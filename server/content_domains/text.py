@@ -1,7 +1,19 @@
 # -*- coding: utf-8 -*-
 import re
 
-from .core import COPY_API_KEY, COPY_API_STYLE, COPY_BASE, COPY_MODEL, OPENAI_BASE, OPENAI_KEY, _post, json
+from .core import (
+    COPY_API_KEY, COPY_API_STYLE, COPY_BASE, COPY_MODEL,
+    _NOPROXY, _post, json, os, urllib,
+)
+
+FALLBACK_COPY_MODEL = COPY_MODEL
+ZHIPU_COPY_MODEL = "glm-4-plus"
+ZHIPU_API_BASE = "https://open.bigmodel.cn/api/paas/v4"
+ZHIPU_API_KEY = (os.environ.get("ZHIPU_API_KEY") or "").strip()
+DIRECTOR_ZHIPU_API_KEY = (os.environ.get("REVERSE_ZHIPU_KEY") or "").strip()
+DIRECTOR_ZHIPU_MODEL = (
+    os.environ.get("REVERSE_ZHIPU_MODEL") or "glm-4v-plus"
+).strip()
 
 
 SCRIPT_FACT_GUARD = (
@@ -63,38 +75,88 @@ def sanitize_script_scenes(scenes, brief):
         cleaned.append(item)
     return cleaned
 
-def _chat(sysmsg, usermsg, temp):
+
+def _zhipu_request(messages, temp, api_key, model):
+    if not api_key:
+        raise RuntimeError("REVERSE_ZHIPU_KEY is not configured")
+    body = json.dumps({
+        "model": model,
+        "messages": messages,
+        "temperature": temp,
+    }, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        ZHIPU_API_BASE + "/chat/completions",
+        data=body,
+        headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
+        method="POST",
+    )
+    with _NOPROXY.open(req, timeout=300) as response:
+        d = json.loads(response.read())
+    return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+
+
+def _copy_channel(sysmsg, usermsg, temp):
     if COPY_API_STYLE == "responses":
-        body = json.dumps({"model": COPY_MODEL, "instructions": sysmsg, "input": usermsg,
-                           "stream": False}).encode()
-        d = _post("/v1/responses", body, "application/json", base=COPY_BASE, key=COPY_API_KEY)
+        body = json.dumps({
+            "model": COPY_MODEL,
+            "instructions": sysmsg,
+            "input": usermsg,
+            "stream": False,
+        }, ensure_ascii=False).encode("utf-8")
+        data = _post("/v1/responses", body, "application/json", base=COPY_BASE, key=COPY_API_KEY)
         return "".join(
             str(part.get("text") or "")
-            for item in (d.get("output") or [])
+            for item in (data.get("output") or [])
             for part in (item.get("content") or [])
             if part.get("type") == "output_text"
         ).strip()
     if COPY_API_STYLE != "chat_completions":
         raise ValueError("COPY_API_STYLE 仅支持 chat_completions 或 responses")
-    body = json.dumps({"model": COPY_MODEL,
-                       "messages": [{"role": "system", "content": sysmsg}, {"role": "user", "content": usermsg}],
-                       "temperature": temp}).encode()
-    d = _post("/v1/chat/completions", body, "application/json", base=COPY_BASE, key=COPY_API_KEY)
-    return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+    body = json.dumps({
+        "model": os.environ.get("COPY_FALLBACK_MODEL", COPY_MODEL),
+        "messages": [
+            {"role": "system", "content": sysmsg},
+            {"role": "user", "content": usermsg},
+        ],
+        "temperature": temp,
+    }, ensure_ascii=False).encode("utf-8")
+    data = _post("/v1/chat/completions", body, "application/json", base=COPY_BASE, key=COPY_API_KEY)
+    return (data.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
 
 
-def _chat_multimodal(sysmsg, usermsg, image_data_urls, temp=0.85):
-    """带参考图的 GPT-4o 多模态调用。"""
-    from . import egress
+def _chat(sysmsg, usermsg, temp):
+    """Legacy shared copy channel for generic copy and short-drama planning."""
+    if COPY_API_STYLE == "responses":
+        return _copy_channel(sysmsg, usermsg, temp)
+    if COPY_API_STYLE != "chat_completions":
+        raise ValueError("COPY_API_STYLE 仅支持 chat_completions 或 responses")
+    messages = [
+        {"role": "system", "content": sysmsg},
+        {"role": "user", "content": usermsg},
+    ]
+    if ZHIPU_API_KEY:
+        return _zhipu_request(messages, temp, ZHIPU_API_KEY, ZHIPU_COPY_MODEL)
+    return _copy_channel(sysmsg, usermsg, temp)
+
+
+def _director_chat(sysmsg, usermsg, temp):
+    if COPY_API_STYLE == "responses":
+        return _copy_channel(sysmsg, usermsg, temp)
+    return _zhipu_request([
+        {"role": "system", "content": sysmsg},
+        {"role": "user", "content": usermsg},
+    ], temp, DIRECTOR_ZHIPU_API_KEY, DIRECTOR_ZHIPU_MODEL)
+
+
+def _director_chat_multimodal(sysmsg, usermsg, image_data_urls, temp=0.85):
+    """带参考图的智谱 GLM-4V 多模态调用。"""
     content = [{"type": "text", "text": usermsg}]
     for url in (image_data_urls or []):
         content.append({"type": "image_url", "image_url": {"url": str(url), "detail": "low"}})
-    body = json.dumps({"model": "gpt-4o", "messages": [
+    return _zhipu_request([
         {"role": "system", "content": sysmsg},
-        {"role": "user", "content": content}], "temperature": temp}).encode()
-    d = egress.post_json(OPENAI_BASE, OPENAI_BASE, "/v1/chat/completions", body,
-                         {"Authorization": "Bearer " + OPENAI_KEY, "Content-Type": "application/json"})
-    return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+        {"role": "user", "content": content},
+    ], temp, DIRECTOR_ZHIPU_API_KEY, DIRECTOR_ZHIPU_MODEL)
 
 
 def gen_copy(payload):
@@ -132,18 +194,26 @@ def gen_copy(payload):
         try: dur_sec = int((dur or "30s").replace("s","").strip())
         except: dur_sec = 30
         n_scenes = max(3, min(8, max(1, dur_sec // 8)))
-        sysmsg = "你是黄雀传媒资深短视频编导。只输出 JSON 本身，不要解释、不要 markdown 代码块。"
+        sysmsg = (
+            "你是黄雀传媒资深短视频编导。生成可直接拍摄或输入视频生成模型的执行级分镜，"
+            "确保相邻镜头主体外观、空间位置、动作和道具连续。"
+            "只输出 JSON 本身，不要解释、不要 markdown 代码块。"
+        )
         usermsg = ("为以下选题生成一套可拍的%s短视频分镜脚本（平台%s，总时长约%s）。\n选题/卖点：%s\n"
-                    "严格输出 JSON：{\"scenes\":[{\"dur\":\"3s\",\"scene\":\"画面描述\",\"line\":\"%s\"}]}，"
-                    "生成 %d 个分镜，各 dur 之和≈总时长。"
+                    "严格输出 JSON：{\"scenes\":[{\"dur\":\"3s\",\"scene\":\"80-140字的执行级画面描述\",\"line\":\"%s\"}]}。"
+                    "生成 %d 个分镜，各 dur 之和≈总时长；每个 scene 写 80-140 字并明确："
+                    "主体可见外观与位置、动作起点—过程—终点、表情视线和身体姿态、道具互动、"
+                    "场景前中后景关系、景别与机位、构图、运镜起止路线、光线方向、色温色调、"
+                    "材质质感、环境音/音效、转场依据及与前后镜的连续性。"
+                    "禁止使用“人物出现”“展示产品”“镜头切换”等空泛描述。"
                     % (style, plat, dur, brief, line_desc, n_scenes))
         sysmsg += SCRIPT_FACT_GUARD
         usermsg += "\n事实约束：" + SCRIPT_FACT_GUARD
         if ref_images:
             usermsg += "\n（可参考上传的图片来构思分镜画面）"
-            raw = _chat_multimodal(sysmsg, usermsg, ref_images)
+            raw = _director_chat_multimodal(sysmsg, usermsg, ref_images)
         else:
-            raw = _chat(sysmsg, usermsg, 0.85)
+            raw = _director_chat(sysmsg, usermsg, 0.85)
         s, e = raw.find("{"), raw.rfind("}"); scenes = []
         if s >= 0 and e > s:
             try: scenes = json.loads(raw[s:e+1]).get("scenes", [])

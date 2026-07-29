@@ -189,6 +189,69 @@ function testRendererDistinguishesLoadingErrorEmptyPendingAndSilent() {
   assert.match(silent, /data-state="silent"[\s\S]*当前镜头为静音镜头/);
 }
 
+function testDraftTimingShowsOverflowAndRecommendedSpeedBeforeSave() {
+  const state = c2Snapshot();
+  const shot = state.shots[0];
+  shot.lines = [shot.lines[0]];
+  const line = shot.lines[0];
+  line.speed = 1;
+  line.start_ms = 300;
+  line.end_ms = 4850;
+  line.versions[0].duration_ms = 5150;
+  line.versions[0].settings.speed = 1;
+  const html = voice.renderWorkspace(state, {
+    voices, selectedShotId: shot.id, timelineDirty: true,
+  });
+  assert.match(html, /音频超出镜头 0\.45s/);
+  assert.match(html, /音频结束于 5\.45s/);
+  assert.match(html, /采用推荐语速 1\.15/);
+  assert.match(html, /当前修改尚未保存[\s\S]*配音或字幕超过镜头时长/);
+  assert.match(html, /data-action="save-timeline"[^>]*disabled/);
+}
+
+function testDraftSettingsChangesBlockTimelineSave() {
+  [
+    line => { line.speed += 0.1; },
+    line => { line.pitch += 1; },
+    line => { line.volume += 1; },
+    line => { line.voice_key = line.voice_key === 'longwan'?'longcheng':'longwan'; },
+  ].forEach(change => {
+    const state = c2Snapshot();
+    const shot = state.shots[0];
+    shot.lines = [shot.lines[0]];
+    const line = shot.lines[0];
+    line.start_ms = 0;
+    line.end_ms = 1000;
+    line.versions[0].duration_ms = 1000;
+    change(line);
+    const html = voice.renderWorkspace(state, {
+      voices, selectedShotId: shot.id, timelineDirty: true,
+    });
+    assert.match(html, /配音参数已修改，请重新生成后再保存时间轴/);
+    assert.match(html, /当前配音版本与音色参数不一致，请重新生成配音/);
+    assert.match(html, /data-action="save-timeline"[^>]*disabled/);
+  });
+}
+
+function testSubtitleOnlyOverflowDoesNotRecommendVoiceSpeed() {
+  const state = c2Snapshot();
+  const shot = state.shots[0];
+  shot.lines = [shot.lines[0]];
+  const line = shot.lines[0];
+  line.start_ms = 0;
+  line.end_ms = 5200;
+  line.speed = 0.5;
+  line.versions[0].duration_ms = 1000;
+  line.versions[0].settings.speed = 0.5;
+  const html = voice.renderWorkspace(state, {
+    voices, selectedShotId: shot.id, timelineDirty: true,
+  });
+  assert.match(html, /字幕超出镜头 0\.20s/);
+  assert.match(html, /请调整字幕结束时间/);
+  assert.doesNotMatch(html, /data-action="apply-recommended-speed"/);
+  assert.match(html, /data-action="save-timeline"[^>]*disabled/);
+}
+
 function testRendererEscapesAttributesErrorsAndVoiceFallbacks() {
   const malicious = snapshot({
     shots: [{
@@ -755,12 +818,240 @@ async function testC2ShotPlaybackStopsOnSelectionAndDestroy() {
   assert.ok(players.every((player) => player.pauses >= 1));
 }
 
+function testAlignmentPanelUsesServerActionsAndEscapesProvider() {
+  const snapshot = c2Snapshot();
+  snapshot.alignment = {
+    provider: { name: '<estimated-provider>' },
+    readiness: { ready: true, blockers: [] },
+    actions: { generate: false, save: true, lock: false },
+    current_version: {
+      id: 'alignment-1', version: 2, revision: 1,
+      status: 'needs_review', effective_status: 'needs_review',
+      quality: {
+        coverage: 1, mean_confidence: 0.92,
+        blockers: [{ code: 'manual_review_required', message: '<校对必需>' }],
+      },
+      timeline: [{
+        line_id: 'voice-1', text: '第一句',
+        audio_start_ms: 100, audio_end_ms: 1800,
+        subtitle_start_ms: 100, subtitle_end_ms: 1800,
+      }],
+    },
+  };
+  let html = voice.renderWorkspace(snapshot, { voices, canEdit: true });
+  assert.match(html, /第 4 阶段 · 字幕强制对齐/);
+  assert.match(html, /&lt;estimated-provider&gt;/);
+  assert.match(html, /&lt;校对必需&gt;/);
+  assert.match(html, /data-alignment-field="subtitle_start_ms"/);
+  assert.match(html, /data-action="preview-alignment"/);
+  assert.match(html, /data-action="review-alignment"/);
+  assert.doesNotMatch(html, /data-action="review-alignment" disabled/);
+  assert.match(html, /data-review-action="confirm_unchanged"/);
+  assert.match(html, /确认当前估算结果正确/);
+  html = voice.renderWorkspace(snapshot, {
+    voices, canEdit: true,
+    alignmentDraft: {
+      versionId: 'alignment-1', revision: 1,
+      lines: [{
+        line_id: 'voice-1',
+        subtitle_start_ms: 150,
+        subtitle_end_ms: 1750,
+      }],
+    },
+  });
+  assert.doesNotMatch(html, /data-action="review-alignment" disabled/);
+  assert.match(html, /data-review-action="save_adjustments"/);
+  assert.match(html, /保存调整并确认/);
+}
+
+function testAlignmentHandoffUsesServerCapabilityAndPreservesLegacyProjects() {
+  const legacy = c2Snapshot();
+  legacy.handoff_blocked = false;
+  legacy.handoff_blockers = [];
+  let html = voice.renderWorkspace(legacy, { voices, canEdit: true });
+  assert.doesNotMatch(
+    html,
+    /data-action="confirm-voice-stage"[^>]*disabled/,
+    'a legacy project that never started alignment remains eligible for handoff'
+  );
+
+  const started = c2Snapshot();
+  started.handoff_blocked = false;
+  started.handoff_blockers = [];
+  started.alignment = {
+    handoff: {
+      required: true, ready: false,
+      blockers: [{ code: 'alignment_not_locked', message: '请先锁定对齐版本' }],
+    },
+    readiness: { ready: true, blockers: [] },
+    actions: { generate: true, save: true, lock: false },
+    current_version: {
+      id: 'alignment-review', version: 1, revision: 1,
+      status: 'needs_review', effective_status: 'needs_review',
+      quality: { coverage: 1, mean_confidence: 0.9, blockers: [] },
+      timeline: [],
+    },
+  };
+  html = voice.renderWorkspace(started, { voices, canEdit: true });
+  assert.match(html, /data-action="confirm-voice-stage"[^>]*disabled/);
+
+  started.alignment.handoff.ready = true;
+  started.alignment.current_version.status = 'locked';
+  started.alignment.current_version.effective_status = 'locked';
+  html = voice.renderWorkspace(started, { voices, canEdit: true });
+  assert.doesNotMatch(html, /data-action="confirm-voice-stage"[^>]*disabled/);
+}
+
+async function testAlignmentReviewSubmitsEditedBoundaries() {
+  const state = c2Snapshot();
+  state.alignment = {
+    handoff: { required: true, ready: false, blockers: [] },
+    readiness: { ready: true, blockers: [] },
+    actions: { generate: true, save: true, lock: false },
+    current_version: {
+      id: 'alignment-edit', version: 1, revision: 3,
+      status: 'needs_review', effective_status: 'needs_review',
+      quality: { coverage: 1, mean_confidence: 0.9, blockers: [] },
+      timeline: [{
+        line_id: 'voice-1', text: '第一句',
+        audio_start_ms: 100, audio_end_ms: 1800,
+        subtitle_start_ms: 100, subtitle_end_ms: 1800,
+      }],
+    },
+  };
+  let submitted = null;
+  const workspace = voice.createWorkspace({
+    projectId: 'project-1', document: null,
+    client: { json(route, options = {}) {
+      if (route.startsWith('/api/gen/short-drama/voice?')) {
+        return Promise.resolve(JSON.parse(JSON.stringify(state)));
+      }
+      if (route === '/api/gen/audio/voices') {
+        return Promise.resolve({ items: voices });
+      }
+      if (route === '/api/gen/short-drama/subtitle-alignment/timeline') {
+        submitted = options.body;
+        return Promise.resolve({});
+      }
+      throw new Error(`unexpected route ${route}`);
+    } },
+  });
+  await workspace.ready;
+  workspace.updateAlignmentLine('voice-1', {
+    subtitle_start_ms: 150,
+    subtitle_end_ms: 1750,
+  });
+  await workspace.reviewAlignment();
+  assert.equal(submitted.review_action, 'save_adjustments');
+  assert.deepEqual(submitted.lines, [{
+    line_id: 'voice-1',
+    subtitle_start_ms: 150,
+    subtitle_end_ms: 1750,
+  }]);
+  workspace.destroy();
+}
+
+async function testAlignmentReviewCanExplicitlyConfirmUnchangedEstimate() {
+  const state = c2Snapshot();
+  state.alignment = {
+    handoff: { required: true, ready: false, blockers: [] },
+    readiness: { ready: true, blockers: [] },
+    actions: { generate: true, save: true, lock: false },
+    current_version: {
+      id: 'alignment-confirm', version: 1, revision: 2,
+      status: 'needs_review', effective_status: 'needs_review',
+      quality: { coverage: 1, mean_confidence: 0.9, blockers: [] },
+      timeline: [{
+        line_id: 'voice-1', text: '第一句',
+        audio_start_ms: 100, audio_end_ms: 1800,
+        subtitle_start_ms: 100, subtitle_end_ms: 1800,
+      }],
+    },
+  };
+  let submitted = null;
+  const workspace = voice.createWorkspace({
+    projectId: 'project-1', document: null,
+    client: { json(route, options = {}) {
+      if (route.startsWith('/api/gen/short-drama/voice?')) {
+        return Promise.resolve(JSON.parse(JSON.stringify(state)));
+      }
+      if (route === '/api/gen/audio/voices') {
+        return Promise.resolve({ items: voices });
+      }
+      if (route === '/api/gen/short-drama/subtitle-alignment/timeline') {
+        submitted = options.body;
+        return Promise.resolve({});
+      }
+      throw new Error(`unexpected route ${route}`);
+    } },
+  });
+  await workspace.ready;
+  await workspace.reviewAlignment();
+  assert.equal(submitted.review_action, 'confirm_unchanged');
+  assert.deepEqual(submitted.lines, [{
+    line_id: 'voice-1',
+    subtitle_start_ms: 100,
+    subtitle_end_ms: 1800,
+  }]);
+  workspace.destroy();
+}
+
+async function testSilentAlignmentCanBeReviewedWithAnEmptyTimeline() {
+  const state = c2Snapshot();
+  state.alignment = {
+    handoff: { required: true, ready: false, blockers: [] },
+    readiness: { ready: true, blockers: [] },
+    actions: { generate: true, save: true, lock: false },
+    current_version: {
+      id: 'alignment-silent', version: 1, revision: 1,
+      status: 'needs_review', effective_status: 'needs_review',
+      quality: { coverage: 0, mean_confidence: 0, blockers: [] },
+      timeline: [],
+    },
+  };
+  const html = voice.renderWorkspace(state, { voices, canEdit: true });
+  assert.match(html, /当前项目没有对白，无需调整字幕边界/);
+  assert.match(html, /确认当前无对白结果/);
+  assert.doesNotMatch(html, /data-action="review-alignment" disabled/);
+
+  let submitted = null;
+  const workspace = voice.createWorkspace({
+    projectId: 'project-1', document: null,
+    client: { json(route, options = {}) {
+      if (route.startsWith('/api/gen/short-drama/voice?')) {
+        return Promise.resolve(JSON.parse(JSON.stringify(state)));
+      }
+      if (route === '/api/gen/audio/voices') {
+        return Promise.resolve({ items: voices });
+      }
+      if (route === '/api/gen/short-drama/subtitle-alignment/timeline') {
+        submitted = options.body;
+        return Promise.resolve({});
+      }
+      throw new Error(`unexpected route ${route}`);
+    } },
+  });
+  await workspace.ready;
+  await workspace.reviewAlignment();
+  assert.equal(submitted.review_action, 'confirm_unchanged');
+  assert.deepEqual(submitted.lines, []);
+  workspace.destroy();
+}
+
 async function main() {
   testNormalizeRenderAndReadonlyContract();
   testRendererDistinguishesLoadingErrorEmptyPendingAndSilent();
+  testDraftTimingShowsOverflowAndRecommendedSpeedBeforeSave();
+  testDraftSettingsChangesBlockTimelineSave();
+  testSubtitleOnlyOverflowDoesNotRecommendVoiceSpeed();
   testRendererEscapesAttributesErrorsAndVoiceFallbacks();
   testPrototypeNamedVoiceAndStatusKeysUseNormalFallbacks();
   testNarrationRendersAnExplicitEscapedBadge();
+  testAlignmentPanelUsesServerActionsAndEscapesProvider();
+  testAlignmentHandoffUsesServerCapabilityAndPreservesLegacyProjects();
+  await testAlignmentReviewSubmitsEditedBoundaries();
+  await testAlignmentReviewCanExplicitlyConfirmUnchangedEstimate();
+  await testSilentAlignmentCanBeReviewedWithAnEmptyTimeline();
   testBrowserUmdExport();
   await testWorkspaceLoadsResourcesWithBoardHeaderAndExposesState();
   await testLatestReloadWinsOverOlderSuccessAndError();
@@ -777,6 +1068,7 @@ async function main() {
     __dirname, '../site/workbench/canvas/canvas-short-drama-voice.css'
   ), 'utf8');
   assert.match(css, /grid-template-columns:\s*260px\s+minmax\(0,\s*1fr\)\s+300px/);
+  assert.match(css, /\.nc-sdv-timing\.is-error/);
   console.log('canvas short drama voice: pass');
 }
 

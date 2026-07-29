@@ -213,13 +213,24 @@
   };
   document.getElementById("getCode").onclick=function(){ setMsg("验证码登录即将上线，请用密码登录","err"); };
 
+  function safeNext(value){
+    if(!value||value.length>1024)return "";
+    try{
+      var target=new URL(value,location.origin);
+      return target.origin===location.origin&&/^\/workbench\/[a-zA-Z0-9_-]+(?:\.html)?$/.test(target.pathname)
+        ? target.pathname+target.search : "";
+    }catch(e){ return ""; }
+  }
   function enterWorkbench(user){
     try{
       localStorage.removeItem("hq_role");
       if(user) localStorage.setItem("hq_user",JSON.stringify(user));
     }catch(e){}
     var role=(user && user.role) || "member";
-    var rd=new URLSearchParams(location.search).get("redirect");
+    var params=new URLSearchParams(location.search);
+    var next=safeNext(params.get("next"));
+    if(next){ location.href=next; return; }
+    var rd=params.get("redirect");
     var dest=(rd && /^[a-zA-Z0-9_-]+$/.test(rd)) ? rd : (role==="admin" ? "dashboard" : "inspiration");
     location.href="workbench/"+dest+".html";
   }

@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>IP12 产品方案报告 · 黄雀</title>
+  <style>
+    :root{--night:#080d18;--night-2:#11182a;--paper:#f7f3ea;--sheet:#fffdf8;--ink:#191b25;--muted:#687080;--line:#ddd6c8;--gold:#e8bd61;--gold-soft:#f8e9bd;--violet:#8058e8;--violet-soft:#eee8ff;--amber:#fff0c4;--red:#a53d49;--shadow:0 32px 90px rgba(0,0,0,.34)}
+    *{box-sizing:border-box}html{background:var(--night)}body{min-height:100vh;margin:0;color:#f8f5ed;background:radial-gradient(circle at 85% 8%,rgba(128,88,232,.2),transparent 28%),radial-gradient(circle at 12% 82%,rgba(232,189,97,.12),transparent 24%),linear-gradient(145deg,#090e1a,#070b14 70%);font:15px/1.68 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+    button,input{font:inherit}a{color:inherit}.shell{width:min(1120px,calc(100% - 32px));margin:28px auto 64px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:20px}.brand{display:flex;align-items:center;gap:12px;color:#fff;text-decoration:none}.mark{display:grid;place-items:center;width:40px;height:40px;border:1px solid rgba(232,189,97,.55);border-radius:12px;background:linear-gradient(145deg,#f2cd78,#d9a94c);color:#241b09;font-weight:900;box-shadow:0 10px 30px rgba(232,189,97,.2)}.brand strong,.brand-copy span{display:block}.brand strong{font-size:16px;letter-spacing:.03em}.brand-copy span{color:#9ca6b9;font-size:12px}.toolbar{display:flex;gap:10px;flex-wrap:wrap}.btn{border:1px solid rgba(255,255,255,.18);border-radius:999px;padding:9px 16px;background:rgba(255,255,255,.07);color:#fff;font-weight:750;cursor:pointer;text-decoration:none}.btn.primary{border-color:var(--gold);background:var(--gold);color:#231b0b;box-shadow:0 8px 24px rgba(232,189,97,.2)}.btn:disabled{opacity:.45;cursor:not-allowed}.btn:focus-visible,.brand:focus-visible,.consent:focus-within,.product a:focus-visible{outline:3px solid var(--gold);outline-offset:3px}
+    .status{display:none;margin:0 0 18px;padding:12px 16px;border:1px solid #d8b25e;border-radius:14px;background:var(--amber);color:#5d4618}.status.show{display:block}.status.error{border-color:#d38e96;background:#fff0f0;color:var(--red)}
+    .gate{display:none;overflow:hidden;border:1px solid rgba(232,189,97,.34);border-radius:28px;background:var(--paper);color:var(--ink);box-shadow:var(--shadow)}.gate.show{display:grid;grid-template-columns:minmax(0,1.32fr) minmax(300px,.68fr)}.gate-copy{padding:54px}.eyebrow{margin:0 0 14px;color:#7250d0;font-size:11px;font-weight:850;letter-spacing:.18em;text-transform:uppercase}.gate h1{max-width:680px;margin:0 0 18px;font:800 clamp(34px,4.7vw,58px)/1.12 "Noto Serif SC","Source Han Serif SC","Songti SC",Georgia,serif;letter-spacing:-.035em}.gate-lead{max-width:680px;margin:0;color:var(--muted);font-size:16px}.evidence-route{display:grid;grid-template-columns:auto 1fr auto 1fr auto;align-items:center;gap:12px;margin:0 0 34px;color:#4f5665;font-size:12px;font-weight:750}.evidence-route span{white-space:nowrap}.evidence-route b{margin-right:6px;color:var(--violet);font:800 11px/1.2 "SFMono-Regular",Consolas,monospace}.evidence-route i{height:1px;background:linear-gradient(90deg,var(--violet),var(--gold));position:relative}.evidence-route i:after{content:"";position:absolute;right:-1px;top:-3px;width:7px;height:7px;border-radius:50%;background:var(--gold)}.consent{display:flex;align-items:flex-start;gap:11px;margin:28px 0 18px;padding:17px 18px;border:1px solid var(--line);border-radius:15px;background:var(--sheet);box-shadow:0 10px 30px rgba(30,25,15,.05)}.consent input{width:18px;height:18px;margin-top:3px;accent-color:var(--violet)}.privacy{font-size:12px;color:var(--muted)}
+    .gate-side{position:relative;overflow:hidden;padding:44px 38px;background:radial-gradient(circle at 100% 0,rgba(128,88,232,.38),transparent 42%),var(--night-2);color:#fff}.gate-side:after{content:"";position:absolute;right:-28px;bottom:-28px;width:150px;height:150px;background-image:radial-gradient(rgba(232,189,97,.34) 1px,transparent 1px);background-size:12px 12px;transform:rotate(-8deg)}.side-kicker{margin:0 0 14px;color:var(--gold);font:800 11px/1.2 "SFMono-Regular",Consolas,monospace;letter-spacing:.18em}.gate-side h2{position:relative;z-index:1;margin:0;font:760 25px/1.35 "Noto Serif SC","Source Han Serif SC","Songti SC",serif}.gate-side ol{position:relative;z-index:1;counter-reset:method;margin:28px 0 0;padding:0;list-style:none}.gate-side li{counter-increment:method;display:grid;grid-template-columns:34px 1fr;gap:10px;align-items:start;margin:18px 0;color:#d8deeb}.gate-side li:before{content:"0" counter(method);color:var(--gold);font:800 12px/1.65 "SFMono-Regular",Consolas,monospace}.method-mark{position:relative;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:34px;padding-top:18px;border-top:1px solid rgba(255,255,255,.14);color:#aeb7c9;font-size:11px;font-weight:750;letter-spacing:.08em}.method-mark b{color:var(--gold)}
+    .report{display:none;overflow:hidden;border:1px solid rgba(232,189,97,.26);border-radius:28px;background:var(--paper);color:var(--ink);box-shadow:var(--shadow)}.report.show{display:block}.cover{position:relative;overflow:hidden;padding:54px 64px 44px;color:#fff;background:radial-gradient(circle at 88% 10%,rgba(128,88,232,.28),transparent 31%),var(--night-2)}.cover:after{content:"";position:absolute;right:50px;bottom:-55px;width:250px;height:160px;background-image:linear-gradient(rgba(232,189,97,.12) 1px,transparent 1px),linear-gradient(90deg,rgba(232,189,97,.12) 1px,transparent 1px);background-size:22px 22px;transform:skewX(-12deg)}.cover .eyebrow{position:relative;z-index:1;color:var(--gold)}.cover h1{position:relative;z-index:1;max-width:820px;margin:8px 0 16px;font:800 clamp(36px,5vw,60px)/1.12 "Noto Serif SC","Source Han Serif SC","Songti SC",Georgia,serif;letter-spacing:-.035em}.cover p{position:relative;z-index:1;max-width:760px;margin:0;color:#cbd3e0;font-size:17px}.cover-route{position:relative;z-index:1;max-width:720px;margin-bottom:32px;color:#b7c0d1}.cover-route b{color:var(--gold)}.meta{position:relative;z-index:1;display:flex;gap:8px;flex-wrap:wrap;margin-top:28px}.pill{border:1px solid rgba(232,189,97,.3);border-radius:999px;padding:5px 10px;background:rgba(8,13,24,.28);color:#e5e9f1;font-size:12px}.content{padding:24px 64px 64px;background:var(--paper)}.section{padding:36px 0;border-bottom:1px solid var(--line)}.section:last-child{border-bottom:0}.section-head{display:grid;grid-template-columns:52px 1fr;gap:16px;align-items:start;margin-bottom:22px}.num{display:grid;place-items:center;width:42px;height:42px;border-radius:12px;background:var(--night-2);color:var(--gold);font:850 12px/1 "SFMono-Regular",Consolas,monospace}.section h2{margin:0;font:780 27px/1.25 "Noto Serif SC","Source Han Serif SC","Songti SC",serif}.section-lead{max-width:720px;margin:4px 0 0;color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.card{padding:21px;border:1px solid var(--line);border-radius:15px;background:var(--sheet);box-shadow:0 8px 24px rgba(45,36,22,.045)}.card h3{margin:0 0 8px;font-size:17px;line-height:1.45}.card p{margin:7px 0;color:#4f5562}.tag{display:inline-block;margin:0 5px 6px 0;border-radius:999px;padding:3px 9px;background:var(--gold-soft);color:#654b14;font-size:12px;font-weight:750}.product{margin-top:16px;padding:15px;border:1px solid #ddd2fb;border-radius:12px;background:var(--violet-soft)}.product a{display:inline-flex;align-items:center;gap:7px;color:#5c36bd;font-weight:850}.product a:after{content:"→"}.product a[aria-disabled="true"]{opacity:.55;cursor:not-allowed;text-decoration:none}.steps{margin:9px 0 0;padding-left:20px}.steps li{margin:5px 0}.evidence{font:12px/1.6 "SFMono-Regular",Consolas,"PingFang SC",sans-serif;color:var(--muted)}.metric{display:grid;grid-template-columns:1fr 1fr;gap:10px 18px}.metric strong{display:block;color:#6841c9;font-size:11px;letter-spacing:.06em}.empty{padding:22px;border:1px dashed #bdb5a7;border-radius:14px;color:var(--muted);background:#fbf8f1}.disclaimer{margin-top:22px;padding:18px;border-left:4px solid var(--gold);background:#fff5d8;color:#654f22}.stale{display:none;margin:0;padding:13px 64px;background:var(--amber);color:#654d17}.stale.show{display:block}.footer-note{padding:20px 64px;border-top:1px solid var(--line);background:#eee9df;color:var(--muted);font-size:12px}
+    @media(max-width:760px){.shell{width:min(100% - 20px,1120px);margin-top:14px}.gate.show{grid-template-columns:1fr}.gate-copy,.gate-side{padding:30px 26px}.gate h1{letter-spacing:-.025em}.evidence-route{gap:7px;margin-bottom:26px;font-size:10px}.evidence-route span{white-space:normal}.evidence-route b{display:block;margin:0 0 2px}.cover{padding:38px 26px 30px}.content{padding:10px 26px 38px}.grid{grid-template-columns:1fr}.section-head{grid-template-columns:42px 1fr}.stale,.footer-note{padding-left:26px;padding-right:26px}.topbar{align-items:flex-start}.toolbar{justify-content:flex-end}.method-mark{align-items:flex-start;flex-direction:column}}
+    @media(max-width:520px){.topbar{align-items:stretch;flex-direction:column}.toolbar{display:grid;grid-template-columns:1fr 1fr}.toolbar .btn{padding-inline:11px;text-align:center}.toolbar .primary{grid-column:1/-1}.gate-copy,.gate-side{padding-inline:22px}.gate h1{font-size:34px}.metric{grid-template-columns:1fr}}
+    @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
+    @page{size:A4;margin:14mm}
+    @media print{body{background:#fff;color:#000;font-size:10.5pt}.shell{width:100%;margin:0}.no-print,.status,.gate{display:none!important}.report{display:block!important;border:0;border-radius:0;box-shadow:none}.cover{padding:22mm 16mm 14mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}.cover h1{font-size:34pt}.content{padding:5mm 16mm 10mm;background:#fff}.section{break-inside:auto;padding:8mm 0}.section-head,.card,.product{break-inside:avoid}.grid{gap:4mm}.stale{padding:4mm 16mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}.footer-note{padding:5mm 16mm}.product a{text-decoration:none}}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar no-print">
+      <a class="brand" href="/" aria-label="返回黄雀主站首页"><span class="mark">雀</span><span class="brand-copy"><strong>黄雀 · IP12</strong><span>产品方案报告</span></span></a>
+      <div class="toolbar">
+        <button class="btn" id="refreshBtn" type="button">刷新报告</button>
+        <button class="btn" id="regenerateBtn" type="button" hidden>重新生成</button>
+        <button class="btn primary" id="confirmBtn" type="button" hidden>确认 IP 底座并进入内容生产</button>
+        <a class="btn primary" id="downloadBtn" href="#" hidden>下载 PDF</a>
+        <button class="btn" id="printBtn" type="button" hidden>打印 / 保存为 PDF</button>
+      </div>
+    </header>
+    <p class="status" id="status" role="status"></p>
+
+    <section class="gate" id="gate" aria-labelledby="gateTitle">
+      <div class="gate-copy">
+        <div class="evidence-route" aria-label="报告推导路径"><span><b>01</b>真实资料</span><i></i><span><b>02</b>定位判断</span><i></i><span><b>03</b>IP 底座</span></div>
+        <p class="eyebrow">黄雀数字化 IP · 证据型方案</p>
+        <h1 id="gateTitle">让每一条建议，都能追溯到你的真实资料</h1>
+        <p class="gate-lead">完成模块 1–4 的采访后即可生成。报告会区分事实、判断、备选与推荐；资料缺口会明确标出，不会由 AI 擅自补写。</p>
+        <label class="consent">
+          <input id="consent" type="checkbox">
+          <span>我同意将本项目中<strong>已经保存的 IP12 回答</strong>发送给 AI 分析服务，用于生成本次报告。我知道跳过的步骤只会作为资料缺口，不会被当成事实。</span>
+        </label>
+        <button class="btn primary" id="generateBtn" type="button" disabled>同意并生成报告</button>
+        <p class="privacy">生成需消耗一次 AI 服务额度。未勾选不会发送资料、不会调用模型，也不会保存新报告。</p>
+      </div>
+      <aside class="gate-side">
+        <p class="side-kicker">HOW IT WORKS</p>
+        <h2>不是“万能答案”，而是一条可以逐项核对的推导链</h2>
+        <ol>
+          <li>从已确认回答中提取可引用的经营事实</li>
+          <li>区分定位、人设、价值主张和故事资产</li>
+          <li>确认报告后，才进入模块 5–6 的内容生产</li>
+        </ol>
+        <div class="method-mark"><span>FACTS</span><b>→</b><span>FOUNDATION</span><b>→</b><span>CONFIRM</span></div>
+      </aside>
+    </section>
+
+    <article class="report" id="report">
+      <p class="stale" id="stale">项目内容已在报告生成后发生变化。当前仍展示历史报告；重新生成前请核对最新回答。</p>
+      <header class="cover">
+        <div class="evidence-route cover-route" aria-hidden="true"><span><b>01</b>真实资料</span><i></i><span><b>02</b>定位判断</span><i></i><span><b>03</b>IP 底座</span></div>
+        <p class="eyebrow">Huangque · Digital IP Foundation Brief</p>
+        <h1 id="reportTitle"></h1>
+        <p id="summary"></p>
+        <div class="meta" id="meta"></div>
+      </header>
+      <div class="content" id="sections"></div>
+      <footer class="footer-note">可下载服务器生成的私有 PDF；也可使用浏览器“打印 / 保存为 PDF”。本站不提供 Word/DOCX 文件。</footer>
+    </article>
+  </main>
+  <script>
+    const qs=new URLSearchParams(location.search),projectId=qs.get("project")||"";
+    const API="/api/gen/digital-ip/projects/"+encodeURIComponent(projectId);
+    const PRODUCTS={
+      image_studio:{name:"图片生成",url:"banana.html"},script_studio:{name:"文案编导",url:"script.html"},
+      voice_studio:{name:"音频创作",url:"audio.html"},video_studio:{name:"视频创作",url:"video.html"},
+      workflow_canvas:{name:"创作画布",url:"canvas.html"}
+    };
+    const PRODUCT_HANDOFF_KEY="hq_ip12_product_handoff_v1",PRODUCT_HANDOFF_TARGETS=new Set(["image_studio","script_studio","video_studio"]);
+    const $=id=>document.getElementById(id),status=$("status"),gate=$("gate"),report=$("report"),consent=$("consent"),generateBtn=$("generateBtn"),downloadBtn=$("downloadBtn");
+    let project=null,currentEnvelope=null;
+    function node(tag,className,text){const el=document.createElement(tag);if(className)el.className=className;if(text!==undefined)el.textContent=String(text);return el}
+    function showStatus(message,error=false){status.textContent=message;status.className="status show"+(error?" error":"")}
+    function clearStatus(){status.textContent="";status.className="status"}
+    function auth(response){if(response.status===401){location.href="/login.html?next="+encodeURIComponent(location.pathname+location.search);return false}return true}
+    async function json(response){const data=await response.json().catch(()=>({detail:"服务返回异常"}));if(!response.ok)throw Object.assign(new Error(data.detail||"请求失败"),{status:response.status,data});return data}
+    function section(number,title,lead){const wrap=node("section","section"),head=node("div","section-head");head.append(node("span","num",number));const copy=node("div");copy.append(node("h2","",title),node("p","section-lead",lead));head.append(copy);wrap.append(head);return wrap}
+    function empty(text){return node("p","empty",text)}
+    function renderList(items){const list=node("ol","steps");(items||[]).forEach(item=>list.append(node("li","",item)));return list}
+    function sameOriginPdfUrl(value){try{const url=new URL(String(value||""),location.origin),expected=`/api/gen/digital-ip/projects/${encodeURIComponent(projectId)}/report.pdf`;return url.origin===location.origin&&url.pathname===expected?url.pathname+url.search:""}catch(_){return ""}}
+    function productLink(productId,known,match,stale){
+      const handoff=PRODUCT_HANDOFF_TARGETS.has(productId),link=node("a","",handoff?`带入${known.name}`:known.name);
+      link.href=known.url+(handoff?"?prefill=ip12":"");
+      if(!handoff){link.target="_blank";link.rel="noopener";return link}
+      if(stale){
+        link.href="#";
+        link.setAttribute("aria-disabled","true");
+        link.addEventListener("click",event=>{event.preventDefault();showStatus("报告已过期，请重新生成后再带入产品页。",true)});
+        return link;
+      }
+      link.addEventListener("click",event=>{
+        event.preventDefault();
+        const steps=(match.execution_steps||[]).join("；"),prompt=`请基于以下 IP12 产品建议，在${known.name}中创建一份可编辑草稿：\n${match.fit_reason||""}${steps?`\n执行重点：${steps}`:""}`.slice(0,1000);
+        try{
+          sessionStorage.removeItem(PRODUCT_HANDOFF_KEY);
+          sessionStorage.setItem(PRODUCT_HANDOFF_KEY,JSON.stringify({version:1,target:productId,prompt,created_at:Date.now()}));
+          location.href=link.href;
+        }catch(_){showStatus("浏览器无法暂存待编辑方案，请刷新后重试。",true)}
+      });
+      return link;
+    }
+    function renderLegacy(payload){currentEnvelope=payload.report;const content=currentEnvelope.content||{};gate.classList.remove("show");report.classList.add("show");$("printBtn").hidden=false;$("regenerateBtn").hidden=false;$("confirmBtn").hidden=true;const pdfUrl=sameOriginPdfUrl(currentEnvelope.pdf_url);downloadBtn.hidden=!pdfUrl;downloadBtn.href=pdfUrl||"#";$("reportTitle").textContent=content.title||"IP12 产品方案报告";$("summary").textContent=content.executive_summary||"";
+      const meta=$("meta");meta.replaceChildren();const progress=currentEnvelope.progress||{};[project?.title||payload.project?.title||"IP12 项目",`确认 ${progress.confirmed||0} · 跳过 ${progress.skipped||0} · 共 ${progress.total||34}`,new Date((currentEnvelope.generated_at||0)*1000).toLocaleString("zh-CN")].forEach(value=>meta.append(node("span","pill",value)));
+      $("stale").classList.toggle("show",!!payload.stale);const root=$("sections");root.replaceChildren();
+      const evidenceSection=section("01","事实依据","报告中的痛点、指标与建议只能追溯到这些已确认回答。"),evidenceGrid=node("div","grid");(content.evidence||[]).forEach(item=>{const card=node("article","card"),source=item.source_name&&item.source_location?`${item.source_name} · ${item.source_location}`:item.source_ref;card.append(node("span","tag",item.evidence_id),node("h3","",item.claim),node("p","",`“${item.source_excerpt}”`),node("p","evidence",`来源：${source}`));evidenceGrid.append(card)});evidenceSection.append(evidenceGrid.childElementCount?evidenceGrid:empty("当前没有足够的已确认事实可列为证据。"));root.append(evidenceSection);
+      const painSection=section("02","行业痛点与匹配产品","没有直接能力匹配时，报告不会为了推荐而推荐。"),painGrid=node("div","grid");(content.industry_pains||[]).forEach(item=>{const card=node("article","card");card.append(node("h3","",item.pain),node("p","",item.why_it_matters));(item.evidence_ids||[]).forEach(id=>card.append(node("span","tag",id)));(item.product_matches||[]).forEach(match=>{const known=PRODUCTS[match.product_id];if(!known)return;const box=node("div","product"),handoff=PRODUCT_HANDOFF_TARGETS.has(match.product_id),stale=!!payload.stale;box.append(productLink(match.product_id,known,match,stale),node("p","product-hint",handoff?(stale?"报告已过期，请重新生成后再带入":"点击后只预填待编辑内容，不会自动生成、扣点或发布"):"可点击跳转使用我们的网站功能"),node("p","",match.fit_reason),renderList(match.execution_steps));card.append(box)});painGrid.append(card)});painSection.append(painGrid.childElementCount?painGrid:empty("现有已确认资料不足以形成有证据的行业痛点或产品推荐。"));root.append(painSection);
+      const planSection=section("03","执行路线","每一步都保留用户核对，不自动发布、投放、支付或联系第三方。"),planGrid=node("div","grid");(content.execution_plan||[]).forEach(item=>{const card=node("article","card");card.append(node("span","tag",item.phase),node("h3","",item.goal),renderList(item.steps));planGrid.append(card)});planSection.append(planGrid.childElementCount?planGrid:empty("暂无可执行路线，请先补齐关键资料。"));root.append(planSection);
+      const metricSection=section("04","复盘指标","目标值是待确认的规划值，不是经营效果承诺。"),metricGrid=node("div","grid");(content.metrics||[]).forEach(item=>{const card=node("article","card metric"),fields=[["定义",item.definition],["基线",item.baseline],["规划目标",item.target],["复盘周期",item.review_cycle]];card.append(node("h3","",item.name));fields.forEach(([label,value])=>{const box=node("div");box.append(node("strong","",label),node("span","",value));card.append(box)});metricGrid.append(card)});metricSection.append(metricGrid.childElementCount?metricGrid:empty("现有证据不足以建立指标；建议先补充可核对的经营数据。"));root.append(metricSection);
+      const gapSection=section("05","材料缺口","跳过的步骤只会形成缺口，不会被模型补写成事实。"),gapGrid=node("div","grid");(content.material_gaps||[]).forEach(item=>{const card=node("article","card");card.append(node("span","tag",item.blocking?"阻塞项":"可后补"),node("h3","",item.gap),node("p","",item.why_needed),node("p","evidence",`补充方式：${item.how_to_collect}`));gapGrid.append(card)});gapSection.append(gapGrid.childElementCount?gapGrid:empty("报告未识别到额外材料缺口。"));root.append(gapSection);
+      const note=section("06","使用边界","请在执行前再次核对事实、页面能力和业务条件。");note.append(node("p","disclaimer",content.disclaimer||"报告仅供规划参考，不构成经营效果保证。"));root.append(note)
+    }
+    function evidenceTags(ids){const wrap=node("div","");(ids||[]).forEach(id=>wrap.append(node("span","tag",id)));return wrap}
+    function renderFoundation(payload){
+      currentEnvelope=payload.report;const content=currentEnvelope.content||{},stage=payload.stage_status?.status||currentEnvelope.status||"pending_confirmation";
+      gate.classList.remove("show");report.classList.add("show");$("printBtn").hidden=false;$("regenerateBtn").hidden=false;
+      const pdfUrl=sameOriginPdfUrl(currentEnvelope.pdf_url);downloadBtn.hidden=!pdfUrl;downloadBtn.href=pdfUrl||"#";
+      $("reportTitle").textContent=content.title||"IP 人设定位｜模块 1–4";$("summary").textContent=content.executive_summary||"";
+      const meta=$("meta");meta.replaceChildren();const progress=currentEnvelope.progress||{};
+      [project?.title||payload.project?.title||"IP12 项目",`已记录 ${progress.confirmed||0} · 待补 ${progress.skipped||0}`,stage==="confirmed"?"已确认 IP 底座":"待确认 IP 底座"].forEach(value=>meta.append(node("span","pill",value)));
+      $("stale").classList.toggle("show",!!payload.stale);const root=$("sections");root.replaceChildren();
+      const evidenceSection=section("01","事实依据","只展示已经确认且可回查的回答或资料。"),evidenceGrid=node("div","grid");
+      (content.evidence||[]).forEach(item=>{const card=node("article","card"),source=item.source_name&&item.source_location?`${item.source_name} · ${item.source_location}`:item.source_ref;card.append(node("span","tag",item.evidence_id),node("h3","",item.claim),node("p","",`“${item.source_excerpt}”`),node("p","evidence",`来源：${source}`));evidenceGrid.append(card)});
+      evidenceSection.append(evidenceGrid.childElementCount?evidenceGrid:empty("当前没有足够的已确认事实可列为证据。"));root.append(evidenceSection);
+      const modules=[...(content.modules||[])].sort((a,b)=>(a.module_id||0)-(b.module_id||0));
+      modules.forEach((module,index)=>{const moduleSection=section(String(index+2).padStart(2,"0"),module.title||`模块 ${module.module_id||index+1}`,module.summary||"待本人复核的阶段判断。"),grid=node("div","grid");(module.findings||[]).forEach(item=>{const card=node("article","card");card.append(node("span","tag",{fact:"事实",inference:"AI 判断",option:"备选",recommendation:"推荐"}[item.kind]||"待核对"),node("h3","",item.title),node("p","",item.detail),evidenceTags(item.evidence_ids));if((item.risks||[]).length)card.append(node("p","evidence",`风险/边界：${item.risks.join("；")}`));grid.append(card)});moduleSection.append(grid.childElementCount?grid:empty("该模块暂无可引用结论。"));root.append(moduleSection)});
+      const priorities=section("06","执行优先级","P0–P3 是待确认的工作顺序，不代表效果承诺。"),priorityGrid=node("div","grid");(content.execution_priorities||[]).forEach(item=>{const card=node("article","card");card.append(node("span","tag",item.priority),node("h3","",item.task),node("p","",`预计产出：${item.output||"待确认"}`),evidenceTags(item.evidence_ids));priorityGrid.append(card)});priorities.append(priorityGrid.childElementCount?priorityGrid:empty("暂无下一步优先级。"));root.append(priorities);
+      const confirmations=section("07","待确认事项","以下事项需要本人确认，确认后才会解锁模块 5–6。"),confirmationGrid=node("div","grid");(content.confirmation_items||[]).forEach(item=>{const card=node("article","card");card.append(node("span","tag",item.required?"必须确认":"建议确认"),node("h3","",item.item),node("p","",item.reason),evidenceTags(item.evidence_ids));confirmationGrid.append(card)});confirmations.append(confirmationGrid.childElementCount?confirmationGrid:empty("报告未列出额外确认项。"));root.append(confirmations);
+      const gaps=section("08","资料缺口","跳过的步骤只会形成缺口，不会被补写成事实。"),gapGrid=node("div","grid");(content.material_gaps||[]).forEach(item=>{const card=node("article","card");card.append(node("span","tag",item.blocking?"阻塞项":"可后补"),node("h3","",item.gap),node("p","",item.why_needed),node("p","evidence",`补充方式：${item.how_to_collect}`));gapGrid.append(card)});gaps.append(gapGrid.childElementCount?gapGrid:empty("报告未识别到额外资料缺口。"));root.append(gaps);
+      const note=section("09","使用边界","AI 判断和创意备选需要本人复核，不构成公开授权或结果保证。");note.append(node("p","disclaimer",content.disclaimer||"报告仅基于用户确认资料，不构成经营效果保证。"));root.append(note);
+      $("confirmBtn").hidden=stage!=="pending_confirmation"||!!payload.stale;
+    }
+    function render(payload){return payload.report?.stage==="foundation_v1"?renderFoundation(payload):renderLegacy(payload)}
+    async function load(){clearStatus();if(!projectId){showStatus("链接缺少 project 参数，请从 IP12 项目进入报告页。",true);return}try{const projectResponse=await fetch(API,{credentials:"include",cache:"no-store"});if(!auth(projectResponse))return;project=(await json(projectResponse)).project;const response=await fetch(API+"/report",{credentials:"include",cache:"no-store"});if(!auth(response))return;if(response.status===404){gate.classList.add("show");report.classList.remove("show");$("printBtn").hidden=true;downloadBtn.hidden=true;downloadBtn.href="#";return}render(await json(response))}catch(error){if(error.status===404){gate.classList.add("show");return}showStatus(error.message,true)}}
+    consent.addEventListener("change",()=>{generateBtn.disabled=!consent.checked});
+    generateBtn.addEventListener("click",async()=>{if(!consent.checked||!project)return;generateBtn.disabled=true;generateBtn.textContent="正在生成…";showStatus("正在根据已保存回答生成报告，请不要重复提交。");try{const response=await fetch(API+"/report",{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({revision:project.revision,consent:true})});if(!auth(response))return;const payload=await json(response);project=payload.project;clearStatus();render(payload)}catch(error){if(error.status===403&&error.data?.membership_url){showStatus(error.message+"。请先前往会员页面开通。",true)}else if(error.status===409){showStatus("项目已更新，请刷新后再生成报告。",true)}else{showStatus(error.message,true)}}finally{generateBtn.textContent="同意并生成报告";generateBtn.disabled=!consent.checked}});
+    $("confirmBtn").addEventListener("click",async()=>{if(!project||!currentEnvelope)return;const button=$("confirmBtn");button.disabled=true;showStatus("正在确认 IP 底座…");try{const response=await fetch(API+"/report-confirm",{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({revision:project.revision,report_id:currentEnvelope.report_id})});if(!auth(response))return;const payload=await json(response);project=payload.project||project;location.href=`ip12.html?project=${encodeURIComponent(projectId)}&module=5&step=1`}catch(error){showStatus(error.status===409?"项目内容已更新，请重新生成并确认报告。":error.message,true);button.disabled=false}});
+    $("regenerateBtn").addEventListener("click",()=>{consent.checked=false;generateBtn.disabled=true;gate.classList.add("show");gate.scrollIntoView({block:"start"})});
+    $("printBtn").addEventListener("click",()=>window.print());$("refreshBtn").addEventListener("click",load);load();
+  </script>
+  <script src="cloud-shell.js?v=642453c4"></script>
+</body>
+</html>

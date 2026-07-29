@@ -47,7 +47,7 @@ class ZelongDedicatedChannelTests(unittest.TestCase):
         valid = {"provider": "zelong2", "prompt": "demo", "ratio": "1:1", "quality": "std", "count": 1}
         with mock.patch.object(image_domain, "ZELONG2_IMAGE_MODEL", "zelong-cpa-gpt-image-2"):
             self.assertEqual(image_domain.validate_image_payload(valid)["count"], 1)
-            for change in ({"image": "bad"}, {"mask": "bad"}, {"ratio": "9:16"},
+            for change in ({"image": "bad"}, {"mask": "bad"}, {"reference_images": ["bad"]}, {"ratio": "9:16"},
                            {"quality": "hd"}, {"count": 2}):
                 with self.subTest(change=change), self.assertRaisesRegex(ValueError, "首期仅支持"):
                     image_domain.validate_image_payload(dict(valid, **change))
@@ -79,10 +79,11 @@ class ZelongDedicatedChannelTests(unittest.TestCase):
         self.assertTrue(captured["streaming"])
         self.assertEqual(result["count"], 1)
 
-    def test_zelong2_card_is_visible_and_scoped(self):
+    def test_zelong2_card_is_host_scoped_and_keeps_verified_limits(self):
         tag = re.search(r'<div data-engine="zelong2"[^>]*>', BANANA).group(0)
-        self.assertNotIn("aria-hidden", tag)
-        self.assertNotIn("display:none", tag)
+        self.assertIn('aria-hidden="true"', tag)
+        self.assertIn("display:none", tag)
+        self.assertIn("location.hostname==='zelong.huangquechuanmei.com'", BANANA)
         self.assertIn("泽龙专用生图", BANANA)
         self.assertIn("当前支持纯文生图、1K 方图、标准清晰度、单张生成", BANANA)
         self.assertIn("zelong2:1", BANANA)

@@ -201,6 +201,49 @@ def post_json(official_base, heygen_base, path, data, headers, log=None):
     raise last if last is not None else RuntimeError("egress: 无可用通道")
 
 
+def post_json_idempotent(official_base, heygen_base, path, data, headers, log=None,
+                         max_attempts=2):
+    """POST an idempotent analysis request, retrying a slow/broken read once.
+
+    Unlike image generation, chat analysis can be safely repeated from the
+    user's perspective: the paid site job is created and charged only once.
+    Prefer the next configured route; with a single route, retry it once.
+    """
+    available = channels(official_base, heygen_base)
+    if not available:
+        raise RuntimeError("egress: 无可用通道")
+    attempts = []
+    for channel in available:
+        if _channel_usable(channel[2]):
+            attempts.append(channel)
+    if not attempts:
+        raise RuntimeError("egress: 无可用通道")
+    while len(attempts) < max(1, int(max_attempts or 1)):
+        attempts.append(attempts[-1])
+
+    last = None
+    for number, (label, base, proxy, timeout) in enumerate(
+            attempts[:max(1, int(max_attempts or 1))], 1):
+        request = urllib.request.Request(
+            base + path, data=data, headers=headers, method="POST",
+        )
+        try:
+            with _opener(proxy).open(request, timeout=timeout) as response:
+                return json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            last = error
+            if 400 <= int(getattr(error, "code", 0) or 0) < 500:
+                raise
+        except Exception as error:
+            last = error
+        if log:
+            log(
+                "[egress] idempotent %s attempt %d/%d via %s failed: %s"
+                % (path, number, max_attempts, label, str(last)[:120])
+            )
+    raise last if last is not None else RuntimeError("egress: 请求失败")
+
+
 def _read_image_stream(response, expected=1):
     """读取 Images API SSE；连接中断时保留已收到的最后一张有效渐进图。"""
     completed, partial = [], []

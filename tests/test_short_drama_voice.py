@@ -670,6 +670,52 @@ class ShortDramaVoiceSnapshotTests(unittest.TestCase):
             line["start_ms"] is None for line in current["shots"][0]["lines"]
         ))
 
+    def test_duration_overflow_exposes_timing_details_and_recommended_speed(self):
+        snapshot = self._complete_first_voice_shot()
+        payload = self._timeline_body(
+            snapshot, starts=(0, 4000), ends=(1000, 4900),
+        )
+        with self.assertRaises(
+                short_drama_voice.VoiceTimelineValidationError) as raised:
+            short_drama_voice.save_voice_timeline(
+                self.db, "alice", payload,
+            )
+        blocker = raised.exception.blocker
+        self.assertEqual("duration_overflow", blocker["code"])
+        self.assertEqual(5000, blocker["shot_duration_ms"])
+        self.assertEqual(1200, blocker["audio_duration_ms"])
+        self.assertEqual(5200, blocker["audio_end_ms"])
+        self.assertEqual(200, blocker["audio_overflow_ms"])
+        self.assertEqual(0, blocker["subtitle_overflow_ms"])
+        self.assertEqual(200, blocker["overflow_ms"])
+        self.assertEqual(1.25, blocker["recommended_speed"])
+
+    def test_subtitle_only_overflow_does_not_recommend_voice_speed(self):
+        snapshot = self._complete_first_voice_shot()
+        payload = self._timeline_body(
+            snapshot, starts=(0, 1000), ends=(5200, 2200),
+        )
+        with self.assertRaises(
+                short_drama_voice.VoiceTimelineValidationError) as raised:
+            short_drama_voice.save_voice_timeline(
+                self.db, "alice", payload,
+            )
+        blocker = raised.exception.blocker
+        self.assertEqual("duration_overflow", blocker["code"])
+        self.assertEqual(1000, blocker["audio_end_ms"])
+        self.assertEqual(0, blocker["audio_overflow_ms"])
+        self.assertEqual(200, blocker["subtitle_overflow_ms"])
+        self.assertEqual(200, blocker["overflow_ms"])
+        self.assertIsNone(blocker.get("recommended_speed"))
+
+    def test_recommended_voice_speed_stays_within_supported_range(self):
+        self.assertIsNone(short_drama_voice._recommended_voice_speed(
+            0.5, 1000, 5000,
+        ))
+        self.assertIsNone(short_drama_voice._recommended_voice_speed(
+            1, 5000, 1000,
+        ))
+
     def test_lock_unlock_and_voice_handoff_are_server_authoritative(self):
         snapshot = self._complete_first_voice_shot()
         snapshot = short_drama_voice.save_voice_timeline(

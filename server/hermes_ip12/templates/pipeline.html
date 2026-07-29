@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>视频流水线 — 抖音仿写</title>
+<style>
+:root{--bg:#0d0d0d;--card:#171717;--bd:#262626;--tx:#e5e5e5;--dim:#737373;--ac:#a78bfa;--acb:#c4b5fd;--gr:#4ade80;--wa:#fbbf24;--r:10px;--f:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:var(--f);background:var(--bg);color:var(--tx);min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:40px 20px}
+h1{font-size:22px;color:var(--acb);margin-bottom:4px}
+.sub{font-size:12px;color:var(--dim);margin-bottom:24px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:var(--r);padding:24px;width:100%;max-width:640px;margin-bottom:16px}
+label{font-size:12px;color:var(--dim);display:block;margin-bottom:6px}
+input,textarea,select{width:100%;padding:10px;background:#0a0a0a;border:1px solid var(--bd);color:var(--tx);border-radius:6px;font-size:13px;font-family:var(--f);margin-bottom:12px}
+input:focus,select:focus{border-color:var(--ac);outline:none}
+input[type=file]{padding:8px;cursor:pointer}
+.btn{width:100%;padding:12px;border:none;border-radius:8px;background:var(--ac);color:#fff;font-size:14px;font-weight:600;cursor:pointer;transition:opacity .15s}
+.btn:hover{opacity:0.85}
+.btn:disabled{opacity:0.4;cursor:not-allowed}
+.step{display:flex;align-items:center;gap:8px;padding:6px 0;font-size:11px}
+.step .num{width:20px;height:20px;border-radius:50%;background:var(--bd);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0}
+.step.done .num{background:var(--gr);color:#000}
+.step.active .num{background:var(--ac);color:#fff;animation:pulse 1.5s infinite}
+.step .label{color:var(--dim)}
+.step.done .label{color:var(--tx)}
+.step.active .label{color:var(--acb)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
+#result{display:none;margin-top:12px}
+#result video{width:100%;max-width:360px;border-radius:8px;display:block;margin:12px auto}
+pre{background:#0a0a0a;padding:10px;border-radius:6px;font-size:11px;max-height:200px;overflow-y:auto;white-space:pre-wrap}
+.back{color:var(--dim);font-size:11px;margin-top:20px}
+.back a{color:var(--acb);text-decoration:none}
+</style>
+</head>
+<body>
+
+<h1>🎬 视频流水线</h1>
+<div class="sub">上传对标视频 → AI拆解 → 仿写脚本 → 出图配音 → 渲染成品</div>
+
+<div class="card">
+  <label>📤 上传对标视频（从抖音下载的 MP4）</label>
+  <input type="file" id="videoFile" accept="video/mp4,video/*">
+
+  <label>📝 新视频主题（留空则自动从对标视频生成）</label>
+  <input id="topic" placeholder="例：美业老板3个获客秘诀">
+
+  <label>🏷️ 赛道</label>
+  <input id="niche" placeholder="美业" value="美业">
+
+  <button class="btn" id="goBtn" onclick="runPipeline()">🚀 开始流水线</button>
+
+  <div id="steps" style="margin-top:16px;display:none">
+    <div class="step" id="s1"><span class="num">1</span><span class="label">上传视频</span></div>
+    <div class="step" id="s2"><span class="num">2</span><span class="label">语音转文字 (faster-whisper)</span></div>
+    <div class="step" id="s3"><span class="num">3</span><span class="label">AI 拆解脚本结构</span></div>
+    <div class="step" id="s4"><span class="num">4</span><span class="label">AI 仿写新脚本</span></div>
+    <div class="step" id="s5"><span class="num">5</span><span class="label">通义万相出图 + 配音</span></div>
+    <div class="step" id="s6"><span class="num">6</span><span class="label">FFmpeg 渲染合成</span></div>
+  </div>
+
+  <div id="result"></div>
+</div>
+
+<div class="back"><a href="/">← 返回孵化教练</a> · <a href="{{ '/video-factory' }}">视频工厂(旧)</a></div>
+
+<script>
+async function runPipeline(){
+  var file = document.getElementById('videoFile').files[0];
+  if(!file){ alert('请先选择视频文件'); return; }
+
+  var btn = document.getElementById('goBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ 处理中...';
+
+  // Show steps
+  var stepsDiv = document.getElementById('steps');
+  stepsDiv.style.display = 'block';
+  var steps = ['s1','s2','s3','s4','s5','s6'];
+  steps.forEach(function(id){ document.getElementById(id).className = 'step'; });
+
+  var result = document.getElementById('result');
+  result.style.display = 'block';
+  result.innerHTML = '';
+
+  function markStep(n, status){
+    var el = document.getElementById('s'+n);
+    if(el) el.className = 'step ' + status;
+  }
+
+  try{
+    // Step 1: Upload
+    markStep(1, 'active');
+    var form = new FormData();
+    form.append('video', file);
+    form.append('topic', document.getElementById('topic').value);
+    form.append('niche', document.getElementById('niche').value);
+
+    var r = await fetch('/api/pipeline-upload', {
+      method: 'POST',
+      body: form
+    });
+
+    if(!r.ok){
+      var errText = await r.text();
+      throw new Error('HTTP ' + r.status + ': ' + errText.slice(0,200));
+    }
+
+    var uploaded = await r.json();
+    if(!uploaded.ok){ throw new Error(uploaded.error || '上传失败'); }
+    var pipelineResponse = await fetch('/api/pipeline', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        upload_id: uploaded.upload_id,
+        topic: document.getElementById('topic').value,
+        niche: document.getElementById('niche').value
+      })
+    });
+    if(!pipelineResponse.ok){
+      var pipelineError = await pipelineResponse.text();
+      throw new Error('HTTP ' + pipelineResponse.status + ': ' + pipelineError.slice(0,200));
+    }
+    var d = await pipelineResponse.json();
+    markStep(1, 'done');
+
+    if(!d.ok){ throw new Error(d.error || '流水线失败'); }
+
+    // Mark all steps done based on response
+    if(d.steps){ for(var stepNumber=1; stepNumber<=6; stepNumber++) markStep(stepNumber, 'done'); }
+
+    // Show result
+    result.innerHTML = '<p style="color:var(--gr);text-align:center;font-size:14px;margin-bottom:12px">✅ 视频生成成功！</p>';
+    if(d.video_url){
+      result.innerHTML += '<video src="' + esc(safeUrl(d.video_url)) + '" controls autoplay muted></video>';
+    }
+    if(d.script){
+      result.innerHTML += '<details style="margin-top:12px"><summary style="cursor:pointer;color:var(--acb);font-size:12px">📝 查看脚本</summary><pre>' + esc(d.script.narration_full || JSON.stringify(d.script,null,2)) + '</pre></details>';
+    }
+    if(d.scenes){
+      result.innerHTML += '<details style="margin-top:8px"><summary style="cursor:pointer;color:var(--acb);font-size:12px">🎞️ ' + d.scenes.length + ' 个场景</summary>' + d.scenes.map(function(s,i){
+        return '<div style="font-size:11px;padding:4px 0;border-bottom:1px solid var(--bd)">' + (i+1) + '. ' + esc(s.text||'') + ' <span style="color:var(--dim)">[' + esc(s.emotion||'') + ']</span></div>';
+      }).join('') + '</details>';
+    }
+  } catch(e){
+    result.innerHTML = '<p style="color:#ef4444;text-align:center">❌ ' + esc(e.message) + '</p>';
+  }
+
+  btn.disabled = false;
+  btn.textContent = '🚀 重新处理';
+}
+
+function esc(s){
+  var d = document.createElement('div'); d.textContent = s||''; return d.innerHTML;
+}
+function safeUrl(s){s=String(s||'').trim();return s.startsWith('/')||/^https?:\/\//i.test(s)?s:''}
+</script>
+</body>
+</html>

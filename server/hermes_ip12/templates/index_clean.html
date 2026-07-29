@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IP孵化教练 v3 — Hermes</title>
+<script src="https://unpkg.com/marked@15.0.12/lib/marked.umd.js"></script>
+<style>
+:root {
+  --bg: #0d0d0d; --sidebar-bg: #111; --card-bg: #171717; --border: #262626;
+  --text: #e5e5e5; --text-dim: #737373; --accent: #a78bfa; --accent-bright: #c4b5fd;
+  --accent-glow: rgba(167,139,250,0.12); --success: #4ade80; --success-bg: rgba(74,222,128,0.1);
+  --warn: #fbbf24; --user-bubble: #1e1b2e; --ai-bubble: #171717; --input-bg: #1a1a1a;
+  --radius: 10px; --radius-sm: 6px;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:var(--font); background:var(--bg); color:var(--text); height:100vh; display:flex; overflow:hidden; }
+
+.sidebar { width:300px; min-width:300px; background:var(--sidebar-bg); border-right:1px solid var(--border); display:flex; flex-direction:column; height:100vh; }
+.sidebar-header { padding:20px 16px 12px; border-bottom:1px solid var(--border); }
+.sidebar-header .brand { display:flex; align-items:center; gap:8px; margin-bottom:4px; }
+.sidebar-header .brand .icon { font-size:22px; }
+.sidebar-header .brand h1 { font-size:15px; font-weight:700; color:var(--accent-bright); }
+.sidebar-header .subtitle { font-size:11px; color:var(--text-dim); margin-left:30px; }
+.progress-wrap { padding:12px 16px; border-bottom:1px solid var(--border); }
+.progress-label { font-size:11px; color:var(--text-dim); margin-bottom:6px; display:flex; justify-content:space-between; }
+.progress-label span { color:var(--accent-bright); }
+.progress-bar { height:4px; background:var(--border); border-radius:2px; overflow:hidden; }
+.progress-fill { height:100%; background:linear-gradient(90deg, var(--accent), var(--success)); border-radius:2px; transition:width .5s ease; }
+.module-section-label { font-size:10px; text-transform:uppercase; letter-spacing:1px; color:var(--text-dim); padding:10px 16px 4px; }
+.module-list { overflow-y:auto; padding:4px 8px; }
+.module-item { display:flex; align-items:center; gap:10px; padding:9px 12px; border-radius:var(--radius-sm); cursor:pointer; transition:all .15s; font-size:13px; }
+.module-item:hover { background:rgba(255,255,255,0.03); }
+.module-item.current { background:var(--accent-glow); border:1px solid rgba(167,139,250,0.25); }
+.module-item.completed { opacity:0.65; }
+.module-item.locked { opacity:0.4; cursor:not-allowed; }
+.module-item .mod-num { width:24px; height:24px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; flex-shrink:0; background:var(--border); color:var(--text-dim); }
+.module-item.current .mod-num { background:var(--accent); color:#fff; }
+.module-item.completed .mod-num { background:var(--success); color:#000; }
+.module-item .mod-info { flex:1; min-width:0; }
+.module-item .mod-name { font-weight:500; }
+.module-item .mod-desc { font-size:10px; color:var(--text-dim); margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.module-item .mod-check { color:var(--success); font-size:14px; }
+.module-item .mod-badge { font-size:10px; padding:2px 6px; border-radius:10px; background:var(--accent-glow); color:var(--accent-bright); white-space:nowrap; }
+.module-item.completed .mod-badge { background:var(--success-bg); color:var(--success); }
+.module-item .mod-report-btn { font-size:14px; cursor:pointer; padding:2px 4px; opacity:0.5; transition:opacity .15s; }
+.module-item .mod-report-btn:hover { opacity:1; }
+.report-section { border-top:1px solid var(--border); overflow-y:auto; }
+.report-section-label { font-size:10px; text-transform:uppercase; letter-spacing:1px; color:var(--text-dim); padding:10px 16px 4px; }
+.report-mini { display:flex; align-items:center; gap:8px; padding:6px 16px; cursor:pointer; font-size:12px; transition:background .15s; }
+.report-mini:hover { background:rgba(255,255,255,0.03); }
+.report-mini .r-icon { font-size:14px; }
+.report-mini .r-date { font-size:10px; color:var(--text-dim); margin-left:auto; }
+
+/* Deliverable section in sidebar */
+.deliverable-section { border-top:1px solid var(--border); overflow-y:auto; max-height:35vh; }
+.deliverable-section-label { font-size:10px; text-transform:uppercase; letter-spacing:1px; color:var(--text-dim); padding:10px 16px 4px; }
+.deliverable-mini { display:flex; align-items:center; gap:8px; padding:6px 16px; cursor:pointer; font-size:12px; transition:background .15s; }
+.deliverable-mini:hover { background:rgba(255,255,255,0.03); }
+.deliverable-mini .d-icon { font-size:14px; color:var(--success); }
+
+.sidebar-footer { padding:12px 16px; border-top:1px solid var(--border); display:flex; gap:8px; }
+.sidebar-footer button { flex:1; padding:8px; border:1px solid var(--border); border-radius:var(--radius-sm); background:transparent; color:var(--text); cursor:pointer; font-size:12px; transition:all .15s; }
+.sidebar-footer button:hover { background:rgba(255,255,255,0.04); }
+.sidebar-footer button.primary { border-color:var(--accent); color:var(--accent-bright); }
+.sidebar-footer button.primary:hover { background:var(--accent-glow); }
+
+.main { flex:1; display:flex; flex-direction:column; height:100vh; min-width:0; }
+.top-bar { padding:12px 24px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; font-size:13px; }
+.top-bar .current-module { display:flex; align-items:center; gap:8px; }
+.top-bar .current-module .dot { width:8px; height:8px; border-radius:50%; background:var(--accent); }
+.top-bar .current-module strong { color:var(--accent-bright); }
+.top-bar .convos-btn { padding:6px 12px; border:1px solid var(--border); border-radius:var(--radius-sm); background:transparent; color:var(--text-dim); cursor:pointer; font-size:12px; }
+.top-bar .convos-btn:hover { color:var(--text); border-color:var(--text-dim); }
+.chat-area { flex:1; overflow-y:auto; padding:24px; display:flex; flex-direction:column; gap:16px; }
+.welcome { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; color:var(--text-dim); text-align:center; }
+.welcome .big-icon { font-size:56px; }
+.welcome h2 { font-size:22px; color:var(--text); font-weight:600; }
+.welcome p { font-size:14px; max-width:420px; line-height:1.7; }
+.welcome .start-btn { margin-top:8px; padding:12px 28px; border:none; border-radius:var(--radius); background:var(--accent); color:#fff; cursor:pointer; font-size:14px; font-weight:600; transition:opacity .15s; }
+.welcome .start-btn:hover { opacity:0.85; }
+.message { display:flex; gap:12px; max-width:800px; width:100%; margin:0 auto; }
+.message.user { flex-direction:row-reverse; }
+.avatar { width:32px; height:32px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:15px; flex-shrink:0; }
+.message.user .avatar { background:var(--accent-glow); }
+.message.assistant .avatar { background:rgba(255,255,255,0.05); }
+.bubble { padding:14px 18px; border-radius:var(--radius); max-width:85%; font-size:14px; line-height:1.75; word-break:break-word; }
+.message.user .bubble { background:var(--user-bubble); }
+.message.assistant .bubble { background:var(--ai-bubble); border:1px solid var(--border); }
+
+/* ── Deliverable Card ── */
+.deliverable-card { max-width:800px; width:100%; margin:0 auto; border:1px solid var(--success); border-radius:var(--radius); background:rgba(74,222,128,0.05); overflow:hidden; }
+.deliverable-card-header { padding:12px 18px; background:var(--success-bg); border-bottom:1px solid rgba(74,222,128,0.15); display:flex; align-items:center; gap:10px; font-size:14px; font-weight:600; color:var(--success); }
+.deliverable-card-body { padding:18px 22px; font-size:14px; line-height:1.85; max-height:600px; overflow-y:auto; }
+.deliverable-card-body h1,.deliverable-card-body h2,.deliverable-card-body h3 { color:var(--success); margin:16px 0 8px; }
+.deliverable-card-body h2 { font-size:16px; }
+.deliverable-card-body h3 { font-size:14px; }
+.deliverable-card-body p { margin:0 0 10px; }
+.deliverable-card-body ul,.deliverable-card-body ol { padding-left:20px; margin:6px 0; }
+.deliverable-card-body li { margin:3px 0; }
+.deliverable-card-body strong { color:var(--success); }
+.deliverable-card-body pre { background:#0a0a0a; border-radius:var(--radius-sm); padding:14px; overflow-x:auto; margin:8px 0; font-size:12px; line-height:1.5; border:1px solid #1a1a1a; }
+.deliverable-card-body code { font-size:12px; background:rgba(255,255,255,0.06); padding:2px 6px; border-radius:4px; }
+
+/* Report card */
+.report-card { max-width:800px; width:100%; margin:0 auto; border:1px solid var(--accent); border-radius:var(--radius); background:rgba(167,139,250,0.05); overflow:hidden; }
+.report-card-header { padding:12px 18px; background:var(--accent-glow); border-bottom:1px solid rgba(167,139,250,0.15); display:flex; align-items:center; gap:10px; font-size:14px; font-weight:600; color:var(--accent-bright); }
+.report-card-body { padding:18px 22px; font-size:14px; line-height:1.85; max-height:500px; overflow-y:auto; }
+.report-card-body h1,.report-card-body h2,.report-card-body h3 { color:var(--accent-bright); margin:16px 0 8px; }
+.report-card-body h2 { font-size:16px; }
+.report-card-body h3 { font-size:14px; }
+.report-card-body p { margin:0 0 10px; }
+.report-card-body strong { color:var(--accent-bright); }
+.report-card-body pre { background:#0a0a0a; border-radius:var(--radius-sm); padding:14px; overflow-x:auto; margin:8px 0; font-size:12px; border:1px solid #1a1a1a; }
+
+.report-generating { max-width:800px; width:100%; margin:0 auto; padding:18px; border:1px dashed var(--border); border-radius:var(--radius); display:flex; align-items:center; gap:12px; color:var(--text-dim); font-size:14px; }
+.spinner { width:20px; height:20px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+
+.cursor::after { content:'▍'; animation:blink 1s infinite; color:var(--accent); }
+@keyframes blink { 0%,50% { opacity:1; } 51%,100% { opacity:0; } }
+.input-area { padding:16px 24px 20px; border-top:1px solid var(--border); }
+.input-wrap { max-width:800px; margin:0 auto; display:flex; gap:8px; background:var(--input-bg); border:1px solid var(--border); border-radius:var(--radius); padding:6px; align-items:flex-end; }
+.input-wrap:focus-within { border-color:var(--accent); }
+.input-wrap textarea { flex:1; background:transparent; border:none; outline:none; color:var(--text); font-family:var(--font); font-size:14px; resize:none; padding:6px 8px; min-height:24px; max-height:150px; line-height:1.5; }
+.input-wrap textarea::placeholder { color:var(--text-dim); }
+.send-btn { width:38px; height:38px; border-radius:var(--radius-sm); border:none; background:var(--accent); color:#fff; cursor:pointer; font-size:16px; display:flex; align-items:center; justify-content:center; flex-shrink:0; transition:opacity .15s; }
+.send-btn:disabled { opacity:0.25; cursor:not-allowed; }
+.send-btn:hover:not(:disabled) { opacity:0.85; }
+.typing { display:flex; gap:4px; padding:6px 0; }
+.typing span { width:6px; height:6px; border-radius:50%; background:var(--text-dim); animation:bounce 1.4s infinite; }
+.typing span:nth-child(2) { animation-delay:.2s; }
+.typing span:nth-child(3) { animation-delay:.4s; }
+@keyframes bounce { 0%,60%,100% { transform:translateY(0); opacity:.3; } 30% { transform:translateY(-6px); opacity:1; } }
+.overlay { position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:100; display:flex; align-items:center; justify-content:center; }
+.overlay.hidden { display:none; }
+.overlay-panel { background:var(--sidebar-bg); border:1px solid var(--border); border-radius:var(--radius); width:440px; max-height:70vh; overflow-y:auto; padding:20px; }
+.overlay-panel h3 { margin-bottom:12px; font-size:15px; }
+.overlay-panel .convo-row { display:flex; align-items:center; justify-content:space-between; padding:8px 10px; border-radius:var(--radius-sm); cursor:pointer; font-size:13px; }
+.overlay-panel .convo-row:hover { background:rgba(255,255,255,0.04); }
+.overlay-panel .convo-row .cid { color:var(--accent-bright); font-family:monospace; font-size:10px; margin-left:8px; }
+.overlay-panel .close-btn { float:right; background:none; border:none; color:var(--text-dim); cursor:pointer; font-size:18px; }
+.toast { position:fixed; bottom:24px; right:24px; z-index:200; background:var(--success-bg); border:1px solid var(--success); color:var(--success); padding:12px 18px; border-radius:var(--radius-sm); font-size:13px; animation:slideIn .3s ease, fadeOut .5s ease 3s forwards; pointer-events:none; }
+@keyframes slideIn { from { transform:translateY(20px); opacity:0; } to { transform:translateY(0); opacity:1; } }
+@keyframes fadeOut { to { opacity:0; } }
+::-webkit-scrollbar { width:5px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.06); border-radius:3px; }
+.hamburger { display:none; width:36px; height:36px; border:none; background:transparent; cursor:pointer; flex-shrink:0; padding:6px; flex-direction:column; justify-content:center; gap:5px; }
+.hamburger span { display:block; height:2px; background:var(--text); border-radius:1px; transition:all .2s; }
+.hamburger.open span:nth-child(1) { transform:rotate(45deg) translate(5px,5px); }
+.hamburger.open span:nth-child(2) { opacity:0; }
+.hamburger.open span:nth-child(3) { transform:rotate(-45deg) translate(5px,-5px); }
+.drawer-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:50; }
+.drawer-overlay.open { display:block; }
+@media (max-width:720px) {
+  .sidebar { position:fixed; left:0; top:0; z-index:60; width:280px; min-width:280px; transform:translateX(-100%); transition:transform .25s ease; }
+  .sidebar.open { transform:translateX(0); }
+  .hamburger { display:flex; }
+  .chat-area { padding:12px 10px; }
+  .message { max-width:100%; }
+  .message .bubble { max-width:92%; font-size:14px; }
+  .report-card,.deliverable-card { max-width:100%; }
+  .report-card-body,.deliverable-card-body { padding:12px 14px; font-size:13px; max-height:400px; }
+  .input-area { padding:8px 10px 12px; }
+  .input-wrap { max-width:100%; }
+  .input-wrap textarea { font-size:16px; }
+  .top-bar { padding:8px 12px; }
+  .overlay-panel { width:90vw; max-height:80vh; }
+  .toast { left:12px; right:12px; bottom:80px; text-align:center; }
+  .welcome .big-icon { font-size:42px; }
+  .welcome h2 { font-size:18px; }
+  .report-section,.deliverable-section { max-height:35vh; }
+  .sidebar-close { display:block !important; }
+}
+</style>
+</head>
+<body>
+<div class="drawer-overlay" id="drawerOverlay" onclick="toggleDrawer()"></div>
+
+<aside class="sidebar">
+  <div class="sidebar-header">
+    <button class="sidebar-close" onclick="toggleDrawer()" style="display:none;float:right;background:none;border:none;color:var(--text-dim);font-size:20px;cursor:pointer;padding:0 4px;">✕</button>
+    <div class="brand"><span class="icon">🧠</span><h1>IP 孵化教练 v3</h1></div>
+    <div class="subtitle">6 个模块开放 · 后续能力开发中</div>
+  </div>
+  <div class="progress-wrap">
+    <div class="progress-label"><span>诊断进度</span><span id="progressText">0/6</span></div>
+    <div class="progress-bar"><div class="progress-fill" id="progressBar" style="width:0%"></div></div>
+  </div>
+  <div class="module-section-label">诊断模块</div>
+  <div class="module-list" id="moduleList"></div>
+  <div class="report-section" id="reportSection" style="display:none">
+    <div class="report-section-label">📄 诊断报告</div>
+    <div id="reportMiniList"></div>
+  </div>
+  <div class="deliverable-section" id="deliverableSection" style="display:none">
+    <div class="deliverable-section-label">📦 交付物</div>
+    <div id="deliverableMiniList"></div>
+  </div>
+  <div class="sidebar-footer">
+    <button onclick="closeDrawer();newDiagnosis()">＋ 新诊断</button>
+    <button class="primary" onclick="toggleConvos()">📋 历史</button>
+  </div>
+</aside>
+
+<main class="main">
+  <div class="top-bar">
+    <button class="hamburger" id="hamburgerBtn" onclick="toggleDrawer()"><span></span><span></span><span></span></button>
+    <div class="current-module" id="currentModuleBadge"><span class="dot"></span>当前：<strong id="currentModuleName">定位诊断</strong><span style="color:var(--text-dim);font-size:11px" id="stepBadge"></span></div>
+    <button class="convos-btn" onclick="toggleConvos()">历史对话</button>
+  </div>
+  <div class="chat-area" id="chatArea">
+    <div class="welcome" id="welcome">
+      <div class="big-icon">🧠</div>
+      <h2>大鹏 IP 孵化教练 v3</h2>
+      <p>完成 6 个开放模块，建立你的 IP 底座<br>模块 7-12 尚未开发，敬请期待</p>
+      <button class="start-btn" onclick="newDiagnosis()">开始诊断</button>
+    </div>
+  </div>
+  <div class="input-area">
+    <div class="input-wrap">
+      <textarea id="userInput" rows="1" placeholder="输入消息，Enter 发送..." onkeydown="handleKey(event)" disabled></textarea>
+      <button class="send-btn" id="sendBtn" onclick="sendMessage()" disabled>➤</button>
+    </div>
+  </div>
+</main>
+
+<div class="overlay hidden" id="convoOverlay" onclick="if(event.target===this) toggleConvos()">
+  <div class="overlay-panel" id="convoPanel"></div>
+</div>
+
+<script>
+const MODULES = [
+  {id:1,name:"定位诊断",icon:"🎯",desc:"找到你是谁，为谁而来"},
+  {id:2,name:"人设塑造",icon:"🎭",desc:"打造让人记住的人格"},
+  {id:3,name:"价值主张",icon:"💎",desc:"提炼不可替代的核心价值"},
+  {id:4,name:"故事资产",icon:"📖",desc:"挖掘能打动人心的故事"},
+  {id:5,name:"选题策划",icon:"📋",desc:"构建持续输出的选题库"},
+  {id:6,name:"文案口播",icon:"✍️",desc:"写出让人停下来的文案 → 🎁"},
+  {id:7,name:"形象设计",icon:"🖼️",desc:"设计一眼记住的视觉IP → 🎁"},
+  {id:8,name:"脚本分镜",icon:"🎬",desc:"把想法变成可拍的脚本"},
+  {id:9,name:"私域矩阵",icon:"🔗",desc:"搭建自动运转的私域系统"},
+  {id:10,name:"朋友圈运营",icon:"💬",desc:"让朋友圈变成成交阵地 → 🎁"},
+  {id:11,name:"销售策略",icon:"💰",desc:"从信任到成交的完整链路"},
+  {id:12,name:"公众号变现",icon:"📝",desc:"长内容到持续变现的闭环"},
+];
+const AVAILABLE_MODULE_COUNT = 6;
+const DELIVERABLE_MODULES = [5,6];
+
+let currentConvoId = null;
+let coachState = { current_module:1, completed_modules:[], module_step:0, ip_profile:{}, intake:{status:'complete'} };
+let reports = {};
+let deliverables = {};
+let streaming = false;
+let conversations = [];
+
+if(typeof marked!=='undefined'){marked.setOptions({ breaks:true, gfm:true });}
+renderModules();
+loadConversations().then(() => { if (conversations.length > 0) selectConversation(conversations[0].id); });
+
+function renderModules() {
+  const list = document.getElementById('moduleList');
+  const done = (coachState.completed_modules || []).filter(id=>id<=AVAILABLE_MODULE_COUNT);
+  const cur = Math.min(coachState.current_module || 1, AVAILABLE_MODULE_COUNT);
+  const intakePending = coachState.intake?.status === 'collecting';
+  const intakeRound = intakePending ? (coachState.intake.round || 1) : 0;
+  list.innerHTML = MODULES.map(m => {
+    let cls = 'module-item', badge = '', check = '', reportBtn = '';
+    const comingSoon = m.id > AVAILABLE_MODULE_COUNT;
+    if (comingSoon) { cls += ' locked'; badge = '<span class="mod-badge">尚未开发，敬请期待</span>'; }
+    else if (intakePending) { cls += ' locked'; if (m.id===1) badge = `<span class="mod-badge">基础信息 ${intakeRound}/3</span>`; }
+    if (done.includes(m.id)) { cls += ' completed'; check = '<span class="mod-check">✓</span>';
+      reportBtn = `<span class="mod-report-btn" onclick="event.stopPropagation();viewReport(${m.id})" title="查看报告">📄</span>`; }
+    if (!intakePending && m.id === cur && !done.includes(m.id)) { cls += ' current'; badge = '<span class="mod-badge">进行中</span>'; }
+    if (intakePending && m.id===1) cls += ' current';
+    return `<div class="${cls}" onclick="closeDrawer();${comingSoon?"toast('尚未开发，敬请期待')":`jumpToModule(${m.id})`}" title="${comingSoon?'尚未开发，敬请期待':m.desc}"><div class="mod-num">${done.includes(m.id)?'✓':m.id}</div><div class="mod-info"><div class="mod-name">${m.icon} ${m.name}</div><div class="mod-desc">${m.desc}</div></div>${badge}${reportBtn}${check}</div>`;
+  }).join('');
+  updateProgress(); renderReportMinis(); renderDeliverableMinis();
+}
+
+function updateProgress() {
+  const done = (coachState.completed_modules || []).filter(id=>id<=AVAILABLE_MODULE_COUNT).length;
+  const intakePending = coachState.intake?.status === 'collecting';
+  document.getElementById('progressBar').style.width = Math.round(done/AVAILABLE_MODULE_COUNT*100)+'%';
+  document.getElementById('progressText').textContent = done===AVAILABLE_MODULE_COUNT?'🎉 六步完成':done+'/'+AVAILABLE_MODULE_COUNT;
+  const cur = Math.min(coachState.current_module || 1, AVAILABLE_MODULE_COUNT);
+  const mod = MODULES.find(m=>m.id===cur);
+  document.getElementById('currentModuleName').textContent = intakePending?`基础信息 · ${coachState.intake.round||1}/3`:(mod?mod.name:'—');
+  document.getElementById('stepBadge').textContent = (coachState.module_step||0)>0?` · Step ${coachState.module_step}`:'';
+}
+
+function renderReportMinis() {
+  const section=document.getElementById('reportSection'), mini=document.getElementById('reportMiniList');
+  const keys=Object.keys(reports).filter(k=>reports[k]&&Number(k)<=AVAILABLE_MODULE_COUNT);
+  const foundation=coachState.foundation_report||{},done=coachState.completed_modules||[];
+  let foundationRows='';
+  if(foundation.status==='awaiting_confirmation'||foundation.status==='confirmed'){
+    foundationRows='<div class="report-mini" onclick="closeDrawer();openFoundationReport()"><span class="r-icon">📑</span><span>模块 1-4 IP 定位初稿 PDF</span></div>';
+    if(foundation.status==='awaiting_confirmation')foundationRows+='<div class="report-mini" onclick="closeDrawer();confirmFoundationReport()"><span class="r-icon">✅</span><span>确认初稿，继续模块 5</span></div>';
+  }else if(done.includes(4))foundationRows='<div class="report-mini" onclick="closeDrawer();generateFoundationReport()"><span class="r-icon">↻</span><span>检查/重试模块 1-4 PDF</span></div>';
+  if(keys.length===0&&!foundationRows){section.style.display='none';return;}
+  section.style.display='block';
+  mini.innerHTML=foundationRows+keys.map(k=>{const r=reports[k],mod=MODULES[parseInt(k)-1],title=typeof r==='object'?r.title:`${mod?.name||'模块'}报告`;
+    return`<div class="report-mini" data-id="${escHtml(k)}" onclick="closeDrawer();viewReport(this.dataset.id)"><span class="r-icon">📄</span><span>${escHtml(title)}</span><span class="r-date">${escHtml(typeof r==='object'?r.generated_at?.slice(5):'')}</span></div>`;}).join('');
+}
+
+function renderDeliverableMinis() {
+  const section=document.getElementById('deliverableSection'), mini=document.getElementById('deliverableMiniList');
+  const keys=Object.keys(deliverables).filter(k=>deliverables[k]&&(!/^\d+$/.test(k)||Number(k)<=AVAILABLE_MODULE_COUNT));
+  if(keys.length===0){section.style.display='none';return;}
+  section.style.display='block';
+  mini.innerHTML=keys.map(k=>{const d=deliverables[k],title=typeof d==='object'?d.title:`模块${k}交付物`;
+    return`<div class="deliverable-mini" data-id="${escHtml(k)}" onclick="closeDrawer();viewDeliverable(this.dataset.id)"><span class="d-icon">📦</span><span>${escHtml(title)}</span></div>`;}).join('');
+}
+
+async function loadConversations() {
+  const res=await fetch('/api/conversations'); conversations=await res.json();
+}
+async function loadReports() {
+  if(!currentConvoId)return; try{const res=await fetch(`/api/conversations/${currentConvoId}/reports`);reports=await res.json();renderReportMinis();}catch(e){}
+}
+async function loadDeliverables() {
+  if(!currentConvoId)return; try{const res=await fetch(`/api/conversations/${currentConvoId}/deliverables`);deliverables=await res.json();renderDeliverableMinis();}catch(e){}
+}
+
+async function newDiagnosis() {
+  const res=await fetch('/api/conversations',{method:'POST'});const data=await res.json();
+  conversations.unshift({id:data.id,title:'新诊断',current_module:1,completed_modules:[],message_count:1});
+  selectConversation(data.id);
+}
+
+async function selectConversation(id) {
+  closeDrawer(); currentConvoId=id;
+  const res=await fetch(`/api/conversations/${id}`);const convo=await res.json();
+  coachState=convo.coach_state||{current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}};
+  reports=convo.reports||{}; deliverables=convo.deliverables||{};
+  renderModules(); renderChat(convo.messages||[]); document.getElementById('userInput').disabled=false; document.getElementById('userInput').focus();
+  loadReports(); loadDeliverables();
+}
+
+async function deleteConversation(id) {
+  if(!confirm('删除这个诊断记录？'))return;
+  await fetch(`/api/conversations/${id}`,{method:'DELETE'});conversations=conversations.filter(c=>c.id!==id);
+  if(currentConvoId===id){currentConvoId=null;coachState={current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}};reports={};deliverables={};renderModules();document.getElementById('chatArea').innerHTML=document.getElementById('welcome').outerHTML;document.getElementById('userInput').disabled=true;}
+}
+
+async function jumpToModule(modId) {
+  if(modId>AVAILABLE_MODULE_COUNT){toast('尚未开发，敬请期待');return;}
+  if(!currentConvoId||streaming)return;
+  if(coachState.intake?.status==='collecting'){toast('请先完成 3 轮基础信息');return;}
+  const res=await fetch('/api/jump-module',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId,module:modId})});
+  const data=await res.json();if(!res.ok||!data.ok){toast(`❌ ${data.error||'无法切换模块'}`);return}coachState.current_module=data.current_module;coachState.module_step=0;renderModules();await sendJumpMessage(modId);
+}
+
+async function sendJumpMessage(modId) {
+  if(!currentConvoId||streaming)return; streaming=true;
+  const area=document.getElementById('chatArea');
+  const userMsg=document.createElement('div');userMsg.className='message user';userMsg.innerHTML=`<div class="avatar">👤</div><div class="bubble">📌 跳到模块 ${modId}：${MODULES.find(m=>m.id===modId)?.name}</div>`;area.appendChild(userMsg);
+  const aiMsg=document.createElement('div');aiMsg.className='message assistant';aiMsg.innerHTML=`<div class="avatar">🧠</div><div class="bubble"><div class="typing"><span></span><span></span><span></span></div></div>`;area.appendChild(aiMsg);
+  scrollBottom();
+  let fullText='';const bubble=aiMsg.querySelector('.bubble');
+  try{
+    const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId,message:`跳到模块 ${modId}`})});
+    if(!res.ok){const errorData=await res.json();throw new Error(errorData.error||'发送失败');}
+    const reader=res.body.getReader();const decoder=new TextDecoder();let buf='';
+    while(true){const{done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});const lines=buf.split('\n');buf=lines.pop()||'';for(const line of lines){if(!line.startsWith('data: '))continue;try{const data=JSON.parse(line.slice(6));if(data.error){bubble.innerHTML=`<span style="color:#ef4444">❌ ${escHtml(data.error)}</span>`;}else if(data.content){fullText+=data.content;bubble.innerHTML=renderMarkdown(fullText)+'<span class="cursor"></span>';scrollBottom();}else if(data.done){bubble.innerHTML=renderMarkdown(fullText);if(data.state){coachState=data.state;renderModules();}if(data.auto_deliverables){handleAutoDeliverables(data.auto_deliverables);}}}catch(e){}}}
+  }catch(e){bubble.innerHTML=`<span style="color:#ef4444">❌ ${escHtml(e.message)}</span>`;}
+  streaming=false;
+}
+
+function renderChat(messages) {
+  const area=document.getElementById('chatArea');
+  if(!messages||messages.length===0){area.innerHTML=document.getElementById('welcome').outerHTML;return;}
+  area.innerHTML=messages.map(m=>`<div class="message ${m.role==='user'?'user':'assistant'}"><div class="avatar">${m.role==='user'?'👤':'🧠'}</div><div class="bubble">${renderMarkdown(m.content)}</div></div>`).join('');
+  scrollBottom();
+}
+
+function isSafeMarkdownUrl(value,base='https://huangque.invalid/'){try{const u=new URL(String(value??'').trim(),base);return u.protocol==='http:'||u.protocol==='https:'}catch(e){return false}}
+function sanitizeMarked(html){const t=document.createElement('template');t.innerHTML=html;t.content.querySelectorAll('a[href],img[src]').forEach(el=>{const attr=el.tagName==='A'?'href':'src';if(!isSafeMarkdownUrl(el.getAttribute(attr),location.href)){if(el.tagName==='A')el.replaceWith(document.createTextNode(el.textContent));else el.remove()}else if(el.tagName==='A'){el.rel='noopener noreferrer'}});return t.innerHTML}
+function renderMarkdown(text) { if(!text)return''; try{if(typeof marked!=='undefined')return sanitizeMarked(marked.parse(escHtml(text)));}catch(e){} return escHtml(text).replace(/\n/g,'<br>'); }
+function escHtml(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
+function scrollBottom(){const area=document.getElementById('chatArea');requestAnimationFrame(()=>{area.scrollTop=area.scrollHeight;});}
+
+async function generateFoundationReport(){
+  if(!currentConvoId||streaming)return;streaming=true;toast('正在生成模块 1-4 PDF…');
+  try{const res=await fetch('/api/foundation-report/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId})});const data=await res.json();if(!res.ok||!data.ok)throw new Error(data.error||'PDF 生成失败');coachState=data.state;renderModules();toast('✅ PDF 已生成，请下载查看并确认');}
+  catch(e){toast(`❌ ${e.message}`);}finally{streaming=false;}
+}
+
+async function openFoundationReport(){
+  if(!currentConvoId)return;const url=`/api/foundation-report/${currentConvoId}.pdf`;const res=await fetch(url,{method:'HEAD',cache:'no-store'});
+  if(!res.ok){coachState.foundation_report={status:'failed'};renderModules();toast('❌ PDF 文件不可用，请重新生成');return;}window.open(url,'_blank','noopener');
+}
+
+async function confirmFoundationReport(){
+  if(!currentConvoId||streaming)return;
+  try{const res=await fetch('/api/foundation-report/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId})});const data=await res.json();if(!res.ok||!data.ok)throw new Error(data.error||'确认失败');coachState=data.state;renderModules();toast(`✅ IP 定位初稿已确认，继续模块 ${coachState.current_module}`);if(!(coachState.completed_modules||[]).includes(coachState.current_module))sendJumpMessage(coachState.current_module);}
+  catch(e){toast(`❌ ${e.message}`);}
+}
+
+// ── Reports ──
+async function viewReport(moduleId) {
+  if(!currentConvoId)return;
+  if(reports[moduleId]){showReportCard(moduleId,reports[moduleId]);return;}
+  const area=document.getElementById('chatArea');const genEl=document.createElement('div');genEl.className='report-generating';genEl.innerHTML=`<div class="spinner"></div>正在生成 ${MODULES[moduleId-1]?.name} 报告...`;area.appendChild(genEl);scrollBottom();
+  try{const res=await fetch('/api/generate-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId,module:moduleId})});const data=await res.json();genEl.remove();
+    if(data.ok){reports[moduleId]={title:`${MODULES[moduleId-1]?.name}报告`,content:data.report,generated_at:new Date().toISOString()};renderReportMinis();showReportCard(moduleId,reports[moduleId]);toast(`✅ ${MODULES[moduleId-1]?.name}报告已生成`);}
+    else{const errEl=document.createElement('div');errEl.className='message assistant';errEl.innerHTML=`<div class="avatar">🧠</div><div class="bubble"><span style="color:#ef4444">❌ 报告生成失败: ${escHtml(data.error)}</span></div>`;area.appendChild(errEl);}
+  }catch(e){genEl.remove();}
+}
+
+function showReportCard(moduleId,report){
+  const area=document.getElementById('chatArea'),mod=MODULES[moduleId-1],title=typeof report==='object'?report.title:`${mod.name}报告`,content=typeof report==='object'?report.content:report;
+  const card=document.createElement('div');card.className='report-card';card.innerHTML=`<div class="report-card-header">📄 ${mod.icon} ${escHtml(title)}</div><div class="report-card-body">${renderMarkdown(content)}</div>`;area.appendChild(card);scrollBottom();
+}
+
+// ── Deliverables ──
+function handleAutoDeliverables(autoData) {
+  for(const [mid,deliv] of Object.entries(autoData)) {
+    deliverables[mid]=deliv;
+    showDeliverableCard(mid,deliv);
+  }
+  renderDeliverableMinis();
+  toast('🎁 模块完成！交付物已自动生成');
+}
+
+function showDeliverableCard(mid,deliv) {
+  const area=document.getElementById('chatArea'),mod=MODULES[parseInt(mid)-1];
+  let html=`<div class="deliverable-card-header">📦 ${mod?.icon||''} ${escHtml(deliv.title)}</div><div class="deliverable-card-body">`;
+  for(const[name,content] of Object.entries(deliv.items||{})) {
+    html+=`<h3>${escHtml(name)}</h3>${renderMarkdown(content)}`;
+    if(Object.keys(deliv.items||{}).length>1) html+='<hr style="margin:16px 0;border:1px solid var(--border)">';
+  }
+  html+='</div>';
+  const card=document.createElement('div');card.className='deliverable-card';card.innerHTML=html;area.appendChild(card);scrollBottom();
+}
+
+async function viewDeliverable(mid) {
+  if(!currentConvoId)return;
+  if(deliverables[mid]){showDeliverableCard(mid,deliverables[mid]);return;}
+  const area=document.getElementById('chatArea');const genEl=document.createElement('div');genEl.className='report-generating';genEl.innerHTML=`<div class="spinner"></div>正在生成 ${MODULES[mid-1]?.name} 交付物...`;area.appendChild(genEl);scrollBottom();
+  try{const res=await fetch('/api/generate-deliverable',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId,module:mid})});const data=await res.json();genEl.remove();
+    if(data.ok){deliverables[mid]=data.deliverable;renderDeliverableMinis();showDeliverableCard(mid,data.deliverable);toast(`✅ ${MODULES[mid-1]?.name} 交付物已生成`);}
+    else{const errEl=document.createElement('div');errEl.className='message assistant';errEl.innerHTML=`<div class="avatar">🧠</div><div class="bubble"><span style="color:#ef4444">❌ ${escHtml(data.error)}</span></div>`;area.appendChild(errEl);}
+  }catch(e){genEl.remove();}
+}
+
+function toast(msg){const t=document.createElement('div');t.className='toast';t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.remove(),3500);}
+
+// ── Send ──
+function handleKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();}}
+
+async function sendMessage(){
+  if(streaming||!currentConvoId)return;
+  const input=document.getElementById('userInput'),text=input.value.trim();if(!text)return;
+  input.value='';input.style.height='auto';document.getElementById('sendBtn').disabled=true;streaming=true;
+  const area=document.getElementById('chatArea'),welcome=area.querySelector('.welcome');if(welcome)welcome.remove();
+  const userMsg=document.createElement('div');userMsg.className='message user';userMsg.innerHTML=`<div class="avatar">👤</div><div class="bubble">${escHtml(text).replace(/\n/g,'<br>')}</div>`;area.appendChild(userMsg);
+  const aiMsg=document.createElement('div');aiMsg.className='message assistant';aiMsg.innerHTML=`<div class="avatar">🧠</div><div class="bubble"><div class="typing"><span></span><span></span><span></span></div></div>`;area.appendChild(aiMsg);scrollBottom();
+  let fullText='';const bubble=aiMsg.querySelector('.bubble');
+  try{const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId,message:text})});
+    if(!res.ok){const errorData=await res.json();throw new Error(errorData.error||'发送失败');}
+    const reader=res.body.getReader();const decoder=new TextDecoder();let buf='';
+    while(true){const{done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});const lines=buf.split('\n');buf=lines.pop()||'';for(const line of lines){if(!line.startsWith('data: '))continue;try{const data=JSON.parse(line.slice(6));
+      if(data.error){bubble.innerHTML=`<span style="color:#ef4444">❌ ${escHtml(data.error)}</span>`;}
+      else if(data.content){fullText+=data.content;bubble.innerHTML=renderMarkdown(fullText)+'<span class="cursor"></span>';scrollBottom();}
+      else if(data.done){bubble.innerHTML=renderMarkdown(fullText);if(data.state){coachState=data.state;renderModules();}if(data.new_completed&&data.new_completed.length>0){data.new_completed.forEach(mid=>{toast(`✅ ${MODULES[mid-1]?.name}完成！`);});renderModules();}if(data.auto_deliverables){handleAutoDeliverables(data.auto_deliverables);}}
+    }catch(e){}}}
+  }catch(e){bubble.innerHTML=`<span style="color:#ef4444">❌ ${escHtml(e.message)}</span>`;}
+  streaming=false;document.getElementById('sendBtn').disabled=false;document.getElementById('userInput').focus();
+}
+
+// ── Drawer ──
+function toggleDrawer(){const sidebar=document.querySelector('.sidebar'),overlay=document.getElementById('drawerOverlay'),hamburger=document.getElementById('hamburgerBtn');const isOpen=sidebar.classList.contains('open');if(isOpen){sidebar.classList.remove('open');overlay.classList.remove('open');hamburger.classList.remove('open');}else{sidebar.classList.add('open');overlay.classList.add('open');hamburger.classList.add('open');}}
+function closeDrawer(){const sidebar=document.querySelector('.sidebar');if(sidebar.classList.contains('open'))toggleDrawer();}
+
+// ── Convo Overlay ──
+function toggleConvos(){const overlay=document.getElementById('convoOverlay');if(overlay.classList.contains('hidden')){loadConversations().then(()=>{const panel=document.getElementById('convoPanel');panel.innerHTML=`<button class="close-btn" onclick="toggleConvos()">✕</button><h3>历史诊断记录</h3>${conversations.length===0?'<p style="color:var(--text-dim);font-size:13px">暂无记录</p>':''}${conversations.map(c=>`<div class="convo-row" data-id="${escHtml(c.id)}" onclick="selectConversation(this.dataset.id);toggleConvos()"><span>${escHtml(c.title)}<span class="cid">${escHtml(c.id)}</span></span><span style="font-size:11px;color:var(--text-dim)">模块${escHtml(c.current_module)} · ${escHtml(c.message_count)}条 · 📄${escHtml(c.report_count||0)} · 📦${escHtml(c.deliverable_count||0)}<button data-id="${escHtml(c.id)}" style="background:none;border:none;color:#ef4444;cursor:pointer;margin-left:8px" onclick="event.stopPropagation();deleteConversation(this.dataset.id)">🗑</button></span></div>`).join('')}`;overlay.classList.remove('hidden');});}else{overlay.classList.add('hidden');}}
+
+document.getElementById('userInput').addEventListener('input',function(){this.style.height='auto';this.style.height=Math.min(this.scrollHeight,150)+'px';});
+</script>
+</body>
+</html>

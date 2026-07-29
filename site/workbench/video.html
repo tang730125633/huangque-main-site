@@ -32,6 +32,7 @@
   .function-tabs{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:18px;padding:4px;border:1px solid rgba(148,164,187,.12);border-radius:13px;background:rgba(7,11,19,.34)}
   .function-tab{height:36px;padding:0 18px;border:1px solid transparent;border-radius:10px;background:transparent;color:#94a4bb;font:800 13px inherit;cursor:pointer}
   .function-tab.on{color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);box-shadow:0 10px 24px rgba(231,178,76,.14)}
+  .direct-create-focus{outline:2px solid #e7b24c;box-shadow:0 0 0 5px rgba(231,178,76,.15)}
   .function-panel{min-height:0}
   .motion-panel{margin-top:22px;border:1px solid rgba(148,164,187,.12);border-radius:15px;background:rgba(7,11,19,.28);padding:18px}
   .motion-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}
@@ -769,7 +770,7 @@
 <div id="toast" class="toast"></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=e836823b"></script>
+<script src="cloud-shell.js?v=642453c4"></script>
 <script>
 (function(){
   var token='__cookie__';
@@ -3278,6 +3279,19 @@
   function _applyPrefillVoice(){
     if(_prefillVoice && applyTemplateVoice(_prefillVoice)) _prefillVoice='';
   }
+  function applyIP12Handoff(){
+    try{
+      if(new URLSearchParams(location.search).get('prefill')!=='ip12') return;
+      var raw=sessionStorage.getItem('hq_ip12_product_handoff_v1');
+      sessionStorage.removeItem('hq_ip12_product_handoff_v1');
+      var handoff=JSON.parse(raw||'null'), age=handoff?Date.now()-Number(handoff.created_at):Infinity;
+      if(!handoff||handoff.version!==1||handoff.target!=='video_studio'||!Number.isFinite(age)||age<0||age>600000||!handoff.prompt) return;
+      updateFunction('talking');updateMode('text');
+      $('scriptText').value=String(handoff.prompt).slice(0,1000);$('scriptText').dispatchEvent(new Event('input'));$('scriptText').focus();
+      setVideoStatus('已带入 IP12 待编辑方案，请检查后再生成','talking');
+      if(typeof toast==='function') toast('已带入 IP12 待编辑方案，请检查后再生成');
+    }catch(e){}
+  }
   // 灵感页「一键跟创（视频）」：?prompt= 预填到果肉/Seedance/Omni 渠道并切到对应 tab
   function applyInspirationPrefill(){
     try{
@@ -3292,7 +3306,27 @@
       if(typeof toast==='function') toast('已带入灵感提示词，可直接生成');
     }catch(e){}
   }
+  function applyDirectVideoAction(){
+    try{
+      var q=new URLSearchParams(location.search);
+      if(q.get('function')!=='cinematic'||q.get('action')!=='create-avatar') return;
+      updateFunction('cinematic');
+      setTimeout(function(){
+        var entry=$('cineNewAvatarDrop');
+        if(!entry) return;
+        entry.classList.add('direct-create-focus');
+        entry.setAttribute('tabindex','-1');
+        try{entry.scrollIntoView({behavior:'smooth',block:'center'});}catch(e){entry.scrollIntoView();}
+        try{entry.focus({preventScroll:true});}catch(e){entry.focus();}
+        if($('cineAvatarStatus')){
+          $('cineAvatarStatus').textContent='请上传一张正脸清晰的照片，创建完成后返回短剧工作区刷新形象库。';
+        }
+      },0);
+    }catch(e){}
+  }
   applyAssetPrefill();
+  applyDirectVideoAction();
+  applyIP12Handoff();
   videoHealthReady.then(applyInspirationPrefill);
   loadVoices();
   loadVideoHistory();

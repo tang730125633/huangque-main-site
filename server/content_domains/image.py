@@ -196,7 +196,7 @@ def validate_image_payload(payload):
     if provider == "zelong2":
         if ZELONG2_IMAGE_MODEL != "zelong-cpa-gpt-image-2":
             raise ValueError("泽龙专用生图渠道未配置")
-        if body.get("image") or body.get("mask"):
+        if body.get("image") or body.get("mask") or body.get("reference_images"):
             raise ValueError("泽龙专用生图首期仅支持文生图")
         if (body.get("ratio") or "1:1") != "1:1":
             raise ValueError("泽龙专用生图首期仅支持 1:1 方图")

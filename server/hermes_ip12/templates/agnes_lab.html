@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agnes 全模态 API 实验室</title>
+<style>
+:root{--bg:#070a0f;--panel:#101722;--line:#263447;--text:#e8eef7;--dim:#8d9aab;--blue:#57a6ff;--green:#44d19d;--yellow:#f6c65b;--red:#ff6b6b;--purple:#a78bfa}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top left,#1d244b,#070a0f 55%);color:var(--text);font-family:"Microsoft YaHei",Arial,sans-serif}.wrap{display:grid;grid-template-columns:420px 1fr;gap:14px;padding:16px;min-height:100vh}.pane{background:rgba(16,23,34,.94);border:1px solid rgba(255,255,255,.08);border-radius:16px;overflow:hidden}.head{padding:16px 18px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.025)}h1{font-size:19px;margin:0 0 6px}.sub{font-size:12px;color:var(--dim);line-height:1.55}.box{padding:16px}label{display:block;font-size:12px;color:#c4d0e2;margin:10px 0 6px}input,select,textarea{width:100%;background:#090e15;color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px;outline:none;font-size:14px}textarea{min-height:145px;resize:vertical}input:focus,select:focus,textarea:focus{border-color:var(--blue)}.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.tab{padding:8px 11px;border:1px solid var(--line);border-radius:999px;background:#0c121b;color:var(--dim);cursor:pointer}.tab.active{border-color:var(--green);color:var(--green);background:rgba(68,209,157,.08)}.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}.btn{border:1px solid rgba(255,255,255,.1);background:#121b27;color:var(--text);padding:9px 11px;border-radius:10px;cursor:pointer}.btn.primary{border:0;background:linear-gradient(135deg,#7c3aed,#16a34a);font-weight:800}.btn.warn{border-color:rgba(246,198,91,.5);color:var(--yellow)}.btn:disabled{opacity:.55;cursor:not-allowed}.status{padding:10px 12px;background:#090e15;border:1px solid var(--line);border-radius:12px;color:var(--dim);font-size:13px;white-space:pre-wrap}.out{white-space:pre-wrap;line-height:1.65;background:#090e15;border:1px solid var(--line);border-radius:12px;padding:14px;min-height:180px}.gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:12px}.card{background:#090e15;border:1px solid var(--line);border-radius:12px;padding:10px}.card img{width:100%;border-radius:10px;display:block}.small{font-size:12px;color:var(--dim);word-break:break-all}.runs{max-height:320px;overflow:auto}.run{padding:10px;border-bottom:1px solid var(--line);font-size:12px;color:var(--dim)}.ok{color:var(--green)}.bad{color:var(--red)}.videoBox{margin-top:12px;background:#090e15;border:1px solid var(--line);border-radius:14px;padding:12px}.videoBox video{width:100%;max-height:520px;background:#000;border-radius:10px}.addr{margin-top:10px;padding:10px;border:1px solid rgba(68,209,157,.3);background:rgba(68,209,157,.06);border-radius:10px;color:#b6f3dc;font-size:13px;white-space:pre-wrap;word-break:break-all}.progress{height:10px;background:#0b1018;border:1px solid var(--line);border-radius:999px;overflow:hidden;margin-top:8px}.bar{height:100%;width:0;background:linear-gradient(90deg,#7c3aed,#44d19d)}@media(max-width:900px){.wrap{grid-template-columns:1fr;padding:10px}.pane{border-radius:12px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <section class="pane">
+    <div class="head"><h1>Agnes 全模态 API 实验室</h1><div class="sub">独立测试页：文本 / 生图 / 生视频。生成结果必须在本页预览，并显示保存地址。</div></div>
+    <div class="box">
+      <div class="tabs">
+        <button class="tab active" data-mode="text">文本</button>
+        <button class="tab" data-mode="image">生图</button>
+        <button class="tab" data-mode="video">文生视频</button>
+        <button class="tab" data-mode="i2v">图生视频</button>
+      </div>
+      <label>模型</label><select id="model"></select>
+      <div class="row"><div><label>尺寸</label><input id="size" value="1024x1024"></div><div><label>时长/温度</label><input id="param" value="0.4"></div></div>
+      <label>提示词</label>
+      <textarea id="prompt">用中文回答：Agnes API 对我们的美业AI内容系统有什么用？用5条说明。</textarea>
+      <label>润色模式</label>
+      <select id="polishMode">
+        <option value="beauty" selected>美业专用：团队默认，强制贴近美容院/私域成交</option>
+        <option value="business">通用商业：保留原主题，优化成商业素材</option>
+        <option value="free">自由创意：保留原题材，不强行商业化/美业化</option>
+        <option value="poster">产品海报：适合产品/课程/活动海报</option>
+        <option value="cover">短视频封面：适合封面、强主体、留标题区</option>
+      </select>
+      <div id="i2vBox" style="display:none">
+        <label>图生视频首帧图片</label>
+        <input id="i2vFile" type="file" accept="image/*">
+        <div class="toolbar"><button class="btn" id="uploadI2vBtn" type="button">上传首帧图片</button></div>
+        <label>图片URL（公网可访问，上传后自动填写）</label>
+        <input id="i2vImageUrl" placeholder="https://... 或上传图片后自动生成">
+        <div id="i2vUploadInfo" class="status" style="margin-top:8px">图生视频必须使用 Agnes 能访问的公网图片URL。公网页面上传后会自动生成 http://129.204.166.13:3000/media/agnes/images/xxx.png</div>
+      </div>
+      <div class="toolbar">
+        <button class="btn primary" id="runBtn">开始测试</button>
+        <button class="btn warn" id="polishBtn">AI润色提示词</button>
+        <button class="btn" id="modelsBtn">拉取模型列表</button>
+        <button class="btn warn" id="sampleBtn">填入业务测试提示词</button>
+      </div>
+      <div style="margin-top:12px" id="status" class="status">正在读取状态...</div>
+    </div>
+  </section>
+  <section class="pane">
+    <div class="head"><h1>输出结果 / 预览窗口</h1><div class="sub">运行记录：D:/HermesData/agnes_lab/runs.jsonl；图片：D:/HermesData/agnes_lab/images；视频：D:/HermesData/agnes_lab/videos。</div></div>
+    <div class="box">
+      <div id="output" class="out">等待测试...</div>
+      <div id="videoPreview" class="videoBox" style="display:none">
+        <h1>视频预览</h1>
+        <video id="videoEl" controls playsinline></video>
+        <div id="videoAddr" class="addr"></div>
+      </div>
+      <div id="gallery" class="gallery"></div>
+      <h1 style="margin-top:18px">最近记录</h1>
+      <div id="runs" class="runs status">加载中...</div>
+    </div>
+  </section>
+</div>
+<script>
+const modes={text:{model:'agnes-2.0-flash',param:'0.4',size:'-'},image:{model:'agnes-image-2.0-flash',param:'1',size:'1024x1024'},video:{model:'agnes-video-v2.0',param:'5',size:'1280x768'},i2v:{model:'agnes-video-v2.0',param:'5',size:'1280x768'}};
+let mode='text';
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+const safeUrl=s=>{s=String(s??'').trim();return s.startsWith('/')||/^https?:\/\//i.test(s)?s:''};
+const samplePrompts={
+  beauty:{text:'用中文回答：Agnes API 对我们的美业AI内容系统有什么用？用5条说明。',image:'高端美容院老板正在查看AI经营数据大屏，真实中国商业摄影风格，温暖灯光，专业可信，画面干净，适合朋友圈配图，不要文字，不要水印',video:'美容院老板站在门店前，看手机里的AI经营报告，真实商业短片风格，自然光，镜头缓慢推进，5秒，有轻柔背景音乐',i2v:'让图片中的美容院老板自然抬头看向镜头，轻微点头，背景灯光柔和流动，保持人物和场景一致，真实商业短片风格，5秒'},
+  business:{text:'用中文回答：AI 对一家本地门店经营有什么帮助？用5条说明。',image:'一家本地门店老板正在查看经营数据报表，真实中国商业摄影风格，温暖灯光，专业可信，画面干净，适合品牌宣传，不要文字，不要水印',video:'本地门店老板在收银台旁查看手机经营报表，真实商业短片风格，自然光，镜头缓慢推进，5秒',i2v:'让图片中的主体做轻微自然动作，镜头缓慢推进，保持原始构图和人物一致，真实商业短片质感，5秒'},
+  free:{text:'用中文写一段关于傍晚散步的短文，轻松自然。',image:'一只橘猫坐在屋顶边缘看夕阳，温暖色调，电影感光影，画面安静，高清写实，不要文字，不要水印',video:'一只橘猫在窗边看夕阳，尾巴轻轻摆动，暖色光线，镜头缓慢推进，5秒',i2v:'让图片中的主体轻微自然运动，光影缓慢变化，镜头轻轻推进，保持原图构图一致，5秒'},
+  poster:{text:'用中文说明一张产品海报应该突出哪些信息。',image:'一瓶高端护肤产品放在柔和光线下，干净背景，产品海报构图，预留标题区域，不要生成文字，不要水印',video:'一款产品在干净桌面上被柔光照亮，镜头缓慢环绕，商业广告质感，5秒',i2v:'让产品周围光线缓慢流动，镜头轻微环绕，保持产品清晰稳定，商业广告质感，5秒'},
+  cover:{text:'用中文给“老板为什么要用AI”写5个短视频封面标题方向。',image:'一位中国老板表情认真地看着电脑屏幕，背景简洁，强主体，短视频封面构图，左侧预留标题区域，不要文字，不要水印',video:'一位老板从惊讶到认真点头看向电脑屏幕，短视频封面感，镜头快速轻推，5秒',i2v:'让图片中的人物轻微抬头或点头，眼神更坚定，镜头快速轻推，适合短视频封面转动态视频，5秒'}
+};
+function currentPolishMode(){return ($('polishMode')&&$('polishMode').value)||'beauty'}
+function fillSample(){const pm=currentPolishMode();const group=samplePrompts[pm]||samplePrompts.beauty;$('prompt').value=group[mode]||group.image;}
+function setMode(m){mode=m;document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.mode===m));$('model').innerHTML=`<option>${modes[m].model}</option>`;$('param').value=modes[m].param;$('size').value=modes[m].size;if($('i2vBox'))$('i2vBox').style.display=(m==='i2v')?'block':'none';fillSample();}
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>setMode(b.dataset.mode));
+async function api(url, body){const r=await fetch(url,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});const j=await r.json();if(!r.ok)throw new Error(j.error||JSON.stringify(j));return j;}
+async function uploadI2vImage(){const inp=$('i2vFile');if(!inp.files.length)throw new Error('请先选择图片');const fd=new FormData();fd.append('file',inp.files[0]);const r=await fetch('/api/agnes/upload-image',{method:'POST',body:fd});const j=await r.json();if(!r.ok||!j.ok)throw new Error(j.error||JSON.stringify(j));const f=j.files[0];$('i2vImageUrl').value=f.public_url;$('i2vUploadInfo').textContent=`上传成功\n网页地址：${location.origin}${f.url}\nAgnes可访问URL：${f.public_url}\n本地/服务器保存地址：${f.path}\n大小：${f.bytes} bytes`;return f;}
+async function loadStatus(){try{const j=await api('/api/agnes/status');$('status').textContent=`Key状态：${j.has_key?'已配置':'未配置'}\n接口：${j.base_url}\n文本：${j.models.text}\n图片：${j.models.image}\n视频：${j.models.video}\n数据目录：${j.data_root}`;}catch(e){$('status').textContent='状态读取失败：'+e.message}}
+async function loadRuns(){try{const j=await api('/api/agnes/runs');$('runs').innerHTML=(j.items||[]).map(x=>`<div class="run"><span class="${x.ok?'ok':'bad'}">${x.ok?'OK':'FAIL'}</span> ${esc(x.time)} | ${esc(x.type)} | ${esc(x.model||'')} | ${esc(x.elapsed||'')}s ${x.task_id?'| '+esc(x.task_id):''}<br>${esc((x.prompt||x.video_status||'').toString().slice(0,140))}</div>`).join('')||'暂无记录';}catch(e){$('runs').textContent='记录读取失败：'+e.message}}
+function showVideo(saved){const u=safeUrl(saved&&saved.url);if(!u)return;$('videoPreview').style.display='block';$('videoEl').src=u;$('videoAddr').textContent=`网页预览地址：${location.origin}${u}\n本地保存地址：${saved.path||''}\n远程原始地址：${safeUrl(saved.remote_url)}\n文件大小：${saved.bytes||0} bytes`;}
+async function pollVideo(taskId){let last={};for(let i=0;i<90;i++){const j=await api('/api/agnes/video/'+encodeURIComponent(taskId));last=j;const p=Math.max(0,Math.min(100,Number(j.progress)||0));const st=j.video_status||'unknown';$('output').innerHTML=`视频任务已提交\ntask_id：${esc(taskId)}\n状态：${esc(st)}\n进度：${esc(p)}%\n轮询：${i+1}/90\n<div class="progress"><div class="bar" style="width:${p}%"></div></div>`;if(j.saved){showVideo(j.saved);loadRuns();return j;}if(st==='failed'||st==='error')throw new Error(JSON.stringify(j.raw||j));await new Promise(r=>setTimeout(r,5000));}return last;}
+$('modelsBtn').onclick=async()=>{try{$('output').textContent='拉取模型中...';const j=await api('/api/agnes/models');$('output').textContent=JSON.stringify(j.result,null,2);loadRuns();}catch(e){$('output').textContent='失败：'+e.message}};
+$('sampleBtn').onclick=()=>fillSample();
+$('polishMode').onchange=()=>fillSample();
+$('uploadI2vBtn').onclick=async()=>{try{$('i2vUploadInfo').textContent='上传中...';await uploadI2vImage();}catch(e){$('i2vUploadInfo').textContent='上传失败：'+e.message}};
+$('polishBtn').onclick=async()=>{const btn=$('polishBtn');btn.disabled=true;const old=$('prompt').value;$('output').textContent='正在润色提示词...';try{const j=await api('/api/agnes/polish-prompt',{prompt:old,target:mode,polish_mode:$('polishMode').value});if(j.polished){$('prompt').value=j.polished;$('output').textContent=`AI润色完成：\n\n原始需求：\n${old}\n\n润色后提示词：\n${j.polished}\n\n下一步：你可以人工微调后点击“开始测试”。`; }else{$('output').textContent='润色失败：没有返回内容';}loadRuns();}catch(e){$('output').textContent='润色失败：'+e.message;}finally{btn.disabled=false;}};
+
+$('runBtn').onclick=async()=>{const btn=$('runBtn');btn.disabled=true;$('gallery').innerHTML='';$('videoPreview').style.display='none';$('output').textContent='执行中...';try{let url='/api/agnes/text',body={model:$('model').value,prompt:$('prompt').value,temperature:parseFloat($('param').value||'0.4')};if(mode==='image'){url='/api/agnes/image';body={model:$('model').value,prompt:$('prompt').value,size:$('size').value,n:parseInt($('param').value||'1')}}if(mode==='video'){url='/api/agnes/video';body={model:$('model').value,prompt:$('prompt').value,size:$('size').value,duration:parseInt($('param').value||'5')}}if(mode==='i2v'){url='/api/agnes/image-to-video';body={model:$('model').value,prompt:$('prompt').value,size:$('size').value,duration:parseInt($('param').value||'5'),image_url:$('i2vImageUrl').value}}const j=await api(url,body);if(mode==='text'){$('output').textContent=`耗时：${j.elapsed}s\n用量：${JSON.stringify(j.usage||{})}\n\n${j.text}`;}else if(mode==='image'){$('output').textContent=JSON.stringify(j,null,2);if(j.saved){$('gallery').innerHTML=j.saved.map(s=>{const u=safeUrl(s.url);return u?`<div class="card"><img src="${esc(u)}"><div class="small">网页地址：${esc(location.origin+u)}<br>文件：${esc(s.filename)}</div></div>`:`<div class="card small">远程URL：${esc(safeUrl(s.remote_url))}</div>`}).join('')}}else if(mode==='video'||mode==='i2v'){$('output').textContent=`视频任务已提交，开始自动轮询...\ntask_id：${j.task_id}`;await pollVideo(j.task_id);}loadRuns();}catch(e){$('output').textContent='失败：'+e.message;}finally{btn.disabled=false;}}
+setMode('text');loadStatus();loadRuns();
+</script>
+</body>
+</html>

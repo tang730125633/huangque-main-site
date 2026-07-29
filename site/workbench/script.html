@@ -166,7 +166,7 @@
         <div style="position:relative; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px; padding:13px 14px;">
           <textarea id="bdUrl" rows="2" placeholder="粘贴抖音/小红书视频链接…（每行一个，可批量≤5条）" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.7; font-family:inherit;"></textarea>
         </div>
-        <div id="bdUrlHint" style="margin-top:8px; font-size:11px; color:#5c6b82;">支持抖音、小红书公开视频链接，最多 5 条（每行一个，每个链接 20 点），完成后可直接生成同款视频</div>
+        <div id="bdUrlHint" style="margin-top:8px; font-size:11px; color:#5c6b82;">支持抖音、小红书公开视频链接，链接视频最大 200MB；最多 5 条（每行一个，每个链接 20 点）</div>
 
         <button id="bdGen" class="hv-lift" style="width:100%; height:54px; margin-top:18px; font-size:16px; font-weight:700; color:#0f172a; background:linear-gradient(135deg,#93c5fd,#60a5fa); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(96,165,250,.55); transition:.2s; font-family:inherit; display:flex; align-items:center; justify-content:center; gap:9px;">
           <span class="sc-ico" style="width:19px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg></span>
@@ -342,7 +342,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=e836823b"></script>
+<script src="cloud-shell.js?v=642453c4"></script>
 <script>
 /* 编导页接 /api/gen/copy（format=script）+ /api/gen/breakdown → 脚本/拆解双模式 */
 (function(){
@@ -384,6 +384,51 @@
   var BD_REVERSE_LABEL='开始反推（20 点）';
 
   function tok(){ return '__cookie__'; }
+  function _readApiResponse(response){
+    return response.text().then(function(text){
+      var data={};
+      try{ data=text?JSON.parse(text):{}; }
+      catch(e){
+        data={detail:'服务返回异常（HTTP '+response.status+'），请稍后重试'};
+      }
+      return {s:response.status,d:data};
+    });
+  }
+  function _jobRecoveryHtml(message,jobId){
+    return '<div style="padding:24px;text-align:center;color:#f4708a;">'+esc(message)
+      +'<div style="margin-top:8px;color:#94a4bb;font-size:12px;">任务编号：'+esc(String(jobId))+'</div>'
+      +'<div style="display:flex;gap:8px;justify-content:center;margin-top:14px;">'
+      +'<button type="button" class="sc-btn" data-resume-breakdown="'+escAttr(String(jobId))+'">继续查询</button>'
+      +'<a class="sc-btn" href="assets.html">查看资产库</a></div></div>';
+  }
+  var _pendingSubmissionMemory={};
+  function _pendingSubmission(scope,payload){
+    var storageKey='hq_pending_submit_'+scope;
+    var body=JSON.stringify(payload||{});
+    var saved=null;
+    try{ saved=JSON.parse(sessionStorage.getItem(storageKey)||'null'); }
+    catch(e){ saved=_pendingSubmissionMemory[storageKey]||null; }
+    if(saved&&saved.body===body&&saved.key){
+      return {storageKey:storageKey,body:body,key:saved.key};
+    }
+    var pending={
+      body:body,
+      key:scope+'-'+Date.now()+'-'+Math.random().toString(36).slice(2)
+    };
+    _pendingSubmissionMemory[storageKey]=pending;
+    try{ sessionStorage.setItem(storageKey,JSON.stringify(pending)); }catch(e){}
+    return {storageKey:storageKey,body:body,key:pending.key};
+  }
+  function _confirmSubmission(pending){
+    if(!pending) return;
+    delete _pendingSubmissionMemory[pending.storageKey];
+    try{
+      var saved=JSON.parse(sessionStorage.getItem(pending.storageKey)||'null');
+      if(saved&&saved.body===pending.body&&saved.key===pending.key){
+        sessionStorage.removeItem(pending.storageKey);
+      }
+    }catch(e){}
+  }
   function currentTheme(){ return window.HQTheme ? window.HQTheme.get() : ((document.documentElement.getAttribute('data-theme')==='light')?'light':'dark'); }
   function renderThemeToggle(theme){
     [themeLightBtn, themeDarkBtn].forEach(function(btn){
@@ -410,6 +455,17 @@
     var q='?prompt='+encodeURIComponent(prompt||'');
     if(extra) q+=extra;
     return page+q;
+  }
+  function applyIP12Handoff(){
+    try{
+      if(new URLSearchParams(location.search).get('prefill')!=='ip12') return;
+      var raw=sessionStorage.getItem('hq_ip12_product_handoff_v1');
+      sessionStorage.removeItem('hq_ip12_product_handoff_v1');
+      var handoff=JSON.parse(raw||'null'), age=handoff?Date.now()-Number(handoff.created_at):Infinity;
+      if(!handoff||handoff.version!==1||handoff.target!=='script_studio'||!Number.isFinite(age)||age<0||age>600000||!handoff.prompt) return;
+      topic.value=String(handoff.prompt).slice(0,1000);topic.dispatchEvent(new Event('input'));topic.focus();
+      if(window.HQ&&window.HQ.toast) HQ.toast('已带入 IP12 待编辑方案，请检查后再生成');
+    }catch(e){}
   }
   function cardText(card, label){
     var found='';
@@ -584,7 +640,7 @@
     if(panelWrite) panelWrite.style.display=currentMode==='write'?'':'none';
     if(panelBreakdown) panelBreakdown.style.display=currentMode==='breakdown'?'':'none';
     if(bdIntroText) bdIntroText.textContent=reverseMode?'粘贴竞品视频链接，AI 读取关键画面与口播语境，直接反推出可复用的中文提示词':'粘贴竞品视频链接，AI 拆出分镜结构，再沿当前主线生成同款视频';
-    if(bdUrlHint) bdUrlHint.textContent=reverseMode?'支持抖音、小红书公开视频链接，提示词反推暂仅支持单条链接（20 点）':'支持抖音、小红书公开视频链接，最多 5 条（每行一个，每个链接 20 点），完成后可直接生成同款视频';
+    if(bdUrlHint) bdUrlHint.textContent=reverseMode?'支持抖音、小红书公开视频链接，链接视频最大 200MB；提示词反推暂仅支持单条链接（20 点）':'支持抖音、小红书公开视频链接，链接视频最大 200MB；最多 5 条（每行一个，每个链接 20 点）';
     if(bdGenText) bdGenText.textContent=reverseMode?BD_REVERSE_LABEL:BD_SCENES_LABEL;
     if(bdActionHint) bdActionHint.textContent=reverseMode?'下载 → 抽帧 → 转写 → AI反推 · 约 40-90 秒':'下载 → 抽帧 → 转写 → AI分析 · 约 40-90 秒';
     if(previewTitle) previewTitle.textContent=currentMode==='breakdown' ? (reverseMode?'拆解结果 · 提示词反推':'拆解结果 · 分镜预览') : initialPreviewTitle;
@@ -1084,10 +1140,32 @@
   if(bdImageReverse)bdImageReverse.onclick=function(){_submitLocalReverse('image',bdLocalImage.files[0],bdImageReverse);};
   if(bdVideoReverse)bdVideoReverse.onclick=function(){_submitLocalReverse('video',bdLocalVideo.files[0],bdVideoReverse);};
 
+  function normalizeBreakdownUrl(text){
+    var match=String(text||'').match(/https?:\/\/[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]+/);
+    if(!match) return '';
+    try{
+      var parsed=new URL(match[0]);
+      var host=(parsed.hostname||'').toLowerCase().replace(/\.$/,'');
+      var allowed=host==='douyin.com'||host.endsWith('.douyin.com')
+        ||host==='iesdouyin.com'||host.endsWith('.iesdouyin.com')
+        ||host==='xiaohongshu.com'||host.endsWith('.xiaohongshu.com')
+        ||host==='xhslink.com'||host.endsWith('.xhslink.com');
+      return allowed?parsed.href:'';
+    }catch(e){ return ''; }
+  }
   if(bdGen){ bdGen.onclick=function(){
     var raw=(bdUrl.value||'').trim();
     if(!raw){ scenes.innerHTML='<div style="padding:22px;text-align:center;color:#f4708a;font-size:13px;">请先粘贴视频链接</div>'; return; }
-    var lines=raw.split('\n').map(function(l){return l.trim();}).filter(Boolean);
+    var sourceLines=raw.split('\n').map(function(l){return l.trim();}).filter(Boolean);
+    var lines=sourceLines.map(normalizeBreakdownUrl);
+    if(lines.some(function(url){return !url;})){
+      scenes.innerHTML='<div style="padding:22px;text-align:center;color:#f4708a;font-size:13px;">链接格式不正确，请粘贴抖音或小红书的完整 http(s) 分享链接</div>';
+      return;
+    }
+    if(lines.length>5){
+      scenes.innerHTML='<div style="padding:22px;text-align:center;color:#f4708a;font-size:13px;">一次最多提交 5 条链接</div>';
+      return;
+    }
     var submitMode=currentBreakdownTool||'scenes';
     var isBatch=submitMode==='scenes' && lines.length>1;
     currentMode='breakdown'; syncModeUi();
@@ -1100,16 +1178,41 @@
     var pollCount=0, lastPhase='downloading', pollErrors=0;
     var maxPolls=isBatch?(100*lines.length):120;  // 批量按条数放宽：每条最长约90s，5条≈450s+，避免后端还在跑前端先报超时
     var reqBody=isBatch?{urls:lines,mode:'scenes'}:{url:lines[0],mode:submitMode};
-    fetch('/api/gen/breakdown',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(reqBody)})
-      .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
+    var breakdownPending=_pendingSubmission('script-breakdown',reqBody);
+    fetch('/api/gen/breakdown',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json','Idempotency-Key':breakdownPending.key},body:breakdownPending.body})
+      .then(_readApiResponse)
       .then(function(x){
-        if(x.s===401){ resetBdBtn(); if(window.HQ) HQ.login(); return; }
-        if(x.s===402){ resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
-        if(!x.d.job_id){ resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+((x.d&&x.d.detail)||'未知')+'</div>'; return; }
-        var MAX_POLL_ERRORS=10;
-        var iv=setInterval(function(){
+        if(x.s===401){ _confirmSubmission(breakdownPending); resetBdBtn(); if(window.HQ) HQ.login(); return; }
+        if(x.s===402){ _confirmSubmission(breakdownPending); resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
+        if(!x.d.job_id){
+          resetBdBtn();
+          if(x.d&&x.d.code==='idempotency_in_progress'){
+            scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4a460;">请求已受理，点击“开始”可使用同一凭证继续确认，不会重复扣点</div>';
+            return;
+          }
+          if(x.s<500||(x.d&&x.d.operation_terminal===true)) _confirmSubmission(breakdownPending);
+          scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+esc((x.d&&x.d.detail)||'未知')+'</div>'; return;
+        }
+        _confirmSubmission(breakdownPending);
+        var MAX_POLL_ERRORS=10, iv=null;
+        function showRecovery(message){
+          resetBdBtn();
+          scenes.innerHTML=_jobRecoveryHtml(message,x.d.job_id);
+          var resume=scenes.querySelector('[data-resume-breakdown]');
+          if(resume) resume.onclick=function(){
+            pollCount=0; pollErrors=0;
+            scenes.innerHTML='<div style="padding:34px;text-align:center;color:#60a5fa;font-size:13px;">正在继续查询任务…</div>';
+            startPolling();
+          };
+        }
+        function startPolling(){
+          if(iv) clearInterval(iv);
+          iv=setInterval(function(){
           pollCount++;
-          fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
+          fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(_readApiResponse).then(function(jobResponse){
+            var d=jobResponse.d||{};
+            if(jobResponse.s===401){ clearInterval(iv); resetBdBtn(); if(window.HQ) HQ.login(); return; }
+            if(jobResponse.s>=500){ throw new Error(d.detail||'任务查询失败'); }
             pollErrors=0;
             if(d.phase && d.phase!==lastPhase){ lastPhase=d.phase; setBdPhase(d.phase,'active'); }
             if(d.status==='done'){
@@ -1117,8 +1220,11 @@
               var result=d.result||{};
               if(result.type==='breakdown_batch'){
                 switchBreakdownTool('scenes');
-                var first=result.results[0];
+                var first=(result.results||[]).find(function(item){
+                  return normalizeBreakdownScenes((item&&item.scenes)||[]).length>0;
+                });
                 if(first) renderBreakdown(first);
+                else scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">批量拆解没有生成有效分镜，请重试</div>';
                 (result.results||[]).forEach(function(item){ saveBreakdownHistory(item); });
                 var msg='批量完成：'+result.results.length+'/'+result.total+' 成功';
                 if(result.errors.length) msg+='，'+result.errors.length+' 条失败';
@@ -1134,19 +1240,24 @@
               if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
             } else if(d.status==='error'||d.status==='failed'){
               clearInterval(iv); resetBdBtn();
-              scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">'+(submitMode==='reverse_prompt'?'反推失败：':'拆解失败：')+(d.error||'')+' · 已退点</div>';
+              var failure=String(d.error||'未知错误');
+              scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">'
+                +(submitMode==='reverse_prompt'?'反推失败：':'拆解失败：')+esc(failure)
+                +(failure.indexOf('退')>=0?'':' · 已退点')+'</div>';
             } else if(d.phase){
               var phaseMsg={downloading:'正在下载视频…',extracting_frames:'正在抽取关键帧…',transcribing:'正在转写口播…',analyzing:submitMode==='reverse_prompt'?'AI 正在反推提示词…':'AI 分析拆解中…'};
-              var bm=/^batch_(d+)_(d+)$/.exec(d.phase||'');
+              var bm=/^batch_(\d+)_(\d+)$/.exec(d.phase||'');
               scenes.innerHTML='<div style="padding:34px; text-align:center; color:#60a5fa; font-size:13px;">'+(bm?('批量拆解中（第'+bm[1]+'条/共'+bm[2]+'条）'):(phaseMsg[d.phase]||'处理中…'))+'</div>';
             }
-            if(pollCount>maxPolls){ clearInterval(iv); resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">'+(submitMode==='reverse_prompt'?'反推超时，请稍后重试':'拆解超时，请稍后重试')+'</div>'; }
+            if(pollCount>maxPolls){ clearInterval(iv); showRecovery(submitMode==='reverse_prompt'?'页面等待超时，任务可能仍在处理中':'页面等待超时，任务可能仍在处理中'); }
           }).catch(function(){
             pollErrors++;
             if(pollErrors>=3 && pollErrors<MAX_POLL_ERRORS) scenes.innerHTML='<div style="padding:34px; text-align:center; color:#f4a460; font-size:13px;">网络不稳定，正在重试…（'+pollErrors+'/'+MAX_POLL_ERRORS+'）</div>';
-            if(pollErrors>=MAX_POLL_ERRORS){ clearInterval(iv); resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">网络连接失败，请检查网络后重试</div>'; }
+            if(pollErrors>=MAX_POLL_ERRORS){ clearInterval(iv); showRecovery('网络连接失败，但任务可能仍在处理中'); }
           });
         },3000);
+        }
+        startPolling();
       }).catch(function(){ resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">网络错误，请重试</div>'; });
   }; }
 
@@ -1317,7 +1428,7 @@
     var selectedDuration=10;
     var submitted=false;
     function updateCost(){
-      var rate=selectedAvatarId===null?12:10;
+      var rate=selectedAvatarId===null?30:10;
       cost.textContent='预计消耗 '+(selectedDuration*rate)+' 点';
       duration.querySelectorAll('[data-reverse-duration]').forEach(function(btn){
         var seconds=Number(btn.getAttribute('data-reverse-duration'));
@@ -1416,31 +1527,175 @@
     var sum=(list||[]).reduce(function(total,s){ var n=parseInt((s.dur||'').replace('s',''))||0; return total+n; },0);
     return Math.min(15, Math.max(1, sum||30));
   }
+  function _confirmDramaVideo(list){
+    var duration=_dramaDuration(list), cost=duration*12;
+    return window.confirm('将生成 '+duration+' 秒剧情视频，预计消耗 '+cost+' 点。\n\n确认提交生成吗？');
+  }
+  var ACTIVE_VIDEO_JOB_KEY='hq_script_active_video_job';
+  var activeVideoResumeTimer=null;
+  function _videoLookupDisposition(status){
+    status=Number(status||0);
+    if(status===401) return 'login';
+    if([400,403,404,410].indexOf(status)>=0) return 'clear';
+    if(status>=400) return 'retry';
+    return 'ok';
+  }
+  function _activeVideoOwner(){
+    try{
+      var user=JSON.parse(localStorage.getItem('hq_user')||'null')||{};
+      return String(user.username||user.account_id||user.id||'').trim();
+    }catch(e){ return ''; }
+  }
+  function _activeVideoJobKey(owner){
+    owner=String(owner||'').trim();
+    return owner?ACTIVE_VIDEO_JOB_KEY+':'+encodeURIComponent(owner):'';
+  }
+  function _readActiveVideoJob(){
+    var owner=_activeVideoOwner(), key=_activeVideoJobKey(owner);
+    if(!key) return null;
+    try{
+      // Old builds used one browser-global key. Never restore it because it
+      // has no trustworthy owner and can leak a task across account switches.
+      localStorage.removeItem(ACTIVE_VIDEO_JOB_KEY);
+      var value=JSON.parse(localStorage.getItem(key)||'null');
+      if(!value||!value.jobId||String(value.owner||'')!==owner){
+        if(value) localStorage.removeItem(key);
+        return null;
+      }
+      return value;
+    }catch(e){ return null; }
+  }
+  function _saveActiveVideoJob(value){
+    var owner=_activeVideoOwner(), key=_activeVideoJobKey(owner);
+    if(!key) return '';
+    value=Object.assign({},value,{owner:owner});
+    try{ localStorage.setItem(key,JSON.stringify(value)); }catch(e){}
+    return owner;
+  }
+  function _clearActiveVideoJob(jobId,owner){
+    owner=String(owner||_activeVideoOwner()).trim();
+    var key=_activeVideoJobKey(owner);
+    if(!key) return;
+    var current=null;
+    try{ current=JSON.parse(localStorage.getItem(key)||'null'); }catch(e){}
+    if(!jobId||!current||String(current.jobId)===String(jobId)){
+      try{ localStorage.removeItem(key); }catch(e){}
+    }
+  }
+  function _resumeActiveVideoJob(){
+    var active=_readActiveVideoJob();
+    if(!active){
+      if(activeVideoResumeTimer) clearInterval(activeVideoResumeTimer);
+      activeVideoResumeTimer=null;
+      return false;
+    }
+    if(activeVideoResumeTimer) clearInterval(activeVideoResumeTimer);
+    _setGenerateBusy(genVideoBtn,true);
+    if(bdRemakeBtn) _setGenerateBusy(bdRemakeBtn,true);
+    function finishButtons(){
+      _setGenerateBusy(genVideoBtn,false);
+      if(bdRemakeBtn) _setGenerateBusy(bdRemakeBtn,false);
+    }
+    function check(){
+      fetch('/api/gen/job/'+encodeURIComponent(active.jobId),{headers:{'Authorization':'Bearer '+tok()}})
+        .then(_readApiResponse).then(function(response){
+          var disposition=_videoLookupDisposition(response.s);
+          if(disposition==='login'){
+            clearInterval(activeVideoResumeTimer); activeVideoResumeTimer=null; finishButtons();
+            if(window.HQ) HQ.login();
+            return;
+          }
+          if(disposition==='clear'){
+            clearInterval(activeVideoResumeTimer); activeVideoResumeTimer=null;
+            _clearActiveVideoJob(active.jobId,active.owner); finishButtons();
+            scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">该任务已失效或不属于当前账号，请重新提交。</div>';
+            return;
+          }
+          if(disposition==='retry') throw new Error((response.d&&response.d.detail)||'查询失败');
+          var job=response.d||{};
+          if(job.status==='done'){
+            clearInterval(activeVideoResumeTimer); activeVideoResumeTimer=null;
+            _clearActiveVideoJob(active.jobId,active.owner); finishButtons();
+            var videoUrl=(job.result&&job.result.video_url)||'';
+            scenes.innerHTML='<div style="padding:24px;text-align:center;">'
+              +'<div style="font-size:40px;margin-bottom:10px;">✅</div>'
+              +'<div style="font-size:15px;font-weight:700;color:#eaf1fa;margin-bottom:8px;">生成完成！</div>'
+              +(videoUrl?'<video src="'+esc(videoUrl)+'" controls style="max-width:100%;max-height:260px;border-radius:10px;cursor:zoom-in;"></video>':'')
+              +'<div style="margin-top:14px;"><a href="assets.html" class="sc-btn" style="color:#e7b24c;">📁 查看资产库</a></div></div>';
+            if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
+            loadHistory();
+            return;
+          }
+          if(job.status==='error'||job.status==='failed'){
+            clearInterval(activeVideoResumeTimer); activeVideoResumeTimer=null;
+            _clearActiveVideoJob(active.jobId,active.owner); finishButtons();
+            scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">成片失败：'+esc(job.error||'生成失败')+' · 已退点</div>';
+            return;
+          }
+          var elapsed=Math.max(0,Math.floor((Date.now()-Number(active.startedAt||Date.now()))/1000));
+          scenes.innerHTML='<div style="padding:34px;text-align:center;color:#e7b24c;font-size:13px;">🎬 已恢复任务 '+esc(String(active.jobId))+' 的进度，正在生成…已等待 '+Math.floor(elapsed/60)+' 分 '+(elapsed%60)+' 秒'
+            +'<div style="margin-top:12px;"><a href="assets.html" style="color:#60a5fa;">同时可在资产库查看</a></div></div>';
+        }).catch(function(){
+          scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4a460;">任务 '+esc(String(active.jobId))+' 仍在运行，但暂时无法查询；将自动重试。'
+            +'<div style="margin-top:12px;"><a href="assets.html" style="color:#60a5fa;">前往资产库查看</a></div></div>';
+        });
+    }
+    check();
+    activeVideoResumeTimer=setInterval(check,3000);
+    return true;
+  }
   function _doGenerate(payload,btn,options){
     options=options||{};
     var endpoint=options.endpoint||'/api/gen/script_to_video';
     var sceneCount=options.sceneCount==null?(payload.scenes||[]).length:options.sceneCount;
+    if(_readActiveVideoJob()){
+      _resumeActiveVideoJob();
+      return;
+    }
     _setGenerateBusy(btn,true);
     scenes.innerHTML='<div style="padding:34px;text-align:center;color:#e7b24c;font-size:13px;">🎬 正在启动生成…</div>';
     if(meta) meta.innerHTML='';
     hideBreakdownMeta();
     var pollCount=0, lastProgress=-1, pollErrors=0, startTs=Date.now();
     var requestHeaders={'Authorization':'Bearer '+tok(),'Content-Type':'application/json'};
-    if(endpoint==='/api/gen/script_to_video') requestHeaders['Idempotency-Key']='script-video-'+Date.now()+'-'+Math.random().toString(36).slice(2);
-    fetch(endpoint,{method:'POST',headers:requestHeaders,body:JSON.stringify(payload)})
+    var needsIdempotency=endpoint==='/api/gen/script_to_video'||endpoint==='/api/gen/xiaole_video';
+    var videoPending=needsIdempotency?_pendingSubmission('script-video-'+endpoint.replace(/[^a-z_]/gi,''),payload):null;
+    if(videoPending) requestHeaders['Idempotency-Key']=videoPending.key;
+    fetch(endpoint,{method:'POST',headers:requestHeaders,body:videoPending?videoPending.body:JSON.stringify(payload)})
       .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
       .then(function(x){
-        if(x.s===401){ _setGenerateBusy(btn,false); if(window.HQ) HQ.login(); return; }
-        if(x.s===402){ _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足（需要 '+ ((x.d&&(x.d.need||x.d.cost))||'') +' 点）· <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
+        if(x.s===401){ _confirmSubmission(videoPending); _setGenerateBusy(btn,false); if(window.HQ) HQ.login(); return; }
+        if(x.s===402){ _confirmSubmission(videoPending); _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足（需要 '+ ((x.d&&(x.d.need||x.d.cost))||'') +' 点）· <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
         if(!x.d.job_id){ _setGenerateBusy(btn,false); var msg=(x.d&&x.d.detail)||'未知错误';
+          if(x.s<500||(x.d&&x.d.operation_terminal===true)) _confirmSubmission(videoPending);
           if(msg.indexOf('形象')>=0||msg.indexOf('人物')>=0) msg+='<br><a href="video.html" style="color:#60a5fa;">→ 去视频页创建形象</a>';
           scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+msg+'</div>'; return; }
+        _confirmSubmission(videoPending);
+        var activeJobOwner=_saveActiveVideoJob({
+          jobId:x.d.job_id, endpoint:endpoint, sceneCount:sceneCount,
+          startedAt:Date.now(), cost:x.d.cost==null?null:x.d.cost
+        });
         var iv=setInterval(function(){
           pollCount++;
-          fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
+          fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(_readApiResponse).then(function(response){
+            var disposition=_videoLookupDisposition(response.s);
+            if(disposition==='login'){
+              clearInterval(iv); _setGenerateBusy(btn,false);
+              if(window.HQ) HQ.login();
+              return;
+            }
+            if(disposition==='clear'){
+              clearInterval(iv); _setGenerateBusy(btn,false);
+              _clearActiveVideoJob(x.d.job_id,activeJobOwner);
+              scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">该任务已失效或不属于当前账号，请重新提交。</div>';
+              return;
+            }
+            if(disposition==='retry') throw new Error((response.d&&response.d.detail)||'查询失败');
+            var d=response.d||{};
             pollErrors=0;
             if(d.status==='done'){
               clearInterval(iv); _setGenerateBusy(btn,false);
+              _clearActiveVideoJob(x.d.job_id,activeJobOwner);
               var vurl=(d.result&&d.result.video_url)||'';
               var breakdown=x.d.cost_breakdown||{};
               var costInfo=x.d.cost!=null?' · 消耗 '+x.d.cost+' 点':'';
@@ -1463,6 +1718,7 @@
               loadHistory();
             } else if(d.status==='error'||d.status==='failed'){
               clearInterval(iv); _setGenerateBusy(btn,false);
+              _clearActiveVideoJob(x.d.job_id,activeJobOwner);
               scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">成片失败：'+(d.error||'')+' · 已退点</div>';
             } else {
               var elapsed=Math.floor((Date.now()-startTs)/1000);
@@ -1488,6 +1744,7 @@
     if(!list.length){ location.href='video.html'; return; }
     var hasScenes=list.some(function(s){ return (s.scene||'').trim(); });
     if(!hasScenes){ if(window.HQ&&window.HQ.toast) HQ.toast('脚本中没有画面描述'); return; }
+    if(!_confirmDramaVideo(list)) return;
     _doGenerate({scenes:list,style:'剧情',duration:_dramaDuration(list)},genVideoBtn);
   }; }
   if(genAudioBtn){ genAudioBtn.onclick=function(e){
@@ -1509,17 +1766,20 @@
     if(isReverse){
       var prompt=reversePromptText();
       if(!prompt){ if(window.HQ&&window.HQ.toast) HQ.toast('请先完成提示词反推'); return; }
+      var reverseRefs=((lastBreakdownReverse&&lastBreakdownReverse.frame_thumbnails)||[]).slice(0,4);
       _showReverseVideoPicker(prompt,function(choice){
         if(choice.avatarId){
+          var avatarPrompt='人物身份与面部必须以所选数字人形象为准；参考关键帧仅用于还原动作、镜头、构图、场景和节奏。'+prompt;
           _doGenerate({
-            cine_mode:'open', avatar_ids:[choice.avatarId], prompt:prompt,
-            duration:choice.duration, ratio:'9:16', resolution:'720p', enhance_prompt:false
+            cine_mode:'open', avatar_ids:[choice.avatarId], prompt:avatarPrompt,
+            reference_images:reverseRefs, duration:choice.duration,
+            ratio:'9:16', resolution:'720p', enhance_prompt:false
           },bdRemakeBtn,{endpoint:'/api/gen/cinematic',sceneCount:1});
           return;
         }
-        var reverseScenes=[{scene:prompt,line:'',dur:choice.duration+'s'}];
-        _doGenerate({scenes:reverseScenes,style:'剧情',duration:choice.duration},
-                    bdRemakeBtn,{endpoint:'/api/gen/script_to_video',sceneCount:1});
+        var seedancePrompt='严格按照所附参考关键帧的时间顺序生成，保持动作节点、镜头转换、构图和场景布局。'+prompt;
+        _doGenerate({channel:'micro',prompt:seedancePrompt,reference_images:reverseRefs,duration:choice.duration},
+                    bdRemakeBtn,{endpoint:'/api/gen/xiaole_video',sceneCount:1});
       });
       return;
     } else {
@@ -1530,6 +1790,7 @@
     _pickRemakeStyle(function(style){
       if(style==='剧情'){
         if(!scenes.some(function(s){ return (s.scene||'').trim(); })){ if(window.HQ&&window.HQ.toast) HQ.toast('拆解结果里没有画面描述，无法生成剧情视频'); return; }
+        if(!_confirmDramaVideo(scenes)) return;
         _doGenerate({scenes:scenes,style:'剧情',duration:_dramaDuration(scenes)},bdRemakeBtn);
       } else {
         if(!scenes.some(function(s){ return (s.line||'').trim(); })){ if(window.HQ&&window.HQ.toast) HQ.toast('拆解结果里没有口播文案，无法生成'+style+'视频'); return; }
@@ -1564,12 +1825,23 @@
     _setGenerateBusy(btn,true);
     scenes.innerHTML='<div style="padding:34px;text-align:center;color:#e7b24c;font-size:13px;">🎨 正在生成图片…</div>';
     var pollCount=0, pollErrors=0;
-    fetch('/api/gen/image',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify({prompt:prompt,ratio:'9:16',quality:'standard'})})
-      .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
+    var imagePayload={prompt:prompt,ratio:'9:16',quality:'standard'};
+    var imagePending=_pendingSubmission('script-image',imagePayload);
+    fetch('/api/gen/image',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json','Idempotency-Key':imagePending.key},body:imagePending.body})
+      .then(_readApiResponse)
       .then(function(x){
-        if(x.s===401){ _setGenerateBusy(btn,false); if(window.HQ) HQ.login(); return; }
-        if(x.s===402){ _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
-        if(!x.d.job_id){ _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+((x.d&&x.d.detail)||'未知')+'</div>'; return; }
+        if(x.s===401){ _confirmSubmission(imagePending); _setGenerateBusy(btn,false); if(window.HQ) HQ.login(); return; }
+        if(x.s===402){ _confirmSubmission(imagePending); _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
+        if(!x.d.job_id){
+          _setGenerateBusy(btn,false);
+          if(x.d&&x.d.code==='idempotency_in_progress'){
+            scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4a460;">请求已受理，再次点击将使用同一凭证继续确认，不会重复扣点</div>';
+            return;
+          }
+          if(x.s<500||(x.d&&x.d.operation_terminal===true)) _confirmSubmission(imagePending);
+          scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+esc((x.d&&x.d.detail)||'未知')+'</div>'; return;
+        }
+        _confirmSubmission(imagePending);
         var iv=setInterval(function(){
           pollCount++;
           fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
@@ -1636,7 +1908,9 @@
     e.preventDefault();
     _openMediaLightbox(tag, src);
   });
+  applyIP12Handoff();
   loadHistory();
+  _resumeActiveVideoJob();
 })();
 </script>
 
@@ -1669,11 +1943,11 @@
   <div id="reverseVideoAvatarGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:10px;min-height:80px;max-height:230px;overflow-y:auto;padding-right:3px;"></div>
   <div style="font-size:13px;font-weight:600;margin:18px 0 8px;">视频时长</div>
   <div id="reverseVideoDuration" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
-    <button class="sc-opt" type="button" data-reverse-duration="5" aria-pressed="false" style="font-family:inherit;">5 秒 · 60 点</button>
-    <button class="sc-opt on" type="button" data-reverse-duration="10" aria-pressed="true" style="font-family:inherit;">10 秒 · 120 点</button>
-    <button class="sc-opt" type="button" data-reverse-duration="15" aria-pressed="false" style="font-family:inherit;">15 秒 · 180 点</button>
+    <button class="sc-opt" type="button" data-reverse-duration="5" aria-pressed="false" style="font-family:inherit;">5 秒 · 150 点</button>
+    <button class="sc-opt on" type="button" data-reverse-duration="10" aria-pressed="true" style="font-family:inherit;">10 秒 · 300 点</button>
+    <button class="sc-opt" type="button" data-reverse-duration="15" aria-pressed="false" style="font-family:inherit;">15 秒 · 450 点</button>
   </div>
-  <div id="reverseVideoCost" style="text-align:center;color:#e7b24c;font-size:13px;font-weight:600;margin:14px 0;">预计消耗 120 点</div>
+  <div id="reverseVideoCost" style="text-align:center;color:#e7b24c;font-size:13px;font-weight:600;margin:14px 0;">预计消耗 300 点</div>
   <div style="text-align:center;font-size:11.5px;color:#5c6b82;margin-bottom:14px;">没有形象？<a href="video.html" style="color:#60a5fa;">去创建</a></div>
   <button id="reverseVideoConfirm" type="button" style="width:100%;height:46px;border:none;border-radius:12px;cursor:pointer;font-family:inherit;font-size:15px;font-weight:700;color:#111827;background:linear-gradient(135deg,#f4cd72,#e7b24c);">确认生成</button>
 </div>

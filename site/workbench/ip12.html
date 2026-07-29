@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>黄雀 · 美业老板数字化 IP 十二模块</title>
+  <title>黄雀 · 数字化 IP 六模块</title>
   <style>
     :root{
       --bg:#06111f;
@@ -29,9 +29,9 @@
     body{background:var(--bg)}
     button,textarea,input{font:inherit}
     button{cursor:pointer}
-    .app{min-height:100vh;display:grid;grid-template-columns:290px minmax(560px,1fr) 360px;background:var(--paper)}
+    .app{min-height:100vh;display:grid;grid-template-columns:220px minmax(0,820px);justify-content:center;background:var(--paper)}
     .sidebar{
-      position:sticky;top:0;height:100vh;padding:28px 22px 22px;border-right:1px solid rgba(216,174,85,.2);
+      position:sticky;top:0;height:100vh;padding:24px 16px 18px;border-right:1px solid rgba(216,174,85,.2);
       background:#071525;color:#f5efe4;display:flex;flex-direction:column;z-index:4
     }
     .brand{display:flex;align-items:center;gap:13px;padding:0 6px 28px;border-bottom:1px solid rgba(216,174,85,.25);margin-bottom:16px}
@@ -46,17 +46,20 @@
       margin:0 4px 14px;padding:11px 12px;border:1px solid rgba(46,157,137,.22);border-radius:12px;
       background:rgba(46,157,137,.07);color:#91bcb2;font-size:11px;line-height:1.55
     }
+    .privacy,.side-actions{display:none!important}
     .privacy i{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--teal);margin-right:7px}
     .module-scroll{overflow:auto;padding-right:3px;flex:1;scrollbar-width:none}
     .module-scroll::-webkit-scrollbar{display:none}
     .phase-label{padding:16px 9px 8px;color:#8c7340;font-size:10px;letter-spacing:.16em;font-weight:800}
     .module-btn{
       width:100%;border:1px solid transparent;background:transparent;color:#9aa5b5;border-radius:10px;
-      padding:10px 9px;margin:2px 0;display:grid;grid-template-columns:36px 1fr auto;gap:10px;align-items:center;text-align:left
+      padding:8px 9px;margin:2px 0;display:grid;grid-template-columns:36px 1fr;gap:10px;align-items:center;text-align:left
     }
     .module-btn:hover{background:rgba(255,255,255,.04);color:#f4e6bf}
     .module-btn.active{background:linear-gradient(100deg,#efd487,#d6a84c);border-color:#f4d785;color:#0a1929;box-shadow:0 10px 28px rgba(0,0,0,.16)}
     .module-btn.done{color:#c6d6d1}
+    .module-btn:disabled{cursor:not-allowed;opacity:.58;background:rgba(255,255,255,.025)}
+    .module-btn:disabled:hover{color:#9aa5b5;background:rgba(255,255,255,.025)}
     .module-no{
       width:34px;height:34px;border:1px solid #5d6878;border-radius:50%;display:grid;place-items:center;
       color:#aab3bf;font-family:Georgia,serif;font-size:12px;font-weight:800
@@ -66,13 +69,13 @@
     .module-copy b{display:block;font-size:13px;margin-bottom:3px;font-weight:600}
     .module-copy small{font-size:10px;color:#708094}
     .module-btn.active .module-copy small,.module-btn.active .module-state{color:#5e4a24}
-    .module-state{font-size:10px;color:#69768a}
+    .module-state{grid-column:2;font-size:9px;line-height:1.35;color:#69768a;margin-top:-7px}
     .module-btn.done .module-state{color:var(--teal)}
     .side-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding-top:16px}
     .soft-btn{border:1px solid #2a3a4d;background:#0b1a2b;color:#aeb9c8;border-radius:10px;padding:10px 8px;font-size:12px}
     .soft-btn:hover{border-color:#a17d38;color:#eed591}
 
-    .main{min-width:0;padding:0 0 54px;background:var(--paper)}
+    .main{min-width:0;max-width:820px;padding:18px 0 48px;background:var(--paper)}
     .topbar{
       min-height:78px;display:flex;align-items:center;justify-content:space-between;gap:24px;margin:0;
       padding:0 42px;background:#071525;border-bottom:1px solid rgba(216,174,85,.18)
@@ -89,6 +92,7 @@
         radial-gradient(circle at 83% 20%,rgba(216,174,85,.11),transparent 30%),
         linear-gradient(180deg,#fbf8f1,var(--paper));box-shadow:none
     }
+    .topbar,.hero,.handoff{display:none}
     .hero:after{content:"";position:absolute;width:160px;height:1px;left:46px;bottom:0;background:linear-gradient(90deg,var(--gold),transparent)}
     .eyebrow{display:flex;align-items:center;gap:10px;color:#997331;font-size:11px;font-weight:800;letter-spacing:.17em}
     .eyebrow i{width:25px;height:1px;background:var(--gold)}
@@ -99,12 +103,13 @@
     .badge.gold{border-color:#d5b66e;color:#74551e;background:#f7eccf}
     .badge.industry{border-color:#9fcfc7;color:#0e6b63;background:#e2f1ed}
 
-    .step-card{margin:0 34px;border:1px solid #dfd6c8;border-radius:18px;background:rgba(255,255,255,.55);overflow:hidden;box-shadow:0 18px 55px rgba(35,31,24,.08)}
+    .step-card{margin:0 24px;border:1px solid #dfd6c8;border-radius:18px;background:rgba(255,255,255,.55);overflow:hidden;box-shadow:0 18px 55px rgba(35,31,24,.08)}
+    .project-card{display:none}
+    .conversation-card{min-height:calc(100vh - 96px)}
     .step-head{display:grid;grid-template-columns:1fr auto;gap:20px;padding:22px 28px;border-bottom:1px solid var(--line-soft)}
     .step-kicker{color:var(--teal);font-size:10px;font-weight:800;letter-spacing:.14em}
     .step-head h2{font-family:Georgia,"Songti SC",serif;font-size:25px;margin:8px 0 7px;color:#102338}
-    .step-head p{margin:0;color:#727781;font-size:12px;line-height:1.65}
-    .module-progress{text-align:right;min-width:150px}
+    .step-head p,.module-progress{display:none}
     .module-progress strong{display:block;font-family:Georgia,serif;font-size:19px;color:#a47725}
     .module-progress small{color:var(--muted);font-size:10px}
     .mini-progress{height:4px;background:#e2d9cc;border-radius:99px;margin-top:9px;overflow:hidden}
@@ -112,14 +117,14 @@
     .step-body{padding:26px 28px 28px}
     .why{
       display:grid;grid-template-columns:35px 1fr;gap:12px;padding:14px 15px;border-radius:12px;
-      background:#f5eee1;border:1px solid #e1d7c7;margin-bottom:22px
+      background:#f5eee1;border:1px solid #e1d7c7;margin-bottom:22px;display:none
     }
     .why-mark{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:#f1d99b;color:#77551d;font-family:Georgia,serif;font-weight:900}
     .why b{display:block;font-size:12px;margin:1px 0 4px}
     .why span{color:#737984;font-size:12px;line-height:1.55}
     .answer-label{font-size:12px;font-weight:700;display:block;margin:0 0 9px}
     .answer{
-      display:block;width:100%;min-height:230px;resize:vertical;border:1px solid #d4c9b8;border-radius:9px;
+      display:block;width:100%;min-height:120px;resize:vertical;border:1px solid #d4c9b8;border-radius:9px;
       background:rgba(255,255,255,.58);color:#102033;padding:18px 20px;line-height:1.75;outline:none
     }
     .answer::placeholder{color:#aea99f}
@@ -156,7 +161,7 @@
     }
     .step-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:5px}
     .action-group{display:flex;gap:9px}
-    .nav-btn{border:1px solid #cfc4b4;border-radius:9px;padding:12px 19px;background:rgba(255,255,255,.45);color:#53606d}
+    .nav-btn{display:inline-flex;align-items:center;justify-content:center;border:1px solid #cfc4b4;border-radius:9px;padding:12px 19px;background:rgba(255,255,255,.45);color:#53606d;text-decoration:none}
     .nav-btn:hover{border-color:#9b8c74}
     .nav-btn.primary{min-width:150px;border-color:#167f75;background:linear-gradient(135deg,#168f84,#0d726a);color:#fff8e9;font-weight:800;box-shadow:0 10px 25px rgba(22,139,128,.17)}
     .nav-btn:disabled{opacity:.35;cursor:not-allowed}
@@ -166,11 +171,27 @@
     .handoff-card span{font-size:10px;color:#95702e;letter-spacing:.1em}
     .handoff-card b{display:block;font-size:13px;margin:7px 0 5px;color:#14273a}
     .handoff-card p{margin:0;color:#7d7e7e;font-size:11px;line-height:1.5}
+    .phase-outcome{margin:18px 34px 0;padding:22px;border:1px solid #d7bd7f;border-radius:17px;background:linear-gradient(145deg,#fffdf7,#f3ead8);box-shadow:0 14px 35px rgba(73,54,18,.08)}
+    .phase-outcome[hidden]{display:none}
+    .outcome-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:15px}
+    .outcome-head span{color:#8b682a;font-size:10px;font-weight:800;letter-spacing:.12em}
+    .outcome-head h2{margin:5px 0 4px;color:#132638;font:700 23px/1.25 Georgia,"Songti SC",serif}
+    .outcome-head p{margin:0;color:#70757b;font-size:11px;line-height:1.6}
+    .outcome-head strong{border:1px solid #d7bd7f;border-radius:999px;padding:6px 10px;color:#7d5d22;font-size:10px;white-space:nowrap}
+    .outcome-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+    .outcome-card{padding:13px;border:1px solid #dfd4c4;border-radius:12px;background:rgba(255,255,255,.64)}
+    .outcome-card b{display:block;margin-bottom:5px;color:#16293b;font-size:12px}
+    .outcome-card p{margin:0;color:#6d7379;font-size:11px;line-height:1.55}
+    .outcome-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px}
 
     .memory{
-      position:sticky;top:0;height:100vh;border-left:1px solid rgba(216,174,85,.24);background:#081726;
-      padding:28px 24px;overflow:auto;color:#f4eee2
+      position:fixed;z-index:22;top:0;right:0;width:min(380px,92vw);height:100dvh;border-left:1px solid rgba(216,174,85,.24);background:#081726;
+      padding:28px 24px;overflow:auto;color:#f4eee2;transform:translateX(102%);visibility:hidden;pointer-events:none;transition:transform .2s ease,visibility .2s;box-shadow:-28px 0 70px rgba(0,0,0,.35)
     }
+    body.memory-open .memory{transform:translateX(0);visibility:visible;pointer-events:auto}
+    .memory{display:none}
+    .drawer-scrim{position:fixed;inset:0;z-index:18;border:0;background:rgba(2,7,13,.62);opacity:0;pointer-events:none;transition:opacity .2s}
+    body.memory-open .drawer-scrim,body.module-open .drawer-scrim{opacity:1;pointer-events:auto}
     .memory-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:17px}
     .memory-head b{font-family:Georgia,"Songti SC",serif;font-size:17px;color:#e7bd60}
     .live{font-size:9px;border:1px solid rgba(46,157,137,.35);border-radius:999px;padding:5px 8px;color:#74c2b3;background:rgba(46,157,137,.08)}
@@ -219,7 +240,7 @@
     .ai-candidate p{margin:0;color:#8f9cad;font-size:10px;line-height:1.55}
     .ai-candidate button{border:1px solid #385068;border-radius:8px;background:#10263a;color:#b8c7d5;font-size:10px;padding:7px 9px;margin-top:8px}
     .ai-follow-up{margin-top:10px;border-left:2px solid #39a99c;padding:8px 10px;background:#0d2235;color:#a7b7c5;font-size:10px;line-height:1.55}
-    .coach-card{border:1px solid rgba(216,174,85,.42);border-radius:15px;padding:15px;background:linear-gradient(145deg,rgba(216,174,85,.09),rgba(22,139,128,.05))}
+    .coach-card{margin-bottom:0;border:1px solid rgba(216,174,85,.42);border-radius:15px;padding:18px;background:#071525;color:#f4eee2;box-shadow:0 18px 45px rgba(5,16,29,.16)}
     .coach-head{display:grid;grid-template-columns:42px 1fr auto;gap:10px;align-items:center}
     .coach-pet{
       position:relative;width:42px;height:42px;border:1px solid rgba(231,189,96,.58);border-radius:52% 52% 48% 18%;
@@ -227,27 +248,47 @@
       font-family:Georgia,"Songti SC",serif;font-weight:900;transform:rotate(-5deg);box-shadow:0 8px 20px rgba(0,0,0,.2)
     }
     .coach-pet:after{content:"";position:absolute;right:3px;bottom:3px;width:8px;height:8px;border:2px solid #0b1b2c;border-radius:50%;background:#43c2ae}
-    .coach-head b{display:block;color:#f1dfb7;font-size:12px;margin-bottom:3px}
-    .coach-head p{margin:0;color:#8290a2;font-size:9px;line-height:1.45}
-    .coach-model{font-size:9px;color:#65b8aa}
-    .coach-messages{display:grid;gap:8px;margin-top:12px;max-height:220px;overflow:auto}
-    .coach-bubble{border-radius:10px;padding:9px 10px;font-size:10px;line-height:1.6;white-space:pre-wrap}
+    .coach-head b{display:block;color:#f1dfb7;font-size:14px;margin-bottom:3px}
+    .coach-head p{margin:0;color:#8290a2;font-size:11px;line-height:1.45}
+    .coach-tools{display:flex;align-items:center;justify-content:flex-end;gap:6px}
+    .coach-model{display:none}
+    .drawer-btn{border:1px solid #344b61;border-radius:999px;background:#0c2032;color:#b7c5d2;padding:6px 9px;font-size:10px}
+    .module-drawer-btn{display:none}
+    .memory-drawer-btn,.coach-quick,.coach-actions,#interaction,.support-details,#nextBtn{display:none!important}
+    .step-actions{justify-content:flex-end;border-top:0;margin-top:4px;padding-top:0}
+    .step-actions .save-state{display:none}
+    #backBtn,#skipBtn{border:0;background:transparent;color:#8190a1;padding:5px 4px;font-size:11px}
+    .coach-messages{display:grid;align-content:start;gap:10px;margin-top:14px;min-height:380px;height:calc(100dvh - 315px);max-height:none;overflow:auto;padding:14px;border:1px solid #1c3044;border-radius:12px;background:#050d18}
+    .coach-bubble{width:fit-content;max-width:88%;border-radius:12px;padding:11px 13px;font-size:13px;line-height:1.65;white-space:pre-wrap}
     .coach-bubble.assistant{background:#10263a;color:#c8d3dc;border-left:2px solid #d7aa50}
-    .coach-bubble.user{margin-left:22px;background:#17352f;color:#cce6df}
+    .coach-welcome{animation:coachWelcome .28s ease-out}
+    @keyframes coachWelcome{from{opacity:0;transform:translateX(10px)}to{opacity:1;transform:translateX(0)}}
+    @media(prefers-reduced-motion:reduce){.coach-welcome{animation:coachWelcomeFade .2s ease-out}@keyframes coachWelcomeFade{from{opacity:0}to{opacity:1}}}
+    .coach-bubble.user{margin-left:auto;background:#17352f;color:#cce6df}
+    .coach-transition{margin:3px 0;color:#66778a;font-size:9px;letter-spacing:.08em;text-align:center}
     .coach-quick,.coach-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
     .coach-chip,.coach-action{
-      border:1px solid #344b61;border-radius:999px;background:#0c2032;color:#aebdca;padding:6px 8px;font-size:9px;text-align:left
+      border:1px solid #344b61;border-radius:999px;background:#0c2032;color:#aebdca;padding:7px 10px;font-size:11px;text-align:left
     }
     .coach-action{border-color:#866d39;color:#e6ca8d}
     .coach-answer{margin-top:8px;padding:9px;border:1px dashed #3c665f;border-radius:9px;background:#0b211f;color:#a9c9c2;font-size:10px;line-height:1.55}
-    .coach-form{display:grid;grid-template-columns:1fr auto;gap:7px;margin-top:10px}
-    .coach-input{min-width:0;border:1px solid #31465b;border-radius:9px;background:#071522;color:#d9e2e9;padding:9px 10px;outline:none;font-size:10px}
+    .coach-consent{display:flex;align-items:flex-start;gap:8px;margin-top:12px;color:#aeb9c8;font-size:11px;line-height:1.55}
+    .coach-form{position:sticky;bottom:0;z-index:3;display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:10px;padding-top:8px;background:#071525}
+    .coach-input{min-width:0;max-height:120px;resize:vertical;border:1px solid #31465b;border-radius:9px;background:#071522;color:#d9e2e9;padding:11px 13px;outline:none;font-size:13px;line-height:1.5}
     .coach-input:focus{border-color:#4aa89b}
-    .coach-send{border:0;border-radius:9px;background:#d5a94e;color:#102030;padding:8px 11px;font-weight:800;font-size:10px}
+    .coach-send{border:0;border-radius:9px;background:#d5a94e;color:#102030;padding:10px 17px;font-weight:800;font-size:12px}
     .coach-send:disabled{opacity:.5;cursor:wait}
-    .coach-status{margin:7px 0 0;color:#68778b;font-size:9px;line-height:1.45}
-    .coach-float{display:none}
-
+    .coach-status{margin:7px 0 0;color:#68778b;font-size:10px;line-height:1.45}
+    .answer-draft{margin:0 0 18px;border:1px solid #d8cfc0;border-radius:12px;background:rgba(255,255,255,.42)}
+    .answer-draft summary{padding:13px 15px;color:#53606d;font-size:12px;font-weight:700;cursor:pointer}
+    .answer-draft .answer{margin:0 15px 14px;width:calc(100% - 30px)}
+    .answer-draft .helper{margin:0 15px 14px}
+    .answer-draft .answer-label{display:block;margin:0 15px 10px}
+    .answer-draft .suggestions,.answer-draft .review-list{margin:0 15px 12px}
+    .support-details{margin:12px 0;border:1px dashed #36506d;border-radius:10px;color:#aab7c4}
+    .support-details summary{padding:10px 12px;cursor:pointer;font-size:11px}
+    .support-details-body{padding:0 12px 12px}
+    .support-note{display:none}
     .modal{position:fixed;inset:0;background:rgba(2,4,8,.76);display:none;align-items:center;justify-content:center;padding:24px;z-index:20}
     .modal.open{display:flex}
     .guide{width:min(720px,100%);max-height:88vh;overflow:auto;background:var(--paper);color:var(--ink);border-radius:24px;padding:28px;box-shadow:0 35px 100px rgba(0,0,0,.5)}
@@ -265,58 +306,68 @@
     .fatal{display:none;margin:15px;padding:15px;background:#3b1616;border:1px solid var(--danger);border-radius:12px;color:#ffd1c9}
 
     @media(max-width:1180px){
-      .app{grid-template-columns:260px 1fr}
-      .memory{position:static;height:auto;grid-column:2;padding:24px;border-left:0;background:#081726}
+      .app{grid-template-columns:210px minmax(0,1fr)}
       .suggestions{grid-template-columns:1fr}
     }
     @media(max-width:760px){
-      .app{display:block}
-      .sidebar{position:static;height:auto;padding:14px;border-right:0;border-bottom:1px solid rgba(216,174,85,.25)}
+      .app{display:block;min-height:100dvh}
+      .sidebar{display:none;position:fixed;z-index:22;inset:0 auto 0 0;width:min(310px,88vw);height:100dvh;padding:14px;border-right:1px solid rgba(216,174,85,.25);border-bottom:0;box-shadow:28px 0 70px rgba(0,0,0,.4)}
+      body.module-open .sidebar{display:flex}
       .brand{padding:0 2px 12px;margin-bottom:9px}
       .brand-mark{width:38px;height:38px;font-size:15px}
       .privacy{display:none}
-      .module-scroll{display:flex;gap:8px;max-height:none;overflow-x:auto;padding:2px 0 7px}
-      .phase-label{display:none}
-      .module-btn{min-width:168px;margin:0;padding:8px;grid-template-columns:32px 1fr}
+      .module-scroll{display:block;overflow-y:auto;padding:2px 0 7px}
+      .phase-label{display:block;padding:10px 8px 5px}
+      .module-btn{width:100%;margin:1px 0;padding:8px;grid-template-columns:32px 1fr}
       .module-no{width:30px;height:30px}
-      .module-state{display:none}
+      .module-state{display:block;grid-column:2;text-align:left;line-height:1.35;margin-top:-6px}
       .module-copy small{display:none}
       .side-actions{padding-top:4px}
-      .main{padding:0 0 45px}
-      .memory{padding:22px 14px 30px}
+      .main{max-width:none;padding:0}
+      .memory{display:none}
+      .project-card,.topbar,.hero,.handoff{display:none}
+      .module-drawer-btn{display:inline-flex}
       .topbar{min-height:92px;padding:16px 22px;align-items:flex-start;flex-direction:column;gap:11px}
       .overall{min-width:100%;width:100%}
       .hero{padding:32px 22px 17px}
       .hero h1{font-size:38px}
-      .step-card{margin:0 14px}
-      .handoff{margin:16px 14px 0}
-      .step-head{grid-template-columns:1fr}
-      .module-progress{text-align:left}
-      .handoff,.guide-steps{grid-template-columns:1fr}
+      .step-card{margin:0}
+      .conversation-card{min-height:100dvh;border:0;border-radius:0;box-shadow:none;background:#071525}
+      .handoff,.phase-outcome{margin:16px 14px 0}
+      .step-head{grid-template-columns:1fr auto;gap:10px;padding:12px 14px;background:#071525;border-color:#1c3044}
+      .step-head h2{margin:4px 0 0;color:#f1dfb7;font-size:17px}
+      .step-head p,.module-progress small{display:none}
+      .step-kicker{font-size:9px}
+      .module-progress{min-width:86px;text-align:right}
+      .module-progress strong{font-size:14px}
+      .step-body{padding:0}
+      .coach-card{min-height:calc(100dvh - 70px);padding:12px;border:0;border-radius:0;box-shadow:none}
+      .coach-head{grid-template-columns:36px 1fr auto}
+      .coach-pet{width:36px;height:36px}
+      .handoff,.guide-steps,.outcome-grid{grid-template-columns:1fr}
       .step-actions{align-items:flex-start;flex-direction:column}
       .action-group{width:100%}
       .nav-btn{flex:1}
-      .coach-float{
-        display:grid;position:fixed;right:17px;bottom:18px;z-index:12;width:50px;height:50px;border:1px solid #f0cf7c;
-        border-radius:52% 52% 48% 18%;place-items:center;background:linear-gradient(145deg,#efd487,#b98531);
-        color:#0b1928;font-family:Georgia,"Songti SC",serif;font-weight:900;box-shadow:0 14px 35px rgba(0,0,0,.36)
-      }
+      .save-state{display:none}
+      .coach-messages{min-height:calc(100dvh - 245px);height:calc(100dvh - 245px);max-height:none}
+      .coach-form{padding-bottom:env(safe-area-inset-bottom)}
+      .phase-outcome{margin:14px 0 0}
     }
   </style>
 </head>
 <body>
   <div id="fatal" class="fatal"></div>
   <div class="app" id="app">
-    <aside class="sidebar">
-      <div class="brand">
+    <aside class="sidebar" id="modulePanel" aria-label="模块进度" tabindex="-1">
+      <a class="brand" href="/" aria-label="返回黄雀主站首页">
         <div class="brand-mark">雀</div>
         <div><b>黄雀</b><small>数字化 IP 操作系统</small></div>
-      </div>
-      <div class="privacy"><i></i>泽龙 AI 试点 · 仅点击小黄雀或诊断时调用 OpenAI，不扣黄雀点数；当前步骤内容会发送给 AI。</div>
+      </a>
+      <div class="privacy"><i></i>黄雀 IP12 · 仅点击小黄雀或“AI 分析本步”时调用 AI 分析服务，不扣黄雀点数；当前步骤及所选资料会发送给 AI。</div>
       <div id="moduleList" class="module-scroll"></div>
       <div class="side-actions">
         <button class="soft-btn" id="guideBtn" type="button">使用说明</button>
-        <button class="soft-btn" id="resetBtn" type="button">重置演示</button>
+        <button class="soft-btn" id="resetBtn" type="button">重置本机缓存</button>
       </div>
     </aside>
 
@@ -324,7 +375,7 @@
       <div class="topbar">
         <div class="crumb"><b>数字化 IP</b>　/　初始化</div>
         <div class="overall">
-          <span id="overallText">总进度 0 / 54</span>
+          <span id="overallText">当前开放 0 / 38</span>
           <div class="progress"><i id="overallBar"></i></div>
           <span id="percentText">0%</span>
         </div>
@@ -337,12 +388,19 @@
         <div class="hero-meta">
           <span class="badge gold" id="moduleCount">模块 1 / 12</span>
           <span class="badge" id="stepCount">模块内步骤 1 / 5</span>
-          <span class="badge industry">行业预设 · 美业门店老板</span>
+          <span class="badge industry">不预设行业 · AI 逐步追问</span>
           <span class="badge">所有关键结论都由你确认</span>
         </div>
       </section>
 
-      <section class="step-card">
+      <section class="step-card project-card" style="padding:16px 22px;">
+        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+          <b>IP12 成长档案</b><input id="projectTitle" maxlength="120" aria-label="项目名称" placeholder="未命名数字 IP" style="min-width:180px; flex:1; padding:8px 10px; border-radius:8px; border:1px solid #29405b; background:#0d1b2b; color:#edf5ff;">
+          <span class="save-state" id="projectStatus">登录后自动恢复项目</span>
+        </div>
+      </section>
+
+      <section class="step-card conversation-card">
         <header class="step-head">
           <div>
             <div class="step-kicker" id="stepKicker">STEP 01</div>
@@ -360,53 +418,64 @@
             <div class="why-mark">?</div>
             <div><b>为什么现在做这一步</b><span id="stepWhy"></span></div>
           </div>
-          <div id="interaction"></div>
-          <div class="note-box">体验提示：填写后可点击右侧“AI 分析本步”。AI 只给建议；你点击“确认并继续”后，结果才写进数字化 IP 档案。</div>
-          <div class="step-actions">
-            <span class="save-state" id="saveState">浏览器会自动保存本页内容</span>
-            <div class="action-group">
-              <button class="nav-btn" id="backBtn" type="button">上一步</button>
-              <button class="nav-btn primary" id="nextBtn" type="button">确认并继续</button>
+          <section class="coach-card" id="coachCard" aria-live="polite">
+            <div class="coach-head">
+              <div class="coach-pet" aria-hidden="true">雀</div>
+              <div><b>小黄雀 · IP 成长教练</b><p>AI 会结合当前模块和你的回答动态提问，一次只问一个问题。</p></div>
+              <div class="coach-tools">
+                <span class="coach-model" id="guideModel">待命</span>
+                <button class="drawer-btn module-drawer-btn" id="moduleDrawerBtn" type="button" aria-expanded="false">模块</button>
+                <button class="drawer-btn memory-drawer-btn" id="memoryDrawerBtn" type="button" aria-expanded="false">档案</button>
+              </div>
             </div>
-          </div>
+            <div class="coach-messages" id="coachMessages"></div>
+            <div class="coach-quick" id="coachQuick">
+              <button class="coach-chip" type="button" data-guide-prompt="我不知道怎么开始，请用一个简单问题引导我">我不知道怎么开始</button>
+              <button class="coach-chip" type="button" data-guide-prompt="请根据我的行业和经历，给我一个贴近实际的例子">给我一个贴近我的例子</button>
+            </div>
+            <div id="interaction"></div>
+            <label class="coach-consent"><input id="aiConsent" type="checkbox">我同意在主动发送时，将本次回答交给 AI 做采访整理。</label>
+            <div class="coach-form">
+              <textarea class="coach-input" id="coachInput" maxlength="1200" rows="2" placeholder="像聊天一样说说你的经历、想法或现在最卡的地方…"></textarea>
+              <button class="coach-send" id="coachSend" type="button">发送</button>
+            </div>
+            <p class="coach-status" id="coachStatus">不会监听输入；只有你点击发送后才调用 AI。</p>
+            <div class="coach-actions" id="coachActions"></div>
+            <details class="support-details">
+              <summary>补充资料（可选）</summary>
+              <div class="support-details-body">
+                <label for="projectFiles">最多 6 份、单份最多 8 MiB、总计 20 MiB</label>
+                <input id="projectFiles" type="file" multiple accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg,.webp" style="display:block; margin-top:8px; max-width:100%;">
+                <p id="fileStatus" class="ai-status">支持 PDF、Office、表格、文本与 PNG/JPEG/WebP。PPT/Word 内嵌图表建议先导出为 PDF。</p>
+              </div>
+            </details>
+            <div class="note-box support-note">AI 的提问和整理只形成建议草稿；只有你把草稿带入、检查并点击“确认并继续”，内容才写进数字化 IP 档案。</div>
+            <div class="step-actions">
+              <span class="save-state" id="saveState">浏览器会自动保存本页内容</span>
+              <div class="action-group">
+                <button class="nav-btn" id="backBtn" type="button">上一步</button>
+                <button class="nav-btn" id="skipBtn" type="button">跳过，稍后回补</button>
+                <button class="nav-btn primary" id="nextBtn" type="button">确认并继续</button>
+              </div>
+            </div>
+            <section class="phase-outcome" id="foundationOutcome" aria-live="polite" hidden></section>
+          </section>
         </div>
       </section>
 
       <section class="handoff">
         <article class="handoff-card"><span>MODULES 01–04</span><b>形成 IP 底座</b><p>定位、人设、价值和故事被确认后，形成第一版长期档案。</p></article>
-        <article class="handoff-card"><span>MODULES 05–08</span><b>进入内容生产</b><p>选题、文案、形象与脚本将连接黄雀编导、图片和视频能力。</p></article>
-        <article class="handoff-card"><span>MODULES 09–12</span><b>进入运营增长</b><p>发布、私域、销售和商业反馈重新回到 IP 档案。</p></article>
+        <article class="handoff-card"><span>MODULES 05–06</span><b>进入内容生产</b><p>报告确认后继续选题策划与文案口播。</p></article>
+        <article class="handoff-card"><span>MODULES 07–12</span><b>开发中，敬请期待</b><p>后续形象、脚本与运营能力暂不开放。</p></article>
       </section>
     </main>
 
-    <aside class="memory">
-      <div class="memory-head"><b>正在形成的 IP 档案</b><span class="live">OPENAI · STRUCTURED</span></div>
+    <aside class="memory" id="memoryPanel" aria-label="IP 档案抽屉" tabindex="-1">
+      <div class="memory-head"><b>正在形成的 IP 档案</b><span class="live">AI 分析服务 · 结构化分析</span></div>
       <section class="ip-card">
         <div class="ip-symbol">IP</div>
         <h3 id="ipName">尚未命名的数字化 IP</h3>
         <p id="ipSummary">每次确认都会成为后续内容和视频共同读取的项目记忆。</p>
-      </section>
-      <section class="coach-card" id="coachCard" aria-live="polite">
-        <div class="coach-head">
-          <div class="coach-pet" aria-hidden="true">雀</div>
-          <div><b>小黄雀 · IP 成长教练</b><p>只陪你完成当前步骤，不替你做诊断和确认。</p></div>
-          <span class="coach-model" id="guideModel">待命</span>
-        </div>
-        <div class="coach-messages" id="coachMessages"></div>
-        <div class="coach-quick" id="coachQuick">
-          <button class="coach-chip" type="button" data-guide-prompt="我不知道这道题怎么填">我不知道怎么填</button>
-          <button class="coach-chip" type="button" data-guide-prompt="请用更简单的话问我">用简单的话问我</button>
-          <button class="coach-chip" type="button" data-guide-prompt="给我一个贴近美业门店老板的例子">给我一个美业案例</button>
-          <button class="coach-chip" type="button" data-guide-prompt="帮我整理当前回答，但不要替我确认">帮我整理回答</button>
-          <button class="coach-chip" type="button" data-guide-prompt="告诉我完成本题后下一步做什么">告诉我下一步</button>
-          <button class="coach-chip" type="button" data-guide-prompt="检查当前回答是否足够完整">检查是否完整</button>
-        </div>
-        <div class="coach-form">
-          <input class="coach-input" id="coachInput" maxlength="1200" placeholder="也可以直接问小黄雀…">
-          <button class="coach-send" id="coachSend" type="button">发送</button>
-        </div>
-        <p class="coach-status" id="coachStatus">不会监听输入；只有你点击后才调用 AI。</p>
-        <div class="coach-actions" id="coachActions"></div>
       </section>
       <section class="memory-section" aria-live="polite">
         <div class="memory-title"><b>本步 AI 诊断</b><span id="aiModel">等待调用</span></div>
@@ -415,8 +484,16 @@
         <div id="aiResult"></div>
       </section>
       <section class="memory-section">
-        <div class="memory-title"><b>三阶段进度</b><span id="doneModulesText">0 / 12 完成</span></div>
+        <div class="memory-title"><b>路线进度</b><span id="doneModulesText">0 / 6 已走完</span></div>
         <div id="phaseProgress"></div>
+      </section>
+      <section class="memory-section">
+        <div class="memory-title"><b>待补步骤</b><span id="skippedCount">0 项</span></div>
+        <div id="skippedItems"></div>
+      </section>
+      <section class="memory-section">
+        <div class="memory-title"><b>模块 1–4 阶段报告</b><span>本人确认后解锁 5–6</span></div>
+        <div id="reportUnlock"></div>
       </section>
       <section class="memory-section">
         <div class="memory-title"><b>已确认的模块结果</b><span>用户确认</span></div>
@@ -428,191 +505,266 @@
       </div>
     </aside>
   </div>
-  <button class="coach-float" id="coachFloat" type="button" aria-label="打开小黄雀 IP 成长教练">雀</button>
-
+  <button class="drawer-scrim" id="drawerScrim" type="button" aria-label="关闭侧栏"></button>
   <div class="modal" id="guideModal" role="dialog" aria-modal="true" aria-labelledby="guideTitle">
     <div class="guide">
       <div class="guide-top">
-        <div><h2 id="guideTitle">如何体验十二模块</h2><p>当前版本预设为美业门店老板，围绕获客、成交、复购、团队和老板 IP 展开 12 个模块、54 个确认步骤。</p></div>
+        <div><h2 id="guideTitle">如何使用六模块</h2><p>不用一次把所有信息说完。小黄雀会像咨询师一样，每次聚焦一个主题，结合你的回答继续追问。</p></div>
         <button class="close" id="closeGuide" type="button" aria-label="关闭">×</button>
       </div>
       <div class="guide-steps">
-        <div class="guide-step"><b>1. 从门店经营底图开始</b><span>先填写门店规模、经营年限、当前痛点、优势能力和目标顾客。</span></div>
-        <div class="guide-step"><b>2. 使用示例加速体验</b><span>不想现在填写资料时，点击“带入示例”即可继续。</span></div>
-        <div class="guide-step"><b>3. 确认 AI 候选</b><span>遇到候选方案时先选择，再点击“确认并继续”。</span></div>
-        <div class="guide-step"><b>4. 查看右侧长期档案</b><span>完成模块后，确认结果会沉淀到 IP 档案中。</span></div>
-        <div class="guide-step"><b>5. 随时切换模块预览</b><span>左侧 12 个模块都可打开，适合快速检查完整产品生命周期。</span></div>
-        <div class="guide-step"><b>6. 刷新后继续</b><span>体验数据保存在浏览器本地；点击“重置演示”可以清空。</span></div>
+        <div class="guide-step"><b>1. 一次聚焦一个主题</b><span>复杂问题也只拆成 2–3 个短确认点。</span></div>
+        <div class="guide-step"><b>2. 问题后会给参考方向</b><span>你可以直接选一个、改写，或补充自己的答案。</span></div>
+        <div class="guide-step"><b>3. 说过的信息不会重复问</b><span>信息够用后自动记录，并进入下一题。</span></div>
+        <div class="guide-step"><b>4. 先确认底座报告</b><span>完成模块 1–4 后生成 PDF，确认后继续模块 5–6。</span></div>
       </div>
-      <div class="guide-note">当前是泽龙站点的美业 AI 试点：右侧会调用 OpenAI Structured Outputs 返回固定结构的诊断。AI 推荐与用户确认分开保存，尚未写入黄雀正式数字 IP 项目库，也不会扣黄雀点数。</div>
+      <div class="guide-note">模块 7–12 正在开发中，敬请期待。</div>
     </div>
   </div>
   <div class="toast" id="toast"></div>
 
   <script>
+    const interviewStep=(title,question)=>({title,question,instruction:`围绕“${title}”像咨询师一样听取用户原话；信息不清楚时聚焦一个主题，最多补 2–3 个短确认点，并给出可参考的方向。`,why:"帮助理解用户在这一主题上的真实情况。",type:"input",label:question,sample:""});
+    const steps=items=>items.map(([title,question])=>interviewStep(title,question));
     const MODULES = [
-      {
-        id:1,phase:"IP 底座",name:"定位诊断",desc:"从门店经历、经营结果和顾客痛点中，找到美业老板可验证、可持续的定位。",
-        output:"已确认定位方案",
-        steps:[
-          {title:"采集门店经营底图",instruction:"先理解真实门店和老板本人，不急着生成一句漂亮口号。",why:"美业老板的定位必须来自经营经历、真实结果、顾客问题和本人优势的交集。",type:"input",label:"请写下门店类型与规模、经营年限、当前最大痛点、最拿手的能力，以及最想吸引的顾客",sample:"门店：二线城市皮肤管理店，2 家门店、18 名员工，经营 7 年。\n当前痛点：平台流量越来越贵，到店率不稳定；咨询师会推项目但不会建立长期信任，老客复购下降。\n最拿手：问题肌判断、服务流程设计、老客关系维护和员工带教。\n本人特点：愿意讲真实经营，不端着，也不制造容貌焦虑。\n目标顾客：28–45 岁、重视长期改善但害怕被强推项目的女性。"},
-          {title:"提炼 3–5 个经营关键词",instruction:"从门店事实中提炼最稳定、最有证据的关键词。",why:"关键词是后续三套老板 IP 定位共同的事实底座。",type:"multi",options:["问题肌管理","门店增长","老客复购","员工带教","真实经营"],sampleChoice:["问题肌管理","老客复购","真实经营"]},
-          {title:"生成三套差异化定位",instruction:"比较专业、经营和陪伴三种切入角度，而不是让 AI 直接替你决定。",why:"同一家门店可以形成完全不同的老板 IP，必须先比较再确认。",type:"select",options:["问题肌管理主理人｜不卖焦虑，讲清皮肤长期改善","美业门店复购教练｜让服务从一次成交变成长期关系","七年美业老板复盘者｜公开讲获客、员工和经营真问题"],sampleChoice:"问题肌管理主理人｜不卖焦虑，讲清皮肤长期改善"},
-          {title:"比较市场机会与风险",instruction:"检查每套定位能吸引谁、解决什么痛点，以及可能造成的误解。",why:"定位不仅要有传播感，还必须与门店真实交付一致。",type:"review",preview:["问题肌主理人：专业信任强；风险是内容容易只剩知识科普。","复购教练：老板人群商业承接清晰；风险是需要真实经营数据和案例。","经营复盘者：故事和同行共鸣强；风险是不能只输出抱怨和焦虑。"]},
-          {title:"推荐首选并由用户确认",instruction:"系统给出推荐理由，你可以采用、组合或自定义。",why:"只有老板亲自确认的定位，才能写入后续内容和视频共同读取的 IP 档案。",type:"select",options:["采用：问题肌管理主理人","组合：问题肌主理人 + 七年门店经营复盘","自定义：保留关键词，重新命名我的老板 IP"],sampleChoice:"组合：问题肌主理人 + 七年门店经营复盘"}
-        ]
-      },
-      {
-        id:2,phase:"IP 底座",name:"人设塑造",desc:"把真实人格、价值观和未来目标转化为可信、长期可持续的公开形象。",
-        output:"已确认人设画像",
-        steps:[
-          {title:"补充经营原则与三年目标",instruction:"复用模块 1 的门店经历，只询问尚未覆盖的价值观。",why:"可信的美业老板人设必须来自真实服务原则和长期经营方向。",type:"input",label:"你最不能妥协的服务原则是什么？未来三年希望顾客和同行怎样评价你？",sample:"原则：不制造容貌焦虑，不为了成交给顾客叠加不需要的项目；所有方案先讲适用边界和真实预期。\n未来三年：让顾客想到问题肌长期管理时先想到我，也让同行知道门店可以不靠强推和低价竞争活下来。"},
-          {title:"确认人格与价值关键词",instruction:"从老板真实行为中提炼，而不是堆砌完美形容词。",why:"关键词会控制以后口播、镜头、员工表达和门店品牌行为。",type:"multi",options:["真诚克制","专业耐心","敢讲经营真话","尊重顾客边界","长期主义"],sampleChoice:["真诚克制","敢讲经营真话","长期主义"]},
-          {title:"生成三套人设画像",instruction:"比较专业、同行和经营者三种人格重心。",why:"老板应该主动选择自己愿意长期坚持的公开角色。",type:"select",options:["专业主理人｜用判断和案例建立信任","门店同行姐姐｜不端着，陪顾客和老板拆真实问题","清醒经营者｜公开反对强推、低价战和容貌焦虑"],sampleChoice:"门店同行姐姐｜不端着，陪顾客和老板拆真实问题"},
-          {title:"比较传播优势与风险",instruction:"检查每套人设的信任来源与表演成本。",why:"好人设必须真实、可持续，也不能让门店老板被角色绑架。",type:"review",preview:["专业主理人：顾客信任强；风险是距离感和科普同质化。","同行姐姐：亲近、适合口播；风险是专业高度需要案例支撑。","清醒经营者：立场鲜明；风险是不能把内容做成行业抱怨。"]},
-          {title:"确认最终人设",instruction:"采用、组合或自定义后，形成第一版美业老板人设。",why:"后续所有 AI 表达和门店内容都必须读取这份已确认人设。",type:"select",options:["采用：门店同行姐姐","组合：专业主理人 + 门店同行姐姐","自定义：保留真实经营感，但弱化“专家”标签"],sampleChoice:"组合：专业主理人 + 门店同行姐姐"}
-        ]
-      },
-      {
-        id:3,phase:"IP 底座",name:"价值主张",desc:"说明这个 IP 为谁解决什么问题，并明确能够兑现的变化与能力边界。",
-        output:"已确认价值主张",
-        steps:[
-          {title:"补齐专业领域和顾客结果",instruction:"把能力翻译成顾客和门店能够感受到的变化。",why:"价值主张不是“我技术很好”，而是顾客为什么信任你、门店为什么选择你。",type:"input",label:"你最擅长解决哪类顾客问题？希望顾客如何介绍你？你最想改变行业里的什么现象？",sample:"领域：敏感肌和痘肌的长期管理。\n第一印象：她不会一上来推套餐，而是先把皮肤问题和预期讲清楚。\n长期影响：让更多顾客不再被容貌焦虑和短期营销绑架，让美业门店靠专业与复购增长。"},
-          {title:"提炼价值关键词",instruction:"确认顾客痛点、独特方法和结果边界。",why:"后续选题、咨询和服务都要回到这些价值关键词。",type:"multi",options:["先诊断再推荐","长期皮肤管理","真实案例","不制造焦虑","复购来自信任"],sampleChoice:["先诊断再推荐","不制造焦虑","复购来自信任"]},
-          {title:"生成三条价值主张",instruction:"每条主张包含一句话金句、优势和适用边界。",why:"用对比找到最能代表门店长期承诺的表达。",type:"select",options:["不急着卖项目，先帮你看懂自己的皮肤。","一次成交不是终点，真正的改善来自长期管理。","不制造容貌焦虑，只提供有边界的专业建议。"],sampleChoice:"不急着卖项目，先帮你看懂自己的皮肤。"},
-          {title:"横向比较三条主张",instruction:"从顾客记忆、专业可信、门店承接和长期扩展比较。",why:"一句金句不能只追求传播，还必须指导真实服务。",type:"review",preview:["“先看懂皮肤”：顾客理解成本低，适合咨询入口。","“长期管理”：复购承接清晰，适合会员体系。","“不制造焦虑”：立场鲜明，但必须用专业判断支撑。"]},
-          {title:"确认首选价值主张",instruction:"选择主张，并允许保留一条辅助表达。",why:"确认后，它会成为内容、咨询和项目设计的判断标准。",type:"select",options:["主张：先看懂皮肤，再决定做什么","主张：专业服务带来长期复购","组合：不制造焦虑 + 长期管理"],sampleChoice:"组合：不制造焦虑 + 长期管理"}
-        ]
-      },
-      {
-        id:4,phase:"IP 底座",name:"故事资产",desc:"把挫折、成长和愿景整理为可追溯、可复用的信任资产。",
-        output:"核心故事资产清单",
-        steps:[
-          {title:"补充门店转折和共鸣点",instruction:"从模块 1 的经营经历继续深挖，不重复从头询问。",why:"故事不是履历，而是顾客和同行为什么会相信这位老板的证据。",type:"input",label:"哪次门店低谷或顾客事件真正改变了你的经营方式？它证明了你什么？",sample:"门店第二年我做过一次低价拓客，三天来了很多人，但员工忙乱、顾客体验差，最后几乎没有复购。那次之后我停止追求虚假到店数，重新设计咨询、服务和回访流程。它让我相信：真正的增长不是把人拉进店，而是让顾客愿意再回来。"},
-          {title:"提炼关键故事节点",instruction:"从经历中找到冲突、选择、结果和新认知。",why:"清晰节点能够被复用为口播、长文和门店案例。",type:"multi",options:["低价拓客失败","员工集体焦虑","顾客拒绝强推","重做服务流程","复购开始回升"],sampleChoice:["低价拓客失败","重做服务流程","复购开始回升"]},
-          {title:"划分三类故事",instruction:"将素材放入挫折型、成长型和愿景型。",why:"不同内容场景需要不同情绪和传播目的。",type:"review",preview:["挫折型：低价活动到店很多，却没有留下顾客。","成长型：从追流量转向咨询、服务和回访。","愿景型：让门店不靠强推，也能获得顾客长期信任。"]},
-          {title:"生成故事资产卡",instruction:"为每个故事形成名称、梗概、情绪点和传播场景。",why:"结构化故事卡才能被后续内容系统准确调用。",type:"review",preview:["《那场热闹却失败的拓客活动》｜兴奋到清醒｜品牌故事/口播","《顾客为什么没有回来》｜自责到改变｜案例视频/员工培训","《不靠强推的美业门店》｜责任与愿景｜主页简介/长文"]},
-          {title:"确认核心故事",instruction:"选择最能支撑当前定位的一段真实门店故事。",why:"主故事将成为第一批内容和老板个人介绍的信任入口。",type:"select",options:["核心故事：《那场热闹却失败的拓客活动》","核心故事：《顾客为什么没有回来》","组合：低价拓客失败 + 重做服务流程"],sampleChoice:"组合：低价拓客失败 + 重做服务流程"}
-        ]
-      },
-      {
-        id:5,phase:"内容生产",name:"内容选题",desc:"从受众问题、IP 价值和故事资产生成可持续的内容选题库。",
-        output:"已确认内容选题库",
-        steps:[
-          {title:"提炼顾客与门店高频问题",instruction:"读取目标顾客和已确认档案，找到顾客、员工和老板反复遇到的问题。",why:"美业选题应该回应真实到店、成交和复购问题，而不是只追热点。",type:"input",label:"顾客、员工和你自己最近最常卡在哪三个问题？近期内容希望带来什么结果？",sample:"顾客常问：为什么做了项目还是反复？会不会被强推套餐？\n员工常卡：咨询时只会讲价格，不会讲长期方案。\n老板最痛：平台流量越来越贵，活动到店后复购很低。\n近期目标：通过老板 IP 获得 30 个高意向咨询，并让老客重新理解长期管理价值。"},
-          {title:"生成不少于 15 个具体选题",instruction:"覆盖顾客教育、门店经营、真实故事、争议观点和案例。",why:"先建立足够宽的美业选题池，再做分类和优先级。",type:"multi",options:["顾客不是嫌贵，是没听懂价值","为什么低价拓客留不住人","皮肤管理不是项目堆叠","咨询师越推销顾客越防备","老客不复购真正怪谁","美业老板为什么一定要出镜","员工离职带走顾客怎么办","平台流量越来越贵怎么破","第一次咨询最不该问什么","问题肌改善为什么会反复","门店朋友圈别只发促销","三种制造容貌焦虑的话术","真实顾客方案怎样讲边界","从一次成交到长期管理","一家店不靠低价活下来的过程"],sampleChoice:["为什么低价拓客留不住人","老客不复购真正怪谁","美业老板为什么一定要出镜"]},
-          {title:"形成分类选题库",instruction:"把选题按顾客问题、经营目标和平台分类。",why:"分类后才能形成长期内容支柱和稳定发布节奏。",type:"review",preview:["顾客教育：问题肌、项目边界、长期管理。","门店经营：获客、到店、咨询、复购和员工。","故事型：老板低谷、顾客转折、团队成长。","争议型：反对强推、低价战和容貌焦虑。","案例型：真实顾客与真实经营改变。"]},
-          {title:"确认三个重点选题",instruction:"结合当前经营目标选择第一批最值得生产的内容。",why:"选题库可以很大，但第一批只做最接近顾客痛点的三条。",type:"multi",options:["为什么低价拓客留不住人","老客不复购真正怪谁","美业老板为什么一定要出镜","顾客不是嫌贵，是没听懂价值","咨询师越推销顾客越防备"],sampleChoice:["为什么低价拓客留不住人","老客不复购真正怪谁","美业老板为什么一定要出镜"]}
-        ]
-      },
-      {
-        id:6,phase:"内容生产",name:"文案口播",desc:"围绕已确认选题生成多种表达方案，并由用户批准最终口播版本。",
-        output:"已批准口播文案",
-        steps:[
-          {title:"生成 A/B/C 三种口播文案",instruction:"同一美业痛点分别尝试共情型、观点型和门店故事型。",why:"表达风格不同，顾客信任和老板人设感受也会不同。",type:"select",options:["A 共情型｜我知道很多美业老板不是不努力，而是每天都在为下一批顾客从哪里来发愁……","B 观点型｜低价拓客最可怕的，不是利润低，而是你根本不知道顾客为什么没有再回来。","C 故事型｜我做过一次三天爆满的活动，店里很热闹，但一个月后我才发现，几乎没人复购。"],sampleChoice:"C 故事型｜我做过一次三天爆满的活动，店里很热闹，但一个月后我才发现，几乎没人复购。"},
-          {title:"优化口播节奏与字幕点",instruction:"检查前三秒、情绪递进、短句、停顿和 3–4 个字幕重点。",why:"好观点不等于好口播，必须适合美业老板真实出镜。",type:"review",preview:["前三秒：那次活动三天爆满，但一个月后几乎没人回来。","字幕点 1：到店不等于留下。","字幕点 2：第一次咨询决定信任。","字幕点 3：回访不是群发促销。","结尾：说说你店里最难解决的是获客、成交还是复购。"]},
-          {title:"确认最终文案版本",instruction:"选择最符合人设和传播目标的一版，允许继续编辑。",why:"只有批准版本才能进入编导和视频生产。",type:"select",options:["批准故事型版本","故事开场 + 干货中段","保留观点，重新生成更克制的结尾"],sampleChoice:"故事开场 + 干货中段"}
-        ]
-      },
-      {
-        id:7,phase:"内容生产",name:"IP 形象设计",desc:"确认可长期使用的外观、灯光、镜头、场景、表情和声音规范。",
-        output:"已确认视觉与镜头档案",
-        steps:[
-          {title:"采集五类形象信息",instruction:"理解老板真实气质、门店审美、最怕被误解的样子和常见出镜场景。",why:"美业视觉不能只追求精致，还要让顾客感到可信、可接近。",type:"input",label:"请描述你的气质、门店风格、最怕被误解的样子、三年关键词和主要出镜场景",sample:"气质：专业、温柔但不讨好。\n门店风格：米白和木色，安静、干净。\n最怕被误解：只会卖套餐、制造焦虑的老板。\n三年关键词：专业、真实、长期陪伴。\n场景：门店咨询区口播、顾客案例复盘、员工晨会和老板经营分享。"},
-          {title:"生成三套差异化形象方案",instruction:"每套包含服装、灯光、机位、门店背景、表情和声调。",why:"视觉选择也需要比较，而不是由模型直接定稿。",type:"select",options:["专业主理人｜门店咨询区、柔和侧光、半身平视","温暖同行姐姐｜米白空间、自然光、近景交流感","清醒美业老板｜深色背景、真实经营现场、直接表达"],sampleChoice:"专业主理人｜门店咨询区、柔和侧光、半身平视"},
-          {title:"确认长期形象规范",instruction:"选择主方案，并确定不能随意变化的视觉要素。",why:"确认档案将共同约束头像、封面、数字人和门店视频模板。",type:"select",options:["采用专业主理人","专业主理人 + 温暖同行辅助场景","暂不确认，先上传本人和门店照片再分析"],sampleChoice:"专业主理人 + 温暖同行辅助场景"}
-        ]
-      },
-      {
-        id:8,phase:"内容生产",name:"脚本分镜",desc:"把已批准文案转化为可拍摄、可生成、可进入批量视频的镜头计划。",
-        output:"已批准脚本与分镜",
-        steps:[
-          {title:"确认视频五项参数",instruction:"明确美业主题、顾客或同行受众、风格、时长和业务目的。",why:"脚本必须服务一个具体的信任或经营目标，不能只追求画面丰富。",type:"input",label:"请填写主题、目标受众、表达风格、时长和视频目的",sample:"主题：为什么低价拓客留不住顾客。\n受众：正在为流量和复购焦虑的美业门店老板。\n风格：真实门店故事 + 三个经营判断。\n时长：60 秒。\n目的：建立老板 IP 信任，获得门店经营诊断咨询。"},
-          {title:"生成三套不同风格脚本",instruction:"每套包含钩子、中段、结尾、分镜和口播。",why:"先比较生产复杂度和传播优势，再决定采用哪套。",type:"select",options:["单人口播｜4 镜头｜最快生产","案例纪录｜6 镜头｜信任感最强","图文解释｜8 镜头｜信息密度最高"],sampleChoice:"案例纪录｜6 镜头｜信任感最强"},
-          {title:"比较传播优势与风险",instruction:"评估真实度、节奏、素材成本和批量复制难度。",why:"脚本不仅要好看，还要适合当前生产能力。",type:"review",preview:["单人口播：生产快；风险是视觉单一。","案例纪录：信任强；风险是需要真实素材。","图文解释：信息清晰；风险是制作成本高、容易像课程。"]},
-          {title:"确认最终脚本和分镜",instruction:"选择方案，并明确进入黄雀现有能力的方式。",why:"批准后才能创建图片、数字人或批量视频任务。",type:"select",options:["批准案例纪录版","先用单人口播做首版验证","案例开场 + 口播主体的混合版"],sampleChoice:"案例开场 + 口播主体的混合版"}
-        ]
-      },
-      {
-        id:9,phase:"运营增长",name:"私域矩阵",desc:"设计从公域认识、私域承接到长期触达的合规运营路径。",
-        output:"已确认私域矩阵方案",
-        steps:[
-          {title:"采集私域五类信息",instruction:"明确顾客、核心项目、现有内容、承接渠道和复购目标。",why:"平台不是越多越好，关键是公域顾客怎样合规进入长期服务。",type:"input",label:"请填写目标顾客、核心项目、现有内容、私域渠道和本月经营目标",sample:"目标顾客：28–45 岁敏感肌和痘肌女性。\n核心服务：皮肤诊断 + 90 天长期管理。\n现有内容：老板口播、真实案例和居家护理清单。\n私域：个人微信 + 企业微信 + 老客群。\n目标：每月新增 30 个高意向咨询，老客复购率提升 15%。"},
-          {title:"设计引流与欢迎路径",instruction:"规划公域入口、欢迎内容和第一次咨询。",why:"顾客第一次进入私域的体验决定她会不会把你当专业主理人。",type:"review",preview:["短视频问题 → 私信领取《问题肌自查清单》。","欢迎消息 → 先问困扰、持续时间和做过的项目，不急着报价。","首批内容 → 一个真实案例、一份护理建议、一次老板公开答疑。"]},
-          {title:"确认矩阵账号角色",instruction:"明确老板号、门店号和顾问号各自承担什么责任。",why:"角色清楚可以避免所有账号只发促销。",type:"select",options:["轻量：老板 IP 主号 + 企业微信承接","标准：老板号 + 门店案例号 + 顾问承接号","第一版只做老板主号，不扩矩阵"],sampleChoice:"轻量：老板 IP 主号 + 企业微信承接"},
-          {title:"制定内容与转化节奏",instruction:"确定每日、每周动作和顾客主动咨询后的承接条件。",why:"私域价值来自稳定信任，不是临时群发活动。",type:"review",preview:["每日：回答一个顾客真实问题或分享服务现场。","每周：一次案例复盘 + 一次老板答疑。","触发：顾客主动描述问题后，再邀请到店诊断，不群发强推套餐。"]},
-          {title:"确认第一执行重点",instruction:"从完整方案中选择最先验证的一条路径。",why:"先跑通一条获客到复购链，再考虑扩大矩阵。",type:"select",options:["老板口播 → 自查清单 → 到店诊断","真实案例 → 顾客答疑 → 90 天管理方案","暂不引流，先积累 10 条高质量内容"],sampleChoice:"老板口播 → 自查清单 → 到店诊断"}
-        ]
-      },
-      {
-        id:10,phase:"运营增长",name:"朋友圈运营",desc:"用专业证明、真实日常和适度转化建立长期信任。",
-        output:"已确认朋友圈运营计划",
-        steps:[
-          {title:"确认身份、项目、顾客和目标",instruction:"优先复用档案，只补充朋友圈承担的门店经营目标。",why:"朋友圈必须和老板公开 IP、门店服务保持一致。",type:"input",label:"你希望朋友圈让顾客形成什么印象？本月最想承接什么项目或关系？",sample:"印象：真实、专业、不强推，能看见老板每天怎样服务顾客和带团队。\n承接：敏感肌 90 天管理、老客复购和顾客转介绍。"},
-          {title:"建立五类内容结构",instruction:"配置专业、故事、证明、日常和转化内容。",why:"只有促销会透支信任，只有科普也不会产生到店行动。",type:"review",preview:["专业价值：皮肤判断、护理边界和常见误区。","故事共鸣：顾客困扰、老板低谷和员工成长。","社交证明：真实反馈与阶段变化，避免夸大疗效。","情感链接：门店现场、学习和老板价值观。","转化引导：诊断、答疑、体验和长期管理说明。"]},
-          {title:"形成七天运营节奏",instruction:"让五类内容在一周内自然分布。",why:"节奏比连续促销更能建立美业长期信任。",type:"review",preview:["周一：皮肤误区｜周二：真实案例｜周三：门店工作现场","周四：顾客问题｜周五：老板经营复盘｜周六：生活与价值观","周日：本周总结 + 下周到店答疑名额"]},
-          {title:"生成文案骨架和配图建议",instruction:"为每类内容准备可复用结构。",why:"骨架降低持续创作成本，但必须保留真实顾客和门店细节。",type:"review",preview:["案例骨架：困扰 → 判断 → 方案 → 阶段变化 → 适用边界。","观点骨架：美业反常识 → 真实经历 → 给顾客或同行的建议。","配图：真实门店、老板和服务细节优先，少用廉价促销海报。"]},
-          {title:"确认 30 天发力重点",instruction:"选择本月最重要的内容比例和业务目标。",why:"运营计划必须服从当前 IP 阶段，而不是平均用力。",type:"select",options:["案例与方法 60%｜建立专业信任","真实故事 50%｜先建立人格连接","方法 40% + 案例 40% + 服务 20%"],sampleChoice:"方法 40% + 案例 40% + 服务 20%"}
-        ]
-      },
-      {
-        id:11,phase:"运营增长",name:"销售与反馈",desc:"把咨询、异议和成交原话变成下一轮内容与产品优化依据。",
-        output:"已确认销售与反馈机制",
-        steps:[
-          {title:"采集项目、顾客、渠道和困境",instruction:"明确门店真实咨询与成交路径，而不是直接生成逼单话术。",why:"销售策略必须建立在顾客问题、专业判断和服务边界上。",type:"input",label:"请填写核心项目、目标顾客、咨询渠道、当前成交困境和目标",sample:"项目：敏感肌 90 天长期管理。\n顾客：反复敏感、做过多个项目但效果不稳定的女性。\n渠道：老板短视频 + 微信咨询 + 到店诊断。\n困境：顾客问完价格就消失，咨询师容易急着推套餐。\n目标：提高有效咨询到店率和首次诊断后的方案接受率。"},
-          {title:"设计完整销售流程",instruction:"从触达、信任、需求、价值、异议、成交到售后。",why:"不能只优化最后一句话，必须看顾客完整体验。",type:"review",preview:["触达：内容回应真实皮肤问题。","信任：老板立场、案例和专业边界。","需求：确认困扰、经历和预期，不先报价。","价值：讲清诊断、阶段方案和长期管理。","异议：价格、时间、曾被强推和效果担忧。","成交：顾客理解方案后自主决定。","售后：记录变化、回访并收集真实反馈。"]},
-          {title:"生成各环节话术候选",instruction:"话术用于帮助顾客理解，不替代专业判断，也不用于逼单。",why:"老板确认后才能使用，禁止自动向顾客发送。",type:"review",preview:["需求：你现在最困扰的是反复、敏感，还是做了很多项目仍不稳定？","价值：我们先完成诊断，再决定你是否需要项目，不适合的我会直接说明。","异议：你可以先理解方案和边界，不需要今天立刻决定。"]},
-          {title:"建立反馈记录机制",instruction:"定义需要回收的顾客原话、异议、成交和未到店原因。",why:"反馈必须回到 IP 档案和内容计划，系统才会持续成长。",type:"input",label:"你准备每周记录哪些顾客与员工反馈？由谁复盘？",sample:"记录评论问题、微信咨询原话、未到店原因、价格异议、成交原因、阶段效果反馈和员工咨询卡点；每周五由老板、店长和咨询负责人共同复盘。"},
-          {title:"确认下一轮优化重点",instruction:"选择最值得反哺定位、内容或门店服务的一项变化。",why:"反馈不是看板终点，而是下一轮内容和经营动作的起点。",type:"select",options:["把首次诊断流程讲得更具体","增加顾客害怕强推的真实内容","减少促销内容，增加服务过程与边界","先收集两周未到店原因再调整"],sampleChoice:"增加顾客害怕强推的真实内容"}
-        ]
-      },
-      {
-        id:12,phase:"运营增长",name:"公众号商业化",desc:"把长期内容、信任和服务承接形成可持续的商业闭环。",
-        output:"已确认公众号商业化方案",
-        steps:[
-          {title:"确认人设、项目、读者和目标",instruction:"读取前面档案，只补充公众号在美业老板 IP 中的主要功能。",why:"公众号不是另一个促销号，而是长期案例和专业信任资产中心。",type:"input",label:"公众号主要服务顾客还是美业同行？承担什么功能？希望实现什么目标？",sample:"读者：重视长期皮肤管理的顾客，以及关注真实经营的美业门店老板。\n功能：沉淀顾客教育、真实案例、老板经营复盘和服务边界。\n目标：形成长期搜索资产，每月带来 10 个高质量到店诊断或经营咨询。"},
-          {title:"设计四类文章结构",instruction:"配置专业价值、顾客故事、经营观点和服务承接文章。",why:"栏目结构能让长期内容既稳定又不变成促销合集。",type:"review",preview:["专业文章：皮肤判断、项目边界和护理清单。","故事文章：顾客转折、员工成长和门店低谷。","观点文章：反对强推、低价战和容貌焦虑。","转化文章：诊断流程、适合谁、不适合谁和真实服务说明。"]},
-          {title:"生成写作建议",instruction:"为每类文章确定标题、正文和结尾结构。",why:"可复用结构能降低长文生产成本并保持人设一致。",type:"review",preview:["标题：具体人群 + 真实问题 + 明确判断。","正文：场景 → 冲突 → 方法 → 案例 → 边界。","结尾：给下一步，不夸大、不强推。"]},
-          {title:"确认公众号运营节奏",instruction:"建议每周 2–3 篇，并和短视频、朋友圈复用同一内容卡。",why:"同一 IP 项目应该一份内容多端表达，而不是重复从零创作。",type:"review",preview:["周二：方法长文｜周四：案例复盘｜周日：观点或服务说明","短视频负责触达，公众号负责深度，私域负责继续对话。"]},
-          {title:"确认商业化路径",instruction:"选择免费价值、信任、到店诊断或同行服务的承接路径。",why:"商业化必须和门店真实可交付价值一致。",type:"select",options:["专业长文 → 自查清单 → 到店诊断 → 长期管理","真实案例 → 老板公开答疑 → 到店体验","经营复盘 → 美业老板小课 → 门店陪跑","先做长期内容资产，暂不设置付费承接"],sampleChoice:"专业长文 → 自查清单 → 到店诊断 → 长期管理"}
-        ]
-      }
+      {id:1,phase:"IP 底座",name:"定位诊断",desc:"了解真实背景、能力、赛道与目标人群。",output:"定位诊断资料",steps:steps([
+        ["姓名或昵称","我应该怎么称呼你？姓名、昵称或大家平时对你的叫法都可以。"],["性别与年龄段","你大概在哪个年龄段？比如 25–30、31–35、36–40；性别按你愿意公开的方式说就好。"],["所在城市","你目前主要在哪座城市生活或工作？"],["当前职业或身份","你现在主要在做什么？比如上班、创业、自由职业，或者经营自己的门店。"],["从业年限","这件事你做了多久？"],["行业与岗位经历","在做现在这件事之前，你还做过哪些工作？挑 1–2 段重要的说就好。"],["主要收入来源","你现在的收入主要来自哪类工作或业务？比如工资、自己的生意、咨询服务，或其他。"],["年收入区间","如果方便，你的年收入大概在哪个区间？比如 10 万以下、10–30 万、30–50 万或 50 万以上；不方便也可以跳过。"],["最大挫折或低谷","你愿意讲一段对你影响最大的低谷吗？先说当时发生了什么就好。"],["最有成就感的事","到目前为止，哪件事最让你觉得“这事我做成了”？"],["被夸最多的特点","身边的人最常夸你哪一点？"],["被吐槽最多的特点","他们最常提醒你改哪一点？"],["最强能力","遇到什么问题时，别人最愿意来找你帮忙？比如做决策、解决业务问题、表达沟通，或安慰陪伴。"],["IP 赛道","如果接下来一年只聊一个方向，你最愿意持续聊什么？比如专业经验、个人成长、生活方式，或其他。"],["目标受众","你最想帮助哪一类人？比如刚入行的人、创业者、某类客户，或和你有相似经历的人。"],["解决的问题","这类人最常卡在哪个具体问题上？"],["差异化","客户或朋友为什么会先想到你，而不是别人？"],["已有内容账号","你现在主要在哪些平台做内容？还没开始也可以直接说“没有”。"]
+      ])},
+      {id:2,phase:"IP 底座",name:"人设塑造",desc:"形成真实、可持续的公开表达方式。",output:"人设塑造资料",steps:steps([
+        ["三个性格词","熟悉你的人会用哪三个词形容你？比如直接、温和、较真、幽默，也可以用自己的词。"],["说话风格","他们会怎么形容你的说话方式？比如直接、温和、幽默，还是有条理。"],["讨厌的博主风格","有哪些表达方式是你明确不想采用的？比如喊口号、卖惨，或端着讲道理。"],["聊天与朋友圈习惯","你聊天或发朋友圈时，最明显的习惯是什么？比如爱讲故事、发干货、记录生活，或很少发。"]
+      ])},
+      {id:3,phase:"IP 底座",name:"价值主张",desc:"明确用户为什么记住、相信和追随你。",output:"价值主张资料",steps:steps([
+        ["记忆金句","如果别人只记住你一个观点，你最希望是什么？"],["一句话自我介绍","如果让我把你介绍给一个新朋友，你最希望我怎么说？可以用“我是怎样的人，正在帮助谁解决什么问题”来回答。"],["追随理由","认识你的人，通常因为什么愿意信任你？比如专业、真实、结果，还是陪伴感。"]
+      ])},
+      {id:4,phase:"IP 底座",name:"故事资产",desc:"采集可核对的真实故事，不由 AI 补写。",output:"故事资产资料",steps:steps([
+        ["绝境翻身","你愿意讲一段自己走出低谷的经历吗？先说当时发生了什么、你做了什么、后来怎样，每项一句就好。"],["踩过的大坑","你做过哪次决定，后来发现是个大坑？先说当时的选择和最后的教训就好。"],["逆袭或突破","有没有哪次突破，让你明显感觉自己成长了？说说转折点和结果就好。"],["戏剧性经历","你经历过哪件出乎意料、至今还记得很清楚的事？"],["团队或项目故事","你带团队或做项目时，哪段经历让你印象最深？先说挑战和你做的关键动作就好。"]
+      ])},
+      {id:5,phase:"内容落地",name:"内容选题",desc:"结合商业目标与受众问题确定第一批选题。",output:"内容选题资料",steps:steps([
+        ["做 IP 的目的","你现在做个人 IP，最想先解决什么？比如获客、建立信任、卖产品，还是扩大影响力。"],["可投入时间","你每周能稳定拿出多少时间做内容？比如 2 小时、半天或 1 天。"],["现有产品或服务","你现在主要通过什么产品或服务帮助客户？没有成型产品也可以直接说“还没有”。"],["三个月目标","未来三个月，你最想先看到哪个结果？比如稳定更新、获得第一批咨询，或卖出一个产品，只选一个就好。"],["一年目标","一年后，你希望这个 IP 变成什么样？比如有稳定内容、稳定客户，或形成自己的产品。"]
+      ])},
+      {id:6,phase:"内容落地",name:"文案口播",desc:"围绕确认选题完成一版可编辑口播。",output:"已完成口播文案",steps:steps([
+        ["首条口播主题","第一条口播，你最想回答客户的哪个具体问题？"],["表达方式","这条口播你想怎么讲：像聊天、讲观点，还是讲故事？"],["行动目标","看完以后，你最希望观众做什么？比如留言、关注、私信，还是先记住一个观点。"]
+      ])},
+      {id:7,phase:"后续能力",name:"IP 形象设计",desc:"正在开发中，敬请期待",availability:"coming_soon",steps:[]},
+      {id:8,phase:"后续能力",name:"脚本分镜",desc:"正在开发中，敬请期待",availability:"coming_soon",steps:[]},
+      {id:9,phase:"后续能力",name:"私域矩阵",desc:"正在开发中，敬请期待",availability:"coming_soon",steps:[]},
+      {id:10,phase:"后续能力",name:"朋友圈运营",desc:"正在开发中，敬请期待",availability:"coming_soon",steps:[]},
+      {id:11,phase:"后续能力",name:"销售策略",desc:"正在开发中，敬请期待",availability:"coming_soon",steps:[]},
+      {id:12,phase:"后续能力",name:"公众号变现",desc:"正在开发中，敬请期待",availability:"coming_soon",steps:[]}
     ];
 
-    const STORAGE_KEY = "huangque-ip12-beauty-ai-pilot-v3";
+    const STORAGE_KEY = "huangque-ip12-conversation-v1";
+    const LEGACY_STORAGE_KEY = "huangque-ip12-beauty-ai-pilot-v3";
     const API_URL = "/api/gen/digital-ip/diagnose";
     const GUIDE_API_URL = "/api/gen/digital-ip/guide";
-    const totalSteps = MODULES.reduce((sum,module)=>sum+module.steps.length,0);
-    const initialState = {moduleIndex:0,stepIndex:0,answers:{},completedModules:[],profile:{},analyses:{},guideTurns:[]};
-    let state = loadState();
+    const PROJECTS_URL = "/api/gen/digital-ip/projects";
+    const GUIDE_TURN_LIMIT = 240;
+    const PRODUCT_HANDOFF_KEY = "hq_ip12_product_handoff_v1";
+    const PRODUCT_HANDOFFS = {
+      image_studio:{url:"banana.html",instruction:"请根据以下已确认的 IP 底座，制作一份符合定位、人设、价值与故事的视觉内容草稿："},
+      script_studio:{url:"script.html",instruction:"请根据以下已确认的 IP 底座，策划一条符合定位、人设、价值与故事的内容："},
+      video_studio:{url:"video.html",instruction:"请根据以下已确认的 IP 底座，制作一条符合定位、人设、价值与故事的视频草稿："}
+    };
+    const UPLOAD_MIME = {pdf:"application/pdf",doc:"application/msword",docx:"application/vnd.openxmlformats-officedocument.wordprocessingml.document",ppt:"application/vnd.ms-powerpoint",pptx:"application/vnd.openxmlformats-officedocument.presentationml.presentation",xls:"application/vnd.ms-excel",xlsx:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",csv:"text/csv",txt:"text/plain",md:"text/markdown",png:"image/png",jpg:"image/jpeg",jpeg:"image/jpeg",webp:"image/webp"};
+    const totalSteps = MODULES.filter(module=>module.availability!=="coming_soon").reduce((sum,module)=>sum+module.steps.length,0);
+    const roadmapSteps = totalSteps;
+    const initialState = {interviewVersion:2,moduleIndex:0,stepIndex:0,answers:{},completedModules:[],profile:{},analyses:{},guideTurns:[]};
+    let state = structuredClone(initialState);
     let selectedChoice = null;
     let toastTimer = null;
+    let project = null;
+    let projectSaveTimer = null;
+    let projectSaving = false;
+    let projectSavePending = false;
+    let foundationDirty = false;
+    let guideBusy = false;
 
     const $ = id => document.getElementById(id);
     const phaseGroups = [
       {name:"01 · IP 底座",range:[1,4]},
-      {name:"02 · 内容生产",range:[5,8]},
-      {name:"03 · 运营增长",range:[9,12]}
+      {name:"02 · 内容落地",range:[5,6]},
+      {name:"03 · 后续能力",range:[7,12]}
     ];
 
-    function loadState(){
-      try{
-        const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-        return saved && typeof saved==="object"
-          ? {...initialState,...saved,analyses:saved.analyses||{},guideTurns:saved.guideTurns||[]}
-          : structuredClone(initialState);
-      }catch(_){ return structuredClone(initialState); }
+    function projectStorageKey(prefix=STORAGE_KEY){ return project?.id?`${prefix}:${project.id}`:""; }
+    function reportPdfUrl(){ return project?.id?`${PROJECTS_URL}/${encodeURIComponent(project.id)}/report.pdf`:""; }
+    function isOpenModuleIndex(index){ return !!MODULES[index]&&MODULES[index].availability!=="coming_soon"; }
+    function foundationStage(){ return project?.foundation_stage||{status:"missing",stale:false}; }
+    function foundationReady(){ const stage=foundationStage(); return !foundationDirty&&stage.status==="confirmed"&&stage.stale!==true; }
+    function isModuleUnlocked(module){ return !!module&&module.availability!=="coming_soon"&&(module.id<=4||foundationReady()); }
+    function isUnlockedModuleIndex(index){ return isModuleUnlocked(MODULES[index]); }
+    function fallbackModuleIndex(){
+      const indexes=MODULES.map((module,index)=>isModuleUnlocked(module)?index:-1).filter(index=>index>=0);
+      return indexes.find(index=>!state.completedModules.includes(MODULES[index].id))??indexes.at(-1)??0;
     }
+    function isOpenStepKey(key){
+      const [moduleIndex,stepIndex]=String(key).split("-").map(Number);
+      return Number.isInteger(moduleIndex)&&Number.isInteger(stepIndex)&&isOpenModuleIndex(moduleIndex)&&!!MODULES[moduleIndex].steps[stepIndex];
+    }
+    function firstUnresolvedStep(moduleIndex){
+      const module=MODULES[moduleIndex];
+      if(!module)return 0;
+      const index=module.steps.findIndex((_,stepIndex)=>{
+        const answer=state.answers[`${moduleIndex}-${stepIndex}`]||{};
+        return answer.confirmed!==true&&answer.skipped!==true;
+      });
+      return index<0?0:index;
+    }
+    function nextUnresolvedCursor(moduleIndex=state.moduleIndex,stepIndex=state.stepIndex){
+      const candidates=[];
+      for(let si=stepIndex+1;si<MODULES[moduleIndex].steps.length;si++)candidates.push({moduleIndex,stepIndex:si});
+      for(let si=0;si<stepIndex;si++)candidates.push({moduleIndex,stepIndex:si});
+      for(let mi=moduleIndex+1;mi<MODULES.length;mi++){
+        if(!isUnlockedModuleIndex(mi))continue;
+        for(let si=0;si<MODULES[mi].steps.length;si++)candidates.push({moduleIndex:mi,stepIndex:si});
+      }
+      for(let mi=0;mi<moduleIndex;mi++){
+        if(!isUnlockedModuleIndex(mi))continue;
+        for(let si=0;si<MODULES[mi].steps.length;si++)candidates.push({moduleIndex:mi,stepIndex:si});
+      }
+      return candidates.find(({moduleIndex,stepIndex})=>{
+        const answer=state.answers[`${moduleIndex}-${stepIndex}`]||{};
+        return answer.confirmed!==true&&answer.skipped!==true;
+      })||null;
+    }
+    function navigationCommand(value){
+      const text=String(value||"").replace(/[\s，。！？!?、]/g,"");
+      if(["继续","下一题","下一个","往下","进入下一题"].includes(text))return {type:"next"};
+      if(["上一题","上一个","返回上一题"].includes(text))return {type:"previous"};
+      if(["跳过","暂时跳过","这题跳过"].includes(text))return {type:"skip"};
+      const module=text.match(/^(?:你)?(?:帮我)?(?:跳到|跳一下|进入|切换到)?模块([1-6])(?:吧)?$/)||
+        text.match(/^(?:你)?(?:帮我)?(?:跳到|跳一下|进入|切换到)(?:第)?([1-6])(?:个)?模块(?:吧)?$/);
+      return module?{type:"module",moduleIndex:Number(module[1])-1}:null;
+    }
+    function entryStep(){
+      const query=new URLSearchParams(location.search);
+      const module=Number(query.get("module")), step=Number(query.get("step"));
+      if(!Number.isInteger(module)||!Number.isInteger(step)||module<1||module>MODULES.length||!isUnlockedModuleIndex(module-1)||step<1||step>MODULES[module-1].steps.length)return null;
+      return {moduleIndex:module-1,stepIndex:step-1};
+    }
+    function localDraft(){
+      try{
+        const key=projectStorageKey();
+        const saved=key?JSON.parse(localStorage.getItem(key)||localStorage.getItem(projectStorageKey(LEGACY_STORAGE_KEY))):null;
+        const draft=saved?.state||saved;
+        return {state:draft?.interviewVersion===2?{...initialState,...draft,analyses:draft.analyses||{},guideTurns:draft.guideTurns||[]}:null,title:saved?.state?String(saved.title||""):"",revision:saved?.state?Number(saved.revision):NaN,savedAt:saved?.state?Number(saved.savedAt):0};
+      }catch(_){ return {state:null,title:"",revision:NaN,savedAt:0}; }
+    }
+    function loadState(){ return localDraft().state||structuredClone(initialState); }
     function persist(){
-      localStorage.setItem(STORAGE_KEY,JSON.stringify(state));
-      $("saveState").textContent="已自动保存 · 刷新后可以继续";
+      persistLocal();
+      $("saveState").textContent=project?"已保存到本机缓存 · 正在同步账号档案":"账号档案加载中";
+      queueProjectSave();
+    }
+    function persistLocal(){ const key=projectStorageKey(); if(key)localStorage.setItem(key,JSON.stringify({state,title:$("projectTitle").value,revision:project?.revision,savedAt:Date.now()})); }
+    function projectTime(value){ const number=Number(value); if(Number.isFinite(number))return number>1e12?number:number*1000; const parsed=Date.parse(value); return Number.isFinite(parsed)?parsed:0; }
+    function shouldRestoreLocal(draft){
+      const remoteRevision=Number(project?.revision);
+      return !!draft.state&&draft.savedAt>projectTime(project?.updated_at)&&(!Number.isFinite(remoteRevision)||draft.revision===remoteRevision);
+    }
+    function projectStatusText(){ return {draft:"草稿",candidate_ready:"待确认候选",confirmed:"已确认档案"}[project?.status]||"项目"; }
+    function uploadMime(file){ const ext=(file.name.split(".").pop()||"").toLowerCase(); return UPLOAD_MIME[ext]||file.type||""; }
+    function projectDraft(){ return {questionnaire_state:{interviewVersion:2,moduleIndex:state.moduleIndex,stepIndex:state.stepIndex,answers:state.answers,completedModules:state.completedModules,profile:state.profile,guideTurns:state.guideTurns}}; }
+    function queueProjectSave(){
+      if(!project)return;
+      projectSavePending=true;
+      clearTimeout(projectSaveTimer);
+      projectSaveTimer=setTimeout(()=>saveProject(false),700);
+    }
+    async function saveProject(strict=false){
+      if(!project){ if(strict)throw new Error("账号档案尚未加载"); return false; }
+      if(projectSaving)return false;
+      projectSaving=true;
+      projectSavePending=false;
+      try{
+        const response=await fetch(`${PROJECTS_URL}/${encodeURIComponent(project.id)}`,{method:"PATCH",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({revision:project.revision,title:$("projectTitle").value,state:projectDraft()})});
+        if(response.status===409){ if(strict)await loadProject(); throw new Error("项目已在另一端更新，请重新查看后再操作"); }
+        if(!response.ok)throw new Error("项目保存失败");
+        project=(await response.json()).project;
+        persistLocal();
+        $("projectStatus").textContent=`${projectStatusText()} · 已保存 · 跨端可恢复`;
+        return true;
+      }catch(error){
+        $("projectStatus").textContent=error.message||"网络不可用，暂存本项目缓存";
+        if(strict)throw error;
+        return false;
+      }finally{
+        projectSaving=false;
+        if(projectSavePending)queueProjectSave();
+      }
+    }
+    async function flushProjectSave(){
+      clearTimeout(projectSaveTimer);
+      projectSavePending=false;
+      while(projectSaving)await new Promise(resolve=>setTimeout(resolve,40));
+      clearTimeout(projectSaveTimer);
+      projectSavePending=false;
+      if(!await saveProject(true))throw new Error("项目保存失败");
+    }
+    async function loadProject(){
+      try{
+        const requestedProject=new URLSearchParams(location.search).get("project");
+        let response=await fetch(requestedProject?`${PROJECTS_URL}/${encodeURIComponent(requestedProject)}`:PROJECTS_URL,{credentials:"include",cache:"no-store"});
+        if(response.status===401){ window.location.href=`/login.html?next=${encodeURIComponent(location.pathname+location.search)}`; return; }
+        let result=await response.json();
+        if(!response.ok)throw new Error(result.detail||"项目读取失败");
+        if(requestedProject){ project=result.project; }
+        else if(result.items&&result.items.length){ project=result.items[0]; }
+        else{
+          response=await fetch(PROJECTS_URL,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({title:"未命名数字 IP"})});
+          result=await response.json(); if(!response.ok)throw new Error(result.detail||"项目创建失败"); project=result.project;
+        }
+        const remote=project.state?.questionnaire_state, draft=localDraft(), restoreLocal=shouldRestoreLocal(draft);
+        state=restoreLocal?draft.state:remote?.interviewVersion===2?{...initialState,...remote,analyses:{},guideTurns:remote.guideTurns||[]}:structuredClone(initialState);
+        foundationDirty=false;
+        $("projectTitle").value=restoreLocal&&draft.title?draft.title:project.title||"";
+        const target=entryStep();
+        if(target){ state.moduleIndex=target.moduleIndex; state.stepIndex=target.stepIndex; }
+        else if(foundationReady()&&state.moduleIndex===3&&state.completedModules.includes(4)){ state.moduleIndex=4; state.stepIndex=0; }
+        if(!isUnlockedModuleIndex(state.moduleIndex)){ state.moduleIndex=fallbackModuleIndex(); state.stepIndex=0; }
+        state.analyses={};
+        const analysis=project.last_analysis?.analysis;
+        const input=project.last_analysis?.input||{};
+        const analysisKey=Number.isInteger(input.module_index)&&Number.isInteger(input.step_index)?`${input.module_index}-${input.step_index}`:keyFor();
+        if(analysis)state.analyses[analysisKey]={analysis,model:project.last_analysis.model||"AI 分析服务",usage:{}};
+        persistLocal(); render();
+        if(restoreLocal)queueProjectSave();
+        $("projectStatus").textContent=`${projectStatusText()} · 已恢复 · 跨端可继续`;
+      }catch(_){ state=structuredClone(initialState); render(); $("projectStatus").textContent="网络不可用，未加载账号档案"; }
     }
     function keyFor(mi=state.moduleIndex,si=state.stepIndex){ return `${mi}-${si}`; }
+    function invalidateStaleAnalysis(nextAnswer){
+      const input=project?.last_analysis?.input||{};
+      if(!state.analyses[keyFor()]||input.module_index!==state.moduleIndex||input.step_index!==state.stepIndex||String(input.answer||"").trim()===String(nextAnswer||"").trim())return false;
+      delete state.analyses[keyFor()];
+      if(state.answers[keyFor()])delete state.answers[keyFor()].aiChoice;
+      return true;
+    }
+    function scrollBehavior(){ return window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth"; }
+    function scrollTop(){ window.scrollTo({top:0,behavior:scrollBehavior()}); }
+    function scrollIntoView(element,block="start"){ element.scrollIntoView({behavior:scrollBehavior(),block}); }
     function escapeHtml(value){
       return String(value??"").replace(/[&<>"']/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]));
     }
     function confirmedStepCount(){
-      return Object.values(state.answers).filter(answer=>answer?.confirmed).length;
+      return Object.entries(state.answers).filter(([key,answer])=>isOpenStepKey(key)&&answer?.confirmed).length;
+    }
+    function skippedSteps(){
+      return Object.entries(state.answers).filter(([key,answer])=>isOpenStepKey(key)&&answer?.skipped).map(([key,answer])=>{
+        const [moduleIndex,stepIndex]=key.split("-").map(Number);
+        const module=MODULES[moduleIndex], step=module?.steps[stepIndex];
+        return step?{moduleIndex,stepIndex,module,step,answer}:null;
+      }).filter(Boolean);
+    }
+    function progressedStepCount(){ return confirmedStepCount()+skippedSteps().length; }
+    function moduleSkippedCount(moduleIndex){
+      return skippedSteps().filter(item=>item.moduleIndex===moduleIndex).length;
+    }
+    function moduleInterviewSummary(moduleIndex){
+      return MODULES[moduleIndex].steps.map((_,stepIndex)=>{
+        const answer=state.answers[`${moduleIndex}-${stepIndex}`]||{};
+        return answer.keywords||answer.text||"";
+      }).filter(Boolean).join("；").slice(0,500);
     }
     function showToast(message){
       $("toast").textContent=message;
@@ -620,36 +772,39 @@
       clearTimeout(toastTimer);
       toastTimer=setTimeout(()=>$("toast").classList.remove("show"),1800);
     }
-    function phaseFor(moduleId){ return moduleId<=4?0:moduleId<=8?1:2; }
+    function phaseFor(moduleId){ return moduleId<=4?0:moduleId<=6?1:2; }
     function isModuleDone(id){ return state.completedModules.includes(id); }
 
     function renderModules(){
       const groups = [
         {label:"01 · IP 底座",modules:MODULES.slice(0,4)},
-        {label:"02 · 内容生产",modules:MODULES.slice(4,8)},
-        {label:"03 · 运营增长",modules:MODULES.slice(8,12)}
+        {label:"02 · 内容落地",modules:MODULES.slice(4,6)},
+        {label:"03 · 开发中",modules:MODULES.slice(6,12)}
       ];
       $("moduleList").innerHTML=groups.map(group=>
         `<div class="phase-label">${group.label}</div>`+
         group.modules.map(module=>{
           const index=module.id-1;
-          const active=index===state.moduleIndex;
+          const coming=module.availability==="coming_soon";
+          const locked=!coming&&!isModuleUnlocked(module);
+          const active=!coming&&!locked&&index===state.moduleIndex;
           const done=isModuleDone(module.id);
-          return `<button class="module-btn ${active?"active":""} ${done?"done":""}" type="button" data-module="${index}">
+          const skipped=moduleSkippedCount(index);
+          return `<button class="module-btn ${active?"active":""} ${done?"done":""}" type="button" data-module="${index}" ${coming||locked?"disabled":""} ${active?'aria-current="step"':""}>
             <span class="module-no">${String(module.id).padStart(2,"0")}</span>
-            <span class="module-copy"><b>${escapeHtml(module.name)}</b><small>${module.steps.length} 个内部步骤</small></span>
-            <span class="module-state">${done?"已确认":active?"进行中":"可预览"}</span>
+            <span class="module-copy"><b>${escapeHtml(module.name)}</b></span>
+            <span class="module-state">${coming?"正在开发中，敬请期待":locked?"确认报告后解锁":done?(skipped?`${skipped} 项待补`:"已完成"):active?"进行中":"可进入"}</span>
           </button>`;
         }).join("")
       ).join("");
-      document.querySelectorAll("[data-module]").forEach(btn=>{
+      document.querySelectorAll("[data-module]:not(:disabled)").forEach(btn=>{
         btn.addEventListener("click",()=>{
           saveDraft();
           state.moduleIndex=Number(btn.dataset.module);
-          state.stepIndex=0;
+          state.stepIndex=firstUnresolvedStep(state.moduleIndex);
           persist();
           render();
-          window.scrollTo({top:0,behavior:"smooth"});
+          closeDrawers();
         });
       });
     }
@@ -658,23 +813,37 @@
       const answer=state.answers[keyFor()]||{};
       selectedChoice=answer.choice??(step.type==="multi"?[]:null);
       let html="";
+      if(answer.skipped)html=`<div class="note-box">此步骤已跳过，尚未进入已确认档案。填写后点击“确认并继续”即可回补。</div>`;
       if(step.type==="input"){
-        html=`<label class="answer-label" for="answer">${escapeHtml(step.label)}</label>
-          <textarea class="answer" id="answer" placeholder="先写最接近真实的一版，不需要追求完美。">${escapeHtml(answer.text||"")}</textarea>
-          <div class="helper"><span>回答越具体，后续候选越准确。</span><button class="example-btn" id="exampleBtn" type="button">带入示例</button></div>`;
+        html+=`<details class="answer-draft" ${answer.text?"open":""}>
+          <summary>本步确认稿 · 对话后可带入，也可以直接填写</summary>
+          <textarea class="answer" id="answer" aria-label="本步确认稿" placeholder="AI 整理出的草稿会带入这里；你也可以直接写自己的版本。">${escapeHtml(answer.text||"")}</textarea>
+          <div class="helper"><span>这里不是固定问卷；请检查内容后再确认。</span><button class="example-btn" id="exampleBtn" type="button">带入一个示例草稿</button></div>
+        </details>`;
       }else if(step.type==="select"||step.type==="multi"){
-        html=`<label class="answer-label">${step.type==="multi"?"可以选择多项":"请选择一项作为当前确认"}</label>
+        html+=`<details class="answer-draft" ${answer.choice?"open":""}>
+          <summary>本题确认稿 · 准备好后再选择</summary>
+          <label class="answer-label">${step.type==="multi"?"可以选择多项":"请选择一项作为当前确认"}</label>
           <div class="suggestions">${step.options.map((option,index)=>{
             const selected=Array.isArray(selectedChoice)?selectedChoice.includes(option):selectedChoice===option;
             return `<button class="suggestion ${selected?"selected":""}" type="button" data-choice="${index}"><i></i><b>${String(index+1).padStart(2,"0")}</b>${escapeHtml(option)}</button>`;
           }).join("")}</div>
-          <div class="helper"><span>${step.type==="multi"?"可多选，确认后形成当前步骤结果。":"你可以先选择系统示例，再继续下一步。"}</span><button class="example-btn" id="exampleBtn" type="button">选择推荐示例</button></div>`;
+          <div class="helper"><span>${step.type==="multi"?"可多选，确认后形成当前步骤结果。":"你可以先选择系统示例，再继续下一步。"}</span><button class="example-btn" id="exampleBtn" type="button">选择推荐示例</button></div>
+        </details>`;
       }else{
-        html=`<label class="answer-label">系统根据前面资料形成的体验结果</label>
+        html+=`<details class="answer-draft" ${answer.reviewed?"open":""}>
+          <summary>本题确认稿 · 查看系统备选</summary>
+          <label class="answer-label">系统根据前面资料形成的阶段结果</label>
           <div class="review-list">${step.preview.map((item,index)=>`<div class="review-item"><em>${String(index+1).padStart(2,"0")}</em><div><b>建议 ${index+1}</b><span>${escapeHtml(item)}</span></div></div>`).join("")}</div>
-          <div class="helper"><span>正式版会展示来源、修订号和重新生成入口。</span><button class="example-btn" id="exampleBtn" type="button">确认已阅读</button></div>`;
+          <div class="helper"><span>这些是系统备选，不会自动当成你的事实。</span><button class="example-btn" id="exampleBtn" type="button">确认已阅读</button></div>
+        </details>`;
       }
       $("interaction").innerHTML=html;
+      const textarea=$("answer");
+      if(textarea)textarea.addEventListener("input",()=>{
+        const stale=saveDraft();
+        if(stale){ showToast("回答已修改，请重新分析并确认"); }
+      });
 
       const exampleBtn=$("exampleBtn");
       if(exampleBtn){
@@ -682,6 +851,7 @@
           if(step.type==="input"){
             $("answer").value=step.sample;
             $("answer").focus();
+            saveDraft();
           }else if(step.type==="multi"){
             selectedChoice=[...(step.sampleChoice||[])];
             saveDraft();
@@ -720,11 +890,24 @@
       if(!step)return;
       const current=state.answers[keyFor()]||{};
       const textarea=document.getElementById("answer");
-      state.answers[keyFor()]={...current,text:textarea?textarea.value.trim():current.text||"",choice:selectedChoice};
+      const value=step.type==="review"?step.preview.join("\n"):textarea?textarea.value.trim():current.text||"";
+      const next={...current,text:value,choice:selectedChoice};
+      const hasDraft=!!value||(Array.isArray(selectedChoice)?selectedChoice.length>0:selectedChoice!==null&&selectedChoice!==undefined&&selectedChoice!=="")||current.confirmed===true||current.skipped===true;
+      if(!hasDraft&&!state.answers[keyFor()]){ persist(); return false; }
+      const changed=confirmedAnswerChanged(step,current,next);
+      const contentChanged=answerText(step,current)!==answerText(step,next);
+      if(module.id<=4&&foundationReady()&&contentChanged)foundationDirty=true;
+      const {confirmedValue,...draft}=next;
+      state.answers[keyFor()]=changed?{...draft,confirmed:false}:next;
+      if(changed)delete state.profile[module.id];
+      const stale=invalidateStaleAnalysis(answerText(step,next))||changed;
       persist();
+      if(changed)renderFoundationOutcome();
+      if(stale)renderAI();
+      return stale;
     }
 
-    function confirmCurrent(){
+    async function confirmCurrent(){
       saveDraft();
       const module=MODULES[state.moduleIndex];
       const step=module.steps[state.stepIndex];
@@ -737,25 +920,57 @@
         showToast("请先选择一项，或使用推荐示例");
         return;
       }
-      state.answers[keyFor()]={...answer,confirmed:true};
+      if(step.type==="review"&&!answer.reviewed){
+        showToast("请先打开本题确认稿并确认已阅读");
+        return;
+      }
+      if(Number.isInteger(answer.aiChoice)){
+        try{ await confirmCandidate(answer.aiChoice); }
+        catch(error){ showToast(error.message||"确认候选失败"); return; }
+      }
+      if(module.id<=4&&foundationReady()&&answer.confirmed!==true)foundationDirty=true;
+      state.answers[keyFor()]={...answer,confirmed:true,confirmedValue:answerText(step,answer),skipped:false};
+      advanceCurrent(false);
+    }
+
+    function skipCurrent(){
+      saveDraft();
+      const module=MODULES[state.moduleIndex];
+      const answer=state.answers[keyFor()]||{};
+      if(module.id<=4&&foundationReady()&&answer.skipped!==true)foundationDirty=true;
+      const {aiChoice,confirmedValue,...draft}=answer;
+      state.answers[keyFor()]={...draft,confirmed:false,skipped:true};
+      delete state.analyses[keyFor()];
+      advanceCurrent(true);
+    }
+
+    function advanceCurrent(skipped){
+      const module=MODULES[state.moduleIndex];
+      const answer=state.answers[keyFor()]||{};
       if(state.stepIndex===module.steps.length-1){
         if(!state.completedModules.includes(module.id))state.completedModules.push(module.id);
-        const summary=Array.isArray(answer.choice)?answer.choice.join("、"):answer.choice||answer.text||module.output;
-        state.profile[module.id]={title:module.name,output:module.output,summary:String(summary).slice(0,180)};
-        if(state.moduleIndex<MODULES.length-1){
-          state.moduleIndex++;
-          state.stepIndex=0;
-          showToast(`模块 ${module.id} 已确认，进入模块 ${module.id+1}`);
+        if(skipped){
+          delete state.profile[module.id];
         }else{
-          showToast("十二模块体验完成");
+          const summary=moduleInterviewSummary(state.moduleIndex)||answer.text||module.output;
+          state.profile[module.id]={title:module.name,output:module.output,summary:String(summary).slice(0,180)};
+        }
+        const nextIndex=MODULES.findIndex((candidate,index)=>index>state.moduleIndex&&isModuleUnlocked(candidate));
+        if(nextIndex>=0){
+          state.moduleIndex=nextIndex;
+          state.stepIndex=0;
+          showToast(skipped?`已跳过本步，可随时回补；进入模块 ${MODULES[nextIndex].id}`:`模块 ${module.id} 已确认，进入模块 ${MODULES[nextIndex].id}`);
+        }else{
+          const waiting=skippedSteps().length;
+          if(module.id===4&&!foundationReady())showToast("模块 1–4 已完成，请先生成并确认阶段报告");
+          else showToast(waiting?`当前开放模块已走完，还有 ${waiting} 项待补`:"当前开放的 6 个模块已完成");
         }
       }else{
         state.stepIndex++;
-        showToast("本步骤已确认");
+        showToast(skipped?"已跳过本步，可随时回补":"本步骤已确认");
       }
       persist();
       render();
-      window.scrollTo({top:0,behavior:"smooth"});
     }
 
     function goBack(){
@@ -768,7 +983,7 @@
       }
       persist();
       render();
-      window.scrollTo({top:0,behavior:"smooth"});
+      scrollTop();
     }
 
     function answerText(step,answer){
@@ -778,42 +993,135 @@
       return step.preview.join("\n");
     }
 
+    function confirmedAnswerChanged(step,current,next){
+      return current.confirmed&&current.confirmedValue!==answerText(step,next);
+    }
+
     function confirmedContext(){
       return Object.entries(state.answers).filter(([,answer])=>answer?.confirmed).slice(-12).map(([key,answer])=>{
         const [moduleIndex,stepIndex]=key.split("-").map(Number);
         const module=MODULES[moduleIndex];
         const step=module?.steps[stepIndex];
-        return step?{module:module.name,step:step.title,answer:answerText(step,answer).slice(0,1200)}:null;
+        return step&&module.availability!=="coming_soon"?{module:module.name,step:step.title,answer:answerText(step,answer).slice(0,1200)}:null;
       }).filter(Boolean);
     }
 
     function currentIPSummary(){
-      return Object.values(state.profile).map(item=>`${item.title}：${item.summary}`).join("\n").slice(0,800);
+      const profiles=Object.entries(state.profile).filter(([id])=>Number(id)<=6).map(([,item])=>`${item.title}：${item.summary}`);
+      const answers=confirmedContext().reverse().map(item=>`${item.module} / ${item.step}：${item.answer}`);
+      return [...answers,...profiles].join("\n").slice(0,800);
+    }
+
+    function foundationItems(){
+      return MODULES.slice(0,4).flatMap((module,moduleIndex)=>module.steps.map((step,stepIndex)=>({module,moduleIndex,step,stepIndex,answer:state.answers[`${moduleIndex}-${stepIndex}`]})));
+    }
+
+    function foundationHandoff(target){
+      const product=PRODUCT_HANDOFFS[target];
+      const context=[1,2,3,4].map(id=>state.profile[id]&&`${state.profile[id].title}：${state.profile[id].summary}`).filter(Boolean).join("\n");
+      if(!product||foundationItems().some(item=>!item.answer?.confirmed)||[1,2,3,4].some(id=>!state.profile[id])||!context){ showToast("请先完成 IP 底座的全部确认"); return; }
+      try{
+        sessionStorage.setItem(PRODUCT_HANDOFF_KEY,JSON.stringify({version:1,target,prompt:`${product.instruction}\n\n${context}`.slice(0,1000),created_at:Date.now()}));
+      }catch(_){ showToast("浏览器无法暂存方案，请直接进入产品页"); return; }
+      location.href=`${product.url}?prefill=ip12`;
     }
 
     function nextStepTitle(){
       const module=MODULES[state.moduleIndex];
       if(state.stepIndex<module.steps.length-1)return module.steps[state.stepIndex+1].title;
-      return MODULES[state.moduleIndex+1]?.steps[0]?.title||"完成十二模块并查看数字化 IP 档案";
+      return MODULES.find((candidate,index)=>index>state.moduleIndex&&isModuleUnlocked(candidate))?.steps[0]?.title||(module.id===4?"生成并确认模块 1–4 阶段报告":"完成当前开放模块");
+    }
+
+    function currentGuideTurns(){
+      const stepKey=keyFor();
+      return state.guideTurns.filter(turn=>turn.stepKey===stepKey).slice(-6);
+    }
+
+    function activeGuideTurns(){ return state.guideTurns.filter(turn=>isOpenStepKey(turn.stepKey)); }
+    function visibleGuideTurns(){ return activeGuideTurns().slice(-GUIDE_TURN_LIMIT); }
+    function requestGuideTurns(){ return activeGuideTurns().slice(-6); }
+    function stepMeta(stepKey){
+      const [moduleIndex,stepIndex]=String(stepKey||"").split("-").map(Number);
+      const module=MODULES[moduleIndex],step=module?.steps[stepIndex];
+      return module&&step?{module,step}:null;
+    }
+    function stepQuestion(step){
+      const source=String(step?.question||step?.label||step?.instruction||step?.title||"").trim();
+      return source||`关于“${step?.title||"这一题"}”，你愿意先说说最真实的想法吗？`;
     }
 
     function latestGuideReply(){
-      return [...state.guideTurns].reverse().find(turn=>turn.role==="assistant")||{};
+      return [...currentGuideTurns()].reverse().find(turn=>turn.role==="assistant")||{};
+    }
+
+    function handleNavigationMessage(message){
+      const command=navigationCommand(message);
+      if(!command)return false;
+      $("coachInput").value="";
+      if(command.type==="previous"){
+        goBack();
+        $("coachStatus").textContent="已回到上一题。";
+        return true;
+      }
+      if(command.type==="skip"){
+        skipCurrent();
+        $("coachStatus").textContent="本题已标记待补，继续下一题。";
+        return true;
+      }
+      if(command.type==="module"){
+        if(!isUnlockedModuleIndex(command.moduleIndex)){
+          showToast("请先确认模块 1–4 阶段报告");
+          return true;
+        }
+        saveDraft();
+        state.moduleIndex=command.moduleIndex;
+        state.stepIndex=firstUnresolvedStep(command.moduleIndex);
+        persist(); render(); closeDrawers();
+        $("coachStatus").textContent=`已进入模块 ${command.moduleIndex+1} 的首个未完成问题。`;
+        return true;
+      }
+      const answer=state.answers[keyFor()]||{};
+      if(answer.confirmed!==true&&answer.skipped!==true){
+        showToast("请先回答当前问题，或点击“跳过，稍后回补”");
+        return true;
+      }
+      const next=nextUnresolvedCursor();
+      if(!next){
+        showToast(foundationReady()?"当前开放模块已经完成":"请先生成并确认模块 1–4 阶段报告");
+        return true;
+      }
+      state.moduleIndex=next.moduleIndex;
+      state.stepIndex=next.stepIndex;
+      persist(); render();
+      $("coachStatus").textContent="已进入下一个未完成问题。";
+      return true;
     }
 
     function renderCoach(){
-      const turns=state.guideTurns.slice(-6);
-      $("coachMessages").innerHTML=turns.length?turns.map(turn=>
-        `<div class="coach-bubble ${turn.role==="user"?"user":"assistant"}">${escapeHtml(turn.content)}${
+      const turns=visibleGuideTurns();
+      let priorStepKey="",html="";
+      turns.forEach(turn=>{
+        if(turn.stepKey!==priorStepKey){
+          const meta=stepMeta(turn.stepKey);
+          if(meta)html+=`<div class="coach-transition">模块 ${meta.module.id} · ${escapeHtml(meta.step.title)}</div><div class="coach-bubble assistant">${escapeHtml(stepQuestion(meta.step))}</div>`;
+          priorStepKey=turn.stepKey;
+        }
+        html+=`<div class="coach-bubble ${turn.role==="user"?"user":"assistant"}">${escapeHtml(turn.content)}${
           turn.role==="assistant"&&turn.suggested_answer
-            ? `<div class="coach-answer"><b>可编辑的回答草稿</b><br>${escapeHtml(turn.suggested_answer)}</div>`
+            ? `<div class="coach-answer"><b>我先这样理解</b><br>${escapeHtml(turn.suggested_answer)}</div>`
             : ""
-        }</div>`
-      ).join(""):`<div class="coach-bubble assistant">我会守在这里。看不懂问题、想不起例子，或者不知道下一步做什么，都可以点下面的入口问我。</div>`;
+        }</div>`;
+      });
+      if(!currentGuideTurns().length){
+        const module=MODULES[state.moduleIndex],step=module.steps[state.stepIndex];
+        html+=`<div class="coach-transition">模块 ${module.id} · ${escapeHtml(step.title)}</div><div class="coach-bubble assistant coach-welcome">${escapeHtml(stepQuestion(step))}</div>`;
+      }
+      $("coachMessages").innerHTML=html;
       const latest=latestGuideReply();
-      $("guideModel").textContent=latest.model||"待命";
+      $("guideModel").textContent=latest.content?"AI 分析服务":"待命";
+      $("coachQuick").hidden=currentGuideTurns().length>0;
       $("coachActions").innerHTML=[
-        ...(latest.follow_up_questions||[]).map((question,index)=>
+        ...(latest.follow_up_questions||[]).slice(0,1).map((question,index)=>
           `<button class="coach-chip" type="button" data-guide-question="${index}">${escapeHtml(question)}</button>`
         ),
         ...(latest.actions||[]).map((action,index)=>
@@ -824,17 +1132,22 @@
     }
 
     async function askGuide(rawMessage){
-      saveDraft();
+      if(guideBusy)return;
       const message=String(rawMessage||$("coachInput").value||"").trim();
       if(!message){
         showToast("先告诉小黄雀你哪里不清楚");
         return;
       }
+      if(handleNavigationMessage(message))return;
+      if(!$("aiConsent").checked){ showToast("请先明确同意发送当前回答给 AI"); return; }
       const module=MODULES[state.moduleIndex];
       const step=module.steps[state.stepIndex];
       const answer=state.answers[keyFor()]||{};
-      const priorTurns=state.guideTurns.slice(-3).map(turn=>({role:turn.role,content:turn.content}));
+      const stepKey=keyFor();
+      const mergedAnswer=[answer.text,message].filter(Boolean).join("\n").slice(0,6000);
+      const priorTurns=requestGuideTurns().map(turn=>({role:turn.role,content:turn.content}));
       const button=$("coachSend");
+      guideBusy=true;
       button.disabled=true;
       $("coachStatus").textContent="小黄雀正在理解当前步骤…";
       try{
@@ -851,36 +1164,62 @@
             ip_summary:currentIPSummary(),
             next_step:nextStepTitle(),
             message,
-            recent_turns:priorTurns
+            recent_turns:priorTurns,
+            consent:true
           })
         });
         if(response.status===401){
-          window.location.href=`/login.html?next=${encodeURIComponent(location.pathname)}`;
+          window.location.href=`/login.html?next=${encodeURIComponent(location.pathname+location.search)}`;
           return;
         }
         const result=await response.json().catch(()=>({}));
         if(!response.ok||!result.ok)throw new Error(result.detail||"小黄雀暂时无法回复");
         const guide=result.guide||{};
+        const followUp=(guide.follow_up_questions||[]).slice(0,1);
         state.guideTurns=[...state.guideTurns,
-          {role:"user",content:message},
+          {role:"user",content:message,stepKey},
           {
             role:"assistant",
-            content:guide.reply||"我们继续完成当前步骤。",
+            content:[guide.reply||"我已经记下了。",followUp[0]||""].filter(Boolean).join("\n\n"),
             suggested_answer:guide.suggested_answer||"",
-            follow_up_questions:guide.follow_up_questions||[],
+            follow_up_questions:followUp,
             actions:guide.recommended_actions||[],
-            model:result.cached?"已缓存":(result.model||"OpenAI")
+            model:result.cached?"已缓存":(result.model||"AI 分析服务"),
+            stepKey
           }
-        ].slice(-6);
-        persist();
+        // ponytail: 240 条覆盖当前六模块试点；超过后再迁独立追加式会话表。
+        ].slice(-GUIDE_TURN_LIMIT);
         $("coachInput").value="";
-        $("coachStatus").textContent=`已约束为当前步骤${result.usage?.total_tokens?` · ${result.usage.total_tokens} tokens`:""}。`;
-        renderCoach();
+        state.answers[stepKey]={...answer,text:mergedAnswer,keywords:guide.suggested_answer||answer.keywords||"",confirmed:!followUp.length,confirmedValue:!followUp.length?mergedAnswer:answer.confirmedValue||"",skipped:false};
+        if(followUp.length){
+          persist();
+          $("coachStatus").textContent="还差一点信息，请继续回答上面这个问题。";
+          renderCoach();
+        }else{
+          $("coachStatus").textContent="已记录，继续下一题。";
+          advanceCurrent(false);
+          if(module.id===4&&state.completedModules.includes(4))$("coachStatus").textContent="模块 1–4 已完成，请查看并确认阶段报告。";
+          if(module.id===6&&state.completedModules.includes(6))$("coachStatus").textContent="六个模块已完成，当前流程到这里结束。";
+        }
       }catch(error){
         $("coachStatus").textContent=error.message||"小黄雀暂时无法回复，请稍后重试。";
+        if(!currentGuideTurns().length)renderCoach();
       }finally{
+        guideBusy=false;
         button.disabled=false;
       }
+    }
+
+    function applyGuideDraft(value){
+      const answer=$("answer");
+      if(!answer){ showToast("当前不是文字填写题，请使用页面选项"); return; }
+      const draft=String(value||"").trim();
+      if(!draft){ showToast("当前没有可带入的回答草稿"); return; }
+      answer.value=draft;
+      answer.closest("details")?.setAttribute("open","");
+      answer.focus();
+      saveDraft();
+      showToast("已带入草稿，确认前仍可修改");
     }
 
     function runGuideAction(index){
@@ -888,28 +1227,38 @@
       const action=(latest.actions||[])[index];
       if(!action)return;
       if(action.type==="fill_answer"){
-        const answer=$("answer");
-        if(!answer){
-          showToast("当前不是文字填写题，请使用页面选项");
-          return;
-        }
-        answer.value=action.value||latest.suggested_answer||"";
-        answer.focus();
-        saveDraft();
-        showToast("已带入草稿，确认前仍可修改");
+        applyGuideDraft(action.value||latest.suggested_answer);
       }else if(action.type==="show_example"){
         $("exampleBtn")?.click();
       }else if(action.type==="continue_chat"){
         $("coachInput").value=action.value||"";
         $("coachInput").focus();
       }else if(action.type==="run_diagnosis"){
-        $("analyzeBtn").scrollIntoView({behavior:"smooth",block:"center"});
+        scrollIntoView($("analyzeBtn"),"center");
         $("analyzeBtn").focus();
         showToast("请检查回答后，再由你点击 AI 诊断");
       }else if(action.type==="open_step"){
-        document.querySelector(".step-card").scrollIntoView({behavior:"smooth",block:"start"});
+        scrollIntoView(document.querySelector(".step-card"));
         showToast(action.value==="next"?"确认当前步骤后即可进入下一步":"已回到当前步骤");
       }
+    }
+
+    async function readProjectFiles(){
+      const files=[...$("projectFiles").files];
+      if(files.length>6)throw new Error("最多选择 6 份资料");
+      let total=0;
+      for(const file of files){
+        if(file.size>8*1024*1024)throw new Error(`${file.name} 超过 8 MiB`);
+        total+=file.size;
+      }
+      if(total>20*1024*1024)throw new Error("资料总量不能超过 20 MiB");
+      $("fileStatus").textContent=files.length?`已选择 ${files.length} 份资料，共 ${(total/1024/1024).toFixed(1)} MiB；仅本次发送，不保存原文件。`:"未选择资料；可只分析当前回答。";
+      return Promise.all(files.map(file=>new Promise((resolve,reject)=>{
+        const reader=new FileReader();
+        reader.onload=()=>{const mime=uploadMime(file),base64=String(reader.result||"").split(",",2)[1]||""; resolve({name:file.name,type:mime,data_url:`data:${mime};base64,${base64}`});};
+        reader.onerror=()=>reject(new Error("资料读取失败"));
+        reader.readAsDataURL(file);
+      })));
     }
 
     async function analyzeCurrent(){
@@ -922,25 +1271,30 @@
         showToast("请先填写回答，或带入示例");
         return;
       }
+      if(!project){ showToast("正在恢复项目，请稍后再试"); return; }
+      if(!$("aiConsent").checked){ showToast("请先明确同意发送所选资料给 AI"); return; }
       const button=$("analyzeBtn");
       button.disabled=true;
       button.textContent="AI 正在分析…";
-      $("aiStatus").textContent="正在从美业获客、到店、成交、复购、团队与老板 IP 链路分析。";
+      $("aiStatus").textContent=`正在按“${module.name}”的规则分析事实、缺口与候选方案。`;
       try{
-        const response=await fetch(API_URL,{
+        await flushProjectSave();
+        const files=await readProjectFiles();
+        const response=await fetch(`${PROJECTS_URL}/${encodeURIComponent(project.id)}/analyze`,{
           method:"POST",
           credentials:"include",
           headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({module:module.name,step:step.title,answer:text,confirmed_context:confirmedContext()})
+          body:JSON.stringify({revision:project.revision,module_index:state.moduleIndex,step_index:state.stepIndex,answer:text,context:{current_module:module.name,current_step:step.title,confirmed_context:confirmedContext()},files,consent:true})
         });
         if(response.status===401){
-          window.location.href=`/login.html?next=${encodeURIComponent(location.pathname)}`;
+          window.location.href=`/login.html?next=${encodeURIComponent(location.pathname+location.search)}`;
           return;
         }
         const result=await response.json().catch(()=>({}));
         if(!response.ok||!result.ok)throw new Error(result.detail||result.error||"AI 分析暂时不可用");
+        project=result.project;
         state.analyses[keyFor()]={analysis:result.analysis,model:result.model,usage:result.usage||{},at:new Date().toISOString()};
-        persist();
+        persistLocal();
         renderAI();
       }catch(error){
         $("aiStatus").textContent=error.message||"AI 分析暂时不可用，请稍后重试。";
@@ -948,6 +1302,17 @@
         button.disabled=false;
         button.textContent="重新分析本步";
       }
+    }
+
+    async function confirmCandidate(index){
+      if(!project)return false;
+      await flushProjectSave();
+      const response=await fetch(`${PROJECTS_URL}/${encodeURIComponent(project.id)}/confirm`,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({revision:project.revision,candidate_index:index})});
+      if(response.status===409){ await loadProject(); throw new Error("项目已在另一端更新，请重新选择候选"); }
+      const result=await response.json().catch(()=>({}));
+      if(!response.ok||!result.ok)throw new Error(result.detail||"确认候选失败");
+      project=result.project;
+      return true;
     }
 
     function renderAI(){
@@ -962,10 +1327,12 @@
       }
       const analysis=saved.analysis||{};
       const current=state.answers[keyFor()]||{};
-      $("aiModel").textContent=saved.model||"OpenAI";
+      const plansConfirmed=project?.status==="confirmed";
+      $("aiModel").textContent="AI 分析服务";
       $("aiStatus").textContent=`结构化诊断已返回${saved.usage?.total_tokens?` · ${saved.usage.total_tokens} tokens`:""}。`;
       const facts=(analysis.confirmed_facts||[]).map(item=>`<li>${escapeHtml(item)}</li>`).join("");
       const pains=(analysis.business_pains||[]).map(item=>`<div class="ai-pain"><b>${escapeHtml(item.label)}</b>${escapeHtml(item.evidence)} · ${escapeHtml(item.impact)}</div>`).join("");
+      const evidence=(analysis.source_evidence||[]).map(item=>`<li><b>${escapeHtml(item.file_name||"用户当前回答")}</b> · ${escapeHtml(item.location||"未定位")}：${escapeHtml(item.evidence||item.claim||"")}</li>`).join("");
       const candidates=(analysis.positioning_candidates||[]).map((item,index)=>{
         const recommended=index===analysis.recommended_index;
         const selected=current.aiChoice===index;
@@ -977,27 +1344,55 @@
       }).join("");
       $("aiResult").innerHTML=`<p class="ai-summary">${escapeHtml(analysis.summary||"")}</p>
         ${facts?`<div class="ai-label">已确认事实</div><ul class="ai-list">${facts}</ul>`:""}
-        ${pains?`<div class="ai-label">经营痛点</div>${pains}`:""}
-        ${candidates?`<div class="ai-label">人设候选</div>${candidates}`:""}
+        ${evidence?`<div class="ai-label">来源证据与定位</div><ul class="ai-list">${evidence}</ul>`:""}
+        ${pains?`<div class="ai-label">关键问题</div>${pains}`:""}
+        ${candidates?`<div class="ai-label">阶段候选</div>${candidates}`:""}
+        ${(analysis.gaps||[]).length?`<div class="ai-follow-up"><b>资料缺口</b><br>${escapeHtml(analysis.gaps.join("；"))}</div>`:""}
+        ${(analysis.conflicts||[]).length?`<div class="ai-follow-up"><b>待核对冲突</b><br>${escapeHtml(analysis.conflicts.join("；"))}</div>`:""}
+        ${analysis.image_plan?`<div class="ai-follow-up"><b>图片行动计划：${escapeHtml(analysis.image_plan.goal||"")}</b><br>${escapeHtml((analysis.image_plan.steps||[]).join(" → "))}<br>${plansConfirmed?'<a href="banana.html">去既有图片工具</a>':'确认候选后可进入既有图片工具。'}</div>`:""}
+        ${analysis.video_plan?`<div class="ai-follow-up"><b>视频行动计划：${escapeHtml(analysis.video_plan.goal||"")}</b><br>${escapeHtml((analysis.video_plan.steps||[]).join(" → "))}<br>${plansConfirmed?'<a href="video.html">去既有视频工具</a>':'确认候选后可进入既有视频工具。'}</div>`:""}
+        ${(analysis.next_steps||[]).length?`<div class="ai-follow-up"><b>下一步</b><br>${escapeHtml(analysis.next_steps.join(" → "))}</div>`:""}
         ${analysis.follow_up_question?`<div class="ai-follow-up"><b>还需要你补充</b><br>${escapeHtml(analysis.follow_up_question)}</div>`:""}`;
       document.querySelectorAll("[data-ai-choice]").forEach(candidate=>{
         candidate.addEventListener("click",()=>{
           state.answers[keyFor()]={...(state.answers[keyFor()]||{}),aiChoice:Number(candidate.dataset.aiChoice)};
           persist();
           renderAI();
-          showToast("已选择 AI 候选，仍需你确认当前步骤");
+          showToast("已选择 AI 候选；点击“确认并继续”才会写入长期档案");
         });
       });
     }
 
     function renderMemory(){
-      const completed=state.completedModules.length;
-      $("doneModulesText").textContent=`${completed} / 12 完成`;
+      const completed=state.completedModules.filter(id=>id<=6).length;
+      const skipped=skippedSteps();
+      const progressed=progressedStepCount(), confirmed=confirmedStepCount();
+      $("doneModulesText").textContent=confirmed===totalSteps?`当前开放 · ${totalSteps} / ${totalSteps}`:progressed===totalSteps?`首轮已走完 · ${skipped.length} 待补`:`${completed} / 6 已走完 · ${skipped.length} 待补`;
       $("phaseProgress").innerHTML=phaseGroups.map((phase,index)=>{
+        if(index===2)return `<div class="phase-row"><i>${index+1}</i><b>${phase.name}</b><small>开发中，敬请期待</small></div>`;
         const count=state.completedModules.filter(id=>id>=phase.range[0]&&id<=phase.range[1]).length;
-        return `<div class="phase-row"><i>${index+1}</i><b>${phase.name}</b><small>${count} / 4</small></div>`;
+        const phaseSkipped=skipped.filter(item=>item.module.id>=phase.range[0]&&item.module.id<=phase.range[1]).length;
+        const total=phase.range[1]-phase.range[0]+1;
+        return `<div class="phase-row"><i>${index+1}</i><b>${phase.name}</b><small>${count} / ${total}${phaseSkipped?` · ${phaseSkipped} 待补`:""}</small></div>`;
       }).join("");
-      const items=Object.entries(state.profile).sort((a,b)=>Number(a[0])-Number(b[0]));
+      $("skippedCount").textContent=`${skipped.length} 项`;
+      $("skippedItems").innerHTML=skipped.length?skipped.map(item=>
+        `<button class="coach-action" type="button" data-resume-module="${item.moduleIndex}" data-resume-step="${item.stepIndex}">模块 ${item.module.id} · ${escapeHtml(item.step.title)} · 去回补</button>`
+      ).join(""):`<p class="empty-memory">暂无待补步骤。</p>`;
+      const foundationComplete=foundationItems().every(item=>item.answer?.confirmed||item.answer?.skipped),stage=foundationStage();
+      const pdfAction=stage.report_id?`<a class="coach-action" href="${escapeHtml(reportPdfUrl())}" download>下载 PDF</a>`:"";
+      $("reportUnlock").innerHTML=!foundationComplete
+        ?`<p class="empty-memory">完成模块 1–4 后生成阶段报告。</p>`
+        :foundationReady()
+          ?`<p class="empty-memory">模块 1–4 报告已确认，模块 5–6 已解锁。</p><button class="coach-action" id="openReportBtn" type="button">查看阶段报告</button>${pdfAction}`
+          :`<p class="empty-memory">${foundationDirty||stage.stale||stage.status==="stale"?"回答已变化，请重新生成并确认报告。":stage.status==="pending_confirmation"?"阶段报告待本人确认。":"阶段报告尚未生成。"}</p><button class="coach-action" id="openReportBtn" type="button">${stage.report_id?"查看并确认阶段报告":"生成阶段报告"}</button>${pdfAction}`;
+      $("openReportBtn")?.addEventListener("click",event=>openFoundationReport(event.currentTarget));
+      $("skippedItems").querySelectorAll("[data-resume-module]").forEach(button=>button.addEventListener("click",()=>{
+        state.moduleIndex=Number(button.dataset.resumeModule);
+        state.stepIndex=Number(button.dataset.resumeStep);
+        persist(); render(); closeDrawers();
+      }));
+      const items=Object.entries(state.profile).filter(([id])=>Number(id)<=6).sort((a,b)=>Number(a[0])-Number(b[0]));
       $("memoryItems").innerHTML=items.length?items.map(([,item])=>
         `<div class="memory-item"><b>${escapeHtml(item.title)} · ${escapeHtml(item.output)}</b><p>${escapeHtml(item.summary)}</p></div>`
       ).join(""):`<p class="empty-memory">还没有已确认结果。完成任意模块的最后一步后，结果会显示在这里。</p>`;
@@ -1006,16 +1401,45 @@
       $("ipSummary").textContent=first?first.summary:"每次确认都会成为后续内容和视频共同读取的项目记忆。";
     }
 
-    function render(){
-      const module=MODULES[state.moduleIndex];
-      if(!module){
-        state=structuredClone(initialState);
-        persist();
-        return render();
+    function renderFoundationOutcome(){
+      const section=$("foundationOutcome"),items=foundationItems();
+      if(!items.every(item=>item.answer?.confirmed||item.answer?.skipped)){
+        section.hidden=true;
+        section.replaceChildren();
+        return;
       }
+      section.hidden=false;
+      const pending=items.filter(item=>!item.answer?.confirmed);
+      const profiles=[1,2,3,4].map(id=>state.profile[id]||{title:MODULES[id-1].name,output:"存在待补资料",summary:"阶段报告会明确标记资料缺口，不会由 AI 补写。"});
+      const stage=foundationStage(),stale=foundationDirty||stage.stale||stage.status==="stale",ready=foundationReady();
+      const title=ready?"模块 1–4 报告已确认":stale?"模块 1–4 报告需要更新":stage.status==="pending_confirmation"?"模块 1–4 报告待本人确认":"模块 1–4 初稿已完成";
+      const gapNote=pending.length?`其中 ${pending.length} 项已跳过，会作为资料缺口列入报告。`:"";
+      const copy=(ready?"定位、人设、价值与故事已经本人确认，可以继续模块 5–6。":stale?"已确认回答发生变化，请重新生成并确认报告后继续。":stage.status==="pending_confirmation"?"请阅读阶段报告并确认，确认后进入模块 5–6。":"请生成阶段报告并确认，确认后进入模块 5–6。")+gapNote;
+      const pdfAction=stage.report_id?`<a class="nav-btn" href="${escapeHtml(reportPdfUrl())}" download>下载 PDF</a>`:"";
+      const primaryAction=ready?'<button class="nav-btn primary" type="button" data-continue-content>继续模块 5</button>':`<button class="nav-btn primary" type="button" data-open-foundation-report>${stage.report_id?"查看并确认阶段报告":"生成阶段报告"}</button>`;
+      section.innerHTML=`<div class="outcome-head"><div><span>FOUNDATION CHECKPOINT</span><h2>${title}</h2><p>${copy}</p></div><strong>${pending.length?`待补 ${pending.length} 项`:"4 / 4 已确认"}</strong></div><div class="outcome-grid">${profiles.map(item=>`<article class="outcome-card"><b>${escapeHtml(item.title)} · ${escapeHtml(item.output)}</b><p>${escapeHtml(item.summary)}</p></article>`).join("")}</div><div class="outcome-actions">${primaryAction}${pdfAction}</div>`;
+    }
+
+    async function openFoundationReport(button){
+      if(!project?.id){ showToast("账号档案尚未加载"); return; }
+      button.disabled=true;
+      try{
+        await flushProjectSave();
+        location.href=`ip12-report.html?project=${encodeURIComponent(project.id)}`;
+      }catch(error){
+        button.disabled=false;
+        showToast(error.message||"项目保存失败，请稍后重试");
+      }
+    }
+
+    function render(){
+      if(!isUnlockedModuleIndex(state.moduleIndex)){ state.moduleIndex=fallbackModuleIndex(); state.stepIndex=0; }
+      const module=MODULES[state.moduleIndex];
       const step=module.steps[state.stepIndex]||module.steps[0];
       if(!module.steps[state.stepIndex])state.stepIndex=0;
-      const overall=confirmedStepCount();
+      const confirmed=confirmedStepCount();
+      const skipped=skippedSteps().length;
+      const overall=progressedStepCount();
       const percent=Math.round(overall/totalSteps*100);
       $("phaseName").textContent=module.phase;
       $("moduleTitle").textContent=module.name;
@@ -1028,13 +1452,17 @@
       $("stepWhy").textContent=step.why;
       $("moduleStepText").textContent=`${String(state.stepIndex+1).padStart(2,"0")} / ${String(module.steps.length).padStart(2,"0")}`;
       $("moduleBar").style.width=`${(state.stepIndex+1)/module.steps.length*100}%`;
-      $("overallText").textContent=`总进度 ${overall} / ${totalSteps}`;
+      $("overallText").textContent=`当前开放 ${overall} / ${totalSteps} · 完整路线 ${roadmapSteps} 步 · 待补 ${skipped}`;
       $("overallBar").style.width=`${percent}%`;
       $("percentText").textContent=`${percent}%`;
       $("backBtn").disabled=state.moduleIndex===0&&state.stepIndex===0;
-      $("nextBtn").textContent=state.stepIndex===module.steps.length-1?(module.id===12?"完成十二模块体验":"确认并完成模块"):"确认并继续";
+      $("skipBtn").textContent="跳过，稍后回补";
+      const journeyComplete=module.id===6&&state.stepIndex===module.steps.length-1&&state.answers[keyFor()]?.confirmed&&state.completedModules.includes(6);
+      $("nextBtn").disabled=journeyComplete;
+      $("nextBtn").textContent=journeyComplete?"当前流程已完成":state.stepIndex===module.steps.length-1?(module.id===6?"完成当前开放模块":module.id===4&&!foundationReady()?"确认并完成模块 4":"确认并完成模块"):"确认并继续";
       renderModules();
       renderInteraction(step);
+      renderFoundationOutcome();
       renderMemory();
       renderAI();
       renderCoach();
@@ -1043,8 +1471,9 @@
     function selfCheck(){
       const errors=[];
       if(MODULES.length!==12)errors.push(`模块数量应为 12，实际为 ${MODULES.length}`);
-      if(totalSteps!==54)errors.push(`步骤数量应为 54，实际为 ${totalSteps}`);
-      if(MODULES.some(module=>!module.name||!module.steps.length))errors.push("存在缺少名称或步骤的模块");
+      if(totalSteps!==38)errors.push(`当前采访字段应为 38，实际为 ${totalSteps}`);
+      if(MODULES.some(module=>!module.name||(module.availability!=="coming_soon"&&!module.steps.length)))errors.push("存在缺少名称或步骤的开放模块");
+      if(MODULES.slice(6).some(module=>module.availability!=="coming_soon"))errors.push("模块 7–12 必须保持开发中");
       console.assert(errors.length===0,errors.join("; "));
       if(errors.length){
         $("fatal").style.display="block";
@@ -1053,17 +1482,37 @@
       }
     }
 
+    function closeDrawers(){
+      document.body.classList.remove("module-open","memory-open");
+      $("moduleDrawerBtn").setAttribute("aria-expanded","false");
+      $("memoryDrawerBtn").setAttribute("aria-expanded","false");
+    }
+    function toggleDrawer(name){
+      const className=`${name}-open`,opening=!document.body.classList.contains(className);
+      closeDrawers();
+      if(opening){
+        document.body.classList.add(className);
+        $(`${name}DrawerBtn`).setAttribute("aria-expanded","true");
+        requestAnimationFrame(() => $(name==="memory"?"memoryPanel":"modulePanel").focus());
+      }
+    }
+
     $("nextBtn").addEventListener("click",confirmCurrent);
     $("backBtn").addEventListener("click",goBack);
+    $("skipBtn").addEventListener("click",skipCurrent);
     $("analyzeBtn").addEventListener("click",analyzeCurrent);
+    $("projectTitle").addEventListener("change",persist);
+    $("projectFiles").addEventListener("change",()=>{const files=[...$("projectFiles").files]; $("fileStatus").textContent=files.length?`已选择 ${files.length} 份资料；请勾选同意后由你主动分析。`:"未选择资料；可只分析当前回答。";});
     $("coachSend").addEventListener("click",()=>askGuide());
     $("coachInput").addEventListener("keydown",event=>{
-      if(event.key==="Enter"&&!event.isComposing){
+      if(event.key==="Enter"&&!event.shiftKey&&!event.isComposing){
         event.preventDefault();
         askGuide();
       }
     });
     $("coachCard").addEventListener("click",event=>{
+      const draft=event.target.closest("[data-guide-use-draft]");
+      if(draft)return applyGuideDraft(state.guideTurns[Number(draft.dataset.guideUseDraft)]?.suggested_answer);
       const prompt=event.target.closest("[data-guide-prompt]");
       if(prompt)return askGuide(prompt.dataset.guidePrompt);
       const question=event.target.closest("[data-guide-question]");
@@ -1074,27 +1523,55 @@
       const action=event.target.closest("[data-guide-action]");
       if(action)runGuideAction(Number(action.dataset.guideAction));
     });
-    $("coachFloat").addEventListener("click",()=>$("coachCard").scrollIntoView({behavior:"smooth",block:"start"}));
-    $("guideBtn").addEventListener("click",()=>$("guideModal").classList.add("open"));
+    $("foundationOutcome").addEventListener("click",event=>{
+      const resume=event.target.closest("[data-resume-module]");
+      if(resume){
+        state.moduleIndex=Number(resume.dataset.resumeModule);
+        state.stepIndex=Number(resume.dataset.resumeStep);
+        persist(); render(); closeDrawers();
+        return;
+      }
+      const report=event.target.closest("[data-open-foundation-report]");
+      if(report)return openFoundationReport(report);
+      const next=event.target.closest("[data-continue-content]");
+      if(next&&foundationReady()){
+        state.moduleIndex=4;
+        state.stepIndex=0;
+        persist(); render();
+        return;
+      }
+      const target=event.target.closest("[data-foundation-target]");
+      if(target)foundationHandoff(target.dataset.foundationTarget);
+    });
+    $("moduleDrawerBtn").addEventListener("click",()=>toggleDrawer("module"));
+    $("memoryDrawerBtn").addEventListener("click",()=>toggleDrawer("memory"));
+    $("drawerScrim").addEventListener("click",closeDrawers);
+    $("guideBtn").addEventListener("click",()=>{closeDrawers(); $("guideModal").classList.add("open");});
     $("closeGuide").addEventListener("click",()=>$("guideModal").classList.remove("open"));
     $("guideModal").addEventListener("click",event=>{if(event.target===$("guideModal"))$("guideModal").classList.remove("open")});
+    document.addEventListener("keydown",event=>{if(event.key==="Escape")closeDrawers()});
     $("resetBtn").addEventListener("click",()=>{
-      if(confirm("只清除当前浏览器中的体验数据，确定重置吗？")){
-        localStorage.removeItem(STORAGE_KEY);
+      if(confirm("只清除当前浏览器中的离线缓存；云端项目不会删除，确定重置吗？")){
+        const key=projectStorageKey(); if(key)localStorage.removeItem(key);
+        const legacyKey=projectStorageKey(LEGACY_STORAGE_KEY); if(legacyKey)localStorage.removeItem(legacyKey);
         state=structuredClone(initialState);
         selectedChoice=null;
+        foundationDirty=false;
         render();
-        showToast("演示数据已重置");
+        showToast("本机离线缓存已重置");
       }
     });
-    window.addEventListener("beforeunload",saveDraft);
+    window.addEventListener("pagehide",()=>{
+      saveDraft();
+      clearTimeout(projectSaveTimer);
+      if(!project||projectSaving)return;
+      projectSavePending=false;
+      fetch(`${PROJECTS_URL}/${encodeURIComponent(project.id)}`,{method:"PATCH",credentials:"include",keepalive:true,headers:{"Content-Type":"application/json"},body:JSON.stringify({revision:project.revision,title:$("projectTitle").value,state:projectDraft()})}).catch(()=>{});
+    });
     selfCheck();
     render();
-    if(!localStorage.getItem("huangque-ip12-beauty-guide-seen-v2")){
-      $("guideModal").classList.add("open");
-      localStorage.setItem("huangque-ip12-beauty-guide-seen-v2","1");
-    }
+    loadProject();
   </script>
-  <script src="cloud-shell.js?v=e836823b"></script>
+  <script src="cloud-shell.js?v=642453c4"></script>
 </body>
 </html>

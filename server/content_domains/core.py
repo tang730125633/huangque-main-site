@@ -611,7 +611,10 @@ def verify(token):
         req = urllib.request.Request(AUTH_BASE + "/api/auth/me",
                                      headers={"Authorization": "Bearer " + token})
         with urllib.request.urlopen(req, timeout=6) as r:
-            user = json.loads(r.read()).get("user")
+            auth_result = json.loads(r.read())
+            user = auth_result.get("user")
+            if isinstance(user, dict):
+                user["_membership_enforcement_enabled"] = bool(auth_result.get("membership_enforcement_enabled"))
     except Exception:
         if VERIFY_CACHE_TTL:
             with _verify_cache_lock: _verify_cache.pop(token, None)
@@ -656,6 +659,7 @@ def _leads_domain():
     from . import leads
     return leads
 def _short_drama_domain(): from . import short_drama; return short_drama
+def _digital_ip_domain(): from . import digital_ip; return digital_ip
 def _must_change_password(user):
     return bool(user and user.get("must_change"))
 
@@ -884,6 +888,21 @@ def _global_running_breakdown_count():   # 全局运行中的爆款拆解数（�
                         (SERVICE_OWNER, SERVICE_OWNER)).fetchone()
     return int(row["n"] if row else 0)
 
+
+def _prepare_breakdown_refund(points_domain, username, cost, result, job_id):
+    """Prepare partial refunds, or fail safely during a mixed-version deploy."""
+    if (result or {}).get("type") != "breakdown_batch":
+        return False
+    if not ((result or {}).get("errors") or []):
+        return False
+    callback = getattr(points_domain, "prepare_breakdown_batch_refund", None)
+    if callback:
+        return callback(username, cost, result, job_id)
+    raise RuntimeError(
+        "批量拆解退款组件版本不一致，本次任务已转为失败并自动退回全部点数"
+    )
+
+
 def _reject_pending_job(job_id, username, cost, reason):
     return _fail_job_and_schedule_refund(
         job_id, reason, from_states=("pending",), username=username, cost=cost,
@@ -1097,8 +1116,8 @@ def run_job(job_id):
         result = HANDLERS[kind](payload)
         breakdown_refund_prepared = False
         if kind == "breakdown":
-            breakdown_refund_prepared = _domains()[1].prepare_breakdown_batch_refund(
-                username, cost, result, job_id)
+            breakdown_refund_prepared = _prepare_breakdown_refund(
+                _domains()[1], username, cost, result, job_id)
         # 先 CAS 抢 done 终态：仅当仍是 running 才写 done，防 reaper 已判 error 又被无条件覆盖(既出片又退点)
         if not _set_terminal(job_id, "done", result=result):
             if breakdown_refund_prepared:
@@ -1116,7 +1135,8 @@ def run_job(job_id):
             except Exception:
                 pass
         if kind == "breakdown":
-            _domains()[1].reconcile_breakdown_refund(job_id)
+            if breakdown_refund_prepared:
+                _domains()[1].reconcile_breakdown_refund(job_id)
         # 已确认拿到 done 终态；入库是次要副作用，失败也不改状态、不退点
         try:
             audio_domain, _, video_domain = _domains()
@@ -1254,20 +1274,7 @@ class H(BaseHTTPRequestHandler):
         if _short_drama_domain().dispatch_http(self, "POST", jdb, verify, getattr(points_domain, "cost_of", None), mutation_lock=_submission_lock, canvas_access_resolver=_short_drama_canvas_access,
                 points_getter=getattr(points_domain, "get_points", None), voice_validator=lambda username, voice_key:
                 audio_domain.resolve_audio_provider_voice(username, voice_key), generation_dependencies=(audio_domain, points_domain, globals())): return
-        if p in {"/api/gen/digital-ip/diagnose", "/api/gen/digital-ip/guide"}:
-            user = verify(self._token())
-            if not user: return self._send(401, {"detail": "未登录或登录已过期"})
-            if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
-            from . import digital_ip
-            try:
-                handler = digital_ip.guide if p.endswith("/guide") else digital_ip.diagnose
-                return self._send(200, handler(self._json_body_strict(), user["username"]))
-            except digital_ip.DigitalIPError as e:
-                return self._send(e.status, {"detail": str(e)})
-            except ValueError as e:
-                return self._send(400, {"detail": str(e)[:220]})
-            except Exception:
-                return self._send(502, {"detail": "数字化 IP AI 服务暂时不可用，请稍后重试"})
+        if _digital_ip_domain().dispatch_http(self, "POST", verify, _must_change_password): return
         if p == "/api/gen/inspiration/like": return inspiration_likes.handle_post(self, verify(self._token()), AUDIO_DB)
         if p == "/api/gen/asset/favorite":
             user = verify(self._token())
@@ -1521,10 +1528,8 @@ class H(BaseHTTPRequestHandler):
                     from . import script_to_video as script_to_video_domain
                     body = script_to_video_domain.prepare_script_to_video_payload(body, user["username"])
                 elif kind == "breakdown":
-                    if not isinstance(body, dict):
-                        raise ValueError("请求体必须是 JSON 对象")
-                    if body.get("local_path") or body.get("upload_token"):
-                        raise ValueError("本地素材只能通过专用上传接口提交")
+                    from . import breakdown as breakdown_domain
+                    body = breakdown_domain.validate_breakdown_payload(body)
                 elif kind == "copy":
                     from . import text as text_domain
                     body = text_domain.validate_copy_payload(body)
@@ -1535,7 +1540,7 @@ class H(BaseHTTPRequestHandler):
                         body.pop("short_drama_references", None)
                 if not is_still_route: request_body = dict(body) if isinstance(body, dict) else body
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
-                if not is_still_route: idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video"} else ""
+                if not is_still_route: idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video", "breakdown"} else ""
                 if kind == "sora_video" and not idem_key: raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
                 if kind == "xiaole_video" and str(body.get("channel") or "").lower() in {"micro", "omni"} and not idem_key: raise ValueError("官方视频提交必须提供 Idempotency-Key")
             except miniprogram_security.ContentRejected as e:
@@ -1702,6 +1707,11 @@ class H(BaseHTTPRequestHandler):
                     failed_response = {"detail": {"refunded": "任务创建失败，点数已退回",
                         "queued": "任务创建失败，退款正在自动重试"}.get(e.compensation, "任务创建失败，退款需人工核对"),
                         "submission_ref": e.submission_ref}
+                    if e.compensation == "refunded":
+                        # The charge has been compensated, so this failed
+                        # submission is a terminal result.  Clients may discard
+                        # the pending idempotency key and safely try again.
+                        failed_response["operation_terminal"] = True
                     if is_still_route:
                         _short_drama_domain().short_drama_production.consume_failed_quote(
                             jdb, user["username"], prepared["quote_token"], idem_key)
@@ -1769,6 +1779,7 @@ class H(BaseHTTPRequestHandler):
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
         if _short_drama_domain().dispatch_http(self, "GET", jdb, verify, getattr(points_domain, "cost_of", None), canvas_access_resolver=_short_drama_canvas_access): return
+        if _digital_ip_domain().dispatch_http(self, "GET", verify, _must_change_password): return
         if p == "/api/gen/audio/clone-vip":
             return self._method_not_allowed()
         if p == "/api/gen/inspiration/likes": return inspiration_likes.handle_get(self, verify(self._token()), AUDIO_DB)
@@ -1997,6 +2008,7 @@ class H(BaseHTTPRequestHandler):
         if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
         self._send(404, {"detail": "not found"})
     def do_PATCH(self):
+        if _digital_ip_domain().dispatch_http(self, "PATCH", verify, _must_change_password): return
         if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
         self._send(404, {"detail": "not found"})
     def do_DELETE(self):

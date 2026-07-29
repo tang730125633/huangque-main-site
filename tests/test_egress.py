@@ -199,6 +199,49 @@ class FailoverTests(unittest.TestCase):
         self.assertEqual(out, {"data": []})
         self.assertEqual(len(calls), 1)
 
+    def test_idempotent_analysis_retries_timeout_on_next_channel(self):
+        calls = []
+
+        class _Opener:
+            def __init__(self, tag):
+                self.tag = tag
+            def open(self, req, timeout=None):
+                calls.append(self.tag)
+                if len(calls) == 1:
+                    raise TimeoutError("read timed out")
+                return _FakeResp(b'{"ok":2}')
+
+        with patch.object(self.eg, "_channel_usable", return_value=True), \
+             patch.object(
+                 self.eg, "_opener",
+                 side_effect=lambda proxy: _Opener("direct" if not proxy else proxy),
+             ):
+            result = self.eg.post_json_idempotent(
+                "https://official", "https://heygen", "/chat", b"{}", {},
+                max_attempts=2,
+            )
+        self.assertEqual(result, {"ok": 2})
+        self.assertEqual(calls, ["http://p1", "http://p2"])
+
+    def test_idempotent_analysis_retries_only_route_once(self):
+        eg = _reload_egress(primary="", fallback="")
+        calls = []
+
+        class _Opener:
+            def open(self, req, timeout=None):
+                calls.append(req.full_url)
+                if len(calls) == 1:
+                    raise TimeoutError("read timed out")
+                return _FakeResp(b'{"ok":3}')
+
+        with patch.object(eg, "_opener", return_value=_Opener()):
+            result = eg.post_json_idempotent(
+                "https://official", "https://heygen", "/chat", b"{}", {},
+                max_attempts=2,
+            )
+        self.assertEqual(result, {"ok": 3})
+        self.assertEqual(len(calls), 2)
+
 
 class ChannelPreflightTests(unittest.TestCase):
     """代理不可达时，整档跳过且一个字节都不发——最安全的降级。"""

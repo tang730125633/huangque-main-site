@@ -82,6 +82,15 @@ function testOpenApiContract() {
   }
   const voiceSchema = voiceOperation.responses['200']
     .content['application/json'].schema;
+  const alignmentReviewSchema = spec.paths[
+    '/api/gen/short-drama/subtitle-alignment/timeline'
+  ].post.requestBody.content['application/json'].schema;
+  assert.ok(alignmentReviewSchema.required.includes('review_action'));
+  assert.deepEqual(
+    alignmentReviewSchema.properties.review_action.enum,
+    ['save_adjustments', 'confirm_unchanged'],
+  );
+  assert.equal(alignmentReviewSchema.additionalProperties, false);
   const productionSchema = spec.paths['/api/gen/short-drama/production'].get
     .responses['200'].content['application/json'].schema;
   assert.ok(productionSchema.required.includes('handoff_blocked'));
@@ -173,7 +182,10 @@ function testOpenApiContract() {
   assert.match(spec.paths['/api/gen/short-drama/projects'].post.description, /free|no points/i);
   assert.match(spec.paths['/api/gen/short-drama/project'].put.description, /free|no points/i);
   const listProjects = spec.paths['/api/gen/short-drama/projects'].get;
-  assert.deepEqual(listProjects.parameters.map((parameter) => parameter.name), ['page', 'page_size']);
+  assert.deepEqual(
+    listProjects.parameters.map((parameter) => parameter.name || parameter.$ref),
+    ['#/components/parameters/XCanvasBoardId', 'page', 'page_size'],
+  );
   const listSchema = listProjects.responses['200'].content['application/json'].schema;
   for (const field of ['items', 'page', 'page_size', 'total', 'total_pages']) {
     assert.ok(listSchema.required.includes(field), `project list requires ${field}`);
