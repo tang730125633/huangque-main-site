@@ -34,6 +34,7 @@ class HermesIP12SourceTests(unittest.TestCase):
         self.assertIn("同一条回复", prompt)
         self.assertIn("绝不说“请稍等”", prompt)
         self.assertIn("立刻执行 Step 2", prompt)
+        self.assertIn("模块切换必须同步界面", prompt)
 
     def test_complete_original_route_set_is_present(self):
         routes = set()
@@ -212,7 +213,7 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-from server import app
+from server import app, parse_coach_state_updates
 import image_services
 import media_library
 import video_analyzer
@@ -220,6 +221,13 @@ import video_replica
 
 routes = {rule.rule for rule in app.url_map.iter_rules() if rule.endpoint != "static"}
 assert len(routes) == 71, len(routes)
+
+transitioned = parse_coach_state_updates(
+    "好，我们进入模块2：人设塑造。",
+    {"current_module": 1, "completed_modules": [], "module_step": 0},
+)
+assert transitioned["current_module"] == 2, transitioned
+assert transitioned["completed_modules"] == [1], transitioned
 
 client = app.test_client()
 for path in ("/", "/classic", "/skills", "/analytics", "/images", "/videos",

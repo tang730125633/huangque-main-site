@@ -220,10 +220,18 @@ def parse_coach_state_updates(ai_response, current_state):
                 updated_state["module_step"] = 0
     if "全部完成" in text or "结业" in text:
         updated_state["completed_modules"] = list(range(1, 13))
-    jump_match = re.search(r'接下来是模块\s*(\d+)', text)
-    if jump_match:
-        target = int(jump_match.group(1))
-        if 1 <= target <= 12:
+    transition_match = re.search(
+        r'(?:接下来(?:是|进入)?|(?:直接)?进入(?:到)?|开始(?:进入)?|切换(?:到|至)?)\s*第?\s*模块\s*(\d+)',
+        text,
+    )
+    if transition_match:
+        target = int(transition_match.group(1))
+        current = updated_state.get("current_module", 1)
+        # The coach has visibly started the next module. Keep the sidebar in
+        # sync, but only accept the normal one-module forward transition.
+        if target == current + 1 and target <= 12:
+            if current not in updated_state["completed_modules"]:
+                updated_state["completed_modules"].append(current)
             updated_state["current_module"] = target
             updated_state["module_step"] = 0
     return updated_state
