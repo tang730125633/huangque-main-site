@@ -131,8 +131,8 @@ rollback_release() {
   rollback_step "restore site nginx configuration" restore_file \
     "$backup/nginx-huangquechuanmei.conf" \
     "$backup/nginx-huangquechuanmei.conf.state" "$NGINX_SITE_AVAILABLE"
-  rollback_step "restore site nginx enabled link" restore_file \
-    "$backup/nginx-huangquechuanmei-enabled.conf" \
+  rollback_step "restore site nginx enabled link" \
+    restore_file "$backup/nginx-huangquechuanmei-enabled.conf" \
     "$backup/nginx-huangquechuanmei-enabled.conf.state" "$NGINX_SITE_ENABLED"
   rollback_step "reload systemd units" privileged systemctl daemon-reload
   if test "$(cat "$backup/hermes-ip12-preview.enabled")" = enabled; then
