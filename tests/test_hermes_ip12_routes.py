@@ -242,6 +242,7 @@ assert foundation["foundation_report"]["status"] == "generating", foundation
 report_html = _foundation_html("""# 忽略的总标题
 ## 模块一｜定位诊断
 ### 核心关键词
+#### 故事名称：从无到有
 1. **实战**：有可验证经历。
 | 场景 | 建议口径 |
 | --- | --- |
@@ -251,6 +252,7 @@ report_html = _foundation_html("""# 忽略的总标题
 assert "模块一｜定位诊断" in report_html
 assert "<table>" in report_html and "账号封面" in report_html
 assert "<blockquote>待本人确认</blockquote>" in report_html
+assert "<h4>故事名称：从无到有</h4>" in report_html
 
 client = app.test_client()
 for path in ("/", "/classic", "/skills", "/analytics", "/images", "/videos",
