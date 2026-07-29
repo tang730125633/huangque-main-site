@@ -2,7 +2,6 @@
 
 def register_v6_routes(app):
     from flask import jsonify, render_template, request
-    from runtime_paths import DATA_DIR
 
     def api_status():
         from model_router import current_provider, provider_status
@@ -26,20 +25,21 @@ def register_v6_routes(app):
             topic = request.form.get('topic', '').strip()
             niche = request.form.get('niche', '美业').strip()
 
-            import uuid
             from pathlib import Path
             from werkzeug.utils import secure_filename
-            uid = uuid.uuid4().hex[:10]
+            from artifact_store import atomic_write_bytes, new_asset_id, upload_path
+            from security import current_username
+            uid = new_asset_id()
             filename = secure_filename(f.filename or "video.mp4")
             if Path(filename).suffix.lower() not in {".mp4", ".mov", ".webm", ".mkv", ".avi"}:
                 return jsonify({"ok": False, "error": "Unsupported video type"}), 400
-            save_dir = (DATA_DIR / "uploads").resolve()
-            save_dir.mkdir(parents=True, exist_ok=True)
-            save_path = (save_dir / f"{uid}_{filename}").resolve()
-            if save_path.parent != save_dir:
-                return jsonify({"ok": False, "error": "Invalid filename"}), 400
-            f.save(save_path)
-            return jsonify({"ok": True, "path": str(save_path)})
+            save_path = upload_path(current_username(), uid, Path(filename).suffix)
+            atomic_write_bytes(save_path, f.read())
+            return jsonify({"ok": True, "upload_id": uid})
+        except OSError as e:
+            if "quota" in str(e).lower():
+                return jsonify({"ok": False, "error": str(e)}), 507
+            raise
         except Exception as e:
             import traceback
             traceback.print_exc()

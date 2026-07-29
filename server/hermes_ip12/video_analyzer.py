@@ -1,14 +1,25 @@
 """
 视频对标分析器 — 下载 → 转文字 → AI拆解结构 → 喂给视频工厂
 """
-import ipaddress, os, re, json, socket, uuid, time, subprocess, shutil, urllib.parse
+import ipaddress, os, re, json, socket, uuid, time, subprocess, shutil, tempfile, urllib.parse
 import requests as http_requests
 from pathlib import Path
 from flask import request, jsonify
-from runtime_paths import DATA_DIR
-
-ANALYSIS_DIR = DATA_DIR / "analyses"
-ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
+from artifact_store import (
+    StorageQuotaExceeded,
+    analysis_dir,
+    atomic_write_bytes,
+    finalize_file,
+    new_asset_id,
+    reserve_capacity,
+    video_path as owned_video_path,
+    video_work_dir,
+)
+ANALYSIS_MAX_DOWNLOAD_MB = max(
+    1, int(os.environ.get("HERMES_ANALYSIS_MAX_DOWNLOAD_MB", "200"))
+)
+ANALYSIS_MAX_DOWNLOAD_BYTES = ANALYSIS_MAX_DOWNLOAD_MB * 1024 * 1024
+ANALYSIS_MAX_DOWNLOAD_ARG = f"{ANALYSIS_MAX_DOWNLOAD_MB}M"
 VIDEO_HOSTS = (
     "douyin.com", "iesdouyin.com", "tiktok.com", "tiktokv.com",
     "xiaohongshu.com", "xhslink.com", "bilibili.com", "b23.tv",
@@ -44,8 +55,9 @@ def register_video_analyzer(app):
     def api_analyze_video():
         """下载对标视频 → 转文字 → AI拆解"""
         from model_router import call_ai
+        from security import current_username
 
-        body = request.get_json()
+        body = request.get_json() or {}
         url = body.get("url", "").strip()
 
         if not url:
@@ -53,34 +65,53 @@ def register_video_analyzer(app):
         if not is_public_video_url(url):
             return jsonify({"ok": False, "error": "仅支持公网 HTTP/HTTPS 视频链接"}), 400
 
-        analysis_id = uuid.uuid4().hex[:10]
-        work_dir = ANALYSIS_DIR / analysis_id
-        work_dir.mkdir(parents=True, exist_ok=True)
+        username = current_username()
+        analysis_id = new_asset_id()
+        final_dir = None
 
         try:
-            # Step 1: Download video
-            video_path = download_video(url, work_dir)
-            if not video_path:
-                return jsonify({"ok": False, "error": "视频下载失败，请检查链接是否有效"}), 400
+            with reserve_capacity(ANALYSIS_MAX_DOWNLOAD_BYTES) as reservation:
+                with tempfile.TemporaryDirectory(prefix="hermes-analysis-") as temp_dir:
+                    work_dir = Path(temp_dir)
 
-            # Step 2: Transcribe
-            transcript = transcribe_video(video_path, work_dir)
-            if not transcript:
-                return jsonify({"ok": False, "error": "语音转文字失败"}), 500
+                    # Download and transcription are staged outside the final
+                    # owner directory while their worst-case size is reserved.
+                    video_path = download_video(url, work_dir)
+                    if not video_path:
+                        return jsonify({"ok": False, "error": "视频下载失败，请检查链接是否有效"}), 400
+                    source_video = Path(video_path).resolve()
+                    if source_video.stat().st_size > ANALYSIS_MAX_DOWNLOAD_BYTES:
+                        raise StorageQuotaExceeded("analysis download exceeds size limit")
 
-            # Step 3: AI analysis
-            analysis = analyze_transcript(call_ai, transcript, url)
+                    transcript = transcribe_video(str(source_video), work_dir)
+                    if not transcript:
+                        return jsonify({"ok": False, "error": "语音转文字失败"}), 500
+                    analysis = analyze_transcript(call_ai, transcript, url)
 
-            # Save analysis
-            result = {
-                "analysis_id": analysis_id,
-                "url": url,
-                "transcript": transcript,
-                "analysis": analysis,
-                "video_path": str(video_path)
-            }
-            with open(work_dir / "result.json", "w", encoding="utf-8") as f:
-                json.dump(result, f, ensure_ascii=False, indent=2)
+                    _, final_dir = analysis_dir(username, analysis_id)
+                    final_video = final_dir / f"source{source_video.suffix.lower()}"
+                    try:
+                        finalize_file(
+                            source_video, final_video, reservation=reservation
+                        )
+                        result = {
+                            "analysis_id": analysis_id,
+                            "owner_username": username,
+                            "url": url,
+                            "transcript": transcript,
+                            "analysis": analysis,
+                            "video_path": str(final_video),
+                        }
+                        atomic_write_bytes(
+                            final_dir / "result.json",
+                            json.dumps(
+                                result, ensure_ascii=False, indent=2
+                            ).encode("utf-8"),
+                            reservation=reservation,
+                        )
+                    except Exception:
+                        shutil.rmtree(final_dir, ignore_errors=True)
+                        raise
 
             return jsonify({
                 "ok": True,
@@ -89,8 +120,13 @@ def register_video_analyzer(app):
                 "analysis": analysis
             })
 
+        except StorageQuotaExceeded as e:
+            if final_dir is not None:
+                shutil.rmtree(final_dir, ignore_errors=True)
+            return jsonify({"ok": False, "error": str(e)}), 507
         except Exception as e:
-            shutil.rmtree(work_dir, ignore_errors=True)
+            if final_dir is not None:
+                shutil.rmtree(final_dir, ignore_errors=True)
             import traceback
             traceback.print_exc()
             return jsonify({"ok": False, "error": str(e)}), 500
@@ -99,6 +135,7 @@ def register_video_analyzer(app):
     def api_generate_from_analysis():
         """基于分析结果生成对标视频"""
         from model_router import call_ai
+        from security import current_username
 
         body = request.get_json()
         analysis_id = body.get("analysis_id", "").strip()
@@ -108,9 +145,11 @@ def register_video_analyzer(app):
         if not re.fullmatch(r"[0-9a-f]{10}", analysis_id) or not topic:
             return jsonify({"ok": False, "error": "缺少参数"}), 400
 
-        work_dir = (ANALYSIS_DIR / analysis_id).resolve()
-        if work_dir.parent != ANALYSIS_DIR.resolve():
-            return jsonify({"ok": False, "error": "分析ID无效"}), 400
+        username = current_username()
+        try:
+            _, work_dir = analysis_dir(username, analysis_id, create=False)
+        except FileNotFoundError:
+            return jsonify({"ok": False, "error": "分析结果不存在"}), 404
         result_file = work_dir / "result.json"
 
         if not result_file.exists():
@@ -123,11 +162,9 @@ def register_video_analyzer(app):
         transcript = result.get("transcript", "")
 
         # Generate script with reference
-        from video_factory import generate_script, generate_all_images, generate_tts_pro, generate_subtitles, compose_video_pro, OUTPUT_DIR
+        from video_factory import generate_all_images, generate_tts_pro, generate_subtitles, compose_video_pro
 
-        video_id = uuid.uuid4().hex[:10]
-        vwork_dir = OUTPUT_DIR / video_id
-        vwork_dir.mkdir(parents=True, exist_ok=True)
+        video_id, vwork_dir = video_work_dir(username)
 
         try:
             script = generate_script_with_reference(call_ai, topic, niche, analysis, transcript)
@@ -136,9 +173,9 @@ def register_video_analyzer(app):
             subtitle_path = generate_subtitles(script["scenes"], vwork_dir)
             video_path = compose_video_pro(scenes, audio_path, subtitle_path, vwork_dir)
 
-            final_name = f"ref_{video_id}.mp4"
-            final_path = OUTPUT_DIR / final_name
-            shutil.move(video_path, final_path)
+            final_name = f"{video_id}.mp4"
+            final_path = owned_video_path(username, final_name)
+            finalize_file(video_path, final_path)
             shutil.rmtree(vwork_dir, ignore_errors=True)
 
             return jsonify({
@@ -169,7 +206,7 @@ def download_video(url, work_dir):
         "-f", "best[height<=1080]",
         "-o", str(output),
         "--no-playlist",
-        "--max-filesize", "200M",
+        "--max-filesize", ANALYSIS_MAX_DOWNLOAD_ARG,
         "--socket-timeout", "30",
         url
     ], capture_output=True, text=True, timeout=120, cwd=str(work_dir))
@@ -185,6 +222,7 @@ def download_video(url, work_dir):
         "-f", "worst[ext=mp4]",
         "-o", str(output),
         "--no-playlist",
+        "--max-filesize", ANALYSIS_MAX_DOWNLOAD_ARG,
         "--socket-timeout", "30",
         url
     ], capture_output=True, text=True, timeout=120, cwd=str(work_dir))

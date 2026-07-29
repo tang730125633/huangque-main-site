@@ -6,16 +6,14 @@ import os, re, json, uuid, time, tempfile, subprocess, shutil, urllib.parse
 import requests as http_requests
 from pathlib import Path
 from flask import request, jsonify
-from runtime_paths import DATA_DIR
-
-OUTPUT_DIR = DATA_DIR / "videos"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+from artifact_store import finalize_file, video_path as owned_video_path, video_work_dir
 
 def register_video_factory(app):
 
     @app.route("/api/generate-video", methods=["POST"])
     def api_generate_video():
         from model_router import call_ai
+        from security import current_username
 
         body = request.get_json()
         topic = body.get("topic", "").strip()
@@ -25,9 +23,8 @@ def register_video_factory(app):
         if not topic:
             return jsonify({"ok": False, "error": "请输入话题"}), 400
 
-        video_id = uuid.uuid4().hex[:10]
-        work_dir = OUTPUT_DIR / video_id
-        work_dir.mkdir(parents=True, exist_ok=True)
+        username = current_username()
+        video_id, work_dir = video_work_dir(username)
 
         try:
             script = generate_script(call_ai, topic, niche, style)
@@ -37,8 +34,8 @@ def register_video_factory(app):
             video_path = compose_video_pro(scenes, audio_path, subtitle_path, work_dir)
 
             final_name = f"{video_id}.mp4"
-            final_path = OUTPUT_DIR / final_name
-            shutil.move(video_path, final_path)
+            final_path = owned_video_path(username, final_name)
+            finalize_file(video_path, final_path)
             shutil.rmtree(work_dir, ignore_errors=True)
 
             return jsonify({
@@ -58,7 +55,11 @@ def register_video_factory(app):
     @app.route("/api/video-file/<filename>")
     def api_video_file(filename):
         from flask import send_file
-        path = OUTPUT_DIR / filename
+        from security import current_username
+        try:
+            path = owned_video_path(current_username(), filename)
+        except FileNotFoundError:
+            return jsonify({"error": "not found"}), 404
         if not path.exists():
             return jsonify({"error": "not found"}), 404
         return send_file(str(path), mimetype="video/mp4")

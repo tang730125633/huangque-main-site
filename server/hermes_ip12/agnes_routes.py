@@ -7,6 +7,12 @@ import uuid
 import urllib.request
 import urllib.error
 from werkzeug.utils import secure_filename
+from artifact_store import (
+    StorageQuotaExceeded,
+    atomic_append_bytes,
+    atomic_write_bytes,
+    reserve_capacity,
+)
 
 BASE_URL = "https://apihub.agnes-ai.com/v1"
 TEXT_MODEL = "agnes-2.0-flash"
@@ -65,9 +71,8 @@ def http_json(path, key, payload=None, method=None, timeout=90):
 
 
 def append_run(runs_path, row):
-    runs_path.parent.mkdir(parents=True, exist_ok=True)
-    with runs_path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    content = (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8")
+    atomic_append_bytes(runs_path, content)
 
 
 def extract_text_completion(body):
@@ -105,7 +110,7 @@ def download_video_if_ready(body, task_id, video_root):
     if not path.exists() or path.stat().st_size == 0:
         req = urllib.request.Request(remote_url, headers={"User-Agent": "HermesCockpit/AgnesLab"})
         with urllib.request.urlopen(req, timeout=240) as rr:
-            path.write_bytes(rr.read())
+            atomic_write_bytes(path, rr.read())
     return {"filename": fn, "url": f"/media/agnes/videos/{fn}", "path": str(path), "remote_url": remote_url, "bytes": path.stat().st_size}
 
 
@@ -274,7 +279,7 @@ def register_agnes_routes(app, project_dir, data_root=None):
                 if b64:
                     import base64
                     fn = safe_name("agnes_img") + f"_{i}.png"
-                    (image_root / fn).write_bytes(base64.b64decode(b64))
+                    atomic_write_bytes(image_root / fn, base64.b64decode(b64))
                     saved.append({"filename": fn, "url": f"/media/agnes/images/{fn}"})
                 elif url:
                     try:
@@ -283,8 +288,10 @@ def register_agnes_routes(app, project_dir, data_root=None):
                             raw_img = rr.read()
                         ext = ".png"
                         fn = safe_name("agnes_img") + f"_{i}{ext}"
-                        (image_root / fn).write_bytes(raw_img)
+                        atomic_write_bytes(image_root / fn, raw_img)
                         saved.append({"filename": fn, "url": f"/media/agnes/images/{fn}", "remote_url": url})
+                    except StorageQuotaExceeded:
+                        raise
                     except Exception:
                         saved.append({"remote_url": url})
         row = {"time": now(), "type": "image", "model": model, "prompt": prompt, "ok": out.get("ok"), "status": out.get("status"), "elapsed": elapsed, "saved": saved, "raw_keys": list(body.keys()) if isinstance(body, dict) else []}
@@ -299,7 +306,7 @@ def register_agnes_routes(app, project_dir, data_root=None):
             files = [f] if f else []
         if not files:
             return jsonify({"ok": False, "error": "请上传图片"}), 400
-        saved = []
+        pending = []
         for f in files:
             original = f.filename or "image.png"
             ext = Path(original).suffix.lower() or ".png"
@@ -308,15 +315,20 @@ def register_agnes_routes(app, project_dir, data_root=None):
             safe = secure_filename(original) or f"image{ext}"
             fn = safe_name("agnes_upload") + "_" + safe
             dest = image_root / fn
-            f.save(dest)
-            local_url = f"/media/agnes/images/{fn}"
-            saved.append({
-                "filename": fn,
-                "url": local_url,
-                "public_url": public_url_for_request(local_url),
-                "path": str(dest),
-                "bytes": dest.stat().st_size,
-            })
+            content = f.read()
+            pending.append((original, fn, dest, content))
+        saved = []
+        with reserve_capacity(sum(len(item[3]) for item in pending)) as reservation:
+            for original, fn, dest, content in pending:
+                atomic_write_bytes(dest, content, reservation=reservation)
+                local_url = f"/media/agnes/images/{fn}"
+                saved.append({
+                    "filename": fn,
+                    "url": local_url,
+                    "public_url": public_url_for_request(local_url),
+                    "path": str(dest),
+                    "bytes": len(content),
+                })
         append_run(runs_path, {"time": now(), "type": "image_upload", "ok": True, "saved": saved})
         return jsonify({"ok": True, "files": saved})
 
@@ -381,6 +393,11 @@ def register_agnes_routes(app, project_dir, data_root=None):
         if out.get("ok") and body.get("status") == "completed":
             try:
                 saved = download_video_if_ready(body, task_id, video_root)
+            except StorageQuotaExceeded:
+                return jsonify({
+                    "ok": False,
+                    "error": "Hermes storage quota exceeded",
+                }), 507
             except Exception as e:
                 download_error = str(e)
         append_run(runs_path, {"time": now(), "type": "video_status", "ok": out.get("ok"), "status": out.get("status"), "elapsed": elapsed, "task_id": task_id, "video_status": body.get("status"), "progress": body.get("progress"), "saved": saved, "download_error": download_error})
