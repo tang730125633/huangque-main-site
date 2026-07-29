@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -251,13 +252,43 @@ def finalize_file(source, destination, reservation=None):
     destination = Path(destination).resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     with storage_transaction():
+        source_size = source.stat().st_size
         source_inside_data = source.is_relative_to(DATA_DIR.resolve())
         ensure_capacity(
-            0 if source_inside_data else source.stat().st_size,
+            0 if source_inside_data else source_size,
             replacing=destination,
             reservation=reservation,
         )
-        os.replace(source, destination)
+        try:
+            os.replace(source, destination)
+        except OSError as exc:
+            if exc.errno != errno.EXDEV and getattr(exc, "winerror", None) != 17:
+                raise
+
+            # Cross-filesystem moves cannot use rename. Copy into the target
+            # directory, then atomically publish there. The stricter capacity
+            # check accounts for the temporary peak while source, old target,
+            # and copied temporary file may coexist.
+            temp = destination.with_name(
+                f".{destination.name}.{uuid.uuid4().hex}.tmp"
+            )
+            ensure_capacity(
+                source_size,
+                reservation=reservation,
+            )
+            try:
+                shutil.copy2(source, temp)
+                if temp.stat().st_size != source_size:
+                    raise OSError(errno.EIO, "incomplete cross-filesystem copy")
+                os.replace(temp, destination)
+                try:
+                    source.unlink()
+                except OSError:
+                    # The destination is already committed. Callers that stage
+                    # in a temporary directory will clean up the duplicate.
+                    pass
+            finally:
+                temp.unlink(missing_ok=True)
     return destination
 
 

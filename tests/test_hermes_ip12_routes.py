@@ -257,6 +257,8 @@ class HermesIP12RuntimeTests(unittest.TestCase):
         script = r'''
 import io
 import base64
+import errno
+import hashlib
 import json
 import os
 import shutil
@@ -517,6 +519,102 @@ except artifact_store.StorageQuotaExceeded:
     pass
 assert quota_first.exists() and not quota_second.exists()
 artifact_store.DATA_QUOTA_BYTES = original_quota
+
+# Cross-filesystem finalize falls back to a target-side atomic copy.
+external_root = Path(os.environ["HERMES_DATA_DIR"]).parent
+cross_source = external_root / f"hermes-cross-{os.getpid()}.bin"
+cross_destination = artifact_store.media_path(
+    "admin", artifact_store.new_asset_id(), ".bin"
+)
+cross_content = b"cross-filesystem-content"
+cross_source.write_bytes(cross_content)
+real_replace = artifact_store.os.replace
+replace_calls = []
+
+def replace_cross_device_once(source, destination):
+    replace_calls.append((Path(source), Path(destination)))
+    if len(replace_calls) == 1:
+        raise OSError(errno.EXDEV, "cross-device link")
+    return real_replace(source, destination)
+
+with patch.object(
+    artifact_store.os, "replace", side_effect=replace_cross_device_once
+):
+    artifact_store.finalize_file(cross_source, cross_destination)
+assert not cross_source.exists()
+assert cross_destination.read_bytes() == cross_content
+assert hashlib.sha256(cross_destination.read_bytes()).digest() == hashlib.sha256(
+    cross_content
+).digest()
+assert not list(cross_destination.parent.glob(f".{cross_destination.name}.*.tmp"))
+
+# Copy interruption keeps the source and removes target-side temporary files.
+interrupted_source = external_root / f"hermes-interrupted-{os.getpid()}.bin"
+interrupted_destination = artifact_store.media_path(
+    "admin", artifact_store.new_asset_id(), ".bin"
+)
+interrupted_source.write_bytes(b"complete-source")
+
+def interrupt_copy(source, destination):
+    Path(destination).write_bytes(b"partial")
+    raise OSError(errno.EIO, "copy interrupted")
+
+with patch.object(
+    artifact_store.os, "replace", side_effect=OSError(errno.EXDEV, "cross-device link")
+), patch.object(artifact_store.shutil, "copy2", side_effect=interrupt_copy):
+    try:
+        artifact_store.finalize_file(interrupted_source, interrupted_destination)
+        raise AssertionError("interrupted copy should fail")
+    except OSError as exc:
+        assert exc.errno == errno.EIO
+assert interrupted_source.exists()
+assert not interrupted_destination.exists()
+assert not list(
+    interrupted_destination.parent.glob(f".{interrupted_destination.name}.*.tmp")
+)
+interrupted_source.unlink()
+
+# Non-cross-device errors fail closed and never enter the copy fallback.
+closed_source = external_root / f"hermes-closed-{os.getpid()}.bin"
+closed_destination = artifact_store.media_path(
+    "admin", artifact_store.new_asset_id(), ".bin"
+)
+closed_source.write_bytes(b"closed")
+with patch.object(
+    artifact_store.os, "replace", side_effect=PermissionError(errno.EACCES, "denied")
+), patch.object(artifact_store.shutil, "copy2") as forbidden_copy:
+    try:
+        artifact_store.finalize_file(closed_source, closed_destination)
+        raise AssertionError("permission error should fail")
+    except PermissionError:
+        pass
+forbidden_copy.assert_not_called()
+assert closed_source.exists() and not closed_destination.exists()
+closed_source.unlink()
+
+# Cross-filesystem fallback uses peak, not final-net, quota accounting.
+peak_source = external_root / f"hermes-peak-{os.getpid()}.bin"
+peak_destination = artifact_store.media_path(
+    "admin", artifact_store.new_asset_id(), ".bin"
+)
+peak_source.write_bytes(b"0123456789")
+artifact_store.atomic_write_bytes(peak_destination, b"old-target")
+artifact_store.DATA_QUOTA_BYTES = artifact_store.directory_size() + 5
+with patch.object(
+    artifact_store.os, "replace", side_effect=OSError(errno.EXDEV, "cross-device link")
+), patch.object(artifact_store.shutil, "copy2") as quota_copy:
+    try:
+        artifact_store.finalize_file(peak_source, peak_destination)
+        raise AssertionError("cross-device peak quota should fail")
+    except artifact_store.StorageQuotaExceeded:
+        pass
+quota_copy.assert_not_called()
+assert peak_source.exists()
+assert peak_destination.read_bytes() == b"old-target"
+assert not list(peak_destination.parent.glob(f".{peak_destination.name}.*.tmp"))
+peak_source.unlink()
+artifact_store.DATA_QUOTA_BYTES = original_quota
+
 assert client.post(
     "/api/chat",
     json={"conversation_id": "../../knowledge/visual_formulas", "message": "test"},
@@ -825,10 +923,27 @@ def run_analysis():
         headers={"Authorization": "Bearer admin-token"},
     )
 
+analysis_exdev = []
+def replace_analysis_cross_device(source, destination):
+    source_path = Path(source)
+    destination_path = Path(destination)
+    if (
+        not analysis_exdev
+        and source_path.name == "source.mp4"
+        and source_path.parent.name.startswith("hermes-analysis-")
+        and destination_path.name == "source.mp4"
+    ):
+        analysis_exdev.append((source_path, destination_path))
+        raise OSError(errno.EXDEV, "cross-device link")
+    return real_replace(source, destination)
+
 with patch.object(video_analyzer, "is_public_video_url", return_value=True), \
      patch.object(video_analyzer, "download_video", side_effect=fake_analysis_download), \
      patch.object(video_analyzer, "transcribe_video", return_value="transcript"), \
-     patch.object(video_analyzer, "analyze_transcript", return_value="analysis"):
+     patch.object(video_analyzer, "analyze_transcript", return_value="analysis"), \
+     patch.object(
+         artifact_store.os, "replace", side_effect=replace_analysis_cross_device
+     ):
     with ThreadPoolExecutor(max_workers=2) as pool:
         first_future = pool.submit(run_analysis)
         assert analysis_started.wait(timeout=10)
@@ -837,6 +952,7 @@ with patch.object(video_analyzer, "is_public_video_url", return_value=True), \
         analysis_release.set()
         first = first_future.result(timeout=10)
 assert first.status_code == 200, first.get_data(as_text=True)
+assert len(analysis_exdev) == 1
 after_analyses = {path.name for path in analyses_root.iterdir()}
 assert len(after_analyses - before_analyses) == 1
 assert artifact_store.directory_size() <= artifact_store.DATA_QUOTA_BYTES
