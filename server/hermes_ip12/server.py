@@ -341,21 +341,16 @@ def _validate_foundation_pdf(path):
         raise RuntimeError("PDF file size is invalid")
     if not data.startswith(b"%PDF-") or not re.search(rb"%%EOF\s*\Z", data):
         raise RuntimeError("PDF file is incomplete")
-    startxref = list(re.finditer(rb"startxref\s+(\d+)", data[-4096:]))
-    if not startxref:
-        raise RuntimeError("PDF cross-reference is missing")
-    xref_offset = int(startxref[-1].group(1))
-    if xref_offset <= 0 or data[xref_offset:xref_offset + 4] != b"xref":
-        raise RuntimeError("PDF cross-reference is invalid")
-    trailer_offset = data.find(b"trailer", xref_offset)
-    trailer = data[trailer_offset:] if trailer_offset > xref_offset else b""
-    root = re.search(rb"/Root\s+(\d+)\s+(\d+)\s+R", trailer)
-    if not root:
-        raise RuntimeError("PDF trailer is invalid")
-    root_header = rb"\b" + root.group(1) + rb"\s+" + root.group(2) + rb"\s+obj\b"
-    if not re.search(root_header, data[:xref_offset]):
-        raise RuntimeError("PDF root object is invalid")
-    page_count = len(re.findall(rb"/Type\s*/Page\b", data[:xref_offset]))
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(path, strict=True)
+        if reader.is_encrypted:
+            raise ValueError("encrypted PDF")
+        page_count = len(reader.pages)
+        for page in reader.pages:
+            page.mediabox
+    except Exception as exc:
+        raise RuntimeError("PDF cannot be parsed") from exc
     if not 8 <= page_count <= 10:
         raise RuntimeError("PDF page count is outside 8-10 pages")
     return page_count

@@ -156,6 +156,7 @@ class HermesIP12SourceTests(unittest.TestCase):
 
         requirements = (HERMES / "requirements.txt").read_text(encoding="utf-8")
         self.assertIn("yt-dlp", requirements)
+        self.assertIn("pypdf", requirements)
         ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
         for path in (
             "server/hermes_ip12/data/",
@@ -210,7 +211,7 @@ if (!rendered.includes("&lt;img") || !rendered.includes("<br>")) process.exit(5)
 
 
 @unittest.skipUnless(
-    importlib.util.find_spec("flask") and importlib.util.find_spec("requests"),
+    importlib.util.find_spec("flask") and importlib.util.find_spec("requests") and importlib.util.find_spec("pypdf"),
     "Hermes runtime dependencies are not installed",
 )
 class HermesIP12RuntimeTests(unittest.TestCase):
@@ -315,7 +316,8 @@ assert _validate_foundation_pdf(valid_pdf) == 8
 if shutil.which("pdfinfo"):
     assert subprocess.run(["pdfinfo", str(valid_pdf)], capture_output=True).returncode == 0
 invalid_pdf = Path(os.environ["HERMES_DATA_DIR"]) / "invalid.pdf"
-invalid_pdf.write_bytes(b"%PDF-1.7\n" + b"/Type /Page\n" * 8 + b"0" * 10000 + b"\n%%EOF\n")
+invalid_body = b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n" + b"/Type /Page\n" * 8 + b"0" * 10000
+invalid_pdf.write_bytes(invalid_body + b"\nxref\nthis is not a cross-reference table\ntrailer\n<< /Root 1 0 R /Size 10 >>\nstartxref\n" + str(len(invalid_body) + 1).encode() + b"\n%%EOF\n")
 try:
     _validate_foundation_pdf(invalid_pdf)
     raise AssertionError("structurally invalid PDF was accepted")
