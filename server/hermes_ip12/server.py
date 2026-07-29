@@ -245,8 +245,32 @@ def _foundation_html(markdown):
     source_rows = str(markdown or "").splitlines()
     if source_rows and source_rows[0].strip().startswith("# "):
         source_rows = source_rows[1:]
+    table_rows = []
+
+    def flush_table():
+        nonlocal table_rows
+        if not table_rows:
+            return
+        cells = [[html.escape(cell.strip()) for cell in row.strip().strip("|").split("|")] for row in table_rows]
+        header, *body_rows = cells
+        if body_rows and all(re.fullmatch(r":?-{3,}:?", cell.replace(" ", "")) for cell in body_rows[0]):
+            body_rows = body_rows[1:]
+        rows.append("<table><thead><tr>%s</tr></thead><tbody>%s</tbody></table>" % (
+            "".join("<th>%s</th>" % cell for cell in header),
+            "".join("<tr>%s</tr>" % "".join("<td>%s</td>" % cell for cell in row) for row in body_rows),
+        ))
+        table_rows = []
+
     for raw in source_rows:
-        line = html.escape(raw.strip())
+        if raw.strip().startswith("|") and raw.strip().endswith("|"):
+            table_rows.append(raw)
+            continue
+        flush_table()
+        raw_line = raw.strip()
+        if raw_line.startswith("> "):
+            rows.append("<blockquote>%s</blockquote>" % html.escape(raw_line[2:]))
+            continue
+        line = html.escape(raw_line)
         if not line:
             continue
         line = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", line)
@@ -258,15 +282,18 @@ def _foundation_html(markdown):
             rows.append("<h1>%s</h1>" % line[2:])
         elif line.startswith(("- ", "* ")):
             rows.append("<li>%s</li>" % line[2:])
+        elif line == "---":
+            rows.append("<hr>")
         else:
             rows.append("<p>%s</p>" % line)
+    flush_table()
     body = "\n".join(rows) or "<p>暂无已确认内容。</p>"
     return """<!doctype html><html lang='zh-CN'><meta charset='utf-8'><style>
-@page{size:A4;margin:18mm 18mm 20mm;@bottom-right{content:counter(page) '/' counter(pages);color:#69727d;font-size:8pt}}body{font-family:'Noto Sans SC','WenQuanYi Zen Hei','Microsoft YaHei',sans-serif;color:#28313b;line-height:1.8;font-size:10.5pt}h1{font-size:24pt;margin:0 0 4mm;color:#17253a;border-bottom:3px solid #d8b65b;padding-bottom:5mm}h2{font-size:16pt;margin:10mm 0 3mm;color:#173d78;border-left:3px solid #d8b65b;padding-left:3mm}h3{font-size:12pt;margin:5mm 0 2mm;color:#26364b}p,li{margin:1.5mm 0}li{margin-left:5mm}.meta{color:#707987;font-size:9pt;margin-bottom:8mm}.notice{margin:7mm 0;padding:3mm 4mm;background:#faf7ed;border-left:3px solid #d8b65b;color:#66572f}</style><body><h1>IP 人设定位｜模块 1-4 初稿</h1><div class='meta'>黄雀 IP 孵化教练 · 仅基于本次对话整理 · 生成后请本人确认</div><div class='notice'>本报告用于确认 IP 底座。确认后才会开启模块 5 及后续内容生产。</div>%s</body></html>""" % body
+@page{size:A4;margin:16mm 18mm 18mm;@bottom-right{content:counter(page) '/' counter(pages);color:#69727d;font-size:8pt}}body{font-family:'Noto Sans SC','WenQuanYi Zen Hei','Microsoft YaHei',sans-serif;color:#29313b;line-height:1.75;font-size:10.2pt}.cover{border-bottom:2px solid #173d78;padding-bottom:5mm;margin-bottom:7mm}.cover h1{font-size:19pt;margin:0 0 3mm;color:#1d2632;border:0;padding:0}.meta{color:#69727d;font-size:9pt;line-height:1.7}.notice{margin:5mm 0 8mm;padding:3mm 4mm;background:#f5f7fa;border-left:3px solid #dce3ea;color:#566270}h1{font-size:18pt;margin:0 0 5mm;color:#1d2632;border-bottom:1px solid #dce3ea;padding-bottom:4mm}h2{font-size:15pt;margin:9mm 0 4mm;color:#1d2632;border-top:2px solid #dce3ea;padding-top:5mm}h3{font-size:11.5pt;margin:5mm 0 2mm;color:#1d2632}p,li{margin:1.7mm 0}li{margin-left:5mm}strong{color:#1d2632}blockquote{margin:4mm 0;padding:3mm 4mm;border-left:3px solid #dce3ea;color:#687483;background:#fafbfd}hr{border:0;border-top:2px solid #dce3ea;margin:7mm 0}table{width:100%%;border-collapse:collapse;margin:4mm 0 7mm;font-size:9.3pt;page-break-inside:avoid}th{background:#edf3ff;color:#29313b;font-weight:700}th,td{border:1px solid #d8e2f4;padding:2.5mm 3mm;text-align:left;vertical-align:top}tr:nth-child(even){background:#fafcff}</style><body><div class='cover'><h1>IP 人设定位｜模块 1-4 初稿</h1><div class='meta'>黄雀 IP 孵化教练 · 基于本次对话整理 · 生成后请本人确认</div></div><div class='notice'>本报告用于确认 IP 底座。确认后才会开启模块 5 及后续内容生产。</div>%s</body></html>""" % body
 
 def generate_foundation_report(convo_id):
     convo = load_conversation(convo_id)
-    messages = [{"role": "system", "content": "你是IP定位报告编辑。只基于对话中已经出现的信息，写一份中文Markdown初稿。必须含：IP定位、目标人群、核心能力与价值观、核心价值主张、4个故事资产、内容方向、待本人确认事项。未知或数字不确定时标注‘待本人确认’，不要编造。"}]
+    messages = [{"role": "system", "content": """你是IP定位报告编辑。只基于对话中已经出现的信息，写一份可直接交给客户确认的中文Markdown《模块1-4定位初稿》。这不是摘要：信息充分时应形成约8-10页的策略报告，但绝不为凑页数编造。未知、未确认数字或事实必须写‘待本人确认’。\n\n严格按以下结构输出，不写开场客套，也不要输出总标题：\n## 模块一｜定位诊断\n### 核心关键词（5-7个）：每个用编号、关键词和一句解释。\n### 最终定位：名称、一句话定位语、三合一策略。\n### 市场机会：至少3点，写清目标人群共鸣、成交痛点、差异化和可验证资产。\n### 潜在风险：3-5点，给出对应控制建议。\n## 模块二｜人设塑造\n### 三套人设方案：每套包含名称、核心特质、故事基调、传播标签、人设公式、优势与风险。\n### 推荐人设：说明选择理由，并提供账号封面/置顶、引流钩子、成交主张、逆袭故事、个人口头禅五条口径。此处必须用Markdown表格，列为“场景｜建议口径”。\n## 模块三｜价值主张提炼\n### 核心价值主张：主张核心、一句话金句、服务对象、解决问题、可交付结果。\n### 差异化证明：把经历、能力、结果和价值观分别写清。\n### 一句话自我介绍（优化版）：给原始口径、优化口径与3条优化理由。\n## 模块四｜故事资产挖掘\n### 四个故事资产：每个含故事名称、起点、转折、结果/品质、核心情绪点、适用传播场景。\n### 三类传播故事：挫折型、成长型、愿景型各选一个，说明传播目的。\n### 执行优先级建议：必须用Markdown表格，列为“优先级｜模块｜关键任务｜预计产出”。\n## 确认页\n用一句话列出客户要确认的3-5项；最后固定写：‘文档状态：模块1-4初稿完成，待本人确认后进入模块5-6执行。’\n\n不要编造未在对话中出现的金额、人数、经历、客户结果或账号名称。"""}]
     messages.extend(convo.get("messages", [])[-40:])
     messages.append({"role": "user", "content": "生成《IP 人设定位｜模块 1-4 初稿》，直接输出报告。"})
     content = call_ai(messages, stream=False, temperature=0.35).json()["choices"][0]["message"]["content"]
