@@ -3,8 +3,8 @@
 Hermes 12模块IP孵化教练 v3 — 诊断→交付闭环
 新增：模块完成自动生成交付物 / GEO分析 / Humanizer / 一键导出
 """
-import html, json, os, pathlib, re, shutil, subprocess, tempfile, uuid
-from datetime import datetime
+import html, json, os, pathlib, re, shutil, subprocess, tempfile, threading, uuid
+from datetime import datetime, timedelta
 from flask import Flask, g, request, jsonify, Response, redirect, render_template, send_file
 import requests
 from runtime_paths import DATA_DIR, ROOT_DIR
@@ -22,6 +22,9 @@ DELIVERABLES_DIR = DATA_DIR / "deliverables"
 FOUNDATION_REPORTS_DIR = DATA_DIR / "foundation_reports"
 CONVERSATION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
 AUTH_BASE = os.environ.get("HERMES_AUTH_BASE", "http://127.0.0.1:8095").rstrip("/")
+# ponytail: one process-wide lock is enough for this single-process Flask service.
+CONVERSATION_STATE_LOCK = threading.RLock()
+PROCESS_RUN_ID = uuid.uuid4().hex
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024
@@ -165,6 +168,10 @@ class InvalidConversationId(ValueError):
     pass
 
 
+class ReportGenerationInProgress(RuntimeError):
+    pass
+
+
 def conversation_path(convo_id):
     if not isinstance(convo_id, str) or not CONVERSATION_ID_RE.fullmatch(convo_id):
         raise InvalidConversationId("invalid conversation id")
@@ -236,7 +243,15 @@ def load_conversation(convo_id):
 
 def save_conversation(convo_id, data):
     data["updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-    conversation_path(convo_id).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    path = conversation_path(convo_id)
+    with CONVERSATION_STATE_LOCK:
+        fd, temp_path = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, ensure_ascii=False, indent=2)
+            os.replace(temp_path, path)
+        finally:
+            pathlib.Path(temp_path).unlink(missing_ok=True)
 
 def list_convos(owner_account_id=None):
     convos = []
@@ -264,16 +279,18 @@ def parse_coach_state_updates(ai_response, current_state):
     for m in MODULES:
         mid = m["id"]
         patterns = [f"模块 {mid} 完成", f"模块{mid} 完成", f"✅ 模块 {mid}", f"模块 {mid} ✅"]
-        if any(p in text for p in patterns):
+        if mid == updated_state.get("current_module", 1) and any(p in text for p in patterns):
             if mid not in updated_state["completed_modules"]:
                 updated_state["completed_modules"].append(mid)
             if updated_state["current_module"] == mid:
                 if mid == 4:
-                    updated_state["foundation_report"] = {"status": "generating"}
+                    if (updated_state.get("foundation_report") or {}).get("status") != "confirmed":
+                        updated_state["foundation_report"] = {"status": "generating"}
                 else:
-                    updated_state["current_module"] = mid + 1
+                    updated_state["current_module"] = min(12, mid + 1)
                 updated_state["module_step"] = 0
-    if "全部完成" in text or "结业" in text:
+    if ("全部完成" in text or "结业" in text) and current_state.get("current_module") == 12 \
+            and (current_state.get("foundation_report") or {}).get("status") == "confirmed":
         updated_state["completed_modules"] = list(range(1, 13))
     transition_match = re.search(
         r'(?:接下来(?:是|进入)?|(?:直接)?进入(?:到)?|开始(?:进入)?|切换(?:到|至)?)\s*第?\s*模块\s*(\d+)',
@@ -284,12 +301,68 @@ def parse_coach_state_updates(ai_response, current_state):
         current = updated_state.get("current_module", 1)
         # The coach has visibly started the next module. Keep the sidebar in
         # sync, but only accept the normal one-module forward transition.
-        if target == current + 1 and target <= 12:
+        foundation_confirmed = (updated_state.get("foundation_report") or {}).get("status") == "confirmed"
+        if target == current + 1 and target <= 12 and (target < 5 or foundation_confirmed):
             if current not in updated_state["completed_modules"]:
                 updated_state["completed_modules"].append(current)
             updated_state["current_module"] = target
             updated_state["module_step"] = 0
     return updated_state
+
+
+def _foundation_source_messages(convo):
+    messages = convo.get("messages", [])
+    source_end = (convo.get("coach_state") or {}).get("foundation_source_message_count")
+    if isinstance(source_end, int) and 0 < source_end <= len(messages):
+        return messages[:source_end]
+    markers = ("模块 4 完成", "模块4 完成", "✅ 模块 4", "模块 4 ✅")
+    for index, message in enumerate(messages):
+        if message.get("role") == "assistant" and any(marker in str(message.get("content", "")) for marker in markers):
+            return messages[:index + 1]
+    for index, message in enumerate(messages):
+        if message.get("role") == "assistant" and re.search(r"(?:接下来|进入|开始|切换).{0,8}模块\s*5", str(message.get("content", ""))):
+            return messages[:index]
+    return messages
+
+
+def _foundation_generation_active(report):
+    if report.get("status") != "generating" or report.get("process_run_id") != PROCESS_RUN_ID or not report.get("started_at"):
+        return False
+    try:
+        started_at = datetime.strptime(report["started_at"], "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return False
+    return datetime.now() - started_at < timedelta(minutes=15)
+
+
+def _validate_foundation_pdf(path):
+    data = path.read_bytes()
+    if not (10_000 <= len(data) <= 20 * 1024 * 1024):
+        raise RuntimeError("PDF file size is invalid")
+    if not data.startswith(b"%PDF-") or not re.search(rb"%%EOF\s*\Z", data):
+        raise RuntimeError("PDF file is incomplete")
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(path, strict=True)
+        if reader.is_encrypted:
+            raise ValueError("encrypted PDF")
+        page_count = len(reader.pages)
+        for page in reader.pages:
+            page.mediabox
+    except Exception as exc:
+        raise RuntimeError("PDF cannot be parsed") from exc
+    if not 8 <= page_count <= 10:
+        raise RuntimeError("PDF page count is outside 8-10 pages")
+    return page_count
+
+
+def _mark_foundation_report_failed(convo_id):
+    with CONVERSATION_STATE_LOCK:
+        convo = load_conversation(convo_id)
+        report = dict((convo.get("coach_state") or {}).get("foundation_report") or {})
+        report.update({"status": "failed", "error": "PDF 文件不可用"})
+        convo.setdefault("coach_state", {})["foundation_report"] = report
+        save_conversation(convo_id, convo)
 
 def _foundation_html(markdown):
     rows = []
@@ -345,14 +418,27 @@ def _foundation_html(markdown):
 @page{size:A4;margin:16mm 18mm 18mm;@bottom-right{content:counter(page) '/' counter(pages);color:#69727d;font-size:8pt}}body{font-family:'Noto Sans SC','WenQuanYi Zen Hei','Microsoft YaHei',sans-serif;color:#29313b;line-height:1.75;font-size:10.2pt}.cover{border-bottom:2px solid #173d78;padding-bottom:5mm;margin-bottom:7mm}.cover h1{font-size:19pt;margin:0 0 3mm;color:#1d2632;border:0;padding:0}.meta{color:#69727d;font-size:9pt;line-height:1.7}.notice{margin:5mm 0 8mm;padding:3mm 4mm;background:#f5f7fa;border-left:3px solid #dce3ea;color:#566270}h1{font-size:18pt;margin:0 0 5mm;color:#1d2632;border-bottom:1px solid #dce3ea;padding-bottom:4mm}h2{font-size:15pt;margin:9mm 0 4mm;color:#1d2632;border-top:2px solid #dce3ea;padding-top:5mm}h3{font-size:11.5pt;margin:5mm 0 2mm;color:#1d2632}h4{font-size:10.5pt;margin:4mm 0 2mm;color:#29313b}p,li{margin:1.7mm 0}li{margin-left:5mm}strong{color:#1d2632}blockquote{margin:4mm 0;padding:3mm 4mm;border-left:3px solid #dce3ea;color:#687483;background:#fafbfd}hr{border:0;border-top:2px solid #dce3ea;margin:7mm 0}table{width:100%%;border-collapse:collapse;margin:4mm 0 7mm;font-size:9.3pt;page-break-inside:avoid}th{background:#edf3ff;color:#29313b;font-weight:700}th,td{border:1px solid #d8e2f4;padding:2.5mm 3mm;text-align:left;vertical-align:top}tr:nth-child(even){background:#fafcff}</style><body><div class='cover'><h1>IP 人设定位｜模块 1-4 初稿</h1><div class='meta'>黄雀 IP 孵化教练 · 基于本次对话整理 · 生成后请本人确认</div></div><div class='notice'>本报告用于确认 IP 底座。确认后才会开启模块 5 及后续内容生产。</div>%s</body></html>""" % body
 
 def generate_foundation_report(convo_id):
-    convo = load_conversation(convo_id)
+    target = FOUNDATION_REPORTS_DIR / (convo_id + ".pdf")
+    with CONVERSATION_STATE_LOCK:
+        convo = load_conversation(convo_id)
+        state = convo.setdefault("coach_state", {})
+        report = state.get("foundation_report") or {}
+        if report.get("status") in {"awaiting_confirmation", "confirmed"}:
+            try:
+                _validate_foundation_pdf(target)
+                return report
+            except (OSError, RuntimeError):
+                pass
+        if _foundation_generation_active(report):
+            raise ReportGenerationInProgress("报告正在生成，请稍后再试")
+        state["foundation_report"] = {"status": "generating", "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "process_run_id": PROCESS_RUN_ID}
+        save_conversation(convo_id, convo)
     messages = [{"role": "system", "content": """你是IP定位报告编辑。只基于对话中已经出现的信息，写一份可直接交给客户确认的中文Markdown《模块1-4定位初稿》。目标是与成熟咨询交付一致的8-10页策略报告，而不是对话摘要；通过充分拆解已知信息实现信息密度，绝不为凑页数编造。未知、未确认数字或事实必须写‘待本人确认’。\n\n严格按以下结构输出，不写开场客套，也不要输出总标题：\n## 模块一｜定位诊断\n### 核心关键词（7个）：每个用编号、关键词和一句解释。\n### 最终定位：名称、一句话定位语、三合一策略。\n### 市场机会：5点，必须写目标人群共鸣、成交痛点、差异化、可验证资产和传播机会。\n### 潜在风险与控制建议：5组，每组写风险和一条控制建议。\n## 模块二｜人设塑造\n### 三套人设方案：每套包含名称、核心特质、故事基调、传播标签、人设公式、优势、风险与适用场景。\n### 最终推荐：推荐哪套人设、5条具体匹配理由、核心人设要素表。\n### 对外口径：账号封面/置顶、引流钩子、成交主张、逆袭故事、个人口头禅五条口径，必须用Markdown表格，列为“场景｜建议口径”。\n## 模块三｜价值主张提炼\n### 价值主张诊断表：把现有表达或当前问题逐条写成“原始口径｜问题｜优化方向”表格；没有原始口径时明确写“待本人确认”。\n### 三套价值主张方案：每套写主张核心、一句话金句、优势、潜在局限。\n### 最终价值主张：主张核心、服务对象、解决问题、可交付结果、最终一句话金句。\n### 金句备选：至少3条，并为每条写适用场景。\n### 差异化证明与变现路径：用一张“经历/能力/结果/价值观｜可证明点｜转化用途”表和一张“路径｜具体措施”表。\n## 模块四｜故事资产挖掘\n### 故事库（至少5个）：每个故事单独用四级标题；必须有一句话、起点、冲突、转折、结果、情绪曲线、适用场景、开头钩子、传播价值。若第5个故事缺少事实，写“候选故事线｜待本人补充”，并说明应补什么，不能虚构。\n### 推荐核心故事主线：选择2个故事组合，写5条推荐理由和可延展的内容系列。\n### 内容资产使用表：至少6行，列为“内容类型｜主题｜适用场景｜目标受众｜传播渠道｜预期效果”。\n## 优化建议汇总\n给“金句升级、内容边界、证明材料、风险控制”各一条可执行建议。\n## 确认页\n列出5项客户要确认的项目；最后固定写：‘文档状态：模块1-4初稿完成，待本人确认后进入模块5-6执行。’\n\n不要编造未在对话中出现的金额、人数、经历、客户结果或账号名称。"""}]
-    messages.extend(convo.get("messages", [])[-40:])
+    messages.extend(_foundation_source_messages(convo))
     messages.append({"role": "user", "content": "生成《IP 人设定位｜模块 1-4 初稿》，直接输出报告。"})
     messages.append({"role": "user", "content": "交付质检：请完整输出所有标题和表格，不得用‘略’、‘同上’或压缩成摘要。目标约8-10页、6000字左右。每个字段独占一行；策略推导必须建立在已知事实上，未知处清楚标注‘待本人确认’。"})
     content = call_ai(messages, stream=False, temperature=0.4, max_tokens=8500).json()["choices"][0]["message"]["content"]
     FOUNDATION_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    target = FOUNDATION_REPORTS_DIR / (convo_id + ".pdf")
     browser = next((item for item in (shutil.which("chromium"), shutil.which("chromium-browser"), "/snap/bin/chromium") if item and pathlib.Path(item).is_file()), "")
     if not browser:
         raise RuntimeError("PDF renderer is unavailable")
@@ -363,11 +449,23 @@ def generate_foundation_report(convo_id):
             [browser, "--headless", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--no-pdf-header-footer", "--user-data-dir=" + str(root / "profile"), "--print-to-pdf=" + str(pdf_path), html_path.as_uri()],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False,
         )
-        if not pdf_path.exists() or not pdf_path.read_bytes().startswith(b"%PDF-"):
+        if not pdf_path.exists():
             raise RuntimeError("PDF renderer failed")
-        target.write_bytes(pdf_path.read_bytes())
+        _validate_foundation_pdf(pdf_path)
+        staged_target = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            shutil.copyfile(pdf_path, staged_target)
+            os.replace(staged_target, target)
+        finally:
+            staged_target.unlink(missing_ok=True)
     record = {"status": "awaiting_confirmation", "filename": target.name, "content": content, "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M")}
-    convo = load_conversation(convo_id); convo.setdefault("coach_state", {})["foundation_report"] = record; save_conversation(convo_id, convo)
+    with CONVERSATION_STATE_LOCK:
+        convo = load_conversation(convo_id)
+        latest_report = convo.setdefault("coach_state", {}).get("foundation_report") or {}
+        if latest_report.get("status") == "confirmed":
+            return latest_report
+        convo["coach_state"]["foundation_report"] = record
+        save_conversation(convo_id, convo)
     return record
 
 def call_ai(messages, stream=False, temperature=0.7, max_tokens=None):
@@ -552,28 +650,36 @@ def api_delete_convo(cid):
 
 def prepare_chat(cid, user_msg):
     """Store one user turn and build the shared model context for web and mini-program."""
-    convo = owned_conversation(cid)
-    if convo is None:
-        return None, None, None
-    convo["messages"].append({"role": "user", "content": user_msg})
-    if convo["title"] == "新诊断" and len(convo["messages"]) >= 2:
-        for message in convo["messages"]:
-            if message["role"] == "user":
-                title = message["content"][:30].replace("\n", " ")
-                convo["title"] = title if len(title) < 30 else title[:27] + "..."
-                break
-    save_conversation(cid, convo)
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return None, None, None
+        state = convo.get("coach_state", {})
+        if 4 in state.get("completed_modules", []) and (state.get("foundation_report") or {}).get("status") != "confirmed":
+            return convo, None, None
+        convo["messages"].append({"role": "user", "content": user_msg})
+        if convo["title"] == "新诊断" and len(convo["messages"]) >= 2:
+            for message in convo["messages"]:
+                if message["role"] == "user":
+                    title = message["content"][:30].replace("\n", " ")
+                    convo["title"] = title if len(title) < 30 else title[:27] + "..."
+                    break
+        save_conversation(cid, convo)
     messages = [{"role": "system", "content": build_system_prompt(cid)}]
     messages.extend(convo["messages"][-40:])
     return convo, messages, list(convo.get("coach_state", {}).get("completed_modules", []))
 
 def finish_chat(cid, full, old_completed):
     """Apply exactly the same coach-state, delivery and PDF rules to every chat client."""
-    convo = load_conversation(cid)
-    convo["messages"].append({"role": "assistant", "content": full})
-    state = parse_coach_state_updates(full, convo.get("coach_state", {}))
-    convo["coach_state"] = state
-    new_completed = [module for module in state.get("completed_modules", []) if module not in old_completed]
+    with CONVERSATION_STATE_LOCK:
+        convo = load_conversation(cid)
+        convo["messages"].append({"role": "assistant", "content": full})
+        state = parse_coach_state_updates(full, convo.get("coach_state", {}))
+        convo["coach_state"] = state
+        new_completed = [module for module in state.get("completed_modules", []) if module not in old_completed]
+        if 4 in new_completed:
+            state["foundation_source_message_count"] = len(convo["messages"])
+        save_conversation(cid, convo)
     auto_deliverables = {}
     for module in new_completed:
         if module in MODULE_DELIVERABLES:
@@ -585,15 +691,16 @@ def finish_chat(cid, full, old_completed):
                 pass
     foundation_report = None
     if 4 in new_completed:
-        save_conversation(cid, convo)
         try:
             foundation_report = generate_foundation_report(cid)
-            convo = load_conversation(cid)
-            state = convo.get("coach_state", state)
+        except ReportGenerationInProgress:
+            pass
         except Exception as exc:
-            state["foundation_report"] = {"status": "failed", "error": str(exc)[:120]}
-            convo["coach_state"] = state
-    save_conversation(cid, convo)
+            with CONVERSATION_STATE_LOCK:
+                convo = load_conversation(cid)
+                convo.setdefault("coach_state", {})["foundation_report"] = {"status": "failed", "error": str(exc)[:120]}
+                save_conversation(cid, convo)
+    state = load_conversation(cid).get("coach_state", state)
     return state, new_completed, auto_deliverables, foundation_report
 
 @app.route("/api/chat", methods=["POST"])
@@ -608,6 +715,8 @@ def api_chat():
     convo, messages, old_completed = prepare_chat(cid, user_msg)
     if convo is None:
         return jsonify({"ok": False, "error": "诊断不存在"}), 404
+    if messages is None:
+        return jsonify({"ok": False, "error": "请先生成并确认模块 1-4 的 IP 定位初稿 PDF"}), 409
 
     def generate():
         full = ""
@@ -647,6 +756,8 @@ def api_chat_complete():
     convo, messages, old_completed = prepare_chat(cid, user_msg)
     if convo is None:
         return jsonify({"ok": False, "error": "诊断不存在"}), 404
+    if messages is None:
+        return jsonify({"ok": False, "error": "请先生成并确认模块 1-4 的 IP 定位初稿 PDF"}), 409
     try:
         response = call_ai(messages, stream=False)
         full = response.json()["choices"][0]["message"]["content"]
@@ -663,8 +774,13 @@ def api_generate_deliverable():
     body = request.get_json()
     cid = body["conversation_id"]
     module_id = body["module"]
-    if owned_conversation(cid) is None:
+    if not isinstance(module_id, int) or not 1 <= module_id <= 12:
+        return jsonify({"ok": False, "error": "模块编号无效"}), 400
+    convo = owned_conversation(cid)
+    if convo is None:
         return jsonify({"ok": False, "error": "诊断不存在"}), 404
+    if module_id >= 5 and (convo.get("coach_state", {}).get("foundation_report") or {}).get("status") != "confirmed":
+        return jsonify({"ok": False, "error": "请先确认模块 1-4 的 IP 定位初稿 PDF"}), 409
     try:
         result = generate_deliverable(cid, module_id)
         if result:
@@ -678,8 +794,13 @@ def api_generate_report():
     body = request.get_json()
     cid = body["conversation_id"]
     module_id = body["module"]
-    if owned_conversation(cid) is None:
+    if not isinstance(module_id, int) or not 1 <= module_id <= 12:
+        return jsonify({"ok": False, "error": "模块编号无效"}), 400
+    convo = owned_conversation(cid)
+    if convo is None:
         return jsonify({"ok": False, "error": "诊断不存在"}), 404
+    if module_id >= 5 and (convo.get("coach_state", {}).get("foundation_report") or {}).get("status") != "confirmed":
+        return jsonify({"ok": False, "error": "请先确认模块 1-4 的 IP 定位初稿 PDF"}), 409
     try:
         report = generate_module_report(cid, module_id)
         return jsonify({"ok": True, "module": module_id, "report": report})
@@ -703,26 +824,74 @@ def api_get_deliverables(cid):
 
 @app.route("/api/foundation-report/<cid>.pdf", methods=["GET"])
 def api_foundation_pdf(cid):
-    if owned_conversation(cid) is None:
+    convo = owned_conversation(cid)
+    if convo is None:
         return jsonify({"ok": False, "error": "报告不存在"}), 404
+    if (convo.get("coach_state", {}).get("foundation_report") or {}).get("status") not in {"awaiting_confirmation", "confirmed"}:
+        return jsonify({"ok": False, "error": "PDF 尚未生成"}), 404
     path = FOUNDATION_REPORTS_DIR / (cid + ".pdf")
     if not path.is_file():
+        _mark_foundation_report_failed(cid)
         return jsonify({"ok": False, "error": "PDF 尚未生成"}), 404
-    return send_file(path, mimetype="application/pdf", as_attachment=True, download_name="IP人设定位_模块1-4初稿.pdf")
+    try:
+        _validate_foundation_pdf(path)
+    except (OSError, RuntimeError):
+        _mark_foundation_report_failed(cid)
+        return jsonify({"ok": False, "error": "PDF 文件不可用，请重新生成"}), 409
+    response = send_file(path, mimetype="application/pdf", as_attachment=True, download_name="IP人设定位_模块1-4初稿.pdf")
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
+@app.route("/api/foundation-report/generate", methods=["POST"])
+def api_generate_foundation_report():
+    cid = (request.get_json(silent=True) or {}).get("conversation_id", "")
+    convo = owned_conversation(cid)
+    if convo is None:
+        return jsonify({"ok": False, "error": "诊断不存在"}), 404
+    if 4 not in convo.get("coach_state", {}).get("completed_modules", []):
+        return jsonify({"ok": False, "error": "请先完成模块 1-4"}), 409
+    report = (convo.get("coach_state") or {}).get("foundation_report") or {}
+    if report.get("status") in {"awaiting_confirmation", "confirmed"}:
+        try:
+            _validate_foundation_pdf(FOUNDATION_REPORTS_DIR / (cid + ".pdf"))
+            return jsonify({"ok": False, "error": "PDF 已生成，无需重复生成"}), 409
+        except (OSError, RuntimeError):
+            _mark_foundation_report_failed(cid)
+    try:
+        record = generate_foundation_report(cid)
+    except ReportGenerationInProgress as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 409
+    except Exception as exc:
+        with CONVERSATION_STATE_LOCK:
+            convo = load_conversation(cid)
+            convo.setdefault("coach_state", {})["foundation_report"] = {"status": "failed", "error": str(exc)[:120]}
+            save_conversation(cid, convo)
+        return jsonify({"ok": False, "error": "PDF 生成失败，请重试"}), 502
+    return jsonify({"ok": True, "report": record, "state": load_conversation(cid).get("coach_state", {})})
 
 @app.route("/api/foundation-report/confirm", methods=["POST"])
 def api_confirm_foundation_report():
     cid = request.get_json()["conversation_id"]
-    convo = owned_conversation(cid)
-    if convo is None:
-        return jsonify({"ok": False, "error": "诊断不存在"}), 404
-    state = convo.setdefault("coach_state", {})
-    report = state.get("foundation_report", {})
-    if report.get("status") != "awaiting_confirmation":
-        return jsonify({"ok": False, "error": "请先生成并查看模块 1-4 初稿"}), 409
-    report["status"] = "confirmed"; report["confirmed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-    state["foundation_report"] = report; state["current_module"] = 5; state["module_step"] = 0
-    save_conversation(cid, convo)
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return jsonify({"ok": False, "error": "诊断不存在"}), 404
+        state = convo.setdefault("coach_state", {})
+        report = state.get("foundation_report", {})
+        if report.get("status") != "awaiting_confirmation":
+            return jsonify({"ok": False, "error": "请先生成并查看模块 1-4 初稿"}), 409
+        try:
+            _validate_foundation_pdf(FOUNDATION_REPORTS_DIR / (cid + ".pdf"))
+        except (OSError, RuntimeError):
+            _mark_foundation_report_failed(cid)
+            return jsonify({"ok": False, "error": "PDF 文件不可用，请重新生成"}), 409
+        report["status"] = "confirmed"; report["confirmed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+        current_module = int(state.get("current_module", 4))
+        state["foundation_report"] = report; state["current_module"] = min(12, max(5, current_module))
+        if current_module <= 4:
+            state["module_step"] = 0
+        save_conversation(cid, convo)
     return jsonify({"ok": True, "state": state})
 
 @app.route("/api/jump-module", methods=["POST"])
@@ -730,16 +899,19 @@ def api_jump():
     body = request.get_json()
     cid = body["conversation_id"]
     target = body["module"]
-    convo = owned_conversation(cid)
-    if convo is None:
-        return jsonify({"ok": False, "error": "诊断不存在"}), 404
-    foundation = convo.get("coach_state", {}).get("foundation_report", {})
-    if target >= 5 and foundation.get("status") != "confirmed":
-        return jsonify({"ok": False, "error": "请先确认模块 1-4 的 IP 定位初稿 PDF"}), 409
-    convo["coach_state"]["current_module"] = target
-    convo["coach_state"]["module_step"] = 0
-    convo["messages"].append({"role": "user", "content": f"跳到模块 {target}: {MODULES[target-1]['name']}"})
-    save_conversation(cid, convo)
+    if not isinstance(target, int) or not 1 <= target <= 12:
+        return jsonify({"ok": False, "error": "模块编号无效"}), 400
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return jsonify({"ok": False, "error": "诊断不存在"}), 404
+        foundation = convo.get("coach_state", {}).get("foundation_report", {})
+        if target >= 5 and foundation.get("status") != "confirmed":
+            return jsonify({"ok": False, "error": "请先确认模块 1-4 的 IP 定位初稿 PDF"}), 409
+        convo["coach_state"]["current_module"] = target
+        convo["coach_state"]["module_step"] = 0
+        convo["messages"].append({"role": "user", "content": f"跳到模块 {target}: {MODULES[target-1]['name']}"})
+        save_conversation(cid, convo)
     return jsonify({"ok": True, "current_module": target})
 
 @app.route("/api/humanize", methods=["POST"])
@@ -776,6 +948,8 @@ def api_topic_radar():
         convo = owned_conversation(convo_id)
         if convo is None:
             return jsonify({"ok": False, "error": "诊断不存在"}), 404
+        if (convo.get("coach_state", {}).get("foundation_report") or {}).get("status") != "confirmed":
+            return jsonify({"ok": False, "error": "请先确认模块 1-4 的 IP 定位初稿 PDF"}), 409
         for m in convo.get("messages", [])[-10:]:
             context_msgs.append({"role": m["role"], "content": m["content"][:300]})
 

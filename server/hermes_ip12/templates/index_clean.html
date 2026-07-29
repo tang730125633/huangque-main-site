@@ -285,9 +285,15 @@ function updateProgress() {
 function renderReportMinis() {
   const section=document.getElementById('reportSection'), mini=document.getElementById('reportMiniList');
   const keys=Object.keys(reports).filter(k=>reports[k]);
-  if(keys.length===0){section.style.display='none';return;}
+  const foundation=coachState.foundation_report||{},done=coachState.completed_modules||[];
+  let foundationRows='';
+  if(foundation.status==='awaiting_confirmation'||foundation.status==='confirmed'){
+    foundationRows='<div class="report-mini" onclick="closeDrawer();openFoundationReport()"><span class="r-icon">📑</span><span>模块 1-4 IP 定位初稿 PDF</span></div>';
+    if(foundation.status==='awaiting_confirmation')foundationRows+='<div class="report-mini" onclick="closeDrawer();confirmFoundationReport()"><span class="r-icon">✅</span><span>确认初稿，继续模块 5</span></div>';
+  }else if(done.includes(4))foundationRows='<div class="report-mini" onclick="closeDrawer();generateFoundationReport()"><span class="r-icon">↻</span><span>检查/重试模块 1-4 PDF</span></div>';
+  if(keys.length===0&&!foundationRows){section.style.display='none';return;}
   section.style.display='block';
-  mini.innerHTML=keys.map(k=>{const r=reports[k],mod=MODULES[parseInt(k)-1],title=typeof r==='object'?r.title:`${mod?.name||'模块'}报告`;
+  mini.innerHTML=foundationRows+keys.map(k=>{const r=reports[k],mod=MODULES[parseInt(k)-1],title=typeof r==='object'?r.title:`${mod?.name||'模块'}报告`;
     return`<div class="report-mini" data-id="${escHtml(k)}" onclick="closeDrawer();viewReport(this.dataset.id)"><span class="r-icon">📄</span><span>${escHtml(title)}</span><span class="r-date">${escHtml(typeof r==='object'?r.generated_at?.slice(5):'')}</span></div>`;}).join('');
 }
 
@@ -334,7 +340,7 @@ async function deleteConversation(id) {
 async function jumpToModule(modId) {
   if(!currentConvoId||streaming)return;
   const res=await fetch('/api/jump-module',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId,module:modId})});
-  const data=await res.json(); coachState.current_module=data.current_module; coachState.module_step=0; renderModules(); await sendJumpMessage(modId);
+  const data=await res.json();if(!res.ok||!data.ok){toast(`❌ ${data.error||'无法切换模块'}`);return}coachState.current_module=data.current_module;coachState.module_step=0;renderModules();await sendJumpMessage(modId);
 }
 
 async function sendJumpMessage(modId) {
@@ -346,6 +352,7 @@ async function sendJumpMessage(modId) {
   let fullText='';const bubble=aiMsg.querySelector('.bubble');
   try{
     const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId,message:`跳到模块 ${modId}`})});
+    if(!res.ok){const errorData=await res.json();throw new Error(errorData.error||'发送失败');}
     const reader=res.body.getReader();const decoder=new TextDecoder();let buf='';
     while(true){const{done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});const lines=buf.split('\n');buf=lines.pop()||'';for(const line of lines){if(!line.startsWith('data: '))continue;try{const data=JSON.parse(line.slice(6));if(data.error){bubble.innerHTML=`<span style="color:#ef4444">❌ ${escHtml(data.error)}</span>`;}else if(data.content){fullText+=data.content;bubble.innerHTML=renderMarkdown(fullText)+'<span class="cursor"></span>';scrollBottom();}else if(data.done){bubble.innerHTML=renderMarkdown(fullText);if(data.state){coachState=data.state;renderModules();}if(data.auto_deliverables){handleAutoDeliverables(data.auto_deliverables);}}}catch(e){}}}
   }catch(e){bubble.innerHTML=`<span style="color:#ef4444">❌ ${escHtml(e.message)}</span>`;}
@@ -364,6 +371,23 @@ function sanitizeMarked(html){const t=document.createElement('template');t.inner
 function renderMarkdown(text) { if(!text)return''; try{if(typeof marked!=='undefined')return sanitizeMarked(marked.parse(escHtml(text)));}catch(e){} return escHtml(text).replace(/\n/g,'<br>'); }
 function escHtml(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
 function scrollBottom(){const area=document.getElementById('chatArea');requestAnimationFrame(()=>{area.scrollTop=area.scrollHeight;});}
+
+async function generateFoundationReport(){
+  if(!currentConvoId||streaming)return;streaming=true;toast('正在生成模块 1-4 PDF…');
+  try{const res=await fetch('/api/foundation-report/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId})});const data=await res.json();if(!res.ok||!data.ok)throw new Error(data.error||'PDF 生成失败');coachState=data.state;renderModules();toast('✅ PDF 已生成，请下载查看并确认');}
+  catch(e){toast(`❌ ${e.message}`);}finally{streaming=false;}
+}
+
+async function openFoundationReport(){
+  if(!currentConvoId)return;const url=`/api/foundation-report/${currentConvoId}.pdf`;const res=await fetch(url,{method:'HEAD',cache:'no-store'});
+  if(!res.ok){coachState.foundation_report={status:'failed'};renderModules();toast('❌ PDF 文件不可用，请重新生成');return;}window.open(url,'_blank','noopener');
+}
+
+async function confirmFoundationReport(){
+  if(!currentConvoId||streaming)return;
+  try{const res=await fetch('/api/foundation-report/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId})});const data=await res.json();if(!res.ok||!data.ok)throw new Error(data.error||'确认失败');coachState=data.state;renderModules();toast(`✅ IP 定位初稿已确认，继续模块 ${coachState.current_module}`);if(!(coachState.completed_modules||[]).includes(coachState.current_module))sendJumpMessage(coachState.current_module);}
+  catch(e){toast(`❌ ${e.message}`);}
+}
 
 // ── Reports ──
 async function viewReport(moduleId) {
@@ -426,6 +450,7 @@ async function sendMessage(){
   const aiMsg=document.createElement('div');aiMsg.className='message assistant';aiMsg.innerHTML=`<div class="avatar">🧠</div><div class="bubble"><div class="typing"><span></span><span></span><span></span></div></div>`;area.appendChild(aiMsg);scrollBottom();
   let fullText='';const bubble=aiMsg.querySelector('.bubble');
   try{const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId,message:text})});
+    if(!res.ok){const errorData=await res.json();throw new Error(errorData.error||'发送失败');}
     const reader=res.body.getReader();const decoder=new TextDecoder();let buf='';
     while(true){const{done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});const lines=buf.split('\n');buf=lines.pop()||'';for(const line of lines){if(!line.startsWith('data: '))continue;try{const data=JSON.parse(line.slice(6));
       if(data.error){bubble.innerHTML=`<span style="color:#ef4444">❌ ${escHtml(data.error)}</span>`;}

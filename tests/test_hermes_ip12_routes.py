@@ -42,7 +42,7 @@ class HermesIP12SourceTests(unittest.TestCase):
         for path in HERMES.glob("*.py"):
             routes.update(pattern.findall(path.read_text(encoding="utf-8")))
 
-        self.assertEqual(len(routes), 75)
+        self.assertEqual(len(routes), 76)
         self.assertTrue(
             {
                 "/api/chat",
@@ -50,6 +50,7 @@ class HermesIP12SourceTests(unittest.TestCase):
                 "/api/generate-deliverable",
                 "/api/generate-image",
                 "/api/generate-video",
+                "/api/foundation-report/generate",
                 "/api/analyze-video",
                 "/api/pipeline",
                 "/api/replica",
@@ -155,6 +156,7 @@ class HermesIP12SourceTests(unittest.TestCase):
 
         requirements = (HERMES / "requirements.txt").read_text(encoding="utf-8")
         self.assertIn("yt-dlp", requirements)
+        self.assertIn("pypdf", requirements)
         ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
         for path in (
             "server/hermes_ip12/data/",
@@ -209,7 +211,7 @@ if (!rendered.includes("&lt;img") || !rendered.includes("<br>")) process.exit(5)
 
 
 @unittest.skipUnless(
-    importlib.util.find_spec("flask") and importlib.util.find_spec("requests"),
+    importlib.util.find_spec("flask") and importlib.util.find_spec("requests") and importlib.util.find_spec("pypdf"),
     "Hermes runtime dependencies are not installed",
 )
 class HermesIP12RuntimeTests(unittest.TestCase):
@@ -219,11 +221,13 @@ import io
 import base64
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
 import server
-from server import _foundation_html, app, parse_coach_state_updates
+from server import _foundation_generation_active, _foundation_html, _foundation_source_messages, _validate_foundation_pdf, app, parse_coach_state_updates
 import image_services
 import media_library
 import video_analyzer
@@ -231,7 +235,7 @@ import video_replica
 
 server.current_account_id = lambda: "acct_a"
 routes = {rule.rule for rule in app.url_map.iter_rules() if rule.endpoint != "static"}
-assert len(routes) == 75, len(routes)
+assert len(routes) == 76, len(routes)
 
 transitioned = parse_coach_state_updates(
     "好，我们进入模块2：人设塑造。",
@@ -245,6 +249,80 @@ foundation = parse_coach_state_updates(
 )
 assert foundation["current_module"] == 4, foundation
 assert foundation["foundation_report"]["status"] == "generating", foundation
+blocked_transition = parse_coach_state_updates(
+    "✅ 模块 4 完成。接下来进入模块 5。",
+    {"current_module": 4, "completed_modules": [1, 2, 3], "module_step": 0},
+)
+assert blocked_transition["current_module"] == 4, blocked_transition
+assert blocked_transition["completed_modules"] == [1, 2, 3, 4], blocked_transition
+revisited = parse_coach_state_updates(
+    "✅ 模块 4 完成。接下来进入模块 5。",
+    {"current_module": 4, "completed_modules": [1, 2, 3, 4], "module_step": 0,
+     "foundation_report": {"status": "confirmed"}},
+)
+assert revisited["current_module"] == 5, revisited
+assert revisited["foundation_report"]["status"] == "confirmed", revisited
+assert 5 not in parse_coach_state_updates(
+    "✅ 模块 5 完成",
+    {"current_module": 4, "completed_modules": [1, 2, 3, 4], "module_step": 0,
+     "foundation_report": {"status": "awaiting_confirmation"}},
+)["completed_modules"]
+assert parse_coach_state_updates(
+    "本次诊断全部完成，正式结业",
+    {"current_module": 1, "completed_modules": [], "module_step": 0},
+)["completed_modules"] == []
+source_messages = [
+    {"role": "user", "content": "模块一资料"},
+    {"role": "assistant", "content": "继续模块四"},
+    {"role": "assistant", "content": "✅ 模块 4 完成"},
+    {"role": "user", "content": "模块五资料"},
+]
+assert _foundation_source_messages({"messages": source_messages}) == source_messages[:3]
+transition_messages = source_messages[:2] + [
+    {"role": "assistant", "content": "接下来进入模块 5"},
+    {"role": "user", "content": "模块五资料"},
+]
+assert _foundation_source_messages({"messages": transition_messages}) == transition_messages[:2]
+assert _foundation_source_messages({
+    "messages": source_messages,
+    "coach_state": {"foundation_source_message_count": 2},
+}) == source_messages[:2]
+assert not _foundation_generation_active({"status": "generating", "started_at": "2099-01-01 00:00:00", "process_run_id": "old-process"})
+
+def write_test_pdf(path, pages=8):
+    stream = b"q\nQ\n%" + b"0" * 10000 + b"\n"
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [" + b" ".join(f"{i} 0 R".encode() for i in range(3, 3 + pages)) + f"] /Count {pages} >>".encode(),
+    ]
+    objects.extend(
+        f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents {3 + pages} 0 R >>".encode()
+        for _ in range(pages)
+    )
+    objects.append(f"<< /Length {len(stream)} >>\nstream\n".encode() + stream + b"endstream")
+    data = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets = [0]
+    for number, obj in enumerate(objects, 1):
+        offsets.append(len(data)); data.extend(f"{number} 0 obj\n".encode() + obj + b"\nendobj\n")
+    xref = len(data); data.extend(f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode())
+    for offset in offsets[1:]:
+        data.extend(f"{offset:010d} 00000 n \n".encode())
+    data.extend(f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
+    path.write_bytes(data)
+
+valid_pdf = Path(os.environ["HERMES_DATA_DIR"]) / "valid.pdf"
+write_test_pdf(valid_pdf)
+assert _validate_foundation_pdf(valid_pdf) == 8
+if shutil.which("pdfinfo"):
+    assert subprocess.run(["pdfinfo", str(valid_pdf)], capture_output=True).returncode == 0
+invalid_pdf = Path(os.environ["HERMES_DATA_DIR"]) / "invalid.pdf"
+invalid_body = b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n" + b"/Type /Page\n" * 8 + b"0" * 10000
+invalid_pdf.write_bytes(invalid_body + b"\nxref\nthis is not a cross-reference table\ntrailer\n<< /Root 1 0 R /Size 10 >>\nstartxref\n" + str(len(invalid_body) + 1).encode() + b"\n%%EOF\n")
+try:
+    _validate_foundation_pdf(invalid_pdf)
+    raise AssertionError("structurally invalid PDF was accepted")
+except RuntimeError:
+    pass
 report_html = _foundation_html("""# 忽略的总标题
 ## 模块一｜定位诊断
 ### 核心关键词
@@ -275,6 +353,8 @@ assert client.get(f"/api/conversations/{cid}/deliverables").get_json() == {}
 server.current_account_id = lambda: "acct_b"
 assert client.get(f"/api/conversations/{cid}").status_code == 404
 assert client.get(f"/api/foundation-report/{cid}.pdf").status_code == 404
+assert client.post("/api/foundation-report/generate", json={"conversation_id": cid}).status_code == 404
+assert client.post("/api/foundation-report/confirm", json={"conversation_id": cid}).status_code == 404
 assert client.get("/api/conversations").get_json() == []
 server.current_account_id = lambda: "acct_a"
 assert client.delete(f"/api/conversations/{cid}").get_json()["ok"] is True
@@ -282,6 +362,55 @@ assert client.delete(f"/api/conversations/{cid}").get_json()["ok"] is True
 foundation_cid = client.post("/api/conversations").get_json()["id"]
 assert client.post("/api/foundation-report/confirm", json={"conversation_id": foundation_cid}).status_code == 409
 assert client.post("/api/jump-module", json={"conversation_id": foundation_cid, "module": 5}).status_code == 409
+assert client.post("/api/foundation-report/generate", json={"conversation_id": foundation_cid}).status_code == 409
+
+gated = server.load_conversation(foundation_cid)
+gated["coach_state"] = {"current_module": 4, "completed_modules": [1, 2, 3, 4],
+                         "module_step": 0, "foundation_report": {"status": "generating"}}
+server.save_conversation(foundation_cid, gated)
+with patch.object(server, "call_ai") as gated_model:
+    gated_reply = client.post("/api/chat-complete", json={"conversation_id": foundation_cid, "message": "继续"})
+    assert gated_reply.status_code == 409, gated_reply.get_data(as_text=True)
+    gated_model.assert_not_called()
+assert client.post("/api/generate-report", json={"conversation_id": foundation_cid, "module": 5}).status_code == 409
+assert client.post("/api/generate-deliverable", json={"conversation_id": foundation_cid, "module": 5}).status_code == 409
+
+gated = server.load_conversation(foundation_cid)
+gated["coach_state"] = {"current_module": 8, "completed_modules": list(range(1, 8)),
+                         "module_step": 3, "foundation_report": {"status": "awaiting_confirmation"}}
+server.save_conversation(foundation_cid, gated)
+server.FOUNDATION_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+foundation_pdf = server.FOUNDATION_REPORTS_DIR / f"{foundation_cid}.pdf"
+foundation_pdf.unlink(missing_ok=True)
+assert client.get(f"/api/foundation-report/{foundation_cid}.pdf").status_code == 404
+gated = server.load_conversation(foundation_cid)
+assert gated["coach_state"]["foundation_report"]["status"] == "failed"
+gated["coach_state"]["foundation_report"] = {"status": "awaiting_confirmation"}
+server.save_conversation(foundation_cid, gated)
+foundation_pdf.write_bytes(invalid_pdf.read_bytes())
+assert client.get(f"/api/foundation-report/{foundation_cid}.pdf").status_code == 409
+gated = server.load_conversation(foundation_cid)
+assert gated["coach_state"]["foundation_report"]["status"] == "failed"
+gated["coach_state"]["foundation_report"] = {"status": "awaiting_confirmation"}
+server.save_conversation(foundation_cid, gated)
+foundation_pdf.write_bytes(invalid_pdf.read_bytes())
+assert client.post("/api/foundation-report/confirm", json={"conversation_id": foundation_cid}).status_code == 409
+gated = server.load_conversation(foundation_cid)
+assert gated["coach_state"]["foundation_report"]["status"] == "failed"
+gated["coach_state"]["foundation_report"] = {"status": "awaiting_confirmation"}
+server.save_conversation(foundation_cid, gated)
+foundation_pdf.write_bytes(valid_pdf.read_bytes())
+with patch.object(server, "call_ai") as report_model:
+    duplicate = client.post("/api/foundation-report/generate", json={"conversation_id": foundation_cid})
+    assert duplicate.status_code == 409, duplicate.get_data(as_text=True)
+    report_model.assert_not_called()
+download = client.get(f"/api/foundation-report/{foundation_cid}.pdf")
+assert download.status_code == 200
+assert download.headers["Cache-Control"] == "private, no-store"
+confirmed = client.post("/api/foundation-report/confirm", json={"conversation_id": foundation_cid})
+assert confirmed.status_code == 200, confirmed.get_data(as_text=True)
+assert confirmed.get_json()["state"]["current_module"] == 8
+assert confirmed.get_json()["state"]["module_step"] == 3
 assert client.post(
     "/api/chat",
     json={"conversation_id": "../../knowledge/visual_formulas", "message": "test"},
