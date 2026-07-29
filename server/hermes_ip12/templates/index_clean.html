@@ -34,6 +34,7 @@ body { font-family:var(--font); background:var(--bg); color:var(--text); height:
 .module-item:hover { background:rgba(255,255,255,0.03); }
 .module-item.current { background:var(--accent-glow); border:1px solid rgba(167,139,250,0.25); }
 .module-item.completed { opacity:0.65; }
+.module-item.locked { opacity:0.4; cursor:not-allowed; }
 .module-item .mod-num { width:24px; height:24px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; flex-shrink:0; background:var(--border); color:var(--text-dim); }
 .module-item.current .mod-num { background:var(--accent); color:#fff; }
 .module-item.completed .mod-num { background:var(--success); color:#000; }
@@ -248,7 +249,7 @@ const MODULES = [
 const DELIVERABLE_MODULES = [5,6,7,10]; // 有自动交付物的模块
 
 let currentConvoId = null;
-let coachState = { current_module:1, completed_modules:[], module_step:0, ip_profile:{} };
+let coachState = { current_module:1, completed_modules:[], module_step:0, ip_profile:{}, intake:{status:'complete'} };
 let reports = {};
 let deliverables = {};
 let streaming = false;
@@ -262,11 +263,15 @@ function renderModules() {
   const list = document.getElementById('moduleList');
   const done = coachState.completed_modules || [];
   const cur = coachState.current_module || 1;
+  const intakePending = coachState.intake?.status === 'collecting';
+  const intakeRound = intakePending ? (coachState.intake.round || 1) : 0;
   list.innerHTML = MODULES.map(m => {
     let cls = 'module-item', badge = '', check = '', reportBtn = '';
+    if (intakePending) { cls += ' locked'; if (m.id===1) badge = `<span class="mod-badge">基础信息 ${intakeRound}/3</span>`; }
     if (done.includes(m.id)) { cls += ' completed'; check = '<span class="mod-check">✓</span>';
       reportBtn = `<span class="mod-report-btn" onclick="event.stopPropagation();viewReport(${m.id})" title="查看报告">📄</span>`; }
-    if (m.id === cur && !done.includes(m.id)) { cls += ' current'; badge = '<span class="mod-badge">进行中</span>'; }
+    if (!intakePending && m.id === cur && !done.includes(m.id)) { cls += ' current'; badge = '<span class="mod-badge">进行中</span>'; }
+    if (intakePending && m.id===1) cls += ' current';
     return `<div class="${cls}" onclick="closeDrawer();jumpToModule(${m.id})" title="${m.desc}"><div class="mod-num">${done.includes(m.id)?'✓':m.id}</div><div class="mod-info"><div class="mod-name">${m.icon} ${m.name}</div><div class="mod-desc">${m.desc}</div></div>${badge}${reportBtn}${check}</div>`;
   }).join('');
   updateProgress(); renderReportMinis(); renderDeliverableMinis();
@@ -274,11 +279,12 @@ function renderModules() {
 
 function updateProgress() {
   const done = (coachState.completed_modules || []).length;
+  const intakePending = coachState.intake?.status === 'collecting';
   document.getElementById('progressBar').style.width = Math.round(done/12*100)+'%';
   document.getElementById('progressText').textContent = done===12?'🎉 全部完成':done+'/12';
   const cur = coachState.current_module || 1;
   const mod = MODULES.find(m=>m.id===cur);
-  document.getElementById('currentModuleName').textContent = mod?mod.name:'—';
+  document.getElementById('currentModuleName').textContent = intakePending?`基础信息 · ${coachState.intake.round||1}/3`:(mod?mod.name:'—');
   document.getElementById('stepBadge').textContent = (coachState.module_step||0)>0?` · Step ${coachState.module_step}`:'';
 }
 
@@ -318,14 +324,14 @@ async function loadDeliverables() {
 
 async function newDiagnosis() {
   const res=await fetch('/api/conversations',{method:'POST'});const data=await res.json();
-  conversations.unshift({id:data.id,title:'新诊断',current_module:1,completed_modules:[],message_count:0});
+  conversations.unshift({id:data.id,title:'新诊断',current_module:1,completed_modules:[],message_count:1});
   selectConversation(data.id);
 }
 
 async function selectConversation(id) {
   closeDrawer(); currentConvoId=id;
   const res=await fetch(`/api/conversations/${id}`);const convo=await res.json();
-  coachState=convo.coach_state||{current_module:1,completed_modules:[],module_step:0,ip_profile:{}};
+  coachState=convo.coach_state||{current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}};
   reports=convo.reports||{}; deliverables=convo.deliverables||{};
   renderModules(); renderChat(convo.messages||[]); document.getElementById('userInput').disabled=false; document.getElementById('userInput').focus();
   loadReports(); loadDeliverables();
@@ -334,11 +340,12 @@ async function selectConversation(id) {
 async function deleteConversation(id) {
   if(!confirm('删除这个诊断记录？'))return;
   await fetch(`/api/conversations/${id}`,{method:'DELETE'});conversations=conversations.filter(c=>c.id!==id);
-  if(currentConvoId===id){currentConvoId=null;coachState={current_module:1,completed_modules:[],module_step:0,ip_profile:{}};reports={};deliverables={};renderModules();document.getElementById('chatArea').innerHTML=document.getElementById('welcome').outerHTML;document.getElementById('userInput').disabled=true;}
+  if(currentConvoId===id){currentConvoId=null;coachState={current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}};reports={};deliverables={};renderModules();document.getElementById('chatArea').innerHTML=document.getElementById('welcome').outerHTML;document.getElementById('userInput').disabled=true;}
 }
 
 async function jumpToModule(modId) {
   if(!currentConvoId||streaming)return;
+  if(coachState.intake?.status==='collecting'){toast('请先完成 3 轮基础信息');return;}
   const res=await fetch('/api/jump-module',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId,module:modId})});
   const data=await res.json();if(!res.ok||!data.ok){toast(`❌ ${data.error||'无法切换模块'}`);return}coachState.current_module=data.current_module;coachState.module_step=0;renderModules();await sendJumpMessage(modId);
 }

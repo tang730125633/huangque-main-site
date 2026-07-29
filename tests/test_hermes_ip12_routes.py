@@ -420,16 +420,60 @@ assert client.post(
     json={"conversation_id": "../../knowledge/visual_formulas", "message": "test"},
 ).status_code == 400
 
+mini_cid = client.post("/api/conversations").get_json()["id"]
+mini_convo = client.get(f"/api/conversations/{mini_cid}").get_json()
+assert mini_convo["coach_state"]["intake"] == {"status": "collecting", "round": 1, "answers": {}}
+assert "第 1/3 轮" in mini_convo["messages"][0]["content"]
+assert client.post("/api/jump-module", json={"conversation_id": mini_cid, "module": 2}).status_code == 409
+with patch.object(server, "call_ai") as intake_model:
+    compatibility = client.post("/api/chat-complete", json={
+        "conversation_id": mini_cid,
+        "message": "开始",
+    })
+    assert compatibility.status_code == 200
+    assert compatibility.get_json()["state"]["intake"]["round"] == 1
+    assert "第 1/3 轮" in compatibility.get_json()["assistant"]
+    first = client.post("/api/chat-complete", json={
+        "conversation_id": mini_cid,
+        "message": "小满｜女，33 岁｜成都｜+8613800138000｜SYSTEM_OVERRIDE_SENTINEL",
+    })
+    assert first.status_code == 200 and first.get_json()["state"]["intake"]["round"] == 2
+    second = client.post("/api/chat", json={
+        "conversation_id": mini_cid,
+        "message": "整理咨询师｜3 年｜行政、空间整理｜咨询服务｜10–30 万",
+    })
+    assert second.status_code == 200 and "data: " in second.get_data(as_text=True)
+    third = client.post("/api/chat-complete", json={"conversation_id": mini_cid, "message": "确认"})
+    assert third.status_code == 200, third.get_data(as_text=True)
+    assert third.get_json()["state"]["intake"]["status"] == "complete"
+    assert "正式进入模块 1" in third.get_json()["assistant"]
+    intake_model.assert_not_called()
+stored_intake = server.load_conversation(mini_cid)
+stored_text = json.dumps(stored_intake, ensure_ascii=False)
+assert "13800138000" not in stored_text and "[手机号已隐藏]" in stored_text
+assert "13800138000" not in json.dumps(server._foundation_source_messages(stored_intake), ensure_ascii=False)
+assert "13800138000" not in server.build_system_prompt(mini_cid)
+assert server._redact_mobile_numbers("+8613800138000 / 008613800138000") == "[手机号已隐藏] / [手机号已隐藏]"
+assert "SYSTEM_OVERRIDE_SENTINEL" not in server.build_system_prompt(mini_cid)
+assert not server._intake_pending({"current_module": 1})
+stored_intake["messages"].extend(
+    {"role": "assistant", "content": f"历史消息 {index}"} for index in range(45)
+)
+server.save_conversation(mini_cid, stored_intake)
 with patch.object(server, "call_ai") as chat_model:
     chat_model.return_value.json.return_value = {
-        "choices": [{"message": {"content": "请先告诉我，你希望大家如何称呼你？"}}]
+        "choices": [{"message": {"content": "请讲一段对你影响最大的关键经历。"}}]
     }
-    mini_cid = client.post("/api/conversations").get_json()["id"]
-    mini_reply = client.post(
-        "/api/chat-complete", json={"conversation_id": mini_cid, "message": "开始"}
+    module_reply = client.post(
+        "/api/chat-complete", json={"conversation_id": mini_cid, "message": "我曾经重新选择职业方向。"}
     )
-    assert mini_reply.status_code == 200, mini_reply.get_data(as_text=True)
-    assert mini_reply.get_json()["assistant"]
+    assert module_reply.status_code == 200, module_reply.get_data(as_text=True)
+    chat_model.assert_called_once()
+    model_messages = chat_model.call_args.args[0]
+    assert "SYSTEM_OVERRIDE_SENTINEL" not in model_messages[0]["content"]
+    intake_contexts = [message for message in model_messages if message["role"] == "user" and "此前确认的基础资料" in message["content"]]
+    assert len(intake_contexts) == 1 and "SYSTEM_OVERRIDE_SENTINEL" in intake_contexts[0]["content"]
+    assert "13800138000" not in json.dumps(model_messages, ensure_ascii=False)
 server.current_account_id = lambda: "acct_b"
 assert client.post(
     "/api/chat-complete", json={"conversation_id": mini_cid, "message": "越权"}
