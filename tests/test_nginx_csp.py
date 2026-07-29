@@ -61,8 +61,23 @@ class NginxCspTest(unittest.TestCase):
         self.assertIn("proxy_request_buffering off;", block)
         self.assertIn("proxy_buffering off;", block)
         self.assertIn("client_max_body_size 200m;", block)
-        self.assertIn("sub_filter '\"/' '\"/workbench/ip12/';", block)
-        self.assertIn("sub_filter \"'/\" \"'/workbench/ip12/\";", block)
+        for expected in (
+            "sub_filter '\"/api/' '\"/workbench/ip12/api/';",
+            "sub_filter \"'/api/\" \"'/workbench/ip12/api/\";",
+            "sub_filter '`/api/' '`/workbench/ip12/api/';",
+            "sub_filter '\"/media/' '\"/workbench/ip12/media/';",
+            "sub_filter \"'/analytics'\" \"'/workbench/ip12/analytics'\";",
+            "sub_filter \"'/classic'\" \"'/workbench/ip12/classic'\";",
+            "sub_filter \"'/skills'\" \"'/workbench/ip12/skills'\";",
+            "sub_filter 'href=\"/agnes-lab\"' 'href=\"/workbench/ip12/agnes-lab\"';",
+            "sub_filter 'href=\"/video-factory\"' 'href=\"/workbench/ip12/video-factory\"';",
+            "sub_filter 'href=\"/\"' 'href=\"/workbench/ip12/\"';",
+        ):
+            self.assertIn(expected, block)
+        self.assertNotIn("text/event-stream", block)
+        self.assertNotIn("sub_filter '\"/' '\"/workbench/ip12/';", block)
+        self.assertNotIn("sub_filter \"'/\" \"'/workbench/ip12/\";", block)
+        self.assertNotIn("sub_filter '`/' '`/workbench/ip12/';", block)
         self.assertNotIn("auth_basic", block)
 
     def test_direct_3101_gateway_uses_the_same_flask_service(self):
