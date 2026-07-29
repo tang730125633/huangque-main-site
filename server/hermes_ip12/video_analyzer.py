@@ -5,10 +5,7 @@ import ipaddress, os, re, json, socket, uuid, time, subprocess, shutil, urllib.p
 import requests as http_requests
 from pathlib import Path
 from flask import request, jsonify
-from runtime_paths import DATA_DIR
-
-ANALYSIS_DIR = DATA_DIR / "analyses"
-ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
+from artifact_store import analysis_dir, finalize_file, video_path as owned_video_path, video_work_dir
 VIDEO_HOSTS = (
     "douyin.com", "iesdouyin.com", "tiktok.com", "tiktokv.com",
     "xiaohongshu.com", "xhslink.com", "bilibili.com", "b23.tv",
@@ -44,6 +41,7 @@ def register_video_analyzer(app):
     def api_analyze_video():
         """下载对标视频 → 转文字 → AI拆解"""
         from model_router import call_ai
+        from security import current_username
 
         body = request.get_json()
         url = body.get("url", "").strip()
@@ -53,8 +51,8 @@ def register_video_analyzer(app):
         if not is_public_video_url(url):
             return jsonify({"ok": False, "error": "仅支持公网 HTTP/HTTPS 视频链接"}), 400
 
-        analysis_id = uuid.uuid4().hex[:10]
-        work_dir = ANALYSIS_DIR / analysis_id
+        username = current_username()
+        analysis_id, work_dir = analysis_dir(username)
         work_dir.mkdir(parents=True, exist_ok=True)
 
         try:
@@ -74,6 +72,7 @@ def register_video_analyzer(app):
             # Save analysis
             result = {
                 "analysis_id": analysis_id,
+                "owner_username": username,
                 "url": url,
                 "transcript": transcript,
                 "analysis": analysis,
@@ -99,6 +98,7 @@ def register_video_analyzer(app):
     def api_generate_from_analysis():
         """基于分析结果生成对标视频"""
         from model_router import call_ai
+        from security import current_username
 
         body = request.get_json()
         analysis_id = body.get("analysis_id", "").strip()
@@ -108,9 +108,11 @@ def register_video_analyzer(app):
         if not re.fullmatch(r"[0-9a-f]{10}", analysis_id) or not topic:
             return jsonify({"ok": False, "error": "缺少参数"}), 400
 
-        work_dir = (ANALYSIS_DIR / analysis_id).resolve()
-        if work_dir.parent != ANALYSIS_DIR.resolve():
-            return jsonify({"ok": False, "error": "分析ID无效"}), 400
+        username = current_username()
+        try:
+            _, work_dir = analysis_dir(username, analysis_id, create=False)
+        except FileNotFoundError:
+            return jsonify({"ok": False, "error": "分析结果不存在"}), 404
         result_file = work_dir / "result.json"
 
         if not result_file.exists():
@@ -123,11 +125,9 @@ def register_video_analyzer(app):
         transcript = result.get("transcript", "")
 
         # Generate script with reference
-        from video_factory import generate_script, generate_all_images, generate_tts_pro, generate_subtitles, compose_video_pro, OUTPUT_DIR
+        from video_factory import generate_all_images, generate_tts_pro, generate_subtitles, compose_video_pro
 
-        video_id = uuid.uuid4().hex[:10]
-        vwork_dir = OUTPUT_DIR / video_id
-        vwork_dir.mkdir(parents=True, exist_ok=True)
+        video_id, vwork_dir = video_work_dir(username)
 
         try:
             script = generate_script_with_reference(call_ai, topic, niche, analysis, transcript)
@@ -136,9 +136,9 @@ def register_video_analyzer(app):
             subtitle_path = generate_subtitles(script["scenes"], vwork_dir)
             video_path = compose_video_pro(scenes, audio_path, subtitle_path, vwork_dir)
 
-            final_name = f"ref_{video_id}.mp4"
-            final_path = OUTPUT_DIR / final_name
-            shutil.move(video_path, final_path)
+            final_name = f"{video_id}.mp4"
+            final_path = owned_video_path(username, final_name)
+            finalize_file(video_path, final_path)
             shutil.rmtree(vwork_dir, ignore_errors=True)
 
             return jsonify({

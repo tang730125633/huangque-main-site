@@ -140,16 +140,28 @@ class HermesIP12SourceTests(unittest.TestCase):
     def test_service_security_boundary_is_registered(self):
         server = (HERMES / "server.py").read_text(encoding="utf-8")
         security = (HERMES / "security.py").read_text(encoding="utf-8")
+        artifact_store = (HERMES / "artifact_store.py").read_text(encoding="utf-8")
         video_factory = (HERMES / "video_factory.py").read_text(encoding="utf-8")
 
         self.assertIn("register_security(app, DATA_DIR)", server)
         self.assertIn('HERMES_ENABLE_INTERNAL_TOOLS", "0"', server)
         self.assertIn('AUTH_BASE + "/api/auth/me"', security)
         self.assertIn('request.path == "/healthz"', security)
+        self.assertIn("authentication service unavailable", security)
+        self.assertIn("administrator permission required", security)
         self.assertIn("Hermes storage quota exceeded", security)
         self.assertIn("too many concurrent requests", security)
-        self.assertIn("_user_output_dir(current_username())", video_factory)
-        self.assertIn("VIDEO_FILE_RE.fullmatch(filename)", video_factory)
+        self.assertIn("too many requests", security)
+        self.assertIn("def atomic_write_bytes", artifact_store)
+        self.assertIn("def video_work_dir", artifact_store)
+        self.assertIn("owned_video_path(current_username(), filename)", video_factory)
+        for filename in (
+            "video_factory.py", "video_analyzer.py", "video_pipeline.py", "video_replica.py"
+        ):
+            source = (HERMES / filename).read_text(encoding="utf-8")
+            self.assertIn("video_work_dir(", source, filename)
+            self.assertIn("finalize_file(", source, filename)
+        self.assertIn("if _is_metered(request.method)", security)
 
     def test_security_boundaries_and_runtime_ignores_are_kept(self):
         index = (HERMES / "templates/index.html").read_text(encoding="utf-8")
@@ -247,20 +259,30 @@ from unittest.mock import patch
 import server
 from server import _foundation_generation_active, _foundation_html, _foundation_source_messages, _validate_foundation_pdf, app, parse_coach_state_updates
 import security
+import artifact_store
 import image_services
 import media_library
 import video_analyzer
+import video_factory
+import video_pipeline
 import video_replica
+import video_vision
 
 server.current_account_id = lambda: "acct_a"
 security._validate_token = lambda token: {
-    "account_id": "acct_a",
-    "username": "admin",
-    "role": "admin",
-} if token == "admin-token" else None
+    "admin-token": {"account_id": "acct_a", "username": "admin", "role": "admin"},
+    "member-a-token": {"account_id": "acct_a", "username": "member-a", "role": "member"},
+    "member-b-token": {"account_id": "acct_b", "username": "member-b", "role": "member"},
+}.get(token)
 security.RATE_REQUESTS = 1000
 routes = {rule.rule for rule in app.url_map.iter_rules() if rule.endpoint != "static"}
 assert len(routes) == 76, len(routes)
+assert all(
+    security._is_metered(method)
+    for rule in app.url_map.iter_rules()
+    for method in rule.methods
+    if method in {"POST", "PUT", "PATCH", "DELETE"}
+)
 
 transitioned = parse_coach_state_updates(
     "好，我们进入模块2：人设塑造。",
@@ -440,6 +462,50 @@ confirmed = client.post("/api/foundation-report/confirm", json={"conversation_id
 assert confirmed.status_code == 200, confirmed.get_data(as_text=True)
 assert confirmed.get_json()["state"]["current_module"] == 8
 assert confirmed.get_json()["state"]["module_step"] == 3
+
+owned_video = artifact_store.video_path("admin", "0123456789.mp4")
+owned_video.parent.mkdir(parents=True, exist_ok=True)
+owned_video.write_bytes(b"video")
+assert client.get(
+    "/api/video-file/0123456789.mp4",
+    headers={"Authorization": "Bearer admin-token"},
+).status_code == 200
+assert client.get(
+    "/api/video-file/0123456789.mp4",
+    headers={"Authorization": "Bearer member-a-token"},
+).status_code == 404
+assert client.get(
+    "/api/video-file/../../0123456789.mp4",
+    headers={"Authorization": "Bearer admin-token"},
+).status_code == 404
+
+security._rate_hits.clear()
+original_rate = security.RATE_REQUESTS
+security.RATE_REQUESTS = 1
+assert client.post("/api/humanize", json={"text": ""}).status_code == 400
+assert client.post("/api/humanize", json={"text": ""}).status_code == 429
+security.RATE_REQUESTS = original_rate
+security._rate_hits.clear()
+
+security._active["admin"] = security.USER_CONCURRENCY
+assert client.post("/api/humanize", json={"text": ""}).status_code == 429
+security._active.clear()
+
+original_quota = artifact_store.DATA_QUOTA_BYTES
+artifact_store.DATA_QUOTA_BYTES = 1
+assert client.post("/api/media/upload", json={"data": "AAAA"}).status_code == 507
+artifact_store.DATA_QUOTA_BYTES = original_quota
+quota_first = artifact_store.media_path("admin", artifact_store.new_asset_id(), ".bin")
+quota_second = artifact_store.media_path("admin", artifact_store.new_asset_id(), ".bin")
+artifact_store.DATA_QUOTA_BYTES = artifact_store.directory_size() + 5
+artifact_store.atomic_write_bytes(quota_first, b"1234")
+try:
+    artifact_store.atomic_write_bytes(quota_second, b"5678")
+    raise AssertionError("second quota write should fail")
+except artifact_store.StorageQuotaExceeded:
+    pass
+assert quota_first.exists() and not quota_second.exists()
+artifact_store.DATA_QUOTA_BYTES = original_quota
 assert client.post(
     "/api/chat",
     json={"conversation_id": "../../knowledge/visual_formulas", "message": "test"},
@@ -528,12 +594,17 @@ media = client.post(
     },
 )
 assert media.status_code == 200, media.get_data(as_text=True)
-saved = Path(media.get_json()["path"]).resolve()
-media_root = (Path(os.environ["HERMES_HOME"]).resolve() / "media_library").resolve()
+media_root = Path(os.environ["HERMES_DATA_DIR"]).resolve()
+index = json.loads((media_root / "media_library" / "index.json").read_text())
+saved = Path(index["entries"][media.get_json()["id"]]["file_path"]).resolve()
 assert saved.is_relative_to(media_root)
-index = json.loads((media_root / "index.json").read_text())
 assert all(Path(entry["file_path"]).resolve().is_relative_to(media_root)
            for entry in index["entries"].values())
+assert all(entry["owner_username"] == "admin" for entry in index["entries"].values())
+assert client.get(
+    "/api/media/search?q=outside",
+    headers={"Authorization": "Bearer member-b-token"},
+).get_json()["results"] == []
 assert client.post(
     "/api/media/upload",
     json={"filename": "../../probe.py", "data": base64.b64encode(b"bad").decode()},
@@ -545,8 +616,14 @@ pipeline_upload = client.post(
     content_type="multipart/form-data",
 )
 assert pipeline_upload.status_code == 200, pipeline_upload.get_data(as_text=True)
-pipeline_path = Path(pipeline_upload.get_json()["path"]).resolve()
-assert pipeline_path.is_relative_to((Path(os.environ["HERMES_DATA_DIR"]) / "uploads").resolve())
+pipeline_upload_id = pipeline_upload.get_json()["upload_id"]
+pipeline_path = artifact_store.find_upload("admin", pipeline_upload_id)
+assert pipeline_path.is_relative_to((Path(os.environ["HERMES_DATA_DIR"]) / "users").resolve())
+assert client.post(
+    "/api/pipeline",
+    json={"upload_id": pipeline_upload_id, "topic": "test"},
+    headers={"Authorization": "Bearer member-b-token"},
+).status_code == 400
 assert client.post(
     "/api/pipeline-upload",
     data={"video": (io.BytesIO(b"bad"), "../../clip.py")},
@@ -555,6 +632,74 @@ assert client.post(
 assert client.post(
     "/api/pipeline", json={"video_path": "/etc/passwd", "topic": "test"}
 ).status_code == 400
+
+def fake_video_file(work_dir, name="output.mp4"):
+    path = Path(work_dir) / name
+    path.write_bytes(b"generated-video")
+    return str(path)
+
+def assert_owned_video(response):
+    assert response.status_code == 200, response.get_data(as_text=True)
+    url = response.get_json()["video_url"]
+    owner_response = client.get(url)
+    assert owner_response.status_code == 200, (url, owner_response.status_code)
+    other_response = client.get(
+        url, headers={"Authorization": "Bearer member-b-token"}
+    )
+    assert other_response.status_code == 404, (url, other_response.status_code)
+
+fake_script = {
+    "title": "test", "narration_full": "test",
+    "scenes": [{"narration": "test", "visual": "test"}],
+}
+with patch.object(video_factory, "generate_script", return_value=fake_script), \
+     patch.object(video_factory, "generate_all_images", side_effect=lambda scenes, work_dir: scenes), \
+     patch.object(video_factory, "generate_tts_pro", return_value="audio"), \
+     patch.object(video_factory, "generate_subtitles", return_value="subtitle"), \
+     patch.object(video_factory, "compose_video_pro", side_effect=lambda *args: fake_video_file(args[-1])):
+    assert_owned_video(client.post("/api/generate-video", json={"topic": "test"}))
+
+analysis_id, analysis_root = artifact_store.analysis_dir("admin")
+analysis_root.mkdir(parents=True, exist_ok=True)
+(analysis_root / "result.json").write_text(json.dumps({
+    "analysis_id": analysis_id, "owner_username": "admin",
+    "analysis": "analysis", "transcript": "transcript",
+}))
+assert client.post(
+    "/api/generate-from-analysis",
+    json={"analysis_id": analysis_id, "topic": "test"},
+    headers={"Authorization": "Bearer member-b-token"},
+).status_code == 404
+with patch.object(video_analyzer, "generate_script_with_reference", return_value=fake_script), \
+     patch.object(video_factory, "generate_all_images", side_effect=lambda scenes, work_dir: scenes), \
+     patch.object(video_factory, "generate_tts_pro", return_value="audio"), \
+     patch.object(video_factory, "generate_subtitles", return_value="subtitle"), \
+     patch.object(video_factory, "compose_video_pro", side_effect=lambda *args: fake_video_file(args[-1])):
+    assert_owned_video(client.post(
+        "/api/generate-from-analysis",
+        json={"analysis_id": analysis_id, "topic": "test"},
+    ))
+
+with patch.object(video_pipeline, "transcribe_video", return_value={"full_text": "test"}), \
+     patch.object(video_pipeline, "optimize", return_value={
+         "title": "test", "scenes": [], "narration_full": "test"
+     }), \
+     patch.object(video_pipeline, "generate_videos", return_value=[]), \
+     patch.object(video_pipeline, "generate_tts", return_value="audio"), \
+     patch.object(video_pipeline, "compose_video", side_effect=lambda *args: fake_video_file(args[-1])), \
+     patch.object(video_vision, "analyze_video_visual", return_value={"frames_analyzed": 1}), \
+     patch.object(video_pipeline.KnowledgeBase, "add_formula"):
+    assert_owned_video(client.post(
+        "/api/pipeline",
+        json={"upload_id": pipeline_upload_id, "topic": "test"},
+    ))
+
+with patch.object(video_replica, "replicate", return_value=[]), \
+     patch.object(video_replica, "compose_final", side_effect=lambda clips, text, work_dir: fake_video_file(work_dir)):
+    assert_owned_video(client.post(
+        "/api/replica",
+        json={"topic": "test", "segments": [{"text": "test"}]},
+    ))
 
 with patch.object(image_services.http_requests, "get") as proxy_get:
     blocked = client.get(

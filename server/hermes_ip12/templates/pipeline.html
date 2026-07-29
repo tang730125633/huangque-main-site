@@ -106,7 +106,22 @@ async function runPipeline(){
       throw new Error('HTTP ' + r.status + ': ' + errText.slice(0,200));
     }
 
-    var d = await r.json();
+    var uploaded = await r.json();
+    if(!uploaded.ok){ throw new Error(uploaded.error || '上传失败'); }
+    var pipelineResponse = await fetch('/api/pipeline', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        upload_id: uploaded.upload_id,
+        topic: document.getElementById('topic').value,
+        niche: document.getElementById('niche').value
+      })
+    });
+    if(!pipelineResponse.ok){
+      var pipelineError = await pipelineResponse.text();
+      throw new Error('HTTP ' + pipelineResponse.status + ': ' + pipelineError.slice(0,200));
+    }
+    var d = await pipelineResponse.json();
     markStep(1, 'done');
 
     if(!d.ok){ throw new Error(d.error || '流水线失败'); }

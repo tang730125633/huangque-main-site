@@ -27,7 +27,6 @@ INTERNAL_ROLES = {
 RATE_WINDOW_SECONDS = max(1, int(os.environ.get("HERMES_RATE_WINDOW_SECONDS", "60")))
 RATE_REQUESTS = max(1, int(os.environ.get("HERMES_RATE_REQUESTS", "20")))
 USER_CONCURRENCY = max(1, int(os.environ.get("HERMES_USER_CONCURRENCY", "2")))
-DATA_QUOTA_BYTES = max(1, int(os.environ.get("HERMES_DATA_QUOTA_MB", "2048"))) * 1024 * 1024
 
 INTERNAL_PREFIXES = (
     "/api/agnes/",
@@ -36,20 +35,6 @@ INTERNAL_PREFIXES = (
     "/media/team-workbench/",
 )
 INTERNAL_PATHS = {"/agnes-lab", "/team-workbench"}
-EXPENSIVE_PATHS = {
-    "/api/chat",
-    "/api/generate-report",
-    "/api/generate-deliverable",
-    "/api/humanize",
-    "/api/generate-image",
-    "/api/generate-video",
-    "/api/analyze-video",
-    "/api/pipeline",
-    "/api/replica",
-    "/api/pipeline-upload",
-    "/api/media/upload",
-}
-EXPENSIVE_PREFIXES = ("/api/agnes/", "/api/team-workbench/upload")
 UPLOAD_PATHS = {
     "/api/pipeline-upload",
     "/api/media/upload",
@@ -124,8 +109,8 @@ def _is_internal(path):
     return path in INTERNAL_PATHS or any(path.startswith(prefix) for prefix in INTERNAL_PREFIXES)
 
 
-def _is_expensive(path):
-    return path in EXPENSIVE_PATHS or any(path.startswith(prefix) for prefix in EXPENSIVE_PREFIXES)
+def _is_metered(method):
+    return method in {"POST", "PUT", "PATCH", "DELETE"}
 
 
 def _client_ip():
@@ -155,7 +140,7 @@ def _audit(data_dir, event, status, username="", detail=""):
 
 
 def _consume_rate(username):
-    key = username + "|" + _client_ip()
+    key = username + "|" + _client_ip() + "|" + request.path
     now = time.monotonic()
     with _rate_lock:
         hits = _rate_hits[key]
@@ -173,17 +158,6 @@ def _acquire_concurrency(username):
             return False
         _active[username] += 1
         return True
-
-
-def _directory_size(root):
-    total = 0
-    for path in Path(root).rglob("*"):
-        try:
-            if path.is_file():
-                total += path.stat().st_size
-        except OSError:
-            continue
-    return total
 
 
 def _release_concurrency(username):
@@ -234,12 +208,15 @@ def register_security(app, data_dir):
             return jsonify({"ok": False, "error": "administrator permission required"}), 403
 
         if request.method == "POST" and request.path in UPLOAD_PATHS:
+            import artifact_store
             incoming = max(0, request.content_length or 0)
-            if _directory_size(data_dir) + incoming > DATA_QUOTA_BYTES:
+            try:
+                artifact_store.ensure_capacity(incoming)
+            except artifact_store.StorageQuotaExceeded:
                 _audit(data_dir, "storage_quota", "denied", username)
                 return jsonify({"ok": False, "error": "Hermes storage quota exceeded"}), 507
 
-        if request.method in {"POST", "PUT", "PATCH", "DELETE"} and _is_expensive(request.path):
+        if _is_metered(request.method):
             if not _consume_rate(username):
                 _audit(data_dir, "rate_limit", "denied", username)
                 return jsonify({"ok": False, "error": "too many requests"}), 429

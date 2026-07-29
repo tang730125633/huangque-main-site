@@ -2,14 +2,10 @@
 """video_pipeline.py — 抖音视频分析+仿写 6步流水线 v3 (素材库集成)"""
 import os, re, json, uuid, time, shutil, subprocess
 from pathlib import Path
-from runtime_paths import DATA_DIR
+from artifact_store import find_upload, finalize_file, video_path, video_work_dir
 
 # ── 素材库集成 ──
 from media_library import MediaLibrary, KnowledgeBase, get_best_image
-
-OUTPUT_DIR = DATA_DIR / "videos"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-UPLOAD_DIR = (DATA_DIR / "uploads").resolve()
 
 # ── AI helper (call_ai returns requests.Response, extract text) ──
 def ai_chat(prompt):
@@ -76,7 +72,7 @@ def optimize(analysis, topic, niche, scene_count=6, visual_report=""):
 SEEDANCE_KEY = os.environ.get("ARK_API_KEY") or os.environ.get("SEEDANCE_API_KEY", "")
 SEEDANCE_API = "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks"
 
-def _gen_one_video(scene, i, work_dir):
+def _gen_one_video(scene, i, work_dir, owner_username):
     """Generate one video segment via seedance 1.0-pro-fast"""
     import requests as req
 
@@ -118,7 +114,11 @@ def _gen_one_video(scene, i, work_dir):
                     # Auto-save to library
                     try:
                         kw = visual[:30] if visual else f"scene_{i}"
-                        MediaLibrary.add(kw, str(vp), source="seedance", tags=["seedance", "ai_generated"])
+                        MediaLibrary.add(
+                            kw, str(vp), source="seedance",
+                            tags=["seedance", "ai_generated"],
+                            owner_username=owner_username,
+                        )
                     except Exception as le:
                         print(f"Library save: {le}")
                     return str(vp)
@@ -145,7 +145,7 @@ def _gen_one_video(scene, i, work_dir):
     except:
         return ""
 
-def generate_videos(scenes, work_dir):
+def generate_videos(scenes, work_dir, owner_username):
     """Generate all scene videos in parallel (skip cached)"""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -159,7 +159,10 @@ def generate_videos(scenes, work_dir):
 
     if to_generate:
         with ThreadPoolExecutor(max_workers=len(to_generate)) as pool:
-            futures = {pool.submit(_gen_one_video, s, i, work_dir): i for i, s in to_generate}
+            futures = {
+                pool.submit(_gen_one_video, s, i, work_dir, owner_username): i
+                for i, s in to_generate
+            }
             for future in as_completed(futures):
                 i = futures[future]
                 try: videos[i] = future.result()
@@ -216,31 +219,28 @@ def register_pipeline(app):
     @app.route("/api/pipeline", methods=["POST"])
     def api_pipeline():
         from flask import request, jsonify
+        from security import current_username
 
         data = request.get_json() or {}
-        raw_video_path = str(data.get("video_path", ""))
+        upload_id = str(data.get("upload_id") or "").strip()
         topic = data.get("topic", "").strip()
         niche = data.get("niche", "美业").strip()
 
-        candidate = Path(raw_video_path)
-        video_path = candidate.resolve() if candidate.is_absolute() else (UPLOAD_DIR / candidate).resolve()
-        if (
-            not raw_video_path
-            or not video_path.is_relative_to(UPLOAD_DIR)
-            or not video_path.is_file()
-            or video_path.suffix.lower() not in {".mp4", ".mov", ".webm", ".mkv", ".avi"}
-        ):
+        username = current_username()
+        try:
+            input_video_path = find_upload(username, upload_id)
+        except FileNotFoundError:
             return jsonify(ok=False, error="视频不存在或不属于上传目录"), 400
+        if input_video_path.suffix.lower() not in {".mp4", ".mov", ".webm", ".mkv", ".avi"}:
+            return jsonify(ok=False, error="视频类型不支持"), 400
 
-        job_id = uuid.uuid4().hex[:10]
-        work_dir = OUTPUT_DIR / job_id
-        work_dir.mkdir(parents=True, exist_ok=True)
+        job_id, work_dir = video_work_dir(username)
 
         try:
             steps = {}
 
             # 1. Transcribe
-            t = transcribe_video(str(video_path))
+            t = transcribe_video(str(input_video_path))
             steps["transcribe"] = "OK"
 
             # 2. Deconstruct
@@ -255,7 +255,7 @@ def register_pipeline(app):
 
             # Run visual analysis on the video
             from video_vision import analyze_video_visual
-            visual_report = analyze_video_visual(str(video_path), num_frames=6)
+            visual_report = analyze_video_visual(str(input_video_path), num_frames=6)
             steps["vision"] = f"{visual_report.get('frames_analyzed',0)} frames"
 
             script = optimize(
@@ -275,7 +275,7 @@ def register_pipeline(app):
             lib_hits = 0
             for i, scene in enumerate(scenes):
                 kw = scene.get("visual", "")[:30] or scene.get("text", "")[:20]
-                cached = MediaLibrary.search(kw)
+                cached = MediaLibrary.search(kw, owner_username=username)
                 if cached:
                     cached_path = cached[0]["file_path"]
                     if os.path.exists(cached_path) and cached_path.endswith('.mp4'):
@@ -287,7 +287,7 @@ def register_pipeline(app):
             if lib_hits:
                 steps["library_hits"] = f"{lib_hits}/{len(scenes)} reused"
 
-            video_paths = generate_videos(scenes, work_dir)
+            video_paths = generate_videos(scenes, work_dir, username)
             steps["videos"] = f"{sum(1 for v in video_paths if v)}/{len(scenes)}"
 
             # 5. TTS
@@ -306,8 +306,8 @@ def register_pipeline(app):
                 return jsonify(ok=False, error="Render failed"), 500
 
             final_name = f"{job_id}.mp4"
-            final_path = OUTPUT_DIR / final_name
-            shutil.move(video, final_path)
+            final_path = video_path(username, final_name)
+            finalize_file(video, final_path)
             shutil.rmtree(work_dir, ignore_errors=True)
 
             # Save visual formula to knowledge base

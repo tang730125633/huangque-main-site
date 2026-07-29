@@ -5,7 +5,8 @@ def register_upload(app):
     from pathlib import Path
     from werkzeug.utils import secure_filename
     from media_library import MediaLibrary
-    from runtime_paths import ROOT_DIR
+    from artifact_store import StorageQuotaExceeded, atomic_write_bytes, media_path, new_asset_id
+    from security import current_username
 
     @app.route("/api/media/upload", methods=["POST"])
     def api_media_upload():
@@ -23,17 +24,20 @@ def register_upload(app):
             image = b64.b64decode(img_b64, validate=True)
         except (binascii.Error, ValueError):
             return jsonify(ok=False, error="Invalid base64 data"), 400
-        safe_kw = secure_filename(keyword)[:30] or "unknown"
-        kw_dir = (ROOT_DIR / "media_library" / safe_kw).resolve()
-        kw_dir.mkdir(parents=True, exist_ok=True)
-        dest = (kw_dir / filename).resolve()
-        if dest.parent != kw_dir:
-            return jsonify(ok=False, error="Invalid filename"), 400
-        dest.write_bytes(image)
+        username = current_username()
+        dest = media_path(username, new_asset_id(), Path(filename).suffix)
         try:
-            mid = MediaLibrary.add(keyword, str(dest), source="bing")
-            return jsonify(ok=True, id=mid, path=str(dest))
-        except:
-            return jsonify(ok=True, path=str(dest))
+            atomic_write_bytes(dest, image)
+            mid = MediaLibrary.add(
+                keyword, str(dest), source="upload",
+                owner_username=username, copy_file=False,
+            )
+            return jsonify(ok=True, id=mid)
+        except StorageQuotaExceeded as exc:
+            dest.unlink(missing_ok=True)
+            return jsonify(ok=False, error=str(exc)), 507
+        except Exception:
+            dest.unlink(missing_ok=True)
+            raise
 
     print("api_upload route OK")

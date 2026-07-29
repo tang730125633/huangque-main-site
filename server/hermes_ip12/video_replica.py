@@ -6,10 +6,7 @@ video_replica.py — 新闻播报类视频复刻引擎
 import os, re, json, uuid, time, shutil, subprocess
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from runtime_paths import DATA_DIR
-
-OUTPUT_DIR = DATA_DIR / "videos"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+from artifact_store import finalize_file, video_path, video_work_dir
 
 PEXELS_KEY = os.environ.get("PEXELS_API_KEY", "")
 SEEDANCE_KEY = os.environ.get("ARK_API_KEY") or os.environ.get("SEEDANCE_API_KEY", "")
@@ -201,6 +198,7 @@ def register_replica(app):
 
     @app.route("/api/replica", methods=["POST"])
     def api_replica():
+        from security import current_username
         data = request.get_json() or {}
         topic = data.get("topic", "").strip()
         segments = data.get("segments", [])
@@ -208,9 +206,8 @@ def register_replica(app):
         if not segments:
             return jsonify(ok=False, error="请提供分段文案"), 400
 
-        job_id = uuid.uuid4().hex[:10]
-        work_dir = OUTPUT_DIR / f"replica_{job_id}"
-        work_dir.mkdir(parents=True, exist_ok=True)
+        username = current_username()
+        job_id, work_dir = video_work_dir(username)
 
         try:
             clips = replicate(segments, work_dir)
@@ -220,9 +217,9 @@ def register_replica(app):
             if not final:
                 return jsonify(ok=False, error="Compose failed"), 500
 
-            final_name = f"replica_{job_id}.mp4"
-            final_path = OUTPUT_DIR / final_name
-            shutil.move(final, final_path)
+            final_name = f"{job_id}.mp4"
+            final_path = video_path(username, final_name)
+            finalize_file(final, final_path)
             shutil.rmtree(work_dir, ignore_errors=True)
 
             return jsonify({

@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
 media_library.py — 素材库 + 知识库
-/media_library/   素材文件(图/视频)
-/knowledge/       视觉公式/模板/关键词映射
+/data/media_library/   按 owner 隔离的素材文件(图/视频)
+/data/knowledge/       视觉公式/模板/关键词映射
 """
-import os, json, time, shutil
+import os, json, time
 from pathlib import Path
 from datetime import datetime
-from runtime_paths import ROOT_DIR
+from runtime_paths import DATA_DIR
+from artifact_store import atomic_copy, atomic_write_bytes, media_path, new_asset_id, owner_key
 from werkzeug.utils import secure_filename
 
-BASE = ROOT_DIR
+BASE = DATA_DIR
 MEDIA = BASE / "media_library"
 KNOWLEDGE = BASE / "knowledge"
 
@@ -31,50 +32,74 @@ class MediaLibrary:
 
     @staticmethod
     def _save(data):
-        MediaLibrary.INDEX_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        atomic_write_bytes(
+            MediaLibrary.INDEX_FILE,
+            json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"),
+        )
 
     @staticmethod
-    def search(keyword):
+    def _owner(owner_username=None):
+        if owner_username is not None:
+            return str(owner_username)
+        try:
+            from security import current_username
+            return current_username()
+        except Exception:
+            return ""
+
+    @staticmethod
+    def search(keyword, owner_username=None):
         """搜素材库，返回匹配的文件列表"""
         data = MediaLibrary._load()
         kw = keyword.lower().strip()
         results = []
+        owner_username = MediaLibrary._owner(owner_username)
         for entry_id, entry in data["entries"].items():
+            if entry.get("owner_username") != owner_username:
+                continue
             tags = [t.lower() for t in entry.get("tags", [])]
             if kw in entry.get("keyword", "").lower() or any(kw in t for t in tags):
                 results.append(entry)
         return results
 
     @staticmethod
-    def add(keyword, file_path, source="manual", tags=None):
+    def add(keyword, file_path, source="manual", tags=None, owner_username=None, copy_file=True):
         """添加素材入库。file_path会被复制到素材库"""
         data = MediaLibrary._load()
+        owner_username = MediaLibrary._owner(owner_username)
+        if not owner_username:
+            raise ValueError("media owner required")
 
         # 去重：检查是否已有相同文件
         fhash = str(os.path.getsize(file_path)) + "_" + Path(file_path).name
         for eid, entry in data["entries"].items():
-            if entry.get("fhash") == fhash:
+            if entry.get("fhash") == fhash and entry.get("owner_username") == owner_username:
                 return entry["id"]
 
         # 归入关键词子目录
         safe_kw = secure_filename(str(keyword).lower())[:30] or "unknown"
-        kw_dir = (MEDIA / safe_kw).resolve()
-        if kw_dir.parent != MEDIA.resolve():
+        owner_dir = (MEDIA / owner_key(owner_username)).resolve()
+        kw_dir = (owner_dir / safe_kw).resolve()
+        if kw_dir.parent != owner_dir:
             raise ValueError("invalid media keyword")
-        kw_dir.mkdir(exist_ok=True)
+        kw_dir.mkdir(parents=True, exist_ok=True)
 
         # 复制文件
         ext = Path(file_path).suffix
         entry_id = f"{safe_kw}_{int(time.time())}"
-        dest = (kw_dir / f"{entry_id}{ext}").resolve()
-        if dest.parent != kw_dir:
-            raise ValueError("invalid media destination")
-        shutil.copy2(file_path, dest)
+        if copy_file:
+            dest = (kw_dir / f"{entry_id}{ext}").resolve()
+            if dest.parent != kw_dir:
+                raise ValueError("invalid media destination")
+            atomic_copy(file_path, dest)
+        else:
+            dest = Path(file_path).resolve()
 
         # 记录元数据
         stat = os.stat(file_path)
         entry = {
             "id": entry_id,
+            "owner_username": owner_username,
             "keyword": keyword,
             "file_path": str(dest),
             "original_name": Path(file_path).name,
@@ -98,10 +123,14 @@ class MediaLibrary:
         return entry_id
 
     @staticmethod
-    def stats():
+    def stats(owner_username=None):
         """返回素材库统计"""
         data = MediaLibrary._load()
-        entries = data["entries"]
+        owner_username = MediaLibrary._owner(owner_username)
+        entries = {
+            key: value for key, value in data["entries"].items()
+            if value.get("owner_username") == owner_username
+        }
         total_size = sum(e.get("size_bytes", 0) for e in entries.values())
         return {
             "total_files": len(entries),
@@ -198,6 +227,7 @@ PEXELS_KEY = os.environ.get("PEXELS_API_KEY", "")
 def google_search_images(query, num=5):
     """搜Google图片，返回[{url, title, width, height, thumbnail}]"""
     import requests as req
+    owner_username = MediaLibrary._owner()
     try:
         r = req.get("https://www.googleapis.com/customsearch/v1",
             params={"key": GOOGLE_API_KEY, "cx": GOOGLE_CX, "q": query,
@@ -256,11 +286,13 @@ def get_best_image(keyword):
                 photo = photos[0]
                 img_url = photo["src"]["large"]
                 img_data = req.get(img_url, timeout=30).content
-                tmp_path = MEDIA / f"tmp_{int(time.time())}.jpg"
-                tmp_path.write_bytes(img_data)
-                MediaLibrary.add(keyword, str(tmp_path), source="pexels",
-                               tags=[search_term, photo.get("photographer", "")])
-                tmp_path.unlink()
+                saved_path = media_path(owner_username, new_asset_id(), ".jpg")
+                atomic_write_bytes(saved_path, img_data)
+                MediaLibrary.add(
+                    keyword, str(saved_path), source="pexels",
+                    tags=[search_term, photo.get("photographer", "")],
+                    owner_username=owner_username, copy_file=False,
+                )
                 return {"source": "pexels", "keyword": keyword, "count": len(photos)}
     except Exception as e:
         print(f"Pexels error: {e}")
@@ -274,11 +306,13 @@ def get_best_image(keyword):
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
                 }).content
                 if len(img_data) > 5000:  # at least 5KB, skip placeholders
-                    tmp_path = MEDIA / f"tmp_{int(time.time())}.jpg"
-                    tmp_path.write_bytes(img_data)
-                    MediaLibrary.add(keyword, str(tmp_path), source="google",
-                                   tags=[search_term, img.get("title", "")])
-                    tmp_path.unlink()
+                    saved_path = media_path(owner_username, new_asset_id(), ".jpg")
+                    atomic_write_bytes(saved_path, img_data)
+                    MediaLibrary.add(
+                        keyword, str(saved_path), source="google",
+                        tags=[search_term, img.get("title", "")],
+                        owner_username=owner_username, copy_file=False,
+                    )
                     return {"source": "google", "keyword": keyword, "url": img["url"]}
             except Exception as ie:
                 continue
