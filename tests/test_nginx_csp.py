@@ -46,20 +46,39 @@ class NginxCspTest(unittest.TestCase):
                 for header in expected:
                     self.assertEqual(config.count(header), 4, header)
 
-    def test_workbench_ip12_uses_the_existing_native_product(self):
+    def test_workbench_ip12_proxies_directly_to_git_managed_hermes(self):
         config = self._config("deploy/nginx-huangquechuanmei.conf")
-        self.assertNotIn("location ^~ /workbench/ip12/", config)
-        self.assertNotIn("X-Forwarded-Prefix /workbench/ip12", config)
         self.assertIn(
-            "location = /workbench/ip12/ { try_files /workbench/ip12.html =404; }",
+            "location = /workbench/ip12 { return 301 /workbench/ip12/; }",
             config,
         )
-        self.assertIn("try_files $uri $uri.html $uri/index.html =404;", config)
-
-        page = self._config("site/workbench/ip12.html")
-        self.assertIn('<base href="/workbench/">', page)
-        self.assertIn("完成模块 1–4 后生成阶段报告", page)
-        self.assertIn("download>下载 PDF</a>", page)
+        start = config.index("location ^~ /workbench/ip12/")
+        end = config.index("\n    }", start)
+        block = config[start:end]
+        self.assertIn("proxy_pass http://127.0.0.1:3102/;", block)
+        self.assertNotIn("127.0.0.1:3101", block)
+        self.assertIn('proxy_set_header Accept-Encoding "";', block)
+        self.assertIn("proxy_request_buffering off;", block)
+        self.assertIn("proxy_buffering off;", block)
+        self.assertIn("client_max_body_size 200m;", block)
+        for expected in (
+            "sub_filter '\"/api/' '\"/workbench/ip12/api/';",
+            "sub_filter \"'/api/\" \"'/workbench/ip12/api/\";",
+            "sub_filter '`/api/' '`/workbench/ip12/api/';",
+            "sub_filter '\"/media/' '\"/workbench/ip12/media/';",
+            "sub_filter \"'/analytics'\" \"'/workbench/ip12/analytics'\";",
+            "sub_filter \"'/classic'\" \"'/workbench/ip12/classic'\";",
+            "sub_filter \"'/skills'\" \"'/workbench/ip12/skills'\";",
+            "sub_filter 'href=\"/agnes-lab\"' 'href=\"/workbench/ip12/agnes-lab\"';",
+            "sub_filter 'href=\"/video-factory\"' 'href=\"/workbench/ip12/video-factory\"';",
+            "sub_filter 'href=\"/\"' 'href=\"/workbench/ip12/\"';",
+        ):
+            self.assertIn(expected, block)
+        self.assertNotIn("text/event-stream", block)
+        self.assertNotIn("sub_filter '\"/' '\"/workbench/ip12/';", block)
+        self.assertNotIn("sub_filter \"'/\" \"'/workbench/ip12/\";", block)
+        self.assertNotIn("sub_filter '`/' '`/workbench/ip12/';", block)
+        self.assertNotIn("auth_basic", block)
 
     def test_direct_3101_gateway_uses_the_same_flask_service(self):
         config = self._config("deploy/nginx-hermes-ip12-direct.conf")
