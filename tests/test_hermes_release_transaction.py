@@ -198,7 +198,7 @@ exit 0
         commands = self.log.read_text(encoding="utf-8")
         self.assertIn("daemon-reload", commands)
         self.assertIn("restart hermes-ip12-preview.service", commands)
-        self.assertIn("curl http://local.test/healthz", commands)
+        self.assertIn("curl -fsS http://local.test/healthz", commands)
 
     def test_rolls_back_when_failure_occurs_after_rsync(self):
         self._assert_rolled_back("rsync")
