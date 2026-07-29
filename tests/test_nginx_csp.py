@@ -88,16 +88,31 @@ class NginxCspTest(unittest.TestCase):
 
     def test_hermes_runbook_updates_the_actively_loaded_main_site_config(self):
         runbook = self._config("deploy/生产环境清单与还原手册.md")
+        release = self._config("deploy/hermes-ip12-release.sh")
         active = "/etc/nginx/sites-enabled/huangquechuanmei"
-        self.assertIn(f"backup_file {active} nginx-huangquechuanmei-enabled.conf", runbook)
+        self.assertIn("deploy/hermes-ip12-release.sh", runbook)
         self.assertIn(
-            f'sudo install -m 0644 "$HERMES_RELEASE_DIR/deploy/nginx-huangquechuanmei.conf" {active}',
-            runbook,
+            f"NGINX_SITE_ENABLED=\"${{HERMES_NGINX_SITE_ENABLED:-{active}}}\"",
+            release,
         )
         self.assertIn(
-            f'restore_file "$backup/nginx-huangquechuanmei-enabled.conf" '
-            f'"$backup/nginx-huangquechuanmei-enabled.conf.state" {active}',
-            runbook,
+            'backup_file "$NGINX_SITE_ENABLED" '
+            "nginx-huangquechuanmei-enabled.conf",
+            release,
+        )
+        self.assertIn(
+            '"$HERMES_RELEASE_DIR/deploy/nginx-huangquechuanmei.conf" '
+            '"$NGINX_SITE_ENABLED"',
+            release,
+        )
+        self.assertIn(
+            'restore_file "$backup/nginx-huangquechuanmei-enabled.conf"',
+            release,
+        )
+        self.assertIn(
+            '"$backup/nginx-huangquechuanmei-enabled.conf.state" '
+            '"$NGINX_SITE_ENABLED"',
+            release,
         )
 
 

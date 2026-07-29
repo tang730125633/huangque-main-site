@@ -153,8 +153,9 @@ class HermesIP12SourceTests(unittest.TestCase):
         self.assertIn("too many concurrent requests", security)
         self.assertIn("too many requests", security)
         self.assertIn("def atomic_write_bytes", artifact_store)
+        self.assertIn("def atomic_append_bytes", artifact_store)
         self.assertIn("def video_work_dir", artifact_store)
-        self.assertIn('QUOTA_OWNER_DIR_RE = re.compile(r"[0-9a-f]{24}', artifact_store)
+        self.assertIn('LEGACY_ROLLBACK_DIRS = frozenset({"videos", "analyses", "uploads"})', artifact_store)
         self.assertIn("def _quota_paths():", artifact_store)
         self.assertIn('(?:ref_|replica_)?([0-9a-f]{10})', artifact_store)
         self.assertIn("owned_video_path(current_username(), filename)", video_factory)
@@ -173,16 +174,27 @@ class HermesIP12SourceTests(unittest.TestCase):
         runbook = (ROOT / "deploy" / "生产环境清单与还原手册.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("http://127.0.0.1:3102/healthz", runbook)
-        self.assertIn(
-            "https://huangquechuanmei.com/workbench/ip12/healthz", runbook
+        release_script = (ROOT / "deploy/hermes-ip12-release.sh").read_text(
+            encoding="utf-8"
         )
-        self.assertIn("http://129.204.166.13:3101/healthz", runbook)
-        self.assertNotIn("http://127.0.0.1:3102/ >/dev/null", runbook)
+        self.assertIn("http://127.0.0.1:3102/healthz", release_script)
+        self.assertIn(
+            "https://huangquechuanmei.com/workbench/ip12/healthz", release_script
+        )
+        self.assertIn("http://129.204.166.13:3101/healthz", release_script)
+        self.assertNotIn("http://127.0.0.1:3102/ >/dev/null", release_script)
         self.assertEqual(
             video_analyzer.count('"--max-filesize", ANALYSIS_MAX_DOWNLOAD_ARG'), 2
         )
         self.assertIn("with reserve_capacity(ANALYSIS_MAX_DOWNLOAD_BYTES)", video_analyzer)
+        agnes_routes = (HERMES / "agnes_routes.py").read_text(encoding="utf-8")
+        team_routes = (HERMES / "team_workbench_routes.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("atomic_write_bytes", agnes_routes)
+        self.assertIn("reserve_capacity", agnes_routes)
+        self.assertIn("atomic_write_bytes", team_routes)
+        self.assertIn("reserve_capacity", team_routes)
 
     def test_security_boundaries_and_runtime_ignores_are_kept(self):
         index = (HERMES / "templates/index.html").read_text(encoding="utf-8")
@@ -225,15 +237,12 @@ class HermesIP12SourceTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn('git archive "$HERMES_SHA"', runbook)
+        self.assertIn("deploy/hermes-ip12-release.sh", runbook)
         self.assertIn("deploy/nginx-huangquechuanmei.conf", runbook)
         self.assertIn("hermes-last-backup", runbook)
-        self.assertIn("systemctl restart hermes-ip12-preview.service", runbook)
-        self.assertIn("rsync -a --delete", runbook)
+        self.assertIn("deploy/hermes-ip12-release.sh", runbook)
         release_start = runbook.index("HERMES_STAGE=$(mktemp -d)")
-        release_end = runbook.index(
-            "curl -fsS https://huangquechuanmei.com/workbench/ip12/healthz",
-            release_start,
-        )
+        release_end = runbook.index("\n```", release_start)
         release = runbook[release_start:release_end]
         self.assertIn("scripts/migrate_hermes_artifacts.py", release)
         self.assertIn(
@@ -241,20 +250,29 @@ class HermesIP12SourceTests(unittest.TestCase):
             release,
         )
         self.assertIn(
-            'test -f "$HERMES_RELEASE_DIR/scripts/migrate_hermes_artifacts.py"',
+            'test -f "$HERMES_STAGE/deploy/hermes-ip12-release.sh"',
             release,
         )
+        release_script = (ROOT / "deploy/hermes-ip12-release.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("trap rollback_release EXIT", release_script)
+        self.assertIn("restore_file", release_script)
+        self.assertIn("systemctl daemon-reload", release_script)
+        self.assertIn("fail_if_requested rsync", release_script)
+        self.assertIn("fail_if_requested pip", release_script)
+        self.assertIn("fail_if_requested health", release_script)
         self.assertLess(
-            release.index("sudo systemctl stop hermes-ip12-preview.service"),
-            release.index("--dry-run"),
+            release_script.index('systemctl stop "$SERVICE"'),
+            release_script.index("--dry-run"),
         )
         self.assertLess(
-            release.index("--dry-run"),
-            release.index('"$HERMES_RELEASE_DIR/server/hermes_ip12/"'),
+            release_script.index("--dry-run"),
+            release_script.index('"$HERMES_RELEASE_DIR/server/hermes_ip12/"'),
         )
         self.assertLess(
-            release.index("--dry-run"),
-            release.rindex("sudo systemctl restart hermes-ip12-preview.service"),
+            release_script.index("--dry-run"),
+            release_script.rindex('systemctl restart "$SERVICE"'),
         )
         env_example = (ROOT / "deploy" / "hermes-ip12.env.example").read_text(
             encoding="utf-8"
@@ -760,6 +778,59 @@ uploaded = client.post(
 assert uploaded["files"][0]["public_url"].startswith(
     "https://huangquechuanmei.com/workbench/ip12/media/agnes/images/"
 ), uploaded
+
+# Active internal-tool directories count toward quota. A successful upload must
+# increase used space, and the next upload must be rejected on cumulative use.
+original_quota = artifact_store.DATA_QUOTA_BYTES
+agnes_images = Path(os.environ["HERMES_DATA_DIR"]) / "agnes_lab" / "images"
+agnes_before_files = set(agnes_images.iterdir())
+agnes_before_bytes = artifact_store.directory_size()
+artifact_store.DATA_QUOTA_BYTES = agnes_before_bytes + 4096
+agnes_first = client.post(
+    "/api/agnes/upload-image",
+    data={"files": (io.BytesIO(b"first-agnes"), "first.png")},
+    content_type="multipart/form-data",
+)
+assert agnes_first.status_code == 200, agnes_first.get_data(as_text=True)
+agnes_after_bytes = artifact_store.directory_size()
+assert agnes_after_bytes > agnes_before_bytes
+agnes_after_files = set(agnes_images.iterdir())
+assert len(agnes_after_files - agnes_before_files) == 1
+artifact_store.DATA_QUOTA_BYTES = agnes_after_bytes + 1
+agnes_second = client.post(
+    "/api/agnes/upload-image",
+    data={"files": (io.BytesIO(b"second-agnes"), "second.png")},
+    content_type="multipart/form-data",
+)
+assert agnes_second.status_code == 507, agnes_second.get_data(as_text=True)
+assert set(agnes_images.iterdir()) == agnes_after_files
+
+team_uploads = (
+    Path(os.environ["HERMES_DATA_DIR"]) / "team_workbench" / "uploads" / "images"
+)
+team_before_files = set(team_uploads.iterdir())
+team_before_bytes = artifact_store.directory_size()
+artifact_store.DATA_QUOTA_BYTES = team_before_bytes + 4096
+team_first = client.post(
+    "/api/team-workbench/upload",
+    data={"files": (io.BytesIO(b"first-team"), "first.png")},
+    content_type="multipart/form-data",
+)
+assert team_first.status_code == 200, team_first.get_data(as_text=True)
+team_after_bytes = artifact_store.directory_size()
+assert team_after_bytes > team_before_bytes
+team_after_files = set(team_uploads.iterdir())
+assert len(team_after_files - team_before_files) == 1
+artifact_store.DATA_QUOTA_BYTES = team_after_bytes + 1
+team_second = client.post(
+    "/api/team-workbench/upload",
+    data={"files": (io.BytesIO(b"second-team"), "second.png")},
+    content_type="multipart/form-data",
+)
+assert team_second.status_code == 507, team_second.get_data(as_text=True)
+assert set(team_uploads.iterdir()) == team_after_files
+assert not list(Path(os.environ["HERMES_DATA_DIR"]).rglob("*.tmp"))
+artifact_store.DATA_QUOTA_BYTES = original_quota
 
 media = client.post(
     "/api/media/upload",

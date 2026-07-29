@@ -39,6 +39,14 @@ PROCESS_RUN_ID = uuid.uuid4().hex
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_prefix=1)
+import artifact_store
+
+
+@app.errorhandler(artifact_store.StorageQuotaExceeded)
+def storage_quota_exceeded(_error):
+    return jsonify({"ok": False, "error": "Hermes storage quota exceeded"}), 507
+
+
 from security import register_security
 register_security(app, DATA_DIR)
 from routes_extra import register_v6_routes

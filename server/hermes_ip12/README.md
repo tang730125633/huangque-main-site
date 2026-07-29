@@ -42,12 +42,13 @@ checksum manifest in `data/.migrations/`. After verifying `/healthz`, media
 search, and historical video URLs, archive the legacy directories according to
 the normal backup policy.
 
-Quota preflight runs before the manifest or any artifact is written. Only
-canonical owner storage under `data/users/` and owner-keyed
-`data/media_library/` directories counts toward the runtime artifact quota;
-the retained flat `data/videos/`, `data/analyses/`, and `data/uploads/` rollback
-copies are not counted twice. If preflight reports insufficient space, increase
-`HERMES_DATA_QUOTA_MB` explicitly and rerun the dry-run before migration.
+Quota preflight runs before the manifest or any artifact is written. All active
+storage below `data/` counts toward the runtime quota, including `agnes_lab/`,
+`team_workbench/`, `users/`, `media_library/`, and `knowledge/`. Only the
+retained top-level `data/videos/`, `data/analyses/`, and `data/uploads/`
+rollback copies are excluded. If preflight reports insufficient space,
+increase `HERMES_DATA_QUOTA_MB` explicitly and rerun the dry-run before
+migration.
 
 To roll back, stop Hermes first. Rollback refuses to overwrite a media index or
 remove a migrated file that changed after migration.

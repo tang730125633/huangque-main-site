@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import hashlib
 import json
 import os
-import re
 import shutil
 import sys
 import uuid
@@ -24,7 +24,7 @@ from pathlib import Path
 
 MIGRATION_ID = "hermes-owner-artifacts-v1"
 MANIFEST_NAME = f"{MIGRATION_ID}.json"
-OWNER_DIR_RE = re.compile(r"[0-9a-f]{24}\Z")
+LEGACY_ROLLBACK_DIRS = frozenset({"videos", "analyses", "uploads"})
 
 
 class QuotaPreflightError(RuntimeError):
@@ -126,27 +126,19 @@ def _is_quota_path(path, data_dir):
     parts = relative.parts
     if not parts:
         return False
-    if parts[0] == "users":
-        return True
-    return (
-        parts[0] == "media_library"
-        and len(parts) >= 2
-        and (
-            parts[1] == "index.json"
-            or OWNER_DIR_RE.fullmatch(parts[1]) is not None
-        )
-    )
+    return parts[0] not in LEGACY_ROLLBACK_DIRS
 
 
 def _quota_directory_size(data_dir):
     data_dir = Path(data_dir).resolve()
-    media_root = data_dir / "media_library"
-    roots = [data_dir / "users", media_root / "index.json"]
-    if media_root.exists():
-        roots.extend(
-            path for path in media_root.iterdir()
-            if path.is_dir() and OWNER_DIR_RE.fullmatch(path.name)
-        )
+    roots = (
+        [
+            path for path in data_dir.iterdir()
+            if path.name not in LEGACY_ROLLBACK_DIRS
+        ]
+        if data_dir.exists()
+        else []
+    )
     total = 0
     seen = set()
     for root in roots:
@@ -178,14 +170,32 @@ def _validate_plan_quota(plan):
     index_path = Path(index["path"])
     current_index_bytes = index_path.stat().st_size if index_path.is_file() else 0
     final_index_bytes = len(base64.b64decode(index["after_base64"]))
-    projected_bytes = (
+    manifest_path = Path(plan["manifest_path"])
+    current_manifest_bytes = (
+        manifest_path.stat().st_size if manifest_path.is_file() else 0
+    )
+    projected_without_manifest = (
         current_bytes + remaining_bytes - current_index_bytes + final_index_bytes
+        - current_manifest_bytes
     )
-    quota.update(
-        current_bytes=current_bytes,
-        remaining_copy_bytes=remaining_bytes,
-        projected_bytes=projected_bytes,
-    )
+    manifest_bytes = 0
+    for _attempt in range(10):
+        projected_bytes = projected_without_manifest + manifest_bytes
+        quota.update(
+            current_bytes=current_bytes,
+            remaining_copy_bytes=remaining_bytes,
+            manifest_bytes=manifest_bytes,
+            projected_bytes=projected_bytes,
+        )
+        completed = copy.deepcopy(plan)
+        completed["state"] = "completed"
+        completed["completed_at"] = "2000-01-01T00:00:00.000000+00:00"
+        measured = len(_json_bytes(completed))
+        if measured == manifest_bytes:
+            break
+        manifest_bytes = measured
+    projected_bytes = projected_without_manifest + manifest_bytes
+    quota.update(manifest_bytes=manifest_bytes, projected_bytes=projected_bytes)
     if projected_bytes > int(quota["limit_bytes"]):
         required_mb = (projected_bytes + 1024 * 1024 - 1) // (1024 * 1024)
         raise QuotaPreflightError(
@@ -329,7 +339,7 @@ def build_plan(root_dir, data_dir, legacy_owner, quota_bytes=None):
         "operations": operations,
         "quota": {
             "limit_bytes": int(quota_bytes),
-            "policy": "canonical-owner-storage-v1",
+            "policy": "active-data-excluding-legacy-rollback-v2",
         },
         "index": {
             "path": str(target_index_path),

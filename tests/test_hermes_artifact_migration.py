@@ -141,7 +141,7 @@ class HermesArtifactMigrationTests(unittest.TestCase):
                 self.root,
                 self.data,
                 "legacy-user",
-                quota_bytes=projected - 1,
+                quota_bytes=max(1, projected // 2),
             )
         self.assertFalse((self.data / ".migrations").exists())
         self.assertFalse((self.data / "users").exists())
@@ -158,6 +158,14 @@ class HermesArtifactMigrationTests(unittest.TestCase):
         self.assertEqual(
             migrate_hermes_artifacts._quota_directory_size(self.data),
             after_migration,
+        )
+
+        active = self.data / "agnes_lab" / "images" / "active.png"
+        active.parent.mkdir(parents=True)
+        active.write_bytes(b"active-data")
+        self.assertEqual(
+            migrate_hermes_artifacts._quota_directory_size(self.data),
+            after_migration + len(b"active-data"),
         )
 
     def test_runtime_quota_excludes_legacy_but_charges_canonical_move(self):

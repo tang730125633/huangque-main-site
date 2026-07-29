@@ -7,6 +7,7 @@ import io
 import json
 import mimetypes
 import uuid
+from artifact_store import atomic_append_bytes, atomic_write_bytes, reserve_capacity
 
 
 VALID_TYPES = {
@@ -151,8 +152,11 @@ def apply_classification(item, business_track=None, force_label=False):
 
 
 def write_jsonl_items(path, items):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in items) + ("\n" if items else ""), encoding="utf-8")
+    content = (
+        "\n".join(json.dumps(x, ensure_ascii=False) for x in items)
+        + ("\n" if items else "")
+    ).encode("utf-8")
+    atomic_write_bytes(path, content)
 
 
 def upsert_library_item(path, item):
@@ -203,9 +207,8 @@ def read_jsonl(path, limit=300):
 
 
 def append_jsonl(path, obj):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    content = (json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8")
+    atomic_append_bytes(path, content)
 
 
 def normalize_submission(data):
@@ -390,7 +393,7 @@ def register_team_workbench_routes(app, project_dir, data_root=None):
     @app.route("/api/team-workbench/upload", methods=["POST"])
     def team_workbench_upload():
         files = request.files.getlist("files") or []
-        saved = []
+        pending = []
         for f in files:
             original = f.filename or "upload"
             ext = Path(original).suffix.lower()
@@ -400,17 +403,21 @@ def register_team_workbench_routes(app, project_dir, data_root=None):
             safe = secure_filename(original) or f"upload{ext}"
             filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}_{safe}"
             dest = uploads / category / filename
-            f.save(dest)
-            mime = mimetypes.guess_type(str(dest))[0] or "application/octet-stream"
-            saved.append({
-                "original_name": original,
-                "filename": filename,
-                "category": category,
-                "mime": mime,
-                "bytes": dest.stat().st_size,
-                "path": str(dest),
-                "url": f"/media/team-workbench/{category}/{filename}",
-            })
+            pending.append((original, filename, category, dest, f.read()))
+        saved = []
+        with reserve_capacity(sum(len(item[4]) for item in pending)) as reservation:
+            for original, filename, category, dest, content in pending:
+                atomic_write_bytes(dest, content, reservation=reservation)
+                mime = mimetypes.guess_type(str(dest))[0] or "application/octet-stream"
+                saved.append({
+                    "original_name": original,
+                    "filename": filename,
+                    "category": category,
+                    "mime": mime,
+                    "bytes": len(content),
+                    "path": str(dest),
+                    "url": f"/media/team-workbench/{category}/{filename}",
+                })
         return jsonify({"ok": True, "files": saved})
 
     @app.route("/api/team-workbench/status")

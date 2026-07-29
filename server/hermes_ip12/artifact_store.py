@@ -18,7 +18,7 @@ from runtime_paths import DATA_DIR
 
 
 ASSET_ID_RE = re.compile(r"[0-9a-f]{10}\Z")
-QUOTA_OWNER_DIR_RE = re.compile(r"[0-9a-f]{24}\Z")
+LEGACY_ROLLBACK_DIRS = frozenset({"videos", "analyses", "uploads"})
 # New files use ``<id>.mp4``. The two prefixed forms were emitted by the
 # pre-isolation analyzer and replica pipelines and remain valid after migration.
 VIDEO_NAME_RE = re.compile(r"(?:ref_|replica_)?([0-9a-f]{10})\.mp4\Z")
@@ -206,15 +206,13 @@ def media_path(username, asset_id, extension):
 
 
 def _quota_paths():
-    """Return canonical storage paths; legacy rollback copies are not billable."""
-    media_root = DATA_DIR / "media_library"
-    paths = [DATA_DIR / "users", media_root / "index.json"]
-    if media_root.exists():
-        paths.extend(
-            path for path in media_root.iterdir()
-            if path.is_dir() and QUOTA_OWNER_DIR_RE.fullmatch(path.name)
-        )
-    return paths
+    """Return every active data path except retained top-level rollback copies."""
+    if not DATA_DIR.exists():
+        return []
+    return [
+        path for path in DATA_DIR.iterdir()
+        if path.name not in LEGACY_ROLLBACK_DIRS
+    ]
 
 
 def _is_quota_path(path):
@@ -225,20 +223,11 @@ def _is_quota_path(path):
     parts = relative.parts
     if not parts:
         return False
-    if parts[0] == "users":
-        return True
-    return (
-        parts[0] == "media_library"
-        and len(parts) >= 2
-        and (
-            parts[1] == "index.json"
-            or QUOTA_OWNER_DIR_RE.fullmatch(parts[1]) is not None
-        )
-    )
+    return parts[0] not in LEGACY_ROLLBACK_DIRS
 
 
 def directory_size(root=None):
-    """Count canonical artifacts, or every file below an explicit test root."""
+    """Count active data, or every file below an explicit test root."""
     roots = [Path(root)] if root is not None else _quota_paths()
     total = 0
     seen = set()
@@ -261,7 +250,7 @@ def directory_size(root=None):
 
 def ensure_capacity(extra_bytes, replacing=None, reservation=None):
     replacing_size = 0
-    if replacing:
+    if replacing and _is_quota_path(replacing):
         try:
             replacing_size = Path(replacing).stat().st_size
         except OSError:
@@ -291,6 +280,16 @@ def atomic_write_bytes(destination, content, reservation=None):
         finally:
             temp.unlink(missing_ok=True)
     return destination
+
+
+def atomic_append_bytes(destination, content, reservation=None):
+    """Append bytes without bypassing quota or exposing a partial JSONL write."""
+    destination = Path(destination)
+    with storage_transaction():
+        existing = destination.read_bytes() if destination.is_file() else b""
+        return atomic_write_bytes(
+            destination, existing + bytes(content), reservation=reservation
+        )
 
 
 def finalize_file(source, destination, reservation=None):
