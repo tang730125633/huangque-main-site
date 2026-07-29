@@ -35,6 +35,16 @@ class HermesIP12SourceTests(unittest.TestCase):
         self.assertIn("绝不说“请稍等”", prompt)
         self.assertIn("立刻执行 Step 2", prompt)
         self.assertIn("模块切换必须同步界面", prompt)
+        self.assertIn("当前产品只开放模块 1-6", prompt)
+        self.assertIn("current_module 保持 6，不进入模块 7", prompt)
+        self.assertNotIn("current_module = 7", prompt)
+
+    def test_only_six_modules_are_open_in_both_web_views(self):
+        for filename in ("index.html", "index_clean.html"):
+            page = (HERMES / "templates" / filename).read_text(encoding="utf-8")
+            self.assertIn("AVAILABLE_MODULE_COUNT", page)
+            self.assertIn("尚未开发，敬请期待", page)
+            self.assertIn("0/6", page)
 
     def test_complete_original_route_set_is_present(self):
         routes = set()
@@ -266,6 +276,20 @@ revisited = parse_coach_state_updates(
 )
 assert revisited["current_module"] == 5, revisited
 assert revisited["foundation_report"]["status"] == "confirmed", revisited
+finished = parse_coach_state_updates(
+    "✅ 模块 6 完成。接下来进入模块 7。",
+    {"current_module": 6, "completed_modules": [1, 2, 3, 4, 5], "module_step": 0,
+     "foundation_report": {"status": "confirmed"}},
+)
+assert finished["current_module"] == 6, finished
+assert finished["completed_modules"] == [1, 2, 3, 4, 5, 6], finished
+legacy = parse_coach_state_updates(
+    "继续复盘",
+    {"current_module": 8, "completed_modules": list(range(1, 8)), "module_step": 2,
+     "foundation_report": {"status": "confirmed"}},
+)
+assert legacy["current_module"] == 6, legacy
+assert legacy["completed_modules"] == [1, 2, 3, 4, 5, 6], legacy
 assert 5 not in parse_coach_state_updates(
     "✅ 模块 5 完成",
     {"current_module": 4, "completed_modules": [1, 2, 3, 4], "module_step": 0,
@@ -378,6 +402,10 @@ with patch.object(server, "call_ai") as gated_model:
     gated_model.assert_not_called()
 assert client.post("/api/generate-report", json={"conversation_id": foundation_cid, "module": 5}).status_code == 409
 assert client.post("/api/generate-deliverable", json={"conversation_id": foundation_cid, "module": 5}).status_code == 409
+assert client.post("/api/jump-module", json={"conversation_id": foundation_cid, "module": 7}).status_code == 409
+assert client.post("/api/generate-report", json={"conversation_id": foundation_cid, "module": 7}).status_code == 409
+assert client.post("/api/generate-deliverable", json={"conversation_id": foundation_cid, "module": 7}).status_code == 409
+assert client.post("/api/module7-images", json={}).status_code == 409
 
 gated = server.load_conversation(foundation_cid)
 gated["coach_state"] = {"current_module": 8, "completed_modules": list(range(1, 8)),
@@ -413,7 +441,7 @@ assert download.status_code == 200
 assert download.headers["Cache-Control"] == "private, no-store"
 confirmed = client.post("/api/foundation-report/confirm", json={"conversation_id": foundation_cid})
 assert confirmed.status_code == 200, confirmed.get_data(as_text=True)
-assert confirmed.get_json()["state"]["current_module"] == 8
+assert confirmed.get_json()["state"]["current_module"] == 6
 assert confirmed.get_json()["state"]["module_step"] == 3
 assert client.post(
     "/api/chat",
