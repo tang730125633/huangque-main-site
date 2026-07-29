@@ -3,7 +3,7 @@
 Hermes 12模块IP孵化教练 v3 — 诊断→交付闭环
 新增：模块完成自动生成交付物 / GEO分析 / Humanizer / 一键导出
 """
-import html, json, os, pathlib, re, shutil, signal, subprocess, tempfile, time, uuid
+import html, json, os, pathlib, re, shutil, subprocess, tempfile, uuid
 from datetime import datetime
 from flask import Flask, request, jsonify, Response, render_template, send_file
 import requests
@@ -305,13 +305,10 @@ def generate_foundation_report(convo_id):
     with tempfile.TemporaryDirectory(prefix="hermes-foundation-", dir=str(pathlib.Path.home())) as directory:
         root = pathlib.Path(directory); html_path = root / "report.html"; pdf_path = root / "report.pdf"
         html_path.write_text(_foundation_html(content), encoding="utf-8")
-        process = subprocess.Popen([browser, "--headless", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--no-pdf-header-footer", "--user-data-dir=" + str(root / "profile"), "--print-to-pdf=" + str(pdf_path), html_path.as_uri()], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-        deadline = time.monotonic() + 45
-        while time.monotonic() < deadline and not pdf_path.exists():
-            if process.poll() is not None: break
-            time.sleep(.1)
-        if process.poll() is None:
-            os.killpg(process.pid, signal.SIGTERM)
+        subprocess.run(
+            [browser, "--headless", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--no-pdf-header-footer", "--user-data-dir=" + str(root / "profile"), "--print-to-pdf=" + str(pdf_path), html_path.as_uri()],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False,
+        )
         if not pdf_path.exists() or not pdf_path.read_bytes().startswith(b"%PDF-"):
             raise RuntimeError("PDF renderer failed")
         target.write_bytes(pdf_path.read_bytes())
