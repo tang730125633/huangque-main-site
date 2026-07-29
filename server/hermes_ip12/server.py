@@ -242,7 +242,10 @@ def parse_coach_state_updates(ai_response, current_state):
 
 def _foundation_html(markdown):
     rows = []
-    for raw in str(markdown or "").splitlines():
+    source_rows = str(markdown or "").splitlines()
+    if source_rows and source_rows[0].strip().startswith("# "):
+        source_rows = source_rows[1:]
+    for raw in source_rows:
         line = html.escape(raw.strip())
         if not line:
             continue
