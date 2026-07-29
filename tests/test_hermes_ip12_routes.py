@@ -213,7 +213,7 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-from server import app, parse_coach_state_updates
+from server import _foundation_html, app, parse_coach_state_updates
 import image_services
 import media_library
 import video_analyzer
@@ -234,6 +234,18 @@ foundation = parse_coach_state_updates(
 )
 assert foundation["current_module"] == 4, foundation
 assert foundation["foundation_report"]["status"] == "generating", foundation
+report_html = _foundation_html("""# 忽略的总标题
+## 模块一｜定位诊断
+### 核心关键词
+1. **实战**：有可验证经历。
+| 场景 | 建议口径 |
+| --- | --- |
+| 账号封面 | 直接说结果 |
+> 待本人确认
+""")
+assert "模块一｜定位诊断" in report_html
+assert "<table>" in report_html and "账号封面" in report_html
+assert "<blockquote>待本人确认</blockquote>" in report_html
 
 client = app.test_client()
 for path in ("/", "/classic", "/skills", "/analytics", "/images", "/videos",
