@@ -121,13 +121,56 @@ def load_coach_prompt():
 
 COACH_PROMPT_BASE = load_coach_prompt()
 
+MOBILE_NUMBER_RE = re.compile(r"(?<!\d)1[3-9]\d(?:[ -]?\d){8}(?!\d)")
+INTAKE_FIRST_QUESTION = """在正式进入模块 1 前，我们先用最多 3 轮把基础资料补齐。一次只填这一组即可。
+
+**第 1/3 轮｜基本信息**
+请按这个顺序回复：
+1. 姓名或希望我怎么称呼你
+2. 性别与年龄（也可以只写年龄段）
+3. 所在城市
+4. 手机号（可选，不填不影响诊断；如填写，系统只保留隐藏版本，不进入 AI 分析或 PDF）
+
+示例：小满｜女，33 岁｜成都｜不填"""
+INTAKE_SECOND_QUESTION = """收到。继续第 2/3 轮，只补职业背景：
+
+1. 当前职业或身份
+2. 从业年限
+3. 做过哪些行业或岗位（简单列出即可）
+4. 目前主要收入来源
+5. 年收入区间：10 万以下 / 10–30 万 / 30–50 万 / 50–100 万 / 100 万以上 / 不方便透露
+
+示例：整理咨询师｜3 年｜行政、空间整理｜咨询服务｜10–30 万"""
+INTAKE_MODULE_ONE_START = """✅ 基础信息已确认。现在正式进入模块 1：定位诊断。
+
+我们先只聊一个问题：**请讲一段对你影响最大的关键经历或转折。**
+可以从一次职业变化、创业决定、人生低谷或重新开始说起；告诉我发生了什么，以及它后来怎样影响了你。"""
+
+
+def initial_coach_state():
+    return {"ip_profile": {}, "current_module": 1, "completed_modules": [], "module_step": 0,
+            "intake": {"status": "collecting", "round": 1, "answers": {}}}
+
+
+def _redact_mobile_numbers(value):
+    return MOBILE_NUMBER_RE.sub("[手机号已隐藏]", str(value or ""))
+
+
+def _intake_pending(state):
+    intake = state.get("intake")
+    return isinstance(intake, dict) and intake.get("status") == "collecting"
+
 def build_system_prompt(convo_id):
     convo = load_conversation(convo_id)
-    state = convo.get("coach_state", {"ip_profile": {}, "current_module": 1, "completed_modules": [], "module_step": 0})
+    state = convo.get("coach_state", initial_coach_state())
     cm = state["current_module"]
     mod = MODULES[cm - 1] if 1 <= cm <= 12 else MODULES[0]
     done = state.get("completed_modules", [])
-    profile_summary = json.dumps(state.get("ip_profile", {}), ensure_ascii=False)[:300]
+    profile = dict(state.get("ip_profile", {}))
+    intake = state.get("intake") or {}
+    if intake.get("status") == "complete" and intake.get("answers"):
+        profile["基础资料"] = intake["answers"]
+    profile_summary = json.dumps(profile, ensure_ascii=False)[:1200]
 
     module_protocol = f"""
 ## 当前模块：{mod['id']}. {mod['name']} {mod['icon']}
@@ -141,6 +184,9 @@ def build_system_prompt(convo_id):
 - 信息不够就追问，宁可多问一轮也不瞎猜
 - 每一步给学员具体的选择或确认点，不要开放式"你觉得呢"
 - 用学员已提供的信息来回溯，让他感觉你在认真听
+- 基础资料已经采集，不要重复询问称呼、年龄、城市、职业或收入区间
+- 基础资料中如有“确认或修正”，以该轮内容为准
+- 不要索要、复述或输出手机号
 """
     completed_summary = ""
     if done:
@@ -237,8 +283,9 @@ def load_conversation(convo_id):
     path = conversation_path(convo_id)
     if path.exists():
         return json.loads(path.read_text(encoding="utf-8"))
-    return {"id": convo_id, "title": "新诊断", "messages": [],
-            "coach_state": {"ip_profile": {}, "current_module": 1, "completed_modules": [], "module_step": 0},
+    return {"id": convo_id, "title": "新诊断",
+            "messages": [{"role": "assistant", "content": INTAKE_FIRST_QUESTION}],
+            "coach_state": initial_coach_state(),
             "reports": {}, "deliverables": {}, "updated": ""}
 
 def save_conversation(convo_id, data):
@@ -310,19 +357,63 @@ def parse_coach_state_updates(ai_response, current_state):
     return updated_state
 
 
+def handle_intake_turn(convo_id, user_message):
+    """Complete the three-round preflight without spending a model call."""
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(convo_id)
+        if convo is None:
+            return None
+        state = convo.setdefault("coach_state", {})
+        if not _intake_pending(state):
+            return False
+        intake = state["intake"]
+        round_number = min(3, max(1, int(intake.get("round", 1))))
+        answer = _redact_mobile_numbers(user_message).strip()[:1200]
+        answers = dict(intake.get("answers") or {})
+        convo.setdefault("messages", []).append({"role": "user", "content": answer})
+        if round_number == 1:
+            answers["基本信息"] = answer
+            intake.update({"round": 2, "answers": answers})
+            reply = INTAKE_SECOND_QUESTION
+            label = re.sub(r"^(?:姓名|昵称|称呼)[:：]\s*", "", re.split(r"[｜|，,\n]", answer)[0]).strip()[:12]
+            if label:
+                convo["title"] = f"{label} · IP 诊断"
+        elif round_number == 2:
+            answers["职业背景"] = answer
+            intake.update({"round": 3, "answers": answers})
+            reply = """已记录。最后是第 3/3 轮，请核对：
+
+- **基本信息**：%s
+- **职业背景**：%s
+
+没有问题请回复“确认”；需要修改时，请在这一条里一次性写出正确内容。回复后我会直接开始模块 1。""" % (
+                answers.get("基本信息", "未填写"), answers.get("职业背景", "未填写"))
+        else:
+            answers["确认或修正"] = answer
+            intake.update({"status": "complete", "round": 3, "answers": answers})
+            state["current_module"] = 1
+            state["module_step"] = 0
+            reply = INTAKE_MODULE_ONE_START
+        convo["messages"].append({"role": "assistant", "content": reply})
+        save_conversation(convo_id, convo)
+        return {"assistant": reply, "state": state}
+
+
 def _foundation_source_messages(convo):
     messages = convo.get("messages", [])
+    def safe(items):
+        return [dict(message, content=_redact_mobile_numbers(message.get("content", ""))) for message in items]
     source_end = (convo.get("coach_state") or {}).get("foundation_source_message_count")
     if isinstance(source_end, int) and 0 < source_end <= len(messages):
-        return messages[:source_end]
+        return safe(messages[:source_end])
     markers = ("模块 4 完成", "模块4 完成", "✅ 模块 4", "模块 4 ✅")
     for index, message in enumerate(messages):
         if message.get("role") == "assistant" and any(marker in str(message.get("content", "")) for marker in markers):
-            return messages[:index + 1]
+            return safe(messages[:index + 1])
     for index, message in enumerate(messages):
         if message.get("role") == "assistant" and re.search(r"(?:接下来|进入|开始|切换).{0,8}模块\s*5", str(message.get("content", ""))):
-            return messages[:index]
-    return messages
+            return safe(messages[:index])
+    return safe(messages)
 
 
 def _foundation_generation_active(report):
@@ -434,6 +525,7 @@ def generate_foundation_report(convo_id):
         state["foundation_report"] = {"status": "generating", "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "process_run_id": PROCESS_RUN_ID}
         save_conversation(convo_id, convo)
     messages = [{"role": "system", "content": """你是IP定位报告编辑。只基于对话中已经出现的信息，写一份可直接交给客户确认的中文Markdown《模块1-4定位初稿》。目标是与成熟咨询交付一致的8-10页策略报告，而不是对话摘要；通过充分拆解已知信息实现信息密度，绝不为凑页数编造。未知、未确认数字或事实必须写‘待本人确认’。\n\n严格按以下结构输出，不写开场客套，也不要输出总标题：\n## 模块一｜定位诊断\n### 核心关键词（7个）：每个用编号、关键词和一句解释。\n### 最终定位：名称、一句话定位语、三合一策略。\n### 市场机会：5点，必须写目标人群共鸣、成交痛点、差异化、可验证资产和传播机会。\n### 潜在风险与控制建议：5组，每组写风险和一条控制建议。\n## 模块二｜人设塑造\n### 三套人设方案：每套包含名称、核心特质、故事基调、传播标签、人设公式、优势、风险与适用场景。\n### 最终推荐：推荐哪套人设、5条具体匹配理由、核心人设要素表。\n### 对外口径：账号封面/置顶、引流钩子、成交主张、逆袭故事、个人口头禅五条口径，必须用Markdown表格，列为“场景｜建议口径”。\n## 模块三｜价值主张提炼\n### 价值主张诊断表：把现有表达或当前问题逐条写成“原始口径｜问题｜优化方向”表格；没有原始口径时明确写“待本人确认”。\n### 三套价值主张方案：每套写主张核心、一句话金句、优势、潜在局限。\n### 最终价值主张：主张核心、服务对象、解决问题、可交付结果、最终一句话金句。\n### 金句备选：至少3条，并为每条写适用场景。\n### 差异化证明与变现路径：用一张“经历/能力/结果/价值观｜可证明点｜转化用途”表和一张“路径｜具体措施”表。\n## 模块四｜故事资产挖掘\n### 故事库（至少5个）：每个故事单独用四级标题；必须有一句话、起点、冲突、转折、结果、情绪曲线、适用场景、开头钩子、传播价值。若第5个故事缺少事实，写“候选故事线｜待本人补充”，并说明应补什么，不能虚构。\n### 推荐核心故事主线：选择2个故事组合，写5条推荐理由和可延展的内容系列。\n### 内容资产使用表：至少6行，列为“内容类型｜主题｜适用场景｜目标受众｜传播渠道｜预期效果”。\n## 优化建议汇总\n给“金句升级、内容边界、证明材料、风险控制”各一条可执行建议。\n## 确认页\n列出5项客户要确认的项目；最后固定写：‘文档状态：模块1-4初稿完成，待本人确认后进入模块5-6执行。’\n\n不要编造未在对话中出现的金额、人数、经历、客户结果或账号名称。"""}]
+    messages[0]["content"] += "\n\n隐私要求：不得在报告中输出手机号、联系方式或‘手机号已隐藏’占位符。"
     messages.extend(_foundation_source_messages(convo))
     messages.append({"role": "user", "content": "生成《IP 人设定位｜模块 1-4 初稿》，直接输出报告。"})
     messages.append({"role": "user", "content": "交付质检：请完整输出所有标题和表格，不得用‘略’、‘同上’或压缩成摘要。目标约8-10页、6000字左右。每个字段独占一行；策略推导必须建立在已知事实上，未知处清楚标注‘待本人确认’。"})
@@ -639,8 +731,9 @@ def api_list_convos():
 @app.route("/api/conversations", methods=["POST"])
 def api_create_convo():
     cid = uuid.uuid4().hex[:12]
-    data = {"id": cid, "title": "新诊断", "messages": [],
-            "coach_state": {"ip_profile": {}, "current_module": 1, "completed_modules": [], "module_step": 0},
+    data = {"id": cid, "title": "新诊断",
+            "messages": [{"role": "assistant", "content": INTAKE_FIRST_QUESTION}],
+            "coach_state": initial_coach_state(),
             "reports": {}, "deliverables": {}, "owner_account_id": current_account_id(),
             "updated": datetime.now().strftime("%Y-%m-%d %H:%M")}
     save_conversation(cid, data)
@@ -671,7 +764,7 @@ def prepare_chat(cid, user_msg):
         state = convo.get("coach_state", {})
         if 4 in state.get("completed_modules", []) and (state.get("foundation_report") or {}).get("status") != "confirmed":
             return convo, None, None
-        convo["messages"].append({"role": "user", "content": user_msg})
+        convo["messages"].append({"role": "user", "content": _redact_mobile_numbers(user_msg)})
         if convo["title"] == "新诊断" and len(convo["messages"]) >= 2:
             for message in convo["messages"]:
                 if message["role"] == "user":
@@ -726,6 +819,16 @@ def api_chat():
     if not user_msg:
         return jsonify({"error": "empty message"}), 400
 
+    intake_result = handle_intake_turn(cid, user_msg)
+    if intake_result is None:
+        return jsonify({"ok": False, "error": "诊断不存在"}), 404
+    if intake_result is not False:
+        def intake_events():
+            yield f"data: {json.dumps({'content': intake_result['assistant']})}\n\n"
+            yield f"data: {json.dumps({'done': True, 'state': intake_result['state'], 'new_completed': [], 'auto_deliverables': {}})}\n\n"
+        return Response(intake_events(), mimetype="text/event-stream",
+                        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
+
     convo, messages, old_completed = prepare_chat(cid, user_msg)
     if convo is None:
         return jsonify({"ok": False, "error": "诊断不存在"}), 404
@@ -767,6 +870,13 @@ def api_chat_complete():
     user_msg = str(body.get("message", "")).strip()
     if not user_msg:
         return jsonify({"error": "empty message"}), 400
+    intake_result = handle_intake_turn(cid, user_msg)
+    if intake_result is None:
+        return jsonify({"ok": False, "error": "诊断不存在"}), 404
+    if intake_result is not False:
+        return jsonify({"ok": True, "assistant": intake_result["assistant"],
+                        "state": intake_result["state"], "new_completed": [],
+                        "auto_deliverables": {}, "foundation_report": None})
     convo, messages, old_completed = prepare_chat(cid, user_msg)
     if convo is None:
         return jsonify({"ok": False, "error": "诊断不存在"}), 404
@@ -919,6 +1029,8 @@ def api_jump():
         convo = owned_conversation(cid)
         if convo is None:
             return jsonify({"ok": False, "error": "诊断不存在"}), 404
+        if _intake_pending(convo.get("coach_state", {})):
+            return jsonify({"ok": False, "error": "请先完成 3 轮基础信息采集"}), 409
         foundation = convo.get("coach_state", {}).get("foundation_report", {})
         if target >= 5 and foundation.get("status") != "confirmed":
             return jsonify({"ok": False, "error": "请先确认模块 1-4 的 IP 定位初稿 PDF"}), 409
