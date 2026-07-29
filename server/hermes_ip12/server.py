@@ -5,7 +5,7 @@ Hermes 12模块IP孵化教练 v3 — 诊断→交付闭环
 """
 import html, json, os, pathlib, re, shutil, subprocess, tempfile, uuid
 from datetime import datetime
-from flask import Flask, request, jsonify, Response, render_template, send_file
+from flask import Flask, g, request, jsonify, Response, redirect, render_template, send_file
 import requests
 from runtime_paths import DATA_DIR, ROOT_DIR
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -21,6 +21,7 @@ REPORTS_DIR = DATA_DIR / "reports"
 DELIVERABLES_DIR = DATA_DIR / "deliverables"
 FOUNDATION_REPORTS_DIR = DATA_DIR / "foundation_reports"
 CONVERSATION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
+AUTH_BASE = os.environ.get("HERMES_AUTH_BASE", "http://127.0.0.1:8095").rstrip("/")
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024
@@ -173,6 +174,54 @@ def conversation_path(convo_id):
     return path
 
 
+def current_account_id():
+    """Validate the existing Huangque cookie/Bearer token; never trust a client owner id."""
+    if getattr(g, "hermes_account_id", None):
+        return g.hermes_account_id
+    headers = {}
+    for name in ("Authorization", "Cookie"):
+        value = request.headers.get(name)
+        if value:
+            headers[name] = value
+    try:
+        response = requests.get(AUTH_BASE + "/api/auth/me", headers=headers, timeout=3)
+    except requests.RequestException as exc:
+        raise RuntimeError("账号服务暂不可用") from exc
+    if response.status_code == 401:
+        return ""
+    if response.status_code != 200:
+        raise RuntimeError("账号服务暂不可用")
+    account_id = str((response.json().get("user") or {}).get("account_id") or "").strip()
+    if not account_id:
+        raise RuntimeError("账号身份无效")
+    g.hermes_account_id = account_id
+    return account_id
+
+
+def owned_conversation(convo_id):
+    path = conversation_path(convo_id)
+    if not path.exists():
+        return None
+    convo = json.loads(path.read_text(encoding="utf-8"))
+    if convo.get("owner_account_id") != current_account_id():
+        return None
+    return convo
+
+
+@app.before_request
+def require_huangque_account():
+    if request.path == "/healthz":
+        return None
+    try:
+        if current_account_id():
+            return None
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 503
+    if request.path.startswith("/api/"):
+        return jsonify({"ok": False, "error": "请先登录黄雀账号"}), 401
+    return redirect("/login.html?redirect=workbench/ip12")
+
+
 @app.errorhandler(InvalidConversationId)
 def invalid_conversation_id(error):
     return jsonify({"ok": False, "error": str(error)}), 400
@@ -189,12 +238,14 @@ def save_conversation(convo_id, data):
     data["updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
     conversation_path(convo_id).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-def list_convos():
+def list_convos(owner_account_id=None):
     convos = []
     if CONVOS_DIR.exists():
         for f in sorted(CONVOS_DIR.glob("*.json"), reverse=True):
             try:
                 d = json.loads(f.read_text(encoding="utf-8"))
+                if owner_account_id and d.get("owner_account_id") != owner_account_id:
+                    continue
                 cs = d.get("coach_state", {})
                 convos.append({"id": f.stem, "title": d.get("title", "新诊断"),
                     "updated": d.get("updated", ""),
@@ -459,6 +510,11 @@ def api_geo_analyze():
 def index():
     return render_template("index.html", modules=MODULES)
 
+
+@app.route("/healthz")
+def healthz():
+    return jsonify({"ok": True})
+
 @app.route("/classic")
 def classic_index():
     """Keep the original report/deliverable workbench available unchanged."""
@@ -466,25 +522,32 @@ def classic_index():
 
 @app.route("/api/conversations", methods=["GET"])
 def api_list_convos():
-    return jsonify(list_convos())
+    return jsonify(list_convos(current_account_id()))
 
 @app.route("/api/conversations", methods=["POST"])
 def api_create_convo():
     cid = uuid.uuid4().hex[:12]
     data = {"id": cid, "title": "新诊断", "messages": [],
             "coach_state": {"ip_profile": {}, "current_module": 1, "completed_modules": [], "module_step": 0},
-            "reports": {}, "deliverables": {}, "updated": datetime.now().strftime("%Y-%m-%d %H:%M")}
+            "reports": {}, "deliverables": {}, "owner_account_id": current_account_id(),
+            "updated": datetime.now().strftime("%Y-%m-%d %H:%M")}
     save_conversation(cid, data)
     return jsonify({"id": cid})
 
 @app.route("/api/conversations/<cid>", methods=["GET"])
 def api_get_convo(cid):
-    return jsonify(load_conversation(cid))
+    convo = owned_conversation(cid)
+    if convo is None:
+        return jsonify({"ok": False, "error": "诊断不存在"}), 404
+    return jsonify(convo)
 
 @app.route("/api/conversations/<cid>", methods=["DELETE"])
 def api_delete_convo(cid):
+    if owned_conversation(cid) is None:
+        return jsonify({"ok": False, "error": "诊断不存在"}), 404
     path = conversation_path(cid)
     if path.exists(): path.unlink()
+    (FOUNDATION_REPORTS_DIR / (cid + ".pdf")).unlink(missing_ok=True)
     return jsonify({"ok": True})
 
 @app.route("/api/chat", methods=["POST"])
@@ -496,7 +559,9 @@ def api_chat():
     if not user_msg:
         return jsonify({"error": "empty message"}), 400
 
-    convo = load_conversation(cid)
+    convo = owned_conversation(cid)
+    if convo is None:
+        return jsonify({"ok": False, "error": "诊断不存在"}), 404
     convo["messages"].append({"role": "user", "content": user_msg})
     if convo["title"] == "新诊断" and len(convo["messages"]) >= 2:
         for m in convo["messages"]:
@@ -573,7 +638,8 @@ def api_generate_deliverable():
     body = request.get_json()
     cid = body["conversation_id"]
     module_id = body["module"]
-    conversation_path(cid)
+    if owned_conversation(cid) is None:
+        return jsonify({"ok": False, "error": "诊断不存在"}), 404
     try:
         result = generate_deliverable(cid, module_id)
         if result:
@@ -587,7 +653,8 @@ def api_generate_report():
     body = request.get_json()
     cid = body["conversation_id"]
     module_id = body["module"]
-    conversation_path(cid)
+    if owned_conversation(cid) is None:
+        return jsonify({"ok": False, "error": "诊断不存在"}), 404
     try:
         report = generate_module_report(cid, module_id)
         return jsonify({"ok": True, "module": module_id, "report": report})
@@ -596,18 +663,23 @@ def api_generate_report():
 
 @app.route("/api/conversations/<cid>/reports", methods=["GET"])
 def api_get_reports(cid):
-    convo = load_conversation(cid)
+    convo = owned_conversation(cid)
+    if convo is None:
+        return jsonify({"ok": False, "error": "诊断不存在"}), 404
     return jsonify(convo.get("reports", {}))
 
 @app.route("/api/conversations/<cid>/deliverables", methods=["GET"])
 def api_get_deliverables(cid):
     """获取某对话的所有交付物"""
-    convo = load_conversation(cid)
+    convo = owned_conversation(cid)
+    if convo is None:
+        return jsonify({"ok": False, "error": "诊断不存在"}), 404
     return jsonify(convo.get("deliverables", {}))
 
 @app.route("/api/foundation-report/<cid>.pdf", methods=["GET"])
 def api_foundation_pdf(cid):
-    conversation_path(cid)
+    if owned_conversation(cid) is None:
+        return jsonify({"ok": False, "error": "报告不存在"}), 404
     path = FOUNDATION_REPORTS_DIR / (cid + ".pdf")
     if not path.is_file():
         return jsonify({"ok": False, "error": "PDF 尚未生成"}), 404
@@ -616,7 +688,10 @@ def api_foundation_pdf(cid):
 @app.route("/api/foundation-report/confirm", methods=["POST"])
 def api_confirm_foundation_report():
     cid = request.get_json()["conversation_id"]
-    convo = load_conversation(cid); state = convo.setdefault("coach_state", {})
+    convo = owned_conversation(cid)
+    if convo is None:
+        return jsonify({"ok": False, "error": "诊断不存在"}), 404
+    state = convo.setdefault("coach_state", {})
     report = state.get("foundation_report", {})
     if report.get("status") != "awaiting_confirmation":
         return jsonify({"ok": False, "error": "请先生成并查看模块 1-4 初稿"}), 409
@@ -630,7 +705,9 @@ def api_jump():
     body = request.get_json()
     cid = body["conversation_id"]
     target = body["module"]
-    convo = load_conversation(cid)
+    convo = owned_conversation(cid)
+    if convo is None:
+        return jsonify({"ok": False, "error": "诊断不存在"}), 404
     foundation = convo.get("coach_state", {}).get("foundation_report", {})
     if target >= 5 and foundation.get("status") != "confirmed":
         return jsonify({"ok": False, "error": "请先确认模块 1-4 的 IP 定位初稿 PDF"}), 409
@@ -671,7 +748,9 @@ def api_topic_radar():
     # 获取对话上下文
     context_msgs = []
     if convo_id:
-        convo = load_conversation(convo_id)
+        convo = owned_conversation(convo_id)
+        if convo is None:
+            return jsonify({"ok": False, "error": "诊断不存在"}), 404
         for m in convo.get("messages", [])[-10:]:
             context_msgs.append({"role": m["role"], "content": m["content"][:300]})
 
@@ -708,7 +787,9 @@ def api_topic_radar():
 
         # Save to conversation if available
         if convo_id:
-            convo = load_conversation(convo_id)
+            convo = owned_conversation(convo_id)
+            if convo is None:
+                return jsonify({"ok": False, "error": "诊断不存在"}), 404
             if "deliverables" not in convo:
                 convo["deliverables"] = {}
             convo["deliverables"]["topic_radar"] = {
@@ -725,7 +806,7 @@ def api_topic_radar():
 
 @app.route("/analytics")
 def analytics():
-    convos = list_convos()
+    convos = list_convos(current_account_id())
     t_convos = len(convos)
     t_msgs = sum(c.get("message_count",0) for c in convos)
     t_reports = sum(c.get("report_count",0) for c in convos)

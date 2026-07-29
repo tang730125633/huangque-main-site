@@ -42,7 +42,7 @@ class HermesIP12SourceTests(unittest.TestCase):
         for path in HERMES.glob("*.py"):
             routes.update(pattern.findall(path.read_text(encoding="utf-8")))
 
-        self.assertEqual(len(routes), 73)
+        self.assertEqual(len(routes), 74)
         self.assertTrue(
             {
                 "/api/chat",
@@ -218,14 +218,16 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import server
 from server import _foundation_html, app, parse_coach_state_updates
 import image_services
 import media_library
 import video_analyzer
 import video_replica
 
+server.current_account_id = lambda: "acct_a"
 routes = {rule.rule for rule in app.url_map.iter_rules() if rule.endpoint != "static"}
-assert len(routes) == 73, len(routes)
+assert len(routes) == 74, len(routes)
 
 transitioned = parse_coach_state_updates(
     "好，我们进入模块2：人设塑造。",
@@ -262,9 +264,15 @@ for path in ("/", "/classic", "/skills", "/analytics", "/images", "/videos",
 
 created = client.post("/api/conversations").get_json()
 cid = created["id"]
-assert client.get(f"/api/conversations/{cid}").get_json()["id"] == cid
+owned = client.get(f"/api/conversations/{cid}").get_json()
+assert owned["id"] == cid and owned["owner_account_id"] == "acct_a"
 assert client.get(f"/api/conversations/{cid}/reports").get_json() == {}
 assert client.get(f"/api/conversations/{cid}/deliverables").get_json() == {}
+server.current_account_id = lambda: "acct_b"
+assert client.get(f"/api/conversations/{cid}").status_code == 404
+assert client.get(f"/api/foundation-report/{cid}.pdf").status_code == 404
+assert client.get("/api/conversations").get_json() == []
+server.current_account_id = lambda: "acct_a"
 assert client.delete(f"/api/conversations/{cid}").get_json()["ok"] is True
 
 foundation_cid = client.post("/api/conversations").get_json()["id"]
