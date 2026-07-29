@@ -34,6 +34,7 @@ body{font-family:var(--f);background:var(--bg);color:var(--tx);height:100vh;disp
 .mod-item:hover{background:rgba(255,255,255,0.03)}
 .mod-item.cur{background:var(--ag);border:1px solid rgba(167,139,250,0.25)}
 .mod-item.done{opacity:0.6}
+.mod-item.locked{opacity:.38;cursor:not-allowed}
 .mod-item .mod-row{display:flex;align-items:center;gap:8px;width:100%}
 .mod-num{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;background:var(--bd);color:var(--dim)}
 .mod-item.cur .mod-num{background:var(--ac);color:#fff}
@@ -253,10 +254,13 @@ async function runVideoAnalyzer(){
 
 function renderMods(){
   var done=state.completed_modules||[],cur=state.current_module||1;
+  var foundation=state.foundation_report||{};
   var html='';
   for(var i=0;i<M.length;i++){
     var m=M[i];
     var cls='mod-item',badge='',check='',expand='<span class="mod-expand">▶</span>';
+    var locked=m.id>=5&&foundation.status!=='confirmed';
+    if(locked){cls+=' locked';badge='<span class="mod-badge">待确认 PDF</span>'}
     if(done.indexOf(m.id)>=0){cls+=' done';check='<span style="color:var(--gr);font-size:12px">✓</span>'}
     if(m.id===cur&&done.indexOf(m.id)<0){cls+=' cur';badge='<span class="mod-badge">进行中</span>'}
     if(m.id===expandedMod)cls+=' expanded';
@@ -269,7 +273,8 @@ function renderMods(){
         subs+='<div class="mod-sub" onclick="event.stopPropagation();loadSkill(\''+s.id+'\')"><span class="s-icon">'+s.icon+'</span>'+eHtml(s.name)+'</div>';
       }
     }
-    html+='<div class="'+cls+'" onclick="'+(hasSub?'toggleExpand('+m.id+')':'jumpModule('+m.id+')')+'"><div class="mod-num">'+(done.indexOf(m.id)>=0?'✓':m.id)+'</div><div class="mod-info"><div class="mod-name">'+m.icon+' '+m.name+'</div></div>'+badge+check+(hasSub?expand:'')+subs+'</div>';
+    var click=locked?"toast('请先确认模块 1-4 的 IP 定位初稿 PDF')":(hasSub?'toggleExpand('+m.id+')':'jumpModule('+m.id+')');
+    html+='<div class="'+cls+'" onclick="'+click+'"><div class="mod-num">'+(done.indexOf(m.id)>=0?'✓':m.id)+'</div><div class="mod-info"><div class="mod-name">'+m.icon+' '+m.name+'</div></div>'+badge+check+(hasSub?expand:'')+subs+'</div>';
   }
   document.getElementById('modScroll').innerHTML=html;
   var dc=done.length;
@@ -301,9 +306,19 @@ function renderArtifacts(){
   Object.keys(reports).forEach(function(mid){mid=Number(mid);if(mid>=1&&mid<=12&&done.indexOf(mid)<0)done.push(mid)});
   done.forEach(function(mid){rows.push('<button onclick="viewReport('+mid+')">📄 '+eHtml(M[mid-1].name)+'报告</button>')});
   Object.keys(deliverables).forEach(function(mid){var d=deliverables[mid]||{},mod=M[Number(mid)-1],arg=/^\d+$/.test(mid)?mid:"'topic_radar'";rows.push('<button onclick="viewDeliverable('+arg+')">📦 '+eHtml(d.title||(mod?mod.name+'交付物':'交付物'))+'</button>')});
+  var foundation=state.foundation_report||{};
+  if(foundation.status==='awaiting_confirmation'||foundation.status==='confirmed'){
+    rows.push('<button onclick="window.open(\'/api/foundation-report/'+cid+'.pdf\',\'_blank\')">📑 模块 1-4 IP 定位初稿 PDF</button>');
+    if(foundation.status==='awaiting_confirmation')rows.push('<button onclick="confirmFoundationReport()">✅ 确认初稿，开始模块 5</button>');
+  }
   var wrap=document.getElementById('artifactsWrap'),box=document.getElementById('artifactRows');
   wrap.style.display=(cid&&rows.length)?'block':'none';
   box.innerHTML=rows.join('');
+}
+
+async function confirmFoundationReport(){
+  if(!cid||streaming)return;
+  try{var r=await fetch('/api/foundation-report/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid})});var d=await r.json();if(!d.ok)throw new Error(d.error||'确认失败');state=d.state;renderMods();toast('✅ IP 定位初稿已确认，开始模块 5');sendJumpMsg(5)}catch(e){toast('❌ '+e.message)}
 }
 
 async function viewReport(mid){

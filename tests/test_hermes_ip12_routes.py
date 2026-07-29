@@ -42,7 +42,7 @@ class HermesIP12SourceTests(unittest.TestCase):
         for path in HERMES.glob("*.py"):
             routes.update(pattern.findall(path.read_text(encoding="utf-8")))
 
-        self.assertEqual(len(routes), 71)
+        self.assertEqual(len(routes), 73)
         self.assertTrue(
             {
                 "/api/chat",
@@ -220,7 +220,7 @@ import video_analyzer
 import video_replica
 
 routes = {rule.rule for rule in app.url_map.iter_rules() if rule.endpoint != "static"}
-assert len(routes) == 71, len(routes)
+assert len(routes) == 73, len(routes)
 
 transitioned = parse_coach_state_updates(
     "好，我们进入模块2：人设塑造。",
@@ -228,6 +228,12 @@ transitioned = parse_coach_state_updates(
 )
 assert transitioned["current_module"] == 2, transitioned
 assert transitioned["completed_modules"] == [1], transitioned
+foundation = parse_coach_state_updates(
+    "✅ 模块 4 完成",
+    {"current_module": 4, "completed_modules": [1, 2, 3], "module_step": 0},
+)
+assert foundation["current_module"] == 4, foundation
+assert foundation["foundation_report"]["status"] == "generating", foundation
 
 client = app.test_client()
 for path in ("/", "/classic", "/skills", "/analytics", "/images", "/videos",
@@ -241,6 +247,10 @@ assert client.get(f"/api/conversations/{cid}").get_json()["id"] == cid
 assert client.get(f"/api/conversations/{cid}/reports").get_json() == {}
 assert client.get(f"/api/conversations/{cid}/deliverables").get_json() == {}
 assert client.delete(f"/api/conversations/{cid}").get_json()["ok"] is True
+
+foundation_cid = client.post("/api/conversations").get_json()["id"]
+assert client.post("/api/foundation-report/confirm", json={"conversation_id": foundation_cid}).status_code == 409
+assert client.post("/api/jump-module", json={"conversation_id": foundation_cid, "module": 5}).status_code == 409
 assert client.post(
     "/api/chat",
     json={"conversation_id": "../../knowledge/visual_formulas", "message": "test"},
