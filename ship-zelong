@@ -16,11 +16,11 @@ usage() {
   cat <<'EOF'
 用法：
   # 1. 必须先 dry-run（会输出 PLAN_ID）
-  ./ship-zelong --commit <40位SHA> --file <白名单文件> [--file ...]
+  ./ship-zelong --commit <40位SHA> [--source main|dev/zelong] --file <白名单文件> [--file ...]
   ./ship-zelong --commit <实时origin/main的40位SHA> --adspower-baseline
 
   # 2. 参数完全相同，并携带 PLAN_ID 才会真正部署
-  ./ship-zelong --commit <40位SHA> --file <文件> [--file ...] --apply --plan <PLAN_ID>
+  ./ship-zelong --commit <40位SHA> [--source main|dev/zelong] --file <文件> [--file ...] --apply --plan <PLAN_ID>
 
   # 回滚也必须先 dry-run，再携带 PLAN_ID 执行
   ./ship-zelong --rollback <RUN_ID>
@@ -120,11 +120,17 @@ validate_commit() {
   git cat-file -e "$1^{commit}" 2>/dev/null
 }
 
-validate_remote_main() {
-  local requested remote_main
+validate_source_ref() {
+  case "$1" in main|dev/zelong) return 0;; *) return 1;; esac
+}
+
+validate_remote_source() {
+  local requested source_ref remote_commit
   requested="$(printf '%s' "$1" | tr 'A-F' 'a-f')"
-  remote_main="$(git ls-remote --exit-code origin refs/heads/main 2>/dev/null | awk 'NR == 1 {print $1}')"
-  test -n "$remote_main" && test "$requested" = "$remote_main"
+  source_ref="$2"
+  validate_source_ref "$source_ref" || return 1
+  remote_commit="$(git ls-remote --exit-code origin "refs/heads/$source_ref" 2>/dev/null | awk 'NR == 1 {print $1}')"
+  test -n "$remote_commit" && test "$requested" = "$remote_commit"
 }
 
 validate_unchanged_paths() {
@@ -369,11 +375,12 @@ REMOTE
 }
 
 main() {
-  local commit="" apply=0 plan="" rollback="" baseline=0 tmp identity plan_id payload
+  local commit="" source_ref="main" source_set=0 apply=0 plan="" rollback="" baseline=0 tmp identity plan_id payload
   local -a files=()
   while test $# -gt 0; do
     case "$1" in
       --commit) test $# -ge 2 || die "--commit 缺少值"; commit="$2"; shift 2;;
+      --source) test $# -ge 2 || die "--source 缺少值"; source_ref="$2"; source_set=1; shift 2;;
       --file) test $# -ge 2 || die "--file 缺少值"; files+=("$2"); shift 2;;
       --adspower-baseline) baseline=1; shift;;
       --apply) apply=1; shift;;
@@ -389,6 +396,7 @@ main() {
   trap "rm -rf '$tmp'" EXIT
 
   if test -n "$rollback"; then
+    test "$source_set" = 0 || die "--rollback 禁止与 --source 混用"
     validate_token "$rollback" || die "RUN_ID 非法"
     ssh "$REMOTE" "sudo test -f '$BACKUP_ROOT/$rollback/restore.tsv'" || die "回滚点不存在：$rollback"
     payload="$tmp/plan"; rollback_payload "$rollback" "$identity" "$payload"
@@ -403,8 +411,10 @@ main() {
   fi
 
   validate_commit "$commit" || die "--commit 必须是本机已存在的完整 40 位 commit SHA"
-  validate_remote_main "$commit" || die "--commit 必须等于实时 origin/main；拒绝 stale ref 或未 push 的 commit"
+  validate_source_ref "$source_ref" || die "--source 只允许 main 或 dev/zelong"
+  validate_remote_source "$commit" "$source_ref" || die "--commit 必须等于实时 origin/$source_ref；拒绝 stale ref 或未 push 的 commit"
   if test "$baseline" = 1; then
+    test "$source_ref" = "main" || die "--adspower-baseline 只允许 origin/main"
     test "${#files[@]}" = 0 || die "--adspower-baseline 禁止与 --file 混用"
     load_adspower_baseline
     validate_adspower_baseline_content "$commit" "${files[@]}" || die "AdsPower 的 11 个文件已相对审核来源 $ADSPOWER_BASELINE_SOURCE_COMMIT 发生变化，必须重新审核"
@@ -414,13 +424,13 @@ main() {
   make_manifest "$commit" "$tmp/stage" "$tmp/manifest.tsv" "$tmp/files.txt" "${files[@]}"
   payload="$tmp/plan"
   {
-    printf 'version=1\naction=deploy\nremote=%s\ndomain=%s\ncommit=%s\nidentity=%s\n' "$REMOTE" "$DOMAIN" "$commit" "$identity"
+    printf 'version=1\naction=deploy\nremote=%s\ndomain=%s\nsource=%s\ncommit=%s\nidentity=%s\n' "$REMOTE" "$DOMAIN" "$source_ref" "$commit" "$identity"
     cat "$tmp/manifest.tsv"
   } >"$payload"
   plan_id="$(save_or_check_plan "$payload" "$apply" "$plan")"
   print_manifest "$tmp/manifest.tsv"
   if test "$apply" = 0; then
-    printf '\n【DRY-RUN】未上传文件、未备份、未重启。\ncommit=%s\nPLAN_ID=%s\n' "$commit" "$plan_id"
+    printf '\n【DRY-RUN】未上传文件、未备份、未重启。\nsource=origin/%s\ncommit=%s\nPLAN_ID=%s\n' "$source_ref" "$commit" "$plan_id"
     printf '真正执行时使用相同参数，另加：--apply --plan %s\n' "$plan_id"
   else
     apply_deploy "$commit" "$plan_id" "$tmp/stage" "$tmp/manifest.tsv" "$tmp/files.txt"
