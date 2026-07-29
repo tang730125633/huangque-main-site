@@ -5,7 +5,17 @@ Hermes 12模块IP孵化教练 v3 — 诊断→交付闭环
 """
 import html, json, os, pathlib, re, shutil, subprocess, tempfile, threading, uuid
 from datetime import datetime, timedelta
-from flask import Flask, g, request, jsonify, Response, redirect, render_template, send_file
+from flask import (
+    Flask,
+    Response,
+    g,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    stream_with_context,
+)
 import requests
 from runtime_paths import DATA_DIR, ROOT_DIR
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -29,9 +39,11 @@ PROCESS_RUN_ID = uuid.uuid4().hex
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_prefix=1)
+from security import register_security
+register_security(app, DATA_DIR)
 from routes_extra import register_v6_routes
 register_v6_routes(app)
-if os.environ.get("HERMES_ENABLE_INTERNAL_TOOLS", "1") == "1":
+if os.environ.get("HERMES_ENABLE_INTERNAL_TOOLS", "0") == "1":
     try:
         from agnes_routes import register_agnes_routes
         register_agnes_routes(app, PROJECT_DIR, DATA_DIR)
@@ -228,6 +240,11 @@ def current_account_id():
     """Validate the existing Huangque cookie/Bearer token; never trust a client owner id."""
     if getattr(g, "hermes_account_id", None):
         return g.hermes_account_id
+    security_identity = getattr(g, "hermes_user", None) or {}
+    security_account_id = str(security_identity.get("account_id") or "").strip()
+    if security_account_id:
+        g.hermes_account_id = security_account_id
+        return security_account_id
     headers = {}
     for name in ("Authorization", "Cookie"):
         value = request.headers.get(name)

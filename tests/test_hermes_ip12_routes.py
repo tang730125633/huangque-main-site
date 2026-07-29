@@ -137,6 +137,20 @@ class HermesIP12SourceTests(unittest.TestCase):
         self.assertIn("内容资产使用表", source)
         self.assertIn("优化建议汇总", source)
 
+    def test_service_security_boundary_is_registered(self):
+        server = (HERMES / "server.py").read_text(encoding="utf-8")
+        security = (HERMES / "security.py").read_text(encoding="utf-8")
+        video_factory = (HERMES / "video_factory.py").read_text(encoding="utf-8")
+
+        self.assertIn("register_security(app, DATA_DIR)", server)
+        self.assertIn('HERMES_ENABLE_INTERNAL_TOOLS", "0"', server)
+        self.assertIn('AUTH_BASE + "/api/auth/me"', security)
+        self.assertIn('request.path == "/healthz"', security)
+        self.assertIn("Hermes storage quota exceeded", security)
+        self.assertIn("too many concurrent requests", security)
+        self.assertIn("_user_output_dir(current_username())", video_factory)
+        self.assertIn("VIDEO_FILE_RE.fullmatch(filename)", video_factory)
+
     def test_security_boundaries_and_runtime_ignores_are_kept(self):
         index = (HERMES / "templates/index.html").read_text(encoding="utf-8")
         classic = (HERMES / "templates/index_clean.html").read_text(encoding="utf-8")
@@ -232,12 +246,19 @@ from unittest.mock import patch
 
 import server
 from server import _foundation_generation_active, _foundation_html, _foundation_source_messages, _validate_foundation_pdf, app, parse_coach_state_updates
+import security
 import image_services
 import media_library
 import video_analyzer
 import video_replica
 
 server.current_account_id = lambda: "acct_a"
+security._validate_token = lambda token: {
+    "account_id": "acct_a",
+    "username": "admin",
+    "role": "admin",
+} if token == "admin-token" else None
+security.RATE_REQUESTS = 1000
 routes = {rule.rule for rule in app.url_map.iter_rules() if rule.endpoint != "static"}
 assert len(routes) == 76, len(routes)
 
@@ -342,7 +363,11 @@ assert "<table>" in report_html and "账号封面" in report_html
 assert "<blockquote>待本人确认</blockquote>" in report_html
 assert "<h4>故事名称：从无到有</h4>" in report_html
 
+anonymous = app.test_client()
+assert anonymous.get("/healthz").status_code == 200
+assert anonymous.get("/").status_code == 401
 client = app.test_client()
+client.environ_base["HTTP_AUTHORIZATION"] = "Bearer admin-token"
 for path in ("/", "/classic", "/skills", "/analytics", "/images", "/videos",
              "/video-factory", "/pipeline", "/agnes-lab", "/team-workbench"):
     response = client.get(path)
