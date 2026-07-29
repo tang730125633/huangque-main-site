@@ -14,6 +14,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import uuid
@@ -23,6 +24,11 @@ from pathlib import Path
 
 MIGRATION_ID = "hermes-owner-artifacts-v1"
 MANIFEST_NAME = f"{MIGRATION_ID}.json"
+OWNER_DIR_RE = re.compile(r"[0-9a-f]{24}\Z")
+
+
+class QuotaPreflightError(RuntimeError):
+    pass
 
 
 def _digest(path):
@@ -107,11 +113,91 @@ def _operation(source, destination):
         "source": str(source),
         "destination": str(destination),
         "sha256": checksum,
+        "size_bytes": source.stat().st_size,
         "created": not existed,
     }
 
 
-def build_plan(root_dir, data_dir, legacy_owner):
+def _is_quota_path(path, data_dir):
+    try:
+        relative = Path(path).resolve().relative_to(Path(data_dir).resolve())
+    except ValueError:
+        return False
+    parts = relative.parts
+    if not parts:
+        return False
+    if parts[0] == "users":
+        return True
+    return (
+        parts[0] == "media_library"
+        and len(parts) >= 2
+        and (
+            parts[1] == "index.json"
+            or OWNER_DIR_RE.fullmatch(parts[1]) is not None
+        )
+    )
+
+
+def _quota_directory_size(data_dir):
+    data_dir = Path(data_dir).resolve()
+    media_root = data_dir / "media_library"
+    roots = [data_dir / "users", media_root / "index.json"]
+    if media_root.exists():
+        roots.extend(
+            path for path in media_root.iterdir()
+            if path.is_dir() and OWNER_DIR_RE.fullmatch(path.name)
+        )
+    total = 0
+    seen = set()
+    for root in roots:
+        candidates = [root] if root.is_file() else root.rglob("*")
+        for path in candidates:
+            if not path.is_file():
+                continue
+            stat = path.stat()
+            identity = (stat.st_dev, stat.st_ino)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            total += stat.st_size
+    return total
+
+
+def _validate_plan_quota(plan):
+    data_dir = Path(plan["data_dir"])
+    quota = plan["quota"]
+    current_bytes = _quota_directory_size(data_dir)
+    remaining_bytes = sum(
+        int(item["size_bytes"])
+        for item in plan["operations"]
+        if item["created"]
+        and not Path(item["destination"]).exists()
+        and _is_quota_path(item["destination"], data_dir)
+    )
+    index = plan["index"]
+    index_path = Path(index["path"])
+    current_index_bytes = index_path.stat().st_size if index_path.is_file() else 0
+    final_index_bytes = len(base64.b64decode(index["after_base64"]))
+    projected_bytes = (
+        current_bytes + remaining_bytes - current_index_bytes + final_index_bytes
+    )
+    quota.update(
+        current_bytes=current_bytes,
+        remaining_copy_bytes=remaining_bytes,
+        projected_bytes=projected_bytes,
+    )
+    if projected_bytes > int(quota["limit_bytes"]):
+        required_mb = (projected_bytes + 1024 * 1024 - 1) // (1024 * 1024)
+        raise QuotaPreflightError(
+            "migration would exceed Hermes artifact quota: "
+            f"current={current_bytes} bytes, copies={remaining_bytes} bytes, "
+            f"projected={projected_bytes} bytes, limit={quota['limit_bytes']} bytes; "
+            f"set HERMES_DATA_QUOTA_MB to at least {required_mb} before retrying"
+        )
+    return plan
+
+
+def build_plan(root_dir, data_dir, legacy_owner, quota_bytes=None):
     root_dir = Path(root_dir).resolve()
     data_dir = Path(data_dir).resolve()
     if not str(legacy_owner).strip():
@@ -228,7 +314,11 @@ def build_plan(root_dir, data_dir, legacy_owner):
     merged["keywords"] = keywords
     target_index_after = _json_bytes(merged)
 
-    return {
+    if quota_bytes is None:
+        quota_bytes = max(
+            1, int(os.environ.get("HERMES_DATA_QUOTA_MB", "2048"))
+        ) * 1024 * 1024
+    plan = {
         "migration_id": MIGRATION_ID,
         "state": "prepared",
         "legacy_owner": owner,
@@ -237,6 +327,10 @@ def build_plan(root_dir, data_dir, legacy_owner):
         "data_dir": str(data_dir),
         "manifest_path": str(manifest_path),
         "operations": operations,
+        "quota": {
+            "limit_bytes": int(quota_bytes),
+            "policy": "canonical-owner-storage-v1",
+        },
         "index": {
             "path": str(target_index_path),
             "existed": target_index_existed,
@@ -246,6 +340,7 @@ def build_plan(root_dir, data_dir, legacy_owner):
             "after_sha256": hashlib.sha256(target_index_after).hexdigest(),
         },
     }
+    return _validate_plan_quota(plan)
 
 
 def _load_manifest(data_dir):
@@ -255,7 +350,7 @@ def _load_manifest(data_dir):
     return path, json.loads(path.read_text(encoding="utf-8"))
 
 
-def migrate(root_dir, data_dir, legacy_owner, dry_run=False):
+def migrate(root_dir, data_dir, legacy_owner, dry_run=False, quota_bytes=None):
     data_dir = Path(data_dir).resolve()
     manifest_path = data_dir / ".migrations" / MANIFEST_NAME
     plan = None
@@ -272,7 +367,12 @@ def migrate(root_dir, data_dir, legacy_owner, dry_run=False):
         else:
             raise ValueError(f"unknown migration state: {existing.get('state')}")
 
-    plan = plan or build_plan(root_dir, data_dir, legacy_owner)
+    plan = plan or build_plan(
+        root_dir, data_dir, legacy_owner, quota_bytes=quota_bytes
+    )
+    if quota_bytes is not None:
+        plan["quota"]["limit_bytes"] = int(quota_bytes)
+    _validate_plan_quota(plan)
     if dry_run:
         preview = dict(plan)
         preview["state"] = "dry-run"
@@ -391,6 +491,12 @@ def parse_args(argv=None):
         "--legacy-owner",
         help="existing account username that owns all pre-isolation artifacts",
     )
+    parser.add_argument(
+        "--quota-mb",
+        type=int,
+        default=max(1, int(os.environ.get("HERMES_DATA_QUOTA_MB", "2048"))),
+        help="artifact quota used for the mandatory migration preflight",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--rollback", action="store_true")
     args = parser.parse_args(argv)
@@ -408,7 +514,11 @@ def main(argv=None):
             result = rollback(args.data_dir)
         else:
             result = migrate(
-                args.root_dir, args.data_dir, args.legacy_owner, dry_run=args.dry_run
+                args.root_dir,
+                args.data_dir,
+                args.legacy_owner,
+                dry_run=args.dry_run,
+                quota_bytes=max(1, args.quota_mb) * 1024 * 1024,
             )
     except Exception as exc:
         print(f"migration failed: {exc}", file=sys.stderr)
@@ -421,6 +531,7 @@ def main(argv=None):
                 "state": result["state"],
                 "legacy_owner": result["legacy_owner"],
                 "created_files": created,
+                "quota": result.get("quota"),
             },
             ensure_ascii=False,
         )

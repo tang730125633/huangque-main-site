@@ -1,4 +1,7 @@
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -122,6 +125,80 @@ class HermesArtifactMigrationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "changed after migration"):
             migrate_hermes_artifacts.rollback(self.data)
         self.assertTrue(index_path.exists())
+
+    def test_near_quota_preflight_fails_before_any_migration_write(self):
+        plan = migrate_hermes_artifacts.build_plan(
+            self.root, self.data, "legacy-user", quota_bytes=1024 * 1024
+        )
+        projected = plan["quota"]["projected_bytes"]
+        self.assertGreater(projected, 0)
+
+        with self.assertRaisesRegex(
+            migrate_hermes_artifacts.QuotaPreflightError,
+            "set HERMES_DATA_QUOTA_MB",
+        ):
+            migrate_hermes_artifacts.migrate(
+                self.root,
+                self.data,
+                "legacy-user",
+                quota_bytes=projected - 1,
+            )
+        self.assertFalse((self.data / ".migrations").exists())
+        self.assertFalse((self.data / "users").exists())
+
+    def test_retained_legacy_files_are_excluded_from_canonical_quota(self):
+        result = migrate_hermes_artifacts.migrate(
+            self.root, self.data, "legacy-user", quota_bytes=1024 * 1024
+        )
+        after_migration = migrate_hermes_artifacts._quota_directory_size(self.data)
+        self.assertEqual(after_migration, result["quota"]["projected_bytes"])
+
+        retained = self.data / "videos" / "0123456789.mp4"
+        retained.write_bytes(retained.read_bytes() + b"x" * 10000)
+        self.assertEqual(
+            migrate_hermes_artifacts._quota_directory_size(self.data),
+            after_migration,
+        )
+
+    def test_runtime_quota_excludes_legacy_but_charges_canonical_move(self):
+        runtime_data = self.root / "runtime-data"
+        script = r"""
+from pathlib import Path
+import artifact_store
+
+legacy = artifact_store.DATA_DIR / "videos" / "legacy.bin"
+legacy.parent.mkdir(parents=True)
+legacy.write_bytes(b"0123456789")
+assert artifact_store.directory_size() == 0
+
+destination = artifact_store.media_path(
+    "legacy-user", artifact_store.new_asset_id(), ".bin"
+)
+artifact_store.DATA_QUOTA_BYTES = 5
+try:
+    artifact_store.finalize_file(legacy, destination)
+    raise AssertionError("legacy-to-canonical move bypassed quota")
+except artifact_store.StorageQuotaExceeded:
+    pass
+assert legacy.exists()
+assert not destination.exists()
+print("RUNTIME_QUOTA_OK")
+"""
+        env = os.environ.copy()
+        env["HERMES_HOME"] = str(self.root)
+        env["HERMES_DATA_DIR"] = str(runtime_data)
+        env["PYTHONPATH"] = str(
+            Path(__file__).parents[1] / "server" / "hermes_ip12"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=Path(__file__).parents[1],
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("RUNTIME_QUOTA_OK", result.stdout)
 
     def test_prepared_manifest_resumes_without_losing_rollback_ownership(self):
         plan = migrate_hermes_artifacts.build_plan(

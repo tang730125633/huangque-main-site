@@ -19,7 +19,8 @@ report-and-deliverable interface against the same conversations.
 Before the first deployment that enables owner-isolated artifact storage, map
 all pre-isolation assets to the existing account that created them. Do not guess
 the username: confirm it in the account service first. Stop Hermes while the
-migration runs so the media index cannot change concurrently.
+migration runs so the media index cannot change concurrently. The release
+package installs the migration tool under `scripts/` before invoking it.
 
 ```bash
 sudo systemctl stop hermes-ip12-preview
@@ -40,6 +41,13 @@ the originals are deliberately retained. It is idempotent and records a
 checksum manifest in `data/.migrations/`. After verifying `/healthz`, media
 search, and historical video URLs, archive the legacy directories according to
 the normal backup policy.
+
+Quota preflight runs before the manifest or any artifact is written. Only
+canonical owner storage under `data/users/` and owner-keyed
+`data/media_library/` directories counts toward the runtime artifact quota;
+the retained flat `data/videos/`, `data/analyses/`, and `data/uploads/` rollback
+copies are not counted twice. If preflight reports insufficient space, increase
+`HERMES_DATA_QUOTA_MB` explicitly and rerun the dry-run before migration.
 
 To roll back, stop Hermes first. Rollback refuses to overwrite a media index or
 remove a migrated file that changed after migration.

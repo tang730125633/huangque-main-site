@@ -18,6 +18,7 @@ from runtime_paths import DATA_DIR
 
 
 ASSET_ID_RE = re.compile(r"[0-9a-f]{10}\Z")
+QUOTA_OWNER_DIR_RE = re.compile(r"[0-9a-f]{24}\Z")
 # New files use ``<id>.mp4``. The two prefixed forms were emitted by the
 # pre-isolation analyzer and replica pipelines and remain valid after migration.
 VIDEO_NAME_RE = re.compile(r"(?:ref_|replica_)?([0-9a-f]{10})\.mp4\Z")
@@ -204,14 +205,57 @@ def media_path(username, asset_id, extension):
     return (user_dir(username, "media") / f"{asset_id}{extension}").resolve()
 
 
-def directory_size(root=DATA_DIR):
+def _quota_paths():
+    """Return canonical storage paths; legacy rollback copies are not billable."""
+    media_root = DATA_DIR / "media_library"
+    paths = [DATA_DIR / "users", media_root / "index.json"]
+    if media_root.exists():
+        paths.extend(
+            path for path in media_root.iterdir()
+            if path.is_dir() and QUOTA_OWNER_DIR_RE.fullmatch(path.name)
+        )
+    return paths
+
+
+def _is_quota_path(path):
+    try:
+        relative = Path(path).resolve().relative_to(DATA_DIR.resolve())
+    except ValueError:
+        return False
+    parts = relative.parts
+    if not parts:
+        return False
+    if parts[0] == "users":
+        return True
+    return (
+        parts[0] == "media_library"
+        and len(parts) >= 2
+        and (
+            parts[1] == "index.json"
+            or QUOTA_OWNER_DIR_RE.fullmatch(parts[1]) is not None
+        )
+    )
+
+
+def directory_size(root=None):
+    """Count canonical artifacts, or every file below an explicit test root."""
+    roots = [Path(root)] if root is not None else _quota_paths()
     total = 0
-    for path in Path(root).rglob("*"):
-        try:
-            if path.is_file():
-                total += path.stat().st_size
-        except OSError:
-            continue
+    seen = set()
+    for root_path in roots:
+        candidates = [root_path] if root_path.is_file() else root_path.rglob("*")
+        for path in candidates:
+            try:
+                if not path.is_file():
+                    continue
+                stat = path.stat()
+                identity = (stat.st_dev, stat.st_ino)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                total += stat.st_size
+            except OSError:
+                continue
     return total
 
 
@@ -255,9 +299,9 @@ def finalize_file(source, destination, reservation=None):
     destination.parent.mkdir(parents=True, exist_ok=True)
     with storage_transaction():
         source_size = source.stat().st_size
-        source_inside_data = source.is_relative_to(DATA_DIR.resolve())
+        source_inside_quota = _is_quota_path(source)
         ensure_capacity(
-            0 if source_inside_data else source_size,
+            0 if source_inside_quota else source_size,
             replacing=destination,
             reservation=reservation,
         )

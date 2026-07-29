@@ -154,6 +154,8 @@ class HermesIP12SourceTests(unittest.TestCase):
         self.assertIn("too many requests", security)
         self.assertIn("def atomic_write_bytes", artifact_store)
         self.assertIn("def video_work_dir", artifact_store)
+        self.assertIn('QUOTA_OWNER_DIR_RE = re.compile(r"[0-9a-f]{24}', artifact_store)
+        self.assertIn("def _quota_paths():", artifact_store)
         self.assertIn('(?:ref_|replica_)?([0-9a-f]{10})', artifact_store)
         self.assertIn("owned_video_path(current_username(), filename)", video_factory)
         for filename in (
@@ -227,6 +229,38 @@ class HermesIP12SourceTests(unittest.TestCase):
         self.assertIn("hermes-last-backup", runbook)
         self.assertIn("systemctl restart hermes-ip12-preview.service", runbook)
         self.assertIn("rsync -a --delete", runbook)
+        release_start = runbook.index("HERMES_STAGE=$(mktemp -d)")
+        release_end = runbook.index(
+            "curl -fsS https://huangquechuanmei.com/workbench/ip12/healthz",
+            release_start,
+        )
+        release = runbook[release_start:release_end]
+        self.assertIn("scripts/migrate_hermes_artifacts.py", release)
+        self.assertIn(
+            'test -f "$HERMES_STAGE/scripts/migrate_hermes_artifacts.py"',
+            release,
+        )
+        self.assertIn(
+            'test -f "$HERMES_RELEASE_DIR/scripts/migrate_hermes_artifacts.py"',
+            release,
+        )
+        self.assertLess(
+            release.index("sudo systemctl stop hermes-ip12-preview.service"),
+            release.index("--dry-run"),
+        )
+        self.assertLess(
+            release.index("--dry-run"),
+            release.index('"$HERMES_RELEASE_DIR/server/hermes_ip12/"'),
+        )
+        self.assertLess(
+            release.index("--dry-run"),
+            release.rindex("sudo systemctl restart hermes-ip12-preview.service"),
+        )
+        env_example = (ROOT / "deploy" / "hermes-ip12.env.example").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("HERMES_LEGACY_OWNER=", env_example)
+        self.assertIn("HERMES_DATA_QUOTA_MB=2048", env_example)
 
     @unittest.skipUnless(shutil.which("node"), "node is required")
     def test_markdown_guard_blocks_script_protocols_and_falls_back(self):
@@ -529,6 +563,28 @@ try:
 except artifact_store.StorageQuotaExceeded:
     pass
 assert quota_first.exists() and not quota_second.exists()
+artifact_store.DATA_QUOTA_BYTES = original_quota
+
+# Rollback copies retained in the old flat directories are not counted twice.
+canonical_size = artifact_store.directory_size()
+legacy_video = Path(os.environ["HERMES_DATA_DIR"]) / "videos" / "legacy.mp4"
+legacy_video.parent.mkdir(parents=True, exist_ok=True)
+legacy_video.write_bytes(b"legacy" * 10000)
+assert artifact_store.directory_size() == canonical_size
+
+# Moving a retained legacy file into canonical storage still requires capacity.
+legacy_move = legacy_video.with_name("legacy-move.bin")
+legacy_move.write_bytes(b"0123456789")
+legacy_destination = artifact_store.media_path(
+    "admin", artifact_store.new_asset_id(), ".bin"
+)
+artifact_store.DATA_QUOTA_BYTES = artifact_store.directory_size() + 5
+try:
+    artifact_store.finalize_file(legacy_move, legacy_destination)
+    raise AssertionError("legacy-to-canonical move should enforce quota")
+except artifact_store.StorageQuotaExceeded:
+    pass
+assert legacy_move.exists() and not legacy_destination.exists()
 artifact_store.DATA_QUOTA_BYTES = original_quota
 
 # Cross-filesystem finalize falls back to a target-side atomic copy.
