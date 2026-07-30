@@ -83,7 +83,7 @@ def test_parse_link_xhs_shortlink_follows_to_note_without_legacy_api():
 
     with mock.patch.object(tikhub._XHS_OPENER, "open", return_value=Response()) as open_url, \
          mock.patch.object(tikhub, "_g", side_effect=AssertionError("legacy App V1 must not be called")):
-        info = tikhub.parse_link("看看 https://xhslink.cn/a1b2c3 这篇")
+        info = tikhub.parse_link("看看 http://xhslink.cn/a1b2c3 这篇")
     assert info == {"platform": "xhs", "id": "694e676f000000001e03ab64", "note_type": None}
     open_url.assert_called_once()
 

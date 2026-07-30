@@ -488,7 +488,7 @@ _XHS_HOST_SUFFIXES = ("xiaohongshu.com", "xhslink.com", "xhslink.cn")
 def _is_xhs_url(url):
     parsed = urllib.parse.urlparse(url or "")
     host = (parsed.hostname or "").lower().rstrip(".")
-    return parsed.scheme == "https" and any(host == suffix or host.endswith("." + suffix) for suffix in _XHS_HOST_SUFFIXES)
+    return parsed.scheme in ("http", "https") and any(host == suffix or host.endswith("." + suffix) for suffix in _XHS_HOST_SUFFIXES)
 
 class _XhsRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
