@@ -235,6 +235,10 @@ function testCanvasIntegration() {
     'node tests/test_canvas_short_drama_voice.js',
   ]) assert.ok(ci.includes(command), `CI must run ${command}`);
   assert.equal((html.match(/data-add="shortDrama"/g) || []).length, 2);
+  assert.equal((html.match(/data-add="image"/g) || []).length, 2);
+  assert.equal((html.match(/data-add="reverse"/g) || []).length, 2);
+  assert.match(html, /画布空白处右键添加节点/);
+  assert.match(html, /id="ncFsAdd"[^>]*>\+ 添加节点<\/button>/);
   assert.match(app, /shortDrama:\s*\{name:'短剧项目',\s*color:'#[a-f0-9]+'\}/);
   assert.ok(app.includes('data-f="openShortDrama"'));
   assert.ok(app.includes('shortDramaModule.createWorkspace('));
