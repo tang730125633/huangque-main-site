@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
 <link rel="stylesheet" href="../assets/cloud.css?v=8">
 <script src="theme-init.js?v=11eb385e"></script>
-<link rel="stylesheet" href="canvas/canvas.css?v=a789f025">
+<link rel="stylesheet" href="canvas/canvas.css?v=86952e5e">
 <link rel="stylesheet" href="canvas/canvas-short-drama.css?v=66787790">
 <link rel="stylesheet" href="canvas/canvas-short-drama-production.css?v=1215029d">
 <link rel="stylesheet" href="canvas/canvas-short-drama-voice.css?v=41589c99">
@@ -111,6 +111,13 @@
           <div id="ncSelectionBox" class="nc-selection-box" aria-hidden="true"></div>
         </div>
       </div>
+      <section id="ncStoryboard" class="nc-storyboard" aria-label="故事板视图" hidden>
+        <div class="nc-story-head">
+          <div><span>成品视图</span><strong>故事板</strong><p>按工作流顺序阅读文本、图片、视频和短剧进度。</p></div>
+          <small id="ncStoryMeta">0 个场景</small>
+        </div>
+        <div id="ncStoryGrid" class="nc-story-grid"></div>
+      </section>
         <div id="ncEmpty" class="nc-empty">
           <div class="nc-empty-card">
             <span class="nc-empty-kicker">AI 创作画布</span>
@@ -166,21 +173,27 @@
       </div>
       <div id="ncFsDock" class="nc-fs-dock" aria-label="全屏画布工具栏">
         <div class="nc-fs-row">
-          <div class="nc-fs-group">
-            <button id="ncFsAgent" class="nc-fs-btn nc-fs-agent" type="button" title="打开画布 Agent">✦ Agent</button>
-            <button id="ncFsAdd" class="nc-fs-btn nc-fs-add" type="button" title="添加节点">+ 添加节点</button>
+          <div class="nc-fs-group nc-view-toggle" role="group" aria-label="画布视图">
+            <button class="nc-fs-btn" type="button" data-canvas-view="workflow" aria-pressed="true">工作流</button>
+            <button class="nc-fs-btn" type="button" data-canvas-view="story" aria-pressed="false">故事板</button>
           </div>
           <div class="nc-fs-group">
+            <button id="ncFsAgent" class="nc-fs-btn nc-fs-agent" type="button" title="打开画布 Agent">✦ Agent</button>
+          </div>
+          <div class="nc-fs-group" data-workflow-tools>
+            <button id="ncFsAdd" class="nc-fs-btn nc-fs-add" type="button" title="添加节点">+ 添加节点</button>
+          </div>
+          <div class="nc-fs-group" data-workflow-tools>
             <button id="ncFsUndo" class="nc-fs-btn icon" type="button" title="撤销">↶</button>
             <button id="ncFsRedo" class="nc-fs-btn icon" type="button" title="重做">↷</button>
           </div>
-          <div class="nc-fs-group">
+          <div class="nc-fs-group" data-workflow-tools>
             <button id="ncFsZoomOut" class="nc-fs-btn icon" type="button" title="缩小">−</button>
             <input id="ncFsZoomLabel" class="nc-fs-btn nc-fs-zoom" value="100%" inputmode="decimal" aria-label="缩放比例">
             <button id="ncFsZoomIn" class="nc-fs-btn icon" type="button" title="放大">+</button>
             <button id="ncFsFit" class="nc-fs-btn" type="button">适应</button>
           </div>
-          <div class="nc-fs-group nc-fs-side-moved" aria-label="模板功能">
+          <div class="nc-fs-group nc-fs-side-moved" data-workflow-tools aria-label="模板功能">
             <button id="ncFsTplMenu" class="nc-fs-btn" type="button" title="模板功能">模板</button>
           </div>
           <div class="nc-fs-group">
@@ -222,6 +235,6 @@
 <script src="canvas/canvas-short-drama-video.js?v=6b3d7e61"></script>
 <script src="canvas/canvas-short-drama-assembly.js?v=7e1c53d6"></script>
 <script src="canvas/canvas-short-drama.js?v=263fa181"></script>
-<script src="canvas/canvas-app.js?v=a019e216"></script>
+<script src="canvas/canvas-app.js?v=06e34602"></script>
 </body>
 </html>

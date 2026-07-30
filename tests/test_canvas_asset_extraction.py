@@ -9,7 +9,7 @@ HTML_PATH = ROOT / "site" / "workbench" / "canvas.html"
 CSS_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas.css"
 APP_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas-app.js"
 
-EXPECTED_CSS_SHA256 = "b2d253f9337ae22c38e4be4342cf5123541219c1f55a788de475656ac252d960"
+EXPECTED_CSS_SHA256 = "47faf200a849a4fc4fe7531d310314992ba8c36363c0c7a2033ed4bd99611e9a"
 
 
 def normalized_sha256(path: Path) -> str:
@@ -56,6 +56,18 @@ class CanvasAssetExtractionTests(unittest.TestCase):
         self.assertIn(".nc-canvas-shell.agent-open .nc-canvas", css)
         self.assertIn(".nc-canvas-shell.agent-open .nc-empty", css)
         self.assertIn("openSidePanel('agent',true)", app)
+
+    def test_storyboard_is_a_derived_view_of_the_existing_workflow(self):
+        html = HTML_PATH.read_text(encoding="utf-8")
+        css = CSS_PATH.read_text(encoding="utf-8")
+        app = APP_PATH.read_text(encoding="utf-8")
+        self.assertIn('id="ncStoryboard"', html)
+        self.assertIn('data-canvas-view="workflow"', html)
+        self.assertIn('data-canvas-view="story"', html)
+        self.assertIn("graphApi.topologicalOrder(", app)
+        self.assertIn("function renderStoryboard()", app)
+        self.assertIn("function setCanvasView(view)", app)
+        self.assertIn(".nc-canvas-shell.story-view .nc-storyboard", css)
 
     def test_portable_infinite_canvas_interactions_are_wired(self):
         html = HTML_PATH.read_text(encoding="utf-8")
