@@ -687,7 +687,8 @@
     var orderRows=(p.recent||[]).map(function(x){return '<tr><td>'+esc(x.source)+'</td><td><code>'+esc(x.order_id)+'</code></td><td>'+money(x.amount_fen)+'</td><td>'+esc(x.order_type==='membership_experience'?'499 会员':'点数')+'</td><td>'+esc(paymentStatusName(x.status))+'</td><td>'+Number(x.points||0).toLocaleString()+'</td><td>'+esc(fmtTime(x.created_at))+'</td><td><div class="truncate" title="'+esc(x.detail||'')+'">'+esc(x.detail||'-')+'</div></td></tr>'}).join('');
     var ledgerRows=(ledger.items||[]).slice(0,10).map(function(x){var delta=Number(x.delta||0);return '<tr><td>'+esc(fmtTime(x.created_at))+'</td><td>'+(delta>0?'+':'')+delta.toLocaleString()+'</td><td>'+esc(pointReasonText(x))+'</td><td>'+esc(x.who_admin==='system'?'任务':x.who_admin)+'</td></tr>'}).join('');
     box.hidden=false;
-    box.innerHTML='<div class="row"><div><h2 style="margin:0">'+esc(u.display_name||u.username)+' <code>'+esc(u.username)+'</code></h2><div class="hint">注册于 '+esc(u.created_at||'-')+' · '+esc(roleName(u.role))+' · '+esc(membershipName(u.membership_tier))+' · 当前 '+Number(u.points||0).toLocaleString()+' 点</div></div><div class="actions"><button class="mini" id="detailRefresh">刷新</button><button class="mini" id="detailNotice">发通知</button><button class="mini" id="detailPoints">查看流水</button><button class="mini" id="detailClose">关闭</button></div></div>'+
+    box.innerHTML='<div class="row"><div><h2 style="margin:0">'+esc(u.display_name||u.username)+' <code>'+esc(u.username)+'</code></h2><div class="hint">注册于 '+esc(u.created_at||'-')+' · '+esc(roleName(u.role))+' · '+esc(membershipName(u.membership_tier))+' · 当前 '+Number(u.points||0).toLocaleString()+' 点</div></div><div class="actions"><button class="mini" id="detailRefresh">刷新</button><button class="mini" id="detailNotice">发通知</button><button class="mini danger" id="detailPassword">重置密码</button><button class="mini" id="detailPoints">查看流水</button><button class="mini" id="detailClose">关闭</button></div></div>'+
+      '<div class="pool-editor" id="passwordResetEditor" hidden><b>重置 '+esc(u.username)+' 的密码</b><div class="hint">重置后会注销该用户全部登录态；用户使用临时密码登录后必须立即改密。</div><div class="toolbar"><input class="field" id="passwordResetNew" type="password" minlength="6" maxlength="128" autocomplete="new-password" aria-label="新临时密码" placeholder="新临时密码（6–128 位）"><input class="field" id="passwordResetConfirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" aria-label="确认新临时密码" placeholder="再次输入临时密码"><button class="primary" id="passwordResetSubmit">确认重置</button><button id="passwordResetCancel">取消</button></div></div>'+
       '<div class="ledger-summary"><div class="ledger-stat"><span>累计任务</span><b>'+Number(t.total||0).toLocaleString()+'</b></div><div class="ledger-stat"><span>成功</span><b>'+Number(t.done||0).toLocaleString()+'</b></div><div class="ledger-stat"><span>失败</span><b>'+Number(t.error||0).toLocaleString()+'</b></div><div class="ledger-stat"><span>已结束成功率</span><b>'+pct(t.success_rate)+'</b><span>另有 '+Number(t.running||0)+' 个进行中</span></div></div>'+
       '<div class="detail-grid">'+insightTable('按功能',t.by_function)+insightTable('按渠道',t.by_channel)+insightTable('按模型',t.by_model)+'</div>'+
       '<div class="detail-block" style="margin-bottom:12px"><h3>最近任务</h3>'+(taskRows?'<div class="table-wrap"><table><thead><tr><th>任务</th><th>功能</th><th>渠道</th><th>模型</th><th>状态</th><th>点数</th><th>时间</th></tr></thead><tbody>'+taskRows+'</tbody></table></div>':'<div class="muted">暂无任务</div>')+'</div>'+
@@ -697,6 +698,9 @@
     el('detailClose').onclick=function(){box.hidden=true;state.detailUser=''};
     el('detailRefresh').onclick=function(){openUserDetail(u.username)};
     el('detailNotice').onclick=function(){sendUserNotification(u.username)};
+    el('detailPassword').onclick=function(){el('passwordResetEditor').hidden=false;el('passwordResetNew').focus()};
+    el('passwordResetCancel').onclick=closePasswordReset;
+    el('passwordResetSubmit').onclick=function(){resetUserPassword(u.username)};
     el('detailPoints').onclick=function(){openPoints(u.username)};
   }
   function openUserDetail(username){
@@ -712,6 +716,20 @@
     if(!confirm('确认向 '+username+' 发送这条站内通知？'))return;
     state.noticeSending=true;
     api('/api/admin/users/notification',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,title:title,detail:detail})}).then(function(){toast('通知已发送')}).catch(function(e){toast(e.message)}).finally(function(){state.noticeSending=false});
+  }
+  function closePasswordReset(){
+    el('passwordResetNew').value='';el('passwordResetConfirm').value='';el('passwordResetEditor').hidden=true;
+  }
+  function resetUserPassword(username){
+    var password=el('passwordResetNew').value,confirmation=el('passwordResetConfirm').value;
+    if(password.length<6||password.length>128){toast('临时密码需为 6–128 位');return}
+    if(password!==confirmation){toast('两次输入的密码不一致');return}
+    if(!confirm('确认重置 '+username+' 的密码并注销其全部登录态？'))return;
+    var button=el('passwordResetSubmit');button.disabled=true;
+    api('/api/admin/users/password/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,new_password:password})})
+      .then(function(){closePasswordReset();toast('密码已重置，用户下次登录必须改密');loadUsers();openUserDetail(username)})
+      .catch(function(e){toast(e.message)})
+      .finally(function(){button.disabled=false});
   }
   function renderUsers(d){
     var items=d.items||[];

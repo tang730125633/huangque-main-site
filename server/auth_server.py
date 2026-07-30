@@ -2018,6 +2018,40 @@ def list_admin_users(query="", sort="created_at", direction="desc", limit=100, o
         c.close()
 
 
+def reset_password_admin(username, new_password):
+    username = str(username or "").strip()
+    if not username:
+        return None, "missing_username"
+    if not isinstance(new_password, str):
+        return None, "invalid_password"
+    if len(username) > USERNAME_MAX_LENGTH:
+        return None, "username_too_long"
+    if len(new_password) < 6:
+        return None, "password_too_short"
+    if len(new_password) > PASSWORD_MAX_LENGTH:
+        return None, "password_too_long"
+    salt = secrets.token_hex(16)
+    password_hash = hash_pw(new_password, salt)
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        cur = c.execute(
+            "UPDATE users SET pw_hash=?, pw_salt=?, must_change=1 WHERE username=?",
+            (password_hash, salt, username),
+        )
+        if cur.rowcount != 1:
+            c.rollback()
+            return None, "not_found"
+        c.execute("DELETE FROM tokens WHERE username=?", (username,))
+        c.commit()
+        return {"username": username, "must_change": True, "reauth": True}, None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+
 def public_user_notification(row):
     return {
         "id": int(row["id"]),
@@ -3833,6 +3867,31 @@ class H(BaseHTTPRequestHandler):
             if err:
                 return self._send(400, {"detail": messages.get(err, err)})
             return self._send(200, {"ok": True, "notification": notice})
+        if p == "/api/auth/admin/password/reset":
+            if not self._require_internal():
+                return
+            admin = self._require_admin_user()
+            if not admin:
+                return
+            d = self._body()
+            if self._bad_json() or not isinstance(d, dict):
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            try:
+                result, err = reset_password_admin(d.get("username"), d.get("new_password"))
+                messages = {
+                    "missing_username": "缺少用户账号",
+                    "invalid_password": "新密码格式不正确",
+                    "username_too_long": "账号最多 64 位",
+                    "password_too_short": "新密码至少 6 位",
+                    "password_too_long": "新密码最多 128 位",
+                }
+                if err == "not_found":
+                    return self._send(404, {"detail": "用户不存在"})
+                if err:
+                    return self._send(400, {"detail": messages.get(err, err)})
+                return self._send(200, {"ok": True, "reset": result})
+            except Exception:
+                return self._send(500, {"detail": "重置密码失败"})
         if p == "/api/auth/admin/points/adjust":
             if not self._require_internal():
                 return
