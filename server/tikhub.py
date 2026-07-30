@@ -483,6 +483,20 @@ def ch_comments(object_id, last_buffer=""):
 _URL_RE = re.compile(r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+")
 _DY_HOST_SUFFIXES = ("douyin.com", "iesdouyin.com")
 _DY_HOSTS = {"v.douyin.com", "douyinvod.com"}
+_XHS_HOST_SUFFIXES = ("xiaohongshu.com", "xhslink.com", "xhslink.cn")
+
+def _is_xhs_url(url):
+    parsed = urllib.parse.urlparse(url or "")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    return parsed.scheme in ("http", "https") and any(host == suffix or host.endswith("." + suffix) for suffix in _XHS_HOST_SUFFIXES)
+
+class _XhsRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _is_xhs_url(newurl):
+            raise urllib.error.HTTPError(newurl, code, "unsafe Xiaohongshu redirect", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+_XHS_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _XhsRedirectHandler())
 
 def _extract_url(text):
     """从分享文案里提取第一个干净 URL；没有则返回 None（口令式分享无 URL）。"""
@@ -493,6 +507,23 @@ def _is_douyin_url(url):
     """只按 hostname 判断抖音链接，避免 notdouyin.com 这类子串误判。"""
     host = (urllib.parse.urlparse(url or "").hostname or "").lower().rstrip(".")
     return host in _DY_HOSTS or any(host == suffix or host.endswith("." + suffix) for suffix in _DY_HOST_SUFFIXES)
+
+def _xhs_note_id(url):
+    m = re.search(r"(?:explore|discovery/item|item)/([0-9a-fA-F]+)", url or "")
+    if m:
+        return m.group(1)
+    if not _is_xhs_url(url):
+        return None
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": UA})
+        with _XHS_OPENER.open(req, timeout=10) as r:
+            final_url = r.geturl()
+        if not _is_xhs_url(final_url):
+            return None
+        m = re.search(r"(?:explore|discovery/item|item)/([0-9a-fA-F]+)", final_url)
+        return m.group(1) if m else None
+    except (OSError, urllib.error.URLError):
+        return None
 
 def dy_share_code(text):
     """抖音「口令式」无链接分享 → aweme_id（best-effort）。
@@ -528,10 +559,8 @@ def parse_link(text):
     url = _extract_url(text)         # 干净 URL（截断粘连的中文）；口令式分享无 URL → None
     probe = (url or text).strip()
     low = probe.lower()
-    if "xiaohongshu.com" in low or "xhslink" in low:
-        nm = re.search(r"(?:explore|discovery/item|item)/([0-9a-fA-F]+)", probe)
-        nid = nm.group(1) if nm else (_g("/api/v1/xiaohongshu/app/extract_share_info", share_link=probe) or {}).get("note_id")
-        return {"platform": "xhs", "id": nid, "note_type": None}
+    if _is_xhs_url(probe):
+        return {"platform": "xhs", "id": _xhs_note_id(probe), "note_type": None}
     if "weixin.qq.com" in low or "/sph" in low or "channels" in low or "finder" in low:
         return {"platform": "channels", "id": probe, "note_type": "video"}
     # 抖音：优先链接解析；纯口令(无链接)退回 best-effort 口令解析

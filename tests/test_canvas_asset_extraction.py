@@ -9,7 +9,7 @@ HTML_PATH = ROOT / "site" / "workbench" / "canvas.html"
 CSS_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas.css"
 APP_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas-app.js"
 
-EXPECTED_CSS_SHA256 = "7ed3d72ec3a3c9e520d07bd45ba6967e622e20047a0b07de0b67ef48b99a6655"
+EXPECTED_CSS_SHA256 = "53ce4a2f0a1def5e51b39eee2e3bc1c4705744ab2368faec68e3bb774c7426c4"
 
 
 def normalized_sha256(path: Path) -> str:
@@ -34,6 +34,15 @@ class CanvasAssetExtractionTests(unittest.TestCase):
         self.assertIn(".nc-side-tool:hover,.nc-side-tool.on,.nc-side-tool:focus-visible", css)
         self.assertIn("content:attr(aria-label)", css)
         self.assertIn("@media (prefers-reduced-motion:reduce)", css)
+
+    def test_grid_and_default_nodes_follow_the_centered_viewport(self):
+        css = CSS_PATH.read_text(encoding="utf-8")
+        app = APP_PATH.read_text(encoding="utf-8")
+        self.assertIn("--grid-minor:24px", css)
+        self.assertIn("function syncCanvasGrid()", app)
+        self.assertIn("fallback=x==null||y==null?viewportNodePoint():null", app)
+        self.assertIn("function centerEmptyView()", app)
+        self.assertIn("((minX+maxX)/2)*zoom-canvas.clientWidth/2", app)
 
     def test_five_modules_are_versioned_and_loaded_in_exact_order(self):
         html = HTML_PATH.read_text(encoding="utf-8")

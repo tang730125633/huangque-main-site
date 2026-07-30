@@ -1584,6 +1584,7 @@
     (snap.nodes||[]).forEach(function(n){ addNode(n.type,n.x,n.y,n); });
     if(snap.zoom){ zoom=Math.max(.5,Math.min(1.6,snap.zoom)); inner.style.transform='scale('+zoom+')'; }
     if(snap.scroll){ canvas.scrollLeft=snap.scroll.left||0; canvas.scrollTop=snap.scroll.top||0; }
+    syncCanvasGrid();
     redraw(); refreshAllGenRefs(); updateSelectedRegion();
     updateState('已撤销');
     restoring=false;
@@ -1699,7 +1700,8 @@
     if(type==='shortDrama'&&data) data=shortDramaModule.sanitizeNodeData(data);
     var t=TYPE[type], nextNid=++nid, id=currentBoardScope==='collab'&&collabSync?collabSync.makeNodeId(collabNodeSeed,nextNid):'n'+nextNid;
     if(data&&data.id){ id=data.id; var m=String(id).match(/^n(\d+)$/); if(m) nid=Math.max(nid,parseInt(m[1],10)); }
-    var node={ id:id, type:type, x:(x==null?60+((nid*30)%400):x), y:(y==null?50+((nid*40)%300):y), collapsed:!!(data&&data.collapsed), params:Object.assign({engine:'nb2',channel:'grok',ratio:'16:9',duration:'5',quality:'hd',title:'',remark:''},(data&&data.params)||{}), outputs:stateApi.cloneSnapshot((data&&data.outputs)||{}), image:(data&&data.image)||null };
+    var fallback=x==null||y==null?viewportNodePoint():null;
+    var node={ id:id, type:type, x:(x==null?fallback.x:x), y:(y==null?fallback.y:y), collapsed:!!(data&&data.collapsed), params:Object.assign({engine:'nb2',channel:'grok',ratio:'16:9',duration:'5',quality:'hd',title:'',remark:''},(data&&data.params)||{}), outputs:stateApi.cloneSnapshot((data&&data.outputs)||{}), image:(data&&data.image)||null };
     if(type==='shortDrama') node.params=normalizeShortDramaNodeParams(node.params);
     var el=document.createElement('div'); el.className='nc-node'+(type==='shortDrama'?' nc-node-short-drama':''); el.style.left=node.x+'px'; el.style.top=node.y+'px';
     var body='';
@@ -1818,6 +1820,12 @@
   function noteOf(node,msg,color){ var n=node.el.querySelector('[data-f="note"]'); if(n){ n.textContent=msg||''; n.style.color=color||'#5c6b82'; } }
   function innerWidth(){ return inner.offsetWidth||CANVAS_BASE_W; }
   function innerHeight(){ return inner.offsetHeight||CANVAS_BASE_H; }
+  function syncCanvasGrid(){
+    canvas.style.setProperty('--grid-minor',(24*zoom)+'px');
+    canvas.style.setProperty('--grid-major',(120*zoom)+'px');
+    canvas.style.setProperty('--grid-x',(-canvas.scrollLeft)+'px');
+    canvas.style.setProperty('--grid-y',(-canvas.scrollTop)+'px');
+  }
   function ensureCanvasBounds(x,y){
     var nextW=Math.max(innerWidth(),Math.ceil(x+CANVAS_GROW_PAD));
     var nextH=Math.max(innerHeight(),Math.ceil(y+CANVAS_GROW_PAD));
@@ -1889,6 +1897,7 @@
     inner.style.transform='scale('+zoom+')';
     canvas.scrollLeft=wx*zoom-cx;
     canvas.scrollTop=wy*zoom-cy;
+    syncCanvasGrid();
     scheduleMap();
     updateState();
   }
@@ -2069,7 +2078,7 @@
   }
   function fitView(){
     var ids=Object.keys(nodes);
-    if(!ids.length){ setZoom(1); canvas.scrollLeft=0; canvas.scrollTop=0; return; }
+    if(!ids.length){ setZoom(1); centerEmptyView(); syncCanvasGrid(); return; }
     var minX=Infinity,minY=Infinity,maxX=0,maxY=0;
     ids.forEach(function(id){
       var n=nodes[id], w=n.el.offsetWidth||250, h=n.el.offsetHeight||160;
@@ -2078,8 +2087,9 @@
     var pad=80, bw=Math.max(1,maxX-minX+pad*2), bh=Math.max(1,maxY-minY+pad*2);
     var next=Math.min(1.2,Math.max(.5,Math.min(canvas.clientWidth/bw,canvas.clientHeight/bh)));
     setZoom(next);
-    canvas.scrollLeft=Math.max(0,(minX-pad)*zoom);
-    canvas.scrollTop=Math.max(0,(minY-pad)*zoom);
+    canvas.scrollLeft=Math.max(0,((minX+maxX)/2)*zoom-canvas.clientWidth/2);
+    canvas.scrollTop=Math.max(0,((minY+maxY)/2)*zoom-canvas.clientHeight/2);
+    syncCanvasGrid();
     updateState('已适应视图');
   }
   function fullscreenElement(){
@@ -2114,8 +2124,9 @@
   }
   function focusNode(node){
     if(!node) return;
-    canvas.scrollLeft=Math.max(0,(node.x-80)*zoom);
-    canvas.scrollTop=Math.max(0,(node.y-80)*zoom);
+    canvas.scrollLeft=Math.max(0,(node.x+(node.el.offsetWidth||250)/2)*zoom-canvas.clientWidth/2);
+    canvas.scrollTop=Math.max(0,(node.y+(node.el.offsetHeight||160)/2)*zoom-canvas.clientHeight/2);
+    syncCanvasGrid();
     scheduleMap();
   }
   function hideMenu(){ if(menu) menu.classList.remove('on'); }
@@ -2180,6 +2191,14 @@
   }
   function viewportCenterPoint(){
     return {x:Math.max(0,(canvas.scrollLeft+canvas.clientWidth/2)/zoom),y:Math.max(0,(canvas.scrollTop+canvas.clientHeight/2)/zoom)};
+  }
+  function viewportNodePoint(){
+    var center=viewportCenterPoint();
+    return {x:Math.max(0,center.x-125),y:Math.max(0,center.y-80)};
+  }
+  function centerEmptyView(){
+    canvas.scrollLeft=Math.max(0,(innerWidth()*zoom-canvas.clientWidth)/2);
+    canvas.scrollTop=Math.max(0,(innerHeight()*zoom-canvas.clientHeight)/2);
   }
   function closeDialog(){
     var old=document.querySelector('.nc-dialog-mask');
@@ -2936,7 +2955,7 @@
     if(canvas.classList.contains('connecting')||canvas.classList.contains('selecting')||dragPort||(t&&t.closest&&t.closest('.nc-port,.nc-go,.nc-chip,.nc-head,.nc-lab,.nc-node-title,.nc-menu'))){ e.preventDefault(); }
   });
   canvas.addEventListener('dragstart',function(e){ if(canvas.classList.contains('connecting')||dragPort){ e.preventDefault(); } });
-  canvas.addEventListener('scroll',function(){ scheduleMap(); },{passive:true});
+  canvas.addEventListener('scroll',function(){ syncCanvasGrid(); scheduleMap(); },{passive:true});
   window.addEventListener('resize',function(){ scheduleMap(); });
   document.addEventListener('click',function(e){ if(!menu||!menu.classList.contains('on')) return; if(e.target&&e.target.closest&&e.target.closest('.nc-menu')) return; hideMenu(); });
   document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ hideMenu(); if(localFullscreen) showBoardHome(); } });
@@ -3261,7 +3280,7 @@
     };
   });
   bindButton(fsAdd,function(){
-    showMenuFromButton(fsAdd,addNodeMenuItems(viewportCenterPoint()));
+    showMenuFromButton(fsAdd,addNodeMenuItems(viewportNodePoint()));
   });
   bindButton(fsUndo,function(){ undo(); });
   bindButton(fsRedo,function(){ redo(); });
