@@ -212,12 +212,18 @@
   .nc-map-node{ fill:rgba(231,178,76,.72); stroke:rgba(255,255,255,.24); stroke-width:.7; }
   .nc-map-node.img{ fill:rgba(70,180,255,.72); }
   .nc-map-view{ fill:rgba(45,212,191,.08); stroke:#2dd4bf; stroke-width:1.4; }
-  .nc-menu{ position:fixed; z-index:30; display:none; min-width:126px; padding:5px; border:1px solid rgba(148,164,187,.12); border-radius:10px; background:rgba(8,12,20,.94); box-shadow:0 18px 42px -24px rgba(0,0,0,.9); backdrop-filter:blur(16px); }
+  .nc-menu{ position:fixed; z-index:30; display:none; width:202px; max-width:calc(100vw - 16px); box-sizing:border-box; padding:7px; border:1px solid rgba(148,164,187,.15); border-radius:14px; background:rgba(27,30,35,.96); box-shadow:0 24px 54px -24px rgba(0,0,0,.96),inset 0 1px rgba(255,255,255,.035); backdrop-filter:blur(18px); }
+  .nc-menu.add{ width:214px; }
   .nc-menu.on{ display:block; }
-  .nc-menu button{ display:flex; align-items:center; gap:8px; width:100%; min-height:28px; padding:5px 8px; border:0; border-radius:7px; background:transparent; color:#94a4bb; text-align:left; cursor:pointer; font:inherit; font-size:12px; user-select:none; -webkit-user-select:none; }
-  .nc-menu button:hover{ color:#eaf1fa; background:rgba(148,164,187,.075); }
-  .nc-menu-k{ width:19px; height:19px; display:grid; place-items:center; flex:none; border-radius:6px; background:rgba(148,164,187,.06); color:#cbd6e4; font-size:10.5px; font-weight:800; }
+  .nc-menu-title{ padding:7px 9px 6px; color:#8b929d; font-size:11px; font-weight:800; letter-spacing:.03em; }
+  .nc-menu-section{ padding:10px 9px 5px; color:#626a76; font-size:10.5px; }
+  .nc-menu-separator{ height:1px; margin:6px 9px; background:rgba(148,164,187,.12); }
+  .nc-menu button{ display:flex; align-items:center; gap:9px; width:100%; min-height:34px; padding:6px 9px; border:0; border-radius:8px; background:transparent; color:#d6dbe3; text-align:left; cursor:pointer; font:inherit; font-size:12px; user-select:none; -webkit-user-select:none; }
+  .nc-menu button:hover,.nc-menu button:focus-visible{ outline:none; color:#fff; background:rgba(255,255,255,.075); }
+  .nc-menu button:disabled{ color:#59606b; cursor:not-allowed; background:transparent; }
+  .nc-menu-k{ width:20px; height:20px; display:grid; place-items:center; flex:none; border-radius:6px; background:rgba(255,255,255,.05); color:#e2e7ee; font-size:10px; font-weight:800; }
   .nc-menu-t{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .nc-menu-shortcut{ margin-left:auto; color:#707884; font-size:10.5px; }
   .nc-side-tools{ position:absolute; right:14px; top:50%; z-index:13; transform:translateY(-50%); display:flex; flex-direction:column; gap:8px; padding:6px; border:1px solid rgba(148,164,187,.1); border-radius:14px; background:rgba(8,12,20,.42); box-shadow:0 14px 40px -28px rgba(0,0,0,.72),inset 0 1px rgba(255,255,255,.025); backdrop-filter:blur(14px); transition:transform .24s ease,background .24s ease,border-color .24s ease,box-shadow .24s ease; }
   .nc-side-tools:hover,.nc-side-tools:focus-within{ transform:translate(-2px,-50%); border-color:rgba(231,178,76,.2); background:rgba(10,15,24,.94); box-shadow:0 22px 52px -26px rgba(0,0,0,.92),0 0 28px -18px rgba(231,178,76,.46),inset 0 1px rgba(255,255,255,.07); }
   .nc-side-tool{ position:relative; width:42px; height:42px; display:grid; place-items:center; border:1px solid transparent; border-radius:11px; background:transparent; color:#7f90a8; cursor:pointer; font:inherit; transition:transform .18s ease,color .2s ease,background .2s ease,border-color .2s ease,box-shadow .2s ease; }

@@ -9,7 +9,7 @@ HTML_PATH = ROOT / "site" / "workbench" / "canvas.html"
 CSS_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas.css"
 APP_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas-app.js"
 
-EXPECTED_CSS_SHA256 = "fd5b02f73234ae86fb93309b305bd6db7f55009a4ef14629b709bb9954b5e47a"
+EXPECTED_CSS_SHA256 = "ad330db2f0ac1c83d09f45ff7d62a2341aeb4cceb582d587d75d20d661a5ff71"
 
 
 def normalized_sha256(path: Path) -> str:
@@ -66,6 +66,19 @@ class CanvasAssetExtractionTests(unittest.TestCase):
         self.assertIn("function connectedNodeMenuItems(", app)
         self.assertIn("graphApi.resizeNodeRect(", app)
         self.assertIn("graphApi.alignmentGuides(", app)
+
+    def test_canvas_creation_and_context_menus_have_distinct_roles(self):
+        html = HTML_PATH.read_text(encoding="utf-8")
+        css = CSS_PATH.read_text(encoding="utf-8")
+        app = APP_PATH.read_text(encoding="utf-8")
+        self.assertIn("双击画布空白处添加节点", html)
+        self.assertIn("function showAddNodeMenu(", app)
+        self.assertRegex(app, r"canvas\.addEventListener\('dblclick',[\s\S]*?showAddNodeMenu\(canvasPointFromClient\(e\)")
+        self.assertRegex(app, r"function menuForCanvas\(e\)[\s\S]*?label:'上传图片'[\s\S]*?label:'添加节点'[\s\S]*?label:'撤销'[\s\S]*?label:'重做'[\s\S]*?label:'粘贴'")
+        self.assertIn("disabled:!history.canUndo()", app)
+        self.assertIn("disabled:!history.canRedo()", app)
+        self.assertIn("disabled:!clipNode", app)
+        self.assertIn(".nc-menu-shortcut", css)
 
     def test_canvas_modules_are_versioned_and_loaded_in_exact_order(self):
         html = HTML_PATH.read_text(encoding="utf-8")
