@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from collections import defaultdict, deque
 from http import cookies
 from pathlib import Path
@@ -49,6 +51,7 @@ _rate_lock = threading.Lock()
 _active = defaultdict(int)
 _active_lock = threading.Lock()
 _audit_lock = threading.Lock()
+_REQUEST_ID_RE = re.compile(r"[A-Za-z0-9_-]{8,128}\Z")
 
 
 def _token_from_request():
@@ -118,6 +121,8 @@ def _client_ip():
 
 
 def _audit(data_dir, event, status, username="", detail=""):
+    g.hermes_audit_recorded = True
+    started_at = getattr(g, "hermes_started_at", None)
     record = {
         "time": int(time.time()),
         "event": event,
@@ -128,6 +133,8 @@ def _audit(data_dir, event, status, username="", detail=""):
         "path": request.path,
         "ip": _client_ip(),
         "detail": str(detail)[:200],
+        "duration_ms": round((time.monotonic() - started_at) * 1000, 1) if started_at else None,
+        "request_id": getattr(g, "hermes_request_id", ""),
     }
     audit_dir = Path(data_dir) / "audit"
     try:
@@ -186,6 +193,11 @@ def register_security(app, data_dir):
 
     @app.before_request
     def authenticate_request():
+        g.hermes_started_at = time.monotonic()
+        incoming_request_id = (request.headers.get("X-Request-ID") or "").strip()
+        g.hermes_request_id = (
+            incoming_request_id if _REQUEST_ID_RE.fullmatch(incoming_request_id) else uuid.uuid4().hex
+        )
         if request.path == "/healthz":
             return None
         token = _token_from_request()
@@ -227,11 +239,16 @@ def register_security(app, data_dir):
 
     @app.after_request
     def finish_request(response):
-        username = getattr(g, "hermes_concurrency_user", "")
-        if username:
+        concurrency_user = getattr(g, "hermes_concurrency_user", "")
+        if concurrency_user:
             if response.is_streamed:
-                response.call_on_close(lambda: _release_concurrency(username))
+                response.call_on_close(lambda: _release_concurrency(concurrency_user))
             else:
-                _release_concurrency(username)
-            _audit(data_dir, "metered_request", response.status_code, username)
+                _release_concurrency(concurrency_user)
+        identity = getattr(g, "hermes_user", {})
+        username = identity.get("username", "")
+        if username and request.path.startswith("/api/") and not getattr(g, "hermes_audit_recorded", False):
+            event = "metered_request" if _is_metered(request.method) else "api_request"
+            _audit(data_dir, event, response.status_code, username)
+        response.headers["X-Request-ID"] = getattr(g, "hermes_request_id", uuid.uuid4().hex)
         return response
