@@ -1498,6 +1498,9 @@ class H(BaseHTTPRequestHandler):
             if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
             try: feature_flags.require_enabled(kind)
             except feature_flags.FeatureDisabled as e: return self._send(503, {"detail": str(e)})
+            if kind == "canvas_agent":
+                if is_shutting_down():
+                    return self._send(503, {"detail": "服务正在更新，请稍等几秒后重试（未扣点）", "code": "shutting_down", "retry_after_ms": 5000})
             still_idem_started = False
             still_attempt = None
             still_access = _short_drama_canvas_access(self) if is_still_route else None
@@ -1555,7 +1558,7 @@ class H(BaseHTTPRequestHandler):
                     body = audio_domain.validate_audio_payload(body, user["username"])
                 if not is_still_route: request_body = dict(body) if isinstance(body, dict) else body
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
-                if not is_still_route: idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "audio", "video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video", "breakdown", "canvas_agent"} else ""
+                if not is_still_route: idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "audio", "video", "tryon", "xiaole_video", "sora_video", "cinematic", "canvas_agent", "script_to_video", "breakdown"} else ""
                 if kind == "canvas_agent" and not idem_key: raise ValueError("画布 Agent 提交必须提供 Idempotency-Key")
                 if kind == "sora_video" and not idem_key: raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
                 if kind == "xiaole_video" and str(body.get("channel") or "").lower() in {"micro", "omni"} and not idem_key: raise ValueError("官方视频提交必须提供 Idempotency-Key")
