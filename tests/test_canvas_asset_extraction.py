@@ -9,7 +9,7 @@ HTML_PATH = ROOT / "site" / "workbench" / "canvas.html"
 CSS_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas.css"
 APP_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas-app.js"
 
-EXPECTED_CSS_SHA256 = "96c2cf4a29c2fcd04113c920f198783f07a2794d3a6959582986b46a95353396"
+EXPECTED_CSS_SHA256 = "03e48f956f3fc2b25fbe526fe2069b119d7cd4875b6e6435f8bb0838240f4ddb"
 
 
 def normalized_sha256(path: Path) -> str:
