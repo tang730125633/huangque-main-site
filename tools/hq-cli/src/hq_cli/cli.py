@@ -27,7 +27,7 @@ EXIT_API = 10
 EXIT_CONFIRMATION = 11
 MAX_INPUT_BYTES = 65536
 LOGIN_SCOPES = [
-    "profile:read", "ip12:read", "ip12:write", "prompt:optimize", "canvas:read",
+    "profile:read", "ip12:read", "ip12:write", "ip12:chat", "prompt:optimize", "canvas:read",
     "canvas:write", "tasks:read", "assets:read", "assets:write", "generation:quote", "generation:submit",
 ]
 
@@ -354,7 +354,7 @@ def main(argv=None):
                 if args.quote_token:
                     request_body["quote_token"] = args.quote_token
                 result = _request("/api/auth/cli/action", "POST", request_body,
-                                  credentials["access_token"], timeout=120)
+                                  credentials["access_token"], timeout=310)
             next_actions = list(capability["next_actions"])
             if capability["side_effect"] == "paid" and not args.confirm:
                 next_actions = ["Review cost and points, then re-run the identical input with `--confirm --quote-token <quote_token>`. "]

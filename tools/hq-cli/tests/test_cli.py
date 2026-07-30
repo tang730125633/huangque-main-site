@@ -46,7 +46,7 @@ class HqCliTests(unittest.TestCase):
         _, output, _ = self.invoke(["capabilities"])
         by_id = {item["id"]: item for item in self.payload(output)["capabilities"]}
         expected = {
-            "account", "ip12-projects", "ip12-project", "ip12-create", "ip12-report",
+            "account", "ip12-projects", "ip12-project", "ip12-create", "ip12-report", "ip12-message",
             "prompt-optimize", "canvas-list", "canvas-get", "canvas-create", "tasks", "task",
             "assets", "voices", "asset-favorite", "asset-tags",
             "image-generate", "video-generate", "audio-generate",
@@ -112,6 +112,7 @@ class HqCliTests(unittest.TestCase):
         inputs = {
             "prompt-optimize": b'{"prompt":"better portrait","kind":"image"}',
             "ip12-create": b'{"title":"My IP"}',
+            "ip12-message": '{"project_id":"ip_1","message":"我的核心客户是本地餐饮老板","request_id":"turn-001"}'.encode(),
             "canvas-create": b'{"name":"Launch","prompt":"first idea"}',
             "asset-tags": '{"kind":"image","key":"asset-1","tags":["客户案例"]}'.encode(),
         }
@@ -121,6 +122,22 @@ class HqCliTests(unittest.TestCase):
                 self.assertEqual(cli.EXIT_CONFIRMATION, code)
                 self.assertEqual("confirmation_required", self.payload(error)["error"])
         request.assert_not_called()
+
+    def test_confirmed_ip12_message_calls_fixed_action_with_long_timeout(self):
+        self.authorize()
+        with patch("hq_cli.client.request_json", return_value=(200, {"assistant": "继续回答", "state": {}})) as request:
+            code, output, error = self.invoke(
+                ["run", "ip12-message", "--input", "@-", "--confirm"],
+                b'{"project_id":"ip_1","message":"my customer is a restaurant owner","request_id":"turn-001"}',
+            )
+        self.assertEqual(0, code, error)
+        self.assertEqual("继续回答", self.payload(output)["result"]["assistant"])
+        self.assertEqual({
+            "action": "ip12-message",
+            "input": {"project_id": "ip_1", "message": "my customer is a restaurant owner", "request_id": "turn-001"},
+            "confirm": True,
+        }, request.call_args.kwargs["body"])
+        self.assertEqual(310, request.call_args.kwargs["timeout"])
 
     def test_confirmed_canvas_create_calls_server_action(self):
         self.authorize()

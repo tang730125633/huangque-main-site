@@ -1,4 +1,4 @@
-# 黄雀主站 HQ CLI 0.2
+# 黄雀主站 HQ CLI 0.3
 
 `hq` 是给用户和 Agent 使用的黄雀主站命令行工具。它固定连接
 `https://huangquechuanmei.com`，不接受自定义服务器、任意 HTTP 方法、密码或 Cookie。
@@ -10,7 +10,7 @@ curl -fsSL https://huangquechuanmei.com/downloads/hq/install.sh | sh
 ```
 
 需要 Python 3.9+。安装脚本会校验版本化 wheel 的 SHA-256，把程序放在
-`~/.local/share/hq-cli/0.2.0/`，并创建 `~/.local/bin/hq`。如果该目录不在 PATH，按安装结果提示补一次即可。
+`~/.local/share/hq-cli/0.3.0/`，并创建 `~/.local/bin/hq`。如果该目录不在 PATH，按安装结果提示补一次即可。
 
 ## 给一个没有上下文的 Agent
 
@@ -29,7 +29,7 @@ hq describe ip12-projects --json
 ## 能力
 
 - 读取账号资料、点数和授权范围。
-- 创建/读取主站当前 Hermes IP12 诊断项目，读取基础资料、对话、进度和已有模块报告。
+- 创建/读取主站当前 Hermes IP12 诊断项目，读取基础资料、对话、进度和已有模块报告；授权中包含独立 `ip12:chat` 权限，显式确认后可继续一轮诊断对话。
 - 真实调用图片或视频提示词优化。
 - 创建并读取画布，可把提示词放入首个文本节点。
 - 读取任务详情、点数流水、图片/音频/视频等资产与可用音色；可收藏资产并管理标签。
@@ -41,6 +41,7 @@ hq describe ip12-projects --json
 ```sh
 hq capabilities --json
 hq describe canvas-create --json
+hq describe ip12-message --json
 ```
 
 输入只接受 UTF-8 JSON 对象文件或标准输入，最多 64 KiB：
@@ -49,6 +50,15 @@ hq describe canvas-create --json
 printf '%s\n' '{"name":"客户内容规划","prompt":"为餐饮老板规划一周短视频"}' > canvas.json
 hq run canvas-create --input @canvas.json --confirm --json
 ```
+
+继续 IP12 对话会写入本人项目并调用 AI，必须显式确认：
+
+```sh
+printf '%s\n' '{"project_id":"项目ID","message":"我的核心客户是本地餐饮老板","request_id":"turn-20260730-001"}' > ip12-message.json
+hq run ip12-message --input @ip12-message.json --confirm --json
+```
+
+同一轮网络超时只能原样复用同一个 `request_id`；新一轮必须换新值。若返回“结果未知”，先读取项目，避免重复写入。
 
 付费生成必须分两次：
 
@@ -65,6 +75,6 @@ hq run image-generate --input @image.json --confirm --quote-token '<quote_token>
 
 - 这是黄雀主站 CLI，不是泽龙 CLI；只有 `main` 环境。
 - Agent 只能运行内置能力，不能借 CLI 请求任意 URL 或旧业务 API。
-- 读取、外部 AI、普通写入、付费写入分别声明；提示词优化、创建 IP12/画布和付费生成都要求显式确认。
-- V0.2 支持资产收藏和标签，不提供删除资产、删除项目、管理员接口、充值或批量破坏性操作。
+- 读取、外部 AI、普通写入、付费写入分别声明；IP12 对话使用独立 `ip12:chat` 权限，提示词优化、创建 IP12/画布和付费生成都要求显式确认。
+- V0.3 支持资产收藏和标签，不提供删除资产、删除项目、管理员接口、充值或批量破坏性操作。
 - 成功与错误都输出一个带 `schema`、`cli_version` 的 JSON；用进程退出码判断结果。

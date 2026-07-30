@@ -3419,7 +3419,7 @@ class H(BaseHTTPRequestHandler):
             plan = hq_cli_api.action_plan(action, input_body)
             if plan["scope"] not in scopes:
                 raise hq_cli_api.CLIAPIError(403, "当前 CLI 授权缺少权限：" + plan["scope"], "insufficient_scope")
-            if action in {"ip12-create", "prompt-optimize", "canvas-create", "asset-favorite", "asset-tags"} and not confirm:
+            if action in {"ip12-create", "ip12-message", "prompt-optimize", "canvas-create", "asset-favorite", "asset-tags"} and not confirm:
                 raise hq_cli_api.CLIAPIError(409, "该操作需要显式确认", "confirmation_required")
             if plan["kind"] == "account":
                 return self._cli_send(200, {"user": self._cli_public_user(row), "scopes": list(scopes),
@@ -3479,6 +3479,38 @@ class H(BaseHTTPRequestHandler):
                     "points": result.get("points"), "expires_in": hq_cli_api.QUOTE_TTL,
                     "confirmation_required": True,
                 })
+            if action == "ip12-message":
+                claim, previous_status = hq_cli_api.begin_action_request(
+                    db, row["username"], action, plan["request_id"], plan["project_id"], plan["request_hash"],
+                )
+                if claim == "conflict":
+                    raise hq_cli_api.CLIAPIError(409, "request_id 已绑定其他输入", "idempotency_conflict")
+                if claim == "in_progress":
+                    raise hq_cli_api.CLIAPIError(409, "该轮对话仍在处理中，请使用相同 request_id 稍后查询", "idempotency_in_progress")
+                if claim == "uncertain":
+                    raise hq_cli_api.CLIAPIError(409, "上次结果未知，请先读取项目再决定是否发起新一轮", "result_unknown")
+                if claim == "busy":
+                    raise hq_cli_api.CLIAPIError(429, "该项目已有一轮 CLI 对话正在处理", "project_busy")
+                if claim == "rate_limited":
+                    raise hq_cli_api.CLIAPIError(429, "IP12 CLI 对话请求过于频繁，请稍后重试", "rate_limited")
+                if claim == "completed":
+                    if previous_status and 200 <= int(previous_status) < 300:
+                        return self._cli_send(200, {
+                            "ok": True, "replayed": True, "project_id": plan["project_id"],
+                            "detail": "该轮已处理；请读取项目取得最新回复和进度。",
+                        })
+                    raise hq_cli_api.CLIAPIError(409, "该轮此前已处理但未成功，请先读取项目", "previous_attempt_completed")
+                try:
+                    status, result = self._cli_proxy(plan, row["username"])
+                except Exception:
+                    hq_cli_api.finish_action_request(
+                        db, row["username"], action, plan["request_id"], uncertain=True,
+                    )
+                    raise
+                hq_cli_api.finish_action_request(
+                    db, row["username"], action, plan["request_id"], http_status=status,
+                )
+                return self._cli_send(status, result)
             status, result = self._cli_proxy(plan, row["username"])
             if 200 <= status < 300 and action == "ip12-create" and isinstance(result, dict):
                 project = result.get("project") or {}

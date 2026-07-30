@@ -88,6 +88,16 @@ CAPABILITIES["ip12-create"] = _api(
 CAPABILITIES["ip12-report"] = _api(
     "ip12-report", "读取 IP12 报告", "ip12-report", "读取一个本人 Hermes IP12 项目已经保存的模块报告；不会重新生成报告。",
     {"project_id": STRING_ID}, ["project_id"], "ip12:read")
+CAPABILITIES["ip12-message"] = _api(
+    "ip12-message", "继续 IP12 对话", "ip12-message",
+    "向本人 IP12 项目提交一轮回答并调用 AI 教练；request_id 必须每轮唯一，重试同一轮时保持不变。",
+    {"project_id": STRING_ID, "message": {"type": "string", "minLength": 1, "maxLength": 4000},
+     "request_id": STRING_ID},
+    ["project_id", "message", "request_id"], "ip12:chat", "external_ai", True,
+    {"kind": "external_ai", "points": 0, "detail": "不扣点，但会写入 IP12 项目并调用黄雀 AI。"})
+CAPABILITIES["ip12-message"]["next_actions"] = [
+    "网络超时后只可用完全相同的输入和 request_id 重试；若返回结果未知，先读取 IP12 项目。",
+]
 CAPABILITIES["prompt-optimize"] = _api(
     "prompt-optimize", "优化提示词", "prompt-optimize", "真实调用黄雀主站提示词优化服务。",
     {"prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
