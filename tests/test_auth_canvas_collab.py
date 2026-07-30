@@ -336,8 +336,16 @@ class AuthCanvasCollabTests(unittest.TestCase):
         duplicate = self._ops(
             board["id"],
             "same-batch",
-            [{"type": "node.patch", "id": "n1", "fields": {"title": "twice"}}],
+            [{"type": "node.patch", "id": "n1", "fields": {"title": "once"}}],
         )
+        with self.assertRaises(urllib.error.HTTPError) as reused:
+            self._ops(
+                board["id"],
+                "same-batch",
+                [{"type": "node.patch", "id": "n1", "fields": {"title": "twice"}}],
+            )
+        self.assertEqual(409, reused.exception.code)
+        self.assertEqual("idempotency_conflict", json.loads(reused.exception.read())["code"])
         second = self._ops(
             board["id"],
             "next-batch",
