@@ -9,7 +9,7 @@ HTML_PATH = ROOT / "site" / "workbench" / "canvas.html"
 CSS_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas.css"
 APP_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas-app.js"
 
-EXPECTED_CSS_SHA256 = "03e48f956f3fc2b25fbe526fe2069b119d7cd4875b6e6435f8bb0838240f4ddb"
+EXPECTED_CSS_SHA256 = "7ed3d72ec3a3c9e520d07bd45ba6967e622e20047a0b07de0b67ef48b99a6655"
 
 
 def normalized_sha256(path: Path) -> str:
@@ -27,6 +27,13 @@ class CanvasAssetExtractionTests(unittest.TestCase):
         self.assertNotRegex(html, r"(?s)<style>.*?</style>")
         self.assertNotRegex(html, r"(?s)<script>\s*/\* 节点生产画布")
         self.assertRegex(html, r'src="canvas/canvas-app\.js\?v=[0-9a-f]{8}"')
+
+    def test_side_toolbar_has_pointer_keyboard_and_reduced_motion_feedback(self):
+        css = CSS_PATH.read_text(encoding="utf-8")
+        self.assertIn(".nc-side-tools:hover,.nc-side-tools:focus-within", css)
+        self.assertIn(".nc-side-tool:hover,.nc-side-tool.on,.nc-side-tool:focus-visible", css)
+        self.assertIn("content:attr(aria-label)", css)
+        self.assertIn("@media (prefers-reduced-motion:reduce)", css)
 
     def test_five_modules_are_versioned_and_loaded_in_exact_order(self):
         html = HTML_PATH.read_text(encoding="utf-8")
