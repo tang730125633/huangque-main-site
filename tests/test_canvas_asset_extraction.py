@@ -9,7 +9,7 @@ HTML_PATH = ROOT / "site" / "workbench" / "canvas.html"
 CSS_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas.css"
 APP_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas-app.js"
 
-EXPECTED_CSS_SHA256 = "be4944037b29204b610229ef24da317a304b5e82be335c4d02e5bd2c2356fed4"
+EXPECTED_CSS_SHA256 = "e17f27b81f7210769084deb021f86913b0c3ee1782289c09fdf82cf420f50faa"
 
 
 def normalized_sha256(path: Path) -> str:
@@ -46,6 +46,16 @@ class CanvasAssetExtractionTests(unittest.TestCase):
         self.assertIn("CANVAS_VIEW_PAD=1200", app)
         self.assertIn("margin:1200px", css)
         self.assertIn("offset=(Object.keys(nodes).length%5)*36", app)
+
+    def test_portable_infinite_canvas_interactions_are_wired(self):
+        html = HTML_PATH.read_text(encoding="utf-8")
+        css = CSS_PATH.read_text(encoding="utf-8")
+        app = APP_PATH.read_text(encoding="utf-8")
+        self.assertIn('id="ncGuideX"', html)
+        self.assertIn(".nc-resize-handle", css)
+        self.assertIn("function connectedNodeMenuItems(", app)
+        self.assertIn("graphApi.resizeNodeRect(", app)
+        self.assertIn("graphApi.alignmentGuides(", app)
 
     def test_five_modules_are_versioned_and_loaded_in_exact_order(self):
         html = HTML_PATH.read_text(encoding="utf-8")

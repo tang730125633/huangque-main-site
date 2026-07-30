@@ -8,7 +8,7 @@
   var canvasExporter=window.HQCanvas&&window.HQCanvas.exporter;
   var canvasStorage=storageApi.createStorage({storage:function(){return window.localStorage;}});
   var apiClient=apiModule.createClient({fetchImpl:window.fetch.bind(window),tokenProvider:tok,AbortControllerImpl:window.AbortController,setTimeoutImpl:setTimeout,clearTimeoutImpl:clearTimeout});
-  var wrap=document.querySelector('.nc-wrap'), inner=document.getElementById('ncInner'), svg=document.getElementById('ncEdges'), canvas=document.getElementById('ncCanvas'), empty=document.getElementById('ncEmpty'), selectionBox=document.getElementById('ncSelectionBox'), selectedRegion=document.getElementById('ncSelectedRegion');
+  var wrap=document.querySelector('.nc-wrap'), inner=document.getElementById('ncInner'), svg=document.getElementById('ncEdges'), canvas=document.getElementById('ncCanvas'), empty=document.getElementById('ncEmpty'), selectionBox=document.getElementById('ncSelectionBox'), selectedRegion=document.getElementById('ncSelectedRegion'), guideX=document.getElementById('ncGuideX'), guideY=document.getElementById('ncGuideY');
   var boardHome=document.getElementById('ncBoardHome'), editorView=document.getElementById('ncEditorView'), boardGrid=document.getElementById('ncBoardGrid'), boardSearch=document.getElementById('ncBoardSearch'), boardSort=document.getElementById('ncBoardSort'), backHomeBtn=document.getElementById('ncBackHome');
   var nodeCountEl=document.getElementById('ncNodeCount'), edgeCountEl=document.getElementById('ncEdgeCount'), runStateEl=document.getElementById('ncRunState');
   var undoBtn=document.getElementById('ncUndo'), redoBtn=document.getElementById('ncRedo'), fullscreenBtn=document.getElementById('ncFullscreen'), zoomLabel=document.getElementById('ncZoomLabel'), map=document.getElementById('ncMap'), mapSvg=document.getElementById('ncMapSvg');
@@ -229,7 +229,7 @@
       edges:stateApi.cloneSnapshot(edges),
       nodes:Object.keys(nodes).map(function(k){
         var n=nodes[k];
-        return {id:n.id,type:n.type,x:n.x,y:n.y,collapsed:n.el?n.el.classList.contains('collapsed'):!!n.collapsed,params:stateApi.cloneSnapshot(n.type==='shortDrama'?normalizeShortDramaNodeParams(n.params):n.params||{}),outputs:shortDramaNodeOutputs(n),image:n.image||null,state:n.el?n.el.getAttribute('data-state')||'':n.state||'',note:n.el?(n.el.querySelector('[data-f="note"]')||{}).textContent||'':n.note||''};
+        return {id:n.id,type:n.type,x:n.x,y:n.y,width:n.width||null,height:n.height||null,collapsed:n.el?n.el.classList.contains('collapsed'):!!n.collapsed,params:stateApi.cloneSnapshot(n.type==='shortDrama'?normalizeShortDramaNodeParams(n.params):n.params||{}),outputs:shortDramaNodeOutputs(n),image:n.image||null,state:n.el?n.el.getAttribute('data-state')||'':n.state||'',note:n.el?(n.el.querySelector('[data-f="note"]')||{}).textContent||'':n.note||''};
       })
     };
   }
@@ -1701,7 +1701,7 @@
     var t=TYPE[type], nextNid=++nid, id=currentBoardScope==='collab'&&collabSync?collabSync.makeNodeId(collabNodeSeed,nextNid):'n'+nextNid;
     if(data&&data.id){ id=data.id; var m=String(id).match(/^n(\d+)$/); if(m) nid=Math.max(nid,parseInt(m[1],10)); }
     var fallback=x==null||y==null?viewportNodePoint():null;
-    var node={ id:id, type:type, x:(x==null?fallback.x:x), y:(y==null?fallback.y:y), collapsed:!!(data&&data.collapsed), params:Object.assign({engine:'nb2',channel:'grok',ratio:'16:9',duration:'5',quality:'hd',title:'',remark:''},(data&&data.params)||{}), outputs:stateApi.cloneSnapshot((data&&data.outputs)||{}), image:(data&&data.image)||null };
+    var node={ id:id, type:type, x:(x==null?fallback.x:x), y:(y==null?fallback.y:y), width:Number(data&&data.width)||0, height:Number(data&&data.height)||0, collapsed:!!(data&&data.collapsed), params:Object.assign({engine:'nb2',channel:'grok',ratio:'16:9',duration:'5',quality:'hd',title:'',remark:''},(data&&data.params)||{}), outputs:stateApi.cloneSnapshot((data&&data.outputs)||{}), image:(data&&data.image)||null };
     if(type==='shortDrama') node.params=normalizeShortDramaNodeParams(node.params);
     var el=document.createElement('div'); el.className='nc-node'+(type==='shortDrama'?' nc-node-short-drama':''); el.style.left=node.x+'px'; el.style.top=node.y+'px';
     var body='';
@@ -1724,6 +1724,8 @@
       +'<button class="nc-go nc-short-drama-open" type="button" data-f="openShortDrama">打开短剧工作区</button>';
     el.innerHTML='<div class="nc-head" data-f="head"><span style="display:flex;align-items:center;gap:7px;min-width:0;"><span class="dot" style="background:'+t.color+'"></span><span class="nc-node-title" data-f="headTitle">'+escapeHtml(node.params.title||t.name)+'</span><span class="nc-remark-mark" data-f="remarkMark" title="有备注">注</span></span><span class="nc-actions"><span class="nc-fold" data-f="fold" title="折叠/展开">−</span><span class="nc-x" data-f="del">×</span></span></div>'
       +'<div class="nc-body">'+body+'<div class="nc-note" data-f="note"></div></div>';
+    ['n','ne','e','se','s','sw','w','nw'].forEach(function(direction){ var handle=document.createElement('button'); handle.type='button'; handle.className='nc-resize-handle nc-resize-'+direction; handle.setAttribute('data-resize',direction); handle.setAttribute('aria-label','调整节点大小'); el.appendChild(handle); });
+    if(node.width&&node.height){ el.style.width=node.width+'px'; el.style.height=node.height+'px'; el.classList.add('resized'); }
     inner.appendChild(el); node.el=el;
     // ports
     (t.ins||[]).forEach(function(p,i){ var d=document.createElement('div'); d.className='nc-port pin'+(p==='image'?' img':''); d.setAttribute('data-kind','in'); d.setAttribute('data-port',p); d.title='输入:'+p; d.style.top=(46+i*22)+'px'; el.appendChild(d); });
@@ -2168,6 +2170,18 @@
       {key:'短',label:'短剧',title:'创建短剧项目',run:function(){ addAt('shortDrama',pt); }}
     ];
   }
+  function connectedNodeMenuItems(from,pt){
+    var compatible=from&&from.port==='prompt'?[['gen','作图'],['video','视频']]:from&&from.port==='image'?[['reverse','反推'],['gen','作图'],['video','视频']]:[];
+    return compatible.map(function(item){
+      return {key:item[1].slice(0,1),label:'创建'+item[1]+'节点并连线',run:function(){
+        pushUndo();
+        var node=addNode(item[0],Math.max(0,pt.x+28),Math.max(0,pt.y-48));
+        connectEdge(from,{node:node.id,port:from.port});
+        selectNode(node);
+        updateState('已创建并连线');
+      }};
+    });
+  }
   function stopUiEvent(e){
     if(!e) return;
     e.stopPropagation();
@@ -2576,6 +2590,17 @@
   }
 
   // ---------- 节点交互 ----------
+  function clearAlignmentGuides(){
+    if(guideX) guideX.style.display='none';
+    if(guideY) guideY.style.display='none';
+  }
+  function paintAlignmentGuides(movingIds){
+    if(!graphApi||!graphApi.alignmentGuides) return;
+    var list=Object.keys(nodes).map(function(id){ var node=nodes[id],rect=nodeRect(node); return {id:id,x:node.x,y:node.y,width:rect.w,height:rect.h}; });
+    var guides=graphApi.alignmentGuides(list,movingIds,6/Math.max(zoom,.15));
+    if(guideX){ guideX.style.display=guides.x==null?'none':'block'; if(guides.x!=null) guideX.style.left=guides.x+'px'; }
+    if(guideY){ guideY.style.display=guides.y==null?'none':'block'; if(guides.y!=null) guideY.style.top=guides.y+'px'; }
+  }
   function wireNode(node){
     var el=node.el, head=el.querySelector('[data-f="head"]');
     el.setAttribute('data-node-id',node.id);
@@ -2602,9 +2627,31 @@
         });
         redraw();
         updateSelectedRegion();
+        paintAlignmentGuides(groupIds);
       }
-      function up(){ if(moved) pushUndo(before); window.removeEventListener('pointermove',mv); window.removeEventListener('pointerup',up); }
+      function up(){ clearAlignmentGuides(); if(moved) pushUndo(before); window.removeEventListener('pointermove',mv); window.removeEventListener('pointerup',up); }
       window.addEventListener('pointermove',mv); window.addEventListener('pointerup',up);
+    });
+    el.querySelectorAll('[data-resize]').forEach(function(handle){
+      handle.addEventListener('pointerdown',function(e){
+        if(!canEditCanvas()||!graphApi||!graphApi.resizeNodeRect) return;
+        e.preventDefault(); e.stopPropagation();
+        selectNode(node);
+        var direction=handle.getAttribute('data-resize'),sx=e.clientX,sy=e.clientY,moved=false,before=snapshot();
+        var start={x:node.x,y:node.y,width:el.offsetWidth||250,height:el.offsetHeight||160};
+        function mv(ev){
+          var rect=graphApi.resizeNodeRect(start,direction,(ev.clientX-sx)/zoom,(ev.clientY-sy)/zoom,{minWidth:220,maxWidth:520,minHeight:80,maxHeight:720});
+          if(Math.abs(ev.clientX-sx)+Math.abs(ev.clientY-sy)>2) moved=true;
+          node.x=Math.max(0,rect.x); node.y=Math.max(0,rect.y); node.width=rect.width; node.height=rect.height;
+          el.style.left=node.x+'px'; el.style.top=node.y+'px'; el.style.width=node.width+'px'; el.style.height=node.height+'px'; el.classList.add('resized');
+          ensureNodeVisibleBounds(node); redraw(); updateSelectedRegion();
+        }
+        function up(){
+          window.removeEventListener('pointermove',mv); window.removeEventListener('pointerup',up);
+          if(moved){ pushUndo(before); updateState('已调整节点大小'); }
+        }
+        window.addEventListener('pointermove',mv); window.addEventListener('pointerup',up);
+      });
     });
     el.querySelector('[data-f="del"]').onclick=function(){ if(!canEditCanvas()) return; delNode(node.id); };
     el.querySelector('[data-f="fold"]').onclick=function(e){ e.stopPropagation(); toggleCollapsed(node); };
@@ -2658,7 +2705,11 @@
           if(wasActive){
             var target=inputPortAt(upEv,port);
             if(target){ pushUndo(); connectEdge(dragPort.from,target); }
-            else updateState('连线已取消');
+            else{
+              var from=dragPort.from,pt=innerPoint(upEv),items=connectedNodeMenuItems(from,pt);
+              if(items.length){ showMenu(items,upEv.clientX,upEv.clientY); updateState('选择要创建的下游节点'); }
+              else updateState('当前输出暂无可连接的节点');
+            }
           }
           dragPort=null; redraw(); clearConnectHints();
           setTimeout(function(){ suppressPortClick=false; },0);
@@ -2870,9 +2921,11 @@
         });
         redraw();
         updateSelectedRegion();
+        paintAlignmentGuides(ids);
       }
       function up(){
         if(moved) pushUndo(before);
+        clearAlignmentGuides();
         selectedRegion.classList.remove('dragging');
         window.removeEventListener('pointermove',mv);
         window.removeEventListener('pointerup',up);
