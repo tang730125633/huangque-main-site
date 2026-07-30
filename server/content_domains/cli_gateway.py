@@ -2,10 +2,42 @@
 
 import hmac
 
+from . import cli_uploads
+
 
 def _internal_auth(handler, secret):
     supplied = handler.headers.get("X-HQ-Internal-Token") or ""
     return bool(secret) and hmac.compare_digest(supplied, secret)
+
+
+def handle_image_upload(handler, path, verify, must_change_password, secret):
+    if path != "/api/gen/cli/image-upload":
+        return False
+    if not _internal_auth(handler, secret):
+        handler._send(403, {"detail": "forbidden"})
+        return True
+    user = verify(handler._token())
+    if not user:
+        handler._send(401, {"detail": "未登录或登录已过期"})
+        return True
+    if must_change_password(user):
+        handler._send(403, {"detail": "请先修改初始密码"})
+        return True
+    try:
+        if handler.headers.get("Transfer-Encoding"):
+            raise ValueError("图片上传必须提供 Content-Length")
+        length = int(handler.headers.get("Content-Length") or 0)
+        content_type = (handler.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        result = cli_uploads.store_image(
+            handler.rfile, length, user["username"], content_type,
+            handler.headers.get("X-HQ-Image-SHA256"),
+        )
+        handler._send(200, result)
+    except ValueError as exc:
+        handler._send(400, {"detail": str(exc)[:220], "code": "invalid_image_upload"})
+    except OSError:
+        handler._send(500, {"detail": "图片暂时无法保存", "code": "image_upload_failed"})
+    return True
 
 
 def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
@@ -32,6 +64,7 @@ def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
         kind, payload = request["kind"], request["payload"]
         if kind == "image":
             from . import image
+            payload = cli_uploads.expand_image_payload(payload, user["username"])
             payload = image.validate_image_payload(payload)
             payload.pop("short_drama_references", None)
         elif kind == "xiaole_video":

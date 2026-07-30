@@ -27,8 +27,9 @@ EXIT_API = 10
 EXIT_CONFIRMATION = 11
 MAX_INPUT_BYTES = 65536
 LOGIN_SCOPES = [
-    "profile:read", "ip12:read", "ip12:write", "prompt:optimize", "canvas:read",
-    "canvas:write", "tasks:read", "assets:read", "assets:write", "generation:quote", "generation:submit",
+    "profile:read", "ip12:read", "ip12:write", "ip12:chat", "prompt:optimize", "canvas:read",
+    "canvas:write", "tasks:read", "assets:read", "assets:write", "assets:upload",
+    "generation:quote", "generation:submit",
 ]
 
 
@@ -172,11 +173,7 @@ def _doctor(environment):
     return checks
 
 
-def _request(path, method="GET", body=None, token="", timeout=30, accepted=None):
-    try:
-        status, payload = client.request_json(path, method=method, body=body, token=token, timeout=timeout)
-    except (client.NetworkError, ValueError) as exc:
-        raise CliError(EXIT_NETWORK, "network_error", "cannot reach Huangque main site: %s" % exc)
+def _checked_response(status, payload, accepted=None):
     accepted = accepted or range(200, 300)
     if status not in accepted:
         detail = payload.get("detail") if isinstance(payload, dict) else "request failed"
@@ -186,6 +183,14 @@ def _request(path, method="GET", body=None, token="", timeout=30, accepted=None)
         exit_code = EXIT_CONFIRMATION if status == 409 else EXIT_API
         raise CliError(exit_code, str(code or "api_error"), str(detail), {"http_status": status})
     return payload
+
+
+def _request(path, method="GET", body=None, token="", timeout=30, accepted=None):
+    try:
+        status, payload = client.request_json(path, method=method, body=body, token=token, timeout=timeout)
+    except (client.NetworkError, ValueError) as exc:
+        raise CliError(EXIT_NETWORK, "network_error", "cannot reach Huangque main site: %s" % exc)
+    return _checked_response(status, payload, accepted)
 
 
 def _credentials():
@@ -267,6 +272,7 @@ def build_parser():
     run.add_argument("--open-browser", action="store_true")
     run.add_argument("--confirm", action="store_true")
     run.add_argument("--quote-token")
+    run.add_argument("--file")
     doctor = subcommands.add_parser("doctor", add_help=False, allow_abbrev=False)
     _add_common(doctor, "show_command_help")
     doctor.add_argument("--environment", choices=sorted(ENVIRONMENTS), default="main")
@@ -321,14 +327,40 @@ def main(argv=None):
             if capability is None:
                 raise CliError(EXIT_UNKNOWN_CAPABILITY, "unknown_capability", "unknown capability: %s" % args.id)
             if args.command == "describe":
+                next_action = ("Run `hq run %s --file /absolute/path --confirm --json`." % args.id
+                               if capability["kind"] == "upload" else
+                               "Use only this input_schema with `hq run %s --input @file --json`." % args.id)
                 _write(sys.stdout, _envelope("hq.describe/v1", capability=capability,
-                    next_actions=["Use only this input_schema with `hq run %s --input @file --json`." % args.id]))
+                    next_actions=[next_action]))
                 return 0
             if not capability["runnable"]:
                 raise CliError(EXIT_UNAVAILABLE, "unavailable_capability", "capability is unavailable: %s" % args.id)
-            payload = _load_json(args.input)
-            _validate(capability, payload)
-            if capability["kind"] == "navigation":
+            is_upload = capability["kind"] == "upload"
+            if is_upload:
+                if args.input:
+                    raise CliError(EXIT_USAGE, "usage_error", "upload capabilities do not accept --input")
+                payload = {}
+            else:
+                if args.file:
+                    raise CliError(EXIT_USAGE, "usage_error", "only upload capabilities accept --file")
+                payload = _load_json(args.input)
+                _validate(capability, payload)
+            if is_upload:
+                if args.open_browser or args.quote_token:
+                    raise CliError(EXIT_USAGE, "usage_error", "image-upload does not accept browser or quote options")
+                if not args.confirm:
+                    raise CliError(EXIT_CONFIRMATION, "confirmation_required", "re-run this upload with --confirm")
+                if not args.file:
+                    raise CliError(EXIT_USAGE, "usage_error", "image-upload requires --file /absolute/path")
+                credentials = _credentials()
+                try:
+                    status, upload = client.upload_image(args.file, credentials["access_token"])
+                except ValueError as exc:
+                    raise CliError(EXIT_INPUT, "invalid_upload_file", "image upload failed: %s" % exc)
+                except client.NetworkError as exc:
+                    raise CliError(EXIT_NETWORK, "upload_error", "image upload failed: %s" % exc)
+                result = _checked_response(status, upload)
+            elif capability["kind"] == "navigation":
                 if args.confirm or args.quote_token:
                     raise CliError(EXIT_USAGE, "usage_error", "navigation does not accept --confirm or --quote-token")
                 url = resolve_url(capability, args.environment, payload)
@@ -354,7 +386,8 @@ def main(argv=None):
                 if args.quote_token:
                     request_body["quote_token"] = args.quote_token
                 result = _request("/api/auth/cli/action", "POST", request_body,
-                                  credentials["access_token"], timeout=120)
+                                  credentials["access_token"],
+                                  timeout=310 if capability["id"] == "ip12-message" else 120)
             next_actions = list(capability["next_actions"])
             if capability["side_effect"] == "paid" and not args.confirm:
                 next_actions = ["Review cost and points, then re-run the identical input with `--confirm --quote-token <quote_token>`. "]

@@ -3395,6 +3395,50 @@ class H(BaseHTTPRequestHandler):
             c = db()
             c.execute("DELETE FROM tokens WHERE token=?", (token,))
             c.commit(); c.close()
+
+    def _cli_image_upload(self):
+        auth = self._cli_user()
+        if not auth:
+            return self._cli_send(401, {"detail": "CLI 未登录或授权已过期", "code": "cli_unauthorized"})
+        row, scopes = auth
+        if "assets:upload" not in scopes:
+            return self._cli_send(403, {"detail": "当前 CLI 授权缺少权限：assets:upload", "code": "insufficient_scope"})
+        if (self.headers.get("X-HQ-Confirm") or "").strip().lower() != "true":
+            return self._cli_send(409, {"detail": "上传本地图片需要显式确认", "code": "confirmation_required"})
+        if self.headers.get("Transfer-Encoding"):
+            return self._cli_send(400, {"detail": "图片上传必须提供 Content-Length", "code": "invalid_image_upload"})
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            length = 0
+        if length <= 0 or length > hq_cli_api.IMAGE_UPLOAD_MAX_BYTES:
+            return self._cli_send(413, {"detail": "图片大小必须在 1B 到 10MB 之间", "code": "invalid_image_upload"})
+        content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if content_type not in {"image/jpeg", "image/png", "image/webp"}:
+            return self._cli_send(400, {"detail": "只支持 PNG / JPG / WebP", "code": "invalid_image_upload"})
+        digest = (self.headers.get("X-HQ-Image-SHA256") or "").strip().lower()
+        if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+            return self._cli_send(400, {"detail": "缺少有效的图片摘要", "code": "invalid_image_upload"})
+        if not hq_cli_api.IMAGE_UPLOAD_SLOTS.acquire(blocking=False):
+            return self._cli_send(429, {"detail": "图片上传繁忙，请稍后重试", "code": "upload_busy"})
+        token = ""
+        try:
+            token = issue_token(row["username"], ttl=hq_cli_api.BRIDGE_TOKEN_TTL)
+            status, result = hq_cli_api.proxy_image_upload(
+                self.rfile, length, token, INTERNAL_TOKEN, content_type, digest,
+            )
+        except hq_cli_api.CLIAPIError as exc:
+            status, result = exc.status, {"detail": exc.detail, "code": exc.code}
+        finally:
+            try:
+                if token:
+                    connection = db()
+                    connection.execute("DELETE FROM tokens WHERE token=?", (token,))
+                    connection.commit(); connection.close()
+            finally:
+                hq_cli_api.IMAGE_UPLOAD_SLOTS.release()
+        return self._cli_send(status, result)
+
     def _cli_action(self, body):
         auth = self._cli_user()
         if not auth:
@@ -3419,7 +3463,7 @@ class H(BaseHTTPRequestHandler):
             plan = hq_cli_api.action_plan(action, input_body)
             if plan["scope"] not in scopes:
                 raise hq_cli_api.CLIAPIError(403, "当前 CLI 授权缺少权限：" + plan["scope"], "insufficient_scope")
-            if action in {"ip12-create", "prompt-optimize", "canvas-create", "asset-favorite", "asset-tags"} and not confirm:
+            if action in {"ip12-create", "ip12-message", "prompt-optimize", "canvas-create", "asset-favorite", "asset-tags"} and not confirm:
                 raise hq_cli_api.CLIAPIError(409, "该操作需要显式确认", "confirmation_required")
             if plan["kind"] == "account":
                 return self._cli_send(200, {"user": self._cli_public_user(row), "scopes": list(scopes),
@@ -3479,6 +3523,38 @@ class H(BaseHTTPRequestHandler):
                     "points": result.get("points"), "expires_in": hq_cli_api.QUOTE_TTL,
                     "confirmation_required": True,
                 })
+            if action == "ip12-message":
+                claim, previous_status = hq_cli_api.begin_action_request(
+                    db, row["username"], action, plan["request_id"], plan["project_id"], plan["request_hash"],
+                )
+                if claim == "conflict":
+                    raise hq_cli_api.CLIAPIError(409, "request_id 已绑定其他输入", "idempotency_conflict")
+                if claim == "in_progress":
+                    raise hq_cli_api.CLIAPIError(409, "该轮对话仍在处理中，请使用相同 request_id 稍后查询", "idempotency_in_progress")
+                if claim == "uncertain":
+                    raise hq_cli_api.CLIAPIError(409, "上次结果未知，请先读取项目再决定是否发起新一轮", "result_unknown")
+                if claim == "busy":
+                    raise hq_cli_api.CLIAPIError(429, "该项目已有一轮 CLI 对话正在处理", "project_busy")
+                if claim == "rate_limited":
+                    raise hq_cli_api.CLIAPIError(429, "IP12 CLI 对话请求过于频繁，请稍后重试", "rate_limited")
+                if claim == "completed":
+                    if previous_status and 200 <= int(previous_status) < 300:
+                        return self._cli_send(200, {
+                            "ok": True, "replayed": True, "project_id": plan["project_id"],
+                            "detail": "该轮已处理；请读取项目取得最新回复和进度。",
+                        })
+                    raise hq_cli_api.CLIAPIError(409, "该轮此前已处理但未成功，请先读取项目", "previous_attempt_completed")
+                try:
+                    status, result = self._cli_proxy(plan, row["username"])
+                except Exception:
+                    hq_cli_api.finish_action_request(
+                        db, row["username"], action, plan["request_id"], uncertain=True,
+                    )
+                    raise
+                hq_cli_api.finish_action_request(
+                    db, row["username"], action, plan["request_id"], http_status=status,
+                )
+                return self._cli_send(status, result)
             status, result = self._cli_proxy(plan, row["username"])
             if 200 <= status < 300 and action == "ip12-create" and isinstance(result, dict):
                 project = result.get("project") or {}
@@ -3581,6 +3657,8 @@ class H(BaseHTTPRequestHandler):
             token = bearer_token(self.headers.get("Authorization"))
             hq_cli_api.revoke(db, token)
             return self._cli_send(200, {"ok": True})
+        if p == "/api/auth/cli/image-upload":
+            return self._cli_image_upload()
         if p == "/api/auth/cli/action":
             if self._content_length_exceeds(128 * 1024):
                 return self._cli_send(413, {"detail": "CLI 输入不能超过 128 KiB"})

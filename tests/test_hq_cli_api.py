@@ -1,4 +1,5 @@
 import http.cookiejar
+import hashlib
 import importlib
 import json
 import os
@@ -49,6 +50,23 @@ class HQCLIAPITests(unittest.TestCase):
         request = urllib.request.Request(self.base + path, data=data, headers=headers,
                                          method=method or ("POST" if payload is not None else "GET"))
         opener = browser or urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(request, timeout=3) as response:
+                return response.getcode(), json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read())
+
+    def _raw_request(self, path, raw, token="", content_type="image/png", confirm=True):
+        headers = {
+            "Content-Type": content_type,
+            "X-HQ-Image-SHA256": hashlib.sha256(raw).hexdigest(),
+        }
+        if token:
+            headers["Authorization"] = "Bearer " + token
+        if confirm:
+            headers["X-HQ-Confirm"] = "true"
+        request = urllib.request.Request(self.base + path, data=raw, headers=headers, method="POST")
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
             with opener.open(request, timeout=3) as response:
                 return response.getcode(), json.loads(response.read())
@@ -191,6 +209,51 @@ class HQCLIAPITests(unittest.TestCase):
                 "SELECT COUNT(*) FROM tokens WHERE token=?", (captured["web_token"],)
             ).fetchone()[0])
 
+    def test_image_upload_requires_own_scope_confirmation_and_streams_raw_bytes(self):
+        raw = b"\x89PNG\r\n\x1a\n" + b"private-image"
+        denied = self._token(["assets:read"])
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_image_upload") as proxy:
+            status, payload = self._raw_request("/api/auth/cli/image-upload", raw, token=denied)
+        self.assertEqual(403, status)
+        self.assertEqual("insufficient_scope", payload["code"])
+        proxy.assert_not_called()
+
+        token = self._token(["assets:upload"])
+        status, payload = self._raw_request(
+            "/api/auth/cli/image-upload", raw, token=token, confirm=False,
+        )
+        self.assertEqual(409, status)
+        self.assertEqual("confirmation_required", payload["code"])
+
+        busy_slots = mock.Mock()
+        busy_slots.acquire.return_value = False
+        with mock.patch.object(self.auth.hq_cli_api, "IMAGE_UPLOAD_SLOTS", busy_slots):
+            status, payload = self._raw_request("/api/auth/cli/image-upload", raw, token=token)
+        self.assertEqual(429, status)
+        self.assertEqual("upload_busy", payload["code"])
+        busy_slots.release.assert_not_called()
+
+        captured = {}
+
+        def fake_upload(stream, length, web_token, internal_token, content_type, digest):
+            captured.update(
+                raw=stream.read(length), web_token=web_token, internal_token=internal_token,
+                content_type=content_type, digest=digest,
+            )
+            return 200, {"upload_id": "img_" + "a" * 32, "sha256": digest}
+
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_image_upload", side_effect=fake_upload):
+            status, payload = self._raw_request("/api/auth/cli/image-upload", raw, token=token)
+        self.assertEqual(200, status, payload)
+        self.assertEqual(raw, captured["raw"])
+        self.assertEqual("image/png", captured["content_type"])
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), captured["digest"])
+        self.assertEqual(self.auth.INTERNAL_TOKEN, captured["internal_token"])
+        with sqlite3.connect(self.auth.DB) as connection:
+            self.assertEqual(0, connection.execute(
+                "SELECT COUNT(*) FROM tokens WHERE token=?", (captured["web_token"],)
+            ).fetchone()[0])
+
     def test_canvas_create_builds_one_safe_text_node(self):
         token = self._token(["canvas:write"])
         status, payload = self._request("/api/auth/cli/action", {
@@ -228,11 +291,28 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual("24", submitted[0]["headers"]["X-HQ-Expected-Cost"])
         self.assertTrue(all(plan["internal"] for plan in submitted))
 
+    def test_image_generation_accepts_only_valid_upload_id_combinations(self):
+        upload_id = "img_" + "a" * 32
+        plan = self.auth.hq_cli_api.action_plan("image-generate", {
+            "prompt": "keep the person", "provider": "openai", "image_upload_id": upload_id,
+        })
+        self.assertEqual(upload_id, plan["payload"]["image_upload_id"])
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan("image-generate", {
+                "prompt": "bad", "provider": "openai", "reference_upload_ids": [upload_id],
+            })
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan("image-generate", {
+                "prompt": "bad", "provider": "seedream", "image_upload_id": upload_id,
+                "mask_upload_id": "img_" + "b" * 32,
+            })
+
     def test_server_requires_confirmation_for_external_ai_and_writes(self):
-        token = self._token(["prompt:optimize", "ip12:write", "canvas:write", "assets:write"])
+        token = self._token(["prompt:optimize", "ip12:write", "ip12:chat", "canvas:write", "assets:write"])
         cases = [
             ("prompt-optimize", {"prompt": "portrait", "kind": "image"}),
             ("ip12-create", {"title": "my project"}),
+            ("ip12-message", {"project_id": "ip_1", "message": "我的客户是餐饮老板", "request_id": "turn-001"}),
             ("canvas-create", {"name": "my board"}),
             ("asset-tags", {"kind": "image", "key": "asset-1", "tags": ["客户案例"]}),
         ]
@@ -244,6 +324,85 @@ class HQCLIAPITests(unittest.TestCase):
                 self.assertEqual(409, status)
                 self.assertEqual("confirmation_required", payload["code"])
         proxy.assert_not_called()
+
+    def test_ip12_message_has_separate_scope_and_fixed_non_streaming_proxy(self):
+        input_body = {"project_id": "ip_1", "message": "我的客户是餐饮老板", "request_id": "turn-001"}
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json") as proxy:
+            token = self._token(["ip12:write"])
+            status, payload = self._request("/api/auth/cli/action", {
+                "action": "ip12-message", "input": input_body, "confirm": True,
+            }, token=token)
+            self.assertEqual(403, status)
+            self.assertEqual("insufficient_scope", payload["code"])
+            proxy.assert_not_called()
+
+            token = self._token(["ip12:chat"])
+            proxy.return_value = (200, {"ok": True, "assistant": "继续回答"})
+            status, payload = self._request("/api/auth/cli/action", {
+                "action": "ip12-message", "input": input_body, "confirm": True,
+            }, token=token)
+        self.assertEqual(200, status)
+        self.assertEqual("继续回答", payload["assistant"])
+        plan = proxy.call_args.args[0]
+        self.assertEqual((self.auth.hq_cli_api.HERMES_BASE, "/api/chat-complete", "POST", 290),
+                         (plan["base"], plan["path"], plan["method"], plan["timeout"]))
+        self.assertEqual({"conversation_id": "ip_1", "message": "我的客户是餐饮老板"}, plan["body"])
+        self.assertEqual("turn-001", plan["headers"]["Idempotency-Key"])
+
+        status, replay = self._request("/api/auth/cli/action", {
+            "action": "ip12-message", "input": input_body, "confirm": True,
+        }, token=token)
+        self.assertEqual(200, status)
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(1, proxy.call_count)
+        changed = dict(input_body, message="另一条回答")
+        status, conflict = self._request("/api/auth/cli/action", {
+            "action": "ip12-message", "input": changed, "confirm": True,
+        }, token=token)
+        self.assertEqual(409, status)
+        self.assertEqual("idempotency_conflict", conflict["code"])
+
+    def test_ip12_message_blocks_same_project_inflight_and_limits_rate(self):
+        action = "ip12-message"
+        claim = self.auth.hq_cli_api.begin_action_request(
+            self.auth.db, "alice", action, "turn-1", "ip_1", "hash-1", now=100,
+        )
+        self.assertEqual(("new", None), claim)
+        self.assertEqual(("in_progress", None), self.auth.hq_cli_api.begin_action_request(
+            self.auth.db, "alice", action, "turn-1", "ip_1", "hash-1", now=101,
+        ))
+        self.assertEqual(("busy", None), self.auth.hq_cli_api.begin_action_request(
+            self.auth.db, "alice", action, "turn-2", "ip_1", "hash-2", now=102,
+        ))
+        self.auth.hq_cli_api.finish_action_request(self.auth.db, "alice", action, "turn-1", 200, now=103)
+        for number in range(2, 7):
+            self.assertEqual(("new", None), self.auth.hq_cli_api.begin_action_request(
+                self.auth.db, "alice", action, "turn-%s" % number, "ip_%s" % number,
+                "hash-%s" % number, now=104 + number,
+            ))
+            self.auth.hq_cli_api.finish_action_request(
+                self.auth.db, "alice", action, "turn-%s" % number, 200, now=105 + number,
+            )
+        self.assertEqual(("rate_limited", None), self.auth.hq_cli_api.begin_action_request(
+            self.auth.db, "alice", action, "turn-7", "ip_7", "hash-7", now=112,
+        ))
+
+    def test_ip12_message_uncertain_result_blocks_fresh_project_request(self):
+        token = self._token(["ip12:chat"])
+        first = {"project_id": "ip_1", "message": "第一轮回答", "request_id": "turn-001"}
+        second = {"project_id": "ip_1", "message": "第二轮回答", "request_id": "turn-002"}
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=TimeoutError("lost response")) as proxy:
+            status, payload = self._request("/api/auth/cli/action", {
+                "action": "ip12-message", "input": first, "confirm": True,
+            }, token=token)
+            self.assertEqual(500, status)
+            self.assertEqual("cli_internal_error", payload["code"])
+            status, payload = self._request("/api/auth/cli/action", {
+                "action": "ip12-message", "input": second, "confirm": True,
+            }, token=token)
+        self.assertEqual(409, status)
+        self.assertEqual("result_unknown", payload["code"])
+        self.assertEqual(1, proxy.call_count)
 
     def test_asset_offset_reaches_every_backend(self):
         for kind in ("image", "audio", "video"):
