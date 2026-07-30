@@ -61,6 +61,16 @@ test('compact labels are bound to a floating hover and focus tooltip', () => {
   assert.match(shell, /bindNavTooltips\(aside\)/);
 });
 
+test('shared navigation animates from pointer position with reduced-motion fallback', () => {
+  assert.match(shell, /function bindNavMotion\(aside\)/);
+  assert.match(shell, /--hq-nav-x/);
+  assert.match(shell, /pointermove/);
+  assert.match(shell, /hq-nav-draw/);
+  assert.match(shell, /hq-nav-seed-a/);
+  assert.match(shell, /bindNavMotion\(aside\)/);
+  assert.match(shell, /prefers-reduced-motion:reduce/);
+});
+
 test('compact mode hides the logout overlay but keeps expanded logout', () => {
   const navDisplayMode = readNavDisplayMode();
   assert.match(shell, /class="hq-user-logout" data-logout="1"/);
