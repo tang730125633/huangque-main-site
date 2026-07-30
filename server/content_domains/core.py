@@ -1547,8 +1547,6 @@ class H(BaseHTTPRequestHandler):
                 elif kind == "canvas_agent":
                     from . import canvas_agent as canvas_agent_domain
                     body = canvas_agent_domain.validate_payload(body, _short_drama_canvas_access(self))
-                    if body.get("quoted_cost") != points_domain.cost_of(kind, body):
-                        raise ValueError("画布 Agent 价格已变化，请重新报价")
                 elif kind == "image":
                     from . import image as image_domain
                     body = image_domain.validate_image_payload(body)
@@ -1591,6 +1589,8 @@ class H(BaseHTTPRequestHandler):
                 return self._send(503, {"detail": blocked, "code": "upstream_exhausted", "retry_after_ms": 60000})
             is_short_drama = kind == "copy" and isinstance(body, dict) and body.get("format") == "short_drama"
             cost = points_domain.cost_of(kind, body) if not is_short_drama and not is_still_route else None
+            if kind == "canvas_agent" and body.get("quoted_cost") != cost:
+                return self._send(400, {"detail": "画布 Agent 价格已变化，请重新报价"})
             if cli_gateway.reject_changed_cost(self, cost, AUTH_INTERNAL_TOKEN): return
             with _submission_lock:
                 if (is_still_route and is_shutting_down()
