@@ -80,7 +80,7 @@ map_path() {
   local path="$1" rest unit
   validate_repo_path "$path" || return 1
   case "$path" in
-    server/invites.py|server/wxpay.py|server/wechat_subscribe.py|server/wechat_virtual_pay.py|server/sync_virtual_pay_goods.py)
+    server/hq_cli_api.py|server/invites.py|server/wxpay.py|server/wechat_subscribe.py|server/wechat_virtual_pay.py|server/sync_virtual_pay_goods.py)
       printf '10|/home/ubuntu/auth-service/%s|auth|0\n' "${path#server/}" ;;
     server/auth_server.py)
       printf '30|/home/ubuntu/auth-service/auth_server.py|auth|0\n' ;;

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>授权 HQ CLI · 黄雀 AI</title>
+  <link rel="icon" href="../assets/cloud/logo-bird.png">
+  <link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
+  <style>
+    :root{color-scheme:dark;--bg:#070b13;--panel:#0d1320;--line:rgba(231,178,76,.22);--gold:#e7b24c;--text:#eaf1fa;--dim:#94a4bb;--danger:#ff6b78}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 50% 0,rgba(231,178,76,.14),transparent 38%),var(--bg);color:var(--text);font-family:"HQ Sans",system-ui,-apple-system,sans-serif}
+    main{width:min(620px,calc(100% - 32px));margin:0 auto;padding:48px 0}.brand{display:flex;align-items:center;gap:10px;color:var(--gold);font-weight:750}.brand img{width:30px;height:30px}
+    .card{margin-top:24px;padding:clamp(22px,5vw,36px);border:1px solid var(--line);border-radius:22px;background:linear-gradient(160deg,rgba(28,23,13,.46),rgba(13,19,32,.94));box-shadow:0 28px 80px rgba(0,0,0,.45)}
+    h1{margin:0;font-size:clamp(24px,5vw,34px)}.lead{margin:10px 0 0;color:var(--dim);line-height:1.7}.code{margin:24px 0 8px;font:700 26px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.12em;color:var(--gold)}
+    .meta{color:var(--dim);font-size:14px}.meta b{color:var(--text)}ul{list-style:none;margin:22px 0;padding:0;border-top:1px solid rgba(148,164,187,.12)}li{padding:13px 0;border-bottom:1px solid rgba(148,164,187,.12)}li b{display:block;font-size:14px}li span{display:block;margin-top:4px;color:var(--dim);font-size:13px;line-height:1.5}
+    .actions{display:flex;gap:12px;margin-top:24px}button{min-height:46px;padding:0 20px;border-radius:11px;border:1px solid var(--line);font:650 14px inherit;cursor:pointer}button:focus-visible{outline:3px solid rgba(231,178,76,.4);outline-offset:2px}.approve{flex:1;background:linear-gradient(135deg,#f4cd72,var(--gold));color:#171006}.deny{background:transparent;color:var(--dim)}button:disabled{cursor:not-allowed;opacity:.5}
+    .status{min-height:24px;margin-top:18px;color:var(--dim);line-height:1.6}.status.error{color:var(--danger)}.hidden{display:none}@media(max-width:520px){main{padding:24px 0}.actions{flex-direction:column}.deny{order:2}}
+  </style>
+</head>
+<body>
+<main>
+  <a class="brand" href="/workbench/inspiration" aria-label="返回黄雀 AI 工作台"><img src="../assets/cloud/logo-bird.png" alt="">黄雀 AI</a>
+  <section class="card" aria-labelledby="title">
+    <h1 id="title">授权 HQ CLI</h1>
+    <p class="lead">只授权下面列出的黄雀主站能力。CLI 不会获得你的网页登录 Cookie 或密码。</p>
+    <div class="code" id="code">----</div>
+    <div class="meta" id="meta">正在核对账号与授权请求…</div>
+    <ul id="scopes" class="hidden" aria-label="申请的权限"></ul>
+    <div class="actions hidden" id="actions">
+      <button class="deny" id="deny" type="button">拒绝</button>
+      <button class="approve" id="approve" type="button">同意授权</button>
+    </div>
+    <div class="status" id="status" role="status" aria-live="polite"></div>
+  </section>
+</main>
+<script>
+(function(){
+  "use strict";
+  var params=new URLSearchParams(location.search);
+  var userCode=String(params.get("user_code")||"").trim().toUpperCase();
+  var codeEl=document.getElementById("code"),meta=document.getElementById("meta"),scopes=document.getElementById("scopes");
+  var actions=document.getElementById("actions"),statusEl=document.getElementById("status"),approve=document.getElementById("approve"),deny=document.getElementById("deny");
+  codeEl.textContent=userCode||"----";
+  function message(text,error){statusEl.textContent=text;statusEl.className="status"+(error?" error":"");}
+  function post(path,body){return fetch(path,{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(function(r){return r.json().catch(function(){return {detail:"服务器返回无效响应"};}).then(function(d){return {ok:r.ok,status:r.status,data:d};});});}
+  function login(){var next="/workbench/device?user_code="+encodeURIComponent(userCode);location.replace("/login?next="+encodeURIComponent(next));}
+  function decide(value){approve.disabled=deny.disabled=true;message(value?"正在授权…":"正在拒绝…");post("/api/auth/cli/device/approve",{user_code:userCode,approve:value}).then(function(result){if(result.status===401){login();return;}if(!result.ok)throw new Error(result.data.detail||"操作失败");actions.classList.add("hidden");message(value?"授权成功。现在可以回到终端继续使用 HQ CLI。":"已拒绝授权。你可以关闭此页面。");}).catch(function(err){approve.disabled=deny.disabled=false;message(err.message||"操作失败",true);});}
+  if(!/^[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(userCode)){meta.textContent="";message("授权码格式不正确，请从 HQ CLI 重新发起登录。",true);return;}
+  fetch("/api/auth/me",{credentials:"same-origin",headers:{"Accept":"application/json"}}).then(function(r){if(r.status===401){login();return null;}return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||"无法读取账号");return d;});}).then(function(account){if(!account)return null;return post("/api/auth/cli/device/info",{user_code:userCode}).then(function(result){if(result.status===401){login();return;}if(!result.ok)throw new Error(result.data.detail||"授权请求无效");if(result.data.status!=="pending")throw new Error("该授权请求已处理或已过期，请从 CLI 重新登录");var user=account.user||account;meta.innerHTML="账号：<b></b>　Agent：<b></b>";var bold=meta.querySelectorAll("b");bold[0].textContent=user.display_name||user.username||"当前账号";bold[1].textContent=result.data.client_name;scopes.textContent="";(result.data.scope_details||[]).forEach(function(item){var li=document.createElement("li"),name=document.createElement("b"),desc=document.createElement("span");name.textContent=item.scope;desc.textContent=item.description;li.append(name,desc);scopes.appendChild(li);});scopes.classList.remove("hidden");actions.classList.remove("hidden");message("确认无误后再授权；你随时可以运行 hq logout 撤销当前 CLI 令牌。");});}).catch(function(err){meta.textContent="";message(err.message||"授权请求加载失败",true);});
+  approve.addEventListener("click",function(){decide(true);});deny.addEventListener("click",function(){decide(false);});
+}());
+</script>
+</body>
+</html>

@@ -21,6 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKBENCH_DIR = ROOT / "site" / "workbench"
+STANDALONE_PAGES = {"device.html"}  # 设备授权页不能注入工作台外壳、登录弹窗或任务脚本。
 
 
 class Asset:
@@ -82,7 +83,7 @@ ASSETS = (
 
 
 def html_files() -> list[Path]:
-    return sorted(WORKBENCH_DIR.glob("*.html"))
+    return sorted(path for path in WORKBENCH_DIR.glob("*.html") if path.name not in STANDALONE_PAGES)
 
 
 def main() -> int:

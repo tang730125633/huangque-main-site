@@ -24,14 +24,22 @@ def _idx(needle):
 
 
 class SmokeImportTests(unittest.TestCase):
-    def test_invite_module_is_deployed_with_auth(self):
-        self.assertIn("server/auth_server.py|server/invites.py|server/wxpay.py", SRC)
+    def test_auth_dependencies_are_deployed_and_monitored(self):
+        self.assertIn("server/auth_server.py|server/hq_cli_api.py|server/invites.py|server/wxpay.py", SRC)
         self.assertIn(
             "'server/invites.py': '/home/ubuntu/auth-service/invites.py'",
             (ROOT / "scripts/drift_sentinel.py").read_text(encoding="utf-8"),
         )
         self.assertIn(
+            "'server/hq_cli_api.py': '/home/ubuntu/auth-service/hq_cli_api.py'",
+            (ROOT / "scripts/drift_sentinel.py").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
             '"$R"/server/invites.py',
+            (ROOT / "deploy/setup-dev-server.sh").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            '"$R"/server/hq_cli_api.py',
             (ROOT / "deploy/setup-dev-server.sh").read_text(encoding="utf-8"),
         )
 

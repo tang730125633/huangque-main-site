@@ -17,7 +17,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security, inspiration_likes, history, notifications  # 领域存储模块均无反向依赖
+import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security, inspiration_likes, history, notifications, cli_gateway  # 领域存储模块均无反向依赖
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -1267,6 +1267,8 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
+        if cli_gateway.handle_quote(self, p, verify, _must_change_password, is_shutting_down,
+                                    feature_flags, points_domain, audio_domain, video_domain, AUTH_INTERNAL_TOKEN): return
         if _short_drama_domain().dispatch_http(self, "POST", jdb, verify, getattr(points_domain, "cost_of", None), mutation_lock=_submission_lock, canvas_access_resolver=_short_drama_canvas_access,
                 points_getter=getattr(points_domain, "get_points", None), voice_validator=lambda username, voice_key:
                 audio_domain.resolve_audio_provider_voice(username, voice_key), generation_dependencies=(audio_domain, points_domain, globals())): return
@@ -1534,9 +1536,11 @@ class H(BaseHTTPRequestHandler):
                     body = image_domain.validate_image_payload(body)
                     if not is_still_route:
                         body.pop("short_drama_references", None)
+                elif kind == "audio":
+                    body = audio_domain.validate_audio_payload(body, user["username"])
                 if not is_still_route: request_body = dict(body) if isinstance(body, dict) else body
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
-                if not is_still_route: idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video", "breakdown"} else ""
+                if not is_still_route: idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "audio", "video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video", "breakdown"} else ""
                 if kind == "sora_video" and not idem_key: raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
                 if kind == "xiaole_video" and str(body.get("channel") or "").lower() in {"micro", "omni"} and not idem_key: raise ValueError("官方视频提交必须提供 Idempotency-Key")
             except miniprogram_security.ContentRejected as e:
@@ -1568,6 +1572,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(503, {"detail": blocked, "code": "upstream_exhausted", "retry_after_ms": 60000})
             is_short_drama = kind == "copy" and isinstance(body, dict) and body.get("format") == "short_drama"
             cost = points_domain.cost_of(kind, body) if not is_short_drama and not is_still_route else None
+            if cli_gateway.reject_changed_cost(self, cost, AUTH_INTERNAL_TOKEN): return
             with _submission_lock:
                 if (is_still_route and is_shutting_down()
                         and (not still_attempt or still_attempt.get("state") in {"accepted", "charged"})):
@@ -1917,7 +1922,9 @@ class H(BaseHTTPRequestHandler):
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             try: lim = int((q.get("limit") or ["120"])[0])
             except Exception: lim = 120
-            return self._send(200, {"items": audio_domain.list_audio_assets(user["username"], lim)})
+            try: offset = int((q.get("offset") or ["0"])[0])
+            except Exception: offset = 0
+            return self._send(200, {"items": audio_domain.list_audio_assets(user["username"], lim, offset)})
         if p == "/api/gen/video/avatars":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
@@ -1931,7 +1938,9 @@ class H(BaseHTTPRequestHandler):
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             try: lim = int((q.get("limit") or ["120"])[0])
             except Exception: lim = 120
-            return self._send(200, {"items": video_domain.list_video_assets(user["username"], lim)})
+            try: offset = int((q.get("offset") or ["0"])[0])
+            except Exception: offset = 0
+            return self._send(200, {"items": video_domain.list_video_assets(user["username"], lim, offset)})
         if p == "/api/gen/audio/slots":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
@@ -1951,17 +1960,20 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/gen/history":   # 本人生成历史（资产/最近作品都读这）
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
-            try: lim = min(120, int(self.path.split("limit=")[1].split("&")[0])) if "limit=" in self.path else 60
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try: lim = max(1, min(120, int((q.get("limit") or ["60"])[0])))
             except Exception: lim = 60
-            kind = self.path.split("kind=")[1].split("&")[0] if "kind=" in self.path else "image"
+            try: offset = max(0, min(100000, int((q.get("offset") or ["0"])[0])))
+            except Exception: offset = 0
+            kind = (q.get("kind") or ["image"])[0]
             if kind not in HANDLERS: kind = "image"
             with closing(jdb()) as c:
                 _ensure_column(c, "jobs", "deleted", "INTEGER DEFAULT 0")
                 rows = c.execute("""SELECT id,result,created_at FROM jobs
                                  WHERE username=? AND status='done' AND kind=? AND COALESCE(deleted,0)=0
                                  ORDER BY id DESC LIMIT ?""",
-                                 (user["username"], kind, lim)).fetchall()
-            items = history.expand_job_results(rows, lim)
+                                 (user["username"], kind, lim + offset)).fetchall()
+            items = history.expand_job_results(rows, lim, offset)
             return self._send(200, {"items": items})
         if p == "/api/gen/collect/search":   # 关键词搜（即时，扣 1 点）— 采集页选片用
             user = verify(self._token())

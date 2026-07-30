@@ -5,8 +5,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
 CONFIG_PROXIES = {
-    "deploy/nginx-huangquechuanmei.conf": ("/api/auth/", "/api/admin/"),
-    "server/nginx-huangquechuanmei.conf": ("/api/auth/",),
+    "deploy/nginx-huangquechuanmei.conf": ("/api/auth/", "/api/admin/", "/api/gen/"),
+    "server/nginx-huangquechuanmei.conf": ("/api/auth/", "/api/gen/"),
 }
 INTERNAL_AUTH_PATHS = (
     "/api/auth/points",
@@ -59,7 +59,7 @@ class NginxInternalBoundaryTests(unittest.TestCase):
                     self.assertEqual(len(matches), 1)
                     self.assertLess(matches[0].start(), public_auth_start)
 
-    def test_public_auth_proxies_drop_client_internal_token(self):
+    def test_public_proxies_drop_client_internal_token(self):
         header = re.compile(
             r'(?m)^[ \t]*proxy_set_header[ \t]+'
             r'X-HQ-Internal-Token[ \t]+""[ \t]*;[ \t]*$'

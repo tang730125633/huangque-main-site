@@ -49,13 +49,18 @@ jobs:
 
       - name: 测试并构建 HQ CLI
         working-directory: tools/hq-cli
+        env:
+          SOURCE_DATE_EPOCH: "1735689600"
         run: |
           PYTHONPATH=src python -m unittest discover -s tests -v
           cli_tmp="$(mktemp -d)"
           trap 'rm -rf "$cli_tmp"' EXIT
-          python -m pip wheel --no-deps --wheel-dir "$cli_tmp/wheels" .
+          python -m pip wheel --no-deps --wheel-dir "$cli_tmp/wheels-a" .
+          python -m pip wheel --no-deps --wheel-dir "$cli_tmp/wheels-b" .
+          cmp "$cli_tmp"/wheels-a/*.whl "$cli_tmp"/wheels-b/*.whl
+          sh -n ../../site/downloads/hq/install.sh
           python -m venv "$cli_tmp/venv"
-          "$cli_tmp/venv/bin/pip" install --no-index --no-deps "$cli_tmp"/wheels/*.whl
+          "$cli_tmp/venv/bin/pip" install --no-index --no-deps ../../site/downloads/hq/v0.2.0/huangque_hq_cli-0.2.0-py3-none-any.whl
           "$cli_tmp/venv/bin/hq" version --json
           "$cli_tmp/venv/bin/hq" capabilities --json
           "$cli_tmp/venv/bin/python" -m hq_cli version --json

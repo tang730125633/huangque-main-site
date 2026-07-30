@@ -1,3 +1,3 @@
-"""HQ CLI: safe, read-only Huangque navigation."""
+"""HQ CLI: scoped Huangque main-site capabilities for agents."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

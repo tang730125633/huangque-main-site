@@ -510,10 +510,11 @@ for path in ("/", "/classic", "/skills", "/analytics", "/images", "/videos",
     response = client.get(path)
     assert response.status_code == 200, (path, response.status_code)
 
-created = client.post("/api/conversations").get_json()
+created = client.post("/api/conversations", json={"title": "CLI 客户诊断"}).get_json()
 cid = created["id"]
 owned = client.get(f"/api/conversations/{cid}").get_json()
-assert owned["id"] == cid and owned["owner_account_id"] == "acct_a"
+assert owned["id"] == cid and owned["owner_account_id"] == "acct_a" and owned["title"] == "CLI 客户诊断"
+assert client.post("/api/conversations", json={"unknown": True}).status_code == 400
 assert client.get(f"/api/conversations/{cid}/reports").get_json() == {}
 assert client.get(f"/api/conversations/{cid}/deliverables").get_json() == {}
 server.current_account_id = lambda: "acct_b"

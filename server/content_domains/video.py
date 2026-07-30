@@ -1233,8 +1233,9 @@ def record_video_pending_asset(job_id, username, payload):
         "status": "running",
     })
 
-def list_video_assets(username, limit=120):
+def list_video_assets(username, limit=120, offset=0):
     limit = max(1, min(120, int(limit or 120)))
+    offset = max(0, min(100000, int(offset or 0)))
     with closing(adb()) as c:
         rows = c.execute("""SELECT id, job_id, username, mode, image_file, audio_file, reference_video_file, video_file, video_url,
                    text, voice_key, resolution, ratio, motion, phase, image_asset_id, audio_asset_id, reference_asset_id,
@@ -1243,7 +1244,7 @@ def list_video_assets(username, limit=120):
                    status, error, created_at, updated_at
             FROM video_assets
             WHERE username=? AND status!='deleted'
-            ORDER BY id DESC LIMIT ?""", (username, limit)).fetchall()
+            ORDER BY id DESC LIMIT ? OFFSET ?""", (username, limit, offset)).fetchall()
     items = [dict(r) for r in rows]
     job_ids = [item.get("job_id") for item in items if item.get("job_id")]
     if job_ids:
