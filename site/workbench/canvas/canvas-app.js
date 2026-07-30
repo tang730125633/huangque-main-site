@@ -2371,6 +2371,28 @@
     var mac=/Mac|iPhone|iPad/.test((navigator&&navigator.platform)||'');
     return mac?(shift?'⇧⌘'+key:'⌘'+key):(shift?'Ctrl+Shift+'+key:'Ctrl+'+key);
   }
+  var MENU_ICONS={
+    text:'<path pathLength="1" class="nc-icon-base" d="M4 6h16"/><path pathLength="1" class="nc-icon-detail" d="M4 12h12M4 18h9"/>',
+    image:'<rect pathLength="1" class="nc-icon-base" x="3" y="4" width="18" height="16" rx="2"/><circle pathLength="1" class="nc-icon-detail" cx="8.5" cy="9" r="1.8"/><path pathLength="1" class="nc-icon-detail" d="m5 18 5-5 3 3 2-2 4 4"/>',
+    reverse:'<rect pathLength="1" class="nc-icon-base" x="3" y="4" width="14" height="13" rx="2"/><path pathLength="1" class="nc-icon-detail" d="m5 15 4-4 3 3 2-2 2 2M18 9.5a4.5 4.5 0 1 1-.7 6.5M18 9.5v4h-4"/>',
+    generate:'<rect pathLength="1" class="nc-icon-base" x="3" y="5" width="15" height="15" rx="2"/><path pathLength="1" class="nc-icon-detail" d="m5 18 4-4 3 3 2-2 2 2"/><path pathLength="1" class="nc-icon-spark" d="m19 2 .7 1.8 1.8.7-1.8.7L19 8l-.7-1.8-1.8-.7 1.8-.7Z"/>',
+    video:'<rect pathLength="1" class="nc-icon-base" x="3" y="5" width="17" height="14" rx="2"/><path pathLength="1" class="nc-icon-detail" d="m9.5 9 5 3-5 3Z"/><path pathLength="1" class="nc-icon-spark" d="m19 2 .6 1.5 1.5.6-1.5.6-.6 1.5-.6-1.5-1.5-.6 1.5-.6Z"/>',
+    drama:'<rect pathLength="1" class="nc-icon-base" x="3" y="5" width="18" height="14" rx="2"/><path pathLength="1" class="nc-icon-detail" d="M8 5v14M16 5v14M3 9h5M16 9h5M3 15h5M16 15h5m-5-5 3 2-3 2Z"/>',
+    upload:'<path pathLength="1" class="nc-icon-base" d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/><path pathLength="1" class="nc-icon-detail" d="M12 16V4m-4 4 4-4 4 4"/>',
+    assets:'<path pathLength="1" class="nc-icon-base" d="m12 3 8 4-8 4-8-4Z"/><path pathLength="1" class="nc-icon-detail" d="m4 12 8 4 8-4M4 17l8 4 8-4"/>',
+    add:'<circle pathLength="1" class="nc-icon-base" cx="8" cy="8" r="3"/><circle pathLength="1" class="nc-icon-detail" cx="17.5" cy="15.5" r="2.5"/><path pathLength="1" class="nc-icon-detail" d="m10.5 10 5 4M7 17v5m-2.5-2.5h5"/>',
+    undo:'<path pathLength="1" class="nc-icon-base" d="M9 7 4 12l5 5"/><path pathLength="1" class="nc-icon-detail" d="M5 12h8a6 6 0 0 1 6 6v1"/>',
+    redo:'<path pathLength="1" class="nc-icon-base" d="m15 7 5 5-5 5"/><path pathLength="1" class="nc-icon-detail" d="M19 12h-8a6 6 0 0 0-6 6v1"/>',
+    paste:'<rect pathLength="1" class="nc-icon-base" x="5" y="4" width="14" height="17" rx="2"/><path pathLength="1" class="nc-icon-detail" d="M9 4.5V3h6v1.5M9 9h6M9 13h6M9 17h4"/>',
+    note:'<path pathLength="1" class="nc-icon-base" d="M5 3h9l5 5v13H5Z M14 3v5h5"/><path pathLength="1" class="nc-icon-detail" d="m8 17 1-4 6-6 2 2-6 6Z"/>',
+    preview:'<path pathLength="1" class="nc-icon-base" d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle pathLength="1" class="nc-icon-detail" cx="12" cy="12" r="2.5"/>',
+    copy:'<rect pathLength="1" class="nc-icon-base" x="8" y="8" width="12" height="12" rx="2"/><path pathLength="1" class="nc-icon-detail" d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
+    remove:'<path pathLength="1" class="nc-icon-base" d="M5 7h14m-9-3h4l1 3H9Zm-3 3 1 14h8l1-14"/><path pathLength="1" class="nc-icon-detail" d="M10 11v6M14 11v6"/>'
+  };
+  function menuIcon(name){
+    var shapes=MENU_ICONS[name];
+    return shapes?'<span class="nc-menu-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round">'+shapes+'</svg></span>':'';
+  }
   function showMenu(items,x,y,options){
     if(!menu) return;
     options=options||{};
@@ -2398,11 +2420,7 @@
       b.setAttribute('role','menuitem');
       if(it.title) b.title=it.title;
       if(it.disabled){ b.disabled=true; b.setAttribute('aria-disabled','true'); }
-      if(it.key||it.shortcut){
-        b.innerHTML=(it.key?'<span class="nc-menu-k">'+escapeHtml(it.key)+'</span>':'')+'<span class="nc-menu-t">'+escapeHtml(it.label)+'</span>'+(it.shortcut?'<span class="nc-menu-shortcut">'+escapeHtml(it.shortcut)+'</span>':'');
-      }else{
-        b.textContent=it.label;
-      }
+      b.innerHTML=(it.icon?menuIcon(it.icon):(it.key?'<span class="nc-menu-k">'+escapeHtml(it.key)+'</span>':''))+'<span class="nc-menu-t">'+escapeHtml(it.label)+'</span>'+(it.shortcut?'<span class="nc-menu-shortcut">'+escapeHtml(it.shortcut)+'</span>':'');
       b.onmousedown=function(e){ e.preventDefault(); };
       b.onclick=function(e){ e.stopPropagation(); if(it.disabled) return; hideMenu(); it.run(); };
       menu.appendChild(b);
@@ -2434,26 +2452,26 @@
   }
   function addNodeMenuItems(pt){
     return [
-      {key:'文',label:'文本',title:'添加文本提示词节点',run:function(){ addAt('text',pt); }},
-      {key:'图',label:'图片',title:'上传或粘贴素材图',run:function(){ addAt('image',pt); }},
-      {key:'反',label:'图片反推',title:'根据图片生成提示词',run:function(){ addAt('reverse',pt); }},
-      {key:'生',label:'图片生成',title:'根据提示词和参考图生成图片',run:function(){ addAt('gen',pt); }},
-      {key:'视',label:'视频生成',title:'根据提示词和参考图生成视频',run:function(){ addAt('video',pt); }},
-      {key:'剧',label:'短剧生产',title:'创建短剧项目',run:function(){ addAt('shortDrama',pt); }}
+      {icon:'text',label:'文本',title:'添加文本提示词节点',run:function(){ addAt('text',pt); }},
+      {icon:'image',label:'图片',title:'上传或粘贴素材图',run:function(){ addAt('image',pt); }},
+      {icon:'reverse',label:'图片反推',title:'根据图片生成提示词',run:function(){ addAt('reverse',pt); }},
+      {icon:'generate',label:'图片生成',title:'根据提示词和参考图生成图片',run:function(){ addAt('gen',pt); }},
+      {icon:'video',label:'视频生成',title:'根据提示词和参考图生成视频',run:function(){ addAt('video',pt); }},
+      {icon:'drama',label:'短剧生产',title:'创建短剧项目',run:function(){ addAt('shortDrama',pt); }}
     ];
   }
   function showAddNodeMenu(pt,x,y,anchor){
     var items=[{kind:'title',label:'添加节点'}].concat(addNodeMenuItems(pt),[
       {kind:'section',label:'添加资源'},
-      {key:'传',label:'上传图片',run:function(){ uploadImageAt(pt); }},
-      {key:'资',label:'打开我的资产',run:function(){ openSidePanel('assets',true); }}
+      {icon:'upload',label:'上传图片',run:function(){ uploadImageAt(pt); }},
+      {icon:'assets',label:'打开我的资产',run:function(){ openSidePanel('assets',true); }}
     ]);
     showMenu(items,x,y,{variant:'add',anchor:anchor,focus:true,label:'添加节点'});
   }
   function connectedNodeMenuItems(from,pt){
     var compatible=from&&from.port==='prompt'?[['gen','作图'],['video','视频']]:from&&from.port==='image'?[['reverse','反推'],['gen','作图'],['video','视频']]:[];
     return compatible.map(function(item){
-      return {key:item[1].slice(0,1),label:'创建'+item[1]+'节点并连线',run:function(){
+      return {icon:item[0]==='gen'?'generate':item[0],label:'创建'+item[1]+'节点并连线',run:function(){
         pushUndo();
         var node=addNode(item[0],Math.max(0,pt.x+28),Math.max(0,pt.y-48));
         connectEdge(from,{node:node.id,port:from.port});
@@ -2711,46 +2729,46 @@
     e.preventDefault();
     if(!canEditCanvas()){
       selectNode(node);
-      if((node.params.remark||'').trim()) showMenu([{label:'查看备注',run:function(){ viewNodeRemark(node); }}],e.clientX,e.clientY);
+      if((node.params.remark||'').trim()) showMenu([{icon:'preview',label:'查看备注',run:function(){ viewNodeRemark(node); }}],e.clientX,e.clientY);
       return;
     }
     var groupIds=selectedNodes[node.id]?selectedNodeIds():[];
     if(groupIds.length>1){
       showMenu([
-        {label:'批量复制 '+groupIds.length+' 个节点',run:function(){ copyNode(); }},
+        {icon:'copy',label:'批量复制 '+groupIds.length+' 个节点',run:function(){ copyNode(); }},
         {label:'批量折叠',run:function(){ setSelectedCollapsed(true); }},
         {label:'批量展开',run:function(){ setSelectedCollapsed(false); }},
-        {label:'批量删除',run:function(){ deleteSelectedNodes(); }}
+        {icon:'remove',label:'批量删除',run:function(){ deleteSelectedNodes(); }}
       ],e.clientX,e.clientY);
       return;
     }
     selectNode(node);
     var items=[
-      {label:(node.params.remark||'').trim()?'编辑备注':'添加备注',run:function(){ editNodeRemark(node); }}
+      {icon:'note',label:(node.params.remark||'').trim()?'编辑备注':'添加备注',run:function(){ editNodeRemark(node); }}
     ];
     if(node.type==='image'){
-      items.push({label:'本地上传图片',run:function(){ chooseNodeImage(node,'图片已更换'); }});
-      items.push({label:'从资产列表选择',run:function(){ openNodeAssetPicker(node); }});
+      items.push({icon:'upload',label:'本地上传图片',run:function(){ chooseNodeImage(node,'图片已更换'); }});
+      items.push({icon:'assets',label:'从资产列表选择',run:function(){ openNodeAssetPicker(node); }});
     }
     if((node.params.remark||'').trim()){
-      items.push({label:'查看备注',run:function(){ viewNodeRemark(node); }});
-      items.push({label:'删除备注',run:function(){ deleteNodeRemark(node); }});
+      items.push({icon:'preview',label:'查看备注',run:function(){ viewNodeRemark(node); }});
+      items.push({icon:'remove',label:'删除备注',run:function(){ deleteNodeRemark(node); }});
     }
     showMenu(items,e.clientX,e.clientY);
   }
   function menuForCanvas(e){
     e.preventDefault();
-    if(!canEditCanvas()){ showMenu([{label:'适应视图',run:function(){ fitView(); }}],e.clientX,e.clientY); return; }
+    if(!canEditCanvas()){ showMenu([{icon:'preview',label:'适应视图',run:function(){ fitView(); }}],e.clientX,e.clientY); return; }
     var pt=canvasPointFromClient(e);
     var x=e.clientX, y=e.clientY;
     showMenu([
-      {label:'上传图片',run:function(){ uploadImageAt(pt); }},
-      {label:'保存到我的资产',disabled:true,title:'当前仅支持打开资产管理'},
-      {label:'添加节点',run:function(){ showAddNodeMenu(pt,x,y); }},
+      {icon:'upload',label:'上传图片',run:function(){ uploadImageAt(pt); }},
+      {icon:'assets',label:'保存到我的资产',disabled:true,title:'当前仅支持打开资产管理'},
+      {icon:'add',label:'添加节点',run:function(){ showAddNodeMenu(pt,x,y); }},
       {kind:'separator'},
-      {label:'撤销',shortcut:commandShortcut('Z'),disabled:!history.canUndo(),run:function(){ undo(); }},
-      {label:'重做',shortcut:commandShortcut('Z',true),disabled:!history.canRedo(),run:function(){ redo(); }},
-      {label:'粘贴',shortcut:commandShortcut('V'),disabled:!clipNode,run:function(){ pasteNode(); }}
+      {icon:'undo',label:'撤销',shortcut:commandShortcut('Z'),disabled:!history.canUndo(),run:function(){ undo(); }},
+      {icon:'redo',label:'重做',shortcut:commandShortcut('Z',true),disabled:!history.canRedo(),run:function(){ redo(); }},
+      {icon:'paste',label:'粘贴',shortcut:commandShortcut('V'),disabled:!clipNode,run:function(){ pasteNode(); }}
     ],x,y,{variant:'context',focus:true,label:'画布操作'});
   }
   function menuForEdge(e,i){
@@ -2758,7 +2776,7 @@
     selectedEdge=i; redraw();
     if(!canEditCanvas()) return;
     showMenu([
-      {label:'删除连线',run:function(){ delSelectedEdge(); }}
+      {icon:'remove',label:'删除连线',run:function(){ delSelectedEdge(); }}
     ],e.clientX,e.clientY);
   }
   function defaultTemplateName(){
@@ -3238,10 +3256,10 @@
       e.preventDefault();
       e.stopPropagation();
       showMenu([
-        {label:'批量复制 '+ids.length+' 个节点',run:function(){ copyNode(); }},
+        {icon:'copy',label:'批量复制 '+ids.length+' 个节点',run:function(){ copyNode(); }},
         {label:'批量折叠',run:function(){ setSelectedCollapsed(true); }},
         {label:'批量展开',run:function(){ setSelectedCollapsed(false); }},
-        {label:'批量删除',run:function(){ deleteSelectedNodes(); }}
+        {icon:'remove',label:'批量删除',run:function(){ deleteSelectedNodes(); }}
       ],e.clientX,e.clientY);
     });
   }

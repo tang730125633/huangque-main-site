@@ -9,7 +9,7 @@ HTML_PATH = ROOT / "site" / "workbench" / "canvas.html"
 CSS_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas.css"
 APP_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas-app.js"
 
-EXPECTED_CSS_SHA256 = "ad330db2f0ac1c83d09f45ff7d62a2341aeb4cceb582d587d75d20d661a5ff71"
+EXPECTED_CSS_SHA256 = "b2d253f9337ae22c38e4be4342cf5123541219c1f55a788de475656ac252d960"
 
 
 def normalized_sha256(path: Path) -> str:
@@ -79,6 +79,11 @@ class CanvasAssetExtractionTests(unittest.TestCase):
         self.assertIn("disabled:!history.canRedo()", app)
         self.assertIn("disabled:!clipNode", app)
         self.assertIn(".nc-menu-shortcut", css)
+        self.assertIn("var MENU_ICONS=", app)
+        self.assertIn("function menuIcon(", app)
+        self.assertIn("@keyframes nc-menu-icon-draw", css)
+        self.assertIn("@keyframes nc-menu-icon-spark", css)
+        self.assertIn("prefers-reduced-motion:reduce", css)
 
     def test_canvas_modules_are_versioned_and_loaded_in_exact_order(self):
         html = HTML_PATH.read_text(encoding="utf-8")

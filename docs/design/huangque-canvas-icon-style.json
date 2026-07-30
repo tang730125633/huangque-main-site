@@ -1,0 +1,26 @@
+{
+  "name": "huangque-canvas-linear",
+  "label": "黄雀画布线性图标",
+  "preamble": "Premium minimal line icons for Huangque's dark AI creation canvas: crisp silver-white outlines, uniform rounded strokes, restrained geometry, generous negative space, and one tiny warm-gold four-point sparrow sparkle as a recurring brand signature. No tile, no container, no text, no fill, no shadow or glow.",
+  "palette": [
+    "#F1F3F5",
+    "#E7B24C"
+  ],
+  "cutout": "floodfill",
+  "thresh": 28,
+  "construction": {
+    "grid": "24-unit keyline; live area 76%; 12% optical padding; circles may be slightly larger than squares",
+    "stroke": "uniform 2.1-unit silver-white stroke with rounded caps and joins",
+    "corner_radius": "one consistent small outer radius",
+    "angles": "geometry constrained to 45-degree increments",
+    "detail_budget": "one core metaphor and no more than four elements per icon",
+    "fill_rule": "outline only; no filled mass",
+    "color_rule": "silver-white carries the icon; warm gold appears only as one very small secondary sparkle",
+    "shared_parts": "reuse one canonical image frame, play triangle, plus, document and sparkle",
+    "perspective": "flat front-facing",
+    "shadow": "none",
+    "motif": "one tiny four-point sparrow sparkle placed near the upper-right edge when it does not obscure the metaphor",
+    "weight_hierarchy": "the silver-white defining stroke stays visually heavier than the smaller gold sparkle"
+  },
+  "fits": "Huangque canvas creation menu, context actions and future toolbox headers."
+}
