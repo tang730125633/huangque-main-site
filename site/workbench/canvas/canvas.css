@@ -149,11 +149,13 @@
   .nc-edge-hit{ pointer-events:stroke; cursor:pointer; }
   .nc-edge-sel{ stroke:#2dd4bf; stroke-width:3; filter:drop-shadow(0 0 6px rgba(45,212,191,.45)); }
   .nc-node{ position:absolute; z-index:2; width:250px; border:1px solid rgba(148,164,187,.12); border-radius:12px; background:rgba(11,16,24,.94); box-shadow:0 14px 34px -24px rgba(0,0,0,.85); font-size:12.5px; transition:border-color .16s, box-shadow .16s, transform .16s; user-select:none; -webkit-user-select:none; }
+  .nc-node.resized{ display:flex; flex-direction:column; }
+  .nc-node.resized .nc-body{ flex:1; min-height:0; overflow:auto; }
   .nc-node.sel{ border-color:rgba(231,178,76,.54); box-shadow:0 16px 36px -24px rgba(231,178,76,.38),0 14px 34px -24px rgba(0,0,0,.85); }
   .nc-node[data-state="running"]{ border-color:rgba(45,212,191,.55); }
   .nc-node[data-state="done"]{ border-color:rgba(43,213,118,.45); }
   .nc-node[data-state="error"]{ border-color:rgba(244,112,138,.55); }
-  .nc-node.collapsed{ width:220px; }
+  .nc-node.collapsed{ width:220px; height:auto!important; }
   .nc-node.collapsed .nc-body{ display:none; }
   .nc-node.collapsed .nc-port{ top:50%!important; transform:translateY(-50%); }
   .nc-head{ display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 10px; border-bottom:1px solid rgba(148,164,187,.08); cursor:move; border-radius:12px 12px 0 0; font-weight:700; user-select:none; -webkit-user-select:none; }
@@ -168,6 +170,11 @@
   .nc-lab{ font-size:10.5px; color:#5c6b82; user-select:none; -webkit-user-select:none; }
   .nc-node-title{ font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .nc-node-title[contenteditable="true"]{ min-width:54px; max-width:160px; padding:2px 5px; margin:-3px -6px; border:1px solid rgba(70,180,255,.5); border-radius:5px; background:rgba(70,180,255,.08); outline:none; overflow:visible; text-overflow:clip; cursor:text; user-select:text; -webkit-user-select:text; }
+  .nc-resize-handle{ position:absolute; z-index:5; display:none; width:11px; height:11px; padding:0; border:2px solid #101722; border-radius:50%; background:#e7b24c; box-shadow:0 0 0 1px rgba(231,178,76,.4); }
+  .nc-node.sel:not(.collapsed) .nc-resize-handle{ display:block; }
+  .nc-resize-n{ left:50%; top:-6px; transform:translateX(-50%); cursor:ns-resize; }.nc-resize-ne{ right:-6px; top:-6px; cursor:nesw-resize; }.nc-resize-e{ right:-6px; top:50%; transform:translateY(-50%); cursor:ew-resize; }.nc-resize-se{ right:-6px; bottom:-6px; cursor:nwse-resize; }.nc-resize-s{ left:50%; bottom:-6px; transform:translateX(-50%); cursor:ns-resize; }.nc-resize-sw{ left:-6px; bottom:-6px; cursor:nesw-resize; }.nc-resize-w{ left:-6px; top:50%; transform:translateY(-50%); cursor:ew-resize; }.nc-resize-nw{ left:-6px; top:-6px; cursor:nwse-resize; }
+  .nc-align-guide{ position:absolute; z-index:3; display:none; pointer-events:none; background:rgba(45,212,191,.78); box-shadow:0 0 8px rgba(45,212,191,.32); }
+  .nc-align-guide.vertical{ top:0; bottom:0; width:1px; }.nc-align-guide.horizontal{ left:0; right:0; height:1px; }
   .nc-remark-mark{ display:none; flex:0 0 auto; align-items:center; justify-content:center; height:17px; min-width:17px; padding:0 4px; border-radius:4px; background:#fff1c2; color:#8a5d00; font-size:11px; font-weight:700; }
   .nc-node.has-remark .nc-remark-mark{ display:inline-flex; }
   .nc-in{ width:100%; box-sizing:border-box; padding:7px 9px; font-size:12px; color:#eaf1fa; background:rgba(6,10,17,.56); border:1px solid rgba(148,164,187,.12); border-radius:8px; outline:none; font-family:inherit; resize:none; user-select:text; -webkit-user-select:text; }
