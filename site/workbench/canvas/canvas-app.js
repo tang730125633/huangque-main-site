@@ -2366,42 +2366,89 @@
     syncCanvasGrid();
     scheduleMap();
   }
-  function hideMenu(){ if(menu) menu.classList.remove('on'); }
-  function showMenu(items,x,y){
+  function hideMenu(){ if(menu){ menu.classList.remove('on'); menu.innerHTML=''; } }
+  function commandShortcut(key,shift){
+    var mac=/Mac|iPhone|iPad/.test((navigator&&navigator.platform)||'');
+    return mac?(shift?'⇧⌘'+key:'⌘'+key):(shift?'Ctrl+Shift+'+key:'Ctrl+'+key);
+  }
+  function showMenu(items,x,y,options){
     if(!menu) return;
+    options=options||{};
     menu.innerHTML='';
+    menu.className='nc-menu'+(options.variant?' '+options.variant:'');
+    menu.setAttribute('aria-label',options.label||'操作菜单');
     items.forEach(function(it){
+      if(it.kind==='title'||it.kind==='section'){
+        var heading=document.createElement('div');
+        heading.className=it.kind==='title'?'nc-menu-title':'nc-menu-section';
+        heading.textContent=it.label||'';
+        heading.setAttribute('role','presentation');
+        menu.appendChild(heading);
+        return;
+      }
+      if(it.kind==='separator'){
+        var separator=document.createElement('div');
+        separator.className='nc-menu-separator';
+        separator.setAttribute('role','separator');
+        menu.appendChild(separator);
+        return;
+      }
       var b=document.createElement('button');
       b.type='button';
+      b.setAttribute('role','menuitem');
       if(it.title) b.title=it.title;
-      if(it.key){
-        b.innerHTML='<span class="nc-menu-k">'+escapeHtml(it.key)+'</span><span class="nc-menu-t">'+escapeHtml(it.label)+'</span>';
+      if(it.disabled){ b.disabled=true; b.setAttribute('aria-disabled','true'); }
+      if(it.key||it.shortcut){
+        b.innerHTML=(it.key?'<span class="nc-menu-k">'+escapeHtml(it.key)+'</span>':'')+'<span class="nc-menu-t">'+escapeHtml(it.label)+'</span>'+(it.shortcut?'<span class="nc-menu-shortcut">'+escapeHtml(it.shortcut)+'</span>':'');
       }else{
         b.textContent=it.label;
       }
       b.onmousedown=function(e){ e.preventDefault(); };
-      b.onclick=function(){ hideMenu(); it.run(); };
+      b.onclick=function(e){ e.stopPropagation(); if(it.disabled) return; hideMenu(); it.run(); };
       menu.appendChild(b);
     });
-    menu.style.left=Math.max(8,Math.min(x,window.innerWidth-160))+'px';
-    menu.style.top=Math.max(8,Math.min(y,window.innerHeight-items.length*38-16))+'px';
     menu.classList.add('on');
+    var width=menu.offsetWidth, height=menu.offsetHeight;
+    var left=Math.max(8,Math.min(x,window.innerWidth-width-8));
+    var top=options.anchor==='above'?y-height:y;
+    menu.style.left=left+'px';
+    menu.style.top=Math.max(8,Math.min(top,window.innerHeight-height-8))+'px';
+    menu.onkeydown=function(e){
+      if(e.key!=='ArrowDown'&&e.key!=='ArrowUp') return;
+      e.preventDefault();
+      var buttons=Array.prototype.slice.call(menu.querySelectorAll('button:not(:disabled)'));
+      if(!buttons.length) return;
+      var current=buttons.indexOf(document.activeElement), step=e.key==='ArrowDown'?1:-1;
+      if(current<0) buttons[step>0?0:buttons.length-1].focus();
+      else buttons[(current+step+buttons.length)%buttons.length].focus();
+    };
+    if(options.focus){
+      var first=menu.querySelector('button:not(:disabled)');
+      if(first) first.focus();
+    }
   }
   function showMenuFromButton(btn,items){
     if(!btn) return;
     var r=btn.getBoundingClientRect();
-    var menuH=(items&&items.length?items.length:1)*34+12;
-    showMenu(items,r.left,r.top-menuH-10);
+    showMenu(items,r.left,r.top-10,{anchor:'above',focus:true});
   }
   function addNodeMenuItems(pt){
     return [
       {key:'文',label:'文本',title:'添加文本提示词节点',run:function(){ addAt('text',pt); }},
       {key:'图',label:'图片',title:'上传或粘贴素材图',run:function(){ addAt('image',pt); }},
-      {key:'反',label:'反推',title:'根据图片生成提示词',run:function(){ addAt('reverse',pt); }},
-      {key:'生',label:'作图',title:'根据提示词和参考图生成图片',run:function(){ addAt('gen',pt); }},
-      {key:'视',label:'视频',title:'根据提示词和参考图生成视频',run:function(){ addAt('video',pt); }},
-      {key:'短',label:'短剧',title:'创建短剧项目',run:function(){ addAt('shortDrama',pt); }}
+      {key:'反',label:'图片反推',title:'根据图片生成提示词',run:function(){ addAt('reverse',pt); }},
+      {key:'生',label:'图片生成',title:'根据提示词和参考图生成图片',run:function(){ addAt('gen',pt); }},
+      {key:'视',label:'视频生成',title:'根据提示词和参考图生成视频',run:function(){ addAt('video',pt); }},
+      {key:'剧',label:'短剧生产',title:'创建短剧项目',run:function(){ addAt('shortDrama',pt); }}
     ];
+  }
+  function showAddNodeMenu(pt,x,y,anchor){
+    var items=[{kind:'title',label:'添加节点'}].concat(addNodeMenuItems(pt),[
+      {kind:'section',label:'添加资源'},
+      {key:'传',label:'上传图片',run:function(){ uploadImageAt(pt); }},
+      {key:'资',label:'打开我的资产',run:function(){ openSidePanel('assets',true); }}
+    ]);
+    showMenu(items,x,y,{variant:'add',anchor:anchor,focus:true,label:'添加节点'});
   }
   function connectedNodeMenuItems(from,pt){
     var compatible=from&&from.port==='prompt'?[['gen','作图'],['video','视频']]:from&&from.port==='image'?[['reverse','反推'],['gen','作图'],['video','视频']]:[];
@@ -2516,6 +2563,11 @@
     var node=addNode(type,pt.x,pt.y);
     selectNode(node);
     updateState('已添加');
+    return node;
+  }
+  function uploadImageAt(pt){
+    var node=addAt('image',pt);
+    if(node) chooseNodeImage(node,'图片已上传');
   }
   function beginInlineRename(node,preserveSelection){
     if(!canEditCanvas()) return;
@@ -2690,10 +2742,16 @@
     e.preventDefault();
     if(!canEditCanvas()){ showMenu([{label:'适应视图',run:function(){ fitView(); }}],e.clientX,e.clientY); return; }
     var pt=canvasPointFromClient(e);
-    showMenu(addNodeMenuItems(pt).concat([
-      {label:'粘贴节点',run:function(){ pasteNode(); }},
-      {label:'适应视图',run:function(){ fitView(); }}
-    ]),e.clientX,e.clientY);
+    var x=e.clientX, y=e.clientY;
+    showMenu([
+      {label:'上传图片',run:function(){ uploadImageAt(pt); }},
+      {label:'保存到我的资产',disabled:true,title:'当前仅支持打开资产管理'},
+      {label:'添加节点',run:function(){ showAddNodeMenu(pt,x,y); }},
+      {kind:'separator'},
+      {label:'撤销',shortcut:commandShortcut('Z'),disabled:!history.canUndo(),run:function(){ undo(); }},
+      {label:'重做',shortcut:commandShortcut('Z',true),disabled:!history.canRedo(),run:function(){ redo(); }},
+      {label:'粘贴',shortcut:commandShortcut('V'),disabled:!clipNode,run:function(){ pasteNode(); }}
+    ],x,y,{variant:'context',focus:true,label:'画布操作'});
   }
   function menuForEdge(e,i){
     e.preventDefault();
@@ -3128,6 +3186,14 @@
   canvas.addEventListener('click', function(e){
     if(suppressCanvasClick){ e.preventDefault(); suppressCanvasClick=false; return; }
     if(e.target===canvas||e.target===inner){ pendingPort=null; selectedEdge=-1; selectNode(null); redraw(); }
+  });
+  canvas.addEventListener('dblclick', function(e){
+    var t=e.target;
+    if(t&&t.closest&&t.closest('.nc-node,.nc-port,.nc-edge-hit,button,a,input,textarea,.nc-empty-card,.nc-menu')) return;
+    if(!canEditCanvas()) return;
+    e.preventDefault();
+    e.stopPropagation();
+    showAddNodeMenu(canvasPointFromClient(e),e.clientX,e.clientY);
   });
   if(selectedRegion){
     selectedRegion.addEventListener('pointerdown', function(e){
@@ -3571,7 +3637,8 @@
     };
   });
   bindButton(fsAdd,function(){
-    showMenuFromButton(fsAdd,addNodeMenuItems(viewportNodePoint()));
+    var r=fsAdd.getBoundingClientRect();
+    showAddNodeMenu(viewportNodePoint(),r.left,r.top-10,'above');
   });
   bindButton(fsAgent,function(){ openSidePanel('agent'); });
   bindButton(fsUndo,function(){ undo(); });
