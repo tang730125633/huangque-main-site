@@ -17,7 +17,7 @@ class InspirationDiversityTests(unittest.TestCase):
 
     def test_gallery_keeps_curated_range_and_contiguous_ids(self):
         self.assertGreaterEqual(len(self.items), 60)
-        self.assertEqual([item["id"] for item in self.items], list(range(1, len(self.items) + 1)))
+        self.assertEqual(sorted(item["id"] for item in self.items), list(range(1, len(self.items) + 1)))
         self.assertGreaterEqual(len({item["category"] for item in self.items}), 11)
 
     def test_template_placeholders_are_not_published(self):
@@ -35,12 +35,17 @@ class InspirationDiversityTests(unittest.TestCase):
             self.assertEqual(header[8:12], b"WEBP", name)
 
     def test_new_vertical_cases_have_real_images_and_reusable_prompts(self):
-        additions = [item for item in self.items if item["id"] >= 59]
+        additions = [item for item in self.items if 59 <= item["id"] <= 62]
         self.assertEqual({item["category"] for item in additions}, {"皮肤管理封面", "医美科普配图"})
         for item in additions:
             self.assertEqual(item["model"], "gpt")
             self.assertGreater(len(item["prompt"]), 100)
             self.assertGreater((ASSET_DIR / pathlib.PurePosixPath(item["image"]).name).stat().st_size, 80_000)
+
+    def test_moments_cases_are_curated_first_with_reusable_prompts(self):
+        additions = self.items[:18]
+        self.assertEqual([item["id"] for item in additions], list(range(63, 81)))
+        self.assertTrue(all(item["prompt"].strip() for item in additions))
 
 
 if __name__ == "__main__":
