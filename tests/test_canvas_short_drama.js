@@ -736,6 +736,16 @@ async function testWorkspaceSourceAndRenderContract() {
     '/api/gen/short-drama/project', '/api/gen/short-drama/confirm', '/api/gen/copy',
     '/api/gen/short-drama/apply-plan', '/api/gen/short-drama/planning-quote',
   ]) assert.ok(source.includes(endpoint), `workspace client must use ${endpoint}`);
+  assert.match(
+    source,
+    /querySelectorAll\('\.nc-short-drama-dialogue\[data-dialogue-index\]'\)/,
+    'script form reads dialogue cards only',
+  );
+  assert.doesNotMatch(
+    source,
+    /querySelectorAll\('\[data-dialogue-index\]'\)/,
+    'copy/delete controls must never be parsed as empty dialogue lines',
+  );
   assert.doesNotMatch(source, /3\s*点/, 'workspace must not hard-code the planning price as fact');
   assert.ok(css.includes('.nc-short-drama-workspace'));
   assert.ok(css.includes('.nc-short-drama-character-rail'));
@@ -1124,6 +1134,24 @@ async function testProductionWorkspaceCanReturnToPhaseOneReview() {
   assert.match(workspace.render(), /class="nc-short-drama-production"/);
   workspace.destroy();
   assert.equal(destroys, 2);
+}
+
+function testScriptValidationReportsTheExactBrokenDialogue() {
+  const project = workspaceProject({ stage: 'script_review' });
+  const script = Object.assign({}, project.script_versions[0], {
+    dialogue_lines: [
+      project.script_versions[0].dialogue_lines[0],
+      {
+        id: '', client_token: '', character_key: 'missing-role', text: '',
+      },
+    ],
+  });
+  const errors = shortDrama.validateScript(script, project);
+  assert.ok(errors.includes('台词 2：请填写台词内容'));
+  assert.ok(errors.includes('台词 2：新增台词缺少客户端请求标识'));
+  assert.ok(errors.includes('台词 2：引用了未知角色 missing-role'));
+  assert.ok(errors.every((message) => !message.includes('台词 3')),
+    'one broken dialogue must not be expanded into synthetic button rows');
 }
 
 async function testBrowserGlobalProductionModuleFallbacks() {
@@ -2017,6 +2045,7 @@ async function main() {
   await testTerminalJobFailureDoesNotApplyPlan();
   testMissingPollFailsClearly();
   await testWorkspaceSourceAndRenderContract();
+  testScriptValidationReportsTheExactBrokenDialogue();
   await testProductionWorkspaceCanReturnToPhaseOneReview();
   await testBrowserGlobalProductionModuleFallbacks();
   testWorkspacePureStateAndPayloadHelpers();

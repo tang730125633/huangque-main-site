@@ -395,10 +395,15 @@
     var characterKeys=(project&&project.characters||[]).map(function(item){ return item.character_key; });
     var ids=Object.create(null);
     value.dialogue_lines.forEach(function(line,index){
-      if(!line.id||!line.character_key||!line.text) errors.push('台词 '+(index+1)+' 字段不完整');
-      if(ids[line.id]) errors.push('台词标识不能重复');
-      ids[line.id]=true;
-      if(characterKeys.indexOf(line.character_key)<0) errors.push('台词引用了未知角色');
+      var label='台词 '+(index+1)+'：';
+      if(!line.character_key) errors.push(label+'请选择说话角色');
+      if(!line.text) errors.push(label+'请填写台词内容');
+      if(!line.id&&!line.client_token) errors.push(label+'新增台词缺少客户端请求标识');
+      if(line.id&&ids[line.id]) errors.push(label+'台词标识不能重复');
+      if(line.id) ids[line.id]=true;
+      if(line.character_key&&characterKeys.indexOf(line.character_key)<0){
+        errors.push(label+'引用了未知角色 '+line.character_key);
+      }
     });
     return errors;
   }
@@ -999,6 +1004,25 @@
       var input=container&&container.querySelector('[data-field="'+name+'"]');
       return input?input.value:'';
     }
+    function readDialogueLines(form,currentProject){
+      var names=Object.create(null);
+      (currentProject&&currentProject.characters||[]).forEach(function(character){
+        names[cleanText(character.character_key)]=cleanText(character.name||character.character_key);
+      });
+      names.narrator=names.narrator||'旁白';
+      return Array.prototype.map.call(
+        form.querySelectorAll('.nc-short-drama-dialogue[data-dialogue-index]'),
+        function(row){
+          var id=valueFrom(row,'id'),characterKey=valueFrom(row,'character_key');
+          if(id==='保存后由系统生成') id='';
+          return {
+            id:id,client_token:valueFrom(row,'client_token'),
+            character_key:characterKey,speaker_name_snapshot:names[characterKey]||characterKey,
+            text:valueFrom(row,'text'),subtitle_enabled:true,voice_overrides:{}
+          };
+        }
+      );
+    }
     function readSettings(){
       var form=host.querySelector('.nc-short-drama-settings-form');
       return {title:valueFrom(form,'title'),synopsis:valueFrom(form,'synopsis'),ratio:valueFrom(form,'ratio'),
@@ -1021,9 +1045,7 @@
       var form=host.querySelector('.nc-short-drama-script-form');
       return {title:valueFrom(form,'title'),logline:valueFrom(form,'logline'),hook:valueFrom(form,'hook'),
         conflict_text:valueFrom(form,'conflict_text'),turn_text:valueFrom(form,'turn_text'),ending:valueFrom(form,'ending'),
-        dialogue_lines:Array.prototype.map.call(form.querySelectorAll('[data-dialogue-index]'),function(row){
-          return {id:valueFrom(row,'id'),character_key:valueFrom(row,'character_key'),text:valueFrom(row,'text')};
-        })};
+        dialogue_lines:readDialogueLines(form,project)};
     }
     function readShots(){
       return Array.prototype.map.call(host.querySelectorAll('[data-shot-index]'),function(card){
