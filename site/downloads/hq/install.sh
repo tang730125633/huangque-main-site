@@ -48,6 +48,12 @@ if [ ! -x "$target_dir/venv/bin/hq" ]; then
   stage_dir=""
 fi
 
+# venv 控制台脚本会记住临时目录；移动后从最终路径重装一次以刷新 shebang，兼容修复已安装的 0.2.0。
+if ! "$target_dir/venv/bin/hq" version --json >/dev/null 2>&1; then
+  "$target_dir/venv/bin/python" -m pip install --disable-pip-version-check --no-index --no-deps --force-reinstall "$wheel_path" >/dev/null
+fi
+"$target_dir/venv/bin/hq" version --json >/dev/null || fail "安装后的 hq 无法启动"
+
 if { [ -e "$link_path" ] || [ -L "$link_path" ]; } && [ ! -L "$link_path" ]; then
   fail "$link_path 已存在且不是符号链接，未覆盖"
 fi
