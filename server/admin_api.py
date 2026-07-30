@@ -2198,6 +2198,23 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": str(e)})
             except Exception as e:
                 return auth_error_response(self, e)
+        if path == "/api/admin/users/password/reset":
+            try:
+                body = self._body()
+                if not isinstance(body, dict):
+                    return self._send(400, {"detail": "请求体不是合法 JSON"})
+                result = auth_admin_request(
+                    "/api/auth/admin/password/reset", self._token(), method="POST", payload=body,
+                )
+                _admin_audit(
+                    user.get("username") or "admin", "user_password_reset",
+                    str(body.get("username") or ""), {"sessions_revoked": True, "must_change": True},
+                )
+                return self._send(200, result)
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
+            except Exception as e:
+                return auth_error_response(self, e)
         if path == "/api/admin/users/notification":
             try:
                 body = self._body()
