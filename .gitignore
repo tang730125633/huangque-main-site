@@ -31,6 +31,8 @@ __pycache__/
 jobs.db
 server/jobs.db
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 models/
 transcribe_out/

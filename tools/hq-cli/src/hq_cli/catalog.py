@@ -52,6 +52,20 @@ def _api(identifier, name, action, description, fields=None, required=None, scop
     }
 
 
+def _upload(identifier, name, description, scope):
+    capability = _api(
+        identifier, name, None, description, scope=scope,
+        side_effect="upload", confirmation=True,
+    )
+    capability["kind"] = "upload"
+    capability["file_input"] = {
+        "argument": "--file", "path": "absolute", "maxBytes": 10 * 1024 * 1024,
+        "mimeTypes": ["image/jpeg", "image/png", "image/webp"],
+        "accountActiveMaxFiles": 8, "accountActiveMaxBytes": 60 * 1024 * 1024,
+    }
+    return capability
+
+
 STRING_ID = {"type": "string", "minLength": 1, "maxLength": 160}
 LIMIT = {"type": "integer", "minimum": 1, "maximum": 120}
 
@@ -88,6 +102,16 @@ CAPABILITIES["ip12-create"] = _api(
 CAPABILITIES["ip12-report"] = _api(
     "ip12-report", "读取 IP12 报告", "ip12-report", "读取一个本人 Hermes IP12 项目已经保存的模块报告；不会重新生成报告。",
     {"project_id": STRING_ID}, ["project_id"], "ip12:read")
+CAPABILITIES["ip12-message"] = _api(
+    "ip12-message", "继续 IP12 对话", "ip12-message",
+    "向本人 IP12 项目提交一轮回答并调用 AI 教练；request_id 必须每轮唯一，重试同一轮时保持不变。",
+    {"project_id": STRING_ID, "message": {"type": "string", "minLength": 1, "maxLength": 4000},
+     "request_id": STRING_ID},
+    ["project_id", "message", "request_id"], "ip12:chat", "external_ai", True,
+    {"kind": "external_ai", "points": 0, "detail": "不扣点，但会写入 IP12 项目并调用黄雀 AI。"})
+CAPABILITIES["ip12-message"]["next_actions"] = [
+    "网络超时后只可用完全相同的输入和 request_id 重试；若返回结果未知，先读取 IP12 项目。",
+]
 CAPABILITIES["prompt-optimize"] = _api(
     "prompt-optimize", "优化提示词", "prompt-optimize", "真实调用黄雀主站提示词优化服务。",
     {"prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
@@ -122,6 +146,14 @@ CAPABILITIES["assets"] = _api(
     ["kind"], "assets:read")
 CAPABILITIES["voices"] = _api(
     "voices", "可用音色", "voices", "读取当前账号可用于音频生成的公共与个人音色。", scope="assets:read")
+CAPABILITIES["image-upload"] = _upload(
+    "image-upload", "上传生成参考图",
+    "把一张本地 PNG、JPG 或 WebP 流式上传为本人短期私有 upload_id；不扣点，不返回公开素材地址。",
+    "assets:upload",
+)
+CAPABILITIES["image-upload"]["next_actions"] = [
+    "把返回的 upload_id 写入 image-generate 的 image_upload_id、mask_upload_id 或 reference_upload_ids。",
+]
 ASSET_MARK_FIELDS = {
     "kind": {"type": "string", "enum": ["image", "audio", "video", "avatar", "copy", "collect", "leads", "breakdown"]},
     "key": {"type": "string", "minLength": 1, "maxLength": 500},
@@ -143,6 +175,10 @@ IMAGE_FIELDS = {
     "quality": {"type": "string", "enum": ["std", "hd"]},
     "count": {"type": "integer", "minimum": 1, "maximum": 4},
     "variant": {"type": "string", "enum": ["std", "pro"]},
+    "image_upload_id": {"type": "string", "minLength": 36, "maxLength": 36},
+    "mask_upload_id": {"type": "string", "minLength": 36, "maxLength": 36},
+    "reference_upload_ids": {"type": "array", "maxItems": 4,
+                             "items": {"type": "string", "minLength": 36, "maxLength": 36}},
 }
 VIDEO_FIELDS = {
     "prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
@@ -172,6 +208,12 @@ for identifier, name, fields, required in (
         fields, required, "generation:quote", "paid", True,
         {"kind": "server_quote", "unit": "points", "confirmation": "quote_token + --confirm"},
     )
+
+CAPABILITIES["image-generate"]["constraints"] = [
+    "image_upload_id and reference_upload_ids are mutually exclusive",
+    "reference_upload_ids requires provider=xiaole and accepts 1-4 items",
+    "mask_upload_id requires image_upload_id, provider=openai, PNG mask, and count=1",
+]
 
 
 def capability_list():

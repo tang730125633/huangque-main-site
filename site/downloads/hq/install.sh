@@ -1,10 +1,10 @@
 #!/bin/sh
 set -eu
 
-version="0.2.0"
-wheel_name="huangque_hq_cli-0.2.0-py3-none-any.whl"
-wheel_sha256="8a4183744269afbe9537ed165f27cb168166315a990bb5cf02adbc3496497195"
-wheel_url="https://huangquechuanmei.com/downloads/hq/v0.2.0/$wheel_name"
+version="0.3.0"
+wheel_name="huangque_hq_cli-0.3.0-py3-none-any.whl"
+wheel_sha256="143cbced871b0375c0bb24f4255deba327ac9db221ddc55a0554dcf7c419377c"
+wheel_url="https://huangquechuanmei.com/downloads/hq/v0.3.0/$wheel_name"
 
 fail() { printf 'HQ CLI 安装失败：%s\n' "$1" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || fail "需要 curl"
@@ -48,7 +48,7 @@ if [ ! -x "$target_dir/venv/bin/hq" ]; then
   stage_dir=""
 fi
 
-# venv 控制台脚本会记住临时目录；移动后从最终路径重装一次以刷新 shebang，兼容修复已安装的 0.2.0。
+# venv 控制台脚本会记住临时目录；移动后从最终路径重装一次以刷新 shebang。
 if ! "$target_dir/venv/bin/hq" version --json >/dev/null 2>&1; then
   "$target_dir/venv/bin/python" -m pip install --disable-pip-version-check --no-index --no-deps --force-reinstall "$wheel_path" >/dev/null
 fi
