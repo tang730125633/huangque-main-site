@@ -28,7 +28,7 @@ EXIT_CONFIRMATION = 11
 MAX_INPUT_BYTES = 65536
 LOGIN_SCOPES = [
     "profile:read", "ip12:read", "ip12:write", "ip12:chat", "prompt:optimize", "canvas:read",
-    "canvas:write", "tasks:read", "assets:read", "assets:write", "assets:upload",
+    "canvas:write", "canvas:agent", "canvas:edit", "tasks:read", "assets:read", "assets:write", "assets:upload",
     "generation:quote", "generation:submit",
 ]
 

@@ -1517,6 +1517,36 @@ def apply_canvas_ops_to_snapshot(data, name, ops):
     snapshot["edges"] = edges
     return snapshot, name
 
+
+def validate_cli_canvas_ops(board, ops):
+    data = (board or {}).get("data") or {}
+    node_types = {
+        item.get("id"): item.get("type")
+        for item in data.get("nodes", []) if isinstance(item, dict)
+    }
+    for op in ops:
+        if op["type"] == "node.create":
+            node = op["node"]
+            if node["id"] in node_types:
+                return "node_exists"
+            node_types[node["id"]] = node["type"]
+        elif op["type"] == "node.patch":
+            if op["id"] not in node_types:
+                return "node_not_found"
+        elif op["type"] == "edge.create":
+            edge = op["edge"]
+            source = node_types.get(edge["from"]["node"])
+            target = node_types.get(edge["to"]["node"])
+            if source in {"text", "reverse"} and target in {"gen", "video"}:
+                port = "prompt"
+            elif source in {"image", "gen"} and target in {"reverse", "gen", "video"}:
+                port = "image"
+            else:
+                return "incompatible_edge"
+            if edge["from"]["port"] != port or edge["to"]["port"] != port:
+                return "incompatible_edge"
+    return None
+
 def public_canvas_batch(row):
     try:
         ops = json.loads(row["ops_json"])
@@ -1547,7 +1577,7 @@ def canvas_online_users(c, board_id, now=None):
 def canvas_online_count(c, board_id, now=None):
     return len(canvas_online_users(c, board_id, now))
 
-def apply_canvas_ops(username, board_id, payload):
+def apply_canvas_ops(username, board_id, payload, cli_safe=False):
     normalized, err = normalize_canvas_ops_payload(payload)
     if err:
         return None, err
@@ -1570,6 +1600,14 @@ def apply_canvas_ops(username, board_id, payload):
         existing = c.execute("SELECT * FROM canvas_ops WHERE board_id=? AND op_id=?",
                              (board_id, normalized["op_id"])).fetchone()
         if existing:
+            try:
+                existing_ops = json.loads(existing["ops_json"])
+            except Exception:
+                existing_ops = None
+            if (existing["username"] != username or existing["client_id"] != normalized["client_id"]
+                    or existing_ops != normalized["ops"]):
+                c.rollback()
+                return None, "idempotency_conflict"
             board = public_canvas_board(row, role, include_data=True, members_count=canvas_member_count(c, board_id))
             board["members"] = list_canvas_members(c, board_id)
             result = {
@@ -1596,6 +1634,11 @@ def apply_canvas_ops(username, board_id, payload):
             data = json.loads(row["data_json"] or "{}")
         except Exception:
             data = {}
+        if cli_safe:
+            err = validate_cli_canvas_ops({"data": data}, normalized["ops"])
+            if err:
+                c.rollback()
+                return None, err
         data, name = apply_canvas_ops_to_snapshot(data, row["name"], normalized["ops"])
         data_json, err = pack_canvas_data(data)
         if err:
@@ -3463,7 +3506,7 @@ class H(BaseHTTPRequestHandler):
             plan = hq_cli_api.action_plan(action, input_body)
             if plan["scope"] not in scopes:
                 raise hq_cli_api.CLIAPIError(403, "当前 CLI 授权缺少权限：" + plan["scope"], "insufficient_scope")
-            if action in {"ip12-create", "ip12-message", "prompt-optimize", "canvas-create", "asset-favorite", "asset-tags"} and not confirm:
+            if action in {"ip12-create", "ip12-message", "prompt-optimize", "canvas-create", "canvas-ops", "asset-favorite", "asset-tags"} and not confirm:
                 raise hq_cli_api.CLIAPIError(409, "该操作需要显式确认", "confirmation_required")
             if plan["kind"] == "account":
                 return self._cli_send(200, {"user": self._cli_public_user(row), "scopes": list(scopes),
@@ -3486,6 +3529,25 @@ class H(BaseHTTPRequestHandler):
                     raise hq_cli_api.CLIAPIError(400, "画布创建失败：" + err)
                 return self._cli_send(200, {"board": board,
                     "url": hq_cli_api.PUBLIC_ORIGIN + "/workbench/canvas?collab=" + urllib.parse.quote(board["id"])})
+            if plan["kind"] == "canvas-ops":
+                result, err = apply_canvas_ops(row["username"], plan["board_id"], {
+                    **plan["payload"], "client_id": "hq-cli",
+                }, cli_safe=True)
+                if err == "not_found":
+                    raise hq_cli_api.CLIAPIError(404, "画布不存在", "not_found")
+                if err == "forbidden":
+                    raise hq_cli_api.CLIAPIError(403, "当前账号没有画布编辑权限", "forbidden")
+                if err == "conflict":
+                    raise hq_cli_api.CLIAPIError(409, "画布已更新，请读取最新版本后重试", "canvas_version_conflict")
+                if err == "idempotency_conflict":
+                    raise hq_cli_api.CLIAPIError(409, "op_id 已绑定其他画布操作", "idempotency_conflict")
+                if err == "rate_limited":
+                    raise hq_cli_api.CLIAPIError(429, "画布操作过于频繁，请稍后重试", "rate_limited")
+                if err in {"too_many_ops", "too_large"}:
+                    raise hq_cli_api.CLIAPIError(413, "画布操作数据过大", err)
+                if err:
+                    raise hq_cli_api.CLIAPIError(400, "画布写入失败：" + err, err)
+                return self._cli_send(200, result)
             if plan["kind"] == "generation":
                 generation_kind, payload = plan["generation_kind"], plan["payload"]
                 if confirm:
@@ -3496,21 +3558,28 @@ class H(BaseHTTPRequestHandler):
                     claims = hq_cli_api.verify_quote(
                         INTERNAL_TOKEN, quote_token, row["username"], generation_kind, payload,
                     )
+                    submit_body = dict(payload)
+                    if plan.get("quoted_cost_field"):
+                        submit_body[plan["quoted_cost_field"]] = claims["c"]
+                    submit_headers = {
+                        "Idempotency-Key": "hqcli-" + claims["n"],
+                        "X-HQ-Expected-Cost": str(claims["c"]),
+                    }
+                    submit_headers.update(plan.get("submit_headers") or {})
                     submit_plan = {
                         "base": hq_cli_api.CONTENT_BASE, "path": plan["endpoint"], "method": "POST",
-                        "body": payload, "timeout": 30, "internal": True,
-                        "headers": {
-                            "Idempotency-Key": "hqcli-" + claims["n"],
-                            "X-HQ-Expected-Cost": str(claims["c"]),
-                        },
+                        "body": submit_body, "timeout": 30, "internal": True,
+                        "headers": submit_headers,
                     }
                     status, result = self._cli_proxy(submit_plan, row["username"])
                     return self._cli_send(status, result)
                 if quote_token:
                     raise hq_cli_api.CLIAPIError(400, "quote_token 只能与 confirm=true 同时使用")
                 quote_plan = {
-                    "base": hq_cli_api.CONTENT_BASE, "path": "/api/gen/cli/quote", "method": "POST",
-                    "body": {"kind": generation_kind, "payload": payload}, "timeout": 30, "internal": True,
+                    "base": hq_cli_api.CONTENT_BASE,
+                    "path": plan.get("quote_endpoint", "/api/gen/cli/quote"), "method": "POST",
+                    "body": plan.get("quote_body", {"kind": generation_kind, "payload": payload}),
+                    "timeout": 30, "internal": True,
                 }
                 status, result = self._cli_proxy(quote_plan, row["username"])
                 if not 200 <= status < 300:
@@ -4514,6 +4583,8 @@ class H(BaseHTTPRequestHandler):
                 if err == "rate_limited":
                     return self._send(429, {"detail": "操作太频繁，请稍候",
                                             "retry_after": (result or {}).get("retry_after")})
+                if err == "idempotency_conflict":
+                    return self._send(409, {"detail": "op_id 已绑定其他操作", "code": err})
                 if err in {"too_many_ops", "too_large"}:
                     return self._send(413, {"detail": "画布操作数据过大"})
                 if err:
