@@ -3,7 +3,8 @@
 """Huangque operations admin API.
 
 Stage 1 covers service/key/channel visibility and read-only job statistics.
-All /api/admin/* routes require a platform token whose user role is admin.
+Admin routes require an admin token; the two explicitly named public inspiration
+read/event routes are consumed by the public gallery.
 """
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -16,8 +17,10 @@ import re
 
 try:
     import func_names                    # 生产：admin_api.py 直接跑，同目录下就是 func_names.py
+    import inspiration_cases
 except ModuleNotFoundError:              # 测试：以包的形式 import server.admin_api，server/ 不在 sys.path 上
     from . import func_names
+    from . import inspiration_cases
 import sqlite3
 import time
 import urllib.error
@@ -651,6 +654,7 @@ def init_db():
         feature_flags.init_db()
     if provider_keys is not None:
         provider_keys.init_db()
+    inspiration_cases.init_db(ADMIN_DB)
 
 
 def verify(token):
@@ -1981,6 +1985,11 @@ class H(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if not path.startswith("/api/admin/"):
             return self._send(404, {"detail": "not found"})
+        if path == "/api/admin/public/inspirations":
+            try:
+                return self._send(200, inspiration_cases.list_public(ADMIN_DB))
+            except Exception:
+                return self._send(500, {"detail": "灵感案例加载失败"})
         user = self._admin()
         if not user:
             return
@@ -1996,6 +2005,14 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"items": load_channels()})
         if path == "/api/admin/features":
             return self._send(200, {"items": load_features()})
+        if path == "/api/admin/inspirations":
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                return self._send(200, inspiration_cases.list_admin(
+                    ADMIN_DB, JOB_DB, (q.get("days") or ["30"])[0]
+                ))
+            except Exception as exc:
+                return self._send(500, {"detail": str(exc)[:180] or "案例加载失败"})
         if path == "/api/admin/users":
             q = urllib.parse.urlparse(self.path).query
             suffix = "/api/auth/admin/users" + (("?" + q) if q else "")
@@ -2133,9 +2150,63 @@ class H(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if not path.startswith("/api/admin/"):
             return self._send(404, {"detail": "not found"})
+        if path == "/api/admin/public/inspiration-events":
+            try:
+                if int(self.headers.get("Content-Length") or 0) > 16384:
+                    raise ValueError("事件请求过大")
+                return self._send(200, inspiration_cases.record_events(ADMIN_DB, self._body()))
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
+            except Exception:
+                return self._send(500, {"detail": "事件记录失败"})
         user = self._admin()
         if not user:
             return
+        if path == "/api/admin/inspirations/media":
+            try:
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                result = inspiration_cases.upload_media(
+                    self.rfile,
+                    self.headers.get("Content-Length"),
+                    self.headers.get("Content-Type"),
+                    (q.get("kind") or [""])[0],
+                )
+                try:
+                    _admin_audit(
+                        user.get("username") or "admin", "inspiration.media.upload", result["key"],
+                        {"media_type": result["media_type"], "size": result["size"]},
+                    )
+                except Exception as audit_error:
+                    print("inspiration upload audit failed:", type(audit_error).__name__)
+                return self._send(200, result)
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
+            except RuntimeError as exc:
+                return self._send(503, {"detail": str(exc)})
+            except Exception:
+                return self._send(500, {"detail": "素材上传失败，请重试"})
+        if path in {"/api/admin/inspirations/save", "/api/admin/inspirations/status"}:
+            actor = user.get("username") or "admin"
+            try:
+                body = self._body()
+                if path.endswith("/save"):
+                    item = inspiration_cases.save_case(ADMIN_DB, body, actor, bool(body.get("publish")))
+                    action = "publish" if body.get("publish") else "save"
+                else:
+                    status = str(body.get("status") or "")
+                    item = inspiration_cases.set_status(ADMIN_DB, body.get("id"), status, actor)
+                    action = status
+                try:
+                    _admin_audit(actor, "inspiration.%s" % action, item["id"], {
+                        "title": item["title"], "status": item["status"], "public_id": item["public_id"],
+                    })
+                except Exception as audit_error:
+                    print("inspiration audit failed:", type(audit_error).__name__)
+                return self._send(200, {"ok": True, "item": item})
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
+            except Exception as exc:
+                return self._send(500, {"detail": str(exc)[:180] or "保存失败"})
         if path == "/api/admin/server-keys/reveal":
             try:
                 result = reveal_server_key(

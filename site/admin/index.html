@@ -112,7 +112,26 @@
     .detail-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0}
     .detail-block{min-width:0;padding:12px;border:1px solid var(--line);border-radius:8px;background:rgba(17,22,19,.72)}
     .detail-block h3{margin:0 0 8px;font-size:13px}.detail-block .table-wrap{max-height:280px;overflow:auto}
-    @media (max-width:960px){.shell{padding:20px 14px}.span3,.span4,.span6,.span8{grid-column:span 12}.channels,.feature-grid,.invite-config,.membership-recharge,.detail-grid{grid-template-columns:1fr}.ledger-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ledger-stat:nth-child(2){border-right:0}.ledger-stat:nth-child(-n+2){border-bottom:1px solid var(--line)}header{flex-direction:column}.user{width:100%}}
+    .case-workspace{display:grid;grid-template-columns:minmax(340px,.9fr) minmax(420px,1.1fr);gap:14px}
+    .case-panel{border:1px solid var(--line);border-radius:8px;background:rgba(17,22,19,.56);padding:14px;min-width:0}
+    .case-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+    .case-fields label,.case-full{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12px}
+    .case-fields .field,.case-fields select,.case-full .field{width:100%;min-width:0}
+    .case-full{margin-top:10px}.case-full textarea{margin:0;min-height:118px;font-family:inherit;font-size:13px}
+    .case-checks{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-top:10px;color:var(--muted);font-size:12px}.case-checks input{accent-color:var(--primary)}
+    .case-upload{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+    .upload-box{display:flex;min-height:82px;align-items:center;justify-content:center;text-align:center;border:1px dashed rgba(240,190,85,.35);border-radius:8px;background:rgba(240,190,85,.045);padding:10px;color:var(--gold);cursor:pointer}
+    .upload-box[hidden]{display:none}.upload-box input{display:none}.upload-box small{display:block;color:var(--muted);font-weight:400;margin-top:4px}
+    .case-preview{margin-top:12px;min-height:190px;border:1px solid var(--line);border-radius:8px;background:#0b0f0d;display:grid;place-items:center;overflow:hidden;position:relative}
+    .case-preview img,.case-preview video{display:block;width:100%;height:260px;object-fit:contain;background:#070a08}
+    .case-preview .preview-copy{position:absolute;left:0;right:0;bottom:0;padding:28px 12px 11px;background:linear-gradient(transparent,rgba(7,10,8,.92))}
+    .case-list{display:grid;gap:10px;max-height:860px;overflow:auto;padding-right:3px}
+    .case-item{display:grid;grid-template-columns:92px 1fr;gap:12px;padding:10px;border:1px solid var(--line);border-radius:8px;background:rgba(32,40,34,.58)}
+    .case-thumb{width:92px;height:110px;object-fit:cover;border-radius:6px;background:#0b0f0d}
+    .case-item h3{margin:0;font-size:14px}.case-meta,.case-metrics{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-top:7px}.case-metrics{color:var(--muted);font-size:12px}
+    .case-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}.case-actions button{height:29px;font-size:12px;padding:0 9px}
+    @media (max-width:960px){.shell{padding:20px 14px}.span3,.span4,.span6,.span8{grid-column:span 12}.channels,.feature-grid,.invite-config,.membership-recharge,.detail-grid,.case-workspace{grid-template-columns:1fr}.ledger-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ledger-stat:nth-child(2){border-right:0}.ledger-stat:nth-child(-n+2){border-bottom:1px solid var(--line)}header{flex-direction:column}.user{width:100%}.case-list{max-height:none}}
+    @media (max-width:560px){.case-fields,.case-upload{grid-template-columns:1fr}.case-item{grid-template-columns:72px 1fr}.case-thumb{width:72px;height:92px}}
   </style>
 </head>
 <body>
@@ -153,7 +172,53 @@
         <button class="tab" data-module-tab="points">点数流水</button>
         <button class="tab" data-module-tab="recharge">充值管理</button>
         <button class="tab" data-module-tab="invite">邀请管理</button>
+        <button class="tab" data-module-tab="inspirations">灵感案例</button>
       </div>
+
+      <section class="card span12 module-card" data-module="inspirations" hidden>
+        <div class="section-head">
+          <div><h2>灵感案例管理</h2><div class="hint">上传图片，或上传视频＋封面；确认来源授权后即可发布到首页灵感案例。</div></div>
+          <div class="actions"><span class="muted" id="caseCount">-</span><button id="caseRefresh">刷新</button><button class="primary" id="caseNew">新建案例</button></div>
+        </div>
+        <div class="case-workspace">
+          <div class="case-panel" id="caseEditor">
+            <div class="row"><div><b id="caseEditorTitle">新建案例</b><div class="hint">先保存草稿也可以，发布前会自动检查必填项。</div></div><span class="pill neutral" id="caseEditStatus">草稿</span></div>
+            <input type="hidden" id="caseId">
+            <div class="case-fields" style="margin-top:12px">
+              <label>素材类型<select id="caseMediaType"><option value="image">图片案例</option><option value="video">视频案例</option></select></label>
+              <label>做同款目标<select id="caseTarget">
+                <optgroup label="作图"><option value="nb2">纳米香蕉 2</option><option value="pro">纳米香蕉 Pro</option><option value="gpt">黄雀引擎 2</option><option value="seedream">黄雀引擎 1</option></optgroup>
+                <optgroup label="视频"><option value="grok">果肉视频</option><option value="micro">Seedance</option><option value="omni">Omni</option></optgroup>
+              </select></label>
+              <label>标题<input class="field" id="caseTitle" maxlength="80" placeholder="例如：春日樱花水光肌"></label>
+              <label>分类<input class="field" id="caseCategory" maxlength="30" list="caseCategoryOptions" placeholder="例如：医美焕肤"></label>
+              <label>标签<input class="field" id="caseTags" maxlength="160" placeholder="朋友圈, 水光肌, 写实"></label>
+              <label>排序<input class="field" id="caseSort" type="number" min="0" max="9999" value="100" inputmode="numeric"><span>数字越小越靠前</span></label>
+            </div>
+            <datalist id="caseCategoryOptions"><option value="护肤精华"><option value="医美焕肤"><option value="门店拓客"><option value="美妆产品"><option value="朋友圈日签"><option value="客户案例展示"></datalist>
+            <label class="case-full">提示词<textarea id="casePrompt" maxlength="5000" placeholder="用户点“做同款”后会自动带入这里的内容"></textarea></label>
+            <div class="case-upload">
+              <label class="upload-box"><input id="caseMediaFile" type="file" accept="image/png,image/jpeg,image/webp"><span><b id="caseMediaLabel">上传案例图片</b><small id="caseMediaState">PNG / JPG / WebP，最大 10MB</small></span></label>
+              <label class="upload-box" id="caseCoverBox" hidden><input id="caseCoverFile" type="file" accept="image/png,image/jpeg,image/webp"><span><b>上传视频封面</b><small id="caseCoverState">PNG / JPG / WebP，最大 10MB</small></span></label>
+            </div>
+            <input type="hidden" id="caseMediaUrl"><input type="hidden" id="caseCoverUrl">
+            <div class="case-fields" style="margin-top:10px">
+              <label>素材来源<input class="field" id="caseSourcePlatform" maxlength="40" list="caseSourceOptions" placeholder="例如：抖音 / 原创拍摄"></label>
+              <label>原链接<input class="field" id="caseSourceUrl" type="url" maxlength="2000" placeholder="https://..."></label>
+              <label>授权状态<select id="caseRights"><option value="">待确认</option><option value="original">原创素材</option><option value="authorized">已获授权</option></select></label>
+              <label>授权备注<input class="field" id="caseRightsNote" maxlength="300" placeholder="授权人、日期或凭证位置"></label>
+            </div>
+            <datalist id="caseSourceOptions"><option value="原创"><option value="抖音"><option value="快手"><option value="小红书"><option value="视频号"></datalist>
+            <div class="case-checks"><label><input id="caseFeatured" type="checkbox"> 首页置顶</label><span>曝光和做同款点击会自动统计</span></div>
+            <div class="case-preview" id="casePreview"><div class="muted">上传素材后在这里预览前台效果</div></div>
+            <div class="actions" style="margin-top:12px"><button id="caseSave">保存草稿</button><button class="primary" id="casePublish">保存并发布</button><button id="caseReset">清空</button></div>
+          </div>
+          <div class="case-panel">
+            <div class="row" style="margin-bottom:10px"><div><b>案例列表</b><div class="hint">数据为近 30 天成功生成与积分消耗。</div></div><select id="caseFilter"><option value="all">全部状态</option><option value="published">已发布</option><option value="draft">草稿</option><option value="unpublished">已下架</option></select></div>
+            <div class="case-list" id="caseList"><div class="empty">正在加载案例…</div></div>
+          </div>
+        </div>
+      </section>
 
       <section class="card span12 module-card" data-module="ops">
         <div class="section-head"><div><h2>服务健康</h2><div class="hint">页面每 30 秒自动刷新一次；「测试」会立即单独探测该服务。</div></div></div>
@@ -881,6 +946,72 @@
     fetch(url,{headers:authHeaders()}).then(function(r){if(!r.ok)return r.json().then(function(d){throw new Error(d.detail||'导出失败')});return r.blob()}).then(function(blob){var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='邀请关系-'+new Date().toISOString().slice(0,10)+'.xlsx';a.click();setTimeout(function(){URL.revokeObjectURL(a.href)},1000)}).catch(function(e){toast(e.message)});
   }
 
+  var caseItems=[], caseLoading=false;
+  var imageTargets=['nb2','pro','gpt','seedream'];
+  function caseTargetName(v){return ({nb2:'纳米香蕉 2',pro:'纳米香蕉 Pro',gpt:'黄雀引擎 2',seedream:'黄雀引擎 1',grok:'果肉视频',micro:'Seedance',omni:'Omni'})[v]||v}
+  function caseStatusPill(v){var map={published:['ok','已发布'],draft:['warn','草稿'],unpublished:['neutral','已下架']},x=map[v]||['neutral',v];return '<span class="pill '+x[0]+'">'+esc(x[1])+'</span>'}
+  function syncCaseMedia(clearUrls){
+    var video=el('caseMediaType').value==='video', targetIsImage=imageTargets.indexOf(el('caseTarget').value)>=0;
+    if(video&&targetIsImage)el('caseTarget').value='grok';
+    if(!video&&!targetIsImage)el('caseTarget').value='nb2';
+    el('caseCoverBox').hidden=!video;
+    el('caseMediaFile').accept=video?'video/mp4,video/webm':'image/png,image/jpeg,image/webp';
+    el('caseMediaLabel').textContent=video?'上传案例视频':'上传案例图片';
+    el('caseMediaState').textContent=video?'MP4 / WebM，最大 200MB':'PNG / JPG / WebP，最大 10MB';
+    if(clearUrls){el('caseMediaUrl').value='';el('caseCoverUrl').value='';el('caseMediaFile').value='';el('caseCoverFile').value=''}
+    renderCasePreview();
+  }
+  function resetCaseEditor(){
+    el('caseId').value='';el('caseTitle').value='';el('caseCategory').value='';el('caseTags').value='';el('casePrompt').value='';
+    el('caseMediaType').value='image';el('caseTarget').value='nb2';el('caseSort').value='100';el('caseMediaUrl').value='';el('caseCoverUrl').value='';
+    el('caseSourcePlatform').value='';el('caseSourceUrl').value='';el('caseRights').value='';el('caseRightsNote').value='';el('caseFeatured').checked=false;
+    el('caseMediaFile').value='';el('caseCoverFile').value='';el('caseMediaState').textContent='PNG / JPG / WebP，最大 10MB';el('caseCoverState').textContent='PNG / JPG / WebP，最大 10MB';el('caseEditorTitle').textContent='新建案例';el('caseEditStatus').outerHTML='<span class="pill neutral" id="caseEditStatus">草稿</span>';
+    syncCaseMedia(false);
+  }
+  function casePayload(publish){
+    return {id:Number(el('caseId').value||0),title:el('caseTitle').value,category:el('caseCategory').value,tags:el('caseTags').value.split(',').map(function(x){return x.trim()}).filter(Boolean),prompt:el('casePrompt').value,media_type:el('caseMediaType').value,media_url:el('caseMediaUrl').value,cover_url:el('caseCoverUrl').value,target:el('caseTarget').value,sort_order:Number(el('caseSort').value||100),featured:el('caseFeatured').checked,source_platform:el('caseSourcePlatform').value,source_url:el('caseSourceUrl').value,rights_status:el('caseRights').value,rights_note:el('caseRightsNote').value,publish:!!publish};
+  }
+  function renderCasePreview(){
+    var box=el('casePreview'),media=el('caseMediaUrl').value,cover=el('caseCoverUrl').value,title=(el('caseTitle').value||'案例标题').trim(),category=(el('caseCategory').value||'案例分类').trim(),video=el('caseMediaType').value==='video';
+    if(!media){box.innerHTML='<div class="muted">上传素材后在这里预览前台效果</div>';return}
+    var visual=video?'<video src="'+esc(media)+'" poster="'+esc(cover)+'" controls muted playsinline></video>':'<img src="'+esc(media)+'" alt="">';
+    box.innerHTML=visual+'<div class="preview-copy"><b>'+esc(title)+'</b><div class="muted">'+esc(category)+' · '+esc(caseTargetName(el('caseTarget').value))+'</div></div>';
+  }
+  function uploadCaseFile(input,kind,stateId,onDone){
+    var file=input.files&&input.files[0];if(!file)return;
+    var max=kind==='video'?200*1024*1024:10*1024*1024;if(file.size>max){toast(kind==='video'?'视频不能超过 200MB':'图片不能超过 10MB');input.value='';return}
+    var out=el(stateId),xhr=new XMLHttpRequest();out.textContent='准备上传…';input.disabled=true;
+    xhr.open('POST','/api/admin/inspirations/media?kind='+encodeURIComponent(kind),true);xhr.setRequestHeader('Authorization','Bearer '+token);xhr.setRequestHeader('Content-Type',file.type||'application/octet-stream');
+    xhr.upload.onprogress=function(e){if(e.lengthComputable)out.textContent='上传 '+Math.round(e.loaded/e.total*100)+'%'};
+    xhr.onload=function(){input.disabled=false;var d={};try{d=JSON.parse(xhr.responseText||'{}')}catch(e){}if(xhr.status<200||xhr.status>=300){out.textContent='上传失败';toast(d.detail||'素材上传失败');return}out.textContent='已上传 · '+Math.round(Number(d.size||file.size)/1024/1024*10)/10+'MB';onDone(d.url);renderCasePreview()};
+    xhr.onerror=function(){input.disabled=false;out.textContent='上传失败';toast('网络中断，请重试')};xhr.send(file);
+  }
+  function renderCaseList(){
+    var filter=el('caseFilter').value,items=caseItems.filter(function(x){return filter==='all'||x.status===filter});
+    el('caseCount').textContent='共 '+caseItems.length+' 个案例';
+    if(!items.length){el('caseList').innerHTML='<div class="empty">暂无'+(filter==='all'?'':'该状态的')+'案例</div>';return}
+    el('caseList').innerHTML=items.map(function(x){var action=x.status==='published'?'<button class="danger" data-case-status="unpublished" data-id="'+x.id+'">下架</button>':'<button class="primary" data-case-status="published" data-id="'+x.id+'">上架</button>';return '<article class="case-item"><img class="case-thumb" src="'+esc(x.cover_url||x.media_url)+'" alt=""><div><div class="row"><h3>'+esc(x.title)+'</h3>'+caseStatusPill(x.status)+'</div><div class="case-meta"><span class="pill neutral">'+esc(x.media_type==='video'?'视频':'图片')+'</span><span class="muted">'+esc(caseTargetName(x.target))+' · '+esc(x.category||'未分类')+(x.featured?' · 置顶':'')+'</span></div><div class="case-metrics"><span>曝光 '+Number(x.impressions||0).toLocaleString()+'</span><span>做同款 '+Number(x.clicks||0).toLocaleString()+'</span><span>成功 '+Number(x.success_count||0).toLocaleString()+'</span><span>积分 '+Number(x.points_spent||0).toLocaleString()+'</span></div><div class="case-actions"><button data-case-edit="'+x.id+'">编辑</button>'+action+'<a class="btn mini" style="text-decoration:none;display:inline-flex;align-items:center" href="/workbench/inspiration" target="_blank" rel="noopener">看前台</a></div></div></article>'}).join('');
+    Array.prototype.forEach.call(el('caseList').querySelectorAll('[data-case-edit]'),function(btn){btn.onclick=function(){editCase(Number(btn.getAttribute('data-case-edit')))}});
+    Array.prototype.forEach.call(el('caseList').querySelectorAll('[data-case-status]'),function(btn){btn.onclick=function(){setCaseStatus(btn)}});
+  }
+  function loadInspirations(){
+    if(caseLoading)return;caseLoading=true;el('caseList').innerHTML='<div class="empty">正在加载案例…</div>';
+    api('/api/admin/inspirations?days=30').then(function(d){caseItems=d.items||[];renderCaseList()}).catch(function(e){el('caseList').innerHTML='<div class="error">'+esc(e.message)+'</div>'}).finally(function(){caseLoading=false});
+  }
+  function editCase(id){
+    var x=caseItems.find(function(item){return Number(item.id)===Number(id)});if(!x)return;
+    el('caseId').value=x.id;el('caseTitle').value=x.title||'';el('caseCategory').value=x.category||'';el('caseTags').value=(x.tags||[]).join(', ');el('casePrompt').value=x.prompt||'';el('caseMediaType').value=x.media_type||'image';el('caseTarget').value=x.target||'nb2';el('caseSort').value=x.sort_order==null?100:x.sort_order;el('caseMediaUrl').value=x.media_url||'';el('caseCoverUrl').value=x.cover_url||'';el('caseSourcePlatform').value=x.source_platform||'';el('caseSourceUrl').value=x.source_url||'';el('caseRights').value=x.rights_status||'';el('caseRightsNote').value=x.rights_note||'';el('caseFeatured').checked=!!x.featured;
+    el('caseMediaState').textContent=x.media_url?'素材已上传':'尚未上传';el('caseCoverState').textContent=x.cover_url?'封面已上传':'尚未上传';el('caseEditorTitle').textContent='编辑 · '+x.title;el('caseEditStatus').outerHTML=caseStatusPill(x.status).replace('<span ','<span id="caseEditStatus" ');syncCaseMedia(false);el('caseEditor').scrollIntoView({behavior:'smooth',block:'start'});
+  }
+  function saveCase(publish){
+    var btn=publish?el('casePublish'):el('caseSave');btn.disabled=true;
+    api('/api/admin/inspirations/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(casePayload(publish))}).then(function(d){toast(publish?'案例已发布':'案例已保存');caseItems=[d.item].concat(caseItems.filter(function(x){return x.id!==d.item.id}));renderCaseList();editCase(d.item.id)}).catch(function(e){toast(e.message)}).finally(function(){btn.disabled=false});
+  }
+  function setCaseStatus(btn){
+    var status=btn.getAttribute('data-case-status');if(status==='unpublished'&&!confirm('下架后前台将立即不再展示这个案例，继续吗？'))return;btn.disabled=true;
+    api('/api/admin/inspirations/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:Number(btn.getAttribute('data-id')),status:status})}).then(function(){toast(status==='published'?'案例已上架':'案例已下架');loadInspirations()}).catch(function(e){toast(e.message)}).finally(function(){btn.disabled=false});
+  }
+
   function renderStats(st){
     var rows=(st.by_kind||[]).map(function(x){
       return '<tr><td><b>'+esc(kindName(x.kind))+'</b><div class="muted">'+esc(x.kind)+'</div></td><td>'+Number(x.total||0).toLocaleString()+'</td><td>'+Number(x.done||0).toLocaleString()+'</td><td>'+Number(x.error||0).toLocaleString()+'</td><td>'+pct(x.success_rate)+'</td><td><div class="bar"><i style="width:'+pct(x.failure_rate)+'"></i></div><span class="muted">'+pct(x.failure_rate)+'</span></td></tr>';
@@ -896,6 +1027,7 @@
     if(name==='points'){loadPoints()}
     if(name==='recharge'){loadRecharge()}
     if(name==='invite'){loadInvite()}
+    if(name==='inspirations'){loadInspirations()}
   }
   function render(d){
     state.data=d; setUser(d.user||{});
@@ -969,6 +1101,12 @@
   el('inviteStatus').onchange=loadInvite;
   el('inviteRisk').onchange=loadInvite;
   ['rewardInviter','rewardInvitee'].forEach(function(id){el(id).oninput=function(){clearTimeout(state.rewardTimer);state.rewardTimer=setTimeout(loadInvite,300)}});el('rewardStatus').onchange=loadInvite;
+  el('caseRefresh').onclick=loadInspirations;el('caseNew').onclick=resetCaseEditor;el('caseReset').onclick=resetCaseEditor;el('caseSave').onclick=function(){saveCase(false)};el('casePublish').onclick=function(){saveCase(true)};el('caseFilter').onchange=renderCaseList;
+  el('caseMediaType').onchange=function(){syncCaseMedia(true)};
+  el('caseTarget').onchange=function(){var shouldBeImage=imageTargets.indexOf(el('caseTarget').value)>=0;if((el('caseMediaType').value==='image')!==shouldBeImage){el('caseMediaType').value=shouldBeImage?'image':'video';syncCaseMedia(true)}else renderCasePreview()};
+  ['caseTitle','caseCategory'].forEach(function(id){el(id).oninput=renderCasePreview});
+  el('caseMediaFile').onchange=function(){var kind=el('caseMediaType').value;uploadCaseFile(el('caseMediaFile'),kind,'caseMediaState',function(url){el('caseMediaUrl').value=url;if(kind==='image')el('caseCoverUrl').value=url})};
+  el('caseCoverFile').onchange=function(){uploadCaseFile(el('caseCoverFile'),'image','caseCoverState',function(url){el('caseCoverUrl').value=url})};
   Array.prototype.forEach.call(document.querySelectorAll('[data-module-tab]'), function(btn){
     btn.onclick=function(){switchModule(btn.getAttribute('data-module-tab'))};
   });
