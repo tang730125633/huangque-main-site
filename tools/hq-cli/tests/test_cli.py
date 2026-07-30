@@ -1,9 +1,11 @@
 import io
+import hashlib
 import json
 import os
 import stat
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from hq_cli import cli, client
@@ -48,7 +50,7 @@ class HqCliTests(unittest.TestCase):
         expected = {
             "account", "ip12-projects", "ip12-project", "ip12-create", "ip12-report", "ip12-message",
             "prompt-optimize", "canvas-list", "canvas-get", "canvas-create", "tasks", "task",
-            "assets", "voices", "asset-favorite", "asset-tags",
+            "assets", "voices", "image-upload", "asset-favorite", "asset-tags",
             "image-generate", "video-generate", "audio-generate",
         }
         self.assertTrue(expected <= set(by_id))
@@ -56,6 +58,7 @@ class HqCliTests(unittest.TestCase):
         self.assertTrue(all(by_id[item]["runnable"] for item in expected))
         self.assertEqual("server_quote", by_id["image-generate"]["cost"]["kind"])
         self.assertEqual("hq_device_authorization", by_id["ip12-projects"]["target_auth"])
+        self.assertEqual("assets:upload", by_id["image-upload"]["required_scope"])
 
     def test_login_uses_device_flow_saves_token_without_printing_it(self):
         responses = [
@@ -182,6 +185,83 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual(cli.EXIT_CONFIRMATION, code)
         self.assertEqual("quote_required", self.payload(error)["error"])
         request.assert_not_called()
+
+    def test_image_upload_requires_confirmation_and_uses_file_transport(self):
+        self.authorize()
+        image_path = os.path.join(self.temp.name, "reference.png")
+        with patch.object(client, "upload_image") as upload:
+            code, _, error = self.invoke(["run", "image-upload", "--file", image_path])
+            self.assertEqual(cli.EXIT_CONFIRMATION, code)
+            upload.assert_not_called()
+            upload.return_value = (200, {
+                "upload_id": "img_" + "a" * 32, "mime": "image/png", "bytes": 12,
+                "sha256": "b" * 64, "expires_in": 3600,
+            })
+            code, output, error = self.invoke([
+                "run", "image-upload", "--file", image_path, "--confirm", "--json",
+            ])
+        self.assertEqual(0, code, error)
+        self.assertEqual("img_" + "a" * 32, self.payload(output)["result"]["upload_id"])
+        upload.assert_called_once_with(image_path, "t" * 43)
+
+    def test_streaming_image_client_sends_no_local_path_or_filename(self):
+        raw = b"\x89PNG\r\n\x1a\n" + b"private-image"
+        image_path = Path(self.temp.name) / "secret-name.png"
+        image_path.write_bytes(raw)
+        digest = hashlib.sha256(raw).hexdigest()
+
+        class Response:
+            status = 200
+
+            def read(self, _limit):
+                return json.dumps({"upload_id": "img_" + "a" * 32, "sha256": digest}).encode()
+
+        class Connection:
+            def __init__(self):
+                self.headers, self.sent = {}, bytearray()
+
+            def putrequest(self, method, path, **_kwargs):
+                self.method, self.path = method, path
+
+            def putheader(self, key, value):
+                self.headers[key] = value
+
+            def endheaders(self):
+                pass
+
+            def send(self, chunk):
+                self.sent.extend(chunk)
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                pass
+
+        connection = Connection()
+        with patch.object(client.http.client, "HTTPSConnection", return_value=connection):
+            status, payload = client.upload_image(str(image_path), "t" * 43)
+        self.assertEqual(200, status)
+        self.assertEqual("img_" + "a" * 32, payload["upload_id"])
+        self.assertEqual(raw, bytes(connection.sent))
+        self.assertEqual(client.IMAGE_UPLOAD_PATH, connection.path)
+        self.assertEqual("true", connection.headers["X-HQ-Confirm"])
+        serialized = json.dumps(connection.headers)
+        self.assertNotIn("secret-name.png", serialized)
+        self.assertNotIn(str(image_path), serialized)
+
+        link = Path(self.temp.name) / "linked.png"
+        link.symlink_to(image_path)
+        with self.assertRaises(ValueError):
+            client.upload_image(str(link), "t" * 43)
+
+        real_dir = Path(self.temp.name) / "real"
+        real_dir.mkdir()
+        (real_dir / "inside.png").write_bytes(raw)
+        linked_dir = Path(self.temp.name) / "linked-dir"
+        linked_dir.symlink_to(real_dir, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            client.upload_image(str(linked_dir / "inside.png"), "t" * 43)
 
     def test_navigation_is_main_site_only_and_never_opens_by_default(self):
         with patch("hq_cli.cli.webbrowser.open") as opened:

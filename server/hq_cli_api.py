@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import hmac
+import http.client
 import json
 import os
 import re
@@ -35,6 +36,7 @@ SCOPES = {
     "prompt:optimize": "把提示词发送给黄雀 AI 优化",
     "canvas:read": "读取本人可访问的画布",
     "canvas:write": "创建本人画布",
+    "assets:upload": "上传本人生成所需的临时参考图",
     "tasks:read": "读取本人任务状态与点数流水",
     "assets:read": "读取本人资产与音色",
     "assets:write": "收藏资产并管理本人资产标签",
@@ -46,6 +48,9 @@ DEFAULT_SCOPES = tuple(SCOPES)
 _START_HITS = {}
 _START_HITS_LOCK = threading.Lock()
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,160}$")
+_UPLOAD_ID_RE = re.compile(r"^img_[0-9a-f]{32}$")
+IMAGE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+IMAGE_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
 _TASK_KINDS = {
     "", "image", "audio", "video", "xiaole_video", "copy", "collect", "leads",
     "tryon", "cinematic", "avatar", "breakdown", "script_to_video", "sora_video",
@@ -202,6 +207,13 @@ def _enum(value, field, choices):
 def _identifier(value, field):
     value = _string(value, field, 1, 160)
     if not _ID_RE.fullmatch(value):
+        raise CLIAPIError(400, field + " 格式不合法")
+    return value
+
+
+def _upload_id(value, field):
+    value = _string(value, field, 1, 64).lower()
+    if not _UPLOAD_ID_RE.fullmatch(value):
         raise CLIAPIError(400, field + " 格式不合法")
     return value
 
@@ -458,6 +470,49 @@ def proxy_json(plan, web_token, internal_token=""):
     return int(status), payload
 
 
+def proxy_image_upload(stream, length, web_token, internal_token, content_type, digest):
+    if not internal_token:
+        raise CLIAPIError(503, "CLI 内部授权未配置", "not_configured")
+    target = urllib.parse.urlsplit(CONTENT_BASE)
+    if target.scheme != "http" or target.hostname not in {"127.0.0.1", "localhost"} or target.path not in {"", "/"}:
+        raise CLIAPIError(503, "CLI 图片上传目标配置不安全", "not_configured")
+    connection = http.client.HTTPConnection(target.hostname, target.port or 80, timeout=60)
+    try:
+        connection.putrequest("POST", "/api/gen/cli/image-upload", skip_accept_encoding=True)
+        connection.putheader("Authorization", "Bearer " + web_token)
+        connection.putheader("X-HQ-Internal-Token", internal_token)
+        connection.putheader("X-HQ-Image-SHA256", digest)
+        connection.putheader("Content-Type", content_type)
+        connection.putheader("Content-Length", str(length))
+        connection.putheader("Accept", "application/json")
+        connection.putheader("User-Agent", "huangque-auth-cli-upload/1")
+        connection.endheaders()
+        remaining = length
+        while remaining:
+            chunk = stream.read(min(64 * 1024, remaining))
+            if not chunk:
+                raise CLIAPIError(400, "图片上传不完整", "invalid_image_upload")
+            connection.send(chunk)
+            remaining -= len(chunk)
+        response = connection.getresponse()
+        raw, status = response.read(2 * 1024 * 1024 + 1), response.status
+    except CLIAPIError:
+        raise
+    except (OSError, http.client.HTTPException) as exc:
+        raise CLIAPIError(502, "图片上传服务暂时不可用：" + str(exc)[:120], "upstream_unavailable")
+    finally:
+        connection.close()
+    if len(raw) > 2 * 1024 * 1024:
+        raise CLIAPIError(502, "图片上传服务响应过大", "upstream_response_too_large")
+    try:
+        payload = json.loads(raw or b"{}")
+    except Exception:
+        raise CLIAPIError(502, "图片上传服务返回了无效响应", "invalid_upstream_response")
+    if not isinstance(payload, dict):
+        raise CLIAPIError(502, "图片上传服务返回了无效响应", "invalid_upstream_response")
+    return int(status), payload
+
+
 def _plan(scope, kind, **values):
     return {"scope": scope, "kind": kind, **values}
 
@@ -576,7 +631,10 @@ def action_plan(action, value):
 
 def _generation_payload(action, value):
     if action == "image-generate":
-        _strict_object(value, {"prompt", "provider", "ratio", "quality", "count", "variant"}, ("prompt",))
+        _strict_object(value, {
+            "prompt", "provider", "ratio", "quality", "count", "variant",
+            "image_upload_id", "mask_upload_id", "reference_upload_ids",
+        }, ("prompt",))
         body = {
             "prompt": _string(value["prompt"], "prompt", 1, 2000),
             "provider": _enum(value.get("provider", "openai"), "provider", ("openai", "xiaole", "seedream")),
@@ -588,6 +646,29 @@ def _generation_payload(action, value):
             if body["provider"] != "seedream":
                 raise CLIAPIError(400, "variant 仅用于 seedream")
             body["variant"] = _enum(value["variant"], "variant", ("std", "pro"))
+        if "image_upload_id" in value:
+            body["image_upload_id"] = _upload_id(value["image_upload_id"], "image_upload_id")
+        if "mask_upload_id" in value:
+            body["mask_upload_id"] = _upload_id(value["mask_upload_id"], "mask_upload_id")
+        if "reference_upload_ids" in value:
+            references = value["reference_upload_ids"]
+            if not isinstance(references, list) or not 1 <= len(references) <= 4:
+                raise CLIAPIError(400, "reference_upload_ids 必须包含 1-4 项")
+            body["reference_upload_ids"] = []
+            for item in references:
+                clean = _upload_id(item, "reference_upload_ids")
+                if clean not in body["reference_upload_ids"]:
+                    body["reference_upload_ids"].append(clean)
+        if body.get("image_upload_id") and body.get("reference_upload_ids"):
+            raise CLIAPIError(400, "单参考图和多参考图不能同时使用")
+        if body.get("mask_upload_id") and not body.get("image_upload_id"):
+            raise CLIAPIError(400, "蒙版必须同时提供 image_upload_id")
+        if body.get("mask_upload_id") and body["provider"] != "openai":
+            raise CLIAPIError(400, "蒙版局部修改仅支持 openai")
+        if body.get("mask_upload_id") and body["count"] != 1:
+            raise CLIAPIError(400, "蒙版局部修改 count 必须为 1")
+        if body.get("reference_upload_ids") and body["provider"] != "xiaole":
+            raise CLIAPIError(400, "多参考图目前仅支持 xiaole")
         return body, "image", "/api/gen/image"
     if action == "video-generate":
         _strict_object(value, {"prompt", "channel", "ratio", "duration", "resolution", "model", "generate_audio"}, ("prompt",))

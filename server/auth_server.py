@@ -3395,6 +3395,50 @@ class H(BaseHTTPRequestHandler):
             c = db()
             c.execute("DELETE FROM tokens WHERE token=?", (token,))
             c.commit(); c.close()
+
+    def _cli_image_upload(self):
+        auth = self._cli_user()
+        if not auth:
+            return self._cli_send(401, {"detail": "CLI 未登录或授权已过期", "code": "cli_unauthorized"})
+        row, scopes = auth
+        if "assets:upload" not in scopes:
+            return self._cli_send(403, {"detail": "当前 CLI 授权缺少权限：assets:upload", "code": "insufficient_scope"})
+        if (self.headers.get("X-HQ-Confirm") or "").strip().lower() != "true":
+            return self._cli_send(409, {"detail": "上传本地图片需要显式确认", "code": "confirmation_required"})
+        if self.headers.get("Transfer-Encoding"):
+            return self._cli_send(400, {"detail": "图片上传必须提供 Content-Length", "code": "invalid_image_upload"})
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            length = 0
+        if length <= 0 or length > hq_cli_api.IMAGE_UPLOAD_MAX_BYTES:
+            return self._cli_send(413, {"detail": "图片大小必须在 1B 到 10MB 之间", "code": "invalid_image_upload"})
+        content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if content_type not in {"image/jpeg", "image/png", "image/webp"}:
+            return self._cli_send(400, {"detail": "只支持 PNG / JPG / WebP", "code": "invalid_image_upload"})
+        digest = (self.headers.get("X-HQ-Image-SHA256") or "").strip().lower()
+        if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+            return self._cli_send(400, {"detail": "缺少有效的图片摘要", "code": "invalid_image_upload"})
+        if not hq_cli_api.IMAGE_UPLOAD_SLOTS.acquire(blocking=False):
+            return self._cli_send(429, {"detail": "图片上传繁忙，请稍后重试", "code": "upload_busy"})
+        token = ""
+        try:
+            token = issue_token(row["username"], ttl=hq_cli_api.BRIDGE_TOKEN_TTL)
+            status, result = hq_cli_api.proxy_image_upload(
+                self.rfile, length, token, INTERNAL_TOKEN, content_type, digest,
+            )
+        except hq_cli_api.CLIAPIError as exc:
+            status, result = exc.status, {"detail": exc.detail, "code": exc.code}
+        finally:
+            try:
+                if token:
+                    connection = db()
+                    connection.execute("DELETE FROM tokens WHERE token=?", (token,))
+                    connection.commit(); connection.close()
+            finally:
+                hq_cli_api.IMAGE_UPLOAD_SLOTS.release()
+        return self._cli_send(status, result)
+
     def _cli_action(self, body):
         auth = self._cli_user()
         if not auth:
@@ -3613,6 +3657,8 @@ class H(BaseHTTPRequestHandler):
             token = bearer_token(self.headers.get("Authorization"))
             hq_cli_api.revoke(db, token)
             return self._cli_send(200, {"ok": True})
+        if p == "/api/auth/cli/image-upload":
+            return self._cli_image_upload()
         if p == "/api/auth/cli/action":
             if self._content_length_exceeds(128 * 1024):
                 return self._cli_send(413, {"detail": "CLI 输入不能超过 128 KiB"})
