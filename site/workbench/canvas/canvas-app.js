@@ -9,12 +9,12 @@
   var canvasExporter=window.HQCanvas&&window.HQCanvas.exporter;
   var canvasStorage=storageApi.createStorage({storage:function(){return window.localStorage;}});
   var apiClient=apiModule.createClient({fetchImpl:window.fetch.bind(window),tokenProvider:tok,AbortControllerImpl:window.AbortController,setTimeoutImpl:setTimeout,clearTimeoutImpl:clearTimeout});
-  var wrap=document.querySelector('.nc-wrap'), inner=document.getElementById('ncInner'), svg=document.getElementById('ncEdges'), canvas=document.getElementById('ncCanvas'), empty=document.getElementById('ncEmpty'), selectionBox=document.getElementById('ncSelectionBox'), selectedRegion=document.getElementById('ncSelectedRegion'), guideX=document.getElementById('ncGuideX'), guideY=document.getElementById('ncGuideY');
+  var wrap=document.querySelector('.nc-wrap'), canvasShell=document.querySelector('.nc-canvas-shell'), inner=document.getElementById('ncInner'), svg=document.getElementById('ncEdges'), canvas=document.getElementById('ncCanvas'), empty=document.getElementById('ncEmpty'), selectionBox=document.getElementById('ncSelectionBox'), selectedRegion=document.getElementById('ncSelectedRegion'), guideX=document.getElementById('ncGuideX'), guideY=document.getElementById('ncGuideY');
   var boardHome=document.getElementById('ncBoardHome'), editorView=document.getElementById('ncEditorView'), boardGrid=document.getElementById('ncBoardGrid'), boardSearch=document.getElementById('ncBoardSearch'), boardSort=document.getElementById('ncBoardSort'), backHomeBtn=document.getElementById('ncBackHome');
   var nodeCountEl=document.getElementById('ncNodeCount'), edgeCountEl=document.getElementById('ncEdgeCount'), runStateEl=document.getElementById('ncRunState');
   var undoBtn=document.getElementById('ncUndo'), redoBtn=document.getElementById('ncRedo'), fullscreenBtn=document.getElementById('ncFullscreen'), zoomLabel=document.getElementById('ncZoomLabel'), map=document.getElementById('ncMap'), mapSvg=document.getElementById('ncMapSvg');
   var runAllBtn=document.getElementById('ncRunAll');
-  var fsAdd=document.getElementById('ncFsAdd'), fsUndo=document.getElementById('ncFsUndo'), fsRedo=document.getElementById('ncFsRedo'), fsZoomOut=document.getElementById('ncFsZoomOut'), fsZoomIn=document.getElementById('ncFsZoomIn'), fsZoomLabel=document.getElementById('ncFsZoomLabel'), fsFit=document.getElementById('ncFsFit'), fsMore=document.getElementById('ncFsMore'), fsRun=document.getElementById('ncFsRun'), fsExit=document.getElementById('ncFsExit'), saveStateEl=document.getElementById('ncSaveState'), onlineStateEl=document.getElementById('ncOnlineState');
+  var fsAgent=document.getElementById('ncFsAgent'), fsAdd=document.getElementById('ncFsAdd'), fsUndo=document.getElementById('ncFsUndo'), fsRedo=document.getElementById('ncFsRedo'), fsZoomOut=document.getElementById('ncFsZoomOut'), fsZoomIn=document.getElementById('ncFsZoomIn'), fsZoomLabel=document.getElementById('ncFsZoomLabel'), fsFit=document.getElementById('ncFsFit'), fsMore=document.getElementById('ncFsMore'), fsRun=document.getElementById('ncFsRun'), fsExit=document.getElementById('ncFsExit'), saveStateEl=document.getElementById('ncSaveState'), onlineStateEl=document.getElementById('ncOnlineState');
   var fsTplMenu=document.getElementById('ncFsTplMenu');
   var tplSelect=document.getElementById('ncTemplateSelect'), tplName=document.getElementById('ncTemplateName'), tplImportFile=document.getElementById('ncTplImportFile'), menu=document.getElementById('ncMenu'), cleanupStorageBtn=document.getElementById('ncCleanupStorage');
   var sidePanel=document.getElementById('ncSidePanel'), sideTitle=document.getElementById('ncSideTitle'), sideBody=document.getElementById('ncSideBody'), sideClose=document.getElementById('ncSideClose');
@@ -1161,6 +1161,7 @@
     if(wrap) wrap.classList.add('editing');
     if(editorView) editorView.style.display='';
     if(boardHome) boardHome.style.display='';
+    if(!window.matchMedia||window.matchMedia('(min-width:901px)').matches) openSidePanel('agent',true);
     setTimeout(function(){ fitView(); scheduleMap(); },40);
   }
   function showBoardHome(){
@@ -1444,21 +1445,37 @@
     if(!node) return '未命名节点';
     return (node.params&&node.params.title)||((TYPE[node.type]&&TYPE[node.type].name)||nodeTypeLabel(node.type));
   }
-  function openSidePanel(kind){
+  function openSidePanel(kind,keepOpen){
     if(!sidePanel||!sideBody) return;
-    activeSidePanel=activeSidePanel===kind?'':kind;
+    var beforeWidth=canvas&&canvas.clientWidth||0;
+    activeSidePanel=!keepOpen&&activeSidePanel===kind?'':kind;
     document.querySelectorAll('.nc-side-tool').forEach(function(b){ b.classList.toggle('on', b.getAttribute('data-side')===activeSidePanel); });
     sidePanel.classList.toggle('on', !!activeSidePanel);
     sidePanel.classList.toggle('agent', activeSidePanel==='agent');
+    if(canvasShell) canvasShell.classList.toggle('agent-open',activeSidePanel==='agent');
+    if(fsAgent) fsAgent.classList.toggle('on',activeSidePanel==='agent');
     sidePanel.setAttribute('aria-hidden', activeSidePanel?'false':'true');
     if(activeSidePanel) renderSidePanel();
+    if(canvas&&beforeWidth) requestAnimationFrame(function(){
+      var afterWidth=canvas.clientWidth;
+      canvas.scrollLeft=Math.max(0,canvas.scrollLeft+(beforeWidth-afterWidth)/2);
+      syncCanvasGrid(); scheduleMap();
+    });
   }
   function closeSidePanel(){
+    var beforeWidth=canvas&&canvas.clientWidth||0;
     activeSidePanel='';
     if(sidePanel) sidePanel.classList.remove('on');
     if(sidePanel) sidePanel.classList.remove('agent');
     if(sidePanel) sidePanel.setAttribute('aria-hidden','true');
+    if(canvasShell) canvasShell.classList.remove('agent-open');
+    if(fsAgent) fsAgent.classList.remove('on');
     document.querySelectorAll('.nc-side-tool').forEach(function(b){ b.classList.remove('on'); });
+    if(canvas&&beforeWidth) requestAnimationFrame(function(){
+      var afterWidth=canvas.clientWidth;
+      canvas.scrollLeft=Math.max(0,canvas.scrollLeft+(beforeWidth-afterWidth)/2);
+      syncCanvasGrid(); scheduleMap();
+    });
   }
   function renderSidePanel(){
     if(!activeSidePanel||!sideBody) return;
@@ -1559,8 +1576,15 @@
   }
   function currentAgentSession(){
     var key=agentSessionKey();
-    if(!agentSessions[key]) agentSessions[key]={key:key,messages:[],quote:null,points:null,quoteLoading:false,quoteError:'',pending:false,status:'',plan:null,applied:false};
+    if(!agentSessions[key]) agentSessions[key]={key:key,messages:[],draft:'',quote:null,points:null,quoteLoading:false,quoteError:'',pending:false,status:'',plan:null,applied:false};
     return agentSessions[key];
+  }
+  function startAgentPrompt(prompt){
+    var session=currentAgentSession();
+    session.draft=String(prompt||'').trim();
+    openSidePanel('agent',true);
+    var input=sideBody&&sideBody.querySelector('[data-agent-input]');
+    if(input){ input.focus(); input.setSelectionRange(input.value.length,input.value.length); }
   }
   function agentNodeContent(node){
     if(!node) return '';
@@ -1583,9 +1607,10 @@
     });
   }
   function renderAgentPanel(){
-    if(sideTitle) sideTitle.textContent='画布 Agent';
+    if(sideTitle) sideTitle.textContent='Agent 工作台';
     if(!agentModule){ sideBody.innerHTML='<div class="nc-side-empty">Agent 模块未加载</div>'; return; }
     var session=currentAgentSession();
+    var selectionCount=selectedNodeIds().length;
     var messages=session.messages.map(function(message){
       return '<div class="nc-agent-message '+escapeHtml(message.role)+'">'+escapeHtml(message.content)+'</div>';
     }).join('');
@@ -1599,16 +1624,26 @@
     var quoteText=session.quoteLoading?'正在读取报价…':session.quoteError?session.quoteError:session.quote==null?'报价不可用':('本次 '+session.quote+' 点');
     var balance=session.points==null?'':('余额 '+session.points+' 点');
     var insufficient=session.quote!=null&&session.points!=null&&session.points<session.quote;
-    sideBody.innerHTML='<div class="nc-agent"><div class="nc-agent-intro"><strong>先选节点，再告诉 Agent 要做什么</strong>未选节点时读取整张画布；选中节点时只读取选区。Agent 只建议操作，图片与视频只创建草稿，不会自动生成。</div>'
-      +'<div class="nc-agent-messages">'+(messages||'<div class="nc-agent-message">我可以整理提示词、创建生成草稿、修改选中的文本节点或连接现有节点。</div>')+(session.status?'<div class="nc-agent-message">'+escapeHtml(session.status)+'</div>':'')+plan+'</div>'
-      +'<div class="nc-agent-compose"><textarea data-agent-input maxlength="2000" placeholder="例如：把选中的卖点整理成一个 9:16 图片生成草稿" '+(session.pending||session.quote==null?'disabled':'')+'></textarea>'
+    var starters=!session.messages.length?'<div class="nc-agent-starters">'
+      +'<button class="nc-agent-starter" type="button" data-agent-prompt="帮我整理当前画布，把内容按清晰的生产顺序连接起来。"><b>整理现有画布</b>梳理节点与连线关系</button>'
+      +'<button class="nc-agent-starter" type="button" data-agent-prompt="帮我搭建一个短视频脚本工作流：先创建脚本，再创建画面和视频生成草稿。"><b>搭建短视频流程</b>脚本、画面到视频草稿</button>'
+      +'<button class="nc-agent-starter" type="button" data-agent-prompt="分析我选中的节点，优化其中的文本内容并保留原意。"><b>优化选中内容</b>只处理当前选区</button>'
+      +'<button class="nc-agent-starter" type="button" data-agent-prompt="帮我搭建一个产品图文方案，创建卖点文案和图片生成草稿。"><b>创建图文方案</b>卖点文案与作图草稿</button>'
+      +'</div>':'';
+    sideBody.innerHTML='<div class="nc-agent"><div class="nc-agent-hero"><span class="nc-agent-orb">✦</span><strong>一句话，帮你搭好画布</strong><p>Agent 先给出可勾选的方案，只有你确认后才会修改画布。</p><div class="nc-agent-context"><span><i></i>'+(selectionCount?('已读取 '+selectionCount+' 个选中节点'):'已读取当前画布')+'</span><span>图片与视频仅建草稿</span></div></div>'+starters
+      +'<div class="nc-agent-messages">'+(messages||'<div class="nc-agent-message">你可以直接描述目标，也可以从上面的常用场景开始。</div>')+(session.status?'<div class="nc-agent-message">'+escapeHtml(session.status)+'</div>':'')+plan+'</div>'
+      +'<div class="nc-agent-compose"><textarea data-agent-input maxlength="2000" placeholder="描述你想完成的内容，或 @ 选中的节点…" '+(session.pending||session.quote==null?'disabled':'')+'>'+escapeHtml(session.draft||'')+'</textarea>'
       +'<div class="nc-agent-quote"><span>'+escapeHtml(quoteText)+'</span><span>'+escapeHtml(balance)+'</span></div>'
       +(session.quoteError?'<button class="nc-agent-apply" type="button" data-agent-retry>重新读取报价</button>':'')
       +'<button class="nc-agent-submit" type="button" '+(session.pending||session.quote==null||insufficient?'disabled':'')+'>'+(session.pending?'Agent 思考中…':insufficient?'点数不足':session.quote==null?'等待报价':('发送 · '+session.quote+' 点'))+'</button></div></div>';
     var input=sideBody.querySelector('[data-agent-input]');
     var submit=sideBody.querySelector('.nc-agent-submit');
     if(submit) submit.onclick=function(){ submitAgentTurn(input&&input.value); };
-    if(input) input.onkeydown=function(e){ if((e.metaKey||e.ctrlKey)&&e.key==='Enter'){ e.preventDefault(); submitAgentTurn(input.value); } };
+    if(input){
+      input.oninput=function(){ session.draft=input.value; };
+      input.onkeydown=function(e){ if((e.metaKey||e.ctrlKey)&&e.key==='Enter'){ e.preventDefault(); submitAgentTurn(input.value); } };
+    }
+    sideBody.querySelectorAll('[data-agent-prompt]').forEach(function(btn){ btn.onclick=function(){ startAgentPrompt(btn.getAttribute('data-agent-prompt')); }; });
     var apply=sideBody.querySelector('.nc-agent-apply:not([data-agent-retry])');
     if(apply) apply.onclick=function(){
       var ids=Array.prototype.map.call(sideBody.querySelectorAll('[data-agent-action]:checked'),function(box){return box.getAttribute('data-agent-action');});
@@ -1655,6 +1690,7 @@
     var body=Object.assign({},snapshot,{prompt:prompt,history:history,quoted_cost:session.quote});
     var requestKey='canvas-agent-'+(window.crypto&&crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2));
     var headers=agentHeaders(requestKey);
+    session.draft='';
     session.messages.push({role:'user',content:prompt});
     session.pending=true; session.status='正在读取画布并规划操作…'; session.plan=null; session.applied=false;
     renderAgentPanel();
@@ -3537,6 +3573,7 @@
   bindButton(fsAdd,function(){
     showMenuFromButton(fsAdd,addNodeMenuItems(viewportNodePoint()));
   });
+  bindButton(fsAgent,function(){ openSidePanel('agent'); });
   bindButton(fsUndo,function(){ undo(); });
   bindButton(fsRedo,function(){ redo(); });
   bindButton(fsZoomOut,function(){ setZoom(zoom-.1); });
@@ -3575,6 +3612,9 @@
   });
   document.querySelectorAll('.nc-side-tool[data-side]').forEach(function(btn){
     btn.onclick=function(e){ e.stopPropagation(); openSidePanel(btn.getAttribute('data-side')); };
+  });
+  document.querySelectorAll('[data-agent-start]').forEach(function(btn){
+    btn.onclick=function(e){ e.stopPropagation(); startAgentPrompt(btn.getAttribute('data-agent-start')); };
   });
   if(sideClose) sideClose.onclick=function(e){ e.stopPropagation(); closeSidePanel(); };
   if(sidePanel){

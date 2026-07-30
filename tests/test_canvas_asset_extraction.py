@@ -9,7 +9,7 @@ HTML_PATH = ROOT / "site" / "workbench" / "canvas.html"
 CSS_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas.css"
 APP_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas-app.js"
 
-EXPECTED_CSS_SHA256 = "4a03a05a647f177729ca1ddf8e8dc222f6632ca2cf1d5d5452e958767b7bc376"
+EXPECTED_CSS_SHA256 = "fd5b02f73234ae86fb93309b305bd6db7f55009a4ef14629b709bb9954b5e47a"
 
 
 def normalized_sha256(path: Path) -> str:
@@ -46,6 +46,16 @@ class CanvasAssetExtractionTests(unittest.TestCase):
         self.assertIn("CANVAS_VIEW_PAD=1200", app)
         self.assertIn("margin:1200px", css)
         self.assertIn("offset=(Object.keys(nodes).length%5)*36", app)
+
+    def test_agent_workspace_stays_visible_without_covering_the_canvas(self):
+        html = HTML_PATH.read_text(encoding="utf-8")
+        css = CSS_PATH.read_text(encoding="utf-8")
+        app = APP_PATH.read_text(encoding="utf-8")
+        self.assertIn('id="ncFsAgent"', html)
+        self.assertIn('data-agent-start=', html)
+        self.assertIn(".nc-canvas-shell.agent-open .nc-canvas", css)
+        self.assertIn(".nc-canvas-shell.agent-open .nc-empty", css)
+        self.assertIn("openSidePanel('agent',true)", app)
 
     def test_portable_infinite_canvas_interactions_are_wired(self):
         html = HTML_PATH.read_text(encoding="utf-8")

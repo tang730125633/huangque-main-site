@@ -37,10 +37,15 @@ assert.throws(() => agent.validatePlan({...all, snapshot_digest: 'deadbeef'}, pl
 const html = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas.html'), 'utf8');
 const app = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-app.js'), 'utf8');
 assert.ok(html.includes('data-side="agent"'));
+assert.ok(html.includes('id="ncFsAgent"'));
+assert.ok(html.includes('data-agent-start='));
 assert.ok(html.indexOf('canvas/canvas-agent.js?v=') < html.indexOf('canvas/canvas-app.js?v='));
 assert.ok(app.includes("'/api/gen/canvas-agent/quote'"));
 assert.ok(app.includes("'/api/gen/canvas_agent'"));
 assert.ok(app.includes("'Idempotency-Key':idempotencyKey"));
 assert.ok(app.includes('确认应用所选操作'));
+assert.ok(app.includes("openSidePanel('agent',true)"));
+assert.ok(app.includes("canvasShell.classList.toggle('agent-open'"));
+assert.ok(app.includes("session.draft='';"));
 
 console.log('canvas agent tests passed');
