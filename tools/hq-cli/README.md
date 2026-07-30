@@ -25,6 +25,7 @@ hq describe ip12-projects --json
 
 `hq login` 使用浏览器设备授权：用户在黄雀主站登录并查看权限后同意，CLI 不接触账号密码或网页 Cookie。
 访问令牌仅保存在本机 `~/.config/hq-cli/credentials.json`，权限为 `0600`，8 小时后失效；`hq logout` 会在服务端撤销。
+从 V0.2 升级后需重新执行一次 `hq login`，才能取得新增的 `ip12:chat` 权限。
 
 ## 能力
 

@@ -106,6 +106,7 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual("/api/auth/cli/action", request.call_args.args[0])
         self.assertEqual({"action": "ip12-projects", "input": {}, "confirm": False}, request.call_args.kwargs["body"])
         self.assertEqual("t" * 43, request.call_args.kwargs["token"])
+        self.assertEqual(120, request.call_args.kwargs["timeout"])
 
     def test_external_ai_and_write_actions_require_explicit_confirmation_before_http(self):
         self.authorize()

@@ -354,7 +354,8 @@ def main(argv=None):
                 if args.quote_token:
                     request_body["quote_token"] = args.quote_token
                 result = _request("/api/auth/cli/action", "POST", request_body,
-                                  credentials["access_token"], timeout=310)
+                                  credentials["access_token"],
+                                  timeout=310 if capability["id"] == "ip12-message" else 120)
             next_actions = list(capability["next_actions"])
             if capability["side_effect"] == "paid" and not args.confirm:
                 next_actions = ["Review cost and points, then re-run the identical input with `--confirm --quote-token <quote_token>`. "]
