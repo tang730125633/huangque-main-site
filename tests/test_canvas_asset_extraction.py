@@ -9,7 +9,7 @@ HTML_PATH = ROOT / "site" / "workbench" / "canvas.html"
 CSS_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas.css"
 APP_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas-app.js"
 
-EXPECTED_CSS_SHA256 = "53ce4a2f0a1def5e51b39eee2e3bc1c4705744ab2368faec68e3bb774c7426c4"
+EXPECTED_CSS_SHA256 = "be4944037b29204b610229ef24da317a304b5e82be335c4d02e5bd2c2356fed4"
 
 
 def normalized_sha256(path: Path) -> str:
@@ -43,6 +43,8 @@ class CanvasAssetExtractionTests(unittest.TestCase):
         self.assertIn("fallback=x==null||y==null?viewportNodePoint():null", app)
         self.assertIn("function centerEmptyView()", app)
         self.assertIn("((minX+maxX)/2)*zoom-canvas.clientWidth/2", app)
+        self.assertIn("CANVAS_VIEW_PAD=1200", app)
+        self.assertIn("margin:1200px", css)
 
     def test_five_modules_are_versioned_and_loaded_in_exact_order(self):
         html = HTML_PATH.read_text(encoding="utf-8")

@@ -184,7 +184,7 @@
       box.innerHTML='<a class="nc-mini" href="'+escapeHtml(url)+'" target="_blank" rel="noopener">打开视频</a>';
     });
   }
-  var CANVAS_BASE_W=8000, CANVAS_BASE_H=5000, CANVAS_GROW_PAD=1200;
+  var CANVAS_BASE_W=8000, CANVAS_BASE_H=5000, CANVAS_GROW_PAD=1200, CANVAS_VIEW_PAD=1200;
   var IMAGE_SAVE_MAX=1280, IMAGE_SAVE_QUALITY=.82;
   var TYPE={
     text:  {name:'文本 · 提示词', color:'#e7b24c', outs:['prompt']},
@@ -1606,7 +1606,7 @@
     });
     if(!isFinite(minX)) minX=0;
     if(!isFinite(minY)) minY=0;
-    var target=Object.keys(nodes).length?{x:maxX+140,y:Math.max(80,canvas.scrollTop/zoom+80)}:viewportCenterPoint();
+    var target=Object.keys(nodes).length?{x:maxX+140,y:Math.max(80,viewportTopLeftPoint().y+80)}:viewportCenterPoint();
     var idMap={}, created=[];
     list.forEach(function(n){
       var data=stateApi.cloneSnapshot(n);
@@ -1683,15 +1683,15 @@
       var n=nodes[id], nw=Math.max(3,(n.el.offsetWidth||250)*sx), nh=Math.max(3,(n.el.offsetHeight||150)*sy);
       s+='<rect class="nc-map-node'+(n.type==='image'?' img':'')+'" x="'+(n.x*sx).toFixed(1)+'" y="'+(n.y*sy).toFixed(1)+'" width="'+nw.toFixed(1)+'" height="'+nh.toFixed(1)+'" rx="1.6"/>';
     });
-    var vx=canvas.scrollLeft/zoom*sx, vy=canvas.scrollTop/zoom*sy, vw=canvas.clientWidth/zoom*sx, vh=canvas.clientHeight/zoom*sy;
+    var vx=(canvas.scrollLeft-CANVAS_VIEW_PAD)/zoom*sx, vy=(canvas.scrollTop-CANVAS_VIEW_PAD)/zoom*sy, vw=canvas.clientWidth/zoom*sx, vh=canvas.clientHeight/zoom*sy;
     s+='<rect class="nc-map-view" x="'+Math.max(0,vx).toFixed(1)+'" y="'+Math.max(0,vy).toFixed(1)+'" width="'+Math.min(w,vw).toFixed(1)+'" height="'+Math.min(h,vh).toFixed(1)+'" rx="2"/>';
     mapSvg.innerHTML=s;
   }
   function moveViewFromMap(e){
     if(!map) return;
     var r=map.getBoundingClientRect(), x=(e.clientX-r.left)/r.width, y=(e.clientY-r.top)/r.height;
-    canvas.scrollLeft=Math.max(0,x*innerWidth()*zoom-canvas.clientWidth/2);
-    canvas.scrollTop=Math.max(0,y*innerHeight()*zoom-canvas.clientHeight/2);
+    canvas.scrollLeft=Math.max(0,CANVAS_VIEW_PAD+x*innerWidth()*zoom-canvas.clientWidth/2);
+    canvas.scrollTop=Math.max(0,CANVAS_VIEW_PAD+y*innerHeight()*zoom-canvas.clientHeight/2);
     scheduleMap();
   }
 
@@ -1823,8 +1823,8 @@
   function syncCanvasGrid(){
     canvas.style.setProperty('--grid-minor',(24*zoom)+'px');
     canvas.style.setProperty('--grid-major',(120*zoom)+'px');
-    canvas.style.setProperty('--grid-x',(-canvas.scrollLeft)+'px');
-    canvas.style.setProperty('--grid-y',(-canvas.scrollTop)+'px');
+    canvas.style.setProperty('--grid-x',(CANVAS_VIEW_PAD-canvas.scrollLeft)+'px');
+    canvas.style.setProperty('--grid-y',(CANVAS_VIEW_PAD-canvas.scrollTop)+'px');
   }
   function ensureCanvasBounds(x,y){
     var nextW=Math.max(innerWidth(),Math.ceil(x+CANVAS_GROW_PAD));
@@ -1892,11 +1892,11 @@
     var old=zoom;
     cx=cx==null?canvas.clientWidth/2:cx;
     cy=cy==null?canvas.clientHeight/2:cy;
-    var wx=(canvas.scrollLeft+cx)/old, wy=(canvas.scrollTop+cy)/old;
+    var wx=(canvas.scrollLeft+cx-CANVAS_VIEW_PAD)/old, wy=(canvas.scrollTop+cy-CANVAS_VIEW_PAD)/old;
     zoom=next;
     inner.style.transform='scale('+zoom+')';
-    canvas.scrollLeft=wx*zoom-cx;
-    canvas.scrollTop=wy*zoom-cy;
+    canvas.scrollLeft=CANVAS_VIEW_PAD+wx*zoom-cx;
+    canvas.scrollTop=CANVAS_VIEW_PAD+wy*zoom-cy;
     syncCanvasGrid();
     scheduleMap();
     updateState();
@@ -2028,7 +2028,8 @@
       copied.nodes.forEach(function(n){ minX=Math.min(minX,n.x||0); minY=Math.min(minY,n.y||0); });
       if(!isFinite(minX)) minX=0;
       if(!isFinite(minY)) minY=0;
-      var base=selectedNode&&nodes[selectedNode]?{x:nodes[selectedNode].x+40,y:nodes[selectedNode].y+40}:{x:canvas.scrollLeft/zoom+90,y:canvas.scrollTop/zoom+90};
+      var viewStart=viewportTopLeftPoint();
+      var base=selectedNode&&nodes[selectedNode]?{x:nodes[selectedNode].x+40,y:nodes[selectedNode].y+40}:{x:viewStart.x+90,y:viewStart.y+90};
       copied.nodes.forEach(function(n){
         var data=stateApi.cloneSnapshot(n), oldId=data.id;
         data.id=currentBoardScope==='collab'&&collabSync?collabSync.makeNodeId(collabNodeSeed,nid+1):'n'+(nid+1);
@@ -2048,7 +2049,8 @@
     }
     var base=selectedNode&&nodes[selectedNode]?nodes[selectedNode]:null;
     var data=stateApi.cloneSnapshot(clipNode);
-    var x=base?base.x+34:canvas.scrollLeft/zoom+90, y=base?base.y+34:canvas.scrollTop/zoom+90;
+    var viewStart=viewportTopLeftPoint();
+    var x=base?base.x+34:viewStart.x+90, y=base?base.y+34:viewStart.y+90;
     var node=addNode(data.type,Math.max(0,x),Math.max(0,y),data);
     selectNode(node);
     updateState('已粘贴节点');
@@ -2087,8 +2089,8 @@
     var pad=80, bw=Math.max(1,maxX-minX+pad*2), bh=Math.max(1,maxY-minY+pad*2);
     var next=Math.min(1.2,Math.max(.5,Math.min(canvas.clientWidth/bw,canvas.clientHeight/bh)));
     setZoom(next);
-    canvas.scrollLeft=Math.max(0,((minX+maxX)/2)*zoom-canvas.clientWidth/2);
-    canvas.scrollTop=Math.max(0,((minY+maxY)/2)*zoom-canvas.clientHeight/2);
+    canvas.scrollLeft=Math.max(0,CANVAS_VIEW_PAD+((minX+maxX)/2)*zoom-canvas.clientWidth/2);
+    canvas.scrollTop=Math.max(0,CANVAS_VIEW_PAD+((minY+maxY)/2)*zoom-canvas.clientHeight/2);
     syncCanvasGrid();
     updateState('已适应视图');
   }
@@ -2124,8 +2126,8 @@
   }
   function focusNode(node){
     if(!node) return;
-    canvas.scrollLeft=Math.max(0,(node.x+(node.el.offsetWidth||250)/2)*zoom-canvas.clientWidth/2);
-    canvas.scrollTop=Math.max(0,(node.y+(node.el.offsetHeight||160)/2)*zoom-canvas.clientHeight/2);
+    canvas.scrollLeft=Math.max(0,CANVAS_VIEW_PAD+(node.x+(node.el.offsetWidth||250)/2)*zoom-canvas.clientWidth/2);
+    canvas.scrollTop=Math.max(0,CANVAS_VIEW_PAD+(node.y+(node.el.offsetHeight||160)/2)*zoom-canvas.clientHeight/2);
     syncCanvasGrid();
     scheduleMap();
   }
@@ -2189,16 +2191,19 @@
       fn(e);
     });
   }
+  function viewportTopLeftPoint(){
+    return {x:Math.max(0,(canvas.scrollLeft-CANVAS_VIEW_PAD)/zoom),y:Math.max(0,(canvas.scrollTop-CANVAS_VIEW_PAD)/zoom)};
+  }
   function viewportCenterPoint(){
-    return {x:Math.max(0,(canvas.scrollLeft+canvas.clientWidth/2)/zoom),y:Math.max(0,(canvas.scrollTop+canvas.clientHeight/2)/zoom)};
+    return {x:Math.max(0,(canvas.scrollLeft+canvas.clientWidth/2-CANVAS_VIEW_PAD)/zoom),y:Math.max(0,(canvas.scrollTop+canvas.clientHeight/2-CANVAS_VIEW_PAD)/zoom)};
   }
   function viewportNodePoint(){
     var center=viewportCenterPoint();
     return {x:Math.max(0,center.x-125),y:Math.max(0,center.y-80)};
   }
   function centerEmptyView(){
-    canvas.scrollLeft=Math.max(0,(innerWidth()*zoom-canvas.clientWidth)/2);
-    canvas.scrollTop=Math.max(0,(innerHeight()*zoom-canvas.clientHeight)/2);
+    canvas.scrollLeft=Math.max(0,CANVAS_VIEW_PAD+(innerWidth()*zoom-canvas.clientWidth)/2);
+    canvas.scrollTop=Math.max(0,CANVAS_VIEW_PAD+(innerHeight()*zoom-canvas.clientHeight)/2);
   }
   function closeDialog(){
     var old=document.querySelector('.nc-dialog-mask');
@@ -2823,7 +2828,7 @@
     edges.push({from:{node:t.id,port:'prompt'}, to:{node:g.id,port:'prompt'}});
     edges.push({from:{node:img.id,port:'image'}, to:{node:r.id,port:'image'}});
     redraw(); refreshAllGenRefs(); updateState('示例已重置');
-    canvas.scrollLeft=0; canvas.scrollTop=0;
+    fitView();
   }
   svg.addEventListener('click', function(e){
     var hit=e.target&&e.target.closest?e.target.closest('.nc-edge-hit'):null;

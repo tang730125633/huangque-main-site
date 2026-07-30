@@ -140,7 +140,7 @@
   .nc-canvas.selecting{ cursor:crosshair; user-select:none; }
   .nc-canvas.connecting,.nc-canvas.connecting *{ user-select:none; -webkit-user-select:none; }
   .nc-canvas.connecting input,.nc-canvas.connecting textarea{ user-select:text; -webkit-user-select:text; }
-  .nc-inner{ position:relative; width:8000px; height:5000px; transform-origin:0 0; }
+  .nc-inner{ position:relative; width:8000px; height:5000px; margin:1200px; transform-origin:0 0; }
   .nc-selection-box{ position:absolute; z-index:4; display:none; pointer-events:none; border:1px dashed rgba(70,180,255,.9); background:rgba(70,180,255,.13); border-radius:6px; box-shadow:0 0 0 1px rgba(70,180,255,.1) inset; }
   .nc-selected-region{ position:absolute; z-index:3; display:none; pointer-events:auto; cursor:move; border:1px solid rgba(45,212,191,.85); background:rgba(45,212,191,.06); border-radius:10px; box-shadow:0 0 0 1px rgba(45,212,191,.12) inset,0 0 18px rgba(45,212,191,.18); }
   .nc-selected-region.dragging{ background:rgba(45,212,191,.11); border-color:#2dd4bf; box-shadow:0 0 0 1px rgba(45,212,191,.18) inset,0 0 24px rgba(45,212,191,.26); }
