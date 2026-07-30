@@ -45,6 +45,7 @@ class CanvasAssetExtractionTests(unittest.TestCase):
         self.assertIn("((minX+maxX)/2)*zoom-canvas.clientWidth/2", app)
         self.assertIn("CANVAS_VIEW_PAD=1200", app)
         self.assertIn("margin:1200px", css)
+        self.assertIn("offset=(Object.keys(nodes).length%5)*36", app)
 
     def test_five_modules_are_versioned_and_loaded_in_exact_order(self):
         html = HTML_PATH.read_text(encoding="utf-8")

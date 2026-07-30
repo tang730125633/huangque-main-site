@@ -2198,8 +2198,8 @@
     return {x:Math.max(0,(canvas.scrollLeft+canvas.clientWidth/2-CANVAS_VIEW_PAD)/zoom),y:Math.max(0,(canvas.scrollTop+canvas.clientHeight/2-CANVAS_VIEW_PAD)/zoom)};
   }
   function viewportNodePoint(){
-    var center=viewportCenterPoint();
-    return {x:Math.max(0,center.x-125),y:Math.max(0,center.y-80)};
+    var center=viewportCenterPoint(), offset=(Object.keys(nodes).length%5)*36;
+    return {x:Math.max(0,center.x-125+offset),y:Math.max(0,center.y-80+offset)};
   }
   function centerEmptyView(){
     canvas.scrollLeft=Math.max(0,CANVAS_VIEW_PAD+(innerWidth()*zoom-canvas.clientWidth)/2);
