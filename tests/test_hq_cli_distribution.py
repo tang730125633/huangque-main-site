@@ -1,4 +1,7 @@
 import hashlib
+import subprocess
+import sys
+import tempfile
 import unittest
 import zipfile
 from pathlib import Path
@@ -27,7 +30,27 @@ class HQCLIDistributionTests(unittest.TestCase):
         source = INSTALLER.read_text(encoding="utf-8")
         self.assertIn('target_dir="$data_root/$version"', source)
         self.assertIn('[ ! -L "$link_path" ]', source)
+        self.assertIn('--force-reinstall "$wheel_path"', source)
         self.assertIn('ln -sfn "$target_dir/venv/bin/hq" "$link_path"', source)
+
+    def test_moved_venv_entrypoint_can_be_repaired_from_final_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stage = Path(tmp) / "stage"
+            target = Path(tmp) / "0.2.0"
+            subprocess.run([sys.executable, "-m", "venv", stage / "venv"], check=True)
+            subprocess.run(
+                [stage / "venv/bin/python", "-m", "pip", "install", "--no-index", "--no-deps", WHEEL],
+                check=True,
+            )
+            stage.rename(target)
+            subprocess.run(
+                [
+                    target / "venv/bin/python", "-m", "pip", "install", "--no-index", "--no-deps",
+                    "--force-reinstall", WHEEL,
+                ],
+                check=True,
+            )
+            subprocess.run([target / "venv/bin/hq", "version", "--json"], check=True)
 
     def test_release_wheel_contains_exact_cli_source(self):
         expected = sorted(path for path in SOURCE.glob("*.py"))
