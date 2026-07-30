@@ -779,14 +779,22 @@ def api_list_convos():
 
 @app.route("/api/conversations", methods=["POST"])
 def api_create_convo():
+    body = request.get_json(silent=True)
+    if body is None:
+        body = {}
+    if not isinstance(body, dict) or set(body) - {"title"}:
+        return jsonify({"ok": False, "error": "只允许 title 参数"}), 400
+    title = body.get("title", "新诊断")
+    if not isinstance(title, str) or not title.strip() or len(title.strip()) > 120:
+        return jsonify({"ok": False, "error": "title 必须是 1-120 字符"}), 400
     cid = uuid.uuid4().hex[:12]
-    data = {"id": cid, "title": "新诊断",
+    data = {"id": cid, "title": title.strip(),
             "messages": [{"role": "assistant", "content": INTAKE_FIRST_QUESTION}],
             "coach_state": initial_coach_state(),
             "reports": {}, "deliverables": {}, "owner_account_id": current_account_id(),
             "updated": datetime.now().strftime("%Y-%m-%d %H:%M")}
     save_conversation(cid, data)
-    return jsonify({"id": cid})
+    return jsonify({"id": cid, "title": data["title"]})
 
 @app.route("/api/conversations/<cid>", methods=["GET"])
 def api_get_convo(cid):

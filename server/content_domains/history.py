@@ -2,12 +2,14 @@
 import json
 
 
-def expand_job_results(rows, limit):
+def expand_job_results(rows, limit, offset=0):
     """Expand every result URL into its own newest-first history item."""
     items = []
     limit = max(0, int(limit or 0))
+    offset = max(0, int(offset or 0))
     if not limit:
         return items
+    end = limit + offset
     for row in rows:
         try:
             result = json.loads(row["result"])
@@ -39,6 +41,6 @@ def expand_job_results(rows, limit):
                 "emotion": result.get("emotion"),
                 "created_at": row["created_at"],
             })
-            if len(items) >= limit:
-                return items
-    return items
+            if len(items) >= end:
+                return items[offset:end]
+    return items[offset:end]

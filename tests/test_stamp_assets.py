@@ -45,9 +45,11 @@ class AssetRegistryTests(unittest.TestCase):
         self.assertIn("theme-init.js", names)
 
     def test_only_shell_is_required(self):
-        """cloud-shell.js 每页都有；theme 是页面级的，没引用不算错。"""
+        """普通工作台页必须有 shell；独立设备授权页显式排除。"""
         required = {a.name for a in stamp_assets.ASSETS if a.required}
         self.assertEqual({"cloud-shell.js"}, required)
+        self.assertEqual({"device.html"}, stamp_assets.STANDALONE_PAGES)
+        self.assertNotIn("device.html", {path.name for path in stamp_assets.html_files()})
 
     def test_canvas_assets_are_registered_as_optional(self):
         assets = {a.name: a for a in stamp_assets.ASSETS}

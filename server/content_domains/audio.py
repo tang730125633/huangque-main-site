@@ -821,8 +821,9 @@ def rename_audio_voice(username, slot_id, display_name):
         c.commit()
     return {"slot_id": slot_id, "display_name": name, "updated_at": now}
 
-def list_audio_assets(username, limit=120):
+def list_audio_assets(username, limit=120, offset=0):
     limit = max(1, min(120, int(limit or 120)))
+    offset = max(0, min(100000, int(offset or 0)))
     with closing(adb()) as c:
         _ensure_column(c, "audio_assets", "deleted", "INTEGER DEFAULT 0")
         rows = c.execute("""SELECT a.id, a.job_id, a.username, a.voice_id, a.voice_key, a.file, a.url, a.text,
@@ -830,7 +831,7 @@ def list_audio_assets(username, limit=120):
             FROM audio_assets a
             LEFT JOIN audio_voices v ON v.id = a.voice_id
             WHERE a.username=? AND COALESCE(a.deleted,0)=0
-            ORDER BY a.id DESC LIMIT ?""", (username, limit)).fetchall()
+            ORDER BY a.id DESC LIMIT ? OFFSET ?""", (username, limit, offset)).fetchall()
     return [dict(r) for r in rows]
 
 # ============ 配音能力：OpenAI TTS（同事的 audio 能力，合并保留） ============
@@ -885,28 +886,52 @@ def _cosy_voice_for(provider_voice):
         raise ValueError("该音色尚未迁移到新引擎，请重新复刻一次")
     return v      # 兜底：当作预置名直接用
 
-def gen_audio(payload):
-    text = (payload.get("text") or payload.get("prompt") or "").strip()
+def validate_audio_payload(payload, username=""):
+    if not isinstance(payload, dict):
+        raise ValueError("请求体必须是 JSON 对象")
+    body = dict(payload)
+    text = str(body.get("text") or body.get("prompt") or "").strip()
     if not text:
         raise ValueError("配音文案不能为空")
     if len(text) > 1000:
         raise ValueError("配音文案过长，请控制在 1000 字以内")
-    username = (payload.get("_username") or "").strip()
-    raw_voice_key = (payload.get("voice") or "S_d21F8OR62").strip()
-    voice_key = raw_voice_key.lower() if raw_voice_key.lower() in set() else raw_voice_key
-    voice = resolve_audio_provider_voice(username, voice_key)
-    raw_speed = payload.get("speed")
+    raw_voice_key = body.get("voice") or "S_d21F8OR62"
+    if not isinstance(raw_voice_key, str) or not raw_voice_key.strip() or len(raw_voice_key.strip()) > 128:
+        raise ValueError("音色参数无效")
+    voice_key = raw_voice_key.strip()
+    if username:
+        resolve_audio_provider_voice(username, voice_key)
+    raw_speed = body.get("speed")
     if isinstance(raw_speed, (int, float)):
-        speed = max(0.5, min(2.0, round(float(raw_speed), 1)))
+        if isinstance(raw_speed, bool) or raw_speed != raw_speed or not 0.5 <= float(raw_speed) <= 2.0:
+            raise ValueError("语速必须是 0.5-2.0")
+        speed = round(float(raw_speed), 1)
     else:
+        if raw_speed not in (None, "", *SPEED_MAP):
+            raise ValueError("语速参数无效")
         speed = SPEED_MAP.get(raw_speed or "normal", 1.0)
-    def knob(name, minv, maxv, default):
+    for name, minimum, maximum in (("pitch", -12, 12), ("volume", -50, 100)):
+        raw = body.get(name, 0)
+        if isinstance(raw, bool):
+            raise ValueError("%s 必须是整数" % name)
         try:
-            return max(minv, min(maxv, int(float(payload.get(name, default)))))
-        except Exception:
-            return default
-    pitch = knob("pitch", -12, 12, 0)
-    volume = knob("volume", -50, 100, 0)
+            clean = int(raw)
+        except (TypeError, ValueError):
+            raise ValueError("%s 必须是整数" % name)
+        if str(raw).strip() != str(clean) or not minimum <= clean <= maximum:
+            raise ValueError("%s 超出范围" % name)
+        body[name] = clean
+    body.update({"text": text, "voice": voice_key, "speed": speed})
+    return body
+
+
+def gen_audio(payload):
+    username = str((payload or {}).get("_username") or "").strip()
+    payload = validate_audio_payload(payload, username)
+    text = payload["text"]
+    voice_key = payload["voice"]
+    voice = resolve_audio_provider_voice(username, voice_key)
+    speed, pitch, volume = payload["speed"], payload["pitch"], payload["volume"]
 
     # Current public and personal voices use CosyVoice. Never fall back to
     # the retired provider when the CosyVoice channel is unavailable.

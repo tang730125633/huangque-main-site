@@ -290,7 +290,7 @@ function renderMods(){
 }
 
 renderMods();
-loadConvos().then(function(){if(convos.length>0)selectConvo(convos[0].id)});
+loadConvos().then(function(){var requested=new URLSearchParams(location.search).get('conversation_id');var target=convos.find(function(c){return c.id===requested});if(target)selectConvo(target.id);else if(convos.length>0)selectConvo(convos[0].id)});
 
 async function loadConvos(){var r=await fetch('/api/conversations');convos=await r.json()}
 async function newDiagnosis(){var r=await fetch('/api/conversations',{method:'POST'});var d=await r.json();convos.unshift({id:d.id,title:'新诊断',current_module:1,completed_modules:[],message_count:1});selectConvo(d.id)}
