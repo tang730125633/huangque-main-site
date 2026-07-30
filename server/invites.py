@@ -34,6 +34,7 @@ INVITE_REWARD_TOTALS = {
     "partner": {"experience": 240, "partner": 1500},
     "initiator": {"experience": 280, "partner": 2500, "initiator": 15000},
 }
+PARTNER_EXPERIENCE_FREE_SLOTS = 9
 MEMBERSHIP_LEVEL_ORDER = {"": 0, "experience": 1, "partner": 2, "initiator": 3}
 
 
@@ -137,6 +138,23 @@ def init_schema(conn, now=None):
     reward_cols = {row["name"] for row in conn.execute("PRAGMA table_info(invite_reward_point_records)").fetchall()}
     if "voided_by" not in reward_cols:
         conn.execute("ALTER TABLE invite_reward_point_records ADD COLUMN voided_by TEXT")
+    conn.execute("""CREATE TABLE IF NOT EXISTS partner_experience_reward_slots(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        inviter_user_id INTEGER NOT NULL,
+        invitee_user_id INTEGER NOT NULL,
+        invite_relation_id INTEGER NOT NULL UNIQUE,
+        upgrade_record_id INTEGER UNIQUE,
+        ordinal INTEGER NOT NULL,
+        reward_eligible INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+    )""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_partner_experience_slots_ordinal
+                    ON partner_experience_reward_slots(inviter_user_id,ordinal)""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_partner_experience_slots_invitee
+                    ON partner_experience_reward_slots(inviter_user_id,invitee_user_id)""")
+    conn.execute("""CREATE INDEX IF NOT EXISTS idx_partner_experience_slots_inviter
+                    ON partner_experience_reward_slots(inviter_user_id,id)""")
+    backfill_partner_experience_reward_slots(conn, now)
     if not conn.execute("SELECT 1 FROM invite_campaigns LIMIT 1").fetchone():
         conn.execute("""INSERT INTO invite_campaigns(
             name,status,start_at,end_at,code_required,daily_invite_limit,created_at,updated_at
@@ -260,6 +278,127 @@ def invited_membership_limit(conn, user_id, target_tier):
     return {"allowed": True, "relation": dict(relation), "inviter_tier": inviter_tier}
 
 
+def ensure_partner_experience_reward_slot(conn, relation, upgrade_record_id, created_at):
+    """为合伙人的体验官下线分配不可变奖励资格序号。"""
+    upgrade_record_id = int(upgrade_record_id) if upgrade_record_id is not None else None
+    existing = conn.execute(
+        """SELECT * FROM partner_experience_reward_slots
+            WHERE upgrade_record_id=? OR invite_relation_id=?
+               OR (inviter_user_id=? AND invitee_user_id=?)
+            ORDER BY id LIMIT 1""",
+        (
+            upgrade_record_id, int(relation["id"]),
+            int(relation["inviter_user_id"]), int(relation["invitee_user_id"]),
+        ),
+    ).fetchone()
+    if existing:
+        return dict(existing)
+    ordinal = int(conn.execute(
+        """SELECT COALESCE(MAX(ordinal),0)+1
+             FROM partner_experience_reward_slots WHERE inviter_user_id=?""",
+        (int(relation["inviter_user_id"]),),
+    ).fetchone()[0])
+    eligible = 1 if ordinal > PARTNER_EXPERIENCE_FREE_SLOTS else 0
+    cur = conn.execute(
+        """INSERT INTO partner_experience_reward_slots(
+               inviter_user_id,invitee_user_id,invite_relation_id,upgrade_record_id,
+               ordinal,reward_eligible,created_at
+           ) VALUES(?,?,?,?,?,?,?)""",
+        (
+            int(relation["inviter_user_id"]), int(relation["invitee_user_id"]),
+            int(relation["id"]), upgrade_record_id, ordinal, eligible,
+            int(created_at),
+        ),
+    )
+    return dict(conn.execute(
+        "SELECT * FROM partner_experience_reward_slots WHERE id=?", (cur.lastrowid,),
+    ).fetchone())
+
+
+def backfill_partner_experience_reward_slots(conn, now=None):
+    """按历史首次体验官升级顺序回填资格序号，不改变既有奖励。"""
+    now = int(now or time.time())
+    candidates = conn.execute(
+        """SELECT ui.id AS invite_relation_id,ui.inviter_user_id,ui.invitee_user_id,
+                  mu.id AS upgrade_record_id,
+                  COALESCE(mu.created_at,invitee.membership_started_at,ui.bound_at) AS created_at
+             FROM user_invites ui
+             JOIN users inviter ON inviter.id=ui.inviter_user_id
+             JOIN users invitee ON invitee.id=ui.invitee_user_id
+             LEFT JOIN membership_upgrade_records mu
+               ON mu.id=(
+                    SELECT first_mu.id FROM membership_upgrade_records first_mu
+                     WHERE first_mu.user_id=ui.invitee_user_id
+                       AND first_mu.to_level='experience' AND first_mu.status='effective'
+                    ORDER BY first_mu.created_at,first_mu.id
+                    LIMIT 1
+               )
+            WHERE ui.status='bound' AND ui.risk_status<>'blocked'
+              AND inviter.membership_tier='partner'
+              AND inviter.account_status='active'
+              AND inviter.membership_expires_at>?
+              AND (
+                    mu.id IS NOT NULL
+                    OR (
+                        invitee.membership_tier='experience'
+                        AND invitee.account_status='active'
+                        AND invitee.membership_expires_at>?
+                    )
+              )
+            ORDER BY ui.inviter_user_id,
+                     COALESCE(mu.created_at,invitee.membership_started_at,ui.bound_at),
+                     COALESCE(mu.id,ui.id)""",
+        (now, now),
+    ).fetchall()
+    inserted = 0
+    for row in candidates:
+        if conn.execute(
+            """SELECT 1 FROM partner_experience_reward_slots
+                WHERE upgrade_record_id=? OR invite_relation_id=?
+                   OR (inviter_user_id=? AND invitee_user_id=?)
+                LIMIT 1""",
+            (
+                row["upgrade_record_id"], row["invite_relation_id"],
+                row["inviter_user_id"], row["invitee_user_id"],
+            ),
+        ).fetchone():
+            continue
+        relation = {
+            "id": row["invite_relation_id"],
+            "inviter_user_id": row["inviter_user_id"],
+            "invitee_user_id": row["invitee_user_id"],
+        }
+        ensure_partner_experience_reward_slot(
+            conn, relation, row["upgrade_record_id"], row["created_at"],
+        )
+        inserted += 1
+    return inserted
+
+
+def partner_experience_reward_preview(conn, inviter_user_id, invite_relation_id=None):
+    """返回关系已有序号或指定合伙人的下一个体验官序号。"""
+    if invite_relation_id is not None:
+        existing = conn.execute(
+            """SELECT ordinal,reward_eligible FROM partner_experience_reward_slots
+                WHERE invite_relation_id=?""",
+            (int(invite_relation_id),),
+        ).fetchone()
+        if existing:
+            return {
+                "ordinal": int(existing["ordinal"]),
+                "reward_eligible": bool(existing["reward_eligible"]),
+            }
+    ordinal = int(conn.execute(
+        """SELECT COALESCE(MAX(ordinal),0)+1
+             FROM partner_experience_reward_slots WHERE inviter_user_id=?""",
+        (int(inviter_user_id),),
+    ).fetchone()[0])
+    return {
+        "ordinal": ordinal,
+        "reward_eligible": ordinal > PARTNER_EXPERIENCE_FREE_SLOTS,
+    }
+
+
 def reward_upgrade_preview(conn, user_id, target_tier, now=None):
     """预览会员升级将产生的一级邀请奖励积分，不写数据库。"""
     now = int(now or time.time())
@@ -281,6 +420,13 @@ def reward_upgrade_preview(conn, user_id, target_tier, now=None):
         and int(relation["membership_expires_at"] or 0) > now
     )
     target_total = INVITE_REWARD_TOTALS.get(inviter_tier, {}).get(str(target_tier or ""), 0) if inviter_active else 0
+    partner_policy = None
+    if inviter_active and inviter_tier == "partner" and str(target_tier or "") == "experience":
+        partner_policy = partner_experience_reward_preview(
+            conn, relation["inviter_user_id"], relation["id"],
+        )
+        if not partner_policy["reward_eligible"]:
+            target_total = 0
     current_total = conn.execute(
         """SELECT COALESCE(SUM(reward_points),0) FROM invite_reward_point_records
             WHERE invite_relation_id=? AND status='recorded'""",
@@ -300,6 +446,13 @@ def reward_upgrade_preview(conn, user_id, target_tier, now=None):
         "inviter_tier_name": MEMBERSHIP_NAMES.get(inviter_tier, "非会员"),
         "reward_points": int(delta),
         "reward_total_after": int(current_total or 0) + int(delta),
+        "partner_experience_ordinal": (
+            int(partner_policy["ordinal"]) if partner_policy else 0
+        ),
+        "reward_suppressed_reason": (
+            "partner_first_nine_experience"
+            if partner_policy and not partner_policy["reward_eligible"] else ""
+        ),
     }
 
 
@@ -349,6 +502,18 @@ def record_membership_upgrade(conn, user_id, from_level, to_level, source,
         and inviter_tier in INVITE_REWARD_TOTALS
         and int(relation["membership_expires_at"] or 0) > now
     )
+    partner_slot = None
+    if inviter_active and inviter_tier == "partner" and to_level == "experience":
+        partner_slot = ensure_partner_experience_reward_slot(
+            conn, relation, upgrade_id, now,
+        )
+        if not partner_slot["reward_eligible"]:
+            return {
+                "upgrade_record_id": upgrade_id,
+                "reward": None,
+                "partner_experience_slot": partner_slot,
+                "reward_suppressed_reason": "partner_first_nine_experience",
+            }
     target_total = INVITE_REWARD_TOTALS.get(inviter_tier, {}).get(to_level, 0) if inviter_active else 0
     if target_total <= 0:
         return {"upgrade_record_id": upgrade_id, "reward": None}
@@ -378,7 +543,11 @@ def record_membership_upgrade(conn, user_id, from_level, to_level, source,
     reward = conn.execute(
         "SELECT * FROM invite_reward_point_records WHERE id=?", (reward_cur.lastrowid,),
     ).fetchone()
-    return {"upgrade_record_id": upgrade_id, "reward": dict(reward)}
+    result = {"upgrade_record_id": upgrade_id, "reward": dict(reward)}
+    if partner_slot:
+        result["partner_experience_slot"] = partner_slot
+        result["reward_suppressed_reason"] = ""
+    return result
 
 
 def reward_points(conn, inviter_user_id, limit=20, offset=0):
