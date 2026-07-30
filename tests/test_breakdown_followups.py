@@ -81,7 +81,7 @@ class BreakdownFollowupTests(unittest.TestCase):
             }, ensure_ascii=False)
 
         with mock.patch.object(
-            breakdown, "_chat_multimodal", side_effect=fake_chat
+            breakdown, "_chat_multimodal_gemini", side_effect=fake_chat
         ):
             result = breakdown._reverse_from_frames(
                 {},
@@ -306,7 +306,7 @@ class BreakdownFollowupTests(unittest.TestCase):
             return responses.pop(0)
 
         with mock.patch.object(
-            breakdown, "_chat_multimodal", side_effect=fake_chat,
+            breakdown, "_chat_multimodal_gemini", side_effect=fake_chat,
         ) as chat:
             result = breakdown._reverse_from_frames(
                 {}, ["frame.jpg"], duration=6,
@@ -387,7 +387,7 @@ class BreakdownFollowupTests(unittest.TestCase):
             ensure_ascii=False,
         )
         with mock.patch.object(
-            breakdown, "_chat_multimodal", return_value=raw,
+            breakdown, "_chat_multimodal_gemini", return_value=raw,
         ) as chat, mock.patch.object(
             breakdown, "_expand_short_reverse_segments",
             wraps=breakdown._expand_short_reverse_segments,
@@ -437,7 +437,7 @@ class BreakdownFollowupTests(unittest.TestCase):
             return responses.pop(0)
 
         with mock.patch.object(
-            breakdown, "_chat_multimodal", side_effect=fake_chat,
+            breakdown, "_chat_multimodal_gemini", side_effect=fake_chat,
         ) as chat:
             result = breakdown._reverse_from_frames(
                 {}, ["frame.jpg"], duration=6,
@@ -466,7 +466,7 @@ class BreakdownFollowupTests(unittest.TestCase):
             ensure_ascii=False,
         )
         with mock.patch.object(
-            breakdown, "_chat_multimodal", return_value=duplicate,
+            breakdown, "_chat_multimodal_gemini", return_value=duplicate,
         ) as chat:
             result = breakdown._reverse_from_frames(
                 {}, ["frame.jpg"], duration=6,
@@ -493,7 +493,7 @@ class BreakdownFollowupTests(unittest.TestCase):
             ensure_ascii=False,
         )
         with mock.patch.object(
-            breakdown, "_chat_multimodal", return_value=short,
+            breakdown, "_chat_multimodal_gemini", return_value=short,
         ) as chat:
             result = breakdown._reverse_from_frames(
                 {}, ["frame.jpg"], duration=6,
@@ -532,7 +532,7 @@ class BreakdownFollowupTests(unittest.TestCase):
             return responses.pop(0)
 
         with mock.patch.object(
-            breakdown, "_chat_multimodal", side_effect=fake_chat,
+            breakdown, "_chat_multimodal_gemini", side_effect=fake_chat,
         ) as chat:
             result = breakdown._reverse_from_frames(
                 {}, ["frame.jpg"], duration=6,
@@ -547,7 +547,7 @@ class BreakdownFollowupTests(unittest.TestCase):
     def test_reverse_timeline_validation_fails_after_bounded_retry(self):
         invalid = json.dumps({"segments": ["始终错误。"]}, ensure_ascii=False)
         with mock.patch.object(
-            breakdown, "_chat_multimodal", return_value=invalid,
+            breakdown, "_chat_multimodal_gemini", return_value=invalid,
         ) as chat:
             with self.assertRaisesRegex(ValueError, "内容校验失败"):
                 breakdown._reverse_from_frames(
@@ -983,6 +983,69 @@ class BreakdownFollowupTests(unittest.TestCase):
         self.assertNotEqual(len(raw), original_size)
         with Image.open(io.BytesIO(raw)) as thumbnail:
             self.assertLessEqual(max(thumbnail.size), breakdown._THUMBNAIL_MAX_EDGE)
+    def test_gemini_reverse_requires_api_key(self):
+        with mock.patch.object(breakdown, "GEMINI_API_KEY", ""):
+            with self.assertRaisesRegex(RuntimeError, "GEMINI_API_KEY"):
+                breakdown._chat_multimodal_gemini("system", "user", [])
+
+    def test_gemini_reverse_request_shape_and_response_parsing(self):
+        def fake_frame(path, max_bytes):
+            return b"x" * 16, "image/jpeg"
+
+        with mock.patch.object(breakdown, "GEMINI_API_KEY", "secret-gemini-key"), \
+             mock.patch.object(
+                 breakdown, "_bounded_ai_frame", side_effect=fake_frame,
+             ), mock.patch.object(
+                 breakdown.egress,
+                 "post_json_idempotent",
+                 return_value={
+                     "candidates": [{
+                         "content": {"parts": [{"text": "{\"prompt\":\"ok\"}"}]},
+                     }],
+                 },
+             ) as posted:
+            result = breakdown._chat_multimodal_gemini(
+                "system", "user", ["a.jpg", "b.jpg"], max_tokens=1800,
+            )
+
+        self.assertEqual(result, '{"prompt":"ok"}')
+        official_base, _heygen_base, path, data, headers = posted.call_args.args[:5]
+        self.assertEqual(official_base, breakdown.GEMINI_BASE)
+        self.assertEqual(
+            path,
+            "/v1beta/models/gemini-3.1-pro-preview:generateContent",
+        )
+        self.assertEqual(headers["x-goog-api-key"], "secret-gemini-key")
+        body = json.loads(data)
+        self.assertEqual(
+            body["system_instruction"], {"parts": [{"text": "system"}]},
+        )
+        parts = body["contents"][0]["parts"]
+        self.assertEqual(parts[0], {"text": "user"})
+        self.assertEqual(
+            [part["inline_data"]["mime_type"] for part in parts[1:]],
+            ["image/jpeg", "image/jpeg"],
+        )
+        self.assertEqual(body["generationConfig"]["maxOutputTokens"], 1800)
+        self.assertNotIn("messages", body)
+
+    def test_gemini_reverse_http_400_raises_without_glm_fallback(self):
+        error = urllib.error.HTTPError(
+            "https://generativelanguage.googleapis.com/v1beta/models/x:generateContent",
+            400,
+            "Bad Request",
+            {},
+            io.BytesIO(b'{"error":{"message":"invalid argument"}}'),
+        )
+        with mock.patch.object(breakdown, "GEMINI_API_KEY", "secret-gemini-key"), \
+             mock.patch.object(
+                 breakdown.egress, "post_json_idempotent", side_effect=error,
+             ), mock.patch.object(
+                 breakdown, "_chat_multimodal",
+             ) as glm_chat:
+            with self.assertRaisesRegex(RuntimeError, "AI 分析请求被上游拒绝"):
+                breakdown._chat_multimodal_gemini("system", "user", [])
+        glm_chat.assert_not_called()
 
 
 if __name__ == "__main__":

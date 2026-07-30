@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""爆款拆解：竞品视频链接 → 下载 → 抽帧 → ASR → GLM-4V 多模态 → 分镜脚本"""
+"""爆款拆解：竞品视频链接 → 下载 → 抽帧 → ASR → 多模态 → 分镜脚本。
+
+普通拆解与图片反推走智谱 GLM-4V；视频提示词反推走 Gemini（见
+_chat_multimodal_gemini），失败不回退。
+"""
 import os, json, time, base64, tempfile, subprocess, shutil, mimetypes, io
 import http.client
 import re
@@ -15,6 +19,12 @@ from . import egress
 ZHIPU_API_BASE = "https://open.bigmodel.cn/api/paas/v4"
 ZHIPU_API_KEY = (os.environ.get("REVERSE_ZHIPU_KEY") or "").strip()
 ZHIPU_MODEL = (os.environ.get("REVERSE_ZHIPU_MODEL") or "glm-4v-plus").strip()
+# 视频提示词反推专用：走 Gemini，禁止回退 GLM；普通拆解与图片反推仍用上面的 GLM。
+GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip()
+GEMINI_BASE = (os.environ.get("GEMINI_BASE")
+               or "https://generativelanguage.googleapis.com").rstrip("/")
+REVERSE_GEMINI_MODEL = (os.environ.get("REVERSE_GEMINI_MODEL")
+                        or "gemini-3.1-pro-preview").strip()
 BREAKDOWN_DOWNLOAD_BUDGET = max(
     30, int(os.environ.get("BREAKDOWN_DOWNLOAD_BUDGET", "180") or "180")
 )
@@ -591,7 +601,7 @@ def _reverse_from_frames(
             )
         try:
             if duration > 0:
-                raw = _chat_multimodal(
+                raw = _chat_multimodal_gemini(
                     sysmsg, message, frames, max_tokens=1800,
                 )
                 contents = _coerce_reverse_segments(
@@ -1357,56 +1367,118 @@ def _chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7, max_tokens=None):
             max_attempts=2,
         )
     except Exception as error:
-        code = int(getattr(error, "code", 0) or 0)
-        reason = getattr(error, "reason", None)
-        detail = str(error or "").lower()
-        upstream_detail = ""
-        if isinstance(error, urllib.error.HTTPError):
-            try:
-                upstream_detail = error.read(1024).decode("utf-8", "replace")
-            except Exception:
-                upstream_detail = ""
-        timed_out = (
-            isinstance(error, (TimeoutError, socket.timeout))
-            or isinstance(reason, (TimeoutError, socket.timeout))
-            or "timed out" in detail
-            or "timeout" in detail
-        )
-        print(
-            "[breakdown] ai request failed type=%s http=%s request_bytes=%d image_bytes=%d upstream=%s"
-            % (
-                type(error).__name__, code or "-", len(request_data), image_bytes,
-                re.sub(r"\s+", " ", upstream_detail)[:500] or "-",
-            ),
-            flush=True,
-        )
-        if code == 413:
-            message = "AI 分析素材数据过大，请缩短视频或降低素材分辨率，本次点数已自动退回"
-        elif code == 429:
-            message = "AI 分析服务请求过多，请稍后重试，本次点数已自动退回"
-        elif code in (401, 403):
-            message = "AI 分析服务鉴权异常，本次点数已自动退回，请联系管理员"
-        elif code == 400:
-            message = "AI 分析请求被上游拒绝，可能是素材格式或内容不兼容，本次点数已自动退回"
-        elif code >= 500:
-            message = "AI 分析服务暂时不可用，本次点数已自动退回，请稍后重试"
-        elif timed_out:
-            message = "AI 分析响应超时，本次未生成结果，点数已自动退回，请稍后重试"
-        elif isinstance(
-            error,
-            (
-                urllib.error.URLError,
-                http.client.RemoteDisconnected,
-                http.client.IncompleteRead,
-                ConnectionError,
-                ssl.SSLError,
-            ),
-        ):
-            message = "AI 分析连接中断，本次点数已自动退回，请稍后重试"
-        else:
-            message = "AI 分析服务暂时不可用，本次未生成结果，点数已自动退回，请稍后重试"
-        raise RuntimeError(message) from error
+        _raise_ai_request_error(error, len(request_data), image_bytes)
     return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+
+
+def _raise_ai_request_error(error, request_bytes, image_bytes):
+    """把上游异常统一翻译成用户可读、且明确点数已退回的 RuntimeError。"""
+    code = int(getattr(error, "code", 0) or 0)
+    reason = getattr(error, "reason", None)
+    detail = str(error or "").lower()
+    upstream_detail = ""
+    if isinstance(error, urllib.error.HTTPError):
+        try:
+            upstream_detail = error.read(1024).decode("utf-8", "replace")
+        except Exception:
+            upstream_detail = ""
+    timed_out = (
+        isinstance(error, (TimeoutError, socket.timeout))
+        or isinstance(reason, (TimeoutError, socket.timeout))
+        or "timed out" in detail
+        or "timeout" in detail
+    )
+    print(
+        "[breakdown] ai request failed type=%s http=%s request_bytes=%d image_bytes=%d upstream=%s"
+        % (
+            type(error).__name__, code or "-", request_bytes, image_bytes,
+            re.sub(r"\s+", " ", upstream_detail)[:500] or "-",
+        ),
+        flush=True,
+    )
+    if code == 413:
+        message = "AI 分析素材数据过大，请缩短视频或降低素材分辨率，本次点数已自动退回"
+    elif code == 429:
+        message = "AI 分析服务请求过多，请稍后重试，本次点数已自动退回"
+    elif code in (401, 403):
+        message = "AI 分析服务鉴权异常，本次点数已自动退回，请联系管理员"
+    elif code == 400:
+        message = "AI 分析请求被上游拒绝，可能是素材格式或内容不兼容，本次点数已自动退回"
+    elif code >= 500:
+        message = "AI 分析服务暂时不可用，本次点数已自动退回，请稍后重试"
+    elif timed_out:
+        message = "AI 分析响应超时，本次未生成结果，点数已自动退回，请稍后重试"
+    elif isinstance(
+        error,
+        (
+            urllib.error.URLError,
+            http.client.RemoteDisconnected,
+            http.client.IncompleteRead,
+            ConnectionError,
+            ssl.SSLError,
+        ),
+    ):
+        message = "AI 分析连接中断，本次点数已自动退回，请稍后重试"
+    else:
+        message = "AI 分析服务暂时不可用，本次未生成结果，点数已自动退回，请稍后重试"
+    raise RuntimeError(message) from error
+
+
+def _chat_multimodal_gemini(sysmsg, usermsg, image_paths, temp=0.7, max_tokens=None):
+    """视频提示词反推专用：Gemini 多模态。失败直接抛错，不回退 GLM。"""
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY is not configured")
+
+    parts = [{"text": usermsg}]
+    image_paths = _evenly_spaced_frames(image_paths, _AI_MAX_FRAMES)
+    per_frame_budget = min(
+        _AI_FRAME_MAX_BYTES,
+        max(32 * 1024, _AI_FRAMES_TOTAL_MAX_BYTES // max(1, len(image_paths))),
+    )
+    image_bytes = 0
+    for path in image_paths:
+        frame, media_type = _bounded_ai_frame(path, per_frame_budget)
+        if image_bytes + len(frame) > _AI_FRAMES_TOTAL_MAX_BYTES:
+            raise ValueError("视频关键帧压缩后仍然过大，请缩短视频或降低素材分辨率")
+        image_bytes += len(frame)
+        parts.append({
+            "inline_data": {
+                "mime_type": media_type,
+                "data": base64.b64encode(frame).decode(),
+            },
+        })
+
+    body = {
+        "system_instruction": {"parts": [{"text": sysmsg}]},
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {"temperature": temp},
+    }
+    if max_tokens is not None:
+        body["generationConfig"]["maxOutputTokens"] = int(max_tokens)
+
+    request_data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    try:
+        d = egress.post_json_idempotent(
+            GEMINI_BASE, GEMINI_BASE,
+            "/v1beta/models/%s:generateContent" % REVERSE_GEMINI_MODEL,
+            request_data,
+            {
+                "Content-Type": "application/json",
+                "x-goog-api-key": GEMINI_API_KEY,
+            },
+            log=lambda message: print("[breakdown] %s" % message, flush=True),
+            max_attempts=2,
+        )
+    except Exception as error:
+        _raise_ai_request_error(error, len(request_data), image_bytes)
+    candidates = d.get("candidates") or []
+    content = (candidates[0].get("content") or {}) if candidates else {}
+    texts = [
+        str(part.get("text") or "")
+        for part in (content.get("parts") or [])
+        if isinstance(part, dict)
+    ]
+    return "".join(texts).strip()
 
 
 HANDLERS = {"breakdown": gen_breakdown}
