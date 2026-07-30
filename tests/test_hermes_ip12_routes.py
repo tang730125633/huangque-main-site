@@ -358,7 +358,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import server
-from server import _foundation_generation_active, _foundation_html, _foundation_source_messages, _validate_foundation_pdf, app, parse_coach_state_updates
+from server import _foundation_generation_active, _foundation_html, _foundation_source_messages, _render_foundation_pdf, _validate_foundation_pdf, app, parse_coach_state_updates
 import security
 import artifact_store
 import image_services
@@ -499,6 +499,35 @@ assert "模块一｜定位诊断" in report_html
 assert "<table>" in report_html and "账号封面" in report_html
 assert "<blockquote>待本人确认</blockquote>" in report_html
 assert "<h4>故事名称：从无到有</h4>" in report_html
+
+render_root = Path(os.environ["HERMES_DATA_DIR"]) / "foundation-render"
+render_root.mkdir()
+render_calls = []
+def fake_render(args, **kwargs):
+    render_calls.append(args[0])
+    html_text = Path(args[-1][7:]).read_text(encoding="utf-8")
+    pdf_path = Path(next(item.split("=", 1)[1] for item in args if item.startswith("--print-to-pdf=")))
+    write_test_pdf(pdf_path, 8 if "body{zoom:1.05}" in html_text else 7)
+    return subprocess.CompletedProcess(args, 0)
+with patch.object(server.subprocess, "run", side_effect=fake_render):
+    fitted_pdf = _render_foundation_pdf("## 模块一", ["/fake/chromium"], render_root)
+assert _validate_foundation_pdf(fitted_pdf) == 8
+assert render_calls == ["/fake/chromium", "/fake/chromium"]
+
+fallback_root = Path(os.environ["HERMES_DATA_DIR"]) / "foundation-fallback"
+fallback_root.mkdir()
+fallback_calls = []
+def fake_fallback(args, **kwargs):
+    fallback_calls.append(args[0])
+    if args[0] == "/fake/playwright":
+        raise subprocess.TimeoutExpired(args, 60)
+    pdf_path = Path(next(item.split("=", 1)[1] for item in args if item.startswith("--print-to-pdf=")))
+    write_test_pdf(pdf_path, 8)
+    return subprocess.CompletedProcess(args, 0)
+with patch.object(server.subprocess, "run", side_effect=fake_fallback):
+    fallback_pdf = _render_foundation_pdf("## 模块一", ["/fake/playwright", "/fake/chromium"], fallback_root)
+assert _validate_foundation_pdf(fallback_pdf) == 8
+assert fallback_calls == ["/fake/playwright", "/fake/chromium"]
 
 anonymous = app.test_client()
 assert anonymous.get("/healthz").status_code == 200
