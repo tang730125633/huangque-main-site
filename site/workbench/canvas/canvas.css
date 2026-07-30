@@ -125,21 +125,20 @@
   .nc-save-state.saved{ color:#2bd576; }
   .nc-save-state.error{ color:#f4708a; }
   .nc-online-state{ min-width:52px; color:#7f8fa7; font-size:12px; white-space:nowrap; }
-  body.nc-local-fullscreen .nc-float,
   body.nc-local-fullscreen .nc-legend,
-  .nc-wrap:fullscreen .nc-float,
   .nc-wrap:fullscreen .nc-legend,
-  .nc-wrap:-webkit-full-screen .nc-float,
   .nc-wrap:-webkit-full-screen .nc-legend{ display:none; }
-  .nc-canvas{ position:relative; flex:1; min-height:0; border:1px solid rgba(148,164,187,.09); border-radius:14px; overflow:hidden; scrollbar-width:none; cursor:grab;
-    height:100%; background:radial-gradient(rgba(148,164,187,.052) 1px, transparent 1px) 0 0/24px 24px, linear-gradient(165deg, rgba(9,14,23,.72), rgba(5,8,14,.82)); box-shadow:inset 0 1px 0 rgba(255,255,255,.025); }
+  .nc-canvas{ position:relative; flex:1; min-height:0; border:1px solid rgba(148,164,187,.12); border-radius:14px; overflow:hidden; scrollbar-width:none; cursor:grab;
+    height:100%; background:linear-gradient(165deg, #0b111c, #070b12); box-shadow:inset 0 1px 0 rgba(255,255,255,.035); }
   .nc-canvas::-webkit-scrollbar{ display:none; width:0; height:0; }
   .nc-canvas.panning{ cursor:grabbing; user-select:none; }
   .nc-canvas.connecting{ cursor:crosshair; }
   .nc-canvas.selecting{ cursor:crosshair; user-select:none; }
   .nc-canvas.connecting,.nc-canvas.connecting *{ user-select:none; -webkit-user-select:none; }
   .nc-canvas.connecting input,.nc-canvas.connecting textarea{ user-select:text; -webkit-user-select:text; }
-  .nc-inner{ position:relative; width:8000px; height:5000px; transform-origin:0 0; }
+  .nc-inner{ position:relative; width:8000px; height:5000px; transform-origin:0 0;
+    background-image:linear-gradient(rgba(148,164,187,.09) 1px, transparent 1px),linear-gradient(90deg,rgba(148,164,187,.09) 1px,transparent 1px),linear-gradient(rgba(148,164,187,.15) 1px,transparent 1px),linear-gradient(90deg,rgba(148,164,187,.15) 1px,transparent 1px);
+    background-size:24px 24px,24px 24px,120px 120px,120px 120px; }
   .nc-selection-box{ position:absolute; z-index:4; display:none; pointer-events:none; border:1px dashed rgba(70,180,255,.9); background:rgba(70,180,255,.13); border-radius:6px; box-shadow:0 0 0 1px rgba(70,180,255,.1) inset; }
   .nc-selected-region{ position:absolute; z-index:3; display:none; pointer-events:auto; cursor:move; border:1px solid rgba(45,212,191,.85); background:rgba(45,212,191,.06); border-radius:10px; box-shadow:0 0 0 1px rgba(45,212,191,.12) inset,0 0 18px rgba(45,212,191,.18); }
   .nc-selected-region.dragging{ background:rgba(45,212,191,.11); border-color:#2dd4bf; box-shadow:0 0 0 1px rgba(45,212,191,.18) inset,0 0 24px rgba(45,212,191,.26); }
@@ -268,6 +267,8 @@
   .nc-empty-card{ width:min(420px, calc(100% - 32px)); padding:22px; border:1px dashed rgba(148,164,187,.22); border-radius:16px; background:rgba(9,14,24,.72); text-align:center; color:#94a4bb; pointer-events:auto; }
   .nc-empty-card b{ display:block; margin-bottom:7px; color:#eaf1fa; font-size:16px; }
   .nc-empty-card p{ margin-bottom:14px; color:#5c6b82; font-size:12.5px; }
+  .nc-empty-actions{ display:flex; justify-content:center; gap:7px; flex-wrap:wrap; }
+  .nc-fs-add{ min-width:84px; }
   /* ports */
   .nc-port{ position:absolute; width:13px; height:13px; border-radius:50%; background:#0d131c; border:2px solid #94a4bb; cursor:crosshair; z-index:3; user-select:none; -webkit-user-select:none; touch-action:none; }
   .nc-port:hover{ border-color:#e7b24c; }

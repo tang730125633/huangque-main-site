@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
 <link rel="stylesheet" href="../assets/cloud.css?v=8">
 <script src="theme-init.js?v=11eb385e"></script>
-<link rel="stylesheet" href="canvas/canvas.css?v=d84ea6bf">
+<link rel="stylesheet" href="canvas/canvas.css?v=db09ed5e">
 <link rel="stylesheet" href="canvas/canvas-short-drama.css?v=66787790">
 <link rel="stylesheet" href="canvas/canvas-short-drama-production.css?v=1215029d">
 <link rel="stylesheet" href="canvas/canvas-short-drama-voice.css?v=41589c99">
@@ -107,11 +107,15 @@
           <svg id="ncEdges" class="nc-edges"></svg>
           <div id="ncSelectedRegion" class="nc-selected-region" aria-hidden="true"></div>
           <div id="ncSelectionBox" class="nc-selection-box" aria-hidden="true"></div>
-          <div id="ncEmpty" class="nc-empty">
-            <div class="nc-empty-card">
-              <b>从一个节点开始搭流程</b>
-              <p>添加文本、图片、反推或作图节点，连起来后可以一键并行运行。</p>
+        </div>
+        <div id="ncEmpty" class="nc-empty">
+          <div class="nc-empty-card">
+            <b>从一个节点开始搭流程</b>
+            <p>点击下方按钮开始，也可在画布空白处右键添加节点。</p>
+            <div class="nc-empty-actions" aria-label="快速添加节点">
               <button class="nc-add" data-add="text" title="添加文本提示词节点">+ 文本</button>
+              <button class="nc-add" data-add="image" title="上传或粘贴素材图">+ 图片</button>
+              <button class="nc-add" data-add="reverse" title="根据图片生成提示词">+ 反推</button>
               <button class="nc-add" data-add="gen" title="根据提示词和参考图生成图片">+ 作图</button>
               <button class="nc-add" data-add="video" title="根据提示词和参考图生成视频">+ 视频</button>
               <button class="nc-add" data-add="shortDrama" title="创建短剧项目">+ 短剧</button>
@@ -140,7 +144,7 @@
       <div id="ncFsDock" class="nc-fs-dock" aria-label="全屏画布工具栏">
         <div class="nc-fs-row">
           <div class="nc-fs-group">
-            <button id="ncFsAdd" class="nc-fs-btn icon" type="button" title="添加节点">+</button>
+            <button id="ncFsAdd" class="nc-fs-btn nc-fs-add" type="button" title="添加节点">+ 添加节点</button>
           </div>
           <div class="nc-fs-group">
             <button id="ncFsUndo" class="nc-fs-btn icon" type="button" title="撤销">↶</button>
@@ -165,6 +169,7 @@
         </div>
       </div>
       <div class="nc-float">
+        <span class="nc-mini">空白处右键添加节点</span>
         <span class="nc-mini">拖动节点</span>
         <span class="nc-mini">点击端口连线</span>
         <span class="nc-mini">上传图可粘贴</span>
@@ -191,6 +196,6 @@
 <script src="canvas/canvas-short-drama-video.js?v=6b3d7e61"></script>
 <script src="canvas/canvas-short-drama-assembly.js?v=7e1c53d6"></script>
 <script src="canvas/canvas-short-drama.js?v=263fa181"></script>
-<script src="canvas/canvas-app.js?v=e84c57c4"></script>
+<script src="canvas/canvas-app.js?v=affe41a6"></script>
 </body>
 </html>

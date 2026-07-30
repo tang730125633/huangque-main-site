@@ -194,6 +194,11 @@
     video: {name:'生视频',        color:'#f472b6', ins:['prompt','image'], outs:['video']},
     shortDrama:{name:'短剧项目', color:'#f59e0b'}
   };
+  function syncRunAllDisabled(){
+    var disabled=!canEditCanvas()||runAllExecutableNodes().length===0||!!runAllBatch;
+    if(runAllBtn) runAllBtn.disabled=disabled;
+    if(fsRun) fsRun.disabled=disabled;
+  }
   function updateState(label){
     if(label) runLabel=label;
     var count=Object.keys(nodes).length;
@@ -205,6 +210,7 @@
     if(redoBtn) redoBtn.disabled=!canEditCanvas()||!history.canRedo();
     if(fsUndo) fsUndo.disabled=!canEditCanvas()||!history.canUndo();
     if(fsRedo) fsRedo.disabled=!canEditCanvas()||!history.canRedo();
+    syncRunAllDisabled();
     syncZoomInputs();
     if(activeSidePanel) renderSidePanel();
     scheduleSave();
@@ -774,6 +780,7 @@
       if(el) el.disabled=!!readonly;
     });
     document.querySelectorAll('.nc-node input,.nc-node textarea,.nc-node select,.nc-node button').forEach(function(el){ el.disabled=!!readonly; });
+    syncRunAllDisabled();
     document.querySelectorAll('.nc-node [data-f="openShortDrama"]').forEach(function(openShortDrama){
       var host=openShortDrama.closest('.nc-node'), node=host&&nodes[host.getAttribute('data-node-id')];
       openShortDrama.disabled=!!readonly&&!(node&&node.params.project_id);
