@@ -4,6 +4,7 @@
   var stateApi=window.HQCanvas&&window.HQCanvas.state;
   var storageApi=window.HQCanvas&&window.HQCanvas.storage;
   var apiModule=window.HQCanvas&&window.HQCanvas.api;
+  var agentModule=window.HQCanvas&&window.HQCanvas.agent;
   var shortDramaModule=window.HQCanvas&&window.HQCanvas.shortDrama;
   var canvasExporter=window.HQCanvas&&window.HQCanvas.exporter;
   var canvasStorage=storageApi.createStorage({storage:function(){return window.localStorage;}});
@@ -23,6 +24,7 @@
   var selectedNode=null, selectedNodes={}, selectedEdge=-1, clipNode=null, zoom=1;
   var RUN_ALL_REMOTE_LIMIT=2, RUN_ALL_RETRY_MS=4000, runAllBatch=null, runAllRetryTimer=null;
   var activeSidePanel='', accountAssetsLoaded=false, accountAssets=[], accountAssetsPromise=null;
+  var agentSessions={};
   var currentBoardId=null, boardMode='mine', boardLastSeenUpdatedAt=0, boardConflict=false;
   var currentBoardScope='local', currentCollabVersion=0, currentCollabRole='', currentCollabName='', currentCollabMembers=[];
   var collabBoards=[], collabLoaded=false, collabLoading=false, collabError='', collabErrorHint='', collabCreating=false, collabSaving=false, collabQueuedSnap=null;
@@ -212,7 +214,7 @@
     if(fsRedo) fsRedo.disabled=!canEditCanvas()||!history.canRedo();
     syncRunAllDisabled();
     syncZoomInputs();
-    if(activeSidePanel) renderSidePanel();
+    if(activeSidePanel&&activeSidePanel!=='agent') renderSidePanel();
     scheduleSave();
   }
   function setNodeState(node,state,msg,color){
@@ -1447,17 +1449,20 @@
     activeSidePanel=activeSidePanel===kind?'':kind;
     document.querySelectorAll('.nc-side-tool').forEach(function(b){ b.classList.toggle('on', b.getAttribute('data-side')===activeSidePanel); });
     sidePanel.classList.toggle('on', !!activeSidePanel);
+    sidePanel.classList.toggle('agent', activeSidePanel==='agent');
     sidePanel.setAttribute('aria-hidden', activeSidePanel?'false':'true');
     if(activeSidePanel) renderSidePanel();
   }
   function closeSidePanel(){
     activeSidePanel='';
     if(sidePanel) sidePanel.classList.remove('on');
+    if(sidePanel) sidePanel.classList.remove('agent');
     if(sidePanel) sidePanel.setAttribute('aria-hidden','true');
     document.querySelectorAll('.nc-side-tool').forEach(function(b){ b.classList.remove('on'); });
   }
   function renderSidePanel(){
     if(!activeSidePanel||!sideBody) return;
+    if(activeSidePanel==='agent') renderAgentPanel();
     if(activeSidePanel==='nodes') renderNodeManager();
     if(activeSidePanel==='assets') renderAssetManager();
     if(activeSidePanel==='export') renderExportPanel();
@@ -1544,6 +1549,198 @@
     sideBody.innerHTML='<div class="nc-export-box"><div class="nc-export-preview">'+(b?('预计导出 '+Math.round(b.w)+' × '+Math.round(b.h)+' JPG'):'当前画布为空，暂无可导出内容')+'</div><button id="ncExportJpg" class="nc-export-btn" type="button" '+(b?'':'disabled')+'>导出 JPG</button><div class="nc-side-empty" style="padding:0 4px;text-align:left;">导出内容包含节点、连线和图片预览，不包含工具栏。</div></div>';
     var btn=document.getElementById('ncExportJpg');
     if(btn) btn.onclick=function(){ exportCanvasJpg(); };
+  }
+  function agentSessionKey(){ return currentBoardScope+':'+String(currentBoardId||'draft'); }
+  function agentErrorText(error,fallback){
+    var message=String(error&&error.message||'').trim();
+    if(!message||message.length>180||/<(?:!doctype|html|body|head)\b/i.test(message)) return fallback;
+    if(error&&error.status===401) return '请先登录后使用画布 Agent';
+    return message;
+  }
+  function currentAgentSession(){
+    var key=agentSessionKey();
+    if(!agentSessions[key]) agentSessions[key]={key:key,messages:[],quote:null,points:null,quoteLoading:false,quoteError:'',pending:false,status:'',plan:null,applied:false};
+    return agentSessions[key];
+  }
+  function agentNodeContent(node){
+    if(!node) return '';
+    if(node.type==='text'||node.type==='gen'||node.type==='video') return (node.params&&node.params.text)||'';
+    if(node.type==='reverse') return (node.outputs&&node.outputs.prompt)||'';
+    if(node.type==='image') return '图片素材（首版不读取图像内容）';
+    if(node.type==='shortDrama') return '短剧项目阶段：'+String(node.params&&node.params.stage||'未开始');
+    return '';
+  }
+  function buildAgentSnapshot(){
+    var selected=selectedNodeIds();
+    return agentModule.createSnapshot({
+      projectId:agentSessionKey(),scope:currentBoardScope,
+      selectedNodeIds:selected,
+      nodes:Object.keys(nodes).map(function(id){
+        var node=nodes[id];
+        return {id:id,type:node.type,title:nodeDisplayName(node),content:agentNodeContent(node)};
+      }),
+      edges:edges.map(function(edge){return {from_node_id:edge.from.node,to_node_id:edge.to.node};})
+    });
+  }
+  function renderAgentPanel(){
+    if(sideTitle) sideTitle.textContent='画布 Agent';
+    if(!agentModule){ sideBody.innerHTML='<div class="nc-side-empty">Agent 模块未加载</div>'; return; }
+    var session=currentAgentSession();
+    var messages=session.messages.map(function(message){
+      return '<div class="nc-agent-message '+escapeHtml(message.role)+'">'+escapeHtml(message.content)+'</div>';
+    }).join('');
+    var plan='';
+    if(session.plan&&(session.plan.actions||[]).length){
+      plan='<div class="nc-agent-plan">'+session.plan.actions.map(function(action){
+        return '<label><input type="checkbox" data-agent-action="'+escapeHtml(action.id)+'" checked '+(session.applied?'disabled':'')+'><span>'+escapeHtml(agentModule.actionLabel(action))+'</span></label>';
+      }).join('')+(session.plan.warnings||[]).map(function(warning){return '<div class="nc-agent-warning">'+escapeHtml(warning)+'</div>';}).join('')
+        +'<button class="nc-agent-apply" type="button" '+(session.applied||!canEditCanvas()?'disabled':'')+'>'+(session.applied?'已应用，可撤销':'确认应用所选操作')+'</button></div>';
+    }
+    var quoteText=session.quoteLoading?'正在读取报价…':session.quoteError?session.quoteError:session.quote==null?'报价不可用':('本次 '+session.quote+' 点');
+    var balance=session.points==null?'':('余额 '+session.points+' 点');
+    var insufficient=session.quote!=null&&session.points!=null&&session.points<session.quote;
+    sideBody.innerHTML='<div class="nc-agent"><div class="nc-agent-intro"><strong>先选节点，再告诉 Agent 要做什么</strong>未选节点时读取整张画布；选中节点时只读取选区。Agent 只建议操作，图片与视频只创建草稿，不会自动生成。</div>'
+      +'<div class="nc-agent-messages">'+(messages||'<div class="nc-agent-message">我可以整理提示词、创建生成草稿、修改选中的文本节点或连接现有节点。</div>')+(session.status?'<div class="nc-agent-message">'+escapeHtml(session.status)+'</div>':'')+plan+'</div>'
+      +'<div class="nc-agent-compose"><textarea data-agent-input maxlength="2000" placeholder="例如：把选中的卖点整理成一个 9:16 图片生成草稿" '+(session.pending||session.quote==null?'disabled':'')+'></textarea>'
+      +'<div class="nc-agent-quote"><span>'+escapeHtml(quoteText)+'</span><span>'+escapeHtml(balance)+'</span></div>'
+      +(session.quoteError?'<button class="nc-agent-apply" type="button" data-agent-retry>重新读取报价</button>':'')
+      +'<button class="nc-agent-submit" type="button" '+(session.pending||session.quote==null||insufficient?'disabled':'')+'>'+(session.pending?'Agent 思考中…':insufficient?'点数不足':session.quote==null?'等待报价':('发送 · '+session.quote+' 点'))+'</button></div></div>';
+    var input=sideBody.querySelector('[data-agent-input]');
+    var submit=sideBody.querySelector('.nc-agent-submit');
+    if(submit) submit.onclick=function(){ submitAgentTurn(input&&input.value); };
+    if(input) input.onkeydown=function(e){ if((e.metaKey||e.ctrlKey)&&e.key==='Enter'){ e.preventDefault(); submitAgentTurn(input.value); } };
+    var apply=sideBody.querySelector('.nc-agent-apply:not([data-agent-retry])');
+    if(apply) apply.onclick=function(){
+      var ids=Array.prototype.map.call(sideBody.querySelectorAll('[data-agent-action]:checked'),function(box){return box.getAttribute('data-agent-action');});
+      applyAgentPlan(session,ids);
+    };
+    var retry=sideBody.querySelector('[data-agent-retry]');
+    if(retry) retry.onclick=function(){ session.quoteError=''; session.quote=null; loadAgentQuote(session); renderAgentPanel(); };
+    if(session.quote==null&&!session.quoteLoading&&!session.quoteError) loadAgentQuote(session);
+  }
+  function loadAgentQuote(session){
+    session.quoteLoading=true;
+    apiClient.json('/api/gen/canvas-agent/quote',{method:'POST',body:{}}).then(function(data){
+      session.quote=Number(data.cost);
+      session.points=Number(data.points);
+      session.quoteError='';
+    }).catch(function(error){
+      session.quote=null;
+      session.quoteError=agentErrorText(error,'报价读取失败，请确认 Agent 服务已启用');
+    }).finally(function(){
+      session.quoteLoading=false;
+      if(activeSidePanel==='agent'&&currentAgentSession()===session) renderAgentPanel();
+    });
+  }
+  function agentHeaders(idempotencyKey){
+    var headers={'Idempotency-Key':idempotencyKey};
+    if(currentBoardScope==='collab'&&currentBoardId) headers['X-Canvas-Board-Id']=String(currentBoardId);
+    return headers;
+  }
+  function retryAgentSubmission(body,headers,attempt){
+    return apiClient.json('/api/gen/canvas_agent',{method:'POST',body:body,headers:headers,timeout:12000}).catch(function(error){
+      var retryable=error&&(error.code==='timeout'||error.code==='idempotency_in_progress');
+      if(!retryable||attempt>=4) throw error;
+      return new Promise(function(resolve){setTimeout(resolve,800*(attempt+1));}).then(function(){return retryAgentSubmission(body,headers,attempt+1);});
+    });
+  }
+  function submitAgentTurn(prompt){
+    prompt=String(prompt||'').trim();
+    var session=currentAgentSession();
+    if(!prompt||session.pending||session.quote==null) return;
+    var snapshot;
+    try{ snapshot=buildAgentSnapshot(); }
+    catch(error){ session.messages.push({role:'error',content:error.message}); renderAgentPanel(); return; }
+    var history=session.messages.filter(function(message){return message.role==='user'||message.role==='assistant';}).slice(-8);
+    var body=Object.assign({},snapshot,{prompt:prompt,history:history,quoted_cost:session.quote});
+    var requestKey='canvas-agent-'+(window.crypto&&crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2));
+    var headers=agentHeaders(requestKey);
+    session.messages.push({role:'user',content:prompt});
+    session.pending=true; session.status='正在读取画布并规划操作…'; session.plan=null; session.applied=false;
+    renderAgentPanel();
+    retryAgentSubmission(body,headers,0).then(function(data){
+      if(!data.job_id) throw new Error(data.detail||'Agent 任务提交失败');
+      session.points=data.points_left==null?session.points:Number(data.points_left);
+      if(window.HQ&&HQ.refreshPoints) HQ.refreshPoints();
+      return apiModule.poll({
+        request:function(){return apiClient.json('/api/gen/job/'+data.job_id);},intervalMs:1400,maxMs:300000,
+        inspect:function(job){
+          if(job.status==='done') return {done:true,value:typeof job.result==='string'?JSON.parse(job.result):job.result};
+          if(job.status==='error'||job.status==='failed') return {error:new Error(job.error||'Agent 思考失败，点数已自动退回')};
+          return {pending:true};
+        },
+        onProgress:function(job,seconds){session.status='Agent 思考中，已用 '+seconds+' 秒…'; if(activeSidePanel==='agent'&&currentAgentSession()===session) renderAgentPanel();},
+        timeoutError:function(){return new Error('Agent 响应超时，请稍后查看任务记录');}
+      });
+    }).then(function(result){
+      var content=String(result&&result.content||'Agent 已完成分析。');
+      session.messages.push({role:'assistant',content:content});
+      session.plan=result&&result.plan||null;
+      session.status=session.plan&&(session.plan.actions||[]).length?'请勾选并确认要应用的操作。':'';
+    }).catch(function(error){
+      session.messages.push({role:'error',content:agentErrorText(error,'Agent 请求失败，请稍后重试')});
+      session.status='';
+    }).finally(function(){
+      session.pending=false;
+      session.quote=null; session.points=null; session.quoteError='';
+      if(window.HQ&&HQ.refreshPoints) HQ.refreshPoints();
+      if(activeSidePanel==='agent'&&currentAgentSession()===session) renderAgentPanel();
+    });
+  }
+  function addAgentConnection(sourceId,targetId){
+    var source=nodes[sourceId],target=nodes[targetId];
+    if(!source||!target) return false;
+    var ports=agentModule.connectionPorts(source.type,target.type);
+    if(!ports) return false;
+    var multiImage=ports.to==='image'&&(target.type==='gen'||target.type==='video');
+    edges=edges.filter(function(edge){
+      var duplicate=edge.from.node===sourceId&&edge.from.port===ports.from&&edge.to.node===targetId&&edge.to.port===ports.to;
+      var sameInput=edge.to.node===targetId&&edge.to.port===ports.to;
+      return multiImage?!duplicate:!sameInput;
+    });
+    edges.push({from:{node:sourceId,port:ports.from},to:{node:targetId,port:ports.to}});
+    return true;
+  }
+  function applyAgentPlan(session,actionIds){
+    if(!canEditCanvas()||!session.plan||session.applied) return;
+    try{
+      var current=buildAgentSnapshot();
+      agentModule.validatePlan(current,session.plan);
+      var wanted={}; (actionIds||[]).forEach(function(id){wanted[id]=true;});
+      var actions=session.plan.actions.filter(function(action){return !!wanted[action.id];});
+      if(!actions.length) throw new Error('请至少选择一个 Agent 操作');
+      pushUndo();
+      var base=viewportNodePoint(),created=[],nextSelection=null;
+      actions.forEach(function(action,index){
+        var node;
+        if(action.type==='create_text_node'){
+          node=addNode('text',base.x+index*34,base.y+index*34,{params:{title:action.title,text:action.content}});
+          created.push(node.id);
+        }else if(action.type==='update_text_node'){
+          node=nodes[action.node_id];
+          node.params.text=action.content;
+          if(action.title) node.params.title=action.title;
+          applyNodeUI(node);
+        }else if(action.type==='create_generation_draft'){
+          var type=action.mode==='image'?'gen':action.mode==='video'?'video':'text';
+          node=addNode(type,base.x+index*34,base.y+index*34,{params:{title:action.title,text:action.prompt}});
+          created.push(node.id);
+          (action.connect_from||[]).forEach(function(sourceId){addAgentConnection(sourceId,node.id);});
+        }else if(action.type==='connect_nodes'){
+          addAgentConnection(action.from_node_id,action.to_node_id);
+        }else if(action.type==='select_nodes'){
+          nextSelection=action.node_ids;
+        }
+      });
+      redraw(); refreshAllGenRefs();
+      selectNodesByIds(created.length?created:(nextSelection||selectedNodeIds()));
+      session.applied=true; session.status='操作已应用，可用底部撤销恢复。';
+      updateState('Agent 操作已应用');
+      if(activeSidePanel==='agent') renderAgentPanel();
+    }catch(error){
+      session.messages.push({role:'error',content:(error&&error.message)||'Agent 操作应用失败'});
+      if(activeSidePanel==='agent') renderAgentPanel();
+    }
   }
   function exportCanvasJpg(){
     var bounds=canvasContentBounds();

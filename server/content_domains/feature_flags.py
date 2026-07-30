@@ -34,6 +34,7 @@ CATALOG = [
     {"key": "leads", "name": "获客分析", "desc": "线索抓取与评论分析", "service": "content"},
     {"key": "dl", "name": "下载代理", "desc": "无水印视频下载代理", "service": "dl"},
     {"key": "copy", "name": "文案生成", "desc": "营销文案生成", "service": "content"},
+    {"key": "canvas_agent", "name": "画布 Agent", "desc": "读取画布并生成需确认的操作建议", "service": "content", "default_enabled": False},
 ]
 CATALOG_MAP = {item["key"]: item for item in CATALOG}
 
