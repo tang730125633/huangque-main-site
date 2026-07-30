@@ -1486,14 +1486,8 @@ class H(BaseHTTPRequestHandler):
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
             if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
-            try:
-                if self._json_body_strict() != {}: raise ValueError("报价请求体必须为空")
-            except ValueError as e:
-                return self._send(400, {"detail": str(e)})
-            try: feature_flags.require_enabled("canvas_agent")
-            except feature_flags.FeatureDisabled as e: return self._send(503, {"detail": str(e)})
-            return self._send(200, {"kind": "canvas_agent", "cost": points_domain.cost_of("canvas_agent", {}),
-                                    "points": points_domain.get_points(user["username"])})
+            from . import canvas_agent as canvas_agent_domain
+            return canvas_agent_domain.handle_quote(self, user)
         is_still_route = p == "/api/gen/short-drama/generate-stills"
         kind = "image" if is_still_route else None
         if p.startswith("/api/gen/") and p[9:] in HANDLERS:

@@ -38,6 +38,17 @@ class CanvasAgentTests(unittest.TestCase):
         self.assertEqual(core.COST["canvas_agent"], 3)
         self.assertFalse(feature_flags.CATALOG_MAP["canvas_agent"]["default_enabled"])
 
+    def test_quote_is_flagged_and_uses_current_balance(self):
+        class Handler:
+            def _json_body_strict(self): return {}
+            def _send(self, status, body): return status, body
+
+        with mock.patch.object(feature_flags, "require_enabled") as enabled, \
+             mock.patch("content_domains.points.get_points", return_value=19):
+            status, body = canvas_agent.handle_quote(Handler(), {"username": "tester"})
+        enabled.assert_called_once_with("canvas_agent")
+        self.assertEqual((status, body["cost"], body["points"]), (200, 3, 19))
+
     def test_snapshot_rejects_media_and_unverified_collaboration(self):
         with self.assertRaisesRegex(ValueError, "媒体数据"):
             canvas_agent.validate_payload(payload(nodes=[{

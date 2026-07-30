@@ -128,6 +128,20 @@ def validate_payload(payload, access=None):
     return cleaned
 
 
+def handle_quote(handler, user):
+    from . import feature_flags, points
+    try:
+        if handler._json_body_strict() != {}:
+            raise ValueError("报价请求体必须为空")
+        feature_flags.require_enabled("canvas_agent")
+    except ValueError as error:
+        return handler._send(400, {"detail": str(error)})
+    except feature_flags.FeatureDisabled as error:
+        return handler._send(503, {"detail": str(error)})
+    return handler._send(200, {"kind": "canvas_agent", "cost": points.cost_of("canvas_agent", {}),
+                               "points": points.get_points(user["username"])})
+
+
 def _ports_compatible(source_type, target_type):
     outputs = {"text": {"prompt"}, "image": {"image"}, "reverse": {"prompt"},
                "gen": {"image"}, "video": set(), "shortDrama": set()}
