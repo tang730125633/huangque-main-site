@@ -9,7 +9,7 @@
   var canvasExporter=window.HQCanvas&&window.HQCanvas.exporter;
   var canvasStorage=storageApi.createStorage({storage:function(){return window.localStorage;}});
   var apiClient=apiModule.createClient({fetchImpl:window.fetch.bind(window),tokenProvider:tok,AbortControllerImpl:window.AbortController,setTimeoutImpl:setTimeout,clearTimeoutImpl:clearTimeout});
-  var wrap=document.querySelector('.nc-wrap'), canvasShell=document.querySelector('.nc-canvas-shell'), inner=document.getElementById('ncInner'), svg=document.getElementById('ncEdges'), canvas=document.getElementById('ncCanvas'), empty=document.getElementById('ncEmpty'), selectionBox=document.getElementById('ncSelectionBox'), selectedRegion=document.getElementById('ncSelectedRegion'), guideX=document.getElementById('ncGuideX'), guideY=document.getElementById('ncGuideY');
+  var wrap=document.querySelector('.nc-wrap'), canvasShell=document.querySelector('.nc-canvas-shell'), inner=document.getElementById('ncInner'), svg=document.getElementById('ncEdges'), canvas=document.getElementById('ncCanvas'), empty=document.getElementById('ncEmpty'), storyboard=document.getElementById('ncStoryboard'), storyGrid=document.getElementById('ncStoryGrid'), storyMeta=document.getElementById('ncStoryMeta'), selectionBox=document.getElementById('ncSelectionBox'), selectedRegion=document.getElementById('ncSelectedRegion'), guideX=document.getElementById('ncGuideX'), guideY=document.getElementById('ncGuideY');
   var boardHome=document.getElementById('ncBoardHome'), editorView=document.getElementById('ncEditorView'), boardGrid=document.getElementById('ncBoardGrid'), boardSearch=document.getElementById('ncBoardSearch'), boardSort=document.getElementById('ncBoardSort'), backHomeBtn=document.getElementById('ncBackHome');
   var nodeCountEl=document.getElementById('ncNodeCount'), edgeCountEl=document.getElementById('ncEdgeCount'), runStateEl=document.getElementById('ncRunState');
   var undoBtn=document.getElementById('ncUndo'), redoBtn=document.getElementById('ncRedo'), fullscreenBtn=document.getElementById('ncFullscreen'), zoomLabel=document.getElementById('ncZoomLabel'), map=document.getElementById('ncMap'), mapSvg=document.getElementById('ncMapSvg');
@@ -20,7 +20,7 @@
   var sidePanel=document.getElementById('ncSidePanel'), sideTitle=document.getElementById('ncSideTitle'), sideBody=document.getElementById('ncSideBody'), sideClose=document.getElementById('ncSideClose');
   var sideTplMenu=document.getElementById('ncSideTplMenu'), sideMore=document.getElementById('ncSideMore');
   var nodes={}, edges=[], nid=0, pendingPort=null, runLabel='就绪', history=stateApi.createHistory({limit:60}), restoring=false, loading=false, dragPort=null, suppressPortClick=false, suppressCanvasClick=false, mapDirty=false, saveTimer=null;
-  var localFullscreen=false;
+  var localFullscreen=false, canvasView='workflow';
   var selectedNode=null, selectedNodes={}, selectedEdge=-1, clipNode=null, zoom=1;
   var RUN_ALL_REMOTE_LIMIT=2, RUN_ALL_RETRY_MS=4000, runAllBatch=null, runAllRetryTimer=null;
   var activeSidePanel='', accountAssetsLoaded=false, accountAssets=[], accountAssetsPromise=null;
@@ -214,6 +214,7 @@
     if(fsRedo) fsRedo.disabled=!canEditCanvas()||!history.canRedo();
     syncRunAllDisabled();
     syncZoomInputs();
+    if(canvasView==='story') renderStoryboard();
     if(activeSidePanel&&activeSidePanel!=='agent') renderSidePanel();
     scheduleSave();
   }
@@ -1158,6 +1159,7 @@
     }
   }
   function showEditor(){
+    setCanvasView('workflow');
     if(wrap) wrap.classList.add('editing');
     if(editorView) editorView.style.display='';
     if(boardHome) boardHome.style.display='';
@@ -1444,6 +1446,49 @@
   function nodeDisplayName(node){
     if(!node) return '未命名节点';
     return (node.params&&node.params.title)||((TYPE[node.type]&&TYPE[node.type].name)||nodeTypeLabel(node.type));
+  }
+  function renderStoryboard(){
+    if(!storyGrid||canvasView!=='story') return;
+    var ordered=graphApi.topologicalOrder(Object.keys(nodes).map(function(id){ return {id:id}; }),edges);
+    if(storyMeta) storyMeta.textContent=ordered.length+' 个场景';
+    if(!ordered.length){
+      storyGrid.innerHTML='<div class="nc-story-empty"><strong>故事板还没有内容</strong><span>先在工作流中添加文本、图片或视频节点。</span><button type="button">返回工作流</button></div>';
+      storyGrid.querySelector('button').onclick=function(){ setCanvasView('workflow'); };
+      return;
+    }
+    var ready=0;
+    storyGrid.innerHTML=ordered.map(function(id,index){
+      var node=nodes[id], params=node.params||{}, output=node.outputs||{}, text='', image='', video=output.video||output.video_url||'', body='';
+      if(node.type==='text'||node.type==='gen'||node.type==='video') text=String(params.text||'').trim();
+      if(node.type==='reverse') text=String(output.prompt||'').trim();
+      if(node.type==='image') image=node.image||output.image||'';
+      if(node.type==='gen') image=output.image||'';
+      var progress=node.type==='shortDrama'?Math.max(0,Math.min(100,Number(params.progress)||0)):0;
+      var hasContent=!!(text||image||video||progress);
+      if(hasContent) ready++;
+      if(video) body='<div class="nc-story-media nc-story-video" data-story-video="'+index+'"><span>正在准备视频预览…</span></div>';
+      else if(image) body='<div class="nc-story-media"><img src="'+escapeHtml(image)+'" alt="'+escapeHtml(nodeDisplayName(node))+'"></div>';
+      else if(node.type==='shortDrama') body='<div class="nc-story-progress"><div><b>'+escapeHtml(params.stage||'未开始')+'</b><span>'+progress+'%</span></div><i><span style="width:'+progress+'%"></span></i><small>'+escapeHtml(params.ratio||'16:9')+' · '+escapeHtml(params.target_duration||60)+' 秒</small></div>';
+      else if(node.type==='image'||node.type==='gen'||node.type==='video') body='<div class="nc-story-media empty"><span>'+({image:'等待图片素材',gen:'等待生成图片',video:'等待生成视频'}[node.type])+'</span></div>';
+      if(text) body+='<p class="nc-story-copy">'+escapeHtml(text)+'</p>';
+      if(!body) body='<p class="nc-story-copy muted">等待补充内容…</p>';
+      var status=nodeStatusLabel(node); if(status==='等待'&&hasContent) status='已就绪';
+      return '<article class="nc-story-card '+escapeHtml(node.type)+'"><div class="nc-story-card-head"><span class="nc-story-index">'+String(index+1).padStart(2,'0')+'</span><div><small>'+escapeHtml(nodeTypeLabel(node.type))+'</small><strong>'+escapeHtml(nodeDisplayName(node))+'</strong></div><em>'+escapeHtml(status)+'</em></div>'+body+'</article>';
+    }).join('');
+    if(storyMeta) storyMeta.textContent=ordered.length+' 个场景 · '+ready+' 个已就绪';
+    storyGrid.querySelectorAll('[data-story-video]').forEach(function(box){
+      var node=nodes[ordered[Number(box.getAttribute('data-story-video'))]], url=node&&node.outputs&&(node.outputs.video||node.outputs.video_url);
+      playableAssetUrl(url).then(function(src){ if(box.isConnected&&canvasView==='story') box.innerHTML='<video controls playsinline preload="metadata" src="'+escapeHtml(src)+'"></video>'; })
+        .catch(function(){ if(box.isConnected) box.innerHTML='<span>视频预览加载失败</span>'; });
+    });
+  }
+  function setCanvasView(view){
+    canvasView=view==='story'?'story':'workflow';
+    if(canvasShell) canvasShell.classList.toggle('story-view',canvasView==='story');
+    if(storyboard) storyboard.hidden=canvasView!=='story';
+    document.querySelectorAll('[data-canvas-view]').forEach(function(button){ button.setAttribute('aria-pressed',String(button.getAttribute('data-canvas-view')===canvasView)); });
+    if(canvasView==='story') renderStoryboard();
+    else requestAnimationFrame(function(){ syncCanvasGrid(); scheduleMap(); });
   }
   function openSidePanel(kind,keepOpen){
     if(!sidePanel||!sideBody) return;
@@ -2361,6 +2406,7 @@
   }
   function focusNode(node){
     if(!node) return;
+    setCanvasView('workflow');
     canvas.scrollLeft=Math.max(0,CANVAS_VIEW_PAD+(node.x+(node.el.offsetWidth||250)/2)*zoom-canvas.clientWidth/2);
     canvas.scrollTop=Math.max(0,CANVAS_VIEW_PAD+(node.y+(node.el.offsetHeight||160)/2)*zoom-canvas.clientHeight/2);
     syncCanvasGrid();
@@ -3700,6 +3746,9 @@
   });
   document.querySelectorAll('[data-agent-start]').forEach(function(btn){
     btn.onclick=function(e){ e.stopPropagation(); startAgentPrompt(btn.getAttribute('data-agent-start')); };
+  });
+  document.querySelectorAll('[data-canvas-view]').forEach(function(btn){
+    btn.onclick=function(){ setCanvasView(btn.getAttribute('data-canvas-view')); };
   });
   if(sideClose) sideClose.onclick=function(e){ e.stopPropagation(); closeSidePanel(); };
   if(sidePanel){
