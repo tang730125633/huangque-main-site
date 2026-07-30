@@ -167,6 +167,9 @@ class HermesIP12SourceTests(unittest.TestCase):
         self.assertIn("Hermes storage quota exceeded", security)
         self.assertIn("too many concurrent requests", security)
         self.assertIn("too many requests", security)
+        self.assertIn('response.headers["X-Request-ID"]', security)
+        self.assertIn('"duration_ms"', security)
+        self.assertIn('"request_id"', security)
         self.assertIn("def atomic_write_bytes", artifact_store)
         self.assertIn("def atomic_append_bytes", artifact_store)
         self.assertIn("def video_work_dir", artifact_store)
@@ -539,8 +542,20 @@ for path in ("/", "/classic", "/skills", "/analytics", "/images", "/videos",
     response = client.get(path)
     assert response.status_code == 200, (path, response.status_code)
 
-created = client.post("/api/conversations", json={"title": "CLI 客户诊断"}).get_json()
+created_response = client.post(
+    "/api/conversations", json={"title": "CLI 客户诊断"},
+    headers={"X-Request-ID": "hermes_runtime_1234"},
+)
+assert created_response.headers["X-Request-ID"] == "hermes_runtime_1234"
+created = created_response.get_json()
 cid = created["id"]
+audit_rows = [json.loads(line) for line in (Path(os.environ["HERMES_DATA_DIR"]) / "audit" / "security.jsonl").read_text().splitlines()]
+created_audit = [row for row in audit_rows if row.get("request_id") == "hermes_runtime_1234"][-1]
+assert created_audit["username"] == "admin"
+assert created_audit["status"] == 200
+assert created_audit["duration_ms"] >= 0
+created_response.close()
+assert security._active.get("admin", 0) == 0, security._active
 owned = client.get(f"/api/conversations/{cid}").get_json()
 assert owned["id"] == cid and owned["owner_account_id"] == "acct_a" and owned["title"] == "CLI 客户诊断"
 assert client.post("/api/conversations", json={"unknown": True}).status_code == 400
