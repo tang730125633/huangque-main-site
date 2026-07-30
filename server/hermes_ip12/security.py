@@ -247,7 +247,8 @@ def register_security(app, data_dir):
                 _release_concurrency(concurrency_user)
         identity = getattr(g, "hermes_user", {})
         username = identity.get("username", "")
-        if username and request.path.startswith("/api/") and not getattr(g, "hermes_audit_recorded", False):
+        auditable = _is_metered(request.method) or request.path.startswith("/api/foundation-report/")
+        if username and auditable and not getattr(g, "hermes_audit_recorded", False):
             event = "metered_request" if _is_metered(request.method) else "api_request"
             _audit(data_dir, event, response.status_code, username)
         response.headers["X-Request-ID"] = getattr(g, "hermes_request_id", uuid.uuid4().hex)
