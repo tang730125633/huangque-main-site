@@ -11,7 +11,7 @@ CORE = (Path(__file__).resolve().parents[1] / "server" / "content_domains" / "co
 
 class ImageHistoryItemsTests(unittest.TestCase):
     def test_history_endpoint_uses_expanded_job_results(self):
-        self.assertIn("items = history.expand_job_results(rows, lim)", CORE)
+        self.assertIn("items = history.expand_job_results(rows, lim, offset)", CORE)
 
     def test_expands_every_url_from_a_multi_image_job(self):
         rows = [
@@ -49,6 +49,17 @@ class ImageHistoryItemsTests(unittest.TestCase):
         items = expand_job_results(rows, limit=2)
 
         self.assertEqual([item["url"] for item in items], ["/1.png", "/2.png"])
+
+    def test_applies_offset_after_expanding_images(self):
+        rows = [{
+            "id": 12,
+            "created_at": 200,
+            "result": json.dumps({"urls": ["/1.png", "/2.png", "/3.png"]}),
+        }]
+
+        items = expand_job_results(rows, limit=2, offset=1)
+
+        self.assertEqual([item["url"] for item in items], ["/2.png", "/3.png"])
 
     def test_ignores_empty_or_duplicate_urls_inside_one_job(self):
         rows = [{

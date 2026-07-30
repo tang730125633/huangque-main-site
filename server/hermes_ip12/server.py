@@ -475,7 +475,7 @@ def _foundation_generation_active(report):
     return datetime.now() - started_at < timedelta(minutes=15)
 
 
-def _validate_foundation_pdf(path):
+def _foundation_pdf_page_count(path):
     data = path.read_bytes()
     if not (10_000 <= len(data) <= 20 * 1024 * 1024):
         raise RuntimeError("PDF file size is invalid")
@@ -491,6 +491,11 @@ def _validate_foundation_pdf(path):
             page.mediabox
     except Exception as exc:
         raise RuntimeError("PDF cannot be parsed") from exc
+    return page_count
+
+
+def _validate_foundation_pdf(path):
+    page_count = _foundation_pdf_page_count(path)
     if not 8 <= page_count <= 10:
         raise RuntimeError("PDF page count is outside 8-10 pages")
     return page_count
@@ -504,7 +509,7 @@ def _mark_foundation_report_failed(convo_id):
         convo.setdefault("coach_state", {})["foundation_report"] = report
         save_conversation(convo_id, convo)
 
-def _foundation_html(markdown):
+def _foundation_html(markdown, zoom=1.0):
     rows = []
     source_rows = str(markdown or "").splitlines()
     if source_rows and source_rows[0].strip().startswith("# "):
@@ -554,8 +559,48 @@ def _foundation_html(markdown):
             rows.append("<p>%s</p>" % line)
     flush_table()
     body = "\n".join(rows) or "<p>暂无已确认内容。</p>"
+    zoom_css = "" if zoom == 1.0 else "body{zoom:%g}" % zoom
     return """<!doctype html><html lang='zh-CN'><meta charset='utf-8'><style>
-@page{size:A4;margin:16mm 18mm 18mm;@bottom-right{content:counter(page) '/' counter(pages);color:#69727d;font-size:8pt}}body{font-family:'Noto Sans SC','WenQuanYi Zen Hei','Microsoft YaHei',sans-serif;color:#29313b;line-height:1.75;font-size:10.2pt}.cover{border-bottom:2px solid #173d78;padding-bottom:5mm;margin-bottom:7mm}.cover h1{font-size:19pt;margin:0 0 3mm;color:#1d2632;border:0;padding:0}.meta{color:#69727d;font-size:9pt;line-height:1.7}.notice{margin:5mm 0 8mm;padding:3mm 4mm;background:#f5f7fa;border-left:3px solid #dce3ea;color:#566270}h1{font-size:18pt;margin:0 0 5mm;color:#1d2632;border-bottom:1px solid #dce3ea;padding-bottom:4mm}h2{font-size:15pt;margin:9mm 0 4mm;color:#1d2632;border-top:2px solid #dce3ea;padding-top:5mm}h3{font-size:11.5pt;margin:5mm 0 2mm;color:#1d2632}h4{font-size:10.5pt;margin:4mm 0 2mm;color:#29313b}p,li{margin:1.7mm 0}li{margin-left:5mm}strong{color:#1d2632}blockquote{margin:4mm 0;padding:3mm 4mm;border-left:3px solid #dce3ea;color:#687483;background:#fafbfd}hr{border:0;border-top:2px solid #dce3ea;margin:7mm 0}table{width:100%%;border-collapse:collapse;margin:4mm 0 7mm;font-size:9.3pt;page-break-inside:avoid}th{background:#edf3ff;color:#29313b;font-weight:700}th,td{border:1px solid #d8e2f4;padding:2.5mm 3mm;text-align:left;vertical-align:top}tr:nth-child(even){background:#fafcff}</style><body><div class='cover'><h1>IP 人设定位｜模块 1-4 初稿</h1><div class='meta'>黄雀 IP 孵化教练 · 基于本次对话整理 · 生成后请本人确认</div></div><div class='notice'>本报告用于确认 IP 底座。确认后开启模块 5-6；模块 7 及后续能力尚未开发，敬请期待。</div>%s</body></html>""" % body
+@page{size:A4;margin:16mm 18mm 18mm;@bottom-right{content:counter(page) '/' counter(pages);color:#69727d;font-size:8pt}}body{font-family:'Noto Sans SC','WenQuanYi Zen Hei','Microsoft YaHei',sans-serif;color:#29313b;line-height:1.75;font-size:10.2pt}.cover{border-bottom:2px solid #173d78;padding-bottom:5mm;margin-bottom:7mm}.cover h1{font-size:19pt;margin:0 0 3mm;color:#1d2632;border:0;padding:0}.meta{color:#69727d;font-size:9pt;line-height:1.7}.notice{margin:5mm 0 8mm;padding:3mm 4mm;background:#f5f7fa;border-left:3px solid #dce3ea;color:#566270}h1{font-size:18pt;margin:0 0 5mm;color:#1d2632;border-bottom:1px solid #dce3ea;padding-bottom:4mm}h2{font-size:15pt;margin:9mm 0 4mm;color:#1d2632;border-top:2px solid #dce3ea;padding-top:5mm}h3{font-size:11.5pt;margin:5mm 0 2mm;color:#1d2632}h4{font-size:10.5pt;margin:4mm 0 2mm;color:#29313b}p,li{margin:1.7mm 0}li{margin-left:5mm}strong{color:#1d2632}blockquote{margin:4mm 0;padding:3mm 4mm;border-left:3px solid #dce3ea;color:#687483;background:#fafbfd}hr{border:0;border-top:2px solid #dce3ea;margin:7mm 0}table{width:100%%;border-collapse:collapse;margin:4mm 0 7mm;font-size:9.3pt;page-break-inside:avoid}th{background:#edf3ff;color:#29313b;font-weight:700}th,td{border:1px solid #d8e2f4;padding:2.5mm 3mm;text-align:left;vertical-align:top}tr:nth-child(even){background:#fafcff}%s</style><body><div class='cover'><h1>IP 人设定位｜模块 1-4 初稿</h1><div class='meta'>黄雀 IP 孵化教练 · 基于本次对话整理 · 生成后请本人确认</div></div><div class='notice'>本报告用于确认 IP 底座。确认后开启模块 5-6；模块 7 及后续能力尚未开发，敬请期待。</div>%s</body></html>""" % (zoom_css, body)
+
+
+def _foundation_zoom_candidates(page_count):
+    if page_count < 8:
+        return (1.05, 1.1, 1.15, 1.2, 1.25, 1.3)
+    if page_count > 10:
+        return (0.95, 0.9, 0.85, 0.8, 0.75, 0.7)
+    return ()
+
+
+def _render_foundation_pdf(content, browsers, root):
+    last_error = RuntimeError("PDF renderer failed")
+    for browser_index, browser in enumerate(browsers):
+        zooms = [1.0]
+        for attempt, zoom in enumerate(zooms):
+            html_path = root / ("report-%d-%d.html" % (browser_index, attempt))
+            pdf_path = root / ("report-%d-%d.pdf" % (browser_index, attempt))
+            html_path.write_text(_foundation_html(content, zoom=zoom), encoding="utf-8")
+            try:
+                subprocess.run(
+                    [browser, "--headless", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--no-pdf-header-footer", "--user-data-dir=" + str(root / ("profile-%d-%d" % (browser_index, attempt))), "--print-to-pdf=" + str(pdf_path), html_path.as_uri()],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False,
+                )
+            except subprocess.TimeoutExpired as exc:
+                last_error = exc
+                break
+            if not pdf_path.exists():
+                break
+            try:
+                page_count = _foundation_pdf_page_count(pdf_path)
+            except RuntimeError as exc:
+                last_error = exc
+                break
+            if 8 <= page_count <= 10:
+                return pdf_path
+            last_error = RuntimeError("PDF page count is outside 8-10 pages")
+            if zoom == 1.0:
+                zooms.extend(_foundation_zoom_candidates(page_count))
+    raise RuntimeError("PDF renderer failed") from last_error
 
 def generate_foundation_report(convo_id):
     target = FOUNDATION_REPORTS_DIR / (convo_id + ".pdf")
@@ -587,25 +632,19 @@ def generate_foundation_report(convo_id):
             playwright_browser = playwright.chromium.executable_path
     except Exception:
         pass
-    browser = next((item for item in (
+    browsers = list(dict.fromkeys(item for item in (
         playwright_browser,
         shutil.which("google-chrome"),
         shutil.which("google-chrome-stable"),
         shutil.which("chromium"),
         shutil.which("chromium-browser"),
         "/snap/bin/chromium",
-    ) if item and pathlib.Path(item).is_file()), "")
-    if not browser:
+    ) if item and pathlib.Path(item).is_file()))
+    if not browsers:
         raise RuntimeError("PDF renderer is unavailable")
     with tempfile.TemporaryDirectory(prefix="hermes-foundation-", dir=str(pathlib.Path.home())) as directory:
-        root = pathlib.Path(directory); html_path = root / "report.html"; pdf_path = root / "report.pdf"
-        html_path.write_text(_foundation_html(content), encoding="utf-8")
-        subprocess.run(
-            [browser, "--headless", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--no-pdf-header-footer", "--user-data-dir=" + str(root / "profile"), "--print-to-pdf=" + str(pdf_path), html_path.as_uri()],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False,
-        )
-        if not pdf_path.exists():
-            raise RuntimeError("PDF renderer failed")
+        root = pathlib.Path(directory)
+        pdf_path = _render_foundation_pdf(content, browsers, root)
         _validate_foundation_pdf(pdf_path)
         staged_target = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
         try:
@@ -779,14 +818,22 @@ def api_list_convos():
 
 @app.route("/api/conversations", methods=["POST"])
 def api_create_convo():
+    body = request.get_json(silent=True)
+    if body is None:
+        body = {}
+    if not isinstance(body, dict) or set(body) - {"title"}:
+        return jsonify({"ok": False, "error": "只允许 title 参数"}), 400
+    title = body.get("title", "新诊断")
+    if not isinstance(title, str) or not title.strip() or len(title.strip()) > 120:
+        return jsonify({"ok": False, "error": "title 必须是 1-120 字符"}), 400
     cid = uuid.uuid4().hex[:12]
-    data = {"id": cid, "title": "新诊断",
+    data = {"id": cid, "title": title.strip(),
             "messages": [{"role": "assistant", "content": INTAKE_FIRST_QUESTION}],
             "coach_state": initial_coach_state(),
             "reports": {}, "deliverables": {}, "owner_account_id": current_account_id(),
             "updated": datetime.now().strftime("%Y-%m-%d %H:%M")}
     save_conversation(cid, data)
-    return jsonify({"id": cid})
+    return jsonify({"id": cid, "title": data["title"]})
 
 @app.route("/api/conversations/<cid>", methods=["GET"])
 def api_get_convo(cid):

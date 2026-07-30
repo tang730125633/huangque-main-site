@@ -185,7 +185,7 @@ RS
 }
 for f in "$@"; do
   case "$f" in
-    server/auth_server.py|server/invites.py|server/wxpay.py|server/wechat_subscribe.py) dest=/home/ubuntu/auth-service/; svc=huangque-auth ;;
+    server/auth_server.py|server/hq_cli_api.py|server/invites.py|server/wxpay.py|server/wechat_subscribe.py) dest=/home/ubuntu/auth-service/; svc=huangque-auth ;;
     server/wechat_virtual_pay.py|server/sync_virtual_pay_goods.py)
              dest=/home/ubuntu/auth-service/; svc=huangque-auth ;;
     server/content_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-content ;;

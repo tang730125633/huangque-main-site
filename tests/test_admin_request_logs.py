@@ -9,7 +9,7 @@ SAMPLE = "\n".join(
     [
         '127.0.0.1 - - [09/Jul/2026:08:41:19 +0800] "GET /api/claim?token=worker-secret HTTP/1.1" 200 12 "-" "Python-urllib/3.11"',
         '127.0.0.1 - - [09/Jul/2026:08:41:30 +0800] "GET /api/admin/overview?days=7 HTTP/1.1" 200 900 "-" "Mozilla/5.0"',
-        '1.2.3.4 - - [09/Jul/2026:08:42:00 +0800] "POST /api/gen/image HTTP/1.1" 500 88 "-" "Mozilla/5.0"',
+        '1.2.3.4 - - [09/Jul/2026:08:42:00 +0800] "POST /api/gen/image HTTP/1.1" 500 88 "-" "Mozilla/5.0" rt=1.234 rid=req_image_1234',
         '5.6.7.8 - - [09/Jul/2026:08:42:30 +0800] "GET /api/gen/job/42?api_key=abc&ratio=1:1 HTTP/1.1" 200 55 "-" "Mozilla/5.0"',
         # 畸形分号分隔 + 嵌套 URL 编码密钥 + basic auth 用户名带空格
         '2.2.2.2 - - [09/Jul/2026:08:42:40 +0800] "GET /api/gen/x?a=1;token=evil HTTP/1.1" 200 10 "-" "curl/8"',
@@ -83,6 +83,13 @@ class RequestLogTests(unittest.TestCase):
         self.assertEqual(times, sorted(times, reverse=True))
         self.assertIn("/api/keywords", [x["path"] for x in items])  # 来自第二个文件
 
+    def test_observability_suffix_is_parsed_without_breaking_legacy_lines(self):
+        items = {x["path"]: x for x in admin_api.request_logs(include_noise=True)["items"]}
+        self.assertEqual(items["/api/gen/image"]["duration_sec"], 1.234)
+        self.assertEqual(items["/api/gen/image"]["request_id"], "req_image_1234")
+        self.assertIsNone(items["/api/gen/health"]["duration_sec"])
+        self.assertEqual(items["/api/gen/health"]["request_id"], "")
+
     def test_missing_log_file(self):
         admin_api.NGINX_ACCESS_LOGS = [pathlib.Path(str(self.files[0]) + ".nope")]
         data = admin_api.request_logs()
@@ -114,13 +121,22 @@ class RequestLogUserTests(unittest.TestCase):
         dbf = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         dbf.close()
         self.db_path = pathlib.Path(dbf.name)
+        audit = tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False)
+        import json
+        import time as _time
+        audit.write(json.dumps({
+            "time": int(_time.time()), "event": "metered_request", "status": 200,
+            "username": "member-a", "role": "member", "method": "POST",
+            "path": "/api/foundation-report/generate", "ip": "10.0.0.8",
+            "detail": "", "duration_ms": 432.1, "request_id": "hermes_req_1234",
+        }) + "\n")
+        audit.close()
+        self.audit_path = pathlib.Path(audit.name)
         c = sqlite3.connect(str(self.db_path))
         c.execute(
             "CREATE TABLE jobs(id INTEGER PRIMARY KEY, username TEXT, kind TEXT,"
             " cost INTEGER, status TEXT, payload TEXT, created_at INTEGER, updated_at INTEGER)"
         )
-        import time as _time
-
         now = int(_time.time())
         c.execute(
             "INSERT INTO jobs VALUES(1226,'tang','xiaole_video',13,'done','{}',?,?)",
@@ -131,14 +147,18 @@ class RequestLogUserTests(unittest.TestCase):
 
         self.old_logs = admin_api.NGINX_ACCESS_LOGS
         self.old_db = admin_api.JOB_DB
+        self.old_hermes_logs = admin_api.HERMES_AUDIT_LOGS
         admin_api.NGINX_ACCESS_LOGS = [self.log_path]
         admin_api.JOB_DB = self.db_path
+        admin_api.HERMES_AUDIT_LOGS = [self.audit_path]
 
     def tearDown(self):
         admin_api.NGINX_ACCESS_LOGS = self.old_logs
         admin_api.JOB_DB = self.old_db
+        admin_api.HERMES_AUDIT_LOGS = self.old_hermes_logs
         self.log_path.unlink(missing_ok=True)
         self.db_path.unlink(missing_ok=True)
+        self.audit_path.unlink(missing_ok=True)
 
     def test_enrichment(self):
         items = {x["path"]: x for x in admin_api.request_logs()["items"]}
@@ -161,7 +181,7 @@ class RequestLogUserTests(unittest.TestCase):
         data = admin_api.activity_logs()
         items = data["items"]
         sources = {x["source"] for x in items}
-        self.assertEqual(sources, {"job", "http"})
+        self.assertEqual(sources, {"job", "http", "ip12"})
         # 任务行：带用户/功能/点数；时间线按时间倒序
         job_rows = [x for x in items if x["source"] == "job"]
         self.assertEqual(job_rows[0]["user"], "tang")
@@ -169,6 +189,11 @@ class RequestLogUserTests(unittest.TestCase):
         self.assertEqual(job_rows[0]["cat"], "ok")
         times = [x["time"] for x in items]
         self.assertEqual(times, sorted(times, reverse=True))
+        ip12 = next(x for x in items if x["source"] == "ip12")
+        self.assertEqual(ip12["user"], "member-a")
+        self.assertEqual(ip12["func"], "IP12 · 生成初稿 PDF")
+        self.assertAlmostEqual(ip12["duration_sec"], 0.4321)
+        self.assertEqual(ip12["request_id"], "hermes_req_1234")
 
     def test_activity_filters(self):
         # source 过滤
@@ -176,12 +201,16 @@ class RequestLogUserTests(unittest.TestCase):
         self.assertTrue(only_jobs and all(x["source"] == "job" for x in only_jobs))
         only_http = admin_api.activity_logs(source="http")["items"]
         self.assertTrue(only_http and all(x["source"] == "http" for x in only_http))
+        only_ip12 = admin_api.activity_logs(source="ip12")["items"]
+        self.assertTrue(only_ip12 and all(x["source"] == "ip12" for x in only_ip12))
         # 统一状态：fail = HTTP >=400（本样本 404）
         fails = admin_api.activity_logs(category="fail")["items"]
         self.assertTrue(fails and all(x["cat"] == "fail" for x in fails))
         # 关键词搜用户名 → 命中任务行
         hit = admin_api.activity_logs(q="tang")["items"]
         self.assertTrue(hit and all("tang" in (x["user"] or "") or "tang" in x["path"] for x in hit))
+        request_hit = admin_api.activity_logs(q="hermes_req_1234")["items"]
+        self.assertEqual([x["source"] for x in request_hit], ["ip12"])
 
     def test_activity_fail_filter_not_crowded_out(self):
         # 404 行不在最新 2 条里；fail 条件下推到采集层后依然能查到

@@ -46,6 +46,21 @@ class NginxCspTest(unittest.TestCase):
                 for header in expected:
                     self.assertEqual(config.count(header), 4, header)
 
+    def test_request_id_and_duration_are_logged(self):
+        for relative_path in self.CONFIGS:
+            config = self._config(relative_path)
+            with self.subTest(config=relative_path):
+                self.assertIn("log_format huangque_observed", config)
+                self.assertIn("rt=$request_time rid=$request_id", config)
+                self.assertIn(
+                    "access_log /var/log/nginx/huangquechuanmei.access.log huangque_observed;",
+                    config,
+                )
+                self.assertIn("add_header X-Request-ID $request_id always;", config)
+
+        deploy = self._config("deploy/nginx-huangquechuanmei.conf")
+        self.assertEqual(deploy.count("proxy_set_header X-Request-ID $request_id;"), 2)
+
     def test_workbench_ip12_proxies_directly_to_git_managed_hermes(self):
         config = self._config("deploy/nginx-huangquechuanmei.conf")
         self.assertIn(

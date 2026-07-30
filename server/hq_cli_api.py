@@ -1,0 +1,569 @@
+"""Scoped device authorization and fixed action plans for the Huangque CLI."""
+
+import base64
+import hashlib
+import hmac
+import json
+import os
+import re
+import secrets
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+PUBLIC_ORIGIN = os.environ.get("HQ_CLI_PUBLIC_ORIGIN", "https://huangquechuanmei.com").strip().rstrip("/")
+DEVICE_TTL = 10 * 60
+TOKEN_TTL = 8 * 60 * 60
+POLL_INTERVAL = 3
+BRIDGE_TOKEN_TTL = 60
+QUOTE_TTL = 5 * 60
+CONTENT_BASE = "http://127.0.0.1:8096"
+IMGGEN_BASE = "http://127.0.0.1:8101"
+HERMES_BASE = "http://127.0.0.1:3102"
+
+SCOPES = {
+    "profile:read": "读取账号公开资料与点数",
+    "ip12:read": "读取本人 IP12 项目与报告",
+    "ip12:write": "创建本人 IP12 项目",
+    "prompt:optimize": "把提示词发送给黄雀 AI 优化",
+    "canvas:read": "读取本人可访问的画布",
+    "canvas:write": "创建本人画布",
+    "tasks:read": "读取本人任务状态与点数流水",
+    "assets:read": "读取本人资产与音色",
+    "assets:write": "收藏资产并管理本人资产标签",
+    "generation:quote": "查询图片、视频、音频所需点数",
+    "generation:submit": "经二次确认后提交生成并扣点",
+}
+DEFAULT_SCOPES = tuple(SCOPES)
+
+_START_HITS = {}
+_START_HITS_LOCK = threading.Lock()
+_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,160}$")
+_TASK_KINDS = {
+    "", "image", "audio", "video", "xiaole_video", "copy", "collect", "leads",
+    "tryon", "cinematic", "avatar", "breakdown", "script_to_video", "sora_video",
+}
+
+
+class CLIAPIError(Exception):
+    def __init__(self, status, detail, code="invalid_request"):
+        super().__init__(detail)
+        self.status = int(status)
+        self.detail = str(detail)
+        self.code = str(code)
+
+
+def init_schema(connection):
+    connection.execute("""CREATE TABLE IF NOT EXISTS cli_device_grants(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_code_hash TEXT NOT NULL UNIQUE,
+        user_code_hash TEXT NOT NULL UNIQUE,
+        client_name TEXT NOT NULL,
+        requested_scopes_json TEXT NOT NULL,
+        approved_scopes_json TEXT,
+        username TEXT,
+        status TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        approved_at INTEGER,
+        last_poll_at INTEGER NOT NULL DEFAULT 0,
+        token_hash TEXT UNIQUE,
+        token_expires_at INTEGER,
+        revoked_at INTEGER
+    )""")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_cli_grants_user ON cli_device_grants(username, token_expires_at)")
+
+
+def _hash(value):
+    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+
+
+def _strict_object(value, allowed, required=()):
+    if not isinstance(value, dict):
+        raise CLIAPIError(400, "请求体必须是 JSON 对象")
+    unknown = sorted(set(value) - set(allowed))
+    if unknown:
+        raise CLIAPIError(400, "不支持的参数：" + unknown[0])
+    missing = [key for key in required if key not in value]
+    if missing:
+        raise CLIAPIError(400, "缺少参数：" + missing[0])
+    return value
+
+
+def _string(value, field, minimum=0, maximum=2000):
+    if not isinstance(value, str):
+        raise CLIAPIError(400, field + " 必须是字符串")
+    value = value.strip()
+    if len(value) < minimum or len(value) > maximum or any(ord(ch) < 32 for ch in value):
+        raise CLIAPIError(400, field + " 长度或内容不合法")
+    return value
+
+
+def _integer(value, field, minimum, maximum):
+    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+        raise CLIAPIError(400, "%s 必须是 %d-%d 的整数" % (field, minimum, maximum))
+    return value
+
+
+def _enum(value, field, choices):
+    value = _string(value, field, 1, 80)
+    if value not in choices:
+        raise CLIAPIError(400, field + " 仅支持：" + "、".join(choices))
+    return value
+
+
+def _identifier(value, field):
+    value = _string(value, field, 1, 160)
+    if not _ID_RE.fullmatch(value):
+        raise CLIAPIError(400, field + " 格式不合法")
+    return value
+
+
+def _tags(value):
+    if not isinstance(value, list) or len(value) > 8:
+        raise CLIAPIError(400, "tags 必须是最多 8 项的数组")
+    clean = []
+    for item in value:
+        tag = _string(item, "tags", 1, 24)
+        if tag not in clean:
+            clean.append(tag)
+    return clean
+
+
+def _normalize_scopes(value):
+    if not isinstance(value, list) or not value or len(value) > len(SCOPES):
+        raise CLIAPIError(400, "requested_scopes 必须是非空权限数组")
+    scopes = []
+    for item in value:
+        if not isinstance(item, str) or item not in SCOPES:
+            raise CLIAPIError(400, "包含未知权限范围")
+        if item not in scopes:
+            scopes.append(item)
+    return scopes
+
+
+def _allow_device_start(client_key, now):
+    with _START_HITS_LOCK:
+        hits = [stamp for stamp in _START_HITS.get(client_key, []) if now - stamp < 600]
+        _START_HITS[client_key] = hits
+        if len(hits) >= 10:
+            return False
+        hits.append(now)
+        return True
+
+
+def _user_code():
+    alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+    raw = "".join(secrets.choice(alphabet) for _ in range(8))
+    return raw[:4] + "-" + raw[4:]
+
+
+def _normalize_user_code(value):
+    raw = re.sub(r"[^A-Za-z0-9]", "", str(value or "")).upper()
+    if len(raw) != 8:
+        raise CLIAPIError(400, "授权码格式不正确")
+    return raw[:4] + "-" + raw[4:]
+
+
+def start_device(db_factory, body, client_key, now=None):
+    now = int(time.time() if now is None else now)
+    _strict_object(body, {"client_name", "requested_scopes"}, ("client_name", "requested_scopes"))
+    if not _allow_device_start(str(client_key or "unknown"), now):
+        raise CLIAPIError(429, "授权请求过于频繁，请稍后重试", "rate_limited")
+    client_name = _string(body["client_name"], "client_name", 1, 80)
+    scopes = _normalize_scopes(body["requested_scopes"])
+    for _ in range(16):
+        device_code, user_code = secrets.token_urlsafe(32), _user_code()
+        try:
+            with db_factory() as connection:
+                connection.execute(
+                    """INSERT INTO cli_device_grants(
+                       device_code_hash,user_code_hash,client_name,requested_scopes_json,status,created_at,expires_at
+                       ) VALUES(?,?,?,?,?,?,?)""",
+                    (_hash(device_code), _hash(user_code), client_name,
+                     json.dumps(scopes, separators=(",", ":")), "pending", now, now + DEVICE_TTL),
+                )
+            break
+        except Exception as exc:
+            if "UNIQUE" not in str(exc).upper():
+                raise
+    else:
+        raise CLIAPIError(503, "暂时无法创建授权码，请重试")
+    return {
+        "device_code": device_code,
+        "user_code": user_code,
+        "verification_uri": PUBLIC_ORIGIN + "/workbench/device?user_code=" + urllib.parse.quote(user_code),
+        "expires_in": DEVICE_TTL,
+        "interval": POLL_INTERVAL,
+        "scopes": scopes,
+        "scope_details": [{"scope": scope, "description": SCOPES[scope]} for scope in scopes],
+    }
+
+
+def approve_device(db_factory, username, body, now=None):
+    now = int(time.time() if now is None else now)
+    _strict_object(body, {"user_code", "approve"}, ("user_code", "approve"))
+    if not isinstance(body["approve"], bool):
+        raise CLIAPIError(400, "approve 必须是布尔值")
+    code_hash = _hash(_normalize_user_code(body["user_code"]))
+    with db_factory() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute("SELECT * FROM cli_device_grants WHERE user_code_hash=?", (code_hash,)).fetchone()
+        if not row:
+            raise CLIAPIError(404, "授权码不存在", "not_found")
+        if int(row["expires_at"]) <= now:
+            connection.execute("UPDATE cli_device_grants SET status='expired' WHERE id=?", (row["id"],))
+            raise CLIAPIError(410, "授权码已过期", "expired_token")
+        if row["status"] != "pending":
+            if row["status"] == "approved" and row["username"] == username:
+                return {"ok": True, "status": "approved"}
+            raise CLIAPIError(409, "授权码已处理", "already_processed")
+        status = "approved" if body["approve"] else "denied"
+        scopes = row["requested_scopes_json"] if body["approve"] else None
+        connection.execute(
+            """UPDATE cli_device_grants
+               SET status=?,username=?,approved_scopes_json=?,approved_at=? WHERE id=?""",
+            (status, username, scopes, now, row["id"]),
+        )
+    return {"ok": True, "status": status}
+
+
+def device_info(db_factory, body, now=None):
+    now = int(time.time() if now is None else now)
+    _strict_object(body, {"user_code"}, ("user_code",))
+    code_hash = _hash(_normalize_user_code(body["user_code"]))
+    with db_factory() as connection:
+        row = connection.execute(
+            "SELECT client_name,requested_scopes_json,status,expires_at FROM cli_device_grants WHERE user_code_hash=?",
+            (code_hash,),
+        ).fetchone()
+    if not row:
+        raise CLIAPIError(404, "授权码不存在", "not_found")
+    status = row["status"]
+    if status == "pending" and int(row["expires_at"]) <= now:
+        status = "expired"
+    try:
+        scopes = json.loads(row["requested_scopes_json"] or "[]")
+    except Exception:
+        raise CLIAPIError(500, "授权请求数据无效", "invalid_grant")
+    return {
+        "client_name": row["client_name"], "status": status, "expires_at": int(row["expires_at"]),
+        "scopes": scopes,
+        "scope_details": [{"scope": scope, "description": SCOPES[scope]} for scope in scopes if scope in SCOPES],
+    }
+
+
+def poll_device(db_factory, body, now=None):
+    now = int(time.time() if now is None else now)
+    _strict_object(body, {"device_code"}, ("device_code",))
+    device_code = _string(body["device_code"], "device_code", 20, 200)
+    with db_factory() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute("SELECT * FROM cli_device_grants WHERE device_code_hash=?", (_hash(device_code),)).fetchone()
+        if not row:
+            raise CLIAPIError(400, "设备授权请求无效", "invalid_grant")
+        status = row["status"]
+        if status in {"pending", "approved"} and int(row["expires_at"]) <= now:
+            connection.execute("UPDATE cli_device_grants SET status='expired' WHERE id=?", (row["id"],))
+            raise CLIAPIError(410, "设备授权已过期", "expired_token")
+        if status == "approved":
+            token = secrets.token_urlsafe(32)
+            scopes = json.loads(row["approved_scopes_json"] or "[]")
+            connection.execute(
+                """UPDATE cli_device_grants SET status='issued',token_hash=?,token_expires_at=?,last_poll_at=?
+                   WHERE id=? AND status='approved'""",
+                (_hash(token), now + TOKEN_TTL, now, row["id"]),
+            )
+            return {"access_token": token, "token_type": "Bearer", "expires_in": TOKEN_TTL, "scopes": scopes}
+        if status == "pending":
+            last_poll = int(row["last_poll_at"] or 0)
+            if last_poll and now - last_poll < POLL_INTERVAL:
+                raise CLIAPIError(429, "轮询过快，请按 interval 重试", "slow_down")
+            connection.execute("UPDATE cli_device_grants SET last_poll_at=? WHERE id=?", (now, row["id"]),)
+            raise CLIAPIError(202, "等待用户授权", "authorization_pending")
+        if status == "denied":
+            raise CLIAPIError(403, "用户拒绝了授权", "access_denied")
+        if status == "expired":
+            raise CLIAPIError(410, "设备授权已过期", "expired_token")
+        raise CLIAPIError(409, "访问令牌已经签发，请重新登录", "already_issued")
+
+
+def authenticate(db_factory, token, now=None):
+    now = int(time.time() if now is None else now)
+    token = str(token or "").strip()
+    if not 20 <= len(token) <= 200:
+        return None
+    with db_factory() as connection:
+        row = connection.execute(
+            """SELECT u.*,g.approved_scopes_json AS cli_scopes,g.token_expires_at AS cli_expires_at
+               FROM cli_device_grants g JOIN users u ON u.username=g.username
+               WHERE g.token_hash=? AND g.status='issued' AND g.revoked_at IS NULL
+                 AND g.token_expires_at>? AND COALESCE(u.account_status,'active')='active'""",
+            (_hash(token), now),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        scopes = tuple(json.loads(row["cli_scopes"] or "[]"))
+    except Exception:
+        return None
+    return row, scopes
+
+
+def revoke(db_factory, token, now=None):
+    now = int(time.time() if now is None else now)
+    token = str(token or "").strip()
+    if not token:
+        return False
+    with db_factory() as connection:
+        cursor = connection.execute(
+            "UPDATE cli_device_grants SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL",
+            (now, _hash(token)),
+        )
+    return cursor.rowcount > 0
+
+
+def origin_allowed(origin):
+    return bool(origin) and hmac.compare_digest(str(origin).strip().rstrip("/"), PUBLIC_ORIGIN)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def proxy_json(plan, web_token, internal_token=""):
+    headers = {
+        "Authorization": "Bearer " + web_token,
+        "User-Agent": "huangque-auth-cli-gateway/1",
+        "Accept": "application/json",
+    }
+    headers.update(plan.get("headers") or {})
+    if plan.get("internal"):
+        if not internal_token:
+            raise CLIAPIError(503, "CLI 内部授权未配置", "not_configured")
+        headers["X-HQ-Internal-Token"] = internal_token
+    body = plan.get("body")
+    data = None
+    if body is not None:
+        data = json.dumps(body, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(
+        plan["base"] + plan["path"], data=data, headers=headers, method=plan.get("method", "GET"),
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    try:
+        with opener.open(request, timeout=plan.get("timeout", 30)) as response:
+            raw, status = response.read(2 * 1024 * 1024 + 1), response.getcode()
+    except urllib.error.HTTPError as exc:
+        raw, status = exc.read(2 * 1024 * 1024 + 1), exc.code
+    except (urllib.error.URLError, OSError) as exc:
+        raise CLIAPIError(502, "黄雀业务服务暂时不可用：" + str(exc)[:120], "upstream_unavailable")
+    if len(raw) > 2 * 1024 * 1024:
+        raise CLIAPIError(502, "黄雀业务服务响应过大", "upstream_response_too_large")
+    try:
+        payload = json.loads(raw or b"{}")
+    except Exception:
+        payload = {"detail": "黄雀业务服务返回了无效响应"}
+        status = 502
+    if isinstance(payload, dict) and "detail" not in payload and isinstance(payload.get("error"), str):
+        payload = dict(payload, detail=payload["error"])
+    return int(status), payload
+
+
+def _plan(scope, kind, **values):
+    return {"scope": scope, "kind": kind, **values}
+
+
+def action_plan(action, value):
+    if not isinstance(value, dict):
+        raise CLIAPIError(400, "input 必须是 JSON 对象")
+    if action == "account":
+        _strict_object(value, set())
+        return _plan("profile:read", "account")
+    if action == "ip12-projects":
+        _strict_object(value, set())
+        return _plan("ip12:read", "proxy", base=HERMES_BASE, path="/api/conversations")
+    if action in {"ip12-project", "ip12-report"}:
+        _strict_object(value, {"project_id"}, ("project_id",))
+        project_id = _identifier(value["project_id"], "project_id")
+        suffix = "/reports" if action == "ip12-report" else ""
+        return _plan("ip12:read", "proxy", base=HERMES_BASE,
+                     path="/api/conversations/" + urllib.parse.quote(project_id, safe="") + suffix)
+    if action == "ip12-create":
+        _strict_object(value, {"title"}, ("title",))
+        title = _string(value["title"], "title", 1, 120)
+        return _plan("ip12:write", "proxy", base=HERMES_BASE, path="/api/conversations",
+                     method="POST", body={"title": title})
+    if action == "prompt-optimize":
+        _strict_object(value, {"prompt", "kind"}, ("prompt", "kind"))
+        prompt = _string(value["prompt"], "prompt", 1, 2000)
+        kind = _enum(value["kind"], "kind", ("image", "video"))
+        return _plan("prompt:optimize", "proxy", base=IMGGEN_BASE, path="/api/gen/reverse", method="POST",
+                     body={"action": "optimize", "prompt": prompt, "kind": kind}, timeout=90)
+    if action == "canvas-list":
+        _strict_object(value, {"limit", "offset"})
+        limit = _integer(value.get("limit", 20), "limit", 1, 100)
+        offset = _integer(value.get("offset", 0), "offset", 0, 100000)
+        return _plan("canvas:read", "canvas-list", limit=limit, offset=offset)
+    if action == "canvas-get":
+        _strict_object(value, {"board_id"}, ("board_id",))
+        return _plan("canvas:read", "canvas-get", board_id=_identifier(value["board_id"], "board_id"))
+    if action == "canvas-create":
+        _strict_object(value, {"name", "prompt"}, ("name",))
+        name = _string(value["name"], "name", 1, 48)
+        prompt = _string(value.get("prompt", ""), "prompt", 0, 2000)
+        nodes = []
+        if prompt:
+            nodes.append({"id": "n1", "type": "text", "x": 80, "y": 80, "collapsed": False,
+                          "params": {"text": prompt}, "outputs": {"prompt": prompt}, "image": None,
+                          "state": "", "note": ""})
+        data = {"nid": len(nodes), "runLabel": "就绪", "zoom": 1,
+                "scroll": {"left": 0, "top": 0}, "edges": [], "nodes": nodes}
+        return _plan("canvas:write", "canvas-create", name=name, data=data)
+    if action == "tasks":
+        _strict_object(value, {"days", "kind", "page", "page_size"})
+        days = _integer(value.get("days", 30), "days", 1, 365)
+        page = _integer(value.get("page", 1), "page", 1, 100000)
+        page_size = _integer(value.get("page_size", 20), "page_size", 5, 50)
+        kind = _string(value.get("kind", ""), "kind", 0, 32)
+        if kind not in _TASK_KINDS:
+            raise CLIAPIError(400, "kind 不是可查询的任务类型")
+        query = urllib.parse.urlencode({"days": days, "kind": kind, "page": page, "page_size": page_size})
+        return _plan("tasks:read", "proxy", base=CONTENT_BASE, path="/api/gen/points/history?" + query)
+    if action == "task":
+        _strict_object(value, {"job_id"}, ("job_id",))
+        job_id = _integer(value["job_id"], "job_id", 1, 2**63 - 1)
+        return _plan("tasks:read", "proxy", base=CONTENT_BASE, path="/api/gen/job/%d" % job_id)
+    if action == "assets":
+        _strict_object(value, {"kind", "limit", "offset"}, ("kind",))
+        kind = _enum(value["kind"], "kind", ("image", "audio", "video", "copy", "collect", "leads", "breakdown"))
+        limit = _integer(value.get("limit", 60), "limit", 1, 120)
+        offset = _integer(value.get("offset", 0), "offset", 0, 100000)
+        if kind == "image":
+            path = "/api/gen/history?" + urllib.parse.urlencode({"kind": "image", "limit": limit, "offset": offset})
+        elif kind in {"audio", "video"}:
+            path = "/api/gen/%s/assets?" % kind + urllib.parse.urlencode({"limit": limit, "offset": offset})
+        else:
+            path = "/api/gen/assets?" + urllib.parse.urlencode({"kind": kind, "limit": limit, "offset": offset})
+        return _plan("assets:read", "proxy", base=CONTENT_BASE, path=path)
+    if action == "voices":
+        _strict_object(value, set())
+        return _plan("assets:read", "proxy", base=CONTENT_BASE, path="/api/gen/audio/voices")
+    if action == "asset-favorite":
+        _strict_object(value, {"kind", "key", "favorite"}, ("kind", "key", "favorite"))
+        if not isinstance(value["favorite"], bool):
+            raise CLIAPIError(400, "favorite 必须是布尔值")
+        body = {
+            "kind": _enum(value["kind"], "kind", ("image", "audio", "video", "avatar", "copy", "collect", "leads", "breakdown")),
+            "key": _string(value["key"], "key", 1, 500), "favorite": value["favorite"],
+        }
+        return _plan("assets:write", "proxy", base=CONTENT_BASE, path="/api/gen/asset/favorite",
+                     method="POST", body=body)
+    if action == "asset-tags":
+        _strict_object(value, {"kind", "key", "tags"}, ("kind", "key", "tags"))
+        body = {
+            "kind": _enum(value["kind"], "kind", ("image", "audio", "video", "avatar", "copy", "collect", "leads", "breakdown")),
+            "key": _string(value["key"], "key", 1, 500), "tags": _tags(value["tags"]),
+        }
+        return _plan("assets:write", "proxy", base=CONTENT_BASE, path="/api/gen/asset/tags",
+                     method="POST", body=body)
+    if action in {"image-generate", "video-generate", "audio-generate"}:
+        payload, generation_kind, endpoint = _generation_payload(action, value)
+        return _plan("generation:quote", "generation", generation_kind=generation_kind,
+                     endpoint=endpoint, payload=payload)
+    raise CLIAPIError(404, "未知 CLI 能力", "unknown_action")
+
+
+def _generation_payload(action, value):
+    if action == "image-generate":
+        _strict_object(value, {"prompt", "provider", "ratio", "quality", "count", "variant"}, ("prompt",))
+        body = {
+            "prompt": _string(value["prompt"], "prompt", 1, 2000),
+            "provider": _enum(value.get("provider", "openai"), "provider", ("openai", "xiaole", "seedream")),
+            "ratio": _enum(value.get("ratio", "1:1"), "ratio", ("1:1", "9:16", "16:9", "3:4")),
+            "quality": _enum(value.get("quality", "hd"), "quality", ("std", "hd")),
+            "count": _integer(value.get("count", 1), "count", 1, 4),
+        }
+        if "variant" in value:
+            if body["provider"] != "seedream":
+                raise CLIAPIError(400, "variant 仅用于 seedream")
+            body["variant"] = _enum(value["variant"], "variant", ("std", "pro"))
+        return body, "image", "/api/gen/image"
+    if action == "video-generate":
+        _strict_object(value, {"prompt", "channel", "ratio", "duration", "resolution", "model", "generate_audio"}, ("prompt",))
+        channel = _enum(value.get("channel", "grok"), "channel", ("grok", "micro", "omni"))
+        body = {
+            "prompt": _string(value["prompt"], "prompt", 1, 2000),
+            "channel": channel,
+            "ratio": _enum(value.get("ratio", "16:9" if channel in {"grok", "omni"} else "9:16"),
+                           "ratio", ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3")),
+            "duration": _integer(value.get("duration", 10 if channel == "grok" else 5), "duration", 1, 15),
+            "resolution": _enum(value.get("resolution", "720p"), "resolution", ("480p", "720p", "1080p")),
+        }
+        if "model" in value:
+            body["model"] = _enum(value["model"], "model", ("grok-imagine-video", "grok-imagine-video-1.5"))
+            if channel != "grok":
+                raise CLIAPIError(400, "model 参数仅用于 grok")
+        if "generate_audio" in value:
+            if not isinstance(value["generate_audio"], bool) or channel != "micro":
+                raise CLIAPIError(400, "generate_audio 仅用于 micro 且必须是布尔值")
+            body["generate_audio"] = value["generate_audio"]
+        return body, "xiaole_video", "/api/gen/xiaole_video"
+    _strict_object(value, {"text", "voice", "speed", "pitch", "volume"}, ("text",))
+    body = {"text": _string(value["text"], "text", 1, 1000)}
+    if "voice" in value:
+        body["voice"] = _string(value["voice"], "voice", 1, 128)
+    for field, default, minimum, maximum in (("pitch", 0, -12, 12), ("volume", 0, -50, 100)):
+        body[field] = _integer(value.get(field, default), field, minimum, maximum)
+    speed = value.get("speed", 1.0)
+    if isinstance(speed, bool) or not isinstance(speed, (int, float)) or not 0.5 <= float(speed) <= 2:
+        raise CLIAPIError(400, "speed 必须是 0.5-2 的数字")
+    body["speed"] = round(float(speed), 1)
+    return body, "audio", "/api/gen/audio"
+
+
+def _canonical(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+
+
+def issue_quote(secret, username, generation_kind, payload, cost, now=None):
+    if not secret:
+        raise CLIAPIError(503, "CLI 报价签名未配置", "not_configured")
+    now = int(time.time() if now is None else now)
+    cost = int(cost)
+    if cost <= 0:
+        raise CLIAPIError(502, "生成费用无效", "invalid_quote")
+    claims = {
+        "v": 1, "u": username, "k": generation_kind,
+        "h": hashlib.sha256(_canonical(payload)).hexdigest(),
+        "c": cost, "e": now + QUOTE_TTL, "n": secrets.token_hex(16),
+    }
+    encoded = base64.urlsafe_b64encode(_canonical(claims)).decode("ascii").rstrip("=")
+    signature = hmac.new(secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+    return encoded + "." + signature, claims
+
+
+def verify_quote(secret, token, username, generation_kind, payload, now=None):
+    if not secret:
+        raise CLIAPIError(503, "CLI 报价签名未配置", "not_configured")
+    now = int(time.time() if now is None else now)
+    try:
+        encoded, signature = str(token or "").split(".", 1)
+        expected = hmac.new(secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError("signature")
+        claims = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+    except Exception:
+        raise CLIAPIError(400, "报价凭证无效，请重新报价", "invalid_quote")
+    payload_hash = hashlib.sha256(_canonical(payload)).hexdigest()
+    if (claims.get("v") != 1 or claims.get("u") != username or claims.get("k") != generation_kind
+            or claims.get("h") != payload_hash or not isinstance(claims.get("c"), int)
+            or not isinstance(claims.get("e"), int) or not isinstance(claims.get("n"), str)):
+        raise CLIAPIError(409, "报价与当前账号或参数不匹配，请重新报价", "quote_mismatch")
+    if claims["e"] <= now:
+        raise CLIAPIError(409, "报价已过期，请重新报价", "quote_expired")
+    return claims

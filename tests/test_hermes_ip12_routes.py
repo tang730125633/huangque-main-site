@@ -167,6 +167,9 @@ class HermesIP12SourceTests(unittest.TestCase):
         self.assertIn("Hermes storage quota exceeded", security)
         self.assertIn("too many concurrent requests", security)
         self.assertIn("too many requests", security)
+        self.assertIn('response.headers["X-Request-ID"]', security)
+        self.assertIn('"duration_ms"', security)
+        self.assertIn('"request_id"', security)
         self.assertIn("def atomic_write_bytes", artifact_store)
         self.assertIn("def atomic_append_bytes", artifact_store)
         self.assertIn("def video_work_dir", artifact_store)
@@ -358,7 +361,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import server
-from server import _foundation_generation_active, _foundation_html, _foundation_source_messages, _validate_foundation_pdf, app, parse_coach_state_updates
+from server import _foundation_generation_active, _foundation_html, _foundation_source_messages, _render_foundation_pdf, _validate_foundation_pdf, app, parse_coach_state_updates
 import security
 import artifact_store
 import image_services
@@ -500,6 +503,35 @@ assert "<table>" in report_html and "账号封面" in report_html
 assert "<blockquote>待本人确认</blockquote>" in report_html
 assert "<h4>故事名称：从无到有</h4>" in report_html
 
+render_root = Path(os.environ["HERMES_DATA_DIR"]) / "foundation-render"
+render_root.mkdir()
+render_calls = []
+def fake_render(args, **kwargs):
+    render_calls.append(args[0])
+    html_text = Path(args[-1][7:]).read_text(encoding="utf-8")
+    pdf_path = Path(next(item.split("=", 1)[1] for item in args if item.startswith("--print-to-pdf=")))
+    write_test_pdf(pdf_path, 8 if "body{zoom:1.05}" in html_text else 7)
+    return subprocess.CompletedProcess(args, 0)
+with patch.object(server.subprocess, "run", side_effect=fake_render):
+    fitted_pdf = _render_foundation_pdf("## 模块一", ["/fake/chromium"], render_root)
+assert _validate_foundation_pdf(fitted_pdf) == 8
+assert render_calls == ["/fake/chromium", "/fake/chromium"]
+
+fallback_root = Path(os.environ["HERMES_DATA_DIR"]) / "foundation-fallback"
+fallback_root.mkdir()
+fallback_calls = []
+def fake_fallback(args, **kwargs):
+    fallback_calls.append(args[0])
+    if args[0] == "/fake/playwright":
+        raise subprocess.TimeoutExpired(args, 60)
+    pdf_path = Path(next(item.split("=", 1)[1] for item in args if item.startswith("--print-to-pdf=")))
+    write_test_pdf(pdf_path, 8)
+    return subprocess.CompletedProcess(args, 0)
+with patch.object(server.subprocess, "run", side_effect=fake_fallback):
+    fallback_pdf = _render_foundation_pdf("## 模块一", ["/fake/playwright", "/fake/chromium"], fallback_root)
+assert _validate_foundation_pdf(fallback_pdf) == 8
+assert fallback_calls == ["/fake/playwright", "/fake/chromium"]
+
 anonymous = app.test_client()
 assert anonymous.get("/healthz").status_code == 200
 assert anonymous.get("/").status_code == 401
@@ -510,10 +542,23 @@ for path in ("/", "/classic", "/skills", "/analytics", "/images", "/videos",
     response = client.get(path)
     assert response.status_code == 200, (path, response.status_code)
 
-created = client.post("/api/conversations").get_json()
+created_response = client.post(
+    "/api/conversations", json={"title": "CLI 客户诊断"},
+    headers={"X-Request-ID": "hermes_runtime_1234"},
+)
+assert created_response.headers["X-Request-ID"] == "hermes_runtime_1234"
+created = created_response.get_json()
 cid = created["id"]
+audit_rows = [json.loads(line) for line in (Path(os.environ["HERMES_DATA_DIR"]) / "audit" / "security.jsonl").read_text().splitlines()]
+created_audit = [row for row in audit_rows if row.get("request_id") == "hermes_runtime_1234"][-1]
+assert created_audit["username"] == "admin"
+assert created_audit["status"] == 200
+assert created_audit["duration_ms"] >= 0
+created_response.close()
+assert security._active.get("admin", 0) == 0, security._active
 owned = client.get(f"/api/conversations/{cid}").get_json()
-assert owned["id"] == cid and owned["owner_account_id"] == "acct_a"
+assert owned["id"] == cid and owned["owner_account_id"] == "acct_a" and owned["title"] == "CLI 客户诊断"
+assert client.post("/api/conversations", json={"unknown": True}).status_code == 400
 assert client.get(f"/api/conversations/{cid}/reports").get_json() == {}
 assert client.get(f"/api/conversations/{cid}/deliverables").get_json() == {}
 server.current_account_id = lambda: "acct_b"

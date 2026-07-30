@@ -27,6 +27,11 @@ try:
 except ImportError:  # 生产环境以脚本方式从 /home/ubuntu/auth-service 启动
     import invites
 
+try:
+    from . import hq_cli_api
+except ImportError:  # 生产环境以脚本方式从 /home/ubuntu/auth-service 启动
+    import hq_cli_api
+
 DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.db")
 PORT = 8095
 ITER = 200000
@@ -486,6 +491,7 @@ def init_db():
         c.execute("ALTER TABLE users ADD COLUMN wx_openid TEXT")
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_wx_openid ON users(wx_openid) WHERE wx_openid IS NOT NULL")
     invites.init_schema(c)
+    hq_cli_api.init_schema(c)
     c.commit(); c.close()
 
 def generate_account_id():
@@ -3225,13 +3231,13 @@ def cleanup_expired_tokens(c=None):
     if own:
         c.commit(); c.close()
 
-def issue_token(username, c=None):
+def issue_token(username, c=None, ttl=None):
     own = c is None
     if own: c = db()
     cleanup_expired_tokens(c)
     tok = secrets.token_urlsafe(32)
     c.execute("INSERT INTO tokens(token,username,expires_at) VALUES(?,?,?)",
-              (tok, username, int(time.time()) + TOKEN_TTL))
+              (tok, username, int(time.time()) + int(TOKEN_TTL if ttl is None else ttl)))
     if own:
         c.commit(); c.close()
     return tok
@@ -3357,8 +3363,7 @@ class H(BaseHTTPRequestHandler):
             device_hits.append(now)
             ip_hits.append(now)
             return True
-    def _user(self):
-        tok = request_token(self.headers)
+    def _user_from_token(self, tok):
         if not tok:
             return None
         c = db()
@@ -3368,6 +3373,124 @@ class H(BaseHTTPRequestHandler):
                       (tok, int(time.time()))).fetchone()
         c.close()
         return r
+    def _user(self):
+        return self._user_from_token(request_token(self.headers))
+    def _cookie_user(self):
+        return self._user_from_token(cookie_token(self.headers.get("Cookie")))
+    def _cli_user(self):
+        return hq_cli_api.authenticate(db, bearer_token(self.headers.get("Authorization")))
+    def _cli_send(self, code, body):
+        return self._send(code, body, {"Cache-Control": "no-store"})
+    def _cli_public_user(self, row):
+        return public_user(
+            row["username"], row["display_name"], row["points"], row["role"], row["must_change"],
+            row["account_id"] or ensure_account_id(row["username"]), row["membership_tier"],
+            row["membership_started_at"], row["membership_expires_at"],
+        )
+    def _cli_proxy(self, plan, username):
+        token = issue_token(username, ttl=hq_cli_api.BRIDGE_TOKEN_TTL)
+        try:
+            return hq_cli_api.proxy_json(plan, token, INTERNAL_TOKEN)
+        finally:
+            c = db()
+            c.execute("DELETE FROM tokens WHERE token=?", (token,))
+            c.commit(); c.close()
+    def _cli_action(self, body):
+        auth = self._cli_user()
+        if not auth:
+            return self._cli_send(401, {"detail": "CLI 未登录或授权已过期", "code": "cli_unauthorized"})
+        row, scopes = auth
+        if not isinstance(body, dict):
+            return self._cli_send(400, {"detail": "请求体必须是 JSON 对象"})
+        unknown = sorted(set(body) - {"action", "input", "confirm", "quote_token"})
+        if unknown:
+            return self._cli_send(400, {"detail": "不支持的参数：" + unknown[0]})
+        action = body.get("action")
+        if not isinstance(action, str) or not action or len(action) > 80:
+            return self._cli_send(400, {"detail": "action 不合法"})
+        input_body = body.get("input", {})
+        confirm = body.get("confirm", False)
+        if not isinstance(confirm, bool):
+            return self._cli_send(400, {"detail": "confirm 必须是布尔值"})
+        quote_token = body.get("quote_token", "")
+        if not isinstance(quote_token, str) or len(quote_token) > 4096:
+            return self._cli_send(400, {"detail": "quote_token 不合法"})
+        try:
+            plan = hq_cli_api.action_plan(action, input_body)
+            if plan["scope"] not in scopes:
+                raise hq_cli_api.CLIAPIError(403, "当前 CLI 授权缺少权限：" + plan["scope"], "insufficient_scope")
+            if action in {"ip12-create", "prompt-optimize", "canvas-create", "asset-favorite", "asset-tags"} and not confirm:
+                raise hq_cli_api.CLIAPIError(409, "该操作需要显式确认", "confirmation_required")
+            if plan["kind"] == "account":
+                return self._cli_send(200, {"user": self._cli_public_user(row), "scopes": list(scopes),
+                                            "expires_at": int(row["cli_expires_at"])})
+            if plan["kind"] == "canvas-list":
+                boards, total, err = list_canvas_boards(row["username"], plan["limit"], plan["offset"])
+                if err:
+                    raise hq_cli_api.CLIAPIError(400, err)
+                return self._cli_send(200, {"boards": boards, "total": total})
+            if plan["kind"] == "canvas-get":
+                board, err = get_canvas_board(row["username"], plan["board_id"])
+                if err:
+                    raise hq_cli_api.CLIAPIError(404, "画布不存在", "not_found")
+                return self._cli_send(200, {"board": board})
+            if plan["kind"] == "canvas-create":
+                board, err = create_canvas_board(row["username"], {"name": plan["name"], "data": plan["data"]})
+                if err == "too_many_boards":
+                    raise hq_cli_api.CLIAPIError(429, "画布数量已达上限")
+                if err:
+                    raise hq_cli_api.CLIAPIError(400, "画布创建失败：" + err)
+                return self._cli_send(200, {"board": board,
+                    "url": hq_cli_api.PUBLIC_ORIGIN + "/workbench/canvas?collab=" + urllib.parse.quote(board["id"])})
+            if plan["kind"] == "generation":
+                generation_kind, payload = plan["generation_kind"], plan["payload"]
+                if confirm:
+                    if "generation:submit" not in scopes:
+                        raise hq_cli_api.CLIAPIError(403, "当前 CLI 授权不能提交扣点生成", "insufficient_scope")
+                    if not quote_token:
+                        raise hq_cli_api.CLIAPIError(409, "提交生成前必须先取得 quote_token", "quote_required")
+                    claims = hq_cli_api.verify_quote(
+                        INTERNAL_TOKEN, quote_token, row["username"], generation_kind, payload,
+                    )
+                    submit_plan = {
+                        "base": hq_cli_api.CONTENT_BASE, "path": plan["endpoint"], "method": "POST",
+                        "body": payload, "timeout": 30, "internal": True,
+                        "headers": {
+                            "Idempotency-Key": "hqcli-" + claims["n"],
+                            "X-HQ-Expected-Cost": str(claims["c"]),
+                        },
+                    }
+                    status, result = self._cli_proxy(submit_plan, row["username"])
+                    return self._cli_send(status, result)
+                if quote_token:
+                    raise hq_cli_api.CLIAPIError(400, "quote_token 只能与 confirm=true 同时使用")
+                quote_plan = {
+                    "base": hq_cli_api.CONTENT_BASE, "path": "/api/gen/cli/quote", "method": "POST",
+                    "body": {"kind": generation_kind, "payload": payload}, "timeout": 30, "internal": True,
+                }
+                status, result = self._cli_proxy(quote_plan, row["username"])
+                if not 200 <= status < 300:
+                    return self._cli_send(status, result)
+                token, claims = hq_cli_api.issue_quote(
+                    INTERNAL_TOKEN, row["username"], generation_kind, payload, result.get("cost"),
+                )
+                return self._cli_send(200, {
+                    "quote_token": token, "kind": generation_kind, "cost": claims["c"],
+                    "points": result.get("points"), "expires_in": hq_cli_api.QUOTE_TTL,
+                    "confirmation_required": True,
+                })
+            status, result = self._cli_proxy(plan, row["username"])
+            if 200 <= status < 300 and action == "ip12-create" and isinstance(result, dict):
+                project = result.get("project") or {}
+                project_id = project.get("id") or result.get("id")
+                if project_id:
+                    result["url"] = (hq_cli_api.PUBLIC_ORIGIN + "/workbench/ip12/?conversation_id="
+                                     + urllib.parse.quote(str(project_id)))
+            return self._cli_send(status, result)
+        except hq_cli_api.CLIAPIError as exc:
+            return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
+        except Exception:
+            return self._cli_send(500, {"detail": "CLI 操作暂时不可用", "code": "cli_internal_error"})
     def _internal_auth(self):
         if not INTERNAL_TOKEN:
             return False
@@ -3405,6 +3528,66 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
+        if p == "/api/auth/cli/device/start":
+            if self._content_length_exceeds(8192):
+                return self._cli_send(413, {"detail": "请求过大"})
+            d = self._body()
+            if self._bad_json():
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON"})
+            try:
+                return self._cli_send(200, hq_cli_api.start_device(db, d, self._client_ip()))
+            except hq_cli_api.CLIAPIError as exc:
+                return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
+        if p == "/api/auth/cli/device/info":
+            if not hq_cli_api.origin_allowed(self.headers.get("Origin")):
+                return self._cli_send(403, {"detail": "来源校验失败", "code": "origin_forbidden"})
+            if not self._cookie_user():
+                return self._cli_send(401, {"detail": "请先登录黄雀账号"})
+            if self._content_length_exceeds(4096):
+                return self._cli_send(413, {"detail": "请求过大"})
+            d = self._body()
+            if self._bad_json():
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON"})
+            try:
+                return self._cli_send(200, hq_cli_api.device_info(db, d))
+            except hq_cli_api.CLIAPIError as exc:
+                return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
+        if p == "/api/auth/cli/device/approve":
+            if not hq_cli_api.origin_allowed(self.headers.get("Origin")):
+                return self._cli_send(403, {"detail": "来源校验失败", "code": "origin_forbidden"})
+            row = self._cookie_user()
+            if not row:
+                return self._cli_send(401, {"detail": "请先登录黄雀账号"})
+            if self._content_length_exceeds(4096):
+                return self._cli_send(413, {"detail": "请求过大"})
+            d = self._body()
+            if self._bad_json():
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON"})
+            try:
+                return self._cli_send(200, hq_cli_api.approve_device(db, row["username"], d))
+            except hq_cli_api.CLIAPIError as exc:
+                return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
+        if p == "/api/auth/cli/device/poll":
+            if self._content_length_exceeds(4096):
+                return self._cli_send(413, {"detail": "请求过大"})
+            d = self._body()
+            if self._bad_json():
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON"})
+            try:
+                return self._cli_send(200, hq_cli_api.poll_device(db, d))
+            except hq_cli_api.CLIAPIError as exc:
+                return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
+        if p == "/api/auth/cli/logout":
+            token = bearer_token(self.headers.get("Authorization"))
+            hq_cli_api.revoke(db, token)
+            return self._cli_send(200, {"ok": True})
+        if p == "/api/auth/cli/action":
+            if self._content_length_exceeds(128 * 1024):
+                return self._cli_send(413, {"detail": "CLI 输入不能超过 128 KiB"})
+            d = self._body()
+            if self._bad_json():
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON"})
+            return self._cli_action(d)
         if p == "/api/auth/subscription/choices":
             row = self._user()
             if not row:
@@ -4436,6 +4619,13 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path.split("?")[0]
+        if p == "/api/auth/cli/status":
+            auth = self._cli_user()
+            if not auth:
+                return self._cli_send(401, {"detail": "CLI 未登录或授权已过期", "code": "cli_unauthorized"})
+            row, scopes = auth
+            return self._cli_send(200, {"user": self._cli_public_user(row), "scopes": list(scopes),
+                                        "expires_at": int(row["cli_expires_at"])})
         if p == "/api/auth/subscription/status":
             row = self._user()
             if not row:

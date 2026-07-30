@@ -1,0 +1,256 @@
+import http.cookiejar
+import importlib
+import json
+import os
+import sqlite3
+import tempfile
+import threading
+import unittest
+import urllib.error
+import urllib.request
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from http.server import ThreadingHTTPServer
+from unittest import mock
+
+
+class HQCLIAPITests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        import server.auth_server as auth_server
+
+        self.auth = importlib.reload(auth_server)
+        self.auth.DB = os.path.join(self.tmp.name, "users.db")
+        self.auth.AUTH_COOKIE_SECURE = False
+        self.auth.INTERNAL_TOKEN = "test-internal-secret"
+        self.auth.init_db()
+        self.auth.create_user("alice", "secret123", 100, "member")
+        self.auth.hq_cli_api._START_HITS.clear()
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base = "http://127.0.0.1:%d" % self.server.server_address[1]
+        self.auth.hq_cli_api.PUBLIC_ORIGIN = self.base
+        self.browser = self._login_browser()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=3)
+        self.tmp.cleanup()
+
+    def _request(self, path, payload=None, token="", browser=None, origin=None, method=None):
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = "Bearer " + token
+        if origin:
+            headers["Origin"] = origin
+        data = None if payload is None else json.dumps(payload).encode()
+        request = urllib.request.Request(self.base + path, data=data, headers=headers,
+                                         method=method or ("POST" if payload is not None else "GET"))
+        opener = browser or urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(request, timeout=3) as response:
+                return response.getcode(), json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read())
+
+    def _login_browser(self):
+        jar = http.cookiejar.CookieJar()
+        browser = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPCookieProcessor(jar))
+        status, _ = self._request("/api/auth/login", {"username": "alice", "password": "secret123"}, browser=browser)
+        self.assertEqual(200, status)
+        return browser
+
+    def _start(self, scopes=None):
+        status, payload = self._request("/api/auth/cli/device/start", {
+            "client_name": "test agent", "requested_scopes": scopes or list(self.auth.hq_cli_api.DEFAULT_SCOPES),
+        })
+        self.assertEqual(200, status, payload)
+        return payload
+
+    def _approve(self, start, approve=True):
+        return self._request(
+            "/api/auth/cli/device/approve", {"user_code": start["user_code"], "approve": approve},
+            browser=self.browser, origin=self.base,
+        )
+
+    def _token(self, scopes=None):
+        start = self._start(scopes)
+        self.assertEqual(200, self._approve(start)[0])
+        status, payload = self._request("/api/auth/cli/device/poll", {"device_code": start["device_code"]})
+        self.assertEqual(200, status, payload)
+        return payload["access_token"]
+
+    def test_device_codes_and_access_token_are_only_stored_as_hashes(self):
+        start = self._start()
+        with sqlite3.connect(self.auth.DB) as connection:
+            row = connection.execute(
+                "SELECT device_code_hash,user_code_hash,token_hash FROM cli_device_grants"
+            ).fetchone()
+        self.assertNotEqual(start["device_code"], row[0])
+        self.assertNotEqual(start["user_code"], row[1])
+        self.assertIsNone(row[2])
+        self._approve(start)
+        _, polled = self._request("/api/auth/cli/device/poll", {"device_code": start["device_code"]})
+        with sqlite3.connect(self.auth.DB) as connection:
+            stored = connection.execute("SELECT token_hash FROM cli_device_grants").fetchone()[0]
+        self.assertNotEqual(polled["access_token"], stored)
+        self.assertNotIn(polled["access_token"], Path(self.auth.DB).read_bytes().decode("latin1"))
+
+    def test_approval_requires_same_origin_and_browser_cookie(self):
+        start = self._start()
+        status, info = self._request(
+            "/api/auth/cli/device/info", {"user_code": start["user_code"]},
+            browser=self.browser, origin=self.base,
+        )
+        self.assertEqual(200, status)
+        self.assertEqual("test agent", info["client_name"])
+        self.assertEqual(start["scopes"], info["scopes"])
+        status, _ = self._request(
+            "/api/auth/cli/device/approve", {"user_code": start["user_code"], "approve": True},
+            browser=self.browser,
+        )
+        self.assertEqual(403, status)
+        status, _ = self._request(
+            "/api/auth/cli/device/approve", {"user_code": start["user_code"], "approve": True},
+            origin=self.base,
+        )
+        self.assertEqual(401, status)
+        status, payload = self._approve(start)
+        self.assertEqual(200, status)
+        self.assertEqual("approved", payload["status"])
+
+    def test_cli_token_status_logout_and_web_token_isolation(self):
+        token = self._token()
+        status, payload = self._request("/api/auth/cli/status", token=token)
+        self.assertEqual(200, status)
+        self.assertEqual("alice", payload["user"]["username"])
+        self.assertIn("generation:submit", payload["scopes"])
+        status, _ = self._request("/api/auth/me", token=token)
+        self.assertEqual(401, status)
+        self.assertEqual(200, self._request("/api/auth/cli/logout", {}, token=token)[0])
+        self.assertEqual(401, self._request("/api/auth/cli/status", token=token)[0])
+
+    def test_denied_and_expired_device_grants_never_issue_tokens(self):
+        denied = self._start()
+        self.assertEqual("denied", self._approve(denied, False)[1]["status"])
+        status, payload = self._request("/api/auth/cli/device/poll", {"device_code": denied["device_code"]})
+        self.assertEqual(403, status)
+        self.assertEqual("access_denied", payload["code"])
+        expired = self._start()
+        with sqlite3.connect(self.auth.DB) as connection:
+            connection.execute("UPDATE cli_device_grants SET expires_at=0 WHERE device_code_hash=?",
+                               (self.auth.hq_cli_api._hash(expired["device_code"]),))
+            connection.commit()
+        status, payload = self._request("/api/auth/cli/device/poll", {"device_code": expired["device_code"]})
+        self.assertEqual(410, status)
+        self.assertEqual("expired_token", payload["code"])
+
+    def test_concurrent_poll_issues_exactly_one_access_token(self):
+        start = self._start()
+        self._approve(start)
+
+        def poll():
+            return self._request("/api/auth/cli/device/poll", {"device_code": start["device_code"]})
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: poll(), range(2)))
+        self.assertEqual(sorted(status for status, _ in results), [200, 409])
+        self.assertEqual(sum("access_token" in body for _, body in results), 1)
+
+    def test_scope_enforcement_happens_before_business_proxy(self):
+        token = self._token(["ip12:read"])
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json") as proxy:
+            status, payload = self._request("/api/auth/cli/action", {
+                "action": "ip12-create", "input": {"title": "blocked"}, "confirm": True,
+            }, token=token)
+        self.assertEqual(403, status)
+        self.assertEqual("insufficient_scope", payload["code"])
+        proxy.assert_not_called()
+
+    def test_fixed_read_proxy_uses_short_lived_web_token_and_deletes_it(self):
+        token = self._token(["ip12:read"])
+        captured = {}
+
+        def fake_proxy(plan, web_token, internal_token):
+            captured.update(plan=plan, web_token=web_token, internal_token=internal_token)
+            return 200, {"items": [{"id": "p1"}]}
+
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            status, payload = self._request("/api/auth/cli/action", {
+                "action": "ip12-projects", "input": {}, "confirm": False,
+            }, token=token)
+        self.assertEqual(200, status)
+        self.assertEqual("p1", payload["items"][0]["id"])
+        self.assertEqual(self.auth.hq_cli_api.HERMES_BASE, captured["plan"]["base"])
+        self.assertEqual("/api/conversations", captured["plan"]["path"])
+        self.assertNotEqual(token, captured["web_token"])
+        with sqlite3.connect(self.auth.DB) as connection:
+            self.assertEqual(0, connection.execute(
+                "SELECT COUNT(*) FROM tokens WHERE token=?", (captured["web_token"],)
+            ).fetchone()[0])
+
+    def test_canvas_create_builds_one_safe_text_node(self):
+        token = self._token(["canvas:write"])
+        status, payload = self._request("/api/auth/cli/action", {
+            "action": "canvas-create", "input": {"name": "Launch", "prompt": "first idea"}, "confirm": True,
+        }, token=token)
+        self.assertEqual(200, status, payload)
+        board = payload["board"]
+        self.assertEqual("Launch", board["name"])
+        self.assertEqual("text", board["data"]["nodes"][0]["type"])
+        self.assertEqual("first idea", board["data"]["nodes"][0]["outputs"]["prompt"])
+        self.assertIn("collab=" + board["id"], payload["url"])
+
+    def test_paid_quote_binds_user_payload_cost_expiry_and_idempotency(self):
+        token = self._token(["generation:quote", "generation:submit"])
+        submitted = []
+
+        def fake_proxy(plan, web_token, internal_token):
+            if plan["path"] == "/api/gen/cli/quote":
+                return 200, {"kind": "image", "cost": 24, "points": 100}
+            submitted.append(plan)
+            return 200, {"job_id": 42, "cost": 24, "points_left": 76}
+
+        request = {"action": "image-generate", "input": {"prompt": "gold bird", "count": 2}, "confirm": False}
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            status, quote = self._request("/api/auth/cli/action", request, token=token)
+            self.assertEqual(200, status, quote)
+            confirm = dict(request, confirm=True, quote_token=quote["quote_token"])
+            self.assertEqual(200, self._request("/api/auth/cli/action", confirm, token=token)[0])
+            self.assertEqual(200, self._request("/api/auth/cli/action", confirm, token=token)[0])
+            changed = dict(confirm, input={"prompt": "different", "count": 2})
+            status, payload = self._request("/api/auth/cli/action", changed, token=token)
+        self.assertEqual(409, status)
+        self.assertEqual("quote_mismatch", payload["code"])
+        self.assertEqual(submitted[0]["headers"]["Idempotency-Key"], submitted[1]["headers"]["Idempotency-Key"])
+        self.assertEqual("24", submitted[0]["headers"]["X-HQ-Expected-Cost"])
+        self.assertTrue(all(plan["internal"] for plan in submitted))
+
+    def test_server_requires_confirmation_for_external_ai_and_writes(self):
+        token = self._token(["prompt:optimize", "ip12:write", "canvas:write", "assets:write"])
+        cases = [
+            ("prompt-optimize", {"prompt": "portrait", "kind": "image"}),
+            ("ip12-create", {"title": "my project"}),
+            ("canvas-create", {"name": "my board"}),
+            ("asset-tags", {"kind": "image", "key": "asset-1", "tags": ["客户案例"]}),
+        ]
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json") as proxy:
+            for action, input_body in cases:
+                status, payload = self._request("/api/auth/cli/action", {
+                    "action": action, "input": input_body, "confirm": False,
+                }, token=token)
+                self.assertEqual(409, status)
+                self.assertEqual("confirmation_required", payload["code"])
+        proxy.assert_not_called()
+
+    def test_asset_offset_reaches_every_backend(self):
+        for kind in ("image", "audio", "video"):
+            plan = self.auth.hq_cli_api.action_plan("assets", {"kind": kind, "limit": 10, "offset": 20})
+            self.assertIn("limit=10", plan["path"])
+            self.assertIn("offset=20", plan["path"])
+
+
+if __name__ == "__main__":
+    unittest.main()
