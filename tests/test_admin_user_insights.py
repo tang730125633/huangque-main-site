@@ -137,6 +137,35 @@ class AuthUserInsightsTests(unittest.TestCase):
         self.assertIsNone(notice)
         self.assertEqual(err, "detail_too_long")
 
+    def test_password_reset_requires_admin_and_revokes_existing_sessions(self):
+        admin = self.client("admin")
+        alice = self.client("alice")
+        with self.assertRaises(urllib.error.HTTPError) as no_internal:
+            self.post(admin, "/api/auth/admin/password/reset", {
+                "username": "alice", "new_password": "temporary456",
+            })
+        self.assertEqual(no_internal.exception.code, 403)
+        with self.assertRaises(urllib.error.HTTPError) as not_admin:
+            self.post(alice, "/api/auth/admin/password/reset", {
+                "username": "alice", "new_password": "temporary456",
+            }, internal=True)
+        self.assertEqual(not_admin.exception.code, 403)
+
+        reset = self.post(admin, "/api/auth/admin/password/reset", {
+            "username": "alice", "new_password": "temporary456",
+        }, internal=True)
+        self.assertTrue(reset["reset"]["must_change"])
+        with self.assertRaises(urllib.error.HTTPError) as revoked:
+            self.get(alice, "/api/auth/me")
+        self.assertEqual(revoked.exception.code, 401)
+        with self.assertRaises(urllib.error.HTTPError) as old_password:
+            self.post(alice, "/api/auth/login", {"username": "alice", "password": "secret123"})
+        self.assertEqual(old_password.exception.code, 401)
+        relogin = self.post(alice, "/api/auth/login", {
+            "username": "alice", "password": "temporary456",
+        })
+        self.assertTrue(relogin["user"]["must_change"])
+
 
 class AdminTaskInsightsTests(unittest.TestCase):
     def setUp(self):
@@ -186,7 +215,8 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
         for marker in (
             'id="userDetailBox"', 'data-act="detail"', 'data-act="notice"',
             "/api/admin/users/detail?username=", "/api/admin/users/notification",
-            "noticeSending",
+            "noticeSending", 'id="detailPassword"', 'type="password" minlength="6" maxlength="128"',
+            "/api/admin/users/password/reset",
         ):
             self.assertIn(marker, html)
         self.assertIn("/api/auth/notifications?limit=50", shell)
