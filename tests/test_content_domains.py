@@ -23,13 +23,13 @@ class ContentDomainTests(unittest.TestCase):
         # （avatar/cinematic 是把动作模仿拆成「建形象 / 生成剧情视频」两步时加的）
         self.assertEqual(
             sorted(content_api.HANDLERS),
-            ["audio", "avatar", "breakdown", "cinematic", "collect", "copy", "image", "leads", "script_to_video", "sora_video", "tryon", "video", "xiaole_video"],
+            ["audio", "avatar", "breakdown", "canvas_agent", "cinematic", "collect", "copy", "image", "leads", "script_to_video", "sora_video", "tryon", "video", "xiaole_video"],
         )
         self.assertIs(content_api.HANDLERS, content_api.registry.HANDLERS)
 
     def test_domains_export_expected_handlers(self):
         registry = importlib.import_module("content_domains.registry")
-        for name in ("image", "copy", "collect", "leads", "audio", "video", "xiaole_video", "sora_video", "breakdown"):
+        for name in ("image", "copy", "canvas_agent", "collect", "leads", "audio", "video", "xiaole_video", "sora_video", "breakdown"):
             self.assertIn(name, registry.HANDLERS)
             self.assertTrue(callable(registry.HANDLERS[name]))
 

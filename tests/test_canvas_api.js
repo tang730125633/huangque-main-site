@@ -325,6 +325,7 @@ function testCanvasIntegration() {
     'canvas/canvas-state.js?v=',
     'canvas/canvas-storage.js?v=',
     'canvas/canvas-api.js?v=',
+    'canvas/canvas-agent.js?v=',
     'canvas/canvas-export.js?v=',
     'canvas-collab-sync.js?v=',
     'canvas/canvas-app.js?v=',
@@ -334,7 +335,7 @@ function testCanvasIntegration() {
   assert.deepEqual(order, [...order].sort((left, right) => left - right), 'modules, collaboration sync, and app must load in dependency order');
   assert.match(app, /var apiModule=window\.HQCanvas&&window\.HQCanvas\.api;/);
   assert.match(app, /apiModule\.createClient\(/);
-  assert.equal((app.match(/apiModule\.poll\(/g) || []).length, 2, 'image and video jobs share bounded polling');
+  assert.equal((app.match(/apiModule\.poll\(/g) || []).length, 3, 'image, video, and Agent jobs share bounded polling');
   assert.equal((app.match(/maxMs:420000/g) || []).length, 1, 'image jobs retain their 420 second limit');
   assert.equal((app.match(/maxMs:900000/g) || []).length, 1, 'video jobs retain their 900 second limit');
   assert.match(app, /error&&error\.code==='timeout'/);

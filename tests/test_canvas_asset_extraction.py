@@ -9,7 +9,7 @@ HTML_PATH = ROOT / "site" / "workbench" / "canvas.html"
 CSS_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas.css"
 APP_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas-app.js"
 
-EXPECTED_CSS_SHA256 = "e17f27b81f7210769084deb021f86913b0c3ee1782289c09fdf82cf420f50faa"
+EXPECTED_CSS_SHA256 = "4a03a05a647f177729ca1ddf8e8dc222f6632ca2cf1d5d5452e958767b7bc376"
 
 
 def normalized_sha256(path: Path) -> str:
@@ -57,7 +57,7 @@ class CanvasAssetExtractionTests(unittest.TestCase):
         self.assertIn("graphApi.resizeNodeRect(", app)
         self.assertIn("graphApi.alignmentGuides(", app)
 
-    def test_five_modules_are_versioned_and_loaded_in_exact_order(self):
+    def test_canvas_modules_are_versioned_and_loaded_in_exact_order(self):
         html = HTML_PATH.read_text(encoding="utf-8")
         css = re.search(r'href="canvas/canvas\.css\?v=([0-9a-f]{8})"', html)
         self.assertIsNotNone(css, "canvas stylesheet must have a content stamp")
@@ -66,6 +66,7 @@ class CanvasAssetExtractionTests(unittest.TestCase):
             "canvas/canvas-state.js?v=",
             "canvas/canvas-storage.js?v=",
             "canvas/canvas-api.js?v=",
+            "canvas/canvas-agent.js?v=",
             "canvas/canvas-export.js?v=",
             "canvas-collab-sync.js?v=",
             "canvas/canvas-app.js?v=",
