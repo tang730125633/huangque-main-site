@@ -101,6 +101,30 @@ class NginxCspTest(unittest.TestCase):
         self.assertIn("proxy_pass http://127.0.0.1:3102;", config)
         self.assertIn("client_max_body_size 200m;", config)
 
+    def test_cli_image_upload_is_streamed_and_bounded(self):
+        for relative_path in self.CONFIGS:
+            config = self._config(relative_path)
+            with self.subTest(config=relative_path):
+                start = config.index("location = /api/auth/cli/image-upload {")
+                end = config.index("\n    }", start)
+                block = config[start:end]
+                self.assertIn("proxy_pass http://127.0.0.1:8095;", block)
+                self.assertIn("proxy_request_buffering off;", block)
+                self.assertIn("proxy_buffering off;", block)
+                self.assertIn("client_max_body_size 10m;", block)
+                self.assertIn("limit_req zone=hq_cli_upload_rate burst=8 nodelay;", block)
+                self.assertIn("limit_conn hq_cli_upload_conn 2;", block)
+                self.assertIn("client_body_timeout 20s;", block)
+                self.assertIn(
+                    "limit_req_zone $binary_remote_addr zone=hq_cli_upload_rate:10m rate=12r/m;",
+                    config,
+                )
+                self.assertIn(
+                    "limit_conn_zone $binary_remote_addr zone=hq_cli_upload_conn:10m;",
+                    config,
+                )
+                self.assertIn('proxy_set_header X-HQ-Internal-Token "";', block)
+
     def test_hermes_runbook_updates_the_actively_loaded_main_site_config(self):
         runbook = self._config("deploy/生产环境清单与还原手册.md")
         release = self._config("deploy/hermes-ip12-release.sh")
