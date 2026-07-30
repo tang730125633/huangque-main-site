@@ -8,6 +8,7 @@
 运行：python3 -m pytest tests/test_tikhub_parse.py   或   python3 tests/test_tikhub_parse.py
 """
 import os, sys, re
+from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "server"))
 import tikhub
 
@@ -72,6 +73,29 @@ def test_parse_link_douyin_video_url_offline():
     info = tikhub.parse_link("快看 https://www.douyin.com/video/7654380745624879025 这条")
     assert info["platform"] == "douyin"
     assert info["id"] == "7654380745624879025"
+
+
+def test_parse_link_xhs_shortlink_follows_to_note_without_legacy_api():
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def geturl(self): return "https://www.xiaohongshu.com/discovery/item/694e676f000000001e03ab64"
+
+    with mock.patch.object(tikhub._XHS_OPENER, "open", return_value=Response()) as open_url, \
+         mock.patch.object(tikhub, "_g", side_effect=AssertionError("legacy App V1 must not be called")):
+        info = tikhub.parse_link("看看 https://xhslink.cn/a1b2c3 这篇")
+    assert info == {"platform": "xhs", "id": "694e676f000000001e03ab64", "note_type": None}
+    open_url.assert_called_once()
+
+
+def test_xhs_redirect_rejects_non_xhs_host():
+    handler = tikhub._XhsRedirectHandler()
+    req = tikhub.urllib.request.Request("https://xhslink.cn/a1b2c3")
+    try:
+        handler.redirect_request(req, None, 302, "Found", {}, "http://127.0.0.1/private")
+    except tikhub.urllib.error.HTTPError:
+        return
+    raise AssertionError("non-Xiaohongshu redirect was accepted")
 
 
 if __name__ == "__main__":
