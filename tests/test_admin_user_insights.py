@@ -151,8 +151,16 @@ class AuthUserInsightsTests(unittest.TestCase):
             [item["invitee_username"] for item in data["invite_rewards"]["items"]],
             ["bob", "bob"],
         )
+        self.assertIsNone(data["invite_relations"]["referrer"])
+        self.assertEqual(data["invite_relations"]["invitees"]["total"], 1)
         self.assertEqual(
-            self.auth.admin_user_insights("bob")["invite_rewards"]["total"], 0,
+            data["invite_relations"]["invitees"]["items"][0]["username"], "bob",
+        )
+        bob = self.auth.admin_user_insights("bob")
+        self.assertEqual(bob["invite_relations"]["referrer"]["username"], "alice")
+        self.assertEqual(bob["invite_relations"]["invitees"]["total"], 0)
+        self.assertEqual(
+            bob["invite_rewards"]["total"], 0,
         )
         self.assertIsNone(self.auth.admin_user_insights("missing"))
 
@@ -271,6 +279,7 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             "/api/admin/users/detail?username=", "/api/admin/users/notification",
             "noticeSending", 'id="detailPassword"', 'type="password" minlength="6" maxlength="128"',
             "/api/admin/users/password/reset", "invite_rewards", "inviteRewardRows",
+            "invite_relations", "inviteRelationRows", "邀请关系", "直接邀请用户",
             "邀请奖励明细", "有效奖励", "已作废奖励",
         ):
             self.assertIn(marker, html)

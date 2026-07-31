@@ -2175,6 +2175,7 @@ def admin_user_insights(username):
         invite_rewards = invites.admin_reward_points(
             c, {"inviter_user_id": user["id"]}, limit=20,
         )
+        invite_relations = invites.admin_user_relations(c, user["id"], limit=20)
     finally:
         c.close()
 
@@ -2236,6 +2237,7 @@ def admin_user_insights(username):
         },
         "ledger": list_points_audit(username=username, limit=20),
         "invite_rewards": invite_rewards,
+        "invite_relations": invite_relations,
     }
 
 
