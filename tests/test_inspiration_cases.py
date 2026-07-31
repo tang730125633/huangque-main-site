@@ -63,7 +63,7 @@ class InspirationCasesTest(unittest.TestCase):
             conn.execute("CREATE TABLE jobs(cost INTEGER,status TEXT,payload TEXT,created_at INTEGER)")
             conn.execute(
                 "INSERT INTO jobs VALUES(?,?,?,?)",
-                (12, "done", json.dumps({"source_inspiration_id": public_id, "prompt": "x"}), int(time.time())),
+                (12, "done", json.dumps({"source_inspiration_id": public_id, "image": "x" * 5000}), int(time.time())),
             )
             conn.execute(
                 "INSERT INTO jobs VALUES(?,?,?,?)",

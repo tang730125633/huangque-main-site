@@ -226,14 +226,16 @@ def _job_metrics(job_db, days=30):
     try:
         with closing(sqlite3.connect(str(path), timeout=10)) as conn:
             rows = conn.execute(
-                "SELECT cost,substr(payload,1,4096) FROM jobs WHERE status='done' AND created_at>=?",
+                """SELECT cost,CASE WHEN json_valid(payload)
+                   THEN json_extract(payload,'$.source_inspiration_id') END
+                   FROM jobs WHERE status='done' AND created_at>=?""",
                 (since,),
             ).fetchall()
     except sqlite3.Error:
         return result
-    for cost, raw in rows:
+    for cost, source_id in rows:
         try:
-            public_id = int((json.loads(raw or "{}") or {}).get("source_inspiration_id") or 0)
+            public_id = int(source_id or 0)
         except Exception:
             continue
         if public_id < PUBLIC_ID_BASE:
