@@ -511,8 +511,10 @@
     if(/竖版|竖构图|竖幅/.test(src)) return '9:16';
     return '';
   }
+  var sourceInspirationId=0;
   // 灵感页「做同款」：从 ?prompt= / ?engine= 预填提示词 + 切引擎，并尽量从提示词里还原比例
   try{ var ip=new URLSearchParams(location.search);
+    sourceInspirationId=Number(ip.get('inspiration')||0);if(sourceInspirationId<1000000)sourceInspirationId=0;
     if(ip.get('prefill')==='ip12'){
       try{
         var rawHandoff=sessionStorage.getItem('hq_ip12_product_handoff_v1');
@@ -740,6 +742,7 @@
     if(!payload.prompt){ flash('请先输入提示词','#f4708a'); return; }
     if(submitting) return;
     if(activeCount()){ flash('已有任务生成中，请等待完成','#f4708a'); return; }
+    if(sourceInspirationId)payload=Object.assign({source_inspiration_id:sourceInspirationId},payload);
     lastPayload=payload; submitting=true; syncGen();
     var hint = endpoint==='/api/gen/banana'
                  ? (bananaVariant==='pro' ? '纳米香蕉 Pro 约 1-2 分钟' : '纳米香蕉 2 约 30-90 秒')
