@@ -479,6 +479,67 @@ def admin_reward_points(conn, filters=None, limit=100, offset=0):
     }
 
 
+def admin_user_relations(conn, user_id, limit=20, now=None):
+    user_id = int(user_id)
+    limit = max(1, min(int(limit or 20), 100))
+    now = int(now or time.time())
+    referrer_row = conn.execute(
+        """SELECT ui.id AS relation_id,ui.status,ui.risk_status,ui.bound_at,ui.source,
+                  u.id AS user_id,u.username,u.display_name,
+                  u.membership_tier,u.membership_expires_at
+             FROM user_invites ui
+             JOIN users u ON u.id=ui.inviter_user_id
+            WHERE ui.invitee_user_id=?""",
+        (user_id,),
+    ).fetchone()
+    total = conn.execute(
+        "SELECT COUNT(*) FROM user_invites WHERE inviter_user_id=?",
+        (user_id,),
+    ).fetchone()[0]
+    invitee_rows = conn.execute(
+        """SELECT ui.id AS relation_id,ui.status,ui.risk_status,ui.bound_at,ui.source,
+                  u.id AS user_id,u.username,u.display_name,
+                  u.membership_tier,u.membership_expires_at
+             FROM user_invites ui
+             JOIN users u ON u.id=ui.invitee_user_id
+            WHERE ui.inviter_user_id=?
+            ORDER BY ui.id DESC LIMIT ?""",
+        (user_id, limit),
+    ).fetchall()
+
+    def relation_user(row):
+        if not row:
+            return None
+        tier = str(row["membership_tier"] or "")
+        expires_at = int(row["membership_expires_at"] or 0)
+        known_tier = tier in MEMBERSHIP_NAMES
+        active = known_tier and expires_at > now
+        return {
+            "relation_id": int(row["relation_id"]),
+            "user_id": int(row["user_id"]),
+            "username": row["username"],
+            "display_name": row["display_name"] or row["username"],
+            "membership_tier": tier if known_tier else "",
+            "membership_name": MEMBERSHIP_NAMES.get(tier, "非会员"),
+            "membership_active": active,
+            "membership_status": "active" if active else ("expired" if known_tier else "none"),
+            "membership_expires_at": expires_at if known_tier else 0,
+            "status": row["status"],
+            "risk_status": row["risk_status"],
+            "bound_at": int(row["bound_at"] or 0),
+            "source": row["source"] or "",
+        }
+
+    return {
+        "referrer": relation_user(referrer_row),
+        "invitees": {
+            "items": [relation_user(row) for row in invitee_rows],
+            "total": int(total),
+            "limit": limit,
+        },
+    }
+
+
 def admin_reward_action(conn, reward_id, action, reason, operator, now=None):
     reward_id = int(reward_id)
     action = str(action or "").strip()
