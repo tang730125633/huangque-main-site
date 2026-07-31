@@ -24,6 +24,20 @@ TABLE = "tbl1XM63cxFuXSha"
 DB = "/home/ubuntu/content-api/content_jobs.db"
 ENV = "/home/ubuntu/.hq_feishu.env"
 BASE = "https://open.feishu.cn/open-apis"
+SHANGHAI = datetime.timezone(datetime.timedelta(hours=8), name="Asia/Shanghai")
+
+
+def day_bounds(day):
+    start = datetime.datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=SHANGHAI)
+    return int(start.timestamp()), int((start + datetime.timedelta(days=1)).timestamp())
+
+
+def day_timestamp_ms(day):
+    return day_bounds(day)[0] * 1000
+
+
+def today():
+    return datetime.datetime.now(SHANGHAI).date().isoformat()
 
 
 def env():
@@ -133,21 +147,52 @@ def summarize(job_rows):
 
 
 def aggregate(day):
-    start = datetime.datetime.strptime(day, "%Y-%m-%d")
-    end = start + datetime.timedelta(days=1)
+    start, end = day_bounds(day)
     with sqlite3.connect(DB) as database:
         rows = database.execute(
             "SELECT kind,payload,status,COALESCE(cost,0),COALESCE(refunded,0) "
             "FROM jobs WHERE created_at>=? AND created_at<? "
             "AND status IN ('done','error') AND COALESCE(deleted,0)=0",
-            (start.timestamp(), end.timestamp()),
+            (start, end),
         ).fetchall()
     return summarize(rows)
 
 
+def _chunks(items, size=500):
+    for offset in range(0, len(items), size):
+        yield items[offset:offset + size]
+
+
+def _record_key(fields):
+    return (
+        str(fields.get("大类") or ""),
+        str(fields.get("功能") or ""),
+        str(fields.get("渠道") or ""),
+    )
+
+
+def _row_fields(timestamp, row):
+    category, feature, channel, ok, failed, cost = row
+    fields = {
+        "日期": timestamp,
+        "功能": feature,
+        "成功": ok,
+        "失败": failed,
+        "总数": ok + failed,
+        "成功率": round(ok / (ok + failed), 4),
+        "点数消耗": cost,
+    }
+    if category:
+        fields["大类"] = category
+    if channel:
+        fields["渠道"] = channel
+    return fields
+
+
 def replace_day(access_token, day, rows):
-    timestamp = int(datetime.datetime.strptime(day, "%Y-%m-%d").timestamp() * 1000)
-    record_ids, page = [], ""
+    """幂等同步一天的数据，保留已有记录 ID，避免图表因删后重建而短暂空白。"""
+    timestamp = day_timestamp_ms(day)
+    existing, duplicate_ids, page = {}, [], ""
     while True:
         data = api(
             access_token,
@@ -156,47 +201,58 @@ def replace_day(access_token, day, rows):
             + (f"&page_token={page}" if page else ""),
         )["data"]
         for item in data.get("items") or []:
-            if (item.get("fields") or {}).get("日期") == timestamp:
-                record_ids.append(item["record_id"])
+            fields = item.get("fields") or {}
+            if fields.get("日期") != timestamp:
+                continue
+            key = _record_key(fields)
+            if key in existing:
+                duplicate_ids.append(item["record_id"])
+            else:
+                existing[key] = item
         if not data.get("has_more"):
             break
         page = data.get("page_token", "")
-    if record_ids:
+
+    desired = {_record_key(_row_fields(timestamp, row)): _row_fields(timestamp, row) for row in rows}
+    updates, creates = [], []
+    for key, fields in desired.items():
+        current = existing.pop(key, None)
+        if current:
+            updates.append({"record_id": current["record_id"], "fields": fields})
+        else:
+            creates.append({"fields": fields})
+    stale_ids = duplicate_ids + [item["record_id"] for item in existing.values()]
+
+    for batch in _chunks(updates):
         api(
             access_token,
             "POST",
-            f"/bitable/v1/apps/{APP}/tables/{TABLE}/records/batch_delete",
-            {"records": record_ids},
+            f"/bitable/v1/apps/{APP}/tables/{TABLE}/records/batch_update",
+            {"records": batch},
         )
-
-    records = []
-    for category, feature, channel, ok, failed, cost in rows:
-        fields = {
-            "日期": timestamp,
-            "功能": feature,
-            "成功": ok,
-            "失败": failed,
-            "总数": ok + failed,
-            "成功率": round(ok / (ok + failed), 4),
-            "点数消耗": cost,
-        }
-        if category:
-            fields["大类"] = category
-        if channel:
-            fields["渠道"] = channel
-        records.append({"fields": fields})
-    if records:
+    for batch in _chunks(creates):
         api(
             access_token,
             "POST",
             f"/bitable/v1/apps/{APP}/tables/{TABLE}/records/batch_create",
-            {"records": records},
+            {"records": batch},
         )
-    print(day, "同步", len(records), "条，调用", sum(row[3] + row[4] for row in rows), "次")
+    for batch in _chunks(stale_ids):
+        api(
+            access_token,
+            "POST",
+            f"/bitable/v1/apps/{APP}/tables/{TABLE}/records/batch_delete",
+            {"records": batch},
+        )
+    print(
+        day,
+        "同步", len(desired), "条，更新", len(updates), "新增", len(creates), "清理", len(stale_ids),
+        "条，调用", sum(row[3] + row[4] for row in rows), "次",
+    )
 
 
 def main():
-    day = sys.argv[1] if len(sys.argv) > 1 else datetime.date.today().isoformat()
+    day = sys.argv[1] if len(sys.argv) > 1 else today()
     replace_day(token(), day, aggregate(day))
 
 
