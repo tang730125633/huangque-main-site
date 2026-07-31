@@ -2829,6 +2829,8 @@
     });
     updateOfficialVideoControls();
   }
+  var sourceInspirationId=0;
+  try{sourceInspirationId=Number(new URLSearchParams(location.search).get('inspiration')||0);if(sourceInspirationId<1000000)sourceInspirationId=0}catch(e){}
   // 共用现有 xiaole_video 任务外壳；micro / omni 在后端只走官方 API。
   function submitXiaole(channel){
     if(!token){ location.href='../login.html?redirect=workbench/video'; return; }
@@ -2847,6 +2849,7 @@
       toast('Grok Video 1.5 必须上传且只能上传1张首帧图'); return;
     }
     var xlPayload={channel:channel,prompt:prompt};
+    if(sourceInspirationId)xlPayload.source_inspiration_id=sourceInspirationId;
     if(channel==='grok'){
       xlPayload.operation=grokOperation;
       if(editing){xlPayload.reference_video_data=grokEditVideoData;xlPayload.source_duration=grokEditDuration;xlPayload.model='grok-imagine-video';}

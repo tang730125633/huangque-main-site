@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import http.client
 import json
+import math
 import os
 import re
 import secrets
@@ -36,6 +37,8 @@ SCOPES = {
     "prompt:optimize": "把提示词发送给黄雀 AI 优化",
     "canvas:read": "读取本人可访问的画布",
     "canvas:write": "创建本人画布",
+    "canvas:agent": "把画布快照发送给 AI 生成可确认的操作方案",
+    "canvas:edit": "经确认后编辑本人有编辑权限的画布",
     "assets:upload": "上传本人生成所需的临时参考图",
     "tasks:read": "读取本人任务状态与点数流水",
     "assets:read": "读取本人资产与音色",
@@ -49,6 +52,11 @@ _START_HITS = {}
 _START_HITS_LOCK = threading.Lock()
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,160}$")
 _UPLOAD_ID_RE = re.compile(r"^img_[0-9a-f]{32}$")
+_CANVAS_NODE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+_CANVAS_OP_NODE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+_CANVAS_PROJECT_RE = re.compile(r"^(local|collab):[A-Za-z0-9_-]{1,120}$")
+_CANVAS_OP_ID_RE = re.compile(r"^hqcli-[A-Za-z0-9_-]{11,122}$")
+_CANVAS_BASE64_RE = re.compile(r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{512,}={0,2}(?![A-Za-z0-9+/_=-])")
 IMAGE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
 IMAGE_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
 _TASK_KINDS = {
@@ -216,6 +224,177 @@ def _upload_id(value, field):
     if not _UPLOAD_ID_RE.fullmatch(value):
         raise CLIAPIError(400, field + " 格式不合法")
     return value
+
+
+def _number(value, field, minimum, maximum):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise CLIAPIError(400, field + " 必须是有限数字")
+    if not minimum <= value <= maximum:
+        raise CLIAPIError(400, field + " 超出允许范围")
+    return value
+
+
+def _canvas_node_id(value, field="节点标识"):
+    value = _string(value, field, 1, 128)
+    if not _CANVAS_NODE_ID_RE.fullmatch(value):
+        raise CLIAPIError(400, field + " 格式不合法")
+    return value
+
+
+def _canvas_op_node_id(value, field="节点标识"):
+    value = _string(value, field, 1, 64)
+    if not _CANVAS_OP_NODE_ID_RE.fullmatch(value):
+        raise CLIAPIError(400, field + " 格式不合法")
+    return value
+
+
+def _canvas_agent_payload(value):
+    _strict_object(value, {
+        "prompt", "project_id", "snapshot_digest", "scope", "nodes", "edges",
+        "selected_node_ids", "history",
+    }, ("prompt", "project_id", "snapshot_digest", "scope", "nodes", "edges", "selected_node_ids"))
+    project_id = _string(value["project_id"], "project_id", 1, 128)
+    scope = _enum(value["scope"], "scope", ("local", "collab"))
+    if not _CANVAS_PROJECT_RE.fullmatch(project_id) or not project_id.startswith(scope + ":"):
+        raise CLIAPIError(400, "project_id 与 scope 不匹配")
+    digest = _string(value["snapshot_digest"], "snapshot_digest", 8, 32).lower()
+    if not re.fullmatch(r"[a-f0-9]{8,32}", digest):
+        raise CLIAPIError(400, "snapshot_digest 格式不合法")
+    raw_nodes = value["nodes"]
+    if not isinstance(raw_nodes, list) or len(raw_nodes) > 60:
+        raise CLIAPIError(400, "nodes 必须是最多 60 项的数组")
+    nodes, node_ids, total_content = [], set(), 0
+    for raw in raw_nodes:
+        _strict_object(raw, {"id", "type", "title", "content", "selected"},
+                       ("id", "type", "title", "content", "selected"))
+        node_id = _canvas_node_id(raw["id"])
+        if node_id in node_ids:
+            raise CLIAPIError(400, "nodes 包含重复节点")
+        if not isinstance(raw["selected"], bool):
+            raise CLIAPIError(400, "selected 必须是布尔值")
+        node = {
+            "id": node_id,
+            "type": _enum(raw["type"], "节点类型", ("text", "image", "reverse", "gen", "video", "shortDrama")),
+            "title": _string(raw["title"], "节点标题", 0, 120),
+            "content": _string(raw["content"], "节点内容", 0, 5000),
+            "selected": raw["selected"],
+        }
+        total_content += len(node["title"]) + len(node["content"])
+        node_ids.add(node_id)
+        nodes.append(node)
+    if total_content > 30000:
+        raise CLIAPIError(400, "画布上下文文本超过限制")
+    selected = value["selected_node_ids"]
+    if not isinstance(selected, list) or len(selected) > 30:
+        raise CLIAPIError(400, "selected_node_ids 必须是最多 30 项的数组")
+    selected = [_canvas_node_id(item, "选中节点标识") for item in selected]
+    if len(selected) != len(set(selected)) or any(item not in node_ids for item in selected):
+        raise CLIAPIError(400, "selected_node_ids 引用了无效节点")
+    raw_edges = value["edges"]
+    if not isinstance(raw_edges, list) or len(raw_edges) > 120:
+        raise CLIAPIError(400, "edges 必须是最多 120 项的数组")
+    edges = []
+    for raw in raw_edges:
+        _strict_object(raw, {"from_node_id", "to_node_id"}, ("from_node_id", "to_node_id"))
+        source = _canvas_node_id(raw["from_node_id"], "连线起点")
+        target = _canvas_node_id(raw["to_node_id"], "连线终点")
+        if source == target or source not in node_ids or target not in node_ids:
+            raise CLIAPIError(400, "edges 引用了无效节点")
+        edges.append({"from_node_id": source, "to_node_id": target})
+    raw_history = value.get("history", [])
+    if not isinstance(raw_history, list) or len(raw_history) > 10:
+        raise CLIAPIError(400, "history 必须是最多 10 项的数组")
+    history = []
+    for raw in raw_history:
+        _strict_object(raw, {"role", "content"}, ("role", "content"))
+        role = _enum(raw["role"], "历史角色", ("user", "assistant"))
+        content = _string(raw["content"], "历史消息", 0, 2000)
+        if content:
+            history.append({"role": role, "content": content})
+    payload = {
+        "prompt": _string(value["prompt"], "prompt", 1, 2000), "project_id": project_id,
+        "snapshot_digest": digest, "scope": scope, "nodes": nodes, "edges": edges,
+        "selected_node_ids": selected, "history": history,
+    }
+    raw = json.dumps(payload, ensure_ascii=False).lower()
+    if any(marker in raw for marker in ("data:image/", "data:video/", ";base64,", "blob:")) or _CANVAS_BASE64_RE.search(raw):
+        raise CLIAPIError(400, "画布上下文不能包含媒体数据或 Blob 地址")
+    return payload
+
+
+def _canvas_params(value, require_text=False):
+    _strict_object(value, {"title", "text"}, ("text",) if require_text else ())
+    if not value:
+        raise CLIAPIError(400, "params 不能为空")
+    params = {}
+    if "title" in value:
+        params["title"] = _string(value["title"], "params.title", 0, 120)
+    if "text" in value:
+        params["text"] = _string(value["text"], "params.text", 1 if require_text else 0, 5000)
+    return params
+
+
+def _canvas_ops_payload(value):
+    _strict_object(value, {"board_id", "base_version", "op_id", "ops"},
+                   ("board_id", "base_version", "op_id", "ops"))
+    op_id = _string(value["op_id"], "op_id", 17, 128)
+    if not _CANVAS_OP_ID_RE.fullmatch(op_id):
+        raise CLIAPIError(400, "op_id 必须以 hqcli- 开头并包含足够的随机字符")
+    raw_ops = value["ops"]
+    if not isinstance(raw_ops, list) or not 1 <= len(raw_ops) <= 12:
+        raise CLIAPIError(400, "ops 必须包含 1-12 项")
+    ops = []
+    for raw in raw_ops:
+        if not isinstance(raw, dict):
+            raise CLIAPIError(400, "画布操作必须是对象")
+        kind = raw.get("type")
+        if kind == "node.create":
+            _strict_object(raw, {"type", "node"}, ("type", "node"))
+            node = raw["node"]
+            _strict_object(node, {"id", "type", "x", "y", "params"}, ("id", "type", "x", "y", "params"))
+            ops.append({"type": kind, "node": {
+                "id": _canvas_op_node_id(node["id"]),
+                "type": _enum(node["type"], "node.type", ("text", "gen", "video")),
+                "x": _number(node["x"], "node.x", 0, 100000),
+                "y": _number(node["y"], "node.y", 0, 100000),
+                "params": _canvas_params(node["params"], require_text=True),
+            }})
+        elif kind == "node.patch":
+            _strict_object(raw, {"type", "id", "fields"}, ("type", "id", "fields"))
+            fields = raw["fields"]
+            _strict_object(fields, {"x", "y", "params"})
+            if not fields:
+                raise CLIAPIError(400, "node.patch fields 不能为空")
+            clean = {}
+            if "x" in fields:
+                clean["x"] = _number(fields["x"], "fields.x", 0, 100000)
+            if "y" in fields:
+                clean["y"] = _number(fields["y"], "fields.y", 0, 100000)
+            if "params" in fields:
+                clean["params"] = _canvas_params(fields["params"])
+            ops.append({"type": kind, "id": _canvas_op_node_id(raw["id"]), "fields": clean})
+        elif kind == "edge.create":
+            _strict_object(raw, {"type", "edge"}, ("type", "edge"))
+            edge = raw["edge"]
+            _strict_object(edge, {"from", "to"}, ("from", "to"))
+            endpoints = {}
+            for name in ("from", "to"):
+                endpoint = edge[name]
+                _strict_object(endpoint, {"node", "port"}, ("node", "port"))
+                endpoints[name] = {
+                    "node": _canvas_op_node_id(endpoint["node"], "edge.%s.node" % name),
+                    "port": _enum(endpoint["port"], "edge.%s.port" % name, ("prompt", "image")),
+                }
+            if endpoints["from"]["node"] == endpoints["to"]["node"]:
+                raise CLIAPIError(400, "画布连线不能形成自环")
+            ops.append({"type": kind, "edge": endpoints})
+        else:
+            raise CLIAPIError(400, "CLI 不允许该画布操作")
+    return {
+        "board_id": _identifier(value["board_id"], "board_id"),
+        "base_version": _integer(value["base_version"], "base_version", 1, 2**63 - 1),
+        "op_id": op_id, "ops": ops,
+    }
 
 
 def _tags(value):
@@ -575,6 +754,19 @@ def action_plan(action, value):
         data = {"nid": len(nodes), "runLabel": "就绪", "zoom": 1,
                 "scroll": {"left": 0, "top": 0}, "edges": [], "nodes": nodes}
         return _plan("canvas:write", "canvas-create", name=name, data=data)
+    if action == "canvas-agent-plan":
+        payload = _canvas_agent_payload(value)
+        headers = {}
+        if payload["scope"] == "collab":
+            headers["X-Canvas-Board-Id"] = payload["project_id"].split(":", 1)[1]
+        return _plan(
+            "canvas:agent", "generation", generation_kind="canvas_agent",
+            endpoint="/api/gen/canvas_agent", quote_endpoint="/api/gen/canvas-agent/quote",
+            quote_body={}, payload=payload, quoted_cost_field="quoted_cost", submit_headers=headers,
+        )
+    if action == "canvas-ops":
+        payload = _canvas_ops_payload(value)
+        return _plan("canvas:edit", "canvas-ops", board_id=payload.pop("board_id"), payload=payload)
     if action == "tasks":
         _strict_object(value, {"days", "kind", "page", "page_size"})
         days = _integer(value.get("days", 30), "days", 1, 365)
