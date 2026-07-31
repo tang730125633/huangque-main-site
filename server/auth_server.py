@@ -2172,6 +2172,9 @@ def admin_user_insights(username):
             "SELECT * FROM virtual_pay_orders WHERE username=? ORDER BY created_at DESC,order_id DESC",
             (username,),
         ).fetchall()
+        invite_rewards = invites.admin_reward_points(
+            c, {"inviter_user_id": user["id"]}, limit=20,
+        )
     finally:
         c.close()
 
@@ -2232,6 +2235,7 @@ def admin_user_insights(username):
             "recent": recent[:20],
         },
         "ledger": list_points_audit(username=username, limit=20),
+        "invite_rewards": invite_rewards,
     }
 
 
