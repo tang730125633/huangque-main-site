@@ -61,6 +61,8 @@ class AssetRegistryTests(unittest.TestCase):
         self.assertIn("canvas/canvas-agent.js", assets)
         self.assertIn("canvas/canvas-export.js", assets)
         self.assertIn("canvas/canvas-app.js", assets)
+        self.assertIn("canvas/canvas-short-drama-video.js", assets)
+        self.assertIn("canvas/canvas-short-drama-video.css", assets)
         self.assertFalse(assets["canvas/canvas.css"].required)
         self.assertFalse(assets["canvas/canvas-graph.js"].required)
         self.assertFalse(assets["canvas/canvas-state.js"].required)
@@ -69,6 +71,8 @@ class AssetRegistryTests(unittest.TestCase):
         self.assertFalse(assets["canvas/canvas-agent.js"].required)
         self.assertFalse(assets["canvas/canvas-export.js"].required)
         self.assertFalse(assets["canvas/canvas-app.js"].required)
+        self.assertFalse(assets["canvas/canvas-short-drama-video.js"].required)
+        self.assertFalse(assets["canvas/canvas-short-drama-video.css"].required)
 
     def test_canvas_html_uses_current_canvas_asset_stamps(self):
         html = (ROOT / "site" / "workbench" / "canvas.html").read_bytes()
