@@ -52,5 +52,32 @@
     nodes.forEach(function(n){ var w=n.width||250,h=n.height||160; minX=Math.min(minX,n.x||0); minY=Math.min(minY,n.y||0); maxX=Math.max(maxX,(n.x||0)+w); maxY=Math.max(maxY,(n.y||0)+h); });
     return {x:Math.max(0,minX-pad),y:Math.max(0,minY-pad),w:Math.max(360,maxX-minX+pad*2),h:Math.max(240,maxY-minY+pad*2)};
   }
-  return {detectCycle:detectCycle,topologicalOrder:topologicalOrder,computeAutoLayout:computeAutoLayout,contentBounds:contentBounds};
+  function resizeNodeRect(start,direction,deltaX,deltaY,bounds){
+    bounds=bounds||{};
+    var fromLeft=direction.indexOf('w')>=0,fromRight=direction.indexOf('e')>=0,fromTop=direction.indexOf('n')>=0,fromBottom=direction.indexOf('s')>=0;
+    var minWidth=bounds.minWidth||220,maxWidth=bounds.maxWidth||520,minHeight=bounds.minHeight||80,maxHeight=bounds.maxHeight||720;
+    var width=Math.min(maxWidth,Math.max(minWidth,start.width+(fromLeft?-deltaX:fromRight?deltaX:0)));
+    var height=Math.min(maxHeight,Math.max(minHeight,start.height+(fromTop?-deltaY:fromBottom?deltaY:0)));
+    return {
+      x:Math.round(fromLeft?start.x+start.width-width:start.x),
+      y:Math.round(fromTop?start.y+start.height-height:start.y),
+      width:Math.round(width),height:Math.round(height)
+    };
+  }
+  function alignmentGuides(nodes,movingIds,threshold){
+    var moving={},anchor=null,result={x:null,y:null};
+    (movingIds||[]).forEach(function(id){ moving[id]=true; });
+    (nodes||[]).some(function(node){ if(moving[node.id]){ anchor=node; return true; } return false; });
+    if(!anchor) return result;
+    var ax=anchor.x+(anchor.width||250)/2,ay=anchor.y+(anchor.height||160)/2,limit=threshold==null?6:threshold;
+    (nodes||[]).some(function(node){
+      if(moving[node.id]) return false;
+      var x=node.x+(node.width||250)/2,y=node.y+(node.height||160)/2;
+      if(result.x==null&&Math.abs(x-ax)<=limit) result.x=x;
+      if(result.y==null&&Math.abs(y-ay)<=limit) result.y=y;
+      return result.x!=null&&result.y!=null;
+    });
+    return result;
+  }
+  return {detectCycle:detectCycle,topologicalOrder:topologicalOrder,computeAutoLayout:computeAutoLayout,contentBounds:contentBounds,resizeNodeRect:resizeNodeRect,alignmentGuides:alignmentGuides};
 });

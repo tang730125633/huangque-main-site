@@ -9,7 +9,7 @@ HTML_PATH = ROOT / "site" / "workbench" / "canvas.html"
 CSS_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas.css"
 APP_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas-app.js"
 
-EXPECTED_CSS_SHA256 = "96c2cf4a29c2fcd04113c920f198783f07a2794d3a6959582986b46a95353396"
+EXPECTED_CSS_SHA256 = "47faf200a849a4fc4fe7531d310314992ba8c36363c0c7a2033ed4bd99611e9a"
 
 
 def normalized_sha256(path: Path) -> str:
@@ -28,7 +28,76 @@ class CanvasAssetExtractionTests(unittest.TestCase):
         self.assertNotRegex(html, r"(?s)<script>\s*/\* 节点生产画布")
         self.assertRegex(html, r'src="canvas/canvas-app\.js\?v=[0-9a-f]{8}"')
 
-    def test_five_modules_are_versioned_and_loaded_in_exact_order(self):
+    def test_side_toolbar_has_pointer_keyboard_and_reduced_motion_feedback(self):
+        css = CSS_PATH.read_text(encoding="utf-8")
+        self.assertIn(".nc-side-tools:hover,.nc-side-tools:focus-within", css)
+        self.assertIn(".nc-side-tool:hover,.nc-side-tool.on,.nc-side-tool:focus-visible", css)
+        self.assertIn("content:attr(aria-label)", css)
+        self.assertIn("@media (prefers-reduced-motion:reduce)", css)
+
+    def test_grid_and_default_nodes_follow_the_centered_viewport(self):
+        css = CSS_PATH.read_text(encoding="utf-8")
+        app = APP_PATH.read_text(encoding="utf-8")
+        self.assertIn("--grid-minor:24px", css)
+        self.assertIn("function syncCanvasGrid()", app)
+        self.assertIn("fallback=x==null||y==null?viewportNodePoint():null", app)
+        self.assertIn("function centerEmptyView()", app)
+        self.assertIn("((minX+maxX)/2)*zoom-canvas.clientWidth/2", app)
+        self.assertIn("CANVAS_VIEW_PAD=1200", app)
+        self.assertIn("margin:1200px", css)
+        self.assertIn("offset=(Object.keys(nodes).length%5)*36", app)
+
+    def test_agent_workspace_stays_visible_without_covering_the_canvas(self):
+        html = HTML_PATH.read_text(encoding="utf-8")
+        css = CSS_PATH.read_text(encoding="utf-8")
+        app = APP_PATH.read_text(encoding="utf-8")
+        self.assertIn('id="ncFsAgent"', html)
+        self.assertIn('data-agent-start=', html)
+        self.assertIn(".nc-canvas-shell.agent-open .nc-canvas", css)
+        self.assertIn(".nc-canvas-shell.agent-open .nc-empty", css)
+        self.assertIn("openSidePanel('agent',true)", app)
+
+    def test_storyboard_is_a_derived_view_of_the_existing_workflow(self):
+        html = HTML_PATH.read_text(encoding="utf-8")
+        css = CSS_PATH.read_text(encoding="utf-8")
+        app = APP_PATH.read_text(encoding="utf-8")
+        self.assertIn('id="ncStoryboard"', html)
+        self.assertIn('data-canvas-view="workflow"', html)
+        self.assertIn('data-canvas-view="story"', html)
+        self.assertIn("graphApi.topologicalOrder(", app)
+        self.assertIn("function renderStoryboard()", app)
+        self.assertIn("function setCanvasView(view)", app)
+        self.assertIn(".nc-canvas-shell.story-view .nc-storyboard", css)
+
+    def test_portable_infinite_canvas_interactions_are_wired(self):
+        html = HTML_PATH.read_text(encoding="utf-8")
+        css = CSS_PATH.read_text(encoding="utf-8")
+        app = APP_PATH.read_text(encoding="utf-8")
+        self.assertIn('id="ncGuideX"', html)
+        self.assertIn(".nc-resize-handle", css)
+        self.assertIn("function connectedNodeMenuItems(", app)
+        self.assertIn("graphApi.resizeNodeRect(", app)
+        self.assertIn("graphApi.alignmentGuides(", app)
+
+    def test_canvas_creation_and_context_menus_have_distinct_roles(self):
+        html = HTML_PATH.read_text(encoding="utf-8")
+        css = CSS_PATH.read_text(encoding="utf-8")
+        app = APP_PATH.read_text(encoding="utf-8")
+        self.assertIn("双击画布空白处添加节点", html)
+        self.assertIn("function showAddNodeMenu(", app)
+        self.assertRegex(app, r"canvas\.addEventListener\('dblclick',[\s\S]*?showAddNodeMenu\(canvasPointFromClient\(e\)")
+        self.assertRegex(app, r"function menuForCanvas\(e\)[\s\S]*?label:'上传图片'[\s\S]*?label:'添加节点'[\s\S]*?label:'撤销'[\s\S]*?label:'重做'[\s\S]*?label:'粘贴'")
+        self.assertIn("disabled:!history.canUndo()", app)
+        self.assertIn("disabled:!history.canRedo()", app)
+        self.assertIn("disabled:!clipNode", app)
+        self.assertIn(".nc-menu-shortcut", css)
+        self.assertIn("var MENU_ICONS=", app)
+        self.assertIn("function menuIcon(", app)
+        self.assertIn("@keyframes nc-menu-icon-draw", css)
+        self.assertIn("@keyframes nc-menu-icon-spark", css)
+        self.assertIn("prefers-reduced-motion:reduce", css)
+
+    def test_canvas_modules_are_versioned_and_loaded_in_exact_order(self):
         html = HTML_PATH.read_text(encoding="utf-8")
         css = re.search(r'href="canvas/canvas\.css\?v=([0-9a-f]{8})"', html)
         self.assertIsNotNone(css, "canvas stylesheet must have a content stamp")
@@ -37,6 +106,7 @@ class CanvasAssetExtractionTests(unittest.TestCase):
             "canvas/canvas-state.js?v=",
             "canvas/canvas-storage.js?v=",
             "canvas/canvas-api.js?v=",
+            "canvas/canvas-agent.js?v=",
             "canvas/canvas-export.js?v=",
             "canvas-collab-sync.js?v=",
             "canvas/canvas-app.js?v=",

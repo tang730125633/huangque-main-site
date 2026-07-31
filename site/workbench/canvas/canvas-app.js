@@ -4,25 +4,27 @@
   var stateApi=window.HQCanvas&&window.HQCanvas.state;
   var storageApi=window.HQCanvas&&window.HQCanvas.storage;
   var apiModule=window.HQCanvas&&window.HQCanvas.api;
+  var agentModule=window.HQCanvas&&window.HQCanvas.agent;
   var shortDramaModule=window.HQCanvas&&window.HQCanvas.shortDrama;
   var canvasExporter=window.HQCanvas&&window.HQCanvas.exporter;
   var canvasStorage=storageApi.createStorage({storage:function(){return window.localStorage;}});
   var apiClient=apiModule.createClient({fetchImpl:window.fetch.bind(window),tokenProvider:tok,AbortControllerImpl:window.AbortController,setTimeoutImpl:setTimeout,clearTimeoutImpl:clearTimeout});
-  var wrap=document.querySelector('.nc-wrap'), inner=document.getElementById('ncInner'), svg=document.getElementById('ncEdges'), canvas=document.getElementById('ncCanvas'), empty=document.getElementById('ncEmpty'), selectionBox=document.getElementById('ncSelectionBox'), selectedRegion=document.getElementById('ncSelectedRegion');
+  var wrap=document.querySelector('.nc-wrap'), canvasShell=document.querySelector('.nc-canvas-shell'), inner=document.getElementById('ncInner'), svg=document.getElementById('ncEdges'), canvas=document.getElementById('ncCanvas'), empty=document.getElementById('ncEmpty'), storyboard=document.getElementById('ncStoryboard'), storyGrid=document.getElementById('ncStoryGrid'), storyMeta=document.getElementById('ncStoryMeta'), selectionBox=document.getElementById('ncSelectionBox'), selectedRegion=document.getElementById('ncSelectedRegion'), guideX=document.getElementById('ncGuideX'), guideY=document.getElementById('ncGuideY');
   var boardHome=document.getElementById('ncBoardHome'), editorView=document.getElementById('ncEditorView'), boardGrid=document.getElementById('ncBoardGrid'), boardSearch=document.getElementById('ncBoardSearch'), boardSort=document.getElementById('ncBoardSort'), backHomeBtn=document.getElementById('ncBackHome');
   var nodeCountEl=document.getElementById('ncNodeCount'), edgeCountEl=document.getElementById('ncEdgeCount'), runStateEl=document.getElementById('ncRunState');
   var undoBtn=document.getElementById('ncUndo'), redoBtn=document.getElementById('ncRedo'), fullscreenBtn=document.getElementById('ncFullscreen'), zoomLabel=document.getElementById('ncZoomLabel'), map=document.getElementById('ncMap'), mapSvg=document.getElementById('ncMapSvg');
   var runAllBtn=document.getElementById('ncRunAll');
-  var fsAdd=document.getElementById('ncFsAdd'), fsUndo=document.getElementById('ncFsUndo'), fsRedo=document.getElementById('ncFsRedo'), fsZoomOut=document.getElementById('ncFsZoomOut'), fsZoomIn=document.getElementById('ncFsZoomIn'), fsZoomLabel=document.getElementById('ncFsZoomLabel'), fsFit=document.getElementById('ncFsFit'), fsMore=document.getElementById('ncFsMore'), fsRun=document.getElementById('ncFsRun'), fsExit=document.getElementById('ncFsExit'), saveStateEl=document.getElementById('ncSaveState'), onlineStateEl=document.getElementById('ncOnlineState');
+  var fsAgent=document.getElementById('ncFsAgent'), fsAdd=document.getElementById('ncFsAdd'), fsUndo=document.getElementById('ncFsUndo'), fsRedo=document.getElementById('ncFsRedo'), fsZoomOut=document.getElementById('ncFsZoomOut'), fsZoomIn=document.getElementById('ncFsZoomIn'), fsZoomLabel=document.getElementById('ncFsZoomLabel'), fsFit=document.getElementById('ncFsFit'), fsMore=document.getElementById('ncFsMore'), fsRun=document.getElementById('ncFsRun'), fsExit=document.getElementById('ncFsExit'), saveStateEl=document.getElementById('ncSaveState'), onlineStateEl=document.getElementById('ncOnlineState');
   var fsTplMenu=document.getElementById('ncFsTplMenu');
   var tplSelect=document.getElementById('ncTemplateSelect'), tplName=document.getElementById('ncTemplateName'), tplImportFile=document.getElementById('ncTplImportFile'), menu=document.getElementById('ncMenu'), cleanupStorageBtn=document.getElementById('ncCleanupStorage');
   var sidePanel=document.getElementById('ncSidePanel'), sideTitle=document.getElementById('ncSideTitle'), sideBody=document.getElementById('ncSideBody'), sideClose=document.getElementById('ncSideClose');
   var sideTplMenu=document.getElementById('ncSideTplMenu'), sideMore=document.getElementById('ncSideMore');
   var nodes={}, edges=[], nid=0, pendingPort=null, runLabel='就绪', history=stateApi.createHistory({limit:60}), restoring=false, loading=false, dragPort=null, suppressPortClick=false, suppressCanvasClick=false, mapDirty=false, saveTimer=null;
-  var localFullscreen=false;
+  var localFullscreen=false, canvasView='workflow';
   var selectedNode=null, selectedNodes={}, selectedEdge=-1, clipNode=null, zoom=1;
   var RUN_ALL_REMOTE_LIMIT=2, RUN_ALL_RETRY_MS=4000, runAllBatch=null, runAllRetryTimer=null;
   var activeSidePanel='', accountAssetsLoaded=false, accountAssets=[], accountAssetsPromise=null;
+  var agentSessions={};
   var currentBoardId=null, boardMode='mine', boardLastSeenUpdatedAt=0, boardConflict=false;
   var currentBoardScope='local', currentCollabVersion=0, currentCollabRole='', currentCollabName='', currentCollabMembers=[];
   var collabBoards=[], collabLoaded=false, collabLoading=false, collabError='', collabErrorHint='', collabCreating=false, collabSaving=false, collabQueuedSnap=null;
@@ -184,7 +186,7 @@
       box.innerHTML='<a class="nc-mini" href="'+escapeHtml(url)+'" target="_blank" rel="noopener">打开视频</a>';
     });
   }
-  var CANVAS_BASE_W=8000, CANVAS_BASE_H=5000, CANVAS_GROW_PAD=1200;
+  var CANVAS_BASE_W=8000, CANVAS_BASE_H=5000, CANVAS_GROW_PAD=1200, CANVAS_VIEW_PAD=1200;
   var IMAGE_SAVE_MAX=1280, IMAGE_SAVE_QUALITY=.82;
   var TYPE={
     text:  {name:'文本 · 提示词', color:'#e7b24c', outs:['prompt']},
@@ -194,6 +196,11 @@
     video: {name:'生视频',        color:'#f472b6', ins:['prompt','image'], outs:['video']},
     shortDrama:{name:'短剧项目', color:'#f59e0b'}
   };
+  function syncRunAllDisabled(){
+    var disabled=!canEditCanvas()||runAllExecutableNodes().length===0||!!runAllBatch;
+    if(runAllBtn) runAllBtn.disabled=disabled;
+    if(fsRun) fsRun.disabled=disabled;
+  }
   function updateState(label){
     if(label) runLabel=label;
     var count=Object.keys(nodes).length;
@@ -205,8 +212,10 @@
     if(redoBtn) redoBtn.disabled=!canEditCanvas()||!history.canRedo();
     if(fsUndo) fsUndo.disabled=!canEditCanvas()||!history.canUndo();
     if(fsRedo) fsRedo.disabled=!canEditCanvas()||!history.canRedo();
+    syncRunAllDisabled();
     syncZoomInputs();
-    if(activeSidePanel) renderSidePanel();
+    if(canvasView==='story') renderStoryboard();
+    if(activeSidePanel&&activeSidePanel!=='agent') renderSidePanel();
     scheduleSave();
   }
   function setNodeState(node,state,msg,color){
@@ -223,7 +232,7 @@
       edges:stateApi.cloneSnapshot(edges),
       nodes:Object.keys(nodes).map(function(k){
         var n=nodes[k];
-        return {id:n.id,type:n.type,x:n.x,y:n.y,collapsed:n.el?n.el.classList.contains('collapsed'):!!n.collapsed,params:stateApi.cloneSnapshot(n.type==='shortDrama'?normalizeShortDramaNodeParams(n.params):n.params||{}),outputs:shortDramaNodeOutputs(n),image:n.image||null,state:n.el?n.el.getAttribute('data-state')||'':n.state||'',note:n.el?(n.el.querySelector('[data-f="note"]')||{}).textContent||'':n.note||''};
+        return {id:n.id,type:n.type,x:n.x,y:n.y,width:n.width||null,height:n.height||null,collapsed:n.el?n.el.classList.contains('collapsed'):!!n.collapsed,params:stateApi.cloneSnapshot(n.type==='shortDrama'?normalizeShortDramaNodeParams(n.params):n.params||{}),outputs:shortDramaNodeOutputs(n),image:n.image||null,state:n.el?n.el.getAttribute('data-state')||'':n.state||'',note:n.el?(n.el.querySelector('[data-f="note"]')||{}).textContent||'':n.note||''};
       })
     };
   }
@@ -774,6 +783,7 @@
       if(el) el.disabled=!!readonly;
     });
     document.querySelectorAll('.nc-node input,.nc-node textarea,.nc-node select,.nc-node button').forEach(function(el){ el.disabled=!!readonly; });
+    syncRunAllDisabled();
     document.querySelectorAll('.nc-node [data-f="openShortDrama"]').forEach(function(openShortDrama){
       var host=openShortDrama.closest('.nc-node'), node=host&&nodes[host.getAttribute('data-node-id')];
       openShortDrama.disabled=!!readonly&&!(node&&node.params.project_id);
@@ -1149,9 +1159,11 @@
     }
   }
   function showEditor(){
+    setCanvasView('workflow');
     if(wrap) wrap.classList.add('editing');
     if(editorView) editorView.style.display='';
     if(boardHome) boardHome.style.display='';
+    if(!window.matchMedia||window.matchMedia('(min-width:901px)').matches) openSidePanel('agent',true);
     setTimeout(function(){ fitView(); scheduleMap(); },40);
   }
   function showBoardHome(){
@@ -1435,22 +1447,84 @@
     if(!node) return '未命名节点';
     return (node.params&&node.params.title)||((TYPE[node.type]&&TYPE[node.type].name)||nodeTypeLabel(node.type));
   }
-  function openSidePanel(kind){
+  function renderStoryboard(){
+    if(!storyGrid||canvasView!=='story') return;
+    var ordered=graphApi.topologicalOrder(Object.keys(nodes).map(function(id){ return {id:id}; }),edges);
+    if(storyMeta) storyMeta.textContent=ordered.length+' 个场景';
+    if(!ordered.length){
+      storyGrid.innerHTML='<div class="nc-story-empty"><strong>故事板还没有内容</strong><span>先在工作流中添加文本、图片或视频节点。</span><button type="button">返回工作流</button></div>';
+      storyGrid.querySelector('button').onclick=function(){ setCanvasView('workflow'); };
+      return;
+    }
+    var ready=0;
+    storyGrid.innerHTML=ordered.map(function(id,index){
+      var node=nodes[id], params=node.params||{}, output=node.outputs||{}, text='', image='', video=output.video||output.video_url||'', body='';
+      if(node.type==='text'||node.type==='gen'||node.type==='video') text=String(params.text||'').trim();
+      if(node.type==='reverse') text=String(output.prompt||'').trim();
+      if(node.type==='image') image=node.image||output.image||'';
+      if(node.type==='gen') image=output.image||'';
+      var progress=node.type==='shortDrama'?Math.max(0,Math.min(100,Number(params.progress)||0)):0;
+      var hasContent=!!(text||image||video||progress);
+      if(hasContent) ready++;
+      if(video) body='<div class="nc-story-media nc-story-video" data-story-video="'+index+'"><span>正在准备视频预览…</span></div>';
+      else if(image) body='<div class="nc-story-media"><img src="'+escapeHtml(image)+'" alt="'+escapeHtml(nodeDisplayName(node))+'"></div>';
+      else if(node.type==='shortDrama') body='<div class="nc-story-progress"><div><b>'+escapeHtml(params.stage||'未开始')+'</b><span>'+progress+'%</span></div><i><span style="width:'+progress+'%"></span></i><small>'+escapeHtml(params.ratio||'16:9')+' · '+escapeHtml(params.target_duration||60)+' 秒</small></div>';
+      else if(node.type==='image'||node.type==='gen'||node.type==='video') body='<div class="nc-story-media empty"><span>'+({image:'等待图片素材',gen:'等待生成图片',video:'等待生成视频'}[node.type])+'</span></div>';
+      if(text) body+='<p class="nc-story-copy">'+escapeHtml(text)+'</p>';
+      if(!body) body='<p class="nc-story-copy muted">等待补充内容…</p>';
+      var status=nodeStatusLabel(node); if(status==='等待'&&hasContent) status='已就绪';
+      return '<article class="nc-story-card '+escapeHtml(node.type)+'"><div class="nc-story-card-head"><span class="nc-story-index">'+String(index+1).padStart(2,'0')+'</span><div><small>'+escapeHtml(nodeTypeLabel(node.type))+'</small><strong>'+escapeHtml(nodeDisplayName(node))+'</strong></div><em>'+escapeHtml(status)+'</em></div>'+body+'</article>';
+    }).join('');
+    if(storyMeta) storyMeta.textContent=ordered.length+' 个场景 · '+ready+' 个已就绪';
+    storyGrid.querySelectorAll('[data-story-video]').forEach(function(box){
+      var node=nodes[ordered[Number(box.getAttribute('data-story-video'))]], url=node&&node.outputs&&(node.outputs.video||node.outputs.video_url);
+      playableAssetUrl(url).then(function(src){ if(box.isConnected&&canvasView==='story') box.innerHTML='<video controls playsinline preload="metadata" src="'+escapeHtml(src)+'"></video>'; })
+        .catch(function(){ if(box.isConnected) box.innerHTML='<span>视频预览加载失败</span>'; });
+    });
+  }
+  function setCanvasView(view){
+    canvasView=view==='story'?'story':'workflow';
+    if(canvasShell) canvasShell.classList.toggle('story-view',canvasView==='story');
+    if(storyboard) storyboard.hidden=canvasView!=='story';
+    document.querySelectorAll('[data-canvas-view]').forEach(function(button){ button.setAttribute('aria-pressed',String(button.getAttribute('data-canvas-view')===canvasView)); });
+    if(canvasView==='story') renderStoryboard();
+    else requestAnimationFrame(function(){ syncCanvasGrid(); scheduleMap(); });
+  }
+  function openSidePanel(kind,keepOpen){
     if(!sidePanel||!sideBody) return;
-    activeSidePanel=activeSidePanel===kind?'':kind;
+    var beforeWidth=canvas&&canvas.clientWidth||0;
+    activeSidePanel=!keepOpen&&activeSidePanel===kind?'':kind;
     document.querySelectorAll('.nc-side-tool').forEach(function(b){ b.classList.toggle('on', b.getAttribute('data-side')===activeSidePanel); });
     sidePanel.classList.toggle('on', !!activeSidePanel);
+    sidePanel.classList.toggle('agent', activeSidePanel==='agent');
+    if(canvasShell) canvasShell.classList.toggle('agent-open',activeSidePanel==='agent');
+    if(fsAgent) fsAgent.classList.toggle('on',activeSidePanel==='agent');
     sidePanel.setAttribute('aria-hidden', activeSidePanel?'false':'true');
     if(activeSidePanel) renderSidePanel();
+    if(canvas&&beforeWidth) requestAnimationFrame(function(){
+      var afterWidth=canvas.clientWidth;
+      canvas.scrollLeft=Math.max(0,canvas.scrollLeft+(beforeWidth-afterWidth)/2);
+      syncCanvasGrid(); scheduleMap();
+    });
   }
   function closeSidePanel(){
+    var beforeWidth=canvas&&canvas.clientWidth||0;
     activeSidePanel='';
     if(sidePanel) sidePanel.classList.remove('on');
+    if(sidePanel) sidePanel.classList.remove('agent');
     if(sidePanel) sidePanel.setAttribute('aria-hidden','true');
+    if(canvasShell) canvasShell.classList.remove('agent-open');
+    if(fsAgent) fsAgent.classList.remove('on');
     document.querySelectorAll('.nc-side-tool').forEach(function(b){ b.classList.remove('on'); });
+    if(canvas&&beforeWidth) requestAnimationFrame(function(){
+      var afterWidth=canvas.clientWidth;
+      canvas.scrollLeft=Math.max(0,canvas.scrollLeft+(beforeWidth-afterWidth)/2);
+      syncCanvasGrid(); scheduleMap();
+    });
   }
   function renderSidePanel(){
     if(!activeSidePanel||!sideBody) return;
+    if(activeSidePanel==='agent') renderAgentPanel();
     if(activeSidePanel==='nodes') renderNodeManager();
     if(activeSidePanel==='assets') renderAssetManager();
     if(activeSidePanel==='export') renderExportPanel();
@@ -1538,6 +1612,217 @@
     var btn=document.getElementById('ncExportJpg');
     if(btn) btn.onclick=function(){ exportCanvasJpg(); };
   }
+  function agentSessionKey(){ return currentBoardScope+':'+String(currentBoardId||'draft'); }
+  function agentErrorText(error,fallback){
+    var message=String(error&&error.message||'').trim();
+    if(!message||message.length>180||/<(?:!doctype|html|body|head)\b/i.test(message)) return fallback;
+    if(error&&error.status===401) return '请先登录后使用画布 Agent';
+    return message;
+  }
+  function currentAgentSession(){
+    var key=agentSessionKey();
+    if(!agentSessions[key]) agentSessions[key]={key:key,messages:[],draft:'',quote:null,points:null,quoteLoading:false,quoteError:'',pending:false,status:'',plan:null,applied:false};
+    return agentSessions[key];
+  }
+  function startAgentPrompt(prompt){
+    var session=currentAgentSession();
+    session.draft=String(prompt||'').trim();
+    openSidePanel('agent',true);
+    var input=sideBody&&sideBody.querySelector('[data-agent-input]');
+    if(input){ input.focus(); input.setSelectionRange(input.value.length,input.value.length); }
+  }
+  function agentNodeContent(node){
+    if(!node) return '';
+    if(node.type==='text'||node.type==='gen'||node.type==='video') return (node.params&&node.params.text)||'';
+    if(node.type==='reverse') return (node.outputs&&node.outputs.prompt)||'';
+    if(node.type==='image') return '图片素材（首版不读取图像内容）';
+    if(node.type==='shortDrama') return '短剧项目阶段：'+String(node.params&&node.params.stage||'未开始');
+    return '';
+  }
+  function buildAgentSnapshot(){
+    var selected=selectedNodeIds();
+    return agentModule.createSnapshot({
+      projectId:agentSessionKey(),scope:currentBoardScope,
+      selectedNodeIds:selected,
+      nodes:Object.keys(nodes).map(function(id){
+        var node=nodes[id];
+        return {id:id,type:node.type,title:nodeDisplayName(node),content:agentNodeContent(node)};
+      }),
+      edges:edges.map(function(edge){return {from_node_id:edge.from.node,to_node_id:edge.to.node};})
+    });
+  }
+  function renderAgentPanel(){
+    if(sideTitle) sideTitle.textContent='Agent 工作台';
+    if(!agentModule){ sideBody.innerHTML='<div class="nc-side-empty">Agent 模块未加载</div>'; return; }
+    var session=currentAgentSession();
+    var selectionCount=selectedNodeIds().length;
+    var messages=session.messages.map(function(message){
+      return '<div class="nc-agent-message '+escapeHtml(message.role)+'">'+escapeHtml(message.content)+'</div>';
+    }).join('');
+    var plan='';
+    if(session.plan&&(session.plan.actions||[]).length){
+      plan='<div class="nc-agent-plan">'+session.plan.actions.map(function(action){
+        return '<label><input type="checkbox" data-agent-action="'+escapeHtml(action.id)+'" checked '+(session.applied?'disabled':'')+'><span>'+escapeHtml(agentModule.actionLabel(action))+'</span></label>';
+      }).join('')+(session.plan.warnings||[]).map(function(warning){return '<div class="nc-agent-warning">'+escapeHtml(warning)+'</div>';}).join('')
+        +'<button class="nc-agent-apply" type="button" '+(session.applied||!canEditCanvas()?'disabled':'')+'>'+(session.applied?'已应用，可撤销':'确认应用所选操作')+'</button></div>';
+    }
+    var quoteText=session.quoteLoading?'正在读取报价…':session.quoteError?session.quoteError:session.quote==null?'报价不可用':('本次 '+session.quote+' 点');
+    var balance=session.points==null?'':('余额 '+session.points+' 点');
+    var insufficient=session.quote!=null&&session.points!=null&&session.points<session.quote;
+    var starters=!session.messages.length?'<div class="nc-agent-starters">'
+      +'<button class="nc-agent-starter" type="button" data-agent-prompt="帮我整理当前画布，把内容按清晰的生产顺序连接起来。"><b>整理现有画布</b>梳理节点与连线关系</button>'
+      +'<button class="nc-agent-starter" type="button" data-agent-prompt="帮我搭建一个短视频脚本工作流：先创建脚本，再创建画面和视频生成草稿。"><b>搭建短视频流程</b>脚本、画面到视频草稿</button>'
+      +'<button class="nc-agent-starter" type="button" data-agent-prompt="分析我选中的节点，优化其中的文本内容并保留原意。"><b>优化选中内容</b>只处理当前选区</button>'
+      +'<button class="nc-agent-starter" type="button" data-agent-prompt="帮我搭建一个产品图文方案，创建卖点文案和图片生成草稿。"><b>创建图文方案</b>卖点文案与作图草稿</button>'
+      +'</div>':'';
+    sideBody.innerHTML='<div class="nc-agent"><div class="nc-agent-hero"><span class="nc-agent-orb">✦</span><strong>一句话，帮你搭好画布</strong><p>Agent 先给出可勾选的方案，只有你确认后才会修改画布。</p><div class="nc-agent-context"><span><i></i>'+(selectionCount?('已读取 '+selectionCount+' 个选中节点'):'已读取当前画布')+'</span><span>图片与视频仅建草稿</span></div></div>'+starters
+      +'<div class="nc-agent-messages">'+(messages||'<div class="nc-agent-message">你可以直接描述目标，也可以从上面的常用场景开始。</div>')+(session.status?'<div class="nc-agent-message">'+escapeHtml(session.status)+'</div>':'')+plan+'</div>'
+      +'<div class="nc-agent-compose"><textarea data-agent-input maxlength="2000" placeholder="描述你想完成的内容，或 @ 选中的节点…" '+(session.pending||session.quote==null?'disabled':'')+'>'+escapeHtml(session.draft||'')+'</textarea>'
+      +'<div class="nc-agent-quote"><span>'+escapeHtml(quoteText)+'</span><span>'+escapeHtml(balance)+'</span></div>'
+      +(session.quoteError?'<button class="nc-agent-apply" type="button" data-agent-retry>重新读取报价</button>':'')
+      +'<button class="nc-agent-submit" type="button" '+(session.pending||session.quote==null||insufficient?'disabled':'')+'>'+(session.pending?'Agent 思考中…':insufficient?'点数不足':session.quote==null?'等待报价':('发送 · '+session.quote+' 点'))+'</button></div></div>';
+    var input=sideBody.querySelector('[data-agent-input]');
+    var submit=sideBody.querySelector('.nc-agent-submit');
+    if(submit) submit.onclick=function(){ submitAgentTurn(input&&input.value); };
+    if(input){
+      input.oninput=function(){ session.draft=input.value; };
+      input.onkeydown=function(e){ if((e.metaKey||e.ctrlKey)&&e.key==='Enter'){ e.preventDefault(); submitAgentTurn(input.value); } };
+    }
+    sideBody.querySelectorAll('[data-agent-prompt]').forEach(function(btn){ btn.onclick=function(){ startAgentPrompt(btn.getAttribute('data-agent-prompt')); }; });
+    var apply=sideBody.querySelector('.nc-agent-apply:not([data-agent-retry])');
+    if(apply) apply.onclick=function(){
+      var ids=Array.prototype.map.call(sideBody.querySelectorAll('[data-agent-action]:checked'),function(box){return box.getAttribute('data-agent-action');});
+      applyAgentPlan(session,ids);
+    };
+    var retry=sideBody.querySelector('[data-agent-retry]');
+    if(retry) retry.onclick=function(){ session.quoteError=''; session.quote=null; loadAgentQuote(session); renderAgentPanel(); };
+    if(session.quote==null&&!session.quoteLoading&&!session.quoteError) loadAgentQuote(session);
+  }
+  function loadAgentQuote(session){
+    session.quoteLoading=true;
+    apiClient.json('/api/gen/canvas-agent/quote',{method:'POST',body:{}}).then(function(data){
+      session.quote=Number(data.cost);
+      session.points=Number(data.points);
+      session.quoteError='';
+    }).catch(function(error){
+      session.quote=null;
+      session.quoteError=agentErrorText(error,'报价读取失败，请确认 Agent 服务已启用');
+    }).finally(function(){
+      session.quoteLoading=false;
+      if(activeSidePanel==='agent'&&currentAgentSession()===session) renderAgentPanel();
+    });
+  }
+  function agentHeaders(idempotencyKey){
+    var headers={'Idempotency-Key':idempotencyKey};
+    if(currentBoardScope==='collab'&&currentBoardId) headers['X-Canvas-Board-Id']=String(currentBoardId);
+    return headers;
+  }
+  function retryAgentSubmission(body,headers,attempt){
+    return apiClient.json('/api/gen/canvas_agent',{method:'POST',body:body,headers:headers,timeout:12000}).catch(function(error){
+      var retryable=error&&(error.code==='timeout'||error.code==='idempotency_in_progress');
+      if(!retryable||attempt>=4) throw error;
+      return new Promise(function(resolve){setTimeout(resolve,800*(attempt+1));}).then(function(){return retryAgentSubmission(body,headers,attempt+1);});
+    });
+  }
+  function submitAgentTurn(prompt){
+    prompt=String(prompt||'').trim();
+    var session=currentAgentSession();
+    if(!prompt||session.pending||session.quote==null) return;
+    var snapshot;
+    try{ snapshot=buildAgentSnapshot(); }
+    catch(error){ session.messages.push({role:'error',content:error.message}); renderAgentPanel(); return; }
+    var history=session.messages.filter(function(message){return message.role==='user'||message.role==='assistant';}).slice(-8);
+    var body=Object.assign({},snapshot,{prompt:prompt,history:history,quoted_cost:session.quote});
+    var requestKey='canvas-agent-'+(window.crypto&&crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2));
+    var headers=agentHeaders(requestKey);
+    session.draft='';
+    session.messages.push({role:'user',content:prompt});
+    session.pending=true; session.status='正在读取画布并规划操作…'; session.plan=null; session.applied=false;
+    renderAgentPanel();
+    retryAgentSubmission(body,headers,0).then(function(data){
+      if(!data.job_id) throw new Error(data.detail||'Agent 任务提交失败');
+      session.points=data.points_left==null?session.points:Number(data.points_left);
+      if(window.HQ&&HQ.refreshPoints) HQ.refreshPoints();
+      return apiModule.poll({
+        request:function(){return apiClient.json('/api/gen/job/'+data.job_id);},intervalMs:1400,maxMs:300000,
+        inspect:function(job){
+          if(job.status==='done') return {done:true,value:typeof job.result==='string'?JSON.parse(job.result):job.result};
+          if(job.status==='error'||job.status==='failed') return {error:new Error(job.error||'Agent 思考失败，点数已自动退回')};
+          return {pending:true};
+        },
+        onProgress:function(job,seconds){session.status='Agent 思考中，已用 '+seconds+' 秒…'; if(activeSidePanel==='agent'&&currentAgentSession()===session) renderAgentPanel();},
+        timeoutError:function(){return new Error('Agent 响应超时，请稍后查看任务记录');}
+      });
+    }).then(function(result){
+      var content=String(result&&result.content||'Agent 已完成分析。');
+      session.messages.push({role:'assistant',content:content});
+      session.plan=result&&result.plan||null;
+      session.status=session.plan&&(session.plan.actions||[]).length?'请勾选并确认要应用的操作。':'';
+    }).catch(function(error){
+      session.messages.push({role:'error',content:agentErrorText(error,'Agent 请求失败，请稍后重试')});
+      session.status='';
+    }).finally(function(){
+      session.pending=false;
+      session.quote=null; session.points=null; session.quoteError='';
+      if(window.HQ&&HQ.refreshPoints) HQ.refreshPoints();
+      if(activeSidePanel==='agent'&&currentAgentSession()===session) renderAgentPanel();
+    });
+  }
+  function addAgentConnection(sourceId,targetId){
+    var source=nodes[sourceId],target=nodes[targetId];
+    if(!source||!target) return false;
+    var ports=agentModule.connectionPorts(source.type,target.type);
+    if(!ports) return false;
+    var multiImage=ports.to==='image'&&(target.type==='gen'||target.type==='video');
+    edges=edges.filter(function(edge){
+      var duplicate=edge.from.node===sourceId&&edge.from.port===ports.from&&edge.to.node===targetId&&edge.to.port===ports.to;
+      var sameInput=edge.to.node===targetId&&edge.to.port===ports.to;
+      return multiImage?!duplicate:!sameInput;
+    });
+    edges.push({from:{node:sourceId,port:ports.from},to:{node:targetId,port:ports.to}});
+    return true;
+  }
+  function applyAgentPlan(session,actionIds){
+    if(!canEditCanvas()||!session.plan||session.applied) return;
+    try{
+      var current=buildAgentSnapshot();
+      agentModule.validatePlan(current,session.plan);
+      var wanted={}; (actionIds||[]).forEach(function(id){wanted[id]=true;});
+      var actions=session.plan.actions.filter(function(action){return !!wanted[action.id];});
+      if(!actions.length) throw new Error('请至少选择一个 Agent 操作');
+      pushUndo();
+      var base=viewportNodePoint(),created=[],nextSelection=null;
+      actions.forEach(function(action,index){
+        var node;
+        if(action.type==='create_text_node'){
+          node=addNode('text',base.x+index*34,base.y+index*34,{params:{title:action.title,text:action.content}});
+          created.push(node.id);
+        }else if(action.type==='update_text_node'){
+          node=nodes[action.node_id];
+          node.params.text=action.content;
+          if(action.title) node.params.title=action.title;
+          applyNodeUI(node);
+        }else if(action.type==='create_generation_draft'){
+          var type=action.mode==='image'?'gen':action.mode==='video'?'video':'text';
+          node=addNode(type,base.x+index*34,base.y+index*34,{params:{title:action.title,text:action.prompt}});
+          created.push(node.id);
+          (action.connect_from||[]).forEach(function(sourceId){addAgentConnection(sourceId,node.id);});
+        }else if(action.type==='connect_nodes'){
+          addAgentConnection(action.from_node_id,action.to_node_id);
+        }else if(action.type==='select_nodes'){
+          nextSelection=action.node_ids;
+        }
+      });
+      redraw(); refreshAllGenRefs();
+      selectNodesByIds(created.length?created:(nextSelection||selectedNodeIds()));
+      session.applied=true; session.status='操作已应用，可用底部撤销恢复。';
+      updateState('Agent 操作已应用');
+      if(activeSidePanel==='agent') renderAgentPanel();
+    }catch(error){
+      session.messages.push({role:'error',content:(error&&error.message)||'Agent 操作应用失败'});
+      if(activeSidePanel==='agent') renderAgentPanel();
+    }
+  }
   function exportCanvasJpg(){
     var bounds=canvasContentBounds();
     if(!bounds){ updateState('画布为空'); return; }
@@ -1577,6 +1862,7 @@
     (snap.nodes||[]).forEach(function(n){ addNode(n.type,n.x,n.y,n); });
     if(snap.zoom){ zoom=Math.max(.5,Math.min(1.6,snap.zoom)); inner.style.transform='scale('+zoom+')'; }
     if(snap.scroll){ canvas.scrollLeft=snap.scroll.left||0; canvas.scrollTop=snap.scroll.top||0; }
+    syncCanvasGrid();
     redraw(); refreshAllGenRefs(); updateSelectedRegion();
     updateState('已撤销');
     restoring=false;
@@ -1598,7 +1884,7 @@
     });
     if(!isFinite(minX)) minX=0;
     if(!isFinite(minY)) minY=0;
-    var target=Object.keys(nodes).length?{x:maxX+140,y:Math.max(80,canvas.scrollTop/zoom+80)}:viewportCenterPoint();
+    var target=Object.keys(nodes).length?{x:maxX+140,y:Math.max(80,viewportTopLeftPoint().y+80)}:viewportCenterPoint();
     var idMap={}, created=[];
     list.forEach(function(n){
       var data=stateApi.cloneSnapshot(n);
@@ -1675,15 +1961,15 @@
       var n=nodes[id], nw=Math.max(3,(n.el.offsetWidth||250)*sx), nh=Math.max(3,(n.el.offsetHeight||150)*sy);
       s+='<rect class="nc-map-node'+(n.type==='image'?' img':'')+'" x="'+(n.x*sx).toFixed(1)+'" y="'+(n.y*sy).toFixed(1)+'" width="'+nw.toFixed(1)+'" height="'+nh.toFixed(1)+'" rx="1.6"/>';
     });
-    var vx=canvas.scrollLeft/zoom*sx, vy=canvas.scrollTop/zoom*sy, vw=canvas.clientWidth/zoom*sx, vh=canvas.clientHeight/zoom*sy;
+    var vx=(canvas.scrollLeft-CANVAS_VIEW_PAD)/zoom*sx, vy=(canvas.scrollTop-CANVAS_VIEW_PAD)/zoom*sy, vw=canvas.clientWidth/zoom*sx, vh=canvas.clientHeight/zoom*sy;
     s+='<rect class="nc-map-view" x="'+Math.max(0,vx).toFixed(1)+'" y="'+Math.max(0,vy).toFixed(1)+'" width="'+Math.min(w,vw).toFixed(1)+'" height="'+Math.min(h,vh).toFixed(1)+'" rx="2"/>';
     mapSvg.innerHTML=s;
   }
   function moveViewFromMap(e){
     if(!map) return;
     var r=map.getBoundingClientRect(), x=(e.clientX-r.left)/r.width, y=(e.clientY-r.top)/r.height;
-    canvas.scrollLeft=Math.max(0,x*innerWidth()*zoom-canvas.clientWidth/2);
-    canvas.scrollTop=Math.max(0,y*innerHeight()*zoom-canvas.clientHeight/2);
+    canvas.scrollLeft=Math.max(0,CANVAS_VIEW_PAD+x*innerWidth()*zoom-canvas.clientWidth/2);
+    canvas.scrollTop=Math.max(0,CANVAS_VIEW_PAD+y*innerHeight()*zoom-canvas.clientHeight/2);
     scheduleMap();
   }
 
@@ -1692,7 +1978,8 @@
     if(type==='shortDrama'&&data) data=shortDramaModule.sanitizeNodeData(data);
     var t=TYPE[type], nextNid=++nid, id=currentBoardScope==='collab'&&collabSync?collabSync.makeNodeId(collabNodeSeed,nextNid):'n'+nextNid;
     if(data&&data.id){ id=data.id; var m=String(id).match(/^n(\d+)$/); if(m) nid=Math.max(nid,parseInt(m[1],10)); }
-    var node={ id:id, type:type, x:(x==null?60+((nid*30)%400):x), y:(y==null?50+((nid*40)%300):y), collapsed:!!(data&&data.collapsed), params:Object.assign({engine:'nb2',channel:'grok',ratio:'16:9',duration:'5',quality:'hd',title:'',remark:''},(data&&data.params)||{}), outputs:stateApi.cloneSnapshot((data&&data.outputs)||{}), image:(data&&data.image)||null };
+    var fallback=x==null||y==null?viewportNodePoint():null;
+    var node={ id:id, type:type, x:(x==null?fallback.x:x), y:(y==null?fallback.y:y), width:Number(data&&data.width)||0, height:Number(data&&data.height)||0, collapsed:!!(data&&data.collapsed), params:Object.assign({engine:'nb2',channel:'grok',ratio:'16:9',duration:'5',quality:'hd',title:'',remark:''},(data&&data.params)||{}), outputs:stateApi.cloneSnapshot((data&&data.outputs)||{}), image:(data&&data.image)||null };
     if(type==='shortDrama') node.params=normalizeShortDramaNodeParams(node.params);
     var el=document.createElement('div'); el.className='nc-node'+(type==='shortDrama'?' nc-node-short-drama':''); el.style.left=node.x+'px'; el.style.top=node.y+'px';
     var body='';
@@ -1715,6 +2002,8 @@
       +'<button class="nc-go nc-short-drama-open" type="button" data-f="openShortDrama">打开短剧工作区</button>';
     el.innerHTML='<div class="nc-head" data-f="head"><span style="display:flex;align-items:center;gap:7px;min-width:0;"><span class="dot" style="background:'+t.color+'"></span><span class="nc-node-title" data-f="headTitle">'+escapeHtml(node.params.title||t.name)+'</span><span class="nc-remark-mark" data-f="remarkMark" title="有备注">注</span></span><span class="nc-actions"><span class="nc-fold" data-f="fold" title="折叠/展开">−</span><span class="nc-x" data-f="del">×</span></span></div>'
       +'<div class="nc-body">'+body+'<div class="nc-note" data-f="note"></div></div>';
+    ['n','ne','e','se','s','sw','w','nw'].forEach(function(direction){ var handle=document.createElement('button'); handle.type='button'; handle.className='nc-resize-handle nc-resize-'+direction; handle.setAttribute('data-resize',direction); handle.setAttribute('aria-label','调整节点大小'); el.appendChild(handle); });
+    if(node.width&&node.height){ el.style.width=node.width+'px'; el.style.height=node.height+'px'; el.classList.add('resized'); }
     inner.appendChild(el); node.el=el;
     // ports
     (t.ins||[]).forEach(function(p,i){ var d=document.createElement('div'); d.className='nc-port pin'+(p==='image'?' img':''); d.setAttribute('data-kind','in'); d.setAttribute('data-port',p); d.title='输入:'+p; d.style.top=(46+i*22)+'px'; el.appendChild(d); });
@@ -1811,6 +2100,12 @@
   function noteOf(node,msg,color){ var n=node.el.querySelector('[data-f="note"]'); if(n){ n.textContent=msg||''; n.style.color=color||'#5c6b82'; } }
   function innerWidth(){ return inner.offsetWidth||CANVAS_BASE_W; }
   function innerHeight(){ return inner.offsetHeight||CANVAS_BASE_H; }
+  function syncCanvasGrid(){
+    canvas.style.setProperty('--grid-minor',(24*zoom)+'px');
+    canvas.style.setProperty('--grid-major',(120*zoom)+'px');
+    canvas.style.setProperty('--grid-x',(CANVAS_VIEW_PAD-canvas.scrollLeft)+'px');
+    canvas.style.setProperty('--grid-y',(CANVAS_VIEW_PAD-canvas.scrollTop)+'px');
+  }
   function ensureCanvasBounds(x,y){
     var nextW=Math.max(innerWidth(),Math.ceil(x+CANVAS_GROW_PAD));
     var nextH=Math.max(innerHeight(),Math.ceil(y+CANVAS_GROW_PAD));
@@ -1877,11 +2172,12 @@
     var old=zoom;
     cx=cx==null?canvas.clientWidth/2:cx;
     cy=cy==null?canvas.clientHeight/2:cy;
-    var wx=(canvas.scrollLeft+cx)/old, wy=(canvas.scrollTop+cy)/old;
+    var wx=(canvas.scrollLeft+cx-CANVAS_VIEW_PAD)/old, wy=(canvas.scrollTop+cy-CANVAS_VIEW_PAD)/old;
     zoom=next;
     inner.style.transform='scale('+zoom+')';
-    canvas.scrollLeft=wx*zoom-cx;
-    canvas.scrollTop=wy*zoom-cy;
+    canvas.scrollLeft=CANVAS_VIEW_PAD+wx*zoom-cx;
+    canvas.scrollTop=CANVAS_VIEW_PAD+wy*zoom-cy;
+    syncCanvasGrid();
     scheduleMap();
     updateState();
   }
@@ -2012,7 +2308,8 @@
       copied.nodes.forEach(function(n){ minX=Math.min(minX,n.x||0); minY=Math.min(minY,n.y||0); });
       if(!isFinite(minX)) minX=0;
       if(!isFinite(minY)) minY=0;
-      var base=selectedNode&&nodes[selectedNode]?{x:nodes[selectedNode].x+40,y:nodes[selectedNode].y+40}:{x:canvas.scrollLeft/zoom+90,y:canvas.scrollTop/zoom+90};
+      var viewStart=viewportTopLeftPoint();
+      var base=selectedNode&&nodes[selectedNode]?{x:nodes[selectedNode].x+40,y:nodes[selectedNode].y+40}:{x:viewStart.x+90,y:viewStart.y+90};
       copied.nodes.forEach(function(n){
         var data=stateApi.cloneSnapshot(n), oldId=data.id;
         data.id=currentBoardScope==='collab'&&collabSync?collabSync.makeNodeId(collabNodeSeed,nid+1):'n'+(nid+1);
@@ -2032,7 +2329,8 @@
     }
     var base=selectedNode&&nodes[selectedNode]?nodes[selectedNode]:null;
     var data=stateApi.cloneSnapshot(clipNode);
-    var x=base?base.x+34:canvas.scrollLeft/zoom+90, y=base?base.y+34:canvas.scrollTop/zoom+90;
+    var viewStart=viewportTopLeftPoint();
+    var x=base?base.x+34:viewStart.x+90, y=base?base.y+34:viewStart.y+90;
     var node=addNode(data.type,Math.max(0,x),Math.max(0,y),data);
     selectNode(node);
     updateState('已粘贴节点');
@@ -2062,7 +2360,7 @@
   }
   function fitView(){
     var ids=Object.keys(nodes);
-    if(!ids.length){ setZoom(1); canvas.scrollLeft=0; canvas.scrollTop=0; return; }
+    if(!ids.length){ setZoom(1); centerEmptyView(); syncCanvasGrid(); return; }
     var minX=Infinity,minY=Infinity,maxX=0,maxY=0;
     ids.forEach(function(id){
       var n=nodes[id], w=n.el.offsetWidth||250, h=n.el.offsetHeight||160;
@@ -2071,8 +2369,9 @@
     var pad=80, bw=Math.max(1,maxX-minX+pad*2), bh=Math.max(1,maxY-minY+pad*2);
     var next=Math.min(1.2,Math.max(.5,Math.min(canvas.clientWidth/bw,canvas.clientHeight/bh)));
     setZoom(next);
-    canvas.scrollLeft=Math.max(0,(minX-pad)*zoom);
-    canvas.scrollTop=Math.max(0,(minY-pad)*zoom);
+    canvas.scrollLeft=Math.max(0,CANVAS_VIEW_PAD+((minX+maxX)/2)*zoom-canvas.clientWidth/2);
+    canvas.scrollTop=Math.max(0,CANVAS_VIEW_PAD+((minY+maxY)/2)*zoom-canvas.clientHeight/2);
+    syncCanvasGrid();
     updateState('已适应视图');
   }
   function fullscreenElement(){
@@ -2107,46 +2406,125 @@
   }
   function focusNode(node){
     if(!node) return;
-    canvas.scrollLeft=Math.max(0,(node.x-80)*zoom);
-    canvas.scrollTop=Math.max(0,(node.y-80)*zoom);
+    setCanvasView('workflow');
+    canvas.scrollLeft=Math.max(0,CANVAS_VIEW_PAD+(node.x+(node.el.offsetWidth||250)/2)*zoom-canvas.clientWidth/2);
+    canvas.scrollTop=Math.max(0,CANVAS_VIEW_PAD+(node.y+(node.el.offsetHeight||160)/2)*zoom-canvas.clientHeight/2);
+    syncCanvasGrid();
     scheduleMap();
   }
-  function hideMenu(){ if(menu) menu.classList.remove('on'); }
-  function showMenu(items,x,y){
+  function hideMenu(){ if(menu){ menu.classList.remove('on'); menu.innerHTML=''; } }
+  function commandShortcut(key,shift){
+    var mac=/Mac|iPhone|iPad/.test((navigator&&navigator.platform)||'');
+    return mac?(shift?'⇧⌘'+key:'⌘'+key):(shift?'Ctrl+Shift+'+key:'Ctrl+'+key);
+  }
+  var MENU_ICONS={
+    text:'<path pathLength="1" class="nc-icon-base" d="M4 6h16"/><path pathLength="1" class="nc-icon-detail" d="M4 12h12M4 18h9"/>',
+    image:'<rect pathLength="1" class="nc-icon-base" x="3" y="4" width="18" height="16" rx="2"/><circle pathLength="1" class="nc-icon-detail" cx="8.5" cy="9" r="1.8"/><path pathLength="1" class="nc-icon-detail" d="m5 18 5-5 3 3 2-2 4 4"/>',
+    reverse:'<rect pathLength="1" class="nc-icon-base" x="3" y="4" width="14" height="13" rx="2"/><path pathLength="1" class="nc-icon-detail" d="m5 15 4-4 3 3 2-2 2 2M18 9.5a4.5 4.5 0 1 1-.7 6.5M18 9.5v4h-4"/>',
+    generate:'<rect pathLength="1" class="nc-icon-base" x="3" y="5" width="15" height="15" rx="2"/><path pathLength="1" class="nc-icon-detail" d="m5 18 4-4 3 3 2-2 2 2"/><path pathLength="1" class="nc-icon-spark" d="m19 2 .7 1.8 1.8.7-1.8.7L19 8l-.7-1.8-1.8-.7 1.8-.7Z"/>',
+    video:'<rect pathLength="1" class="nc-icon-base" x="3" y="5" width="17" height="14" rx="2"/><path pathLength="1" class="nc-icon-detail" d="m9.5 9 5 3-5 3Z"/><path pathLength="1" class="nc-icon-spark" d="m19 2 .6 1.5 1.5.6-1.5.6-.6 1.5-.6-1.5-1.5-.6 1.5-.6Z"/>',
+    drama:'<rect pathLength="1" class="nc-icon-base" x="3" y="5" width="18" height="14" rx="2"/><path pathLength="1" class="nc-icon-detail" d="M8 5v14M16 5v14M3 9h5M16 9h5M3 15h5M16 15h5m-5-5 3 2-3 2Z"/>',
+    upload:'<path pathLength="1" class="nc-icon-base" d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/><path pathLength="1" class="nc-icon-detail" d="M12 16V4m-4 4 4-4 4 4"/>',
+    assets:'<path pathLength="1" class="nc-icon-base" d="m12 3 8 4-8 4-8-4Z"/><path pathLength="1" class="nc-icon-detail" d="m4 12 8 4 8-4M4 17l8 4 8-4"/>',
+    add:'<circle pathLength="1" class="nc-icon-base" cx="8" cy="8" r="3"/><circle pathLength="1" class="nc-icon-detail" cx="17.5" cy="15.5" r="2.5"/><path pathLength="1" class="nc-icon-detail" d="m10.5 10 5 4M7 17v5m-2.5-2.5h5"/>',
+    undo:'<path pathLength="1" class="nc-icon-base" d="M9 7 4 12l5 5"/><path pathLength="1" class="nc-icon-detail" d="M5 12h8a6 6 0 0 1 6 6v1"/>',
+    redo:'<path pathLength="1" class="nc-icon-base" d="m15 7 5 5-5 5"/><path pathLength="1" class="nc-icon-detail" d="M19 12h-8a6 6 0 0 0-6 6v1"/>',
+    paste:'<rect pathLength="1" class="nc-icon-base" x="5" y="4" width="14" height="17" rx="2"/><path pathLength="1" class="nc-icon-detail" d="M9 4.5V3h6v1.5M9 9h6M9 13h6M9 17h4"/>',
+    note:'<path pathLength="1" class="nc-icon-base" d="M5 3h9l5 5v13H5Z M14 3v5h5"/><path pathLength="1" class="nc-icon-detail" d="m8 17 1-4 6-6 2 2-6 6Z"/>',
+    preview:'<path pathLength="1" class="nc-icon-base" d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle pathLength="1" class="nc-icon-detail" cx="12" cy="12" r="2.5"/>',
+    copy:'<rect pathLength="1" class="nc-icon-base" x="8" y="8" width="12" height="12" rx="2"/><path pathLength="1" class="nc-icon-detail" d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
+    remove:'<path pathLength="1" class="nc-icon-base" d="M5 7h14m-9-3h4l1 3H9Zm-3 3 1 14h8l1-14"/><path pathLength="1" class="nc-icon-detail" d="M10 11v6M14 11v6"/>'
+  };
+  function menuIcon(name){
+    var shapes=MENU_ICONS[name];
+    return shapes?'<span class="nc-menu-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round">'+shapes+'</svg></span>':'';
+  }
+  function showMenu(items,x,y,options){
     if(!menu) return;
+    options=options||{};
     menu.innerHTML='';
+    menu.className='nc-menu'+(options.variant?' '+options.variant:'');
+    menu.setAttribute('aria-label',options.label||'操作菜单');
     items.forEach(function(it){
+      if(it.kind==='title'||it.kind==='section'){
+        var heading=document.createElement('div');
+        heading.className=it.kind==='title'?'nc-menu-title':'nc-menu-section';
+        heading.textContent=it.label||'';
+        heading.setAttribute('role','presentation');
+        menu.appendChild(heading);
+        return;
+      }
+      if(it.kind==='separator'){
+        var separator=document.createElement('div');
+        separator.className='nc-menu-separator';
+        separator.setAttribute('role','separator');
+        menu.appendChild(separator);
+        return;
+      }
       var b=document.createElement('button');
       b.type='button';
+      b.setAttribute('role','menuitem');
       if(it.title) b.title=it.title;
-      if(it.key){
-        b.innerHTML='<span class="nc-menu-k">'+escapeHtml(it.key)+'</span><span class="nc-menu-t">'+escapeHtml(it.label)+'</span>';
-      }else{
-        b.textContent=it.label;
-      }
+      if(it.disabled){ b.disabled=true; b.setAttribute('aria-disabled','true'); }
+      b.innerHTML=(it.icon?menuIcon(it.icon):(it.key?'<span class="nc-menu-k">'+escapeHtml(it.key)+'</span>':''))+'<span class="nc-menu-t">'+escapeHtml(it.label)+'</span>'+(it.shortcut?'<span class="nc-menu-shortcut">'+escapeHtml(it.shortcut)+'</span>':'');
       b.onmousedown=function(e){ e.preventDefault(); };
-      b.onclick=function(){ hideMenu(); it.run(); };
+      b.onclick=function(e){ e.stopPropagation(); if(it.disabled) return; hideMenu(); it.run(); };
       menu.appendChild(b);
     });
-    menu.style.left=Math.max(8,Math.min(x,window.innerWidth-160))+'px';
-    menu.style.top=Math.max(8,Math.min(y,window.innerHeight-items.length*38-16))+'px';
     menu.classList.add('on');
+    var width=menu.offsetWidth, height=menu.offsetHeight;
+    var left=Math.max(8,Math.min(x,window.innerWidth-width-8));
+    var top=options.anchor==='above'?y-height:y;
+    menu.style.left=left+'px';
+    menu.style.top=Math.max(8,Math.min(top,window.innerHeight-height-8))+'px';
+    menu.onkeydown=function(e){
+      if(e.key!=='ArrowDown'&&e.key!=='ArrowUp') return;
+      e.preventDefault();
+      var buttons=Array.prototype.slice.call(menu.querySelectorAll('button:not(:disabled)'));
+      if(!buttons.length) return;
+      var current=buttons.indexOf(document.activeElement), step=e.key==='ArrowDown'?1:-1;
+      if(current<0) buttons[step>0?0:buttons.length-1].focus();
+      else buttons[(current+step+buttons.length)%buttons.length].focus();
+    };
+    if(options.focus){
+      var first=menu.querySelector('button:not(:disabled)');
+      if(first) first.focus();
+    }
   }
   function showMenuFromButton(btn,items){
     if(!btn) return;
     var r=btn.getBoundingClientRect();
-    var menuH=(items&&items.length?items.length:1)*34+12;
-    showMenu(items,r.left,r.top-menuH-10);
+    showMenu(items,r.left,r.top-10,{anchor:'above',focus:true});
   }
   function addNodeMenuItems(pt){
     return [
-      {key:'文',label:'文本',title:'添加文本提示词节点',run:function(){ addAt('text',pt); }},
-      {key:'图',label:'图片',title:'上传或粘贴素材图',run:function(){ addAt('image',pt); }},
-      {key:'反',label:'反推',title:'根据图片生成提示词',run:function(){ addAt('reverse',pt); }},
-      {key:'生',label:'作图',title:'根据提示词和参考图生成图片',run:function(){ addAt('gen',pt); }},
-      {key:'视',label:'视频',title:'根据提示词和参考图生成视频',run:function(){ addAt('video',pt); }},
-      {key:'短',label:'短剧',title:'创建短剧项目',run:function(){ addAt('shortDrama',pt); }}
+      {icon:'text',label:'文本',title:'添加文本提示词节点',run:function(){ addAt('text',pt); }},
+      {icon:'image',label:'图片',title:'上传或粘贴素材图',run:function(){ addAt('image',pt); }},
+      {icon:'reverse',label:'图片反推',title:'根据图片生成提示词',run:function(){ addAt('reverse',pt); }},
+      {icon:'generate',label:'图片生成',title:'根据提示词和参考图生成图片',run:function(){ addAt('gen',pt); }},
+      {icon:'video',label:'视频生成',title:'根据提示词和参考图生成视频',run:function(){ addAt('video',pt); }},
+      {icon:'drama',label:'短剧生产',title:'创建短剧项目',run:function(){ addAt('shortDrama',pt); }}
     ];
+  }
+  function showAddNodeMenu(pt,x,y,anchor){
+    var items=[{kind:'title',label:'添加节点'}].concat(addNodeMenuItems(pt),[
+      {kind:'section',label:'添加资源'},
+      {icon:'upload',label:'上传图片',run:function(){ uploadImageAt(pt); }},
+      {icon:'assets',label:'打开我的资产',run:function(){ openSidePanel('assets',true); }}
+    ]);
+    showMenu(items,x,y,{variant:'add',anchor:anchor,focus:true,label:'添加节点'});
+  }
+  function connectedNodeMenuItems(from,pt){
+    var compatible=from&&from.port==='prompt'?[['gen','作图'],['video','视频']]:from&&from.port==='image'?[['reverse','反推'],['gen','作图'],['video','视频']]:[];
+    return compatible.map(function(item){
+      return {icon:item[0]==='gen'?'generate':item[0],label:'创建'+item[1]+'节点并连线',run:function(){
+        pushUndo();
+        var node=addNode(item[0],Math.max(0,pt.x+28),Math.max(0,pt.y-48));
+        connectEdge(from,{node:node.id,port:from.port});
+        selectNode(node);
+        updateState('已创建并连线');
+      }};
+    });
   }
   function stopUiEvent(e){
     if(!e) return;
@@ -2171,8 +2549,19 @@
       fn(e);
     });
   }
+  function viewportTopLeftPoint(){
+    return {x:Math.max(0,(canvas.scrollLeft-CANVAS_VIEW_PAD)/zoom),y:Math.max(0,(canvas.scrollTop-CANVAS_VIEW_PAD)/zoom)};
+  }
   function viewportCenterPoint(){
-    return {x:Math.max(0,(canvas.scrollLeft+canvas.clientWidth/2)/zoom),y:Math.max(0,(canvas.scrollTop+canvas.clientHeight/2)/zoom)};
+    return {x:Math.max(0,(canvas.scrollLeft+canvas.clientWidth/2-CANVAS_VIEW_PAD)/zoom),y:Math.max(0,(canvas.scrollTop+canvas.clientHeight/2-CANVAS_VIEW_PAD)/zoom)};
+  }
+  function viewportNodePoint(){
+    var center=viewportCenterPoint(), offset=(Object.keys(nodes).length%5)*36;
+    return {x:Math.max(0,center.x-125+offset),y:Math.max(0,center.y-80+offset)};
+  }
+  function centerEmptyView(){
+    canvas.scrollLeft=Math.max(0,CANVAS_VIEW_PAD+(innerWidth()*zoom-canvas.clientWidth)/2);
+    canvas.scrollTop=Math.max(0,CANVAS_VIEW_PAD+(innerHeight()*zoom-canvas.clientHeight)/2);
   }
   function closeDialog(){
     var old=document.querySelector('.nc-dialog-mask');
@@ -2238,6 +2627,11 @@
     var node=addNode(type,pt.x,pt.y);
     selectNode(node);
     updateState('已添加');
+    return node;
+  }
+  function uploadImageAt(pt){
+    var node=addAt('image',pt);
+    if(node) chooseNodeImage(node,'图片已上传');
   }
   function beginInlineRename(node,preserveSelection){
     if(!canEditCanvas()) return;
@@ -2381,48 +2775,54 @@
     e.preventDefault();
     if(!canEditCanvas()){
       selectNode(node);
-      if((node.params.remark||'').trim()) showMenu([{label:'查看备注',run:function(){ viewNodeRemark(node); }}],e.clientX,e.clientY);
+      if((node.params.remark||'').trim()) showMenu([{icon:'preview',label:'查看备注',run:function(){ viewNodeRemark(node); }}],e.clientX,e.clientY);
       return;
     }
     var groupIds=selectedNodes[node.id]?selectedNodeIds():[];
     if(groupIds.length>1){
       showMenu([
-        {label:'批量复制 '+groupIds.length+' 个节点',run:function(){ copyNode(); }},
+        {icon:'copy',label:'批量复制 '+groupIds.length+' 个节点',run:function(){ copyNode(); }},
         {label:'批量折叠',run:function(){ setSelectedCollapsed(true); }},
         {label:'批量展开',run:function(){ setSelectedCollapsed(false); }},
-        {label:'批量删除',run:function(){ deleteSelectedNodes(); }}
+        {icon:'remove',label:'批量删除',run:function(){ deleteSelectedNodes(); }}
       ],e.clientX,e.clientY);
       return;
     }
     selectNode(node);
     var items=[
-      {label:(node.params.remark||'').trim()?'编辑备注':'添加备注',run:function(){ editNodeRemark(node); }}
+      {icon:'note',label:(node.params.remark||'').trim()?'编辑备注':'添加备注',run:function(){ editNodeRemark(node); }}
     ];
     if(node.type==='image'){
-      items.push({label:'本地上传图片',run:function(){ chooseNodeImage(node,'图片已更换'); }});
-      items.push({label:'从资产列表选择',run:function(){ openNodeAssetPicker(node); }});
+      items.push({icon:'upload',label:'本地上传图片',run:function(){ chooseNodeImage(node,'图片已更换'); }});
+      items.push({icon:'assets',label:'从资产列表选择',run:function(){ openNodeAssetPicker(node); }});
     }
     if((node.params.remark||'').trim()){
-      items.push({label:'查看备注',run:function(){ viewNodeRemark(node); }});
-      items.push({label:'删除备注',run:function(){ deleteNodeRemark(node); }});
+      items.push({icon:'preview',label:'查看备注',run:function(){ viewNodeRemark(node); }});
+      items.push({icon:'remove',label:'删除备注',run:function(){ deleteNodeRemark(node); }});
     }
     showMenu(items,e.clientX,e.clientY);
   }
   function menuForCanvas(e){
     e.preventDefault();
-    if(!canEditCanvas()){ showMenu([{label:'适应视图',run:function(){ fitView(); }}],e.clientX,e.clientY); return; }
+    if(!canEditCanvas()){ showMenu([{icon:'preview',label:'适应视图',run:function(){ fitView(); }}],e.clientX,e.clientY); return; }
     var pt=canvasPointFromClient(e);
-    showMenu(addNodeMenuItems(pt).concat([
-      {label:'粘贴节点',run:function(){ pasteNode(); }},
-      {label:'适应视图',run:function(){ fitView(); }}
-    ]),e.clientX,e.clientY);
+    var x=e.clientX, y=e.clientY;
+    showMenu([
+      {icon:'upload',label:'上传图片',run:function(){ uploadImageAt(pt); }},
+      {icon:'assets',label:'保存到我的资产',disabled:true,title:'当前仅支持打开资产管理'},
+      {icon:'add',label:'添加节点',run:function(){ showAddNodeMenu(pt,x,y); }},
+      {kind:'separator'},
+      {icon:'undo',label:'撤销',shortcut:commandShortcut('Z'),disabled:!history.canUndo(),run:function(){ undo(); }},
+      {icon:'redo',label:'重做',shortcut:commandShortcut('Z',true),disabled:!history.canRedo(),run:function(){ redo(); }},
+      {icon:'paste',label:'粘贴',shortcut:commandShortcut('V'),disabled:!clipNode,run:function(){ pasteNode(); }}
+    ],x,y,{variant:'context',focus:true,label:'画布操作'});
   }
   function menuForEdge(e,i){
     e.preventDefault();
     selectedEdge=i; redraw();
     if(!canEditCanvas()) return;
     showMenu([
-      {label:'删除连线',run:function(){ delSelectedEdge(); }}
+      {icon:'remove',label:'删除连线',run:function(){ delSelectedEdge(); }}
     ],e.clientX,e.clientY);
   }
   function defaultTemplateName(){
@@ -2545,6 +2945,17 @@
   }
 
   // ---------- 节点交互 ----------
+  function clearAlignmentGuides(){
+    if(guideX) guideX.style.display='none';
+    if(guideY) guideY.style.display='none';
+  }
+  function paintAlignmentGuides(movingIds){
+    if(!graphApi||!graphApi.alignmentGuides) return;
+    var list=Object.keys(nodes).map(function(id){ var node=nodes[id],rect=nodeRect(node); return {id:id,x:node.x,y:node.y,width:rect.w,height:rect.h}; });
+    var guides=graphApi.alignmentGuides(list,movingIds,6/Math.max(zoom,.15));
+    if(guideX){ guideX.style.display=guides.x==null?'none':'block'; if(guides.x!=null) guideX.style.left=guides.x+'px'; }
+    if(guideY){ guideY.style.display=guides.y==null?'none':'block'; if(guides.y!=null) guideY.style.top=guides.y+'px'; }
+  }
   function wireNode(node){
     var el=node.el, head=el.querySelector('[data-f="head"]');
     el.setAttribute('data-node-id',node.id);
@@ -2571,9 +2982,31 @@
         });
         redraw();
         updateSelectedRegion();
+        paintAlignmentGuides(groupIds);
       }
-      function up(){ if(moved) pushUndo(before); window.removeEventListener('pointermove',mv); window.removeEventListener('pointerup',up); }
+      function up(){ clearAlignmentGuides(); if(moved) pushUndo(before); window.removeEventListener('pointermove',mv); window.removeEventListener('pointerup',up); }
       window.addEventListener('pointermove',mv); window.addEventListener('pointerup',up);
+    });
+    el.querySelectorAll('[data-resize]').forEach(function(handle){
+      handle.addEventListener('pointerdown',function(e){
+        if(!canEditCanvas()||!graphApi||!graphApi.resizeNodeRect) return;
+        e.preventDefault(); e.stopPropagation();
+        selectNode(node);
+        var direction=handle.getAttribute('data-resize'),sx=e.clientX,sy=e.clientY,moved=false,before=snapshot();
+        var start={x:node.x,y:node.y,width:el.offsetWidth||250,height:el.offsetHeight||160};
+        function mv(ev){
+          var rect=graphApi.resizeNodeRect(start,direction,(ev.clientX-sx)/zoom,(ev.clientY-sy)/zoom,{minWidth:220,maxWidth:520,minHeight:80,maxHeight:720});
+          if(Math.abs(ev.clientX-sx)+Math.abs(ev.clientY-sy)>2) moved=true;
+          node.x=Math.max(0,rect.x); node.y=Math.max(0,rect.y); node.width=rect.width; node.height=rect.height;
+          el.style.left=node.x+'px'; el.style.top=node.y+'px'; el.style.width=node.width+'px'; el.style.height=node.height+'px'; el.classList.add('resized');
+          ensureNodeVisibleBounds(node); redraw(); updateSelectedRegion();
+        }
+        function up(){
+          window.removeEventListener('pointermove',mv); window.removeEventListener('pointerup',up);
+          if(moved){ pushUndo(before); updateState('已调整节点大小'); }
+        }
+        window.addEventListener('pointermove',mv); window.addEventListener('pointerup',up);
+      });
     });
     el.querySelector('[data-f="del"]').onclick=function(){ if(!canEditCanvas()) return; delNode(node.id); };
     el.querySelector('[data-f="fold"]').onclick=function(e){ e.stopPropagation(); toggleCollapsed(node); };
@@ -2627,7 +3060,11 @@
           if(wasActive){
             var target=inputPortAt(upEv,port);
             if(target){ pushUndo(); connectEdge(dragPort.from,target); }
-            else updateState('连线已取消');
+            else{
+              var from=dragPort.from,pt=innerPoint(upEv),items=connectedNodeMenuItems(from,pt);
+              if(items.length){ showMenu(items,upEv.clientX,upEv.clientY); updateState('选择要创建的下游节点'); }
+              else updateState('当前输出暂无可连接的节点');
+            }
           }
           dragPort=null; redraw(); clearConnectHints();
           setTimeout(function(){ suppressPortClick=false; },0);
@@ -2797,7 +3234,7 @@
     edges.push({from:{node:t.id,port:'prompt'}, to:{node:g.id,port:'prompt'}});
     edges.push({from:{node:img.id,port:'image'}, to:{node:r.id,port:'image'}});
     redraw(); refreshAllGenRefs(); updateState('示例已重置');
-    canvas.scrollLeft=0; canvas.scrollTop=0;
+    fitView();
   }
   svg.addEventListener('click', function(e){
     var hit=e.target&&e.target.closest?e.target.closest('.nc-edge-hit'):null;
@@ -2813,6 +3250,14 @@
   canvas.addEventListener('click', function(e){
     if(suppressCanvasClick){ e.preventDefault(); suppressCanvasClick=false; return; }
     if(e.target===canvas||e.target===inner){ pendingPort=null; selectedEdge=-1; selectNode(null); redraw(); }
+  });
+  canvas.addEventListener('dblclick', function(e){
+    var t=e.target;
+    if(t&&t.closest&&t.closest('.nc-node,.nc-port,.nc-edge-hit,button,a,input,textarea,.nc-empty-card,.nc-menu')) return;
+    if(!canEditCanvas()) return;
+    e.preventDefault();
+    e.stopPropagation();
+    showAddNodeMenu(canvasPointFromClient(e),e.clientX,e.clientY);
   });
   if(selectedRegion){
     selectedRegion.addEventListener('pointerdown', function(e){
@@ -2839,9 +3284,11 @@
         });
         redraw();
         updateSelectedRegion();
+        paintAlignmentGuides(ids);
       }
       function up(){
         if(moved) pushUndo(before);
+        clearAlignmentGuides();
         selectedRegion.classList.remove('dragging');
         window.removeEventListener('pointermove',mv);
         window.removeEventListener('pointerup',up);
@@ -2855,10 +3302,10 @@
       e.preventDefault();
       e.stopPropagation();
       showMenu([
-        {label:'批量复制 '+ids.length+' 个节点',run:function(){ copyNode(); }},
+        {icon:'copy',label:'批量复制 '+ids.length+' 个节点',run:function(){ copyNode(); }},
         {label:'批量折叠',run:function(){ setSelectedCollapsed(true); }},
         {label:'批量展开',run:function(){ setSelectedCollapsed(false); }},
-        {label:'批量删除',run:function(){ deleteSelectedNodes(); }}
+        {icon:'remove',label:'批量删除',run:function(){ deleteSelectedNodes(); }}
       ],e.clientX,e.clientY);
     });
   }
@@ -2929,7 +3376,7 @@
     if(canvas.classList.contains('connecting')||canvas.classList.contains('selecting')||dragPort||(t&&t.closest&&t.closest('.nc-port,.nc-go,.nc-chip,.nc-head,.nc-lab,.nc-node-title,.nc-menu'))){ e.preventDefault(); }
   });
   canvas.addEventListener('dragstart',function(e){ if(canvas.classList.contains('connecting')||dragPort){ e.preventDefault(); } });
-  canvas.addEventListener('scroll',function(){ scheduleMap(); },{passive:true});
+  canvas.addEventListener('scroll',function(){ syncCanvasGrid(); scheduleMap(); },{passive:true});
   window.addEventListener('resize',function(){ scheduleMap(); });
   document.addEventListener('click',function(e){ if(!menu||!menu.classList.contains('on')) return; if(e.target&&e.target.closest&&e.target.closest('.nc-menu')) return; hideMenu(); });
   document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ hideMenu(); if(localFullscreen) showBoardHome(); } });
@@ -3254,8 +3701,10 @@
     };
   });
   bindButton(fsAdd,function(){
-    showMenuFromButton(fsAdd,addNodeMenuItems(viewportCenterPoint()));
+    var r=fsAdd.getBoundingClientRect();
+    showAddNodeMenu(viewportNodePoint(),r.left,r.top-10,'above');
   });
+  bindButton(fsAgent,function(){ openSidePanel('agent'); });
   bindButton(fsUndo,function(){ undo(); });
   bindButton(fsRedo,function(){ redo(); });
   bindButton(fsZoomOut,function(){ setZoom(zoom-.1); });
@@ -3294,6 +3743,12 @@
   });
   document.querySelectorAll('.nc-side-tool[data-side]').forEach(function(btn){
     btn.onclick=function(e){ e.stopPropagation(); openSidePanel(btn.getAttribute('data-side')); };
+  });
+  document.querySelectorAll('[data-agent-start]').forEach(function(btn){
+    btn.onclick=function(e){ e.stopPropagation(); startAgentPrompt(btn.getAttribute('data-agent-start')); };
+  });
+  document.querySelectorAll('[data-canvas-view]').forEach(function(btn){
+    btn.onclick=function(){ setCanvasView(btn.getAttribute('data-canvas-view')); };
   });
   if(sideClose) sideClose.onclick=function(e){ e.stopPropagation(); closeSidePanel(); };
   if(sidePanel){
