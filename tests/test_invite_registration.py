@@ -451,7 +451,7 @@ class InviteRegistrationTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_miniprogram_hides_partner_and_initiator_reward_ledger_only(self):
+    def test_member_clients_hide_partner_and_initiator_reward_ledger(self):
         conn = self._connect()
         try:
             now = int(time.time())
@@ -476,6 +476,15 @@ class InviteRegistrationTests(unittest.TestCase):
         )
         self.assertIsNone(err)
         self.assertEqual(upgraded["membership_tier"], "experience")
+        conn = self._connect()
+        try:
+            ledger = self.auth.invites.reward_points(
+                conn, self._user_id("inviter"),
+            )
+            self.assertEqual(ledger["total_reward_points"], 240)
+            self.assertEqual(ledger["total"], 1)
+        finally:
+            conn.close()
 
         token = self.auth.issue_token("inviter")
         headers = {"Authorization": "Bearer " + token}
@@ -505,9 +514,9 @@ class InviteRegistrationTests(unittest.TestCase):
                     headers=headers,
                 )
                 self.assertEqual(website_status, 200)
-                self.assertEqual(website_body["total_reward_points"], 240)
-                self.assertEqual(website_body["total"], 1)
-                self.assertEqual(len(website_body["records"]), 1)
+                self.assertEqual(website_body["total_reward_points"], 0)
+                self.assertEqual(website_body["total"], 0)
+                self.assertEqual(website_body["records"], [])
 
         conn = self._connect()
         try:
@@ -524,6 +533,13 @@ class InviteRegistrationTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["total_reward_points"], 240)
         self.assertEqual(body["total"], 1)
+        website_status, website_body, _ = self._request(
+            "/api/invite/reward-points?limit=20&offset=0",
+            headers=headers,
+        )
+        self.assertEqual(website_status, 200)
+        self.assertEqual(website_body["total_reward_points"], 240)
+        self.assertEqual(website_body["total"], 1)
 
     def test_empty_hash_secret_stores_no_ip_or_device_identifier(self):
         self.auth.INVITE_HASH_SECRET = ""
