@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HTML_PATH = ROOT / "site" / "workbench" / "canvas.html"
 CSS_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas.css"
 APP_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas-app.js"
+SHORT_DRAMA_CSS = sorted((ROOT / "site" / "workbench" / "canvas").glob("canvas-short-drama*.css"))
 
 EXPECTED_CSS_SHA256 = "47faf200a849a4fc4fe7531d310314992ba8c36363c0c7a2033ed4bd99611e9a"
 
@@ -68,6 +69,16 @@ class CanvasAssetExtractionTests(unittest.TestCase):
         self.assertIn("function renderStoryboard()", app)
         self.assertIn("function setCanvasView(view)", app)
         self.assertIn(".nc-canvas-shell.story-view .nc-storyboard", css)
+
+    def test_short_drama_workspaces_use_the_canvas_dark_palette(self):
+        css = "\n".join(path.read_text(encoding="utf-8") for path in SHORT_DRAMA_CSS)
+        self.assertIn("#070b13", css)
+        self.assertIn("#e7b24c", css)
+        self.assertIn("#94a4bb", css)
+        self.assertNotRegex(
+            css,
+            r"background(?:-color)?\s*:[^;{}]*#(?:fff|ffffff|fff5dd|ffedc8|fffaf0)\b",
+        )
 
     def test_portable_infinite_canvas_interactions_are_wired(self):
         html = HTML_PATH.read_text(encoding="utf-8")
