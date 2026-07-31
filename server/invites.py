@@ -439,6 +439,9 @@ def admin_reward_points(conn, filters=None, limit=100, offset=0):
     limit = max(1, min(int(limit or 100), 300))
     offset = max(0, int(offset or 0))
     where, args = ["1=1"], []
+    if filters.get("inviter_user_id") is not None:
+        where.append("rr.inviter_user_id=?")
+        args.append(int(filters["inviter_user_id"]))
     if filters.get("inviter"):
         where.append("(ir.username LIKE ? OR ir.display_name LIKE ?)")
         value = "%" + str(filters["inviter"]).strip() + "%"

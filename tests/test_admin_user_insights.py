@@ -55,6 +55,50 @@ class AuthUserInsightsTests(unittest.TestCase):
                        who_admin,username,delta,before_points,after_points,reason,created_at
                    ) VALUES('system','alice',-10,110,100,'job:image',30)"""
             )
+            alice_id = c.execute(
+                "SELECT id FROM users WHERE username='alice'",
+            ).fetchone()[0]
+            bob_id = c.execute(
+                "SELECT id FROM users WHERE username='bob'",
+            ).fetchone()[0]
+            campaign_id = c.execute("SELECT id FROM invite_campaigns LIMIT 1").fetchone()[0]
+            relation_id = c.execute(
+                """INSERT INTO user_invites(
+                       campaign_id,inviter_user_id,invitee_user_id,invite_code,source,
+                       status,risk_status,bound_at,updated_at
+                   ) VALUES(?,?,?,'ABC234','test','bound','normal',40,40)""",
+                (campaign_id, alice_id, bob_id),
+            ).lastrowid
+            first_upgrade = c.execute(
+                """INSERT INTO membership_upgrade_records(
+                       user_id,from_level,to_level,source,source_order_id,status,created_at
+                   ) VALUES(?,'','experience','test','reward-1','effective',41)""",
+                (bob_id,),
+            ).lastrowid
+            second_upgrade = c.execute(
+                """INSERT INTO membership_upgrade_records(
+                       user_id,from_level,to_level,source,source_order_id,status,created_at
+                   ) VALUES(?,'experience','partner','test','reward-2','effective',42)""",
+                (bob_id,),
+            ).lastrowid
+            c.execute(
+                """INSERT INTO invite_reward_point_records(
+                       invite_relation_id,upgrade_record_id,inviter_user_id,invitee_user_id,
+                       inviter_level_snapshot,invitee_level,reward_points,reward_total_after,
+                       status,created_at
+                   ) VALUES(?,?,?,?, 'partner','experience',240,240,'recorded',41)""",
+                (relation_id, first_upgrade, alice_id, bob_id),
+            )
+            c.execute(
+                """INSERT INTO invite_reward_point_records(
+                       invite_relation_id,upgrade_record_id,inviter_user_id,invitee_user_id,
+                       inviter_level_snapshot,invitee_level,reward_points,reward_total_after,
+                       status,created_at,voided_at,void_reason,voided_by
+                   ) VALUES(?,?,?,?, 'partner','partner',1260,1500,'voided',42,43,
+                            '测试作废','admin')""",
+                (relation_id, second_upgrade, alice_id, bob_id),
+            )
+        c.close()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -100,6 +144,16 @@ class AuthUserInsightsTests(unittest.TestCase):
         self.assertEqual(data["payments"]["paid_amount_fen"], 59800)
         self.assertEqual(data["payments"]["pending_count"], 2)
         self.assertEqual(data["ledger"]["summary"]["debits"], 10)
+        self.assertEqual(data["invite_rewards"]["recorded_points"], 240)
+        self.assertEqual(data["invite_rewards"]["voided_points"], 1260)
+        self.assertEqual(data["invite_rewards"]["total"], 2)
+        self.assertEqual(
+            [item["invitee_username"] for item in data["invite_rewards"]["items"]],
+            ["bob", "bob"],
+        )
+        self.assertEqual(
+            self.auth.admin_user_insights("bob")["invite_rewards"]["total"], 0,
+        )
         self.assertIsNone(self.auth.admin_user_insights("missing"))
 
     def test_notification_admin_boundary_and_user_isolation(self):
@@ -216,7 +270,8 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             'id="userDetailBox"', 'data-act="detail"', 'data-act="notice"',
             "/api/admin/users/detail?username=", "/api/admin/users/notification",
             "noticeSending", 'id="detailPassword"', 'type="password" minlength="6" maxlength="128"',
-            "/api/admin/users/password/reset",
+            "/api/admin/users/password/reset", "invite_rewards", "inviteRewardRows",
+            "邀请奖励明细", "有效奖励", "已作废奖励",
         ):
             self.assertIn(marker, html)
         self.assertIn("/api/auth/notifications?limit=50", shell)
