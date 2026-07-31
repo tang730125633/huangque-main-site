@@ -451,6 +451,80 @@ class InviteRegistrationTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_miniprogram_hides_partner_and_initiator_reward_ledger_only(self):
+        conn = self._connect()
+        try:
+            now = int(time.time())
+            conn.execute(
+                """UPDATE users
+                      SET membership_tier='partner',
+                          membership_started_at=?,
+                          membership_expires_at=?
+                    WHERE username='inviter'""",
+                (now, now + self.auth.MEMBERSHIP_YEAR_SECONDS),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result, err = self.auth.register_account(
+            "reward-invitee", "secret123", invite_code=self._invite_code(),
+        )
+        self.assertIsNone(err)
+        upgraded, err = self.auth.set_membership_admin(
+            "admin", "reward-invitee", "experience", "测试邀请奖励",
+        )
+        self.assertIsNone(err)
+        self.assertEqual(upgraded["membership_tier"], "experience")
+
+        token = self.auth.issue_token("inviter")
+        headers = {"Authorization": "Bearer " + token}
+        for tier in ("partner", "initiator"):
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "UPDATE users SET membership_tier=? WHERE username='inviter'",
+                    (tier,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            with self.subTest(tier=tier):
+                status, body, _ = self._request(
+                    "/api/auth/invite/reward-points?limit=20&offset=0",
+                    headers=headers,
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(body["total_reward_points"], 0)
+                self.assertEqual(body["total"], 0)
+                self.assertEqual(body["records"], [])
+
+                website_status, website_body, _ = self._request(
+                    "/api/invite/reward-points?limit=20&offset=0",
+                    headers=headers,
+                )
+                self.assertEqual(website_status, 200)
+                self.assertEqual(website_body["total_reward_points"], 240)
+                self.assertEqual(website_body["total"], 1)
+                self.assertEqual(len(website_body["records"]), 1)
+
+        conn = self._connect()
+        try:
+            conn.execute(
+                "UPDATE users SET membership_tier='experience' WHERE username='inviter'",
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        status, body, _ = self._request(
+            "/api/auth/invite/reward-points?limit=20&offset=0",
+            headers=headers,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body["total_reward_points"], 240)
+        self.assertEqual(body["total"], 1)
+
     def test_empty_hash_secret_stores_no_ip_or_device_identifier(self):
         self.auth.INVITE_HASH_SECRET = ""
         result, err = self.auth.register_account(

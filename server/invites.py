@@ -381,10 +381,18 @@ def record_membership_upgrade(conn, user_id, from_level, to_level, source,
     return {"upgrade_record_id": upgrade_id, "reward": dict(reward)}
 
 
-def reward_points(conn, inviter_user_id, limit=20, offset=0):
+def reward_points(conn, inviter_user_id, limit=20, offset=0, hidden=False):
     """返回独立邀请奖励积分汇总；绝不读取或修改 users.points。"""
     limit = max(1, min(int(limit or 20), 100))
     offset = max(0, int(offset or 0))
+    if hidden:
+        return {
+            "total_reward_points": 0,
+            "records": [],
+            "total": 0,
+            "limit": limit,
+            "offset": offset,
+        }
     inviter_user_id = int(inviter_user_id)
     total = conn.execute(
         """SELECT COALESCE(SUM(reward_points),0) FROM invite_reward_point_records
