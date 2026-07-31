@@ -4965,17 +4965,14 @@ class H(BaseHTTPRequestHandler):
                 return self._send(401, {"detail": "未登录"})
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             membership = membership_for_row(row)
-            hide_miniprogram_rewards = (
-                p == "/api/auth/invite/reward-points"
-                and membership["membership_tier"] in ("partner", "initiator")
-            )
+            hide_member_rewards = membership["membership_tier"] in ("partner", "initiator")
             c = db()
             try:
                 data = invites.reward_points(
                     c, row["id"],
                     limit=(query.get("limit") or ["20"])[0],
                     offset=(query.get("offset") or ["0"])[0],
-                    hidden=hide_miniprogram_rewards,
+                    hidden=hide_member_rewards,
                 )
                 return self._send(200, {"ok": True, **data})
             except (TypeError, ValueError):
