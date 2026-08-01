@@ -154,6 +154,26 @@ class HeyGenMcpOAuthTests(unittest.TestCase):
             "fit": "cover", "expressiveness": "medium", "outputFormat": "mp4",
         })
 
+    def test_photo_avatar_create_and_status_use_exact_mcp_contract(self):
+        calls = []
+
+        def call(tool, arguments, timeout=90):
+            calls.append((tool, arguments))
+            if tool == "create_photo_avatar":
+                return {"avatar_item": {"id": "look-1"}, "avatar_group": {"id": "group-1"}}
+            return {"id": "look-1", "status": "completed"}
+
+        with patch.object(video, "_HEYGEN_MCP_CREDENTIALS", "/secure/heygen-mcp.json"), \
+             patch.object(video, "_heygen_mcp_call", side_effect=call):
+            look_id, group_id = video._heygen_create_photo_avatar("image-asset", direct=True)
+            status, message = video._heygen_look_status(look_id, group_id, direct=True)
+
+        self.assertEqual((look_id, group_id, status, message),
+                         ("look-1", "group-1", "completed", ""))
+        self.assertEqual(calls[0][0], "create_photo_avatar")
+        self.assertEqual(calls[0][1]["file"], {"type": "asset_id", "asset_id": "image-asset"})
+        self.assertEqual(calls[1], ("get_avatar_look", {"lookId": "look-1"}))
+
     def test_plain_video_oauth_failure_does_not_repeat_on_relay(self):
         with patch.object(video, "_HEYGEN_DIRECT", True), \
              patch.object(video, "HEYGEN_API_KEY", "key"), \

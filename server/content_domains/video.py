@@ -1843,15 +1843,21 @@ def _find_nested_dict(obj, pred):
     return None
 
 def _heygen_create_photo_avatar(image_asset_id, direct=False):
-    body = json.dumps({
-        "type": "photo",
-        "name": "huangque_photo_avatar_%d" % int(time.time()),
-        "file": {"type": "asset_id", "asset_id": image_asset_id},
-    }, ensure_ascii=False).encode()
-    data = _heygen_request_json("POST", "/avatars", body, {
-        "Content-Type": "application/json",
-    }, timeout=90, direct=direct)
-    root = data.get("data") or {}
+    name = "huangque_photo_avatar_%d" % int(time.time())
+    if _heygen_mcp_enabled():
+        data = _heygen_mcp_call("create_photo_avatar", {
+            "name": name,
+            "file": {"type": "asset_id", "asset_id": image_asset_id},
+        }, timeout=90)
+    else:
+        body = json.dumps({
+            "type": "photo", "name": name,
+            "file": {"type": "asset_id", "asset_id": image_asset_id},
+        }, ensure_ascii=False).encode()
+        data = _heygen_request_json("POST", "/avatars", body, {
+            "Content-Type": "application/json",
+        }, timeout=90, direct=direct)
+    root = data.get("data") or data
     avatar_item_id = (((root.get("avatar_item") or {}).get("id")) or "").strip()
     avatar_group_id = (((root.get("avatar_group") or {}).get("id")) or "").strip()
     if not avatar_item_id:
@@ -1881,6 +1887,12 @@ def _heygen_look_status(avatar_item_id, avatar_group_id="", direct=False):
 
     look 级状态只在 v2：`GET /v2/photo_avatar/{look_id}` → `status`（pending / completed / failed）。
     """
+    if _heygen_mcp_enabled():
+        d = _heygen_mcp_call("get_avatar_look", {"lookId": avatar_item_id}, timeout=20)
+        node = d.get("data") or d.get("avatar_item") or d
+        error = node.get("error") or {}
+        return str(node.get("status") or "").lower(), str(
+            node.get("moderation_msg") or error.get("message") or "")
     if direct:
         d = _heygen_direct_req("GET", _HEYGEN_DIRECT_API + "/v2/photo_avatar/" + urllib.parse.quote(avatar_item_id),
                                body=None, ctype=None, timeout=20)
