@@ -38,6 +38,10 @@ INLINE_MAX_DURATION_SECONDS = 15.0
 INLINE_MAX_REQUEST_BYTES = 18_000_000
 MAX_MEDIA_BYTES = 200 * 1024 * 1024
 MAX_RESPONSE_BYTES = 64 * 1024
+UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
+FILE_POLL_INITIAL_DELAY_SECONDS = 1.0
+FILE_POLL_MAX_DELAY_SECONDS = 8.0
+CLEANUP_RETRY_DELAYS_SECONDS = (1.0, 3.0)
 
 UNKNOWN = "unknown"
 NOT_APPLICABLE = "not_applicable"
@@ -317,23 +321,45 @@ def _upload_file(path, mime_type, api_key, deadline=None, heartbeat=None):
         upload_url = response.headers.get("X-Goog-Upload-URL")
     if not upload_url or not str(upload_url).startswith(API_BASE + "/"):
         raise RuntimeError("Gemini Files API did not return a trusted upload URL")
+    offset = 0
+    result = None
     with open(path, "rb") as source:
-        payload = source.read(MAX_MEDIA_BYTES + 1)
-    if len(payload) != size:
-        raise ValueError("Gemini reverse media changed during upload")
-    finalize = urllib.request.Request(
-        upload_url,
-        data=payload,
-        headers={
-            "Content-Type": mime_type,
-            "x-goog-api-key": api_key,
-            "X-Goog-Upload-Offset": "0",
-            "X-Goog-Upload-Command": "upload, finalize",
-        },
-        method="POST",
-    )
-    with _open(finalize, deadline=deadline, heartbeat=heartbeat) as response:
-        result = _read_json_response(response)
+        while offset < size:
+            expected = min(UPLOAD_CHUNK_BYTES, size - offset)
+            payload = source.read(expected)
+            if len(payload) != expected:
+                raise ValueError("Gemini reverse media changed during upload")
+            final_chunk = offset + len(payload) == size
+            command = "upload, finalize" if final_chunk else "upload"
+            upload = urllib.request.Request(
+                upload_url,
+                data=payload,
+                headers={
+                    "Content-Type": mime_type,
+                    "x-goog-api-key": api_key,
+                    "X-Goog-Upload-Offset": str(offset),
+                    "X-Goog-Upload-Command": command,
+                },
+                method="POST",
+            )
+            # Retrying a chunk blindly can duplicate bytes when the provider
+            # committed the chunk but its response was lost. Fail the task
+            # instead of risking an invalid remote object.
+            with _open(
+                upload,
+                deadline=deadline,
+                heartbeat=heartbeat,
+                retry_transient=False,
+            ) as response:
+                if final_chunk:
+                    result = _read_json_response(response)
+                else:
+                    response.read(MAX_RESPONSE_BYTES + 1)
+            offset += len(payload)
+        if source.read(1):
+            raise ValueError("Gemini reverse media changed during upload")
+    if offset != size or not isinstance(result, dict):
+        raise RuntimeError("Gemini Files API upload did not complete")
     file_info = result.get("file") if isinstance(result, dict) else None
     if not isinstance(file_info, dict):
         file_info = result if isinstance(result, dict) else {}
@@ -352,10 +378,13 @@ def _wait_for_file(file_info, api_key, deadline=None, heartbeat=None):
         headers={"x-goog-api-key": api_key},
         method="GET",
     )
-    for _attempt in range(30):
+    poll_deadline = deadline or (time.monotonic() + ANALYSIS_BUDGET_SECONDS)
+    delay = FILE_POLL_INITIAL_DELAY_SECONDS
+    while True:
+        _remaining(poll_deadline)
         with _open(
             request,
-            deadline=deadline,
+            deadline=poll_deadline,
             heartbeat=heartbeat,
             retry_transient=True,
         ) as response:
@@ -367,31 +396,68 @@ def _wait_for_file(file_info, api_key, deadline=None, heartbeat=None):
             return active
         if state in {"FAILED", "ERROR"}:
             raise RuntimeError("Gemini Files API could not process the media")
-        _remaining(deadline)
-        time.sleep(1)
-    raise RuntimeError("Gemini Files API media processing did not complete")
+        remaining = _remaining(poll_deadline)
+        sleep_for = delay if remaining is None else min(delay, remaining - 1.0)
+        if sleep_for <= 0:
+            raise TimeoutError("Gemini reverse analysis exceeded its total budget")
+        if heartbeat:
+            heartbeat()
+        time.sleep(sleep_for)
+        delay = min(delay * 2.0, FILE_POLL_MAX_DELAY_SECONDS)
 
 
 def _delete_file(file_info, api_key):
     if not file_info:
-        return
+        return {"status": "not_needed", "attempts": 0}
+    name = str(file_info.get("name") or "")
+    resource_sha256 = hashlib.sha256(
+        name.encode("utf-8", "replace")
+    ).hexdigest()
     request = urllib.request.Request(
-        API_BASE + "/v1beta/" + file_info["name"],
+        API_BASE + "/v1beta/" + name,
         headers={"x-goog-api-key": api_key},
         method="DELETE",
     )
-    try:
-        with _open(
-            request,
-            deadline=time.monotonic() + 15,
-            retry_transient=False,
-        ) as response:
-            response.read(1024)
-    except Exception:
-        print(
-            "[breakdown] Gemini temporary file cleanup failed",
-            flush=True,
-        )
+    attempts = len(CLEANUP_RETRY_DELAYS_SECONDS) + 1
+    for attempt in range(attempts):
+        try:
+            with _open(
+                request,
+                deadline=time.monotonic() + 15,
+                retry_transient=False,
+            ) as response:
+                response.read(1024)
+            audit = {
+                "resource_sha256": resource_sha256,
+                "attempt": attempt + 1,
+                "status": "deleted",
+                "cleanup_pending": False,
+            }
+            print(
+                "[breakdown] gemini cleanup audit=%s"
+                % json.dumps(audit, ensure_ascii=True),
+                flush=True,
+            )
+            return {"status": "deleted", "attempts": attempt + 1}
+        except Exception as error:
+            final_attempt = attempt + 1 == attempts
+            audit = {
+                "resource_sha256": resource_sha256,
+                "attempt": attempt + 1,
+                "status": "pending_provider_cleanup",
+                "cleanup_pending": True,
+                "error": _safe_text(type(error).__name__, 80),
+            }
+            if not final_attempt:
+                audit["retry_in_seconds"] = CLEANUP_RETRY_DELAYS_SECONDS[attempt]
+            print(
+                "[breakdown] gemini cleanup audit=%s"
+                % json.dumps(audit, ensure_ascii=True),
+                flush=True,
+            )
+            if not final_attempt:
+                time.sleep(CLEANUP_RETRY_DELAYS_SECONDS[attempt])
+    return {"status": "pending_provider_cleanup", "attempts": attempts}
 
 
 def _instruction(title, duration, platform, transcript, windows, retry_error=""):

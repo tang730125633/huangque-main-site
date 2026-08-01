@@ -421,6 +421,14 @@ class GeminiReverseRequestTests(unittest.TestCase):
 
 
 class GeminiReverseHttpTests(unittest.TestCase):
+    def _response_context(self, payload=b"", headers=None):
+        response = mock.MagicMock()
+        response.headers = headers or {}
+        response.read.return_value = payload
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        return response
+
     def _http_error(self, code, payload=None):
         return urllib.error.HTTPError(
             "https://generativelanguage.googleapis.com/test",
@@ -459,6 +467,116 @@ class GeminiReverseHttpTests(unittest.TestCase):
             got = gemini_reverse._open(request)
         self.assertIs(got, response)
         self.assertEqual(opened.call_count, 2)
+
+    def test_processing_longer_than_thirty_seconds_can_become_active(self):
+        clock = [0.0]
+
+        def monotonic():
+            return clock[0]
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        processing = json.dumps({"state": "PROCESSING"}).encode("utf-8")
+        active = json.dumps({
+            "state": "ACTIVE",
+            "uri": "https://generativelanguage.googleapis.com/file/active",
+        }).encode("utf-8")
+        responses = [self._response_context(processing) for _ in range(6)]
+        responses.append(self._response_context(active))
+        file_info = {
+            "name": "files/test-media",
+            "uri": "https://generativelanguage.googleapis.com/file/pending",
+            "mime_type": "video/mp4",
+        }
+        with mock.patch.object(gemini_reverse.time, "monotonic", side_effect=monotonic), \
+             mock.patch.object(gemini_reverse.time, "sleep", side_effect=sleep), \
+             mock.patch.object(gemini_reverse, "_open", side_effect=responses) as opened:
+            result = gemini_reverse._wait_for_file(
+                file_info,
+                "test-key",
+                deadline=100.0,
+            )
+        self.assertGreater(clock[0], 30.0)
+        self.assertEqual(result["uri"], "https://generativelanguage.googleapis.com/file/active")
+        self.assertEqual(opened.call_count, 7)
+
+    def test_large_file_upload_is_chunked_with_offsets_and_finalization(self):
+        start = self._response_context(headers={
+            "X-Goog-Upload-URL": (
+                "https://generativelanguage.googleapis.com/upload/session"
+            ),
+        })
+        middle_one = self._response_context()
+        middle_two = self._response_context()
+        final = self._response_context(json.dumps({
+            "file": {
+                "name": "files/test-media",
+                "uri": "https://generativelanguage.googleapis.com/file/test-media",
+            },
+        }).encode("utf-8"))
+        with tempfile.NamedTemporaryFile(delete=False) as media:
+            media.write(b"0123456789")
+            path = media.name
+        self.addCleanup(lambda: pathlib.Path(path).unlink(missing_ok=True))
+        with mock.patch.object(gemini_reverse, "UPLOAD_CHUNK_BYTES", 4), \
+             mock.patch.object(
+                 gemini_reverse,
+                 "_open",
+                 side_effect=[start, middle_one, middle_two, final],
+             ) as opened:
+            result = gemini_reverse._upload_file(
+                path,
+                "video/mp4",
+                "test-key",
+                deadline=100.0,
+            )
+        requests = [call.args[0] for call in opened.call_args_list[1:]]
+        self.assertEqual([len(request.data) for request in requests], [4, 4, 2])
+        self.assertEqual(
+            [request.get_header("X-goog-upload-offset") for request in requests],
+            ["0", "4", "8"],
+        )
+        self.assertEqual(
+            [request.get_header("X-goog-upload-command") for request in requests],
+            ["upload", "upload", "upload, finalize"],
+        )
+        self.assertEqual(result["name"], "files/test-media")
+        self.assertTrue(all(
+            call.kwargs.get("retry_transient") is False
+            for call in opened.call_args_list[1:]
+        ))
+
+    def test_delete_failure_is_retried_and_left_in_traceable_pending_state(self):
+        output = io.StringIO()
+        file_info = {
+            "name": "files/test-media",
+            "uri": "https://generativelanguage.googleapis.com/file/test-media",
+        }
+        with mock.patch.object(
+                 gemini_reverse,
+                 "_open",
+                 side_effect=RuntimeError("secret cleanup detail"),
+             ) as opened, \
+             mock.patch.object(gemini_reverse.time, "sleep") as sleep, \
+             mock.patch("sys.stdout", output):
+            result = gemini_reverse._delete_file(file_info, "test-key")
+        self.assertEqual(result, {
+            "status": "pending_provider_cleanup",
+            "attempts": 3,
+        })
+        self.assertEqual(opened.call_count, 3)
+        self.assertEqual(
+            [call.args[0] for call in sleep.call_args_list],
+            list(gemini_reverse.CLEANUP_RETRY_DELAYS_SECONDS),
+        )
+        logged = output.getvalue()
+        self.assertIn('"cleanup_pending": true', logged)
+        self.assertIn('"status": "pending_provider_cleanup"', logged)
+        self.assertIn("resource_sha256", logged)
+        self.assertNotIn("files/test-media", logged)
+        self.assertNotIn("test-key", logged)
+        self.assertNotIn("secret cleanup detail", logged)
 
 
 if __name__ == "__main__":
