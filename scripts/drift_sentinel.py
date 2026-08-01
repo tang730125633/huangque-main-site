@@ -51,6 +51,7 @@ BACKEND_RUNTIME = {
     'server/hq_cli_api.py': '/home/ubuntu/auth-service/hq_cli_api.py',
     'server/wechat_subscribe.py': '/home/ubuntu/auth-service/wechat_subscribe.py',
     'server/invites.py': '/home/ubuntu/auth-service/invites.py',
+    'server/business_cards.py': '/home/ubuntu/auth-service/business_cards.py',
     'server/wxpay.py': '/home/ubuntu/auth-service/wxpay.py',
     'server/wechat_virtual_pay.py': '/home/ubuntu/auth-service/wechat_virtual_pay.py',
     'server/sync_virtual_pay_goods.py': '/home/ubuntu/auth-service/sync_virtual_pay_goods.py',
@@ -67,6 +68,11 @@ BACKEND_RUNTIME = {
 }
 
 CONTENT_DOMAINS_RUNTIME = os.environ.get('HQ_CONTENT_DOMAINS_RUNTIME', '/home/ubuntu/content-api/content_domains')
+AUTH_SHARED_RUNTIME = {
+    'server/content_domains/__init__.py': '/home/ubuntu/auth-service/content_domains/__init__.py',
+    'server/content_domains/cos.py': '/home/ubuntu/auth-service/content_domains/cos.py',
+    'server/content_domains/miniprogram_security.py': '/home/ubuntu/auth-service/content_domains/miniprogram_security.py',
+}
 SYSTEMD_DIR = os.environ.get('HQ_SYSTEMD_DIR', '/etc/systemd/system')
 
 
@@ -145,6 +151,16 @@ def git_path_to_runtime(git_path):
     return None
 
 
+def git_path_to_runtimes(git_path):
+    """返回同一 Git 文件的全部运行副本；共享模块漏任一份都算漂移。"""
+    primary = git_path_to_runtime(git_path)
+    paths = [primary] if primary else []
+    shared = AUTH_SHARED_RUNTIME.get(git_path.replace('\\', '/'))
+    if shared and shared not in paths:
+        paths.append(shared)
+    return paths
+
+
 def runtime_to_git_path(path):
     path = os.path.normpath(path)
     webroot = os.path.normpath(WEBROOT)
@@ -154,6 +170,9 @@ def runtime_to_git_path(path):
             return None
         return 'site/' + rel
     for git_path, runtime in BACKEND_RUNTIME.items():
+        if path == os.path.normpath(runtime):
+            return git_path
+    for git_path, runtime in AUTH_SHARED_RUNTIME.items():
         if path == os.path.normpath(runtime):
             return git_path
     domain_dir = os.path.normpath(CONTENT_DOMAINS_RUNTIME)
@@ -188,6 +207,9 @@ def runtime_files():
     for p in BACKEND_RUNTIME.values():
         if os.path.isfile(p):
             files.append(p)
+    for p in AUTH_SHARED_RUNTIME.values():
+        if os.path.isfile(p):
+            files.append(p)
     for p in glob.glob(os.path.join(CONTENT_DOMAINS_RUNTIME, '*.py')):
         if os.path.isfile(p) and runtime_to_git_path(p):
             files.append(p)
@@ -200,13 +222,13 @@ def diff_paths(git_paths=None):
     changed, missing, added = [], [], []
     expected_runtime = {}
     for gp in wanted:
-        rp = git_path_to_runtime(gp)
-        if rp:
-            expected_runtime[gp] = rp
-            if not os.path.exists(rp):
+        runtimes = git_path_to_runtimes(gp)
+        if runtimes:
+            expected_runtime[gp] = runtimes
+            if any(not os.path.exists(rp) for rp in runtimes):
                 missing.append(gp)
                 continue
-            if md5_file(rp) != git_md5(gp):
+            if any(md5_file(rp) != git_md5(gp) for rp in runtimes):
                 changed.append(gp)
 
     if git_paths is None:

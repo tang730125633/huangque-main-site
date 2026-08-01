@@ -106,7 +106,7 @@ class InviteRewardTests(unittest.TestCase):
         finally:
             c.close()
 
-    def test_invited_user_cannot_exceed_direct_inviter_tier(self):
+    def test_invited_user_can_exceed_direct_inviter_tier(self):
         code = self._invite_code()
         _, err = self.auth.register_account("limited", "secret123", invite_code=code)
         self.assertIsNone(err)
@@ -115,11 +115,68 @@ class InviteRewardTests(unittest.TestCase):
         )
         self.assertIsNone(err)
         self.assertEqual(user["membership_tier"], "partner")
-        with self.assertRaises(self.auth.invites.InviteError) as caught:
-            self.auth.set_membership_admin(
-                "admin", "limited", "initiator", "不允许越级", now=self.now + 2,
-            )
-        self.assertEqual(caught.exception.code, "invite_membership_limit")
+        user, err = self.auth.set_membership_admin(
+            "admin", "limited", "initiator", "允许按业务升级", now=self.now + 2,
+        )
+        self.assertIsNone(err)
+        self.assertEqual(user["membership_tier"], "initiator")
+
+    def test_pending_review_progression_holds_cap(self):
+        code = self._invite_code()
+        _, err = self.auth.register_account("review-user", "secret123", invite_code=code)
+        self.assertIsNone(err)
+        c = self._connect()
+        try:
+            relation = c.execute("SELECT * FROM user_invites WHERE invitee_user_id=?", (self._user_id(c, "review-user"),)).fetchone()
+            c.execute("UPDATE user_invites SET risk_status='review' WHERE id=?", (relation["id"],))
+            c.commit()
+        finally:
+            c.close()
+        self.auth.set_membership_admin("admin", "review-user", "experience", "待复核升级", now=self.now + 1)
+        self.auth.set_membership_admin("admin", "review-user", "partner", "待复核升级", now=self.now + 2)
+        c = self._connect()
+        try:
+            rewards = c.execute(
+                "SELECT reward_points,status FROM invite_reward_point_records WHERE invite_relation_id=? ORDER BY id",
+                (relation["id"],),
+            ).fetchall()
+            self.assertEqual([(r["reward_points"], r["status"]) for r in rewards], [(240, "pending_review"), (1260, "pending_review")])
+            self.auth.invites.admin_relation_action(c, relation["id"], "restore", "", self._user_id(c, "admin"), self.now + 3)
+            c.commit()
+            self.assertEqual(c.execute(
+                "SELECT SUM(reward_points) FROM invite_reward_point_records WHERE invite_relation_id=? AND status='recorded'",
+                (relation["id"],),
+            ).fetchone()[0], 1500)
+        finally:
+            c.close()
+
+    def test_void_then_upgrade_cannot_restore_above_cap(self):
+        code = self._invite_code()
+        _, err = self.auth.register_account("restore-user", "secret123", invite_code=code)
+        self.assertIsNone(err)
+        self.auth.set_membership_admin("admin", "restore-user", "experience", "先升体验官", now=self.now + 1)
+        c = self._connect()
+        try:
+            first_id = c.execute(
+                "SELECT id FROM invite_reward_point_records WHERE invitee_user_id=?",
+                (self._user_id(c, "restore-user"),),
+            ).fetchone()[0]
+            self.auth.invites.admin_reward_action(c, first_id, "void", "人工复核作废", "admin", self.now + 2)
+            c.commit()
+        finally:
+            c.close()
+        self.auth.set_membership_admin("admin", "restore-user", "partner", "再升合伙人", now=self.now + 3)
+        c = self._connect()
+        try:
+            self.assertEqual(c.execute(
+                "SELECT SUM(reward_points) FROM invite_reward_point_records WHERE invitee_user_id=? AND status='recorded'",
+                (self._user_id(c, "restore-user"),),
+            ).fetchone()[0], 1500)
+            with self.assertRaises(self.auth.invites.InviteError) as caught:
+                self.auth.invites.admin_reward_action(c, first_id, "restore", "尝试超额恢复", "admin", self.now + 4)
+            self.assertEqual(caught.exception.code, "reward_cap_exceeded")
+        finally:
+            c.close()
 
     def test_admin_reward_ledger_can_void_and_restore_without_changing_user_points(self):
         code = self._invite_code()
@@ -148,6 +205,27 @@ class InviteRewardTests(unittest.TestCase):
                 c.execute("SELECT points FROM users WHERE username='ledger-user'").fetchone()[0],
                 before_points,
             )
+        finally:
+            c.close()
+
+    def test_refunded_membership_reward_cannot_be_restored(self):
+        code = self._invite_code()
+        _, err = self.auth.register_account("refunded-user", "secret123", invite_code=code)
+        self.assertIsNone(err)
+        self.auth.set_membership_admin("admin", "refunded-user", "experience", "生成奖励", now=self.now + 1)
+        c = self._connect()
+        try:
+            reward_id = c.execute(
+                "SELECT id FROM invite_reward_point_records WHERE invitee_user_id=?",
+                (self._user_id(c, "refunded-user"),),
+            ).fetchone()[0]
+            c.execute(
+                "UPDATE invite_reward_point_records SET status='voided',void_reason='membership_refund' WHERE id=?",
+                (reward_id,),
+            )
+            with self.assertRaises(self.auth.invites.InviteError) as caught:
+                self.auth.invites.admin_reward_action(c, reward_id, "restore", "尝试恢复", "admin", self.now + 2)
+            self.assertEqual(caught.exception.code, "refunded_reward_not_restorable")
         finally:
             c.close()
 
