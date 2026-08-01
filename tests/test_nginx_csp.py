@@ -46,6 +46,16 @@ class NginxCspTest(unittest.TestCase):
                 for header in expected:
                     self.assertEqual(config.count(header), 4, header)
 
+    def test_root_serves_the_marketing_homepage(self):
+        for relative_path in self.CONFIGS:
+            config = self._config(relative_path)
+            with self.subTest(config=relative_path):
+                start = config.index("location = / {")
+                end = config.index("\n    }", start)
+                block = config[start:end]
+                self.assertIn("try_files /index.html =404;", block)
+                self.assertNotIn("return 302", block)
+
     def test_request_id_and_duration_are_logged(self):
         for relative_path in self.CONFIGS:
             config = self._config(relative_path)
