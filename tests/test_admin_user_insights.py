@@ -287,6 +287,24 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
         self.assertIn("server-notice-", shell)
         self.assertIn("escapeHtml(x.title)", shell)
 
+    def test_support_layout_uses_sidebar_dashboard_and_customer_drawer(self):
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "site/admin/index.html").read_text(encoding="utf-8")
+        for marker in (
+            'class="admin-sidebar"', 'data-module-tab="dashboard"',
+            'data-module-tab="users"', 'data-module-tab="logs"',
+            'data-module-tab="recharge"', 'data-module-tab="points"',
+            'data-module-tab="invite"', 'data-module-tab="inspirations"',
+            'data-module-tab="services"', 'data-module-tab="channels"',
+            'data-module-tab="features"', 'data-module="dashboard"',
+            'id="globalUserSearch"', 'id="customerLayer"',
+            "/api/admin/activity?limit=8", "/api/admin/recharge/orders?status=pending",
+            "module:'dashboard'", "aria-current",
+        ):
+            self.assertIn(marker, html)
+        self.assertNotIn('data-module-tab="ops"', html)
+        self.assertNotIn('class="module-tabs', html)
+
 
 if __name__ == "__main__":
     unittest.main()
