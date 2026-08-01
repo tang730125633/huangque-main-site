@@ -16,6 +16,8 @@ video = importlib.import_module("content_domains.video")
 
 class HeyGenMcpOAuthTests(unittest.TestCase):
     def test_expired_oauth_refreshes_and_stays_private(self):
+        requests = []
+
         class Response:
             def __enter__(self):
                 return self
@@ -27,7 +29,8 @@ class HeyGenMcpOAuthTests(unittest.TestCase):
                 return json.dumps({"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 3600}).encode()
 
         class Opener:
-            def open(self, *_args, **_kwargs):
+            def open(self, request, **_kwargs):
+                requests.append(request)
                 return Response()
 
         with tempfile.TemporaryDirectory() as directory:
@@ -44,6 +47,30 @@ class HeyGenMcpOAuthTests(unittest.TestCase):
             saved = json.loads(credentials.read_text())
             self.assertEqual(saved["refresh_token"], "new-refresh")
             self.assertEqual(os.stat(credentials).st_mode & 0o077, 0)
+            self.assertEqual(requests[0].get_header("User-agent"), "huangque-content/1.0")
+
+    def test_mcp_transport_sets_cloudflare_safe_user_agent(self):
+        requests = []
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'event: message\ndata: {"jsonrpc":"2.0","id":"x","result":{"content":[{"type":"text","text":"{\\"ok\\":true}"}],"isError":false}}\n\n'
+
+        class Opener:
+            def open(self, request, **_kwargs):
+                requests.append(request)
+                return Response()
+
+        with patch.object(video, "_heygen_mcp_access_token", return_value="token"), \
+             patch.object(video, "_heygen_direct_opener", return_value=Opener()):
+            self.assertEqual(video._heygen_mcp_call("get_current_user", {}), {"ok": True})
+        self.assertEqual(requests[0].get_header("User-agent"), "huangque-content/1.0")
 
     def test_cinematic_create_and_poll_use_exact_mcp_contract(self):
         calls = []

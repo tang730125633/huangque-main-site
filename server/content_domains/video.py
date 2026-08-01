@@ -2019,6 +2019,7 @@ def _heygen_mcp_access_token(force_refresh=False):
         }).encode()
         req = urllib.request.Request(_HEYGEN_MCP_TOKEN_URL, data=body, headers={
             "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "huangque-content/1.0",
         }, method="POST")
         try:
             with _heygen_direct_opener().open(req, timeout=30) as response:
@@ -2049,6 +2050,7 @@ def _heygen_mcp_call(tool, arguments, timeout=90):
             "Accept": "application/json, text/event-stream",
             "Content-Type": "application/json",
             "MCP-Protocol-Version": "2025-06-18",
+            "User-Agent": "huangque-content/1.0",
         }, method="POST")
         with _heygen_direct_opener().open(req, timeout=timeout) as response:
             return response.read().decode("utf-8")
