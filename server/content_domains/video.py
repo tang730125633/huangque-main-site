@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import fcntl
 import math
 import sqlite3
 import tempfile
@@ -2006,39 +2007,44 @@ def _heygen_mcp_access_token(force_refresh=False):
             raise ValueError("HeyGen MCP OAuth 未配置")
         if path.stat().st_mode & 0o077:
             raise RuntimeError("HeyGen MCP OAuth 凭据权限必须为 600")
-        credentials = json.loads(path.read_text(encoding="utf-8"))
-        if not force_refresh and credentials.get("access_token") and float(credentials.get("expires_at") or 0) > time.time() + 60:
-            return credentials["access_token"]
-        if not credentials.get("client_id") or not credentials.get("refresh_token"):
-            raise RuntimeError("HeyGen MCP OAuth 不可刷新，请重新授权")
-        body = urllib.parse.urlencode({
-            "grant_type": "refresh_token",
-            "client_id": credentials["client_id"],
-            "refresh_token": credentials["refresh_token"],
-            "resource": _HEYGEN_MCP_URL.rstrip("/"),
-        }).encode()
-        req = urllib.request.Request(_HEYGEN_MCP_TOKEN_URL, data=body, headers={
-            "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "huangque-content/1.0",
-        }, method="POST")
+        lock_fd = os.open(str(path) + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            with _heygen_direct_opener().open(req, timeout=30) as response:
-                refreshed = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", "replace").replace("\n", " ")[:300]
-            raise RuntimeError("HeyGen MCP OAuth 刷新失败: HTTP %s %s" % (exc.code, detail)) from exc
-        credentials.update({
-            "access_token": refreshed["access_token"],
-            "refresh_token": refreshed.get("refresh_token") or credentials["refresh_token"],
-            "expires_at": int(time.time()) + int(refreshed.get("expires_in") or 3600),
-        })
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as temp:
-            json.dump(credentials, temp, ensure_ascii=False)
-            temp_path = temp.name
-        os.chmod(temp_path, 0o600)
-        os.replace(temp_path, path)
-        return credentials["access_token"]
+            os.fchmod(lock_fd, 0o600)
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            credentials = json.loads(path.read_text(encoding="utf-8"))
+            if not force_refresh and credentials.get("access_token") and float(credentials.get("expires_at") or 0) > time.time() + 60:
+                return credentials["access_token"]
+            if not credentials.get("client_id") or not credentials.get("refresh_token"):
+                raise RuntimeError("HeyGen MCP OAuth 不可刷新，请重新授权")
+            body = urllib.parse.urlencode({
+                "grant_type": "refresh_token",
+                "client_id": credentials["client_id"],
+                "refresh_token": credentials["refresh_token"],
+                "resource": _HEYGEN_MCP_URL.rstrip("/"),
+            }).encode()
+            req = urllib.request.Request(_HEYGEN_MCP_TOKEN_URL, data=body, headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "User-Agent": "huangque-content/1.0",
+            }, method="POST")
+            try:
+                with _heygen_direct_opener().open(req, timeout=30) as response:
+                    refreshed = json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", "replace").replace("\n", " ")[:300]
+                raise RuntimeError("HeyGen MCP OAuth 刷新失败: HTTP %s %s" % (exc.code, detail)) from exc
+            credentials.update({
+                "access_token": refreshed["access_token"],
+                "refresh_token": refreshed.get("refresh_token") or credentials["refresh_token"],
+                "expires_at": int(time.time()) + int(refreshed.get("expires_in") or 3600),
+            })
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as temp:
+                json.dump(credentials, temp, ensure_ascii=False)
+                temp_path = temp.name
+            os.chmod(temp_path, 0o600)
+            os.replace(temp_path, path)
+            return credentials["access_token"]
+        finally:
+            os.close(lock_fd)
 
 
 def _heygen_mcp_call(tool, arguments, timeout=90):

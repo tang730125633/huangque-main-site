@@ -44,9 +44,12 @@ class HeyGenMcpOAuthTests(unittest.TestCase):
                  patch.object(video, "_heygen_direct_opener", return_value=Opener()), \
                  patch.object(video.time, "time", return_value=1000):
                 self.assertEqual(video._heygen_mcp_access_token(), "new-access")
+                self.assertEqual(video._heygen_mcp_access_token(), "new-access")
             saved = json.loads(credentials.read_text())
             self.assertEqual(saved["refresh_token"], "new-refresh")
             self.assertEqual(os.stat(credentials).st_mode & 0o077, 0)
+            self.assertEqual(os.stat(str(credentials) + ".lock").st_mode & 0o077, 0)
+            self.assertEqual(len(requests), 1)
             self.assertEqual(requests[0].get_header("User-agent"), "huangque-content/1.0")
 
     def test_mcp_transport_sets_cloudflare_safe_user_agent(self):
