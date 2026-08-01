@@ -72,6 +72,15 @@ MEMBERSHIP_PRODUCT = {
     "recommended": False,
     "order_type": "membership_experience",
 }
+MEMBERSHIP_RENEWAL_PRODUCT = {
+    "id": "membership_experience_renewal",
+    "product_id": "hq_exp_renew_1y",
+    "title": "体验官续费一年",
+    "price_fen": 49900,
+    "points": 0,
+    "recommended": False,
+    "order_type": "membership_experience_renewal",
+}
 
 CUSTOM_MIN_AMOUNT_YUAN = 1
 CUSTOM_MAX_AMOUNT_YUAN = 5000
@@ -276,8 +285,9 @@ def offer_id():
 def products():
     raw = (os.environ.get("WX_VIRTUAL_PAY_PRODUCTS_JSON") or "").strip()
     values = json.loads(raw) if raw else list(DEFAULT_PRODUCTS)
-    values = [item for item in values if str(item.get("id") or "").strip() != MEMBERSHIP_PRODUCT["id"]]
+    values = [item for item in values if str(item.get("id") or "").strip() not in (MEMBERSHIP_PRODUCT["id"], MEMBERSHIP_RENEWAL_PRODUCT["id"])]
     values.append(MEMBERSHIP_PRODUCT)
+    values.append(MEMBERSHIP_RENEWAL_PRODUCT)
     result = []
     seen = set()
     for item in values:
@@ -295,7 +305,7 @@ def products():
             raise VirtualPayError("虚拟支付商品 id 缺失或重复", "bad_config")
         if not product["product_id"] or len(product["product_id"]) > 20:
             raise VirtualPayError("虚拟支付 product_id 无效", "bad_config")
-        if product["price_fen"] <= 0 or product["points"] <= 0 or not product["title"]:
+        if product["price_fen"] <= 0 or product["points"] < 0 or not product["title"]:
             raise VirtualPayError("虚拟支付商品价格、点数或名称无效", "bad_config")
         if product["custom_amount"] and product["price_fen"] != 100:
             raise VirtualPayError("虚拟支付自定义金额商品单价必须为1元", "bad_config")

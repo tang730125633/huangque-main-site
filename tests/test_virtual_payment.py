@@ -248,7 +248,7 @@ class VirtualPaymentTests(unittest.TestCase):
             )
 
         self.assertIsNone(result)
-        self.assertEqual(err, "membership_already_active")
+        self.assertEqual(err, "membership_already_owned")
         code_to_session.assert_not_called()
 
     def test_user_cannot_create_a_second_open_membership_order(self):
@@ -477,7 +477,7 @@ class VirtualPaymentTests(unittest.TestCase):
             )
 
         self.assertIsNone(result)
-        self.assertEqual(err, "membership_order_exists")
+        self.assertEqual(err, "membership_already_owned")
         code_to_session.assert_not_called()
 
     def test_create_order_allows_wechat_payer_used_by_another_account(self):
@@ -709,7 +709,7 @@ class VirtualPaymentTests(unittest.TestCase):
         })
 
         self.assertEqual(response["errcode"], 0)
-        self.assertEqual(response["order"]["status"], "refund_review")
+        self.assertEqual(response["order"]["status"], "refunded")
         self.assertEqual(self.auth.get_points_row("buyer")["points"], 1005)
 
         with patch.object(self.auth.wechat_vpay, "query_order") as query_order:
@@ -720,7 +720,7 @@ class VirtualPaymentTests(unittest.TestCase):
             })
 
         self.assertIsNone(confirm_err)
-        self.assertEqual(confirmed["status"], "refund_review")
+        self.assertEqual(confirmed["status"], "refunded")
         self.assertEqual(delivery_response["errcode"], 0)
         query_order.assert_not_called()
         self.assertEqual(self.auth.get_points_row("buyer")["points"], 1005)
@@ -729,7 +729,7 @@ class VirtualPaymentTests(unittest.TestCase):
             tier = c.execute(
                 "SELECT membership_tier FROM users WHERE username='buyer'"
             ).fetchone()[0]
-            self.assertEqual(tier, "experience")
+            self.assertEqual(tier, "")
         finally:
             c.close()
 

@@ -208,7 +208,7 @@ class InviteRegistrationTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_membership_invite_gate_is_controlled_by_default_off_switch(self):
+    def test_free_users_can_keep_using_invite_codes_when_membership_gate_is_enabled(self):
         code = self._invite_code()
         conn = self._connect()
         try:
@@ -233,8 +233,7 @@ class InviteRegistrationTests(unittest.TestCase):
 
         os.environ["HQ_MEMBERSHIP_ENFORCEMENT_ENABLED"] = "1"
         status, body, _ = self._request("/api/auth/invite/validate?code=" + code)
-        self.assertEqual(status, 409)
-        self.assertEqual(body["code"], "inviter_ineligible")
+        self.assertEqual(status, 200)
 
     def test_invalid_code_rolls_back_user_relation_and_token(self):
         result, err = self.auth.register_account(

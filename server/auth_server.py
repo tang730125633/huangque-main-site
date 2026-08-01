@@ -28,6 +28,11 @@ except ImportError:  # 生产环境以脚本方式从 /home/ubuntu/auth-service 
     import invites
 
 try:
+    from . import business_cards
+except ImportError:
+    import business_cards
+
+try:
     from . import hq_cli_api
 except ImportError:  # 生产环境以脚本方式从 /home/ubuntu/auth-service 启动
     import hq_cli_api
@@ -70,6 +75,7 @@ MEMBERSHIP_TIERS = {
 EXPERIENCE_MEMBERSHIP_AMOUNT = 499
 EXPERIENCE_MEMBERSHIP_POINTS = 1000
 MEMBERSHIP_ORDER_TYPE = "membership_experience"
+MEMBERSHIP_RENEWAL_ORDER_TYPE = "membership_experience_renewal"
 MEMBERSHIP_DISCOUNT_BPS = {
     "experience": 10000,
     "partner": 7500,
@@ -491,6 +497,7 @@ def init_db():
         c.execute("ALTER TABLE users ADD COLUMN wx_openid TEXT")
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_wx_openid ON users(wx_openid) WHERE wx_openid IS NOT NULL")
     invites.init_schema(c)
+    business_cards.init_schema(c)
     hq_cli_api.init_schema(c)
     c.commit(); c.close()
 
@@ -782,12 +789,13 @@ def create_user(username, password, points=0, role='member'):
     print("OK user:", username)
 
 def register_account(username, password, display_name=None, invite_code="", invite_source="web_manual",
-                     client_ip="", device_id=""):
+                     client_ip="", device_id="", card=None, invite_attribution_token=""):
     """在一个事务中创建账号、保存直接邀请关系并签发令牌。"""
     username = str(username or "").strip()
     password = str(password or "")
     display_name = str(display_name or username).strip() or username
     invite_code = invites.normalize_code(invite_code)
+    invite_attribution_token = str(invite_attribution_token or "").strip()
     device_id = str(device_id or "").strip()
     if not username or not password:
         return None, {"status": 400, "code": "missing_credentials", "detail": "请填写账号和密码"}
@@ -810,6 +818,13 @@ def register_account(username, password, display_name=None, invite_code="", invi
     c = db()
     try:
         c.execute("BEGIN IMMEDIATE")
+        if invite_attribution_token:
+            attribution = business_cards.verify_attribution(invite_attribution_token, INVITE_HASH_SECRET)
+            if invite_code and invite_code != invites.normalize_code(attribution["code"]):
+                raise business_cards.CardError("invalid_invite_attribution", "邀请归因不匹配", 409)
+            if business_cards.owner(c, attribution["card_public_id"]) != int(attribution["owner_user_id"]):
+                raise business_cards.CardError("invalid_invite_attribution", "邀请归因已失效", 409)
+            invite_code = invites.normalize_code(attribution["code"])
         account_id = _new_unique_account_id(c)
         cur = c.execute("""INSERT INTO users(
             username,pw_hash,pw_salt,display_name,points,role,must_change,account_id
@@ -819,8 +834,10 @@ def register_account(username, password, display_name=None, invite_code="", invi
         relation = invites.bind_registration(
             c, cur.lastrowid, invite_code, invite_source,
             client_ip=client_ip, device_id=device_id, hash_secret=INVITE_HASH_SECRET,
-            enforce_membership=membership_enforcement_enabled(),
+            enforce_membership=False,
         )
+        if card is not None:
+            business_cards.create_draft(c, cur.lastrowid, card)
         token = issue_token(username, c)
         c.commit()
         return {
@@ -833,6 +850,9 @@ def register_account(username, password, display_name=None, invite_code="", invi
     except invites.InviteError as exc:
         c.rollback()
         return None, {"status": exc.http_status, "code": exc.code, "detail": exc.detail}
+    except business_cards.CardError as exc:
+        c.rollback()
+        return None, {"status": exc.status, "code": exc.code, "detail": exc.detail}
     except sqlite3.IntegrityError:
         c.rollback()
         return None, {"status": 409, "code": "username_exists", "detail": "账号已存在"}
@@ -2456,29 +2476,37 @@ def recharge_membership_admin(who_admin, username, tier, reason="", request_id="
         c.close()
 
 
-def _activate_experience_membership(c, username, operator, reason, now, source_order_id=None):
+def _activate_experience_membership(c, username, operator, reason, now, source_order_id=None, renewal=False):
     row = c.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
     if not row:
         return None, "user_not_found"
     before = membership_for_row(row, now)
+    if renewal and str(row["membership_tier"] or "") != "experience":
+        return None, "membership_renewal_not_eligible"
     base = max(int(now), int(row["membership_expires_at"] or 0))
     expires_at = base + MEMBERSHIP_YEAR_SECONDS
-    c.execute(
-        """UPDATE users SET membership_tier='experience',membership_started_at=?,membership_expires_at=?
-           WHERE username=?""",
-        (int(now), expires_at, username),
-    )
-    _grant_membership_voice_slot_entitlement(
-        c, username, "online", source_order_id or "membership-online:%s:%d" % (username, now), now,
-    )
+    if renewal:
+        c.execute("UPDATE users SET membership_expires_at=? WHERE username=?", (expires_at, username))
+    else:
+        c.execute("""UPDATE users SET membership_tier='experience',membership_started_at=?,membership_expires_at=?
+                   WHERE username=?""", (int(now), expires_at, username))
+        _grant_membership_voice_slot_entitlement(
+            c, username, "online", source_order_id or "membership-online:%s:%d" % (username, now), now,
+        )
     fresh = c.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
     after = membership_for_row(fresh, now)
     audit_id = _write_membership_audit(c, username, before, after, operator, reason, now)
     invites.record_membership_upgrade(
         c, fresh["id"], before["membership_tier"], after["membership_tier"],
         "online", source_order_id=source_order_id or "membership-audit:%d" % audit_id,
-        operator=operator, now=now,
+        operator=operator, now=now, event_type="renewal" if renewal else "upgrade",
     )
+    c.execute("""INSERT OR IGNORE INTO membership_recharge_records(
+        request_id,username,tier,before_expires_at,after_expires_at,operator,reason,created_at
+    ) VALUES(?,?,?,?,?,?,?,?)""", (
+        "membership-order:" + str(source_order_id or audit_id), username, "experience",
+        int(row["membership_expires_at"] or 0), expires_at, operator, reason[:300], now,
+    ))
     return after, None
 
 def adjust_points_admin(who_admin, username, delta, reason=""):
@@ -2821,12 +2849,12 @@ def public_virtual_pay_custom(membership_tier=""):
     }
 
 
-def _existing_membership_order(c, username):
+def _existing_membership_order(c, username, order_type=MEMBERSHIP_ORDER_TYPE):
     return c.execute(
         """SELECT * FROM virtual_pay_orders
              WHERE username=? AND order_type=? AND status NOT IN ('failed','refunded')
              ORDER BY created_at DESC LIMIT 1""",
-        (username, MEMBERSHIP_ORDER_TYPE),
+        (username, order_type),
     ).fetchone()
 
 
@@ -2885,7 +2913,7 @@ def _refresh_unpaid_membership_order(row):
 def _virtual_order_is_terminal(row):
     status = row["status"]
     return status in ("refunded", "refund_review") or (
-        (row["order_type"] or "points") == MEMBERSHIP_ORDER_TYPE and status == "failed"
+        (row["order_type"] or "points") in (MEMBERSHIP_ORDER_TYPE, MEMBERSHIP_RENEWAL_ORDER_TYPE) and status == "failed"
     )
 
 
@@ -2911,12 +2939,14 @@ def create_virtual_pay_order(username, package_id, wx_code, custom_amount_yuan=N
         return None, "user_not_found"
     membership = membership_for_row(pricing_user)
     order_type = product.get("order_type") or "points"
-    if order_type == MEMBERSHIP_ORDER_TYPE:
-        if membership["membership_active"]:
-            return None, "membership_already_active"
+    if order_type in (MEMBERSHIP_ORDER_TYPE, MEMBERSHIP_RENEWAL_ORDER_TYPE):
+        if order_type == MEMBERSHIP_ORDER_TYPE and str(pricing_user["membership_tier"] or ""):
+            return None, "membership_already_owned"
+        if order_type == MEMBERSHIP_RENEWAL_ORDER_TYPE and str(pricing_user["membership_tier"] or "") != "experience":
+            return None, "membership_renewal_not_eligible"
         c = db()
         try:
-            existing_order = _existing_membership_order(c, username)
+            existing_order = _existing_membership_order(c, username, order_type)
         finally:
             c.close()
         if existing_order:
@@ -2960,11 +2990,14 @@ def create_virtual_pay_order(username, package_id, wx_code, custom_amount_yuan=N
         if not user:
             c.rollback()
             return None, "user_not_found"
-        if order_type == MEMBERSHIP_ORDER_TYPE:
-            if membership_for_row(user)["membership_active"]:
+        if order_type in (MEMBERSHIP_ORDER_TYPE, MEMBERSHIP_RENEWAL_ORDER_TYPE):
+            if order_type == MEMBERSHIP_ORDER_TYPE and str(user["membership_tier"] or ""):
                 c.rollback()
-                return None, "membership_already_active"
-            if _existing_membership_order(c, username):
+                return None, "membership_already_owned"
+            if order_type == MEMBERSHIP_RENEWAL_ORDER_TYPE and str(user["membership_tier"] or "") != "experience":
+                c.rollback()
+                return None, "membership_renewal_not_eligible"
+            if _existing_membership_order(c, username, order_type):
                 c.rollback()
                 return None, "membership_order_exists"
         c.execute(
@@ -3078,12 +3111,14 @@ def confirm_virtual_pay_order(username, order_id, verified_wx_order=None):
             delta = int(fresh["points"] or 0)
             after = before + delta
             now = int(time.time())
-            c.execute("UPDATE users SET points=? WHERE username=?", (after, username))
-            _write_audit(c, SYSTEM_ACTOR, username, delta, before, after, "微信虚拟支付: " + order_id)
-            if (fresh["order_type"] or "points") == MEMBERSHIP_ORDER_TYPE:
+            if delta:
+                c.execute("UPDATE users SET points=? WHERE username=?", (after, username))
+                _write_audit(c, SYSTEM_ACTOR, username, delta, before, after, "微信虚拟支付: " + order_id)
+            if (fresh["order_type"] or "points") in (MEMBERSHIP_ORDER_TYPE, MEMBERSHIP_RENEWAL_ORDER_TYPE):
                 _, membership_err = _activate_experience_membership(
-                    c, username, SYSTEM_ACTOR, "微信虚拟支付开通体验官: " + order_id,
-                    now, source_order_id=order_id,
+                    c, username, SYSTEM_ACTOR,
+                    ("微信虚拟支付续费体验官: " if fresh["order_type"] == MEMBERSHIP_RENEWAL_ORDER_TYPE else "微信虚拟支付开通体验官: ") + order_id,
+                    now, source_order_id=order_id, renewal=fresh["order_type"] == MEMBERSHIP_RENEWAL_ORDER_TYPE,
                 )
                 if membership_err:
                     c.rollback()
@@ -3236,14 +3271,32 @@ def refund_virtual_pay_order(message):
         if fresh["status"] in ("refunded", "refund_review"):
             c.rollback()
             return public_virtual_pay_order(fresh), None
-        if (fresh["order_type"] or "points") == MEMBERSHIP_ORDER_TYPE:
-            c.execute(
-                "UPDATE virtual_pay_orders SET status='refund_review',last_error=? WHERE order_id=?",
-                ("体验官订单退款需人工核对权益", fresh["order_id"]),
-            )
-            final = c.execute(
-                "SELECT * FROM virtual_pay_orders WHERE order_id=?", (fresh["order_id"],)
-            ).fetchone()
+        if (fresh["order_type"] or "points") in (MEMBERSHIP_ORDER_TYPE, MEMBERSHIP_RENEWAL_ORDER_TYPE):
+            # Payment callbacks may arrive after a later renewal.  Rewards must be voided
+            # for a confirmed refund, but entitlement may only be rewound when this exact
+            # order still owns the current expiry.
+            c.execute("""UPDATE invite_reward_point_records SET status='voided',voided_at=?,
+                         void_reason='membership_refund',voided_by=?
+                         WHERE upgrade_record_id IN (SELECT id FROM membership_upgrade_records
+                         WHERE source='online' AND source_order_id=?) AND status<>'voided'""",
+                      (int(time.time()), SYSTEM_ACTOR, fresh["order_id"]))
+            recharge = c.execute("SELECT * FROM membership_recharge_records WHERE request_id=?",
+                                 ("membership-order:" + fresh["order_id"],)).fetchone()
+            user = c.execute("SELECT * FROM users WHERE username=?", (fresh["username"],)).fetchone()
+            can_restore = bool(recharge and user and int(user["membership_expires_at"] or 0) == int(recharge["after_expires_at"] or 0))
+            if can_restore:
+                if fresh["order_type"] == MEMBERSHIP_RENEWAL_ORDER_TYPE:
+                    c.execute("UPDATE users SET membership_expires_at=? WHERE username=?",
+                              (int(recharge["before_expires_at"] or 0) or None, fresh["username"]))
+                else:
+                    c.execute("UPDATE users SET membership_tier='',membership_started_at=NULL,membership_expires_at=NULL WHERE username=?",
+                              (fresh["username"],))
+                status, detail = "refunded", ""
+            else:
+                status, detail = "refund_review", "退款不覆盖后续续费，需人工核对权益"
+            c.execute("UPDATE virtual_pay_orders SET status=?,last_error=? WHERE order_id=?",
+                      (status, detail, fresh["order_id"]))
+            final = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=?", (fresh["order_id"],)).fetchone()
             c.commit()
             return public_virtual_pay_order(final), None
         if fresh["status"] == "credited":
@@ -3882,7 +3935,7 @@ class H(BaseHTTPRequestHandler):
             c = db()
             try:
                 code_row = invites.rotate_user_code(
-                    c, row["id"], enforce_membership=membership_enforcement_enabled(),
+                    c, row["id"], enforce_membership=False,
                 )
                 c.commit()
                 return self._send(200, {
@@ -4419,7 +4472,7 @@ class H(BaseHTTPRequestHandler):
             source = "web_link" if str(d.get("invite_source") or "") == "web_link" else "web_manual"
             result, err = register_account(
                 u, pw, name, invite_code=d.get("invite_code"), invite_source=source,
-                client_ip=self._client_ip(), device_id=d.get("device_id"),
+                client_ip=self._client_ip(), device_id=d.get("device_id"), card=d.get("card"),
             )
             if err:
                 return self._send(err["status"], {"detail": err["detail"], "code": err["code"]})
@@ -4488,7 +4541,8 @@ class H(BaseHTTPRequestHandler):
             name = (d.get("display_name") or u).strip() or u
             result, err = register_account(
                 u, pw, name, invite_code=d.get("invite_code"), invite_source="miniprogram",
-                client_ip=self._client_ip(), device_id=d.get("device_id"),
+                client_ip=self._client_ip(), device_id=d.get("device_id"), card=d.get("card"),
+                invite_attribution_token=d.get("invite_attribution_token"),
             )
             if err:
                 return self._send(err["status"], {"detail": err["detail"], "code": err["code"]})
@@ -4496,6 +4550,33 @@ class H(BaseHTTPRequestHandler):
                 "token": result["token"], "user": result["user"],
                 "invite_bound": result["invite_bound"],
             })
+        if p in ("/api/auth/card/publish", "/api/auth/card/unpublish", "/api/auth/card/media"):
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            if p.endswith("/media") and self._content_length_exceeds(6 * 1024 * 1024):
+                return self._send(413, {"detail": "图片过大", "code": "image_too_large"})
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            c = db()
+            try:
+                c.execute("BEGIN IMMEDIATE")
+                if p.endswith("/publish") or p.endswith("/unpublish"):
+                    card = business_cards.publish(c, row["id"], "unpublished" if p.endswith("/unpublish") else (d.get("status") or "published"))
+                    result = {"ok": True, "card": card}
+                else:
+                    key = business_cards.upload_image(d.get("data"), d.get("field"))
+                    card = business_cards.update(c, row["id"], {d.get("field"): key})
+                    result = {"ok": True, "key": key, "card": business_cards._decode({**card, "display_name": row["display_name"]}, True)}
+                c.commit()
+                return self._send(200, result)
+            except business_cards.CardError as exc:
+                c.rollback(); return self._send(exc.status, {"detail": exc.detail, "code": exc.code})
+            except Exception:
+                c.rollback(); return self._send(503, {"detail": "名片媒体服务暂不可用", "code": "media_unavailable"})
+            finally:
+                c.close()
         if p == "/api/auth/logout":
             clear_cookie = {"Set-Cookie": clear_auth_cookie_header()}
             tok = request_token(self.headers)
@@ -4763,6 +4844,25 @@ class H(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         p = self.path.split("?", 1)[0]
+        if p == "/api/auth/card/me":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            if self._content_length_exceeds(business_cards.MAX_JSON_BYTES):
+                return self._send(413, {"detail": "请求过大", "code": "card_too_large"})
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            c = db()
+            try:
+                c.execute("BEGIN IMMEDIATE")
+                business_cards.update(c, row["id"], d)
+                c.commit()
+                return self._send(200, {"ok": True, "card": business_cards.mine(c, row["id"])})
+            except business_cards.CardError as exc:
+                c.rollback(); return self._send(exc.status, {"detail": exc.detail, "code": exc.code})
+            finally:
+                c.close()
         if p != "/api/auth/admin/invite/config":
             return self._send(404, {"detail": "not found"})
         if not self._require_internal():
@@ -4833,6 +4933,107 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path.split("?")[0]
+        if p in ("/api/auth/card/me", "/api/auth/card/public", "/api/auth/network/ancestors", "/api/auth/network/children", "/api/admin/invite/network", "/api/auth/admin/invite/network") or p.startswith("/api/auth/card/media/"):
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            if p.startswith("/api/auth/card/media/"):
+                parts = p[len("/api/auth/card/media/"):].split("/")
+                if len(parts) != 2:
+                    return self._send(404, {"detail": "not found"})
+                c = db()
+                try:
+                    key = business_cards.media_key(c, parts[0], parts[1])
+                    if not key:
+                        return self._send(404, {"detail": "not found"})
+                    try:
+                        from .content_domains import cos
+                    except ImportError:
+                        from content_domains import cos
+                    return self._send(200, {"ok": True, "url": cos.object_url(key, private=True)})
+                except business_cards.CardError as exc:
+                    return self._send(exc.status, {"detail": exc.detail, "code": exc.code})
+                except Exception:
+                    return self._send(503, {"detail": "媒体服务暂不可用", "code": "media_unavailable"})
+                finally:
+                    c.close()
+            if p == "/api/auth/card/public":
+                c = db()
+                try:
+                    public_id = (query.get("id") or [""])[0]
+                    card = business_cards.public(c, public_id)
+                    response = {"ok": True, "card": card, "invite_valid": False}
+                    code = invites.normalize_code((query.get("invite") or [""])[0])
+                    owner_id = business_cards.owner(c, public_id)
+                    if code and INVITE_HASH_SECRET:
+                        try:
+                            invite = invites.validate_code(c, code, enforce_membership=False)
+                            if int(invite["inviter_user_id"]) == owner_id:
+                                response["invite_valid"] = True
+                                response["invite_attribution_token"] = business_cards.attribution_token(
+                                    code, public_id, owner_id, INVITE_HASH_SECRET,
+                                )
+                        except invites.InviteError:
+                            pass
+                    return self._send(200, response)
+                except business_cards.CardError as exc:
+                    return self._send(exc.status, {"detail": exc.detail, "code": exc.code})
+                finally:
+                    c.close()
+            if p == "/api/auth/card/me":
+                row = self._user()
+                if not row:
+                    return self._send(401, {"detail": "未登录"})
+                c = db()
+                try:
+                    c.execute("BEGIN IMMEDIATE")
+                    business_cards.create_draft(c, row["id"])
+                    card = business_cards.mine(c, row["id"])
+                    c.commit()
+                    return self._send(200, {"ok": True, "card": card})
+                finally:
+                    c.close()
+            if p in ("/api/admin/invite/network", "/api/auth/admin/invite/network"):
+                if not self._require_internal():
+                    return
+                if not self._require_admin_user():
+                    return
+                c = db()
+                try:
+                    target = (query.get("user_id") or query.get("parent_id") or [""])[0]
+                    if not target and (query.get("search") or [""])[0]:
+                        term = "%" + (query.get("search") or [""])[0].strip() + "%"
+                        users = c.execute("SELECT id FROM users WHERE username LIKE ? OR display_name LIKE ? ORDER BY id LIMIT 20", (term, term)).fetchall()
+                        return self._send(200, {"ok": True, "items": [{"user_id": int(r["id"]), **business_cards.public_network_person(c, r["id"])} for r in users]})
+                    user = c.execute("SELECT id FROM users WHERE id=?", (target,)).fetchone()
+                    if not user:
+                        return self._send(404, {"detail": "not found"})
+                    data = business_cards.children(c, user["id"], 1, (query.get("before_id") or ["0"])[0], (query.get("limit") or ["12"])[0])
+                    return self._send(200, {"ok": True, "user_id": int(user["id"]), **data})
+                except (ValueError, business_cards.CardError):
+                    return self._send(400, {"detail": "分页参数无效"})
+                finally:
+                    c.close()
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            c = db()
+            try:
+                if p.endswith("/ancestors"):
+                    return self._send(200, {"ok": True, "items": business_cards.ancestors(c, row["id"])})
+                parent = (query.get("parent") or ["self"])[0]
+                parent_id = row["id"]
+                if parent != "self":
+                    found = c.execute("SELECT user_id FROM business_cards WHERE public_id=?", (parent,)).fetchone()
+                    if not found:
+                        return self._send(404, {"detail": "not found"})
+                    parent_id = int(found["user_id"])
+                    if int(row["id"]) not in set(business_cards.ancestor_ids(c, parent_id)):
+                        return self._send(404, {"detail": "not found"})
+                data = business_cards.children(c, parent_id, 1, (query.get("before_id") or ["0"])[0], (query.get("limit") or ["12"])[0])
+                return self._send(200, {"ok": True, **data})
+            except (ValueError, business_cards.CardError):
+                return self._send(400, {"detail": "分页参数无效"})
+            finally:
+                c.close()
         if p == "/api/auth/cli/status":
             auth = self._cli_user()
             if not auth:
@@ -4905,7 +5106,7 @@ class H(BaseHTTPRequestHandler):
             c = db()
             try:
                 row = invites.validate_code(
-                    c, code, enforce_membership=membership_enforcement_enabled(),
+                    c, code, enforce_membership=False,
                 )
                 return self._send(200, {
                     "ok": True, "code": row["code"], "inviter": invites.public_inviter(row),
@@ -4922,7 +5123,7 @@ class H(BaseHTTPRequestHandler):
             try:
                 c.execute("BEGIN IMMEDIATE")
                 code_row = invites.ensure_user_code(
-                    c, row["id"], enforce_membership=membership_enforcement_enabled(),
+                    c, row["id"], enforce_membership=False,
                 )
                 c.commit()
                 return self._send(200, {
