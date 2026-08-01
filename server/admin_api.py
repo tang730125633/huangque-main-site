@@ -2005,6 +2005,13 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"items": load_channels()})
         if path == "/api/admin/features":
             return self._send(200, {"items": load_features()})
+        if path == "/api/admin/announcements":
+            q = urllib.parse.urlparse(self.path).query
+            suffix = "/api/auth/admin/announcements" + (("?" + q) if q else "")
+            try:
+                return self._send(200, auth_admin_request(suffix, self._token()))
+            except Exception as e:
+                return auth_error_response(self, e)
         if path == "/api/admin/inspirations":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             try:
@@ -2284,6 +2291,58 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, result)
             except ValueError as e:
                 return self._send(400, {"detail": str(e)})
+            except Exception as e:
+                return auth_error_response(self, e)
+        if path == "/api/admin/announcements/preview":
+            try:
+                return self._send(200, auth_admin_request(
+                    "/api/auth/admin/announcements/preview", self._token(),
+                    method="POST", payload=self._body(),
+                ))
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
+            except Exception as e:
+                return auth_error_response(self, e)
+        if path == "/api/admin/announcements":
+            try:
+                body = self._body()
+                result = auth_admin_request(
+                    "/api/auth/admin/announcements", self._token(), method="POST", payload=body,
+                )
+                campaign = result.get("campaign") or {}
+                if not result.get("duplicate"):
+                    try:
+                        _admin_audit(
+                            user.get("username") or "admin", "announcement_publish", campaign.get("id"),
+                            {
+                                "request_id": campaign.get("request_id"),
+                                "audience": campaign.get("audience"),
+                                "recipient_count": campaign.get("recipient_count", 0),
+                            },
+                        )
+                    except Exception as audit_error:
+                        print("announcement publish audit failed:", type(audit_error).__name__)
+                return self._send(200, result)
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
+            except Exception as e:
+                return auth_error_response(self, e)
+        if path.startswith("/api/admin/announcements/") and path.endswith("/recall"):
+            suffix = path.replace("/api/admin/", "/api/auth/admin/", 1)
+            try:
+                result = auth_admin_request(
+                    suffix, self._token(), method="POST", payload={},
+                )
+                campaign = result.get("campaign") or {}
+                if not result.get("already_recalled"):
+                    try:
+                        _admin_audit(
+                            user.get("username") or "admin", "announcement_recall", campaign.get("id"),
+                            {"recipient_count": campaign.get("recipient_count", 0)},
+                        )
+                    except Exception as audit_error:
+                        print("announcement recall audit failed:", type(audit_error).__name__)
+                return self._send(200, result)
             except Exception as e:
                 return auth_error_response(self, e)
         if path == "/api/admin/users/notification":
