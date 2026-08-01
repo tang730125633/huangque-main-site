@@ -299,7 +299,11 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             'data-module-tab="features"', 'data-module="dashboard"',
             'id="globalUserSearch"', 'id="customerLayer"',
             "/api/admin/activity?limit=8", "/api/admin/recharge/orders?status=pending",
-            "module:'dashboard'", "aria-current",
+            "module:'dashboard'", "aria-current", "/workbench/hq-icons-duotone.js",
+            'class="side-nav-icon"', "prefers-reduced-motion:reduce",
+            "dashboard:'home'", "users:'users'", "logs:'clock'", "recharge:'coins'",
+            "points:'trend'", "invite:'userPlus'", "inspirations:'sparkles'",
+            "services:'checkCircle'", "channels:'lock'", "features:'sliders'",
         ):
             self.assertIn(marker, html)
         self.assertNotIn('data-module-tab="ops"', html)
