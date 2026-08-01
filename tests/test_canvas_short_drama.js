@@ -736,16 +736,6 @@ async function testWorkspaceSourceAndRenderContract() {
     '/api/gen/short-drama/project', '/api/gen/short-drama/confirm', '/api/gen/copy',
     '/api/gen/short-drama/apply-plan', '/api/gen/short-drama/planning-quote',
   ]) assert.ok(source.includes(endpoint), `workspace client must use ${endpoint}`);
-  assert.match(
-    source,
-    /querySelectorAll\('\.nc-short-drama-dialogue\[data-dialogue-index\]'\)/,
-    'script form reads dialogue cards only',
-  );
-  assert.doesNotMatch(
-    source,
-    /querySelectorAll\('\[data-dialogue-index\]'\)/,
-    'copy/delete controls must never be parsed as empty dialogue lines',
-  );
   assert.doesNotMatch(source, /3\s*点/, 'workspace must not hard-code the planning price as fact');
   assert.ok(css.includes('.nc-short-drama-workspace'));
   assert.ok(css.includes('.nc-short-drama-character-rail'));
@@ -1136,22 +1126,84 @@ async function testProductionWorkspaceCanReturnToPhaseOneReview() {
   assert.equal(destroys, 2);
 }
 
-function testScriptValidationReportsTheExactBrokenDialogue() {
+async function testScriptSaveIgnoresDialogueActionControls() {
   const project = workspaceProject({ stage: 'script_review' });
-  const script = Object.assign({}, project.script_versions[0], {
-    dialogue_lines: [
-      project.script_versions[0].dialogue_lines[0],
-      {
-        id: '', client_token: '', character_key: 'missing-role', text: '',
-      },
-    ],
-  });
-  const errors = shortDrama.validateScript(script, project);
-  assert.ok(errors.includes('台词 2：请填写台词内容'));
-  assert.ok(errors.includes('台词 2：新增台词缺少客户端请求标识'));
-  assert.ok(errors.includes('台词 2：引用了未知角色 missing-role'));
-  assert.ok(errors.every((message) => !message.includes('台词 3')),
-    'one broken dialogue must not be expanded into synthetic button rows');
+  const script = project.script_versions[0];
+  const field = (value) => ({ value });
+  const formFields = Object.fromEntries(
+    ['title', 'logline', 'hook', 'conflict_text', 'turn_text', 'ending']
+      .map((name) => [`[data-field="${name}"]`, field(script[name])]),
+  );
+  const dialogueFields = {
+    '[data-field="id"]': field('line-1'),
+    '[data-field="character_key"]': field('visitor'),
+    '[data-field="text"]': field('我只有五分钟。'),
+  };
+  const dialogueCard = {
+    className: 'nc-short-drama-dialogue',
+    getAttribute(name) { return name === 'data-dialogue-index' ? '0' : null; },
+    querySelector(selector) { return dialogueFields[selector] || null; },
+  };
+  const copyButton = {
+    className: 'copy-dialogue',
+    getAttribute(name) {
+      if (name === 'data-dialogue-index') return '0';
+      if (name === 'data-action') return 'copy-dialogue';
+      return null;
+    },
+    querySelector() { return null; },
+  };
+  const scriptForm = {
+    querySelector(selector) { return formFields[selector] || null; },
+    querySelectorAll(selector) {
+      if (selector === '.nc-short-drama-dialogue[data-dialogue-index]') return [dialogueCard];
+      if (selector === '[data-dialogue-index]') return [dialogueCard, copyButton];
+      return [];
+    },
+  };
+  let clickHandler = null;
+  let savedPatch = null;
+  let resolveSaved;
+  const saved = new Promise((resolve) => { resolveSaved = resolve; });
+  const body = {
+    appendChild(node) { node.parentNode = body; },
+    removeChild(node) { if (node.parentNode === body) node.parentNode = null; },
+  };
+  const host = {
+    innerHTML: '', parentNode: null,
+    addEventListener(type, handler) { if (type === 'click') clickHandler = handler; },
+    removeEventListener() {},
+    querySelector(selector) {
+      return selector === '.nc-short-drama-script-form' ? scriptForm : null;
+    },
+  };
+  const document = { body, createElement() { return host; } };
+  const client = {
+    get() { return Promise.resolve(project); },
+    update(id, revision, patch) {
+      savedPatch = patch;
+      resolveSaved();
+      return Promise.resolve(Object.assign({}, project, { revision: revision + 1 }));
+    },
+    confirm() { throw new Error('unexpected confirmation'); },
+    generatePlan() { throw new Error('unexpected paid generation'); },
+  };
+  const workspace = shortDrama.createWorkspace({ projectId: project.id, client, document });
+  await workspace.ready;
+  const saveButton = {
+    parentNode: host,
+    getAttribute(name) { return name === 'data-action' ? 'save-script' : null; },
+  };
+  clickHandler({ target: saveButton });
+  await saved;
+  assert.equal(scriptForm.querySelectorAll('[data-dialogue-index]').length, 2,
+    'fixture contains both a real dialogue card and an indexed action control');
+  assert.deepEqual(savedPatch.script.dialogue_lines, [{
+    id: 'line-1', character_key: 'visitor', text: '我只有五分钟。',
+  }], 'saved payload contains only the real dialogue card');
+  assert.deepEqual(Object.keys(savedPatch.script.dialogue_lines[0]).sort(),
+    ['character_key', 'id', 'text'], 'saved payload keeps the existing backend contract');
+  workspace.destroy();
 }
 
 async function testBrowserGlobalProductionModuleFallbacks() {
@@ -2045,7 +2097,7 @@ async function main() {
   await testTerminalJobFailureDoesNotApplyPlan();
   testMissingPollFailsClearly();
   await testWorkspaceSourceAndRenderContract();
-  testScriptValidationReportsTheExactBrokenDialogue();
+  await testScriptSaveIgnoresDialogueActionControls();
   await testProductionWorkspaceCanReturnToPhaseOneReview();
   await testBrowserGlobalProductionModuleFallbacks();
   testWorkspacePureStateAndPayloadHelpers();
