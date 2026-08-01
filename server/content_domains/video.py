@@ -1989,6 +1989,109 @@ DUO_MOTION_PROMPT_BASE = "用这两个人物形象模仿视频里面的动作" +
 DUO_MOTION_PROMPT = DUO_MOTION_PROMPT_BASE
 
 
+_HEYGEN_MCP_URL = "https://mcp.heygen.com/mcp/v1/"
+_HEYGEN_MCP_TOKEN_URL = "https://api2.heygen.com/v1/oauth/token"
+_HEYGEN_MCP_CREDENTIALS = os.environ.get("HEYGEN_MCP_CREDENTIALS", "").strip()
+_heygen_mcp_auth_lock = threading.Lock()
+
+
+def _heygen_mcp_enabled():
+    return bool(_HEYGEN_MCP_CREDENTIALS)
+
+
+def _heygen_mcp_access_token(force_refresh=False):
+    path = pathlib.Path(_HEYGEN_MCP_CREDENTIALS)
+    with _heygen_mcp_auth_lock:
+        if not path.is_file():
+            raise ValueError("HeyGen MCP OAuth 未配置")
+        if path.stat().st_mode & 0o077:
+            raise RuntimeError("HeyGen MCP OAuth 凭据权限必须为 600")
+        credentials = json.loads(path.read_text(encoding="utf-8"))
+        if not force_refresh and credentials.get("access_token") and float(credentials.get("expires_at") or 0) > time.time() + 60:
+            return credentials["access_token"]
+        if not credentials.get("client_id") or not credentials.get("refresh_token"):
+            raise RuntimeError("HeyGen MCP OAuth 不可刷新，请重新授权")
+        body = urllib.parse.urlencode({
+            "grant_type": "refresh_token",
+            "client_id": credentials["client_id"],
+            "refresh_token": credentials["refresh_token"],
+            "resource": _HEYGEN_MCP_URL.rstrip("/"),
+        }).encode()
+        req = urllib.request.Request(_HEYGEN_MCP_TOKEN_URL, data=body, headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+        }, method="POST")
+        try:
+            with _heygen_direct_opener().open(req, timeout=30) as response:
+                refreshed = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace").replace("\n", " ")[:300]
+            raise RuntimeError("HeyGen MCP OAuth 刷新失败: HTTP %s %s" % (exc.code, detail)) from exc
+        credentials.update({
+            "access_token": refreshed["access_token"],
+            "refresh_token": refreshed.get("refresh_token") or credentials["refresh_token"],
+            "expires_at": int(time.time()) + int(refreshed.get("expires_in") or 3600),
+        })
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as temp:
+            json.dump(credentials, temp, ensure_ascii=False)
+            temp_path = temp.name
+        os.chmod(temp_path, 0o600)
+        os.replace(temp_path, path)
+        return credentials["access_token"]
+
+
+def _heygen_mcp_call(tool, arguments, timeout=90):
+    def request(token):
+        payload = {"jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": "tools/call",
+                   "params": {"name": tool, "arguments": arguments}}
+        req = urllib.request.Request(_HEYGEN_MCP_URL, data=json.dumps(payload, ensure_ascii=False).encode(), headers={
+            "Authorization": "Bearer " + token,
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "MCP-Protocol-Version": "2025-06-18",
+        }, method="POST")
+        with _heygen_direct_opener().open(req, timeout=timeout) as response:
+            return response.read().decode("utf-8")
+
+    token = _heygen_mcp_access_token()
+    for attempt in range(2):
+        try:
+            raw = request(token)
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401 and attempt == 0:
+                token = _heygen_mcp_access_token(force_refresh=True)
+                continue
+            detail = exc.read().decode("utf-8", "replace").replace("\n", " ")[:500]
+            if exc.code == 429:
+                raise HeyGenRateLimited("HeyGen MCP 限流(429): %s" % detail) from exc
+            raise RuntimeError("HeyGen MCP 失败: HTTP %s %s" % (exc.code, detail)) from exc
+        except OSError as exc:
+            raise HeyGenNetworkError("HeyGen MCP 网络失败: %s" % str(getattr(exc, "reason", exc))[:200]) from exc
+
+    messages = [json.loads(line[6:]) for line in raw.splitlines() if line.startswith("data: ")]
+    if not messages and raw.lstrip().startswith("{"):
+        messages = [json.loads(raw)]
+    if not messages:
+        raise RuntimeError("HeyGen MCP 返回解析失败")
+    message = messages[-1]
+    if message.get("error"):
+        raise RuntimeError("HeyGen MCP 失败: %s" % json.dumps(message["error"], ensure_ascii=False)[:500])
+    result = message.get("result") or {}
+    texts = [item.get("text", "") for item in result.get("content", []) if item.get("type") == "text"]
+    detail = texts[0] if texts else json.dumps(result, ensure_ascii=False)
+    if result.get("isError"):
+        if "429" in detail or "rate_limit" in detail.lower():
+            raise HeyGenRateLimited("HeyGen MCP 限流: %s" % detail[:500])
+        raise RuntimeError("HeyGen MCP 工具失败: %s" % detail[:500])
+    if texts:
+        try:
+            return json.loads(texts[0])
+        except json.JSONDecodeError:
+            return {"text": texts[0]}
+    return result.get("structuredContent") or result
+
+
 def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, resolution, duration,
                                    prompt=None, direct=False, enhance_prompt=False):
     # avatar_id 是 1~3 个 look 的数组 —— 多个 look 会让 HeyGen 在【同一个镜头】里同时出现多个人，
@@ -2012,11 +2115,27 @@ def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, re
     refs = [{"type": "asset_id", "asset_id": a} for a in refs if a]
     if refs:
         payload["references"] = refs
-    body = json.dumps(payload, ensure_ascii=False).encode()
-    data = _heygen_request_json("POST", "/videos", body, {
-        "Content-Type": "application/json",
-    }, timeout=90, direct=direct)
-    video_id = ((data.get("data") or {}).get("video_id") or "").strip()
+    if _heygen_mcp_enabled():
+        arguments = {
+            "prompt": payload["prompt"],
+            "avatarId": payload["avatar_id"],
+            "aspectRatio": payload["aspect_ratio"],
+            "resolution": payload["resolution"],
+            "autoDuration": False,
+            "duration": payload["duration"],
+            "enhancePrompt": payload["enhance_prompt"],
+            "title": payload["title"],
+        }
+        if refs:
+            arguments["references"] = refs
+        data = _heygen_mcp_call("create_video_from_cinematic_avatar", arguments, timeout=90)
+        video_id = str(data.get("video_id") or data.get("id") or "").strip()
+    else:
+        body = json.dumps(payload, ensure_ascii=False).encode()
+        data = _heygen_request_json("POST", "/videos", body, {
+            "Content-Type": "application/json",
+        }, timeout=90, direct=direct)
+        video_id = ((data.get("data") or {}).get("video_id") or "").strip()
     if not video_id:
         raise RuntimeError("HeyGen未返回video_id: %s" % json.dumps(data, ensure_ascii=False)[:500])
     return video_id
@@ -2212,7 +2331,11 @@ def _heygen_poll_video(video_id, direct=False, deadline_s=None):
     net_fails = 0
     while time.time() < deadline:
         try:
-            data = _heygen_request_json("GET", "/videos/" + urllib.parse.quote(video_id), timeout=90, direct=direct)
+            if _heygen_mcp_enabled():
+                info = _heygen_mcp_call("get_video", {"videoId": video_id}, timeout=90)
+            else:
+                data = _heygen_request_json("GET", "/videos/" + urllib.parse.quote(video_id), timeout=90, direct=direct)
+                info = data.get("data") or {}
         except HeyGenNetworkError as e:
             # 轮询是幂等 GET、不计费——隧道瞬时抖动不该判死任务、白烧提交费(#605)。
             # 等下一轮重试；deadline 仍是总上限，不会无限转。provider 明确 failed 才判失败(见下)。
@@ -2221,7 +2344,6 @@ def _heygen_poll_video(video_id, direct=False, deadline_s=None):
                   % (video_id, net_fails, HEYGEN_POLL_INTERVAL, str(e)[:120]), flush=True)
             time.sleep(HEYGEN_POLL_INTERVAL)
             continue
-        info = data.get("data") or {}
         status = str(info.get("status") or "").lower()
         if status != last_status:
             print("[heygen] video_id=%s status=%s" % (video_id, status), flush=True)
