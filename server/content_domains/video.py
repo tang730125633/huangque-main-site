@@ -1795,21 +1795,34 @@ def _shrink_motion_reference(reference_video_file):
 
 def _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion, direct=False):
     title = "huangque video %d" % int(time.time())
-    body = json.dumps({
-        "title": title,
-        "type": "image",
-        "image": {"type": "asset_id", "asset_id": image_asset_id},
-        "audio_asset_id": audio_asset_id,
-        "resolution": resolution,
-        "aspect_ratio": ratio,
-        "fit": "cover",
-        "expressiveness": motion,
-        "output_format": "mp4",
-    }, ensure_ascii=False).encode()
-    data = _heygen_request_json("POST", "/videos", body, {
-        "Content-Type": "application/json",
-    }, timeout=90, direct=direct)
-    video_id = ((data.get("data") or {}).get("video_id") or "").strip()
+    if _heygen_mcp_enabled():
+        data = _heygen_mcp_call("create_video_from_image", {
+            "title": title,
+            "image": {"type": "asset_id", "asset_id": image_asset_id},
+            "audioAssetId": audio_asset_id,
+            "resolution": resolution,
+            "aspectRatio": ratio,
+            "fit": "cover",
+            "expressiveness": motion,
+            "outputFormat": "mp4",
+        }, timeout=90)
+        video_id = str(data.get("video_id") or data.get("id") or "").strip()
+    else:
+        body = json.dumps({
+            "title": title,
+            "type": "image",
+            "image": {"type": "asset_id", "asset_id": image_asset_id},
+            "audio_asset_id": audio_asset_id,
+            "resolution": resolution,
+            "aspect_ratio": ratio,
+            "fit": "cover",
+            "expressiveness": motion,
+            "output_format": "mp4",
+        }, ensure_ascii=False).encode()
+        data = _heygen_request_json("POST", "/videos", body, {
+            "Content-Type": "application/json",
+        }, timeout=90, direct=direct)
+        video_id = ((data.get("data") or {}).get("video_id") or "").strip()
     if not video_id:
         raise RuntimeError("HeyGen未返回video_id: %s" % json.dumps(data, ensure_ascii=False)[:500])
     return video_id
@@ -1996,6 +2009,10 @@ _HEYGEN_MCP_CREDENTIALS = os.environ.get("HEYGEN_MCP_CREDENTIALS", "").strip()
 _heygen_mcp_auth_lock = threading.Lock()
 
 
+class HeyGenMCPAuthError(RuntimeError):
+    pass
+
+
 def _heygen_mcp_enabled():
     return bool(_HEYGEN_MCP_CREDENTIALS)
 
@@ -2004,9 +2021,9 @@ def _heygen_mcp_access_token(force_refresh=False):
     path = pathlib.Path(_HEYGEN_MCP_CREDENTIALS)
     with _heygen_mcp_auth_lock:
         if not path.is_file():
-            raise ValueError("HeyGen MCP OAuth 未配置")
+            raise HeyGenMCPAuthError("HeyGen MCP OAuth 未配置")
         if path.stat().st_mode & 0o077:
-            raise RuntimeError("HeyGen MCP OAuth 凭据权限必须为 600")
+            raise HeyGenMCPAuthError("HeyGen MCP OAuth 凭据权限必须为 600")
         lock_fd = os.open(str(path) + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
         try:
             os.fchmod(lock_fd, 0o600)
@@ -2015,7 +2032,7 @@ def _heygen_mcp_access_token(force_refresh=False):
             if not force_refresh and credentials.get("access_token") and float(credentials.get("expires_at") or 0) > time.time() + 60:
                 return credentials["access_token"]
             if not credentials.get("client_id") or not credentials.get("refresh_token"):
-                raise RuntimeError("HeyGen MCP OAuth 不可刷新，请重新授权")
+                raise HeyGenMCPAuthError("HeyGen MCP OAuth 不可刷新，请重新授权")
             body = urllib.parse.urlencode({
                 "grant_type": "refresh_token",
                 "client_id": credentials["client_id"],
@@ -2031,10 +2048,11 @@ def _heygen_mcp_access_token(force_refresh=False):
                     refreshed = json.loads(response.read().decode("utf-8"))
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", "replace").replace("\n", " ")[:300]
-                raise RuntimeError("HeyGen MCP OAuth 刷新失败: HTTP %s %s" % (exc.code, detail)) from exc
+                raise HeyGenMCPAuthError("HeyGen MCP OAuth 刷新失败: HTTP %s %s" % (exc.code, detail)) from exc
             credentials.update({
                 "access_token": refreshed["access_token"],
-                "refresh_token": refreshed.get("refresh_token") or credentials["refresh_token"],
+                # HeyGen 当前 refresh token 为一次性；响应不下发新 token 时不能保留已失效的旧值。
+                "refresh_token": refreshed.get("refresh_token") or "",
                 "expires_at": int(time.time()) + int(refreshed.get("expires_in") or 3600),
             })
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as temp:
@@ -2071,6 +2089,8 @@ def _heygen_mcp_call(tool, arguments, timeout=90):
                 token = _heygen_mcp_access_token(force_refresh=True)
                 continue
             detail = exc.read().decode("utf-8", "replace").replace("\n", " ")[:500]
+            if exc.code in (401, 403):
+                raise HeyGenMCPAuthError("HeyGen MCP 鉴权失败: HTTP %s %s" % (exc.code, detail)) from exc
             if exc.code == 429:
                 raise HeyGenRateLimited("HeyGen MCP 限流(429): %s" % detail) from exc
             raise RuntimeError("HeyGen MCP 失败: HTTP %s %s" % (exc.code, detail)) from exc
@@ -2333,14 +2353,22 @@ class HeyGenBilledError(RuntimeError):
 HEYGEN_MOTION_DEADLINE = CINEMATIC_GEN_DEADLINE
 
 
-def _heygen_poll_video(video_id, direct=False, deadline_s=None):
+def _heygen_poll_video(video_id, direct=False, deadline_s=None, mcp=False):
     deadline = time.time() + (deadline_s or HEYGEN_TIMEOUT)
     last_status = ""
     net_fails = 0
     while time.time() < deadline:
         try:
-            if _heygen_mcp_enabled():
-                info = _heygen_mcp_call("get_video", {"videoId": video_id}, timeout=90)
+            if mcp:
+                try:
+                    info = _heygen_mcp_call("get_video", {"videoId": video_id}, timeout=90)
+                except RuntimeError as e:
+                    # GET 不计费。MCP OAuth 即使在已提交后失效，也必须用 API Key 把成片/真实失败接回来。
+                    print("[heygen] MCP GET 不可用，回退 API GET video_id=%s: %s"
+                          % (video_id, str(e)[:160]), flush=True)
+                    data = _heygen_request_json("GET", "/videos/" + urllib.parse.quote(video_id),
+                                                timeout=90, direct=direct)
+                    info = data.get("data") or {}
             else:
                 data = _heygen_request_json("GET", "/videos/" + urllib.parse.quote(video_id), timeout=90, direct=direct)
                 info = data.get("data") or {}
@@ -2474,6 +2502,8 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
             return generate_heygen_video_direct(image_file, audio_file, resolution, ratio, motion)
         except HeyGenBilledError:
             raise   # 已提交=已计费，重发就是再付一次钱（泽龙转发同一账号）
+        except HeyGenMCPAuthError:
+            raise   # MCP 创建前鉴权失败，第二条线路仍是同一份 OAuth；立刻退点，不能假回退。
         except Exception as e:
             print("[heygen] 直连失败(提交前),回退泽龙中转: %s" % str(e)[:200], flush=True)
     image_fp = _resolve_out_file(image_file)
@@ -4361,7 +4391,8 @@ def gen_cinematic(payload):
         # ↓ 此刻已计费。之后任何失败都不能重发（见 HeyGenBilledError）——HeyGen 提交即扣费。
         update_video_asset_phase(job_id, "polling_video", provider_video_id=video_id)
         try:
-            info = _heygen_poll_video(video_id, direct=True, deadline_s=HEYGEN_MOTION_DEADLINE)
+            info = _heygen_poll_video(video_id, direct=True, deadline_s=HEYGEN_MOTION_DEADLINE,
+                                      mcp=_heygen_mcp_enabled())
             update_video_asset_phase(job_id, "downloading_video", source_video_url=info.get("video_url"))
             video_file = _download_video_file_direct(info["video_url"], "cinematic")
         except Exception as e:
