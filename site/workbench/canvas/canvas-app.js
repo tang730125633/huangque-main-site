@@ -2693,6 +2693,10 @@
   }
   function canvasPointFromClient(e){
     var r=inner.getBoundingClientRect();
+    if(!Object.keys(nodes).length&&(e.clientX<r.left||e.clientY<r.top)){
+      centerEmptyView();
+      r=inner.getBoundingClientRect();
+    }
     return {x:Math.max(0,(e.clientX-r.left)/zoom),y:Math.max(0,(e.clientY-r.top)/zoom)};
   }
   canvas.addEventListener('dragover',function(e){
