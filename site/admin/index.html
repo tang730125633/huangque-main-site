@@ -92,6 +92,11 @@
     .invite-config{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
     .invite-config label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12px}
     .invite-config .field,.invite-config select{width:100%;min-width:0}
+    .invite-network{margin-top:18px;padding-top:18px;border-top:1px solid var(--line)}
+    .network-chain{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-bottom:12px}.network-chain .arrow{color:var(--muted)}
+    .network-tree,.network-tree ul{list-style:none;margin:0;padding-left:18px}.network-tree{padding-left:0}.network-tree ul{margin-top:8px;border-left:1px solid var(--line)}
+    .network-node{display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:rgba(17,22,19,.72)}.network-node+.network-tree{margin-top:8px}
+    .network-node-main{min-width:150px;flex:1}.network-node-main a{color:var(--text);text-decoration:none}.network-node-main a:hover{text-decoration:underline}.network-node-meta{display:flex;gap:6px;align-items:center;flex-wrap:wrap}.network-node-meta a.mini{display:inline-flex;align-items:center;color:var(--text);text-decoration:none}.network-tree .empty{margin-top:8px;padding:9px 10px}
     .membership-recharge{display:grid;grid-template-columns:minmax(220px,1fr) minmax(180px,.6fr) minmax(260px,1.4fr) auto;gap:10px;align-items:end;margin:0 0 16px;padding:14px;border:1px solid rgba(240,190,85,.22);border-radius:8px;background:rgba(240,190,85,.055)}
     .membership-recharge label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12px}.membership-recharge .field,.membership-recharge select{width:100%;min-width:0}
     .feature-card{border:1px solid var(--line);border-radius:8px;background:rgba(32,40,34,.72);padding:14px;display:flex;flex-direction:column;gap:12px;min-height:154px}
@@ -130,7 +135,7 @@
     .case-thumb{width:92px;height:110px;object-fit:cover;border-radius:6px;background:#0b0f0d}
     .case-item h3{margin:0;font-size:14px}.case-meta,.case-metrics{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-top:7px}.case-metrics{color:var(--muted);font-size:12px}
     .case-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}.case-actions button{height:29px;font-size:12px;padding:0 9px}
-    @media (max-width:960px){.shell{padding:20px 14px}.span3,.span4,.span6,.span8{grid-column:span 12}.channels,.feature-grid,.invite-config,.membership-recharge,.detail-grid,.case-workspace{grid-template-columns:1fr}.ledger-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ledger-stat:nth-child(2){border-right:0}.ledger-stat:nth-child(-n+2){border-bottom:1px solid var(--line)}header{flex-direction:column}.user{width:100%}.case-list{max-height:none}}
+    @media (max-width:960px){.shell{padding:20px 14px}.span3,.span4,.span6,.span8{grid-column:span 12}.channels,.feature-grid,.invite-config,.membership-recharge,.detail-grid,.case-workspace{grid-template-columns:1fr}.ledger-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ledger-stat:nth-child(2){border-right:0}.ledger-stat:nth-child(-n+2){border-bottom:1px solid var(--line)}header{flex-direction:column}.user{width:100%}.case-list{max-height:none}.network-node{align-items:stretch}.network-node .actions{width:100%}}
     @media (max-width:560px){.case-fields,.case-upload{grid-template-columns:1fr}.case-item{grid-template-columns:72px 1fr}.case-thumb{width:72px;height:92px}}
   </style>
 </head>
@@ -352,6 +357,11 @@
           <select id="inviteRisk"><option value="">全部风控</option><option value="normal">正常</option><option value="review">待复核</option><option value="blocked">已封禁</option></select>
         </div>
         <div id="inviteRelationsBox"></div>
+        <div class="invite-network">
+          <div class="section-head"><div><h2>关系树 / 链路</h2><div class="hint">搜索用户后查看完整上级链路；按需展开下级。节点可打开公开名片，展示风控与奖励事件状态。</div></div><button id="inviteNetworkRefresh" disabled>刷新链路</button></div>
+          <div class="toolbar"><input class="field" id="inviteNetworkUser" type="search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="搜索关系树用户" placeholder="输入用户账号 / ID"><button class="primary" id="inviteNetworkSearch">查看关系树</button></div>
+          <div id="inviteNetworkBox" class="empty">输入用户账号或 ID 后查看关系树</div>
+        </div>
         <h2 style="margin-top:18px">管理员审计</h2>
         <div id="inviteAuditBox"></div>
       </section>
@@ -928,6 +938,58 @@
     el('inviteStatsBox').innerHTML=metrics.map(function(x){return '<div class="card metric span3"><div><span>'+x[0]+'</span><b>'+Number(x[1]||0).toLocaleString()+'</b></div></div>'}).join('');
   }
   function inviteStatusName(v){return ({bound:'已绑定',invalid:'已无效',unbound:'已解绑',normal:'正常',review:'待复核',blocked:'已封禁',active:'正常',banned:'已停用'})[v]||v}
+  // 网络接口集中在这里，后端确定字段后只需调整这一处。
+  var INVITE_NETWORK_API='/api/admin/invite/network', INVITE_NETWORK_LIMIT=20;
+  function networkId(node){return String(node&&(node.user_id||node.id||node.username)||'')}
+  function inviteNetworkUrl(userId,parentId,beforeId){var q=['user_id='+encodeURIComponent(userId),'limit='+INVITE_NETWORK_LIMIT];if(parentId)q.push('parent_id='+encodeURIComponent(parentId));if(beforeId)q.push('before_id='+encodeURIComponent(beforeId));return INVITE_NETWORK_API+'?'+q.join('&')}
+  function networkName(node){return node.display_name||node.name||node.username||('用户 #'+networkId(node))}
+  function networkCard(node){var url=String(node.public_card_url||node.card_url||node.public_url||'');if(!(/^(?:https?:)?\/\//.test(url)||url.charAt(0)==='/'))return '';return '<a class="mini" href="'+esc(url)+'" target="_blank" rel="noopener">公开名片</a>'}
+  function networkStatus(node){var risk=node.risk_status||'normal',relation=node.relationship_status||node.relation_status||node.status||'bound';return '<span class="pill '+(risk==='normal'?'ok':'warn')+'">'+esc(inviteStatusName(relation))+'</span><span class="pill '+(risk==='normal'?'ok':(risk==='blocked'?'fail':'warn'))+'">风控：'+esc(inviteStatusName(risk))+'</span>'}
+  function networkReward(node){var reward=node.reward||{},type=node.reward_event_type||node.reward_type||reward.type||'无奖励事件',status=node.reward_event_status||node.reward_status||reward.status||'—';return '<span class="pill neutral">'+esc(type)+'</span><span class="muted">奖励：'+esc(status)+'</span>'}
+  function storeNetworkNodes(items){(items||[]).forEach(function(node){var id=networkId(node);if(id)state.inviteNetwork.nodes[id]=node})}
+  function networkTreeItem(id){
+    var data=state.inviteNetwork,node=data.nodes[id],children=data.children[id],expanded=!!data.expanded[id],loading=!!data.loading[id],canExpand=(Array.isArray(children)&&children.length)||node.has_children!==false&&Number(node.children_count||node.descendant_count||1)!==0;
+    var control=canExpand?'<button class="mini" data-network-toggle="'+esc(id)+'" '+(loading?'disabled':'')+'>'+ (expanded?'收起下级':(loading?'加载中…':'展开下级'))+'</button>':'';
+    var html='<li><div class="network-node"><div class="network-node-main"><b>'+esc(networkName(node))+'</b><div class="muted">'+esc(node.username||'')+(node.account_id?' · '+esc(node.account_id):'')+'</div></div><div class="network-node-meta">'+networkStatus(node)+networkReward(node)+networkCard(node)+control+'</div></div>';
+    if(expanded){
+      if(data.errors[id]) html+='<div class="error">下级加载失败：'+esc(data.errors[id])+'</div>';
+      else if(!Array.isArray(children)) html+='<div class="empty">正在加载下级…</div>';
+      else if(!children.length) html+='<div class="empty">暂无下级用户</div>';
+      else html+='<ul>'+children.map(function(child){return networkTreeItem(networkId(child))}).join('')+'</ul>';
+      if(data.before[id])html+='<button class="mini" data-network-more="'+esc(id)+'">加载更多下级</button>';
+    }
+    return html+'</li>';
+  }
+  function renderInviteNetwork(){
+    var data=state.inviteNetwork,box=el('inviteNetworkBox');
+    if(!data||!data.rootId)return;
+    var ancestors=data.ancestors||[],chain=ancestors.map(function(node){return '<span>'+esc(networkName(node))+'</span>'+networkCard(node)}).join('<span class="arrow">→</span>');
+    if(chain)chain+='<span class="arrow">→</span>';
+    box.className='';box.innerHTML='<div class="network-chain">'+chain+'<b>'+esc(networkName(data.nodes[data.rootId]))+'</b></div><ul class="network-tree">'+networkTreeItem(data.rootId)+'</ul>';
+    Array.prototype.forEach.call(box.querySelectorAll('[data-network-toggle]'),function(btn){btn.onclick=function(){var id=btn.getAttribute('data-network-toggle');if(data.expanded[id]){data.expanded[id]=false;renderInviteNetwork()}else loadInviteNetworkChildren(id)}});
+    Array.prototype.forEach.call(box.querySelectorAll('[data-network-more]'),function(btn){btn.onclick=function(){var id=btn.getAttribute('data-network-more');loadInviteNetworkChildren(id,data.before[id])}});
+  }
+  function loadInviteNetworkChildren(parentId,beforeId){
+    var data=state.inviteNetwork;if(!data||data.loading[parentId])return;
+    data.loading[parentId]=true;data.expanded[parentId]=true;data.errors[parentId]='';renderInviteNetwork();
+    api(inviteNetworkUrl(data.userId,parentId,beforeId)).then(function(response){
+      var children=response.children||response.items||((response.node||{}).children)||[];
+      storeNetworkNodes(children);
+      var known=data.children[parentId]||[],seen={};known.forEach(function(node){seen[networkId(node)]=true});children.forEach(function(node){if(!seen[networkId(node)])known.push(node)});
+      data.children[parentId]=known;data.before[parentId]=response.next_before_id||'';
+    }).catch(function(e){data.errors[parentId]=e.message||'请求失败'}).finally(function(){data.loading[parentId]=false;renderInviteNetwork()});
+  }
+  function loadInviteNetwork(){
+    var userId=(el('inviteNetworkUser').value||'').trim(),box=el('inviteNetworkBox');
+    if(!userId){box.className='error';box.textContent='请输入用户账号或 ID';return}
+    el('inviteNetworkRefresh').disabled=true;box.className='empty';box.textContent='正在读取上级链路和本人节点…';
+    api(inviteNetworkUrl(userId)).then(function(response){
+      var root=response.user||response.root||response.node||response.item;
+      if(!root||!networkId(root))throw new Error('未找到该用户的关系节点');
+      state.inviteNetwork={userId:userId,rootId:networkId(root),nodes:{},children:{},before:{},expanded:{},loading:{},errors:{},ancestors:response.ancestors||response.ancestor_chain||response.parents||[]};
+      storeNetworkNodes(state.inviteNetwork.ancestors);storeNetworkNodes([root]);renderInviteNetwork();
+    }).catch(function(e){box.className='error';box.textContent=e.message||'关系树读取失败'}).finally(function(){el('inviteNetworkRefresh').disabled=false});
+  }
   function renderInviteRelations(d){
     var items=d.items||[];
     if(!items.length){el('inviteRelationsBox').innerHTML='<div class="empty">暂无符合条件的邀请关系</div>';return}
@@ -1125,6 +1187,9 @@
   el('rechargeUser').oninput=function(){clearTimeout(state.rechargeTimer);state.rechargeTimer=setTimeout(loadRecharge,260)};
   el('inviteSave').onclick=saveInviteConfig;
   el('inviteRefresh').onclick=loadInvite;
+  el('inviteNetworkSearch').onclick=loadInviteNetwork;
+  el('inviteNetworkRefresh').onclick=loadInviteNetwork;
+  el('inviteNetworkUser').onkeydown=function(e){if(e.key==='Enter')loadInviteNetwork()};
   el('rewardRefresh').onclick=loadInvite;
   el('inviteExport').onclick=exportInvite;
   ['inviteInviter','inviteInvitee','inviteCode'].forEach(function(id){el(id).oninput=function(){clearTimeout(state.inviteTimer);state.inviteTimer=setTimeout(loadInvite,300)}});
