@@ -548,25 +548,28 @@
   }
   function copyText(text, onDone){
     if(!text) return Promise.resolve(false);
+    function fallback(){
+      var ta=null;
+      try{
+        ta=document.createElement('textarea');
+        ta.value=text;
+        ta.setAttribute('readonly','readonly');
+        ta.style.cssText='position:fixed;left:-9999px;top:0;opacity:0;';
+        document.body.appendChild(ta);
+        ta.select();
+        var copied=document.execCommand('copy');
+        if(copied&&onDone) onDone();
+        return !!copied;
+      }catch(_e){
+        return false;
+      }finally{
+        if(ta&&ta.parentNode) ta.parentNode.removeChild(ta);
+      }
+    }
     if(navigator.clipboard&&navigator.clipboard.writeText){
-      return navigator.clipboard.writeText(text).then(function(){ if(onDone) onDone(); return true; }).catch(function(){ return false; });
+      return navigator.clipboard.writeText(text).then(function(){ if(onDone) onDone(); return true; }).catch(fallback);
     }
-    var ta=null;
-    try{
-      ta=document.createElement('textarea');
-      ta.value=text;
-      ta.setAttribute('readonly','readonly');
-      ta.style.cssText='position:fixed;left:-9999px;top:0;opacity:0;';
-      document.body.appendChild(ta);
-      ta.select();
-      var copied=document.execCommand('copy');
-      if(copied&&onDone) onDone();
-      return Promise.resolve(!!copied);
-    }catch(_e){
-      return Promise.resolve(false);
-    }finally{
-      if(ta&&ta.parentNode) ta.parentNode.removeChild(ta);
-    }
+    return Promise.resolve(fallback());
   }
   function setPicked(id,selector,value){
     if(!value) return;
@@ -835,6 +838,7 @@
     var isReverse=(bd.type==='breakdown_reverse');
     return {
       type:bd.type||'breakdown',
+      job_id:bd.job_id||bd._history_job_id||null,
       source_url:bd.source_url||'',
       source_title:bd.source_title||'',
       source_platform:bd.source_platform||'',
@@ -853,6 +857,15 @@
       reverse_audit:isReverse?(bd.reverse_audit||null):null
     };
   }
+  function compactBreakdownHistoryMeta(bd){
+    var meta=breakdownMetaFromResult(bd);
+    return {
+      type:meta.type,job_id:meta.job_id,source_url:meta.source_url,
+      source_title:meta.source_title,source_platform:meta.source_platform,
+      duration:meta.duration,analysis:meta.analysis,scenes:meta.scenes,
+      prompt:meta.prompt,source_type:meta.source_type
+    };
+  }
   function isBreakdownHistoryMeta(meta){
     meta=meta||{};
     var prompt=meta.type==='breakdown_reverse'?reverseResultPrompt(meta):String(meta.prompt||'').trim();
@@ -860,10 +873,10 @@
   }
   function saveBreakdownHistory(bd){
     if(!bd) return;
-    var savedMeta=breakdownMetaFromResult(bd);
+    var savedMeta=compactBreakdownHistoryMeta(bd);
     if(!isBreakdownHistoryMeta(savedMeta)) return;
     var item={
-      kind:'breakdown',
+      kind:'breakdown',job_id:savedMeta.job_id,
       title:bd.source_title||((bd.type==='breakdown_reverse')?'视频提示词反推':'爆款拆解'),
       created_at:Math.floor(Date.now()/1000),
       meta:savedMeta
@@ -877,7 +890,12 @@
       });
       dedup.unshift(item);
       localStorage.setItem(BREAKDOWN_HISTORY_KEY, JSON.stringify(dedup.slice(0,12)));
-    }catch(_e){}
+      return true;
+    }catch(_e){
+      if(historyState) historyState.textContent='本机历史空间不足，完整结果仍可从服务器生成记录恢复';
+      if(window.HQ&&window.HQ.toast) HQ.toast('本机历史保存失败，完整结果仍保存在服务器');
+      return false;
+    }
   }
   function readBreakdownHistory(){
     try{
@@ -891,13 +909,14 @@
       return (meta.results||[]).map(function(bd, idx){
         return {
           kind:'breakdown',
+          job_id:item&&item.job_id,
           title:bd.source_title||((item&&item.title)||('批量拆解 '+(idx+1))),
           created_at:item&&item.created_at,
-          meta:breakdownMetaFromResult(bd)
+          meta:Object.assign(breakdownMetaFromResult(bd),{job_id:item&&item.job_id,_batch_index:idx})
         };
       }).filter(function(x){ return isBreakdownHistoryMeta(x.meta); });
     }
-    return isBreakdownHistoryMeta(meta) ? [{kind:'breakdown',title:item&&item.title,created_at:item&&item.created_at,meta:meta}] : [];
+    return isBreakdownHistoryMeta(meta) ? [{kind:'breakdown',job_id:item&&item.job_id,title:item&&item.title,created_at:item&&item.created_at,meta:Object.assign({},meta,{job_id:item&&item.job_id})}] : [];
   }
   function prepareBreakdownRemakePayload(bd, style){
     return {scenes:normalizeBreakdownScenes((bd&&bd.scenes)||[]),style:style||'剧情'};
@@ -1190,8 +1209,9 @@
         if(d.phase&&d.phase!==lastPhase){ lastPhase=d.phase; setBdPhase(d.phase,'active'); }
         if(d.status==='done'){
           clearInterval(iv); _localBusy(btn,false); markAllBdPhasesDone();
-          switchBreakdownTool('reverse_prompt'); renderBreakdownReverse(d.result||{});
-          saveBreakdownHistory(d.result||{}); loadHistory();
+          var localResult=d.result||{}; localResult._history_job_id=jobId;
+          switchBreakdownTool('reverse_prompt'); renderBreakdownReverse(localResult);
+          saveBreakdownHistory(localResult); loadHistory();
           if(bdLocalStatus){bdLocalStatus.textContent='反推完成，已保存到生成记录';bdLocalStatus.style.color='#4ade80';}
           if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
         }else if(d.status==='error'||d.status==='failed'){
@@ -1316,6 +1336,7 @@
             if(d.status==='done'){
               clearInterval(iv); resetBdBtn(); markAllBdPhasesDone();
               var result=d.result||{};
+              result._history_job_id=x.d.job_id;
               if(result.type==='breakdown_batch'){
                 switchBreakdownTool('scenes');
                 var first=(result.results||[]).find(function(item){
@@ -1323,7 +1344,7 @@
                 });
                 if(first) renderBreakdown(first);
                 else scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">批量拆解没有生成有效分镜，请重试</div>';
-                (result.results||[]).forEach(function(item){ saveBreakdownHistory(item); });
+                (result.results||[]).forEach(function(item){ item._history_job_id=x.d.job_id; saveBreakdownHistory(item); });
                 var msg='批量完成：'+result.results.length+'/'+result.total+' 成功';
                 if(result.errors.length) msg+='，'+result.errors.length+' 条失败';
                 if(window.HQ&&window.HQ.toast) HQ.toast(msg);
@@ -1360,17 +1381,23 @@
   }; }
 
   var copyBtn=null; document.querySelectorAll('.sc-btn').forEach(function(b){ if(b.textContent.indexOf('复制全部')>=0) copyBtn=b; });
-  if(copyBtn){ var co=copyBtn.innerHTML; copyBtn.onclick=function(){
+  var copyAllOrig=copyBtn?copyBtn.innerHTML:'';
+  function copyAllVisibleText(){
     var txt='';
     if(currentMode==='breakdown' && isBreakdownReverseTool()) txt=reversePromptText();
     else {
       var copyScenes=getDisplayedScenes();
       if(copyScenes.length) txt=scriptText(copyScenes);
     }
-    if(!txt) return;
-    if(navigator.clipboard) navigator.clipboard.writeText(txt);
-    copyBtn.textContent='已复制 ✓'; setTimeout(function(){ copyBtn.innerHTML=co; },1500);
-  }; }
+    if(!txt) return Promise.resolve(false);
+    return copyText(txt,function(){
+      copyBtn.textContent='已复制 ✓'; setTimeout(function(){ copyBtn.innerHTML=copyAllOrig; },1500);
+    }).then(function(copied){
+      if(!copied&&window.HQ&&window.HQ.toast) HQ.toast('复制失败，请检查浏览器剪贴板权限');
+      return copied;
+    });
+  }
+  if(copyBtn){ copyBtn.onclick=copyAllVisibleText; }
 
   if(exportBtn){ var exportOrig=exportBtn.innerHTML; exportBtn.onclick=function(){
     var exportScenes=getDisplayedScenes();
@@ -1386,6 +1413,30 @@
     exportBtn.textContent='已导出 ✓'; setTimeout(function(){exportBtn.innerHTML=exportOrig;},1500);
   }; }
 
+  function loadBreakdownHistoryDetail(item){
+    var meta=(item&&item.meta)||{}, jobId=(item&&item.job_id)||meta.job_id;
+    if(!jobId) return Promise.resolve(meta);
+    return fetch('/api/gen/job/'+encodeURIComponent(jobId),{
+      cache:'no-store',credentials:'same-origin',
+      headers:{'Authorization':'Bearer '+tok(),'Cache-Control':'no-cache'}
+    }).then(function(r){
+      if(r.status===401){ if(window.HQ) HQ.login(); throw new Error('请先登录后查看'); }
+      return r.json().catch(function(){return {};}).then(function(d){
+        if(!r.ok) throw new Error(d.detail||'历史详情读取失败');
+        var result=d.result||{}, detail=result;
+        if(result.type==='breakdown_batch'){
+          var list=Array.isArray(result.results)?result.results:[];
+          var idx=Number(meta._batch_index);
+          detail=Number.isInteger(idx)&&idx>=0&&idx<list.length?list[idx]:list.find(function(x){
+            return x&&meta.source_url&&x.source_url===meta.source_url;
+          });
+          if(!detail) throw new Error('历史详情中缺少对应拆解结果');
+        }
+        detail=Object.assign({},detail,{_history_job_id:jobId});
+        return detail;
+      });
+    });
+  }
   function historyCard(item){
     var m=item.meta||{}, list=Array.isArray(m.scenes)?m.scenes:[];
     var isBreakdown=(item.kind==='breakdown')||!!m.source_platform;
@@ -1406,20 +1457,21 @@
         switchMode('breakdown');
         if(isReverse){
           switchBreakdownTool('reverse_prompt');
-          renderBreakdownReverse({
-            type:'breakdown_reverse',source_url:m.source_url,source_title:m.source_title||heading,
-            source_platform:m.source_platform,duration:m.duration,prompt:m.prompt||'',
-            sections:m.sections||null,frame_thumbnails:m.frame_thumbnails||[],
-            reference_thumbnail_indices:m.reference_thumbnail_indices||[],
-            audit_thumbnail_indices:m.audit_thumbnail_indices||[],frame_manifest:m.frame_manifest||[],
-            timeline_audit:m.timeline_audit||null,quality_score:m.quality_score||null,
-            reverse_audit:m.reverse_audit||null
+          if(historyState) historyState.textContent='正在读取完整历史详情…';
+          loadBreakdownHistoryDetail(item).then(function(detail){
+            renderBreakdownReverse(Object.assign({},detail,{source_title:detail.source_title||heading}));
+            if(historyState) historyState.textContent='已载入：'+heading;
+            scenes.scrollIntoView({behavior:'smooth',block:'start'});
+          }).catch(function(error){
+            renderBreakdownReverse(Object.assign({},m,{source_title:m.source_title||heading}));
+            if(historyState) historyState.textContent='完整详情读取失败，已载入服务器摘要';
+            if(window.HQ&&window.HQ.toast) HQ.toast((error&&error.message)||'历史详情读取失败');
           });
         }else{
           switchBreakdownTool('scenes');
           renderBreakdown({source_url:m.source_url,source_title:m.source_title||heading,source_platform:m.source_platform,duration:m.duration,analysis:m.analysis||'',scenes:list,frame_thumbnails:m.frame_thumbnails||[]});
+          if(historyState) historyState.textContent='已载入：'+heading;
         }
-        if(historyState) historyState.textContent='已载入：'+heading;
       }else{
         if(topic) topic.value=heading;
         setPicked('segStyle','.sc-opt',m.style); setPicked('segDur','.sc-opt',m.dur); setPicked('platRow','.sc-chip',m.platform);
@@ -1427,7 +1479,7 @@
         render({scenes:list},heading,m.style||'口播',m.dur||'');
         if(historyState) historyState.textContent='已载入：'+heading;
       }
-      scenes.scrollIntoView({behavior:'smooth',block:'start'});
+      if(!isReverse) scenes.scrollIntoView({behavior:'smooth',block:'start'});
     };
     return btn;
   }

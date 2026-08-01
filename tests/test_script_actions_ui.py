@@ -110,8 +110,9 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("BREAKDOWN_HISTORY_KEY='hq_script_breakdown_history'", self.html)
         self.assertIn("switchMode('breakdown')", self.html)
         self.assertIn("renderBreakdown({source_url:m.source_url", self.html)
-        self.assertIn("renderBreakdownReverse({", self.html)
-        self.assertIn("type:'breakdown_reverse',source_url:m.source_url", self.html)
+        self.assertIn("loadBreakdownHistoryDetail(item).then(function(detail)", self.html)
+        self.assertIn("renderBreakdownReverse(Object.assign({},detail", self.html)
+        self.assertIn("Object.assign({},detail,{source_title:detail.source_title||heading})", self.html)
         self.assertIn("analysis:m.analysis||''", self.html)
 
     def test_breakdown_analysis_is_rendered_and_saved_to_history(self):

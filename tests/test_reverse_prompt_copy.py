@@ -51,6 +51,7 @@ class ReversePromptCopyTests(unittest.TestCase):
                 "reversePromptText",
                 "copyText",
                 "copyReversePrompt",
+                "copyAllVisibleText",
             )
         )
 
@@ -117,6 +118,47 @@ copyReversePrompt().then(function(copied){{
         self.assertEqual(result["writes"], [])
         self.assertEqual(result["toasts"], ["复制失败，请检查浏览器剪贴板权限"])
         self.assertEqual(result["button"], "📋 复制提示词")
+
+    def test_visible_copy_all_rejection_does_not_report_success(self):
+        harness = f"""
+var toasts=[];
+var card={{textContent:'页面实际显示的反推提示词'}};
+var document={{
+  getElementById:function(id){{return id==='bdReversePromptText'?card:null;}},
+  createElement:function(){{throw new Error('fallback denied');}}
+}};
+var lastBreakdownReverse={{source_url:'https://example.invalid/video'}};
+Object.defineProperty(globalThis,'navigator',{{
+  value:{{clipboard:{{writeText:function(){{return Promise.reject(new Error('denied'));}}}}}},
+  configurable:true
+}});
+var copyBtn={{textContent:'复制全部',innerHTML:'复制全部'}};
+var copyAllOrig=copyBtn.innerHTML;
+var currentMode='breakdown';
+function isBreakdownReverseTool(){{return true;}}
+function getDisplayedScenes(){{return [];}}
+function scriptText(){{return '';}}
+var window={{HQ:{{toast:function(message){{toasts.push(message);}}}}}};
+var HQ=window.HQ;
+function setTimeout(callback){{callback();}}
+{self.functions}
+copyAllVisibleText().then(function(copied){{
+  process.stdout.write(JSON.stringify({{
+    copied:copied,toasts:toasts,button:copyBtn.innerHTML
+  }}));
+}});
+"""
+        result = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        got = json.loads(result.stdout)
+        self.assertFalse(got["copied"])
+        self.assertEqual(got["toasts"], ["复制失败，请检查浏览器剪贴板权限"])
+        self.assertEqual(got["button"], "复制全部")
 
 
 if __name__ == "__main__":

@@ -155,6 +155,37 @@ class AssetsStoreTests(unittest.TestCase):
         self.assertEqual(a["meta"]["prompt"], result["prompt"])
         self.assertEqual(a["meta"]["frame_thumbnails"], ["data:image/jpeg;base64,thumb2"])
 
+    def test_record_breakdown_reverse_round_trips_structured_audit(self):
+        thumbnails = ["data:image/jpeg;base64," + (str(i) * (240 * 1024)) for i in range(8)]
+        result = {
+            "type": "breakdown_reverse",
+            "source_title": "完整反推审计",
+            "source_url": "https://example.com/video/reverse-audit",
+            "source_platform": "douyin",
+            "duration": 16,
+            "prompt": "按四段时间轴复刻",
+            "sections": {"reverse_audit": {"model": "gemini"}},
+            "frame_thumbnails": thumbnails,
+            "reference_thumbnail_indices": [2, 4, 6, 8],
+            "audit_thumbnail_indices": [1, 3, 5, 7],
+            "frame_manifest": [{"global_frame_number": i} for i in range(1, 9)],
+            "timeline_audit": {"precision_seconds": 0.1, "windows": [[0, 4], [4, 8]]},
+            "quality_score": {"total": 96, "components": {"evidence": 96}},
+            "reverse_audit": {"segments": [{"segment_id": 1}]},
+        }
+        self.assertTrue(self.store.record_asset(181, "u", "breakdown", result))
+        asset = self.store.list_assets("u", kind="breakdown")[0]
+        meta = asset["meta"]
+        # 列表只带一张缩略图，完整 8 帧由所属 job 详情接口读取；结构化审计必须完整持久化。
+        self.assertEqual(meta["frame_thumbnails"], thumbnails[:1])
+        self.assertEqual(meta["frame_count"], 8)
+        self.assertEqual(meta["reference_thumbnail_indices"], [2, 4, 6, 8])
+        self.assertEqual(meta["audit_thumbnail_indices"], [1, 3, 5, 7])
+        self.assertEqual(len(meta["frame_manifest"]), 8)
+        self.assertEqual(meta["timeline_audit"]["precision_seconds"], 0.1)
+        self.assertEqual(meta["quality_score"]["total"], 96)
+        self.assertEqual(meta["reverse_audit"]["segments"][0]["segment_id"], 1)
+
     def test_record_breakdown_batch_keeps_all_results(self):
         result = {
             "type": "breakdown_batch",
