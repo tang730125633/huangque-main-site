@@ -25,6 +25,7 @@
   var RUN_ALL_REMOTE_LIMIT=2, RUN_ALL_RETRY_MS=4000, runAllBatch=null, runAllRetryTimer=null;
   var activeSidePanel='', accountAssetsLoaded=false, accountAssets=[], accountAssetsPromise=null;
   var agentSessions={};
+  var agentIP12Context=null, agentIP12Loaded=false, agentIP12Loading=false, agentIP12Error='';
   var currentBoardId=null, boardMode='mine', boardLastSeenUpdatedAt=0, boardConflict=false;
   var currentBoardScope='local', currentCollabVersion=0, currentCollabRole='', currentCollabName='', currentCollabMembers=[];
   var collabBoards=[], collabLoaded=false, collabLoading=false, collabError='', collabErrorHint='', collabCreating=false, collabSaving=false, collabQueuedSnap=null;
@@ -1624,6 +1625,29 @@
     if(!agentSessions[key]) agentSessions[key]={key:key,messages:[],draft:'',quote:null,points:null,quoteLoading:false,quoteError:'',pending:false,status:'',plan:null,applied:false};
     return agentSessions[key];
   }
+  function loadAgentIP12Context(){
+    if(agentIP12Loaded||agentIP12Loading) return;
+    agentIP12Loading=true; agentIP12Error='';
+    apiClient.json('/api/gen/digital-ip/projects',{cache:'no-store'}).then(function(data){
+      var projects=Array.isArray(data&&data.items)?data.items:[];
+      agentIP12Context=agentModule.buildIP12Context(projects[0]);
+      agentIP12Loaded=true;
+    }).catch(function(error){
+      agentIP12Context=null; agentIP12Loaded=true;
+      agentIP12Error=agentErrorText(error,'IP12 资料读取失败');
+    }).finally(function(){
+      agentIP12Loading=false;
+      if(activeSidePanel==='agent') renderAgentPanel();
+    });
+  }
+  function agentPageContext(){
+    return {page:'canvas',path:location.pathname,title:document.title,can_edit:canEditCanvas(),selected_count:Math.min(30,selectedNodeIds().length)};
+  }
+  function agentIP12Label(){
+    if(agentIP12Loading||!agentIP12Loaded) return '正在读取 IP12';
+    if(agentIP12Context) return '已结合 IP12 · '+agentIP12Context.title;
+    return agentIP12Error||'暂无 IP12 资料';
+  }
   function startAgentPrompt(prompt){
     var session=currentAgentSession();
     session.draft=String(prompt||'').trim();
@@ -1654,28 +1678,31 @@
   function renderAgentPanel(){
     if(sideTitle) sideTitle.textContent='Agent 工作台';
     if(!agentModule){ sideBody.innerHTML='<div class="nc-side-empty">Agent 模块未加载</div>'; return; }
+    if(!agentIP12Loaded&&!agentIP12Loading) loadAgentIP12Context();
     var session=currentAgentSession();
     var selectionCount=selectedNodeIds().length;
     var messages=session.messages.map(function(message){
       return '<div class="nc-agent-message '+escapeHtml(message.role)+'">'+escapeHtml(message.content)+'</div>';
     }).join('');
-    var plan='';
-    if(session.plan&&(session.plan.actions||[]).length){
-      plan='<div class="nc-agent-plan">'+session.plan.actions.map(function(action){
+    var plan='', actions=session.plan&&session.plan.actions||[], guides=session.plan&&session.plan.guides||[];
+    if(session.plan&&(actions.length||guides.length||(session.plan.warnings||[]).length)){
+      plan='<div class="nc-agent-plan">'+actions.map(function(action){
         return '<label><input type="checkbox" data-agent-action="'+escapeHtml(action.id)+'" checked '+(session.applied?'disabled':'')+'><span>'+escapeHtml(agentModule.actionLabel(action))+'</span></label>';
-      }).join('')+(session.plan.warnings||[]).map(function(warning){return '<div class="nc-agent-warning">'+escapeHtml(warning)+'</div>';}).join('')
-        +'<button class="nc-agent-apply" type="button" '+(session.applied||!canEditCanvas()?'disabled':'')+'>'+(session.applied?'已应用，可撤销':'确认应用所选操作')+'</button></div>';
+      }).join('')+(guides.length?'<div class="nc-agent-guides"><strong>推荐下一步</strong>'+guides.map(function(guide,index){
+        return '<button class="nc-agent-guide" type="button" data-agent-guide="'+index+'"><b>'+escapeHtml(guide.label)+'</b><span>'+escapeHtml(guide.reason)+'</span></button>';
+      }).join('')+'</div>':'')+(session.plan.warnings||[]).map(function(warning){return '<div class="nc-agent-warning">'+escapeHtml(warning)+'</div>';}).join('')
+        +(actions.length?'<button class="nc-agent-apply" type="button" '+(session.applied||!canEditCanvas()?'disabled':'')+'>'+(session.applied?'已应用，可撤销':'确认应用所选操作')+'</button>':'')+'</div>';
     }
     var quoteText=session.quoteLoading?'正在读取报价…':session.quoteError?session.quoteError:session.quote==null?'报价不可用':('本次 '+session.quote+' 点');
     var balance=session.points==null?'':('余额 '+session.points+' 点');
     var insufficient=session.quote!=null&&session.points!=null&&session.points<session.quote;
     var starters=!session.messages.length?'<div class="nc-agent-starters">'
-      +'<button class="nc-agent-starter" type="button" data-agent-prompt="帮我整理当前画布，把内容按清晰的生产顺序连接起来。"><b>整理现有画布</b>梳理节点与连线关系</button>'
+      +'<button class="nc-agent-starter" type="button" data-agent-prompt="结合我的 IP12 和当前画布，规划第一条最适合我的短视频内容，并告诉我接下来去哪个页面继续。"><b>结合 IP12 规划</b>从客户资料到第一条内容</button>'
       +'<button class="nc-agent-starter" type="button" data-agent-prompt="帮我搭建一个短视频脚本工作流：先创建脚本，再创建画面和视频生成草稿。"><b>搭建短视频流程</b>脚本、画面到视频草稿</button>'
       +'<button class="nc-agent-starter" type="button" data-agent-prompt="分析我选中的节点，优化其中的文本内容并保留原意。"><b>优化选中内容</b>只处理当前选区</button>'
       +'<button class="nc-agent-starter" type="button" data-agent-prompt="帮我搭建一个产品图文方案，创建卖点文案和图片生成草稿。"><b>创建图文方案</b>卖点文案与作图草稿</button>'
       +'</div>':'';
-    sideBody.innerHTML='<div class="nc-agent"><div class="nc-agent-hero"><span class="nc-agent-orb">✦</span><strong>一句话，帮你搭好画布</strong><p>Agent 先给出可勾选的方案，只有你确认后才会修改画布。</p><div class="nc-agent-context"><span><i></i>'+(selectionCount?('已读取 '+selectionCount+' 个选中节点'):'已读取当前画布')+'</span><span>图片与视频仅建草稿</span></div></div>'+starters
+    sideBody.innerHTML='<div class="nc-agent"><div class="nc-agent-hero"><span class="nc-agent-orb">✦</span><strong>从 IP12 到创作下一步</strong><p>Agent 结合当前页面和客户资料给出方案；图片与视频只建草稿，确认后才会修改画布。</p><div class="nc-agent-context"><span><i></i>'+(selectionCount?('已读取 '+selectionCount+' 个选中节点'):'已读取当前画布')+'</span><span>'+escapeHtml(agentIP12Label())+'</span></div></div>'+starters
       +'<div class="nc-agent-messages">'+(messages||'<div class="nc-agent-message">你可以直接描述目标，也可以从上面的常用场景开始。</div>')+(session.status?'<div class="nc-agent-message">'+escapeHtml(session.status)+'</div>':'')+plan+'</div>'
       +'<div class="nc-agent-compose"><textarea data-agent-input maxlength="2000" placeholder="描述你想完成的内容，或 @ 选中的节点…" '+(session.pending||session.quote==null?'disabled':'')+'>'+escapeHtml(session.draft||'')+'</textarea>'
       +'<div class="nc-agent-quote"><span>'+escapeHtml(quoteText)+'</span><span>'+escapeHtml(balance)+'</span></div>'
@@ -1689,6 +1716,7 @@
       input.onkeydown=function(e){ if((e.metaKey||e.ctrlKey)&&e.key==='Enter'){ e.preventDefault(); submitAgentTurn(input.value); } };
     }
     sideBody.querySelectorAll('[data-agent-prompt]').forEach(function(btn){ btn.onclick=function(){ startAgentPrompt(btn.getAttribute('data-agent-prompt')); }; });
+    sideBody.querySelectorAll('[data-agent-guide]').forEach(function(btn){ btn.onclick=function(){ followAgentGuide(guides[Number(btn.getAttribute('data-agent-guide'))]); }; });
     var apply=sideBody.querySelector('.nc-agent-apply:not([data-agent-retry])');
     if(apply) apply.onclick=function(){
       var ids=Array.prototype.map.call(sideBody.querySelectorAll('[data-agent-action]:checked'),function(box){return box.getAttribute('data-agent-action');});
@@ -1697,6 +1725,26 @@
     var retry=sideBody.querySelector('[data-agent-retry]');
     if(retry) retry.onclick=function(){ session.quoteError=''; session.quote=null; loadAgentQuote(session); renderAgentPanel(); };
     if(session.quote==null&&!session.quoteLoading&&!session.quoteError) loadAgentQuote(session);
+  }
+  function followAgentGuide(guide){
+    if(!guide) return;
+    if(guide.target==='ip12'){
+      location.href='/workbench/ip12.html'+(agentIP12Context?'?project='+encodeURIComponent(agentIP12Context.project_id):'');
+      return;
+    }
+    var targets={
+      script:{url:'/workbench/script.html?prefill=ip12',handoff:'script_studio'},
+      image:{url:'/workbench/banana.html?prefill=ip12',handoff:'image_studio'},
+      video:{url:'/workbench/video.html?prefill=ip12',handoff:'video_studio'}
+    };
+    var target=targets[guide.target];
+    if(!target) return;
+    try{
+      sessionStorage.setItem('hq_ip12_product_handoff_v1',JSON.stringify({
+        version:1,target:target.handoff,prompt:String(guide.prompt||'').slice(0,1000),created_at:Date.now()
+      }));
+    }catch(error){ updateState('浏览器无法暂存 Agent 草稿'); return; }
+    location.href=target.url;
   }
   function loadAgentQuote(session){
     session.quoteLoading=true;
@@ -1732,7 +1780,8 @@
     try{ snapshot=buildAgentSnapshot(); }
     catch(error){ session.messages.push({role:'error',content:error.message}); renderAgentPanel(); return; }
     var history=session.messages.filter(function(message){return message.role==='user'||message.role==='assistant';}).slice(-8);
-    var body=Object.assign({},snapshot,{prompt:prompt,history:history,quoted_cost:session.quote});
+    var body=Object.assign({},snapshot,{prompt:prompt,history:history,quoted_cost:session.quote,page_context:agentPageContext()});
+    if(agentIP12Context) body.ip12_context=agentIP12Context;
     var requestKey='canvas-agent-'+(window.crypto&&crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2));
     var headers=agentHeaders(requestKey);
     session.draft='';
@@ -1757,7 +1806,7 @@
       var content=String(result&&result.content||'Agent 已完成分析。');
       session.messages.push({role:'assistant',content:content});
       session.plan=result&&result.plan||null;
-      session.status=session.plan&&(session.plan.actions||[]).length?'请勾选并确认要应用的操作。':'';
+      session.status=session.plan&&(session.plan.actions||[]).length?'请勾选并确认要应用的操作。':session.plan&&(session.plan.guides||[]).length?'请选择一个推荐的下一步。':'';
     }).catch(function(error){
       session.messages.push({role:'error',content:agentErrorText(error,'Agent 请求失败，请稍后重试')});
       session.status='';
