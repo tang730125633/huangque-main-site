@@ -973,6 +973,8 @@ def start_job_workers():
                              (AVATAR_JOB_WORKERS, _avatar_job_queue, "content-avatar-worker")):
         for i in range(count):
             threading.Thread(target=_job_worker_loop, args=(q,), name="%s-%d" % (prefix, i + 1), daemon=True).start()
+    from . import gemini_reverse
+    gemini_reverse.start_cleanup_worker(jdb)
     threading.Thread(target=_pending_job_scanner, name="content-job-recover", daemon=True).start(); threading.Thread(target=notifications.scanner, args=(jdb,), name="content-video-notify", daemon=True).start()
     _recover_pending_jobs(_PENDING_RECOVERY_LIMIT)
     try:

@@ -383,6 +383,8 @@ def _do_breakdown(payload, info, url):
             return _reverse_from_frames(
                 payload, frames, url, title, platform, duration,
                 script_text=script_text,
+                media_path=tmp_video.name,
+                media_mime="video/mp4",
             )
 
         context = (
@@ -498,11 +500,57 @@ def _download_breakdown_video(tikhub, info, detail, destination):
 
 def _reverse_from_frames(
     payload, frames, source_url="", title="", platform="", duration=0,
-    script_text="",
+    script_text="", media_path=None, media_mime="video/mp4",
 ):
     duration = max(0.0, float(duration or 0))
     duration_text = ("%.3f" % duration).rstrip("0").rstrip(".")
-    if duration > 0:
+    if duration > 0 and media_path:
+        from . import gemini_reverse
+
+        job_id = (payload or {}).get("_job_id")
+        gemini_result = gemini_reverse.analyze_video(
+            media_path,
+            media_mime,
+            title,
+            duration,
+            platform,
+            script_text,
+            heartbeat=lambda: _heartbeat(job_id, "analyzing"),
+            cleanup_jdb=jdb,
+        )
+        return {
+            "type": "breakdown_reverse",
+            "source_url": source_url,
+            "source_title": title,
+            "source_platform": platform,
+            "duration": duration,
+            "prompt": gemini_result["prompt"],
+            "frame_thumbnails": _frame_thumbnails(frames),
+            "model_provider": gemini_result["provider"],
+            "model_id": gemini_result["model"],
+            "model_attempts": gemini_result["attempts"],
+            "reverse_audit": {
+                "model_provider": gemini_result["provider"],
+                "model_id": gemini_result["model"],
+                "model_attempts": gemini_result["attempts"],
+                "cross_provider_fallback": False,
+                "attempt_audit": gemini_result["attempt_audit"],
+                "segments": [
+                    {
+                        "segment_id": entry["segment_id"],
+                        "start_seconds": entry["start_seconds"],
+                        "end_seconds": entry["end_seconds"],
+                        "readiness": entry["readiness"],
+                        "evidence_seconds": {
+                            key: list(value["evidence_seconds"])
+                            for key, value in entry["facts"].items()
+                        },
+                    }
+                    for entry in gemini_result["entries"]
+                ],
+            },
+        }
+    elif duration > 0:
         source_context = (
             "视频标题：%s\n平台：%s\n总时长：%s 秒\n口播时间轴：\n%s\n\n"
             % (
@@ -957,6 +1005,8 @@ def _do_local_reverse(payload, upload_token):
         _heartbeat(job_id, "analyzing")
         return _reverse_from_frames(
             payload, frames, "", os.path.basename(path), "local", duration,
+            media_path=path if media_type == "video" else None,
+            media_mime=(mimetypes.guess_type(path)[0] or "video/mp4"),
         )
     finally:
         if frame_dir:
