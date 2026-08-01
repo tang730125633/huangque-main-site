@@ -10,7 +10,7 @@ CSS_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas.css"
 APP_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas-app.js"
 SHORT_DRAMA_CSS = sorted((ROOT / "site" / "workbench" / "canvas").glob("canvas-short-drama*.css"))
 
-EXPECTED_CSS_SHA256 = "33f7f91091ed4f35b8a5d7d22f70dae955c23924aec9f7f01ff3e5aeef52fb31"
+EXPECTED_CSS_SHA256 = "c36a74515d6d4071c306701100b4187d5333eb9825ecde26ce26a519718c3e0a"
 
 
 def normalized_sha256(path: Path) -> str:
@@ -43,6 +43,8 @@ class CanvasAssetExtractionTests(unittest.TestCase):
         self.assertIn("function syncCanvasGrid()", app)
         self.assertIn("fallback=x==null||y==null?viewportNodePoint():null", app)
         self.assertIn("function centerEmptyView()", app)
+        self.assertIn("if(empty&&empty.parentNode!==inner) inner.appendChild(empty);", app)
+        self.assertIn("empty.classList.toggle('on', count===0)", app)
         self.assertIn("((minX+maxX)/2)*zoom-canvas.clientWidth/2", app)
         self.assertIn("CANVAS_VIEW_PAD=1200", app)
         self.assertIn("margin:1200px", css)

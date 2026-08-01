@@ -451,9 +451,8 @@
     .nc-fs-dock::-webkit-scrollbar{ display:none; }
     .nc-fs-row{ width:max-content; flex-wrap:nowrap; justify-content:flex-start; }
     .nc-fs-group{ flex:none; }
-    .nc-empty{ align-items:flex-start; overflow-y:auto; box-sizing:border-box; padding:18px 58px 86px 8px; scrollbar-width:none; }
-    .nc-empty::-webkit-scrollbar{ display:none; }
-    .nc-empty-card{ width:min(520px,calc(100% - 24px)); padding:18px 12px; }
+    .nc-empty{ align-items:center; overflow:visible; padding:0; }
+    .nc-empty-card{ width:min(520px,calc(100vw - 82px)); padding:18px 12px; }
     .nc-empty-workflows{ grid-template-columns:1fr; }
     .nc-empty-workflow{ min-height:62px; }
     .nc-agent-starters{ grid-template-columns:1fr; }
