@@ -209,12 +209,22 @@ def retry_failed_refunds(jdb, refund_job, limit=100):
     with closing(jdb()) as c:
         import sqlite3
         c.row_factory = sqlite3.Row
-        has_attempts = bool(c.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='short_drama_charge_attempts'"
-        ).fetchone())
-        attempt_exclusion = (
-            "AND NOT EXISTS (SELECT 1 FROM short_drama_charge_attempts a WHERE a.job_id=jobs.id)"
-            if has_attempts else ""
+        owned_attempt_tables = {
+            row[0] for row in c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ("
+                "'short_drama_charge_attempts',"
+                "'short_drama_character_reference_attempts',"
+                "'short_drama_voice_charge_attempts')"
+            ).fetchall()
+        }
+        attempt_exclusion = " ".join(
+            "AND NOT EXISTS (SELECT 1 FROM %s a WHERE a.job_id=jobs.id)" % table
+            for table in (
+                "short_drama_charge_attempts",
+                "short_drama_character_reference_attempts",
+                "short_drama_voice_charge_attempts",
+            )
+            if table in owned_attempt_tables
         )
         rows = c.execute(
             """SELECT id,username,cost FROM jobs

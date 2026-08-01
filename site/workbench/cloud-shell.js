@@ -21,6 +21,7 @@
       video: '<rect x="2" y="6" width="14" height="12" rx="2" ' + L + '/><path d="M22 8l-6 4 6 4z" fill="__ACC__"/>',
       mic: '<rect x="9" y="2" width="6" height="12" rx="3" ' + L + '/><path d="M5 10a7 7 0 0 0 14 0" ' + A + '/><path d="M12 17v4" ' + L + '/>',
       edit: '<path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" ' + L + '/><path d="M12 20h9" ' + A + '/>',
+      clapper: '<path d="M3 9h18v11H3zM3 9l2-5h16l-2 5" ' + L + '/><path d="M7 4l3 5M14 4l3 5M9 13l5 3-5 3z" ' + A + '/>',
       layers: '<path d="M12 2l9 5-9 5-9-5z" ' + A + '/><path d="M3 12l9 5 9-5M3 17l9 5 9-5" ' + L + '/>',
       folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" ' + L + '/><path d="M7 13.5h4" ' + A + '/>',
       coins: '<circle cx="8" cy="8" r="6" ' + L + '/><path d="M18.1 6.6A6 6 0 1 1 9.9 18.5" ' + A + '/><path d="M7 6h1v4" ' + L + '/><path d="M16.7 12.6h1v4" ' + A + '/>',
@@ -55,6 +56,7 @@
     video:'<rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/>',
     mic:'<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/>',
     edit:'<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+    clapper:'<path d="M3 9h18v11H3zM3 9l2-5h16l-2 5M7 4l3 5M14 4l3 5"/><path d="M9 13l5 3-5 3z"/>',
     layers:'<path d="M12 2l9 5-9 5-9-5z"/><path d="M3 12l9 5 9-5M3 17l9 5 9-5"/>',
     folder:'<path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
     coins:'<circle cx="8" cy="8" r="6"/><path d="M18.1 6.6A6 6 0 1 1 9.9 18.5"/><path d="M7 6h1v4M16.7 12.6h1v4"/>',
@@ -111,7 +113,7 @@
     {k:'dashboard',l:'今日',i:'home', admin:true}, {k:'inspiration',l:'灵感设计',i:'sparkles'},
     {k:'leads',l:'平台获客',i:'search'}, {k:'collect',l:'内容爬取',i:'link'}, {k:'banana',l:'图片生成',i:'image'},
     {k:'video',l:'视频生成',i:'video'}, {k:'audio',l:'音频生成',i:'mic'}, {k:'script',l:'文案编导',i:'edit'},
-    {k:'canvas',l:'无限画布',i:'layers'}, {k:'assets',l:'我的资产',i:'folder'}, {k:'invite',l:'邀请中心',i:'users'},
+    {k:'short-drama',l:'短剧创作',i:'clapper'}, {k:'canvas',l:'无限画布',i:'layers'}, {k:'assets',l:'我的资产',i:'folder'}, {k:'invite',l:'邀请中心',i:'users'},
     {k:'cost',l:'成本',i:'coins', admin:true}, {k:'tutorials',l:'教程视频',i:'play'}, {k:'settings',l:'通用设置',i:'gear'}
   ];
 

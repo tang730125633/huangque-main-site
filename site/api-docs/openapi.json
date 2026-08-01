@@ -50,8 +50,16 @@
       "JobStatus": { "type": "object", "properties": { "id": { "type": "integer" }, "kind": { "type": "string" }, "status": { "type": "string", "enum": ["pending", "running", "done", "error"] }, "result": { "description": "成功时结果；mode=short_drama 的 copy job 使用 ShortDramaPlanningResult。其他任务使用不带该 mode 的领域结果对象。", "oneOf": [{ "$ref": "#/components/schemas/ShortDramaPlanningResult" }, { "type": "object", "not": { "required": ["mode"], "properties": { "mode": { "enum": ["short_drama"] } } } }] }, "error": { "type": "string" }, "created_at": { "type": "integer" }, "updated_at": { "type": "integer" } } },
       "User": { "type": "object", "properties": { "username": { "type": "string" }, "name": { "type": "string" }, "points": { "type": "integer" }, "role": { "type": "string" }, "must_change": { "type": "boolean" } } },
       "ShortDramaDialogueLine": {
-        "type": "object", "required": ["id", "character_key", "text"], "additionalProperties": false,
-        "properties": { "id": { "type": "string", "maxLength": 80 }, "character_key": { "type": "string", "maxLength": 80 }, "text": { "type": "string", "maxLength": 4000 } }
+        "type": "object", "required": ["character_key", "text"], "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "maxLength": 80, "readOnly": true },
+          "client_token": { "type": "string", "maxLength": 120, "writeOnly": true },
+          "character_key": { "type": "string", "maxLength": 80 },
+          "speaker_name_snapshot": { "type": "string", "maxLength": 80, "readOnly": true },
+          "text": { "type": "string", "maxLength": 4000 },
+          "subtitle_enabled": { "type": "boolean", "default": true },
+          "voice_overrides": { "type": "object", "additionalProperties": true }
+        }
       },
       "ShortDramaCharacter": {
         "description": "cinematic_avatar 的 avatar_id 必须引用当前用户本人拥有、未删除且可用的电影级数字人；ai_character 不要求 avatar_id。",
@@ -90,7 +98,7 @@
         }
       },
       "ShortDramaProject": {
-        "type": "object", "required": ["id", "board_id", "title", "synopsis", "ratio", "target_duration", "shot_count", "visual_style", "target_platform", "point_budget", "spent_points", "stage", "revision", "characters", "script_versions", "shots"],
+        "type": "object", "required": ["id", "board_id", "title", "synopsis", "ratio", "target_duration", "shot_count", "visual_style", "target_platform", "point_budget", "spent_points", "stage", "revision", "characters", "script_versions", "dialogue_token_receipts", "shots"],
         "properties": {
           "id": { "type": "string", "format": "uuid" }, "board_id": { "type": "string", "nullable": true, "readOnly": true, "description": "null for a local project; otherwise the collaboration board that scopes access." }, "title": { "type": "string", "maxLength": 80 }, "synopsis": { "type": "string", "minLength": 8, "maxLength": 4000 },
           "ratio": { "type": "string", "enum": ["9:16", "16:9"] }, "target_duration": { "type": "integer", "enum": [30, 45, 60] }, "shot_count": { "type": "integer", "minimum": 6, "maximum": 10 },
@@ -100,6 +108,7 @@
           "revision": { "type": "integer", "readOnly": true, "minimum": 1 }, "created_at": { "type": "integer", "readOnly": true }, "updated_at": { "type": "integer", "readOnly": true },
           "characters": { "type": "array", "maxItems": 20, "items": { "$ref": "#/components/schemas/ShortDramaCharacter" } },
           "script_versions": { "type": "array", "maxItems": 20, "items": { "$ref": "#/components/schemas/ShortDramaScriptVersion" } },
+          "dialogue_token_receipts": { "type": "object", "readOnly": true, "description": "Active project-scoped client token to server line ID receipts for retry recovery.", "additionalProperties": { "type": "string", "maxLength": 80 } },
           "shots": { "type": "array", "items": { "$ref": "#/components/schemas/ShortDramaShot" } }
         }
       },
@@ -171,7 +180,7 @@
           "project_id": { "type": "string", "minLength": 1 },
           "revision": { "type": "integer", "minimum": 1 },
           "shot_id": { "type": "string", "minLength": 1 },
-          "prompt": { "type": "string" },
+          "prompt": { "type": "string", "description": "可选的本次生成补充要求；分镜 image_prompt 由服务端单独读取，客户端不应重复提交。" },
           "mode": { "type": "string", "enum": ["single", "retry", "batch"] },
           "count": { "type": "integer", "enum": [2], "description": "The server accepts exactly two candidates per request." }
         }
@@ -192,14 +201,22 @@
       },
       "ShortDramaStillQuote": {
         "type": "object",
-        "required": ["cost", "count", "kind", "quote_token", "expires_at"],
+        "required": ["cost", "count", "kind", "quote_token", "expires_at", "shot_id", "base_prompt", "user_direction", "compiled_prompt", "source_prompt_hash"],
         "additionalProperties": false,
         "properties": {
           "cost": { "type": "integer", "minimum": 0 },
           "count": { "type": "integer", "enum": [2] },
           "kind": { "type": "string", "enum": ["still"] },
           "quote_token": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
-          "expires_at": { "type": "integer", "description": "Unix timestamp; quotes expire after 300 seconds." }
+          "expires_at": { "type": "integer", "description": "Unix timestamp; quotes expire after 300 seconds." },
+          "shot_id": { "type": "string" },
+          "base_prompt": { "type": "string", "description": "服务器当前已确认的分镜画面提示词。" },
+          "user_direction": { "type": "string", "description": "本次生成的可选补充要求。" },
+          "compiled_prompt": { "type": "string", "description": "加入角色、镜头、连续性和质量约束后真正提交给模型的提示词。" },
+          "source_prompt_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "snapshot_id": { "type": "string", "nullable": true, "description": "启用资产图谱时，本报价绑定的不可变镜头快照。" },
+          "package_hash": { "type": "string", "nullable": true, "pattern": "^[a-f0-9]{64}$" },
+          "graph_revision": { "type": "integer", "nullable": true, "minimum": 1 }
         }
       },
       "ShortDramaAssetSelectionRequest": {
@@ -360,7 +377,7 @@
         "required": ["code", "message"],
         "additionalProperties": false,
         "properties": {
-          "code": { "type": "string", "enum": ["missing_locked_voice_shot", "missing_locked_video_shot", "missing_current_voice_version", "missing_current_video_version", "stale_voice_version", "stale_video_version", "missing_source_file", "source_file_untrusted", "ffprobe_unavailable", "media_probe_failed", "ratio_mismatch", "clip_duration_mismatch", "timeline_invalid", "audio_overlap", "subtitle_overlap", "project_duration_mismatch", "source_changed_during_probe", "missing_d1_media_plan", "bgm_asset_missing", "bgm_asset_forbidden", "bgm_source_untrusted", "bgm_probe_failed", "active_composition_job", "preview_missing", "final_missing"] },
+          "code": { "type": "string", "enum": ["missing_locked_voice_shot", "missing_locked_video_shot", "missing_current_voice_version", "missing_current_video_version", "stale_voice_version", "stale_video_version", "missing_source_file", "source_file_untrusted", "ffprobe_unavailable", "media_probe_failed", "ratio_mismatch", "clip_duration_mismatch", "timeline_invalid", "audio_overlap", "subtitle_overlap", "project_duration_mismatch", "source_changed_during_probe", "missing_d1_media_plan", "bgm_asset_missing", "bgm_asset_forbidden", "bgm_source_untrusted", "bgm_probe_failed", "active_composition_job", "preview_missing", "final_missing", "active_lipsync_job", "lipsync_plan_missing", "lipsync_plan_invalid", "lipsync_dependency_changed", "lipsync_selection_changed", "lipsync_job_not_succeeded", "lipsync_billing_unsettled", "lipsync_source_hash_mismatch", "lipsync_manifest_invalid", "lipsync_manifest_mismatch"] },
           "message": { "type": "string" },
           "shot_id": { "type": "string" },
           "line_id": { "type": "string" }
@@ -385,14 +402,16 @@
             }
           },
           "video": {
-            "type": "object", "required": ["confirmed", "status", "current_version", "video_revision", "source", "probe"], "additionalProperties": false,
+            "type": "object", "required": ["confirmed", "status", "current_version", "video_revision", "source", "probe", "source_kind", "lipsync"], "additionalProperties": false,
             "properties": {
               "confirmed": { "type": "boolean" },
               "status": { "type": "string", "enum": ["ready", "blocked"] },
               "current_version": { "type": "integer", "minimum": 1, "nullable": true },
               "video_revision": { "type": "integer", "minimum": 1, "nullable": true },
               "source": { "type": "object", "nullable": true },
-              "probe": { "type": "object", "nullable": true }
+              "probe": { "type": "object", "nullable": true },
+              "source_kind": { "type": "string", "enum": ["standard", "lipsync"] },
+              "lipsync": { "type": "object", "nullable": true }
             }
           },
           "ready": { "type": "boolean" },
@@ -410,6 +429,9 @@
           "job_id": { "type": "string" },
           "input_hash": { "type": "string" },
           "config": { "type": "object" },
+          "plan_hash": { "type": "string" },
+          "manifest_hash": { "type": "string" },
+          "manifest": { "type": "object" },
           "url": { "type": "string", "format": "uri-reference" },
           "cover_url": { "type": "string", "format": "uri-reference" },
           "duration_ms": { "type": "integer", "minimum": 1, "nullable": true },
@@ -450,7 +472,7 @@
       },
       "ShortDramaAssemblyWorkspace": {
         "type": "object",
-        "required": ["project_id", "revision", "stage", "ratio", "target_duration", "assembly_revision", "config", "current_preview_version", "current_final_version", "preview_locked", "implementation_status", "rendering_enabled", "planner_version", "input_hash", "media_plan", "audio_subtitle", "master_audio", "shots", "versions", "active_job", "latest_job", "readiness", "actions", "blockers", "completion"],
+        "required": ["project_id", "revision", "stage", "ratio", "target_duration", "assembly_revision", "config", "current_preview_version", "current_final_version", "preview_locked", "implementation_status", "rendering_enabled", "planner_version", "input_hash", "media_plan", "audio_subtitle", "master_audio", "lipsync_assembly", "shots", "versions", "active_job", "latest_job", "readiness", "actions", "blockers", "completion"],
         "additionalProperties": false,
         "properties": {
           "project_id": { "type": "string" },
@@ -528,6 +550,11 @@
               "timeline": { "type": "object" },
               "blockers": { "type": "array", "items": { "$ref": "#/components/schemas/ShortDramaAssemblyBlocker" } }
             }
+          },
+          "lipsync_assembly": {
+            "type": "object",
+            "nullable": true,
+            "description": "PR-H 固化的口型素材选择、依赖哈希及不可变版本证据"
           },
           "shots": { "type": "array", "items": { "$ref": "#/components/schemas/ShortDramaAssemblyShot" } },
           "versions": { "type": "array", "items": { "$ref": "#/components/schemas/ShortDramaCompositionVersion" } },
@@ -667,9 +694,553 @@
           "replayed": {"type": "boolean"}
         }
       },
+      "FaceTarget": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "value"],
+        "properties": {
+          "type": {"type": "string", "enum": ["character"]},
+          "value": {"type": "string", "minLength": 1}
+        }
+      },
+      "ShortDramaLipsyncBlocker": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["code", "scope", "entity_id", "message", "repair_action"],
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "missing_master_timeline", "timeline_stale",
+              "missing_locked_visual",
+              "missing_locked_audio", "missing_face_target",
+              "overlapping_visible_speech", "alignment_stale",
+              "alignment_review_incomplete",
+              "active_lipsync_job", "provider_not_selected",
+              "provider_unsupported", "project_stage_readonly"
+            ]
+          },
+          "scope": {"type": "string", "enum": ["project", "shot", "segment"]},
+          "entity_id": {"type": "string"},
+          "message": {"type": "string"},
+          "repair_action": {"type": "string"}
+        }
+      },
+      "ShortDramaLipsyncSnapshot": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "project_id", "revision", "generated_at", "contract_version",
+          "hash_algorithm_version", "input_hash", "dependencies", "blockers",
+          "can_quote", "active_jobs", "versions", "current_version", "stale",
+          "permissions", "readiness", "features", "billing"
+        ],
+        "properties": {
+          "project_id": {"type": "string"},
+          "revision": {"type": "integer", "minimum": 1},
+          "generated_at": {"type": "integer", "minimum": 0},
+          "contract_version": {"type": "string", "enum": ["short-drama-lipsync-v1"]},
+          "hash_algorithm_version": {"type": "string", "enum": ["canonical-json-sha256-v1"]},
+          "input_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "dependencies": {
+            "type": "object",
+            "required": [
+              "timeline", "visual_sources", "audio", "alignment",
+              "speakers", "provider_catalog"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "timeline": {"type": "object"},
+              "visual_sources": {"type": "array", "items": {"type": "object"}},
+              "audio": {"type": "object"},
+              "alignment": {"type": "object"},
+              "speakers": {"type": "array", "items": {"type": "object"}},
+              "provider_catalog": {"type": "object"}
+            }
+          },
+          "blockers": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/ShortDramaLipsyncBlocker"}
+          },
+          "can_quote": {"type": "boolean"},
+          "active_jobs": {"type": "array", "items": {"type": "object"}},
+          "billing": {
+            "type": "object",
+            "required": ["unsettled", "refund_pending", "manual_review"],
+            "properties": {
+              "unsettled": {"type": "array", "items": {"type": "object"}},
+              "refund_pending": {"type": "integer", "minimum": 0},
+              "manual_review": {"type": "integer", "minimum": 0}
+            }
+          },
+          "versions": {"type": "array", "items": {"type": "object"}},
+          "current_version": {"type": "array", "items": {"type": "object"}},
+          "stale": {"type": "boolean"},
+          "permissions": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "read", "quote", "can_edit", "can_create_job",
+              "can_select", "can_lock"
+            ],
+            "properties": {
+              "read": {"type": "boolean"},
+              "quote": {"type": "boolean"},
+              "can_edit": {"type": "boolean"},
+              "can_create_job": {"type": "boolean"},
+              "can_select": {"type": "boolean"},
+              "can_lock": {"type": "boolean"}
+            }
+          },
+          "readiness": {
+            "type": "object"
+          },
+          "features": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["ui_enabled", "mutations_enabled", "batch_enabled"],
+            "properties": {
+              "ui_enabled": {"type": "boolean"},
+              "mutations_enabled": {"type": "boolean"},
+              "batch_enabled": {"type": "boolean"}
+            }
+          }
+        }
+      },
+      "ShortDramaLipsyncQuoteRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "project_id", "shot_id", "expected_revision",
+          "expected_input_hash", "provider", "profile", "face_target",
+          "idempotency_key"
+        ],
+        "properties": {
+          "project_id": {"type": "string", "minLength": 1},
+          "shot_id": {"type": "string", "minLength": 1},
+          "expected_revision": {"type": "integer", "minimum": 1},
+          "expected_input_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "provider": {"type": "string", "minLength": 1},
+          "profile": {"type": "string", "minLength": 1},
+          "face_target": {
+            "allOf": [{"$ref": "#/components/schemas/FaceTarget"}],
+            "description": "前端显式选择的镜头内人物目标；报价时长仅统计该目标的可见对白区间。"
+          },
+          "idempotency_key": {"type": "string", "minLength": 1}
+        }
+      },
+      "ShortDramaLipsyncQuote": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "quote_id", "business_key", "quote_revision", "status",
+          "quote_mode", "chargeable", "provider",
+          "provider_capability_version", "profile", "pricing_version",
+          "duration_ms", "actual_duration_ms", "billable_duration_ms",
+          "media_spec", "cost", "input_hash", "expires_at", "replayed"
+        ],
+        "properties": {
+          "quote_id": {"type": "string", "format": "uuid"},
+          "business_key": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "quote_revision": {"type": "integer", "minimum": 1},
+          "status": {"type": "string", "enum": ["issued"]},
+          "quote_mode": {"type": "string", "enum": ["simulation", "paid"]},
+          "chargeable": {"type": "boolean"},
+          "provider": {"type": "string"},
+          "provider_capability_version": {"type": "string"},
+          "profile": {"type": "string"},
+          "pricing_version": {"type": "string"},
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "所选 face_target 的去重可见对白区间总时长。"
+          },
+          "actual_duration_ms": {"type": "integer", "minimum": 1},
+          "billable_duration_ms": {"type": "integer", "minimum": 1},
+          "media_spec": {"type": "object"},
+          "cost": {
+            "type": "object",
+            "required": [
+              "points", "currency", "external_estimate",
+              "actual_duration_ms", "billable_duration_ms", "breakdown"
+            ],
+            "properties": {
+              "points": {"type": "integer", "minimum": 0},
+              "currency": {"type": "string"},
+              "external_estimate": {"type": "number", "minimum": 0},
+              "actual_duration_ms": {"type": "integer", "minimum": 1},
+              "billable_duration_ms": {"type": "integer", "minimum": 1},
+              "breakdown": {"type": "array", "items": {"type": "object"}}
+            }
+          },
+          "input_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "expires_at": {"type": "integer"},
+          "replayed": {"type": "boolean"}
+        }
+      },
+      "ShortDramaLipsyncJobRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["project_id", "shot_id", "quote_id", "expected_input_hash"],
+        "properties": {
+          "project_id": {"type": "string", "minLength": 1},
+          "shot_id": {"type": "string", "minLength": 1},
+          "quote_id": {"type": "string", "format": "uuid"},
+          "expected_input_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      },
+      "ShortDramaLipsyncJob": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "id", "attempt_id", "project_id", "shot_id", "provider", "state",
+          "attempt_state", "cost", "progress", "result", "error", "replayed"
+        ],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "attempt_id": {"type": "string", "format": "uuid"},
+          "project_id": {"type": "string"},
+          "shot_id": {"type": "string"},
+          "provider": {"type": "string"},
+          "provider_job_id": {"type": "string", "nullable": true},
+          "state": {
+            "type": "string",
+            "enum": [
+              "prepared", "queued", "running", "succeeded", "failed",
+              "cancel_pending", "cancelled", "manual_review"
+            ]
+          },
+          "attempt_state": {
+            "type": "string",
+            "enum": [
+              "accepted", "charged", "linked", "settled", "failed",
+              "refund_pending", "refunded", "manual_review"
+            ]
+          },
+          "cost": {"type": "integer", "minimum": 0},
+          "points_left": {"type": "integer", "nullable": true},
+          "progress": {"type": "integer", "minimum": 0, "maximum": 100},
+          "result": {"type": "object"},
+          "error": {"type": "object"},
+          "terminal": {"type": "object"},
+          "replayed": {"type": "boolean"}
+        }
+      },
+      "ShortDramaLipsyncSpeakerUpdate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["project_id", "revision", "timeline_revision", "changes"],
+        "properties": {
+          "project_id": {"type": "string", "minLength": 1},
+          "revision": {"type": "integer", "minimum": 1},
+          "timeline_revision": {"type": "integer", "minimum": 1},
+          "changes": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "id", "start_ms", "end_ms", "character_key",
+                "speaking_mode", "face_target"
+              ],
+              "properties": {
+                "id": {"type": "string"},
+                "start_ms": {"type": "integer", "minimum": 0},
+                "end_ms": {"type": "integer", "minimum": 1},
+                "character_key": {"type": "string"},
+                "speaking_mode": {
+                  "type": "string",
+                  "enum": ["visible", "offscreen", "silent"]
+                },
+                "face_target": {"type": "object"}
+              }
+            }
+          }
+        }
+      },
+      "ShortDramaLipsyncVersionMutation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "project_id", "expected_revision", "expected_input_hash",
+          "expected_pointer_revision"
+        ],
+        "properties": {
+          "project_id": {"type": "string", "minLength": 1},
+          "expected_revision": {"type": "integer", "minimum": 1},
+          "expected_input_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "expected_pointer_revision": {"type": "integer", "minimum": 0},
+          "version_id": {"type": "string"}
+        }
+      },
+      "ShortDramaFaceAnalysisRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["project_id", "shot_id"],
+        "properties": {
+          "project_id": {"type": "string", "minLength": 1},
+          "shot_id": {"type": "string", "minLength": 1},
+          "character_references": {
+            "type": "array",
+            "minItems": 1,
+            "description": "仅声明当前镜头角色；参考资产由服务端从项目内已锁定角色版本解析。客户端资产 ID 必须为空。",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["character_key"],
+              "properties": {
+                "character_key": {"type": "string", "minLength": 1},
+                "reference_asset_ids": {
+                  "type": "array",
+                  "maxItems": 0,
+                  "deprecated": true,
+                  "items": {"type": "string"}
+                }
+              }
+            }
+          },
+          "params": {"type": "object"}
+        }
+      },
+      "ShortDramaFaceAnalysis": {
+        "type": "object",
+        "required": [
+          "id", "contract_version", "project_id", "shot_id", "input_hash", "result_hash",
+          "status", "result", "manual_confirmation_required",
+          "can_create_paid_job"
+        ],
+        "properties": {
+          "id": {"type": "string"},
+          "contract_version": {"type": "string", "enum": ["short-drama-lipsync-face-analysis-v2"]},
+          "project_id": {"type": "string"},
+          "shot_id": {"type": "string"},
+          "input_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "result_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "status": {"type": "string", "enum": ["proposed", "manual_review", "failed"]},
+          "result": {"type": "object", "additionalProperties": false, "required": ["detections", "tracks", "matches", "proposals", "limitations"], "properties": {"detections": {"type": "array", "items": {"type": "object"}}, "tracks": {"type": "array", "items": {"type": "object"}}, "matches": {"type": "array", "items": {"type": "object"}}, "proposals": {"type": "array", "items": {"type": "object"}}, "limitations": {"type": "array", "items": {"type": "string"}}}, "description": "v2 严格结果：只含检测框、轨迹、分数和候选，不含未知字段或原始人脸向量"},
+          "manual_confirmation_required": {"type": "boolean", "enum": [true]},
+          "can_create_paid_job": {"type": "boolean", "enum": [false]},
+          "reused": {"type": "boolean"}
+        }
+      },
+      "ShortDramaFaceTrackConfirmation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "analysis_id", "expected_input_hash", "expected_result_hash",
+          "expected_revision", "review_mode", "review_reason", "mapping"
+        ],
+        "properties": {
+          "analysis_id": {"type": "string", "minLength": 1},
+          "expected_input_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "expected_result_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "expected_revision": {"type": "integer", "minimum": 0},
+          "review_mode": {
+            "type": "string",
+            "enum": ["manual_confirmed", "manual_adjusted"]
+          },
+          "review_reason": {"type": "string", "minLength": 1},
+          "mapping": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["segment_id", "face_track_id", "character_key"],
+              "properties": {
+                "segment_id": {"type": "string"},
+                "face_track_id": {"type": "string"},
+                "character_key": {"type": "string"}
+              }
+            }
+          }
+        }
+      },
+      "TimelineBlocker": {
+        "type": "object",
+        "required": ["code", "message"],
+        "additionalProperties": true,
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "timeline_revision_conflict", "timeline_segment_overlap",
+              "timeline_out_of_bounds", "timeline_missing_character",
+              "timeline_missing_face_target", "timeline_voice_not_locked",
+              "timeline_alignment_stale", "timeline_legacy_incomplete",
+              "timeline_stage_readonly", "timeline_handoff_not_ready",
+              "timeline_invalid_segment",
+              "timeline_invalid_subtitle"
+            ]
+          },
+          "message": {"type": "string"},
+          "shot_id": {"type": "string"},
+          "line_id": {"type": "string"},
+          "segment_id": {"type": "string"}
+        }
+      },
+      "TimelineSegment": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id", "shot_id", "line_id", "character_key", "voice_asset_id",
+          "start_ms", "end_ms", "speaking_mode", "face_target", "sort_order"
+        ],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "shot_id": {"type": "string", "minLength": 1},
+          "line_id": {"type": "string", "minLength": 1},
+          "character_key": {"type": "string"},
+          "voice_asset_id": {"type": "string"},
+          "start_ms": {"type": "integer", "minimum": 0},
+          "end_ms": {"type": "integer", "minimum": 1},
+          "speaking_mode": {
+            "type": "string",
+            "enum": ["visible", "offscreen", "narration"]
+          },
+          "face_target": {
+            "nullable": true,
+            "allOf": [{"$ref": "#/components/schemas/FaceTarget"}]
+          },
+          "sort_order": {"type": "integer", "minimum": 0}
+        }
+      },
+      "MasterTimelineVersion": {
+        "type": "object",
+        "required": [
+          "id", "project_id", "version", "status", "effective_status",
+          "revision", "contract_version", "duration_ms", "source_hashes",
+          "timeline_hash", "input_hash", "subtitle_cues", "blockers", "segments"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "project_id": {"type": "string"},
+          "version": {"type": "integer", "minimum": 1},
+          "parent_id": {"type": "string", "nullable": true},
+          "status": {"type": "string", "enum": ["draft", "blocked", "ready"]},
+          "effective_status": {
+            "type": "string",
+            "enum": ["draft", "blocked", "ready", "stale"]
+          },
+          "revision": {"type": "integer", "minimum": 1},
+          "timeline_revision": {"type": "integer", "minimum": 1},
+          "contract_version": {
+            "type": "string",
+            "enum": ["short_drama_speaker_timeline_v1"]
+          },
+          "duration_ms": {"type": "integer", "minimum": 0},
+          "source_hashes": {"type": "object", "additionalProperties": {"type": "string"}},
+          "timeline_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "input_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "subtitle_cues": {"type": "array", "items": {"type": "object"}},
+          "blockers": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/TimelineBlocker"}
+          },
+          "segments": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/TimelineSegment"}
+          }
+        }
+      },
+      "MasterTimelineSnapshot": {
+        "type": "object",
+        "required": [
+          "contract_version", "project_id", "project_revision",
+          "timeline_revision", "stage", "duration_ms", "shot_bounds",
+          "characters", "source_hashes", "status", "versions", "blockers",
+          "capabilities"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "contract_version": {
+            "type": "string",
+            "enum": ["short_drama_speaker_timeline_v1"]
+          },
+          "project_id": {"type": "string"},
+          "project_revision": {"type": "integer", "minimum": 1},
+          "timeline_revision": {"type": "integer", "minimum": 0},
+          "stage": {"type": "string"},
+          "duration_ms": {"type": "integer", "minimum": 0},
+          "shot_bounds": {"type": "array", "items": {"type": "object"}},
+          "characters": {"type": "array", "items": {"type": "object"}},
+          "source_hashes": {"type": "object", "additionalProperties": {"type": "string"}},
+          "status": {
+            "type": "string",
+            "enum": ["legacy", "draft", "blocked", "ready", "stale"]
+          },
+          "current_version": {
+            "nullable": true,
+            "allOf": [{"$ref": "#/components/schemas/MasterTimelineVersion"}]
+          },
+          "versions": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/MasterTimelineVersion"}
+          },
+          "blockers": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/TimelineBlocker"}
+          },
+          "capabilities": {"type": "object", "additionalProperties": {"type": "boolean"}},
+          "replayed": {"type": "boolean"}
+        }
+      },
+      "TimelineWriteRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["project_id", "revision", "timeline_revision", "changes"],
+        "properties": {
+          "project_id": {"type": "string", "minLength": 1},
+          "revision": {"type": "integer", "minimum": 1},
+          "timeline_revision": {"type": "integer", "minimum": 0},
+          "changes": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id", "start_ms", "end_ms", "character_key",
+                "speaking_mode", "face_target"
+              ],
+              "properties": {
+                "id": {"type": "string", "minLength": 1},
+                "start_ms": {"type": "integer", "minimum": 0},
+                "end_ms": {"type": "integer", "minimum": 1},
+                "character_key": {"type": "string"},
+                "speaking_mode": {
+                  "type": "string",
+                  "enum": ["visible", "offscreen", "narration"]
+                },
+                "face_target": {
+                  "nullable": true,
+                  "allOf": [{"$ref": "#/components/schemas/FaceTarget"}]
+                }
+              }
+            }
+          }
+        }
+      },
       "RevisionConflict": {
         "type": "object", "required": ["detail", "code"], "properties": {
           "detail": { "type": "string" }, "code": { "type": "string", "enum": ["revision_conflict", "job_already_applied"] }
+        }
+      },
+      "TimelineHandoffConflict": {
+        "type": "object",
+        "required": ["detail", "code", "blockers"],
+        "additionalProperties": false,
+        "properties": {
+          "detail": { "type": "string" },
+          "code": { "type": "string", "enum": ["timeline_handoff_not_ready"] },
+          "blockers": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/TimelineBlocker" }
+          }
         }
       },
       "ShortDramaDeleteConflict": {
@@ -678,11 +1249,168 @@
           { "type": "object", "required": ["detail", "code"], "additionalProperties": false, "properties": { "detail": { "type": "string" }, "code": { "type": "string", "enum": ["short_drama_unapplied_paid_job"] } } }
         ]
       },
-      "Error": { "type": "object", "properties": { "detail": { "type": "string" } } }
+      "ShortDramaConversationMutation": {
+        "type": "object",
+        "required": ["project_id", "conversation_revision"],
+        "properties": {
+          "project_id": { "type": "string" },
+          "conversation_revision": { "type": "integer", "minimum": 1 },
+          "message": { "type": "string", "minLength": 1, "maxLength": 8000 },
+          "instruction": { "type": "string", "maxLength": 2000 },
+          "version_id": { "type": "string" }
+        }
+      },
+      "ShortDramaCharacterStudioWorkspace": {
+        "type": "object",
+        "required": ["project_id", "project_revision", "script_version_id", "characters", "avatars", "summary", "permissions"],
+        "properties": {
+          "project_id": { "type": "string" },
+          "project_revision": { "type": "integer", "minimum": 1 },
+          "script_version_id": { "type": "string" },
+          "script_version": { "type": "integer", "minimum": 1 },
+          "characters": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+          "avatars": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+          "summary": { "type": "object", "additionalProperties": true },
+          "permissions": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "ShortDramaCharacterProfileMutation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["project_id", "project_revision", "character_key", "identity_text", "personality", "appearance_prompt", "wardrobe_prompt"],
+        "properties": {
+          "project_id": { "type": "string" },
+          "project_revision": { "type": "integer", "minimum": 1 },
+          "character_key": { "type": "string" },
+          "identity_text": { "type": "string", "minLength": 1, "maxLength": 4000 },
+          "personality": { "type": "string", "minLength": 1, "maxLength": 4000 },
+          "appearance_prompt": { "type": "string", "minLength": 1, "maxLength": 4000 },
+          "wardrobe_prompt": { "type": "string", "minLength": 1, "maxLength": 4000 }
+        }
+      },
+      "ShortDramaCharacterAvatarMutation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["project_id", "project_revision", "character_key", "avatar_id"],
+        "properties": {
+          "project_id": { "type": "string" },
+          "project_revision": { "type": "integer", "minimum": 1 },
+          "character_key": { "type": "string" },
+          "avatar_id": { "type": "string", "description": "传空字符串表示解除绑定" }
+        }
+      },
+      "ShortDramaConversationWorkspace": {
+        "type": "object",
+        "required": ["project", "conversation", "messages", "versions", "permissions", "billing"],
+        "properties": {
+          "project": { "$ref": "#/components/schemas/ShortDramaProject" },
+          "conversation": {
+            "type": "object",
+            "required": ["state", "revision"],
+            "properties": {
+              "state": { "type": "string", "enum": ["idea_intake", "direction_review", "script_generating", "script_review", "script_locked", "generation_failed"] },
+              "revision": { "type": "integer", "minimum": 1 },
+              "understanding": { "type": "object", "additionalProperties": true },
+              "current_version_id": { "type": "string", "nullable": true },
+              "locked_version_id": { "type": "string", "nullable": true }
+            }
+          },
+          "messages": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+          "current_script": { "type": "object", "nullable": true, "additionalProperties": true },
+          "versions": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+          "permissions": { "type": "object", "additionalProperties": true },
+          "billing": { "type": "object", "description": "PR-2 始终 cost=0、charged=false。", "additionalProperties": true }
+        }
+      },
+      "ShortDramaPreflightWorkspace": {
+        "type": "object",
+        "required": ["project", "state", "conversation_revision", "versions", "stale", "permissions", "billing"],
+        "properties": {
+          "project": { "type": "object", "additionalProperties": true },
+          "state": { "type": "string", "enum": ["script_required", "awaiting_preflight", "ready_for_confirmation", "confirmed"] },
+          "conversation_revision": { "type": "integer", "minimum": 0 },
+          "source_script": { "type": "object", "nullable": true, "additionalProperties": true },
+          "current_plan": { "type": "object", "nullable": true, "additionalProperties": true },
+          "versions": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+          "stale": { "type": "boolean" },
+          "permissions": { "type": "object", "additionalProperties": true },
+          "billing": { "type": "object", "description": "PR-3 仅估算，始终 cost=0、charged=false。", "additionalProperties": true }
+        }
+      },
+      "ShortDramaPreflightGenerate": {
+        "type": "object",
+        "required": ["project_id", "conversation_revision", "quality_route"],
+        "properties": {
+          "project_id": { "type": "string" },
+          "conversation_revision": { "type": "integer", "minimum": 1 },
+          "quality_route": { "type": "string", "enum": ["quick_draft", "formal"] }
+        }
+      },
+      "ShortDramaPreflightConfirm": {
+        "type": "object",
+        "required": ["project_id", "plan_id", "plan_version", "accepted_issue_keys"],
+        "properties": {
+          "project_id": { "type": "string" },
+          "plan_id": { "type": "string" },
+          "plan_version": { "type": "integer", "minimum": 1 },
+          "accepted_issue_keys": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "Error": { "type": "object", "properties": { "detail": { "type": "string" }, "code": { "type": "string" } } }
     }
   },
   "security": [{ "bearerAuth": [] }],
   "paths": {
+    "/api/admin/short-drama/lipsync/health": {
+      "get": {
+        "tags": ["管理后台"],
+        "summary": "短剧口型灰度健康、指标与告警",
+        "responses": {"200": {"description": "健康指标、告警、灰度配置及 Provider 状态"}, "403": {"description": "需要管理员权限"}}
+      }
+    },
+    "/api/admin/short-drama/lipsync/diagnostics": {
+      "get": {
+        "tags": ["管理后台"],
+        "summary": "按项目、任务、扣点尝试或 Provider Job ID 脱敏诊断",
+        "parameters": [
+          {"name": "project_id", "in": "query", "schema": {"type": "string"}},
+          {"name": "job_id", "in": "query", "schema": {"type": "string"}},
+          {"name": "attempt_id", "in": "query", "schema": {"type": "string"}},
+          {"name": "provider_job_id", "in": "query", "schema": {"type": "string"}}
+        ],
+        "responses": {"200": {"description": "脱敏任务、资金、版本和事件链"}, "400": {"description": "缺少查询标识"}, "403": {"description": "需要管理员权限"}}
+      }
+    },
+    "/api/admin/short-drama/lipsync/rollout": {
+      "post": {
+        "tags": ["管理后台"],
+        "summary": "更新短剧口型灰度比例、名单与全局熔断",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["confirmation", "reason", "enabled", "kill_switch", "percentage"], "properties": {"confirmation": {"type": "string", "enum": ["CONFIRM"]}, "reason": {"type": "string"}, "enabled": {"type": "boolean"}, "kill_switch": {"type": "boolean"}, "percentage": {"type": "integer", "minimum": 0, "maximum": 100}}}}}},
+        "responses": {"200": {"description": "灰度配置已更新并审计"}, "409": {"description": "配置版本冲突"}, "403": {"description": "需要管理员权限"}}
+      }
+    },
+    "/api/admin/short-drama/lipsync/provider": {
+      "post": {
+        "tags": ["管理后台"],
+        "summary": "暂停或恢复单个口型 Provider",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["confirmation", "provider", "paused", "reason"], "properties": {"confirmation": {"type": "string", "enum": ["CONFIRM"]}, "provider": {"type": "string"}, "paused": {"type": "boolean"}, "reason": {"type": "string"}, "incident_id": {"type": "string"}}}}}},
+        "responses": {"200": {"description": "Provider 状态已更新并审计"}, "403": {"description": "需要管理员权限"}}
+      }
+    },
+    "/api/admin/short-drama/lipsync/reconcile": {
+      "post": {
+        "tags": ["管理后台"],
+        "summary": "释放指定口型任务租约并恢复轮询",
+        "responses": {"200": {"description": "恢复结果"}, "403": {"description": "需要管理员权限"}}
+      }
+    },
+    "/api/admin/short-drama/lipsync/refund": {
+      "post": {
+        "tags": ["管理后台"],
+        "summary": "重试指定失败口型扣点尝试的退款",
+        "responses": {"200": {"description": "退款恢复结果"}, "403": {"description": "需要管理员权限"}}
+      }
+    },
     "/api/auth/login": {
       "post": {
         "tags": ["认证"], "summary": "登录(拿 token)", "security": [],
@@ -974,7 +1702,7 @@
       "get": {
         "tags": ["短剧"],
         "summary": "读取第 4 阶段字幕强制对齐工作区",
-        "description": "返回冻结输入哈希、Provider 能力、任务、不可变版本、字级时间线、质量指标、操作门禁和服务端阶段推进能力。未启动对齐的历史项目保持兼容。本阶段不扣点。",
+        "description": "返回冻结输入哈希、真实/降级 Provider 能力、feature/shadow 状态、可恢复任务、不可变版本、cue/word 时间、真实置信度、unmatched_tokens、low_confidence_ranges、degradation、操作门禁和服务端阶段推进能力。Provider 转写仅作诊断，发布文本始终使用锁定台词。未启动对齐的历史项目保持兼容，本阶段不扣点。",
         "security": [{"bearerAuth": []}],
         "parameters": [{"$ref": "#/components/parameters/XCanvasBoardId"}, {
           "name": "project_id", "in": "query", "required": true,
@@ -992,7 +1720,7 @@
       "post": {
         "tags": ["短剧"],
         "summary": "创建字幕强制对齐任务",
-        "description": "幂等创建零扣点字幕对齐任务。Provider Job ID 在任务创建后立即持久化。",
+        "description": "幂等创建零扣点字幕对齐任务。真实任务受 HQ_SHORT_DRAMA_ALIGNMENT_REAL_ENABLED 控制；Provider Job ID、能力、trace_id、heartbeat 和终态在返回后立即持久化，刷新或重启优先恢复原任务。",
         "security": [{"bearerAuth": []}],
         "parameters": [
           {"$ref": "#/components/parameters/XCanvasBoardId"},
@@ -1010,7 +1738,10 @@
           "202": {"description": "任务已创建"},
           "200": {"description": "相同幂等请求重放，或不同幂等键复用相同输入的已有版本"},
           "409": {"description": "幂等冲突或存在活动任务"},
-          "422": {"description": "输入未锁定或音频未就绪"}
+          "422": {"description": "输入未锁定、音频未就绪、低置信或台词无法匹配"},
+          "502": {"description": "Provider 结果无效"},
+          "503": {"description": "真实 Provider 未启用或当前不可用"},
+          "504": {"description": "Provider 超时，可刷新恢复原任务"}
         }
       }
     },
@@ -1106,6 +1837,402 @@
         }
       }
     },
+    "/api/gen/short-drama/master-timeline": {
+      "get": {
+        "tags": ["短剧"],
+        "security": [{"bearerAuth": []}],
+        "summary": "读取 PR-C 主时间轴与说话人编排快照",
+        "description": "读取当前不可变版本、来源哈希、阻断项、能力和版本历史。旧项目缺少证据时保持 legacy，只读且不会伪造 ready。",
+        "parameters": [
+          {"$ref": "#/components/parameters/XCanvasBoardId"},
+          {
+            "name": "project_id", "in": "query", "required": true,
+            "schema": {"type": "string", "minLength": 1}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "主时间轴快照",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MasterTimelineSnapshot"}}}
+          },
+          "401": {"description": "未登录"},
+          "403": {"description": "没有画布访问权限"},
+          "404": {"description": "项目不存在"}
+        }
+      },
+      "put": {
+        "tags": ["短剧"],
+        "security": [{"bearerAuth": []}],
+        "summary": "按双 revision 保存主时间轴局部变更",
+        "description": "服务端重新读取权威依赖并组装完整 canonical timeline，创建新的不可变版本，不覆盖旧版本。",
+        "parameters": [
+          {"$ref": "#/components/parameters/XCanvasBoardId"},
+          {"$ref": "#/components/parameters/IdempotencyKeyRequired"}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TimelineWriteRequest"}}}
+        },
+        "responses": {
+          "200": {
+            "description": "已保存新版本或重放相同幂等请求",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MasterTimelineSnapshot"}}}
+          },
+          "400": {"description": "请求字段或格式无效"},
+          "401": {"description": "未登录"},
+          "403": {"description": "无编辑权限或必须先修改初始密码"},
+          "404": {"description": "项目不存在或无权发现"},
+          "409": {"description": "项目或时间轴 revision 冲突、幂等冲突或当前版本不可编辑"},
+          "422": {"description": "区间越界、重叠、角色或可见目标无效"}
+        }
+      }
+    },
+    "/api/gen/short-drama/master-timeline/rebuild": {
+      "post": {
+        "tags": ["短剧"],
+        "security": [{"bearerAuth": []}],
+        "summary": "从已锁定配音和字幕对齐重建主时间轴草稿",
+        "parameters": [
+          {"$ref": "#/components/parameters/XCanvasBoardId"},
+          {"$ref": "#/components/parameters/IdempotencyKeyRequired"}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object", "additionalProperties": false,
+            "required": ["project_id", "revision", "timeline_revision"],
+            "properties": {
+              "project_id": {"type": "string", "minLength": 1},
+              "revision": {"type": "integer", "minimum": 1},
+              "timeline_revision": {"type": "integer", "minimum": 0}
+            }
+          }}}
+        },
+        "responses": {
+          "200": {
+            "description": "已创建草稿或重放相同幂等请求",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MasterTimelineSnapshot"}}}
+          },
+          "400": {"description": "请求字段或格式无效"},
+          "401": {"description": "未登录"},
+          "403": {"description": "无编辑权限或必须先修改初始密码"},
+          "404": {"description": "项目不存在或无权发现"},
+          "409": {"description": "revision 或幂等冲突"},
+          "422": {"description": "配音或字幕对齐尚未锁定"}
+        }
+      }
+    },
+    "/api/gen/short-drama/master-timeline/confirm": {
+      "post": {
+        "tags": ["短剧"],
+        "security": [{"bearerAuth": []}],
+        "summary": "确认无阻断的主时间轴版本",
+        "parameters": [
+          {"$ref": "#/components/parameters/XCanvasBoardId"},
+          {"$ref": "#/components/parameters/IdempotencyKeyRequired"}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object", "additionalProperties": false,
+            "required": ["project_id", "revision", "timeline_revision"],
+            "properties": {
+              "project_id": {"type": "string", "minLength": 1},
+              "revision": {"type": "integer", "minimum": 1},
+              "timeline_revision": {"type": "integer", "minimum": 0}
+            }
+          }}}
+        },
+        "responses": {
+          "200": {
+            "description": "已创建 ready 不可变版本",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MasterTimelineSnapshot"}}}
+          },
+          "400": {"description": "请求字段或格式无效"},
+          "401": {"description": "未登录"},
+          "403": {"description": "无编辑权限或必须先修改初始密码"},
+          "404": {"description": "项目不存在或无权发现"},
+          "409": {"description": "revision 冲突、stale 或版本不可确认"},
+          "422": {"description": "仍有主时间轴阻断项"}
+        }
+      }
+    },
+    "/api/gen/short-drama/master-timeline/versions": {
+      "get": {
+        "tags": ["短剧"],
+        "security": [{"bearerAuth": []}],
+        "summary": "读取主时间轴不可变版本历史",
+        "parameters": [
+          {"$ref": "#/components/parameters/XCanvasBoardId"},
+          {
+            "name": "project_id", "in": "query", "required": true,
+            "schema": {"type": "string", "minLength": 1}
+          }
+        ],
+        "responses": {
+          "200": {"description": "版本历史"},
+          "401": {"description": "未登录"},
+          "403": {"description": "没有画布访问权限"},
+          "404": {"description": "项目不存在"}
+        }
+      }
+    },
+    "/api/gen/short-drama/lipsync/snapshot": {
+      "get": {
+        "tags": ["短剧"],
+        "security": [{"bearerAuth": []}],
+        "summary": "读取 PR-E 口型依赖快照与诊断",
+        "description": "服务端聚合主时间轴、锁定画面、主音轨、字幕对齐、人物目标与 Provider 能力。旧项目缺依赖时返回 blocker，不触发修复、Provider 或扣点。",
+        "parameters": [
+          {"$ref": "#/components/parameters/XCanvasBoardId"},
+          {
+            "name": "project_id", "in": "query", "required": true,
+            "schema": {"type": "string", "minLength": 1}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "稳定依赖快照；viewer 也可读取",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShortDramaLipsyncSnapshot"}}}
+          },
+          "401": {"description": "未登录"},
+          "404": {"description": "项目不存在或无权发现"}
+        }
+      }
+    },
+    "/api/gen/short-drama/lipsync/faces/analyze": {
+      "post": {
+        "tags": ["短剧"],
+        "security": [{"bearerAuth": []}],
+        "summary": "生成 PR-J 项目内人脸跟踪候选",
+        "description": "仅生成可审阅候选，不自动创建付费口型任务；首版只接受不重叠的多人轮流对白。",
+        "parameters": [{"$ref": "#/components/parameters/XCanvasBoardId"}],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShortDramaFaceAnalysisRequest"}}}
+        },
+        "responses": {
+          "200": {"description": "候选分析或同输入复用结果", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShortDramaFaceAnalysis"}}}},
+          "403": {"description": "没有项目编辑权限"},
+          "409": {"description": "项目阶段不允许分析"},
+          "422": {"description": "对白重叠、画面缺失或参考集合无效"},
+          "503": {"description": "PR-J 分析开关关闭"}
+        }
+      }
+    },
+    "/api/gen/short-drama/lipsync/faces/analyses/{analysis_id}": {
+      "get": {
+        "tags": ["短剧"],
+        "security": [{"bearerAuth": []}],
+        "summary": "读取 PR-J 人脸分析候选",
+        "parameters": [
+          {"$ref": "#/components/parameters/XCanvasBoardId"},
+          {"name": "analysis_id", "in": "path", "required": true, "schema": {"type": "string"}}
+        ],
+        "responses": {
+          "200": {"description": "分析候选", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShortDramaFaceAnalysis"}}}},
+          "403": {"description": "没有项目读取权限"},
+          "404": {"description": "分析不存在"}
+        }
+      }
+    },
+    "/api/gen/short-drama/lipsync/faces/confirm": {
+      "post": {
+        "tags": ["短剧"],
+        "security": [{"bearerAuth": []}],
+        "summary": "人工确认 PR-J 人物与人脸轨迹映射",
+        "description": "逐段人工确认后创建不可变跟踪版本；不会创建或扣费口型任务。",
+        "parameters": [{"$ref": "#/components/parameters/XCanvasBoardId"}],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShortDramaFaceTrackConfirmation"}}}
+        },
+        "responses": {
+          "200": {"description": "不可变跟踪版本"},
+          "403": {"description": "没有项目编辑权限"},
+          "409": {"description": "输入哈希、素材或当前修订已变化"},
+          "422": {"description": "人工审核记录或逐段映射不完整"},
+          "503": {"description": "PR-J 分析开关关闭"}
+        }
+      }
+    },
+    "/api/gen/short-drama/lipsync/faces/current": {
+      "get": {
+        "tags": ["短剧"],
+        "security": [{"bearerAuth": []}],
+        "summary": "读取镜头当前已确认的人脸跟踪版本",
+        "parameters": [
+          {"$ref": "#/components/parameters/XCanvasBoardId"},
+          {"name": "project_id", "in": "query", "required": true, "schema": {"type": "string"}},
+          {"name": "shot_id", "in": "query", "required": true, "schema": {"type": "string"}}
+        ],
+        "responses": {
+          "200": {"description": "当前版本；尚未确认时 current 为 null"},
+          "403": {"description": "没有项目读取权限"},
+          "404": {"description": "项目不存在"}
+        }
+      }
+    },
+    "/api/gen/short-drama/lipsync/quote": {
+      "post": {
+        "tags": ["短剧"],
+        "security": [{"bearerAuth": []}],
+        "summary": "创建 PR-E 口型模拟报价",
+        "description": "仅创建 chargeable=false 的可过期模拟报价。不会创建 attempt/job、调用外部 Provider、扣点或退款。",
+        "parameters": [{"$ref": "#/components/parameters/XCanvasBoardId"}],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShortDramaLipsyncQuoteRequest"}}}
+        },
+        "responses": {
+          "200": {
+            "description": "新模拟报价或有效报价重放",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShortDramaLipsyncQuote"}}}
+          },
+          "400": {"description": "请求格式或 face_target 无效"},
+          "401": {"description": "未登录"},
+          "403": {"description": "viewer 或当前阶段没有报价写权限"},
+          "404": {"description": "项目或镜头不存在"},
+          "409": {"description": "项目 revision 或依赖 input_hash 已变化"},
+          "422": {"description": "依赖阻断或 Provider 不支持媒体规格"}
+        }
+      }
+    },
+    "/api/gen/short-drama/lipsync/jobs": {
+      "post": {
+        "tags": ["短剧"],
+        "security": [{"bearerAuth": []}],
+        "summary": "创建 PR-F 口型付费任务",
+        "description": "原子消费报价并创建 attempt/job 意图，使用稳定账本键扣点。真实 Provider 与账本写入均受默认关闭的功能开关保护。",
+        "parameters": [
+          {"$ref": "#/components/parameters/XCanvasBoardId"},
+          {
+            "name": "Idempotency-Key", "in": "header", "required": true,
+            "schema": {"type": "string", "minLength": 1}
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShortDramaLipsyncJobRequest"}}}
+        },
+        "responses": {
+          "202": {"description": "任务已持久化并完成扣点确认", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShortDramaLipsyncJob"}}}},
+          "402": {"description": "点数不足"},
+          "403": {"description": "无镜头写权限"},
+          "409": {"description": "报价过期、已消费、依赖变化或幂等冲突"},
+          "503": {"description": "功能开关关闭、消费者/Provider 未就绪或扣点结果未知"}
+        }
+      }
+    },
+    "/api/gen/short-drama/lipsync/jobs/{job_id}": {
+      "get": {
+        "tags": ["短剧"],
+        "security": [{"bearerAuth": []}],
+        "summary": "查询 PR-F 口型任务及退款状态",
+        "parameters": [{"name": "job_id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+        "responses": {
+          "200": {"description": "任务快照", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShortDramaLipsyncJob"}}}},
+          "403": {"description": "无读取权限"},
+          "404": {"description": "任务不存在"}
+        }
+      }
+    },
+    "/api/gen/short-drama/lipsync/jobs/{job_id}/retry": {
+      "post": {
+        "tags": ["短剧"],
+        "security": [{"bearerAuth": []}],
+        "summary": "重试尚未关联 Provider 的口型任务",
+        "parameters": [{"name": "job_id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+        "responses": {
+          "200": {"description": "已重新入队", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShortDramaLipsyncJob"}}}},
+          "409": {"description": "必须对账或当前状态不可重试"}
+        }
+      }
+    },
+    "/api/gen/short-drama/lipsync/jobs/{job_id}/cancel": {
+      "post": {
+        "tags": ["短剧"],
+        "security": [{"bearerAuth": []}],
+        "summary": "请求取消口型任务",
+        "parameters": [{"name": "job_id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+        "responses": {
+          "200": {"description": "取消请求已记录", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShortDramaLipsyncJob"}}}},
+          "404": {"description": "任务不存在"}
+        }
+      }
+    },
+    "/api/gen/short-drama/lipsync/speakers": {
+      "put": {
+        "tags": ["短剧"],
+        "security": [{"bearerAuth": []}],
+        "summary": "保存 PR-G 口型说话人与人脸目标",
+        "description": "复用主时间轴版本体系创建新版本；不在前端或口型域维护影子时间轴。",
+        "parameters": [
+          {"$ref": "#/components/parameters/XCanvasBoardId"},
+          {
+            "name": "Idempotency-Key", "in": "header", "required": true,
+            "schema": {"type": "string", "minLength": 1}
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShortDramaLipsyncSpeakerUpdate"}}}
+        },
+        "responses": {
+          "200": {"description": "已创建新的主时间轴版本"},
+          "403": {"description": "只读角色或功能开关关闭"},
+          "409": {"description": "项目或时间轴版本冲突"},
+          "422": {"description": "说话人区间或人脸目标无效"}
+        }
+      }
+    },
+    "/api/gen/short-drama/lipsync/versions/{version_id}/select": {
+      "put": {
+        "tags": ["短剧"],
+        "security": [{"bearerAuth": []}],
+        "summary": "选择 PR-G 口型不可变版本",
+        "parameters": [
+          {"$ref": "#/components/parameters/XCanvasBoardId"},
+          {
+            "name": "version_id", "in": "path", "required": true,
+            "schema": {"type": "string"}
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShortDramaLipsyncVersionMutation"}}}
+        },
+        "responses": {
+          "200": {"description": "当前版本指针已更新"},
+          "404": {"description": "版本不存在"},
+          "409": {"description": "版本已锁定、已过期或指针发生并发变化"}
+        }
+      }
+    },
+    "/api/gen/short-drama/lipsync/versions/{version_id}/lock": {
+      "post": {
+        "tags": ["短剧"],
+        "security": [{"bearerAuth": []}],
+        "summary": "锁定 PR-G 当前口型版本",
+        "description": "仅允许锁定已选择、依赖未变化且通过服务端 readiness 校验的版本。",
+        "parameters": [
+          {"$ref": "#/components/parameters/XCanvasBoardId"},
+          {
+            "name": "version_id", "in": "path", "required": true,
+            "schema": {"type": "string"}
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShortDramaLipsyncVersionMutation"}}}
+        },
+        "responses": {
+          "200": {"description": "版本已锁定或幂等重放"},
+          "409": {"description": "快照、项目或当前指针已经变化"},
+          "422": {"description": "readiness 阻塞，暂不可锁定"}
+        }
+      }
+    },
     "/api/gen/short-drama/video": {
       "get": {
         "tags": ["短剧"],
@@ -1158,6 +2285,25 @@
           "400": {"description": "项目尚未进入 C-3 视频阶段"},
           "401": {"description": "未登录"}, "403": {"description": "无画布访问权限"},
           "404": {"description": "项目不存在或无权发现"}
+        }
+      }
+    },
+    "/api/gen/short-drama/avatar-candidates": {
+      "get": {
+        "tags": ["短剧"],
+        "summary": "读取角色确认页的电影化形象候选",
+        "description": "免费且不扣点。仅项目 owner/editor 可读；共享画布 editor 读取项目 owner 的 ready 电影化形象。响应只包含站内候选 ID、名称、缩略图和状态，不暴露供应商内部形象 ID。viewer 不可列举项目所有者的形象库。",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/XCanvasBoardId"}, {
+          "name": "project_id", "in": "query", "required": true,
+          "schema": {"type": "string", "minLength": 1}
+        }],
+        "responses": {
+          "200": {"description": "项目所有者的可用电影化形象及当前用户是否可创建新形象"},
+          "400": {"description": "缺少 project_id"},
+          "401": {"description": "未登录"},
+          "403": {"description": "当前画布角色为 viewer，不能列举候选形象"},
+          "404": {"description": "项目不存在，或当前用户无权发现该项目"}
         }
       }
     },
@@ -1217,6 +2363,161 @@
         }
       }
     },
+    "/api/gen/short-drama/sound-design": {
+      "get": {
+        "tags": ["短剧"],
+        "summary": "Read the AI sound-design workspace",
+        "description": "Free and read-only. Returns suggestions, provider capability, pricing and generated jobs for one project.",
+        "security": [{"bearerAuth": []}],
+        "parameters": [
+          {"$ref": "#/components/parameters/XCanvasBoardId"},
+          {"name": "project_id", "in": "query", "required": true, "schema": {"type": "string", "minLength": 1}}
+        ],
+        "responses": {
+          "200": {"description": "Sound-design workspace"},
+          "401": {"description": "Not authenticated"},
+          "404": {"description": "Project not found or not visible"}
+        }
+      }
+    },
+    "/api/gen/short-drama/sound-design/analyze": {
+      "post": {
+        "tags": ["短剧"],
+        "summary": "Analyze shots and create sound-effect suggestions",
+        "description": "Free and idempotent for the same project revision and shot source.",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/XCanvasBoardId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {
+          "type": "object", "additionalProperties": false,
+          "required": ["project_id", "revision"],
+          "properties": {
+            "project_id": {"type": "string", "minLength": 1},
+            "revision": {"type": "integer", "minimum": 1}
+          }
+        }}}},
+        "responses": {
+          "200": {"description": "Updated sound-design workspace"},
+          "409": {"description": "Revision or project stage conflict"}
+        }
+      }
+    },
+    "/api/gen/short-drama/sound-design/suggestions": {
+      "put": {
+        "tags": ["短剧"],
+        "summary": "Edit and confirm AI sound-effect suggestions",
+        "description": "Free. Only suggested, confirmed or rejected suggestions are editable.",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/XCanvasBoardId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {
+          "type": "object", "additionalProperties": false,
+          "required": ["project_id", "revision", "items"],
+          "properties": {
+            "project_id": {"type": "string", "minLength": 1},
+            "revision": {"type": "integer", "minimum": 1},
+            "items": {"type": "array", "maxItems": 30, "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["id", "prompt", "status", "volume", "loop"],
+              "properties": {
+                "id": {"type": "string", "minLength": 1},
+                "prompt": {"type": "string", "minLength": 1, "maxLength": 450},
+                "status": {"type": "string", "enum": ["suggested", "confirmed", "rejected"]},
+                "volume": {"type": "number", "minimum": 0, "maximum": 1},
+                "loop": {"type": "boolean"}
+              }
+            }}
+          }
+        }}}},
+        "responses": {
+          "200": {"description": "Updated sound-design workspace"},
+          "409": {"description": "Suggestion is no longer editable"}
+        }
+      }
+    },
+    "/api/gen/short-drama/sound-design/quote": {
+      "post": {
+        "tags": ["短剧"],
+        "summary": "Quote confirmed AI sound effects",
+        "description": "Free quote. Validates provider capability, revisions and project point budget before any charge.",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/XCanvasBoardId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {
+          "type": "object", "additionalProperties": false,
+          "required": ["project_id", "revision", "assembly_revision", "suggestion_ids"],
+          "properties": {
+            "project_id": {"type": "string", "minLength": 1},
+            "revision": {"type": "integer", "minimum": 1},
+            "assembly_revision": {"type": "integer", "minimum": 1},
+            "suggestion_ids": {"type": "array", "minItems": 1, "maxItems": 30, "uniqueItems": true, "items": {"type": "string"}}
+          }
+        }}}},
+        "responses": {
+          "200": {"description": "Time-limited quote"},
+          "409": {"description": "Revision, selection or project budget conflict"},
+          "503": {"description": "Sound-effect provider is not configured"}
+        }
+      }
+    },
+    "/api/gen/short-drama/sound-design/jobs": {
+      "get": {
+        "tags": ["短剧"],
+        "summary": "Poll AI sound-effect jobs",
+        "security": [{"bearerAuth": []}],
+        "parameters": [
+          {"$ref": "#/components/parameters/XCanvasBoardId"},
+          {"name": "project_id", "in": "query", "required": true, "schema": {"type": "string", "minLength": 1}}
+        ],
+        "responses": {"200": {"description": "Project sound-effect jobs"}}
+      },
+      "post": {
+        "tags": ["短剧"],
+        "summary": "Submit paid AI sound-effect jobs",
+        "description": "Requires Idempotency-Key. Charges once, creates one recoverable job per confirmed suggestion and automatically refunds failed jobs.",
+        "security": [{"bearerAuth": []}],
+        "parameters": [
+          {"$ref": "#/components/parameters/XCanvasBoardId"},
+          {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 128}}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {
+          "type": "object", "additionalProperties": false,
+          "required": ["project_id", "revision", "assembly_revision", "quote_token"],
+          "properties": {
+            "project_id": {"type": "string", "minLength": 1},
+            "revision": {"type": "integer", "minimum": 1},
+            "assembly_revision": {"type": "integer", "minimum": 1},
+            "quote_token": {"type": "string", "minLength": 1}
+          }
+        }}}},
+        "responses": {
+          "200": {"description": "Idempotent replay"},
+          "202": {"description": "Jobs accepted"},
+          "409": {"description": "Quote, revision, idempotency or budget conflict"}
+        }
+      }
+    },
+    "/api/gen/short-drama/sound-design/apply": {
+      "post": {
+        "tags": ["短剧"],
+        "summary": "Apply generated sound effects to the assembly timeline",
+        "description": "Free. Adds owned generated assets to sound_cues, increments assembly_revision and invalidates the previous preview.",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/XCanvasBoardId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {
+          "type": "object", "additionalProperties": false,
+          "required": ["project_id", "revision", "assembly_revision", "job_ids", "approve_manual_review"],
+          "properties": {
+            "project_id": {"type": "string", "minLength": 1},
+            "revision": {"type": "integer", "minimum": 1},
+            "assembly_revision": {"type": "integer", "minimum": 1},
+            "job_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "integer", "minimum": 1}},
+            "approve_manual_review": {"type": "boolean"}
+          }
+        }}}},
+        "responses": {
+          "200": {"description": "Updated assembly workspace"},
+          "409": {"description": "A selected job is not ready or requires approval"}
+        }
+      }
+    },
     "/api/gen/short-drama/assembly": {
       "get": {
         "tags": ["短剧"],
@@ -1233,6 +2534,124 @@
           "401": {"description": "未登录", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
           "403": {"description": "必须修改初始密码，或账号没有画布基础访问能力", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
           "404": {"description": "项目不存在，或当前用户无权发现该项目", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/gen/short-drama/final-assets/{asset_id}": {
+      "get": {
+        "tags": ["短剧"],
+        "summary": "读取已归档的短剧正式成片",
+        "description": "只读且不扣点。返回指定短剧正式成片及刷新后的私有播放/下载地址；不返回 COS object_key。非共享项目仅 owner 可读，共享项目的 owner/editor/viewer 需同时提交 X-Canvas-Board-Id。",
+        "security": [{"bearerAuth": []}],
+        "parameters": [
+          {"$ref": "#/components/parameters/XCanvasBoardId"},
+          {"name": "asset_id", "in": "path", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 128}}
+        ],
+        "responses": {
+          "200": {"description": "短剧正式成片详情", "content": {"application/json": {"schema": {
+            "type": "object",
+            "required": ["id", "asset_id", "source_type", "project_id", "job_id", "title", "status", "video_url", "resolution", "created_at"],
+            "properties": {
+              "id": {"type": "string"},
+              "asset_id": {"type": "string"},
+              "source_type": {"type": "string", "enum": ["short_drama_final"]},
+              "project_id": {"type": "string"},
+              "composition_version_id": {"type": "string"},
+              "version": {"type": "integer", "nullable": true},
+              "job_id": {"type": "string"},
+              "title": {"type": "string"},
+              "status": {"type": "string", "enum": ["done"]},
+              "video_url": {"type": "string"},
+              "url": {"type": "string"},
+              "image_url": {"type": "string"},
+              "cover_url": {"type": "string"},
+              "mime": {"type": "string"},
+              "size": {"type": "integer"},
+              "sha256": {"type": "string"},
+              "width": {"type": "integer"},
+              "height": {"type": "integer"},
+              "resolution": {"type": "string"},
+              "ratio": {"type": "string"},
+              "fps": {"type": "number"},
+              "duration_ms": {"type": "integer"},
+              "video_codec": {"type": "string"},
+              "audio_codec": {"type": "string"},
+              "created_by": {"type": "string"},
+              "created_at": {"type": "integer"}
+            }
+          }}}},
+          "401": {"description": "未登录"},
+          "403": {"description": "必须修改初始密码"},
+          "404": {"description": "资产不存在、已删除或当前用户无权发现该资产"}
+        }
+      }
+    },
+    "/api/gen/short-drama/assembly/audio-assets": {
+      "get": {
+        "tags": ["短剧"],
+        "summary": "读取项目 owner 的声音设计资产",
+        "description": "先按 project_id 与 X-Canvas-Board-Id 校验共享画布权限，再由服务端解析项目 owner 并返回其未删除音频资产；不信任客户端提供的用户名。owner/editor/viewer 可读，声音配置保存仍仅允许 owner/editor。",
+        "security": [{"bearerAuth": []}],
+        "parameters": [
+          {"$ref": "#/components/parameters/XCanvasBoardId"},
+          {"name": "project_id", "in": "query", "required": true, "schema": {"type": "string", "minLength": 1}},
+          {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 120, "default": 120}}
+        ],
+        "responses": {
+          "200": {"description": "项目 owner 的音频资产列表"},
+          "400": {"description": "缺少 project_id 或参数无效"},
+          "401": {"description": "未登录"},
+          "403": {"description": "必须修改初始密码"},
+          "404": {"description": "项目不存在、画布不匹配或当前成员已被移除"}
+        }
+      }
+    },
+    "/api/gen/short-drama/assembly/config": {
+      "put": {
+        "tags": ["短剧"],
+        "summary": "保存装配声音配置",
+        "description": "免费且不扣点。使用 project revision 与 assembly_revision 双重乐观锁保存字幕、BGM 和逐镜手动音效时间线。保存会递增 assembly_revision，使旧预览退出当前版本；供应商视频原声始终不进入主音轨。",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/XCanvasBoardId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {
+          "type": "object", "additionalProperties": false,
+          "required": ["project_id", "revision", "assembly_revision", "config"],
+          "properties": {
+            "project_id": {"type": "string", "minLength": 1},
+            "revision": {"type": "integer", "minimum": 1},
+            "assembly_revision": {"type": "integer", "minimum": 1},
+            "config": {"type": "object", "additionalProperties": false,
+              "required": ["subtitle", "bgm", "sound_cues"],
+              "properties": {
+                "subtitle": {"type": "object"},
+                "bgm": {"type": "object"},
+                "sound_cues": {"type": "array", "maxItems": 120, "items": {
+                  "type": "object", "additionalProperties": false,
+                  "required": ["id", "shot_id", "kind", "asset_id", "start_ms", "end_ms", "loop", "volume", "fade_in_ms", "fade_out_ms", "enabled"],
+                  "properties": {
+                    "id": {"type": "string", "minLength": 1, "maxLength": 80},
+                    "shot_id": {"type": "string", "minLength": 1},
+                    "kind": {"type": "string", "enum": ["ambience", "foley", "transition", "impact"]},
+                    "asset_id": {"type": "integer", "minimum": 1},
+                    "start_ms": {"type": "integer", "minimum": 0},
+                    "end_ms": {"type": "integer", "minimum": 1},
+                    "loop": {"type": "boolean"},
+                    "volume": {"type": "number", "minimum": 0, "maximum": 1},
+                    "fade_in_ms": {"type": "integer", "minimum": 0},
+                    "fade_out_ms": {"type": "integer", "minimum": 0},
+                    "enabled": {"type": "boolean"}
+                  }
+                }}
+              }
+            }
+          }
+        }}}},
+        "responses": {
+          "200": {"description": "配置已保存或无变化"},
+          "400": {"description": "配置字段、音效时间线或音频资产无效"},
+          "403": {"description": "无写权限"},
+          "404": {"description": "项目不存在或无权发现"},
+          "409": {"description": "项目/装配版本冲突或已有合成任务"}
         }
       }
     },
@@ -1302,6 +2721,78 @@
         "responses": {
           "409": {"description": "D-6 已开启，必须使用 /completion/confirm"},
           "503": {"description": "D-6 已关闭，禁止完成确认"}
+        }
+      }
+    },
+    "/api/gen/short-drama/playback": {
+      "get": {
+        "tags": ["短剧"], "summary": "读取 PR-D 单文件播放包",
+        "description": "免费只读。返回当前播放包、历史播放包、活动重封装任务及历史烧录字幕兼容提示。播放包由一个含主音轨的 MP4 和一个外置 WebVTT 组成。",
+        "parameters": [
+          {"$ref": "#/components/parameters/XCanvasBoardId"},
+          {"name": "project_id", "in": "query", "required": true, "schema": {"type": "string", "minLength": 1}}
+        ],
+        "responses": {
+          "200": {"description": "播放包快照"},
+          "403": {"description": "无读取权限"},
+          "404": {"description": "项目不存在或无权发现"}
+        }
+      }
+    },
+    "/api/gen/short-drama/playback/remux": {
+      "post": {
+        "tags": ["短剧"], "summary": "提交零扣点轻量重封装",
+        "description": "必须携带 Idempotency-Key。仅接受采用 external_vtt 交付的新 720p 预览；历史已烧录字幕版本返回 legacy_burned_subtitle，不伪装为可关闭字幕。",
+        "parameters": [
+          {"$ref": "#/components/parameters/XCanvasBoardId"},
+          {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 180}}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {
+          "type": "object", "additionalProperties": false,
+          "required": ["project_id"],
+          "properties": {
+            "project_id": {"type": "string", "minLength": 1},
+            "source_version_id": {"type": "string"}
+          }
+        }}}},
+        "responses": {
+          "202": {"description": "零扣点重封装任务已创建"},
+          "200": {"description": "幂等重放或已有相同播放包"},
+          "409": {"description": "幂等冲突、活动任务、历史烧录字幕、主时间线未就绪或已失效、预览输入已失效"}
+        }
+      }
+    },
+    "/api/gen/short-drama/playback/jobs/{job_id}": {
+      "get": {
+        "tags": ["短剧"], "summary": "轮询 PR-D 重封装任务",
+        "parameters": [
+          {"$ref": "#/components/parameters/XCanvasBoardId"},
+          {"name": "job_id", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}},
+          {"name": "project_id", "in": "query", "required": true, "schema": {"type": "string", "minLength": 1}}
+        ],
+        "responses": {
+          "200": {"description": "任务状态；cost 固定为 0"},
+          "404": {"description": "任务不存在或无权发现"}
+        }
+      }
+    },
+    "/api/gen/short-drama/playback/versions/{version_id}/select": {
+      "put": {
+        "tags": ["短剧"], "summary": "选择当前播放包版本",
+        "description": "只更新播放上下文，不改变项目内容版本，不扣点。",
+        "parameters": [
+          {"$ref": "#/components/parameters/XCanvasBoardId"},
+          {"name": "version_id", "in": "path", "required": true, "schema": {"type": "string", "minLength": 1}}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {
+          "type": "object", "additionalProperties": false,
+          "required": ["project_id"],
+          "properties": {"project_id": {"type": "string", "minLength": 1}}
+        }}}},
+        "responses": {
+          "200": {"description": "已选择的播放包"},
+          "403": {"description": "无写权限"},
+          "404": {"description": "播放包不存在"}
         }
       }
     },
@@ -1609,6 +3100,193 @@
         }
       }
     },
+    "/api/gen/short-drama/conversation": {
+      "get": {
+        "tags": ["短剧策划"], "summary": "读取独立短剧对话式剧本工作区", "description": "Free / no points. 读取消息、理解摘要、结构化剧本版本、锁定状态和编辑权限。",
+        "parameters": [{ "name": "project_id", "in": "query", "required": true, "schema": { "type": "string" } }, { "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "responses": { "200": { "description": "工作区快照", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaConversationWorkspace" } } } }, "401": { "description": "未登录" }, "403": { "description": "无访问权限" }, "404": { "description": "项目不存在" } }
+      }
+    },
+    "/api/gen/short-drama/character-studio": {
+      "get": {
+        "tags": ["短剧策划"],
+        "summary": "读取锁定剧本的角色形象工作室",
+        "description": "汇总声明、说话和出镜角色，并返回角色档案、参考图、可用电影化身、绑定状态及影响镜头。",
+        "parameters": [{ "name": "project_id", "in": "query", "required": true, "schema": { "type": "string" } }, { "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "responses": {
+          "200": { "description": "角色工作室快照", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaCharacterStudioWorkspace" } } } },
+          "409": { "description": "剧本尚未锁定" }
+        }
+      }
+    },
+    "/api/gen/short-drama/character-studio/profile": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "保存角色身份、性格、外貌和穿着档案",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKeyRequired" }, { "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaCharacterProfileMutation" } } } },
+        "responses": { "200": { "description": "保存成功并返回新的项目 revision" }, "409": { "description": "项目版本冲突" }, "422": { "description": "角色档案不完整" } }
+      }
+    },
+    "/api/gen/short-drama/character-studio/bind-avatar": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "绑定或解除角色的电影化身",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKeyRequired" }, { "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaCharacterAvatarMutation" } } } },
+        "responses": { "200": { "description": "绑定成功并返回新的项目 revision" }, "409": { "description": "版本冲突或电影化身已被其他角色占用" }, "422": { "description": "电影化身尚不可用" } }
+      }
+    },
+    "/api/gen/short-drama/asset-graph": {
+      "get": {
+        "tags": ["短剧策划"], "summary": "读取项目资产图谱",
+        "description": "读取角色、场景、服装、妆容、道具、车辆和线索的不可变版本及镜头关系。",
+        "parameters": [{ "name": "project_id", "in": "query", "required": true, "schema": { "type": "string" } }, { "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "responses": { "200": { "description": "资产实体、版本、关系和 graph_revision" } }
+      }
+    },
+    "/api/gen/short-drama/asset-graph/shot-package": {
+      "get": {
+        "tags": ["短剧策划"], "summary": "读取镜头当前资产快照",
+        "parameters": [{ "name": "project_id", "in": "query", "required": true, "schema": { "type": "string" } }, { "name": "shot_id", "in": "query", "required": true, "schema": { "type": "string" } }, { "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "responses": { "200": { "description": "不可变镜头资产包" }, "409": { "description": "尚未建立快照" } }
+      }
+    },
+    "/api/gen/short-drama/asset-graph/sync": {
+      "post": {
+        "tags": ["短剧策划"], "summary": "从角色和分镜同步基础资产",
+        "parameters": [{ "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["project_id", "graph_revision"], "properties": { "project_id": { "type": "string" }, "graph_revision": { "type": "integer", "minimum": 1 } } } } } },
+        "responses": { "200": { "description": "同步结果" }, "409": { "description": "资产图谱版本冲突" } }
+      }
+    },
+    "/api/gen/short-drama/asset-graph/assets": {
+      "post": {
+        "tags": ["短剧策划"], "summary": "创建资产实体及首个草稿版本",
+        "parameters": [{ "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["project_id", "graph_revision", "asset_key", "asset_type", "name"], "properties": { "project_id": { "type": "string" }, "graph_revision": { "type": "integer" }, "asset_key": { "type": "string" }, "asset_type": { "type": "string", "enum": ["character", "scene", "costume", "makeup", "prop", "vehicle", "clue"] }, "name": { "type": "string" }, "description": { "type": "string" } } } } } },
+        "responses": { "200": { "description": "创建成功" }, "409": { "description": "标识或 revision 冲突" } }
+      }
+    },
+    "/api/gen/short-drama/asset-graph/versions": {
+      "post": {
+        "tags": ["短剧策划"], "summary": "为资产创建不可覆盖的新草稿版本",
+        "parameters": [{ "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["project_id", "graph_revision", "entity_id", "prompt"], "properties": { "project_id": { "type": "string" }, "graph_revision": { "type": "integer" }, "entity_id": { "type": "string" }, "prompt": { "type": "string" }, "negative_prompt": { "type": "string" }, "references": { "type": "array", "items": { "type": "object" } }, "attributes": { "type": "object" } } } } } },
+        "responses": { "200": { "description": "新版本" }, "409": { "description": "revision 冲突" } }
+      }
+    },
+    "/api/gen/short-drama/asset-graph/versions/lock": {
+      "post": {
+        "tags": ["短剧策划"], "summary": "锁定资产版本",
+        "parameters": [{ "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["project_id", "graph_revision", "version_id"], "properties": { "project_id": { "type": "string" }, "graph_revision": { "type": "integer" }, "version_id": { "type": "string" } } } } } },
+        "responses": { "200": { "description": "锁定成功" }, "409": { "description": "revision 冲突" } }
+      }
+    },
+    "/api/gen/short-drama/asset-graph/bindings": {
+      "post": {
+        "tags": ["短剧策划"], "summary": "绑定资产到镜头",
+        "parameters": [{ "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["project_id", "graph_revision", "shot_id", "relation_type", "entity_id"], "properties": { "project_id": { "type": "string" }, "graph_revision": { "type": "integer" }, "shot_id": { "type": "string" }, "relation_type": { "type": "string" }, "entity_id": { "type": "string" }, "version_id": { "type": "string" }, "metadata": { "type": "object" } } } } } },
+        "responses": { "200": { "description": "绑定成功" }, "422": { "description": "跨项目或非法版本" } }
+      }
+    },
+    "/api/gen/short-drama/asset-graph/snapshots": {
+      "post": {
+        "tags": ["短剧策划"], "summary": "生成镜头不可变资产快照",
+        "description": "快照会报告缺失或未锁定资产；采用资产图谱的镜头仅允许使用当前 revision 的 ready 快照生成。",
+        "parameters": [{ "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["project_id", "graph_revision", "shot_id"], "properties": { "project_id": { "type": "string" }, "graph_revision": { "type": "integer" }, "shot_id": { "type": "string" } } } } } },
+        "responses": { "200": { "description": "ready 或 blocked 快照与 blockers" }, "409": { "description": "revision 冲突" } }
+      }
+    },
+    "/api/gen/short-drama/conversation/messages": {
+      "post": {
+        "tags": ["短剧策划"], "summary": "发送创作消息并更新理解摘要", "description": "Free / no points. 使用 conversation_revision 乐观锁；幂等重放仅接受相同请求。",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKeyRequired" }, { "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/ShortDramaConversationMutation" }, { "required": ["message"] }] } } } },
+        "responses": { "200": { "description": "更新后的工作区", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaConversationWorkspace" } } } }, "409": { "description": "版本或幂等冲突" } }
+      }
+    },
+    "/api/gen/short-drama/conversation/jobs/{job_id}": {
+      "get": {
+        "tags": ["短剧策划"], "summary": "读取剧本生成任务状态", "description": "Free / no points. 本地确定性 Provider 会立即完成，但保留统一任务契约供后续异步 Provider 使用。",
+        "parameters": [{ "name": "job_id", "in": "path", "required": true, "schema": { "type": "string" } }, { "name": "project_id", "in": "query", "required": true, "schema": { "type": "string" } }, { "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "responses": { "200": { "description": "任务状态" }, "404": { "description": "项目或任务不存在" } }
+      }
+    },
+    "/api/gen/short-drama/conversation/script/generate": {
+      "post": {
+        "tags": ["短剧策划"], "summary": "生成或修改结构化剧本版本", "description": "Free / no points. 返回确定性的结构化剧本快照；锁定后禁止再次生成。",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKeyRequired" }, { "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaConversationMutation" } } } },
+        "responses": { "200": { "description": "新剧本版本及工作区", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaConversationWorkspace" } } } }, "409": { "description": "版本、幂等或锁定冲突" } }
+      }
+    },
+    "/api/gen/short-drama/conversation/script/shot/update": {
+      "post": {
+        "tags": ["短剧策划"], "summary": "编辑单个镜头及对应台词", "description": "Free / no points. 校验剧本版本和会话 revision，保持总时长守恒并生成可审计的新剧本版本。",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKeyRequired" }, { "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["project_id", "conversation_revision", "version_id", "shot_key", "changes"], "properties": { "project_id": { "type": "string" }, "conversation_revision": { "type": "integer", "minimum": 1 }, "version_id": { "type": "string" }, "shot_key": { "type": "string" }, "changes": { "type": "object" } } } } } },
+        "responses": { "200": { "description": "编辑后的新版本及工作区", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaConversationWorkspace" } } } }, "409": { "description": "版本、幂等、锁定或 revision 冲突" }, "422": { "description": "镜头、台词或 Provider 参数未通过质量校验" } }
+      }
+    },
+    "/api/gen/short-drama/conversation/script/shot/regenerate": {
+      "post": {
+        "tags": ["短剧策划"], "summary": "重新生成单个镜头", "description": "Free / no points. 仅替换指定未锁定镜头，保留其他镜头和总时长，并创建新的可追溯版本。",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKeyRequired" }, { "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["project_id", "conversation_revision", "version_id", "shot_key"], "properties": { "project_id": { "type": "string" }, "conversation_revision": { "type": "integer", "minimum": 1 }, "version_id": { "type": "string" }, "shot_key": { "type": "string" }, "instruction": { "type": "string", "maxLength": 1000 } } } } } },
+        "responses": { "200": { "description": "重生成后的新版本及工作区", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaConversationWorkspace" } } } }, "409": { "description": "版本、幂等、锁定或 revision 冲突" }, "422": { "description": "重生成结果未通过质量校验" } }
+      }
+    },
+    "/api/gen/short-drama/conversation/script/shot/lock": {
+      "post": {
+        "tags": ["短剧策划"], "summary": "锁定或解锁单个镜头", "description": "Free / no points. 单镜头锁定后不可编辑或重生成；操作生成新的可审计版本。",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKeyRequired" }, { "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["project_id", "conversation_revision", "version_id", "shot_key", "locked"], "properties": { "project_id": { "type": "string" }, "conversation_revision": { "type": "integer", "minimum": 1 }, "version_id": { "type": "string" }, "shot_key": { "type": "string" }, "locked": { "type": "boolean" } } } } } },
+        "responses": { "200": { "description": "锁定状态变更后的新版本及工作区", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaConversationWorkspace" } } } }, "409": { "description": "版本、幂等、脚本锁定或 revision 冲突" } }
+      }
+    },
+    "/api/gen/short-drama/conversation/script/restore": {
+      "post": {
+        "tags": ["短剧策划"], "summary": "将历史剧本恢复为一个新版本", "description": "Free / no points. 不覆盖历史记录。",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKeyRequired" }, { "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/ShortDramaConversationMutation" }, { "required": ["version_id"] }] } } } },
+        "responses": { "200": { "description": "恢复后的新版本" }, "409": { "description": "版本、幂等或锁定冲突" } }
+      }
+    },
+    "/api/gen/short-drama/conversation/script/lock": {
+      "post": {
+        "tags": ["短剧策划"], "summary": "锁定当前结构化剧本", "description": "Free / no points. 仅能锁定当前版本；锁定后 PR-2 不再允许消息、生成或恢复。",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKeyRequired" }, { "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/ShortDramaConversationMutation" }, { "required": ["version_id"] }] } } } },
+        "responses": { "200": { "description": "锁定后的工作区" }, "409": { "description": "非当前版本、版本或锁定冲突" } }
+      }
+    },
+    "/api/gen/short-drama/preflight": {
+      "get": {
+        "tags": ["短剧策划"], "summary": "读取制作前体检与制作方案", "description": "Free / no points. 读取锁定剧本对应的时长计划、素材建议、制作路线、估算和确认状态。",
+        "parameters": [{ "name": "project_id", "in": "query", "required": true, "schema": { "type": "string" } }, { "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "responses": { "200": { "description": "制作准备工作区", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaPreflightWorkspace" } } } }, "401": { "description": "未登录" }, "403": { "description": "无访问权限" }, "404": { "description": "项目不存在" } }
+      }
+    },
+    "/api/gen/short-drama/preflight/generate": {
+      "post": {
+        "tags": ["短剧策划"], "summary": "生成或复用制作前体检方案", "description": "Free / no points. 依据锁定剧本和项目规格生成确定性的镜头时长、素材缺口、路线与成本耗时估算。",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKeyRequired" }, { "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaPreflightGenerate" } } } },
+        "responses": { "200": { "description": "生成后的制作准备工作区", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaPreflightWorkspace" } } } }, "409": { "description": "剧本版本、输入或幂等冲突" }, "422": { "description": "制作体检存在阻塞项" } }
+      }
+    },
+    "/api/gen/short-drama/preflight/confirm": {
+      "post": {
+        "tags": ["短剧策划"], "summary": "一次确认制作方案", "description": "Free / no points. 确认最新且未过期的制作方案；不扣点、不创建媒体任务，也不推进旧九阶段流程。",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKeyRequired" }, { "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaPreflightConfirm" } } } },
+        "responses": { "200": { "description": "已确认的制作准备工作区", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaPreflightWorkspace" } } } }, "409": { "description": "方案已过期或已被替换" }, "422": { "description": "阻塞项未解决或建议未接受" } }
+      }
+    },
     "/api/gen/short-drama/projects": {
       "get": {
         "tags": ["短剧策划"], "summary": "列出当前作用域的短剧项目", "description": "Free / no points. 不带 X-Canvas-Board-Id 时仅列出 Bearer 用户本人创建的本地项目；携带可访问画布时列出该画布项目，owner/editor/viewer 可读。",
@@ -1736,7 +3414,7 @@
     },
     "/api/gen/short-drama/confirm": {
       "post": {
-        "tags": ["短剧策划"], "summary": "确认当前短剧审核阶段", "description": "Free / no points. 本地项目仅创建者可写；共享项目需携带匹配的 X-Canvas-Board-Id，owner/editor 可写，viewer 返回 403。策划阶段按顺序推进；voice_review 仅在全部配音镜头锁定且服务端权威校验通过后进入 video_review。禁止跳级，成功后 revision 加 1。",
+        "tags": ["短剧策划"], "summary": "确认当前短剧审核阶段", "description": "Free / no points. 本地项目仅创建者可写；共享项目需携带匹配的 X-Canvas-Board-Id，owner/editor 可写，viewer 返回 403。策划阶段按顺序推进；voice_review 仅在全部配音镜头和已启动的字幕对齐锁定后进入 video_review。历史项目未创建主时间轴时保持兼容；一旦存在主时间轴，服务端会在同一写事务内重新计算其有效状态，只有 ready 才允许推进。禁止跳级，成功后 revision 加 1。",
         "parameters": [{ "$ref": "#/components/parameters/XCanvasBoardId" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": {
           "type": "object", "required": ["project_id", "revision", "stage"], "additionalProperties": false,
@@ -1748,7 +3426,7 @@
           "401": { "description": "未登录；认证先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "403": { "description": "账号必须先修改初始密码；或共享画布角色为 viewer/无写权限；检查先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "404": { "description": "项目不存在、画布不匹配或当前用户无权发现", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "409": { "description": "revision_conflict：提交的 revision 已过期", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RevisionConflict" } } } }
+          "409": { "description": "revision_conflict：提交的 revision 已过期；或 timeline_handoff_not_ready：已启动的主时间轴尚未确认或已经失效", "content": { "application/json": { "schema": { "oneOf": [{ "$ref": "#/components/schemas/RevisionConflict" }, { "$ref": "#/components/schemas/TimelineHandoffConflict" }] } } } }
         }
       }
     },
@@ -1788,7 +3466,7 @@
       "post": {
         "tags": ["短剧"],
         "summary": "报价一次短剧关键帧生成",
-        "description": "Free / no points. 服务端按固定 Seedream std/hd、项目比例、2 张候选图和服务端派生引用生成实时报价；报价 300 秒后过期。本地项目仅创建者可写；共享项目需携带匹配的 X-Canvas-Board-Id，owner/editor 可写，viewer 返回 403。",
+        "description": "Free / no points. 服务端按固定 Seedream std/hd、项目比例、2 张候选图和服务端派生引用生成实时报价；报价 300 秒后过期。启用资产图谱后，报价同时绑定 snapshot_id、package_hash 和 graph_revision。本地项目仅创建者可写；共享项目需携带匹配的 X-Canvas-Board-Id，owner/editor 可写，viewer 返回 403。",
         "parameters": [{ "$ref": "#/components/parameters/XCanvasBoardId" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaStillRequest" } } } },
         "responses": {
@@ -1797,9 +3475,9 @@
           "401": { "description": "未登录", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "403": { "description": "账号必须先修改初始密码；或共享画布角色为 viewer/无写权限", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "404": { "description": "项目不存在、画布不匹配、用户无权发现或分镜不属于项目", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "409": { "description": "revision_conflict：提交的 revision 已过期", "content": { "application/json": { "schema": {
+          "409": { "description": "revision_conflict，或资产图谱快照缺失、阻塞、过期", "content": { "application/json": { "schema": {
             "type": "object", "required": ["detail", "code"], "additionalProperties": false,
-            "properties": { "detail": { "type": "string" }, "code": { "type": "string", "enum": ["revision_conflict"] } }
+            "properties": { "detail": { "type": "string" }, "code": { "type": "string", "enum": ["revision_conflict", "asset_snapshot_missing", "asset_snapshot_blocked", "asset_snapshot_stale", "asset_snapshot_invalid"] } }
           } } } }
         }
       }
@@ -1842,7 +3520,7 @@
       "post": {
         "tags": ["短剧"],
         "summary": "提交付费关键帧生成任务",
-        "description": "付费异步任务。必须提交未过期且与归一化请求完全匹配的 quote_token，并使用 Idempotency-Key。服务端在扣点前重新校验项目、revision、stills_review、分镜、预算、共享画布写权限和报价；成功受理后固定生成 2 张候选图。相同键和相同请求重放原响应；同键不同请求返回 409。",
+        "description": "付费异步任务。必须提交未过期且与归一化请求及资产快照完全匹配的 quote_token，并使用 Idempotency-Key。服务端在扣点前重新校验项目、revision、stills_review、分镜、预算、共享画布写权限、snapshot_id、package_hash、graph_revision 和报价；成功受理后固定生成 2 张候选图。相同键和相同请求重放原响应；同键不同请求返回 409。",
         "parameters": [
           { "$ref": "#/components/parameters/XCanvasBoardId" },
           { "$ref": "#/components/parameters/IdempotencyKeyRequired" }
@@ -1855,7 +3533,7 @@
           "402": { "description": "点数不足；charge_rejected 且 operation_terminal=true", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "403": { "description": "账号必须先修改初始密码；或共享画布角色为 viewer/无写权限", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "404": { "description": "项目不存在、画布不匹配或当前用户无权发现", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "409": { "description": "idempotency_conflict、charge_attempt_in_progress 或 revision_conflict", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": { "description": "idempotency_conflict、charge_attempt_in_progress、revision_conflict 或 asset_quote_stale", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "429": { "description": "用户活动任务、提交频率或队列已满；失败后自动退款或进入退款重试", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "500": { "description": "任务创建或关联失败；响应说明已退款或退款处理状态", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "502": { "description": "点数服务失败；返回 detail 与本次任务所需点数 need", "content": { "application/json": { "schema": {
@@ -1944,6 +3622,428 @@
         "tags": ["配音音色"], "summary": "上传样音 → 触发音色克隆训练",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["slot_id", "audio"], "properties": { "slot_id": { "type": "string" }, "name": { "type": "string", "default": "我的VIP复制音色" }, "audio": { "type": "string", "description": "base64 样本音频" }, "audio_format": { "type": "string", "default": "mp3", "description": "mp3/wav/m4a/aac/ogg" } } } } } },
         "responses": { "200": { "description": "OK · 返回 voice(status=training,后续轮询 clone-status)" } }
+      }
+    },
+    "/api/gen/short-drama/autodraft": {
+      "get": {
+        "tags": ["短剧策划"],
+        "summary": "获取自动草稿工作区",
+        "parameters": [
+          { "name": "project_id", "in": "query", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "返回确认方案、当前任务、草稿版本、问题镜头与计费模式" },
+          "403": { "description": "无项目访问权限" },
+          "404": { "description": "项目不存在" }
+        }
+      }
+    },
+    "/api/gen/short-drama/autodraft/provider-preflight": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "免费编译并校验一个镜头的真实 Provider 请求",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["project_id", "plan_id", "shot_key", "avatar_id"],
+                "properties": {
+                  "project_id": { "type": "string" },
+                  "plan_id": { "type": "string" },
+                  "shot_key": { "type": "string" },
+                  "character_key": { "type": "string" },
+                  "avatar_id": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "返回脱敏请求参数、请求哈希和 Provider 可用状态；不扣点、不提交外部任务" },
+          "422": { "description": "镜头或角色形象不可用于真实生成" }
+        }
+      }
+    },
+    "/api/gen/short-drama/autodraft/provider-quote": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "生成单镜头 Provider 付费报价",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["project_id", "plan_id", "shot_key", "avatar_id"],
+                "properties": {
+                  "project_id": { "type": "string" },
+                  "plan_id": { "type": "string" },
+                  "shot_key": { "type": "string" },
+                  "character_key": { "type": "string" },
+                  "avatar_id": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "返回五分钟有效的报价令牌、费用和请求哈希；本接口不扣点" },
+          "503": { "description": "真实 Provider 尚未配置" }
+        }
+      }
+    },
+    "/api/gen/short-drama/autodraft/provider-jobs": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "确认报价、扣点并创建单镜头真实生成任务",
+        "parameters": [
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["project_id", "quote_token"],
+                "additionalProperties": false,
+                "properties": {
+                  "project_id": { "type": "string" },
+                  "quote_token": { "type": "string", "pattern": "^[0-9a-f]{32}$" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "返回已扣点并进入队列的任务；相同幂等键只扣点一次" },
+          "402": { "description": "点数不足" },
+          "409": { "description": "报价过期、已消费、已失效或镜头已有活动任务" },
+          "503": { "description": "扣点或角色形象校验服务不可用" }
+        }
+      }
+    },
+    "/api/gen/short-drama/autodraft/provider-jobs/{job_id}": {
+      "get": {
+        "tags": ["短剧策划"],
+        "summary": "轮询单镜头真实生成任务并执行恢复、退款和结果归档",
+        "parameters": [
+          { "name": "job_id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "project_id", "in": "query", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "返回扣点、Provider 提交、轮询、结果版本或退款状态" },
+          "404": { "description": "任务不存在" }
+        }
+      }
+    },
+    "/api/gen/short-drama/autodraft/jobs": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "从已确认制作方案启动 720p 自动草稿",
+        "parameters": [
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["project_id", "plan_id"],
+                "properties": {
+                  "project_id": { "type": "string" },
+                  "plan_id": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "任务已创建或幂等重放" },
+          "402": { "description": "点数不足" },
+          "409": { "description": "方案未确认、已有活动任务或幂等冲突" },
+          "503": { "description": "扣点状态待恢复或计费服务不可用" }
+        }
+      }
+    },
+    "/api/gen/short-drama/autodraft/jobs/{job_id}": {
+      "get": {
+        "tags": ["短剧策划"],
+        "summary": "轮询自动草稿任务",
+        "parameters": [
+          { "name": "job_id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "project_id", "in": "query", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "返回阶段、进度、结果和降级问题" },
+          "404": { "description": "任务不存在" }
+        }
+      }
+    },
+    "/api/gen/short-drama/autodraft/jobs/{job_id}/retry": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "重试失败或已取消的自动草稿任务",
+        "parameters": [
+          { "name": "job_id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["project_id"],
+                "properties": { "project_id": { "type": "string" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "任务重新进入队列，不重复扣点" },
+          "409": { "description": "任务不可重试或存在其他活动任务" }
+        }
+      }
+    },
+    "/api/gen/short-drama/autodraft/jobs/{job_id}/cancel": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "取消活动中的自动草稿任务",
+        "parameters": [
+          { "name": "job_id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["project_id"],
+                "properties": { "project_id": { "type": "string" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "任务已取消" },
+          "409": { "description": "任务不可取消" }
+        }
+      }
+    },
+    "/api/gen/short-drama/refinement": {
+      "get": {
+        "tags": ["短剧策划"],
+        "summary": "获取独立短剧精修与正式交付工作区",
+        "parameters": [
+          { "name": "project_id", "in": "query", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "返回当前精修版本、问题镜头、任务、正式交付版本和计费模式" },
+          "409": { "description": "尚未生成可播放草稿" }
+        }
+      }
+    },
+    "/api/gen/short-drama/refinement/changes/preview": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "预览单镜头精修影响范围",
+        "parameters": [
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["project_id", "shot_key"],
+            "properties": {
+              "project_id": { "type": "string" },
+              "shot_key": { "type": "string" },
+              "replacement_provider_version_id": { "type": "string" }
+            }
+          } } }
+        },
+        "responses": { "200": { "description": "返回受影响镜头、失效资产、耗时和恢复点" } }
+      }
+    },
+    "/api/gen/short-drama/refinement/jobs": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "提交单镜头精修任务",
+        "parameters": [
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["project_id", "shot_key", "replacement_provider_version_id"],
+            "properties": {
+              "project_id": { "type": "string" },
+              "shot_key": { "type": "string" },
+              "source_version_id": { "type": "string" },
+              "replacement_provider_version_id": { "type": "string", "minLength": 1 }
+            }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "精修任务已创建或幂等重放" },
+          "409": { "description": "版本已锁定、已有活动任务或幂等冲突" }
+        }
+      }
+    },
+    "/api/gen/short-drama/refinement/jobs/{job_id}": {
+      "get": {
+        "tags": ["短剧策划"],
+        "summary": "轮询单镜头精修任务",
+        "parameters": [
+          { "name": "job_id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "project_id", "in": "query", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "返回任务进度和新精修版本" } }
+      }
+    },
+    "/api/gen/short-drama/refinement/issues": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "标记当前精修版本中的问题镜头并使旧验收失效",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object",
+            "required": ["project_id", "version_id", "shot_key", "issue_code", "message"],
+            "properties": {
+              "project_id": { "type": "string" },
+              "version_id": { "type": "string" },
+              "shot_key": { "type": "string" },
+              "issue_code": { "type": "string" },
+              "message": { "type": "string", "maxLength": 500 }
+            }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "返回包含问题记录的新精修工作副本" },
+          "409": { "description": "目标不是当前精修版本" }
+        }
+      }
+    },
+    "/api/gen/short-drama/refinement/confirm": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "确认精修版本用于正式交付",
+        "parameters": [
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["project_id", "version_id", "checklist", "source_hashes"],
+            "properties": {
+              "project_id": { "type": "string" },
+              "version_id": { "type": "string" },
+              "checklist": {
+                "type": "object",
+                "required": ["story_continuity", "character_consistency", "audio_video_sync", "subtitle_timing", "visual_integrity", "transition_quality"],
+                "additionalProperties": false,
+                "properties": {
+                  "story_continuity": { "type": "boolean", "const": true },
+                  "character_consistency": { "type": "boolean", "const": true },
+                  "audio_video_sync": { "type": "boolean", "const": true },
+                  "subtitle_timing": { "type": "boolean", "const": true },
+                  "visual_integrity": { "type": "boolean", "const": true },
+                  "transition_quality": { "type": "boolean", "const": true }
+                }
+              },
+              "source_hashes": {
+                "type": "object",
+                "additionalProperties": { "type": "string" }
+              }
+            }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "精修版本已锁定" },
+          "409": { "description": "仍有问题镜头、验收项不完整或输入哈希已过期" }
+        }
+      }
+    },
+    "/api/gen/short-drama/refinement/restore": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "从历史精修版本创建新工作副本",
+        "parameters": [
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["project_id", "version_id"],
+            "properties": {
+              "project_id": { "type": "string" },
+              "version_id": { "type": "string" }
+            }
+          } } }
+        },
+        "responses": { "200": { "description": "返回新精修工作副本" } }
+      }
+    },
+    "/api/gen/short-drama/delivery/quote": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "获取 1080p 正式交付报价（真实执行器启用后可用）",
+        "parameters": [
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["project_id", "version_id"],
+            "properties": {
+              "project_id": { "type": "string" },
+              "version_id": { "type": "string" }
+            }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "返回五分钟有效的单次报价令牌；开发演示模式费用固定为 0 且不可交付" },
+          "503": { "description": "真实正式交付执行器未启用，不创建报价且不扣点" }
+        }
+      }
+    },
+    "/api/gen/short-drama/delivery/jobs": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "提交 1080p 正式交付任务",
+        "parameters": [
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "required": ["project_id", "quote_token"],
+            "properties": {
+              "project_id": { "type": "string" },
+              "quote_token": { "type": "string" }
+            }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "任务已创建或幂等重放" },
+          "402": { "description": "点数不足" },
+          "409": { "description": "报价过期、已使用、输入变化或已有活动任务" },
+          "503": { "description": "正式交付执行器未启用、扣点状态待恢复或计费服务不可用" }
+        }
+      }
+    },
+    "/api/gen/short-drama/delivery/jobs/{job_id}": {
+      "get": {
+        "tags": ["短剧策划"],
+        "summary": "轮询 1080p 正式交付任务",
+        "parameters": [
+          { "name": "job_id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "project_id", "in": "query", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "返回合成进度及不可变交付快照" } }
       }
     },
     "/api/gen/video": {

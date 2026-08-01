@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 黄雀 AI · 内容生成后端 API（能力中心）
-=====================================================
+-----------------------------------------------------
 架构：能力集中在后端，网页 + 飞书 bot 都来调；点数/额度统一在这里扣。
 - 鉴权：复用现有认证服务(:8095)，前端带 Bearer <hq_token>；本服务调 /api/auth/me 校验 + 取 username/points/role。
 - 异步任务模型：/api/gen/<能力> 提交 → job_id → 轮询 /api/gen/job/{id}（与 leadgen 同套路）。
@@ -141,10 +141,88 @@ def _resolve_out_file(rel):
         if fp.exists() and fp.is_file():
             return fp
     return None
+
+def _parse_byte_range(value, size):
+    """Parse one HTTP byte range and return an inclusive (start, end) tuple."""
+    if not value:
+        return None
+    if size < 0 or not str(value).startswith("bytes="):
+        raise ValueError("invalid byte range")
+    spec = str(value)[6:].strip()
+    if not spec or "," in spec or "-" not in spec:
+        raise ValueError("invalid byte range")
+    start_text, end_text = spec.split("-", 1)
+    if not start_text:
+        try:
+            suffix = int(end_text)
+        except (TypeError, ValueError):
+            raise ValueError("invalid byte range")
+        if suffix <= 0 or size <= 0:
+            raise ValueError("unsatisfiable byte range")
+        return max(0, size - suffix), size - 1
+    try:
+        start = int(start_text)
+        end = int(end_text) if end_text else size - 1
+    except (TypeError, ValueError):
+        raise ValueError("invalid byte range")
+    if start < 0 or start >= size or end < start:
+        raise ValueError("unsatisfiable byte range")
+    return start, min(end, size - 1)
+
+def _send_out_file(handler, fp, sensitive=False):
+    size = fp.stat().st_size
+    try:
+        byte_range = _parse_byte_range(handler.headers.get("Range"), size)
+    except ValueError:
+        handler.send_response(416)
+        handler.send_header("Accept-Ranges", "bytes")
+        handler.send_header("Content-Range", "bytes */%d" % size)
+        handler.send_header("Content-Length", "0")
+        handler.end_headers()
+        return
+
+    start, end = byte_range if byte_range is not None else (0, size - 1)
+    length = max(0, end - start + 1)
+    handler.send_response(206 if byte_range is not None else 200)
+    handler.send_header(
+        "Content-Type",
+        mimetypes.guess_type(str(fp))[0] or "application/octet-stream",
+    )
+    handler.send_header("Accept-Ranges", "bytes")
+    handler.send_header("Content-Length", str(length))
+    if byte_range is not None:
+        handler.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
+    if sensitive or fp.name.startswith("voice_preview_"):
+        handler.send_header(
+            "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0"
+        )
+        handler.send_header("Pragma", "no-cache")
+        handler.send_header("Expires", "0")
+    else:
+        handler.send_header("Cache-Control", "public, max-age=86400")
+    handler.end_headers()
+
+    remaining = length
+    try:
+        with fp.open("rb") as source:
+            source.seek(start)
+            while remaining > 0:
+                chunk = source.read(min(64 * 1024, remaining))
+                if not chunk:
+                    break
+                handler.wfile.write(chunk)
+                remaining -= len(chunk)
+    except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+        pass
+
 def _sensitive_output_file(rel):
     rel = str(rel or "").replace("\\", "/").lstrip("/")
     name = os.path.basename(rel)
     return (rel.startswith("video/") or
+            rel.startswith("short_drama_preview/") or
+            rel.startswith("short_drama_final/") or
+            rel.startswith("short_drama_playback/") or
+            rel.startswith("lipsync/") or
             rel.startswith("audio/voice_preview_") or
             rel.startswith("audio/clone_") or
             rel.startswith("audio/vid_aud_") or
@@ -152,7 +230,7 @@ def _sensitive_output_file(rel):
             name.startswith("tryon_cloth_") or
             name.startswith("tryon_bg_"))
 
-def _user_owns_output_file(username, rel):
+def _user_owns_output_file(username, rel, access=None):
     """敏感本地文件只允许其资产归属用户读取；删除后的资产不再放行。"""
     if not username or not rel:
         return False
@@ -181,7 +259,58 @@ def _user_owns_output_file(username, rel):
         row = c.execute("""SELECT 1 FROM audio_voices
             WHERE username=? AND scope='personal' AND preview_file=? LIMIT 1""",
             (username, rel)).fetchone()
-        return bool(row) or _short_drama_domain().short_drama_assembly.user_owns_output_file(jdb, username, rel)
+        if row:
+            return True
+    try:
+        access = access if isinstance(access, dict) else {}
+        with closing(jdb()) as c:
+            row = c.execute(
+                "SELECT p.username,p.board_id FROM "
+                "short_drama_composition_versions v "
+                "JOIN short_drama_projects p ON p.id=v.project_id "
+                "WHERE p.deleted=0 AND ? IN (v.file,v.cover_file) LIMIT 1",
+                (rel,),
+            ).fetchone()
+            if not row:
+                row = c.execute(
+                    "SELECT p.username,p.board_id FROM "
+                    "short_drama_playback_versions v "
+                    "JOIN short_drama_projects p ON p.id=v.project_id "
+                    "WHERE p.deleted=0 "
+                    "AND ? IN (v.media_file,v.subtitle_file) LIMIT 1",
+                    (rel,),
+                ).fetchone()
+            if not row:
+                row = c.execute(
+                    "SELECT p.username,p.board_id FROM "
+                    "short_drama_lipsync_versions v "
+                    "JOIN short_drama_projects p ON p.id=v.project_id "
+                    "WHERE p.deleted=0 AND v.file=? LIMIT 1",
+                    (rel,),
+                ).fetchone()
+            if not row:
+                try:
+                    row = c.execute(
+                        "SELECT p.username,p.board_id FROM "
+                        "short_drama_provider_shot_versions v "
+                        "JOIN short_drama_projects p ON p.id=v.project_id "
+                        "WHERE p.deleted=0 AND v.file=? LIMIT 1",
+                        (rel,),
+                    ).fetchone()
+                except sqlite3.OperationalError:
+                    # Older databases may not have initialized the optional
+                    # single-shot Provider tables yet.
+                    row = None
+        if row and row["username"] == username and not row["board_id"]:
+            return True
+        return bool(
+            row and row["board_id"]
+            and str(access.get("board_id") or "") == row["board_id"]
+            and str(access.get("role") or "").lower()
+            in {"owner", "editor", "viewer"}
+        )
+    except Exception:
+        return False
 
 # ---- 能力定义：成本(点数) + 处理函数 ----
 def _env_positive_int(name, default):
@@ -190,6 +319,16 @@ def _env_positive_int(name, default):
     except Exception:
         value = default
     return max(1, value)
+
+
+def _public_points_error(points_domain, error, need):
+    formatter = getattr(points_domain, "public_error_body", None)
+    if callable(formatter):
+        return formatter(error, need)
+    return {
+        "detail": str(getattr(error, "detail", error))[:220],
+        "need": int(need),
+    }
 
 VIDEO_COST = _env_positive_int("VIDEO_COST", 20)
 JOB_WORKERS, FAST_JOB_WORKERS = _env_positive_int("CONTENT_JOB_WORKERS", 3), _env_positive_int("CONTENT_FAST_JOB_WORKERS", 3)  # 慢队列(换装/果肉video)/快队列(图片/音频等)各自worker数，分开防视频堵死快任务
@@ -231,6 +370,9 @@ CINEMATIC_REAPER_GRACE = CINEMATIC_GEN_DEADLINE + 300
 KIND_GRACE_DEFAULT = _env_positive_int("KIND_GRACE_DEFAULT", 900)
 KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "sora_video": 1500, "image": 900, "collect": 1200,
               "cinematic": CINEMATIC_REAPER_GRACE, "avatar": 300, "breakdown": 600,
+              "short_drama_sound_effect": 900,
+              "short_drama_preview": 1800, "short_drama_final": 3600,
+              "short_drama_remux": 600,
               "script_to_video": 1200, "canvas_agent": 300}
 # ⚠️ tryon 【不】跟着 15 分钟走：线上实测线路一中位 909s、**p90 1612s(27 分钟)**。
 #    砍到 15 分钟会把超过一成的换装任务判成失败。要改它得先把那条链路本身提速。
@@ -317,6 +459,8 @@ def init_audio_db():
             volume INTEGER,
             created_at INTEGER
         )""")
+        _ensure_column(c, "audio_assets", "asset_kind", "TEXT NOT NULL DEFAULT 'voice'")
+        _ensure_column(c, "audio_assets", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
         c.execute("""CREATE TABLE IF NOT EXISTS voice_slot_pool(
             slot_id TEXT PRIMARY KEY,
             status TEXT NOT NULL DEFAULT 'available',
@@ -655,6 +799,9 @@ def _leads_domain():
     from . import leads
     return leads
 def _short_drama_domain(): from . import short_drama; return short_drama
+def _lipsync_worker_domain():
+    from . import short_drama_lipsync_worker
+    return short_drama_lipsync_worker
 def _digital_ip_domain(): from . import digital_ip; return digital_ip
 def _must_change_password(user):
     return bool(user and user.get("must_change"))
@@ -751,6 +898,13 @@ def _fail_job_and_schedule_refund(job_id, error, *, from_states=("running",),
                                   username=None, cost=None, kind=None):
     """Fail one job while preserving the single durable owner of its refund retry."""
     if kind is None or kind == "image":
+        character_reference = (
+            _short_drama_domain().fail_linked_character_reference_job(
+                jdb, job_id, error, from_states=from_states,
+            )
+        )
+        if character_reference is not None:
+            return bool(character_reference["claimed"])
         linked = _short_drama_domain().short_drama_production.fail_linked_job(
             jdb, job_id, error, from_states=from_states,
         )
@@ -778,6 +932,8 @@ def _pick_job_queue(kind, mode=None):
         return _image_job_queue
     if kind == "breakdown":
         return _job_queue               # 下载+ffmpeg+ASR+多模态，走慢池别堵快任务
+    if kind == "short_drama_preview":
+        return _job_queue               # 本地 FFmpeg 重任务，复用慢队列
     if kind == "cinematic":
         return _cinematic_job_queue     # HeyGen 剧情视频，约 8 分钟/条，10 个 worker
     if kind == "avatar":
@@ -949,9 +1105,19 @@ def _pending_job_scanner():
             _recover_pending_jobs(_PENDING_RECOVERY_LIMIT)
             _short_drama_domain().short_drama_production.retry_attempt_refunds(
                 jdb, _domains()[1], JOB_QUEUE_MAX)
+            _short_drama_domain().retry_character_reference_refunds(
+                jdb, _domains()[1], JOB_QUEUE_MAX)
             _short_drama_domain().short_drama_voice.retry_voice_attempt_refunds(
                 jdb, _domains()[1], JOB_QUEUE_MAX)
+            _short_drama_domain().short_drama_video.retry_video_attempt_refunds(
+                jdb, _domains()[1], JOB_QUEUE_MAX)
             jobs_store.retry_failed_refunds(jdb, _refund_once, JOB_QUEUE_MAX)
+            _short_drama_domain().short_drama_assembly.reconcile_final_refunds(
+                jdb, JOB_QUEUE_MAX)
+            _short_drama_domain().short_drama_assembly.retry_final_charge_attempts(
+                jdb, _domains()[1], JOB_QUEUE_MAX)
+            _short_drama_domain().short_drama_completion.reconcile_attempts(
+                jdb, JOB_QUEUE_MAX)
         except Exception:
             pass
         time.sleep(30)
@@ -974,6 +1140,12 @@ def start_job_workers():
         for i in range(count):
             threading.Thread(target=_job_worker_loop, args=(q,), name="%s-%d" % (prefix, i + 1), daemon=True).start()
     threading.Thread(target=_pending_job_scanner, name="content-job-recover", daemon=True).start(); threading.Thread(target=notifications.scanner, args=(jdb,), name="content-video-notify", daemon=True).start()
+    try:
+        _lipsync_worker_domain().start_service(
+            jdb, _domains()[1], output_root=OUT_DIR,
+        )
+    except Exception as error:
+        print("[lipsync] worker startup failed: %s" % error, flush=True)
     _recover_pending_jobs(_PENDING_RECOVERY_LIMIT)
     try:
         retry_breakdown = getattr(_domains()[1], "retry_breakdown_refunds", None)
@@ -984,8 +1156,18 @@ def start_job_workers():
     try:
         _short_drama_domain().short_drama_production.retry_attempt_refunds(
             jdb, _domains()[1], JOB_QUEUE_MAX)
+        _short_drama_domain().retry_character_reference_refunds(
+            jdb, _domains()[1], JOB_QUEUE_MAX)
         _short_drama_domain().short_drama_voice.retry_voice_attempt_refunds(
             jdb, _domains()[1], JOB_QUEUE_MAX)
+        _short_drama_domain().short_drama_video.retry_video_attempt_refunds(
+            jdb, _domains()[1], JOB_QUEUE_MAX)
+        _short_drama_domain().short_drama_refinement.retry_delivery_attempt_refunds(
+            jdb, _domains()[1], JOB_QUEUE_MAX)
+        _short_drama_domain().short_drama_assembly.retry_final_charge_attempts(
+            jdb, _domains()[1], JOB_QUEUE_MAX)
+        _short_drama_domain().short_drama_completion.reconcile_attempts(
+            jdb, JOB_QUEUE_MAX)
     except Exception:
         pass
 def drain_and_exit(signum=None, frame=None):
@@ -1106,7 +1288,7 @@ def run_job(job_id):
         # 抢到 running 才开心跳（前面几个 return 都还没认领，不该有心跳）。
         # 有了它，reaper 的「没心跳」才真的等于「worker 死了」—— 而不是「正在轮询/烧字幕」。
         stop_heartbeat = _start_job_heartbeat(job_id)
-        if kind in {"audio", "video", "tryon", "xiaole_video", "sora_video", "leads", "cinematic", "avatar", "breakdown", "script_to_video"}:
+        if kind in {"audio", "short_drama_sound_effect", "video", "tryon", "xiaole_video", "sora_video", "leads", "cinematic", "avatar", "breakdown", "short_drama_preview", "short_drama_final", "script_to_video"}:
             payload["_username"] = username   # 少一个 kind，handler 就拿不到用户名/job_id：
             payload["_job_id"] = job_id       # gen_avatar 记不了形象归属，gen_cinematic 查不到用户的形象
         result = HANDLERS[kind](payload)
@@ -1136,10 +1318,48 @@ def run_job(job_id):
         # 已确认拿到 done 终态；入库是次要副作用，失败也不改状态、不退点
         try:
             audio_domain, _, video_domain = _domains()
-            if kind == "audio":
-                audio_domain.record_audio_asset(job_id, username, result)
+            if kind in {"audio", "short_drama_sound_effect"}:
+                asset_username = username
+                if kind == "short_drama_sound_effect":
+                    asset_username = str(
+                        ((result or {}).get("sound_design") or {}).get(
+                            "owner_username"
+                        ) or username
+                    )
+                audio_domain.record_audio_asset(
+                    job_id, asset_username, result
+                )
+            if kind == "short_drama_sound_effect":
+                asset = audio_domain.get_audio_asset_by_job(
+                    asset_username, job_id
+                )
+                _short_drama_domain().short_drama_sound_design.reconcile_job(
+                    jdb, job_id, result, asset
+                )
+            if kind == "image":
+                _short_drama_domain().reconcile_character_reference_job(
+                    jdb, job_id, username, result
+                )
             if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video"}:
                 video_domain.record_video_asset(job_id, username, result)
+            if kind == "short_drama_preview":
+                _short_drama_domain().short_drama_assembly.reconcile_preview_job(
+                    jdb, job_id
+                )
+            if kind == "short_drama_final":
+                _short_drama_domain().short_drama_assembly.reconcile_final_job(
+                    jdb, job_id
+                )
+                # 正式成片任务与短剧内部资产先完成对账；统一视频资产库是次要
+                # 归档，失败不能让工作区永久停留在 running。
+                try:
+                    video_domain.record_video_asset(
+                        job_id,
+                        str(result.get("asset_owner") or username),
+                        result,
+                    )
+                except Exception:
+                    pass
             assets_store.record_asset(job_id, username, kind, result)  # 只有 copy 会入统一 assets 表；其余 kind 内部忽略
         except Exception:
             pass
@@ -1162,6 +1382,34 @@ def run_job(job_id):
         )
         if claimed:
             _mark_video_asset_failed(job_id, kind, e)
+            if kind == "short_drama_sound_effect":
+                try:
+                    _short_drama_domain().short_drama_sound_design.fail_job(
+                        jdb, job_id, e
+                    )
+                except Exception:
+                    pass
+            if kind == "short_drama_preview":
+                try:
+                    _short_drama_domain().short_drama_assembly.reconcile_preview_job(
+                        jdb, job_id
+                    )
+                except Exception:
+                    pass
+            if kind == "short_drama_final":
+                try:
+                    _short_drama_domain().short_drama_assembly.reconcile_final_job(
+                        jdb, job_id
+                    )
+                except Exception:
+                    pass
+            if kind == "short_drama_remux":
+                try:
+                    _short_drama_domain().short_drama_playback.reconcile_job(
+                        jdb, job_id
+                    )
+                except Exception:
+                    pass
     finally:
         if stop_heartbeat:
             stop_heartbeat()   # ⚠️ 必须停 —— 否则每跑一个任务泄漏一个线程，而且它会一直把已终态的任务刷成「活着」
@@ -1269,11 +1517,799 @@ class H(BaseHTTPRequestHandler):
         audio_domain, points_domain, video_domain = _domains()
         if cli_gateway.handle_image_upload(
                 self, p, verify, _must_change_password, AUTH_INTERNAL_TOKEN): return
-        if cli_gateway.handle_quote(self, p, verify, _must_change_password, is_shutting_down,
-                                    feature_flags, points_domain, audio_domain, video_domain, AUTH_INTERNAL_TOKEN): return
-        if _short_drama_domain().dispatch_http(self, "POST", jdb, verify, getattr(points_domain, "cost_of", None), mutation_lock=_submission_lock, canvas_access_resolver=_short_drama_canvas_access,
-                points_getter=getattr(points_domain, "get_points", None), voice_validator=lambda username, voice_key:
-                audio_domain.resolve_audio_provider_voice(username, voice_key), generation_dependencies=(audio_domain, points_domain, globals())): return
+        if cli_gateway.handle_quote(
+                self, p, verify, _must_change_password, is_shutting_down,
+                feature_flags, points_domain, audio_domain, video_domain,
+                AUTH_INTERNAL_TOKEN): return
+        if p == "/api/gen/short-drama/generate-character-reference":
+            user = verify(self._token())
+            if not user:
+                return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user):
+                return self._send(403, {"detail": "请先修改初始密码"})
+            try:
+                request_body = self._json_body_strict()
+                idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
+                if not idem_key:
+                    raise ValueError("角色标准图生成必须提供 Idempotency-Key")
+                access = _short_drama_canvas_access(self)
+                owner = _short_drama_domain()._project_username_for_access(
+                    jdb, user["username"],
+                    str(request_body.get("project_id") or ""),
+                    access, write=True,
+                )
+                attempt = _short_drama_domain().get_character_reference_attempt(
+                    jdb, user["username"], idem_key
+                )
+                _short_drama_domain().validate_character_reference_attempt_request(
+                    attempt, request_body
+                )
+                recovered = _short_drama_domain().find_recoverable_character_reference(
+                    jdb, user["username"], owner, request_body, idem_key
+                )
+            except (LookupError, PermissionError, ValueError,
+                    _short_drama_domain().RevisionConflict) as error:
+                _short_drama_domain()._http_error(
+                    self, error, operation_terminal=True
+                )
+                return
+            if recovered and recovered["username"] != user["username"]:
+                return self._send(409, {
+                    "detail": "该角色已有协作者正在生成标准图，请等待任务完成",
+                    "code": "character_reference_in_progress",
+                    "retry_after_ms": 2000,
+                })
+            if not recovered and not attempt:
+                try:
+                    feature_flags.require_enabled("image")
+                    feature_flags.require_enabled("banana")
+                except feature_flags.FeatureDisabled as error:
+                    return self._send(503, {"detail": str(error)})
+            with _submission_lock:
+                try:
+                    attempt = _short_drama_domain().get_character_reference_attempt(
+                        jdb, user["username"], idem_key
+                    )
+                    _short_drama_domain().validate_character_reference_attempt_request(
+                        attempt, request_body
+                    )
+                    recovered = _short_drama_domain().find_recoverable_character_reference(
+                        jdb, user["username"], owner, request_body, idem_key
+                    )
+                    if recovered:
+                        if recovered["username"] != user["username"]:
+                            return self._send(409, {
+                                "detail": "该角色已有协作者正在生成标准图，请等待任务完成",
+                                "code": "character_reference_in_progress",
+                                "retry_after_ms": 2000,
+                            })
+                        job_id = int(recovered["job_id"])
+                        if recovered.get("job_status") == "done":
+                            recovered = (
+                                _short_drama_domain()
+                                .reconcile_character_reference_job(
+                                    jdb, job_id, user["username"]
+                                )
+                            ) or recovered
+                        if recovered.get("status") == "failed":
+                            return self._send(409, {
+                                "detail": recovered.get("error")
+                                          or "角色标准图任务已失败，请重新生成",
+                                "code": "character_reference_terminal",
+                                "operation_terminal": True,
+                            })
+                        if recovered.get("job_status") == "pending":
+                            enqueue_job(job_id, "image")
+                        return self._send(200, {
+                            "project_id": recovered["project_id"],
+                            "character_key": recovered["character_key"],
+                            "job_id": job_id,
+                            "cost": int(recovered["cost"]),
+                            "replayed": True,
+                            "association_status": recovered["status"],
+                        })
+                    if attempt and attempt["state"] in {"refunded", "failed"}:
+                        terminal = attempt.get("terminal_response") or {}
+                        return self._send(409, {
+                            "detail": terminal.get("detail")
+                                      or "该角色标准图请求已终止，请使用新的操作重新生成",
+                            "code": "character_reference_terminal",
+                            "operation_terminal": True,
+                        })
+                    if attempt and attempt["state"] == "refund_pending":
+                        attempt = _short_drama_domain().reconcile_character_reference_refund(
+                            jdb, points_domain, attempt
+                        )
+                        if attempt["state"] == "refunded":
+                            return self._send(409, {
+                                "detail": "该角色标准图请求已退款，请使用新的操作重新生成",
+                                "code": "character_reference_terminal",
+                                "operation_terminal": True,
+                            })
+                        return self._send(503, {
+                            "detail": "角色标准图退款正在确认，请稍后重试",
+                            "code": "refund_pending",
+                            "retry_after_ms": 1000,
+                        })
+                    if attempt and attempt["state"] == "linked":
+                        terminal = attempt.get("terminal_response") or {}
+                        return self._send(200, dict(terminal, replayed=True))
+                    if not attempt:
+                        prepared = (
+                            _short_drama_domain()
+                            .prepare_character_reference_submission(
+                                jdb, user["username"], owner, request_body, idem_key,
+                                points_domain.cost_of,
+                            )
+                        )
+                        miniprogram_security.check_payload(prepared["payload"])
+                        active_jobs = _user_active_job_count(user["username"])
+                        if active_jobs >= MAX_USER_ACTIVE_JOBS:
+                            return self._send(429, {
+                                "detail": "您有 %d 个任务正在排队/生成，完成后再提交"
+                                          % active_jobs,
+                                "code": "active_job_cap",
+                                "active_jobs": active_jobs,
+                                "max_active_jobs": MAX_USER_ACTIVE_JOBS,
+                                "retry_after_ms": 4000,
+                                "need": int(prepared["cost"]),
+                            })
+                        attempt = (
+                            _short_drama_domain()
+                            .accept_character_reference_attempt(
+                                jdb, prepared, user["username"]
+                            )
+                        )
+                    else:
+                        prepared = {
+                            "request": {
+                                "project_id": attempt["project_id"],
+                                "revision": int(attempt["project_revision"]),
+                                "character_key": attempt["character_key"],
+                            },
+                            "owner_username": attempt["owner_username"],
+                            "payload": attempt["payload"],
+                            "cost": int(attempt["cost"]),
+                            "snapshot_hash": attempt["character_snapshot_hash"],
+                            "idempotency_key": attempt["idempotency_key"],
+                        }
+                    if attempt["state"] == "accepted":
+                        points_left = points_domain.deduct_points(
+                            user["username"], int(attempt["cost"]),
+                            "short-drama character reference",
+                            transaction_key=attempt["charge_key"],
+                        )
+                        attempt = (
+                            _short_drama_domain()
+                            .mark_character_reference_attempt_charged(
+                                jdb, user["username"], idem_key, points_left
+                            )
+                        )
+                    if attempt["state"] != "charged":
+                        raise ValueError("角色标准图扣费尝试状态无效")
+                    points_left = int(attempt["points_left"])
+                    job_id = jobs_store.create_job_after_charge(
+                        jdb, "image", user["username"], int(prepared["cost"]),
+                        prepared["payload"], SERVICE_OWNER,
+                        before_commit=lambda connection, linked_job_id:
+                            _short_drama_domain().record_character_reference_job(
+                                connection, prepared, user["username"], linked_job_id
+                            ),
+                    )
+                except feature_flags.FeatureDisabled as error:
+                    return self._send(503, {"detail": str(error)})
+                except miniprogram_security.ContentRejected as error:
+                    return self._send(400, {
+                        "detail": str(error), "code": "content_rejected",
+                        "operation_terminal": True,
+                    })
+                except miniprogram_security.SecurityUnavailable as error:
+                    return self._send(503, {
+                        "detail": str(error),
+                        "code": "content_security_unavailable",
+                        "retry_after_ms": 5000,
+                    })
+                except points_domain.AuthPointsError as error:
+                    response = {
+                        "detail": error.detail,
+                        "need": int(locals().get("prepared", {}).get("cost") or 0),
+                    }
+                    if error.status == 402 and locals().get("attempt"):
+                        _short_drama_domain().mark_character_reference_attempt_failed(
+                            jdb, user["username"], idem_key, response
+                        )
+                    return self._send(
+                        402 if error.status == 402 else 502,
+                        response,
+                    )
+                except _short_drama_domain().CharacterReferenceInProgress as error:
+                    return self._send(409, {
+                        "detail": str(error),
+                        "code": "character_reference_in_progress",
+                        "retry_after_ms": 2000,
+                    })
+                except (LookupError, PermissionError, ValueError,
+                        _short_drama_domain().RevisionConflict) as error:
+                    if (locals().get("attempt")
+                            and attempt.get("state") == "charged"):
+                        failed = _short_drama_domain().fail_character_reference_attempt(
+                            jdb, user["username"], idem_key, {
+                                "detail": "角色标准图任务创建失败，点数已退回",
+                                "code": "character_reference_create_failed",
+                                "operation_terminal": True,
+                            },
+                        )
+                        settled = _short_drama_domain().reconcile_character_reference_refund(
+                            jdb, points_domain, failed
+                        )
+                        if settled["state"] != "refunded":
+                            return self._send(503, {
+                                "detail": "角色标准图退款正在确认，请稍后重试",
+                                "code": "refund_pending",
+                                "retry_after_ms": 1000,
+                            })
+                        return self._send(500, {
+                            "detail": "角色标准图任务创建失败，点数已退回",
+                            "code": "character_reference_create_failed",
+                            "operation_terminal": True,
+                        })
+                    _short_drama_domain()._http_error(
+                        self, error, operation_terminal=True
+                    )
+                    return
+                except Exception:
+                    if (locals().get("attempt")
+                            and attempt.get("state") == "charged"):
+                        failed = _short_drama_domain().fail_character_reference_attempt(
+                            jdb, user["username"], idem_key, {
+                                "detail": "角色标准图任务创建失败，点数已退回",
+                                "code": "character_reference_create_failed",
+                                "operation_terminal": True,
+                            },
+                        )
+                        settled = _short_drama_domain().reconcile_character_reference_refund(
+                            jdb, points_domain, failed
+                        )
+                        if settled["state"] != "refunded":
+                            return self._send(503, {
+                                "detail": "角色标准图退款正在确认，请稍后重试",
+                                "code": "refund_pending",
+                                "retry_after_ms": 1000,
+                            })
+                    return self._send(500, {
+                        "detail": "角色标准图任务创建失败，点数已退回",
+                        "code": "character_reference_create_failed",
+                        "operation_terminal": True,
+                    })
+            if not enqueue_job(job_id, "image"):
+                failed = _short_drama_domain().fail_character_reference_attempt(
+                    jdb, user["username"], idem_key, {
+                        "detail": "任务队列已满，请稍后重试",
+                        "code": "queue_full",
+                        "operation_terminal": True,
+                        "retry_after_ms": 4000,
+                    }, job_id=job_id,
+                )
+                settled = _short_drama_domain().reconcile_character_reference_refund(
+                    jdb, points_domain, failed
+                )
+                if settled["state"] != "refunded":
+                    return self._send(503, {
+                        "detail": "角色标准图退款正在确认，请稍后重试",
+                        "code": "refund_pending",
+                        "retry_after_ms": 1000,
+                    })
+                return self._send(429, {
+                    "detail": "任务队列已满，请稍后重试",
+                    "code": "queue_full",
+                    "operation_terminal": True,
+                    "retry_after_ms": 4000,
+                })
+            return self._send(200, {
+                "project_id": prepared["request"]["project_id"],
+                "character_key": prepared["request"]["character_key"],
+                "job_id": job_id,
+                "cost": int(prepared["cost"]),
+                "points_left": points_left,
+                "replayed": False,
+                "association_status": "linked",
+            })
+        if _short_drama_domain().dispatch_http(self, "POST", jdb, verify,
+                getattr(points_domain, "cost_of", None), mutation_lock=_submission_lock,
+                canvas_access_resolver=_short_drama_canvas_access,
+                voice_validator=lambda username, voice_key:
+                    audio_domain.resolve_audio_provider_voice(username, voice_key),
+                points_getter=getattr(points_domain, "get_points", None),
+                audio_asset_lookup=getattr(audio_domain, "get_audio_asset", None),
+                audio_asset_job_lookup=getattr(
+                    audio_domain, "get_audio_asset_by_job", None
+                ),
+                audio_asset_recorder=getattr(
+                    audio_domain, "record_audio_asset", None
+                ),
+                enqueue_job=enqueue_job,
+                deduct_points=getattr(points_domain, "deduct_points", None),
+                refund_points=getattr(points_domain, "refund_points", None),
+                charge_lookup=getattr(
+                    points_domain, "get_points_transaction", None
+                ),
+                lipsync_provider_ready=_lipsync_worker_domain().runtime_ready,
+                lipsync_wake=_lipsync_worker_domain().wake): return
+        if p == "/api/gen/short-drama/generate-voice":
+            user = verify(self._token())
+            if not user:
+                return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user):
+                return self._send(403, {"detail": "请先修改初始密码"})
+            try:
+                request_body = self._json_body_strict()
+                normalized = _short_drama_domain().short_drama_voice.normalize_generate_request(
+                    request_body
+                )
+                idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
+                if not idem_key:
+                    raise ValueError("配音生成必须提供 Idempotency-Key")
+                known_attempt = (
+                    _short_drama_domain().short_drama_voice.recover_voice_submission(
+                        jdb, user["username"], request_body, idem_key
+                    )
+                )
+                owner = known_attempt.get("owner_username") if known_attempt else None
+            except (_short_drama_domain().short_drama_voice.VoiceQuoteConsumed,
+                    _short_drama_domain().short_drama_voice.VoiceChargeInProgress,
+                    LookupError, PermissionError, ValueError,
+                    _short_drama_domain().RevisionConflict) as error:
+                _short_drama_domain()._http_error(self, error, operation_terminal=True)
+                return
+            if not known_attempt:
+                try:
+                    feature_flags.require_enabled("audio")
+                    miniprogram_security.check_payload(request_body)
+                    access = _short_drama_canvas_access(self)
+                    owner = _short_drama_domain()._project_username_for_access(
+                        jdb, user["username"], normalized["project_id"], access, write=True
+                    )
+                    audio_domain.resolve_audio_provider_voice(
+                        user["username"], normalized["voice_key"]
+                    )
+                except feature_flags.FeatureDisabled as error:
+                    return self._send(503, {"detail": str(error)})
+                except miniprogram_security.ContentRejected as error:
+                    return self._send(400, {
+                        "detail": str(error), "code": "content_rejected",
+                        "operation_terminal": True,
+                    })
+                except miniprogram_security.SecurityUnavailable as error:
+                    return self._send(503, {
+                        "detail": str(error), "code": "content_security_unavailable",
+                        "retry_after_ms": 5000,
+                    })
+                except (LookupError, PermissionError, ValueError,
+                        _short_drama_domain().RevisionConflict) as error:
+                    _short_drama_domain()._http_error(
+                        self, error, operation_terminal=True
+                    )
+                    return
+            with _submission_lock:
+                try:
+                    attempt = (
+                        _short_drama_domain().short_drama_voice
+                        .recover_voice_submission(
+                            jdb, user["username"], request_body, idem_key
+                        )
+                    )
+                    replay = attempt is not None
+                    if replay:
+                        owner = attempt.get("owner_username")
+                    else:
+                        active_jobs = _user_active_job_count(user["username"])
+                        if active_jobs >= MAX_USER_ACTIVE_JOBS:
+                            return self._send(429, {
+                                "detail": "您有 %d 个任务正在排队/生成，完成后再提交" %
+                                          active_jobs,
+                                "code": "active_job_cap",
+                                "active_jobs": active_jobs,
+                                "max_active_jobs": MAX_USER_ACTIVE_JOBS,
+                                "retry_after_ms": 4000,
+                            })
+                        attempt, replay = (
+                            _short_drama_domain().short_drama_voice
+                            .prepare_voice_submission(
+                                jdb, user["username"], owner, request_body, idem_key
+                            )
+                        )
+                except (_short_drama_domain().short_drama_voice.VoiceQuoteConsumed,
+                        _short_drama_domain().short_drama_voice.VoiceChargeInProgress,
+                        LookupError, PermissionError, ValueError,
+                        _short_drama_domain().RevisionConflict) as error:
+                    _short_drama_domain()._http_error(
+                        self, error, operation_terminal=True
+                    )
+                    return
+                if replay and attempt.get("job_id"):
+                    try:
+                        _short_drama_domain().short_drama_voice.get_voice_workspace(
+                            jdb, owner, attempt["project_id"]
+                        )
+                        attempt = (
+                            _short_drama_domain().short_drama_voice.get_voice_attempt(
+                                jdb, user["username"], idem_key
+                            )
+                        )
+                    except Exception:
+                        pass
+                if replay and attempt["state"] in {"linked", "done"}:
+                    return self._send(200, {
+                        "project_id": attempt["project_id"],
+                        "line_id": attempt["voice_line_id"],
+                        "job_id": int(attempt["job_id"]),
+                        "cost": int(attempt["cost"]),
+                        "points_left": attempt["points_left"],
+                        "replayed": True,
+                    })
+                if replay and attempt["state"] in {"refund_pending", "refunded", "failed"}:
+                    terminal = dict(attempt.get("terminal_response") or {
+                        "detail": "本次配音生成未受理，请重新询价",
+                    })
+                    status = 503 if attempt["state"] == "refund_pending" else 409
+                    terminal.setdefault("code", "voice_refund_pending"
+                                        if status == 503 else "voice_operation_terminal")
+                    terminal["operation_terminal"] = True
+                    return self._send(status, terminal)
+                if is_shutting_down():
+                    return self._send(503, {
+                        "detail": "服务正在更新，请稍等几秒后重试（未重复扣点）",
+                        "code": "shutting_down", "retry_after_ms": 5000,
+                    })
+                try:
+                    if attempt["state"] == "accepted":
+                        points_left = points_domain.deduct_points(
+                            user["username"], int(attempt["cost"]),
+                            "short-drama voice",
+                            transaction_key=attempt["charge_key"],
+                        )
+                        attempt = (
+                            _short_drama_domain().short_drama_voice
+                            .mark_voice_attempt_charged(
+                                jdb, user["username"], idem_key, points_left
+                            )
+                        )
+                    else:
+                        points_left = int(attempt["points_left"])
+                    jid = jobs_store.create_job_after_charge(
+                        jdb, "audio", user["username"], int(attempt["cost"]),
+                        attempt["audio_payload"], SERVICE_OWNER,
+                        before_commit=lambda connection, job_id:
+                            _short_drama_domain().short_drama_voice.bind_voice_job(
+                                jdb, user["username"], idem_key, connection, job_id
+                            ),
+                    )
+                    attempt = _short_drama_domain().short_drama_voice.get_voice_attempt(
+                        jdb, user["username"], idem_key
+                    )
+                except points_domain.AuthPointsError as error:
+                    if error.status == 402:
+                        _short_drama_domain().short_drama_voice.mark_voice_attempt_failed(
+                            jdb, user["username"], idem_key,
+                            {"detail": error.detail, "code": "charge_rejected"},
+                        )
+                    return self._send(
+                        402 if error.status == 402 else 502,
+                        {"detail": error.detail, "need": int(attempt["cost"])},
+                    )
+                except Exception:
+                    terminal = {
+                        "detail": "配音任务创建失败，退款正在自动处理",
+                        "code": "voice_job_create_failed",
+                        "operation_terminal": True,
+                    }
+                    attempt = (
+                        _short_drama_domain().short_drama_voice
+                        .mark_voice_attempt_refund_pending(
+                            jdb, user["username"], idem_key, terminal
+                        )
+                    )
+                    try:
+                        points_domain.refund_points(
+                            user["username"], int(attempt["cost"]),
+                            "short-drama voice:create-failed",
+                            transaction_key=attempt["refund_key"],
+                        )
+                        _short_drama_domain().short_drama_voice.mark_voice_attempt_refunded(
+                            jdb, user["username"], idem_key
+                        )
+                        return self._send(500, terminal)
+                    except Exception:
+                        return self._send(503, {
+                            "detail": "配音任务创建失败，退款正在自动重试",
+                            "code": "voice_refund_pending",
+                            "retry_after_ms": 5000,
+                        })
+                if not enqueue_job(jid, "audio"):
+                    _reject_pending_job(
+                        jid, user["username"], int(attempt["cost"]),
+                        "任务队列已满，请稍后再试",
+                    )
+                    return self._send(429, {
+                        "detail": "任务队列已满，请重新询价后重试",
+                        "code": "queue_full", "operation_terminal": True,
+                        "retry_after_ms": 4000,
+                    })
+                return self._send(200, {
+                    "project_id": attempt["project_id"],
+                    "line_id": attempt["voice_line_id"],
+                    "job_id": jid,
+                    "cost": int(attempt["cost"]),
+                    "points_left": points_left,
+                    "replayed": False,
+                })
+        if p == "/api/gen/short-drama/generate-video":
+            user = verify(self._token())
+            if not user:
+                return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user):
+                return self._send(403, {"detail": "请先修改初始密码"})
+            video_workflow = _short_drama_domain().short_drama_video
+            try:
+                request_body = self._json_body_strict()
+                normalized = video_workflow.normalize_generate_request(request_body)
+                idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
+                if not idem_key:
+                    raise ValueError("视频生成必须提供 Idempotency-Key")
+                known_attempt = video_workflow.recover_video_submission(
+                    jdb, user["username"], request_body, idem_key
+                )
+                owner = known_attempt.get("owner_username") if known_attempt else None
+            except (video_workflow.VideoQuoteConsumed,
+                    video_workflow.VideoChargeInProgress,
+                    video_workflow.VideoBlocked,
+                    LookupError, PermissionError, ValueError,
+                    _short_drama_domain().RevisionConflict) as error:
+                _short_drama_domain()._http_error(
+                    self, error, operation_terminal=True
+                )
+                return
+            if not known_attempt:
+                try:
+                    feature_flags.require_enabled("cinematic")
+                    miniprogram_security.check_payload(request_body)
+                    access = _short_drama_canvas_access(self)
+                    owner = _short_drama_domain()._project_username_for_access(
+                        jdb, user["username"], normalized["project_id"],
+                        access, write=True,
+                    )
+                except feature_flags.FeatureDisabled as error:
+                    return self._send(503, {"detail": str(error)})
+                except miniprogram_security.ContentRejected as error:
+                    return self._send(400, {
+                        "detail": str(error), "code": "content_rejected",
+                        "operation_terminal": True,
+                    })
+                except miniprogram_security.SecurityUnavailable as error:
+                    return self._send(503, {
+                        "detail": str(error),
+                        "code": "content_security_unavailable",
+                        "retry_after_ms": 5000,
+                    })
+                except (LookupError, PermissionError, ValueError,
+                        _short_drama_domain().RevisionConflict) as error:
+                    _short_drama_domain()._http_error(
+                        self, error, operation_terminal=True
+                    )
+                    return
+            with _submission_lock:
+                try:
+                    attempt = video_workflow.recover_video_submission(
+                        jdb, user["username"], request_body, idem_key
+                    )
+                    replay = attempt is not None
+                    if replay:
+                        owner = attempt.get("owner_username")
+                    else:
+                        active_jobs = _user_active_job_count(user["username"])
+                        if active_jobs >= MAX_USER_ACTIVE_JOBS:
+                            return self._send(429, {
+                                "detail": "当前排队任务已达上限，请等待后再提交",
+                                "code": "active_job_cap",
+                                "active_jobs": active_jobs,
+                                "max_active_jobs": MAX_USER_ACTIVE_JOBS,
+                                "retry_after_ms": 4000,
+                            })
+                        cinematic_jobs = _user_active_kind_count(
+                            user["username"], "cinematic"
+                        )
+                        if cinematic_jobs >= MAX_USER_ACTIVE_CINEMATIC:
+                            return self._send(429, {
+                                "detail": "电影化身视频并发任务已达上限",
+                                "code": "cinematic_active_cap",
+                                "active_jobs": cinematic_jobs,
+                                "max_active_jobs": MAX_USER_ACTIVE_CINEMATIC,
+                                "retry_after_ms": 4000,
+                            })
+                        attempt, replay = video_workflow.prepare_video_submission(
+                            jdb, user["username"], owner, request_body, idem_key,
+                            video_domain.get_video_avatar,
+                        )
+                except (video_workflow.VideoQuoteConsumed,
+                        video_workflow.VideoChargeInProgress,
+                        video_workflow.VideoBlocked,
+                        LookupError, PermissionError, ValueError,
+                        _short_drama_domain().RevisionConflict) as error:
+                    _short_drama_domain()._http_error(
+                        self, error, operation_terminal=True
+                    )
+                    return
+                if replay and attempt.get("job_id"):
+                    try:
+                        video_workflow.get_video_workspace(
+                            jdb, owner, attempt["project_id"],
+                            video_domain.get_video_avatar,
+                        )
+                        attempt = video_workflow.get_video_attempt(
+                            jdb, user["username"], idem_key
+                        )
+                    except Exception:
+                        pass
+                if replay and attempt["state"] in {"linked", "done"}:
+                    return self._send(200, {
+                        "project_id": attempt["project_id"],
+                        "shot_id": attempt["shot_id"],
+                        "job_id": int(attempt["job_id"]),
+                        "cost": int(attempt["cost"]),
+                        "points_left": attempt["points_left"],
+                        "replayed": True,
+                    })
+                if replay and attempt["state"] in {
+                        "refund_pending", "refunded", "failed"}:
+                    terminal = dict(attempt.get("terminal_response") or {
+                        "detail": "本次视频生成未受理，请重新询价",
+                    })
+                    status = 503 if attempt["state"] == "refund_pending" else 409
+                    terminal.setdefault(
+                        "code", "video_refund_pending"
+                        if status == 503 else "video_operation_terminal"
+                    )
+                    terminal["operation_terminal"] = True
+                    return self._send(status, terminal)
+                if (
+                    attempt["state"] == "accepted"
+                    and attempt.get("recovery_token")
+                ):
+                    return self._send(503, {
+                        "detail": "视频扣点状态正在自动对账，请稍后使用原请求重试",
+                        "code": "video_charge_recovery",
+                        "retry_after_ms": 5000,
+                    })
+                if is_shutting_down():
+                    return self._send(503, {
+                        "detail": "服务正在更新，请稍后重试（不会重复扣点）",
+                        "code": "shutting_down",
+                        "retry_after_ms": 5000,
+                    })
+                try:
+                    if attempt["state"] == "accepted":
+                        attempt = video_workflow.claim_video_attempt_charge(
+                            jdb, user["username"], idem_key
+                        )
+                        claim_token = attempt.get("recovery_token")
+                        if (
+                            not claim_token
+                            or not str(claim_token).startswith("submission:")
+                        ):
+                            raise video_workflow.VideoChargeInProgress(
+                                "video charge recovery owns this submission"
+                            )
+                        points_left = points_domain.deduct_points(
+                            user["username"], int(attempt["cost"]),
+                            "short-drama video",
+                            transaction_key=attempt["charge_key"],
+                        )
+                        attempt = video_workflow.mark_video_attempt_charged(
+                            jdb, user["username"], idem_key, points_left,
+                            claim_token,
+                        )
+                        if attempt["state"] != "charged":
+                            raise video_workflow.VideoChargeInProgress(
+                                "video charge recovery owns this submission"
+                            )
+                    else:
+                        points_left = int(attempt["points_left"])
+                    jid = jobs_store.create_job_after_charge(
+                        jdb, "cinematic", user["username"],
+                        int(attempt["cost"]), attempt["video_payload"],
+                        SERVICE_OWNER,
+                        before_commit=lambda connection, job_id:
+                            video_workflow.bind_video_job(
+                                jdb, user["username"], idem_key,
+                                connection, job_id,
+                            ),
+                    )
+                    attempt = video_workflow.get_video_attempt(
+                        jdb, user["username"], idem_key
+                    )
+                except video_workflow.VideoChargeInProgress:
+                    return self._send(503, {
+                        "detail": "视频扣点状态正在自动对账，请稍后使用原请求重试",
+                        "code": "video_charge_recovery",
+                        "retry_after_ms": 5000,
+                    })
+                except points_domain.AuthPointsError as error:
+                    if error.status == 402:
+                        video_workflow.mark_video_attempt_failed(
+                            jdb, user["username"], idem_key,
+                            {"detail": error.detail, "code": "charge_rejected"},
+                            claim_token=claim_token,
+                        )
+                    return self._send(
+                        402 if error.status == 402 else 502,
+                        {"detail": error.detail, "need": int(attempt["cost"])},
+                    )
+                except Exception:
+                    terminal = {
+                        "detail": "视频任务创建失败，退款正在自动处理",
+                        "code": "video_job_create_failed",
+                        "operation_terminal": True,
+                    }
+                    attempt = video_workflow.mark_video_attempt_refund_pending(
+                        jdb, user["username"], idem_key, terminal
+                    )
+                    try:
+                        points_domain.refund_points(
+                            user["username"], int(attempt["cost"]),
+                            "short-drama video:create-failed",
+                            transaction_key=attempt["refund_key"],
+                        )
+                        video_workflow.mark_video_attempt_refunded(
+                            jdb, user["username"], idem_key
+                        )
+                        return self._send(500, terminal)
+                    except Exception:
+                        return self._send(503, {
+                            "detail": "视频任务创建失败，退款正在自动重试",
+                            "code": "video_refund_pending",
+                            "retry_after_ms": 5000,
+                        })
+                if not enqueue_job(jid, "cinematic"):
+                    _reject_pending_job(
+                        jid, user["username"], int(attempt["cost"]),
+                        "任务队列已满，请稍后重试",
+                    )
+                    return self._send(429, {
+                        "detail": "任务队列已满，请重新询价后重试",
+                        "code": "queue_full",
+                        "operation_terminal": True,
+                        "retry_after_ms": 4000,
+                    })
+                return self._send(202, {
+                    "project_id": attempt["project_id"],
+                    "shot_id": attempt["shot_id"],
+                    "job_id": jid,
+                    "cost": int(attempt["cost"]),
+                    "points_left": points_left,
+                    "replayed": False,
+                })
+        if p in {"/api/gen/digital-ip/diagnose", "/api/gen/digital-ip/guide"}:
+            user = verify(self._token())
+            if not user:
+                return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user):
+                return self._send(403, {"detail": "请先修改初始密码"})
+            from . import digital_ip
+            try:
+                handler = digital_ip.guide if p.endswith("/guide") else digital_ip.diagnose
+                return self._send(
+                    200, handler(self._json_body_strict(), user["username"])
+                )
+            except digital_ip.DigitalIPError as error:
+                return self._send(error.status, {"detail": str(error)})
+            except ValueError as error:
+                return self._send(400, {"detail": str(error)[:220]})
+            except Exception:
+                return self._send(
+                    502, {"detail": "数字化 IP AI 服务暂时不可用，请稍后重试"}
+                )
+        if p == "/api/gen/cinematic/quote" and video_domain.dispatch_cinematic_quote(
+                self, verify, points_domain.cost_of): return
         if _digital_ip_domain().dispatch_http(self, "POST", verify, _must_change_password): return
         if p == "/api/gen/inspiration/like": return inspiration_likes.handle_post(self, verify(self._token()), AUDIO_DB)
         if p == "/api/gen/asset/favorite":
@@ -1344,7 +2380,10 @@ class H(BaseHTTPRequestHandler):
             except feature_flags.FeatureDisabled as e: return self._send(503, {"detail": str(e)})
             except audio_domain.VoiceSlotError as e: return self._send(e.status, {"detail": str(e)})
             except points_domain.AuthPointsError as e:
-                return self._send(e.status if e.status in (402, 403) else 502, points_domain.public_error_body(e, audio_domain.VOICE_SLOT_COST))
+                return self._send(
+                    e.status if e.status in (402, 403) else 502,
+                    _public_points_error(points_domain, e, audio_domain.VOICE_SLOT_COST),
+                )
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:160]})
         if p == "/api/gen/audio/redeem-slot":
@@ -1447,7 +2486,10 @@ class H(BaseHTTPRequestHandler):
                         video_domain.record_video_pending_asset(jid, user["username"], body)
                 except points_domain.AuthPointsError as e:
                     _idempotency_abort(user["username"], p, idem_key)
-                    return self._send(e.status if e.status in (402, 403) else 502, points_domain.public_error_body(e, total))
+                    return self._send(
+                        e.status if e.status in (402, 403) else 502,
+                        _public_points_error(points_domain, e, total),
+                    )
                 except jobs_store.PaidJobInsertError as e:
                     _idempotency_abort(user["username"], p, idem_key)
                     return self._send(500, {"detail": {"refunded": "批量任务创建失败，点数已退回",
@@ -1496,9 +2538,11 @@ class H(BaseHTTPRequestHandler):
             if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
             try: feature_flags.require_enabled(kind)
             except feature_flags.FeatureDisabled as e: return self._send(503, {"detail": str(e)})
-            if kind == "canvas_agent":
-                if is_shutting_down():
-                    return self._send(503, {"detail": "服务正在更新，请稍等几秒后重试（未扣点）", "code": "shutting_down", "retry_after_ms": 5000})
+            if kind == "canvas_agent" and is_shutting_down():
+                return self._send(503, {
+                    "detail": "服务正在更新，请稍等几秒后重试（未扣点）",
+                    "code": "shutting_down", "retry_after_ms": 5000,
+                })
             still_idem_started = False
             still_attempt = None
             still_access = _short_drama_canvas_access(self) if is_still_route else None
@@ -1546,20 +2590,31 @@ class H(BaseHTTPRequestHandler):
                     body = text_domain.validate_copy_payload(body)
                 elif kind == "canvas_agent":
                     from . import canvas_agent as canvas_agent_domain
-                    body = canvas_agent_domain.validate_payload(body, _short_drama_canvas_access(self))
+                    body = canvas_agent_domain.validate_payload(
+                        body, _short_drama_canvas_access(self)
+                    )
                 elif kind == "image":
                     from . import image as image_domain
                     body = image_domain.validate_image_payload(body)
+                    if body.get("provider") == "banana":
+                        feature_flags.require_enabled("banana")
                     if not is_still_route:
                         body.pop("short_drama_references", None)
                 elif kind == "audio":
-                    body = audio_domain.validate_audio_payload(body, user["username"])
+                    body = audio_domain.validate_audio_payload(
+                        body, user["username"]
+                    )
                 if not is_still_route: request_body = dict(body) if isinstance(body, dict) else body
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
                 if not is_still_route: idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "audio", "video", "tryon", "xiaole_video", "sora_video", "cinematic", "canvas_agent", "script_to_video", "breakdown"} else ""
-                if kind == "canvas_agent" and not idem_key: raise ValueError("画布 Agent 提交必须提供 Idempotency-Key")
+                if kind == "canvas_agent" and not idem_key:
+                    raise ValueError("画布 Agent 提交必须提供 Idempotency-Key")
                 if kind == "sora_video" and not idem_key: raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
                 if kind == "xiaole_video" and str(body.get("channel") or "").lower() in {"micro", "omni"} and not idem_key: raise ValueError("官方视频提交必须提供 Idempotency-Key")
+            except feature_flags.FeatureDisabled as e:
+                if still_idem_started:
+                    _idempotency_abort(user["username"], p, idem_key)
+                return self._send(503, {"detail": str(e)})
             except miniprogram_security.ContentRejected as e:
                 terminal = is_still_route and bool(locals().get("idem_key"))
                 return self._send(400, {"detail": str(e), "code": "content_rejected",
@@ -1591,7 +2646,8 @@ class H(BaseHTTPRequestHandler):
             cost = points_domain.cost_of(kind, body) if not is_short_drama and not is_still_route else None
             if kind == "canvas_agent" and body.get("quoted_cost") != cost:
                 return self._send(400, {"detail": "画布 Agent 价格已变化，请重新报价"})
-            if cli_gateway.reject_changed_cost(self, cost, AUTH_INTERNAL_TOKEN): return
+            if cli_gateway.reject_changed_cost(
+                    self, cost, AUTH_INTERNAL_TOKEN): return
             with _submission_lock:
                 if (is_still_route and is_shutting_down()
                         and (not still_attempt or still_attempt.get("state") in {"accepted", "charged"})):
@@ -1722,7 +2778,10 @@ class H(BaseHTTPRequestHandler):
                         return self._send(402, public_rejected)
                     elif not (is_still_route and e.status == 502):
                         _idempotency_abort(user["username"], p, idem_key)
-                    return self._send(e.status if e.status in (402, 403) else 502, points_domain.public_error_body(e, cost))
+                    return self._send(
+                        e.status if e.status in (402, 403) else 502,
+                        _public_points_error(points_domain, e, cost),
+                    )
                 except jobs_store.PaidJobInsertError as e:
                     failed_response = {"detail": {"refunded": "任务创建失败，点数已退回",
                         "queued": "任务创建失败，退款正在自动重试"}.get(e.compensation, "任务创建失败，退款需人工核对"),
@@ -1798,7 +2857,22 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
-        if _short_drama_domain().dispatch_http(self, "GET", jdb, verify, getattr(points_domain, "cost_of", None), canvas_access_resolver=_short_drama_canvas_access): return
+        if _short_drama_domain().dispatch_http(
+                self, "GET", jdb, verify,
+                getattr(points_domain, "cost_of", None),
+                canvas_access_resolver=_short_drama_canvas_access,
+                audio_asset_lookup=getattr(
+                    audio_domain, "get_audio_asset", None
+                ),
+                audio_asset_job_lookup=getattr(
+                    audio_domain, "get_audio_asset_by_job", None
+                ),
+                audio_asset_recorder=getattr(
+                    audio_domain, "record_audio_asset", None
+                ),
+                audio_asset_list=getattr(
+                    audio_domain, "list_audio_assets", None
+                )): return
         if _digital_ip_domain().dispatch_http(self, "GET", verify, _must_change_password): return
         if p == "/api/gen/audio/clone-vip":
             return self._method_not_allowed()
@@ -1843,6 +2917,18 @@ class H(BaseHTTPRequestHandler):
                 except Exception:
                     pass
             d = _job_public_dict(r, phase)
+            if r["kind"] in {"short_drama_preview", "short_drama_final"}:
+                with closing(jdb()) as c:
+                    linked = c.execute(
+                        "SELECT phase,progress,error_code,error_message "
+                        "FROM short_drama_composition_jobs WHERE job_id=?",
+                        (str(jid),),
+                    ).fetchone()
+                if linked:
+                    d["composition_phase"] = linked["phase"]
+                    d["progress"] = linked["progress"]
+                    d["error_code"] = linked["error_code"]
+                    d["error_message"] = linked["error_message"]
             return self._send(200, d)
         if p == "/api/gen/points/history":
             user = verify(self._token())
@@ -1905,8 +2991,16 @@ class H(BaseHTTPRequestHandler):
             finally:
                 up.close()
             return
-        if p.startswith("/api/gen/file/"):
-            rel = p[len("/api/gen/file/"):]
+        file_prefix = next(
+            (
+                prefix
+                for prefix in ("/api/gen/file/", "/api/files/")
+                if p.startswith(prefix)
+            ),
+            None,
+        )
+        if file_prefix:
+            rel = p[len(file_prefix):]
             fp = _resolve_out_file(rel)
             if not fp: return self._send(404, {"detail": "no file"})
             try:
@@ -1917,20 +3011,13 @@ class H(BaseHTTPRequestHandler):
             if sensitive:
                 user = verify(self._token())
                 if not user: return self._send(401, {"detail": "未登录"})
-                if not _user_owns_output_file(user.get("username"), canonical_rel):
+                if not _user_owns_output_file(
+                    user.get("username"), canonical_rel,
+                    _short_drama_canvas_access(self),
+                ):
                     return self._send(404, {"detail": "no file"})
-            fn = fp.name
-            data = fp.read_bytes()
-            ctype = mimetypes.guess_type(str(fp))[0] or "application/octet-stream"
-            self.send_response(200); self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(data)))
-            if sensitive or fn.startswith("voice_preview_"):
-                self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
-                self.send_header("Pragma", "no-cache")
-                self.send_header("Expires", "0")
-            else:
-                self.send_header("Cache-Control", "public, max-age=86400")
-            self.end_headers(); self.wfile.write(data); return
+            _send_out_file(self, fp, sensitive=sensitive)
+            return
         if p == "/api/gen/audio/voices":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "???"})
@@ -2012,7 +3099,7 @@ class H(BaseHTTPRequestHandler):
                 points_left = points_domain.deduct_points(user["username"], 1, "search:" + platform)
             except points_domain.AuthPointsError as e:
                 code = e.status if e.status in (402, 403) else 502
-                return self._send(code, points_domain.public_error_body(e, 1))
+                return self._send(code, _public_points_error(points_domain, e, 1))
             try:
                 r = tikhub.search(platform, keyword, page=page, video_only=False)  # 含图文
             except tikhub.TikHubError as e:
@@ -2031,7 +3118,13 @@ class H(BaseHTTPRequestHandler):
                                     "max_user_running_talking": MAX_USER_RUNNING_TALKING, "max_user_running_image": MAX_USER_RUNNING_IMAGE, "video_cost": VIDEO_COST, "video_batch_max": min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS), "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
         self._send(404, {"detail": "not found"})
     def do_PUT(self):
-        if _short_drama_domain().dispatch_http(self, "PUT", jdb, verify, mutation_lock=_submission_lock, canvas_access_resolver=_short_drama_canvas_access): return  # /api/gen/short-drama/project
+        audio_domain, _points_domain, _video_domain = _domains()
+        if _short_drama_domain().dispatch_http(
+                self, "PUT", jdb, verify, mutation_lock=_submission_lock,
+                canvas_access_resolver=_short_drama_canvas_access,
+                audio_asset_lookup=getattr(
+                    audio_domain, "get_audio_asset", None
+                )): return  # /api/gen/short-drama/project
         if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
         self._send(404, {"detail": "not found"})
     def do_PATCH(self):

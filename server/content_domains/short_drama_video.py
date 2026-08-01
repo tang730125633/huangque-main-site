@@ -14,6 +14,7 @@ import unicodedata
 import uuid
 
 from . import short_drama_prompt_compiler
+from .core import _file_url
 
 
 VIDEO_WRITE_STAGE = "video_review"
@@ -623,11 +624,17 @@ def _cast_character_items(conn, project, avatar_lookup=None):
         )
         avatar = _usable_avatar(project["username"], avatar_id, avatar_lookup)
         valid = bool(avatar)
+        reference_file = str(character["reference_file"] or "").strip()
+        reference_url = str(character["reference_url"] or "").strip()
+        if not reference_url and reference_file:
+            reference_url = _file_url(reference_file)
+        if not reference_url and avatar:
+            reference_url = str(avatar.get("image_url") or "").strip()
         items.append({
             "character_key": character["character_key"],
             "name": character["name"],
-            "reference_file": character["reference_file"] or "",
-            "reference_url": character["reference_url"] or "",
+            "reference_file": reference_file,
+            "reference_url": reference_url,
             "reference_locked": bool(character["reference_locked"]),
             "source_type": character["source_type"],
             "binding_source": source if avatar_id is not None else "missing",
@@ -1989,6 +1996,8 @@ def get_video_workspace(db_factory, owner_username, project_id, avatar_lookup=No
         reconcile_video_jobs(conn, project_id)
         project = _project(conn, owner_username, project_id)
         snapshot = build_video_snapshot(conn, project, avatar_lookup)
+        from . import short_drama_lipsync_visuals
+        short_drama_lipsync_visuals.sync_project(conn, project_id)
         conn.commit()
         return snapshot
     except Exception:
@@ -2111,6 +2120,10 @@ def set_video_shot_lock(db_factory, owner_username, body, avatar_lookup=None):
                 request["video_revision"],
             ),
         )
+        from . import short_drama_lipsync_visuals
+        short_drama_lipsync_visuals.sync_shot(
+            conn, project["id"], request["shot_id"], now=now
+        )
         updated = conn.execute(
             "UPDATE short_drama_projects SET revision=revision+1,updated_at=? "
             "WHERE id=? AND username=? AND revision=? AND stage='video_review'",
@@ -2154,6 +2167,11 @@ def confirm_video_stage(db_factory, owner_username, body, avatar_lookup=None):
         if snapshot["handoff_blocked"]:
             first = snapshot["handoff_blockers"][0]
             raise VideoBlocked(first["code"], first["message"])
+        from . import short_drama_assembly_lipsync
+        try:
+            short_drama_assembly_lipsync.capture_for_handoff(conn, project)
+        except short_drama_assembly_lipsync.LipsyncAssemblyBlocked as error:
+            raise VideoBlocked(error.code, str(error)) from error
         now = int(time.time())
         updated = conn.execute(
             "UPDATE short_drama_projects "

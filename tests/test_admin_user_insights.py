@@ -8,6 +8,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+from contextlib import closing
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -27,7 +28,7 @@ class AuthUserInsightsTests(unittest.TestCase):
         self.auth.create_user("admin", "secret123", 0, "admin")
         self.auth.create_user("alice", "secret123", 100, "member")
         self.auth.create_user("bob", "secret123", 20, "member")
-        with sqlite3.connect(self.auth.DB) as c:
+        with closing(sqlite3.connect(self.auth.DB)) as c:
             c.execute(
                 """INSERT INTO recharge_orders(
                        order_id,username,amount,points,status,created_at,reviewed_at,order_type
@@ -53,7 +54,7 @@ class AuthUserInsightsTests(unittest.TestCase):
             c.execute(
                 """INSERT INTO points_audit(
                        who_admin,username,delta,before_points,after_points,reason,created_at
-                   ) VALUES('system','alice',-10,110,100,'job:image',30)"""
+                    ) VALUES('system','alice',-10,110,100,'job:image',30)"""
             )
             alice_id = c.execute(
                 "SELECT id FROM users WHERE username='alice'",
@@ -98,7 +99,7 @@ class AuthUserInsightsTests(unittest.TestCase):
                             '测试作废','admin')""",
                 (relation_id, second_upgrade, alice_id, bob_id),
             )
-        c.close()
+            c.commit()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -185,7 +186,7 @@ class AuthUserInsightsTests(unittest.TestCase):
         }, internal=True)
         self.assertTrue(sent["ok"])
         self.assertNotIn("created_by", sent["notification"])
-        with sqlite3.connect(self.auth.DB) as c:
+        with closing(sqlite3.connect(self.auth.DB)) as c:
             actor = c.execute("SELECT created_by FROM user_notifications").fetchone()[0]
         self.assertEqual(actor, "admin")
         self.assertEqual(self.get(alice, "/api/auth/notifications")["items"][0]["title"], "抱歉声明")
@@ -239,7 +240,7 @@ class AdminTaskInsightsTests(unittest.TestCase):
         os.close(fd)
         self.path = Path(path)
         self.admin.JOB_DB = self.path
-        with sqlite3.connect(self.path) as c:
+        with closing(sqlite3.connect(self.path)) as c:
             c.execute(
                 """CREATE TABLE jobs(
                        id INTEGER PRIMARY KEY,kind TEXT,username TEXT,cost INTEGER,status TEXT,
@@ -254,6 +255,7 @@ class AdminTaskInsightsTests(unittest.TestCase):
                     (4, "image", "bob", 8, "done", '{"provider":"openai"}', 60, 70),
                 ],
             )
+            c.commit()
 
     def tearDown(self):
         self.admin.JOB_DB = self.old_db

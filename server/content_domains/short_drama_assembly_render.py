@@ -4,6 +4,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from . import short_drama_assembly as assembly
@@ -22,6 +23,7 @@ FINAL_PROFILE = {
     "9:16": (1080, 1920),
     "16:9": (1920, 1080),
 }
+FINAL_UPLOAD_VERIFY_DELAYS = (0, 0.5, 1, 2)
 
 
 class PreviewRenderError(ValueError):
@@ -159,6 +161,7 @@ def _ensure_d2(context, tools):
             ),
             toolchain=tools,
             bgm_source=context.get("bgm_source"),
+            sound_cues=context.get("sound_cues") or [],
             master_audio_contract=snapshot.get("master_audio"),
             cached_audio_files=reusable_files,
         )
@@ -186,7 +189,9 @@ def _ensure_d2(context, tools):
 def _ass_filter(path, font_dir):
     value = Path(path).resolve().as_posix()
     value = value.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
-    directory = Path(font_dir).resolve().as_posix()
+    directory = Path(
+        font_dir or Path(subtitles.DEFAULT_FONT_PATH).parent
+    ).resolve().as_posix()
     directory = directory.replace(
         "\\", "\\\\"
     ).replace(":", "\\:").replace("'", "\\'")
@@ -194,7 +199,8 @@ def _ass_filter(path, font_dir):
 
 
 def build_preview_command(
-    videos, master_audio, subtitles_ass, ratio, output, font_dir
+    videos, master_audio, subtitles_ass, ratio, output, *,
+    burn_subtitles=True, font_dir=None,
 ):
     width, height = PREVIEW_PROFILE[ratio]
     ffmpeg = os.environ.get("FFMPEG_BIN", "ffmpeg")
@@ -221,7 +227,12 @@ def build_preview_command(
     filters.append(
         "%sconcat=n=%d:v=1:a=0[joined]" % ("".join(labels), len(labels))
     )
-    filters.append("[joined]%s[vout]" % _ass_filter(subtitles_ass, font_dir))
+    if burn_subtitles:
+        filters.append(
+            "[joined]%s[vout]" % _ass_filter(subtitles_ass, font_dir)
+        )
+    else:
+        filters.append("[joined]null[vout]")
     duration = sum(int(item["duration_ms"]) for item in videos) / 1000
     command.extend([
         "-filter_complex", ";".join(filters),
@@ -236,10 +247,11 @@ def build_preview_command(
 
 
 def build_final_command(
-    videos, master_audio, subtitles_ass, ratio, output, font_dir
+    videos, master_audio, subtitles_ass, ratio, output, *, font_dir=None
 ):
     command = build_preview_command(
-        videos, master_audio, subtitles_ass, ratio, output, font_dir
+        videos, master_audio, subtitles_ass, ratio, output,
+        font_dir=font_dir,
     )
     width, height = FINAL_PROFILE[ratio]
     preview_width, preview_height = PREVIEW_PROFILE[ratio]
@@ -316,42 +328,78 @@ def _verified_private_upload(path, object_key, content_type, sha256):
         raise PreviewRenderError(
             "export_unavailable", "正式导出对象存储未配置"
         )
+
     def inspect_remote():
         head = cos.head(object_key)
         normalized = {
             str(key).lower(): value for key, value in dict(head).items()
         }
-        return (
-            int(
+        try:
+            remote_size = int(
                 normalized.get("content-length")
                 or normalized.get("content_length")
                 or -1
-            ),
-            str(
-                normalized.get("x-cos-meta-sha256")
-                or normalized.get("sha256")
-                or ""
+            )
+        except (TypeError, ValueError):
+            remote_size = -1
+        return {
+            "size": remote_size,
+            "sha256": str(
+                normalized.get("x-cos-meta-sha256") or ""
             ).strip('"'),
-        )
+            "request_id": str(
+                normalized.get("x-cos-request-id") or ""
+            ).strip('"'),
+        }
 
     try:
-        remote_size, remote_hash = inspect_remote()
+        remote = inspect_remote()
     except Exception:
-        remote_size, remote_hash = -1, ""
-    if remote_size == path.stat().st_size and remote_hash == sha256:
+        remote = {"size": -1, "sha256": "", "request_id": ""}
+    local_size = path.stat().st_size
+    if remote["size"] == local_size and remote["sha256"] == sha256:
         return cos.object_url(object_key, private=True)
     url = cos.upload(
         path, object_key, content_type, private=True,
-        metadata={"sha256": sha256},
+        metadata={"x-cos-meta-sha256": sha256},
     )
-    remote_size, remote_hash = inspect_remote()
-    if remote_size != path.stat().st_size or (
-        remote_hash != sha256
-    ):
+    last_error = None
+    for delay in FINAL_UPLOAD_VERIFY_DELAYS:
+        if delay:
+            time.sleep(delay)
+        try:
+            remote = inspect_remote()
+            last_error = None
+        except Exception as error:
+            last_error = error
+            continue
+        if remote["size"] == local_size and remote["sha256"] == sha256:
+            return url
+
+    request_detail = (
+        "（COS request_id=%s）" % remote["request_id"]
+        if remote.get("request_id") else ""
+    )
+    if last_error is not None or remote["size"] < 0:
         raise PreviewRenderError(
-            "upload_failed", "对象存储上传完整性校验失败"
+            "upload_verify_unavailable",
+            "COS 上传后无法读取对象元数据%s" % request_detail,
         )
-    return url
+    if remote["size"] != local_size:
+        raise PreviewRenderError(
+            "upload_size_mismatch",
+            "COS 上传后文件大小不一致（本地 %d 字节，远端 %d 字节）%s"
+            % (local_size, remote["size"], request_detail),
+        )
+    if not remote["sha256"]:
+        raise PreviewRenderError(
+            "upload_hash_missing",
+            "COS 上传后 SHA256 元数据缺失%s" % request_detail,
+        )
+    raise PreviewRenderError(
+        "upload_hash_mismatch",
+        "COS 上传后 SHA256 校验不一致%s" % request_detail,
+    )
 
 
 def run_preview_job(payload):
@@ -381,7 +429,13 @@ def run_preview_job(payload):
         )
         _run(build_preview_command(
             context["videos"], master, subtitles_ass,
-            context["project"]["ratio"], preview, tools["font_dir"],
+            context["project"]["ratio"], preview,
+            burn_subtitles=(
+                (context["snapshot"]["config"].get("subtitle") or {}).get(
+                    "delivery"
+                ) != "external_vtt"
+            ),
+            font_dir=tools["font_dir"],
         ))
         assembly.set_preview_progress(db_factory, job_id, "concatenating", 88)
         expected_duration = sum(
@@ -412,6 +466,11 @@ def run_preview_job(payload):
             "width": video["width"], "height": video["height"],
             "fps": video["fps"], "video_codec": video["codec"],
             "audio_codec": audio["codec"],
+            "subtitle_delivery": (
+                (context["snapshot"]["config"].get("subtitle") or {}).get(
+                    "delivery"
+                ) or "burned_ass"
+            ),
         }
     finally:
         if temp_dir.exists():
@@ -447,7 +506,8 @@ def run_final_job(payload):
         if not final.is_file():
             _run(build_final_command(
                 context["videos"], master, subtitles_ass,
-                context["project"]["ratio"], part, tools["font_dir"],
+                context["project"]["ratio"], part,
+                font_dir=tools["font_dir"],
             ))
             os.replace(part, final)
         assembly.set_final_progress(db_factory, job_id, "probing", 72)

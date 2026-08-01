@@ -14,6 +14,9 @@
   var ALIGNMENT_JOBS_PATH='/api/gen/short-drama/subtitle-alignment/jobs';
   var ALIGNMENT_TIMELINE_PATH='/api/gen/short-drama/subtitle-alignment/timeline';
   var ALIGNMENT_LOCK_PATH='/api/gen/short-drama/subtitle-alignment/lock';
+  var MASTER_TIMELINE_PATH='/api/gen/short-drama/master-timeline';
+  var MASTER_TIMELINE_REBUILD_PATH=MASTER_TIMELINE_PATH+'/rebuild';
+  var MASTER_TIMELINE_CONFIRM_PATH=MASTER_TIMELINE_PATH+'/confirm';
   var CONFIRM_PATH='/api/gen/short-drama/confirm';
   var POLL_INTERVAL=1800;
 
@@ -126,7 +129,12 @@
       alignment:input.alignment&&typeof input.alignment==='object'?
         clone(input.alignment):null,
       alignmentDraft:options.alignmentDraft&&typeof options.alignmentDraft==='object'?
-        clone(options.alignmentDraft):null
+        clone(options.alignmentDraft):null,
+      master_timeline:input.master_timeline&&typeof input.master_timeline==='object'?
+        clone(input.master_timeline):null,
+      masterTimelineDraft:options.masterTimelineDraft&&
+        typeof options.masterTimelineDraft==='object'?
+        clone(options.masterTimelineDraft):null
     };
   }
   function selectedShot(state){
@@ -375,11 +383,38 @@
         var voiceVersion=voiceLine&&currentVersion(voiceLine);
         var voiceUrl=audioUrl(voiceVersion);
         var lineBlockers=alignmentDraftAnalysis.byLine[text(source.line_id)]||[];
+        var wordTimingVisible=!!(
+          alignment.provider&&alignment.provider.word_timing_enabled
+        );
+        var sourceWords=wordTimingVisible?
+          (Array.isArray(source.words)?source.words:
+            Array.isArray(source.tokens)?source.tokens:[]):[];
+        var unmatched=Array.isArray(source.unmatched_tokens)?
+          source.unmatched_tokens:[];
+        var confidence=number(source.confidence,0);
+        var wordHtml=sourceWords.map(function(word){
+          var wordConfidence=number(word.confidence,0);
+          return '<span class="nc-sdv-alignment-word'+
+            (wordConfidence<0.65?' is-low':'')+'" title="'+
+            escapeHtml(formatMs(word.start_ms)+' - '+formatMs(word.end_ms)+
+              ' · '+wordConfidence.toFixed(2))+'">'+
+            escapeHtml(word.token||'')+'</span>';
+        }).join('');
         return '<article class="nc-sdv-alignment-line'+
-          (lineBlockers.length?' has-error':'')+'"><strong>'+
+          (lineBlockers.length||source.status==='unmatched'?' has-error':'')+
+          (confidence&&confidence<0.8?' has-low-confidence':'')+'"><strong>'+
           escapeHtml(source.text||source.line_id)+'</strong>'+
           '<small>只读音频 '+formatMs(source.audio_start_ms)+' - '+
-          formatMs(source.audio_end_ms)+'</small>'+
+          formatMs(source.audio_end_ms)+' · 状态 '+
+          escapeHtml(source.status||'estimated')+' · 置信度 '+
+          (source.confidence==null?'--':confidence.toFixed(2))+'</small>'+
+          (wordHtml?'<details class="nc-sdv-alignment-words"><summary>'+
+            '词级诊断（'+sourceWords.length+'）</summary><div>'+wordHtml+
+            '</div></details>':'')+
+          (unmatched.length?'<p class="nc-sdv-alignment-unmatched">'+
+            '未匹配：'+escapeHtml(unmatched.map(function(item){
+              return item.token;
+            }).join('、'))+'</p>':'')+
           '<div class="nc-sdv-alignment-boundaries"><label>字幕开始(ms)'+
           '<input type="number" step="50" data-alignment-field="subtitle_start_ms" '+
           'data-alignment-line-id="'+escapeHtml(source.line_id)+'" value="'+
@@ -412,12 +447,6 @@
       alignmentCurrent&&Array.isArray(alignmentCurrent.timeline)&&
       !alignmentCurrent.timeline.length
     );
-    var alignmentProviderMode=alignmentQuality.provider_mode||'';
-    var alignmentIsEstimated=alignmentProviderMode==='estimated_fallback'||
-      alignmentProviderMode==='mixed';
-    var alignmentNote=alignmentIsEstimated?
-      '真实音频对齐未完整覆盖；当前含估算时间，必须逐句试听并人工确认后才能锁定。':
-      '时间来自真实音频 ASR word timestamps；音频边界只读，锁定前仍须人工确认。';
     var alignmentPanel='<section class="nc-sdv-alignment"><header><strong>'+
       '第 4 阶段 · 字幕强制对齐</strong><span>'+
       escapeHtml(alignmentCurrent?
@@ -425,14 +454,23 @@
         '尚未生成')+'</span></header>'+
       '<dl><div><dt>Provider</dt><dd>'+
       escapeHtml(alignment.provider&&alignment.provider.name||'--')+
+      (alignment.provider&&alignment.provider.real_forced_alignment?
+        ' · 真实':' · 估算降级')+
       '</dd></div><div><dt>覆盖率</dt><dd>'+
       (alignmentQuality.coverage==null?'--':
         (number(alignmentQuality.coverage,0)*100).toFixed(1)+'%')+
       '</dd></div><div><dt>平均置信度</dt><dd>'+
       (alignmentQuality.mean_confidence==null?'--':
         number(alignmentQuality.mean_confidence,0).toFixed(2))+
+      '</dd></div><div><dt>未匹配词</dt><dd>'+
+      (alignmentQuality.unmatched_tokens||[]).length+
+      '</dd></div><div><dt>低置信区间</dt><dd>'+
+      (alignmentQuality.low_confidence_ranges||[]).length+
+      '</dd></div><div><dt>退化项</dt><dd>'+
+      (alignmentQuality.degradation||[]).length+
       '</dd></div></dl>'+
-      '<p class="nc-sdv-alignment-note">'+escapeHtml(alignmentNote)+'</p>'+
+      '<p class="nc-sdv-alignment-note">发布字幕始终使用锁定台词；Provider '+
+      '转写仅用于诊断。低置信、未匹配和降级结果必须人工复核，本阶段不扣点。</p>'+
       (alignmentReview?'<p class="nc-sdv-alignment-review">审核方式：'+
         escapeHtml(alignmentReview.action==='confirm_unchanged'?
           '原样确认':'调整后确认')+' · 审核人：'+
@@ -462,6 +500,24 @@
       (alignmentQuality.blockers&&alignmentQuality.blockers.length?
         '<p class="nc-sdv-error">'+escapeHtml(blockerText(alignmentQuality.blockers))+'</p>':'')+
       '</section>';
+    var masterTimelineModule=typeof globalThis!=='undefined'&&
+      globalThis.HQCanvas&&globalThis.HQCanvas.shortDramaTimeline;
+    var masterTimelinePanel=masterTimelineModule&&
+      typeof masterTimelineModule.renderPanel==='function'?
+      masterTimelineModule.renderPanel(
+        state.master_timeline,state.masterTimelineDraft,{
+          busy:state.operationBusy,canEdit:state.canEdit,
+          conflictFrozen:state.conflictFrozen
+        }
+      ):'';
+    // Legacy projects created before PR-C have no master timeline yet. Keep
+    // their existing handoff path available; once a timeline exists, require
+    // its current version to be ready.
+    var masterTimelineStarted=!!(
+      state.master_timeline&&state.master_timeline.current_version
+    );
+    var masterTimelineReady=!masterTimelineStarted||
+      state.master_timeline.current_version.effective_status==='ready';
     var visibleBlockers=state.timelineDirty?
       timingAnalysis.blockers:(shot&&shot.lock_blockers||[]);
     var blockedLines=Object.create(null);
@@ -628,7 +684,7 @@
       '>'+(shot&&shot.locked?'解锁当前镜头':'锁定当前镜头')+'</button>'+
       '<button type="button" data-action="confirm-voice-stage"'+
       (state.canEdit&&state.stage==='voice_review'&&!state.handoff_blocked&&
-        alignmentHandoff.ready===true&&
+        alignmentHandoff.ready===true&&masterTimelineReady&&
         !state.operationBusy&&!state.timelineDirty&&!state.conflictFrozen?'':' disabled')+
       '>进入视频生成阶段</button>'+
       (visibleBlockers.length?'<div class="nc-sdv-blockers"><strong>'+
@@ -637,7 +693,7 @@
       (state.handoff_blockers.length?'<div class="nc-sdv-blockers"><strong>阶段推进阻塞</strong><p>'+
         escapeHtml(blockerText(state.handoff_blockers))+'</p></div>':'')+
       (state.conflictFrozen?'<p class="nc-sdv-error">检测到版本冲突，请刷新工作区后继续。</p>':'')+
-      alignmentPanel+
+      alignmentPanel+masterTimelinePanel+
       (state.operationError?'<p class="nc-sdv-error" role="alert">'+escapeHtml(state.operationError)+'</p>':'')+
       '<p>时间轴保存、锁定和阶段推进均不扣点；服务端校验结果为准。</p>'+
       '</aside></div>';
@@ -652,6 +708,7 @@
     var ui={busy:true,error:'',operationError:'',selectedShotId:options.selectedShotId};
     var timelineDrafts=Object.create(null),conflictFrozen=false;
     var alignmentDraft=null;
+    var masterTimelineDraft=null;
     var timelinePlaying=false,timelineCursorMs=0,playingLineId='';
     var timelinePlayers=[],timelineTimers=[],timelineClockTimer=null;
     var timelineDrag=null;
@@ -713,7 +770,7 @@
         timelineDirty:!!timelineDrafts[ui.selectedShotId],
         timelinePlaying:timelinePlaying,timelineCursorMs:timelineCursorMs,
         playingLineId:playingLineId,conflictFrozen:conflictFrozen,
-        alignmentDraft:alignmentDraft
+        alignmentDraft:alignmentDraft,masterTimelineDraft:masterTimelineDraft
       });
       if(host&&!destroyed) host.innerHTML=html;
       return html;
@@ -1046,7 +1103,9 @@
     }
     function revisionConflict(error){
       return !!(error&&(error.code==='revision_conflict'||
-        error.data&&error.data.code==='revision_conflict'));
+        error.code==='timeline_revision_conflict'||
+        error.data&&(error.data.code==='revision_conflict'||
+          error.data.code==='timeline_revision_conflict')));
     }
     function ambiguousFreeWrite(error){
       var status=number(error&&error.status,0);
@@ -1268,6 +1327,91 @@
         revision:number(version.revision,0)
       });
     }
+    function masterTimelineModule(){
+      return typeof globalThis!=='undefined'&&globalThis.HQCanvas&&
+        globalThis.HQCanvas.shortDramaTimeline;
+    }
+    function currentMasterTimeline(){
+      return snapshot&&snapshot.master_timeline||null;
+    }
+    function ensureMasterTimelineDraft(){
+      var module=masterTimelineModule(),master=currentMasterTimeline();
+      if(!module||!master||!master.current_version||
+          !master.capabilities||!master.capabilities.save||conflictFrozen){
+        throw new Error('当前主时间轴版本不能编辑，请先重建草稿');
+      }
+      if(!masterTimelineDraft||
+          masterTimelineDraft.versionId!==text(master.current_version.id)||
+          masterTimelineDraft.timelineRevision!==number(master.timeline_revision,0)){
+        masterTimelineDraft=module.createDraft(master);
+      }
+      return masterTimelineDraft;
+    }
+    function acceptMasterTimeline(result){
+      if(!result||!snapshot) return result;
+      snapshot.master_timeline=result;
+      snapshot.revision=number(result.project_revision,snapshot.revision);
+      masterTimelineDraft=null;
+      conflictFrozen=false;ui.operationError='';render();
+      if(typeof options.onChange==='function'){
+        return Promise.resolve(options.onChange({
+          project_id:snapshot.project_id,revision:snapshot.revision,
+          stage:snapshot.stage,spent_points:number(snapshot.spent_points,0),
+          point_budget:number(snapshot.point_budget,0),
+          reserved_points:number(snapshot.reserved_points,0)
+        })).then(function(){ return result; });
+      }
+      return result;
+    }
+    function masterTimelineMutation(path,method,body,keyPrefix){
+      if(generationBusy) return Promise.reject(new Error('操作正在处理中'));
+      generationBusy=true;ui.operationError='';render();
+      return callJson(path,{
+        method:method,body:body,
+        headers:{'Idempotency-Key':requestKey(keyPrefix)}
+      }).then(acceptMasterTimeline).catch(mutationFailure).finally(function(){
+        generationBusy=false;render();
+      });
+    }
+    function rebuildMasterTimeline(){
+      var master=currentMasterTimeline();
+      if(!master||!master.capabilities||!master.capabilities.rebuild){
+        return Promise.reject(new Error('请先锁定全部配音和字幕对齐版本'));
+      }
+      return masterTimelineMutation(
+        MASTER_TIMELINE_REBUILD_PATH,'POST',{
+          project_id:snapshot.project_id,
+          revision:number(master.project_revision,snapshot.revision),
+          timeline_revision:number(master.timeline_revision,0)
+        },'master-timeline-rebuild'
+      );
+    }
+    function saveMasterTimeline(){
+      var module=masterTimelineModule(),master=currentMasterTimeline(),draft;
+      try{ draft=ensureMasterTimelineDraft(); }
+      catch(error){ return Promise.reject(error); }
+      var changed=module.changes(master,draft);
+      if(!changed.length) return Promise.reject(new Error('没有待保存的主时间轴修改'));
+      return masterTimelineMutation(MASTER_TIMELINE_PATH,'PUT',{
+        project_id:snapshot.project_id,
+        revision:number(master.project_revision,snapshot.revision),
+        timeline_revision:number(master.timeline_revision,0),
+        changes:changed
+      },'master-timeline-save');
+    }
+    function confirmMasterTimeline(){
+      var master=currentMasterTimeline();
+      if(!master||!master.capabilities||!master.capabilities.confirm){
+        return Promise.reject(new Error('主时间轴仍有阻断问题，暂时不能确认'));
+      }
+      return masterTimelineMutation(
+        MASTER_TIMELINE_CONFIRM_PATH,'POST',{
+          project_id:snapshot.project_id,
+          revision:number(master.project_revision,snapshot.revision),
+          timeline_revision:number(master.timeline_revision,0)
+        },'master-timeline-confirm'
+      );
+    }
     function selectVersion(lineId,version){
       var line=findLine(lineId);
       try{ requireVoiceWritable(line?[line]:[]); }catch(error){ return Promise.reject(error); }
@@ -1417,6 +1561,9 @@
           else if(action==='generate-alignment') task=generateAlignment();
           else if(action==='review-alignment') task=reviewAlignment();
           else if(action==='lock-alignment') task=lockAlignment();
+          else if(action==='rebuild-master-timeline') task=rebuildMasterTimeline();
+          else if(action==='save-master-timeline') task=saveMasterTimeline();
+          else if(action==='confirm-master-timeline') task=confirmMasterTimeline();
           else if(action==='nudge-alignment'){
             try{
               var alignmentLineId=node.getAttribute('data-alignment-line-id');
@@ -1465,6 +1612,21 @@
     function onChange(event){
       var node=event&&event.target;
       if(!node||!node.getAttribute) return;
+      var masterField=node.getAttribute('data-master-field');
+      if(masterField){
+        try{
+          var masterModule=masterTimelineModule();
+          var masterDraft=ensureMasterTimelineDraft();
+          masterModule.updateDraft(
+            masterDraft,node.getAttribute('data-master-segment-id'),
+            masterField,node.value
+          );
+          render();
+        }catch(masterError){
+          ui.operationError=text(masterError.message||masterError);render();
+        }
+        return;
+      }
       var alignmentField=node.getAttribute('data-alignment-field');
       if(alignmentField){
         var alignmentPatch={};
@@ -1567,6 +1729,7 @@
         if(destroyed||generation!==requestGeneration) return null;
         if(!silent&&conflictFrozen){
           timelineDrafts=Object.create(null);
+          masterTimelineDraft=null;
           conflictFrozen=false;
         }
         snapshot=results[0];voices=voiceItems(results[1]);
@@ -1576,6 +1739,16 @@
           alignmentDraft.revision!==number(reloadedAlignment.revision,0)
         )){
           alignmentDraft=null;
+        }
+        var reloadedMaster=snapshot.master_timeline&&
+          snapshot.master_timeline.current_version;
+        if(masterTimelineDraft&&(
+          !reloadedMaster||
+          masterTimelineDraft.versionId!==text(reloadedMaster.id)||
+          masterTimelineDraft.timelineRevision!==
+            number(snapshot.master_timeline.timeline_revision,0)
+        )){
+          masterTimelineDraft=null;
         }
         if(!(snapshot.shots||[]).some(function(shot){
           return shot.id===ui.selectedShotId;
@@ -1612,6 +1785,9 @@
       saveTimeline:saveTimeline,setShotLock:setShotLock,
       generateAlignment:generateAlignment,reviewAlignment:reviewAlignment,
       lockAlignment:lockAlignment,
+      rebuildMasterTimeline:rebuildMasterTimeline,
+      saveMasterTimeline:saveMasterTimeline,
+      confirmMasterTimeline:confirmMasterTimeline,
       confirmVoiceStage:confirmVoiceStage,playShot:playShot,
       pauseShot:pauseShotPlayback,replayShot:replayShot,
       getState:function(){
@@ -1622,7 +1798,7 @@
           timelineDirty:!!timelineDrafts[ui.selectedShotId],
           timelinePlaying:timelinePlaying,timelineCursorMs:timelineCursorMs,
           playingLineId:playingLineId,conflictFrozen:conflictFrozen,
-          alignmentDraft:alignmentDraft
+          alignmentDraft:alignmentDraft,masterTimelineDraft:masterTimelineDraft
         }));
       },
       destroy:function(){

@@ -47,6 +47,7 @@ class ErrorClassificationTests(unittest.TestCase):
 
     def _request(self, err):
         with patch.object(video, "HEYGEN_API_KEY", "k"), \
+             patch.object(video, "HEYGEN_API_BASE", "https://relay.test/v3"), \
              patch.object(video.urllib.request, "urlopen", side_effect=err):
             return video._heygen_request_json("POST", "/videos")
 
@@ -150,6 +151,7 @@ class RetryDisciplineTests(unittest.TestCase):
         err = _http_error(429, b'{"error":{"code":"rate_limit_exceeded"}}')
         err.headers = {"Retry-After": "12"}
         with patch.object(video, "HEYGEN_API_KEY", "k"), \
+             patch.object(video, "HEYGEN_API_BASE", "https://relay.test/v3"), \
              patch.object(video.urllib.request, "urlopen", side_effect=err):
             with self.assertRaises(video.HeyGenRateLimited) as ctx:
                 video._heygen_request_json("POST", "/videos")

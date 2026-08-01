@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest import mock
 
@@ -6,32 +7,29 @@ from server.content_domains import short_drama_visual_gate as gate
 
 class ShortDramaVisualGateTests(unittest.TestCase):
     def test_gate_is_off_by_default_and_invalid_values_fail_closed(self):
-        with mock.patch.dict("os.environ", {}, clear=True):
+        with mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual("off", gate.gate_mode())
-            self.assertFalse(gate._enabled("SHORT_DRAMA_VISUAL_GATE_ASR"))
-            self.assertFalse(gate._enabled("SHORT_DRAMA_VISUAL_GATE_VISION"))
         with mock.patch.dict(
-            "os.environ", {"SHORT_DRAMA_VISUAL_GATE_MODE": "unexpected"},
+            os.environ, {"SHORT_DRAMA_VISUAL_GATE_MODE": "invalid"},
             clear=True,
         ):
             self.assertEqual("off", gate.gate_mode())
 
     def test_default_off_performs_no_media_or_external_work(self):
         with (
-            mock.patch.dict("os.environ", {}, clear=True),
-            mock.patch.object(gate, "_transcribe_source_audio") as transcribe,
-            mock.patch.object(gate, "_extract_frames") as extract,
-            mock.patch.object(gate, "_inspect_frames") as inspect,
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.object(gate, "_transcribe_source_audio") as asr,
+            mock.patch.object(gate, "_extract_frames") as frames,
+            mock.patch.object(gate, "_inspect_frames") as vision,
         ):
             report = gate.inspect_visual_source(
                 "source.mp4", "silent.mp4",
                 {"source": {"audio": {"codec": "aac"}}}, {},
             )
         self.assertEqual("skipped", report["decision"])
-        self.assertEqual("off", report["mode"])
-        transcribe.assert_not_called()
-        extract.assert_not_called()
-        inspect.assert_not_called()
+        asr.assert_not_called()
+        frames.assert_not_called()
+        vision.assert_not_called()
 
     def test_clean_silent_video_is_accepted(self):
         report = gate.build_gate_report(

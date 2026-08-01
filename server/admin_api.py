@@ -10,6 +10,7 @@ read/event routes are consumed by the public gallery.
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from contextlib import closing
 from http import cookies
+from importlib import import_module
 import json
 import os
 import pathlib
@@ -27,15 +28,37 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-try:
-    from content_domains import egress, feature_flags, provider_keys
-except ImportError:
+_DOMAIN_PACKAGE = (
+    __package__ + ".content_domains" if __package__ else "content_domains"
+)
+egress = import_module(_DOMAIN_PACKAGE + ".egress")
+feature_flags = import_module(_DOMAIN_PACKAGE + ".feature_flags")
+provider_keys = import_module(_DOMAIN_PACKAGE + ".provider_keys")
+
+
+def _optional_content_domain(name):
     try:
-        from .content_domains import egress, feature_flags, provider_keys
+        return import_module(_DOMAIN_PACKAGE + "." + name)
     except ImportError:
-        egress = None
-        feature_flags = None
-        provider_keys = None
+        return None
+
+
+points_domain = _optional_content_domain("points")
+short_drama_lipsync_diagnostics = _optional_content_domain(
+    "short_drama_lipsync_diagnostics"
+)
+short_drama_lipsync_jobs = _optional_content_domain(
+    "short_drama_lipsync_jobs"
+)
+short_drama_lipsync_observability = _optional_content_domain(
+    "short_drama_lipsync_observability"
+)
+short_drama_lipsync_reconcile = _optional_content_domain(
+    "short_drama_lipsync_reconcile"
+)
+short_drama_lipsync_rollout = _optional_content_domain(
+    "short_drama_lipsync_rollout"
+)
 
 AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
 
@@ -628,6 +651,13 @@ def db():
     return conn
 
 
+def lipsync_db():
+    JOB_DB.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(JOB_DB), timeout=10)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def init_db():
     with closing(db()) as c:
         c.execute(
@@ -654,6 +684,12 @@ def init_db():
         feature_flags.init_db()
     if provider_keys is not None:
         provider_keys.init_db()
+    if short_drama_lipsync_rollout is not None:
+        short_drama_lipsync_rollout.init_db(lipsync_db)
+    if short_drama_lipsync_observability is not None:
+        short_drama_lipsync_observability.init_db(lipsync_db)
+
+
     inspiration_cases.init_db(ADMIN_DB)
 
 
@@ -2005,6 +2041,48 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"items": load_channels()})
         if path == "/api/admin/features":
             return self._send(200, {"items": load_features()})
+        if path == "/api/admin/short-drama/lipsync/health":
+            if short_drama_lipsync_observability is None:
+                return self._send(503, {"detail": "lipsync observability unavailable"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                window = int((q.get("window_seconds") or ["3600"])[0])
+                result = short_drama_lipsync_observability.health(
+                    lipsync_db, window_seconds=window
+                )
+                result["rollout"] = short_drama_lipsync_rollout.get_config(
+                    lipsync_db
+                )
+                result["providers"] = (
+                    short_drama_lipsync_rollout.provider_controls(lipsync_db)
+                )
+                return self._send(200, result)
+            except Exception as exc:
+                return self._send(500, {"detail": str(exc)[:180]})
+        if path == "/api/admin/short-drama/lipsync/diagnostics":
+            if short_drama_lipsync_diagnostics is None:
+                return self._send(503, {"detail": "lipsync diagnostics unavailable"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            filters = {
+                key: (q.get(key) or [""])[0]
+                for key in (
+                    "project_id", "job_id", "attempt_id", "provider_job_id",
+                    "version_id", "trace_id",
+                )
+            }
+            try:
+                return self._send(
+                    200,
+                    short_drama_lipsync_diagnostics.query(
+                        lipsync_db, filters,
+                        actor=user.get("username") or "admin",
+                        limit=(q.get("limit") or ["100"])[0],
+                    ),
+                )
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
+            except Exception as exc:
+                return self._send(500, {"detail": str(exc)[:180]})
         if path == "/api/admin/inspirations":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             try:
@@ -2162,6 +2240,138 @@ class H(BaseHTTPRequestHandler):
         user = self._admin()
         if not user:
             return
+        if path == "/api/admin/short-drama/lipsync/rollout":
+            actor = user.get("username") or "admin"
+            try:
+                body = self._body()
+                if str(body.get("confirmation") or "") != "CONFIRM":
+                    raise ValueError("confirmation must be CONFIRM")
+                result = short_drama_lipsync_rollout.set_config(
+                    lipsync_db, actor, body,
+                    expected_version=body.get("expected_version"),
+                )
+                feature_flags.set_enabled(
+                    short_drama_lipsync_rollout.FEATURE,
+                    bool(result["enabled"]), actor,
+                )
+                return self._send(200, {"ok": True, "rollout": result})
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
+            except short_drama_lipsync_rollout.RolloutError as exc:
+                return self._send(exc.status, {
+                    "detail": str(exc), "code": exc.code
+                })
+            except Exception as exc:
+                return self._send(500, {"detail": str(exc)[:180]})
+        if path == "/api/admin/short-drama/lipsync/provider":
+            actor = user.get("username") or "admin"
+            try:
+                body = self._body()
+                if str(body.get("confirmation") or "") != "CONFIRM":
+                    raise ValueError("confirmation must be CONFIRM")
+                result = short_drama_lipsync_rollout.set_provider_paused(
+                    lipsync_db, actor, body.get("provider"),
+                    bool(body.get("paused")), body.get("reason"),
+                    incident_id=body.get("incident_id") or "",
+                )
+                return self._send(200, {"ok": True, "provider": result})
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
+            except Exception as exc:
+                return self._send(500, {"detail": str(exc)[:180]})
+        if path == "/api/admin/short-drama/lipsync/reconcile":
+            if (
+                short_drama_lipsync_reconcile is None
+                or short_drama_lipsync_observability is None
+            ):
+                return self._send(503, {
+                    "detail": "lipsync reconciliation unavailable"
+                })
+            actor = user.get("username") or "admin"
+            try:
+                body = self._body()
+                if str(body.get("confirmation") or "") != "CONFIRM":
+                    raise ValueError("confirmation must be CONFIRM")
+                reason = str(body.get("reason") or "").strip()
+                if not reason:
+                    raise ValueError("reason is required")
+                job_id = str(body.get("job_id") or "").strip()
+                if not job_id:
+                    raise ValueError("job_id is required")
+                released = short_drama_lipsync_reconcile.release_expired_leases(
+                    lipsync_db, now=int(time.time()), limit=1, job_id=job_id
+                )
+                changed = job_id in released
+                short_drama_lipsync_observability.emit(
+                    lipsync_db, "lipsync.admin.reconcile",
+                    severity="warning", job_id=job_id, actor=actor,
+                    detail={
+                        "reason": reason,
+                        "incident_id": body.get("incident_id") or "",
+                        "changed": changed,
+                    },
+                )
+                return self._send(200, {"ok": True, "changed": changed})
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
+            except Exception as exc:
+                return self._send(500, {"detail": str(exc)[:180]})
+        if path == "/api/admin/short-drama/lipsync/refund":
+            if (
+                short_drama_lipsync_rollout is None
+                or short_drama_lipsync_jobs is None
+                or short_drama_lipsync_observability is None
+                or points_domain is None
+            ):
+                return self._send(503, {
+                    "detail": "lipsync refund recovery unavailable"
+                })
+            actor = user.get("username") or "admin"
+            try:
+                body = self._body()
+                if str(body.get("confirmation") or "") != "CONFIRM":
+                    raise ValueError("confirmation must be CONFIRM")
+                reason = str(body.get("reason") or "").strip()
+                attempt_id = str(body.get("attempt_id") or "").strip()
+                if not reason or not attempt_id:
+                    raise ValueError("attempt_id and reason are required")
+                claimed = short_drama_lipsync_rollout.request_manual_refund(
+                    lipsync_db, actor, attempt_id, reason,
+                    incident_id=body.get("incident_id") or "",
+                )
+                ledger = short_drama_lipsync_jobs.PointsLedger(points_domain)
+                refunded = (
+                    claimed["state"] == "refunded"
+                    or short_drama_lipsync_jobs.reconcile_refund_attempt(
+                        lipsync_db, ledger, attempt_id
+                    )
+                )
+                short_drama_lipsync_observability.emit(
+                    lipsync_db, "lipsync.admin.refund",
+                    severity="warning", attempt_id=attempt_id, actor=actor,
+                    detail={
+                        "reason": reason,
+                        "incident_id": body.get("incident_id") or "",
+                        "old_state": claimed["attempt_state"],
+                        "new_state": (
+                            "refunded" if refunded else "refund_pending"
+                        ),
+                        "job_state": claimed["job_state"],
+                        "refunded": refunded,
+                    },
+                )
+                return self._send(200, {
+                    "ok": True, "refunded": refunded,
+                    "replayed": bool(claimed.get("replayed")),
+                })
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
+            except short_drama_lipsync_rollout.RolloutError as exc:
+                return self._send(exc.status, {
+                    "detail": str(exc), "code": exc.code,
+                })
+            except Exception as exc:
+                return self._send(500, {"detail": str(exc)[:180]})
         if path == "/api/admin/inspirations/media":
             try:
                 q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)

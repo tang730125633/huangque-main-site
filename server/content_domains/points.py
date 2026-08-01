@@ -56,7 +56,13 @@ def cost_of(kind, body):
         # 质量基价按引擎分档（IMAGE_BASE_COST）。gen_image 里 provider 缺省是 openai，这里保持一致。
         provider = (body.get("provider") or "openai").strip().lower()
         tier = "hd" if (body.get("quality") or "hd") == "hd" else "std"
-        if provider == "seedream":
+        if provider == "banana":
+            from .banana_provider import BASE_COST
+            model = str(body.get("model") or "nb2").strip().lower()
+            if model not in BASE_COST:
+                raise ValueError("Nano Banana model pricing is not configured")
+            base = BASE_COST[model][tier]
+        elif provider == "seedream":
             variant = (body.get("variant") or "std").strip().lower()   # 5.0 标准 / 5.0 pro
             base = (SEEDREAM_VARIANT_COST.get(variant) or SEEDREAM_VARIANT_COST["std"])[tier]
         else:
@@ -334,6 +340,20 @@ def get_points(username):
         return int(res.get("points") or 0)
     except Exception:
         return 0
+
+
+def get_points_transaction(transaction_key):
+    """Read one committed Auth points ledger row by its stable transaction key."""
+    transaction_key = urllib.parse.quote(str(transaction_key or "").strip(), safe="")
+    if not transaction_key:
+        raise AuthPointsError(400, "missing transaction_key")
+    res = _auth_points_request(
+        "/api/auth/points/transaction?transaction_key=" + transaction_key,
+        method="GET",
+    )
+    transaction = res.get("transaction")
+    return dict(transaction) if isinstance(transaction, dict) else None
+
 
 def deduct_points(username, amount, reason="", transaction_key=""):
     """预扣点。reason 落 points_audit，供对账。

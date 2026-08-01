@@ -147,6 +147,8 @@ function testNormalizeAndRenderContract() {
       video: {
         confirmed: true, status: 'ready', current_version: 3,
         video_revision: 4,
+        source_kind: 'lipsync',
+        lipsync: { version_id: 'lip-1', version: 2, provider: 'fal' },
       },
       ready: true,
       blockers: [],
@@ -161,9 +163,10 @@ function testNormalizeAndRenderContract() {
       blockers: [],
     },
   }), {});
-  assert.match(planned, /已确认 v3/);
+  assert.doesNotMatch(planned, /已确认 v3/);
   assert.match(planned, /D-1 媒体计划已生成 · 输入哈希 1234567890ab/);
   assert.match(planned, /nc-sda-plan-shot/);
+  assert.match(planned, /口型成片 v2/);
   assert.match(planned, /音频与字幕引擎 · 引擎就绪/);
   assert.match(planned, /等待 D-3 预览任务调用/);
   const completed = assembly.renderWorkspace(snapshot({
@@ -442,6 +445,16 @@ function testOpenApiContractAndMirrors() {
     assert.ok(workspace.required.includes(field), `workspace requires ${field}`);
   }
   assert.deepEqual(workspace.properties.rendering_enabled.enum, [true]);
+  const blockerCodes =
+    spec.components.schemas.ShortDramaAssemblyBlocker.properties.code.enum;
+  for (const code of [
+    'active_lipsync_job',
+    'lipsync_source_hash_mismatch',
+    'lipsync_manifest_invalid',
+    'lipsync_manifest_mismatch',
+  ]) {
+    assert.ok(blockerCodes.includes(code), `assembly blocker documents ${code}`);
+  }
   assert.equal(
     Object.hasOwn(workspace.properties.actions.properties.can_preview, 'enum'),
     false,

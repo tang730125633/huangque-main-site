@@ -125,6 +125,36 @@ class ShortDramaAssemblyAudioTests(unittest.TestCase):
             "error", render[render.index("-loglevel") + 1]
         )
 
+    def test_soundscape_places_manual_cues_and_three_track_mix_ducks_them(self):
+        soundscape = audio.build_soundscape_command(
+            [{
+                "file": Path("door.wav"),
+                "timeline_start_ms": 1200,
+                "timeline_end_ms": 2600,
+                "loop": False,
+                "volume": 0.55,
+                "fade_in_ms": 100,
+                "fade_out_ms": 200,
+            }],
+            5000,
+            Path("soundscape.wav"),
+        )
+        graph = soundscape[soundscape.index("-filter_complex") + 1]
+        self.assertIn("adelay=1200|1200", graph)
+        self.assertIn("volume=0.550000", graph)
+        self.assertIn("afade=t=out:st=1.200:d=0.200", graph)
+        self.assertIn("amix=inputs=2:duration=first", graph)
+
+        analysis = audio.build_loudness_analysis_command(
+            Path("dialogue.wav"), Path("bgm.wav"), 5000,
+            Path("soundscape.wav"),
+        )
+        mix = analysis[analysis.index("-filter_complex") + 1]
+        self.assertEqual(3, analysis.count("-i"))
+        self.assertIn("[1:a][side_bgm]sidechaincompress", mix)
+        self.assertIn("[2:a][side_sfx]sidechaincompress", mix)
+        self.assertIn("amix=inputs=3:duration=first", mix)
+
     @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is unavailable")
     def test_real_loudness_analysis_emits_parseable_measurements(self):
         with tempfile.TemporaryDirectory() as directory:
