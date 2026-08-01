@@ -332,10 +332,20 @@ class AuthAnnouncementTests(unittest.TestCase):
         visible = request_json(alice, self.base, "/api/auth/notifications")["items"]
         self.assertNotIn(campaign_id, {item["campaign_id"] for item in visible})
         with sqlite3.connect(self.auth.DB) as connection:
-            retained = connection.execute(
+            remaining = connection.execute(
                 "SELECT COUNT(*) FROM user_notifications WHERE campaign_id=?", (campaign_id,),
             ).fetchone()[0]
-        self.assertEqual(retained, sent["count"])
+            campaign = connection.execute(
+                "SELECT status,recipient_count FROM announcement_campaigns WHERE id=?",
+                (campaign_id,),
+            ).fetchone()
+            old_code_visible = connection.execute(
+                "SELECT COUNT(*) FROM user_notifications WHERE username='alice' AND campaign_id=?",
+                (campaign_id,),
+            ).fetchone()[0]
+        self.assertEqual(remaining, 0)
+        self.assertEqual(campaign, ("recalled", sent["count"]))
+        self.assertEqual(old_code_visible, 0)
 
 
 class AdminAnnouncementProxyAuditTests(unittest.TestCase):

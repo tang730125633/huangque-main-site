@@ -2423,6 +2423,10 @@ def recall_announcement(campaign_id, recalled_by, now=None):
                 (recalled_at, str(recalled_by or "admin")[:80], campaign_id),
             )
             row = c.execute("SELECT * FROM announcement_campaigns WHERE id=?", (campaign_id,)).fetchone()
+        removed = c.execute(
+            "DELETE FROM user_notifications WHERE campaign_id=?", (campaign_id,),
+        ).rowcount
+        if changed or removed:
             c.commit()
         else:
             c.rollback()
