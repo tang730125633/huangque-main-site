@@ -19,6 +19,7 @@
 直接 402、任务判死退点 —— 响亮地坏掉，立刻能发现；钱包有钱时则是静默烧钱。
 """
 import unittest
+from unittest.mock import mock_open, patch
 
 from scripts import balance_sentinel as bs
 
@@ -75,6 +76,27 @@ class HeygenAlertTests(unittest.TestCase):
         items = bs.heygen_alerts(plan=0, api=0)
         self.assertNotIn("HeyGen 静默跳价", self._names(items))
         self.assertLess(items[0][1], items[0][2], "但套餐额度为 0 仍要告警")
+
+
+class HeygenOAuthAlertTests(unittest.TestCase):
+    def test_healthy_oauth_does_not_alert(self):
+        now = 1_000_000
+        with patch("builtins.open", mock_open(read_data='{"expires_at": 2000000}')):
+            item = bs.check_heygen_oauth(now=now)
+        self.assertGreater(item[1], item[2])
+
+    def test_oauth_expiry_alerts_three_days_early(self):
+        now = 1_000_000
+        with patch("builtins.open", mock_open(read_data='{"expires_at": 1086400}')):
+            item = bs.check_heygen_oauth(now=now)
+        self.assertLess(item[1], item[2])
+        self.assertIn("重新授权", item[5])
+
+    def test_missing_oauth_alerts_immediately(self):
+        with patch("builtins.open", side_effect=FileNotFoundError):
+            item = bs.check_heygen_oauth(now=1_000_000)
+        self.assertLess(item[1], item[2])
+        self.assertIn("缺失或损坏", item[5])
 
 
 class CollectAlertsTests(unittest.TestCase):

@@ -42,6 +42,9 @@ def check_runninghub():
     return ("RunningHub(换装线一/换背景)", bal, 20.0, "¥%.2f" % bal, "https://www.runninghub.cn/call-api")
 
 HEYGEN_PLAN_MIN = 60.0   # plan_credit 低于它就告警。实测真实用户约 8 条/半小时 → 60 条≈4 小时余量
+HEYGEN_MCP_CREDENTIALS = os.environ.get(
+    "HEYGEN_MCP_CREDENTIALS", "/home/ubuntu/.config/huangque/heygen-mcp.json")
+HEYGEN_OAUTH_WARN_SECONDS = 3 * 86400
 
 
 def heygen_quota(d):
@@ -72,6 +75,22 @@ def check_heygen():
     d = json.load(op.open(urllib.request.Request("https://api.heygen.com/v2/user/remaining_quota",
                                                  headers={"X-Api-Key": k}), timeout=25))
     return heygen_alerts(*heygen_quota(d))
+
+
+def check_heygen_oauth(now=None):
+    """MCP OAuth 到期前 3 天告警；只读过期时间，不读取或输出 token。"""
+    try:
+        expires_at = float(json.load(open(HEYGEN_MCP_CREDENTIALS))["expires_at"])
+    except Exception:
+        return ("HeyGen MCP OAuth", 0.0, 1.0, "凭据缺失或损坏", "https://developers.heygen.com/mcp/overview",
+                "🚨 HeyGen MCP OAuth 凭据缺失或损坏，套餐 Credits 视频会在创建前失败并自动退点。请立即重新授权。")
+    remaining = max(0.0, expires_at - (time.time() if now is None else now))
+    expires = time.strftime("%Y-%m-%d %H:%M", time.localtime(expires_at))
+    return ("HeyGen MCP OAuth", remaining, HEYGEN_OAUTH_WARN_SECONDS,
+            "有效期还剩 %.1f 天（%s）" % (remaining / 86400, expires),
+            "https://developers.heygen.com/mcp/overview",
+            "🚨 HeyGen MCP OAuth 将于 %s 到期。供应商当前 refresh token 实测只能使用一次，"
+            "且刷新响应不返回替代 token；请在到期前重新授权，否则口播/剧情视频会在创建前失败并自动退点。" % expires)
 
 
 def heygen_alerts(plan, api):
@@ -140,7 +159,7 @@ def feishu_send(text):
     except Exception as e:
         print("feishu err", e); return False
 
-CHECKS = (check_wavespeed, check_runninghub, check_heygen, check_tikhub)
+CHECKS = (check_wavespeed, check_runninghub, check_heygen, check_heygen_oauth, check_tikhub)
 
 
 def collect_alerts(checks, state, now, journal=None):
