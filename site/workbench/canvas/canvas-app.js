@@ -24,7 +24,7 @@
   var localFullscreen=false, canvasView='workflow';
   var selectedNode=null, selectedNodes={}, selectedEdge=-1, clipNode=null, zoom=1;
   var RUN_ALL_REMOTE_LIMIT=2, RUN_ALL_RETRY_MS=4000, runAllBatch=null, runAllRetryTimer=null;
-  var activeSidePanel='', accountAssetsLoaded=false, accountAssets=[], accountAssetsPromise=null;
+  var activeSidePanel='', accountAssetsLoaded=false, accountAssets=[], accountAssetsPromise=null, dragAsset=null;
   var agentSessions={};
   var agentIP12Context=null, agentIP12Loaded=false, agentIP12Loading=false, agentIP12Error='';
   var currentBoardId=null, boardMode='mine', boardLastSeenUpdatedAt=0, boardConflict=false;
@@ -196,6 +196,7 @@
     reverse:{name:'提示词反推',   color:'#8a5cf6', ins:['image'], outs:['prompt']},
     gen:   {name:'作图',          color:'#2bd576', ins:['prompt','image'], outs:['image']},
     video: {name:'生视频',        color:'#f472b6', ins:['prompt','image'], outs:['video']},
+    videoAsset:{name:'视频 · 素材',color:'#f472b6', outs:['video']},
     shortDrama:{name:'短剧项目', color:'#f59e0b'}
   };
   function syncRunAllDisabled(){
@@ -1439,7 +1440,7 @@
     return String(s).replace(/[&<>"']/g,function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; });
   }
   function nodeTypeLabel(type){
-    return ({text:'文本',image:'图片',reverse:'反推',gen:'作图',video:'视频',shortDrama:'短剧'})[type]||type||'节点';
+    return ({text:'文本',image:'图片',reverse:'反推',gen:'作图',video:'视频',videoAsset:'视频素材',shortDrama:'短剧'})[type]||type||'节点';
   }
   function nodeStatusLabel(node){
     var s=node&&node.el&&node.el.getAttribute('data-state');
@@ -1471,7 +1472,7 @@
       if(video) body='<div class="nc-story-media nc-story-video" data-story-video="'+index+'"><span>正在准备视频预览…</span></div>';
       else if(image) body='<div class="nc-story-media"><img src="'+escapeHtml(image)+'" alt="'+escapeHtml(nodeDisplayName(node))+'"></div>';
       else if(node.type==='shortDrama') body='<div class="nc-story-progress"><div><b>'+escapeHtml(params.stage||'未开始')+'</b><span>'+progress+'%</span></div><i><span style="width:'+progress+'%"></span></i><small>'+escapeHtml(params.ratio||'16:9')+' · '+escapeHtml(params.target_duration||60)+' 秒</small></div>';
-      else if(node.type==='image'||node.type==='gen'||node.type==='video') body='<div class="nc-story-media empty"><span>'+({image:'等待图片素材',gen:'等待生成图片',video:'等待生成视频'}[node.type])+'</span></div>';
+      else if(node.type==='image'||node.type==='gen'||node.type==='video'||node.type==='videoAsset') body='<div class="nc-story-media empty"><span>'+({image:'等待图片素材',gen:'等待生成图片',video:'等待生成视频',videoAsset:'等待视频素材'}[node.type])+'</span></div>';
       if(text) body+='<p class="nc-story-copy">'+escapeHtml(text)+'</p>';
       if(!body) body='<p class="nc-story-copy muted">等待补充内容…</p>';
       var status=nodeStatusLabel(node); if(status==='等待'&&hasContent) status='已就绪';
@@ -1588,11 +1589,19 @@
       sideBody.innerHTML='<div class="nc-side-empty">'+(accountAssetsLoaded?'暂无可展示资产':'正在读取账户资产...')+'</div>';
       return;
     }
-    sideBody.innerHTML='<div class="nc-asset-grid">'+assets.map(function(a,i){
+    sideBody.innerHTML='<div class="nc-asset-hint">拖到画布创建图片或视频节点 · 单击预览</div><div class="nc-asset-grid">'+assets.map(function(a,i){
       var thumb=a.type==='image'?' style="background-image:url(\''+escapeHtml(a.url)+'\')"':'';
-      return '<button class="nc-asset-card '+escapeHtml(a.type)+'" type="button" data-asset-idx="'+i+'"><div class="nc-asset-thumb"'+thumb+'>'+(a.type==='video'?'视频':'')+'</div><div class="nc-asset-info"><b>'+escapeHtml(a.title)+'</b><span>'+escapeHtml(a.source)+'</span></div></button>';
+      return '<button class="nc-asset-card '+escapeHtml(a.type)+'" type="button" draggable="'+(canEditCanvas()?'true':'false')+'" data-asset-idx="'+i+'"><div class="nc-asset-thumb"'+thumb+'>'+(a.type==='video'?'视频':'')+'</div><div class="nc-asset-info"><b>'+escapeHtml(a.title)+'</b><span>'+escapeHtml(a.source)+'</span></div></button>';
     }).join('')+'</div>';
     sideBody.querySelectorAll('[data-asset-idx]').forEach(function(btn){
+      btn.ondragstart=function(e){
+        var a=assets[parseInt(btn.getAttribute('data-asset-idx'),10)];
+        if(!canEditCanvas()||!a||!a.url){ e.preventDefault(); return; }
+        dragAsset=a;
+        if(e.dataTransfer){ e.dataTransfer.effectAllowed='copy'; e.dataTransfer.setData('text/plain',a.title||'黄雀资产'); }
+        canvas.classList.add('asset-drop-ready');
+      };
+      btn.ondragend=clearAssetDragState;
       btn.onclick=function(){
         var a=assets[parseInt(btn.getAttribute('data-asset-idx'),10)];
         if(!a||!a.url) return;
@@ -1600,6 +1609,20 @@
         else window.open(a.url,'_blank');
       };
     });
+  }
+  function clearAssetDragState(){
+    dragAsset=null;
+    canvas.classList.remove('asset-drop-ready','asset-drop-target');
+  }
+  function addAssetAt(asset,pt){
+    if(!canEditCanvas()||!asset||!asset.url) return;
+    pushUndo();
+    var type=asset.type==='video'?'videoAsset':'image', outputs={}, data={params:{title:String(asset.title||'').slice(0,80)},outputs:outputs};
+    if(type==='videoAsset') outputs.video=asset.url;
+    else{ data.image=asset.url; outputs.image=asset.url; }
+    var node=addNode(type,Math.max(0,pt.x-125),Math.max(0,pt.y-70),data);
+    selectNode(node);
+    updateState(type==='videoAsset'?'已添加视频资产':'已添加图片资产');
   }
   function canvasContentBounds(){
     return graphApi.contentBounds(Object.keys(nodes).map(function(id){
@@ -2048,6 +2071,7 @@
       +'<div class="nc-refbar" data-f="refs"><span>参考图 0 张</span><div class="nc-refthumbs"></div></div>'
       +'<textarea class="nc-in" data-f="text" rows="2" placeholder="视频提示词（也可由上游文本/反推节点连入）"></textarea>'
       +'<button class="nc-go" data-f="run">生成视频</button><div class="nc-video-result" data-f="videoResult"></div>';
+    if(type==='videoAsset') body='<div class="nc-video-result" data-f="videoResult"></div>';
     if(type==='shortDrama') body='<div class="nc-short-drama-summary"><div><span>画幅与时长</span><strong data-f="shortDramaRatio"></strong></div><div><span>当前阶段</span><strong data-f="shortDramaStage"></strong></div><div><span>完成进度</span><strong data-f="shortDramaProgress"></strong></div><div><span>点数</span><strong data-f="shortDramaPoints"></strong></div></div>'
       +'<button class="nc-go nc-short-drama-open" type="button" data-f="openShortDrama">打开短剧工作区</button>';
     el.innerHTML='<div class="nc-head" data-f="head"><span style="display:flex;align-items:center;gap:7px;min-width:0;"><span class="dot" style="background:'+t.color+'"></span><span class="nc-node-title" data-f="headTitle">'+escapeHtml(node.params.title||t.name)+'</span><span class="nc-remark-mark" data-f="remarkMark" title="有备注">注</span></span><span class="nc-actions"><span class="nc-fold" data-f="fold" title="折叠/展开">−</span><span class="nc-x" data-f="del">×</span></span></div>'
@@ -2671,6 +2695,19 @@
     var r=inner.getBoundingClientRect();
     return {x:Math.max(0,(e.clientX-r.left)/zoom),y:Math.max(0,(e.clientY-r.top)/zoom)};
   }
+  canvas.addEventListener('dragover',function(e){
+    if(!dragAsset||!canEditCanvas()) return;
+    e.preventDefault();
+    if(e.dataTransfer) e.dataTransfer.dropEffect='copy';
+    canvas.classList.add('asset-drop-target');
+  });
+  canvas.addEventListener('drop',function(e){
+    if(!dragAsset||!canEditCanvas()) return;
+    e.preventDefault();
+    var asset=dragAsset, pt=canvasPointFromClient(e);
+    clearAssetDragState();
+    addAssetAt(asset,pt);
+  });
   function addAt(type,pt){
     if(!canEditCanvas()) return;
     pushUndo();

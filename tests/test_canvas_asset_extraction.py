@@ -10,7 +10,7 @@ CSS_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas.css"
 APP_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas-app.js"
 SHORT_DRAMA_CSS = sorted((ROOT / "site" / "workbench" / "canvas").glob("canvas-short-drama*.css"))
 
-EXPECTED_CSS_SHA256 = "c36a74515d6d4071c306701100b4187d5333eb9825ecde26ce26a519718c3e0a"
+EXPECTED_CSS_SHA256 = "c0878c00e3eab04376abd06f3d474587ef5cdc8d3e4e380584155e0982ab349c"
 
 
 def normalized_sha256(path: Path) -> str:
@@ -109,6 +109,19 @@ class CanvasAssetExtractionTests(unittest.TestCase):
         self.assertIn("@keyframes nc-menu-icon-draw", css)
         self.assertIn("@keyframes nc-menu-icon-spark", css)
         self.assertIn("prefers-reduced-motion:reduce", css)
+
+    def test_account_assets_drag_to_matching_canvas_nodes(self):
+        app = APP_PATH.read_text(encoding="utf-8")
+        css = CSS_PATH.read_text(encoding="utf-8")
+        self.assertIn("draggable=\"'+(canEditCanvas()?'true':'false')+'\"", app)
+        self.assertIn("btn.ondragstart=function(e)", app)
+        self.assertIn("canvas.addEventListener('dragover'", app)
+        self.assertIn("canvas.addEventListener('drop'", app)
+        self.assertRegex(app, r"type=asset\.type==='video'\?'videoAsset':'image'")
+        self.assertIn("videoAsset:{name:'视频 · 素材'", app)
+        self.assertIn("outputs.video=asset.url", app)
+        self.assertIn("outputs.image=asset.url", app)
+        self.assertIn(".nc-canvas.asset-drop-target", css)
 
     def test_canvas_modules_are_versioned_and_loaded_in_exact_order(self):
         html = HTML_PATH.read_text(encoding="utf-8")
