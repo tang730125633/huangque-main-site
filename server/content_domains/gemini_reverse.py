@@ -80,6 +80,10 @@ FACT_FIELDS = (
     "continuity",
 )
 OPTIONAL_FACT_FIELDS = {"wardrobe", "sound", "subtitles", "continuity"}
+TRANSITION_TYPES = {
+    "none", "hard_cut", "fade", "dissolve", "wipe", "occlusion",
+    "whip_pan", "push_pull", "unknown",
+}
 GENERATION_ADVICE_FIELDS = (
     "aspect_ratio",
     "fps",
@@ -145,6 +149,20 @@ def _schema():
             },
         },
     }
+    transition = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["type", "description", "evidence_seconds"],
+        "properties": {
+            "type": {"type": "string", "enum": sorted(TRANSITION_TYPES)},
+            "description": {"type": "string"},
+            "evidence_seconds": {
+                "type": "array",
+                "items": {"type": "number", "minimum": 0},
+                "maxItems": 3,
+            },
+        },
+    }
     return {
         "type": "object",
         "additionalProperties": False,
@@ -159,11 +177,13 @@ def _schema():
                     "additionalProperties": False,
                     "required": [
                         "segment_id",
+                        "transition_from_previous",
                         "facts",
                         "generation_advice",
                     ],
                     "properties": {
                         "segment_id": {"type": "integer", "minimum": 1},
+                        "transition_from_previous": transition,
                         "facts": {
                             "type": "array",
                             "minItems": len(FACT_FIELDS),
@@ -775,9 +795,15 @@ def _instruction(title, duration, platform, transcript, windows, retry_error="")
         "exactly the root key shots; no markdown, wrapper, commentary, timeline "
         "fields, start_seconds, or end_seconds. Return exactly one shot for each "
         "segment_id in ascending order. Each shot has exactly segment_id, facts, "
-        "and generation_advice. Facts must contain exactly one row for every key "
+        "transition_from_previous, and generation_advice. Facts must contain "
+        "exactly one row for every key "
         "in this order: %s. Every fact row has exactly key, value, and "
-        "evidence_seconds. Use 1-3 timestamps inside the segment for every "
+        "evidence_seconds. transition_from_previous has exactly type, description, "
+        "and evidence_seconds. Segment 1 must use type none, description "
+        "not_applicable, and []. For later segments classify only the fixed server "
+        "boundary as hard_cut, fade, dissolve, wipe, occlusion, whip_pan, "
+        "push_pull, or unknown; never create or move a boundary. Use [] for an "
+        "unknown transition. Use 1-3 timestamps inside the segment for every "
         "observed value and [] only for unknown or not_applicable. Use the exact "
         "sentinel unknown when evidence is insufficient. Use not_applicable only "
         "for wardrobe, sound, subtitles, or continuity when absent. Do not infer "
@@ -1084,6 +1110,61 @@ def _duplicate_error(entries):
     return None
 
 
+def _validate_transition(value, segment_id, start):
+    if not isinstance(value, dict) or set(value) != {
+        "type", "description", "evidence_seconds",
+    }:
+        raise ValueError(
+            "第%d段transition_from_previous结构无效" % segment_id
+        )
+    transition_type = str(value.get("type") or "").strip().lower()
+    description = str(value.get("description") or "").strip()
+    evidence = value.get("evidence_seconds")
+    if transition_type not in TRANSITION_TYPES:
+        raise ValueError("第%d段转场类型无效" % segment_id)
+    if not isinstance(evidence, list) or len(evidence) > 3:
+        raise ValueError("第%d段转场证据时间点无效" % segment_id)
+    if segment_id == 1:
+        if (
+            transition_type != "none"
+            or description != NOT_APPLICABLE
+            or evidence
+        ):
+            raise ValueError(
+                "第1段转场必须为none、not_applicable且无证据"
+            )
+    elif transition_type == "none":
+        raise ValueError("第%d段必须判断服务器转场边界" % segment_id)
+    elif transition_type == "unknown":
+        if description not in {UNKNOWN, ""} or evidence:
+            raise ValueError("第%d段未知转场不能携带推断或证据" % segment_id)
+        description = UNKNOWN
+    else:
+        if not description or description in {UNKNOWN, NOT_APPLICABLE}:
+            raise ValueError("第%d段转场描述为空" % segment_id)
+        if SUBJECTIVE_PATTERN.search(description):
+            raise ValueError("第%d段转场描述包含无证据主观推断" % segment_id)
+        if not evidence:
+            raise ValueError("第%d段转场缺少边界证据" % segment_id)
+    normalized = []
+    for point in evidence:
+        if isinstance(point, bool) or not isinstance(point, (int, float)):
+            raise ValueError("第%d段转场证据时间点无效" % segment_id)
+        point = float(point)
+        if point < float(start) - 1.01 or point > float(start) + 1.01:
+            raise ValueError("第%d段转场证据超出服务器边界" % segment_id)
+        normalized.append(round(point, 3))
+    return {
+        "boundary_id": segment_id - 1 if segment_id > 1 else None,
+        "at_seconds": float(start) if segment_id > 1 else None,
+        "type": transition_type,
+        "description": description,
+        "evidence_seconds": normalized,
+        "time_source": "server_ffmpeg",
+        "type_source": "gemini",
+    }
+
+
 def parse_result(raw, windows, transcript=""):
     """Parse the complete JSON object. No extraction or salvage is allowed."""
     try:
@@ -1100,7 +1181,8 @@ def parse_result(raw, windows, transcript=""):
     entries = []
     for index, (shot, window) in enumerate(zip(shots, windows), 1):
         if not isinstance(shot, dict) or set(shot) != {
-            "segment_id", "facts", "generation_advice",
+            "segment_id", "transition_from_previous", "facts",
+            "generation_advice",
         }:
             raise ValueError("第%d段结构字段不完整" % index)
         if shot.get("segment_id") != index:
@@ -1153,6 +1235,9 @@ def parse_result(raw, windows, transcript=""):
             "end_seconds": end,
             "display_range": window[2],
             "facts": facts,
+            "transition_from_previous": _validate_transition(
+                shot.get("transition_from_previous"), index, start,
+            ),
             "generation_advice": _validate_advice(
                 shot.get("generation_advice"),
                 index,
@@ -1178,6 +1263,16 @@ def _group(entry, keys):
 
 
 def assemble_prompt(entries):
+    transition_labels = {
+        "hard_cut": "直接硬切",
+        "fade": "淡入淡出",
+        "dissolve": "叠化",
+        "wipe": "划像",
+        "occlusion": "遮挡转场",
+        "whip_pan": "甩镜转场",
+        "push_pull": "推拉转场",
+        "unknown": "类型未确认",
+    }
     lines = []
     for entry in entries:
         advice = entry["generation_advice"]
@@ -1212,8 +1307,58 @@ def assemble_prompt(entries):
         )
         if not content:
             raise ValueError("第%d段可生成提示词为空" % entry["segment_id"])
+        transition = entry.get("transition_from_previous") or {}
+        if entry["segment_id"] > 1:
+            transition_text = transition_labels.get(
+                transition.get("type"), "类型未确认",
+            )
+            description = _visible(transition.get("description"))
+            content = "转场：%s%s；%s" % (
+                transition_text,
+                "（%s）" % description if description else "",
+                content,
+            )
         lines.append("%s %s" % (entry["display_range"], content))
     return "\n".join(lines)
+
+
+def quality_score(entries):
+    """Score only validated structured output; total is the weakest dimension."""
+    entries = list(entries or [])
+    applicable = sum(
+        int((entry.get("readiness") or {}).get("applicable") or 0)
+        for entry in entries
+    )
+    ready = sum(
+        int((entry.get("readiness") or {}).get("ready") or 0)
+        for entry in entries
+    )
+    cited = sum(
+        1
+        for entry in entries
+        for fact in (entry.get("facts") or {}).values()
+        if fact.get("value") not in {UNKNOWN, NOT_APPLICABLE}
+        and fact.get("evidence_seconds")
+    )
+    evidence_slots = sum(
+        1
+        for entry in entries
+        for fact in (entry.get("facts") or {}).values()
+        if fact.get("value") not in {UNKNOWN, NOT_APPLICABLE}
+    )
+    evidence = round(100.0 * cited / evidence_slots, 1) if evidence_slots else 0.0
+    readiness = round(100.0 * ready / applicable, 1) if applicable else 0.0
+    components = {
+        "source_evidence_coverage": evidence,
+        "generation_readiness": readiness,
+        "factual_consistency": 100.0 if entries else 0.0,
+    }
+    return {
+        "total": min(components.values()),
+        "components": components,
+        "legacy_unstructured": False,
+        "generated_video_similarity_claim": False,
+    }
 
 
 def _audit_entry(entry):
@@ -1222,6 +1367,7 @@ def _audit_entry(entry):
         "start_seconds": entry["start_seconds"],
         "end_seconds": entry["end_seconds"],
         "readiness": entry["readiness"],
+        "transition_from_previous": entry["transition_from_previous"],
         "evidence_seconds": {
             key: list(value["evidence_seconds"])
             for key, value in entry["facts"].items()
@@ -1239,13 +1385,15 @@ def analyze_video(
     heartbeat=None,
     deadline=None,
     cleanup_jdb=None,
+    windows=None,
+    timeline_audit=None,
 ):
     api_key = str(os.environ.get("GEMINI_API_KEY") or "").strip()
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY is not configured")
     if not path or not os.path.isfile(path):
         raise ValueError("Gemini reverse requires the original media file")
-    windows = fixed_windows(duration)
+    windows = list(windows or fixed_windows(duration))
     deadline = deadline or (time.monotonic() + ANALYSIS_BUDGET_SECONDS)
     uploaded = None
     attempt_audit = []
@@ -1298,6 +1446,7 @@ def analyze_video(
                 raw = _candidate_text(response)
                 entries = parse_result(raw, windows, transcript=transcript)
                 prompt = assemble_prompt(entries)
+                score = quality_score(entries)
                 attempt_audit.append({
                     "attempt": attempt + 1,
                     "http_status": 200,
@@ -1320,6 +1469,14 @@ def analyze_video(
                     "prompt": prompt,
                     "attempt_audit": attempt_audit,
                     "cross_provider_fallback": False,
+                    "timeline_audit": json.loads(json.dumps(
+                        timeline_audit or {
+                            "windows": windows,
+                            "source": "server_fixed_windows",
+                        },
+                        ensure_ascii=False,
+                    )),
+                    "quality_score": score,
                 }
             except ValueError as error:
                 validation_error = _safe_text(error, 500)

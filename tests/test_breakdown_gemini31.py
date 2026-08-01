@@ -43,6 +43,18 @@ def _shot(index, window, suffix=""):
         })
     return {
         "segment_id": index,
+        "transition_from_previous": (
+            {
+                "type": "none",
+                "description": gemini_reverse.NOT_APPLICABLE,
+                "evidence_seconds": [],
+            }
+            if index == 1 else {
+                "type": "hard_cut",
+                "description": "画面在服务器边界处直接切换",
+                "evidence_seconds": [start],
+            }
+        ),
         "facts": rows,
         "generation_advice": {
             "aspect_ratio": "保持原片竖屏画幅",
@@ -228,6 +240,160 @@ class GeminiReverseSchemaTests(unittest.TestCase):
         self.assertNotIn("unknown", prompt)
         self.assertNotIn("not_applicable", prompt)
 
+    def test_authoritative_timeline_is_deterministic_gap_free_and_tenth_precision(self):
+        candidates = [
+            {"at_seconds": 8.24, "score": 0.91},
+            {"at_seconds": 15.58, "score": 0.88},
+        ]
+        expected = breakdown._build_authoritative_reverse_timeline(
+            21.534, candidates,
+        )
+        for _index in range(100):
+            self.assertEqual(
+                breakdown._build_authoritative_reverse_timeline(
+                    21.534, candidates,
+                ),
+                expected,
+            )
+        self.assertEqual(expected["precision_seconds"], 0.1)
+        self.assertEqual(
+            expected["windows"],
+            [
+                (0.0, 8.2, "[00:00.0-00:08.2]"),
+                (8.2, 15.6, "[00:08.2-00:15.6]"),
+                (15.6, 21.5, "[00:15.6-00:21.5]"),
+            ],
+        )
+        self.assertEqual(expected["windows"][0][0], 0.0)
+        self.assertEqual(expected["windows"][-1][1], 21.5)
+
+    def test_authoritative_timeline_uses_only_strong_spaced_candidates(self):
+        timeline = breakdown._build_authoritative_reverse_timeline(
+            10.0,
+            [
+                {"at_seconds": 0.4, "score": 0.99},
+                {"at_seconds": 2.0, "score": 0.70},
+                {"at_seconds": 2.4, "score": 0.95},
+                {"at_seconds": 5.0, "score": 0.90},
+                {"at_seconds": 8.0, "score": 0.80},
+                {"at_seconds": 9.6, "score": 0.99},
+            ],
+        )
+        self.assertEqual(
+            [item["at_seconds"] for item in timeline["transitions"]],
+            [2.4, 5.0, 8.0],
+        )
+        self.assertEqual(len(timeline["windows"]), 4)
+        for previous, current in zip(
+            timeline["windows"], timeline["windows"][1:],
+        ):
+            self.assertEqual(previous[1], current[0])
+
+    def test_ffmpeg_candidates_are_evidence_only_and_path_is_not_audited(self):
+        output = (
+            "[Parsed_metadata_1] frame:0 pts:824 pts_time:8.24\n"
+            "[Parsed_metadata_1] lavfi.scene_score=0.812345\n"
+            "[Parsed_metadata_1] frame:1 pts:1558 pts_time:15.58\n"
+            "[Parsed_metadata_1] lavfi.scene_score=0.723456\n"
+        )
+        completed = mock.Mock(returncode=0, stdout="", stderr=output)
+        with mock.patch.object(
+            breakdown.subprocess, "run", return_value=completed,
+        ):
+            candidates, audit = breakdown._detect_reverse_transition_candidates(
+                "private-video.mp4", 21.534,
+            )
+        self.assertEqual(
+            [item["at_seconds"] for item in candidates], [8.2, 15.6],
+        )
+        self.assertEqual(audit["candidate_count"], 2)
+        self.assertNotIn("private-video.mp4", json.dumps(audit))
+
+    def test_detector_failure_falls_back_to_one_server_owned_segment(self):
+        with mock.patch.object(
+            breakdown.subprocess, "run", side_effect=FileNotFoundError("ffmpeg"),
+        ):
+            timeline = breakdown._authoritative_reverse_timeline(
+                "private-video.mp4", 21.534,
+            )
+        self.assertEqual(
+            timeline["windows"], [(0.0, 21.5, "[00:00.0-00:21.5]")],
+        )
+        self.assertEqual(timeline["detector_audit"]["status"], "unavailable")
+
+    def test_real_pts_own_unequal_windows_and_reference_indices_are_explicit(self):
+        frames = ["frame-%d.jpg" % index for index in range(1, 9)]
+        windows = [
+            (0.0, 1.0, "[00:00.0-00:01.0]"),
+            (1.0, 9.0, "[00:01.0-00:09.0]"),
+            (9.0, 10.0, "[00:09.0-00:10.0]"),
+        ]
+        points = [0.0, 1.25, 2.5, 3.75, 5.0, 6.25, 8.75, 9.5]
+        bundle = breakdown._reverse_frame_bundle(
+            frames, windows, frame_pts=points,
+        )
+        self.assertEqual(
+            bundle["segment_source_indices"],
+            [[1], [2, 3, 4, 5, 6, 7], [8]],
+        )
+        self.assertEqual(
+            bundle["segment_model_source_indices"], [[1], [2, 7], [8]],
+        )
+        self.assertEqual(bundle["reference_thumbnail_indices"], [1, 2, 3])
+        self.assertEqual(
+            [item["source_frame_index"] for item in bundle["manifest"][:3]],
+            [1, 7, 8],
+        )
+
+    def test_model_cannot_return_timestamps_or_unbound_transition(self):
+        windows = [(0.0, 1.0, "[00:00.0-00:01.0]")]
+        payload = _payload(windows)
+        payload["shots"][0]["start_seconds"] = 0.0
+        with self.assertRaisesRegex(ValueError, "结构字段不完整"):
+            gemini_reverse.parse_result(
+                json.dumps(payload, ensure_ascii=False), windows,
+            )
+
+        windows = [
+            (0.0, 1.0, "[00:00.0-00:01.0]"),
+            (1.0, 2.0, "[00:01.0-00:02.0]"),
+        ]
+        payload = _payload(windows)
+        payload["shots"][1]["transition_from_previous"]["evidence_seconds"] = [3.0]
+        with self.assertRaisesRegex(ValueError, "超出服务器边界"):
+            gemini_reverse.parse_result(
+                json.dumps(payload, ensure_ascii=False), windows,
+            )
+
+    def test_transition_is_bound_to_server_boundary_and_rendered(self):
+        windows = [
+            (0.0, 1.0, "[00:00.0-00:01.0]"),
+            (1.0, 2.0, "[00:01.0-00:02.0]"),
+        ]
+        entries = gemini_reverse.parse_result(
+            json.dumps(_payload(windows), ensure_ascii=False), windows,
+        )
+        transition = entries[1]["transition_from_previous"]
+        self.assertEqual(transition["boundary_id"], 1)
+        self.assertEqual(transition["at_seconds"], 1.0)
+        self.assertEqual(transition["time_source"], "server_ffmpeg")
+        self.assertEqual(transition["type_source"], "gemini")
+        prompt = gemini_reverse.assemble_prompt(entries)
+        self.assertIn("转场：直接硬切", prompt)
+        self.assertIn("[00:00.0-00:01.0]", prompt)
+        self.assertIn("[00:01.0-00:02.0]", prompt)
+
+    def test_quality_total_is_minimum_and_never_legacy_hundred_zero(self):
+        windows = [(0.0, 1.0, "[00:00.0-00:01.0]")]
+        entries = gemini_reverse.parse_result(
+            json.dumps(_payload(windows), ensure_ascii=False), windows,
+        )
+        score = gemini_reverse.quality_score(entries)
+        self.assertFalse(score["legacy_unstructured"])
+        self.assertGreaterEqual(score["components"]["generation_readiness"], 90)
+        self.assertEqual(score["components"]["factual_consistency"], 100.0)
+        self.assertEqual(score["total"], min(score["components"].values()))
+
 
 class GeminiReverseRequestTests(unittest.TestCase):
     def setUp(self):
@@ -394,11 +560,33 @@ class GeminiReverseRequestTests(unittest.TestCase):
             "attempts": 1,
             "prompt": "[00:00-00:04] 主体：白色矩形",
             "attempt_audit": [{"attempt": 1, "validation": "passed"}],
+            "timeline_audit": {
+                "windows": [(0.0, 4.0, "[00:00.0-00:04.0]")],
+                "source": "single_full_media_segment",
+            },
+            "quality_score": {
+                "total": 100.0,
+                "components": {
+                    "source_evidence_coverage": 100.0,
+                    "generation_readiness": 100.0,
+                    "factual_consistency": 100.0,
+                },
+                "legacy_unstructured": False,
+            },
             "entries": [{
                 "segment_id": 1,
                 "start_seconds": 0.0,
                 "end_seconds": 4.0,
                 "readiness": {"ready": 17, "applicable": 17, "percent": 100.0},
+                "transition_from_previous": {
+                    "boundary_id": None,
+                    "at_seconds": None,
+                    "type": "none",
+                    "description": gemini_reverse.NOT_APPLICABLE,
+                    "evidence_seconds": [],
+                    "time_source": "server_ffmpeg",
+                    "type_source": "gemini",
+                },
                 "facts": {
                     key: {"value": "fact", "evidence_seconds": [0.0]}
                     for key in gemini_reverse.FACT_FIELDS
@@ -408,7 +596,11 @@ class GeminiReverseRequestTests(unittest.TestCase):
         with mock.patch.object(
             gemini_reverse, "analyze_video", return_value=gemini_result
         ) as analyze, mock.patch.object(
-            breakdown, "_frame_thumbnails", return_value=[]
+            breakdown, "_frame_thumbnails", return_value=["thumb"]
+        ), mock.patch.object(
+            breakdown,
+            "_authoritative_reverse_timeline",
+            return_value=gemini_result["timeline_audit"],
         ):
             result = breakdown._reverse_from_frames(
                 {"_job_id": 7},
