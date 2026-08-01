@@ -51,6 +51,7 @@ BACKEND_RUNTIME = {
     'server/hq_cli_api.py': '/home/ubuntu/auth-service/hq_cli_api.py',
     'server/wechat_subscribe.py': '/home/ubuntu/auth-service/wechat_subscribe.py',
     'server/invites.py': '/home/ubuntu/auth-service/invites.py',
+    'server/business_cards.py': '/home/ubuntu/auth-service/business_cards.py',
     'server/wxpay.py': '/home/ubuntu/auth-service/wxpay.py',
     'server/wechat_virtual_pay.py': '/home/ubuntu/auth-service/wechat_virtual_pay.py',
     'server/sync_virtual_pay_goods.py': '/home/ubuntu/auth-service/sync_virtual_pay_goods.py',
