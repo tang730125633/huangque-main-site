@@ -569,15 +569,24 @@ def _delete_resource(name, api_key):
         headers={"x-goog-api-key": api_key},
         method="DELETE",
     )
-    with _open(
-        request,
-        deadline=time.monotonic() + 15,
-        retry_transient=False,
-    ) as response:
-        response.read(1024)
+    try:
+        with _open(
+            request,
+            deadline=time.monotonic() + 15,
+            retry_transient=False,
+        ) as response:
+            response.read(1024)
+    except RuntimeError as error:
+        summary = str(error or "")
+        if re.match(r"^Gemini HTTP 404(?:$|:)", summary) or re.match(
+            r"^Gemini HTTP \d{3}: NOT_FOUND(?:$|:)", summary
+        ):
+            return "already_absent"
+        raise
+    return "deleted"
 
 
-def _complete_cleanup(jdb, row, now=None):
+def _complete_cleanup(jdb, row, provider_result="deleted", now=None):
     current = int(time.time() if now is None else now)
     with closing(jdb()) as connection:
         connection.execute(
@@ -588,7 +597,11 @@ def _complete_cleanup(jdb, row, now=None):
         connection.commit()
     _cleanup_audit(
         row["resource_name"],
-        "deleted_by_recovery",
+        (
+            "already_absent_by_recovery"
+            if provider_result == "already_absent"
+            else "deleted_by_recovery"
+        ),
         attempts=row["attempts"],
         created_at=row["created_at"],
         completed_at=current,
@@ -646,11 +659,11 @@ def drain_cleanup_once(jdb, api_key=None, now=None):
     if not row:
         return False
     try:
-        _delete_resource(row["resource_name"], key)
+        provider_result = _delete_resource(row["resource_name"], key)
     except Exception as error:
         _reschedule_cleanup(jdb, row, error, now=now)
     else:
-        _complete_cleanup(jdb, row, now=now)
+        _complete_cleanup(jdb, row, provider_result=provider_result, now=now)
     return True
 
 
@@ -696,10 +709,10 @@ def _delete_file(file_info, api_key, cleanup_jdb=None):
     attempts = len(CLEANUP_RETRY_DELAYS_SECONDS) + 1
     for attempt in range(attempts):
         try:
-            _delete_resource(name, api_key)
+            provider_result = _delete_resource(name, api_key)
             _cleanup_audit(
                 name,
-                "deleted",
+                "already_absent" if provider_result == "already_absent" else "deleted",
                 attempt=attempt + 1,
                 cleanup_pending=False,
             )

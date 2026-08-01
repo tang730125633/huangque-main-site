@@ -695,6 +695,93 @@ class GeminiReverseHttpTests(unittest.TestCase):
         ).with_name("core.py").read_text(encoding="utf-8")
         self.assertIn("gemini_reverse.start_cleanup_worker(jdb)", core_source)
 
+    def test_lost_delete_response_then_recovery_404_completes_cleanup(self):
+        jdb = self._cleanup_db()
+        file_info = {
+            "name": "files/test-media",
+            "uri": "https://generativelanguage.googleapis.com/file/test-media",
+        }
+        with mock.patch.object(
+                 gemini_reverse,
+                 "_delete_resource",
+                 side_effect=RuntimeError("response lost"),
+             ), \
+             mock.patch.object(gemini_reverse.time, "sleep"):
+            result = gemini_reverse._delete_file(
+                file_info,
+                "test-key",
+                cleanup_jdb=jdb,
+            )
+        self.assertTrue(result["persisted"])
+        with closing(jdb()) as connection:
+            retry_at = connection.execute(
+                "SELECT next_retry_at FROM gemini_file_cleanup_outbox"
+            ).fetchone()[0]
+
+        not_found = self._http_error(404, {
+            "error": {
+                "code": 404,
+                "status": "NOT_FOUND",
+                "message": "file no longer exists",
+            },
+        })
+        output = io.StringIO()
+        with mock.patch.object(
+                 urllib.request,
+                 "urlopen",
+                 side_effect=not_found,
+             ) as opened, \
+             mock.patch("sys.stdout", output):
+            drained = gemini_reverse.drain_cleanup_once(
+                jdb,
+                api_key="test-key",
+                now=retry_at,
+            )
+        self.assertTrue(drained)
+        self.assertEqual(opened.call_count, 1)
+        with closing(jdb()) as connection:
+            remaining = connection.execute(
+                "SELECT COUNT(*) FROM gemini_file_cleanup_outbox"
+            ).fetchone()[0]
+        self.assertEqual(remaining, 0)
+        self.assertIn("already_absent_by_recovery", output.getvalue())
+        self.assertIn('"cleanup_pending": false', output.getvalue())
+        self.assertNotIn("files/test-media", output.getvalue())
+
+    def test_recovery_403_keeps_cleanup_pending(self):
+        jdb = self._cleanup_db()
+        gemini_reverse._persist_cleanup(
+            jdb,
+            "files/test-media",
+            attempts=3,
+            now=100,
+        )
+        forbidden = self._http_error(403, {
+            "error": {
+                "code": 403,
+                "status": "PERMISSION_DENIED",
+                "message": "forbidden",
+            },
+        })
+        with mock.patch.object(
+            urllib.request,
+            "urlopen",
+            side_effect=forbidden,
+        ):
+            self.assertTrue(gemini_reverse.drain_cleanup_once(
+                jdb,
+                api_key="test-key",
+                now=130,
+            ))
+        with closing(jdb()) as connection:
+            row = connection.execute(
+                "SELECT status,attempts,next_retry_at " \
+                "FROM gemini_file_cleanup_outbox"
+            ).fetchone()
+        self.assertEqual(row["status"], "pending")
+        self.assertEqual(row["attempts"], 4)
+        self.assertGreater(row["next_retry_at"], 130)
+
 
 if __name__ == "__main__":
     unittest.main()
