@@ -130,6 +130,7 @@ class AuthAnnouncementTests(unittest.TestCase):
             ("partner", "member"),
             ("initiator", "member"),
             ("disabled", "member"),
+            ("service", "service"),
         ]:
             self.auth.create_user(username, PASSWORD, 0, role)
         with sqlite3.connect(self.auth.DB) as connection:
@@ -137,11 +138,13 @@ class AuthAnnouncementTests(unittest.TestCase):
                 """UPDATE users
                    SET membership_tier=?,membership_expires_at=? WHERE username=?""",
                 [
+                    ("initiator", FIXED_NOW + 100, "admin"),
                     ("experience", FIXED_NOW - 1, "expired"),
                     ("experience", FIXED_NOW + 100, "experience"),
                     ("partner", FIXED_NOW + 100, "partner"),
                     ("initiator", FIXED_NOW + 100, "initiator"),
                     ("partner", FIXED_NOW + 100, "disabled"),
+                    ("initiator", FIXED_NOW + 100, "service"),
                 ],
             )
             connection.execute(
@@ -173,10 +176,10 @@ class AuthAnnouncementTests(unittest.TestCase):
     def test_audience_rules_and_preview_send_consistency(self):
         preview, err = self.auth.preview_announcement({"mode": "all"}, now=FIXED_NOW)
         self.assertIsNone(err)
-        self.assertEqual(preview["count"], 5)
+        self.assertEqual(preview["count"], 6)
         self.assertEqual(
             preview["breakdown"],
-            {"none": 2, "experience": 1, "partner": 1, "initiator": 1},
+            {"none": 2, "experience": 1, "partner": 1, "initiator": 2},
         )
 
         audience = {"mode": "tiers", "tiers": ["initiator", "experience", "experience"]}
@@ -189,7 +192,7 @@ class AuthAnnouncementTests(unittest.TestCase):
         self.assertIsNone(err)
         self.assertEqual(sent["count"], preview["count"])
         self.assertEqual(sent["breakdown"], preview["breakdown"])
-        self.assertEqual(sent["count"], 2)
+        self.assertEqual(sent["count"], 3)
         with sqlite3.connect(self.auth.DB) as connection:
             recipients = {
                 row[0] for row in connection.execute(
@@ -197,7 +200,7 @@ class AuthAnnouncementTests(unittest.TestCase):
                     (sent["campaign"]["id"],),
                 )
             }
-        self.assertEqual(recipients, {"experience", "initiator"})
+        self.assertEqual(recipients, {"admin", "experience", "initiator"})
 
     def test_publish_is_idempotent_and_rejects_changed_replay(self):
         first, err = self.auth.publish_announcement(
@@ -273,7 +276,9 @@ class AuthAnnouncementTests(unittest.TestCase):
         )
         campaign_id = sent["campaign"]["id"]
         self.assertEqual(sent["campaign"]["status"], "published")
-        self.assertEqual(sent["count"], 5)
+        self.assertEqual(sent["count"], 6)
+        admin_items = request_json(admin, self.base, "/api/auth/notifications")["items"]
+        self.assertIn(campaign_id, {item["campaign_id"] for item in admin_items})
         listing = request_json(
             admin, self.base, "/api/auth/admin/announcements", internal=True,
         )
@@ -439,7 +444,7 @@ class AdminAnnouncementProxyAuditTests(unittest.TestCase):
             admin, self.admin_base, "/api/admin/announcements/preview",
             method="POST", payload={"audience": {"mode": "all"}},
         )
-        self.assertEqual(preview["count"], 1)
+        self.assertEqual(preview["count"], 2)
         title = "不可进入审计的标题"
         detail = "不可进入审计的公告正文"
         sent = request_json(
