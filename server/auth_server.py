@@ -81,6 +81,8 @@ MEMBERSHIP_DISCOUNT_BPS = {
     "partner": 7500,
     "initiator": 5500,
 }
+ANNOUNCEMENT_REQUEST_ID_MAX_LENGTH = 128
+SHANGHAI_TZ = datetime.timezone(datetime.timedelta(hours=8))
 MEMBERSHIP_ENFORCEMENT_ENV = "HQ_MEMBERSHIP_ENFORCEMENT_ENABLED"
 VIRTUAL_PAY_RECONCILE_INTERVAL_SECONDS = 60
 VIRTUAL_PAY_RECONCILE_BATCH = 100
@@ -307,6 +309,22 @@ def init_db():
     # 只能命中原流水，不能再次加点。NULL 不参与冲突，老调用方保持原行为。
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_points_audit_transaction_key "
               "ON points_audit(transaction_key)")
+    c.execute("""CREATE TABLE IF NOT EXISTS announcement_campaigns(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        detail TEXT NOT NULL,
+        audience_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'published',
+        recipient_count INTEGER NOT NULL DEFAULT 0,
+        breakdown_json TEXT NOT NULL DEFAULT '{}',
+        created_by TEXT NOT NULL,
+        request_id TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL,
+        published_at INTEGER NOT NULL,
+        recalled_at INTEGER,
+        recalled_by TEXT
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_announcement_campaigns_created ON announcement_campaigns(id DESC)")
     c.execute("""CREATE TABLE IF NOT EXISTS user_notifications(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT NOT NULL,
@@ -314,9 +332,21 @@ def init_db():
         title TEXT NOT NULL,
         detail TEXT NOT NULL,
         created_by TEXT NOT NULL,
-        created_at INTEGER NOT NULL
+        created_at INTEGER NOT NULL,
+        campaign_id INTEGER,
+        read_at INTEGER,
+        popup_snoozed_until INTEGER
     )""")
+    notification_cols = {r["name"] for r in c.execute("PRAGMA table_info(user_notifications)").fetchall()}
+    if "campaign_id" not in notification_cols:
+        c.execute("ALTER TABLE user_notifications ADD COLUMN campaign_id INTEGER")
+    if "read_at" not in notification_cols:
+        c.execute("ALTER TABLE user_notifications ADD COLUMN read_at INTEGER")
+    if "popup_snoozed_until" not in notification_cols:
+        c.execute("ALTER TABLE user_notifications ADD COLUMN popup_snoozed_until INTEGER")
     c.execute("CREATE INDEX IF NOT EXISTS idx_user_notifications_user ON user_notifications(username,id DESC)")
+    c.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_user_notifications_campaign_user
+                 ON user_notifications(campaign_id,username) WHERE campaign_id IS NOT NULL""")
     c.execute("""CREATE TABLE IF NOT EXISTS wechat_subscription_grants(
         username TEXT NOT NULL,
         event_type TEXT NOT NULL,
@@ -2143,30 +2173,278 @@ def reset_password_admin(username, new_password):
         c.close()
 
 
+def _notification_text(title, detail):
+    title = str(title or "").strip()
+    detail = str(detail or "").strip()
+    if not title:
+        return None, None, "missing_title"
+    if len(title) > 80:
+        return None, None, "title_too_long"
+    if not detail:
+        return None, None, "missing_detail"
+    if len(detail) > 1000:
+        return None, None, "detail_too_long"
+    return title, detail, None
+
+
+def _shanghai_day_end(epoch):
+    local = datetime.datetime.fromtimestamp(int(epoch), SHANGHAI_TZ)
+    end = local.replace(hour=23, minute=59, second=59, microsecond=0)
+    return int(end.timestamp())
+
+
+def _shanghai_next_midnight(epoch):
+    local = datetime.datetime.fromtimestamp(int(epoch), SHANGHAI_TZ)
+    tomorrow = local.date() + datetime.timedelta(days=1)
+    return int(datetime.datetime.combine(tomorrow, datetime.time(), SHANGHAI_TZ).timestamp())
+
+
 def public_user_notification(row):
+    campaign_id = row_get(row, "campaign_id")
+    published_at = int(row_get(row, "published_at", 0) or 0)
     return {
         "id": int(row["id"]),
+        "campaign_id": int(campaign_id) if campaign_id is not None else None,
         "kind": row["kind"] or "system",
         "title": row["title"],
         "detail": row["detail"],
         "created_at": int(row["created_at"] or 0),
+        "read_at": int(row_get(row, "read_at", 0) or 0),
+        "popup_snoozed_until": int(row_get(row, "popup_snoozed_until", 0) or 0),
+        "popup_until": _shanghai_day_end(published_at) if campaign_id is not None and published_at else 0,
     }
+
+
+def normalize_announcement_audience(audience):
+    if not isinstance(audience, dict):
+        return None, "invalid_audience"
+    mode = str(audience.get("mode") or "").strip()
+    if mode == "all":
+        return {"mode": "all"}, None
+    if mode != "tiers" or not isinstance(audience.get("tiers"), list):
+        return None, "invalid_audience"
+    requested = set()
+    for tier in audience["tiers"]:
+        if not isinstance(tier, str) or tier not in MEMBERSHIP_TIERS:
+            return None, "invalid_tier"
+        requested.add(tier)
+    tiers = [tier for tier in MEMBERSHIP_TIERS if tier in requested]
+    if not tiers:
+        return None, "missing_tiers"
+    return {"mode": "tiers", "tiers": tiers}, None
+
+
+def select_announcement_audience(connection, audience, cutoff):
+    audience, err = normalize_announcement_audience(audience)
+    if err:
+        return None, err
+    cutoff = int(cutoff)
+    where = "role='member' AND COALESCE(account_status,'active')='active'"
+    params = []
+    if audience["mode"] == "tiers":
+        holes = ",".join("?" * len(audience["tiers"]))
+        where += " AND membership_tier IN (%s) AND COALESCE(membership_expires_at,0)>?" % holes
+        params.extend(audience["tiers"])
+        params.append(cutoff)
+    rows = connection.execute(
+        "SELECT username,membership_tier,membership_expires_at FROM users WHERE " + where + " ORDER BY id",
+        params,
+    ).fetchall()
+    breakdown = {"none": 0, **{tier: 0 for tier in MEMBERSHIP_TIERS}}
+    for row in rows:
+        tier = str(row["membership_tier"] or "")
+        if tier not in MEMBERSHIP_TIERS or int(row["membership_expires_at"] or 0) <= cutoff:
+            tier = "none"
+        breakdown[tier] += 1
+    return {
+        "audience": audience,
+        "cutoff": cutoff,
+        "count": len(rows),
+        "breakdown": breakdown,
+        "_where": where,
+        "_params": params,
+    }, None
+
+
+def preview_announcement(audience, now=None):
+    cutoff = int(time.time() if now is None else now)
+    c = db()
+    try:
+        selected, err = select_announcement_audience(c, audience, cutoff)
+        if err:
+            return None, err
+        return {key: value for key, value in selected.items() if not key.startswith("_")}, None
+    finally:
+        c.close()
+
+
+def public_announcement_campaign(row):
+    try:
+        audience = json.loads(row["audience_json"] or "{}")
+    except Exception:
+        audience = {}
+    try:
+        breakdown = json.loads(row_get(row, "breakdown_json", "{}") or "{}")
+    except Exception:
+        breakdown = {}
+    published_at = int(row["published_at"] or 0)
+    return {
+        "id": int(row["id"]),
+        "title": row["title"],
+        "detail": row["detail"],
+        "audience": audience,
+        "status": row["status"],
+        "recipient_count": int(row["recipient_count"] or 0),
+        "breakdown": breakdown,
+        "created_by": row["created_by"],
+        "request_id": row["request_id"],
+        "created_at": int(row["created_at"] or 0),
+        "published_at": published_at,
+        "popup_until": _shanghai_day_end(published_at) if published_at else 0,
+        "recalled_at": int(row["recalled_at"] or 0),
+        "recalled_by": row["recalled_by"] or "",
+    }
+
+
+def publish_announcement(title, detail, audience, request_id, created_by, now=None):
+    title, detail, err = _notification_text(title, detail)
+    if err:
+        return None, err
+    audience, err = normalize_announcement_audience(audience)
+    if err:
+        return None, err
+    if not isinstance(request_id, str) or not request_id.strip():
+        return None, "missing_request_id"
+    request_id = request_id.strip()
+    if len(request_id) > ANNOUNCEMENT_REQUEST_ID_MAX_LENGTH:
+        return None, "request_id_too_long"
+    created_by = str(created_by or "admin")[:80]
+    cutoff = int(time.time() if now is None else now)
+    audience_json = json.dumps(audience, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        existing = c.execute(
+            "SELECT * FROM announcement_campaigns WHERE request_id=?", (request_id,),
+        ).fetchone()
+        if existing:
+            if (existing["title"], existing["detail"], existing["audience_json"]) != (
+                    title, detail, audience_json):
+                c.rollback()
+                return None, "request_id_conflict"
+            campaign = public_announcement_campaign(existing)
+            c.rollback()
+            return {
+                "campaign": campaign,
+                "count": campaign["recipient_count"],
+                "breakdown": campaign["breakdown"],
+                "duplicate": True,
+            }, None
+        selected, err = select_announcement_audience(c, audience, cutoff)
+        if err:
+            c.rollback()
+            return None, err
+        cur = c.execute(
+            """INSERT INTO announcement_campaigns(
+                   title,detail,audience_json,status,recipient_count,breakdown_json,
+                   created_by,request_id,created_at,published_at)
+               VALUES(?,?,?,'published',0,?,?,?,?,?)""",
+            (title, detail, audience_json,
+             json.dumps(selected["breakdown"], ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+             created_by, request_id, cutoff, cutoff),
+        )
+        campaign_id = int(cur.lastrowid)
+        c.execute(
+            """INSERT INTO user_notifications(
+                   username,kind,title,detail,created_by,created_at,campaign_id)
+               SELECT username,'announcement',?,?,?,?,? FROM users WHERE """ + selected["_where"],
+            [title, detail, created_by, cutoff, campaign_id] + list(selected["_params"]),
+        )
+        recipient_count = int(c.execute(
+            "SELECT COUNT(*) AS n FROM user_notifications WHERE campaign_id=?", (campaign_id,),
+        ).fetchone()["n"])
+        c.execute(
+            "UPDATE announcement_campaigns SET recipient_count=? WHERE id=?",
+            (recipient_count, campaign_id),
+        )
+        row = c.execute("SELECT * FROM announcement_campaigns WHERE id=?", (campaign_id,)).fetchone()
+        c.commit()
+        campaign = public_announcement_campaign(row)
+        return {
+            "campaign": campaign,
+            "count": recipient_count,
+            "breakdown": selected["breakdown"],
+            "duplicate": False,
+        }, None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+
+def list_announcement_campaigns(limit=50):
+    limit = max(1, min(100, int(limit or 50)))
+    c = db()
+    try:
+        rows = c.execute(
+            "SELECT * FROM announcement_campaigns ORDER BY id DESC LIMIT ?", (limit,),
+        ).fetchall()
+        total = int(c.execute("SELECT COUNT(*) AS n FROM announcement_campaigns").fetchone()["n"])
+        return {
+            "items": [public_announcement_campaign(row) for row in rows],
+            "total": total,
+            "limit": limit,
+        }
+    finally:
+        c.close()
+
+
+def recall_announcement(campaign_id, recalled_by, now=None):
+    try:
+        campaign_id = int(campaign_id)
+    except (TypeError, ValueError):
+        return None, "invalid_id"
+    if campaign_id <= 0:
+        return None, "invalid_id"
+    recalled_at = int(time.time() if now is None else now)
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute("SELECT * FROM announcement_campaigns WHERE id=?", (campaign_id,)).fetchone()
+        if not row:
+            c.rollback()
+            return None, "not_found"
+        changed = row["status"] != "recalled"
+        if changed:
+            c.execute(
+                """UPDATE announcement_campaigns
+                   SET status='recalled',recalled_at=?,recalled_by=? WHERE id=?""",
+                (recalled_at, str(recalled_by or "admin")[:80], campaign_id),
+            )
+            row = c.execute("SELECT * FROM announcement_campaigns WHERE id=?", (campaign_id,)).fetchone()
+        removed = c.execute(
+            "DELETE FROM user_notifications WHERE campaign_id=?", (campaign_id,),
+        ).rowcount
+        if changed or removed:
+            c.commit()
+        else:
+            c.rollback()
+        return {"campaign": public_announcement_campaign(row), "already_recalled": not changed}, None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
 
 
 def create_user_notification(username, title, detail, created_by):
     username = str(username or "").strip()
-    title = str(title or "").strip()
-    detail = str(detail or "").strip()
     if not username:
         return None, "missing_username"
-    if not title:
-        return None, "missing_title"
-    if len(title) > 80:
-        return None, "title_too_long"
-    if not detail:
-        return None, "missing_detail"
-    if len(detail) > 1000:
-        return None, "detail_too_long"
+    title, detail, err = _notification_text(title, detail)
+    if err:
+        return None, err
     c = db()
     try:
         if not c.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone():
@@ -2184,16 +2462,88 @@ def create_user_notification(username, title, detail, created_by):
         c.close()
 
 
+def _user_notification_row(connection, username, notification_id):
+    return connection.execute(
+        """SELECT n.*,c.published_at FROM user_notifications n
+           LEFT JOIN announcement_campaigns c ON c.id=n.campaign_id
+           WHERE n.username=? AND n.id=?
+             AND (n.campaign_id IS NULL OR c.status='published')""",
+        (str(username or "").strip(), int(notification_id)),
+    ).fetchone()
+
+
 def list_user_notifications(username, limit=50):
     limit = max(1, min(100, int(limit or 50)))
     c = db()
     try:
         rows = c.execute(
-            """SELECT id,kind,title,detail,created_at FROM user_notifications
-               WHERE username=? ORDER BY id DESC LIMIT ?""",
+            """SELECT n.*,c.published_at FROM user_notifications n
+               LEFT JOIN announcement_campaigns c ON c.id=n.campaign_id
+               WHERE n.username=? AND (n.campaign_id IS NULL OR c.status='published')
+               ORDER BY n.id DESC LIMIT ?""",
             (str(username or "").strip(), limit),
         ).fetchall()
         return [public_user_notification(row) for row in rows]
+    finally:
+        c.close()
+
+
+def mark_user_notification_read(username, notification_id, now=None):
+    try:
+        notification_id = int(notification_id)
+    except (TypeError, ValueError):
+        return None, "invalid_id"
+    c = db()
+    try:
+        row = _user_notification_row(c, username, notification_id)
+        if not row:
+            return None, "not_found"
+        c.execute(
+            "UPDATE user_notifications SET read_at=COALESCE(read_at,?) WHERE id=? AND username=?",
+            (int(time.time() if now is None else now), notification_id, str(username or "").strip()),
+        )
+        row = _user_notification_row(c, username, notification_id)
+        c.commit()
+        return public_user_notification(row), None
+    finally:
+        c.close()
+
+
+def snooze_user_notification_today(username, notification_id, now=None):
+    try:
+        notification_id = int(notification_id)
+    except (TypeError, ValueError):
+        return None, "invalid_id"
+    now = int(time.time() if now is None else now)
+    c = db()
+    try:
+        row = _user_notification_row(c, username, notification_id)
+        if not row:
+            return None, "not_found"
+        c.execute(
+            "UPDATE user_notifications SET popup_snoozed_until=? WHERE id=? AND username=?",
+            (_shanghai_next_midnight(now), notification_id, str(username or "").strip()),
+        )
+        row = _user_notification_row(c, username, notification_id)
+        c.commit()
+        return public_user_notification(row), None
+    finally:
+        c.close()
+
+
+def mark_all_user_notifications_read(username, now=None):
+    c = db()
+    try:
+        cur = c.execute(
+            """UPDATE user_notifications SET read_at=?
+               WHERE username=? AND read_at IS NULL
+                 AND (campaign_id IS NULL OR campaign_id IN (
+                     SELECT id FROM announcement_campaigns WHERE status='published'
+                 ))""",
+            (int(time.time() if now is None else now), str(username or "").strip()),
+        )
+        c.commit()
+        return int(cur.rowcount or 0)
     finally:
         c.close()
 
@@ -4128,6 +4478,112 @@ class H(BaseHTTPRequestHandler):
                 return self._send(403, {"detail": str(exc)})
             except Exception:
                 return self._send(500, {"detail": "message push failed"})
+        if p == "/api/auth/notifications/read-all":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            try:
+                count = mark_all_user_notifications_read(row["username"])
+                return self._send(200, {"ok": True, "updated_count": count})
+            except Exception:
+                return self._send(500, {"detail": "通知已读状态保存失败"})
+        notification_action_prefix = "/api/auth/notifications/"
+        if p.startswith(notification_action_prefix):
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            parts = p[len(notification_action_prefix):].strip("/").split("/")
+            if len(parts) != 2 or parts[1] not in {"read", "snooze-today"}:
+                return self._send(404, {"detail": "not found"})
+            try:
+                notification_id = int(parts[0])
+            except (TypeError, ValueError):
+                return self._send(400, {"detail": "通知 ID 不正确"})
+            try:
+                if parts[1] == "read":
+                    notice, err = mark_user_notification_read(row["username"], notification_id)
+                else:
+                    notice, err = snooze_user_notification_today(row["username"], notification_id)
+                if err == "not_found":
+                    return self._send(404, {"detail": "通知不存在"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, "notification": notice})
+            except Exception:
+                return self._send(500, {"detail": "通知状态保存失败"})
+        if p == "/api/auth/admin/announcements/preview":
+            if not self._require_internal():
+                return
+            admin = self._require_admin_user()
+            if not admin:
+                return
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            try:
+                preview, err = preview_announcement(d.get("audience"))
+                if err:
+                    messages = {
+                        "invalid_audience": "公告受众格式不正确",
+                        "invalid_tier": "公告会员等级无效",
+                        "missing_tiers": "请至少选择一个会员等级",
+                    }
+                    return self._send(400, {"detail": messages.get(err, err), "code": err})
+                return self._send(200, {"ok": True, **preview})
+            except Exception:
+                return self._send(500, {"detail": "公告受众预览失败"})
+        if p == "/api/auth/admin/announcements":
+            if not self._require_internal():
+                return
+            admin = self._require_admin_user()
+            if not admin:
+                return
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            try:
+                result, err = publish_announcement(
+                    d.get("title"), d.get("detail"), d.get("audience"), d.get("request_id"),
+                    admin["username"],
+                )
+                if err:
+                    messages = {
+                        "missing_title": "通知标题不能为空",
+                        "title_too_long": "通知标题最多 80 个字符",
+                        "missing_detail": "通知内容不能为空",
+                        "detail_too_long": "通知内容最多 1000 个字符",
+                        "invalid_audience": "公告受众格式不正确",
+                        "invalid_tier": "公告会员等级无效",
+                        "missing_tiers": "请至少选择一个会员等级",
+                        "missing_request_id": "缺少公告请求编号",
+                        "request_id_too_long": "公告请求编号最多 128 个字符",
+                    }
+                    status = 409 if err == "request_id_conflict" else 400
+                    return self._send(status, {
+                        "detail": messages.get(err, "公告请求编号与原请求不一致"), "code": err,
+                    })
+                return self._send(200, {"ok": True, **result})
+            except Exception:
+                return self._send(500, {"detail": "公告发布失败"})
+        announcement_recall_prefix = "/api/auth/admin/announcements/"
+        if p.startswith(announcement_recall_prefix) and p.endswith("/recall"):
+            if not self._require_internal():
+                return
+            admin = self._require_admin_user()
+            if not admin:
+                return
+            campaign_id = p[len(announcement_recall_prefix):-len("/recall")].strip("/")
+            try:
+                result, err = recall_announcement(campaign_id, admin["username"])
+                if err == "invalid_id":
+                    return self._send(400, {"detail": "公告 ID 不正确"})
+                if err == "not_found":
+                    return self._send(404, {"detail": "公告不存在"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, **result})
+            except Exception:
+                return self._send(500, {"detail": "公告召回失败"})
         if p == "/api/auth/admin/notifications":
             if not self._require_internal():
                 return
@@ -5423,6 +5879,20 @@ class H(BaseHTTPRequestHandler):
                 return self._send_raw(200, echo)
             except wechat_vpay.MessagePushError:
                 return self._send_raw(403, "forbidden")
+        if p == "/api/auth/admin/announcements":
+            if not self._require_internal():
+                return
+            admin = self._require_admin_user()
+            if not admin:
+                return
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                data = list_announcement_campaigns((q.get("limit") or ["50"])[0])
+                return self._send(200, {"ok": True, **data})
+            except (TypeError, ValueError):
+                return self._send(400, {"detail": "分页参数无效"})
+            except Exception:
+                return self._send(500, {"detail": "公告列表读取失败"})
         if p == "/api/auth/admin/users":
             if not self._require_internal():
                 return
