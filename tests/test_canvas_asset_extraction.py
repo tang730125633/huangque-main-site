@@ -10,7 +10,7 @@ CSS_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas.css"
 APP_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas-app.js"
 SHORT_DRAMA_CSS = sorted((ROOT / "site" / "workbench" / "canvas").glob("canvas-short-drama*.css"))
 
-EXPECTED_CSS_SHA256 = "47faf200a849a4fc4fe7531d310314992ba8c36363c0c7a2033ed4bd99611e9a"
+EXPECTED_CSS_SHA256 = "33f7f91091ed4f35b8a5d7d22f70dae955c23924aec9f7f01ff3e5aeef52fb31"
 
 
 def normalized_sha256(path: Path) -> str:

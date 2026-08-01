@@ -60,6 +60,25 @@ class CanvasAgentTests(unittest.TestCase):
         clean = canvas_agent.validate_payload(collab, {"board_id": "board_8", "role": "viewer"})
         self.assertEqual(clean["project_id"], "collab:board_8")
 
+    def test_page_and_ip12_context_are_bounded(self):
+        clean = canvas_agent.validate_payload(payload(
+            page_context={
+                "page": "canvas", "path": "/workbench/canvas", "title": "黄雀画布",
+                "can_edit": True, "selected_count": 1,
+            },
+            ip12_context={
+                "project_id": "ip12_project_1", "title": "美业 IP", "status": "confirmed",
+                "foundation_status": "confirmed",
+                "facts": [{"label": "定位", "value": "问题肌管理主理人"}],
+            },
+        ))
+        self.assertEqual(clean["page_context"]["page"], "canvas")
+        self.assertEqual(clean["ip12_context"]["facts"][0]["label"], "定位")
+        with self.assertRaisesRegex(ValueError, "页面上下文"):
+            canvas_agent.validate_payload(payload(page_context={
+                "page": "other", "path": "/admin", "title": "后台", "can_edit": True, "selected_count": 0,
+            }))
+
     def test_plan_copies_snapshot_and_only_updates_selected_text(self):
         request = canvas_agent.validate_payload(payload())
         raw = json.dumps({
@@ -94,6 +113,22 @@ class CanvasAgentTests(unittest.TestCase):
         self.assertEqual(action["type"], "create_generation_draft")
         self.assertNotIn("execute", action)
         self.assertNotIn("url", json.dumps(result, ensure_ascii=False).lower())
+
+    def test_guides_only_target_known_huangque_pages(self):
+        request = canvas_agent.validate_payload(payload())
+        raw = json.dumps({
+            "content": "建议先完善视觉提示词。", "actions": [], "warnings": [],
+            "guides": [{
+                "target": "image", "label": "去图片工作台", "reason": "继续制作主视觉",
+                "prompt": "真实门店主理人半身像",
+            }],
+        }, ensure_ascii=False)
+        result = canvas_agent.normalize_model_result(raw, request)
+        self.assertEqual(result["plan"]["guides"][0]["target"], "image")
+        self.assertFalse(result["plan"]["requires_confirmation"])
+        bad = raw.replace('"image"', '"https://evil.example"', 1)
+        with self.assertRaisesRegex(ValueError, "引导目标"):
+            canvas_agent.normalize_model_result(bad, request)
 
     def test_model_call_uses_bounded_structured_context(self):
         reply = json.dumps({"content": "可以。", "actions": [], "warnings": []}, ensure_ascii=False)
