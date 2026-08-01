@@ -999,6 +999,16 @@
       var input=container&&container.querySelector('[data-field="'+name+'"]');
       return input?input.value:'';
     }
+    function readDialogueLines(form){
+      return Array.prototype.map.call(
+        form.querySelectorAll('.nc-short-drama-dialogue[data-dialogue-index]'),
+        function(row){
+          return {
+            id:valueFrom(row,'id'),character_key:valueFrom(row,'character_key'),text:valueFrom(row,'text')
+          };
+        }
+      );
+    }
     function readSettings(){
       var form=host.querySelector('.nc-short-drama-settings-form');
       return {title:valueFrom(form,'title'),synopsis:valueFrom(form,'synopsis'),ratio:valueFrom(form,'ratio'),
@@ -1021,9 +1031,7 @@
       var form=host.querySelector('.nc-short-drama-script-form');
       return {title:valueFrom(form,'title'),logline:valueFrom(form,'logline'),hook:valueFrom(form,'hook'),
         conflict_text:valueFrom(form,'conflict_text'),turn_text:valueFrom(form,'turn_text'),ending:valueFrom(form,'ending'),
-        dialogue_lines:Array.prototype.map.call(form.querySelectorAll('[data-dialogue-index]'),function(row){
-          return {id:valueFrom(row,'id'),character_key:valueFrom(row,'character_key'),text:valueFrom(row,'text')};
-        })};
+        dialogue_lines:readDialogueLines(form)};
     }
     function readShots(){
       return Array.prototype.map.call(host.querySelectorAll('[data-shot-index]'),function(card){
