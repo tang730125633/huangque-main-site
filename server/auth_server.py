@@ -2239,7 +2239,7 @@ def select_announcement_audience(connection, audience, cutoff):
     if err:
         return None, err
     cutoff = int(cutoff)
-    where = "role='member' AND COALESCE(account_status,'active')='active'"
+    where = "role IN ('member','admin') AND COALESCE(account_status,'active')='active'"
     params = []
     if audience["mode"] == "tiers":
         holes = ",".join("?" * len(audience["tiers"]))
