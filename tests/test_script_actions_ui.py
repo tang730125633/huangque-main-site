@@ -110,7 +110,8 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("BREAKDOWN_HISTORY_KEY='hq_script_breakdown_history'", self.html)
         self.assertIn("switchMode('breakdown')", self.html)
         self.assertIn("renderBreakdown({source_url:m.source_url", self.html)
-        self.assertIn("renderBreakdownReverse({type:'breakdown_reverse'", self.html)
+        self.assertIn("renderBreakdownReverse({", self.html)
+        self.assertIn("type:'breakdown_reverse',source_url:m.source_url", self.html)
         self.assertIn("analysis:m.analysis||''", self.html)
 
     def test_breakdown_analysis_is_rendered_and_saved_to_history(self):
@@ -160,7 +161,8 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("} else if(result.type==='breakdown_reverse'){", self.html)
         self.assertIn("switchBreakdownTool('reverse_prompt')", self.html)
         self.assertIn("document.getElementById('bdReversePromptText')", self.html)
-        self.assertIn("return prompt && prompt!==sourceUrl ? prompt : '';", self.html)
+        self.assertIn("function validReversePromptText(value, sourceUrl)", self.html)
+        self.assertIn("return card ? validReversePromptText(card.textContent,sourceUrl) : '';", self.html)
         self.assertIn("location.href=handoffUrl('banana.html',prompt)", self.html)
         self.assertIn("if(currentMode==='breakdown' && isBreakdownReverseTool()) txt=reversePromptText();", self.html)
         self.assertIn("提示词反推暂仅支持单条视频链接", self.html)
@@ -174,8 +176,10 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("saveBreakdownHistory(item);", self.html)
 
     def test_reverse_history_is_saved_and_restored(self):
-        self.assertIn("prompt:(bd.prompt||'')", self.html)
-        self.assertIn("return !!((Array.isArray(meta.scenes)&&meta.scenes.length)||String(meta.prompt||'').trim());", self.html)
+        self.assertIn("prompt:isReverse?reverseResultPrompt(bd):(bd.prompt||'')", self.html)
+        self.assertIn("var prompt=meta.type==='breakdown_reverse'?reverseResultPrompt(meta):String(meta.prompt||'').trim();", self.html)
+        self.assertIn("timeline_audit:isReverse?(bd.timeline_audit||null):null", self.html)
+        self.assertIn("quality_score:isReverse?(bd.quality_score||null):null", self.html)
         self.assertIn("renderBreakdownReverse(result); saveBreakdownHistory(result); loadHistory();", self.html)
         self.assertIn("isReverse?'反推':'拆解'", self.html)
 

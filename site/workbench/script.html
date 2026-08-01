@@ -440,13 +440,25 @@
   }
   function isBreakdownReverseTool(){ return currentBreakdownTool==='reverse_prompt'; }
   function breakdownSceneList(){ return normalizeBreakdownScenes((lastBreakdown&&lastBreakdown.scenes)||[]); }
+  function isReversePromptErrorText(value){
+    var text=String(value||'').trim();
+    return /^(?:反推失败|拆解失败|反推结果为空)[:：]?/.test(text)
+      || /(?:^|[·\s])已退点(?:$|[·\s])/.test(text);
+  }
+  function validReversePromptText(value, sourceUrl){
+    var text=String(value||'').trim();
+    var source=String(sourceUrl||'').trim();
+    return text && text!==source && !isReversePromptErrorText(text) ? text : '';
+  }
+  function reverseResultPrompt(bd){
+    bd=bd||{};
+    return validReversePromptText(bd.prompt,bd.source_url)
+      ||validReversePromptText(reverseLegacyPrompt(bd.sections),bd.source_url);
+  }
   function reversePromptText(){
     var card=document.getElementById('bdReversePromptText');
-    var domText=card ? String(card.textContent||'').trim() : '';
-    if(domText) return domText;
-    var prompt=((lastBreakdownReverse&&lastBreakdownReverse.prompt)||'').trim();
     var sourceUrl=((lastBreakdownReverse&&lastBreakdownReverse.source_url)||'').trim();
-    return prompt && prompt!==sourceUrl ? prompt : '';
+    return card ? validReversePromptText(card.textContent,sourceUrl) : '';
   }
   function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
   function escAttr(s){ return esc(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
@@ -539,19 +551,21 @@
     if(navigator.clipboard&&navigator.clipboard.writeText){
       return navigator.clipboard.writeText(text).then(function(){ if(onDone) onDone(); return true; }).catch(function(){ return false; });
     }
+    var ta=null;
     try{
-      var ta=document.createElement('textarea');
+      ta=document.createElement('textarea');
       ta.value=text;
       ta.setAttribute('readonly','readonly');
       ta.style.cssText='position:fixed;left:-9999px;top:0;opacity:0;';
       document.body.appendChild(ta);
       ta.select();
-      document.execCommand('copy');
-      document.body.removeChild(ta);
-      if(onDone) onDone();
-      return Promise.resolve(true);
+      var copied=document.execCommand('copy');
+      if(copied&&onDone) onDone();
+      return Promise.resolve(!!copied);
     }catch(_e){
       return Promise.resolve(false);
+    }finally{
+      if(ta&&ta.parentNode) ta.parentNode.removeChild(ta);
     }
   }
   function setPicked(id,selector,value){
@@ -720,20 +734,94 @@
     bindSceneHandoffs();
     syncModeUi();
   }
+  function reverseLegacyPrompt(sections){
+    if(!sections||typeof sections!=='object'||Array.isArray(sections)) return '';
+    var labels={subject:'主体',scene:'场景',composition:'构图',action:'动作',lighting:'光影',style:'风格',parameters:'参数'};
+    return Object.keys(labels).map(function(key){
+      var value=sections[key];
+      return value===undefined||value===null||!String(value).trim()?'':labels[key]+'：'+String(value).trim();
+    }).filter(Boolean).join('\n');
+  }
+  function reverseAuditData(bd){
+    bd=bd||{};
+    var sectionAudit=(bd.sections&&typeof bd.sections==='object'&&!Array.isArray(bd.sections))
+      ?bd.sections.reverse_audit:null;
+    return (bd.reverse_audit&&typeof bd.reverse_audit==='object'&&!Array.isArray(bd.reverse_audit))
+      ?bd.reverse_audit
+      :((sectionAudit&&typeof sectionAudit==='object'&&!Array.isArray(sectionAudit))?sectionAudit:{});
+  }
+  function reverseFixedSecond(value){
+    var number=Number(value);
+    return Number.isFinite(number)?number.toFixed(1):'';
+  }
+  function reverseTransitionText(transition){
+    if(!transition||typeof transition!=='object') return '';
+    var labels={none:'连续镜头',hard_cut:'直接硬切',fade:'淡入淡出',dissolve:'叠化',wipe:'划像',occlusion:'遮挡转场',whip_pan:'甩镜转场',push_pull:'推拉转场',unknown:'类型未确认'};
+    var label=labels[transition.type]||String(transition.type||'').trim();
+    var description=String(transition.description||'').trim();
+    return label+(description?'（'+description+'）':'');
+  }
+  function reverseTimelineSegments(bd){
+    var audit=reverseAuditData(bd);
+    if(Array.isArray(audit.segments)&&audit.segments.length) return audit.segments;
+    var timeline=(bd&&bd.timeline_audit)||audit.timeline_audit||{};
+    return (Array.isArray(timeline.windows)?timeline.windows:[]).map(function(window,index){
+      return {
+        segment_id:index+1,
+        start_seconds:Array.isArray(window)?window[0]:window.start_seconds,
+        end_seconds:Array.isArray(window)?window[1]:window.end_seconds,
+        transition_from_previous:null
+      };
+    });
+  }
+  function reverseAuditHtml(bd){
+    bd=bd||{};
+    var audit=reverseAuditData(bd);
+    var score=(bd.quality_score&&typeof bd.quality_score==='object')?bd.quality_score:audit.quality_score;
+    var scoreHtml='';
+    if(score&&typeof score==='object'&&!Array.isArray(score)){
+      var components=score.components||{};
+      var scoreItems=[
+        ['综合',score.total],
+        ['证据覆盖',components.source_evidence_coverage],
+        ['生成就绪',components.generation_readiness],
+        ['事实一致',components.factual_consistency]
+      ].filter(function(item){return Number.isFinite(Number(item[1]));});
+      if(scoreItems.length){
+        scoreHtml='<div data-reverse-score style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">'
+          +scoreItems.map(function(item){return '<span style="padding:5px 9px;border:1px solid rgba(167,139,250,.22);border-radius:8px;background:rgba(167,139,250,.06);font-size:11px;color:#c4b5fd;">'+item[0]+' '+esc(String(Number(item[1])))+'</span>';}).join('')
+          +'</div>';
+      }
+    }
+    var segments=reverseTimelineSegments(bd);
+    var timelineHtml=segments.length?'<div data-reverse-timeline style="margin-top:14px;display:grid;gap:8px;">'
+      +'<div style="font-size:12px;font-weight:700;color:#94a4bb;">权威时间轴与转场</div>'
+      +segments.map(function(segment,index){
+        var start=reverseFixedSecond(segment.start_seconds), end=reverseFixedSecond(segment.end_seconds);
+        var transition=index?reverseTransitionText(segment.transition_from_previous):'';
+        var readiness=segment.readiness||{};
+        var ready=Number(readiness.ready), applicable=Number(readiness.applicable);
+        var readinessText=Number.isFinite(ready)&&Number.isFinite(applicable)&&applicable>0?' · 生成槽位 '+ready+'/'+applicable:'';
+        return '<div style="display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border-radius:9px;background:rgba(148,164,187,.05);font-size:12px;color:#dbe5f2;">'
+          +'<span style="color:#a78bfa;font-weight:700;white-space:nowrap;">第'+esc(String(segment.segment_id||index+1))+'段</span>'
+          +'<span class="mono" style="white-space:nowrap;">'+esc(start)+'–'+esc(end)+' 秒</span>'
+          +(transition?'<span>· '+esc(transition)+'</span>':'')
+          +(readinessText?'<span style="color:#94a4bb;">'+esc(readinessText)+'</span>':'')
+          +'</div>';
+      }).join('')+'</div>':'';
+    return scoreHtml||timelineHtml?'<div class="sc-reverse-audit">'+scoreHtml+timelineHtml+'</div>':'';
+  }
   function renderBreakdownReverse(bd){
     lastBreakdownReverse=bd;
     bdEditing=false; if(bdEditBtn) bdEditBtn.textContent='✏️ 编辑分镜'; if(bdEditCancelBtn) bdEditCancelBtn.style.display='none';
-    var prompt=((bd&&bd.prompt)||'').trim();
-    var labels={subject:'主体',scene:'场景',composition:'构图',action:'动作',lighting:'光影',style:'风格',parameters:'参数'};
-    var sectionOrder=['subject','scene','composition','action','lighting','style','parameters'];
-    var sectionHtml=(bd&&bd.sections)?'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;">'
-      +sectionOrder.map(function(key){ var value=(bd.sections&&bd.sections[key])||''; return '<div class="sc-card" style="display:block;"><div style="font-size:12px;font-weight:700;color:#c4b5fd;margin-bottom:7px;">'+labels[key]+'</div><div style="font-size:13px;line-height:1.75;color:#f5f3ff;">'+esc(value)+'</div></div>'; }).join('')+'</div>':'';
+    var prompt=reverseResultPrompt(bd);
+    var auditHtml=reverseAuditHtml(bd);
     if(meta) meta.innerHTML='<span style="color:#a78bfa;">反推</span><span style="color:#5c6b82;">·</span><span>'+esc((bd&&bd.source_title)||'视频提示词反推')+'</span><span style="color:#5c6b82;">·</span><span>'+esc(platformText(bd&&bd.source_platform))+'</span><span style="color:#5c6b82;">·</span><span class="mono">'+esc(String(fmtDur((bd&&bd.duration)||'')))+'s</span>';
     scenes.innerHTML=prompt
-      ? sectionHtml+'<div id="bdReverseResult" class="sc-card" style="display:'+(sectionHtml?'none':'block')+';">'
+      ? '<div id="bdReverseResult" class="sc-card" style="display:block;">'
         +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:12px;font-weight:700;color:#c4b5fd;"><span>✨</span><span>反推提示词</span></div>'
         +'<div id="bdReversePromptText" style="font-size:14px;line-height:1.85;color:#f5f3ff;white-space:pre-wrap;word-break:break-word;">'+esc(prompt)+'</div>'
-        +'</div>'
+        +auditHtml+'</div>'
       : '<div style="padding:24px;text-align:center;color:#f4708a;">反推结果为空，请重试</div>';
     if(bdResultMeta && bd && bd.source_url){ bdResultMeta.style.display=''; }
     if(bdSourceLink && bd && bd.source_url){ bdSourceLink.href=bd.source_url; }
@@ -744,6 +832,7 @@
   }
   function breakdownMetaFromResult(bd){
     bd=bd||{};
+    var isReverse=(bd.type==='breakdown_reverse');
     return {
       type:bd.type||'breakdown',
       source_url:bd.source_url||'',
@@ -752,23 +841,32 @@
       duration:bd.duration||'',
       analysis:(bd.analysis||''),
       scenes:normalizeBreakdownScenes(bd.scenes||[]),
-      prompt:(bd.prompt||''),
+      prompt:isReverse?reverseResultPrompt(bd):(bd.prompt||''),
       source_type:bd.source_type||'',
       sections:bd.sections||null,
-      frame_thumbnails:(bd.frame_thumbnails||[]).slice(0,2)
+      frame_thumbnails:(bd.frame_thumbnails||[]).slice(0,isReverse?8:2),
+      reference_thumbnail_indices:isReverse?(bd.reference_thumbnail_indices||[]):[],
+      audit_thumbnail_indices:isReverse?(bd.audit_thumbnail_indices||[]):[],
+      frame_manifest:isReverse?(bd.frame_manifest||[]):[],
+      timeline_audit:isReverse?(bd.timeline_audit||null):null,
+      quality_score:isReverse?(bd.quality_score||null):null,
+      reverse_audit:isReverse?(bd.reverse_audit||null):null
     };
   }
   function isBreakdownHistoryMeta(meta){
     meta=meta||{};
-    return !!((Array.isArray(meta.scenes)&&meta.scenes.length)||String(meta.prompt||'').trim());
+    var prompt=meta.type==='breakdown_reverse'?reverseResultPrompt(meta):String(meta.prompt||'').trim();
+    return !!((Array.isArray(meta.scenes)&&meta.scenes.length)||prompt);
   }
   function saveBreakdownHistory(bd){
     if(!bd) return;
+    var savedMeta=breakdownMetaFromResult(bd);
+    if(!isBreakdownHistoryMeta(savedMeta)) return;
     var item={
       kind:'breakdown',
       title:bd.source_title||((bd.type==='breakdown_reverse')?'视频提示词反推':'爆款拆解'),
       created_at:Math.floor(Date.now()/1000),
-      meta:breakdownMetaFromResult(bd)
+      meta:savedMeta
     };
     try{
       var list=JSON.parse(localStorage.getItem(BREAKDOWN_HISTORY_KEY)||'[]');
@@ -1308,7 +1406,15 @@
         switchMode('breakdown');
         if(isReverse){
           switchBreakdownTool('reverse_prompt');
-          renderBreakdownReverse({type:'breakdown_reverse',source_url:m.source_url,source_title:m.source_title||heading,source_platform:m.source_platform,duration:m.duration,prompt:m.prompt||'',frame_thumbnails:m.frame_thumbnails||[]});
+          renderBreakdownReverse({
+            type:'breakdown_reverse',source_url:m.source_url,source_title:m.source_title||heading,
+            source_platform:m.source_platform,duration:m.duration,prompt:m.prompt||'',
+            sections:m.sections||null,frame_thumbnails:m.frame_thumbnails||[],
+            reference_thumbnail_indices:m.reference_thumbnail_indices||[],
+            audit_thumbnail_indices:m.audit_thumbnail_indices||[],frame_manifest:m.frame_manifest||[],
+            timeline_audit:m.timeline_audit||null,quality_score:m.quality_score||null,
+            reverse_audit:m.reverse_audit||null
+          });
         }else{
           switchBreakdownTool('scenes');
           renderBreakdown({source_url:m.source_url,source_title:m.source_title||heading,source_platform:m.source_platform,duration:m.duration,analysis:m.analysis||'',scenes:list,frame_thumbnails:m.frame_thumbnails||[]});
@@ -1802,13 +1908,22 @@
       }
     });
   }; }
-  if(bdReverseCopyBtn){ var reverseCopyOrig=bdReverseCopyBtn.innerHTML; bdReverseCopyBtn.onclick=function(){
+  var reverseCopyOrig=bdReverseCopyBtn?bdReverseCopyBtn.innerHTML:'';
+  function copyReversePrompt(){
     var prompt=reversePromptText();
-    if(!prompt) return;
-    if(navigator.clipboard) navigator.clipboard.writeText(prompt);
-    bdReverseCopyBtn.textContent='已复制 ✓';
-    setTimeout(function(){ bdReverseCopyBtn.innerHTML=reverseCopyOrig; },1500);
-  }; }
+    if(!prompt){
+      if(window.HQ&&window.HQ.toast) HQ.toast('没有可复制的有效提示词');
+      return Promise.resolve(false);
+    }
+    return copyText(prompt,function(){
+      bdReverseCopyBtn.textContent='已复制 ✓';
+      setTimeout(function(){ bdReverseCopyBtn.innerHTML=reverseCopyOrig; },1500);
+    }).then(function(copied){
+      if(!copied&&window.HQ&&window.HQ.toast) HQ.toast('复制失败，请检查浏览器剪贴板权限');
+      return copied;
+    });
+  }
+  if(bdReverseCopyBtn){ bdReverseCopyBtn.onclick=copyReversePrompt; }
   if(bdReverseDrawBtn){ bdReverseDrawBtn.onclick=function(){
     var prompt=reversePromptText();
     if(!prompt){ if(window.HQ&&window.HQ.toast) HQ.toast('请先完成提示词反推'); return; }
