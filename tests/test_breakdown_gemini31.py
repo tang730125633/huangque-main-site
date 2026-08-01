@@ -2,10 +2,12 @@
 import io
 import json
 import pathlib
+import sqlite3
 import sys
 import tempfile
 import unittest
 import urllib.error
+from contextlib import closing
 from unittest import mock
 
 
@@ -379,7 +381,11 @@ class GeminiReverseRequestTests(unittest.TestCase):
                 gemini_reverse.analyze_video(
                     self.path, "video/mp4", "", 16.0, "local", ""
                 )
-        deleted.assert_called_once_with(uploaded, "test-key")
+        deleted.assert_called_once_with(
+            uploaded,
+            "test-key",
+            cleanup_jdb=None,
+        )
 
     def test_runtime_integration_uses_gemini_and_exposes_only_audit_summary(self):
         gemini_result = {
@@ -564,6 +570,7 @@ class GeminiReverseHttpTests(unittest.TestCase):
         self.assertEqual(result, {
             "status": "pending_provider_cleanup",
             "attempts": 3,
+            "persisted": False,
         })
         self.assertEqual(opened.call_count, 3)
         self.assertEqual(
@@ -577,6 +584,116 @@ class GeminiReverseHttpTests(unittest.TestCase):
         self.assertNotIn("files/test-media", logged)
         self.assertNotIn("test-key", logged)
         self.assertNotIn("secret cleanup detail", logged)
+
+    def _cleanup_db(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = pathlib.Path(directory.name) / "content_jobs.db"
+
+        def connect():
+            connection = sqlite3.connect(str(path))
+            connection.row_factory = sqlite3.Row
+            return connection
+
+        return connect
+
+    def test_cleanup_exhaustion_persists_and_worker_recovery_removes_record(self):
+        jdb = self._cleanup_db()
+        file_info = {
+            "name": "files/test-media",
+            "uri": "https://generativelanguage.googleapis.com/file/test-media",
+        }
+        with mock.patch.object(
+                 gemini_reverse,
+                 "_delete_resource",
+                 side_effect=RuntimeError("provider unavailable"),
+             ) as immediate_delete, \
+             mock.patch.object(gemini_reverse.time, "sleep"):
+            result = gemini_reverse._delete_file(
+                file_info,
+                "test-key",
+                cleanup_jdb=jdb,
+            )
+        self.assertEqual(immediate_delete.call_count, 3)
+        self.assertTrue(result["persisted"])
+        with closing(jdb()) as connection:
+            row = connection.execute(
+                "SELECT resource_name,created_at,attempts,next_retry_at," \
+                "expires_at,status FROM gemini_file_cleanup_outbox"
+            ).fetchone()
+        self.assertEqual(row["resource_name"], "files/test-media")
+        self.assertGreater(row["created_at"], 0)
+        self.assertEqual(row["attempts"], 3)
+        self.assertGreater(row["next_retry_at"], row["created_at"])
+        self.assertEqual(row["status"], "pending")
+        self.assertLessEqual(
+            row["expires_at"] - row["created_at"],
+            gemini_reverse.CLEANUP_QUEUE_RETENTION_SECONDS,
+        )
+
+        # Simulate a later worker/process recovery after the durable retry time.
+        with mock.patch.object(gemini_reverse, "_delete_resource") as recovered:
+            drained = gemini_reverse.drain_cleanup_once(
+                jdb,
+                api_key="test-key",
+                now=row["next_retry_at"],
+            )
+        self.assertTrue(drained)
+        recovered.assert_called_once_with("files/test-media", "test-key")
+        with closing(jdb()) as connection:
+            remaining = connection.execute(
+                "SELECT COUNT(*) FROM gemini_file_cleanup_outbox"
+            ).fetchone()[0]
+        self.assertEqual(remaining, 0)
+
+    def test_cleanup_retry_boundary_removes_record_and_logs_final_state(self):
+        jdb = self._cleanup_db()
+        gemini_reverse._persist_cleanup(
+            jdb,
+            "files/test-media",
+            gemini_reverse.CLEANUP_QUEUE_MAX_ATTEMPTS,
+            now=100,
+        )
+        output = io.StringIO()
+        with mock.patch("sys.stdout", output):
+            claimed = gemini_reverse._claim_cleanup(jdb, now=131)
+        self.assertIsNone(claimed)
+        with closing(jdb()) as connection:
+            remaining = connection.execute(
+                "SELECT COUNT(*) FROM gemini_file_cleanup_outbox"
+            ).fetchone()[0]
+        self.assertEqual(remaining, 0)
+        self.assertIn("retry_window_exhausted", output.getvalue())
+        self.assertNotIn("files/test-media", output.getvalue())
+
+    def test_cleanup_worker_is_registered_as_daemon_startup_recovery(self):
+        jdb = self._cleanup_db()
+        previous = gemini_reverse._cleanup_worker_started
+        self.addCleanup(
+            setattr,
+            gemini_reverse,
+            "_cleanup_worker_started",
+            previous,
+        )
+        gemini_reverse._cleanup_worker_started = False
+        thread = mock.MagicMock()
+        with mock.patch.object(
+                 gemini_reverse.threading,
+                 "Thread",
+                 return_value=thread,
+             ) as thread_factory:
+            self.assertTrue(gemini_reverse.start_cleanup_worker(jdb))
+            self.assertFalse(gemini_reverse.start_cleanup_worker(jdb))
+        thread.start.assert_called_once_with()
+        call = thread_factory.call_args
+        self.assertIs(call.kwargs["target"], gemini_reverse.cleanup_scanner)
+        self.assertEqual(call.kwargs["args"], (jdb,))
+        self.assertEqual(call.kwargs["name"], "gemini-file-cleanup-recover")
+        self.assertTrue(call.kwargs["daemon"])
+        core_source = pathlib.Path(
+            breakdown.__file__
+        ).with_name("core.py").read_text(encoding="utf-8")
+        self.assertIn("gemini_reverse.start_cleanup_worker(jdb)", core_source)
 
 
 if __name__ == "__main__":

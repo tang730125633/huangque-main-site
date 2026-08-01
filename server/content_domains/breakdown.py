@@ -516,6 +516,7 @@ def _reverse_from_frames(
             platform,
             script_text,
             heartbeat=lambda: _heartbeat(job_id, "analyzing"),
+            cleanup_jdb=jdb,
         )
         return {
             "type": "breakdown_reverse",

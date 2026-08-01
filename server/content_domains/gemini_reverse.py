@@ -11,9 +11,11 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
+from contextlib import closing
 from difflib import SequenceMatcher
 
 
@@ -42,6 +44,15 @@ UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 FILE_POLL_INITIAL_DELAY_SECONDS = 1.0
 FILE_POLL_MAX_DELAY_SECONDS = 8.0
 CLEANUP_RETRY_DELAYS_SECONDS = (1.0, 3.0)
+CLEANUP_QUEUE_RETRY_BASE_SECONDS = 30
+CLEANUP_QUEUE_RETRY_MAX_SECONDS = 3600
+CLEANUP_QUEUE_MAX_ATTEMPTS = 12
+CLEANUP_QUEUE_RETENTION_SECONDS = 47 * 3600
+CLEANUP_QUEUE_LEASE_SECONDS = 60
+CLEANUP_QUEUE_SCAN_SECONDS = 30
+
+_cleanup_worker_lock = threading.Lock()
+_cleanup_worker_started = False
 
 UNKNOWN = "unknown"
 NOT_APPLICABLE = "not_applicable"
@@ -406,58 +417,325 @@ def _wait_for_file(file_info, api_key, deadline=None, heartbeat=None):
         delay = min(delay * 2.0, FILE_POLL_MAX_DELAY_SECONDS)
 
 
-def _delete_file(file_info, api_key):
-    if not file_info:
-        return {"status": "not_needed", "attempts": 0}
-    name = str(file_info.get("name") or "")
-    resource_sha256 = hashlib.sha256(
-        name.encode("utf-8", "replace")
-    ).hexdigest()
+def _file_name(value):
+    name = str(value or "")
+    if not re.fullmatch(
+        r"files/[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?", name
+    ):
+        raise ValueError("Gemini Files API resource name is invalid")
+    return name
+
+
+def _cleanup_audit(name, status, **fields):
+    audit = {
+        "resource_sha256": hashlib.sha256(
+            str(name or "").encode("utf-8", "replace")
+        ).hexdigest(),
+        "status": status,
+    }
+    audit.update(fields)
+    print(
+        "[breakdown] gemini cleanup audit=%s"
+        % json.dumps(audit, ensure_ascii=True),
+        flush=True,
+    )
+
+
+def ensure_cleanup_table(jdb, now=None):
+    current = int(time.time() if now is None else now)
+    with closing(jdb()) as connection:
+        connection.execute("""CREATE TABLE IF NOT EXISTS gemini_file_cleanup_outbox(
+            resource_name TEXT PRIMARY KEY,
+            created_at INTEGER NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            next_retry_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            lease_until INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT NOT NULL DEFAULT '',
+            updated_at INTEGER NOT NULL
+        )""")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_gemini_cleanup_ready "
+            "ON gemini_file_cleanup_outbox(status,next_retry_at,created_at)"
+        )
+        connection.execute(
+            "UPDATE gemini_file_cleanup_outbox "
+            "SET status='pending',lease_until=0,next_retry_at=?,updated_at=? "
+            "WHERE status='deleting' AND lease_until<=?",
+            (current, current, current),
+        )
+        connection.commit()
+
+
+def _persist_cleanup(jdb, name, attempts, now=None):
+    name = _file_name(name)
+    current = int(time.time() if now is None else now)
+    ensure_cleanup_table(jdb, now=current)
+    with closing(jdb()) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "INSERT OR IGNORE INTO gemini_file_cleanup_outbox(" \
+            "resource_name,created_at,attempts,next_retry_at,expires_at," \
+            "status,lease_until,last_error,updated_at) " \
+            "VALUES(?,?,?,?,?,'pending',0,'delete_failed',?)",
+            (
+                name,
+                current,
+                int(attempts),
+                current + CLEANUP_QUEUE_RETRY_BASE_SECONDS,
+                current + CLEANUP_QUEUE_RETENTION_SECONDS,
+                current,
+            ),
+        )
+        connection.execute(
+            "UPDATE gemini_file_cleanup_outbox "
+            "SET attempts=MAX(attempts,?),status='pending',lease_until=0," \
+            "next_retry_at=MIN(next_retry_at,?),last_error='delete_failed'," \
+            "updated_at=? WHERE resource_name=?",
+            (
+                int(attempts),
+                current + CLEANUP_QUEUE_RETRY_BASE_SECONDS,
+                current,
+                name,
+            ),
+        )
+        connection.commit()
+
+
+def _claim_cleanup(jdb, now=None):
+    current = int(time.time() if now is None else now)
+    ensure_cleanup_table(jdb, now=current)
+    exhausted = []
+    with closing(jdb()) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        rows = connection.execute(
+            "SELECT resource_name,attempts,created_at FROM " \
+            "gemini_file_cleanup_outbox WHERE " \
+            "attempts>=? OR expires_at<=?",
+            (CLEANUP_QUEUE_MAX_ATTEMPTS, current),
+        ).fetchall()
+        for row in rows:
+            exhausted.append({
+                "resource_name": row["resource_name"],
+                "attempts": int(row["attempts"] or 0),
+                "created_at": int(row["created_at"] or 0),
+            })
+        connection.execute(
+            "DELETE FROM gemini_file_cleanup_outbox WHERE " \
+            "attempts>=? OR expires_at<=?",
+            (CLEANUP_QUEUE_MAX_ATTEMPTS, current),
+        )
+        row = connection.execute(
+            "SELECT resource_name,created_at,attempts,next_retry_at,expires_at " \
+            "FROM gemini_file_cleanup_outbox WHERE status='pending' " \
+            "AND next_retry_at<=? ORDER BY next_retry_at,created_at LIMIT 1",
+            (current,),
+        ).fetchone()
+        claimed = None
+        if row:
+            cursor = connection.execute(
+                "UPDATE gemini_file_cleanup_outbox " \
+                "SET status='deleting',attempts=attempts+1,lease_until=?," \
+                "updated_at=? WHERE resource_name=? AND status='pending'",
+                (
+                    current + CLEANUP_QUEUE_LEASE_SECONDS,
+                    current,
+                    row["resource_name"],
+                ),
+            )
+            if cursor.rowcount == 1:
+                claimed = {
+                    "resource_name": row["resource_name"],
+                    "created_at": int(row["created_at"] or 0),
+                    "attempts": int(row["attempts"] or 0) + 1,
+                    "expires_at": int(row["expires_at"] or 0),
+                }
+        connection.commit()
+    for item in exhausted:
+        _cleanup_audit(
+            item["resource_name"],
+            "retry_window_exhausted",
+            attempts=item["attempts"],
+            created_at=item["created_at"],
+            cleanup_pending=False,
+        )
+    return claimed
+
+
+def _delete_resource(name, api_key):
     request = urllib.request.Request(
-        API_BASE + "/v1beta/" + name,
+        API_BASE + "/v1beta/" + _file_name(name),
         headers={"x-goog-api-key": api_key},
         method="DELETE",
     )
+    with _open(
+        request,
+        deadline=time.monotonic() + 15,
+        retry_transient=False,
+    ) as response:
+        response.read(1024)
+
+
+def _complete_cleanup(jdb, row, now=None):
+    current = int(time.time() if now is None else now)
+    with closing(jdb()) as connection:
+        connection.execute(
+            "DELETE FROM gemini_file_cleanup_outbox " \
+            "WHERE resource_name=? AND status='deleting'",
+            (row["resource_name"],),
+        )
+        connection.commit()
+    _cleanup_audit(
+        row["resource_name"],
+        "deleted_by_recovery",
+        attempts=row["attempts"],
+        created_at=row["created_at"],
+        completed_at=current,
+        cleanup_pending=False,
+    )
+
+
+def _reschedule_cleanup(jdb, row, error, now=None):
+    current = int(time.time() if now is None else now)
+    attempts = int(row["attempts"] or 0)
+    expired = (
+        attempts >= CLEANUP_QUEUE_MAX_ATTEMPTS
+        or current >= int(row["expires_at"] or 0)
+    )
+    delay = min(
+        CLEANUP_QUEUE_RETRY_MAX_SECONDS,
+        CLEANUP_QUEUE_RETRY_BASE_SECONDS * (2 ** min(attempts, 10)),
+    )
+    with closing(jdb()) as connection:
+        if expired:
+            connection.execute(
+                "DELETE FROM gemini_file_cleanup_outbox " \
+                "WHERE resource_name=? AND status='deleting'",
+                (row["resource_name"],),
+            )
+        else:
+            connection.execute(
+                "UPDATE gemini_file_cleanup_outbox " \
+                "SET status='pending',lease_until=0,next_retry_at=?," \
+                "last_error=?,updated_at=? WHERE resource_name=? " \
+                "AND status='deleting'",
+                (
+                    current + delay,
+                    _safe_text(type(error).__name__, 80),
+                    current,
+                    row["resource_name"],
+                ),
+            )
+        connection.commit()
+    _cleanup_audit(
+        row["resource_name"],
+        "retry_window_exhausted" if expired else "recovery_retry_scheduled",
+        attempts=attempts,
+        next_retry_at=None if expired else current + delay,
+        cleanup_pending=not expired,
+        error=_safe_text(type(error).__name__, 80),
+    )
+
+
+def drain_cleanup_once(jdb, api_key=None, now=None):
+    key = str(api_key or os.environ.get("GEMINI_API_KEY") or "").strip()
+    if not key:
+        return False
+    row = _claim_cleanup(jdb, now=now)
+    if not row:
+        return False
+    try:
+        _delete_resource(row["resource_name"], key)
+    except Exception as error:
+        _reschedule_cleanup(jdb, row, error, now=now)
+    else:
+        _complete_cleanup(jdb, row, now=now)
+    return True
+
+
+def cleanup_scanner(jdb, interval=CLEANUP_QUEUE_SCAN_SECONDS):
+    while True:
+        try:
+            while drain_cleanup_once(jdb):
+                pass
+        except Exception as error:
+            print(
+                "[breakdown] gemini cleanup scanner error=%s"
+                % _safe_text(type(error).__name__, 80),
+                flush=True,
+            )
+        time.sleep(interval)
+
+
+def start_cleanup_worker(jdb):
+    global _cleanup_worker_started
+    ensure_cleanup_table(jdb)
+    with _cleanup_worker_lock:
+        if _cleanup_worker_started:
+            return False
+        _cleanup_worker_started = True
+    try:
+        threading.Thread(
+            target=cleanup_scanner,
+            args=(jdb,),
+            name="gemini-file-cleanup-recover",
+            daemon=True,
+        ).start()
+    except Exception:
+        with _cleanup_worker_lock:
+            _cleanup_worker_started = False
+        raise
+    return True
+
+
+def _delete_file(file_info, api_key, cleanup_jdb=None):
+    if not file_info:
+        return {"status": "not_needed", "attempts": 0}
+    name = _file_name(file_info.get("name"))
     attempts = len(CLEANUP_RETRY_DELAYS_SECONDS) + 1
     for attempt in range(attempts):
         try:
-            with _open(
-                request,
-                deadline=time.monotonic() + 15,
-                retry_transient=False,
-            ) as response:
-                response.read(1024)
-            audit = {
-                "resource_sha256": resource_sha256,
-                "attempt": attempt + 1,
-                "status": "deleted",
-                "cleanup_pending": False,
-            }
-            print(
-                "[breakdown] gemini cleanup audit=%s"
-                % json.dumps(audit, ensure_ascii=True),
-                flush=True,
+            _delete_resource(name, api_key)
+            _cleanup_audit(
+                name,
+                "deleted",
+                attempt=attempt + 1,
+                cleanup_pending=False,
             )
             return {"status": "deleted", "attempts": attempt + 1}
         except Exception as error:
             final_attempt = attempt + 1 == attempts
-            audit = {
-                "resource_sha256": resource_sha256,
-                "attempt": attempt + 1,
-                "status": "pending_provider_cleanup",
-                "cleanup_pending": True,
-                "error": _safe_text(type(error).__name__, 80),
-            }
-            if not final_attempt:
-                audit["retry_in_seconds"] = CLEANUP_RETRY_DELAYS_SECONDS[attempt]
-            print(
-                "[breakdown] gemini cleanup audit=%s"
-                % json.dumps(audit, ensure_ascii=True),
-                flush=True,
+            retry_in = None if final_attempt else CLEANUP_RETRY_DELAYS_SECONDS[attempt]
+            persisted = False
+            if final_attempt and cleanup_jdb:
+                try:
+                    _persist_cleanup(cleanup_jdb, name, attempts)
+                    persisted = True
+                except Exception as persist_error:
+                    _cleanup_audit(
+                        name,
+                        "persistence_failed",
+                        attempt=attempt + 1,
+                        cleanup_pending=True,
+                        error=_safe_text(type(persist_error).__name__, 80),
+                    )
+            _cleanup_audit(
+                name,
+                "pending_provider_cleanup",
+                attempt=attempt + 1,
+                cleanup_pending=True,
+                persisted=persisted,
+                retry_in_seconds=retry_in,
+                error=_safe_text(type(error).__name__, 80),
             )
             if not final_attempt:
-                time.sleep(CLEANUP_RETRY_DELAYS_SECONDS[attempt])
-    return {"status": "pending_provider_cleanup", "attempts": attempts}
+                time.sleep(retry_in)
+    return {
+        "status": "pending_provider_cleanup",
+        "attempts": attempts,
+        "persisted": persisted,
+    }
 
 
 def _instruction(title, duration, platform, transcript, windows, retry_error=""):
@@ -947,6 +1225,7 @@ def analyze_video(
     transcript,
     heartbeat=None,
     deadline=None,
+    cleanup_jdb=None,
 ):
     api_key = str(os.environ.get("GEMINI_API_KEY") or "").strip()
     if not api_key:
@@ -1074,4 +1353,4 @@ def analyze_video(
         raise ValueError("Gemini反推结果校验失败")
     finally:
         if uploaded:
-            _delete_file(uploaded, api_key)
+            _delete_file(uploaded, api_key, cleanup_jdb=cleanup_jdb)
