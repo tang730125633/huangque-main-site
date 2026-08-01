@@ -455,6 +455,7 @@
 
   // ===== 通知中心：任务结果、点数变化、系统公告 =====
   var _noticeState={kind:'all',items:[],loading:false};
+  var _legacyNoticeReadSync={};
   var _announcementState={notice:null,busy:false,returnFocus:null,shown:{}};
   var _friendsPanelHandler=null;
   function registerFriendsPanel(handler){
@@ -581,7 +582,10 @@
         popupUntil:x.popup_until||null
       });
     });
-    items.forEach(function(x){ x.read=x.serverId?!!x.serverReadAt:read.indexOf(x.id)>=0; });
+    items.forEach(function(x){
+      x.read=x.serverId?!!x.serverReadAt:read.indexOf(x.id)>=0;
+      if(!x.isAnnouncement&&!x.read&&x.serverId&&read.indexOf(x.id)>=0){x.read=true;syncLegacyNoticeRead(x)}
+    });
     return items.sort(function(a,b){ return Number(b.time||0)-Number(a.time||0); });
   }
   function formatNoticeTime(ms){
@@ -670,7 +674,12 @@
   }
   function notificationStateRequest(path){
     return fetch(path,{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json'},body:'{}'})
-      .then(function(r){ return r.json().catch(function(){return {};}).then(function(d){ if(!r.ok) throw new Error(d.detail||'通知状态保存失败'); return d; }); });
+      .then(function(r){ return r.json().catch(function(){return {};}).then(function(d){ if(!r.ok){var e=new Error(d.detail||'通知状态保存失败');e.status=r.status;throw e} return d; }); });
+  }
+  function syncLegacyNoticeRead(x){
+    if(!x||!x.serverId||_legacyNoticeReadSync[x.serverId])return;
+    _legacyNoticeReadSync[x.serverId]=true;
+    notificationStateRequest('/api/auth/notifications/'+encodeURIComponent(x.serverId)+'/read').then(function(d){x.serverReadAt=(d.notification&&d.notification.read_at)||Math.floor(Date.now()/1000)}).catch(function(){delete _legacyNoticeReadSync[x.serverId]});
   }
   function markNoticeRead(notice){
     var x=typeof notice==='string'?_noticeState.items.find(function(it){return it.id===notice;}):notice;
@@ -794,7 +803,10 @@
       else x.snoozedUntil=(d.notification&&d.notification.popup_snoozed_until)||Math.floor(Date.now()/1000)+86400;
       closeAnnouncement(); renderNotices(); updateNotificationBadge();
       if(action==='view') setTimeout(function(){ openNotificationPanel(); var row=document.querySelector('[data-notice-id="'+escapeAttr(x.id)+'"]'); if(row) row.scrollIntoView({block:'center'}); },30);
-    }).catch(function(err){ setAnnouncementBusy(false,(err&&err.message)||'保存失败，请重试'); });
+    }).catch(function(err){
+      if(err&&err.status===404){closeAnnouncement();loadNotices();return}
+      setAnnouncementBusy(false,(err&&err.message)||'保存失败，请重试');
+    });
   }
   function maybeOpenAnnouncement(){
     if(_announcementState.notice) return;
