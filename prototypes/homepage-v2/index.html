@@ -288,7 +288,7 @@
       logo.classList.add('is-assembling');
 
       const order = [0, 8, 2, 6, 4, 1, 7, 3, 5];
-      const offsets = [[-28,-24],[0,-32],[28,-22],[-32,0],[0,-12],[32,0],[-26,24],[0,32],[26,24]];
+      const offsets = [[-70,-58],[0,-76],[70,-58],[-78,0],[0,-34],[78,0],[-68,60],[0,78],[68,60]];
       const started = performance.now();
       const draw = now => {
         context.clearRect(0, 0, rect.width, rect.height);
@@ -300,7 +300,7 @@
         order.forEach((cell, index) => {
           const column = cell % 3;
           const row = Math.floor(cell / 3);
-          const progress = Math.max(0, Math.min(1, (now - started - index * 48) / 430));
+          const progress = Math.max(0, Math.min(1, (now - started - index * 58) / 540));
           const eased = 1 - Math.pow(1 - progress, 3);
           const tileWidth = rect.width / 3;
           const tileHeight = rect.height / 3;
@@ -310,8 +310,8 @@
           context.save();
           context.globalAlpha = progress;
           context.translate(x + offsets[cell][0] * (1 - eased), y + offsets[cell][1] * (1 - eased));
-          context.rotate((column - row) * .11 * (1 - eased));
-          context.scale(.72 + .28 * eased, .72 + .28 * eased);
+          context.rotate((column - row) * .2 * (1 - eased));
+          context.scale(.5 + .5 * eased, .5 + .5 * eased);
           context.drawImage(logoImage, column * logoImage.naturalWidth / 3, row * logoImage.naturalHeight / 3, logoImage.naturalWidth / 3, logoImage.naturalHeight / 3, -tileWidth / 2, -tileHeight / 2, tileWidth, tileHeight);
           context.restore();
         });

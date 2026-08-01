@@ -56,10 +56,11 @@ button{color:inherit}
 .hero-inner{width:min(980px,calc(100% - 48px));margin:auto;text-align:center}
 .hero-logo{width:86px;height:86px;display:grid;place-items:center;margin:auto;border:1px solid var(--line-strong);background:linear-gradient(145deg,#121d2c,#0c1420);box-shadow:0 24px 70px rgba(0,0,0,.28)}
 .hero-logo img{width:67px;height:60px;object-fit:contain}
-.hero-logo[data-logo-motion]{position:relative;overflow:hidden}
+.hero-logo[data-logo-motion]{position:relative;width:clamp(120px,10vw,144px);height:clamp(120px,10vw,144px);overflow:hidden}
 .hero-logo[data-logo-motion] img{transition:opacity .16s ease,transform .32s cubic-bezier(.22,1,.36,1)}
-.hero-logo-canvas{position:absolute;top:50%;left:50%;width:67px;height:60px;opacity:0;pointer-events:none;transform:translate(-50%,-50%);transition:opacity .16s ease}
-.hero-logo.is-assembling img{opacity:0;transform:scale(.94)}
+.hero-logo[data-logo-motion] img,.hero-logo[data-logo-motion] .hero-logo-canvas{width:clamp(94px,7.8vw,112px);height:clamp(84px,7vw,100px)}
+.hero-logo-canvas{position:absolute;top:50%;left:50%;opacity:0;pointer-events:none;transform:translate(-50%,-50%);transition:opacity .16s ease}
+.hero-logo.is-assembling img{opacity:0;transform:scale(.86)}
 .hero-logo.is-assembling .hero-logo-canvas{opacity:1}
 .hero-logo.is-settled img{animation:logo-settle .42s cubic-bezier(.22,1,.36,1)}
 .kicker{color:var(--gold);font:600 12px/1.4 var(--mono);letter-spacing:.14em;text-transform:uppercase}
@@ -189,7 +190,7 @@ footer{padding:34px 0;border-top:1px solid var(--line);background:#060a10;color:
 @keyframes grow-line{from{transform:scaleX(0)}to{transform:scaleX(1)}}
 @keyframes cursor{50%{opacity:0}}
 @keyframes reveal{from{opacity:.18;transform:translateY(42px)}to{opacity:1;transform:none}}
-@keyframes logo-settle{0%{transform:scale(.94)}55%{transform:scale(1.045)}100%{transform:none}}
+@keyframes logo-settle{0%{transform:scale(.86)}58%{transform:scale(1.07)}100%{transform:none}}
 
 @supports (animation-timeline:view()){
   [data-reveal]{animation:reveal linear both;animation-timeline:view();animation-range:entry 0% cover 30%}
