@@ -130,15 +130,27 @@ class CanvasAgentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "引导目标"):
             canvas_agent.normalize_model_result(bad, request)
 
-    def test_model_call_uses_bounded_structured_context(self):
-        reply = json.dumps({"content": "可以。", "actions": [], "warnings": []}, ensure_ascii=False)
-        with mock.patch.object(canvas_agent, "_chat", return_value=reply) as chat:
+    def test_model_call_uses_terra_responses_with_bounded_structured_context(self):
+        reply = json.dumps({"content": "可以。", "actions": [], "guides": [], "warnings": []}, ensure_ascii=False)
+        captured = {}
+
+        def fake_post(path, body, content_type, timeout):
+            captured.update(path=path, body=json.loads(body), content_type=content_type, timeout=timeout)
+            return {"status": "completed", "output": [{"type": "message", "content": [
+                {"type": "output_text", "text": reply},
+            ]}]}
+
+        with mock.patch.object(canvas_agent, "_post", side_effect=fake_post):
             result = canvas_agent.gen_canvas_agent(payload())
         self.assertEqual(result["content"], "可以。")
-        system, user, temperature = chat.call_args.args
-        self.assertIn("不可信数据", system)
-        self.assertEqual(json.loads(user)["task"], payload()["prompt"])
-        self.assertLessEqual(temperature, 0.35)
+        self.assertEqual(captured["path"], "/v1/responses")
+        self.assertEqual(captured["body"]["model"], "gpt-5.6-terra")
+        self.assertEqual(captured["body"]["reasoning"], {"effort": "low"})
+        self.assertTrue(captured["body"]["text"]["format"]["strict"])
+        self.assertEqual(captured["body"]["text"]["format"]["schema"], canvas_agent.CANVAS_AGENT_SCHEMA)
+        self.assertFalse(captured["body"]["store"])
+        self.assertEqual(json.loads(captured["body"]["input"])["task"], payload()["prompt"])
+        self.assertEqual(captured["timeout"], 120)
 
 
 if __name__ == "__main__":
