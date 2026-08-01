@@ -117,6 +117,8 @@ class CanvasAssetExtractionTests(unittest.TestCase):
         self.assertIn("btn.ondragstart=function(e)", app)
         self.assertIn("canvas.addEventListener('dragover'", app)
         self.assertIn("canvas.addEventListener('drop'", app)
+        self.assertIn("!Object.keys(nodes).length&&(e.clientX<r.left||e.clientY<r.top)", app)
+        self.assertIn("centerEmptyView();", app)
         self.assertRegex(app, r"type=asset\.type==='video'\?'videoAsset':'image'")
         self.assertIn("videoAsset:{name:'视频 · 素材'", app)
         self.assertIn("outputs.video=asset.url", app)
