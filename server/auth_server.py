@@ -4998,16 +4998,23 @@ class H(BaseHTTPRequestHandler):
                     return
                 c = db()
                 try:
-                    target = (query.get("user_id") or query.get("parent_id") or [""])[0]
+                    target = (query.get("user_id") or [""])[0]
                     if not target and (query.get("search") or [""])[0]:
                         term = "%" + (query.get("search") or [""])[0].strip() + "%"
-                        users = c.execute("SELECT id FROM users WHERE username LIKE ? OR display_name LIKE ? ORDER BY id LIMIT 20", (term, term)).fetchall()
-                        return self._send(200, {"ok": True, "items": [{"user_id": int(r["id"]), **business_cards.public_network_person(c, r["id"])} for r in users]})
-                    user = c.execute("SELECT id FROM users WHERE id=?", (target,)).fetchone()
+                        users = c.execute("SELECT id,username FROM users WHERE username LIKE ? OR display_name LIKE ? ORDER BY id LIMIT 20", (term, term)).fetchall()
+                        return self._send(200, {"ok": True, "items": [{"user_id": int(r["id"]), "username": r["username"], **business_cards.public_network_person(c, r["id"])} for r in users]})
+                    user = c.execute("SELECT id,username FROM users WHERE CAST(id AS TEXT)=? OR username=?", (target, target)).fetchone()
                     if not user:
                         return self._send(404, {"detail": "not found"})
-                    data = business_cards.children(c, user["id"], 1, (query.get("before_id") or ["0"])[0], (query.get("limit") or ["12"])[0])
-                    return self._send(200, {"ok": True, "user_id": int(user["id"]), **data})
+                    parent = (query.get("parent_id") or [""])[0]
+                    parent_id = business_cards.node_user_id(c, parent) if parent else int(user["id"])
+                    if parent and not parent_id:
+                        try: parent_id = int(parent)
+                        except ValueError: return self._send(404, {"detail": "not found"})
+                    data = business_cards.children(c, parent_id, (query.get("before_id") or ["0"])[0], (query.get("limit") or ["12"])[0], admin=True)
+                    root = business_cards.public_network_person(c, user["id"])
+                    root.update({"user_id": int(user["id"]), "username": user["username"]})
+                    return self._send(200, {"ok": True, "root": root, "user": root, "ancestors": business_cards.ancestors(c, user["id"]), "children": data["items"], **data})
                 except (ValueError, business_cards.CardError):
                     return self._send(400, {"detail": "分页参数无效"})
                 finally:
@@ -5018,18 +5025,17 @@ class H(BaseHTTPRequestHandler):
             c = db()
             try:
                 if p.endswith("/ancestors"):
-                    return self._send(200, {"ok": True, "items": business_cards.ancestors(c, row["id"])})
+                    return self._send(200, {"ok": True, "root": business_cards.public_network_person(c, row["id"]), "items": business_cards.ancestors(c, row["id"])})
                 parent = (query.get("parent") or ["self"])[0]
                 parent_id = row["id"]
                 if parent != "self":
-                    found = c.execute("SELECT user_id FROM business_cards WHERE public_id=?", (parent,)).fetchone()
-                    if not found:
+                    parent_id = business_cards.node_user_id(c, parent)
+                    if not parent_id:
                         return self._send(404, {"detail": "not found"})
-                    parent_id = int(found["user_id"])
                     if int(row["id"]) not in set(business_cards.ancestor_ids(c, parent_id)):
                         return self._send(404, {"detail": "not found"})
-                data = business_cards.children(c, parent_id, 1, (query.get("before_id") or ["0"])[0], (query.get("limit") or ["12"])[0])
-                return self._send(200, {"ok": True, **data})
+                data = business_cards.children(c, parent_id, (query.get("before_id") or ["0"])[0], (query.get("limit") or ["12"])[0])
+                return self._send(200, {"ok": True, "root": business_cards.public_network_person(c, parent_id), **data})
             except (ValueError, business_cards.CardError):
                 return self._send(400, {"detail": "分页参数无效"})
             finally:

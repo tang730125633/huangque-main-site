@@ -83,6 +83,23 @@ def init_schema(conn):
     )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cards_public ON business_cards(public_id,status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cards_network ON business_cards(user_id,status,discoverable_in_network)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS network_node_ids(
+        user_id INTEGER PRIMARY KEY, node_id TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL
+    )""")
+
+
+def node_id(conn, user_id):
+    row = conn.execute("SELECT node_id FROM network_node_ids WHERE user_id=?", (int(user_id),)).fetchone()
+    if row:
+        return row["node_id"]
+    value = secrets.token_urlsafe(18)
+    conn.execute("INSERT OR IGNORE INTO network_node_ids(user_id,node_id,created_at) VALUES(?,?,?)", (int(user_id), value, int(time.time())))
+    return conn.execute("SELECT node_id FROM network_node_ids WHERE user_id=?", (int(user_id),)).fetchone()["node_id"]
+
+
+def node_user_id(conn, value):
+    row = conn.execute("SELECT user_id FROM network_node_ids WHERE node_id=?", (str(value or ""),)).fetchone()
+    return int(row["user_id"]) if row else 0
 
 
 def _public_id(conn):
@@ -214,11 +231,13 @@ def media_key(conn, public_id, field, owner_id=None):
 
 
 def public_network_person(conn, user_id):
-    row = conn.execute("""SELECT u.display_name,c.public_id,c.headline,c.company,c.avatar_key,c.status,c.discoverable_in_network
+    row = conn.execute("""SELECT u.display_name,u.account_status,c.public_id,c.headline,c.company,c.avatar_key,c.status,c.discoverable_in_network
                           FROM users u LEFT JOIN business_cards c ON c.user_id=u.id WHERE u.id=?""", (int(user_id),)).fetchone()
-    if row and row["status"] == "published" and row["discoverable_in_network"]:
-        return {"public_id": row["public_id"], "name": row["display_name"] or "黄雀用户", "avatar": row["avatar_key"] or "", "headline": row["headline"] or "", "company": row["company"] or ""}
-    return {"public_id": "", "name": "匿名用户", "avatar": "", "headline": "", "company": ""}
+    children_count = conn.execute("SELECT COUNT(*) FROM user_invites WHERE inviter_user_id=? AND status='bound' AND risk_status='normal'", (int(user_id),)).fetchone()[0]
+    base = {"node_id": node_id(conn, user_id), "children_count": int(children_count or 0), "has_children": bool(children_count)}
+    if row and row["account_status"] == "active" and row["status"] == "published" and row["discoverable_in_network"]:
+        return {**base, "public_id": row["public_id"], "name": row["display_name"] or "黄雀用户", "avatar": row["avatar_key"] or "", "headline": row["headline"] or "", "title": row["headline"] or "", "company": row["company"] or ""}
+    return {**base, "public_id": "", "name": "匿名用户", "avatar": "", "headline": "", "title": "", "company": ""}
 
 
 def ancestors(conn, user_id, limit=100):
@@ -243,26 +262,21 @@ def ancestor_ids(conn, user_id, limit=100):
     return result
 
 
-def children(conn, user_id, level=1, cursor=0, limit=20):
-    level, cursor, limit = int(level or 1), int(cursor or 0), max(1, min(100, int(limit or 20)))
-    if level < 1 or level > 100:
-        raise CardError("invalid_level")
-    current, seen = [int(user_id)], {int(user_id)}
-    for _ in range(level):
-        if not current:
-            break
-        placeholders = ",".join("?" for _ in current)
-        rows = conn.execute("SELECT id,invitee_user_id FROM user_invites WHERE inviter_user_id IN (" + placeholders + ") AND status='bound' AND risk_status='normal' ORDER BY id", current).fetchall()
-        current = [int(row["invitee_user_id"]) for row in rows if int(row["invitee_user_id"]) not in seen]
-        seen.update(current)
-    # At this point current is exactly the requested depth.  IDs are supplied by the prior level,
-    # so keyset pagination is stable without exposing relations outside this subtree.
-    pairs = [(row["id"], int(row["invitee_user_id"])) for row in conn.execute(
-        "SELECT id,invitee_user_id FROM user_invites WHERE invitee_user_id IN (%s) ORDER BY id" % ",".join("?" for _ in current), current
-    ).fetchall()] if current else []
-    page = [(rid, uid) for rid, uid in pairs if rid > cursor][:limit]
-    return {"level": level, "items": [public_network_person(conn, uid) for _, uid in page],
-            "next_cursor": page[-1][0] if len(page) == limit else 0}
+def children(conn, user_id, cursor=0, limit=20, admin=False):
+    cursor, limit = int(cursor or 0), max(1, min(100, int(limit or 20)))
+    rows = conn.execute("""SELECT id,invitee_user_id,status,risk_status FROM user_invites
+                           WHERE inviter_user_id=? AND status='bound' AND risk_status='normal' AND id>?
+                           ORDER BY id LIMIT ?""", (int(user_id), cursor, limit + 1)).fetchall()
+    page, items = rows[:limit], []
+    for relation in page:
+        item = public_network_person(conn, relation["invitee_user_id"])
+        if admin:
+            user = conn.execute("SELECT id,username FROM users WHERE id=?", (relation["invitee_user_id"],)).fetchone()
+            reward = conn.execute("SELECT event_type,status,reward_points FROM invite_reward_point_records WHERE invite_relation_id=? ORDER BY id DESC LIMIT 1", (relation["id"],)).fetchone()
+            item.update({"user_id": int(user["id"]), "username": user["username"], "relation_status": relation["status"], "risk_status": relation["risk_status"], "reward_event": ({"event_type": reward["event_type"], "status": reward["status"], "points": int(reward["reward_points"])} if reward else None)})
+        items.append(item)
+    next_id = int(page[-1]["id"]) if len(rows) > limit else 0
+    return {"items": items, "next_cursor": next_id, "next_before_id": next_id}
 
 
 def upload_image(payload, field, prefix="cards"):
