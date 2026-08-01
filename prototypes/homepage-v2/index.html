@@ -48,7 +48,10 @@
   <main id="main">
     <section class="hero" id="top">
       <div class="hero-inner" data-reveal>
-        <div class="hero-logo"><img src="../../site/assets/logo_sparrow.png" alt=""></div>
+        <div class="hero-logo" data-logo-motion>
+          <img src="../../site/assets/logo_sparrow.png" alt="">
+          <canvas class="hero-logo-canvas" aria-hidden="true"></canvas>
+        </div>
         <p class="kicker">IP12 · AGENT · CANVAS · VIDEO · CLI</p>
         <h1>让你的生意，<br class="mobile-break">拥有一套<br><em>会持续生长的内容系统。</em></h1>
         <p class="hero-lead">IP12 定义你是谁，Agent 先给计划，Canvas 把图文音视频串成可审核的生产链路。</p>
@@ -75,9 +78,9 @@
       </div>
 
       <div class="page-shell story-layout">
-        <div class="story-visual" aria-live="polite">
+        <div class="story-visual">
           <div class="story-stage">
-            <div class="stage-head"><span>黄雀任务台 · 新品内容启动</span><span data-stage-label>01 / IP12</span></div>
+            <div class="stage-head"><span>黄雀任务台 · 新品内容启动</span><span data-stage-label aria-live="polite">01 / IP12</span></div>
             <div class="stage-track" aria-hidden="true">
               <span class="is-active" data-indicator="ip12"><b>01</b> IP12</span>
               <span data-indicator="agent"><b>02</b> AGENT</span>
@@ -159,28 +162,28 @@
         </div>
 
         <div class="story-chapters">
-          <article class="story-step is-active" id="ip12" data-story="ip12" data-label="01 / IP12" tabindex="0">
+          <article class="story-step is-active" id="ip12" data-story="ip12" data-label="01 / IP12">
             <span class="step-no">01 / DIGITAL IP FOUNDATION</span>
             <h3>先把“你是谁”，<br>变成可继续使用的底座。</h3>
             <p>IP12 不是一张做完就丢的问卷，而是一条从定位、人设、价值与故事出发的长期路线。当前开放前 6 个核心模块。</p>
             <a href="../../site/workbench/ip12.html">开始建立 IP 底座 ↗</a>
           </article>
 
-          <article class="story-step" id="agent" data-story="agent" data-label="02 / AGENT + CANVAS" tabindex="0">
+          <article class="story-step" id="agent" data-story="agent" data-label="02 / AGENT + CANVAS">
             <span class="step-no">02 / AGENT + CANVAS</span>
             <h3>Agent 给计划，<br>你在画布上决定。</h3>
             <p>Canvas Agent 读取必要上下文，先生成可审核的节点方案。只有你确认后，它才把非破坏性操作写进画布。</p>
             <a href="../../site/workbench/canvas.html">打开无限画布 ↗</a>
           </article>
 
-          <article class="story-step" id="video" data-story="video" data-label="03 / VIDEO PIPELINE" tabindex="0">
+          <article class="story-step" id="video" data-story="video" data-label="03 / VIDEO PIPELINE">
             <span class="step-no">03 / VIDEO PIPELINE</span>
             <h3>视频不是一个按钮，<br>而是一条可检查的机制。</h3>
             <p>从脚本、参考素材和镜头规划，到生成任务、状态追踪与资产回收。真正提交前，系统先报价并等待确认。</p>
             <a href="../../site/workbench/video.html">进入视频工作台 ↗</a>
           </article>
 
-          <article class="story-step" id="cli" data-story="cli" data-label="04 / HQ CLI" tabindex="0">
+          <article class="story-step" id="cli" data-story="cli" data-label="04 / HQ CLI">
             <span class="step-no">04 / HQ CLI</span>
             <h3>你自己的 Agent，<br>也能受控使用黄雀。</h3>
             <p>HQ CLI 使用浏览器设备授权和能力范围，不要求把主站密码交给外部 Agent；付费动作仍然遵守报价与确认边界。</p>
@@ -266,6 +269,103 @@
       step.addEventListener('pointerenter', () => activateStory(step.dataset.story));
     });
 
+    const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+    const logo = document.querySelector('[data-logo-motion]');
+    const logoImage = logo?.querySelector('img');
+    const logoCanvas = logo?.querySelector('canvas');
+
+    async function assembleLogo() {
+      if (reducedMotion.matches || document.hidden || !logoCanvas?.getContext('2d')) return;
+      try { await logoImage.decode(); } catch {}
+      if (!logoImage.naturalWidth) return;
+
+      const rect = logoCanvas.getBoundingClientRect();
+      const dpr = Math.min(devicePixelRatio || 1, 2);
+      const context = logoCanvas.getContext('2d');
+      logoCanvas.width = Math.round(rect.width * dpr);
+      logoCanvas.height = Math.round(rect.height * dpr);
+      context.scale(dpr, dpr);
+      logo.classList.add('is-assembling');
+
+      const order = [0, 8, 2, 6, 4, 1, 7, 3, 5];
+      const offsets = [[-28,-24],[0,-32],[28,-22],[-32,0],[0,-12],[32,0],[-26,24],[0,32],[26,24]];
+      const started = performance.now();
+      const draw = now => {
+        context.clearRect(0, 0, rect.width, rect.height);
+        if (reducedMotion.matches) {
+          logo.classList.remove('is-assembling');
+          return;
+        }
+        let complete = true;
+        order.forEach((cell, index) => {
+          const column = cell % 3;
+          const row = Math.floor(cell / 3);
+          const progress = Math.max(0, Math.min(1, (now - started - index * 48) / 430));
+          const eased = 1 - Math.pow(1 - progress, 3);
+          const tileWidth = rect.width / 3;
+          const tileHeight = rect.height / 3;
+          const x = column * tileWidth + tileWidth / 2;
+          const y = row * tileHeight + tileHeight / 2;
+          complete &&= progress === 1;
+          context.save();
+          context.globalAlpha = progress;
+          context.translate(x + offsets[cell][0] * (1 - eased), y + offsets[cell][1] * (1 - eased));
+          context.rotate((column - row) * .11 * (1 - eased));
+          context.scale(.72 + .28 * eased, .72 + .28 * eased);
+          context.drawImage(logoImage, column * logoImage.naturalWidth / 3, row * logoImage.naturalHeight / 3, logoImage.naturalWidth / 3, logoImage.naturalHeight / 3, -tileWidth / 2, -tileHeight / 2, tileWidth, tileHeight);
+          context.restore();
+        });
+        if (!complete) requestAnimationFrame(draw);
+        else {
+          logo.classList.remove('is-assembling');
+          logo.classList.add('is-settled');
+        }
+      };
+      requestAnimationFrame(draw);
+    }
+
+    const storyLayout = document.querySelector('.story-layout');
+    const storyStage = storyLayout?.querySelector('.story-stage');
+    const storyChapters = storyLayout?.querySelector('.story-chapters');
+    const desktopStory = matchMedia('(min-width: 961px)');
+    let storyFrame;
+
+    function renderStoryIntro() {
+      storyFrame = 0;
+      if (reducedMotion.matches || !desktopStory.matches) {
+        storyLayout.classList.remove('story-motion-ready', 'is-story-copy-visible');
+        storyLayout.style.cssText = '';
+        return;
+      }
+
+      const layoutRect = storyLayout.getBoundingClientRect();
+      const start = scrollY + layoutRect.top - innerHeight * .84;
+      const progress = Math.max(0, Math.min(1, (scrollY - start) / Math.min(420, innerHeight * .58)));
+      const eased = progress * progress * (3 - 2 * progress);
+      const stageRect = storyStage.getBoundingClientRect();
+      const currentShift = parseFloat(storyLayout.style.getPropertyValue('--story-stage-x')) || 0;
+      const shift = layoutRect.left + layoutRect.width / 2 - (stageRect.left + stageRect.width / 2 - currentShift);
+      const copyProgress = Math.max(0, Math.min(1, (progress - .68) / .32));
+      storyLayout.classList.add('story-motion-ready');
+      storyLayout.classList.toggle('is-story-copy-visible', copyProgress > .15);
+      storyLayout.style.setProperty('--story-stage-x', `${shift * (1 - eased)}px`);
+      storyLayout.style.setProperty('--story-stage-y', `${24 * (1 - eased)}px`);
+      storyLayout.style.setProperty('--story-stage-scale', 1 + .12 * (1 - eased));
+      storyLayout.style.setProperty('--story-copy-opacity', copyProgress);
+      storyLayout.style.setProperty('--story-copy-y', `${26 * (1 - copyProgress)}px`);
+    }
+
+    function scheduleStoryIntro() {
+      if (!storyFrame) storyFrame = requestAnimationFrame(renderStoryIntro);
+    }
+
+    assembleLogo();
+    renderStoryIntro();
+    addEventListener('scroll', scheduleStoryIntro, { passive: true });
+    addEventListener('resize', scheduleStoryIntro);
+    reducedMotion.addEventListener('change', scheduleStoryIntro);
+    desktopStory.addEventListener('change', scheduleStoryIntro);
+
     const copyButton = document.querySelector('[data-copy]');
     copyButton.addEventListener('click', async () => {
       const original = copyButton.textContent;
@@ -282,7 +382,9 @@
       }
     });
 
-    window.__homepageCheck = () => steps.length === 4 && steps.every(step => panels.some(panel => panel.dataset.panel === step.dataset.story));
+    window.__homepageCheck = () => steps.length === 4
+      && steps.every(step => panels.some(panel => panel.dataset.panel === step.dataset.story))
+      && Boolean(logoCanvas && storyStage && storyChapters);
     console.assert(window.__homepageCheck(), 'Homepage story mapping is incomplete');
   })();
   </script>
