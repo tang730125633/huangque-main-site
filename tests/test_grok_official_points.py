@@ -41,7 +41,7 @@ class XiaolePointsTests(unittest.TestCase):
     def test_submit_path_and_validator_stay_wired_together(self):
         core_src = (Path(video.__file__).with_name("core.py")).read_text(encoding="utf-8")
         self.assertIn('elif kind == "xiaole_video":', core_src)
-        self.assertIn("validate_xiaole_video_payload(body)", core_src)
+        self.assertIn('validate_xiaole_video_payload(body, user["username"])', core_src)
         self.assertTrue(callable(video.validate_xiaole_video_payload))
 
 
