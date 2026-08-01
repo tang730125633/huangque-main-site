@@ -691,6 +691,7 @@
     return '<div class="detail-block"><h3>'+esc(title)+'</h3>'+(rows?'<div class="table-wrap"><table><thead><tr><th>名称</th><th>总量</th><th>成功</th><th>失败</th><th>成功率</th></tr></thead><tbody>'+rows+'</tbody></table></div>':'<div class="muted">暂无记录</div>')+'</div>';
   }
   function paymentStatusName(s){return ({approved:'已入账',pending:'待处理',rejected:'已拒绝',created:'待支付',credited:'已生效',failed:'失败',refunded:'已退款',refund_review:'退款待核对'})[s]||s}
+  function paymentTypeName(type){return type==='membership_experience_renewal'?'体验会员续费':(type==='membership_experience'?'体验官开通':'点数充值')}
   function inviteRelationStatus(x){
     var status=({bound:'有效',invalid:'无效',unbound:'已解绑'})[x.status]||x.status||'未知';
     var risk=({normal:'正常',review:'待复核',blocked:'已拦截'})[x.risk_status]||x.risk_status||'未知';
@@ -699,7 +700,7 @@
   function renderUserDetail(d){
     var u=d.user||{},t=d.tasks||{},p=d.payments||{},ledger=d.ledger||{},rewards=d.invite_rewards||{},relations=d.invite_relations||{},referrer=relations.referrer,invitees=relations.invitees||{},box=el('userDetailBox');
     var taskRows=(t.recent||[]).map(function(x){return '<tr><td><code>#'+esc(x.id)+'</code></td><td>'+esc(x.func)+'</td><td>'+esc(x.channel)+'</td><td><div class="truncate" title="'+esc(x.model)+'">'+esc(x.model)+'</div></td><td>'+jobStatusPill(x.status)+'</td><td>'+Number(x.cost||0).toLocaleString()+'</td><td>'+esc(fmtTime(x.created_at))+'</td></tr>'}).join('');
-    var orderRows=(p.recent||[]).map(function(x){return '<tr><td>'+esc(x.source)+'</td><td><code>'+esc(x.order_id)+'</code></td><td>'+money(x.amount_fen)+'</td><td>'+esc(x.order_type==='membership_experience'?'499 会员':'点数')+'</td><td>'+esc(paymentStatusName(x.status))+'</td><td>'+Number(x.points||0).toLocaleString()+'</td><td>'+esc(fmtTime(x.created_at))+'</td><td><div class="truncate" title="'+esc(x.detail||'')+'">'+esc(x.detail||'-')+'</div></td></tr>'}).join('');
+    var orderRows=(p.recent||[]).map(function(x){return '<tr><td>'+esc(x.source)+'</td><td><code>'+esc(x.order_id)+'</code></td><td>'+money(x.amount_fen)+'</td><td>'+esc(paymentTypeName(x.order_type))+'</td><td>'+esc(paymentStatusName(x.status))+'</td><td>'+Number(x.points||0).toLocaleString()+'</td><td>'+esc(fmtTime(x.created_at))+'</td><td><div class="truncate" title="'+esc(x.detail||'')+'">'+esc(x.detail||'-')+'</div></td></tr>'}).join('');
     var ledgerRows=(ledger.items||[]).slice(0,10).map(function(x){var delta=Number(x.delta||0);return '<tr><td>'+esc(fmtTime(x.created_at))+'</td><td>'+(delta>0?'+':'')+delta.toLocaleString()+'</td><td>'+esc(pointReasonText(x))+'</td><td>'+esc(x.who_admin==='system'?'任务':x.who_admin)+'</td></tr>'}).join('');
     var inviteRewardRows=(rewards.items||[]).map(function(x){return '<tr><td><code>#'+esc(x.id)+'</code></td><td><b>'+esc(x.invitee_name||x.invitee_username)+'</b><div class="muted">'+esc(x.invitee_username||'')+'</div></td><td>'+esc(x.inviter_level_name||'')+' → '+esc(x.invitee_level_name||'')+'</td><td><code>'+Number(x.reward_points||0).toLocaleString()+'</code></td><td><code>'+Number(x.reward_total_after||0).toLocaleString()+'</code></td><td>'+(x.status==='recorded'?'<span class="pill ok">有效</span>':'<span class="pill fail">已作废</span>')+'</td><td><code>'+esc(fmtTime(x.created_at))+'</code><div class="muted">'+esc(x.void_reason||'')+'</div></td></tr>'}).join('');
     var inviteRelationRows=(invitees.items||[]).map(function(x){return '<tr><td><code>#'+esc(x.user_id)+'</code></td><td><b>'+esc(x.display_name||x.username)+'</b><div class="muted">'+esc(x.username)+'</div></td><td>'+membershipText(x)+'</td><td>'+inviteRelationStatus(x)+'</td><td><code>'+esc(fmtTime(x.bound_at))+'</code></td><td><button class="mini" data-related-user="'+esc(x.username)+'">查看</button></td></tr>'}).join('');
@@ -878,6 +879,8 @@
   function orderStatus(s){
     if(s==='approved') return '<span class="pill ok">已通过</span>';
     if(s==='rejected') return '<span class="pill fail">已驳回</span>';
+    if(s==='refunded') return '<span class="pill fail">已退款</span>';
+    if(s==='refund_review') return '<span class="pill warn">退款待核对</span>';
     return '<span class="pill warn">待审批</span>';
   }
   function rechargeQuery(){
@@ -892,7 +895,7 @@
     if(!items.length){el('rechargeBox').innerHTML='<div class="empty">暂无充值申请</div>';return}
     el('rechargeBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>订单</th><th>用户</th><th>类型</th><th>金额</th><th>点数</th><th>状态</th><th>提交时间</th><th>备注</th><th>审核</th></tr></thead><tbody>'+items.map(function(x){
       var pending=x.status==='pending';
-      return '<tr><td><code>'+esc(x.order_id)+'</code></td><td><b>'+esc(x.username)+'</b></td><td>'+(x.order_type==='membership_experience'?'<span class="pill warn">体验官开通</span>':'<span class="pill">点数充值</span>')+'</td><td><code>¥'+Number(x.amount||0).toFixed(2)+'</code></td><td><code>'+Number(x.points||0).toLocaleString()+'</code></td><td>'+orderStatus(x.status)+'</td><td><code>'+fmtTime(x.created_at)+'</code></td><td><div class="truncate" title="'+esc(x.note||x.review_note||'')+'">'+esc(x.note||x.review_note||'')+'</div></td><td><div class="actions">'+(pending?'<button class="mini" data-act="approve" data-id="'+esc(x.order_id)+'">确认到账</button><button class="mini danger" data-act="reject" data-id="'+esc(x.order_id)+'">驳回</button>':'<span class="muted">'+esc(x.reviewed_by||'')+'</span>')+'</div></td></tr>';
+      return '<tr><td><code>'+esc(x.order_id)+'</code></td><td><b>'+esc(x.username)+'</b></td><td><span class="pill '+(x.order_type==='points'?'':'warn')+'">'+esc(paymentTypeName(x.order_type))+'</span></td><td><code>¥'+Number(x.amount||0).toFixed(2)+'</code></td><td><code>'+Number(x.points||0).toLocaleString()+'</code></td><td>'+orderStatus(x.status)+'</td><td><code>'+fmtTime(x.created_at)+'</code></td><td><div class="truncate" title="'+esc(x.note||x.review_note||'')+'">'+esc(x.note||x.review_note||'')+'</div></td><td><div class="actions">'+(pending?'<button class="mini" data-act="approve" data-id="'+esc(x.order_id)+'">确认到账</button><button class="mini danger" data-act="reject" data-id="'+esc(x.order_id)+'">驳回</button>':'<span class="muted">'+esc(x.reviewed_by||'')+'</span>')+'</div></td></tr>';
     }).join('')+'</tbody></table></div>';
     Array.prototype.forEach.call(document.querySelectorAll('#rechargeBox button'), function(btn){
       btn.onclick=function(){reviewRecharge(btn.getAttribute('data-id'), btn.getAttribute('data-act'))};
@@ -943,9 +946,9 @@
   function networkId(node){return String(node&&(node.user_id||node.id||node.username)||'')}
   function inviteNetworkUrl(userId,parentId,beforeId){var q=['user_id='+encodeURIComponent(userId),'limit='+INVITE_NETWORK_LIMIT];if(parentId)q.push('parent_id='+encodeURIComponent(parentId));if(beforeId)q.push('before_id='+encodeURIComponent(beforeId));return INVITE_NETWORK_API+'?'+q.join('&')}
   function networkName(node){return node.display_name||node.name||node.username||('用户 #'+networkId(node))}
-  function networkCard(node){var url=String(node.public_card_url||node.card_url||node.public_url||'');if(!(/^(?:https?:)?\/\//.test(url)||url.charAt(0)==='/'))return '';return '<a class="mini" href="'+esc(url)+'" target="_blank" rel="noopener">公开名片</a>'}
+  function networkCard(node){if(!node.public_id)return '<span class="muted">未公开名片</span>';var summary=[node.title||node.headline,node.company].filter(Boolean).join(' · ');return '<span class="pill neutral" title="名片 ID：'+esc(node.public_id)+'">名片'+(summary?'：'+esc(summary):'')+'</span>'}
   function networkStatus(node){var risk=node.risk_status||'normal',relation=node.relationship_status||node.relation_status||node.status||'bound';return '<span class="pill '+(risk==='normal'?'ok':'warn')+'">'+esc(inviteStatusName(relation))+'</span><span class="pill '+(risk==='normal'?'ok':(risk==='blocked'?'fail':'warn'))+'">风控：'+esc(inviteStatusName(risk))+'</span>'}
-  function networkReward(node){var reward=node.reward||{},type=node.reward_event_type||node.reward_type||reward.type||'无奖励事件',status=node.reward_event_status||node.reward_status||reward.status||'—';return '<span class="pill neutral">'+esc(type)+'</span><span class="muted">奖励：'+esc(status)+'</span>'}
+  function networkReward(node){var reward=node.reward_event;if(!reward)return '<span class="muted">无奖励事件</span>';var type=reward.event_type==='renewal'?'续费奖励':'升级奖励';return '<span class="pill neutral">'+esc(type)+'</span><span class="muted">'+Number(reward.points||0).toLocaleString()+' 点 · '+esc(reward.status||'—')+'</span>'}
   function storeNetworkNodes(items){(items||[]).forEach(function(node){var id=networkId(node);if(id)state.inviteNetwork.nodes[id]=node})}
   function networkTreeItem(id){
     var data=state.inviteNetwork,node=data.nodes[id],children=data.children[id],expanded=!!data.expanded[id],loading=!!data.loading[id],canExpand=(Array.isArray(children)&&children.length)||node.has_children!==false&&Number(node.children_count||node.descendant_count||1)!==0;

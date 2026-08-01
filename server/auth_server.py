@@ -160,13 +160,14 @@ def jsapi_recharge_quote(amount, membership_tier=""):
 
 def purchase_quote(amount, product_type="points", jsapi=False, membership_tier=""):
     product_type = (product_type or "points").strip()
-    if product_type == MEMBERSHIP_ORDER_TYPE:
+    if product_type in (MEMBERSHIP_ORDER_TYPE, MEMBERSHIP_RENEWAL_ORDER_TYPE):
         try:
             if abs(float(amount) - EXPERIENCE_MEMBERSHIP_AMOUNT) > 1e-9:
                 return None
         except (TypeError, ValueError, OverflowError):
             return None
-        return EXPERIENCE_MEMBERSHIP_AMOUNT, EXPERIENCE_MEMBERSHIP_POINTS, MEMBERSHIP_ORDER_TYPE
+        points = 0 if product_type == MEMBERSHIP_RENEWAL_ORDER_TYPE else EXPERIENCE_MEMBERSHIP_POINTS
+        return EXPERIENCE_MEMBERSHIP_AMOUNT, points, product_type
     if product_type != "points":
         return None
     quote = jsapi_recharge_quote(amount, membership_tier) if jsapi else None
@@ -822,7 +823,7 @@ def register_account(username, password, display_name=None, invite_code="", invi
             attribution = business_cards.verify_attribution(invite_attribution_token, INVITE_HASH_SECRET)
             if invite_code and invite_code != invites.normalize_code(attribution["code"]):
                 raise business_cards.CardError("invalid_invite_attribution", "邀请归因不匹配", 409)
-            if business_cards.owner(c, attribution["card_public_id"]) != int(attribution["owner_user_id"]):
+            if business_cards.public_owner(c, attribution["card_public_id"]) != int(attribution["owner_user_id"]):
                 raise business_cards.CardError("invalid_invite_attribution", "邀请归因已失效", 409)
             invite_code = invites.normalize_code(attribution["code"])
         account_id = _new_unique_account_id(c)
@@ -838,6 +839,7 @@ def register_account(username, password, display_name=None, invite_code="", invi
         )
         if card is not None:
             business_cards.create_draft(c, cur.lastrowid, card)
+        saved_card = business_cards.mine(c, cur.lastrowid) if card is not None else None
         token = issue_token(username, c)
         c.commit()
         return {
@@ -846,6 +848,7 @@ def register_account(username, password, display_name=None, invite_code="", invi
                 username, display_name, NEW_USER_TRIAL_POINTS, account_id=account_id,
             ),
             "invite_bound": bool(relation),
+            "card": saved_card,
         }, None
     except invites.InviteError as exc:
         c.rollback()
@@ -861,6 +864,19 @@ def register_account(username, password, display_name=None, invite_code="", invi
         return None, {"status": 500, "code": "register_failed", "detail": "注册失败"}
     finally:
         c.close()
+
+
+def card_for_owner(conn, user_id):
+    card = business_cards.mine(conn, user_id)
+    if not card:
+        return None
+    try:
+        card["invite_code"] = invites.ensure_user_code(
+            conn, user_id, enforce_membership=False,
+        )["code"]
+    except invites.InviteError:
+        card["invite_code"] = ""
+    return card
 
 def membership_public(tier="", started_at=None, expires_at=None, now=None):
     tier = str(tier or "").strip()
@@ -893,6 +909,18 @@ def membership_for_row(row, now=None):
         row["membership_expires_at"] if "membership_expires_at" in keys else None,
         now,
     )
+
+
+def membership_purchase_error(row, order_type, now=None, require_active_renewal=True):
+    """统一会员商品资格；下单时续费须有效，已付款履约时只防会员类型漂移。"""
+    if order_type == MEMBERSHIP_ORDER_TYPE:
+        return "membership_already_owned" if row and str(row["membership_tier"] or "") else None
+    if order_type == MEMBERSHIP_RENEWAL_ORDER_TYPE:
+        if not row or str(row["membership_tier"] or "") != "experience":
+            return "membership_renewal_not_eligible"
+        if require_active_renewal and not membership_for_row(row, now)["membership_active"]:
+            return "membership_renewal_not_eligible"
+    return None
 
 
 def user_has_active_membership(username, conn=None, now=None):
@@ -2621,9 +2649,9 @@ def create_recharge_order(username, amount, points, note="", order_type="points"
         return None, "missing_username"
     if amount <= 0:
         return None, "amount_invalid"
-    if points <= 0:
+    if points < 0 or (points == 0 and order_type != MEMBERSHIP_RENEWAL_ORDER_TYPE):
         return None, "points_invalid"
-    if order_type not in {"points", MEMBERSHIP_ORDER_TYPE}:
+    if order_type not in {"points", MEMBERSHIP_ORDER_TYPE, MEMBERSHIP_RENEWAL_ORDER_TYPE}:
         return None, "order_type_invalid"
     list_amount = float(amount if list_amount is None else list_amount)
     if list_amount <= 0:
@@ -2634,6 +2662,25 @@ def create_recharge_order(username, amount, points, note="", order_type="points"
     order_id = "R%d%s" % (now, secrets.token_hex(3).upper())
     c = db()
     try:
+        c.execute("BEGIN IMMEDIATE")
+        if order_type in (MEMBERSHIP_ORDER_TYPE, MEMBERSHIP_RENEWAL_ORDER_TYPE):
+            user = c.execute(
+                "SELECT membership_tier,membership_started_at,membership_expires_at FROM users WHERE username=?",
+                (username,),
+            ).fetchone()
+            if not user:
+                c.rollback()
+                return None, "user_not_found"
+            purchase_error = membership_purchase_error(user, order_type, now)
+            if purchase_error:
+                c.rollback()
+                return None, purchase_error
+            if c.execute(
+                "SELECT 1 FROM recharge_orders WHERE username=? AND order_type=? AND status='pending' LIMIT 1",
+                (username, order_type),
+            ).fetchone():
+                c.rollback()
+                return None, "membership_order_exists"
         c.execute(
             """INSERT INTO recharge_orders(
                    order_id,username,amount,points,status,note,created_at,order_type,
@@ -2707,19 +2754,29 @@ def review_recharge_order(who_admin, order_id, action, reason="", transaction_id
             if not user:
                 c.rollback()
                 return None, "user_not_found"
+            order_type = order["order_type"] or "points"
+            purchase_error = membership_purchase_error(
+                user, order_type, now, require_active_renewal=False,
+            )
+            if purchase_error:
+                c.rollback()
+                return None, purchase_error
             before = int(user["points"] or 0)
             delta = int(order["points"] or 0)
             after = before + delta
-            c.execute("UPDATE users SET points=? WHERE username=?", (after, order["username"]))
-            c.execute(
-                """INSERT INTO points_audit(who_admin, username, delta, before_points, after_points, reason, created_at)
-                   VALUES(?,?,?,?,?,?,?)""",
-                (who_admin, order["username"], delta, before, after, "充值审批: %s %s" % (order_id, reason), now),
-            )
-            if (order["order_type"] or "points") == MEMBERSHIP_ORDER_TYPE:
+            if delta:
+                c.execute("UPDATE users SET points=? WHERE username=?", (after, order["username"]))
+                c.execute(
+                    """INSERT INTO points_audit(who_admin, username, delta, before_points, after_points, reason, created_at)
+                       VALUES(?,?,?,?,?,?,?)""",
+                    (who_admin, order["username"], delta, before, after, "充值审批: %s %s" % (order_id, reason), now),
+                )
+            if order_type in (MEMBERSHIP_ORDER_TYPE, MEMBERSHIP_RENEWAL_ORDER_TYPE):
                 _, membership_err = _activate_experience_membership(
                     c, order["username"], who_admin,
-                    "体验官开通订单: %s" % order_id, now, source_order_id=order_id,
+                    ("体验官续费订单: %s" if order_type == MEMBERSHIP_RENEWAL_ORDER_TYPE else "体验官开通订单: %s") % order_id,
+                    now, source_order_id=order_id,
+                    renewal=order_type == MEMBERSHIP_RENEWAL_ORDER_TYPE,
                 )
                 if membership_err:
                     c.rollback()
@@ -2762,6 +2819,21 @@ def set_recharge_transaction(order_id, transaction_id, pay_channel):
         c.commit()
     finally:
         c.close()
+
+
+def fail_recharge_order(order_id, detail):
+    if not order_id:
+        return
+    c = db()
+    try:
+        c.execute(
+            "UPDATE recharge_orders SET status='rejected',reviewed_by=?,reviewed_at=?,review_note=? WHERE order_id=? AND status='pending'",
+            (SYSTEM_ACTOR, int(time.time()), str(detail or "支付下单失败")[:300], order_id),
+        )
+        c.commit()
+    finally:
+        c.close()
+
 
 def reconcile_wxpay_recharge(order_row, payment, actor="wxpay-query"):
     """校验微信支付结果并幂等到账；notify 与主动查单共用同一条安全边界。"""
@@ -2852,7 +2924,7 @@ def public_virtual_pay_custom(membership_tier=""):
 def _existing_membership_order(c, username, order_type=MEMBERSHIP_ORDER_TYPE):
     return c.execute(
         """SELECT * FROM virtual_pay_orders
-             WHERE username=? AND order_type=? AND status NOT IN ('failed','refunded')
+             WHERE username=? AND order_type=? AND status IN ('created','refund_review')
              ORDER BY created_at DESC LIMIT 1""",
         (username, order_type),
     ).fetchone()
@@ -2940,10 +3012,9 @@ def create_virtual_pay_order(username, package_id, wx_code, custom_amount_yuan=N
     membership = membership_for_row(pricing_user)
     order_type = product.get("order_type") or "points"
     if order_type in (MEMBERSHIP_ORDER_TYPE, MEMBERSHIP_RENEWAL_ORDER_TYPE):
-        if order_type == MEMBERSHIP_ORDER_TYPE and str(pricing_user["membership_tier"] or ""):
-            return None, "membership_already_owned"
-        if order_type == MEMBERSHIP_RENEWAL_ORDER_TYPE and str(pricing_user["membership_tier"] or "") != "experience":
-            return None, "membership_renewal_not_eligible"
+        purchase_error = membership_purchase_error(pricing_user, order_type)
+        if purchase_error:
+            return None, purchase_error
         c = db()
         try:
             existing_order = _existing_membership_order(c, username, order_type)
@@ -2991,12 +3062,10 @@ def create_virtual_pay_order(username, package_id, wx_code, custom_amount_yuan=N
             c.rollback()
             return None, "user_not_found"
         if order_type in (MEMBERSHIP_ORDER_TYPE, MEMBERSHIP_RENEWAL_ORDER_TYPE):
-            if order_type == MEMBERSHIP_ORDER_TYPE and str(user["membership_tier"] or ""):
+            purchase_error = membership_purchase_error(user, order_type)
+            if purchase_error:
                 c.rollback()
-                return None, "membership_already_owned"
-            if order_type == MEMBERSHIP_RENEWAL_ORDER_TYPE and str(user["membership_tier"] or "") != "experience":
-                c.rollback()
-                return None, "membership_renewal_not_eligible"
+                return None, purchase_error
             if _existing_membership_order(c, username, order_type):
                 c.rollback()
                 return None, "membership_order_exists"
@@ -3075,7 +3144,7 @@ def confirm_virtual_pay_order(username, order_id, verified_wx_order=None):
     if wx_status not in (2, 3, 4):
         next_status = "failed"
         error_detail = "微信订单状态异常: %s" % wx_status
-        if (row["order_type"] or "points") == MEMBERSHIP_ORDER_TYPE:
+        if (row["order_type"] or "points") in (MEMBERSHIP_ORDER_TYPE, MEMBERSHIP_RENEWAL_ORDER_TYPE):
             if wx_status in (5, 8):
                 next_status = "refunded"
                 error_detail = "微信订单已退款"
@@ -3257,6 +3326,115 @@ def _virtual_pay_event_order(message):
     return None
 
 
+def _revert_membership_order(c, order, now):
+    """作废一笔已确认退款的会员权益；后续状态已变化时只进人工复核。"""
+    order_id = order["order_id"]
+    recharge = c.execute(
+        "SELECT * FROM membership_recharge_records WHERE request_id=?",
+        ("membership-order:" + order_id,),
+    ).fetchone()
+    user = c.execute("SELECT * FROM users WHERE username=?", (order["username"],)).fetchone()
+    if not recharge or not user or int(user["membership_expires_at"] or 0) != int(recharge["after_expires_at"] or 0):
+        return "refund_review", "退款不覆盖后续会员变更，需人工核对权益"
+    points = int(order["points"] or 0)
+    if order["order_type"] == MEMBERSHIP_ORDER_TYPE and int(user["points"] or 0) < points:
+        return "refund_review", "首购点数余额不足，需人工核对权益"
+
+    c.execute("""UPDATE invite_reward_point_records SET status='voided',voided_at=?,
+                 void_reason='membership_refund',voided_by=?
+                 WHERE upgrade_record_id IN (SELECT id FROM membership_upgrade_records
+                 WHERE source='online' AND source_order_id=?) AND status<>'voided'""",
+              (now, SYSTEM_ACTOR, order_id))
+    c.execute("""UPDATE membership_upgrade_records SET status='voided',voided_at=?,
+                 void_reason='membership_refund'
+                 WHERE source='online' AND source_order_id=? AND status<>'voided'""",
+              (now, order_id))
+    if order["order_type"] == MEMBERSHIP_ORDER_TYPE:
+        c.execute(
+            "DELETE FROM membership_voice_slot_entitlements WHERE username=? AND source_order_id=?",
+            (order["username"], order_id),
+        )
+    before_membership = membership_for_row(user, now)
+    if order["order_type"] == MEMBERSHIP_RENEWAL_ORDER_TYPE:
+        c.execute(
+            "UPDATE users SET membership_expires_at=? WHERE username=?",
+            (int(recharge["before_expires_at"] or 0) or None, order["username"]),
+        )
+    else:
+        before_points = int(user["points"] or 0)
+        if points:
+            c.execute("UPDATE users SET points=? WHERE username=?", (before_points - points, order["username"]))
+            _write_audit(
+                c, SYSTEM_ACTOR, order["username"], -points, before_points, before_points - points,
+                "会员首购退款: " + order_id,
+            )
+        c.execute(
+            "UPDATE users SET membership_tier='',membership_started_at=NULL,membership_expires_at=NULL WHERE username=?",
+            (order["username"],),
+        )
+    after_user = c.execute("SELECT * FROM users WHERE username=?", (order["username"],)).fetchone()
+    _write_membership_audit(
+        c, order["username"], before_membership, membership_for_row(after_user, now),
+        SYSTEM_ACTOR, "会员订单退款: " + order_id, now,
+    )
+    return "refunded", ""
+
+
+def refund_recharge_order(order_id, refund):
+    """处理微信支付 V3 已验签、已解密的全额退款通知。"""
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        order = c.execute("SELECT * FROM recharge_orders WHERE order_id=?", (str(order_id or ""),)).fetchone()
+        if not order:
+            c.rollback()
+            return None, "not_found"
+        if order["status"] in ("refunded", "refund_review"):
+            c.rollback()
+            return public_recharge_order(order), None
+        if order["status"] != "approved":
+            c.rollback()
+            return public_recharge_order(order), "not_approved"
+        amount = refund.get("amount") or {}
+        total = int(round(float(order["amount"]) * 100))
+        if refund.get("refund_status") != "SUCCESS":
+            c.rollback()
+            return public_recharge_order(order), "refund_mismatch"
+        if int(amount.get("total") or 0) != total:
+            status, detail = "refund_review", "退款原订单金额不一致，需人工核对"
+        elif int(amount.get("refund") or 0) != total:
+            status, detail = "refund_review", "部分退款需人工核对权益"
+        elif order["transaction_id"] and refund.get("transaction_id") != order["transaction_id"]:
+            status, detail = "refund_review", "退款流水与原支付不一致，需人工核对"
+        elif (order["order_type"] or "points") in (MEMBERSHIP_ORDER_TYPE, MEMBERSHIP_RENEWAL_ORDER_TYPE):
+            status, detail = _revert_membership_order(c, order, int(time.time()))
+        else:
+            user = c.execute("SELECT points FROM users WHERE username=?", (order["username"],)).fetchone()
+            points = int(order["points"] or 0)
+            if not user or int(user["points"] or 0) < points:
+                status, detail = "refund_review", "点数余额不足，需人工核对退款"
+            else:
+                before = int(user["points"] or 0)
+                c.execute("UPDATE users SET points=? WHERE username=?", (before - points, order["username"]))
+                _write_audit(c, SYSTEM_ACTOR, order["username"], -points, before, before - points, "微信支付退款: " + order["order_id"])
+                status, detail = "refunded", ""
+        c.execute(
+            "UPDATE recharge_orders SET status=?,reviewed_by=?,reviewed_at=?,review_note=? WHERE order_id=?",
+            (status, SYSTEM_ACTOR, int(time.time()), detail, order["order_id"]),
+        )
+        final = c.execute("SELECT * FROM recharge_orders WHERE order_id=?", (order["order_id"],)).fetchone()
+        c.commit()
+        return public_recharge_order(final), None
+    except (TypeError, ValueError):
+        c.rollback()
+        return None, "refund_mismatch"
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+
 def refund_virtual_pay_order(message):
     row = _virtual_pay_event_order(message)
     if not row:
@@ -3272,28 +3450,7 @@ def refund_virtual_pay_order(message):
             c.rollback()
             return public_virtual_pay_order(fresh), None
         if (fresh["order_type"] or "points") in (MEMBERSHIP_ORDER_TYPE, MEMBERSHIP_RENEWAL_ORDER_TYPE):
-            # Payment callbacks may arrive after a later renewal.  Rewards must be voided
-            # for a confirmed refund, but entitlement may only be rewound when this exact
-            # order still owns the current expiry.
-            c.execute("""UPDATE invite_reward_point_records SET status='voided',voided_at=?,
-                         void_reason='membership_refund',voided_by=?
-                         WHERE upgrade_record_id IN (SELECT id FROM membership_upgrade_records
-                         WHERE source='online' AND source_order_id=?) AND status<>'voided'""",
-                      (int(time.time()), SYSTEM_ACTOR, fresh["order_id"]))
-            recharge = c.execute("SELECT * FROM membership_recharge_records WHERE request_id=?",
-                                 ("membership-order:" + fresh["order_id"],)).fetchone()
-            user = c.execute("SELECT * FROM users WHERE username=?", (fresh["username"],)).fetchone()
-            can_restore = bool(recharge and user and int(user["membership_expires_at"] or 0) == int(recharge["after_expires_at"] or 0))
-            if can_restore:
-                if fresh["order_type"] == MEMBERSHIP_RENEWAL_ORDER_TYPE:
-                    c.execute("UPDATE users SET membership_expires_at=? WHERE username=?",
-                              (int(recharge["before_expires_at"] or 0) or None, fresh["username"]))
-                else:
-                    c.execute("UPDATE users SET membership_tier='',membership_started_at=NULL,membership_expires_at=NULL WHERE username=?",
-                              (fresh["username"],))
-                status, detail = "refunded", ""
-            else:
-                status, detail = "refund_review", "退款不覆盖后续续费，需人工核对权益"
+            status, detail = _revert_membership_order(c, fresh, int(time.time()))
             c.execute("UPDATE virtual_pay_orders SET status=?,last_error=? WHERE order_id=?",
                       (status, detail, fresh["order_id"]))
             final = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=?", (fresh["order_id"],)).fetchone()
@@ -4147,6 +4304,8 @@ class H(BaseHTTPRequestHandler):
                     return self._send(404, {"detail": "user not found"})
                 if err == "already_reviewed":
                     return self._send(409, {"detail": "订单已审批", "order": order})
+                if err in {"membership_already_owned", "membership_renewal_not_eligible"}:
+                    return self._send(409, {"detail": "会员资格已变化，订单需人工核对", "code": err})
                 if err:
                     return self._send(400, {"detail": err})
                 return self._send(200, {"ok": True, "order": order})
@@ -4179,11 +4338,15 @@ class H(BaseHTTPRequestHandler):
                     return self._send(404, {"detail": "充值套餐不存在"})
                 if err == "membership_required":
                     return self._send(403, {"detail": "请先开通会员", "code": err})
+                if err == "membership_already_owned":
+                    return self._send(409, {"detail": "该账号已有会员记录，不能重复领取首购权益", "code": err})
+                if err == "membership_renewal_not_eligible":
+                    return self._send(409, {"detail": "仅有效体验官可自助续费", "code": err})
                 if err == "membership_already_active":
                     return self._send(409, {"detail": "当前会员仍在有效期内", "code": err})
                 if err == "membership_order_exists":
                     return self._send(409, {
-                        "detail": "已存在体验官订单，暂不支持续费或重复购买",
+                        "detail": "已有待处理的同类会员订单",
                         "code": err,
                     })
                 if err == "invalid_custom_amount":
@@ -4258,8 +4421,10 @@ class H(BaseHTTPRequestHandler):
             amount, points, order_type = quote
             if order_type == "points" and not self._require_membership(row):
                 return
-            if order_type == MEMBERSHIP_ORDER_TYPE and membership_for_row(row)["membership_active"]:
-                return self._send(409, {"detail": "当前已有有效会员，无需重复开通"})
+            purchase_error = membership_purchase_error(row, order_type)
+            if purchase_error:
+                detail = "该账号已有会员记录，不能重复领取首购权益" if purchase_error == "membership_already_owned" else "仅有效体验官可自助续费"
+                return self._send(409, {"detail": detail, "code": purchase_error})
             try:
                 order, err = create_recharge_order(
                     row["username"], amount, points, d.get("note") or "", order_type,
@@ -4267,7 +4432,8 @@ class H(BaseHTTPRequestHandler):
                     discount_bps=membership_discount_bps(pricing_tier) if order_type == "points" else 10000,
                 )
                 if err:
-                    return self._send(400, {"detail": err})
+                    status = 409 if err in {"membership_already_owned", "membership_renewal_not_eligible", "membership_order_exists"} else 400
+                    return self._send(status, {"detail": err, "code": err})
                 return self._send(200, {"ok": True, "order": order})
             except Exception:
                 return self._send(500, {"detail": "充值申请提交失败"})
@@ -4290,25 +4456,29 @@ class H(BaseHTTPRequestHandler):
             amount, points, order_type = quote
             if order_type == "points" and not self._require_membership(row):
                 return
-            if order_type == MEMBERSHIP_ORDER_TYPE and membership_for_row(row)["membership_active"]:
-                return self._send(409, {"detail": "当前已有有效会员，无需重复开通"})
+            purchase_error = membership_purchase_error(row, order_type)
+            if purchase_error:
+                detail = "该账号已有会员记录，不能重复领取首购权益" if purchase_error == "membership_already_owned" else "仅有效体验官可自助续费"
+                return self._send(409, {"detail": detail, "code": purchase_error})
+            order = None
             try:
                 order, err = create_recharge_order(
                     row["username"], amount, points,
-                    "微信扫码充值" if order_type == "points" else "微信扫码开通体验官",
+                    "微信扫码充值" if order_type == "points" else ("微信扫码续费体验官" if order_type == MEMBERSHIP_RENEWAL_ORDER_TYPE else "微信扫码开通体验官"),
                     order_type,
                     list_amount=d.get("amount"), pricing_tier=pricing_tier,
                     discount_bps=membership_discount_bps(pricing_tier) if order_type == "points" else 10000,
                 )
                 if err:
-                    return self._send(400, {"detail": err})
+                    status = 409 if err in {"membership_already_owned", "membership_renewal_not_eligible", "membership_order_exists"} else 400
+                    return self._send(status, {"detail": err, "code": err})
                 code_url = wxpay.create_native(
                     order["order_id"],
                     "黄雀点数充值 %d点" % points if order_type == "points" else "黄雀体验官会员（一年）",
                     int(round(amount * 100)))
                 return self._send(200, {"ok": True, "order": order, "code_url": code_url})
             except Exception as e:
-                # 下单失败:订单停留在 pending(等同一个没人审的人工申请),无害
+                fail_recharge_order((order or {}).get("order_id"), "微信扫码下单失败")
                 return self._send(502, {"detail": "微信下单失败", "error": str(e)[:200]})
         if p == "/api/auth/wxpay/jsapi":
             # 小程序内充值:需登录态(定位黄雀账号) + wx.login 的 js_code(换微信 openid)
@@ -4338,19 +4508,23 @@ class H(BaseHTTPRequestHandler):
             amount, points, order_type = quote
             if order_type == "points" and not self._require_membership(row):
                 return
-            if order_type == MEMBERSHIP_ORDER_TYPE and membership_for_row(row)["membership_active"]:
-                return self._send(409, {"detail": "当前已有有效会员，无需重复开通"})
+            purchase_error = membership_purchase_error(row, order_type)
+            if purchase_error:
+                detail = "该账号已有会员记录，不能重复领取首购权益" if purchase_error == "membership_already_owned" else "仅有效体验官可自助续费"
+                return self._send(409, {"detail": detail, "code": purchase_error})
+            order = None
             try:
                 openid = wxpay.jscode2session(js_code)
                 order, err = create_recharge_order(
                     row["username"], amount, points,
-                    "微信小程序充值" if order_type == "points" else "微信小程序开通体验官",
+                    "微信小程序充值" if order_type == "points" else ("微信小程序续费体验官" if order_type == MEMBERSHIP_RENEWAL_ORDER_TYPE else "微信小程序开通体验官"),
                     order_type,
                     list_amount=d.get("amount"), pricing_tier=pricing_tier,
                     discount_bps=membership_discount_bps(pricing_tier) if order_type == "points" else 10000,
                 )
                 if err:
-                    return self._send(400, {"detail": err})
+                    status = 409 if err in {"membership_already_owned", "membership_renewal_not_eligible", "membership_order_exists"} else 400
+                    return self._send(status, {"detail": err, "code": err})
                 prepay_id = wxpay.create_jsapi(
                     order["order_id"],
                     "黄雀点数充值 %d点" % points if order_type == "points" else "黄雀体验官会员（一年）",
@@ -4358,6 +4532,7 @@ class H(BaseHTTPRequestHandler):
                 pay = wxpay.jsapi_pay_params(prepay_id)   # 客户端 wx.requestPayment 参数
                 return self._send(200, {"ok": True, "order": order, "pay": pay})
             except Exception as e:
+                fail_recharge_order((order or {}).get("order_id"), "微信小程序下单失败")
                 return self._send(502, {"detail": "微信下单失败", "error": str(e)[:200]})
         if p == "/api/auth/wxpay/reconcile":
             row = self._user()
@@ -4401,13 +4576,22 @@ class H(BaseHTTPRequestHandler):
             if not wxpay.verify_notify(self.headers, raw):
                 return self._send(401, {"code": "FAIL", "message": "签名验证失败"})
             try:
-                resource = wxpay.decrypt_resource(json.loads(raw or b"{}")["resource"])
+                envelope = json.loads(raw or b"{}")
+                resource = wxpay.decrypt_resource(envelope["resource"])
             except Exception:
                 return self._send(400, {"code": "FAIL", "message": "解密失败"})
             order_id = (resource.get("out_trade_no") or "").strip()
             order_row = get_recharge_order(order_id)
             if not order_row:
                 return self._send(200, {"code": "SUCCESS"})   # 未知订单,回200止重推,不加点
+            if str(envelope.get("event_type") or "").startswith("REFUND."):
+                if envelope.get("event_type") != "REFUND.SUCCESS":
+                    return self._send(200, {"code": "SUCCESS"})
+                try:
+                    refund_recharge_order(order_id, resource)
+                    return self._send(200, {"code": "SUCCESS"})
+                except Exception:
+                    return self._send(500, {"code": "FAIL", "message": "退款权益处理失败"})
             try:
                 _, err = reconcile_wxpay_recharge(order_row, resource, actor="wxpay")
                 if err in {
@@ -4546,10 +4730,13 @@ class H(BaseHTTPRequestHandler):
             )
             if err:
                 return self._send(err["status"], {"detail": err["detail"], "code": err["code"]})
-            return self._send(200, {
+            response = {
                 "token": result["token"], "user": result["user"],
                 "invite_bound": result["invite_bound"],
-            })
+            }
+            if result.get("card") is not None:
+                response["card"] = result["card"]
+            return self._send(200, response)
         if p in ("/api/auth/card/publish", "/api/auth/card/unpublish", "/api/auth/card/media"):
             row = self._user()
             if not row:
@@ -4559,16 +4746,25 @@ class H(BaseHTTPRequestHandler):
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
+            key = None
+            if p.endswith("/media"):
+                try:
+                    key = business_cards.upload_image(d.get("data"), d.get("field"))
+                except business_cards.CardError as exc:
+                    return self._send(exc.status, {"detail": exc.detail, "code": exc.code})
+                except Exception:
+                    return self._send(503, {"detail": "名片媒体服务暂不可用", "code": "media_unavailable"})
             c = db()
             try:
                 c.execute("BEGIN IMMEDIATE")
                 if p.endswith("/publish") or p.endswith("/unpublish"):
-                    card = business_cards.publish(c, row["id"], "unpublished" if p.endswith("/unpublish") else (d.get("status") or "published"))
+                    business_cards.publish(c, row["id"], "unpublished" if p.endswith("/unpublish") else (d.get("status") or "published"))
+                    card = card_for_owner(c, row["id"])
                     result = {"ok": True, "card": card}
                 else:
-                    key = business_cards.upload_image(d.get("data"), d.get("field"))
-                    card = business_cards.update(c, row["id"], {d.get("field"): key})
-                    result = {"ok": True, "key": key, "card": business_cards._decode({**card, "display_name": row["display_name"]}, True)}
+                    business_cards.set_media_key(c, row["id"], d.get("field"), key)
+                    card = card_for_owner(c, row["id"])
+                    result = {"ok": True, "url": card[d.get("field")], "card": card}
                 c.commit()
                 return self._send(200, result)
             except business_cards.CardError as exc:
@@ -4857,8 +5053,9 @@ class H(BaseHTTPRequestHandler):
             try:
                 c.execute("BEGIN IMMEDIATE")
                 business_cards.update(c, row["id"], d)
+                card = card_for_owner(c, row["id"])
                 c.commit()
-                return self._send(200, {"ok": True, "card": business_cards.mine(c, row["id"])})
+                return self._send(200, {"ok": True, "card": card})
             except business_cards.CardError as exc:
                 c.rollback(); return self._send(exc.status, {"detail": exc.detail, "code": exc.code})
             finally:
@@ -4960,19 +5157,29 @@ class H(BaseHTTPRequestHandler):
                 try:
                     public_id = (query.get("id") or [""])[0]
                     card = business_cards.public(c, public_id)
-                    response = {"ok": True, "card": card, "invite_valid": False}
+                    now = int(time.time())
+                    response = {"ok": True, "card": card, "invite_valid": False, "server_time": now}
                     code = invites.normalize_code((query.get("invite") or [""])[0])
                     owner_id = business_cards.owner(c, public_id)
+                    try:
+                        card["invite_code"] = invites.ensure_user_code(
+                            c, owner_id, now=now, enforce_membership=False,
+                        )["code"]
+                    except invites.InviteError:
+                        card["invite_code"] = ""
                     if code and INVITE_HASH_SECRET:
                         try:
                             invite = invites.validate_code(c, code, enforce_membership=False)
                             if int(invite["inviter_user_id"]) == owner_id:
                                 response["invite_valid"] = True
+                                response["invite_validated_at"] = now
+                                response["invite_expires_at"] = now + 7 * 24 * 3600
                                 response["invite_attribution_token"] = business_cards.attribution_token(
-                                    code, public_id, owner_id, INVITE_HASH_SECRET,
+                                    code, public_id, owner_id, INVITE_HASH_SECRET, now=now,
                                 )
                         except invites.InviteError:
                             pass
+                    c.commit()
                     return self._send(200, response)
                 except business_cards.CardError as exc:
                     return self._send(exc.status, {"detail": exc.detail, "code": exc.code})
@@ -4986,7 +5193,7 @@ class H(BaseHTTPRequestHandler):
                 try:
                     c.execute("BEGIN IMMEDIATE")
                     business_cards.create_draft(c, row["id"])
-                    card = business_cards.mine(c, row["id"])
+                    card = card_for_owner(c, row["id"])
                     c.commit()
                     return self._send(200, {"ok": True, "card": card})
                 finally:
@@ -5002,7 +5209,9 @@ class H(BaseHTTPRequestHandler):
                     if not target and (query.get("search") or [""])[0]:
                         term = "%" + (query.get("search") or [""])[0].strip() + "%"
                         users = c.execute("SELECT id,username FROM users WHERE username LIKE ? OR display_name LIKE ? ORDER BY id LIMIT 20", (term, term)).fetchall()
-                        return self._send(200, {"ok": True, "items": [{"user_id": int(r["id"]), "username": r["username"], **business_cards.public_network_person(c, r["id"])} for r in users]})
+                        items = [{"user_id": int(r["id"]), "username": r["username"], **business_cards.public_network_person(c, r["id"], admin=True)} for r in users]
+                        c.commit()
+                        return self._send(200, {"ok": True, "items": items})
                     user = c.execute("SELECT id,username FROM users WHERE CAST(id AS TEXT)=? OR username=?", (target, target)).fetchone()
                     if not user:
                         return self._send(404, {"detail": "not found"})
@@ -5012,9 +5221,11 @@ class H(BaseHTTPRequestHandler):
                         try: parent_id = int(parent)
                         except ValueError: return self._send(404, {"detail": "not found"})
                     data = business_cards.children(c, parent_id, (query.get("before_id") or ["0"])[0], (query.get("limit") or ["12"])[0], admin=True)
-                    root = business_cards.public_network_person(c, user["id"])
+                    root = business_cards.public_network_person(c, user["id"], admin=True)
                     root.update({"user_id": int(user["id"]), "username": user["username"]})
-                    return self._send(200, {"ok": True, "root": root, "user": root, "ancestors": business_cards.ancestors(c, user["id"]), "children": data["items"], **data})
+                    ancestors = business_cards.ancestors(c, user["id"], admin=True)
+                    c.commit()
+                    return self._send(200, {"ok": True, "root": root, "user": root, "ancestors": ancestors, "children": data["items"], **data})
                 except (ValueError, business_cards.CardError):
                     return self._send(400, {"detail": "分页参数无效"})
                 finally:
@@ -5025,7 +5236,9 @@ class H(BaseHTTPRequestHandler):
             c = db()
             try:
                 if p.endswith("/ancestors"):
-                    return self._send(200, {"ok": True, "root": business_cards.public_network_person(c, row["id"]), "items": business_cards.ancestors(c, row["id"])})
+                    result = {"ok": True, "root": business_cards.public_network_person(c, row["id"]), "items": business_cards.ancestors(c, row["id"])}
+                    c.commit()
+                    return self._send(200, result)
                 parent = (query.get("parent") or ["self"])[0]
                 parent_id = row["id"]
                 if parent != "self":
@@ -5035,7 +5248,9 @@ class H(BaseHTTPRequestHandler):
                     if int(row["id"]) not in set(business_cards.ancestor_ids(c, parent_id)):
                         return self._send(404, {"detail": "not found"})
                 data = business_cards.children(c, parent_id, (query.get("before_id") or ["0"])[0], (query.get("limit") or ["12"])[0])
-                return self._send(200, {"ok": True, "root": business_cards.public_network_person(c, parent_id), **data})
+                result = {"ok": True, "root": business_cards.public_network_person(c, parent_id), **data}
+                c.commit()
+                return self._send(200, result)
             except (ValueError, business_cards.CardError):
                 return self._send(400, {"detail": "分页参数无效"})
             finally:

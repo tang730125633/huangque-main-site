@@ -140,9 +140,10 @@ def init_schema(conn, now=None):
     if "event_type" not in reward_cols:
         conn.execute("ALTER TABLE invite_reward_point_records ADD COLUMN event_type TEXT NOT NULL DEFAULT 'upgrade'")
     conn.execute("DROP INDEX IF EXISTS idx_invite_rewards_relation_level")
+    conn.execute("DROP INDEX IF EXISTS idx_invite_rewards_upgrade_relation_level")
     conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_invite_rewards_upgrade_relation_level
                     ON invite_reward_point_records(invite_relation_id,invitee_level)
-                    WHERE event_type='upgrade'""")
+                    WHERE event_type='upgrade' AND status IN ('recorded','pending_review')""")
     if "voided_by" not in reward_cols:
         conn.execute("ALTER TABLE invite_reward_point_records ADD COLUMN voided_by TEXT")
     if not conn.execute("SELECT 1 FROM invite_campaigns LIMIT 1").fetchone():
@@ -245,7 +246,7 @@ def require_inviter_eligibility(conn, user_id, now=None, public=False, enforce_m
 
 
 def invited_membership_limit(conn, user_id, target_tier):
-    """校验被邀请用户不能升级到高于一级邀请人的会员等级。"""
+    """保留旧调用合同；邀请关系不再限制被邀请人的会员等级。"""
     target_tier = str(target_tier or "")
     relation = conn.execute(
         """SELECT ui.id,ui.inviter_user_id,inviter.username,inviter.display_name,
@@ -257,15 +258,11 @@ def invited_membership_limit(conn, user_id, target_tier):
     ).fetchone()
     if not relation or not target_tier:
         return {"allowed": True, "relation": dict(relation) if relation else None}
-    inviter_tier = str(relation["membership_tier"] or "")
-    if MEMBERSHIP_LEVEL_ORDER.get(target_tier, 0) > MEMBERSHIP_LEVEL_ORDER.get(inviter_tier, 0):
-        inviter_name = MEMBERSHIP_NAMES.get(inviter_tier, "非会员")
-        raise InviteError(
-            "invite_membership_limit",
-            "该用户的一级邀请人为%s，最高只能升级到%s" % (inviter_name, inviter_name),
-            409,
-        )
-    return {"allowed": True, "relation": dict(relation), "inviter_tier": inviter_tier}
+    return {
+        "allowed": True,
+        "relation": dict(relation),
+        "inviter_tier": str(relation["membership_tier"] or ""),
+    }
 
 
 def reward_upgrade_preview(conn, user_id, target_tier, now=None):
@@ -291,12 +288,14 @@ def reward_upgrade_preview(conn, user_id, target_tier, now=None):
     target_total = INVITE_REWARD_TOTALS.get(inviter_tier, {}).get(str(target_tier or ""), 0) if inviter_active else 0
     current_total = conn.execute(
         """SELECT COALESCE(SUM(reward_points),0) FROM invite_reward_point_records
-            WHERE invite_relation_id=? AND status='recorded' AND event_type='upgrade'""",
+            WHERE invite_relation_id=? AND status IN ('recorded','pending_review')
+              AND event_type='upgrade'""",
         (relation["id"],),
     ).fetchone()[0]
     duplicate = conn.execute(
         """SELECT 1 FROM invite_reward_point_records
-            WHERE invite_relation_id=? AND invitee_level=? AND status='recorded' AND event_type='upgrade'""",
+            WHERE invite_relation_id=? AND invitee_level=?
+              AND status IN ('recorded','pending_review') AND event_type='upgrade'""",
         (relation["id"], str(target_tier or "")),
     ).fetchone()
     delta = 0 if duplicate else max(0, int(target_total or 0) - int(current_total or 0))
@@ -364,17 +363,24 @@ def record_membership_upgrade(conn, user_id, from_level, to_level, source,
         return {"upgrade_record_id": upgrade_id, "reward": None}
     duplicate = conn.execute(
         """SELECT * FROM invite_reward_point_records
-            WHERE invite_relation_id=? AND invitee_level=? AND event_type='upgrade'""",
+            WHERE invite_relation_id=? AND invitee_level=? AND event_type='upgrade'
+              AND status IN ('recorded','pending_review')""",
         (relation["id"], to_level),
     ).fetchone()
     if event_type == "upgrade" and duplicate:
         return {"upgrade_record_id": upgrade_id, "reward": dict(duplicate)}
-    current_total = conn.execute(
+    upgrade_total = conn.execute(
         """SELECT COALESCE(SUM(reward_points),0) FROM invite_reward_point_records
-            WHERE invite_relation_id=? AND status='recorded' AND event_type='upgrade'""",
+            WHERE invite_relation_id=? AND status IN ('recorded','pending_review')
+              AND event_type='upgrade'""",
         (relation["id"],),
     ).fetchone()[0]
-    delta = max(0, int(target_total) - int(current_total or 0))
+    all_total = conn.execute(
+        """SELECT COALESCE(SUM(reward_points),0) FROM invite_reward_point_records
+            WHERE invite_relation_id=? AND status IN ('recorded','pending_review')""",
+        (relation["id"],),
+    ).fetchone()[0]
+    delta = int(target_total) if event_type == "renewal" else max(0, int(target_total) - int(upgrade_total or 0))
     if delta <= 0:
         return {"upgrade_record_id": upgrade_id, "reward": None}
     reward_status = "pending_review" if relation["risk_status"] == "review" else "recorded"
@@ -384,7 +390,7 @@ def record_membership_upgrade(conn, user_id, from_level, to_level, source,
                inviter_level_snapshot,invitee_level,reward_points,reward_total_after,status,created_at,event_type
            ) VALUES(?,?,?,?,?,?,?,?, ?,?,?)""",
         (relation["id"], upgrade_id, relation["inviter_user_id"], relation["invitee_user_id"],
-         inviter_tier, to_level, delta, int(current_total or 0) + delta, reward_status, now, event_type),
+         inviter_tier, to_level, delta, int(all_total or 0) + delta, reward_status, now, event_type),
     )
     reward = conn.execute(
         "SELECT * FROM invite_reward_point_records WHERE id=?", (reward_cur.lastrowid,),
@@ -461,7 +467,7 @@ def admin_reward_points(conn, filters=None, limit=100, offset=0):
         where.append("(ie.username LIKE ? OR ie.display_name LIKE ?)")
         value = "%" + str(filters["invitee"]).strip() + "%"
         args.extend([value, value])
-    if filters.get("status") in ("recorded", "voided"):
+    if filters.get("status") in ("recorded", "pending_review", "voided"):
         where.append("rr.status=?")
         args.append(filters["status"])
     clause = " AND ".join(where)
@@ -571,6 +577,26 @@ def admin_reward_action(conn, reward_id, action, reason, operator, now=None):
                         SET status='voided',voided_at=?,void_reason=?,voided_by=? WHERE id=?""",
                      (now, reason, operator, reward_id))
     else:
+        if row["void_reason"] == "membership_refund":
+            raise InviteError("refunded_reward_not_restorable", "退款订单的奖励不能恢复", 409)
+        if row["event_type"] == "upgrade":
+            records = conn.execute(
+                """SELECT inviter_level_snapshot,invitee_level,reward_points,status
+                     FROM invite_reward_point_records
+                    WHERE invite_relation_id=? AND event_type='upgrade'""",
+                (row["invite_relation_id"],),
+            ).fetchall()
+            cap = max([
+                INVITE_REWARD_TOTALS.get(item["inviter_level_snapshot"], {}).get(item["invitee_level"], 0)
+                for item in records
+            ] or [0])
+            current = sum(
+                int(item["reward_points"] or 0)
+                for item in records
+                if item["status"] in ("recorded", "pending_review")
+            )
+            if current + int(row["reward_points"] or 0) > cap:
+                raise InviteError("reward_cap_exceeded", "恢复后将超过该关系的升级奖励上限", 409)
         conn.execute("""UPDATE invite_reward_point_records
                         SET status='recorded',voided_at=NULL,void_reason=NULL,voided_by=? WHERE id=?""",
                      (operator, reward_id))
@@ -959,13 +985,22 @@ def admin_relation_action(conn, relation_id, action, reason, operator_user_id, n
     before = dict(row)
     if action == "invalidate":
         conn.execute("UPDATE user_invites SET status='invalid',invalid_reason=?,updated_at=? WHERE id=?", (reason, now, row["id"]))
+        conn.execute("""UPDATE invite_reward_point_records
+                        SET status='voided',voided_at=?,void_reason='relation_invalid',voided_by='system'
+                        WHERE invite_relation_id=? AND status<>'voided'""", (now, row["id"]))
     elif action == "unbind":
         conn.execute("UPDATE user_invites SET status='unbound',invalid_reason=?,updated_at=? WHERE id=?", (reason, now, row["id"]))
+        conn.execute("""UPDATE invite_reward_point_records
+                        SET status='voided',voided_at=?,void_reason='relation_unbound',voided_by='system'
+                        WHERE invite_relation_id=? AND status<>'voided'""", (now, row["id"]))
     elif action == "restore":
         conn.execute("UPDATE user_invites SET status='bound',risk_status='normal',invalid_reason=NULL,updated_at=? WHERE id=?", (now, row["id"]))
         conn.execute("UPDATE invite_reward_point_records SET status='recorded' WHERE invite_relation_id=? AND status='pending_review'", (row["id"],))
     elif action == "ban":
         conn.execute("UPDATE user_invites SET risk_status='blocked',invalid_reason=?,updated_at=? WHERE id=?", (reason, now, row["id"]))
+        conn.execute("""UPDATE invite_reward_point_records
+                        SET status='voided',voided_at=?,void_reason='relation_blocked',voided_by='system'
+                        WHERE invite_relation_id=? AND status<>'voided'""", (now, row["id"]))
         conn.execute("UPDATE users SET account_status='banned' WHERE id=?", (row["invitee_user_id"],))
         conn.execute("DELETE FROM tokens WHERE username=(SELECT username FROM users WHERE id=?)", (row["invitee_user_id"],))
     elif action == "unban":

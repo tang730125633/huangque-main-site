@@ -16,7 +16,7 @@ except ImportError:
         miniprogram_security = None
 
 
-TEXT_FIELDS = ("headline", "company", "bio", "phone", "email", "address")
+TEXT_FIELDS = ("name", "headline", "company", "bio", "phone", "email", "address")
 JSON_FIELDS = ("tags", "works", "links")
 MEDIA_FIELDS = ("avatar", "wechat_qr")
 SENSITIVE_FIELDS = ("phone", "email", "address", "wechat_qr")
@@ -68,10 +68,19 @@ def owner(conn, public_id):
     return int(row["user_id"]) if row else 0
 
 
+def public_owner(conn, public_id):
+    row = conn.execute(
+        """SELECT c.user_id FROM business_cards c JOIN users u ON u.id=c.user_id
+             WHERE c.public_id=? AND c.status='published' AND u.account_status='active'""",
+        (str(public_id),),
+    ).fetchone()
+    return int(row["user_id"]) if row else 0
+
+
 def init_schema(conn):
     conn.execute("""CREATE TABLE IF NOT EXISTS business_cards(
         user_id INTEGER PRIMARY KEY, public_id TEXT NOT NULL UNIQUE,
-        headline TEXT NOT NULL DEFAULT '', company TEXT NOT NULL DEFAULT '', bio TEXT NOT NULL DEFAULT '',
+        name TEXT NOT NULL DEFAULT '', headline TEXT NOT NULL DEFAULT '', company TEXT NOT NULL DEFAULT '', bio TEXT NOT NULL DEFAULT '',
         phone TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '', address TEXT NOT NULL DEFAULT '',
         tags_json TEXT NOT NULL DEFAULT '[]', works_json TEXT NOT NULL DEFAULT '[]', links_json TEXT NOT NULL DEFAULT '[]',
         avatar_key TEXT NOT NULL DEFAULT '', wechat_qr_key TEXT NOT NULL DEFAULT '',
@@ -81,6 +90,9 @@ def init_schema(conn):
         status TEXT NOT NULL DEFAULT 'draft', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
         published_at INTEGER
     )""")
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(business_cards)").fetchall()}
+    if "name" not in columns:
+        conn.execute("ALTER TABLE business_cards ADD COLUMN name TEXT NOT NULL DEFAULT ''")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cards_public ON business_cards(public_id,status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cards_network ON business_cards(user_id,status,discoverable_in_network)")
     conn.execute("""CREATE TABLE IF NOT EXISTS network_node_ids(
@@ -124,8 +136,8 @@ def create_draft(conn, user_id, payload=None, now=None):
 
 def _json(value, field):
     if value is None:
-        return None
-    if not isinstance(value, (list, dict)):
+        raise CardError("invalid_" + field)
+    if not isinstance(value, (str, list, dict)):
         raise CardError("invalid_" + field)
     raw = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     if len(raw.encode()) > MAX_JSON_BYTES:
@@ -147,10 +159,21 @@ def update(conn, user_id, payload, now=None):
         raise CardError("invalid_card")
     if len(json.dumps(payload, ensure_ascii=False).encode()) > MAX_JSON_BYTES:
         raise CardError("card_too_large")
+    payload = dict(payload)
+    if "title" in payload and "headline" not in payload:
+        payload["headline"] = payload["title"]
+    privacy = payload.pop("privacy", None)
+    if privacy is not None:
+        if not isinstance(privacy, dict):
+            raise CardError("invalid_privacy")
+        for field in SENSITIVE_FIELDS:
+            if field in privacy:
+                payload[field + "_public"] = privacy[field]
     row = conn.execute("SELECT * FROM business_cards WHERE user_id=?", (int(user_id),)).fetchone()
     if not row:
         row = create_draft(conn, user_id, now=now)
-    allowed = set(TEXT_FIELDS + JSON_FIELDS + MEDIA_FIELDS + SENSITIVE_FIELDS + ("discoverable_in_network",))
+    public_fields = tuple(field + "_public" for field in SENSITIVE_FIELDS)
+    allowed = set(TEXT_FIELDS + JSON_FIELDS + public_fields + ("discoverable_in_network",))
     values = {}
     for key, value in payload.items():
         if key not in allowed:
@@ -159,12 +182,10 @@ def update(conn, user_id, payload, now=None):
             values[key] = _text(value, key)
         elif key in JSON_FIELDS:
             values[key + "_json"] = _json(value, key)
-        elif key in MEDIA_FIELDS:
-            if not isinstance(value, str) or len(value) > 512:
-                raise CardError("invalid_" + key)
-            values[key + "_key"] = value.strip()
         else:
-            values[key] = 1 if value is True else 0
+            if not isinstance(value, bool):
+                raise CardError("invalid_" + key)
+            values[key] = 1 if value else 0
     if values:
         values["updated_at"] = int(now or time.time())
         fields = ",".join(key + "=?" for key in values)
@@ -172,24 +193,59 @@ def update(conn, user_id, payload, now=None):
     return dict(conn.execute("SELECT * FROM business_cards WHERE user_id=?", (int(user_id),)).fetchone())
 
 
+def set_media_key(conn, user_id, field, key, now=None):
+    if field not in MEDIA_FIELDS or not isinstance(key, str) or not key.startswith("cards/") or len(key) > 512:
+        raise CardError("invalid_image")
+    create_draft(conn, user_id, now=now)
+    conn.execute(
+        "UPDATE business_cards SET %s=?,updated_at=? WHERE user_id=?" % (field + "_key"),
+        (key, int(now or time.time()), int(user_id)),
+    )
+    return dict(conn.execute("SELECT * FROM business_cards WHERE user_id=?", (int(user_id),)).fetchone())
+
+
+def _media_url(key):
+    if not key:
+        return ""
+    try:
+        from .content_domains import cos
+    except ImportError:
+        try:
+            from content_domains import cos
+        except ImportError:
+            return ""
+    try:
+        return cos.object_url(key, private=True)
+    except Exception:
+        return ""
+
+
 def _decode(row, owner=False):
+    privacy = {field: bool(row[field + "_public"]) for field in SENSITIVE_FIELDS}
     result = {
-        "public_id": row["public_id"], "name": row["display_name"] or "黄雀用户",
-        "headline": row["headline"], "company": row["company"], "bio": row["bio"],
+        "public_id": row["public_id"], "name": row["name"] or row["display_name"] or "黄雀用户",
+        "title": row["headline"], "headline": row["headline"], "company": row["company"], "bio": row["bio"],
         "tags": json.loads(row["tags_json"] or "[]"), "works": json.loads(row["works_json"] or "[]"),
-        "links": json.loads(row["links_json"] or "[]"), "avatar": row["avatar_key"] or "",
+        "links": json.loads(row["links_json"] or "[]"), "avatar": _media_url(row["avatar_key"]),
     }
     if owner:
-        result.update({field: row[field] for field in TEXT_FIELDS[3:]})
-        result.update({field: row[field + "_key"] or "" for field in ("avatar", "wechat_qr")})
+        result.update({field: row[field] for field in ("phone", "email", "address")})
+        result["wechat_qr"] = _media_url(row["wechat_qr_key"])
         result.update({field + "_public": bool(row[field + "_public"]) for field in SENSITIVE_FIELDS})
-        result.update({"discoverable_in_network": bool(row["discoverable_in_network"]), "status": row["status"]})
+        result.update({
+            "privacy": privacy,
+            "discoverable_in_network": bool(row["discoverable_in_network"]),
+            "status": row["status"],
+            "published": row["status"] == "published",
+            "is_published": row["status"] == "published",
+        })
     else:
-        for field in TEXT_FIELDS[3:]:
+        for field in ("phone", "email", "address"):
             if row[field + "_public"]:
                 result[field] = row[field]
         if row["wechat_qr_public"]:
-            result["wechat_qr"] = row["wechat_qr_key"] or ""
+            result["wechat_qr"] = _media_url(row["wechat_qr_key"])
+        result["privacy"] = privacy
     return result
 
 
@@ -199,9 +255,13 @@ def mine(conn, user_id):
 
 
 def publish(conn, user_id, status, now=None):
-    row = create_draft(conn, user_id, now=now)
+    create_draft(conn, user_id, now=now)
     if status not in ("published", "unpublished"):
         raise CardError("invalid_status")
+    if status == "published":
+        row = conn.execute("SELECT name,headline,company FROM business_cards WHERE user_id=?", (int(user_id),)).fetchone()
+        if not row or not all(str(row[field] or "").strip() for field in ("name", "headline", "company")):
+            raise CardError("card_incomplete", "请先填写姓名、职称和公司", 409)
     now = int(now or time.time())
     conn.execute("UPDATE business_cards SET status=?,published_at=?,updated_at=? WHERE user_id=?",
                  (status, now if status == "published" else None, now, int(user_id)))
@@ -230,25 +290,50 @@ def media_key(conn, public_id, field, owner_id=None):
     return row[field + "_key"] or ""
 
 
-def public_network_person(conn, user_id):
-    row = conn.execute("""SELECT u.display_name,u.account_status,c.public_id,c.headline,c.company,c.avatar_key,c.status,c.discoverable_in_network
+def public_network_person(conn, user_id, admin=False):
+    row = conn.execute("""SELECT u.display_name,u.account_status,c.public_id,c.name,c.headline,c.company,c.avatar_key,c.status,c.discoverable_in_network
                           FROM users u LEFT JOIN business_cards c ON c.user_id=u.id WHERE u.id=?""", (int(user_id),)).fetchone()
-    children_count = conn.execute("SELECT COUNT(*) FROM user_invites WHERE inviter_user_id=? AND status='bound' AND risk_status='normal'", (int(user_id),)).fetchone()[0]
+    count_sql = "SELECT COUNT(*) FROM user_invites WHERE inviter_user_id=?"
+    if not admin:
+        count_sql += " AND status='bound' AND risk_status='normal'"
+    children_count = conn.execute(count_sql, (int(user_id),)).fetchone()[0]
     base = {"node_id": node_id(conn, user_id), "children_count": int(children_count or 0), "has_children": bool(children_count)}
     if row and row["account_status"] == "active" and row["status"] == "published" and row["discoverable_in_network"]:
-        return {**base, "public_id": row["public_id"], "name": row["display_name"] or "黄雀用户", "avatar": row["avatar_key"] or "", "headline": row["headline"] or "", "title": row["headline"] or "", "company": row["company"] or ""}
+        return {**base, "public_id": row["public_id"], "name": row["name"] or row["display_name"] or "黄雀用户", "avatar": _media_url(row["avatar_key"]), "headline": row["headline"] or "", "title": row["headline"] or "", "company": row["company"] or ""}
     return {**base, "public_id": "", "name": "匿名用户", "avatar": "", "headline": "", "title": "", "company": ""}
 
 
-def ancestors(conn, user_id, limit=100):
+def _admin_relation_fields(conn, relation):
+    user = conn.execute("SELECT id,username FROM users WHERE id=?", (relation["person_user_id"],)).fetchone()
+    reward = conn.execute(
+        "SELECT event_type,status,reward_points FROM invite_reward_point_records WHERE invite_relation_id=? ORDER BY id DESC LIMIT 1",
+        (relation["id"],),
+    ).fetchone()
+    return {
+        "user_id": int(user["id"]), "username": user["username"],
+        "relation_status": relation["status"], "risk_status": relation["risk_status"],
+        "reward_event": ({"event_type": reward["event_type"], "status": reward["status"], "points": int(reward["reward_points"])} if reward else None),
+    }
+
+
+def ancestors(conn, user_id, limit=100, admin=False):
     items, seen, current = [], {int(user_id)}, int(user_id)
     for _ in range(min(100, int(limit))):
-        row = conn.execute("SELECT inviter_user_id FROM user_invites WHERE invitee_user_id=? AND status='bound' AND risk_status='normal'", (current,)).fetchone()
+        sql = "SELECT id,inviter_user_id,status,risk_status FROM user_invites WHERE invitee_user_id=?"
+        if not admin:
+            sql += " AND status='bound' AND risk_status='normal'"
+        row = conn.execute(sql, (current,)).fetchone()
         if not row or int(row["inviter_user_id"]) in seen:
             break
         current = int(row["inviter_user_id"]); seen.add(current)
-        items.append(public_network_person(conn, current))
-    return items
+        item = public_network_person(conn, current, admin=admin)
+        if admin:
+            item.update(_admin_relation_fields(conn, {
+                "id": row["id"], "person_user_id": current,
+                "status": row["status"], "risk_status": row["risk_status"],
+            }))
+        items.append(item)
+    return list(reversed(items))
 
 
 def ancestor_ids(conn, user_id, limit=100):
@@ -264,16 +349,21 @@ def ancestor_ids(conn, user_id, limit=100):
 
 def children(conn, user_id, cursor=0, limit=20, admin=False):
     cursor, limit = int(cursor or 0), max(1, min(100, int(limit or 20)))
-    rows = conn.execute("""SELECT id,invitee_user_id,status,risk_status FROM user_invites
-                           WHERE inviter_user_id=? AND status='bound' AND risk_status='normal' AND id>?
-                           ORDER BY id LIMIT ?""", (int(user_id), cursor, limit + 1)).fetchall()
+    where = "WHERE inviter_user_id=? AND id>?"
+    if not admin:
+        where += " AND status='bound' AND risk_status='normal'"
+    rows = conn.execute(
+        "SELECT id,invitee_user_id,status,risk_status FROM user_invites " + where + " ORDER BY id LIMIT ?",
+        (int(user_id), cursor, limit + 1),
+    ).fetchall()
     page, items = rows[:limit], []
     for relation in page:
-        item = public_network_person(conn, relation["invitee_user_id"])
+        item = public_network_person(conn, relation["invitee_user_id"], admin=admin)
         if admin:
-            user = conn.execute("SELECT id,username FROM users WHERE id=?", (relation["invitee_user_id"],)).fetchone()
-            reward = conn.execute("SELECT event_type,status,reward_points FROM invite_reward_point_records WHERE invite_relation_id=? ORDER BY id DESC LIMIT 1", (relation["id"],)).fetchone()
-            item.update({"user_id": int(user["id"]), "username": user["username"], "relation_status": relation["status"], "risk_status": relation["risk_status"], "reward_event": ({"event_type": reward["event_type"], "status": reward["status"], "points": int(reward["reward_points"])} if reward else None)})
+            item.update(_admin_relation_fields(conn, {
+                "id": relation["id"], "person_user_id": relation["invitee_user_id"],
+                "status": relation["status"], "risk_status": relation["risk_status"],
+            }))
         items.append(item)
     next_id = int(page[-1]["id"]) if len(rows) > limit else 0
     return {"items": items, "next_cursor": next_id, "next_before_id": next_id}

@@ -19,8 +19,12 @@ class BusinessCardNetworkTests(unittest.TestCase):
         with self.conn() as c:
             c.execute("UPDATE users SET display_name='根用户',membership_tier='experience',membership_expires_at=? WHERE username='root'", (now + 999999,))
             code = self.auth.invites.ensure_user_code(c, self.uid(c, "root"), enforce_membership=False)["code"]
-        self.child, err = self.auth.register_account("child", "secret123", "子用户", invite_code=code, card={"headline": "设计师"})
+        self.child, err = self.auth.register_account(
+            "child", "secret123", "子用户", invite_code=code,
+            card={"name": "子用户", "title": "设计师", "company": "黄雀"},
+        )
         self.assertIsNone(err)
+        self.assertEqual(self.child["card"]["title"], "设计师")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -41,7 +45,9 @@ class BusinessCardNetworkTests(unittest.TestCase):
             self.assertEqual(mine["headline"], "设计师")
             with self.assertRaises(self.auth.business_cards.CardError):
                 self.auth.business_cards.public(c, mine["public_id"])
-            self.auth.business_cards.update(c, child_id, {"phone": "13800000000", "phone_public": False})
+            self.auth.business_cards.update(c, child_id, {"phone": "13800000000", "privacy": {"phone": False}})
+            self.auth.business_cards.update(c, child_id, {"avatar": "cards/forged.jpg", "wechat_qr": "cards/forged.jpg"})
+            self.assertEqual(self.auth.business_cards.mine(c, child_id)["avatar"], "")
             self.auth.business_cards.publish(c, child_id, "published")
             public = self.auth.business_cards.public(c, mine["public_id"])
             self.assertNotIn("phone", public)
@@ -58,12 +64,18 @@ class BusinessCardNetworkTests(unittest.TestCase):
     def test_card_attribution_is_owner_bound_and_expires_server_side(self):
         with self.conn() as c:
             root_id = self.uid(c, "root")
-            card = self.auth.business_cards.create_draft(c, root_id)
+            card = self.auth.business_cards.create_draft(c, root_id, {"name": "根用户", "title": "老师", "company": "黄雀"})
             self.auth.business_cards.publish(c, root_id, "published")
             code = self.auth.invites.ensure_user_code(c, root_id, enforce_membership=False)["code"]
             token = self.auth.business_cards.attribution_token(code, card["public_id"], root_id, self.auth.INVITE_HASH_SECRET)
         result, err = self.auth.register_account("attributed", "secret123", invite_code=code, card={}, invite_attribution_token=token)
         self.assertIsNone(err); self.assertTrue(result["invite_bound"])
+        with self.conn() as c:
+            self.auth.business_cards.publish(c, root_id, "unpublished")
+        result, err = self.auth.register_account("revoked", "secret123", invite_code=code, card={}, invite_attribution_token=token)
+        self.assertIsNone(result); self.assertEqual(err["code"], "invalid_invite_attribution")
+        with self.conn() as c:
+            self.assertIsNone(c.execute("SELECT 1 FROM users WHERE username='revoked'").fetchone())
         stale = self.auth.business_cards.attribution_token(code, card["public_id"], root_id, self.auth.INVITE_HASH_SECRET, now=100)
         with self.assertRaises(self.auth.business_cards.CardError):
             self.auth.business_cards.verify_attribution(stale, self.auth.INVITE_HASH_SECRET)
@@ -71,7 +83,7 @@ class BusinessCardNetworkTests(unittest.TestCase):
     def test_network_masks_undiscoverable_and_stops_cycles(self):
         with self.conn() as c:
             root_id, child_id = self.uid(c, "root"), self.uid(c, "child")
-            self.auth.business_cards.create_draft(c, root_id)
+            self.auth.business_cards.create_draft(c, root_id, {"name": "根用户", "title": "老师", "company": "黄雀"})
             self.auth.business_cards.publish(c, root_id, "published")
             tree = self.auth.business_cards.children(c, root_id)
             self.assertEqual(tree["items"][0]["name"], "匿名用户")
