@@ -11,6 +11,7 @@ vm.runInThisContext(fs.readFileSync('site/workbench/image-mentions.js', 'utf8'))
 
 const mentions = window.HQImageMentions;
 assert.deepEqual(mentions.trigger('描述@', 3), { start: 2, end: 3 });
+assert.equal(mentions.serialize({ childNodes: [{ nodeType: 1, tagName: 'BR' }] }), '');
 assert.deepEqual(
   mentions.move('A@图片1B@图片2C', 1, 5, 11),
   { value: 'AB@图片2C@图片1', cursor: 11 },

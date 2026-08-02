@@ -20,7 +20,7 @@
       if(node.nodeType===3){out+=node.nodeValue||'';return;}
       if(node.nodeType!==1)return;
       if(node.dataset&&node.dataset.token){out+=node.dataset.token;return;}
-      if(node.tagName==='BR'){out+='\n';return;}
+      if(node.tagName==='BR')return;
       out+=serialize(node);
       if((node.tagName==='DIV'||node.tagName==='P')&&node.nextSibling)out+='\n';
     });

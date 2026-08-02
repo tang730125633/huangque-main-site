@@ -58,7 +58,7 @@ class SoraVideoUiTests(unittest.TestCase):
         self.assertIn("2026-09-24", HTML)
 
     def test_prompt_reference_interactions_are_wired(self):
-        self.assertIn('src="image-mentions.js?v=20260802e"', HTML)
+        self.assertIn('src="image-mentions.js?v=20260802f"', HTML)
         self.assertIn("HQImageMentions.bind(promptEl", HTML)
         self.assertIn("promptEl.addEventListener('drop'", HTML)
         self.assertIn("setupXiaoleRefPanel('sora', soraRefData, 1)", HTML)
