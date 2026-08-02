@@ -753,6 +753,25 @@
       ?bd.reverse_audit
       :((sectionAudit&&typeof sectionAudit==='object'&&!Array.isArray(sectionAudit))?sectionAudit:{});
   }
+  function reverseReferenceThumbnailIndices(bd){
+    bd=bd||{};
+    var audit=reverseAuditData(bd);
+    var indices=Array.isArray(bd.reference_thumbnail_indices)&&bd.reference_thumbnail_indices.length
+      ?bd.reference_thumbnail_indices
+      :(Array.isArray(audit.reference_thumbnail_indices)?audit.reference_thumbnail_indices:[]);
+    return indices.map(function(value){return Number(value);}).filter(function(value){
+      return Number.isInteger(value)&&value>=1;
+    });
+  }
+  function reverseReferenceImages(bd){
+    bd=bd||{};
+    var thumbs=Array.isArray(bd.frame_thumbnails)?bd.frame_thumbnails:[];
+    var indices=reverseReferenceThumbnailIndices(bd);
+    if(!indices.length) return thumbs.slice(0,4);
+    return indices.slice(0,4).map(function(index){
+      return thumbs[index-1]||null;
+    }).filter(Boolean);
+  }
   function reverseFixedSecond(value){
     var number=Number(value);
     return Number.isFinite(number)?number.toFixed(1):'';
@@ -1576,15 +1595,24 @@
   function _showReverseVideoPicker(prompt,onConfirm){
     var modal=document.getElementById('reverseVideoPickModal');
     var noAvatar=document.getElementById('reverseVideoNoAvatar');
+    var channelStatus=document.getElementById('reverseVideoSeedanceStatus');
     var grid=document.getElementById('reverseVideoAvatarGrid');
     var duration=document.getElementById('reverseVideoDuration');
     var cost=document.getElementById('reverseVideoCost');
     var confirm=document.getElementById('reverseVideoConfirm');
     var close=document.getElementById('reverseVideoPickClose');
-    if(!modal||!noAvatar||!grid||!duration||!cost||!confirm||!close) return;
+    if(!modal||!noAvatar||!channelStatus||!grid||!duration||!cost||!confirm||!close) return;
+    var invocationId=++reverseVideoPickerRequest;
+    var avatarLoadRequest=0;
     var selectedAvatarId=null;
     var selectedDuration=10;
     var submitted=false;
+    var noAvatarChannel='';
+    function updateConfirm(){
+      var blocked=selectedAvatarId===null&&!noAvatarChannel;
+      confirm.disabled=blocked;
+      confirm.style.opacity=blocked?'.55':'1';
+    }
     function updateCost(){
       var rate=selectedAvatarId===null?30:10;
       cost.textContent='预计消耗 '+(selectedDuration*rate)+' 点';
@@ -1597,6 +1625,7 @@
       });
     }
     function selectAvatar(id){
+      if(id===null&&!noAvatarChannel) return;
       selectedAvatarId=id;
       noAvatar.classList.toggle('on',id===null);
       noAvatar.setAttribute('aria-pressed',id===null?'true':'false');
@@ -1606,13 +1635,32 @@
         card.setAttribute('aria-pressed',on?'true':'false');
       });
       updateCost();
+      updateConfirm();
+    }
+    function setNoAvatarAvailability(channel,detail){
+      noAvatarChannel=channel==='micro'||channel==='grok'?channel:'';
+      noAvatar.disabled=!noAvatarChannel;
+      channelStatus.textContent=detail;
+      channelStatus.setAttribute('data-state',noAvatarChannel?'ready':'blocked');
+      if(noAvatarChannel&&selectedAvatarId===null){
+        selectAvatar(null);
+        return;
+      }
+      if(!noAvatarChannel&&selectedAvatarId===null){
+        noAvatar.classList.toggle('on',false);
+        noAvatar.setAttribute('aria-pressed','false');
+      }
+      updateConfirm();
     }
     function dismiss(){ modal.style.display='none'; }
     modal.style.display='flex';
-    confirm.disabled=false;
-    confirm.style.opacity='1';
-    selectAvatar(null);
+    noAvatar.disabled=true;
+    noAvatar.classList.toggle('on',false);
+    noAvatar.setAttribute('aria-pressed','false');
+    channelStatus.textContent='正在检查开放式视频通道…';
+    channelStatus.setAttribute('data-state','checking');
     updateCost();
+    updateConfirm();
     duration.querySelectorAll('[data-reverse-duration]').forEach(function(btn){
       btn.onclick=function(){ selectedDuration=Number(btn.getAttribute('data-reverse-duration')); updateCost(); };
     });
@@ -1620,20 +1668,20 @@
     close.onclick=dismiss;
     modal.onclick=function(e){ if(e.target===modal) dismiss(); };
     confirm.onclick=function(){
-      if(submitted) return;
+      if(submitted||confirm.disabled) return;
       submitted=true;
       confirm.disabled=true;
       confirm.style.opacity='.6';
       dismiss();
-      onConfirm({avatarId:selectedAvatarId,duration:selectedDuration});
+      onConfirm({avatarId:selectedAvatarId,duration:selectedDuration,channel:selectedAvatarId===null?noAvatarChannel:''});
     };
     function loadAvatars(){
-      var requestId=++reverseVideoPickerRequest;
+      var avatarRequestId=++avatarLoadRequest;
       grid.innerHTML='<div style="grid-column:1/-1;color:#5c6b82;font-size:13px;text-align:center;padding:32px 0;">正在读取形象…</div>';
       fetch('/api/gen/video/avatars?limit=60',{headers:{'Authorization':'Bearer '+tok()}})
         .then(function(r){ return r.ok?r.json():Promise.reject(); })
         .then(function(d){
-          if(requestId!==reverseVideoPickerRequest) return;
+          if(invocationId!==reverseVideoPickerRequest||avatarRequestId!==avatarLoadRequest) return;
           var avatars=(d&&d.items)||[];
           if(!avatars.length){
             grid.innerHTML='<div style="grid-column:1/-1;color:#94a4bb;font-size:13px;text-align:center;padding:24px 0;">还没有形象<br><a href="video.html" style="color:#60a5fa;">去创建</a></div>';
@@ -1654,7 +1702,7 @@
           selectAvatar(selectedAvatarId);
         })
         .catch(function(){
-          if(requestId!==reverseVideoPickerRequest) return;
+          if(invocationId!==reverseVideoPickerRequest||avatarRequestId!==avatarLoadRequest) return;
           grid.innerHTML='<div style="grid-column:1/-1;color:#f4a460;font-size:13px;text-align:center;padding:16px 0 4px;">形象加载失败，不影响无形象生成</div>';
           var retry=document.createElement('button');
           retry.type='button';
@@ -1666,7 +1714,30 @@
           grid.appendChild(retry);
         });
     }
+    function loadNoAvatarAvailability(){
+      fetch('/api/gen/health',{cache:'no-store'})
+        .then(function(r){ return r.ok?r.json():Promise.reject(); })
+        .then(function(d){
+          if(invocationId!==reverseVideoPickerRequest) return;
+          var hasExplicitChannel=d&&Object.prototype.hasOwnProperty.call(d,'reverse_remake_video_channel');
+          var channel=hasExplicitChannel?d.reverse_remake_video_channel:(d&&d.seedance_video_enabled===true?'micro':'');
+          if(channel==='micro'){
+            setNoAvatarAvailability('micro','Seedance 官方通道可用');
+            return;
+          }
+          if(channel==='grok'){
+            setNoAvatarAvailability('grok','开放式生成通道可用（果肉视频）');
+            return;
+          }
+          setNoAvatarAvailability('','开放式视频通道暂未开启；请选择数字人形象生成，或联系管理员开启通道。');
+        })
+        .catch(function(){
+          if(invocationId!==reverseVideoPickerRequest) return;
+          setNoAvatarAvailability('','暂时无法确认开放式视频通道状态；请选择数字人形象，或稍后重试。');
+        });
+    }
     loadAvatars();
+    loadNoAvatarAvailability();
   }
   function _setGenerateBusy(btn, busy){
     if(!btn) return;
@@ -1924,7 +1995,7 @@
     if(isReverse){
       var prompt=reversePromptText();
       if(!prompt){ if(window.HQ&&window.HQ.toast) HQ.toast('请先完成提示词反推'); return; }
-      var reverseRefs=((lastBreakdownReverse&&lastBreakdownReverse.frame_thumbnails)||[]).slice(0,4);
+      var reverseRefs=reverseReferenceImages(lastBreakdownReverse);
       _showReverseVideoPicker(prompt,function(choice){
         if(choice.avatarId){
           var avatarPrompt='人物身份与面部必须以所选数字人形象为准；参考关键帧仅用于还原动作、镜头、构图、场景和节奏。'+prompt;
@@ -1935,8 +2006,8 @@
           },bdRemakeBtn,{endpoint:'/api/gen/cinematic',sceneCount:1});
           return;
         }
-        var seedancePrompt='严格按照所附参考关键帧的时间顺序生成，保持动作节点、镜头转换、构图和场景布局。'+prompt;
-        _doGenerate({channel:'micro',prompt:seedancePrompt,reference_images:reverseRefs,duration:choice.duration},
+        var remakePrompt='严格按照所附参考关键帧的时间顺序生成，保持动作节点、镜头转换、构图和场景布局。'+prompt;
+        _doGenerate({channel:choice.channel,prompt:remakePrompt,reference_images:reverseRefs,duration:choice.duration,ratio:'9:16',resolution:'720p',reference_mode:choice.channel==='grok'?'ordered_storyboard':undefined},
                     bdRemakeBtn,{endpoint:'/api/gen/xiaole_video',sceneCount:1});
       });
       return;
@@ -2107,6 +2178,7 @@
   <div style="font-size:12.5px;color:#94a4bb;line-height:1.6;margin-bottom:16px;">形象可选；不选择时生成纯剧情视频</div>
   <div style="font-size:13px;font-weight:600;margin-bottom:8px;">选择形象（可选）</div>
   <button id="reverseVideoNoAvatar" class="sc-opt on" type="button" aria-pressed="true" style="width:100%;font-family:inherit;margin-bottom:10px;">不使用形象</button>
+  <div id="reverseVideoSeedanceStatus" data-state="checking" style="font-size:11.5px;color:#94a4bb;line-height:1.55;margin:-2px 0 12px;">正在检查开放式视频通道…</div>
   <div id="reverseVideoAvatarGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:10px;min-height:80px;max-height:230px;overflow-y:auto;padding-right:3px;"></div>
   <div style="font-size:13px;font-weight:600;margin:18px 0 8px;">视频时长</div>
   <div id="reverseVideoDuration" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">

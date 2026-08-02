@@ -133,6 +133,13 @@ class SeedanceReferenceUnavailable(RuntimeError):
     status = 503
 
 
+class GrokReferenceUnavailable(RuntimeError):
+    """Reverse reference frames could not be published before charging."""
+
+    code = "grok_reference_upload_unavailable"
+    status = 503
+
+
 def _set_provider_key_health(key_id, ok, error=""):
     try:
         provider_keys.set_health(key_id, ok, error=error)
@@ -194,6 +201,47 @@ def omni_video_is_open():
 def seedance_video_is_open():
     from . import video_seedance
     return video_seedance.available()
+
+
+def seedance_video_health_enabled(flags):
+    """Report the dedicated Seedance path without shared-provider fallback."""
+    try:
+        return bool(seedance_video_is_open() and flags.is_enabled("seedance_video"))
+    except Exception:
+        return False
+
+
+def grok_video_is_open():
+    """Return whether the configured Grok path can accept new work."""
+    try:
+        if GROK_VIDEO_PROVIDER == "xiaole":
+            return bool(XIAOLEVIDEO_API_KEY)
+        from . import video_xai
+        return bool(video_xai.available())
+    except Exception:
+        return False
+
+
+def grok_reference_upload_is_open():
+    """The xAI path needs public COS URLs for reverse reference frames."""
+    if GROK_VIDEO_PROVIDER == "xiaole":
+        return True
+    try:
+        from . import cos
+        return bool(cos.enabled()
+                    and importlib.util.find_spec("qcloud_cos")
+                    and importlib.util.find_spec("PIL"))
+    except Exception:
+        return False
+
+
+def reverse_remake_video_channel(flags):
+    """Pick a usable no-avatar engine; avatar generation remains cinematic."""
+    if seedance_video_health_enabled(flags) and seedance_reference_upload_is_open():
+        return "micro"
+    if grok_video_is_open() and grok_reference_upload_is_open():
+        return "grok"
+    return ""
 
 
 def seedance_upscale_is_open():
@@ -421,12 +469,60 @@ def stage_seedance_references(body, username, token=None):
     return staged_keys
 
 
+def stage_grok_references(body, username, token=None):
+    """Publish ordered reverse frames to public COS before any point charge."""
+    refs = [str(item or "").strip()
+            for item in ((body or {}).get("reference_images") or [])
+            if str(item or "").strip()]
+    if (GROK_VIDEO_PROVIDER == "xiaole"
+            or str((body or {}).get("channel") or "").strip().lower() != "grok"
+            or str((body or {}).get("reference_mode") or "").strip().lower() != "ordered_storyboard"):
+        return []
+    if not 1 <= len(refs) <= 4 or any(not item.startswith("data:") for item in refs):
+        raise GrokReferenceUnavailable("Grok 反推仅接受1-4张本任务关键帧，本次未扣点")
+    if not grok_reference_upload_is_open():
+        raise GrokReferenceUnavailable("Grok 反推参考图公网转存未配置，本次未扣点")
+
+    owner = str(username or "").strip()
+    if not owner:
+        raise GrokReferenceUnavailable("Grok 反推参考图缺少账号归属，本次未扣点")
+    owner_hash = hashlib.sha256(owner.encode("utf-8")).hexdigest()[:16]
+    staged_keys = []
+    staged_refs = []
+    try:
+        for index, raw in enumerate(refs):
+            mime, ext, data = _seedance_data_image(raw)
+            attempt_token = _seedance_staging_token(token)
+            content_hash = hashlib.sha256(data).hexdigest()
+            object_key = "seedance/reference/%s/%s-grok-%d-%s%s" % (
+                owner_hash, attempt_token, index + 1, content_hash[:16], ext)
+            _persist_staging_cleanup_intent(object_key)
+            staged_keys.append(object_key)
+            from . import cos
+            public_ref = _seedance_reference_uri(
+                cos.put_bytes(data, object_key, mime, private=False))
+            staged_refs.append(public_ref)
+    except Exception as exc:
+        cleanup_staged_seedance_references(staged_keys)
+        if isinstance(exc, GrokReferenceUnavailable):
+            raise
+        print("[grok] reverse reference staging failed: %s" % type(exc).__name__, flush=True)
+        raise GrokReferenceUnavailable("Grok 反推参考图公网转存失败，本次未扣点") from exc
+    body["reference_images"] = staged_refs
+    body["_seedance_staged_keys"] = staged_keys
+    return staged_keys
+
+
 def xiaole_reference_needs_staging(kind, body):
     """该提交是否需要在扣点前做 COS 参考图转存（决定预检/锁外上传是否启用）。"""
     refs = [str(item or "").strip() for item in ((body or {}).get("reference_images") or []) if str(item or "").strip()]
-    return (kind == "xiaole_video"
-            and str((body or {}).get("channel") or "").strip().lower() == "micro"
-            and any(item.startswith("data:") for item in refs))
+    if kind != "xiaole_video" or not any(item.startswith("data:") for item in refs):
+        return False
+    channel = str((body or {}).get("channel") or "").strip().lower()
+    if channel == "micro":
+        return True
+    return (channel == "grok" and GROK_VIDEO_PROVIDER != "xiaole"
+            and str((body or {}).get("reference_mode") or "").strip().lower() == "ordered_storyboard")
 
 
 def xiaole_reference_precheck(kind, body, cost, known_points=None):
@@ -448,8 +544,10 @@ def stage_xiaole_video_references(kind, body, username, token=None):
     if not xiaole_reference_needs_staging(kind, body):
         return [], None
     try:
+        if str((body or {}).get("channel") or "").strip().lower() == "grok":
+            return stage_grok_references(body, username, token), None
         return stage_seedance_references(body, username, token), None
-    except SeedanceReferenceUnavailable as e:
+    except (SeedanceReferenceUnavailable, GrokReferenceUnavailable) as e:
         return None, (e.status, {"detail": str(e)[:220], "code": e.code, "retry_after_ms": 60000})
 
 
@@ -1123,6 +1221,11 @@ def validate_xiaole_video_payload(payload, username=None):
         raise ValueError("请输入视频提示词")
     cleaned["channel"] = channel
     cleaned["prompt"] = prompt
+    reference_mode = str(cleaned.get("reference_mode") or "").strip().lower()
+    if reference_mode not in {"", "ordered_storyboard"}:
+        raise ValueError("参考图模式不支持")
+    if reference_mode and channel != "grok":
+        raise ValueError("保序参考帧仅用于果肉反推回退")
     if channel in {"micro", "omni"}:
         from . import feature_flags
         operation = str(cleaned.get("operation") or "generate").strip().lower()
@@ -1228,6 +1331,21 @@ def validate_xiaole_video_payload(payload, username=None):
         raise ValueError("reference_images 必须是数组")
     refs = [str(x or "").strip() for x in refs if str(x or "").strip()]
     validate_image_mentions(prompt, len(refs))
+    if reference_mode == "ordered_storyboard":
+        if not 1 <= len(refs) <= 4:
+            raise ValueError("反推同款需要1-4张按时间排序的关键帧")
+        if any(not item.startswith("data:") for item in refs):
+            raise ValueError("果肉反推回退仅接受本次任务的本地关键帧，本次未扣点")
+        hashes = []
+        for item in refs:
+            _mime, _ext, data = _seedance_data_image(item)
+            hashes.append(hashlib.sha256(data).hexdigest())
+        cleaned["_reference_storyboard_count"] = len(refs)
+        cleaned["_reference_storyboard_source_hashes"] = hashes
+        cleaned["prompt"] = (
+            "参考图按原视频时间顺序排列；必须依次还原每张图的动作节点、"
+            "镜头转换和场景变化。" + prompt
+        )
     if model == "grok-imagine-video-1.5" and not refs:
         raise ValueError("Grok Video 1.5 至少需要1张参考图")
     if len(refs) > XIAOLE_MAX_REF:
@@ -4899,6 +5017,8 @@ def gen_xiaole_video(payload):
         "provider": result.get("provider"),
         "generate_audio": result.get("generate_audio"),
         "completion_tokens": result.get("completion_tokens"),
+        "reference_storyboard_count": payload.get("_reference_storyboard_count"),
+        "reference_storyboard_source_hashes": payload.get("_reference_storyboard_source_hashes"),
         "source_resolution": result.get("source_resolution"),
         "upscale": result.get("upscale"),
         "upscale_provider": result.get("upscale_provider"),

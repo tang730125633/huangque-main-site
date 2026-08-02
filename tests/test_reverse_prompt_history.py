@@ -50,6 +50,9 @@ class ReversePromptHistoryTests(unittest.TestCase):
                 "validReversePromptText",
                 "reverseResultPrompt",
                 "reverseLegacyPrompt",
+                "reverseAuditData",
+                "reverseReferenceThumbnailIndices",
+                "reverseReferenceImages",
                 "breakdownMetaFromResult",
                 "compactBreakdownHistoryMeta",
                 "isBreakdownHistoryMeta",
@@ -105,6 +108,37 @@ process.stdout.write(JSON.stringify({{meta:meta,valid:isBreakdownHistoryMeta(met
             }
         )
         self.assertFalse(result["valid"])
+
+    def test_generation_uses_reference_indices_not_audit_frames(self):
+        harness = f"""
+{self.functions}
+var payload={{
+  frame_thumbnails:['audit-1','ref-2','audit-3','ref-4','audit-5','ref-6','audit-7','ref-8'],
+  reference_thumbnail_indices:[2,4,6,8]
+}};
+process.stdout.write(JSON.stringify(reverseReferenceImages(payload)));
+"""
+        result = subprocess.run(
+            ["node", "-e", harness], check=True, capture_output=True,
+            text=True, encoding="utf-8",
+        )
+        self.assertEqual(
+            ["ref-2", "ref-4", "ref-6", "ref-8"],
+            json.loads(result.stdout),
+        )
+
+    def test_legacy_history_without_mapping_keeps_first_four_frames(self):
+        harness = f"""
+{self.functions}
+process.stdout.write(JSON.stringify(reverseReferenceImages({{
+  frame_thumbnails:['f1','f2','f3','f4','f5']
+}})));
+"""
+        result = subprocess.run(
+            ["node", "-e", harness], check=True, capture_output=True,
+            text=True, encoding="utf-8",
+        )
+        self.assertEqual(["f1", "f2", "f3", "f4"], json.loads(result.stdout))
 
     def test_history_restore_passes_all_reverse_metadata_back_to_renderer(self):
         self.assertIn("loadBreakdownHistoryDetail(item).then(function(detail)", self.html)
