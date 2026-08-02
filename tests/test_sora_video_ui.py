@@ -52,8 +52,21 @@ class SoraVideoUiTests(unittest.TestCase):
             self.assertIn(rate, HTML)
 
     def test_policy_and_sunset_are_visible_before_submit(self):
-        self.assertIn("当前只支持非真人文生视频", HTML)
+        self.assertIn("支持文生视频或 1 张非真人参考图", HTML)
+        self.assertIn('id="soraRefGrid"', HTML)
+        self.assertIn("reference_images:soraRefData", HTML)
         self.assertIn("2026-09-24", HTML)
+
+    def test_prompt_reference_interactions_are_wired(self):
+        self.assertIn('src="image-mentions.js?v=20260802"', HTML)
+        self.assertIn("HQImageMentions.bind(promptEl", HTML)
+        self.assertIn("promptEl.addEventListener('drop'", HTML)
+        self.assertIn("setupXiaoleRefPanel('sora', soraRefData, 1)", HTML)
+
+    def test_banana_exact_route_accepts_the_backend_reference_budget(self):
+        nginx = (ROOT / "deploy/nginx-huangquechuanmei.conf").read_text(encoding="utf-8")
+        block = nginx.split("location = /api/gen/banana {", 1)[1].split("}", 1)[0]
+        self.assertIn("client_max_body_size 80m;", block)
 
 
 if __name__ == "__main__":

@@ -620,7 +620,7 @@
         </div>
         <div class="cine-notice">
           <b>提交前请确认</b>
-          <span>· 当前只支持非真人文生视频，不支持参考图</span>
+          <span>· 支持文生视频或 1 张非真人参考图；参考图会作为视频首帧</span>
           <span>· 请勿生成真人、公众人物、受版权保护角色或品牌标识</span>
           <span>· 该能力为限时测试，官方计划于 2026-09-24 下线</span>
         </div>
@@ -628,6 +628,15 @@
           <div class="faint" style="font-size:12px;margin-bottom:8px;">视频提示词 <span style="color:#5c6b82;">· 描述主体、动作、镜头和光线</span></div>
           <textarea id="soraPrompt" rows="4" maxlength="2000" placeholder="例如：琥珀色精华瓶置于石台上，金色晨光缓慢扫过瓶身，镜头平稳向前推进，高级护肤广告质感，无人物、无文字、无标识" style="width:100%;min-height:120px;resize:vertical;background:rgba(7,11,19,.5);border:1px solid rgba(148,164,187,.16);border-radius:12px;color:#eaf1fa;padding:12px 14px;font:inherit;font-size:14px;"></textarea>
           <div id="soraPromptCount" class="faint" style="font-size:11.5px;text-align:right;margin-top:6px;">0 / 2000</div>
+        </div>
+        <div class="panel" style="margin-top:12px;">
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">参考图 <span style="color:#5c6b82;">· 可选 1 张 · 不得含真人脸 · 可拖入或粘贴到提示词框</span></div>
+          <div id="soraRefGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px;">
+            <label id="soraRefAdd" style="position:relative;display:flex;align-items:center;justify-content:center;min-height:74px;border:1px dashed rgba(148,164,187,.28);border-radius:12px;background:rgba(7,11,19,.4);cursor:pointer;">
+              <input id="soraRefFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+              <span style="font-size:20px;color:#94a4bb;">＋</span>
+            </label>
+          </div>
         </div>
         <div class="panel" style="margin-top:12px;">
           <div class="faint" style="font-size:12px;margin-bottom:8px;">模型</div>
@@ -771,6 +780,7 @@
 
 <script src="../assets/cloud.js?v=8"></script>
 <script src="cloud-shell.js?v=46c6dacf"></script>
+<script src="image-mentions.js?v=20260802"></script>
 <script>
 (function(){
   var token='__cookie__';
@@ -790,8 +800,7 @@
   // 所以选了 3 个形象，参考图就只剩 6 张额度。这一点必须显示给用户，否则他会以为是 bug。
   var cineRefVideos=[], cineRefImages=[];
   function insertImageMention(textarea,index){
-    if(!textarea)return; var token='@图片'+index, start=textarea.selectionStart==null?textarea.value.length:textarea.selectionStart;
-    textarea.setRangeText(token,start,textarea.selectionEnd==null?start:textarea.selectionEnd,'end'); textarea.focus();
+    HQImageMentions.insert(textarea,index);
   }
   function promptUsesShiftedImage(textarea,index){
     var found=false; String((textarea||{}).value||'').replace(/@(?:图片|图)([1-9]\d*)/g,function(all,n){if(Number(n)>=index)found=true;return all;}); return found;
@@ -2467,6 +2476,21 @@
     // 动作模仿只收 1 个视频（cineMaxRefVideos 跟着玩法走），也不收参考图。
     bindCineRefs($('cineVideoFile'), cineRefVideos, cineMaxRefVideos, '参考视频');
     bindCineRefs($('cineImageFile'), cineRefImages, cineMaxRefImages, '参考图片');
+    if(ta){
+      HQImageMentions.bind(ta,function(){return cineRefImages.map(function(item){return item.data;});});
+      function addPromptImages(files,range){
+        var room=cineMaxRefImages()-cineRefImages.length;
+        files=files.slice(0,Math.max(0,room));
+        if(!files.length){toast('参考图片已达上限（'+cineMaxRefImages()+'）');return;}
+        Promise.all(files.map(readFileData)).then(function(datas){
+          datas.forEach(function(data,i){cineRefImages.push({data:data,name:files[i].name,file:files[i]});HQImageMentions.insert(ta,cineRefImages.length,range);range={start:ta.selectionStart,end:ta.selectionEnd};});
+          renderCineRefs();
+        }).catch(function(e){toast(e.message||'文件读取失败');});
+      }
+      ta.addEventListener('paste',function(e){var items=Array.from((e.clipboardData&&e.clipboardData.items)||[]),item=items.find(function(x){return x.type&&x.type.indexOf('image/')===0;});if(item){var range={start:ta.selectionStart,end:ta.selectionEnd};e.preventDefault();addPromptImages([item.getAsFile()],range);}});
+      ta.addEventListener('dragover',function(e){e.preventDefault();});
+      ta.addEventListener('drop',function(e){var files=Array.from((e.dataTransfer&&e.dataTransfer.files)||[]).filter(function(f){return f.type.indexOf('image/')===0;});if(files.length){var range={start:ta.selectionStart,end:ta.selectionEnd};e.preventDefault();addPromptImages(files,range);}});
+    }
     document.querySelectorAll('[data-cine-ratio]').forEach(function(b){b.onclick=function(){
       selectedCineRatio=b.dataset.cineRatio;
       document.querySelectorAll('[data-cine-ratio]').forEach(function(x){x.classList.toggle('on',x===b);});
@@ -2970,7 +2994,7 @@
     if(!soraAvailable){toast(soraHealthKnown?'Sora 限时测试暂未开放':'正在检查 Sora 测试通道');return;}
     var prompt=String(($('soraPrompt')||{}).value||'').trim();
     if(!prompt){toast('请输入视频提示词');if($('soraPrompt'))$('soraPrompt').focus();return;}
-    var payload={model:selectedSoraModel,prompt:prompt,seconds:selectedSoraSeconds,ratio:selectedSoraRatio,resolution:selectedSoraResolution};
+    var payload={model:selectedSoraModel,prompt:prompt,seconds:selectedSoraSeconds,ratio:selectedSoraRatio,resolution:selectedSoraResolution,reference_images:soraRefData};
     var body=JSON.stringify(payload);
     if(soraRetryKey && soraRetryBody!==body){toast('上一笔提交结果尚未确认，请保持原参数重试');return;}
     if(!soraRetryKey){soraRetryBody=body;soraRetryKey=newSoraIdempotencyKey();saveSoraRetry();}
@@ -3038,7 +3062,7 @@
   var grokRefData=[];
   var refreshGrokRefs=function(){};
   function grokRefLimit(){return GROK_REF_MAX;}
-  var microRefData=[], omniRefData=[];
+  var soraRefData=[], microRefData=[], omniRefData=[];
   restoreOfficialVideoRetries();
   (function setupGrokPanel(){
     var editInput=$('grokEditFile');
@@ -3101,13 +3125,13 @@
       addTile.style.display = grokRefData.length>=grokRefLimit() ? 'none' : '';
     }
     refreshGrokRefs=renderGrokRefs;
-    function addGrokRefFile(f){
+    function addGrokRefFile(f,done){
       if(!f) return;
       var limit=grokRefLimit();
-      if(grokRefData.length>=limit){ toast('最多上传'+limit+'张参考图'); return; }
-      if(f.size>8*1024*1024){ toast('参考图太大，请压到 8MB 内'); return; }
+      if(grokRefData.length>=limit){ toast('最多上传'+limit+'张参考图'); if(done)done(0); return; }
+      if(f.size>8*1024*1024){ toast('参考图太大，请压到 8MB 内'); if(done)done(0); return; }
       var rd=new FileReader();
-      rd.onload=function(){ grokRefData.push(rd.result); renderGrokRefs(); toast('参考图已添加('+grokRefData.length+'/'+limit+')'); };
+      rd.onload=function(){ grokRefData.push(rd.result); renderGrokRefs(); toast('参考图已添加('+grokRefData.length+'/'+limit+')'); if(done)done(grokRefData.length); };
       rd.readAsDataURL(f);
     }
     if(inp){ inp.onchange=function(){ addGrokRefFile(inp.files&&inp.files[0]); inp.value=''; }; }
@@ -3117,13 +3141,18 @@
       for(var i=0;i<items.length;i++){
         if(items[i].type&&items[i].type.indexOf('image/')===0){
           var f=items[i].getAsFile();
-          if(f){ e.preventDefault(); addGrokRefFile(f); }
+          if(f){ var ta=$('grokPrompt'),range={start:ta.selectionStart,end:ta.selectionEnd}; e.preventDefault(); addGrokRefFile(f,function(index){if(index)HQImageMentions.insert(ta,index,range);}); }
           return;
         }
       }
     }
     if($('grokPrompt')) $('grokPrompt').addEventListener('paste', grokPasteHandler);
     if(grid) grid.addEventListener('paste', grokPasteHandler);
+    if($('grokPrompt')){
+      HQImageMentions.bind($('grokPrompt'),function(){return grokRefData;});
+      $('grokPrompt').addEventListener('dragover',function(e){e.preventDefault();});
+      $('grokPrompt').addEventListener('drop',function(e){var files=Array.from((e.dataTransfer&&e.dataTransfer.files)||[]).filter(function(f){return f.type.indexOf('image/')===0;});if(!files.length)return;e.preventDefault();var ta=$('grokPrompt'),range={start:ta.selectionStart,end:ta.selectionEnd},i=0;function next(){if(i>=files.length)return;addGrokRefFile(files[i++],function(index){if(index){HQImageMentions.insert(ta,index,range);range={start:ta.selectionStart,end:ta.selectionEnd};}next();});}next();});
+    }
   })();
   // Seedance/Omni 参考图面板(图生视频)：一套逻辑复用，各存各的 refData；支持点击上传/粘贴
   function setupXiaoleRefPanel(ch, refArr, maxN){
@@ -3143,18 +3172,24 @@
       });
       addTile.style.display = refArr.length>=maxN ? 'none' : '';
     }
-    function addFile(f){
+    function addFile(f,done){
       if(!f) return;
-      if(refArr.length>=maxN){ toast('最多上传'+maxN+'张参考图'); return; }
-      if(f.size>8*1024*1024){ toast('参考图太大，请压到 8MB 内'); return; }
-      var rd=new FileReader(); rd.onload=function(){ refArr.push(rd.result); render(); toast('参考图已添加('+refArr.length+'/'+maxN+')'); }; rd.readAsDataURL(f);
+      if(refArr.length>=maxN){ toast('最多上传'+maxN+'张参考图'); if(done)done(0); return; }
+      if(f.size>8*1024*1024){ toast('参考图太大，请压到 8MB 内'); if(done)done(0); return; }
+      var rd=new FileReader(); rd.onload=function(){ refArr.push(rd.result); render(); toast('参考图已添加('+refArr.length+'/'+maxN+')'); if(done)done(refArr.length); }; rd.readAsDataURL(f);
     }
     if(inp){ inp.onchange=function(){ addFile(inp.files&&inp.files[0]); inp.value=''; }; }
-    function paste(e){ var items=(e.clipboardData&&e.clipboardData.items)||[]; for(var i=0;i<items.length;i++){ if(items[i].type&&items[i].type.indexOf('image/')===0){ var f=items[i].getAsFile(); if(f){ e.preventDefault(); addFile(f); } return; } } }
+    function paste(e){ var items=(e.clipboardData&&e.clipboardData.items)||[]; for(var i=0;i<items.length;i++){ if(items[i].type&&items[i].type.indexOf('image/')===0){ var f=items[i].getAsFile(); if(f){ var range={start:promptEl.selectionStart,end:promptEl.selectionEnd};e.preventDefault();addFile(f,function(index){if(index)HQImageMentions.insert(promptEl,index,range);}); } return; } } }
     if(promptEl) promptEl.addEventListener('paste', paste);
     grid.addEventListener('paste', paste);
+    if(promptEl){
+      HQImageMentions.bind(promptEl,function(){return refArr;});
+      promptEl.addEventListener('dragover',function(e){e.preventDefault();});
+      promptEl.addEventListener('drop',function(e){var files=Array.from((e.dataTransfer&&e.dataTransfer.files)||[]).filter(function(f){return f.type.indexOf('image/')===0;});if(!files.length)return;e.preventDefault();var range={start:promptEl.selectionStart,end:promptEl.selectionEnd},i=0;function next(){if(i>=files.length)return;addFile(files[i++],function(index){if(index){HQImageMentions.insert(promptEl,index,range);range={start:promptEl.selectionStart,end:promptEl.selectionEnd};}next();});}next();});
+    }
     render();
   }
+  setupXiaoleRefPanel('sora', soraRefData, 1);
   setupXiaoleRefPanel('micro', microRefData, 9);
   setupXiaoleRefPanel('omni', omniRefData, 6);
   if($('refreshAvatarBtn')) $('refreshAvatarBtn').onclick=function(){loadMotionAvatars(true);};

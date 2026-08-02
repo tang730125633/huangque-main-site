@@ -232,6 +232,7 @@
 
 <script src="../assets/cloud.js?v=8"></script>
 <script src="cloud-shell.js?v=46c6dacf"></script>
+<script src="image-mentions.js?v=20260802"></script>
 <script>
 /* 作图页接后端能力中心 /api/gen/image + /api/gen/banana，点数后端统一扣。 */
 (function(){
@@ -847,8 +848,7 @@
   }
   function refLimit(){ return REF_LIMITS[engine]||1; }
   function insertImageMention(index){
-    var token='@图片'+index, start=pr.selectionStart==null?pr.value.length:pr.selectionStart;
-    pr.setRangeText(token,start,pr.selectionEnd==null?start:pr.selectionEnd,'end'); pr.focus();
+    HQImageMentions.insert(pr,index);
   }
   // 把一张图片文件/Blob（上传或粘贴）压缩后加入参考图（上传与粘贴共用）
   function refFromFile(f,done){
@@ -862,11 +862,11 @@
         if(done) done();
         return;
       }
-      addRef(ref.dataUrl, ref.width, ref.height);
-      if(done) done();
+      var index=addRef(ref.dataUrl, ref.width, ref.height);
+      if(done) done(index);
       try{ URL.revokeObjectURL(url); }catch(e){}
     };
-    im.onerror=function(){ setNote('这张图读取失败，换一张试试','#f4708a'); if(done)done(); };
+    im.onerror=function(){ setNote('这张图读取失败，换一张试试','#f4708a'); if(done)done(0); };
     im.src=url;
   }
   function addRefFiles(files,index){ index=index||0; if(index>=files.length)return; refFromFile(files[index],function(){addRefFiles(files,index+1);}); }
@@ -877,11 +877,22 @@
     for(var i=0;i<items.length;i++){
       if(items[i].kind==='file' && items[i].type && items[i].type.indexOf('image/')===0){
         var f=items[i].getAsFile();
-        if(f){ e.preventDefault(); refFromFile(f);
-          setNote('✅ 已添加参考图，可点图片编号插入 @图片N','#2bd576'); return; }
+        if(f){ var range={start:pr.selectionStart,end:pr.selectionEnd}; e.preventDefault(); refFromFile(f,function(index){
+          if(index){HQImageMentions.insert(pr,index,range);setNote('✅ 已添加参考图并插入 @图片'+index,'#2bd576');} }); return; }
       }
     }
   }); }
+  if(pr){
+    HQImageMentions.bind(pr,function(){return refImages.map(function(item){return item.url;});});
+    pr.addEventListener('dragover',function(e){if(Array.from((e.dataTransfer&&e.dataTransfer.items)||[]).some(function(x){return x.kind==='file'&&x.type.indexOf('image/')===0;})){e.preventDefault();}});
+    pr.addEventListener('drop',function(e){
+      var files=Array.from((e.dataTransfer&&e.dataTransfer.files)||[]).filter(function(f){return f.type.indexOf('image/')===0;});
+      if(!files.length)return; e.preventDefault();
+      var range={start:pr.selectionStart,end:pr.selectionEnd}, pos=0;
+      function next(){if(pos>=files.length)return;refFromFile(files[pos++],function(index){if(index){HQImageMentions.insert(pr,index,range);range={start:pr.selectionStart,end:pr.selectionEnd};}next();});}
+      next();
+    });
+  }
 
   // ===== 提示词反推：上传/粘贴图 → Gemini 反推提示词 → 填入提示词框 / 连图做图生图 =====
   var revImgData=null, revImgUrl=null, revW=0, revH=0;
@@ -992,10 +1003,11 @@
   }
   function addRef(dataUrl,w,h){
     var limit=refLimit();
-    if(refImages.length>=limit){ setNote('当前引擎最多支持 '+limit+' 张参考图','#f4708a'); return; }
+    if(refImages.length>=limit){ setNote('当前引擎最多支持 '+limit+' 张参考图','#f4708a'); return 0; }
     refImages.push({data:dataUrl.split(',')[1]||dataUrl,url:dataUrl,width:w,height:h});
     syncFirstRef(); renderRefs();
     setNote('✅ 已添加参考图（'+refImages.length+'/'+limit+'），点“图片'+refImages.length+'”可插入提示词','#2bd576');
+    return refImages.length;
   }
   function promptUsesShiftedIndex(index){
     var found=false; (pr.value||'').replace(/@(?:图片|图)([1-9]\d*)/g,function(_,n){if(Number(n)>=index)found=true;return _;}); return found;

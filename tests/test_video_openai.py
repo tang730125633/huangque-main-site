@@ -59,6 +59,23 @@ def _headers(request):
 
 
 class OpenAIVideoAdapterTests(unittest.TestCase):
+    def test_reference_image_uses_official_multipart_field(self):
+        opener = Mock()
+        opener.open.side_effect = [
+            _Response({"id": "video_ref", "status": "queued"}),
+            _Response({"id": "video_ref", "status": "completed"}),
+        ]
+        with patch.object(video_openai, "OPENAI_API_KEY", "test-key"), \
+             patch.object(video_openai, "_opener", return_value=opener):
+            video_openai.generate(
+                "sora-2", "demo", 4, "1280x720", input_reference=b"png-bytes",
+                now=lambda: 0, sleep=lambda _delay: None,
+            )
+        request = opener.open.call_args_list[0].args[0]
+        self.assertIn("multipart/form-data", _headers(request)["content-type"])
+        self.assertIn(b'name="input_reference"', request.data)
+        self.assertIn(b"png-bytes", request.data)
+
     def test_cross_origin_redirect_never_forwards_api_credentials(self):
         request = urllib.request.Request(
             "https://api.openai.com/v1/videos/video_1/content",
