@@ -14,6 +14,7 @@ from .core import (
 import random   # 429 退避重试的抖动：不加抖动，同一批 worker 退避后又会撞在一起
 
 from .audio import gen_audio
+from .image_mentions import resolve_image_mentions, validate_image_mentions
 from . import (
     provider_keys,
     short_drama_media_sanitize,
@@ -226,6 +227,7 @@ def validate_xiaole_video_payload(payload):
         if not isinstance(refs, list):
             raise ValueError("reference_images 必须是数组")
         refs = [str(item or "").strip() for item in refs if str(item or "").strip()]
+        validate_image_mentions(prompt, len(refs))
 
         if channel == "omni":
             from . import video_gemini_omni
@@ -298,6 +300,15 @@ def validate_xiaole_video_payload(payload):
 
     if channel == "grok" and str(cleaned.get("operation") or "generate").strip().lower() == "edit":
         raise ValueError("果肉视频编辑维护中")
+    if channel == "grok":
+        common_refs = cleaned.get("reference_images") or []
+        if not isinstance(common_refs, list):
+            raise ValueError("reference_images 必须是数组")
+        common_refs = [str(x or "").strip() for x in common_refs if str(x or "").strip()]
+        if len(common_refs) > XIAOLE_MAX_REF:
+            raise ValueError("Grok 视频最多支持%d张参考图" % XIAOLE_MAX_REF)
+        validate_image_mentions(prompt, len(common_refs))
+        cleaned["reference_images"] = common_refs
     if channel != "grok" or GROK_VIDEO_PROVIDER == "xiaole":
         return cleaned
 
@@ -315,10 +326,10 @@ def validate_xiaole_video_payload(payload):
     if not isinstance(refs, list):
         raise ValueError("reference_images 必须是数组")
     refs = [str(x or "").strip() for x in refs if str(x or "").strip()]
-    if model == "grok-imagine-video-1.5":
-        if len(refs) != 1:
-            raise ValueError("Grok Video 1.5 仅支持1张首帧图")
-    elif len(refs) > XIAOLE_MAX_REF:
+    validate_image_mentions(prompt, len(refs))
+    if model == "grok-imagine-video-1.5" and not refs:
+        raise ValueError("Grok Video 1.5 至少需要1张参考图")
+    if len(refs) > XIAOLE_MAX_REF:
         raise ValueError("xAI官方图生视频最多支持%d张参考图" % XIAOLE_MAX_REF)
     ratio = str(cleaned.get("ratio") or "16:9").strip()
     if ratio not in XAI_GROK_RATIOS:
@@ -331,6 +342,8 @@ def validate_xiaole_video_payload(payload):
         raise ValueError("果肉视频时长必须是1-15秒整数")
     resolution = str(cleaned.get("resolution") or "720p").strip().lower()
     allowed_resolutions = XAI_GROK_RESOLUTIONS | ({"1080p"} if model == "grok-imagine-video-1.5" else set())
+    if refs:
+        allowed_resolutions = {"720p"}
     if resolution not in allowed_resolutions:
         raise ValueError("%s 不支持分辨率 %s" % (model, resolution))
     cleaned.update({
@@ -3535,8 +3548,8 @@ def gen_xiaole_video(payload):
     )
     if not model:
         raise ValueError("未知视频渠道：%s" % channel)
-    prompt = (payload.get("prompt") or "").strip()
-    if not prompt:
+    user_prompt = (payload.get("prompt") or "").strip()
+    if not user_prompt:
         raise ValueError("请输入视频提示词")
     ratio = (
         payload.get("ratio")
@@ -3555,6 +3568,8 @@ def gen_xiaole_video(payload):
                 if channel == "omni"
                 else [_xiaole_ref_to_url(r) for r in raw_refs]
             )
+    mention_style = "xai" if use_xai else ("omni" if channel == "omni" else "generic")
+    prompt = resolve_image_mentions(user_prompt, len(ref_images or []), mention_style)
     label = {
         "grok": "果肉视频", "micro": "Seedance 视频", "omni": "Omni 视频",
     }.get(channel, model)
@@ -3627,12 +3642,12 @@ def gen_xiaole_video(payload):
                 video_xai.XaiCreateUnavailableError, create_xai_edit,
             )
         else:
-            image_url = ref_images[0] if ref_images else None
-            if image_url and not str(image_url).startswith(("http://", "https://")):
-                raise RuntimeError("xAI官方图生视频需要可公网访问的参考图，COS转存失败")
+            for image_url in ref_images or []:
+                if not str(image_url).startswith(("http://", "https://")):
+                    raise RuntimeError("xAI官方图生视频需要可公网访问的参考图，COS转存失败")
             def create_xai_video(candidate):
                 return video_xai.generate(
-                    model=model, prompt=prompt, image_url=image_url,
+                    model=model, prompt=prompt, reference_image_urls=ref_images,
                     duration=payload.get("duration") or 10,
                     aspect_ratio=ratio,
                     resolution=payload.get("resolution") or "720p",
@@ -3919,7 +3934,7 @@ def gen_xiaole_video(payload):
     # /api/gen/file/ 链接写进资产记录。public_url 内部会在 COS 不可用时安全回退。
     video_url = public_url(video_file, "video/mp4", private=True) if video_file else result.get("video_url")
     return {
-        "type": "video", "status": "done", "mode": channel, "model": result.get("model") or model, "text": prompt,
+        "type": "video", "status": "done", "mode": channel, "model": result.get("model") or model, "text": user_prompt,
         "operation": payload.get("operation") or "generate",
         "ratio": result.get("ratio") or ratio,
         "resolution": result.get("resolution") or (
@@ -4257,6 +4272,7 @@ def validate_cinematic_payload(body, username=None):
         raise ValueError("参考视频最多 %d 个" % max_videos)
 
     images = [i for i in (body.get("reference_images") or []) if str(i or "").strip()]
+    validate_image_mentions(prompt, len(images))
     for i in images:
         if not _is_valid_data_url(i, VALID_IMAGE_MIMES):
             raise ValueError("参考图片格式不支持（jpg/png/webp）")
@@ -4332,6 +4348,7 @@ def gen_cinematic(payload):
     # 队列里可能还躺着改版前入队的 job，它们的素材还没落盘。
     video_files = list(payload.get("reference_video_files") or [])
     image_files = list(payload.get("reference_image_files") or [])
+    provider_prompt = resolve_image_mentions(payload.get("prompt"), len(image_files))
     if not video_files and payload.get("reference_videos"):
         video_files = [_save_data_file(v, "motion_ref", [".mp4", ".mov", ".webm"])
                        for v in payload["reference_videos"]]
@@ -4397,7 +4414,7 @@ def gen_cinematic(payload):
             # 同样的话说两遍。所以这里【什么都不拼】——
             #     payload 里的 prompt == HeyGen 真正收到的 prompt，一个字不差。
             # 顺带一个好处：排查时不用再脑补「后端还偷偷加了什么」。
-            prompt=payload["prompt"], direct=True,
+            prompt=provider_prompt, direct=True,
             enhance_prompt=payload.get("enhance_prompt")), "剧情视频")
 
         # ↓ 此刻已计费。之后任何失败都不能重发（见 HeyGenBilledError）——HeyGen 提交即扣费。

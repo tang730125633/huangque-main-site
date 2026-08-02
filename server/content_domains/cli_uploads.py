@@ -14,8 +14,8 @@ import uuid
 
 
 MAX_BYTES = 10 * 1024 * 1024
-MAX_USER_BYTES = 60 * 1024 * 1024
-MAX_USER_FILES = 8
+MAX_USER_BYTES = 96 * 1024 * 1024
+MAX_USER_FILES = 20
 MIN_FREE_BYTES = 512 * 1024 * 1024
 TTL = max(600, min(24 * 60 * 60, int(os.environ.get("HQ_CLI_IMAGE_UPLOAD_TTL", "3600") or 3600)))
 UPLOAD_ROOT = pathlib.Path(os.environ.get(
@@ -232,10 +232,12 @@ def expand_image_payload(payload, username, now=None):
         raise ValueError("蒙版必须同时提供原图 upload_id")
     provider = str(body.get("provider") or "openai").strip().lower()
     if reference_ids is not None:
-        if provider != "xiaole":
-            raise ValueError("多参考图目前仅支持果肉生图")
-        if not isinstance(reference_ids, list) or not 1 <= len(reference_ids) <= 4:
-            raise ValueError("reference_upload_ids 必须包含 1-4 项")
+        limits = {"openai": 16, "seedream": 10, "xiaole": 4,
+                  "grok": 7, "micro": 9, "omni": 6}
+        target = str(body.get("channel") or provider).strip().lower()
+        limit = limits.get(target, 1)
+        if not isinstance(reference_ids, list) or not 1 <= len(reference_ids) <= limit:
+            raise ValueError("reference_upload_ids 必须包含 1-%d 项" % limit)
     if mask_id and provider != "openai":
         raise ValueError("蒙版局部修改仅支持 OpenAI 图片引擎")
 
