@@ -265,12 +265,14 @@ def _compensate_failed_insert(jdb, refund, username, cost, kind, submission_ref,
 
 
 def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_kind="",
-                     before_commit=None, charge_transaction_key=""):
+                     before_commit=None, charge_transaction_key="", before_charge=None):
     """一次预扣并原子写入一个或多个任务；失败补偿只维护这一处。"""
     items = [(int(cost or 0), payload) for cost, payload in items]
     total = sum(cost for cost, _ in items)
     submission_ref = uuid.uuid4().hex
     reason = "job:%s submit:%s" % (reason_kind or kind, submission_ref)
+    if before_charge is not None:
+        before_charge()
     points_left = (deduct(username, total, reason, charge_transaction_key)
                    if charge_transaction_key else deduct(username, total, reason))
     now = int(time.time())
@@ -298,13 +300,14 @@ def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_k
 
 
 def create_paid_job(jdb, deduct, refund, kind, username, cost, payload, owner,
-                    before_commit=None, charge_transaction_key=""):
+                    before_commit=None, charge_transaction_key="", before_charge=None):
     batch_callback = None
     if before_commit is not None:
         batch_callback = lambda connection, job_ids: before_commit(connection, job_ids[0])
     job_ids, points_left = create_paid_jobs(
         jdb, deduct, refund, kind, username, [(cost, payload)], owner,
-        before_commit=batch_callback, charge_transaction_key=charge_transaction_key)
+        before_commit=batch_callback, charge_transaction_key=charge_transaction_key,
+        before_charge=before_charge)
     return job_ids[0], points_left
 
 

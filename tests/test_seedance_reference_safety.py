@@ -329,6 +329,130 @@ class SeedanceReferenceSafetyTests(unittest.TestCase):
                 self.assertEqual(1, self.video.retry_pending_seedance_cleanups())
             delete.assert_called_once_with("orphan-key")
 
+    def test_terminal_cas_crash_window_converges_after_restart_scan(self):
+        import json as _json
+        import sqlite3
+        import tempfile
+        from contextlib import closing as _closing
+        from content_domains import core, jobs_store
+
+        key = "seedance/reference/%s/terminal.png" % __import__("hashlib").sha256(b"fang").hexdigest()[:16]
+        with tempfile.TemporaryDirectory() as td, \
+             patch.object(core, "JOB_DB", str(Path(td) / "jobs.db")), \
+             patch.object(self.video, "_cleanup_table_ready", False):
+            with _closing(self.video._cleanup_db()):
+                pass
+            with _closing(sqlite3.connect(core.JOB_DB)) as db:
+                db.execute("""CREATE TABLE jobs(
+                    id INTEGER PRIMARY KEY,kind TEXT,username TEXT,status TEXT,
+                    payload TEXT,result TEXT,error TEXT,cost INTEGER DEFAULT 0,
+                    refunded INTEGER DEFAULT 0,updated_at INTEGER)""")
+                db.execute("INSERT INTO jobs VALUES(1,'xiaole_video','fang','running',?,NULL,NULL,0,0,0)",
+                           (_json.dumps({"_seedance_staged_keys": [key]}),))
+                db.execute("""INSERT INTO seedance_pending_cleanup
+                    (key,job_id,created_at,attempts,state,next_attempt_at,updated_at)
+                    VALUES(?,1,0,0,'linked',0,0)""", (key,))
+                db.commit()
+            # Simulate the process dying immediately after terminal CAS: the normal
+            # after_terminal_seedance_cleanup callback is deliberately not called.
+            self.assertTrue(jobs_store.set_terminal_with_video_outbox(
+                core.jdb, 1, "done", {"ok": True}))
+            with patch.object(self.video, "_seedance_cos_delete") as delete:
+                self.assertEqual(1, self.video.retry_pending_seedance_cleanups())
+            delete.assert_called_once_with(key)
+            with _closing(sqlite3.connect(core.JOB_DB)) as db:
+                self.assertEqual("done", db.execute("SELECT status FROM jobs WHERE id=1").fetchone()[0])
+                self.assertEqual(0, db.execute("SELECT COUNT(*) FROM seedance_pending_cleanup").fetchone()[0])
+
+    def test_restart_releases_stale_precharge_idempotency_attempt(self):
+        import sqlite3
+        import tempfile
+        from contextlib import closing as _closing
+        from content_domains import core, submission_idempotency
+
+        endpoint, idem_key = "/api/gen/xiaole-video", "restart-upload-123"
+        request = {"channel": "micro", "reference_images": ["data:image/png;base64,AA=="]}
+        with tempfile.TemporaryDirectory() as td, \
+             patch.object(core, "JOB_DB", str(Path(td) / "jobs.db")), \
+             patch.object(self.video, "_cleanup_table_ready", False):
+            self.assertEqual("new", submission_idempotency.begin(
+                core.jdb, "fang", endpoint, idem_key, request)[0])
+            self.video._reserve_seedance_staging_attempt("fang", endpoint, idem_key)
+            self.video._persist_staging_cleanup_intent("orphan-upload-key")
+            with _closing(sqlite3.connect(core.JOB_DB)) as db:
+                db.execute("UPDATE seedance_staging_attempts SET updated_at=0")
+                db.execute("UPDATE seedance_pending_cleanup SET created_at=0,next_attempt_at=0")
+                db.commit()
+            with patch.object(self.video, "_seedance_cos_delete") as delete:
+                self.assertEqual(1, self.video.retry_pending_seedance_cleanups())
+            delete.assert_called_once_with("orphan-upload-key")
+            self.assertEqual("new", submission_idempotency.begin(
+                core.jdb, "fang", endpoint, idem_key, request)[0])
+
+    def test_restart_never_aborts_attempt_after_charge_boundary(self):
+        import sqlite3
+        import tempfile
+        from contextlib import closing as _closing
+        from content_domains import core, submission_idempotency
+
+        endpoint, idem_key = "/api/gen/xiaole-video", "charging-boundary-123"
+        request = {"channel": "micro", "reference_images": ["data:image/png;base64,AA=="]}
+        with tempfile.TemporaryDirectory() as td, \
+             patch.object(core, "JOB_DB", str(Path(td) / "jobs.db")), \
+             patch.object(self.video, "_cleanup_table_ready", False):
+            self.assertEqual("new", submission_idempotency.begin(
+                core.jdb, "fang", endpoint, idem_key, request)[0])
+            self.video._reserve_seedance_staging_attempt("fang", endpoint, idem_key)
+            self.video._mark_seedance_staging_attempt_ready("fang", endpoint, idem_key)
+            self.video.mark_seedance_reference_charging("fang", endpoint, idem_key)
+            with _closing(sqlite3.connect(core.JOB_DB)) as db:
+                db.execute("UPDATE seedance_staging_attempts SET updated_at=0")
+                db.commit()
+            self.video.retry_pending_seedance_cleanups()
+            self.assertEqual("processing", submission_idempotency.begin(
+                core.jdb, "fang", endpoint, idem_key, request)[0])
+
+    def test_charge_boundary_precedes_deduct_and_job_link_is_atomic(self):
+        import sqlite3
+        import tempfile
+        from contextlib import closing as _closing
+        from content_domains import core, jobs_store
+
+        endpoint, idem_key, key = "/api/gen/xiaole-video", "atomic-link-123", "atomic-key"
+        with tempfile.TemporaryDirectory() as td, \
+             patch.object(core, "JOB_DB", str(Path(td) / "jobs.db")), \
+             patch.object(self.video, "_cleanup_table_ready", False):
+            with _closing(self.video._cleanup_db()):
+                pass
+            with _closing(sqlite3.connect(core.JOB_DB)) as db:
+                db.execute("""CREATE TABLE jobs(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,username TEXT,
+                    cost INTEGER,payload TEXT,created_at INTEGER,updated_at INTEGER,owner TEXT)""")
+                db.commit()
+            self.video._reserve_seedance_staging_attempt("fang", endpoint, idem_key)
+            self.video._mark_seedance_staging_attempt_ready("fang", endpoint, idem_key)
+            self.video._persist_staging_cleanup_intent(key)
+
+            def deduct(*_args, **_kwargs):
+                with _closing(sqlite3.connect(core.JOB_DB)) as db:
+                    self.assertEqual("charging", db.execute(
+                        "SELECT state FROM seedance_staging_attempts").fetchone()[0])
+                return 999
+
+            job_id, points_left = jobs_store.create_paid_job(
+                core.jdb, deduct, lambda *_args, **_kwargs: True,
+                "xiaole_video", "fang", 150, {"channel": "micro"}, "content",
+                before_charge=lambda: self.video.mark_seedance_reference_charging(
+                    "fang", endpoint, idem_key),
+                before_commit=lambda connection, jid: self.video.link_staged_seedance_references(
+                    connection, [key], jid, "fang", endpoint, idem_key),
+            )
+            self.assertEqual(999, points_left)
+            with _closing(sqlite3.connect(core.JOB_DB)) as db:
+                self.assertEqual(0, db.execute("SELECT COUNT(*) FROM seedance_staging_attempts").fetchone()[0])
+                self.assertEqual((job_id, "linked"), db.execute(
+                    "SELECT job_id,state FROM seedance_pending_cleanup WHERE key=?", (key,)).fetchone())
+
     def test_outcome_unknown_keeps_reference_until_signed_url_expires(self):
         from content_domains import video_seedance
         payload = {"channel": "micro"}

@@ -735,7 +735,6 @@ _inflight_lock = threading.Lock()
 DRAIN_TIMEOUT = _env_positive_int("CONTENT_DRAIN_TIMEOUT", 1800)
 def is_shutting_down():
     return _shutting_down.is_set()
-
 # CAS 抢终态 / 退点幂等：实现在 content_domains/jobs_store.py，三个共写 jobs 表的服务共用一份。
 def _set_terminal(job_id, status, result=None, error=None, from_states=("running",), cleanup_delay=0):
     return getattr(_domains()[2], "after_terminal_seedance_cleanup", lambda claimed, *_: claimed)(jobs_store.set_terminal_with_video_outbox(jdb, job_id, status, result, error, from_states), job_id, cleanup_delay)
@@ -1589,10 +1588,10 @@ class H(BaseHTTPRequestHandler):
             if kind == "canvas_agent" and body.get("quoted_cost") != cost:
                 return self._send(400, {"detail": "画布 Agent 价格已变化，请重新报价"})
             if cli_gateway.reject_changed_cost(self, cost, AUTH_INTERNAL_TOKEN): return
-            staged_ref_keys, seedance_idem_reserved, seedance_early = video_domain.prepare_xiaole_reference_submission(kind, body, cost, user.get("points"), user["username"], idem_key, _submission_lock, lambda: _idempotency_begin(user["username"], p, idem_key, request_body), lambda: _idempotency_abort(user["username"], p, idem_key), lambda: _user_video_submit_limit(kind, body, user["username"], cost), lambda: _user_active_job_count(user["username"]), MAX_USER_ACTIVE_JOBS) if kind == "xiaole_video" else ([], False, None)
+            staged_ref_keys, seedance_idem_reserved, seedance_early = video_domain.prepare_xiaole_reference_submission(kind, body, cost, user.get("points"), user["username"], idem_key, p, _submission_lock, lambda: _idempotency_begin(user["username"], p, idem_key, request_body), lambda: _idempotency_abort(user["username"], p, idem_key), lambda: _user_video_submit_limit(kind, body, user["username"], cost), lambda: _user_active_job_count(user["username"]), MAX_USER_ACTIVE_JOBS) if kind == "xiaole_video" else ([], False, None)
             if seedance_early: return self._send(*seedance_early)
             with _submission_lock:
-                if seedance_idem_reserved and is_shutting_down(): video_domain.cleanup_staged_seedance_references(staged_ref_keys); _idempotency_abort(user["username"], p, idem_key); return self._send(503, {"detail": "服务正在更新，请稍等几秒后重试（未扣点）", "code": "shutting_down", "retry_after_ms": 5000})
+                if seedance_idem_reserved and is_shutting_down(): video_domain.abort_xiaole_reference_submission(staged_ref_keys, user["username"], p, idem_key, lambda: _idempotency_abort(user["username"], p, idem_key)); return self._send(503, {"detail": "服务正在更新，请稍等几秒后重试（未扣点）", "code": "shutting_down", "retry_after_ms": 5000})
                 if (is_still_route and is_shutting_down()
                         and (not still_attempt or still_attempt.get("state") in {"accepted", "charged"})):
                     if still_idem_started and not still_attempt: _idempotency_abort(user["username"], p, idem_key)
@@ -1655,12 +1654,12 @@ class H(BaseHTTPRequestHandler):
                         _idempotency_abort(user["username"], p, idem_key); _short_drama_domain()._http_error(self, e, operation_terminal=True); return
                 limit_hit = None if still_attempt else _user_video_submit_limit(kind, body, user["username"], cost)
                 if limit_hit:
-                    video_domain.cleanup_staged_seedance_references(staged_ref_keys) if staged_ref_keys else None; _idempotency_abort(user["username"], p, idem_key)
+                    video_domain.abort_xiaole_reference_submission(staged_ref_keys, user["username"], p, idem_key, lambda: _idempotency_abort(user["username"], p, idem_key)) if staged_ref_keys else _idempotency_abort(user["username"], p, idem_key)
                     if is_still_route: limit_hit["operation_terminal"] = True
                     return self._send(429, limit_hit)
                 active_jobs = 0 if still_attempt else _user_active_job_count(user["username"])
                 if active_jobs >= MAX_USER_ACTIVE_JOBS:
-                    video_domain.cleanup_staged_seedance_references(staged_ref_keys) if staged_ref_keys else None; _idempotency_abort(user["username"], p, idem_key)
+                    video_domain.abort_xiaole_reference_submission(staged_ref_keys, user["username"], p, idem_key, lambda: _idempotency_abort(user["username"], p, idem_key)) if staged_ref_keys else _idempotency_abort(user["username"], p, idem_key)
                     return self._send(429, {"detail": "您有 %d 个任务正在排队/生成，完成后再提交" % active_jobs,
                         "code": "active_job_cap", "active_jobs": active_jobs, "max_active_jobs": MAX_USER_ACTIVE_JOBS,
                         "retry_after_ms": 4000, "need": cost,
@@ -1705,11 +1704,12 @@ class H(BaseHTTPRequestHandler):
                         jid, points_left = jobs_store.create_paid_job(
                             jdb, points_domain.deduct_points, points_domain.refund_points,
                             kind, user["username"], cost, body, SERVICE_OWNER,
-                            before_commit=(lambda connection, job_id: video_domain.link_staged_seedance_references(connection, staged_ref_keys, job_id)) if staged_ref_keys else still_association,
-                            charge_transaction_key=("job-charge:%s:%s:%s" % (user["username"], p, idem_key))
-                            if idem_key else "")
+                            before_commit=(lambda connection, job_id: video_domain.link_staged_seedance_references(connection, staged_ref_keys, job_id, user["username"], p, idem_key)) if staged_ref_keys else still_association,
+                            charge_transaction_key=("job-charge:%s:%s:%s" % (user["username"], p, idem_key)) if idem_key else "",
+                            before_charge=(lambda: video_domain.mark_seedance_reference_charging(user["username"], p, idem_key)) if staged_ref_keys else None)
+                except (video_domain.SeedanceReferenceUnavailable if isinstance(video_domain.SeedanceReferenceUnavailable, type) and issubclass(video_domain.SeedanceReferenceUnavailable, BaseException) else ()) as e: video_domain.abort_xiaole_reference_submission(staged_ref_keys, user["username"], p, idem_key, lambda: _idempotency_abort(user["username"], p, idem_key)); return self._send(e.status, {"detail": str(e)[:220], "code": e.code, "retry_after_ms": 60000})
                 except points_domain.AuthPointsError as e:
-                    if staged_ref_keys: video_domain.cleanup_staged_seedance_references(staged_ref_keys)
+                    if staged_ref_keys: video_domain.cleanup_staged_seedance_references(staged_ref_keys); video_domain.release_seedance_staging_attempt(user["username"], p, idem_key) if e.status in (402, 403) else None
                     if is_still_route and e.status == 402:
                         rejected = {
                             "detail": e.detail, "need": cost, "code": "charge_rejected",
@@ -1721,11 +1721,11 @@ class H(BaseHTTPRequestHandler):
                         public_rejected = dict(rejected)
                         public_rejected.pop("_http_status", None)
                         return self._send(402, public_rejected)
-                    elif not (is_still_route and e.status == 502):
+                    elif not ((is_still_route or staged_ref_keys) and e.status == 502):
                         _idempotency_abort(user["username"], p, idem_key)
                     return self._send(e.status if e.status in (402, 403) else 502, points_domain.public_error_body(e, cost))
                 except jobs_store.PaidJobInsertError as e:
-                    if staged_ref_keys: video_domain.cleanup_staged_seedance_references(staged_ref_keys)
+                    if staged_ref_keys: video_domain.cleanup_staged_seedance_references(staged_ref_keys); video_domain.release_seedance_staging_attempt(user["username"], p, idem_key)
                     failed_response = {"detail": {"refunded": "任务创建失败，点数已退回",
                         "queued": "任务创建失败，退款正在自动重试"}.get(e.compensation, "任务创建失败，退款需人工核对"),
                         "submission_ref": e.submission_ref}

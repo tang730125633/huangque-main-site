@@ -22,6 +22,7 @@ from . import (
     provider_keys,
     short_drama_media_sanitize,
     short_drama_visual_gate,
+    submission_idempotency,
 )
 
 VALID_VIDEO_MODES = {"text", "audio"}
@@ -451,7 +452,7 @@ def stage_xiaole_video_references(kind, body, username, token=None):
 
 
 def prepare_xiaole_reference_submission(
-        kind, body, cost, known_points, username, token, submission_lock,
+        kind, body, cost, known_points, username, token, endpoint, submission_lock,
         begin_idempotency, abort_idempotency, check_limit, active_count,
         max_active_jobs):
     """Reserve one official submission, then stage its images outside the lock."""
@@ -490,15 +491,35 @@ def prepare_xiaole_reference_submission(
         if eligibility_error:
             abort_idempotency()
             return [], False, eligibility_error
+        try:
+            _reserve_seedance_staging_attempt(username, endpoint, token)
+        except SeedanceReferenceUnavailable as exc:
+            abort_idempotency()
+            return [], False, (exc.status, {
+                "detail": str(exc)[:220], "code": exc.code,
+                "retry_after_ms": 60000,
+            })
     try:
         keys, staging_error = stage_xiaole_video_references(
             kind, body, username, token)
     except Exception:
+        release_seedance_staging_attempt(username, endpoint, token)
         abort_idempotency()
         raise
     if staging_error:
+        release_seedance_staging_attempt(username, endpoint, token)
         abort_idempotency()
         return [], False, staging_error
+    try:
+        _mark_seedance_staging_attempt_ready(username, endpoint, token)
+    except SeedanceReferenceUnavailable as exc:
+        cleanup_staged_seedance_references(keys)
+        release_seedance_staging_attempt(username, endpoint, token)
+        abort_idempotency()
+        return [], False, (exc.status, {
+            "detail": str(exc)[:220], "code": exc.code,
+            "retry_after_ms": 60000,
+        })
     return keys, True, None
 
 
@@ -532,6 +553,11 @@ def _cleanup_db():
             state TEXT NOT NULL DEFAULT 'cleanup_pending',
             next_attempt_at INTEGER NOT NULL DEFAULT 0,
             updated_at INTEGER NOT NULL DEFAULT 0)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS seedance_staging_attempts(
+            username TEXT NOT NULL, endpoint TEXT NOT NULL, idem_key TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'uploading', job_id INTEGER,
+            created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+            PRIMARY KEY(username,endpoint,idem_key))""")
         columns = {row[1] for row in c.execute("PRAGMA table_info(seedance_pending_cleanup)").fetchall()}
         if "state" not in columns:
             c.execute("ALTER TABLE seedance_pending_cleanup ADD COLUMN state TEXT NOT NULL DEFAULT 'cleanup_pending'")
@@ -542,6 +568,74 @@ def _cleanup_db():
         c.commit()
         _cleanup_table_ready = True
     return c
+
+
+def _reserve_seedance_staging_attempt(username, endpoint, idem_key):
+    """Persist the pre-charge lease before any COS network operation."""
+    now = int(time.time())
+    try:
+        with closing(_cleanup_db()) as c:
+            c.execute(
+                """INSERT INTO seedance_staging_attempts
+                   (username,endpoint,idem_key,state,job_id,created_at,updated_at)
+                   VALUES(?,?,?,'uploading',NULL,?,?)
+                   ON CONFLICT(username,endpoint,idem_key) DO UPDATE SET
+                     state='uploading',job_id=NULL,created_at=excluded.created_at,
+                     updated_at=excluded.updated_at""",
+                (str(username), str(endpoint), str(idem_key), now, now),
+            )
+            c.commit()
+    except Exception as exc:
+        print("[seedance] ALARM staging attempt persist failed: %s" % type(exc).__name__, flush=True)
+        raise SeedanceReferenceUnavailable("Seedance 参考图恢复事务不可用，本次未扣点") from exc
+
+
+def _set_seedance_staging_attempt_state(username, endpoint, idem_key, state):
+    now = int(time.time())
+    with closing(_cleanup_db()) as c:
+        changed = c.execute(
+            """UPDATE seedance_staging_attempts SET state=?,updated_at=?
+               WHERE username=? AND endpoint=? AND idem_key=? AND job_id IS NULL""",
+            (str(state), now, str(username), str(endpoint), str(idem_key)),
+        ).rowcount
+        c.commit()
+    if changed != 1:
+        raise SeedanceReferenceUnavailable("Seedance 参考图恢复状态丢失，本次未扣点")
+
+
+def _mark_seedance_staging_attempt_ready(username, endpoint, idem_key):
+    _set_seedance_staging_attempt_state(username, endpoint, idem_key, "staged")
+
+
+def mark_seedance_reference_charging(username, endpoint, idem_key):
+    """Last durable boundary before the external points transaction begins."""
+    _set_seedance_staging_attempt_state(username, endpoint, idem_key, "charging")
+
+
+def release_seedance_staging_attempt(username, endpoint, idem_key, connection=None):
+    if not (username and endpoint and idem_key):
+        return
+    own = connection is None
+    c = connection or _cleanup_db()
+    try:
+        c.execute(
+            "DELETE FROM seedance_staging_attempts WHERE username=? AND endpoint=? AND idem_key=?",
+            (str(username), str(endpoint), str(idem_key)),
+        )
+        if own:
+            c.commit()
+    finally:
+        if own:
+            c.close()
+
+
+def abort_xiaole_reference_submission(keys, username, endpoint, idem_key, abort_idempotency):
+    """Abort a proven pre-charge attempt and retire both durable reservations."""
+    try:
+        cleanup_staged_seedance_references(keys)
+        release_seedance_staging_attempt(username, endpoint, idem_key)
+    finally:
+        abort_idempotency()
 
 
 def _persist_staging_cleanup_intent(key):
@@ -561,17 +655,29 @@ def _persist_staging_cleanup_intent(key):
         raise SeedanceReferenceUnavailable("Seedance 参考图清理事务不可用，本次未扣点") from exc
 
 
-def link_staged_seedance_references(connection, keys, job_id):
+def link_staged_seedance_references(connection, keys, job_id, username=None,
+                                    endpoint=None, idem_key=None):
     """Atomically link staged objects to the job in the job INSERT transaction."""
     now = int(time.time())
     for key in [str(k) for k in (keys or []) if k]:
         cur = connection.execute(
             """UPDATE seedance_pending_cleanup
-               SET job_id=?,state='linked',updated_at=? WHERE key=? AND state='staged'""",
-            (int(job_id), now, key),
+               SET job_id=?,state='linked',next_attempt_at=?,updated_at=?
+               WHERE key=? AND state='staged'""",
+            (int(job_id), now + SEEDANCE_UNKNOWN_CLEANUP_DELAY, now, key),
         )
         if cur.rowcount != 1:
             raise RuntimeError("Seedance 参考图暂存事务丢失")
+    if keys:
+        changed = connection.execute(
+            """UPDATE seedance_staging_attempts SET state='linked',job_id=?,updated_at=?
+               WHERE username=? AND endpoint=? AND idem_key=? AND state='charging'""",
+            (int(job_id), now, str(username), str(endpoint), str(idem_key)),
+        ).rowcount
+        if changed != 1:
+            raise RuntimeError("Seedance 参考图提交事务丢失")
+        release_seedance_staging_attempt(
+            username, endpoint, idem_key, connection=connection)
 
 
 def _enqueue_pending_cleanup(keys, job_id=None, delay_seconds=0):
@@ -647,9 +753,77 @@ def cleanup_staged_seedance_references(object_keys, job_id=None, delay_seconds=0
         _remove_cleanup_record(key)
 
 
+def _recover_orphaned_seedance_attempts(now, limit):
+    """Release only stale attempts proven to be before the charge boundary."""
+    cutoff = int(now) - SEEDANCE_STAGING_ORPHAN_GRACE
+    try:
+        with closing(_cleanup_db()) as c:
+            submission_idempotency.ensure_table(c)
+            c.commit()
+            rows = c.execute(
+                """SELECT username,endpoint,idem_key FROM seedance_staging_attempts
+                   WHERE state IN ('uploading','staged') AND updated_at<=?
+                   ORDER BY updated_at,username,endpoint,idem_key LIMIT ?""",
+                (cutoff, int(limit)),
+            ).fetchall()
+            recovered = 0
+            for row in rows:
+                c.execute("BEGIN IMMEDIATE")
+                attempt = c.execute(
+                    """SELECT state,job_id FROM seedance_staging_attempts
+                       WHERE username=? AND endpoint=? AND idem_key=?""",
+                    (row["username"], row["endpoint"], row["idem_key"]),
+                ).fetchone()
+                if (not attempt or attempt["state"] not in {"uploading", "staged"}
+                        or attempt["job_id"] is not None):
+                    c.commit()
+                    continue
+                # response_json IS NULL proves the key never reached a terminal replay;
+                # the attempt phase proves the external points call was never entered.
+                c.execute(
+                    """DELETE FROM submission_idempotency
+                       WHERE username=? AND endpoint=? AND idem_key=?
+                         AND response_json IS NULL""",
+                    (row["username"], row["endpoint"], row["idem_key"]),
+                )
+                c.execute(
+                    """DELETE FROM seedance_staging_attempts
+                       WHERE username=? AND endpoint=? AND idem_key=?
+                         AND state IN ('uploading','staged') AND job_id IS NULL""",
+                    (row["username"], row["endpoint"], row["idem_key"]),
+                )
+                c.commit()
+                recovered += 1
+            return recovered
+    except Exception:
+        return 0
+
+
+def _promote_terminal_linked_cleanups(now):
+    """Close the crash window between terminal CAS and its cleanup callback."""
+    try:
+        with closing(_cleanup_db()) as c:
+            changed = c.execute(
+                """UPDATE seedance_pending_cleanup AS cleanup
+                   SET state='cleanup_pending',updated_at=?
+                   WHERE state='linked' AND job_id IS NOT NULL AND (
+                     NOT EXISTS(SELECT 1 FROM jobs WHERE id=cleanup.job_id) OR
+                     EXISTS(SELECT 1 FROM jobs WHERE id=cleanup.job_id
+                            AND status IN ('done','error'))
+                   )""",
+                (int(now),),
+            ).rowcount
+            c.commit()
+            return changed
+    except Exception:
+        return 0
+
+
 def retry_pending_seedance_cleanups(limit=50):
     """Retry eligible cleanup rows without starving newer objects."""
     now = int(time.time())
+    _recover_orphaned_seedance_attempts(now, limit)
+    _promote_terminal_linked_cleanups(now)
     try:
         with closing(_cleanup_db()) as c:
             rows = c.execute(
