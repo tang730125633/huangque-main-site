@@ -28,6 +28,40 @@
 - <https://help.aliyun.com/zh/model-studio/wan2-2-animate-move>
 - <https://github.com/Wan-Video/Wan2.2>
 
+## 补充工具评估
+
+### Wan-Dancer：不进入指定动作复刻主链
+
+`Wan-Video/Wan-Dancer` 是“人物图 + 音乐 + 舞种提示词 → 原创长舞视频”，不是“人物图 + 目标动作视频 → 复刻动作”。它适合以后做一分钟级音乐舞蹈生成，但当前不能替代 `wan2.2-animate-move`。
+
+- 官方开源协议：Apache-2.0。
+- 官方参考环境：Ubuntu 22.04、8 × NVIDIA A800 80GB。
+- 当前没有托管推理供应商，不能复用现有百炼 API 直接调用。
+- 结论：本阶段不下载 14B 权重、不建设 GPU 集群、不接正式产品。
+
+官方依据：
+
+- <https://github.com/Wan-Video/Wan-Dancer>
+- <https://huggingface.co/Wan-AI/Wan-Dancer-14B>
+
+### depthvideo.com：作为可选深度预处理
+
+该工具在浏览器本地使用 Depth Anything V2 / ONNX Runtime Web 逐帧推理，素材不上传，能够导出 MP4/WebM。它不是供应商 API，因此不接后端；需要深度对照时直接人工生成一次即可。
+
+首次深度对照采用：
+
+1. 选择 Depth Anything V2 Small。Small 为 Apache-2.0；Base/Large 为 CC-BY-NC-4.0，不进入黄雀商业链路。
+2. 选择“仅人物”、灰度、MP4，保留完整身体；不要使用热力图。
+3. 导出后确认时长、宽高、帧率与原视频一致，且手脚没有被人物遮罩切掉。
+4. 把深度 MP4 交给 `seedance_motion_poc.py --mode depth`；不要交给官方 `wan2.2-animate-move`，后者应使用原始表演视频。
+5. 如果人物遮罩闪烁或断肢，再改用“全图”灰度重导一次，不预建新的深度服务。
+
+依据：
+
+- <https://www.depthvideo.com/>
+- <https://github.com/DepthAnything/Depth-Anything-V2>
+- <https://github.com/DepthAnything/Video-Depth-Anything>
+
 ## 官方合同（2026-08-02 核验）
 
 - Seedance 2.0 多模态参考支持 0–9 张图、0–3 段视频、0–3 段音频及文本组合。
@@ -58,8 +92,9 @@
 1. 用 5 秒、单人全身、固定镜头、简单背景素材跑 Wan std，预估 ¥2。
 2. 动作正确但画质或稳定性不足时才跑 Wan pro，预估 ¥3。
 3. 再用同一素材跑 Seedance RGB；只有出现原演员/背景污染时才增加深度对照。
-4. 每组只提交一次，记录官方 task ID、请求参数、耗时、实际扣费和成片 URL；不得因页面无响应重复提交。
-5. 人工按 1–5 分评估动作相似度、节奏、身份、脸、服装、身体、手脚、背景污染、黑白泄漏和闪烁。
+4. 深度对照直接用 depthvideo.com 的 Small 模型生成，不建设服务、不上传素材。
+5. 每组只提交一次，记录官方 task ID、请求参数、耗时、实际扣费和成片 URL；不得因页面无响应重复提交。
+6. 人工按 1–5 分评估动作相似度、节奏、身份、脸、服装、身体、手脚、背景污染、黑白泄漏和闪烁。
 
 ## 隔离 POC 用法
 
