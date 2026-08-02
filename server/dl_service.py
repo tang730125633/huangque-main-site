@@ -38,6 +38,17 @@ MIME_EXT = {
 }
 
 
+def download_headers(host):
+    headers = {"User-Agent": UA}
+    if host.endswith((
+        "zjcdn.com", "douyinvod.com", "douyinstatic.com", "douyinpic.com", "amemv.com",
+        "bytecdn.cn", "ixigua.com", "pstatp.com", "snssdk.com", "byteimg.com",
+        "bytedance.net", "lf-douyin.com", "365yg.com",
+    )):
+        headers["Referer"] = "https://www.douyin.com/"
+    return headers
+
+
 def content_type_ext(headers):
     ctype = (headers.get("Content-Type") or "application/octet-stream").split(";", 1)[0].strip().lower()
     return ctype or "application/octet-stream", MIME_EXT.get(ctype, ".mp4")
@@ -153,7 +164,7 @@ class H(BaseHTTPRequestHandler):
                 return self._err(400, "视频号下载缺少解密密钥(请重新爬取获取新链接)")
             return self._stream_decrypt(url, dk, ascii_name, raw)
         try:
-            up = OPENER.open(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=120)
+            up = OPENER.open(urllib.request.Request(url, headers=download_headers(host)), timeout=120)
         except Exception:
             return self._err(502, "下载失败(地址可能已过期，请重新爬取)")
         ctype, ext = content_type_ext(up.headers)
