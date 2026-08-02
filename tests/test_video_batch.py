@@ -407,6 +407,11 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
                 self.assertEqual(2, health["max_user_active_xiaole_video"])
                 self.assertEqual(1, health["max_user_active_tryon"])
                 self.assertIn("reverse_remake_video_channel", health)
+                self.assertIn("reverse_remake_video_offer", health)
+                self.assertEqual(
+                    health["reverse_remake_video_channel"],
+                    health["reverse_remake_video_offer"]["channel"],
+                )
             finally:
                 if server:
                     server.shutdown()
@@ -794,6 +799,38 @@ class ReverseRemakeChannelTests(unittest.TestCase):
                 patch.object(video, "grok_video_is_open", return_value=True), \
                 patch.object(video, "grok_reference_upload_is_open", return_value=False):
             self.assertEqual("", video.reverse_remake_video_channel(core.feature_flags))
+
+    def test_legacy_xiaole_provider_is_never_advertised_for_reverse_frames(self):
+        from content_domains import core
+
+        with patch.object(video, "GROK_VIDEO_PROVIDER", "xiaole"), \
+                patch.object(video, "XIAOLEVIDEO_API_KEY", "configured"), \
+                patch.object(video, "seedance_video_health_enabled", return_value=False):
+            self.assertFalse(video.grok_reference_upload_is_open())
+            self.assertEqual("", video.reverse_remake_video_channel(core.feature_flags))
+
+    def test_reverse_remake_offer_uses_authoritative_points_matrix(self):
+        from content_domains import core, points
+
+        with patch.object(video, "reverse_remake_video_channel", return_value="micro"):
+            micro = video.reverse_remake_video_offer(core.feature_flags, points.cost_of)
+        self.assertEqual("micro", micro["channel"])
+        self.assertEqual("720p", micro["resolution"])
+        self.assertEqual({"5": 150, "10": 300, "15": 450}, micro["duration_costs"])
+
+        with patch.object(video, "reverse_remake_video_channel", return_value="grok"):
+            grok = video.reverse_remake_video_offer(core.feature_flags, points.cost_of)
+        self.assertEqual("grok-imagine-video", grok["model"])
+        self.assertEqual({"5": 60, "10": 120, "15": 180}, grok["duration_costs"])
+
+    def test_reverse_remake_offer_fails_closed_on_invalid_quote(self):
+        from content_domains import core
+
+        with patch.object(video, "reverse_remake_video_channel", return_value="grok"):
+            offer = video.reverse_remake_video_offer(
+                core.feature_flags, lambda _kind, _body: 0)
+        self.assertEqual("", offer["channel"])
+        self.assertEqual({}, offer["duration_costs"])
 
     def test_grok_reference_staging_is_before_deduct_in_submit_path(self):
         from content_domains import core

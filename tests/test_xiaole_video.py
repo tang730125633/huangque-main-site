@@ -346,6 +346,43 @@ class XiaoleVideoTests(unittest.TestCase):
                     "reference_images": [], "reference_mode": "ordered_storyboard",
                 })
 
+    def test_legacy_xiaole_reverse_rejects_five_and_corrupt_data_urls_before_charge(self):
+        corrupt = "data:image/png;base64,AA=="
+        with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xiaole"):
+            with self.assertRaisesRegex(ValueError, "1-4张"):
+                self.video.validate_xiaole_video_payload({
+                    "channel": "grok", "prompt": "逐段还原",
+                    "reference_images": [corrupt] * 5,
+                    "reference_mode": "ordered_storyboard",
+                })
+            with self.assertRaisesRegex(ValueError, "图片|参考图"):
+                self.video.validate_xiaole_video_payload({
+                    "channel": "grok", "prompt": "逐段还原",
+                    "reference_images": [corrupt],
+                    "reference_mode": "ordered_storyboard",
+                })
+
+    def test_legacy_xiaole_reverse_valid_frame_still_fails_before_charge(self):
+        from PIL import Image
+
+        buffer = io.BytesIO()
+        Image.new("RGB", (8, 8), (30, 60, 90)).save(buffer, "PNG")
+        ref = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+        body = {
+            "channel": "grok", "prompt": "逐段还原",
+            "reference_images": [ref], "reference_mode": "ordered_storyboard",
+        }
+        with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xiaole"):
+            with self.assertRaisesRegex(ValueError, "不支持安全反推参考帧"):
+                self.video.validate_xiaole_video_payload(body)
+            self.assertTrue(self.video.xiaole_reference_needs_staging("xiaole_video", body))
+            keys, error = self.video.stage_xiaole_video_references(
+                "xiaole_video", body, "fang", "c" * 32)
+        self.assertIsNone(keys)
+        self.assertEqual(503, error[0])
+        self.assertEqual("grok_reference_upload_unavailable", error[1]["code"])
+        self.assertIn("未扣点", error[1]["detail"])
+
     def test_reverse_grok_staging_failure_is_precharge_503(self):
         from PIL import Image
 

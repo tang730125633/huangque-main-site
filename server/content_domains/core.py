@@ -2026,10 +2026,12 @@ class H(BaseHTTPRequestHandler):
                       "stats": {"like": it.get("like"), "comment": it.get("comment")}} for it in (r.get("items") or [])]
             return self._send(200, {"items": items, "cost": 1, "points_left": points_left})
         if p == "/api/gen/health":
+            reverse_remake_offer = video_domain.reverse_remake_video_offer(
+                feature_flags, points_domain.cost_of)
             return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS), "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS, "talking_job_workers": TALKING_JOB_WORKERS, "image_job_workers": IMAGE_JOB_WORKERS, "job_queue_max": JOB_QUEUE_MAX, "talking_job_queue_max": TALKING_JOB_QUEUE_MAX,
                                     "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_active_xiaole_video": MAX_USER_ACTIVE_XIAOLE_VIDEO, "max_user_active_sora_video": MAX_USER_ACTIVE_SORA_VIDEO, "max_user_active_tryon": MAX_USER_ACTIVE_TRYON, "max_user_active_cinematic": MAX_USER_ACTIVE_CINEMATIC,
                                     "sora_video_enabled": bool(video_domain.sora_video_is_open() and OPENAI_KEY and feature_flags.is_enabled("sora_video")),
-                                    "omni_video_enabled": bool(video_domain.omni_video_is_open() and feature_flags.is_enabled("omni_video")), "seedance_video_enabled": bool(video_domain.seedance_video_is_open() and feature_flags.is_enabled("seedance_video")), "reverse_remake_video_channel": video_domain.reverse_remake_video_channel(feature_flags), "seedance_reference_images_enabled": video_domain.seedance_reference_upload_is_open(), "seedance_upscale_enabled": bool(video_domain.seedance_upscale_is_open() and feature_flags.is_enabled("seedance_video")),
+                                    "omni_video_enabled": bool(video_domain.omni_video_is_open() and feature_flags.is_enabled("omni_video")), "seedance_video_enabled": bool(video_domain.seedance_video_is_open() and feature_flags.is_enabled("seedance_video")), "reverse_remake_video_channel": reverse_remake_offer["channel"], "reverse_remake_video_offer": reverse_remake_offer, "seedance_reference_images_enabled": video_domain.seedance_reference_upload_is_open(), "seedance_upscale_enabled": bool(video_domain.seedance_upscale_is_open() and feature_flags.is_enabled("seedance_video")),
                                     "max_user_running_talking": MAX_USER_RUNNING_TALKING, "max_user_running_image": MAX_USER_RUNNING_IMAGE, "video_cost": VIDEO_COST, "video_batch_max": min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS), "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
         self._send(404, {"detail": "not found"})
     def do_PUT(self):

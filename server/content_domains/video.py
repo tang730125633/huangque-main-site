@@ -225,7 +225,7 @@ def grok_video_is_open():
 def grok_reference_upload_is_open():
     """The xAI path needs public COS URLs for reverse reference frames."""
     if GROK_VIDEO_PROVIDER == "xiaole":
-        return True
+        return False
     try:
         from . import cos
         return bool(cos.enabled()
@@ -242,6 +242,36 @@ def reverse_remake_video_channel(flags):
     if grok_video_is_open() and grok_reference_upload_is_open():
         return "grok"
     return ""
+
+
+def reverse_remake_video_offer(flags, cost_of):
+    """Return one server-priced no-avatar offer, or a fail-closed empty offer."""
+    channel = reverse_remake_video_channel(flags)
+    empty = {"channel": "", "model": "", "resolution": "", "duration_costs": {}}
+    if not channel:
+        return empty
+    try:
+        if channel == "micro":
+            from . import video_seedance
+            model = video_seedance.SEEDANCE_MODEL
+        else:
+            model = "grok-imagine-video"
+        resolution = "720p"
+        costs = {}
+        for duration in (5, 10, 15):
+            quoted = int(cost_of("xiaole_video", {
+                "channel": channel, "model": model,
+                "resolution": resolution, "duration": duration,
+            }))
+            if quoted <= 0:
+                return empty
+            costs[str(duration)] = quoted
+        return {
+            "channel": channel, "model": model, "resolution": resolution,
+            "duration_costs": costs,
+        }
+    except Exception:
+        return empty
 
 
 def seedance_upscale_is_open():
@@ -474,10 +504,11 @@ def stage_grok_references(body, username, token=None):
     refs = [str(item or "").strip()
             for item in ((body or {}).get("reference_images") or [])
             if str(item or "").strip()]
-    if (GROK_VIDEO_PROVIDER == "xiaole"
-            or str((body or {}).get("channel") or "").strip().lower() != "grok"
+    if (str((body or {}).get("channel") or "").strip().lower() != "grok"
             or str((body or {}).get("reference_mode") or "").strip().lower() != "ordered_storyboard"):
         return []
+    if GROK_VIDEO_PROVIDER == "xiaole":
+        raise GrokReferenceUnavailable("当前果肉供应商不支持安全公网转存，本次未扣点")
     if not 1 <= len(refs) <= 4 or any(not item.startswith("data:") for item in refs):
         raise GrokReferenceUnavailable("Grok 反推仅接受1-4张本任务关键帧，本次未扣点")
     if not grok_reference_upload_is_open():
@@ -521,7 +552,7 @@ def xiaole_reference_needs_staging(kind, body):
     channel = str((body or {}).get("channel") or "").strip().lower()
     if channel == "micro":
         return True
-    return (channel == "grok" and GROK_VIDEO_PROVIDER != "xiaole"
+    return (channel == "grok"
             and str((body or {}).get("reference_mode") or "").strip().lower() == "ordered_storyboard")
 
 
@@ -1313,6 +1344,23 @@ def validate_xiaole_video_payload(payload, username=None):
             raise ValueError("Grok 视频最多支持%d张参考图" % XIAOLE_MAX_REF)
         validate_image_mentions(prompt, len(common_refs))
         cleaned["reference_images"] = common_refs
+        if reference_mode == "ordered_storyboard":
+            if not 1 <= len(common_refs) <= 4:
+                raise ValueError("反推同款需要1-4张按时间排序的关键帧")
+            if any(not item.startswith("data:") for item in common_refs):
+                raise ValueError("果肉反推回退仅接受本次任务的本地关键帧，本次未扣点")
+            hashes = []
+            for item in common_refs:
+                _mime, _ext, data = _seedance_data_image(item)
+                hashes.append(hashlib.sha256(data).hexdigest())
+            cleaned["_reference_storyboard_count"] = len(common_refs)
+            cleaned["_reference_storyboard_source_hashes"] = hashes
+            cleaned["prompt"] = (
+                "参考图按原视频时间顺序排列；必须依次还原每张图的动作节点、"
+                "镜头转换和场景变化。" + prompt
+            )
+            if GROK_VIDEO_PROVIDER == "xiaole":
+                raise ValueError("当前果肉供应商不支持安全反推参考帧，本次未扣点")
     if channel != "grok" or GROK_VIDEO_PROVIDER == "xiaole":
         return cleaned
 
@@ -1331,21 +1379,6 @@ def validate_xiaole_video_payload(payload, username=None):
         raise ValueError("reference_images 必须是数组")
     refs = [str(x or "").strip() for x in refs if str(x or "").strip()]
     validate_image_mentions(prompt, len(refs))
-    if reference_mode == "ordered_storyboard":
-        if not 1 <= len(refs) <= 4:
-            raise ValueError("反推同款需要1-4张按时间排序的关键帧")
-        if any(not item.startswith("data:") for item in refs):
-            raise ValueError("果肉反推回退仅接受本次任务的本地关键帧，本次未扣点")
-        hashes = []
-        for item in refs:
-            _mime, _ext, data = _seedance_data_image(item)
-            hashes.append(hashlib.sha256(data).hexdigest())
-        cleaned["_reference_storyboard_count"] = len(refs)
-        cleaned["_reference_storyboard_source_hashes"] = hashes
-        cleaned["prompt"] = (
-            "参考图按原视频时间顺序排列；必须依次还原每张图的动作节点、"
-            "镜头转换和场景变化。" + prompt
-        )
     if model == "grok-imagine-video-1.5" and not refs:
         raise ValueError("Grok Video 1.5 至少需要1张参考图")
     if len(refs) > XIAOLE_MAX_REF:

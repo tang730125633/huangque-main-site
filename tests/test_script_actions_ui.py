@@ -63,9 +63,10 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("预计消耗 '+cost+' 点", self.html)
         self.assertIn("if(!_confirmDramaVideo(list)) return;", self.html)
 
-    def test_reverse_video_estimate_matches_seedance_price(self):
-        self.assertIn("selectedAvatarId===null?30:10", self.html)
-        self.assertIn("seconds*rate", self.html)
+    def test_reverse_video_estimate_uses_server_quote(self):
+        self.assertIn("noAvatarOffer.duration_costs[String(selectedDuration)]", self.html)
+        self.assertIn("noAvatarOffer.duration_costs[String(seconds)]", self.html)
+        self.assertIn("selectedDuration*10", self.html)
         self.assertIn("5 秒 · 150 点", self.html)
         self.assertIn("10 秒 · 300 点", self.html)
         self.assertIn("15 秒 · 450 点", self.html)
@@ -92,7 +93,7 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn('id="reverseVideoCost"', self.html)
         self.assertIn("selectedDuration=10", self.html)
         self.assertIn("selectedAvatarId=null", self.html)
-        self.assertIn("selectedAvatarId===null?30:10", self.html)
+        self.assertIn("var noAvatarOffer=null", self.html)
 
     def test_reverse_video_picker_avatar_failure_does_not_bypass_channel_gate(self):
         self.assertIn("function _showReverseVideoPicker(prompt,onConfirm)", self.html)
@@ -103,8 +104,8 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("还没有形象", self.html)
         self.assertIn("video.html", self.html)
         self.assertIn("fetch('/api/gen/health',{cache:'no-store'})", self.html)
-        self.assertIn("reverse_remake_video_channel", self.html)
-        self.assertIn("Object.prototype.hasOwnProperty.call(d,'reverse_remake_video_channel')", self.html)
+        self.assertIn("reverse_remake_video_offer", self.html)
+        self.assertIn("offer.duration_costs", self.html)
         self.assertIn("if(submitted||confirm.disabled) return;", self.html)
 
     def test_reverse_video_picker_cancel_and_submit_are_explicit(self):
@@ -112,7 +113,8 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn('id="reverseVideoConfirm"', self.html)
         self.assertIn("confirm.disabled=true", self.html)
         self.assertIn("if(submitted||confirm.disabled) return;", self.html)
-        self.assertIn("onConfirm({avatarId:selectedAvatarId,duration:selectedDuration,channel:selectedAvatarId===null?noAvatarChannel:''})", self.html)
+        self.assertIn("model:selectedAvatarId===null&&noAvatarOffer?noAvatarOffer.model:''", self.html)
+        self.assertIn("resolution:selectedAvatarId===null&&noAvatarOffer?noAvatarOffer.resolution:''", self.html)
 
     def test_reverse_video_picker_ignores_stale_avatar_responses(self):
         self.assertIn("var reverseVideoPickerRequest=0", self.html)
@@ -169,6 +171,8 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("function reverseReferenceThumbnailIndices(bd)", self.html)
         self.assertIn("function reverseReferenceImages(bd)", self.html)
         self.assertIn("channel:choice.channel", self.html)
+        self.assertIn("model:choice.model", self.html)
+        self.assertIn("resolution:choice.resolution", self.html)
         self.assertIn("reference_mode:choice.channel==='grok'?'ordered_storyboard':undefined", self.html)
         self.assertIn("{endpoint:'/api/gen/xiaole_video',sceneCount:1}", self.html)
         self.assertIn("endpoint==='/api/gen/xiaole_video'", self.html)
@@ -637,8 +641,17 @@ class ReverseVideoPickerRuntimeTests(unittest.TestCase):
         html = SCRIPT_HTML.read_text(encoding="utf-8")
         cls.picker = _extract_js_function(html, "_showReverseVideoPicker")
 
-    def _run_picker(self, channel="", avatars=None, pick_avatar=False, seedance_enabled=False):
+    def _run_picker(self, channel="", avatars=None, pick_avatar=False, seedance_enabled=False,
+                    costs=None, model=None, resolution="720p"):
         avatars = avatars or []
+        if costs is None:
+            costs = ({"5": 150, "10": 300, "15": 450} if channel == "micro"
+                     else {"5": 60, "10": 120, "15": 180} if channel == "grok" else {})
+        if model is None:
+            model = ("seedance-1-5-pro-251215" if channel == "micro"
+                     else "grok-imagine-video" if channel == "grok" else "")
+        offer = {"channel": channel, "model": model, "resolution": resolution,
+                 "duration_costs": costs}
         harness = f"""
 class ClassList {{
   constructor(){{this.values={{}};}}
@@ -670,7 +683,7 @@ function esc(value){{return String(value);}}
 function response(data){{return {{ok:true,json:function(){{return Promise.resolve(data);}}}};}}
 function fetch(url){{
   if(url.indexOf('/api/gen/video/avatars')===0) return Promise.resolve(response({{items:{json.dumps(avatars, ensure_ascii=False)}}}));
-  if(url==='/api/gen/health') return Promise.resolve(response({{reverse_remake_video_channel:{json.dumps(channel)},seedance_video_enabled:{str(seedance_enabled).lower()}}}));
+  if(url==='/api/gen/health') return Promise.resolve(response({{reverse_remake_video_offer:{json.dumps(offer)},seedance_video_enabled:{str(seedance_enabled).lower()}}}));
   return Promise.reject(new Error('unexpected '+url));
 }}
 {self.picker}
@@ -686,7 +699,10 @@ setImmediate(function(){{setImmediate(function(){{
   process.stdout.write(JSON.stringify({{
     choice:choice,noAvatarDisabled:ids.reverseVideoNoAvatar.disabled,
     confirmDisabled:ids.reverseVideoConfirm.disabled,
-    state:ids.reverseVideoSeedanceStatus.getAttribute('data-state'),cardCount:cardCount
+    state:ids.reverseVideoSeedanceStatus.getAttribute('data-state'),
+    statusText:ids.reverseVideoSeedanceStatus.textContent,cardCount:cardCount,
+    costText:ids.reverseVideoCost.textContent,
+    durationLabels:ids.reverseVideoDuration.children.map(function(item){{return item.textContent;}})
   }}));
 }});}});
 """
@@ -712,11 +728,30 @@ setImmediate(function(){{setImmediate(function(){{
     def test_grok_fallback_submits_explicit_channel_once(self):
         got = self._run_picker(channel="grok")
         self.assertEqual(
-            {"avatarId": None, "duration": 10, "channel": "grok"},
+            {"avatarId": None, "duration": 10, "channel": "grok",
+             "model": "grok-imagine-video", "resolution": "720p"},
             got["choice"],
         )
         self.assertFalse(got["noAvatarDisabled"])
         self.assertEqual("ready", got["state"])
+        self.assertEqual("预计消耗 120 点", got["costText"])
+        self.assertEqual(["5 秒 · 60 点", "10 秒 · 120 点", "15 秒 · 180 点"],
+                         got["durationLabels"])
+
+    def test_seedance_offer_uses_server_quoted_prices(self):
+        got = self._run_picker(channel="micro")
+        self.assertEqual("预计消耗 300 点", got["costText"])
+        self.assertEqual(["5 秒 · 150 点", "10 秒 · 300 点", "15 秒 · 450 点"],
+                         got["durationLabels"])
+
+    def test_missing_or_invalid_server_quote_fails_closed(self):
+        for costs in ({}, {"5": 60, "10": 120}, {"5": 60, "10": 0, "15": 180}):
+            with self.subTest(costs=costs):
+                got = self._run_picker(channel="grok", costs=costs)
+                self.assertIsNone(got["choice"])
+                self.assertTrue(got["noAvatarDisabled"])
+                self.assertTrue(got["confirmDisabled"])
+                self.assertIn("报价不可用", got["statusText"])
 
     def test_avatar_path_remains_available_when_open_channels_are_closed(self):
         got = self._run_picker(
@@ -725,7 +760,8 @@ setImmediate(function(){{setImmediate(function(){{
         )
         self.assertEqual(1, got["cardCount"], got)
         self.assertEqual(
-            {"avatarId": "avatar-7", "duration": 10, "channel": ""},
+            {"avatarId": "avatar-7", "duration": 10, "channel": "",
+             "model": "", "resolution": ""},
             got["choice"],
             got,
         )

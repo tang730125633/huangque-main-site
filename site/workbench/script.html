@@ -1608,18 +1608,25 @@
     var selectedDuration=10;
     var submitted=false;
     var noAvatarChannel='';
+    var noAvatarOffer=null;
     function updateConfirm(){
       var blocked=selectedAvatarId===null&&!noAvatarChannel;
       confirm.disabled=blocked;
       confirm.style.opacity=blocked?'.55':'1';
     }
     function updateCost(){
-      var rate=selectedAvatarId===null?30:10;
-      cost.textContent='预计消耗 '+(selectedDuration*rate)+' 点';
+      var quoted=selectedAvatarId===null
+        ?Number(noAvatarOffer&&noAvatarOffer.duration_costs&&noAvatarOffer.duration_costs[String(selectedDuration)])
+        :selectedDuration*10;
+      var costText=Number.isInteger(quoted)&&quoted>0?String(quoted):'--';
+      cost.textContent='预计消耗 '+costText+' 点';
       duration.querySelectorAll('[data-reverse-duration]').forEach(function(btn){
         var seconds=Number(btn.getAttribute('data-reverse-duration'));
         var on=seconds===selectedDuration;
-        btn.textContent=seconds+' 秒 · '+(seconds*rate)+' 点';
+        var buttonCost=selectedAvatarId===null
+          ?Number(noAvatarOffer&&noAvatarOffer.duration_costs&&noAvatarOffer.duration_costs[String(seconds)])
+          :seconds*10;
+        btn.textContent=seconds+' 秒 · '+(Number.isInteger(buttonCost)&&buttonCost>0?buttonCost:'--')+' 点';
         btn.classList.toggle('on',on);
         btn.setAttribute('aria-pressed',on?'true':'false');
       });
@@ -1637,8 +1644,18 @@
       updateCost();
       updateConfirm();
     }
-    function setNoAvatarAvailability(channel,detail){
-      noAvatarChannel=channel==='micro'||channel==='grok'?channel:'';
+    function setNoAvatarAvailability(offer,detail){
+      var channel=offer&&offer.channel;
+      var costs=offer&&offer.duration_costs;
+      var validCosts=[5,10,15].every(function(seconds){
+        var value=Number(costs&&costs[String(seconds)]);
+        return Number.isInteger(value)&&value>0;
+      });
+      var validOffer=(channel==='micro'||channel==='grok')
+        &&typeof offer.model==='string'&&offer.model.length>0
+        &&offer.resolution==='720p'&&validCosts;
+      noAvatarOffer=validOffer?offer:null;
+      noAvatarChannel=validOffer?channel:'';
       noAvatar.disabled=!noAvatarChannel;
       channelStatus.textContent=detail;
       channelStatus.setAttribute('data-state',noAvatarChannel?'ready':'blocked');
@@ -1650,6 +1667,7 @@
         noAvatar.classList.toggle('on',false);
         noAvatar.setAttribute('aria-pressed','false');
       }
+      updateCost();
       updateConfirm();
     }
     function dismiss(){ modal.style.display='none'; }
@@ -1673,7 +1691,12 @@
       confirm.disabled=true;
       confirm.style.opacity='.6';
       dismiss();
-      onConfirm({avatarId:selectedAvatarId,duration:selectedDuration,channel:selectedAvatarId===null?noAvatarChannel:''});
+      onConfirm({
+        avatarId:selectedAvatarId,duration:selectedDuration,
+        channel:selectedAvatarId===null?noAvatarChannel:'',
+        model:selectedAvatarId===null&&noAvatarOffer?noAvatarOffer.model:'',
+        resolution:selectedAvatarId===null&&noAvatarOffer?noAvatarOffer.resolution:''
+      });
     };
     function loadAvatars(){
       var avatarRequestId=++avatarLoadRequest;
@@ -1719,21 +1742,32 @@
         .then(function(r){ return r.ok?r.json():Promise.reject(); })
         .then(function(d){
           if(invocationId!==reverseVideoPickerRequest) return;
-          var hasExplicitChannel=d&&Object.prototype.hasOwnProperty.call(d,'reverse_remake_video_channel');
-          var channel=hasExplicitChannel?d.reverse_remake_video_channel:(d&&d.seedance_video_enabled===true?'micro':'');
+          var offer=d&&d.reverse_remake_video_offer;
+          var channel=offer&&offer.channel;
+          var quoted=offer&&offer.duration_costs;
+          var quoteReady=(channel==='micro'||channel==='grok')
+            &&typeof offer.model==='string'&&offer.model.length>0
+            &&offer.resolution==='720p'
+            &&[5,10,15].every(function(seconds){
+              var value=Number(quoted&&quoted[String(seconds)]);
+              return Number.isInteger(value)&&value>0;
+            });
+          if(!quoteReady){
+            setNoAvatarAvailability(null,'开放式视频通道暂未开启或报价不可用；请选择数字人形象生成，或联系管理员。');
+            return;
+          }
           if(channel==='micro'){
-            setNoAvatarAvailability('micro','Seedance 官方通道可用');
+            setNoAvatarAvailability(offer,'Seedance 官方通道可用');
             return;
           }
           if(channel==='grok'){
-            setNoAvatarAvailability('grok','开放式生成通道可用（果肉视频）');
+            setNoAvatarAvailability(offer,'开放式生成通道可用（果肉视频）');
             return;
           }
-          setNoAvatarAvailability('','开放式视频通道暂未开启；请选择数字人形象生成，或联系管理员开启通道。');
         })
         .catch(function(){
           if(invocationId!==reverseVideoPickerRequest) return;
-          setNoAvatarAvailability('','暂时无法确认开放式视频通道状态；请选择数字人形象，或稍后重试。');
+          setNoAvatarAvailability(null,'暂时无法确认开放式视频通道状态及价格；请选择数字人形象，或稍后重试。');
         });
     }
     loadAvatars();
@@ -2007,7 +2041,7 @@
           return;
         }
         var remakePrompt='严格按照所附参考关键帧的时间顺序生成，保持动作节点、镜头转换、构图和场景布局。'+prompt;
-        _doGenerate({channel:choice.channel,prompt:remakePrompt,reference_images:reverseRefs,duration:choice.duration,ratio:'9:16',resolution:'720p',reference_mode:choice.channel==='grok'?'ordered_storyboard':undefined},
+        _doGenerate({channel:choice.channel,model:choice.model,prompt:remakePrompt,reference_images:reverseRefs,duration:choice.duration,ratio:'9:16',resolution:choice.resolution,reference_mode:choice.channel==='grok'?'ordered_storyboard':undefined},
                     bdRemakeBtn,{endpoint:'/api/gen/xiaole_video',sceneCount:1});
       });
       return;
