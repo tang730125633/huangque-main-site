@@ -67,6 +67,13 @@ class CosBudgetTests(unittest.TestCase):
         self.assertEqual(n, 1000)
         self.assertEqual(os.path.getsize(self._dest()), 1000)
 
+    def test_douyin_download_sends_required_referer(self):
+        self.assertEqual(
+            self.tikhub.cdn_headers("https://v26-webf.douyinvod.com/video.mp4")["Referer"],
+            "https://www.douyin.com/",
+        )
+        self.assertNotIn("Referer", self.tikhub.cdn_headers("https://sns-video-hw.xhscdn.com/video.mp4"))
+
     def test_rejects_oversize_by_content_length(self):
         """Content-Length 预检：下载前就否掉，省掉整段无用等待。"""
         self._stub_opener(_FakeResponse(b"", {"Content-Length": "999999999"}))
