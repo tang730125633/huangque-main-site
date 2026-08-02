@@ -57,6 +57,11 @@
     .chip-row{flex:none;flex-wrap:nowrap;gap:14px}
     .catalog-note{gap:9px;padding:11px 12px}.catalog-copy{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .masonry{column-count:1}.tutGrid{grid-template-columns:1fr}
+    .inspiration-detail{flex-direction:column;max-height:92vh!important}
+    .inspiration-detail-visual{min-height:190px!important;height:28vh;flex:none!important}
+    .inspiration-detail-visual img,.inspiration-detail-visual video{height:100%;max-height:100%!important;object-fit:contain}
+    .inspiration-detail-copy{min-width:0!important;padding:18px!important}
+    .inspiration-detail-actions{display:grid!important;grid-template-columns:repeat(auto-fit,minmax(90px,1fr))}
   }
   .chip{ cursor:pointer; transition:.15s; padding:1px 2px; }
   .chip:hover{ color:#e7b24c !important; }
@@ -300,15 +305,16 @@
     var jumpLabel=isVid?'🎬 一键跟创（去视频页）':'🎨 一键跟创（去作图）';
     var visual=(isVid&&x.video)?'<video src="'+x.video+'" poster="'+x.image+'" controls playsinline style="display:block; width:100%; max-height:88vh; object-fit:contain;"></video>':'<img src="'+x.image+'" style="display:block; max-width:100%; max-height:88vh; object-fit:contain;">';
     dlgEl.innerHTML=''
-      +'<div style="display:flex; max-width:880px; width:100%; max-height:88vh; background:#0d1119; border:1px solid rgba(231,178,76,.2); border-radius:18px; overflow:hidden;">'
-      +  '<div style="position:relative; flex:1.1; min-width:0; background:#05080d; display:flex; align-items:center; justify-content:center;">'+visual+watermarkHtml()+'</div>'
-      +  '<div style="flex:1; min-width:280px; display:flex; flex-direction:column; padding:22px; overflow:auto;">'
+      +'<div class="inspiration-detail" style="display:flex; max-width:880px; width:100%; max-height:88vh; background:#0d1119; border:1px solid rgba(231,178,76,.2); border-radius:18px; overflow:hidden;">'
+      +  '<div class="inspiration-detail-visual" style="position:relative; flex:1.1; min-width:0; background:#05080d; display:flex; align-items:center; justify-content:center;">'+visual+watermarkHtml()+'</div>'
+      +  '<div class="inspiration-detail-copy" style="flex:1; min-width:280px; display:flex; flex-direction:column; padding:22px; overflow:auto;">'
       +    '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;"><div style="font-size:18px; font-weight:700;">'+(x.title||'创作详情')+'</div><span id="dlgClose" style="cursor:pointer; color:#94a4bb; font-size:24px; line-height:1; padding:0 4px;">&times;</span></div>'
       +    '<div style="display:flex; align-items:center; gap:5px; font-size:12px; color:#94a4bb; margin-bottom:16px;">'+(x.category||'')+(badge?(' · '+badge):'')+' · '+likeButton(x)+'</div>'
       +    '<div style="font-size:13px; font-weight:600; margin-bottom:8px;">创作描述 <span style="font-size:11px; color:#5c6b82; font-weight:400;">(可直接编辑，跟创时用改后的)</span></div>'
       +    '<textarea id="dlgPrompt" style="flex:1; min-height:130px; resize:none; width:100%; box-sizing:border-box; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.16); border-radius:10px; color:#eaf1fa; font-size:13px; line-height:1.7; padding:12px; font-family:inherit; outline:none;"></textarea>'
-      +    '<div style="display:flex; gap:8px; margin-top:14px;">'
+      +    '<div class="inspiration-detail-actions" style="display:flex; gap:8px; margin-top:14px;">'
       +      '<button id="dlgCopy" style="flex:1; padding:10px; font-size:12.5px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.28); border-radius:10px; cursor:pointer; font-family:inherit;">复制提示词</button>'
+      +      (isVid?'':'<button id="dlgShare" style="flex:1; padding:10px; font-size:12.5px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.28); border-radius:10px; cursor:pointer; font-family:inherit;">复制分享链接</button>')
       +      '<button id="dlgDl" style="flex:1; padding:10px; font-size:12.5px; color:#94a4bb; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.18); border-radius:10px; cursor:pointer; font-family:inherit;">下载样图</button>'
       +    '</div>'
       +    (isVid?'':'<div style="font-size:11px; color:#5c6b82; margin-top:10px;">💡 在上面描述框 Ctrl/⌘V 粘贴你的图，跟创时把这个风格套到你的图上（图生图）</div>')
@@ -348,11 +354,22 @@
       if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(ta.value||'').then(done,function(){ ta.select(); try{document.execCommand('copy');}catch(e){} done(); }); }
       else { ta.select(); try{document.execCommand('copy');}catch(e){} done(); }
     };
+    var shareBtn=dlgEl.querySelector('#dlgShare');
+    if(shareBtn)shareBtn.onclick=function(){
+      var b=shareBtn, url=location.origin+'/case/'+encodeURIComponent(x.id), done=function(){ b.textContent='✓ 链接已复制'; setTimeout(function(){ b.textContent='复制分享链接'; },1500); };
+      if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(url).then(done,function(){ var ta2=document.createElement('textarea');ta2.value=url;document.body.appendChild(ta2);ta2.select();try{document.execCommand('copy');}catch(e){}ta2.remove();done(); }); }
+      else { var ta2=document.createElement('textarea');ta2.value=url;document.body.appendChild(ta2);ta2.select();try{document.execCommand('copy');}catch(e){}ta2.remove();done(); }
+    };
     dlgEl.querySelector('#dlgDl').onclick=function(){ var a=document.createElement('a'); a.href=(isVid&&x.video)?x.video:x.image; a.download=(x.title||'huangque')+(isVid?'.mp4':'.webp'); document.body.appendChild(a); a.click(); a.remove(); };
     dlgEl.querySelector('#dlgGo').onclick=function(){
       var dest=isVid?'video.html':'banana.html';
       if(x.managed)trackManaged('click',[Number(x.id)]);
-      location.href=dest+'?prompt='+encodeURIComponent(ta.value||'')+(isVid?('&channel='+encodeURIComponent(x.target||x.model||'grok')):((x.model)?('&engine='+encodeURIComponent(x.model)):''))+(x.managed?('&inspiration='+encodeURIComponent(x.id)):'');
+      if(!isVid){
+        try{sessionStorage.setItem('hq_followcreate_case_v1',JSON.stringify({id:String(x.id),prompt:ta.value||'',model:x.model||'',created_at:Date.now()}));}catch(e){}
+        location.href=dest+'?inspiration='+encodeURIComponent(x.id);
+      }else{
+        location.href=dest+'?prompt='+encodeURIComponent(ta.value||'')+'&channel='+encodeURIComponent(x.target||x.model||'grok')+(x.managed?('&inspiration='+encodeURIComponent(x.id)):'');
+      }
     };
     dlgEl.style.display='flex';
   }

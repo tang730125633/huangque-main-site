@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>黄雀 AI · 一键跟创案例</title>
+<meta name="description" content="查看黄雀 AI 创作案例，一键带入同款风格开始创作。">
+<meta property="og:type" content="website">
+<meta property="og:title" content="黄雀 AI · 一键跟创案例">
+<meta property="og:description" content="打开案例，一键带入同款风格开始创作。">
+<meta property="og:image" content="https://huangquechuanmei.com/assets/cloud/login-scene.png">
+<link rel="icon" href="/assets/cloud/logo-bird.png">
+<link rel="stylesheet" href="/assets/fonts/hq-fonts.css">
+<style>
+  :root{color-scheme:dark;--gold:#e7b24c;--gold-soft:#f4cd72;--text:#eef3fa;--muted:#98a6b9;--faint:#65738a;--line:rgba(148,164,187,.16);--surface:#101722}
+  *{box-sizing:border-box}
+  html{min-height:100%;background:#070b12}
+  body{min-height:100vh;margin:0;color:var(--text);background:radial-gradient(circle at 82% 8%,rgba(231,178,76,.13),transparent 30%),radial-gradient(circle at 8% 92%,rgba(35,98,132,.12),transparent 34%),#070b12;font-family:"Inter","PingFang SC","Microsoft YaHei",sans-serif}
+  a{color:inherit;text-decoration:none}
+  button{font:inherit}
+  .page{width:min(1160px,calc(100% - 40px));margin:0 auto}
+  .topbar{height:72px;display:flex;align-items:center;justify-content:space-between;gap:20px}
+  .brand{display:inline-flex;align-items:center;gap:10px;font-size:15px;font-weight:800;letter-spacing:.04em}
+  .brand img{width:34px;height:34px;object-fit:contain}
+  .back{color:var(--muted);font-size:13px;transition:color .16s}
+  .back:hover,.back:focus-visible{color:var(--gold-soft)}
+  .hero{display:grid;grid-template-columns:minmax(0,1.08fr) minmax(340px,.92fr);min-height:calc(100vh - 126px);overflow:hidden;border:1px solid rgba(231,178,76,.2);border-radius:24px;background:linear-gradient(145deg,rgba(16,23,34,.95),rgba(10,15,24,.92));box-shadow:0 30px 80px rgba(0,0,0,.34)}
+  .visual{position:relative;display:flex;min-height:620px;align-items:center;justify-content:center;overflow:hidden;background:#05080d}
+  .visual:before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 50% 44%,rgba(231,178,76,.08),transparent 52%)}
+  .visual img{position:relative;z-index:1;display:block;width:100%;height:100%;max-height:760px;object-fit:contain}
+  .watermark{position:absolute;right:16px;bottom:16px;z-index:2;padding:6px 10px;border:1px solid rgba(255,255,255,.35);border-radius:7px;background:rgba(7,11,19,.58);color:rgba(255,255,255,.9);font-size:10px;font-weight:800;letter-spacing:.08em;backdrop-filter:blur(4px)}
+  .copy{display:flex;flex-direction:column;justify-content:center;padding:48px}
+  .eyebrow{display:inline-flex;align-self:flex-start;padding:6px 10px;border:1px solid rgba(231,178,76,.26);border-radius:999px;background:rgba(231,178,76,.08);color:var(--gold-soft);font-size:11px;font-weight:800;letter-spacing:.08em}
+  h1{margin:18px 0 0;font-size:clamp(30px,4vw,48px);line-height:1.16;letter-spacing:-.025em}
+  .summary{margin:16px 0 0;color:var(--muted);font-size:15px;line-height:1.75}
+  .meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px}
+  .tag{padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:rgba(148,164,187,.05);color:#c5cfdd;font-size:12px}
+  .actions{display:grid;gap:10px;margin-top:30px}
+  .primary,.secondary{display:flex;min-height:52px;align-items:center;justify-content:center;border-radius:12px;font-weight:800;cursor:pointer;transition:transform .16s,filter .16s,border-color .16s}
+  .primary{border:0;background:linear-gradient(135deg,var(--gold-soft),var(--gold));color:#211707;box-shadow:0 16px 34px -16px rgba(231,178,76,.72)}
+  .primary:hover:not(:disabled),.primary:focus-visible{transform:translateY(-1px);filter:brightness(1.05)}
+  .primary:disabled{cursor:wait;opacity:.7}
+  .secondary{border:1px solid var(--line);background:rgba(148,164,187,.04);color:var(--muted)}
+  .secondary:hover,.secondary:focus-visible{border-color:rgba(231,178,76,.34);color:var(--gold-soft)}
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:28px;padding-top:24px;border-top:1px solid var(--line)}
+  .step{color:var(--faint);font-size:11.5px;line-height:1.5}.step b{display:block;margin-bottom:4px;color:#d6deea;font-size:12px}
+  .loading{position:fixed;inset:72px 0 0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:14px}
+  .loading:before{content:"";width:18px;height:18px;margin-right:10px;border:2px solid rgba(231,178,76,.2);border-top-color:var(--gold);border-radius:50%;animation:spin .8s linear infinite}
+  .error{display:none;min-height:calc(100vh - 126px);align-items:center;justify-content:center;text-align:center}
+  .error-box{width:min(520px,100%);padding:46px 28px;border:1px solid var(--line);border-radius:20px;background:rgba(16,23,34,.85)}
+  .error-icon{font-size:36px}.error h1{font-size:26px}.error p{color:var(--muted);line-height:1.7}.error .secondary{margin-top:22px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @media(max-width:820px){
+    .page{width:min(100% - 24px,620px)}.topbar{height:58px}.brand img{width:30px;height:30px}
+    .hero{grid-template-columns:1fr;min-height:0;border-radius:18px}.visual{min-height:0;height:42vh;max-height:430px}.visual img{max-height:none}
+    .copy{padding:24px 20px calc(24px + env(safe-area-inset-bottom))}h1{margin-top:14px;font-size:28px}.summary{margin-top:12px;font-size:14px}.meta{margin-top:16px}.actions{margin-top:22px}.primary,.secondary{min-height:50px}.steps{margin-top:22px;padding-top:20px}
+    .error{min-height:calc(100vh - 82px)}
+  }
+  @media(max-width:430px){.steps{grid-template-columns:1fr;gap:12px}.step{display:grid;grid-template-columns:52px 1fr;align-items:start}.step b{margin:0}.back{font-size:12px}}
+  @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<header class="page topbar">
+  <a class="brand" href="/" aria-label="黄雀 AI 首页"><img src="/assets/cloud/logo-bird.png" alt="">黄雀 AI</a>
+  <a class="back" href="/workbench/inspiration">查看更多黄雀案例 →</a>
+</header>
+
+<main class="page">
+  <div id="loading" class="loading" role="status">案例加载中</div>
+  <article id="hero" class="hero" hidden>
+    <div class="visual"><img id="caseImage" alt=""><span class="watermark" aria-hidden="true">黄雀AI · 灵感样片</span></div>
+    <div class="copy">
+      <span class="eyebrow">AI 图片跟创 · 黄雀官方案例</span>
+      <h1 id="caseTitle"></h1>
+      <p id="caseSummary" class="summary"></p>
+      <div class="meta"><span id="caseCategory" class="tag"></span><span id="caseModel" class="tag"></span></div>
+      <div class="actions">
+        <button id="followButton" class="primary" type="button">一键跟创这个风格</button>
+        <a class="secondary" href="/workbench/inspiration">查看更多黄雀案例</a>
+      </div>
+      <div class="steps" aria-label="跟创步骤">
+        <div class="step"><b>01 打开</b><span>案例风格自动带入</span></div>
+        <div class="step"><b>02 调整</b><span>换人物、产品或文字</span></div>
+        <div class="step"><b>03 生成</b><span>确认后手动生成图片</span></div>
+      </div>
+    </div>
+  </article>
+  <section id="error" class="error" aria-live="polite">
+    <div class="error-box"><div class="error-icon">✦</div><h1 id="errorTitle">案例暂时无法打开</h1><p id="errorText">请稍后重试，或前往黄雀灵感案例查看更多作品。</p><a class="secondary" href="/workbench/inspiration">查看灵感案例</a></div>
+  </section>
+</main>
+
+<script>
+(function(){
+  'use strict';
+  function caseIdFromPath(pathname){
+    var match=String(pathname||'').match(/^\/case\/([1-9]\d{0,14})\/?$/);
+    return match?Number(match[1]):0;
+  }
+  function safeMediaUrl(value){
+    try{var url=new URL(String(value||''),location.href);return /^https?:$/.test(url.protocol)?url.href:'';}catch(e){return '';}
+  }
+  function loadItems(url){
+    return fetch(url,{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('load');return r.json();})
+      .then(function(d){return {ok:true,items:Array.isArray(d)?d:(d.items||[])};})
+      .catch(function(){return {ok:false,items:[]};});
+  }
+  function modelName(value){
+    var key=String(value||'').toLowerCase();
+    return {nb2:'纳米香蕉 2',pro:'纳米香蕉 Pro',gpt:'黄雀引擎 2',seedream:'黄雀引擎 1 标准',seedream_pro:'黄雀引擎 1 Pro'}[key]||'图片引擎';
+  }
+  function showError(title,text){
+    document.getElementById('loading').style.display='none';
+    document.getElementById('errorTitle').textContent=title;
+    document.getElementById('errorText').textContent=text;
+    document.getElementById('error').style.display='flex';
+  }
+  var caseId=caseIdFromPath(location.pathname);
+  if(!caseId){showError('案例链接无效','请检查分享链接是否完整，或前往黄雀灵感案例查看更多作品。');return;}
+  Promise.all([loadItems('/workbench/inspirations.json'),loadItems('/api/admin/public/inspirations')]).then(function(all){
+    var item=all[0].items.concat(all[1].items).filter(function(x){return String(x&&x.id)===String(caseId);})[0];
+    if(!item){
+      var unavailable=(caseId>=1000000&&!all[1].ok)||(caseId<1000000&&!all[0].ok);
+      showError(unavailable?'案例暂时无法打开':'案例不存在或已下架',unavailable?'网络开小差了，请稍后刷新重试。':'这个分享已经结束，可以前往灵感案例查看其他作品。');return;
+    }
+    if(item.type&&item.type!=='image'){showError('该案例暂不支持图片跟创','第一版先开放图片案例，视频跟创将在后续版本提供。');return;}
+    var image=safeMediaUrl(item.image);
+    if(!image){showError('案例素材暂时不可用','可以稍后重试，或前往灵感案例查看其他作品。');return;}
+    var title=String(item.title||'黄雀原创图片案例'),category=String(item.category||'图片创作');
+    document.title=title+' · 黄雀 AI 一键跟创';
+    document.querySelector('meta[name="description"]').content='查看“'+title+'”案例，一键带入同款风格开始创作。';
+    document.querySelector('meta[property="og:title"]').content=title+' · 黄雀 AI 一键跟创';
+    document.getElementById('caseImage').src=image;
+    document.getElementById('caseImage').alt=title;
+    document.getElementById('caseTitle').textContent=title;
+    document.getElementById('caseSummary').textContent='已准备好这张'+category+'案例的风格参数。进入作图页后，你可以更换人物、产品、场景或文字，再确认生成。';
+    document.getElementById('caseCategory').textContent=category;
+    document.getElementById('caseModel').textContent=modelName(item.target||item.model);
+    document.getElementById('loading').style.display='none';
+    document.getElementById('hero').hidden=false;
+    var button=document.getElementById('followButton');
+    button.onclick=function(){
+      if(button.disabled)return;
+      button.disabled=true;button.textContent='正在准备跟创…';
+      var next='/workbench/banana?inspiration='+encodeURIComponent(caseId);
+      var register='/login?mode=register&next='+encodeURIComponent(next);
+      fetch('/api/auth/me',{credentials:'same-origin',cache:'no-store'}).then(function(r){location.href=r.ok?next:register;}).catch(function(){location.href=register;});
+    };
+  });
+})();
+</script>
+</body>
+</html>
