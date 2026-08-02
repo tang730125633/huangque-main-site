@@ -396,6 +396,8 @@ def _seedream_check_ref(images):
     先在本地判魔数(PNG/JPEG/WebP)，给出人话错误，也省一次网络往返。
     Ark 本身对参考图很宽容：实测 5.4MB base64、3000x200 极端比例、JPEG 字节贴 png 标签都能过，
     所以这里只拦「确实是坏数据」和「大到离谱」。"""
+    if isinstance(images, str):
+        images = [images] if images else []
     for img in images or []:
         try:
             raw = base64.b64decode(img)
@@ -481,6 +483,8 @@ def _seedream_one(model, prompt, size, images):
     会和 .png 文件名 / image/png 的 Content-Type 对不上。"""
     body = {"model": model, "prompt": prompt, "size": size,
             "output_format": "png", "response_format": "url", "watermark": False}
+    if isinstance(images, str):
+        images = [images] if images else []
     if images:
         # 实测：image 必须是 data URI；裸 base64 会被判成 URL 并报 400 invalid url specified。
         refs = ["data:image/png;base64," + img for img in images]
@@ -617,7 +621,8 @@ def gen_image(payload):
         variant = "pro" if str(payload.get("variant") or "").strip().lower() == "pro" else "std"
         q = "hd" if (payload.get("quality") or "hd") == "hd" else "std"   # Seedream 按像素分档，不用 high/medium
         count = max(1, min(SEEDREAM_MAX_N, int(payload.get("count") or 1)))
-        result = _gen_image_seedream(prompt, ratio, q, count, refs, variant)
+        seedream_refs = refs if len(refs) > 1 else (refs[0] if refs else None)
+        result = _gen_image_seedream(prompt, ratio, q, count, seedream_refs, variant)
         result["prompt"] = user_prompt
         return result
     size  = SIZES.get(ratio, "1024x1024")
