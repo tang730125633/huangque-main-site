@@ -22,9 +22,9 @@
   if(empty&&empty.parentNode!==inner) inner.appendChild(empty);
   var nodes={}, edges=[], nid=0, pendingPort=null, runLabel='就绪', history=stateApi.createHistory({limit:60}), restoring=false, loading=false, dragPort=null, suppressPortClick=false, suppressCanvasClick=false, mapDirty=false, saveTimer=null;
   var localFullscreen=false, canvasView='workflow';
-  var selectedNode=null, selectedNodes={}, selectedEdge=-1, clipNode=null, zoom=1;
+  var selectedNode=null, selectedNodes={}, selectedEdge=-1, clipNode=null, zoom=1, imageToolbar=null;
   var RUN_ALL_REMOTE_LIMIT=2, RUN_ALL_RETRY_MS=4000, runAllBatch=null, runAllRetryTimer=null;
-  var activeSidePanel='', accountAssetsLoaded=false, accountAssets=[], accountAssetsPromise=null;
+  var activeSidePanel='', accountAssetsLoaded=false, accountAssets=[], accountAssetsPromise=null, dragAsset=null;
   var agentSessions={};
   var agentIP12Context=null, agentIP12Loaded=false, agentIP12Loading=false, agentIP12Error='';
   var currentBoardId=null, boardMode='mine', boardLastSeenUpdatedAt=0, boardConflict=false;
@@ -196,6 +196,7 @@
     reverse:{name:'提示词反推',   color:'#8a5cf6', ins:['image'], outs:['prompt']},
     gen:   {name:'作图',          color:'#2bd576', ins:['prompt','image'], outs:['image']},
     video: {name:'生视频',        color:'#f472b6', ins:['prompt','image'], outs:['video']},
+    videoAsset:{name:'视频 · 素材',color:'#f472b6', outs:['video']},
     shortDrama:{name:'短剧项目', color:'#f59e0b'}
   };
   function syncRunAllDisabled(){
@@ -216,6 +217,7 @@
     if(fsRedo) fsRedo.disabled=!canEditCanvas()||!history.canRedo();
     syncRunAllDisabled();
     syncZoomInputs();
+    updateImageToolbar();
     if(canvasView==='story') renderStoryboard();
     if(activeSidePanel&&activeSidePanel!=='agent') renderSidePanel();
     scheduleSave();
@@ -1187,6 +1189,7 @@
     if(localFullscreen) setLocalFullscreen(false);
     if(document.fullscreenElement&&document.exitFullscreen){ document.exitFullscreen().catch(function(){}); }
     if(wrap) wrap.classList.remove('editing');
+    updateImageToolbar();
     setEditorReadonly(false);
     if(wasCollab){
       boardMode='collab';
@@ -1439,7 +1442,7 @@
     return String(s).replace(/[&<>"']/g,function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; });
   }
   function nodeTypeLabel(type){
-    return ({text:'文本',image:'图片',reverse:'反推',gen:'作图',video:'视频',shortDrama:'短剧'})[type]||type||'节点';
+    return ({text:'文本',image:'图片',reverse:'反推',gen:'作图',video:'视频',videoAsset:'视频素材',shortDrama:'短剧'})[type]||type||'节点';
   }
   function nodeStatusLabel(node){
     var s=node&&node.el&&node.el.getAttribute('data-state');
@@ -1471,7 +1474,7 @@
       if(video) body='<div class="nc-story-media nc-story-video" data-story-video="'+index+'"><span>正在准备视频预览…</span></div>';
       else if(image) body='<div class="nc-story-media"><img src="'+escapeHtml(image)+'" alt="'+escapeHtml(nodeDisplayName(node))+'"></div>';
       else if(node.type==='shortDrama') body='<div class="nc-story-progress"><div><b>'+escapeHtml(params.stage||'未开始')+'</b><span>'+progress+'%</span></div><i><span style="width:'+progress+'%"></span></i><small>'+escapeHtml(params.ratio||'16:9')+' · '+escapeHtml(params.target_duration||60)+' 秒</small></div>';
-      else if(node.type==='image'||node.type==='gen'||node.type==='video') body='<div class="nc-story-media empty"><span>'+({image:'等待图片素材',gen:'等待生成图片',video:'等待生成视频'}[node.type])+'</span></div>';
+      else if(node.type==='image'||node.type==='gen'||node.type==='video'||node.type==='videoAsset') body='<div class="nc-story-media empty"><span>'+({image:'等待图片素材',gen:'等待生成图片',video:'等待生成视频',videoAsset:'等待视频素材'}[node.type])+'</span></div>';
       if(text) body+='<p class="nc-story-copy">'+escapeHtml(text)+'</p>';
       if(!body) body='<p class="nc-story-copy muted">等待补充内容…</p>';
       var status=nodeStatusLabel(node); if(status==='等待'&&hasContent) status='已就绪';
@@ -1490,7 +1493,8 @@
     if(storyboard) storyboard.hidden=canvasView!=='story';
     document.querySelectorAll('[data-canvas-view]').forEach(function(button){ button.setAttribute('aria-pressed',String(button.getAttribute('data-canvas-view')===canvasView)); });
     if(canvasView==='story') renderStoryboard();
-    else requestAnimationFrame(function(){ syncCanvasGrid(); scheduleMap(); });
+    else requestAnimationFrame(function(){ syncCanvasGrid(); scheduleMap(); updateImageToolbar(); });
+    updateImageToolbar();
   }
   function openSidePanel(kind,keepOpen){
     if(!sidePanel||!sideBody) return;
@@ -1506,7 +1510,7 @@
     if(canvas&&beforeWidth) requestAnimationFrame(function(){
       var afterWidth=canvas.clientWidth;
       canvas.scrollLeft=Math.max(0,canvas.scrollLeft+(beforeWidth-afterWidth)/2);
-      syncCanvasGrid(); scheduleMap();
+      syncCanvasGrid(); scheduleMap(); updateImageToolbar();
     });
   }
   function closeSidePanel(){
@@ -1521,7 +1525,7 @@
     if(canvas&&beforeWidth) requestAnimationFrame(function(){
       var afterWidth=canvas.clientWidth;
       canvas.scrollLeft=Math.max(0,canvas.scrollLeft+(beforeWidth-afterWidth)/2);
-      syncCanvasGrid(); scheduleMap();
+      syncCanvasGrid(); scheduleMap(); updateImageToolbar();
     });
   }
   function renderSidePanel(){
@@ -1588,11 +1592,19 @@
       sideBody.innerHTML='<div class="nc-side-empty">'+(accountAssetsLoaded?'暂无可展示资产':'正在读取账户资产...')+'</div>';
       return;
     }
-    sideBody.innerHTML='<div class="nc-asset-grid">'+assets.map(function(a,i){
+    sideBody.innerHTML='<div class="nc-asset-hint">拖到画布创建图片或视频节点 · 单击预览</div><div class="nc-asset-grid">'+assets.map(function(a,i){
       var thumb=a.type==='image'?' style="background-image:url(\''+escapeHtml(a.url)+'\')"':'';
-      return '<button class="nc-asset-card '+escapeHtml(a.type)+'" type="button" data-asset-idx="'+i+'"><div class="nc-asset-thumb"'+thumb+'>'+(a.type==='video'?'视频':'')+'</div><div class="nc-asset-info"><b>'+escapeHtml(a.title)+'</b><span>'+escapeHtml(a.source)+'</span></div></button>';
+      return '<button class="nc-asset-card '+escapeHtml(a.type)+'" type="button" draggable="'+(canEditCanvas()?'true':'false')+'" data-asset-idx="'+i+'"><div class="nc-asset-thumb"'+thumb+'>'+(a.type==='video'?'视频':'')+'</div><div class="nc-asset-info"><b>'+escapeHtml(a.title)+'</b><span>'+escapeHtml(a.source)+'</span></div></button>';
     }).join('')+'</div>';
     sideBody.querySelectorAll('[data-asset-idx]').forEach(function(btn){
+      btn.ondragstart=function(e){
+        var a=assets[parseInt(btn.getAttribute('data-asset-idx'),10)];
+        if(!canEditCanvas()||!a||!a.url){ e.preventDefault(); return; }
+        dragAsset=a;
+        if(e.dataTransfer){ e.dataTransfer.effectAllowed='copy'; e.dataTransfer.setData('text/plain',a.title||'黄雀资产'); }
+        canvas.classList.add('asset-drop-ready');
+      };
+      btn.ondragend=clearAssetDragState;
       btn.onclick=function(){
         var a=assets[parseInt(btn.getAttribute('data-asset-idx'),10)];
         if(!a||!a.url) return;
@@ -1600,6 +1612,20 @@
         else window.open(a.url,'_blank');
       };
     });
+  }
+  function clearAssetDragState(){
+    dragAsset=null;
+    canvas.classList.remove('asset-drop-ready','asset-drop-target');
+  }
+  function addAssetAt(asset,pt){
+    if(!canEditCanvas()||!asset||!asset.url) return;
+    pushUndo();
+    var type=asset.type==='video'?'videoAsset':'image', outputs={}, data={params:{title:String(asset.title||'').slice(0,80)},outputs:outputs};
+    if(type==='videoAsset') outputs.video=asset.url;
+    else{ data.image=asset.url; outputs.image=asset.url; }
+    var node=addNode(type,Math.max(0,pt.x-125),Math.max(0,pt.y-70),data);
+    selectNode(node);
+    updateState(type==='videoAsset'?'已添加视频资产':'已添加图片资产');
   }
   function canvasContentBounds(){
     return graphApi.contentBounds(Object.keys(nodes).map(function(id){
@@ -2048,6 +2074,7 @@
       +'<div class="nc-refbar" data-f="refs"><span>参考图 0 张</span><div class="nc-refthumbs"></div></div>'
       +'<textarea class="nc-in" data-f="text" rows="2" placeholder="视频提示词（也可由上游文本/反推节点连入）"></textarea>'
       +'<button class="nc-go" data-f="run">生成视频</button><div class="nc-video-result" data-f="videoResult"></div>';
+    if(type==='videoAsset') body='<div class="nc-video-result" data-f="videoResult"></div>';
     if(type==='shortDrama') body='<div class="nc-short-drama-summary"><div><span>画幅与时长</span><strong data-f="shortDramaRatio"></strong></div><div><span>当前阶段</span><strong data-f="shortDramaStage"></strong></div><div><span>完成进度</span><strong data-f="shortDramaProgress"></strong></div><div><span>点数</span><strong data-f="shortDramaPoints"></strong></div></div>'
       +'<button class="nc-go nc-short-drama-open" type="button" data-f="openShortDrama">打开短剧工作区</button>';
     el.innerHTML='<div class="nc-head" data-f="head"><span style="display:flex;align-items:center;gap:7px;min-width:0;"><span class="dot" style="background:'+t.color+'"></span><span class="nc-node-title" data-f="headTitle">'+escapeHtml(node.params.title||t.name)+'</span><span class="nc-remark-mark" data-f="remarkMark" title="有备注">注</span></span><span class="nc-actions"><span class="nc-fold" data-f="fold" title="折叠/展开">−</span><span class="nc-x" data-f="del">×</span></span></div>'
@@ -2483,11 +2510,143 @@
     note:'<path pathLength="1" class="nc-icon-base" d="M5 3h9l5 5v13H5Z M14 3v5h5"/><path pathLength="1" class="nc-icon-detail" d="m8 17 1-4 6-6 2 2-6 6Z"/>',
     preview:'<path pathLength="1" class="nc-icon-base" d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle pathLength="1" class="nc-icon-detail" cx="12" cy="12" r="2.5"/>',
     copy:'<rect pathLength="1" class="nc-icon-base" x="8" y="8" width="12" height="12" rx="2"/><path pathLength="1" class="nc-icon-detail" d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
-    remove:'<path pathLength="1" class="nc-icon-base" d="M5 7h14m-9-3h4l1 3H9Zm-3 3 1 14h8l1-14"/><path pathLength="1" class="nc-icon-detail" d="M10 11v6M14 11v6"/>'
+    remove:'<path pathLength="1" class="nc-icon-base" d="M5 7h14m-9-3h4l1 3H9Zm-3 3 1 14h8l1-14"/><path pathLength="1" class="nc-icon-detail" d="M10 11v6M14 11v6"/>',
+    portrait:'<path pathLength="1" class="nc-icon-base" d="M7 20v-2.2a5 5 0 0 1 10 0V20M8 8a4 4 0 1 0 8 0 4 4 0 0 0-8 0Z"/><path pathLength="1" class="nc-icon-detail" d="M10.5 8.5h.01M13.5 8.5h.01M10.5 11.5c.8.7 2.2.7 3 0"/><path pathLength="1" class="nc-icon-spark" d="m19 3 .6 1.5 1.5.6-1.5.6-.6 1.5-.6-1.5-1.5-.6 1.5-.6Z"/>',
+    light:'<circle pathLength="1" class="nc-icon-base" cx="12" cy="12" r="3.5"/><path pathLength="1" class="nc-icon-detail" d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8m10.6 10.6 1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/>',
+    angle:'<path pathLength="1" class="nc-icon-base" d="M4 7.5 9 5l5 2.5L9 10Zm6 5 5-2.5 5 2.5-5 2.5Z"/><path pathLength="1" class="nc-icon-detail" d="M4 7.5V13l5 2.5V10m6 5v4.5l5-2.5v-4.5"/><path pathLength="1" class="nc-icon-spark" d="m4 18 .6 1.4 1.4.6-1.4.6L4 22l-.6-1.4L2 20l1.4-.6Z"/>',
+    grid:'<path pathLength="1" class="nc-icon-base" d="M4 4h16v16H4Z"/><path pathLength="1" class="nc-icon-detail" d="M9.3 4v16m5.4-16v16M4 9.3h16M4 14.7h16"/><path pathLength="1" class="nc-icon-spark" d="m20 2 .5 1.2 1.2.5-1.2.5-.5 1.2-.5-1.2-1.2-.5 1.2-.5Z"/>',
+    more:'<circle pathLength="1" class="nc-icon-base" cx="5" cy="12" r="1"/><circle pathLength="1" class="nc-icon-detail" cx="12" cy="12" r="1"/><circle pathLength="1" class="nc-icon-detail" cx="19" cy="12" r="1"/>',
+    download:'<path pathLength="1" class="nc-icon-base" d="M5 20h14"/><path pathLength="1" class="nc-icon-detail" d="M12 3v12m-4-4 4 4 4-4"/>'
   };
   function menuIcon(name){
     var shapes=MENU_ICONS[name];
     return shapes?'<span class="nc-menu-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round">'+shapes+'</svg></span>':'';
+  }
+  function imageNodeSource(node){
+    return node&&(node.image||(node.outputs&&node.outputs.image))||'';
+  }
+  function createImageActionDraft(source,type,options){
+    if(!source||!canEditCanvas()||!imageNodeSource(source)) return;
+    options=options||{};
+    pushUndo();
+    var branches=edges.filter(function(edge){ return edge.from.node===source.id&&edge.from.port==='image'; }).length;
+    var params=Object.assign({title:options.title||TYPE[type].name},options.params||{});
+    var node=addNode(type,source.x+(source.el.offsetWidth||250)+120,Math.max(0,source.y+Math.min(branches,4)*48),{params:params});
+    connectEdge({node:source.id,port:'image'},{node:node.id,port:'image'});
+    selectNode(node);
+    focusNode(node);
+    updateState(options.status||'已创建并连线，确认参数后再生成');
+  }
+  function createImageGenDraft(source,title,prompt,ratio){
+    createImageActionDraft(source,'gen',{
+      title:title,
+      params:{text:prompt,ratio:ratio||(source.params&&source.params.ratio)||'16:9',quality:'hd'},
+      status:'已创建「'+title+'」草稿，确认参数后再生成'
+    });
+  }
+  function showImageActionMenu(button,label,items){
+    var rect=button.getBoundingClientRect();
+    showMenu(items,rect.left,rect.bottom+8,{focus:true,label:label});
+  }
+  function portraitActionItems(source){
+    return [
+      {icon:'portrait',label:'自然肤质',run:function(){ createImageGenDraft(source,'人像优化 · 自然肤质','保持参考图人物身份、五官、发型和服装一致；采用自然肤质与真实皮肤纹理，轻微优化瑕疵，避免磨皮、塑料感和面部变形。'); }},
+      {icon:'portrait',label:'清透修饰',run:function(){ createImageGenDraft(source,'人像优化 · 清透修饰','保持参考图人物身份和五官完全一致；清透修饰皮肤并均匀肤色，保留真实毛孔和自然细节，避免过度磨皮与假面感。'); }},
+      {icon:'portrait',label:'真实肌理',run:function(){ createImageGenDraft(source,'人像优化 · 真实肌理','保持参考图人物身份和五官完全一致；强化真实肌理、自然毛孔和面部细节，肤色真实，避免磨皮和蜡像感。'); }}
+    ];
+  }
+  function lightingActionItems(source){
+    return [
+      {icon:'light',label:'柔和补光',run:function(){ createImageGenDraft(source,'打光优化 · 柔和补光','保持参考图主体、构图和场景一致；增加柔和自然的面部与环境补光，压住过曝和死黑区域，保留真实光影层次。'); }},
+      {icon:'light',label:'自然匹配',run:function(){ createImageGenDraft(source,'打光优化 · 自然匹配','保持参考图主体和构图一致；让人物与环境光向、色温和明暗关系自然匹配，融合真实，避免抠图感。'); }},
+      {icon:'light',label:'氛围强化',run:function(){ createImageGenDraft(source,'打光优化 · 氛围强化','保持参考图主体和构图一致；强化有层次的电影氛围光、轮廓光与环境光，主体清晰，避免过度炫光。'); }}
+    ];
+  }
+  function triggerImageDownload(source){
+    var src=imageNodeSource(source);
+    if(!src) return;
+    function download(href,revoke){
+      var link=document.createElement('a');
+      link.href=href;
+      link.download=canvasExporter.safeFilename(nodeDisplayName(source)||'huangque-image')+'.png';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      if(revoke) setTimeout(function(){ URL.revokeObjectURL(href); },1000);
+      updateState('图片已下载');
+    }
+    if(src.indexOf('data:image/')===0){ download(src,false); return; }
+    apiClient.asset(src).then(function(blob){ download(URL.createObjectURL(blob),true); })
+      .catch(function(){ window.open(src,'_blank','noopener'); updateState('已打开图片，请在新页面保存'); });
+  }
+  function showImageMoreMenu(button,source){
+    var items=[];
+    if(source.type==='image'){
+      items.push({icon:'upload',label:'本地替换图片',run:function(){ chooseNodeImage(source,'图片已更换'); }});
+      items.push({icon:'assets',label:'从资产列表选择',run:function(){ openNodeAssetPicker(source); }});
+    }
+    items.push({icon:'preview',label:'查看大图',run:function(){ window.open(imageNodeSource(source),'_blank','noopener'); }});
+    items.push({icon:'download',label:'下载图片',run:function(){ triggerImageDownload(source); }});
+    items.push({icon:'note',label:(source.params.remark||'').trim()?'编辑备注':'添加备注',run:function(){ editNodeRemark(source); }});
+    items.push({kind:'separator'});
+    items.push({icon:'remove',label:'删除图片节点',run:function(){ openConfirmDialog('删除图片节点','节点和相关连线会一起删除，仍可通过撤销恢复。',function(){ delNode(source.id); }); }});
+    showImageActionMenu(button,'图片更多操作',items);
+  }
+  function selectedImageActionNode(){
+    var node=selectedNode&&nodes[selectedNode];
+    if(!node||!wrap.classList.contains('editing')||!canEditCanvas()||canvasView!=='workflow') return null;
+    if((node.type!=='image'&&node.type!=='gen')||!imageNodeSource(node)) return null;
+    return node;
+  }
+  function ensureImageToolbar(){
+    if(imageToolbar) return imageToolbar;
+    imageToolbar=document.createElement('div');
+    imageToolbar.className='nc-image-toolbar';
+    imageToolbar.setAttribute('role','toolbar');
+    imageToolbar.setAttribute('aria-label','图片下一步操作');
+    imageToolbar.innerHTML=''
+      +'<button type="button" data-image-action="reverse" title="根据图片反推提示词">'+menuIcon('reverse')+'<span>反推</span></button>'
+      +'<button type="button" data-image-action="continue" title="以当前图片作为参考继续作图">'+menuIcon('generate')+'<span>继续作图</span></button>'
+      +'<button type="button" data-image-action="portrait" title="调整人像肤质与细节">'+menuIcon('portrait')+'<span>人像优化</span><b>NEW</b></button>'
+      +'<button type="button" data-image-action="lighting" title="调整人物与环境光影">'+menuIcon('light')+'<span>打光</span></button>'
+      +'<button type="button" data-image-action="angle" title="生成身份一致的多角度设定图">'+menuIcon('angle')+'<span>多角度</span></button>'
+      +'<button type="button" data-image-action="grid" title="生成同一主体的九宫格画面">'+menuIcon('grid')+'<span>九宫格</span></button>'
+      +'<button type="button" data-image-action="video" title="以当前图片创建视频草稿">'+menuIcon('video')+'<span>转视频</span></button>'
+      +'<button type="button" class="more" data-image-action="more" title="更多图片操作">'+menuIcon('more')+'<span>更多</span></button>';
+    imageToolbar.addEventListener('pointerdown',function(event){ event.stopPropagation(); });
+    imageToolbar.addEventListener('click',function(event){
+      var button=event.target&&event.target.closest&&event.target.closest('[data-image-action]');
+      var source=selectedImageActionNode();
+      if(!button||!source) return;
+      event.preventDefault();
+      event.stopPropagation();
+      var action=button.getAttribute('data-image-action');
+      if(action==='reverse') createImageActionDraft(source,'reverse',{title:'反推提示词',status:'已创建反推节点，点击反推时才扣点'});
+      if(action==='continue') createImageGenDraft(source,'继续作图','基于参考图继续创作，保持主体身份、服装、核心构图和画面风格一致，提升细节、光影与整体完成度。');
+      if(action==='portrait') showImageActionMenu(button,'人像优化',portraitActionItems(source));
+      if(action==='lighting') showImageActionMenu(button,'打光优化',lightingActionItems(source));
+      if(action==='angle') createImageGenDraft(source,'多角度设定','保持参考图人物或主体的身份、造型、服装、比例和风格一致，生成正面、侧面、背面三视图，使用纯净统一背景，细节一致，适合角色设定。');
+      if(action==='grid') createImageGenDraft(source,'九宫格分镜','保持参考图人物或主体的身份、服装和风格一致，生成 3×3 九宫格：九个连续但不同的镜头角度、景别和表情，构图清晰，每格边界整齐，不添加文字。','1:1');
+      if(action==='video') createImageActionDraft(source,'video',{title:'图片转视频',params:{text:'保持主体身份、外观与场景一致，添加自然、稳定的轻微动作和镜头运动，避免形变、闪烁和画面跳变。',channel:'grok',ratio:'16:9',duration:'5'},status:'已创建视频草稿，确认参数后再生成'});
+      if(action==='more') showImageMoreMenu(button,source);
+    });
+    document.body.appendChild(imageToolbar);
+    return imageToolbar;
+  }
+  function updateImageToolbar(){
+    var node=selectedImageActionNode();
+    if(!node){ if(imageToolbar) imageToolbar.classList.remove('on'); return; }
+    var bar=ensureImageToolbar(), nodeRect=node.el.getBoundingClientRect(), canvasRect=canvas.getBoundingClientRect();
+    if(nodeRect.right<canvasRect.left||nodeRect.left>canvasRect.right||nodeRect.bottom<canvasRect.top||nodeRect.top>canvasRect.bottom){ bar.classList.remove('on'); return; }
+    bar.classList.add('on');
+    bar.setAttribute('data-node-id',node.id);
+    var minLeft=Math.max(8,canvasRect.left+8), maxRight=Math.min(window.innerWidth-8,canvasRect.right-8);
+    bar.style.maxWidth=Math.max(220,maxRight-minLeft)+'px';
+    var width=bar.offsetWidth, height=bar.offsetHeight;
+    bar.style.left=Math.max(minLeft,Math.min(nodeRect.left+(nodeRect.width-width)/2,maxRight-width))+'px';
+    var top=nodeRect.top-height-10;
+    if(top<Math.max(8,canvasRect.top+8)) top=Math.min(canvasRect.bottom-height-8,nodeRect.bottom+10);
+    bar.style.top=Math.max(8,top)+'px';
   }
   function showMenu(items,x,y,options){
     if(!menu) return;
@@ -2669,8 +2828,25 @@
   }
   function canvasPointFromClient(e){
     var r=inner.getBoundingClientRect();
+    if(!Object.keys(nodes).length&&(e.clientX<r.left||e.clientY<r.top)){
+      centerEmptyView();
+      r=inner.getBoundingClientRect();
+    }
     return {x:Math.max(0,(e.clientX-r.left)/zoom),y:Math.max(0,(e.clientY-r.top)/zoom)};
   }
+  canvas.addEventListener('dragover',function(e){
+    if(!dragAsset||!canEditCanvas()) return;
+    e.preventDefault();
+    if(e.dataTransfer) e.dataTransfer.dropEffect='copy';
+    canvas.classList.add('asset-drop-target');
+  });
+  canvas.addEventListener('drop',function(e){
+    if(!dragAsset||!canEditCanvas()) return;
+    e.preventDefault();
+    var asset=dragAsset, pt=canvasPointFromClient(e);
+    clearAssetDragState();
+    addAssetAt(asset,pt);
+  });
   function addAt(type,pt){
     if(!canEditCanvas()) return;
     pushUndo();
@@ -3199,6 +3375,7 @@
     selectedEdge=-1;
     if(node) node.el.classList.add('sel');
     updateSelectedRegion();
+    updateImageToolbar();
   }
   function selectNodesByIds(ids){
     selectedNodes={};
@@ -3214,6 +3391,7 @@
     var keys=Object.keys(selectedNodes);
     if(keys.length===1) selectedNode=keys[0];
     updateSelectedRegion();
+    updateImageToolbar();
     updateState(keys.length?('已选中 '+keys.length+' 个节点'):'就绪');
   }
   function updateSelectedRegion(){
@@ -3221,6 +3399,7 @@
     var ids=Object.keys(selectedNodes||{}).filter(function(id){ return !!nodes[id]; });
     if(ids.length<2){
       selectedRegion.style.display='none';
+      updateImageToolbar();
       return;
     }
     var minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
@@ -3235,6 +3414,7 @@
     selectedRegion.style.top=(minY-pad)+'px';
     selectedRegion.style.width=(maxX-minX+pad*2)+'px';
     selectedRegion.style.height=(maxY-minY+pad*2)+'px';
+    updateImageToolbar();
   }
   function rectsIntersect(a,b){
     return a.x<=b.x+b.w && a.x+a.w>=b.x && a.y<=b.y+b.h && a.y+a.h>=b.y;
@@ -3426,8 +3606,8 @@
     if(canvas.classList.contains('connecting')||canvas.classList.contains('selecting')||dragPort||(t&&t.closest&&t.closest('.nc-port,.nc-go,.nc-chip,.nc-head,.nc-lab,.nc-node-title,.nc-menu'))){ e.preventDefault(); }
   });
   canvas.addEventListener('dragstart',function(e){ if(canvas.classList.contains('connecting')||dragPort){ e.preventDefault(); } });
-  canvas.addEventListener('scroll',function(){ syncCanvasGrid(); scheduleMap(); },{passive:true});
-  window.addEventListener('resize',function(){ scheduleMap(); });
+  canvas.addEventListener('scroll',function(){ syncCanvasGrid(); scheduleMap(); updateImageToolbar(); },{passive:true});
+  window.addEventListener('resize',function(){ scheduleMap(); updateImageToolbar(); });
   document.addEventListener('click',function(e){ if(!menu||!menu.classList.contains('on')) return; if(e.target&&e.target.closest&&e.target.closest('.nc-menu')) return; hideMenu(); });
   document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ hideMenu(); if(localFullscreen) showBoardHome(); } });
   if(map){

@@ -1502,7 +1502,7 @@ class H(BaseHTTPRequestHandler):
                 if is_still_route:
                     request_body, still_idem_body = _short_drama_domain().short_drama_production.normalize_still_request(body, require_quote=True); idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
                     if not idem_key: raise ValueError("关键帧提交必须提供 Idempotency-Key")
-                elif kind == "image":
+                elif kind in {"image", "xiaole_video"}:
                     body = cli_uploads.expand_image_payload(body, user["username"])
                 # 微信内容安全必须在校验、扣点和入队前完成；服务异常时不收单。
                 miniprogram_security.check_payload(body)

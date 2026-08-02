@@ -35,7 +35,7 @@ MAX_VIDEO_BYTES = max(
         or (128 * 1024 * 1024)),
 )
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
-MAX_REFERENCE_IMAGES = 3
+MAX_REFERENCE_IMAGES = 6
 RATIOS = {"9:16", "16:9"}
 IMAGE_MIMES = {"image/jpeg", "image/png", "image/webp"}
 TRANSIENT_GET_CODES = {408, 429} | set(range(500, 600))
@@ -236,7 +236,7 @@ def build_request(prompt, reference_images=None, aspect_ratio="16:9",
         raise ValueError("Gemini Omni 目标时长必须是 3-10 秒整数")
     images = list(reference_images or [])
     if len(images) > MAX_REFERENCE_IMAGES:
-        raise ValueError("Gemini Omni 最多支持 3 张参考图")
+        raise ValueError("Gemini Omni 最多支持 6 张参考图")
     parts = [_image_part(image) for image in images]
     effective_prompt = _duration_prompt(prompt, duration)
     if parts:

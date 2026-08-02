@@ -18,6 +18,7 @@ from .core import (
 import random   # 429 退避重试的抖动：不加抖动，同一批 worker 退避后又会撞在一起
 
 from .audio import gen_audio
+from .image_mentions import resolve_image_mentions, validate_image_mentions
 from . import (
     provider_keys,
     short_drama_media_sanitize,
@@ -96,6 +97,7 @@ SORA_VIDEO_SUNSET = "2026-09-24"
 SORA_MODELS = {"sora-2", "sora-2-pro"}
 SORA_SECONDS = {4, 8, 12}  # 上游 create 接口实测只接受 4/8/12 秒。
 SORA_RATIOS = {"9:16", "16:9"}
+SORA_MAX_REFERENCE_BYTES = 10 * 1024 * 1024
 SORA_SIZE_MAP = {
     ("sora-2", "720p", "9:16"): "720x1280",
     ("sora-2", "720p", "16:9"): "1280x720",
@@ -955,6 +957,7 @@ def validate_xiaole_video_payload(payload, username=None):
         if not isinstance(refs, list):
             raise ValueError("reference_images 必须是数组")
         refs = [str(item or "").strip() for item in refs if str(item or "").strip()]
+        validate_image_mentions(prompt, len(refs))
 
         if channel == "omni":
             from . import video_gemini_omni
@@ -1023,6 +1026,15 @@ def validate_xiaole_video_payload(payload, username=None):
 
     if channel == "grok" and str(cleaned.get("operation") or "generate").strip().lower() == "edit":
         raise ValueError("果肉视频编辑维护中")
+    if channel == "grok":
+        common_refs = cleaned.get("reference_images") or []
+        if not isinstance(common_refs, list):
+            raise ValueError("reference_images 必须是数组")
+        common_refs = [str(x or "").strip() for x in common_refs if str(x or "").strip()]
+        if len(common_refs) > XIAOLE_MAX_REF:
+            raise ValueError("Grok 视频最多支持%d张参考图" % XIAOLE_MAX_REF)
+        validate_image_mentions(prompt, len(common_refs))
+        cleaned["reference_images"] = common_refs
     if channel != "grok" or GROK_VIDEO_PROVIDER == "xiaole":
         return cleaned
 
@@ -1040,10 +1052,10 @@ def validate_xiaole_video_payload(payload, username=None):
     if not isinstance(refs, list):
         raise ValueError("reference_images 必须是数组")
     refs = [str(x or "").strip() for x in refs if str(x or "").strip()]
-    if model == "grok-imagine-video-1.5":
-        if len(refs) != 1:
-            raise ValueError("Grok Video 1.5 仅支持1张首帧图")
-    elif len(refs) > XIAOLE_MAX_REF:
+    validate_image_mentions(prompt, len(refs))
+    if model == "grok-imagine-video-1.5" and not refs:
+        raise ValueError("Grok Video 1.5 至少需要1张参考图")
+    if len(refs) > XIAOLE_MAX_REF:
         raise ValueError("xAI官方图生视频最多支持%d张参考图" % XIAOLE_MAX_REF)
     ratio = str(cleaned.get("ratio") or "16:9").strip()
     if ratio not in XAI_GROK_RATIOS:
@@ -1056,6 +1068,8 @@ def validate_xiaole_video_payload(payload, username=None):
         raise ValueError("果肉视频时长必须是1-15秒整数")
     resolution = str(cleaned.get("resolution") or "720p").strip().lower()
     allowed_resolutions = XAI_GROK_RESOLUTIONS | ({"1080p"} if model == "grok-imagine-video-1.5" else set())
+    if refs:
+        allowed_resolutions = {"720p"}
     if resolution not in allowed_resolutions:
         raise ValueError("%s 不支持分辨率 %s" % (model, resolution))
     cleaned.update({
@@ -1066,7 +1080,7 @@ def validate_xiaole_video_payload(payload, username=None):
 
 
 def validate_sora_video_payload(payload):
-    """校验 Sora 限时 Beta 的最小业务契约；只支持非真人文生视频。"""
+    """校验 Sora 限时 Beta 契约；参考图只作为首帧且最多一张。"""
     if not sora_video_is_open():
         raise ValueError("Sora 限时测试通道未开启")
     if not isinstance(payload, dict):
@@ -1098,16 +1112,28 @@ def validate_sora_video_payload(payload):
     size = SORA_SIZE_MAP.get((model, resolution, ratio))
     if not size:
         raise ValueError("%s 不支持分辨率 %s" % (model, resolution))
-    # 当前官方规则拒绝真人、公众人物和含人脸参考图。Beta 先不接 input_reference，
-    # 从服务端白名单上消除前端绕过，而不是只靠页面隐藏。
+    refs = payload.get("reference_images") or []
+    if not isinstance(refs, list):
+        raise ValueError("Sora 参考图格式错误")
+    if len(refs) > 1:
+        raise ValueError("Sora 最多支持1张参考图")
+    if refs:
+        ref = str(refs[0] or "").strip()
+        if not _is_valid_data_url(ref, VALID_IMAGE_MIMES):
+            raise ValueError("Sora 参考图仅支持 JPEG、PNG、WebP")
+        if len(base64.b64decode(ref.split(",", 1)[1], validate=True)) > SORA_MAX_REFERENCE_BYTES:
+            raise ValueError("Sora 参考图不能超过10MB")
+    validate_image_mentions(prompt, len(refs))
     return {
         "mode": "sora",
         "prompt": prompt,
+        "provider_prompt": resolve_image_mentions(prompt, len(refs)),
         "model": model,
         "seconds": seconds,
         "ratio": ratio,
         "resolution": resolution,
         "size": size,
+        "reference_images": refs,
     }
 
 def _is_valid_data_url(value, allowed_mimes):
@@ -4152,6 +4178,30 @@ def generate_xiaole_video(model, prompt, reference_images=None, size="720x1280",
     raise TimeoutError("视频生成超时")
 
 
+def _prepare_sora_input_reference(data_url, size):
+    """把首帧裁成官方要求的精确输出尺寸，返回 PNG 字节。"""
+    encoded = str(data_url or "").split(",", 1)[1]
+    raw = base64.b64decode(encoded, validate=True)
+    width, height = [int(part) for part in str(size).split("x", 1)]
+    with tempfile.TemporaryDirectory(prefix="hq-sora-ref-") as folder:
+        source = pathlib.Path(folder) / "source"
+        target = pathlib.Path(folder) / "reference.png"
+        source.write_bytes(raw)
+        try:
+            subprocess.run([
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-i", str(source), "-frames:v", "1", "-vf",
+                "scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d" %
+                (width, height, width, height),
+                str(target),
+            ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ValueError("Sora 参考图处理失败，请换一张 JPEG、PNG 或 WebP") from exc
+        if not target.is_file() or not target.stat().st_size:
+            raise ValueError("Sora 参考图处理失败，请换一张图片")
+        return target.read_bytes()
+
+
 def gen_sora_video(payload):
     """OpenAI Sora 2 限时 Beta：创建/恢复 → 轮询 → 鉴权下载 → 永久资产入库。"""
     from . import video_openai
@@ -4161,6 +4211,7 @@ def gen_sora_video(payload):
         raise ValueError("付费 Sora 任务必须绑定 job_id")
     model = str(payload.get("model") or "sora-2")
     prompt = str(payload.get("prompt") or "").strip()
+    provider_prompt = str(payload.get("provider_prompt") or prompt).strip()
     seconds = int(payload.get("seconds") or 4)
     size = str(payload.get("size") or SORA_SIZE_MAP.get(
         (model, payload.get("resolution") or "720p", payload.get("ratio") or "9:16"),
@@ -4199,16 +4250,19 @@ def gen_sora_video(payload):
             api_key=candidate["secret"], provider_key_id=candidate["id"],
         )
     else:
+        refs = payload.get("reference_images") or []
+        input_reference = _prepare_sora_input_reference(refs[0], size) if refs else None
         rendered, candidate = _create_with_provider_key(
             "sora",
             job_id,
             "sora_submitting",
             video_openai.CredentialRejected,
             lambda selected: video_openai.generate(
-                model, prompt, seconds, size,
+                model, provider_prompt, seconds, size,
                 job_id=job_id, heartbeat=sora_heartbeat,
                 api_key=selected["secret"],
                 provider_key_id=selected["id"],
+                input_reference=input_reference,
             ),
         )
 
@@ -4260,8 +4314,8 @@ def gen_xiaole_video(payload):
     )
     if not model:
         raise ValueError("未知视频渠道：%s" % channel)
-    prompt = (payload.get("prompt") or "").strip()
-    if not prompt:
+    user_prompt = (payload.get("prompt") or "").strip()
+    if not user_prompt:
         raise ValueError("请输入视频提示词")
     ratio = (
         payload.get("ratio")
@@ -4283,6 +4337,8 @@ def gen_xiaole_video(payload):
                       if channel == "micro"
                       else [_xiaole_ref_to_url(r) for r in raw_refs])
             )
+    mention_style = "xai" if use_xai else ("omni" if channel == "omni" else "generic")
+    prompt = resolve_image_mentions(user_prompt, len(ref_images or []), mention_style)
     label = {
         "grok": "果肉视频", "micro": "Seedance 视频", "omni": "Omni 视频",
     }.get(channel, model)
@@ -4355,12 +4411,12 @@ def gen_xiaole_video(payload):
                 video_xai.XaiCreateUnavailableError, create_xai_edit,
             )
         else:
-            image_url = ref_images[0] if ref_images else None
-            if image_url and not str(image_url).startswith(("http://", "https://")):
-                raise RuntimeError("xAI官方图生视频需要可公网访问的参考图，COS转存失败")
+            for image_url in ref_images or []:
+                if not str(image_url).startswith(("http://", "https://")):
+                    raise RuntimeError("xAI官方图生视频需要可公网访问的参考图，COS转存失败")
             def create_xai_video(candidate):
                 return video_xai.generate(
-                    model=model, prompt=prompt, image_url=image_url,
+                    model=model, prompt=prompt, reference_image_urls=ref_images,
                     duration=payload.get("duration") or 10,
                     aspect_ratio=ratio,
                     resolution=payload.get("resolution") or "720p",
@@ -4647,7 +4703,7 @@ def gen_xiaole_video(payload):
     # /api/gen/file/ 链接写进资产记录。public_url 内部会在 COS 不可用时安全回退。
     video_url = public_url(video_file, "video/mp4", private=True) if video_file else result.get("video_url")
     return {
-        "type": "video", "status": "done", "mode": channel, "model": result.get("model") or model, "text": prompt,
+        "type": "video", "status": "done", "mode": channel, "model": result.get("model") or model, "text": user_prompt,
         "operation": payload.get("operation") or "generate",
         "ratio": result.get("ratio") or ratio,
         "resolution": result.get("resolution") or (
@@ -4985,6 +5041,7 @@ def validate_cinematic_payload(body, username=None):
         raise ValueError("参考视频最多 %d 个" % max_videos)
 
     images = [i for i in (body.get("reference_images") or []) if str(i or "").strip()]
+    validate_image_mentions(prompt, len(images))
     for i in images:
         if not _is_valid_data_url(i, VALID_IMAGE_MIMES):
             raise ValueError("参考图片格式不支持（jpg/png/webp）")
@@ -5060,6 +5117,7 @@ def gen_cinematic(payload):
     # 队列里可能还躺着改版前入队的 job，它们的素材还没落盘。
     video_files = list(payload.get("reference_video_files") or [])
     image_files = list(payload.get("reference_image_files") or [])
+    provider_prompt = resolve_image_mentions(payload.get("prompt"), len(image_files))
     if not video_files and payload.get("reference_videos"):
         video_files = [_save_data_file(v, "motion_ref", [".mp4", ".mov", ".webm"])
                        for v in payload["reference_videos"]]
@@ -5125,7 +5183,7 @@ def gen_cinematic(payload):
             # 同样的话说两遍。所以这里【什么都不拼】——
             #     payload 里的 prompt == HeyGen 真正收到的 prompt，一个字不差。
             # 顺带一个好处：排查时不用再脑补「后端还偷偷加了什么」。
-            prompt=payload["prompt"], direct=True,
+            prompt=provider_prompt, direct=True,
             enhance_prompt=payload.get("enhance_prompt")), "剧情视频")
 
         # ↓ 此刻已计费。之后任何失败都不能重发（见 HeyGenBilledError）——HeyGen 提交即扣费。

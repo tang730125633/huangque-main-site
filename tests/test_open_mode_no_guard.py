@@ -45,8 +45,9 @@ class NothingIsAppendedAnyMoreTests(unittest.TestCase):
     排查时不用再脑补「后端还偷偷加了什么」。
     """
 
-    def test_gen_cinematic_sends_the_prompt_verbatim(self):
-        self.assertIn('prompt=payload["prompt"], direct=True', GEN)
+    def test_gen_cinematic_sends_the_resolved_prompt_without_identity_guard(self):
+        self.assertIn('prompt=provider_prompt, direct=True', GEN)
+        self.assertIn('provider_prompt = resolve_image_mentions', GEN)
         # 只查【代码】—— 注释里为了讲清楚「原来拼的是什么」还会提到 guard 的名字
         code = chr(10).join(ln for ln in GEN.splitlines() if not ln.lstrip().startswith("#"))
         self.assertNotIn("CINEMATIC_IDENTITY_GUARD", code,

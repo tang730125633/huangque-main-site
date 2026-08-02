@@ -71,7 +71,8 @@ LIMIT = {"type": "integer", "minimum": 1, "maximum": 120}
 CANVAS_AGENT_NODE_ID = {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"}
 CANVAS_OP_NODE_ID = {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"}
 CANVAS_AGENT_FIELDS = {
-    "prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
+    "prompt": {"type": "string", "minLength": 1, "maxLength": 2000,
+               "description": "可用 @图片1、@图片2 按 reference_upload_ids 顺序引用"},
     "project_id": {"type": "string", "pattern": "^(local|collab):[A-Za-z0-9_-]{1,120}$"},
     "snapshot_digest": {"type": "string", "pattern": "^[a-f0-9]{8,32}$"},
     "scope": {"type": "string", "enum": ["local", "collab"]},
@@ -261,17 +262,20 @@ IMAGE_FIELDS = {
     "variant": {"type": "string", "enum": ["std", "pro"]},
     "image_upload_id": {"type": "string", "minLength": 36, "maxLength": 36},
     "mask_upload_id": {"type": "string", "minLength": 36, "maxLength": 36},
-    "reference_upload_ids": {"type": "array", "maxItems": 4,
+    "reference_upload_ids": {"type": "array", "maxItems": 16,
                              "items": {"type": "string", "minLength": 36, "maxLength": 36}},
 }
 VIDEO_FIELDS = {
-    "prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
+    "prompt": {"type": "string", "minLength": 1, "maxLength": 2000,
+               "description": "可用 @图片1、@图片2 按 reference_upload_ids 顺序引用"},
     "channel": {"type": "string", "enum": ["grok", "micro", "omni"]},
     "ratio": {"type": "string", "enum": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"]},
     "duration": {"type": "integer", "minimum": 1, "maximum": 15},
     "resolution": {"type": "string", "enum": ["480p", "720p", "1080p"]},
     "model": {"type": "string", "enum": ["grok-imagine-video", "grok-imagine-video-1.5"]},
     "generate_audio": {"type": "boolean"},
+    "reference_upload_ids": {"type": "array", "maxItems": 9,
+                             "items": {"type": "string", "minLength": 36, "maxLength": 36}},
 }
 AUDIO_FIELDS = {
     "text": {"type": "string", "minLength": 1, "maxLength": 1000},
@@ -295,8 +299,12 @@ for identifier, name, fields, required in (
 
 CAPABILITIES["image-generate"]["constraints"] = [
     "image_upload_id and reference_upload_ids are mutually exclusive",
-    "reference_upload_ids requires provider=xiaole and accepts 1-4 items",
+    "reference_upload_ids limits: openai=16, seedream=10, xiaole=4",
     "mask_upload_id requires image_upload_id, provider=openai, PNG mask, and count=1",
+]
+CAPABILITIES["video-generate"]["constraints"] = [
+    "reference_upload_ids limits: grok=7, micro=9, omni=6",
+    "@图片N references the Nth item in reference_upload_ids",
 ]
 
 

@@ -445,10 +445,14 @@ class HQCLIAPITests(unittest.TestCase):
             "prompt": "keep the person", "provider": "openai", "image_upload_id": upload_id,
         })
         self.assertEqual(upload_id, plan["payload"]["image_upload_id"])
-        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
-            self.auth.hq_cli_api.action_plan("image-generate", {
-                "prompt": "bad", "provider": "openai", "reference_upload_ids": [upload_id],
-            })
+        multi = self.auth.hq_cli_api.action_plan("image-generate", {
+            "prompt": "use @图片1", "provider": "openai", "reference_upload_ids": [upload_id],
+        })
+        self.assertEqual([upload_id], multi["payload"]["reference_upload_ids"])
+        video = self.auth.hq_cli_api.action_plan("video-generate", {
+            "prompt": "use @图片1", "channel": "grok", "reference_upload_ids": [upload_id],
+        })
+        self.assertEqual([upload_id], video["payload"]["reference_upload_ids"])
         with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
             self.auth.hq_cli_api.action_plan("image-generate", {
                 "prompt": "bad", "provider": "seedream", "image_upload_id": upload_id,

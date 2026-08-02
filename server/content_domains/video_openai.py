@@ -152,7 +152,8 @@ def _open(opener, request, timeout, api_key=None):
         ) from exc
 
 
-def _request_json(opener, method, path, body=None, timeout=90, api_key=None):
+def _request_json(opener, method, path, body=None, timeout=90, api_key=None,
+                  content_type=None):
     api_key = OPENAI_API_KEY if api_key is None else str(api_key).strip()
     if not api_key:
         raise ValueError("OpenAI 视频未配置（OPENAI_API_KEY）")
@@ -163,8 +164,8 @@ def _request_json(opener, method, path, body=None, timeout=90, api_key=None):
     }
     data = None
     if body is not None:
-        request_headers["Content-Type"] = "application/json"
-        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        request_headers["Content-Type"] = content_type or "application/json"
+        data = body if content_type else json.dumps(body, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         _api_url(path), data=data, headers=request_headers, method=method
     )
@@ -274,21 +275,30 @@ def _poll(opener, video_id, model, seconds, size, job_id=None, heartbeat=None,
 
 
 def generate(model, prompt, seconds, size, job_id=None, heartbeat=None,
-             now=None, sleep=None, api_key=None, provider_key_id=None):
+             now=None, sleep=None, api_key=None, provider_key_id=None,
+             input_reference=None):
     """Submit exactly one Sora job, persist its id, then poll to completion."""
     model = _required(model, " model")
     prompt = _required(prompt, " prompt")
     seconds = _required(seconds, " seconds")
     size = _required(size, " size")
     opener = _opener()
+    create_body = {"model": model, "prompt": prompt, "seconds": seconds, "size": size}
+    content_type = None
+    if input_reference:
+        from .core import _multipart
+        create_body, content_type = _multipart(
+            create_body, [("input_reference", "reference.png", input_reference)]
+        )
     try:
         created = _request_json(
             opener,
             "POST",
             "/videos",
-            {"model": model, "prompt": prompt, "seconds": seconds, "size": size},
+            create_body,
             timeout=120,
             api_key=api_key,
+            content_type=content_type,
         )
     except CreateRejected:
         raise
