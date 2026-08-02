@@ -38,6 +38,9 @@ jobs:
       - name: 安装微信消息推送加密依赖
         run: python -m pip install "cryptography>=41,<50"
 
+      - name: 安装 content 服务 Python 依赖
+        run: python -m pip install -r deploy/requirements-content.txt
+
       - name: 检查敏感文件与静态资源
         run: python scripts/ci_validate.py
 
@@ -60,7 +63,7 @@ jobs:
           cmp "$cli_tmp"/wheels-a/*.whl "$cli_tmp"/wheels-b/*.whl
           sh -n ../../site/downloads/hq/install.sh
           python -m venv "$cli_tmp/venv"
-          "$cli_tmp/venv/bin/pip" install --no-index --no-deps ../../site/downloads/hq/v0.3.0/huangque_hq_cli-0.3.0-py3-none-any.whl
+          "$cli_tmp/venv/bin/pip" install --no-index --no-deps ../../site/downloads/hq/v0.4.0/huangque_hq_cli-0.4.0-py3-none-any.whl
           "$cli_tmp/venv/bin/hq" version --json
           "$cli_tmp/venv/bin/hq" capabilities --json
           "$cli_tmp/venv/bin/python" -m hq_cli version --json

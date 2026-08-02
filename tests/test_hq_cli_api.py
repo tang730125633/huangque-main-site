@@ -100,6 +100,19 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual(200, status, payload)
         return payload["access_token"]
 
+    @staticmethod
+    def _canvas_snapshot(board_id):
+        return {
+            "prompt": "把卖点整理成图片生成草稿",
+            "project_id": "collab:" + board_id,
+            "snapshot_digest": "deadbeef",
+            "scope": "collab",
+            "nodes": [{
+                "id": "n1", "type": "text", "title": "卖点", "content": "轻便耐用", "selected": True,
+            }],
+            "edges": [], "selected_node_ids": ["n1"], "history": [],
+        }
+
     def test_device_codes_and_access_token_are_only_stored_as_hashes(self):
         start = self._start()
         with sqlite3.connect(self.auth.DB) as connection:
@@ -266,6 +279,141 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual("first idea", board["data"]["nodes"][0]["outputs"]["prompt"])
         self.assertIn("collab=" + board["id"], payload["url"])
 
+    def test_canvas_agent_plan_is_scoped_quoted_and_never_auto_applies(self):
+        board, err = self.auth.create_canvas_board("alice", {
+            "name": "Agent board",
+            "data": {"nodes": [{"id": "n1", "type": "text", "params": {"text": "轻便耐用"}}], "edges": []},
+        })
+        self.assertIsNone(err)
+        input_body = self._canvas_snapshot(board["id"])
+        input_body.update(
+            page_context={
+                "page": "canvas", "path": "/workbench/canvas", "title": "黄雀画布",
+                "can_edit": True, "selected_count": 1,
+            },
+            ip12_context={
+                "project_id": "ip12_project_1", "title": "美业 IP", "status": "confirmed",
+                "foundation_status": "confirmed", "facts": [{"label": "定位", "value": "主理人"}],
+            },
+        )
+        denied = self._token(["generation:submit"])
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json") as proxy:
+            status, payload = self._request("/api/auth/cli/action", {
+                "action": "canvas-agent-plan", "input": input_body, "confirm": False,
+            }, token=denied)
+        self.assertEqual(403, status)
+        self.assertEqual("insufficient_scope", payload["code"])
+        proxy.assert_not_called()
+
+        quote_only = self._token(["canvas:agent"])
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", return_value=(
+                200, {"kind": "canvas_agent", "cost": 3, "points": 100})):
+            status, quote = self._request("/api/auth/cli/action", {
+                "action": "canvas-agent-plan", "input": input_body, "confirm": False,
+            }, token=quote_only)
+            self.assertEqual(200, status, quote)
+            status, payload = self._request("/api/auth/cli/action", {
+                "action": "canvas-agent-plan", "input": input_body, "confirm": True,
+                "quote_token": quote["quote_token"],
+            }, token=quote_only)
+        self.assertEqual(403, status)
+        self.assertEqual("insufficient_scope", payload["code"])
+
+        token = self._token(["canvas:agent", "generation:submit"])
+        submitted = []
+
+        def fake_proxy(plan, web_token, internal_token):
+            if plan["path"] == "/api/gen/canvas-agent/quote":
+                self.assertEqual({}, plan["body"])
+                return 200, {"kind": "canvas_agent", "cost": 3, "points": 100}
+            submitted.append(plan)
+            return 200, {"job_id": 84, "cost": 3, "points_left": 97}
+
+        request = {"action": "canvas-agent-plan", "input": input_body, "confirm": False}
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            status, quote = self._request("/api/auth/cli/action", request, token=token)
+            self.assertEqual(200, status, quote)
+            confirm = dict(request, confirm=True, quote_token=quote["quote_token"])
+            status, result = self._request("/api/auth/cli/action", confirm, token=token)
+            self.assertEqual(200, status, result)
+            changed = dict(confirm, input={**input_body, "prompt": "不同任务"})
+            mismatch_status, mismatch = self._request("/api/auth/cli/action", changed, token=token)
+        self.assertEqual(409, mismatch_status)
+        self.assertEqual("quote_mismatch", mismatch["code"])
+        self.assertEqual(84, result["job_id"])
+        self.assertEqual("/api/gen/canvas_agent", submitted[0]["path"])
+        self.assertEqual(3, submitted[0]["body"]["quoted_cost"])
+        self.assertEqual("美业 IP", submitted[0]["body"]["ip12_context"]["title"])
+        self.assertEqual("canvas", submitted[0]["body"]["page_context"]["page"])
+        self.assertEqual(board["id"], submitted[0]["headers"]["X-Canvas-Board-Id"])
+        self.assertEqual("3", submitted[0]["headers"]["X-HQ-Expected-Cost"])
+        self.assertTrue(submitted[0]["headers"]["Idempotency-Key"].startswith("hqcli-"))
+        current, _ = self.auth.get_canvas_board("alice", board["id"])
+        self.assertEqual(1, current["version"])
+
+    def test_canvas_ops_are_confirmed_strict_and_idempotent(self):
+        board, err = self.auth.create_canvas_board("alice", {
+            "name": "CLI board",
+            "data": {"nodes": [{"id": "n1", "type": "text", "params": {"text": "卖点"}}], "edges": []},
+        })
+        self.assertIsNone(err)
+        action_input = {
+            "board_id": board["id"], "base_version": 1, "op_id": "hqcli-abcdefghijkl",
+            "ops": [
+                {"type": "node.patch", "id": "n1", "fields": {"params": {"title": "核心卖点"}}},
+                {"type": "node.create", "node": {
+                    "id": "n2", "type": "gen", "x": 360, "y": 80,
+                    "params": {"title": "图片草稿", "text": "轻便耐用的产品海报"},
+                }},
+                {"type": "edge.create", "edge": {
+                    "from": {"node": "n1", "port": "prompt"},
+                    "to": {"node": "n2", "port": "prompt"},
+                }},
+            ],
+        }
+        denied = self._token(["canvas:read"])
+        status, payload = self._request("/api/auth/cli/action", {
+            "action": "canvas-ops", "input": action_input, "confirm": True,
+        }, token=denied)
+        self.assertEqual(403, status)
+        self.assertEqual("insufficient_scope", payload["code"])
+
+        token = self._token(["canvas:edit"])
+        status, payload = self._request("/api/auth/cli/action", {
+            "action": "canvas-ops", "input": action_input, "confirm": False,
+        }, token=token)
+        self.assertEqual(409, status)
+        self.assertEqual("confirmation_required", payload["code"])
+        confirmed = {"action": "canvas-ops", "input": action_input, "confirm": True}
+        status, result = self._request("/api/auth/cli/action", confirmed, token=token)
+        self.assertEqual(200, status, result)
+        self.assertEqual(2, result["version"])
+        self.assertEqual(2, len(result["board"]["data"]["nodes"]))
+        self.assertEqual(200, self._request("/api/auth/cli/action", confirmed, token=token)[0])
+
+        changed = {**action_input, "ops": [
+            {"type": "node.patch", "id": "n1", "fields": {"params": {"title": "其他内容"}}},
+        ]}
+        status, payload = self._request("/api/auth/cli/action", {
+            "action": "canvas-ops", "input": changed, "confirm": True,
+        }, token=token)
+        self.assertEqual(409, status)
+        self.assertEqual("idempotency_conflict", payload["code"])
+        dangerous = {**action_input, "op_id": "hqcli-mnopqrstuvwx", "ops": [{"type": "node.delete", "id": "n1"}]}
+        self.assertEqual(400, self._request("/api/auth/cli/action", {
+            "action": "canvas-ops", "input": dangerous, "confirm": True,
+        }, token=token)[0])
+        stale = {**action_input, "op_id": "hqcli-zyxwvutsrqpo", "ops": [
+            {"type": "node.patch", "id": "n1", "fields": {"x": 120}},
+        ]}
+        status, payload = self._request("/api/auth/cli/action", {
+            "action": "canvas-ops", "input": stale, "confirm": True,
+        }, token=token)
+        self.assertEqual(409, status)
+        self.assertEqual("canvas_version_conflict", payload["code"])
+        current, _ = self.auth.get_canvas_board("alice", board["id"])
+        self.assertEqual(2, current["version"])
+
     def test_paid_quote_binds_user_payload_cost_expiry_and_idempotency(self):
         token = self._token(["generation:quote", "generation:submit"])
         submitted = []
@@ -297,10 +445,14 @@ class HQCLIAPITests(unittest.TestCase):
             "prompt": "keep the person", "provider": "openai", "image_upload_id": upload_id,
         })
         self.assertEqual(upload_id, plan["payload"]["image_upload_id"])
-        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
-            self.auth.hq_cli_api.action_plan("image-generate", {
-                "prompt": "bad", "provider": "openai", "reference_upload_ids": [upload_id],
-            })
+        multi = self.auth.hq_cli_api.action_plan("image-generate", {
+            "prompt": "use @图片1", "provider": "openai", "reference_upload_ids": [upload_id],
+        })
+        self.assertEqual([upload_id], multi["payload"]["reference_upload_ids"])
+        video = self.auth.hq_cli_api.action_plan("video-generate", {
+            "prompt": "use @图片1", "channel": "grok", "reference_upload_ids": [upload_id],
+        })
+        self.assertEqual([upload_id], video["payload"]["reference_upload_ids"])
         with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
             self.auth.hq_cli_api.action_plan("image-generate", {
                 "prompt": "bad", "provider": "seedream", "image_upload_id": upload_id,

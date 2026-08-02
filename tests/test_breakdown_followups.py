@@ -4,6 +4,7 @@ import http.client
 import io
 import json
 import pathlib
+import shutil
 import sys
 import tempfile
 import unittest
@@ -19,6 +20,37 @@ except ImportError:
 
 
 class BreakdownFollowupTests(unittest.TestCase):
+    def test_extract_frames_binds_each_path_to_real_ffmpeg_pts(self):
+        points = [0.0, 1.25, 2.5, 3.75, 5.0, 6.25, 7.5, 8.75]
+
+        def fake_run(command, **_kwargs):
+            pattern = command[-1]
+            for index in range(1, 9):
+                pathlib.Path(pattern.replace("%d", str(index))).write_bytes(b"jpg")
+            stderr = "\n".join(
+                "[Parsed_showinfo_0] pts_time:%s" % point
+                for point in points
+            ).encode("utf-8")
+            return mock.Mock(stderr=stderr)
+
+        with mock.patch.object(
+            breakdown.subprocess, "run", side_effect=fake_run,
+        ):
+            frame_dir, frames, actual = breakdown._extract_frames(
+                "video.mp4",
+                8,
+                10.0,
+                scale_width=1024,
+                min_frames=8,
+                uniform=True,
+                return_pts=True,
+            )
+        try:
+            self.assertEqual(len(frames), 8)
+            self.assertEqual(actual, points)
+        finally:
+            shutil.rmtree(frame_dir, ignore_errors=True)
+
     def test_tikhub_millisecond_duration_is_normalized_to_seconds(self):
         self.assertAlmostEqual(
             breakdown._normalize_duration_seconds(10034), 10.034, places=3
@@ -53,7 +85,13 @@ class BreakdownFollowupTests(unittest.TestCase):
             )
 
         self.assertEqual(result["type"], "breakdown_reverse")
-        self.assertEqual(extracted.call_args.args[1:], (4, 10.034))
+        self.assertEqual(extracted.call_args.args[1:], (8, 10.034))
+        self.assertEqual(extracted.call_args.kwargs, {
+            "scale_width": 1024,
+            "min_frames": 8,
+            "uniform": True,
+            "return_pts": True,
+        })
         self.assertEqual(reversed_from_frames.call_args.args[-1], 10.034)
         self.assertEqual(
             reversed_from_frames.call_args.kwargs["script_text"],

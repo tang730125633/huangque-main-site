@@ -365,27 +365,6 @@ class CopyZhipuProviderTests(unittest.TestCase):
         self.assertEqual(text.FALLBACK_COPY_MODEL, body["model"])
         self.assertEqual("/v1/chat/completions", post.call_args.args[0])
 
-    def test_zelong_copy_and_director_use_configured_responses_channel(self):
-        response = {"output": [{
-            "content": [{"type": "output_text", "text": "dedicated ok"}],
-        }]}
-        with mock.patch.multiple(
-            text,
-            COPY_API_STYLE="responses",
-            COPY_BASE="https://api.zelong.vip",
-            COPY_API_KEY="test-key",
-            COPY_MODEL="zelong-cpa-gpt-5.4",
-        ), mock.patch.object(text, "_post", return_value=response) as post:
-            self.assertEqual("dedicated ok", text._chat("system", "user", 0.5))
-            self.assertEqual("dedicated ok", text._director_chat("system", "user", 0.5))
-
-        body = json.loads(post.call_args.args[1])
-        self.assertEqual(2, post.call_count)
-        self.assertEqual("zelong-cpa-gpt-5.4", body["model"])
-        self.assertEqual("/v1/responses", post.call_args.args[0])
-        self.assertEqual("https://api.zelong.vip", post.call_args.kwargs["base"])
-        self.assertEqual("test-key", post.call_args.kwargs["key"])
-
     def test_script_business_path_uses_director_channel_only(self):
         director_result = json.dumps({
             "scenes": [{"dur": "3s", "scene": "产品置于窗边", "line": "自然介绍"}],

@@ -90,7 +90,7 @@ def _job_payload(raw):
         return d if isinstance(d, dict) else {}
     except Exception:
         # payload 只取了前缀，截断的 JSON 解析不了 —— 这里不做正则兜底：
-        # 兜底失败最多是把功能名认成上一级（例如「作图」而不是「作图 · 泽龙专用生图」），
+        # 兜底失败最多是把功能名认成上一级（例如「作图」而不是「作图 · 泽龙2生图」），
         # 熔断粒度变粗一点，不会误伤到别的渠道。
         return {}
 

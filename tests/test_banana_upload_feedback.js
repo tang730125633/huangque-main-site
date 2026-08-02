@@ -15,12 +15,11 @@ function test(name, fn) {
   }
 }
 
-test('oversized converted reference is rejected before setRef', () => {
+test('oversized converted reference is rejected before addRef', () => {
   const block = html.slice(html.indexOf('function refFromFile'), html.indexOf('if(upFile)'));
   assert.match(block, /dataUrlBytes\(ref\.dataUrl\)>\(fruit\?XIAOLE_REF_MAX_BYTES:REF_MAX_BYTES\)/);
   assert.match(block, /图片仍超过/);
-  assert.ok(block.indexOf('dataUrlBytes(ref.dataUrl)') < block.indexOf('setRef('));
-  assert.ok(block.indexOf('dataUrlBytes(ref.dataUrl)') < block.indexOf('addXiaoleRef('));
+  assert.ok(block.indexOf('dataUrlBytes(ref.dataUrl)') < block.indexOf('addRef('));
 });
 
 test('oversized reverse-prompt image is rejected before revSet', () => {

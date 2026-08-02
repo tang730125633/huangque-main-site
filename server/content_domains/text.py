@@ -2,12 +2,10 @@
 import re
 
 from .core import (
-    COPY_API_KEY, COPY_API_STYLE, COPY_BASE, COPY_MODEL,
-    _NOPROXY, _post, json, os, urllib,
+    COPY_MODEL as FALLBACK_COPY_MODEL, _NOPROXY, _post, json, os, urllib,
 )
 
-FALLBACK_COPY_MODEL = COPY_MODEL
-ZHIPU_COPY_MODEL = "glm-4-plus"
+COPY_MODEL = "glm-4-plus"
 ZHIPU_API_BASE = "https://open.bigmodel.cn/api/paas/v4"
 ZHIPU_API_KEY = (os.environ.get("ZHIPU_API_KEY") or "").strip()
 DIRECTOR_ZHIPU_API_KEY = (os.environ.get("REVERSE_ZHIPU_KEY") or "").strip()
@@ -95,53 +93,24 @@ def _zhipu_request(messages, temp, api_key, model):
     return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
 
 
-def _copy_channel(sysmsg, usermsg, temp):
-    if COPY_API_STYLE == "responses":
-        body = json.dumps({
-            "model": COPY_MODEL,
-            "instructions": sysmsg,
-            "input": usermsg,
-            "stream": False,
-        }, ensure_ascii=False).encode("utf-8")
-        data = _post("/v1/responses", body, "application/json", base=COPY_BASE, key=COPY_API_KEY)
-        return "".join(
-            str(part.get("text") or "")
-            for item in (data.get("output") or [])
-            for part in (item.get("content") or [])
-            if part.get("type") == "output_text"
-        ).strip()
-    if COPY_API_STYLE != "chat_completions":
-        raise ValueError("COPY_API_STYLE 仅支持 chat_completions 或 responses")
-    body = json.dumps({
-        "model": os.environ.get("COPY_FALLBACK_MODEL", COPY_MODEL),
-        "messages": [
-            {"role": "system", "content": sysmsg},
-            {"role": "user", "content": usermsg},
-        ],
-        "temperature": temp,
-    }, ensure_ascii=False).encode("utf-8")
-    data = _post("/v1/chat/completions", body, "application/json", base=COPY_BASE, key=COPY_API_KEY)
-    return (data.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
-
-
 def _chat(sysmsg, usermsg, temp):
     """Legacy shared copy channel for generic copy and short-drama planning."""
-    if COPY_API_STYLE == "responses":
-        return _copy_channel(sysmsg, usermsg, temp)
-    if COPY_API_STYLE != "chat_completions":
-        raise ValueError("COPY_API_STYLE 仅支持 chat_completions 或 responses")
     messages = [
         {"role": "system", "content": sysmsg},
         {"role": "user", "content": usermsg},
     ]
     if ZHIPU_API_KEY:
-        return _zhipu_request(messages, temp, ZHIPU_API_KEY, ZHIPU_COPY_MODEL)
-    return _copy_channel(sysmsg, usermsg, temp)
+        return _zhipu_request(messages, temp, ZHIPU_API_KEY, COPY_MODEL)
+    fallback = json.dumps({
+        "model": os.environ.get("COPY_FALLBACK_MODEL", FALLBACK_COPY_MODEL),
+        "messages": messages,
+        "temperature": temp,
+    }, ensure_ascii=False).encode("utf-8")
+    d = _post("/v1/chat/completions", fallback, "application/json")
+    return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
 
 
 def _director_chat(sysmsg, usermsg, temp):
-    if COPY_API_STYLE == "responses":
-        return _copy_channel(sysmsg, usermsg, temp)
     return _zhipu_request([
         {"role": "system", "content": sysmsg},
         {"role": "user", "content": usermsg},

@@ -162,6 +162,14 @@ def _project_breakdown_item(result):
         "analysis": r.get("analysis"),
         "prompt": r.get("prompt"),
         "frame_thumbnails": r.get("frame_thumbnails") or [],
+        # 反推历史必须能从服务端资产记录恢复。列表接口会单独瘦身大体积
+        # frame_thumbnails，但这些结构化审计字段体积小，不能丢。
+        "reference_thumbnail_indices": r.get("reference_thumbnail_indices") or [],
+        "audit_thumbnail_indices": r.get("audit_thumbnail_indices") or [],
+        "frame_manifest": r.get("frame_manifest") or [],
+        "timeline_audit": r.get("timeline_audit"),
+        "quality_score": r.get("quality_score"),
+        "reverse_audit": r.get("reverse_audit"),
     }
 
 

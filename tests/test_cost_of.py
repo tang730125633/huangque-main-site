@@ -88,7 +88,7 @@ class CostOfTests(unittest.TestCase):
     def test_breakdown_partial_refund_is_persistent_idempotent_and_retryable(self):
         core = importlib.import_module("content_domains.core")
         original_db = core.JOB_DB
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
             core.JOB_DB = str(Path(directory) / "jobs.db")
             try:
                 with sqlite3.connect(core.JOB_DB) as connection:

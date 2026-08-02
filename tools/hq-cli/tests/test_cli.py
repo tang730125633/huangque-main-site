@@ -49,7 +49,7 @@ class HqCliTests(unittest.TestCase):
         by_id = {item["id"]: item for item in self.payload(output)["capabilities"]}
         expected = {
             "account", "ip12-projects", "ip12-project", "ip12-create", "ip12-report", "ip12-message",
-            "prompt-optimize", "canvas-list", "canvas-get", "canvas-create", "tasks", "task",
+            "prompt-optimize", "canvas-list", "canvas-get", "canvas-create", "canvas-agent-plan", "canvas-ops", "tasks", "task",
             "assets", "voices", "image-upload", "asset-favorite", "asset-tags",
             "image-generate", "video-generate", "audio-generate",
         }
@@ -59,6 +59,9 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual("server_quote", by_id["image-generate"]["cost"]["kind"])
         self.assertEqual("hq_device_authorization", by_id["ip12-projects"]["target_auth"])
         self.assertEqual("assets:upload", by_id["image-upload"]["required_scope"])
+        self.assertEqual("server_quote", by_id["canvas-agent-plan"]["cost"]["kind"])
+        self.assertEqual("canvas:edit", by_id["canvas-ops"]["required_scope"])
+        self.assertEqual(12, by_id["canvas-ops"]["input_schema"]["properties"]["ops"]["maxItems"])
 
     def test_login_uses_device_flow_saves_token_without_printing_it(self):
         responses = [
@@ -118,6 +121,7 @@ class HqCliTests(unittest.TestCase):
             "ip12-create": b'{"title":"My IP"}',
             "ip12-message": '{"project_id":"ip_1","message":"我的核心客户是本地餐饮老板","request_id":"turn-001"}'.encode(),
             "canvas-create": b'{"name":"Launch","prompt":"first idea"}',
+            "canvas-ops": b'{"board_id":"cb_1","base_version":1,"op_id":"hqcli-abcdefghijkl","ops":[{"type":"node.patch","id":"n1","fields":{"x":120}}]}',
             "asset-tags": '{"kind":"image","key":"asset-1","tags":["客户案例"]}'.encode(),
         }
         with patch("hq_cli.client.request_json") as request:
@@ -174,6 +178,33 @@ class HqCliTests(unittest.TestCase):
         self.assertFalse(first.kwargs["body"]["confirm"])
         self.assertTrue(second.kwargs["body"]["confirm"])
         self.assertEqual("q.abc", second.kwargs["body"]["quote_token"])
+        self.assertEqual(first.kwargs["body"]["input"], second.kwargs["body"]["input"])
+
+    def test_canvas_agent_plan_uses_paid_flow_without_auto_writing(self):
+        self.authorize()
+        snapshot = {
+            "prompt": "创建图片草稿", "project_id": "collab:cb_1", "snapshot_digest": "deadbeef",
+            "scope": "collab", "nodes": [{
+                "id": "n1", "type": "text", "title": "卖点", "content": "轻便", "selected": True,
+            }], "edges": [], "selected_node_ids": ["n1"], "history": [],
+        }
+        raw = json.dumps(snapshot, ensure_ascii=False).encode()
+        quote = {"quote_token": "q.canvas", "kind": "canvas_agent", "cost": 3, "points": 100,
+                 "expires_in": 300, "confirmation_required": True}
+        with patch("hq_cli.client.request_json", side_effect=[
+                (200, quote), (200, {"job_id": 84, "cost": 3, "points_left": 97})]) as request:
+            code, output, error = self.invoke(["run", "canvas-agent-plan", "--input", "@-"], raw)
+            self.assertEqual(0, code, error)
+            self.assertEqual(3, self.payload(output)["result"]["cost"])
+            code, output, error = self.invoke([
+                "run", "canvas-agent-plan", "--input", "@-", "--confirm", "--quote-token", "q.canvas",
+            ], raw)
+        self.assertEqual(0, code, error)
+        self.assertEqual(84, self.payload(output)["result"]["job_id"])
+        first, second = request.call_args_list
+        self.assertEqual("canvas-agent-plan", first.kwargs["body"]["action"])
+        self.assertFalse(first.kwargs["body"]["confirm"])
+        self.assertTrue(second.kwargs["body"]["confirm"])
         self.assertEqual(first.kwargs["body"]["input"], second.kwargs["body"]["input"])
 
     def test_paid_confirm_without_server_quote_is_blocked_before_http(self):

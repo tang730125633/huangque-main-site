@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """爆款拆解：竞品视频链接 → 下载 → 抽帧 → ASR → GLM-4V 多模态 → 分镜脚本"""
-import os, json, time, base64, tempfile, subprocess, shutil, mimetypes, io
+import os, json, time, base64, tempfile, subprocess, shutil, mimetypes, io, math
 import http.client
 import re
 import socket
@@ -38,6 +38,9 @@ _AI_FRAME_MAX_EDGE = 640
 _AI_FRAME_MAX_BYTES = 128 * 1024
 _AI_FRAMES_TOTAL_MAX_BYTES = 1024 * 1024
 _AI_MAX_FRAMES = 4
+_REVERSE_SCENE_SCORE_THRESHOLD = 0.30
+_REVERSE_MIN_SEGMENT_SECONDS = 1.0
+_REVERSE_MAX_SEGMENTS = 4
 
 
 def _ensure_upload_table(connection):
@@ -366,8 +369,36 @@ def _do_breakdown(payload, info, url):
         probed_duration = _probe_duration(tmp_video.name)
         if probed_duration > 0:
             duration = probed_duration
-        frame_count = max(4, min(10, int(duration / 5)))
-        frame_dir, frames = _extract_frames(tmp_video.name, frame_count, duration)
+        is_reverse = payload.get("mode") == "reverse_prompt"
+        frame_pts = None
+        reverse_timeline = None
+        if is_reverse:
+            reverse_timeline = _authoritative_reverse_timeline(
+                tmp_video.name, duration,
+            )
+            frame_dir, frames, frame_pts = _split_extracted_frames(
+                _extract_frames(
+                    tmp_video.name,
+                    8,
+                    duration,
+                    scale_width=1024,
+                    min_frames=8,
+                    uniform=True,
+                    return_pts=True,
+                )
+            )
+            frames, frame_pts = _fill_reverse_window_frames(
+                tmp_video.name,
+                frame_dir,
+                frames,
+                frame_pts,
+                reverse_timeline["windows"],
+            )
+        else:
+            frame_count = max(4, min(10, int(duration / 5)))
+            frame_dir, frames = _extract_frames(
+                tmp_video.name, frame_count, duration,
+            )
 
         script_text = ""
         try:
@@ -379,10 +410,14 @@ def _do_breakdown(payload, info, url):
 
         _heartbeat(job_id, "analyzing")
         platform = info.get("platform", "")
-        if payload.get("mode") == "reverse_prompt":
+        if is_reverse:
             return _reverse_from_frames(
                 payload, frames, url, title, platform, duration,
                 script_text=script_text,
+                media_path=tmp_video.name,
+                media_mime="video/mp4",
+                frame_pts=frame_pts,
+                timeline=reverse_timeline,
             )
 
         context = (
@@ -498,11 +533,98 @@ def _download_breakdown_video(tikhub, info, detail, destination):
 
 def _reverse_from_frames(
     payload, frames, source_url="", title="", platform="", duration=0,
-    script_text="",
+    script_text="", media_path=None, media_mime="video/mp4",
+    frame_pts=None, timeline=None,
 ):
     duration = max(0.0, float(duration or 0))
     duration_text = ("%.3f" % duration).rstrip("0").rstrip(".")
-    if duration > 0:
+    if duration > 0 and media_path:
+        from . import gemini_reverse
+
+        job_id = (payload or {}).get("_job_id")
+        timeline = timeline or _authoritative_reverse_timeline(
+            media_path, duration,
+        )
+        windows = list(timeline.get("windows") or [])
+        if not windows:
+            raise ValueError("反推时间轴为空")
+        gemini_result = gemini_reverse.analyze_video(
+            media_path,
+            media_mime,
+            title,
+            duration,
+            platform,
+            script_text,
+            heartbeat=lambda: _heartbeat(job_id, "analyzing"),
+            cleanup_jdb=jdb,
+            windows=windows,
+            timeline_audit=timeline,
+        )
+        frame_bundle = _reverse_frame_bundle(
+            frames, windows, frame_pts=frame_pts,
+        )
+        frame_thumbnails = _frame_thumbnails(
+            frame_bundle["frames"], limit=len(frame_bundle["frames"]),
+        )
+        if len(frame_thumbnails) != len(frame_bundle["frames"]):
+            raise ValueError("反推审计证据帧序列化失败，请重试")
+        quality_score = gemini_result["quality_score"]
+        return {
+            "type": "breakdown_reverse",
+            "source_url": source_url,
+            "source_title": title,
+            "source_platform": platform,
+            "duration": duration,
+            "prompt": gemini_result["prompt"],
+            "frame_count": len(frames or []),
+            "frame_thumbnails": frame_thumbnails,
+            "reference_frame_strategy": "explicit_indices_one_per_segment",
+            "reference_thumbnail_indices": frame_bundle[
+                "reference_thumbnail_indices"
+            ],
+            "audit_thumbnail_indices": frame_bundle[
+                "audit_thumbnail_indices"
+            ],
+            "frame_manifest": frame_bundle["manifest"],
+            "timeline_audit": gemini_result["timeline_audit"],
+            "quality_score": quality_score,
+            "model_provider": gemini_result["provider"],
+            "model_id": gemini_result["model"],
+            "model_attempts": gemini_result["attempts"],
+            "reverse_audit": {
+                "model_provider": gemini_result["provider"],
+                "model_id": gemini_result["model"],
+                "model_attempts": gemini_result["attempts"],
+                "cross_provider_fallback": False,
+                "attempt_audit": gemini_result["attempt_audit"],
+                "timeline_audit": gemini_result["timeline_audit"],
+                "quality_score": quality_score,
+                "frame_manifest": frame_bundle["manifest"],
+                "reference_thumbnail_indices": frame_bundle[
+                    "reference_thumbnail_indices"
+                ],
+                "audit_thumbnail_indices": frame_bundle[
+                    "audit_thumbnail_indices"
+                ],
+                "segments": [
+                    {
+                        "segment_id": entry["segment_id"],
+                        "start_seconds": entry["start_seconds"],
+                        "end_seconds": entry["end_seconds"],
+                        "readiness": entry["readiness"],
+                        "transition_from_previous": entry[
+                            "transition_from_previous"
+                        ],
+                        "evidence_seconds": {
+                            key: list(value["evidence_seconds"])
+                            for key, value in entry["facts"].items()
+                        },
+                    }
+                    for entry in gemini_result["entries"]
+                ],
+            },
+        }
+    elif duration > 0:
         source_context = (
             "视频标题：%s\n平台：%s\n总时长：%s 秒\n口播时间轴：\n%s\n\n"
             % (
@@ -682,6 +804,247 @@ def _fixed_reverse_ranges(duration, max_segments=4):
         )
         for index in range(count)
     ]
+
+
+def _round_tenth(value):
+    """Round source time once, at the server boundary, to the 0.1s contract."""
+    return math.floor(max(0.0, float(value or 0)) * 10.0 + 0.5) / 10.0
+
+
+def _timeline_label_tenth(seconds):
+    total_tenths = max(0, int(_round_tenth(seconds) * 10))
+    minutes, remainder = divmod(total_tenths, 600)
+    return "%02d:%04.1f" % (minutes, remainder / 10.0)
+
+
+def _reverse_display_range(start, end):
+    return "[%s-%s]" % (
+        _timeline_label_tenth(start),
+        _timeline_label_tenth(end),
+    )
+
+
+def _detect_reverse_transition_candidates(path, duration):
+    """Collect FFmpeg scene-score evidence without exposing the media path."""
+    duration = _round_tenth(duration)
+    command = [
+        "ffmpeg", "-hide_banner", "-nostdin", "-v", "info", "-i", path,
+        "-vf",
+        "select='gt(scene,%.2f)',metadata=print"
+        % _REVERSE_SCENE_SCORE_THRESHOLD,
+        "-an", "-f", "null", "-",
+    ]
+    try:
+        process = subprocess.run(
+            command,
+            check=False,
+            timeout=max(20, min(60, int(math.ceil(duration * 2.0)))),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except Exception as error:
+        return [], {
+            "detector": "ffmpeg_scene_score",
+            "threshold": _REVERSE_SCENE_SCORE_THRESHOLD,
+            "status": "unavailable",
+            "error_type": type(error).__name__,
+        }
+    output = "%s\n%s" % (process.stdout or "", process.stderr or "")
+    pattern = re.compile(
+        r"frame:\s*\d+\s+pts:[^\r\n]*?pts_time:([0-9]+(?:\.[0-9]+)?)"
+        r"[\s\S]{0,240}?lavfi\.scene_score=([0-9]+(?:\.[0-9]+)?)"
+    )
+    candidates = []
+    for match in pattern.finditer(output):
+        at_seconds = _round_tenth(match.group(1))
+        score = round(float(match.group(2)), 6)
+        if 0.0 < at_seconds < duration:
+            candidates.append({
+                "at_seconds": at_seconds,
+                "score": score,
+                "detector": "ffmpeg_scene_score",
+            })
+    return candidates, {
+        "detector": "ffmpeg_scene_score",
+        "threshold": _REVERSE_SCENE_SCORE_THRESHOLD,
+        "status": "ok" if process.returncode == 0 else "partial",
+        "candidate_count": len(candidates),
+        "ffmpeg_returncode": int(process.returncode),
+    }
+
+
+def _build_authoritative_reverse_timeline(duration, candidates=None):
+    """Build at most four gap-free shots from evidence-backed cut candidates."""
+    duration = max(0.1, _round_tenth(duration))
+    normalized = []
+    for raw in candidates or []:
+        try:
+            at_seconds = _round_tenth(raw.get("at_seconds"))
+            score = float(raw.get("score") or 0.0)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if (
+            at_seconds < _REVERSE_MIN_SEGMENT_SECONDS
+            or duration - at_seconds < _REVERSE_MIN_SEGMENT_SECONDS
+        ):
+            continue
+        normalized.append({
+            "at_seconds": at_seconds,
+            "score": round(score, 6),
+            "detector": str(raw.get("detector") or "ffmpeg_scene_score"),
+        })
+    selected = []
+    for candidate in sorted(
+        normalized, key=lambda item: (-item["score"], item["at_seconds"]),
+    ):
+        if any(
+            abs(candidate["at_seconds"] - previous["at_seconds"])
+            < _REVERSE_MIN_SEGMENT_SECONDS
+            for previous in selected
+        ):
+            continue
+        selected.append(candidate)
+        if len(selected) >= _REVERSE_MAX_SEGMENTS - 1:
+            break
+    selected.sort(key=lambda item: item["at_seconds"])
+    boundaries = [0.0] + [
+        item["at_seconds"] for item in selected
+    ] + [duration]
+    windows = [
+        (
+            boundaries[index],
+            boundaries[index + 1],
+            _reverse_display_range(
+                boundaries[index], boundaries[index + 1],
+            ),
+        )
+        for index in range(len(boundaries) - 1)
+    ]
+    return {
+        "windows": windows,
+        "transitions": [
+            {
+                "boundary_id": index,
+                "at_seconds": candidate["at_seconds"],
+                "score": candidate["score"],
+                "detector": candidate["detector"],
+            }
+            for index, candidate in enumerate(selected, 1)
+        ],
+        "duration_seconds": duration,
+        "precision_seconds": 0.1,
+        "max_segments": _REVERSE_MAX_SEGMENTS,
+        "min_segment_seconds": _REVERSE_MIN_SEGMENT_SECONDS,
+        "source": (
+            "ffmpeg_scene_candidates"
+            if selected else "single_full_media_segment"
+        ),
+    }
+
+
+def _authoritative_reverse_timeline(path, duration):
+    candidates, detector_audit = _detect_reverse_transition_candidates(
+        path, duration,
+    )
+    timeline = _build_authoritative_reverse_timeline(duration, candidates)
+    timeline["detector_audit"] = detector_audit
+    return timeline
+
+
+def _reverse_frame_time(frame_index, frame_count, duration):
+    if int(frame_count or 0) <= 1:
+        return 0.0
+    return max(0.0, float(duration or 0)) * max(
+        0, int(frame_index or 0) - 1,
+    ) / float(int(frame_count) - 1)
+
+
+def _group_reverse_frame_indices(frame_count, windows, frame_pts=None):
+    frame_count = max(0, int(frame_count or 0))
+    windows = list(windows or [])
+    if not windows:
+        return []
+    pts = None
+    if frame_pts is not None:
+        try:
+            candidate = [float(value) for value in frame_pts]
+        except (TypeError, ValueError):
+            candidate = []
+        if len(candidate) == frame_count:
+            pts = candidate
+    duration = float(windows[-1][1])
+    groups = [[] for _window in windows]
+    for frame_index in range(1, frame_count + 1):
+        at_seconds = (
+            pts[frame_index - 1]
+            if pts is not None
+            else _reverse_frame_time(frame_index, frame_count, duration)
+        )
+        for window_index, (start, end, _label) in enumerate(windows):
+            if (
+                float(start) <= at_seconds < float(end)
+                or (
+                    window_index == len(windows) - 1
+                    and at_seconds <= float(end)
+                )
+            ):
+                groups[window_index].append(frame_index)
+                break
+        else:
+            groups[0 if at_seconds < float(windows[0][0]) else -1].append(
+                frame_index
+            )
+    return groups
+
+
+def _reverse_frame_bundle(frames, windows, frame_pts=None):
+    ordered = list(frames or [])
+    groups = _group_reverse_frame_indices(
+        len(ordered), windows, frame_pts=frame_pts,
+    )
+    if not groups or any(not group for group in groups):
+        raise ValueError("反推关键帧不足：权威时间段与原始帧无法完整对应")
+    model_groups = [
+        [group[0], group[-1]] if len(group) > 1 else [group[0]]
+        for group in groups
+    ]
+    references = [group[-1] for group in groups]
+    source_order = references + [
+        index for index in range(1, len(ordered) + 1)
+        if index not in references
+    ]
+    location = {}
+    for segment_index, group in enumerate(groups, 1):
+        for local_index, source_index in enumerate(group, 1):
+            location[source_index] = (segment_index, local_index)
+    manifest = []
+    for thumbnail_index, source_index in enumerate(source_order, 1):
+        segment_index, local_index = location[source_index]
+        manifest.append({
+            "thumbnail_index": thumbnail_index,
+            "source_frame_index": source_index,
+            "segment_index": segment_index,
+            "segment_local_index": local_index,
+            "source_seconds": (
+                round(float(frame_pts[source_index - 1]), 3)
+                if frame_pts is not None and len(frame_pts) == len(ordered)
+                else round(_reverse_frame_time(
+                    source_index, len(ordered), float(windows[-1][1]),
+                ), 3)
+            ),
+            "downstream_reference": source_index in references,
+        })
+    return {
+        "frames": [ordered[index - 1] for index in source_order],
+        "manifest": manifest,
+        "reference_thumbnail_indices": list(range(1, len(references) + 1)),
+        "audit_thumbnail_indices": list(
+            range(len(references) + 1, len(source_order) + 1)
+        ),
+        "segment_source_indices": groups,
+        "segment_model_source_indices": model_groups,
+    }
 
 
 def _coerce_reverse_segments(
@@ -946,6 +1309,8 @@ def _do_local_reverse(payload, upload_token):
     frame_dir = None
     try:
         _heartbeat(job_id, "extracting_frames")
+        frame_pts = None
+        reverse_timeline = None
         if media_type == "image":
             frames = [path]
             duration = 0
@@ -953,10 +1318,32 @@ def _do_local_reverse(payload, upload_token):
             duration = _probe_duration(path)
             if duration > 120.05:
                 raise ValueError("视频最长支持 2 分钟")
-            frame_dir, frames = _extract_frames(path, 8, duration or 30)
+            reverse_timeline = _authoritative_reverse_timeline(path, duration)
+            frame_dir, frames, frame_pts = _split_extracted_frames(
+                _extract_frames(
+                    path,
+                    8,
+                    duration or 30,
+                    scale_width=1024,
+                    min_frames=8,
+                    uniform=True,
+                    return_pts=True,
+                )
+            )
+            frames, frame_pts = _fill_reverse_window_frames(
+                path,
+                frame_dir,
+                frames,
+                frame_pts,
+                reverse_timeline["windows"],
+            )
         _heartbeat(job_id, "analyzing")
         return _reverse_from_frames(
             payload, frames, "", os.path.basename(path), "local", duration,
+            media_path=path if media_type == "video" else None,
+            media_mime=(mimetypes.guess_type(path)[0] or "video/mp4"),
+            frame_pts=frame_pts,
+            timeline=reverse_timeline,
         )
     finally:
         if frame_dir:
@@ -1272,39 +1659,162 @@ def _format_transcript(segs):
     return str(segs)
 
 
-def _extract_frames(video_path, count=6, duration=30):
-    """ffmpeg 抽帧：场景检测 + 均匀采样兜底。返回 (outdir, [paths])"""
+_SHOWINFO_PTS_PATTERN = re.compile(
+    r"pts_time:(-?[0-9]+(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?)"
+)
+
+
+def _parse_showinfo_pts(stderr_text):
+    points = []
+    for line in str(stderr_text or "").splitlines():
+        if "showinfo" not in line:
+            continue
+        match = _SHOWINFO_PTS_PATTERN.search(line)
+        if match:
+            points.append(float(match.group(1)))
+    return points
+
+
+def _showinfo_pts_from_completed(completed):
+    stderr = getattr(completed, "stderr", b"") or b""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", "replace")
+    return _parse_showinfo_pts(stderr)
+
+
+def _extract_frames(
+    video_path,
+    count=6,
+    duration=30,
+    scale_width=512,
+    min_frames=None,
+    uniform=False,
+    return_pts=False,
+):
+    """Extract frames and optionally bind each path to its real FFmpeg PTS."""
+    count = max(2, min(int(count or 2), 12))
+    scale_width = max(256, min(int(scale_width or 512), 2048))
     outdir = tempfile.mkdtemp()
-    subprocess.run(
-        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-         "-i", video_path,
-         "-vf", "select='gt(scene,0.15)',scale=512:-1",
-         "-vsync", "vfr", "-vframes", str(count),
-         "%s/frame_%%d.jpg" % outdir],
-        check=True, timeout=60,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    frames = sorted([os.path.join(outdir, f) for f in os.listdir(outdir)
-                     if f.endswith(".jpg")],
-                    key=lambda p: int(os.path.splitext(os.path.basename(p))[0].split("_")[-1]))
-    if len(frames) < max(3, count // 2):
-        shutil.rmtree(outdir)
+    points = []
+    if not uniform:
+        try:
+            completed = subprocess.run(
+                ["ffmpeg", "-y", "-hide_banner", "-loglevel", "info",
+                 "-i", video_path,
+                 "-vf", "select='gt(scene,0.15)',showinfo,scale=%d:-1"
+                 % scale_width,
+                 "-vsync", "vfr", "-vframes", str(count),
+                 "%s/frame_%%d.jpg" % outdir],
+                check=True, timeout=60,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            points = _showinfo_pts_from_completed(completed)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            pass
+    frames = sorted(
+        [os.path.join(outdir, name) for name in os.listdir(outdir)
+         if name.endswith(".jpg")],
+        key=lambda path: int(
+            os.path.splitext(os.path.basename(path))[0].split("_")[-1]
+        ),
+    )
+    minimum = (
+        max(2, min(int(min_frames), count))
+        if min_frames is not None else max(3, count // 2)
+    )
+    if len(frames) < minimum:
+        shutil.rmtree(outdir, ignore_errors=True)
         outdir = tempfile.mkdtemp()
         fps = max(float(count) / max(float(duration or 1), 1.0), 0.001)
-        subprocess.run(
-            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-             "-i", video_path,
-             "-vf", "fps=%.6f,scale=512:-1" % fps,
-             "-vframes", str(count),
-             "%s/frame_%%d.jpg" % outdir],
-            check=True, timeout=60,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        frames = sorted([os.path.join(outdir, f) for f in os.listdir(outdir)
-                         if f.endswith(".jpg")],
-                        key=lambda p: int(os.path.splitext(os.path.basename(p))[0].split("_")[-1]))
+        try:
+            completed = subprocess.run(
+                ["ffmpeg", "-y", "-hide_banner", "-loglevel", "info",
+                 "-i", video_path,
+                 "-vf", "fps=%.6f,showinfo,scale=%d:-1"
+                 % (fps, scale_width),
+                 "-vframes", str(count),
+                 "%s/frame_%%d.jpg" % outdir],
+                check=True, timeout=60,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            points = _showinfo_pts_from_completed(completed)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            points = []
+        frames = sorted(
+            [os.path.join(outdir, name) for name in os.listdir(outdir)
+             if name.endswith(".jpg")],
+            key=lambda path: int(
+                os.path.splitext(os.path.basename(path))[0].split("_")[-1]
+            ),
+        )
     if not frames:
         shutil.rmtree(outdir, ignore_errors=True)
         raise ValueError("视频未能提取有效关键帧，请检查视频内容后重试")
+    if len(points) != len(frames):
+        points = [
+            index * float(duration or len(frames)) / max(len(frames), 1)
+            for index in range(len(frames))
+        ]
+    if return_pts:
+        return outdir, frames, points
     return outdir, frames
+
+
+def _split_extracted_frames(extracted):
+    if len(extracted) == 3:
+        return extracted[0], list(extracted[1]), list(extracted[2])
+    return extracted[0], list(extracted[1]), None
+
+
+def _fill_reverse_window_frames(
+    video_path, frame_dir, frames, frame_pts, windows, scale_width=1024,
+):
+    """Resample inside an empty window; never remap another shot's evidence."""
+    ordered = list(frames or [])
+    if frame_pts is None or not ordered or not windows:
+        return ordered, frame_pts
+    points = [float(value) for value in frame_pts]
+    if len(points) != len(ordered):
+        return ordered, frame_pts
+    groups = _group_reverse_frame_indices(
+        len(ordered), windows, frame_pts=points,
+    )
+    if not groups or all(groups):
+        return ordered, points
+    scale_width = max(256, min(int(scale_width or 1024), 2048))
+    directory = frame_dir or os.path.dirname(ordered[0])
+    for window_index, group in enumerate(groups):
+        if group:
+            continue
+        start = float(windows[window_index][0])
+        end = float(windows[window_index][1])
+        output = os.path.join(
+            directory, "frame_window_%d.jpg" % (window_index + 1),
+        )
+        try:
+            completed = subprocess.run(
+                ["ffmpeg", "-y", "-hide_banner", "-loglevel", "info",
+                 "-ss", "%.3f" % start, "-to", "%.3f" % end,
+                 "-i", video_path,
+                 "-vf", "scale=%d:-1,showinfo" % scale_width,
+                 "-frames:v", "1", output],
+                check=True, timeout=30,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            continue
+        if not os.path.isfile(output):
+            continue
+        showinfo = _showinfo_pts_from_completed(completed)
+        at_seconds = start + showinfo[0] if showinfo else (start + end) / 2.0
+        if not start <= at_seconds < end:
+            at_seconds = (start + end) / 2.0
+        position = 0
+        while position < len(points) and points[position] <= at_seconds:
+            position += 1
+        ordered.insert(position, output)
+        points.insert(position, at_seconds)
+    return ordered, points
 
 
 def _chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7, max_tokens=None):

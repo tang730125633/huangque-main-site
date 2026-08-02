@@ -19,6 +19,8 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from content_domains.image_mentions import resolve_image_mentions, validate_image_mentions
+
 try:
     from content_domains import feature_flags
 except ImportError:
@@ -127,6 +129,8 @@ BASE_COST   = {"nb2": {"std": 18, "hd": 35}, "pro": {"std": 35, "hd": 44}}
 IMAGE_SIZES = {"nb2": {"std": "1K", "hd": "2K"}, "pro": {"std": "2K", "hd": "4K"}}
 RATIOS = {"1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"}
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_REFERENCE_IMAGES = 14
+MAX_REFERENCE_TOTAL_BYTES = 48 * 1024 * 1024
 
 def _clean_b64(value):
     raw = (value or "").strip()
@@ -169,7 +173,27 @@ def validate_banana_payload(body):
         raise ValueError("count 必须是 1、2 或 4")
     if count not in {1, 2, 4}:
         raise ValueError("count 必须是 1、2 或 4")
+    if body.get("image") and body.get("reference_images") is not None:
+        raise ValueError("image 与 reference_images 不能同时传；多图请统一使用 reference_images")
     _validate_b64_image(body, "image")
+    refs = body.get("reference_images")
+    if refs is not None:
+        if not isinstance(refs, list) or not refs:
+            raise ValueError("reference_images 必须是非空图片数组")
+        if len(refs) > MAX_REFERENCE_IMAGES:
+            raise ValueError("Nano Banana 最多支持 14 张参考图")
+        cleaned, total = [], 0
+        for index, value in enumerate(refs, 1):
+            one = {"image": value}
+            _validate_b64_image(one, "image")
+            if not one.get("image"):
+                raise ValueError("第%d张参考图不能为空" % index)
+            total += len(base64.b64decode(one["image"]))
+            cleaned.append(one["image"])
+        if total > MAX_REFERENCE_TOTAL_BYTES:
+            raise ValueError("参考图合计不能超过 48MB")
+        body["reference_images"] = cleaned
+    validate_image_mentions(prompt, len(body.get("reference_images") or ([] if not body.get("image") else [body["image"]])))
     body["prompt"] = prompt
     body["model"] = mkey
     body["ratio"] = ratio
@@ -270,10 +294,10 @@ def verify(token):
 
 
 # ============ Nano Banana / Gemini image generation ============
-def _build_banana_body(prompt, ratio, image=None, image_size=None):
+def _build_banana_body(prompt, ratio, images=None, image_size=None):
     """Build Gemini generateContent request body."""
     parts = []
-    if image:
+    for image in images or []:
         # Frontend sends uploaded/reference/result images as PNG base64.
         parts.append({"inlineData": {"mimeType": "image/png", "data": image}})
     parts.append({"text": prompt})
@@ -308,24 +332,26 @@ def _banana_one(model, body, idx, ratio=None):
 # ============ worker锛堝け璐ラ€€鐐癸紱娓呴亾澶敱 content_api 缁熶竴璺戯級 ============
 def gen_banana(payload):
     payload = validate_banana_payload(payload)
-    prompt = payload["prompt"]
+    user_prompt = payload["prompt"]
     mkey = payload["model"]
     model = MODELS[mkey]
     ratio = payload["ratio"]
     image = payload.get("image")
+    images = list(payload.get("reference_images") or ([] if not image else [image]))
+    prompt = resolve_image_mentions(user_prompt, len(images))
     q = payload["quality"]
     image_size = IMAGE_SIZES[mkey][q]
     count = payload["count"]
     if not GEMINI_KEY:
         raise ValueError("GEMINI_API_KEY 未配置")
-    body = json.dumps(_build_banana_body(prompt, ratio, image, image_size)).encode()
+    body = json.dumps(_build_banana_body(prompt, ratio, images, image_size)).encode()
     items = [_banana_one(model, body, i, ratio) for i in range(count)]
     files = [fn for fn, _ in items]
     dimensions = [dim for _, dim in items if dim]
     urls = [_public_url(f, "image/png") for f in files]
-    result = {"type": "image", "mode": ("nanobanana_img2img_" if image else "nanobanana_") + mkey, "model": model,
+    result = {"type": "image", "mode": ("nanobanana_img2img_" if images else "nanobanana_") + mkey, "model": model,
             "image_size": image_size, "quality": q, "count": count, "file": files[0], "url": urls[0],
-            "files": files, "urls": urls, "ratio": ratio, "prompt": prompt}
+            "files": files, "urls": urls, "ratio": ratio, "prompt": user_prompt}
     if dimensions:
         result["width"] = dimensions[0]["width"]
         result["height"] = dimensions[0]["height"]

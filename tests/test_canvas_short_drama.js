@@ -1126,6 +1126,86 @@ async function testProductionWorkspaceCanReturnToPhaseOneReview() {
   assert.equal(destroys, 2);
 }
 
+async function testScriptSaveIgnoresDialogueActionControls() {
+  const project = workspaceProject({ stage: 'script_review' });
+  const script = project.script_versions[0];
+  const field = (value) => ({ value });
+  const formFields = Object.fromEntries(
+    ['title', 'logline', 'hook', 'conflict_text', 'turn_text', 'ending']
+      .map((name) => [`[data-field="${name}"]`, field(script[name])]),
+  );
+  const dialogueFields = {
+    '[data-field="id"]': field('line-1'),
+    '[data-field="character_key"]': field('visitor'),
+    '[data-field="text"]': field('我只有五分钟。'),
+  };
+  const dialogueCard = {
+    className: 'nc-short-drama-dialogue',
+    getAttribute(name) { return name === 'data-dialogue-index' ? '0' : null; },
+    querySelector(selector) { return dialogueFields[selector] || null; },
+  };
+  const copyButton = {
+    className: 'copy-dialogue',
+    getAttribute(name) {
+      if (name === 'data-dialogue-index') return '0';
+      if (name === 'data-action') return 'copy-dialogue';
+      return null;
+    },
+    querySelector() { return null; },
+  };
+  const scriptForm = {
+    querySelector(selector) { return formFields[selector] || null; },
+    querySelectorAll(selector) {
+      if (selector === '.nc-short-drama-dialogue[data-dialogue-index]') return [dialogueCard];
+      if (selector === '[data-dialogue-index]') return [dialogueCard, copyButton];
+      return [];
+    },
+  };
+  let clickHandler = null;
+  let savedPatch = null;
+  let resolveSaved;
+  const saved = new Promise((resolve) => { resolveSaved = resolve; });
+  const body = {
+    appendChild(node) { node.parentNode = body; },
+    removeChild(node) { if (node.parentNode === body) node.parentNode = null; },
+  };
+  const host = {
+    innerHTML: '', parentNode: null,
+    addEventListener(type, handler) { if (type === 'click') clickHandler = handler; },
+    removeEventListener() {},
+    querySelector(selector) {
+      return selector === '.nc-short-drama-script-form' ? scriptForm : null;
+    },
+  };
+  const document = { body, createElement() { return host; } };
+  const client = {
+    get() { return Promise.resolve(project); },
+    update(id, revision, patch) {
+      savedPatch = patch;
+      resolveSaved();
+      return Promise.resolve(Object.assign({}, project, { revision: revision + 1 }));
+    },
+    confirm() { throw new Error('unexpected confirmation'); },
+    generatePlan() { throw new Error('unexpected paid generation'); },
+  };
+  const workspace = shortDrama.createWorkspace({ projectId: project.id, client, document });
+  await workspace.ready;
+  const saveButton = {
+    parentNode: host,
+    getAttribute(name) { return name === 'data-action' ? 'save-script' : null; },
+  };
+  clickHandler({ target: saveButton });
+  await saved;
+  assert.equal(scriptForm.querySelectorAll('[data-dialogue-index]').length, 2,
+    'fixture contains both a real dialogue card and an indexed action control');
+  assert.deepEqual(savedPatch.script.dialogue_lines, [{
+    id: 'line-1', character_key: 'visitor', text: '我只有五分钟。',
+  }], 'saved payload contains only the real dialogue card');
+  assert.deepEqual(Object.keys(savedPatch.script.dialogue_lines[0]).sort(),
+    ['character_key', 'id', 'text'], 'saved payload keeps the existing backend contract');
+  workspace.destroy();
+}
+
 async function testBrowserGlobalProductionModuleFallbacks() {
   const source = fs.readFileSync(
     path.join(__dirname, '..', 'site', 'workbench', 'canvas', 'canvas-short-drama.js'),
@@ -2017,6 +2097,7 @@ async function main() {
   await testTerminalJobFailureDoesNotApplyPlan();
   testMissingPollFailsClearly();
   await testWorkspaceSourceAndRenderContract();
+  await testScriptSaveIgnoresDialogueActionControls();
   await testProductionWorkspaceCanReturnToPhaseOneReview();
   await testBrowserGlobalProductionModuleFallbacks();
   testWorkspacePureStateAndPayloadHelpers();

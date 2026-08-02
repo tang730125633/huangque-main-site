@@ -55,6 +55,50 @@ class AuthUserInsightsTests(unittest.TestCase):
                        who_admin,username,delta,before_points,after_points,reason,created_at
                    ) VALUES('system','alice',-10,110,100,'job:image',30)"""
             )
+            alice_id = c.execute(
+                "SELECT id FROM users WHERE username='alice'",
+            ).fetchone()[0]
+            bob_id = c.execute(
+                "SELECT id FROM users WHERE username='bob'",
+            ).fetchone()[0]
+            campaign_id = c.execute("SELECT id FROM invite_campaigns LIMIT 1").fetchone()[0]
+            relation_id = c.execute(
+                """INSERT INTO user_invites(
+                       campaign_id,inviter_user_id,invitee_user_id,invite_code,source,
+                       status,risk_status,bound_at,updated_at
+                   ) VALUES(?,?,?,'ABC234','test','bound','normal',40,40)""",
+                (campaign_id, alice_id, bob_id),
+            ).lastrowid
+            first_upgrade = c.execute(
+                """INSERT INTO membership_upgrade_records(
+                       user_id,from_level,to_level,source,source_order_id,status,created_at
+                   ) VALUES(?,'','experience','test','reward-1','effective',41)""",
+                (bob_id,),
+            ).lastrowid
+            second_upgrade = c.execute(
+                """INSERT INTO membership_upgrade_records(
+                       user_id,from_level,to_level,source,source_order_id,status,created_at
+                   ) VALUES(?,'experience','partner','test','reward-2','effective',42)""",
+                (bob_id,),
+            ).lastrowid
+            c.execute(
+                """INSERT INTO invite_reward_point_records(
+                       invite_relation_id,upgrade_record_id,inviter_user_id,invitee_user_id,
+                       inviter_level_snapshot,invitee_level,reward_points,reward_total_after,
+                       status,created_at
+                   ) VALUES(?,?,?,?, 'partner','experience',240,240,'recorded',41)""",
+                (relation_id, first_upgrade, alice_id, bob_id),
+            )
+            c.execute(
+                """INSERT INTO invite_reward_point_records(
+                       invite_relation_id,upgrade_record_id,inviter_user_id,invitee_user_id,
+                       inviter_level_snapshot,invitee_level,reward_points,reward_total_after,
+                       status,created_at,voided_at,void_reason,voided_by
+                   ) VALUES(?,?,?,?, 'partner','partner',1260,1500,'voided',42,43,
+                            '测试作废','admin')""",
+                (relation_id, second_upgrade, alice_id, bob_id),
+            )
+        c.close()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -100,6 +144,24 @@ class AuthUserInsightsTests(unittest.TestCase):
         self.assertEqual(data["payments"]["paid_amount_fen"], 59800)
         self.assertEqual(data["payments"]["pending_count"], 2)
         self.assertEqual(data["ledger"]["summary"]["debits"], 10)
+        self.assertEqual(data["invite_rewards"]["recorded_points"], 240)
+        self.assertEqual(data["invite_rewards"]["voided_points"], 1260)
+        self.assertEqual(data["invite_rewards"]["total"], 2)
+        self.assertEqual(
+            [item["invitee_username"] for item in data["invite_rewards"]["items"]],
+            ["bob", "bob"],
+        )
+        self.assertIsNone(data["invite_relations"]["referrer"])
+        self.assertEqual(data["invite_relations"]["invitees"]["total"], 1)
+        self.assertEqual(
+            data["invite_relations"]["invitees"]["items"][0]["username"], "bob",
+        )
+        bob = self.auth.admin_user_insights("bob")
+        self.assertEqual(bob["invite_relations"]["referrer"]["username"], "alice")
+        self.assertEqual(bob["invite_relations"]["invitees"]["total"], 0)
+        self.assertEqual(
+            bob["invite_rewards"]["total"], 0,
+        )
         self.assertIsNone(self.auth.admin_user_insights("missing"))
 
     def test_notification_admin_boundary_and_user_isolation(self):
@@ -136,6 +198,35 @@ class AuthUserInsightsTests(unittest.TestCase):
         notice, err = self.auth.create_user_notification("alice", "标题", "x" * 1001, "admin")
         self.assertIsNone(notice)
         self.assertEqual(err, "detail_too_long")
+
+    def test_password_reset_requires_admin_and_revokes_existing_sessions(self):
+        admin = self.client("admin")
+        alice = self.client("alice")
+        with self.assertRaises(urllib.error.HTTPError) as no_internal:
+            self.post(admin, "/api/auth/admin/password/reset", {
+                "username": "alice", "new_password": "temporary456",
+            })
+        self.assertEqual(no_internal.exception.code, 403)
+        with self.assertRaises(urllib.error.HTTPError) as not_admin:
+            self.post(alice, "/api/auth/admin/password/reset", {
+                "username": "alice", "new_password": "temporary456",
+            }, internal=True)
+        self.assertEqual(not_admin.exception.code, 403)
+
+        reset = self.post(admin, "/api/auth/admin/password/reset", {
+            "username": "alice", "new_password": "temporary456",
+        }, internal=True)
+        self.assertTrue(reset["reset"]["must_change"])
+        with self.assertRaises(urllib.error.HTTPError) as revoked:
+            self.get(alice, "/api/auth/me")
+        self.assertEqual(revoked.exception.code, 401)
+        with self.assertRaises(urllib.error.HTTPError) as old_password:
+            self.post(alice, "/api/auth/login", {"username": "alice", "password": "secret123"})
+        self.assertEqual(old_password.exception.code, 401)
+        relogin = self.post(alice, "/api/auth/login", {
+            "username": "alice", "password": "temporary456",
+        })
+        self.assertTrue(relogin["user"]["must_change"])
 
 
 class AdminTaskInsightsTests(unittest.TestCase):
@@ -186,12 +277,37 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
         for marker in (
             'id="userDetailBox"', 'data-act="detail"', 'data-act="notice"',
             "/api/admin/users/detail?username=", "/api/admin/users/notification",
-            "noticeSending",
+            "noticeSending", 'id="detailPassword"', 'type="password" minlength="6" maxlength="128"',
+            "/api/admin/users/password/reset", "invite_rewards", "inviteRewardRows",
+            "invite_relations", "inviteRelationRows", "邀请关系", "直接邀请用户",
+            "邀请奖励明细", "有效奖励", "已作废奖励",
         ):
             self.assertIn(marker, html)
         self.assertIn("/api/auth/notifications?limit=50", shell)
         self.assertIn("server-notice-", shell)
         self.assertIn("escapeHtml(x.title)", shell)
+
+    def test_support_layout_uses_sidebar_dashboard_and_customer_drawer(self):
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "site/admin/index.html").read_text(encoding="utf-8")
+        for marker in (
+            'class="admin-sidebar"', 'data-module-tab="dashboard"',
+            'data-module-tab="users"', 'data-module-tab="logs"',
+            'data-module-tab="recharge"', 'data-module-tab="points"',
+            'data-module-tab="invite"', 'data-module-tab="inspirations"',
+            'data-module-tab="services"', 'data-module-tab="channels"',
+            'data-module-tab="features"', 'data-module="dashboard"',
+            'id="globalUserSearch"', 'id="customerLayer"',
+            "/api/admin/activity?limit=8", "/api/admin/recharge/orders?status=pending",
+            "module:'dashboard'", "aria-current", "/workbench/hq-icons-duotone.js",
+            'class="side-nav-icon"', "prefers-reduced-motion:reduce",
+            "dashboard:'home'", "users:'users'", "logs:'clock'", "recharge:'coins'",
+            "points:'trend'", "invite:'userPlus'", "inspirations:'sparkles'",
+            "services:'checkCircle'", "channels:'lock'", "features:'sliders'",
+        ):
+            self.assertIn(marker, html)
+        self.assertNotIn('data-module-tab="ops"', html)
+        self.assertNotIn('class="module-tabs', html)
 
 
 if __name__ == "__main__":

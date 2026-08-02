@@ -68,6 +68,65 @@ def _upload(identifier, name, description, scope):
 
 STRING_ID = {"type": "string", "minLength": 1, "maxLength": 160}
 LIMIT = {"type": "integer", "minimum": 1, "maximum": 120}
+CANVAS_AGENT_NODE_ID = {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"}
+CANVAS_OP_NODE_ID = {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"}
+CANVAS_AGENT_FIELDS = {
+    "prompt": {"type": "string", "minLength": 1, "maxLength": 2000,
+               "description": "可用 @图片1、@图片2 按 reference_upload_ids 顺序引用"},
+    "project_id": {"type": "string", "pattern": "^(local|collab):[A-Za-z0-9_-]{1,120}$"},
+    "snapshot_digest": {"type": "string", "pattern": "^[a-f0-9]{8,32}$"},
+    "scope": {"type": "string", "enum": ["local", "collab"]},
+    "nodes": {"type": "array", "maxItems": 60, "items": _schema({
+        "id": CANVAS_AGENT_NODE_ID,
+        "type": {"type": "string", "enum": ["text", "image", "reverse", "gen", "video", "shortDrama"]},
+        "title": {"type": "string", "maxLength": 120},
+        "content": {"type": "string", "maxLength": 5000},
+        "selected": {"type": "boolean"},
+    }, ["id", "type", "title", "content", "selected"])},
+    "edges": {"type": "array", "maxItems": 120, "items": _schema({
+        "from_node_id": CANVAS_AGENT_NODE_ID, "to_node_id": CANVAS_AGENT_NODE_ID,
+    }, ["from_node_id", "to_node_id"])},
+    "selected_node_ids": {"type": "array", "maxItems": 30, "items": CANVAS_AGENT_NODE_ID},
+    "history": {"type": "array", "maxItems": 10, "items": _schema({
+        "role": {"type": "string", "enum": ["user", "assistant"]},
+        "content": {"type": "string", "maxLength": 2000},
+    }, ["role", "content"])},
+}
+CANVAS_PARAMS = _schema({
+    "title": {"type": "string", "maxLength": 120},
+    "text": {"type": "string", "maxLength": 5000},
+})
+CANVAS_PARAMS["minProperties"] = 1
+CANVAS_CREATE_PARAMS = _schema({
+    "title": {"type": "string", "maxLength": 120},
+    "text": {"type": "string", "minLength": 1, "maxLength": 5000},
+}, ["text"])
+CANVAS_ENDPOINT = _schema({
+    "node": CANVAS_OP_NODE_ID, "port": {"type": "string", "enum": ["prompt", "image"]},
+}, ["node", "port"])
+CANVAS_OPS = {
+    "type": "array", "minItems": 1, "maxItems": 12, "items": {"oneOf": [
+        _schema({
+            "type": {"type": "string", "const": "node.create"},
+            "node": _schema({
+                "id": CANVAS_OP_NODE_ID, "type": {"type": "string", "enum": ["text", "gen", "video"]},
+                "x": {"type": "number", "minimum": 0, "maximum": 100000},
+                "y": {"type": "number", "minimum": 0, "maximum": 100000}, "params": CANVAS_CREATE_PARAMS,
+            }, ["id", "type", "x", "y", "params"]),
+        }, ["type", "node"]),
+        _schema({
+            "type": {"type": "string", "const": "node.patch"}, "id": CANVAS_OP_NODE_ID,
+            "fields": {**_schema({
+                "x": {"type": "number", "minimum": 0, "maximum": 100000},
+                "y": {"type": "number", "minimum": 0, "maximum": 100000}, "params": CANVAS_PARAMS,
+            }), "minProperties": 1},
+        }, ["type", "id", "fields"]),
+        _schema({
+            "type": {"type": "string", "const": "edge.create"},
+            "edge": _schema({"from": CANVAS_ENDPOINT, "to": CANVAS_ENDPOINT}, ["from", "to"]),
+        }, ["type", "edge"]),
+    ]},
+}
 
 CAPABILITIES = {}
 for item in (
@@ -130,6 +189,32 @@ CAPABILITIES["canvas-create"] = _api(
     {"name": {"type": "string", "minLength": 1, "maxLength": 48},
      "prompt": {"type": "string", "minLength": 0, "maxLength": 2000}},
     ["name"], "canvas:write", "write", True)
+CAPABILITIES["canvas-agent-plan"] = _api(
+    "canvas-agent-plan", "画布 Agent 规划", "canvas-agent-plan",
+    "把严格裁剪的画布文本快照发送给 AI；先报价，确认后扣点并返回可审核的操作方案，不自动修改画布。",
+    CANVAS_AGENT_FIELDS,
+    ["prompt", "project_id", "snapshot_digest", "scope", "nodes", "edges", "selected_node_ids"],
+    "canvas:agent", "paid", True,
+    {"kind": "server_quote", "unit": "points", "confirmation": "quote_token + --confirm"},
+)
+CAPABILITIES["canvas-agent-plan"]["next_actions"] = [
+    "用 task 轮询 job_id；审核 result.plan.actions 后，再转换为 canvas-ops 并单独确认写入。",
+]
+CAPABILITIES["canvas-ops"] = _api(
+    "canvas-ops", "写入画布操作", "canvas-ops",
+    "向本人有编辑权限的协作画布提交最多 12 个非破坏性操作；不支持删除、整体覆盖或执行生成。",
+    {
+        "board_id": STRING_ID,
+        "base_version": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807},
+        "op_id": {"type": "string", "pattern": "^hqcli-[A-Za-z0-9_-]{11,122}$"},
+        "ops": CANVAS_OPS,
+    }, ["board_id", "base_version", "op_id", "ops"], "canvas:edit", "write", True,
+)
+CAPABILITIES["canvas-ops"]["constraints"] = [
+    "Only node.create, node.patch, and edge.create are accepted",
+    "Allowed created node types: text, gen, video",
+    "Delete, generated outputs, board snapshots, members, and scripts are rejected",
+]
 CAPABILITIES["tasks"] = _api(
     "tasks", "任务列表", "tasks", "按账号读取生成任务、状态、扣点和退款结果。",
     {"days": {"type": "integer", "minimum": 1, "maximum": 365},
@@ -177,17 +262,20 @@ IMAGE_FIELDS = {
     "variant": {"type": "string", "enum": ["std", "pro"]},
     "image_upload_id": {"type": "string", "minLength": 36, "maxLength": 36},
     "mask_upload_id": {"type": "string", "minLength": 36, "maxLength": 36},
-    "reference_upload_ids": {"type": "array", "maxItems": 4,
+    "reference_upload_ids": {"type": "array", "maxItems": 16,
                              "items": {"type": "string", "minLength": 36, "maxLength": 36}},
 }
 VIDEO_FIELDS = {
-    "prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
+    "prompt": {"type": "string", "minLength": 1, "maxLength": 2000,
+               "description": "可用 @图片1、@图片2 按 reference_upload_ids 顺序引用"},
     "channel": {"type": "string", "enum": ["grok", "micro", "omni"]},
     "ratio": {"type": "string", "enum": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"]},
     "duration": {"type": "integer", "minimum": 1, "maximum": 15},
     "resolution": {"type": "string", "enum": ["480p", "720p", "1080p"]},
     "model": {"type": "string", "enum": ["grok-imagine-video", "grok-imagine-video-1.5"]},
     "generate_audio": {"type": "boolean"},
+    "reference_upload_ids": {"type": "array", "maxItems": 9,
+                             "items": {"type": "string", "minLength": 36, "maxLength": 36}},
 }
 AUDIO_FIELDS = {
     "text": {"type": "string", "minLength": 1, "maxLength": 1000},
@@ -211,8 +299,12 @@ for identifier, name, fields, required in (
 
 CAPABILITIES["image-generate"]["constraints"] = [
     "image_upload_id and reference_upload_ids are mutually exclusive",
-    "reference_upload_ids requires provider=xiaole and accepts 1-4 items",
+    "reference_upload_ids limits: openai=16, seedream=10, xiaole=4",
     "mask_upload_id requires image_upload_id, provider=openai, PNG mask, and count=1",
+]
+CAPABILITIES["video-generate"]["constraints"] = [
+    "reference_upload_ids limits: grok=7, micro=9, omni=6",
+    "@图片N references the Nth item in reference_upload_ids",
 ]
 
 

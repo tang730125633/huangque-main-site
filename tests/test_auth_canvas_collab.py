@@ -336,8 +336,16 @@ class AuthCanvasCollabTests(unittest.TestCase):
         duplicate = self._ops(
             board["id"],
             "same-batch",
-            [{"type": "node.patch", "id": "n1", "fields": {"title": "twice"}}],
+            [{"type": "node.patch", "id": "n1", "fields": {"title": "once"}}],
         )
+        with self.assertRaises(urllib.error.HTTPError) as reused:
+            self._ops(
+                board["id"],
+                "same-batch",
+                [{"type": "node.patch", "id": "n1", "fields": {"title": "twice"}}],
+            )
+        self.assertEqual(409, reused.exception.code)
+        self.assertEqual("idempotency_conflict", json.loads(reused.exception.read())["code"])
         second = self._ops(
             board["id"],
             "next-batch",
@@ -604,12 +612,9 @@ class AuthCanvasCollabTests(unittest.TestCase):
             ],
         }
 
-        with self.assertRaises((urllib.error.HTTPError, urllib.error.URLError)) as oversized:
+        with self.assertRaises(urllib.error.HTTPError) as oversized:
             self._post("/api/auth/canvas/boards/%s/ops" % board["id"], payload)
-        if isinstance(oversized.exception, urllib.error.HTTPError):
-            self.assertEqual(oversized.exception.code, 413)
-        else:
-            self.assertIsInstance(oversized.exception.reason, BrokenPipeError)
+        self.assertEqual(oversized.exception.code, 413)
 
         current = self._get("/api/auth/canvas/boards/%s" % board["id"])["board"]
         self.assertEqual(current["version"], 1)

@@ -25,21 +25,36 @@ def _idx(needle):
 
 class SmokeImportTests(unittest.TestCase):
     def test_auth_dependencies_are_deployed_and_monitored(self):
-        self.assertIn("server/auth_server.py|server/hq_cli_api.py|server/invites.py|server/wxpay.py", SRC)
+        drift = (ROOT / "scripts/drift_sentinel.py").read_text(encoding="utf-8")
+        self.assertIn("server/auth_server.py|server/hq_cli_api.py|server/invites.py|server/business_cards.py|server/wxpay.py", SRC)
         self.assertIn(
             "'server/invites.py': '/home/ubuntu/auth-service/invites.py'",
-            (ROOT / "scripts/drift_sentinel.py").read_text(encoding="utf-8"),
+            drift,
         )
         self.assertIn(
             "'server/hq_cli_api.py': '/home/ubuntu/auth-service/hq_cli_api.py'",
-            (ROOT / "scripts/drift_sentinel.py").read_text(encoding="utf-8"),
+            drift,
         )
+        self.assertIn(
+            "'server/business_cards.py': '/home/ubuntu/auth-service/business_cards.py'",
+            drift,
+        )
+        for name in ("__init__.py", "cos.py", "miniprogram_security.py"):
+            self.assertIn(
+                "'server/content_domains/%s': '/home/ubuntu/auth-service/content_domains/%s'" % (name, name),
+                drift,
+            )
+        self.assertIn("runtimes = git_path_to_runtimes(gp)", drift)
         self.assertIn(
             '"$R"/server/invites.py',
             (ROOT / "deploy/setup-dev-server.sh").read_text(encoding="utf-8"),
         )
         self.assertIn(
             '"$R"/server/hq_cli_api.py',
+            (ROOT / "deploy/setup-dev-server.sh").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            '"$R"/server/business_cards.py',
             (ROOT / "deploy/setup-dev-server.sh").read_text(encoding="utf-8"),
         )
 

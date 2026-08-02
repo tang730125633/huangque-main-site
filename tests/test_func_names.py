@@ -162,10 +162,10 @@ class NamesMatchTheProductTests(unittest.TestCase):
 
     def test_the_image_engine_names_use_the_ui_labels(self):
         """UI 品牌名与日志必须一致，不能泄露上游原模型名。"""
-        for name in ("黄雀引擎 2", "黄雀引擎 1", "果肉生图", "泽龙专用生图", "纳米香蕉"):
+        for name in ("黄雀引擎 2", "黄雀引擎 1", "果肉生图", "泽龙2生图", "纳米香蕉"):
             self.assertIn(name, self.BANANA_HTML, "「%s」不是 banana.html 里的引擎标签" % name)
         self.assertEqual(F.func_name("image", {}), "作图 · 黄雀引擎 2")          # gpt 不发 provider
-        self.assertEqual(F.func_name("image", {"provider": "zelong2"}), "作图 · 泽龙专用生图")
+        self.assertEqual(F.func_name("image", {"provider": "zelong2"}), "作图 · 泽龙2生图")
         self.assertEqual(F.func_name("image", {"model": "nb2"}), "作图 · 纳米香蕉 2")
         self.assertEqual(F.func_name("image", {"provider": "seedream", "variant": "pro"}),
                          "作图 · 黄雀引擎 1 Pro")
