@@ -631,12 +631,24 @@ def comments(platform, id_or_url, cursor=None, count=20, fresh=False):
 def _http_get(url, max_bytes=26_000_000, timeout=60):
     """⚠ timeout 只管单次 socket 读：慢 CDN 每次都在 timeout 内吐一点数据就能无限续命，
     总耗时不受控。要硬上限请用 http_get_budgeted()。此函数保留给小文件(字幕等)。"""
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    req = urllib.request.Request(url, headers=cdn_headers(url))
     with _OPENER.open(req, timeout=timeout) as r:  # CDN 直连，绕过环境代理
         return r.read(max_bytes)
 
 # ASR 下载预算：下载顶过 reaper 判死线会导致「判死退点 → worker 又写回 done」的双发事故
 ASR_DL_DEADLINE = int(os.environ.get("ASR_DOWNLOAD_DEADLINE", "120"))
+
+DOUYIN_CDN_SUFFIXES = (
+    "zjcdn.com", "douyinvod.com", "douyinstatic.com", "douyinpic.com", "amemv.com",
+    "bytecdn.cn", "ixigua.com", "pstatp.com", "snssdk.com", "byteimg.com",
+    "bytedance.net", "lf-douyin.com", "365yg.com",
+)
+
+def cdn_headers(url):
+    headers = {"User-Agent": UA}
+    if (urllib.parse.urlparse(url).hostname or "").lower().endswith(DOUYIN_CDN_SUFFIXES):
+        headers["Referer"] = "https://www.douyin.com/"
+    return headers
 
 def download_to_file(url, deadline_ts, dest_path, max_bytes=26_000_000, read_timeout=30):
     """流式下载到文件，内存恒定（一次只驻留 256KB）。返回落盘字节数。
@@ -648,7 +660,7 @@ def download_to_file(url, deadline_ts, dest_path, max_bytes=26_000_000, read_tim
     remain = deadline_ts - time.time()
     if remain <= 0:
         raise TimeoutError("下载预算已耗尽")
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    req = urllib.request.Request(url, headers=cdn_headers(url))
     got = 0
     with _OPENER.open(req, timeout=min(read_timeout, remain)) as r, open(dest_path, "wb") as f:
         declared = r.headers.get("Content-Length")
@@ -677,7 +689,7 @@ def http_get_budgeted(url, deadline_ts, max_bytes=26_000_000, read_timeout=30):
     remain = deadline_ts - time.time()
     if remain <= 0:
         raise TimeoutError("下载预算已耗尽")
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    req = urllib.request.Request(url, headers=cdn_headers(url))
     with _OPENER.open(req, timeout=min(read_timeout, remain)) as r:  # CDN 直连，绕过环境代理
         declared = r.headers.get("Content-Length")
         if declared and int(declared) > max_bytes:
