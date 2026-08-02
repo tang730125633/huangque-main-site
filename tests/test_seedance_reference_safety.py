@@ -389,7 +389,7 @@ class SeedanceReferenceSafetyTests(unittest.TestCase):
             self.assertEqual("new", submission_idempotency.begin(
                 core.jdb, "fang", endpoint, idem_key, request)[0])
 
-    def test_restart_never_aborts_attempt_after_charge_boundary(self):
+    def test_restart_releases_attempt_crashed_before_deduct_call(self):
         import sqlite3
         import tempfile
         from contextlib import closing as _closing
@@ -397,6 +397,19 @@ class SeedanceReferenceSafetyTests(unittest.TestCase):
 
         endpoint, idem_key = "/api/gen/xiaole-video", "charging-boundary-123"
         request = {"channel": "micro", "reference_images": ["data:image/png;base64,AA=="]}
+        staged = {"channel": "micro", "_seedance_staged_keys": ["before-deduct-key"]}
+
+        class Points:
+            refunds = []
+
+            @staticmethod
+            def get_points_transaction(_transaction_key):
+                return None
+
+            @classmethod
+            def refund_points(cls, *_args, **_kwargs):
+                cls.refunds.append((_args, _kwargs))
+
         with tempfile.TemporaryDirectory() as td, \
              patch.object(core, "JOB_DB", str(Path(td) / "jobs.db")), \
              patch.object(self.video, "_cleanup_table_ready", False):
@@ -404,13 +417,76 @@ class SeedanceReferenceSafetyTests(unittest.TestCase):
                 core.jdb, "fang", endpoint, idem_key, request)[0])
             self.video._reserve_seedance_staging_attempt("fang", endpoint, idem_key)
             self.video._mark_seedance_staging_attempt_ready("fang", endpoint, idem_key)
-            self.video.mark_seedance_reference_charging("fang", endpoint, idem_key)
+            self.video._persist_staging_cleanup_intent("before-deduct-key")
+            self.video.mark_seedance_reference_charging(
+                "fang", endpoint, idem_key, "xiaole_video", 150, staged,
+                "content", "job-charge:before-deduct")
             with _closing(sqlite3.connect(core.JOB_DB)) as db:
                 db.execute("UPDATE seedance_staging_attempts SET updated_at=0")
                 db.commit()
-            self.video.retry_pending_seedance_cleanups()
-            self.assertEqual("processing", submission_idempotency.begin(
+            with patch.object(self.video, "_seedance_cos_delete") as delete:
+                self.video.retry_pending_seedance_cleanups(points_domain=Points())
+            delete.assert_called_once_with("before-deduct-key")
+            self.assertEqual([], Points.refunds)
+            self.assertEqual("new", submission_idempotency.begin(
                 core.jdb, "fang", endpoint, idem_key, request)[0])
+            with _closing(sqlite3.connect(core.JOB_DB)) as db:
+                self.assertEqual(0, db.execute(
+                    "SELECT COUNT(*) FROM seedance_staging_attempts").fetchone()[0])
+
+    def test_restart_refunds_charge_committed_before_jobs_commit(self):
+        import sqlite3
+        import tempfile
+        from contextlib import closing as _closing
+        from content_domains import core, submission_idempotency
+
+        endpoint, idem_key = "/api/gen/xiaole-video", "charged-no-job-123"
+        request = {"channel": "micro", "reference_images": ["data:image/png;base64,AA=="]}
+        staged = {"channel": "micro", "_seedance_staged_keys": ["after-deduct-key"]}
+
+        class Points:
+            refunds = []
+
+            @staticmethod
+            def get_points_transaction(transaction_key):
+                self.assertEqual("job-charge:after-deduct", transaction_key)
+                return {"username": "fang", "delta": -150, "after_points": 850}
+
+            @classmethod
+            def refund_points(cls, username, amount, reason, transaction_key=""):
+                cls.refunds.append((username, amount, reason, transaction_key))
+                return 1000
+
+        with tempfile.TemporaryDirectory() as td, \
+             patch.object(core, "JOB_DB", str(Path(td) / "jobs.db")), \
+             patch.object(self.video, "_cleanup_table_ready", False):
+            self.assertEqual("new", submission_idempotency.begin(
+                core.jdb, "fang", endpoint, idem_key, request)[0])
+            self.video._reserve_seedance_staging_attempt("fang", endpoint, idem_key)
+            self.video._mark_seedance_staging_attempt_ready("fang", endpoint, idem_key)
+            self.video._persist_staging_cleanup_intent("after-deduct-key")
+            self.video.mark_seedance_reference_charging(
+                "fang", endpoint, idem_key, "xiaole_video", 150, staged,
+                "content", "job-charge:after-deduct")
+            with _closing(sqlite3.connect(core.JOB_DB)) as db:
+                db.execute("UPDATE seedance_staging_attempts SET updated_at=0")
+                db.commit()
+            with patch.object(self.video, "_seedance_cos_delete") as delete:
+                self.video.retry_pending_seedance_cleanups(points_domain=Points())
+                self.video.retry_pending_seedance_cleanups(points_domain=Points())
+            delete.assert_called_once_with("after-deduct-key")
+            self.assertEqual(1, len(Points.refunds))
+            self.assertEqual(("fang", 150), Points.refunds[0][:2])
+            self.assertTrue(Points.refunds[0][3].startswith(
+                "job-charge-refund:"))
+            state, response = submission_idempotency.begin(
+                core.jdb, "fang", endpoint, idem_key, request)
+            self.assertEqual("replay", state)
+            self.assertEqual("seedance_charge_recovered", response["code"])
+            self.assertTrue(response["operation_terminal"])
+            with _closing(sqlite3.connect(core.JOB_DB)) as db:
+                self.assertEqual(0, db.execute(
+                    "SELECT COUNT(*) FROM seedance_staging_attempts").fetchone()[0])
 
     def test_charge_boundary_precedes_deduct_and_job_link_is_atomic(self):
         import sqlite3
@@ -443,7 +519,9 @@ class SeedanceReferenceSafetyTests(unittest.TestCase):
                 core.jdb, deduct, lambda *_args, **_kwargs: True,
                 "xiaole_video", "fang", 150, {"channel": "micro"}, "content",
                 before_charge=lambda: self.video.mark_seedance_reference_charging(
-                    "fang", endpoint, idem_key),
+                    "fang", endpoint, idem_key, "xiaole_video", 150,
+                    {"channel": "micro", "_seedance_staged_keys": [key]},
+                    "content", "job-charge:atomic-link"),
                 before_commit=lambda connection, jid: self.video.link_staged_seedance_references(
                     connection, [key], jid, "fang", endpoint, idem_key),
             )

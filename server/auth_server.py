@@ -2930,6 +2930,22 @@ def adjust_points_admin(who_admin, username, delta, reason=""):
     finally:
         c.close()
 
+def get_points_transaction(transaction_key):
+    """Return one internal ledger row for crash reconciliation."""
+    key = str(transaction_key or "").strip()
+    if not key or len(key) > 160:
+        return None
+    c = db()
+    try:
+        row = c.execute(
+            "SELECT username,delta,after_points,created_at FROM points_audit "
+            "WHERE transaction_key=?", (key,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        c.close()
+
+
 def list_points_audit(username="", limit=100, actor="", direction=""):
     """actor='admin' 只看人工加减点/充值审批，'system' 只看任务扣退点，''(默认) 全看。
 
@@ -5586,6 +5602,16 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path.split("?")[0]
+        if p == "/api/auth/points/transaction":
+            if not self._require_internal():
+                return
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            key = str((query.get("transaction_key") or [""])[0]).strip()
+            if not key or len(key) > 160:
+                return self._send(400, {"detail": "invalid transaction_key"})
+            return self._send(200, {
+                "ok": True, "transaction": get_points_transaction(key),
+            })
         if p in ("/api/auth/card/me", "/api/auth/card/public", "/api/auth/network/ancestors", "/api/auth/network/children", "/api/admin/invite/network", "/api/auth/admin/invite/network") or p.startswith("/api/auth/card/media/"):
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             if p.startswith("/api/auth/card/media/"):

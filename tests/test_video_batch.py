@@ -454,6 +454,7 @@ class SeedanceReferenceOrderingTests(unittest.TestCase):
                 self.refunds = []
                 self.balance = 100
                 self.deduct_error = None
+                self.transaction = None
                 self.get_point_calls = 0
 
             def cost_of(self, kind, body):
@@ -476,6 +477,9 @@ class SeedanceReferenceOrderingTests(unittest.TestCase):
             def refund_points(self, username, cost, reason, transaction_key=""):
                 self.refunds.append((username, cost, reason, transaction_key))
                 return self.balance
+
+            def get_points_transaction(self, transaction_key):
+                return self.transaction
 
             def public_error_body(self, error, need):
                 return {"detail": error.detail, "need": need}
@@ -575,6 +579,7 @@ class SeedanceReferenceOrderingTests(unittest.TestCase):
                     fake.refunds.clear()
                     fake.balance = 100
                     fake.deduct_error = None
+                    fake.transaction = None
                     fake.get_point_calls = 0
                     core._shutting_down.clear()
                     flags["upload_open"] = True
@@ -679,15 +684,21 @@ class SeedanceReferenceOrderingTests(unittest.TestCase):
                 with closing(core.jdb()) as db:
                     self.assertEqual(0, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
 
-                # 扣点失败（上传后）：已上传对象必须被清理
+                # 扣点结果未知（上传后）：先保留对象，流水确认未扣点后再清理。
                 reset()
                 fake.deduct_error = FakePointsError(502, "点数接口不可用")
                 status, resp = post(micro_body)
                 self.assertEqual(502, status)
                 self.assertEqual(1, len(put_calls))
-                self.assertEqual([put_calls[0]["key"]], delete_calls)
+                self.assertEqual([], delete_calls)
                 with closing(core.jdb()) as db:
                     self.assertEqual(0, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+                    self.assertEqual("charging", db.execute(
+                        "SELECT state FROM seedance_staging_attempts").fetchone()[0])
+                    db.execute("UPDATE seedance_staging_attempts SET updated_at=0")
+                    db.commit()
+                video.retry_pending_seedance_cleanups(points_domain=fake)
+                self.assertEqual([put_calls[0]["key"]], delete_calls)
 
                 # 入队失败（扣点后）：已上传对象必须被清理，点数退回
                 reset()

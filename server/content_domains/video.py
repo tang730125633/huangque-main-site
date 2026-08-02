@@ -558,6 +558,9 @@ def _cleanup_db():
         c.execute("""CREATE TABLE IF NOT EXISTS seedance_staging_attempts(
             username TEXT NOT NULL, endpoint TEXT NOT NULL, idem_key TEXT NOT NULL,
             state TEXT NOT NULL DEFAULT 'uploading', job_id INTEGER,
+            kind TEXT, cost INTEGER, owner TEXT, request_json TEXT,
+            charge_key TEXT, refund_key TEXT, recovery_token TEXT,
+            recovery_started_at INTEGER, last_error TEXT,
             created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
             PRIMARY KEY(username,endpoint,idem_key))""")
         columns = {row[1] for row in c.execute("PRAGMA table_info(seedance_pending_cleanup)").fetchall()}
@@ -567,6 +570,21 @@ def _cleanup_db():
             c.execute("ALTER TABLE seedance_pending_cleanup ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0")
         if "updated_at" not in columns:
             c.execute("ALTER TABLE seedance_pending_cleanup ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0")
+        attempt_columns = {
+            row[1] for row in c.execute(
+                "PRAGMA table_info(seedance_staging_attempts)").fetchall()
+        }
+        for name, definition in {
+            "kind": "TEXT", "cost": "INTEGER", "owner": "TEXT",
+            "request_json": "TEXT", "charge_key": "TEXT",
+            "refund_key": "TEXT", "recovery_token": "TEXT",
+            "recovery_started_at": "INTEGER", "last_error": "TEXT",
+        }.items():
+            if name not in attempt_columns:
+                c.execute("ALTER TABLE seedance_staging_attempts ADD COLUMN %s %s" %
+                          (name, definition))
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_seedance_staging_charge_key "
+                  "ON seedance_staging_attempts(charge_key) WHERE charge_key IS NOT NULL")
         c.commit()
         _cleanup_table_ready = True
     return c
@@ -583,7 +601,9 @@ def _reserve_seedance_staging_attempt(username, endpoint, idem_key):
                    VALUES(?,?,?,'uploading',NULL,?,?)
                    ON CONFLICT(username,endpoint,idem_key) DO UPDATE SET
                      state='uploading',job_id=NULL,created_at=excluded.created_at,
-                     updated_at=excluded.updated_at""",
+                     updated_at=excluded.updated_at,kind=NULL,cost=NULL,owner=NULL,
+                     request_json=NULL,charge_key=NULL,refund_key=NULL,
+                     recovery_token=NULL,recovery_started_at=NULL,last_error=NULL""",
                 (str(username), str(endpoint), str(idem_key), now, now),
             )
             c.commit()
@@ -609,9 +629,31 @@ def _mark_seedance_staging_attempt_ready(username, endpoint, idem_key):
     _set_seedance_staging_attempt_state(username, endpoint, idem_key, "staged")
 
 
-def mark_seedance_reference_charging(username, endpoint, idem_key):
-    """Last durable boundary before the external points transaction begins."""
-    _set_seedance_staging_attempt_state(username, endpoint, idem_key, "charging")
+def mark_seedance_reference_charging(username, endpoint, idem_key, kind, cost,
+                                     payload, owner, charge_key):
+    """Persist the complete recovery intent before touching Auth points."""
+    charge_key = str(charge_key or "").strip()
+    if not charge_key:
+        raise SeedanceReferenceUnavailable(
+            "Seedance 扣点事务缺少幂等键，本次未扣点")
+    request_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    refund_key = "job-charge-refund:" + hashlib.sha256(
+        charge_key.encode("utf-8")).hexdigest()
+    now = int(time.time())
+    with closing(_cleanup_db()) as c:
+        changed = c.execute(
+            """UPDATE seedance_staging_attempts SET state='charging',kind=?,cost=?,
+               owner=?,request_json=?,charge_key=?,refund_key=?,updated_at=?,
+               recovery_token=NULL,recovery_started_at=NULL,last_error=NULL
+               WHERE username=? AND endpoint=? AND idem_key=? AND state='staged'
+                 AND job_id IS NULL""",
+            (str(kind), int(cost), str(owner), request_json, charge_key,
+             refund_key, now, str(username), str(endpoint), str(idem_key)),
+        ).rowcount
+        c.commit()
+    if changed != 1:
+        raise SeedanceReferenceUnavailable(
+            "Seedance 参考图扣点恢复状态丢失，本次未扣点")
 
 
 def release_seedance_staging_attempt(username, endpoint, idem_key, connection=None):
@@ -801,6 +843,138 @@ def _recover_orphaned_seedance_attempts(now, limit):
         return 0
 
 
+def _seedance_attempt_keys(row):
+    try:
+        payload = json.loads(row["request_json"] or "{}")
+        return [str(key) for key in payload.get("_seedance_staged_keys") or []
+                if str(key)]
+    except Exception:
+        return []
+
+
+def _claim_seedance_charge_recoveries(now, limit):
+    cutoff = int(now) - SEEDANCE_STAGING_ORPHAN_GRACE
+    lease_cutoff = int(now) - SEEDANCE_STAGING_ORPHAN_GRACE
+    claimed = []
+    try:
+        with closing(_cleanup_db()) as c:
+            c.row_factory = sqlite3.Row
+            rows = c.execute(
+                """SELECT username,endpoint,idem_key FROM seedance_staging_attempts
+                   WHERE state IN ('charging','refund_pending') AND job_id IS NULL
+                     AND updated_at<=? AND
+                     (recovery_token IS NULL OR recovery_started_at<=?)
+                   ORDER BY updated_at LIMIT ?""",
+                (cutoff, lease_cutoff, int(limit)),
+            ).fetchall()
+            for candidate in rows:
+                token = "seedance:" + uuid.uuid4().hex
+                changed = c.execute(
+                    """UPDATE seedance_staging_attempts
+                       SET recovery_token=?,recovery_started_at=?,updated_at=?
+                       WHERE username=? AND endpoint=? AND idem_key=?
+                         AND state IN ('charging','refund_pending') AND job_id IS NULL
+                         AND (recovery_token IS NULL OR recovery_started_at<=?)""",
+                    (token, int(now), int(now), candidate["username"],
+                     candidate["endpoint"], candidate["idem_key"], lease_cutoff),
+                ).rowcount
+                if changed == 1:
+                    row = c.execute(
+                        """SELECT * FROM seedance_staging_attempts
+                           WHERE username=? AND endpoint=? AND idem_key=?""",
+                        (candidate["username"], candidate["endpoint"],
+                         candidate["idem_key"]),
+                    ).fetchone()
+                    claimed.append((dict(row), token))
+            c.commit()
+    except Exception:
+        return []
+    return claimed
+
+
+def _release_seedance_charge_recovery(row, token, error=""):
+    with closing(_cleanup_db()) as c:
+        c.execute(
+            """UPDATE seedance_staging_attempts SET recovery_token=NULL,
+               recovery_started_at=NULL,last_error=?,updated_at=?
+               WHERE username=? AND endpoint=? AND idem_key=?
+                 AND recovery_token=? AND job_id IS NULL""",
+            (str(error or "")[:300], int(time.time()), row["username"],
+             row["endpoint"], row["idem_key"], token),
+        )
+        c.commit()
+
+
+def _recover_seedance_charge_attempts(points_domain, now, limit):
+    """Reconcile crash-window charges without replaying a deduction."""
+    if not points_domain or not callable(
+            getattr(points_domain, "get_points_transaction", None)):
+        return 0
+    recovered = 0
+    for row, token in _claim_seedance_charge_recoveries(now, limit):
+        keys = _seedance_attempt_keys(row)
+        if not (row.get("charge_key") and row.get("refund_key") and
+                row.get("request_json") and int(row.get("cost") or 0) > 0):
+            _release_seedance_charge_recovery(
+                row, token, "incomplete_seedance_charge_intent")
+            continue
+        if row["state"] == "charging":
+            try:
+                ledger = points_domain.get_points_transaction(row["charge_key"])
+            except Exception as exc:
+                _release_seedance_charge_recovery(row, token, type(exc).__name__)
+                continue
+            if ledger is None:
+                submission_idempotency.abort(
+                    jdb, row["username"], row["endpoint"], row["idem_key"])
+                release_seedance_staging_attempt(
+                    row["username"], row["endpoint"], row["idem_key"])
+                cleanup_staged_seedance_references(keys)
+                recovered += 1
+                continue
+            try:
+                matches = (str(ledger.get("username") or "") == row["username"]
+                           and int(ledger.get("delta") or 0) == -int(row["cost"]))
+            except (TypeError, ValueError):
+                matches = False
+            if not matches:
+                _release_seedance_charge_recovery(
+                    row, token, "seedance_charge_ledger_inconsistent")
+                continue
+            with closing(_cleanup_db()) as c:
+                changed = c.execute(
+                    """UPDATE seedance_staging_attempts SET state='refund_pending',
+                       updated_at=? WHERE username=? AND endpoint=? AND idem_key=?
+                         AND state='charging' AND recovery_token=?""",
+                    (int(time.time()), row["username"], row["endpoint"],
+                     row["idem_key"], token),
+                ).rowcount
+                c.commit()
+            if changed != 1:
+                continue
+        try:
+            points_domain.refund_points(
+                row["username"], int(row["cost"]),
+                "seedance reference submission:crash recovery",
+                transaction_key=row["refund_key"],
+            )
+        except Exception as exc:
+            _release_seedance_charge_recovery(row, token, type(exc).__name__)
+            continue
+        response = {
+            "detail": "视频任务创建中断，已自动退回点数，请重新提交",
+            "code": "seedance_charge_recovered", "operation_terminal": True,
+            "_http_status": 500,
+        }
+        submission_idempotency.complete(
+            jdb, row["username"], row["endpoint"], row["idem_key"], response)
+        release_seedance_staging_attempt(
+            row["username"], row["endpoint"], row["idem_key"])
+        cleanup_staged_seedance_references(keys)
+        recovered += 1
+    return recovered
+
+
 def _promote_terminal_linked_cleanups(now):
     """Close the crash window between terminal CAS and its cleanup callback."""
     try:
@@ -821,10 +995,11 @@ def _promote_terminal_linked_cleanups(now):
         return 0
 
 
-def retry_pending_seedance_cleanups(limit=50):
+def retry_pending_seedance_cleanups(limit=50, points_domain=None):
     """Retry eligible cleanup rows without starving newer objects."""
     now = int(time.time())
     _recover_orphaned_seedance_attempts(now, limit)
+    _recover_seedance_charge_attempts(points_domain, now, limit)
     _promote_terminal_linked_cleanups(now)
     try:
         with closing(_cleanup_db()) as c:
