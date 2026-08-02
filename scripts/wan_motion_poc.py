@@ -2,11 +2,14 @@
 """Wan2.2 图生动作隔离 POC；默认只预览请求和费用。"""
 import argparse
 import json
+import mimetypes
 import os
+import secrets
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 
 MODEL = "wan2.2-animate-move"
@@ -14,10 +17,10 @@ DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com"
 PRICE_CNY_PER_SECOND = {"wan-std": 0.4, "wan-pro": 0.6}
 
 
-def _https_url(value, label):
+def _media_url(value, label):
     parsed = urllib.parse.urlsplit(str(value))
-    if parsed.scheme != "https" or not parsed.netloc:
-        raise ValueError(f"{label}必须是公网 HTTPS URL")
+    if parsed.scheme not in {"https", "oss"} or not parsed.netloc:
+        raise ValueError(f"{label}必须是公网 HTTPS URL 或百炼临时 oss:// URL")
     return value
 
 
@@ -27,8 +30,8 @@ def build_payload(identity_image_url, motion_video_url, mode="wan-std", watermar
     return {
         "model": MODEL,
         "input": {
-            "image_url": _https_url(identity_image_url, "人物图片"),
-            "video_url": _https_url(motion_video_url, "动作视频"),
+            "image_url": _media_url(identity_image_url, "人物图片"),
+            "video_url": _media_url(motion_video_url, "动作视频"),
             "watermark": bool(watermark),
         },
         "parameters": {"check_image": True, "mode": mode},
@@ -47,6 +50,7 @@ def _request_json(method, url, api_key, payload=None):
         "Authorization": "Bearer " + api_key,
         "Content-Type": "application/json",
         "X-DashScope-Async": "enable",
+        "X-DashScope-OssResourceResolve": "enable",
     })
     try:
         with urllib.request.urlopen(request, timeout=120) as response:
@@ -54,6 +58,70 @@ def _request_json(method, url, api_key, payload=None):
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode(errors="replace")[:1000]
         raise RuntimeError(f"Wan 请求失败（HTTP {exc.code}）：{detail}") from exc
+
+
+def _multipart_body(fields, file_path, boundary):
+    chunks = []
+    for name, value in fields:
+        chunks.extend([
+            f"--{boundary}\r\n".encode(),
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(),
+            str(value).encode(), b"\r\n",
+        ])
+    path = Path(file_path)
+    content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    chunks.extend([
+        f"--{boundary}\r\n".encode(),
+        f'Content-Disposition: form-data; name="file"; filename="{path.name}"\r\n'.encode(),
+        f"Content-Type: {content_type}\r\n\r\n".encode(),
+        path.read_bytes(), b"\r\n",
+        f"--{boundary}--\r\n".encode(),
+    ])
+    return b"".join(chunks)
+
+
+def upload_temp_file(file_path, api_key, base_url=DEFAULT_BASE_URL):
+    path = Path(file_path)
+    if not path.is_file():
+        raise ValueError(f"素材不存在：{path}")
+    policy_url = base_url.rstrip("/") + "/api/v1/uploads?" + urllib.parse.urlencode({
+        "action": "getPolicy", "model": MODEL,
+    })
+    policy = _request_json("GET", policy_url, api_key).get("data", {})
+    required = (
+        "policy", "signature", "upload_dir", "upload_host",
+        "oss_access_key_id", "x_oss_object_acl", "x_oss_forbid_overwrite",
+    )
+    if any(not policy.get(key) for key in required):
+        raise RuntimeError("百炼临时上传凭证不完整")
+    max_bytes = int(policy.get("max_file_size_mb") or 0) * 1024 * 1024
+    if max_bytes and path.stat().st_size > max_bytes:
+        raise ValueError("素材超过百炼临时上传大小限制")
+
+    object_key = policy["upload_dir"].rstrip("/") + "/" + secrets.token_hex(8) + path.suffix.lower()
+    fields = [
+        ("OSSAccessKeyId", policy["oss_access_key_id"]),
+        ("Signature", policy["signature"]),
+        ("policy", policy["policy"]),
+        ("x-oss-object-acl", policy["x_oss_object_acl"]),
+        ("x-oss-forbid-overwrite", policy["x_oss_forbid_overwrite"]),
+        ("key", object_key),
+        ("success_action_status", "200"),
+    ]
+    boundary = "----wan-motion-" + secrets.token_hex(12)
+    request = urllib.request.Request(
+        policy["upload_host"],
+        data=_multipart_body(fields, path, boundary),
+        method="POST",
+        headers={"Content-Type": "multipart/form-data; boundary=" + boundary},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=300) as response:
+            if response.status != 200:
+                raise RuntimeError(f"百炼临时素材上传失败（HTTP {response.status}）")
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"百炼临时素材上传失败（HTTP {exc.code}）") from exc
+    return "oss://" + object_key
 
 
 def submit(payload, api_key, base_url=DEFAULT_BASE_URL):

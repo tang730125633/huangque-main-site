@@ -26,6 +26,12 @@ class WanMotionPocTests(unittest.TestCase):
         self.assertNotIn("signature", preview["input"]["image_url"])
         self.assertNotIn("signature", preview["input"]["video_url"])
 
+        temporary = POC.build_payload(
+            "oss://dashscope-instant/person.jpg",
+            "oss://dashscope-instant/motion.mp4",
+        )
+        self.assertTrue(temporary["input"]["image_url"].startswith("oss://"))
+
     def test_rejects_non_https_media(self):
         with self.assertRaisesRegex(ValueError, "HTTPS"):
             POC.build_payload(
@@ -43,6 +49,13 @@ class WanMotionPocTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 POC.main(args)
         submit.assert_not_called()
+
+    def test_upload_multipart_keeps_file_last(self):
+        body = POC._multipart_body(
+            [("policy", "p"), ("key", "k")], SCRIPT, "boundary"
+        )
+        self.assertLess(body.index(b'name="policy"'), body.index(b'name="file"'))
+        self.assertTrue(body.endswith(b"--boundary--\r\n"))
 
 
 if __name__ == "__main__":
