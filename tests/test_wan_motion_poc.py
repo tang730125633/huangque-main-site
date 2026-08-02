@@ -14,14 +14,14 @@ SPEC.loader.exec_module(POC)
 
 
 class WanMotionPocTests(unittest.TestCase):
-    def test_builds_official_image_to_action_contract(self):
+    def test_builds_official_character_replacement_contract(self):
         payload = POC.build_payload(
             "https://media.example/person.jpg?signature=secret",
             "https://media.example/motion.mp4?signature=secret",
         )
-        self.assertEqual(payload["model"], "wan2.2-animate-move")
+        self.assertEqual(payload["model"], "wan2.2-animate-mix")
         self.assertEqual(payload["parameters"]["mode"], "wan-std")
-        self.assertEqual(POC.estimate_cost(5, "wan-std"), 2.0)
+        self.assertEqual(POC.estimate_cost(5, "wan-std"), 3.0)
         preview = POC._preview(payload)
         self.assertNotIn("signature", preview["input"]["image_url"])
         self.assertNotIn("signature", preview["input"]["video_url"])
@@ -42,7 +42,7 @@ class WanMotionPocTests(unittest.TestCase):
     def test_paid_submit_needs_both_gates(self):
         args = [
             "--identity-image-url", "https://media.example/person.jpg",
-            "--motion-video-url", "https://media.example/motion.mp4",
+            "--source-video-url", "https://media.example/motion.mp4",
             "--submit",
         ]
         with patch.dict("os.environ", {}, clear=True), patch.object(POC, "submit") as submit:

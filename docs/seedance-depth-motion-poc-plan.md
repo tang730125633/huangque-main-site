@@ -4,7 +4,7 @@
 
 ## 结论
 
-第一候选改为阿里云百炼 `wan2.2-animate-move`。它是专门的图生动作模型，直接接收“授权人物图片 + 原始表演视频”，迁移动作和表情，不需要提示词，也不要求用户先生成深度视频。Seedance 2.0 保留为第二候选和深度软参考对照。
+第一候选改为阿里云百炼 `wan2.2-animate-mix`。它是专门的视频换人模型，直接接收“授权人物图片 + 原始表演视频”，替换原视频主角并保留场景、光照、色调、动作和表情，不需要提示词，也不要求用户先生成深度视频。`wan2.2-animate-move` 只适合按人物图片背景生成动作视频，不满足“锁住原视频场景”的目标。Seedance 2.0 保留为第二候选和深度软参考对照。
 
 截图中的“先生成黑白深度视频再交给 Wan”属于可实验的社区工作流，不是官方 Animate Move API 的必要步骤。先直传原始动作视频；只有真实结果证明身份或背景污染明显时，才测试深度路线。
 
@@ -12,27 +12,27 @@
 
 主站已经具备：账号与点数、异步任务、失败退款、Seedance 官方适配器、多密钥池、最多 9 张参考图、安全暂存、轮询恢复、成片下载和资产入库。
 
-当前缺口：主站没有 Wan 图生动作调用；Seedance 适配器此前也没有构造官方支持的 `video_url` / `reference_video`。本 POC 增加两个默认零费用的隔离入口，不修改正式用户页面、数据库结构或生产开关。
+当前缺口：主站没有 Wan 视频换人调用；Seedance 适配器此前也没有构造官方支持的 `video_url` / `reference_video`。本 POC 增加两个默认零费用的隔离入口，不修改正式用户页面、数据库结构或生产开关。
 
 ## Wan 官方合同（2026-08-02 核验）
 
-- 模型固定为 `wan2.2-animate-move`，输入字段是 `image_url` 与 `video_url`。
+- 模型固定为 `wan2.2-animate-mix`，输入字段是 `image_url` 与 `video_url`。
 - 参考视频支持 MP4/AVI/MOV、2–30 秒、单文件不超过 200 MB；人物图不超过 5 MB。
 - `wan-std` 适合低成本预览，`wan-pro` 更平滑但更慢、更贵。
-- 华北 2（北京）原价为 std ¥0.4/输出秒、pro ¥0.6/输出秒；5 秒估算分别为 ¥2、¥3。失败调用不收费。
+- 华北 2（北京）原价为 std ¥0.6/输出秒、pro ¥0.9/输出秒；5 秒估算分别为 ¥3、¥4.5。失败调用不收费。
 - 任务异步执行，结果 URL 只保留 24 小时，成功后必须下载到现有对象存储。
 
 官方依据：
 
-- <https://help.aliyun.com/zh/model-studio/wan-animate-move-api>
-- <https://help.aliyun.com/zh/model-studio/wan2-2-animate-move>
+- <https://help.aliyun.com/zh/model-studio/wan-animate-mix-api>
+- <https://help.aliyun.com/zh/model-studio/wan2-2-animate-mix>
 - <https://github.com/Wan-Video/Wan2.2>
 
 ## 补充工具评估
 
 ### Wan-Dancer：不进入指定动作复刻主链
 
-`Wan-Video/Wan-Dancer` 是“人物图 + 音乐 + 舞种提示词 → 原创长舞视频”，不是“人物图 + 目标动作视频 → 复刻动作”。它适合以后做一分钟级音乐舞蹈生成，但当前不能替代 `wan2.2-animate-move`。
+`Wan-Video/Wan-Dancer` 是“人物图 + 音乐 + 舞种提示词 → 原创长舞视频”，不是“人物图 + 目标动作视频 → 原视频人物替换”。它适合以后做一分钟级音乐舞蹈生成，但当前不能替代 `wan2.2-animate-mix`。
 
 - 官方开源协议：Apache-2.0。
 - 官方参考环境：Ubuntu 22.04、8 × NVIDIA A800 80GB。
@@ -53,7 +53,7 @@
 1. 选择 Depth Anything V2 Small。Small 为 Apache-2.0；Base/Large 为 CC-BY-NC-4.0，不进入黄雀商业链路。
 2. 选择“仅人物”、灰度、MP4，保留完整身体；不要使用热力图。
 3. 导出后确认时长、宽高、帧率与原视频一致，且手脚没有被人物遮罩切掉。
-4. 把深度 MP4 交给 `seedance_motion_poc.py --mode depth`；不要交给官方 `wan2.2-animate-move`，后者应使用原始表演视频。
+4. 把深度 MP4 交给 `seedance_motion_poc.py --mode depth`；不要交给官方 `wan2.2-animate-mix`，后者应使用需要保留场景的原始表演视频。
 5. 如果人物遮罩闪烁或断肢，再改用“全图”灰度重导一次，不预建新的深度服务。
 
 依据：
@@ -82,15 +82,15 @@
 
 | 模式 | 输入 | 目的 | 当前状态 |
 |---|---|---|---|
-| A / Wan std | 授权人物图 + 原始动作视频 | 专用动作迁移低成本基线 | POC 已支持；第一候选 |
+| A / Wan std | 授权人物图 + 原始动作视频 | 保留原场景的视频换人基线 | POC 已支持；第一候选 |
 | B / Wan pro | 与 A 相同 | 判断更高质量模式是否值得增加 50% 成本 | POC 已支持 |
 | C / Seedance RGB | 授权人物素材 + 原始动作视频 | 与通用多模态视频模型对照 | POC 已支持 |
 | D / Seedance depth | 授权人物素材 + 黑白深度视频 | 仅在污染明显时验证深度软参考 | POC 已支持；深度生成器未建设 |
 
 ## 执行顺序
 
-1. 用 5 秒、单人全身、固定镜头、简单背景素材跑 Wan std，预估 ¥2。
-2. 动作正确但画质或稳定性不足时才跑 Wan pro，预估 ¥3。
+1. 用 5 秒、单人全身、固定镜头、简单背景素材跑 Wan std，预估 ¥3。
+2. 换人正确但画质或稳定性不足时才跑 Wan pro，预估 ¥4.5。
 3. 再用同一素材跑 Seedance RGB；只有出现原演员/背景污染时才增加深度对照。
 4. 深度对照直接用 depthvideo.com 的 Small 模型生成，不建设服务、不上传素材。
 5. 每组只提交一次，记录官方 task ID、请求参数、耗时、实际扣费和成片 URL；不得因页面无响应重复提交。

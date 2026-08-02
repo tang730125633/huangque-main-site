@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wan2.2 图生动作隔离 POC；默认只预览请求和费用。"""
+"""Wan2.2 视频换人隔离 POC；默认只预览请求和费用。"""
 import argparse
 import json
 import mimetypes
@@ -12,9 +12,9 @@ import urllib.request
 from pathlib import Path
 
 
-MODEL = "wan2.2-animate-move"
+MODEL = "wan2.2-animate-mix"
 DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com"
-PRICE_CNY_PER_SECOND = {"wan-std": 0.4, "wan-pro": 0.6}
+PRICE_CNY_PER_SECOND = {"wan-std": 0.6, "wan-pro": 0.9}
 
 
 def _media_url(value, label):
@@ -24,14 +24,14 @@ def _media_url(value, label):
     return value
 
 
-def build_payload(identity_image_url, motion_video_url, mode="wan-std", watermark=False):
+def build_payload(identity_image_url, source_video_url, mode="wan-std", watermark=False):
     if mode not in PRICE_CNY_PER_SECOND:
         raise ValueError("mode 必须是 wan-std 或 wan-pro")
     return {
         "model": MODEL,
         "input": {
             "image_url": _media_url(identity_image_url, "人物图片"),
-            "video_url": _media_url(motion_video_url, "动作视频"),
+            "video_url": _media_url(source_video_url, "待换人视频"),
             "watermark": bool(watermark),
         },
         "parameters": {"check_image": True, "mode": mode},
@@ -142,7 +142,7 @@ def wait_for_result(task_id, api_key, base_url=DEFAULT_BASE_URL, timeout=40 * 60
         if status in {"SUCCEEDED", "FAILED", "CANCELED", "UNKNOWN"}:
             return result
         time.sleep(15)
-    raise TimeoutError("Wan 动作任务等待超时")
+    raise TimeoutError("Wan 换人任务等待超时")
 
 
 def _preview(payload):
@@ -156,7 +156,7 @@ def _preview(payload):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--identity-image-url", required=True, help="已获授权的人物图片 HTTPS URL")
-    parser.add_argument("--motion-video-url", required=True, help="2–30 秒动作视频 HTTPS URL")
+    parser.add_argument("--source-video-url", required=True, help="2–30 秒待换人视频 HTTPS URL")
     parser.add_argument("--mode", choices=PRICE_CNY_PER_SECOND, default="wan-std")
     parser.add_argument("--expected-seconds", type=float, default=5, help="仅用于调用前估价")
     parser.add_argument("--watermark", action="store_true")
@@ -167,7 +167,7 @@ def main(argv=None):
 
     try:
         payload = build_payload(
-            args.identity_image_url, args.motion_video_url, args.mode, args.watermark
+            args.identity_image_url, args.source_video_url, args.mode, args.watermark
         )
         cost = estimate_cost(args.expected_seconds, args.mode)
     except ValueError as exc:
