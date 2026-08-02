@@ -73,6 +73,7 @@ SORA_VIDEO_SUNSET = "2026-09-24"
 SORA_MODELS = {"sora-2", "sora-2-pro"}
 SORA_SECONDS = {4, 8, 12}  # 上游 create 接口实测只接受 4/8/12 秒。
 SORA_RATIOS = {"9:16", "16:9"}
+SORA_MAX_REFERENCE_BYTES = 10 * 1024 * 1024
 SORA_SIZE_MAP = {
     ("sora-2", "720p", "9:16"): "720x1280",
     ("sora-2", "720p", "16:9"): "1280x720",
@@ -354,7 +355,7 @@ def validate_xiaole_video_payload(payload):
 
 
 def validate_sora_video_payload(payload):
-    """校验 Sora 限时 Beta 的最小业务契约；只支持非真人文生视频。"""
+    """校验 Sora 限时 Beta 契约；参考图只作为首帧且最多一张。"""
     if not sora_video_is_open():
         raise ValueError("Sora 限时测试通道未开启")
     if not isinstance(payload, dict):
@@ -386,16 +387,28 @@ def validate_sora_video_payload(payload):
     size = SORA_SIZE_MAP.get((model, resolution, ratio))
     if not size:
         raise ValueError("%s 不支持分辨率 %s" % (model, resolution))
-    # 当前官方规则拒绝真人、公众人物和含人脸参考图。Beta 先不接 input_reference，
-    # 从服务端白名单上消除前端绕过，而不是只靠页面隐藏。
+    refs = payload.get("reference_images") or []
+    if not isinstance(refs, list):
+        raise ValueError("Sora 参考图格式错误")
+    if len(refs) > 1:
+        raise ValueError("Sora 最多支持1张参考图")
+    if refs:
+        ref = str(refs[0] or "").strip()
+        if not _is_valid_data_url(ref, VALID_IMAGE_MIMES):
+            raise ValueError("Sora 参考图仅支持 JPEG、PNG、WebP")
+        if len(base64.b64decode(ref.split(",", 1)[1], validate=True)) > SORA_MAX_REFERENCE_BYTES:
+            raise ValueError("Sora 参考图不能超过10MB")
+    validate_image_mentions(prompt, len(refs))
     return {
         "mode": "sora",
         "prompt": prompt,
+        "provider_prompt": resolve_image_mentions(prompt, len(refs)),
         "model": model,
         "seconds": seconds,
         "ratio": ratio,
         "resolution": resolution,
         "size": size,
+        "reference_images": refs,
     }
 
 def _is_valid_data_url(value, allowed_mimes):
@@ -3440,6 +3453,30 @@ def generate_xiaole_video(model, prompt, reference_images=None, size="720x1280",
     raise TimeoutError("视频生成超时")
 
 
+def _prepare_sora_input_reference(data_url, size):
+    """把首帧裁成官方要求的精确输出尺寸，返回 PNG 字节。"""
+    encoded = str(data_url or "").split(",", 1)[1]
+    raw = base64.b64decode(encoded, validate=True)
+    width, height = [int(part) for part in str(size).split("x", 1)]
+    with tempfile.TemporaryDirectory(prefix="hq-sora-ref-") as folder:
+        source = pathlib.Path(folder) / "source"
+        target = pathlib.Path(folder) / "reference.png"
+        source.write_bytes(raw)
+        try:
+            subprocess.run([
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-i", str(source), "-frames:v", "1", "-vf",
+                "scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d" %
+                (width, height, width, height),
+                str(target),
+            ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ValueError("Sora 参考图处理失败，请换一张 JPEG、PNG 或 WebP") from exc
+        if not target.is_file() or not target.stat().st_size:
+            raise ValueError("Sora 参考图处理失败，请换一张图片")
+        return target.read_bytes()
+
+
 def gen_sora_video(payload):
     """OpenAI Sora 2 限时 Beta：创建/恢复 → 轮询 → 鉴权下载 → 永久资产入库。"""
     from . import video_openai
@@ -3449,6 +3486,7 @@ def gen_sora_video(payload):
         raise ValueError("付费 Sora 任务必须绑定 job_id")
     model = str(payload.get("model") or "sora-2")
     prompt = str(payload.get("prompt") or "").strip()
+    provider_prompt = str(payload.get("provider_prompt") or prompt).strip()
     seconds = int(payload.get("seconds") or 4)
     size = str(payload.get("size") or SORA_SIZE_MAP.get(
         (model, payload.get("resolution") or "720p", payload.get("ratio") or "9:16"),
@@ -3487,16 +3525,19 @@ def gen_sora_video(payload):
             api_key=candidate["secret"], provider_key_id=candidate["id"],
         )
     else:
+        refs = payload.get("reference_images") or []
+        input_reference = _prepare_sora_input_reference(refs[0], size) if refs else None
         rendered, candidate = _create_with_provider_key(
             "sora",
             job_id,
             "sora_submitting",
             video_openai.CredentialRejected,
             lambda selected: video_openai.generate(
-                model, prompt, seconds, size,
+                model, provider_prompt, seconds, size,
                 job_id=job_id, heartbeat=sora_heartbeat,
                 api_key=selected["secret"],
                 provider_key_id=selected["id"],
+                input_reference=input_reference,
             ),
         )
 
