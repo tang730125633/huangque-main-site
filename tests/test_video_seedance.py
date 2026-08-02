@@ -37,6 +37,34 @@ def _http_error(code, detail):
 
 
 class SeedanceVideoTests(unittest.TestCase):
+    def test_multimodal_payload_accepts_reference_video(self):
+        payload = video_seedance._build_payload(
+            video_seedance.SEEDANCE_MODEL,
+            "Use [Image 1] as the person and [Video 1] as the motion reference.",
+            5,
+            "adaptive",
+            "480p",
+            False,
+            ["asset://asset-authorized-person"],
+            ["https://media.example/motion.mp4"],
+        )
+        self.assertEqual(payload["content"][-1], {
+            "type": "video_url",
+            "video_url": {"url": "https://media.example/motion.mp4"},
+            "role": "reference_video",
+        })
+
+    def test_reference_video_rejects_unsafe_urls_and_more_than_three(self):
+        for value in ("file:///tmp/motion.mp4", "data:video/mp4;base64,AAAA"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "参考视频"):
+                    video_seedance._reference_video_item(value)
+        with self.assertRaisesRegex(ValueError, "最多支持 3 段"):
+            video_seedance._build_payload(
+                video_seedance.SEEDANCE_MODEL, "demo", 5, "adaptive", "480p",
+                False, [], ["https://media.example/%d.mp4" % i for i in range(4)],
+            )
+
     def test_reference_payload_rejects_local_and_malformed_asset_urls(self):
         for value in (
                 "data:image/png;base64,AAAA", "file:///tmp/ref.png",
@@ -101,6 +129,7 @@ class SeedanceVideoTests(unittest.TestCase):
                     "https://img.example/one.jpg",
                     "asset://asset-2",
                 ],
+                reference_videos=["https://media.example/motion.mp4"],
                 job_id=9,
                 heartbeat=heartbeat,
                 now=lambda: 0,
@@ -120,9 +149,10 @@ class SeedanceVideoTests(unittest.TestCase):
         self.assertEqual(body["ratio"], "16:9")
         self.assertEqual(body["duration"], 8)
         self.assertIs(body["generate_audio"], True)
+        self.assertEqual(body["content"][-1]["role"], "reference_video")
         self.assertEqual(
             [item.get("role") for item in body["content"][1:]],
-            ["reference_image", "reference_image"],
+            ["reference_image", "reference_image", "reference_video"],
         )
         self.assertEqual(result["source_video_url"], "https://cdn.example/out.mp4")
         self.assertEqual(result["completion_tokens"], 123456)
