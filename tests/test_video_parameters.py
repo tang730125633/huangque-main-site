@@ -135,10 +135,11 @@ class VideoParameterUiTests(unittest.TestCase):
         self.assertNotIn('id="grok15Btn"', VIDEO_HTML)
         self.assertNotIn("通用版带参考图最长支持10秒", VIDEO_HTML)
         self.assertIn(
-            "function grokRefLimit(){return selectedGrokModel==='grok-imagine-video-1.5'?1:GROK_REF_MAX;}",
+            "function grokRefLimit(){return GROK_REF_MAX;}",
             VIDEO_HTML,
         )
-        self.assertIn("Grok Video 1.5 必须上传且只能上传1张首帧图", VIDEO_HTML)
+        self.assertIn("Grok Video 1.5 至少上传1张参考图（最多7张）", VIDEO_HTML)
+        self.assertIn("Grok 参考图生视频最高支持 720p", VIDEO_HTML)
 
     def test_hidden_output_shadow_ui_is_removed(self):
         for stale_id in ("outputThumb", "outputMotion", "outputRatio", "outputDuration", "outputPreview"):

@@ -3,7 +3,7 @@ set -eu
 
 version="0.4.0"
 wheel_name="huangque_hq_cli-0.4.0-py3-none-any.whl"
-wheel_sha256="523f6193e2ec011dec68ecd2969fd1593911016210c056034419c7e42662e561"
+wheel_sha256="5ff9854c97d55e59bf8a39be79229a7d098b23537b15a049e04d6c36dd68c20e"
 wheel_url="https://huangquechuanmei.com/downloads/hq/v0.4.0/$wheel_name"
 
 fail() { printf 'HQ CLI 安装失败：%s\n' "$1" >&2; exit 1; }

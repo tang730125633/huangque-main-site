@@ -95,7 +95,7 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertIn("videoHealthReady.then(applyInspirationPrefill)", html)
         self.assertIn("targetMode==='omni'", html)
         self.assertIn("targetMode==='micro'", html)
-        self.assertIn("setupXiaoleRefPanel('omni', omniRefData, 3)", html)
+        self.assertIn("setupXiaoleRefPanel('omni', omniRefData, 6)", html)
         self.assertIn("setupXiaoleRefPanel('micro', microRefData, 9)", html)
 
     def test_generate_xiaole_video_sends_size_without_aspect_ratio(self):
@@ -267,18 +267,18 @@ class XiaoleVideoTests(unittest.TestCase):
             })
             self.assertEqual(len(cleaned["reference_images"]), 3)
 
-    def test_validate_video_15_rejects_multiple_first_frames(self):
+    def test_validate_video_15_accepts_multiple_references(self):
         with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"):
-            with self.assertRaisesRegex(ValueError, "仅支持1张首帧图"):
-                self.video.validate_xiaole_video_payload({
-                    "channel": "grok", "prompt": "cinematic demo",
-                    "model": "grok-imagine-video-1.5",
-                    "reference_images": ["https://a/1.jpg", "https://a/2.jpg"],
-                })
+            body = self.video.validate_xiaole_video_payload({
+                "channel": "grok", "prompt": "让 @图片1 穿上 @图片2 的衣服",
+                "model": "grok-imagine-video-1.5", "resolution": "720p",
+                "reference_images": ["https://a/1.jpg", "https://a/2.jpg"],
+            })
+        self.assertEqual(2, len(body["reference_images"]))
 
     def test_validate_video_15_requires_reference(self):
         with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"):
-            with self.assertRaisesRegex(ValueError, "仅支持1张首帧图"):
+            with self.assertRaisesRegex(ValueError, "至少需要1张参考图"):
                 self.video.validate_xiaole_video_payload({
                     "channel": "grok", "prompt": "cinematic demo",
                     "model": "grok-imagine-video-1.5",

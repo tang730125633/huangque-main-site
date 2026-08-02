@@ -1879,16 +1879,16 @@
     "/api/gen/image": {
       "post": {
         "tags": ["作图"], "summary": "gpt-image 作图(文生图/图生图/局部修改) · 12点",
-        "description": "异步,返回 job_id。带 image 进图生图;再带 mask 进局部修改。",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["prompt"], "properties": { "prompt": { "type": "string" }, "ratio": { "type": "string", "enum": ["1:1", "9:16", "16:9", "3:4"], "default": "1:1" }, "image": { "type": "string", "description": "base64(无 data: 前缀),参考图→图生图" }, "mask": { "type": "string", "description": "base64 蒙版→局部修改" } } } } } },
+        "description": "异步,返回 job_id。reference_images 为推荐多图字段；提示词可用 @图片1、@图片2 按数组顺序引用。image 是兼容旧客户端的单图字段，不能与 reference_images 同传；mask 局部修改仅支持单图。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["prompt"], "properties": { "prompt": { "type": "string", "description": "支持 @图片N（也兼容 @图N），N 必须对应已上传参考图" }, "ratio": { "type": "string", "enum": ["1:1", "9:16", "16:9", "3:4"], "default": "1:1" }, "provider": { "type": "string", "enum": ["openai", "seedream", "xiaole", "zelong"], "default": "openai" }, "image": { "type": "string", "deprecated": true, "description": "兼容旧客户端的单张 base64 参考图" }, "reference_images": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "type": "string" }, "description": "base64 参考图数组；openai 最多16张、seedream最多10张、xiaole最多4张、zelong最多1张" }, "mask": { "type": "string", "description": "base64 蒙版→局部修改，仅可配1张参考图" } } } } } },
         "responses": { "200": { "description": "受理", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobAccepted" } } } }, "402": { "description": "点数不足" } }
       }
     },
     "/api/gen/banana": {
       "post": {
         "tags": ["作图"], "summary": "nano banana 作图(NB2 10点 / Pro 18点)",
-        "description": "异步,返回 job_id。带 image 进图生图。Pro=最强中文/4K。",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["prompt"], "properties": { "prompt": { "type": "string" }, "model": { "type": "string", "enum": ["nb2", "pro"], "default": "nb2", "description": "nb2=gemini-3.1-flash-image,pro=gemini-3-pro-image" }, "ratio": { "type": "string", "default": "1:1", "description": "1:1 / 2:3 / 3:2 / 3:4 / 4:3 / 4:5 / 5:4 / 9:16 / 16:9 / 21:9" }, "image": { "type": "string", "description": "base64 参考图(可选)" } } } } } },
+        "description": "异步,返回 job_id。最多14张参考图；提示词可用 @图片1、@图片2 按数组顺序引用。image 是兼容旧客户端的单图字段，不能与 reference_images 同传。Pro=最强中文/4K。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["prompt"], "properties": { "prompt": { "type": "string", "description": "支持 @图片N（也兼容 @图N），N 必须对应已上传参考图" }, "model": { "type": "string", "enum": ["nb2", "pro"], "default": "nb2", "description": "nb2=gemini-3.1-flash-image,pro=gemini-3-pro-image" }, "ratio": { "type": "string", "default": "1:1", "description": "1:1 / 2:3 / 3:2 / 3:4 / 4:3 / 4:5 / 5:4 / 9:16 / 16:9 / 21:9" }, "image": { "type": "string", "deprecated": true, "description": "兼容旧客户端的单张 base64 参考图" }, "reference_images": { "type": "array", "minItems": 1, "maxItems": 14, "items": { "type": "string" }, "description": "base64 参考图数组，顺序对应 @图片N" } } } } } },
         "responses": { "200": { "description": "受理", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobAccepted" } } } }, "402": { "description": "点数不足" } }
       }
     },

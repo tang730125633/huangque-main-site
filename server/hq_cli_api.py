@@ -885,8 +885,9 @@ def _generation_payload(action, value):
             body["mask_upload_id"] = _upload_id(value["mask_upload_id"], "mask_upload_id")
         if "reference_upload_ids" in value:
             references = value["reference_upload_ids"]
-            if not isinstance(references, list) or not 1 <= len(references) <= 4:
-                raise CLIAPIError(400, "reference_upload_ids 必须包含 1-4 项")
+            limit = {"openai": 16, "seedream": 10, "xiaole": 4}[body["provider"]]
+            if not isinstance(references, list) or not 1 <= len(references) <= limit:
+                raise CLIAPIError(400, "reference_upload_ids 必须包含 1-%d 项" % limit)
             body["reference_upload_ids"] = []
             for item in references:
                 clean = _upload_id(item, "reference_upload_ids")
@@ -900,11 +901,9 @@ def _generation_payload(action, value):
             raise CLIAPIError(400, "蒙版局部修改仅支持 openai")
         if body.get("mask_upload_id") and body["count"] != 1:
             raise CLIAPIError(400, "蒙版局部修改 count 必须为 1")
-        if body.get("reference_upload_ids") and body["provider"] != "xiaole":
-            raise CLIAPIError(400, "多参考图目前仅支持 xiaole")
         return body, "image", "/api/gen/image"
     if action == "video-generate":
-        _strict_object(value, {"prompt", "channel", "ratio", "duration", "resolution", "model", "generate_audio"}, ("prompt",))
+        _strict_object(value, {"prompt", "channel", "ratio", "duration", "resolution", "model", "generate_audio", "reference_upload_ids"}, ("prompt",))
         channel = _enum(value.get("channel", "grok"), "channel", ("grok", "micro", "omni"))
         body = {
             "prompt": _string(value["prompt"], "prompt", 1, 2000),
@@ -922,6 +921,16 @@ def _generation_payload(action, value):
             if not isinstance(value["generate_audio"], bool) or channel != "micro":
                 raise CLIAPIError(400, "generate_audio 仅用于 micro 且必须是布尔值")
             body["generate_audio"] = value["generate_audio"]
+        if "reference_upload_ids" in value:
+            references = value["reference_upload_ids"]
+            limit = {"grok": 7, "micro": 9, "omni": 6}[channel]
+            if not isinstance(references, list) or not 1 <= len(references) <= limit:
+                raise CLIAPIError(400, "reference_upload_ids 必须包含 1-%d 项" % limit)
+            body["reference_upload_ids"] = []
+            for item in references:
+                clean = _upload_id(item, "reference_upload_ids")
+                if clean not in body["reference_upload_ids"]:
+                    body["reference_upload_ids"].append(clean)
         return body, "xiaole_video", "/api/gen/xiaole_video"
     _strict_object(value, {"text", "voice", "speed", "pitch", "volume"}, ("text",))
     body = {"text": _string(value["text"], "text", 1, 1000)}

@@ -61,7 +61,7 @@ hq run canvas-create --input @canvas.json --confirm --json
 hq run image-upload --file /absolute/path/reference.png --confirm --json
 ```
 
-上传不扣点、不返回公开 URL，结果中的 `upload_id` 默认一小时失效；每个账号同时最多保留 8 个、合计 60 MiB。把它写入图片生成参数：
+上传不扣点、不返回公开 URL，结果中的 `upload_id` 默认一小时失效；每个账号同时最多保留 20 个、合计 96 MiB。把它写入图片生成参数：
 
 ```sh
 printf '%s\n' '{"prompt":"保持人物一致，生成电影海报","provider":"openai","image_upload_id":"img_替换为上传结果","ratio":"9:16","quality":"hd","count":1}' > image.json
@@ -70,7 +70,7 @@ hq run image-generate --input @image.json --json
 hq run image-generate --input @image.json --confirm --quote-token '<quote_token>' --json
 ```
 
-果肉多参考图使用最多 4 项的 `reference_upload_ids`；OpenAI 局部修改同时传 `image_upload_id` 和 PNG `mask_upload_id`。提交返回 `job_id`，用已有 `task` 能力轮询，任务完成后的 `result.url` / `result.urls` 就是成品地址。
+多参考图统一使用 `reference_upload_ids`：OpenAI 图片最多 16 张、Seedream 10 张、果肉图片 4 张；Grok 视频 7 张、Seedance 9 张、Omni 6 张。提示词用 `@图片1`、`@图片2` 按数组顺序引用（兼容 `@图1`）。OpenAI 局部修改仍同时传 `image_upload_id` 和 PNG `mask_upload_id`。提交返回 `job_id`，用已有 `task` 能力轮询，任务完成后的 `result.url` / `result.urls` 就是成品地址。
 
 画布 Agent 同样分两步：先用 `canvas-get` 读取协作画布并构造 `canvas-agent-plan` 所需的严格文本快照，再报价和确认。任务完成后先审核 `result.plan.actions`；只有确实要落盘时，才把允许的动作转换为 `canvas-ops`，带最新 `base_version`、唯一的 `hqcli-...` 操作号和 `--confirm` 提交。`canvas-ops` 不接受删除、整板覆盖、生成结果、成员管理或脚本。
 
