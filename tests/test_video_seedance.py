@@ -37,6 +37,24 @@ def _http_error(code, detail):
 
 
 class SeedanceVideoTests(unittest.TestCase):
+    def test_reference_payload_rejects_local_and_malformed_asset_urls(self):
+        for value in (
+                "data:image/png;base64,AAAA", "file:///tmp/ref.png",
+                "asset://reference/2", "asset://asset-a/b", "https:///missing-host"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "公网 URL|asset://"):
+                    video_seedance._reference_item(value)
+
+    def test_error_summary_redacts_signed_url_query_credentials(self):
+        raw = (
+            "failed to read https://bucket.example/path/ref.png?"
+            "q-signature=top-secret&q-key-time=1; retry"
+        )
+        cleaned = video_seedance._safe_text(raw)
+        self.assertIn("https://bucket.example/path/ref.png?[REDACTED]", cleaned)
+        self.assertNotIn("top-secret", cleaned)
+        self.assertNotIn("q-key-time", cleaned)
+
     def test_generate_sends_official_payload_once_then_returns_video_url(self):
         events = []
 

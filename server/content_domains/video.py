@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 import fcntl
+import hashlib
+import importlib.util
+import io
+import ipaddress
 import math
 import sqlite3
 import tempfile
@@ -19,6 +23,7 @@ from . import (
     provider_keys,
     short_drama_media_sanitize,
     short_drama_visual_gate,
+    submission_idempotency,
 )
 
 VALID_VIDEO_MODES = {"text", "audio"}
@@ -60,6 +65,25 @@ GROK_VIDEO_PROVIDER = os.environ.get("GROK_VIDEO_PROVIDER", "xai").strip().lower
 XAI_GROK_MODELS = {"grok-imagine-video", "grok-imagine-video-1.5"}
 XAI_GROK_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"}
 XAI_GROK_RESOLUTIONS = {"480p", "720p"}
+SEEDANCE_REFERENCE_MAX_BYTES = 30 * 1024 * 1024
+SEEDANCE_REFERENCE_SIGN_EXPIRE = 2 * 60 * 60
+SEEDANCE_COS_KEY_SCHEME = "cos-key://"
+SEEDANCE_CLEANUP_MAX_ATTEMPTS = 5
+SEEDANCE_STAGING_ORPHAN_GRACE = 10 * 60
+SEEDANCE_UNKNOWN_CLEANUP_DELAY = SEEDANCE_REFERENCE_SIGN_EXPIRE + 60
+_SEEDANCE_ASSET_RE = re.compile(r"asset://asset-[A-Za-z0-9._-]{1,240}\Z")
+_SEEDANCE_IMAGE_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
+_SEEDANCE_IMAGE_FORMATS = {
+    "image/jpeg": "JPEG",
+    "image/jpg": "JPEG",
+    "image/png": "PNG",
+    "image/webp": "WEBP",
+}
 SEEDANCE_UPSCALE_ENABLED = os.environ.get(
     "SEEDANCE_UPSCALE_ENABLED", "0"
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -100,6 +124,13 @@ class SoraSubmissionUnknown(RuntimeError):
 
 class OfficialVideoSubmissionUnknown(RuntimeError):
     """Official Omni/Seedance create may have succeeded without a confirmed id."""
+
+
+class SeedanceReferenceUnavailable(RuntimeError):
+    """A reference image could not be staged before points are deducted."""
+
+    code = "seedance_reference_upload_unavailable"
+    status = 503
 
 
 def _set_provider_key_health(key_id, ok, error=""):
@@ -170,6 +201,876 @@ def seedance_upscale_is_open():
     return SEEDANCE_UPSCALE_ENABLED and wavespeed.available() and cos.enabled()
 
 
+def seedance_reference_upload_is_open():
+    """Reference-image capability is separate from text-only Seedance health."""
+    try:
+        from . import cos
+        return bool(cos.enabled()
+                    and importlib.util.find_spec("qcloud_cos")
+                    and importlib.util.find_spec("PIL"))
+    except Exception:
+        return False
+
+
+def _seedance_reference_uri(value):
+    """Validate a provider-readable reference without fetching user URLs here."""
+    raw = str(value or "").strip()
+    parsed = urllib.parse.urlsplit(raw)
+    if parsed.scheme in {"http", "https"}:
+        if not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("Seedance 参考图 URL 不合法")
+        host = parsed.hostname.rstrip(".").lower()
+        if host == "localhost":
+            raise ValueError("Seedance 参考图必须使用公网地址")
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            address = None
+        if address is not None and not address.is_global:
+            raise ValueError("Seedance 参考图必须使用公网地址")
+        return raw
+    if parsed.scheme == "asset" and _SEEDANCE_ASSET_RE.fullmatch(raw):
+        return raw
+    raise ValueError("Seedance 参考图必须是公网 URL 或已授权 asset:// 素材")
+
+
+def _seedance_decode_check(data, mime):
+    """真实解码校验：完整解码 + 声明 MIME 与实际格式一致。
+    魔数只认文件头，损坏 JPEG 伪装成 image/png 能混过去；这里用 Pillow verify()+load()
+    做完整解码。Pillow 缺失时 fail-closed：宁可拒绝上传也不放行未校验内容。"""
+    try:
+        from PIL import Image
+    except Exception as exc:
+        raise SeedanceReferenceUnavailable("图片完整性校验组件不可用，参考图未上传，本次未扣点") from exc
+    expected = _SEEDANCE_IMAGE_FORMATS.get(mime)
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            detected = str(img.format or "").upper()
+            img.verify()   # 结构完整性
+        with Image.open(io.BytesIO(data)) as img:
+            img.load()     # 完整解码：截断/损坏的像素数据在这一步暴露
+    except Exception:
+        raise ValueError("Seedance 参考图片内容无效或已损坏") from None
+    if detected != expected:
+        raise ValueError("Seedance 参考图片内容与声明格式不一致")
+
+
+def _seedance_data_image(value):
+    raw = str(value or "").strip()
+    if not raw.startswith("data:") or "," not in raw:
+        raise ValueError("Seedance 参考图片格式不支持（jpg/png/webp）")
+    meta, encoded = raw.split(",", 1)
+    if ";base64" not in meta.lower():
+        raise ValueError("Seedance 参考图片必须使用 base64 编码")
+    mime = meta.split(";", 1)[0].replace("data:", "", 1).lower()
+    ext = _SEEDANCE_IMAGE_TYPES.get(mime)
+    if not ext:
+        raise ValueError("Seedance 参考图片格式不支持（jpg/png/webp）")
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except Exception:
+        raise ValueError("Seedance 参考图片内容解析失败") from None
+    if len(data) > SEEDANCE_REFERENCE_MAX_BYTES:
+        raise ValueError("Seedance 单张参考图片不能超过30MB")
+    _seedance_decode_check(data, mime)
+    return mime, ext, data
+
+
+def _seedance_assert_asset_owned(ref, username=None):
+    """asset://asset-<provider_id> 必须命中当前账号在统一资产表里【显式登记】的
+    Seedance 上游素材映射（assets.meta JSON 的 seedance_asset_id 字段）。
+    本地资产行号不等同于上游 asset：没有 provider 映射的普通资产（哪怕编号相同）
+    一律拒绝；库不可读 fail-closed。schema 不变，映射存在现有 meta JSON 字段里。"""
+    owner = str(username or "").strip()
+    suffix = str(ref or "").split("asset://asset-", 1)[-1]
+    if not owner or not suffix:
+        raise ValueError("Seedance 参考素材不存在或未授权给当前账号")
+    try:
+        from . import assets_store
+        with closing(assets_store.adb()) as c:
+            rows = c.execute(
+                """SELECT meta FROM assets
+                   WHERE username=? AND COALESCE(deleted,0)=0 AND meta LIKE '%seedance_asset_id%'""",
+                (owner,)).fetchall()
+    except Exception as exc:
+        print("[seedance] asset ownership check failed: %s" % type(exc).__name__, flush=True)
+        raise ValueError("Seedance 参考素材归属核验失败，请稍后重试") from exc
+    for row in rows:
+        try:
+            meta = json.loads(row["meta"] or "{}")
+        except Exception:
+            continue
+        if str((meta or {}).get("seedance_asset_id") or "") == suffix:
+            return
+    raise ValueError("Seedance 参考素材不存在或未授权给当前账号")
+
+
+def _seedance_cos_presign(object_key, expire=SEEDANCE_REFERENCE_SIGN_EXPIRE):
+    """参考图的短期预签名 GET。cos._SIGN_EXPIRE 面向成片(默认 7 天)，参考图只活一个任务生命周期。"""
+    from . import cos
+    return cos._client().get_presigned_url(
+        Method="GET", Bucket=cos._BUCKET, Key=cos._object_key(object_key), Expired=expire)
+
+
+def _seedance_cos_delete(object_key):
+    from . import cos
+    cos._client().delete_object(Bucket=cos._BUCKET, Key=cos._object_key(object_key))
+
+
+def _seedance_staging_token(token):
+    """Return a unique token for one physical staging attempt.
+
+    Idempotency controls job creation, not object lifetime.  Reusing a stable
+    object key after an aborted request lets an old cleanup intent delete the
+    new retry's image, so every physical attempt must get a fresh key.
+    """
+    return uuid.uuid4().hex
+
+
+def _stage_seedance_reference(value, username=None, token=None):
+    """把本地 data: 参考图上传为 COS 私有对象，返回 (cos-key://内部引用, 对象键)。
+    提交时不签名 —— 签名推迟到 worker 真正向 Seedance 提交的那一刻（见 _seedance_ref_to_signed_url）。
+    只被 stage_seedance_references 调用；http(s)/asset:// 透传不产对象。"""
+    raw = str(value or "").strip()
+    if not raw.startswith("data:"):
+        return _seedance_reference_uri(raw), None
+    owner = str(username or "").strip()
+    if not owner:
+        raise ValueError("Seedance 参考图缺少账号归属信息")
+    mime, ext, data = _seedance_data_image(raw)
+    owner_hash = hashlib.sha256(owner.encode("utf-8")).hexdigest()[:16]
+    content_hash = hashlib.sha256(data).hexdigest()
+    staging_token = str(token or "").strip() or _seedance_staging_token(None)
+    if not re.fullmatch(r"[a-f0-9]{32}", staging_token):
+        raise ValueError("Seedance 参考图暂存标识不合法")
+    object_key = "seedance/reference/%s/%s-%s%s" % (owner_hash, staging_token, content_hash[:16], ext)
+    _persist_staging_cleanup_intent(object_key)
+    try:
+        from . import cos
+        cos.put_bytes(data, object_key, mime, private=True)   # 用户肖像素材强制私有 ACL
+        return SEEDANCE_COS_KEY_SCHEME + object_key, object_key
+    except SeedanceReferenceUnavailable:
+        cleanup_staged_seedance_references([object_key])
+        raise
+    except Exception as exc:
+        print("[seedance] reference staging failed: %s" % type(exc).__name__, flush=True)
+        cleanup_staged_seedance_references([object_key])
+        raise SeedanceReferenceUnavailable("Seedance 参考图上传失败，本次未扣点") from exc
+
+
+def _seedance_ref_to_signed_url(ref, username=None):
+    """worker 向 Seedance 提交前，才把 payload 里的 cos-key:// 对象键换成新鲜预签名 URL。
+    http(s)/asset:// 走原契约不变；cos-key:// 必须是本账号前缀下的参考图键，否则拒绝。"""
+    raw = str(ref or "").strip()
+    if not raw.startswith(SEEDANCE_COS_KEY_SCHEME):
+        return _seedance_reference_uri(raw)
+    owner = str(username or "").strip()
+    owner_hash = hashlib.sha256(owner.encode("utf-8")).hexdigest()[:16] if owner else ""
+    key = raw[len(SEEDANCE_COS_KEY_SCHEME):]
+    if not owner_hash or not key.startswith("seedance/reference/%s/" % owner_hash):
+        raise ValueError("Seedance 参考图对象键不合法")
+    return _seedance_reference_uri(_seedance_cos_presign(key))
+
+
+def _validate_seedance_references(values, username=None):
+    """本地校验(无网络)：真实解码 + MIME/扩展名一致 + asset:// 归属核验。
+    COS 转存是网络动作，由 core 在幂等/上限/余额资格检查之后、扣点之前单独触发。"""
+    refs = [str(item or "").strip() for item in (values or []) if str(item or "").strip()]
+    if len(refs) > 9:
+        raise ValueError("Seedance 最多支持 9 张参考图")
+    out = []
+    for item in refs:
+        if item.startswith("data:"):
+            _seedance_data_image(item)   # 完整解码校验，损坏/伪装在这一步拒绝
+            out.append(item)
+            continue
+        uri = _seedance_reference_uri(item)
+        if uri.startswith("asset://"):
+            _seedance_assert_asset_owned(uri, username)
+        out.append(uri)
+    return out
+
+
+def stage_seedance_references(body, username, token=None):
+    """扣点前的唯一网络动作：micro 渠道的 data: 参考图转存 COS 私有对象。
+    任一失败都 best-effort 删除本批已上传对象（失败键持久化待重试），绝不残留，也绝不回退 data:。
+    就地改写 body["reference_images"] 为 cos-key:// 内部引用（不签名，签名推迟到 worker 提交时），
+    并把对象键记入 body["_seedance_staged_keys"]（随 jobs.payload 落库，供终态清理），
+    返回本批新上传的对象键。"""
+    refs = [str(item or "").strip() for item in ((body or {}).get("reference_images") or []) if str(item or "").strip()]
+    if str((body or {}).get("channel") or "").strip().lower() != "micro" or not any(item.startswith("data:") for item in refs):
+        return []
+    if not seedance_reference_upload_is_open():
+        raise SeedanceReferenceUnavailable("Seedance 参考图上传服务未配置，本次未扣点")
+    staged_keys = []
+    staged_refs = []
+    try:
+        for item in refs:
+            # 每个列表位置使用独立对象键；重复选择同一图片也不能碰撞。
+            url, key = _stage_seedance_reference(
+                item, username, _seedance_staging_token(token)
+            )
+            staged_refs.append(url)
+            if key:
+                staged_keys.append(key)
+    except Exception:
+        cleanup_staged_seedance_references(staged_keys)
+        raise
+    body["reference_images"] = staged_refs
+    body["_seedance_staged_keys"] = staged_keys
+    return staged_keys
+
+
+def xiaole_reference_needs_staging(kind, body):
+    """该提交是否需要在扣点前做 COS 参考图转存（决定预检/锁外上传是否启用）。"""
+    refs = [str(item or "").strip() for item in ((body or {}).get("reference_images") or []) if str(item or "").strip()]
+    return (kind == "xiaole_video"
+            and str((body or {}).get("channel") or "").strip().lower() == "micro"
+            and any(item.startswith("data:") for item in refs))
+
+
+def xiaole_reference_precheck(kind, body, cost, known_points=None):
+    """Fast in-memory eligibility hint; atomic deduct remains authoritative."""
+    if not xiaole_reference_needs_staging(kind, body):
+        return None
+    try:
+        available = int(known_points)
+    except (TypeError, ValueError):
+        return None
+    if available < cost:
+        return (402, {"detail": "点数不足，请先充值（未扣点）", "need": cost})
+    return None
+
+
+def stage_xiaole_video_references(kind, body, username, token=None):
+    """锁外网络转存（core 提交路径的薄接线）：COS 上传耗时长，绝不能放在全局提交锁内。
+    返回 (staged_keys, None)；失败返回 (None, (status, payload)) 由 core 直接 _send。"""
+    if not xiaole_reference_needs_staging(kind, body):
+        return [], None
+    try:
+        return stage_seedance_references(body, username, token), None
+    except SeedanceReferenceUnavailable as e:
+        return None, (e.status, {"detail": str(e)[:220], "code": e.code, "retry_after_ms": 60000})
+
+
+def prepare_xiaole_reference_submission(
+        kind, body, cost, known_points, username, token, endpoint, submission_lock,
+        begin_idempotency, abort_idempotency, check_limit, active_count,
+        max_active_jobs):
+    """Reserve one official submission, then stage its images outside the lock."""
+    if not xiaole_reference_needs_staging(kind, body):
+        return [], False, None
+    with submission_lock:
+        state, response = begin_idempotency()
+        if state == "replay":
+            replay = dict(response or {})
+            return [], False, (int(replay.pop("_http_status", 200)), replay)
+        if state == "conflict":
+            return [], False, (409, {
+                "detail": "同一个 Idempotency-Key 不能用于不同请求",
+                "code": "idempotency_conflict",
+            })
+        if state == "processing":
+            return [], False, (409, {
+                "detail": "相同请求正在受理，请稍后查询",
+                "code": "idempotency_in_progress", "retry_after_ms": 1000,
+            })
+        limit_error = check_limit()
+        if limit_error:
+            abort_idempotency()
+            return [], False, (429, limit_error)
+        active = active_count()
+        if active >= max_active_jobs:
+            abort_idempotency()
+            return [], False, (429, {
+                "detail": "您有 %d 个任务正在排队/生成，完成后再提交" % active,
+                "code": "active_job_cap", "active_jobs": active,
+                "max_active_jobs": max_active_jobs,
+                "retry_after_ms": 4000, "need": cost,
+            })
+        eligibility_error = xiaole_reference_precheck(
+            kind, body, cost, known_points)
+        if eligibility_error:
+            abort_idempotency()
+            return [], False, eligibility_error
+        try:
+            _reserve_seedance_staging_attempt(username, endpoint, token)
+        except SeedanceReferenceUnavailable as exc:
+            abort_idempotency()
+            return [], False, (exc.status, {
+                "detail": str(exc)[:220], "code": exc.code,
+                "retry_after_ms": 60000,
+            })
+    try:
+        keys, staging_error = stage_xiaole_video_references(
+            kind, body, username, token)
+    except Exception:
+        release_seedance_staging_attempt(username, endpoint, token)
+        abort_idempotency()
+        raise
+    if staging_error:
+        release_seedance_staging_attempt(username, endpoint, token)
+        abort_idempotency()
+        return [], False, staging_error
+    try:
+        _mark_seedance_staging_attempt_ready(username, endpoint, token)
+    except SeedanceReferenceUnavailable as exc:
+        cleanup_staged_seedance_references(keys)
+        release_seedance_staging_attempt(username, endpoint, token)
+        abort_idempotency()
+        return [], False, (exc.status, {
+            "detail": str(exc)[:220], "code": exc.code,
+            "retry_after_ms": 60000,
+        })
+    return keys, True, None
+
+
+def after_terminal_seedance_cleanup(claimed, job_id, delay_seconds=0):
+    if claimed:
+        try:
+            cleanup_job_staged_seedance_references(
+                job_id, delay_seconds=delay_seconds)
+        except Exception:
+            pass
+    return claimed
+
+
+def schedule_unknown_seedance_cleanup(kind, payload, error, job_id):
+    delay = seedance_reference_cleanup_delay(kind, payload, error)
+    if delay:
+        cleanup_job_staged_seedance_references(job_id, delay_seconds=delay)
+
+
+_cleanup_table_ready = False
+
+
+def _cleanup_db():
+    """Open the durable staging/cleanup journal and apply additive migration."""
+    global _cleanup_table_ready
+    c = jdb()
+    if not _cleanup_table_ready:
+        c.execute("""CREATE TABLE IF NOT EXISTS seedance_pending_cleanup(
+            key TEXT PRIMARY KEY, job_id INTEGER, created_at INTEGER,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            state TEXT NOT NULL DEFAULT 'cleanup_pending',
+            next_attempt_at INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL DEFAULT 0)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS seedance_staging_attempts(
+            username TEXT NOT NULL, endpoint TEXT NOT NULL, idem_key TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'uploading', job_id INTEGER,
+            kind TEXT, cost INTEGER, owner TEXT, request_json TEXT,
+            charge_key TEXT, refund_key TEXT, recovery_token TEXT,
+            recovery_started_at INTEGER, last_error TEXT,
+            created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+            PRIMARY KEY(username,endpoint,idem_key))""")
+        columns = {row[1] for row in c.execute("PRAGMA table_info(seedance_pending_cleanup)").fetchall()}
+        if "state" not in columns:
+            c.execute("ALTER TABLE seedance_pending_cleanup ADD COLUMN state TEXT NOT NULL DEFAULT 'cleanup_pending'")
+        if "next_attempt_at" not in columns:
+            c.execute("ALTER TABLE seedance_pending_cleanup ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0")
+        if "updated_at" not in columns:
+            c.execute("ALTER TABLE seedance_pending_cleanup ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0")
+        attempt_columns = {
+            row[1] for row in c.execute(
+                "PRAGMA table_info(seedance_staging_attempts)").fetchall()
+        }
+        for name, definition in {
+            "kind": "TEXT", "cost": "INTEGER", "owner": "TEXT",
+            "request_json": "TEXT", "charge_key": "TEXT",
+            "refund_key": "TEXT", "recovery_token": "TEXT",
+            "recovery_started_at": "INTEGER", "last_error": "TEXT",
+        }.items():
+            if name not in attempt_columns:
+                c.execute("ALTER TABLE seedance_staging_attempts ADD COLUMN %s %s" %
+                          (name, definition))
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_seedance_staging_charge_key "
+                  "ON seedance_staging_attempts(charge_key) WHERE charge_key IS NOT NULL")
+        c.commit()
+        _cleanup_table_ready = True
+    return c
+
+
+def _reserve_seedance_staging_attempt(username, endpoint, idem_key):
+    """Persist the pre-charge lease before any COS network operation."""
+    now = int(time.time())
+    try:
+        with closing(_cleanup_db()) as c:
+            c.execute(
+                """INSERT INTO seedance_staging_attempts
+                   (username,endpoint,idem_key,state,job_id,created_at,updated_at)
+                   VALUES(?,?,?,'uploading',NULL,?,?)
+                   ON CONFLICT(username,endpoint,idem_key) DO UPDATE SET
+                     state='uploading',job_id=NULL,created_at=excluded.created_at,
+                     updated_at=excluded.updated_at,kind=NULL,cost=NULL,owner=NULL,
+                     request_json=NULL,charge_key=NULL,refund_key=NULL,
+                     recovery_token=NULL,recovery_started_at=NULL,last_error=NULL""",
+                (str(username), str(endpoint), str(idem_key), now, now),
+            )
+            c.commit()
+    except Exception as exc:
+        print("[seedance] ALARM staging attempt persist failed: %s" % type(exc).__name__, flush=True)
+        raise SeedanceReferenceUnavailable("Seedance 参考图恢复事务不可用，本次未扣点") from exc
+
+
+def _set_seedance_staging_attempt_state(username, endpoint, idem_key, state):
+    now = int(time.time())
+    with closing(_cleanup_db()) as c:
+        changed = c.execute(
+            """UPDATE seedance_staging_attempts SET state=?,updated_at=?
+               WHERE username=? AND endpoint=? AND idem_key=? AND job_id IS NULL""",
+            (str(state), now, str(username), str(endpoint), str(idem_key)),
+        ).rowcount
+        c.commit()
+    if changed != 1:
+        raise SeedanceReferenceUnavailable("Seedance 参考图恢复状态丢失，本次未扣点")
+
+
+def _mark_seedance_staging_attempt_ready(username, endpoint, idem_key):
+    _set_seedance_staging_attempt_state(username, endpoint, idem_key, "staged")
+
+
+def mark_seedance_reference_charging(username, endpoint, idem_key, kind, cost,
+                                     payload, owner, charge_key):
+    """Persist the complete recovery intent before touching Auth points."""
+    charge_key = str(charge_key or "").strip()
+    if not charge_key:
+        raise SeedanceReferenceUnavailable(
+            "Seedance 扣点事务缺少幂等键，本次未扣点")
+    request_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    refund_key = "job-charge-refund:" + hashlib.sha256(
+        charge_key.encode("utf-8")).hexdigest()
+    now = int(time.time())
+    with closing(_cleanup_db()) as c:
+        changed = c.execute(
+            """UPDATE seedance_staging_attempts SET state='charging',kind=?,cost=?,
+               owner=?,request_json=?,charge_key=?,refund_key=?,updated_at=?,
+               recovery_token=NULL,recovery_started_at=NULL,last_error=NULL
+               WHERE username=? AND endpoint=? AND idem_key=? AND state='staged'
+                 AND job_id IS NULL""",
+            (str(kind), int(cost), str(owner), request_json, charge_key,
+             refund_key, now, str(username), str(endpoint), str(idem_key)),
+        ).rowcount
+        c.commit()
+    if changed != 1:
+        raise SeedanceReferenceUnavailable(
+            "Seedance 参考图扣点恢复状态丢失，本次未扣点")
+
+
+def release_seedance_staging_attempt(username, endpoint, idem_key, connection=None):
+    if not (username and endpoint and idem_key):
+        return
+    own = connection is None
+    c = connection or _cleanup_db()
+    try:
+        c.execute(
+            "DELETE FROM seedance_staging_attempts WHERE username=? AND endpoint=? AND idem_key=?",
+            (str(username), str(endpoint), str(idem_key)),
+        )
+        if own:
+            c.commit()
+    finally:
+        if own:
+            c.close()
+
+
+def abort_xiaole_reference_submission(keys, username, endpoint, idem_key, abort_idempotency):
+    """Abort a proven pre-charge attempt and retire both durable reservations."""
+    try:
+        cleanup_staged_seedance_references(keys)
+        release_seedance_staging_attempt(username, endpoint, idem_key)
+    finally:
+        abort_idempotency()
+
+
+def _persist_staging_cleanup_intent(key):
+    """Journal an object key before upload so a process crash is recoverable."""
+    now = int(time.time())
+    try:
+        with closing(_cleanup_db()) as c:
+            c.execute(
+                """INSERT INTO seedance_pending_cleanup
+                   (key,job_id,created_at,attempts,state,next_attempt_at,updated_at)
+                   VALUES(?,?,?,0,'staged',?,?)""",
+                (str(key), None, now, now + SEEDANCE_STAGING_ORPHAN_GRACE, now),
+            )
+            c.commit()
+    except Exception as exc:
+        print("[seedance] ALARM staging cleanup intent persist failed: %s" % type(exc).__name__, flush=True)
+        raise SeedanceReferenceUnavailable("Seedance 参考图清理事务不可用，本次未扣点") from exc
+
+
+def link_staged_seedance_references(connection, keys, job_id, username=None,
+                                    endpoint=None, idem_key=None):
+    """Atomically link staged objects to the job in the job INSERT transaction."""
+    now = int(time.time())
+    for key in [str(k) for k in (keys or []) if k]:
+        cur = connection.execute(
+            """UPDATE seedance_pending_cleanup
+               SET job_id=?,state='linked',next_attempt_at=?,updated_at=?
+               WHERE key=? AND state='staged'""",
+            (int(job_id), now + SEEDANCE_UNKNOWN_CLEANUP_DELAY, now, key),
+        )
+        if cur.rowcount != 1:
+            raise RuntimeError("Seedance 参考图暂存事务丢失")
+    if keys:
+        changed = connection.execute(
+            """UPDATE seedance_staging_attempts SET state='linked',job_id=?,updated_at=?
+               WHERE username=? AND endpoint=? AND idem_key=? AND state='charging'""",
+            (int(job_id), now, str(username), str(endpoint), str(idem_key)),
+        ).rowcount
+        if changed != 1:
+            raise RuntimeError("Seedance 参考图提交事务丢失")
+        release_seedance_staging_attempt(
+            username, endpoint, idem_key, connection=connection)
+
+
+def _enqueue_pending_cleanup(keys, job_id=None, delay_seconds=0):
+    """Persist a cleanup request using the same object key and lifecycle row."""
+    keys = [str(k) for k in (keys or []) if k]
+    if not keys:
+        return
+    try:
+        with closing(_cleanup_db()) as c:
+            now = int(time.time())
+            for k in keys:
+                c.execute(
+                    """INSERT INTO seedance_pending_cleanup
+                       (key,job_id,created_at,attempts,state,next_attempt_at,updated_at)
+                       VALUES(?,?,?,0,'cleanup_pending',?,?)
+                       ON CONFLICT(key) DO UPDATE SET
+                         job_id=COALESCE(excluded.job_id,seedance_pending_cleanup.job_id),
+                         state='cleanup_pending',next_attempt_at=excluded.next_attempt_at,
+                         updated_at=excluded.updated_at""",
+                    (k, job_id, now, now + max(0, int(delay_seconds or 0)), now),
+                )
+            c.commit()
+    except Exception as exc:
+        print("[seedance] ALARM pending cleanup persist failed: %s" % type(exc).__name__, flush=True)
+
+
+def _remove_cleanup_record(key):
+    try:
+        with closing(_cleanup_db()) as c:
+            c.execute("DELETE FROM seedance_pending_cleanup WHERE key=?", (str(key),))
+            c.commit()
+    except Exception:
+        pass
+
+
+def _record_cleanup_failure(key):
+    now = int(time.time())
+    try:
+        with closing(_cleanup_db()) as c:
+            row = c.execute(
+                "SELECT attempts FROM seedance_pending_cleanup WHERE key=?", (str(key),)
+            ).fetchone()
+            attempts = int((row["attempts"] if row else 0) or 0) + 1
+            next_attempt = now + min(300, 30 * (2 ** min(attempts - 1, 3)))
+            c.execute(
+                """UPDATE seedance_pending_cleanup SET attempts=?,state='cleanup_pending',
+                   next_attempt_at=?,updated_at=? WHERE key=?""",
+                (attempts, next_attempt, now, str(key)),
+            )
+            c.commit()
+    except Exception:
+        return
+    if attempts >= SEEDANCE_CLEANUP_MAX_ATTEMPTS:
+        print("[seedance] ALARM cleanup key %s failed %d times, manual intervention required" % (key, attempts), flush=True)
+
+
+def cleanup_staged_seedance_references(object_keys, job_id=None, delay_seconds=0):
+    """best-effort 清理：扣点/入队失败或任务终态时删除已转存的参考图对象；
+    删除失败的键落 seedance_pending_cleanup，由启动扫描和后续清理动作重试收敛。"""
+    keys = [str(k) for k in (object_keys or []) if k]
+    if not keys:
+        return
+    _enqueue_pending_cleanup(keys, job_id, delay_seconds=delay_seconds)
+    if int(delay_seconds or 0) > 0:
+        return
+    for key in keys:
+        try:
+            _seedance_cos_delete(key)
+        except Exception as exc:
+            print("[seedance] reference cleanup failed for %s: %s" % (key, type(exc).__name__), flush=True)
+            _record_cleanup_failure(key)
+            continue
+        _remove_cleanup_record(key)
+
+
+def _recover_orphaned_seedance_attempts(now, limit):
+    """Release only stale attempts proven to be before the charge boundary."""
+    cutoff = int(now) - SEEDANCE_STAGING_ORPHAN_GRACE
+    try:
+        with closing(_cleanup_db()) as c:
+            submission_idempotency.ensure_table(c)
+            c.commit()
+            rows = c.execute(
+                """SELECT username,endpoint,idem_key FROM seedance_staging_attempts
+                   WHERE state IN ('uploading','staged') AND updated_at<=?
+                   ORDER BY updated_at,username,endpoint,idem_key LIMIT ?""",
+                (cutoff, int(limit)),
+            ).fetchall()
+            recovered = 0
+            for row in rows:
+                c.execute("BEGIN IMMEDIATE")
+                attempt = c.execute(
+                    """SELECT state,job_id FROM seedance_staging_attempts
+                       WHERE username=? AND endpoint=? AND idem_key=?""",
+                    (row["username"], row["endpoint"], row["idem_key"]),
+                ).fetchone()
+                if (not attempt or attempt["state"] not in {"uploading", "staged"}
+                        or attempt["job_id"] is not None):
+                    c.commit()
+                    continue
+                # response_json IS NULL proves the key never reached a terminal replay;
+                # the attempt phase proves the external points call was never entered.
+                c.execute(
+                    """DELETE FROM submission_idempotency
+                       WHERE username=? AND endpoint=? AND idem_key=?
+                         AND response_json IS NULL""",
+                    (row["username"], row["endpoint"], row["idem_key"]),
+                )
+                c.execute(
+                    """DELETE FROM seedance_staging_attempts
+                       WHERE username=? AND endpoint=? AND idem_key=?
+                         AND state IN ('uploading','staged') AND job_id IS NULL""",
+                    (row["username"], row["endpoint"], row["idem_key"]),
+                )
+                c.commit()
+                recovered += 1
+            return recovered
+    except Exception:
+        return 0
+
+
+def _seedance_attempt_keys(row):
+    try:
+        payload = json.loads(row["request_json"] or "{}")
+        return [str(key) for key in payload.get("_seedance_staged_keys") or []
+                if str(key)]
+    except Exception:
+        return []
+
+
+def _claim_seedance_charge_recoveries(now, limit):
+    cutoff = int(now) - SEEDANCE_STAGING_ORPHAN_GRACE
+    lease_cutoff = int(now) - SEEDANCE_STAGING_ORPHAN_GRACE
+    claimed = []
+    try:
+        with closing(_cleanup_db()) as c:
+            c.row_factory = sqlite3.Row
+            rows = c.execute(
+                """SELECT username,endpoint,idem_key FROM seedance_staging_attempts
+                   WHERE state IN ('charging','refund_pending') AND job_id IS NULL
+                     AND updated_at<=? AND
+                     (recovery_token IS NULL OR recovery_started_at<=?)
+                   ORDER BY updated_at LIMIT ?""",
+                (cutoff, lease_cutoff, int(limit)),
+            ).fetchall()
+            for candidate in rows:
+                token = "seedance:" + uuid.uuid4().hex
+                changed = c.execute(
+                    """UPDATE seedance_staging_attempts
+                       SET recovery_token=?,recovery_started_at=?,updated_at=?
+                       WHERE username=? AND endpoint=? AND idem_key=?
+                         AND state IN ('charging','refund_pending') AND job_id IS NULL
+                         AND (recovery_token IS NULL OR recovery_started_at<=?)""",
+                    (token, int(now), int(now), candidate["username"],
+                     candidate["endpoint"], candidate["idem_key"], lease_cutoff),
+                ).rowcount
+                if changed == 1:
+                    row = c.execute(
+                        """SELECT * FROM seedance_staging_attempts
+                           WHERE username=? AND endpoint=? AND idem_key=?""",
+                        (candidate["username"], candidate["endpoint"],
+                         candidate["idem_key"]),
+                    ).fetchone()
+                    claimed.append((dict(row), token))
+            c.commit()
+    except Exception:
+        return []
+    return claimed
+
+
+def _release_seedance_charge_recovery(row, token, error=""):
+    with closing(_cleanup_db()) as c:
+        c.execute(
+            """UPDATE seedance_staging_attempts SET recovery_token=NULL,
+               recovery_started_at=NULL,last_error=?,updated_at=?
+               WHERE username=? AND endpoint=? AND idem_key=?
+                 AND recovery_token=? AND job_id IS NULL""",
+            (str(error or "")[:300], int(time.time()), row["username"],
+             row["endpoint"], row["idem_key"], token),
+        )
+        c.commit()
+
+
+def _recover_seedance_charge_attempts(points_domain, now, limit):
+    """Reconcile crash-window charges without replaying a deduction."""
+    if not points_domain or not callable(
+            getattr(points_domain, "get_points_transaction", None)):
+        return 0
+    recovered = 0
+    for row, token in _claim_seedance_charge_recoveries(now, limit):
+        keys = _seedance_attempt_keys(row)
+        if not (row.get("charge_key") and row.get("refund_key") and
+                row.get("request_json") and int(row.get("cost") or 0) > 0):
+            _release_seedance_charge_recovery(
+                row, token, "incomplete_seedance_charge_intent")
+            continue
+        if row["state"] == "charging":
+            try:
+                ledger = points_domain.get_points_transaction(row["charge_key"])
+            except Exception as exc:
+                _release_seedance_charge_recovery(row, token, type(exc).__name__)
+                continue
+            if ledger is None:
+                submission_idempotency.abort(
+                    jdb, row["username"], row["endpoint"], row["idem_key"])
+                release_seedance_staging_attempt(
+                    row["username"], row["endpoint"], row["idem_key"])
+                cleanup_staged_seedance_references(keys)
+                recovered += 1
+                continue
+            try:
+                matches = (str(ledger.get("username") or "") == row["username"]
+                           and int(ledger.get("delta") or 0) == -int(row["cost"]))
+            except (TypeError, ValueError):
+                matches = False
+            if not matches:
+                _release_seedance_charge_recovery(
+                    row, token, "seedance_charge_ledger_inconsistent")
+                continue
+            with closing(_cleanup_db()) as c:
+                changed = c.execute(
+                    """UPDATE seedance_staging_attempts SET state='refund_pending',
+                       updated_at=? WHERE username=? AND endpoint=? AND idem_key=?
+                         AND state='charging' AND recovery_token=?""",
+                    (int(time.time()), row["username"], row["endpoint"],
+                     row["idem_key"], token),
+                ).rowcount
+                c.commit()
+            if changed != 1:
+                continue
+        try:
+            points_domain.refund_points(
+                row["username"], int(row["cost"]),
+                "seedance reference submission:crash recovery",
+                transaction_key=row["refund_key"],
+            )
+        except Exception as exc:
+            _release_seedance_charge_recovery(row, token, type(exc).__name__)
+            continue
+        response = {
+            "detail": "视频任务创建中断，已自动退回点数，请重新提交",
+            "code": "seedance_charge_recovered", "operation_terminal": True,
+            "_http_status": 500,
+        }
+        submission_idempotency.complete(
+            jdb, row["username"], row["endpoint"], row["idem_key"], response)
+        release_seedance_staging_attempt(
+            row["username"], row["endpoint"], row["idem_key"])
+        cleanup_staged_seedance_references(keys)
+        recovered += 1
+    return recovered
+
+
+def _promote_terminal_linked_cleanups(now):
+    """Close the crash window between terminal CAS and its cleanup callback."""
+    try:
+        with closing(_cleanup_db()) as c:
+            changed = c.execute(
+                """UPDATE seedance_pending_cleanup AS cleanup
+                   SET state='cleanup_pending',updated_at=?
+                   WHERE state='linked' AND job_id IS NOT NULL AND (
+                     NOT EXISTS(SELECT 1 FROM jobs WHERE id=cleanup.job_id) OR
+                     EXISTS(SELECT 1 FROM jobs WHERE id=cleanup.job_id
+                            AND status IN ('done','error'))
+                   )""",
+                (int(now),),
+            ).rowcount
+            c.commit()
+            return changed
+    except Exception:
+        return 0
+
+
+def retry_pending_seedance_cleanups(limit=50, points_domain=None):
+    """Retry eligible cleanup rows without starving newer objects."""
+    now = int(time.time())
+    _recover_orphaned_seedance_attempts(now, limit)
+    _recover_seedance_charge_attempts(points_domain, now, limit)
+    _promote_terminal_linked_cleanups(now)
+    try:
+        with closing(_cleanup_db()) as c:
+            rows = c.execute(
+                """SELECT key,attempts,state FROM seedance_pending_cleanup
+                   WHERE (state='cleanup_pending' AND next_attempt_at<=?) OR
+                     (state='staged' AND job_id IS NULL AND created_at<=?)
+                   ORDER BY next_attempt_at,created_at,key LIMIT ?""",
+                (now, now - SEEDANCE_STAGING_ORPHAN_GRACE, int(limit)),
+            ).fetchall()
+    except Exception:
+        return 0
+    processed = 0
+    for row in rows:
+        key = row["key"]
+        if row["state"] == "staged":
+            _enqueue_pending_cleanup([key])
+        try:
+            _seedance_cos_delete(key)
+        except Exception:
+            _record_cleanup_failure(key)
+            processed += 1
+            continue
+        _remove_cleanup_record(key)
+        processed += 1
+    return processed
+
+
+def cleanup_job_staged_seedance_references(job_id, delay_seconds=0):
+    """终态清理：job 进 done/error 后删除本次暂存的参考图对象。
+    由 core._set_terminal 在 CAS 抢到终态后调用；best-effort，永不阻断主流程。
+    防越权：任务必须是 xiaole_video，且每个键必须带该任务属主账号的
+    seedance/reference/<sha256(username)[:16]>/ 前缀 —— payload 被注入/篡改时
+    不能把任意对象键送进删除函数，两条校验不过只告警不删除。"""
+    try:
+        with closing(jdb()) as c:
+            row = c.execute("SELECT kind,username,payload FROM jobs WHERE id=?", (job_id,)).fetchone()
+    except Exception as exc:
+        print("[seedance] terminal cleanup lookup failed for job %s: %s" % (job_id, type(exc).__name__), flush=True)
+        return
+    if not row or row["kind"] != "xiaole_video":
+        return
+    try:
+        keys = (json.loads(row["payload"] or "{}")).get("_seedance_staged_keys") or []
+    except Exception:
+        return
+    owner_hash = hashlib.sha256(str(row["username"] or "").encode("utf-8")).hexdigest()[:16]
+    prefix = "seedance/reference/%s/" % owner_hash
+    safe = []
+    for key in keys:
+        key = str(key or "")
+        if key.startswith(prefix):
+            safe.append(key)
+        else:
+            print("[seedance] ALARM refuse to delete foreign object key for job %s: %s" % (job_id, key[:80]), flush=True)
+    cleanup_staged_seedance_references(safe, job_id, delay_seconds=delay_seconds)
+
+
+def seedance_reference_cleanup_delay(kind, payload, error):
+    """Keep references alive when a paid create may have been accepted upstream."""
+    if kind != "xiaole_video" or str((payload or {}).get("channel") or "").lower() != "micro":
+        return 0
+    try:
+        from . import video_seedance
+        if isinstance(error, video_seedance.CreateOutcomeUnknown):
+            return SEEDANCE_UNKNOWN_CLEANUP_DELAY
+    except Exception:
+        pass
+    return 0
+
+
 def _xiaole_build_refs(reference_images):
     # 前端传 dataURL/URL → API 要的 [{type, value}]，最多 XIAOLE_MAX_REF 张。
     # type 合法枚举(实测 422 暴露)：'url' | 'base64' | 'data_url'。
@@ -204,11 +1105,14 @@ def _xiaole_ref_to_url(data_url):
         print("[video] 参考图转存COS失败，回退原始数据: %s" % e, flush=True)
         return s
 
-def validate_xiaole_video_payload(payload):
+def validate_xiaole_video_payload(payload, username=None):
     """校验共用任务入口；micro / omni 只允许各自官方适配器。"""
     if not isinstance(payload, dict):
         raise ValueError("请求体不是合法 JSON")
-    cleaned = dict(payload)
+    # Internal fields are server-owned. Accepting client supplied cleanup keys
+    # would turn terminal cleanup into a cross-user COS deletion primitive.
+    cleaned = {key: value for key, value in payload.items()
+               if not str(key).startswith("_")}
     channel = str(cleaned.get("channel") or "grok").strip().lower()
     if channel not in XIAOLE_CHANNEL_MODELS:
         raise ValueError("未知视频渠道：%s" % channel)
@@ -279,11 +1183,7 @@ def validate_xiaole_video_payload(payload):
         cleaned.pop("upscale_prediction_id", None)
         if len(refs) > 9:
             raise ValueError("Seedance 最多支持 9 张参考图")
-        for item in refs:
-            if item.startswith(("https://", "http://", "asset://")):
-                continue
-            if not _is_valid_data_url(item, VALID_IMAGE_MIMES):
-                raise ValueError("Seedance 参考图必须是 jpg/png/webp 图片")
+        refs = _validate_seedance_references(refs, username)
         video_seedance._build_payload(
             model, prompt, duration, ratio, resolution, generate_audio, []
         )
@@ -3607,7 +4507,10 @@ def gen_xiaole_video(payload):
             ref_images = (
                 list(raw_refs)
                 if channel == "omni"
-                else [_xiaole_ref_to_url(r) for r in raw_refs]
+                else ([_seedance_ref_to_signed_url(r, payload.get("_username"))
+                       for r in raw_refs]
+                      if channel == "micro"
+                      else [_xiaole_ref_to_url(r) for r in raw_refs])
             )
     mention_style = "xai" if use_xai else ("omni" if channel == "omni" else "generic")
     prompt = resolve_image_mentions(user_prompt, len(ref_images or []), mention_style)

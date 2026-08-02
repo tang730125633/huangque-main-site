@@ -327,7 +327,7 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
             core.HANDLERS = {"video": lambda body: body, "tryon": lambda body: body, "xiaole_video": lambda body: body}
             video.validate_video_payload = lambda body, username: body
             video.validate_tryon_payload = lambda body: body
-            video.validate_xiaole_video_payload = lambda body: body
+            video.validate_xiaole_video_payload = lambda body, username=None: body
             try:
                 with closing(sqlite3.connect(core.JOB_DB)) as db:
                     db.execute("""CREATE TABLE jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,username TEXT,cost INTEGER,
@@ -424,6 +424,355 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
                 video.validate_tryon_payload = originals["validate_tryon"]
                 video.validate_xiaole_video_payload = originals["validate_xiaole"]
                 video.record_video_pending_asset = originals["record_pending"]
+
+
+
+def _real_png_data_url(seed=0):
+    import io as _io
+    from PIL import Image
+    buf = _io.BytesIO()
+    Image.new("RGB", (8, 8), (seed % 256, 128, 64)).save(buf, "PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+class SeedanceReferenceOrderingTests(unittest.TestCase):
+    """评审探针：COS 转存必须发生在幂等/任务上限/余额资格检查之后、扣点之前，
+    且所有后续失败都要清理本批已上传对象。COS SDK 全程 mock，不联网。"""
+
+    def test_reference_upload_runs_after_eligibility_and_before_deduct(self):
+        from content_domains import core, cos
+
+        class FakePointsError(Exception):
+            def __init__(self, status, detail):
+                self.status, self.detail = status, detail
+
+        class FakePoints:
+            AuthPointsError = FakePointsError
+
+            def __init__(self):
+                self.deductions = []
+                self.refunds = []
+                self.balance = 100
+                self.deduct_error = None
+                self.transaction = None
+                self.get_point_calls = 0
+
+            def cost_of(self, kind, body):
+                return 20
+
+            def get_points(self, username):
+                self.get_point_calls += 1
+                return self.balance
+
+            def deduct_points(self, username, cost, reason, transaction_key=""):
+                if self.deduct_error:
+                    raise self.deduct_error
+                self.deductions.append((username, cost, reason, transaction_key))
+                return self.balance - cost
+
+            def safe_refund_points(self, username, cost, reason):
+                self.refunds.append((username, cost, reason))
+                return self.balance
+
+            def refund_points(self, username, cost, reason, transaction_key=""):
+                self.refunds.append((username, cost, reason, transaction_key))
+                return self.balance
+
+            def get_points_transaction(self, transaction_key):
+                return self.transaction
+
+            def public_error_body(self, error, need):
+                return {"detail": error.detail, "need": need}
+
+        signed_url = "https://bucket-1250000000.cos.ap-guangzhou.myqcloud.com/seedance/reference/x?q-sign-algorithm=sha1"
+        flags = {"upload_open": True, "enqueue_ok": True}
+        fake = FakePoints()
+        originals = {
+            "JOB_DB": core.JOB_DB, "AUDIO_DB": core.AUDIO_DB, "_domains": core._domains,
+            "verify": core.verify, "require_enabled": core.feature_flags.require_enabled,
+            "is_enabled": core.feature_flags.is_enabled,
+            "max_active": core.MAX_USER_ACTIVE_JOBS,
+            "max_xiaole": core.MAX_USER_ACTIVE_XIAOLE_VIDEO,
+            "handlers": core.HANDLERS, "enqueue_job": core.enqueue_job,
+            "seedance_probe": video.seedance_video_is_open,
+            "upload_probe": video.seedance_reference_upload_is_open,
+            "presign": video._seedance_cos_presign,
+            "cos_delete": video._seedance_cos_delete,
+            "cos_enabled": cos.enabled, "cos_put": cos.put_bytes,
+            "cleanup_ready": video._cleanup_table_ready,
+        }
+        server = None
+        from content_domains import video_seedance
+        originals["seedance_available"] = video_seedance.available
+        with tempfile.TemporaryDirectory() as td:
+            core.JOB_DB = str(pathlib.Path(td) / "jobs.db")
+            core.AUDIO_DB = str(pathlib.Path(td) / "assets.db")
+            video._cleanup_table_ready = False
+            core.verify = lambda token: {
+                "username": "fang", "must_change": False, "points": fake.balance
+            }
+            core.feature_flags.require_enabled = lambda kind: None
+            core.feature_flags.is_enabled = lambda kind: True
+            core.MAX_USER_ACTIVE_JOBS = 5
+            core.MAX_USER_ACTIVE_XIAOLE_VIDEO = 3
+            core.HANDLERS = {"xiaole_video": lambda body: body}
+            core.enqueue_job = lambda jid, kind=None, mode=None: flags["enqueue_ok"]
+            video.seedance_video_is_open = lambda: True
+            video_seedance.available = lambda: True
+            video.seedance_reference_upload_is_open = lambda: flags["upload_open"]
+            video._seedance_cos_presign = lambda key, expire=video.SEEDANCE_REFERENCE_SIGN_EXPIRE: signed_url
+            cos.enabled = lambda: True
+            put_calls = []
+            delete_calls = []
+            def fake_put(data, key, content_type=None, private=False):
+                put_calls.append({"key": key, "private": private, "content_type": content_type,
+                                  "lock_held": core._submission_lock.locked()})
+                return signed_url
+            def fake_delete(key):
+                delete_calls.append(key)
+            cos.put_bytes = fake_put
+            video._seedance_cos_delete = fake_delete
+            try:
+                with closing(sqlite3.connect(core.JOB_DB)) as db:
+                    db.execute("""CREATE TABLE jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,username TEXT,cost INTEGER,
+                        status TEXT DEFAULT 'pending',payload TEXT,result TEXT,error TEXT,created_at INTEGER,updated_at INTEGER,
+                        deleted INTEGER DEFAULT 0, refunded INTEGER DEFAULT 0, owner TEXT)""")
+                    db.commit()
+                core.init_audio_db()
+                core._domains = lambda: (None, fake, video)
+                server = ThreadingHTTPServer(("127.0.0.1", 0), core.H)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                base = "http://127.0.0.1:%d" % server.server_address[1]
+
+                request_seq = [0]
+
+                def post(body, idem=None):
+                    headers = {"Authorization": "Bearer test", "Content-Type": "application/json"}
+                    if idem is None and body.get("channel") == "micro":
+                        request_seq[0] += 1
+                        idem = "seedance-probe-%04d" % request_seq[0]
+                    if idem:
+                        headers["Idempotency-Key"] = idem
+                    req = urllib.request.Request(base + "/api/gen/xiaole_video",
+                                                 data=json.dumps(body).encode("utf-8"),
+                                                 method="POST", headers=headers)
+                    try:
+                        with urllib.request.urlopen(req, timeout=5) as resp:
+                            return resp.status, json.loads(resp.read())
+                    except urllib.error.HTTPError as e:
+                        return e.code, json.loads(e.read() or b"{}")
+
+                def reset(seed_rows=()):
+                    from content_domains import submission_idempotency
+                    with closing(core.jdb()) as db:
+                        db.execute("DELETE FROM jobs")
+                        submission_idempotency.ensure_table(db)
+                        db.execute("DELETE FROM submission_idempotency")
+                        for idx, (kind, status, payload) in enumerate(seed_rows, start=1):
+                            db.execute("INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at,deleted,refunded) VALUES(?,?,?,?,?,?,?,1,0,0)",
+                                       (idx, kind, "fang", 20, status, payload, 1))
+                        db.commit()
+                    put_calls.clear()
+                    delete_calls.clear()
+                    fake.deductions.clear()
+                    fake.refunds.clear()
+                    fake.balance = 100
+                    fake.deduct_error = None
+                    fake.transaction = None
+                    fake.get_point_calls = 0
+                    core._shutting_down.clear()
+                    flags["upload_open"] = True
+                    flags["enqueue_ok"] = True
+                    core.MAX_USER_ACTIVE_JOBS = 5
+                    core.MAX_USER_ACTIVE_XIAOLE_VIDEO = 3
+
+                micro_body = {"channel": "micro", "prompt": "demo", "duration": 5,
+                              "reference_images": [_real_png_data_url(1)]}
+
+                # 资格全过：上传在扣点前完成，私有 ACL，payload 只存 cos-key:// 键不存签名 URL
+                reset()
+                status, resp = post(micro_body)
+                self.assertEqual(200, status)
+                self.assertEqual(1, len(put_calls))
+                self.assertIs(put_calls[0]["private"], True)
+                self.assertIs(put_calls[0]["lock_held"], False)   # COS 网络上传不得持有全局提交锁
+                self.assertEqual(1, len(fake.deductions))
+                self.assertEqual(0, fake.get_point_calls)
+                with closing(core.jdb()) as db:
+                    row = db.execute("SELECT payload FROM jobs").fetchone()
+                    lifecycle = db.execute(
+                        "SELECT state,job_id FROM seedance_pending_cleanup WHERE key=?",
+                        (put_calls[0]["key"],),
+                    ).fetchone()
+                self.assertIn("cos-key://" + put_calls[0]["key"], row["payload"])
+                self.assertEqual(("linked", resp["job_id"]), tuple(lifecycle))
+                self.assertNotIn("data:image", row["payload"])
+                self.assertNotIn("q-sign-algorithm", row["payload"])   # 提交时不签名，签名推迟到 worker
+                self.assertEqual(0, video.retry_pending_seedance_cleanups())
+
+                # 终态清理：job 进 done 后删除本次暂存对象；重复 CAS 不重复清理
+                self.assertEqual([], delete_calls)
+                self.assertTrue(core._set_terminal(resp["job_id"], "done", result={"url": "x"}, from_states=("pending", "running")))
+                self.assertEqual([put_calls[0]["key"]], delete_calls)
+                self.assertFalse(core._set_terminal(resp["job_id"], "done", result={"url": "y"}, from_states=("pending", "running")))
+                self.assertEqual(1, len(delete_calls))
+
+                # P0 入口：客户端注入的 _seedance_staged_keys 不得随 payload 入库
+                reset()
+                status, resp = post(dict(micro_body, _seedance_staged_keys=["seedance/reference/0000000000000000/evil.png"]))
+                self.assertEqual(200, status)
+                with closing(core.jdb()) as db:
+                    row = db.execute("SELECT payload FROM jobs").fetchone()
+                self.assertNotIn("evil.png", row["payload"])
+                self.assertIn(put_calls[0]["key"], row["payload"])   # 只剩服务端自己生成的键
+
+                # P0 出口：恶意构造的 payload 行（他人前缀/任意键）→ 终态清理删除调用数为 0
+                reset()
+                with closing(core.jdb()) as db:
+                    db.execute("INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at,deleted,refunded) VALUES(1,'xiaole_video','fang',20,'done',?,1,1,0,0)",
+                               (json.dumps({"_seedance_staged_keys": ["seedance/reference/0000000000000000/evil.png", "anything/at/all.png"]}),))
+                    db.commit()
+                video.cleanup_job_staged_seedance_references(1)
+                self.assertEqual([], delete_calls)
+
+                # 余额不足：资格预检 402，COS 上传调用数为 0，不扣点不建任务
+                reset()
+                fake.balance = 0
+                status, resp = post(micro_body)
+                self.assertEqual(402, status)
+                self.assertEqual([], put_calls)
+                self.assertEqual([], fake.deductions)
+                with closing(core.jdb()) as db:
+                    self.assertEqual(0, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+
+                # 全局任务上限已满：429，COS 上传调用数为 0
+                reset(seed_rows=[("video", "running", "{}")])
+                core.MAX_USER_ACTIVE_JOBS = 1
+                status, resp = post(micro_body)
+                self.assertEqual(429, status)
+                self.assertEqual("active_job_cap", resp["code"])
+                self.assertEqual([], put_calls)
+
+                # 果肉/豆姐/欧米渠道上限已满：429，COS 上传调用数为 0
+                reset(seed_rows=[("xiaole_video", "pending", '{"channel":"micro"}')])
+                core.MAX_USER_ACTIVE_XIAOLE_VIDEO = 1
+                status, resp = post(micro_body)
+                self.assertEqual(429, status)
+                self.assertEqual("xiaole_active_cap", resp["code"])
+                self.assertEqual([], put_calls)
+
+                # 幂等冲突：同 Key 不同请求体 409，COS 上传调用数为 0
+                reset()
+                status, resp = post({"channel": "micro", "prompt": "first", "duration": 5}, idem="probe-key-0001")
+                self.assertEqual(200, status)
+                self.assertEqual([], put_calls)   # 首个请求无参考图，本就不上传
+                status, resp = post(micro_body, idem="probe-key-0001")
+                self.assertEqual(409, status)
+                self.assertEqual("idempotency_conflict", resp["code"])
+                self.assertEqual([], put_calls)
+                self.assertEqual(1, len(fake.deductions))   # 冲突请求没有二次扣点
+
+                # 上传服务未配置：503 seedance_reference_upload_unavailable，扣点/建任务为 0
+                reset()
+                flags["upload_open"] = False
+                status, resp = post(micro_body)
+                self.assertEqual(503, status)
+                self.assertEqual("seedance_reference_upload_unavailable", resp["code"])
+                self.assertEqual([], put_calls)
+                self.assertEqual([], fake.deductions)
+                with closing(core.jdb()) as db:
+                    self.assertEqual(0, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+
+                # 扣点结果未知（上传后）：先保留对象，流水确认未扣点后再清理。
+                reset()
+                fake.deduct_error = FakePointsError(502, "点数接口不可用")
+                status, resp = post(micro_body)
+                self.assertEqual(502, status)
+                self.assertEqual(1, len(put_calls))
+                self.assertEqual([], delete_calls)
+                with closing(core.jdb()) as db:
+                    self.assertEqual(0, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+                    self.assertEqual("charging", db.execute(
+                        "SELECT state FROM seedance_staging_attempts").fetchone()[0])
+                    db.execute("UPDATE seedance_staging_attempts SET updated_at=0")
+                    db.commit()
+                video.retry_pending_seedance_cleanups(points_domain=fake)
+                self.assertEqual([put_calls[0]["key"]], delete_calls)
+
+                # 入队失败（扣点后）：已上传对象必须被清理，点数退回
+                reset()
+                flags["enqueue_ok"] = False
+                status, resp = post(micro_body)
+                self.assertEqual(429, status)
+                self.assertEqual("queue_full", resp["code"])
+                self.assertEqual(1, len(put_calls))
+                self.assertEqual([put_calls[0]["key"]], delete_calls)
+                self.assertEqual(1, len(fake.refunds))
+
+                # SIGTERM during COS upload: clean the object and stop before deduct/job creation.
+                reset()
+                def shutdown_during_put(data, key, content_type=None, private=False):
+                    put_calls.append({"key": key, "lock_held": core._submission_lock.locked()})
+                    core._shutting_down.set()
+                    return signed_url
+                cos.put_bytes = shutdown_during_put
+                status, resp = post(micro_body)
+                cos.put_bytes = fake_put
+                core._shutting_down.clear()
+                self.assertEqual(503, status)
+                self.assertEqual("shutting_down", resp["code"])
+                self.assertEqual([put_calls[0]["key"]], delete_calls)
+                self.assertEqual([], fake.deductions)
+                with closing(core.jdb()) as db:
+                    self.assertEqual(0, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+
+                # 并行提交：两个上传必须并发发生（证明上传不在全局提交锁内），且互不阻塞、各自成功
+                reset()
+                barrier = threading.Barrier(2)
+                def blocking_put(data, key, content_type=None, private=False):
+                    put_calls.append({"key": key, "lock_held": core._submission_lock.locked()})
+                    barrier.wait(timeout=20)   # 上传若持锁，另一方到不了这里 → BrokenBarrierError → 503
+                    return signed_url
+                cos.put_bytes = blocking_put
+                results = {}
+                def worker(tag):
+                    try:
+                        results[tag] = post({"channel": "micro", "prompt": "demo", "duration": 5,
+                                             "reference_images": [_real_png_data_url(tag)]})[0]
+                    except Exception as exc:
+                        results[tag] = repr(exc)
+                threads = [threading.Thread(target=worker, args=(tag,)) for tag in (1, 2)]
+                for t in threads: t.start()
+                for t in threads: t.join(timeout=30)
+                cos.put_bytes = fake_put
+                self.assertEqual({1: 200, 2: 200}, results)
+                self.assertEqual(2, len(put_calls))
+                self.assertEqual(2, len({call["key"] for call in put_calls}))   # 跨提交对象键不共享
+                self.assertEqual(2, len(fake.deductions))
+            finally:
+                if server:
+                    server.shutdown()
+                    server.server_close()
+                core.JOB_DB = originals["JOB_DB"]
+                core.AUDIO_DB = originals["AUDIO_DB"]
+                core._domains = originals["_domains"]
+                core.verify = originals["verify"]
+                core.feature_flags.require_enabled = originals["require_enabled"]
+                core.feature_flags.is_enabled = originals["is_enabled"]
+                core.MAX_USER_ACTIVE_JOBS = originals["max_active"]
+                core.MAX_USER_ACTIVE_XIAOLE_VIDEO = originals["max_xiaole"]
+                core.HANDLERS = originals["handlers"]
+                core.enqueue_job = originals["enqueue_job"]
+                video.seedance_video_is_open = originals["seedance_probe"]
+                video_seedance.available = originals["seedance_available"]
+                video.seedance_reference_upload_is_open = originals["upload_probe"]
+                video._seedance_cos_presign = originals["presign"]
+                video._seedance_cos_delete = originals["cos_delete"]
+                cos.enabled = originals["cos_enabled"]
+                cos.put_bytes = originals["cos_put"]
+                video._cleanup_table_ready = originals["cleanup_ready"]
+
 
 
 if __name__ == "__main__":
