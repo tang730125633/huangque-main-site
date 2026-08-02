@@ -889,6 +889,8 @@
     hint.style.cssText='font-size:11.5px;color:#5c6b82;';
     var buttons=document.createElement('div');
     buttons.style.cssText='display:flex;align-items:center;gap:6px;flex:0 0 auto;';
+    var compose=actionBtn('一键成片',function(){ location.href='one-click-video.html?source_asset_id='+encodeURIComponent(x.id); });
+    if(!videoUrl) compose.disabled=true;
     var regen=actionBtn('重生成',function(){ regenerate(x,'video',regen); });
     var del=actionBtn('删除',function(){ deleteAsset(x,'video',del); }); del.className+=' danger';
     var dl=document.createElement('button');
@@ -897,7 +899,7 @@
     dl.onclick=function(){ if(videoUrl) downloadAsset(videoUrl,'huangque-video.mp4',dl); else location.href='video.html'; };
     dl.className='asset-action gold';
     dl.style.height='30px';
-    buttons.appendChild(regen); buttons.appendChild(del); buttons.appendChild(dl);
+    buttons.appendChild(compose); buttons.appendChild(regen); buttons.appendChild(del); buttons.appendChild(dl);
     foot.appendChild(hint); foot.appendChild(buttons);
     body.appendChild(head); body.appendChild(meta); body.appendChild(foot);
     w.appendChild(media); w.appendChild(body); addMarkTools(w,x,'video');

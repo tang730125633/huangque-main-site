@@ -17,7 +17,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security, inspiration_likes, history, notifications, cli_gateway, cli_uploads  # 领域存储模块均无反向依赖
+import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security, inspiration_likes, history, notifications, cli_gateway, cli_uploads, video_compose  # 领域存储模块均无反向依赖
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -1264,12 +1264,12 @@ class H(BaseHTTPRequestHandler):
         audio_domain, points_domain, video_domain = _domains()
         if cli_gateway.handle_image_upload(
                 self, p, verify, _must_change_password, AUTH_INTERNAL_TOKEN): return
-        if cli_gateway.handle_quote(self, p, verify, _must_change_password, is_shutting_down,
-                                    feature_flags, points_domain, audio_domain, video_domain, AUTH_INTERNAL_TOKEN): return
+        if cli_gateway.handle_quote(self, p, verify, _must_change_password, is_shutting_down, feature_flags, points_domain, audio_domain, video_domain, AUTH_INTERNAL_TOKEN): return
         if _short_drama_domain().dispatch_http(self, "POST", jdb, verify, getattr(points_domain, "cost_of", None), mutation_lock=_submission_lock, canvas_access_resolver=_short_drama_canvas_access,
                 points_getter=getattr(points_domain, "get_points", None), voice_validator=lambda username, voice_key:
                 audio_domain.resolve_audio_provider_voice(username, voice_key), generation_dependencies=(audio_domain, points_domain, globals())): return
         if _digital_ip_domain().dispatch_http(self, "POST", verify, _must_change_password): return
+        if video_compose.dispatch_http(self, "POST", verify, _must_change_password, adb, _resolve_out_file, OUT_DIR): return
         if p == "/api/gen/inspiration/like": return inspiration_likes.handle_post(self, verify(self._token()), AUDIO_DB)
         if p == "/api/gen/asset/favorite":
             user = verify(self._token())
@@ -1802,8 +1802,8 @@ class H(BaseHTTPRequestHandler):
         audio_domain, points_domain, video_domain = _domains()
         if _short_drama_domain().dispatch_http(self, "GET", jdb, verify, getattr(points_domain, "cost_of", None), canvas_access_resolver=_short_drama_canvas_access): return
         if _digital_ip_domain().dispatch_http(self, "GET", verify, _must_change_password): return
-        if p == "/api/gen/audio/clone-vip":
-            return self._method_not_allowed()
+        if video_compose.dispatch_http(self, "GET", verify, _must_change_password, adb, _resolve_out_file, OUT_DIR): return
+        if p == "/api/gen/audio/clone-vip": return self._method_not_allowed()
         if p == "/api/gen/inspiration/likes": return inspiration_likes.handle_get(self, verify(self._token()), AUDIO_DB)
         if p == "/api/gen/asset/marks":
             user = verify(self._token())
