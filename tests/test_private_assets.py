@@ -15,6 +15,13 @@ from content_domains import core, cos
 
 
 class PrivateAssetsTest(unittest.TestCase):
+    def test_download_proxy_sends_douyin_referer(self):
+        self.assertEqual(
+            dl_service.download_headers("v26-webf.douyinvod.com")["Referer"],
+            "https://www.douyin.com/",
+        )
+        self.assertNotIn("Referer", dl_service.download_headers("sns-video-hw.xhscdn.com"))
+
     def test_download_proxy_health_endpoint(self):
         server = dl_service.ThreadingHTTPServer(("127.0.0.1", 0), dl_service.H)
         thread = threading.Thread(target=server.serve_forever, daemon=True)

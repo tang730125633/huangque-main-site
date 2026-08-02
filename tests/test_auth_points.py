@@ -123,6 +123,20 @@ class AuthPointsTests(unittest.TestCase):
         points, err = self.auth.deduct_points("fang", 4, "job:image submit:y", "job-charge:x")
         self.assertIsNone(points)
         self.assertEqual(err, "transaction_conflict")
+
+    def test_content_points_transaction_lookup_is_read_only_and_encoded(self):
+        from content_domains import points
+
+        with patch.object(points, "_auth_points_request", return_value={
+            "transaction": {"username": "fang", "delta": -5},
+        }) as request:
+            row = points.get_points_transaction("job-charge:/fang")
+        self.assertEqual(row["delta"], -5)
+        request.assert_called_once_with(
+            "/api/auth/points/transaction?transaction_key=job-charge%3A%2Ffang",
+            method="GET",
+        )
+
     def test_refund_transaction_key_rejects_different_amount(self):
         self.auth.refund_points("fang", 5, "job#42", "job-refund:42")
         points, err = self.auth.refund_points("fang", 6, "job#43", "job-refund:42")
@@ -228,6 +242,24 @@ class AuthPointsTests(unittest.TestCase):
             with urllib.request.urlopen(req, timeout=3) as r:
                 data = json.loads(r.read())
             self.assertEqual(data["points"], 6)
+
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(
+                    base + "/api/auth/points/transaction?transaction_key=job-charge:http",
+                    timeout=3,
+                )
+            self.assertEqual(ctx.exception.code, 403)
+            self.auth.deduct_points(
+                "fang", 1, "job:http", "job-charge:http")
+            lookup = urllib.request.Request(
+                base + "/api/auth/points/transaction?transaction_key=job-charge%3Ahttp",
+                headers={"X-HQ-Internal-Token": "test-internal-token"},
+            )
+            with urllib.request.urlopen(lookup, timeout=3) as r:
+                transaction = json.loads(r.read())["transaction"]
+            self.assertEqual(transaction["username"], "fang")
+            self.assertEqual(transaction["delta"], -1)
+            self.assertEqual(transaction["after_points"], 5)
         finally:
             server.shutdown()
             server.server_close()
