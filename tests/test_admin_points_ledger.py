@@ -17,8 +17,9 @@ class AdminPointsLedgerTests(unittest.TestCase):
         self.assertIn('id="pointsDirection"', self.html)
         self.assertNotIn('id="auditActor"', self.html)
 
-    def test_user_action_opens_filtered_points_module(self):
-        self.assertIn("if(act==='audit') return openPoints(username);", self.html)
+    def test_user_detail_opens_filtered_points_module(self):
+        self.assertIn("el('detailPoints').onclick=function(){openPoints(u.username)};", self.html)
+        self.assertIn("openUserDetail('',btn.getAttribute('data-user-id'));", self.html)
         self.assertIn("el('pointsUser').value=username||'';", self.html)
         self.assertIn("switchModule('points');", self.html)
 
