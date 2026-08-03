@@ -28,6 +28,7 @@ from content_domains import video_compose_asr as asr
 from content_domains import video_compose_media as media
 from content_domains import video_compose_render as render
 from content_domains import video_compose_store as store
+import content_api
 
 
 class VideoComposeAnalysisTests(unittest.TestCase):
@@ -304,7 +305,7 @@ class VideoComposeHttpTests(unittest.TestCase):
         core._resolve_out_file = lambda rel: source if rel == "video/source.mp4" else None
         core._job_queue = queue.Queue(maxsize=4)
         core._queued_job_ids = set()
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), core.H)
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), content_api.H)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.base = "http://127.0.0.1:%d" % self.server.server_address[1]
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
