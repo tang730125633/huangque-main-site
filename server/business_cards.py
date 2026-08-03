@@ -20,9 +20,11 @@ TEXT_FIELDS = ("name", "headline", "company", "bio", "phone", "email", "address"
 JSON_FIELDS = ("tags", "works", "links")
 MEDIA_FIELDS = ("avatar", "wechat_qr")
 WORK_IMAGE_FIELDS = ("work_image_1", "work_image_2", "work_image_3")
+WORK_VIDEO_FIELDS = ("work_video_1", "work_video_2", "work_video_3")
 SENSITIVE_FIELDS = ("phone", "email", "address", "wechat_qr")
 MAX_JSON_BYTES = 64 * 1024
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
+MAX_VIDEO_BYTES = 20 * 1024 * 1024
 MAX_PIXELS = 16_000_000
 ANONYMOUS_JOURNEY_RETENTION = 30 * 24 * 3600
 CONVERTED_JOURNEY_RETENTION = 365 * 24 * 3600
@@ -279,39 +281,49 @@ def _json(value, field):
     return raw
 
 
+def _work_media_key(user_id, media_type, slot, key):
+    extension = {"image": ".jpg", "video": ".mp4"}.get(media_type)
+    prefix = "cards/%s/work_%s_%s/" % (int(user_id), media_type, int(slot))
+    return bool(extension and isinstance(key, str) and key.startswith(prefix) and key.endswith(extension) and len(key) <= 512)
+
+
 def _work_image_key(user_id, slot, key):
-    prefix = "cards/%s/work_image_%s/" % (int(user_id), int(slot))
-    return isinstance(key, str) and key.startswith(prefix) and key.endswith(".jpg") and len(key) <= 512
+    return _work_media_key(user_id, "image", slot, key)
 
 
 def _work_slots(works):
-    images, other = {}, []
+    groups, other = {"image": {}, "video": {}}, []
     for item in works if isinstance(works, list) else []:
-        if not isinstance(item, dict) or item.get("type") != "image":
+        media_type = item.get("type") if isinstance(item, dict) else ""
+        if media_type not in groups:
             other.append(item)
             continue
         try:
             slot = int(item.get("slot") or 0)
         except (TypeError, ValueError):
             slot = 0
-        if slot not in (1, 2, 3) or slot in images:
-            slot = next((value for value in (1, 2, 3) if value not in images), 0)
+        slots = groups[media_type]
+        if slot not in (1, 2, 3) or slot in slots:
+            slot = next((value for value in (1, 2, 3) if value not in slots), 0)
         if slot:
-            images[slot] = {**item, "type": "image", "slot": slot}
-    return images, other
+            slots[slot] = {**item, "type": media_type, "slot": slot}
+    return groups["image"], groups["video"], other
 
 
 def _works(value, user_id):
     if not isinstance(value, list):
         raise CardError("invalid_works")
-    images, other = _work_slots(value)
-    for slot, item in images.items():
-        key = item.get("key")
-        if key and not _work_image_key(user_id, slot, key):
-            raise CardError("invalid_work_image", "作品图片无效")
-        if key:
+    images, videos, other = _work_slots(value)
+    for media_type, slots in (("image", images), ("video", videos)):
+        for slot, item in slots.items():
+            key = item.get("key")
+            if key and not _work_media_key(user_id, media_type, slot, key):
+                raise CardError("invalid_work_" + media_type, "作品媒体无效")
             item.pop("url", None)
-    return _json([images[slot] for slot in sorted(images)] + other, "works")
+    return _json(
+        [images[slot] for slot in sorted(images)] + [videos[slot] for slot in sorted(videos)] + other,
+        "works",
+    )
 
 
 def _text(value, field):
@@ -373,25 +385,33 @@ def set_media_key(conn, user_id, field, key, now=None):
     return dict(conn.execute("SELECT * FROM business_cards WHERE user_id=?", (int(user_id),)).fetchone())
 
 
-def set_work_image_key(conn, user_id, slot, key, title=None, now=None):
+def set_work_media_key(conn, user_id, media_type, slot, key, title=None, now=None):
     slot = int(slot)
-    if slot not in (1, 2, 3) or not _work_image_key(user_id, slot, key):
-        raise CardError("invalid_work_image", "作品图片无效")
+    if slot not in (1, 2, 3) or not _work_media_key(user_id, media_type, slot, key):
+        raise CardError("invalid_work_" + str(media_type), "作品媒体无效")
     if title is not None:
         title = _text(title, "title")
     row = create_draft(conn, user_id, now=now)
-    images, other = _work_slots(json.loads(row["works_json"] or "[]"))
-    item = images.get(slot, {"type": "image", "slot": slot, "title": ""})
-    item.update({"type": "image", "slot": slot, "key": key})
+    images, videos, other = _work_slots(json.loads(row["works_json"] or "[]"))
+    slots = images if media_type == "image" else videos
+    item = slots.get(slot, {"type": media_type, "slot": slot, "title": ""})
+    item.update({"type": media_type, "slot": slot, "key": key})
     item.pop("url", None)
     if title is not None:
         item["title"] = title
-    images[slot] = item
+    slots[slot] = item
     conn.execute(
         "UPDATE business_cards SET works_json=?,updated_at=? WHERE user_id=?",
-        (_json([images[value] for value in sorted(images)] + other, "works"), int(now or time.time()), int(user_id)),
+        (_json(
+            [images[value] for value in sorted(images)] + [videos[value] for value in sorted(videos)] + other,
+            "works",
+        ), int(now or time.time()), int(user_id)),
     )
     return item
+
+
+def set_work_image_key(conn, user_id, slot, key, title=None, now=None):
+    return set_work_media_key(conn, user_id, "image", slot, key, title, now)
 
 
 def _media_url(key):
@@ -414,15 +434,17 @@ def _decode(row, owner=False):
     privacy = {field: bool(row[field + "_public"]) for field in SENSITIVE_FIELDS}
     works = json.loads(row["works_json"] or "[]")
     for item in works:
-        if not isinstance(item, dict) or item.get("type") != "image":
+        if not isinstance(item, dict) or item.get("type") not in ("image", "video"):
             continue
         try:
             slot = int(item.get("slot") or 0)
         except (TypeError, ValueError):
             slot = 0
         key = item.get("key")
-        if key and _work_image_key(row["user_id"], slot, key):
+        if key and _work_media_key(row["user_id"], item["type"], slot, key):
             item["url"] = _media_url(key)
+        else:
+            item.pop("url", None)
         if not owner:
             item.pop("key", None)
     result = {
@@ -611,4 +633,26 @@ def upload_image(payload, field, prefix="cards"):
         raise CardError("media_unavailable", "媒体服务暂不可用", 503)
     key = "%s/%s/%s.jpg" % (prefix, field, secrets.token_urlsafe(16))
     cos.put_bytes(raw, key, "image/jpeg", private=True)
+    return key
+
+
+def upload_video(payload, field, prefix="cards"):
+    if field not in WORK_VIDEO_FIELDS or not isinstance(payload, str) or not payload.startswith("data:video/mp4;base64,"):
+        raise CardError("invalid_video", "仅支持 MP4 视频")
+    try:
+        raw = base64.b64decode(payload.split(",", 1)[1], validate=True)
+    except Exception as exc:
+        raise CardError("invalid_video", "视频文件无效") from exc
+    if len(raw) > MAX_VIDEO_BYTES:
+        raise CardError("video_too_large", "请上传 20MB 以内的视频", 413)
+    if len(raw) < 12 or raw[4:8] != b"ftyp":
+        raise CardError("invalid_video", "视频文件无效")
+    try:
+        from .content_domains import cos
+    except ImportError:
+        from content_domains import cos
+    if not cos.enabled():
+        raise CardError("media_unavailable", "媒体服务暂不可用", 503)
+    key = "%s/%s/%s.mp4" % (prefix, field, secrets.token_urlsafe(16))
+    cos.put_bytes(raw, key, "video/mp4", private=True)
     return key
