@@ -66,7 +66,10 @@
           status:text(video.status||'blocked'),
           current_version:video.current_version==null?null:number(video.current_version,0),
           video_revision:video.video_revision==null?null:number(video.video_revision,0),
-          probe:video.probe&&typeof video.probe==='object'?clone(video.probe):null
+          probe:video.probe&&typeof video.probe==='object'?clone(video.probe):null,
+          source_kind:text(video.source_kind||'standard'),
+          lipsync:video.lipsync&&typeof video.lipsync==='object'?
+            clone(video.lipsync):null
         },
         blockers:(Array.isArray(shot.blockers)?shot.blockers:[]).map(normalizeBlocker)
       };
@@ -124,6 +127,9 @@
         blockers:(Array.isArray(masterAudio.blockers)?
           masterAudio.blockers:[]).map(normalizeBlocker)
       },
+      lipsync_assembly:input.lipsync_assembly&&
+        typeof input.lipsync_assembly==='object'?
+        clone(input.lipsync_assembly):null,
       config:config,
       shots:shots,
       versions:Array.isArray(input.versions)?input.versions.map(clone):[],
@@ -199,7 +205,10 @@
         '<div><strong>'+escapeHtml(shot.shot_key)+'</strong><small>'+
         shot.duration+' 秒</small></div><dl><div><dt>配音字幕</dt><dd>'+
         (shot.voice.locked?'已锁定':'未锁定')+'</dd></div><div><dt>电影化身视频</dt><dd>'+
-        (shot.video.confirmed?'已确认 v'+shot.video.current_version:'未确认')+'</dd></div></dl>'+
+        (shot.video.source_kind==='lipsync'&&shot.video.lipsync?
+          '口型成片 v'+escapeHtml(shot.video.lipsync.version):
+          (shot.video.confirmed?'已确认 v'+shot.video.current_version:'未确认'))+
+        '</dd></div></dl>'+
         '<span class="nc-sda-status">'+readinessLabel(shot.ready)+'</span></article>';
     }).join('');
     var blockerMessages=uniqueBlockerMessages(state.readiness.blockers);

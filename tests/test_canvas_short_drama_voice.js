@@ -821,27 +821,44 @@ async function testC2ShotPlaybackStopsOnSelectionAndDestroy() {
 function testAlignmentPanelUsesServerActionsAndEscapesProvider() {
   const snapshot = c2Snapshot();
   snapshot.alignment = {
-    provider: { name: '<estimated-provider>' },
+    provider: {
+      name: '<real-provider>', real_forced_alignment: true,
+      model_version: 'zh-v1', feature_enabled: true,
+      word_timing_enabled: true,
+    },
     readiness: { ready: true, blockers: [] },
     actions: { generate: false, save: true, lock: false },
     current_version: {
       id: 'alignment-1', version: 2, revision: 1,
       status: 'needs_review', effective_status: 'needs_review',
       quality: {
-        coverage: 1, mean_confidence: 0.92,
+        coverage: 0.75, mean_confidence: 0.72,
+        unmatched_tokens: [{ token: '<漏词>' }],
+        low_confidence_ranges: [{ line_id: 'voice-1' }],
+        degradation: [{ line_id: 'voice-1', reason: 'partial_match' }],
         blockers: [{ code: 'manual_review_required', message: '<校对必需>' }],
       },
       timeline: [{
         line_id: 'voice-1', text: '第一句',
         audio_start_ms: 100, audio_end_ms: 1800,
         subtitle_start_ms: 100, subtitle_end_ms: 1800,
+        confidence: 0.6, status: 'partial_match',
+        unmatched_tokens: [{ token: '<漏词>' }],
+        words: [{
+          token: '<低>', start_ms: 100, end_ms: 300, confidence: 0.4,
+        }],
       }],
     },
   };
   let html = voice.renderWorkspace(snapshot, { voices, canEdit: true });
   assert.match(html, /第 4 阶段 · 字幕强制对齐/);
-  assert.match(html, /&lt;estimated-provider&gt;/);
+  assert.match(html, /&lt;real-provider&gt; · 真实/);
   assert.match(html, /&lt;校对必需&gt;/);
+  assert.match(html, /未匹配词[\s\S]*1/);
+  assert.match(html, /低置信区间[\s\S]*1/);
+  assert.match(html, /词级诊断（1）/);
+  assert.match(html, /&lt;漏词&gt;/);
+  assert.match(html, /nc-sdv-alignment-word is-low/);
   assert.match(html, /data-alignment-field="subtitle_start_ms"/);
   assert.match(html, /data-action="preview-alignment"/);
   assert.match(html, /data-action="review-alignment"/);

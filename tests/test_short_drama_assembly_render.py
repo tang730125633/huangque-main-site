@@ -11,30 +11,6 @@ from server.content_domains import startup_recovery
 
 
 class ShortDramaAssemblyRenderTests(unittest.TestCase):
-    def test_toolchain_requires_strict_noto_font_preflight(self):
-        font = {
-            "family": "Noto Sans CJK SC",
-            "file": "/fonts/noto/NotoSansCJK-Regular.ttc",
-            "font_dir": "/fonts/noto",
-        }
-        with (
-            mock.patch.object(
-                render, "_run",
-                return_value=mock.Mock(stdout="ffmpeg version test\n"),
-            ),
-            mock.patch.object(
-                render.media_plan, "inspect_ffprobe",
-                return_value="ffprobe version test",
-            ),
-            mock.patch.object(
-                render.subtitles, "inspect_font", return_value=font
-            ) as inspect_font,
-        ):
-            tools = render._toolchain()
-        inspect_font.assert_called_once_with()
-        self.assertEqual(font["file"], tools["font"])
-        self.assertEqual(font["font_dir"], tools["font_dir"])
-
     def test_corrupt_reusable_audio_is_staled_then_rebuilt_in_same_job(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -116,7 +92,7 @@ class ShortDramaAssemblyRenderTests(unittest.TestCase):
                 {"file": Path("shot-b.mp4"), "duration_ms": 5000},
             ],
             Path("master.wav"), Path("subtitles.ass"), "9:16",
-            Path("preview.mp4"), Path("/fonts/noto"),
+            Path("preview.mp4"),
         )
         joined = " ".join(str(item) for item in command)
         self.assertIn("scale=720:1280", joined)
@@ -136,18 +112,26 @@ class ShortDramaAssemblyRenderTests(unittest.TestCase):
         command = render.build_preview_command(
             [{"file": "shot.mp4", "duration_ms": 30000}],
             "master.wav", "subtitles.ass", "16:9", "preview.mp4",
-            "/fonts/noto",
         )
         self.assertIsInstance(command, list)
         joined = " ".join(str(item) for item in command)
         self.assertIn("scale=1280:720", joined)
         self.assertIn("-t 30.000", joined)
 
+    def test_external_vtt_preview_does_not_burn_ass_subtitles(self):
+        command = render.build_preview_command(
+            [{"file": "shot.mp4", "duration_ms": 5000}],
+            "master.wav", "subtitles.ass", "9:16", "preview.mp4",
+            burn_subtitles=False,
+        )
+        joined = " ".join(str(item) for item in command)
+        self.assertNotIn("subtitles=filename=", joined)
+        self.assertIn("[joined]null[vout]", joined)
+
     def test_final_command_rebuilds_1080p_high_profile_from_sources(self):
         command = render.build_final_command(
             [{"file": "shot.mp4", "duration_ms": 5000}],
             "master.wav", "subtitles.ass", "9:16", "final.part.mp4",
-            "/fonts/noto",
         )
         joined = " ".join(str(item) for item in command)
         self.assertIn("scale=1080:1920", joined)
@@ -155,6 +139,30 @@ class ShortDramaAssemblyRenderTests(unittest.TestCase):
         self.assertIn("-profile:v high", joined)
         self.assertIn("-crf 20", joined)
         self.assertIn("-b:a 192k", joined)
+
+    def test_toolchain_requires_strict_noto_font_preflight(self):
+        font = {
+            "family": "Noto Sans CJK SC",
+            "file": "/fonts/NotoSansCJK-Regular.ttc",
+            "font_dir": "/fonts",
+        }
+        with (
+            mock.patch.object(
+                render, "_run",
+                return_value=mock.Mock(stdout="ffmpeg version test\n"),
+            ),
+            mock.patch.object(
+                render.media_plan, "inspect_ffprobe",
+                return_value="ffprobe version test",
+            ),
+            mock.patch.object(
+                render.subtitles, "inspect_font", return_value=font
+            ) as inspect_font,
+        ):
+            tools = render._toolchain()
+        inspect_font.assert_called_once_with()
+        self.assertEqual("/fonts/NotoSansCJK-Regular.ttc", tools["font"])
+        self.assertEqual("/fonts", tools["font_dir"])
 
     def test_final_upload_reuses_verified_content_addressed_object(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -183,6 +191,97 @@ class ShortDramaAssemblyRenderTests(unittest.TestCase):
             object_url.assert_called_once_with(
                 "final/key.mp4", private=True
             )
+
+    def test_final_upload_uses_cos_metadata_header_and_retries_head_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "final.mp4"
+            source.write_bytes(b"new-final")
+            digest = render._file_sha256(source)
+            verified = {
+                "Content-Length": str(source.stat().st_size),
+                "X-COS-META-SHA256": digest,
+                "x-cos-request-id": "request-1",
+            }
+            with (
+                mock.patch.object(cos, "enabled", return_value=True),
+                mock.patch.object(
+                    cos, "head",
+                    side_effect=[
+                        FileNotFoundError(),
+                        {"Content-Length": str(source.stat().st_size)},
+                        verified,
+                    ],
+                ),
+                mock.patch.object(
+                    cos, "upload", return_value="signed-url"
+                ) as upload,
+                mock.patch.object(render.time, "sleep") as sleep,
+            ):
+                self.assertEqual(
+                    "signed-url",
+                    render._verified_private_upload(
+                        source, "final/key.mp4", "video/mp4", digest
+                    ),
+                )
+            upload.assert_called_once_with(
+                source,
+                "final/key.mp4",
+                "video/mp4",
+                private=True,
+                metadata={"x-cos-meta-sha256": digest},
+            )
+            sleep.assert_called_once_with(0.5)
+
+    def test_final_upload_reports_missing_remote_sha256(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "final.mp4"
+            source.write_bytes(b"missing-hash")
+            digest = render._file_sha256(source)
+            head = {
+                "Content-Length": str(source.stat().st_size),
+                "x-cos-request-id": "request-2",
+            }
+            with (
+                mock.patch.object(cos, "enabled", return_value=True),
+                mock.patch.object(
+                    cos, "head",
+                    side_effect=[FileNotFoundError(), head, head, head, head],
+                ),
+                mock.patch.object(cos, "upload", return_value="signed-url"),
+                mock.patch.object(render.time, "sleep"),
+            ):
+                with self.assertRaises(render.PreviewRenderError) as raised:
+                    render._verified_private_upload(
+                        source, "final/key.mp4", "video/mp4", digest
+                    )
+            self.assertEqual("upload_hash_missing", raised.exception.code)
+            self.assertIn("SHA256 元数据缺失", str(raised.exception))
+            self.assertIn("request-2", str(raised.exception))
+
+    def test_final_upload_reports_remote_size_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "final.mp4"
+            source.write_bytes(b"wrong-size")
+            digest = render._file_sha256(source)
+            head = {
+                "Content-Length": str(source.stat().st_size + 1),
+                "x-cos-meta-sha256": digest,
+            }
+            with (
+                mock.patch.object(cos, "enabled", return_value=True),
+                mock.patch.object(
+                    cos, "head",
+                    side_effect=[FileNotFoundError(), head, head, head, head],
+                ),
+                mock.patch.object(cos, "upload", return_value="signed-url"),
+                mock.patch.object(render.time, "sleep"),
+            ):
+                with self.assertRaises(render.PreviewRenderError) as raised:
+                    render._verified_private_upload(
+                        source, "final/key.mp4", "video/mp4", digest
+                    )
+            self.assertEqual("upload_size_mismatch", raised.exception.code)
+            self.assertIn("文件大小不一致", str(raised.exception))
 
     def test_startup_requeues_local_preview_without_refund(self):
         with tempfile.TemporaryDirectory() as directory:

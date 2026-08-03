@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from unittest.mock import Mock, patch
 
 
@@ -188,7 +189,7 @@ class ProviderKeyPoolTests(unittest.TestCase):
         self.assertEqual(revealed["expires_in"], 5)
         public = admin_api.provider_key_list()
         self.assertNotIn("secret", str(public))
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             action = conn.execute(
                 "SELECT action FROM admin_audit ORDER BY id DESC LIMIT 1"
             ).fetchone()[0]
@@ -220,7 +221,7 @@ class ProviderKeyPoolTests(unittest.TestCase):
             result["secrets"],
             [{"env": "HEYGEN_API_KEY", "secret": "heygen-secret-7788"}],
         )
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             action, detail = conn.execute(
                 "SELECT action,detail FROM admin_audit ORDER BY id DESC LIMIT 1"
             ).fetchone()
@@ -362,7 +363,7 @@ class ProviderKeyPoolTests(unittest.TestCase):
         self.assertEqual(item["provider_key_id"], "key-9")
 
     def test_admin_console_exposes_real_pool_controls_and_auto_refresh(self):
-        html = (ROOT / "site" / "admin" / "index.html").read_text()
+        html = (ROOT / "site" / "admin" / "index.html").read_text(encoding="utf-8")
         for text in (
             "每 30 秒刷新", "xAI API · 果肉视频", "查看 5 秒",
             "data-provider-key-replace", "data-server-key-reveal",
