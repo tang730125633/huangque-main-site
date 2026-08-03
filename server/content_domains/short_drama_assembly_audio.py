@@ -144,11 +144,99 @@ def build_bgm_command(source_path, duration_ms, config, output_path):
     ]
 
 
-def _premaster_filter(has_bgm):
-    if not has_bgm:
+def _sound_cue_config(cue, project_duration_ms):
+    try:
+        start_ms = int(cue.get("timeline_start_ms"))
+        end_ms = int(cue.get("timeline_end_ms"))
+        volume = float(cue.get("volume"))
+        fade_in_ms = int(cue.get("fade_in_ms"))
+        fade_out_ms = int(cue.get("fade_out_ms"))
+    except (AttributeError, TypeError, ValueError) as error:
+        raise AudioEngineError(
+            "sound_cue_invalid", "音效时间线配置无效"
+        ) from error
+    duration_ms = end_ms - start_ms
+    if (
+        start_ms < 0
+        or end_ms <= start_ms
+        or end_ms > project_duration_ms
+        or not math.isfinite(volume)
+        or volume < 0
+        or volume > 1
+        or fade_in_ms < 0
+        or fade_out_ms < 0
+        or fade_in_ms + fade_out_ms > duration_ms
+    ):
+        raise AudioEngineError("sound_cue_invalid", "音效时间线配置无效")
+    return start_ms, end_ms, volume, fade_in_ms, fade_out_ms
+
+
+def build_soundscape_command(cues, duration_ms, output_path):
+    """Place manual ambience/SFX cues on one deterministic project timeline."""
+    if not isinstance(cues, list) or not cues:
+        raise AudioEngineError("sound_cue_invalid", "音效时间线不能为空")
+    command = _base_command() + [
+        "-f", "lavfi", "-t", _seconds(duration_ms), "-i",
+        f"anullsrc=r={SAMPLE_RATE}:cl=stereo",
+    ]
+    filters = []
+    labels = ["[0:a]"]
+    for index, cue in enumerate(cues, 1):
+        start_ms, end_ms, volume, fade_in_ms, fade_out_ms = (
+            _sound_cue_config(cue, duration_ms)
+        )
+        if cue.get("loop") is True:
+            command.extend(["-stream_loop", "-1"])
+        command.extend(["-i", str(cue.get("file") or "")])
+        cue_duration_ms = end_ms - start_ms
+        fade_out_start = max(0, cue_duration_ms - fade_out_ms)
+        label = f"[cue{index}]"
+        filters.append(
+            f"[{index}:a]aresample={SAMPLE_RATE},"
+            "aformat=sample_fmts=s16:channel_layouts=stereo,"
+            f"atrim=duration={_seconds(cue_duration_ms)},asetpts=N/SR/TB,"
+            f"volume={volume:.6f},"
+            f"afade=t=in:st=0:d={_seconds(fade_in_ms)},"
+            f"afade=t=out:st={_seconds(fade_out_start)}:"
+            f"d={_seconds(fade_out_ms)},"
+            f"adelay={start_ms}|{start_ms}{label}"
+        )
+        labels.append(label)
+    filters.append(
+        "".join(labels)
+        + f"amix=inputs={len(labels)}:duration=first:dropout_transition=0,"
+        f"atrim=duration={_seconds(duration_ms)},asetpts=N/SR/TB[out]"
+    )
+    command.extend([
+        "-filter_complex", ";".join(filters),
+        "-map", "[out]", "-c:a", "pcm_s16le", str(output_path),
+    ])
+    return command
+
+
+def _premaster_filter(has_bgm, has_soundscape=False):
+    if not has_bgm and not has_soundscape:
         return (
             f"[0:a]aresample={SAMPLE_RATE},"
             "aformat=sample_fmts=s16:channel_layouts=stereo[premaster]"
+        )
+    if has_bgm and has_soundscape:
+        return (
+            "[0:a]asplit=3[voice][side_bgm][side_sfx];"
+            "[1:a][side_bgm]sidechaincompress="
+            "threshold=0.02:ratio=8:attack=20:release=300[bgm_ducked];"
+            "[2:a][side_sfx]sidechaincompress="
+            "threshold=0.02:ratio=4:attack=12:release=180[sfx_ducked];"
+            "[voice][sfx_ducked][bgm_ducked]amix=inputs=3:duration=first:"
+            "dropout_transition=0[premaster]"
+        )
+    if has_soundscape:
+        return (
+            "[0:a]asplit=2[voice][side_sfx];"
+            "[1:a][side_sfx]sidechaincompress="
+            "threshold=0.02:ratio=4:attack=12:release=180[sfx_ducked];"
+            "[voice][sfx_ducked]amix=inputs=2:duration=first:"
+            "dropout_transition=0[premaster]"
         )
     return (
         "[0:a]asplit=2[voice][side];"
@@ -174,9 +262,9 @@ def _loudnorm_filter(measured=None):
     )
 
 
-def _mix_graph(has_bgm, duration_ms, measured=None):
+def _mix_graph(has_bgm, duration_ms, measured=None, has_soundscape=False):
     return (
-        _premaster_filter(has_bgm)
+        _premaster_filter(has_bgm, has_soundscape)
         + f";[premaster]{_loudnorm_filter(measured)},"
         f"aresample={SAMPLE_RATE},"
         "aformat=sample_fmts=s16:channel_layouts=stereo,"
@@ -184,15 +272,23 @@ def _mix_graph(has_bgm, duration_ms, measured=None):
     )
 
 
-def build_loudness_analysis_command(dialogue_path, bgm_path, duration_ms):
+def build_loudness_analysis_command(
+    dialogue_path, bgm_path, duration_ms, soundscape_path=None
+):
     # loudnorm writes its JSON measurements at info level. Keeping the
     # default error level here makes a successful analysis look empty.
     command = _base_command("info") + ["-i", str(dialogue_path)]
     if bgm_path is not None:
         command.extend(["-i", str(bgm_path)])
+    if soundscape_path is not None:
+        command.extend(["-i", str(soundscape_path)])
     command.extend([
         "-filter_complex",
-        _mix_graph(bgm_path is not None, duration_ms),
+        _mix_graph(
+            bgm_path is not None,
+            duration_ms,
+            has_soundscape=soundscape_path is not None,
+        ),
         "-map", "[out]", "-f", "null", "-",
     ])
     return command
@@ -235,15 +331,23 @@ def parse_loudnorm(stderr):
 
 
 def build_master_command(
-    dialogue_path, bgm_path, duration_ms, measured, output_path
+    dialogue_path, bgm_path, duration_ms, measured, output_path,
+    soundscape_path=None,
 ):
     measured = _validated_measurements(measured)
     command = _base_command() + ["-i", str(dialogue_path)]
     if bgm_path is not None:
         command.extend(["-i", str(bgm_path)])
+    if soundscape_path is not None:
+        command.extend(["-i", str(soundscape_path)])
     command.extend([
         "-filter_complex",
-        _mix_graph(bgm_path is not None, duration_ms, measured),
+        _mix_graph(
+            bgm_path is not None,
+            duration_ms,
+            measured,
+            soundscape_path is not None,
+        ),
         "-map", "[out]", "-c:a", "pcm_s16le",
         "-ar", str(SAMPLE_RATE), "-ac", str(CHANNELS),
         str(output_path),

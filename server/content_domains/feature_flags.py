@@ -1,8 +1,9 @@
 """Shared platform feature flags.
 
 The admin service writes these flags; content/imggen read them before accepting
-new generation work. Missing rows intentionally mean enabled so existing
-deployments keep their current behavior until an operator disables a feature.
+new generation work. Missing rows use each catalog entry's default: legacy
+entries remain enabled, while new features may opt into fail-closed behavior
+with ``default_enabled=False``.
 """
 
 from contextlib import closing
@@ -19,6 +20,20 @@ _CACHE = {"loaded_at": 0, "items": {}}
 _TTL = 5
 
 CATALOG = [
+    {
+        "key": "short_drama_lipsync_multi_v1",
+        "name": "短剧多人对白口型",
+        "desc": "项目内人物跟踪、人工确认与多人轮流对白口型",
+        "service": "content",
+        "default_enabled": False,
+    },
+    {
+        "key": "short_drama_lipsync_v1",
+        "name": "短剧真实口型",
+        "desc": "短剧真实口型灰度、付费任务与合成交付",
+        "service": "content",
+        "default_enabled": False,
+    },
     {"key": "image", "name": "图片生成", "desc": "黄雀引擎 1 / 2 图片生成入口", "service": "content"},
     {"key": "banana", "name": "纳米香蕉作图", "desc": "纳米香蕉 2 / Pro 图片生成入口", "service": "imggen"},
     {"key": "audio", "name": "配音生成", "desc": "文案配音与音色复刻", "service": "content"},
@@ -130,8 +145,16 @@ def set_enabled(feature, enabled, actor):
     return get_feature(key)
 
 
+def _safe_rows():
+    try:
+        return _load_rows()
+    except Exception as e:
+        print("[feature_flags] read failed, using catalog defaults: %s" % e, flush=True)
+        return {}
+
+
 def get_feature(feature):
-    rows = _load_rows()
+    rows = _safe_rows()
     key = str(feature or "").strip()
     meta = dict(CATALOG_MAP[key])
     row = rows.get(key) or {}
@@ -146,7 +169,7 @@ def get_feature(feature):
 
 
 def list_features(services=None):
-    rows = _load_rows()
+    rows = _safe_rows()
     service_map = {}
     for svc in services or []:
         service_map[svc.get("key")] = svc

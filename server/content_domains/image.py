@@ -191,6 +191,16 @@ def validate_image_payload(payload):
         raise ValueError("\u8bf7\u6c42\u4f53\u5fc5\u987b\u662f JSON \u5bf9\u8c61")
     body = dict(payload)
     provider = str(body.get("provider") or "openai").strip().lower()
+    if provider == "banana":
+        from . import banana_provider
+        banana_body = banana_provider.validate_payload(body)
+        # Preserve server-trusted short-drama metadata; the shared adapter only
+        # normalizes fields that are sent to Gemini.
+        if "short_drama_references" in body:
+            banana_body["short_drama_references"] = body["short_drama_references"]
+        if "short_drama_raw_prompt" in body:
+            banana_body["short_drama_raw_prompt"] = body["short_drama_raw_prompt"]
+        return banana_body
     if provider == "zelong2":
         raise ValueError("泽龙2生图渠道维护中，请使用 Seedream 或果肉生图")
     prompt = (body.get("prompt") or "").strip()
@@ -577,6 +587,14 @@ def gen_image(payload):
     if not prompt:
         raise ValueError("提示词不能为空")
     references = payload.get("short_drama_references")
+    reference_images = []
+    def banana_reference(raw):
+        mime = "image/png"
+        if raw.startswith(b"\xff\xd8\xff"):
+            mime = "image/jpeg"
+        elif raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+            mime = "image/webp"
+        return {"data": base64.b64encode(raw).decode("ascii"), "mime_type": mime}
     if isinstance(references, list):
         context = []
         continuity = None
@@ -586,7 +604,17 @@ def gen_image(payload):
             ref_type = str(reference.get("type") or "")
             name = str(reference.get("name") or "").strip()
             if ref_type == "character" and name:
-                context.append("character appearance: " + name)
+                character_context = [name]
+                for field in ("identity_text", "personality", "appearance_prompt", "wardrobe_prompt"):
+                    value = str(reference.get(field) or "").strip()
+                    if value:
+                        character_context.append(value)
+                context.append("character: " + " | ".join(character_context))
+                local_character = _trusted_short_drama_continuity(
+                    reference.get("url"), reference.get("file")
+                )
+                if local_character:
+                    reference_images.append(banana_reference(local_character))
             elif ref_type == "continuity":
                 if name:
                     context.append("visual continuity: " + name)
@@ -599,7 +627,10 @@ def gen_image(payload):
                 continuity.get("url"), continuity.get("file")
             )
             if local_continuity:
-                payload["image"] = base64.b64encode(local_continuity).decode("ascii")
+                if (payload.get("provider") or "").strip().lower() == "banana":
+                    reference_images.append(banana_reference(local_continuity))
+                else:
+                    payload["image"] = base64.b64encode(local_continuity).decode("ascii")
     payload["prompt"] = prompt
     ratio = payload.get("ratio") or "1:1"
     img   = _clean_b64(payload.get("image"))  # 老单图字段兼容
@@ -608,6 +639,18 @@ def gen_image(payload):
     mask  = _clean_b64(payload.get("mask"))   # 蒙版(透明处=要重绘的区域) → 局部修改
     quality = "high" if (payload.get("quality") or "hd") == "hd" else "medium"  # 标准=medium/高清=high
     provider = (payload.get("provider") or "openai").strip().lower()
+    if provider == "banana":
+        if mask:
+            raise ValueError("Nano Banana short-drama generation does not support masks")
+        from . import banana_provider
+        banana_payload = dict(payload)
+        banana_images = list(payload.get("images") or []) + reference_images
+        if len(banana_images) > banana_provider.MAX_REFERENCE_IMAGES:
+            raise ValueError("Nano Banana supports at most 5 reference images in total")
+        banana_payload["images"] = banana_images
+        result = banana_provider.generate(banana_payload, OUT_DIR, public_url)
+        result["raw_prompt"] = payload.get("short_drama_raw_prompt") or prompt
+        return result
     if provider == "zelong2":
         raise ValueError("泽龙2生图渠道维护中，请使用 Seedream 或果肉生图")
     if provider == "xiaole":

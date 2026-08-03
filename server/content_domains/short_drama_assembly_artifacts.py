@@ -109,13 +109,16 @@ def init_db(db_factory):
         conn.commit()
 
 
-def compute_input_hash(d1_input_hash, config, voice_sources, bgm_source):
+def compute_input_hash(
+    d1_input_hash, config, voice_sources, bgm_source, sound_sources=None
+):
     return canonical_hash({
         "d1_input_hash": str(d1_input_hash or ""),
         "engine_version": ENGINE_VERSION,
         "config": config,
         "voice_sources": voice_sources,
         "bgm_source": bgm_source,
+        "sound_sources": list(sound_sources or []),
         "output": {
             "sample_rate": 48000,
             "channels": 2,

@@ -42,14 +42,15 @@ def reclaim_orphaned_running(
 
     handled = requeued = failed = 0
     for row in rows:
-        if row["kind"] in {"short_drama_preview", "short_drama_final"}:
+        if row["kind"] in {
+            "short_drama_preview", "short_drama_final", "short_drama_remux"
+        }:
             try:
                 won_requeue = requeue_job(row["id"])
             except Exception as exc:
                 logger(
                     "[startup] 短剧合成任务恢复异常 kind=%s job=%s: %s"
-                    % (row["kind"], row["id"], exc),
-                    flush=True,
+                    % (row["kind"], row["id"], exc), flush=True,
                 )
                 continue
             if won_requeue:

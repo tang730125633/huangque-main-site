@@ -45,6 +45,16 @@ function testNormalizeAndRender() {
   assert.match(html, /角色选角/);
   assert.match(html, /侦探化身/);
   assert.match(html, /保存角色绑定/);
+  assert.match(html, /data-reference-image/);
+  const fileOnlyHtml = video.renderWorkspace(snapshot({
+    cast_characters: [{
+      ...snapshot().cast_characters[0],
+      reference_url: '',
+      reference_file: 'server-only/avatar.jpg',
+    }],
+  }), {});
+  assert.doesNotMatch(fileOnlyHtml, /server-only\/avatar\.jpg/);
+  assert.match(fileOnlyHtml, /nc-sdv-cast-reference"><span>/);
   const publicCandidateState = video.normalizeState(snapshot(), {
     avatars: [{ id: 12, name: '公开候选契约', status: 'ready' }],
   });

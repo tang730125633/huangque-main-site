@@ -180,7 +180,7 @@ def inspect_font(font_path=None, runner=subprocess.run):
         )
     try:
         match = runner(
-            ["fc-match", "--format=%{family}\\n%{file}", FONT_NAME],
+            ["fc-match", "--format=%{family}\n%{file}", FONT_NAME],
             capture_output=True,
             text=True,
             timeout=10,
@@ -204,14 +204,15 @@ def inspect_font(font_path=None, runner=subprocess.run):
         or matched_file != configured
     ):
         raise SubtitleError(
-            "subtitle_font_unavailable", "fontconfig 未匹配到指定的 Noto CJK 字体"
+            "subtitle_font_unavailable",
+            "fontconfig 未匹配到指定的 Noto CJK 字体",
         )
     charset = str(query.stdout or "").strip()
     if (
         query.returncode != 0
         or not all(
-            _charset_contains(charset, ord(char))
-            for char in REQUIRED_CJK_GLYPHS
+            _charset_contains(charset, ord(character))
+            for character in REQUIRED_CJK_GLYPHS
         )
     ):
         raise SubtitleError(

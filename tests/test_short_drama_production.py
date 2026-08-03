@@ -1,4 +1,5 @@
 import json
+import os
 import queue
 import sqlite3
 import sys
@@ -17,7 +18,7 @@ SERVER_DIR = str(Path(__file__).resolve().parents[1] / "server")
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
-from content_domains import core, image, jobs_store, short_drama, short_drama_production, short_drama_voice, submission_idempotency, upstream_guard, video
+from content_domains import core, image, jobs_store, short_drama, short_drama_asset_graph, short_drama_completion, short_drama_production, short_drama_voice, submission_idempotency, upstream_guard, video
 
 
 def _project_payload():
@@ -107,6 +108,35 @@ class ShortDramaProductionTests(unittest.TestCase):
         }
         body.update(changes)
         return body
+
+    def _ready_asset_snapshot(self):
+        short_drama_asset_graph.sync_foundation(
+            self.db, "alice", "alice", self.project["id"],
+        )
+        workspace = short_drama_asset_graph.workspace(
+            self.db, "alice", self.project["id"],
+        )
+        revision = workspace["graph_revision"]
+        for entity in workspace["entities"]:
+            if entity["asset_type"] != "scene":
+                continue
+            locked = short_drama_asset_graph.lock_version(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "graph_revision": revision,
+                    "version_id": entity["versions"][0]["id"],
+                },
+            )
+            revision = locked["graph_revision"]
+        snapshot = short_drama_asset_graph.build_snapshot(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "graph_revision": revision,
+                "shot_id": self._shot_id(),
+            },
+        )
+        self.assertEqual("ready", snapshot["status"])
+        return workspace, snapshot
 
     def _real_auth(self):
         import auth_server
@@ -490,7 +520,8 @@ class ShortDramaProductionTests(unittest.TestCase):
         self.assertEqual(accepted["charge_key"], recovered["charge_key"])
         self.assertEqual("accepted", recovered["state"])
         self.assertEqual(24, recovered["cost"])
-        self.assertEqual("seedream", recovered["image_payload"]["provider"])
+        self.assertEqual("banana", recovered["image_payload"]["provider"])
+        self.assertEqual("nb2", recovered["image_payload"]["model"])
 
     def test_different_key_cannot_accept_same_operation_while_ambiguous(self):
         body = self._still_request()
@@ -664,9 +695,11 @@ class ShortDramaProductionTests(unittest.TestCase):
             self.db, "alice", "single-refund-owner-001",
             {"detail": "queue full", "code": "queue_full", "_http_status": 429},
         )
-        self.assertEqual(24, short_drama_production.get_production(
+        pending_usage = short_drama_production.get_production(
             self.db, "alice", self.project["id"],
-        )["reserved_points"])
+        )
+        self.assertEqual(24, pending_usage["spent_points"])
+        self.assertEqual(0, pending_usage["reserved_points"])
         first, first_error = auth.refund_points(
             "alice", 24, "short-drama still compensation", pending["refund_key"],
         )
@@ -686,9 +719,11 @@ class ShortDramaProductionTests(unittest.TestCase):
             ).fetchall()
         self.assertEqual([(pending["refund_key"], 24)], refunds)
         self.assertEqual(100, auth.get_points_row("alice")["points"])
-        self.assertEqual(0, short_drama_production.get_production(
+        refunded_usage = short_drama_production.get_production(
             self.db, "alice", self.project["id"],
-        )["reserved_points"])
+        )
+        self.assertEqual(0, refunded_usage["spent_points"])
+        self.assertEqual(0, refunded_usage["reserved_points"])
         with closing(self.db()) as conn:
             self.assertEqual(1, conn.execute(
                 "SELECT refunded FROM jobs WHERE id=?", (job_id,),
@@ -699,6 +734,7 @@ class ShortDramaProductionTests(unittest.TestCase):
         state = short_drama_production.get_production(
             self.db, "alice", self.project["id"],
         )
+        self.assertEqual(0, state["spent_points"])
         self.assertEqual(24, state["reserved_points"])
         short_drama_production.mark_attempt_charged(
             self.db, "alice", "reserve-accepted-001", 76,
@@ -706,7 +742,8 @@ class ShortDramaProductionTests(unittest.TestCase):
         state = short_drama_production.get_production(
             self.db, "alice", self.project["id"],
         )
-        self.assertEqual(24, state["reserved_points"])
+        self.assertEqual(24, state["spent_points"])
+        self.assertEqual(0, state["reserved_points"])
         self._ensure_job_insert_columns()
         with closing(self.db()) as conn:
             try: conn.execute("ALTER TABLE jobs ADD COLUMN refunded INTEGER NOT NULL DEFAULT 0")
@@ -720,7 +757,8 @@ class ShortDramaProductionTests(unittest.TestCase):
         state = short_drama_production.get_production(
             self.db, "alice", self.project["id"],
         )
-        self.assertEqual(24, state["reserved_points"], "linked job is counted exactly once")
+        self.assertEqual(24, state["spent_points"], "linked job is counted exactly once")
+        self.assertEqual(0, state["reserved_points"])
 
     def test_real_auth_ledger_accepted_recovery_survives_drift_and_http_completion_crash(self):
         auth = self._real_auth()
@@ -864,17 +902,36 @@ class ShortDramaProductionTests(unittest.TestCase):
         local_out.mkdir()
         outside = Path(self.tmp.name) / "secret.png"
         outside.write_bytes(b"\x89PNG\r\n\x1a\nsecret")
-        (local_out / "outside-link.png").symlink_to(outside)
         (local_out / "large.png").write_bytes(b"\x89PNG\r\n\x1a\nlarge")
         captured = []
-        unsafe_references = (
+        unsafe_references = [
+            {"url": "/api/gen/file/../secret.png"},
             {"file": "../secret.png", "url": "https://external.test/secret.png"},
             {"file": str(outside), "url": "/api/gen/file/../secret.png"},
-            {"file": "outside-link.png", "url": "https://external.test/link.png"},
             {"file": "large.png", "url": "https://external.test/large.png"},
-        )
+        ]
+        try:
+            (local_out / "outside-link.png").symlink_to(outside)
+        except NotImplementedError:
+            if os.name != "nt":
+                raise
+        except OSError as error:
+            if os.name != "nt" or getattr(error, "winerror", None) not in {
+                1,     # ERROR_INVALID_FUNCTION
+                5,     # ERROR_ACCESS_DENIED
+                1314,  # ERROR_PRIVILEGE_NOT_HELD
+            }:
+                raise
+        else:
+            unsafe_references.append({
+                "file": "outside-link.png", "url": "https://external.test/link.png",
+            })
         with mock.patch.object(image, "OUT_DIR", local_out), \
              mock.patch.object(image, "IMAGE_REF_MAX_BYTES", 8), \
+             mock.patch.object(
+                 image, "_seedream_fetch",
+                 side_effect=AssertionError("invalid local URL must not be fetched"),
+             ), \
              mock.patch.object(
                  image, "_gen_image_seedream",
                  side_effect=lambda prompt, ratio, quality, count, img, variant:
@@ -889,7 +946,7 @@ class ShortDramaProductionTests(unittest.TestCase):
                         name="previous still", ratio="9:16",
                     )],
                 })
-        self.assertEqual(4, len(captured))
+        self.assertEqual(len(unsafe_references), len(captured))
         for prompt, local_image in captured:
             self.assertIn("previous still", prompt)
             self.assertIsNone(local_image)
@@ -909,8 +966,7 @@ class ShortDramaProductionTests(unittest.TestCase):
     def test_phase_two_rejects_unready_or_unsupported_confirmation(self):
         for stage, message in (
             ("voice_review", "仍有镜头尚未锁定"),
-            ("video_review", "当前批次"),
-            ("assembly_review", "当前批次"),
+            ("video_review", "仍有镜头视频尚未锁定"),
         ):
             with self.subTest(stage=stage), closing(self.db()) as conn:
                 conn.execute(
@@ -927,6 +983,25 @@ class ShortDramaProductionTests(unittest.TestCase):
                     "SELECT stage FROM short_drama_projects WHERE id=?",
                     (self.project["id"],),
                 ).fetchone()[0])
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_projects SET stage='assembly_review', "
+                "revision=50 WHERE id=?",
+                (self.project["id"],),
+            )
+            conn.commit()
+        with mock.patch.dict(
+            os.environ, {"HQ_SHORT_DRAMA_COMPLETION_ENABLED": "1"}
+        ), self.assertRaises(short_drama_completion.CompletionError) as raised:
+            short_drama.confirm_stage(
+                self.db, "alice", self.project["id"], 50, "assembly_review"
+            )
+        self.assertEqual("completion_required", raised.exception.code)
+        with closing(self.db()) as conn:
+            self.assertEqual("assembly_review", conn.execute(
+                "SELECT stage FROM short_drama_projects WHERE id=?",
+                (self.project["id"],),
+            ).fetchone()[0])
 
     def test_idempotency_claim_is_atomic_for_concurrent_identical_retries(self):
         def row_db():
@@ -976,8 +1051,8 @@ class ShortDramaProductionTests(unittest.TestCase):
             "prompt": "rainy midnight doorway",
             "mode": "single",
             "count": 2,
-            "provider": "seedream",
-            "variant": "std",
+            "provider": "banana",
+            "model": "nb2",
             "quality": "hd",
         }, descriptor)
 
@@ -1062,17 +1137,22 @@ class ShortDramaProductionTests(unittest.TestCase):
     def test_reconciliation_accounts_completed_still_cost_in_spent_points_once(self):
         self._link_job(cost=60, quoted_cost=60)
 
-        short_drama_production.get_production(self.db, "alice", self.project["id"])
-        short_drama_production.get_production(self.db, "alice", self.project["id"])
+        first = short_drama_production.get_production(
+            self.db, "alice", self.project["id"],
+        )
+        second = short_drama_production.get_production(
+            self.db, "alice", self.project["id"],
+        )
 
         with closing(self.db()) as conn:
-            spent_points = conn.execute(
+            legacy_spent_points = conn.execute(
                 "SELECT spent_points FROM short_drama_projects WHERE id=?",
                 (self.project["id"],),
             ).fetchone()[0]
-        self.assertEqual(60, spent_points)
+        self.assertEqual((60, 60), (first["spent_points"], second["spent_points"]))
+        self.assertEqual(0, legacy_spent_points, "the unified ledger is not cached twice")
 
-    def test_production_state_reports_active_job_and_reserved_points(self):
+    def test_production_state_reports_active_job_as_spent_without_reserving_again(self):
         job_id = self._link_job(
             job_status="running", link_status="pending", cost=41, quoted_cost=40
         )
@@ -1081,7 +1161,8 @@ class ShortDramaProductionTests(unittest.TestCase):
             self.db, "alice", self.project["id"]
         )
 
-        self.assertEqual(40, state["reserved_points"])
+        self.assertEqual(41, state["spent_points"])
+        self.assertEqual(0, state["reserved_points"])
         self.assertEqual({
             "id": "link-%s" % job_id,
             "job_id": job_id,
@@ -1471,12 +1552,10 @@ class ShortDramaProductionTests(unittest.TestCase):
         self.assertEqual(versions[1]["version"], still["current_version"])
         self.assertTrue(still["locked"])
         self.assertEqual([1, 2, 3, 4], [item["version"] for item in still["versions"]])
-        with closing(self.db()) as conn:
-            spent_points = conn.execute(
-                "SELECT spent_points FROM short_drama_projects WHERE id=?",
-                (project["id"],),
-            ).fetchone()[0]
-        self.assertEqual(selected["spent_points"] + 60, spent_points)
+        self.assertEqual(
+            selected["spent_points"] + 60,
+            regenerated["spent_points"],
+        )
 
     def test_confirm_requires_every_current_shot_to_have_a_locked_still(self):
         self._completed_still_versions()
@@ -1582,7 +1661,10 @@ class ShortDramaProductionTests(unittest.TestCase):
         original = short_drama_production.short_drama_voice.ensure_voice_workspace
 
         def inspect_reconciled_ledger(conn, project_id, allowed_stages=None):
-            observed["spent_points"] = conn.execute(
+            observed["spent_points"] = short_drama._project_point_usage(
+                conn, project_id,
+            )["spent_points"]
+            observed["legacy_spent_points"] = conn.execute(
                 "SELECT spent_points FROM short_drama_projects WHERE id=?",
                 (project_id,),
             ).fetchone()[0]
@@ -1605,10 +1687,12 @@ class ShortDramaProductionTests(unittest.TestCase):
             )
 
         self.assertEqual("voice_review", confirmed["stage"])
-        self.assertEqual({"spent_points": 60, "archive_count": 2}, observed)
+        self.assertEqual({
+            "spent_points": 60, "legacy_spent_points": 0, "archive_count": 2,
+        }, observed)
         with closing(self.db()) as conn:
             self.assertEqual(
-                (60, 2, "done"),
+                (0, 2, "done"),
                 (
                     conn.execute(
                         "SELECT spent_points FROM short_drama_projects WHERE id=?",
@@ -1857,7 +1941,10 @@ class ShortDramaProductionTests(unittest.TestCase):
         observed = {}
 
         def fail_after_reconciliation(conn, project_id, allowed_stages=None):
-            observed["spent_points"] = conn.execute(
+            observed["spent_points"] = short_drama._project_point_usage(
+                conn, project_id,
+            )["spent_points"]
+            observed["legacy_spent_points"] = conn.execute(
                 "SELECT spent_points FROM short_drama_projects WHERE id=?",
                 (project_id,),
             ).fetchone()[0]
@@ -1879,7 +1966,9 @@ class ShortDramaProductionTests(unittest.TestCase):
                         "stage": "stills_review",
                     },
                 )
-        self.assertEqual({"spent_points": 60, "archive_count": 2}, observed)
+        self.assertEqual({
+            "spent_points": 60, "legacy_spent_points": 0, "archive_count": 2,
+        }, observed)
         with closing(self.db()) as conn:
             self.assertEqual(
                 ("stills_review", 0, 0, "pending"),
@@ -1909,8 +1998,9 @@ class ShortDramaProductionTests(unittest.TestCase):
             "stage": "stills_review",
         })
         self.assertEqual("voice_review", confirmed["stage"])
+        self.assertEqual(60, confirmed["spent_points"])
         with closing(self.db()) as conn:
-            self.assertEqual(60, conn.execute(
+            self.assertEqual(0, conn.execute(
                 "SELECT spent_points FROM short_drama_projects WHERE id=?",
                 (self.project["id"],),
             ).fetchone()[0])
@@ -1947,7 +2037,10 @@ class ShortDramaProductionTests(unittest.TestCase):
         self.assertEqual(1, results.count("voice_review"))
         self.assertEqual(1, results.count(short_drama.RevisionConflict))
         with closing(self.db()) as conn:
-            self.assertEqual(60, conn.execute(
+            self.assertEqual(60, short_drama._project_point_usage(
+                conn, self.project["id"],
+            )["spent_points"])
+            self.assertEqual(0, conn.execute(
                 "SELECT spent_points FROM short_drama_projects WHERE id=?",
                 (self.project["id"],),
             ).fetchone()[0])
@@ -2013,15 +2106,38 @@ class ShortDramaProductionTests(unittest.TestCase):
 
         self.assertEqual(self.project["id"], prepared["project"]["id"])
         self.assertEqual(self._shot_id(), prepared["shot"]["id"])
-        self.assertEqual({
-            "provider": "seedream",
-            "variant": "std",
-            "quality": "hd",
-            "prompt": "rainy midnight doorway, consistent detective character",
-            "ratio": self.project["ratio"],
-            "count": 2,
-            "short_drama_references": [],
-        }, prepared["image_payload"])
+        payload = prepared["image_payload"]
+        self.assertEqual("banana", payload["provider"])
+        self.assertEqual("nb2", payload["model"])
+        self.assertEqual("hd", payload["quality"])
+        self.assertEqual(self.project["ratio"], payload["ratio"])
+        self.assertEqual(2, payload["count"])
+        self.assertEqual([], payload["short_drama_references"])
+        self.assertEqual(
+            "rainy midnight doorway, consistent detective character",
+            payload["short_drama_raw_prompt"],
+        )
+        self.assertIn("User direction: rainy midnight doorway", payload["prompt"])
+
+    def test_still_submission_deduplicates_storyboard_prompt_from_legacy_client(self):
+        with closing(self.db()) as conn:
+            image_prompt = conn.execute(
+                "SELECT image_prompt FROM short_drama_shots WHERE id=?",
+                (self._shot_id(),),
+            ).fetchone()[0]
+
+        prepared = short_drama_production.prepare_still_submission(
+            self.db, "alice", self._still_request(prompt=image_prompt)
+        )
+
+        self.assertEqual("", prepared["user_direction"])
+        self.assertEqual("", prepared["image_payload"]["short_drama_raw_prompt"])
+        self.assertEqual(
+            1,
+            prepared["compiled_prompt"].count(image_prompt),
+            "the confirmed storyboard prompt must reach the provider exactly once",
+        )
+        self.assertNotIn("User direction:", prepared["compiled_prompt"])
 
     def test_still_submission_accepts_only_the_immutable_request_contract(self):
         invalid_requests = [
@@ -2096,8 +2212,16 @@ class ShortDramaProductionTests(unittest.TestCase):
     def test_still_quote_uses_server_payload_and_counts_spent_reserved_and_new_cost(self):
         with closing(self.db()) as conn:
             conn.execute(
-                "UPDATE short_drama_projects SET point_budget=100, spent_points=20 WHERE id=?",
+                "UPDATE short_drama_projects SET point_budget=100 WHERE id=?",
                 (self.project["id"],),
+            )
+            conn.execute(
+                "INSERT INTO jobs(username,kind,cost,status,payload,result) "
+                "VALUES('alice','copy',20,'done',?,'{}')",
+                (json.dumps({
+                    "format": "short_drama",
+                    "project_id": self.project["id"],
+                }),),
             )
             conn.commit()
         self._link_job(
@@ -2115,7 +2239,8 @@ class ShortDramaProductionTests(unittest.TestCase):
             )
 
         self.assertEqual("image", quoted_payloads[0][0])
-        self.assertEqual("seedream", quoted_payloads[0][1]["provider"])
+        self.assertEqual("banana", quoted_payloads[0][1]["provider"])
+        self.assertEqual("nb2", quoted_payloads[0][1]["model"])
         self.assertEqual("9:16", quoted_payloads[0][1]["ratio"])
         self.assertEqual(2, quoted_payloads[0][1]["count"])
 
@@ -2160,12 +2285,134 @@ class ShortDramaProductionTests(unittest.TestCase):
                 require_quote=True, idempotency_key="quote-bind-003",
             )
 
+    def test_storyboard_save_preserves_shot_id_and_invalidates_ready_snapshot(self):
+        _workspace, snapshot = self._ready_asset_snapshot()
+        original_shot_id = self._shot_id()
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_projects SET stage='storyboard_review' WHERE id=?",
+                (self.project["id"],),
+            )
+            conn.execute(
+                "UPDATE short_drama_scripts SET logline='侦探追查真相',hook='午夜来客',"
+                "conflict_text='证词冲突',turn_text='线索反转',ending='真相揭晓' "
+                "WHERE project_id=?", (self.project["id"],),
+            )
+            conn.commit()
+        detail = short_drama.get_project(self.db, "alice", self.project["id"])
+        shots = [dict(item) for item in detail["shots"]]
+        shots[0]["image_prompt"] += "，加入新的构图要求"
+        updated = short_drama.update_shots(
+            self.db, "alice", self.project["id"], detail["revision"], shots,
+        )
+        self.assertEqual(original_shot_id, updated["shots"][0]["id"])
+        with closing(self.db()) as conn:
+            with self.assertRaises(short_drama_asset_graph.AssetGraphError) as raised:
+                short_drama_asset_graph.generation_package(
+                    conn, self.project["id"], original_shot_id,
+                )
+        self.assertEqual("asset_snapshot_stale", raised.exception.code)
+        self.assertNotEqual(
+            snapshot["graph_revision"],
+            short_drama_asset_graph.workspace(
+                self.db, "alice", self.project["id"],
+            )["graph_revision"],
+        )
+
+    def test_old_quote_is_rejected_after_new_asset_snapshot_without_charge_or_job(self):
+        workspace, snapshot_a = self._ready_asset_snapshot()
+        body = self._still_request()
+        quote = short_drama_production.prepare_still_quote(
+            self.db, "alice", body, lambda _kind, _payload: 24,
+        )
+        self.assertEqual(snapshot_a["id"], quote["snapshot_id"])
+        self.assertEqual(
+            snapshot_a["package"]["package_hash"], quote["package_hash"],
+        )
+        submitted = dict(body, quote_token=quote["quote_token"])
+        prepared_a = short_drama_production.prepare_still_submission(
+            self.db, "alice", submitted, require_quote=True,
+            idempotency_key="stale-asset-quote-race",
+        )
+
+        scene = next(
+            item for item in workspace["entities"] if item["asset_type"] == "scene"
+        )
+        created = short_drama_asset_graph.create_version(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "graph_revision": snapshot_a["graph_revision"],
+                "entity_id": scene["id"],
+                "prompt": "NEW_ASSET_MARKER，全新的雨夜场景",
+            },
+        )
+        locked = short_drama_asset_graph.lock_version(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "graph_revision": created["graph_revision"],
+                "version_id": created["id"],
+            },
+        )
+        snapshot_b = short_drama_asset_graph.build_snapshot(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "graph_revision": locked["graph_revision"],
+                "shot_id": self._shot_id(),
+            },
+        )
+        self.assertEqual("ready", snapshot_b["status"])
+        self.assertNotEqual(snapshot_a["id"], snapshot_b["id"])
+
+        with self.assertRaises(short_drama_asset_graph.AssetGraphError) as raised:
+            short_drama_production.prepare_still_submission(
+                self.db, "alice", submitted,
+                require_quote=True, idempotency_key="stale-asset-quote",
+            )
+        self.assertEqual("asset_quote_stale", raised.exception.code)
+        with self.assertRaises(short_drama_asset_graph.AssetGraphError) as race:
+            short_drama_production.accept_charge_attempt(
+                self.db, username="alice",
+                endpoint="/api/gen/short-drama/generate-stills",
+                idempotency_key="stale-asset-quote-race", prepared=prepared_a,
+            )
+        self.assertEqual("asset_quote_stale", race.exception.code)
+        with closing(self.db()) as conn:
+            quote_row = conn.execute(
+                "SELECT consumed_idempotency_key FROM short_drama_still_quotes "
+                "WHERE token=?", (quote["quote_token"],),
+            ).fetchone()
+            attempts = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_charge_attempts"
+            ).fetchone()[0]
+            jobs = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+        self.assertIsNone(quote_row[0])
+        self.assertEqual(0, attempts)
+        self.assertEqual(0, jobs)
+
+        quote_b = short_drama_production.prepare_still_quote(
+            self.db, "alice", body, lambda _kind, _payload: 24,
+        )
+        prepared_b = short_drama_production.prepare_still_submission(
+            self.db, "alice", dict(body, quote_token=quote_b["quote_token"]),
+            require_quote=True, idempotency_key="current-asset-quote",
+        )
+        attempt = short_drama_production.accept_charge_attempt(
+            self.db, username="alice",
+            endpoint="/api/gen/short-drama/generate-stills",
+            idempotency_key="current-asset-quote", prepared=prepared_b,
+        )
+        self.assertEqual(snapshot_b["id"], attempt["snapshot_id"])
+        self.assertEqual(snapshot_b["package"]["package_hash"], attempt["package_hash"])
+        self.assertEqual(snapshot_b["graph_revision"], attempt["graph_revision"])
+
     def test_server_derives_owned_character_and_locked_continuity_references(self):
         with closing(self.db()) as conn:
             conn.execute(
                 "INSERT INTO short_drama_characters "
-                "(id, project_id, character_key, name, source_type, avatar_id, sort_order) "
-                "VALUES ('character-owned', ?, 'detective', '侦探', 'cinematic_avatar', 'avatar-owned', 0)",
+                "(id, project_id, character_key, name, source_type, avatar_id, "
+                "reference_file, reference_locked, reference_version, sort_order) "
+                "VALUES ('character-owned', ?, 'detective', '侦探', 'cinematic_avatar', "
+                "'avatar-owned', 'owned.png', 1, 1, 0)",
                 (self.project["id"],),
             )
             target_id = self._shot_id(1)
@@ -2403,11 +2650,38 @@ class ShortDramaProductionTests(unittest.TestCase):
 
 class ShortDramaStillRouteTests(unittest.TestCase):
     class FakeAudio:
+        def __init__(self):
+            self.list_calls = []
+            self.assets = {
+                "alice": [{
+                    "id": 101, "username": "alice",
+                    "file": "audio/owner-bgm.mp3",
+                    "url": "/api/gen/file/audio/owner-bgm.mp3",
+                    "text": "owner bgm",
+                }],
+                "editor": [{
+                    "id": 202, "username": "editor",
+                    "file": "audio/editor-bgm.mp3",
+                    "url": "/api/gen/file/audio/editor-bgm.mp3",
+                    "text": "editor bgm",
+                }],
+            }
+
         @staticmethod
         def resolve_audio_provider_voice(_username, voice_key):
             if not voice_key:
                 raise ValueError("missing voice")
             return voice_key
+
+        def list_audio_assets(self, username, limit=120, offset=0):
+            self.list_calls.append((username, limit))
+            return [dict(item) for item in self.assets.get(username, [])][offset:offset + limit]
+
+        def get_audio_asset(self, username, asset_id):
+            return next((
+                dict(item) for item in self.assets.get(username, [])
+                if item["id"] == int(asset_id)
+            ), None)
 
     class FakePoints:
         class AuthPointsError(Exception):
@@ -2429,17 +2703,6 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         def cost_of(self, kind, body):
             self.cost_calls.append((kind, dict(body)))
             return self.cost
-
-        @staticmethod
-        def public_error_body(error, need=None):
-            body = {"detail": error.detail}
-            if need is not None:
-                body["need"] = need
-            for key in ("code", "membership_url", "membership_enforcement_enabled"):
-                value = getattr(error, key, None)
-                if value is not None:
-                    body[key] = value
-            return body
 
         def deduct_points(self, username, cost, reason, transaction_key=""):
             self.deduct_calls.append((username, cost, reason, transaction_key))
@@ -2892,13 +3155,20 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         self.assertEqual(2, quote["count"])
         self.assertEqual("still", quote["kind"])
         self.assertRegex(quote["quote_token"], r"^[0-9a-f]{32}$")
+        self.assertEqual(self.shot_id, quote["shot_id"])
+        self.assertEqual(self._body()["prompt"], quote["user_direction"])
+        self.assertIn("User direction: " + self._body()["prompt"], quote["compiled_prompt"])
+        self.assertRegex(quote["source_prompt_hash"], r"^[0-9a-f]{64}$")
         self.assertEqual("image", self.points.cost_calls[0][0])
         payload = self.points.cost_calls[0][1]
-        self.assertEqual({
-            "provider": "seedream", "variant": "std", "quality": "hd",
-            "prompt": self._body()["prompt"], "ratio": "9:16", "count": 2,
-            "short_drama_references": [],
-        }, payload)
+        self.assertEqual("banana", payload["provider"])
+        self.assertEqual("nb2", payload["model"])
+        self.assertEqual("hd", payload["quality"])
+        self.assertEqual("9:16", payload["ratio"])
+        self.assertEqual(2, payload["count"])
+        self.assertEqual([], payload["short_drama_references"])
+        self.assertEqual(self._body()["prompt"], payload["short_drama_raw_prompt"])
+        self.assertIn("User direction: " + self._body()["prompt"], payload["prompt"])
         self.assertEqual([], self.points.deduct_calls)
 
     def test_routes_recheck_editor_viewer_demotion_and_removal_permissions(self):
@@ -2948,6 +3218,108 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         self.assertEqual(403, demoted)
         self.assertEqual(404, removed)
         self.assertEqual(404, wrong_board)
+
+    def test_shared_editor_reads_owner_audio_assets_and_can_save_them(self):
+        with closing(core.jdb()) as conn:
+            conn.execute(
+                "UPDATE short_drama_projects "
+                "SET board_id='board-a',stage='assembly_review' WHERE id=?",
+                (self.project["id"],),
+            )
+            revision = conn.execute(
+                "SELECT revision FROM short_drama_projects WHERE id=?",
+                (self.project["id"],),
+            ).fetchone()[0]
+            conn.commit()
+        roles = {
+            "alice": "owner", "editor": "editor", "viewer": "viewer",
+        }
+        core._short_drama_canvas_access = lambda handler: ({
+            "board_id": handler.headers.get("X-Canvas-Board-Id"),
+            "role": roles.get(handler._token()),
+        } if roles.get(handler._token()) else None)
+        path = (
+            "/api/gen/short-drama/assembly/audio-assets?project_id="
+            + self.project["id"] + "&limit=120"
+        )
+
+        editor_status, editor_assets = self.request(
+            path, username="editor", method="GET", raw_body=b"",
+            board_id="board-a",
+        )
+        viewer_status, viewer_assets = self.request(
+            path, username="viewer", method="GET", raw_body=b"",
+            board_id="board-a",
+        )
+        personal_status, personal_assets = self.request(
+            "/api/gen/audio/assets?limit=120", username="editor",
+            method="GET", raw_body=b"", board_id="board-a",
+        )
+        wrong_board, _ = self.request(
+            path, username="editor", method="GET", raw_body=b"",
+            board_id="board-b",
+        )
+        unauthenticated, _ = self.request(
+            path, username="", method="GET", raw_body=b"",
+            board_id="board-a",
+        )
+        roles.pop("editor")
+        removed, _ = self.request(
+            path, username="editor", method="GET", raw_body=b"",
+            board_id="board-a",
+        )
+        roles["editor"] = "editor"
+
+        self.assertEqual(200, editor_status)
+        self.assertEqual([101], [item["id"] for item in editor_assets["items"]])
+        self.assertEqual(200, viewer_status)
+        self.assertEqual([101], [item["id"] for item in viewer_assets["items"]])
+        self.assertEqual(200, personal_status)
+        self.assertEqual([202], [item["id"] for item in personal_assets["items"]])
+        self.assertEqual(404, wrong_board)
+        self.assertEqual(401, unauthenticated)
+        self.assertEqual(404, removed)
+        self.assertEqual(
+            [("alice", 120), ("alice", 120), ("editor", 120)],
+            self.audio.list_calls,
+        )
+
+        config = {
+            "subtitle": {
+                "enabled": True, "preset": "white_outline",
+                "position": "bottom",
+            },
+            "bgm": {
+                "asset_id": 101, "volume": 0.18,
+                "fade_in_ms": 500, "fade_out_ms": 800,
+            },
+            "sound_cues": [],
+        }
+        saved_status, saved = self.request(
+            "/api/gen/short-drama/assembly/config",
+            username="editor", method="PUT", board_id="board-a",
+            body={
+                "project_id": self.project["id"], "revision": revision,
+                "assembly_revision": 1, "config": config,
+            },
+            with_quote=False,
+        )
+        self.assertEqual(200, saved_status)
+        self.assertEqual(101, saved["config"]["bgm"]["asset_id"])
+
+        config["bgm"]["asset_id"] = 202
+        rejected_status, rejected = self.request(
+            "/api/gen/short-drama/assembly/config",
+            username="editor", method="PUT", board_id="board-a",
+            body={
+                "project_id": self.project["id"], "revision": revision,
+                "assembly_revision": saved["assembly_revision"],
+                "config": config,
+            },
+            with_quote=False,
+        )
+        self.assertEqual(400, rejected_status)
+        self.assertEqual("sound_asset_missing", rejected["code"])
 
     def test_first_stage_routes_enforce_current_board_role_and_creation_scope(self):
         roles = {"owner": "owner", "editor": "editor", "viewer": "viewer"}

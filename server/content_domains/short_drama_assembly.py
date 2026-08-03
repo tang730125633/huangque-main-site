@@ -8,6 +8,7 @@ from contextlib import closing
 
 from . import short_drama_assembly_plan as media_plan
 from . import short_drama_assembly_artifacts as assembly_artifacts
+from . import short_drama_assembly_lipsync as lipsync_assembly
 from . import short_drama_master_audio as master_audio
 from . import short_drama_alignment as subtitle_alignment
 
@@ -22,6 +23,7 @@ DEFAULT_ASSEMBLY_CONFIG = {
         "enabled": True,
         "preset": "white_outline",
         "position": "bottom",
+        "delivery": "external_vtt",
     },
     "bgm": {
         "asset_id": None,
@@ -29,6 +31,7 @@ DEFAULT_ASSEMBLY_CONFIG = {
         "fade_in_ms": 500,
         "fade_out_ms": 800,
     },
+    "sound_cues": [],
     "profiles": {
         "preview": "short_drama_preview_v1",
         "final": "short_drama_final_v1",
@@ -58,10 +61,23 @@ _BLOCKER_MESSAGES = {
     "bgm_asset_forbidden": "当前项目无权使用该背景音乐",
     "bgm_source_untrusted": "背景音乐文件不在服务端受控目录中",
     "bgm_probe_failed": "背景音乐文件无法完成规格探测",
+    "sound_asset_missing": "音效资产不存在或已删除",
+    "sound_asset_forbidden": "当前项目无权使用该音效资产",
+    "sound_source_untrusted": "音效文件不在服务端受控目录中",
+    "sound_probe_failed": "音效文件无法完成规格探测",
+    "sound_cue_invalid": "音效时间线配置无效或超出所属镜头",
     "active_composition_job": "项目仍有合成任务处理中",
     "preview_missing": "尚未生成可用预览版本",
     "final_missing": "尚未生成可用正式成片",
 }
+
+_BLOCKER_MESSAGES.update({
+    "lipsync_source_hash_mismatch":
+        "口型素材实际文件与不可变合成清单不一致",
+    "lipsync_manifest_invalid": "口型合成证据清单格式无效",
+    "lipsync_manifest_mismatch":
+        "口型合成证据清单与不可变素材清单不一致",
+})
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS short_drama_compositions (
@@ -87,6 +103,9 @@ CREATE TABLE IF NOT EXISTS short_drama_composition_versions (
   job_id TEXT NOT NULL UNIQUE,
   input_hash TEXT NOT NULL,
   config_json TEXT NOT NULL,
+  plan_hash TEXT NOT NULL DEFAULT '',
+  manifest_hash TEXT NOT NULL DEFAULT '',
+  manifest_json TEXT NOT NULL DEFAULT '{}',
   file TEXT NOT NULL DEFAULT '',
   url TEXT NOT NULL DEFAULT '',
   cover_file TEXT NOT NULL DEFAULT '',
@@ -224,6 +243,16 @@ class PreviewBlocked(ValueError):
         self.code = code
 
 
+def _require_render_environment():
+    """Fail before creating a composition task when subtitle fonts are absent."""
+    from . import short_drama_assembly_subtitles as subtitles
+
+    try:
+        return subtitles.inspect_font()
+    except subtitles.SubtitleError as error:
+        raise PreviewBlocked(error.code, str(error)) from error
+
+
 def init_db(db_factory):
     with closing(db_factory()) as conn:
         conn.execute("PRAGMA foreign_keys=ON")
@@ -239,6 +268,9 @@ def init_db(db_factory):
             "cover_key": "TEXT NOT NULL DEFAULT ''",
             "sha256": "TEXT NOT NULL DEFAULT ''",
             "size": "INTEGER",
+            "plan_hash": "TEXT NOT NULL DEFAULT ''",
+            "manifest_hash": "TEXT NOT NULL DEFAULT ''",
+            "manifest_json": "TEXT NOT NULL DEFAULT '{}'",
         }.items():
             if name not in version_columns:
                 conn.execute(
@@ -261,21 +293,7 @@ def init_db(db_factory):
                 )
         conn.commit()
     assembly_artifacts.init_db(db_factory)
-
-
-def user_owns_output_file(db_factory, username, file_name):
-    """Preserve the authenticated local-file ownership check used by core."""
-    try:
-        with closing(db_factory()) as conn:
-            return bool(conn.execute(
-                "SELECT 1 FROM short_drama_composition_versions v "
-                "JOIN short_drama_projects p ON p.id=v.project_id "
-                "WHERE p.username=? AND p.deleted=0 AND v.status='succeeded' "
-                "AND v.file=? LIMIT 1",
-                (username, file_name),
-            ).fetchone())
-    except Exception:
-        return False
+    lipsync_assembly.init_db(db_factory)
 
 
 def _json_value(value, default):
@@ -291,13 +309,137 @@ def _merge_config(value):
     config = {
         "subtitle": dict(DEFAULT_ASSEMBLY_CONFIG["subtitle"]),
         "bgm": dict(DEFAULT_ASSEMBLY_CONFIG["bgm"]),
+        "sound_cues": [],
         "profiles": dict(DEFAULT_ASSEMBLY_CONFIG["profiles"]),
     }
-    for section in config:
+    for section in ("subtitle", "bgm", "profiles"):
         candidate = saved.get(section)
         if isinstance(candidate, dict):
             config[section].update(candidate)
+    if isinstance(saved.get("sound_cues"), list):
+        config["sound_cues"] = [
+            dict(item) for item in saved["sound_cues"]
+            if isinstance(item, dict)
+        ]
     return config
+
+
+def _finite_number(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number and abs(number) != float("inf") else None
+
+
+def _normalize_sound_cues(value, shot_durations):
+    if not isinstance(value, list) or len(value) > 120:
+        raise ValueError("音效列表必须是数组且最多 120 条")
+    allowed_kinds = {"ambience", "foley", "transition", "impact"}
+    result = []
+    identities = set()
+    for index, raw in enumerate(value):
+        if not isinstance(raw, dict) or set(raw) != {
+            "id", "shot_id", "kind", "asset_id", "start_ms", "end_ms",
+            "loop", "volume", "fade_in_ms", "fade_out_ms", "enabled",
+        }:
+            raise ValueError("第 %d 条音效字段不正确" % (index + 1))
+        cue_id = str(raw.get("id") or "").strip()
+        shot_id = str(raw.get("shot_id") or "").strip()
+        kind = str(raw.get("kind") or "").strip()
+        volume = _finite_number(raw.get("volume"))
+        if (
+            not cue_id
+            or len(cue_id) > 80
+            or cue_id in identities
+            or shot_id not in shot_durations
+            or kind not in allowed_kinds
+            or type(raw.get("asset_id")) is not int
+            or raw["asset_id"] <= 0
+            or type(raw.get("start_ms")) is not int
+            or type(raw.get("end_ms")) is not int
+            or raw["start_ms"] < 0
+            or raw["end_ms"] <= raw["start_ms"]
+            or raw["end_ms"] > shot_durations[shot_id]
+            or type(raw.get("loop")) is not bool
+            or volume is None
+            or volume < 0
+            or volume > 1
+            or type(raw.get("fade_in_ms")) is not int
+            or type(raw.get("fade_out_ms")) is not int
+            or raw["fade_in_ms"] < 0
+            or raw["fade_out_ms"] < 0
+            or raw["fade_in_ms"] + raw["fade_out_ms"]
+            > raw["end_ms"] - raw["start_ms"]
+            or type(raw.get("enabled")) is not bool
+        ):
+            raise ValueError("第 %d 条音效时间线配置无效" % (index + 1))
+        identities.add(cue_id)
+        result.append({
+            "id": cue_id,
+            "shot_id": shot_id,
+            "kind": kind,
+            "asset_id": raw["asset_id"],
+            "start_ms": raw["start_ms"],
+            "end_ms": raw["end_ms"],
+            "loop": raw["loop"],
+            "volume": round(volume, 4),
+            "fade_in_ms": raw["fade_in_ms"],
+            "fade_out_ms": raw["fade_out_ms"],
+            "enabled": raw["enabled"],
+        })
+    return result
+
+
+def _normalize_editable_config(value, shot_durations):
+    if not isinstance(value, dict) or set(value) != {
+        "subtitle", "bgm", "sound_cues"
+    }:
+        raise ValueError("装配配置字段不正确")
+    subtitle = value.get("subtitle")
+    bgm = value.get("bgm")
+    if not isinstance(subtitle, dict) or set(subtitle) != {
+        "enabled", "preset", "position"
+    }:
+        raise ValueError("字幕配置字段不正确")
+    if (
+        type(subtitle.get("enabled")) is not bool
+        or str(subtitle.get("preset") or "") not in {"white_outline"}
+        or str(subtitle.get("position") or "") not in {"bottom", "middle"}
+    ):
+        raise ValueError("字幕配置无效")
+    if not isinstance(bgm, dict) or set(bgm) != {
+        "asset_id", "volume", "fade_in_ms", "fade_out_ms"
+    }:
+        raise ValueError("背景音乐配置字段不正确")
+    bgm_volume = _finite_number(bgm.get("volume"))
+    if (
+        bgm.get("asset_id") is not None
+        and (type(bgm.get("asset_id")) is not int or bgm["asset_id"] <= 0)
+    ) or (
+        bgm_volume is None or bgm_volume < 0 or bgm_volume > 1
+        or type(bgm.get("fade_in_ms")) is not int
+        or type(bgm.get("fade_out_ms")) is not int
+        or bgm["fade_in_ms"] < 0 or bgm["fade_out_ms"] < 0
+    ):
+        raise ValueError("背景音乐配置无效")
+    return {
+        "subtitle": {
+            "enabled": subtitle["enabled"],
+            "preset": subtitle["preset"],
+            "position": subtitle["position"],
+        },
+        "bgm": {
+            "asset_id": bgm["asset_id"],
+            "volume": round(bgm_volume, 4),
+            "fade_in_ms": bgm["fade_in_ms"],
+            "fade_out_ms": bgm["fade_out_ms"],
+        },
+        "sound_cues": _normalize_sound_cues(
+            value.get("sound_cues"), shot_durations
+        ),
+        "profiles": dict(DEFAULT_ASSEMBLY_CONFIG["profiles"]),
+    }
 
 
 def _blocker(code, shot_id=None, line_id=None):
@@ -399,6 +541,23 @@ def _inspect_source(file_key, source_inspector):
         return None, "media_probe_failed"
 
 
+def _validate_lipsync_render_sources(sources, source_inspector):
+    """Recheck immutable lipsync bytes immediately before render handoff."""
+    for shot in sources:
+        source = shot.get("lipsync_source")
+        if not source:
+            continue
+        inspected, error_code = _inspect_source(
+            shot["video_version"]["file"], source_inspector
+        )
+        if error_code:
+            raise PreviewBlocked(error_code, _BLOCKER_MESSAGES[error_code])
+        try:
+            lipsync_assembly.validate_source_fingerprint(source, inspected)
+        except lipsync_assembly.LipsyncAssemblyBlocked as error:
+            raise PreviewBlocked(error.code, str(error))
+
+
 def _source_identity(project, sources):
     return media_plan.canonical_hash({
         "project": {
@@ -411,6 +570,12 @@ def _source_identity(project, sources):
     })
 
 
+def _source_identity_from_conn(conn, project, plan=None):
+    sources = _collect_sources(conn, project["id"])
+    lipsync_assembly.apply_to_sources(sources, plan, project["ratio"])
+    return _source_identity(project, sources)
+
+
 def _version_snapshot(row):
     return {
         "id": row["id"],
@@ -419,6 +584,14 @@ def _version_snapshot(row):
         "job_id": row["job_id"],
         "input_hash": row["input_hash"],
         "config": _json_value(row["config_json"], {}),
+        "plan_hash": row["plan_hash"] if "plan_hash" in row.keys() else "",
+        "manifest_hash": (
+            row["manifest_hash"] if "manifest_hash" in row.keys() else ""
+        ),
+        "manifest": (
+            _json_value(row["manifest_json"], {})
+            if "manifest_json" in row.keys() else {}
+        ),
         "url": row["url"],
         "cover_url": (
             row["cover_url"] if "cover_url" in row.keys() and row["cover_url"]
@@ -439,6 +612,53 @@ def _version_snapshot(row):
         "size": row["size"] if "size" in row.keys() else None,
         "created_at": row["created_at"],
     }
+
+
+def _composition_manifest(snapshot, kind):
+    lipsync = snapshot.get("lipsync_assembly") or {}
+    value = {
+        "contract_version": lipsync_assembly.MANIFEST_CONTRACT_VERSION,
+        "kind": kind,
+        "project_id": snapshot["project_id"],
+        "project_revision": snapshot["revision"],
+        "assembly_revision": snapshot["assembly_revision"],
+        "input_hash": snapshot["input_hash"],
+        "d2_input_hash": snapshot["audio_subtitle"]["input_hash"],
+        "plan_hash": str(lipsync.get("plan_hash") or ""),
+        "selected_sources": [
+            dict(item) for item in lipsync.get("selected_sources") or []
+        ],
+        "master_audio_hash": (
+            snapshot.get("master_audio") or {}
+        ).get("master_audio_hash"),
+        "profile": snapshot["config"]["profiles"][kind],
+    }
+    value["manifest_hash"] = media_plan.canonical_hash(value)
+    lipsync_assembly.validate_composition_manifest(
+        value,
+        expected_kind=kind,
+        expected_project_id=snapshot["project_id"],
+        expected_input_hash=snapshot["input_hash"],
+        plan=lipsync or None,
+    )
+    return value
+
+
+def _final_manifest_from_preview(preview_manifest, config):
+    if not isinstance(preview_manifest, dict) or not preview_manifest:
+        return {}
+    value = {
+        key: json.loads(json.dumps(item, ensure_ascii=False))
+        for key, item in preview_manifest.items()
+        if key != "manifest_hash"
+    }
+    value["kind"] = "final"
+    value["profile"] = config["profiles"]["final"]
+    value["manifest_hash"] = media_plan.canonical_hash(value)
+    lipsync_assembly.validate_composition_manifest(
+        value, expected_kind="final"
+    )
+    return value
 
 
 def _active_job_snapshot(row):
@@ -472,9 +692,20 @@ def build_assembly_snapshot(
     assembly_config = _merge_config(
         composition["config_json"] if composition else None
     )
+    lipsync_plan = None
+    lipsync_blockers = []
+    try:
+        lipsync_plan = lipsync_assembly.load_plan(conn, project)
+    except lipsync_assembly.LipsyncAssemblyBlocked as error:
+        lipsync_blockers = error.blockers or [{
+            "code": error.code, "message": str(error),
+        }]
     sources = _collect_sources(conn, project["id"])
+    lipsync_assembly.apply_to_sources(
+        sources, lipsync_plan, project["ratio"]
+    )
     source_identity = _source_identity(project, sources)
-    blockers = []
+    blockers = list(lipsync_blockers)
     shots = []
     plan_inputs = []
     for shot in sources:
@@ -568,6 +799,17 @@ def build_assembly_snapshot(
             if error_code:
                 _append_blocker(shot_blockers, error_code, shot["id"])
             else:
+                if shot.get("lipsync_source"):
+                    try:
+                        lipsync_assembly.validate_source_fingerprint(
+                            shot["lipsync_source"], video_inspected
+                        )
+                    except lipsync_assembly.LipsyncAssemblyBlocked:
+                        _append_blocker(
+                            shot_blockers,
+                            "lipsync_source_hash_mismatch",
+                            shot["id"],
+                        )
                 probe = video_inspected["probe"]
                 if probe.get("video") is None:
                     _append_blocker(
@@ -609,6 +851,7 @@ def build_assembly_snapshot(
                 "ratio_mismatch",
                 "clip_duration_mismatch",
                 "source_changed_during_probe",
+                "lipsync_source_hash_mismatch",
             }
             and item.get("line_id") is None
             for item in shot_blockers
@@ -664,6 +907,10 @@ def build_assembly_snapshot(
                     video_inspected["fingerprint"] if video_inspected else None
                 ),
                 "probe": video_inspected["probe"] if video_inspected else None,
+                "source_kind": (
+                    "lipsync" if shot.get("lipsync_source") else "standard"
+                ),
+                "lipsync": shot.get("lipsync_source"),
             },
             "ready": shot_ready,
             "blockers": shot_blockers,
@@ -675,6 +922,9 @@ def build_assembly_snapshot(
     ):
         blockers.append(_blocker("project_duration_mismatch"))
     current_sources = _collect_sources(conn, project["id"])
+    lipsync_assembly.apply_to_sources(
+        current_sources, lipsync_plan, project["ratio"]
+    )
     current_project = conn.execute(
         "SELECT id,revision,ratio,target_duration FROM short_drama_projects "
         "WHERE id=?",
@@ -719,6 +969,8 @@ def build_assembly_snapshot(
                 "video": {
                     "version": item["video"]["current_version"],
                     "source": item["video"]["source"],
+                    "source_kind": item["video"]["source_kind"],
+                    "lipsync": item["video"]["lipsync"],
                 },
             } for item in shots],
             "plan": normalization,
@@ -727,6 +979,7 @@ def build_assembly_snapshot(
     d2_blockers = []
     d2_input_hash = None
     bgm_fingerprint = None
+    sound_sources = []
     master_audio_contract = None
     if normalization is None or input_hash is None:
         d2_blockers.append(_blocker("missing_d1_media_plan"))
@@ -767,6 +1020,68 @@ def build_assembly_snapshot(
                         "size": inspected["fingerprint"]["size"],
                         "duration_ms": inspected["probe"]["duration_ms"],
                     }
+        shot_windows = {
+            str(item.get("id") or ""): (
+                int(item.get("start_ms") or 0),
+                int(item.get("duration_ms") or 0),
+            )
+            for item in normalization.get("shots") or []
+            if isinstance(item, dict)
+        }
+        for cue in assembly_config.get("sound_cues") or []:
+            if cue.get("enabled") is not True:
+                continue
+            shot_window = shot_windows.get(str(cue.get("shot_id") or ""))
+            if not shot_window:
+                d2_blockers.append(_blocker("sound_cue_invalid"))
+                continue
+            try:
+                normalized_cue = _normalize_sound_cues(
+                    [cue], {cue["shot_id"]: shot_window[1]}
+                )[0]
+            except (KeyError, ValueError):
+                d2_blockers.append(_blocker("sound_cue_invalid"))
+                continue
+            asset = (
+                bgm_lookup(project["username"], normalized_cue["asset_id"])
+                if callable(bgm_lookup)
+                else None
+            )
+            if not asset:
+                d2_blockers.append(_blocker("sound_asset_missing"))
+                continue
+            if str(asset.get("username") or "") != project["username"]:
+                d2_blockers.append(_blocker("sound_asset_forbidden"))
+                continue
+            inspected, error_code = _inspect_source(
+                asset.get("file"), source_inspector
+            )
+            if error_code:
+                code = (
+                    "sound_source_untrusted"
+                    if error_code == "source_file_untrusted"
+                    else "sound_asset_missing"
+                    if error_code == "missing_source_file"
+                    else "sound_probe_failed"
+                )
+                d2_blockers.append(_blocker(code))
+                continue
+            if (
+                inspected["probe"].get("audio") is None
+                or inspected["probe"].get("video") is not None
+            ):
+                d2_blockers.append(_blocker("sound_probe_failed"))
+                continue
+            sound_sources.append({
+                **normalized_cue,
+                "timeline_start_ms": shot_window[0]
+                + normalized_cue["start_ms"],
+                "timeline_end_ms": shot_window[0]
+                + normalized_cue["end_ms"],
+                "sha256": inspected["fingerprint"]["sha256"],
+                "size": inspected["fingerprint"]["size"],
+                "source_duration_ms": inspected["probe"]["duration_ms"],
+            })
         if not d2_blockers:
             voice_sources = [
                 {
@@ -785,6 +1100,7 @@ def build_assembly_snapshot(
                     voice_sources,
                     bgm_fingerprint,
                     assembly_config["bgm"],
+                    sound_sources,
                 )
             except master_audio.MasterAudioContractError as error:
                 d2_blockers.append(_blocker(error.code))
@@ -800,6 +1116,7 @@ def build_assembly_snapshot(
                 assembly_config,
                 voice_sources,
                 bgm_fingerprint,
+                sound_sources,
             )
     blockers.extend(
         item for item in d2_blockers
@@ -810,6 +1127,7 @@ def build_assembly_snapshot(
     )
     audio_subtitle["blockers"] = d2_blockers
     audio_subtitle["bgm_source"] = bgm_fingerprint
+    audio_subtitle["sound_sources"] = sound_sources
     if d2_blockers:
         audio_subtitle["status"] = "blocked"
     master_audio_snapshot = master_audio.build_snapshot(
@@ -909,6 +1227,7 @@ def build_assembly_snapshot(
         "media_plan": normalization,
         "audio_subtitle": audio_subtitle,
         "master_audio": master_audio_snapshot,
+        "lipsync_assembly": lipsync_plan,
         "shots": shots,
         "versions": versions,
         "active_job": _active_job_snapshot(active_job),
@@ -918,7 +1237,9 @@ def build_assembly_snapshot(
             "blockers": readiness_blockers,
         },
         "actions": {
-            "can_save_config": False,
+            "can_save_config": (
+                project["stage"] == "assembly_review" and active_job is None
+            ),
             "can_preview": (
                 project["stage"] == "assembly_review"
                 and not readiness_blockers
@@ -983,6 +1304,130 @@ def get_assembly_workspace(
         )
 
 
+def save_assembly_config(
+    db_factory, owner_username, body, audio_asset_lookup=None
+):
+    if not isinstance(body, dict) or set(body) != {
+        "project_id", "revision", "assembly_revision", "config"
+    }:
+        raise ValueError("装配配置请求字段不正确")
+    project_id = str(body.get("project_id") or "").strip()
+    if (
+        not project_id
+        or type(body.get("revision")) is not int
+        or type(body.get("assembly_revision")) is not int
+    ):
+        raise ValueError("装配配置版本无效")
+    with closing(db_factory()) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("BEGIN IMMEDIATE")
+        project = conn.execute(
+            "SELECT * FROM short_drama_projects WHERE id=? AND username=? "
+            "AND deleted=0", (project_id, owner_username),
+        ).fetchone()
+        if not project:
+            conn.rollback()
+            raise LookupError("短剧项目不存在")
+        if project["stage"] != "assembly_review":
+            conn.rollback()
+            raise PreviewBlocked("stage_not_writable", "当前阶段不可修改装配配置")
+        if project["revision"] != body["revision"]:
+            conn.rollback()
+            raise PreviewBlocked("revision_conflict", "项目已更新，请刷新后重试")
+        active = conn.execute(
+            "SELECT 1 FROM short_drama_composition_jobs WHERE project_id=? "
+            "AND status IN ('queued','running') LIMIT 1", (project_id,),
+        ).fetchone()
+        if active:
+            conn.rollback()
+            raise ActiveCompositionJob("项目已有合成任务处理中")
+        shot_durations = {
+            str(row["id"]): int(row["duration"]) * 1000
+            for row in conn.execute(
+                "SELECT id,duration FROM short_drama_shots WHERE project_id=?",
+                (project_id,),
+            )
+        }
+        config = _normalize_editable_config(body["config"], shot_durations)
+        asset_ids = {
+            cue["asset_id"] for cue in config["sound_cues"] if cue["enabled"]
+        }
+        if config["bgm"]["asset_id"] is not None:
+            asset_ids.add(config["bgm"]["asset_id"])
+        for asset_id in asset_ids:
+            asset = (
+                audio_asset_lookup(owner_username, asset_id)
+                if callable(audio_asset_lookup) else None
+            )
+            if (
+                not asset
+                or str(asset.get("username") or "") != owner_username
+                or not str(asset.get("file") or "")
+            ):
+                conn.rollback()
+                raise PreviewBlocked(
+                    "sound_asset_missing", "所选音频资产不存在或无权使用"
+                )
+        composition = conn.execute(
+            "SELECT * FROM short_drama_compositions WHERE project_id=?",
+            (project_id,),
+        ).fetchone()
+        current_revision = (
+            int(composition["assembly_revision"]) if composition else 1
+        )
+        if current_revision != body["assembly_revision"]:
+            conn.rollback()
+            raise PreviewBlocked(
+                "revision_conflict", "装配版本已更新，请刷新后重试"
+            )
+        current_config = _merge_config(
+            composition["config_json"] if composition else None
+        )
+        if current_config == config:
+            conn.commit()
+            return {
+                "project_id": project_id,
+                "revision": project["revision"],
+                "assembly_revision": current_revision,
+                "config": config,
+                "changed": False,
+            }
+        next_revision = current_revision + 1
+        now = int(time.time())
+        encoded = json.dumps(config, ensure_ascii=False, sort_keys=True)
+        if composition:
+            updated = conn.execute(
+                "UPDATE short_drama_compositions SET assembly_revision=?,"
+                "config_json=?,current_preview_version=NULL,"
+                "current_final_version=NULL,preview_locked=0,updated_at=? "
+                "WHERE project_id=? AND assembly_revision=?",
+                (
+                    next_revision, encoded, now, project_id, current_revision,
+                ),
+            )
+            if updated.rowcount != 1:
+                conn.rollback()
+                raise PreviewBlocked(
+                    "revision_conflict", "装配版本已更新，请刷新后重试"
+                )
+        else:
+            conn.execute(
+                "INSERT INTO short_drama_compositions "
+                "(project_id,assembly_revision,config_json,created_at,updated_at)"
+                " VALUES (?,?,?,?,?)",
+                (project_id, next_revision, encoded, now, now),
+            )
+        conn.commit()
+        return {
+            "project_id": project_id,
+            "revision": project["revision"],
+            "assembly_revision": next_revision,
+            "config": config,
+            "changed": True,
+        }
+
+
 def _preview_request(body):
     if not isinstance(body, dict) or set(body) != {
         "project_id", "revision", "assembly_revision"
@@ -999,6 +1444,26 @@ def _preview_request(body):
         "project_id": project_id,
         "revision": body["revision"],
         "assembly_revision": body["assembly_revision"],
+    }
+
+
+def _replay_preview_job(conn, actor_username, key, request_hash, project_id):
+    existing = conn.execute(
+        "SELECT * FROM short_drama_composition_jobs "
+        "WHERE username=? AND kind='preview' AND idempotency_key=?",
+        (actor_username, key),
+    ).fetchone()
+    if not existing:
+        return None
+    if existing["request_hash"] != request_hash:
+        raise PreviewIdempotencyConflict(
+            "同一 Idempotency-Key 不能用于不同预览请求"
+        )
+    return {
+        "project_id": project_id,
+        "job_id": int(existing["job_id"]),
+        "status": existing["status"],
+        "replayed": True,
     }
 
 
@@ -1037,38 +1502,41 @@ def create_preview_job(
         if blockers:
             first = blockers[0]
             raise PreviewBlocked(first["code"], first["message"])
-        source_identity = _source_identity(
-            project, _collect_sources(conn, project_id)
+        source_identity = _source_identity_from_conn(
+            conn, project, snapshot.get("lipsync_assembly")
         )
+    manifest = _composition_manifest(snapshot, "preview")
     request_hash = media_plan.canonical_hash({
         "project_id": project_id,
         "revision": request["revision"],
         "assembly_revision": request["assembly_revision"],
         "input_hash": snapshot["input_hash"],
         "d2_input_hash": snapshot["audio_subtitle"]["input_hash"],
+        "manifest_hash": manifest["manifest_hash"],
     })
+    # Replaying an already-persisted request must not depend on the current
+    # render environment. The transactional lookup below remains the race
+    # check for requests that overlap this probe.
+    with closing(db_factory()) as conn:
+        conn.row_factory = sqlite3.Row
+        replayed = _replay_preview_job(
+            conn, actor_username, key, request_hash, project_id
+        )
+        if replayed:
+            return replayed
+    # Keep the potentially slow fontconfig probes outside BEGIN IMMEDIATE.
+    _require_render_environment()
     now = int(time.time())
     with closing(db_factory()) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("BEGIN IMMEDIATE")
-        existing = conn.execute(
-            "SELECT * FROM short_drama_composition_jobs "
-            "WHERE username=? AND kind='preview' AND idempotency_key=?",
-            (actor_username, key),
-        ).fetchone()
-        if existing:
+        replayed = _replay_preview_job(
+            conn, actor_username, key, request_hash, project_id
+        )
+        if replayed:
             conn.commit()
-            if existing["request_hash"] != request_hash:
-                raise PreviewIdempotencyConflict(
-                    "同一 Idempotency-Key 不能用于不同预览请求"
-                )
-            return {
-                "project_id": project_id,
-                "job_id": int(existing["job_id"]),
-                "status": existing["status"],
-                "replayed": True,
-            }
+            return replayed
         locked_project = conn.execute(
             "SELECT * FROM short_drama_projects WHERE id=? AND username=? "
             "AND deleted=0", (project_id, owner_username),
@@ -1076,8 +1544,8 @@ def create_preview_job(
         if (
             not locked_project
             or locked_project["revision"] != request["revision"]
-            or _source_identity(
-                locked_project, _collect_sources(conn, project_id)
+            or _source_identity_from_conn(
+                conn, locked_project, snapshot.get("lipsync_assembly")
             ) != source_identity
         ):
             conn.rollback()
@@ -1123,12 +1591,28 @@ def create_preview_job(
             "assembly_revision": request["assembly_revision"],
             "input_hash": snapshot["input_hash"],
             "d2_input_hash": snapshot["audio_subtitle"]["input_hash"],
+            "manifest": manifest,
         }
         bgm_asset_id = snapshot["config"]["bgm"].get("asset_id")
         if bgm_asset_id is not None and callable(bgm_lookup):
             bgm_asset = bgm_lookup(owner_username, bgm_asset_id)
             if bgm_asset:
                 payload["bgm_file"] = str(bgm_asset.get("file") or "")
+        payload["sound_cues"] = []
+        for cue in snapshot["audio_subtitle"].get("sound_sources") or []:
+            asset = (
+                bgm_lookup(owner_username, cue["asset_id"])
+                if callable(bgm_lookup) else None
+            )
+            if asset:
+                payload["sound_cues"].append({
+                    key: cue[key]
+                    for key in (
+                        "id", "shot_id", "kind", "asset_id",
+                        "timeline_start_ms", "timeline_end_ms", "loop",
+                        "volume", "fade_in_ms", "fade_out_ms",
+                    )
+                } | {"file": str(asset.get("file") or "")})
         cursor = conn.execute(
             "INSERT INTO jobs(kind,username,cost,status,payload,created_at,"
             "updated_at,owner) VALUES ('short_drama_preview',?,0,'pending',?,?,?,"
@@ -1144,11 +1628,14 @@ def create_preview_job(
         version_id = uuid.uuid4().hex
         conn.execute(
             "INSERT INTO short_drama_composition_versions "
-            "(id,project_id,kind,version,job_id,input_hash,config_json,status,"
-            "created_at) VALUES (?,?,'preview',?,?,?,?, 'rendering',?)",
+            "(id,project_id,kind,version,job_id,input_hash,config_json,"
+            "plan_hash,manifest_hash,manifest_json,status,created_at) "
+            "VALUES (?,?,'preview',?,?,?,?,?,?,?,'rendering',?)",
             (
                 version_id, project_id, version, str(job_id),
                 snapshot["input_hash"], json.dumps(config, ensure_ascii=False),
+                manifest["plan_hash"], manifest["manifest_hash"],
+                json.dumps(manifest, ensure_ascii=False),
                 now,
             ),
         )
@@ -1282,18 +1769,60 @@ def preview_render_context(db_factory, job_id):
             "AND deleted=0", (linked["project_id"], payload["owner_username"]),
         ).fetchone()
         bgm_file = str(payload.get("bgm_file") or "")
+        payload_sound_cues = [
+            dict(item) for item in payload.get("sound_cues") or []
+            if isinstance(item, dict)
+        ]
+        asset_files = {
+            int(item["asset_id"]): str(item.get("file") or "")
+            for item in payload_sound_cues
+            if type(item.get("asset_id")) is int and item.get("file")
+        }
+        bgm_asset_id = (
+            _merge_config(
+                conn.execute(
+                    "SELECT config_json FROM short_drama_compositions "
+                    "WHERE project_id=?", (project["id"],),
+                ).fetchone()["config_json"]
+            )["bgm"].get("asset_id")
+        )
+        if bgm_file and bgm_asset_id is not None:
+            asset_files[int(bgm_asset_id)] = bgm_file
         snapshot = build_assembly_snapshot(
             conn, project,
             bgm_lookup=(
                 lambda username, asset_id: {
-                    "username": username, "id": asset_id, "file": bgm_file
+                    "username": username, "id": asset_id,
+                    "file": asset_files.get(int(asset_id), "")
                 }
-                if bgm_file else None
+                if int(asset_id) in asset_files else None
             ),
         )
-        if snapshot["input_hash"] != payload["input_hash"]:
+        if snapshot["input_hash"] != payload.get("input_hash"):
             raise PreviewBlocked("revision_conflict", "预览输入已更新")
+        if (
+            not payload.get("d2_input_hash")
+            or snapshot["audio_subtitle"]["input_hash"]
+            != payload.get("d2_input_hash")
+        ):
+            raise PreviewBlocked(
+                "audio_input_changed",
+                "预览音频输入已更新，请重新生成预览",
+            )
+        _require_preview_manifest(
+            snapshot,
+            payload.get("manifest") or {},
+            expected_kind=(
+                "final"
+                if payload.get("mode") == "short_drama_final"
+                else "preview"
+            ),
+        )
         raw = _collect_sources(conn, project["id"])
+        lipsync_assembly.apply_to_sources(
+            raw, snapshot.get("lipsync_assembly"), project["ratio"]
+        )
+        _validate_lipsync_render_sources(raw, _default_source_inspector)
         videos = []
         shot_inputs = {}
         for shot in raw:
@@ -1318,6 +1847,13 @@ def preview_render_context(db_factory, job_id):
                 str(media_plan.resolve_controlled_file(bgm_file))
                 if bgm_file else None
             ),
+            "sound_cues": [
+                {
+                    **item,
+                    "file": str(media_plan.resolve_controlled_file(item["file"])),
+                }
+                for item in payload_sound_cues
+            ],
         }
 
 
@@ -1331,6 +1867,56 @@ def _final_preview(conn, project_id, preview_version):
         "AND status='succeeded'",
         (project_id, preview_version),
     ).fetchone()
+
+
+def _preview_audio_payload(conn, preview):
+    """Load the immutable audio identity captured by a succeeded preview."""
+    generic = conn.execute(
+        "SELECT payload FROM jobs WHERE id=?", (preview["job_id"],),
+    ).fetchone()
+    try:
+        payload = json.loads(generic["payload"] or "{}") if generic else {}
+    except (TypeError, ValueError):
+        payload = {}
+    d2_input_hash = payload.get("d2_input_hash")
+    if (
+        payload.get("mode") != "short_drama_preview"
+        or not isinstance(d2_input_hash, str)
+        or len(d2_input_hash) != 64
+    ):
+        raise PreviewBlocked(
+            "preview_stale",
+            "预览缺少可信音频身份，请重新生成预览",
+        )
+    return payload
+
+
+def _require_preview_audio_identity(snapshot, preview_payload):
+    if (
+        snapshot["audio_subtitle"]["input_hash"]
+        != preview_payload["d2_input_hash"]
+    ):
+        raise PreviewBlocked(
+            "preview_stale",
+            "预览音频输入已变化，请重新生成预览",
+        )
+
+
+def _require_preview_manifest(snapshot, manifest, expected_kind):
+    current = snapshot.get("lipsync_assembly") or {}
+    try:
+        lipsync_assembly.validate_composition_manifest(
+            manifest,
+            expected_kind=expected_kind,
+            expected_project_id=snapshot["project_id"],
+            expected_input_hash=snapshot["input_hash"],
+            plan=current or None,
+        )
+    except lipsync_assembly.LipsyncAssemblyBlocked as error:
+        raise PreviewBlocked(
+            error.code,
+            "预览使用的口型素材清单已变化，请重新生成预览",
+        )
 
 
 def _final_cover_time(duration_ms, requested):
@@ -1381,15 +1967,18 @@ def create_final_quote(
         preview = _final_preview(conn, project_id, body["preview_version"])
         if not preview:
             raise PreviewBlocked("preview_invalid", "预览版本不存在或未成功")
+        preview_payload = _preview_audio_payload(conn, preview)
         snapshot = build_assembly_snapshot(
             conn, project, bgm_lookup=bgm_lookup
         )
         if snapshot["input_hash"] != preview["input_hash"]:
             raise PreviewBlocked("preview_stale", "预览输入已变化，请重新生成预览")
+        _require_preview_audio_identity(snapshot, preview_payload)
         duration_ms = int(preview["duration_ms"] or project["target_duration"] * 1000)
         cover_time_ms = _final_cover_time(
             duration_ms, body.get("cover_time_ms")
         )
+        _require_render_environment()
         total_cost = max(0, int(cost or 0))
         token = uuid.uuid4().hex
         now = int(time.time())
@@ -1589,12 +2178,26 @@ def create_final_job(
         if bound != supplied:
             conn.rollback()
             raise PreviewBlocked("quote_invalid", "报价与当前导出请求不匹配")
+        preview = _final_preview(conn, project_id, body["preview_version"])
+        if not preview or preview["input_hash"] != quote["input_hash"]:
+            conn.rollback()
+            raise PreviewBlocked("preview_stale", "导出基线已变化")
+        preview_payload = _preview_audio_payload(conn, preview)
+        preview_manifest = (
+            preview_payload.get("manifest")
+            or _json_value(preview["manifest_json"], {})
+        )
+        final_manifest = _final_manifest_from_preview(
+            preview_manifest, _merge_config(preview["config_json"])
+        )
         request_hash = media_plan.canonical_hash({
             "actor": actor_username, "owner": owner_username,
             "project_id": project_id, "revision": body["revision"],
             "assembly_revision": body["assembly_revision"],
             "preview_version": body["preview_version"],
             "input_hash": quote["input_hash"],
+            "d2_input_hash": preview_payload["d2_input_hash"],
+            "manifest_hash": final_manifest.get("manifest_hash", ""),
             "cover_time_ms": body["cover_time_ms"], "cost": quote["cost"],
         })
         if existing:
@@ -1656,15 +2259,11 @@ def create_final_job(
                 "SELECT * FROM short_drama_compositions WHERE project_id=?",
                 (project_id,),
             ).fetchone()
-            preview = _final_preview(
-                conn, project_id, body["preview_version"]
-            )
             if (
                 not project or project["stage"] != "assembly_review"
                 or project["revision"] != body["revision"]
                 or not composition
                 or composition["assembly_revision"] != body["assembly_revision"]
-                or not preview or preview["input_hash"] != quote["input_hash"]
             ):
                 conn.rollback()
                 raise PreviewBlocked("preview_stale", "导出基线已变化")
@@ -1676,6 +2275,16 @@ def create_final_job(
             if active:
                 conn.rollback()
                 raise ActiveCompositionJob("项目已有合成任务处理中")
+            snapshot = build_assembly_snapshot(
+                conn, project, bgm_lookup=bgm_lookup
+            )
+            if snapshot["input_hash"] != preview["input_hash"]:
+                conn.rollback()
+                raise PreviewBlocked("preview_stale", "导出基线已变化")
+            _require_preview_audio_identity(snapshot, preview_payload)
+            _require_preview_manifest(
+                snapshot, final_manifest, expected_kind="final"
+            )
             _enforce_final_budget(
                 conn, project_id, quote["cost"], include_cost=True,
                 point_usage=point_usage,
@@ -1784,16 +2393,24 @@ def create_final_job(
             "SELECT * FROM short_drama_compositions WHERE project_id=?",
             (project_id,),
         ).fetchone()
-        preview = _final_preview(conn, project_id, body["preview_version"])
         if (
             not project or project["stage"] != "assembly_review"
             or project["revision"] != body["revision"]
             or not composition
             or composition["assembly_revision"] != body["assembly_revision"]
-            or not preview or preview["input_hash"] != quote["input_hash"]
         ):
             conn.rollback()
             raise PreviewBlocked("preview_stale", "导出基线已变化")
+        snapshot = build_assembly_snapshot(
+            conn, project, bgm_lookup=bgm_lookup
+        )
+        if snapshot["input_hash"] != preview["input_hash"]:
+            conn.rollback()
+            raise PreviewBlocked("preview_stale", "导出基线已变化")
+        _require_preview_audio_identity(snapshot, preview_payload)
+        _require_preview_manifest(
+            snapshot, final_manifest, expected_kind="final"
+        )
         active = conn.execute(
             "SELECT 1 FROM short_drama_composition_jobs WHERE project_id=? "
             "AND status IN ('queued','running')", (project_id,),
@@ -1816,8 +2433,15 @@ def create_final_job(
             "assembly_revision": body["assembly_revision"],
             "preview_version": body["preview_version"],
             "input_hash": preview["input_hash"],
+            "d2_input_hash": preview_payload["d2_input_hash"],
             "cover_time_ms": body["cover_time_ms"],
             "attempt_id": attempt["id"],
+            "bgm_file": str(preview_payload.get("bgm_file") or ""),
+            "sound_cues": [
+                dict(item) for item in preview_payload.get("sound_cues") or []
+                if isinstance(item, dict)
+            ],
+            "manifest": final_manifest,
         }
         cursor = conn.execute(
             "INSERT INTO jobs(kind,username,cost,status,payload,created_at,"
@@ -1837,11 +2461,15 @@ def create_final_job(
         version_id = uuid.uuid4().hex
         conn.execute(
             "INSERT INTO short_drama_composition_versions "
-            "(id,project_id,kind,version,job_id,input_hash,config_json,status,"
-            "created_at) VALUES (?,?,'final',?,?,?,?, 'rendering',?)",
+            "(id,project_id,kind,version,job_id,input_hash,config_json,"
+            "plan_hash,manifest_hash,manifest_json,status,created_at) "
+            "VALUES (?,?,'final',?,?,?,?,?,?,?,'rendering',?)",
             (
                 version_id, project_id, version, str(job_id),
-                preview["input_hash"], preview["config_json"], now,
+                preview["input_hash"], preview["config_json"],
+                final_manifest.get("plan_hash", ""),
+                final_manifest.get("manifest_hash", ""),
+                json.dumps(final_manifest, ensure_ascii=False), now,
             ),
         )
         conn.execute(
@@ -1963,6 +2591,9 @@ def final_render_context(db_factory, job_id):
         )
         if not preview or preview["input_hash"] != payload["input_hash"]:
             raise PreviewBlocked("preview_stale", "正式导出的预览基线已过期")
+        preview_payload = _preview_audio_payload(conn, preview)
+        if preview_payload["d2_input_hash"] != payload.get("d2_input_hash"):
+            raise PreviewBlocked("preview_stale", "正式导出的预览音频基线已过期")
         version = conn.execute(
             "SELECT id,version FROM short_drama_composition_versions "
             "WHERE job_id=? AND kind='final'", (str(job_id),),
@@ -2021,6 +2652,81 @@ def archive_final_asset(db_factory, job_id, result):
         return dict(conn.execute(
             "SELECT * FROM short_drama_final_assets WHERE id=?", (asset_id,)
         ).fetchone())
+
+
+def final_asset_project_id(db_factory, asset_id):
+    asset_id = str(asset_id or "").strip()
+    if not asset_id or len(asset_id) > 128:
+        raise LookupError("short drama final asset does not exist")
+    with closing(db_factory()) as conn:
+        row = conn.execute(
+            "SELECT project_id FROM short_drama_final_assets "
+            "WHERE id=? AND archive_status='ready' AND deleted=0",
+            (asset_id,),
+        ).fetchone()
+    if not row or not row[0]:
+        raise LookupError("short drama final asset does not exist")
+    return str(row[0])
+
+
+def get_final_asset(db_factory, owner_username, asset_id):
+    asset_id = str(asset_id or "").strip()
+    with closing(db_factory()) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT a.*,v.version,p.ratio "
+            "FROM short_drama_final_assets a "
+            "LEFT JOIN short_drama_composition_versions v "
+            "ON v.id=a.composition_version_id "
+            "LEFT JOIN short_drama_projects p ON p.id=a.project_id "
+            "WHERE a.id=? AND a.owner_username=? "
+            "AND a.archive_status='ready' AND a.deleted=0",
+            (asset_id, owner_username),
+        ).fetchone()
+    if not row:
+        raise LookupError("short drama final asset does not exist")
+    item = dict(row)
+    video_url = item.get("video_url") or ""
+    cover_url = item.get("cover_url") or ""
+    try:
+        from . import cos
+        if cos.enabled():
+            video_url = cos.object_url(item["object_key"], private=True)
+            cover_url = cos.object_url(item["cover_key"], private=True)
+    except Exception:
+        # Keep discovery available during a transient signing outage. A later
+        # retry can obtain a fresh private URL without exposing object keys.
+        pass
+    width = int(item.get("width") or 0)
+    height = int(item.get("height") or 0)
+    return {
+        "id": item["id"],
+        "asset_id": item["id"],
+        "source_type": "short_drama_final",
+        "project_id": item["project_id"],
+        "composition_version_id": item["composition_version_id"],
+        "version": item.get("version"),
+        "job_id": item["job_id"],
+        "title": item["title"],
+        "status": "done",
+        "video_url": video_url,
+        "url": video_url,
+        "image_url": cover_url,
+        "cover_url": cover_url,
+        "mime": item["mime"],
+        "size": item["size"],
+        "sha256": item["sha256"],
+        "width": width,
+        "height": height,
+        "resolution": "%dx%d" % (width, height),
+        "ratio": item.get("ratio") or "",
+        "fps": item["fps"],
+        "duration_ms": item["duration_ms"],
+        "video_codec": item["video_codec"],
+        "audio_codec": item["audio_codec"],
+        "created_by": item["created_by"],
+        "created_at": item["created_at"],
+    }
 
 
 def reconcile_final_job(db_factory, job_id):
@@ -2252,3 +2958,50 @@ def retry_final_charge_attempts(db_factory, points_domain, limit=64):
 def confirm_final(db_factory, owner_username, body):
     from . import short_drama_completion
     short_drama_completion.reject_legacy_completion()
+    if not isinstance(body, dict) or set(body) != {
+        "project_id", "revision", "final_version"
+    }:
+        raise ValueError("确认成片请求字段不正确")
+    now = int(time.time())
+    with closing(db_factory()) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN IMMEDIATE")
+        project = conn.execute(
+            "SELECT * FROM short_drama_projects WHERE id=? AND username=? "
+            "AND deleted=0", (str(body.get("project_id") or ""), owner_username),
+        ).fetchone()
+        if not project:
+            raise LookupError("短剧项目不存在")
+        if project["stage"] == "completed":
+            conn.commit()
+            return {
+                "project_id": project["id"], "stage": "completed",
+                "revision": project["revision"], "replayed": True,
+            }
+        if (
+            project["stage"] != "assembly_review"
+            or project["revision"] != body.get("revision")
+        ):
+            raise PreviewBlocked("revision_conflict", "项目状态已更新")
+        version = conn.execute(
+            "SELECT v.version,a.id AS asset_id FROM "
+            "short_drama_composition_versions v "
+            "JOIN short_drama_final_assets a ON a.composition_version_id=v.id "
+            "WHERE v.project_id=? AND v.kind='final' AND v.version=? "
+            "AND v.status='succeeded' AND a.archive_status='ready' "
+            "AND a.deleted=0",
+            (project["id"], body.get("final_version")),
+        ).fetchone()
+        if not version:
+            raise PreviewBlocked("final_missing", "尚无可确认的正式成片资产")
+        conn.execute(
+            "UPDATE short_drama_projects SET stage='completed',"
+            "revision=revision+1,updated_at=? WHERE id=?",
+            (now, project["id"]),
+        )
+        conn.commit()
+        return {
+            "project_id": project["id"], "stage": "completed",
+            "revision": project["revision"] + 1,
+            "asset_id": version["asset_id"], "replayed": False,
+        }

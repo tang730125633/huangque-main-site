@@ -1,6 +1,7 @@
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 
 import server.admin_api as admin_api
 
@@ -262,6 +263,17 @@ class CatalogAndBalanceTests(unittest.TestCase):
 
 
 class KeyPingTests(unittest.TestCase):
+    def test_optional_domain_failure_does_not_disable_core_domains(self):
+        with mock.patch.object(
+            admin_api, "import_module", side_effect=ImportError("optional")
+        ):
+            self.assertIsNone(
+                admin_api._optional_content_domain("optional_failure")
+            )
+        self.assertIsNotNone(admin_api.egress)
+        self.assertIsNotNone(admin_api.feature_flags)
+        self.assertIsNotNone(admin_api.provider_keys)
+
     def test_every_key_group_is_pingable(self):
         for item in admin_api.key_status():
             self.assertTrue(item["pingable"], item["key"])
