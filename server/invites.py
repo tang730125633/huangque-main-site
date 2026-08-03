@@ -87,6 +87,9 @@ def init_schema(conn, now=None):
         invalid_reason TEXT,
         updated_at INTEGER NOT NULL
     )""")
+    invite_cols = {row["name"] for row in conn.execute("PRAGMA table_info(user_invites)").fetchall()}
+    if "invalid_reason" not in invite_cols:
+        conn.execute("ALTER TABLE user_invites ADD COLUMN invalid_reason TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_invites_inviter_time ON user_invites(inviter_user_id, bound_at DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_invites_campaign_status ON user_invites(campaign_id, status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_invites_ip_time ON user_invites(ip_hash, bound_at DESC)")

@@ -104,6 +104,28 @@ class InviteAdminTests(unittest.TestCase):
             self.assertNotIn(">inviter<", sheet)
             self.assertNotIn(">invitee<", sheet)
 
+    def test_legacy_invite_table_gains_invalid_reason_column(self):
+        c = sqlite3.connect(":memory:")
+        c.row_factory = sqlite3.Row
+        c.execute("""CREATE TABLE user_invites(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            campaign_id INTEGER NOT NULL,
+            inviter_user_id INTEGER NOT NULL,
+            invitee_user_id INTEGER NOT NULL UNIQUE,
+            invite_code TEXT NOT NULL,
+            source TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'bound',
+            risk_status TEXT NOT NULL DEFAULT 'normal',
+            bound_at INTEGER NOT NULL,
+            ip_hash TEXT,
+            device_hash TEXT,
+            updated_at INTEGER NOT NULL
+        )""")
+        self.auth.invites.init_schema(c)
+        columns = {row["name"] for row in c.execute("PRAGMA table_info(user_invites)")}
+        c.close()
+        self.assertIn("invalid_reason", columns)
+
     def test_admin_http_endpoints_require_admin_and_internal_token(self):
         token = self.auth.issue_token("admin")
         c = self.connect()
