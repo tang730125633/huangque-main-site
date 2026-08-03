@@ -1714,7 +1714,7 @@ def reconcile_provider_job(
         conn.close()
     if row and row["status"] == "running":
         provider = load_by_name(row["provider"])
-        if provider is None or not provider.configured:
+        if provider is None:
             return _provider_job(row)
         try:
             provider_state = provider.get_job(row["provider_job_id"])
@@ -1748,15 +1748,19 @@ def reconcile_provider_job(
         except Exception as error:
             conn = _connection(db_factory)
             try:
+                code = getattr(error, "code", "provider_poll_failed")
+                recovery_required = code == "provider_key_unavailable"
                 conn.execute(
-                    "UPDATE short_drama_provider_shot_jobs "
-                    "SET poll_count=poll_count+1,error_json=?,updated_at=? "
+                    "UPDATE short_drama_provider_shot_jobs SET status=?,"
+                    "poll_count=poll_count+1,error_json=?,updated_at=? "
                     "WHERE id=? AND status='running'",
                     (
+                        "submit_unknown" if recovery_required else "running",
                         _json_text({
-                            "code": getattr(error, "code", "provider_poll_failed"),
+                            "code": code,
                             "detail": str(error)[:500],
-                            "retryable": True,
+                            "retryable": not recovery_required,
+                            "requires_reconciliation": recovery_required,
                         }),
                         int(time.time()), job_id,
                     ),

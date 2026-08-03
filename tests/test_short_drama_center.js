@@ -129,7 +129,7 @@ test('前置策划生成结构化剧本并在人工确认后准备正式对话',
   const changed = JSON.parse(JSON.stringify(contract));
   changed.shots[0].sound = 'SERVER_CHANGED_SOUND';
   assert.equal(center.confirmedContractMatches({confirmed_contract:changed}, contract), false);
-  assert.match(centerScript, /if\(!confirmedContractMatches\([^)]*current_script[^)]*contract\)\)throw new Error/);
+  assert.match(centerScript, /continuePlannerContract\(client,project\.id,current,contract\)/);
   const promotion = center.plannerPromotionMessages(preview);
   assert.equal(promotion.length, 3);
   assert.match(promotion[0], /核心设定/);
@@ -139,6 +139,42 @@ test('前置策划生成结构化剧本并在人工确认后准备正式对话',
   assert.match(promotion[2], /CONFIRMED_TRANSITION_MARKER/);
   assert.match(promotion[2], /CONFIRMED_CONTINUITY_MARKER/);
   assert.doesNotMatch(promotion[0], /[“”]/);
+});
+
+test('生成响应丢失后复用相同确认合同并只继续锁定', async () => {
+  const contract = {schema_version:'preproject-confirmed-shot-contract-v1', shots:[{index:1}]};
+  const workspace = {
+    conversation:{state:'script_review', revision:9},
+    current_script:{id:'version-1', script:{confirmed_contract:contract}}
+  };
+  let generates = 0;
+  let locks = 0;
+  const result = await center.continuePlannerContract({
+    generate(){generates += 1; throw new Error('不应重复生成');},
+    lock(body,key){
+      locks += 1;
+      assert.equal(body.version_id, 'version-1');
+      assert.equal(body.conversation_revision, 9);
+      assert.equal(key, 'preproject-project-1-lock');
+      return Promise.resolve({conversation:{state:'script_locked',revision:10},current_script:workspace.current_script});
+    }
+  }, 'project-1', workspace, contract);
+  assert.equal(generates, 0);
+  assert.equal(locks, 1);
+  assert.equal(result.conversation.state, 'script_locked');
+});
+
+test('锁定响应丢失后识别已锁定合同且不重复请求', async () => {
+  const contract = {schema_version:'preproject-confirmed-shot-contract-v1', shots:[{index:1}]};
+  const workspace = {
+    conversation:{state:'script_locked', revision:10},
+    current_script:{id:'version-1', script:{confirmed_contract:contract}}
+  };
+  let requests = 0;
+  const client = {generate(){requests += 1;}, lock(){requests += 1;}};
+  const result = await center.continuePlannerContract(client, 'project-1', workspace, contract);
+  assert.equal(requests, 0);
+  assert.equal(result, workspace);
 });
 
 test('逐镜剧本识别角色、展示对白并阻止超时台词确认', () => {

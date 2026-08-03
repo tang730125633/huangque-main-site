@@ -122,7 +122,7 @@ class ShortDramaConversationTests(unittest.TestCase):
         contract = {
             "schema_version": "preproject-confirmed-shot-contract-v1",
             "title": "确认短剧",
-            "logline": "人工确认的逐镜合同必须原样保存",
+            "logline": "长" * 1000,
             "protagonist": "林夏",
             "conflict": "是否相信旧友",
             "ending": "两人完成和解",
@@ -134,6 +134,12 @@ class ShortDramaConversationTests(unittest.TestCase):
             "beats": beats,
             "shots": shots,
         }
+        for length in (600, 1000):
+            boundary = dict(contract, logline="边" * length)
+            normalized = short_drama_conversation._normalize_confirmed_contract(
+                self.project, boundary
+            )
+            self.assertEqual(length, len(normalized["logline"]))
         generated = short_drama_conversation.generate_script(
             self.db,
             "alice",

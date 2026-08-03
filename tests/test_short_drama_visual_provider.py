@@ -124,6 +124,19 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
         candidates.assert_called_once_with("xai", preferred_id="env")
         self.assertEqual("original-key-a", poll.call_args.kwargs["api_key"])
 
+    def test_grok_running_job_uses_retired_snapshot_without_active_candidate(self):
+        provider = GrokXaiShotProvider()
+        provider_job_id = provider._encode_job_id("retired-key-a", "req-retired")
+        snapshot = {"id": "retired-key-a", "secret": "retired-secret-a"}
+        with mock.patch.object(provider_keys, "has_candidate", return_value=False), \
+             mock.patch.object(provider_keys, "candidates", return_value=[snapshot]) as candidates, \
+             mock.patch("content_domains.video_xai._request_json", return_value={"status": "pending"}) as poll:
+            self.assertFalse(provider.configured)
+            state = provider.get_job(provider_job_id)
+        self.assertEqual("pending", state["status"])
+        candidates.assert_called_once_with("xai", preferred_id="retired-key-a")
+        self.assertEqual("retired-secret-a", poll.call_args.kwargs["api_key"])
+
     def test_valid_shot_request_is_normalized_without_network(self):
         result = HeyGenCinematicShotProvider().validate_request({
             "provider_avatar_id": "avatar-1",

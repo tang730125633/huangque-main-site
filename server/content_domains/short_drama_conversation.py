@@ -1711,7 +1711,7 @@ def _normalize_confirmed_contract(project, value):
     return {
         "schema_version": "preproject-confirmed-shot-contract-v1",
         "title": _confirmed_contract_text(value.get("title"), "title", 120),
-        "logline": _confirmed_contract_text(value.get("logline"), "logline", 500),
+        "logline": _confirmed_contract_text(value.get("logline"), "logline", 2000),
         "protagonist": _confirmed_contract_text(value.get("protagonist"), "protagonist", 80),
         "conflict": _confirmed_contract_text(value.get("conflict"), "conflict", 500),
         "ending": _confirmed_contract_text(value.get("ending"), "ending", 220),

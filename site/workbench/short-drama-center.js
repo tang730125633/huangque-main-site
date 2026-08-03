@@ -235,6 +235,22 @@
   function confirmedContractMatches(script,contract){
     return JSON.stringify(stableContract(script&&script.confirmed_contract||null))===JSON.stringify(stableContract(contract||null));
   }
+  function continuePlannerContract(client,projectId,workspace,contract){
+    function matching(current){return confirmedContractMatches(current&&current.current_script&&current.current_script.script,contract);}
+    function lock(current){
+      if(current.conversation.state==='script_locked')return Promise.resolve(current);
+      return client.lock({project_id:projectId,conversation_revision:Number(current.conversation.revision),version_id:current.current_script.id},'preproject-'+projectId+'-lock');
+    }
+    if(workspace.conversation.state==='script_locked'){
+      if(!matching(workspace))return Promise.reject(new Error('已锁定剧本与本次确认内容不一致，请进入项目核对。'));
+      return Promise.resolve(workspace);
+    }
+    if(matching(workspace))return lock(workspace);
+    return client.generate({project_id:projectId,conversation_revision:Number(workspace.conversation.revision),instruction:'持久化用户已确认的逐镜合同',confirmed_contract:contract},'preproject-'+projectId+'-generate').then(function(current){
+      if(!matching(current))throw new Error('服务端保存的逐镜剧本与确认内容不一致，已阻止自动锁定，请重新确认。');
+      return lock(current);
+    });
+  }
   function importedTitle(value,filename){
     var fromFile=text(filename).replace(/\.[^.]+$/,'').trim();
     if(fromFile&&fromFile.length<=80)return fromFile;
@@ -639,11 +655,7 @@
           var chain=Promise.resolve(workspace);
           plannerPromotionMessages(plannerPreview).forEach(function(message,index){chain=chain.then(function(current){return ensurePlanningMessage(current,message,index,project.id);});});
           return chain.then(function(current){
-            return client.generate({project_id:project.id,conversation_revision:Number(current.conversation.revision),instruction:'持久化用户已确认的逐镜合同',confirmed_contract:contract},'preproject-'+project.id+'-generate');
-          }).then(function(current){
-            if(!confirmedContractMatches(current.current_script&&current.current_script.script,contract))throw new Error('服务端保存的逐镜剧本与确认内容不一致，已阻止自动锁定，请重新确认。');
-            if(current.conversation.state==='script_locked')return current;
-            return client.lock({project_id:project.id,conversation_revision:Number(current.conversation.revision),version_id:current.current_script.id},'preproject-'+project.id+'-lock');
+            return continuePlannerContract(client,project.id,current,contract);
           }).then(function(){return project;});
         });
       }).then(function(project){
@@ -726,5 +738,5 @@
     load().catch(function(){});
     return {reload:load,render:render};
   }
-  return {STAGES:STAGES,LABELS:LABELS,normalizeProject:normalizeProject,progress:progress,filterProjects:filterProjects,metrics:metrics,deleteErrorMessage:deleteErrorMessage,createPayload:createPayload,compactIdea:compactIdea,buildRecommendations:buildRecommendations,advisorStep:advisorStep,plannerProgress:plannerProgress,plannerDurations:plannerDurations,plannerRoles:plannerRoles,plannerReadingSeconds:plannerReadingSeconds,plannerQuality:plannerQuality,buildPlannerPreview:buildPlannerPreview,plannerPromotionMessages:plannerPromotionMessages,plannerConfirmedContract:plannerConfirmedContract,confirmedContractMatches:confirmedContractMatches,importedTitle:importedTitle,analyzeImportedScript:analyzeImportedScript,importProjectPayload:importProjectPayload,newImportKey:newImportKey,readLimitedStream:readLimitedStream,extractPdfText:extractPdfText,extractDocxText:extractDocxText,readScriptFile:readScriptFile,createClient:createClient,projectUrl:projectUrl,cardHtml:cardHtml,mount:mount};
+  return {STAGES:STAGES,LABELS:LABELS,normalizeProject:normalizeProject,progress:progress,filterProjects:filterProjects,metrics:metrics,deleteErrorMessage:deleteErrorMessage,createPayload:createPayload,compactIdea:compactIdea,buildRecommendations:buildRecommendations,advisorStep:advisorStep,plannerProgress:plannerProgress,plannerDurations:plannerDurations,plannerRoles:plannerRoles,plannerReadingSeconds:plannerReadingSeconds,plannerQuality:plannerQuality,buildPlannerPreview:buildPlannerPreview,plannerPromotionMessages:plannerPromotionMessages,plannerConfirmedContract:plannerConfirmedContract,confirmedContractMatches:confirmedContractMatches,continuePlannerContract:continuePlannerContract,importedTitle:importedTitle,analyzeImportedScript:analyzeImportedScript,importProjectPayload:importProjectPayload,newImportKey:newImportKey,readLimitedStream:readLimitedStream,extractPdfText:extractPdfText,extractDocxText:extractDocxText,readScriptFile:readScriptFile,createClient:createClient,projectUrl:projectUrl,cardHtml:cardHtml,mount:mount};
 });

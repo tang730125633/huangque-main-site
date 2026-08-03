@@ -22,6 +22,7 @@ from content_domains import (
     short_drama_preflight,
 )
 from providers.short_drama_visual.heygen_cinematic import HeyGenCinematicShotProvider
+from providers.short_drama_visual.base import VisualProviderError
 
 
 class Handler:
@@ -1017,6 +1018,102 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             conn.close()
         self.assertEqual(("ready", "/api/files/video/provider-job-1.mp4"), version)
         self.assertEqual("done", attempt[0])
+
+    def test_running_job_polls_bound_key_when_provider_has_no_active_candidate(self):
+        class RecoveringProvider:
+            name = "heygen_cinematic"
+
+            def __init__(self):
+                self.active = True
+                self.polls = 0
+
+            @property
+            def configured(self):
+                return self.active
+
+            def create_job(self, request):
+                return {"provider_job_id": "bound-retired-key-job"}
+
+            def get_job(self, provider_job_id):
+                self.polls += 1
+                if self.polls == 1:
+                    return {"status": "pending"}
+                return {
+                    "status": "completed",
+                    "result_url": "https://provider.example/retired-result.mp4",
+                }
+
+            def fetch_result(self, provider_job_id, result_url):
+                return {
+                    "provider_job_id": provider_job_id,
+                    "file": "video/retired-result.mp4",
+                    "url": "/api/files/video/retired-result.mp4",
+                }
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "heygen_cinematic",
+            "HEYGEN_API_KEY": "configured-for-test",
+        }):
+            quote = self._provider_quote()
+            job = short_drama_autodraft.start_provider_job(
+                self.db, "alice", "alice", {"quote_token": quote["quote_token"]},
+                "retired-key-recovery", deduct_points=mock.Mock(),
+                avatar_lookup=lambda *_args: self._provider_avatar(),
+                project_usage=short_drama._project_point_usage,
+            )
+        provider = RecoveringProvider()
+        with mock.patch(
+            "content_domains.short_drama_autodraft.load_by_name",
+            return_value=provider,
+        ):
+            running = short_drama_autodraft.reconcile_provider_job(
+                self.db, "alice", self.project["id"], job["id"]
+            )
+            provider.active = False
+            completed = short_drama_autodraft.reconcile_provider_job(
+                self.db, "alice", self.project["id"], job["id"]
+            )
+        self.assertEqual("running", running["status"])
+        self.assertEqual("succeeded", completed["status"])
+        self.assertEqual(2, provider.polls)
+
+    def test_missing_bound_key_enters_observable_recovery_state(self):
+        class MissingKeyProvider:
+            name = "heygen_cinematic"
+            configured = True
+
+            def create_job(self, request):
+                return {"provider_job_id": "missing-bound-key-job"}
+
+            def get_job(self, provider_job_id):
+                raise VisualProviderError(
+                    "provider_key_unavailable",
+                    "任务绑定的密钥快照不可用",
+                    submitted=True,
+                )
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "heygen_cinematic",
+            "HEYGEN_API_KEY": "configured-for-test",
+        }):
+            quote = self._provider_quote()
+            job = short_drama_autodraft.start_provider_job(
+                self.db, "alice", "alice", {"quote_token": quote["quote_token"]},
+                "missing-key-recovery", deduct_points=mock.Mock(),
+                avatar_lookup=lambda *_args: self._provider_avatar(),
+                project_usage=short_drama._project_point_usage,
+            )
+        with mock.patch(
+            "content_domains.short_drama_autodraft.load_by_name",
+            return_value=MissingKeyProvider(),
+        ):
+            result = short_drama_autodraft.reconcile_provider_job(
+                self.db, "alice", self.project["id"], job["id"]
+            )
+        self.assertEqual("submit_unknown", result["status"])
+        self.assertEqual("provider_key_unavailable", result["error"]["code"])
+        self.assertFalse(result["error"]["retryable"])
+        self.assertTrue(result["error"]["requires_reconciliation"])
 
     def test_grok_vault_failure_blocks_before_charge_and_submission(self):
         with mock.patch.dict(
