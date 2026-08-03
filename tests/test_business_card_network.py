@@ -436,6 +436,54 @@ class BusinessCardNetworkTests(unittest.TestCase):
             self.assertTrue(public_work["url"].startswith("https://signed.example/"))
             self.assertNotEqual(public_work["url"], owner_work["url"])
 
+    def test_work_video_upload_is_private_persistent_and_publicly_playable(self):
+        headers = {"Authorization": "Bearer " + self.child["token"]}
+        with self.conn() as c:
+            child_id = self.uid(c, "child")
+        mp4 = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2"
+        video_data = "data:video/mp4;base64," + base64.b64encode(mp4).decode("ascii")
+
+        with patch("server.content_domains.cos.enabled", return_value=True), \
+             patch("server.content_domains.cos.put_bytes") as put_bytes, \
+             patch.object(self.auth.business_cards, "_media_url", side_effect=lambda key: "https://signed.example/" + key):
+            status, uploaded = self.request("/api/auth/card/media", {
+                "field": "work_video_3", "title": "品牌故事", "data": video_data,
+            }, headers)
+            self.assertEqual(status, 200)
+            self.assertEqual(uploaded["work"]["type"], "video")
+            self.assertEqual(uploaded["work"]["slot"], 3)
+            self.assertEqual(uploaded["work"]["title"], "品牌故事")
+            self.assertTrue(uploaded["key"].startswith("cards/%s/work_video_3/" % child_id))
+            self.assertEqual(put_bytes.call_args.args[2], "video/mp4")
+            self.assertTrue(put_bytes.call_args.kwargs["private"])
+
+            status, owner = self.get("/api/auth/card/me", headers)
+            self.assertEqual(status, 200)
+            owner_video = next(item for item in owner["card"]["works"] if item.get("type") == "video")
+            self.assertEqual(owner_video["key"], uploaded["key"])
+            self.assertTrue(owner_video["url"].startswith("https://signed.example/"))
+
+            status, bad = self.request("/api/auth/card/me", {"works": [{
+                "type": "video", "slot": 3, "key": "cards/999/work_video_3/forged.mp4",
+            }]}, headers, method="PUT")
+            self.assertEqual(status, 400)
+            self.assertEqual(bad["code"], "invalid_work_video")
+
+            status, published = self.request("/api/auth/card/publish", {}, headers)
+            self.assertEqual(status, 200)
+            status, public = self.get("/api/auth/card/public?id=" + published["card"]["public_id"])
+            self.assertEqual(status, 200)
+            public_video = next(item for item in public["card"]["works"] if item.get("type") == "video")
+            self.assertNotIn("key", public_video)
+            self.assertEqual(public_video["title"], "品牌故事")
+            self.assertTrue(public_video["url"].startswith("https://signed.example/"))
+
+        status, invalid = self.request("/api/auth/card/media", {
+            "field": "work_video_1", "data": "data:video/mp4;base64," + base64.b64encode(b"not-mp4").decode("ascii"),
+        }, headers)
+        self.assertEqual(status, 400)
+        self.assertEqual(invalid["code"], "invalid_video")
+
     def test_legacy_miniprogram_register_keeps_sixteen_trial_points(self):
         with patch.object(self.auth.wechat_vpay, "code_to_session", return_value={"openid": "unused"}):
             status, body = self.request("/api/auth/miniprogram-register", {"username": "legacy_mp", "password": "secret123"})

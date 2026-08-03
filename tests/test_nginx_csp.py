@@ -135,6 +135,17 @@ class NginxCspTest(unittest.TestCase):
                 )
                 self.assertIn('proxy_set_header X-HQ-Internal-Token "";', block)
 
+    def test_card_media_upload_has_a_bounded_streaming_route(self):
+        config = self._config("deploy/nginx-huangquechuanmei.conf")
+        start = config.index("location = /api/auth/card/media {")
+        end = config.index("\n    }", start)
+        block = config[start:end]
+        self.assertIn("proxy_pass http://127.0.0.1:8095;", block)
+        self.assertIn("proxy_request_buffering off;", block)
+        self.assertIn("client_max_body_size 30m;", block)
+        self.assertIn("client_body_timeout 90s;", block)
+        self.assertIn("limit_conn hq_cli_upload_conn 2;", block)
+
     def test_hermes_runbook_updates_the_actively_loaded_main_site_config(self):
         runbook = self._config("deploy/生产环境清单与还原手册.md")
         release = self._config("deploy/hermes-ip12-release.sh")
