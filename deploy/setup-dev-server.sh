@@ -36,6 +36,7 @@ sudo useradd -m -s /bin/bash ubuntu 2>/dev/null || true
 sudo mkdir -p /home/ubuntu/{auth-service,content-api,dl-service} /etc/huangque
 sudo mkdir -p /home/ubuntu/auth-service/content_domains
 sudo cp "$R"/server/auth_server.py "$R"/server/hq_cli_api.py "$R"/server/wechat_subscribe.py "$R"/server/invites.py "$R"/server/invite_network.py "$R"/server/business_cards.py "$R"/server/wxpay.py /home/ubuntu/auth-service/
+sudo cp "$R"/scripts/process_invite_reward_claims.py /home/ubuntu/auth-service/
 sudo cp "$R"/server/content_domains/__init__.py "$R"/server/content_domains/cos.py "$R"/server/content_domains/miniprogram_security.py /home/ubuntu/auth-service/content_domains/
 sudo cp "$R"/server/content_api.py "$R"/server/leadgen_api.py "$R"/server/imggen_api.py \
   "$R"/server/admin_api.py "$R"/server/tikhub.py "$R"/server/func_names.py /home/ubuntu/content-api/
@@ -59,11 +60,13 @@ sudo chown -R ubuntu:ubuntu /home/ubuntu
 
 echo "== [5/8] systemd 六服务（含 drop-in）=="
 sudo cp "$R"/deploy/systemd/huangque-{auth,content,dl,imggen-api,leadgen-api,admin}.service /etc/systemd/system/
+sudo cp "$R"/deploy/systemd/huangque-invite-reward-claims.{service,timer} /etc/systemd/system/
 sudo cp -r "$R"/deploy/systemd/huangque-{auth,content,dl,imggen-api,leadgen-api,admin}.service.d /etc/systemd/system/ 2>/dev/null || true
 sudo rm -f /etc/systemd/system/*.service.d/*.example
 sudo systemctl daemon-reload
 sudo systemctl enable --now huangque-auth huangque-content huangque-dl \
   huangque-imggen-api huangque-leadgen-api huangque-admin
+sudo systemctl enable --now huangque-invite-reward-claims.timer
 sleep 3
 
 echo "== [6/8] 前端 + nginx（域名替换为 $DOMAIN）=="

@@ -1,0 +1,18 @@
+[Unit]
+Description=Huangque Invite Reward Claim Expiry Processor
+After=huangque-auth.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/auth-service
+ExecStart=/usr/bin/python3 /home/ubuntu/auth-service/process_invite_reward_claims.py --database /home/ubuntu/auth-service/users.db --limit 100
+Nice=10
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/auth-service
+LockPersonality=true
+MemoryDenyWriteExecute=true
