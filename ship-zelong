@@ -93,6 +93,9 @@ map_path() {
     server/content_domains/*.py)
       rest="${path#server/content_domains/}"
       printf '20|/home/ubuntu/content-api/content_domains/%s|content|0\n' "$rest" ;;
+    server/providers/*.py)
+      rest="${path#server/}"
+      printf '20|/home/ubuntu/content-api/%s|content|0\n' "$rest" ;;
     server/content_api.py)
       printf '30|/home/ubuntu/content-api/content_api.py|content|0\n' ;;
     deploy/systemd/huangque-auth.service)
