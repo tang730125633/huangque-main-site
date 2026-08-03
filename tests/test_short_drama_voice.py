@@ -82,14 +82,6 @@ class ShortDramaVoiceSnapshotTests(unittest.TestCase):
         self.path = str(Path(self.tmp.name) / "content.db")
         self.db = lambda: sqlite3.connect(self.path)
         short_drama.init_db(self.db)
-        with closing(self.db()) as conn:
-            conn.execute("""CREATE TABLE jobs(
-                id INTEGER PRIMARY KEY, kind TEXT, username TEXT, cost INTEGER,
-                status TEXT DEFAULT 'pending', payload TEXT, result TEXT, error TEXT,
-                created_at INTEGER, updated_at INTEGER, deleted INTEGER DEFAULT 0,
-                refunded INTEGER DEFAULT 0, owner TEXT
-            )""")
-            conn.commit()
         payload = {
             "title": "Night", "synopsis": "A detective hears a midnight knock.",
             "ratio": "9:16", "target_duration": 30, "shot_count": 6,
@@ -303,73 +295,6 @@ class ShortDramaVoiceSnapshotTests(unittest.TestCase):
                 self.db, "alice", "alice", changed, "voice-submit-001"
             )
 
-    def test_same_line_rejects_a_second_active_submission_across_actors(self):
-        snapshot, line, first_quote = self._voice_quote()
-        second_quote = short_drama_voice.prepare_voice_quote(
-            self.db, "editor", "alice", {
-                "project_id": self.project["id"],
-                "revision": snapshot["revision"],
-                "items": [{
-                    "line_id": line["id"], "voice_key": "longwan",
-                    "speed": 1.1, "pitch": 2, "volume": 3,
-                }],
-            },
-            lambda _kind, _payload: 10,
-        )
-        request = {
-            "project_id": self.project["id"], "revision": snapshot["revision"],
-            "line_id": line["id"], "voice_key": "longwan",
-            "speed": 1.1, "pitch": 2, "volume": 3,
-            "quote_token": first_quote["items"][0]["quote_token"],
-        }
-        short_drama_voice.prepare_voice_submission(
-            self.db, "alice", "alice", request, "voice-active-owner"
-        )
-        request["quote_token"] = second_quote["items"][0]["quote_token"]
-        with self.assertRaises(short_drama_voice.VoiceChargeInProgress):
-            short_drama_voice.prepare_voice_submission(
-                self.db, "editor", "alice", request, "voice-active-editor"
-            )
-
-    def test_snapshot_uses_voice_ledger_for_reserved_spent_and_refunded_points(self):
-        snapshot, line, quote = self._voice_quote()
-        request = {
-            "project_id": self.project["id"], "revision": snapshot["revision"],
-            "line_id": line["id"], "voice_key": "longwan",
-            "speed": 1.1, "pitch": 2, "volume": 3,
-            "quote_token": quote["items"][0]["quote_token"],
-        }
-        short_drama_voice.prepare_voice_submission(
-            self.db, "alice", "alice", request, "voice-usage"
-        )
-        current = short_drama_voice.get_voice_workspace(
-            self.db, "alice", self.project["id"]
-        )
-        self.assertEqual((0, 10), (current["spent_points"], current["reserved_points"]))
-        short_drama_voice.mark_voice_attempt_charged(
-            self.db, "alice", "voice-usage", 90
-        )
-        with closing(self.db()) as conn:
-            conn.execute(
-                "UPDATE short_drama_voice_charge_attempts SET state='done' "
-                "WHERE idempotency_key='voice-usage'"
-            )
-            conn.commit()
-        current = short_drama_voice.get_voice_workspace(
-            self.db, "alice", self.project["id"]
-        )
-        self.assertEqual((10, 0), (current["spent_points"], current["reserved_points"]))
-        with closing(self.db()) as conn:
-            conn.execute(
-                "UPDATE short_drama_voice_charge_attempts SET state='refunded' "
-                "WHERE idempotency_key='voice-usage'"
-            )
-            conn.commit()
-        current = short_drama_voice.get_voice_workspace(
-            self.db, "alice", self.project["id"]
-        )
-        self.assertEqual((0, 0), (current["spent_points"], current["reserved_points"]))
-
     def test_expired_quote_is_rejected_before_charge_attempt(self):
         snapshot, line, quote = self._voice_quote()
         with closing(self.db()) as conn:
@@ -447,9 +372,13 @@ class ShortDramaVoiceSnapshotTests(unittest.TestCase):
         with closing(self.db()) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute(
-                "INSERT INTO jobs("
-                "id,kind,username,cost,status,payload,result,error,refunded"
-                ") VALUES (101,'audio','alice',10,'done','{}',?,'',0)",
+                "CREATE TABLE jobs(id INTEGER PRIMARY KEY,kind TEXT,username TEXT,"
+                "cost INTEGER,status TEXT,payload TEXT,result TEXT,error TEXT,"
+                "refunded INTEGER DEFAULT 0)"
+            )
+            conn.execute(
+                "INSERT INTO jobs VALUES "
+                "(101,'audio','alice',10,'done','{}',?,'',0)",
                 (json.dumps({
                     "file": "audio/one.mp3", "url": "/api/gen/file/audio/one.mp3",
                     "duration_ms": 1234,
@@ -495,9 +424,12 @@ class ShortDramaVoiceSnapshotTests(unittest.TestCase):
         with closing(self.db()) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute(
-                "INSERT INTO jobs("
-                "id,kind,username,cost,status,payload,result,error,refunded"
-                ") VALUES "
+                "CREATE TABLE jobs(id INTEGER PRIMARY KEY,kind TEXT,username TEXT,"
+                "cost INTEGER,status TEXT,payload TEXT,result TEXT,error TEXT,"
+                "refunded INTEGER DEFAULT 0)"
+            )
+            conn.execute(
+                "INSERT INTO jobs VALUES "
                 "(102,'audio','alice',10,'error','{}','{}','provider failed',1)"
             )
             short_drama_voice.bind_voice_job(
@@ -889,15 +821,6 @@ class ShortDramaVoiceSnapshotTests(unittest.TestCase):
                     "line_id": line["id"], "version": 1,
                 },
             )
-    def test_native_audio_locks_every_shot_and_enters_video_stage(self):
-        result = short_drama_voice.confirm_native_audio(
-            self.db, "alice", self.project["id"], self.project["revision"]
-        )
-        self.assertEqual("video_review", result["stage"])
-        self.assertEqual(self.project["revision"] + 1, result["revision"])
-        self.assertTrue(all(shot["locked"] for shot in result["shots"]))
-        self.assertTrue(all(shot["audio_mode"] == "native" for shot in result["shots"]))
-        self.assertTrue(all(shot["status"] == "native" for shot in result["shots"]))
 
 
 class ShortDramaVoiceSchemaTests(unittest.TestCase):

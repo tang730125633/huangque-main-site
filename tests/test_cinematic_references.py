@@ -22,6 +22,7 @@
 import importlib
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -36,6 +37,25 @@ HTML = (ROOT / "site/workbench/video.html").read_text(encoding="utf-8")
 
 PNG = "data:image/png;base64,iVBORw0KGgo="
 MP4 = "data:video/mp4;base64,AAAAGGZ0eXA="
+
+
+class SaveDataFileTests(unittest.TestCase):
+    def test_partial_write_failure_removes_the_created_file_before_reraising(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "partial.png"
+
+            class PartialWriter:
+                def write_bytes(self, data):
+                    target.write_bytes(data[:4])
+                    raise OSError("disk full")
+
+                def unlink(self):
+                    target.unlink()
+
+            with patch.object(video, "_out_path", return_value=PartialWriter()):
+                with self.assertRaisesRegex(OSError, "disk full"):
+                    video._save_data_file(PNG, "cine_ref", [".png"])
+            self.assertFalse(target.exists())
 
 
 class MediaBudgetTests(unittest.TestCase):

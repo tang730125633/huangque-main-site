@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -26,6 +27,38 @@ FORBIDDEN_PREFIXES = ("secrets",)
 CHECKED_ATTRIBUTES = {"href", "src", "poster"}
 IGNORED_SCHEMES = {"data", "http", "https", "mailto", "tel", "blob", "javascript"}
 IGNORED_SERVER_PREFIXES = ("/api/", "/admin/", "/health")
+
+
+def reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def parse_json_strict(text: str) -> object:
+    return json.loads(
+        text,
+        object_pairs_hook=reject_duplicate_json_keys,
+    )
+
+
+def load_json_strict(path: Path) -> object:
+    return parse_json_strict(path.read_text(encoding="utf-8"))
+
+
+def check_json_files(files: list[PurePosixPath]) -> list[str]:
+    errors: list[str] = []
+    for path in files:
+        if path.suffix.lower() != ".json":
+            continue
+        try:
+            load_json_strict(ROOT / path)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            errors.append(f"JSON 无法严格解析：{path}: {exc}")
+    return errors
 
 
 def tracked_files() -> list[PurePosixPath]:
@@ -160,6 +193,7 @@ def check_html_references(files: list[PurePosixPath]) -> list[str]:
 def main() -> int:
     files = tracked_files()
     errors = check_redlines(files)
+    errors.extend(check_json_files(files))
     errors.extend(check_html_references(files))
 
     if errors:

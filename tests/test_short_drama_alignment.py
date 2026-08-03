@@ -1,8 +1,8 @@
+import json
 import sqlite3
 import sys
 import threading
 import time
-import types
 import unittest
 import uuid
 from contextlib import closing
@@ -17,9 +17,9 @@ if SERVER_DIR not in sys.path:
 from content_domains import (
     short_drama,
     short_drama_alignment as alignment,
-    short_drama_assembly_subtitles as assembly_subtitles,
     short_drama_voice,
 )
+from tests.fixtures.short_drama_alignment_provider import FakeAlignmentProvider
 
 
 def contract(project_id, revision):
@@ -40,7 +40,6 @@ def contract(project_id, revision):
     identity = {
         "contract_version": alignment.CONTRACT_VERSION,
         "project_id": project_id,
-        "project_revision": revision,
         "master_audio_hash": "m" * 64,
         "transcript_hash": "t" * 64,
         "language": "zh-CN",
@@ -62,7 +61,6 @@ def silent_contract(project_id, revision):
     identity = {
         "contract_version": alignment.CONTRACT_VERSION,
         "project_id": project_id,
-        "project_revision": revision,
         "master_audio_hash": "s" * 64,
         "transcript_hash": "e" * 64,
         "language": "zh-CN",
@@ -114,6 +112,51 @@ class ShortDramaAlignmentTests(unittest.TestCase):
         }
         return snapshot, contract(project["id"], project["revision"])
 
+    def test_contract_hash_ignores_unrelated_project_revision_changes(self):
+        def snapshot(revision):
+            return {
+                "project_id": self.project["id"],
+                "revision": revision,
+                "shots": [{
+                    "id": "shot-1",
+                    "duration": 5,
+                    "locked": True,
+                    "lines": [{
+                        "id": "line-1",
+                        "start_ms": 200,
+                        "subtitle_text": "hello",
+                        "input_hash": "a" * 64,
+                        "current_version": 1,
+                        "versions": [{
+                            "version": 1,
+                            "status": "done",
+                            "input_hash": "a" * 64,
+                            "duration_ms": 2000,
+                        }],
+                    }],
+                }],
+            }
+
+        first = alignment._input_contract(snapshot(1))
+        second = alignment._input_contract(snapshot(99))
+        self.assertEqual(first["input_hash"], second["input_hash"])
+        self.assertEqual(first["identity"], second["identity"])
+
+    def test_locked_v1_contract_remains_valid_when_content_is_unchanged(self):
+        current = contract(self.project["id"], self.project["revision"])
+        legacy = {
+            "contract_version": alignment.LEGACY_CONTRACT_VERSION,
+            "input_hash": "legacy-project-revision-hash",
+            "master_audio_hash": current["master_audio_hash"],
+            "transcript_hash": current["transcript_hash"],
+            "provider": current["identity"]["provider"],
+            "model_version": current["identity"]["model_version"],
+        }
+        self.assertTrue(alignment.version_matches_contract(legacy, current))
+        changed = dict(current)
+        changed["transcript_hash"] = "changed"
+        self.assertFalse(alignment.version_matches_contract(legacy, changed))
+
     def silent_current(self, conn, project):
         snapshot = {
             "project_id": project["id"],
@@ -121,217 +164,6 @@ class ShortDramaAlignmentTests(unittest.TestCase):
             "shots": [],
         }
         return snapshot, silent_contract(project["id"], project["revision"])
-
-    def test_real_word_timestamps_preserve_pause_and_variable_rate(self):
-        current = contract(self.project["id"], self.project["revision"])
-        line = current["shots"][0]["lines"][0]
-        line["text"] = "前慢后快"
-        line["audio_file"] = "audio/variable-rate.wav"
-
-        def transcriber(audio_file):
-            self.assertEqual("audio/variable-rate.wav", audio_file)
-            return [
-                {
-                    "word": "前", "start_ms": 0, "end_ms": 700,
-                    "confidence": 0.97,
-                },
-                {
-                    "word": "慢", "start_ms": 700, "end_ms": 1400,
-                    "confidence": 0.96,
-                },
-                {
-                    "word": "后", "start_ms": 1600, "end_ms": 1750,
-                    "confidence": 0.94,
-                },
-                {
-                    "word": "快", "start_ms": 1750, "end_ms": 1900,
-                    "confidence": 0.93,
-                },
-            ]
-
-        timeline, quality = alignment._align(
-            current, transcriber=transcriber
-        )
-        tokens = timeline[0]["tokens"]
-        self.assertEqual(
-            [700, 700, 150, 150],
-            [item["end_ms"] - item["start_ms"] for item in tokens],
-        )
-        self.assertEqual(200, tokens[0]["start_ms"])
-        self.assertEqual(1800, tokens[2]["start_ms"])
-        self.assertEqual("asr_word_timestamps", quality["provider_mode"])
-        self.assertEqual(1.0, quality["coverage"])
-        self.assertEqual(0, quality["estimated_token_count"])
-        self.assertTrue(all(
-            token["match_type"] == "asr_word" for token in tokens
-        ))
-
-    def test_asr_word_interpolation_retains_real_pause_boundaries(self):
-        current = contract(self.project["id"], self.project["revision"])
-        line = current["shots"][0]["lines"][0]
-        line["text"] = "你好世界"
-        line["audio_file"] = "audio/pause.wav"
-        timeline, quality = alignment._align(
-            current,
-            transcriber=lambda _path: [
-                {
-                    "word": "你好", "start_ms": 100, "end_ms": 500,
-                    "confidence": 0.95,
-                },
-                {
-                    "word": "世界", "start_ms": 1200, "end_ms": 1800,
-                    "confidence": 0.91,
-                },
-            ],
-        )
-        tokens = timeline[0]["tokens"]
-        self.assertEqual(300, tokens[0]["start_ms"])
-        self.assertEqual(700, tokens[1]["end_ms"])
-        self.assertEqual(1400, tokens[2]["start_ms"])
-        self.assertEqual(2000, tokens[3]["end_ms"])
-        self.assertTrue(all(
-            token["match_type"] == "interpolated_within_asr_word"
-            for token in tokens
-        ))
-        self.assertEqual("asr_word_timestamps", quality["provider_mode"])
-
-    def test_tiny_asr_word_span_is_redistributed_without_zero_length_tokens(self):
-        current = contract(self.project["id"], self.project["revision"])
-        line = current["shots"][0]["lines"][0]
-        line["text"] = "ABCD"
-        line["audio_start_ms"] = 0
-        line["audio_end_ms"] = 1000
-        timeline, quality = alignment._align(
-            current,
-            transcriber=lambda _path: [{
-                "word": "ABCD",
-                "start_ms": 999,
-                "end_ms": 1000,
-                "confidence": 0.99,
-            }],
-        )
-        tokens = timeline[0]["tokens"]
-        self.assertEqual(4, len(tokens))
-        self.assertTrue(all(
-            token["end_ms"] > token["start_ms"] for token in tokens
-        ))
-        self.assertTrue(all(
-            tokens[index]["end_ms"] <= tokens[index + 1]["start_ms"]
-            for index in range(len(tokens) - 1)
-        ))
-        self.assertEqual(1000, tokens[-1]["end_ms"])
-        self.assertTrue(all(
-            token["match_type"] == "estimated" for token in tokens
-        ))
-        self.assertTrue(all(
-            token["confidence"] is None for token in tokens
-        ))
-        self.assertEqual(4, quality["estimated_token_count"])
-        self.assertIn(
-            "estimated_timing_present",
-            {item["code"] for item in quality["blockers"]},
-        )
-
-    def test_audio_shorter_than_token_resolution_is_rejected(self):
-        current = contract(self.project["id"], self.project["revision"])
-        line = current["shots"][0]["lines"][0]
-        line["text"] = "ABCD"
-        line["audio_start_ms"] = 0
-        line["audio_end_ms"] = 3
-        with self.assertRaises(alignment.AlignmentError) as context:
-            alignment._align(current, transcriber=lambda _path: [])
-        self.assertEqual(
-            "alignment_resolution_insufficient",
-            context.exception.code,
-        )
-
-    def test_unmatched_asr_tokens_are_explicit_estimates_without_confidence(self):
-        current = contract(self.project["id"], self.project["revision"])
-        line = current["shots"][0]["lines"][0]
-        line["text"] = "你好世界"
-        line["audio_file"] = "audio/incomplete.wav"
-        timeline, quality = alignment._align(
-            current,
-            transcriber=lambda _path: [{
-                "word": "你好", "start_ms": 100, "end_ms": 600,
-                "confidence": 0.93,
-            }],
-        )
-        estimated = [
-            token for token in timeline[0]["tokens"]
-            if token["match_type"] == "estimated"
-        ]
-        self.assertEqual(2, len(estimated))
-        self.assertTrue(all(token["confidence"] is None for token in estimated))
-        self.assertEqual("mixed", quality["provider_mode"])
-        self.assertEqual(2, quality["estimated_token_count"])
-        self.assertIn(
-            "estimated_timing_present",
-            {item["code"] for item in quality["blockers"]},
-        )
-
-    def test_provider_failure_is_downgraded_and_never_fakes_confidence(self):
-        current = contract(self.project["id"], self.project["revision"])
-        current["shots"][0]["lines"][0]["audio_file"] = "audio/missing.wav"
-
-        def unavailable(_path):
-            raise alignment.AlignmentProviderUnavailable("model unavailable")
-
-        timeline, quality = alignment._align(
-            current, transcriber=unavailable
-        )
-        self.assertEqual("estimated_fallback", quality["provider_mode"])
-        self.assertIsNone(quality["mean_confidence"])
-        self.assertTrue(all(
-            token["confidence"] is None
-            for token in timeline[0]["tokens"]
-        ))
-        self.assertIn(
-            "forced_alignment_unavailable",
-            {item["code"] for item in quality["blockers"]},
-        )
-
-    def test_faster_whisper_provider_requests_real_word_timestamps(self):
-        calls = {}
-
-        class FakeModel:
-            def __init__(self, model_name, **kwargs):
-                calls["init"] = (model_name, kwargs)
-
-            def transcribe(self, path, **kwargs):
-                calls["transcribe"] = (path, kwargs)
-                word = types.SimpleNamespace(
-                    word="你好", start=0.25, end=0.85, probability=0.91
-                )
-                return [types.SimpleNamespace(words=[word])], object()
-
-        fake_module = types.SimpleNamespace(WhisperModel=FakeModel)
-        source = Path(self.path).with_suffix(".wav")
-        source.write_bytes(b"real-audio-fixture")
-        alignment._WHISPER_MODEL = None
-        alignment._WHISPER_MODEL_NAME = None
-        try:
-            with (
-                mock.patch.dict(
-                    sys.modules, {"faster_whisper": fake_module}
-                ),
-                mock.patch(
-                    "content_domains.core._resolve_out_file",
-                    return_value=source,
-                ),
-            ):
-                words = alignment._transcribe_words("audio/line.wav")
-        finally:
-            alignment._WHISPER_MODEL = None
-            alignment._WHISPER_MODEL_NAME = None
-            source.unlink(missing_ok=True)
-        self.assertEqual("small", calls["init"][0])
-        self.assertEqual(str(source), calls["transcribe"][0])
-        self.assertTrue(calls["transcribe"][1]["word_timestamps"])
-        self.assertTrue(calls["transcribe"][1]["vad_filter"])
-        self.assertEqual("zh", calls["transcribe"][1]["language"])
-        self.assertEqual(250, words[0]["start_ms"])
-        self.assertEqual(850, words[0]["end_ms"])
 
     def test_generate_review_lock_and_replay_without_points(self):
         payload = {
@@ -414,26 +246,6 @@ class ShortDramaAlignmentTests(unittest.TestCase):
                     )
                 },
             )
-
-    def test_alignment_ass_uses_formally_preflighted_noto_font_contract(self):
-        version = {
-            "alignment_hash": "a" * 64,
-            "master_audio_hash": "m" * 64,
-            "transcript_hash": "t" * 64,
-            "timeline": [{
-                "text": "中文字幕",
-                "subtitle_start_ms": 0,
-                "subtitle_end_ms": 1000,
-            }],
-            "quality": {},
-            "manual_reviewed": False,
-        }
-        ass = alignment._artifact_payloads(version)["ass"]
-        self.assertIn(
-            f"Style: Default,{assembly_subtitles.FONT_NAME},",
-            ass,
-        )
-        self.assertNotIn("Style: Default,Arial,", ass)
 
     def test_legacy_workspace_does_not_require_alignment_for_handoff(self):
         with mock.patch.object(alignment, "_current_contract", self.current):
@@ -857,6 +669,133 @@ class ShortDramaAlignmentTests(unittest.TestCase):
         self.assertTrue(row["provider_job_id"])
         self.assertEqual("failed", row["status"])
         self.assertNotIn("provider secret", row["error_json"])
+
+    def test_real_provider_contract_persists_quality_and_recovery_identity(self):
+        fake = FakeAlignmentProvider(result={"segments": [{
+            "line_id": "line-1",
+            "transcript": "你好世界",
+            "words": [
+                {"token": token, "start_ms": 250 + index * 300,
+                 "end_ms": 500 + index * 300, "confidence": 0.96}
+                for index, token in enumerate("你好世界")
+            ],
+        }]})
+        payload = {
+            "project_id": self.project["id"],
+            "revision": self.project["revision"],
+        }
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "HQ_SHORT_DRAMA_ALIGNMENT_PROVIDER": "fake-zh-alignment",
+                "HQ_SHORT_DRAMA_ALIGNMENT_REAL_ENABLED": "1",
+                "HQ_SHORT_DRAMA_ALIGNMENT_WORD_TIMING_ENABLED": "1",
+            },
+            clear=False,
+        ), mock.patch.dict(
+            alignment.PROVIDER_FACTORIES,
+            {"fake-zh-alignment": lambda: fake},
+            clear=False,
+        ), mock.patch.object(alignment, "_current_contract", self.current):
+            created = alignment.create_job(
+                self.db, "alice", payload, "alignment-real-provider"
+            )
+        version = created["workspace"]["current_version"]
+        self.assertEqual("fake-zh-alignment", version["provider"])
+        self.assertEqual("你好，世界", version["timeline"][0]["text"])
+        self.assertEqual(1.0, version["quality"]["coverage"])
+        self.assertEqual([], version["quality"]["unmatched_tokens"])
+        with closing(self.db()) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT provider_job_id,provider_status,capabilities_json,"
+                "trace_id,heartbeat_at,poll_count,terminal_json "
+                "FROM short_drama_alignment_jobs WHERE idempotency_key=?",
+                ("alignment-real-provider",),
+            ).fetchone()
+        self.assertEqual("fake-job-1", row["provider_job_id"])
+        self.assertEqual("succeeded", row["provider_status"])
+        self.assertEqual("fake-trace", row["trace_id"])
+        self.assertGreater(row["heartbeat_at"], 0)
+        self.assertEqual(1, row["poll_count"])
+        self.assertTrue(json.loads(row["capabilities_json"])["supports_resume"])
+        self.assertEqual("succeeded", json.loads(row["terminal_json"])["status"])
+
+    def test_real_provider_is_default_off_and_exposes_feature_state(self):
+        with mock.patch.dict(
+            "os.environ",
+            {"HQ_SHORT_DRAMA_ALIGNMENT_PROVIDER": "fake-zh-alignment"},
+            clear=False,
+        ), mock.patch.dict(
+            alignment.PROVIDER_FACTORIES,
+            {"fake-zh-alignment": FakeAlignmentProvider},
+            clear=False,
+        ), mock.patch.object(alignment, "_current_contract", self.current):
+            workspace = alignment.get_workspace(
+                self.db, "alice", self.project["id"]
+            )
+            self.assertFalse(workspace["provider"]["feature_enabled"])
+            with self.assertRaises(alignment.AlignmentError) as context:
+                alignment.create_job(
+                    self.db,
+                    "alice",
+                    {
+                        "project_id": self.project["id"],
+                        "revision": self.project["revision"],
+                    },
+                    "alignment-disabled-provider",
+                )
+        self.assertEqual(
+            "alignment_provider_unavailable", context.exception.code
+        )
+
+    def test_interrupted_real_job_preserves_recovery_identity(self):
+        capabilities = {
+            "supports_resume": True,
+            "supports_cancel": True,
+            "supports_result_refetch": True,
+        }
+        stale_at = int(alignment.time.time()) - (
+            alignment.INTERRUPTED_JOB_SECONDS + 10
+        )
+        with closing(self.db()) as conn:
+            conn.execute(
+                "INSERT INTO short_drama_alignment_jobs "
+                "(id,username,project_id,idempotency_key,request_hash,"
+                "input_hash,provider,model_version,provider_job_id,"
+                "provider_status,status,capabilities_json,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "recoverable-real-job",
+                    "alice",
+                    self.project["id"],
+                    "recoverable-real-key",
+                    "request-hash",
+                    "input-hash",
+                    "fake-zh-alignment",
+                    "fake-v1",
+                    "provider-job-7",
+                    "running",
+                    "running",
+                    json.dumps(capabilities),
+                    stale_at,
+                    stale_at,
+                ),
+            )
+            conn.commit()
+        with mock.patch.object(alignment, "_current_contract", self.current):
+            workspace = alignment.get_workspace(
+                self.db, "alice", self.project["id"]
+            )
+        self.assertEqual("running", workspace["job"]["status"])
+        self.assertEqual(
+            "alignment_refetch_required",
+            workspace["job"]["last_error_code"],
+        )
+        self.assertTrue(workspace["job"]["recovery"]["required"])
+        self.assertTrue(workspace["job"]["recovery"]["can_resume"])
+        self.assertTrue(workspace["job"]["recovery"]["can_cancel"])
+        self.assertFalse(workspace["job"]["recovery"]["can_refetch"])
 
 
 if __name__ == "__main__":

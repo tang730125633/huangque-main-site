@@ -197,6 +197,49 @@
   line-height: 1.55;
 }
 
+.nc-sdp-prompt textarea[readonly] {
+  color: var(--sd-muted);
+  background: color-mix(in srgb, var(--sd-canvas) 72%, var(--sd-paper));
+}
+
+.nc-sdp-prompt small {
+  font-weight: 500;
+}
+
+.nc-sdp-prompt-layers {
+  display: grid;
+  gap: 14px;
+}
+
+.nc-sdp-prompt-notice {
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--sd-accent) 45%, var(--sd-line));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--sd-accent) 8%, var(--sd-paper));
+  font-size: 12px;
+}
+
+.nc-sdp-prompt-notice button {
+  margin: 8px 8px 0 0;
+  padding: 5px 8px;
+}
+
+.nc-sdp-compiled-prompt summary {
+  cursor: pointer;
+  color: var(--sd-accent-dark);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.nc-sdp-compiled-prompt p,
+.nc-sdp-compiled-prompt pre {
+  margin: 10px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--sd-muted);
+  font: 11px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
 .nc-sdp-reference-list,
 .nc-sdp-history ol {
   margin: 10px 0 0;

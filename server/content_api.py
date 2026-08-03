@@ -11,9 +11,9 @@ import threading
 from http.server import ThreadingHTTPServer
 
 try:
-    from .content_domains import core, registry
+    from .content_domains import core, registry, video_compose
 except ImportError:  # Running as /home/ubuntu/content-api/content_api.py
-    from content_domains import core, registry
+    from content_domains import core, registry, video_compose
 
 
 PORT = core.PORT
@@ -22,6 +22,24 @@ HANDLERS = registry.HANDLERS
 # Keep the legacy core handler behavior while exposing the domain-assembled
 # handler registry to request handling and health responses.
 core.HANDLERS = HANDLERS
+
+
+class H(core.H):
+    def _dispatch_video_compose(self, method):
+        return video_compose.dispatch_http(
+            self, method, core.verify, core._must_change_password, core.adb,
+            core._resolve_out_file, core.OUT_DIR,
+        )
+
+    def do_POST(self):
+        if self._dispatch_video_compose("POST"):
+            return
+        return super().do_POST()
+
+    def do_GET(self):
+        if self._dispatch_video_compose("GET"):
+            return
+        return super().do_GET()
 
 
 def main():
@@ -33,7 +51,7 @@ def main():
     core.start_job_workers()
     threading.Thread(target=core.reaper, daemon=True).start()
 
-    srv = ThreadingHTTPServer(("127.0.0.1", PORT), core.H)
+    srv = ThreadingHTTPServer(("127.0.0.1", PORT), H)
     core._http_server = srv          # drain 时要 shutdown 它，停止收新提交
     core.install_signal_handlers()   # SIGTERM → 停止收活 → 等在飞的跑完 → 退出
 

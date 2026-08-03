@@ -240,6 +240,7 @@
           <h1 style="margin:0;font-size:21px;font-weight:800; display:flex; align-items:center; gap:10px;"><img src="../assets/icons/ic_video.png" alt="" style="width:30px;height:30px;object-fit:contain;flex:none;">视频模块</h1>
           <p id="modeSummary" class="muted" style="margin:7px 0 0;font-size:13px;">选择视频生成功能，创建对应的视频内容</p>
         </div>
+        <a href="one-click-video.html" style="height:36px;padding:0 13px;display:inline-flex;align-items:center;border:1px solid rgba(231,178,76,.34);border-radius:9px;background:rgba(231,178,76,.08);color:#e7b24c;text-decoration:none;font-size:12px;font-weight:900;">一键成片</a>
       </div>
 
       <div class="function-tabs" aria-label="视频功能分页">
@@ -474,10 +475,10 @@
         </div>
 
         <div class="motion-preset-panel">
-          <!-- 动作模仿：参数全部锁死成 #2173 那一条的形状（目前唯一已知能过 HeyGen 审核的配置）。
-               用户只能换形象和参考视频 —— 分辨率、时长、比例都不给选。 -->
+          <!-- 动作模仿参数全部锁死。用户只能换形象和参考视频；
+               分辨率统一 720p，时长和比例跟随参考视频。 -->
           <div id="cineFixedParams" class="hidden" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
-            <span class="pill-fixed">分辨率 1080p</span>
+            <span class="pill-fixed">分辨率 720p</span>
             <span class="pill-fixed">时长跟随参考视频</span>
             <span class="pill-fixed">比例跟随参考视频</span>
             <span class="faint" style="font-size:11.5px;">这些参数已固定，以保证出片成功率</span>
@@ -487,7 +488,7 @@
               <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例</div>
               <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button class="on" data-cine-ratio="9:16">9:16</button><button data-cine-ratio="16:9">16:9</button><button data-cine-ratio="1:1">1:1</button></div>
             </div>
-            <!-- 分辨率固定 1080p（不再给选，selectedCineResolution 缺省 1080p）-->
+            <!-- 电影化身分辨率统一固定 720p -->
             <div style="grid-column:1/-1;">
               <div class="faint" style="font-size:12px;margin-bottom:8px;">成片时长</div>
               <div id="cineDurationSeg" class="seg" style="grid-template-columns:repeat(5,1fr);"><button class="on" data-cine-duration="auto">自适应</button><button data-cine-duration="5">5 秒</button><button data-cine-duration="10">10 秒</button><button data-cine-duration="12">12 秒</button><button data-cine-duration="15">15 秒</button></div>
@@ -779,7 +780,7 @@
 <div id="toast" class="toast"></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=46c6dacf"></script>
+<script src="cloud-shell.js?v=4de5465a"></script>
 <script src="image-mentions.js?v=20260802f"></script>
 <script>
 (function(){
@@ -793,7 +794,7 @@
   // 电影化身（HeyGen cinematic）：三个玩法共用一套控件，见 CINE_MODES
   // 时长默认「自适应」：跟随参考视频的长度。既然给了参考片段，成片就该和它一样长，
   // 而不是被截断或硬拖到某个固定秒数。没传参考视频时后端回落到 10 秒。
-  var cineSelectedAvatarIds=[], selectedCineRatio='9:16', selectedCineResolution='1080p', selectedCineDuration='auto';
+  var cineSelectedAvatarIds=[], selectedCineRatio='9:16', selectedCineResolution='720p', selectedCineDuration='auto';
   // 参考素材：视频和图片各存一份 base64。
   // 媒体预算是【和形象共用的】——官方文档：「Avatar looks and references share a combined
   // media budget: at most 3 videos and 9 images total across avatar_id and references」。
@@ -818,9 +819,9 @@
   // 电影化身的三个玩法。这张表是前端的唯一事实来源 —— 每条都在后端
   // validate_cinematic_payload 里有一模一样的一份（前端只管好用，后端才管好安全）。
   //   avatars    正好要几个形象（open 是上限，motion/duo 是等于）
-  //   fixed      提示词写死 + 参数锁死（分辨率 1080p、时长/比例跟随参考视频）——
+  //   fixed      提示词写死 + 参数锁死（分辨率 720p、时长/比例跟随参考视频）——
   //              整个参数区都不显示，也不往后端发 prompt/resolution/duration。
-  //              锁死的形状照抄 #2173，那是目前唯一已知能过 HeyGen 审核的配置。
+  //              分辨率统一 720p，时长和比例跟随参考视频。
   //   needRef    参考视频必填
   //   durations  可选时长（只有开放式还用得上）；rate 每秒点数
   // ⚠️ rate 必须和后端 CINEMATIC_RATE_PER_SEC 逐字对齐 —— 对不上就是「界面说 30 点、实际扣 100 点」。
@@ -1758,13 +1759,12 @@
                                         : ('选择形象（可多选，最多 '+cfg.avatars+' 个）');
     // 提示词写死的玩法：整块藏起来。藏了还发 prompt 也没用——后端不看客户端传的提示词。
     if($('cinePromptPanel')) $('cinePromptPanel').classList.toggle('hidden', cfg.fixed);
-    // 动作模仿：参数【全部锁死】成 #2173 那一条的形状（目前唯一已知能过 HeyGen 审核的配置）。
-    // 分辨率 1080p、时长跟随参考视频、比例跟随参考视频 —— 三样都不给选，只留一行说明。
+    // 动作模仿：参数全部锁死。分辨率 720p、时长跟随参考视频、比例跟随参考视频。
     // 后端也不认客户端传的值（validate_cinematic_payload），前端藏起来只是别让用户白填。
     if($('cineParamGrid')) $('cineParamGrid').classList.toggle('hidden', cfg.fixed);
     if($('cineFixedParams')) $('cineFixedParams').classList.toggle('hidden', !cfg.fixed);
     if(cfg.fixed){
-      selectedCineResolution='1080p';   // 和后端 CINEMATIC_MOTION_RESOLUTION 对齐
+      selectedCineResolution='720p';    // 和后端 CINEMATIC_OUTPUT_RESOLUTION 对齐
       selectedCineDuration='auto';      // 跟随参考视频（#2173：参考 10.9s → 成片 11s）
     }
     if($('cineRefLabel')) $('cineRefLabel').textContent = cfg.needRef ? '参考视频（必传）' : '参考素材（选填）';

@@ -56,7 +56,13 @@ def cost_of(kind, body):
         # 质量基价按引擎分档（IMAGE_BASE_COST）。gen_image 里 provider 缺省是 openai，这里保持一致。
         provider = (body.get("provider") or "openai").strip().lower()
         tier = "hd" if (body.get("quality") or "hd") == "hd" else "std"
-        if provider == "seedream":
+        if provider == "banana":
+            from .banana_provider import BASE_COST
+            model = str(body.get("model") or "nb2").strip().lower()
+            if model not in BASE_COST:
+                raise ValueError("Nano Banana model pricing is not configured")
+            base = BASE_COST[model][tier]
+        elif provider == "seedream":
             variant = (body.get("variant") or "std").strip().lower()   # 5.0 标准 / 5.0 pro
             base = (SEEDREAM_VARIANT_COST.get(variant) or SEEDREAM_VARIANT_COST["std"])[tier]
         else:

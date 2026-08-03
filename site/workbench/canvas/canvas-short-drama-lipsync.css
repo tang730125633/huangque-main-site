@@ -1,0 +1,36 @@
+.nc-sdl-workspace{margin-top:18px;padding:16px;border:1px solid #d8dde6;border-radius:16px;background:#f7f8fb;color:#182230}
+.nc-sdl-workspace[data-state="disabled"],.nc-sdl-workspace[data-state="error"],.nc-sdl-workspace[data-state="loading"]{display:grid;gap:6px;padding:20px;background:#101827}
+.nc-sdl-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px}
+.nc-sdl-head>div,.nc-sdl-card header>div{display:grid;gap:3px}.nc-sdl-head span,.nc-sdl-card header span{font-size:11px;color:#8b6a24}
+.nc-sdl-head strong{font-size:18px}.nc-sdl-head small{color:#697586}
+.nc-sdl-layout{display:grid;grid-template-columns:minmax(180px,.72fr) minmax(340px,1.55fr) minmax(220px,.85fr);gap:12px;align-items:start}
+.nc-sdl-layout>main,.nc-sdl-layout>aside{display:grid;gap:12px;min-width:0}
+.nc-sdl-card{padding:13px;border:1px solid #dfe3eb;border-radius:13px;background:#101827}
+.nc-sdl-card>header{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px}
+.nc-sdl-card header strong{font-size:14px}.nc-sdl-card button{margin-top:8px}
+.nc-sdl-ready{margin:0;color:#16794d;font-size:12px}.nc-sdl-empty{margin:8px 0;color:#697586;font-size:12px;line-height:1.55}
+.nc-sdl-blockers{display:grid;gap:7px;margin:0;padding:0;list-style:none}
+.nc-sdl-blockers li{display:grid;gap:6px;padding:9px;border-radius:9px;background:#fff3ef;color:#a43d2f;font-size:12px}
+.nc-sdl-blockers li div{display:grid;gap:2px}.nc-sdl-blockers li small{color:#8a817d}.nc-sdl-blockers li>span{font-size:10px}
+.nc-sdl-target{display:grid;gap:5px;margin:8px 0 10px;color:#53657c;font-size:12px}
+.nc-sdl-target select,.nc-sdl-speakers select,.nc-sdl-speakers input{width:100%;box-sizing:border-box;padding:7px;border:1px solid #d8dde6;border-radius:8px;background:#101827;color:#243b64}
+.nc-sdl-speakers{display:grid;gap:8px}.nc-sdl-speakers article{padding:9px;border-radius:10px;background:#f6f8fc}
+.nc-sdl-speakers article>header{display:flex;justify-content:space-between;gap:8px;margin-bottom:7px}
+.nc-sdl-speakers article>header span{color:#697586;font-size:10px}.nc-sdl-speakers article>div{display:grid;grid-template-columns:1fr 1.2fr;gap:8px}
+.nc-sdl-speakers label{display:grid;gap:4px;color:#53657c;font-size:11px}
+.nc-sdl-quote{display:grid;grid-template-columns:1fr auto;gap:4px 8px;margin:10px 0;padding:10px;border-radius:10px;background:#f3f7ff}
+.nc-sdl-quote span{font-size:11px;color:#53657c}.nc-sdl-quote strong{color:#243b64}.nc-sdl-quote small{grid-column:1/-1;color:#607087}
+.nc-sdl-jobs article{display:grid;gap:7px;margin-top:8px;padding:9px;border-radius:10px;background:#fff7e8}
+.nc-sdl-jobs article>div:first-child{display:flex;justify-content:space-between;gap:8px}.nc-sdl-jobs small{color:#765714}
+.nc-sdl-jobs progress{width:100%}.nc-sdl-job-actions{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.nc-sdl-job-actions button{margin:0}
+.nc-sdl-version-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+.nc-sdl-compare{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;padding:9px;border-radius:10px;background:#eef3fb}
+.nc-sdl-compare article{display:grid;gap:5px}.nc-sdl-compare span{font-size:10px;color:#53657c}.nc-sdl-compare video{width:100%;aspect-ratio:16/9;border-radius:7px;background:#101828}
+.nc-sdl-version-grid article{display:grid;gap:7px;padding:9px;border:1px solid #dde2ea;border-radius:11px}
+.nc-sdl-version-grid article.is-selected{border-color:#b38a2f;background:#fffbef}.nc-sdl-version-grid article.is-locked{box-shadow:inset 0 0 0 1px #16794d}
+.nc-sdl-version-grid article>header{display:flex;justify-content:space-between;gap:8px}.nc-sdl-version-grid article>header div{display:grid}
+.nc-sdl-version-grid video{width:100%;aspect-ratio:16/9;border-radius:7px;background:#101828}
+.nc-sdl-version-grid article>div:last-child{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}.nc-sdl-version-grid button{margin:0;padding:6px;font-size:10px}
+.nc-sdl-error{margin:10px 0 0;color:#b42318;font-size:12px}.nc-sdl-workspace>footer{margin-top:12px;color:#7b8491;font-size:10px}
+@media(max-width:1180px){.nc-sdl-layout{grid-template-columns:1fr 1.6fr}.nc-sdl-layout>aside:last-child{grid-column:1/-1;grid-template-columns:1fr 1fr}}
+@media(max-width:760px){.nc-sdl-layout,.nc-sdl-layout>aside:last-child{grid-template-columns:1fr}.nc-sdl-layout>aside:last-child{grid-column:auto}.nc-sdl-version-grid,.nc-sdl-compare{grid-template-columns:1fr}.nc-sdl-speakers article>div{grid-template-columns:1fr}}

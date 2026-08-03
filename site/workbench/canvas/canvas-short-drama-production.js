@@ -55,6 +55,12 @@
       prompt:text(version.prompt),
       ratio:version.ratio==='16:9'?'16:9':(version.ratio==='9:16'?'9:16':''),
       cost:Math.max(0,number(version.cost,0)),
+      unit_cost:Math.max(0,number(version.unit_cost,version.cost||0)),
+      batch_cost:Math.max(0,number(version.batch_cost,0)),
+      provider:text(version.provider),
+      model:text(version.model),
+      quality:text(version.quality),
+      generation_batch_id:text(version.generation_batch_id||version.job_id),
       status:text(version.status||'failed'),
       created_at:number(version.created_at,0)
     };
@@ -90,6 +96,7 @@
       sort_order:number(shot.sort_order,index),
       duration:Math.max(0,number(shot.duration,0)),
       image_prompt:text(shot.image_prompt),
+      image_prompt_hash:text(shot.image_prompt_hash),
       references:references,
       still:{
         asset_id:still.asset_id,
@@ -128,7 +135,7 @@
     var prompts={};
     shots.forEach(function(shot){
       prompts[shot.id]=Object.prototype.hasOwnProperty.call(promptSource,shot.id)?
-        text(promptSource[shot.id]):shot.image_prompt;
+        text(promptSource[shot.id]):'';
     });
     return {
       project_id:input.project_id,
@@ -150,6 +157,8 @@
       destroyed:options.destroyed!=null?!!options.destroyed:!!input.destroyed,
       error:text(options.error!=null?options.error:input.error),
       quote:clone(options.quote!=null?options.quote:input.quote),
+      promptNotices:clone(options.promptNotices!=null?
+        options.promptNotices:(input.promptNotices||{})),
       lastMode:text(options.lastMode!=null?options.lastMode:input.lastMode),
       submittedShotIds:(Array.isArray(options.submittedShotIds)?options.submittedShotIds:
         (Array.isArray(input.submittedShotIds)?input.submittedShotIds:[])).slice()
@@ -225,7 +234,9 @@
     return '<article class="nc-sdp-candidate'+selected(current)+'" data-version-id="'+escapeHtml(version.id)+'">'+
       '<div class="nc-sdp-preview" data-ratio="'+state.ratio+'">'+
       (version.url?'<img src="'+safeUrl(version.url)+'" alt="'+escapeHtml(shot.shot_key)+' 关键帧版本 '+version.version+'">':'<span>无预览</span>')+'</div>'+
-      '<div class="nc-sdp-candidate-meta"><strong>版本 '+version.version+(current?' · 当前':'')+'</strong><small>'+version.cost+' 点 · '+escapeHtml(version.status)+'</small></div>'+
+      '<div class="nc-sdp-candidate-meta"><strong>版本 '+version.version+(current?' · 当前':'')+'</strong><small>'+
+      escapeHtml(version.provider==='banana'?'Nano Banana 2':(version.provider||'历史模型'))+
+      (version.quality?' · '+escapeHtml(version.quality.toUpperCase()):'')+' · '+escapeHtml(version.status)+'</small></div>'+
       '<div class="nc-sdp-candidate-actions"><button type="button" data-action="select-version" data-version="'+version.version+'"'+disabledUnless(selectable&&!current)+'>选择</button>'+
       '<button type="button" data-action="lock-version" data-version="'+version.version+'"'+disabledUnless(selectable)+'>选择并锁定</button></div></article>';
   }
@@ -236,10 +247,48 @@
     var writable=state.canEdit&&!state.busy&&!state.stale&&!state.destroyed&&state.stage==='stills_review';
     var versions=shot.still.versions;
     var candidates=versions.slice().reverse();
+    var seenBatches={};
+    var batches=versions.slice().reverse().filter(function(version){
+      if(!version.batch_cost&&!version.unit_cost) return false;
+      var key=version.generation_batch_id||String(version.job_id||version.version);
+      if(seenBatches[key]) return false;
+      seenBatches[key]=true;
+      return true;
+    });
+    var direction=text(state.prompts[shot.id]).trim();
+    var quote=state.quote&&typeof state.quote==='object'?state.quote:null;
+    var quoteMatches=!!(
+      quote&&text(quote.shot_id)===text(shot.id)&&
+      text(quote.source_prompt_hash)===text(shot.image_prompt_hash)&&
+      text(quote.user_direction).trim()===direction
+    );
+    var promptNotice=state.promptNotices&&state.promptNotices[shot.id];
     return '<main class="nc-sdp-editor"><header class="nc-sdp-editor-header"><div><span class="nc-sdp-kicker">'+escapeHtml(shot.shot_key)+'</span><h2>关键帧候选</h2></div><span class="nc-sdp-ratio">'+state.ratio+'</span></header>'+
-      '<section class="nc-sdp-panel"><label class="nc-sdp-prompt">画面提示词<textarea data-field="prompt"'+disabledUnless(writable)+'>'+escapeHtml(state.prompts[shot.id])+'</textarea></label></section>'+
+      '<section class="nc-sdp-panel nc-sdp-prompt-layers">'+
+      '<label class="nc-sdp-prompt">分镜画面提示词 <small>来自已确认分镜，只读</small>'+
+      '<textarea readonly>'+escapeHtml(shot.image_prompt)+'</textarea></label>'+
+      '<label class="nc-sdp-prompt">本次生成补充要求 <small>可选；不要重复填写上面的分镜提示词</small>'+
+      '<textarea data-field="prompt" placeholder="例如：改成夜景，增加轻微俯拍"'+disabledUnless(writable)+'>'+
+      escapeHtml(state.prompts[shot.id])+'</textarea></label>'+
+      (promptNotice?'<div class="nc-sdp-prompt-notice" role="status">分镜提示词已更新，当前补充要求仍保留。'+
+        '<button type="button" data-action="keep-prompt-supplement">保留补充要求</button>'+
+        '<button type="button" data-action="clear-prompt-supplement">清空补充要求</button></div>':'')+
+      '<details class="nc-sdp-compiled-prompt"'+(quoteMatches?' open':'')+'><summary>最终提交提示词预览</summary>'+
+      (quoteMatches?'<pre>'+escapeHtml(quote.compiled_prompt)+'</pre>':
+        '<p>点击“询价并生成”后，系统会先展示本次真正发送给模型的完整提示词。</p>')+
+      '</details></section>'+
       '<section class="nc-sdp-panel"><h3>参考素材</h3>'+renderReferences(shot)+'</section>'+
-      '<section class="nc-sdp-candidate-grid">'+(candidates.length?candidates.map(function(version){ return renderVersionCard(state,shot,version,writable); }).join(''):'<div class="nc-sdp-empty" data-ratio="'+state.ratio+'">尚未生成关键帧候选</div>')+'</section></main>';
+      '<section class="nc-sdp-candidate-grid">'+(candidates.length?candidates.map(function(version){ return renderVersionCard(state,shot,version,writable); }).join(''):'<div class="nc-sdp-empty" data-ratio="'+state.ratio+'">尚未生成关键帧候选</div>')+'</section>'+
+      (batches.length?'<section class="nc-sdp-panel nc-sdp-history"><h3>生成批次与点数</h3><ol>'+batches.map(function(version){
+        var total=version.batch_cost||version.unit_cost*2;
+        return '<li><span>'+escapeHtml(version.generation_batch_id||String(version.job_id))+'</span><strong>'+
+          escapeHtml(version.provider==='banana'?'Nano Banana 2':(version.provider||'历史模型'))+
+          (version.quality?' · '+escapeHtml(version.quality.toUpperCase()):'')+
+          '</strong><small>'+version.unit_cost+' 点/张 × 2 = '+total+' 点</small></li>';
+      }).join('')+'</ol></section>':'')+
+      '<section class="nc-sdp-panel nc-sdp-history"><h3>历史版本</h3>'+(versions.length?'<ol>'+versions.map(function(version){
+        return '<li><span>V'+version.version+'</span><strong>'+escapeHtml(version.prompt||'无提示词')+'</strong><small>'+escapeHtml(version.id)+' · '+escapeHtml(version.status)+'</small></li>';
+      }).join('')+'</ol>':'<p class="nc-sdp-empty">暂无历史版本</p>')+'</section></main>';
   }
 
   function allShotsLocked(state){
@@ -311,6 +360,7 @@
     if(options.projectId==null||options.projectId==='') throw new Error('production workspace requires projectId');
     var confirmHook=typeof options.confirm==='function'?options.confirm:function(){ return false; };
     var onChange=typeof options.onChange==='function'?options.onChange:function(){};
+    var onError=typeof options.onError==='function'?options.onError:function(){};
     var keyFactory=typeof options.idempotencyKey==='function'?options.idempotencyKey:defaultKey;
     var later=options.setTimeoutImpl||setTimeout;
     var cancelLater=options.clearTimeoutImpl||clearTimeout;
@@ -322,7 +372,9 @@
     var serverState=null,destroyed=false,pollTimer=null,pollReject=null,generationPromise=null,lastPublishedSummaryKey=null;
     var submittedGuards=Object.create(null);
     var pendingSingle=null,pendingBatch=[];
-    var ui={selectedShotId:options.selectedShotId,filter:'all',prompts:{},canEdit:options.canEdit!==false,busy:true,stale:false,error:'',quote:null,lastMode:''};
+    var ui={selectedShotId:options.selectedShotId,filter:'all',prompts:{},
+      promptSources:{},promptNotices:{},canEdit:options.canEdit!==false,
+      busy:true,stale:false,error:'',quote:null,lastMode:''};
 
     function ensureAlive(){ if(destroyed) throw new Error('workspace destroyed'); }
     function loadPendingSingle(){
@@ -429,7 +481,15 @@
       var reconciledBatch=[];
       ui.selectedShotId=normalized.selectedShotId;
       normalized.shots.forEach(function(shot){
-        if(!Object.prototype.hasOwnProperty.call(ui.prompts,shot.id)) ui.prompts[shot.id]=shot.image_prompt;
+        if(!Object.prototype.hasOwnProperty.call(ui.prompts,shot.id)){
+          ui.prompts[shot.id]='';
+        }
+        var previousSource=ui.promptSources[shot.id];
+        if(previousSource!=null&&previousSource!==shot.image_prompt&&
+            text(ui.prompts[shot.id]).trim()){
+          ui.promptNotices[shot.id]=true;
+        }
+        ui.promptSources[shot.id]=shot.image_prompt;
         var guardedJob=submittedGuards[shot.id];
         var terminalFailed=shot.still.job&&shot.still.job.status==='failed'&&
           guardedJob!==true&&shot.still.job.job_id===guardedJob&&
@@ -495,7 +555,7 @@
       ensureAlive();
       var normalized=view();
       if(!normalized.shots.some(function(shot){ return shot.id===shotId; })) return false;
-      ui.selectedShotId=shotId;safePaint();return true;
+      ui.selectedShotId=shotId;ui.quote=null;safePaint();return true;
     }
     function setFilter(filter){
       ensureAlive();
@@ -507,6 +567,7 @@
       var shot=currentShot();
       if(!shot) return false;
       ui.prompts[shot.id]=text(prompt);
+      ui.quote=null;
       if(repaint!==false) safePaint();
       return true;
     }
@@ -544,7 +605,8 @@
         project_id:serverState.project_id,
         revision:number(serverState.revision,0),
         shot_id:shot.id,
-        prompt:text(Object.prototype.hasOwnProperty.call(ui.prompts,shot.id)?ui.prompts[shot.id]:shot.image_prompt).trim(),
+        prompt:text(Object.prototype.hasOwnProperty.call(ui.prompts,shot.id)?
+          ui.prompts[shot.id]:'').trim(),
         mode:mode,
         count:2
       };
@@ -666,6 +728,20 @@
       });
     }
     function pollShot(shotId,jobId){ return pollShots([{shotId:shotId,jobId:jobId}]); }
+    function clearSubmittedGuards(submitted){
+      (submitted||[]).forEach(function(target){ delete submittedGuards[target.shotId]; });
+      safePaint();
+    }
+    function recoverPartialBatch(submitted,primaryError){
+      if(!submitted.length) return Promise.reject(primaryError);
+      return pollShots(submitted).then(function(){
+        clearSubmittedGuards(submitted);
+        throw primaryError;
+      },function(){
+        if(destroyed) throw primaryError;
+        return requestState(true).catch(function(){ return null; }).then(function(){ throw primaryError; });
+      });
+    }
     function trackGeneration(action){
       generationPromise=action.then(function(result){ generationPromise=null;return result; },function(error){
         generationPromise=null;throw error;
@@ -964,6 +1040,20 @@
       if(!target) return;
       var action=target.getAttribute('data-action'),operation=null;
       if(action==='select-shot'){ selectShotById(target.getAttribute('data-shot-id'));return; }
+      if(action==='keep-prompt-supplement'){
+        var currentNoticeShot=currentShot();
+        if(currentNoticeShot) delete ui.promptNotices[currentNoticeShot.id];
+        safePaint();return;
+      }
+      if(action==='clear-prompt-supplement'){
+        var noticeShot=currentShot();
+        if(noticeShot){
+          ui.prompts[noticeShot.id]='';
+          delete ui.promptNotices[noticeShot.id];
+          ui.quote=null;
+        }
+        safePaint();return;
+      }
       if(action==='select-version') operation=selectVersion(target.getAttribute('data-version'),false);
       else if(action==='lock-version') operation=selectVersion(target.getAttribute('data-version'),true);
       else if(action==='generate-current') operation=generate('single');
@@ -971,7 +1061,9 @@
       else if(action==='generate-batch') operation=generateBatch();
       else if(action==='confirm-stage') operation=confirmStage();
       else if(action==='refresh') operation=refresh();
-      if(operation&&typeof operation.catch==='function') operation.catch(function(){});
+      if(operation&&typeof operation.catch==='function'){
+        operation.catch(function(error){ onError(error); });
+      }
     }
     function inputHandler(event){
       var target=actionTarget(event.target,'data-field');

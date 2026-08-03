@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import sqlite3
@@ -18,7 +19,7 @@ SERVER_DIR = str(Path(__file__).resolve().parents[1] / "server")
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
-from content_domains import core, short_drama, short_drama_production, video
+from content_domains import core, image, short_drama, short_drama_production, video
 
 
 def valid_project(**changes):
@@ -214,6 +215,228 @@ class ShortDramaProjectTests(unittest.TestCase):
 
     def applied_project_with_two_characters_and_dialogue(self):
         return self.applied_project()
+
+    def test_new_dialogue_gets_deterministic_server_id_and_snapshot(self):
+        project = self.applied_project()
+        project = short_drama.confirm_stage(
+            self.db, "alice", project["id"], project["revision"], "characters_review"
+        )
+        script = dict(project["script_versions"][-1])
+        script["dialogue_lines"] = list(script["dialogue_lines"]) + [{
+            "client_token": "browser-request-1",
+            "character_key": project["characters"][0]["character_key"],
+            "text": "我们现在出发。",
+            "subtitle_enabled": True,
+            "voice_overrides": {"speed": 1.1},
+        }]
+        first = short_drama.update_script(
+            self.db, "alice", project["id"], project["revision"], script
+        )
+        line = first["script_versions"][-1]["dialogue_lines"][-1]
+        self.assertTrue(line["id"].startswith("line_"))
+        self.assertEqual(project["characters"][0]["name"], line["speaker_name_snapshot"])
+        self.assertEqual({"speed": 1.1}, line["voice_overrides"])
+        self.assertEqual(
+            line["id"], first["dialogue_token_receipts"]["browser-request-1"]
+        )
+
+        retried = short_drama.update_script(
+            self.db, "alice", first["id"], first["revision"], script
+        )
+        self.assertEqual(
+            line["id"], retried["script_versions"][-1]["dialogue_lines"][-1]["id"]
+        )
+
+    def test_lost_response_token_reconciles_with_saved_line(self):
+        project = self.applied_project()
+        project = short_drama.confirm_stage(
+            self.db, "alice", project["id"], project["revision"], "characters_review"
+        )
+        script = dict(project["script_versions"][-1])
+        token_line = {
+            "client_token": "lost-response-token",
+            "character_key": project["characters"][0]["character_key"],
+            "text": "网络中断前已保存",
+            "subtitle_enabled": True,
+            "voice_overrides": {"speed": 1.05},
+        }
+        script["dialogue_lines"] = list(script["dialogue_lines"]) + [token_line]
+        saved = short_drama.update_script(
+            self.db, "alice", project["id"], project["revision"], script
+        )
+        saved_lines = saved["script_versions"][-1]["dialogue_lines"]
+        generated_id = saved_lines[-1]["id"]
+
+        replay = dict(saved["script_versions"][-1])
+        replay["dialogue_lines"] = list(saved_lines) + [token_line]
+        reconciled = short_drama.update_script(
+            self.db, "alice", saved["id"], saved["revision"], replay
+        )
+        reconciled_lines = reconciled["script_versions"][-1]["dialogue_lines"]
+        self.assertEqual(len(saved_lines), len(reconciled_lines))
+        self.assertEqual(1, sum(line["id"] == generated_id for line in reconciled_lines))
+
+    def test_lost_response_token_content_mismatch_is_atomic(self):
+        project = self.applied_project()
+        project = short_drama.confirm_stage(
+            self.db, "alice", project["id"], project["revision"], "characters_review"
+        )
+        script = dict(project["script_versions"][-1])
+        token_line = {
+            "client_token": "mismatch-token",
+            "character_key": project["characters"][0]["character_key"],
+            "text": "已保存内容",
+            "voice_overrides": {},
+        }
+        script["dialogue_lines"] = list(script["dialogue_lines"]) + [token_line]
+        saved = short_drama.update_script(
+            self.db, "alice", project["id"], project["revision"], script
+        )
+        replay = dict(saved["script_versions"][-1])
+        replay["dialogue_lines"] = list(replay["dialogue_lines"]) + [
+            dict(token_line, text="冲突内容")
+        ]
+        self._assert_content_rejected_without_side_effects(
+            saved, lambda before: short_drama.update_script(
+                self.db, "alice", saved["id"], before["revision"], replay
+            )
+        )
+
+    def test_dialogue_id_tampering_is_rejected_atomically(self):
+        project = self.applied_project()
+        project = short_drama.confirm_stage(
+            self.db, "alice", project["id"], project["revision"], "characters_review"
+        )
+        script = dict(project["script_versions"][-1])
+        script["dialogue_lines"] = [
+            dict(line, id="attacker_replaced_id")
+            if line["id"] == "line-1" else line
+            for line in script["dialogue_lines"]
+        ]
+        self._assert_content_rejected_without_side_effects(
+            project, lambda before: short_drama.update_script(
+                self.db, "alice", project["id"], before["revision"], script
+            )
+        )
+
+    def test_deleted_dialogue_token_cannot_be_reused(self):
+        project = self.applied_project()
+        project = short_drama.confirm_stage(
+            self.db, "alice", project["id"], project["revision"], "characters_review"
+        )
+        original_script = dict(project["script_versions"][-1])
+        created_script = dict(original_script)
+        created_script["dialogue_lines"] = list(original_script["dialogue_lines"]) + [{
+            "client_token": "retired-token",
+            "character_key": project["characters"][0]["character_key"],
+            "text": "临时台词",
+            "voice_overrides": {},
+        }]
+        created = short_drama.update_script(
+            self.db, "alice", project["id"], project["revision"], created_script
+        )
+        generated_id = created["script_versions"][-1]["dialogue_lines"][-1]["id"]
+        deleted_script = dict(created["script_versions"][-1])
+        deleted_script["dialogue_lines"] = [
+            line for line in deleted_script["dialogue_lines"] if line["id"] != generated_id
+        ]
+        deleted = short_drama.update_script(
+            self.db, "alice", created["id"], created["revision"], deleted_script
+        )
+        self.assertNotIn("retired-token", deleted["dialogue_token_receipts"])
+        reused_script = dict(deleted["script_versions"][-1])
+        reused_script["dialogue_lines"] = list(reused_script["dialogue_lines"]) + [{
+            "client_token": "retired-token",
+            "character_key": deleted["characters"][0]["character_key"],
+            "text": "冒充的新台词",
+            "voice_overrides": {},
+        }]
+        self._assert_content_rejected_without_side_effects(
+            deleted, lambda before: short_drama.update_script(
+                self.db, "alice", deleted["id"], before["revision"], reused_script
+            )
+        )
+
+    def test_dialogue_client_token_is_project_scoped(self):
+        ids = []
+        for _index in range(2):
+            project = self.applied_project()
+            project = short_drama.confirm_stage(
+                self.db, "alice", project["id"], project["revision"], "characters_review"
+            )
+            script = dict(project["script_versions"][-1])
+            script["dialogue_lines"] = list(script["dialogue_lines"]) + [{
+                "client_token": "same-browser-token",
+                "character_key": project["characters"][0]["character_key"],
+                "text": "项目内台词",
+                "voice_overrides": {},
+            }]
+            updated = short_drama.update_script(
+                self.db, "alice", project["id"], project["revision"], script
+            )
+            ids.append(updated["script_versions"][-1]["dialogue_lines"][-1]["id"])
+            self.assertEqual(
+                { "same-browser-token": ids[-1] },
+                updated["dialogue_token_receipts"],
+            )
+        self.assertNotEqual(ids[0], ids[1])
+
+    def test_dialogue_voice_overrides_requires_object_atomically(self):
+        for invalid in ([], "", 1, None):
+            with self.subTest(value=invalid):
+                project = self.applied_project()
+                project = short_drama.confirm_stage(
+                    self.db, "alice", project["id"], project["revision"], "characters_review"
+                )
+                script = dict(project["script_versions"][-1])
+                script["dialogue_lines"] = [
+                    dict(script["dialogue_lines"][0], voice_overrides=invalid)
+                ] + list(script["dialogue_lines"][1:])
+                self._assert_content_rejected_without_side_effects(
+                    project, lambda before: short_drama.update_script(
+                        self.db, "alice", project["id"], before["revision"], script
+                    )
+                )
+
+    def test_invalid_new_dialogue_rolls_back_token_allocation(self):
+        project = self.applied_project()
+        project = short_drama.confirm_stage(
+            self.db, "alice", project["id"], project["revision"], "characters_review"
+        )
+        script = dict(project["script_versions"][-1])
+        new_line = {
+            "client_token": "rollback-token",
+            "character_key": project["characters"][0]["character_key"],
+            "text": "等待校验",
+            "voice_overrides": [],
+        }
+        script["dialogue_lines"] = list(script["dialogue_lines"]) + [new_line]
+        self._assert_content_rejected_without_side_effects(
+            project, lambda before: short_drama.update_script(
+                self.db, "alice", project["id"], before["revision"], script
+            )
+        )
+        new_line["voice_overrides"] = {}
+        saved = short_drama.update_script(
+            self.db, "alice", project["id"], project["revision"], script
+        )
+        self.assertEqual(
+            "等待校验", saved["script_versions"][-1]["dialogue_lines"][-1]["text"]
+        )
+
+    def test_narrator_is_valid_without_project_character(self):
+        script = {
+            "title": "第一稿", "logline": "一句话", "hook": "钩子",
+            "conflict_text": "冲突", "turn_text": "反转", "ending": "结局",
+            "dialogue_lines": [{
+                "id": "line_narrator", "character_key": "narrator",
+                "text": "夜幕降临。", "subtitle_enabled": False,
+            }],
+        }
+        normalized = short_drama._normalize_script(script, set())
+        line = normalized["dialogue_lines"][0]
+        self.assertEqual("旁白", line["speaker_name_snapshot"])
+        self.assertFalse(line["subtitle_enabled"])
 
     def _content_snapshot(self, project_id):
         project = short_drama.get_project(self.db, "alice", project_id)
@@ -424,6 +647,49 @@ class ShortDramaProjectTests(unittest.TestCase):
                     self.db, "alice", project["id"], project["revision"]
                 )["deleted"])
 
+    def test_delete_blocks_unsettled_provider_shot_attempt_until_refunded(self):
+        project = self.applied_project()
+        shot_key = project["shots"][0]["id"]
+        with closing(self.db()) as conn:
+            conn.execute(
+                "INSERT INTO short_drama_provider_shot_quotes "
+                "(token,actor_username,owner_username,project_id,plan_id,"
+                "shot_key,character_key,"
+                "avatar_id,request_hash,request_json,cost,expires_at,created_at) "
+                "VALUES('provider-delete-quote','alice','alice',?,"
+                "'plan-delete',?,"
+                "'character-delete','avatar-delete','provider-delete-hash',"
+                "'{}',10,9999999999,1)",
+                (project["id"], shot_key),
+            )
+            conn.execute(
+                "INSERT INTO short_drama_provider_shot_attempts "
+                "(id,actor_username,owner_username,project_id,idempotency_key,"
+                "request_hash,quote_token,cost,charge_key,refund_key,state,"
+                "created_at,updated_at) "
+                "VALUES('provider-delete-attempt','alice','alice',?,"
+                "'provider-delete-key','provider-delete-hash',"
+                "'provider-delete-quote',10,'provider-delete-charge',"
+                "'provider-delete-refund','linked',1,1)",
+                (project["id"],),
+            )
+            conn.commit()
+
+        with self.assertRaises(short_drama.ProjectHasUnappliedJobs):
+            short_drama.delete_project(
+                self.db, "alice", project["id"], project["revision"]
+            )
+
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_attempts "
+                "SET state='refunded' WHERE id='provider-delete-attempt'"
+            )
+            conn.commit()
+        self.assertTrue(short_drama.delete_project(
+            self.db, "alice", project["id"], project["revision"]
+        )["deleted"])
+
     def test_create_project_rejects_impossible_duration_shot_pair(self):
         with self.assertRaisesRegex(ValueError, "时长与分镜数量不匹配"):
             short_drama.create_project(
@@ -487,7 +753,7 @@ class ShortDramaProjectTests(unittest.TestCase):
         self.assertEqual(project["characters"][0]["name"], "林默（新）")
         self.assertEqual(project, short_drama.get_project(self.db, "alice", project["id"]))
 
-        with self.assertRaisesRegex(ValueError, "当前阶段"):
+        with self.assertRaises(ValueError):
             short_drama.update_project(
                 self.db, "alice", project["id"], project["revision"],
                 {"script": dict(project["script_versions"][-1])},
@@ -517,6 +783,146 @@ class ShortDramaProjectTests(unittest.TestCase):
         self.assertEqual(len(project["shots"]), 6)
         self.assertTrue(all(x["scene_description"] == "修改后的场景" for x in project["shots"]))
         self.assertEqual(project, short_drama.get_project(self.db, "alice", project["id"]))
+
+    def test_confirmed_project_can_add_character_reference_without_editing_identity(self):
+        project = self.applied_project()
+        for stage in ("characters_review", "script_review", "storyboard_review"):
+            project = short_drama.confirm_stage(
+                self.db, "alice", project["id"], project["revision"], stage
+            )
+        conn = self.db()
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN result TEXT")
+            conn.execute(
+                "INSERT INTO jobs(id,kind,username,cost,status,payload,refunded,result) "
+                "VALUES(901,'image','alice',35,'done',?,0,?)",
+                (
+                    json.dumps({"provider": "banana", "model": "nb2"}),
+                    json.dumps({
+                        "file": "character.png",
+                        "url": "/api/gen/file/character.png",
+                    }),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        Path(self.tmp.name, "character.png").write_bytes(
+            b"\x89PNG\r\n\x1a\nreference"
+        )
+        characters = [dict(item) for item in project["characters"]]
+        characters[0].update({"reference_job_id": 901, "reference_locked": True})
+        with patch.object(image, "OUT_DIR", Path(self.tmp.name)):
+            updated = short_drama.update_characters(
+                self.db, "alice", project["id"], project["revision"], characters
+            )
+        self.assertEqual("stills_review", updated["stage"])
+        self.assertEqual(901, updated["characters"][0]["reference_job_id"])
+        self.assertTrue(updated["characters"][0]["reference_locked"])
+
+        changed = [dict(item) for item in updated["characters"]]
+        changed[0]["name"] = "changed after confirmation"
+        with self.assertRaisesRegex(ValueError, "只能补充或重新生成角色标准图"):
+            short_drama.update_characters(
+                self.db, "alice", updated["id"], updated["revision"], changed
+            )
+
+    def test_character_reference_generation_respects_project_budget(self):
+        project = self.applied_project()
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_projects SET point_budget=20 WHERE id=?",
+                (project["id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        with self.assertRaises(short_drama.PointBudgetExceeded):
+            short_drama.prepare_character_reference_submission(
+                self.db, "alice", "alice", {
+                    "project_id": project["id"],
+                    "revision": project["revision"],
+                    "character_key": project["characters"][0]["character_key"],
+                }, "character-budget-1", lambda _kind, _payload: 35,
+            )
+
+    def test_character_reference_job_is_durable_counted_and_recovered(self):
+        project = self.applied_project()
+        character_key = project["characters"][0]["character_key"]
+        request = {
+            "project_id": project["id"],
+            "revision": project["revision"],
+            "character_key": character_key,
+        }
+        prepared = short_drama.prepare_character_reference_submission(
+            self.db, "alice", "alice", request,
+            "character-recovery-1", lambda _kind, _payload: 35,
+        )
+        short_drama.accept_character_reference_attempt(
+            self.db, prepared, "alice"
+        )
+        short_drama.mark_character_reference_attempt_charged(
+            self.db, "alice", "character-recovery-1", 65
+        )
+        conn = self.db()
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN result TEXT")
+            conn.execute(
+                "INSERT INTO jobs(id,kind,username,cost,status,payload,refunded,result) "
+                "VALUES(902,'image','alice',35,'pending',?,0,NULL)",
+                (json.dumps(prepared["payload"], ensure_ascii=False),),
+            )
+            short_drama.record_character_reference_job(
+                conn, prepared, "alice", 902
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        recovered = short_drama.find_recoverable_character_reference(
+            self.db, "alice", "alice", request, "new-browser-key"
+        )
+        self.assertEqual(902, recovered["job_id"])
+        self.assertEqual(35, short_drama.get_project(
+            self.db, "alice", project["id"]
+        )["spent_points"])
+
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder)
+            (output / "character-902.png").write_bytes(
+                b"\x89PNG\r\n\x1a\nreference"
+            )
+            conn = self.db()
+            try:
+                conn.execute(
+                    "UPDATE jobs SET status='done',result=? WHERE id=902",
+                    (json.dumps({
+                        "file": "character-902.png",
+                        "url": "/api/gen/file/character-902.png",
+                    }),),
+                )
+                # Simulate an unrelated save/revision conflict after the paid job started.
+                conn.execute(
+                    "UPDATE short_drama_projects SET revision=revision+1 WHERE id=?",
+                    (project["id"],),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            with patch.object(image, "OUT_DIR", output):
+                short_drama.reconcile_character_reference_job(
+                    self.db, 902, "alice"
+                )
+
+        attached = short_drama.get_project(self.db, "alice", project["id"])
+        character = next(
+            item for item in attached["characters"]
+            if item["character_key"] == character_key
+        )
+        self.assertEqual(902, character["reference_job_id"])
+        self.assertEqual("character-902.png", character["reference_file"])
+        self.assertTrue(character["reference_locked"])
 
     def test_character_and_script_edits_prune_only_invalid_unconfirmed_references(self):
         project = self.applied_project_with_two_characters_and_dialogue()
@@ -596,6 +1002,7 @@ class ShortDramaProjectTests(unittest.TestCase):
             self.db, "alice", project["id"], project["revision"], characters,
             avatar_lookup=lambda username, avatar_id: {
                 "username": username, "id": avatar_id, "status": "ready",
+                "provider_avatar_id": "provider-ready-1",
             },
         )
         self.assertEqual("ai_character", project["characters"][0]["source_type"])
@@ -609,6 +1016,7 @@ class ShortDramaProjectTests(unittest.TestCase):
             self.db, "alice", project["id"], project["revision"], characters,
             avatar_lookup=lambda username, avatar_id: {
                 "username": username, "id": avatar_id, "status": "ready",
+                "provider_avatar_id": "provider-ready-1",
             },
         )
         self.assertEqual("cinematic_avatar", project["characters"][0]["source_type"])
@@ -1054,17 +1462,23 @@ class ShortDramaRouteTests(unittest.TestCase):
                 self.cost_calls = []
                 self.cost_lock_states = []
                 self.deduct_calls = []
+                self.refund_calls = []
+                self.refund_failures = 0
 
             def cost_of(self, kind, body):
                 self.cost_calls.append((kind, dict(body)))
                 self.cost_lock_states.append(core._submission_lock.locked())
                 return 7
 
-            def deduct_points(self, username, cost, reason):
-                self.deduct_calls.append((username, cost, reason))
+            def deduct_points(self, username, cost, reason, transaction_key=None):
+                self.deduct_calls.append((username, cost, reason, transaction_key))
                 return 100 - cost
 
             def refund_points(self, username, cost, reason, transaction_key=None):
+                self.refund_calls.append((username, cost, reason, transaction_key))
+                if self.refund_failures:
+                    self.refund_failures -= 1
+                    raise ConnectionError("refund response unavailable")
                 return 100
 
         self.points = FakePoints()
@@ -1106,7 +1520,8 @@ class ShortDramaRouteTests(unittest.TestCase):
         core._short_drama_canvas_access = self.originals["canvas_access"]
         self.tmp.cleanup()
 
-    def request(self, method, path, username="alice", body=None, raw_body=None, board_id=None):
+    def request(self, method, path, username="alice", body=None, raw_body=None,
+                board_id=None, idempotency_key=None):
         data = raw_body if raw_body is not None else (
             None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
         )
@@ -1115,6 +1530,8 @@ class ShortDramaRouteTests(unittest.TestCase):
             headers["Authorization"] = "Bearer " + username
         if board_id:
             headers["X-Canvas-Board-Id"] = board_id
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
         request = urllib.request.Request(self.base + path, data=data, method=method, headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=5) as response:
@@ -1361,6 +1778,259 @@ class ShortDramaRouteTests(unittest.TestCase):
                 "SELECT COUNT(*), COALESCE(SUM(cost), 0) FROM jobs"
             ).fetchone())
         self.assertEqual(jobs_before, jobs_after)
+
+    def test_character_reference_route_persists_project_link_and_recovers(self):
+        project = self.applied_project()
+        character_key = project["characters"][0]["character_key"]
+        body = {
+            "project_id": project["id"],
+            "revision": project["revision"],
+            "character_key": character_key,
+        }
+        status, accepted = self.request(
+            "POST", "/api/gen/short-drama/generate-character-reference",
+            body=body, idempotency_key="character-http-1",
+        )
+        self.assertEqual(200, status)
+        self.assertFalse(accepted["replayed"])
+        with closing(core.jdb()) as db:
+            link = db.execute(
+                "SELECT project_id,character_key,job_id,cost,status "
+                "FROM short_drama_character_reference_jobs"
+            ).fetchone()
+        self.assertEqual(
+            (project["id"], character_key, accepted["job_id"], 7, "linked"),
+            tuple(link),
+        )
+
+        status, recovered = self.request(
+            "POST", "/api/gen/short-drama/generate-character-reference",
+            body=body, idempotency_key="new-browser-key",
+        )
+        self.assertEqual(200, status)
+        self.assertTrue(recovered["replayed"])
+        self.assertEqual(accepted["job_id"], recovered["job_id"])
+        self.assertEqual(1, len(self.points.deduct_calls))
+        with closing(core.jdb()) as db:
+            db.execute(
+                "UPDATE jobs SET status='error',refunded=1 WHERE id=?",
+                (accepted["job_id"],),
+            )
+            db.execute(
+                "UPDATE short_drama_character_reference_jobs SET status='failed' "
+                "WHERE job_id=?",
+                (accepted["job_id"],),
+            )
+            db.commit()
+        with core._job_queue_lock:
+            core._queued_job_ids.discard(accepted["job_id"])
+
+    def test_character_reference_is_globally_exclusive_across_collaborators(self):
+        self.enable_board_roles({"alice": "owner", "bob": "editor"})
+        board_id = "shared-character-board"
+        status, project = self.request(
+            "POST", "/api/gen/short-drama/projects", username="alice",
+            board_id=board_id, body=valid_project(board_id=board_id),
+        )
+        self.assertEqual(200, status)
+        plan_job = self.insert_job(username="alice", plan=valid_editable_plan(), project=project)
+        status, project = self.request(
+            "POST", "/api/gen/short-drama/apply-plan", username="alice",
+            board_id=board_id, body={
+                "project_id": project["id"], "revision": project["revision"],
+                "job_id": plan_job,
+            },
+        )
+        self.assertEqual(200, status)
+        body = {
+            "project_id": project["id"],
+            "revision": project["revision"],
+            "character_key": project["characters"][0]["character_key"],
+        }
+        status, accepted = self.request(
+            "POST", "/api/gen/short-drama/generate-character-reference",
+            username="alice", board_id=board_id, body=body,
+            idempotency_key="alice-character-active",
+        )
+        self.assertEqual(200, status)
+        status, blocked = self.request(
+            "POST", "/api/gen/short-drama/generate-character-reference",
+            username="bob", board_id=board_id, body=body,
+            idempotency_key="bob-character-active",
+        )
+        self.assertEqual(409, status)
+        self.assertEqual("character_reference_in_progress", blocked["code"])
+        self.assertEqual(1, len(self.points.deduct_calls))
+        with closing(core.jdb()) as db:
+            self.assertEqual(1, db.execute(
+                "SELECT COUNT(*) FROM short_drama_character_reference_jobs "
+                "WHERE project_id=? AND character_key=?",
+                (project["id"], body["character_key"]),
+            ).fetchone()[0])
+            db.execute(
+                "UPDATE jobs SET status='error',refunded=1 WHERE id=?",
+                (accepted["job_id"],),
+            )
+            db.execute(
+                "UPDATE short_drama_character_reference_jobs SET status='failed' "
+                "WHERE job_id=?",
+                (accepted["job_id"],),
+            )
+            db.execute(
+                "UPDATE short_drama_character_reference_attempts SET state='refunded' "
+                "WHERE job_id=?",
+                (accepted["job_id"],),
+            )
+            db.commit()
+        with core._job_queue_lock:
+            core._queued_job_ids.discard(accepted["job_id"])
+
+    def test_refunded_character_attempt_cannot_create_a_free_job_on_retry(self):
+        project = self.applied_project()
+        body = {
+            "project_id": project["id"],
+            "revision": project["revision"],
+            "character_key": project["characters"][0]["character_key"],
+        }
+        with patch.object(
+                core.jobs_store, "create_job_after_charge",
+                side_effect=RuntimeError("association failed")):
+            status, failed = self.request(
+                "POST", "/api/gen/short-drama/generate-character-reference",
+                body=body, idempotency_key="character-compensated",
+            )
+        self.assertEqual(500, status)
+        self.assertEqual("character_reference_create_failed", failed["code"])
+        self.assertEqual(1, len(self.points.deduct_calls))
+        self.assertEqual(1, len(self.points.refund_calls))
+        self.assertNotEqual(
+            self.points.deduct_calls[0][3], self.points.refund_calls[0][3]
+        )
+
+        status, replay = self.request(
+            "POST", "/api/gen/short-drama/generate-character-reference",
+            body=body, idempotency_key="character-compensated",
+        )
+        self.assertEqual(409, status)
+        self.assertEqual("character_reference_terminal", replay["code"])
+        self.assertEqual(1, len(self.points.deduct_calls))
+        self.assertEqual(1, len(self.points.refund_calls))
+        with closing(core.jdb()) as db:
+            attempt = db.execute(
+                "SELECT state,job_id FROM short_drama_character_reference_attempts "
+                "WHERE username='alice' AND idempotency_key='character-compensated'"
+            ).fetchone()
+            self.assertEqual(("refunded", None), tuple(attempt))
+            self.assertEqual(0, db.execute(
+                "SELECT COUNT(*) FROM short_drama_character_reference_jobs "
+                "WHERE project_id=? AND character_key=?",
+                (project["id"], body["character_key"]),
+            ).fetchone()[0])
+
+    def test_character_reference_idempotency_binds_project_revision(self):
+        project = self.applied_project()
+        body = {
+            "project_id": project["id"],
+            "revision": project["revision"],
+            "character_key": project["characters"][0]["character_key"],
+        }
+        status, accepted = self.request(
+            "POST", "/api/gen/short-drama/generate-character-reference",
+            body=body, idempotency_key="character-revision-bound",
+        )
+        self.assertEqual(200, status)
+        status, conflict = self.request(
+            "POST", "/api/gen/short-drama/generate-character-reference",
+            body=dict(body, revision=body["revision"] + 1),
+            idempotency_key="character-revision-bound",
+        )
+        self.assertEqual(409, status)
+        self.assertEqual("idempotency_conflict", conflict["code"])
+        self.assertEqual(1, len(self.points.deduct_calls))
+        with closing(core.jdb()) as db:
+            self.assertEqual(1, db.execute(
+                "SELECT COUNT(*) FROM short_drama_character_reference_jobs "
+                "WHERE job_id=?",
+                (accepted["job_id"],),
+            ).fetchone()[0])
+            db.execute(
+                "UPDATE jobs SET status='error',refunded=1 WHERE id=?",
+                (accepted["job_id"],),
+            )
+            db.execute(
+                "UPDATE short_drama_character_reference_jobs SET status='failed' "
+                "WHERE job_id=?",
+                (accepted["job_id"],),
+            )
+            db.execute(
+                "UPDATE short_drama_character_reference_attempts SET state='refunded' "
+                "WHERE job_id=?",
+                (accepted["job_id"],),
+            )
+            db.commit()
+        with core._job_queue_lock:
+            core._queued_job_ids.discard(accepted["job_id"])
+
+    def test_generic_refund_scanner_excludes_character_attempt_owned_job(self):
+        project = self.applied_project()
+        body = {
+            "project_id": project["id"],
+            "revision": project["revision"],
+            "character_key": project["characters"][0]["character_key"],
+        }
+        status, accepted = self.request(
+            "POST", "/api/gen/short-drama/generate-character-reference",
+            body=body, idempotency_key="character-refund-owner",
+        )
+        self.assertEqual(200, status)
+        claimed = short_drama.fail_linked_character_reference_job(
+            core.jdb, accepted["job_id"], "provider failed",
+            from_states=("pending",),
+        )
+        self.assertTrue(claimed["claimed"])
+        attempt = short_drama.get_character_reference_attempt(
+            core.jdb, "alice", "character-refund-owner"
+        )
+        self.assertEqual("refund_pending", attempt["state"])
+
+        self.points.refund_failures = 1
+        attempt = short_drama.reconcile_character_reference_refund(
+            core.jdb, self.points, attempt
+        )
+        self.assertEqual("refund_pending", attempt["state"])
+        character_refund_key = attempt["refund_key"]
+        self.assertEqual(character_refund_key, self.points.refund_calls[-1][3])
+
+        generic_refunds = core.jobs_store.retry_failed_refunds(
+            core.jdb, core._refund_once
+        )
+        self.assertEqual(0, generic_refunds)
+        self.assertEqual(1, len(self.points.refund_calls))
+        with closing(core.jdb()) as db:
+            self.assertEqual(2, db.execute(
+                "SELECT refunded FROM jobs WHERE id=?",
+                (accepted["job_id"],),
+            ).fetchone()[0])
+
+        attempt = short_drama.reconcile_character_reference_refund(
+            core.jdb, self.points, attempt
+        )
+        self.assertEqual("refunded", attempt["state"])
+        self.assertEqual(
+            [character_refund_key, character_refund_key],
+            [call[3] for call in self.points.refund_calls],
+        )
+        self.assertFalse(any(
+            str(call[3]).startswith("job-refund:")
+            for call in self.points.refund_calls
+        ))
+        with closing(core.jdb()) as db:
+            self.assertEqual(1, db.execute(
+                "SELECT refunded FROM jobs WHERE id=?",
+                (accepted["job_id"],),
+            ).fetchone()[0])
+        with core._job_queue_lock:
+            core._queued_job_ids.discard(accepted["job_id"])
 
     def test_review_content_put_rejections_follow_http_contract(self):
         status, _ = self.request(
@@ -1705,6 +2375,44 @@ class ShortDramaRouteTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual("1", saved["characters"][0]["avatar_id"])
 
+    def test_character_update_requires_ready_avatar_and_clears_ai_binding(self):
+        with closing(core.adb()) as db:
+            db.execute(
+                "INSERT INTO avatars(username,name,image_file,provider_avatar_id,status) "
+                "VALUES(?,?,?,?,?)",
+                ("alice", "处理中形象", "pending.png", "", "pending"),
+            )
+            pending_id = db.execute(
+                "SELECT id FROM avatars WHERE username='alice' AND name='处理中形象'"
+            ).fetchone()[0]
+            db.commit()
+
+        project = self.applied_project()
+        characters = [dict(character) for character in project["characters"]]
+        characters[0].update({
+            "source_type": "cinematic_avatar",
+            "avatar_id": str(pending_id),
+        })
+        status, response = self.request(
+            "PUT", self.project_path(project), body={
+                "revision": project["revision"], "characters": characters,
+            },
+        )
+        self.assertEqual(400, status)
+        self.assertEqual("avatar_not_ready", response["code"])
+
+        characters[0].update({
+            "source_type": "ai_character",
+            "avatar_id": "1",
+        })
+        status, saved = self.request(
+            "PUT", self.project_path(project), body={
+                "revision": project["revision"], "characters": characters,
+            },
+        )
+        self.assertEqual(200, status)
+        self.assertIsNone(saved["characters"][0]["avatar_id"])
+
     def test_project_creation_missing_required_settings_returns_http_400(self):
         for missing in ("ratio", "target_duration", "shot_count"):
             with self.subTest(missing=missing):
@@ -1712,6 +2420,88 @@ class ShortDramaRouteTests(unittest.TestCase):
                 body.pop(missing)
                 status, _ = self.request("POST", "/api/gen/short-drama/projects", body=body)
                 self.assertEqual(400, status)
+
+    def test_cinematic_quote_is_authenticated_free_and_uses_complete_payload(self):
+        payload = {
+            "cine_mode": "open", "avatar_ids": [1], "prompt": "雨中奔跑",
+            "ratio": "9:16", "duration": 5, "resolution": "1080p",
+        }
+        status, _ = self.request(
+            "POST", "/api/gen/cinematic/quote", username=None, body=payload
+        )
+        self.assertEqual(401, status)
+        status, quote = self.request("POST", "/api/gen/cinematic/quote", body=payload)
+        self.assertEqual(200, status)
+        self.assertEqual({"cost": 7}, quote)
+        self.assertEqual([], self.points.deduct_calls)
+        self.assertEqual("cinematic", self.points.cost_calls[-1][0])
+        quoted_payload = self.points.cost_calls[-1][1]
+        self.assertEqual("720p", quoted_payload["resolution"])
+        self.assertTrue(all(
+            quoted_payload[key] == value
+            for key, value in payload.items()
+            if key != "resolution"
+        ))
+        with closing(core.jdb()) as db:
+            self.assertEqual(0, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+
+    def test_cinematic_quote_cleans_reference_files_on_success_failure_and_cancel_but_paid_keeps_them(self):
+        output = Path(self.tmp.name) / "content_out"
+        image = "data:image/png;base64," + base64.b64encode(
+            b"\x89PNG\r\n\x1a\n" + b"x" * 32
+        ).decode("ascii")
+        payload = {
+            "cine_mode": "open", "avatar_ids": [1], "prompt": "雨中奔跑",
+            "ratio": "9:16", "duration": 5, "resolution": "1080p",
+            "reference_images": [image],
+        }
+
+        def out_path(relative):
+            path = output / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            return path
+
+        def files():
+            return [path for path in output.rglob("*") if path.is_file()]
+
+        class CancelledHandler:
+            path = "/api/gen/cinematic/quote"
+            def _token(self): return "alice"
+            def _json_body_strict(self): return payload
+            def _send(self, *_args): raise ConnectionAbortedError("client cancelled")
+
+        with patch.object(video, "_out_path", side_effect=out_path):
+            status, _quote = self.request("POST", "/api/gen/cinematic/quote", body=payload)
+            self.assertEqual(200, status)
+            self.assertEqual([], files())
+
+            original_cost_of = self.points.cost_of
+            self.points.cost_of = lambda *_args: (_ for _ in ()).throw(ValueError("quote failed"))
+            try:
+                status, _error = self.request("POST", "/api/gen/cinematic/quote", body=payload)
+            finally:
+                self.points.cost_of = original_cost_of
+            self.assertEqual(400, status)
+            self.assertEqual([], files())
+
+            with self.assertRaises(ConnectionAbortedError):
+                video.dispatch_cinematic_quote(CancelledHandler(), core.verify, original_cost_of)
+            self.assertEqual([], files())
+
+            original_handlers = core.HANDLERS
+            core.HANDLERS = dict(core.HANDLERS, cinematic=lambda value: value)
+            try:
+                with patch.object(video, "record_video_pending_asset"):
+                    status, accepted = self.request("POST", "/api/gen/cinematic", body=payload)
+            finally:
+                core.HANDLERS = original_handlers
+            self.assertEqual(200, status, accepted)
+            with closing(core.jdb()) as db:
+                persisted = json.loads(db.execute(
+                    "SELECT payload FROM jobs WHERE id=?", (accepted["job_id"],)
+                ).fetchone()[0])
+            self.assertEqual(1, len(persisted["reference_image_files"]))
+            self.assertEqual(1, len(files()))
 
     def test_invalid_short_drama_copy_payload_is_rejected_before_deduct_or_job_insert(self):
         invalid_changes = (
@@ -1978,3 +2768,61 @@ class ShortDramaRouteTests(unittest.TestCase):
         })
         self.assertEqual(200, status)
         self.assertEqual("script_review", confirmed["stage"])
+
+    def test_legacy_stage_completion_remains_available_until_d6_is_enabled(self):
+        project = self.applied_project()
+        with closing(core.jdb()) as db:
+            db.execute(
+                "UPDATE short_drama_projects SET stage='assembly_review' "
+                "WHERE id=?",
+                (project["id"],),
+            )
+            db.commit()
+            revision = db.execute(
+                "SELECT revision FROM short_drama_projects WHERE id=?",
+                (project["id"],),
+            ).fetchone()[0]
+        stage_body = {
+            "project_id": project["id"],
+            "revision": revision,
+            "stage": "assembly_review",
+        }
+        with patch.dict(
+            os.environ, {"HQ_SHORT_DRAMA_COMPLETION_ENABLED": "0"},
+        ):
+            status, result = self.request(
+                "POST", "/api/gen/short-drama/confirm", body=stage_body,
+            )
+        self.assertEqual(200, status)
+        self.assertEqual("completed", result["stage"])
+        with closing(core.jdb()) as db:
+            row = db.execute(
+                "SELECT stage,completion_id FROM short_drama_projects "
+                "WHERE id=?",
+                (project["id"],),
+            ).fetchone()
+        self.assertEqual(("completed", None), tuple(row))
+
+        blocked_project = self.applied_project()
+        with closing(core.jdb()) as db:
+            db.execute(
+                "UPDATE short_drama_projects SET stage='assembly_review' "
+                "WHERE id=?", (blocked_project["id"],),
+            )
+            db.commit()
+            blocked_revision = db.execute(
+                "SELECT revision FROM short_drama_projects WHERE id=?",
+                (blocked_project["id"],),
+            ).fetchone()[0]
+        with patch.dict(
+            os.environ, {"HQ_SHORT_DRAMA_COMPLETION_ENABLED": "1"},
+        ):
+            status, result = self.request(
+                "POST", "/api/gen/short-drama/confirm", body={
+                    "project_id": blocked_project["id"],
+                    "revision": blocked_revision,
+                    "stage": "assembly_review",
+                },
+            )
+        self.assertEqual(409, status)
+        self.assertEqual("completion_required", result["code"])

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN" data-resolution="portrait">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=1080, height=1920" />
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+  <style>
+    @font-face{font-family:"Noto Sans SC";src:url("assets/fonts/noto-sans-sc-400.woff2") format("woff2");font-weight:400}
+    @font-face{font-family:"Noto Sans SC";src:url("assets/fonts/noto-sans-sc-700.woff2") format("woff2");font-weight:700}
+    @font-face{font-family:"Noto Sans SC";src:url("assets/fonts/noto-sans-sc-900.woff2") format("woff2");font-weight:900}
+    @font-face{font-family:"JetBrains Mono";src:url("assets/fonts/jetbrains-mono-600.woff2") format("woff2");font-weight:600}
+    *{box-sizing:border-box;margin:0;padding:0}
+    html,body{width:1080px;height:1920px;overflow:hidden;background:#05070b;font-family:"Noto Sans SC",sans-serif}
+    #root{position:relative;overflow:hidden;background:#05070b}
+    #a-roll{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform-origin:50% 46%}
+    .wash{position:absolute;inset:0;background:linear-gradient(180deg,rgba(2,4,8,.32) 0%,rgba(2,4,8,0) 24%,rgba(2,4,8,.08) 50%,rgba(2,4,8,.94) 88%,rgba(2,4,8,.98) 100%);pointer-events:none}
+    .caption-shield{position:absolute;left:0;right:0;top:1010px;height:560px;background:linear-gradient(180deg,rgba(4,6,10,0),rgba(4,6,10,.78) 18%,rgba(4,6,10,.88) 76%,rgba(4,6,10,0));pointer-events:none}
+    .brand{position:absolute;left:40px;top:42px;height:52px;padding:0 16px;display:flex;align-items:center;gap:11px;border-radius:12px;background:rgba(3,5,9,.86);border:1px solid rgba(255,255,255,.18);z-index:20;color:#fff;font-family:"JetBrains Mono";font-size:19px;letter-spacing:1.5px;text-shadow:0 2px 12px rgba(0,0,0,.8)}
+    .brand-dot{width:13px;height:13px;border-radius:50%;background:#f4ca3b;box-shadow:0 0 24px rgba(244,202,59,.9)}
+    .brand-rule{width:76px;height:2px;background:#f4ca3b}
+    .mode-chip{position:absolute;right:44px;top:48px;z-index:20;padding:10px 17px;border:1px solid rgba(255,255,255,.42);border-radius:999px;background:rgba(5,8,14,.58);color:#fff;font-size:16px;font-weight:700;letter-spacing:1px;backdrop-filter:blur(12px)}
+    .hook{position:absolute;left:56px;right:56px;top:170px;text-align:center;filter:drop-shadow(0 8px 12px rgba(0,0,0,.82))}
+    .hook-line{display:inline-block;padding:4px 18px;color:#fff;font-size:73px;line-height:1.08;font-weight:900;letter-spacing:-2px;background:rgba(0,0,0,.58);transform:rotate(-1.2deg)}
+    .hook-line.two{margin-top:12px;color:#121212;background:#f4ca3b;font-size:84px;transform:rotate(.8deg);box-shadow:9px 9px 0 rgba(0,0,0,.68)}
+    .hook-underline{width:0;height:9px;margin:20px auto 0;border-radius:99px;background:#f4ca3b;box-shadow:0 0 24px rgba(244,202,59,.55)}
+    .caption{position:absolute;left:50%;bottom:390px;min-width:520px;max-width:940px;transform:translateX(-50%);padding:19px 30px 22px;border-radius:18px;background:rgba(3,5,9,.86);border:1px solid rgba(255,255,255,.16);box-shadow:0 16px 42px rgba(0,0,0,.42);text-align:center;color:#fff;font-size:48px;line-height:1.2;font-weight:900;letter-spacing:.2px;text-shadow:0 3px 9px rgba(0,0,0,.8)}
+    .caption .key{color:#f4ca3b}
+    .caption small{display:block;margin-top:9px;color:rgba(255,255,255,.68);font-family:"JetBrains Mono";font-size:15px;font-weight:600;letter-spacing:1.6px;text-transform:uppercase}
+    .giant{position:absolute;left:54px;right:54px;top:185px;z-index:10;text-align:center;pointer-events:none}
+    .giant-word{display:inline-block;padding:12px 34px 24px;border-radius:22px;background:#05070b;border:2px solid rgba(255,255,255,.22);color:#fff;font-size:150px;line-height:.98;font-weight:900;letter-spacing:-7px;text-shadow:7px 8px 0 #0a0b0d,0 0 36px rgba(0,0,0,.9);transform:rotate(-3deg)}
+    .giant-word.yellow{width:940px;height:450px;display:inline-flex;align-items:center;justify-content:center;color:#f4ca3b;font-size:160px;background:#05070b;border-color:#f4ca3b;text-shadow:8px 10px 0 #111,0 0 40px rgba(244,202,59,.22);transform:rotate(1deg)}
+    #ai-headline{left:70px;right:70px;top:58px}
+    .chapter{position:absolute;left:48px;top:340px;display:flex;align-items:center;gap:14px;color:white;font-family:"JetBrains Mono";font-size:18px;font-weight:600;letter-spacing:1.2px}
+    .chapter span{padding:8px 12px;background:#f4ca3b;color:#111;border-radius:7px;font-size:16px}
+    .progress{position:absolute;left:48px;right:48px;bottom:116px;height:5px;background:rgba(255,255,255,.25);border-radius:99px;overflow:hidden}
+    .progress-fill{width:100%;height:100%;background:#f4ca3b;transform-origin:left center}
+    .footer{position:absolute;left:50px;right:50px;bottom:62px;display:flex;justify-content:space-between;align-items:center;color:rgba(255,255,255,.86);font-family:"JetBrains Mono";font-size:17px;font-weight:600;letter-spacing:1px;text-shadow:0 2px 8px #000}
+    .cta{position:absolute;left:50%;top:180px;width:930px;transform:translateX(-50%);padding:34px 40px 38px;background:rgba(4,6,10,.88);border:2px solid #f4ca3b;border-radius:24px;box-shadow:0 24px 70px rgba(0,0,0,.58);text-align:center;color:#fff}
+    .cta b{display:block;color:#f4ca3b;font-size:70px;line-height:1.08;font-weight:900}
+    .cta span{display:block;margin-top:12px;font-size:27px;font-weight:700;letter-spacing:2px}
+  </style>
+</head>
+<body>
+  <div id="root" data-composition-id="main" data-start="0" data-duration="__DURATION__" data-width="1080" data-height="1920" data-fps="30" data-composition-variables='__VARIABLES__'>
+    <video id="a-roll" class="clip" src="clean-master.mp4" muted playsinline data-start="0" data-duration="__DURATION__" data-track-index="0"></video>
+    <audio id="a-roll-audio" class="clip" src="clean-master.mp4" data-start="0" data-duration="__DURATION__" data-track-index="20" data-volume="1"></audio>
+
+    <div id="contrast-wash" class="clip wash" data-start="0" data-duration="__DURATION__" data-track-index="1"></div>
+    <div id="caption-shield" class="clip caption-shield" data-start="0" data-duration="__DURATION__" data-track-index="12"></div>
+    <div id="brand" class="clip brand" data-start="0" data-duration="__DURATION__" data-track-index="2"><i class="brand-dot"></i><i class="brand-rule"></i><span>__BRAND__</span></div>
+    <div id="mode-chip" class="clip mode-chip" data-start="0" data-duration="__DURATION__" data-track-index="3">VIRAL TALK · 01</div>
+
+    <div id="hook" class="clip hook" data-start="0" data-duration="2.18" data-track-index="4">
+      <div id="hook-one" class="hook-line" data-layout-allow-overlap>__HOOK_ONE__</div><br />
+      <div id="hook-two" class="hook-line two" data-layout-allow-overlap>__HOOK_TWO__</div>
+      <div id="hook-rule" class="hook-underline"></div>
+    </div>
+
+__CAPTIONS__
+
+__HEADLINES__
+    <div id="cta" class="clip cta" data-start="__CTA_START__" data-duration="__CTA_DURATION__" data-track-index="11"><b>__CTA_TITLE__</b><span>__CTA_SUBTITLE__</span></div>
+
+    <div id="timeline-progress" class="clip progress" data-start="0" data-duration="__DURATION__" data-track-index="8"><div id="progress-fill" class="progress-fill"></div></div>
+    <div id="technical-footer" class="clip footer" data-start="0" data-duration="__DURATION__" data-track-index="9"><span>HQ / ONE-CLICK VIDEO</span><span>__DURATION_LABEL__ · 9:16</span></div>
+  </div>
+
+  <script>
+    window.__timelines = window.__timelines || {};
+__TIMELINE_SCRIPT__
+  </script>
+</body>
+</html>

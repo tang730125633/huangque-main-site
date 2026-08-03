@@ -1,9 +1,71 @@
 # -*- coding: utf-8 -*-
+import os
 import re
+import urllib.error
+import urllib.request
 
 from .core import (
-    COPY_MODEL as FALLBACK_COPY_MODEL, _NOPROXY, _post, json, os, urllib,
+    COPY_MODEL as FALLBACK_COPY_MODEL,
+    OPENAI_BASE,
+    OPENAI_KEY,
+    _NOPROXY,
+    _post,
+    json,
 )
+
+
+COPY_API_BASE = os.environ.get("COPY_API_BASE", "").strip()
+COPY_API_KEY = os.environ.get("COPY_API_KEY", "").strip()
+
+
+def _provider_config():
+    dedicated_base = str(COPY_API_BASE or "").strip()
+    dedicated_key = str(COPY_API_KEY or "").strip()
+    if bool(dedicated_base) != bool(dedicated_key):
+        raise RuntimeError("COPY_API_BASE 与 COPY_API_KEY 必须同时配置，不能只配置其中一项")
+    if dedicated_base:
+        return dedicated_base, dedicated_key, "COPY_API_BASE", "COPY_API_KEY"
+    return (
+        str(OPENAI_BASE or "").strip(), str(OPENAI_KEY or "").strip(),
+        "OPENAI_BASE", "OPENAI_API_KEY",
+    )
+
+
+def _chat_url(base, base_env):
+    base = str(base or "").strip().rstrip("/")
+    if not base:
+        raise RuntimeError("文案模型接口未配置，请检查 %s" % base_env)
+    if base.endswith("/v1"):
+        return base + "/chat/completions"
+    return base + "/v1/chat/completions"
+
+
+def _http_error_message(status, base_env, key_env):
+    if status in (401, 403):
+        return "文案模型鉴权失败，请检查 %s" % key_env
+    if status == 404:
+        return "文案模型接口或模型不存在，请检查 %s 和 COPY_MODEL" % base_env
+    if status == 429:
+        return "文案模型请求过于频繁，请稍后重试"
+    if status >= 500:
+        return "文案模型服务暂时不可用，请稍后重试"
+    return "文案模型请求失败（HTTP %s）" % status
+
+
+def _post_chat(body):
+    base, key, base_env, key_env = _provider_config()
+    if not key:
+        raise RuntimeError("文案模型密钥未配置，请检查 %s" % key_env)
+    request = urllib.request.Request(
+        _chat_url(base, base_env), data=body,
+        headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=300) as response:
+            return json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(_http_error_message(error.code, base_env, key_env)) from error
 
 COPY_MODEL = "glm-4-plus"
 ZHIPU_API_BASE = "https://open.bigmodel.cn/api/paas/v4"
@@ -99,14 +161,36 @@ def _chat(sysmsg, usermsg, temp):
         {"role": "system", "content": sysmsg},
         {"role": "user", "content": usermsg},
     ]
+    dedicated_base = str(COPY_API_BASE or "").strip()
+    dedicated_key = str(COPY_API_KEY or "").strip()
+    if dedicated_base or dedicated_key:
+        body = json.dumps({
+            "model": COPY_MODEL,
+            "messages": messages,
+            "temperature": temp,
+        }, ensure_ascii=False).encode("utf-8")
+        d = _post_chat(body)
+        return (
+            (d.get("choices") or [{}])[0]
+            .get("message", {})
+            .get("content", "")
+            .strip()
+        )
     if ZHIPU_API_KEY:
         return _zhipu_request(messages, temp, ZHIPU_API_KEY, COPY_MODEL)
-    fallback = json.dumps({
+    body = json.dumps({
         "model": os.environ.get("COPY_FALLBACK_MODEL", FALLBACK_COPY_MODEL),
         "messages": messages,
         "temperature": temp,
     }, ensure_ascii=False).encode("utf-8")
-    d = _post("/v1/chat/completions", fallback, "application/json")
+    explicit_openai = bool(str(OPENAI_KEY or "").strip()) or (
+        str(OPENAI_BASE or "").strip().rstrip("/")
+        not in {"", "https://api.openai.com"}
+    )
+    d = (
+        _post_chat(body) if explicit_openai
+        else _post("/v1/chat/completions", body, "application/json")
+    )
     return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
 
 
@@ -135,12 +219,32 @@ def gen_copy(payload):
     if (payload.get("format") or "") == "short_drama":
         from . import short_drama
         settings = short_drama.validate_planning_payload(payload)
-        raw = _chat(
-            "你是黄雀传媒短剧编导。只输出 JSON 本身，不要解释，不要 markdown 代码块。",
-            short_drama.build_plan_prompt(settings),
-            0.75,
+        system_prompt = (
+            "你是黄雀传媒短剧编导。必须严格遵守用户给出的 JSON 字段约束；"
+            "只输出 JSON 本身，不要解释，不要 markdown 代码块。"
         )
-        plan = short_drama.parse_and_normalize_plan(raw, settings)
+        raw = _chat(
+            system_prompt,
+            short_drama.build_plan_prompt(settings),
+            0.3,
+        )
+        try:
+            plan = short_drama.parse_and_normalize_plan(raw, settings)
+        except ValueError as first_error:
+            # This is a second provider call inside the already-created paid
+            # planning job. It never creates or charges another job.
+            retry_raw = _chat(
+                system_prompt,
+                short_drama.build_plan_retry_prompt(settings, raw, first_error),
+                0.2,
+            )
+            try:
+                plan = short_drama.parse_and_normalize_plan(retry_raw, settings)
+            except ValueError as retry_error:
+                raise ValueError(
+                    "AI 返回的剧本格式不完整，系统自动修复失败；"
+                    "本次任务将自动退款，请重新生成"
+                ) from retry_error
         return {"type": "copy", "mode": "short_drama", "plan": plan,
                 "project_id": settings.get("project_id"),
                 "project_revision": settings.get("project_revision"),

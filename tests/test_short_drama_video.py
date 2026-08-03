@@ -258,6 +258,7 @@ class ShortDramaVideoTests(unittest.TestCase):
         )
         self.assertFalse(captured["generate_audio"])
         self.assertFalse(captured["enhance_prompt"])
+        self.assertEqual("720p", captured["resolution"])
         self.assertTrue(captured["_short_drama_video"]["visual_only"])
         self.assertEqual(
             self.prompt,
@@ -805,6 +806,30 @@ class ShortDramaVideoTests(unittest.TestCase):
                 (self.project["id"],),
             ).fetchone()[0])
 
+    def test_cast_reference_file_is_exposed_as_browser_url(self):
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_characters SET reference_file=?,reference_url='' "
+                "WHERE project_id=? AND character_key='detective'",
+                ("avatar_src/alice-detective.jpg", self.project["id"]),
+            )
+            conn.commit()
+
+        workspace = short_drama_video.get_video_workspace(
+            self.db, "alice", self.project["id"], self.avatar_lookup
+        )
+        target = next(
+            item for item in workspace["cast_characters"]
+            if item["character_key"] == "detective"
+        )
+        self.assertEqual(
+            "/api/gen/file/avatar_src/alice-detective.jpg",
+            target["reference_url"],
+        )
+        self.assertEqual(
+            "avatar_src/alice-detective.jpg", target["reference_file"]
+        )
+
     def test_cast_change_invalidates_only_affected_unlocked_shots(self):
         with closing(self.db()) as conn:
             conn.execute(
@@ -1030,7 +1055,7 @@ class ShortDramaVideoTests(unittest.TestCase):
             ]
 
         editor = GetHandler(
-            "/api/gen/short-drama/video-cast/avatars?project_id=%s"
+            "/api/gen/short-drama/avatar-candidates?project_id=%s"
             % self.project["id"],
             token="editor",
         )
