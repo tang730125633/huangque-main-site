@@ -148,6 +148,8 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
             "server/wechat_subscribe.py": (10, "/home/ubuntu/auth-service/wechat_subscribe.py", "auth", 0),
             "server/tikhub.py": (10, "/home/ubuntu/content-api/tikhub.py", "content", 0),
             "server/content_domains/core.py": (20, "/home/ubuntu/content-api/content_domains/core.py", "content", 0),
+            "server/providers/lipsync/runtime.py": (20, "/home/ubuntu/content-api/providers/lipsync/runtime.py", "content", 0),
+            "server/providers/short_drama_visual/heygen_cinematic.py": (20, "/home/ubuntu/content-api/providers/short_drama_visual/heygen_cinematic.py", "content", 0),
             "server/content_api.py": (30, "/home/ubuntu/content-api/content_api.py", "content", 0),
             "server/imggen_api.py": (30, "/home/ubuntu/content-api/imggen_api.py", "imggen", 0),
             "server/leadgen_api.py": (30, "/home/ubuntu/content-api/leadgen_api.py", "leadgen", 0),
