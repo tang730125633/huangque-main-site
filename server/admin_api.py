@@ -2138,7 +2138,8 @@ class H(BaseHTTPRequestHandler):
         if path in {
             "/api/admin/invite/config", "/api/admin/invite/stats",
             "/api/admin/invite/relations", "/api/admin/invite/audit",
-            "/api/admin/invite/reward-points", "/api/admin/invite/network",
+            "/api/admin/invite/reward-points", "/api/admin/invite/reward-claims",
+            "/api/admin/invite/network",
         }:
             q = urllib.parse.urlparse(self.path).query
             suffix = path.replace("/api/admin/", "/api/auth/admin/", 1) + (("?" + q) if q else "")
