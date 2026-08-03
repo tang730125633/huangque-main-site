@@ -16,8 +16,40 @@
     body:before{content:"";position:fixed;inset:0;pointer-events:none;background:
       radial-gradient(circle at 16% 8%,rgba(240,190,85,.11),transparent 26%),
       linear-gradient(135deg,rgba(34,197,165,.09),transparent 34%,rgba(240,190,85,.05));opacity:.7}
-    .shell{position:relative;max-width:1440px;margin:0 auto;padding:28px 28px 44px}
-    header{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:22px}
+    body.drawer-open{overflow:hidden}
+    .admin-layout{position:relative;display:flex;min-height:100vh}
+    .admin-sidebar{position:sticky;top:0;z-index:40;width:236px;height:100vh;flex:none;display:flex;flex-direction:column;border-right:1px solid rgba(148,164,187,.1);background:linear-gradient(180deg,rgba(12,18,16,.98),rgba(8,12,10,.98));box-shadow:14px 0 40px rgba(0,0,0,.12)}
+    .admin-brand{display:flex;align-items:center;gap:11px;padding:22px 18px 20px;border-bottom:1px solid rgba(148,164,187,.08)}
+    .admin-brand img{width:34px;height:34px;border-radius:10px;object-fit:cover}
+    .admin-brand b{display:block;font-size:15px}.admin-brand span{display:block;color:var(--muted);font-size:12px}
+    .admin-nav{flex:1;overflow-y:auto;padding:14px 11px 20px}
+    .nav-group+.nav-group{margin-top:18px}.nav-label{padding:0 10px 7px;color:#6f7d75;font-size:11px;font-weight:800;letter-spacing:.1em}
+    .side-nav-item{position:relative;width:100%;height:42px;margin:1px 0;border:0;border-radius:8px;background:transparent;color:var(--muted);display:flex;align-items:center;gap:11px;padding:0 12px;text-align:left;font-size:13px;font-weight:700}
+    .side-nav-item:hover,.side-nav-item:focus-visible{background:rgba(240,190,85,.06);color:var(--text);outline:1px solid rgba(240,190,85,.18)}
+    .side-nav-item.active{background:rgba(240,190,85,.1);color:#f6dfa9}
+    .side-nav-item.active:after{content:"";position:absolute;left:-11px;top:11px;width:3px;height:20px;border-radius:0 3px 3px 0;background:var(--gold)}
+    .side-nav-icon{position:relative;z-index:1;width:18px;height:18px;flex:none;display:grid;place-items:center;opacity:.58;transform-origin:center;transition:opacity .16s,filter .16s}
+    .side-nav-icon svg{display:block;width:18px;height:18px}
+    .side-nav-item.active .side-nav-icon{opacity:1;filter:drop-shadow(0 0 6px rgba(240,190,85,.28))}
+    .side-nav-item:hover .side-nav-icon,.side-nav-item:focus-visible .side-nav-icon{opacity:1;filter:drop-shadow(0 0 7px rgba(240,190,85,.48));animation:admin-nav-bloom .62s cubic-bezier(.22,1,.36,1)}
+    .side-nav-item:hover .side-nav-icon svg>*,.side-nav-item:focus-visible .side-nav-icon svg>*{animation:admin-nav-draw .72s cubic-bezier(.22,1,.36,1)}
+    .side-nav-icon:before,.side-nav-icon:after{content:"";position:absolute;left:50%;top:50%;width:3px;height:3px;border-radius:50%;background:#f6d883;box-shadow:0 0 7px rgba(246,216,131,.8);opacity:0;pointer-events:none}
+    .side-nav-item:hover .side-nav-icon:before,.side-nav-item:focus-visible .side-nav-icon:before{animation:admin-nav-seed-a .68s ease-out}
+    .side-nav-item:hover .side-nav-icon:after,.side-nav-item:focus-visible .side-nav-icon:after{animation:admin-nav-seed-b .74s .04s ease-out}
+    @keyframes admin-nav-bloom{0%{transform:scale(.86) rotate(-5deg)}55%{transform:scale(1.18) rotate(3deg)}100%{transform:scale(1) rotate(0)}}
+    @keyframes admin-nav-draw{0%{stroke-dasharray:2 32;stroke-dashoffset:18;opacity:.35}100%{stroke-dasharray:48 0;stroke-dashoffset:0;opacity:1}}
+    @keyframes admin-nav-seed-a{0%{opacity:0;transform:translate(-50%,-50%) scale(.4)}30%{opacity:1}100%{opacity:0;transform:translate(10px,-12px) scale(1.2)}}
+    @keyframes admin-nav-seed-b{0%{opacity:0;transform:translate(-50%,-50%) scale(.4)}30%{opacity:.9}100%{opacity:0;transform:translate(-13px,8px) scale(.8)}}
+    @media(prefers-reduced-motion:reduce){.side-nav-icon{transition:none}.side-nav-item:hover .side-nav-icon,.side-nav-item:focus-visible .side-nav-icon,.side-nav-item:hover .side-nav-icon svg>*,.side-nav-item:focus-visible .side-nav-icon svg>*,.side-nav-item:hover .side-nav-icon:before,.side-nav-item:focus-visible .side-nav-icon:before,.side-nav-item:hover .side-nav-icon:after,.side-nav-item:focus-visible .side-nav-icon:after{animation:none!important}}
+    .sidebar-foot{padding:13px 14px 18px;border-top:1px solid rgba(148,164,187,.08)}
+    .sidebar-foot a{display:flex;align-items:center;justify-content:center;height:36px;border:1px solid var(--line);border-radius:7px;color:var(--muted);text-decoration:none;font-size:12px;font-weight:700}.sidebar-foot a:hover{color:var(--text)}
+    .sidebar-backdrop{display:none}
+    .admin-main{position:relative;min-width:0;flex:1}
+    .shell{position:relative;max-width:1560px;margin:0 auto;padding:24px 28px 44px}
+    header{display:grid;grid-template-columns:minmax(220px,.8fr) minmax(320px,1.2fr) auto;gap:18px;align-items:center;margin-bottom:22px}
+    .page-heading{min-width:0}.page-heading .sub{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .top-search{display:flex;align-items:center;gap:8px;min-width:0}.top-search .field{width:100%;min-width:0;height:42px;background:rgba(17,22,19,.9)}.top-search button{flex:none;white-space:nowrap}
+    .nav-toggle{display:none;width:42px;padding:0;font-size:18px}
     h1{margin:0;font-size:26px;letter-spacing:0;font-weight:800}
     .sub{color:var(--muted);margin-top:6px}
     .user{display:flex;gap:10px;align-items:center;padding:10px 12px;border:1px solid var(--line);background:rgba(23,29,26,.8);border-radius:8px}
@@ -40,10 +72,13 @@
     .pill.warn{color:var(--warn);border-color:rgba(217,155,53,.28);background:rgba(217,155,53,.1)}
     .pill.neutral{color:var(--muted);border-color:rgba(154,166,159,.18);background:rgba(154,166,159,.08)}
     .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
-    .module-tabs{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px}
-    .tab{height:38px;border-radius:6px;border:1px solid var(--line);background:rgba(32,40,34,.75);color:var(--muted);font-weight:800;padding:0 14px;cursor:pointer}
-    .tab.active{color:#201604;border-color:rgba(240,190,85,.72);background:linear-gradient(135deg,#ffd979,#e5ad35)}
     .module-card[hidden]{display:none}
+    .module-page{min-width:0}
+    .support-hero{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(280px,.6fr);gap:18px;align-items:center;padding:22px;border:1px solid rgba(240,190,85,.22);border-radius:10px;background:linear-gradient(135deg,rgba(240,190,85,.09),rgba(34,197,165,.045) 60%,rgba(23,29,26,.88));box-shadow:0 20px 60px rgba(0,0,0,.14)}
+    .support-hero h2{font-size:22px;margin:0 0 7px}.support-hero p{margin:0;color:var(--muted)}
+    .support-path{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.support-path span{padding:9px 10px;border:1px solid var(--line);border-radius:7px;background:rgba(17,22,19,.7);color:var(--muted);font-size:12px}.support-path b{color:var(--gold);margin-right:6px}
+    .quick-links{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.quick-links button{height:44px;text-align:left}
+    .issue-list{display:grid;gap:8px}.issue-row{display:grid;grid-template-columns:110px minmax(120px,.7fr) minmax(180px,1.4fr) 90px;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid rgba(46,56,50,.72)}.issue-row:last-child{border-bottom:0}
     .section-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:12px}
     .section-head h2{margin:0}
     .hint{font-size:12px;color:var(--muted)}
@@ -113,7 +148,14 @@
     .ledger-stat:last-child{border-right:0}
     .ledger-stat span{display:block;color:var(--muted);font-size:12px}
     .ledger-stat b{display:block;margin-top:4px;font-size:22px;font-variant-numeric:tabular-nums}
-    .user-detail{margin:0 0 14px;padding:14px;border:1px solid rgba(240,190,85,.3);border-radius:8px;background:rgba(240,190,85,.045)}
+    .customer-layer[hidden]{display:none}.customer-layer{position:fixed;inset:0;z-index:90}.drawer-backdrop{position:absolute;inset:0;width:100%;height:100%;border:0;border-radius:0;background:rgba(2,5,3,.72);backdrop-filter:blur(3px)}
+    .customer-drawer{position:absolute;top:0;right:0;width:min(1040px,88vw);height:100%;display:flex;flex-direction:column;border-left:1px solid rgba(240,190,85,.25);background:#111613;box-shadow:-24px 0 70px rgba(0,0,0,.38)}
+    .drawer-head{height:62px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 18px;border-bottom:1px solid var(--line);background:rgba(23,29,26,.96)}
+    .drawer-head b{font-size:15px}.drawer-head span{display:block;color:var(--muted);font-size:12px}
+    .user-detail{min-height:0;flex:1;overflow:auto;padding:18px;background:rgba(240,190,85,.025)}
+    .row-actions{position:relative;display:inline-block}.row-actions summary{height:30px;display:flex;align-items:center;padding:0 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface2);color:var(--text);font-size:12px;font-weight:700;cursor:pointer;list-style:none}.row-actions summary::-webkit-details-marker{display:none}.row-actions[open] summary{border-color:rgba(240,190,85,.45)}
+    .row-actions-menu{position:absolute;right:0;z-index:5;width:190px;margin-top:6px;padding:7px;border:1px solid var(--line);border-radius:8px;background:#111613;box-shadow:0 16px 40px rgba(0,0,0,.35)}.row-actions-menu button{width:100%;justify-content:flex-start;margin:2px 0;text-align:left}
+    .user-actions{min-width:190px}.user-actions>.actions{flex-wrap:nowrap}.user-actions button,.user-actions summary{white-space:nowrap}
     .detail-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0}
     .detail-block{min-width:0;padding:12px;border:1px solid var(--line);border-radius:8px;background:rgba(17,22,19,.72)}
     .detail-block h3{margin:0 0 8px;font-size:13px}.detail-block .table-wrap{max-height:280px;overflow:auto}
@@ -135,50 +177,139 @@
     .case-thumb{width:92px;height:110px;object-fit:cover;border-radius:6px;background:#0b0f0d}
     .case-item h3{margin:0;font-size:14px}.case-meta,.case-metrics{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-top:7px}.case-metrics{color:var(--muted);font-size:12px}
     .case-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}.case-actions button{height:29px;font-size:12px;padding:0 9px}
-    @media (max-width:960px){.shell{padding:20px 14px}.span3,.span4,.span6,.span8{grid-column:span 12}.channels,.feature-grid,.invite-config,.membership-recharge,.detail-grid,.case-workspace{grid-template-columns:1fr}.ledger-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ledger-stat:nth-child(2){border-right:0}.ledger-stat:nth-child(-n+2){border-bottom:1px solid var(--line)}header{flex-direction:column}.user{width:100%}.case-list{max-height:none}.network-node{align-items:stretch}.network-node .actions{width:100%}}
-    @media (max-width:560px){.case-fields,.case-upload{grid-template-columns:1fr}.case-item{grid-template-columns:72px 1fr}.case-thumb{width:72px;height:92px}}
+    .announcement-workspace{display:grid;grid-template-columns:minmax(320px,.9fr) minmax(340px,1.1fr);gap:14px}
+    .announcement-panel{min-width:0;padding:16px;border:1px solid var(--line);border-radius:8px;background:rgba(17,22,19,.62)}
+    .announcement-form{display:grid;gap:12px}.announcement-label{display:grid;gap:6px;color:var(--muted);font-size:12px}.announcement-label .field{width:100%;min-width:0}.announcement-label textarea{min-height:180px;margin:0;font:13px/1.65 inherit}
+    .announcement-label-head{display:flex;justify-content:space-between;gap:12px}.announcement-count{font-variant-numeric:tabular-nums}
+    .announcement-audience{margin:0;padding:12px;border:1px solid var(--line);border-radius:8px}.announcement-audience legend{padding:0 6px;color:var(--text);font-weight:800}.announcement-choice{display:flex;gap:8px;align-items:flex-start;margin:7px 0;color:var(--text);font-size:13px}.announcement-choice input,.announcement-tier input{margin-top:3px;accent-color:var(--gold)}
+    .announcement-panel input:focus-visible,.announcement-panel textarea:focus-visible,.announcement-panel button:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+    .announcement-tiers{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:10px 0 2px 24px}.announcement-tier{display:flex;gap:7px;align-items:flex-start;padding:9px;border:1px solid var(--line);border-radius:7px;background:rgba(32,40,34,.7);color:var(--text);font-size:12px}.announcement-tier:has(input:checked){border-color:rgba(240,190,85,.48);background:rgba(240,190,85,.08)}
+    .announcement-effect{min-height:210px;padding:20px;border:1px solid rgba(240,190,85,.28);border-radius:10px;background:linear-gradient(145deg,rgba(240,190,85,.1),rgba(23,29,26,.92) 48%,rgba(34,197,165,.05));box-shadow:inset 0 1px 0 rgba(255,255,255,.03)}
+    .announcement-effect h3{margin:13px 0 8px;font-size:19px}.announcement-effect p{min-height:86px;margin:0;color:#cdd7d1;white-space:pre-wrap;overflow-wrap:anywhere}.announcement-effect footer{margin-top:16px;padding-top:12px;border-top:1px solid rgba(240,190,85,.14);color:var(--muted);font-size:12px}
+    .announcement-state{margin-top:12px;padding:10px 12px;border:1px dashed var(--line);border-radius:7px;color:var(--muted);background:rgba(23,29,26,.68)}.announcement-state.success{color:var(--ok);border-color:rgba(79,212,126,.3)}.announcement-state.error{color:#ffd0cc;border-color:rgba(224,107,100,.35)}.announcement-state.loading{color:var(--gold);border-color:rgba(240,190,85,.32)}
+    .announcement-breakdown{display:grid;grid-template-columns:repeat(auto-fit,minmax(105px,1fr));gap:8px;margin-top:10px}.announcement-breakdown div{padding:10px;border:1px solid var(--line);border-radius:7px;background:rgba(32,40,34,.58)}.announcement-breakdown span{display:block;color:var(--muted);font-size:11px}.announcement-breakdown b{display:block;margin-top:2px;font-size:18px;color:var(--gold)}
+    .announcement-history-panel{margin-top:14px}.announcement-history{display:grid;gap:10px}.announcement-history-item{padding:14px;border:1px solid var(--line);border-radius:8px;background:rgba(17,22,19,.58)}.announcement-history-item h3{margin:0;font-size:14px}.announcement-history-detail{margin:9px 0;color:#cdd7d1;white-space:pre-wrap;overflow-wrap:anywhere}.announcement-history-meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap;color:var(--muted);font-size:12px}
+    #announcementHistoryRefresh{white-space:nowrap}
+    @media (max-width:1100px){header{grid-template-columns:auto minmax(280px,1fr) auto}.page-heading{display:none}.support-hero{grid-template-columns:1fr}.issue-row{grid-template-columns:90px minmax(100px,.7fr) minmax(160px,1.3fr) 80px}}
+    @media (max-width:900px){.admin-sidebar{position:fixed;left:0;transform:translateX(-100%);transition:transform .18s ease}.admin-layout.nav-open .admin-sidebar{transform:none}.admin-layout.nav-open .sidebar-backdrop{display:block;position:fixed;inset:0;z-index:35;width:100%;height:100%;border:0;border-radius:0;background:rgba(2,5,3,.68)}.nav-toggle{display:block}.shell{padding:18px 14px 36px}header{grid-template-columns:auto minmax(0,1fr) auto;gap:10px}.top-search button{font-size:0;width:42px;padding:0}.top-search button:after{content:"搜";font-size:13px}.span3,.span4,.span6,.span8{grid-column:span 12}.channels,.feature-grid,.invite-config,.membership-recharge,.detail-grid,.case-workspace,.announcement-workspace{grid-template-columns:1fr}.ledger-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ledger-stat:nth-child(2){border-right:0}.ledger-stat:nth-child(-n+2){border-bottom:1px solid var(--line)}.user{padding:7px}.user>div:last-child{display:none}.case-list{max-height:none}.network-node{align-items:stretch}.network-node .actions{width:100%}.customer-drawer{width:100vw}.issue-row{grid-template-columns:90px 1fr}.issue-row>*:nth-child(3){grid-column:1/-1}.issue-row>*:nth-child(4){grid-column:2}}
+    @media (max-width:560px){.top-search{grid-column:1/-1;grid-row:2}.user{grid-column:3;grid-row:1}.nav-toggle{grid-column:1;grid-row:1}.case-fields,.case-upload,.support-path,.quick-links,.announcement-tiers{grid-template-columns:1fr}.announcement-tiers{margin-left:24px}.case-item{grid-template-columns:72px 1fr}.case-thumb{width:72px;height:92px}.drawer-head{padding:0 12px}.user-detail{padding:12px}.row{align-items:flex-start;flex-direction:column}.row>.actions{width:100%}}
   </style>
 </head>
 <body>
-<main class="shell">
-  <header>
-    <div>
-      <h1>运营后台</h1>
-      <div class="sub">接口调试、日志监控、API 号池与用户运营</div>
-    </div>
-    <div class="user" id="userBox"><div class="avatar">?</div><div><b>未登录</b><div class="muted">等待校验</div></div></div>
-  </header>
-
-  <section id="gate" class="empty" style="display:none">
-    当前没有可用登录态。请先使用管理员账号登录黄雀工作台。
-    <a class="btn" href="/login?redirect=/admin-console/" style="margin-left:10px;text-decoration:none">去登录</a>
-  </section>
-
-  <section id="app" style="display:none">
-    <div class="toolbar">
-      <button class="primary" id="refreshBtn">刷新状态</button>
-      <button id="autoRefreshToggle">自动刷新：开</button>
-      <button id="days7">近 7 天</button>
-      <button id="days30">近 30 天</button>
-      <span class="pill ok" id="autoRefreshState">每 30 秒刷新</span>
-      <span class="muted" id="updatedAt"></span>
-    </div>
-    <div class="grid">
-      <div class="card metric span3"><div><span>服务在线</span><b id="svcOnline">-</b></div><span id="svcTotal">-</span></div>
-      <div class="card metric span3"><div><span>密钥已配置</span><b id="keyReady">-</b></div><span id="keyTotal">-</span></div>
-      <div class="card metric span3"><div><span>调用总量</span><b id="jobTotal">-</b></div><span id="statDays">-</span></div>
-      <div class="card metric span3"><div><span>高失败项</span><b id="failKinds">-</b></div><span>失败率 >= 50%</span></div>
-
-      <div class="module-tabs span12" id="moduleTabs">
-        <button class="tab active" data-module-tab="ops">接口调试</button>
-        <button class="tab" data-module-tab="logs">日志监控</button>
-        <button class="tab" data-module-tab="features">功能开关</button>
-        <button class="tab" data-module-tab="users">用户管理</button>
-        <button class="tab" data-module-tab="points">点数流水</button>
-        <button class="tab" data-module-tab="recharge">充值管理</button>
-        <button class="tab" data-module-tab="invite">邀请管理</button>
-        <button class="tab" data-module-tab="inspirations">灵感案例</button>
+<div class="admin-layout" id="adminLayout">
+  <aside class="admin-sidebar" id="adminSidebar" aria-label="运营后台菜单">
+    <div class="admin-brand"><img src="/assets/cloud/logo-bird.png" alt=""><div><b>黄雀 AI</b><span>运营后台</span></div></div>
+    <nav class="admin-nav">
+      <div class="nav-group">
+        <div class="nav-label">客服与运营</div>
+        <button class="side-nav-item active" data-module-tab="dashboard">客服工作台</button>
+        <button class="side-nav-item" data-module-tab="users">用户与账号</button>
+        <button class="side-nav-item" data-module-tab="logs">任务与请求</button>
+        <button class="side-nav-item" data-module-tab="recharge">订单与充值</button>
+        <button class="side-nav-item" data-module-tab="points">点数与退款</button>
+        <button class="side-nav-item" data-module-tab="invite">邀请关系</button>
       </div>
+      <div class="nav-group">
+        <div class="nav-label">内容运营</div>
+        <button class="side-nav-item" data-module-tab="announcements">消息与公告</button>
+        <button class="side-nav-item" data-module-tab="inspirations">灵感案例</button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-label">系统运维</div>
+        <button class="side-nav-item" data-module-tab="services">服务状态</button>
+        <button class="side-nav-item" data-module-tab="channels">渠道与密钥</button>
+        <button class="side-nav-item" data-module-tab="features">功能开关</button>
+      </div>
+    </nav>
+    <div class="sidebar-foot"><a href="/workbench/inspiration.html">返回用户工作台</a></div>
+  </aside>
+  <button class="sidebar-backdrop" id="sidebarBackdrop" aria-label="关闭菜单"></button>
+
+  <main class="admin-main">
+  <div class="shell">
+    <header>
+      <button class="nav-toggle" id="navToggle" aria-controls="adminSidebar" aria-expanded="false" aria-label="打开菜单">☰</button>
+      <div class="page-heading">
+        <h1 id="pageTitle">客服工作台</h1>
+        <div class="sub" id="pageSubtitle">先找到客户，再看清问题并完成处理</div>
+      </div>
+      <div class="top-search" role="search">
+        <input class="field" id="globalUserSearch" type="search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="搜索客户" placeholder="搜索客户账号或昵称">
+        <button class="primary" id="globalUserSearchBtn">搜索客户</button>
+      </div>
+      <div class="user" id="userBox"><div class="avatar">?</div><div><b>未登录</b><div class="muted">等待校验</div></div></div>
+    </header>
+
+    <section id="gate" class="empty" style="display:none">
+      当前没有可用登录态。请先使用管理员账号登录黄雀工作台。
+      <a class="btn" href="/login?redirect=/admin-console/" style="margin-left:10px;text-decoration:none">去登录</a>
+    </section>
+
+    <section id="app" style="display:none">
+      <div class="grid">
+        <section class="module-page module-card span12" data-module="dashboard">
+          <div class="support-hero">
+            <div><h2>从一个客户开始处理</h2><p>在顶部搜索账号或昵称，打开客户全貌后集中查看任务、支付、点数、邀请关系和账号状态。</p></div>
+            <div class="support-path"><span><b>1</b>找到客户</span><span><b>2</b>查看全貌</span><span><b>3</b>定位问题</span><span><b>4</b>处理并留痕</span></div>
+          </div>
+          <div class="grid" style="margin-top:14px">
+            <div class="card metric span3"><div><span>服务在线</span><b id="svcOnline">-</b></div><span id="svcTotal">-</span></div>
+            <div class="card metric span3"><div><span>调用总量</span><b id="jobTotal">-</b></div><span id="statDays">-</span></div>
+            <div class="card metric span3"><div><span>高失败功能</span><b id="failKinds">-</b></div><span>失败率 ≥ 50%</span></div>
+            <div class="card metric span3"><div><span>待审批订单</span><b id="supportPendingOrders">-</b></div><span>需要人工处理</span></div>
+            <div class="card span8">
+              <div class="section-head"><div><h2>最近失败</h2><div class="hint">优先核对有明确用户的失败任务和请求。</div></div><div class="actions"><button id="days7">近 7 天</button><button id="days30">近 30 天</button><button data-jump-module="logs">查看全部</button></div></div>
+              <div id="supportIssueBox" class="empty">正在读取最近失败记录...</div>
+            </div>
+            <div class="card span4">
+              <div class="section-head"><div><h2>常用入口</h2><div class="hint">按客户问题直接进入处理页面。</div></div></div>
+              <div class="quick-links"><button data-jump-module="users">用户与账号</button><button data-jump-module="logs">任务与请求</button><button data-jump-module="recharge">订单与充值</button><button data-jump-module="points">点数与退款</button></div>
+            </div>
+          </div>
+        </section>
+
+      <section class="card span12 module-card" data-module="announcements" hidden>
+        <div class="section-head">
+          <div><h2>消息与公告</h2><div class="hint">编辑完成后先核对受众人数和实际展示效果，再二次确认发布。</div></div>
+          <button id="announcementHistoryRefresh" type="button">刷新历史</button>
+        </div>
+        <div class="announcement-workspace">
+          <div class="announcement-panel">
+            <div class="announcement-form" id="announcementForm">
+              <label class="announcement-label" for="announcementTitle"><span class="announcement-label-head"><b>公告标题</b><span class="announcement-count" id="announcementTitleCount">0 / 80</span></span><input class="field" id="announcementTitle" maxlength="80" data-announcement-field autocomplete="off" placeholder="例如：本周功能升级通知"></label>
+              <label class="announcement-label" for="announcementDetail"><span class="announcement-label-head"><b>公告正文</b><span class="announcement-count" id="announcementDetailCount">0 / 1000</span></span><textarea id="announcementDetail" maxlength="1000" data-announcement-field placeholder="说明更新内容、影响范围和用户需要采取的动作"></textarea></label>
+              <fieldset class="announcement-audience">
+                <legend>发布受众</legend>
+                <label class="announcement-choice"><input type="radio" name="announcementAudienceMode" value="all" data-announcement-field checked><span><b>全体有效账号</b><br><span class="muted">由服务端按当前有效账号统一筛选</span></span></label>
+                <label class="announcement-choice"><input type="radio" name="announcementAudienceMode" value="tiers" data-announcement-field><span><b>按权益层级</b><br><span class="muted">可单选或组合以下三档有效会员</span></span></label>
+                <div class="announcement-tiers" id="announcementTiers">
+                  <label class="announcement-tier"><input type="checkbox" value="experience" data-announcement-tier data-announcement-field><span><b>体验官</b><br><span class="muted">experience</span></span></label>
+                  <label class="announcement-tier"><input type="checkbox" value="partner" data-announcement-tier data-announcement-field><span><b>合伙人</b><br><span class="muted">partner</span></span></label>
+                  <label class="announcement-tier"><input type="checkbox" value="initiator" data-announcement-tier data-announcement-field><span><b>发起人</b><br><span class="muted">initiator</span></span></label>
+                </div>
+              </fieldset>
+              <div class="actions"><button id="announcementPreview" type="button">预览受众</button><button class="primary" id="announcementPublish" type="button" disabled>确认并发布</button></div>
+              <div class="announcement-state" id="announcementPublishState" aria-live="polite">尚未发布</div>
+            </div>
+          </div>
+          <div class="announcement-panel">
+            <div class="section-head"><div><h2>公告效果预览</h2><div class="hint">用户通知中心将按纯文本展示，正文换行会保留。</div></div><span class="pill warn">系统公告</span></div>
+            <article class="announcement-effect" aria-live="polite">
+              <span class="pill warn">系统公告</span>
+              <h3 id="announcementEffectTitle">公告标题将在这里显示</h3>
+              <p id="announcementEffectDetail">公告正文将在这里显示。</p>
+              <footer id="announcementEffectAudience">受众：全体有效账号</footer>
+            </article>
+            <div class="announcement-state" id="announcementAudienceState" aria-live="polite">请先填写公告，再预览受众人数</div>
+            <div class="announcement-breakdown" id="announcementBreakdown" aria-label="受众分档人数"></div>
+          </div>
+        </div>
+        <div class="announcement-panel announcement-history-panel">
+          <div class="section-head"><div><h2>发布历史</h2><div class="hint">显示最近 50 条公告；已发布公告可以召回。</div></div><span class="muted" id="announcementHistoryCount">-</span></div>
+          <div class="announcement-state" id="announcementHistoryState" aria-live="polite">尚未加载发布历史</div>
+          <div class="announcement-history" id="announcementHistory"></div>
+        </div>
+      </section>
 
       <section class="card span12 module-card" data-module="inspirations" hidden>
         <div class="section-head">
@@ -225,14 +356,19 @@
         </div>
       </section>
 
-      <section class="card span12 module-card" data-module="ops">
-        <div class="section-head"><div><h2>服务健康</h2><div class="hint">页面每 30 秒自动刷新一次；「测试」会立即单独探测该服务。</div></div></div>
+      <section class="card span12 module-card" data-module="services" hidden>
+        <div class="section-head"><div><h2>服务状态</h2><div class="hint">页面每 30 秒自动刷新一次；「测试」会立即单独探测该服务。</div></div><span class="muted" id="updatedAt"></span></div>
+        <div class="toolbar">
+          <button class="primary" id="refreshBtn">刷新状态</button>
+          <button id="autoRefreshToggle">自动刷新：开</button>
+          <span class="pill ok" id="autoRefreshState">每 30 秒刷新</span>
+        </div>
         <div id="serviceBox"></div>
       </section>
-      <section class="card span12 module-card" data-module="ops">
+      <section class="card span12 module-card" data-module="channels" hidden>
         <div class="section-head">
           <div><h2>渠道与 API 线路</h2><div class="hint">按真实 API 提供方统一展示，并标明前端功能对应关系；号池渠道支持多 Key 轮询。</div></div>
-          <div class="actions"><span class="muted" id="providerKeyState">-</span><button class="primary" id="providerKeyOpen">新增号池 Key</button></div>
+          <div class="actions"><span class="pill neutral">已配置 <b id="keyReady">-</b></span><span class="muted" id="keyTotal">-</span><span class="muted" id="providerKeyState">-</span><button class="primary" id="providerKeyOpen">新增号池 Key</button></div>
         </div>
         <div class="pool-editor" id="providerKeyEditor" hidden>
           <b id="providerKeyEditorTitle">新增 API Key</b>
@@ -275,7 +411,6 @@
           </select>
           <button id="userRefresh">刷新用户</button>
         </div>
-        <div id="userDetailBox" class="user-detail" hidden></div>
         <div id="usersBox"></div>
       </section>
       <section class="card span12 module-card" data-module="points" hidden>
@@ -403,22 +538,64 @@
         <div class="section-head"><div><h2>调用统计</h2><div class="hint">按能力统计成功率和失败率。</div></div></div>
         <div id="statsBox"></div>
       </section>
-    </div>
-  </section>
-</main>
+      </div>
+    </section>
+  </div>
+  </main>
+</div>
+
+<div class="customer-layer" id="customerLayer" hidden>
+  <button class="drawer-backdrop" id="userDetailBackdrop" aria-label="关闭客户全貌"></button>
+  <aside class="customer-drawer" id="customerDrawer" role="dialog" aria-modal="true" aria-labelledby="customerDrawerTitle" tabindex="-1">
+    <div class="drawer-head"><div><b id="customerDrawerTitle">客户全貌</b><span>任务、支付、点数、邀请和账号处理集中在这里</span></div><button id="drawerClose">关闭</button></div>
+    <div id="userDetailBox" class="user-detail" hidden></div>
+  </aside>
+</div>
 <div class="toast" id="toast"></div>
+<script src="/workbench/hq-icons-duotone.js"></script>
 <script>
 (function(){
   var token = '__cookie__';
   var state = {
-    days:7, data:null, userTimer:null, module:'ops', membershipRequestId:'',
+    days:7, data:null, userTimer:null, module:'dashboard', membershipRequestId:'',
     userPage:1, userPageSize:20, reqPage:1, reqPageSize:20, detailUser:'', noticeSending:false,
-    autoRefresh:true, overviewLoading:false, refreshTimer:null, poolActions:0,
-    poolEpoch:0, refreshPending:false
+    autoRefresh:true, overviewLoading:false, refreshTimer:null, poolActions:0, drawerReturnFocus:null,
+    poolEpoch:0, refreshPending:false, announcementPreview:null, announcementPreviewSignature:'',
+    announcementRequestId:'', announcementPreviewLoading:false, announcementPublishing:false,
+    announcementHistoryLoading:false
   };
   var secretWindows = [];
   var el = function(id){return document.getElementById(id)};
+  var moduleMeta = {
+    dashboard:['客服工作台','先找到客户，再看清问题并完成处理'],
+    users:['用户与账号','集中查看客户身份、会员、点数和账号状态'],
+    logs:['任务与请求','按用户、功能、状态或请求号定位问题'],
+    recharge:['订单与充值','处理会员充值、点数订单和待审批申请'],
+    points:['点数与退款','核对任务扣点、失败退款和人工调整'],
+    invite:['邀请关系','查看邀请链路、奖励台账和风控状态'],
+    announcements:['消息与公告','编辑公告、核对受众并查看发布历史'],
+    inspirations:['灵感案例','管理首页展示案例与做同款入口'],
+    services:['服务状态','查看核心服务在线状态并执行免费拨测'],
+    channels:['渠道与密钥','管理 API 线路、号池健康和轮询状态'],
+    features:['功能开关','控制平台能力是否接受新任务']
+  };
+  var moduleIcons = {
+    dashboard:'home',users:'users',logs:'clock',recharge:'coins',points:'trend',invite:'userPlus',
+    announcements:'message',inspirations:'sparkles',services:'checkCircle',channels:'lock',features:'sliders'
+  };
+  Array.prototype.forEach.call(document.querySelectorAll('[data-module-tab]'),function(btn){
+    var paths=(window.HQIconDuoPaths||{})[moduleIcons[btn.getAttribute('data-module-tab')]];
+    if(!paths)return;
+    btn.insertAdjacentHTML('afterbegin','<span class="side-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round">'+paths.split('__ACC__').join('#f0be55')+'</svg></span>');
+  });
   function toast(msg){var t=el('toast'); t.textContent=msg; t.style.display='block'; clearTimeout(t._tm); t._tm=setTimeout(function(){t.style.display='none'},2600)}
+  function closeSidebar(){el('adminLayout').classList.remove('nav-open');el('navToggle').setAttribute('aria-expanded','false')}
+  function closeUserDetail(){var back=state.drawerReturnFocus;el('customerLayer').hidden=true;el('userDetailBox').hidden=true;state.detailUser='';state.drawerReturnFocus=null;document.body.classList.remove('drawer-open');if(back&&back.isConnected)back.focus()}
+  function searchCustomer(){
+    var query=String(el('globalUserSearch').value||'').trim();
+    if(!query){toast('请输入客户账号或昵称');return}
+    el('userSearch').value=query;state.userPage=1;switchModule('users');
+  }
   function authHeaders(extra){return Object.assign({'Authorization':'Bearer '+token}, extra||{})}
   function api(path,opt){
     opt=opt||{}; opt.headers=authHeaders(opt.headers);
@@ -659,6 +836,28 @@
     el('reqBox').innerHTML='<div class="empty">加载中…</div>';
     api('/api/admin/activity'+q).then(renderActivity).catch(function(e){el('reqBox').innerHTML='<div class="error">'+esc(e.message)+'</div>'});
   }
+  function renderSupportIssues(data){
+    var items=data.items||[],box=el('supportIssueBox');
+    if(!items.length){box.className='empty';box.textContent='近 '+state.days+' 天没有匹配的失败记录';return}
+    box.className='issue-list';
+    box.innerHTML=items.map(function(x){
+      var user=x.user&&x.user!=='-'?x.user:'';
+      var status=x.source==='job'?jobStatusName(x.status_text):('HTTP '+x.status_text);
+      return '<div class="issue-row"><code>'+esc(x.time)+'</code><div>'+(user?'<b>'+esc(user)+'</b>':'<span class="muted">用户待归属</span>')+'</div><div><b>'+esc(x.func||'未知功能')+'</b><div class="truncate muted" title="'+esc(x.path||'')+'">'+esc(x.path||status)+'</div></div><div>'+(user?'<button class="mini" data-issue-user="'+esc(user)+'">看客户</button>':'<button class="mini" data-issue-log>查日志</button>')+'</div></div>';
+    }).join('');
+    Array.prototype.forEach.call(box.querySelectorAll('[data-issue-user]'),function(btn){btn.onclick=function(){var username=btn.getAttribute('data-issue-user');el('globalUserSearch').value=username;openUserDetail(username)}});
+    Array.prototype.forEach.call(box.querySelectorAll('[data-issue-log]'),function(btn){btn.onclick=function(){el('reqStatus').value='fail';switchModule('logs')}});
+  }
+  function loadSupportQueue(){
+    el('supportIssueBox').className='empty';el('supportIssueBox').textContent='正在读取最近失败记录...';
+    Promise.all([
+      api('/api/admin/activity?limit=8&offset=0&days='+encodeURIComponent(state.days)+'&status=fail'),
+      api('/api/admin/recharge/orders?status=pending&limit=300')
+    ]).then(function(results){
+      renderSupportIssues(results[0]);
+      el('supportPendingOrders').textContent=Number((results[1].items||[]).length).toLocaleString();
+    }).catch(function(e){el('supportIssueBox').className='error';el('supportIssueBox').textContent=e.message;el('supportPendingOrders').textContent='-'});
+  }
   function renderFeatures(items){
     var enabled=items.filter(function(x){return x.enabled}).length;
     el('featureCount').textContent='启用 '+enabled+' / '+items.length;
@@ -706,7 +905,7 @@
     var inviteRelationRows=(invitees.items||[]).map(function(x){return '<tr><td><code>#'+esc(x.user_id)+'</code></td><td><b>'+esc(x.display_name||x.username)+'</b><div class="muted">'+esc(x.username)+'</div></td><td>'+membershipText(x)+'</td><td>'+inviteRelationStatus(x)+'</td><td><code>'+esc(fmtTime(x.bound_at))+'</code></td><td><button class="mini" data-related-user="'+esc(x.username)+'">查看</button></td></tr>'}).join('');
     var referrerHtml=referrer?'<div class="row"><div><span class="muted">邀请人</span><div style="margin-top:5px"><b>'+esc(referrer.display_name||referrer.username)+'</b> <code>'+esc(referrer.username)+'</code> <span class="muted">#'+esc(referrer.user_id)+'</span></div><div class="hint">绑定于 '+esc(fmtTime(referrer.bound_at))+' · '+esc(referrer.source||'未知来源')+'</div></div><div class="actions">'+membershipText(referrer)+inviteRelationStatus(referrer)+'<button class="mini" data-related-user="'+esc(referrer.username)+'">查看邀请人</button></div></div>':'<div class="muted">该用户没有邀请人</div>';
     box.hidden=false;
-    box.innerHTML='<div class="row"><div><h2 style="margin:0">'+esc(u.display_name||u.username)+' <code>'+esc(u.username)+'</code></h2><div class="hint">注册于 '+esc(u.created_at||'-')+' · '+esc(roleName(u.role))+' · '+esc(membershipName(u.membership_tier))+' · 当前 '+Number(u.points||0).toLocaleString()+' 点</div></div><div class="actions"><button class="mini" id="detailRefresh">刷新</button><button class="mini" id="detailNotice">发通知</button><button class="mini danger" id="detailPassword">重置密码</button><button class="mini" id="detailPoints">查看流水</button><button class="mini" id="detailClose">关闭</button></div></div>'+
+    box.innerHTML='<div class="row"><div><h2 style="margin:0">'+esc(u.display_name||u.username)+' <code>'+esc(u.username)+'</code></h2><div class="hint">注册于 '+esc(u.created_at||'-')+' · '+esc(roleName(u.role))+' · '+esc(membershipName(u.membership_tier))+' · 当前 '+Number(u.points||0).toLocaleString()+' 点</div></div><div class="actions"><button class="mini" id="detailRefresh">刷新</button><button class="mini" id="detailNotice" data-act="notice">发通知</button><button class="mini" id="detailRecharge">充值会员</button><button class="mini" id="detailMember">调整会员</button><button class="mini" id="detailPlus">加点</button><button class="mini danger" id="detailMinus">扣点</button><button class="mini danger" id="detailPassword">重置密码</button><button class="mini" id="detailPoints">查看流水</button><button class="mini" id="detailClose">关闭</button></div></div>'+
       '<div class="pool-editor" id="passwordResetEditor" hidden><b>重置 '+esc(u.username)+' 的密码</b><div class="hint">重置后会注销该用户全部登录态；用户使用临时密码登录后必须立即改密。</div><div class="toolbar"><input class="field" id="passwordResetNew" type="password" minlength="6" maxlength="128" autocomplete="new-password" aria-label="新临时密码" placeholder="新临时密码（6–128 位）"><input class="field" id="passwordResetConfirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" aria-label="确认新临时密码" placeholder="再次输入临时密码"><button class="primary" id="passwordResetSubmit">确认重置</button><button id="passwordResetCancel">取消</button></div></div>'+
       '<div class="detail-block" style="margin:12px 0"><h3>邀请关系</h3>'+referrerHtml+'<h3 style="margin-top:14px">直接邀请用户 <span class="muted">共 '+Number(invitees.total||0).toLocaleString()+' 人，显示最近 20 人</span></h3>'+(inviteRelationRows?'<div class="table-wrap"><table><thead><tr><th>ID</th><th>用户</th><th>会员</th><th>关系状态</th><th>绑定时间</th><th>操作</th></tr></thead><tbody>'+inviteRelationRows+'</tbody></table></div>':'<div class="muted">暂无直接邀请用户</div>')+'</div>'+
       '<div class="ledger-summary"><div class="ledger-stat"><span>累计任务</span><b>'+Number(t.total||0).toLocaleString()+'</b></div><div class="ledger-stat"><span>成功</span><b>'+Number(t.done||0).toLocaleString()+'</b></div><div class="ledger-stat"><span>失败</span><b>'+Number(t.error||0).toLocaleString()+'</b></div><div class="ledger-stat"><span>已结束成功率</span><b>'+pct(t.success_rate)+'</b><span>另有 '+Number(t.running||0)+' 个进行中</span></div></div>'+
@@ -717,9 +916,13 @@
       '<div class="ledger-summary"><div class="ledger-stat"><span>有效奖励</span><b>'+Number(rewards.recorded_points||0).toLocaleString()+'</b></div><div class="ledger-stat"><span>已作废奖励</span><b>'+Number(rewards.voided_points||0).toLocaleString()+'</b></div><div class="ledger-stat"><span>奖励记录</span><b>'+Number(rewards.total||0).toLocaleString()+'</b></div><div class="ledger-stat"><span>当前展示</span><b>'+Number((rewards.items||[]).length).toLocaleString()+'</b><span>最近 20 条</span></div></div>'+
       '<div class="detail-block" style="margin-bottom:12px"><h3>邀请奖励明细</h3>'+(inviteRewardRows?'<div class="table-wrap"><table><thead><tr><th>ID</th><th>被邀请人</th><th>等级</th><th>本次奖励</th><th>累计至</th><th>状态</th><th>时间 / 原因</th></tr></thead><tbody>'+inviteRewardRows+'</tbody></table></div>':'<div class="muted">暂无邀请奖励记录</div>')+'</div>'+
       '<div class="detail-block"><h3>最近点数变化</h3>'+(ledgerRows?'<div class="table-wrap"><table><thead><tr><th>时间</th><th>变化</th><th>原因</th><th>来源</th></tr></thead><tbody>'+ledgerRows+'</tbody></table></div>':'<div class="muted">暂无点数流水</div>')+'</div>';
-    el('detailClose').onclick=function(){box.hidden=true;state.detailUser=''};
+    el('detailClose').onclick=closeUserDetail;
     el('detailRefresh').onclick=function(){openUserDetail(u.username)};
     el('detailNotice').onclick=function(){sendUserNotification(u.username)};
+    el('detailRecharge').onclick=function(){openMembershipRecharge(u.username)};
+    el('detailMember').onclick=function(){setMembership(u.username)};
+    el('detailPlus').onclick=function(){adjustPoints(u.username,1)};
+    el('detailMinus').onclick=function(){adjustPoints(u.username,-1)};
     el('detailPassword').onclick=function(){el('passwordResetEditor').hidden=false;el('passwordResetNew').focus()};
     el('passwordResetCancel').onclick=closePasswordReset;
     el('passwordResetSubmit').onclick=function(){resetUserPassword(u.username)};
@@ -727,7 +930,7 @@
     Array.prototype.forEach.call(box.querySelectorAll('[data-related-user]'),function(btn){btn.onclick=function(){openUserDetail(btn.getAttribute('data-related-user'))}});
   }
   function openUserDetail(username){
-    state.detailUser=username;var box=el('userDetailBox');box.hidden=false;box.innerHTML='<div class="muted">正在读取 '+esc(username)+' 的任务、付费与邀请信息...</div>';box.scrollIntoView({behavior:'smooth',block:'start'});
+    state.detailUser=username;var box=el('userDetailBox'),layer=el('customerLayer'),opening=layer.hidden;if(opening)state.drawerReturnFocus=document.activeElement;layer.hidden=false;box.hidden=false;document.body.classList.add('drawer-open');box.innerHTML='<div class="muted">正在读取 '+esc(username)+' 的任务、付费与邀请信息...</div>';if(opening)el('customerDrawer').focus();
     api('/api/admin/users/detail?username='+encodeURIComponent(username)).then(function(d){if(state.detailUser===username)renderUserDetail(d)}).catch(function(e){if(state.detailUser===username)box.innerHTML='<div class="error">'+esc(e.message)+'</div>'});
   }
   function sendUserNotification(username){
@@ -739,6 +942,136 @@
     if(!confirm('确认向 '+username+' 发送这条站内通知？'))return;
     state.noticeSending=true;
     api('/api/admin/users/notification',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,title:title,detail:detail})}).then(function(){toast('通知已发送')}).catch(function(e){toast(e.message)}).finally(function(){state.noticeSending=false});
+  }
+  var ANNOUNCEMENT_TIERS=['experience','partner','initiator'];
+  function announcementMode(){var selected=document.querySelector('input[name="announcementAudienceMode"]:checked');return selected?selected.value:'all'}
+  function announcementAudience(){
+    var mode=announcementMode(),tiers=[];
+    if(mode==='tiers')Array.prototype.forEach.call(document.querySelectorAll('[data-announcement-tier]:checked'),function(input){if(ANNOUNCEMENT_TIERS.indexOf(input.value)>=0)tiers.push(input.value)});
+    return {mode:mode,tiers:tiers};
+  }
+  function announcementAudienceLabel(audience){
+    audience=audience||announcementAudience();
+    if(audience.mode==='all')return '全体有效账号';
+    return (audience.tiers||[]).map(membershipName).join('、')||'尚未选择权益层级';
+  }
+  function announcementDraft(){return {title:String(el('announcementTitle').value||'').trim(),detail:String(el('announcementDetail').value||'').trim(),audience:announcementAudience()}}
+  function announcementSignature(){return JSON.stringify(announcementDraft())}
+  function announcementValidationError(){
+    var draft=announcementDraft();
+    if(!draft.title||draft.title.length>80)return '公告标题需为 1-80 个字符';
+    if(!draft.detail||draft.detail.length>1000)return '公告正文需为 1-1000 个字符';
+    if(draft.audience.mode!=='all'&&draft.audience.mode!=='tiers')return '请选择发布受众';
+    if(draft.audience.mode==='tiers'&&!draft.audience.tiers.length)return '请至少选择一个权益层级';
+    return '';
+  }
+  function announcementPreviewTotal(preview){
+    preview=preview||{};var value=preview.total;
+    if(value==null)value=preview.count;
+    if(value==null)value=preview.recipient_count;
+    if(value==null)value=preview.total_recipients;
+    value=Number(value||0);return isFinite(value)&&value>0?value:0;
+  }
+  function setAnnouncementState(id,kind,text){var node=el(id);node.className='announcement-state'+(kind?' '+kind:'');node.textContent=text}
+  function renderAnnouncementEffect(){
+    var draft=announcementDraft();
+    el('announcementTitleCount').textContent=String(el('announcementTitle').value||'').length+' / 80';
+    el('announcementDetailCount').textContent=String(el('announcementDetail').value||'').length+' / 1000';
+    el('announcementEffectTitle').textContent=draft.title||'公告标题将在这里显示';
+    el('announcementEffectDetail').textContent=draft.detail||'公告正文将在这里显示。';
+    el('announcementEffectAudience').textContent='受众：'+announcementAudienceLabel(draft.audience);
+  }
+  function updateAnnouncementControls(){
+    var publishing=state.announcementPublishing,mode=announcementMode(),error=announcementValidationError();
+    Array.prototype.forEach.call(document.querySelectorAll('[data-announcement-field]'),function(input){input.disabled=publishing});
+    Array.prototype.forEach.call(document.querySelectorAll('[data-announcement-tier]'),function(input){input.disabled=publishing||mode!=='tiers'});
+    el('announcementPreview').disabled=publishing||state.announcementPreviewLoading||!!error;
+    el('announcementPublish').disabled=publishing||!state.announcementPreview||state.announcementPreviewSignature!==announcementSignature()||announcementPreviewTotal(state.announcementPreview)<1;
+    el('announcementPublish').textContent=publishing?'发布中…':'确认并发布';
+  }
+  function invalidateAnnouncementPreview(){
+    state.announcementPreview=null;state.announcementPreviewSignature='';state.announcementRequestId='';
+    el('announcementBreakdown').textContent='';
+    setAnnouncementState('announcementAudienceState','','内容或受众已变化，请重新预览受众人数');
+    setAnnouncementState('announcementPublishState','','尚未发布');
+  }
+  function announcementDraftChanged(){invalidateAnnouncementPreview();renderAnnouncementEffect();updateAnnouncementControls()}
+  function announcementBreakdown(preview){
+    var raw=(preview||{}).breakdown||(preview||{}).by_tier||{},result={};
+    if(Array.isArray(raw))raw.forEach(function(item){if(item&&(ANNOUNCEMENT_TIERS.indexOf(item.tier)>=0||item.tier==='none'))result[item.tier]=Number(item.count==null?item.total:item.count)||0});
+    else {ANNOUNCEMENT_TIERS.forEach(function(tier){var value=raw[tier];result[tier]=Number(value&&typeof value==='object'?(value.count==null?value.total:value.count):value)||0});if(Object.prototype.hasOwnProperty.call(raw,'none')){var none=raw.none;result.none=Number(none&&typeof none==='object'?(none.count==null?none.total:none.count):none)||0}}
+    return result;
+  }
+  function renderAnnouncementBreakdown(preview){
+    var counts=announcementBreakdown(preview),box=el('announcementBreakdown'),tiers=ANNOUNCEMENT_TIERS.slice();box.textContent='';if(Object.prototype.hasOwnProperty.call(counts,'none'))tiers.push('none');
+    tiers.forEach(function(tier){var item=document.createElement('div'),name=document.createElement('span'),count=document.createElement('b');name.textContent=tier==='none'?'非会员/过期':membershipName(tier);count.textContent=Number(counts[tier]||0).toLocaleString();item.appendChild(name);item.appendChild(count);box.appendChild(item)});
+  }
+  function previewAnnouncementAudience(){
+    var error=announcementValidationError();if(error){toast(error);return}
+    var signature=announcementSignature(),audience=announcementAudience();state.announcementPreviewLoading=true;state.announcementPreview=null;state.announcementPreviewSignature='';updateAnnouncementControls();el('announcementBreakdown').textContent='';setAnnouncementState('announcementAudienceState','loading','正在核对受众人数…');
+    api('/api/admin/announcements/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({audience:audience})})
+      .then(function(d){
+        if(signature!==announcementSignature())return;
+        var preview=d.preview||d;state.announcementPreview=preview;state.announcementPreviewSignature=signature;renderAnnouncementBreakdown(preview);
+        var total=announcementPreviewTotal(preview);setAnnouncementState('announcementAudienceState',total?'success':'error',total?'本次预计发送给 '+total.toLocaleString()+' 个账号':'当前受众没有可发送账号');
+        setAnnouncementState('announcementPublishState',total?'success':'error',total?'受众预览有效，可以进入发布确认':'收件人数为 0，不能发布');
+      }).catch(function(e){if(signature!==announcementSignature())return;state.announcementPreview=null;state.announcementPreviewSignature='';setAnnouncementState('announcementAudienceState','error','受众预览失败：'+e.message);setAnnouncementState('announcementPublishState','error','预览失败，尚未发布')})
+      .finally(function(){state.announcementPreviewLoading=false;updateAnnouncementControls()});
+  }
+  function nextAnnouncementRequestId(){return window.crypto&&crypto.randomUUID?crypto.randomUUID():'announcement-'+Date.now()+'-'+Math.random().toString(16).slice(2)}
+  function resetAnnouncementComposer(){
+    el('announcementTitle').value='';el('announcementDetail').value='';document.querySelector('input[name="announcementAudienceMode"][value="all"]').checked=true;
+    Array.prototype.forEach.call(document.querySelectorAll('[data-announcement-tier]'),function(input){input.checked=false});
+    state.announcementPreview=null;state.announcementPreviewSignature='';state.announcementRequestId='';el('announcementBreakdown').textContent='';renderAnnouncementEffect();setAnnouncementState('announcementAudienceState','','请填写下一条公告，再预览受众人数');
+  }
+  function publishAnnouncement(){
+    if(state.announcementPublishing)return;
+    var error=announcementValidationError(),signature=announcementSignature(),total=announcementPreviewTotal(state.announcementPreview);
+    if(error){toast(error);return}
+    if(!state.announcementPreview||state.announcementPreviewSignature!==signature||total<1){toast('请先重新预览当前公告的受众人数');return}
+    var draft=announcementDraft();if(!confirm('确认发布这条公告？\n\n受众：'+announcementAudienceLabel(draft.audience)+'\n预计收件：'+total.toLocaleString()+' 个账号\n\n发布后如需撤回，请在发布历史中召回。'))return;
+    if(!state.announcementRequestId)state.announcementRequestId=nextAnnouncementRequestId();
+    var payload={title:draft.title,detail:draft.detail,audience:draft.audience,request_id:state.announcementRequestId};state.announcementPublishing=true;updateAnnouncementControls();setAnnouncementState('announcementPublishState','loading','正在发布，请勿重复点击…');
+    api('/api/admin/announcements',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+      .then(function(){state.announcementRequestId='';resetAnnouncementComposer();setAnnouncementState('announcementPublishState','success','公告发布成功');toast('公告已发布');loadAnnouncements()})
+      .catch(function(e){setAnnouncementState('announcementPublishState','error','发布失败：'+e.message+'；重试将复用本次请求编号');toast(e.message)})
+      .finally(function(){state.announcementPublishing=false;updateAnnouncementControls()});
+  }
+  function announcementHistoryAudience(item){
+    var audience=item.audience||{};
+    if(typeof audience==='string'){try{audience=JSON.parse(audience)}catch(e){audience={mode:audience}}}
+    var mode=audience.mode||item.audience_mode||'all',tiers=audience.tiers||item.tiers||item.audience_tiers||[];
+    if(typeof tiers==='string'){try{tiers=JSON.parse(tiers)}catch(e){tiers=tiers.split(',')}}
+    tiers=(Array.isArray(tiers)?tiers:[]).filter(function(tier){return ANNOUNCEMENT_TIERS.indexOf(tier)>=0});
+    return announcementAudienceLabel({mode:mode,tiers:tiers});
+  }
+  function announcementHistoryCount(item){var value=item.recipient_count;if(value==null)value=item.total_recipients;if(value==null)value=item.total;return Math.max(0,Number(value||0))}
+  function announcementHistoryTime(value){
+    if(!value)return '-';var numeric=Number(value),date=isFinite(numeric)?new Date(numeric>100000000000?numeric:numeric*1000):new Date(value);
+    return isNaN(date.getTime())?'-':date.toLocaleString();
+  }
+  function announcementStatus(status){return ({published:['ok','已发布'],active:['ok','已发布'],sent:['ok','已发布'],recalled:['neutral','已召回'],failed:['fail','失败'],pending:['warn','发布中']})[status]||['neutral',status||'未知']}
+  function appendAnnouncementText(parent,tag,className,text){var node=document.createElement(tag);if(className)node.className=className;node.textContent=text;parent.appendChild(node);return node}
+  function renderAnnouncementHistory(d){
+    var items=d.items||d.announcements||[],box=el('announcementHistory');box.textContent='';el('announcementHistoryCount').textContent='最近 '+items.length+' 条';
+    if(!items.length){setAnnouncementState('announcementHistoryState','','暂无发布历史');return}
+    setAnnouncementState('announcementHistoryState','success','发布历史已更新');
+    items.forEach(function(item){
+      var article=document.createElement('article');article.className='announcement-history-item';var head=document.createElement('div');head.className='row';var title=appendAnnouncementText(head,'h3','',item.title||'未命名公告'),status=announcementStatus(item.status);title.title=item.title||'';appendAnnouncementText(head,'span','pill '+status[0],status[1]);article.appendChild(head);
+      appendAnnouncementText(article,'p','announcement-history-detail',item.detail||'');var meta=document.createElement('div');meta.className='announcement-history-meta';appendAnnouncementText(meta,'span','',announcementHistoryAudience(item));appendAnnouncementText(meta,'span','',announcementHistoryCount(item).toLocaleString()+' 个收件账号');appendAnnouncementText(meta,'time','',announcementHistoryTime(item.published_at||item.created_at));article.appendChild(meta);
+      var id=item.id==null?item.announcement_id:item.id;if(id!=null&&['published','active','sent'].indexOf(item.status)>=0){var actions=document.createElement('div');actions.className='actions';actions.style.marginTop='10px';var button=appendAnnouncementText(actions,'button','mini danger','召回公告');button.type='button';button.addEventListener('click',function(){recallAnnouncement(id,item.title||'',button)});article.appendChild(actions)}
+      box.appendChild(article);
+    });
+  }
+  function recallAnnouncement(id,title,button){
+    if(!confirm('确认召回公告“'+title+'”？\n召回后用户通知中心将不再展示该公告。'))return;
+    button.disabled=true;setAnnouncementState('announcementHistoryState','loading','正在召回公告…');
+    api('/api/admin/announcements/'+encodeURIComponent(id)+'/recall',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
+      .then(function(){toast('公告已召回');loadAnnouncements()}).catch(function(e){setAnnouncementState('announcementHistoryState','error','召回失败：'+e.message);toast(e.message)}).finally(function(){if(button.isConnected)button.disabled=false});
+  }
+  function loadAnnouncements(){
+    if(state.announcementHistoryLoading)return;state.announcementHistoryLoading=true;el('announcementHistory').textContent='';el('announcementHistoryCount').textContent='-';setAnnouncementState('announcementHistoryState','loading','正在加载发布历史…');
+    api('/api/admin/announcements?limit=50').then(renderAnnouncementHistory).catch(function(e){setAnnouncementState('announcementHistoryState','error','发布历史加载失败：'+e.message)}).finally(function(){state.announcementHistoryLoading=false});
   }
   function closePasswordReset(){
     el('passwordResetNew').value='';el('passwordResetConfirm').value='';el('passwordResetEditor').hidden=true;
@@ -761,7 +1094,7 @@
     el('userCount').textContent='第 '+state.userPage+' / '+pages+' 页 · 共 '+total+' 个账号';
     if(!items.length){el('usersBox').innerHTML='<div class="empty">暂无用户</div>';return}
     el('usersBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>ID</th><th>账号</th><th>昵称</th><th>点数</th><th>会员</th><th>角色</th><th>改密</th><th>注册时间</th><th>操作</th></tr></thead><tbody>'+items.map(function(u){
-      return '<tr><td><code>#'+esc(u.id)+'</code></td><td><b>'+esc(u.username)+'</b></td><td><div class="truncate" title="'+esc(u.display_name||'')+'">'+esc(u.display_name||'')+'</div></td><td><code>'+Number(u.points||0).toLocaleString()+'</code></td><td>'+membershipText(u)+'</td><td>'+esc(roleName(u.role))+'</td><td>'+(u.must_change?'<span class="pill warn">需改密</span>':'<span class="pill ok">正常</span>')+'</td><td><code>'+esc(u.created_at||'')+'</code></td><td><div class="actions"><button class="mini" data-act="detail" data-user="'+esc(u.username)+'">详情</button><button class="mini" data-act="notice" data-user="'+esc(u.username)+'">通知</button><button class="mini" data-act="recharge" data-user="'+esc(u.username)+'">充值会员</button><button class="mini" data-act="member" data-user="'+esc(u.username)+'">调整会员</button><button class="mini" data-act="plus" data-user="'+esc(u.username)+'">加点</button><button class="mini danger" data-act="minus" data-user="'+esc(u.username)+'">扣点</button><button class="mini" data-act="audit" data-user="'+esc(u.username)+'">流水</button></div></td></tr>';
+      return '<tr><td><code>#'+esc(u.id)+'</code></td><td><b>'+esc(u.username)+'</b></td><td><div class="truncate" title="'+esc(u.display_name||'')+'">'+esc(u.display_name||'')+'</div></td><td><code>'+Number(u.points||0).toLocaleString()+'</code></td><td>'+membershipText(u)+'</td><td>'+esc(roleName(u.role))+'</td><td>'+(u.must_change?'<span class="pill warn">需改密</span>':'<span class="pill ok">正常</span>')+'</td><td><code>'+esc(u.created_at||'')+'</code></td><td class="user-actions"><div class="actions"><button class="mini primary" data-act="detail" data-user="'+esc(u.username)+'">客户全貌</button><details class="row-actions"><summary>快速处理</summary><div class="row-actions-menu"><button class="mini" data-act="notice" data-user="'+esc(u.username)+'">发送通知</button><button class="mini" data-act="recharge" data-user="'+esc(u.username)+'">充值会员</button><button class="mini" data-act="member" data-user="'+esc(u.username)+'">调整会员</button><button class="mini" data-act="plus" data-user="'+esc(u.username)+'">增加点数</button><button class="mini danger" data-act="minus" data-user="'+esc(u.username)+'">扣除点数</button><button class="mini" data-act="audit" data-user="'+esc(u.username)+'">查看流水</button></div></details></div></td></tr>';
     }).join('')+'</tbody></table></div><div class="pager"><button data-user-page="-1" '+(state.userPage<=1?'disabled':'')+'>上一页</button><span class="pager-info">第 '+state.userPage+' / '+pages+' 页 · 每页 '+state.userPageSize+' 个</span><button data-user-page="1" '+(state.userPage>=pages?'disabled':'')+'>下一页</button></div>';
     Array.prototype.forEach.call(document.querySelectorAll('#usersBox button[data-act]'), function(btn){
       btn.onclick=function(){
@@ -831,6 +1164,7 @@
   }
   function openPoints(username){
     el('pointsUser').value=username||'';
+    closeUserDetail();
     switchModule('points');
   }
   function adjustPoints(username, sign){
@@ -841,7 +1175,7 @@
     var reason=prompt('填写调整原因');
     if(reason==null) return;
     api('/api/admin/points/adjust',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,delta:sign*amount,reason:reason})})
-      .then(function(){toast('点数已调整');loadUsers()})
+      .then(function(){toast('点数已调整');loadUsers();if(state.detailUser===username)openUserDetail(username)})
       .catch(function(e){toast(e.message)});
   }
   function setMembership(username){
@@ -853,11 +1187,12 @@
     var reason=prompt('填写设置原因','管理员设置会员');
     if(reason==null) return;
     api('/api/admin/membership/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,tier:tier,reason:reason})})
-      .then(function(){toast(tier?'会员已设置，有效期一年':'会员已取消');loadUsers()})
+      .then(function(){toast(tier?'会员已设置，有效期一年':'会员已取消');loadUsers();if(state.detailUser===username)openUserDetail(username)})
       .catch(function(e){toast(e.message)});
   }
   function openMembershipRecharge(username){
     el('membershipRechargeUser').value=username||'';
+    closeUserDetail();
     switchModule('recharge');
     el('membershipRechargePanel').scrollIntoView({behavior:'smooth',block:'center'});
     el('membershipRechargeTier').focus();
@@ -1114,14 +1449,18 @@
     el('statsBox').innerHTML=rows?'<div class="table-wrap"><table><thead><tr><th>类型</th><th>总量</th><th>成功</th><th>失败</th><th>成功率</th><th>失败率</th></tr></thead><tbody>'+rows+'</tbody></table></div>':'<div class="empty">'+esc(st.message||'暂无调用数据')+'</div>';
   }
   function switchModule(name){
+    if(!moduleMeta[name])name='dashboard';
     state.module=name;
-    Array.prototype.forEach.call(document.querySelectorAll('[data-module-tab]'), function(btn){btn.classList.toggle('active', btn.getAttribute('data-module-tab')===name)});
+    Array.prototype.forEach.call(document.querySelectorAll('[data-module-tab]'), function(btn){var active=btn.getAttribute('data-module-tab')===name;btn.classList.toggle('active',active);if(active)btn.setAttribute('aria-current','page');else btn.removeAttribute('aria-current')});
     Array.prototype.forEach.call(document.querySelectorAll('[data-module]'), function(card){card.hidden=card.getAttribute('data-module')!==name});
+    el('pageTitle').textContent=moduleMeta[name][0];el('pageSubtitle').textContent=moduleMeta[name][1];closeSidebar();
+    if(name==='dashboard'){loadSupportQueue()}
     if(name==='logs'){loadReqLogs()}
     if(name==='users'){loadUsers()}
     if(name==='points'){loadPoints()}
     if(name==='recharge'){loadRecharge()}
     if(name==='invite'){loadInvite()}
+    if(name==='announcements'){loadAnnouncements()}
     if(name==='inspirations'){loadInspirations()}
   }
   function render(d){
@@ -1136,6 +1475,7 @@
     el('failKinds').textContent=((d.stats&&d.stats.high_failure)||[]).length;
     el('updatedAt').textContent='更新于 '+new Date().toLocaleTimeString();
     renderServices(d.services||[]); renderChannelConsole(d.keys||[],d.provider_keys||{}); renderFeatures(d.features||[]); renderStats(d.stats||{});
+    if(state.module==='dashboard')loadSupportQueue();
   }
   function load(silent){
     if(!token){el('gate').style.display='block';return}
@@ -1162,10 +1502,10 @@
   }
   function startAutoRefresh(){
     clearInterval(state.refreshTimer);
-    state.refreshTimer=setInterval(function(){if(state.autoRefresh&&!document.hidden&&state.module==='ops'&&!state.poolActions)load(true)},30000);
+    state.refreshTimer=setInterval(function(){if(state.autoRefresh&&!document.hidden&&(state.module==='dashboard'||state.module==='services')&&!state.poolActions)load(true)},30000);
   }
   el('refreshBtn').onclick=function(){load(false)};
-  el('autoRefreshToggle').onclick=function(){state.autoRefresh=!state.autoRefresh;updateAutoRefresh();if(state.autoRefresh&&state.module==='ops'&&!state.poolActions)load(true)};
+  el('autoRefreshToggle').onclick=function(){state.autoRefresh=!state.autoRefresh;updateAutoRefresh();if(state.autoRefresh&&(state.module==='dashboard'||state.module==='services')&&!state.poolActions)load(true)};
   el('providerKeyOpen').onclick=function(){openProviderEditor()};
   el('providerKeyCancel').onclick=closeProviderEditor;
   el('providerKeyAdd').onclick=addProviderKey;
@@ -1199,6 +1539,10 @@
   el('inviteStatus').onchange=loadInvite;
   el('inviteRisk').onchange=loadInvite;
   ['rewardInviter','rewardInvitee'].forEach(function(id){el(id).oninput=function(){clearTimeout(state.rewardTimer);state.rewardTimer=setTimeout(loadInvite,300)}});el('rewardStatus').onchange=loadInvite;
+  Array.prototype.forEach.call(document.querySelectorAll('[data-announcement-field]'),function(input){input.addEventListener(input.type==='radio'||input.type==='checkbox'?'change':'input',announcementDraftChanged)});
+  el('announcementPreview').onclick=previewAnnouncementAudience;
+  el('announcementPublish').onclick=publishAnnouncement;
+  el('announcementHistoryRefresh').onclick=loadAnnouncements;
   el('caseRefresh').onclick=loadInspirations;el('caseNew').onclick=resetCaseEditor;el('caseReset').onclick=resetCaseEditor;el('caseSave').onclick=function(){saveCase(false)};el('casePublish').onclick=function(){saveCase(true)};el('caseFilter').onchange=renderCaseList;
   el('caseMediaType').onchange=function(){syncCaseMedia(true)};
   el('caseTarget').onchange=function(){var shouldBeImage=imageTargets.indexOf(el('caseTarget').value)>=0;if((el('caseMediaType').value==='image')!==shouldBeImage){el('caseMediaType').value=shouldBeImage?'image':'video';syncCaseMedia(true)}else renderCasePreview()};
@@ -1208,11 +1552,19 @@
   Array.prototype.forEach.call(document.querySelectorAll('[data-module-tab]'), function(btn){
     btn.onclick=function(){switchModule(btn.getAttribute('data-module-tab'))};
   });
-  document.addEventListener('visibilitychange',function(){if(document.hidden){clearSecretWindows();return}if(state.autoRefresh&&state.module==='ops'&&!state.poolActions)load(true)});
+  Array.prototype.forEach.call(document.querySelectorAll('[data-jump-module]'),function(btn){btn.onclick=function(){switchModule(btn.getAttribute('data-jump-module'))}});
+  el('navToggle').onclick=function(){var open=el('adminLayout').classList.toggle('nav-open');el('navToggle').setAttribute('aria-expanded',open?'true':'false')};
+  el('sidebarBackdrop').onclick=closeSidebar;
+  el('globalUserSearchBtn').onclick=searchCustomer;
+  el('globalUserSearch').onkeydown=function(e){if(e.key==='Enter')searchCustomer()};
+  el('drawerClose').onclick=closeUserDetail;el('userDetailBackdrop').onclick=closeUserDetail;
+  document.addEventListener('keydown',function(e){if(e.key!=='Escape')return;if(!el('customerLayer').hidden)closeUserDetail();else closeSidebar()});
+  document.addEventListener('visibilitychange',function(){if(document.hidden){clearSecretWindows();return}if(state.autoRefresh&&(state.module==='dashboard'||state.module==='services')&&!state.poolActions)load(true)});
   window.addEventListener('pagehide',clearSecretWindows);
   window.addEventListener('pageshow',clearSecretWindows);
   document.addEventListener('freeze',clearSecretWindows);
-  updateAutoRefresh();startAutoRefresh();load(false);
+  document.querySelector('[data-module-tab="dashboard"]').setAttribute('aria-current','page');
+  renderAnnouncementEffect();updateAnnouncementControls();updateAutoRefresh();startAutoRefresh();load(false);
 })();
 </script>
 </body>

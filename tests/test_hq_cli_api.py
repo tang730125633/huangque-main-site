@@ -286,6 +286,16 @@ class HQCLIAPITests(unittest.TestCase):
         })
         self.assertIsNone(err)
         input_body = self._canvas_snapshot(board["id"])
+        input_body.update(
+            page_context={
+                "page": "canvas", "path": "/workbench/canvas", "title": "黄雀画布",
+                "can_edit": True, "selected_count": 1,
+            },
+            ip12_context={
+                "project_id": "ip12_project_1", "title": "美业 IP", "status": "confirmed",
+                "foundation_status": "confirmed", "facts": [{"label": "定位", "value": "主理人"}],
+            },
+        )
         denied = self._token(["generation:submit"])
         with mock.patch.object(self.auth.hq_cli_api, "proxy_json") as proxy:
             status, payload = self._request("/api/auth/cli/action", {
@@ -333,6 +343,8 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual(84, result["job_id"])
         self.assertEqual("/api/gen/canvas_agent", submitted[0]["path"])
         self.assertEqual(3, submitted[0]["body"]["quoted_cost"])
+        self.assertEqual("美业 IP", submitted[0]["body"]["ip12_context"]["title"])
+        self.assertEqual("canvas", submitted[0]["body"]["page_context"]["page"])
         self.assertEqual(board["id"], submitted[0]["headers"]["X-Canvas-Board-Id"])
         self.assertEqual("3", submitted[0]["headers"]["X-HQ-Expected-Cost"])
         self.assertTrue(submitted[0]["headers"]["Idempotency-Key"].startswith("hqcli-"))
@@ -433,10 +445,14 @@ class HQCLIAPITests(unittest.TestCase):
             "prompt": "keep the person", "provider": "openai", "image_upload_id": upload_id,
         })
         self.assertEqual(upload_id, plan["payload"]["image_upload_id"])
-        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
-            self.auth.hq_cli_api.action_plan("image-generate", {
-                "prompt": "bad", "provider": "openai", "reference_upload_ids": [upload_id],
-            })
+        multi = self.auth.hq_cli_api.action_plan("image-generate", {
+            "prompt": "use @图片1", "provider": "openai", "reference_upload_ids": [upload_id],
+        })
+        self.assertEqual([upload_id], multi["payload"]["reference_upload_ids"])
+        video = self.auth.hq_cli_api.action_plan("video-generate", {
+            "prompt": "use @图片1", "channel": "grok", "reference_upload_ids": [upload_id],
+        })
+        self.assertEqual([upload_id], video["payload"]["reference_upload_ids"])
         with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
             self.auth.hq_cli_api.action_plan("image-generate", {
                 "prompt": "bad", "provider": "seedream", "image_upload_id": upload_id,

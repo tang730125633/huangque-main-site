@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 import fcntl
+import hashlib
+import importlib.util
+import io
+import ipaddress
 import math
 import sqlite3
 import tempfile
@@ -14,10 +18,12 @@ from .core import (
 import random   # 429 退避重试的抖动：不加抖动，同一批 worker 退避后又会撞在一起
 
 from .audio import gen_audio
+from .image_mentions import resolve_image_mentions, validate_image_mentions
 from . import (
     provider_keys,
     short_drama_media_sanitize,
     short_drama_visual_gate,
+    submission_idempotency,
 )
 
 VALID_VIDEO_MODES = {"text", "audio"}
@@ -59,6 +65,25 @@ GROK_VIDEO_PROVIDER = os.environ.get("GROK_VIDEO_PROVIDER", "xai").strip().lower
 XAI_GROK_MODELS = {"grok-imagine-video", "grok-imagine-video-1.5"}
 XAI_GROK_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"}
 XAI_GROK_RESOLUTIONS = {"480p", "720p"}
+SEEDANCE_REFERENCE_MAX_BYTES = 30 * 1024 * 1024
+SEEDANCE_REFERENCE_SIGN_EXPIRE = 2 * 60 * 60
+SEEDANCE_COS_KEY_SCHEME = "cos-key://"
+SEEDANCE_CLEANUP_MAX_ATTEMPTS = 5
+SEEDANCE_STAGING_ORPHAN_GRACE = 10 * 60
+SEEDANCE_UNKNOWN_CLEANUP_DELAY = SEEDANCE_REFERENCE_SIGN_EXPIRE + 60
+_SEEDANCE_ASSET_RE = re.compile(r"asset://asset-[A-Za-z0-9._-]{1,240}\Z")
+_SEEDANCE_IMAGE_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
+_SEEDANCE_IMAGE_FORMATS = {
+    "image/jpeg": "JPEG",
+    "image/jpg": "JPEG",
+    "image/png": "PNG",
+    "image/webp": "WEBP",
+}
 SEEDANCE_UPSCALE_ENABLED = os.environ.get(
     "SEEDANCE_UPSCALE_ENABLED", "0"
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -72,6 +97,7 @@ SORA_VIDEO_SUNSET = "2026-09-24"
 SORA_MODELS = {"sora-2", "sora-2-pro"}
 SORA_SECONDS = {4, 8, 12}  # 上游 create 接口实测只接受 4/8/12 秒。
 SORA_RATIOS = {"9:16", "16:9"}
+SORA_MAX_REFERENCE_BYTES = 10 * 1024 * 1024
 SORA_SIZE_MAP = {
     ("sora-2", "720p", "9:16"): "720x1280",
     ("sora-2", "720p", "16:9"): "1280x720",
@@ -98,6 +124,20 @@ class SoraSubmissionUnknown(RuntimeError):
 
 class OfficialVideoSubmissionUnknown(RuntimeError):
     """Official Omni/Seedance create may have succeeded without a confirmed id."""
+
+
+class SeedanceReferenceUnavailable(RuntimeError):
+    """A reference image could not be staged before points are deducted."""
+
+    code = "seedance_reference_upload_unavailable"
+    status = 503
+
+
+class GrokReferenceUnavailable(RuntimeError):
+    """Reverse reference frames could not be published before charging."""
+
+    code = "grok_reference_upload_unavailable"
+    status = 503
 
 
 def _set_provider_key_health(key_id, ok, error=""):
@@ -163,9 +203,1001 @@ def seedance_video_is_open():
     return video_seedance.available()
 
 
+def seedance_video_health_enabled(flags):
+    """Report the dedicated Seedance path without shared-provider fallback."""
+    try:
+        return bool(seedance_video_is_open() and flags.is_enabled("seedance_video"))
+    except Exception:
+        return False
+
+
+def grok_video_is_open():
+    """Return whether the configured Grok path can accept new work."""
+    try:
+        if GROK_VIDEO_PROVIDER == "xiaole":
+            return bool(XIAOLEVIDEO_API_KEY)
+        from . import video_xai
+        return bool(video_xai.available())
+    except Exception:
+        return False
+
+
+def grok_reference_upload_is_open():
+    """The xAI path needs public COS URLs for reverse reference frames."""
+    if GROK_VIDEO_PROVIDER == "xiaole":
+        return False
+    try:
+        from . import cos
+        return bool(cos.enabled()
+                    and importlib.util.find_spec("qcloud_cos")
+                    and importlib.util.find_spec("PIL"))
+    except Exception:
+        return False
+
+
+def reverse_remake_video_channel(flags):
+    """Pick a usable no-avatar engine; avatar generation remains cinematic."""
+    if seedance_video_health_enabled(flags) and seedance_reference_upload_is_open():
+        return "micro"
+    if grok_video_is_open() and grok_reference_upload_is_open():
+        return "grok"
+    return ""
+
+
+def reverse_remake_video_offer(flags, cost_of):
+    """Return one server-priced no-avatar offer, or a fail-closed empty offer."""
+    channel = reverse_remake_video_channel(flags)
+    empty = {"channel": "", "model": "", "resolution": "", "duration_costs": {}}
+    if not channel:
+        return empty
+    try:
+        if channel == "micro":
+            from . import video_seedance
+            model = video_seedance.SEEDANCE_MODEL
+        else:
+            model = "grok-imagine-video"
+        resolution = "720p"
+        costs = {}
+        for duration in (5, 10, 15):
+            quoted = int(cost_of("xiaole_video", {
+                "channel": channel, "model": model,
+                "resolution": resolution, "duration": duration,
+            }))
+            if quoted <= 0:
+                return empty
+            costs[str(duration)] = quoted
+        return {
+            "channel": channel, "model": model, "resolution": resolution,
+            "duration_costs": costs,
+        }
+    except Exception:
+        return empty
+
+
 def seedance_upscale_is_open():
     from . import cos, wavespeed
     return SEEDANCE_UPSCALE_ENABLED and wavespeed.available() and cos.enabled()
+
+
+def seedance_reference_upload_is_open():
+    """Reference-image capability is separate from text-only Seedance health."""
+    try:
+        from . import cos
+        return bool(cos.enabled()
+                    and importlib.util.find_spec("qcloud_cos")
+                    and importlib.util.find_spec("PIL"))
+    except Exception:
+        return False
+
+
+def _seedance_reference_uri(value):
+    """Validate a provider-readable reference without fetching user URLs here."""
+    raw = str(value or "").strip()
+    parsed = urllib.parse.urlsplit(raw)
+    if parsed.scheme in {"http", "https"}:
+        if not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("Seedance 参考图 URL 不合法")
+        host = parsed.hostname.rstrip(".").lower()
+        if host == "localhost":
+            raise ValueError("Seedance 参考图必须使用公网地址")
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            address = None
+        if address is not None and not address.is_global:
+            raise ValueError("Seedance 参考图必须使用公网地址")
+        return raw
+    if parsed.scheme == "asset" and _SEEDANCE_ASSET_RE.fullmatch(raw):
+        return raw
+    raise ValueError("Seedance 参考图必须是公网 URL 或已授权 asset:// 素材")
+
+
+def _seedance_decode_check(data, mime):
+    """真实解码校验：完整解码 + 声明 MIME 与实际格式一致。
+    魔数只认文件头，损坏 JPEG 伪装成 image/png 能混过去；这里用 Pillow verify()+load()
+    做完整解码。Pillow 缺失时 fail-closed：宁可拒绝上传也不放行未校验内容。"""
+    try:
+        from PIL import Image
+    except Exception as exc:
+        raise SeedanceReferenceUnavailable("图片完整性校验组件不可用，参考图未上传，本次未扣点") from exc
+    expected = _SEEDANCE_IMAGE_FORMATS.get(mime)
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            detected = str(img.format or "").upper()
+            img.verify()   # 结构完整性
+        with Image.open(io.BytesIO(data)) as img:
+            img.load()     # 完整解码：截断/损坏的像素数据在这一步暴露
+    except Exception:
+        raise ValueError("Seedance 参考图片内容无效或已损坏") from None
+    if detected != expected:
+        raise ValueError("Seedance 参考图片内容与声明格式不一致")
+
+
+def _seedance_data_image(value):
+    raw = str(value or "").strip()
+    if not raw.startswith("data:") or "," not in raw:
+        raise ValueError("Seedance 参考图片格式不支持（jpg/png/webp）")
+    meta, encoded = raw.split(",", 1)
+    if ";base64" not in meta.lower():
+        raise ValueError("Seedance 参考图片必须使用 base64 编码")
+    mime = meta.split(";", 1)[0].replace("data:", "", 1).lower()
+    ext = _SEEDANCE_IMAGE_TYPES.get(mime)
+    if not ext:
+        raise ValueError("Seedance 参考图片格式不支持（jpg/png/webp）")
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except Exception:
+        raise ValueError("Seedance 参考图片内容解析失败") from None
+    if len(data) > SEEDANCE_REFERENCE_MAX_BYTES:
+        raise ValueError("Seedance 单张参考图片不能超过30MB")
+    _seedance_decode_check(data, mime)
+    return mime, ext, data
+
+
+def _seedance_assert_asset_owned(ref, username=None):
+    """asset://asset-<provider_id> 必须命中当前账号在统一资产表里【显式登记】的
+    Seedance 上游素材映射（assets.meta JSON 的 seedance_asset_id 字段）。
+    本地资产行号不等同于上游 asset：没有 provider 映射的普通资产（哪怕编号相同）
+    一律拒绝；库不可读 fail-closed。schema 不变，映射存在现有 meta JSON 字段里。"""
+    owner = str(username or "").strip()
+    suffix = str(ref or "").split("asset://asset-", 1)[-1]
+    if not owner or not suffix:
+        raise ValueError("Seedance 参考素材不存在或未授权给当前账号")
+    try:
+        from . import assets_store
+        with closing(assets_store.adb()) as c:
+            rows = c.execute(
+                """SELECT meta FROM assets
+                   WHERE username=? AND COALESCE(deleted,0)=0 AND meta LIKE '%seedance_asset_id%'""",
+                (owner,)).fetchall()
+    except Exception as exc:
+        print("[seedance] asset ownership check failed: %s" % type(exc).__name__, flush=True)
+        raise ValueError("Seedance 参考素材归属核验失败，请稍后重试") from exc
+    for row in rows:
+        try:
+            meta = json.loads(row["meta"] or "{}")
+        except Exception:
+            continue
+        if str((meta or {}).get("seedance_asset_id") or "") == suffix:
+            return
+    raise ValueError("Seedance 参考素材不存在或未授权给当前账号")
+
+
+def _seedance_cos_presign(object_key, expire=SEEDANCE_REFERENCE_SIGN_EXPIRE):
+    """参考图的短期预签名 GET。cos._SIGN_EXPIRE 面向成片(默认 7 天)，参考图只活一个任务生命周期。"""
+    from . import cos
+    return cos._client().get_presigned_url(
+        Method="GET", Bucket=cos._BUCKET, Key=cos._object_key(object_key), Expired=expire)
+
+
+def _seedance_cos_delete(object_key):
+    from . import cos
+    cos._client().delete_object(Bucket=cos._BUCKET, Key=cos._object_key(object_key))
+
+
+def _seedance_staging_token(token):
+    """Return a unique token for one physical staging attempt.
+
+    Idempotency controls job creation, not object lifetime.  Reusing a stable
+    object key after an aborted request lets an old cleanup intent delete the
+    new retry's image, so every physical attempt must get a fresh key.
+    """
+    return uuid.uuid4().hex
+
+
+def _stage_seedance_reference(value, username=None, token=None):
+    """把本地 data: 参考图上传为 COS 私有对象，返回 (cos-key://内部引用, 对象键)。
+    提交时不签名 —— 签名推迟到 worker 真正向 Seedance 提交的那一刻（见 _seedance_ref_to_signed_url）。
+    只被 stage_seedance_references 调用；http(s)/asset:// 透传不产对象。"""
+    raw = str(value or "").strip()
+    if not raw.startswith("data:"):
+        return _seedance_reference_uri(raw), None
+    owner = str(username or "").strip()
+    if not owner:
+        raise ValueError("Seedance 参考图缺少账号归属信息")
+    mime, ext, data = _seedance_data_image(raw)
+    owner_hash = hashlib.sha256(owner.encode("utf-8")).hexdigest()[:16]
+    content_hash = hashlib.sha256(data).hexdigest()
+    staging_token = str(token or "").strip() or _seedance_staging_token(None)
+    if not re.fullmatch(r"[a-f0-9]{32}", staging_token):
+        raise ValueError("Seedance 参考图暂存标识不合法")
+    object_key = "seedance/reference/%s/%s-%s%s" % (owner_hash, staging_token, content_hash[:16], ext)
+    _persist_staging_cleanup_intent(object_key)
+    try:
+        from . import cos
+        cos.put_bytes(data, object_key, mime, private=True)   # 用户肖像素材强制私有 ACL
+        return SEEDANCE_COS_KEY_SCHEME + object_key, object_key
+    except SeedanceReferenceUnavailable:
+        cleanup_staged_seedance_references([object_key])
+        raise
+    except Exception as exc:
+        print("[seedance] reference staging failed: %s" % type(exc).__name__, flush=True)
+        cleanup_staged_seedance_references([object_key])
+        raise SeedanceReferenceUnavailable("Seedance 参考图上传失败，本次未扣点") from exc
+
+
+def _seedance_ref_to_signed_url(ref, username=None):
+    """worker 向 Seedance 提交前，才把 payload 里的 cos-key:// 对象键换成新鲜预签名 URL。
+    http(s)/asset:// 走原契约不变；cos-key:// 必须是本账号前缀下的参考图键，否则拒绝。"""
+    raw = str(ref or "").strip()
+    if not raw.startswith(SEEDANCE_COS_KEY_SCHEME):
+        return _seedance_reference_uri(raw)
+    owner = str(username or "").strip()
+    owner_hash = hashlib.sha256(owner.encode("utf-8")).hexdigest()[:16] if owner else ""
+    key = raw[len(SEEDANCE_COS_KEY_SCHEME):]
+    if not owner_hash or not key.startswith("seedance/reference/%s/" % owner_hash):
+        raise ValueError("Seedance 参考图对象键不合法")
+    return _seedance_reference_uri(_seedance_cos_presign(key))
+
+
+def _validate_seedance_references(values, username=None):
+    """本地校验(无网络)：真实解码 + MIME/扩展名一致 + asset:// 归属核验。
+    COS 转存是网络动作，由 core 在幂等/上限/余额资格检查之后、扣点之前单独触发。"""
+    refs = [str(item or "").strip() for item in (values or []) if str(item or "").strip()]
+    if len(refs) > 9:
+        raise ValueError("Seedance 最多支持 9 张参考图")
+    out = []
+    for item in refs:
+        if item.startswith("data:"):
+            _seedance_data_image(item)   # 完整解码校验，损坏/伪装在这一步拒绝
+            out.append(item)
+            continue
+        uri = _seedance_reference_uri(item)
+        if uri.startswith("asset://"):
+            _seedance_assert_asset_owned(uri, username)
+        out.append(uri)
+    return out
+
+
+def stage_seedance_references(body, username, token=None):
+    """扣点前的唯一网络动作：micro 渠道的 data: 参考图转存 COS 私有对象。
+    任一失败都 best-effort 删除本批已上传对象（失败键持久化待重试），绝不残留，也绝不回退 data:。
+    就地改写 body["reference_images"] 为 cos-key:// 内部引用（不签名，签名推迟到 worker 提交时），
+    并把对象键记入 body["_seedance_staged_keys"]（随 jobs.payload 落库，供终态清理），
+    返回本批新上传的对象键。"""
+    refs = [str(item or "").strip() for item in ((body or {}).get("reference_images") or []) if str(item or "").strip()]
+    if str((body or {}).get("channel") or "").strip().lower() != "micro" or not any(item.startswith("data:") for item in refs):
+        return []
+    if not seedance_reference_upload_is_open():
+        raise SeedanceReferenceUnavailable("Seedance 参考图上传服务未配置，本次未扣点")
+    staged_keys = []
+    staged_refs = []
+    try:
+        for item in refs:
+            # 每个列表位置使用独立对象键；重复选择同一图片也不能碰撞。
+            url, key = _stage_seedance_reference(
+                item, username, _seedance_staging_token(token)
+            )
+            staged_refs.append(url)
+            if key:
+                staged_keys.append(key)
+    except Exception:
+        cleanup_staged_seedance_references(staged_keys)
+        raise
+    body["reference_images"] = staged_refs
+    body["_seedance_staged_keys"] = staged_keys
+    return staged_keys
+
+
+def stage_grok_references(body, username, token=None):
+    """Publish ordered reverse frames to public COS before any point charge."""
+    refs = [str(item or "").strip()
+            for item in ((body or {}).get("reference_images") or [])
+            if str(item or "").strip()]
+    if (str((body or {}).get("channel") or "").strip().lower() != "grok"
+            or str((body or {}).get("reference_mode") or "").strip().lower() != "ordered_storyboard"):
+        return []
+    if GROK_VIDEO_PROVIDER == "xiaole":
+        raise GrokReferenceUnavailable("当前果肉供应商不支持安全公网转存，本次未扣点")
+    if not 1 <= len(refs) <= 4 or any(not item.startswith("data:") for item in refs):
+        raise GrokReferenceUnavailable("Grok 反推仅接受1-4张本任务关键帧，本次未扣点")
+    if not grok_reference_upload_is_open():
+        raise GrokReferenceUnavailable("Grok 反推参考图公网转存未配置，本次未扣点")
+
+    owner = str(username or "").strip()
+    if not owner:
+        raise GrokReferenceUnavailable("Grok 反推参考图缺少账号归属，本次未扣点")
+    owner_hash = hashlib.sha256(owner.encode("utf-8")).hexdigest()[:16]
+    staged_keys = []
+    staged_refs = []
+    try:
+        for index, raw in enumerate(refs):
+            mime, ext, data = _seedance_data_image(raw)
+            attempt_token = _seedance_staging_token(token)
+            content_hash = hashlib.sha256(data).hexdigest()
+            object_key = "seedance/reference/%s/%s-grok-%d-%s%s" % (
+                owner_hash, attempt_token, index + 1, content_hash[:16], ext)
+            _persist_staging_cleanup_intent(object_key)
+            staged_keys.append(object_key)
+            from . import cos
+            public_ref = _seedance_reference_uri(
+                cos.put_bytes(data, object_key, mime, private=False))
+            staged_refs.append(public_ref)
+    except Exception as exc:
+        cleanup_staged_seedance_references(staged_keys)
+        if isinstance(exc, GrokReferenceUnavailable):
+            raise
+        print("[grok] reverse reference staging failed: %s" % type(exc).__name__, flush=True)
+        raise GrokReferenceUnavailable("Grok 反推参考图公网转存失败，本次未扣点") from exc
+    body["reference_images"] = staged_refs
+    body["_seedance_staged_keys"] = staged_keys
+    return staged_keys
+
+
+def xiaole_reference_needs_staging(kind, body):
+    """该提交是否需要在扣点前做 COS 参考图转存（决定预检/锁外上传是否启用）。"""
+    refs = [str(item or "").strip() for item in ((body or {}).get("reference_images") or []) if str(item or "").strip()]
+    if kind != "xiaole_video" or not any(item.startswith("data:") for item in refs):
+        return False
+    channel = str((body or {}).get("channel") or "").strip().lower()
+    if channel == "micro":
+        return True
+    return (channel == "grok"
+            and str((body or {}).get("reference_mode") or "").strip().lower() == "ordered_storyboard")
+
+
+def xiaole_reference_precheck(kind, body, cost, known_points=None):
+    """Fast in-memory eligibility hint; atomic deduct remains authoritative."""
+    if not xiaole_reference_needs_staging(kind, body):
+        return None
+    try:
+        available = int(known_points)
+    except (TypeError, ValueError):
+        return None
+    if available < cost:
+        return (402, {"detail": "点数不足，请先充值（未扣点）", "need": cost})
+    return None
+
+
+def stage_xiaole_video_references(kind, body, username, token=None):
+    """锁外网络转存（core 提交路径的薄接线）：COS 上传耗时长，绝不能放在全局提交锁内。
+    返回 (staged_keys, None)；失败返回 (None, (status, payload)) 由 core 直接 _send。"""
+    if not xiaole_reference_needs_staging(kind, body):
+        return [], None
+    try:
+        if str((body or {}).get("channel") or "").strip().lower() == "grok":
+            return stage_grok_references(body, username, token), None
+        return stage_seedance_references(body, username, token), None
+    except (SeedanceReferenceUnavailable, GrokReferenceUnavailable) as e:
+        return None, (e.status, {"detail": str(e)[:220], "code": e.code, "retry_after_ms": 60000})
+
+
+def prepare_xiaole_reference_submission(
+        kind, body, cost, known_points, username, token, endpoint, submission_lock,
+        begin_idempotency, abort_idempotency, check_limit, active_count,
+        max_active_jobs):
+    """Reserve one official submission, then stage its images outside the lock."""
+    if not xiaole_reference_needs_staging(kind, body):
+        return [], False, None
+    with submission_lock:
+        state, response = begin_idempotency()
+        if state == "replay":
+            replay = dict(response or {})
+            return [], False, (int(replay.pop("_http_status", 200)), replay)
+        if state == "conflict":
+            return [], False, (409, {
+                "detail": "同一个 Idempotency-Key 不能用于不同请求",
+                "code": "idempotency_conflict",
+            })
+        if state == "processing":
+            return [], False, (409, {
+                "detail": "相同请求正在受理，请稍后查询",
+                "code": "idempotency_in_progress", "retry_after_ms": 1000,
+            })
+        limit_error = check_limit()
+        if limit_error:
+            abort_idempotency()
+            return [], False, (429, limit_error)
+        active = active_count()
+        if active >= max_active_jobs:
+            abort_idempotency()
+            return [], False, (429, {
+                "detail": "您有 %d 个任务正在排队/生成，完成后再提交" % active,
+                "code": "active_job_cap", "active_jobs": active,
+                "max_active_jobs": max_active_jobs,
+                "retry_after_ms": 4000, "need": cost,
+            })
+        eligibility_error = xiaole_reference_precheck(
+            kind, body, cost, known_points)
+        if eligibility_error:
+            abort_idempotency()
+            return [], False, eligibility_error
+        try:
+            _reserve_seedance_staging_attempt(username, endpoint, token)
+        except SeedanceReferenceUnavailable as exc:
+            abort_idempotency()
+            return [], False, (exc.status, {
+                "detail": str(exc)[:220], "code": exc.code,
+                "retry_after_ms": 60000,
+            })
+    try:
+        keys, staging_error = stage_xiaole_video_references(
+            kind, body, username, token)
+    except Exception:
+        release_seedance_staging_attempt(username, endpoint, token)
+        abort_idempotency()
+        raise
+    if staging_error:
+        release_seedance_staging_attempt(username, endpoint, token)
+        abort_idempotency()
+        return [], False, staging_error
+    try:
+        _mark_seedance_staging_attempt_ready(username, endpoint, token)
+    except SeedanceReferenceUnavailable as exc:
+        cleanup_staged_seedance_references(keys)
+        release_seedance_staging_attempt(username, endpoint, token)
+        abort_idempotency()
+        return [], False, (exc.status, {
+            "detail": str(exc)[:220], "code": exc.code,
+            "retry_after_ms": 60000,
+        })
+    return keys, True, None
+
+
+def after_terminal_seedance_cleanup(claimed, job_id, delay_seconds=0):
+    if claimed:
+        try:
+            cleanup_job_staged_seedance_references(
+                job_id, delay_seconds=delay_seconds)
+        except Exception:
+            pass
+    return claimed
+
+
+def schedule_unknown_seedance_cleanup(kind, payload, error, job_id):
+    delay = seedance_reference_cleanup_delay(kind, payload, error)
+    if delay:
+        cleanup_job_staged_seedance_references(job_id, delay_seconds=delay)
+
+
+_cleanup_table_ready = False
+
+
+def _cleanup_db():
+    """Open the durable staging/cleanup journal and apply additive migration."""
+    global _cleanup_table_ready
+    c = jdb()
+    if not _cleanup_table_ready:
+        c.execute("""CREATE TABLE IF NOT EXISTS seedance_pending_cleanup(
+            key TEXT PRIMARY KEY, job_id INTEGER, created_at INTEGER,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            state TEXT NOT NULL DEFAULT 'cleanup_pending',
+            next_attempt_at INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL DEFAULT 0)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS seedance_staging_attempts(
+            username TEXT NOT NULL, endpoint TEXT NOT NULL, idem_key TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'uploading', job_id INTEGER,
+            kind TEXT, cost INTEGER, owner TEXT, request_json TEXT,
+            charge_key TEXT, refund_key TEXT, recovery_token TEXT,
+            recovery_started_at INTEGER, last_error TEXT,
+            created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+            PRIMARY KEY(username,endpoint,idem_key))""")
+        columns = {row[1] for row in c.execute("PRAGMA table_info(seedance_pending_cleanup)").fetchall()}
+        if "state" not in columns:
+            c.execute("ALTER TABLE seedance_pending_cleanup ADD COLUMN state TEXT NOT NULL DEFAULT 'cleanup_pending'")
+        if "next_attempt_at" not in columns:
+            c.execute("ALTER TABLE seedance_pending_cleanup ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0")
+        if "updated_at" not in columns:
+            c.execute("ALTER TABLE seedance_pending_cleanup ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0")
+        attempt_columns = {
+            row[1] for row in c.execute(
+                "PRAGMA table_info(seedance_staging_attempts)").fetchall()
+        }
+        for name, definition in {
+            "kind": "TEXT", "cost": "INTEGER", "owner": "TEXT",
+            "request_json": "TEXT", "charge_key": "TEXT",
+            "refund_key": "TEXT", "recovery_token": "TEXT",
+            "recovery_started_at": "INTEGER", "last_error": "TEXT",
+        }.items():
+            if name not in attempt_columns:
+                c.execute("ALTER TABLE seedance_staging_attempts ADD COLUMN %s %s" %
+                          (name, definition))
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_seedance_staging_charge_key "
+                  "ON seedance_staging_attempts(charge_key) WHERE charge_key IS NOT NULL")
+        c.commit()
+        _cleanup_table_ready = True
+    return c
+
+
+def _reserve_seedance_staging_attempt(username, endpoint, idem_key):
+    """Persist the pre-charge lease before any COS network operation."""
+    now = int(time.time())
+    try:
+        with closing(_cleanup_db()) as c:
+            c.execute(
+                """INSERT INTO seedance_staging_attempts
+                   (username,endpoint,idem_key,state,job_id,created_at,updated_at)
+                   VALUES(?,?,?,'uploading',NULL,?,?)
+                   ON CONFLICT(username,endpoint,idem_key) DO UPDATE SET
+                     state='uploading',job_id=NULL,created_at=excluded.created_at,
+                     updated_at=excluded.updated_at,kind=NULL,cost=NULL,owner=NULL,
+                     request_json=NULL,charge_key=NULL,refund_key=NULL,
+                     recovery_token=NULL,recovery_started_at=NULL,last_error=NULL""",
+                (str(username), str(endpoint), str(idem_key), now, now),
+            )
+            c.commit()
+    except Exception as exc:
+        print("[seedance] ALARM staging attempt persist failed: %s" % type(exc).__name__, flush=True)
+        raise SeedanceReferenceUnavailable("Seedance 参考图恢复事务不可用，本次未扣点") from exc
+
+
+def _set_seedance_staging_attempt_state(username, endpoint, idem_key, state):
+    now = int(time.time())
+    with closing(_cleanup_db()) as c:
+        changed = c.execute(
+            """UPDATE seedance_staging_attempts SET state=?,updated_at=?
+               WHERE username=? AND endpoint=? AND idem_key=? AND job_id IS NULL""",
+            (str(state), now, str(username), str(endpoint), str(idem_key)),
+        ).rowcount
+        c.commit()
+    if changed != 1:
+        raise SeedanceReferenceUnavailable("Seedance 参考图恢复状态丢失，本次未扣点")
+
+
+def _mark_seedance_staging_attempt_ready(username, endpoint, idem_key):
+    _set_seedance_staging_attempt_state(username, endpoint, idem_key, "staged")
+
+
+def mark_seedance_reference_charging(username, endpoint, idem_key, kind, cost,
+                                     payload, owner, charge_key):
+    """Persist the complete recovery intent before touching Auth points."""
+    charge_key = str(charge_key or "").strip()
+    if not charge_key:
+        raise SeedanceReferenceUnavailable(
+            "Seedance 扣点事务缺少幂等键，本次未扣点")
+    request_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    refund_key = "job-charge-refund:" + hashlib.sha256(
+        charge_key.encode("utf-8")).hexdigest()
+    now = int(time.time())
+    with closing(_cleanup_db()) as c:
+        changed = c.execute(
+            """UPDATE seedance_staging_attempts SET state='charging',kind=?,cost=?,
+               owner=?,request_json=?,charge_key=?,refund_key=?,updated_at=?,
+               recovery_token=NULL,recovery_started_at=NULL,last_error=NULL
+               WHERE username=? AND endpoint=? AND idem_key=? AND state='staged'
+                 AND job_id IS NULL""",
+            (str(kind), int(cost), str(owner), request_json, charge_key,
+             refund_key, now, str(username), str(endpoint), str(idem_key)),
+        ).rowcount
+        c.commit()
+    if changed != 1:
+        raise SeedanceReferenceUnavailable(
+            "Seedance 参考图扣点恢复状态丢失，本次未扣点")
+
+
+def release_seedance_staging_attempt(username, endpoint, idem_key, connection=None):
+    if not (username and endpoint and idem_key):
+        return
+    own = connection is None
+    c = connection or _cleanup_db()
+    try:
+        c.execute(
+            "DELETE FROM seedance_staging_attempts WHERE username=? AND endpoint=? AND idem_key=?",
+            (str(username), str(endpoint), str(idem_key)),
+        )
+        if own:
+            c.commit()
+    finally:
+        if own:
+            c.close()
+
+
+def abort_xiaole_reference_submission(keys, username, endpoint, idem_key, abort_idempotency):
+    """Abort a proven pre-charge attempt and retire both durable reservations."""
+    try:
+        cleanup_staged_seedance_references(keys)
+        release_seedance_staging_attempt(username, endpoint, idem_key)
+    finally:
+        abort_idempotency()
+
+
+def _persist_staging_cleanup_intent(key):
+    """Journal an object key before upload so a process crash is recoverable."""
+    now = int(time.time())
+    try:
+        with closing(_cleanup_db()) as c:
+            c.execute(
+                """INSERT INTO seedance_pending_cleanup
+                   (key,job_id,created_at,attempts,state,next_attempt_at,updated_at)
+                   VALUES(?,?,?,0,'staged',?,?)""",
+                (str(key), None, now, now + SEEDANCE_STAGING_ORPHAN_GRACE, now),
+            )
+            c.commit()
+    except Exception as exc:
+        print("[seedance] ALARM staging cleanup intent persist failed: %s" % type(exc).__name__, flush=True)
+        raise SeedanceReferenceUnavailable("Seedance 参考图清理事务不可用，本次未扣点") from exc
+
+
+def link_staged_seedance_references(connection, keys, job_id, username=None,
+                                    endpoint=None, idem_key=None):
+    """Atomically link staged objects to the job in the job INSERT transaction."""
+    now = int(time.time())
+    for key in [str(k) for k in (keys or []) if k]:
+        cur = connection.execute(
+            """UPDATE seedance_pending_cleanup
+               SET job_id=?,state='linked',next_attempt_at=?,updated_at=?
+               WHERE key=? AND state='staged'""",
+            (int(job_id), now + SEEDANCE_UNKNOWN_CLEANUP_DELAY, now, key),
+        )
+        if cur.rowcount != 1:
+            raise RuntimeError("Seedance 参考图暂存事务丢失")
+    if keys:
+        changed = connection.execute(
+            """UPDATE seedance_staging_attempts SET state='linked',job_id=?,updated_at=?
+               WHERE username=? AND endpoint=? AND idem_key=? AND state='charging'""",
+            (int(job_id), now, str(username), str(endpoint), str(idem_key)),
+        ).rowcount
+        if changed != 1:
+            raise RuntimeError("Seedance 参考图提交事务丢失")
+        release_seedance_staging_attempt(
+            username, endpoint, idem_key, connection=connection)
+
+
+def _enqueue_pending_cleanup(keys, job_id=None, delay_seconds=0):
+    """Persist a cleanup request using the same object key and lifecycle row."""
+    keys = [str(k) for k in (keys or []) if k]
+    if not keys:
+        return
+    try:
+        with closing(_cleanup_db()) as c:
+            now = int(time.time())
+            for k in keys:
+                c.execute(
+                    """INSERT INTO seedance_pending_cleanup
+                       (key,job_id,created_at,attempts,state,next_attempt_at,updated_at)
+                       VALUES(?,?,?,0,'cleanup_pending',?,?)
+                       ON CONFLICT(key) DO UPDATE SET
+                         job_id=COALESCE(excluded.job_id,seedance_pending_cleanup.job_id),
+                         state='cleanup_pending',next_attempt_at=excluded.next_attempt_at,
+                         updated_at=excluded.updated_at""",
+                    (k, job_id, now, now + max(0, int(delay_seconds or 0)), now),
+                )
+            c.commit()
+    except Exception as exc:
+        print("[seedance] ALARM pending cleanup persist failed: %s" % type(exc).__name__, flush=True)
+
+
+def _remove_cleanup_record(key):
+    try:
+        with closing(_cleanup_db()) as c:
+            c.execute("DELETE FROM seedance_pending_cleanup WHERE key=?", (str(key),))
+            c.commit()
+    except Exception:
+        pass
+
+
+def _record_cleanup_failure(key):
+    now = int(time.time())
+    try:
+        with closing(_cleanup_db()) as c:
+            row = c.execute(
+                "SELECT attempts FROM seedance_pending_cleanup WHERE key=?", (str(key),)
+            ).fetchone()
+            attempts = int((row["attempts"] if row else 0) or 0) + 1
+            next_attempt = now + min(300, 30 * (2 ** min(attempts - 1, 3)))
+            c.execute(
+                """UPDATE seedance_pending_cleanup SET attempts=?,state='cleanup_pending',
+                   next_attempt_at=?,updated_at=? WHERE key=?""",
+                (attempts, next_attempt, now, str(key)),
+            )
+            c.commit()
+    except Exception:
+        return
+    if attempts >= SEEDANCE_CLEANUP_MAX_ATTEMPTS:
+        print("[seedance] ALARM cleanup key %s failed %d times, manual intervention required" % (key, attempts), flush=True)
+
+
+def cleanup_staged_seedance_references(object_keys, job_id=None, delay_seconds=0):
+    """best-effort 清理：扣点/入队失败或任务终态时删除已转存的参考图对象；
+    删除失败的键落 seedance_pending_cleanup，由启动扫描和后续清理动作重试收敛。"""
+    keys = [str(k) for k in (object_keys or []) if k]
+    if not keys:
+        return
+    _enqueue_pending_cleanup(keys, job_id, delay_seconds=delay_seconds)
+    if int(delay_seconds or 0) > 0:
+        return
+    for key in keys:
+        try:
+            _seedance_cos_delete(key)
+        except Exception as exc:
+            print("[seedance] reference cleanup failed for %s: %s" % (key, type(exc).__name__), flush=True)
+            _record_cleanup_failure(key)
+            continue
+        _remove_cleanup_record(key)
+
+
+def _recover_orphaned_seedance_attempts(now, limit):
+    """Release only stale attempts proven to be before the charge boundary."""
+    cutoff = int(now) - SEEDANCE_STAGING_ORPHAN_GRACE
+    try:
+        with closing(_cleanup_db()) as c:
+            submission_idempotency.ensure_table(c)
+            c.commit()
+            rows = c.execute(
+                """SELECT username,endpoint,idem_key FROM seedance_staging_attempts
+                   WHERE state IN ('uploading','staged') AND updated_at<=?
+                   ORDER BY updated_at,username,endpoint,idem_key LIMIT ?""",
+                (cutoff, int(limit)),
+            ).fetchall()
+            recovered = 0
+            for row in rows:
+                c.execute("BEGIN IMMEDIATE")
+                attempt = c.execute(
+                    """SELECT state,job_id FROM seedance_staging_attempts
+                       WHERE username=? AND endpoint=? AND idem_key=?""",
+                    (row["username"], row["endpoint"], row["idem_key"]),
+                ).fetchone()
+                if (not attempt or attempt["state"] not in {"uploading", "staged"}
+                        or attempt["job_id"] is not None):
+                    c.commit()
+                    continue
+                # response_json IS NULL proves the key never reached a terminal replay;
+                # the attempt phase proves the external points call was never entered.
+                c.execute(
+                    """DELETE FROM submission_idempotency
+                       WHERE username=? AND endpoint=? AND idem_key=?
+                         AND response_json IS NULL""",
+                    (row["username"], row["endpoint"], row["idem_key"]),
+                )
+                c.execute(
+                    """DELETE FROM seedance_staging_attempts
+                       WHERE username=? AND endpoint=? AND idem_key=?
+                         AND state IN ('uploading','staged') AND job_id IS NULL""",
+                    (row["username"], row["endpoint"], row["idem_key"]),
+                )
+                c.commit()
+                recovered += 1
+            return recovered
+    except Exception:
+        return 0
+
+
+def _seedance_attempt_keys(row):
+    try:
+        payload = json.loads(row["request_json"] or "{}")
+        return [str(key) for key in payload.get("_seedance_staged_keys") or []
+                if str(key)]
+    except Exception:
+        return []
+
+
+def _claim_seedance_charge_recoveries(now, limit):
+    cutoff = int(now) - SEEDANCE_STAGING_ORPHAN_GRACE
+    lease_cutoff = int(now) - SEEDANCE_STAGING_ORPHAN_GRACE
+    claimed = []
+    try:
+        with closing(_cleanup_db()) as c:
+            c.row_factory = sqlite3.Row
+            rows = c.execute(
+                """SELECT username,endpoint,idem_key FROM seedance_staging_attempts
+                   WHERE state IN ('charging','refund_pending') AND job_id IS NULL
+                     AND updated_at<=? AND
+                     (recovery_token IS NULL OR recovery_started_at<=?)
+                   ORDER BY updated_at LIMIT ?""",
+                (cutoff, lease_cutoff, int(limit)),
+            ).fetchall()
+            for candidate in rows:
+                token = "seedance:" + uuid.uuid4().hex
+                changed = c.execute(
+                    """UPDATE seedance_staging_attempts
+                       SET recovery_token=?,recovery_started_at=?,updated_at=?
+                       WHERE username=? AND endpoint=? AND idem_key=?
+                         AND state IN ('charging','refund_pending') AND job_id IS NULL
+                         AND (recovery_token IS NULL OR recovery_started_at<=?)""",
+                    (token, int(now), int(now), candidate["username"],
+                     candidate["endpoint"], candidate["idem_key"], lease_cutoff),
+                ).rowcount
+                if changed == 1:
+                    row = c.execute(
+                        """SELECT * FROM seedance_staging_attempts
+                           WHERE username=? AND endpoint=? AND idem_key=?""",
+                        (candidate["username"], candidate["endpoint"],
+                         candidate["idem_key"]),
+                    ).fetchone()
+                    claimed.append((dict(row), token))
+            c.commit()
+    except Exception:
+        return []
+    return claimed
+
+
+def _release_seedance_charge_recovery(row, token, error=""):
+    with closing(_cleanup_db()) as c:
+        c.execute(
+            """UPDATE seedance_staging_attempts SET recovery_token=NULL,
+               recovery_started_at=NULL,last_error=?,updated_at=?
+               WHERE username=? AND endpoint=? AND idem_key=?
+                 AND recovery_token=? AND job_id IS NULL""",
+            (str(error or "")[:300], int(time.time()), row["username"],
+             row["endpoint"], row["idem_key"], token),
+        )
+        c.commit()
+
+
+def _recover_seedance_charge_attempts(points_domain, now, limit):
+    """Reconcile crash-window charges without replaying a deduction."""
+    if not points_domain or not callable(
+            getattr(points_domain, "get_points_transaction", None)):
+        return 0
+    recovered = 0
+    for row, token in _claim_seedance_charge_recoveries(now, limit):
+        keys = _seedance_attempt_keys(row)
+        if not (row.get("charge_key") and row.get("refund_key") and
+                row.get("request_json") and int(row.get("cost") or 0) > 0):
+            _release_seedance_charge_recovery(
+                row, token, "incomplete_seedance_charge_intent")
+            continue
+        if row["state"] == "charging":
+            try:
+                ledger = points_domain.get_points_transaction(row["charge_key"])
+            except Exception as exc:
+                _release_seedance_charge_recovery(row, token, type(exc).__name__)
+                continue
+            if ledger is None:
+                submission_idempotency.abort(
+                    jdb, row["username"], row["endpoint"], row["idem_key"])
+                release_seedance_staging_attempt(
+                    row["username"], row["endpoint"], row["idem_key"])
+                cleanup_staged_seedance_references(keys)
+                recovered += 1
+                continue
+            try:
+                matches = (str(ledger.get("username") or "") == row["username"]
+                           and int(ledger.get("delta") or 0) == -int(row["cost"]))
+            except (TypeError, ValueError):
+                matches = False
+            if not matches:
+                _release_seedance_charge_recovery(
+                    row, token, "seedance_charge_ledger_inconsistent")
+                continue
+            with closing(_cleanup_db()) as c:
+                changed = c.execute(
+                    """UPDATE seedance_staging_attempts SET state='refund_pending',
+                       updated_at=? WHERE username=? AND endpoint=? AND idem_key=?
+                         AND state='charging' AND recovery_token=?""",
+                    (int(time.time()), row["username"], row["endpoint"],
+                     row["idem_key"], token),
+                ).rowcount
+                c.commit()
+            if changed != 1:
+                continue
+        try:
+            points_domain.refund_points(
+                row["username"], int(row["cost"]),
+                "seedance reference submission:crash recovery",
+                transaction_key=row["refund_key"],
+            )
+        except Exception as exc:
+            _release_seedance_charge_recovery(row, token, type(exc).__name__)
+            continue
+        response = {
+            "detail": "视频任务创建中断，已自动退回点数，请重新提交",
+            "code": "seedance_charge_recovered", "operation_terminal": True,
+            "_http_status": 500,
+        }
+        submission_idempotency.complete(
+            jdb, row["username"], row["endpoint"], row["idem_key"], response)
+        release_seedance_staging_attempt(
+            row["username"], row["endpoint"], row["idem_key"])
+        cleanup_staged_seedance_references(keys)
+        recovered += 1
+    return recovered
+
+
+def _promote_terminal_linked_cleanups(now):
+    """Close the crash window between terminal CAS and its cleanup callback."""
+    try:
+        with closing(_cleanup_db()) as c:
+            changed = c.execute(
+                """UPDATE seedance_pending_cleanup AS cleanup
+                   SET state='cleanup_pending',updated_at=?
+                   WHERE state='linked' AND job_id IS NOT NULL AND (
+                     NOT EXISTS(SELECT 1 FROM jobs WHERE id=cleanup.job_id) OR
+                     EXISTS(SELECT 1 FROM jobs WHERE id=cleanup.job_id
+                            AND status IN ('done','error'))
+                   )""",
+                (int(now),),
+            ).rowcount
+            c.commit()
+            return changed
+    except Exception:
+        return 0
+
+
+def retry_pending_seedance_cleanups(limit=50, points_domain=None):
+    """Retry eligible cleanup rows without starving newer objects."""
+    now = int(time.time())
+    _recover_orphaned_seedance_attempts(now, limit)
+    _recover_seedance_charge_attempts(points_domain, now, limit)
+    _promote_terminal_linked_cleanups(now)
+    try:
+        with closing(_cleanup_db()) as c:
+            rows = c.execute(
+                """SELECT key,attempts,state FROM seedance_pending_cleanup
+                   WHERE (state='cleanup_pending' AND next_attempt_at<=?) OR
+                     (state='staged' AND job_id IS NULL AND created_at<=?)
+                   ORDER BY next_attempt_at,created_at,key LIMIT ?""",
+                (now, now - SEEDANCE_STAGING_ORPHAN_GRACE, int(limit)),
+            ).fetchall()
+    except Exception:
+        return 0
+    processed = 0
+    for row in rows:
+        key = row["key"]
+        if row["state"] == "staged":
+            _enqueue_pending_cleanup([key])
+        try:
+            _seedance_cos_delete(key)
+        except Exception:
+            _record_cleanup_failure(key)
+            processed += 1
+            continue
+        _remove_cleanup_record(key)
+        processed += 1
+    return processed
+
+
+def cleanup_job_staged_seedance_references(job_id, delay_seconds=0):
+    """终态清理：job 进 done/error 后删除本次暂存的参考图对象。
+    由 core._set_terminal 在 CAS 抢到终态后调用；best-effort，永不阻断主流程。
+    防越权：任务必须是 xiaole_video，且每个键必须带该任务属主账号的
+    seedance/reference/<sha256(username)[:16]>/ 前缀 —— payload 被注入/篡改时
+    不能把任意对象键送进删除函数，两条校验不过只告警不删除。"""
+    try:
+        with closing(jdb()) as c:
+            row = c.execute("SELECT kind,username,payload FROM jobs WHERE id=?", (job_id,)).fetchone()
+    except Exception as exc:
+        print("[seedance] terminal cleanup lookup failed for job %s: %s" % (job_id, type(exc).__name__), flush=True)
+        return
+    if not row or row["kind"] != "xiaole_video":
+        return
+    try:
+        keys = (json.loads(row["payload"] or "{}")).get("_seedance_staged_keys") or []
+    except Exception:
+        return
+    owner_hash = hashlib.sha256(str(row["username"] or "").encode("utf-8")).hexdigest()[:16]
+    prefix = "seedance/reference/%s/" % owner_hash
+    safe = []
+    for key in keys:
+        key = str(key or "")
+        if key.startswith(prefix):
+            safe.append(key)
+        else:
+            print("[seedance] ALARM refuse to delete foreign object key for job %s: %s" % (job_id, key[:80]), flush=True)
+    cleanup_staged_seedance_references(safe, job_id, delay_seconds=delay_seconds)
+
+
+def seedance_reference_cleanup_delay(kind, payload, error):
+    """Keep references alive when a paid create may have been accepted upstream."""
+    if kind != "xiaole_video" or str((payload or {}).get("channel") or "").lower() != "micro":
+        return 0
+    try:
+        from . import video_seedance
+        if isinstance(error, video_seedance.CreateOutcomeUnknown):
+            return SEEDANCE_UNKNOWN_CLEANUP_DELAY
+    except Exception:
+        pass
+    return 0
 
 
 def _xiaole_build_refs(reference_images):
@@ -202,11 +1234,14 @@ def _xiaole_ref_to_url(data_url):
         print("[video] 参考图转存COS失败，回退原始数据: %s" % e, flush=True)
         return s
 
-def validate_xiaole_video_payload(payload):
+def validate_xiaole_video_payload(payload, username=None):
     """校验共用任务入口；micro / omni 只允许各自官方适配器。"""
     if not isinstance(payload, dict):
         raise ValueError("请求体不是合法 JSON")
-    cleaned = dict(payload)
+    # Internal fields are server-owned. Accepting client supplied cleanup keys
+    # would turn terminal cleanup into a cross-user COS deletion primitive.
+    cleaned = {key: value for key, value in payload.items()
+               if not str(key).startswith("_")}
     channel = str(cleaned.get("channel") or "grok").strip().lower()
     if channel not in XIAOLE_CHANNEL_MODELS:
         raise ValueError("未知视频渠道：%s" % channel)
@@ -217,6 +1252,11 @@ def validate_xiaole_video_payload(payload):
         raise ValueError("请输入视频提示词")
     cleaned["channel"] = channel
     cleaned["prompt"] = prompt
+    reference_mode = str(cleaned.get("reference_mode") or "").strip().lower()
+    if reference_mode not in {"", "ordered_storyboard"}:
+        raise ValueError("参考图模式不支持")
+    if reference_mode and channel != "grok":
+        raise ValueError("保序参考帧仅用于果肉反推回退")
     if channel in {"micro", "omni"}:
         from . import feature_flags
         operation = str(cleaned.get("operation") or "generate").strip().lower()
@@ -226,6 +1266,7 @@ def validate_xiaole_video_payload(payload):
         if not isinstance(refs, list):
             raise ValueError("reference_images 必须是数组")
         refs = [str(item or "").strip() for item in refs if str(item or "").strip()]
+        validate_image_mentions(prompt, len(refs))
 
         if channel == "omni":
             from . import video_gemini_omni
@@ -276,11 +1317,7 @@ def validate_xiaole_video_payload(payload):
         cleaned.pop("upscale_prediction_id", None)
         if len(refs) > 9:
             raise ValueError("Seedance 最多支持 9 张参考图")
-        for item in refs:
-            if item.startswith(("https://", "http://", "asset://")):
-                continue
-            if not _is_valid_data_url(item, VALID_IMAGE_MIMES):
-                raise ValueError("Seedance 参考图必须是 jpg/png/webp 图片")
+        refs = _validate_seedance_references(refs, username)
         video_seedance._build_payload(
             model, prompt, duration, ratio, resolution, generate_audio, []
         )
@@ -298,6 +1335,32 @@ def validate_xiaole_video_payload(payload):
 
     if channel == "grok" and str(cleaned.get("operation") or "generate").strip().lower() == "edit":
         raise ValueError("果肉视频编辑维护中")
+    if channel == "grok":
+        common_refs = cleaned.get("reference_images") or []
+        if not isinstance(common_refs, list):
+            raise ValueError("reference_images 必须是数组")
+        common_refs = [str(x or "").strip() for x in common_refs if str(x or "").strip()]
+        if len(common_refs) > XIAOLE_MAX_REF:
+            raise ValueError("Grok 视频最多支持%d张参考图" % XIAOLE_MAX_REF)
+        validate_image_mentions(prompt, len(common_refs))
+        cleaned["reference_images"] = common_refs
+        if reference_mode == "ordered_storyboard":
+            if not 1 <= len(common_refs) <= 4:
+                raise ValueError("反推同款需要1-4张按时间排序的关键帧")
+            if any(not item.startswith("data:") for item in common_refs):
+                raise ValueError("果肉反推回退仅接受本次任务的本地关键帧，本次未扣点")
+            hashes = []
+            for item in common_refs:
+                _mime, _ext, data = _seedance_data_image(item)
+                hashes.append(hashlib.sha256(data).hexdigest())
+            cleaned["_reference_storyboard_count"] = len(common_refs)
+            cleaned["_reference_storyboard_source_hashes"] = hashes
+            cleaned["prompt"] = (
+                "参考图按原视频时间顺序排列；必须依次还原每张图的动作节点、"
+                "镜头转换和场景变化。" + prompt
+            )
+            if GROK_VIDEO_PROVIDER == "xiaole":
+                raise ValueError("当前果肉供应商不支持安全反推参考帧，本次未扣点")
     if channel != "grok" or GROK_VIDEO_PROVIDER == "xiaole":
         return cleaned
 
@@ -315,10 +1378,10 @@ def validate_xiaole_video_payload(payload):
     if not isinstance(refs, list):
         raise ValueError("reference_images 必须是数组")
     refs = [str(x or "").strip() for x in refs if str(x or "").strip()]
-    if model == "grok-imagine-video-1.5":
-        if len(refs) != 1:
-            raise ValueError("Grok Video 1.5 仅支持1张首帧图")
-    elif len(refs) > XIAOLE_MAX_REF:
+    validate_image_mentions(prompt, len(refs))
+    if model == "grok-imagine-video-1.5" and not refs:
+        raise ValueError("Grok Video 1.5 至少需要1张参考图")
+    if len(refs) > XIAOLE_MAX_REF:
         raise ValueError("xAI官方图生视频最多支持%d张参考图" % XIAOLE_MAX_REF)
     ratio = str(cleaned.get("ratio") or "16:9").strip()
     if ratio not in XAI_GROK_RATIOS:
@@ -331,6 +1394,8 @@ def validate_xiaole_video_payload(payload):
         raise ValueError("果肉视频时长必须是1-15秒整数")
     resolution = str(cleaned.get("resolution") or "720p").strip().lower()
     allowed_resolutions = XAI_GROK_RESOLUTIONS | ({"1080p"} if model == "grok-imagine-video-1.5" else set())
+    if refs:
+        allowed_resolutions = {"720p"}
     if resolution not in allowed_resolutions:
         raise ValueError("%s 不支持分辨率 %s" % (model, resolution))
     cleaned.update({
@@ -341,7 +1406,7 @@ def validate_xiaole_video_payload(payload):
 
 
 def validate_sora_video_payload(payload):
-    """校验 Sora 限时 Beta 的最小业务契约；只支持非真人文生视频。"""
+    """校验 Sora 限时 Beta 契约；参考图只作为首帧且最多一张。"""
     if not sora_video_is_open():
         raise ValueError("Sora 限时测试通道未开启")
     if not isinstance(payload, dict):
@@ -373,16 +1438,28 @@ def validate_sora_video_payload(payload):
     size = SORA_SIZE_MAP.get((model, resolution, ratio))
     if not size:
         raise ValueError("%s 不支持分辨率 %s" % (model, resolution))
-    # 当前官方规则拒绝真人、公众人物和含人脸参考图。Beta 先不接 input_reference，
-    # 从服务端白名单上消除前端绕过，而不是只靠页面隐藏。
+    refs = payload.get("reference_images") or []
+    if not isinstance(refs, list):
+        raise ValueError("Sora 参考图格式错误")
+    if len(refs) > 1:
+        raise ValueError("Sora 最多支持1张参考图")
+    if refs:
+        ref = str(refs[0] or "").strip()
+        if not _is_valid_data_url(ref, VALID_IMAGE_MIMES):
+            raise ValueError("Sora 参考图仅支持 JPEG、PNG、WebP")
+        if len(base64.b64decode(ref.split(",", 1)[1], validate=True)) > SORA_MAX_REFERENCE_BYTES:
+            raise ValueError("Sora 参考图不能超过10MB")
+    validate_image_mentions(prompt, len(refs))
     return {
         "mode": "sora",
         "prompt": prompt,
+        "provider_prompt": resolve_image_mentions(prompt, len(refs)),
         "model": model,
         "seconds": seconds,
         "ratio": ratio,
         "resolution": resolution,
         "size": size,
+        "reference_images": refs,
     }
 
 def _is_valid_data_url(value, allowed_mimes):
@@ -1915,21 +2992,34 @@ def _shrink_motion_reference(reference_video_file):
 
 def _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion, direct=False):
     title = "huangque video %d" % int(time.time())
-    body = json.dumps({
-        "title": title,
-        "type": "image",
-        "image": {"type": "asset_id", "asset_id": image_asset_id},
-        "audio_asset_id": audio_asset_id,
-        "resolution": resolution,
-        "aspect_ratio": ratio,
-        "fit": "cover",
-        "expressiveness": motion,
-        "output_format": "mp4",
-    }, ensure_ascii=False).encode()
-    data = _heygen_request_json("POST", "/videos", body, {
-        "Content-Type": "application/json",
-    }, timeout=90, direct=direct)
-    video_id = ((data.get("data") or {}).get("video_id") or "").strip()
+    if _heygen_mcp_enabled():
+        data = _heygen_mcp_call("create_video_from_image", {
+            "title": title,
+            "image": {"type": "asset_id", "asset_id": image_asset_id},
+            "audioAssetId": audio_asset_id,
+            "resolution": resolution,
+            "aspectRatio": ratio,
+            "fit": "cover",
+            "expressiveness": motion,
+            "outputFormat": "mp4",
+        }, timeout=90)
+        video_id = str(data.get("video_id") or data.get("id") or "").strip()
+    else:
+        body = json.dumps({
+            "title": title,
+            "type": "image",
+            "image": {"type": "asset_id", "asset_id": image_asset_id},
+            "audio_asset_id": audio_asset_id,
+            "resolution": resolution,
+            "aspect_ratio": ratio,
+            "fit": "cover",
+            "expressiveness": motion,
+            "output_format": "mp4",
+        }, ensure_ascii=False).encode()
+        data = _heygen_request_json("POST", "/videos", body, {
+            "Content-Type": "application/json",
+        }, timeout=90, direct=direct)
+        video_id = ((data.get("data") or {}).get("video_id") or "").strip()
     if not video_id:
         raise RuntimeError("HeyGen未返回video_id: %s" % json.dumps(data, ensure_ascii=False)[:500])
     return video_id
@@ -1950,15 +3040,21 @@ def _find_nested_dict(obj, pred):
     return None
 
 def _heygen_create_photo_avatar(image_asset_id, direct=False):
-    body = json.dumps({
-        "type": "photo",
-        "name": "huangque_photo_avatar_%d" % int(time.time()),
-        "file": {"type": "asset_id", "asset_id": image_asset_id},
-    }, ensure_ascii=False).encode()
-    data = _heygen_request_json("POST", "/avatars", body, {
-        "Content-Type": "application/json",
-    }, timeout=90, direct=direct)
-    root = data.get("data") or {}
+    name = "huangque_photo_avatar_%d" % int(time.time())
+    if _heygen_mcp_enabled():
+        data = _heygen_mcp_call("create_photo_avatar", {
+            "name": name,
+            "file": {"type": "asset_id", "asset_id": image_asset_id},
+        }, timeout=90)
+    else:
+        body = json.dumps({
+            "type": "photo", "name": name,
+            "file": {"type": "asset_id", "asset_id": image_asset_id},
+        }, ensure_ascii=False).encode()
+        data = _heygen_request_json("POST", "/avatars", body, {
+            "Content-Type": "application/json",
+        }, timeout=90, direct=direct)
+    root = data.get("data") or data
     avatar_item_id = (((root.get("avatar_item") or {}).get("id")) or "").strip()
     avatar_group_id = (((root.get("avatar_group") or {}).get("id")) or "").strip()
     if not avatar_item_id:
@@ -1988,6 +3084,12 @@ def _heygen_look_status(avatar_item_id, avatar_group_id="", direct=False):
 
     look 级状态只在 v2：`GET /v2/photo_avatar/{look_id}` → `status`（pending / completed / failed）。
     """
+    if _heygen_mcp_enabled():
+        d = _heygen_mcp_call("get_avatar_look", {"lookId": avatar_item_id}, timeout=20)
+        node = d.get("data") or d.get("avatar_item") or d
+        error = node.get("error") or {}
+        return str(node.get("status") or "").lower(), str(
+            node.get("moderation_msg") or error.get("message") or "")
     if direct:
         d = _heygen_direct_req("GET", _HEYGEN_DIRECT_API + "/v2/photo_avatar/" + urllib.parse.quote(avatar_item_id),
                                body=None, ctype=None, timeout=20)
@@ -2116,6 +3218,10 @@ _HEYGEN_MCP_CREDENTIALS = os.environ.get("HEYGEN_MCP_CREDENTIALS", "").strip()
 _heygen_mcp_auth_lock = threading.Lock()
 
 
+class HeyGenMCPAuthError(RuntimeError):
+    pass
+
+
 def _heygen_mcp_enabled():
     return bool(_HEYGEN_MCP_CREDENTIALS)
 
@@ -2124,9 +3230,9 @@ def _heygen_mcp_access_token(force_refresh=False):
     path = pathlib.Path(_HEYGEN_MCP_CREDENTIALS)
     with _heygen_mcp_auth_lock:
         if not path.is_file():
-            raise ValueError("HeyGen MCP OAuth 未配置")
+            raise HeyGenMCPAuthError("HeyGen MCP OAuth 未配置")
         if path.stat().st_mode & 0o077:
-            raise RuntimeError("HeyGen MCP OAuth 凭据权限必须为 600")
+            raise HeyGenMCPAuthError("HeyGen MCP OAuth 凭据权限必须为 600")
         lock_fd = os.open(str(path) + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
         try:
             os.fchmod(lock_fd, 0o600)
@@ -2135,7 +3241,7 @@ def _heygen_mcp_access_token(force_refresh=False):
             if not force_refresh and credentials.get("access_token") and float(credentials.get("expires_at") or 0) > time.time() + 60:
                 return credentials["access_token"]
             if not credentials.get("client_id") or not credentials.get("refresh_token"):
-                raise RuntimeError("HeyGen MCP OAuth 不可刷新，请重新授权")
+                raise HeyGenMCPAuthError("HeyGen MCP OAuth 不可刷新，请重新授权")
             body = urllib.parse.urlencode({
                 "grant_type": "refresh_token",
                 "client_id": credentials["client_id"],
@@ -2151,10 +3257,11 @@ def _heygen_mcp_access_token(force_refresh=False):
                     refreshed = json.loads(response.read().decode("utf-8"))
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", "replace").replace("\n", " ")[:300]
-                raise RuntimeError("HeyGen MCP OAuth 刷新失败: HTTP %s %s" % (exc.code, detail)) from exc
+                raise HeyGenMCPAuthError("HeyGen MCP OAuth 刷新失败: HTTP %s %s" % (exc.code, detail)) from exc
             credentials.update({
                 "access_token": refreshed["access_token"],
-                "refresh_token": refreshed.get("refresh_token") or credentials["refresh_token"],
+                # HeyGen 当前 refresh token 为一次性；响应不下发新 token 时不能保留已失效的旧值。
+                "refresh_token": refreshed.get("refresh_token") or "",
                 "expires_at": int(time.time()) + int(refreshed.get("expires_in") or 3600),
             })
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as temp:
@@ -2191,6 +3298,8 @@ def _heygen_mcp_call(tool, arguments, timeout=90):
                 token = _heygen_mcp_access_token(force_refresh=True)
                 continue
             detail = exc.read().decode("utf-8", "replace").replace("\n", " ")[:500]
+            if exc.code in (401, 403):
+                raise HeyGenMCPAuthError("HeyGen MCP 鉴权失败: HTTP %s %s" % (exc.code, detail)) from exc
             if exc.code == 429:
                 raise HeyGenRateLimited("HeyGen MCP 限流(429): %s" % detail) from exc
             raise RuntimeError("HeyGen MCP 失败: HTTP %s %s" % (exc.code, detail)) from exc
@@ -2453,14 +3562,22 @@ class HeyGenBilledError(RuntimeError):
 HEYGEN_MOTION_DEADLINE = CINEMATIC_GEN_DEADLINE
 
 
-def _heygen_poll_video(video_id, direct=False, deadline_s=None):
+def _heygen_poll_video(video_id, direct=False, deadline_s=None, mcp=False):
     deadline = time.time() + (deadline_s or HEYGEN_TIMEOUT)
     last_status = ""
     net_fails = 0
     while time.time() < deadline:
         try:
-            if _heygen_mcp_enabled():
-                info = _heygen_mcp_call("get_video", {"videoId": video_id}, timeout=90)
+            if mcp:
+                try:
+                    info = _heygen_mcp_call("get_video", {"videoId": video_id}, timeout=90)
+                except RuntimeError as e:
+                    # GET 不计费。MCP OAuth 即使在已提交后失效，也必须用 API Key 把成片/真实失败接回来。
+                    print("[heygen] MCP GET 不可用，回退 API GET video_id=%s: %s"
+                          % (video_id, str(e)[:160]), flush=True)
+                    data = _heygen_request_json("GET", "/videos/" + urllib.parse.quote(video_id),
+                                                timeout=90, direct=direct)
+                    info = data.get("data") or {}
             else:
                 data = _heygen_request_json("GET", "/videos/" + urllib.parse.quote(video_id), timeout=90, direct=direct)
                 info = data.get("data") or {}
@@ -2594,6 +3711,8 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
             return generate_heygen_video_direct(image_file, audio_file, resolution, ratio, motion)
         except HeyGenBilledError:
             raise   # 已提交=已计费，重发就是再付一次钱（泽龙转发同一账号）
+        except HeyGenMCPAuthError:
+            raise   # MCP 创建前鉴权失败，第二条线路仍是同一份 OAuth；立刻退点，不能假回退。
         except Exception as e:
             print("[heygen] 直连失败(提交前),回退泽龙中转: %s" % str(e)[:200], flush=True)
     image_fp = _resolve_out_file(image_file)
@@ -3505,6 +4624,30 @@ def generate_xiaole_video(model, prompt, reference_images=None, size="720x1280",
     raise TimeoutError("视频生成超时")
 
 
+def _prepare_sora_input_reference(data_url, size):
+    """把首帧裁成官方要求的精确输出尺寸，返回 PNG 字节。"""
+    encoded = str(data_url or "").split(",", 1)[1]
+    raw = base64.b64decode(encoded, validate=True)
+    width, height = [int(part) for part in str(size).split("x", 1)]
+    with tempfile.TemporaryDirectory(prefix="hq-sora-ref-") as folder:
+        source = pathlib.Path(folder) / "source"
+        target = pathlib.Path(folder) / "reference.png"
+        source.write_bytes(raw)
+        try:
+            subprocess.run([
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-i", str(source), "-frames:v", "1", "-vf",
+                "scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d" %
+                (width, height, width, height),
+                str(target),
+            ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ValueError("Sora 参考图处理失败，请换一张 JPEG、PNG 或 WebP") from exc
+        if not target.is_file() or not target.stat().st_size:
+            raise ValueError("Sora 参考图处理失败，请换一张图片")
+        return target.read_bytes()
+
+
 def gen_sora_video(payload):
     """OpenAI Sora 2 限时 Beta：创建/恢复 → 轮询 → 鉴权下载 → 永久资产入库。"""
     from . import video_openai
@@ -3514,6 +4657,7 @@ def gen_sora_video(payload):
         raise ValueError("付费 Sora 任务必须绑定 job_id")
     model = str(payload.get("model") or "sora-2")
     prompt = str(payload.get("prompt") or "").strip()
+    provider_prompt = str(payload.get("provider_prompt") or prompt).strip()
     seconds = int(payload.get("seconds") or 4)
     size = str(payload.get("size") or SORA_SIZE_MAP.get(
         (model, payload.get("resolution") or "720p", payload.get("ratio") or "9:16"),
@@ -3552,16 +4696,19 @@ def gen_sora_video(payload):
             api_key=candidate["secret"], provider_key_id=candidate["id"],
         )
     else:
+        refs = payload.get("reference_images") or []
+        input_reference = _prepare_sora_input_reference(refs[0], size) if refs else None
         rendered, candidate = _create_with_provider_key(
             "sora",
             job_id,
             "sora_submitting",
             video_openai.CredentialRejected,
             lambda selected: video_openai.generate(
-                model, prompt, seconds, size,
+                model, provider_prompt, seconds, size,
                 job_id=job_id, heartbeat=sora_heartbeat,
                 api_key=selected["secret"],
                 provider_key_id=selected["id"],
+                input_reference=input_reference,
             ),
         )
 
@@ -3613,8 +4760,8 @@ def gen_xiaole_video(payload):
     )
     if not model:
         raise ValueError("未知视频渠道：%s" % channel)
-    prompt = (payload.get("prompt") or "").strip()
-    if not prompt:
+    user_prompt = (payload.get("prompt") or "").strip()
+    if not user_prompt:
         raise ValueError("请输入视频提示词")
     ratio = (
         payload.get("ratio")
@@ -3631,8 +4778,13 @@ def gen_xiaole_video(payload):
             ref_images = (
                 list(raw_refs)
                 if channel == "omni"
-                else [_xiaole_ref_to_url(r) for r in raw_refs]
+                else ([_seedance_ref_to_signed_url(r, payload.get("_username"))
+                       for r in raw_refs]
+                      if channel == "micro"
+                      else [_xiaole_ref_to_url(r) for r in raw_refs])
             )
+    mention_style = "xai" if use_xai else ("omni" if channel == "omni" else "generic")
+    prompt = resolve_image_mentions(user_prompt, len(ref_images or []), mention_style)
     label = {
         "grok": "果肉视频", "micro": "Seedance 视频", "omni": "Omni 视频",
     }.get(channel, model)
@@ -3705,12 +4857,12 @@ def gen_xiaole_video(payload):
                 video_xai.XaiCreateUnavailableError, create_xai_edit,
             )
         else:
-            image_url = ref_images[0] if ref_images else None
-            if image_url and not str(image_url).startswith(("http://", "https://")):
-                raise RuntimeError("xAI官方图生视频需要可公网访问的参考图，COS转存失败")
+            for image_url in ref_images or []:
+                if not str(image_url).startswith(("http://", "https://")):
+                    raise RuntimeError("xAI官方图生视频需要可公网访问的参考图，COS转存失败")
             def create_xai_video(candidate):
                 return video_xai.generate(
-                    model=model, prompt=prompt, image_url=image_url,
+                    model=model, prompt=prompt, reference_image_urls=ref_images,
                     duration=payload.get("duration") or 10,
                     aspect_ratio=ratio,
                     resolution=payload.get("resolution") or "720p",
@@ -3997,7 +5149,7 @@ def gen_xiaole_video(payload):
     # /api/gen/file/ 链接写进资产记录。public_url 内部会在 COS 不可用时安全回退。
     video_url = public_url(video_file, "video/mp4", private=True) if video_file else result.get("video_url")
     return {
-        "type": "video", "status": "done", "mode": channel, "model": result.get("model") or model, "text": prompt,
+        "type": "video", "status": "done", "mode": channel, "model": result.get("model") or model, "text": user_prompt,
         "operation": payload.get("operation") or "generate",
         "ratio": result.get("ratio") or ratio,
         "resolution": result.get("resolution") or (
@@ -4018,6 +5170,8 @@ def gen_xiaole_video(payload):
         "provider": result.get("provider"),
         "generate_audio": result.get("generate_audio"),
         "completion_tokens": result.get("completion_tokens"),
+        "reference_storyboard_count": payload.get("_reference_storyboard_count"),
+        "reference_storyboard_source_hashes": payload.get("_reference_storyboard_source_hashes"),
         "source_resolution": result.get("source_resolution"),
         "upscale": result.get("upscale"),
         "upscale_provider": result.get("upscale_provider"),
@@ -4376,6 +5530,7 @@ def validate_cinematic_payload(body, username=None, temporary_reference_files=No
         raise ValueError("参考视频最多 %d 个" % max_videos)
 
     images = [i for i in (body.get("reference_images") or []) if str(i or "").strip()]
+    validate_image_mentions(prompt, len(images))
     for i in images:
         if not _is_valid_data_url(i, VALID_IMAGE_MIMES):
             raise ValueError("参考图片格式不支持（jpg/png/webp）")
@@ -4491,6 +5646,7 @@ def gen_cinematic(payload):
     # 队列里可能还躺着改版前入队的 job，它们的素材还没落盘。
     video_files = list(payload.get("reference_video_files") or [])
     image_files = list(payload.get("reference_image_files") or [])
+    provider_prompt = resolve_image_mentions(payload.get("prompt"), len(image_files))
     if not video_files and payload.get("reference_videos"):
         video_files = [_save_data_file(v, "motion_ref", [".mp4", ".mov", ".webm"])
                        for v in payload["reference_videos"]]
@@ -4556,13 +5712,14 @@ def gen_cinematic(payload):
             # 同样的话说两遍。所以这里【什么都不拼】——
             #     payload 里的 prompt == HeyGen 真正收到的 prompt，一个字不差。
             # 顺带一个好处：排查时不用再脑补「后端还偷偷加了什么」。
-            prompt=payload["prompt"], direct=True,
+            prompt=provider_prompt, direct=True,
             enhance_prompt=payload.get("enhance_prompt")), "剧情视频")
 
         # ↓ 此刻已计费。之后任何失败都不能重发（见 HeyGenBilledError）——HeyGen 提交即扣费。
         update_video_asset_phase(job_id, "polling_video", provider_video_id=video_id)
         try:
-            info = _heygen_poll_video(video_id, direct=True, deadline_s=HEYGEN_MOTION_DEADLINE)
+            info = _heygen_poll_video(video_id, direct=True, deadline_s=HEYGEN_MOTION_DEADLINE,
+                                      mcp=_heygen_mcp_enabled())
             update_video_asset_phase(job_id, "downloading_video", source_video_url=info.get("video_url"))
             video_file = _download_video_file_direct(info["video_url"], "cinematic")
         except Exception as e:

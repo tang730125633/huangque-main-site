@@ -193,9 +193,9 @@
       </div>
 
       <div id="refSection">
-      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">参考图 <span id="upHint" style="font-size:12px; color:#5c6b82; font-weight:400;">(可选 · 果肉生图最多可上传 4 张；其它引擎为单图)</span></div>
+      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">参考图 <span id="upHint" style="font-size:12px; color:#5c6b82; font-weight:400;">(可选 · 图片编号可点入提示词)</span></div>
       <div style="display:flex; gap:10px;">
-        <label id="upBox" class="hv-gold" style="position:relative; width:66px; height:66px; flex:none; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; border:1px dashed rgba(148,164,187,.26); background:rgba(148,164,187,.04); border-radius:11px; color:#94a4bb; cursor:pointer; transition:.16s; overflow:hidden; background-size:cover; background-position:center;"><input id="upFile" type="file" accept="image/*" style="display:none"><span id="upIcon" style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg></span><span id="upText" style="font-size:10px;">上传</span></label>
+        <label id="upBox" class="hv-gold" style="position:relative; width:66px; height:66px; flex:none; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; border:1px dashed rgba(148,164,187,.26); background:rgba(148,164,187,.04); border-radius:11px; color:#94a4bb; cursor:pointer; transition:.16s; overflow:hidden; background-size:cover; background-position:center;"><input id="upFile" type="file" accept="image/*" multiple style="display:none"><span id="upIcon" style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg></span><span id="upText" style="font-size:10px;">上传</span></label>
       </div>
       </div>
 
@@ -231,7 +231,8 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=f3965a3c"></script>
+<script src="cloud-shell.js?v=4de5465a"></script>
+<script src="image-mentions.js?v=20260802f"></script>
 <script>
 /* 作图页接后端能力中心 /api/gen/image + /api/gen/banana，点数后端统一扣。 */
 (function(){
@@ -240,7 +241,7 @@
       resultRatio=document.getElementById('resultRatio');
   var collectHandoff=null;
   if(!gen) return;
-  var ratio='9:16', engine='banana', quality='hd', count=1, bananaVariant='nb2', seedreamVariant='std', xiaoleRefs=[];
+  var ratio='9:16', engine='banana', quality='hd', count=1, bananaVariant='nb2', seedreamVariant='std', refImages=[];
   function splitPercent(clientX,left,width){
     return Math.max(35,Math.min(65,Math.round(((clientX-left)/width)*100)));
   }
@@ -410,9 +411,8 @@
     if(bv) bv.style.display = (e==='banana') ? 'grid' : 'none';
     var sv=document.getElementById('seedreamVariantRow');
     if(sv) sv.style.display = (e==='seedream') ? 'grid' : 'none';
-    if(e==='xiaole' && !xiaoleRefs.length && refImg) xiaoleRefs.push(refImg);
     if(refImg) showInp(engine==='gpt');
-    renderXiaoleRefs();
+    renderRefs();
     updateCost();   // Nano Banana 两个型号点数不同，切引擎/切型号都要重算
   }
   document.querySelectorAll('#engineRow > div').forEach(function(c){ c.onclick=function(){ selectEngine(c.getAttribute('data-engine')); }; });
@@ -812,7 +812,8 @@
   }
 
   // ===== 参考图上传 → 图生图 / 局部修改（inpaint，gpt-image 专属）=====
-  var refImg=null, refW=0, refH=0, inpBtn=null, XIAOLE_REF_MAX=4;
+  var refImg=null, refW=0, refH=0, inpBtn=null;
+  var REF_LIMITS={banana:14,gpt:16,seedream:10,xiaole:4,zelong2:0};
   var upBox=document.getElementById('upBox'), upFile=document.getElementById('upFile'),
       upIcon=document.getElementById('upIcon'), upText=document.getElementById('upText'), upHint=document.getElementById('upHint');
   function showInp(on){ if(inpBtn) inpBtn.style.display=on?'inline-flex':'none'; }
@@ -845,7 +846,11 @@
     cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
     return shrinkToBudget(cv, maxBytes);
   }
-  // 把一张图片文件/Blob（上传或粘贴）压缩后设为参考图（上传与粘贴共用）
+  function refLimit(){ return REF_LIMITS[engine]||1; }
+  function insertImageMention(index){
+    HQImageMentions.insert(pr,index);
+  }
+  // 把一张图片文件/Blob（上传或粘贴）压缩后加入参考图（上传与粘贴共用）
   function refFromFile(f,done){
     if(!f) return;
     var url=URL.createObjectURL(f), im=new Image();
@@ -854,27 +859,40 @@
       if(dataUrlBytes(ref.dataUrl)>(fruit?XIAOLE_REF_MAX_BYTES:REF_MAX_BYTES)){
         setNote('图片仍超过 '+(fruit?'7':'9')+'MB，请压缩或更换图片后重试','#f4708a');
         try{ URL.revokeObjectURL(url); }catch(e){}
+        if(done) done();
         return;
       }
-      if(fruit) addXiaoleRef(ref.dataUrl); else setRef(ref.dataUrl, ref.width, ref.height);
-      if(done) done();
+      var index=addRef(ref.dataUrl, ref.width, ref.height);
+      if(done) done(index);
       try{ URL.revokeObjectURL(url); }catch(e){}
     };
-    im.onerror=function(){ setNote('这张图读取失败，换一张试试','#f4708a'); };
+    im.onerror=function(){ setNote('这张图读取失败，换一张试试','#f4708a'); if(done)done(0); };
     im.src=url;
   }
-  if(upFile){ upFile.onchange=function(){ refFromFile(upFile.files&&upFile.files[0]); }; }
+  function addRefFiles(files,index){ index=index||0; if(index>=files.length)return; refFromFile(files[index],function(){addRefFiles(files,index+1);}); }
+  if(upFile){ upFile.onchange=function(){ var files=Array.from(upFile.files||[]); upFile.value=''; addRefFiles(files); }; }
   // 直接在提示词框 Ctrl/⌘+V 粘贴剪贴板图片 → 设为参考图（图生图），不把图当乱码塞进文本
   if(pr){ pr.addEventListener('paste', function(e){
     var items=(e.clipboardData&&e.clipboardData.items)||[];
     for(var i=0;i<items.length;i++){
       if(items[i].kind==='file' && items[i].type && items[i].type.indexOf('image/')===0){
         var f=items[i].getAsFile();
-        if(f){ e.preventDefault(); refFromFile(f);
-          setNote(engine==='xiaole'?'✅ 已添加果肉生图参考图':'✅ 已把剪贴板图片设为参考图 · 改下提示词，点生成即走「图生图」','#2bd576'); return; }
+        if(f){ var range={start:pr.selectionStart,end:pr.selectionEnd}; e.preventDefault(); refFromFile(f,function(index){
+          if(index){HQImageMentions.insert(pr,index,range);setNote('✅ 已添加参考图并插入 @图片'+index,'#2bd576');} }); return; }
       }
     }
   }); }
+  if(pr){
+    HQImageMentions.bind(pr,function(){return refImages.map(function(item){return item.url;});});
+    pr.addEventListener('dragover',function(e){if(Array.from((e.dataTransfer&&e.dataTransfer.items)||[]).some(function(x){return x.kind==='file'&&x.type.indexOf('image/')===0;})){e.preventDefault();}});
+    pr.addEventListener('drop',function(e){
+      var files=Array.from((e.dataTransfer&&e.dataTransfer.files)||[]).filter(function(f){return f.type.indexOf('image/')===0;});
+      if(!files.length)return; e.preventDefault();
+      var range={start:pr.selectionStart,end:pr.selectionEnd}, pos=0;
+      function next(){if(pos>=files.length)return;refFromFile(files[pos++],function(index){if(index){HQImageMentions.insert(pr,index,range);range={start:pr.selectionStart,end:pr.selectionEnd};}next();});}
+      next();
+    });
+  }
 
   // ===== 提示词反推：上传/粘贴图 → Gemini 反推提示词 → 填入提示词框 / 连图做图生图 =====
   var revImgData=null, revImgUrl=null, revW=0, revH=0;
@@ -921,11 +939,6 @@
     if(revImgUrl && typeof setRef==='function') setRef(revImgUrl, revW, revH);
     setNote('✅ 提示词+参考图都已带上，点生成即走「图生图」','#2bd576'); };
 
-  if(upText){ upText.addEventListener('click',function(e){ if(refImg&&engine!=='xiaole'){ e.preventDefault(); e.stopPropagation();
-    refImg=null; refW=refH=0; upFile.value=''; upBox.style.backgroundImage='none'; upBox.style.borderStyle='dashed'; upBox.style.borderColor='rgba(148,164,187,.26)';
-    if(upIcon) upIcon.style.display='flex'; upText.textContent='上传'; upText.style.background='none'; upText.style.padding='0';
-    if(upHint) upHint.textContent='(可选 · 果肉生图最多可上传 4 张；其它引擎为单图)'; showInp(false);
-  } }); }
   if(upBox){
     inpBtn=document.createElement('button');
     inpBtn.id='inpBtn'; inpBtn.textContent='✏️ 局部修改'; inpBtn.style.cssText='display:none; align-items:center; gap:5px; margin-top:10px; padding:7px 13px; font-size:12.5px; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); border-radius:9px; cursor:pointer; font-family:inherit;';
@@ -981,34 +994,46 @@
   }
   // setRef：把一张 PNG dataURL 设为参考图（上传 + 继续改共用）
   function setRef(dataUrl, w, h){
-    refImg=dataUrl.split(',')[1]; refW=w; refH=h;
-    upBox.style.backgroundImage='url('+dataUrl+')'; upBox.style.borderStyle='solid'; upBox.style.borderColor='rgba(231,178,76,.5)';
-    if(upIcon) upIcon.style.display='none';
-    if(upText){ upText.textContent='✕ 清除'; upText.style.background='rgba(7,11,19,.65)'; upText.style.padding='1px 5px'; upText.style.borderRadius='4px'; }
-    if(upHint) upHint.textContent='(已就绪 ·「图生图」改全图'+(engine==='gpt'?'，或「局部修改」只改涂抹处':'')+')';
-    showInp(engine==='gpt');
+    refImages=[{data:dataUrl.split(',')[1]||dataUrl,url:dataUrl,width:w,height:h}];
+    syncFirstRef(); renderRefs();
   }
-  function addXiaoleRef(dataUrl){
-    if(xiaoleRefs.length>=XIAOLE_REF_MAX){ setNote('果肉生图最多可上传 '+XIAOLE_REF_MAX+' 张参考图','#f4708a'); return; }
-    xiaoleRefs.push(dataUrl.split(',')[1]||dataUrl); renderXiaoleRefs();
-    setNote('✅ 已添加果肉生图参考图（'+xiaoleRefs.length+'/'+XIAOLE_REF_MAX+'）','#2bd576');
+  function syncFirstRef(){
+    var first=refImages[0]; refImg=first?first.data:null; refW=first?first.width:0; refH=first?first.height:0;
+    showInp(engine==='gpt'&&refImages.length===1);
   }
-  function renderXiaoleRefs(){
+  function addRef(dataUrl,w,h){
+    var limit=refLimit();
+    if(refImages.length>=limit){ setNote('当前引擎最多支持 '+limit+' 张参考图','#f4708a'); return 0; }
+    refImages.push({data:dataUrl.split(',')[1]||dataUrl,url:dataUrl,width:w,height:h});
+    syncFirstRef(); renderRefs();
+    setNote('✅ 已添加参考图（'+refImages.length+'/'+limit+'），点“图片'+refImages.length+'”可插入提示词','#2bd576');
+    return refImages.length;
+  }
+  function promptUsesShiftedIndex(index){
+    var found=false; (pr.value||'').replace(/@(?:图片|图)([1-9]\d*)/g,function(_,n){if(Number(n)>=index)found=true;return _;}); return found;
+  }
+  function renderRefs(){
     if(!upBox) return;
-    var row=upBox.parentElement;
-    row.querySelectorAll('.xiaole-ref-thumb').forEach(function(el){el.remove();});
-    if(engine!=='xiaole'){
-      upBox.style.display='flex';
-      if(!refImg){ upBox.style.backgroundImage='none'; upBox.style.borderStyle='dashed'; upBox.style.borderColor='rgba(148,164,187,.26)'; if(upIcon)upIcon.style.display='flex'; if(upText)upText.textContent='上传'; }
-      return;
-    }
+    var row=upBox.parentElement, limit=refLimit();
+    row.querySelectorAll('.image-ref-thumb').forEach(function(el){el.remove();});
     upBox.style.backgroundImage='none'; upBox.style.borderStyle='dashed'; upBox.style.borderColor='rgba(148,164,187,.26)';
     if(upIcon)upIcon.style.display='flex'; if(upText)upText.textContent='添加';
-    if(upHint)upHint.textContent='(可选 · 已选 '+xiaoleRefs.length+'/'+XIAOLE_REF_MAX+' 张，上传或在提示词框 Ctrl/⌘V 粘贴)';
-    xiaoleRefs.forEach(function(data,i){ var box=document.createElement('div'); box.className='xiaole-ref-thumb'; box.style.cssText='position:relative;width:66px;height:66px;border:1px solid rgba(231,178,76,.5);border-radius:11px;overflow:hidden;background:#070b13;'; box.innerHTML='<img src="data:image/png;base64,'+data+'" style="width:100%;height:100%;object-fit:cover"><button type="button" style="position:absolute;right:3px;top:3px;width:20px;height:20px;border:0;border-radius:50%;background:rgba(7,11,19,.8);color:#fff;cursor:pointer;">×</button>'; box.querySelector('button').onclick=function(){xiaoleRefs.splice(i,1);renderXiaoleRefs();}; row.insertBefore(box,upBox); });
-    upBox.style.display=xiaoleRefs.length>=XIAOLE_REF_MAX?'none':'flex';
+    if(upHint)upHint.textContent='(已选 '+refImages.length+'/'+limit+' 张 · 点图片编号插入 @图片N)';
+    refImages.forEach(function(item,i){
+      var box=document.createElement('div'); box.className='image-ref-thumb';
+      box.style.cssText='position:relative;width:66px;height:66px;border:1px solid rgba(231,178,76,.5);border-radius:11px;overflow:hidden;background:#070b13;';
+      box.innerHTML='<img src="'+item.url+'" style="width:100%;height:100%;object-fit:cover"><button type="button" data-mention style="position:absolute;left:3px;bottom:3px;border:0;border-radius:5px;background:rgba(7,11,19,.82);color:#e7b24c;font:10px inherit;cursor:pointer;">图片'+(i+1)+'</button><button type="button" data-remove aria-label="删除图片'+(i+1)+'" style="position:absolute;right:3px;top:3px;width:20px;height:20px;border:0;border-radius:50%;background:rgba(7,11,19,.8);color:#fff;cursor:pointer;">×</button>';
+      box.querySelector('[data-mention]').onclick=function(){insertImageMention(i+1);};
+      box.querySelector('[data-remove]').onclick=function(){
+        if(promptUsesShiftedIndex(i+1)){setNote('提示词已引用图片'+(i+1)+'或后续图片，请先删除对应 @图片N','#f4708a');return;}
+        refImages.splice(i,1); syncFirstRef(); renderRefs();
+      };
+      row.insertBefore(box,upBox);
+    });
+    upBox.style.display=refImages.length>=limit?'none':'flex';
+    if(refImages.length>limit) setNote('当前引擎最多支持 '+limit+' 张参考图，请删减后再生成','#f4708a');
   }
-  renderXiaoleRefs();
+  renderRefs();
 
   // 灵感页详情弹窗「跟创」带来的粘贴参考图（经 sessionStorage 传递）→ 载入即设为参考图（图生图）
   try{ var _fcref=sessionStorage.getItem('hq_followcreate_ref');
@@ -1063,19 +1088,19 @@
   // 文生图 / 图生图（有参考图）/ nano banana
   gen.onclick=function(){
     var bp={prompt:(pr.value||'').trim(), ratio:ratio, quality:quality, count:count};
-    var usesRef=(engine==='xiaole'&&xiaoleRefs.length)|| (!!refImg&&engine!=='zelong2');
-    if(engine==='xiaole'&&xiaoleRefs.length) bp.reference_images=xiaoleRefs.slice();
-    else if(usesRef) bp.image=refImg;
+    var usesRef=refImages.length>0&&engine!=='zelong2';
+    if(refImages.length>refLimit()){ setNote('当前引擎最多支持 '+refLimit()+' 张参考图，请删减后再生成','#f4708a'); return; }
+    if(usesRef) bp.reference_images=refImages.map(function(x){return x.data;});
     if(engine==='gpt' || engine==='xiaole' || engine==='zelong2' || engine==='seedream'){
       if(engine!=='gpt') bp.provider=engine;              // 果肉/泽龙2/Seedream 各自 provider
       if(engine==='seedream') bp.variant=seedreamVariant; // 5.0 标准 / 5.0 Pro
       var lbl = engine==='xiaole' ? '果肉生图 '
               : engine==='zelong2' ? '泽龙2生图 '
               : engine==='seedream' ? ('黄雀引擎 1 '+(seedreamVariant==='pro'?'Pro ':'标准 ')) : '';
-      submit(bp, lbl+((engine==='xiaole'&&xiaoleRefs.length)?'多图参考生图中':(usesRef?'图生图中（在参考图上改）':(engine==='gpt'?'文生图中':'生成中'))), '/api/gen/image');
+      submit(bp, lbl+(usesRef?'多图参考生图中':(engine==='gpt'?'文生图中':'生成中')), '/api/gen/image');
     } else {
       bp.model=bananaVariant;   // 一张卡两个型号：nb2 / pro，后端 /api/gen/banana 按 model 分流
-      submit(bp, (bananaVariant==='pro'?'纳米香蕉 Pro ':'纳米香蕉 2 ')+(refImg?'图生图中（在参考图上改）':'生成中'), '/api/gen/banana');
+      submit(bp, (bananaVariant==='pro'?'纳米香蕉 Pro ':'纳米香蕉 2 ')+(usesRef?'多图参考生图中':'生成中'), '/api/gen/banana');
     }
   };
   // 最近作品：读真实历史（生成即自动入库）

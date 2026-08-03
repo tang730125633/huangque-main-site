@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import tempfile
 import time
@@ -1095,21 +1096,34 @@ class ShortDramaAssemblyTests(unittest.TestCase):
             source_inspector=self._video_inspection,
         )
         self.assertTrue(workspace["actions"]["can_confirm"])
-        with self.assertRaises(
-            short_drama_completion.CompletionDisabled
+        completion_body = {
+            "project_id": self.project["id"],
+            "revision": revision, "final_version": 1,
+        }
+        with mock.patch.dict(
+            os.environ, {"HQ_SHORT_DRAMA_COMPLETION_ENABLED": "1"},
         ):
-            short_drama_assembly.confirm_final(
-                self.db, "alice", {
-                    "project_id": self.project["id"],
-                    "revision": revision, "final_version": 1,
-                },
+            with self.assertRaises(
+                short_drama_completion.CompletionError
+            ) as required:
+                short_drama_assembly.confirm_final(
+                    self.db, "alice", completion_body,
+                )
+        self.assertEqual("completion_required", required.exception.code)
+        with mock.patch.dict(
+            os.environ, {"HQ_SHORT_DRAMA_COMPLETION_ENABLED": "0"},
+        ):
+            completed = short_drama_assembly.confirm_final(
+                self.db, "alice", completion_body,
             )
+        self.assertEqual("completed", completed["stage"])
+        self.assertFalse(completed["replayed"])
         with closing(self.db()) as conn:
             stage = conn.execute(
                 "SELECT stage FROM short_drama_projects WHERE id=?",
                 (self.project["id"],),
             ).fetchone()[0]
-        self.assertEqual("assembly_review", stage)
+        self.assertEqual("completed", stage)
 
     def test_d4_attempt_states_are_included_in_project_point_ledger(self):
         now = int(time.time())

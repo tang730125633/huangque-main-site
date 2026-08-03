@@ -236,7 +236,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=f3965a3c"></script>
+<script src="cloud-shell.js?v=4de5465a"></script>
 <script>
 (function () {
   'use strict';
@@ -279,6 +279,7 @@
         var a = document.createElement('a');
         a.href = URL.createObjectURL(blob); a.download = (q.get('name') || 'download') + ext;
         document.body.appendChild(a); a.click(); a.remove();
+        setNote('✅ 下载已开始', '#2bd576');
         setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
       });
   }

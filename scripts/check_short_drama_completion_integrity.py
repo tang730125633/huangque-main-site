@@ -37,7 +37,7 @@ def inspect_connection(conn, now=None, stale_seconds=300):
             "ok": False,
             "checked_at": now,
             "issues": [_issue(
-                "schema_missing", None, "??????" + "?".join(missing)
+                "schema_missing", None, "缺少数据表：" + ",".join(missing)
             )],
         }
 
@@ -50,7 +50,7 @@ def inspect_connection(conn, now=None, stale_seconds=300):
     ):
         issues.append(_issue(
             "completed_snapshot_mismatch", row["id"],
-            "completed ??????? completion_id ???",
+            "completed 项目与不可变快照的 completion_id 不一致",
         ))
 
     for row in conn.execute(
@@ -62,7 +62,7 @@ def inspect_connection(conn, now=None, stale_seconds=300):
     ):
         issues.append(_issue(
             "snapshot_project_mismatch", row["project_id"],
-            "????????? completed ????",
+            "不可变快照没有匹配的 completed 项目指针",
         ))
 
     if _table_exists(conn, "short_drama_final_assets"):
@@ -76,7 +76,7 @@ def inspect_connection(conn, now=None, stale_seconds=300):
         ):
             issues.append(_issue(
                 "delivery_asset_invalid", row["project_id"],
-                "????????????????",
+                "交付快照引用的正式资产不存在、已删除或未完成归档",
             ))
 
     cutoff = now - max(60, int(stale_seconds or 300))
@@ -87,15 +87,15 @@ def inspect_connection(conn, now=None, stale_seconds=300):
     ):
         issues.append(_issue(
             "completion_attempt_stale", row["project_id"],
-            "???? attempt ?????? started?" + str(row["id"]),
+            "完成确认 attempt 长时间停留在 started：" + str(row["id"]),
         ))
 
     return {"ok": not issues, "checked_at": now, "issues": issues}
 
 
 def main():
-    parser = argparse.ArgumentParser(description="???? D-6 ???????")
-    parser.add_argument("--db", required=True, help="?? SQLite ?????")
+    parser = argparse.ArgumentParser(description="只读检查 D-6 完成交付一致性")
+    parser.add_argument("--db", required=True, help="短剧 SQLite 数据库路径")
     parser.add_argument("--stale-seconds", type=int, default=300)
     args = parser.parse_args()
     uri = "file:%s?mode=ro" % args.db.replace("\\", "/")

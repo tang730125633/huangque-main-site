@@ -2958,3 +2958,50 @@ def retry_final_charge_attempts(db_factory, points_domain, limit=64):
 def confirm_final(db_factory, owner_username, body):
     from . import short_drama_completion
     short_drama_completion.reject_legacy_completion()
+    if not isinstance(body, dict) or set(body) != {
+        "project_id", "revision", "final_version"
+    }:
+        raise ValueError("确认成片请求字段不正确")
+    now = int(time.time())
+    with closing(db_factory()) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN IMMEDIATE")
+        project = conn.execute(
+            "SELECT * FROM short_drama_projects WHERE id=? AND username=? "
+            "AND deleted=0", (str(body.get("project_id") or ""), owner_username),
+        ).fetchone()
+        if not project:
+            raise LookupError("短剧项目不存在")
+        if project["stage"] == "completed":
+            conn.commit()
+            return {
+                "project_id": project["id"], "stage": "completed",
+                "revision": project["revision"], "replayed": True,
+            }
+        if (
+            project["stage"] != "assembly_review"
+            or project["revision"] != body.get("revision")
+        ):
+            raise PreviewBlocked("revision_conflict", "项目状态已更新")
+        version = conn.execute(
+            "SELECT v.version,a.id AS asset_id FROM "
+            "short_drama_composition_versions v "
+            "JOIN short_drama_final_assets a ON a.composition_version_id=v.id "
+            "WHERE v.project_id=? AND v.kind='final' AND v.version=? "
+            "AND v.status='succeeded' AND a.archive_status='ready' "
+            "AND a.deleted=0",
+            (project["id"], body.get("final_version")),
+        ).fetchone()
+        if not version:
+            raise PreviewBlocked("final_missing", "尚无可确认的正式成片资产")
+        conn.execute(
+            "UPDATE short_drama_projects SET stage='completed',"
+            "revision=revision+1,updated_at=? WHERE id=?",
+            (now, project["id"]),
+        )
+        conn.commit()
+        return {
+            "project_id": project["id"], "stage": "completed",
+            "revision": project["revision"] + 1,
+            "asset_id": version["asset_id"], "replayed": False,
+        }

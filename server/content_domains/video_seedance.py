@@ -70,6 +70,13 @@ def _safe_text(value, limit=500, api_key=None):
     for secret in (api_key, ARK_API_KEY):
         if secret:
             text = re.sub(re.escape(secret), "***", text, flags=re.IGNORECASE)
+    # Signed object URLs are credentials. Redact the complete query instead
+    # of trying to enumerate provider-specific signature parameter names.
+    text = re.sub(
+        r"(?i)(https?://[^\s?#\"'<>]+)\?[^\s\"'<>]+",
+        lambda match: match.group(1) + "?[REDACTED]",
+        text,
+    )
     return text[:limit]
 
 
@@ -205,7 +212,11 @@ def _request_json(opener, method, path, body=None, timeout=90, api_key=None):
 def _reference_item(url):
     url = str(url or "").strip()
     parsed = urllib.parse.urlsplit(url)
-    if parsed.scheme not in {"http", "https", "asset"}:
+    valid_http = (parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+                  and not parsed.username and not parsed.password)
+    valid_asset = (parsed.scheme == "asset" and bool(re.fullmatch(
+        r"asset://asset-[A-Za-z0-9._-]{1,240}", url)))
+    if not (valid_http or valid_asset):
         raise ValueError("Seedance 参考图必须是公网 URL 或已授权 asset:// 素材")
     return {
         "type": "image_url",

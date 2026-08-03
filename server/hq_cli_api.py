@@ -251,7 +251,7 @@ def _canvas_op_node_id(value, field="节点标识"):
 def _canvas_agent_payload(value):
     _strict_object(value, {
         "prompt", "project_id", "snapshot_digest", "scope", "nodes", "edges",
-        "selected_node_ids", "history",
+        "selected_node_ids", "history", "page_context", "ip12_context",
     }, ("prompt", "project_id", "snapshot_digest", "scope", "nodes", "edges", "selected_node_ids"))
     project_id = _string(value["project_id"], "project_id", 1, 128)
     scope = _enum(value["scope"], "scope", ("local", "collab"))
@@ -311,11 +311,52 @@ def _canvas_agent_payload(value):
         content = _string(raw["content"], "历史消息", 0, 2000)
         if content:
             history.append({"role": role, "content": content})
+    page_context = value.get("page_context")
+    if page_context is not None:
+        _strict_object(page_context, {"page", "path", "title", "can_edit", "selected_count"},
+                       ("page", "path", "title", "can_edit", "selected_count"))
+        if page_context["page"] != "canvas" or page_context["path"] not in {
+                "/workbench/canvas", "/workbench/canvas.html"}:
+            raise CLIAPIError(400, "page_context 不属于黄雀画布")
+        if not isinstance(page_context["can_edit"], bool):
+            raise CLIAPIError(400, "page_context.can_edit 必须是布尔值")
+        page_context = {
+            "page": "canvas", "path": page_context["path"],
+            "title": _string(page_context["title"], "page_context.title", 0, 120),
+            "can_edit": page_context["can_edit"],
+            "selected_count": _integer(page_context["selected_count"], "page_context.selected_count", 0, 30),
+        }
+    ip12_context = value.get("ip12_context")
+    if ip12_context is not None:
+        _strict_object(ip12_context, {"project_id", "title", "status", "foundation_status", "facts"},
+                       ("project_id", "title", "status", "foundation_status", "facts"))
+        raw_facts = ip12_context["facts"]
+        if not isinstance(raw_facts, list) or len(raw_facts) > 20:
+            raise CLIAPIError(400, "ip12_context.facts 必须是最多 20 项的数组")
+        facts = []
+        for raw in raw_facts:
+            _strict_object(raw, {"label", "value"}, ("label", "value"))
+            facts.append({
+                "label": _string(raw["label"], "ip12_context.facts.label", 1, 80),
+                "value": _string(raw["value"], "ip12_context.facts.value", 1, 800),
+            })
+        ip12_context = {
+            "project_id": _identifier(ip12_context["project_id"], "ip12_context.project_id"),
+            "title": _string(ip12_context["title"], "ip12_context.title", 0, 120),
+            "status": _enum(ip12_context["status"], "ip12_context.status", ("draft", "candidate_ready", "confirmed")),
+            "foundation_status": _enum(ip12_context["foundation_status"], "ip12_context.foundation_status",
+                                       ("missing", "pending_confirmation", "confirmed", "stale", "legacy")),
+            "facts": facts,
+        }
     payload = {
         "prompt": _string(value["prompt"], "prompt", 1, 2000), "project_id": project_id,
         "snapshot_digest": digest, "scope": scope, "nodes": nodes, "edges": edges,
         "selected_node_ids": selected, "history": history,
     }
+    if page_context is not None:
+        payload["page_context"] = page_context
+    if ip12_context is not None:
+        payload["ip12_context"] = ip12_context
     raw = json.dumps(payload, ensure_ascii=False).lower()
     if any(marker in raw for marker in ("data:image/", "data:video/", ";base64,", "blob:")) or _CANVAS_BASE64_RE.search(raw):
         raise CLIAPIError(400, "画布上下文不能包含媒体数据或 Blob 地址")
@@ -844,8 +885,9 @@ def _generation_payload(action, value):
             body["mask_upload_id"] = _upload_id(value["mask_upload_id"], "mask_upload_id")
         if "reference_upload_ids" in value:
             references = value["reference_upload_ids"]
-            if not isinstance(references, list) or not 1 <= len(references) <= 4:
-                raise CLIAPIError(400, "reference_upload_ids 必须包含 1-4 项")
+            limit = {"openai": 16, "seedream": 10, "xiaole": 4}[body["provider"]]
+            if not isinstance(references, list) or not 1 <= len(references) <= limit:
+                raise CLIAPIError(400, "reference_upload_ids 必须包含 1-%d 项" % limit)
             body["reference_upload_ids"] = []
             for item in references:
                 clean = _upload_id(item, "reference_upload_ids")
@@ -859,11 +901,9 @@ def _generation_payload(action, value):
             raise CLIAPIError(400, "蒙版局部修改仅支持 openai")
         if body.get("mask_upload_id") and body["count"] != 1:
             raise CLIAPIError(400, "蒙版局部修改 count 必须为 1")
-        if body.get("reference_upload_ids") and body["provider"] != "xiaole":
-            raise CLIAPIError(400, "多参考图目前仅支持 xiaole")
         return body, "image", "/api/gen/image"
     if action == "video-generate":
-        _strict_object(value, {"prompt", "channel", "ratio", "duration", "resolution", "model", "generate_audio"}, ("prompt",))
+        _strict_object(value, {"prompt", "channel", "ratio", "duration", "resolution", "model", "generate_audio", "reference_upload_ids"}, ("prompt",))
         channel = _enum(value.get("channel", "grok"), "channel", ("grok", "micro", "omni"))
         body = {
             "prompt": _string(value["prompt"], "prompt", 1, 2000),
@@ -881,6 +921,16 @@ def _generation_payload(action, value):
             if not isinstance(value["generate_audio"], bool) or channel != "micro":
                 raise CLIAPIError(400, "generate_audio 仅用于 micro 且必须是布尔值")
             body["generate_audio"] = value["generate_audio"]
+        if "reference_upload_ids" in value:
+            references = value["reference_upload_ids"]
+            limit = {"grok": 7, "micro": 9, "omni": 6}[channel]
+            if not isinstance(references, list) or not 1 <= len(references) <= limit:
+                raise CLIAPIError(400, "reference_upload_ids 必须包含 1-%d 项" % limit)
+            body["reference_upload_ids"] = []
+            for item in references:
+                clean = _upload_id(item, "reference_upload_ids")
+                if clean not in body["reference_upload_ids"]:
+                    body["reference_upload_ids"].append(clean)
         return body, "xiaole_video", "/api/gen/xiaole_video"
     _strict_object(value, {"text", "voice", "speed", "pitch", "volume"}, ("text",))
     body = {"text": _string(value["text"], "text", 1, 1000)}

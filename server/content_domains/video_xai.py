@@ -213,13 +213,20 @@ def resume(request_id, model, duration, job_id=None, heartbeat=None, now=None,
 
 
 def generate(model, prompt, duration, aspect_ratio, resolution, image_url=None,
+             reference_image_urls=None,
              job_id=None, heartbeat=None, now=None, sleep=None, api_key=None,
              provider_key_id=None):
     """创建 xAI 生成任务并轮询到终态。"""
     duration = int(duration)
+    references = [str(url or "").strip() for url in (reference_image_urls or []) if str(url or "").strip()]
+    legacy_image = str(image_url or "").strip() if not references else ""
+    if len(references) > 7:
+        raise ValueError("xAI官方图生视频最多支持7张参考图")
+    if references and resolution != "720p":
+        raise ValueError("xAI参考图生视频最高支持720p")
     if model == "grok-imagine-video-1.5":
-        if not str(image_url or "").strip():
-            raise ValueError("Grok Video 1.5 仅支持1张首帧图")
+        if not references and not legacy_image:
+            raise ValueError("Grok Video 1.5 至少需要1张参考图")
         if duration < 1 or duration > 15:
             raise ValueError("Grok Video 1.5 视频时长必须是1-15秒整数")
     elif duration < 1 or duration > 15:
@@ -232,8 +239,10 @@ def generate(model, prompt, duration, aspect_ratio, resolution, image_url=None,
         "aspect_ratio": aspect_ratio,
         "resolution": resolution,
     }
-    if image_url:
-        payload["image"] = {"url": image_url}
+    if legacy_image:
+        payload["image"] = {"url": legacy_image}
+    elif references:
+        payload["reference_images"] = [{"url": url} for url in references]
 
     try:
         created = _create(

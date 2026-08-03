@@ -341,19 +341,16 @@ def get_points(username):
     except Exception:
         return 0
 
-
 def get_points_transaction(transaction_key):
-    """Read one committed Auth points ledger row by its stable transaction key."""
-    transaction_key = urllib.parse.quote(str(transaction_key or "").strip(), safe="")
-    if not transaction_key:
-        raise AuthPointsError(400, "missing transaction_key")
+    """Read one Auth ledger row without creating or replaying a charge."""
+    key = str(transaction_key or "").strip()
+    if not key or len(key) > 160:
+        raise ValueError("invalid transaction_key")
+    query = urllib.parse.urlencode({"transaction_key": key})
     res = _auth_points_request(
-        "/api/auth/points/transaction?transaction_key=" + transaction_key,
-        method="GET",
-    )
-    transaction = res.get("transaction")
-    return dict(transaction) if isinstance(transaction, dict) else None
-
+        "/api/auth/points/transaction?" + query, method="GET")
+    row = res.get("transaction")
+    return row if isinstance(row, dict) else None
 
 def deduct_points(username, amount, reason="", transaction_key=""):
     """预扣点。reason 落 points_audit，供对账。

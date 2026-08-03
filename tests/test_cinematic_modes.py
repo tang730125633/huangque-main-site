@@ -146,11 +146,12 @@ class FixedPromptTests(_Base):
 
     def test_the_guard_is_no_longer_appended_by_gen_cinematic(self):
         """反过来了：现在固定提示词【自带】约束，gen_cinematic 什么都不拼。
-        payload 里的 prompt == HeyGen 收到的 prompt。"""
+        没有 @图片N 时 payload 里的 prompt == HeyGen 收到的 prompt。"""
         gen = VIDEO_SRC.split("def gen_cinematic")[1].split(chr(10) + "def ")[0]
         code = chr(10).join(ln for ln in gen.splitlines() if not ln.lstrip().startswith("#"))
         self.assertNotIn("CINEMATIC_IDENTITY_GUARD", code)
-        self.assertIn('prompt=payload["prompt"]', code)
+        self.assertIn('prompt=provider_prompt', code)
+        self.assertIn('provider_prompt = resolve_image_mentions', code)
 
     def test_the_single_person_prompt_is_the_one_kongli_gave(self):
         """kongli 2026-07-14 换的这段（详见 test_open_mode_no_guard）。

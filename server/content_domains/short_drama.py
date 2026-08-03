@@ -44,6 +44,7 @@ NEXT_STAGE = {
     "stills_review": "voice_review",
     "voice_review": "video_review",
     "video_review": "assembly_review",
+    "assembly_review": "completed",
 }
 RATIOS = {"9:16", "16:9"}
 DURATIONS = {30, 45, 60}
@@ -3233,7 +3234,10 @@ def confirm_stage(db_factory, username, project_id, revision, current_stage,
             "revision": revision,
             "stage": current_stage,
         }, avatar_lookup)
-    if current_stage in short_drama_production.PRODUCTION_STAGES:
+    if (
+        current_stage in short_drama_production.PRODUCTION_STAGES
+        and current_stage != "assembly_review"
+    ):
         raise ValueError("当前批次只允许确认关键帧阶段")
     if current_stage not in NEXT_STAGE:
         raise ValueError("当前阶段不可确认")
@@ -4602,6 +4606,17 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             handler._send(200, result)
         elif method == "POST" and path.endswith("/assembly/confirm"):
             short_drama_completion.reject_legacy_completion()
+            body = _request_object(handler)
+            owner = _project_username_for_access(
+                db_factory, username, str(body.get("project_id") or ""),
+                access, write=True,
+            )
+            handler._send(
+                200,
+                short_drama_assembly.confirm_final(
+                    db_factory, owner, body,
+                ),
+            )
         elif method == "POST" and path.endswith("/select-asset"):
             body = _request_object(handler)
             _project_username_for_access(

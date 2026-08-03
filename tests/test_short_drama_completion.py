@@ -199,10 +199,40 @@ class ShortDramaCompletionTests(unittest.TestCase):
         self.assertEqual({
             "short_drama_completions",
             "short_drama_completion_attempts",
+            "short_drama_completion_migration_runs",
+            "short_drama_completion_migration_items",
         }, tables)
         self.assertTrue({
             "completion_id", "completed_at", "completed_by",
         }.issubset(columns))
+
+    def test_default_rollout_keeps_legacy_stage_completion_available(self):
+        with closing(self.db()) as conn:
+            revision = conn.execute(
+                "SELECT revision FROM short_drama_projects WHERE id=?",
+                (self.project_id,),
+            ).fetchone()[0]
+        with mock.patch.dict(
+            os.environ, {"HQ_SHORT_DRAMA_COMPLETION_ENABLED": "1"},
+        ):
+            with self.assertRaises(
+                short_drama_completion.CompletionError
+            ) as required:
+                short_drama.confirm_stage(
+                    self.db, "alice", self.project_id, revision,
+                    "assembly_review",
+                )
+        self.assertEqual("completion_required", required.exception.code)
+
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HQ_SHORT_DRAMA_COMPLETION_ENABLED", None)
+            completed = short_drama.confirm_stage(
+                self.db, "alice", self.project_id, revision,
+                "assembly_review",
+            )
+        self.assertEqual("completed", completed["stage"])
+        self.assertEqual(revision + 1, completed["revision"])
+        self.assertIsNone(completed["completion_id"])
 
     def _mark_legacy_completed(self, with_archived_attempt):
         now = int(time.time())
@@ -237,6 +267,9 @@ class ShortDramaCompletionTests(unittest.TestCase):
         self.assertEqual(
             {
                 "dry_run": True,
+                "run_id": None,
+                "state": "dry_run",
+                "replayed": False,
                 "scanned": 1,
                 "eligible": 1,
                 "migrated": 0,
@@ -249,10 +282,15 @@ class ShortDramaCompletionTests(unittest.TestCase):
                 "SELECT completion_id FROM short_drama_projects WHERE id=?",
                 (self.project_id,),
             ).fetchone()[0])
+            self.assertEqual(0, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_completion_migration_runs"
+            ).fetchone()[0])
         applied = short_drama_completion.migrate_legacy_completions(
-            self.db, apply=True, now=1730000100
+            self.db, apply=True, now=1730000100,
+            run_id="release-20260803",
         )
         self.assertEqual(1, applied["migrated"])
+        self.assertEqual("release-20260803", applied["run_id"])
         with closing(self.db()) as conn:
             conn.row_factory = sqlite3.Row
             project = conn.execute(
@@ -281,9 +319,74 @@ class ShortDramaCompletionTests(unittest.TestCase):
         self.assertEqual("legacy_completion_migrated", audit["event_type"])
         self.assertTrue(json.loads(audit["detail_json"])["legacy_migration"])
         replay = short_drama_completion.migrate_legacy_completions(
-            self.db, apply=True, now=1730000200
+            self.db, apply=True, now=1730000200,
+            run_id="release-20260803",
         )
-        self.assertEqual(0, replay["scanned"])
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(1, replay["migrated"])
+
+        verified = short_drama_completion.verify_legacy_completions(
+            self.db, run_id="release-20260803", now=1730000201,
+        )
+        self.assertTrue(verified["ok"])
+        self.assertEqual(1, verified["applied_items"])
+
+        rolled_back = short_drama_completion.rollback_legacy_completions(
+            self.db, "release-20260803", now=1730000202,
+        )
+        self.assertEqual(1, rolled_back["rolled_back"])
+        with closing(self.db()) as conn:
+            project = conn.execute(
+                "SELECT stage,revision,completion_id,completed_at,completed_by "
+                "FROM short_drama_projects WHERE id=?", (self.project_id,),
+            ).fetchone()
+            completion_count = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_completions "
+                "WHERE project_id=?", (self.project_id,),
+            ).fetchone()[0]
+        self.assertEqual("completed", project[0])
+        self.assertIsNone(project[2])
+        self.assertIsNone(project[3])
+        self.assertIsNone(project[4])
+        self.assertEqual(0, completion_count)
+        rollback_replay = short_drama_completion.rollback_legacy_completions(
+            self.db, "release-20260803", now=1730000203,
+        )
+        self.assertTrue(rollback_replay["replayed"])
+
+    def test_legacy_migration_rollback_is_atomic_after_project_changes(self):
+        self._mark_legacy_completed(with_archived_attempt=True)
+        short_drama_completion.migrate_legacy_completions(
+            self.db, apply=True, now=1730000100,
+            run_id="release-conflict",
+        )
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_projects SET revision=revision+1 "
+                "WHERE id=?", (self.project_id,),
+            )
+            conn.commit()
+        with self.assertRaises(short_drama_completion.CompletionError) as blocked:
+            short_drama_completion.rollback_legacy_completions(
+                self.db, "release-conflict", now=1730000200,
+            )
+        self.assertEqual("migration_rollback_blocked", blocked.exception.code)
+        with closing(self.db()) as conn:
+            project = conn.execute(
+                "SELECT completion_id FROM short_drama_projects WHERE id=?",
+                (self.project_id,),
+            ).fetchone()
+            completion_count = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_completions "
+                "WHERE project_id=?", (self.project_id,),
+            ).fetchone()[0]
+            run_state = conn.execute(
+                "SELECT state FROM short_drama_completion_migration_runs "
+                "WHERE run_id='release-conflict'",
+            ).fetchone()[0]
+        self.assertIsNotNone(project[0])
+        self.assertEqual(1, completion_count)
+        self.assertEqual("applied", run_state)
 
     def test_legacy_completed_project_without_archived_attempt_needs_review(self):
         self._mark_legacy_completed(with_archived_attempt=False)
@@ -306,6 +409,15 @@ class ShortDramaCompletionTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(("completed", None), project)
         self.assertEqual(0, count)
+
+        with self.assertRaises(short_drama_completion.CompletionError) as pending:
+            short_drama_completion.get_completion(
+                self.db, "alice", self.project_id,
+            )
+        self.assertEqual(
+            "legacy_completion_pending_migration", pending.exception.code,
+        )
+        self.assertEqual(409, pending.exception.status)
 
     def test_readiness_is_free_deterministic_and_machine_readable(self):
         first = self._readiness()

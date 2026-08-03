@@ -10,7 +10,7 @@ CSS_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas.css"
 APP_PATH = ROOT / "site" / "workbench" / "canvas" / "canvas-app.js"
 SHORT_DRAMA_CSS = sorted((ROOT / "site" / "workbench" / "canvas").glob("canvas-short-drama*.css"))
 
-EXPECTED_CSS_SHA256 = "47faf200a849a4fc4fe7531d310314992ba8c36363c0c7a2033ed4bd99611e9a"
+EXPECTED_CSS_SHA256 = "56209e89ee4beb432419de076f1a91fac19ebc47babf24d4689f67b11f3b3fd0"
 
 
 def normalized_sha256(path: Path) -> str:
@@ -43,6 +43,8 @@ class CanvasAssetExtractionTests(unittest.TestCase):
         self.assertIn("function syncCanvasGrid()", app)
         self.assertIn("fallback=x==null||y==null?viewportNodePoint():null", app)
         self.assertIn("function centerEmptyView()", app)
+        self.assertIn("if(empty&&empty.parentNode!==inner) inner.appendChild(empty);", app)
+        self.assertIn("empty.classList.toggle('on', count===0)", app)
         self.assertIn("((minX+maxX)/2)*zoom-canvas.clientWidth/2", app)
         self.assertIn("CANVAS_VIEW_PAD=1200", app)
         self.assertIn("margin:1200px", css)
@@ -107,6 +109,40 @@ class CanvasAssetExtractionTests(unittest.TestCase):
         self.assertIn("@keyframes nc-menu-icon-draw", css)
         self.assertIn("@keyframes nc-menu-icon-spark", css)
         self.assertIn("prefers-reduced-motion:reduce", css)
+
+    def test_account_assets_drag_to_matching_canvas_nodes(self):
+        app = APP_PATH.read_text(encoding="utf-8")
+        css = CSS_PATH.read_text(encoding="utf-8")
+        self.assertIn("draggable=\"'+(canEditCanvas()?'true':'false')+'\"", app)
+        self.assertIn("btn.ondragstart=function(e)", app)
+        self.assertIn("canvas.addEventListener('dragover'", app)
+        self.assertIn("canvas.addEventListener('drop'", app)
+        self.assertIn("!Object.keys(nodes).length&&(e.clientX<r.left||e.clientY<r.top)", app)
+        self.assertIn("centerEmptyView();", app)
+        self.assertRegex(app, r"type=asset\.type==='video'\?'videoAsset':'image'")
+        self.assertIn("videoAsset:{name:'视频 · 素材'", app)
+        self.assertIn("outputs.video=asset.url", app)
+        self.assertIn("outputs.image=asset.url", app)
+        self.assertIn(".nc-canvas.asset-drop-target", css)
+
+    def test_selected_images_offer_animated_connected_draft_actions(self):
+        app = APP_PATH.read_text(encoding="utf-8")
+        css = CSS_PATH.read_text(encoding="utf-8")
+        self.assertIn("function createImageActionDraft(", app)
+        self.assertIn("function updateImageToolbar()", app)
+        self.assertIn("data-image-action=\"portrait\"", app)
+        self.assertIn("data-image-action=\"lighting\"", app)
+        self.assertIn("data-image-action=\"angle\"", app)
+        self.assertIn("data-image-action=\"grid\"", app)
+        self.assertIn("data-image-action=\"video\"", app)
+        self.assertIn("connectEdge({node:source.id,port:'image'}", app)
+        self.assertIn("确认参数后再生成", app)
+        draft = re.search(r"function createImageActionDraft\([\s\S]*?(?=\n  function createImageGenDraft)", app)
+        self.assertIsNotNone(draft)
+        self.assertNotIn("runNode(", draft.group(0))
+        self.assertIn(".nc-image-toolbar button:hover .nc-icon-base", css)
+        self.assertIn(".nc-image-toolbar button:focus-visible", css)
+        self.assertRegex(css, r"prefers-reduced-motion:[^)]+\)[\s\S]*?\.nc-image-toolbar")
 
     def test_canvas_modules_are_versioned_and_loaded_in_exact_order(self):
         html = HTML_PATH.read_text(encoding="utf-8")

@@ -89,6 +89,32 @@ CREATE TABLE IF NOT EXISTS short_drama_audit_events (
 );
 CREATE INDEX IF NOT EXISTS idx_short_drama_audit_project
   ON short_drama_audit_events(project_id,created_at DESC);
+
+CREATE TABLE IF NOT EXISTS short_drama_completion_migration_runs (
+  run_id TEXT PRIMARY KEY,
+  state TEXT NOT NULL CHECK(state IN ('applied','rolled_back')),
+  actor_username TEXT NOT NULL,
+  report_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS short_drama_completion_migration_items (
+  run_id TEXT NOT NULL REFERENCES short_drama_completion_migration_runs(run_id)
+    ON DELETE RESTRICT,
+  project_id TEXT NOT NULL,
+  completion_id TEXT NOT NULL,
+  project_revision INTEGER NOT NULL,
+  previous_completion_id TEXT,
+  previous_completed_at INTEGER,
+  previous_completed_by TEXT,
+  state TEXT NOT NULL CHECK(state IN ('applied','rolled_back')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(run_id,project_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_short_drama_completion_migration_item
+  ON short_drama_completion_migration_items(completion_id);
 """
 
 
@@ -118,14 +144,14 @@ def enabled():
 
 
 def reject_legacy_completion():
-    """Legacy completion routes never mutate projects after D-6 exists."""
+    """Reject legacy completion only after the D-6 rollout is enabled."""
     if enabled():
         raise CompletionError(
             "completion_required",
             "请使用 D-6 原子完成确认流程推进 completed",
             409,
         )
-    raise CompletionDisabled()
+    return False
 
 
 def _connection(db_factory):
@@ -594,6 +620,20 @@ def get_completion(db_factory, owner_username, project_id):
             raise LookupError("短剧项目不存在")
         row = _completion_row(conn, project_id)
         if not row:
+            if project["stage"] == "completed":
+                raise CompletionError(
+                    "legacy_completion_pending_migration",
+                    "历史完成项目尚未生成不可变交付快照，请先完成迁移或人工复核",
+                    409,
+                    [{
+                        "code": "legacy_completion_pending_migration",
+                        "domain": "completion",
+                        "entity_id": project_id,
+                        "message": "历史完成项目缺少不可变交付快照",
+                        "recommended_action":
+                            "运行历史完成项目迁移并处理 manual_review",
+                    }],
+                )
             raise CompletionError(
                 "completion_not_found", "项目尚未完成交付确认", 404
             )
@@ -920,9 +960,11 @@ def _legacy_completion_evidence(conn, project):
 def migrate_legacy_completions(
     db_factory, limit=64, apply=False, now=None,
     actor_username="system:legacy-completion-migration",
+    run_id=None,
 ):
     """Backfill only legacy completed projects with a complete evidence chain."""
     timestamp = int(now or time.time())
+    migration_run_id = str(run_id or uuid.uuid4()) if apply else None
     with closing(_connection(db_factory)) as conn:
         if not _table_exists(conn, "short_drama_completions"):
             raise CompletionError(
@@ -932,6 +974,28 @@ def migrate_legacy_completions(
             )
         if apply:
             conn.execute("BEGIN IMMEDIATE")
+            existing_run = conn.execute(
+                "SELECT state,report_json FROM "
+                "short_drama_completion_migration_runs WHERE run_id=?",
+                (migration_run_id,),
+            ).fetchone()
+            if existing_run:
+                if existing_run["state"] != "applied":
+                    raise CompletionError(
+                        "migration_run_closed",
+                        "该迁移批次已经回滚，不能使用相同 run_id 重做",
+                        409,
+                    )
+                report = _json(existing_run["report_json"], {})
+                report["replayed"] = True
+                conn.commit()
+                return report
+            conn.execute(
+                "INSERT INTO short_drama_completion_migration_runs "
+                "(run_id,state,actor_username,report_json,created_at,updated_at) "
+                "VALUES (?,'applied',?,'{}',?,?)",
+                (migration_run_id, actor_username, timestamp, timestamp),
+            )
         projects = conn.execute(
             "SELECT * FROM short_drama_projects "
             "WHERE stage='completed' AND completion_id IS NULL "
@@ -940,6 +1004,9 @@ def migrate_legacy_completions(
         ).fetchall()
         report = {
             "dry_run": not bool(apply),
+            "run_id": migration_run_id,
+            "state": "dry_run" if not apply else "applied",
+            "replayed": False,
             "scanned": len(projects),
             "eligible": 0,
             "migrated": 0,
@@ -976,6 +1043,7 @@ def migrate_legacy_completions(
                 "completed_at": completed_at,
                 "delivery_hash": delivery_hash,
                 "legacy_migration": True,
+                "migration_run_id": migration_run_id,
                 "migrated_at": timestamp,
                 "migrated_by": actor_username,
             }
@@ -1010,6 +1078,7 @@ def migrate_legacy_completions(
                     project["username"], project["board_id"], completion_id,
                     request_hash, _canonical({
                         "legacy_migration": True,
+                        "migration_run_id": migration_run_id,
                         "source_endpoint":
                             "/api/gen/short-drama/assembly/confirm",
                         "final_version_id": evidence["final_version"]["id"],
@@ -1033,9 +1102,214 @@ def migrate_legacy_completions(
                     "历史完成项目在迁移期间发生变化",
                     409,
                 )
+            conn.execute(
+                "INSERT INTO short_drama_completion_migration_items "
+                "(run_id,project_id,completion_id,project_revision,"
+                "previous_completion_id,previous_completed_at,"
+                "previous_completed_by,state,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,'applied',?,?)",
+                (
+                    migration_run_id, project["id"], completion_id,
+                    int(project["revision"]), project["completion_id"],
+                    project["completed_at"], project["completed_by"],
+                    timestamp, timestamp,
+                ),
+            )
             report["migrated"] += 1
         if apply:
+            conn.execute(
+                "UPDATE short_drama_completion_migration_runs "
+                "SET report_json=?,updated_at=? WHERE run_id=?",
+                (_canonical(report), timestamp, migration_run_id),
+            )
             conn.commit()
+        return report
+
+
+def verify_legacy_completions(db_factory, run_id=None, now=None):
+    """Verify completion pointers, snapshots and an optional migration run."""
+    timestamp = int(now or time.time())
+    issues = []
+    with closing(_connection(db_factory)) as conn:
+        rows = conn.execute(
+            "SELECT p.id,p.completion_id,c.completion_id AS snapshot_id "
+            "FROM short_drama_projects p "
+            "LEFT JOIN short_drama_completions c ON c.project_id=p.id "
+            "WHERE p.stage='completed' AND (p.completion_id IS NULL "
+            "OR c.completion_id IS NULL OR p.completion_id<>c.completion_id) "
+            "ORDER BY p.updated_at,p.id"
+        ).fetchall()
+        for row in rows:
+            issues.append({
+                "project_id": row["id"],
+                "code": "completed_snapshot_mismatch",
+            })
+        orphaned = conn.execute(
+            "SELECT c.project_id FROM short_drama_completions c "
+            "LEFT JOIN short_drama_projects p ON p.id=c.project_id "
+            "WHERE p.id IS NULL OR p.stage<>'completed' "
+            "OR p.completion_id IS NULL OR p.completion_id<>c.completion_id "
+            "ORDER BY c.project_id"
+        ).fetchall()
+        for row in orphaned:
+            issues.append({
+                "project_id": row["project_id"],
+                "code": "snapshot_project_mismatch",
+            })
+        run = None
+        item_count = 0
+        if run_id:
+            run = conn.execute(
+                "SELECT state FROM short_drama_completion_migration_runs "
+                "WHERE run_id=?", (str(run_id),),
+            ).fetchone()
+            if not run:
+                issues.append({
+                    "project_id": None, "code": "migration_run_not_found",
+                })
+            else:
+                item_count = int(conn.execute(
+                    "SELECT COUNT(*) FROM "
+                    "short_drama_completion_migration_items "
+                    "WHERE run_id=? AND state='applied'",
+                    (str(run_id),),
+                ).fetchone()[0])
+                if run["state"] != "applied":
+                    issues.append({
+                        "project_id": None, "code": "migration_run_not_applied",
+                    })
+    return {
+        "ok": not issues,
+        "checked_at": timestamp,
+        "run_id": str(run_id) if run_id else None,
+        "run_state": run["state"] if run else None,
+        "applied_items": item_count,
+        "issues": issues,
+    }
+
+
+def rollback_legacy_completions(
+    db_factory, run_id, now=None,
+    actor_username="system:legacy-completion-migration",
+):
+    """Atomically roll back one applied migration batch without changing stage."""
+    migration_run_id = str(run_id or "").strip()
+    if not migration_run_id:
+        raise CompletionError("migration_run_required", "缺少迁移 run_id", 400)
+    timestamp = int(now or time.time())
+    with closing(_connection(db_factory)) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        run = conn.execute(
+            "SELECT state,report_json FROM short_drama_completion_migration_runs "
+            "WHERE run_id=?", (migration_run_id,),
+        ).fetchone()
+        if not run:
+            raise CompletionError(
+                "migration_run_not_found", "迁移批次不存在", 404,
+            )
+        if run["state"] == "rolled_back":
+            report = _json(run["report_json"], {})
+            report["replayed"] = True
+            conn.commit()
+            return report
+        items = conn.execute(
+            "SELECT * FROM short_drama_completion_migration_items "
+            "WHERE run_id=? AND state='applied' ORDER BY project_id",
+            (migration_run_id,),
+        ).fetchall()
+        blockers = []
+        for item in items:
+            project = conn.execute(
+                "SELECT stage,revision,completion_id FROM short_drama_projects "
+                "WHERE id=?", (item["project_id"],),
+            ).fetchone()
+            completion = conn.execute(
+                "SELECT completion_id,snapshot_json FROM short_drama_completions "
+                "WHERE project_id=?", (item["project_id"],),
+            ).fetchone()
+            snapshot = _json(completion["snapshot_json"], {}) if completion else {}
+            migration = snapshot.get("completion") or {}
+            if (
+                not project
+                or project["stage"] != "completed"
+                or int(project["revision"]) != int(item["project_revision"])
+                or project["completion_id"] != item["completion_id"]
+                or not completion
+                or completion["completion_id"] != item["completion_id"]
+                or migration.get("migration_run_id") != migration_run_id
+            ):
+                blockers.append({
+                    "project_id": item["project_id"],
+                    "code": "migration_rollback_conflict",
+                })
+        if blockers:
+            conn.rollback()
+            raise CompletionError(
+                "migration_rollback_blocked",
+                "迁移后数据已经变化，不能自动回滚",
+                409,
+                blockers,
+            )
+        for item in items:
+            updated = conn.execute(
+                "UPDATE short_drama_projects SET completion_id=?,"
+                "completed_at=?,completed_by=? WHERE id=? "
+                "AND stage='completed' AND revision=? AND completion_id=?",
+                (
+                    item["previous_completion_id"],
+                    item["previous_completed_at"],
+                    item["previous_completed_by"], item["project_id"],
+                    item["project_revision"], item["completion_id"],
+                ),
+            )
+            if updated.rowcount != 1:
+                raise CompletionError(
+                    "migration_rollback_conflict",
+                    "回滚期间项目状态发生变化",
+                    409,
+                )
+            conn.execute(
+                "DELETE FROM short_drama_completions "
+                "WHERE project_id=? AND completion_id=?",
+                (item["project_id"], item["completion_id"]),
+            )
+            conn.execute(
+                "UPDATE short_drama_completion_migration_items "
+                "SET state='rolled_back',updated_at=? "
+                "WHERE run_id=? AND project_id=?",
+                (timestamp, migration_run_id, item["project_id"]),
+            )
+            conn.execute(
+                "INSERT INTO short_drama_audit_events "
+                "(id,project_id,event_key,event_type,actor_username,"
+                "owner_username,entity_id,detail_json,created_at) "
+                "SELECT ?,p.id,?,'legacy_completion_migration_rolled_back',"
+                "?,p.username,?, ?,? FROM short_drama_projects p WHERE p.id=?",
+                (
+                    str(uuid.uuid4()),
+                    "legacy-completion-rollback:%s:%s" % (
+                        migration_run_id, item["project_id"],
+                    ),
+                    actor_username, migration_run_id,
+                    _canonical({
+                        "migration_run_id": migration_run_id,
+                        "completion_id": item["completion_id"],
+                    }),
+                    timestamp, item["project_id"],
+                ),
+            )
+        report = {
+            "run_id": migration_run_id,
+            "state": "rolled_back",
+            "rolled_back": len(items),
+            "replayed": False,
+        }
+        conn.execute(
+            "UPDATE short_drama_completion_migration_runs "
+            "SET state='rolled_back',report_json=?,updated_at=? WHERE run_id=?",
+            (_canonical(report), timestamp, migration_run_id),
+        )
+        conn.commit()
         return report
 
 

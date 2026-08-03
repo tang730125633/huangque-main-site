@@ -2764,7 +2764,7 @@ class ShortDramaRouteTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual("script_review", confirmed["stage"])
 
-    def test_legacy_completion_routes_never_reopen_when_flag_is_disabled(self):
+    def test_legacy_stage_completion_remains_available_until_d6_is_enabled(self):
         project = self.applied_project()
         with closing(core.jdb()) as db:
             db.execute(
@@ -2777,45 +2777,47 @@ class ShortDramaRouteTests(unittest.TestCase):
                 "SELECT revision FROM short_drama_projects WHERE id=?",
                 (project["id"],),
             ).fetchone()[0]
-        legacy_body = {
-            "project_id": project["id"],
-            "revision": revision,
-            "final_version": 1,
-        }
         stage_body = {
             "project_id": project["id"],
             "revision": revision,
             "stage": "assembly_review",
         }
-        cases = (
-            ("0", 503, "completion_disabled"),
-            ("1", 409, "completion_required"),
-            ("0", 503, "completion_disabled"),
-        )
-        for flag, expected_status, expected_code in cases:
-            with self.subTest(flag=flag, code=expected_code):
-                with patch.dict(
-                    os.environ,
-                    {"HQ_SHORT_DRAMA_COMPLETION_ENABLED": flag},
-                ):
-                    status, result = self.request(
-                        "POST",
-                        "/api/gen/short-drama/assembly/confirm",
-                        body=legacy_body,
-                    )
-                    self.assertEqual(expected_status, status)
-                    self.assertEqual(expected_code, result["code"])
-                    status, result = self.request(
-                        "POST",
-                        "/api/gen/short-drama/confirm",
-                        body=stage_body,
-                    )
-                    self.assertEqual(expected_status, status)
-                    self.assertEqual(expected_code, result["code"])
+        with patch.dict(
+            os.environ, {"HQ_SHORT_DRAMA_COMPLETION_ENABLED": "0"},
+        ):
+            status, result = self.request(
+                "POST", "/api/gen/short-drama/confirm", body=stage_body,
+            )
+        self.assertEqual(200, status)
+        self.assertEqual("completed", result["stage"])
         with closing(core.jdb()) as db:
             row = db.execute(
                 "SELECT stage,completion_id FROM short_drama_projects "
                 "WHERE id=?",
                 (project["id"],),
             ).fetchone()
-        self.assertEqual(("assembly_review", None), tuple(row))
+        self.assertEqual(("completed", None), tuple(row))
+
+        blocked_project = self.applied_project()
+        with closing(core.jdb()) as db:
+            db.execute(
+                "UPDATE short_drama_projects SET stage='assembly_review' "
+                "WHERE id=?", (blocked_project["id"],),
+            )
+            db.commit()
+            blocked_revision = db.execute(
+                "SELECT revision FROM short_drama_projects WHERE id=?",
+                (blocked_project["id"],),
+            ).fetchone()[0]
+        with patch.dict(
+            os.environ, {"HQ_SHORT_DRAMA_COMPLETION_ENABLED": "1"},
+        ):
+            status, result = self.request(
+                "POST", "/api/gen/short-drama/confirm", body={
+                    "project_id": blocked_project["id"],
+                    "revision": blocked_revision,
+                    "stage": "assembly_review",
+                },
+            )
+        self.assertEqual(409, status)
+        self.assertEqual("completion_required", result["code"])

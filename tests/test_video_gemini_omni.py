@@ -49,9 +49,9 @@ class GeminiOmniTests(unittest.TestCase):
             refs["generation_config"]["video_config"]["task"],
             "reference_to_video",
         )
-        with self.assertRaisesRegex(ValueError, "最多支持 3 张"):
+        with self.assertRaisesRegex(ValueError, "最多支持 6 张"):
             self.omni.build_request(
-                "demo", [self.image()] * 4, "16:9", 6, "inline"
+                "demo", [self.image()] * 7, "16:9", 6, "inline"
             )
 
     def test_parameter_boundaries(self):

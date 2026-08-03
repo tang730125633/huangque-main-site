@@ -9,6 +9,34 @@ SCRIPT_HTML = pathlib.Path(__file__).resolve().parents[1] / "site/workbench/scri
 CORE_PY = pathlib.Path(__file__).resolve().parents[1] / "server/content_domains/core.py"
 
 
+def _extract_js_function(source, name):
+    marker = f"function {name}("
+    start = source.index(marker)
+    brace = source.index("{", start)
+    depth = 0
+    quote = None
+    escaped = False
+    for index in range(brace, len(source)):
+        char = source[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in ("'", '"', "`"):
+            quote = char
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start:index + 1]
+    raise AssertionError(f"unterminated JavaScript function: {name}")
+
+
 class ScriptActionsUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -35,9 +63,10 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("预计消耗 '+cost+' 点", self.html)
         self.assertIn("if(!_confirmDramaVideo(list)) return;", self.html)
 
-    def test_reverse_video_estimate_matches_seedance_price(self):
-        self.assertIn("selectedAvatarId===null?30:10", self.html)
-        self.assertIn("seconds*rate", self.html)
+    def test_reverse_video_estimate_uses_server_quote(self):
+        self.assertIn("noAvatarOffer.duration_costs[String(selectedDuration)]", self.html)
+        self.assertIn("noAvatarOffer.duration_costs[String(seconds)]", self.html)
+        self.assertIn("selectedDuration*10", self.html)
         self.assertIn("5 秒 · 150 点", self.html)
         self.assertIn("10 秒 · 300 点", self.html)
         self.assertIn("15 秒 · 450 点", self.html)
@@ -64,9 +93,9 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn('id="reverseVideoCost"', self.html)
         self.assertIn("selectedDuration=10", self.html)
         self.assertIn("selectedAvatarId=null", self.html)
-        self.assertIn("selectedAvatarId===null?30:10", self.html)
+        self.assertIn("var noAvatarOffer=null", self.html)
 
-    def test_reverse_video_picker_load_failure_keeps_no_avatar_available(self):
+    def test_reverse_video_picker_avatar_failure_does_not_bypass_channel_gate(self):
         self.assertIn("function _showReverseVideoPicker(prompt,onConfirm)", self.html)
         self.assertIn("fetch('/api/gen/video/avatars?limit=60'", self.html)
         self.assertIn("形象加载失败，不影响无形象生成", self.html)
@@ -74,19 +103,24 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("retry.onclick=loadAvatars", self.html)
         self.assertIn("还没有形象", self.html)
         self.assertIn("video.html", self.html)
+        self.assertIn("fetch('/api/gen/health',{cache:'no-store'})", self.html)
+        self.assertIn("reverse_remake_video_offer", self.html)
+        self.assertIn("offer.duration_costs", self.html)
+        self.assertIn("if(submitted||confirm.disabled) return;", self.html)
 
     def test_reverse_video_picker_cancel_and_submit_are_explicit(self):
         self.assertIn('id="reverseVideoPickClose"', self.html)
         self.assertIn('id="reverseVideoConfirm"', self.html)
         self.assertIn("confirm.disabled=true", self.html)
-        self.assertIn("if(submitted) return;", self.html)
-        self.assertIn("dismiss();\n      onConfirm({avatarId:selectedAvatarId,duration:selectedDuration})", self.html)
-        self.assertIn("onConfirm({avatarId:selectedAvatarId,duration:selectedDuration})", self.html)
+        self.assertIn("if(submitted||confirm.disabled) return;", self.html)
+        self.assertIn("model:selectedAvatarId===null&&noAvatarOffer?noAvatarOffer.model:''", self.html)
+        self.assertIn("resolution:selectedAvatarId===null&&noAvatarOffer?noAvatarOffer.resolution:''", self.html)
 
     def test_reverse_video_picker_ignores_stale_avatar_responses(self):
         self.assertIn("var reverseVideoPickerRequest=0", self.html)
-        self.assertIn("var requestId=++reverseVideoPickerRequest", self.html)
-        self.assertGreaterEqual(self.html.count("if(requestId!==reverseVideoPickerRequest) return;"), 2)
+        self.assertIn("var invocationId=++reverseVideoPickerRequest", self.html)
+        self.assertIn("var avatarRequestId=++avatarLoadRequest", self.html)
+        self.assertGreaterEqual(self.html.count("if(invocationId!==reverseVideoPickerRequest"), 3)
 
     def test_breakdown_mode_ui_and_api_exist(self):
         self.assertIn('data-mode="breakdown"', self.html)
@@ -110,7 +144,9 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("BREAKDOWN_HISTORY_KEY='hq_script_breakdown_history'", self.html)
         self.assertIn("switchMode('breakdown')", self.html)
         self.assertIn("renderBreakdown({source_url:m.source_url", self.html)
-        self.assertIn("renderBreakdownReverse({type:'breakdown_reverse'", self.html)
+        self.assertIn("loadBreakdownHistoryDetail(item).then(function(detail)", self.html)
+        self.assertIn("renderBreakdownReverse(Object.assign({},detail", self.html)
+        self.assertIn("Object.assign({},detail,{source_title:detail.source_title||heading})", self.html)
         self.assertIn("analysis:m.analysis||''", self.html)
 
     def test_breakdown_analysis_is_rendered_and_saved_to_history(self):
@@ -129,11 +165,25 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("_showReverseVideoPicker(prompt,function(choice)", self.html)
         self.assertIn("_doGenerate({scenes:scenes,style:'剧情',duration:_dramaDuration(scenes)},bdRemakeBtn)", self.html)
 
-    def test_reverse_video_without_avatar_uses_seedance_with_references(self):
+    def test_reverse_video_without_avatar_uses_available_channel_with_ordered_references(self):
         self.assertIn("_showReverseVideoPicker(prompt,function(choice)", self.html)
-        self.assertIn("{channel:'micro',prompt:seedancePrompt,reference_images:reverseRefs,duration:choice.duration}", self.html)
+        self.assertIn("var reverseRefs=reverseReferenceImages(lastBreakdownReverse)", self.html)
+        self.assertIn("function reverseReferenceThumbnailIndices(bd)", self.html)
+        self.assertIn("function reverseReferenceImages(bd)", self.html)
+        self.assertIn("channel:choice.channel", self.html)
+        self.assertIn("model:choice.model", self.html)
+        self.assertIn("resolution:choice.resolution", self.html)
+        self.assertIn("reference_mode:choice.channel==='grok'?'ordered_storyboard':undefined", self.html)
         self.assertIn("{endpoint:'/api/gen/xiaole_video',sceneCount:1}", self.html)
         self.assertIn("endpoint==='/api/gen/xiaole_video'", self.html)
+
+    def test_reverse_video_picker_fails_closed_without_open_channel(self):
+        self.assertIn('id="reverseVideoSeedanceStatus"', self.html)
+        self.assertIn("var noAvatarChannel=''", self.html)
+        self.assertIn("noAvatar.disabled=!noAvatarChannel", self.html)
+        self.assertIn("var blocked=selectedAvatarId===null&&!noAvatarChannel", self.html)
+        self.assertIn("开放式视频通道暂未开启", self.html)
+        self.assertIn("开放式生成通道可用（果肉视频）", self.html)
 
     def test_reverse_video_with_avatar_uses_existing_cinematic_api(self):
         self.assertIn("endpoint:'/api/gen/cinematic'", self.html)
@@ -160,7 +210,8 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("} else if(result.type==='breakdown_reverse'){", self.html)
         self.assertIn("switchBreakdownTool('reverse_prompt')", self.html)
         self.assertIn("document.getElementById('bdReversePromptText')", self.html)
-        self.assertIn("return prompt && prompt!==sourceUrl ? prompt : '';", self.html)
+        self.assertIn("function validReversePromptText(value, sourceUrl)", self.html)
+        self.assertIn("return card ? validReversePromptText(card.textContent,sourceUrl) : '';", self.html)
         self.assertIn("location.href=handoffUrl('banana.html',prompt)", self.html)
         self.assertIn("if(currentMode==='breakdown' && isBreakdownReverseTool()) txt=reversePromptText();", self.html)
         self.assertIn("提示词反推暂仅支持单条视频链接", self.html)
@@ -174,8 +225,10 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("saveBreakdownHistory(item);", self.html)
 
     def test_reverse_history_is_saved_and_restored(self):
-        self.assertIn("prompt:(bd.prompt||'')", self.html)
-        self.assertIn("return !!((Array.isArray(meta.scenes)&&meta.scenes.length)||String(meta.prompt||'').trim());", self.html)
+        self.assertIn("prompt:isReverse?reverseResultPrompt(bd):(bd.prompt||'')", self.html)
+        self.assertIn("var prompt=meta.type==='breakdown_reverse'?reverseResultPrompt(meta):String(meta.prompt||'').trim();", self.html)
+        self.assertIn("timeline_audit:isReverse?(bd.timeline_audit||null):null", self.html)
+        self.assertIn("quality_score:isReverse?(bd.quality_score||null):null", self.html)
         self.assertIn("renderBreakdownReverse(result); saveBreakdownHistory(result); loadHistory();", self.html)
         self.assertIn("isReverse?'反推':'拆解'", self.html)
 
@@ -578,6 +631,141 @@ setImmediate(function(){
         self.assertIn("function renderSceneStats(list)", self.html)
         self.assertIn("renderSceneStats(readEditingScenes())", self.html)
         self.assertIn("修改口播会实时刷新字数 / 时长", self.html)
+
+
+class ReverseVideoPickerRuntimeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not shutil.which("node"):
+            raise unittest.SkipTest("node is required for reverse picker contracts")
+        html = SCRIPT_HTML.read_text(encoding="utf-8")
+        cls.picker = _extract_js_function(html, "_showReverseVideoPicker")
+
+    def _run_picker(self, channel="", avatars=None, pick_avatar=False, seedance_enabled=False,
+                    costs=None, model=None, resolution="720p"):
+        avatars = avatars or []
+        if costs is None:
+            costs = ({"5": 150, "10": 300, "15": 450} if channel == "micro"
+                     else {"5": 60, "10": 120, "15": 180} if channel == "grok" else {})
+        if model is None:
+            model = ("seedance-1-5-pro-251215" if channel == "micro"
+                     else "grok-imagine-video" if channel == "grok" else "")
+        offer = {"channel": channel, "model": model, "resolution": resolution,
+                 "duration_costs": costs}
+        harness = f"""
+class ClassList {{
+  constructor(){{this.values={{}};}}
+  toggle(name,on){{this.values[name]=Boolean(on);}}
+}}
+class Element {{
+  constructor(id){{this.id=id;this.style={{}};this.disabled=false;this.textContent='';this.children=[];this.attributes={{}};this.classList=new ClassList();this.onclick=null;this._innerHTML='';}}
+  set innerHTML(value){{this._innerHTML=String(value);this.children=[];}}
+  get innerHTML(){{return this._innerHTML;}}
+  setAttribute(name,value){{this.attributes[name]=String(value);}}
+  getAttribute(name){{return this.attributes[name]||null;}}
+  appendChild(child){{this.children.push(child);return child;}}
+  querySelectorAll(selector){{
+    var match=selector.match(/^\\[([^\\]]+)\\]$/);
+    if(!match) return [];
+    return this.children.filter(function(child){{return Object.prototype.hasOwnProperty.call(child.attributes,match[1]);}});
+  }}
+}}
+var ids={{}};
+['reverseVideoPickModal','reverseVideoNoAvatar','reverseVideoSeedanceStatus','reverseVideoAvatarGrid','reverseVideoDuration','reverseVideoCost','reverseVideoConfirm','reverseVideoPickClose'].forEach(function(id){{ids[id]=new Element(id);}});
+[5,10,15].forEach(function(seconds){{var button=new Element('duration-'+seconds);button.setAttribute('data-reverse-duration',seconds);ids.reverseVideoDuration.appendChild(button);}});
+var document={{
+  getElementById:function(id){{return ids[id]||null;}},
+  createElement:function(tag){{return new Element(tag);}}
+}};
+var reverseVideoPickerRequest=0;
+function tok(){{return 'token';}}
+function esc(value){{return String(value);}}
+function response(data){{return {{ok:true,json:function(){{return Promise.resolve(data);}}}};}}
+function fetch(url){{
+  if(url.indexOf('/api/gen/video/avatars')===0) return Promise.resolve(response({{items:{json.dumps(avatars, ensure_ascii=False)}}}));
+  if(url==='/api/gen/health') return Promise.resolve(response({{reverse_remake_video_offer:{json.dumps(offer)},seedance_video_enabled:{str(seedance_enabled).lower()}}}));
+  return Promise.reject(new Error('unexpected '+url));
+}}
+{self.picker}
+var choice=null;
+_showReverseVideoPicker('prompt',function(value){{choice=value;}});
+setImmediate(function(){{setImmediate(function(){{
+  var cardCount=ids.reverseVideoAvatarGrid.children.length;
+  if({str(pick_avatar).lower()}){{
+    var cards=ids.reverseVideoAvatarGrid.children;
+    if(cards.length) cards[0].onclick();
+  }}
+  ids.reverseVideoConfirm.onclick();
+  process.stdout.write(JSON.stringify({{
+    choice:choice,noAvatarDisabled:ids.reverseVideoNoAvatar.disabled,
+    confirmDisabled:ids.reverseVideoConfirm.disabled,
+    state:ids.reverseVideoSeedanceStatus.getAttribute('data-state'),
+    statusText:ids.reverseVideoSeedanceStatus.textContent,cardCount:cardCount,
+    costText:ids.reverseVideoCost.textContent,
+    durationLabels:ids.reverseVideoDuration.children.map(function(item){{return item.textContent;}})
+  }}));
+}});}});
+"""
+        result = subprocess.run(
+            ["node", "-e", harness], check=True, capture_output=True,
+            text=True, encoding="utf-8",
+        )
+        return json.loads(result.stdout)
+
+    def test_no_open_channel_cannot_submit_paid_no_avatar_job(self):
+        got = self._run_picker()
+        self.assertIsNone(got["choice"])
+        self.assertTrue(got["noAvatarDisabled"])
+        self.assertTrue(got["confirmDisabled"])
+        self.assertEqual("blocked", got["state"])
+
+    def test_explicit_empty_channel_is_not_overridden_by_legacy_seedance_flag(self):
+        got = self._run_picker(seedance_enabled=True)
+        self.assertIsNone(got["choice"])
+        self.assertTrue(got["noAvatarDisabled"])
+        self.assertTrue(got["confirmDisabled"])
+
+    def test_grok_fallback_submits_explicit_channel_once(self):
+        got = self._run_picker(channel="grok")
+        self.assertEqual(
+            {"avatarId": None, "duration": 10, "channel": "grok",
+             "model": "grok-imagine-video", "resolution": "720p"},
+            got["choice"],
+        )
+        self.assertFalse(got["noAvatarDisabled"])
+        self.assertEqual("ready", got["state"])
+        self.assertEqual("预计消耗 120 点", got["costText"])
+        self.assertEqual(["5 秒 · 60 点", "10 秒 · 120 点", "15 秒 · 180 点"],
+                         got["durationLabels"])
+
+    def test_seedance_offer_uses_server_quoted_prices(self):
+        got = self._run_picker(channel="micro")
+        self.assertEqual("预计消耗 300 点", got["costText"])
+        self.assertEqual(["5 秒 · 150 点", "10 秒 · 300 点", "15 秒 · 450 点"],
+                         got["durationLabels"])
+
+    def test_missing_or_invalid_server_quote_fails_closed(self):
+        for costs in ({}, {"5": 60, "10": 120}, {"5": 60, "10": 0, "15": 180}):
+            with self.subTest(costs=costs):
+                got = self._run_picker(channel="grok", costs=costs)
+                self.assertIsNone(got["choice"])
+                self.assertTrue(got["noAvatarDisabled"])
+                self.assertTrue(got["confirmDisabled"])
+                self.assertIn("报价不可用", got["statusText"])
+
+    def test_avatar_path_remains_available_when_open_channels_are_closed(self):
+        got = self._run_picker(
+            avatars=[{"id": "avatar-7", "name": "avatar"}],
+            pick_avatar=True,
+        )
+        self.assertEqual(1, got["cardCount"], got)
+        self.assertEqual(
+            {"avatarId": "avatar-7", "duration": 10, "channel": "",
+             "model": "", "resolution": ""},
+            got["choice"],
+            got,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

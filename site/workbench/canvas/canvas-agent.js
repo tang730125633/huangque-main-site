@@ -4,7 +4,7 @@
   if(root){ root.HQCanvas=root.HQCanvas||{}; root.HQCanvas.agent=api; }
 })(typeof globalThis!=='undefined'?globalThis:this,function(){
   'use strict';
-  var MAX_NODES=60, MAX_EDGES=120, MAX_ACTIONS=12;
+  var MAX_NODES=60, MAX_EDGES=120, MAX_ACTIONS=12, MAX_IP12_FACTS=20;
 
   function digest(value){
     var text=JSON.stringify(value), hash=2166136261;
@@ -69,5 +69,44 @@
     if((sourceType==='image'||sourceType==='gen')&&(targetType==='reverse'||targetType==='gen'||targetType==='video')) return {from:'image',to:'image'};
     return null;
   }
-  return {createSnapshot:createSnapshot,validatePlan:validatePlan,actionLabel:actionLabel,connectionPorts:connectionPorts,digest:digest};
+  function buildIP12Context(project){
+    if(!project||typeof project!=='object'||!project.id) return null;
+    var facts=[],seen={};
+    function add(label,value){
+      label=String(label||'').trim().slice(0,80);
+      if(Array.isArray(value)) value=value.join('、');
+      value=String(value||'').trim().slice(0,800);
+      var key=label+'\n'+value;
+      if(!label||!value||seen[key]||facts.length>=MAX_IP12_FACTS) return;
+      seen[key]=true; facts.push({label:label,value:value});
+    }
+    var questionnaire=project.state&&project.state.questionnaire_state||{};
+    var profiles=questionnaire.profile||{};
+    Object.keys(profiles).sort(function(a,b){return Number(a)-Number(b);}).forEach(function(key){
+      var item=profiles[key]||{};
+      add(item.title||('模块 '+key),item.summary);
+    });
+    var profile=project.confirmed_profile||{};
+    add('已确认定位',profile.title);
+    add('一句话定位',profile.one_liner);
+    add('内容方向',profile.content_angles);
+    var plans=project.confirmed_plans||{};
+    var imagePlan=plans.image_plan||{}, videoPlan=plans.video_plan||{};
+    add('图片计划',imagePlan.goal||imagePlan.prompt);
+    add('视频计划',videoPlan.goal||videoPlan.format);
+    add('后续步骤',plans.next_steps);
+    var answers=questionnaire.answers||{};
+    Object.keys(answers).sort().forEach(function(key){
+      var answer=answers[key]||{}, value=answer.text||answer.choice;
+      if(answer.confirmed===true) add('已确认回答 '+key,value);
+    });
+    var status=['draft','candidate_ready','confirmed'].indexOf(project.status)>=0?project.status:'draft';
+    var foundation=project.foundation_stage&&project.foundation_stage.status;
+    if(['missing','pending_confirmation','confirmed','stale','legacy'].indexOf(foundation)<0) foundation='missing';
+    return {
+      project_id:String(project.id).slice(0,160),title:String(project.title||'未命名数字 IP').slice(0,120),
+      status:status,foundation_status:foundation,facts:facts
+    };
+  }
+  return {createSnapshot:createSnapshot,validatePlan:validatePlan,actionLabel:actionLabel,connectionPorts:connectionPorts,digest:digest,buildIP12Context:buildIP12Context};
 });

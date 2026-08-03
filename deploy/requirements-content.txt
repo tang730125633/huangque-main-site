@@ -1,0 +1,6 @@
+# Python dependencies required by huangque-content.service (/usr/bin/python3).
+# Install with the same interpreter used by the systemd unit:
+#   /usr/bin/python3 -m pip install -r deploy/requirements-content.txt
+cos-python-sdk-v5==1.9.44
+# Seedance reference images are fully decoded before private staging.
+Pillow==12.2.0
