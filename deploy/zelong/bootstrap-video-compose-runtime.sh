@@ -37,6 +37,6 @@ if [[ -z "${HYPERFRAMES_BROWSER_PATH:-}" ]] && [[ -x /usr/bin/chromium-browser ]
 fi
 node --version
 npm --version
-npx --yes hyperframes@0.7.88 browser ensure
-npx --yes hyperframes@0.7.88 --version
-printf 'video-compose runtime ready: node=%s hyperframes=0.7.88\n' "$(node --version)"
+npx --yes hyperframes@0.7.90 browser ensure
+npx --yes hyperframes@0.7.90 --version
+printf 'video-compose runtime ready: node=%s hyperframes=0.7.90\n' "$(node --version)"

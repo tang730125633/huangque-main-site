@@ -450,10 +450,20 @@ class VideoComposeDeploymentTests(unittest.TestCase):
         )
         self.assertIn("ONNXRUNTIME_NODE_INSTALL_CUDA=skip", script)
         self.assertIn("HYPERFRAMES_BROWSER_PATH=/usr/bin/chromium-browser", script)
+        self.assertIn("hyperframes@0.7.90", script)
+        renderer_source = (ROOT / "server/content_domains/video_compose_render.py").read_text(
+            encoding="utf-8"
+        )
         self.assertIn(
             'environment["HYPERFRAMES_BROWSER_PATH"] = "/usr/bin/chromium-browser"',
-            (ROOT / "server/content_domains/video_compose_render.py").read_text(encoding="utf-8"),
+            renderer_source,
         )
+        self.assertIn("hyperframes@0.7.90", renderer_source)
+        for package_path in (
+            ROOT / "site/assets/one-click/templates/viral-talking-head-v1/package.json",
+            ROOT / "tools/hyperframes/viral-talking-head-v1/package.json",
+        ):
+            self.assertIn("hyperframes@0.7.90", package_path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
