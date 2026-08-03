@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN" data-resolution="portrait">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=1080, height=1920" />
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+  <style>
+    @font-face{font-family:"Noto Sans SC";src:url("assets/fonts/noto-sans-sc-400.woff2") format("woff2");font-weight:400}
+    @font-face{font-family:"Noto Sans SC";src:url("assets/fonts/noto-sans-sc-700.woff2") format("woff2");font-weight:700}
+    @font-face{font-family:"Noto Sans SC";src:url("assets/fonts/noto-sans-sc-900.woff2") format("woff2");font-weight:900}
+    @font-face{font-family:"JetBrains Mono";src:url("assets/fonts/jetbrains-mono-600.woff2") format("woff2");font-weight:600}
+    *{box-sizing:border-box;margin:0;padding:0}
+    html,body{width:1080px;height:1920px;overflow:hidden;background:#05070b;font-family:"Noto Sans SC",sans-serif}
+    #root{position:relative;overflow:hidden;background:#05070b}
+    #a-roll{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform-origin:50% 46%}
+    .wash{position:absolute;inset:0;background:linear-gradient(180deg,rgba(2,4,8,.32) 0%,rgba(2,4,8,0) 24%,rgba(2,4,8,.08) 50%,rgba(2,4,8,.94) 88%,rgba(2,4,8,.98) 100%);pointer-events:none}
+    .caption-shield{position:absolute;left:0;right:0;top:1010px;height:560px;background:linear-gradient(180deg,rgba(4,6,10,0),rgba(4,6,10,.78) 18%,rgba(4,6,10,.88) 76%,rgba(4,6,10,0));pointer-events:none}
+    .brand{position:absolute;left:40px;top:42px;height:52px;padding:0 16px;display:flex;align-items:center;gap:11px;border-radius:12px;background:rgba(3,5,9,.86);border:1px solid rgba(255,255,255,.18);z-index:20;color:#fff;font-family:"JetBrains Mono";font-size:19px;letter-spacing:1.5px;text-shadow:0 2px 12px rgba(0,0,0,.8)}
+    .brand-dot{width:13px;height:13px;border-radius:50%;background:#f4ca3b;box-shadow:0 0 24px rgba(244,202,59,.9)}
+    .brand-rule{width:76px;height:2px;background:#f4ca3b}
+    .mode-chip{position:absolute;right:44px;top:48px;z-index:20;padding:10px 17px;border:1px solid rgba(255,255,255,.42);border-radius:999px;background:rgba(5,8,14,.58);color:#fff;font-size:16px;font-weight:700;letter-spacing:1px;backdrop-filter:blur(12px)}
+    .hook{position:absolute;left:56px;right:56px;top:170px;text-align:center;filter:drop-shadow(0 8px 12px rgba(0,0,0,.82))}
+    .hook-line{display:inline-block;padding:4px 18px;color:#fff;font-size:73px;line-height:1.08;font-weight:900;letter-spacing:-2px;background:rgba(0,0,0,.58);transform:rotate(-1.2deg)}
+    .hook-line.two{margin-top:12px;color:#121212;background:#f4ca3b;font-size:84px;transform:rotate(.8deg);box-shadow:9px 9px 0 rgba(0,0,0,.68)}
+    .hook-underline{width:0;height:9px;margin:20px auto 0;border-radius:99px;background:#f4ca3b;box-shadow:0 0 24px rgba(244,202,59,.55)}
+    .caption{position:absolute;left:50%;bottom:390px;min-width:520px;max-width:940px;transform:translateX(-50%);padding:19px 30px 22px;border-radius:18px;background:rgba(3,5,9,.86);border:1px solid rgba(255,255,255,.16);box-shadow:0 16px 42px rgba(0,0,0,.42);text-align:center;color:#fff;font-size:48px;line-height:1.2;font-weight:900;letter-spacing:.2px;text-shadow:0 3px 9px rgba(0,0,0,.8)}
+    .caption .key{color:#f4ca3b}
+    .caption small{display:block;margin-top:9px;color:rgba(255,255,255,.68);font-family:"JetBrains Mono";font-size:15px;font-weight:600;letter-spacing:1.6px;text-transform:uppercase}
+    .giant{position:absolute;left:54px;right:54px;top:185px;z-index:10;text-align:center;pointer-events:none}
+    .giant-word{display:inline-block;padding:12px 34px 24px;border-radius:22px;background:#05070b;border:2px solid rgba(255,255,255,.22);color:#fff;font-size:150px;line-height:.98;font-weight:900;letter-spacing:-7px;text-shadow:7px 8px 0 #0a0b0d,0 0 36px rgba(0,0,0,.9);transform:rotate(-3deg)}
+    .giant-word.yellow{width:940px;height:450px;display:inline-flex;align-items:center;justify-content:center;color:#f4ca3b;font-size:160px;background:#05070b;border-color:#f4ca3b;text-shadow:8px 10px 0 #111,0 0 40px rgba(244,202,59,.22);transform:rotate(1deg)}
+    #ai-headline{left:70px;right:70px;top:58px}
+    .chapter{position:absolute;left:48px;top:340px;display:flex;align-items:center;gap:14px;color:white;font-family:"JetBrains Mono";font-size:18px;font-weight:600;letter-spacing:1.2px}
+    .chapter span{padding:8px 12px;background:#f4ca3b;color:#111;border-radius:7px;font-size:16px}
+    .progress{position:absolute;left:48px;right:48px;bottom:116px;height:5px;background:rgba(255,255,255,.25);border-radius:99px;overflow:hidden}
+    .progress-fill{width:100%;height:100%;background:#f4ca3b;transform-origin:left center}
+    .footer{position:absolute;left:50px;right:50px;bottom:62px;display:flex;justify-content:space-between;align-items:center;color:rgba(255,255,255,.86);font-family:"JetBrains Mono";font-size:17px;font-weight:600;letter-spacing:1px;text-shadow:0 2px 8px #000}
+    .cta{position:absolute;left:50%;top:180px;width:930px;transform:translateX(-50%);padding:34px 40px 38px;background:rgba(4,6,10,.88);border:2px solid #f4ca3b;border-radius:24px;box-shadow:0 24px 70px rgba(0,0,0,.58);text-align:center;color:#fff}
+    .cta b{display:block;color:#f4ca3b;font-size:70px;line-height:1.08;font-weight:900}
+    .cta span{display:block;margin-top:12px;font-size:27px;font-weight:700;letter-spacing:2px}
+  </style>
+</head>
+<body>
+  <div id="root" data-composition-id="main" data-start="0" data-duration="9.73" data-width="1080" data-height="1920" data-fps="30" data-composition-variables='{"brand":"黄雀 AI · 一键成片","template":"viral-talking-head-v1","version":"1.0.0-demo"}'>
+    <video id="a-roll" class="clip" src="clean-master.mp4" muted playsinline data-start="0" data-duration="9.73" data-track-index="0"></video>
+    <audio id="a-roll-audio" class="clip" src="clean-master.mp4" data-start="0" data-duration="9.73" data-track-index="20" data-volume="1"></audio>
+
+    <div id="contrast-wash" class="clip wash" data-start="0" data-duration="9.73" data-track-index="1"></div>
+    <div id="caption-shield" class="clip caption-shield" data-start="0" data-duration="9.73" data-track-index="12"></div>
+    <div id="brand" class="clip brand" data-start="0" data-duration="9.73" data-track-index="2"><i class="brand-dot"></i><i class="brand-rule"></i><span>黄雀 AI</span></div>
+    <div id="mode-chip" class="clip mode-chip" data-start="0" data-duration="9.73" data-track-index="3">VIRAL TALK · 01</div>
+
+    <div id="hook" class="clip hook" data-start="0" data-duration="2.18" data-track-index="4">
+      <div id="hook-one" class="hook-line" data-layout-allow-overlap>20多岁 · 全靠自己</div><br />
+      <div id="hook-two" class="hook-line two" data-layout-allow-overlap>全款拿下猪脚饭</div>
+      <div id="hook-rule" class="hook-underline"></div>
+    </div>
+
+    <div id="caption-1" class="clip caption" data-start="0" data-duration="2.47" data-track-index="10"><span class="key">20多岁</span><small>the setup</small></div>
+    <div id="caption-2" class="clip caption" data-start="2.47" data-duration=".79" data-track-index="10">不靠父母<small>no family shortcut</small></div>
+    <div id="caption-3" class="clip caption" data-start="3.26" data-duration=".70" data-track-index="10">不靠别人<small>no outside help</small></div>
+    <div id="caption-4" class="clip caption" data-start="3.96" data-duration=".88" data-track-index="10">也不靠同事<small>no workplace shortcut</small></div>
+    <div id="caption-5" class="clip caption" data-start="4.84" data-duration=".72" data-track-index="10">就靠<span class="key">我自己</span><small>by myself</small></div>
+    <div id="caption-6" class="clip caption" data-start="5.56" data-duration="2.06" data-track-index="10"><span class="key">全款拿下</span>一碗猪脚饭<small>the big reveal</small></div>
+    <div id="caption-7" class="clip caption" data-start="7.62" data-duration=".86" data-track-index="10">如果你跟我一样<small>same starting point</small></div>
+    <div id="caption-8" class="clip caption" data-start="8.48" data-duration=".52" data-track-index="10">做 <span class="key">AI</span><small>the turn</small></div>
+    <div id="caption-9" class="clip caption" data-start="9.00" data-duration=".73" data-track-index="10">你也可以<small>your turn</small></div>
+
+    <div id="food-headline" class="clip giant" data-start="5.82" data-duration="1.46" data-track-index="5"><div class="giant-word">猪脚饭</div></div>
+    <div id="ai-headline" class="clip giant" data-start="8.38" data-duration=".58" data-track-index="6"><div class="giant-word yellow">AI</div></div>
+    <div id="cta" class="clip cta" data-start="9.00" data-duration=".73" data-track-index="11"><b>你也可以</b><span>让每条口播都有记忆点</span></div>
+
+    <div id="timeline-progress" class="clip progress" data-start="0" data-duration="9.73" data-track-index="8"><div id="progress-fill" class="progress-fill"></div></div>
+    <div id="technical-footer" class="clip footer" data-start="0" data-duration="9.73" data-track-index="9"><span>HQ / ONE-CLICK VIDEO</span><span>00:10 · 9:16</span></div>
+  </div>
+
+  <script>
+    window.__timelines = window.__timelines || {};
+    const tl = gsap.timeline({paused:true});
+    tl.from("#brand",{opacity:0,x:-36,duration:.42,ease:"power3.out"},0)
+      .from("#mode-chip",{opacity:0,x:32,duration:.38,ease:"power3.out"},.08)
+      .from("#hook-one",{opacity:0,y:-54,scale:.86,duration:.46,ease:"back.out(1.7)"},.05)
+      .from("#hook-two",{opacity:0,y:52,scale:.76,rotation:-4,duration:.48,ease:"back.out(1.9)"},.24)
+      .to("#hook-rule",{width:460,duration:.42,ease:"power3.out"},.48)
+      .to("#hook",{opacity:0,y:-18,duration:.24,ease:"power2.in"},1.92)
+      .from("#food-headline",{opacity:0,scale:1.75,rotation:7,y:-36,duration:.30,ease:"back.out(1.45)"},5.82)
+      .from("#ai-headline",{opacity:0,scale:1.08,rotation:-5,y:-22,duration:.28,ease:"back.out(1.6)"},8.38)
+      .from("#cta",{opacity:0,y:-58,scale:.86,duration:.38,ease:"back.out(1.55)"},9.00)
+      .fromTo("#progress-fill",{scaleX:0},{scaleX:1,duration:9.73,ease:"none"},0)
+      .to("#a-roll",{scale:1.035,duration:.14,ease:"power2.out"},3.28)
+      .to("#a-roll",{scale:1,duration:.24,ease:"power2.inOut"},3.42)
+      .to("#a-roll",{scale:1.04,duration:.14,ease:"power2.out"},4.82)
+      .to("#a-roll",{scale:1,duration:.24,ease:"power2.inOut"},4.96)
+      .to("#a-roll",{scale:1.045,duration:.14,ease:"power2.out"},7.58)
+      .to("#a-roll",{scale:1,duration:.26,ease:"power2.inOut"},7.72);
+    [
+      ["#caption-1",0],["#caption-2",2.47],["#caption-3",3.26],["#caption-4",3.96],
+      ["#caption-5",4.84],["#caption-6",5.56],["#caption-7",7.62],["#caption-8",8.48],["#caption-9",9.00]
+    ].forEach(([selector,start])=>tl.from(selector,{opacity:0,y:30,scale:.94,duration:.18,ease:"back.out(1.5)"},start));
+    window.__timelines.main = tl;
+  </script>
+</body>
+</html>

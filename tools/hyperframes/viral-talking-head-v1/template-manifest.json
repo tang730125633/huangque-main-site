@@ -1,0 +1,18 @@
+{
+  "id": "viral-talking-head-v1",
+  "version": "1.0.0-demo",
+  "status": "draft",
+  "verified": false,
+  "supported_ratios": ["9:16"],
+  "operations": [
+    "base_captions",
+    "semantic_caption_groups",
+    "keyword_highlight",
+    "hook_title",
+    "dynamic_headline",
+    "cut_masking_zoom"
+  ],
+  "required_inputs": ["clean_video", "text_timeline"],
+  "optional_inputs": ["brand_name", "cta"],
+  "output": {"width": 1080, "height": 1920, "fps": 30, "video": "h264", "audio": "aac"}
+}
