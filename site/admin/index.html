@@ -483,6 +483,16 @@
         <div class="grid" id="inviteStatsBox"></div>
       </section>
       <section class="card span12 module-card" data-module="invite" hidden>
+        <div class="section-head"><div><h2>拉人轨迹 / 转化漏斗</h2><div class="hint">记录进入制作链路、注册、发布和会员转化；权益只以服务端邀请关系与奖励台账为准。</div></div><button id="inviteJourneyRefresh">刷新轨迹</button></div>
+        <div class="toolbar">
+          <input class="field" id="inviteJourneyUser" type="search" autocomplete="off" placeholder="邀请人或被邀请人账号 / 昵称 / ID">
+          <select id="inviteJourneyStatus"><option value="">全部阶段</option><option value="started">开始制作</option><option value="registered">已注册</option><option value="rewarded">已送体验点</option><option value="member">已开通会员</option></select>
+          <select id="inviteJourneyDays"><option value="7">近 7 天</option><option value="30" selected>近 30 天</option><option value="90">近 90 天</option><option value="365">近 365 天</option></select>
+        </div>
+        <div class="grid" id="inviteJourneyStats"></div>
+        <div id="inviteJourneyBox"></div>
+      </section>
+      <section class="card span12 module-card" data-module="invite" hidden>
         <div class="section-head"><div><h2>邀请关系</h2><div class="hint">支持按邀请双方、邀请码、关系状态和风控状态筛选。</div></div><div class="actions"><button id="inviteRefresh">刷新</button><button class="primary" id="inviteExport">导出 XLSX</button></div></div>
         <div class="toolbar">
           <input class="field" id="inviteInviter" autocomplete="off" placeholder="邀请人账号 / 昵称 / ID">
@@ -903,12 +913,13 @@
   }
   function renderUserDetail(d){
     var u=d.user||{},t=d.tasks||{},p=d.payments||{},ledger=d.ledger||{},rewards=d.invite_rewards||{},relations=d.invite_relations||{},referrer=relations.referrer,invitees=relations.invitees||{},box=el('userDetailBox');
+    state.detailUser=u.username;
     var taskRows=(t.recent||[]).map(function(x){return '<tr><td><code>#'+esc(x.id)+'</code></td><td>'+esc(x.func)+'</td><td>'+esc(x.channel)+'</td><td><div class="truncate" title="'+esc(x.model)+'">'+esc(x.model)+'</div></td><td>'+jobStatusPill(x.status)+'</td><td>'+Number(x.cost||0).toLocaleString()+'</td><td>'+esc(fmtTime(x.created_at))+'</td></tr>'}).join('');
     var orderRows=(p.recent||[]).map(function(x){return '<tr><td>'+esc(x.source)+'</td><td><code>'+esc(x.order_id)+'</code></td><td>'+money(x.amount_fen)+'</td><td>'+esc(paymentTypeName(x.order_type))+'</td><td>'+esc(paymentStatusName(x.status))+'</td><td>'+Number(x.points||0).toLocaleString()+'</td><td>'+esc(fmtTime(x.created_at))+'</td><td><div class="truncate" title="'+esc(x.detail||'')+'">'+esc(x.detail||'-')+'</div></td></tr>'}).join('');
     var ledgerRows=(ledger.items||[]).slice(0,10).map(function(x){var delta=Number(x.delta||0);return '<tr><td>'+esc(fmtTime(x.created_at))+'</td><td>'+(delta>0?'+':'')+delta.toLocaleString()+'</td><td>'+esc(pointReasonText(x))+'</td><td>'+esc(x.who_admin==='system'?'任务':x.who_admin)+'</td></tr>'}).join('');
-    var inviteRewardRows=(rewards.items||[]).map(function(x){return '<tr><td><code>#'+esc(x.id)+'</code></td><td><b>'+esc(x.invitee_name||x.invitee_username)+'</b><div class="muted">'+esc(x.invitee_username||'')+'</div></td><td>'+esc(x.inviter_level_name||'')+' → '+esc(x.invitee_level_name||'')+'</td><td><code>'+Number(x.reward_points||0).toLocaleString()+'</code></td><td><code>'+Number(x.reward_total_after||0).toLocaleString()+'</code></td><td>'+(x.status==='recorded'?'<span class="pill ok">有效</span>':'<span class="pill fail">已作废</span>')+'</td><td><code>'+esc(fmtTime(x.created_at))+'</code><div class="muted">'+esc(x.void_reason||'')+'</div></td></tr>'}).join('');
-    var inviteRelationRows=(invitees.items||[]).map(function(x){return '<tr><td><code>#'+esc(x.user_id)+'</code></td><td><b>'+esc(x.display_name||x.username)+'</b><div class="muted">'+esc(x.username)+'</div></td><td>'+membershipText(x)+'</td><td>'+inviteRelationStatus(x)+'</td><td><code>'+esc(fmtTime(x.bound_at))+'</code></td><td><button class="mini" data-related-user="'+esc(x.username)+'">查看</button></td></tr>'}).join('');
-    var referrerHtml=referrer?'<div class="row"><div><span class="muted">邀请人</span><div style="margin-top:5px"><b>'+esc(referrer.display_name||referrer.username)+'</b> <code>'+esc(referrer.username)+'</code> <span class="muted">#'+esc(referrer.user_id)+'</span></div><div class="hint">绑定于 '+esc(fmtTime(referrer.bound_at))+' · '+esc(referrer.source||'未知来源')+'</div></div><div class="actions">'+membershipText(referrer)+inviteRelationStatus(referrer)+'<button class="mini" data-related-user="'+esc(referrer.username)+'">查看邀请人</button></div></div>':'<div class="muted">该用户没有邀请人</div>';
+    var inviteRewardRows=(rewards.items||[]).map(function(x){return '<tr><td><code>#'+esc(x.id)+'</code></td><td><b>'+esc(x.invitee_name||x.invitee_account)+'</b><div class="muted">'+esc(x.invitee_account||'')+'</div></td><td>'+esc(x.inviter_level_name||'')+' → '+esc(x.invitee_level_name||'')+'</td><td><code>'+Number(x.reward_points||0).toLocaleString()+'</code></td><td><code>'+Number(x.reward_total_after||0).toLocaleString()+'</code></td><td>'+(x.status==='recorded'?'<span class="pill ok">有效</span>':'<span class="pill fail">已作废</span>')+'</td><td><code>'+esc(fmtTime(x.created_at))+'</code><div class="muted">'+esc(x.void_reason||'')+'</div></td></tr>'}).join('');
+    var inviteRelationRows=(invitees.items||[]).map(function(x){return '<tr><td><code>#'+esc(x.user_id)+'</code></td><td><b>'+esc(x.display_name||x.account)+'</b><div class="muted">'+esc(x.account||'')+'</div></td><td>'+membershipText(x)+'</td><td>'+inviteRelationStatus(x)+'</td><td><code>'+esc(fmtTime(x.bound_at))+'</code></td><td><button class="mini" data-related-user-id="'+esc(x.user_id)+'">查看</button></td></tr>'}).join('');
+    var referrerHtml=referrer?'<div class="row"><div><span class="muted">邀请人</span><div style="margin-top:5px"><b>'+esc(referrer.display_name||referrer.account)+'</b> <code>'+esc(referrer.account)+'</code> <span class="muted">#'+esc(referrer.user_id)+'</span></div><div class="hint">绑定于 '+esc(fmtTime(referrer.bound_at))+' · '+esc(referrer.source||'未知来源')+'</div></div><div class="actions">'+membershipText(referrer)+inviteRelationStatus(referrer)+'<button class="mini" data-related-user-id="'+esc(referrer.user_id)+'">查看邀请人</button></div></div>':'<div class="muted">该用户没有邀请人</div>';
     box.hidden=false;
     box.innerHTML='<div class="row"><div><h2 style="margin:0">'+esc(u.display_name||u.username)+' <code>'+esc(u.username)+'</code></h2><div class="hint">注册于 '+esc(u.created_at||'-')+' · '+esc(roleName(u.role))+' · '+esc(membershipName(u.membership_tier))+' · 当前 '+Number(u.points||0).toLocaleString()+' 点</div></div><div class="actions"><button class="mini" id="detailRefresh">刷新</button><button class="mini" id="detailNotice" data-act="notice">发通知</button><button class="mini" id="detailRecharge">充值会员</button><button class="mini" id="detailMember">调整会员</button><button class="mini" id="detailPlus">加点</button><button class="mini danger" id="detailMinus">扣点</button><button class="mini danger" id="detailPassword">重置密码</button><button class="mini" id="detailPoints">查看流水</button><button class="mini" id="detailClose">关闭</button></div></div>'+
       '<div class="pool-editor" id="passwordResetEditor" hidden><b>重置 '+esc(u.username)+' 的密码</b><div class="hint">重置后会注销该用户全部登录态；用户使用临时密码登录后必须立即改密。</div><div class="toolbar"><input class="field" id="passwordResetNew" type="password" minlength="6" maxlength="128" autocomplete="new-password" aria-label="新临时密码" placeholder="新临时密码（6–128 位）"><input class="field" id="passwordResetConfirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" aria-label="确认新临时密码" placeholder="再次输入临时密码"><button class="primary" id="passwordResetSubmit">确认重置</button><button id="passwordResetCancel">取消</button></div></div>'+
@@ -932,11 +943,12 @@
     el('passwordResetCancel').onclick=closePasswordReset;
     el('passwordResetSubmit').onclick=function(){resetUserPassword(u.username)};
     el('detailPoints').onclick=function(){openPoints(u.username)};
-    Array.prototype.forEach.call(box.querySelectorAll('[data-related-user]'),function(btn){btn.onclick=function(){openUserDetail(btn.getAttribute('data-related-user'))}});
+    Array.prototype.forEach.call(box.querySelectorAll('[data-related-user-id]'),function(btn){btn.onclick=function(){openUserDetail('',btn.getAttribute('data-related-user-id'))}});
   }
-  function openUserDetail(username){
-    state.detailUser=username;var box=el('userDetailBox'),layer=el('customerLayer'),opening=layer.hidden;if(opening)state.drawerReturnFocus=document.activeElement;layer.hidden=false;box.hidden=false;document.body.classList.add('drawer-open');box.innerHTML='<div class="muted">正在读取 '+esc(username)+' 的任务、付费与邀请信息...</div>';if(opening)el('customerDrawer').focus();
-    api('/api/admin/users/detail?username='+encodeURIComponent(username)).then(function(d){if(state.detailUser===username)renderUserDetail(d)}).catch(function(e){if(state.detailUser===username)box.innerHTML='<div class="error">'+esc(e.message)+'</div>'});
+  function openUserDetail(username,userId){
+    var identity=userId?('id:'+userId):username,url=userId?('/api/admin/users/detail?user_id='+encodeURIComponent(userId)):('/api/admin/users/detail?username='+encodeURIComponent(username));
+    state.detailUser=identity;var box=el('userDetailBox'),layer=el('customerLayer'),opening=layer.hidden;if(opening)state.drawerReturnFocus=document.activeElement;layer.hidden=false;box.hidden=false;document.body.classList.add('drawer-open');box.innerHTML='<div class="muted">正在读取 '+esc(userId?('用户 #'+userId):username)+' 的任务、付费与邀请信息...</div>';if(opening)el('customerDrawer').focus();
+    api(url).then(function(d){if(state.detailUser===identity)renderUserDetail(d)}).catch(function(e){if(state.detailUser===identity)box.innerHTML='<div class="error">'+esc(e.message)+'</div>'});
   }
   function sendUserNotification(username){
     if(state.noticeSending){toast('通知正在发送，请稍候');return}
@@ -1099,17 +1111,11 @@
     el('userCount').textContent='第 '+state.userPage+' / '+pages+' 页 · 共 '+total+' 个账号';
     if(!items.length){el('usersBox').innerHTML='<div class="empty">暂无用户</div>';return}
     el('usersBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>ID</th><th>账号</th><th>昵称</th><th>点数</th><th>会员</th><th>角色</th><th>改密</th><th>注册时间</th><th>操作</th></tr></thead><tbody>'+items.map(function(u){
-      return '<tr><td><code>#'+esc(u.id)+'</code></td><td><b>'+esc(u.username)+'</b></td><td><div class="truncate" title="'+esc(u.display_name||'')+'">'+esc(u.display_name||'')+'</div></td><td><code>'+Number(u.points||0).toLocaleString()+'</code></td><td>'+membershipText(u)+'</td><td>'+esc(roleName(u.role))+'</td><td>'+(u.must_change?'<span class="pill warn">需改密</span>':'<span class="pill ok">正常</span>')+'</td><td><code>'+esc(u.created_at||'')+'</code></td><td class="user-actions"><div class="actions"><button class="mini primary" data-act="detail" data-user="'+esc(u.username)+'">客户全貌</button><details class="row-actions"><summary>快速处理</summary><div class="row-actions-menu"><button class="mini" data-act="notice" data-user="'+esc(u.username)+'">发送通知</button><button class="mini" data-act="recharge" data-user="'+esc(u.username)+'">充值会员</button><button class="mini" data-act="member" data-user="'+esc(u.username)+'">调整会员</button><button class="mini" data-act="plus" data-user="'+esc(u.username)+'">增加点数</button><button class="mini danger" data-act="minus" data-user="'+esc(u.username)+'">扣除点数</button><button class="mini" data-act="audit" data-user="'+esc(u.username)+'">查看流水</button></div></details></div></td></tr>';
+      return '<tr><td><code>#'+esc(u.id)+'</code></td><td><b>'+esc(u.account)+'</b></td><td><div class="truncate" title="'+esc(u.display_name||'')+'">'+esc(u.display_name||'')+'</div></td><td><code>'+Number(u.points||0).toLocaleString()+'</code></td><td>'+membershipText(u)+'</td><td>'+esc(roleName(u.role))+'</td><td>'+(u.must_change?'<span class="pill warn">需改密</span>':'<span class="pill ok">正常</span>')+'</td><td><code>'+esc(u.created_at||'')+'</code></td><td class="user-actions"><button class="mini primary" data-act="detail" data-user-id="'+esc(u.id)+'">客户全貌</button></td></tr>';
     }).join('')+'</tbody></table></div><div class="pager"><button data-user-page="-1" '+(state.userPage<=1?'disabled':'')+'>上一页</button><span class="pager-info">第 '+state.userPage+' / '+pages+' 页 · 每页 '+state.userPageSize+' 个</span><button data-user-page="1" '+(state.userPage>=pages?'disabled':'')+'>下一页</button></div>';
     Array.prototype.forEach.call(document.querySelectorAll('#usersBox button[data-act]'), function(btn){
       btn.onclick=function(){
-        var act=btn.getAttribute('data-act'), username=btn.getAttribute('data-user');
-        if(act==='detail') return openUserDetail(username);
-        if(act==='notice') return sendUserNotification(username);
-        if(act==='audit') return openPoints(username);
-        if(act==='recharge') return openMembershipRecharge(username);
-        if(act==='member') return setMembership(username);
-        adjustPoints(username, act==='minus'?-1:1);
+        openUserDetail('',btn.getAttribute('data-user-id'));
       };
     });
     Array.prototype.forEach.call(el('usersBox').querySelectorAll('[data-user-page]'),function(btn){
@@ -1280,6 +1286,20 @@
     el('inviteStatsRange').textContent='近 '+(d.days||30)+' 天';
     el('inviteStatsBox').innerHTML=metrics.map(function(x){return '<div class="card metric span3"><div><span>'+x[0]+'</span><b>'+Number(x[1]||0).toLocaleString()+'</b></div></div>'}).join('');
   }
+  function inviteJourneyQuery(){var q=['limit=100','days='+encodeURIComponent(el('inviteJourneyDays').value||'30')],u=(el('inviteJourneyUser').value||'').trim(),s=el('inviteJourneyStatus').value;if(u)q.push('user='+encodeURIComponent(u));if(s)q.push('status='+encodeURIComponent(s));return '?'+q.join('&')}
+  function renderInviteJourneys(d){
+    var s=d.summary||{},metrics=[['有效进入',s.visited],['开始制作',s.started],['完成注册',s.registered],['绑定关系',s.bound],['获得 100 点',s.trial_rewarded],['发布名片',s.published],['开通会员',s.members],['注册率',Math.round(Number(s.registration_rate||0)*100)+'%']];
+    el('inviteJourneyStats').innerHTML=metrics.map(function(x){return '<div class="card metric span3"><div><span>'+x[0]+'</span><b>'+(/^\d+%$/.test(String(x[1]))?x[1]:Number(x[1]||0).toLocaleString())+'</b></div></div>'}).join('');
+    var items=d.items||[];if(!items.length){el('inviteJourneyBox').innerHTML='<div class="empty">该条件下暂无拉人轨迹</div>';return}
+    function step(label,ts){return ts?'<span class="pill ok">'+label+' · '+esc(fmtTime(ts))+'</span>':'<span class="pill neutral">'+label+' · 未到达</span>'}
+    el('inviteJourneyBox').innerHTML='<div class="hint" style="margin:10px 0 8px">共 '+Number(d.total||0).toLocaleString()+' 次有效进入；未注册访客只显示匿名轨迹，账号默认脱敏。</div><div class="table-wrap"><table><thead><tr><th>邀请人</th><th>被邀请人</th><th>轨迹</th><th>关系 / 风控</th><th>权益结果</th></tr></thead><tbody>'+items.map(function(x){
+      var inviter='<b>'+esc(x.inviter_name||x.inviter_account)+'</b><div class="muted">'+esc(x.inviter_account_id||x.inviter_account||'')+'</div>',invitee=x.registered_user_id?'<b>'+esc(x.invitee_name||x.invitee_account)+'</b><div class="muted">'+esc(x.invitee_account_id||x.invitee_account||'')+'</div>':'<span class="muted">匿名访客</span>';
+      var stages=step('打开',x.visited_at)+' '+step('制作',x.card_started_at)+' '+step('注册',x.registered_at)+' '+step('发布',x.published_at);
+      var relation=x.invite_relation_id?'<span class="pill '+(x.relation_status==='bound'?'ok':'warn')+'">'+esc(inviteStatusName(x.relation_status||'bound'))+'</span> <span class="pill '+(x.risk_status==='normal'?'ok':'warn')+'">风控：'+esc(inviteStatusName(x.risk_status||'normal'))+'</span>':'<span class="muted">尚未建立关系</span>';
+      var benefit=(x.benefit_granted_at?'<span class="pill ok">已送 100 点</span>':'<span class="muted">未送体验点</span>')+(x.membership_at?' <span class="pill ok">已开会员</span>':'')+(Number(x.membership_reward_points||0)?'<div class="muted">邀请权益 '+Number(x.membership_reward_points).toLocaleString()+' 点</div>':'');
+      return '<tr><td>'+inviter+'</td><td>'+invitee+'</td><td><div class="actions">'+stages+'</div></td><td>'+relation+'</td><td>'+benefit+'</td></tr>';
+    }).join('')+'</tbody></table></div>';
+  }
   function inviteStatusName(v){return ({bound:'已绑定',invalid:'已无效',unbound:'已解绑',normal:'正常',review:'待复核',blocked:'已封禁',active:'正常',banned:'已停用'})[v]||v}
   // 网络接口集中在这里，后端确定字段后只需调整这一处。
   var INVITE_NETWORK_API='/api/admin/invite/network', INVITE_NETWORK_LIMIT=20;
@@ -1343,17 +1363,17 @@
       var actions='<button class="mini" data-invite-act="invalidate" data-id="'+x.id+'">标记无效</button><button class="mini" data-invite-act="unbind" data-id="'+x.id+'">解绑</button>';
       if(x.status!=='bound') actions+='<button class="mini" data-invite-act="restore" data-id="'+x.id+'">恢复</button>';
       actions+=x.invitee_account_status==='banned'?'<button class="mini" data-invite-act="unban" data-id="'+x.id+'">解封账号</button>':'<button class="mini danger" data-invite-act="ban" data-id="'+x.id+'">封禁账号</button>';
-      return '<tr><td><b>'+esc(x.inviter_username)+'</b><div class="muted">'+esc(x.inviter_name||'')+' · '+esc(x.inviter_account_id||'')+'</div></td><td><b>'+esc(x.invitee_username)+'</b><div class="muted">'+esc(x.invitee_name||'')+' · '+esc(x.invitee_account_id||'')+'</div></td><td><code>'+esc(x.invite_code)+'</code><div class="muted">'+esc(x.source)+'</div></td><td><code>'+fmtTime(x.bound_at)+'</code></td><td>'+relation+'<div class="muted truncate" title="'+esc(x.invalid_reason||'')+'">'+esc(x.invalid_reason||'')+'</div></td><td>'+risk+' '+account+'</td><td><div class="actions">'+actions+'</div></td></tr>';
+      return '<tr><td><b>'+esc(x.inviter_account)+'</b><div class="muted">'+esc(x.inviter_name||'')+' · '+esc(x.inviter_account_id||'')+'</div></td><td><b>'+esc(x.invitee_account)+'</b><div class="muted">'+esc(x.invitee_name||'')+' · '+esc(x.invitee_account_id||'')+'</div></td><td><code>'+esc(x.invite_code)+'</code><div class="muted">'+esc(x.source)+'</div></td><td><code>'+fmtTime(x.bound_at)+'</code></td><td>'+relation+'<div class="muted truncate" title="'+esc(x.invalid_reason||'')+'">'+esc(x.invalid_reason||'')+'</div></td><td>'+risk+' '+account+'</td><td><div class="actions">'+actions+'</div></td></tr>';
     }).join('')+'</tbody></table></div>';
     Array.prototype.forEach.call(document.querySelectorAll('[data-invite-act]'),function(btn){btn.onclick=function(){handleInviteAction(btn)}});
   }
   function renderInviteAudit(d){
     var items=d.items||[];
     if(!items.length){el('inviteAuditBox').innerHTML='<div class="empty">暂无管理员操作记录</div>';return}
-    el('inviteAuditBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>时间</th><th>管理员</th><th>关系 ID</th><th>动作</th><th>原因</th></tr></thead><tbody>'+items.map(function(x){return '<tr><td><code>'+fmtTime(x.created_at)+'</code></td><td>'+esc(x.operator_name||x.operator_username||'-')+'</td><td><code>'+(x.invite_relation_id||'-')+'</code></td><td>'+esc(x.action)+'</td><td>'+esc(x.reason||'-')+'</td></tr>'}).join('')+'</tbody></table></div>';
+    el('inviteAuditBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>时间</th><th>管理员</th><th>关系 ID</th><th>动作</th><th>原因</th></tr></thead><tbody>'+items.map(function(x){return '<tr><td><code>'+fmtTime(x.created_at)+'</code></td><td>'+esc(x.operator_name||x.operator_account||'-')+'</td><td><code>'+(x.invite_relation_id||'-')+'</code></td><td>'+esc(x.action)+'</td><td>'+esc(x.reason||'-')+'</td></tr>'}).join('')+'</tbody></table></div>';
   }
   function rewardQuery(){var q=['limit=100'];var a=(el('rewardInviter').value||'').trim(),b=(el('rewardInvitee').value||'').trim(),s=el('rewardStatus').value;if(a)q.push('inviter='+encodeURIComponent(a));if(b)q.push('invitee='+encodeURIComponent(b));if(s)q.push('status='+encodeURIComponent(s));return '?'+q.join('&')}
-  function renderInviteRewards(d){var items=d.items||[];el('inviteRewardSummary').textContent='有效 '+Number(d.recorded_points||0).toLocaleString()+' · 已作废 '+Number(d.voided_points||0).toLocaleString()+' · 共 '+Number(d.total||0)+' 条';if(!items.length){el('inviteRewardBox').innerHTML='<div class="empty">暂无奖励台账记录</div>';return}el('inviteRewardBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>ID</th><th>邀请人</th><th>被邀请人</th><th>等级</th><th>奖励积分</th><th>状态</th><th>时间 / 原因</th><th>操作</th></tr></thead><tbody>'+items.map(function(x){var action=x.status==='recorded'?'void':'restore',label=x.status==='recorded'?'作废':'恢复';return '<tr><td><code>'+x.id+'</code></td><td><b>'+esc(x.inviter_username)+'</b><div class="muted">'+esc(x.inviter_level_name||'')+'</div></td><td><b>'+esc(x.invitee_username)+'</b><div class="muted">'+esc(x.invitee_level_name||'')+'</div></td><td>'+esc(x.inviter_level_name||'')+' → '+esc(x.invitee_level_name||'')+'</td><td><code>'+Number(x.reward_points||0).toLocaleString()+'</code></td><td>'+(x.status==='recorded'?'<span class="pill ok">有效</span>':'<span class="pill fail">已作废</span>')+'</td><td><code>'+fmtTime(x.created_at)+'</code><div class="muted">'+esc(x.void_reason||'')+'</div></td><td><button class="mini '+(action==='void'?'danger':'')+'" data-reward-act="'+action+'" data-id="'+x.id+'" data-user="'+esc(x.inviter_username)+'" data-points="'+Number(x.reward_points||0)+'">'+label+'</button></td></tr>'}).join('')+'</tbody></table></div>';Array.prototype.forEach.call(document.querySelectorAll('[data-reward-act]'),function(btn){btn.onclick=function(){handleRewardAction(btn)}})}
+  function renderInviteRewards(d){var items=d.items||[];el('inviteRewardSummary').textContent='有效 '+Number(d.recorded_points||0).toLocaleString()+' · 已作废 '+Number(d.voided_points||0).toLocaleString()+' · 共 '+Number(d.total||0)+' 条';if(!items.length){el('inviteRewardBox').innerHTML='<div class="empty">暂无奖励台账记录</div>';return}el('inviteRewardBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>ID</th><th>邀请人</th><th>被邀请人</th><th>等级</th><th>奖励积分</th><th>状态</th><th>时间 / 原因</th><th>操作</th></tr></thead><tbody>'+items.map(function(x){var action=x.status==='recorded'?'void':'restore',label=x.status==='recorded'?'作废':'恢复';return '<tr><td><code>'+x.id+'</code></td><td><b>'+esc(x.inviter_name||x.inviter_account)+'</b><div class="muted">'+esc(x.inviter_level_name||'')+'</div></td><td><b>'+esc(x.invitee_name||x.invitee_account)+'</b><div class="muted">'+esc(x.invitee_level_name||'')+'</div></td><td>'+esc(x.inviter_level_name||'')+' → '+esc(x.invitee_level_name||'')+'</td><td><code>'+Number(x.reward_points||0).toLocaleString()+'</code></td><td>'+(x.status==='recorded'?'<span class="pill ok">有效</span>':'<span class="pill fail">已作废</span>')+'</td><td><code>'+fmtTime(x.created_at)+'</code><div class="muted">'+esc(x.void_reason||'')+'</div></td><td><button class="mini '+(action==='void'?'danger':'')+'" data-reward-act="'+action+'" data-id="'+x.id+'" data-user="'+esc(x.inviter_account)+'" data-points="'+Number(x.reward_points||0)+'">'+label+'</button></td></tr>'}).join('')+'</tbody></table></div>';Array.prototype.forEach.call(document.querySelectorAll('[data-reward-act]'),function(btn){btn.onclick=function(){handleRewardAction(btn)}})}
   function claimQuery(){var q=['limit=100'],s=el('inviteClaimStatus').value,a=(el('rewardInviter').value||'').trim(),b=(el('rewardInvitee').value||'').trim();if(s)q.push('status='+encodeURIComponent(s));if(a)q.push('inviter='+encodeURIComponent(a));if(b)q.push('invitee='+encodeURIComponent(b));return '?'+q.join('&')}
   function claimStatusName(v){return {pending_upgrade:'待升级领取',credited:'已到账',transferred:'已向上转移',voided:'已作废',no_recipient:'无合格领取人'}[v]||v||'-'}
   function renderInviteClaims(d){var items=d.items||[];el('inviteClaimSummary').textContent='共 '+Number(d.total||0).toLocaleString()+' 条';if(!items.length){el('inviteClaimBox').innerHTML='<div class="empty">暂无奖励领取状态记录</div>';return}el('inviteClaimBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>ID</th><th>直接邀请人</th><th>被邀请人</th><th>最终领取人</th><th>目标等级</th><th>真实额度</th><th>状态 / 层级</th><th>时间 / 原因</th></tr></thead><tbody>'+items.map(function(x){return '<tr><td><code>'+Number(x.id||0)+'</code></td><td><b>'+esc(x.direct_inviter_username||'-')+'</b></td><td><b>'+esc(x.invitee_username||'-')+'</b></td><td>'+esc(x.recipient_username||'-')+'</td><td>'+esc(x.target_level||'-')+'</td><td><code>'+Number(x.reward_points||0).toLocaleString()+'</code></td><td>'+esc(claimStatusName(x.status))+'<div class="muted">向上 '+Number(x.transfer_depth||0)+' 层</div></td><td><code>'+fmtTime(x.created_at)+'</code><div class="muted">'+esc(x.reason||'')+'</div></td></tr>'}).join('')+'</tbody></table></div>'}
@@ -1362,8 +1382,8 @@
     if(!token) return;
     Promise.all([
       api('/api/admin/invite/config'),api('/api/admin/invite/stats?days=30'),
-      api('/api/admin/invite/relations'+inviteQuery()),api('/api/admin/invite/audit?limit=80'),api('/api/admin/invite/reward-points'+rewardQuery()),api('/api/admin/invite/reward-claims'+claimQuery())
-    ]).then(function(all){renderInviteConfig(all[0]);renderInviteStats(all[1]);renderInviteRelations(all[2]);renderInviteAudit(all[3]);renderInviteRewards(all[4]);renderInviteClaims(all[5])})
+      api('/api/admin/invite/journeys'+inviteJourneyQuery()),api('/api/admin/invite/relations'+inviteQuery()),api('/api/admin/invite/audit?limit=80'),api('/api/admin/invite/reward-points'+rewardQuery()),api('/api/admin/invite/reward-claims'+claimQuery())
+    ]).then(function(all){renderInviteConfig(all[0]);renderInviteStats(all[1]);renderInviteJourneys(all[2]);renderInviteRelations(all[3]);renderInviteAudit(all[4]);renderInviteRewards(all[5]);renderInviteClaims(all[6])})
       .catch(function(e){el('inviteRelationsBox').innerHTML='<div class="error">'+esc(e.message)+'</div>'});
   }
   function saveInviteConfig(){
@@ -1538,6 +1558,7 @@
   el('rechargeUser').oninput=function(){clearTimeout(state.rechargeTimer);state.rechargeTimer=setTimeout(loadRecharge,260)};
   el('inviteSave').onclick=saveInviteConfig;
   el('inviteRefresh').onclick=loadInvite;
+  el('inviteJourneyRefresh').onclick=loadInvite;
   el('inviteNetworkSearch').onclick=loadInviteNetwork;
   el('inviteNetworkRefresh').onclick=loadInviteNetwork;
   el('inviteNetworkUser').onkeydown=function(e){if(e.key==='Enter')loadInviteNetwork()};
@@ -1546,6 +1567,9 @@
   ['inviteInviter','inviteInvitee','inviteCode'].forEach(function(id){el(id).oninput=function(){clearTimeout(state.inviteTimer);state.inviteTimer=setTimeout(loadInvite,300)}});
   el('inviteStatus').onchange=loadInvite;
   el('inviteRisk').onchange=loadInvite;
+  el('inviteJourneyUser').oninput=function(){clearTimeout(state.inviteJourneyTimer);state.inviteJourneyTimer=setTimeout(loadInvite,300)};
+  el('inviteJourneyStatus').onchange=loadInvite;
+  el('inviteJourneyDays').onchange=loadInvite;
   ['rewardInviter','rewardInvitee'].forEach(function(id){el(id).oninput=function(){clearTimeout(state.rewardTimer);state.rewardTimer=setTimeout(loadInvite,300)}});el('rewardStatus').onchange=loadInvite;el('inviteClaimStatus').onchange=loadInvite;
   Array.prototype.forEach.call(document.querySelectorAll('[data-announcement-field]'),function(input){input.addEventListener(input.type==='radio'||input.type==='checkbox'?'change':'input',announcementDraftChanged)});
   el('announcementPreview').onclick=previewAnnouncementAudience;

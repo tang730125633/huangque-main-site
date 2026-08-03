@@ -263,12 +263,13 @@ class InviteRewardClaimTests(unittest.TestCase):
             self.conn, 2, "experience", "partner", "admin",
             source_order_id="membership-admin-view", now=NOW,
         )
+        self.conn.execute("UPDATE users SET username='13800000031' WHERE id=1")
         data = invites.admin_reward_claims(
             self.conn, filters={"status": "pending_upgrade"}, limit=20, offset=0,
         )
         self.assertEqual(data["total"], 1)
         item = data["items"][0]
-        self.assertEqual(item["direct_inviter_username"], "inviter")
+        self.assertEqual(item["direct_inviter_username"], "138****0031")
         self.assertEqual(item["invitee_username"], "invitee")
         self.assertEqual(item["target_level"], "partner")
         self.assertEqual(item["reward_points"], 1500)

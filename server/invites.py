@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
 CODE_LENGTH = 6
-VALID_SOURCES = {"web_link", "web_manual", "miniprogram", "admin"}
+VALID_SOURCES = {"web_link", "web_manual", "miniprogram", "miniprogram_card", "admin"}
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 DEFAULT_DAILY_LIMIT = int(os.environ.get("HQ_INVITE_DAILY_LIMIT", "50"))
 IP_REVIEW_THRESHOLD = int(os.environ.get("HQ_INVITE_IP_REVIEW_THRESHOLD", "3"))
@@ -36,6 +36,7 @@ INVITE_REWARD_TOTALS = {
 }
 MEMBERSHIP_LEVEL_ORDER = {"": 0, "experience": 1, "partner": 2, "initiator": 3}
 REWARD_CLAIM_TTL_SECONDS = 7 * 24 * 3600
+RISK_HASH_RETENTION = 30 * 24 * 3600
 
 
 class InviteError(Exception):
@@ -90,6 +91,11 @@ def init_schema(conn, now=None):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_invites_campaign_status ON user_invites(campaign_id, status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_invites_ip_time ON user_invites(ip_hash, bound_at DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_invites_device_time ON user_invites(device_hash, bound_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_invites_bound_at ON user_invites(bound_at)")
+    conn.execute(
+        "UPDATE user_invites SET ip_hash=NULL,device_hash=NULL WHERE bound_at<? AND (ip_hash IS NOT NULL OR device_hash IS NOT NULL)",
+        (now - RISK_HASH_RETENTION,),
+    )
     conn.execute("""CREATE TABLE IF NOT EXISTS invite_admin_audit(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         operator_user_id INTEGER NOT NULL,
@@ -892,8 +898,12 @@ def admin_reward_claims(conn, filters=None, limit=100, offset=0):
                   ie.username AS invitee_username,recipient.username AS recipient_username""" +
         base + " ORDER BY c.id DESC LIMIT ? OFFSET ?", args + [limit, offset],
     ).fetchall()
+    items = [dict(row) for row in rows]
+    for item in items:
+        for key in ("direct_inviter_username", "invitee_username", "recipient_username"):
+            item[key] = masked_admin_account(item.get(key))
     return {
-        "items": [dict(row) for row in rows],
+        "items": items,
         "total": int(total),
         "limit": limit,
         "offset": offset,
@@ -1112,7 +1122,12 @@ def bind_registration(conn, invitee_user_id, invite_code, source, client_ip="", 
     limit = int(config.get("daily_invite_limit") or 0)
     if limit > 0 and int(used_today) >= limit:
         raise InviteError("daily_limit", "该邀请码今日邀请人数已达上限", 409)
-    source = source if source in VALID_SOURCES else "web_manual"
+    if source not in VALID_SOURCES:
+        raise InviteError("invalid_source", "邀请来源无效", 400)
+    conn.execute(
+        "UPDATE user_invites SET ip_hash=NULL,device_hash=NULL WHERE bound_at<? AND (ip_hash IS NOT NULL OR device_hash IS NOT NULL)",
+        (now - RISK_HASH_RETENTION,),
+    )
     ip_hash = _privacy_hash(client_ip, hash_secret)
     device_hash = _privacy_hash(device_id, hash_secret)
     risk_status = "normal"
@@ -1324,6 +1339,134 @@ def admin_stats(conn, days=30, now=None):
     }
 
 
+def admin_referral_journeys(conn, filters=None, days=30, limit=100, offset=0, now=None):
+    filters = filters or {}
+    now = int(now or time.time())
+    try:
+        days = max(1, min(int(days or 30), 365))
+        limit = max(1, min(int(limit or 100), 300))
+        offset = max(0, int(offset or 0))
+    except (TypeError, ValueError):
+        raise InviteError("invalid_pagination", "轨迹查询参数不正确")
+    where = ["j.visited_at>=?"]
+    args = [day_start(now) - (days - 1) * 86400]
+    user = str(filters.get("user") or "").strip()
+    if user:
+        value = "%" + user + "%"
+        where.append("(inviter.username LIKE ? OR inviter.display_name LIKE ? OR inviter.account_id LIKE ? "
+                     "OR invitee.username LIKE ? OR invitee.display_name LIKE ? OR invitee.account_id LIKE ?)")
+        args.extend([value] * 6)
+    status = str(filters.get("status") or "").strip()
+    if status == "visited":
+        where.append("j.card_started_at IS NULL")
+    elif status == "started":
+        where.append("j.card_started_at IS NOT NULL AND j.registered_user_id IS NULL")
+    elif status == "registered":
+        where.append("j.registered_user_id IS NOT NULL")
+    elif status == "rewarded":
+        where.append("pa.id IS NOT NULL")
+    elif status == "member":
+        where.append("EXISTS(SELECT 1 FROM membership_upgrade_records mu WHERE mu.user_id=j.registered_user_id AND mu.status='effective')")
+    elif status:
+        raise InviteError("invalid_status", "轨迹状态筛选不正确")
+    joins = """ FROM card_referral_journeys j
+        JOIN users inviter ON inviter.id=j.inviter_user_id
+        LEFT JOIN users invitee ON invitee.id=j.registered_user_id
+        LEFT JOIN user_invites ui ON ui.id=j.invite_relation_id
+        LEFT JOIN points_audit pa ON pa.transaction_key=('card-referral:' || j.journey_id) """
+    clause = " WHERE " + " AND ".join(where)
+    summary = conn.execute(
+        """SELECT COUNT(*) AS total,
+                  COALESCE(SUM(CASE WHEN j.card_started_at IS NOT NULL THEN 1 ELSE 0 END),0) AS started,
+                  COALESCE(SUM(CASE WHEN j.registered_user_id IS NOT NULL THEN 1 ELSE 0 END),0) AS registered,
+                  COALESCE(SUM(CASE WHEN j.invite_relation_id IS NOT NULL THEN 1 ELSE 0 END),0) AS bound,
+                  COALESCE(SUM(CASE WHEN pa.id IS NOT NULL THEN 1 ELSE 0 END),0) AS trial_rewarded,
+                  COALESCE(SUM(CASE WHEN j.published_at IS NOT NULL THEN 1 ELSE 0 END),0) AS published,
+                  COALESCE(SUM(CASE WHEN EXISTS(SELECT 1 FROM membership_upgrade_records mu
+                    WHERE mu.user_id=j.registered_user_id AND mu.status='effective') THEN 1 ELSE 0 END),0) AS members
+           """ + joins + clause,
+        args,
+    ).fetchone()
+    rows = conn.execute(
+        """SELECT j.*,inviter.username AS inviter_username,inviter.display_name AS inviter_name,
+                  inviter.account_id AS inviter_account_id,
+                  invitee.username AS invitee_username,invitee.display_name AS invitee_name,
+                  invitee.account_id AS invitee_account_id,
+                  ui.status AS relation_status,ui.risk_status,ui.bound_at,
+                  j.published_at,pa.created_at AS benefit_granted_at,
+                  (SELECT MAX(mu.created_at) FROM membership_upgrade_records mu
+                    WHERE mu.user_id=j.registered_user_id AND mu.status='effective') AS membership_at,
+                  (SELECT COALESCE(SUM(rr.reward_points),0) FROM invite_reward_point_records rr
+                    WHERE rr.invite_relation_id=j.invite_relation_id AND rr.status='recorded') AS membership_reward_points
+           """ + joins + clause + " ORDER BY j.visited_at DESC LIMIT ? OFFSET ?",
+        args + [limit, offset],
+    ).fetchall()
+    total = int(summary["total"] or 0)
+    registered = int(summary["registered"] or 0)
+    items = []
+    for row in rows:
+        item = dict(row)
+        for prefix in ("inviter", "invitee"):
+            username = item.pop(prefix + "_username", "") or ""
+            item[prefix + "_account"] = masked_admin_account(username)
+            item[prefix + "_name"] = masked_admin_account(item.get(prefix + "_name") or "")
+        items.append(item)
+    return {
+        "items": items,
+        "total": total,
+        "days": days,
+        "limit": limit,
+        "offset": offset,
+        "summary": {
+            "visited": total,
+            "started": int(summary["started"] or 0),
+            "registered": registered,
+            "bound": int(summary["bound"] or 0),
+            "trial_rewarded": int(summary["trial_rewarded"] or 0),
+            "published": int(summary["published"] or 0),
+            "members": int(summary["members"] or 0),
+            "registration_rate": round(registered / total, 4) if total else 0,
+        },
+    }
+
+
+def masked_admin_account(value):
+    value = str(value or "")
+    if len(value) == 11 and value.startswith("1") and value.isdigit():
+        return value[:3] + "****" + value[-4:]
+    return value
+
+
+def admin_relation_view(item):
+    view = dict(item)
+    for prefix in ("inviter", "invitee"):
+        username = view.pop(prefix + "_username", "") or ""
+        view[prefix + "_account"] = masked_admin_account(username)
+        view[prefix + "_name"] = masked_admin_account(view.get(prefix + "_name") or "")
+    code = str(view.get("invite_code") or "")
+    view["invite_code"] = code[:2] + "••••" if code else ""
+    return view
+
+
+def admin_reward_view(item):
+    view = dict(item)
+    for prefix in ("inviter", "invitee"):
+        username = view.pop(prefix + "_username", "") or ""
+        view[prefix + "_account"] = masked_admin_account(username)
+        view[prefix + "_name"] = masked_admin_account(view.get(prefix + "_name") or "")
+    return view
+
+
+def admin_user_relation_view(item):
+    if not item:
+        return None
+    view = dict(item)
+    username = view.pop("username", "") or ""
+    view["account"] = masked_admin_account(username)
+    view["display_name"] = masked_admin_account(view.get("display_name") or "")
+    return view
+
+
 def _admin_relation_where(filters):
     clauses, params = [], []
     joins = """ FROM user_invites ui
@@ -1386,7 +1529,8 @@ def admin_relation_action(conn, relation_id, action, reason, operator_user_id, n
     row = conn.execute("SELECT * FROM user_invites WHERE id=?", (int(relation_id),)).fetchone()
     if not row:
         raise InviteError("relation_not_found", "邀请关系不存在", 404)
-    before = dict(row)
+    audit_fields = ("id", "status", "risk_status", "invalid_reason", "updated_at")
+    before = {key: row[key] for key in audit_fields}
     if action == "invalidate":
         conn.execute("UPDATE user_invites SET status='invalid',invalid_reason=?,updated_at=? WHERE id=?", (reason, now, row["id"]))
         conn.execute("""UPDATE invite_reward_point_records
@@ -1411,14 +1555,15 @@ def admin_relation_action(conn, relation_id, action, reason, operator_user_id, n
         conn.execute("UPDATE user_invites SET risk_status='normal',invalid_reason=NULL,updated_at=? WHERE id=?", (now, row["id"]))
         conn.execute("UPDATE users SET account_status='active' WHERE id=?", (row["invitee_user_id"],))
         conn.execute("UPDATE invite_reward_point_records SET status='recorded' WHERE invite_relation_id=? AND status='pending_review'", (row["id"],))
-    after = dict(conn.execute("SELECT * FROM user_invites WHERE id=?", (row["id"],)).fetchone())
+    fresh = conn.execute("SELECT * FROM user_invites WHERE id=?", (row["id"],)).fetchone()
+    after = {key: fresh[key] for key in audit_fields}
     conn.execute("""INSERT INTO invite_admin_audit(
         operator_user_id,invite_relation_id,action,reason,before_json,after_json,created_at
     ) VALUES(?,?,?,?,?,?,?)""", (
         int(operator_user_id), row["id"], action, reason,
         json.dumps(before, ensure_ascii=False), json.dumps(after, ensure_ascii=False), now,
     ))
-    return after
+    return dict(fresh)
 
 
 def admin_audit(conn, limit=100):
@@ -1430,7 +1575,13 @@ def admin_audit(conn, limit=100):
         u.username AS operator_username,u.display_name AS operator_name
         FROM invite_admin_audit a LEFT JOIN users u ON u.id=a.operator_user_id
         ORDER BY a.id DESC LIMIT ?""", (limit,)).fetchall()
-    return [dict(row) for row in rows]
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["operator_account"] = masked_admin_account(item.pop("operator_username", ""))
+        item["operator_name"] = masked_admin_account(item.get("operator_name") or "")
+        items.append(item)
+    return items
 
 
 def _xlsx_col(index):
@@ -1454,14 +1605,16 @@ def export_relations_xlsx(conn, filters=None):
             COALESCE(invitee.account_status,'active') AS invitee_account_status
             """ + joins + " ORDER BY ui.id DESC", params).fetchall()
         items = [dict(row) for row in rows]
-    headers = ["关系ID", "邀请人账号", "邀请人昵称", "邀请人账号ID", "被邀请人账号", "被邀请人昵称",
-               "被邀请人账号ID", "邀请码", "来源", "关系状态", "风控状态", "账号状态", "绑定时间", "处理原因"]
+    headers = ["关系ID", "邀请人昵称", "邀请人账号ID", "被邀请人昵称", "被邀请人账号ID",
+               "来源", "关系状态", "风控状态", "账号状态", "绑定时间", "处理原因"]
     rows = [headers]
     for item in items:
         bound = datetime.datetime.fromtimestamp(int(item["bound_at"]), SHANGHAI).strftime("%Y-%m-%d %H:%M:%S")
-        rows.append([item["id"], item["inviter_username"], item["inviter_name"] or "", item["inviter_account_id"] or "",
-                     item["invitee_username"], item["invitee_name"] or "", item["invitee_account_id"] or "",
-                     item["invite_code"], item["source"], item["status"], item["risk_status"],
+        inviter_name = "" if item["inviter_name"] == item["inviter_username"] else item["inviter_name"] or ""
+        invitee_name = "" if item["invitee_name"] == item["invitee_username"] else item["invitee_name"] or ""
+        rows.append([item["id"], inviter_name, item["inviter_account_id"] or "",
+                     invitee_name, item["invitee_account_id"] or "",
+                     item["source"], item["status"], item["risk_status"],
                      item["invitee_account_status"], bound, item["invalid_reason"] or ""])
     sheet_rows = []
     for r_idx, values in enumerate(rows, 1):
@@ -1475,14 +1628,14 @@ def export_relations_xlsx(conn, filters=None):
                 cells.append(f'<c r="{ref}"{style} t="inlineStr"><is><t>{escape(str(value))}</t></is></c>')
         row_style = ' ht="28" customHeight="1"' if r_idx == 1 else ' ht="22" customHeight="1"'
         sheet_rows.append(f'<row r="{r_idx}"{row_style}>' + "".join(cells) + "</row>")
-    widths = [10, 18, 18, 16, 18, 18, 16, 12, 14, 12, 12, 12, 22, 28]
+    widths = [10, 18, 16, 18, 16, 16, 12, 12, 12, 22, 28]
     cols = "".join(f'<col min="{i}" max="{i}" width="{width}" customWidth="1"/>' for i, width in enumerate(widths, 1))
     last_row = max(1, len(rows))
     sheet = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' \
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' \
         '<sheetViews><sheetView showGridLines="0" workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' \
         '<cols>' + cols + '</cols><sheetData>' + "".join(sheet_rows) + \
-        f'</sheetData><autoFilter ref="A1:N{last_row}"/></worksheet>'
+        f'</sheetData><autoFilter ref="A1:K{last_row}"/></worksheet>'
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8"?>' \

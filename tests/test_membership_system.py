@@ -35,6 +35,9 @@ class MembershipSystemTests(unittest.TestCase):
         self.auth.init_db()
         self.auth.create_user("buyer", "secret123", 20, "member")
         self.auth.create_user("admin", "secret123", 20, "admin")
+        c = self.auth.db()
+        c.execute("UPDATE users SET must_change=0 WHERE username IN ('buyer','admin')")
+        c.commit(); c.close()
 
     def tearDown(self):
         if self.old_db is None:
@@ -456,9 +459,14 @@ class MembershipSystemTests(unittest.TestCase):
         self.assertEqual(first["total"], 3)
         self.assertEqual(first["limit"], 2)
         self.assertEqual(first["offset"], 0)
-        self.assertEqual([item["username"] for item in first["items"]], ["page_alpha", "page_beta"])
-        self.assertEqual([item["username"] for item in second["items"]], ["page_gamma"])
+        self.assertEqual([item["account"] for item in first["items"]], ["page_alpha", "page_beta"])
+        self.assertEqual([item["account"] for item in second["items"]], ["page_gamma"])
         self.assertTrue(all(item["id"] > 0 for item in first["items"] + second["items"]))
+
+        self.auth.create_user("13800000031", "secret123", 0, "member")
+        masked = self.auth.list_admin_users(query="13800000031", limit=10)
+        self.assertEqual(masked["items"][0]["account"], "138****0031")
+        self.assertNotIn("username", masked["items"][0])
 
     def test_http_blocks_nonmember_deduct_and_point_recharge_but_allows_membership_order(self):
         os.environ["HQ_MEMBERSHIP_ENFORCEMENT_ENABLED"] = "1"

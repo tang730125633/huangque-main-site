@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # 黄雀 AI · 独立认证服务（零依赖，标准库）
 # 端口 127.0.0.1:8095，nginx 把 /api/auth/ 路由过来。与 leadgen(8090) 完全隔离。
-import datetime, sqlite3, hashlib, secrets, json, os, sys, time, urllib.parse, threading
+import datetime, sqlite3, hashlib, secrets, json, os, re, sys, time, urllib.parse, threading
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -62,6 +62,7 @@ REGISTER_IP_MAX = int(os.environ.get("HQ_AUTH_REGISTER_IP_MAX", "20"))
 USERNAME_MAX_LENGTH = 64
 PASSWORD_MAX_LENGTH = 128
 NEW_USER_TRIAL_POINTS = int(os.environ.get("HQ_AUTH_TRIAL_POINTS", "16"))  # 暂时保留新用户注册赠送 16 点
+MINIPROGRAM_CARD_TRIAL_POINTS = 100
 # 充值定价：客户端只传金额(元)，点数一律服务端算，绝不信客户端传的点数——
 # 否则用户能花 1 元买百万点。与 recharge.html / 小程序 recharge.js 保持一致。
 # 固定档与自定义均按 10 点/元；自定义限 10~5000 元整。
@@ -273,9 +274,12 @@ def init_db():
         points INTEGER DEFAULT 0,
         role TEXT DEFAULT 'member',
         must_change INTEGER DEFAULT 1,
+        card_initial_password INTEGER NOT NULL DEFAULT 0,
         created_at TEXT DEFAULT (datetime('now'))
     )""")
     user_cols = {r["name"] for r in c.execute("PRAGMA table_info(users)").fetchall()}
+    if "card_initial_password" not in user_cols:
+        c.execute("ALTER TABLE users ADD COLUMN card_initial_password INTEGER NOT NULL DEFAULT 0")
     if "account_id" not in user_cols:
         c.execute("ALTER TABLE users ADD COLUMN account_id TEXT")
     if "account_status" not in user_cols:
@@ -901,10 +905,158 @@ def register_account(username, password, display_name=None, invite_code="", invi
         c.close()
 
 
+def miniprogram_openid(wx_code):
+    if not str(wx_code or "").strip():
+        return None, {"status": 400, "code": "missing_wx_code", "detail": "缺少微信登录凭证"}
+    try:
+        session = wechat_vpay.code_to_session(str(wx_code).strip())
+    except wechat_vpay.VirtualPayError:
+        return None, {"status": 400, "code": "wechat_auth_failed", "detail": "微信登录态获取失败"}
+    except Exception:
+        return None, {"status": 503, "code": "wechat_auth_unavailable", "detail": "微信登录暂不可用"}
+    openid = str(session.get("openid") or "").strip()
+    if not openid:
+        return None, {"status": 400, "code": "wechat_auth_failed", "detail": "微信登录态获取失败"}
+    return openid, None
+
+
+def register_miniprogram_card(wx_code, phone, card, device_id, invite_code="", invite_attribution_token="", client_ip=""):
+    """Create a phone account and bind its Mini Program identity in one SQLite transaction."""
+    phone = str(phone or "").strip()
+    device_id = str(device_id or "").strip()
+    invite_code = invites.normalize_code(invite_code)
+    invite_attribution_token = str(invite_attribution_token or "").strip()
+    if not re.fullmatch(r"1[3-9]\d{9}", phone):
+        return None, {"status": 400, "code": "invalid_phone", "detail": "请输入中国大陆 11 位手机号"}
+    if not isinstance(card, dict):
+        return None, {"status": 400, "code": "invalid_card", "detail": "名片信息无效"}
+    required = (card.get("name"), card.get("title") or card.get("headline"), card.get("company"))
+    if not all(isinstance(value, str) and value.strip() for value in required):
+        return None, {"status": 400, "code": "incomplete_card", "detail": "请填写姓名、职称和公司"}
+    card = dict(card)
+    card["phone"] = phone
+    if not device_id:
+        return None, {"status": 400, "code": "missing_device_id", "detail": "缺少设备标识"}
+    if len(device_id) > 256:
+        return None, {"status": 400, "code": "device_id_too_long", "detail": "设备标识过长"}
+    if len(invite_code) > 32:
+        return None, {"status": 400, "code": "invalid_code", "detail": "邀请码无效"}
+    openid, err = miniprogram_openid(wx_code)
+    if err:
+        return None, err
+    salt = secrets.token_hex(16)
+    password_hash = hash_pw(phone, salt)
+    attribution = None
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        owner_id = business_cards.openid_owner(c, openid)
+        if owner_id:
+            owner = c.execute("SELECT * FROM users WHERE id=? AND account_status='active'", (owner_id,)).fetchone()
+            if not owner:
+                return None, {"status": 404, "code": "card_unbound", "detail": "微信尚未绑定名片"}
+            token = issue_token(owner["username"], c)
+            response = {
+                "token": token,
+                "user": public_user(owner["username"], owner["display_name"], owner["points"], owner["role"], owner["must_change"], owner["account_id"], owner["membership_tier"], owner["membership_started_at"], owner["membership_expires_at"]),
+                "card": card_for_owner(c, owner_id),
+                "invite_bound": bool(c.execute(
+                    "SELECT 1 FROM user_invites WHERE invitee_user_id=?", (owner_id,),
+                ).fetchone()),
+                "created": False,
+                "invite_rewarded": False,
+                "ai_account": owner["username"],
+                "initial_password": initial_password_change_required(owner),
+            }
+            c.commit()
+            return response, None
+        if c.execute("SELECT 1 FROM users WHERE username=?", (phone,)).fetchone():
+            return None, {"status": 409, "code": "account_exists", "detail": "该手机号已有账号，请使用账号登录"}
+        initial_points = 0
+        if invite_attribution_token:
+            attribution = business_cards.verify_attribution(invite_attribution_token, INVITE_HASH_SECRET)
+            if invite_code and invite_code != invites.normalize_code(attribution["code"]):
+                raise business_cards.CardError("invalid_invite_attribution", "邀请归因不匹配", 409)
+            if business_cards.public_owner(c, attribution["card_public_id"]) != int(attribution["owner_user_id"]):
+                raise business_cards.CardError("invalid_invite_attribution", "邀请归因已失效", 409)
+            invite_code = invites.normalize_code(attribution["code"])
+        account_id = _new_unique_account_id(c)
+        cur = c.execute("""INSERT INTO users(
+            username,pw_hash,pw_salt,display_name,points,role,must_change,card_initial_password,account_id
+        ) VALUES(?,?,?,?,?,?,0,1,?)""", (
+            phone, password_hash, salt, phone, initial_points, "member", account_id,
+        ))
+        business_cards.create_draft(c, cur.lastrowid, card)
+        business_cards.bind_miniprogram_openid(c, cur.lastrowid, openid)
+        relation = invites.bind_registration(
+            c, cur.lastrowid, invite_code, "miniprogram_card",
+            client_ip=client_ip, device_id=device_id, hash_secret=INVITE_HASH_SECRET,
+            enforce_membership=False,
+        )
+        if relation and attribution and attribution.get("journey_id"):
+            business_cards.start_referral_journey(c, attribution, relation["campaign_id"])
+            journey = business_cards.convert_referral_journey(
+                c, attribution, cur.lastrowid, relation["id"],
+            )
+            if journey:
+                initial_points = MINIPROGRAM_CARD_TRIAL_POINTS
+                c.execute("UPDATE users SET points=? WHERE id=?", (initial_points, cur.lastrowid))
+        if relation and initial_points == MINIPROGRAM_CARD_TRIAL_POINTS:
+            transaction_key = (
+                "card-referral:" + str(attribution.get("journey_id"))
+                if attribution and attribution.get("journey_id")
+                else "card-referral-relation:" + str(relation["id"])
+            )
+            c.execute(
+                """INSERT INTO points_audit(
+                       who_admin,username,delta,before_points,after_points,reason,created_at,transaction_key
+                   ) VALUES(?,?,?,?,?,?,?,?)""",
+                (SYSTEM_ACTOR, phone, initial_points, 0, initial_points,
+                 "名片邀请注册奖励", int(time.time()), transaction_key),
+            )
+        token = issue_token(phone, c)
+        saved_card = card_for_owner(c, cur.lastrowid)
+        c.commit()
+        return {
+            "token": token,
+            "user": public_user(phone, phone, initial_points, "member", False, account_id),
+            "card": saved_card,
+            "invite_bound": bool(relation),
+            "created": True,
+            "invite_rewarded": bool(relation and initial_points == MINIPROGRAM_CARD_TRIAL_POINTS),
+            "ai_account": phone,
+            "initial_password": True,
+        }, None
+    except invites.InviteError as exc:
+        c.rollback()
+        return None, {"status": exc.http_status, "code": exc.code, "detail": exc.detail}
+    except business_cards.CardError as exc:
+        c.rollback()
+        return None, {"status": exc.status, "code": exc.code, "detail": exc.detail}
+    except sqlite3.IntegrityError:
+        c.rollback()
+        return None, {"status": 409, "code": "account_exists", "detail": "该手机号已有账号，请使用账号登录"}
+    except Exception:
+        c.rollback()
+        return None, {"status": 500, "code": "register_failed", "detail": "注册失败"}
+    finally:
+        c.close()
+
+
 def card_for_owner(conn, user_id):
     card = business_cards.mine(conn, user_id)
     if not card:
         return None
+    user = conn.execute(
+        "SELECT username,must_change,card_initial_password FROM users WHERE id=?",
+        (int(user_id),),
+    ).fetchone()
+    card["ai_account"] = user["username"] if user else ""
+    card["initial_password"] = initial_password_change_required(user)
+    card["wechat_bound"] = bool(conn.execute(
+        "SELECT 1 FROM business_cards WHERE user_id=? AND miniprogram_openid IS NOT NULL",
+        (int(user_id),),
+    ).fetchone())
     try:
         card["invite_code"] = invites.ensure_user_code(
             conn, user_id, enforce_membership=False,
@@ -912,6 +1064,12 @@ def card_for_owner(conn, user_id):
     except invites.InviteError:
         card["invite_code"] = ""
     return card
+
+
+def initial_password_change_required(row):
+    keys = set(row.keys()) if row is not None and hasattr(row, "keys") else set()
+    return bool(row and (("must_change" in keys and row["must_change"]) or
+                         ("card_initial_password" in keys and row["card_initial_password"])))
 
 def membership_public(tier="", started_at=None, expires_at=None, now=None):
     tier = str(tier or "").strip()
@@ -2099,16 +2257,20 @@ def refund_points(username, amount, reason="", transaction_key=""):
     finally:
         c.close()
 
-def public_admin_user(row):
+def public_admin_user(row, mask_account=False):
+    username = row["username"]
     data = {
         "id": row["id"],
-        "username": row["username"],
-        "display_name": row["display_name"] or row["username"],
+        "username": username,
+        "display_name": row["display_name"] or username,
         "points": row["points"],
         "role": row["role"],
         "must_change": bool(row["must_change"]),
         "created_at": row["created_at"],
     }
+    if mask_account:
+        data["account"] = invites.masked_admin_account(data.pop("username"))
+        data["display_name"] = invites.masked_admin_account(data["display_name"])
     data.update(membership_for_row(row))
     return data
 
@@ -2135,7 +2297,7 @@ def list_admin_users(query="", sort="created_at", direction="desc", limit=100, o
         rows = c.execute(sql, args + [limit, offset]).fetchall()
         total = c.execute(count_sql + where_sql, args).fetchone()["n"]
         return {
-            "items": [public_admin_user(r) for r in rows],
+            "items": [public_admin_user(r, mask_account=True) for r in rows],
             "total": total,
             "limit": limit,
             "offset": offset,
@@ -2553,20 +2715,26 @@ def mark_all_user_notifications_read(username, now=None):
         c.close()
 
 
-def admin_user_insights(username):
+def admin_user_insights(username="", user_id=None):
     username = str(username or "").strip()
-    if not username:
+    if user_id is not None:
+        try:
+            user_id = int(user_id)
+        except (TypeError, ValueError):
+            return None
+    if not username and not user_id:
         return None
     c = db()
     try:
         user = c.execute(
             """SELECT id,username,display_name,points,role,must_change,created_at,
                       membership_tier,membership_started_at,membership_expires_at
-               FROM users WHERE username=?""",
-            (username,),
+               FROM users WHERE %s=?""" % ("id" if user_id else "username"),
+            (user_id if user_id else username,),
         ).fetchone()
         if not user:
             return None
+        username = user["username"]
         manual = c.execute(
             "SELECT * FROM recharge_orders WHERE username=? ORDER BY created_at DESC,order_id DESC",
             (username,),
@@ -2578,7 +2746,15 @@ def admin_user_insights(username):
         invite_rewards = invites.admin_reward_points(
             c, {"inviter_user_id": user["id"]}, limit=20,
         )
+        invite_rewards["items"] = [
+            invites.admin_reward_view(item) for item in invite_rewards["items"]
+        ]
         invite_relations = invites.admin_user_relations(c, user["id"], limit=20)
+        invite_relations["referrer"] = invites.admin_user_relation_view(invite_relations["referrer"])
+        invite_relations["invitees"]["items"] = [
+            invites.admin_user_relation_view(item)
+            for item in invite_relations["invitees"]["items"]
+        ]
     finally:
         c.close()
 
@@ -4311,6 +4487,15 @@ class H(BaseHTTPRequestHandler):
         })
         return False
 
+    def _require_purchase_password(self, row):
+        if not initial_password_change_required(row):
+            return True
+        self._send(403, {
+            "detail": "充值或开通会员前请先修改初始密码",
+            "code": "initial_password_change_required",
+        })
+        return False
+
     def do_POST(self):
         p = self.path.split("?")[0]
         if p == "/api/auth/cli/device/start":
@@ -4830,6 +5015,8 @@ class H(BaseHTTPRequestHandler):
             row = self._user()
             if not row:
                 return self._send(401, {"detail": "未登录"})
+            if not self._require_purchase_password(row):
+                return
             if not miniprogram_payments_enabled():
                 return self._send(503, {
                     "detail": "小程序支付功能暂时关闭",
@@ -4923,6 +5110,8 @@ class H(BaseHTTPRequestHandler):
             row = self._user()
             if not row:
                 return self._send(401, {"detail": "未登录"})
+            if not self._require_purchase_password(row):
+                return
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
@@ -4956,6 +5145,8 @@ class H(BaseHTTPRequestHandler):
             row = self._user()
             if not row:
                 return self._send(401, {"detail": "未登录"})
+            if not self._require_purchase_password(row):
+                return
             if wxpay is None or not wxpay.configured():
                 return self._send(503, {"detail": "微信支付未配置"})
             d = self._body()
@@ -5000,6 +5191,8 @@ class H(BaseHTTPRequestHandler):
             row = self._user()
             if not row:
                 return self._send(401, {"detail": "未登录"})
+            if not self._require_purchase_password(row):
+                return
             if not miniprogram_payments_enabled():
                 return self._send(503, {
                     "detail": "小程序支付功能暂时关闭",
@@ -5203,6 +5396,99 @@ class H(BaseHTTPRequestHandler):
                 u, row["display_name"], row["points"], row["role"], row["must_change"], account_id,
                 row["membership_tier"], row["membership_started_at"], row["membership_expires_at"],
             )}, {"Set-Cookie": auth_cookie_header(tok)})
+        if p == "/api/auth/card/wechat/bind":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            openid, err = miniprogram_openid(d.get("wx_code"))
+            if err:
+                return self._send(err["status"], {"detail": err["detail"], "code": err["code"]})
+            c = db()
+            try:
+                c.execute("BEGIN IMMEDIATE")
+                business_cards.bind_miniprogram_openid(c, row["id"], openid)
+                card = card_for_owner(c, row["id"])
+                c.commit()
+                return self._send(200, {
+                    "card": card, "wechat_bound": True,
+                    "ai_account": card["ai_account"],
+                    "initial_password": card["initial_password"],
+                })
+            except business_cards.CardError as exc:
+                c.rollback()
+                return self._send(exc.status, {"detail": exc.detail, "code": exc.code})
+            finally:
+                c.close()
+        if p == "/api/auth/miniprogram/card-login":
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            openid, err = miniprogram_openid(d.get("wx_code"))
+            if err:
+                return self._send(err["status"], {"detail": err["detail"], "code": err["code"]})
+            c = db()
+            try:
+                owner = c.execute("""SELECT u.* FROM business_cards bc JOIN users u ON u.id=bc.user_id
+                                     WHERE bc.miniprogram_openid=? AND u.account_status='active'""", (openid,)).fetchone()
+                if not owner:
+                    return self._send(404, {"detail": "微信尚未绑定名片", "code": "card_unbound"})
+                account_id = owner["account_id"] or ensure_account_id(owner["username"], c)
+                token = issue_token(owner["username"], c)
+                card = card_for_owner(c, owner["id"])
+                c.commit()
+                return self._send(200, {"token": token, "user": public_user(
+                    owner["username"], owner["display_name"], owner["points"], owner["role"], owner["must_change"], account_id,
+                    owner["membership_tier"], owner["membership_started_at"], owner["membership_expires_at"],
+                ), "card": card})
+            finally:
+                c.close()
+        if p == "/api/auth/invite/journey/start":
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            try:
+                attribution = business_cards.verify_attribution(
+                    d.get("invite_attribution_token"), INVITE_HASH_SECRET,
+                )
+                if not self._consume_register_attempt("invite-journey:" + str(attribution["card_public_id"])):
+                    return self._send(429, {"detail": "操作过于频繁，请稍后再试", "code": "rate_limited"})
+                c = db()
+                try:
+                    c.execute("BEGIN IMMEDIATE")
+                    invite = invites.validate_code(
+                        c, attribution["code"], enforce_membership=False,
+                    )
+                    if (
+                        int(invite["inviter_user_id"]) != int(attribution["owner_user_id"])
+                        or business_cards.public_owner(c, attribution["card_public_id"]) != int(attribution["owner_user_id"])
+                    ):
+                        raise business_cards.CardError("invalid_invite_attribution", "邀请归因已失效", 409)
+                    journey = business_cards.start_referral_journey(c, attribution, invite["campaign_id"])
+                    c.commit()
+                    return self._send(200, {"ok": True, "started": bool(journey)})
+                finally:
+                    c.close()
+            except invites.InviteError as exc:
+                return self._send(exc.http_status, {"detail": exc.detail, "code": exc.code})
+            except business_cards.CardError as exc:
+                return self._send(exc.status, {"detail": exc.detail, "code": exc.code})
+        if p == "/api/auth/miniprogram/card-register":
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            if not self._consume_register_attempt(d.get("device_id")):
+                return self._send(429, {"detail": "注册次数过多，请稍后再试"})
+            result, err = register_miniprogram_card(
+                d.get("wx_code"), d.get("phone"), d.get("card"), d.get("device_id"),
+                invite_code=d.get("invite_code"), invite_attribution_token=d.get("invite_attribution_token"),
+                client_ip=self._client_ip(),
+            )
+            if err:
+                return self._send(err["status"], {"detail": err["detail"], "code": err["code"]})
+            return self._send(200, result)
         if p == "/api/auth/miniprogram-login":
             # 小程序 wx.request 不像浏览器那样自动带 httpOnly cookie，专供小程序客户端：
             # token 放响应体让小程序自己存起来，后续走 Authorization: Bearer 请求头（网站登录/注册不受影响，仍只走 cookie）。
@@ -5274,6 +5560,11 @@ class H(BaseHTTPRequestHandler):
                 c.execute("BEGIN IMMEDIATE")
                 if p.endswith("/publish") or p.endswith("/unpublish"):
                     business_cards.publish(c, row["id"], "unpublished" if p.endswith("/unpublish") else (d.get("status") or "published"))
+                    if not p.endswith("/unpublish"):
+                        c.execute(
+                            "UPDATE card_referral_journeys SET published_at=COALESCE(published_at,?) WHERE registered_user_id=?",
+                            (int(time.time()), row["id"]),
+                        )
                     card = card_for_owner(c, row["id"])
                     result = {"ok": True, "card": card}
                 else:
@@ -5324,7 +5615,7 @@ class H(BaseHTTPRequestHandler):
                 fresh = c.execute("SELECT pw_hash,pw_salt FROM users WHERE username=?", (row["username"],)).fetchone()
                 if not fresh or hash_pw(oldp, fresh["pw_salt"]) != fresh["pw_hash"]:
                     return self._send(400, {"detail": "当前密码不正确"})
-                c.execute("UPDATE users SET pw_hash=?, pw_salt=?, must_change=0 WHERE username=?",
+                c.execute("UPDATE users SET pw_hash=?, pw_salt=?, must_change=0, card_initial_password=0 WHERE username=?",
                           (hash_pw(newp, salt), salt, row["username"]))
                 c.execute("DELETE FROM tokens WHERE username=?", (row["username"],))
                 c.commit()
@@ -5701,6 +5992,7 @@ class H(BaseHTTPRequestHandler):
                                 response["invite_expires_at"] = now + 7 * 24 * 3600
                                 response["invite_attribution_token"] = business_cards.attribution_token(
                                     code, public_id, owner_id, INVITE_HASH_SECRET, now=now,
+                                    journey_id=secrets.token_urlsafe(18),
                                 )
                         except invites.InviteError:
                             pass
@@ -5720,7 +6012,12 @@ class H(BaseHTTPRequestHandler):
                     business_cards.create_draft(c, row["id"])
                     card = card_for_owner(c, row["id"])
                     c.commit()
-                    return self._send(200, {"ok": True, "card": card})
+                    return self._send(200, {
+                        "ok": True, "card": card,
+                        "ai_account": card["ai_account"],
+                        "initial_password": card["initial_password"],
+                        "wechat_bound": card["wechat_bound"],
+                    })
                 finally:
                     c.close()
             if p in ("/api/admin/invite/network", "/api/auth/admin/invite/network"):
@@ -5734,7 +6031,7 @@ class H(BaseHTTPRequestHandler):
                     if not target and (query.get("search") or [""])[0]:
                         term = "%" + (query.get("search") or [""])[0].strip() + "%"
                         users = c.execute("SELECT id,username FROM users WHERE username LIKE ? OR display_name LIKE ? ORDER BY id LIMIT 20", (term, term)).fetchall()
-                        items = [{"user_id": int(r["id"]), "username": r["username"], **business_cards.public_network_person(c, r["id"], admin=True)} for r in users]
+                        items = [{"user_id": int(r["id"]), "username": invites.masked_admin_account(r["username"]), **business_cards.public_network_person(c, r["id"], admin=True)} for r in users]
                         c.commit()
                         return self._send(200, {"ok": True, "items": items})
                     user = c.execute("SELECT id,username FROM users WHERE CAST(id AS TEXT)=? OR username=?", (target, target)).fetchone()
@@ -5747,7 +6044,7 @@ class H(BaseHTTPRequestHandler):
                         except ValueError: return self._send(404, {"detail": "not found"})
                     data = business_cards.children(c, parent_id, (query.get("before_id") or ["0"])[0], (query.get("limit") or ["12"])[0], admin=True)
                     root = business_cards.public_network_person(c, user["id"], admin=True)
-                    root.update({"user_id": int(user["id"]), "username": user["username"]})
+                    root.update({"user_id": int(user["id"]), "username": invites.masked_admin_account(user["username"])})
                     ancestors = business_cards.ancestors(c, user["id"], admin=True)
                     c.commit()
                     return self._send(200, {"ok": True, "root": root, "user": root, "ancestors": ancestors, "children": data["items"], **data})
@@ -5809,6 +6106,17 @@ class H(BaseHTTPRequestHandler):
                     return self._send(200, {"ok": True, "config": dict(row) if row else None})
                 if p == "/api/auth/admin/invite/stats":
                     return self._send(200, {"ok": True, **invites.admin_stats(c, (query.get("days") or ["30"])[0])})
+                if p == "/api/auth/admin/invite/journeys":
+                    journey_filters = {
+                        key: (query.get(key) or [""])[0]
+                        for key in ("user", "status")
+                    }
+                    data = invites.admin_referral_journeys(
+                        c, journey_filters, (query.get("days") or ["30"])[0],
+                        (query.get("limit") or ["100"])[0],
+                        (query.get("offset") or ["0"])[0],
+                    )
+                    return self._send(200, {"ok": True, **data})
                 filters = {
                     key: (query.get(key) or [""])[0]
                     for key in ("inviter", "invitee", "code", "status", "risk_status", "start_at", "end_at")
@@ -5817,6 +6125,7 @@ class H(BaseHTTPRequestHandler):
                     data = invites.admin_relations(
                         c, filters, (query.get("limit") or ["50"])[0], (query.get("offset") or ["0"])[0],
                     )
+                    data["items"] = [invites.admin_relation_view(item) for item in data["items"]]
                     return self._send(200, {"ok": True, **data})
                 if p == "/api/auth/admin/invite/audit":
                     return self._send(200, {"ok": True, "items": invites.admin_audit(c, (query.get("limit") or ["100"])[0])})
@@ -5826,6 +6135,7 @@ class H(BaseHTTPRequestHandler):
                         c, reward_filters, (query.get("limit") or ["100"])[0],
                         (query.get("offset") or ["0"])[0],
                     )
+                    data["items"] = [invites.admin_reward_view(item) for item in data["items"]]
                     return self._send(200, {"ok": True, **data})
                 if p == "/api/auth/admin/invite/reward-claims":
                     claim_filters = {
@@ -6057,7 +6367,10 @@ class H(BaseHTTPRequestHandler):
                 return
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             try:
-                data = admin_user_insights((q.get("username") or [""])[0])
+                data = admin_user_insights(
+                    (q.get("username") or [""])[0],
+                    (q.get("user_id") or [None])[0],
+                )
                 if not data:
                     return self._send(404, {"detail": "用户不存在"})
                 return self._send(200, {"ok": True, **data})
@@ -6189,11 +6502,13 @@ class H(BaseHTTPRequestHandler):
             row = self._user()
             if not row: return self._send(401, {"detail": "未登录"})
             account_id = row["account_id"] or ensure_account_id(row["username"])
-            return self._send(200, {
-                "user": public_user(
+            user = public_user(
                 row["username"], row["display_name"], row["points"], row["role"], row["must_change"], account_id,
                 row["membership_tier"], row["membership_started_at"], row["membership_expires_at"],
-                ),
+            )
+            user["initial_password"] = initial_password_change_required(row)
+            return self._send(200, {
+                "user": user,
                 "membership_enforcement_enabled": membership_enforcement_enabled(),
             })
         if p == "/api/auth/friends":
