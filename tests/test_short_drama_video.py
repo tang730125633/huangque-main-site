@@ -258,6 +258,7 @@ class ShortDramaVideoTests(unittest.TestCase):
         )
         self.assertFalse(captured["generate_audio"])
         self.assertFalse(captured["enhance_prompt"])
+        self.assertEqual("720p", captured["resolution"])
         self.assertTrue(captured["_short_drama_video"]["visual_only"])
         self.assertEqual(
             self.prompt,

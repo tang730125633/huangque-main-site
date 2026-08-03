@@ -941,7 +941,7 @@ def prepare_video_quote(db_factory, actor_username, owner_username, body, cost_o
             "cine_mode": "open",
             "avatar_ids": dependencies["avatar_ids"],
             "prompt": compiled["prompt"],
-            "resolution": "1080p",
+            "resolution": "720p",
             "ratio": dependencies["ratio"],
             "duration": dependencies["duration"],
             "reference_image_files": [dependencies["still"]["file"]],

@@ -219,9 +219,9 @@ class CinematicValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             video.validate_cinematic_payload(self._body(prompt="   "))
 
-    def test_both_resolutions_are_allowed(self):
+    def test_legacy_resolutions_are_accepted_but_forced_to_720p(self):
         for r in ("720p", "1080p"):
-            self.assertEqual(video.validate_cinematic_payload(self._body(resolution=r))["resolution"], r)
+            self.assertEqual(video.validate_cinematic_payload(self._body(resolution=r))["resolution"], "720p")
 
     def test_rejects_unsupported_resolution(self):
         with self.assertRaises(ValueError):
@@ -262,7 +262,7 @@ class CinematicRequestBodyTests(unittest.TestCase):
         body = self._capture(avatar_item_id=["look1", "look2", "look3"], reference_asset_id="ref1",
                              ratio="9:16", resolution="1080p", duration=10, prompt="海边跳舞")
         self.assertEqual(body["avatar_id"], ["look1", "look2", "look3"])
-        self.assertEqual(body["resolution"], "1080p")
+        self.assertEqual(body["resolution"], "720p")
 
     def test_single_avatar_still_works(self):
         # 动作模仿那条老路径传的是单个 id（不是列表），不能因为改成数组就坏掉

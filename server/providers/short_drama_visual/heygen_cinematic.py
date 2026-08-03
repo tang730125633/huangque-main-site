@@ -56,7 +56,7 @@ class HeyGenCinematicShotProvider(ShotVisualProvider):
             "provider_avatar_id": avatar_id,
             "prompt": prompt,
             "ratio": ratio,
-            "resolution": str(request.get("resolution") or "720p").lower(),
+            "resolution": "720p",
             "duration_seconds": duration,
         }
 

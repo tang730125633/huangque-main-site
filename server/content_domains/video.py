@@ -3175,9 +3175,9 @@ CINEMATIC_IDENTITY_GUARD = (
 #     "Use these two avatars to replace the two people in the reference video"
 # 是换脸/深度伪造的教科书措辞。审核模型是英文的 —— 中文对它半透明，英文它读得懂。
 #
-# 所以这里【原样照抄】线上跑通的 #2173：
+# 所以提示词和非分辨率参数沿用线上跑通的 #2173；分辨率现统一降为 720p：
 #     提示词  「用这个人物形象模仿视频里面的动作」（用户写的，成片 383s）
-#     分辨率  1080p        比例 9:16（跟随参考视频）    时长 11s（自适应，参考视频 10.9s）
+#     分辨率  720p         比例 9:16（跟随参考视频）    时长 11s（自适应，参考视频 10.9s）
 #     润色    关           参考视频 576x1024 竖版
 #
 # ⚠️ 身份约束（CINEMATIC_IDENTITY_GUARD）【不要改】：#2173 发出去的是「这句中文 + 那段英文
@@ -3334,6 +3334,9 @@ def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, re
     # avatar_id 是 1~3 个 look 的数组 —— 多个 look 会让 HeyGen 在【同一个镜头】里同时出现多个人，
     # 不是生成多条视频。所以 3 个形象仍然只扣 1 条视频的钱。
     ids = [i for i in (avatar_item_id if isinstance(avatar_item_id, (list, tuple)) else [avatar_item_id]) if i]
+    # 电影化身当前统一走 720p。这里是所有调用者（主工作台、画布、短剧）的共同上游边界，
+    # 不能只依赖页面或 payload 校验，否则直接调用 helper 的渠道仍可能提交 1080p。
+    resolution = CINEMATIC_OUTPUT_RESOLUTION
     payload = {
         "type": "cinematic_avatar",
         "title": "follow_reference_motion",
@@ -5268,11 +5271,12 @@ def gen_avatar(payload):
 
 # ============ 电影化身：HeyGen cinematic_avatar ============
 # 三个玩法共用同一个上游接口（type=cinematic_avatar），差别只在【谁来写提示词】和【几个形象】：
-#   motion 单人动作模仿：1 个形象 + 必传参考视频，提示词写死，用户只调分辨率和时长
+#   motion 单人动作模仿：1 个形象 + 必传参考视频，提示词和生成参数写死
 #   duo   双人动作模仿：2 个形象 + 必传参考视频，提示词写死（另一段）
 #   open  开放式生成  ：1~3 个形象，自己写提示词，参考视频选填
 CINEMATIC_MAX_AVATARS = 3        # HeyGen 硬上限：avatar_id 是 1~3 个 look 的数组
-CINEMATIC_RESOLUTIONS = {"720p", "1080p"}
+CINEMATIC_RESOLUTIONS = {"720p", "1080p"}  # 兼容旧客户端；服务端最终统一覆盖为 720p
+CINEMATIC_OUTPUT_RESOLUTION = "720p"
 CINEMATIC_PROMPT_MAX = 2000
 CINEMATIC_DURATION_RANGE = (4, 15)   # HeyGen: 4~15 秒
 CINEMATIC_AUTO_DURATION = 10         # 选了「自适应」但没传参考视频时的回落值
@@ -5288,9 +5292,9 @@ CINEMATIC_MODES = ("motion", "duo", "open")
 CINEMATIC_DUO_ENABLED = os.environ.get("CINEMATIC_DUO_ENABLED", "").strip().lower() in ("1", "true", "yes")
 CINEMATIC_COMING_SOON = {} if CINEMATIC_DUO_ENABLED else {"duo": "双人动作模仿暂未开放"}
 # 动作模仿只给三档：自适应 / 10 秒 / 15 秒（开放式仍可在 4~15 内任选）
-# 动作模仿锁死的参数（照抄 #2173 —— 目前唯一已知能过 HeyGen 审核的配置）。
+# 动作模仿锁死的参数。
 # 用户只能换形象和参考视频；分辨率/时长/润色都不给选，也不认客户端传的值。
-CINEMATIC_MOTION_RESOLUTION = "1080p"
+CINEMATIC_MOTION_RESOLUTION = CINEMATIC_OUTPUT_RESOLUTION
 
 # 每秒点数。HeyGen 那边是扁平价（$7/条，与时长无关），我们按时长卖 —— 这是产品定价，不是成本。
 # ⚠️ 改这里等于改价：cost_of() 直接乘这个数。
@@ -5475,6 +5479,11 @@ def validate_cinematic_payload(body, username=None, temporary_reference_files=No
     # 参考素材的校验统一放在下面（reference_videos/reference_images，老的单字段会先合进去）。
     # 别在这里按老字段 reference_video_data 再判一次「动作模仿必须传参考视频」——
     # 新前端发的是 reference_videos[]，那样判会把每一条动作模仿都拒掉。
+    requested_resolution = (body.get("resolution") or CINEMATIC_OUTPUT_RESOLUTION).strip().lower()
+    if requested_resolution not in CINEMATIC_RESOLUTIONS:
+        raise ValueError("分辨率仅支持 720p、1080p")
+    resolution = CINEMATIC_OUTPUT_RESOLUTION
+
     if cine_mode in CINEMATIC_FIXED_PROMPTS:
         # 提示词写死。客户端传什么都不看 —— 它是计费和成片效果的一部分，不能由前端说了算。
         prompt = CINEMATIC_FIXED_PROMPTS[cine_mode]
@@ -5486,20 +5495,15 @@ def validate_cinematic_payload(body, username=None, temporary_reference_files=No
             raise ValueError("画面描述不能超过 %d 字" % CINEMATIC_PROMPT_MAX)
 
     if cine_mode in CINEMATIC_FIXED_PROMPTS:
-        # 动作模仿【锁死】成 #2173 那一条的形状 —— 它是目前唯一一个已知能过 HeyGen 审核的配置。
+        # 动作模仿锁死参数；所有电影化身统一输出 720p。
         # 用户只能换两样东西：形象、参考视频。分辨率/时长/润色一律不接受客户端的值。
-        #     分辨率 1080p         （#2173 就是 1080p；不再给 720p 的选项）
+        #     分辨率 720p          （所有电影化身渠道统一）
         #     时长   自适应        （跟随参考视频：#2173 的参考片段 10.9s → 成片 11s）
         #     润色   关            （下面统一置 False）
         #     比例   跟随参考视频   （#2173 的参考是 576x1024 竖版 → 9:16；前端按宽高算好传上来。
         #                           这里仍然校验它是合法值，但不给用户在界面上选）
-        resolution = CINEMATIC_MOTION_RESOLUTION
         duration = "auto"
     else:
-        resolution = (body.get("resolution") or "720p").strip().lower()
-        if resolution not in CINEMATIC_RESOLUTIONS:
-            raise ValueError("分辨率仅支持 720p、1080p")
-
         lo, hi = CINEMATIC_DURATION_RANGE
         raw = str(body.get("duration") or "").strip().lower()
         if raw in ("", "auto"):
