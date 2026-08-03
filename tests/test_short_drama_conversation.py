@@ -783,6 +783,95 @@ class ShortDramaConversationTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_project_create_http_replays_one_project_after_lost_response(self):
+        body = payload(title="幂等创建短剧")
+        first = Handler(
+            "/api/gen/short-drama/projects", body=body,
+            idempotency_key="http-create-lost-response",
+        )
+        second = Handler(
+            "/api/gen/short-drama/projects", body=body,
+            idempotency_key="http-create-lost-response",
+        )
+        verify = lambda _: {"username": "alice"}
+        self.assertTrue(short_drama.dispatch_http(first, "POST", self.db, verify))
+        self.assertTrue(short_drama.dispatch_http(second, "POST", self.db, verify))
+        self.assertEqual(200, first.response[0])
+        self.assertEqual(200, second.response[0])
+        self.assertEqual(first.response[1]["id"], second.response[1]["id"])
+        conn = self.db()
+        try:
+            self.assertEqual(
+                1,
+                conn.execute(
+                    "SELECT COUNT(*) FROM short_drama_projects WHERE id=?",
+                    (first.response[1]["id"],),
+                ).fetchone()[0],
+            )
+            self.assertEqual(
+                1,
+                conn.execute(
+                    "SELECT COUNT(*) FROM short_drama_project_requests "
+                    "WHERE username='alice' AND operation='project_create' "
+                    "AND idempotency_key='http-create-lost-response'"
+                ).fetchone()[0],
+            )
+        finally:
+            conn.close()
+
+    def test_project_create_same_key_with_different_payload_conflicts(self):
+        first = Handler(
+            "/api/gen/short-drama/projects", body=payload(title="第一版项目"),
+            idempotency_key="http-create-conflict",
+        )
+        conflict = Handler(
+            "/api/gen/short-drama/projects", body=payload(title="第二版项目"),
+            idempotency_key="http-create-conflict",
+        )
+        verify = lambda _: {"username": "alice"}
+        self.assertTrue(short_drama.dispatch_http(first, "POST", self.db, verify))
+        self.assertTrue(short_drama.dispatch_http(conflict, "POST", self.db, verify))
+        self.assertEqual(200, first.response[0])
+        self.assertEqual(409, conflict.response[0])
+        self.assertEqual("idempotency_conflict", conflict.response[1]["code"])
+        conn = self.db()
+        try:
+            self.assertEqual(
+                1,
+                conn.execute(
+                    "SELECT COUNT(*) FROM short_drama_projects "
+                    "WHERE title IN ('第一版项目','第二版项目')"
+                ).fetchone()[0],
+            )
+        finally:
+            conn.close()
+
+    def test_project_create_rolls_back_when_idempotency_record_fails(self):
+        conn = self.db()
+        try:
+            before = conn.execute("SELECT COUNT(*) FROM short_drama_projects").fetchone()[0]
+            conn.executescript("""
+            CREATE TRIGGER reject_project_request
+            BEFORE INSERT ON short_drama_project_requests
+            BEGIN SELECT RAISE(ABORT,'injected request failure'); END;
+            """)
+            conn.commit()
+        finally:
+            conn.close()
+        with self.assertRaises(sqlite3.IntegrityError):
+            short_drama.create_project(
+                self.db, "alice", payload(title="事务回滚项目"),
+                idempotency_key="rollback-create-request",
+            )
+        conn = self.db()
+        try:
+            self.assertEqual(
+                before,
+                conn.execute("SELECT COUNT(*) FROM short_drama_projects").fetchone()[0],
+            )
+        finally:
+            conn.close()
+
     def test_message_generate_restore_and_lock_flow(self):
         first = short_drama_conversation.send_message(
             self.db,

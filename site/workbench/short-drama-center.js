@@ -302,6 +302,11 @@
     if(cryptoObject&&typeof cryptoObject.randomUUID==='function')return 'script-import-'+cryptoObject.randomUUID();
     return 'script-import-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
   }
+  function newProjectKey(){
+    var cryptoObject=runtimeRoot&&runtimeRoot.crypto;
+    if(cryptoObject&&typeof cryptoObject.randomUUID==='function')return 'project-create-'+cryptoObject.randomUUID();
+    return 'project-create-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
+  }
   function decodePdfString(raw,hex){
     var bytes=[];
     if(hex){
@@ -438,7 +443,7 @@
     }
     return {
       list:function(){return request('/api/gen/short-drama/projects?page=1&page_size=50');},
-      create:function(payload){return request('/api/gen/short-drama/projects',{method:'POST',body:payload});},
+      create:function(payload,idempotencyKey){var options={method:'POST',body:payload};if(idempotencyKey)options.headers={'Idempotency-Key':idempotencyKey};return request('/api/gen/short-drama/projects',options);},
       workspace:function(id){return request('/api/gen/short-drama/conversation?project_id='+encodeURIComponent(id));},
       message:function(payload,key){return request('/api/gen/short-drama/conversation/messages',{method:'POST',headers:{'Idempotency-Key':key},body:payload});},
       generate:function(payload,key){return request('/api/gen/short-drama/conversation/script/generate',{method:'POST',headers:{'Idempotency-Key':key},body:payload});},
@@ -472,7 +477,7 @@
     var ideaForm=doc.getElementById('shortDramaIdeaForm'),ideaInput=doc.getElementById('shortDramaIdeaInput');
     var chat=doc.getElementById('shortDramaIdeaChat'),quickReplies=doc.getElementById('shortDramaIdeaQuickReplies');
     var recommendations=doc.getElementById('shortDramaRecommendations'),ideaMessages=[],selectedProjectId='',importFilename='',importAnalysis=null,pendingImportKey='';
-    var createMode='idea',plannerPayload=null,selectedDirection=null,plannerPreview=null,pendingCreatedProject=null;
+    var createMode='idea',plannerPayload=null,selectedDirection=null,plannerPreview=null,pendingCreatedProject=null,pendingCreateKey='';
     var deleteButton=doc.getElementById('shortDramaDeleteProject');
     var confirmDelete=options.confirmImpl||function(message){return typeof runtimeRoot.confirm==='function'&&runtimeRoot.confirm(message);};
     function setNotice(message,isError){notice.textContent=message||'';notice.classList.toggle('error',!!isError);notice.hidden=!message;}
@@ -575,7 +580,7 @@
       if(step==='import') setCreateHeading('IMPORT A SCRIPT','导入已有剧本','上传文件或粘贴原稿，助手会先识别内容，再与你确认如何成片。');
     }
     function resetCreate(){
-      form.reset();ideaMessages=[];chat.innerHTML='';recommendations.innerHTML='';recommendations.hidden=true;createMode='idea';plannerPayload=null;selectedDirection=null;plannerPreview=null;pendingCreatedProject=null;
+      form.reset();ideaMessages=[];chat.innerHTML='';recommendations.innerHTML='';recommendations.hidden=true;createMode='idea';plannerPayload=null;selectedDirection=null;plannerPreview=null;pendingCreatedProject=null;pendingCreateKey='';
       importText.value='';importFile.value='';importFilename='';importAnalysis=null;pendingImportKey='';importEditor.hidden=false;importForm.hidden=true;importForm.reset();
       doc.getElementById('shortDramaImportCount').textContent='0';doc.getElementById('shortDramaImportFileName').hidden=true;doc.getElementById('shortDramaImportError').hidden=true;
       doc.getElementById('shortDramaSelectedDirection').hidden=true;
@@ -603,7 +608,7 @@
       renderPlanner();
     }
     function startPlanner(){
-      plannerPayload=createPayload(form);ideaMessages=[];selectedDirection=null;plannerPreview=null;pendingCreatedProject=null;
+      plannerPayload=createPayload(form);ideaMessages=[];selectedDirection=null;plannerPreview=null;pendingCreatedProject=null;pendingCreateKey='';
       chat.innerHTML='';recommendations.innerHTML='';recommendations.hidden=true;renderScriptPreview(null);plannerNotice('',false);
       chatBubble('assistant',createMode==='inspiration'?'我会先从你给出的线索出发，再通过几个选择帮你找到故事方向。':'我已收到基本设定。接下来一起确认情绪、结局和故事方向，确认后才创建项目。');
       if(plannerPayload.synopsis){chatBubble('user',plannerPayload.synopsis);ideaMessages.push(plannerPayload.synopsis);}
@@ -649,7 +654,8 @@
       if(plannerPreview.quality.blocking){renderScriptPreview(plannerPreview);plannerNotice('请先处理所有超时台词或缺失的动作、表情，再确认创建项目。',true);return Promise.resolve();}
       var button=doc.getElementById('shortDramaConfirmScript');button.disabled=true;plannerNotice('正在建立正式项目并固化已确认剧本…',false);
       var contract=plannerConfirmedContract(plannerPreview);
-      var createdPromise=pendingCreatedProject?Promise.resolve(pendingCreatedProject):client.create(plannerPayload).then(function(project){pendingCreatedProject=project;return project;});
+      if(!pendingCreateKey)pendingCreateKey=newProjectKey();
+      var createdPromise=pendingCreatedProject?Promise.resolve(pendingCreatedProject):client.create(plannerPayload,pendingCreateKey).then(function(project){pendingCreatedProject=project;return project;});
       return createdPromise.then(function(project){
         return client.workspace(project.id).then(function(workspace){
           var chain=Promise.resolve(workspace);
@@ -738,5 +744,5 @@
     load().catch(function(){});
     return {reload:load,render:render};
   }
-  return {STAGES:STAGES,LABELS:LABELS,normalizeProject:normalizeProject,progress:progress,filterProjects:filterProjects,metrics:metrics,deleteErrorMessage:deleteErrorMessage,createPayload:createPayload,compactIdea:compactIdea,buildRecommendations:buildRecommendations,advisorStep:advisorStep,plannerProgress:plannerProgress,plannerDurations:plannerDurations,plannerRoles:plannerRoles,plannerReadingSeconds:plannerReadingSeconds,plannerQuality:plannerQuality,buildPlannerPreview:buildPlannerPreview,plannerPromotionMessages:plannerPromotionMessages,plannerConfirmedContract:plannerConfirmedContract,confirmedContractMatches:confirmedContractMatches,continuePlannerContract:continuePlannerContract,importedTitle:importedTitle,analyzeImportedScript:analyzeImportedScript,importProjectPayload:importProjectPayload,newImportKey:newImportKey,readLimitedStream:readLimitedStream,extractPdfText:extractPdfText,extractDocxText:extractDocxText,readScriptFile:readScriptFile,createClient:createClient,projectUrl:projectUrl,cardHtml:cardHtml,mount:mount};
+  return {STAGES:STAGES,LABELS:LABELS,normalizeProject:normalizeProject,progress:progress,filterProjects:filterProjects,metrics:metrics,deleteErrorMessage:deleteErrorMessage,createPayload:createPayload,compactIdea:compactIdea,buildRecommendations:buildRecommendations,advisorStep:advisorStep,plannerProgress:plannerProgress,plannerDurations:plannerDurations,plannerRoles:plannerRoles,plannerReadingSeconds:plannerReadingSeconds,plannerQuality:plannerQuality,buildPlannerPreview:buildPlannerPreview,plannerPromotionMessages:plannerPromotionMessages,plannerConfirmedContract:plannerConfirmedContract,confirmedContractMatches:confirmedContractMatches,continuePlannerContract:continuePlannerContract,importedTitle:importedTitle,analyzeImportedScript:analyzeImportedScript,importProjectPayload:importProjectPayload,newImportKey:newImportKey,newProjectKey:newProjectKey,readLimitedStream:readLimitedStream,extractPdfText:extractPdfText,extractDocxText:extractDocxText,readScriptFile:readScriptFile,createClient:createClient,projectUrl:projectUrl,cardHtml:cardHtml,mount:mount};
 });

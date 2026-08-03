@@ -241,7 +241,7 @@ test('客户端使用 Cookie 会话并支持安全删除独立短剧', async () 
   };
   const client = center.createClient(fetchImpl);
   await client.list();
-  await client.create({title:'项目'});
+  await client.create({title:'项目'}, 'project-create-key');
   await client.message({project_id:'project-1', conversation_revision:1, message:'确认方向'}, 'planner-message');
   await client.generate({project_id:'project-1', conversation_revision:2}, 'planner-generate');
   await client.lock({project_id:'project-1', conversation_revision:3, version_id:'script-1'}, 'planner-lock');
@@ -249,6 +249,7 @@ test('客户端使用 Cookie 会话并支持安全删除独立短剧', async () 
   assert.equal(calls[0].url, '/api/gen/short-drama/projects?page=1&page_size=50');
   assert.equal(calls[0].options.credentials, 'same-origin');
   assert.equal(calls[0].options.headers.Authorization, 'Bearer __cookie__');
+  assert.equal(calls[1].options.headers['Idempotency-Key'], 'project-create-key');
   assert.equal(calls[2].url, '/api/gen/short-drama/conversation/messages');
   assert.equal(calls[2].options.headers['Idempotency-Key'], 'planner-message');
   assert.equal(calls[3].url, '/api/gen/short-drama/conversation/script/generate');
@@ -257,6 +258,26 @@ test('客户端使用 Cookie 会话并支持安全删除独立短剧', async () 
   assert.equal(calls[5].options.method, 'POST');
   assert.deepEqual(JSON.parse(calls[5].options.body), {project_id:'project-1', revision:4});
   for (const call of calls) assert.equal(Object.hasOwn(call.options.headers, 'X-Canvas-Board-Id'), false);
+});
+
+test('首次建项响应丢失后使用同一幂等键重试', async () => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({url, options});
+    if(calls.length === 1)throw new Error('response lost after commit');
+    return {ok:true,status:200,text:async ()=>'{"id":"project-once"}'};
+  };
+  const client = center.createClient(fetchImpl);
+  const body = {title:'只创建一次'};
+  await assert.rejects(client.create(body, 'stable-project-create'));
+  const project = await client.create(body, 'stable-project-create');
+  assert.equal(project.id, 'project-once');
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].options.headers['Idempotency-Key'], 'stable-project-create');
+  assert.equal(calls[1].options.headers['Idempotency-Key'], 'stable-project-create');
+  assert.deepEqual(JSON.parse(calls[0].options.body), JSON.parse(calls[1].options.body));
+  assert.match(centerScript, /if\(!pendingCreateKey\)pendingCreateKey=newProjectKey\(\)/);
+  assert.match(centerScript, /client\.create\(plannerPayload,pendingCreateKey\)/);
 });
 
 test('客户端使用同一幂等键原子导入项目和完整剧本', async () => {

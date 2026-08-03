@@ -94,6 +94,13 @@ class ScriptImportError(ValueError):
         self.status = int(status)
 
 
+class ProjectCreationError(ValueError):
+    def __init__(self, code, message, status=400):
+        super().__init__(message)
+        self.code = code
+        self.status = int(status)
+
+
 class ProjectHasUnappliedJobs(RuntimeError):
     pass
 
@@ -186,6 +193,21 @@ CREATE TABLE IF NOT EXISTS short_drama_projects (
 );
 CREATE INDEX IF NOT EXISTS idx_short_drama_projects_owner
   ON short_drama_projects(username, deleted, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS short_drama_project_requests (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  project_id TEXT NOT NULL UNIQUE
+    REFERENCES short_drama_projects(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(username,operation,idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_short_drama_project_requests_project
+  ON short_drama_project_requests(project_id);
 
 CREATE TABLE IF NOT EXISTS short_drama_script_imports (
   id TEXT PRIMARY KEY,
@@ -1202,7 +1224,9 @@ def _project_username_for_access(db_factory, username, project_id, access=None, 
     return owner
 
 
-def create_project(db_factory, username, payload, access=None):
+def create_project(
+    db_factory, username, payload, access=None, idempotency_key=None,
+):
     data = validate_project_payload(payload)
     board_id = data.get("board_id")
     if board_id:
@@ -1210,11 +1234,48 @@ def create_project(db_factory, username, payload, access=None):
         if (str(access.get("board_id") or "") != board_id
                 or str(access.get("role") or "").lower() not in {"owner", "editor"}):
             raise PermissionError("current board role cannot create this project")
+    key = str(idempotency_key or "").strip()
+    if key and len(key) > 160:
+        raise ProjectCreationError(
+            "idempotency_key_invalid", "Idempotency-Key 长度不能超过 160 个字符"
+        )
+    operation = "project_create"
+    request_data = {
+        "board_id": data.get("board_id"),
+        "title": data["title"],
+        "synopsis": data["synopsis"],
+        "ratio": data["ratio"],
+        "target_duration": data["target_duration"],
+        "shot_count": data["shot_count"],
+        "visual_style": data["visual_style"],
+        "target_platform": _text(data.get("target_platform") or "抖音", 80),
+        "point_budget": data.get("point_budget", 0),
+    }
+    request_hash = hashlib.sha256(
+        json.dumps(request_data, ensure_ascii=False, sort_keys=True,
+                   separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     now = int(time.time())
     project_id = str(uuid.uuid4())
     conn = _connection(db_factory)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        if key:
+            existing = conn.execute(
+                "SELECT project_id,request_hash FROM short_drama_project_requests "
+                "WHERE username=? AND operation=? AND idempotency_key=?",
+                (username, operation, key),
+            ).fetchone()
+            if existing:
+                if str(existing[1]) != request_hash:
+                    raise ProjectCreationError(
+                        "idempotency_conflict",
+                        "同一 Idempotency-Key 不能用于不同的短剧项目",
+                        409,
+                    )
+                result = _project_detail(conn, username, existing[0])
+                conn.rollback()
+                return result
         max_projects = _max_projects_per_user()
         active_projects = conn.execute(
             "SELECT COUNT(*) FROM short_drama_projects WHERE username=? AND deleted=0",
@@ -1229,8 +1290,18 @@ def create_project(db_factory, username, payload, access=None):
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (project_id, username, data.get("board_id"), data["title"], data["synopsis"], data["ratio"],
              data["target_duration"], data["shot_count"], data["visual_style"],
-             _text(data.get("target_platform") or "抖音", 80), data.get("point_budget", 0), now, now),
+             request_data["target_platform"], request_data["point_budget"], now, now),
         )
+        if key:
+            conn.execute(
+                "INSERT INTO short_drama_project_requests "
+                "(id,username,operation,idempotency_key,request_hash,project_id,"
+                "created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    str(uuid.uuid4()), username, operation, key, request_hash,
+                    project_id, now, now,
+                ),
+            )
         conn.commit()
         return _project_detail(conn, username, project_id)
     except Exception:
@@ -3452,6 +3523,10 @@ def _http_error(handler, error, *, operation_terminal=False):
         handler._send(error.status, {
             "detail": str(error)[:220], "code": error.code, **terminal,
         })
+    elif isinstance(error, ProjectCreationError):
+        handler._send(error.status, {
+            "detail": str(error)[:220], "code": error.code, **terminal,
+        })
     elif isinstance(error, ProjectHasUnappliedJobs):
         handler._send(409, {
             "detail": str(error)[:220],
@@ -5104,7 +5179,10 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                 str(handler.headers.get("Idempotency-Key") or ""),
             ))
         elif path.endswith("/projects"):
-            handler._send(200, create_project(db_factory, username, _request_object(handler), access))
+            handler._send(200, create_project(
+                db_factory, username, _request_object(handler), access,
+                str(handler.headers.get("Idempotency-Key") or ""),
+            ))
         elif path.endswith("/apply-plan"):
             body = _request_object(handler)
             _validate_project_request(body, {"project_id", "revision", "job_id"})
