@@ -23,7 +23,7 @@ TEMPLATE_ROOT = pathlib.Path(os.environ.get(
 _DEFAULT_NPX = "/home/ubuntu/.local/hq-node/bin/npx" if pathlib.Path(
     "/home/ubuntu/.local/hq-node/bin/npx").is_file() else "npx"
 HYPERFRAMES_COMMAND = os.environ.get(
-    "VIDEO_COMPOSE_HYPERFRAMES_CMD", _DEFAULT_NPX + " --yes hyperframes@0.7.88"
+    "VIDEO_COMPOSE_HYPERFRAMES_CMD", _DEFAULT_NPX + " --yes hyperframes@0.7.90"
 ).strip()
 TEMPLATE_ID = "viral-talking-head-v1"
 TEMPLATE_VERSION = "1.0.0"
