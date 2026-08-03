@@ -390,7 +390,7 @@ class VideoComposeHttpTests(unittest.TestCase):
                  {"start_ms": 900, "end_ms": 1600, "duration_ms": 700}
              ]), \
              mock.patch.object(video_compose.media, "build_clean_master", side_effect=build_clean), \
-             mock.patch.object(video_compose.renderer, "render", side_effect=render_video):
+             mock.patch.object(video_compose.renderer, "render", side_effect=render_video) as render_mock:
             _, analyzed = self.request(
                 "POST", "/api/gen/video-compose/projects/%s/analyze-source" % project["id"],
                 {"expected_revision": project["revision"]},
@@ -406,7 +406,14 @@ class VideoComposeHttpTests(unittest.TestCase):
                 "POST", "/api/gen/video-compose/projects/%s/render" % project["id"],
                 {"expected_revision": confirmed["revision"], "hook": {}, "headlines": [], "brand": {}},
             )
+            _, replayed = self.request(
+                "POST", "/api/gen/video-compose/projects/%s/render" % project["id"],
+                {"expected_revision": confirmed["revision"], "hook": {}, "headlines": [], "brand": {}},
+            )
         self.assertEqual("completed", rendered["project"]["status"])
+        self.assertEqual(rendered["project"]["output_asset_id"],
+                         replayed["project"]["output_asset_id"])
+        self.assertEqual(1, render_mock.call_count)
         request = urllib.request.Request(
             self.base + rendered["output_url"], method="GET",
             headers={"Authorization": "Bearer test"},
