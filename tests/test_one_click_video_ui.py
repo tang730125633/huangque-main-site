@@ -41,7 +41,7 @@ class OneClickVideoUiTests(unittest.TestCase):
         self.assertIn("protectedUrl(d.output_url)", self.html)
 
     def test_mobile_shell_can_scroll_to_review_and_render_panels(self):
-        self.assertIn('@media(max-width:900px){.hq-app{overflow:auto}}', self.html)
+        self.assertIn('@media(max-width:900px){.hq-app{overflow:auto!important}}', self.html)
 
     @unittest.skipUnless(shutil.which("node"), "Node required")
     def test_inline_javascript_syntax(self):
