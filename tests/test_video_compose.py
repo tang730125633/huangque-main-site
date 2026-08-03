@@ -436,5 +436,13 @@ class VideoComposeHttpTests(unittest.TestCase):
         self.assertEqual(401, rejected.exception.code)
 
 
+class VideoComposeDeploymentTests(unittest.TestCase):
+    def test_runtime_bootstrap_skips_unused_cuda_download(self):
+        script = (ROOT / "deploy/zelong/bootstrap-video-compose-runtime.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("ONNXRUNTIME_NODE_INSTALL_CUDA=skip", script)
+
+
 if __name__ == "__main__":
     unittest.main()
