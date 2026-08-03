@@ -23,6 +23,8 @@ SENSITIVE_FIELDS = ("phone", "email", "address", "wechat_qr")
 MAX_JSON_BYTES = 64 * 1024
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
 MAX_PIXELS = 16_000_000
+ANONYMOUS_JOURNEY_RETENTION = 30 * 24 * 3600
+CONVERTED_JOURNEY_RETENTION = 365 * 24 * 3600
 
 
 class CardError(Exception):
@@ -35,12 +37,14 @@ def _b64(data):
     return base64.urlsafe_b64encode(data).decode().rstrip("=")
 
 
-def attribution_token(code, public_id, owner_user_id, secret, now=None):
+def attribution_token(code, public_id, owner_user_id, secret, now=None, journey_id=""):
     if not secret:
         return ""
     now = int(now or time.time())
     payload = {"code": str(code), "card_public_id": str(public_id), "owner_user_id": int(owner_user_id),
                "validated_at": now, "exp": now + 7 * 24 * 3600}
+    if journey_id:
+        payload["journey_id"] = str(journey_id)
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
     return _b64(raw) + "." + _b64(hmac.new(secret.encode(), raw, hashlib.sha256).digest())
 
@@ -77,9 +81,83 @@ def public_owner(conn, public_id):
     return int(row["user_id"]) if row else 0
 
 
+def cleanup_referral_journeys(conn, now=None):
+    now = int(now or time.time())
+    conn.execute(
+        "DELETE FROM card_referral_journeys WHERE registered_user_id IS NULL AND visited_at<?",
+        (now - ANONYMOUS_JOURNEY_RETENTION,),
+    )
+    conn.execute(
+        "DELETE FROM card_referral_journeys WHERE registered_user_id IS NOT NULL AND registered_at<?",
+        (now - CONVERTED_JOURNEY_RETENTION,),
+    )
+
+
+def _referral_journey(conn, attribution, now=None):
+    journey_id = str((attribution or {}).get("journey_id") or "")
+    if not journey_id:
+        return None
+    row = conn.execute(
+        "SELECT * FROM card_referral_journeys WHERE journey_id=?", (journey_id,),
+    ).fetchone()
+    now = int(now or time.time())
+    if (
+        not row or int(row["expires_at"] or 0) <= now
+        or row["card_public_id"] != str(attribution.get("card_public_id") or "")
+        or int(row["inviter_user_id"]) != int(attribution.get("owner_user_id") or 0)
+    ):
+        raise CardError("invalid_invite_attribution", "邀请归因已失效", 409)
+    return row
+
+
+def start_referral_journey(conn, attribution, campaign_id, now=None):
+    journey_id = str((attribution or {}).get("journey_id") or "")
+    if not journey_id:
+        return None
+    now = int(now or time.time())
+    cleanup_referral_journeys(conn, now)
+    conn.execute(
+        """INSERT OR IGNORE INTO card_referral_journeys(
+               journey_id,campaign_id,card_public_id,inviter_user_id,source,
+               visited_at,card_started_at,expires_at
+           ) VALUES(?,?,?,?,'miniprogram_card',?,?,?)""",
+        (journey_id, int(campaign_id), str(attribution["card_public_id"]),
+         int(attribution["owner_user_id"]), min(now, int(attribution["validated_at"])),
+         now, int(attribution["exp"])),
+    )
+    row = _referral_journey(conn, attribution, now)
+    conn.execute(
+        "UPDATE card_referral_journeys SET card_started_at=COALESCE(card_started_at,?) WHERE journey_id=?",
+        (now, row["journey_id"]),
+    )
+    return dict(conn.execute(
+        "SELECT * FROM card_referral_journeys WHERE journey_id=?", (row["journey_id"],),
+    ).fetchone())
+
+
+def convert_referral_journey(conn, attribution, registered_user_id, relation_id, now=None):
+    row = _referral_journey(conn, attribution, now)
+    if not row:
+        return None
+    registered_user_id = int(registered_user_id)
+    if row["registered_user_id"] is not None and int(row["registered_user_id"]) != registered_user_id:
+        raise CardError("invite_journey_used", "本次邀请归因已被使用，请重新打开邀请名片", 409)
+    now = int(now or time.time())
+    conn.execute(
+        """UPDATE card_referral_journeys
+              SET registered_user_id=?,invite_relation_id=?,registered_at=COALESCE(registered_at,?)
+            WHERE journey_id=?""",
+        (registered_user_id, int(relation_id), now, row["journey_id"]),
+    )
+    return dict(conn.execute(
+        "SELECT * FROM card_referral_journeys WHERE journey_id=?", (row["journey_id"],),
+    ).fetchone())
+
+
 def init_schema(conn):
     conn.execute("""CREATE TABLE IF NOT EXISTS business_cards(
         user_id INTEGER PRIMARY KEY, public_id TEXT NOT NULL UNIQUE,
+        miniprogram_openid TEXT,
         name TEXT NOT NULL DEFAULT '', headline TEXT NOT NULL DEFAULT '', company TEXT NOT NULL DEFAULT '', bio TEXT NOT NULL DEFAULT '',
         phone TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '', address TEXT NOT NULL DEFAULT '',
         tags_json TEXT NOT NULL DEFAULT '[]', works_json TEXT NOT NULL DEFAULT '[]', links_json TEXT NOT NULL DEFAULT '[]',
@@ -93,11 +171,41 @@ def init_schema(conn):
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(business_cards)").fetchall()}
     if "name" not in columns:
         conn.execute("ALTER TABLE business_cards ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+    if "miniprogram_openid" not in columns:
+        conn.execute("ALTER TABLE business_cards ADD COLUMN miniprogram_openid TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cards_public ON business_cards(public_id,status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cards_network ON business_cards(user_id,status,discoverable_in_network)")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_cards_miniprogram_openid
+                    ON business_cards(miniprogram_openid)
+                    WHERE miniprogram_openid IS NOT NULL""")
     conn.execute("""CREATE TABLE IF NOT EXISTS network_node_ids(
         user_id INTEGER PRIMARY KEY, node_id TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS card_referral_journeys(
+        journey_id TEXT PRIMARY KEY,
+        campaign_id INTEGER NOT NULL,
+        card_public_id TEXT NOT NULL,
+        inviter_user_id INTEGER NOT NULL,
+        source TEXT NOT NULL,
+        visited_at INTEGER NOT NULL,
+        card_started_at INTEGER,
+        registered_user_id INTEGER,
+        invite_relation_id INTEGER,
+        registered_at INTEGER,
+        published_at INTEGER,
+        expires_at INTEGER NOT NULL
+    )""")
+    journey_columns = {row["name"] for row in conn.execute("PRAGMA table_info(card_referral_journeys)").fetchall()}
+    if "published_at" not in journey_columns:
+        conn.execute("ALTER TABLE card_referral_journeys ADD COLUMN published_at INTEGER")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_card_referral_inviter_time ON card_referral_journeys(inviter_user_id,visited_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_card_referral_expiry ON card_referral_journeys(expires_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_card_referral_anonymous_time ON card_referral_journeys(visited_at) WHERE registered_user_id IS NULL")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_card_referral_registered_time ON card_referral_journeys(registered_at) WHERE registered_user_id IS NOT NULL")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_card_referral_registered_user
+                    ON card_referral_journeys(registered_user_id)
+                    WHERE registered_user_id IS NOT NULL""")
+    cleanup_referral_journeys(conn)
 
 
 def node_id(conn, user_id):
@@ -132,6 +240,31 @@ def create_draft(conn, user_id, payload=None, now=None):
     if payload:
         update(conn, user_id, payload, now)
     return dict(conn.execute("SELECT * FROM business_cards WHERE user_id=?", (int(user_id),)).fetchone())
+
+
+def openid_owner(conn, openid):
+    row = conn.execute(
+        "SELECT user_id FROM business_cards WHERE miniprogram_openid=?",
+        (str(openid or "").strip(),),
+    ).fetchone()
+    return int(row["user_id"]) if row else 0
+
+
+def bind_miniprogram_openid(conn, user_id, openid, now=None):
+    """Bind one WeChat Mini Program identity to one card in the caller's transaction."""
+    openid = str(openid or "").strip()
+    if not openid or len(openid) > 256:
+        raise CardError("invalid_openid", "微信登录态无效", 400)
+    user_id = int(user_id)
+    create_draft(conn, user_id, now=now)
+    existing_owner = openid_owner(conn, openid)
+    if existing_owner and existing_owner != user_id:
+        raise CardError("openid_in_use", "该微信已绑定其他名片", 409)
+    conn.execute(
+        "UPDATE business_cards SET miniprogram_openid=?,updated_at=? WHERE user_id=?",
+        (openid, int(now or time.time()), user_id),
+    )
+    return dict(conn.execute("SELECT * FROM business_cards WHERE user_id=?", (user_id,)).fetchone())
 
 
 def _json(value, field):
@@ -305,12 +438,15 @@ def public_network_person(conn, user_id, admin=False):
 
 def _admin_relation_fields(conn, relation):
     user = conn.execute("SELECT id,username FROM users WHERE id=?", (relation["person_user_id"],)).fetchone()
+    username = str(user["username"] or "")
+    if len(username) == 11 and username.startswith("1") and username.isdigit():
+        username = username[:3] + "****" + username[-4:]
     reward = conn.execute(
         "SELECT event_type,status,reward_points FROM invite_reward_point_records WHERE invite_relation_id=? ORDER BY id DESC LIMIT 1",
         (relation["id"],),
     ).fetchone()
     return {
-        "user_id": int(user["id"]), "username": user["username"],
+        "user_id": int(user["id"]), "username": username,
         "relation_status": relation["status"], "risk_status": relation["risk_status"],
         "reward_event": ({"event_type": reward["event_type"], "status": reward["status"], "points": int(reward["reward_points"])} if reward else None),
     }

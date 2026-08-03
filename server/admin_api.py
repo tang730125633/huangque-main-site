@@ -2108,14 +2108,18 @@ class H(BaseHTTPRequestHandler):
         if path == "/api/admin/users/detail":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             username = (q.get("username") or [""])[0].strip()
-            if not username:
-                return self._send(400, {"detail": "缺少用户账号"})
+            user_id = (q.get("user_id") or [""])[0].strip()
+            if not username and not user_id:
+                return self._send(400, {"detail": "缺少用户账号或 ID"})
             try:
+                identity = ("user_id=" + urllib.parse.quote(user_id)) if user_id else (
+                    "username=" + urllib.parse.quote(username)
+                )
                 data = auth_admin_request(
-                    "/api/auth/admin/user-insights?username=" + urllib.parse.quote(username),
+                    "/api/auth/admin/user-insights?" + identity,
                     self._token(),
                 )
-                data["tasks"] = user_job_insights(username)
+                data["tasks"] = user_job_insights(data["user"]["username"])
                 return self._send(200, data)
             except ValueError as e:
                 return self._send(400, {"detail": str(e)})
@@ -2139,7 +2143,7 @@ class H(BaseHTTPRequestHandler):
             "/api/admin/invite/config", "/api/admin/invite/stats",
             "/api/admin/invite/relations", "/api/admin/invite/audit",
             "/api/admin/invite/reward-points", "/api/admin/invite/reward-claims",
-            "/api/admin/invite/network",
+            "/api/admin/invite/journeys", "/api/admin/invite/network",
         }:
             q = urllib.parse.urlparse(self.path).query
             suffix = path.replace("/api/admin/", "/api/auth/admin/", 1) + (("?" + q) if q else "")

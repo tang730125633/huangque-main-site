@@ -1,9 +1,15 @@
 import importlib
+import json
 import os
 import sqlite3
 import tempfile
+import threading
 import time
 import unittest
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
+from unittest.mock import patch
 
 
 class BusinessCardNetworkTests(unittest.TestCase):
@@ -25,13 +31,41 @@ class BusinessCardNetworkTests(unittest.TestCase):
         )
         self.assertIsNone(err)
         self.assertEqual(self.child["card"]["title"], "设计师")
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base = "http://127.0.0.1:%d" % self.server.server_address[1]
 
     def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=3)
         self.tmp.cleanup()
 
     def conn(self):
         c = sqlite3.connect(self.auth.DB); c.row_factory = sqlite3.Row
         return c
+
+    def request(self, path, payload, headers=None):
+        request = urllib.request.Request(
+            self.base + path, data=json.dumps(payload).encode(), method="POST",
+            headers={"Content-Type": "application/json", **(headers or {})},
+        )
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(request, timeout=5) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read())
+
+    def get(self, path, headers=None):
+        request = urllib.request.Request(self.base + path, headers=headers or {})
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(request, timeout=5) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read())
 
     @staticmethod
     def uid(c, username):
@@ -108,6 +142,230 @@ class BusinessCardNetworkTests(unittest.TestCase):
             self.assertEqual([(r["event_type"], r["reward_points"]) for r in rewards], [("renewal", 200), ("renewal", 200)])
             self.assertEqual(c.execute("SELECT COUNT(*) FROM points_audit WHERE username='child'").fetchone()[0], 0)
             self.assertEqual(c.execute("SELECT COUNT(*) FROM membership_voice_slot_entitlements WHERE username='child'").fetchone()[0], 0)
+
+    def test_wechat_card_identity_bridge_keeps_existing_account_and_invites_unchanged(self):
+        with self.conn() as c:
+            root_id = self.uid(c, "root")
+            card = self.auth.business_cards.create_draft(c, root_id, {"name": "根用户", "title": "老师", "company": "黄雀"})
+            before_points = c.execute("SELECT points FROM users WHERE id=?", (root_id,)).fetchone()[0]
+            before_invites = c.execute("SELECT COUNT(*) FROM user_invites").fetchone()[0]
+        token = self.auth.issue_token("root")
+        headers = {"Authorization": "Bearer " + token}
+        with patch.object(self.auth.wechat_vpay, "code_to_session", return_value={"openid": "openid-root"}):
+            status, body = self.request("/api/auth/miniprogram/card-login", {"wx_code": "before-bind"})
+            self.assertEqual(status, 404)
+            self.assertEqual(body["code"], "card_unbound")
+            status, body = self.request("/api/auth/card/wechat/bind", {"wx_code": "bind"}, headers)
+            self.assertEqual(status, 200)
+            self.assertTrue(body["wechat_bound"])
+            self.assertEqual(body["card"]["public_id"], card["public_id"])
+            self.assertTrue(body["card"]["initial_password"])
+            self.assertNotIn("password", body["card"])
+            self.assertEqual(self.request("/api/auth/card/wechat/bind", {"wx_code": "retry"}, headers)[0], 200)
+            status, body = self.request("/api/auth/miniprogram/card-login", {"wx_code": "login"})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["user"]["username"], "root")
+        self.assertEqual(body["user"]["points"], before_points)
+        with self.conn() as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM user_invites").fetchone()[0], before_invites)
+            self.assertEqual(c.execute("SELECT miniprogram_openid FROM business_cards WHERE user_id=?", (root_id,)).fetchone()[0], "openid-root")
+
+    def test_wechat_card_register_rewards_only_valid_attribution_and_is_idempotent(self):
+        with self.conn() as c:
+            root_id = self.uid(c, "root")
+            root_card = self.auth.business_cards.create_draft(c, root_id, {"name": "根用户", "title": "老师", "company": "黄雀"})
+            self.auth.business_cards.publish(c, root_id, "published")
+            code = self.auth.invites.ensure_user_code(c, root_id, enforce_membership=False)["code"]
+        status, shared = self.get("/api/auth/card/public?id=%s&invite=%s" % (root_card["public_id"], code))
+        self.assertEqual(status, 200)
+        self.assertTrue(shared["invite_valid"])
+        attribution = shared["invite_attribution_token"]
+        with self.conn() as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM card_referral_journeys").fetchone()[0], 0)
+        status, started = self.request("/api/auth/invite/journey/start", {
+            "invite_attribution_token": attribution,
+        })
+        self.assertEqual(status, 200)
+        self.assertTrue(started["started"])
+        payload = {
+            "wx_code": "first", "phone": "13800000001", "device_id": "device-1",
+            "card": {"name": "新用户", "title": "设计师", "company": "黄雀"},
+            "invite_code": code, "invite_attribution_token": attribution,
+        }
+        with patch.object(self.auth.wechat_vpay, "code_to_session", return_value={"openid": "openid-new"}):
+            status, first = self.request("/api/auth/miniprogram/card-register", payload)
+            self.assertEqual(status, 200)
+            self.assertEqual(first["user"]["points"], 100)
+            self.assertTrue(first["invite_bound"])
+            self.assertTrue(first["created"])
+            self.assertTrue(first["invite_rewarded"])
+            self.assertEqual(first["ai_account"], "13800000001")
+            self.assertTrue(first["initial_password"])
+            headers = {"Authorization": "Bearer " + first["token"]}
+            status, published = self.request("/api/auth/card/publish", {}, headers)
+            self.assertEqual(status, 200)
+            status, public = self.get(
+                "/api/auth/card/public?id=%s&invite=%s" % (
+                    published["card"]["public_id"], published["card"]["invite_code"],
+                ),
+                {"Authorization": "Bearer stale-owner-token"},
+            )
+            self.assertEqual(status, 200)
+            self.assertTrue(public["invite_valid"])
+            for forbidden in ("username", "ai_account", "initial_password", "password", "pw_hash", "pw_salt"):
+                self.assertNotIn(forbidden, public["card"])
+            status, replay = self.request("/api/auth/miniprogram/card-register", payload)
+        self.assertEqual(status, 200)
+        self.assertEqual(replay["user"]["username"], "13800000001")
+        self.assertTrue(replay["invite_bound"])
+        self.assertFalse(replay["created"])
+        self.assertFalse(replay["invite_rewarded"])
+        self.assertEqual(replay["ai_account"], "13800000001")
+        with self.conn() as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM users WHERE username='13800000001'").fetchone()[0], 1)
+            self.assertEqual(c.execute("SELECT points FROM users WHERE username='13800000001'").fetchone()[0], 100)
+            relation = c.execute("SELECT ui.* FROM user_invites ui JOIN users u ON u.id=ui.invitee_user_id WHERE u.username='13800000001'").fetchone()
+            self.assertEqual(relation["source"], "miniprogram_card")
+            journey = c.execute("SELECT * FROM card_referral_journeys WHERE registered_user_id=?", (relation["invitee_user_id"],)).fetchone()
+            self.assertIsNotNone(journey["card_started_at"])
+            self.assertEqual(journey["invite_relation_id"], relation["id"])
+            audit = c.execute("SELECT * FROM points_audit WHERE transaction_key=?", ("card-referral:" + journey["journey_id"],)).fetchone()
+            self.assertEqual(audit["delta"], 100)
+            funnel = self.auth.invites.admin_referral_journeys(c, {"user": "13800000001"})
+            self.assertEqual(funnel["summary"]["registered"], 1)
+            self.assertEqual(funnel["summary"]["trial_rewarded"], 1)
+            self.assertEqual(funnel["summary"]["published"], 1)
+            self.assertNotIn("invitee_username", funnel["items"][0])
+            self.assertEqual(funnel["items"][0]["invitee_account"], "138****0001")
+        self.assertEqual(self.request("/api/auth/card/unpublish", {}, headers)[0], 200)
+        with self.conn() as c:
+            self.assertEqual(self.auth.invites.admin_referral_journeys(c, {"user": "13800000001"})["summary"]["published"], 1)
+        reused = dict(payload)
+        reused["phone"] = "13800000003"
+        reused["wx_code"] = "reused-attribution"
+        with patch.object(self.auth.wechat_vpay, "code_to_session", return_value={"openid": "openid-reused-attribution"}):
+            status, rejected = self.request("/api/auth/miniprogram/card-register", reused)
+        self.assertEqual(status, 409)
+        self.assertEqual(rejected["code"], "invite_journey_used")
+        with self.conn() as c:
+            self.assertIsNone(c.execute("SELECT 1 FROM users WHERE username='13800000003'").fetchone())
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM points_audit WHERE reason='名片邀请注册奖励'").fetchone()[0], 1)
+        with patch.object(self.auth.wechat_vpay, "code_to_session", return_value={"openid": "openid-no-attribution"}):
+            status, uncredited = self.request("/api/auth/miniprogram/card-register", {
+                "wx_code": "second", "phone": "13800000002", "device_id": "device-2",
+                "card": {"name": "无归因", "title": "设计师", "company": "黄雀"},
+            })
+        self.assertEqual(status, 200)
+        self.assertEqual(uncredited["user"]["points"], 0)
+        self.assertTrue(uncredited["created"])
+        self.assertFalse(uncredited["invite_rewarded"])
+        legacy_token = self.auth.business_cards.attribution_token(
+            code, root_card["public_id"], root_id, self.auth.INVITE_HASH_SECRET,
+        )
+        for suffix in ("6", "7"):
+            with patch.object(self.auth.wechat_vpay, "code_to_session", return_value={"openid": "openid-legacy-" + suffix}):
+                status, legacy = self.request("/api/auth/miniprogram/card-register", {
+                    "wx_code": "legacy-" + suffix, "phone": "1380000000" + suffix,
+                    "device_id": "legacy-device-" + suffix,
+                    "card": {"name": "旧令牌用户", "title": "设计师", "company": "黄雀"},
+                    "invite_code": code, "invite_attribution_token": legacy_token,
+                })
+            self.assertEqual(status, 200)
+            self.assertTrue(legacy["invite_bound"])
+            self.assertEqual(legacy["user"]["points"], 0)
+            self.assertFalse(legacy["invite_rewarded"])
+        with self.conn() as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM points_audit WHERE reason='名片邀请注册奖励'").fetchone()[0], 1)
+
+    def test_wechat_card_registration_requires_complete_card_and_uses_account_phone(self):
+        with patch.object(self.auth.wechat_vpay, "code_to_session", return_value={"openid": "openid-required"}):
+            status, body = self.request("/api/auth/miniprogram/card-register", {
+                "wx_code": "missing", "phone": "13800000004", "device_id": "device-4",
+                "card": {"name": "", "title": "设计师", "company": "黄雀"},
+            })
+            self.assertEqual(status, 400)
+            self.assertEqual(body["code"], "incomplete_card")
+            status, body = self.request("/api/auth/miniprogram/card-register", {
+                "wx_code": "valid", "phone": "13800000004", "device_id": "device-4",
+                "card": {"name": "新用户", "title": "设计师", "company": "黄雀", "phone": "13900000000"},
+            })
+        self.assertEqual(status, 200)
+        self.assertEqual(body["card"]["phone"], "13800000004")
+
+    def test_card_initial_password_allows_ai_but_blocks_new_orders_until_changed(self):
+        phone = "13800000005"
+        with patch.object(self.auth.wechat_vpay, "code_to_session", return_value={"openid": "openid-password"}):
+            status, registered = self.request("/api/auth/miniprogram/card-register", {
+                "wx_code": "register", "phone": phone, "device_id": "device-5",
+                "card": {"name": "改密用户", "title": "设计师", "company": "黄雀"},
+            })
+        self.assertEqual(status, 200)
+        self.assertFalse(registered["user"]["must_change"])
+        self.assertTrue(registered["card"]["initial_password"])
+        headers = {"Authorization": "Bearer " + registered["token"]}
+        status, me = self.get("/api/auth/me", headers)
+        self.assertEqual(status, 200)
+        self.assertTrue(me["user"]["initial_password"])
+
+        for path in (
+            "/api/auth/virtual-pay/order", "/api/auth/recharge/order",
+            "/api/auth/wxpay/native", "/api/auth/wxpay/jsapi",
+        ):
+            status, blocked = self.request(path, {}, headers)
+            self.assertEqual(status, 403, path)
+            self.assertEqual(blocked["code"], "initial_password_change_required", path)
+
+        legacy_headers = {"Authorization": "Bearer " + self.auth.issue_token("root")}
+        status, blocked = self.request("/api/auth/recharge/order", {}, legacy_headers)
+        self.assertEqual(status, 403)
+        self.assertEqual(blocked["code"], "initial_password_change_required")
+
+        status, _ = self.request("/api/auth/change_password", {
+            "old_password": phone, "new_password": "changed123",
+        }, headers)
+        self.assertEqual(status, 200)
+        with self.conn() as c:
+            row = c.execute(
+                "SELECT must_change,card_initial_password FROM users WHERE username=?", (phone,),
+            ).fetchone()
+            self.assertEqual((row["must_change"], row["card_initial_password"]), (0, 0))
+
+        new_headers = {"Authorization": "Bearer " + self.auth.issue_token(phone)}
+        status, me = self.get("/api/auth/me", new_headers)
+        self.assertEqual(status, 200)
+        self.assertFalse(me["user"]["initial_password"])
+        order, err = self.auth.create_recharge_order(phone, 10, 100, "已创建订单")
+        self.assertIsNone(err)
+        with self.conn() as c:
+            c.execute("UPDATE users SET card_initial_password=1 WHERE username=?", (phone,))
+        approved, err = self.auth.review_recharge_order("admin", order["order_id"], "approve", "到账")
+        self.assertIsNone(err)
+        self.assertEqual(approved["status"], "approved")
+
+    def test_wechat_card_registration_never_claims_existing_account_or_other_card_openid(self):
+        self.auth.create_user("13800000003", "secret123")
+        with patch.object(self.auth.wechat_vpay, "code_to_session", return_value={"openid": "openid-conflict-account"}):
+            status, body = self.request("/api/auth/miniprogram/card-register", {
+                "wx_code": "conflict", "phone": "13800000003", "device_id": "device-3",
+                "card": {"name": "冲突", "title": "设计师", "company": "黄雀"},
+            })
+        self.assertEqual(status, 409)
+        self.assertEqual(body["code"], "account_exists")
+        with self.conn() as c:
+            self.assertFalse(c.execute("SELECT 1 FROM business_cards WHERE miniprogram_openid='openid-conflict-account'").fetchone())
+        root_token = self.auth.issue_token("root")
+        child_token = self.auth.issue_token("child")
+        with patch.object(self.auth.wechat_vpay, "code_to_session", return_value={"openid": "openid-taken"}):
+            self.assertEqual(self.request("/api/auth/card/wechat/bind", {"wx_code": "root"}, {"Authorization": "Bearer " + root_token})[0], 200)
+            status, body = self.request("/api/auth/card/wechat/bind", {"wx_code": "child"}, {"Authorization": "Bearer " + child_token})
+        self.assertEqual(status, 409)
+        self.assertEqual(body["code"], "openid_in_use")
+
+    def test_legacy_miniprogram_register_keeps_sixteen_trial_points(self):
+        with patch.object(self.auth.wechat_vpay, "code_to_session", return_value={"openid": "unused"}):
+            status, body = self.request("/api/auth/miniprogram-register", {"username": "legacy_mp", "password": "secret123"})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["user"]["points"], 16)
 
 
 if __name__ == "__main__":

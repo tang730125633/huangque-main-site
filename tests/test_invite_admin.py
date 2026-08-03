@@ -77,8 +77,15 @@ class InviteAdminTests(unittest.TestCase):
             self.auth.invites.admin_relation_action(c, relation_id, "unban", "确认正常", self.user_id("admin", c))
             self.auth.invites.admin_relation_action(c, relation_id, "invalidate", "测试无效", self.user_id("admin", c))
             self.auth.invites.admin_relation_action(c, relation_id, "restore", "", self.user_id("admin", c))
+            c.execute("UPDATE users SET username='13800000031',display_name='13800000031' WHERE username='admin'")
             c.commit()
-            self.assertGreaterEqual(len(self.auth.invites.admin_audit(c)), 5)
+            audit = self.auth.invites.admin_audit(c)
+            self.assertGreaterEqual(len(audit), 5)
+            self.assertEqual(audit[0]["operator_account"], "138****0031")
+            self.assertEqual(audit[0]["operator_name"], "138****0031")
+            self.assertNotIn("operator_username", audit[0])
+            raw_audit = c.execute("SELECT before_json,after_json FROM invite_admin_audit ORDER BY id DESC LIMIT 1").fetchone()
+            self.assertNotIn("ip_hash", raw_audit["before_json"] + raw_audit["after_json"])
         finally:
             c.close()
 
@@ -92,11 +99,20 @@ class InviteAdminTests(unittest.TestCase):
         with zipfile.ZipFile(io.BytesIO(body)) as book:
             self.assertIn("xl/worksheets/sheet1.xml", book.namelist())
             sheet = book.read("xl/worksheets/sheet1.xml").decode("utf-8")
-            self.assertIn("邀请人账号", sheet)
+            self.assertIn("邀请人账号ID", sheet)
             self.assertIn("被邀请用户", sheet)
+            self.assertNotIn(">inviter<", sheet)
+            self.assertNotIn(">invitee<", sheet)
 
     def test_admin_http_endpoints_require_admin_and_internal_token(self):
         token = self.auth.issue_token("admin")
+        c = self.connect()
+        invitee_id = self.user_id("invitee", c)
+        c.execute(
+            "UPDATE users SET username='13800000031',display_name='13800000031' WHERE id=?",
+            (invitee_id,),
+        )
+        c.commit(); c.close()
         server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -106,6 +122,25 @@ class InviteAdminTests(unittest.TestCase):
             req = urllib.request.Request(base + "/api/auth/admin/invite/stats", headers=headers)
             stats = json.loads(urllib.request.urlopen(req, timeout=3).read())
             self.assertEqual(stats["total"], 1)
+            req = urllib.request.Request(base + "/api/auth/admin/invite/journeys", headers=headers)
+            journeys = json.loads(urllib.request.urlopen(req, timeout=3).read())
+            self.assertEqual(journeys["summary"]["visited"], 0)
+            req = urllib.request.Request(
+                base + "/api/auth/admin/invite/network?search=13800000031", headers=headers,
+            )
+            network_search = json.loads(urllib.request.urlopen(req, timeout=3).read())
+            self.assertEqual(network_search["items"][0]["username"], "138****0031")
+            req = urllib.request.Request(
+                base + "/api/auth/admin/invite/network?user_id=%s" % invitee_id, headers=headers,
+            )
+            network = json.loads(urllib.request.urlopen(req, timeout=3).read())
+            self.assertEqual(network["root"]["username"], "138****0031")
+            self.assertNotIn("13800000031", json.dumps(network, ensure_ascii=False))
+            req = urllib.request.Request(base + "/api/auth/admin/invite/relations", headers=headers)
+            relations = json.loads(urllib.request.urlopen(req, timeout=3).read())
+            self.assertNotIn("inviter_username", relations["items"][0])
+            self.assertNotIn("invitee_username", relations["items"][0])
+            self.assertTrue(relations["items"][0]["invite_code"].endswith("••••"))
             payload = json.dumps({"name": "接口活动", "status": "enabled", "code_required": False,
                                   "daily_invite_limit": 60}).encode()
             req = urllib.request.Request(base + "/api/auth/admin/invite/config", data=payload,

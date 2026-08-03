@@ -26,7 +26,7 @@ def _idx(needle):
 class SmokeImportTests(unittest.TestCase):
     def test_auth_dependencies_are_deployed_and_monitored(self):
         drift = (ROOT / "scripts/drift_sentinel.py").read_text(encoding="utf-8")
-        self.assertIn("server/auth_server.py|server/hq_cli_api.py|server/invites.py|server/business_cards.py|server/wxpay.py", SRC)
+        self.assertIn("server/auth_server.py|server/hq_cli_api.py|server/invites.py|server/invite_network.py|server/business_cards.py|server/wxpay.py", SRC)
         self.assertIn(
             "'server/invites.py': '/home/ubuntu/auth-service/invites.py'",
             drift,
@@ -37,6 +37,10 @@ class SmokeImportTests(unittest.TestCase):
         )
         self.assertIn(
             "'server/business_cards.py': '/home/ubuntu/auth-service/business_cards.py'",
+            drift,
+        )
+        self.assertIn(
+            "'server/invite_network.py': '/home/ubuntu/auth-service/invite_network.py'",
             drift,
         )
         for name in ("__init__.py", "cos.py", "miniprogram_security.py"):
@@ -55,6 +59,10 @@ class SmokeImportTests(unittest.TestCase):
         )
         self.assertIn(
             '"$R"/server/business_cards.py',
+            (ROOT / "deploy/setup-dev-server.sh").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            '"$R"/server/invite_network.py',
             (ROOT / "deploy/setup-dev-server.sh").read_text(encoding="utf-8"),
         )
 
