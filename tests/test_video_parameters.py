@@ -28,10 +28,10 @@ class VideoResolutionValidationTests(unittest.TestCase):
             video.validate_video_payload({"mode": "text", "image_data": PNG, "text": "hi",
                                           "voice": "v", "resolution": "4k"})
 
-    def test_cinematic_is_where_1080p_lives_now(self):
+    def test_cinematic_overrides_legacy_1080p_to_720p(self):
         out = video.validate_cinematic_payload({
             "avatar_ids": [1], "prompt": "海边跳舞", "resolution": "1080p", "ratio": "9:16"})
-        self.assertEqual("1080p", out["resolution"])
+        self.assertEqual("720p", out["resolution"])
 
 
 class TryonParameterValidationTests(unittest.TestCase):

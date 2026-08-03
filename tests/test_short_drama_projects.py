@@ -2436,7 +2436,12 @@ class ShortDramaRouteTests(unittest.TestCase):
         self.assertEqual([], self.points.deduct_calls)
         self.assertEqual("cinematic", self.points.cost_calls[-1][0])
         quoted_payload = self.points.cost_calls[-1][1]
-        self.assertTrue(all(quoted_payload[key] == value for key, value in payload.items()))
+        self.assertEqual("720p", quoted_payload["resolution"])
+        self.assertTrue(all(
+            quoted_payload[key] == value
+            for key, value in payload.items()
+            if key != "resolution"
+        ))
         with closing(core.jdb()) as db:
             self.assertEqual(0, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
 

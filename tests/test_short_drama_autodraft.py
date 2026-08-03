@@ -20,6 +20,7 @@ from content_domains import (
     short_drama_conversation,
     short_drama_preflight,
 )
+from providers.short_drama_visual.heygen_cinematic import HeyGenCinematicShotProvider
 
 
 class Handler:
@@ -53,6 +54,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         )
         self.free.start()
         short_drama.init_db(self.db)
+
         self.project = short_drama.create_project(
             self.db,
             "alice",
@@ -128,6 +130,16 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             "confirm-key",
         )
         self.plan_id = current["id"]
+
+    def test_heygen_provider_forces_legacy_1080p_requests_to_720p(self):
+        request = HeyGenCinematicShotProvider().validate_request({
+            "provider_avatar_id": "look-1",
+            "prompt": "镜头缓慢推进",
+            "ratio": "16:9",
+            "resolution": "1080p",
+            "duration_seconds": 5,
+        })
+        self.assertEqual("720p", request["resolution"])
 
     def tearDown(self):
         self.free.stop()
