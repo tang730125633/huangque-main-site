@@ -19,6 +19,7 @@ except ImportError:
 TEXT_FIELDS = ("name", "headline", "company", "bio", "phone", "email", "address")
 JSON_FIELDS = ("tags", "works", "links")
 MEDIA_FIELDS = ("avatar", "wechat_qr")
+WORK_IMAGE_FIELDS = ("work_image_1", "work_image_2", "work_image_3")
 SENSITIVE_FIELDS = ("phone", "email", "address", "wechat_qr")
 MAX_JSON_BYTES = 64 * 1024
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
@@ -278,6 +279,41 @@ def _json(value, field):
     return raw
 
 
+def _work_image_key(user_id, slot, key):
+    prefix = "cards/%s/work_image_%s/" % (int(user_id), int(slot))
+    return isinstance(key, str) and key.startswith(prefix) and key.endswith(".jpg") and len(key) <= 512
+
+
+def _work_slots(works):
+    images, other = {}, []
+    for item in works if isinstance(works, list) else []:
+        if not isinstance(item, dict) or item.get("type") != "image":
+            other.append(item)
+            continue
+        try:
+            slot = int(item.get("slot") or 0)
+        except (TypeError, ValueError):
+            slot = 0
+        if slot not in (1, 2, 3) or slot in images:
+            slot = next((value for value in (1, 2, 3) if value not in images), 0)
+        if slot:
+            images[slot] = {**item, "type": "image", "slot": slot}
+    return images, other
+
+
+def _works(value, user_id):
+    if not isinstance(value, list):
+        raise CardError("invalid_works")
+    images, other = _work_slots(value)
+    for slot, item in images.items():
+        key = item.get("key")
+        if key and not _work_image_key(user_id, slot, key):
+            raise CardError("invalid_work_image", "作品图片无效")
+        if key:
+            item.pop("url", None)
+    return _json([images[slot] for slot in sorted(images)] + other, "works")
+
+
 def _text(value, field):
     if not isinstance(value, str):
         raise CardError("invalid_" + field)
@@ -314,7 +350,7 @@ def update(conn, user_id, payload, now=None):
         if key in TEXT_FIELDS:
             values[key] = _text(value, key)
         elif key in JSON_FIELDS:
-            values[key + "_json"] = _json(value, key)
+            values[key + "_json"] = _works(value, user_id) if key == "works" else _json(value, key)
         else:
             if not isinstance(value, bool):
                 raise CardError("invalid_" + key)
@@ -337,6 +373,27 @@ def set_media_key(conn, user_id, field, key, now=None):
     return dict(conn.execute("SELECT * FROM business_cards WHERE user_id=?", (int(user_id),)).fetchone())
 
 
+def set_work_image_key(conn, user_id, slot, key, title=None, now=None):
+    slot = int(slot)
+    if slot not in (1, 2, 3) or not _work_image_key(user_id, slot, key):
+        raise CardError("invalid_work_image", "作品图片无效")
+    if title is not None:
+        title = _text(title, "title")
+    row = create_draft(conn, user_id, now=now)
+    images, other = _work_slots(json.loads(row["works_json"] or "[]"))
+    item = images.get(slot, {"type": "image", "slot": slot, "title": ""})
+    item.update({"type": "image", "slot": slot, "key": key})
+    item.pop("url", None)
+    if title is not None:
+        item["title"] = title
+    images[slot] = item
+    conn.execute(
+        "UPDATE business_cards SET works_json=?,updated_at=? WHERE user_id=?",
+        (_json([images[value] for value in sorted(images)] + other, "works"), int(now or time.time()), int(user_id)),
+    )
+    return item
+
+
 def _media_url(key):
     if not key:
         return ""
@@ -355,10 +412,23 @@ def _media_url(key):
 
 def _decode(row, owner=False):
     privacy = {field: bool(row[field + "_public"]) for field in SENSITIVE_FIELDS}
+    works = json.loads(row["works_json"] or "[]")
+    for item in works:
+        if not isinstance(item, dict) or item.get("type") != "image":
+            continue
+        try:
+            slot = int(item.get("slot") or 0)
+        except (TypeError, ValueError):
+            slot = 0
+        key = item.get("key")
+        if key and _work_image_key(row["user_id"], slot, key):
+            item["url"] = _media_url(key)
+        if not owner:
+            item.pop("key", None)
     result = {
         "public_id": row["public_id"], "name": row["name"] or row["display_name"] or "黄雀用户",
         "title": row["headline"], "headline": row["headline"], "company": row["company"], "bio": row["bio"],
-        "tags": json.loads(row["tags_json"] or "[]"), "works": json.loads(row["works_json"] or "[]"),
+        "tags": json.loads(row["tags_json"] or "[]"), "works": works,
         "links": json.loads(row["links_json"] or "[]"), "avatar": _media_url(row["avatar_key"]),
     }
     if owner:
@@ -506,7 +576,7 @@ def children(conn, user_id, cursor=0, limit=20, admin=False):
 
 
 def upload_image(payload, field, prefix="cards"):
-    if field not in MEDIA_FIELDS or not isinstance(payload, str) or not payload.startswith("data:image/"):
+    if field not in MEDIA_FIELDS + WORK_IMAGE_FIELDS or not isinstance(payload, str) or not payload.startswith("data:image/"):
         raise CardError("invalid_image")
     try:
         header, encoded = payload.split(",", 1)

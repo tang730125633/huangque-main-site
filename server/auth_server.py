@@ -5549,8 +5549,19 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
             key = None
             if p.endswith("/media"):
+                field = d.get("field")
+                work_slot = (
+                    business_cards.WORK_IMAGE_FIELDS.index(field) + 1
+                    if field in business_cards.WORK_IMAGE_FIELDS else 0
+                )
+                title = d.get("title") if "title" in d else None
+                if work_slot and (title is not None and (not isinstance(title, str) or len(title.strip()) > 160)):
+                    return self._send(400, {"detail": "作品标题无效", "code": "invalid_title"})
                 try:
-                    key = business_cards.upload_image(d.get("data"), d.get("field"))
+                    key = business_cards.upload_image(
+                        d.get("data"), field,
+                        prefix="cards/%s" % row["id"] if work_slot else "cards",
+                    )
                 except business_cards.CardError as exc:
                     return self._send(exc.status, {"detail": exc.detail, "code": exc.code})
                 except Exception:
@@ -5568,9 +5579,19 @@ class H(BaseHTTPRequestHandler):
                     card = card_for_owner(c, row["id"])
                     result = {"ok": True, "card": card}
                 else:
-                    business_cards.set_media_key(c, row["id"], d.get("field"), key)
+                    if work_slot:
+                        business_cards.set_work_image_key(c, row["id"], work_slot, key, title)
+                    else:
+                        business_cards.set_media_key(c, row["id"], d.get("field"), key)
                     card = card_for_owner(c, row["id"])
-                    result = {"ok": True, "url": card[d.get("field")], "card": card}
+                    if work_slot:
+                        work = next(
+                            item for item in card["works"]
+                            if isinstance(item, dict) and item.get("type") == "image" and item.get("slot") == work_slot
+                        )
+                        result = {"ok": True, "url": work.get("url", ""), "key": key, "work": work, "card": card}
+                    else:
+                        result = {"ok": True, "url": card[d.get("field")], "card": card}
                 c.commit()
                 return self._send(200, result)
             except business_cards.CardError as exc:

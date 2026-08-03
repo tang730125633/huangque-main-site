@@ -1,4 +1,6 @@
+import base64
 import importlib
+import io
 import json
 import os
 import sqlite3
@@ -10,6 +12,8 @@ import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
+
+from PIL import Image
 
 
 class BusinessCardNetworkTests(unittest.TestCase):
@@ -46,9 +50,9 @@ class BusinessCardNetworkTests(unittest.TestCase):
         c = sqlite3.connect(self.auth.DB); c.row_factory = sqlite3.Row
         return c
 
-    def request(self, path, payload, headers=None):
+    def request(self, path, payload, headers=None, method="POST"):
         request = urllib.request.Request(
-            self.base + path, data=json.dumps(payload).encode(), method="POST",
+            self.base + path, data=json.dumps(payload).encode(), method=method,
             headers={"Content-Type": "application/json", **(headers or {})},
         )
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -360,6 +364,77 @@ class BusinessCardNetworkTests(unittest.TestCase):
             status, body = self.request("/api/auth/card/wechat/bind", {"wx_code": "child"}, {"Authorization": "Bearer " + child_token})
         self.assertEqual(status, 409)
         self.assertEqual(body["code"], "openid_in_use")
+
+    def test_work_image_upload_preserves_title_and_refreshes_private_url(self):
+        headers = {"Authorization": "Bearer " + self.child["token"]}
+        with self.conn() as c:
+            child_id = self.uid(c, "child")
+        image = io.BytesIO()
+        Image.new("RGB", (2, 2), (30, 60, 90)).save(image, "PNG")
+        image_data = "data:image/png;base64," + base64.b64encode(image.getvalue()).decode("ascii")
+        signed = []
+
+        def signed_url(key):
+            if not key:
+                return ""
+            signed.append(key)
+            return "https://signed.example/%s?refresh=%s" % (key, len(signed))
+
+        with patch.object(self.auth.business_cards.miniprogram_security, "check_image"), \
+             patch("server.content_domains.cos.enabled", return_value=True), \
+             patch("server.content_domains.cos.put_bytes") as put_bytes, \
+             patch.object(self.auth.business_cards, "_media_url", side_effect=signed_url):
+            status, first = self.request("/api/auth/card/media", {
+                "field": "work_image_2", "title": "作品二", "data": image_data,
+            }, headers)
+            self.assertEqual(status, 200)
+            self.assertEqual(first["work"]["slot"], 2)
+            self.assertEqual(first["work"]["title"], "作品二")
+            self.assertTrue(first["key"].startswith("cards/%s/work_image_2/" % child_id))
+            self.assertTrue(first["url"].startswith("https://signed.example/"))
+            self.assertTrue(put_bytes.call_args.kwargs["private"])
+
+            status, replaced = self.request("/api/auth/card/media", {
+                "field": "work_image_2", "data": image_data,
+            }, headers)
+            self.assertEqual(status, 200)
+            self.assertEqual(replaced["work"]["title"], "作品二")
+            self.assertNotEqual(replaced["work"]["key"], first["key"])
+            key = replaced["work"]["key"]
+            with self.conn() as c:
+                stored = json.loads(c.execute(
+                    "SELECT works_json FROM business_cards WHERE user_id=?", (child_id,),
+                ).fetchone()[0])[0]
+            self.assertEqual(stored["key"], key)
+            self.assertNotIn("url", stored)
+
+            status, owner = self.get("/api/auth/card/me", headers)
+            self.assertEqual(status, 200)
+            owner_work = owner["card"]["works"][0]
+            self.assertEqual(owner_work["key"], key)
+            self.assertTrue(owner_work["url"].startswith("https://signed.example/"))
+            self.assertNotEqual(owner_work["url"], replaced["work"]["url"])
+
+            changed = dict(owner_work, title="新标题")
+            status, updated = self.request("/api/auth/card/me", {"works": [changed]}, headers, method="PUT")
+            self.assertEqual(status, 200)
+            self.assertEqual(updated["card"]["works"][0]["title"], "新标题")
+
+            status, bad = self.request("/api/auth/card/me", {"works": [{
+                "type": "image", "slot": 2, "key": "cards/999/work_image_2/forged.jpg",
+            }]}, headers, method="PUT")
+            self.assertEqual(status, 400)
+            self.assertEqual(bad["code"], "invalid_work_image")
+
+            status, published = self.request("/api/auth/card/publish", {}, headers)
+            self.assertEqual(status, 200)
+            status, public = self.get("/api/auth/card/public?id=" + published["card"]["public_id"])
+            self.assertEqual(status, 200)
+            public_work = public["card"]["works"][0]
+            self.assertNotIn("key", public_work)
+            self.assertEqual(public_work["title"], "新标题")
+            self.assertTrue(public_work["url"].startswith("https://signed.example/"))
+            self.assertNotEqual(public_work["url"], owner_work["url"])
 
     def test_legacy_miniprogram_register_keeps_sixteen_trial_points(self):
         with patch.object(self.auth.wechat_vpay, "code_to_session", return_value={"openid": "unused"}):
