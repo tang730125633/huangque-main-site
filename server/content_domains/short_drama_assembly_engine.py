@@ -319,6 +319,7 @@ def build_bundle(
     claim_check,
     toolchain,
     bgm_source=None,
+    sound_cues=None,
     master_audio_contract=None,
     cached_audio_files=None,
 ):
@@ -400,6 +401,7 @@ def build_bundle(
         bgm_config = config.get("bgm") if isinstance(config, dict) else {}
         dialogue = temp / "dialogue.wav"
         bgm = temp / "bgm.wav" if bgm_source is not None else None
+        soundscape = temp / "soundscape.wav" if sound_cues else None
         master = temp / "master.wav"
         if use_audio_cache:
             destinations = {
@@ -503,7 +505,18 @@ def build_bundle(
                 artifacts.append(
                     _audio_artifact("bgm", bgm, temp, project_duration)
                 )
-            if not has_dialogue and bgm is None:
+            if soundscape is not None:
+                try:
+                    _execute(
+                        audio.build_soundscape_command(
+                            sound_cues, project_duration, soundscape
+                        ),
+                        runner,
+                    )
+                except audio.AudioEngineError as error:
+                    raise BundleBuildError(error.code, str(error)) from error
+                _probe_audio(soundscape, project_duration, probe)
+            if not has_dialogue and bgm is None and soundscape is None:
                 measured = None
                 loudness_mode = "silence_bypass"
                 _execute(
@@ -515,7 +528,7 @@ def build_bundle(
             else:
                 analysis = _execute(
                     audio.build_loudness_analysis_command(
-                        dialogue, bgm, project_duration
+                        dialogue, bgm, project_duration, soundscape
                     ),
                     runner,
                 )
@@ -526,7 +539,8 @@ def build_bundle(
                 loudness_mode = "two_pass"
                 _execute(
                     audio.build_master_command(
-                        dialogue, bgm, project_duration, measured, master
+                        dialogue, bgm, project_duration, measured, master,
+                        soundscape,
                     ),
                     runner,
                 )
@@ -583,6 +597,8 @@ def build_bundle(
                 "target_lra": audio.TARGET_LRA,
                 "loudness_mode": loudness_mode,
                 "loudness_measurements": measured,
+                "sound_cue_count": len(sound_cues or []),
+                "source_video_audio": "discarded",
             },
             "master_audio": dict(master_audio_contract or {}),
             "subtitle_events": subtitle_events,

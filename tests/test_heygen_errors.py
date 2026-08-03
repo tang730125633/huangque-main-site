@@ -19,6 +19,7 @@ class HeyGenErrorTest(unittest.TestCase):
         ]
         for error, message, log in cases:
             with self.subTest(message=message), patch.object(video, "HEYGEN_API_KEY", "test-key"), \
+                    patch.object(video, "HEYGEN_API_BASE", "https://relay.test/v3"), \
                     patch.object(video.urllib.request, "urlopen", side_effect=error):
                 output = io.StringIO()
                 with redirect_stdout(output), self.assertRaisesRegex(RuntimeError, message):

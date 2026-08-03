@@ -10,7 +10,7 @@ from .short_drama_assembly_audio import (
 from .short_drama_assembly_plan import canonical_hash
 
 
-ENGINE_VERSION = "short_drama_master_audio_v1"
+ENGINE_VERSION = "short_drama_master_audio_v2"
 CONTRACT_VERSION = "short_drama_master_timeline_v1"
 CODEC = "pcm_s16le"
 
@@ -41,7 +41,9 @@ def _source_by_line(voice_sources):
     return result
 
 
-def build_contract(media_plan, voice_sources, bgm_source, bgm_config):
+def build_contract(
+    media_plan, voice_sources, bgm_source, bgm_config, sound_sources=None
+):
     """Return a deterministic identity that excludes subtitle presentation."""
     if not isinstance(media_plan, dict):
         raise MasterAudioContractError(
@@ -185,6 +187,8 @@ def build_contract(media_plan, voice_sources, bgm_source, bgm_config):
         },
         "shots": shots,
         "bgm": normalized_bgm,
+        "sound_cues": list(sound_sources or []),
+        "source_video_audio": "discarded",
     }
     identity["master_audio_hash"] = canonical_hash(identity)
     return identity

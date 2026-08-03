@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import hashlib
+import sqlite3
 
 from .core import (
     TTS_MODEL,
@@ -657,16 +658,37 @@ def record_audio_asset(job_id, username, result):
     if not result or result.get("type") != "audio":
         return
     now = int(time.time())
-    raw_voice_key = (result.get("voice") or "S_d21F8OR62").strip()
-    voice_key = raw_voice_key.lower() if raw_voice_key.lower() in set() else raw_voice_key
-    voice_id = ensure_audio_voice(username, voice_key)  # #604: 遗留/占位 key 现在返 None，voice_id 存 NULL、不再凭空建占位行
+    asset_kind = str(result.get("asset_kind") or "voice")
+    if asset_kind == "sound_effect":
+        voice_key, voice_id = "", None
+    else:
+        raw_voice_key = (result.get("voice") or "S_d21F8OR62").strip()
+        voice_key = raw_voice_key.lower() if raw_voice_key.lower() in set() else raw_voice_key
+        voice_id = ensure_audio_voice(username, voice_key)
     with closing(adb()) as c:
+        _ensure_column(c, "audio_assets", "asset_kind", "TEXT NOT NULL DEFAULT 'voice'")
+        _ensure_column(c, "audio_assets", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
         c.execute("""INSERT OR REPLACE INTO audio_assets
             (job_id, username, voice_id, voice_key, file, url, text, speed, pitch, volume, created_at)
             VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
             (job_id, username, voice_id, voice_key, result.get("file"), result.get("url"),
              result.get("text") or result.get("prompt"), result.get("speed"), result.get("pitch"),
              result.get("volume"), now))
+        c.execute(
+            "UPDATE audio_assets SET asset_kind=?,metadata_json=? WHERE job_id=?",
+            (
+                asset_kind,
+                json.dumps({
+                    "provider": result.get("provider"),
+                    "provider_model": result.get("provider_model"),
+                    "provider_request_id": result.get("provider_request_id"),
+                    "quality": result.get("quality") or {},
+                    "sound_design": result.get("sound_design") or {},
+                    "duration_ms": result.get("duration_ms"),
+                }, ensure_ascii=False, sort_keys=True),
+                job_id,
+            ),
+        )
         c.commit()
 
 def _cleanup_alloy_placeholder_voices():
@@ -826,13 +848,50 @@ def list_audio_assets(username, limit=120, offset=0):
     offset = max(0, min(100000, int(offset or 0)))
     with closing(adb()) as c:
         _ensure_column(c, "audio_assets", "deleted", "INTEGER DEFAULT 0")
+        _ensure_column(c, "audio_assets", "asset_kind", "TEXT NOT NULL DEFAULT 'voice'")
+        _ensure_column(c, "audio_assets", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
         rows = c.execute("""SELECT a.id, a.job_id, a.username, a.voice_id, a.voice_key, a.file, a.url, a.text,
                    a.speed, a.pitch, a.volume, a.created_at, v.display_name AS voice_name, v.preview_url
+                   ,a.asset_kind,a.metadata_json
             FROM audio_assets a
             LEFT JOIN audio_voices v ON v.id = a.voice_id
             WHERE a.username=? AND COALESCE(a.deleted,0)=0
             ORDER BY a.id DESC LIMIT ? OFFSET ?""", (username, limit, offset)).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_audio_asset_by_job(username, job_id):
+    try:
+        job_id = int(job_id)
+    except (TypeError, ValueError):
+        return None
+    with closing(adb()) as conn:
+        _ensure_column(conn, "audio_assets", "deleted", "INTEGER DEFAULT 0")
+        _ensure_column(conn, "audio_assets", "asset_kind", "TEXT NOT NULL DEFAULT 'voice'")
+        _ensure_column(conn, "audio_assets", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+        row = conn.execute(
+            "SELECT id,job_id,username,file,url,text,created_at,asset_kind,"
+            "metadata_json FROM audio_assets WHERE job_id=? AND username=? "
+            "AND COALESCE(deleted,0)=0", (job_id, username),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_audio_asset(username, asset_id):
+    """Return one owned, non-deleted audio asset for internal composition use."""
+    try:
+        asset_id = int(asset_id)
+    except (TypeError, ValueError):
+        return None
+    with closing(adb()) as conn:
+        conn.row_factory = sqlite3.Row
+        _ensure_column(conn, "audio_assets", "deleted", "INTEGER DEFAULT 0")
+        row = conn.execute(
+            "SELECT id,username,file,url,created_at FROM audio_assets "
+            "WHERE id=? AND username=? AND COALESCE(deleted,0)=0",
+            (asset_id, username),
+        ).fetchone()
+    return dict(row) if row else None
 
 # ============ 配音能力：OpenAI TTS（同事的 audio 能力，合并保留） ============
 VOICE_MAP = {

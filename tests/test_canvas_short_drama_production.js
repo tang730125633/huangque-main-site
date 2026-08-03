@@ -21,14 +21,14 @@ function sampleState(overrides = {}) {
     shots: [
       {
         id: 'shot-2', shot_key: '第二镜', sort_order: 2, duration: 5,
-        image_prompt: '雨夜门口',
+        image_prompt: '雨夜门口', image_prompt_hash: 'hash-rain',
         still: {
           asset_id: 'asset-2', current_version: null, locked: false, versions: [], job: null,
         },
       },
       {
         id: 'shot-1', shot_key: '第一镜', sort_order: 1, duration: 5,
-        image_prompt: '侦探 <script>alert(1)</script>',
+        image_prompt: '侦探 <script>alert(1)</script>', image_prompt_hash: 'hash-detective',
         references: ['<img src=x onerror=alert(1)>'],
         still: {
           asset_id: 'asset-1', current_version: 12, locked: true,
@@ -101,6 +101,8 @@ function testNormalizationAndRenderer() {
   assert.match(html, /<div class="nc-sdp-preview" data-ratio="9:16">/);
   assert.doesNotMatch(html, /<script>|<img src=x|<b>old/);
   assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.match(html, /分镜画面提示词[\s\S]*readonly[\s\S]*本次生成补充要求/);
+  assert.match(html, /最终提交提示词预览/);
   assert.match(html, /data-version="12"[\s\S]*data-action="lock-version"/);
   const historyState = sampleState();
   historyState.shots[1].still.versions.unshift({
@@ -172,6 +174,8 @@ async function testQuoteConfirmSubmitOrderAndCancellation() {
       if (path.startsWith('/api/gen/short-drama/production?')) return Promise.resolve(clone(state));
       if (path === '/api/gen/short-drama/asset-quote') return Promise.resolve({
         cost: 24, count: 2, kind: 'still', quote_token: 'quote-101', expires_at: 9999999999,
+        shot_id: 'shot-2', base_prompt: '雨夜门口', user_direction: '',
+        compiled_prompt: 'Shot prompt: 雨夜门口', source_prompt_hash: 'hash-rain',
       });
       if (path === '/api/gen/short-drama/generate-stills') {
         state = terminalState();
@@ -199,8 +203,9 @@ async function testQuoteConfirmSubmitOrderAndCancellation() {
   const submit = calls[4];
   assert.deepEqual(quoteBody, {
     project_id: 'project/one', revision: 7, shot_id: 'shot-2',
-    prompt: '雨夜门口', mode: 'single', count: 2,
+    prompt: '', mode: 'single', count: 2,
   });
+  assert.equal(calls[3].quote.compiled_prompt, 'Shot prompt: 雨夜门口');
   assert.deepEqual(submit.options.body, Object.assign({}, quoteBody, { quote_token: 'quote-101' }));
   assert.equal(submit.options.headers['Idempotency-Key'], 'still-action-1');
   workspace.destroy();
@@ -570,9 +575,14 @@ async function testTrueBatchQuotesConfirmsSubmitsAndPollsEligibleShots() {
         return Promise.resolve(next);
       }
       if (path === '/api/gen/short-drama/asset-quote') {
+        const shot = state.shots.find((item) => item.id === options.body.shot_id);
         return Promise.resolve({
           cost: options.body.shot_id === 'shot-2' ? 10 : 20, count: 2, kind: 'still',
           quote_token: 'quote-batch-'+options.body.shot_id,
+          expires_at: 9999999999, shot_id: options.body.shot_id,
+          base_prompt: shot.image_prompt, user_direction: options.body.prompt,
+          compiled_prompt: `compiled prompt for ${options.body.shot_id}`,
+          source_prompt_hash: options.body.shot_id === 'shot-2' ? '2'.repeat(64) : '4'.repeat(64),
         });
       }
       if (path === '/api/gen/short-drama/generate-stills') {
@@ -596,6 +606,19 @@ async function testTrueBatchQuotesConfirmsSubmitsAndPollsEligibleShots() {
       assert.equal(quote.cost, 30);
       assert.equal(quote.shot_count, 2);
       assert.deepEqual(quote.shot_ids, ['shot-2', 'shot-4']);
+      assert.deepEqual(quote.quotes.map((item) => ({
+        shot_id: item.shot_id, base_prompt: item.base_prompt,
+        compiled_prompt: item.compiled_prompt,
+      })), [
+        {
+          shot_id: 'shot-2', base_prompt: state.shots.find((item) => item.id === 'shot-2').image_prompt,
+          compiled_prompt: 'compiled prompt for shot-2',
+        },
+        {
+          shot_id: 'shot-4', base_prompt: state.shots.find((item) => item.id === 'shot-4').image_prompt,
+          compiled_prompt: 'compiled prompt for shot-4',
+        },
+      ]);
       assert.deepEqual(bodies.map((body) => body.shot_id), ['shot-2', 'shot-4']);
       return true;
     },

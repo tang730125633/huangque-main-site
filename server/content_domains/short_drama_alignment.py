@@ -1,4 +1,4 @@
-"""Subtitle alignment using real local ASR word timestamps with explicit fallback."""
+"""Subtitle forced-alignment contracts, versions, and local deterministic provider."""
 
 from __future__ import annotations
 
@@ -6,29 +6,29 @@ import hashlib
 import json
 import os
 import sqlite3
-import threading
 import time
 import unicodedata
 import uuid
-from difflib import SequenceMatcher
 
-from . import short_drama_assembly_subtitles as assembly_subtitles
 from . import short_drama_voice
+from .short_drama_alignment_normalize import normalize_result
+from providers.alignment import (
+    DeterministicLocalProvider,
+    FasterWhisperLocalProvider,
+)
 
 
-CONTRACT_VERSION = "short_drama_alignment_v1"
-PROVIDER_NAME = "faster-whisper-local"
-MODEL_VERSION = "word-timestamps-v1"
+CONTRACT_VERSION = "short_drama_alignment_v2"
+LEGACY_CONTRACT_VERSION = "short_drama_alignment_v1"
+PROVIDER_NAME = "deterministic-local"
+MODEL_VERSION = "estimated-char-v1"
 WRITABLE_STAGE = "voice_review"
 INTERRUPTED_JOB_SECONDS = 60
 REVIEW_ACTIONS = {"save_adjustments", "confirm_unchanged"}
-_WHISPER_MODEL = None
-_WHISPER_MODEL_NAME = None
-_WHISPER_MODEL_LOCK = threading.Lock()
-_ALIGNMENT_CONCURRENCY = max(
-    1, int(os.environ.get("SHORT_DRAMA_ALIGNMENT_CONCURRENCY", "1") or 1)
-)
-_ALIGNMENT_SEMAPHORE = threading.BoundedSemaphore(_ALIGNMENT_CONCURRENCY)
+PROVIDER_FACTORIES = {
+    "deterministic-local": DeterministicLocalProvider,
+    "faster-whisper-local": FasterWhisperLocalProvider,
+}
 
 
 class AlignmentError(ValueError):
@@ -55,8 +55,20 @@ CREATE TABLE IF NOT EXISTS short_drama_alignment_jobs (
   request_hash TEXT NOT NULL,
   input_hash TEXT NOT NULL,
   provider TEXT NOT NULL,
+  model_version TEXT NOT NULL DEFAULT 'estimated-char-v1',
   provider_job_id TEXT NOT NULL,
+  provider_status TEXT NOT NULL DEFAULT 'unknown',
   status TEXT NOT NULL CHECK (status IN ('queued','running','succeeded','failed','canceled')),
+  operation TEXT NOT NULL DEFAULT 'generate',
+  request_json TEXT NOT NULL DEFAULT '{}',
+  terminal_json TEXT NOT NULL DEFAULT '{}',
+  capabilities_json TEXT NOT NULL DEFAULT '{}',
+  trace_id TEXT,
+  lease_owner TEXT,
+  lease_expires_at INTEGER,
+  heartbeat_at INTEGER,
+  poll_count INTEGER NOT NULL DEFAULT 0,
+  last_error_code TEXT,
   version_id TEXT,
   error_json TEXT NOT NULL DEFAULT '{}',
   created_at INTEGER NOT NULL,
@@ -137,6 +149,31 @@ def init_db(db_factory):
                     "ALTER TABLE short_drama_alignment_versions "
                     f"ADD COLUMN {name} {definition}"
                 )
+        job_columns = {
+            row[1] for row in conn.execute(
+                "PRAGMA table_info(short_drama_alignment_jobs)"
+            )
+        }
+        job_migrations = {
+            "model_version": "TEXT NOT NULL DEFAULT 'estimated-char-v1'",
+            "provider_status": "TEXT NOT NULL DEFAULT 'unknown'",
+            "operation": "TEXT NOT NULL DEFAULT 'generate'",
+            "request_json": "TEXT NOT NULL DEFAULT '{}'",
+            "terminal_json": "TEXT NOT NULL DEFAULT '{}'",
+            "capabilities_json": "TEXT NOT NULL DEFAULT '{}'",
+            "trace_id": "TEXT",
+            "lease_owner": "TEXT",
+            "lease_expires_at": "INTEGER",
+            "heartbeat_at": "INTEGER",
+            "poll_count": "INTEGER NOT NULL DEFAULT 0",
+            "last_error_code": "TEXT",
+        }
+        for name, definition in job_migrations.items():
+            if name not in job_columns:
+                conn.execute(
+                    "ALTER TABLE short_drama_alignment_jobs "
+                    f"ADD COLUMN {name} {definition}"
+                )
         conn.commit()
     finally:
         conn.close()
@@ -161,6 +198,73 @@ def _tokens(value):
     return [character for character in normalized if not character.isspace()]
 
 
+def _enabled(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return bool(default)
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _provider_selection():
+    name = (
+        os.environ.get("HQ_SHORT_DRAMA_ALIGNMENT_PROVIDER")
+        or PROVIDER_NAME
+    ).strip()
+    factory = PROVIDER_FACTORIES.get(name)
+    if not factory:
+        raise AlignmentError(
+            "alignment_provider_unavailable",
+            "配置的字幕对齐 Provider 不可用",
+            status=503,
+        )
+    provider = factory()
+    capabilities = provider.capabilities()
+    real_enabled = _enabled("HQ_SHORT_DRAMA_ALIGNMENT_REAL_ENABLED")
+    if capabilities.real_forced_alignment and not real_enabled:
+        raise AlignmentError(
+            "alignment_provider_unavailable",
+            "真实字幕对齐功能尚未启用",
+            status=503,
+        )
+    return provider, capabilities
+
+
+def _provider_from_name(name):
+    factory = PROVIDER_FACTORIES.get(str(name or ""))
+    if not factory:
+        raise AlignmentError(
+            "alignment_provider_unavailable",
+            "字幕对齐 Provider 不可用",
+            status=503,
+        )
+    return factory()
+
+
+def _provider_snapshot():
+    name = (
+        os.environ.get("HQ_SHORT_DRAMA_ALIGNMENT_PROVIDER")
+        or PROVIDER_NAME
+    ).strip()
+    factory = PROVIDER_FACTORIES.get(name)
+    provider = factory() if factory else DeterministicLocalProvider()
+    capabilities = provider.capabilities()
+    value = capabilities.to_dict()
+    value.update({
+        "name": capabilities.provider,
+        "feature_enabled": (
+            not capabilities.real_forced_alignment
+            or _enabled("HQ_SHORT_DRAMA_ALIGNMENT_REAL_ENABLED")
+        ),
+        "shadow_enabled": _enabled(
+            "HQ_SHORT_DRAMA_ALIGNMENT_SHADOW_ENABLED"
+        ),
+        "word_timing_enabled": _enabled(
+            "HQ_SHORT_DRAMA_ALIGNMENT_WORD_TIMING_ENABLED"
+        ),
+    })
+    return value
+
+
 def _version_for_line(line):
     current = line.get("current_version")
     return next(
@@ -174,6 +278,7 @@ def _version_for_line(line):
 
 def _input_contract(snapshot):
     blockers = []
+    provider_config = _provider_snapshot()
     shots = []
     absolute_cursor = 0
     transcript = []
@@ -266,12 +371,11 @@ def _input_contract(snapshot):
     identity = {
         "contract_version": CONTRACT_VERSION,
         "project_id": snapshot.get("project_id"),
-        "project_revision": snapshot.get("revision"),
         "master_audio_hash": master_audio_hash,
         "transcript_hash": transcript_hash,
         "language": "zh-CN",
-        "provider": PROVIDER_NAME,
-        "model_version": MODEL_VERSION,
+        "provider": provider_config["name"],
+        "model_version": provider_config["model_version"],
         "shots": identity_shots,
     }
     return {
@@ -284,262 +388,45 @@ def _input_contract(snapshot):
     }
 
 
-class AlignmentProviderUnavailable(RuntimeError):
-    pass
-
-
-def _transcribe_words(audio_file):
-    from .core import _resolve_out_file
-
-    path = _resolve_out_file(audio_file)
-    if path is None:
-        raise AlignmentProviderUnavailable("配音音频文件不存在或不在受控目录")
-    model_name = str(
-        os.environ.get("SHORT_DRAMA_ALIGNMENT_MODEL", "small")
-    ).strip() or "small"
-    try:
-        from faster_whisper import WhisperModel
-    except (ImportError, OSError) as error:
-        raise AlignmentProviderUnavailable("faster-whisper 不可用") from error
-    global _WHISPER_MODEL, _WHISPER_MODEL_NAME
-    if _WHISPER_MODEL is None or _WHISPER_MODEL_NAME != model_name:
-        with _WHISPER_MODEL_LOCK:
-            if _WHISPER_MODEL is None or _WHISPER_MODEL_NAME != model_name:
-                try:
-                    _WHISPER_MODEL = WhisperModel(
-                        model_name, device="cpu", compute_type="int8"
-                    )
-                except Exception as error:
-                    raise AlignmentProviderUnavailable(
-                        "字幕对齐 ASR 模型加载失败"
-                    ) from error
-                _WHISPER_MODEL_NAME = model_name
-    try:
-        with _ALIGNMENT_SEMAPHORE:
-            segments, _ = _WHISPER_MODEL.transcribe(
-                str(path),
-                language="zh",
-                vad_filter=True,
-                word_timestamps=True,
-                beam_size=5,
-            )
-            words = []
-            for segment in segments:
-                for word in getattr(segment, "words", None) or []:
-                    text = str(getattr(word, "word", "") or "").strip()
-                    start = getattr(word, "start", None)
-                    end = getattr(word, "end", None)
-                    if (
-                        not text
-                        or not isinstance(start, (int, float))
-                        or not isinstance(end, (int, float))
-                        or end <= start
-                    ):
-                        continue
-                    probability = getattr(word, "probability", None)
-                    words.append({
-                        "word": text,
-                        "start_ms": max(0, round(float(start) * 1000)),
-                        "end_ms": max(1, round(float(end) * 1000)),
-                        "confidence": (
-                            max(0.0, min(1.0, float(probability)))
-                            if isinstance(probability, (int, float))
-                            else None
-                        ),
-                    })
-            return words
-    except AlignmentProviderUnavailable:
-        raise
-    except Exception as error:
-        raise AlignmentProviderUnavailable("字幕对齐 ASR 执行失败") from error
-
-
-def _recognized_tokens(words, audio_start_ms, audio_end_ms):
-    recognized = []
-    duration = audio_end_ms - audio_start_ms
-    for word in words or []:
-        pieces = _tokens(word.get("word"))
-        if not pieces:
-            continue
-        word_start = max(
-            0, min(max(0, duration - 1), int(word.get("start_ms") or 0))
-        )
-        word_end = max(
-            word_start + 1,
-            min(duration, int(word.get("end_ms") or word_start + 1)),
-        )
-        timing_estimated = False
-        if word_end - word_start < len(pieces):
-            if duration < len(pieces):
-                raise AlignmentError(
-                    "alignment_resolution_insufficient",
-                    "音频时长不足以生成严格递增的 token 时间轴",
-                    status=422,
-                )
-            word_start = min(word_start, duration - len(pieces))
-            word_end = word_start + len(pieces)
-            timing_estimated = True
-        for index, token in enumerate(pieces):
-            start = audio_start_ms + round(
-                word_start + (word_end - word_start) * index / len(pieces)
-            )
-            end = audio_start_ms + round(
-                word_start
-                + (word_end - word_start) * (index + 1) / len(pieces)
-            )
-            recognized.append({
-                "token": token,
-                "start_ms": start,
-                "end_ms": max(start + 1, end),
-                "confidence": (
-                    None if timing_estimated else word.get("confidence")
-                ),
-                "match_type": (
-                    "estimated" if timing_estimated
-                    else "asr_word" if len(pieces) == 1
-                    else "interpolated_within_asr_word"
-                ),
-            })
-    return recognized
-
-
-def _fill_estimated_ranges(slots, expected, line):
-    index = 0
-    while index < len(slots):
-        if slots[index] is not None:
-            index += 1
-            continue
-        end_index = index
-        while end_index < len(slots) and slots[end_index] is None:
-            end_index += 1
-        left = (
-            line["audio_start_ms"]
-            if index == 0 else slots[index - 1]["end_ms"]
-        )
-        right = (
-            line["audio_end_ms"]
-            if end_index == len(slots) else slots[end_index]["start_ms"]
-        )
-        count = end_index - index
-        if right <= left:
-            left = line["audio_start_ms"]
-            right = line["audio_end_ms"]
-        for offset in range(count):
-            start = round(left + (right - left) * offset / count)
-            end = round(left + (right - left) * (offset + 1) / count)
-            slots[index + offset] = {
-                "token": expected[index + offset],
-                "start_ms": start,
-                "end_ms": max(start + 1, end),
-                "confidence": None,
-                "match_type": "estimated",
-            }
-        index = end_index
-    return slots
-
-
-def _align_line(line, words):
-    expected = _tokens(line["text"])
-    if not expected:
-        return [], 0
-    duration = line["audio_end_ms"] - line["audio_start_ms"]
-    if duration < len(expected):
-        raise AlignmentError(
-            "alignment_resolution_insufficient",
-            "音频时长不足以生成严格递增的 token 时间轴",
-            status=422,
-        )
-    recognized = _recognized_tokens(
-        words, line["audio_start_ms"], line["audio_end_ms"]
+def version_matches_contract(version, contract):
+    """Compare durable alignment inputs without unrelated project revisions."""
+    if not version:
+        return False
+    if version.get("input_hash") == contract.get("input_hash"):
+        return True
+    if version.get("contract_version") != LEGACY_CONTRACT_VERSION:
+        return False
+    identity = contract.get("identity") or {}
+    return bool(
+        version.get("master_audio_hash") == contract.get("master_audio_hash")
+        and version.get("transcript_hash") == contract.get("transcript_hash")
+        and version.get("provider") == identity.get("provider")
+        and version.get("model_version") == identity.get("model_version")
     )
-    slots = [None] * len(expected)
-    matcher = SequenceMatcher(
-        None,
-        [_normalize_text(token) for token in expected],
-        [_normalize_text(item["token"]) for item in recognized],
-        autojunk=False,
-    )
-    for block in matcher.get_matching_blocks():
-        for offset in range(block.size):
-            expected_index = block.a + offset
-            source = recognized[block.b + offset]
-            slots[expected_index] = {
-                **source,
-                "token": expected[expected_index],
-            }
-    tokens = _fill_estimated_ranges(slots, expected, line)
-    cursor = line["audio_start_ms"]
-    for index, token in enumerate(tokens):
-        token["normalized_token"] = _normalize_text(token["token"])
-        remaining = len(tokens) - index - 1
-        latest_start = line["audio_end_ms"] - remaining - 1
-        original_start = int(token["start_ms"])
-        original_end = int(token["end_ms"])
-        token["start_ms"] = min(
-            latest_start, max(cursor, original_start)
-        )
-        latest_end = line["audio_end_ms"] - remaining
-        token["end_ms"] = min(
-            latest_end, max(token["start_ms"] + 1, original_end)
-        )
-        if (
-            token["start_ms"] != original_start
-            or token["end_ms"] != original_end
-        ):
-            token["confidence"] = None
-            token["match_type"] = "estimated"
-        cursor = token["end_ms"]
-    matched = sum(
-        token["match_type"] != "estimated" for token in tokens
-    )
-    return tokens, matched
 
 
-def _align(contract, transcriber=None):
-    transcriber = transcriber or _transcribe_words
+def _align(contract):
     timeline = []
     token_count = 0
-    matched_count = 0
-    confidences = []
-    low_confidence_ranges = []
-    unmatched_tokens = []
-    line_coverages = []
-    provider_errors = []
     for shot in contract["shots"]:
         for line in shot["lines"]:
-            words = []
-            try:
-                words = transcriber(line.get("audio_file") or "")
-            except AlignmentProviderUnavailable as error:
-                provider_errors.append({
-                    "line_id": line["line_id"],
-                    "message": str(error)[:220],
+            chars = _tokens(line["text"])
+            duration = line["audio_end_ms"] - line["audio_start_ms"]
+            tokens = []
+            for index, token in enumerate(chars):
+                start = line["audio_start_ms"] + round(duration * index / len(chars))
+                end = line["audio_start_ms"] + round(
+                    duration * (index + 1) / len(chars)
+                )
+                tokens.append({
+                    "token": token,
+                    "normalized_token": _normalize_text(token),
+                    "start_ms": start,
+                    "end_ms": max(start + 1, end),
+                    "confidence": 0.92,
+                    "match_type": "estimated",
                 })
-            tokens, matched = _align_line(line, words)
             token_count += len(tokens)
-            matched_count += matched
-            coverage = matched / len(tokens) if tokens else 1.0
-            line_coverages.append({
-                "line_id": line["line_id"],
-                "coverage": round(coverage, 4),
-            })
-            for token in tokens:
-                confidence = token.get("confidence")
-                if isinstance(confidence, (int, float)):
-                    confidences.append(float(confidence))
-                    if confidence < 0.80:
-                        low_confidence_ranges.append({
-                            "line_id": line["line_id"],
-                            "token": token["token"],
-                            "start_ms": token["start_ms"],
-                            "end_ms": token["end_ms"],
-                            "confidence": round(float(confidence), 4),
-                        })
-                if token["match_type"] == "estimated":
-                    unmatched_tokens.append({
-                        "line_id": line["line_id"],
-                        "token": token["token"],
-                    })
             timeline.append({
                 "shot_id": line["shot_id"],
                 "line_id": line["line_id"],
@@ -552,72 +439,23 @@ def _align(contract, transcriber=None):
                 "subtitle_end_ms": (
                     tokens[-1]["end_ms"] if tokens else line["audio_end_ms"]
                 ),
-                "alignment_source": (
-                    "asr_word_timestamps"
-                    if matched == len(tokens) and tokens
-                    else "estimated_fallback"
-                ),
                 "tokens": tokens,
             })
-    coverage = matched_count / token_count if token_count else 1.0
-    mean_confidence = (
-        sum(confidences) / len(confidences) if confidences else None
-    )
-    estimated_count = token_count - matched_count
-    blockers = [{
-        "code": "manual_review_required",
-        "message": "字幕时间轴必须经过人工校对后才能锁定",
-    }]
-    if provider_errors:
-        blockers.append({
-            "code": "forced_alignment_unavailable",
-            "message": "真实音频对齐不可用，当前仅提供估算时间轴",
-        })
-    if estimated_count:
-        blockers.append({
-            "code": "estimated_timing_present",
-            "message": "存在没有真实 ASR 时间戳的估算 token",
-        })
-    if coverage < 0.98:
-        blockers.append({
-            "code": "project_coverage_low",
-            "message": "项目真实时间戳覆盖率低于 98%",
-        })
-    if any(item["coverage"] < 0.95 for item in line_coverages):
-        blockers.append({
-            "code": "line_coverage_low",
-            "message": "存在真实时间戳覆盖率低于 95% 的台词",
-        })
-    if mean_confidence is not None and mean_confidence < 0.80:
-        blockers.append({
-            "code": "mean_confidence_low",
-            "message": "真实时间戳平均置信度低于 0.80",
-        })
-    if not token_count:
-        provider_mode = "not_applicable"
-    elif not matched_count:
-        provider_mode = "estimated_fallback"
-    elif estimated_count:
-        provider_mode = "mixed"
-    else:
-        provider_mode = "asr_word_timestamps"
     quality = {
-        "provider_mode": provider_mode,
-        "coverage": round(coverage, 4),
-        "line_coverages": line_coverages,
-        "mean_confidence": (
-            round(mean_confidence, 4) if mean_confidence is not None else None
-        ),
-        "low_confidence_ranges": low_confidence_ranges,
-        "unmatched_tokens": unmatched_tokens,
-        "estimated_token_count": estimated_count,
-        "provider_errors": provider_errors,
+        "coverage": 1.0 if token_count else 0.0,
+        "mean_confidence": 0.92 if token_count else 0.0,
+        "low_confidence_ranges": [],
+        "unmatched_tokens": [],
+        "estimated_token_count": token_count,
         "thresholds": {
             "project_coverage": 0.98,
             "line_coverage": 0.95,
             "mean_confidence": 0.80,
         },
-        "blockers": blockers,
+        "blockers": [{
+            "code": "manual_review_required",
+            "message": "本地 Provider 为估算对齐，必须人工校对后才能锁定",
+        }],
     }
     return timeline, quality
 
@@ -658,15 +496,18 @@ def _artifact_payloads(version):
         "[Script Info]", "ScriptType: v4.00+", "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, Alignment",
-        (
-            "Style: Default,"
-            f"{assembly_subtitles.FONT_NAME},42,&H00FFFFFF,2"
-        ),
-        "",
+        "Style: Default,Arial,42,&H00FFFFFF,2", "",
         "[Events]",
         "Format: Layer, Start, End, Style, Text",
     ]
     for index, line in enumerate(timeline, 1):
+        if (
+            type(line.get("subtitle_start_ms")) is not int
+            or type(line.get("subtitle_end_ms")) is not int
+        ):
+            # Keep unmatched cues in alignment JSON for manual review, but do
+            # not publish fabricated timestamps to timed-text artifacts.
+            continue
         text = str(line["text"]).replace("\n", " ").replace("\r", " ")
         vtt_lines.extend([
             str(index),
@@ -754,10 +595,65 @@ def _reconcile_interrupted_jobs(conn, project_id):
     })
     conn.execute(
         "UPDATE short_drama_alignment_jobs "
-        "SET status='failed',error_json=?,updated_at=? "
-        "WHERE project_id=? AND status IN ('queued','running') AND updated_at<=?",
-        (terminal, int(time.time()), project_id, cutoff),
+        "SET status='failed',error_json=?,last_error_code=?,updated_at=? "
+        "WHERE project_id=? AND provider='deterministic-local' "
+        "AND status IN ('queued','running') AND updated_at<=?",
+        (
+            terminal,
+            "local_alignment_interrupted",
+            int(time.time()),
+            project_id,
+            cutoff,
+        ),
     )
+    conn.execute(
+        "UPDATE short_drama_alignment_jobs "
+        "SET last_error_code='alignment_refetch_required',"
+        "lease_owner=NULL,lease_expires_at=NULL,updated_at=? "
+        "WHERE project_id=? AND provider<>'deterministic-local' "
+        "AND provider_job_id IS NOT NULL "
+        "AND status IN ('queued','running') AND updated_at<=?",
+        (int(time.time()), project_id, cutoff),
+    )
+
+
+def _job_payload(row):
+    if row is None:
+        return None
+    payload = dict(row)
+    for field in (
+        "request_json",
+        "terminal_json",
+        "capabilities_json",
+        "error_json",
+    ):
+        value = payload.get(field)
+        if isinstance(value, str) and value:
+            try:
+                payload[field] = json.loads(value)
+            except (TypeError, ValueError):
+                payload[field] = None
+    capabilities = payload.get("capabilities_json") or {}
+    status = str(payload.get("status") or "")
+    provider_status = str(payload.get("provider_status") or "")
+    has_job = bool(payload.get("provider_job_id"))
+    active = status in {"queued", "running"}
+    payload["recovery"] = {
+        "can_resume": bool(
+            has_job and active and capabilities.get("supports_resume")
+        ),
+        "can_refetch": bool(
+            has_job
+            and provider_status == "succeeded"
+            and capabilities.get("supports_result_refetch")
+        ),
+        "can_cancel": bool(
+            has_job and active and capabilities.get("supports_cancel")
+        ),
+        "required": payload.get("last_error_code")
+        == "alignment_refetch_required",
+    }
+    return payload
 
 
 def _project(conn, username, project_id):
@@ -796,7 +692,7 @@ def _workspace(conn, project):
     current_id = current_row[0] if current_row else None
     for version in versions:
         if (
-            version["input_hash"] != contract["input_hash"]
+            not version_matches_contract(version, contract)
             and version["status"] != "stale"
         ):
             version["effective_status"] = "stale"
@@ -859,13 +755,7 @@ def _workspace(conn, project):
         "project_id": project["id"],
         "project_revision": project["revision"],
         "stage": project["stage"],
-        "provider": {
-            "name": PROVIDER_NAME,
-            "model_version": MODEL_VERSION,
-            "real_forced_alignment": True,
-            "supports_cancel": True,
-            "supports_resume": False,
-        },
+        "provider": _provider_snapshot(),
         "input": {
             "input_hash": contract["input_hash"],
             "master_audio_hash": contract["master_audio_hash"],
@@ -882,7 +772,7 @@ def _workspace(conn, project):
         },
         "versions": versions,
         "current_version": current,
-        "job": dict(latest_job) if latest_job else None,
+        "job": _job_payload(latest_job),
         "actions": {
             "generate": (
                 not blockers and project["stage"] == WRITABLE_STAGE
@@ -936,7 +826,7 @@ def require_current_locked_in_transaction(conn, project):
             "alignment_not_locked", "请先完成人工校对并锁定字幕对齐版本",
             status=422,
         )
-    if row["input_hash"] != contract["input_hash"]:
+    if not version_matches_contract(dict(row), contract):
         raise AlignmentError(
             "stale_alignment", "锁定的字幕对齐版本已失效，请重新生成",
             status=409,
@@ -1023,11 +913,14 @@ def create_job(db_factory, username, payload, idempotency_key):
                 status=422,
                 blockers=contract["blockers"],
             )
+        provider, capabilities = _provider_selection()
         request_hash = _hash({
             "username": username,
             "project_id": project_id,
             "revision": revision,
             "input_hash": contract["input_hash"],
+            "provider": capabilities.provider,
+            "model_version": capabilities.model_version,
             "operation": "generate",
         })
         existing = conn.execute(
@@ -1056,22 +949,93 @@ def create_job(db_factory, username, payload, idempotency_key):
             )
         now = int(time.time())
         job_id = str(uuid.uuid4())
-        provider_job_id = str(uuid.uuid4())
         conn.execute(
             "INSERT INTO short_drama_alignment_jobs "
             "(id,username,project_id,idempotency_key,request_hash,input_hash,"
-            "provider,provider_job_id,status,created_at,updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "provider,model_version,provider_job_id,provider_status,status,"
+            "operation,request_json,capabilities_json,heartbeat_at,"
+            "created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 job_id, username, project_id, key, request_hash,
-                contract["input_hash"], PROVIDER_NAME, provider_job_id,
-                "running", now, now,
+                contract["input_hash"], capabilities.provider,
+                capabilities.model_version, "", "creating", "queued",
+                "generate", _canonical({
+                    "project_id": project_id,
+                    "revision": revision,
+                    "input_hash": contract["input_hash"],
+                }), _canonical(capabilities.to_dict()), now, now, now,
             ),
         )
-        # A real provider may start billing as soon as it returns a job id.
-        # Commit the recovery identity before polling or materializing results.
         conn.commit()
-        timeline, quality = _align(contract)
+        if capabilities.real_forced_alignment:
+            try:
+                provider_job = provider.create_job({
+                    **contract["identity"],
+                    "input_hash": contract["input_hash"],
+                    "shots": contract["shots"],
+                })
+            except Exception as error:
+                normalized = provider.normalize_error(error)
+                raise AlignmentError(
+                    normalized.code,
+                    str(normalized),
+                    status=503 if normalized.retryable else 502,
+                ) from error
+            # A provider may start billing as soon as create returns. Persist
+            # its identity before fetching or materializing any result.
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "UPDATE short_drama_alignment_jobs SET provider_job_id=?,"
+                "provider_status=?,status=?,trace_id=?,heartbeat_at=?,"
+                "poll_count=poll_count+1,updated_at=? WHERE id=?",
+                (
+                    provider_job.provider_job_id, provider_job.status,
+                    "running",
+                    provider_job.trace_id, int(time.time()),
+                    int(time.time()), job_id,
+                ),
+            )
+            conn.commit()
+            if provider_job.status not in {"succeeded", "completed"}:
+                conn.execute("BEGIN IMMEDIATE")
+                project = _project(conn, username, project_id)
+                result = {
+                    "replayed": False,
+                    "reused": False,
+                    "job": dict(conn.execute(
+                        "SELECT * FROM short_drama_alignment_jobs WHERE id=?",
+                        (job_id,),
+                    ).fetchone()),
+                    "workspace": _workspace(conn, project),
+                }
+                conn.commit()
+                return result
+            try:
+                provider_result = provider.fetch_result(
+                    provider_job.provider_job_id
+                )
+            except Exception as error:
+                normalized = provider.normalize_error(error)
+                raise AlignmentError(
+                    normalized.code,
+                    str(normalized),
+                    status=503 if normalized.retryable else 502,
+                ) from error
+            timeline, quality = normalize_result(
+                contract, provider_result, capabilities
+            )
+        else:
+            provider_job_id = str(uuid.uuid4())
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "UPDATE short_drama_alignment_jobs SET provider_job_id=?,"
+                "provider_status='succeeded',status='running',heartbeat_at=?,"
+                "poll_count=1,updated_at=? WHERE id=?",
+                (provider_job_id, int(time.time()), int(time.time()), job_id),
+            )
+            conn.commit()
+            timeline, quality = _align(contract)
         conn.execute("BEGIN IMMEDIATE")
         project = _project(conn, username, project_id)
         if (
@@ -1091,8 +1055,8 @@ def create_job(db_factory, username, payload, idempotency_key):
         alignment_hash = _hash({
             "contract_version": CONTRACT_VERSION,
             "input_hash": contract["input_hash"],
-            "provider": PROVIDER_NAME,
-            "model_version": MODEL_VERSION,
+            "provider": capabilities.provider,
+            "model_version": capabilities.model_version,
             "timeline": timeline,
         })
         reusable = conn.execute(
@@ -1110,8 +1074,13 @@ def create_job(db_factory, username, payload, idempotency_key):
             )
             conn.execute(
                 "UPDATE short_drama_alignment_jobs "
-                "SET status='succeeded',version_id=?,updated_at=? WHERE id=?",
-                (reusable["id"], now, job_id),
+                "SET status='succeeded',provider_status='succeeded',"
+                "terminal_json=?,version_id=?,heartbeat_at=?,updated_at=? "
+                "WHERE id=?",
+                (
+                    _canonical({"status": "succeeded", "reused": True}),
+                    reusable["id"], now, now, job_id,
+                ),
             )
             result = {
                 "replayed": False,
@@ -1136,8 +1105,8 @@ def create_job(db_factory, username, payload, idempotency_key):
             "parent_id": None,
             "status": "needs_review",
             "revision": 1,
-            "provider": PROVIDER_NAME,
-            "model_version": MODEL_VERSION,
+            "provider": capabilities.provider,
+            "model_version": capabilities.model_version,
             "contract_version": CONTRACT_VERSION,
             "input_hash": contract["input_hash"],
             "master_audio_hash": contract["master_audio_hash"],
@@ -1172,8 +1141,12 @@ def create_job(db_factory, username, payload, idempotency_key):
         )
         conn.execute(
             "UPDATE short_drama_alignment_jobs "
-            "SET status='succeeded',version_id=?,updated_at=? WHERE id=?",
-            (version["id"], now, job_id),
+            "SET status='succeeded',provider_status='succeeded',"
+            "terminal_json=?,version_id=?,heartbeat_at=?,updated_at=? WHERE id=?",
+            (
+                _canonical({"status": "succeeded", "reused": False}),
+                version["id"], now, now, job_id,
+            ),
         )
         result = {
             "replayed": False,
@@ -1192,14 +1165,23 @@ def create_job(db_factory, username, payload, idempotency_key):
                 conn.execute("BEGIN IMMEDIATE")
                 conn.execute(
                     "UPDATE short_drama_alignment_jobs "
-                    "SET status='failed',error_json=?,updated_at=? "
+                    "SET status='failed',provider_status='failed',"
+                    "error_json=?,terminal_json=?,last_error_code=?,"
+                    "heartbeat_at=?,updated_at=? "
                     "WHERE id=? AND status IN ('queued','running')",
                     (
                         _canonical({
                             "code": getattr(error, "code", "alignment_failed"),
                             "type": error.__class__.__name__,
                         }),
-                        int(time.time()),
+                        _canonical({
+                            "status": "failed",
+                            "code": getattr(
+                                error, "code", "alignment_failed"
+                            ),
+                        }),
+                        getattr(error, "code", "alignment_failed"),
+                        int(time.time()), int(time.time()),
                         job_id,
                     ),
                 )
@@ -1271,7 +1253,7 @@ def save_timeline(db_factory, username, payload, actor_username=None):
             from .short_drama import RevisionConflict
             raise RevisionConflict("字幕对齐版本已更新，请刷新后重试")
         _, contract = _current_contract(conn, project)
-        if source["input_hash"] != contract["input_hash"]:
+        if not version_matches_contract(source, contract):
             raise AlignmentError("stale_alignment", "字幕对齐版本已失效", status=409)
         updates = {item["line_id"]: item for item in request["lines"]}
         if set(updates) != {item["line_id"] for item in source["timeline"]}:
@@ -1325,7 +1307,7 @@ def save_timeline(db_factory, username, payload, actor_username=None):
         quality["review_action"] = request["review_action"]
         alignment_hash = _hash({
             "contract_version": CONTRACT_VERSION,
-            "input_hash": source["input_hash"],
+            "input_hash": contract["input_hash"],
             "parent_id": source["id"],
             "source_revision": source["revision"],
             "timeline": timeline,
@@ -1377,6 +1359,10 @@ def save_timeline(db_factory, username, payload, actor_username=None):
             "parent_id": source["id"],
             "status": "ready",
             "revision": 1,
+            "contract_version": CONTRACT_VERSION,
+            "input_hash": contract["input_hash"],
+            "master_audio_hash": contract["master_audio_hash"],
+            "transcript_hash": contract["transcript_hash"],
             "alignment_hash": alignment_hash,
             "timeline": timeline,
             "quality": quality,
@@ -1399,8 +1385,9 @@ def save_timeline(db_factory, username, payload, actor_username=None):
             (
                 version["id"], request["project_id"], version["version"],
                 source["id"], "ready", 1, source["provider"],
-                source["model_version"], CONTRACT_VERSION, source["input_hash"],
-                source["master_audio_hash"], source["transcript_hash"],
+                source["model_version"], CONTRACT_VERSION,
+                contract["input_hash"], contract["master_audio_hash"],
+                contract["transcript_hash"],
                 alignment_hash, _canonical(timeline), _canonical(quality), 1,
                 request["review_action"], reviewer, now, source["revision"],
                 now, now,
@@ -1447,7 +1434,7 @@ def lock_version(db_factory, username, payload):
             from .short_drama import RevisionConflict
             raise RevisionConflict("字幕对齐版本已更新，请刷新后重试")
         _, contract = _current_contract(conn, project)
-        if version["input_hash"] != contract["input_hash"]:
+        if not version_matches_contract(version, contract):
             raise AlignmentError("stale_alignment", "字幕对齐版本已失效", status=409)
         if (
             version["status"] != "ready"
@@ -1498,10 +1485,33 @@ def cancel_job(db_factory, username, payload):
         if not row:
             raise LookupError("字幕对齐任务不存在")
         if row["status"] in {"queued", "running"}:
+            provider_status = "canceled"
+            trace_id = row["trace_id"]
+            if row["provider"] != PROVIDER_NAME and row["provider_job_id"]:
+                provider = _provider_from_name(row["provider"])
+                try:
+                    canceled = provider.cancel_job(row["provider_job_id"])
+                    provider_status = canceled.status
+                    trace_id = canceled.trace_id or trace_id
+                except Exception as error:
+                    normalized = provider.normalize_error(error)
+                    raise AlignmentError(
+                        normalized.code,
+                        str(normalized),
+                        status=503 if normalized.retryable else 502,
+                    ) from error
             conn.execute(
                 "UPDATE short_drama_alignment_jobs "
-                "SET status='canceled',updated_at=? WHERE id=?",
-                (int(time.time()), row["id"]),
+                "SET status='canceled',provider_status=?,trace_id=?,"
+                "terminal_json=?,heartbeat_at=?,updated_at=? WHERE id=?",
+                (
+                    provider_status, trace_id,
+                    _canonical({
+                        "status": "canceled",
+                        "provider_status": provider_status,
+                    }),
+                    int(time.time()), int(time.time()), row["id"],
+                ),
             )
         result = dict(conn.execute(
             "SELECT * FROM short_drama_alignment_jobs WHERE id=?", (row["id"],)

@@ -142,7 +142,7 @@
         number(state.castSelections[character.character_key],0):number(character.avatar_id,0);
       var current=state.avatars.filter(function(item){return item.id===selected;})[0]||null;
       var conflicted=conflictKeys.indexOf(character.character_key)>=0;
-      var image=text(character.reference_url||character.reference_file);
+      var image=text(character.reference_url);
       var source=character.binding_source==='video_cast'?'C-3 补绑':
         (character.binding_source==='character'?'角色原生':'未绑定');
       var options='<option value="">请选择电影化身</option>'+state.avatars.map(function(avatar){
@@ -155,7 +155,7 @@
       }
       return '<article class="nc-sdv-cast-card'+(character.valid?'':' is-invalid')+
         (conflicted?' is-conflicted':'')+'">'+
-        '<div class="nc-sdv-cast-reference">'+(image?'<img src="'+escapeHtml(image)+
+        '<div class="nc-sdv-cast-reference">'+(image?'<img data-reference-image src="'+escapeHtml(image)+
         '" alt="'+escapeHtml(character.name)+'参考图">':'<span>暂无参考图</span>')+'</div>'+
         '<div class="nc-sdv-cast-detail"><strong>'+escapeHtml(character.name)+'</strong>'+
         '<small>'+character.shot_count+' 个镜头 · '+escapeHtml(source)+'</small>'+
@@ -243,6 +243,17 @@
       }).join('')+'</ul>':'')+'</section>':'';
     var active=shot.job&&ACTIVE[text(shot.job.status)];
     var budget=Math.max(0,state.point_budget-state.spent_points-state.reserved_points);
+    var lipsync=options&&options.lipsyncModule;
+    var lipsyncPanel=lipsync&&typeof lipsync.renderPanel==='function'?
+      lipsync.renderPanel(options.lipsyncSnapshot,options.lipsyncQuote,{
+        loading:options.lipsyncLoading,error:options.lipsyncError,
+        busy:state.operationBusy,canEdit:!readonly,shotId:shot.id,
+        compareVersionId:options.lipsyncCompareVersionId,
+        faceTargetIndex:Number(
+          options.lipsyncFaceTargetIndexes&&
+          options.lipsyncFaceTargetIndexes[shot.id]
+        )||0
+      }):'';
     return '<section class="nc-sdv-workspace" data-stage="'+escapeHtml(state.stage)+'">'+
       '<aside class="nc-sdv-rail"><header><span>C-3 镜头队列</span><h2>电影化身视频</h2>'+
       '<small>'+state.shots.length+' 镜头 · '+escapeHtml(state.ratio)+'</small></header>'+
@@ -271,15 +282,20 @@
       (shot.locked?'解除锁定':'锁定当前版本')+'</button>'+
       '<button type="button" class="is-primary" data-action="confirm-stage"'+
       (readonly||state.handoff_blocked||state.operationBusy?' disabled':'')+
-      '>确认视频并进入合成</button></div></aside></section>';
+      '>确认视频并进入合成</button></div>'+lipsyncPanel+'</aside></section>';
   }
   function createWorkspace(options){
     options=options||{};
     var client=options.client,host=options.host,snapshot=null,destroyed=false;
     var requestGeneration=0,pollTimer=null,pollFailures=0;
+    var lipsyncModule=options.lipsyncModule||
+      (typeof globalThis!=='undefined'&&globalThis.HQCanvas&&
+        globalThis.HQCanvas.shortDramaLipsync);
     var ui={busy:true,operationBusy:false,error:'',selectedShotId:'',enhancePrompt:false,
       avatars:[],avatarBusy:false,canCreateAvatar:false,
-      castSelections:{},castBaseline:{},castDirtyKeys:{},castConflicts:{},castDirty:false};
+      castSelections:{},castBaseline:{},castDirtyKeys:{},castConflicts:{},castDirty:false,
+      lipsyncLoading:true,lipsyncSnapshot:null,lipsyncQuote:null,lipsyncError:'',
+      lipsyncFaceTargetIndexes:{},lipsyncPendingKey:'',lipsyncCompareVersionId:''};
     if(!client||typeof client.json!=='function') throw new Error('视频工作区缺少已认证 API 客户端');
     function viewOptions(){
       return {
@@ -288,7 +304,11 @@
         canEdit:options.canEdit!==false,avatars:ui.avatars,avatarBusy:ui.avatarBusy,
         canCreateAvatar:ui.canCreateAvatar,
         castSelections:ui.castSelections,castDirty:ui.castDirty,
-        castConflicts:ui.castConflicts
+        castConflicts:ui.castConflicts,lipsyncModule:lipsyncModule,
+        lipsyncLoading:ui.lipsyncLoading,lipsyncSnapshot:ui.lipsyncSnapshot,
+        lipsyncQuote:ui.lipsyncQuote,lipsyncError:ui.lipsyncError,
+        lipsyncFaceTargetIndexes:ui.lipsyncFaceTargetIndexes,
+        lipsyncCompareVersionId:ui.lipsyncCompareVersionId
       };
     }
     function state(){ return normalizeState(snapshot||{},viewOptions()); }
@@ -374,6 +394,11 @@
     function avatarPath(){
       return AVATAR_PATH+'?project_id='+encodeURIComponent(options.projectId);
     }
+    function lipsyncPath(){
+      return (lipsyncModule&&lipsyncModule.SNAPSHOT_PATH||
+        '/api/gen/short-drama/lipsync/snapshot')+
+        '?project_id='+encodeURIComponent(options.projectId);
+    }
     function notify(){
       if(typeof options.onChange!=='function'||!snapshot) return Promise.resolve(snapshot);
       return Promise.resolve(options.onChange({
@@ -388,7 +413,17 @@
       pollTimer=null;
     }
     function hasActive(){
-      return state().shots.some(function(shot){ return shot.job&&ACTIVE[text(shot.job.status)]; });
+      var videoActive=state().shots.some(function(shot){
+        return shot.job&&ACTIVE[text(shot.job.status)];
+      });
+      var lipsyncActive=ui.lipsyncSnapshot&&
+        (ui.lipsyncSnapshot.active_jobs||[]).some(function(job){
+          return lipsyncModule&&typeof lipsyncModule.shouldPoll==='function'?
+            lipsyncModule.shouldPoll(job):ACTIVE[text(job.state||job.status)];
+        });
+      var billing=ui.lipsyncSnapshot&&ui.lipsyncSnapshot.billing||{};
+      return videoActive||lipsyncActive||number(billing.refund_pending)>0||
+        number(billing.manual_review)>0;
     }
     function schedulePoll(){
       clearPoll();
@@ -405,18 +440,34 @@
       if(destroyed) return Promise.resolve(null);
       var generation=++requestGeneration;
       if(!config.quiet){ui.busy=true;ui.error='';render();}
+      var videoRequest=Promise.resolve(scopedJson(
+        VIDEO_PATH+'?project_id='+encodeURIComponent(options.projectId)
+      ));
       return Promise.all([
-        Promise.resolve(scopedJson(
-          VIDEO_PATH+'?project_id='+encodeURIComponent(options.projectId)
-        )),
+        videoRequest,
         (options.canEdit===false?Promise.resolve({items:[],can_create_avatar:false}):
-          Promise.resolve(scopedJson(avatarPath())).catch(function(){return {items:[]};}))
+          Promise.resolve(scopedJson(avatarPath())).catch(function(){return {items:[]};})),
+        (lipsyncModule?videoRequest.then(function(){
+          return scopedJson(lipsyncPath());
+        }).then(function(value){
+          return {value:value};
+        },function(error){return {error:error};}):Promise.resolve({disabled:true}))
       ]).then(function(results){
         if(destroyed||generation!==requestGeneration) return null;
-        var result=results[0],avatarResult=results[1];
+        var result=results[0],avatarResult=results[1],lipsyncResult=results[2];
         snapshot=result&&typeof result==='object'?result:{};
         ui.avatars=Array.isArray(avatarResult&&avatarResult.items)?avatarResult.items:[];
         ui.canCreateAvatar=avatarResult&&avatarResult.can_create_avatar===true;
+        ui.lipsyncLoading=false;
+        if(lipsyncResult&&lipsyncResult.value){
+          ui.lipsyncSnapshot=lipsyncResult.value;ui.lipsyncError='';
+          if(ui.lipsyncQuote&&ui.lipsyncQuote.input_hash!==
+              ui.lipsyncSnapshot.input_hash) ui.lipsyncQuote=null;
+        }else if(!(lipsyncResult&&lipsyncResult.disabled)){
+          ui.lipsyncSnapshot=null;
+          ui.lipsyncError=text(lipsyncResult&&lipsyncResult.error&&
+            lipsyncResult.error.message||'口型依赖读取失败');
+        }
         syncCastFromSnapshot();
         ui.busy=false;ui.error='';
         if(!ui.selectedShotId||!state().shots.some(function(s){return s.id===ui.selectedShotId;})){
@@ -532,6 +583,127 @@
         throw error;
       });
     }
+    function quoteLipsync(shot){
+      if(!lipsyncModule||typeof lipsyncModule.quotePayload!=='function'){
+        return Promise.resolve(null);
+      }
+      var shotId=shot&&shot.id;
+      var targets=typeof lipsyncModule.faceTargets==='function'?
+        lipsyncModule.faceTargets(ui.lipsyncSnapshot,shotId):[];
+      var index=Number(ui.lipsyncFaceTargetIndexes[shotId])||0;
+      var payload=lipsyncModule.quotePayload(
+        ui.lipsyncSnapshot,shotId,targets[index]||null
+      );
+      if(!payload) return Promise.resolve(null);
+      ui.operationBusy=true;ui.lipsyncError='';render();
+      return Promise.resolve(scopedJson(
+        lipsyncModule.QUOTE_PATH||'/api/gen/short-drama/lipsync/quote',{
+          method:'POST',headers:{'Content-Type':'application/json'},body:payload
+        }
+      )).then(function(result){
+        ui.operationBusy=false;ui.lipsyncQuote=result;render();return result;
+      }).catch(function(error){
+        ui.operationBusy=false;ui.lipsyncError=text(error&&error.message||error);
+        render();throw error;
+      });
+    }
+    function lipsyncRequest(path,method,body,headers){
+      if(destroyed||ui.operationBusy||!ui.lipsyncSnapshot){
+        return Promise.resolve(null);
+      }
+      ui.operationBusy=true;ui.lipsyncError='';render();
+      return Promise.resolve(scopedJson(path,{
+        method:method||'POST',
+        headers:Object.assign({'Content-Type':'application/json'},headers||{}),
+        body:body||{}
+      })).then(function(result){
+        if(destroyed) return null;
+        ui.operationBusy=false;
+        return reload({quiet:true}).then(function(){return result;});
+      }).catch(function(error){
+        if(destroyed) return null;
+        ui.operationBusy=false;
+        ui.lipsyncError=lipsyncModule&&typeof lipsyncModule.errorMessage==='function'?
+          lipsyncModule.errorMessage(error):text(error&&error.message||error);
+        render();
+        if(typeof options.onError==='function') options.onError(error);
+        throw error;
+      });
+    }
+    function createLipsyncJob(){
+      if(!lipsyncModule||!ui.lipsyncSnapshot||!ui.lipsyncQuote) return Promise.resolve(null);
+      var payload=lipsyncModule.createJobPayload(
+        ui.lipsyncSnapshot,ui.lipsyncQuote
+      );
+      if(!payload) return Promise.resolve(null);
+      var cost=number(ui.lipsyncQuote.cost&&ui.lipsyncQuote.cost.points,0);
+      var accepted=typeof options.confirm==='function'?
+        options.confirm(cost,Object.assign({kind:'lipsync'},ui.lipsyncQuote),payload):true;
+      return Promise.resolve(accepted).then(function(ok){
+        if(!ok) return null;
+        if(!ui.lipsyncPendingKey){
+          ui.lipsyncPendingKey=lipsyncModule.createIdempotencyKey('sd-lipsync-job');
+        }
+        return lipsyncRequest(
+          lipsyncModule.JOBS_PATH||'/api/gen/short-drama/lipsync/jobs',
+          'POST',payload,{'Idempotency-Key':ui.lipsyncPendingKey}
+        ).then(function(result){
+          ui.lipsyncPendingKey='';
+          ui.lipsyncQuote=null;
+          return result;
+        });
+      });
+    }
+    function saveLipsyncSpeakers(){
+      if(!host||!ui.lipsyncSnapshot) return Promise.resolve(null);
+      var changes=[];
+      Array.prototype.forEach.call(
+        host.querySelectorAll('[data-lipsync-segment]'),function(row){
+          var id=text(row.getAttribute('data-lipsync-segment'));
+          var source=(lipsyncModule.shotSegments(
+            ui.lipsyncSnapshot,ui.selectedShotId
+          )||[]).filter(function(item){return text(item.id)===id;})[0];
+          if(!source) return;
+          var modeNode=row.querySelector('[data-field="lipsync-speaking-mode"]');
+          var targetNode=row.querySelector('[data-field="lipsync-face-value"]');
+          changes.push({
+            id:id,start_ms:number(source.start_ms),end_ms:number(source.end_ms),
+            character_key:text(source.character_key),
+            speaking_mode:text(modeNode&&modeNode.value||source.speaking_mode||'visible'),
+            face_target:{
+              type:text(source.face_target&&source.face_target.type||'track'),
+              value:text(targetNode&&targetNode.value)
+            }
+          });
+        }
+      );
+      var timeline=ui.lipsyncSnapshot.dependencies&&
+        ui.lipsyncSnapshot.dependencies.timeline||{};
+      var pending=lipsyncModule.createIdempotencyKey('sd-lipsync-speakers');
+      return lipsyncRequest(
+        lipsyncModule.SPEAKERS_PATH||'/api/gen/short-drama/lipsync/speakers',
+        'PUT',{
+          project_id:ui.lipsyncSnapshot.project_id,
+          revision:ui.lipsyncSnapshot.revision,
+          timeline_revision:number(timeline.timeline_revision),changes:changes
+        },{'Idempotency-Key':pending}
+      ).then(function(result){ui.lipsyncQuote=null;return result;});
+    }
+    function lipsyncVersionBody(versionId){
+      var version=(ui.lipsyncSnapshot.versions||[]).filter(function(item){
+        return text(item.id)===text(versionId);
+      })[0]||{};
+      var pointer=(ui.lipsyncSnapshot.current_version||[]).filter(function(item){
+        return text(item.shot_id)===text(version.shot_id);
+      })[0]||{};
+      return {
+        project_id:ui.lipsyncSnapshot.project_id,
+        expected_revision:ui.lipsyncSnapshot.revision,
+        expected_pointer_revision:number(pointer.revision),
+        expected_input_hash:text(ui.lipsyncSnapshot.input_hash),
+        version_id:text(versionId)
+      };
+    }
     function onClick(event){
       var target=event&&event.target;
       while(target&&target!==host&&!(target.getAttribute&&target.getAttribute('data-action'))){
@@ -557,12 +729,48 @@
       if(action==='reload-cast') reloadCast();
       if(action==='save-cast') saveCast().catch(function(){});
       if(action==='select-shot'){
-        ui.selectedShotId=text(target.getAttribute('data-shot-id'));ui.error='';render();
+        ui.selectedShotId=text(target.getAttribute('data-shot-id'));
+        ui.lipsyncQuote=null;ui.error='';render();
       }
       if(!current) return;
       if(action==='generate'){
         var promptNode=host&&host.querySelector('[data-field="prompt"]');
         generate(current,text(promptNode&&promptNode.value)).catch(function(){});
+      }
+      if(action==='quote-lipsync') quoteLipsync(current).catch(function(){});
+      if(action==='refresh-lipsync') reload({quiet:true}).catch(function(){});
+      if(action==='create-lipsync-job') createLipsyncJob().catch(function(){});
+      if(action==='save-lipsync-speakers') saveLipsyncSpeakers().catch(function(){});
+      if(action==='retry-lipsync-job'){
+        lipsyncRequest(
+          (lipsyncModule.JOBS_PATH||'/api/gen/short-drama/lipsync/jobs')+
+            '/'+encodeURIComponent(target.getAttribute('data-job-id'))+'/retry',
+          'POST',{}
+        ).catch(function(){});
+      }
+      if(action==='cancel-lipsync-job'){
+        lipsyncRequest(
+          (lipsyncModule.JOBS_PATH||'/api/gen/short-drama/lipsync/jobs')+
+            '/'+encodeURIComponent(target.getAttribute('data-job-id'))+'/cancel',
+          'POST',{}
+        ).catch(function(){});
+      }
+      if(action==='select-lipsync-version'){
+        var selectId=text(target.getAttribute('data-version-id'));
+        lipsyncRequest(
+          '/api/gen/short-drama/lipsync/versions/'+encodeURIComponent(selectId)+'/select',
+          'PUT',lipsyncVersionBody(selectId)
+        ).catch(function(){});
+      }
+      if(action==='lock-lipsync-version'){
+        var lockId=text(target.getAttribute('data-version-id'));
+        lipsyncRequest(
+          '/api/gen/short-drama/lipsync/versions/'+encodeURIComponent(lockId)+'/lock',
+          'POST',lipsyncVersionBody(lockId)
+        ).catch(function(){});
+      }
+      if(action==='compare-lipsync-version'){
+        ui.lipsyncCompareVersionId=text(target.getAttribute('data-version-id'));render();
       }
       if(action==='select-version'){
         var body=operationBody(current);body.version=number(target.getAttribute('data-version'),0);
@@ -599,6 +807,11 @@
           target.getAttribute('data-character-key'),target.value
         );
       }
+      if(target&&target.getAttribute&&
+          target.getAttribute('data-field')==='lipsync-face-target'){
+        ui.lipsyncFaceTargetIndexes[ui.selectedShotId]=Number(target.value)||0;
+        ui.lipsyncQuote=null;ui.lipsyncError='';render();
+      }
     }
     function onTimeUpdate(event){
       var player=event&&event.target;
@@ -630,10 +843,20 @@
         }
       });
     }
+    function onImageError(event){
+      var image=event&&event.target;
+      if(!image||!image.matches||!image.matches('[data-reference-image]')) return;
+      var container=image.parentNode;
+      if(!container||!container.ownerDocument) return;
+      var fallback=container.ownerDocument.createElement('span');
+      fallback.textContent='参考图暂不可预览';
+      container.replaceChild(fallback,image);
+    }
     if(host&&typeof host.addEventListener==='function'){
       host.addEventListener('click',onClick);
       host.addEventListener('change',onChange);
       host.addEventListener('timeupdate',onTimeUpdate,true);
+      host.addEventListener('error',onImageError,true);
     }
     render();
     var ready=reload();
@@ -648,6 +871,7 @@
           host.removeEventListener('click',onClick);
           host.removeEventListener('change',onChange);
           host.removeEventListener('timeupdate',onTimeUpdate,true);
+          host.removeEventListener('error',onImageError,true);
         }
         host=null;snapshot=null;
       }

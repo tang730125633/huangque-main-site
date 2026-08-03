@@ -1525,15 +1525,20 @@ def _probe_data_video_duration(data_url):
             except OSError:
                 pass
 def _image_bytes_look_valid(raw):
+    return bool(_detect_image_mime(raw))
+
+
+def _detect_image_mime(raw):
+    """Identify an image from its bytes instead of trusting its label or suffix."""
     if not raw:
-        return False
+        return ""
     if raw.startswith(b"\x89PNG\r\n\x1a\n"):
-        return True
+        return "image/png"
     if raw.startswith(b"\xff\xd8\xff"):
-        return True
+        return "image/jpeg"
     if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
-        return True
-    return False
+        return "image/webp"
+    return ""
 
 def _faststart_video_file(rel):
     raw = str(rel or "").strip()
@@ -2453,7 +2458,11 @@ def get_video_avatar(username, avatar_id):
             FROM avatars WHERE id=? AND username=? AND status!='deleted'""", (avatar_id, username)).fetchone()
     if not row:
         raise ValueError("形象不存在")
-    return dict(row)
+    avatar = dict(row)
+    avatar["image_url"] = (
+        _file_url(avatar["image_file"]) if avatar.get("image_file") else None
+    )
+    return avatar
 
 def rename_video_avatar(username, avatar_id, name):
     avatar = get_video_avatar(username, avatar_id)
@@ -2507,16 +2516,54 @@ def _save_data_file(data_url, prefix, allowed_ext):
         data = base64.b64decode(raw, validate=True)
     except Exception:
         raise ValueError("文件内容解析失败")
+    image_exts = {".jpg", ".jpeg", ".png", ".webp"}
+    if set(allowed_ext).issubset(image_exts):
+        detected = _detect_image_mime(data)
+        if not detected:
+            raise ValueError("图片内容无法识别，请重新导出后上传")
+        ext = {
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/webp": ".webp",
+        }[detected]
+        if ext not in allowed_ext and not (
+                ext == ".jpg" and ".jpeg" in allowed_ext):
+            raise ValueError("不支持的文件格式")
     max_size = (250 if ext in {".mp4", ".mov", ".webm"} else 35) * 1024 * 1024
     if len(data) > max_size:
         raise ValueError("文件过大，请压缩后再上传")
     folder = "audio/" if ext in {".mp3", ".wav", ".m4a"} else ("video/" if ext in {".mp4", ".mov", ".webm"} else "")
     fn = "%s%s_%s%s" % (folder, prefix, uuid.uuid4().hex, ext)  # 不可猜键(#185)：上传的真人素材防猜测
-    _out_path(fn).write_bytes(data)
+    path = _out_path(fn)
+    try:
+        path.write_bytes(data)
+    except Exception:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        raise
     return fn
 
 def _heygen_relay_token():
     return os.environ.get("HEYGEN_RELAY_TOKEN", "").strip()
+
+def _heygen_official_base(base):
+    """官方 HeyGen 域名必须走专用出境通道，不能依赖进程级 HTTP(S)_PROXY。
+
+    本地启动器会清理全局代理，避免认证请求被错误送入代理后返回 401。视频生成仍需
+    访问 HeyGen 官方接口，因此这里只按目标域名选择专用 opener；自定义中转地址继续
+    使用原来的 urlopen，避免把内网/中转流量误送到 mihomo。
+    """
+    try:
+        host = (urllib.parse.urlsplit(base).hostname or "").lower()
+    except (TypeError, ValueError):
+        return False
+    return (
+        host == "api.heygen.com"
+        or host.endswith(".heygen.com")
+        or host.endswith(".heygen.ai")
+    )
 
 def _heygen_request_json(method, path, body=None, headers=None, timeout=180, direct=False):
     # direct=True 时同一套 v3 API 打 HeyGen 真身（泽龙即 v3 转发，路径同构），走 mihomo 代理出境
@@ -2529,7 +2576,13 @@ def _heygen_request_json(method, path, body=None, headers=None, timeout=180, dir
         h.update(headers)
     base = (_HEYGEN_DIRECT_API + "/v3") if direct else HEYGEN_API_BASE
     req = urllib.request.Request(base + path, data=body, headers=h, method=method)
-    open_fn = _heygen_direct_opener().open if direct else urllib.request.urlopen
+    # 登录/鉴权需要直连，所以本地运行器不会再给整个 8105 进程注入全局代理。
+    # 只有官方 HeyGen 请求使用专用出境 opener；非幂等 POST 仍只发送一次。
+    open_fn = (
+        _heygen_direct_opener().open
+        if direct or _heygen_official_base(base)
+        else urllib.request.urlopen
+    )
     try:
         with open_fn(req, timeout=timeout) as r:
             raw = r.read()
@@ -2566,11 +2619,14 @@ def _heygen_upload_asset(file_path, direct=False):
     path = pathlib.Path(file_path)
     if not path.is_file():
         raise ValueError("视频素材文件不存在")
-    mime = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+    raw = path.read_bytes()
+    mime = _detect_image_mime(raw) or mimetypes.guess_type(
+        str(path))[0] or "application/octet-stream"
     if direct:
         # HeyGen 素材上传端点收「raw 文件字节 + 文件 mime」(同口播直连 #405 的 /v1/asset)；
         # 发 multipart/form-data 会被 HeyGen 判 "Content type not supported application/octet-stream" 400。
-        d = _heygen_direct_req("POST", _HEYGEN_DIRECT_UPLOAD + "/v1/asset", path.read_bytes(), mime, timeout=240)
+        d = _heygen_direct_req(
+            "POST", _HEYGEN_DIRECT_UPLOAD + "/v1/asset", raw, mime, timeout=240)
         node = d.get("data") or {}
         asset_id = str(node.get("asset_id") or node.get("id") or "").strip()
         if not asset_id:
@@ -2584,7 +2640,7 @@ def _heygen_upload_asset(file_path, direct=False):
         'Content-Disposition: form-data; name="file"; filename="%s"\r\n'
         "Content-Type: %s\r\n\r\n"
     ) % (boundary, path.name.replace('"', ''), mime)
-    body = head.encode() + path.read_bytes() + ("\r\n--%s--\r\n" % boundary).encode()
+    body = head.encode() + raw + ("\r\n--%s--\r\n" % boundary).encode()
     data = _heygen_request_json("POST", "/assets", body, {
         "Content-Type": "multipart/form-data; boundary=%s" % boundary,
         "Content-Length": str(len(body)),
@@ -2621,29 +2677,93 @@ def _ensure_heygen_audio_mp3(audio_path):
 HEYGEN_IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
 
 def _ensure_heygen_image_jpg(image_path):
-    # HeyGen 素材接口只收 jpg/png；webp 等格式原样上传必然 400（invalid_parameter）
+    # HeyGen 会核对真实图片字节与 Content-Type。浏览器/系统给错 MIME 时，仅改后缀仍会
+    # 400；因此除已经是标准 JPEG 的文件外，一律重新解码成 canonical JPEG。
     path = pathlib.Path(image_path)
-    if path.suffix.lower() in HEYGEN_IMAGE_EXTS:
+    try:
+        detected = _detect_image_mime(path.read_bytes())
+    except OSError:
+        detected = ""
+    if not detected:
+        raise ValueError("图片内容无法识别，请重新导出后上传")
+    if detected == "image/jpeg" and path.suffix.lower() in {".jpg", ".jpeg"}:
         return path
-    out = path.parent / ("heygen_img_%d.jpg" % int(time.time() * 1000))
+    out = path.parent / ("heygen_img_%s.jpg" % uuid.uuid4().hex)
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-i", str(path),
         "-frames:v", "1", "-q:v", "2",
         str(out),
     ]
+    def discard_partial():
+        try:
+            out.unlink()
+        except OSError:
+            pass
     try:
         subprocess.run(cmd, check=True, timeout=120, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except FileNotFoundError:
+        discard_partial()
         raise ValueError("服务器未安装 ffmpeg，无法转换图片格式")
     except subprocess.CalledProcessError as e:
+        discard_partial()
         detail = (e.stderr or b"").decode("utf-8", "replace")[:220]
         raise ValueError("图片格式转换失败，请上传 jpg/png 格式的人物形象图" + (": " + detail if detail else ""))
     except subprocess.TimeoutExpired:
+        discard_partial()
         raise ValueError("图片格式转换超时，请上传 jpg/png 格式的人物形象图")
-    if not out.exists() or out.stat().st_size <= 0:
+    if (not out.exists() or out.stat().st_size <= 0
+            or _detect_image_mime(out.read_bytes()) != "image/jpeg"):
+        discard_partial()
         raise ValueError("图片格式转换失败，请上传 jpg/png 格式的人物形象图")
     return out
+
+
+def _owned_output_relative(path):
+    """Return an OUT_DIR-relative path, rejecting files outside managed output."""
+    root = pathlib.Path(OUT_DIR).resolve()
+    target = pathlib.Path(path).resolve()
+    try:
+        relative = target.relative_to(root)
+    except (OSError, ValueError):
+        raise ValueError("形象文件不在受管输出目录中")
+    if not relative.parts:
+        raise ValueError("形象文件路径无效")
+    return relative.as_posix()
+
+
+def _unlink_owned_output(path):
+    """Best-effort cleanup limited to files managed under OUT_DIR."""
+    if path is None:
+        return False
+    try:
+        root = pathlib.Path(OUT_DIR).resolve()
+        target = pathlib.Path(path).resolve()
+        relative = target.relative_to(root)
+        if not relative.parts or target == root:
+            return False
+        target.unlink()
+        return True
+    except (FileNotFoundError, IsADirectoryError, OSError, ValueError):
+        return False
+
+
+def _upload_heygen_image_asset(image_path, label, direct=False):
+    """Normalize one image for HeyGen and remove only the derived upload file."""
+    source = pathlib.Path(image_path)
+    upload = _ensure_heygen_image_jpg(source)
+    try:
+        return _heygen_retry_net(
+            lambda: _heygen_upload_asset(upload, direct=direct),
+            label,
+        )
+    finally:
+        try:
+            converted = upload.resolve() != source.resolve()
+        except OSError:
+            converted = upload != source
+        if converted:
+            _unlink_owned_output(upload)
 
 
 # 参考视频上传前压到 720p/2Mbps。用户传的是手机原片（实测 1920×1080 / 15.4 Mbps / 24MB），
@@ -3554,11 +3674,11 @@ def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, moti
     audio_fp = _resolve_out_file(audio_file)
     if not image_fp or not audio_fp:
         raise ValueError("视频素材文件不存在")
-    image_fp = _ensure_heygen_image_jpg(image_fp)
     audio_fp = _ensure_heygen_audio_mp3(audio_fp)
     # 素材上传对瞬时网络错误重试：上传不计费(计费在 create-video)，重试安全。隧道抖动一下不该
     # 让整条口播失败(fang 的 cinematic/口播上传 240s 超时同源)。见 _heygen_retry_net。
-    image_asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(image_fp, direct=True), "口播传图")
+    image_asset_id = _upload_heygen_image_asset(
+        image_fp, "口播传图", direct=True)
     audio_asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(audio_fp, direct=True), "口播传音")
     with heygen_slot("口播直连"):   # 账号级并发上限 10，三个池共用；超了在本地排队，不让 HeyGen 甩 429
         # 429 退避重试：请求被瞬间拒绝、未计费，是唯一可以安全重发的失败。
@@ -3599,10 +3719,10 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
     audio_fp = _resolve_out_file(audio_file)
     if not image_fp or not audio_fp:
         raise ValueError("视频素材文件不存在")
-    image_fp = _ensure_heygen_image_jpg(image_fp)
     audio_fp = _ensure_heygen_audio_mp3(audio_fp)
     # 素材上传对瞬时网络错误重试(不计费、安全，同直连)
-    image_asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(image_fp), "口播中转传图")
+    image_asset_id = _upload_heygen_image_asset(
+        image_fp, "口播中转传图")
     audio_asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(audio_fp), "口播中转传音")
     # 中转(泽龙)转发的是同一个 HeyGen 账号，一样占账号的并发额度 —— 不占槽就等于绕过了闸
     with heygen_slot("口播中转"):
@@ -5081,28 +5201,69 @@ def gen_avatar(payload):
     image_file = _save_data_file(payload.get("image_data"), "avatar_src", [".jpg", ".png", ".webp"])
     if not image_file:
         raise ValueError("请先上传人物照片")
-    fp = _ensure_heygen_image_jpg(_resolve_out_file(image_file))
+    source_fp = pathlib.Path(OUT_DIR) / image_file
+    canonical_fp = None
+    persisted_fp = None
     try:
+        source_fp = _resolve_out_file(image_file)
+        canonical_fp = _ensure_heygen_image_jpg(source_fp)
+        canonical_file = (
+            image_file if canonical_fp == source_fp
+            else _owned_output_relative(canonical_fp)
+        )
         # 传图和建 look 都对瞬时网络错误重试 —— 建形象免费，重发不会重复计费（见 _heygen_retry_net）。
         # 隧道扛不住 5 路以上的并发 TLS 握手，不重试的话用户会莫名其妙地建形象失败。
-        asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(fp, direct=True), "建形象传图")
+        asset_id = _heygen_retry_net(
+            lambda: _heygen_upload_asset(canonical_fp, direct=True),
+            "建形象传图",
+        )
         item_id, group_id = _heygen_retry_net(
             lambda: _heygen_retry_429(
                 lambda: _heygen_create_photo_avatar(asset_id, direct=True), "建形象"),
             "建形象提交")
         _heygen_wait_photo_avatar(item_id, group_id, direct=True)
+        row = record_video_avatar(
+            username, canonical_file, item_id, group_id,
+            payload.get("name"),
+        ) or {}
+        persisted_fp = canonical_fp
+        return {
+            "avatar_id": row.get("id"), "name": row.get("name"),
+            "status": "ready", "image_file": canonical_file,
+            "image_url": public_url(canonical_file, "image/jpeg"),
+            "provider_avatar_id": item_id,
+            "provider_avatar_group_id": group_id,
+            "phase": "done",
+            "message": "形象创建完成，可在剧情视频里反复使用",
+        }
     except Exception as e:
         # 线上最常见的失败就是这个。原样把 HeyGen 的英文报文抛给用户毫无意义，翻译成人话。
         if "No face detected" in str(e):
-            raise ValueError("照片里没有检测到人脸，请换一张正脸清晰、光线充足的照片")
+            raise ValueError(
+                "照片里没有检测到人脸，请换一张正脸清晰、光线充足的照片"
+            ) from e
         raise
-    row = record_video_avatar(username, image_file, item_id, group_id, payload.get("name")) or {}
-    return {
-        "avatar_id": row.get("id"), "name": row.get("name"), "status": "ready",
-        "image_file": image_file, "image_url": public_url(image_file, "image/jpeg"),
-        "provider_avatar_id": item_id, "provider_avatar_group_id": group_id,
-        "phase": "done", "message": "形象创建完成，可在剧情视频里反复使用",
-    }
+    finally:
+        keep = None
+        if persisted_fp is not None:
+            try:
+                keep = pathlib.Path(persisted_fp).resolve()
+            except OSError:
+                keep = None
+        candidates = [source_fp, canonical_fp]
+        cleaned = set()
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            try:
+                resolved = pathlib.Path(candidate).resolve()
+            except OSError:
+                resolved = pathlib.Path(candidate)
+            marker = str(resolved)
+            if marker in cleaned or (keep is not None and resolved == keep):
+                continue
+            cleaned.add(marker)
+            _unlink_owned_output(candidate)
 
 
 # ============ 电影化身：HeyGen cinematic_avatar ============
@@ -5269,7 +5430,7 @@ def _cinematic_duration(raw, reference_video_file=None):
     return max(lo, min(hi, int(secs + 0.999999)))
 
 
-def validate_cinematic_payload(body, username=None):
+def validate_cinematic_payload(body, username=None, temporary_reference_files=None):
     """校验并【落定】payload —— 尤其是时长。
 
     时长必须在这里就变成一个确定的整数秒，不能留 "auto" 带下去：调用链是
@@ -5393,8 +5554,14 @@ def validate_cinematic_payload(body, username=None):
     #   1. 【必须】按成片秒数计费，而扣点发生在 worker 之前 —— 「自适应」要在这里探测出秒数，
     #      否则扣点这一刻不知道该扣多少，只能预扣上限再退差。
     #   2. 顺带：payload 里存路径而不是几十 MB 的 base64，jobs.payload 不再被撑爆。
-    video_files = [f for f in (_save_data_file(v, "motion_ref", [".mp4", ".mov", ".webm"]) for v in videos) if f]
-    image_files = [f for f in (_save_data_file(i, "cine_ref", [".jpg", ".png", ".webp"]) for i in images) if f]
+    def save_reference(value, prefix, extensions):
+        saved = _save_data_file(value, prefix, extensions)
+        if saved and temporary_reference_files is not None:
+            temporary_reference_files.append(saved)
+        return saved
+
+    video_files = [f for f in (save_reference(v, "motion_ref", [".mp4", ".mov", ".webm"]) for v in videos) if f]
+    image_files = [f for f in (save_reference(i, "cine_ref", [".jpg", ".png", ".webp"]) for i in images) if f]
     if video_files:
         _motion_reference_duration(video_files[0])   # 超长（>120s）在这里就明确拒绝
     # 「自适应」跟随第一个参考视频的长度
@@ -5414,6 +5581,40 @@ def validate_cinematic_payload(body, username=None):
     for k in ("reference_video_data", "reference_videos", "reference_images"):
         cleaned.pop(k, None)
     return cleaned
+
+
+def _cleanup_cinematic_reference_files(reference_files):
+    for relative in reference_files:
+        try:
+            _out_path(relative).unlink()
+        except OSError:
+            pass
+
+
+def dispatch_cinematic_quote(handler, verify, cost_of):
+    """Serve the free quote beside the cinematic payload validator it relies on."""
+    if handler.path.split("?")[0] != "/api/gen/cinematic/quote":
+        return False
+    user = verify(handler._token())
+    if not user:
+        handler._send(401, {"detail": "未登录"}); return True
+    if user.get("must_change"):
+        handler._send(403, {"detail": "请先修改初始密码"}); return True
+    temporary_reference_files = []
+    try:
+        cleaned = validate_cinematic_payload(
+            handler._json_body_strict(), user["username"], temporary_reference_files
+        )
+        cost = int(cost_of("cinematic", cleaned))
+        if cost < 0:
+            raise ValueError("电影化身视频报价无效")
+        status, response = 200, {"cost": cost}
+    except ValueError as exc:
+        status, response = 400, {"detail": str(exc)[:220]}
+    finally:
+        _cleanup_cinematic_reference_files(temporary_reference_files)
+    handler._send(status, response)
+    return True
 
 
 def gen_cinematic(payload):
