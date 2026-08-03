@@ -242,7 +242,7 @@ def render(clean_video, payload, output_path, timeout=None):
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
         except FileNotFoundError as error:
-            raise RenderError("泽龙测试站尚未安装 HyperFrames 运行时") from error
+            raise RenderError("一键成片渲染运行时尚未安装") from error
         except subprocess.TimeoutExpired as error:
             raise RenderError("模板渲染超时") from error
         except subprocess.CalledProcessError as error:
