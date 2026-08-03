@@ -245,6 +245,11 @@ def _render_project(handler, user, project_id, asset_db_factory, source_resolver
     expected_revision = _revision(body.get("expected_revision"))
     with _RENDER_LOCK:
         current = store.get_project(user["username"], project_id)
+        if current["status"] == "completed" and current.get("output_file"):
+            return handler._send(200, {
+                "project": current,
+                "output_url": BASE_PATH + "/" + project_id + "/output",
+            })
         if current["revision"] != expected_revision:
             raise store.RevisionConflict("项目已更新，请刷新后重试")
         if current["status"] != "review_confirmed" or not current.get("edl"):
