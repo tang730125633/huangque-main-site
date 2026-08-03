@@ -283,6 +283,8 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             "/api/admin/users/password/reset", "invite_rewards", "inviteRewardRows",
             "invite_relations", "inviteRelationRows", "邀请关系", "直接邀请用户",
             "邀请奖励明细", "有效奖励", "已作废奖励",
+            'id="inviteClaimBox"', 'id="inviteClaimStatus"',
+            "/api/admin/invite/reward-claims", "待升级领取", "无合格领取人",
         ):
             self.assertIn(marker, html)
         self.assertIn("/api/auth/notifications?limit=50", shell)

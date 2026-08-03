@@ -33,6 +33,11 @@ except ImportError:
     import business_cards
 
 try:
+    from . import invite_network
+except ImportError:
+    import invite_network
+
+try:
     from . import hq_cli_api
 except ImportError:  # 生产环境以脚本方式从 /home/ubuntu/auth-service 启动
     import hq_cli_api
@@ -2740,8 +2745,17 @@ def set_membership_admin(who_admin, username, tier, reason="", now=None):
             "offline_admin", source_order_id="membership-audit:%d" % audit_id,
             operator=who_admin, now=now,
         )
+        reward_result = invites.settle_pending_for_user(c, fresh["id"], now=now) if tier else {
+            "count": 0, "total_points": 0, "claim_ids": [],
+        }
+        if not tier:
+            invites.void_pending_claims_for_invitee(
+                c, fresh["id"], "membership_revoked", now=now,
+            )
         c.commit()
-        return public_admin_user(fresh), None
+        result = public_admin_user(fresh)
+        result["invite_reward_result"] = reward_result
+        return result, None
     except Exception:
         c.rollback()
         raise
@@ -2835,6 +2849,7 @@ def recharge_membership_admin(who_admin, username, tier, reason="", request_id="
             "offline_admin", source_order_id="membership-recharge:%s" % request_id,
             operator=who_admin, now=now,
         )
+        reward_result = invites.settle_pending_for_user(c, fresh["id"], now=now)
         c.execute(
             """INSERT INTO membership_recharge_records(
                 request_id,username,tier,before_expires_at,after_expires_at,operator,reason,created_at
@@ -2846,6 +2861,7 @@ def recharge_membership_admin(who_admin, username, tier, reason="", request_id="
         result = public_admin_user(fresh)
         result["membership_recharge_duplicate"] = False
         result["membership_recharge_request_id"] = request_id
+        result["invite_reward_result"] = reward_result
         return result, None
     except Exception:
         c.rollback()
@@ -2879,12 +2895,15 @@ def _activate_experience_membership(c, username, operator, reason, now, source_o
         "online", source_order_id=source_order_id or "membership-audit:%d" % audit_id,
         operator=operator, now=now, event_type="renewal" if renewal else "upgrade",
     )
+    reward_result = invites.settle_pending_for_user(c, fresh["id"], now=now)
     c.execute("""INSERT OR IGNORE INTO membership_recharge_records(
         request_id,username,tier,before_expires_at,after_expires_at,operator,reason,created_at
     ) VALUES(?,?,?,?,?,?,?,?)""", (
         "membership-order:" + str(source_order_id or audit_id), username, "experience",
         int(row["membership_expires_at"] or 0), expires_at, operator, reason[:300], now,
     ))
+    after = dict(after)
+    after["invite_reward_result"] = reward_result
     return after, None
 
 def adjust_points_admin(who_admin, username, delta, reason=""):
@@ -3711,6 +3730,11 @@ def _revert_membership_order(c, order, now):
                  WHERE upgrade_record_id IN (SELECT id FROM membership_upgrade_records
                  WHERE source='online' AND source_order_id=?) AND status<>'voided'""",
               (now, SYSTEM_ACTOR, order_id))
+    c.execute("""UPDATE invite_reward_claims SET status='voided',voided_at=?,
+                 reason='membership_refund',updated_at=?
+                 WHERE upgrade_record_id IN (SELECT id FROM membership_upgrade_records
+                 WHERE source='online' AND source_order_id=?) AND status='pending_upgrade'""",
+              (now, now, order_id))
     c.execute("""UPDATE membership_upgrade_records SET status='voided',voided_at=?,
                  void_reason='membership_refund'
                  WHERE source='online' AND source_order_id=? AND status<>'voided'""",
@@ -4385,6 +4409,25 @@ class H(BaseHTTPRequestHandler):
             if result["status"] == "unknown_user":
                 return self._send(200, {"ok": True, "status": "ignored"})
             return self._send(200, {"ok": True, **result})
+        notice_prefix = "/api/auth/invite/notices/"
+        if p.startswith(notice_prefix) and p.endswith("/read"):
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            value = p[len(notice_prefix):-len("/read")].strip("/")
+            try:
+                notice_id = int(value)
+            except (TypeError, ValueError):
+                return self._send(400, {"detail": "提醒记录无效"})
+            c = db()
+            try:
+                changed = invites.ack_reward_notice(c, row["id"], notice_id)
+                if not changed:
+                    return self._send(404, {"detail": "提醒不存在"})
+                c.commit()
+                return self._send(200, {"ok": True})
+            finally:
+                c.close()
         reward_prefix = "/api/auth/admin/invite/reward-points/"
         if p.startswith(reward_prefix):
             if not self._require_internal():
@@ -5784,6 +5827,16 @@ class H(BaseHTTPRequestHandler):
                         (query.get("offset") or ["0"])[0],
                     )
                     return self._send(200, {"ok": True, **data})
+                if p == "/api/auth/admin/invite/reward-claims":
+                    claim_filters = {
+                        key: (query.get(key) or [""])[0]
+                        for key in ("inviter", "invitee", "status")
+                    }
+                    data = invites.admin_reward_claims(
+                        c, claim_filters, (query.get("limit") or ["100"])[0],
+                        (query.get("offset") or ["0"])[0],
+                    )
+                    return self._send(200, {"ok": True, **data})
                 if p == "/api/auth/admin/invite/export.xlsx":
                     body = invites.export_relations_xlsx(c, filters)
                     filename = "invite-relations-%s.xlsx" % datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -5867,6 +5920,65 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, **data})
             except (TypeError, ValueError):
                 return self._send(400, {"detail": "分页参数无效"})
+            finally:
+                c.close()
+        if p in ("/api/invite/downlines", "/api/auth/invite/downlines"):
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            c = db()
+            try:
+                data = invite_network.downlines_page(
+                    c, row["id"], INVITE_HASH_SECRET,
+                    cursor=(query.get("cursor") or ["0"])[0],
+                    limit=(query.get("limit") or ["20"])[0],
+                )
+                return self._send(200, {"ok": True, **data})
+            except invite_network.NetworkError as exc:
+                return self._send(exc.status, {"detail": exc.detail, "code": exc.code})
+            except (TypeError, ValueError):
+                return self._send(400, {"detail": "分页参数无效"})
+            finally:
+                c.close()
+        if p in ("/api/invite/network", "/api/auth/invite/network"):
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            c = db()
+            try:
+                data = invite_network.network_page(
+                    c, row["id"], (query.get("grant") or [""])[0], INVITE_HASH_SECRET,
+                    cursor=(query.get("cursor") or ["0"])[0],
+                    limit=(query.get("limit") or ["20"])[0],
+                )
+                return self._send(200, {"ok": True, **data})
+            except invite_network.NetworkError as exc:
+                return self._send(exc.status, {"detail": exc.detail, "code": exc.code})
+            except (TypeError, ValueError):
+                return self._send(400, {"detail": "分页参数无效"})
+            finally:
+                c.close()
+        if p in ("/api/invite/notices/next", "/api/auth/invite/notices/next"):
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            membership = membership_for_row(row)
+            hidden = membership["membership_tier"] in ("partner", "initiator")
+            c = db()
+            try:
+                notice = invites.next_reward_notice(c, row["id"])
+                if notice and hidden:
+                    if "reward_points" in notice:
+                        notice["reward_points"] = 0
+                    if "total_points" in notice:
+                        notice["total_points"] = 0
+                return self._send(200, {
+                    "ok": True,
+                    "notice": notice,
+                    "server_time": int(time.time()),
+                })
             finally:
                 c.close()
         if p in ("/api/invite/reward-points", "/api/auth/invite/reward-points"):
