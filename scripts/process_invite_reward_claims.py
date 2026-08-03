@@ -11,7 +11,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from server import invites  # noqa: E402
+try:
+    from server import invites  # noqa: E402
+except ModuleNotFoundError as exc:
+    if exc.name != "server":
+        raise
+    import invites  # noqa: E402
 
 
 def process(database, now=None, limit=100):
