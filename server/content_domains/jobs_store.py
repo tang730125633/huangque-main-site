@@ -19,9 +19,36 @@ content_jobs.db 的 jobs 表被三个进程共写：
 """
 import hashlib
 import json
+import os
 import time
 import uuid
 from contextlib import closing
+
+# ship 部署时写入的精确 commit SHA（content_api.py 所在目录，单行文本）。
+# 健康检查每次读文件；建任务写 jobs.service_sha 用启动时的缓存值，不每次碰盘。
+DEPLOY_VERSION_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".deploy-version")
+
+
+def read_deploy_sha():
+    """读取 .deploy-version；文件不存在或读取失败返回 "unknown"，绝不抛异常。"""
+    try:
+        with open(DEPLOY_VERSION_FILE, "r", encoding="utf-8") as f:
+            return f.read().strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _read_service_sha():
+    """启动时读一次 .deploy-version 供 jobs.service_sha 用；读不到存 NULL。"""
+    try:
+        with open(DEPLOY_VERSION_FILE, "r", encoding="utf-8") as f:
+            return f.read().strip() or None
+    except Exception:
+        return None
+
+
+SERVICE_SHA = _read_service_sha()
 
 
 def refund_transaction_key(job_id, username=""):
@@ -71,6 +98,28 @@ def ensure_owner_column(jdb):
         if "owner" not in cols:
             c.execute("ALTER TABLE jobs ADD COLUMN owner TEXT")
             c.commit()
+
+
+def ensure_service_sha_column_on_conn(conn):
+    """在同一连接上保证 jobs.service_sha 存在（PRAGMA 守卫的 ALTER，不动既有数据）。
+
+    供已持有连接的写入路径（create_paid_jobs、short_drama 直写 jobs 等）在 INSERT 前兜底：
+    服务启动时 ensure_service_sha_column 已建列，这里是第二道保险 —— 任何调用方漏了启动
+    ensure，也不至于让 INSERT 直接 500。SQLite 的 ALTER 是事务性的，跟随外层事务提交/回滚。
+    历史行 service_sha 为 NULL —— 显示「版本未知」，不回填。
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    if "service_sha" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN service_sha TEXT")
+
+
+def ensure_service_sha_column(jdb):
+    """保证 jobs.service_sha 存在（任务-代码版本绑定）。与 ensure_owner_column 同款：
+    共写 jobs 表的服务启动时各调一次，谁先起谁建；不建列则 INSERT 带 service_sha 会直接 500。
+    """
+    with closing(jdb()) as c:
+        ensure_service_sha_column_on_conn(c)
+        c.commit()
 
 
 def set_terminal(jdb, job_id, status, result=None, error=None, from_states=("running",)):
@@ -263,11 +312,13 @@ def _compensate_failed_insert(jdb, refund, username, cost, kind, submission_ref,
     payload = json.dumps({"_submission_ref": submission_ref}, ensure_ascii=False)
     try:
         with closing(jdb()) as c:
+            ensure_service_sha_column_on_conn(c)
             cur = c.execute(
-                """INSERT INTO jobs(kind,username,cost,status,payload,error,created_at,updated_at,owner,refunded)
-                   VALUES(?,?,?,'error',?,?,?,?,?,2)""",
+                """INSERT INTO jobs(kind,username,cost,status,payload,error,created_at,updated_at,owner,refunded,service_sha)
+                   VALUES(?,?,?,'error',?,?,?,?,?,2,?)""",
                 (kind, username, int(cost), payload,
-                 "任务创建失败，退款待确认: %s" % str(error or "")[:180], now, now, owner),
+                 "任务创建失败，退款待确认: %s" % str(error or "")[:180], now, now, owner,
+                 SERVICE_SHA),
             )
             retry_job_id = cur.lastrowid
             if charge_transaction_key:
@@ -302,6 +353,7 @@ def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_k
     """一次预扣并原子写入一个或多个任务；失败补偿只维护这一处。"""
     items = [(int(cost or 0), payload) for cost, payload in items]
     total = sum(cost for cost, _ in items)
+    ensure_service_sha_column(jdb)  # 扣点前先把列备好：缺列导致 INSERT 失败不该走到补偿退款
     submission_ref = uuid.uuid4().hex
     reason = "job:%s submit:%s" % (reason_kind or kind, submission_ref)
     if before_charge is not None:
@@ -315,8 +367,9 @@ def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_k
                 job_ids = []
                 for cost, payload in items:
                     cur = c.execute(
-                        "INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) VALUES(?,?,?,?,?,?,?)",
-                        (kind, username, cost, json.dumps(payload, ensure_ascii=False), now, now, owner),
+                        "INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner,service_sha) VALUES(?,?,?,?,?,?,?,?)",
+                        (kind, username, cost, json.dumps(payload, ensure_ascii=False), now, now, owner,
+                         SERVICE_SHA),
                     )
                     job_ids.append(cur.lastrowid)
                 if before_commit is not None:
@@ -354,11 +407,12 @@ def create_job_after_charge(jdb, kind, username, cost, payload, owner, before_co
     now = int(time.time())
     with closing(jdb()) as connection:
         try:
+            ensure_service_sha_column_on_conn(connection)
             cursor = connection.execute(
-                "INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) "
-                "VALUES(?,?,?,?,?,?,?)",
+                "INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner,service_sha) "
+                "VALUES(?,?,?,?,?,?,?,?)",
                 (kind, username, int(cost), json.dumps(payload, ensure_ascii=False),
-                 now, now, owner),
+                 now, now, owner, SERVICE_SHA),
             )
             job_id = int(cursor.lastrowid)
             if before_commit is not None:

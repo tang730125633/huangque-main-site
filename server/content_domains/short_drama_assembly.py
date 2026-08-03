@@ -11,6 +11,7 @@ from . import short_drama_assembly_artifacts as assembly_artifacts
 from . import short_drama_assembly_lipsync as lipsync_assembly
 from . import short_drama_master_audio as master_audio
 from . import short_drama_alignment as subtitle_alignment
+from . import jobs_store
 
 
 ASSEMBLY_STAGES = {"assembly_review", "completed"}
@@ -1613,11 +1614,13 @@ def create_preview_job(
                         "volume", "fade_in_ms", "fade_out_ms",
                     )
                 } | {"file": str(asset.get("file") or "")})
+        jobs_store.ensure_service_sha_column_on_conn(conn)
         cursor = conn.execute(
             "INSERT INTO jobs(kind,username,cost,status,payload,created_at,"
-            "updated_at,owner) VALUES ('short_drama_preview',?,0,'pending',?,?,?,"
-            "'content')",
-            (actor_username, json.dumps(payload, ensure_ascii=False), now, now),
+            "updated_at,owner,service_sha) VALUES ('short_drama_preview',?,0,'pending',?,?,?,"
+            "'content',?)",
+            (actor_username, json.dumps(payload, ensure_ascii=False), now, now,
+             jobs_store.SERVICE_SHA),
         )
         job_id = int(cursor.lastrowid)
         version = int(conn.execute(
@@ -2443,13 +2446,15 @@ def create_final_job(
             ],
             "manifest": final_manifest,
         }
+        jobs_store.ensure_service_sha_column_on_conn(conn)
         cursor = conn.execute(
             "INSERT INTO jobs(kind,username,cost,status,payload,created_at,"
-            "updated_at,owner) VALUES ('short_drama_final',?,?,'pending',?,?,?,"
-            "'content')",
+            "updated_at,owner,service_sha) VALUES ('short_drama_final',?,?,'pending',?,?,?,"
+            "'content',?)",
             (
                 actor_username, attempt["cost"],
                 json.dumps(payload, ensure_ascii=False), now, now,
+                jobs_store.SERVICE_SHA,
             ),
         )
         job_id = int(cursor.lastrowid)

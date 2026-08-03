@@ -627,5 +627,6 @@ class H(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     from content_domains import jobs_store
     jobs_store.ensure_owner_column(jdb)   # 谁先起谁建；不建列则 INSERT 带 owner 会直接 500
+    jobs_store.ensure_service_sha_column(jdb)   # 同理：INSERT 带 service_sha，列不在会 500
     print("huangque-leadgen-api on 127.0.0.1:%d  caps=%s" % (PORT, list(HANDLERS)))
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()

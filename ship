@@ -284,6 +284,14 @@ fi
 if [ -n "$DEPLOYED" ]; then
   $SSHC "$REMOTE" "test -f /home/ubuntu/hq-drift/drift_sentinel.py && python3 /home/ubuntu/hq-drift/drift_sentinel.py --verify-deploy $DEPLOYED" \
     && echo "  ✓ 部署后漂移校验通过" || { echo "  ❌ 部署后漂移校验失败"; exit 1; }
+  # 任务-代码版本绑定：把本次部署的精确 SHA 写进 content-api 目录。
+  # /api/gen/health 的 deploy_sha 和 jobs.service_sha 都读这个文件。
+  # 写失败只警告不阻断 —— 版本绑定是治理手段，不该反过来卡住发布。
+  if $SSHC "$REMOTE" "printf '%s\n' '$HEAD_SHA' | sudo tee /home/ubuntu/content-api/.deploy-version >/dev/null"; then
+    echo "  ✓ 部署版本文件已写入（${HEAD_SHA:0:7}）"
+  else
+    echo "  ⚠ 部署版本文件写入失败（不阻断发布，health 将显示 unknown）"
+  fi
   $SSHC "$REMOTE" "python3 /home/ubuntu/hq-drift/drift_sentinel.py --bless-deploy $DEPLOYED" >/dev/null 2>&1 \
     && echo "  ✓ 本次部署文件已记录" || echo "  （跳过部署记录：哨兵未安装）"
 fi

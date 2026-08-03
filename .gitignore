@@ -23,6 +23,9 @@ config.local.*
 __pycache__/
 *.pyc
 
+# 部署版本标记（ship 部署时写入服务器，本地不该提交）
+.deploy-version
+
 # 系统
 .DS_Store
 *.log

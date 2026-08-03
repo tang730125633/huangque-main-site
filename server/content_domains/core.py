@@ -424,6 +424,7 @@ def init_db():
         _ensure_column(c, "jobs", "deleted", "INTEGER DEFAULT 0")
         _ensure_column(c, "jobs", "refunded", "INTEGER DEFAULT 0")  # 退点幂等键(#187)
         _ensure_column(c, "jobs", "owner", "TEXT")                  # 归属服务(#511)，见 SERVICE_OWNER
+        _ensure_column(c, "jobs", "service_sha", "TEXT")            # 任务执行版本：建任务时写入 .deploy-version 的 SHA，历史行 NULL=版本未知
         submission_idempotency.ensure_table(c)
         c.commit()
     feature_flags.init_db()
@@ -3114,6 +3115,7 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"items": items, "cost": 1, "points_left": points_left})
         if p == "/api/gen/health":
             return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS), "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS, "talking_job_workers": TALKING_JOB_WORKERS, "image_job_workers": IMAGE_JOB_WORKERS, "job_queue_max": JOB_QUEUE_MAX, "talking_job_queue_max": TALKING_JOB_QUEUE_MAX,
+                                    "deploy_sha": jobs_store.read_deploy_sha(),
                                     "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_active_xiaole_video": MAX_USER_ACTIVE_XIAOLE_VIDEO, "max_user_active_sora_video": MAX_USER_ACTIVE_SORA_VIDEO, "max_user_active_tryon": MAX_USER_ACTIVE_TRYON, "max_user_active_cinematic": MAX_USER_ACTIVE_CINEMATIC,
                                     "sora_video_enabled": bool(video_domain.sora_video_is_open() and OPENAI_KEY and feature_flags.is_enabled("sora_video")),
                                     "omni_video_enabled": bool(video_domain.omni_video_is_open() and feature_flags.is_enabled("omni_video")), "seedance_video_enabled": bool(video_domain.seedance_video_is_open() and feature_flags.is_enabled("seedance_video")), "reverse_remake_video_offer": (reverse_remake_offer := video_domain.reverse_remake_video_offer(feature_flags, points_domain.cost_of)), "reverse_remake_video_channel": reverse_remake_offer["channel"], "seedance_reference_images_enabled": video_domain.seedance_reference_upload_is_open(), "seedance_upscale_enabled": bool(video_domain.seedance_upscale_is_open() and feature_flags.is_enabled("seedance_video")),

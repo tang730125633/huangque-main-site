@@ -723,6 +723,7 @@ if __name__ == "__main__":
         feature_flags.init_db()
     from content_domains import jobs_store
     jobs_store.ensure_owner_column(jdb)   # 必须在 start_job_workers 之前：重排扫描按 owner 过滤
+    jobs_store.ensure_service_sha_column(jdb)   # 同理：INSERT 带 service_sha，列不在会 500
     start_job_workers()
     print("huangque-imggen-api on 127.0.0.1:%d  models=%s workers=%d 单用户生图并发上限=%d"
           % (PORT, MODELS, JOB_WORKERS, MAX_USER_RUNNING_IMAGE))

@@ -7,6 +7,7 @@ import uuid
 from contextlib import closing
 
 from . import short_drama_playback_hashes as hashes
+from . import jobs_store
 
 
 class PlaybackError(ValueError):
@@ -512,11 +513,13 @@ def create_remux_job(
             raise PlaybackError(
                 "active_remux_job", "该项目已有重封装任务正在处理", 409
             )
+        jobs_store.ensure_service_sha_column_on_conn(conn)
         cursor = conn.execute(
             "INSERT INTO jobs(kind,username,cost,status,payload,created_at,"
-            "updated_at,owner) VALUES "
-            "('short_drama_remux',?,0,'pending',?,?,?,'content')",
-            (actor, json.dumps(payload, ensure_ascii=False), now, now),
+            "updated_at,owner,service_sha) VALUES "
+            "('short_drama_remux',?,0,'pending',?,?,?,'content',?)",
+            (actor, json.dumps(payload, ensure_ascii=False), now, now,
+             jobs_store.SERVICE_SHA),
         )
         job_id = int(cursor.lastrowid)
         row_id = uuid.uuid4().hex
