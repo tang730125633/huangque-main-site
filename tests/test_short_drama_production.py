@@ -990,10 +990,13 @@ class ShortDramaProductionTests(unittest.TestCase):
                 (self.project["id"],),
             )
             conn.commit()
-        with self.assertRaises(short_drama_completion.CompletionDisabled):
+        with mock.patch.dict(
+            os.environ, {"HQ_SHORT_DRAMA_COMPLETION_ENABLED": "1"}
+        ), self.assertRaises(short_drama_completion.CompletionError) as raised:
             short_drama.confirm_stage(
                 self.db, "alice", self.project["id"], 50, "assembly_review"
             )
+        self.assertEqual("completion_required", raised.exception.code)
         with closing(self.db()) as conn:
             self.assertEqual("assembly_review", conn.execute(
                 "SELECT stage FROM short_drama_projects WHERE id=?",
