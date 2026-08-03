@@ -1,4 +1,8 @@
+import os
+from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import unittest
 
 from server import business_cards, invite_network, invites
@@ -9,6 +13,17 @@ SECRET = "network-test-secret"
 
 
 class InviteNetworkAccessTests(unittest.TestCase):
+    def test_auth_server_supports_direct_module_imports(self):
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "server")
+        checked = subprocess.run(
+            [sys.executable, "-c", "import invite_network; import auth_server"],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+
     def setUp(self):
         self.conn = sqlite3.connect(":memory:")
         self.conn.row_factory = sqlite3.Row

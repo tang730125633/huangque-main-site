@@ -5,7 +5,10 @@ import hmac
 import json
 import time
 
-from .invites import MEMBERSHIP_LEVEL_ORDER, MEMBERSHIP_NAMES
+try:
+    from .invites import MEMBERSHIP_LEVEL_ORDER, MEMBERSHIP_NAMES
+except ImportError:
+    from invites import MEMBERSHIP_LEVEL_ORDER, MEMBERSHIP_NAMES
 
 
 GRANT_TTL_SECONDS = 600
