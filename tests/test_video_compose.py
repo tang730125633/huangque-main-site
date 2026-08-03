@@ -437,11 +437,16 @@ class VideoComposeHttpTests(unittest.TestCase):
 
 
 class VideoComposeDeploymentTests(unittest.TestCase):
-    def test_runtime_bootstrap_skips_unused_cuda_download(self):
+    def test_runtime_bootstrap_uses_cpu_and_existing_system_browser(self):
         script = (ROOT / "deploy/zelong/bootstrap-video-compose-runtime.sh").read_text(
             encoding="utf-8"
         )
         self.assertIn("ONNXRUNTIME_NODE_INSTALL_CUDA=skip", script)
+        self.assertIn("HYPERFRAMES_BROWSER_PATH=/usr/bin/chromium-browser", script)
+        self.assertIn(
+            'environment["HYPERFRAMES_BROWSER_PATH"] = "/usr/bin/chromium-browser"',
+            (ROOT / "server/content_domains/video_compose_render.py").read_text(encoding="utf-8"),
+        )
 
 
 if __name__ == "__main__":

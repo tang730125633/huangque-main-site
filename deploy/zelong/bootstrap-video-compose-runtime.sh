@@ -32,6 +32,9 @@ export PATH="$NODE_ROOT/bin:$PATH"
 export HYPERFRAMES_SKIP_SKILLS=1
 export PRODUCER_LOW_MEMORY_MODE=1
 export ONNXRUNTIME_NODE_INSTALL_CUDA=skip
+if [[ -z "${HYPERFRAMES_BROWSER_PATH:-}" ]] && [[ -x /usr/bin/chromium-browser ]]; then
+  export HYPERFRAMES_BROWSER_PATH=/usr/bin/chromium-browser
+fi
 node --version
 npm --version
 npx --yes hyperframes@0.7.88 browser ensure
