@@ -235,6 +235,9 @@ def render(clean_video, payload, output_path, timeout=None):
         ]
         environment = dict(os.environ)
         environment.update({"HYPERFRAMES_SKIP_SKILLS": "1", "PRODUCER_LOW_MEMORY_MODE": "1"})
+        if "HYPERFRAMES_BROWSER_PATH" not in environment and pathlib.Path(
+                "/usr/bin/chromium-browser").is_file():
+            environment["HYPERFRAMES_BROWSER_PATH"] = "/usr/bin/chromium-browser"
         try:
             completed = subprocess.run(
                 command, check=True, timeout=timeout or max(300, int(data["duration_ms"] / 1000 * 20)),
