@@ -100,6 +100,7 @@ jobs:
           node tests/test_canvas_short_drama_workspace.js
           node tests/test_canvas_short_drama_completion.js
           python -m unittest tests.test_short_drama_completion_integrity -v
+          node tests/test_canvas_digital_presenter.js
 
       - name: 安装设计系统依赖
         working-directory: design-system

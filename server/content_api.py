@@ -11,9 +11,9 @@ import threading
 from http.server import ThreadingHTTPServer
 
 try:
-    from .content_domains import core, registry, video_compose
+    from .content_domains import core, digital_presenter, registry, video_compose
 except ImportError:  # Running as /home/ubuntu/content-api/content_api.py
-    from content_domains import core, registry, video_compose
+    from content_domains import core, digital_presenter, registry, video_compose
 
 
 PORT = core.PORT
@@ -22,9 +22,10 @@ HANDLERS = registry.HANDLERS
 # Keep the legacy core handler behavior while exposing the domain-assembled
 # handler registry to request handling and health responses.
 core.HANDLERS = HANDLERS
+DigitalPresenterH = digital_presenter.make_handler(core.H, core)
 
 
-class H(core.H):
+class H(DigitalPresenterH):
     def _dispatch_video_compose(self, method):
         return video_compose.dispatch_http(
             self, method, core.verify, core._must_change_password, core.adb,
@@ -44,6 +45,7 @@ class H(core.H):
 
 def main():
     core.init_db()
+    digital_presenter.init_db(core.jdb)
     # 回收上次遗留的 running 孤儿 → 秒退点。
     # 优雅停机（drain）之后这里应该【一条都收不到】—— 收到就说明上次是崩溃/被 SIGKILL 了，
     # 它现在是【兜底】，不再是常态。常态下的部署不该再产生孤儿。
