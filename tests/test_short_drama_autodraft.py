@@ -1198,6 +1198,14 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertEqual(1, provider.polls)
         self.assertEqual(1, len(refunds))
         self.assertEqual(quote["cost"], refunds[0][1])
+        late_provider = mock.Mock()
+        short_drama_autodraft._finish_provider_job(
+            self.db,
+            {"id": job["id"], "provider_job_id": "provider-timeout-job"},
+            late_provider,
+            {"status": "completed", "result_url": "https://late.example/video"},
+        )
+        late_provider.fetch_result.assert_not_called()
         conn = self.db()
         try:
             state = conn.execute(

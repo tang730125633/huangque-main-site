@@ -1567,6 +1567,16 @@ def _expire_provider_job(db_factory, job_id, reason, refund_points=None):
 
 
 def _finish_provider_job(db_factory, row, provider, provider_state):
+    inspect_conn = _connection(db_factory)
+    try:
+        current_status = inspect_conn.execute(
+            "SELECT status FROM short_drama_provider_shot_jobs WHERE id=?",
+            (row["id"],),
+        ).fetchone()
+    finally:
+        inspect_conn.close()
+    if not current_status or current_status["status"] != "running":
+        return
     result = provider.fetch_result(
         row["provider_job_id"], provider_state.get("result_url")
     )
@@ -1578,7 +1588,7 @@ def _finish_provider_job(db_factory, row, provider, provider_state):
             "SELECT * FROM short_drama_provider_shot_jobs WHERE id=?",
             (row["id"],),
         ).fetchone()
-        if not current or current["status"] == "succeeded":
+        if not current or current["status"] != "running":
             conn.commit()
             return
         version = int(conn.execute(
@@ -1602,7 +1612,8 @@ def _finish_provider_job(db_factory, row, provider, provider_state):
         final_result = dict(result, version_id=version_id, version=version)
         conn.execute(
             "UPDATE short_drama_provider_shot_jobs SET status='succeeded',"
-            "progress=100,result_json=?,error_json=NULL,updated_at=? WHERE id=?",
+            "progress=100,result_json=?,error_json=NULL,updated_at=? "
+            "WHERE id=? AND status='running'",
             (_json_text(final_result), now, row["id"]),
         )
         conn.execute(
