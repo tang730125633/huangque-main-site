@@ -55,10 +55,14 @@ case "$*" in
     if [ "$FAKE_REMOTE_FILE_MISSING" = "1" ]; then exit 1; fi
     ;;
   *"bash -s"*)
-    cat >/dev/null 2>&1   # 吞掉 stdin 里的远端脚本
+    remote_script=$(cat)
     case "$*" in
       *python3*)
         if [ "$FAKE_IMPORT_FAIL" = "1" ]; then echo "    ❌ import 失败 —— 中止，不重启"; exit 1; fi
+        if [ "$FAKE_SEEDANCE_CONTRACT_FAIL" = "1" ] && printf '%s' "$remote_script" | grep -q before_charge; then
+          echo "    ❌ Seedance 参考图跨模块契约失败 —— 中止，不重启"
+          exit 1
+        fi
         echo "    ✓ import 通过"
         exit 0
         ;;
@@ -301,6 +305,17 @@ exit 0
         )
         self.assertNotEqual(0, result.returncode, result.stdout)
         self.assertIn("import 失败", result.stdout)
+        self.assertNotIn("上线完成", result.stdout)
+
+    def test_seedance_contract_failure_stops_before_restart(self):
+        result = self._run_ship(
+            target="server/content_domains/jobs_store.py",
+            exact_content_domains=True,
+            FAKE_SEEDANCE_CONTRACT_FAIL="1",
+            FAKE_CURL_CODE="200",
+        )
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("Seedance 参考图跨模块契约失败", result.stdout)
         self.assertNotIn("上线完成", result.stdout)
 
     def test_silent_restart_blocks_deployment_success(self):
