@@ -754,7 +754,7 @@
     var focusState=captureCollabFocus();
     flushActiveCollabTitle();
     loading=true;
-    try{ restoreSnapshot(next); }
+    try{ restoreSnapshot(next,{source:'trusted-collab'}); }
     finally{ loading=false; }
     setEditorReadonly(!canEditCanvas());
     restoreCollabFocus(focusState);
@@ -1322,6 +1322,9 @@
     return board.id;
   }
   function createBoardFromTemplate(item){
+    if(item&&item.data&&(item.data.nodes||[]).some(function(n){return !nodeCreationPolicy.canMaterialize(n.type,'local-template');})){
+      updateState('数字人口播模板仅可载入有编辑权限的协作画布');return false;
+    }
     if(!item||!item.data){ updateState('没有可载入的模板'); return false; }
     saveCurrentBoard();
     var snap=sanitizeTemplateSnap(item.data);
@@ -1401,7 +1404,7 @@
       currentCollabMembers=board.members||[];
       collabBaseSnap=collabSync?collabSync.clone(board.data||emptySnapshot()):stateApi.cloneSnapshot(board.data||emptySnapshot());
       rememberCollabBoard(board);
-      restoreSnapshot(board.data||emptySnapshot());
+      restoreSnapshot(board.data||emptySnapshot(),{source:'trusted-collab'});
       history.clear();
       setSaveState(collabCanEdit()?'saved':'readonly');
       showEditor();
@@ -2047,14 +2050,23 @@
   }
   function restoreSnapshot(snap){
     if(!snap) return;
+    var options=arguments[1]||{};
+    var materializeSource=options.source||'restore';
     snap=sanitizeShortDramaSnapshot(snap);
     destroyAllShortDramaWorkspaces();
     digitalPresenterWorkspaceLifecycle.restoreScope(currentShortDramaScopeKey());
     clearDigitalPresenterWorkspaceRefs();
     restoring=true;
+    var restoredNodes=(snap.nodes||[]).filter(function(n){
+      return n&&nodeCreationPolicy.canMaterialize(n.type,materializeSource);
+    });
+    var restoredIds={};restoredNodes.forEach(function(n){restoredIds[n.id]=true;});
     Object.keys(nodes).forEach(function(id){ if(nodes[id]&&nodes[id].el) nodes[id].el.remove(); });
     nodes={}; edges=stateApi.cloneSnapshot(snap.edges||[]); nid=snap.nid||0; pendingPort=null; dragPort=null; selectedNode=null; selectedNodes={}; selectedEdge=-1; runLabel=snap.runLabel||'就绪';
-    (snap.nodes||[]).forEach(function(n){ addNode(n.type,n.x,n.y,n); });
+    edges=edges.filter(function(e){
+      return e&&e.from&&e.to&&restoredIds[e.from.node]&&restoredIds[e.to.node];
+    });
+    restoredNodes.forEach(function(n){ addNode(n.type,n.x,n.y,n,materializeSource); });
     if(snap.zoom){ zoom=Math.max(.5,Math.min(1.6,snap.zoom)); inner.style.transform='scale('+zoom+')'; }
     if(snap.scroll){ canvas.scrollLeft=snap.scroll.left||0; canvas.scrollTop=snap.scroll.top||0; }
     syncCanvasGrid();
@@ -2066,6 +2078,9 @@
     if(!canEditCanvas()) return;
     if(!item||!item.data){ updateState('没有可载入的模板'); return; }
     var snap=sanitizeTemplateSnap(item.data), list=snap.nodes||[];
+    if(list.some(function(n){return !nodeCreationPolicy.canMaterialize(n.type,'create');})){
+      updateState('当前画布无权载入模板中的数字人口播节点');return;
+    }
     if(!list.length){ updateState('模板为空'); return; }
     pushUndo();
     var minX=Infinity, minY=Infinity, maxX=0, maxY=0;
@@ -2169,7 +2184,9 @@
   }
 
   // ---------- 建节点 ----------
-  function addNode(type, x, y, data){
+  function addNode(type, x, y, data,materializeSource){
+    materializeSource=materializeSource||'create';
+    if(!nodeCreationPolicy.canMaterialize(type,materializeSource)) return null;
     if(type==='shortDrama'&&data) data=shortDramaModule.sanitizeNodeData(data);
     if(type==='digitalPresenter'&&data) data=stateApi.sanitizeNodeData(data,{digitalPresenter:digitalPresenterModule.sanitizeNodeData});
     var t=TYPE[type], nextNid=++nid, id=currentBoardScope==='collab'&&collabSync?collabSync.makeNodeId(collabNodeSeed,nextNid):'n'+nextNid;
@@ -2504,6 +2521,10 @@
   function pasteNode(){
     if(!canEditCanvas()) return;
     if(!clipNode) return;
+    var pastedNodes=clipNode.multi?(clipNode.nodes||[]):[clipNode];
+    if(pastedNodes.some(function(n){return !nodeCreationPolicy.canMaterialize(n.type,'create');})){
+      updateState('数字人口播节点仅可粘贴到有编辑权限的协作画布');return;
+    }
     pushUndo();
     if(clipNode.multi){
       var copied=stateApi.cloneSnapshot(clipNode), minX=Infinity, minY=Infinity, idMap={}, made=[];

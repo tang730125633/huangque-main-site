@@ -101,8 +101,18 @@
       }
       return true;
     }
+    function canMaterialize(type,source){
+      if(type!=='digitalPresenter') return source!=='create'||canCreate(type);
+      if(source==='local-template') return false;
+      var context=options.context()||{};
+      if(source==='trusted-collab'){
+        return context.entryEnabled===true&&context.scope==='collab';
+      }
+      return canCreate(type);
+    }
     return {
       canCreate:canCreate,
+      canMaterialize:canMaterialize,
       run:function(type,create){
         if(!canCreate(type)) return false;
         create();return true;
@@ -171,6 +181,7 @@
     var pending=Object.create(null),completed=Object.create(null),discarded=Object.create(null),identities=Object.create(null);
     var storage=options.storage===undefined?defaultSessionStorage():options.storage;
     var identityPrefix='hq_digital_presenter_create:';
+    var coordinatorId=newIdempotencyKey();
     function key(scope,nodeId){ return JSON.stringify([String(scope||''),String(nodeId||'')]); }
     function identityStorageKey(itemKey){ return identityPrefix+itemKey; }
     function readIdentity(itemKey){
@@ -191,8 +202,14 @@
     }
     function creationIdentity(itemKey,payload){
       var fingerprint=creationFingerprint(payload),identity=readIdentity(itemKey);
-      if(identity&&identity.fingerprint===fingerprint) return identity;
-      return writeIdentity(itemKey,{key:newIdempotencyKey(),fingerprint:fingerprint});
+      if(identity&&identity.fingerprint===fingerprint){
+        if(identity.coordinator_id!==coordinatorId){
+          identity={key:identity.key,fingerprint:identity.fingerprint,coordinator_id:coordinatorId};
+          writeIdentity(itemKey,identity);
+        }
+        return identity;
+      }
+      return writeIdentity(itemKey,{key:newIdempotencyKey(),fingerprint:fingerprint,coordinator_id:coordinatorId});
     }
     function clearIdentity(itemKey,identity){
       if(identity&&identities[itemKey]&&identities[itemKey].key!==identity.key) return;
@@ -218,13 +235,16 @@
       if(pending[itemKey]) return pending[itemKey].promise;
       if(completed[itemKey]) return Promise.resolve(consume(scope,nodeId,completed[itemKey]));
       var current=options.getNode(scope,nodeId),projectId=linked(current);
-      if(projectId){ clearIdentity(itemKey);return Promise.resolve(projectId); }
+      if(projectId){
+        var confirmedIdentity=readIdentity(itemKey);
+        if(!confirmedIdentity||confirmedIdentity.coordinator_id!==coordinatorId) clearIdentity(itemKey);
+        return Promise.resolve(projectId);
+      }
       if(!canCreate) return Promise.reject(new Error('当前画布为只读，无法创建数字人口播项目'));
       var identity=creationIdentity(itemKey,payload);
       var request=Promise.resolve().then(function(){ return options.create(payload,identity.key); }).then(function(project){
         var createdId=project&&(project.id||project.project_id);
         if(!createdId) throw new Error('创建数字人口播项目失败');
-        clearIdentity(itemKey,identity);
         if(discarded[scope]) return createdId;
         var entry={scope:scope,nodeId:nodeId,projectId:createdId,expectedProjectId:expectedProjectId,project:project};
         completed[itemKey]=entry;return consume(scope,nodeId,entry);

@@ -114,7 +114,72 @@ async function testCreateProjectCoordinatorReusesPersistedIdempotencyKey() {
   assert.equal(keys.length, 2);
   assert.equal(keys[0], keys[1], 'refresh retry reuses the original Idempotency-Key');
   assert.match(keys[0], /^dp-create-[A-Za-z0-9-]+$/);
-  assert.equal(values.size, 0, 'confirmed success clears the persisted request identity');
+  assert.equal(values.size, 1, 'identity remains until a later read confirms the node link');
+  assert.equal(
+    await refreshed.ensure('collab:board-a', 'n1', { title: 'A' }, true, null),
+    'project-a',
+  );
+  assert.equal(keys.length, 2, 'confirmed node link does not create again');
+  assert.equal(values.size, 1, 'the creating page cannot claim its debounced save is durable');
+  const reloaded = presenter.createProjectCoordinator({
+    storage,
+    getNode() { return node; },
+    create() { throw new Error('persisted node must not create again'); },
+    apply() { throw new Error('persisted node must not apply again'); },
+  });
+  assert.equal(
+    await reloaded.ensure('collab:board-a', 'n1', { title: 'A' }, true, null),
+    'project-a',
+  );
+  assert.equal(values.size, 0, 'reload confirms the node link was durably restored and clears identity');
+}
+
+async function testCreateProjectCoordinatorRecoversAfterScopeSwitch() {
+  const values = new Map();
+  const storage = {
+    getItem(key) { return values.has(key) ? values.get(key) : null; },
+    setItem(key, value) { values.set(key, value); },
+    removeItem(key) { values.delete(key); },
+  };
+  let active = true;
+  let resolveCreate;
+  const keys = [];
+  const firstNode = { id: 'n1', params: presenter.normalizeNodeParams({ title: 'A' }) };
+  const first = presenter.createProjectCoordinator({
+    storage,
+    getNode() { return active ? firstNode : null; },
+    create(_payload, key) {
+      keys.push(key);
+      return new Promise((resolve) => { resolveCreate = resolve; });
+    },
+    apply() { assert.fail('a switched-away canvas must not receive the project'); },
+  });
+  const pending = first.ensure('collab:board-a', 'n1', { title: 'A' }, true, null);
+  await Promise.resolve();
+  active = false;
+  first.cleanupScope('collab:board-a');
+  resolveCreate({ id: 'project-a', title: 'A' });
+  assert.equal(await pending, 'project-a');
+  assert.equal(firstNode.params.project_id, null);
+  assert.equal(values.size, 1, 'switching away preserves the recoverable identity');
+
+  const restoredNode = { id: 'n1', params: presenter.normalizeNodeParams({ title: 'A' }) };
+  const refreshed = presenter.createProjectCoordinator({
+    storage,
+    getNode() { return restoredNode; },
+    create(_payload, key) {
+      keys.push(key);
+      return Promise.resolve({ id: 'project-a', title: 'A' });
+    },
+    apply(node, project) { node.params = presenter.summarizeProject(project); },
+  });
+  assert.equal(
+    await refreshed.ensure('collab:board-a', 'n1', { title: 'A' }, true, null),
+    'project-a',
+  );
+  assert.equal(keys.length, 2);
+  assert.equal(keys[0], keys[1], 'reload after a scope switch replays the same server project');
+  assert.equal(restoredNode.params.project_id, 'project-a');
 }
 
 async function testDigitalPresenterClientSendsIdempotencyKey() {
@@ -289,6 +354,14 @@ function testNodeCreationPolicyGuardsEveryEntry() {
   for (const entry of ['context-menu', 'fullscreen-menu']) {
     assert.equal(policy.canCreate('digitalPresenter'), false, `${entry} hidden on local canvas`);
   }
+  assert.equal(policy.canMaterialize('digitalPresenter', 'create'), false,
+    'cross-canvas paste cannot materialize on a local canvas');
+  assert.equal(policy.canMaterialize('digitalPresenter', 'restore'), false,
+    'local snapshots cannot restore a digital presenter node');
+  assert.equal(policy.canMaterialize('digitalPresenter', 'trusted-collab'), false,
+    'trusted restoration still requires collaborative scope');
+  assert.equal(policy.canMaterialize('digitalPresenter', 'local-template'), false,
+    'a template cannot create a local canvas containing a digital presenter');
   for (const entry of ['addAt', 'top-button']) {
     assert.equal(policy.run('digitalPresenter', () => created.push(entry)), false);
   }
@@ -296,7 +369,18 @@ function testNodeCreationPolicyGuardsEveryEntry() {
 
   context = { canEdit: true, scope: 'collab', entryEnabled: false };
   assert.equal(policy.canCreate('digitalPresenter'), false, 'capability remains required');
+  assert.equal(policy.canMaterialize('digitalPresenter', 'restore'), false,
+    'snapshot restoration also requires the capability');
+  context = { canEdit: false, scope: 'collab', entryEnabled: true };
+  assert.equal(policy.canMaterialize('digitalPresenter', 'create'), false,
+    'viewer cannot paste or import a new node');
+  assert.equal(policy.canMaterialize('digitalPresenter', 'restore'), false,
+    'viewer cannot use undo or a local snapshot to introduce a node');
+  assert.equal(policy.canMaterialize('digitalPresenter', 'trusted-collab'), true,
+    'viewer may render a server-authoritative collaborative snapshot');
   context = { canEdit: true, scope: 'collab', entryEnabled: true };
+  assert.equal(policy.canMaterialize('digitalPresenter', 'create'), true);
+  assert.equal(policy.canMaterialize('digitalPresenter', 'restore'), true);
   for (const entry of ['context-menu', 'fullscreen-menu']) {
     assert.equal(policy.canCreate('digitalPresenter'), true, `${entry} visible on collaborative canvas`);
   }
@@ -327,6 +411,15 @@ function testCanvasIntegration() {
   assert.ok(app.includes('digitalPresenterModule.observeWorkspaceReady'));
   assert.ok(app.includes('digitalPresenterModule.createNodeCreationPolicy'));
   assert.ok(app.includes('nodeCreationPolicy.canCreate'));
+  assert.ok(app.includes('nodeCreationPolicy.canMaterialize'));
+  assert.match(app, /function addNode\(type, x, y, data,materializeSource\)[\s\S]*?nodeCreationPolicy\.canMaterialize/,
+    'the lowest-level node constructor enforces the policy');
+  assert.match(app, /function pasteNode\(\)[\s\S]*?pastedNodes[\s\S]*?nodeCreationPolicy\.canMaterialize/,
+    'clipboard paste checks every copied node');
+  assert.match(app, /function appendTemplateToCanvas\(item\)[\s\S]*?nodeCreationPolicy\.canMaterialize/,
+    'template append checks every imported node');
+  assert.match(app, /function restoreSnapshot\(snap\)[\s\S]*?restoredNodes[\s\S]*?nodeCreationPolicy\.canMaterialize/,
+    'snapshot restore filters unauthorized nodes and their edges');
   assert.ok((app.match(/nodeCreationPolicy\.run/g) || []).length >= 2);
   assert.ok(app.includes('digitalPresenterModule.copyNodeData'));
   assert.ok(app.includes('digitalPresenterModule.createWorkspace'));
@@ -347,6 +440,7 @@ async function main() {
   testNodePersistenceAndCopyHelpers();
   await testCreateProjectCoordinatorIsScopeSafe();
   await testCreateProjectCoordinatorReusesPersistedIdempotencyKey();
+  await testCreateProjectCoordinatorRecoversAfterScopeSwitch();
   await testDigitalPresenterClientSendsIdempotencyKey();
   await testPhaseOneWorkspaceOnlyLoadsAndSavesSettings();
   await testRejectedProjectLoadIsContainedAndErrorCanClose();
