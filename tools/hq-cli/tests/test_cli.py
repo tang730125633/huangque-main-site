@@ -123,12 +123,25 @@ class HqCliTests(unittest.TestCase):
             "canvas-create": b'{"name":"Launch","prompt":"first idea"}',
             "canvas-ops": b'{"board_id":"cb_1","base_version":1,"op_id":"hqcli-abcdefghijkl","ops":[{"type":"node.patch","id":"n1","fields":{"x":120}}]}',
             "asset-tags": '{"kind":"image","key":"asset-1","tags":["客户案例"]}'.encode(),
+            "video-compose-review": ('{"project_id":"compose_%s","expected_revision":2,'
+                                       '"decisions":{"candidate_%s":"remove"}}' % ("a" * 32, "b" * 16)).encode(),
+            "digital-presenter-create": b'{"board_id":"cb_1","request_id":"hqcli-dp-001"}',
         }
         with patch("hq_cli.client.request_json") as request:
             for capability, raw in inputs.items():
                 code, output, error = self.invoke(["run", capability, "--input", "@-"], raw)
                 self.assertEqual(cli.EXIT_CONFIRMATION, code)
                 self.assertEqual("confirmation_required", self.payload(error)["error"])
+        request.assert_not_called()
+
+    def test_video_compose_decisions_reject_invalid_object_values_before_http(self):
+        self.authorize()
+        raw = ('{"project_id":"compose_%s","expected_revision":2,'
+               '"decisions":{"candidate_%s":"maybe"}}' % ("a" * 32, "b" * 16)).encode()
+        with patch("hq_cli.client.request_json") as request:
+            code, _, error = self.invoke(["run", "video-compose-review", "--input", "@-"], raw)
+        self.assertEqual(cli.EXIT_INPUT, code)
+        self.assertEqual("input_error", self.payload(error)["error"])
         request.assert_not_called()
 
     def test_confirmed_ip12_message_calls_fixed_action_with_long_timeout(self):

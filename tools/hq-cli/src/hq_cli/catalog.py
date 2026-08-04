@@ -138,6 +138,8 @@ for item in (
      {"prompt": {"type": "string", "minLength": 1, "maxLength": 2000}}, "account_for_actions"),
     ("video", "视频工作台", "/workbench/video", "进入视频工作台；只预填，不提交生成。",
      {"prompt": {"type": "string", "minLength": 1, "maxLength": 2000}}, "account_for_actions"),
+    ("one-click-video", "一键成片", "/workbench/one-click-video", "用一个已完成的视频资产进入一键成片工作台。",
+     {"source_asset_id": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807}}, "account_for_actions"),
     ("audio", "音频工作台", "/workbench/audio", "进入音频工作台；只预填，不提交生成。",
      {"prompt": {"type": "string", "minLength": 1, "maxLength": 1000}}, "account_for_actions"),
     ("script", "文案", "/workbench/script", "进入文案编导工作台。", None, "account_for_actions"),
@@ -252,6 +254,57 @@ CAPABILITIES["asset-tags"] = _api(
     {**ASSET_MARK_FIELDS, "tags": {"type": "array", "maxItems": 8,
                                     "items": {"type": "string", "minLength": 1, "maxLength": 24}}},
     ["kind", "key", "tags"], "assets:write", "write", True)
+
+COMPOSE_PROJECT_ID = {"type": "string", "pattern": "^compose_[0-9a-f]{32}$"}
+DP_PROJECT_ID = {"type": "string", "pattern": "^dp_[0-9a-f]{32}$"}
+REVISION = {"type": "integer", "minimum": 1, "maximum": 9223372036854775807}
+CAPABILITIES["video-compose-projects"] = _api(
+    "video-compose-projects", "一键成片项目列表", "video-compose-projects", "读取本人一键成片项目。",
+    scope="video-compose:read")
+CAPABILITIES["video-compose-project"] = _api(
+    "video-compose-project", "读取一键成片项目", "video-compose-project", "读取本人一个一键成片项目及当前版本。",
+    {"project_id": COMPOSE_PROJECT_ID}, ["project_id"], "video-compose:read")
+CAPABILITIES["video-compose-create"] = _api(
+    "video-compose-create", "创建一键成片项目", "video-compose-create", "从本人已完成的视频资产创建一键成片项目。",
+    {"source_asset_id": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807}},
+    ["source_asset_id"], "video-compose:write", "write", True)
+CAPABILITIES["video-compose-analyze"] = _api(
+    "video-compose-analyze", "分析一键成片素材", "video-compose-analyze", "转写源视频并识别可审核的删减候选。",
+    {"project_id": COMPOSE_PROJECT_ID, "expected_revision": REVISION},
+    ["project_id", "expected_revision"], "video-compose:write", "external_ai", True)
+CAPABILITIES["video-compose-review"] = _api(
+    "video-compose-review", "确认一键成片剪辑", "video-compose-review", "精确确认全部候选片段保留或删除，生成非破坏性 EDL。",
+    {"project_id": COMPOSE_PROJECT_ID, "expected_revision": REVISION,
+     "decisions": {"type": "object", "minProperties": 1, "maxProperties": 200,
+                   "additionalProperties": {"type": "string", "enum": ["keep", "remove"]}}},
+    ["project_id", "expected_revision", "decisions"], "video-compose:write", "write", True)
+CAPABILITIES["video-compose-render"] = _api(
+    "video-compose-render", "渲染一键成片", "video-compose-render", "按已确认 EDL 使用主站默认模板渲染 MP4，并写入本人视频资产。",
+    {"project_id": COMPOSE_PROJECT_ID, "expected_revision": REVISION},
+    ["project_id", "expected_revision"], "video-compose:write", "write", True)
+
+DP_FIELDS = {
+    "title": {"type": "string", "minLength": 1, "maxLength": 80},
+    "script_text": {"type": "string", "maxLength": 20000},
+    "ratio": {"type": "string", "enum": ["9:16", "16:9"]},
+    "resolution": {"type": "string", "enum": ["1080p"]},
+    "voice_key": {"type": "string", "maxLength": 200},
+    "target_duration": {"type": "integer", "minimum": 30, "maximum": 180},
+}
+CAPABILITIES["digital-presenter-capability"] = _api(
+    "digital-presenter-capability", "数字人口播可用状态", "digital-presenter-capability", "读取主站数字人口播功能开关。",
+    scope="digital-presenter:read")
+CAPABILITIES["digital-presenter-project"] = _api(
+    "digital-presenter-project", "读取数字人口播项目", "digital-presenter-project", "读取本人有访问权限的画布中的数字人口播项目。",
+    {"board_id": STRING_ID, "project_id": DP_PROJECT_ID}, ["board_id", "project_id"], "digital-presenter:read")
+CAPABILITIES["digital-presenter-create"] = _api(
+    "digital-presenter-create", "创建数字人口播项目", "digital-presenter-create", "在本人有编辑权限的协作画布中创建数字人口播项目。",
+    {"board_id": STRING_ID, "request_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{8,128}$"}, **DP_FIELDS},
+    ["board_id", "request_id"], "digital-presenter:write", "write", True)
+CAPABILITIES["digital-presenter-update"] = _api(
+    "digital-presenter-update", "更新数字人口播项目", "digital-presenter-update", "按 revision 更新本人有编辑权限的数字人口播项目。",
+    {"board_id": STRING_ID, "project_id": DP_PROJECT_ID, "revision": REVISION, **DP_FIELDS},
+    ["board_id", "project_id", "revision"], "digital-presenter:write", "write", True)
 
 IMAGE_FIELDS = {
     "prompt": {"type": "string", "minLength": 1, "maxLength": 2000},

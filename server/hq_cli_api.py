@@ -45,8 +45,18 @@ SCOPES = {
     "assets:write": "收藏资产并管理本人资产标签",
     "generation:quote": "查询图片、视频、音频所需点数",
     "generation:submit": "经二次确认后提交生成并扣点",
+    "video-compose:read": "读取本人一键成片项目",
+    "video-compose:write": "经确认后创建、分析、审核或渲染本人一键成片项目",
+    "digital-presenter:read": "读取本人画布中的数字人口播项目",
+    "digital-presenter:write": "经确认后创建或更新本人画布中的数字人口播项目",
 }
 DEFAULT_SCOPES = tuple(SCOPES)
+CONFIRMATION_ACTIONS = frozenset({
+    "ip12-create", "ip12-message", "prompt-optimize", "canvas-create", "canvas-ops",
+    "asset-favorite", "asset-tags", "video-compose-create", "video-compose-analyze",
+    "video-compose-review", "video-compose-render", "digital-presenter-create",
+    "digital-presenter-update",
+})
 
 _START_HITS = {}
 _START_HITS_LOCK = threading.Lock()
@@ -56,6 +66,10 @@ _CANVAS_NODE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _CANVAS_OP_NODE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _CANVAS_PROJECT_RE = re.compile(r"^(local|collab):[A-Za-z0-9_-]{1,120}$")
 _CANVAS_OP_ID_RE = re.compile(r"^hqcli-[A-Za-z0-9_-]{11,122}$")
+_VIDEO_COMPOSE_PROJECT_RE = re.compile(r"^compose_[0-9a-f]{32}$")
+_VIDEO_COMPOSE_CANDIDATE_RE = re.compile(r"^candidate_[0-9a-f]{16}$")
+_DIGITAL_PRESENTER_PROJECT_RE = re.compile(r"^dp_[0-9a-f]{32}$")
+_IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 _CANVAS_BASE64_RE = re.compile(r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{512,}={0,2}(?![A-Za-z0-9+/_=-])")
 IMAGE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
 IMAGE_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
@@ -737,6 +751,40 @@ def _plan(scope, kind, **values):
     return {"scope": scope, "kind": kind, **values}
 
 
+def _matched_string(value, field, pattern, maximum=160):
+    value = _string(value, field, 1, maximum)
+    if not pattern.fullmatch(value):
+        raise CLIAPIError(400, field + " 格式不合法")
+    return value
+
+
+def _video_compose_decisions(value):
+    if not isinstance(value, dict) or not 1 <= len(value) <= 200:
+        raise CLIAPIError(400, "decisions 必须是包含 1-200 项的对象")
+    decisions = {}
+    for candidate_id, decision in value.items():
+        candidate_id = _matched_string(candidate_id, "候选片段 ID", _VIDEO_COMPOSE_CANDIDATE_RE)
+        decisions[candidate_id] = _enum(decision, "剪辑决定", ("keep", "remove"))
+    return decisions
+
+
+def _digital_presenter_fields(value):
+    fields = {}
+    if "title" in value:
+        fields["title"] = _string(value["title"], "title", 1, 80)
+    if "script_text" in value:
+        fields["script_text"] = _string(value["script_text"], "script_text", 0, 20000)
+    if "ratio" in value:
+        fields["ratio"] = _enum(value["ratio"], "ratio", ("9:16", "16:9"))
+    if "resolution" in value:
+        fields["resolution"] = _enum(value["resolution"], "resolution", ("1080p",))
+    if "voice_key" in value:
+        fields["voice_key"] = _string(value["voice_key"], "voice_key", 0, 200)
+    if "target_duration" in value:
+        fields["target_duration"] = _integer(value["target_duration"], "target_duration", 30, 180)
+    return fields
+
+
 def action_plan(action, value):
     if not isinstance(value, dict):
         raise CLIAPIError(400, "input 必须是 JSON 对象")
@@ -855,6 +903,65 @@ def action_plan(action, value):
         }
         return _plan("assets:write", "proxy", base=CONTENT_BASE, path="/api/gen/asset/tags",
                      method="POST", body=body)
+    if action in {"video-compose-projects", "video-compose-project"}:
+        allowed = {"project_id"} if action.endswith("project") else set()
+        _strict_object(value, allowed, allowed)
+        path = "/api/gen/video-compose/projects"
+        if allowed:
+            project_id = _matched_string(value["project_id"], "project_id", _VIDEO_COMPOSE_PROJECT_RE)
+            path += "/" + project_id
+        return _plan("video-compose:read", "proxy", base=CONTENT_BASE, path=path)
+    if action == "video-compose-create":
+        _strict_object(value, {"source_asset_id"}, ("source_asset_id",))
+        body = {"source_asset_id": _integer(value["source_asset_id"], "source_asset_id", 1, 2**63 - 1)}
+        return _plan("video-compose:write", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/video-compose/projects", method="POST", body=body)
+    if action in {"video-compose-analyze", "video-compose-review", "video-compose-render"}:
+        allowed = {"project_id", "expected_revision"}
+        if action == "video-compose-review":
+            allowed.add("decisions")
+        _strict_object(value, allowed, tuple(allowed))
+        project_id = _matched_string(value["project_id"], "project_id", _VIDEO_COMPOSE_PROJECT_RE)
+        body = {"expected_revision": _integer(value["expected_revision"], "expected_revision", 1, 2**63 - 1)}
+        suffix = {"video-compose-analyze": "analyze-source", "video-compose-review": "edit-decisions",
+                  "video-compose-render": "render"}[action]
+        if action == "video-compose-review":
+            body["decisions"] = _video_compose_decisions(value["decisions"])
+        return _plan("video-compose:write", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/video-compose/projects/%s/%s" % (project_id, suffix),
+                     method="POST", body=body, timeout=300 if action != "video-compose-review" else 30)
+    if action == "digital-presenter-capability":
+        _strict_object(value, set())
+        return _plan("digital-presenter:read", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/digital-presenter/capability")
+    if action == "digital-presenter-project":
+        _strict_object(value, {"board_id", "project_id"}, ("board_id", "project_id"))
+        board_id = _identifier(value["board_id"], "board_id")
+        project_id = _matched_string(value["project_id"], "project_id", _DIGITAL_PRESENTER_PROJECT_RE)
+        return _plan("digital-presenter:read", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/digital-presenter/project?id=" + urllib.parse.quote(project_id),
+                     headers={"X-Canvas-Board-Id": board_id})
+    if action in {"digital-presenter-create", "digital-presenter-update"}:
+        control = {"board_id", "request_id"} if action.endswith("create") else {"board_id", "project_id", "revision"}
+        editable = {"title", "script_text", "ratio", "resolution", "voice_key", "target_duration"}
+        _strict_object(value, control | editable, tuple(control))
+        board_id = _identifier(value["board_id"], "board_id")
+        body = _digital_presenter_fields(value)
+        headers = {"X-Canvas-Board-Id": board_id}
+        if action == "digital-presenter-create":
+            headers["Idempotency-Key"] = _matched_string(
+                value["request_id"], "request_id", _IDEMPOTENCY_KEY_RE, 128)
+            path, method = "/api/gen/digital-presenter/projects", "POST"
+        else:
+            if not body:
+                raise CLIAPIError(400, "数字人口播更新至少需要一个字段")
+            body.update({
+                "project_id": _matched_string(value["project_id"], "project_id", _DIGITAL_PRESENTER_PROJECT_RE),
+                "revision": _integer(value["revision"], "revision", 1, 2**63 - 1),
+            })
+            path, method = "/api/gen/digital-presenter/project", "PUT"
+        return _plan("digital-presenter:write", "proxy", base=CONTENT_BASE,
+                     path=path, method=method, body=body, headers=headers)
     if action in {"image-generate", "video-generate", "audio-generate"}:
         payload, generation_kind, endpoint = _generation_payload(action, value)
         return _plan("generation:quote", "generation", generation_kind=generation_kind,
