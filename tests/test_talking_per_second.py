@@ -46,7 +46,7 @@ class TalkingSettleTests(unittest.TestCase):
 
     def test_settle_is_wired_after_done_and_only_refunds_overcharge(self):
         core_src = (Path(video.__file__).with_name("core.py")).read_text(encoding="utf-8")
-        block = core_src.split('if not _set_terminal(job_id, "done", result=result):')[1][:900]
+        block = core_src.split('if not _set_terminal(job_id, "done", result=result):')[1][:1200]
         self.assertIn('kind == "video"', block)
         self.assertIn("talking_actual_cost", block)
         self.assertIn("safe_refund_points", block)

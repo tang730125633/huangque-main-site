@@ -125,9 +125,11 @@ class VideoParameterUiTests(unittest.TestCase):
         # 四个成本提示元素都在
         for eid in ("grokCostNote", "microCostNote", "omniCostNote", "tryonCostNote"):
             self.assertIn('id="%s"' % eid, VIDEO_HTML, eid)
-        # 试衣两档与后端一致：换背景需衣服图+背景图都有 → 40，否则 25
-        self.assertIn("换装+换背景 40 点", VIDEO_HTML)
-        self.assertIn("换装 25 点", VIDEO_HTML)
+        # 试衣两档由统一价目动态注入；默认值仍与后端一致。
+        self.assertIn("TRYON_SINGLE_POINTS=p['video.tryon.single']||25", VIDEO_HTML)
+        self.assertIn("TRYON_DOUBLE_POINTS=p['video.tryon.double']||40", VIDEO_HTML)
+        self.assertIn("'换装+换背景 '+TRYON_DOUBLE_POINTS+' 点", VIDEO_HTML)
+        self.assertIn("'换装 '+TRYON_SINGLE_POINTS+' 点", VIDEO_HTML)
         self.assertEqual(points.cost_of("tryon", {"clothes_data": "x", "background_data": "y"}), 40)
         self.assertEqual(points.cost_of("tryon", {"clothes_data": "x"}), 25)
 

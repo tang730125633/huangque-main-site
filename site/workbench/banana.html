@@ -231,7 +231,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=4de5465a"></script>
+<script src="cloud-shell.js?v=49fe47f6"></script>
 <script src="image-mentions.js?v=20260802f"></script>
 <script>
 /* 作图页接后端能力中心 /api/gen/image + /api/gen/banana，点数后端统一扣。 */
@@ -310,6 +310,21 @@
   //    seedream_std/seedream_pro 对 points.SEEDREAM_VARIANT_COST。否则前端显示和实际扣点对不上。
   // gpt 按官方 $30/M image output token 实测折算(1点=0.1元)：标准≈¥0.30~0.37，高清=4倍≈¥1.20~1.50。
   var COSTBASE={nb2:{std:18,hd:35}, pro:{std:35,hd:44}, gpt:{std:20,hd:35}, seedream_std:{std:8,hd:12}, seedream_pro:{std:15,hd:20}, xiaole:{std:12,hd:16}, zelong2:{std:8,hd:12}};
+  var reverseCost=2;
+  if(window.HQ&&HQ.onPricing) HQ.onPricing(function(p){
+    COSTBASE={
+      nb2:{std:p['image.banana.nb2.std']||18,hd:p['image.banana.nb2.hd']||35},
+      pro:{std:p['image.banana.pro.std']||35,hd:p['image.banana.pro.hd']||44},
+      gpt:{std:p['image.openai.std']||20,hd:p['image.openai.hd']||35},
+      seedream_std:{std:p['image.seedream.std.std']||8,hd:p['image.seedream.std.hd']||12},
+      seedream_pro:{std:p['image.seedream.pro.std']||15,hd:p['image.seedream.pro.hd']||20},
+      xiaole:{std:p['image.xiaole.std']||12,hd:p['image.xiaole.hd']||16},
+      zelong2:{std:p['image.zelong2.std']||8,hd:p['image.zelong2.hd']||12}
+    };
+    reverseCost=p['image.reverse']||2;
+    var button=document.getElementById('revBtn');if(button&&!button.disabled)button.textContent='反推提示词（'+reverseCost+' 点）';
+    updateCost();
+  });
   // 数量上限(中转/循环慢→低)。必须与后端 points.cost_of 的 cap 一致，否则按 N 扣点却只出 cap 张。
   var ENGINE_MAXN={banana:4, gpt:4, seedream:2, xiaole:2, zelong2:1};
   var zelongCard=document.querySelector('#engineRow [data-engine="zelong2"]');
@@ -925,14 +940,14 @@
     fetch('/api/gen/reverse',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify({image:revImgData})})
       .then(function(r){ return r.json().then(function(d){ return {s:r.status,d:d}; }); })
       .then(function(x){
-        revBtn.disabled=false; revBtn.textContent='反推提示词（2 点）';
+        revBtn.disabled=false; revBtn.textContent='反推提示词（'+reverseCost+' 点）';
         if(x.s===401){ HQ.login(); return; }
         if(x.s===402){ revMsg('点数不足 · 去充值','#f4708a'); return; }
         if(!x.d.prompt){ revMsg('反推失败：'+brandedErrorText((x.d&&x.d.detail)||'未知'),'#f4708a'); return; }
         revPrompt.value=x.d.prompt; revResult.style.display='block';
         revMsg('✅ 反推完成，可编辑后填入','#2bd576');
         if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
-      }).catch(function(){ revBtn.disabled=false; revBtn.textContent='反推提示词（2 点）'; revMsg('网络错误，请重试','#f4708a'); });
+      }).catch(function(){ revBtn.disabled=false; revBtn.textContent='反推提示词（'+reverseCost+' 点）'; revMsg('网络错误，请重试','#f4708a'); });
   };
   if(revFill) revFill.onclick=function(){ pr.value=revPrompt.value||''; if(typeof updCount==='function') updCount(); try{pr.focus();}catch(e){} setNote('✅ 反推提示词已填入','#2bd576'); };
   if(revFillImg) revFillImg.onclick=function(){ pr.value=revPrompt.value||''; if(typeof updCount==='function') updCount();

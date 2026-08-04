@@ -20,6 +20,7 @@ from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from content_domains.image_mentions import resolve_image_mentions, validate_image_mentions
+from content_domains import pricing
 
 try:
     from content_domains import feature_flags
@@ -616,7 +617,7 @@ class H(BaseHTTPRequestHandler):
             mk = body["model"]
             cq = body["quality"]
             cn = body["count"]
-            cost = BASE_COST[mk][cq] * cn  # 璐ㄩ噺鍩轰环 脳 鏁伴噺
+            cost = pricing.get_price("image.banana.%s.%s" % (mk, cq)) * cn
             with _submission_lock:
                 active_jobs = _user_active_job_count(user["username"])
                 if active_jobs >= MAX_USER_ACTIVE_JOBS:
@@ -669,7 +670,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": "请先上传或粘贴一张图片"})
             if len(image) > 8 * 1024 * 1024:     # base64 ~8MB ≈ 原图 6MB
                 return self._send(400, {"detail": "图片太大，请压缩后再试"})
-            cost = REVERSE_COST
+            cost = pricing.get_price("image.reverse")
             deduct_status, deduct_data = deduct_points(user["username"], cost, "reverse")
             if deduct_status in (402, 403):
                 return self._send(deduct_status, {"detail": (deduct_data or {}).get("detail") or "点数不足", "need": cost})
@@ -721,6 +722,7 @@ if __name__ == "__main__":
         _selftest(); raise SystemExit(0)
     if feature_flags is not None:
         feature_flags.init_db()
+    pricing.init_db()
     from content_domains import jobs_store
     jobs_store.ensure_owner_column(jdb)   # 必须在 start_job_workers 之前：重排扫描按 owner 过滤
     start_job_workers()

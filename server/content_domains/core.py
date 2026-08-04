@@ -19,10 +19,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
 import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security, inspiration_likes, history, notifications, cli_gateway, cli_uploads  # 领域存储模块均无反向依赖
 try:
-    from . import asset_batch, feature_flags
+    from . import asset_batch, feature_flags, pricing
 except ImportError:  # Running core.py directly during local checks.
     import asset_batch
     import feature_flags
+    import pricing
 
 PORT       = int(os.environ.get("CONTENT_API_PORT", "8096"))
 AUTH_BASE  = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
@@ -427,6 +428,7 @@ def init_db():
         submission_idempotency.ensure_table(c)
         c.commit()
     feature_flags.init_db()
+    pricing.init_db()
     init_audio_db(); _short_drama_domain().init_db(jdb); jobs_store.ensure_video_notification_outbox(jdb)
 
 def init_audio_db():
@@ -1302,7 +1304,8 @@ def run_job(job_id):
         # 互斥 + reaper/reclaim 不碰 done → 每 job 至多结算一次，不重复退。结算失败不影响出片。
         if kind == "video" or (kind == "script_to_video" and (result or {}).get("pipeline") in {"talking", "talking_with_materials"}):
             try:
-                actual = _domains()[2].talking_actual_cost(result)
+                block_points = payload.get("_talking_block_points")
+                actual = _domains()[2].talking_actual_cost(result, block_points)
                 if kind == "script_to_video":
                     actual += int(((payload.get("cost_breakdown") or {}).get("material_images")) or 0)
                 if actual and int(cost or 0) > actual:
@@ -2377,7 +2380,7 @@ class H(BaseHTTPRequestHandler):
             except points_domain.AuthPointsError as e:
                 return self._send(
                     e.status if e.status in (402, 403) else 502,
-                    _public_points_error(points_domain, e, audio_domain.VOICE_SLOT_COST),
+                    _public_points_error(points_domain, e, audio_domain.voice_slot_cost()),
                 )
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:160]})
@@ -2859,6 +2862,8 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
+        if p == "/api/gen/pricing":
+            return self._send(200, pricing.public_catalog())
         if _short_drama_domain().dispatch_http(
                 self, "GET", jdb, verify,
                 getattr(points_domain, "cost_of", None),
@@ -3055,7 +3060,7 @@ class H(BaseHTTPRequestHandler):
             items = audio_domain.list_user_audio_voice_slots(user["username"])
             return self._send(200, {"items": items,
                 "slot_count": sum(1 for item in items if item.get("status") in audio_domain.VALID_VOICE_SLOT_STATUSES),
-                "slot_max": audio_domain.VOICE_SLOT_MAX_PER_USER, "slot_cost": audio_domain.VOICE_SLOT_COST,
+                "slot_max": audio_domain.VOICE_SLOT_MAX_PER_USER, "slot_cost": audio_domain.voice_slot_cost(),
                 "points": user.get("points")})
         if p == "/api/gen/audio/clone-status":
             user = verify(self._token())
@@ -3097,27 +3102,28 @@ class H(BaseHTTPRequestHandler):
             try: page = int(q.get("page", ["1"])[0] or 1)
             except Exception: page = 1
             if not keyword: return self._send(400, {"detail": "缺少关键词"})
+            search_cost = pricing.get_price("collect.search")
             try:
-                points_left = points_domain.deduct_points(user["username"], 1, "search:" + platform)
+                points_left = points_domain.deduct_points(user["username"], search_cost, "search:" + platform)
             except points_domain.AuthPointsError as e:
                 code = e.status if e.status in (402, 403) else 502
-                return self._send(code, _public_points_error(points_domain, e, 1))
+                return self._send(code, _public_points_error(points_domain, e, search_cost))
             try:
                 r = tikhub.search(platform, keyword, page=page, video_only=False)  # 含图文
             except tikhub.TikHubError as e:
-                points_domain.safe_refund_points(user["username"], 1, "search:" + platform + ":refund")
+                points_domain.safe_refund_points(user["username"], search_cost, "search:" + platform + ":refund")
                 return self._send(502, {"detail": str(e)[:160]})
             items = [{"id": it.get("id"), "platform": it.get("platform"), "title": it.get("title"),
                       "cover": it.get("cover"), "author": it.get("author"), "url": it.get("url"),
                       "note_type": it.get("note_type"),
                       "stats": {"like": it.get("like"), "comment": it.get("comment")}} for it in (r.get("items") or [])]
-            return self._send(200, {"items": items, "cost": 1, "points_left": points_left})
+            return self._send(200, {"items": items, "cost": search_cost, "points_left": points_left})
         if p == "/api/gen/health":
             return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS), "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS, "talking_job_workers": TALKING_JOB_WORKERS, "image_job_workers": IMAGE_JOB_WORKERS, "job_queue_max": JOB_QUEUE_MAX, "talking_job_queue_max": TALKING_JOB_QUEUE_MAX,
                                     "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_active_xiaole_video": MAX_USER_ACTIVE_XIAOLE_VIDEO, "max_user_active_sora_video": MAX_USER_ACTIVE_SORA_VIDEO, "max_user_active_tryon": MAX_USER_ACTIVE_TRYON, "max_user_active_cinematic": MAX_USER_ACTIVE_CINEMATIC,
                                     "sora_video_enabled": bool(video_domain.sora_video_is_open() and OPENAI_KEY and feature_flags.is_enabled("sora_video")),
                                     "omni_video_enabled": bool(video_domain.omni_video_is_open() and feature_flags.is_enabled("omni_video")), "seedance_video_enabled": bool(video_domain.seedance_video_is_open() and feature_flags.is_enabled("seedance_video")), "reverse_remake_video_offer": (reverse_remake_offer := video_domain.reverse_remake_video_offer(feature_flags, points_domain.cost_of)), "reverse_remake_video_channel": reverse_remake_offer["channel"], "seedance_reference_images_enabled": video_domain.seedance_reference_upload_is_open(), "seedance_upscale_enabled": bool(video_domain.seedance_upscale_is_open() and feature_flags.is_enabled("seedance_video")),
-                                    "max_user_running_talking": MAX_USER_RUNNING_TALKING, "max_user_running_image": MAX_USER_RUNNING_IMAGE, "video_cost": VIDEO_COST, "video_batch_max": min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS), "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
+                                    "max_user_running_talking": MAX_USER_RUNNING_TALKING, "max_user_running_image": MAX_USER_RUNNING_IMAGE, "video_cost": pricing.get_price("video.talking.block"), "video_batch_max": min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS), "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
         self._send(404, {"detail": "not found"})
     def do_PUT(self):
         audio_domain, _points_domain, _video_domain = _domains()

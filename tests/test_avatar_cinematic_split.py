@@ -57,10 +57,10 @@ class PipelineWiringTests(unittest.TestCase):
     def test_costs_are_registered(self):
         """⚠️ cost_of() 回落到 COST.get(kind, 0) —— 新 kind 忘了登记就是【免费】。"""
         self.assertEqual(points.cost_of("avatar", {}), 2)
-        # 获客固定 30 点/次（采集量前端固定 20 视频），与 leads.html 成本徽章一致；
-        # count/pages 传什么都是 30，防"消耗点数对不上"。
-        self.assertEqual(points.cost_of("leads", {}), 30)
-        self.assertEqual(points.cost_of("leads", {"count": 100, "pages": 3}), 30)
+        # 获客按 6 + floor(数量×页数÷4) 计费；前端固定 20 条、1 页时是 11 点。
+        self.assertEqual(points.cost_of("leads", {}), 9)
+        self.assertEqual(points.cost_of("leads", {"count": 20, "pages": 1}), 11)
+        self.assertEqual(points.cost_of("leads", {"count": 100, "pages": 3}), 28)
         # cinematic 改成按成片秒数计费了（见 test_cinematic_billing），这里只守住底线：
         # 无论 payload 多空、玩法认不认得出来，都不能算出 0 点 —— 那是白送一条 $7 的视频。
         for kind in ("avatar", "cinematic"):

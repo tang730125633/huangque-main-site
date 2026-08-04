@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>点数价格 · 黄雀 AI 工作台</title>
+<link rel="icon" href="../assets/cloud/logo-bird.png">
+<link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
+<link rel="stylesheet" href="../assets/cloud.css?v=8">
+<script src="theme-init.js?v=11eb385e"></script>
+<style>
+  body{overflow:hidden}.price-hero{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin-bottom:24px;flex-wrap:wrap}.price-hero h1{margin:0;font-size:27px}.price-hero p{margin:9px 0 0;color:#94a4bb;font-size:14px;line-height:1.7}.price-note{padding:10px 14px;border:1px solid rgba(231,178,76,.22);border-radius:11px;background:rgba(231,178,76,.07);color:#e7b24c;font-size:12.5px}.price-groups{display:grid;gap:18px}.price-group{overflow:hidden;border:1px solid rgba(148,164,187,.12);border-radius:16px;background:linear-gradient(165deg,rgba(16,24,39,.62),rgba(12,18,32,.45))}.price-group h2{margin:0;padding:16px 20px;border-bottom:1px solid rgba(148,164,187,.09);font-size:16px}.price-table{width:100%;border-collapse:collapse}.price-table th,.price-table td{padding:12px 20px;border-bottom:1px solid rgba(148,164,187,.07);text-align:left;font-size:13px}.price-table th{color:#5c6b82;font-size:11.5px;font-weight:600}.price-table tr:last-child td{border-bottom:0}.price-table td:nth-child(3),.price-table td:nth-child(4){white-space:nowrap}.price-value{font-family:'JetBrains Mono',monospace;color:#e7b24c;font-size:18px;font-weight:800}.price-desc{margin-top:4px;color:#5c6b82;font-size:11.5px}.price-empty{padding:42px;text-align:center;color:#94a4bb;border:1px solid rgba(148,164,187,.12);border-radius:16px}.price-foot{margin-top:18px;color:#5c6b82;font-size:12px;line-height:1.7}@media(max-width:680px){.price-group{overflow-x:auto}.price-table{min-width:620px}.price-table th,.price-table td{padding:11px 14px}.price-note{width:100%}}
+</style>
+<link rel="stylesheet" href="theme.css?v=5873a2f4">
+</head>
+<body>
+<div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
+<div class="hq-app"><div class="hq-content" data-active="pricing">
+  <div class="price-hero">
+    <div><h1>点数价格</h1><p>每项功能当前会扣多少点，以这里的实时价格为准。</p></div>
+    <div class="price-note" id="priceUpdated">正在读取最新价格…</div>
+  </div>
+  <div class="price-groups" id="priceGroups"><div class="price-empty">正在加载价格表…</div></div>
+  <div class="price-foot">批量、按秒和按张功能会按实际数量累计；任务明确失败时按对应功能规则退点。充值换算为 10 点/元。</div>
+</div></div>
+<script src="../assets/cloud.js?v=8"></script>
+<script src="cloud-shell.js?v=49fe47f6"></script>
+<script>
+(function(){
+  'use strict';
+  var box=document.getElementById('priceGroups'),updated=document.getElementById('priceUpdated');
+  function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+  function render(data){
+    var groups={},latest=0;
+    (data.items||[]).forEach(function(x){(groups[x.category]||(groups[x.category]=[])).push(x);latest=Math.max(latest,Number(x.updated_at||0))});
+    var names=Object.keys(groups);
+    if(!names.length){box.innerHTML='<div class="price-empty">暂无价格数据</div>';return}
+    box.innerHTML=names.map(function(name){return '<section class="price-group"><h2>'+esc(name)+'</h2><table class="price-table"><thead><tr><th>功能</th><th>规格</th><th>价格</th><th>单位</th></tr></thead><tbody>'+groups[name].map(function(x){return '<tr><td><b>'+esc(x.name)+'</b>'+(x.desc?'<div class="price-desc">'+esc(x.desc)+'</div>':'')+'</td><td>'+esc(x.variant)+'</td><td><span class="price-value">'+Number(x.points)+'</span> 点</td><td>'+esc(x.unit)+'</td></tr>'}).join('')+'</tbody></table></section>'}).join('');
+    updated.textContent=latest?'最近调价：'+new Date(latest*1000).toLocaleString():'当前为平台默认价格';
+  }
+  function load(){fetch('/api/gen/pricing',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(render).catch(function(){box.innerHTML='<div class="price-empty">价格表暂时无法读取，请稍后刷新</div>';updated.textContent='读取失败'})}
+  load();setInterval(load,30000);
+})();
+</script>
+</body>
+</html>
