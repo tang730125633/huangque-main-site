@@ -93,6 +93,8 @@ jobs:
 
       - name: 测试画布 API 与短剧工作区
         run: |
+          node tests/test_short_drama_center.js
+          node tests/test_short_drama_workspace.js
           node tests/test_canvas_api.js
           node tests/test_canvas_short_drama.js
           node tests/test_canvas_short_drama_production.js

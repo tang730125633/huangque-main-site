@@ -1,7 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const http = require('node:http');
+const os = require('node:os');
 const path = require('node:path');
+const {spawn} = require('node:child_process');
 const zlib = require('node:zlib');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -290,6 +293,42 @@ test('剧本共创室使用两栏、阶段导航和按需切换的对话优先�
   assert.match(centerStyle, /\.short-drama-planner-grid\{[^}]*grid-template-columns:minmax\(0,1fr\) 320px[^}]*overflow:hidden/);
   assert.match(centerStyle, /data-planner-panel="chat"[\s\S]*\.short-drama-planner-canvas/);
   assert.match(centerStyle, /@media\(max-width:900px\)[^{]*\{[^}]*\.short-drama-create-dialog:has/);
+});
+
+test('移动端收起创作记忆后仍可聚焦并再次展开', async () => {
+  const chromeCandidates = process.platform === 'win32'
+    ? ['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe']
+    : ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
+  const chrome = chromeCandidates.find(candidate => fs.existsSync(candidate));
+  assert.ok(chrome, '真实响应式测试需要 Chrome 或 Chromium');
+  const probe = `<script>addEventListener('DOMContentLoaded',function(){setTimeout(function(){try{var dialog=document.getElementById('shortDramaDialog'),inspiration=document.getElementById('shortDramaInspiration'),grid=document.querySelector('.short-drama-planner-grid'),inspector=document.querySelector('.short-drama-planner-inspector'),button=document.getElementById('shortDramaPlannerMemoryToggle'),brief=document.getElementById('shortDramaPlannerBrief');inspiration.hidden=false;dialog.showModal();button.click();button.focus();var checks=[matchMedia('(max-width:900px)').matches,grid.classList.contains('memory-collapsed'),getComputedStyle(inspector).display!=='none',button.getClientRects().length>0,document.activeElement===button,button.getAttribute('aria-expanded')==='false'];button.click();checks.push(!grid.classList.contains('memory-collapsed'),button.getAttribute('aria-expanded')==='true',getComputedStyle(brief).display!=='none');document.documentElement.setAttribute('data-responsive-memory-test',checks.every(Boolean)?'pass':'fail-'+checks.map(function(value){return value?'1':'0';}).join(''));}catch(error){document.documentElement.setAttribute('data-responsive-memory-test','error');}},200);});<\/script>`;
+  const testHtml = html.replace('</body>', probe + '</body>');
+  const siteRoot = path.join(ROOT, 'site');
+  const server = http.createServer((request, response) => {
+    const pathname = decodeURIComponent(new URL(request.url, 'http://127.0.0.1').pathname);
+    if (pathname === '/workbench/short-drama.html') {
+      response.writeHead(200, {'Content-Type':'text/html; charset=utf-8'});response.end(testHtml);return;
+    }
+    const filename = path.resolve(siteRoot, pathname.replace(/^\/+/, ''));
+    if (!filename.startsWith(siteRoot) || !fs.existsSync(filename) || !fs.statSync(filename).isFile()) {response.writeHead(404);response.end('not found');return;}
+    const contentType = filename.endsWith('.css') ? 'text/css' : filename.endsWith('.js') ? 'text/javascript' : 'application/octet-stream';
+    response.writeHead(200, {'Content-Type':contentType});response.end(fs.readFileSync(filename));
+  });
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hq-responsive-'));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    const output = await new Promise((resolve, reject) => {
+      const browser = spawn(chrome, ['--headless=new','--no-sandbox','--disable-gpu','--disable-dev-shm-usage','--hide-scrollbars','--window-size=390,844','--virtual-time-budget=3000','--user-data-dir='+profile,'--dump-dom',`http://127.0.0.1:${address.port}/workbench/short-drama.html`]);
+      let stdout='',stderr='';browser.stdout.on('data',chunk => {stdout+=chunk;});browser.stderr.on('data',chunk => {stderr+=chunk;});
+      const timeout = setTimeout(() => {browser.kill();reject(new Error('Chrome 响应式测试超时'));},15000);
+      browser.on('error',reject);browser.on('close',code => {clearTimeout(timeout);code===0?resolve(stdout):reject(new Error(stderr||`Chrome exited ${code}`));});
+    });
+    assert.match(output, /data-responsive-memory-test="pass"/);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    fs.rmSync(profile, {recursive:true,force:true});
+  }
 });
 
 test('仅展示个人独立项目并正确计算概览', () => {
