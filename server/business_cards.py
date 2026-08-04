@@ -621,10 +621,15 @@ def upload_image(payload, field, prefix="cards"):
         raise
     except Exception as exc:
         raise CardError("invalid_image") from exc
-    # Security rejection/unavailability deliberately bubbles up; a card image must fail closed.
     if miniprogram_security is None:
         raise CardError("media_unavailable", "媒体服务暂不可用", 503)
-    miniprogram_security.check_image(raw, field + ".jpg", "image/jpeg")
+    try:
+        miniprogram_security.check_image(raw, field + ".jpg", "image/jpeg")
+    except miniprogram_security.ContentRejected as exc:
+        label = {"avatar": "头像", "wechat_qr": "微信二维码"}.get(field, "作品图片%s" % field[-1])
+        raise CardError("content_rejected", "%s未通过微信安全检测：%s" % (label, exc), 400) from exc
+    except miniprogram_security.SecurityUnavailable as exc:
+        raise CardError("content_security_unavailable", str(exc), 503) from exc
     try:
         from .content_domains import cos
     except ImportError:
