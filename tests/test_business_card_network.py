@@ -174,6 +174,50 @@ class BusinessCardNetworkTests(unittest.TestCase):
             self.assertEqual(c.execute("SELECT COUNT(*) FROM user_invites").fetchone()[0], before_invites)
             self.assertEqual(c.execute("SELECT miniprogram_openid FROM business_cards WHERE user_id=?", (root_id,)).fetchone()[0], "openid-root")
 
+    def test_card_session_is_independent_until_explicit_account_login(self):
+        with self.conn() as c:
+            root_id = self.uid(c, "root")
+            self.auth.business_cards.create_draft(c, root_id, {"name": "根用户", "title": "老师", "company": "黄雀"})
+        account_headers = {"Authorization": "Bearer " + self.auth.issue_token("child")}
+        with patch.object(self.auth.wechat_vpay, "code_to_session", return_value={"openid": "openid-root"}):
+            self.assertEqual(self.request(
+                "/api/auth/card/wechat/bind", {"wx_code": "bind"},
+                {"Authorization": "Bearer " + self.auth.issue_token("root")},
+            )[0], 200)
+            status, session = self.request("/api/auth/miniprogram/card-session", {"wx_code": "session"})
+        self.assertEqual(status, 200)
+        self.assertIn("card_token", session)
+        self.assertNotIn("token", session)
+
+        card_headers = {"X-HQ-Card-Token": session["card_token"]}
+        self.assertEqual(self.get("/api/auth/me", card_headers)[0], 401)
+        status, mine = self.get("/api/auth/card/me", {**account_headers, **card_headers})
+        self.assertEqual(status, 200)
+        self.assertEqual(mine["card"]["name"], "根用户")
+
+        status, login = self.request("/api/auth/miniprogram/card-account-login", {}, card_headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(login["user"]["username"], "root")
+        self.assertEqual(self.get("/api/auth/me", {"Authorization": "Bearer " + login["token"]})[0], 200)
+
+        self.assertEqual(self.request("/api/auth/change_password", {
+            "old_password": "secret123", "new_password": "changed123",
+        }, card_headers)[0], 200)
+        self.assertEqual(self.get("/api/auth/me", {"Authorization": "Bearer " + login["token"]})[0], 401)
+        self.assertEqual(self.get("/api/auth/me", account_headers)[0], 200)
+        self.assertEqual(self.get("/api/auth/card/me", card_headers)[0], 200)
+
+        with patch.object(self.auth.wechat_vpay, "code_to_session", return_value={"openid": "openid-new-card"}):
+            status, registered = self.request("/api/auth/miniprogram/card-register", {
+                "wx_code": "register", "phone": "13800000008", "device_id": "separate-device",
+                "card": {"name": "新名片", "title": "设计师", "company": "黄雀"},
+                "separate_sessions": True,
+            })
+        self.assertEqual(status, 200)
+        self.assertIn("card_token", registered)
+        self.assertNotIn("token", registered)
+        self.assertEqual(self.get("/api/auth/me", {"Authorization": "Bearer " + registered["card_token"]})[0], 401)
+
     def test_wechat_card_register_rewards_only_valid_attribution_and_is_idempotent(self):
         with self.conn() as c:
             root_id = self.uid(c, "root")

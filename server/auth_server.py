@@ -299,8 +299,12 @@ def init_db():
         token TEXT PRIMARY KEY,
         username TEXT NOT NULL,
         created_at TEXT DEFAULT (datetime('now')),
-        expires_at INTEGER
+        expires_at INTEGER,
+        scope TEXT NOT NULL DEFAULT 'account'
     )""")
+    token_cols = {r["name"] for r in c.execute("PRAGMA table_info(tokens)").fetchall()}
+    if "scope" not in token_cols:
+        c.execute("ALTER TABLE tokens ADD COLUMN scope TEXT NOT NULL DEFAULT 'account'")
     c.execute("""CREATE TABLE IF NOT EXISTS points_audit(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         who_admin TEXT NOT NULL,
@@ -937,7 +941,7 @@ def miniprogram_openid(wx_code):
     return openid, None
 
 
-def register_miniprogram_card(wx_code, phone, card, device_id, invite_code="", invite_attribution_token="", client_ip=""):
+def register_miniprogram_card(wx_code, phone, card, device_id, invite_code="", invite_attribution_token="", client_ip="", separate_sessions=False):
     """Create a phone account and bind its Mini Program identity in one SQLite transaction."""
     phone = str(phone or "").strip()
     device_id = str(device_id or "").strip()
@@ -972,9 +976,9 @@ def register_miniprogram_card(wx_code, phone, card, device_id, invite_code="", i
             owner = c.execute("SELECT * FROM users WHERE id=? AND account_status='active'", (owner_id,)).fetchone()
             if not owner:
                 return None, {"status": 404, "code": "card_unbound", "detail": "微信尚未绑定名片"}
-            token = issue_token(owner["username"], c)
+            token_key = "card_token" if separate_sessions else "token"
+            token = issue_token(owner["username"], c, scope="card" if separate_sessions else "account")
             response = {
-                "token": token,
                 "user": public_user(owner["username"], owner["display_name"], owner["points"], owner["role"], owner["must_change"], owner["account_id"], owner["membership_tier"], owner["membership_started_at"], owner["membership_expires_at"]),
                 "card": card_for_owner(c, owner_id),
                 "invite_bound": bool(c.execute(
@@ -985,6 +989,7 @@ def register_miniprogram_card(wx_code, phone, card, device_id, invite_code="", i
                 "ai_account": owner["username"],
                 "initial_password": initial_password_change_required(owner),
             }
+            response[token_key] = token
             c.commit()
             return response, None
         if c.execute("SELECT 1 FROM users WHERE username=?", (phone,)).fetchone():
@@ -1031,11 +1036,11 @@ def register_miniprogram_card(wx_code, phone, card, device_id, invite_code="", i
                 (SYSTEM_ACTOR, phone, initial_points, 0, initial_points,
                  "名片邀请注册奖励", int(time.time()), transaction_key),
             )
-        token = issue_token(phone, c)
+        token_key = "card_token" if separate_sessions else "token"
+        token = issue_token(phone, c, scope="card" if separate_sessions else "account")
         saved_card = card_for_owner(c, cur.lastrowid)
         c.commit()
-        return {
-            "token": token,
+        response = {
             "user": public_user(phone, phone, initial_points, "member", False, account_id),
             "card": saved_card,
             "invite_bound": bool(relation),
@@ -1044,7 +1049,9 @@ def register_miniprogram_card(wx_code, phone, card, device_id, invite_code="", i
             "invite_reward_points": initial_points if relation else 0,
             "ai_account": phone,
             "initial_password": True,
-        }, None
+        }
+        response[token_key] = token
+        return response, None
     except invites.InviteError as exc:
         c.rollback()
         return None, {"status": exc.http_status, "code": exc.code, "detail": exc.detail}
@@ -4164,13 +4171,13 @@ def cleanup_expired_tokens(c=None):
     if own:
         c.commit(); c.close()
 
-def issue_token(username, c=None, ttl=None):
+def issue_token(username, c=None, ttl=None, scope="account"):
     own = c is None
     if own: c = db()
     cleanup_expired_tokens(c)
     tok = secrets.token_urlsafe(32)
-    c.execute("INSERT INTO tokens(token,username,expires_at) VALUES(?,?,?)",
-              (tok, username, int(time.time()) + int(TOKEN_TTL if ttl is None else ttl)))
+    c.execute("INSERT INTO tokens(token,username,expires_at,scope) VALUES(?,?,?,?)",
+              (tok, username, int(time.time()) + int(TOKEN_TTL if ttl is None else ttl), scope))
     if own:
         c.commit(); c.close()
     return tok
@@ -4296,20 +4303,25 @@ class H(BaseHTTPRequestHandler):
             device_hits.append(now)
             ip_hits.append(now)
             return True
-    def _user_from_token(self, tok):
+    def _user_from_token(self, tok, scope="account"):
         if not tok:
             return None
         c = db()
         r = c.execute("""SELECT u.* FROM tokens t JOIN users u ON u.username=t.username
                          WHERE t.token=? AND (t.expires_at IS NULL OR t.expires_at > ?)
+                           AND COALESCE(t.scope,'account')=?
                            AND COALESCE(u.account_status,'active')='active'""",
-                      (tok, int(time.time()))).fetchone()
+                      (tok, int(time.time()), scope)).fetchone()
         c.close()
         return r
     def _user(self):
         return self._user_from_token(request_token(self.headers))
     def _cookie_user(self):
         return self._user_from_token(cookie_token(self.headers.get("Cookie")))
+    def _card_token_user(self):
+        return self._user_from_token(self.headers.get("X-HQ-Card-Token"), "card")
+    def _card_user(self):
+        return self._card_token_user() if self.headers.get("X-HQ-Card-Token") else self._user()
     def _cli_user(self):
         return hq_cli_api.authenticate(db, bearer_token(self.headers.get("Authorization")))
     def _cli_send(self, code, body):
@@ -5487,9 +5499,11 @@ class H(BaseHTTPRequestHandler):
                 c.execute("BEGIN IMMEDIATE")
                 business_cards.bind_miniprogram_openid(c, row["id"], openid)
                 card = card_for_owner(c, row["id"])
+                card_token = issue_token(row["username"], c, scope="card")
                 c.commit()
                 return self._send(200, {
                     "card": card, "wechat_bound": True,
+                    "card_token": card_token,
                     "ai_account": card["ai_account"],
                     "initial_password": card["initial_password"],
                 })
@@ -5498,7 +5512,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(exc.status, {"detail": exc.detail, "code": exc.code})
             finally:
                 c.close()
-        if p == "/api/auth/miniprogram/card-login":
+        if p in ("/api/auth/miniprogram/card-login", "/api/auth/miniprogram/card-session"):
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
@@ -5511,9 +5525,17 @@ class H(BaseHTTPRequestHandler):
                                      WHERE bc.miniprogram_openid=? AND u.account_status='active'""", (openid,)).fetchone()
                 if not owner:
                     return self._send(404, {"detail": "微信尚未绑定名片", "code": "card_unbound"})
+                card = card_for_owner(c, owner["id"])
+                if p.endswith("/card-session"):
+                    token = issue_token(owner["username"], c, scope="card")
+                    c.commit()
+                    return self._send(200, {
+                        "card_token": token, "card": card,
+                        "ai_account": card["ai_account"],
+                        "initial_password": card["initial_password"],
+                    })
                 account_id = owner["account_id"] or ensure_account_id(owner["username"], c)
                 token = issue_token(owner["username"], c)
-                card = card_for_owner(c, owner["id"])
                 c.commit()
                 return self._send(200, {"token": token, "user": public_user(
                     owner["username"], owner["display_name"], owner["points"], owner["role"], owner["must_change"], account_id,
@@ -5521,6 +5543,16 @@ class H(BaseHTTPRequestHandler):
                 ), "card": card})
             finally:
                 c.close()
+        if p == "/api/auth/miniprogram/card-account-login":
+            owner = self._card_token_user()
+            if not owner:
+                return self._send(401, {"detail": "微信名片授权已失效", "code": "card_session_invalid"})
+            account_id = owner["account_id"] or ensure_account_id(owner["username"])
+            token = issue_token(owner["username"])
+            return self._send(200, {"token": token, "user": public_user(
+                owner["username"], owner["display_name"], owner["points"], owner["role"], owner["must_change"], account_id,
+                owner["membership_tier"], owner["membership_started_at"], owner["membership_expires_at"],
+            )})
         if p == "/api/auth/invite/journey/start":
             d = self._body()
             if self._bad_json():
@@ -5560,7 +5592,7 @@ class H(BaseHTTPRequestHandler):
             result, err = register_miniprogram_card(
                 d.get("wx_code"), d.get("phone"), d.get("card"), d.get("device_id"),
                 invite_code=d.get("invite_code"), invite_attribution_token=d.get("invite_attribution_token"),
-                client_ip=self._client_ip(),
+                client_ip=self._client_ip(), separate_sessions=d.get("separate_sessions") is True,
             )
             if err:
                 return self._send(err["status"], {"detail": err["detail"], "code": err["code"]})
@@ -5615,7 +5647,7 @@ class H(BaseHTTPRequestHandler):
                 response["card"] = result["card"]
             return self._send(200, response)
         if p in ("/api/auth/card/publish", "/api/auth/card/unpublish", "/api/auth/card/media"):
-            row = self._user()
+            row = self._card_user()
             if not row:
                 return self._send(401, {"detail": "未登录"})
             if p.endswith("/media") and self._content_length_exceeds(28 * 1024 * 1024):
@@ -5694,7 +5726,7 @@ class H(BaseHTTPRequestHandler):
             REVOKED_TOKENS.add(tok)
             return self._send(200, {"ok": True}, clear_cookie)
         if p == "/api/auth/change_password":
-            row = self._user()
+            row = self._card_user()
             if not row: return self._send(401, {"detail": "未登录"})
             d = self._body()
             if self._bad_json():
@@ -5713,7 +5745,7 @@ class H(BaseHTTPRequestHandler):
                     return self._send(400, {"detail": "当前密码不正确"})
                 c.execute("UPDATE users SET pw_hash=?, pw_salt=?, must_change=0, card_initial_password=0 WHERE username=?",
                           (hash_pw(newp, salt), salt, row["username"]))
-                c.execute("DELETE FROM tokens WHERE username=?", (row["username"],))
+                c.execute("DELETE FROM tokens WHERE username=? AND COALESCE(scope,'account')='account'", (row["username"],))
                 c.commit()
             except Exception:
                 c.rollback()
@@ -5943,7 +5975,7 @@ class H(BaseHTTPRequestHandler):
     def do_PUT(self):
         p = self.path.split("?", 1)[0]
         if p == "/api/auth/card/me":
-            row = self._user()
+            row = self._card_user()
             if not row:
                 return self._send(401, {"detail": "未登录"})
             if self._content_length_exceeds(business_cards.MAX_JSON_BYTES):
@@ -6099,7 +6131,7 @@ class H(BaseHTTPRequestHandler):
                 finally:
                     c.close()
             if p == "/api/auth/card/me":
-                row = self._user()
+                row = self._card_user()
                 if not row:
                     return self._send(401, {"detail": "未登录"})
                 c = db()
