@@ -229,11 +229,10 @@ class ShortDramaAutodraftTests(unittest.TestCase):
 
         def cost(model, resolution, duration=5):
             return short_drama_autodraft._provider_shot_cost({
-                "request": {
-                    "model": model,
-                    "resolution": resolution,
-                    "duration_seconds": duration,
-                }
+                "provider": "grok",
+                "model": model,
+                "resolution": resolution,
+                "duration_seconds": duration,
             })
 
         with mock.patch(
@@ -250,8 +249,103 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             rates["video.cinematic.open"] = 9
             self.assertEqual(45, short_drama_autodraft._provider_shot_cost({
                 "provider": "heygen_cinematic",
-                "request": {"duration_seconds": 5, "resolution": "720p"},
+                "duration_seconds": 5,
             }))
+
+    def test_grok_15_quote_uses_the_normalized_persisted_request(self):
+        avatar = self._provider_avatar()
+        rates = {"video.grok.v1_5.720p": 25}
+        conn = self.db()
+        try:
+            row = conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()
+            plan = json.loads(row[0])
+            target_shot = plan["material_plan"][0]
+            target_shot["duration_ms"] = 5000
+            target_shot["input_hash"] = short_drama_autodraft._hash(target_shot)
+            conn.execute(
+                "UPDATE short_drama_production_plans SET plan_json=? WHERE id=?",
+                (json.dumps(plan, ensure_ascii=False), self.plan_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "grok",
+            "HQ_SHORT_DRAMA_GROK_MODEL": "grok-imagine-video-1.5",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True
+        ), mock.patch(
+            "content_domains.points.pricing.get_price",
+            side_effect=lambda key: rates[key],
+        ):
+            workspace = short_drama_autodraft.workspace(
+                self.db, "alice", "alice", self.project["id"],
+                avatar_list=lambda _username, _limit: [avatar],
+            )
+            shot = next(
+                item for item in workspace["provider_poc"]["shots"]
+                if item["shot_key"] == target_shot["shot_key"]
+            )
+            body = {
+                "project_id": self.project["id"],
+                "plan_id": self.plan_id,
+                "shot_key": shot["shot_key"],
+                "avatar_id": avatar["id"],
+            }
+            quote = short_drama_autodraft.create_provider_quote(
+                self.db, "alice", "alice", body,
+                avatar_lookup=lambda _username, _avatar_id: avatar,
+            )
+            self.assertEqual("grok-imagine-video-1.5", quote["request"]["model"])
+            self.assertEqual(125, quote["cost"])
+
+            conn = self.db()
+            try:
+                row = conn.execute(
+                    "SELECT request_json,cost FROM short_drama_provider_shot_quotes "
+                    "WHERE token=?", (quote["quote_token"],),
+                ).fetchone()
+            finally:
+                conn.close()
+            persisted_request = json.loads(row[0])
+            self.assertEqual("grok", persisted_request["provider"])
+            self.assertEqual("grok-imagine-video-1.5", persisted_request["model"])
+            self.assertEqual("720p", persisted_request["resolution"])
+            self.assertEqual(5, persisted_request["duration_seconds"])
+            self.assertEqual(125, row[1])
+
+            deduct = mock.Mock()
+            with mock.patch.object(
+                provider_keys,
+                "claim_candidate",
+                return_value={"id": "grok-15-key", "secret": "test-secret"},
+            ):
+                job = short_drama_autodraft.start_provider_job(
+                    self.db,
+                    "alice",
+                    "alice",
+                    {"quote_token": quote["quote_token"]},
+                    "grok-15-normalized-submit",
+                    avatar_lookup=lambda _username, _avatar_id: avatar,
+                    deduct_points=deduct,
+                    project_usage=short_drama._project_point_usage,
+                )
+            self.assertEqual(125, job["cost"])
+            self.assertEqual("grok-imagine-video-1.5", job["request"]["model"])
+            self.assertEqual("720p", job["request"]["resolution"])
+            self.assertEqual(5, job["request"]["duration_seconds"])
+            deduct.assert_called_once()
+
+            rates["video.grok.v1_5.720p"] = 31
+            repriced = short_drama_autodraft.create_provider_quote(
+                self.db, "alice", "alice", body,
+                avatar_lookup=lambda _username, _avatar_id: avatar,
+            )
+            self.assertEqual(155, repriced["cost"])
 
     def test_confirmed_plan_starts_free_local_pollable_job(self):
         job = self._start()

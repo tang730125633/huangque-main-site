@@ -1052,23 +1052,41 @@ def preview_provider_request(
             else "镜头请求已编译通过，但 Provider 尚未配置；本次没有外部调用。"
         ),
     }
+    if validated.get("model"):
+        result["request"]["model"] = str(validated["model"])
     if include_private:
         result["_provider_request"] = validated
     return result
 
 
-def _provider_shot_cost(preview):
-    request = preview.get("request") or {}
-    if str(preview.get("provider") or "").strip() == "heygen_cinematic":
+def _provider_shot_cost(provider_request):
+    request = provider_request if isinstance(provider_request, dict) else {}
+    provider_name = str(request.get("provider") or "").strip()
+    if provider_name == "heygen_cinematic":
         return points_domain.cost_of("cinematic", {
             "cine_mode": "open",
             "duration": int(request.get("duration_seconds") or 0),
         })
+    if provider_name != "grok":
+        raise AutodraftError(
+            "provider_quote_request_invalid",
+            "Provider 鏍囧噯鍖栬姹傜己灏戞湁鏁堢殑娓犻亾",
+            500,
+        )
+    model = str(request.get("model") or "").strip()
+    resolution = str(request.get("resolution") or "").strip().lower()
+    duration = int(request.get("duration_seconds") or 0)
+    if not model or not resolution or duration <= 0:
+        raise AutodraftError(
+            "provider_quote_request_invalid",
+            "Grok 鏍囧噯鍖栬姹傜己灏戣璐瑰弬鏁?",
+            500,
+        )
     return points_domain.cost_of("xiaole_video", {
         "channel": "grok",
-        "model": str(request.get("model") or "grok-imagine-video"),
-        "resolution": str(request.get("resolution") or "720p"),
-        "duration": int(request.get("duration_seconds") or 0),
+        "model": model,
+        "resolution": resolution,
+        "duration": duration,
     })
 
 
@@ -1112,7 +1130,7 @@ def create_provider_quote(
         )
     now = int(time.time())
     token = uuid.uuid4().hex
-    cost = _provider_shot_cost(preview)
+    cost = _provider_shot_cost(provider_request)
     conn = _connection(db_factory)
     try:
         conn.execute(
