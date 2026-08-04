@@ -252,6 +252,43 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                 "duration_seconds": 5,
             }))
 
+    def test_provider_quote_request_errors_are_readable_utf8(self):
+        cases = [
+            ({}, "Provider 规范化请求缺少有效渠道"),
+            (
+                {"provider": "grok", "resolution": "720p", "duration_seconds": 5},
+                "Grok 规范化请求缺少必要计费参数",
+            ),
+            (
+                {
+                    "provider": "grok",
+                    "model": "grok-imagine-video-1.5",
+                    "duration_seconds": 5,
+                },
+                "Grok 规范化请求缺少必要计费参数",
+            ),
+            (
+                {
+                    "provider": "grok",
+                    "model": "grok-imagine-video-1.5",
+                    "resolution": "720p",
+                    "duration_seconds": 0,
+                },
+                "Grok 规范化请求缺少必要计费参数",
+            ),
+        ]
+        for request, expected_detail in cases:
+            with self.subTest(request=request):
+                with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                    short_drama_autodraft._provider_shot_cost(request)
+                self.assertEqual("provider_quote_request_invalid", raised.exception.code)
+                self.assertEqual(500, raised.exception.status)
+                self.assertEqual(expected_detail, str(raised.exception))
+                self.assertEqual(
+                    expected_detail,
+                    str(raised.exception).encode("utf-8").decode("utf-8"),
+                )
+
     def test_grok_15_quote_uses_the_normalized_persisted_request(self):
         avatar = self._provider_avatar()
         rates = {"video.grok.v1_5.720p": 25}

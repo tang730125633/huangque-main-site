@@ -1070,7 +1070,7 @@ def _provider_shot_cost(provider_request):
     if provider_name != "grok":
         raise AutodraftError(
             "provider_quote_request_invalid",
-            "Provider 鏍囧噯鍖栬姹傜己灏戞湁鏁堢殑娓犻亾",
+            "Provider 规范化请求缺少有效渠道",
             500,
         )
     model = str(request.get("model") or "").strip()
@@ -1079,7 +1079,7 @@ def _provider_shot_cost(provider_request):
     if not model or not resolution or duration <= 0:
         raise AutodraftError(
             "provider_quote_request_invalid",
-            "Grok 鏍囧噯鍖栬姹傜己灏戣璐瑰弬鏁?",
+            "Grok 规范化请求缺少必要计费参数",
             500,
         )
     return points_domain.cost_of("xiaole_video", {
