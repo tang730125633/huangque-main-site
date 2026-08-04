@@ -281,7 +281,7 @@ class KeyPingTests(unittest.TestCase):
         self.assertEqual(
             set(admin_api.KEY_PINGS),
             {
-                "openai", "xai", "gemini", "seedance", "zelong", "zelong2", "heygen", "heygen_relay",
+                "openai", "xai", "gemini", "seedance", "minimax", "zelong", "zelong2", "heygen", "heygen_relay",
                 "xiaolevideo", "runninghub", "wavespeed", "cosyvoice", "tikhub", "cos",
             },
         )

@@ -66,6 +66,7 @@ CATALOG = [
     _rule("video.grok.v1_5.1080p", "视频生成", "果肉视频 Grok 1.5", "1080p", 44, "点/秒"),
     _rule("video.seedance", "视频生成", "Seedance 视频", "按成片时长", 30, "点/秒"),
     _rule("video.omni", "视频生成", "Gemini Omni 视频", "按成片时长", 30, "点/秒"),
+    _rule("video.minimax_h3.768p", "视频生成", "麦克视频", "768P", 6, "点/秒", "人物参考剧情视频"),
     _rule("video.sora.standard.720p", "视频生成", "Sora 2", "720p", 30, "点/秒"),
     _rule("video.sora.pro.720p", "视频生成", "Sora 2 Pro", "720p", 90, "点/秒"),
     _rule("video.sora.pro.1024p", "视频生成", "Sora 2 Pro", "1024p", 150, "点/秒"),

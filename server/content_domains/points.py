@@ -99,7 +99,10 @@ def cost_of(kind, body):
         duration = min(15, max(1, int(body.get("duration") or 10)))
         channel = str(body.get("channel") or "grok").lower()
         if channel != "grok":
-            key = "video.omni" if channel == "omni" else "video.seedance"
+            key = {
+                "omni": "video.omni",
+                "minimax": "video.minimax_h3.768p",
+            }.get(channel, "video.seedance")
             return duration * pricing.get_price(key)
         model = str(body.get("model") or "grok-imagine-video")
         resolution = str(body.get("resolution") or "720p").lower()

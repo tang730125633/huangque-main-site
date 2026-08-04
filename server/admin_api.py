@@ -166,6 +166,11 @@ KEY_GROUPS = [
      "env_base_env": ["ARK_BASE"], "env_base_default": "https://ark.cn-beijing.volces.com/api/v3",
      "pool_base_env": ["ARK_BASE"], "pool_base_default": "https://ark.cn-beijing.volces.com/api/v3",
      "env": ["ARK_API_KEY"], "pool_provider": "seedance"},
+    {"key": "minimax", "name": "MiniMax 中国区 API", "category": "视频生成",
+     "features": ["视频模块 → 麦克视频"], "env_features": [],
+     "pool_features": ["视频模块 → 麦克视频"],
+     "pool_base_env": ["MINIMAX_API_BASE"], "pool_base_default": "https://api.minimaxi.com",
+     "env": ["MINIMAX_API_KEY"], "pool_provider": "minimax"},
     {"key": "zelong", "name": "小乐 AI API", "category": "图片生成",
      "features": ["图片生成 → 黄雀引擎 2 备用线路"], "env": ["ZELONG_KEY"]},
     {"key": "zelong2", "name": "泽龙 API", "category": "图片生成",
@@ -1031,6 +1036,13 @@ def _key_ping_seedance():
     return probe_provider_secret("seedance", key)
 
 
+def _key_ping_minimax():
+    key = _env_value(["MINIMAX_API_KEY"])
+    if not key:
+        return {"ok": False, "error": "密钥未配置", "mode": "auth"}
+    return probe_provider_secret("minimax", key)
+
+
 def _openai_compat_ping(key_names, base_names, default_base):
     key = _env_value(key_names)
     if not key:
@@ -1104,6 +1116,7 @@ KEY_PINGS = {
     "openai": _key_ping_openai,
     "gemini": _key_ping_gemini,
     "seedance": _key_ping_seedance,
+    "minimax": _key_ping_minimax,
     "zelong": _key_ping_zelong,
     "zelong2": _key_ping_zelong2,
     "heygen": _key_ping_heygen,
@@ -1121,6 +1134,7 @@ PROVIDER_KEY_NAMES = {
     "sora": "OpenAI Sora",
     "seedance": "火山 Seedance",
     "omni": "Gemini Omni",
+    "minimax": "MiniMax H3",
 }
 
 
@@ -1161,6 +1175,15 @@ def probe_provider_secret(provider, secret):
             base + "/contents/generations/tasks?page_num=1&page_size=1",
             headers={"Authorization": "Bearer " + secret},
             proxied=False,
+        )
+    if provider == "minimax":
+        base = (
+            _env_value(["MINIMAX_API_BASE"])
+            or "https://api.minimaxi.com"
+        ).rstrip("/")
+        return _ping_upstream(
+            "GET", base + "/v2/query/video_generation?page_num=1&page_size=1",
+            headers={"Authorization": "Bearer " + secret}, proxied=False,
         )
     base = (
         _env_value(["GEMINI_OMNI_BASE", "GEMINI_BASE"])
