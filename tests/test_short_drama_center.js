@@ -595,9 +595,42 @@ test('planner drafts are isolated by authenticated account', () => {
   assert.equal(center.plannerDraftStorageKey(''), '');
   const draft = {version:3,username:'alice'};
   assert.equal(center.plannerDraftMatchesUser(draft, 'alice'), true);
+  assert.equal(center.plannerDraftMatchesUser({version:4,username:'alice'}, 'alice'), true);
+  assert.equal(center.plannerDraftMatchesUser({version:5,username:'alice'}, 'alice'), false);
   assert.equal(center.plannerDraftMatchesUser(draft, 'bob'), false);
   assert.match(centerScript, /me:function\(\)\{return request\('\/api\/auth\/me'\)/);
   assert.match(shell, /removeItem\('hq-short-drama-planner-draft-v3:'\+exiting\.username\)/);
+});
+
+test('current planner draft survives a storage round trip with choices and project checkpoint', () => {
+  const values = new Map();
+  const storage = {
+    getItem:key => values.has(key) ? values.get(key) : null,
+    setItem:(key,value) => values.set(key, String(value)),
+    removeItem:key => values.delete(key)
+  };
+  const key = center.plannerDraftStorageKey('alice');
+  const draft = {
+    version:4, username:'alice', saved_at:1700000000000, payload:{title:'雨夜来信'},
+    active_field:'conflict', active_choices:{field:'conflict',items:['隐瞒真相','关系破裂','时间将尽'],updated_at:1699999999000},
+    pending_create_key:'project-create-stable'
+  };
+  assert.equal(center.writePlannerDraftRecord(storage, key, draft, 'alice'), true);
+  const restored = center.readPlannerDraftRecord(storage, key, 'alice', 1700000001000);
+  assert.equal(restored.pending_create_key, 'project-create-stable');
+  assert.deepEqual(center.plannerDraftActiveChoices(restored), draft.active_choices);
+});
+
+test('deployed v3 planner draft remains readable with safe choice defaults', () => {
+  const key = center.plannerDraftStorageKey('alice');
+  const stored = JSON.stringify({version:3,username:'alice',saved_at:1700000000000,active_field:'ending',pending_create_key:'legacy-create-key'});
+  let value = stored;
+  const storage = {getItem:() => value,setItem:(_key,next) => {value=next;},removeItem:() => {value=null;}};
+  const restored = center.readPlannerDraftRecord(storage, key, 'alice', 1700000001000);
+  assert.equal(restored.version, 3);
+  assert.equal(restored.pending_create_key, 'legacy-create-key');
+  assert.deepEqual(center.plannerDraftActiveChoices(restored), {field:'ending',items:[]});
+  assert.equal(value, stored);
 });
 
 test('atomic promotion idempotency checkpoint is persisted before request', () => {
