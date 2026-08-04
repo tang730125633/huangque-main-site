@@ -87,6 +87,126 @@
     if(count===2) return {message:'明白了。最后一个问题：你偏好什么结局——圆满、反转、留白，还是人物完成成长？',quick:['温暖圆满','合理反转','克制留白','人物成长']};
     return {message:'信息已经足够。我整理了三个方向，并说明了各自适合的原因。你可以先选一个，再进入创作设置继续修改。',recommendations:buildRecommendations(messages)};
   }
+  function plannerProgress(messages,selected,preview){
+    var answered=(messages||[]).map(compactIdea).filter(Boolean).length;
+    var score=Math.min(45,answered*15)+(selected?25:0)+(preview?30:0);
+    return {score:score,label:preview?'剧本待确认':selected?'方向待生成':'正在理解想法'};
+  }
+  function plannerDurations(total,count){
+    total=Math.max(Number(total)||30,Number(count)||1);count=Math.max(1,Number(count)||1);
+    var base=Math.floor(total/count),remaining=total-base*count,items=[];
+    for(var i=0;i<count;i++)items.push(base+(i>=count-remaining?1:0));
+    return items;
+  }
+  function plannerRoles(messages,selected){
+    var source=((messages||[]).join('；')+'；'+text(selected&&selected.premise)).trim();
+    var pattern=/外卖小哥|外卖员|女孩|男孩|女生|男生|妈妈|母亲|爸爸|父亲|妻子|丈夫|奶奶|爷爷|老师|学生|护士|医生|同事|老板|店员|老人|孩子|朋友/g;
+    var found=source.match(pattern)||[],unique=[];
+    found.forEach(function(item){if(unique.indexOf(item)<0)unique.push(item);});
+    if(!unique.length)unique.push('主人公');
+    if(unique.length===1)unique.push('关键人物');
+    return unique.slice(0,4);
+  }
+  function plannerReadingSeconds(value){
+    var characters=text(value).replace(/[\s，。！？、；：“”'…]/g,'').length;
+    return characters?Math.round((0.45+characters/3.5)*100)/100:0;
+  }
+  function plannerDialogueSet(source,roles){
+    source=text(source);var first=roles[0]||'主人公',second=roles[1]||'关键人物';
+    if(/雨衣|便利店|下雨|雨天/.test(source))return [
+      {speaker:first,text:'我该怎么回去？'},{speaker:second,text:'这件雨衣你先用。'},
+      {speaker:first,text:'那你怎么办？'},{speaker:second,text:'别担心，我有办法。'},
+      {speaker:first,text:'谢谢你。'},{speaker:'',text:''}
+    ];
+    if(/误会|真相|隐瞒/.test(source))return [
+      {speaker:first,text:'你一直瞒着我？'},{speaker:second,text:'事情不是你想的那样。'},
+      {speaker:first,text:'那真相是什么？'},{speaker:second,text:'我现在告诉你。'},
+      {speaker:first,text:'原来我误会了。'},{speaker:'',text:''}
+    ];
+    return [
+      {speaker:first,text:'事情怎么会这样？'},{speaker:second,text:'先听我说。'},
+      {speaker:first,text:'我需要一个答案。'},{speaker:second,text:'这一次我不再回避。'},
+      {speaker:first,text:'那就重新开始。'},{speaker:'',text:''}
+    ];
+  }
+  function plannerPhase(index,count){
+    if(index===0)return '开场钩子';if(index===count-1)return '结局兑现';
+    return index<Math.ceil(count/2)?'冲突升级':'选择与转折';
+  }
+  function plannerShot(index,count,duration,roles,source,ending,variation){
+    var phase=plannerPhase(index,count),first=roles[0]||'主人公',second=roles[1]||'关键人物';
+    var dialogue=plannerDialogueSet(source,roles)[index%6]||{speaker:'',text:''};
+    var actions=[
+      first+'进入场景，停下脚步并观察眼前状况',
+      second+'注意到异常，主动做出能改变局面的动作',
+      first+'看向'+second+'，身体略微后退后重新站定',
+      second+'拿出关键物件或信息，把选择摆到两人面前',
+      first+'完成决定性的回应动作，两人的关系随之改变',
+      first+'与'+second+'短暂对视，以克制动作收束故事'
+    ];
+    var expressions=['焦虑、警觉','关切、克制','惊讶、犹豫','认真、坚定','释然、感激','平静、温暖'];
+    var cameras=['环境全景切人物中景，缓慢推近','双人中景，跟随关键动作轻微横移','正反打近景，停留人物表情','关键物件特写后拉回双人中景','人物近景，轻推至决定动作','稳定中景转远景，留出结尾余韵'];
+    var transitions=['动作切入下一镜','沿视线方向切换','以对方反应承接','由物件特写转场','顺人物动作切换','淡出结束'];
+    if(variation){actions[index%6]+='，补充一次清晰可见的反应';expressions[index%6]+='，情绪变化更明显';}
+    var reading=plannerReadingSeconds(dialogue.text),remaining=Math.round((duration-reading)*100)/100;
+    return {
+      index:index+1,phase:phase,duration:duration,scene:/雨衣|便利店|下雨|雨天/.test(source)?'雨天，便利店门口':'故事主要场景',
+      characters:roles.slice(0,2),action:actions[index%6],expression:expressions[index%6],
+      speaker:dialogue.speaker,dialogue_kind:dialogue.text?'dialogue':'silence',dialogue:dialogue.text,
+      reading_seconds:reading,remaining_seconds:remaining,camera:cameras[index%6],
+      sound:/雨衣|便利店|下雨|雨天/.test(source)?'持续雨声、便利店开门提示音':'场景环境声，保持对白清晰',
+      transition:transitions[index%6],continuity:index?'承接上一镜头的角色位置、服装和关键物件':'建立时间、空间、服装和关键物件基准',
+      summary:index===0?source:index===count-1?ending:'围绕核心冲突推进第 '+(index+1)+' 个关键动作',
+      locked:false,variation:Number(variation)||0
+    };
+  }
+  function plannerQuality(preview){
+    var blockers=[],warnings=[];
+    (preview&&preview.shots||[]).forEach(function(shot){
+      shot.reading_seconds=plannerReadingSeconds(shot.dialogue_kind==='silence'?'':shot.dialogue);
+      shot.remaining_seconds=Math.round((Number(shot.duration)-shot.reading_seconds)*100)/100;
+      if(shot.remaining_seconds<0)blockers.push({index:shot.index,message:'台词超出镜头 '+Math.abs(shot.remaining_seconds).toFixed(2)+' 秒'});
+      else if(shot.dialogue&&shot.remaining_seconds<0.6)warnings.push({index:shot.index,message:'留给表情动作的时间不足 0.6 秒'});
+      if(!shot.action)blockers.push({index:shot.index,message:'缺少可执行动作'});
+      if(!shot.expression)blockers.push({index:shot.index,message:'缺少表情与情绪'});
+    });
+    return {blocking:blockers.length>0,blockers:blockers,warnings:warnings};
+  }
+  function buildPlannerPreview(payload,messages,selected){
+    payload=payload||{};selected=selected||{};
+    var title=text(payload.title||selected.title||'未命名短剧').trim();
+    var synopsis=text(selected.premise||payload.synopsis||'').trim();
+    var duration=Number(payload.target_duration)||30,shotCount=Number(payload.shot_count)||6;
+    var notes=(messages||[]).map(compactIdea).filter(Boolean);
+    var roles=plannerRoles(notes,selected),protagonist=roles[0];
+    var conflict=(synopsis||notes.join('；')||'主人公必须完成一次重要选择').slice(0,180);
+    var ending=(notes[2]||'结尾形成清晰的情绪落点').slice(0,80);
+    var beats=[],shots=[],durations=plannerDurations(duration,shotCount);
+    for(var i=0;i<shotCount;i++){
+      var shot=plannerShot(i,shotCount,durations[i],roles,conflict,ending,0);shots.push(shot);
+      beats.push({index:shot.index,phase:shot.phase,summary:shot.summary,duration:shot.duration});
+    }
+    var preview={
+      title:title,logline:synopsis,protagonist:protagonist,conflict:conflict,ending:ending,
+      ratio:text(payload.ratio)||'16:9',duration_seconds:duration,shot_count:shotCount,
+      visual_style:text(payload.visual_style)||'电影感写实',characters:roles,beats:beats,shots:shots,
+      selected_direction_id:text(selected.id)||'steady',notes:notes
+    };
+    preview.quality=plannerQuality(preview);return preview;
+  }
+  function plannerPromotionMessages(preview){
+    preview=preview||{};
+    var selection={steady:'方案一',conflict:'方案二',creative:'方案三'}[preview.selected_direction_id]||'方案一';
+    var clean=function(value){return text(value).replace(/[“”"]/g,'').replace(/\s+/g,' ').trim();};
+    var shotContract=(preview.shots||[]).map(function(shot){
+      return '镜头'+shot.index+'['+shot.duration+'秒] 场景='+clean(shot.scene)+'；角色='+(shot.characters||[]).join('、')+'；动作='+clean(shot.action)+'；表情='+clean(shot.expression)+'；'+(shot.dialogue_kind==='silence'?'无台词':'说话人='+clean(shot.speaker)+'；台词='+clean(shot.dialogue))+'；镜头='+clean(shot.camera);
+    }).join('\n');
+    return [
+      '核心设定：'+clean(preview.logline)+'；主角：'+clean(preview.protagonist)+'；冲突：'+clean(preview.conflict)+'；结局：'+clean(preview.ending)+'；补充要求：'+(preview.notes||[]).map(clean).join('；')+'。请推荐三个方向。',
+      selection,
+      '确认以下逐镜剧本并按原样生成正式结构化剧本。每句台词必须在对应镜头时长内说完，不得把核心设定或剧情摘要当成角色台词。\n'+shotContract
+    ];
+  }
   function importedTitle(value,filename){
     var fromFile=text(filename).replace(/\.[^.]+$/,'').trim();
     if(fromFile&&fromFile.length<=80)return fromFile;
@@ -276,6 +396,9 @@
       list:function(){return request('/api/gen/short-drama/projects?page=1&page_size=50');},
       create:function(payload){return request('/api/gen/short-drama/projects',{method:'POST',body:payload});},
       workspace:function(id){return request('/api/gen/short-drama/conversation?project_id='+encodeURIComponent(id));},
+      message:function(payload,key){return request('/api/gen/short-drama/conversation/messages',{method:'POST',headers:{'Idempotency-Key':key},body:payload});},
+      generate:function(payload,key){return request('/api/gen/short-drama/conversation/script/generate',{method:'POST',headers:{'Idempotency-Key':key},body:payload});},
+      lock:function(payload,key){return request('/api/gen/short-drama/conversation/script/lock',{method:'POST',headers:{'Idempotency-Key':key},body:payload});},
       importProject:function(payload,idempotencyKey){return request('/api/gen/short-drama/projects/import',{method:'POST',headers:{'Idempotency-Key':idempotencyKey},body:payload});},
       deleteProject:function(project){
         project=normalizeProject(project);
@@ -305,6 +428,7 @@
     var ideaForm=doc.getElementById('shortDramaIdeaForm'),ideaInput=doc.getElementById('shortDramaIdeaInput');
     var chat=doc.getElementById('shortDramaIdeaChat'),quickReplies=doc.getElementById('shortDramaIdeaQuickReplies');
     var recommendations=doc.getElementById('shortDramaRecommendations'),ideaMessages=[],selectedProjectId='',importFilename='',importAnalysis=null,pendingImportKey='';
+    var createMode='idea',plannerPayload=null,selectedDirection=null,plannerPreview=null,pendingCreatedProject=null;
     var deleteButton=doc.getElementById('shortDramaDeleteProject');
     var confirmDelete=options.confirmImpl||function(message){return typeof runtimeRoot.confirm==='function'&&runtimeRoot.confirm(message);};
     function setNotice(message,isError){notice.textContent=message||'';notice.classList.toggle('error',!!isError);notice.hidden=!message;}
@@ -336,9 +460,15 @@
       return client.list().then(function(result){projects=(result&&result.items)||[];setNotice('',false);render();
         var selected=new URLSearchParams((runtimeRoot.location&&runtimeRoot.location.search)||'').get('project');
         if(selected&&runtimeRoot.HQShortDramaWorkspace){
+          doc.documentElement.classList.add('short-drama-immersive');
+          if(doc.body)doc.body.classList.add('short-drama-immersive');
           doc.querySelector('.short-drama-center').classList.add('workspace-mode');
           runtimeRoot.HQShortDramaWorkspace.mount(doc,{projectId:selected,fetchImpl:options.fetchImpl});
-        }else if(selected)showProject(selected);
+        }else{
+          doc.documentElement.classList.remove('short-drama-immersive');
+          if(doc.body)doc.body.classList.remove('short-drama-immersive');
+          if(selected)showProject(selected);
+        }
       }).catch(function(error){if(error&&error.status===401&&runtimeRoot.location)runtimeRoot.location.href='../login.html?next='+encodeURIComponent(runtimeRoot.location.pathname+runtimeRoot.location.search);else setNotice(error.message||'项目加载失败',true);throw error;});
     }
     function chatBubble(role,message){
@@ -359,6 +489,35 @@
         }).join('');
       recommendations.hidden=!(items&&items.length);
     }
+    function renderPlanner(){
+      var progressState=plannerProgress(ideaMessages,selectedDirection,plannerPreview);
+      doc.getElementById('shortDramaPlannerStatus').textContent=progressState.label;
+      doc.getElementById('shortDramaPlannerProgress').style.width=progressState.score+'%';
+      var payload=plannerPayload||createPayload(form);
+      doc.getElementById('shortDramaPlannerBrief').innerHTML='<dt>项目</dt><dd>'+escapeHtml(payload.title||'待填写')+'</dd><dt>核心想法</dt><dd>'+escapeHtml(payload.synopsis||'由助手一起探索')+'</dd><dt>规格</dt><dd>'+escapeHtml(payload.ratio||'16:9')+' · '+Number(payload.target_duration||30)+' 秒 · '+Number(payload.shot_count||6)+' 镜</dd><dt>方向</dt><dd>'+escapeHtml(selectedDirection&&selectedDirection.title||'待选择')+'</dd><dt>风格</dt><dd>'+escapeHtml(payload.visual_style||'电影感写实')+'</dd>';
+      doc.getElementById('shortDramaGeneratePreview').disabled=!selectedDirection;
+      var confirm=doc.getElementById('shortDramaConfirmScript');confirm.hidden=!plannerPreview;
+      confirm.disabled=!!(plannerPreview&&plannerPreview.quality&&plannerPreview.quality.blocking);
+    }
+    function shotStatus(shot){
+      if(Number(shot.remaining_seconds)<0)return {kind:'blocked',label:'超时 '+Math.abs(Number(shot.remaining_seconds)).toFixed(2)+' 秒'};
+      if(shot.dialogue&&Number(shot.remaining_seconds)<0.6)return {kind:'warning',label:'表演时间不足'};
+      return {kind:'pass',label:shot.dialogue?'时长正常':'静默表演'};
+    }
+    function renderPlannerShot(shot,preview){
+      var status=shotStatus(shot),dialogue=shot.dialogue_kind==='silence'?'本镜头无台词，以表情和动作推进剧情。':shot.speaker+'：'+shot.dialogue;
+      var characterOptions=(preview.characters||[]).map(function(item){return '<option value="'+escapeHtml(item)+'"'+(item===shot.speaker?' selected':'')+'>'+escapeHtml(item)+'</option>';}).join('');
+      var editor=shot.editing?'<div class="short-drama-shot-editor"><label>场景<input name="scene" value="'+escapeHtml(shot.scene)+'"></label><label>动作<textarea name="action">'+escapeHtml(shot.action)+'</textarea></label><label>表情与情绪<input name="expression" value="'+escapeHtml(shot.expression)+'"></label><label>说话方式<select name="dialogue_kind"><option value="dialogue"'+(shot.dialogue_kind==='dialogue'?' selected':'')+'>画面内对白</option><option value="voiceover"'+(shot.dialogue_kind==='voiceover'?' selected':'')+'>画外音</option><option value="silence"'+(shot.dialogue_kind==='silence'?' selected':'')+'>无台词</option></select></label><label>说话角色<select name="speaker"><option value="">无</option>'+characterOptions+'</select></label><label>具体台词<input name="dialogue" value="'+escapeHtml(shot.dialogue)+'"></label><label>镜头设计<textarea name="camera">'+escapeHtml(shot.camera)+'</textarea></label><label>环境声音<input name="sound" value="'+escapeHtml(shot.sound)+'"></label><label>衔接方式<input name="transition" value="'+escapeHtml(shot.transition)+'"></label><div class="short-drama-shot-editor-actions"><button type="button" data-planner-shot-action="cancel" data-shot-index="'+shot.index+'">取消</button><button class="short-drama-primary" type="button" data-planner-shot-action="save" data-shot-index="'+shot.index+'">保存本镜头</button></div></div>':'';
+      return '<article class="short-drama-planner-shot '+status.kind+(shot.locked?' locked':'')+'" data-shot-index="'+shot.index+'"><header><div><b>#'+shot.index+'</b><strong>'+escapeHtml(shot.phase)+'</strong><span>'+shot.duration+' 秒 · '+escapeHtml((shot.characters||[]).join('、'))+'</span></div><em>'+escapeHtml(status.label)+'</em></header><p class="short-drama-planner-dialogue">'+escapeHtml(dialogue)+'</p><small>预计朗读 '+Number(shot.reading_seconds).toFixed(2)+' 秒 · 表情动作 '+Math.max(0,Number(shot.remaining_seconds)).toFixed(2)+' 秒</small><details open><summary>查看完整镜头执行信息</summary><dl><dt>场景</dt><dd>'+escapeHtml(shot.scene)+'</dd><dt>出场角色</dt><dd>'+escapeHtml((shot.characters||[]).join('、'))+'</dd><dt>动作</dt><dd>'+escapeHtml(shot.action)+'</dd><dt>表情</dt><dd>'+escapeHtml(shot.expression)+'</dd><dt>说话角色</dt><dd>'+escapeHtml(shot.speaker||'无')+'</dd><dt>说话方式</dt><dd>'+escapeHtml(shot.dialogue_kind==='voiceover'?'画外音':shot.dialogue_kind==='silence'?'无台词':'画面内对白')+'</dd><dt>镜头</dt><dd>'+escapeHtml(shot.camera)+'</dd><dt>环境声音</dt><dd>'+escapeHtml(shot.sound)+'</dd><dt>衔接</dt><dd>'+escapeHtml(shot.transition)+'</dd><dt>连续性</dt><dd>'+escapeHtml(shot.continuity)+'</dd></dl></details><div class="short-drama-shot-actions"><button type="button" data-planner-shot-action="edit" data-shot-index="'+shot.index+'"'+(shot.locked?' disabled':'')+'>编辑</button><button type="button" data-planner-shot-action="regenerate" data-shot-index="'+shot.index+'"'+(shot.locked?' disabled':'')+'>重生成本镜头</button><button type="button" data-planner-shot-action="mute" data-shot-index="'+shot.index+'"'+(shot.locked?' disabled':'')+'>改成无台词</button><button type="button" data-planner-shot-action="lock" data-shot-index="'+shot.index+'">'+(shot.locked?'解锁':'锁定')+'</button></div>'+editor+'</article>';
+    }
+    function renderScriptPreview(preview){
+      var node=doc.getElementById('shortDramaScriptPreview');
+      if(!preview){node.hidden=true;node.innerHTML='';return;}
+      var quality=preview.quality||plannerQuality(preview),gate=quality.blocking?'<div class="short-drama-planner-gate blocked"><strong>还有 '+quality.blockers.length+' 个镜头不能确认</strong><span>'+quality.blockers.map(function(item){return '镜头 '+item.index+'：'+item.message;}).join('；')+'</span></div>':'<div class="short-drama-planner-gate pass"><strong>逐镜时长检查通过</strong><span>台词、表情动作和镜头时长均可执行。</span></div>';
+      node.innerHTML='<article class="short-drama-planner-overview"><span class="short-drama-eyebrow">逐镜完整剧本</span><h3>'+escapeHtml(preview.title)+'</h3><p>'+escapeHtml(preview.logline)+'</p><dl><dt>主要角色</dt><dd>'+escapeHtml((preview.characters||[]).join('、'))+'</dd><dt>核心冲突</dt><dd>'+escapeHtml(preview.conflict)+'</dd><dt>结局</dt><dd>'+escapeHtml(preview.ending)+'</dd><dt>制作规格</dt><dd>'+escapeHtml(preview.ratio)+' · '+preview.duration_seconds+' 秒 · '+preview.shot_count+' 镜</dd></dl>'+gate+'<div class="short-drama-planner-shots">'+(preview.shots||[]).map(function(shot){return renderPlannerShot(shot,preview);}).join('')+'</div></article>';
+      node.hidden=false;doc.getElementById('shortDramaPlannerCanvasTitle').textContent='完整剧本方案待确认';renderPlanner();
+    }
+    function plannerNotice(message,error){var node=doc.getElementById('shortDramaPlannerNotice');node.textContent=message||'';node.classList.toggle('error',!!error);}
     function setCreateHeading(eyebrow,title,lead){
       doc.getElementById('shortDramaCreateEyebrow').textContent=eyebrow;
       doc.getElementById('shortDramaCreateTitle').textContent=title;
@@ -367,32 +526,101 @@
     function showCreateStep(step){
       startOptions.hidden=step!=='choice';inspiration.hidden=step!=='inspiration';form.hidden=step!=='idea';importSection.hidden=step!=='import';
       if(step==='choice') setCreateHeading('NEW PROJECT','你想怎样开始？','选择最符合当前状态的方式，后面的制作流程完全一致。');
-      if(step==='idea') setCreateHeading('CREATE WITH AN IDEA','创建短剧设置','先说清故事方向，其余角色、分镜和成片设置会逐步出现。');
-      if(step==='inspiration') setCreateHeading('CREATIVE ADVISOR','和创作助手聊一聊','不用一次想完整；助手会逐步了解偏好，再给出三个可选方向。');
+      if(step==='idea') setCreateHeading(createMode==='inspiration'?'START WITH GUIDANCE':'CREATE WITH AN IDEA',createMode==='inspiration'?'先填写基本创作边界':'创建短剧设置',createMode==='inspiration'?'只需填写题材线索和制作规格，下一步由助手与你一起完成剧本。':'先填写已有想法和制作规格，下一步仍会经过助手讨论与剧本确认。');
+      if(step==='inspiration') setCreateHeading('CREATIVE ADVISOR','前置剧本策划','先聊想法、选择结构化方案并确认完整剧本；确认后才创建正式项目。');
       if(step==='import') setCreateHeading('IMPORT A SCRIPT','导入已有剧本','上传文件或粘贴原稿，助手会先识别内容，再与你确认如何成片。');
     }
     function resetCreate(){
-      form.reset();ideaMessages=[];chat.innerHTML='';recommendations.innerHTML='';recommendations.hidden=true;
+      form.reset();ideaMessages=[];chat.innerHTML='';recommendations.innerHTML='';recommendations.hidden=true;createMode='idea';plannerPayload=null;selectedDirection=null;plannerPreview=null;pendingCreatedProject=null;
       importText.value='';importFile.value='';importFilename='';importAnalysis=null;pendingImportKey='';importEditor.hidden=false;importForm.hidden=true;importForm.reset();
       doc.getElementById('shortDramaImportCount').textContent='0';doc.getElementById('shortDramaImportFileName').hidden=true;doc.getElementById('shortDramaImportError').hidden=true;
       doc.getElementById('shortDramaSelectedDirection').hidden=true;
-      var opening=advisorStep([]);chatBubble('assistant',opening.message);renderQuickReplies(opening.quick);
+      var opening=advisorStep([]);chatBubble('assistant',opening.message);renderQuickReplies(opening.quick);renderScriptPreview(null);plannerNotice('',false);renderPlanner();
       showCreateStep('choice');
     }
     function openCreate(){resetCreate();dialog.showModal();}
     function submitIdea(value){
       value=compactIdea(value);if(!value)return;
+      if(plannerPreview){
+        plannerPreview=null;renderScriptPreview(null);
+        plannerNotice('创作要求已更新，请重新生成剧本方案后再确认。',false);
+      }
       chatBubble('user',value);ideaMessages.push(value);ideaInput.value='';
       var reply=advisorStep(ideaMessages);chatBubble('assistant',reply.message);
       renderQuickReplies(reply.quick||[]);renderRecommendations(reply.recommendations||[]);
+      renderPlanner();
     }
     function selectRecommendation(id){
       var selected=buildRecommendations(ideaMessages).find(function(item){return item.id===id;});if(!selected)return;
-      form.elements.title.value=selected.title;form.elements.synopsis.value=selected.premise;
-      form.elements.visual_style.value=selected.style;
-      var summary=doc.getElementById('shortDramaSelectedDirection');
-      summary.innerHTML='<span>已选择 '+escapeHtml(selected.label)+'</span><strong>'+escapeHtml(selected.title)+'</strong><p>'+escapeHtml(selected.reason)+'</p>';
-      summary.hidden=false;showCreateStep('idea');
+      selectedDirection=selected;plannerPreview=null;renderScriptPreview(null);
+      doc.getElementById('shortDramaPlannerCanvasTitle').textContent='已选择 '+selected.title;
+      chatBubble('user','采用 '+selected.label+'：'+selected.title);
+      chatBubble('assistant','方向已记录。你可以继续补充要求，或生成完整剧本方案后进行人工确认。');
+      renderPlanner();
+    }
+    function startPlanner(){
+      plannerPayload=createPayload(form);ideaMessages=[];selectedDirection=null;plannerPreview=null;pendingCreatedProject=null;
+      chat.innerHTML='';recommendations.innerHTML='';recommendations.hidden=true;renderScriptPreview(null);plannerNotice('',false);
+      chatBubble('assistant',createMode==='inspiration'?'我会先从你给出的线索出发，再通过几个选择帮你找到故事方向。':'我已收到基本设定。接下来一起确认情绪、结局和故事方向，确认后才创建项目。');
+      if(plannerPayload.synopsis){chatBubble('user',plannerPayload.synopsis);ideaMessages.push(plannerPayload.synopsis);}
+      var reply=advisorStep(ideaMessages);chatBubble('assistant',reply.message);renderQuickReplies(reply.quick||[]);renderRecommendations(reply.recommendations||[]);
+      showCreateStep('inspiration');renderPlanner();
+    }
+    function generatePlannerScript(){
+      if(!selectedDirection)return;
+      plannerPreview=buildPlannerPreview(plannerPayload,ideaMessages,selectedDirection);
+      renderScriptPreview(plannerPreview);plannerNotice('逐镜完整剧本已生成。请检查每个镜头的角色、台词、表情动作、镜头和声音，再确认创建项目。',false);
+    }
+    function handlePlannerShotAction(event){
+      var button=event.target.closest('[data-planner-shot-action]');if(!button||!plannerPreview)return;
+      var index=Number(button.getAttribute('data-shot-index')),shot=(plannerPreview.shots||[]).find(function(item){return Number(item.index)===index;});
+      if(!shot)return;var action=button.getAttribute('data-planner-shot-action');
+      if(action==='edit'){shot.editing=true;renderScriptPreview(plannerPreview);return;}
+      if(action==='cancel'){shot.editing=false;renderScriptPreview(plannerPreview);return;}
+      if(action==='lock'){shot.locked=!shot.locked;shot.editing=false;renderScriptPreview(plannerPreview);return;}
+      if(shot.locked)return;
+      if(action==='mute'){
+        shot.dialogue_kind='silence';shot.speaker='';shot.dialogue='';shot.editing=false;
+      }else if(action==='regenerate'){
+        var replacement=plannerShot(index-1,plannerPreview.shot_count,shot.duration,plannerPreview.characters||[],plannerPreview.conflict,plannerPreview.ending,Number(shot.variation||0)+1);
+        plannerPreview.shots[index-1]=replacement;
+      }else if(action==='save'){
+        var card=button.closest('[data-shot-index]');if(!card)return;
+        function field(name){var input=card.querySelector('[name="'+name+'"]');return text(input&&input.value).trim();}
+        shot.scene=field('scene');shot.action=field('action');shot.expression=field('expression');shot.dialogue_kind=field('dialogue_kind')||'silence';
+        shot.speaker=shot.dialogue_kind==='silence'?'':field('speaker');shot.dialogue=shot.dialogue_kind==='silence'?'':field('dialogue');
+        shot.camera=field('camera');shot.sound=field('sound');shot.transition=field('transition');shot.editing=false;
+      }
+      plannerPreview.quality=plannerQuality(plannerPreview);renderScriptPreview(plannerPreview);
+      plannerNotice(plannerPreview.quality.blocking?'仍有镜头未通过时长或执行信息检查，请继续调整。':'当前逐镜剧本已通过时长检查，可以确认创建项目。',plannerPreview.quality.blocking);
+    }
+    function ensurePlanningMessage(workspace,message,index,projectId){
+      var exists=(workspace.messages||[]).some(function(item){return item.role==='user'&&compactIdea(item.content)===compactIdea(message);});
+      if(exists)return Promise.resolve(workspace);
+      return client.message({project_id:projectId,conversation_revision:Number(workspace.conversation.revision),message:message},'preproject-'+projectId+'-message-'+index);
+    }
+    function promotePlannerProject(){
+      if(!plannerPreview)return Promise.resolve();
+      plannerPreview.quality=plannerQuality(plannerPreview);
+      if(plannerPreview.quality.blocking){renderScriptPreview(plannerPreview);plannerNotice('请先处理所有超时台词或缺失的动作、表情，再确认创建项目。',true);return Promise.resolve();}
+      var button=doc.getElementById('shortDramaConfirmScript');button.disabled=true;plannerNotice('正在建立正式项目并固化已确认剧本…',false);
+      var createdPromise=pendingCreatedProject?Promise.resolve(pendingCreatedProject):client.create(plannerPayload).then(function(project){pendingCreatedProject=project;return project;});
+      return createdPromise.then(function(project){
+        return client.workspace(project.id).then(function(workspace){
+          var chain=Promise.resolve(workspace);
+          plannerPromotionMessages(plannerPreview).forEach(function(message,index){chain=chain.then(function(current){return ensurePlanningMessage(current,message,index,project.id);});});
+          return chain.then(function(current){
+            if(current.current_script)return current;
+            return client.generate({project_id:project.id,conversation_revision:Number(current.conversation.revision),instruction:'严格按用户确认的逐镜方案生成正式结构化剧本；不得把剧情摘要当台词；每句台词必须在对应镜头时长内说完'},'preproject-'+project.id+'-generate');
+          }).then(function(current){
+            if(current.conversation.state==='script_locked')return current;
+            return client.lock({project_id:project.id,conversation_revision:Number(current.conversation.revision),version_id:current.current_script.id},'preproject-'+project.id+'-lock');
+          }).then(function(){return project;});
+        });
+      }).then(function(project){
+        plannerNotice('剧本已确认，正在进入正式项目。',false);
+        if(runtimeRoot.location)runtimeRoot.location.href=projectUrl(project.id);
+      }).catch(function(error){plannerNotice(error.message||'创建项目失败，可直接重试，系统不会重复发送已保存的策划内容。',true);button.disabled=false;});
     }
     function showImportError(message){var node=doc.getElementById('shortDramaImportError');node.textContent=message||'';node.hidden=!message;}
     function updateImportCount(){doc.getElementById('shortDramaImportCount').textContent=text(importText.value).length.toLocaleString();importAnalysis=null;pendingImportKey='';showImportError('');}
@@ -423,8 +651,9 @@
     doc.querySelectorAll('[data-action="close-create"]').forEach(function(node){node.addEventListener('click',function(){dialog.close();});});
     doc.querySelectorAll('[data-action="back-create-choice"]').forEach(function(node){node.addEventListener('click',function(){showCreateStep('choice');});});
     doc.querySelectorAll('[data-create-mode]').forEach(function(node){node.addEventListener('click',function(){
-      var mode=node.getAttribute('data-create-mode');showCreateStep(mode==='inspiration'?'inspiration':mode==='import'?'import':'idea');
+      var mode=node.getAttribute('data-create-mode');createMode=mode;showCreateStep(mode==='import'?'import':'idea');
     });});
+    doc.querySelectorAll('[data-action="back-create-settings"]').forEach(function(node){node.addEventListener('click',function(){showCreateStep('idea');});});
     doc.getElementById('shortDramaImportChoose').addEventListener('click',function(){importFile.click();});
     importFile.addEventListener('change',function(){loadImportFile(importFile.files&&importFile.files[0]);});
     doc.getElementById('shortDramaRemoveImportFile').addEventListener('click',function(){
@@ -440,19 +669,16 @@
     ideaForm.addEventListener('submit',function(event){event.preventDefault();submitIdea(ideaInput.value);});
     quickReplies.addEventListener('click',function(event){var node=event.target.closest('[data-idea-reply]');if(node)submitIdea(node.getAttribute('data-idea-reply'));});
     recommendations.addEventListener('click',function(event){var node=event.target.closest('[data-recommendation]');if(node)selectRecommendation(node.getAttribute('data-recommendation'));});
+    doc.getElementById('shortDramaGeneratePreview').addEventListener('click',generatePlannerScript);
+    doc.getElementById('shortDramaScriptPreview').addEventListener('click',handlePlannerShotAction);
+    doc.getElementById('shortDramaConfirmScript').addEventListener('click',promotePlannerProject);
     doc.querySelector('[data-action="close-drawer"]').addEventListener('click',function(){selectedProjectId='';drawer.hidden=true;});
     deleteButton.addEventListener('click',deleteSelectedProject);
     doc.getElementById('shortDramaSearch').addEventListener('input',render);doc.getElementById('shortDramaStageFilter').addEventListener('change',render);
     grid.addEventListener('click',function(event){var card=event.target.closest('[data-project-id]');if(card)showProject(card.getAttribute('data-project-id'));});
     grid.addEventListener('keydown',function(event){var card=event.target.closest('[data-project-id]');if(card&&(event.key==='Enter'||event.key===' ')){event.preventDefault();showProject(card.getAttribute('data-project-id'));}});
     form.addEventListener('submit',function(event){
-      event.preventDefault();var submit=doc.getElementById('shortDramaSubmit');submit.disabled=true;setNotice('',false);
-      client.create(createPayload(form)).then(function(project){
-        dialog.close();form.reset();projects.unshift(normalizeProject(project));render();
-        if(runtimeRoot.location) runtimeRoot.location.href=projectUrl(project.id);
-        else showProject(text(project.id));
-      })
-        .catch(function(error){setNotice(error.message||'项目创建失败',true);}).finally(function(){submit.disabled=false;});
+      event.preventDefault();startPlanner();
     });
     importForm.addEventListener('submit',function(event){
       event.preventDefault();if(!importAnalysis)return analyzeImport();
@@ -471,5 +697,5 @@
     load().catch(function(){});
     return {reload:load,render:render};
   }
-  return {STAGES:STAGES,LABELS:LABELS,normalizeProject:normalizeProject,progress:progress,filterProjects:filterProjects,metrics:metrics,deleteErrorMessage:deleteErrorMessage,createPayload:createPayload,compactIdea:compactIdea,buildRecommendations:buildRecommendations,advisorStep:advisorStep,importedTitle:importedTitle,analyzeImportedScript:analyzeImportedScript,importProjectPayload:importProjectPayload,newImportKey:newImportKey,readLimitedStream:readLimitedStream,extractPdfText:extractPdfText,extractDocxText:extractDocxText,readScriptFile:readScriptFile,createClient:createClient,projectUrl:projectUrl,cardHtml:cardHtml,mount:mount};
+  return {STAGES:STAGES,LABELS:LABELS,normalizeProject:normalizeProject,progress:progress,filterProjects:filterProjects,metrics:metrics,deleteErrorMessage:deleteErrorMessage,createPayload:createPayload,compactIdea:compactIdea,buildRecommendations:buildRecommendations,advisorStep:advisorStep,plannerProgress:plannerProgress,plannerDurations:plannerDurations,plannerRoles:plannerRoles,plannerReadingSeconds:plannerReadingSeconds,plannerQuality:plannerQuality,buildPlannerPreview:buildPlannerPreview,plannerPromotionMessages:plannerPromotionMessages,importedTitle:importedTitle,analyzeImportedScript:analyzeImportedScript,importProjectPayload:importProjectPayload,newImportKey:newImportKey,readLimitedStream:readLimitedStream,extractPdfText:extractPdfText,extractDocxText:extractDocxText,readScriptFile:readScriptFile,createClient:createClient,projectUrl:projectUrl,cardHtml:cardHtml,mount:mount};
 });

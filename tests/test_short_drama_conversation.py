@@ -985,6 +985,35 @@ class ShortDramaConversationTests(unittest.TestCase):
         self.assertEqual("pass", script["quality_gate"]["status"])
         self.assertEqual(6, len(script["story_beats"]))
 
+    def test_long_quoted_planning_summary_is_fitted_to_the_shot_duration(self):
+        script = short_drama_conversation.short_drama_storyboard.compile_storyboard(
+            self.project,
+            [
+                "围绕“雨天被困便利店的女孩发愁无法回家，路过的外卖小哥主动将备用雨衣赠予她，赠予一份突如其来的温暖”展开故事"
+            ],
+            [
+                {
+                    "character_key": "girl",
+                    "name": "女孩",
+                    "identity": "被雨困住的女孩",
+                    "personality": "敏感",
+                },
+                {
+                    "character_key": "rider",
+                    "name": "外卖小哥",
+                    "identity": "路过的外卖员",
+                    "personality": "热心",
+                },
+            ],
+        )
+        self.assertEqual("pass", script["quality_gate"]["status"])
+        lines = {item["id"]: item for item in script["dialogue_lines"]}
+        for shot in script["shots"]:
+            line = lines[shot["dialogue_line_ids"][0]]
+            self.assertLessEqual(
+                line["estimated_reading_seconds"], shot["duration_seconds"]
+            )
+
     def test_story_specific_script_does_not_fall_back_to_generic_mystery_template(self):
         mother_daughter = short_drama.create_project(
             self.db,

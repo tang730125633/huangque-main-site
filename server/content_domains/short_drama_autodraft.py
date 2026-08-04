@@ -19,7 +19,7 @@ from providers.short_drama_visual import capability_snapshot
 from providers.short_drama_visual.heygen_cinematic import (
     HeyGenCinematicShotProvider,
 )
-from providers.short_drama_visual.runtime import load_from_environment
+from providers.short_drama_visual.runtime import load_by_name, load_from_environment
 
 from . import short_drama_assembly_plan as media_plan
 
@@ -613,6 +613,8 @@ def _render_provider_preview(project_id, job_id, assembly):
 def _provider_poc_inputs(
     plan, owner_username, avatar_list=None, conn=None, project_id="",
 ):
+    provider = load_from_environment() or HeyGenCinematicShotProvider()
+    provider_name = provider.name
     shots = []
     for index, shot in enumerate(plan.get("material_plan") or []):
         if not isinstance(shot, dict):
@@ -633,10 +635,16 @@ def _provider_poc_inputs(
         except Exception:
             candidates = []
         for avatar in candidates or []:
+            if not isinstance(avatar, dict):
+                continue
+            provider_ready = bool(
+                str(avatar.get("image_url") or "").strip()
+                if provider_name == "grok"
+                else str(avatar.get("provider_avatar_id") or "").strip()
+            )
             if (
-                not isinstance(avatar, dict)
-                or str(avatar.get("status") or "") != "ready"
-                or not str(avatar.get("provider_avatar_id") or "").strip()
+                str(avatar.get("status") or "") != "ready"
+                or not provider_ready
             ):
                 continue
             avatars.append({
@@ -651,11 +659,28 @@ def _provider_poc_inputs(
     if conn is not None and project_id:
         avatar_by_id = {str(item["id"]): item for item in avatars}
         for row in conn.execute(
-            "SELECT character_key,name,avatar_id,reference_url "
+            "SELECT character_key,name,avatar_id,reference_file,reference_url,"
+            "reference_locked "
             "FROM short_drama_characters WHERE project_id=? ORDER BY sort_order,id",
             (project_id,),
         ).fetchall():
             avatar = avatar_by_id.get(str(row["avatar_id"] or ""))
+            character_reference_ready = bool(
+                row["reference_locked"]
+                and (
+                    str(row["reference_file"] or "").strip()
+                    or str(row["reference_url"] or "").strip().startswith(
+                        ("http://", "https://")
+                    )
+                )
+            )
+            generation_identity_id = (
+                str(avatar["id"])
+                if avatar
+                else "character:" + str(row["character_key"])
+                if provider_name == "grok" and character_reference_ready
+                else ""
+            )
             item = {
                 "character_key": str(row["character_key"]),
                 "name": str(row["name"]),
@@ -664,11 +689,12 @@ def _provider_poc_inputs(
                     str(avatar.get("image_url") or "") if avatar
                     else str(row["reference_url"] or "")
                 ),
-                "binding_ready": bool(avatar),
+                "binding_ready": bool(generation_identity_id),
+                "generation_identity_id": generation_identity_id,
             }
             characters.append(item)
-            if avatar:
-                bindings[item["character_key"]] = item["avatar_id"]
+            if generation_identity_id:
+                bindings[item["character_key"]] = generation_identity_id
         material_by_key = {
             str(item.get("shot_key") or ""): item
             for item in plan.get("material_plan") or []
@@ -698,7 +724,7 @@ def _provider_poc_inputs(
                 shot["primary_character_key"], ""
             )
     return {
-        "provider": "heygen_cinematic",
+        "provider": provider_name,
         "shots": shots,
         "avatars": avatars,
         "characters": characters,
@@ -792,12 +818,13 @@ def preview_provider_request(
     db_factory, owner_username, actor_username, body, avatar_lookup=None,
     include_private=False,
 ):
-    """Compile one exact HeyGen cinematic request without billing or I/O."""
+    """Compile one exact visual-provider request without billing or I/O."""
     project_id = str(body.get("project_id") or "").strip()
     plan_id = str(body.get("plan_id") or "").strip()
     shot_key = str(body.get("shot_key") or "").strip()
     avatar_id = str(body.get("avatar_id") or "").strip()
     character_key = str(body.get("character_key") or "").strip()
+    provider = load_from_environment() or HeyGenCinematicShotProvider()
     conn = _connection(db_factory)
     try:
         project = _project(conn, owner_username, project_id)
@@ -858,23 +885,65 @@ def preview_provider_request(
         conn = _connection(db_factory)
         try:
             row = conn.execute(
-                "SELECT avatar_id FROM short_drama_characters "
+                "SELECT avatar_id,reference_file,reference_url,reference_locked "
+                "FROM short_drama_characters "
                 "WHERE project_id=? AND character_key=?",
                 (project_id, character_key),
             ).fetchone()
             avatar_id = str(row["avatar_id"] or "") if row else ""
+            if (
+                provider.name == "grok"
+                and row
+                and not avatar_id
+                and row["reference_locked"]
+                and (
+                    str(row["reference_file"] or "").strip()
+                    or str(row["reference_url"] or "").strip().startswith(
+                        ("http://", "https://")
+                    )
+                )
+            ):
+                avatar_id = "character:" + character_key
         finally:
             conn.close()
-    if not avatar_id or not callable(avatar_lookup):
+    if not avatar_id:
         raise AutodraftError(
-            "provider_avatar_required", "请选择已绑定 Provider 的电影化身", 422
+            "provider_avatar_required", "请先为当前角色锁定一张标准形象图", 422
         )
-    try:
-        avatar = avatar_lookup(owner_username, avatar_id)
-    except Exception as error:
-        raise AutodraftError(
-            "provider_avatar_not_found", "所选电影化身不存在或已不可用", 422
-        ) from error
+    if provider.name == "grok" and avatar_id == "character:" + character_key:
+        conn = _connection(db_factory)
+        try:
+            reference = conn.execute(
+                "SELECT name,reference_file,reference_url,reference_locked "
+                "FROM short_drama_characters "
+                "WHERE project_id=? AND character_key=?",
+                (project_id, character_key),
+            ).fetchone()
+        finally:
+            conn.close()
+        if not reference:
+            raise AutodraftError(
+                "provider_avatar_not_found", "当前角色的标准形象图不存在", 422
+            )
+        avatar = {
+            "id": avatar_id,
+            "username": owner_username,
+            "name": str(reference["name"] or "未命名角色"),
+            "status": "ready" if reference["reference_locked"] else "pending",
+            "image_file": str(reference["reference_file"] or ""),
+            "image_url": str(reference["reference_url"] or ""),
+        }
+    else:
+        if not callable(avatar_lookup):
+            raise AutodraftError(
+                "provider_avatar_lookup_unavailable", "形象库服务暂不可用", 503
+            )
+        try:
+            avatar = avatar_lookup(owner_username, avatar_id)
+        except Exception as error:
+            raise AutodraftError(
+                "provider_avatar_not_found", "所选电影化身不存在或已不可用", 422
+            ) from error
     if (
         not isinstance(avatar, dict)
         or str(avatar.get("username") or "") != owner_username
@@ -882,17 +951,23 @@ def preview_provider_request(
         raise AutodraftError(
             "provider_avatar_forbidden", "无权使用所选电影化身", 403
         )
-    if (
-        str(avatar.get("status") or "") != "ready"
-        or not str(avatar.get("provider_avatar_id") or "").strip()
-    ):
+    reference_image_url = str(avatar.get("image_url") or "").strip()
+    reference_image_file = str(avatar.get("image_file") or "").strip()
+    provider_identity_ready = bool(
+        reference_image_url or reference_image_file
+        if provider.name == "grok"
+        else str(avatar.get("provider_avatar_id") or "").strip()
+    )
+    if str(avatar.get("status") or "") != "ready" or not provider_identity_ready:
         raise AutodraftError(
-            "provider_avatar_not_ready", "所选电影化身尚未完成 Provider 绑定", 422
+            "provider_avatar_not_ready", "所选电影化身缺少当前 Provider 所需的形象资产", 422
         )
     duration_ms = int(shot.get("duration_ms") or 0)
     duration_seconds = max(1, (duration_ms + 999) // 1000)
     outbound = {
-        "provider_avatar_id": str(avatar["provider_avatar_id"]),
+        "provider_avatar_id": str(avatar.get("provider_avatar_id") or ""),
+        "reference_image_url": reference_image_url,
+        "reference_image_file": reference_image_file,
         "prompt": _visual_prompt(shot),
         "ratio": str(project.get("ratio") or "16:9"),
         "resolution": str(
@@ -900,7 +975,6 @@ def preview_provider_request(
         ).lower(),
         "duration_seconds": duration_seconds,
     }
-    provider = load_from_environment() or HeyGenCinematicShotProvider()
     try:
         validated = provider.validate_request(outbound)
     except Exception as error:
@@ -954,7 +1028,7 @@ def preview_provider_request(
         "next_action": (
             "可进入单镜头付费确认"
             if capability.get("configured")
-            else "配置 HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER 和 HEYGEN_API_KEY"
+            else "配置短剧画面 Provider 及其 API Key"
         ),
         "message": (
             "预检通过；本次没有调用 Provider，也没有扣点。"
@@ -1137,12 +1211,6 @@ def start_provider_job(
     # binding changed later. A genuinely new request is recompiled so a stale
     # quote can never charge against an unbound/replaced avatar or changed shot.
     if not inspect_existing:
-        if not callable(avatar_lookup):
-            raise AutodraftError(
-                "provider_avatar_lookup_unavailable",
-                "角色形象校验服务暂不可用，不能执行付费生成",
-                503,
-            )
         refreshed = preview_provider_request(
             db_factory,
             owner_username,
@@ -1241,6 +1309,10 @@ def start_provider_job(
         job_id = uuid.uuid4().hex
         charge_key = "short-drama-provider-shot-charge:" + attempt_id
         refund_key = "short-drama-provider-shot-refund:" + attempt_id
+        quote_request = _json(quote["request_json"], {})
+        provider_name = str(
+            quote_request.get("provider") or "heygen_cinematic"
+        ).strip()
         conn.execute(
             "INSERT INTO short_drama_provider_shot_jobs "
             "(id,project_id,owner_username,actor_username,plan_id,shot_key,"
@@ -1250,7 +1322,7 @@ def start_provider_job(
             (
                 job_id, quote["project_id"], owner_username, actor_username,
                 quote["plan_id"], quote["shot_key"], quote["character_key"],
-                quote["avatar_id"], "heygen_cinematic", quote["request_hash"],
+                quote["avatar_id"], provider_name, quote["request_hash"],
                 quote["request_json"], cost, now, now,
             ),
         )
@@ -1556,7 +1628,7 @@ def reconcile_provider_job(
         finally:
             conn.close()
         if changed.rowcount == 1:
-            provider = load_from_environment()
+            provider = load_by_name(current.get("provider"))
             if provider is None or not provider.configured:
                 error = AutodraftError(
                     "provider_not_configured",
@@ -1620,7 +1692,7 @@ def reconcile_provider_job(
     finally:
         conn.close()
     if row and row["status"] == "running":
-        provider = load_from_environment()
+        provider = load_by_name(row["provider"])
         if provider is None or not provider.configured:
             return _provider_job(row)
         try:

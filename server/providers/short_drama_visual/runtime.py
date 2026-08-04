@@ -3,17 +3,26 @@
 import os
 
 from .heygen_cinematic import HeyGenCinematicShotProvider
+from .grok_xai import GrokXaiShotProvider
 
 
-PROVIDERS = {"heygen_cinematic": HeyGenCinematicShotProvider}
+PROVIDERS = {
+    "heygen_cinematic": HeyGenCinematicShotProvider,
+    "grok": GrokXaiShotProvider,
+    "grok_xai": GrokXaiShotProvider,
+}
+
+
+def load_by_name(name):
+    provider_type = PROVIDERS.get(str(name or "").strip().lower())
+    return provider_type() if provider_type else None
 
 
 def load_from_environment():
     selected = str(
         os.getenv("HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER") or ""
     ).strip().lower()
-    provider_type = PROVIDERS.get(selected)
-    return provider_type() if provider_type else None
+    return load_by_name(selected)
 
 
 def capability_snapshot():
@@ -39,7 +48,8 @@ def capability_snapshot():
         }
     configured = bool(provider.configured)
     return {
-        "selected": selected,
+        "selected": provider.name,
+        "requested": selected,
         "configured": configured,
         "code": "provider_ready" if configured else "provider_not_configured",
         "message": (
