@@ -8,9 +8,27 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
 from content_domains import core, points, pricing, video
+from server import auth_server, wechat_virtual_pay
 
 
 class DynamicPricingTests(unittest.TestCase):
+    def test_ship_deploys_shared_pricing_to_auth_and_content(self):
+        ship = (ROOT / "ship").read_text(encoding="utf-8")
+        self.assertIn("server/content_domains/pricing.py)", ship)
+        self.assertIn('push_file "$f" /home/ubuntu/content-api/content_domains/', ship)
+
+    def test_commerce_prices_drive_membership_quotes_and_virtual_goods(self):
+        values = {
+            "membership.experience.price_yuan": 399,
+            "membership.experience.bonus_points": 900,
+        }
+        with patch.object(auth_server.pricing, "get_price", side_effect=lambda key: values[key]), \
+                patch.object(wechat_virtual_pay.pricing, "get_price", side_effect=lambda key: values[key]):
+            self.assertEqual(auth_server.purchase_quote(399, "membership_experience"), (399, 900, "membership_experience"))
+            products = {item["id"]: item for item in wechat_virtual_pay.products()}
+            self.assertEqual(products["membership_experience"]["price_fen"], 39900)
+            self.assertEqual(products["membership_experience"]["points"], 900)
+
     def test_current_core_accepts_legacy_short_drama_runtime(self):
         calls = []
 
@@ -49,6 +67,7 @@ class DynamicPricingTests(unittest.TestCase):
                 self.assertEqual(video.talking_actual_cost({"duration": 30.1}, talking["_talking_block_points"]), 60)
                 public = {x["key"]: x for x in pricing.public_catalog()["items"]}
                 self.assertEqual(public["image.openai.std"]["points"], 27)
+                self.assertEqual(public["invite.card_trial_reward"]["points"], 100)
                 self.assertNotIn("updated_by", public["image.openai.std"])
                 with self.assertRaises(ValueError):
                     pricing.set_price("image.openai.std", 0, "admin")
