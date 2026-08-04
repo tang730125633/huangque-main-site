@@ -480,6 +480,22 @@ class BusinessCardNetworkTests(unittest.TestCase):
             self.assertTrue(public_work["url"].startswith("https://signed.example/"))
             self.assertNotEqual(public_work["url"], owner_work["url"])
 
+    def test_work_image_rejection_names_the_failed_slot(self):
+        headers = {"Authorization": "Bearer " + self.child["token"]}
+        image = io.BytesIO()
+        Image.new("RGB", (2, 2), (30, 60, 90)).save(image, "PNG")
+        image_data = "data:image/png;base64," + base64.b64encode(image.getvalue()).decode("ascii")
+
+        rejected = self.auth.business_cards.miniprogram_security.ContentRejected("内容可能违反平台规范，请修改后再提交")
+        with patch.object(self.auth.business_cards.miniprogram_security, "check_image", side_effect=rejected):
+            status, body = self.request("/api/auth/card/media", {
+                "field": "work_image_2", "data": image_data,
+            }, headers)
+
+        self.assertEqual(status, 400)
+        self.assertEqual(body["code"], "content_rejected")
+        self.assertEqual(body["detail"], "作品图片2未通过微信安全检测：内容可能违反平台规范，请修改后再提交")
+
     def test_work_video_upload_is_private_persistent_and_publicly_playable(self):
         headers = {"Authorization": "Bearer " + self.child["token"]}
         with self.conn() as c:
