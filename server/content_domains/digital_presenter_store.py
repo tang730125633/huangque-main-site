@@ -1,6 +1,9 @@
 """Persistent project settings for the canvas digital presenter domain."""
 
 from contextlib import closing
+import hashlib
+import json
+import re
 import time
 import uuid
 
@@ -9,6 +12,14 @@ from .canvas_access import PermissionDenied
 
 class RevisionConflict(Exception):
     pass
+
+
+class IdempotencyConflict(Exception):
+    pass
+
+
+_IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
+_CREATE_OPERATION = "create_project"
 
 
 EDITABLE_FIELDS = {
@@ -64,6 +75,20 @@ def init_db(db_factory):
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_digital_presenter_projects_board "
             "ON digital_presenter_projects(board_id, updated_at DESC)"
+        )
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS digital_presenter_idempotency(
+                actor_username TEXT NOT NULL,
+                board_id TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                request_hash TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                response_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(actor_username, board_id, operation, idempotency_key)
+            )"""
         )
         connection.commit()
 
@@ -145,31 +170,83 @@ def _revision(value):
     return value
 
 
-def create_project(db_factory, access, payload):
+def _idempotency_key(value):
+    key = str(value or "").strip()
+    if not key:
+        raise ValueError("missing Idempotency-Key")
+    if not _IDEMPOTENCY_KEY_RE.fullmatch(key):
+        raise ValueError("Idempotency-Key must be 8-128 letters, numbers, or . _ : -")
+    return key
+
+
+def _request_hash(fields):
+    canonical = json.dumps(
+        fields, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _idempotency_row(connection, access, key):
+    return connection.execute(
+        "SELECT request_hash,response_json FROM digital_presenter_idempotency "
+        "WHERE actor_username=? AND board_id=? AND operation=? AND idempotency_key=?",
+        (access.actor_username, access.board_id, _CREATE_OPERATION, key),
+    ).fetchone()
+
+
+def create_project(db_factory, access, payload, idempotency_key):
     access.require_write()
     fields = _normalize_fields(payload, partial=False)
+    idempotency_key = _idempotency_key(idempotency_key)
+    request_hash = _request_hash(fields)
     now = int(time.time())
-    project_id = "dp_" + uuid.uuid4().hex
     with closing(db_factory()) as connection:
-        connection.execute(
-            """INSERT INTO digital_presenter_projects(
-                id, owner_username, created_by, board_id, title, script_text,
-                ratio, resolution, voice_key, avatar_asset_id, background_asset_id,
-                background_mode, target_duration, stage, revision, plan_revision,
-                confirmed_plan_revision, timeline_revision, spent_points, deleted,
-                created_at, updated_at
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'draft',1,0,NULL,0,0,0,?,?)""",
-            (
-                project_id, access.board_owner_username, access.actor_username,
-                access.board_id, fields["title"], fields["script_text"], fields["ratio"],
-                fields["resolution"], fields["voice_key"], fields["avatar_asset_id"],
-                fields["background_asset_id"], fields["background_mode"],
-                fields["target_duration"], now, now,
-            ),
-        )
-        row = _row(connection, project_id)
-        connection.commit()
-    return _public(row)
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            existing = _idempotency_row(connection, access, idempotency_key)
+            if existing:
+                if existing["request_hash"] != request_hash:
+                    raise IdempotencyConflict(
+                        "the same Idempotency-Key cannot be used for a different request"
+                    )
+                response = json.loads(existing["response_json"])
+                connection.commit()
+                return response
+
+            project_id = "dp_" + uuid.uuid4().hex
+            connection.execute(
+                """INSERT INTO digital_presenter_projects(
+                    id, owner_username, created_by, board_id, title, script_text,
+                    ratio, resolution, voice_key, avatar_asset_id, background_asset_id,
+                    background_mode, target_duration, stage, revision, plan_revision,
+                    confirmed_plan_revision, timeline_revision, spent_points, deleted,
+                    created_at, updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'draft',1,0,NULL,0,0,0,?,?)""",
+                (
+                    project_id, access.board_owner_username, access.actor_username,
+                    access.board_id, fields["title"], fields["script_text"], fields["ratio"],
+                    fields["resolution"], fields["voice_key"], fields["avatar_asset_id"],
+                    fields["background_asset_id"], fields["background_mode"],
+                    fields["target_duration"], now, now,
+                ),
+            )
+            response = _public(_row(connection, project_id))
+            connection.execute(
+                """INSERT INTO digital_presenter_idempotency(
+                    actor_username,board_id,operation,idempotency_key,request_hash,
+                    project_id,response_json,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (
+                    access.actor_username, access.board_id, _CREATE_OPERATION,
+                    idempotency_key, request_hash, project_id,
+                    json.dumps(response, ensure_ascii=False, sort_keys=True), now, now,
+                ),
+            )
+            connection.commit()
+            return response
+        except Exception:
+            connection.rollback()
+            raise
 
 
 def get_project(db_factory, access, project_id):

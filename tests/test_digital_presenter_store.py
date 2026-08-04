@@ -5,6 +5,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+import uuid
 from contextlib import closing
 
 
@@ -38,7 +39,7 @@ class DigitalPresenterStoreTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _project(self, access=None, **changes):
+    def _project(self, access=None, idempotency_key=None, **changes):
         payload = {
             "title": "门店资讯",
             "script_text": "今天介绍夏季护理方案。",
@@ -46,7 +47,12 @@ class DigitalPresenterStoreTests(unittest.TestCase):
             "target_duration": 45,
         }
         payload.update(changes)
-        return self.store.create_project(self.db, access or self.owner_access, payload)
+        return self.store.create_project(
+            self.db,
+            access or self.owner_access,
+            payload,
+            idempotency_key or ("test-create-" + uuid.uuid4().hex),
+        )
 
     def test_schema_and_create_persist_trusted_board_ownership(self):
         project = self._project(self.editor_access)
@@ -72,6 +78,56 @@ class DigitalPresenterStoreTests(unittest.TestCase):
             "id", "owner_username", "created_by", "board_id", "script_text",
             "revision", "plan_revision", "timeline_revision", "deleted",
         }.issubset(columns))
+
+    def test_create_replay_returns_one_project_and_original_response(self):
+        key = "test-create-replay"
+        first = self._project(idempotency_key=key)
+        self.store.update_project(
+            self.db, self.owner_access, first["id"], 1, {"title": "updated later"}
+        )
+        replay = self._project(idempotency_key=key)
+
+        self.assertEqual(first, replay)
+        with closing(self.db()) as connection:
+            self.assertEqual(
+                1,
+                connection.execute(
+                    "SELECT COUNT(*) FROM digital_presenter_projects"
+                ).fetchone()[0],
+            )
+            self.assertEqual(
+                1,
+                connection.execute(
+                    "SELECT COUNT(*) FROM digital_presenter_idempotency"
+                ).fetchone()[0],
+            )
+
+    def test_create_rejects_key_reuse_with_different_request(self):
+        key = "test-create-conflict"
+        self._project(idempotency_key=key)
+        with self.assertRaises(self.store.IdempotencyConflict):
+            self._project(idempotency_key=key, title="different request")
+
+    def test_create_key_is_scoped_by_actor_and_board(self):
+        key = "test-create-scoped"
+        owner = self._project(self.owner_access, idempotency_key=key)
+        editor = self._project(self.editor_access, idempotency_key=key)
+        other = self._project(self.other_board_access, idempotency_key=key)
+        self.assertEqual(3, len({owner["id"], editor["id"], other["id"]}))
+
+    def test_create_requires_valid_idempotency_key_without_writes(self):
+        payload = {"title": "test", "ratio": "9:16", "target_duration": 30}
+        for key in (None, "short", "invalid key"):
+            with self.subTest(key=key):
+                with self.assertRaises(ValueError):
+                    self.store.create_project(self.db, self.owner_access, payload, key)
+        with closing(self.db()) as connection:
+            self.assertEqual(
+                0,
+                connection.execute(
+                    "SELECT COUNT(*) FROM digital_presenter_projects"
+                ).fetchone()[0],
+            )
 
     def test_editor_can_update_board_project(self):
         project = self._project(self.owner_access)

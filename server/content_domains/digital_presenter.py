@@ -6,6 +6,7 @@ from . import feature_flags
 from .canvas_access import resolve_canvas_access
 
 from .digital_presenter_store import (
+    IdempotencyConflict,
     PermissionDenied,
     RevisionConflict,
     create_project,
@@ -82,6 +83,8 @@ def _send_error(handler, error):
         handler._send(403, {"detail": str(error)[:220], "code": "forbidden"})
     elif isinstance(error, RevisionConflict):
         handler._send(409, {"detail": str(error)[:220], "code": "revision_conflict"})
+    elif isinstance(error, IdempotencyConflict):
+        handler._send(409, {"detail": str(error)[:220], "code": "idempotency_conflict"})
     else:
         handler._send(400, {"detail": str(error)[:220], "code": "invalid_request"})
 
@@ -152,7 +155,12 @@ def dispatch_http(handler, method, db_factory, verify_token):
         access = _request_access(handler, user["username"])
         _require_policy_access(access, policy)
         if method == "POST" and path.endswith("/projects"):
-            handler._send(200, create_project(db_factory, access, _request_object(handler)))
+            handler._send(200, create_project(
+                db_factory,
+                access,
+                _request_object(handler),
+                handler.headers.get("Idempotency-Key"),
+            ))
         elif method == "GET" and path.endswith("/project"):
             project_id = _single_query(handler, "id", "缺少项目 ID")
             handler._send(200, get_project(db_factory, access, project_id))
@@ -175,7 +183,13 @@ def dispatch_http(handler, method, db_factory, verify_token):
             handler._send(200, delete_project(db_factory, access, project_id, revision))
         else:
             handler._send(404, {"detail": "功能尚未实现", "code": "not_implemented"})
-    except (LookupError, PermissionDenied, RevisionConflict, ValueError) as error:
+    except (
+        LookupError,
+        PermissionDenied,
+        RevisionConflict,
+        IdempotencyConflict,
+        ValueError,
+    ) as error:
         _send_error(handler, error)
     return True
 
@@ -212,6 +226,7 @@ def make_handler(base_handler, core_module):
 
 
 __all__ = [
+    "IdempotencyConflict",
     "PermissionDenied",
     "RevisionConflict",
     "init_db",

@@ -65,6 +65,21 @@
     var rank={owner:3,editor:2,viewer:1};
     return !!rank[previous]&&!!rank[next]&&rank[next]<rank[previous];
   }
+  function canonicalValue(value){
+    if(Array.isArray(value)) return value.map(canonicalValue);
+    if(value&&typeof value==='object'){
+      var sorted={};Object.keys(value).sort().forEach(function(key){ sorted[key]=canonicalValue(value[key]); });return sorted;
+    }
+    return value;
+  }
+  function creationFingerprint(payload){ return JSON.stringify(canonicalValue(payload||{})); }
+  function newIdempotencyKey(){
+    var random=(typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
+    return 'dp-create-'+random;
+  }
+  function defaultSessionStorage(){
+    try{ return typeof sessionStorage!=='undefined'?sessionStorage:null; }catch(error){ return null; }
+  }
 
   function createEntryRegistrar(addEntry){
     if(typeof addEntry!=='function') throw new Error('digital presenter entry registrar requires addEntry');
@@ -153,8 +168,39 @@
     if(typeof options.getNode!=='function'||typeof options.create!=='function'||typeof options.apply!=='function'){
       throw new Error('digital presenter project coordinator requires getNode, create, and apply methods');
     }
-    var pending=Object.create(null),completed=Object.create(null),discarded=Object.create(null);
+    var pending=Object.create(null),completed=Object.create(null),discarded=Object.create(null),identities=Object.create(null);
+    var storage=options.storage===undefined?defaultSessionStorage():options.storage;
+    var identityPrefix='hq_digital_presenter_create:';
     function key(scope,nodeId){ return JSON.stringify([String(scope||''),String(nodeId||'')]); }
+    function identityStorageKey(itemKey){ return identityPrefix+itemKey; }
+    function readIdentity(itemKey){
+      if(identities[itemKey]) return identities[itemKey];
+      if(!storage||typeof storage.getItem!=='function') return null;
+      try{
+        var value=JSON.parse(storage.getItem(identityStorageKey(itemKey))||'null');
+        if(value&&typeof value.key==='string'&&typeof value.fingerprint==='string') identities[itemKey]=value;
+      }catch(error){}
+      return identities[itemKey]||null;
+    }
+    function writeIdentity(itemKey,identity){
+      identities[itemKey]=identity;
+      if(storage&&typeof storage.setItem==='function'){
+        try{ storage.setItem(identityStorageKey(itemKey),JSON.stringify(identity)); }catch(error){}
+      }
+      return identity;
+    }
+    function creationIdentity(itemKey,payload){
+      var fingerprint=creationFingerprint(payload),identity=readIdentity(itemKey);
+      if(identity&&identity.fingerprint===fingerprint) return identity;
+      return writeIdentity(itemKey,{key:newIdempotencyKey(),fingerprint:fingerprint});
+    }
+    function clearIdentity(itemKey,identity){
+      if(identity&&identities[itemKey]&&identities[itemKey].key!==identity.key) return;
+      delete identities[itemKey];
+      if(storage&&typeof storage.removeItem==='function'){
+        try{ storage.removeItem(identityStorageKey(itemKey)); }catch(error){}
+      }
+    }
     function linked(node){ return node&&node.params&&node.params.project_id||null; }
     function scopePending(scope){
       return Object.keys(pending).some(function(item){ return pending[item].scope===scope; });
@@ -172,11 +218,13 @@
       if(pending[itemKey]) return pending[itemKey].promise;
       if(completed[itemKey]) return Promise.resolve(consume(scope,nodeId,completed[itemKey]));
       var current=options.getNode(scope,nodeId),projectId=linked(current);
-      if(projectId) return Promise.resolve(projectId);
+      if(projectId){ clearIdentity(itemKey);return Promise.resolve(projectId); }
       if(!canCreate) return Promise.reject(new Error('当前画布为只读，无法创建数字人口播项目'));
-      var request=Promise.resolve().then(function(){ return options.create(payload); }).then(function(project){
+      var identity=creationIdentity(itemKey,payload);
+      var request=Promise.resolve().then(function(){ return options.create(payload,identity.key); }).then(function(project){
         var createdId=project&&(project.id||project.project_id);
         if(!createdId) throw new Error('创建数字人口播项目失败');
+        clearIdentity(itemKey,identity);
         if(discarded[scope]) return createdId;
         var entry={scope:scope,nodeId:nodeId,projectId:createdId,expectedProjectId:expectedProjectId,project:project};
         completed[itemKey]=entry;return consume(scope,nodeId,entry);
@@ -202,7 +250,10 @@
     function headers(){ return boardId?{'X-Canvas-Board-Id':String(boardId)}:{}; }
     return {
       capability:function(){ return apiClient.json('/api/gen/digital-presenter/capability'); },
-      create:function(payload){ return apiClient.json('/api/gen/digital-presenter/projects',{method:'POST',body:payload,headers:headers()}); },
+      create:function(payload,idempotencyKey){
+        var requestHeaders=headers();requestHeaders['Idempotency-Key']=idempotencyKey||newIdempotencyKey();
+        return apiClient.json('/api/gen/digital-presenter/projects',{method:'POST',body:payload,headers:requestHeaders});
+      },
       get:function(id){ return apiClient.json(projectPath(id),{headers:headers()}); },
       update:function(id,revision,patch){
         return apiClient.json('/api/gen/digital-presenter/project',{method:'PUT',headers:headers(),body:Object.assign({project_id:id,revision:revision},patch)});
@@ -288,6 +339,7 @@
     createEntryRegistrar:createEntryRegistrar,createNodeCreationPolicy:createNodeCreationPolicy,
     createWorkspaceLifecycle:createWorkspaceLifecycle,
     observeWorkspaceReady:observeWorkspaceReady,createProjectCoordinator:createProjectCoordinator,
+    creationFingerprint:creationFingerprint,newIdempotencyKey:newIdempotencyKey,
     createClient:createClient,createWorkspace:createWorkspace
   };
 });

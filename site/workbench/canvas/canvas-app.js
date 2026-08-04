@@ -213,8 +213,9 @@
   }
   var digitalPresenterProjectCoordinator=digitalPresenterModule.createProjectCoordinator({
     getNode:function(scopeKey,nodeId){ return digitalPresenterNodeForScope(scopeKey,nodeId); },
-    create:function(payload){
+    create:function(payload,idempotencyKey){
       var headers=currentBoardId?{'X-Canvas-Board-Id':String(currentBoardId)}:{};
+      headers['Idempotency-Key']=idempotencyKey;
       return apiClient.json('/api/gen/digital-presenter/projects',{method:'POST',body:payload,headers:headers});
     },
     apply:function(node,project){ applyDigitalPresenterSummary(node,project); }

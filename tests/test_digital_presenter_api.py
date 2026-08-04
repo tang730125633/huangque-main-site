@@ -9,6 +9,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+import uuid
 from contextlib import closing
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
@@ -265,13 +266,26 @@ class DigitalPresenterProjectApiTests(unittest.TestCase):
         core.verify = self.original_verify
         self.tmp.cleanup()
 
-    def request(self, method, path, body=None, username="owner", board_id="board-a"):
+    def request(
+        self,
+        method,
+        path,
+        body=None,
+        username="owner",
+        board_id="board-a",
+        idempotency_key=None,
+    ):
         data = None if body is None else json.dumps(body).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         if username:
             headers["Authorization"] = "Bearer " + username
         if board_id:
             headers["X-Canvas-Board-Id"] = board_id
+        if method == "POST" and path == "/api/gen/digital-presenter/projects":
+            if idempotency_key is None:
+                idempotency_key = "test-create-" + uuid.uuid4().hex
+            if idempotency_key:
+                headers["Idempotency-Key"] = idempotency_key
         for attempt in range(2):
             request = urllib.request.Request(
                 self.base + path, data=data, method=method, headers=headers
@@ -346,6 +360,83 @@ class DigitalPresenterProjectApiTests(unittest.TestCase):
         )
         self.assertEqual(403, status)
         self.assertEqual("forbidden", body.get("code"))
+
+    def test_create_replays_after_committed_response_is_lost(self):
+        payload = {
+            "title": "response loss",
+            "script_text": "same logical request",
+            "ratio": "9:16",
+            "target_duration": 45,
+        }
+        key = "test-response-loss"
+
+        class Handler:
+            path = "/api/gen/digital-presenter/projects"
+            headers = {
+                "X-Canvas-Board-Id": "board-a",
+                "Idempotency-Key": key,
+            }
+
+            def __init__(self, drop=False):
+                self.drop = drop
+                self.sent = None
+
+            def _token(self):
+                return "owner"
+
+            def _json_body_strict(self):
+                return dict(payload)
+
+            def _send(self, status, body):
+                if self.drop:
+                    raise ConnectionAbortedError("response lost after commit")
+                self.sent = (status, body)
+
+        with self.assertRaises(ConnectionAbortedError):
+            digital_presenter.dispatch_http(Handler(drop=True), "POST", core.jdb, core.verify)
+        replay = Handler()
+        self.assertTrue(
+            digital_presenter.dispatch_http(replay, "POST", core.jdb, core.verify)
+        )
+        self.assertEqual(200, replay.sent[0])
+        with closing(sqlite3.connect(core.JOB_DB)) as connection:
+            rows = connection.execute(
+                "SELECT id FROM digital_presenter_projects"
+            ).fetchall()
+        self.assertEqual(1, len(rows))
+        self.assertEqual(rows[0][0], replay.sent[1]["id"])
+
+    def test_create_rejects_idempotency_key_conflict_and_missing_key(self):
+        key = "test-http-conflict"
+        status, first = self.request(
+            "POST",
+            "/api/gen/digital-presenter/projects",
+            {"title": "first"},
+            idempotency_key=key,
+        )
+        self.assertEqual(200, status)
+        status, body = self.request(
+            "POST",
+            "/api/gen/digital-presenter/projects",
+            {"title": "second"},
+            idempotency_key=key,
+        )
+        self.assertEqual(409, status)
+        self.assertEqual("idempotency_conflict", body.get("code"))
+        status, body = self.request(
+            "POST",
+            "/api/gen/digital-presenter/projects",
+            {"title": "missing"},
+            idempotency_key="",
+        )
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_request", body.get("code"))
+        with closing(sqlite3.connect(core.JOB_DB)) as connection:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM digital_presenter_projects"
+            ).fetchone()[0]
+        self.assertEqual(1, count)
+        self.assertTrue(first["id"].startswith("dp_"))
 
     def test_generic_project_create_api_rejects_asset_binding_fields(self):
         restricted = {

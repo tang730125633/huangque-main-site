@@ -74,6 +74,60 @@ async function testCreateProjectCoordinatorIsScopeSafe() {
     'late project creation never links another board');
 }
 
+async function testCreateProjectCoordinatorReusesPersistedIdempotencyKey() {
+  const values = new Map();
+  const storage = {
+    getItem(key) { return values.has(key) ? values.get(key) : null; },
+    setItem(key, value) { values.set(key, value); },
+    removeItem(key) { values.delete(key); },
+  };
+  const node = { id: 'n1', params: presenter.normalizeNodeParams({ title: 'A' }) };
+  const keys = [];
+  const first = presenter.createProjectCoordinator({
+    storage,
+    getNode() { return node; },
+    create(_payload, key) {
+      keys.push(key);
+      return Promise.reject(new Error('response lost'));
+    },
+    apply() { throw new Error('unexpected apply'); },
+  });
+  await assert.rejects(
+    first.ensure('collab:board-a', 'n1', { title: 'A' }, true, null),
+    /response lost/,
+  );
+  assert.equal(values.size, 1, 'failed request keeps its identity across refresh');
+
+  const refreshed = presenter.createProjectCoordinator({
+    storage,
+    getNode() { return node; },
+    create(_payload, key) {
+      keys.push(key);
+      return Promise.resolve({ id: 'project-a', title: 'A' });
+    },
+    apply(current, project) { current.params = presenter.summarizeProject(project); },
+  });
+  assert.equal(
+    await refreshed.ensure('collab:board-a', 'n1', { title: 'A' }, true, null),
+    'project-a',
+  );
+  assert.equal(keys.length, 2);
+  assert.equal(keys[0], keys[1], 'refresh retry reuses the original Idempotency-Key');
+  assert.match(keys[0], /^dp-create-[A-Za-z0-9-]+$/);
+  assert.equal(values.size, 0, 'confirmed success clears the persisted request identity');
+}
+
+async function testDigitalPresenterClientSendsIdempotencyKey() {
+  const calls = [];
+  const client = presenter.createClient({
+    json(path, options) { calls.push([path, options]); return Promise.resolve({ id: 'p1' }); },
+  }, 'board-a');
+  await client.create({ title: 'A' }, 'test-client-key');
+  assert.equal(calls[0][0], '/api/gen/digital-presenter/projects');
+  assert.equal(calls[0][1].headers['X-Canvas-Board-Id'], 'board-a');
+  assert.equal(calls[0][1].headers['Idempotency-Key'], 'test-client-key');
+}
+
 async function testPhaseOneWorkspaceOnlyLoadsAndSavesSettings() {
   let project = {
     id: 'p1', title: '资讯项目', script_text: '一段口播', ratio: '9:16',
@@ -267,6 +321,7 @@ function testCanvasIntegration() {
   assert.match(app, /digitalPresenter:\s*\{name:'数字人口播'/);
   assert.ok(app.includes('/api/gen/digital-presenter/capability'));
   assert.ok(app.includes('digitalPresenterModule.createProjectCoordinator'));
+  assert.ok(app.includes("headers['Idempotency-Key']=idempotencyKey"));
   assert.ok(app.includes('digitalPresenterModule.createEntryRegistrar'));
   assert.ok(app.includes('digitalPresenterModule.createWorkspaceLifecycle'));
   assert.ok(app.includes('digitalPresenterModule.observeWorkspaceReady'));
@@ -291,6 +346,8 @@ function testCanvasIntegration() {
 async function main() {
   testNodePersistenceAndCopyHelpers();
   await testCreateProjectCoordinatorIsScopeSafe();
+  await testCreateProjectCoordinatorReusesPersistedIdempotencyKey();
+  await testDigitalPresenterClientSendsIdempotencyKey();
   await testPhaseOneWorkspaceOnlyLoadsAndSavesSettings();
   await testRejectedProjectLoadIsContainedAndErrorCanClose();
   await testDestroyDuringReadyIsContainedAsInactive();
