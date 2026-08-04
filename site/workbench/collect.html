@@ -100,7 +100,7 @@
       </div>
 
       <button id="colBtn" class="hv-lift" style="width:100%; height:54px; margin-top:20px; font-size:16px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(231,178,76,.7); transition:.2s; font-family:inherit;">爬取</button>
-      <div id="colNote" style="text-align:center; font-size:12px; color:#5c6b82; margin-top:12px;">文案 + 评论默认提取 · 约 30 点 · 失败自动退点</div>
+      <div id="colNote" style="text-align:center; font-size:12px; color:#5c6b82; margin-top:12px;">文案 + 评论默认提取 · 约 3 点 · 失败自动退点</div>
     </div>
 
     <!-- ===== RIGHT: Results + History ===== -->
@@ -236,7 +236,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=4de5465a"></script>
+<script src="cloud-shell.js?v=49fe47f6"></script>
 <script>
 (function () {
   'use strict';
@@ -255,6 +255,13 @@
   var copyFields = {};     // field key → text, used by copy buttons
   var pollIv = null;
   var transcriptBusy = false;
+  var collectBasePoints=3, collectTranscriptExtra=3, collectSearchPoints=1;
+  function transcriptPoints(){return collectBasePoints+collectTranscriptExtra;}
+  if(window.HQ&&HQ.onPricing) HQ.onPricing(function(p){
+    collectBasePoints=p['collect.base']||3;collectTranscriptExtra=p['collect.transcript_extra']||3;collectSearchPoints=p['collect.search']||1;
+    setMode(mode);
+    var btn=document.getElementById('transcriptExtractBtn');if(btn&&!btn.disabled)btn.innerHTML='提取文案 <span style="font-size:12px;font-weight:400;opacity:.75;">约 '+transcriptPoints()+' 点</span>';
+  });
 
   function tok() { return '__cookie__'; }
 
@@ -341,7 +348,7 @@
     kwModeEl.style.display   = m === 'keyword' ? '' : 'none';
     if (colBtn) colBtn.textContent = m === 'download' ? '⬇ 解析并下载视频' : '爬取';
     var cn = document.getElementById('colNote');
-    if (cn) cn.textContent = m === 'download' ? '仅解析并下载视频本身 · 不提取评论/文案 · 约 30 点' : '文案 + 评论默认提取 · 约 30 点 · 失败自动退点';
+    if (cn) cn.textContent = m === 'download' ? '仅解析并下载视频本身 · 不提取评论/文案 · 约 '+collectBasePoints+' 点' : '文案 + 评论默认提取 · 约 '+collectBasePoints+' 点 · 失败自动退点';
     selectedUrl = '';
   }
   tabLink.onclick = function () { setMode('link'); };
@@ -711,7 +718,7 @@
       extractBtn.style.opacity       = hasImages ? '.4' : '1';
       extractBtn.style.cursor        = hasImages ? 'not-allowed' : 'pointer';
       extractBtn.style.pointerEvents = hasImages ? 'none' : 'auto';
-      extractBtn.innerHTML = '提取文案 <span style="font-size:12px;font-weight:400;opacity:.75;">约 6 点</span>';
+      extractBtn.innerHTML = '提取文案 <span style="font-size:12px;font-weight:400;opacity:.75;">约 '+transcriptPoints()+' 点</span>';
       if (!hasImages) extractBtn.onclick = submitTranscript;
     }
     if (extractNote) extractNote.textContent = hasImages ? '图文内容无口播文案' : '口播提取约 20 秒到数分钟 · 按需点击';
@@ -775,7 +782,7 @@
     var note = document.getElementById('transcriptExtractNote');
     if (btn) {
       btn.disabled = false; btn.style.opacity = '1'; btn.style.pointerEvents = 'auto';
-      btn.innerHTML = '提取文案 <span style="font-size:12px;font-weight:400;opacity:.75;">约 6 点</span>';
+      btn.innerHTML = '提取文案 <span style="font-size:12px;font-weight:400;opacity:.75;">约 '+transcriptPoints()+' 点</span>';
       btn.onclick = submitTranscript;
     }
     if (note) {

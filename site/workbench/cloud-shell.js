@@ -113,7 +113,7 @@
     {k:'dashboard',l:'今日',i:'home', admin:true}, {k:'inspiration',l:'灵感设计',i:'sparkles'},
     {k:'leads',l:'平台获客',i:'search'}, {k:'collect',l:'内容爬取',i:'link'}, {k:'banana',l:'图片生成',i:'image'},
     {k:'video',l:'视频生成',i:'video'}, {k:'audio',l:'音频生成',i:'mic'}, {k:'script',l:'文案编导',i:'edit'},
-    {k:'short-drama',l:'短剧创作',i:'clapper'}, {k:'canvas',l:'无限画布',i:'layers'}, {k:'assets',l:'我的资产',i:'folder'}, {k:'invite',l:'邀请中心',i:'users'},
+    {k:'short-drama',l:'短剧创作',i:'clapper'}, {k:'canvas',l:'无限画布',i:'layers'}, {k:'assets',l:'我的资产',i:'folder'}, {k:'pricing',l:'点数价格',i:'coins'}, {k:'invite',l:'邀请中心',i:'users'},
     {k:'cost',l:'成本',i:'coins', admin:true}, {k:'tutorials',l:'教程视频',i:'play'}, {k:'settings',l:'通用设置',i:'gear'}
   ];
 
@@ -1048,7 +1048,17 @@
     document.head.appendChild(script);
   }
 
-  window.HQ={ icon:icon, nav:NAV, escapeHtml:escapeHtml, escapeAttr:escapeAttr, safeUrl:safeUrl, isAdmin:isAdmin, refreshPoints:refreshPoints, refreshNotifications:refreshNotificationBadge, setFriendsBadge:updateFriendsBadge, registerFriendsPanel:registerFriendsPanel, setFriendsPanelExpanded:setFriendsPanelExpanded, openFriendsPanel:openFriendsPanel, login:openLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser };
+  var pricingValues={};
+  var pricingListeners=[];
+  function fetchPricing(){return fetch('/api/gen/pricing',{cache:'no-store'})
+    .then(function(r){return r.ok?r.json():Promise.reject(new Error('pricing unavailable'));})
+    .then(function(data){(data.items||[]).forEach(function(item){pricingValues[item.key]=Number(item.points)});return pricingValues;})}
+  var pricingReady=fetchPricing().catch(function(){return pricingValues;});
+  function onPricing(callback){pricingListeners.push(callback);return pricingReady.then(function(values){callback(values);return values;});}
+  function price(key,fallback){var value=Number(pricingValues[key]);return Number.isFinite(value)&&value>0?value:fallback;}
+  setInterval(function(){fetchPricing().then(function(values){pricingListeners.forEach(function(callback){callback(values)})}).catch(function(){})},30000);
+
+  window.HQ={ icon:icon, nav:NAV, escapeHtml:escapeHtml, escapeAttr:escapeAttr, safeUrl:safeUrl, isAdmin:isAdmin, refreshPoints:refreshPoints, refreshNotifications:refreshNotificationBadge, setFriendsBadge:updateFriendsBadge, registerFriendsPanel:registerFriendsPanel, setFriendsPanelExpanded:setFriendsPanelExpanded, openFriendsPanel:openFriendsPanel, login:openLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser, onPricing:onPricing, price:price };
   function _hqInit(){ build(); buildLoginModal(); loadTaskTracker(); }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',_hqInit); else _hqInit();
 })();

@@ -103,7 +103,7 @@
       </div>
 
       <button id="generateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:24px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
-        生成配音 <span class="mono" style="padding:3px 10px;font-size:13px;background:rgba(26,18,6,.18);border-radius:8px;">10 点</span>
+        生成配音 <span id="audioCostBadge" class="mono" style="padding:3px 10px;font-size:13px;background:rgba(26,18,6,.18);border-radius:8px;">10 点</span>
       </button>
       <div id="statusText" class="aud-faint" style="text-align:center;font-size:11.5px;margin-top:11px;">生成失败自动退点，生成完成后自动入库为配音资产</div>
     </section>
@@ -132,7 +132,7 @@
 </div></div>
 <div id="toast" class="toast"></div>
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=4de5465a"></script>
+<script src="cloud-shell.js?v=49fe47f6"></script>
 <script>
 (function(){
   var tok='__cookie__';
@@ -279,6 +279,7 @@
     if(qt!==null && Number.isFinite(pt)) params.pitch=Math.max(-12,Math.min(12,Math.round(pt)));
     if(qvol!==null && Number.isFinite(pvol)) params.volume=Math.max(-50,Math.min(100,Math.round(pvol)));
   }catch(e){}
+  if(window.HQ&&HQ.onPricing) HQ.onPricing(function(p){el('audioCostBadge').textContent=(p['audio.tts']||10)+' 点';});
   bars(); updateParams(); el('ttsText').dispatchEvent(new Event('input')); loadVoices(); loadRecent();
 })();
 </script>

@@ -426,7 +426,7 @@
           </div>
           <label id="cineNewAvatarDrop" class="motion-drop" style="margin-top:12px;">
             <input id="cineNewAvatarFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
-            <strong>+ 创建新形象（5 点）</strong>
+            <strong>+ 创建新形象（2 点）</strong>
             <span>上传一张正脸清晰的照片，约 25 秒建好，之后可反复使用</span>
           </label>
           <div id="cineAvatarStatus" class="faint" style="font-size:11.5px;margin-top:8px;"></div>
@@ -780,7 +780,7 @@
 <div id="toast" class="toast"></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=4de5465a"></script>
+<script src="cloud-shell.js?v=49fe47f6"></script>
 <script src="image-mentions.js?v=20260802f"></script>
 <script>
 (function(){
@@ -789,6 +789,7 @@
   var imageData='', imagePreview='', audioData='', selectedAssetAudio=null, assetAudiosLoaded=false, selectedResolution='1080p', selectedRatio='9:16', selectedMotion='medium';
   var talkingBatch=false, talkingBatchItems=[], videoCost=20, videoBatchMax=5, talkingBatchSeq=0;
   var TALKING_BLOCK_SECONDS=30, TALKING_BLOCK_POINTS=30;
+  var SEEDANCE_RATE=30, OMNI_RATE=30, TRYON_SINGLE_POINTS=25, TRYON_DOUBLE_POINTS=40, AVATAR_POINTS=2;
   var bgmData='', selectedBgmVolume=0.18;
   var selectedSubtitle='off', selectedSubtitleStyle='white', selectedSubtitlePosition='bottom';  // F4 字幕：默认关闭+底部，不勾选时行为与原来一致
   // 电影化身（HeyGen cinematic）：三个玩法共用一套控件，见 CINE_MODES
@@ -1995,9 +1996,9 @@
     if(channel==='grok' && grokOperation==='edit'){
       return '果肉视频编辑维护中';
     }
-    if(channel==='micro') return '预计 '+(selectedSeedanceDuration*30)+' 点（30 点/秒 × '+selectedSeedanceDuration+' 秒）'
+    if(channel==='micro') return '预计 '+(selectedSeedanceDuration*SEEDANCE_RATE)+' 点（'+SEEDANCE_RATE+' 点/秒 × '+selectedSeedanceDuration+' 秒）'
       +(selectedSeedanceUpscale?' · AI 超清测试期暂不加点，预计多等 2-4 分钟':'')+' · 失败自动退点';
-    if(channel==='omni') return '预计 '+(selectedOmniDuration*30)+' 点（30 点/秒 × '+selectedOmniDuration+' 秒）· 失败自动退点';
+    if(channel==='omni') return '预计 '+(selectedOmniDuration*OMNI_RATE)+' 点（'+OMNI_RATE+' 点/秒 × '+selectedOmniDuration+' 秒）· 失败自动退点';
     var rate=grokRate(), secs=selectedGrokDuration;
     return '预计 '+(secs*rate)+' 点（'+rate+' 点/秒 × '+secs+' 秒）';
   }
@@ -2007,6 +2008,27 @@
     'sora-2-pro:1024p':150,
     'sora-2-pro:1080p':210
   };
+  if(window.HQ&&HQ.onPricing) HQ.onPricing(function(p){
+    TALKING_BLOCK_POINTS=p['video.talking.block']||30;
+    CINE_MODES.motion.rate=p['video.cinematic.motion']||10;
+    CINE_MODES.duo.rate=p['video.cinematic.duo']||30;
+    CINE_MODES.open.rate=p['video.cinematic.open']||10;
+    GROK_RATES['grok-imagine-video']['480p']=p['video.grok.v1.480p']||10;
+    GROK_RATES['grok-imagine-video']['720p']=p['video.grok.v1.720p']||12;
+    GROK_RATES['grok-imagine-video-1.5']['480p']=p['video.grok.v1_5.480p']||15;
+    GROK_RATES['grok-imagine-video-1.5']['720p']=p['video.grok.v1_5.720p']||25;
+    GROK_RATES['grok-imagine-video-1.5']['1080p']=p['video.grok.v1_5.1080p']||44;
+    SEEDANCE_RATE=p['video.seedance']||30;OMNI_RATE=p['video.omni']||30;
+    SORA_RATES['sora-2:720p']=p['video.sora.standard.720p']||30;
+    SORA_RATES['sora-2-pro:720p']=p['video.sora.pro.720p']||90;
+    SORA_RATES['sora-2-pro:1024p']=p['video.sora.pro.1024p']||150;
+    SORA_RATES['sora-2-pro:1080p']=p['video.sora.pro.1080p']||210;
+    TRYON_SINGLE_POINTS=p['video.tryon.single']||25;TRYON_DOUBLE_POINTS=p['video.tryon.double']||40;
+    AVATAR_POINTS=p['avatar.create']||2;
+    document.querySelectorAll('[data-cine-mode]').forEach(function(tab){var mode=tab.dataset.cineMode,cfg=CINE_MODES[mode],span=tab.querySelector('span');if(cfg&&span)span.textContent=(mode==='motion'?'1 个形象 + 1 段参考视频 → 照着它的动作演':mode==='duo'?'2 个形象 + 1 段参考视频 → 双人照着动作演':'最多 3 个形象 + 自己写画面描述')+' · '+cfg.rate+' 点/秒';});
+    var avatarLabel=document.querySelector('.avatar-new strong');if(avatarLabel)avatarLabel.textContent='+ 创建新形象（'+AVATAR_POINTS+' 点）';
+    updateVideoCosts();updateChecklist();
+  });
   function soraRate(){return SORA_RATES[selectedSoraModel+':'+selectedSoraResolution]||210;}
   function updateSoraControls(){
     var pro=selectedSoraModel==='sora-2-pro';
@@ -2050,7 +2072,7 @@
     var t=$('tryonCostNote');
     if(t){   // 换装+换背景需同时有衣服图和背景图(与后端 40 判定一致)，否则 25
       var pricey=!!tryonClothesData && !!tryonBackgroundData;
-      t.textContent=(pricey?'换装+换背景 40 点':'换装 25 点')+' · 失败自动退点';
+      t.textContent=(pricey?('换装+换背景 '+TRYON_DOUBLE_POINTS+' 点'):('换装 '+TRYON_SINGLE_POINTS+' 点'))+' · 失败自动退点';
     }
   }
   function readFileData(file){

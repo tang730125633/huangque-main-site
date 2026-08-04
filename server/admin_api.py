@@ -34,6 +34,7 @@ _DOMAIN_PACKAGE = (
 egress = import_module(_DOMAIN_PACKAGE + ".egress")
 feature_flags = import_module(_DOMAIN_PACKAGE + ".feature_flags")
 provider_keys = import_module(_DOMAIN_PACKAGE + ".provider_keys")
+pricing = import_module(_DOMAIN_PACKAGE + ".pricing")
 
 
 def _optional_content_domain(name):
@@ -682,6 +683,7 @@ def init_db():
         c.commit()
     if feature_flags is not None:
         feature_flags.init_db()
+    pricing.init_db()
     if provider_keys is not None:
         provider_keys.init_db()
     if short_drama_lipsync_rollout is not None:
@@ -1704,6 +1706,10 @@ def load_features(services=None):
     return feature_flags.list_features(services or service_status())
 
 
+def load_pricing():
+    return pricing.list_prices()
+
+
 def _validate_config(value, prefix="config"):
     if not isinstance(value, dict):
         raise ValueError("config must be an object")
@@ -1766,6 +1772,27 @@ def save_feature(actor, body):
             (actor, "feature.toggle", feature, json.dumps(detail, ensure_ascii=False), now),
         )
         c.commit()
+    return item
+
+
+def save_pricing(actor, body):
+    key = str(body.get("key") or body.get("rule") or "").strip()
+    reason = str(body.get("reason") or "").strip()[:200]
+    if not reason:
+        raise ValueError("请填写改价原因")
+    old = pricing.get_rule(key)
+    item = pricing.set_price(key, body.get("points"), actor)
+    detail = {
+        "old_points": old["points"],
+        "new_points": item["points"],
+        "reason": reason,
+    }
+    with closing(db()) as conn:
+        conn.execute(
+            "INSERT INTO admin_audit(actor, action, target, detail, created_at) VALUES(?,?,?,?,?)",
+            (actor, "pricing.update", key, json.dumps(detail, ensure_ascii=False), int(time.time())),
+        )
+        conn.commit()
     return item
 
 
@@ -2041,6 +2068,8 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"items": load_channels()})
         if path == "/api/admin/features":
             return self._send(200, {"items": load_features()})
+        if path == "/api/admin/pricing":
+            return self._send(200, {"items": load_pricing()})
         if path == "/api/admin/short-drama/lipsync/health":
             if short_drama_lipsync_observability is None:
                 return self._send(503, {"detail": "lipsync observability unavailable"})
@@ -2231,6 +2260,7 @@ class H(BaseHTTPRequestHandler):
                     "provider_keys": provider_key_list(),
                     "channels": load_channels(),
                     "features": load_features(services),
+                    "pricing": load_pricing(),
                     "stats": job_stats(days),
                 },
             )
@@ -2481,6 +2511,14 @@ class H(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send(500, {"detail": str(e)[:160] or "保存失败"})
             return self._send(200, {"ok": True, "feature": item})
+        if path == "/api/admin/pricing":
+            try:
+                item = save_pricing(user.get("username") or "admin", self._body())
+            except (ValueError, KeyError) as e:
+                return self._send(400, {"detail": str(e)})
+            except Exception as e:
+                return self._send(500, {"detail": str(e)[:160] or "保存失败"})
+            return self._send(200, {"ok": True, "pricing": item})
         if path == "/api/admin/points/adjust":
             try:
                 return self._send(

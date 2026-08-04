@@ -20,6 +20,7 @@ import random   # 429 退避重试的抖动：不加抖动，同一批 worker �
 from .audio import gen_audio
 from .image_mentions import resolve_image_mentions, validate_image_mentions
 from . import (
+    pricing,
     provider_keys,
     short_drama_media_sanitize,
     short_drama_visual_gate,
@@ -5310,7 +5311,12 @@ CINEMATIC_RATE_FALLBACK = 30   # 玩法认不出来时按最贵的收，绝不�
 
 
 def cinematic_rate(cine_mode):
-    return CINEMATIC_RATE_PER_SEC.get(cine_mode, CINEMATIC_RATE_FALLBACK)
+    keys = {
+        "motion": "video.cinematic.motion",
+        "duo": "video.cinematic.duo",
+        "open": "video.cinematic.open",
+    }
+    return pricing.get_price(keys.get(cine_mode, "video.cinematic.duo"))
 
 
 # ===== 口播(video kind)按 30 秒阶梯计费：每档 30 点 =====
@@ -5355,10 +5361,12 @@ def _talking_estimate_seconds(body):
 def video_cost(body):
     """口播预扣：每 30 秒 30 点。text 模式按文本偏保守估算，跑完按成片结算。"""
     secs = _talking_estimate_seconds(body)
-    return max(TALKING_BLOCK_POINTS, int(math.ceil(secs / TALKING_BLOCK_SECONDS)) * TALKING_BLOCK_POINTS)
+    block_points = pricing.get_price("video.talking.block")
+    body["_talking_block_points"] = block_points
+    return max(block_points, int(math.ceil(secs / TALKING_BLOCK_SECONDS)) * block_points)
 
 
-def talking_actual_cost(result):
+def talking_actual_cost(result, block_points=None):
     """口播成片后的真实点数 = 每 30 秒 30 点（HeyGen 返回的 duration）。
     拿不到时长返回 None（不结算，保留预扣）。"""
     secs = (result or {}).get("duration") or (result or {}).get("seconds")
@@ -5368,7 +5376,8 @@ def talking_actual_cost(result):
         value = float(secs)
         if value <= 0:
             return None
-        return max(TALKING_BLOCK_POINTS, int(math.ceil(value / TALKING_BLOCK_SECONDS)) * TALKING_BLOCK_POINTS)
+        block_points = int(block_points or pricing.get_price("video.talking.block"))
+        return max(block_points, int(math.ceil(value / TALKING_BLOCK_SECONDS)) * block_points)
     except (TypeError, ValueError):
         return None
 

@@ -88,6 +88,13 @@ test('signed-in users display their concrete membership tier', () => {
   assert.doesNotMatch(shell, /\?'管理员':'会员'/);
 });
 
+test('point prices are visible and refresh on open pages', () => {
+  assert.match(shell, /\{k:'pricing',l:'点数价格'/);
+  assert.match(shell, /fetch\('\/api\/gen\/pricing'/);
+  assert.match(shell, /pricingListeners\.forEach/);
+  assert.match(shell, /,30000\)/);
+});
+
 test('generation routes alone use the flush workspace shell', () => {
   const usesFlushWorkspace = readUsesFlushWorkspace();
   for (const route of ['banana', 'video', 'audio']) assert.equal(usesFlushWorkspace(route), true, route);
