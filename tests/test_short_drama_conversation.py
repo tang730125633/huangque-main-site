@@ -46,6 +46,51 @@ def payload(**changes):
     return value
 
 
+def confirmed_contract():
+    shots = []
+    beats = []
+    for index in range(1, 7):
+        shots.append({
+            "index": index,
+            "phase": "阶段%d" % index,
+            "duration": 5,
+            "scene": "确认场景%d" % index,
+            "characters": ["林夏", "周野"],
+            "action": "确认动作%d" % index,
+            "expression": "确认表情%d" % index,
+            "speaker": "林夏" if index == 1 else "",
+            "dialogue_kind": "dialogue" if index == 1 else "silence",
+            "dialogue": "这是确认台词" if index == 1 else "",
+            "camera": "确认镜头%d" % index,
+            "sound": "确认声音%d" % index,
+            "transition": "确认转场%d" % index,
+            "continuity": "确认连续性%d" % index,
+            "summary": "确认摘要%d" % index,
+            "locked": index == 2,
+        })
+        beats.append({
+            "index": index,
+            "phase": "阶段%d" % index,
+            "summary": "确认摘要%d" % index,
+            "duration": 5,
+        })
+    return {
+        "schema_version": "preproject-confirmed-shot-contract-v1",
+        "title": "确认短剧",
+        "logline": "两位旧友在雨夜重逢并化解误会。",
+        "protagonist": "林夏",
+        "conflict": "是否相信旧友",
+        "ending": "两人完成和解",
+        "ratio": "16:9",
+        "duration_seconds": 30,
+        "shot_count": 6,
+        "visual_style": "电影感写实",
+        "characters": ["林夏", "周野"],
+        "beats": beats,
+        "shots": shots,
+    }
+
+
 class ShortDramaConversationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -814,6 +859,127 @@ class ShortDramaConversationTests(unittest.TestCase):
                     "SELECT COUNT(*) FROM short_drama_project_requests "
                     "WHERE username='alice' AND operation='project_create' "
                     "AND idempotency_key='http-create-lost-response'"
+                ).fetchone()[0],
+            )
+        finally:
+            conn.close()
+
+    def test_planner_promotion_is_atomic_and_replays_after_lost_response(self):
+        body = {
+            "project": payload(title="原子确认项目"),
+            "planning_messages": [
+                "核心设定：雨夜重逢",
+                "用户选择：情感治愈",
+                "逐镜剧本：六个镜头均已人工确认",
+            ],
+            "confirmed_contract": confirmed_contract(),
+        }
+
+        class LostResponseHandler(Handler):
+            def _send(self, _status, _payload):
+                raise ConnectionAbortedError("response lost after commit")
+
+        first = LostResponseHandler(
+            "/api/gen/short-drama/projects/promote",
+            body=body,
+            idempotency_key="planner-promote-lost-response",
+        )
+        verify = lambda _: {"username": "alice"}
+        with self.assertRaises(ConnectionAbortedError):
+            short_drama.dispatch_http(first, "POST", self.db, verify)
+
+        reloaded = Handler(
+            "/api/gen/short-drama/projects/promote",
+            body=body,
+            idempotency_key="planner-promote-lost-response",
+        )
+        self.assertTrue(short_drama.dispatch_http(reloaded, "POST", self.db, verify))
+        self.assertEqual(200, reloaded.response[0])
+        result = reloaded.response[1]
+        self.assertTrue(result["replayed"])
+        self.assertEqual("script_locked", result["workspace"]["conversation"]["state"])
+        self.assertEqual(
+            body["confirmed_contract"],
+            result["workspace"]["current_script"]["script"]["confirmed_contract"],
+        )
+        project_id = result["project"]["id"]
+        conn = self.db()
+        try:
+            self.assertEqual(
+                1,
+                conn.execute(
+                    "SELECT COUNT(*) FROM short_drama_projects "
+                    "WHERE title='原子确认项目'"
+                ).fetchone()[0],
+            )
+            self.assertEqual(
+                1,
+                conn.execute(
+                    "SELECT COUNT(*) FROM short_drama_project_requests "
+                    "WHERE username='alice' AND operation='planner_promote' "
+                    "AND idempotency_key='planner-promote-lost-response'"
+                ).fetchone()[0],
+            )
+            self.assertEqual(
+                1,
+                conn.execute(
+                    "SELECT COUNT(*) FROM short_drama_script_snapshots "
+                    "WHERE project_id=? AND status='locked'",
+                    (project_id,),
+                ).fetchone()[0],
+            )
+        finally:
+            conn.close()
+
+        conflict_body = dict(body)
+        conflict_body["planning_messages"] = ["不同的策划内容"]
+        conflict = Handler(
+            "/api/gen/short-drama/projects/promote",
+            body=conflict_body,
+            idempotency_key="planner-promote-lost-response",
+        )
+        self.assertTrue(short_drama.dispatch_http(conflict, "POST", self.db, verify))
+        self.assertEqual(409, conflict.response[0])
+        self.assertEqual("idempotency_conflict", conflict.response[1]["code"])
+
+    def test_planner_promotion_rolls_back_project_when_contract_write_fails(self):
+        conn = self.db()
+        try:
+            conn.executescript("""
+            CREATE TRIGGER reject_promoted_contract
+            BEFORE INSERT ON short_drama_script_snapshots
+            BEGIN SELECT RAISE(ABORT,'injected contract failure'); END;
+            """)
+            conn.commit()
+        finally:
+            conn.close()
+        body = {
+            "project": payload(title="必须回滚的确认项目"),
+            "planning_messages": ["核心设定", "确认方向", "确认逐镜剧本"],
+            "confirmed_contract": confirmed_contract(),
+        }
+        with self.assertRaises(sqlite3.IntegrityError):
+            short_drama.promote_planner_project(
+                self.db,
+                "alice",
+                body,
+                "planner-promote-rollback",
+            )
+        conn = self.db()
+        try:
+            self.assertEqual(
+                0,
+                conn.execute(
+                    "SELECT COUNT(*) FROM short_drama_projects "
+                    "WHERE title='必须回滚的确认项目'"
+                ).fetchone()[0],
+            )
+            self.assertEqual(
+                0,
+                conn.execute(
+                    "SELECT COUNT(*) FROM short_drama_project_requests "
+                    "WHERE operation='planner_promote' "
+                    "AND idempotency_key='planner-promote-rollback'"
                 ).fetchone()[0],
             )
         finally:

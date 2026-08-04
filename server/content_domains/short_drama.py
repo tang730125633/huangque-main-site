@@ -1224,23 +1224,8 @@ def _project_username_for_access(db_factory, username, project_id, access=None, 
     return owner
 
 
-def create_project(
-    db_factory, username, payload, access=None, idempotency_key=None,
-):
-    data = validate_project_payload(payload)
-    board_id = data.get("board_id")
-    if board_id:
-        access = access if isinstance(access, dict) else {}
-        if (str(access.get("board_id") or "") != board_id
-                or str(access.get("role") or "").lower() not in {"owner", "editor"}):
-            raise PermissionError("current board role cannot create this project")
-    key = str(idempotency_key or "").strip()
-    if key and len(key) > 160:
-        raise ProjectCreationError(
-            "idempotency_key_invalid", "Idempotency-Key 长度不能超过 160 个字符"
-        )
-    operation = "project_create"
-    request_data = {
+def _project_create_request_data(data):
+    return {
         "board_id": data.get("board_id"),
         "title": data["title"],
         "synopsis": data["synopsis"],
@@ -1251,6 +1236,49 @@ def create_project(
         "target_platform": _text(data.get("target_platform") or "抖音", 80),
         "point_budget": data.get("point_budget", 0),
     }
+
+
+def _require_project_create_access(data, access):
+    board_id = data.get("board_id")
+    if not board_id:
+        return
+    access = access if isinstance(access, dict) else {}
+    if (str(access.get("board_id") or "") != board_id
+            or str(access.get("role") or "").lower() not in {"owner", "editor"}):
+        raise PermissionError("current board role cannot create this project")
+
+
+def _insert_project_row(conn, username, data, request_data, project_id, now):
+    max_projects = _max_projects_per_user()
+    active_projects = conn.execute(
+        "SELECT COUNT(*) FROM short_drama_projects WHERE username=? AND deleted=0",
+        (username,),
+    ).fetchone()[0]
+    if active_projects >= max_projects:
+        raise ProjectLimitExceeded(max_projects)
+    conn.execute(
+        "INSERT INTO short_drama_projects "
+        "(id, username, board_id, title, synopsis, ratio, target_duration, shot_count, visual_style, "
+        "target_platform, point_budget, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (project_id, username, data.get("board_id"), data["title"], data["synopsis"], data["ratio"],
+         data["target_duration"], data["shot_count"], data["visual_style"],
+         request_data["target_platform"], request_data["point_budget"], now, now),
+    )
+
+
+def create_project(
+    db_factory, username, payload, access=None, idempotency_key=None,
+):
+    data = validate_project_payload(payload)
+    _require_project_create_access(data, access)
+    key = str(idempotency_key or "").strip()
+    if key and len(key) > 160:
+        raise ProjectCreationError(
+            "idempotency_key_invalid", "Idempotency-Key 长度不能超过 160 个字符"
+        )
+    operation = "project_create"
+    request_data = _project_create_request_data(data)
     request_hash = hashlib.sha256(
         json.dumps(request_data, ensure_ascii=False, sort_keys=True,
                    separators=(",", ":")).encode("utf-8")
@@ -1276,22 +1304,7 @@ def create_project(
                 result = _project_detail(conn, username, existing[0])
                 conn.rollback()
                 return result
-        max_projects = _max_projects_per_user()
-        active_projects = conn.execute(
-            "SELECT COUNT(*) FROM short_drama_projects WHERE username=? AND deleted=0",
-            (username,),
-        ).fetchone()[0]
-        if active_projects >= max_projects:
-            raise ProjectLimitExceeded(max_projects)
-        conn.execute(
-            "INSERT INTO short_drama_projects "
-            "(id, username, board_id, title, synopsis, ratio, target_duration, shot_count, visual_style, "
-            "target_platform, point_budget, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (project_id, username, data.get("board_id"), data["title"], data["synopsis"], data["ratio"],
-             data["target_duration"], data["shot_count"], data["visual_style"],
-             request_data["target_platform"], request_data["point_budget"], now, now),
-        )
+        _insert_project_row(conn, username, data, request_data, project_id, now)
         if key:
             conn.execute(
                 "INSERT INTO short_drama_project_requests "
@@ -1304,6 +1317,172 @@ def create_project(
             )
         conn.commit()
         return _project_detail(conn, username, project_id)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def promote_planner_project(
+    db_factory, username, payload, idempotency_key, access=None,
+):
+    if not isinstance(payload, dict) or set(payload) != {
+        "project", "planning_messages", "confirmed_contract",
+    }:
+        raise ProjectCreationError(
+            "invalid_request", "确认剧本建项请求字段无效"
+        )
+    data = validate_project_payload(payload["project"])
+    _require_project_create_access(data, access)
+    messages = payload.get("planning_messages")
+    if not isinstance(messages, list) or not 1 <= len(messages) <= 10:
+        raise ProjectCreationError(
+            "invalid_request", "确认剧本策划消息数量无效"
+        )
+    messages = [short_drama_conversation._message(item) for item in messages]
+    contract = payload.get("confirmed_contract")
+    if not isinstance(contract, dict):
+        raise ProjectCreationError(
+            "invalid_request", "确认剧本合同格式无效"
+        )
+    key = str(idempotency_key or "").strip()
+    if not key:
+        raise ProjectCreationError(
+            "idempotency_key_required", "缺少有效的 Idempotency-Key"
+        )
+    if len(key) > 160:
+        raise ProjectCreationError(
+            "idempotency_key_invalid", "Idempotency-Key 长度不能超过 160 个字符"
+        )
+    operation = "planner_promote"
+    request_data = _project_create_request_data(data)
+    request_hash = hashlib.sha256(json.dumps(
+        {
+            "project": request_data,
+            "planning_messages": messages,
+            "confirmed_contract": contract,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    now = int(time.time())
+    project_id = str(uuid.uuid4())
+    conn = _connection(db_factory)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            "SELECT project_id,request_hash FROM short_drama_project_requests "
+            "WHERE username=? AND operation=? AND idempotency_key=?",
+            (username, operation, key),
+        ).fetchone()
+        if existing:
+            if str(existing[1]) != request_hash:
+                raise ProjectCreationError(
+                    "idempotency_conflict",
+                    "同一 Idempotency-Key 不能用于不同的确认剧本建项请求",
+                    409,
+                )
+            promoted_project = _project_detail(conn, username, existing[0])
+            conversation_project = short_drama_conversation._project(
+                conn, username, existing[0]
+            )
+            result = {
+                "project": promoted_project,
+                "workspace": short_drama_conversation._workspace(
+                    conn, conversation_project, username
+                ),
+                "replayed": True,
+            }
+            conn.rollback()
+            return result
+
+        _insert_project_row(conn, username, data, request_data, project_id, now)
+        project = short_drama_conversation._project(conn, username, project_id)
+        short_drama_conversation._ensure_conversation(conn, project_id)
+        for index, content in enumerate(messages):
+            current = short_drama_conversation._conversation(conn, project_id)
+            message_now = int(time.time() * 1000) + index * 2
+            conn.execute(
+                "INSERT INTO short_drama_conversation_messages "
+                "(id,project_id,role,content,metadata_json,created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (
+                    str(uuid.uuid4()), project_id, "user", content,
+                    json.dumps({"kind": "preproject_promotion"}), message_now,
+                ),
+            )
+            understanding = short_drama_conversation._understanding(
+                project, short_drama_conversation._messages(conn, project_id)
+            )
+            reply, reply_metadata = short_drama_conversation._assistant_reply(
+                project, understanding
+            )
+            conn.execute(
+                "INSERT INTO short_drama_conversation_messages "
+                "(id,project_id,role,content,metadata_json,created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (
+                    str(uuid.uuid4()), project_id, "assistant", reply,
+                    json.dumps(reply_metadata, ensure_ascii=False, sort_keys=True),
+                    message_now + 1,
+                ),
+            )
+            conn.execute(
+                "UPDATE short_drama_conversations SET state='direction_review',"
+                "understanding_json=?,revision=revision+1,updated_at=? "
+                "WHERE project_id=? AND revision=?",
+                (
+                    json.dumps(understanding, ensure_ascii=False, sort_keys=True),
+                    int(time.time()), project_id, int(current["revision"]),
+                ),
+            )
+
+        current = short_drama_conversation._conversation(conn, project_id)
+        version_id = short_drama_conversation._create_version(
+            conn,
+            project,
+            username,
+            current,
+            "持久化用户已确认的逐镜合同",
+            current["current_version_id"],
+            confirmed_contract=contract,
+        )
+        current = short_drama_conversation._conversation(conn, project_id)
+        locked_at = int(time.time())
+        conn.execute(
+            "UPDATE short_drama_script_snapshots SET status='locked',"
+            "locked_by=?,locked_at=? WHERE project_id=? AND id=?",
+            (username, locked_at, project_id, version_id),
+        )
+        conn.execute(
+            "UPDATE short_drama_conversations SET state='script_locked',"
+            "locked_version_id=?,revision=revision+1,updated_at=? "
+            "WHERE project_id=? AND revision=?",
+            (
+                version_id, locked_at, project_id, int(current["revision"]),
+            ),
+        )
+        conn.execute(
+            "INSERT INTO short_drama_project_requests "
+            "(id,username,operation,idempotency_key,request_hash,project_id,"
+            "created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
+            (
+                str(uuid.uuid4()), username, operation, key, request_hash,
+                project_id, now, locked_at,
+            ),
+        )
+        promoted_project = _project_detail(conn, username, project_id)
+        response = {
+            "project": promoted_project,
+            "workspace": short_drama_conversation._workspace(
+                conn, project, username
+            ),
+            "replayed": False,
+        }
+        conn.commit()
+        return response
     except Exception:
         conn.rollback()
         raise
@@ -3384,6 +3563,7 @@ _HTTP_ROUTES = {
     },
     "POST": {
         "/api/gen/short-drama/projects",
+        "/api/gen/short-drama/projects/promote",
         "/api/gen/short-drama/projects/import",
         "/api/gen/short-drama/project/delete",
         "/api/gen/short-drama/apply-plan",
@@ -5173,6 +5353,14 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                     db_factory, owner, body["project_id"], body["revision"]
                 )
             handler._send(200, deleted)
+        elif path.endswith("/projects/promote"):
+            handler._send(200, promote_planner_project(
+                db_factory,
+                username,
+                _request_object(handler),
+                str(handler.headers.get("Idempotency-Key") or ""),
+                access,
+            ))
         elif path.endswith("/projects/import"):
             handler._send(200, import_script_project(
                 db_factory, username, _request_object(handler),

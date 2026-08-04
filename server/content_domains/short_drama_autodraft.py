@@ -21,6 +21,7 @@ from providers.short_drama_visual.heygen_cinematic import (
 )
 from providers.short_drama_visual.runtime import load_by_name, load_from_environment
 
+from . import points as points_domain
 from . import short_drama_assembly_plan as media_plan
 
 
@@ -1057,15 +1058,18 @@ def preview_provider_request(
 
 
 def _provider_shot_cost(preview):
-    try:
-        points_per_second = int(
-            os.getenv("HQ_SHORT_DRAMA_PROVIDER_SHOT_POINTS_PER_SECOND") or 10
-        )
-    except (TypeError, ValueError):
-        points_per_second = 10
-    points_per_second = max(1, min(points_per_second, 1000))
-    duration = int((preview.get("request") or {}).get("duration_seconds") or 0)
-    return max(1, duration) * points_per_second
+    request = preview.get("request") or {}
+    if str(preview.get("provider") or "").strip() == "heygen_cinematic":
+        return points_domain.cost_of("cinematic", {
+            "cine_mode": "open",
+            "duration": int(request.get("duration_seconds") or 0),
+        })
+    return points_domain.cost_of("xiaole_video", {
+        "channel": "grok",
+        "model": str(request.get("model") or "grok-imagine-video"),
+        "resolution": str(request.get("resolution") or "720p"),
+        "duration": int(request.get("duration_seconds") or 0),
+    })
 
 
 def _provider_job(row):

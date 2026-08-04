@@ -215,6 +215,44 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertEqual(1, len(charged))
         return job, quote
 
+    def test_provider_shot_cost_uses_shared_dynamic_model_pricing(self):
+        rates = {
+            "video.grok.v1.480p": 10,
+            "video.grok.v1.720p": 12,
+            "video.grok.v1_5.480p": 15,
+            "video.grok.v1_5.720p": 25,
+            "video.grok.v1_5.1080p": 44,
+        }
+
+        def price(key):
+            return rates[key]
+
+        def cost(model, resolution, duration=5):
+            return short_drama_autodraft._provider_shot_cost({
+                "request": {
+                    "model": model,
+                    "resolution": resolution,
+                    "duration_seconds": duration,
+                }
+            })
+
+        with mock.patch(
+            "content_domains.points.pricing.get_price", side_effect=price
+        ), mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_PROVIDER_SHOT_POINTS_PER_SECOND": "999"
+        }):
+            self.assertEqual(50, cost("grok-imagine-video", "480p"))
+            self.assertEqual(60, cost("grok-imagine-video", "720p"))
+            self.assertEqual(125, cost("grok-imagine-video-1.5", "720p"))
+            self.assertEqual(220, cost("grok-imagine-video-1.5", "1080p"))
+            rates["video.grok.v1.720p"] = 17
+            self.assertEqual(85, cost("grok-imagine-video", "720p"))
+            rates["video.cinematic.open"] = 9
+            self.assertEqual(45, short_drama_autodraft._provider_shot_cost({
+                "provider": "heygen_cinematic",
+                "request": {"duration_seconds": 5, "resolution": "720p"},
+            }))
+
     def test_confirmed_plan_starts_free_local_pollable_job(self):
         job = self._start()
         self.assertEqual("queued", job["status"])
