@@ -427,8 +427,8 @@ test('真实 Provider 未接入时禁止生成并明确说明不会播放固定�
     }
   }, true);
   assert.match(ready, /尚未选择真实画面 Provider/);
-  assert.match(ready, /单镜头真实生成/);
-  assert.match(ready, /检查当前镜头/);
+  assert.match(ready, /视频生成总览/);
+  assert.match(ready, /左侧“镜头与台词”/);
   assert.match(ready, /预检和报价不扣点/);
   assert.doesNotMatch(ready, /data-action="provider-quote"/);
   assert.doesNotMatch(ready, /data-action="provider-start"/);
@@ -582,7 +582,7 @@ test('local deterministic delivery is labelled as a free non-deliverable demo', 
 });
 
 test('Provider executor renders preflight, quote, paid confirmation and result state', () => {
-  const output = workspace.autodraftActionsHtml({
+  const state = {
     confirmed_plan:{id:'plan-1',plan:{material_plan:[{shot_key:'shot_01'}]}},
     provider_poc:{
       provider:'heygen_cinematic',
@@ -625,16 +625,19 @@ test('Provider executor renders preflight, quote, paid confirmation and result s
       single_shot_executor_ready:true,
       provider:{selected:'heygen_cinematic',configured:true}
     }
-  }, true);
-  assert.match(output, /data-action="provider-preflight"/);
-  assert.match(output, /id="sdProviderShot"/);
+  };
+  const output = workspace.autodraftActionsHtml(state, true);
+  const controls = workspace.providerShotControlsHtml({shot_key:'shot_01'}, state, true, 'shot_01');
+  assert.match(output, /视频生成总览/);
+  assert.match(controls, /data-action="provider-preflight"/);
+  assert.doesNotMatch(output, /id="sdProviderShot"/);
   assert.doesNotMatch(output, /id="sdProviderAvatar"/);
   assert.match(output, /shot_01/);
   assert.match(output, /1\/1 个角色已锁定/);
-  assert.match(output, /免费检查当前镜头/);
-  assert.match(output, /电影感写实短剧镜头/);
-  assert.match(output, /确认扣 50 点并生成/);
-  assert.match(output, /镜头任务 · running · 45%/);
+  assert.match(controls, /免费检查生成参数/);
+  assert.match(controls, /电影感写实短剧镜头/);
+  assert.match(controls, /确认扣 50 点并生成/);
+  assert.match(controls, /视频任务 · running · 45%/);
   assert.match(output, /预检和报价不扣点/);
   assert.doesNotMatch(output, /create-provider-avatar/);
   assert.doesNotMatch(output, /refresh-provider-avatars/);
@@ -700,7 +703,7 @@ test('generated Provider videos render under their matching script shots', () =>
 });
 
 test('Provider PoC directs missing character bindings to the left character cards', () => {
-  const output = workspace.autodraftActionsHtml({
+  const state = {
     confirmed_plan:{id:'plan-1'},
     provider_poc:{
       provider:'heygen_cinematic',
@@ -721,13 +724,15 @@ test('Provider PoC directs missing character bindings to the left character card
       message:'真实画面 Provider 已可预检；付费任务执行器尚未启用。',
       provider:{selected:'heygen_cinematic',configured:true}
     }
-  }, true);
+  };
+  const output = workspace.autodraftActionsHtml(state, true);
+  const controls = workspace.providerShotControlsHtml({shot_key:'shot_01'}, state, true, 'shot_01');
   assert.match(output, /角色形象尚未准备完整/);
   assert.match(output, /未绑定：记者林夏/);
   assert.match(output, /点击左侧角色卡/);
   assert.doesNotMatch(output, /data-action="create-provider-avatar"/);
   assert.doesNotMatch(output, /data-action="refresh-provider-avatars"/);
-  assert.match(output, /data-action="provider-preflight" type="button" disabled/);
+  assert.match(controls, /data-action="provider-preflight" data-shot-key="shot_01" type="button" disabled/);
   assert.equal(
     workspace.avatarCreateUrl(),
     '/workbench/video.html?function=cinematic&action=create-avatar'

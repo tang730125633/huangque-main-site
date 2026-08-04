@@ -12,6 +12,7 @@ from contextlib import closing
 
 from . import (
     short_drama_alignment,
+    short_drama_advisor,
     short_drama_assembly,
     short_drama_completion,
     short_drama_conversation,
@@ -3562,6 +3563,7 @@ _HTTP_ROUTES = {
         "/api/gen/short-drama/delivery/jobs/{job_id}",
     },
     "POST": {
+        "/api/gen/short-drama/advisor",
         "/api/gen/short-drama/projects",
         "/api/gen/short-drama/projects/promote",
         "/api/gen/short-drama/projects/import",
@@ -3648,7 +3650,13 @@ _HTTP_ROUTES = {
 
 def _http_error(handler, error, *, operation_terminal=False):
     terminal = {"operation_terminal": True} if operation_terminal else {}
-    if isinstance(error, short_drama_lipsync_rollout.RolloutError):
+    if isinstance(error, short_drama_advisor.AdvisorError):
+        handler._send(error.status, {
+            "detail": str(error)[:220],
+            "code": error.code,
+            **terminal,
+        })
+    elif isinstance(error, short_drama_lipsync_rollout.RolloutError):
         handler._send(error.status, {
             "detail": str(error)[:220],
             "code": error.code,
@@ -4078,6 +4086,8 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                 ),
             }
             handler._send(200, actions[path]())
+        elif method == "POST" and path == "/api/gen/short-drama/advisor":
+            handler._send(200, short_drama_advisor.advise(_request_object(handler)))
         elif (
             method == "GET"
             and path.startswith("/api/gen/short-drama/conversation/jobs/")
