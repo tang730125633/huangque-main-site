@@ -3641,7 +3641,10 @@ def _heygen_poll_video(video_id, direct=False, deadline_s=None, mcp=False):
         if status in {"failed", "error"}:
             detail = json.dumps(info, ensure_ascii=False)[:500]
             print("[heygen] FAIL GET /videos/%s -> provider %s" % (video_id, detail), flush=True)
-            raise RuntimeError("HeyGen视频生成失败: %s" % detail)
+            provider_error = str(info.get("failure_message") or info.get("error") or info.get("failure_code") or "").strip()
+            if any(word in provider_error.lower() for word in ("moderation", "flagged", "content policy", "real person")):
+                provider_error = "内容审核未通过，请更换人物图片、参考视频或提示词"
+            raise RuntimeError("HeyGen视频生成失败: %s" % (provider_error[:160] or "上游未返回失败原因"))
         time.sleep(HEYGEN_POLL_INTERVAL)
     raise TimeoutError("HeyGen视频生成超时")
 
