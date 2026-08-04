@@ -608,6 +608,13 @@
     if(cryptoObject&&typeof cryptoObject.randomUUID==='function')return 'project-create-'+cryptoObject.randomUUID();
     return 'project-create-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
   }
+  function plannerDraftStorageKey(username){
+    username=text(username).trim();
+    return username?'hq-short-drama-planner-draft-v3:'+username:'';
+  }
+  function plannerDraftMatchesUser(draft,username){
+    return !!(draft&&draft.version===3&&text(draft.username).trim()&&text(draft.username).trim()===text(username).trim());
+  }
   function decodePdfString(raw,hex){
     var bytes=[];
     if(hex){
@@ -743,6 +750,7 @@
         });});
     }
     return {
+      me:function(){return request('/api/auth/me');},
       list:function(){return request('/api/gen/short-drama/projects?page=1&page_size=50');},
       create:function(payload,idempotencyKey){var options={method:'POST',body:payload};if(idempotencyKey)options.headers={'Idempotency-Key':idempotencyKey};return request('/api/gen/short-drama/projects',options);},
       promote:function(payload,idempotencyKey){return request('/api/gen/short-drama/projects/promote',{method:'POST',headers:{'Idempotency-Key':idempotencyKey},body:payload});},
@@ -780,8 +788,8 @@
     var ideaForm=doc.getElementById('shortDramaIdeaForm'),ideaInput=doc.getElementById('shortDramaIdeaInput');
     var chat=doc.getElementById('shortDramaIdeaChat'),quickReplies=doc.getElementById('shortDramaIdeaQuickReplies');
     var recommendations=doc.getElementById('shortDramaRecommendations'),ideaMessages=[],selectedProjectId='',importFilename='',importAnalysis=null,pendingImportKey='';
-    var createMode='idea',plannerPayload=null,selectedDirection=null,plannerPreview=null,pendingCreateKey='',plannerAnswers={},plannerMeta={},plannerDirtyFields=[],plannerHistory=[],plannerTranscript=[],plannerFeedback=[],plannerCorrectionCount=0,plannerPersistenceReady=false,activePlannerField='',advisorBusy=false,advisorDegraded=false,plannerPanel='auto';
-    var PLANNER_DRAFT_KEY='hq-short-drama-planner-draft-v3';
+    var createMode='idea',plannerPayload=null,selectedDirection=null,plannerPreview=null,pendingCreateKey='',plannerAnswers={},plannerMeta={},plannerDirtyFields=[],plannerHistory=[],plannerTranscript=[],plannerFeedback=[],plannerCorrectionCount=0,plannerPersistenceReady=false,activePlannerField='',advisorBusy=false,advisorDegraded=false,plannerPanel='auto',currentUsername='';
+    var LEGACY_PLANNER_DRAFT_KEY='hq-short-drama-planner-draft-v3';
     var deleteButton=doc.getElementById('shortDramaDeleteProject');
     var confirmDelete=options.confirmImpl||function(message){return typeof runtimeRoot.confirm==='function'&&runtimeRoot.confirm(message);};
     function setNotice(message,isError){notice.textContent=message||'';notice.classList.toggle('error',!!isError);notice.hidden=!message;}
@@ -810,7 +818,8 @@
     }
     function load(){
       setNotice('正在加载项目…',false);
-      return client.list().then(function(result){projects=(result&&result.items)||[];setNotice('',false);render();
+      var identity=typeof client.me==='function'?client.me():Promise.resolve({user:{username:options.username||''}});
+      return identity.then(function(auth){currentUsername=text(auth&&auth.user&&auth.user.username).trim();if(!currentUsername){var error=new Error('无法确认当前登录账号');error.status=401;throw error;}return client.list();}).then(function(result){projects=(result&&result.items)||[];setNotice('',false);render();
         var selected=new URLSearchParams((runtimeRoot.location&&runtimeRoot.location.search)||'').get('project');
         if(selected&&runtimeRoot.HQShortDramaWorkspace){
           doc.documentElement.classList.add('short-drama-immersive');
@@ -927,14 +936,15 @@
       doc.getElementById('shortDramaCreateLead').textContent=lead;
     }
     function plannerStorage(){try{return runtimeRoot.localStorage||null;}catch(error){return null;}}
+    function plannerDraftKey(){return plannerDraftStorageKey(currentUsername);}
     function readPlannerDraft(){
-      try{var storage=plannerStorage(),raw=storage&&storage.getItem(PLANNER_DRAFT_KEY),draft=raw?JSON.parse(raw):null;if(!draft||draft.version!==3||!draft.saved_at||Date.now()-draft.saved_at>30*24*60*60*1000)return null;return draft;}catch(error){return null;}
+      try{var storage=plannerStorage(),key=plannerDraftKey();if(!storage||!key)return null;storage.removeItem(LEGACY_PLANNER_DRAFT_KEY);var raw=storage.getItem(key),draft=raw?JSON.parse(raw):null;if(!plannerDraftMatchesUser(draft,currentUsername)){if(raw)storage.removeItem(key);return null;}if(!draft.saved_at||Date.now()-draft.saved_at>30*24*60*60*1000){storage.removeItem(key);return null;}return draft;}catch(error){return null;}
     }
-    function savePlannerDraft(){
-      if(!plannerPersistenceReady||!plannerPayload)return;
-      try{var storage=plannerStorage();if(!storage)return;storage.setItem(PLANNER_DRAFT_KEY,JSON.stringify({version:3,saved_at:Date.now(),create_mode:createMode,payload:plannerPayload,answers:plannerAnswers,meta:plannerMeta,dirty_fields:plannerDirtyFields,history:plannerHistory,transcript:plannerTranscript,feedback:plannerFeedback,correction_count:plannerCorrectionCount,selected_direction:selectedDirection,preview:plannerPreview,active_field:activePlannerField,advisor_degraded:advisorDegraded,panel:plannerPanel,pending_create_key:pendingCreateKey}));}catch(error){}
+    function savePlannerDraft(required){
+      if(!plannerPersistenceReady||!plannerPayload)return !required;
+      try{var storage=plannerStorage(),key=plannerDraftKey();if(!storage||!key)return false;var encoded=JSON.stringify({version:3,username:currentUsername,saved_at:Date.now(),create_mode:createMode,payload:plannerPayload,answers:plannerAnswers,meta:plannerMeta,dirty_fields:plannerDirtyFields,history:plannerHistory,transcript:plannerTranscript,feedback:plannerFeedback,correction_count:plannerCorrectionCount,selected_direction:selectedDirection,preview:plannerPreview,active_field:activePlannerField,advisor_degraded:advisorDegraded,panel:plannerPanel,pending_create_key:pendingCreateKey});storage.setItem(key,encoded);var saved=JSON.parse(storage.getItem(key)||'null');return plannerDraftMatchesUser(saved,currentUsername)&&saved.pending_create_key===pendingCreateKey;}catch(error){return false;}
     }
-    function clearPlannerDraft(){try{var storage=plannerStorage();if(storage)storage.removeItem(PLANNER_DRAFT_KEY);}catch(error){}}
+    function clearPlannerDraft(){try{var storage=plannerStorage(),key=plannerDraftKey();if(storage&&key)storage.removeItem(key);}catch(error){}}
     function plannerHistoryEntry(answers,meta,dirtyFields,messages,label,changedFields){return {answers:answers,meta:meta,dirtyFields:(dirtyFields||[]).slice(),messages:(messages||[]).slice(),label:label||'创作设定修改',changedFields:(changedFields||[]).slice(),at:Date.now()};}
     function renderPlannerHistory(){
       var list=doc.getElementById('shortDramaPlannerHistoryList'),details=doc.getElementById('shortDramaPlannerHistory');doc.getElementById('shortDramaPlannerHistoryCount').textContent=plannerHistory.length+' 条';details.hidden=!plannerHistory.length;
@@ -971,7 +981,7 @@
       var opening=advisorStep([],{},plannerAnswers,plannerMeta);activePlannerField=opening.field||'';chatBubble('assistant',opening.message);renderQuickReplies(opening.quick);renderScriptPreview(null);plannerNotice('',false);doc.getElementById('shortDramaPlannerAckInput').checked=false;renderPlanner();
       showCreateStep('choice');
     }
-    function openCreate(){var draft=readPlannerDraft();if(draft)restorePlannerDraft(draft);else resetCreate();dialog.showModal();}
+    function openCreate(){if(!currentUsername){setNotice('正在确认登录账号，请稍后重试。',true);return;}var draft=readPlannerDraft();if(draft)restorePlannerDraft(draft);else resetCreate();dialog.showModal();}
     function submitIdea(value){
       value=compactIdea(value);if(!value||advisorBusy)return Promise.resolve(false);
       chatBubble('user',value);ideaInput.value='';
@@ -1110,6 +1120,7 @@
       var button=doc.getElementById('shortDramaConfirmScript');button.disabled=true;plannerNotice('正在建立正式项目并固化已确认剧本…',false);
       var contract=plannerConfirmedContract(plannerPreview);
       if(!pendingCreateKey)pendingCreateKey=newProjectKey();
+      if(!savePlannerDraft(true)){plannerNotice('无法安全保存创建恢复点，请检查浏览器存储权限后重试。项目尚未创建。',true);button.disabled=false;return Promise.resolve();}
       return client.promote({
         project:plannerPayload,
         planning_messages:plannerPromotionMessages(plannerPreview),
@@ -1117,7 +1128,7 @@
       },pendingCreateKey).then(function(result){
         var project=result&&result.project;
         if(!project||!project.id)throw new Error('服务端未返回已确认的短剧项目');
-        plannerNotice('剧本已确认，正在进入正式项目。',false);
+        clearPlannerDraft();plannerNotice('剧本已确认，正在进入正式项目。',false);
         if(runtimeRoot.location)runtimeRoot.location.href=projectUrl(project.id);
       }).catch(function(error){plannerNotice(error.message||'创建项目失败，可直接重试，系统不会重复发送已保存的策划内容。',true);button.disabled=false;});
     }
@@ -1216,5 +1227,5 @@
     load().catch(function(){});
     return {reload:load,render:render};
   }
-  return {STAGES:STAGES,LABELS:LABELS,normalizeProject:normalizeProject,progress:progress,filterProjects:filterProjects,metrics:metrics,deleteErrorMessage:deleteErrorMessage,createPayload:createPayload,compactIdea:compactIdea,plannerUnderstanding:plannerUnderstanding,plannerCompleteness:plannerCompleteness,plannerFlowState:plannerFlowState,buildRecommendations:buildRecommendations,advisorStep:advisorStep,plannerLocalIntent:plannerLocalIntent,plannerLocalFieldUpdates:plannerLocalFieldUpdates,plannerLocalAdvice:plannerLocalAdvice,applyAdvisorResult:applyAdvisorResult,plannerMetaSnapshot:plannerMetaSnapshot,applyAdvisorMetadata:applyAdvisorMetadata,plannerConversationAudit:plannerConversationAudit,plannerAnswerSnapshot:plannerAnswerSnapshot,plannerChangedFields:plannerChangedFields,plannerRecap:plannerRecap,plannerProgress:plannerProgress,plannerAffectedLayers:plannerAffectedLayers,rebuildPlannerPreview:rebuildPlannerPreview,plannerDurations:plannerDurations,plannerRoles:plannerRoles,plannerReadingSeconds:plannerReadingSeconds,plannerStoryPlan:plannerStoryPlan,plannerScenePlan:plannerScenePlan,plannerDialogueSet:plannerDialogueSet,plannerQuality:plannerQuality,plannerReview:plannerReview,repairPlannerPreview:repairPlannerPreview,buildPlannerPreview:buildPlannerPreview,plannerPromotionMessages:plannerPromotionMessages,plannerConfirmedContract:plannerConfirmedContract,plannerWordDocumentHtml:plannerWordDocumentHtml,plannerWordFilename:plannerWordFilename,confirmedContractMatches:confirmedContractMatches,continuePlannerContract:continuePlannerContract,importedTitle:importedTitle,importedGlobalUnderstanding:importedGlobalUnderstanding,analyzeImportedScript:analyzeImportedScript,importProjectPayload:importProjectPayload,newImportKey:newImportKey,newProjectKey:newProjectKey,readLimitedStream:readLimitedStream,extractPdfText:extractPdfText,extractDocxText:extractDocxText,readScriptFile:readScriptFile,createClient:createClient,projectUrl:projectUrl,cardHtml:cardHtml,mount:mount};
+  return {STAGES:STAGES,LABELS:LABELS,normalizeProject:normalizeProject,progress:progress,filterProjects:filterProjects,metrics:metrics,deleteErrorMessage:deleteErrorMessage,createPayload:createPayload,compactIdea:compactIdea,plannerUnderstanding:plannerUnderstanding,plannerCompleteness:plannerCompleteness,plannerFlowState:plannerFlowState,buildRecommendations:buildRecommendations,advisorStep:advisorStep,plannerLocalIntent:plannerLocalIntent,plannerLocalFieldUpdates:plannerLocalFieldUpdates,plannerLocalAdvice:plannerLocalAdvice,applyAdvisorResult:applyAdvisorResult,plannerMetaSnapshot:plannerMetaSnapshot,applyAdvisorMetadata:applyAdvisorMetadata,plannerConversationAudit:plannerConversationAudit,plannerAnswerSnapshot:plannerAnswerSnapshot,plannerChangedFields:plannerChangedFields,plannerRecap:plannerRecap,plannerProgress:plannerProgress,plannerAffectedLayers:plannerAffectedLayers,rebuildPlannerPreview:rebuildPlannerPreview,plannerDurations:plannerDurations,plannerRoles:plannerRoles,plannerReadingSeconds:plannerReadingSeconds,plannerStoryPlan:plannerStoryPlan,plannerScenePlan:plannerScenePlan,plannerDialogueSet:plannerDialogueSet,plannerQuality:plannerQuality,plannerReview:plannerReview,repairPlannerPreview:repairPlannerPreview,buildPlannerPreview:buildPlannerPreview,plannerPromotionMessages:plannerPromotionMessages,plannerConfirmedContract:plannerConfirmedContract,plannerWordDocumentHtml:plannerWordDocumentHtml,plannerWordFilename:plannerWordFilename,confirmedContractMatches:confirmedContractMatches,continuePlannerContract:continuePlannerContract,importedTitle:importedTitle,importedGlobalUnderstanding:importedGlobalUnderstanding,analyzeImportedScript:analyzeImportedScript,importProjectPayload:importProjectPayload,newImportKey:newImportKey,newProjectKey:newProjectKey,plannerDraftStorageKey:plannerDraftStorageKey,plannerDraftMatchesUser:plannerDraftMatchesUser,readLimitedStream:readLimitedStream,extractPdfText:extractPdfText,extractDocxText:extractDocxText,readScriptFile:readScriptFile,createClient:createClient,projectUrl:projectUrl,cardHtml:cardHtml,mount:mount};
 });

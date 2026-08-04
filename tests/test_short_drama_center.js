@@ -574,6 +574,26 @@ test('phase three planner controls are present', () => {
   assert.match(centerStyle, /short-drama-message-feedback/);
 });
 
+test('planner drafts are isolated by authenticated account', () => {
+  assert.equal(center.plannerDraftStorageKey('alice'), 'hq-short-drama-planner-draft-v3:alice');
+  assert.equal(center.plannerDraftStorageKey('bob'), 'hq-short-drama-planner-draft-v3:bob');
+  assert.equal(center.plannerDraftStorageKey(''), '');
+  const draft = {version:3,username:'alice'};
+  assert.equal(center.plannerDraftMatchesUser(draft, 'alice'), true);
+  assert.equal(center.plannerDraftMatchesUser(draft, 'bob'), false);
+  assert.match(centerScript, /me:function\(\)\{return request\('\/api\/auth\/me'\)/);
+  assert.match(shell, /removeItem\('hq-short-drama-planner-draft-v3:'\+exiting\.username\)/);
+});
+
+test('atomic promotion idempotency checkpoint is persisted before request', () => {
+  const requestAt = centerScript.indexOf('client.promote({');
+  const beforeAt = centerScript.lastIndexOf('savePlannerDraft(true)', requestAt);
+  assert.ok(requestAt > 0);
+  assert.ok(beforeAt > 0 && beforeAt < requestAt);
+  assert.match(centerScript, /无法安全保存创建恢复点/);
+  assert.doesNotMatch(centerScript, /pendingCreatedProject/);
+});
+
 test('planner conversation audit detects repeated questions and negative feedback', () => {
   const audit = center.plannerConversationAudit([
     {role:'assistant', message:'你希望故事最后如何结束？'},

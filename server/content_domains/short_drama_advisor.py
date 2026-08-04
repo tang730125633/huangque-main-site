@@ -1,8 +1,12 @@
 """Stateless semantic advisor used before a short-drama project is created."""
 
 import json
+import hashlib
+import logging
 import os
 import re
+import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -18,12 +22,88 @@ ALLOWED_OPERATIONS = {"set", "clear", "keep"}
 ALLOWED_STATUSES = {"confirmed", "inferred", "suggested", "conflicted", "removed"}
 ALLOWED_NEXT_ACTIONS = {"ask", "recommend", "confirm", "continue", "undo", "clarify"}
 
+_USAGE_LOCK = threading.Lock()
+_USER_WINDOWS = {}
+_USER_ACTIVE = {}
+_GLOBAL_ACTIVE = 0
+_AUDIT_LOG = logging.getLogger("short_drama.advisor.usage")
+
 
 class AdvisorError(ValueError):
     def __init__(self, code, message, status=422):
         super().__init__(message)
         self.code = code
         self.status = status
+
+
+def _positive_env(name, default):
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(1, value)
+
+
+def _usage_limits():
+    return {
+        "window_seconds": _positive_env("SHORT_DRAMA_ADVISOR_WINDOW_SECONDS", 300),
+        "requests_per_window": _positive_env("SHORT_DRAMA_ADVISOR_REQUESTS_PER_WINDOW", 12),
+        "user_concurrency": _positive_env("SHORT_DRAMA_ADVISOR_USER_CONCURRENCY", 1),
+        "global_concurrency": _positive_env("SHORT_DRAMA_ADVISOR_GLOBAL_CONCURRENCY", 4),
+    }
+
+
+def _acquire_usage(username, now=None):
+    global _GLOBAL_ACTIVE
+    username = str(username or "").strip()
+    if not username:
+        raise AdvisorError("advisor_identity_required", "无法确认创作助手使用账号", 401)
+    now = time.time() if now is None else float(now)
+    limits = _usage_limits()
+    with _USAGE_LOCK:
+        window = [
+            value for value in _USER_WINDOWS.get(username, [])
+            if now - value < limits["window_seconds"]
+        ]
+        _USER_WINDOWS[username] = window
+        if len(window) >= limits["requests_per_window"]:
+            raise AdvisorError(
+                "advisor_rate_limited", "创作助手免费额度已达当前时间窗口上限，请稍后再试", 429
+            )
+        if _USER_ACTIVE.get(username, 0) >= limits["user_concurrency"]:
+            raise AdvisorError(
+                "advisor_user_busy", "当前账号已有创作助手请求处理中", 429
+            )
+        if _GLOBAL_ACTIVE >= limits["global_concurrency"]:
+            raise AdvisorError(
+                "advisor_capacity_reached", "创作助手当前繁忙，请稍后再试", 429
+            )
+        window.append(now)
+        _USER_WINDOWS[username] = window
+        _USER_ACTIVE[username] = _USER_ACTIVE.get(username, 0) + 1
+        _GLOBAL_ACTIVE += 1
+    return username
+
+
+def _release_usage(username):
+    global _GLOBAL_ACTIVE
+    if not username:
+        return
+    with _USAGE_LOCK:
+        active = max(0, _USER_ACTIVE.get(username, 0) - 1)
+        if active:
+            _USER_ACTIVE[username] = active
+        else:
+            _USER_ACTIVE.pop(username, None)
+        _GLOBAL_ACTIVE = max(0, _GLOBAL_ACTIVE - 1)
+
+
+def _reset_usage_for_tests():
+    global _GLOBAL_ACTIVE
+    with _USAGE_LOCK:
+        _USER_WINDOWS.clear()
+        _USER_ACTIVE.clear()
+        _GLOBAL_ACTIVE = 0
 
 
 def _provider_config():
@@ -223,7 +303,7 @@ def _normalize(result, understanding=None):
     }
 
 
-def advise(body, opener=None):
+def _advise_provider(body, opener=None):
     request_body = _clean_body(body)
     if not request_body["user_message"]:
         raise AdvisorError("message_required", "\u8bf7\u8f93\u5165\u60f3\u6cd5\u6216\u95ee\u9898")
@@ -285,3 +365,28 @@ def advise(body, opener=None):
     choices = result.get("choices") or []
     content = (((choices[0] if choices else {}).get("message") or {}).get("content") or "")
     return _normalize(_json_content(content), request_body["understanding"])
+
+
+def advise(body, opener=None, username=None):
+    request_body = _clean_body(body)
+    if not request_body["user_message"]:
+        raise AdvisorError("message_required", "请输入想法或问题")
+    # Internal deterministic tests may omit username; the authenticated HTTP route never does.
+    ticket = _acquire_usage(username) if username is not None else None
+    request_hash = hashlib.sha256(
+        json.dumps(request_body, ensure_ascii=False, sort_keys=True,
+                   separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:16]
+    started = time.monotonic()
+    outcome = "failed"
+    try:
+        result = _advise_provider(request_body, opener=opener)
+        outcome = "succeeded"
+        return result
+    finally:
+        _release_usage(ticket)
+        _AUDIT_LOG.info(
+            "advisor_usage username=%s request_hash=%s outcome=%s duration_ms=%d",
+            ticket or "internal", request_hash, outcome,
+            int((time.monotonic() - started) * 1000),
+        )

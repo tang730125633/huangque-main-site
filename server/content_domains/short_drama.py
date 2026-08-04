@@ -4087,7 +4087,9 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             }
             handler._send(200, actions[path]())
         elif method == "POST" and path == "/api/gen/short-drama/advisor":
-            handler._send(200, short_drama_advisor.advise(_request_object(handler)))
+            handler._send(200, short_drama_advisor.advise(
+                _request_object(handler), username=username,
+            ))
         elif (
             method == "GET"
             and path.startswith("/api/gen/short-drama/conversation/jobs/")
