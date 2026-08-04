@@ -6,8 +6,10 @@ import json
 import time
 
 try:
+    from . import business_cards
     from .invites import MEMBERSHIP_LEVEL_ORDER, MEMBERSHIP_NAMES
 except ImportError:
+    import business_cards
     from invites import MEMBERSHIP_LEVEL_ORDER, MEMBERSHIP_NAMES
 
 
@@ -110,6 +112,12 @@ def _person(conn, user_id, viewer_id, secret, relation, can_browse, now,
         (int(user_id),),
     ).fetchone()
     card_public_id = card["public_id"] if card and card["status"] == "published" else ""
+    public_card = {}
+    if card_public_id:
+        try:
+            public_card = business_cards.public(conn, card_public_id)
+        except business_cards.CardError:
+            card_public_id = ""
     points, reward_status, expires_at = (0, "", 0)
     if relation_id is not None:
         points, reward_status, expires_at = _reward_display(conn, relation_id, hide_rewards)
@@ -120,6 +128,9 @@ def _person(conn, user_id, viewer_id, secret, relation, can_browse, now,
         "relation": relation,
         "card_available": bool(card_public_id),
         "card_public_id": card_public_id,
+        "name": public_card.get("name", ""),
+        "title": public_card.get("title", ""),
+        "avatar": public_card.get("avatar", ""),
         "node_grant": issue_node_grant(viewer_id, user_id, secret, now) if can_browse else "",
         "reward_points": int(points),
         "reward_status": reward_status,
