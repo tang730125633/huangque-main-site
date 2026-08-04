@@ -68,9 +68,11 @@ class XiaoleVideoTests(unittest.TestCase):
         with patch.object(feature_flags, "_cached_rows", return_value={}):
             self.assertFalse(feature_flags.is_enabled("omni_video"))
             self.assertFalse(feature_flags.is_enabled("seedance_video"))
+            self.assertFalse(feature_flags.is_enabled("minimax_h3_video"))
         html = (Path(__file__).resolve().parents[1] / "site" / "workbench" / "video.html").read_text(encoding="utf-8")
         self.assertIn('class="function-tab hidden" type="button" data-function="omni"', html)
         self.assertIn('class="function-tab hidden" type="button" data-function="micro"', html)
+        self.assertIn('class="function-tab hidden" type="button" data-function="minimax"', html)
         self.assertLess(
             html.index('data-function="sora"'),
             html.index('data-function="omni"'),
@@ -81,7 +83,7 @@ class XiaoleVideoTests(unittest.TestCase):
         )
         self.assertIn("omniAvailable=d.omni_video_enabled===true", html)
         self.assertIn("seedanceAvailable=d.seedance_video_enabled===true", html)
-        self.assertIn("['grok','micro','omni'].indexOf(ch)<0", html)
+        self.assertIn("['grok','micro','omni','minimax'].indexOf(ch)<0", html)
         self.assertIn("gemini-omni-flash-preview", html)
         self.assertIn("doubao-seedance-2-0-260128", html)
         self.assertIn("doubao-seedance-2-0-fast-260128", html)
@@ -99,6 +101,7 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertIn("targetMode==='micro'", html)
         self.assertIn("setupXiaoleRefPanel('omni', omniRefData, 6)", html)
         self.assertIn("setupXiaoleRefPanel('micro', microRefData, 9)", html)
+        self.assertIn("setupXiaoleRefPanel('minimax', minimaxRefData, 5)", html)
 
     def test_generate_xiaole_video_sends_size_without_aspect_ratio(self):
         calls = []
@@ -607,7 +610,7 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertEqual(result["provider"], "google_gemini_omni")
 
     def test_unknown_official_submission_is_held_without_refund_or_resubmit(self):
-        for provider in ("xai", "seedance", "omni"):
+        for provider in ("xai", "seedance", "omni", "minimax"):
             with self.subTest(provider=provider), patch.object(
                 self.video, "get_resumable_grok_request", return_value={
                     "request_id": None, "provider": provider,
@@ -623,7 +626,7 @@ class XiaoleVideoTests(unittest.TestCase):
                 )
 
     def test_unknown_official_submission_hold_never_expires_to_refund(self):
-        for provider in ("xai", "seedance", "omni"):
+        for provider in ("xai", "seedance", "omni", "minimax"):
             with self.subTest(provider=provider), patch.object(
                 self.video,
                 "get_resumable_grok_request",

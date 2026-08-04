@@ -56,10 +56,11 @@ XIAOLE_CHANNEL_MODELS = {
     "grok": "Grok Image Video",   # 果肉视频（Grok Video 1.0：文生/图生视频）
     "micro": "doubao-seedance-2-0-260128",
     "omni": "gemini-omni-flash-preview",
+    "minimax": "MiniMax-H3",
 }
 # 旧小乐豆姐/欧米仍永久停用；官方实现由各自独立 feature flag 控制。
 DISABLED_XIAOLE_VIDEO_CHANNELS = set()
-XIAOLE_IMAGE_CHANNELS = {"grok", "micro", "omni"}  # 支持参考图（图生视频）的渠道
+XIAOLE_IMAGE_CHANNELS = {"grok", "micro", "omni", "minimax"}  # 支持参考图（图生视频）的渠道
 XIAOLE_CHANNEL_DURATION = {}
 XIAOLE_MAX_REF = int(os.environ.get("XIAOLEVIDEO_MAX_REF", "7"))  # Grok 图生视频最多参考图数(实测上游pydantic硬上限7张,超过422)
 GROK_VIDEO_PROVIDER = os.environ.get("GROK_VIDEO_PROVIDER", "xai").strip().lower()
@@ -202,6 +203,11 @@ def omni_video_is_open():
 def seedance_video_is_open():
     from . import video_seedance
     return video_seedance.available()
+
+
+def minimax_h3_video_is_open():
+    from . import video_minimax_h3
+    return video_minimax_h3.available()
 
 
 def seedance_video_health_enabled(flags):
@@ -1258,7 +1264,7 @@ def validate_xiaole_video_payload(payload, username=None):
         raise ValueError("参考图模式不支持")
     if reference_mode and channel != "grok":
         raise ValueError("保序参考帧仅用于果肉反推回退")
-    if channel in {"micro", "omni"}:
+    if channel in {"micro", "omni", "minimax"}:
         from . import feature_flags
         operation = str(cleaned.get("operation") or "generate").strip().lower()
         if operation != "generate":
@@ -1268,6 +1274,26 @@ def validate_xiaole_video_payload(payload, username=None):
             raise ValueError("reference_images 必须是数组")
         refs = [str(item or "").strip() for item in refs if str(item or "").strip()]
         validate_image_mentions(prompt, len(refs))
+
+        if channel == "minimax":
+            from . import video_minimax_h3
+            if not feature_flags.is_enabled("minimax_h3_video"):
+                raise ValueError("麦克视频通道未开启")
+            if not video_minimax_h3.available():
+                raise ValueError("麦克视频服务未配置")
+            model = str(cleaned.get("model") or video_minimax_h3.MODEL).strip()
+            if model != video_minimax_h3.MODEL:
+                raise ValueError("麦克视频模型不支持：%s" % model)
+            ratio = str(cleaned.get("ratio") or "9:16").strip()
+            duration = cleaned.get("duration", 5)
+            resolution = str(cleaned.get("resolution") or "768p").strip()
+            video_minimax_h3.build_request(prompt, refs, ratio, duration, resolution)
+            cleaned.update({
+                "operation": "generate", "model": model, "ratio": ratio,
+                "duration": int(duration), "resolution": "768p",
+                "reference_images": refs,
+            })
+            return cleaned
 
         if channel == "omni":
             from . import video_gemini_omni
@@ -2087,6 +2113,12 @@ def get_resumable_grok_request(job_id):
                 "request_id": None, "submission_unknown": True,
                 "provider": "omni", "phase": phase,
             }
+        if phase.startswith("minimax_") and phase in {
+                "minimax_submitting", "minimax_recovery_required"}:
+            return {
+                "request_id": None, "submission_unknown": True,
+                "provider": "minimax", "phase": phase,
+            }
         return None
     if phase.startswith("openrouter_"):
         provider = "openrouter"
@@ -2096,6 +2128,8 @@ def get_resumable_grok_request(job_id):
         provider = "seedance"
     elif phase.startswith("omni_"):
         provider = "omni"
+    elif phase.startswith("minimax_"):
+        provider = "minimax"
     else:
         return None
     return {
@@ -2115,7 +2149,7 @@ def get_resumable_grok_request(job_id):
 def recover_official_video_paid_job(job_id, error, requeue=None):
     """有官方 id 时只恢复 GET；提交结果未知时保留任务，禁止退款后重复计费。"""
     recovery = get_resumable_grok_request(job_id)
-    if not recovery or recovery.get("provider") not in {"xai", "omni", "seedance"}:
+    if not recovery or recovery.get("provider") not in {"xai", "omni", "seedance", "minimax"}:
         return False
     provider = recovery["provider"]
     if recovery.get("submission_unknown"):
@@ -2232,9 +2266,9 @@ def recover_paid_video_error(job_id, kind, payload, error, requeue=None,
         return recover_sora_paid_job(job_id, error, retry)
 
     channel = str((payload or {}).get("channel") or "").lower()
-    if kind != "xiaole_video" or channel not in {"grok", "micro", "omni"}:
+    if kind != "xiaole_video" or channel not in {"grok", "micro", "omni", "minimax"}:
         return False
-    from . import video_gemini_omni, video_seedance, video_xai, wavespeed
+    from . import video_gemini_omni, video_minimax_h3, video_seedance, video_xai, wavespeed
     if isinstance(error, (
             video_xai.XaiCreateUnavailableError,
             video_xai.XaiCreateRejected,
@@ -2243,6 +2277,8 @@ def recover_paid_video_error(job_id, kind, payload, error, requeue=None,
             video_gemini_omni.GeminiOmniProviderFailed,
             video_seedance.SeedanceRejected,
             video_seedance.SeedanceProviderFailed,
+            video_minimax_h3.MiniMaxRejected,
+            video_minimax_h3.MiniMaxProviderFailed,
             wavespeed.WaveSpeedRejected,
             wavespeed.WaveSpeedProviderFailed,
     )):
@@ -2288,6 +2324,7 @@ def recover_paid_video_error(job_id, kind, payload, error, requeue=None,
         video_xai.TransientXaiError,
         video_gemini_omni.GeminiOmniTransientRead,
         video_seedance.TransientSeedanceError,
+        video_minimax_h3.TransientMiniMaxError,
         wavespeed.WaveSpeedTransientRead,
         TimeoutError,
     )) else None
@@ -4757,7 +4794,7 @@ def gen_xiaole_video(payload):
     if channel in DISABLED_XIAOLE_VIDEO_CHANNELS:
         raise ValueError("该视频渠道维护中，请使用果肉视频生成")
     use_xai = channel == "grok" and GROK_VIDEO_PROVIDER != "xiaole"
-    is_official = channel in {"micro", "omni"}
+    is_official = channel in {"micro", "omni", "minimax"}
     model = (
         payload.get("model") or "grok-imagine-video"
         if use_xai else payload.get("model") or XIAOLE_CHANNEL_MODELS.get(channel)
@@ -4781,7 +4818,7 @@ def gen_xiaole_video(payload):
         if raw_refs and not existing:
             ref_images = (
                 list(raw_refs)
-                if channel == "omni"
+                if channel in {"omni", "minimax"}
                 else ([_seedance_ref_to_signed_url(r, payload.get("_username"))
                        for r in raw_refs]
                       if channel == "micro"
@@ -4791,6 +4828,7 @@ def gen_xiaole_video(payload):
     prompt = resolve_image_mentions(user_prompt, len(ref_images or []), mention_style)
     label = {
         "grok": "果肉视频", "micro": "Seedance 视频", "omni": "Omni 视频",
+        "minimax": "麦克视频",
     }.get(channel, model)
     if not existing and channel == "micro":
         # COS 回退可能仍是 data URL；必须在写 submitting 前用最终引用做完整校验。
@@ -4804,14 +4842,17 @@ def gen_xiaole_video(payload):
         raise OfficialVideoSubmissionUnknown(
             "%s 已发起提交但未确认上游任务 ID，需人工核对" % label
         )
-    if existing and is_official and existing.get("provider") != (
-            "seedance" if channel == "micro" else "omni"):
+    expected_provider = {
+        "micro": "seedance", "omni": "omni", "minimax": "minimax",
+    }.get(channel)
+    if existing and is_official and existing.get("provider") != expected_provider:
         raise RuntimeError("%s 恢复信息与当前任务渠道不一致" % label)
     if job_id and not existing:
-        phase = (
-            ("seedance_" if channel == "micro" else "omni_") + "submitting"
-            if is_official else "queued"
-        )
+        phase = ({
+            "micro": "seedance_submitting",
+            "omni": "omni_submitting",
+            "minimax": "minimax_submitting",
+        }.get(channel, "queued"))
         update_video_asset_phase(
             job_id, phase, strict=is_official, mode=channel, text=prompt,
             model=model, resolution=payload.get("resolution"), ratio=ratio,
@@ -5145,6 +5186,62 @@ def gen_xiaole_video(payload):
             "image_file": cover,
             "image_url": public_url(cover, "image/jpeg") if cover else None,
         }
+    elif channel == "minimax":
+        from . import video_minimax_h3
+
+        provider_id_persisted = bool(existing and existing.get("request_id"))
+
+        def minimax_heartbeat(heartbeat_job_id, phase, **fields):
+            nonlocal provider_id_persisted
+            update_video_asset_phase(
+                heartbeat_job_id, phase,
+                strict=bool(fields.get("provider_video_id"))
+                and not provider_id_persisted,
+                **fields,
+            )
+            provider_id_persisted = provider_id_persisted or bool(
+                fields.get("provider_video_id")
+            )
+
+        duration = int(payload.get("duration") or 5)
+        if existing:
+            candidate = _bound_provider_key(
+                "minimax", existing.get("provider_key_id")
+            )
+            rendered = video_minimax_h3.resume(
+                existing["request_id"], duration, ratio,
+                job_id=job_id, heartbeat=minimax_heartbeat,
+                api_key=candidate["secret"], provider_key_id=candidate["id"],
+            )
+        else:
+            rendered, candidate = _create_with_provider_key(
+                "minimax", job_id, "minimax_submitting",
+                video_minimax_h3.MiniMaxCredentialRejected,
+                lambda selected: video_minimax_h3.generate(
+                    prompt, ref_images, ratio=ratio, duration=duration,
+                    resolution="768P", job_id=job_id,
+                    heartbeat=minimax_heartbeat, api_key=selected["secret"],
+                    provider_key_id=selected["id"],
+                ),
+            )
+        source_url = rendered["source_video_url"]
+        if job_id:
+            update_video_asset_phase(
+                job_id, "minimax_downloading", source_video_url=source_url,
+                provider_video_id=rendered.get("request_id"),
+                provider_key_id=candidate["id"], model=video_minimax_h3.MODEL,
+            )
+        try:
+            video_file = _download_xiaole_video(source_url, "minimax_h3")
+        except RuntimeError as exc:
+            if str(exc).startswith("视频下载失败"):
+                raise video_minimax_h3.TransientMiniMaxError(str(exc)) from exc
+            raise
+        cover = _extract_first_frame_cover(video_file)
+        result = dict(
+            rendered, video_file=video_file, image_file=cover,
+            image_url=public_url(cover, "image/jpeg") if cover else None,
+        )
     else:
         result = generate_xiaole_video(model, prompt, reference_images=ref_images, size=size, job_id=job_id, prefix=channel,
                                        duration=XIAOLE_CHANNEL_DURATION.get(channel))
