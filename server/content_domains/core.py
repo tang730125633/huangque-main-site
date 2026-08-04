@@ -12,7 +12,7 @@
 
 P1：图片(gpt-image-2)。P2 文案 / P3 视频按同样的 register_capability 往里加。
 """
-import os, re, sqlite3, json, time, threading, queue, base64, pathlib, urllib.request, urllib.error, urllib.parse, subprocess, uuid, sys
+import os, re, sqlite3, json, time, threading, queue, base64, pathlib, urllib.request, urllib.error, urllib.parse, subprocess, uuid, sys, inspect
 from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -804,6 +804,20 @@ def _short_drama_domain(): from . import short_drama; return short_drama
 def _lipsync_worker_domain():
     from . import short_drama_lipsync_worker
     return short_drama_lipsync_worker
+def _lipsync_worker_attr(name):
+    try:
+        return getattr(_lipsync_worker_domain(), name)
+    except ImportError:
+        return None
+def _dispatch_short_drama(handler, method, *args, **kwargs):
+    dispatch = _short_drama_domain().dispatch_http
+    parameters = inspect.signature(dispatch).parameters
+    if "generation_dependencies" in parameters:  # 兼容尚未整包发布的旧短剧运行模块
+        kwargs = {key: value for key, value in kwargs.items() if key in parameters}
+        if method == "POST":
+            audio_domain, points_domain, _video_domain = _domains()
+            kwargs["generation_dependencies"] = (audio_domain, points_domain, globals())
+    return dispatch(handler, method, *args, **kwargs)
 def _digital_ip_domain(): from . import digital_ip; return digital_ip
 def _must_change_password(user):
     return bool(user and user.get("must_change"))
@@ -1812,7 +1826,7 @@ class H(BaseHTTPRequestHandler):
                 "replayed": False,
                 "association_status": "linked",
             })
-        if _short_drama_domain().dispatch_http(self, "POST", jdb, verify,
+        if _dispatch_short_drama(self, "POST", jdb, verify,
                 getattr(points_domain, "cost_of", None), mutation_lock=_submission_lock,
                 canvas_access_resolver=_short_drama_canvas_access,
                 voice_validator=lambda username, voice_key:
@@ -1831,8 +1845,8 @@ class H(BaseHTTPRequestHandler):
                 charge_lookup=getattr(
                     points_domain, "get_points_transaction", None
                 ),
-                lipsync_provider_ready=_lipsync_worker_domain().runtime_ready,
-                lipsync_wake=_lipsync_worker_domain().wake): return
+                lipsync_provider_ready=_lipsync_worker_attr("runtime_ready"),
+                lipsync_wake=_lipsync_worker_attr("wake")): return
         if p == "/api/gen/short-drama/generate-voice":
             user = verify(self._token())
             if not user:
@@ -2864,7 +2878,7 @@ class H(BaseHTTPRequestHandler):
         audio_domain, points_domain, video_domain = _domains()
         if p == "/api/gen/pricing":
             return self._send(200, pricing.public_catalog())
-        if _short_drama_domain().dispatch_http(
+        if _dispatch_short_drama(
                 self, "GET", jdb, verify,
                 getattr(points_domain, "cost_of", None),
                 canvas_access_resolver=_short_drama_canvas_access,
@@ -3127,7 +3141,7 @@ class H(BaseHTTPRequestHandler):
         self._send(404, {"detail": "not found"})
     def do_PUT(self):
         audio_domain, _points_domain, _video_domain = _domains()
-        if _short_drama_domain().dispatch_http(
+        if _dispatch_short_drama(
                 self, "PUT", jdb, verify, mutation_lock=_submission_lock,
                 canvas_access_resolver=_short_drama_canvas_access,
                 audio_asset_lookup=getattr(
