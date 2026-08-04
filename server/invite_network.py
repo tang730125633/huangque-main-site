@@ -108,10 +108,15 @@ def _person(conn, user_id, viewer_id, secret, relation, can_browse, now,
     if not row:
         raise NetworkError("not_found", "用户不存在", 404)
     card = conn.execute(
-        """SELECT public_id,status FROM business_cards WHERE user_id=?""",
+        """SELECT public_id,status,discoverable_in_network
+            FROM business_cards WHERE user_id=?""",
         (int(user_id),),
     ).fetchone()
-    card_public_id = card["public_id"] if card and card["status"] == "published" else ""
+    card_public_id = (
+        card["public_id"]
+        if card and card["status"] == "published" and card["discoverable_in_network"]
+        else ""
+    )
     public_card = {}
     if card_public_id:
         try:

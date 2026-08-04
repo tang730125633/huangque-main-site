@@ -148,6 +148,28 @@ class InviteNetworkAccessTests(unittest.TestCase):
         self.assertEqual(item["title"], "")
         self.assertEqual(item["avatar"], "")
 
+    def test_undiscoverable_card_does_not_expose_profile_fields(self):
+        self.conn.execute(
+            "UPDATE users SET membership_tier='experience',membership_expires_at=? WHERE id=2",
+            (NOW + 999999,),
+        )
+        self.conn.execute(
+            "UPDATE business_cards SET discoverable_in_network=0 WHERE user_id=3"
+        )
+        downline = invite_network.downlines_page(
+            self.conn, 2, SECRET, cursor=0, limit=20, now=NOW,
+        )["items"][0]
+        grant = invite_network.issue_node_grant(2, 3, SECRET, NOW)
+        network_node = invite_network.network_page(
+            self.conn, 2, grant, SECRET, cursor=0, limit=20, now=NOW,
+        )["node"]
+        for item in (downline, network_node):
+            self.assertFalse(item["card_available"])
+            self.assertEqual(item["card_public_id"], "")
+            self.assertEqual(item["name"], "")
+            self.assertEqual(item["title"], "")
+            self.assertEqual(item["avatar"], "")
+
     def test_partner_reward_display_is_zero_even_when_real_ledger_exists(self):
         self.conn.execute("""INSERT INTO membership_upgrade_records(
             id,user_id,from_level,to_level,source,status,created_at,event_type
