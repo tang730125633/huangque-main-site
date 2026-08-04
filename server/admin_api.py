@@ -2594,6 +2594,8 @@ class H(BaseHTTPRequestHandler):
                                 "request_id": campaign.get("request_id"),
                                 "audience": campaign.get("audience"),
                                 "recipient_count": campaign.get("recipient_count", 0),
+                                "wechat_push_requested": campaign.get("wechat_push_requested", False),
+                                "wechat_recipient_count": campaign.get("wechat_recipient_count", 0),
                             },
                         )
                     except Exception as audit_error:

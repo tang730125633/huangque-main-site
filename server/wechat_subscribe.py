@@ -1,4 +1,4 @@
-"""微信小程序作品完成订阅消息客户端（仅视频完成事件）。"""
+"""微信小程序订阅消息客户端。"""
 import json
 import os
 import urllib.parse
@@ -12,8 +12,9 @@ except ImportError:
 
 API_URL = "https://api.weixin.qq.com/cgi-bin/message/subscribe/send"
 EVENT_TYPE = "work_complete"
+ANNOUNCEMENT_EVENT_TYPE = "announcement"
 PAGE = "pages/assets/assets"
-FIELDS = {"thing1": "title", "date2": "time", "thing3": "tip"}
+ANNOUNCEMENT_PAGE = "pages/notifications/notifications"
 
 
 class SubscribeMessageError(RuntimeError):
@@ -31,12 +32,36 @@ def configured():
     return bool(template_id())
 
 
+def announcement_template_id():
+    return (os.environ.get("WX_SUBSCRIBE_ANNOUNCEMENT_TEMPLATE_ID") or "").strip()
+
+
+def config(event_type):
+    if event_type == ANNOUNCEMENT_EVENT_TYPE:
+        tid = announcement_template_id()
+        return {
+            "event_type": ANNOUNCEMENT_EVENT_TYPE,
+            "template_id": tid,
+            "label": "平台公告通知",
+            "configured": bool(tid),
+            "page": ANNOUNCEMENT_PAGE,
+        }
+    if event_type == EVENT_TYPE:
+        return public_config()
+    return None
+
+
+def public_configs():
+    return [config(EVENT_TYPE), config(ANNOUNCEMENT_EVENT_TYPE)]
+
+
 def public_config():
     return {
         "event_type": EVENT_TYPE,
         "template_id": template_id(),
         "label": "作品完成通知",
         "configured": configured(),
+        "page": PAGE,
     }
 
 
@@ -63,7 +88,10 @@ def _post_json(url, payload, timeout=12):
         raise SubscribeMessageError("微信订阅消息接口暂时不可用", "network_error") from exc
 
 
-def send(openid, title, completed_at, tip="视频已生成，可前往资产库查看", tid=""):
+def send(openid, title, completed_at, tip="视频已生成，可前往资产库查看", tid="", event_type=EVENT_TYPE):
+    event = config(event_type)
+    if not event:
+        raise SubscribeMessageError("订阅消息事件无效", "bad_event")
     tid = str(tid or template_id()).strip()
     if not tid:
         raise SubscribeMessageError("订阅消息模板未配置", "not_configured")
@@ -76,7 +104,7 @@ def send(openid, title, completed_at, tip="视频已生成，可前往资产库�
     payload = {
         "touser": openid,
         "template_id": tid,
-        "page": PAGE,
+        "page": event["page"],
         "miniprogram_state": state,
         "lang": "zh_CN",
         "data": build_data(title, completed_at, tip),
