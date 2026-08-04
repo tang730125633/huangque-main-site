@@ -305,7 +305,7 @@
     return '<section class="sd-autodraft-actions sd-refinement-provider"><span class="sd-stage-label">PR-5 · 问题镜头真实重生成</span><h2>先生成新媒体，再重新装配</h2><p>精修不会复用旧视频或只改状态。请为问题镜头完成预检、报价和真实 Provider 生成；成功后重新点击对应镜头的重做按钮。</p><label>问题镜头<select id="sdProviderShot"'+(shots.length&&!active?'':' disabled')+'>'+options+'</select></label><div class="sd-check" id="sdProviderShotCharacter"><b>正在读取镜头角色</b></div><button data-action="provider-preflight" type="button"'+(canEdit&&shots.length&&!active?'':' disabled')+'>免费检查当前镜头</button>'+previewHtml+quoteHtml+status+'</section>';
   }
   function shellHtml(){
-    return '<div class="sd-workspace-top"><a href="short-drama.html">← 返回项目</a><div><span id="sdWorkspaceState"></span><b id="sdWorkspaceTitle"></b></div><small>对话与制作准备工作区</small></div>'+
+    return '<div class="sd-workspace-top"><a href="short-drama.html">← 返回项目</a><div><span id="sdWorkspaceState"></span><b id="sdWorkspaceTitle"></b></div><div class="sd-workspace-top-actions"><button type="button" class="sd-inspector-button" data-action="toggle-inspector" id="sdInspectorButton" aria-expanded="true">收起摘要</button><button type="button" class="sd-history-button" data-action="toggle-history" id="sdHistoryButton" hidden>创作记录</button></div></div>'+
       '<div class="sd-workspace-grid" id="sdWorkspaceGrid">'+
       '<aside class="sd-chat"><header><button type="button" class="sd-chat-toggle" data-action="toggle-history" id="sdChatToggle" hidden aria-expanded="false">展开历史记录</button><h2 id="sdChatTitle">和创作助手对话</h2><p id="sdChatDescription">说清人物、冲突、情绪和结局。</p></header><div id="sdMessages"></div><form id="sdMessageForm"><textarea name="message" maxlength="8000" placeholder="例如：结尾要反转，但不要悲剧" required></textarea><button type="submit">发送</button></form><div class="sd-chat-locked-actions" id="sdChatLockedActions" hidden><p>这里仅保留本项目的历史沟通记录，不会修改已锁定或已交付内容。</p><button type="button" data-action="clone-project">基于当前项目创建新版本</button><small>将复制创作规格并建立新项目，当前交付快照保持不变。</small></div></aside>'+
       '<main class="sd-script" id="sdScript"></main>'+
@@ -314,7 +314,7 @@
   }
   function mount(doc,options){
     options=options||{};
-    var projectId=text(options.projectId).trim(),client=options.client||createClient(options.fetchImpl),state=normalize({}),preflight={state:'script_required',current_plan:null,versions:[]},autodraft={state:'plan_required',versions:[]},refinement=null,characterStudio=null,selectedCharacterKey='',selectedShotKey='',selectedProviderShotKey='',pollTimer=null,historyExpanded=false;
+    var projectId=text(options.projectId).trim(),client=options.client||createClient(options.fetchImpl),state=normalize({}),preflight={state:'script_required',current_plan:null,versions:[]},autodraft={state:'plan_required',versions:[]},refinement=null,characterStudio=null,selectedCharacterKey='',selectedShotKey='',selectedProviderShotKey='',pollTimer=null,historyExpanded=false,inspectorExpanded=!(doc.defaultView&&doc.defaultView.innerWidth<=1050);
     var root=doc.getElementById('shortDramaWorkspace');
     if(!root||!projectId)throw new Error('workspace target unavailable');
     root.innerHTML=shellHtml();root.insertAdjacentHTML('beforeend','<div class="sd-character-modal" id="sdCharacterModal" hidden><div class="sd-character-modal-backdrop" data-action="close-character"></div><section role="dialog" aria-modal="true" aria-labelledby="sdCharacterModalTitle"><header><div><span>角色形象工作室</span><h2 id="sdCharacterModalTitle">准备角色</h2></div><button type="button" data-action="close-character" aria-label="关闭">×</button></header><div id="sdCharacterModalBody"></div></section></div><div class="sd-character-modal sd-shot-modal" id="sdShotModal" hidden><div class="sd-character-modal-backdrop" data-action="close-shot-editor"></div><section role="dialog" aria-modal="true" aria-labelledby="sdShotModalTitle"><header><div><span>单镜头编辑器</span><h2 id="sdShotModalTitle">编辑镜头</h2></div><button type="button" data-action="close-shot-editor" aria-label="关闭">×</button></header><div id="sdShotModalBody"></div></section></div>');root.hidden=false;
@@ -428,14 +428,21 @@
       doc.getElementById('sdUnderstanding').innerHTML='<dt>助手状态</dt><dd><span class="sd-advisor-state '+escapeHtml(understanding.phase||'discovering')+'">'+escapeHtml(phaseLabel)+'</span></dd><dt>核心故事</dt><dd>'+escapeHtml(understanding.premise||state.project.synopsis||'待补充')+'</dd>'+(selectedDirection.title?'<dt>助手建议</dt><dd>'+escapeHtml(selectedDirection.title)+'<small>'+escapeHtml(selectedDirection.summary||'')+'</small></dd>':'')+'<dt>用户补充</dt><dd>'+escapeHtml((understanding.story_notes||[]).join('；')||'待补充')+'</dd><dt>风格</dt><dd>'+escapeHtml(understanding.tone||state.project.visual_style||'待补充')+'</dd>'+(missing?'<dt>仍需了解</dt><dd>'+escapeHtml(missing)+'</dd>':'')+'<dt>规格</dt><dd>'+Number(understanding.duration_seconds||state.project.target_duration||0)+' 秒 · '+escapeHtml(understanding.ratio||state.project.ratio||'')+'</dd>'+importContractHtml(understanding.import_contract);
       doc.getElementById('sdVersions').innerHTML=state.versions.map(function(item){return versionHtml(item,state.conversation.current_version_id);}).join('')||'<p class="sd-placeholder">暂无版本</p>';
       var locked=state.conversation.state==='script_locked';
-      var grid=doc.getElementById('sdWorkspaceGrid'),chatToggle=doc.getElementById('sdChatToggle'),lockedActions=doc.getElementById('sdChatLockedActions'),messageForm=doc.getElementById('sdMessageForm');
+      var grid=doc.getElementById('sdWorkspaceGrid'),chatToggle=doc.getElementById('sdChatToggle'),historyButton=doc.getElementById('sdHistoryButton'),inspectorButton=doc.getElementById('sdInspectorButton'),lockedActions=doc.getElementById('sdChatLockedActions'),messageForm=doc.getElementById('sdMessageForm');
       grid.classList.toggle('chat-readonly',locked);
-      grid.classList.toggle('chat-collapsed',locked&&!historyExpanded);
+      grid.classList.toggle('project-ready',locked);
+      grid.classList.toggle('history-open',locked&&historyExpanded);
+      grid.classList.toggle('inspector-collapsed',!inspectorExpanded);
+      inspectorButton.textContent=inspectorExpanded?'收起摘要':'查看摘要';
+      inspectorButton.setAttribute('aria-expanded',inspectorExpanded?'true':'false');
       doc.getElementById('sdChatTitle').textContent=locked?'历史创作记录（只读）':'和创作助手对话';
       doc.getElementById('sdChatDescription').textContent=locked?'剧本已锁定，以下内容仅供追溯。':'说清人物、冲突、情绪和结局。';
       chatToggle.hidden=!locked;
-      chatToggle.textContent=historyExpanded?'收起历史记录':'展开历史记录';
+      chatToggle.textContent='关闭创作记录';
       chatToggle.setAttribute('aria-expanded',historyExpanded?'true':'false');
+      historyButton.hidden=!locked;
+      historyButton.textContent=historyExpanded?'关闭创作记录':'创作记录';
+      historyButton.setAttribute('aria-expanded',historyExpanded?'true':'false');
       lockedActions.hidden=!locked;
       messageForm.hidden=locked;
       doc.getElementById('sdActions').innerHTML=refinement?(refinementActionsHtml(refinement,state.permissions.can_edit)+refinementProviderHtml(autodraft,refinement,state.permissions.can_edit)):(autodraft.confirmed_plan?autodraftActionsHtml(autodraft,state.permissions.can_edit):preflightHtml(state.conversation,preflight,state.permissions.can_edit));
@@ -759,6 +766,11 @@
       }
       if(action&&action.getAttribute('data-action')==='toggle-history'){
         historyExpanded=!historyExpanded;
+        render();
+        return;
+      }
+      if(action&&action.getAttribute('data-action')==='toggle-inspector'){
+        inspectorExpanded=!inspectorExpanded;
         render();
         return;
       }

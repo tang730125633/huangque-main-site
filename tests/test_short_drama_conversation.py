@@ -46,6 +46,51 @@ def payload(**changes):
     return value
 
 
+def confirmed_contract():
+    shots = []
+    beats = []
+    for index in range(1, 7):
+        shots.append({
+            "index": index,
+            "phase": "阶段%d" % index,
+            "duration": 5,
+            "scene": "确认场景%d" % index,
+            "characters": ["林夏", "周野"],
+            "action": "确认动作%d" % index,
+            "expression": "确认表情%d" % index,
+            "speaker": "林夏" if index == 1 else "",
+            "dialogue_kind": "dialogue" if index == 1 else "silence",
+            "dialogue": "这是确认台词" if index == 1 else "",
+            "camera": "确认镜头%d" % index,
+            "sound": "确认声音%d" % index,
+            "transition": "确认转场%d" % index,
+            "continuity": "确认连续性%d" % index,
+            "summary": "确认摘要%d" % index,
+            "locked": index == 2,
+        })
+        beats.append({
+            "index": index,
+            "phase": "阶段%d" % index,
+            "summary": "确认摘要%d" % index,
+            "duration": 5,
+        })
+    return {
+        "schema_version": "preproject-confirmed-shot-contract-v1",
+        "title": "确认短剧",
+        "logline": "两位旧友在雨夜重逢并化解误会。",
+        "protagonist": "林夏",
+        "conflict": "是否相信旧友",
+        "ending": "两人完成和解",
+        "ratio": "16:9",
+        "duration_seconds": 30,
+        "shot_count": 6,
+        "visual_style": "电影感写实",
+        "characters": ["林夏", "周野"],
+        "beats": beats,
+        "shots": shots,
+    }
+
+
 class ShortDramaConversationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -89,6 +134,92 @@ class ShortDramaConversationTests(unittest.TestCase):
         self.assertEqual([], result["messages"])
         self.assertIsNone(result["current_script"])
         self.assertEqual({"cost": 0, "charged": False}, result["billing"])
+
+    def test_confirmed_preproject_contract_is_persisted_before_explicit_lock(self):
+        confirmed = self.confirm_direction(self.project["id"], 1, "contract")
+        shots = []
+        beats = []
+        for index in range(1, 7):
+            shots.append({
+                "index": index,
+                "phase": "阶段%d" % index,
+                "duration": 5,
+                "scene": "确认场景%d" % index,
+                "characters": ["林夏", "周野"],
+                "action": "CONFIRMED_ACTION_%d" % index,
+                "expression": "CONFIRMED_EXPRESSION_%d" % index,
+                "speaker": "林夏" if index == 1 else "",
+                "dialogue_kind": "dialogue" if index == 1 else "silence",
+                "dialogue": "这是确认台词" if index == 1 else "",
+                "camera": "CONFIRMED_CAMERA_%d" % index,
+                "sound": "CONFIRMED_SOUND_%d" % index,
+                "transition": "CONFIRMED_TRANSITION_%d" % index,
+                "continuity": "CONFIRMED_CONTINUITY_%d" % index,
+                "summary": "确认摘要%d" % index,
+                "locked": index == 2,
+            })
+            beats.append({
+                "index": index,
+                "phase": "阶段%d" % index,
+                "summary": "确认摘要%d" % index,
+                "duration": 5,
+            })
+        contract = {
+            "schema_version": "preproject-confirmed-shot-contract-v1",
+            "title": "确认短剧",
+            "logline": "长" * 1000,
+            "protagonist": "林夏",
+            "conflict": "是否相信旧友",
+            "ending": "两人完成和解",
+            "ratio": "16:9",
+            "duration_seconds": 30,
+            "shot_count": 6,
+            "visual_style": "电影感写实",
+            "characters": ["林夏", "周野"],
+            "beats": beats,
+            "shots": shots,
+        }
+        for length in (600, 1000):
+            boundary = dict(contract, logline="边" * length)
+            normalized = short_drama_conversation._normalize_confirmed_contract(
+                self.project, boundary
+            )
+            self.assertEqual(length, len(normalized["logline"]))
+        generated = short_drama_conversation.generate_script(
+            self.db,
+            "alice",
+            "alice",
+            {
+                "project_id": self.project["id"],
+                "conversation_revision": confirmed["conversation"]["revision"],
+                "instruction": "持久化用户已确认的逐镜合同",
+                "confirmed_contract": contract,
+            },
+            "confirmed-contract-generate",
+        )
+        self.assertEqual("script_review", generated["conversation"]["state"])
+        script = generated["current_script"]["script"]
+        self.assertEqual(contract, script["confirmed_contract"])
+        self.assertEqual("CONFIRMED_SOUND_1", script["shots"][0]["sound"])
+        self.assertEqual("CONFIRMED_TRANSITION_1", script["shots"][0]["transition"])
+        self.assertEqual("CONFIRMED_CONTINUITY_1", script["shots"][0]["continuity"])
+        self.assertEqual("CONFIRMED_ACTION_1", script["shots"][0]["action"])
+        self.assertEqual("CONFIRMED_EXPRESSION_1", script["shots"][0]["expression"])
+        self.assertEqual("这是确认台词", script["dialogue_lines"][0]["text"])
+
+        locked = short_drama_conversation.lock_script(
+            self.db,
+            "alice",
+            "alice",
+            {
+                "project_id": self.project["id"],
+                "conversation_revision": generated["conversation"]["revision"],
+                "version_id": generated["current_script"]["id"],
+            },
+            "confirmed-contract-lock",
+        )
+        self.assertEqual("script_locked", locked["conversation"]["state"])
+        self.assertEqual(contract, locked["current_script"]["script"]["confirmed_contract"])
 
     def import_payload(self, source, **changes):
         value = {
@@ -697,6 +828,216 @@ class ShortDramaConversationTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_project_create_http_replays_one_project_after_lost_response(self):
+        body = payload(title="幂等创建短剧")
+        first = Handler(
+            "/api/gen/short-drama/projects", body=body,
+            idempotency_key="http-create-lost-response",
+        )
+        second = Handler(
+            "/api/gen/short-drama/projects", body=body,
+            idempotency_key="http-create-lost-response",
+        )
+        verify = lambda _: {"username": "alice"}
+        self.assertTrue(short_drama.dispatch_http(first, "POST", self.db, verify))
+        self.assertTrue(short_drama.dispatch_http(second, "POST", self.db, verify))
+        self.assertEqual(200, first.response[0])
+        self.assertEqual(200, second.response[0])
+        self.assertEqual(first.response[1]["id"], second.response[1]["id"])
+        conn = self.db()
+        try:
+            self.assertEqual(
+                1,
+                conn.execute(
+                    "SELECT COUNT(*) FROM short_drama_projects WHERE id=?",
+                    (first.response[1]["id"],),
+                ).fetchone()[0],
+            )
+            self.assertEqual(
+                1,
+                conn.execute(
+                    "SELECT COUNT(*) FROM short_drama_project_requests "
+                    "WHERE username='alice' AND operation='project_create' "
+                    "AND idempotency_key='http-create-lost-response'"
+                ).fetchone()[0],
+            )
+        finally:
+            conn.close()
+
+    def test_planner_promotion_is_atomic_and_replays_after_lost_response(self):
+        body = {
+            "project": payload(title="原子确认项目"),
+            "planning_messages": [
+                "核心设定：雨夜重逢",
+                "用户选择：情感治愈",
+                "逐镜剧本：六个镜头均已人工确认",
+            ],
+            "confirmed_contract": confirmed_contract(),
+        }
+
+        class LostResponseHandler(Handler):
+            def _send(self, _status, _payload):
+                raise ConnectionAbortedError("response lost after commit")
+
+        first = LostResponseHandler(
+            "/api/gen/short-drama/projects/promote",
+            body=body,
+            idempotency_key="planner-promote-lost-response",
+        )
+        verify = lambda _: {"username": "alice"}
+        with self.assertRaises(ConnectionAbortedError):
+            short_drama.dispatch_http(first, "POST", self.db, verify)
+
+        reloaded = Handler(
+            "/api/gen/short-drama/projects/promote",
+            body=body,
+            idempotency_key="planner-promote-lost-response",
+        )
+        self.assertTrue(short_drama.dispatch_http(reloaded, "POST", self.db, verify))
+        self.assertEqual(200, reloaded.response[0])
+        result = reloaded.response[1]
+        self.assertTrue(result["replayed"])
+        self.assertEqual("script_locked", result["workspace"]["conversation"]["state"])
+        self.assertEqual(
+            body["confirmed_contract"],
+            result["workspace"]["current_script"]["script"]["confirmed_contract"],
+        )
+        project_id = result["project"]["id"]
+        conn = self.db()
+        try:
+            self.assertEqual(
+                1,
+                conn.execute(
+                    "SELECT COUNT(*) FROM short_drama_projects "
+                    "WHERE title='原子确认项目'"
+                ).fetchone()[0],
+            )
+            self.assertEqual(
+                1,
+                conn.execute(
+                    "SELECT COUNT(*) FROM short_drama_project_requests "
+                    "WHERE username='alice' AND operation='planner_promote' "
+                    "AND idempotency_key='planner-promote-lost-response'"
+                ).fetchone()[0],
+            )
+            self.assertEqual(
+                1,
+                conn.execute(
+                    "SELECT COUNT(*) FROM short_drama_script_snapshots "
+                    "WHERE project_id=? AND status='locked'",
+                    (project_id,),
+                ).fetchone()[0],
+            )
+        finally:
+            conn.close()
+
+        conflict_body = dict(body)
+        conflict_body["planning_messages"] = ["不同的策划内容"]
+        conflict = Handler(
+            "/api/gen/short-drama/projects/promote",
+            body=conflict_body,
+            idempotency_key="planner-promote-lost-response",
+        )
+        self.assertTrue(short_drama.dispatch_http(conflict, "POST", self.db, verify))
+        self.assertEqual(409, conflict.response[0])
+        self.assertEqual("idempotency_conflict", conflict.response[1]["code"])
+
+    def test_planner_promotion_rolls_back_project_when_contract_write_fails(self):
+        conn = self.db()
+        try:
+            conn.executescript("""
+            CREATE TRIGGER reject_promoted_contract
+            BEFORE INSERT ON short_drama_script_snapshots
+            BEGIN SELECT RAISE(ABORT,'injected contract failure'); END;
+            """)
+            conn.commit()
+        finally:
+            conn.close()
+        body = {
+            "project": payload(title="必须回滚的确认项目"),
+            "planning_messages": ["核心设定", "确认方向", "确认逐镜剧本"],
+            "confirmed_contract": confirmed_contract(),
+        }
+        with self.assertRaises(sqlite3.IntegrityError):
+            short_drama.promote_planner_project(
+                self.db,
+                "alice",
+                body,
+                "planner-promote-rollback",
+            )
+        conn = self.db()
+        try:
+            self.assertEqual(
+                0,
+                conn.execute(
+                    "SELECT COUNT(*) FROM short_drama_projects "
+                    "WHERE title='必须回滚的确认项目'"
+                ).fetchone()[0],
+            )
+            self.assertEqual(
+                0,
+                conn.execute(
+                    "SELECT COUNT(*) FROM short_drama_project_requests "
+                    "WHERE operation='planner_promote' "
+                    "AND idempotency_key='planner-promote-rollback'"
+                ).fetchone()[0],
+            )
+        finally:
+            conn.close()
+
+    def test_project_create_same_key_with_different_payload_conflicts(self):
+        first = Handler(
+            "/api/gen/short-drama/projects", body=payload(title="第一版项目"),
+            idempotency_key="http-create-conflict",
+        )
+        conflict = Handler(
+            "/api/gen/short-drama/projects", body=payload(title="第二版项目"),
+            idempotency_key="http-create-conflict",
+        )
+        verify = lambda _: {"username": "alice"}
+        self.assertTrue(short_drama.dispatch_http(first, "POST", self.db, verify))
+        self.assertTrue(short_drama.dispatch_http(conflict, "POST", self.db, verify))
+        self.assertEqual(200, first.response[0])
+        self.assertEqual(409, conflict.response[0])
+        self.assertEqual("idempotency_conflict", conflict.response[1]["code"])
+        conn = self.db()
+        try:
+            self.assertEqual(
+                1,
+                conn.execute(
+                    "SELECT COUNT(*) FROM short_drama_projects "
+                    "WHERE title IN ('第一版项目','第二版项目')"
+                ).fetchone()[0],
+            )
+        finally:
+            conn.close()
+
+    def test_project_create_rolls_back_when_idempotency_record_fails(self):
+        conn = self.db()
+        try:
+            before = conn.execute("SELECT COUNT(*) FROM short_drama_projects").fetchone()[0]
+            conn.executescript("""
+            CREATE TRIGGER reject_project_request
+            BEFORE INSERT ON short_drama_project_requests
+            BEGIN SELECT RAISE(ABORT,'injected request failure'); END;
+            """)
+            conn.commit()
+        finally:
+            conn.close()
+        with self.assertRaises(sqlite3.IntegrityError):
+            short_drama.create_project(
+                self.db, "alice", payload(title="事务回滚项目"),
+                idempotency_key="rollback-create-request",
+            )
+        conn = self.db()
+        try:
+            self.assertEqual(
+                before,
+                conn.execute("SELECT COUNT(*) FROM short_drama_projects").fetchone()[0],
+            )
+        finally:
+            conn.close()
+
     def test_message_generate_restore_and_lock_flow(self):
         first = short_drama_conversation.send_message(
             self.db,
@@ -984,6 +1325,35 @@ class ShortDramaConversationTests(unittest.TestCase):
         )
         self.assertEqual("pass", script["quality_gate"]["status"])
         self.assertEqual(6, len(script["story_beats"]))
+
+    def test_long_quoted_planning_summary_is_fitted_to_the_shot_duration(self):
+        script = short_drama_conversation.short_drama_storyboard.compile_storyboard(
+            self.project,
+            [
+                "围绕“雨天被困便利店的女孩发愁无法回家，路过的外卖小哥主动将备用雨衣赠予她，赠予一份突如其来的温暖”展开故事"
+            ],
+            [
+                {
+                    "character_key": "girl",
+                    "name": "女孩",
+                    "identity": "被雨困住的女孩",
+                    "personality": "敏感",
+                },
+                {
+                    "character_key": "rider",
+                    "name": "外卖小哥",
+                    "identity": "路过的外卖员",
+                    "personality": "热心",
+                },
+            ],
+        )
+        self.assertEqual("pass", script["quality_gate"]["status"])
+        lines = {item["id"]: item for item in script["dialogue_lines"]}
+        for shot in script["shots"]:
+            line = lines[shot["dialogue_line_ids"][0]]
+            self.assertLessEqual(
+                line["estimated_reading_seconds"], shot["duration_seconds"]
+            )
 
     def test_story_specific_script_does_not_fall_back_to_generic_mystery_template(self):
         mother_daughter = short_drama.create_project(

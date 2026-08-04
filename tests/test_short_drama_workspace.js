@@ -10,6 +10,9 @@ const workspaceSource = fs.readFileSync(
 );
 const html = fs.readFileSync(path.join(ROOT, 'site/workbench/short-drama.html'), 'utf8');
 const stamp = fs.readFileSync(path.join(ROOT, 'scripts/stamp_assets.py'), 'utf8');
+const workspaceStyle = fs.readFileSync(
+  path.join(ROOT, 'site/workbench/short-drama-workspace.css'), 'utf8'
+);
 
 test('独立页面加载三栏对话工作区资源', () => {
   assert.match(html, /id="shortDramaWorkspace"/);
@@ -17,6 +20,28 @@ test('独立页面加载三栏对话工作区资源', () => {
   assert.match(html, /short-drama-workspace\.js\?v=/);
   assert.match(stamp, /Asset\("short-drama-workspace\.js"/);
   assert.match(stamp, /Asset\("short-drama-workspace\.css"/);
+});
+
+test('剧本确认后正式项目切换为两栏并将聊天收进只读创作记录', () => {
+  const css = fs.readFileSync(
+    path.join(ROOT, 'site/workbench/short-drama-workspace.css'), 'utf8'
+  );
+  assert.match(workspaceSource, /project-ready/);
+  assert.match(workspaceSource, /历史创作记录（只读）/);
+  assert.match(workspaceSource, /创作记录/);
+  assert.match(css, /\.sd-workspace-grid\.project-ready\{grid-template-columns:/);
+  assert.match(css, /\.project-ready>.sd-chat\{display:none\}/);
+  assert.match(css, /\.project-ready\.history-open>.sd-chat/);
+});
+
+test('project workspace uses immersive shell and a collapsible summary panel', () => {
+  assert.match(workspaceSource, /data-action="toggle-inspector"/);
+  assert.match(workspaceSource, /inspector-collapsed/);
+  assert.match(workspaceSource, /inspectorExpanded/);
+  assert.match(workspaceStyle, /html\.short-drama-immersive #hqSideNav/);
+  assert.match(workspaceStyle, /html\.short-drama-immersive \.hq-main-scroll/);
+  assert.match(workspaceStyle, /\.short-drama-center\.workspace-mode\{[^}]*height:100dvh/);
+  assert.match(workspaceStyle, /\.sd-workspace-grid\.project-ready\.inspector-collapsed/);
 });
 
 test('创作助手展示确认门禁、修改后重确认和结构化理解摘要', () => {

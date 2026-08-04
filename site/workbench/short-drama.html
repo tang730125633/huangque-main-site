@@ -6,8 +6,8 @@
   <title>短剧 · 黄雀 AI 工作台</title>
   <script src="theme-init.js?v=11eb385e"></script>
   <link rel="stylesheet" href="theme.css?v=5873a2f4">
-  <link rel="stylesheet" href="short-drama-center.css?v=c85bf896">
-  <link rel="stylesheet" href="short-drama-workspace.css?v=a95b8350">
+  <link rel="stylesheet" href="short-drama-center.css?v=9bac439d">
+  <link rel="stylesheet" href="short-drama-workspace.css?v=dc6477bb">
 </head>
 <body>
   <div class="hq-app">
@@ -104,21 +104,33 @@
       </section>
 
       <section class="short-drama-inspiration" id="shortDramaInspiration" hidden>
-        <div class="short-drama-chat-log" id="shortDramaIdeaChat" aria-live="polite"></div>
-        <div class="short-drama-quick-replies" id="shortDramaIdeaQuickReplies">
-          <button type="button" data-idea-reply="家庭情感">家庭情感</button>
-          <button type="button" data-idea-reply="悬疑反转">悬疑反转</button>
-          <button type="button" data-idea-reply="校园成长">校园成长</button>
-          <button type="button" data-idea-reply="职场现实">职场现实</button>
+        <div class="short-drama-planner-grid">
+          <section class="short-drama-planner-chat" aria-label="创作助手对话">
+            <header><span>创作助手</span><strong>一起把想法聊清楚</strong><small>聊天仅用于策划，创建项目后转为只读记录。</small></header>
+            <div class="short-drama-chat-log" id="shortDramaIdeaChat" aria-live="polite"></div>
+            <div class="short-drama-quick-replies" id="shortDramaIdeaQuickReplies"></div>
+            <form class="short-drama-chat-compose" id="shortDramaIdeaForm">
+              <label class="sr-only" for="shortDramaIdeaInput">告诉创作助手你的偏好</label>
+              <textarea id="shortDramaIdeaInput" maxlength="600" placeholder="补充人物、冲突、情绪或结局要求"></textarea>
+              <button class="short-drama-primary" type="submit">发送</button>
+            </form>
+          </section>
+          <section class="short-drama-planner-canvas" aria-label="故事方案和剧本预览">
+            <header><span>结构化方案</span><strong id="shortDramaPlannerCanvasTitle">等待故事方向</strong><small>选择方案后生成可确认的完整结构。</small></header>
+            <div class="short-drama-recommendations" id="shortDramaRecommendations" hidden></div>
+            <div class="short-drama-script-preview" id="shortDramaScriptPreview" hidden></div>
+          </section>
+          <aside class="short-drama-planner-inspector" aria-label="当前创作理解">
+            <header><span>当前理解</span><strong id="shortDramaPlannerStatus">正在了解你的想法</strong></header>
+            <div class="short-drama-planner-progress"><span id="shortDramaPlannerProgress"></span></div>
+            <dl id="shortDramaPlannerBrief"></dl>
+            <button class="short-drama-primary" id="shortDramaGeneratePreview" type="button" disabled>生成完整剧本方案</button>
+            <button class="short-drama-primary confirm" id="shortDramaConfirmScript" type="button" hidden>确认剧本并创建项目</button>
+            <p id="shortDramaPlannerNotice" role="status"></p>
+          </aside>
         </div>
-        <div class="short-drama-recommendations" id="shortDramaRecommendations" hidden></div>
-        <form class="short-drama-chat-compose" id="shortDramaIdeaForm">
-          <label class="sr-only" for="shortDramaIdeaInput">告诉创作助手你的偏好</label>
-          <textarea id="shortDramaIdeaInput" maxlength="600" placeholder="例如：我想做一个温暖但有反转的家庭故事"></textarea>
-          <button class="short-drama-primary" type="submit">发送</button>
-        </form>
         <footer class="short-drama-step-footer">
-          <button class="short-drama-secondary" type="button" data-action="back-create-choice">← 返回选择</button>
+          <button class="short-drama-secondary" type="button" data-action="back-create-settings">← 返回基本设置</button>
         </footer>
       </section>
 
@@ -187,14 +199,14 @@
         <label>视觉风格<input name="visual_style" maxlength="120" value="电影感写实" placeholder="例如：电影感写实"></label>
         <footer>
           <button class="short-drama-secondary" type="button" data-action="back-create-choice">← 返回</button>
-          <button class="short-drama-primary" id="shortDramaSubmit" type="submit">创建并进入工作区</button>
+          <button class="short-drama-primary" id="shortDramaSubmit" type="submit">保存设置并进入剧本策划</button>
         </footer>
       </form>
     </div>
   </dialog>
 
   <script src="cloud-shell.js?v=49fe47f6"></script>
-  <script src="short-drama-workspace.js?v=ddabfcd5"></script>
-  <script src="short-drama-center.js?v=56096d71"></script>
+  <script src="short-drama-workspace.js?v=bb3e67a7"></script>
+  <script src="short-drama-center.js?v=b60cc5b5"></script>
 </body>
 </html>
