@@ -71,6 +71,9 @@ class InviteNetworkAccessTests(unittest.TestCase):
         self.assertEqual(page["items"][0]["username"], "child")
         self.assertEqual(page["items"][0]["membership_name"], "体验官")
         self.assertEqual(page["items"][0]["card_public_id"], self.child_card_id)
+        self.assertEqual(page["items"][0]["name"], "下线名片")
+        self.assertEqual(page["items"][0]["title"], "设计师")
+        self.assertEqual(page["items"][0]["avatar"], "")
         self.assertEqual(page["items"][0]["node_grant"], "")
 
     def test_member_grant_opens_one_layer_and_allows_parent_and_child_navigation(self):
@@ -110,9 +113,62 @@ class InviteNetworkAccessTests(unittest.TestCase):
         )["items"][0]
         self.assertEqual(set(item), {
             "username", "membership_tier", "membership_name", "relation",
-            "card_available", "card_public_id", "node_grant", "reward_points",
+            "card_available", "card_public_id", "name", "title", "avatar",
+            "node_grant", "reward_points",
             "reward_status", "reward_expires_at",
         })
+        self.assertNotIn("phone", item)
+        self.assertNotIn("email", item)
+        self.assertNotIn("address", item)
+        self.assertNotIn("wechat_qr", item)
+
+    def test_unpublished_card_does_not_expose_profile_fields(self):
+        self.conn.execute(
+            "UPDATE business_cards SET status='unpublished' WHERE user_id=3"
+        )
+        item = invite_network.downlines_page(
+            self.conn, 2, SECRET, cursor=0, limit=20, now=NOW,
+        )["items"][0]
+        self.assertFalse(item["card_available"])
+        self.assertEqual(item["card_public_id"], "")
+        self.assertEqual(item["name"], "")
+        self.assertEqual(item["title"], "")
+        self.assertEqual(item["avatar"], "")
+
+    def test_inactive_card_owner_does_not_expose_profile_fields(self):
+        self.conn.execute(
+            "UPDATE users SET account_status='disabled' WHERE id=3"
+        )
+        item = invite_network.downlines_page(
+            self.conn, 2, SECRET, cursor=0, limit=20, now=NOW,
+        )["items"][0]
+        self.assertFalse(item["card_available"])
+        self.assertEqual(item["card_public_id"], "")
+        self.assertEqual(item["name"], "")
+        self.assertEqual(item["title"], "")
+        self.assertEqual(item["avatar"], "")
+
+    def test_undiscoverable_card_does_not_expose_profile_fields(self):
+        self.conn.execute(
+            "UPDATE users SET membership_tier='experience',membership_expires_at=? WHERE id=2",
+            (NOW + 999999,),
+        )
+        self.conn.execute(
+            "UPDATE business_cards SET discoverable_in_network=0 WHERE user_id=3"
+        )
+        downline = invite_network.downlines_page(
+            self.conn, 2, SECRET, cursor=0, limit=20, now=NOW,
+        )["items"][0]
+        grant = invite_network.issue_node_grant(2, 3, SECRET, NOW)
+        network_node = invite_network.network_page(
+            self.conn, 2, grant, SECRET, cursor=0, limit=20, now=NOW,
+        )["node"]
+        for item in (downline, network_node):
+            self.assertFalse(item["card_available"])
+            self.assertEqual(item["card_public_id"], "")
+            self.assertEqual(item["name"], "")
+            self.assertEqual(item["title"], "")
+            self.assertEqual(item["avatar"], "")
 
     def test_partner_reward_display_is_zero_even_when_real_ledger_exists(self):
         self.conn.execute("""INSERT INTO membership_upgrade_records(
