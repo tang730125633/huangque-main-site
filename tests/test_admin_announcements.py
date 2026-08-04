@@ -97,7 +97,8 @@ class AnnouncementMigrationTests(unittest.TestCase):
                     {
                         "title", "detail", "audience_json", "status", "recipient_count",
                         "created_by", "request_id", "created_at", "published_at",
-                        "recalled_at", "recalled_by",
+                        "recalled_at", "recalled_by", "wechat_push_requested",
+                        "wechat_recipient_count",
                     }
                     <= campaign_columns
                 )
@@ -231,6 +232,49 @@ class AuthAnnouncementTests(unittest.TestCase):
         self.assertEqual(campaigns, 1)
         self.assertEqual(notices, first["count"])
 
+    def test_announcement_wechat_push_reuses_subscription_outbox(self):
+        old_template = os.environ.get("WX_SUBSCRIBE_ANNOUNCEMENT_TEMPLATE_ID")
+        os.environ["WX_SUBSCRIBE_ANNOUNCEMENT_TEMPLATE_ID"] = "announcement-template"
+        try:
+            with sqlite3.connect(self.auth.DB) as connection:
+                connection.execute(
+                    """INSERT INTO wechat_subscription_grants(
+                           username,event_type,template_id,openid,remaining,last_choice,updated_at)
+                       VALUES('alice','announcement','announcement-template','openid-a',1,'accept',?)""",
+                    (FIXED_NOW,),
+                )
+            preview, err = self.auth.preview_announcement({"mode": "all"}, now=FIXED_NOW)
+            self.assertIsNone(err)
+            self.assertTrue(preview["wechat_push_configured"])
+            self.assertEqual(preview["wechat_subscriber_count"], 1)
+            sent, err = self.auth.publish_announcement(
+                "平台公告", "请在消息中心查看详情", {"mode": "all"},
+                "request-wechat", "admin", now=FIXED_NOW, wechat_push=True,
+            )
+            self.assertIsNone(err)
+            self.assertEqual(sent["wechat_recipient_count"], 1)
+            with sqlite3.connect(self.auth.DB) as connection:
+                outbox = connection.execute(
+                    """SELECT username,event_type,status,kind FROM wechat_subscription_outbox
+                       WHERE business_id=?""",
+                    ("announcement:%d" % sent["campaign"]["id"],),
+                ).fetchone()
+            self.assertEqual(outbox, ("alice", "announcement", "pending", "announcement"))
+            recalled, err = self.auth.recall_announcement(sent["campaign"]["id"], "admin", now=FIXED_NOW + 1)
+            self.assertIsNone(err)
+            self.assertEqual(recalled["campaign"]["status"], "recalled")
+            with sqlite3.connect(self.auth.DB) as connection:
+                status = connection.execute(
+                    "SELECT status FROM wechat_subscription_outbox WHERE business_id=?",
+                    ("announcement:%d" % sent["campaign"]["id"],),
+                ).fetchone()[0]
+            self.assertEqual(status, "dropped")
+        finally:
+            if old_template is None:
+                os.environ.pop("WX_SUBSCRIBE_ANNOUNCEMENT_TEMPLATE_ID", None)
+            else:
+                os.environ["WX_SUBSCRIBE_ANNOUNCEMENT_TEMPLATE_ID"] = old_template
+
     def test_publish_validation_is_explicit(self):
         for title, detail, audience, request_id, expected in [
             ("x" * 81, "正文", {"mode": "all"}, "long-title", "title_too_long"),
@@ -248,6 +292,12 @@ class AuthAnnouncementTests(unittest.TestCase):
                 )
                 self.assertIsNone(result)
                 self.assertEqual(err, expected)
+        result, err = self.auth.publish_announcement(
+            "标题", "正文", {"mode": "all"}, "bad-wechat-push", "admin",
+            now=FIXED_NOW, wechat_push="false",
+        )
+        self.assertIsNone(result)
+        self.assertEqual(err, "invalid_wechat_push")
 
     def test_auth_gates_user_state_and_recall_visibility(self):
         admin = self.login("admin")
@@ -475,7 +525,10 @@ class AdminAnnouncementProxyAuditTests(unittest.TestCase):
         self.assertNotIn(detail, audit_text)
         publish_detail = json.loads(rows[0][1])
         self.assertEqual(
-            set(publish_detail), {"request_id", "audience", "recipient_count"},
+            set(publish_detail), {
+                "request_id", "audience", "recipient_count",
+                "wechat_push_requested", "wechat_recipient_count",
+            },
         )
 
 

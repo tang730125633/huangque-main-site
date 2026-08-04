@@ -290,6 +290,7 @@
                   <label class="announcement-tier"><input type="checkbox" value="initiator" data-announcement-tier data-announcement-field><span><b>发起人</b><br><span class="muted">initiator</span></span></label>
                 </div>
               </fieldset>
+              <label class="announcement-choice"><input type="checkbox" id="announcementWechatPush" data-announcement-field><span><b>同时发送微信订阅消息</b><br><span class="muted" id="announcementWechatHint">仅发送给已主动授权且仍有订阅次数的用户</span></span></label>
               <div class="actions"><button id="announcementPreview" type="button">预览受众</button><button class="primary" id="announcementPublish" type="button" disabled>确认并发布</button></div>
               <div class="announcement-state" id="announcementPublishState" aria-live="polite">尚未发布</div>
             </div>
@@ -1007,7 +1008,7 @@
     if(audience.mode==='all')return '全体有效账号';
     return (audience.tiers||[]).map(membershipName).join('、')||'尚未选择权益层级';
   }
-  function announcementDraft(){return {title:String(el('announcementTitle').value||'').trim(),detail:String(el('announcementDetail').value||'').trim(),audience:announcementAudience()}}
+  function announcementDraft(){return {title:String(el('announcementTitle').value||'').trim(),detail:String(el('announcementDetail').value||'').trim(),audience:announcementAudience(),wechatPush:!!el('announcementWechatPush').checked}}
   function announcementSignature(){return JSON.stringify(announcementDraft())}
   function announcementValidationError(){
     var draft=announcementDraft();
@@ -1031,12 +1032,13 @@
     el('announcementDetailCount').textContent=String(el('announcementDetail').value||'').length+' / 1000';
     el('announcementEffectTitle').textContent=draft.title||'公告标题将在这里显示';
     el('announcementEffectDetail').textContent=draft.detail||'公告正文将在这里显示。';
-    el('announcementEffectAudience').textContent='受众：'+announcementAudienceLabel(draft.audience);
+    el('announcementEffectAudience').textContent='受众：'+announcementAudienceLabel(draft.audience)+(draft.wechatPush?' · 同步微信订阅消息':' · 仅站内公告');
   }
   function updateAnnouncementControls(){
     var publishing=state.announcementPublishing,mode=announcementMode(),error=announcementValidationError();
     Array.prototype.forEach.call(document.querySelectorAll('[data-announcement-field]'),function(input){input.disabled=publishing});
     Array.prototype.forEach.call(document.querySelectorAll('[data-announcement-tier]'),function(input){input.disabled=publishing||mode!=='tiers'});
+    el('announcementWechatPush').disabled=publishing||!!(state.announcementPreview&&!state.announcementPreview.wechat_push_configured);
     el('announcementPreview').disabled=publishing||state.announcementPreviewLoading||!!error;
     el('announcementPublish').disabled=publishing||!state.announcementPreview||state.announcementPreviewSignature!==announcementSignature()||announcementPreviewTotal(state.announcementPreview)<1;
     el('announcementPublish').textContent=publishing?'发布中…':'确认并发布';
@@ -1065,14 +1067,15 @@
       .then(function(d){
         if(signature!==announcementSignature())return;
         var preview=d.preview||d;state.announcementPreview=preview;state.announcementPreviewSignature=signature;renderAnnouncementBreakdown(preview);
-        var total=announcementPreviewTotal(preview);setAnnouncementState('announcementAudienceState',total?'success':'error',total?'本次预计发送给 '+total.toLocaleString()+' 个账号':'当前受众没有可发送账号');
+        var total=announcementPreviewTotal(preview),wechat=Number(preview.wechat_subscriber_count||0),configured=!!preview.wechat_push_configured;el('announcementWechatPush').disabled=!configured;el('announcementWechatHint').textContent=configured?('当前可通过微信触达 '+wechat.toLocaleString()+' 个已授权账号'):'微信公告订阅模板尚未配置，本次只能发送站内公告';if(!configured)el('announcementWechatPush').checked=false;state.announcementPreviewSignature=announcementSignature();renderAnnouncementEffect();
+        setAnnouncementState('announcementAudienceState',total?'success':'error',total?'本次预计发送给 '+total.toLocaleString()+' 个账号，其中微信可触达 '+wechat.toLocaleString()+' 个':'当前受众没有可发送账号');
         setAnnouncementState('announcementPublishState',total?'success':'error',total?'受众预览有效，可以进入发布确认':'收件人数为 0，不能发布');
       }).catch(function(e){if(signature!==announcementSignature())return;state.announcementPreview=null;state.announcementPreviewSignature='';setAnnouncementState('announcementAudienceState','error','受众预览失败：'+e.message);setAnnouncementState('announcementPublishState','error','预览失败，尚未发布')})
       .finally(function(){state.announcementPreviewLoading=false;updateAnnouncementControls()});
   }
   function nextAnnouncementRequestId(){return window.crypto&&crypto.randomUUID?crypto.randomUUID():'announcement-'+Date.now()+'-'+Math.random().toString(16).slice(2)}
   function resetAnnouncementComposer(){
-    el('announcementTitle').value='';el('announcementDetail').value='';document.querySelector('input[name="announcementAudienceMode"][value="all"]').checked=true;
+    el('announcementTitle').value='';el('announcementDetail').value='';el('announcementWechatPush').checked=false;document.querySelector('input[name="announcementAudienceMode"][value="all"]').checked=true;
     Array.prototype.forEach.call(document.querySelectorAll('[data-announcement-tier]'),function(input){input.checked=false});
     state.announcementPreview=null;state.announcementPreviewSignature='';state.announcementRequestId='';el('announcementBreakdown').textContent='';renderAnnouncementEffect();setAnnouncementState('announcementAudienceState','','请填写下一条公告，再预览受众人数');
   }
@@ -1081,9 +1084,9 @@
     var error=announcementValidationError(),signature=announcementSignature(),total=announcementPreviewTotal(state.announcementPreview);
     if(error){toast(error);return}
     if(!state.announcementPreview||state.announcementPreviewSignature!==signature||total<1){toast('请先重新预览当前公告的受众人数');return}
-    var draft=announcementDraft();if(!confirm('确认发布这条公告？\n\n受众：'+announcementAudienceLabel(draft.audience)+'\n预计收件：'+total.toLocaleString()+' 个账号\n\n发布后如需撤回，请在发布历史中召回。'))return;
+    var draft=announcementDraft(),wechat=Number((state.announcementPreview||{}).wechat_subscriber_count||0);if(!confirm('确认发布这条公告？\n\n受众：'+announcementAudienceLabel(draft.audience)+'\n预计站内收件：'+total.toLocaleString()+' 个账号\n微信订阅消息：'+(draft.wechatPush?(wechat.toLocaleString()+' 个已授权账号'):'不发送')+'\n\n站内公告可以召回，已送达微信的消息无法撤回。'))return;
     if(!state.announcementRequestId)state.announcementRequestId=nextAnnouncementRequestId();
-    var payload={title:draft.title,detail:draft.detail,audience:draft.audience,request_id:state.announcementRequestId};state.announcementPublishing=true;updateAnnouncementControls();setAnnouncementState('announcementPublishState','loading','正在发布，请勿重复点击…');
+    var payload={title:draft.title,detail:draft.detail,audience:draft.audience,wechat_push:draft.wechatPush,request_id:state.announcementRequestId};state.announcementPublishing=true;updateAnnouncementControls();setAnnouncementState('announcementPublishState','loading','正在发布，请勿重复点击…');
     api('/api/admin/announcements',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
       .then(function(){state.announcementRequestId='';resetAnnouncementComposer();setAnnouncementState('announcementPublishState','success','公告发布成功');toast('公告已发布');loadAnnouncements()})
       .catch(function(e){setAnnouncementState('announcementPublishState','error','发布失败：'+e.message+'；重试将复用本次请求编号');toast(e.message)})
@@ -1110,7 +1113,7 @@
     setAnnouncementState('announcementHistoryState','success','发布历史已更新');
     items.forEach(function(item){
       var article=document.createElement('article');article.className='announcement-history-item';var head=document.createElement('div');head.className='row';var title=appendAnnouncementText(head,'h3','',item.title||'未命名公告'),status=announcementStatus(item.status);title.title=item.title||'';appendAnnouncementText(head,'span','pill '+status[0],status[1]);article.appendChild(head);
-      appendAnnouncementText(article,'p','announcement-history-detail',item.detail||'');var meta=document.createElement('div');meta.className='announcement-history-meta';appendAnnouncementText(meta,'span','',announcementHistoryAudience(item));appendAnnouncementText(meta,'span','',announcementHistoryCount(item).toLocaleString()+' 个收件账号');appendAnnouncementText(meta,'time','',announcementHistoryTime(item.published_at||item.created_at));article.appendChild(meta);
+      appendAnnouncementText(article,'p','announcement-history-detail',item.detail||'');var meta=document.createElement('div');meta.className='announcement-history-meta';appendAnnouncementText(meta,'span','',announcementHistoryAudience(item));appendAnnouncementText(meta,'span','',announcementHistoryCount(item).toLocaleString()+' 个站内收件账号');if(item.wechat_push_requested)appendAnnouncementText(meta,'span','',Number(item.wechat_recipient_count||0).toLocaleString()+' 个微信订阅收件账号');appendAnnouncementText(meta,'time','',announcementHistoryTime(item.published_at||item.created_at));article.appendChild(meta);
       var id=item.id==null?item.announcement_id:item.id;if(id!=null&&['published','active','sent'].indexOf(item.status)>=0){var actions=document.createElement('div');actions.className='actions';actions.style.marginTop='10px';var button=appendAnnouncementText(actions,'button','mini danger','召回公告');button.type='button';button.addEventListener('click',function(){recallAnnouncement(id,item.title||'',button)});article.appendChild(actions)}
       box.appendChild(article);
     });

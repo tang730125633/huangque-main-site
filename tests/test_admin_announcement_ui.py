@@ -27,7 +27,7 @@ class AdminAnnouncementUiTests(unittest.TestCase):
         self.assertIn("api('/api/admin/announcements/preview'", self.announcement_script)
         self.assertIn("JSON.stringify({audience:audience})", self.announcement_script)
         self.assertIn("api('/api/admin/announcements',{method:'POST'", self.announcement_script)
-        self.assertIn("payload={title:draft.title,detail:draft.detail,audience:draft.audience,request_id:state.announcementRequestId}", self.announcement_script)
+        self.assertIn("payload={title:draft.title,detail:draft.detail,audience:draft.audience,wechat_push:draft.wechatPush,request_id:state.announcementRequestId}", self.announcement_script)
         self.assertIn("api('/api/admin/announcements?limit=50')", self.announcement_script)
         self.assertIn("+'/recall',{method:'POST'", self.announcement_script)
 
@@ -51,6 +51,7 @@ class AdminAnnouncementUiTests(unittest.TestCase):
         self.assertIn("if(state.announcementPublishing)return", self.announcement_script)
         self.assertIn("if(!state.announcementRequestId)state.announcementRequestId=nextAnnouncementRequestId()", self.announcement_script)
         self.assertIn("重试将复用本次请求编号", self.announcement_script)
+        self.assertIn("已送达微信的消息无法撤回", self.announcement_script)
         self.assertIn("confirm('确认发布这条公告？", self.announcement_script)
         self.assertRegex(self.html, r'id="announcementPublish"[^>]*disabled')
 
