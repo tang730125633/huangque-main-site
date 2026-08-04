@@ -30,6 +30,7 @@ LOGIN_SCOPES = [
     "profile:read", "ip12:read", "ip12:write", "ip12:chat", "prompt:optimize", "canvas:read",
     "canvas:write", "canvas:agent", "canvas:edit", "tasks:read", "assets:read", "assets:write", "assets:upload",
     "generation:quote", "generation:submit",
+    "video-compose:read", "video-compose:write", "digital-presenter:read", "digital-presenter:write",
 ]
 
 
@@ -135,6 +136,14 @@ def _validate(capability, payload):
             raise CliError(EXIT_INPUT, "input_error", "input field %s must be an integer" % key)
         if value_type == "boolean" and not isinstance(value, bool):
             raise CliError(EXIT_INPUT, "input_error", "input field %s must be a boolean" % key)
+        if value_type == "object":
+            if not isinstance(value, dict):
+                raise CliError(EXIT_INPUT, "input_error", "input field %s must be an object" % key)
+            if len(value) < definition.get("minProperties", 0) or len(value) > definition.get("maxProperties", len(value)):
+                raise CliError(EXIT_INPUT, "input_error", "input field %s has an invalid number of properties" % key)
+            child = definition.get("additionalProperties") or {}
+            if child.get("enum") and any(entry not in child["enum"] for entry in value.values()):
+                raise CliError(EXIT_INPUT, "input_error", "input field %s contains an invalid value" % key)
         if value_type == "array":
             if not isinstance(value, list):
                 raise CliError(EXIT_INPUT, "input_error", "input field %s must be an array" % key)
