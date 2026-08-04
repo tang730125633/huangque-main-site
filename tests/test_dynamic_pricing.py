@@ -3,13 +3,37 @@ import tempfile
 import unittest
 from pathlib import Path
 import sys
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
-from content_domains import points, pricing, video
+from content_domains import core, points, pricing, video
 
 
 class DynamicPricingTests(unittest.TestCase):
+    def test_current_core_accepts_legacy_short_drama_runtime(self):
+        calls = []
+
+        class LegacyShortDrama:
+            @staticmethod
+            def dispatch_http(handler, method, db_factory, verify_token,
+                              cost_of=None, mutation_lock=None,
+                              canvas_access_resolver=None, voice_validator=None,
+                              points_getter=None, generation_dependencies=None):
+                calls.append(generation_dependencies)
+                return True
+
+        audio_domain, points_domain = object(), object()
+        with patch.object(core, "_short_drama_domain", return_value=LegacyShortDrama), \
+                patch.object(core, "_domains", return_value=(audio_domain, points_domain, object())), \
+                patch.object(core, "_lipsync_worker_domain", side_effect=ImportError):
+            self.assertTrue(core._dispatch_short_drama(
+                object(), "POST", object(), object(), None,
+                audio_asset_lookup=object(), lipsync_wake=object(),
+            ))
+            self.assertIsNone(core._lipsync_worker_attr("wake"))
+        self.assertEqual((audio_domain, points_domain), calls[0][:2])
+
     def test_one_override_updates_billing_and_public_price(self):
         old_path = pricing.DB_PATH
         try:
