@@ -41,7 +41,7 @@
     </div>
 
     <section id="membershipOffer" class="membership-offer" hidden>
-      <div style="position:relative;z-index:1"><div id="membershipOfferEyebrow" style="font-size:12px;font-weight:800;letter-spacing:.16em;color:#e7b24c">EXPERIENCE MEMBERSHIP</div><div id="membershipOfferTitle" style="margin-top:10px;font-size:25px;font-weight:800">开通体验官会员</div><div id="membershipOfferDescription" style="margin-top:8px;color:#94a4bb;font-size:13px">非会员无法使用生成能力或充值点数。开通后一年内有效。</div><div class="membership-benefits"><div><b id="membershipOfferDuration" style="color:#f4d27e">一年</b><br>会员有效期</div><div><b id="membershipOfferPoints" style="color:#f4d27e">1000 点</b><br><span id="membershipOfferPointsNote">开通即赠送</span></div><div><b style="color:#f4d27e">全部功能</b><br>获得使用资格</div></div><button id="membershipOfferAction" class="membership-cta" data-recharge data-amount="499" data-product="membership_experience">¥499 开通体验官 · 赠 1000 点</button><div id="membershipOfferFoot" style="margin-top:13px;color:#718096;font-size:11px">合伙人、发起人由管理员在后台设置，会员期限同为一年。</div></div>
+      <div style="position:relative;z-index:1"><div id="membershipOfferEyebrow" style="font-size:12px;font-weight:800;letter-spacing:.16em;color:#e7b24c">EXPERIENCE MEMBERSHIP</div><div id="membershipOfferTitle" style="margin-top:10px;font-size:25px;font-weight:800">开通体验官会员</div><div id="membershipOfferDescription" style="margin-top:8px;color:#94a4bb;font-size:13px">非会员无法使用生成能力或充值点数。开通后一年内有效。</div><div class="membership-benefits"><div><b id="membershipOfferDuration" style="color:#f4d27e">一年</b><br>会员有效期</div><div><b id="membershipOfferPoints" style="color:#f4d27e">读取中</b><br><span id="membershipOfferPointsNote">开通即赠送</span></div><div><b style="color:#f4d27e">全部功能</b><br>获得使用资格</div></div><button id="membershipOfferAction" class="membership-cta" data-recharge data-product="membership_experience" disabled>价格读取中</button><div id="membershipOfferFoot" style="margin-top:13px;color:#718096;font-size:11px">合伙人、发起人由管理员在后台设置，会员期限同为一年。</div></div>
     </section>
 
     <!-- 点数套餐 -->
@@ -217,6 +217,8 @@
   var membershipActive=false;
   var membershipTier='';
   var membershipRequired=false;
+  var currentUser=null;
+  var commercePricing=null;
   function membershipDisplayName(user){
     if(!user||!user.membership_active) return '非会员';
     return user.membership_name||({experience:'体验官',partner:'合伙人',initiator:'发起人'}[user.membership_tier])||'会员等级待同步';
@@ -224,19 +226,20 @@
   var membershipDiscountBps=10000;
   var $=function(id){return document.getElementById(id)};
   function setTip(msg,color){var el=$('rechargeTip'); if(el){el.textContent=msg; el.style.color=color||'#94a4bb'}}
-  function membershipOrderText(type){return type==='membership_experience_renewal'?'体验会员续费 · 不赠点':(type==='membership_experience'?'体验官 + 1000 点':'')}
+  function membershipOrderText(type){return type==='membership_experience_renewal'?'体验会员续费 · 不赠点':(type==='membership_experience'?'体验官 + '+(commercePricing?commercePricing.bonusPoints.toLocaleString():'—')+' 点':'')}
   function renderMembershipOffer(user,failed){
     var offer=$('membershipOffer'),action=$('membershipOfferAction'),tier=user&&user.membership_tier;
-    offer.hidden=false;action.disabled=!!failed;
+    offer.hidden=false;action.disabled=!!failed||!commercePricing;
+    if(!commercePricing){action.hidden=false;action.textContent='价格读取中';return}
     if(failed){$('membershipOfferTitle').textContent='会员信息读取失败';$('membershipOfferDescription').textContent='暂时无法确认会员资格，请刷新后再试。';$('membershipOfferFoot').textContent='资格读取失败时不会开放购买。';action.hidden=true;return}
     action.hidden=false;
     if(membershipActive&&tier==='experience'){
-      $('membershipOfferEyebrow').textContent='EXPERIENCE RENEWAL';$('membershipOfferTitle').textContent='体验会员续费一年';$('membershipOfferDescription').textContent='续费从当前到期日顺延一年，价格 ¥499，不赠 1000 点。';$('membershipOfferDuration').textContent='续一年';$('membershipOfferPoints').textContent='0 点';$('membershipOfferPointsNote').textContent='续费不赠点';action.textContent='¥499 续费一年 · 不赠点';action.setAttribute('data-product','membership_experience_renewal');$('membershipOfferFoot').textContent='仅当前体验会员可自助续费。';return;
+      $('membershipOfferEyebrow').textContent='EXPERIENCE RENEWAL';$('membershipOfferTitle').textContent='体验会员续费一年';$('membershipOfferDescription').textContent='续费从当前到期日顺延一年，不赠首购点数。';$('membershipOfferDuration').textContent='续一年';$('membershipOfferPoints').textContent='0 点';$('membershipOfferPointsNote').textContent='续费不赠点';action.textContent='¥'+commercePricing.priceYuan+' 续费一年 · 不赠点';action.setAttribute('data-amount',commercePricing.priceYuan);action.setAttribute('data-product','membership_experience_renewal');$('membershipOfferFoot').textContent='仅当前体验会员可自助续费。';return;
     }
     if(membershipActive&&(tier==='partner'||tier==='initiator')){
       $('membershipOfferEyebrow').textContent='MEMBERSHIP SERVICE';$('membershipOfferTitle').textContent='会员续费请联系管理员';$('membershipOfferDescription').textContent='合伙人、发起人暂不开放自助续费。';$('membershipOfferDuration').textContent='管理员处理';$('membershipOfferPoints').textContent='—';$('membershipOfferPointsNote').textContent='不涉及赠点';$('membershipOfferFoot').textContent='请联系管理员确认续费安排。';action.hidden=true;return;
     }
-    $('membershipOfferEyebrow').textContent='EXPERIENCE MEMBERSHIP';$('membershipOfferTitle').textContent='开通体验官会员';$('membershipOfferDescription').textContent='非会员无法使用生成能力或充值点数。开通后一年内有效。';$('membershipOfferDuration').textContent='一年';$('membershipOfferPoints').textContent='1000 点';$('membershipOfferPointsNote').textContent='开通即赠送';action.textContent='¥499 开通体验官 · 赠 1000 点';action.setAttribute('data-product','membership_experience');$('membershipOfferFoot').textContent='合伙人、发起人由管理员在后台设置，会员期限同为一年。';
+    $('membershipOfferEyebrow').textContent='EXPERIENCE MEMBERSHIP';$('membershipOfferTitle').textContent='开通体验官会员';$('membershipOfferDescription').textContent='非会员无法使用生成能力或充值点数。开通后一年内有效。';$('membershipOfferDuration').textContent='一年';$('membershipOfferPoints').textContent=commercePricing.bonusPoints.toLocaleString()+' 点';$('membershipOfferPointsNote').textContent='开通即赠送';action.textContent='¥'+commercePricing.priceYuan+' 开通体验官 · 赠 '+commercePricing.bonusPoints.toLocaleString()+' 点';action.setAttribute('data-amount',commercePricing.priceYuan);action.setAttribute('data-product','membership_experience');$('membershipOfferFoot').textContent='合伙人、发起人由管理员在后台设置，会员期限同为一年。';
   }
   function api(path,opt){
     opt=opt||{};
@@ -271,9 +274,18 @@
       $('membershipDiscountHint').textContent=e.message||'价格读取失败';
     });
   }
+  function loadCommercePricing(){
+    return api('/api/gen/pricing').then(function(d){
+      var values={};(d.items||[]).forEach(function(x){values[x.key]=Number(x.points)});
+      if(!Number.isInteger(values['membership.experience.price_yuan'])||!Number.isInteger(values['membership.experience.bonus_points']))throw new Error('会员价格配置不完整');
+      commercePricing={priceYuan:values['membership.experience.price_yuan'],bonusPoints:values['membership.experience.bonus_points']};
+      if(currentUser)renderMembershipOffer(currentUser);
+    }).catch(function(){commercePricing=null;if(currentUser)renderMembershipOffer(currentUser,true)});
+  }
   function loadMe(){
     api('/api/auth/me').then(function(d){
       var user=(d&&d.user)||{},p=user.points;
+      currentUser=user;
       membershipActive=!!user.membership_active;
       membershipTier=user.membership_tier||'';
       membershipRequired=!!d.membership_enforcement_enabled;
@@ -332,7 +344,7 @@
         var o=(d.items||[]).filter(function(x){return x.order_id===orderId})[0];
         if(o&&o.status==='approved'){
           clearInterval(wxpayPoll); wxpayPoll=null;
-          $('wxpayStatus').textContent=o.order_type==='membership_experience_renewal'?'体验会员已续费一年，不赠点 ✅':(o.order_type==='membership_experience'?'体验官已开通，1000 点已到账 ✅':'支付成功，点数已到账 ✅'); $('wxpayStatus').style.color='#2bd576';
+          $('wxpayStatus').textContent=o.order_type==='membership_experience_renewal'?'体验会员已续费一年，不赠点 ✅':(o.order_type==='membership_experience'?'体验官已开通，'+Number(o.points||0).toLocaleString()+' 点已到账 ✅':'支付成功，点数已到账 ✅'); $('wxpayStatus').style.color='#2bd576';
           loadMe(); loadOrders();
           setTimeout(closeWxpay,1600);
         }
@@ -350,7 +362,7 @@
         var qr=$('wxpayQr'); qr.innerHTML='';
         new QRCode(qr,{text:d.code_url,width:180,height:180,correctLevel:QRCode.CorrectLevel.M});
         var pts=(d.order&&d.order.points)||pointsFor(amount);
-        $('wxpayAmount').textContent=productType==='membership_experience_renewal'?'¥499 · 体验会员续费一年 · 不赠点':(productType==='membership_experience'?'¥499 · 体验官一年 · 赠 1000 点':'¥'+Number((d.order&&d.order.amount)||amount).toFixed(2)+' · '+pts+' 点');
+        $('wxpayAmount').textContent=productType==='membership_experience_renewal'?'¥'+Number((d.order&&d.order.amount)||amount).toFixed(2)+' · 体验会员续费一年 · 不赠点':(productType==='membership_experience'?'¥'+Number((d.order&&d.order.amount)||amount).toFixed(2)+' · 体验官一年 · 赠 '+Number((d.order&&d.order.points)||0).toLocaleString()+' 点':'¥'+Number((d.order&&d.order.amount)||amount).toFixed(2)+' · '+pts+' 点');
         $('wxpayStatus').textContent='请用微信扫一扫完成支付'; $('wxpayStatus').style.color='#e7b24c';
         $('wxpayModal').style.display='flex';
         pollPaid(d.order.order_id);
@@ -395,7 +407,8 @@
     btn.addEventListener('click',function(){submitOrder(btn)});
   });
   if($('orderRefresh')) $('orderRefresh').onclick=loadOrders;
-  loadMe();
+  loadCommercePricing().then(loadMe);
+  setInterval(loadCommercePricing,30000);
   loadOrders();
 })();
 </script>

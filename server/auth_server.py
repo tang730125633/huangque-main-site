@@ -42,6 +42,11 @@ try:
 except ImportError:  # 生产环境以脚本方式从 /home/ubuntu/auth-service 启动
     import hq_cli_api
 
+try:
+    from .content_domains import pricing
+except ImportError:  # 生产环境以脚本方式从 /home/ubuntu/auth-service 启动
+    from content_domains import pricing
+
 DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.db")
 PORT = 8095
 ITER = 200000
@@ -62,7 +67,6 @@ REGISTER_IP_MAX = int(os.environ.get("HQ_AUTH_REGISTER_IP_MAX", "20"))
 USERNAME_MAX_LENGTH = 64
 PASSWORD_MAX_LENGTH = 128
 NEW_USER_TRIAL_POINTS = int(os.environ.get("HQ_AUTH_TRIAL_POINTS", "16"))  # 暂时保留新用户注册赠送 16 点
-MINIPROGRAM_CARD_TRIAL_POINTS = 100
 # 充值定价：客户端只传金额(元)，点数一律服务端算，绝不信客户端传的点数——
 # 否则用户能花 1 元买百万点。与 recharge.html / 小程序 recharge.js 保持一致。
 # 固定档与自定义均按 10 点/元；自定义限 10~5000 元整。
@@ -78,8 +82,6 @@ MEMBERSHIP_TIERS = {
     "partner": "合伙人",
     "initiator": "发起人",
 }
-EXPERIENCE_MEMBERSHIP_AMOUNT = 499
-EXPERIENCE_MEMBERSHIP_POINTS = 1000
 MEMBERSHIP_ORDER_TYPE = "membership_experience"
 MEMBERSHIP_RENEWAL_ORDER_TYPE = "membership_experience_renewal"
 MEMBERSHIP_DISCOUNT_BPS = {
@@ -169,13 +171,14 @@ def jsapi_recharge_quote(amount, membership_tier=""):
 def purchase_quote(amount, product_type="points", jsapi=False, membership_tier=""):
     product_type = (product_type or "points").strip()
     if product_type in (MEMBERSHIP_ORDER_TYPE, MEMBERSHIP_RENEWAL_ORDER_TYPE):
+        membership_amount = pricing.get_price("membership.experience.price_yuan")
         try:
-            if abs(float(amount) - EXPERIENCE_MEMBERSHIP_AMOUNT) > 1e-9:
+            if abs(float(amount) - membership_amount) > 1e-9:
                 return None
         except (TypeError, ValueError, OverflowError):
             return None
-        points = 0 if product_type == MEMBERSHIP_RENEWAL_ORDER_TYPE else EXPERIENCE_MEMBERSHIP_POINTS
-        return EXPERIENCE_MEMBERSHIP_AMOUNT, points, product_type
+        points = 0 if product_type == MEMBERSHIP_RENEWAL_ORDER_TYPE else pricing.get_price("membership.experience.bonus_points")
+        return membership_amount, points, product_type
     if product_type != "points":
         return None
     quote = jsapi_recharge_quote(amount, membership_tier) if jsapi else None
@@ -999,9 +1002,9 @@ def register_miniprogram_card(wx_code, phone, card, device_id, invite_code="", i
                 c, attribution, cur.lastrowid, relation["id"],
             )
             if journey:
-                initial_points = MINIPROGRAM_CARD_TRIAL_POINTS
+                initial_points = pricing.get_price("invite.card_trial_reward")
                 c.execute("UPDATE users SET points=? WHERE id=?", (initial_points, cur.lastrowid))
-        if relation and initial_points == MINIPROGRAM_CARD_TRIAL_POINTS:
+        if relation and initial_points > 0:
             transaction_key = (
                 "card-referral:" + str(attribution.get("journey_id"))
                 if attribution and attribution.get("journey_id")
@@ -1023,7 +1026,8 @@ def register_miniprogram_card(wx_code, phone, card, device_id, invite_code="", i
             "card": saved_card,
             "invite_bound": bool(relation),
             "created": True,
-            "invite_rewarded": bool(relation and initial_points == MINIPROGRAM_CARD_TRIAL_POINTS),
+            "invite_rewarded": bool(relation and initial_points > 0),
+            "invite_reward_points": initial_points if relation else 0,
             "ai_account": phone,
             "initial_password": True,
         }, None

@@ -907,15 +907,15 @@
   function renderPricing(items){
     el('pricingCount').textContent='共 '+items.length+' 项';
     if(!items.length){el('pricingBox').innerHTML='<div class="empty">暂无定价数据</div>';return}
-    el('pricingBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>分类</th><th>功能</th><th>规格</th><th>当前点数</th><th>单位</th><th>默认值</th><th>最近更新</th><th>操作</th></tr></thead><tbody>'+items.map(function(x){
+    el('pricingBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>分类</th><th>功能</th><th>规格</th><th>当前值</th><th>单位</th><th>默认值</th><th>最近更新</th><th>操作</th></tr></thead><tbody>'+items.map(function(x){
       var updated=x.updated_at?(fmtTime(x.updated_at)+(x.updated_by?' · '+x.updated_by:'')):'尚未人工改价';
-      return '<tr data-pricing-row="'+esc(x.key)+'"><td><span class="pill neutral">'+esc(x.category)+'</span></td><td class="pricing-name"><b>'+esc(x.name)+'</b>'+(x.desc?'<div class="muted">'+esc(x.desc)+'</div>':'')+'</td><td>'+esc(x.variant)+'</td><td><input class="field pricing-input" type="number" min="1" max="100000" step="1" inputmode="numeric" value="'+Number(x.points)+'" aria-label="'+esc(x.name+' '+x.variant+' 点数')+'"></td><td class="pricing-unit">'+esc(x.unit)+'</td><td><code>'+Number(x.default_points)+'</code>'+(x.custom?' <span class="pill warn">已改价</span>':'')+'</td><td class="pricing-updated"><span class="muted">'+esc(updated)+'</span></td><td><button class="mini primary" data-pricing-save>保存</button></td></tr>';
+      return '<tr data-pricing-row="'+esc(x.key)+'"><td><span class="pill neutral">'+esc(x.category)+'</span></td><td class="pricing-name"><b>'+esc(x.name)+'</b>'+(x.desc?'<div class="muted">'+esc(x.desc)+'</div>':'')+'</td><td>'+esc(x.variant)+'</td><td><input class="field pricing-input" type="number" min="1" max="100000" step="1" inputmode="numeric" value="'+Number(x.points)+'" aria-label="'+esc(x.name+' '+x.variant+' 当前值')+'"></td><td class="pricing-unit">'+esc(x.unit)+'</td><td><code>'+Number(x.default_points)+'</code>'+(x.custom?' <span class="pill warn">已改价</span>':'')+'</td><td class="pricing-updated"><span class="muted">'+esc(updated)+'</span></td><td><button class="mini primary" data-pricing-save>保存</button></td></tr>';
     }).join('')+'</tbody></table></div>';
     Array.prototype.forEach.call(el('pricingBox').querySelectorAll('[data-pricing-save]'),function(btn){
       btn.onclick=function(){
         var row=btn.closest('[data-pricing-row]'),key=row.getAttribute('data-pricing-row');
         var current=items.find(function(x){return x.key===key}),points=Number(row.querySelector('input').value);
-        if(!Number.isInteger(points)||points<1||points>100000){toast('点数必须是 1–100000 的整数');return}
+        if(!Number.isInteger(points)||points<1||points>100000){toast('数值必须是 1–100000 的整数');return}
         if(current&&points===Number(current.points)){toast('价格没有变化');return}
         var reason=prompt('请填写改价原因，例如：上游成本变化或活动调价');
         if(reason==null)return;reason=String(reason).trim();if(!reason){toast('必须填写改价原因');return}
@@ -1331,7 +1331,7 @@
       var inviter='<b>'+esc(x.inviter_name||x.inviter_account)+'</b><div class="muted">'+esc(x.inviter_account_id||x.inviter_account||'')+'</div>',invitee=x.registered_user_id?'<b>'+esc(x.invitee_name||x.invitee_account)+'</b><div class="muted">'+esc(x.invitee_account_id||x.invitee_account||'')+'</div>':'<span class="muted">匿名访客</span>';
       var stages=step('打开',x.visited_at)+' '+step('制作',x.card_started_at)+' '+step('注册',x.registered_at)+' '+step('发布',x.published_at);
       var relation=x.invite_relation_id?'<span class="pill '+(x.relation_status==='bound'?'ok':'warn')+'">'+esc(inviteStatusName(x.relation_status||'bound'))+'</span> <span class="pill '+(x.risk_status==='normal'?'ok':'warn')+'">风控：'+esc(inviteStatusName(x.risk_status||'normal'))+'</span>':'<span class="muted">尚未建立关系</span>';
-      var benefit=(x.benefit_granted_at?'<span class="pill ok">已送 100 点</span>':'<span class="muted">未送体验点</span>')+(x.membership_at?' <span class="pill ok">已开会员</span>':'')+(Number(x.membership_reward_points||0)?'<div class="muted">邀请权益 '+Number(x.membership_reward_points).toLocaleString()+' 点</div>':'');
+      var benefit=(x.benefit_granted_at?'<span class="pill ok">已送体验点</span>':'<span class="muted">未送体验点</span>')+(x.membership_at?' <span class="pill ok">已开会员</span>':'')+(Number(x.membership_reward_points||0)?'<div class="muted">邀请权益 '+Number(x.membership_reward_points).toLocaleString()+' 点</div>':'');
       return '<tr><td>'+inviter+'</td><td>'+invitee+'</td><td><div class="actions">'+stages+'</div></td><td>'+relation+'</td><td>'+benefit+'</td></tr>';
     }).join('')+'</tbody></table></div>';
   }
