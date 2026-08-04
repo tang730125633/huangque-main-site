@@ -15,6 +15,7 @@ if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
 from content_domains import (
+    provider_keys,
     short_drama,
     short_drama_autodraft,
     short_drama_conversation,
@@ -159,6 +160,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             "name": "记者林夏",
             "status": "ready",
             "provider_avatar_id": "heygen-avatar-1",
+            "image_url": "https://cdn.example/reference.png",
         }
 
     def _provider_quote(self):
@@ -368,7 +370,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                 "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "grok",
                 "XAI_API_KEY": "configured-for-preflight-only",
             },
-        ):
+        ), mock.patch.object(provider_keys, "has_candidate", return_value=True):
             workspace = short_drama_autodraft.workspace(
                 self.db, "alice", "alice", self.project["id"],
                 avatar_list=lambda _username, _limit: [avatar],
@@ -433,7 +435,12 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                 "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "grok",
                 "XAI_API_KEY": "configured-for-preflight-only",
             },
-        ):
+        ), mock.patch.object(provider_keys, "has_candidate", return_value=True), \
+             mock.patch.object(
+                 provider_keys,
+                 "claim_candidate",
+                 return_value={"id": "grok-test-key", "secret": "test-only-secret"},
+             ):
             workspace = short_drama_autodraft.workspace(
                 self.db, "alice", "alice", self.project["id"],
                 avatar_list=lambda _username, _limit: [],
@@ -1010,6 +1017,38 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             conn.close()
         self.assertEqual(("ready", "/api/files/video/provider-job-1.mp4"), version)
         self.assertEqual("done", attempt[0])
+
+    def test_grok_vault_failure_blocks_before_charge_and_submission(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "grok",
+                "XAI_API_KEY": "late-environment-key",
+                "HQ_SHORT_DRAMA_PROVIDER_SHOT_POINTS_PER_SECOND": "10",
+            },
+        ), mock.patch.object(provider_keys, "has_candidate", return_value=True):
+            quote = self._provider_quote()
+            deduct = mock.Mock()
+            with mock.patch.object(
+                provider_keys,
+                "claim_candidate",
+                side_effect=provider_keys.KeyStoreUnavailable(
+                    "视频密钥保险箱未配置，已停止新付费任务"
+                ),
+            ), mock.patch("content_domains.video_xai._create") as create:
+                with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                    short_drama_autodraft.start_provider_job(
+                        self.db,
+                        "alice",
+                        "alice",
+                        {"quote_token": quote["quote_token"]},
+                        "grok-vault-blocked-before-charge",
+                        avatar_lookup=lambda *_args: self._provider_avatar(),
+                        deduct_points=deduct,
+                    )
+        self.assertEqual("provider_not_configured", raised.exception.code)
+        deduct.assert_not_called()
+        create.assert_not_called()
 
     def test_single_shot_idempotency_replay_does_not_charge_twice(self):
         with mock.patch.dict(

@@ -196,16 +196,44 @@
   }
   function plannerPromotionMessages(preview){
     preview=preview||{};
+    var contract=plannerConfirmedContract(preview);
     var selection={steady:'方案一',conflict:'方案二',creative:'方案三'}[preview.selected_direction_id]||'方案一';
     var clean=function(value){return text(value).replace(/[“”"]/g,'').replace(/\s+/g,' ').trim();};
-    var shotContract=(preview.shots||[]).map(function(shot){
-      return '镜头'+shot.index+'['+shot.duration+'秒] 场景='+clean(shot.scene)+'；角色='+(shot.characters||[]).join('、')+'；动作='+clean(shot.action)+'；表情='+clean(shot.expression)+'；'+(shot.dialogue_kind==='silence'?'无台词':'说话人='+clean(shot.speaker)+'；台词='+clean(shot.dialogue))+'；镜头='+clean(shot.camera);
+    var shotContract=contract.shots.map(function(shot){
+      return '镜头'+shot.index+'['+shot.duration+'秒] 场景='+clean(shot.scene)+'；角色='+(shot.characters||[]).join('、')+'；动作='+clean(shot.action)+'；表情='+clean(shot.expression)+'；'+(shot.dialogue_kind==='silence'?'无台词':'说话人='+clean(shot.speaker)+'；台词='+clean(shot.dialogue))+'；镜头='+clean(shot.camera)+'；声音='+clean(shot.sound)+'；转场='+clean(shot.transition)+'；连续性='+clean(shot.continuity);
     }).join('\n');
     return [
       '核心设定：'+clean(preview.logline)+'；主角：'+clean(preview.protagonist)+'；冲突：'+clean(preview.conflict)+'；结局：'+clean(preview.ending)+'；补充要求：'+(preview.notes||[]).map(clean).join('；')+'。请推荐三个方向。',
       selection,
       '确认以下逐镜剧本并按原样生成正式结构化剧本。每句台词必须在对应镜头时长内说完，不得把核心设定或剧情摘要当成角色台词。\n'+shotContract
     ];
+  }
+  function plannerConfirmedContract(preview){
+    preview=preview||{};
+    function clean(value){return text(value).trim();}
+    return {
+      schema_version:'preproject-confirmed-shot-contract-v1',
+      title:clean(preview.title),logline:clean(preview.logline),protagonist:clean(preview.protagonist),
+      conflict:clean(preview.conflict),ending:clean(preview.ending),ratio:clean(preview.ratio),
+      duration_seconds:Number(preview.duration_seconds)||0,shot_count:Number(preview.shot_count)||0,
+      visual_style:clean(preview.visual_style),characters:(preview.characters||[]).map(clean),
+      beats:(preview.beats||[]).map(function(beat){return {index:Number(beat.index),phase:clean(beat.phase),summary:clean(beat.summary),duration:Number(beat.duration)};}),
+      shots:(preview.shots||[]).map(function(shot){return {
+        index:Number(shot.index),phase:clean(shot.phase),duration:Number(shot.duration),scene:clean(shot.scene),
+        characters:(shot.characters||[]).map(clean),action:clean(shot.action),expression:clean(shot.expression),
+        speaker:clean(shot.speaker),dialogue_kind:clean(shot.dialogue_kind)||'silence',dialogue:clean(shot.dialogue),
+        camera:clean(shot.camera),sound:clean(shot.sound),transition:clean(shot.transition),
+        continuity:clean(shot.continuity),summary:clean(shot.summary),locked:!!shot.locked
+      };})
+    };
+  }
+  function stableContract(value){
+    if(Array.isArray(value))return value.map(stableContract);
+    if(value&&typeof value==='object')return Object.keys(value).sort().reduce(function(result,key){result[key]=stableContract(value[key]);return result;},{});
+    return value;
+  }
+  function confirmedContractMatches(script,contract){
+    return JSON.stringify(stableContract(script&&script.confirmed_contract||null))===JSON.stringify(stableContract(contract||null));
   }
   function importedTitle(value,filename){
     var fromFile=text(filename).replace(/\.[^.]+$/,'').trim();
@@ -507,7 +535,7 @@
     function renderPlannerShot(shot,preview){
       var status=shotStatus(shot),dialogue=shot.dialogue_kind==='silence'?'本镜头无台词，以表情和动作推进剧情。':shot.speaker+'：'+shot.dialogue;
       var characterOptions=(preview.characters||[]).map(function(item){return '<option value="'+escapeHtml(item)+'"'+(item===shot.speaker?' selected':'')+'>'+escapeHtml(item)+'</option>';}).join('');
-      var editor=shot.editing?'<div class="short-drama-shot-editor"><label>场景<input name="scene" value="'+escapeHtml(shot.scene)+'"></label><label>动作<textarea name="action">'+escapeHtml(shot.action)+'</textarea></label><label>表情与情绪<input name="expression" value="'+escapeHtml(shot.expression)+'"></label><label>说话方式<select name="dialogue_kind"><option value="dialogue"'+(shot.dialogue_kind==='dialogue'?' selected':'')+'>画面内对白</option><option value="voiceover"'+(shot.dialogue_kind==='voiceover'?' selected':'')+'>画外音</option><option value="silence"'+(shot.dialogue_kind==='silence'?' selected':'')+'>无台词</option></select></label><label>说话角色<select name="speaker"><option value="">无</option>'+characterOptions+'</select></label><label>具体台词<input name="dialogue" value="'+escapeHtml(shot.dialogue)+'"></label><label>镜头设计<textarea name="camera">'+escapeHtml(shot.camera)+'</textarea></label><label>环境声音<input name="sound" value="'+escapeHtml(shot.sound)+'"></label><label>衔接方式<input name="transition" value="'+escapeHtml(shot.transition)+'"></label><div class="short-drama-shot-editor-actions"><button type="button" data-planner-shot-action="cancel" data-shot-index="'+shot.index+'">取消</button><button class="short-drama-primary" type="button" data-planner-shot-action="save" data-shot-index="'+shot.index+'">保存本镜头</button></div></div>':'';
+      var editor=shot.editing?'<div class="short-drama-shot-editor"><label>场景<input name="scene" value="'+escapeHtml(shot.scene)+'"></label><label>动作<textarea name="action">'+escapeHtml(shot.action)+'</textarea></label><label>表情与情绪<input name="expression" value="'+escapeHtml(shot.expression)+'"></label><label>说话方式<select name="dialogue_kind"><option value="dialogue"'+(shot.dialogue_kind==='dialogue'?' selected':'')+'>画面内对白</option><option value="voiceover"'+(shot.dialogue_kind==='voiceover'?' selected':'')+'>画外音</option><option value="silence"'+(shot.dialogue_kind==='silence'?' selected':'')+'>无台词</option></select></label><label>说话角色<select name="speaker"><option value="">无</option>'+characterOptions+'</select></label><label>具体台词<input name="dialogue" value="'+escapeHtml(shot.dialogue)+'"></label><label>镜头设计<textarea name="camera">'+escapeHtml(shot.camera)+'</textarea></label><label>环境声音<input name="sound" value="'+escapeHtml(shot.sound)+'"></label><label>衔接方式<input name="transition" value="'+escapeHtml(shot.transition)+'"></label><label>连续性<input name="continuity" value="'+escapeHtml(shot.continuity)+'"></label><div class="short-drama-shot-editor-actions"><button type="button" data-planner-shot-action="cancel" data-shot-index="'+shot.index+'">取消</button><button class="short-drama-primary" type="button" data-planner-shot-action="save" data-shot-index="'+shot.index+'">保存本镜头</button></div></div>':'';
       return '<article class="short-drama-planner-shot '+status.kind+(shot.locked?' locked':'')+'" data-shot-index="'+shot.index+'"><header><div><b>#'+shot.index+'</b><strong>'+escapeHtml(shot.phase)+'</strong><span>'+shot.duration+' 秒 · '+escapeHtml((shot.characters||[]).join('、'))+'</span></div><em>'+escapeHtml(status.label)+'</em></header><p class="short-drama-planner-dialogue">'+escapeHtml(dialogue)+'</p><small>预计朗读 '+Number(shot.reading_seconds).toFixed(2)+' 秒 · 表情动作 '+Math.max(0,Number(shot.remaining_seconds)).toFixed(2)+' 秒</small><details open><summary>查看完整镜头执行信息</summary><dl><dt>场景</dt><dd>'+escapeHtml(shot.scene)+'</dd><dt>出场角色</dt><dd>'+escapeHtml((shot.characters||[]).join('、'))+'</dd><dt>动作</dt><dd>'+escapeHtml(shot.action)+'</dd><dt>表情</dt><dd>'+escapeHtml(shot.expression)+'</dd><dt>说话角色</dt><dd>'+escapeHtml(shot.speaker||'无')+'</dd><dt>说话方式</dt><dd>'+escapeHtml(shot.dialogue_kind==='voiceover'?'画外音':shot.dialogue_kind==='silence'?'无台词':'画面内对白')+'</dd><dt>镜头</dt><dd>'+escapeHtml(shot.camera)+'</dd><dt>环境声音</dt><dd>'+escapeHtml(shot.sound)+'</dd><dt>衔接</dt><dd>'+escapeHtml(shot.transition)+'</dd><dt>连续性</dt><dd>'+escapeHtml(shot.continuity)+'</dd></dl></details><div class="short-drama-shot-actions"><button type="button" data-planner-shot-action="edit" data-shot-index="'+shot.index+'"'+(shot.locked?' disabled':'')+'>编辑</button><button type="button" data-planner-shot-action="regenerate" data-shot-index="'+shot.index+'"'+(shot.locked?' disabled':'')+'>重生成本镜头</button><button type="button" data-planner-shot-action="mute" data-shot-index="'+shot.index+'"'+(shot.locked?' disabled':'')+'>改成无台词</button><button type="button" data-planner-shot-action="lock" data-shot-index="'+shot.index+'">'+(shot.locked?'解锁':'锁定')+'</button></div>'+editor+'</article>';
     }
     function renderScriptPreview(preview){
@@ -589,7 +617,7 @@
         function field(name){var input=card.querySelector('[name="'+name+'"]');return text(input&&input.value).trim();}
         shot.scene=field('scene');shot.action=field('action');shot.expression=field('expression');shot.dialogue_kind=field('dialogue_kind')||'silence';
         shot.speaker=shot.dialogue_kind==='silence'?'':field('speaker');shot.dialogue=shot.dialogue_kind==='silence'?'':field('dialogue');
-        shot.camera=field('camera');shot.sound=field('sound');shot.transition=field('transition');shot.editing=false;
+        shot.camera=field('camera');shot.sound=field('sound');shot.transition=field('transition');shot.continuity=field('continuity');shot.editing=false;
       }
       plannerPreview.quality=plannerQuality(plannerPreview);renderScriptPreview(plannerPreview);
       plannerNotice(plannerPreview.quality.blocking?'仍有镜头未通过时长或执行信息检查，请继续调整。':'当前逐镜剧本已通过时长检查，可以确认创建项目。',plannerPreview.quality.blocking);
@@ -604,15 +632,16 @@
       plannerPreview.quality=plannerQuality(plannerPreview);
       if(plannerPreview.quality.blocking){renderScriptPreview(plannerPreview);plannerNotice('请先处理所有超时台词或缺失的动作、表情，再确认创建项目。',true);return Promise.resolve();}
       var button=doc.getElementById('shortDramaConfirmScript');button.disabled=true;plannerNotice('正在建立正式项目并固化已确认剧本…',false);
+      var contract=plannerConfirmedContract(plannerPreview);
       var createdPromise=pendingCreatedProject?Promise.resolve(pendingCreatedProject):client.create(plannerPayload).then(function(project){pendingCreatedProject=project;return project;});
       return createdPromise.then(function(project){
         return client.workspace(project.id).then(function(workspace){
           var chain=Promise.resolve(workspace);
           plannerPromotionMessages(plannerPreview).forEach(function(message,index){chain=chain.then(function(current){return ensurePlanningMessage(current,message,index,project.id);});});
           return chain.then(function(current){
-            if(current.current_script)return current;
-            return client.generate({project_id:project.id,conversation_revision:Number(current.conversation.revision),instruction:'严格按用户确认的逐镜方案生成正式结构化剧本；不得把剧情摘要当台词；每句台词必须在对应镜头时长内说完'},'preproject-'+project.id+'-generate');
+            return client.generate({project_id:project.id,conversation_revision:Number(current.conversation.revision),instruction:'持久化用户已确认的逐镜合同',confirmed_contract:contract},'preproject-'+project.id+'-generate');
           }).then(function(current){
+            if(!confirmedContractMatches(current.current_script&&current.current_script.script,contract))throw new Error('服务端保存的逐镜剧本与确认内容不一致，已阻止自动锁定，请重新确认。');
             if(current.conversation.state==='script_locked')return current;
             return client.lock({project_id:project.id,conversation_revision:Number(current.conversation.revision),version_id:current.current_script.id},'preproject-'+project.id+'-lock');
           }).then(function(){return project;});
@@ -697,5 +726,5 @@
     load().catch(function(){});
     return {reload:load,render:render};
   }
-  return {STAGES:STAGES,LABELS:LABELS,normalizeProject:normalizeProject,progress:progress,filterProjects:filterProjects,metrics:metrics,deleteErrorMessage:deleteErrorMessage,createPayload:createPayload,compactIdea:compactIdea,buildRecommendations:buildRecommendations,advisorStep:advisorStep,plannerProgress:plannerProgress,plannerDurations:plannerDurations,plannerRoles:plannerRoles,plannerReadingSeconds:plannerReadingSeconds,plannerQuality:plannerQuality,buildPlannerPreview:buildPlannerPreview,plannerPromotionMessages:plannerPromotionMessages,importedTitle:importedTitle,analyzeImportedScript:analyzeImportedScript,importProjectPayload:importProjectPayload,newImportKey:newImportKey,readLimitedStream:readLimitedStream,extractPdfText:extractPdfText,extractDocxText:extractDocxText,readScriptFile:readScriptFile,createClient:createClient,projectUrl:projectUrl,cardHtml:cardHtml,mount:mount};
+  return {STAGES:STAGES,LABELS:LABELS,normalizeProject:normalizeProject,progress:progress,filterProjects:filterProjects,metrics:metrics,deleteErrorMessage:deleteErrorMessage,createPayload:createPayload,compactIdea:compactIdea,buildRecommendations:buildRecommendations,advisorStep:advisorStep,plannerProgress:plannerProgress,plannerDurations:plannerDurations,plannerRoles:plannerRoles,plannerReadingSeconds:plannerReadingSeconds,plannerQuality:plannerQuality,buildPlannerPreview:buildPlannerPreview,plannerPromotionMessages:plannerPromotionMessages,plannerConfirmedContract:plannerConfirmedContract,confirmedContractMatches:confirmedContractMatches,importedTitle:importedTitle,analyzeImportedScript:analyzeImportedScript,importProjectPayload:importProjectPayload,newImportKey:newImportKey,readLimitedStream:readLimitedStream,extractPdfText:extractPdfText,extractDocxText:extractDocxText,readScriptFile:readScriptFile,createClient:createClient,projectUrl:projectUrl,cardHtml:cardHtml,mount:mount};
 });

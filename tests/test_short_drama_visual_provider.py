@@ -15,6 +15,7 @@ from providers.short_drama_visual.heygen_cinematic import (
     HeyGenCinematicShotProvider,
 )
 from providers.short_drama_visual.grok_xai import GrokXaiShotProvider
+from content_domains import provider_keys
 
 
 class ShortDramaVisualProviderTests(unittest.TestCase):
@@ -46,7 +47,7 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
                 "XAI_API_KEY": "configured-for-test",
             },
             clear=True,
-        ):
+        ), mock.patch.object(provider_keys, "has_candidate", return_value=True):
             snapshot = capability_snapshot()
             provider = load_from_environment()
         self.assertEqual("provider_ready", snapshot["code"])
@@ -76,6 +77,7 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
         }
         candidate = {"id": "key-7", "secret": "test-only-secret"}
         with mock.patch.dict(os.environ, {"XAI_API_KEY": "configured"}, clear=True), \
+             mock.patch.object(provider_keys, "has_candidate", return_value=True), \
              mock.patch.object(provider, "_claim_key", return_value=candidate), \
              mock.patch.object(provider, "_bound_key", return_value=candidate), \
              mock.patch("content_domains.video_xai._create", return_value={"request_id": "req-9"}) as create, \
@@ -95,6 +97,32 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
             [{"url": "https://cdn.example/avatar.png"}],
             create.call_args.args[2]["reference_images"],
         )
+
+    def test_grok_vault_failure_never_falls_back_to_rotated_environment_key(self):
+        provider = GrokXaiShotProvider()
+        with mock.patch.dict(os.environ, {"XAI_API_KEY": "rotated-environment-key"}, clear=True), \
+             mock.patch.object(
+                 provider_keys,
+                 "claim_candidate",
+                 side_effect=provider_keys.KeyStoreUnavailable(
+                     "视频密钥保险箱未配置，已停止新付费任务"
+                 ),
+             ), \
+             mock.patch("content_domains.video_xai._create") as create:
+            with self.assertRaises(provider_keys.KeyStoreUnavailable):
+                provider._claim_key()
+        create.assert_not_called()
+
+    def test_grok_legacy_env_job_resolves_encrypted_snapshot_after_rotation(self):
+        provider = GrokXaiShotProvider()
+        provider_job_id = provider._encode_job_id("env", "req-legacy")
+        snapshot = {"id": "vault-key-a", "secret": "original-key-a"}
+        with mock.patch.dict(os.environ, {"XAI_API_KEY": "rotated-key-b"}, clear=True), \
+             mock.patch.object(provider_keys, "candidates", return_value=[snapshot]) as candidates, \
+             mock.patch("content_domains.video_xai._request_json", return_value={"status": "pending"}) as poll:
+            provider.get_job(provider_job_id)
+        candidates.assert_called_once_with("xai", preferred_id="env")
+        self.assertEqual("original-key-a", poll.call_args.kwargs["api_key"])
 
     def test_valid_shot_request_is_normalized_without_network(self):
         result = HeyGenCinematicShotProvider().validate_request({

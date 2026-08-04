@@ -1232,6 +1232,30 @@ def start_provider_job(
                 "镜头或角色形象已变化，请重新预检并报价",
                 409,
             )
+    prepared_request_json = inspect_quote["request_json"]
+    prepared_provider_name = str(
+        _json(prepared_request_json, {}).get("provider") or "heygen_cinematic"
+    ).strip()
+    if not inspect_existing:
+        provider = load_by_name(prepared_provider_name)
+        if provider is None or not provider.configured:
+            raise AutodraftError(
+                "provider_not_configured",
+                "真实画面 Provider 配置已失效，任务未扣点",
+                503,
+            )
+        prepare_job = getattr(provider, "prepare_job", None)
+        if callable(prepare_job):
+            try:
+                prepared_request_json = _json_text(
+                    prepare_job(_json(prepared_request_json, {}))
+                )
+            except Exception as error:
+                raise AutodraftError(
+                    "provider_not_configured",
+                    "真实画面 Provider 密钥保险箱不可用，任务未扣点",
+                    503,
+                ) from error
     conn = _connection(db_factory)
     attempt_id = None
     job_id = None
@@ -1309,10 +1333,7 @@ def start_provider_job(
         job_id = uuid.uuid4().hex
         charge_key = "short-drama-provider-shot-charge:" + attempt_id
         refund_key = "short-drama-provider-shot-refund:" + attempt_id
-        quote_request = _json(quote["request_json"], {})
-        provider_name = str(
-            quote_request.get("provider") or "heygen_cinematic"
-        ).strip()
+        provider_name = prepared_provider_name
         conn.execute(
             "INSERT INTO short_drama_provider_shot_jobs "
             "(id,project_id,owner_username,actor_username,plan_id,shot_key,"
@@ -1323,7 +1344,7 @@ def start_provider_job(
                 job_id, quote["project_id"], owner_username, actor_username,
                 quote["plan_id"], quote["shot_key"], quote["character_key"],
                 quote["avatar_id"], provider_name, quote["request_hash"],
-                quote["request_json"], cost, now, now,
+                prepared_request_json, cost, now, now,
             ),
         )
         conn.execute(

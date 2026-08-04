@@ -25,8 +25,6 @@ class GrokXaiShotProvider(ShotVisualProvider):
 
     @property
     def configured(self):
-        if str(os.getenv("XAI_API_KEY") or "").strip():
-            return True
         try:
             from content_domains import provider_keys
 
@@ -114,29 +112,30 @@ class GrokXaiShotProvider(ShotVisualProvider):
 
     @staticmethod
     def _claim_key():
-        try:
-            from content_domains import provider_keys
+        from content_domains import provider_keys
 
-            candidate = provider_keys.claim_candidate("xai")
-            if candidate:
-                return candidate
-        except Exception:
-            pass
-        secret = str(os.getenv("XAI_API_KEY") or "").strip()
-        return {"id": "env", "secret": secret} if secret else None
+        return provider_keys.claim_candidate("xai")
 
     @staticmethod
     def _bound_key(key_id):
-        if str(key_id or "") == "env":
-            secret = str(os.getenv("XAI_API_KEY") or "").strip()
-            return {"id": "env", "secret": secret} if secret else None
         try:
             from content_domains import provider_keys
 
-            candidates = provider_keys.candidates("xai", preferred_id=key_id)
+            candidates = provider_keys.candidates(
+                "xai", preferred_id=str(key_id or "env")
+            )
             return candidates[0] if candidates else None
         except Exception:
             return None
+
+    def prepare_job(self, request):
+        """Bind a durable vault key before the caller performs billing."""
+        candidate = self._claim_key()
+        if not candidate or not candidate.get("secret"):
+            raise RuntimeError("果肉视频没有可用的 xAI 密钥")
+        prepared = dict(request or {})
+        prepared["_provider_key_id"] = str(candidate["id"])
+        return prepared
 
     @staticmethod
     def _reference_url(payload):
@@ -161,8 +160,13 @@ class GrokXaiShotProvider(ShotVisualProvider):
             raise VisualProviderError(
                 "provider_not_configured", "果肉视频尚未配置 XAI_API_KEY"
             )
+        prepared_key_id = str((request or {}).get("_provider_key_id") or "").strip()
         payload = self.validate_request(request)
-        candidate = self._claim_key()
+        candidate = (
+            self._bound_key(prepared_key_id)
+            if prepared_key_id
+            else self._claim_key()
+        )
         if not candidate or not candidate.get("secret"):
             raise VisualProviderError(
                 "provider_not_configured", "果肉视频没有可用的 xAI 密钥"

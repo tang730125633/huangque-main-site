@@ -118,11 +118,26 @@ test('前置策划生成结构化剧本并在人工确认后准备正式对话',
   assert.ok(preview.shots.every(shot => Array.isArray(shot.characters) && shot.characters.length));
   assert.equal(preview.quality.blocking, false);
   assert.equal(center.plannerProgress(messages, direction, preview).score, 100);
+  preview.shots[0].sound = 'CONFIRMED_SOUND_MARKER';
+  preview.shots[0].transition = 'CONFIRMED_TRANSITION_MARKER';
+  preview.shots[0].continuity = 'CONFIRMED_CONTINUITY_MARKER';
+  const contract = center.plannerConfirmedContract(preview);
+  assert.equal(contract.shots[0].sound, 'CONFIRMED_SOUND_MARKER');
+  assert.equal(contract.shots[0].transition, 'CONFIRMED_TRANSITION_MARKER');
+  assert.equal(contract.shots[0].continuity, 'CONFIRMED_CONTINUITY_MARKER');
+  assert.equal(center.confirmedContractMatches({confirmed_contract:contract}, contract), true);
+  const changed = JSON.parse(JSON.stringify(contract));
+  changed.shots[0].sound = 'SERVER_CHANGED_SOUND';
+  assert.equal(center.confirmedContractMatches({confirmed_contract:changed}, contract), false);
+  assert.match(centerScript, /if\(!confirmedContractMatches\([^)]*current_script[^)]*contract\)\)throw new Error/);
   const promotion = center.plannerPromotionMessages(preview);
   assert.equal(promotion.length, 3);
   assert.match(promotion[0], /核心设定/);
   assert.match(promotion[2], /逐镜剧本/);
   assert.match(promotion[2], /说话人=|无台词/);
+  assert.match(promotion[2], /CONFIRMED_SOUND_MARKER/);
+  assert.match(promotion[2], /CONFIRMED_TRANSITION_MARKER/);
+  assert.match(promotion[2], /CONFIRMED_CONTINUITY_MARKER/);
   assert.doesNotMatch(promotion[0], /[“”]/);
 });
 

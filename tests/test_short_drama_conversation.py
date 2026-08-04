@@ -90,6 +90,86 @@ class ShortDramaConversationTests(unittest.TestCase):
         self.assertIsNone(result["current_script"])
         self.assertEqual({"cost": 0, "charged": False}, result["billing"])
 
+    def test_confirmed_preproject_contract_is_persisted_before_explicit_lock(self):
+        confirmed = self.confirm_direction(self.project["id"], 1, "contract")
+        shots = []
+        beats = []
+        for index in range(1, 7):
+            shots.append({
+                "index": index,
+                "phase": "阶段%d" % index,
+                "duration": 5,
+                "scene": "确认场景%d" % index,
+                "characters": ["林夏", "周野"],
+                "action": "CONFIRMED_ACTION_%d" % index,
+                "expression": "CONFIRMED_EXPRESSION_%d" % index,
+                "speaker": "林夏" if index == 1 else "",
+                "dialogue_kind": "dialogue" if index == 1 else "silence",
+                "dialogue": "这是确认台词" if index == 1 else "",
+                "camera": "CONFIRMED_CAMERA_%d" % index,
+                "sound": "CONFIRMED_SOUND_%d" % index,
+                "transition": "CONFIRMED_TRANSITION_%d" % index,
+                "continuity": "CONFIRMED_CONTINUITY_%d" % index,
+                "summary": "确认摘要%d" % index,
+                "locked": index == 2,
+            })
+            beats.append({
+                "index": index,
+                "phase": "阶段%d" % index,
+                "summary": "确认摘要%d" % index,
+                "duration": 5,
+            })
+        contract = {
+            "schema_version": "preproject-confirmed-shot-contract-v1",
+            "title": "确认短剧",
+            "logline": "人工确认的逐镜合同必须原样保存",
+            "protagonist": "林夏",
+            "conflict": "是否相信旧友",
+            "ending": "两人完成和解",
+            "ratio": "16:9",
+            "duration_seconds": 30,
+            "shot_count": 6,
+            "visual_style": "电影感写实",
+            "characters": ["林夏", "周野"],
+            "beats": beats,
+            "shots": shots,
+        }
+        generated = short_drama_conversation.generate_script(
+            self.db,
+            "alice",
+            "alice",
+            {
+                "project_id": self.project["id"],
+                "conversation_revision": confirmed["conversation"]["revision"],
+                "instruction": "持久化用户已确认的逐镜合同",
+                "confirmed_contract": contract,
+            },
+            "confirmed-contract-generate",
+        )
+        self.assertEqual("script_review", generated["conversation"]["state"])
+        script = generated["current_script"]["script"]
+        self.assertEqual(contract, script["confirmed_contract"])
+        self.assertEqual("CONFIRMED_SOUND_1", script["shots"][0]["sound"])
+        self.assertEqual("CONFIRMED_TRANSITION_1", script["shots"][0]["transition"])
+        self.assertEqual("CONFIRMED_CONTINUITY_1", script["shots"][0]["continuity"])
+        self.assertEqual("CONFIRMED_ACTION_1", script["shots"][0]["action"])
+        self.assertEqual("CONFIRMED_EXPRESSION_1", script["shots"][0]["expression"])
+        self.assertEqual("这是确认台词", script["dialogue_lines"][0]["text"])
+
+        locked = short_drama_conversation.lock_script(
+            self.db,
+            "alice",
+            "alice",
+            {
+                "project_id": self.project["id"],
+                "conversation_revision": generated["conversation"]["revision"],
+                "version_id": generated["current_script"]["id"],
+            },
+            "confirmed-contract-lock",
+        )
+        self.assertEqual("script_locked", locked["conversation"]["state"])
+        self.assertEqual(contract, locked["current_script"]["script"]["confirmed_contract"])
+
     def import_payload(self, source, **changes):
         value = {
             "title": "完整导入剧本",
