@@ -183,6 +183,38 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             avatar_lookup=lambda _username, _avatar_id: avatar,
         )
 
+    def _running_provider_job(self, key):
+        charged = []
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "heygen_cinematic",
+            "HEYGEN_API_KEY": "configured-for-test",
+            "HQ_SHORT_DRAMA_PROVIDER_SHOT_POINTS_PER_SECOND": "10",
+        }):
+            quote = self._provider_quote()
+            job = short_drama_autodraft.start_provider_job(
+                self.db, "alice", "alice",
+                {"quote_token": quote["quote_token"]}, key,
+                avatar_lookup=lambda *_args: self._provider_avatar(),
+                deduct_points=lambda user, cost, reason, charge_key: charged.append(
+                    (user, cost, reason, charge_key)
+                ),
+                project_usage=short_drama._project_point_usage,
+            )
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs SET status='running',"
+                "provider_job_id='provider-timeout-job',created_at=100,"
+                "updated_at=100 WHERE id=?",
+                (job["id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertGreater(quote["cost"], 0)
+        self.assertEqual(1, len(charged))
+        return job, quote
+
     def test_confirmed_plan_starts_free_local_pollable_job(self):
         job = self._start()
         self.assertEqual("queued", job["status"])
@@ -1114,6 +1146,151 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertEqual("provider_key_unavailable", result["error"]["code"])
         self.assertFalse(result["error"]["retryable"])
         self.assertTrue(result["error"]["requires_reconciliation"])
+
+    def test_single_shot_pending_deadline_fails_and_refunds_once(self):
+        class PendingProvider:
+            def __init__(self):
+                self.polls = 0
+
+            def get_job(self, _provider_job_id):
+                self.polls += 1
+                return {"status": "pending"}
+
+        job, quote = self._running_provider_job("pending-timeout")
+        provider = PendingProvider()
+        refunds = []
+        refund = lambda user, cost, reason, key: refunds.append(
+            (user, cost, reason, key)
+        )
+        with mock.patch.object(
+            short_drama_autodraft, "PROVIDER_SHOT_DEADLINE_SECONDS", 10
+        ), mock.patch.object(
+            short_drama_autodraft, "PROVIDER_SHOT_MAX_POLLS", 99
+        ), mock.patch(
+            "content_domains.short_drama_autodraft.load_by_name",
+            return_value=provider,
+        ):
+            with mock.patch(
+                "content_domains.short_drama_autodraft.time.time",
+                return_value=105,
+            ):
+                running = short_drama_autodraft.reconcile_provider_job(
+                    self.db, "alice", self.project["id"], job["id"],
+                    refund_points=refund,
+                )
+            with mock.patch(
+                "content_domains.short_drama_autodraft.time.time",
+                return_value=111,
+            ):
+                failed = short_drama_autodraft.reconcile_provider_job(
+                    self.db, "alice", self.project["id"], job["id"],
+                    refund_points=refund,
+                )
+                replay = short_drama_autodraft.reconcile_provider_job(
+                    self.db, "alice", self.project["id"], job["id"],
+                    refund_points=refund,
+                )
+        self.assertEqual("running", running["status"])
+        self.assertEqual("failed", failed["status"])
+        self.assertEqual("provider_generation_timeout", failed["error"]["code"])
+        self.assertEqual("deadline", failed["error"]["timeout_reason"])
+        self.assertEqual("failed", replay["status"])
+        self.assertEqual(1, provider.polls)
+        self.assertEqual(1, len(refunds))
+        self.assertEqual(quote["cost"], refunds[0][1])
+        conn = self.db()
+        try:
+            state = conn.execute(
+                "SELECT state FROM short_drama_provider_shot_attempts "
+                "WHERE job_id=?", (job["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual("refunded", state)
+
+    def test_single_shot_poll_failures_hit_limit_and_refund(self):
+        class FailingProvider:
+            def __init__(self):
+                self.polls = 0
+
+            def get_job(self, _provider_job_id):
+                self.polls += 1
+                raise RuntimeError("temporary provider network failure")
+
+        job, quote = self._running_provider_job("poll-failure-timeout")
+        provider = FailingProvider()
+        refunds = []
+        with mock.patch.object(
+            short_drama_autodraft, "PROVIDER_SHOT_DEADLINE_SECONDS", 9999
+        ), mock.patch.object(
+            short_drama_autodraft, "PROVIDER_SHOT_MAX_POLLS", 2
+        ), mock.patch(
+            "content_domains.short_drama_autodraft.load_by_name",
+            return_value=provider,
+        ), mock.patch(
+            "content_domains.short_drama_autodraft.time.time",
+            return_value=105,
+        ):
+            running = short_drama_autodraft.reconcile_provider_job(
+                self.db, "alice", self.project["id"], job["id"],
+                refund_points=lambda user, cost, reason, key: refunds.append(
+                    (user, cost, reason, key)
+                ),
+            )
+            failed = short_drama_autodraft.reconcile_provider_job(
+                self.db, "alice", self.project["id"], job["id"],
+                refund_points=lambda user, cost, reason, key: refunds.append(
+                    (user, cost, reason, key)
+                ),
+            )
+        self.assertEqual("running", running["status"])
+        self.assertEqual("failed", failed["status"])
+        self.assertEqual("poll_limit", failed["error"]["timeout_reason"])
+        self.assertEqual(2, failed["error"]["poll_count"])
+        self.assertEqual(2, provider.polls)
+        self.assertEqual([(quote["cost"],)], [(item[1],) for item in refunds])
+
+    def test_single_shot_timeout_refund_recovers_idempotently(self):
+        job, quote = self._running_provider_job("timeout-refund-recovery")
+        calls = []
+
+        def flaky_refund(user, cost, reason, key):
+            calls.append((user, cost, reason, key))
+            if len(calls) == 1:
+                raise RuntimeError("points service unavailable")
+
+        with mock.patch.object(
+            short_drama_autodraft, "PROVIDER_SHOT_DEADLINE_SECONDS", 10
+        ), mock.patch(
+            "content_domains.short_drama_autodraft.time.time",
+            return_value=111,
+        ):
+            failed = short_drama_autodraft.reconcile_provider_job(
+                self.db, "alice", self.project["id"], job["id"],
+                refund_points=flaky_refund,
+            )
+            recovered = short_drama_autodraft.reconcile_provider_job(
+                self.db, "alice", self.project["id"], job["id"],
+                refund_points=flaky_refund,
+            )
+            short_drama_autodraft.reconcile_provider_job(
+                self.db, "alice", self.project["id"], job["id"],
+                refund_points=flaky_refund,
+            )
+        self.assertEqual("failed", failed["status"])
+        self.assertEqual("failed", recovered["status"])
+        self.assertEqual(2, len(calls))
+        self.assertEqual(quote["cost"], calls[-1][1])
+        self.assertEqual(calls[0][3], calls[1][3])
+        conn = self.db()
+        try:
+            state = conn.execute(
+                "SELECT state FROM short_drama_provider_shot_attempts "
+                "WHERE job_id=?", (job["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual("refunded", state)
 
     def test_grok_vault_failure_blocks_before_charge_and_submission(self):
         with mock.patch.dict(

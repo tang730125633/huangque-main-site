@@ -36,6 +36,21 @@ PROVIDER_BILLING_OBSERVE_AFTER_SECONDS = 300
 PROVIDER_BILLING_CONFIRM_SECONDS = 60
 
 
+def _positive_env_int(name, default):
+    try:
+        return max(1, int(os.environ.get(name, str(default)) or default))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+PROVIDER_SHOT_DEADLINE_SECONDS = _positive_env_int(
+    "HQ_SHORT_DRAMA_PROVIDER_SHOT_DEADLINE_SECONDS", 1800
+)
+PROVIDER_SHOT_MAX_POLLS = _positive_env_int(
+    "HQ_SHORT_DRAMA_PROVIDER_SHOT_MAX_POLLS", 720
+)
+
+
 class AutodraftError(ValueError):
     def __init__(self, code, message, status=400):
         super().__init__(message)
@@ -1475,6 +1490,82 @@ def _recover_provider_refund(db_factory, job_id, refund_points=None):
         conn.close()
 
 
+def _provider_job_timeout_reason(row, now=None, next_poll=False):
+    now = int(time.time() if now is None else now)
+    elapsed = max(0, now - int(row["created_at"] or now))
+    poll_count = int(row["poll_count"] or 0) + (1 if next_poll else 0)
+    if elapsed >= PROVIDER_SHOT_DEADLINE_SECONDS:
+        return {
+            "reason": "deadline",
+            "elapsed_seconds": elapsed,
+            "poll_count": poll_count,
+        }
+    if poll_count >= PROVIDER_SHOT_MAX_POLLS:
+        return {
+            "reason": "poll_limit",
+            "elapsed_seconds": elapsed,
+            "poll_count": poll_count,
+        }
+    return None
+
+
+def _expire_provider_job(db_factory, job_id, reason, refund_points=None):
+    """Claim a running job's timeout before issuing its idempotent refund."""
+    now = int(time.time())
+    payload = {
+        "code": "provider_generation_timeout",
+        "detail": "Provider 生成超过最长等待时间，任务已失败并退点",
+        "retryable": False,
+        "timeout_reason": reason["reason"],
+        "elapsed_seconds": int(reason["elapsed_seconds"]),
+        "poll_count": int(reason["poll_count"]),
+    }
+    claimed = False
+    conn = _connection(db_factory)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        job = conn.execute(
+            "SELECT * FROM short_drama_provider_shot_jobs WHERE id=?",
+            (job_id,),
+        ).fetchone()
+        attempt = _provider_attempt_for_job(conn, job_id)
+        if job and job["status"] == "running":
+            changed = conn.execute(
+                "UPDATE short_drama_provider_shot_jobs SET status='failed',"
+                "error_json=?,updated_at=? WHERE id=? AND status='running'",
+                (_json_text(payload), now, job_id),
+            ).rowcount
+            if changed == 1:
+                claimed = True
+                if attempt:
+                    needs_refund = (
+                        int(attempt["cost"] or 0) > 0
+                        and attempt["state"] in {
+                            "charged", "linked", "refund_pending",
+                        }
+                    )
+                    conn.execute(
+                        "UPDATE short_drama_provider_shot_attempts SET state=?,"
+                        "error_json=?,updated_at=? WHERE id=? "
+                        "AND state NOT IN ('done','refunded')",
+                        (
+                            "refund_pending" if needs_refund else "failed",
+                            _json_text(payload), now, attempt["id"],
+                        ),
+                    )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    if claimed:
+        _recover_provider_refund(
+            db_factory, job_id, refund_points=refund_points,
+        )
+    return claimed
+
+
 def _finish_provider_job(db_factory, row, provider, provider_state):
     result = provider.fetch_result(
         row["provider_job_id"], provider_state.get("result_url")
@@ -1713,61 +1804,88 @@ def reconcile_provider_job(
     finally:
         conn.close()
     if row and row["status"] == "running":
-        provider = load_by_name(row["provider"])
-        if provider is None:
-            return _provider_job(row)
-        try:
-            provider_state = provider.get_job(row["provider_job_id"])
-            status = str(provider_state.get("status") or "unknown").lower()
-            if status in {"completed", "complete", "succeeded", "success"}:
-                _finish_provider_job(db_factory, row, provider, provider_state)
-            elif status in {"failed", "error", "canceled", "cancelled"}:
-                error = AutodraftError(
-                    "provider_generation_failed",
-                    "Provider 未能生成当前镜头",
-                    502,
-                )
-                _refund_provider_job(
-                    db_factory, job_id, error, refund_points=refund_points
-                )
-            else:
-                conn = _connection(db_factory)
-                try:
-                    conn.execute(
-                        "UPDATE short_drama_provider_shot_jobs SET progress=?,"
-                        "poll_count=poll_count+1,error_json=NULL,updated_at=? "
-                        "WHERE id=? AND status='running'",
-                        (
-                            min(90, 30 + int(row["poll_count"] or 0) * 5),
-                            int(time.time()), job_id,
-                        ),
-                    )
-                    conn.commit()
-                finally:
-                    conn.close()
-        except Exception as error:
-            conn = _connection(db_factory)
+        timeout_reason = _provider_job_timeout_reason(row)
+        if timeout_reason:
+            _expire_provider_job(
+                db_factory, job_id, timeout_reason,
+                refund_points=refund_points,
+            )
+        else:
+            provider = load_by_name(row["provider"])
+            if provider is None:
+                return _provider_job(row)
             try:
+                provider_state = provider.get_job(row["provider_job_id"])
+                status = str(provider_state.get("status") or "unknown").lower()
+                if status in {"completed", "complete", "succeeded", "success"}:
+                    _finish_provider_job(db_factory, row, provider, provider_state)
+                elif status in {"failed", "error", "canceled", "cancelled"}:
+                    error = AutodraftError(
+                        "provider_generation_failed",
+                        "Provider 未能生成当前镜头",
+                        502,
+                    )
+                    _refund_provider_job(
+                        db_factory, job_id, error, refund_points=refund_points
+                    )
+                else:
+                    timeout_reason = _provider_job_timeout_reason(
+                        row, next_poll=True,
+                    )
+                    if timeout_reason:
+                        _expire_provider_job(
+                            db_factory, job_id, timeout_reason,
+                            refund_points=refund_points,
+                        )
+                    else:
+                        conn = _connection(db_factory)
+                        try:
+                            conn.execute(
+                                "UPDATE short_drama_provider_shot_jobs SET progress=?,"
+                                "poll_count=poll_count+1,error_json=NULL,updated_at=? "
+                                "WHERE id=? AND status='running'",
+                                (
+                                    min(90, 30 + int(row["poll_count"] or 0) * 5),
+                                    int(time.time()), job_id,
+                                ),
+                            )
+                            conn.commit()
+                        finally:
+                            conn.close()
+            except Exception as error:
                 code = getattr(error, "code", "provider_poll_failed")
                 recovery_required = code == "provider_key_unavailable"
-                conn.execute(
-                    "UPDATE short_drama_provider_shot_jobs SET status=?,"
-                    "poll_count=poll_count+1,error_json=?,updated_at=? "
-                    "WHERE id=? AND status='running'",
-                    (
-                        "submit_unknown" if recovery_required else "running",
-                        _json_text({
-                            "code": code,
-                            "detail": str(error)[:500],
-                            "retryable": not recovery_required,
-                            "requires_reconciliation": recovery_required,
-                        }),
-                        int(time.time()), job_id,
-                    ),
+                timeout_reason = (
+                    None if recovery_required else _provider_job_timeout_reason(
+                        row, next_poll=True,
+                    )
                 )
-                conn.commit()
-            finally:
-                conn.close()
+                if timeout_reason:
+                    _expire_provider_job(
+                        db_factory, job_id, timeout_reason,
+                        refund_points=refund_points,
+                    )
+                else:
+                    conn = _connection(db_factory)
+                    try:
+                        conn.execute(
+                            "UPDATE short_drama_provider_shot_jobs SET status=?,"
+                            "poll_count=poll_count+1,error_json=?,updated_at=? "
+                            "WHERE id=? AND status='running'",
+                            (
+                                "submit_unknown" if recovery_required else "running",
+                                _json_text({
+                                    "code": code,
+                                    "detail": str(error)[:500],
+                                    "retryable": not recovery_required,
+                                    "requires_reconciliation": recovery_required,
+                                }),
+                                int(time.time()), job_id,
+                            ),
+                        )
+                        conn.commit()
+                    finally:
+                        conn.close()
     _recover_provider_refund(
         db_factory, job_id, refund_points=refund_points,
     )
