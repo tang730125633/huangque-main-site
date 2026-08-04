@@ -30,6 +30,9 @@ def _rule(key, category, name, variant, points, unit, desc=""):
 
 
 CATALOG = [
+    _rule("invite.card_trial_reward", "用户权益", "名片有效邀请奖励", "每位新用户", 100, "点/人"),
+    _rule("membership.experience.price_yuan", "用户权益", "体验官会员", "一年售价", 499, "元/年"),
+    _rule("membership.experience.bonus_points", "用户权益", "体验官会员", "首购赠点", 1000, "点/次"),
     _rule("image.banana.nb2.std", "图片生成", "纳米香蕉 2", "标准", 18, "点/张"),
     _rule("image.banana.nb2.hd", "图片生成", "纳米香蕉 2", "高清", 35, "点/张"),
     _rule("image.banana.pro.std", "图片生成", "纳米香蕉 Pro", "标准", 35, "点/张"),

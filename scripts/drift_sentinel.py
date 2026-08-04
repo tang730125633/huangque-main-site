@@ -74,6 +74,7 @@ AUTH_SHARED_RUNTIME = {
     'server/content_domains/__init__.py': '/home/ubuntu/auth-service/content_domains/__init__.py',
     'server/content_domains/cos.py': '/home/ubuntu/auth-service/content_domains/cos.py',
     'server/content_domains/miniprogram_security.py': '/home/ubuntu/auth-service/content_domains/miniprogram_security.py',
+    'server/content_domains/pricing.py': '/home/ubuntu/auth-service/content_domains/pricing.py',
 }
 SYSTEMD_DIR = os.environ.get('HQ_SYSTEMD_DIR', '/etc/systemd/system')
 
