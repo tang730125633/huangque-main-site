@@ -152,6 +152,13 @@ if [ "$svc" = "huangque-content" ]; then
     printf '%s\n' "$out" | tail -8 | sed 's/^/       /'
     exit 1
   fi
+  if out=$(cd "$wd" && PYTHONDONTWRITEBYTECODE=1 "$py_bin" -c "import inspect; from content_domains import jobs_store, video; assert 'before_charge' in inspect.signature(jobs_store.create_paid_job).parameters; assert 'username' in inspect.signature(video.validate_xiaole_video_payload).parameters; assert callable(video.prepare_xiaole_reference_submission)" 2>&1); then
+    echo "    ✓ $svc: Seedance 参考图跨模块契约通过"
+  else
+    echo "    ❌ $svc: Seedance 参考图跨模块契约失败 —— 中止，不重启"
+    printf '%s\n' "$out" | tail -8 | sed 's/^/       /'
+    exit 1
+  fi
 fi
 RS
 }
