@@ -116,21 +116,62 @@
     var labels={collect:'补全故事核心',directions:'选择故事方向',script:preview?'更新受影响内容':'生成完整剧本',review:'审稿确认'};
     return {phase:phase,label:labels[phase],focus_field:focus,conflicts:conflicts,missing:completeness.missing,completeness:completeness,understanding:understanding};
   }
+  function plannerQuestionDefinition(field){
+    return {
+      topic:{message:'先不用想完整故事。你最想创作哪一类内容，或者最近有什么画面、人物让你有感觉？',quick:['家庭情感','悬疑反转','校园成长']},
+      protagonist:{message:'这个方向可以展开。故事最应该跟着谁走？请说清主角的身份或处境。',quick:['普通上班族','独居老人','青春期学生']},
+      conflict:{message:'主角现在最想得到什么？又是什么人或事情拦住了他？',quick:['必须隐瞒真相','关系即将破裂','时间只剩一天']},
+      emotion:{message:'你希望观众看完是什么感受？',quick:['温暖治愈','紧张悬疑','爽感反击']},
+      ending:{message:'你偏好什么结局？',quick:['温暖圆满','合理反转','克制留白']},
+      audience:{message:'最后确认一下，这个故事主要想给谁看？',quick:['大众观众','年轻人','家庭观众']}
+    }[field]||null;
+  }
+  function plannerGuidanceReason(field,index,understanding){
+    var reasons={
+      topic:['人物关系清楚，容易建立情感共鸣','线索和反转鲜明，适合持续制造悬念','成长轨迹直观，年轻观众容易代入'],
+      protagonist:['现实压力集中，人物目标容易讲清楚','生活反差明显，适合细腻的情感表达','成长矛盾直接，行动和变化都比较鲜明'],
+      conflict:['秘密会持续推动剧情并制造悬念','关系危机会放大人物情绪和选择','时间压力能让每个镜头都有明确任务'],
+      emotion:['适合用人物关系产生稳定共鸣','适合用未知信息保持观看动力','适合用明确目标和反击制造情绪释放'],
+      ending:['情绪回报完整，适合温暖题材','能提升记忆点和传播讨论度','余味更长，适合克制的电影感表达'],
+      audience:['理解门槛较低，覆盖面更广','节奏和议题更贴近年轻用户','人物关系更适合共同观看和讨论']
+    };
+    var context=understanding&&understanding.topic?('，也能延续“'+understanding.topic+'”的故事基础'):'';
+    return ((reasons[field]||['方向清晰，便于继续细化','冲突更强，适合推动剧情','更有反差，适合形成记忆点'])[index]||'可以形成清楚的创作方向')+context;
+  }
+  function plannerGuidedQuestion(field,question,items,understanding,fillDefaults){
+    var choices=[];
+    (items||[]).forEach(function(item){var value=compactIdea(item);if(value&&choices.indexOf(value)<0&&choices.length<3)choices.push(value);});
+    var fallback=plannerQuestionDefinition(field);
+    if(fillDefaults!==false)(fallback&&fallback.quick||[]).forEach(function(item){if(choices.indexOf(item)<0&&choices.length<3)choices.push(item);});
+    if(!choices.length)return {message:question,quick:[]};
+    var lines=[question,'','我建议从以下 '+choices.length+' 个方向考虑：'];
+    choices.forEach(function(item,index){lines.push(['①','②','③'][index]+' '+item+'：'+plannerGuidanceReason(field,index,understanding));});
+    lines.push('','你更倾向哪个方向？也可以直接说说自己的想法。');
+    return {message:lines.join('\n'),quick:choices};
+  }
+  function plannerChoiceIndex(value){
+    var token=compactIdea(value).replace(/[\s，,。.!！?？:：]/g,'');
+    var match=token.match(/^(?:我)?(?:选(?:择)?|要|采用)?(?:方向|方案)?(?:第)?([0-9]+|[一二三①②③])(?:个|项|种|号|方向|方案)?$/);
+    if(!match)return 0;
+    return {'一':1,'①':1,'二':2,'②':2,'三':3,'③':3}[match[1]]||Number(match[1])||0;
+  }
+  function plannerResolveChoice(value,context){
+    var clean=compactIdea(value),index=plannerChoiceIndex(clean),items=context&&Array.isArray(context.items)?context.items:[];
+    if(!index)return {matched:false,valid:true,value:clean,index:0,choice:''};
+    if(!items.length||index>items.length)return {matched:true,valid:false,value:clean,index:index,choice:'',available:items.length};
+    var choice=compactIdea(items[index-1]);
+    return {matched:true,valid:true,index:index,choice:choice,value:'我选择方向 '+index+'：'+choice+'。',available:items.length};
+  }
   function advisorStep(messages,payload,answers,meta){
     var flow=plannerFlowState(messages,payload,answers,meta,null,null,[]),understanding=flow.understanding,state=flow.completeness,field=flow.focus_field;
-    var questions={
-      topic:{message:'先不用想完整故事。你最想创作哪一类内容，或者最近有什么画面、人物让你有感觉？',quick:['家庭情感','悬疑反转','校园成长','职场现实']},
-      protagonist:{message:'这个方向可以展开。故事最应该跟着谁走？请说清主角的身份或处境。',quick:['普通上班族','独居老人','青春期学生','新手妈妈']},
-      conflict:{message:'主角现在最想得到什么？又是什么人或事情拦住了他？',quick:['必须隐瞒真相','关系即将破裂','时间只剩一天','一次无法回避的选择']},
-      emotion:{message:'你希望观众看完是什么感受？',quick:['温暖治愈','紧张悬疑','爽感反击','笑中带泪']},
-      ending:{message:'你偏好什么结局？',quick:['温暖圆满','合理反转','克制留白','人物成长']},
-      audience:{message:'最后确认一下，这个故事主要想给谁看？',quick:['大众观众','年轻人','家庭观众','职场人']}
-    };
+    var question=plannerQuestionDefinition(field);
     if(flow.conflicts.length){
       var conflictMeta=meta[field]||{},conflict=conflictMeta.conflict||{};
-      return {field:field,message:'关于'+PLANNER_FIELD_LABELS[field]+'，我现在有两个理解：“'+text(conflict.existing_value||understanding[field])+'”和“'+text(conflict.proposed_value||'你刚补充的说法')+'”。你希望最终采用哪一个？',quick:[text(conflict.existing_value),text(conflict.proposed_value)].filter(Boolean),understanding:understanding,completeness:state,flow:flow};
+      var conflictChoices=[text(conflict.existing_value),text(conflict.proposed_value)].filter(Boolean);
+      var conflictTurn=plannerGuidedQuestion(field,'关于'+PLANNER_FIELD_LABELS[field]+'，我现在有两个不同理解。你希望最终采用哪一个？',conflictChoices,understanding,false);
+      return {field:field,message:conflictTurn.message,quick:conflictTurn.quick,understanding:understanding,completeness:state,flow:flow};
     }
-    if(field&&questions[field])return Object.assign({field:field,understanding:understanding,completeness:state},questions[field]);
+    if(field&&question){var guided=plannerGuidedQuestion(field,question.message,question.quick,understanding);return {field:field,message:guided.message,quick:guided.quick,understanding:understanding,completeness:state};}
     return {message:'我已经理解了故事核心，并整理出三种不同力度的方向。请选择一个，也可以继续补充要求。',recommendations:buildRecommendations(messages,understanding),understanding:understanding,completeness:state};
   }
   function plannerLocalIntent(value){
@@ -249,6 +290,14 @@
     if(!parts.length)return '当前理解没有变化；已确认的设定继续保留。';
     var missing=plannerCompleteness(plannerUnderstanding([],{},after)).missing;
     return '我的理解：'+parts.join('；')+'。'+(missing.length?'还需要确认：'+missing.slice(0,3).map(function(key){return PLANNER_FIELD_LABELS[key];}).join('、')+'。':'关键信息已经齐全。');
+  }
+  function plannerAssistantTurn(parts){
+    var messages=[];
+    (parts||[]).forEach(function(part){
+      var message=text(part).trim();
+      if(message&&messages.indexOf(message)<0)messages.push(message);
+    });
+    return messages.join('\n\n');
   }
   function plannerProgress(messages,selected,preview,payload,answers){
     var interview=plannerCompleteness(plannerUnderstanding(messages,payload,answers)).score;
@@ -787,8 +836,9 @@
     var importText=doc.getElementById('shortDramaImportText'),importFile=doc.getElementById('shortDramaImportFile'),importDrop=doc.getElementById('shortDramaImportDrop');
     var ideaForm=doc.getElementById('shortDramaIdeaForm'),ideaInput=doc.getElementById('shortDramaIdeaInput');
     var chat=doc.getElementById('shortDramaIdeaChat'),quickReplies=doc.getElementById('shortDramaIdeaQuickReplies');
+    var advisorSubmit=ideaForm.querySelector('button[type="submit"]'),advisorSubmitLabel=advisorSubmit?advisorSubmit.textContent:'发送',advisorThinkingNode=null,advisorThinkingTimer=null;
     var recommendations=doc.getElementById('shortDramaRecommendations'),ideaMessages=[],selectedProjectId='',importFilename='',importAnalysis=null,pendingImportKey='';
-    var createMode='idea',plannerPayload=null,selectedDirection=null,plannerPreview=null,pendingCreateKey='',plannerAnswers={},plannerMeta={},plannerDirtyFields=[],plannerHistory=[],plannerTranscript=[],plannerFeedback=[],plannerCorrectionCount=0,plannerPersistenceReady=false,activePlannerField='',advisorBusy=false,advisorDegraded=false,plannerPanel='auto',currentUsername='';
+    var createMode='idea',plannerPayload=null,selectedDirection=null,plannerPreview=null,pendingCreateKey='',plannerAnswers={},plannerMeta={},plannerDirtyFields=[],plannerHistory=[],plannerTranscript=[],plannerFeedback=[],plannerCorrectionCount=0,plannerPersistenceReady=false,activePlannerField='',activePlannerChoices={field:'',items:[]},advisorBusy=false,advisorDegraded=false,plannerPanel='auto',currentUsername='';
     var LEGACY_PLANNER_DRAFT_KEY='hq-short-drama-planner-draft-v3';
     var deleteButton=doc.getElementById('shortDramaDeleteProject');
     var confirmDelete=options.confirmImpl||function(message){return typeof runtimeRoot.confirm==='function'&&runtimeRoot.confirm(message);};
@@ -842,11 +892,39 @@
       chat.appendChild(node);chat.scrollTop=chat.scrollHeight;
       savePlannerDraft();return entry;
     }
+    function removeAdvisorThinkingIndicator(){
+      if(advisorThinkingTimer!==null){runtimeRoot.clearTimeout(advisorThinkingTimer);advisorThinkingTimer=null;}
+      if(advisorThinkingNode&&advisorThinkingNode.parentNode)advisorThinkingNode.parentNode.removeChild(advisorThinkingNode);
+      advisorThinkingNode=null;
+    }
+    function showAdvisorThinkingIndicator(){
+      removeAdvisorThinkingIndicator();
+      var node=doc.createElement('div');
+      node.className='short-drama-chat-bubble assistant thinking';
+      node.setAttribute('role','status');node.setAttribute('aria-live','polite');node.setAttribute('aria-atomic','true');
+      node.innerHTML='<span>创作助手</span><div class="short-drama-thinking-row"><p data-advisor-thinking-label>正在思考，请稍候</p><i class="short-drama-thinking-dots" aria-hidden="true"><b></b><b></b><b></b></i></div>';
+      chat.appendChild(node);chat.scrollTop=chat.scrollHeight;advisorThinkingNode=node;
+      advisorThinkingTimer=runtimeRoot.setTimeout(function(){
+        if(!advisorThinkingNode)return;
+        var label=advisorThinkingNode.querySelector('[data-advisor-thinking-label]');
+        if(label)label.textContent='还在认真整理你的想法，请再稍候…';
+        chat.scrollTop=chat.scrollHeight;
+      },8000);
+    }
+    function setAdvisorBusyState(busy){
+      advisorBusy=!!busy;ideaForm.classList.toggle('busy',advisorBusy);ideaInput.disabled=advisorBusy;
+      chat.setAttribute('aria-busy',advisorBusy?'true':'false');
+      if(advisorSubmit){advisorSubmit.disabled=advisorBusy;advisorSubmit.textContent=advisorBusy?'思考中…':advisorSubmitLabel;}
+      Array.prototype.forEach.call(quickReplies.querySelectorAll('button'),function(button){button.disabled=advisorBusy;});
+      if(advisorBusy)showAdvisorThinkingIndicator();else removeAdvisorThinkingIndicator();
+    }
     function renderQuickReplies(items){
-      quickReplies.innerHTML=(items||[]).map(function(item){
-        return '<button type="button" data-idea-reply="'+escapeHtml(item)+'">'+escapeHtml(item)+'</button>';
+      var visible=[];(items||[]).forEach(function(item){var value=compactIdea(item);if(value&&visible.indexOf(value)<0&&visible.length<3)visible.push(value);});
+      activePlannerChoices={field:activePlannerField||'',items:visible.slice(),updated_at:Date.now()};
+      quickReplies.innerHTML=visible.map(function(item){
+        return '<button type="button" data-idea-reply="'+escapeHtml(item)+'" title="填入输入框，修改后再发送">'+escapeHtml(item)+'</button>';
       }).join('');
-      quickReplies.hidden=!(items&&items.length);
+      quickReplies.hidden=!visible.length;
     }
     function renderRecommendations(items){
       recommendations.innerHTML='<div class="short-drama-recommendation-lead"><strong>为你推荐 3 个方向</strong><span>选择后仍可修改</span></div>'+
@@ -942,7 +1020,7 @@
     }
     function savePlannerDraft(required){
       if(!plannerPersistenceReady||!plannerPayload)return !required;
-      try{var storage=plannerStorage(),key=plannerDraftKey();if(!storage||!key)return false;var encoded=JSON.stringify({version:3,username:currentUsername,saved_at:Date.now(),create_mode:createMode,payload:plannerPayload,answers:plannerAnswers,meta:plannerMeta,dirty_fields:plannerDirtyFields,history:plannerHistory,transcript:plannerTranscript,feedback:plannerFeedback,correction_count:plannerCorrectionCount,selected_direction:selectedDirection,preview:plannerPreview,active_field:activePlannerField,advisor_degraded:advisorDegraded,panel:plannerPanel,pending_create_key:pendingCreateKey});storage.setItem(key,encoded);var saved=JSON.parse(storage.getItem(key)||'null');return plannerDraftMatchesUser(saved,currentUsername)&&saved.pending_create_key===pendingCreateKey;}catch(error){return false;}
+      try{var storage=plannerStorage(),key=plannerDraftKey();if(!storage||!key)return false;var encoded=JSON.stringify({version:4,username:currentUsername,saved_at:Date.now(),create_mode:createMode,payload:plannerPayload,answers:plannerAnswers,meta:plannerMeta,dirty_fields:plannerDirtyFields,history:plannerHistory,transcript:plannerTranscript,feedback:plannerFeedback,correction_count:plannerCorrectionCount,selected_direction:selectedDirection,preview:plannerPreview,active_field:activePlannerField,active_choices:activePlannerChoices,advisor_degraded:advisorDegraded,panel:plannerPanel,pending_create_key:pendingCreateKey});storage.setItem(key,encoded);var saved=JSON.parse(storage.getItem(key)||'null');return plannerDraftMatchesUser(saved,currentUsername)&&saved.pending_create_key===pendingCreateKey;}catch(error){return false;}
     }
     function clearPlannerDraft(){try{var storage=plannerStorage(),key=plannerDraftKey();if(storage&&key)storage.removeItem(key);}catch(error){}}
     function plannerHistoryEntry(answers,meta,dirtyFields,messages,label,changedFields){return {answers:answers,meta:meta,dirtyFields:(dirtyFields||[]).slice(),messages:(messages||[]).slice(),label:label||'创作设定修改',changedFields:(changedFields||[]).slice(),at:Date.now()};}
@@ -960,8 +1038,15 @@
       var reply=advisorStep(ideaMessages,plannerPayload,plannerAnswers,plannerMeta);activePlannerField=reply.field||'';renderQuickReplies(reply.quick||[]);renderPlannerRecommendations(reply.recommendations||[]);renderPlanner();
     }
     function restorePlannerDraft(draft){
-      plannerPersistenceReady=false;createMode=draft.create_mode||'inspiration';plannerPayload=draft.payload||{};plannerAnswers=draft.answers||{};plannerMeta=draft.meta||{};plannerDirtyFields=draft.dirty_fields||[];plannerHistory=draft.history||[];plannerTranscript=draft.transcript||[];plannerFeedback=draft.feedback||[];plannerCorrectionCount=Number(draft.correction_count)||0;selectedDirection=draft.selected_direction||null;plannerPreview=draft.preview||null;activePlannerField=draft.active_field||'';advisorDegraded=!!draft.advisor_degraded;plannerPanel=draft.panel||'auto';pendingCreateKey=draft.pending_create_key||'';
+      plannerPersistenceReady=false;createMode=draft.create_mode||'inspiration';plannerPayload=draft.payload||{};plannerAnswers=draft.answers||{};plannerMeta=draft.meta||{};plannerDirtyFields=draft.dirty_fields||[];plannerHistory=draft.history||[];plannerTranscript=draft.transcript||[];plannerFeedback=draft.feedback||[];plannerCorrectionCount=Number(draft.correction_count)||0;selectedDirection=draft.selected_direction||null;plannerPreview=draft.preview||null;activePlannerField=draft.active_field||'';activePlannerChoices=draft.active_choices&&Array.isArray(draft.active_choices.items)?{field:text(draft.active_choices.field),items:draft.active_choices.items.map(compactIdea).filter(Boolean).slice(0,3),updated_at:Number(draft.active_choices.updated_at)||0}:{field:activePlannerField,items:[]};advisorDegraded=!!draft.advisor_degraded;plannerPanel=draft.panel||'auto';pendingCreateKey=draft.pending_create_key||'';
       chat.innerHTML='';plannerTranscript.forEach(function(entry){chatBubble(entry.role,entry.message,{record:false,entry:entry});});doc.getElementById('shortDramaPlannerAckInput').checked=false;
+      if(activePlannerChoices.items.length){
+        renderQuickReplies(activePlannerChoices.items);
+      }else{
+        var restoredReply=advisorStep(ideaMessages,plannerPayload,plannerAnswers,plannerMeta);
+        activePlannerField=restoredReply.field||activePlannerField;
+        renderQuickReplies(restoredReply.quick||[]);
+      }
       recommendations.innerHTML='';recommendations.hidden=true;if(!plannerPreview){var flow=plannerFlowState(ideaMessages,plannerPayload,plannerAnswers,plannerMeta,selectedDirection,null,plannerDirtyFields);if(flow.phase!=='collect')renderRecommendations(buildRecommendations(ideaMessages,flow.understanding));}
       renderScriptPreview(plannerPreview);showCreateStep('inspiration');plannerPersistenceReady=true;renderPlanner();plannerNotice('已恢复上次未完成的剧本草稿。你可以继续对话、修改或确认。',false);
     }
@@ -973,7 +1058,7 @@
       if(step==='import') setCreateHeading('IMPORT A SCRIPT','导入已有剧本','上传文件或粘贴原稿，助手会先识别内容，再与你确认如何成片。');
     }
     function resetCreate(){
-      plannerPersistenceReady=false;form.reset();ideaMessages=[];chat.innerHTML='';recommendations.innerHTML='';recommendations.hidden=true;createMode='idea';plannerPayload=null;selectedDirection=null;plannerPreview=null;pendingCreateKey='';plannerAnswers={};plannerMeta={};plannerDirtyFields=[];plannerHistory=[];plannerTranscript=[];plannerFeedback=[];plannerCorrectionCount=0;activePlannerField='';advisorDegraded=false;plannerPanel='auto';
+      plannerPersistenceReady=false;form.reset();ideaMessages=[];chat.innerHTML='';recommendations.innerHTML='';recommendations.hidden=true;createMode='idea';plannerPayload=null;selectedDirection=null;plannerPreview=null;pendingCreateKey='';plannerAnswers={};plannerMeta={};plannerDirtyFields=[];plannerHistory=[];plannerTranscript=[];plannerFeedback=[];plannerCorrectionCount=0;activePlannerField='';activePlannerChoices={field:'',items:[]};advisorDegraded=false;plannerPanel='auto';
       importText.value='';importFile.value='';importFilename='';importAnalysis=null;pendingImportKey='';importEditor.hidden=false;importForm.hidden=true;importForm.reset();
       doc.getElementById('shortDramaImportCount').textContent='0';doc.getElementById('shortDramaImportFileName').hidden=true;doc.getElementById('shortDramaImportError').hidden=true;
       doc.getElementById('shortDramaImportGlobal').hidden=true;
@@ -984,12 +1069,21 @@
     function openCreate(){if(!currentUsername){setNotice('正在确认登录账号，请稍后重试。',true);return;}var draft=readPlannerDraft();if(draft)restorePlannerDraft(draft);else resetCreate();dialog.showModal();}
     function submitIdea(value){
       value=compactIdea(value);if(!value||advisorBusy)return Promise.resolve(false);
+      var choiceContext={field:activePlannerChoices.field||activePlannerField||'',items:(activePlannerChoices.items||[]).slice(0,3)};
+      var resolvedChoice=plannerResolveChoice(value,choiceContext);
+      if(resolvedChoice.matched&&!resolvedChoice.valid){
+        chatBubble('user',value);ideaInput.value='';
+        chatBubble('assistant',choiceContext.items.length?'当前只有 '+choiceContext.items.length+' 个推荐方向，请输入 1-'+choiceContext.items.length+'，或直接说说你的想法。':'刚才的推荐方向已经失效，请根据当前问题重新选择。');
+        ideaInput.focus();return Promise.resolve(false);
+      }
+      if(resolvedChoice.matched)value=resolvedChoice.value;
       chatBubble('user',value);ideaInput.value='';
       var expectedField=activePlannerField,understanding=plannerUnderstanding(ideaMessages,plannerPayload,plannerAnswers);
-      advisorBusy=true;ideaForm.classList.add('busy');ideaInput.disabled=true;
-      return client.advisor({messages:ideaMessages.slice(-20),understanding:understanding,field_states:plannerMeta,expected_field:expectedField,user_message:value})
+      setAdvisorBusyState(true);
+      return client.advisor({messages:ideaMessages.slice(-20),understanding:understanding,field_states:plannerMeta,expected_field:expectedField,recommendation_context:{field:choiceContext.field,options:choiceContext.items,selected_index:resolvedChoice.matched?resolvedChoice.index:0,selected_value:resolvedChoice.matched?resolvedChoice.choice:''},user_message:value})
         .catch(function(){var fallback=plannerLocalAdvice(value,expectedField,understanding);fallback.degraded=true;fallback.mode='basic';return fallback;})
         .then(function(result){
+          removeAdvisorThinkingIndicator();
           var priorAnswers=plannerAnswerSnapshot(plannerAnswers),priorMeta=plannerMetaSnapshot(plannerMeta),priorDirty=plannerDirtyFields.slice(),priorMessages=ideaMessages.slice(),before=plannerAnswerSnapshot(plannerUnderstanding(ideaMessages,plannerPayload,plannerAnswers)),intent=text(result&&result.intent).toLowerCase();
           advisorDegraded=!!(result&&result.degraded)||text(result&&result.mode)==='basic';
           if(intent==='undo'){
@@ -1001,17 +1095,19 @@
             var changed=plannerChangedFields(before,effectiveUpdated);if(changed.length){plannerHistory.push(plannerHistoryEntry(priorAnswers,priorMeta,priorDirty,priorMessages,(intent==='modify'||intent==='negate'?'用户修正：':'补充设定：')+changed.map(function(key){return PLANNER_FIELD_LABELS[key];}).join('、'),changed));if(intent==='modify'||intent==='negate')plannerCorrectionCount++;plannerAnswers=updated;plannerMeta=applyAdvisorMetadata(plannerMeta,result);markPlannerChanges(changed);}
           }
           var after=plannerAnswerSnapshot(plannerUnderstanding(ideaMessages,plannerPayload,plannerAnswers));
-          chatBubble('assistant',result.reply||plannerLocalAdvice(value,expectedField,understanding).reply);
-          chatBubble('assistant',plannerRecap(before,after,result));
+          var assistantParts=[result.reply||plannerLocalAdvice(value,expectedField,understanding).reply,plannerRecap(before,after,result)];
           if(['question','ask_recommendation','unknown'].indexOf(intent)>=0){
-            renderQuickReplies(result.quick_replies||plannerLocalAdvice(value,expectedField,understanding).quick_replies||[]);
+            var focusField=text(result.focus_field||expectedField),focusQuestion=plannerQuestionDefinition(focusField),rawChoices=result.quick_replies||plannerLocalAdvice(value,focusField,understanding).quick_replies||[];
+            var questionTurn=plannerGuidedQuestion(focusField,focusQuestion?focusQuestion.message:'你希望接下来采用哪个方向？',rawChoices,after);
+            activePlannerField=focusField;assistantParts.push(questionTurn.message);renderQuickReplies(questionTurn.quick);
           }else{
             if(intent!=='undo')ideaMessages.push(value);
             var reply=advisorStep(ideaMessages,plannerPayload,plannerAnswers,plannerMeta);activePlannerField=reply.field||'';
-            chatBubble('assistant',reply.message);renderQuickReplies(reply.quick||[]);renderPlannerRecommendations(reply.recommendations||[]);
+            assistantParts.push(reply.message);renderQuickReplies(reply.quick||[]);renderPlannerRecommendations(reply.recommendations||[]);
           }
+          chatBubble('assistant',plannerAssistantTurn(assistantParts));
           renderPlanner();return true;
-        }).finally(function(){advisorBusy=false;ideaForm.classList.remove('busy');ideaInput.disabled=false;ideaInput.focus();});
+        }).finally(function(){setAdvisorBusyState(false);ideaInput.focus();});
     }
     function markPlannerChanges(fields){
       if(!plannerPreview)return;
@@ -1182,9 +1278,22 @@
     doc.getElementById('shortDramaAnalyzeImport').addEventListener('click',analyzeImport);
     doc.getElementById('shortDramaEditImport').addEventListener('click',function(){importForm.hidden=true;importEditor.hidden=false;});
     ideaForm.addEventListener('submit',function(event){event.preventDefault();submitIdea(ideaInput.value);});
-    quickReplies.addEventListener('click',function(event){var node=event.target.closest('[data-idea-reply]');if(node)submitIdea(node.getAttribute('data-idea-reply'));});
+    quickReplies.addEventListener('click',function(event){
+      var node=event.target.closest('[data-idea-reply]');if(!node||advisorBusy)return;
+      ideaInput.value=node.getAttribute('data-idea-reply')||'';ideaInput.focus();
+      ideaInput.setSelectionRange(ideaInput.value.length,ideaInput.value.length);
+    });
     doc.getElementById('shortDramaPlannerBrief').addEventListener('change',function(event){var input=event.target.closest('[data-planner-field]');if(input)updatePlannerField(input.getAttribute('data-planner-field'),input.value);});
     doc.getElementById('shortDramaPlannerUndo').addEventListener('click',undoPlannerChange);
+    doc.getElementById('shortDramaPlannerMemoryToggle').addEventListener('click',function(){
+      var gridNode=doc.querySelector('.short-drama-planner-grid');
+      var button=doc.getElementById('shortDramaPlannerMemoryToggle');
+      var collapsed=!gridNode.classList.contains('memory-collapsed');
+      gridNode.classList.toggle('memory-collapsed',collapsed);
+      button.setAttribute('aria-expanded',collapsed?'false':'true');
+      button.setAttribute('aria-label',collapsed?'展开创作记忆':'收起创作记忆');
+      button.textContent=collapsed?'展开':'收起';
+    });
     doc.getElementById('shortDramaPlannerHistoryList').addEventListener('click',function(event){var button=event.target.closest('[data-planner-history-index]');if(button)restorePlannerHistory(button.getAttribute('data-planner-history-index'));});
     doc.getElementById('shortDramaRestartPlanner').addEventListener('click',function(){if(!confirmDelete('这会清除当前未完成的对话、创作记忆和剧本草稿。确认重新开始？'))return;clearPlannerDraft();resetCreate();createMode='inspiration';startPlanner();});
     chat.addEventListener('click',function(event){
@@ -1227,5 +1336,5 @@
     load().catch(function(){});
     return {reload:load,render:render};
   }
-  return {STAGES:STAGES,LABELS:LABELS,normalizeProject:normalizeProject,progress:progress,filterProjects:filterProjects,metrics:metrics,deleteErrorMessage:deleteErrorMessage,createPayload:createPayload,compactIdea:compactIdea,plannerUnderstanding:plannerUnderstanding,plannerCompleteness:plannerCompleteness,plannerFlowState:plannerFlowState,buildRecommendations:buildRecommendations,advisorStep:advisorStep,plannerLocalIntent:plannerLocalIntent,plannerLocalFieldUpdates:plannerLocalFieldUpdates,plannerLocalAdvice:plannerLocalAdvice,applyAdvisorResult:applyAdvisorResult,plannerMetaSnapshot:plannerMetaSnapshot,applyAdvisorMetadata:applyAdvisorMetadata,plannerConversationAudit:plannerConversationAudit,plannerAnswerSnapshot:plannerAnswerSnapshot,plannerChangedFields:plannerChangedFields,plannerRecap:plannerRecap,plannerProgress:plannerProgress,plannerAffectedLayers:plannerAffectedLayers,rebuildPlannerPreview:rebuildPlannerPreview,plannerDurations:plannerDurations,plannerRoles:plannerRoles,plannerReadingSeconds:plannerReadingSeconds,plannerStoryPlan:plannerStoryPlan,plannerScenePlan:plannerScenePlan,plannerDialogueSet:plannerDialogueSet,plannerQuality:plannerQuality,plannerReview:plannerReview,repairPlannerPreview:repairPlannerPreview,buildPlannerPreview:buildPlannerPreview,plannerPromotionMessages:plannerPromotionMessages,plannerConfirmedContract:plannerConfirmedContract,plannerWordDocumentHtml:plannerWordDocumentHtml,plannerWordFilename:plannerWordFilename,confirmedContractMatches:confirmedContractMatches,continuePlannerContract:continuePlannerContract,importedTitle:importedTitle,importedGlobalUnderstanding:importedGlobalUnderstanding,analyzeImportedScript:analyzeImportedScript,importProjectPayload:importProjectPayload,newImportKey:newImportKey,newProjectKey:newProjectKey,plannerDraftStorageKey:plannerDraftStorageKey,plannerDraftMatchesUser:plannerDraftMatchesUser,readLimitedStream:readLimitedStream,extractPdfText:extractPdfText,extractDocxText:extractDocxText,readScriptFile:readScriptFile,createClient:createClient,projectUrl:projectUrl,cardHtml:cardHtml,mount:mount};
+  return {STAGES:STAGES,LABELS:LABELS,normalizeProject:normalizeProject,progress:progress,filterProjects:filterProjects,metrics:metrics,deleteErrorMessage:deleteErrorMessage,createPayload:createPayload,compactIdea:compactIdea,plannerChoiceIndex:plannerChoiceIndex,plannerResolveChoice:plannerResolveChoice,plannerUnderstanding:plannerUnderstanding,plannerCompleteness:plannerCompleteness,plannerFlowState:plannerFlowState,buildRecommendations:buildRecommendations,advisorStep:advisorStep,plannerLocalIntent:plannerLocalIntent,plannerLocalFieldUpdates:plannerLocalFieldUpdates,plannerLocalAdvice:plannerLocalAdvice,applyAdvisorResult:applyAdvisorResult,plannerMetaSnapshot:plannerMetaSnapshot,applyAdvisorMetadata:applyAdvisorMetadata,plannerConversationAudit:plannerConversationAudit,plannerAnswerSnapshot:plannerAnswerSnapshot,plannerChangedFields:plannerChangedFields,plannerRecap:plannerRecap,plannerProgress:plannerProgress,plannerAffectedLayers:plannerAffectedLayers,rebuildPlannerPreview:rebuildPlannerPreview,plannerDurations:plannerDurations,plannerRoles:plannerRoles,plannerReadingSeconds:plannerReadingSeconds,plannerStoryPlan:plannerStoryPlan,plannerScenePlan:plannerScenePlan,plannerDialogueSet:plannerDialogueSet,plannerQuality:plannerQuality,plannerReview:plannerReview,repairPlannerPreview:repairPlannerPreview,buildPlannerPreview:buildPlannerPreview,plannerPromotionMessages:plannerPromotionMessages,plannerConfirmedContract:plannerConfirmedContract,plannerWordDocumentHtml:plannerWordDocumentHtml,plannerWordFilename:plannerWordFilename,confirmedContractMatches:confirmedContractMatches,continuePlannerContract:continuePlannerContract,importedTitle:importedTitle,importedGlobalUnderstanding:importedGlobalUnderstanding,analyzeImportedScript:analyzeImportedScript,importProjectPayload:importProjectPayload,newImportKey:newImportKey,newProjectKey:newProjectKey,plannerDraftStorageKey:plannerDraftStorageKey,plannerDraftMatchesUser:plannerDraftMatchesUser,readLimitedStream:readLimitedStream,extractPdfText:extractPdfText,extractDocxText:extractDocxText,readScriptFile:readScriptFile,createClient:createClient,projectUrl:projectUrl,cardHtml:cardHtml,mount:mount};
 });

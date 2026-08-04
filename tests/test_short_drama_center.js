@@ -106,6 +106,21 @@ test('选择推荐方向后仍通过统一项目表单创建', () => {
   assert.match(center.compactIdea('  我想做家庭故事。 '), /我想做家庭故事/);
 });
 
+test('编号回复会解析为当前推荐方向的完整语义', () => {
+  const context = {field:'conflict', items:['必须隐瞒真相','关系即将破裂','时间只剩一天']};
+  for (const value of ['3','第三个','选3','方向三','③','我选第三个']) {
+    const resolved = center.plannerResolveChoice(value, context);
+    assert.equal(resolved.matched, true);
+    assert.equal(resolved.valid, true);
+    assert.equal(resolved.index, 3);
+    assert.equal(resolved.choice, '时间只剩一天');
+    assert.match(resolved.value, /方向 3：时间只剩一天/);
+  }
+  assert.equal(center.plannerResolveChoice('我想换个故事', context).matched, false);
+  assert.equal(center.plannerResolveChoice('4', context).valid, false);
+  assert.equal(center.plannerResolveChoice('3', {field:'conflict',items:[]}).valid, false);
+});
+
 test('前置策划生成结构化剧本并在人工确认后准备正式对话', () => {
   const messages = ['家庭情感', '温暖治愈', '人物成长'];
   const direction = center.buildRecommendations(messages)[0];

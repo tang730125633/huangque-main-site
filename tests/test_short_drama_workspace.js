@@ -61,6 +61,50 @@ test('创作助手展示确认门禁、修改后重确认和结构化理解摘�
   assert.match(css, /\.sd-advisor-state\.refining/);
 });
 
+test('创作助手请求期间显示可恢复的思考状态', () => {
+  const source = fs.readFileSync(
+    path.join(ROOT, 'site/workbench/short-drama-center.js'), 'utf8'
+  );
+  const css = fs.readFileSync(
+    path.join(ROOT, 'site/workbench/short-drama-center.css'), 'utf8'
+  );
+  assert.match(source, /正在思考，请稍候/);
+  assert.match(source, /还在认真整理你的想法，请再稍候/);
+  assert.match(source, /setAttribute\('aria-busy',advisorBusy\?'true':'false'\)/);
+  assert.match(source, /removeAdvisorThinkingIndicator\(\)/);
+  assert.match(source, /advisorSubmit\.textContent=advisorBusy\?'思考中…'/);
+  assert.match(css, /\.short-drama-chat-bubble\.thinking/);
+  assert.match(css, /@keyframes short-drama-thinking-pulse/);
+  assert.match(css, /prefers-reduced-motion:reduce/);
+});
+
+test('advisor stores confirmation, recap, and follow-up as one multiline turn', () => {
+  const source = fs.readFileSync(
+    path.join(ROOT, 'site/workbench/short-drama-center.js'), 'utf8'
+  );
+  const css = fs.readFileSync(
+    path.join(ROOT, 'site/workbench/short-drama-center.css'), 'utf8'
+  );
+  assert.match(source, /function plannerAssistantTurn\(parts\)/);
+  assert.match(source, /messages\.join\('\\n\\n'\)/);
+  assert.match(source, /assistantParts\.push\(reply\.message\)/);
+  assert.match(source, /chatBubble\('assistant',plannerAssistantTurn\(assistantParts\)\)/);
+  assert.match(css, /white-space:pre-line/);
+});
+
+test('创作助手每轮提供至多三个方向并让用户修改后再发送', () => {
+  const source = fs.readFileSync(
+    path.join(ROOT, 'site/workbench/short-drama-center.js'), 'utf8'
+  );
+  assert.match(source, /function plannerGuidedQuestion\(field,question,items,understanding,fillDefaults\)/);
+  assert.match(source, /你更倾向哪个方向？也可以直接说说自己的想法。/);
+  assert.match(source, /choices\.length<3/);
+  assert.match(source, /visible\.length<3/);
+  assert.match(source, /title="填入输入框，修改后再发送"/);
+  assert.match(source, /ideaInput\.value=node\.getAttribute\('data-idea-reply'\)/);
+  assert.doesNotMatch(source, /if\(node\)submitIdea\(node\.getAttribute\('data-idea-reply'\)\)/);
+});
+
 test('导入原稿展示模式化理解快照与待确认优化边界', () => {
   const faithful = workspace.importContractHtml({
     source_hash:'abc123', import_mode:'faithful',

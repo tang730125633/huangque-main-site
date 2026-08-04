@@ -33,6 +33,26 @@ class ShortDramaAdvisorTests(unittest.TestCase):
     def setUp(self):
         short_drama_advisor._reset_usage_for_tests()
 
+    def test_recommendation_context_is_cleaned_and_selection_is_canonical(self):
+        cleaned = short_drama_advisor._clean_body({
+            "messages": [],
+            "understanding": {},
+            "expected_field": "conflict",
+            "recommendation_context": {
+                "field": "conflict",
+                "options": ["必须隐瞒真相", "关系即将破裂", "时间只剩一天", "不应保留"],
+                "selected_index": "3",
+                "selected_value": "伪造值",
+            },
+            "user_message": "我选择方向 3：时间只剩一天。",
+        })
+        self.assertEqual(cleaned["recommendation_context"], {
+            "field": "conflict",
+            "options": ["必须隐瞒真相", "关系即将破裂", "时间只剩一天"],
+            "selected_index": 3,
+            "selected_value": "时间只剩一天",
+        })
+
     @staticmethod
     def _success_opener(counter=None):
         def opener(_request, timeout=0):

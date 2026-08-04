@@ -163,11 +163,40 @@ def _clean_body(body):
         for key, value in field_states.items()
         if key in ALLOWED_FIELDS and isinstance(value, dict)
     }
+    recommendation_context = body.get("recommendation_context") or {}
+    if not isinstance(recommendation_context, dict):
+        recommendation_context = {}
+    recommendation_field = str(recommendation_context.get("field") or "").strip()
+    if recommendation_field not in ALLOWED_FIELDS:
+        recommendation_field = ""
+    raw_options = recommendation_context.get("options") or []
+    if not isinstance(raw_options, list):
+        raw_options = []
+    recommendation_options = [
+        str(item or "").strip()[:160]
+        for item in raw_options[:3]
+        if str(item or "").strip()
+    ]
+    try:
+        selected_index = int(recommendation_context.get("selected_index") or 0)
+    except (TypeError, ValueError):
+        selected_index = 0
+    if selected_index < 0 or selected_index > len(recommendation_options):
+        selected_index = 0
+    selected_value = str(recommendation_context.get("selected_value") or "").strip()[:160]
+    if selected_index and recommendation_options:
+        selected_value = recommendation_options[selected_index - 1]
     return {
         "messages": cleaned,
         "understanding": understanding,
         "expected_field": expected_field,
         "field_states": field_states,
+        "recommendation_context": {
+            "field": recommendation_field,
+            "options": recommendation_options,
+            "selected_index": selected_index,
+            "selected_value": selected_value,
+        },
         "user_message": str(body.get("user_message") or "").strip()[:600],
     }
 
@@ -317,6 +346,9 @@ def _advise_provider(body, opener=None):
         "'\u4f60\u89c9\u5f97\u5462', '\u5e2e\u6211\u63a8\u8350', and '\u4e0d\u77e5\u9053' must never be stored as business fields. "
         "When the user asks a question, answer it and provide 2-4 concrete options without "
         "advancing the expected field. Never turn a negated value into a positive fact. "
+        "The request may contain recommendation_context with the exact numbered options shown "
+        "to the user. Treat selected_index and selected_value as the resolved meaning of a terse "
+        "numeric choice, and never ask what that number means when they are present. "
         "Extract every explicitly supplied field from one message, not only expected_field. "
         "For every requested change return field_updates, an array of objects with field, "
         "operation (set, clear, or keep), value, confidence, short verbatim evidence, and status. "
