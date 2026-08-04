@@ -38,6 +38,7 @@ CATALOG = [
     {"key": "banana", "name": "纳米香蕉作图", "desc": "纳米香蕉 2 / Pro 图片生成入口", "service": "imggen"},
     {"key": "audio", "name": "配音生成", "desc": "文案配音与音色复刻", "service": "content"},
     {"key": "video", "name": "视频口播", "desc": "数字化 IP 视频生成", "service": "content"},
+    {"key": "digital_presenter", "name": "数字人口播", "desc": "画布数字人口播项目", "service": "content", "default_enabled": False},
     {"key": "sora_video", "name": "Sora 2 限时测试", "desc": "OpenAI Sora 2 / Pro 非真人通用视频（2026-09-24 下线）", "service": "content", "default_enabled": False},
     {"key": "omni_video", "name": "Omni 视频", "desc": "Gemini Omni Flash 官方视频生成", "service": "content", "default_enabled": False},
     {"key": "seedance_video", "name": "Seedance 视频", "desc": "火山方舟 Seedance 2.0 官方视频生成", "service": "content", "default_enabled": False},

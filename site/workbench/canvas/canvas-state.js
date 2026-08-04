@@ -5,6 +5,10 @@
 })(typeof globalThis!=='undefined'?globalThis:this,function(){
   'use strict';
   function cloneSnapshot(value){ return value==null?value:JSON.parse(JSON.stringify(value)); }
+  function sanitizeNodeData(node,sanitizers){
+    var copy=cloneSnapshot(node||{}), sanitizer=sanitizers&&sanitizers[copy.type];
+    return typeof sanitizer==='function'?sanitizer(copy):copy;
+  }
   function createHistory(options){
     options=options||{};
     var limit=Math.max(1,Number(options.limit)||60), undoStack=[], redoStack=[];
@@ -18,5 +22,5 @@
       canRedo:function(){ return redoStack.length>0; }
     };
   }
-  return {cloneSnapshot:cloneSnapshot,createHistory:createHistory};
+  return {cloneSnapshot:cloneSnapshot,sanitizeNodeData:sanitizeNodeData,createHistory:createHistory};
 });

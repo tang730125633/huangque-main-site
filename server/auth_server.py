@@ -4408,7 +4408,7 @@ class H(BaseHTTPRequestHandler):
             plan = hq_cli_api.action_plan(action, input_body)
             if plan["scope"] not in scopes:
                 raise hq_cli_api.CLIAPIError(403, "当前 CLI 授权缺少权限：" + plan["scope"], "insufficient_scope")
-            if action in {"ip12-create", "ip12-message", "prompt-optimize", "canvas-create", "canvas-ops", "asset-favorite", "asset-tags"} and not confirm:
+            if action in hq_cli_api.CONFIRMATION_ACTIONS and not confirm:
                 raise hq_cli_api.CLIAPIError(409, "该操作需要显式确认", "confirmation_required")
             if plan["kind"] == "account":
                 return self._cli_send(200, {"user": self._cli_public_user(row), "scopes": list(scopes),
@@ -4584,6 +4584,32 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
+        if p == "/api/auth/internal/canvas/access":
+            if not self._require_internal():
+                return
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "request body must be valid JSON"})
+            if not isinstance(d, dict) or set(d) != {"username", "board_id"}:
+                return self._send(400, {"detail": "request fields must be username and board_id"})
+            username = d.get("username")
+            board_id = d.get("board_id")
+            if not isinstance(username, str) or not username.strip():
+                return self._send(400, {"detail": "username is required"})
+            if not isinstance(board_id, str) or not board_id.strip():
+                return self._send(400, {"detail": "board_id is required"})
+            c = db()
+            try:
+                role, board = canvas_role_and_board(c, username.strip(), board_id.strip())
+            finally:
+                c.close()
+            if not role or not board:
+                return self._send(404, {"detail": "canvas access not found"})
+            return self._send(200, {
+                "board_id": board["id"],
+                "board_owner_username": board["owner_username"],
+                "role": role,
+            })
         if p == "/api/auth/cli/device/start":
             if self._content_length_exceeds(8192):
                 return self._cli_send(413, {"detail": "请求过大"})
