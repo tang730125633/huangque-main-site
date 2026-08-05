@@ -10,6 +10,8 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import closing
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from . import egress, provider_keys
 
@@ -29,6 +31,18 @@ _USAGE_LOCK = threading.Lock()
 _USER_ACTIVE = {}
 _GLOBAL_ACTIVE = 0
 _AUDIT_LOG = logging.getLogger("short_drama.advisor.usage")
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+_MAX_INPUT_TOKENS = 16000
+_MAX_OUTPUT_TOKENS = 1200
+_MODEL_PRICES = {
+    # xAI prices per 1M tokens: $0.30 input / $0.50 output.
+    "grok-3-mini": (300000, 500000),
+    "grok-3-mini-latest": (300000, 500000),
+    "grok-3-mini-beta": (300000, 500000),
+    "grok-3-mini-fast": (300000, 500000),
+    "grok-3-mini-fast-latest": (300000, 500000),
+    "grok-3-mini-fast-beta": (300000, 500000),
+}
 
 _USAGE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS short_drama_advisor_usage (
@@ -70,9 +84,6 @@ def _usage_limits():
         "window_seconds": _positive_env("SHORT_DRAMA_ADVISOR_WINDOW_SECONDS", 300),
         "requests_per_window": _positive_env("SHORT_DRAMA_ADVISOR_REQUESTS_PER_WINDOW", 12),
         "user_daily_requests": _positive_env("SHORT_DRAMA_ADVISOR_USER_DAILY_REQUESTS", 60),
-        "request_reserve_microusd": _positive_env(
-            "SHORT_DRAMA_ADVISOR_REQUEST_RESERVE_MICROUSD", 10000
-        ),
         "global_daily_budget_microusd": _positive_env(
             "SHORT_DRAMA_ADVISOR_GLOBAL_DAILY_BUDGET_MICROUSD", 1000000
         ),
@@ -87,14 +98,19 @@ def init_db(db_factory):
         conn.commit()
 
 
-def _reserve_usage(db_factory, username, request_hash, now, limits):
+def _shanghai_day_bounds(timestamp):
+    local = datetime.fromtimestamp(timestamp, timezone.utc).astimezone(_SHANGHAI)
+    midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    return int(midnight.timestamp()), int(midnight.timestamp()) + 86400
+
+
+def _reserve_usage(db_factory, username, request_hash, now, limits, reserve):
     if not callable(db_factory):
         raise AdvisorError(
             "advisor_usage_store_unavailable", "创作助手额度服务暂时不可用", 503
         )
     timestamp = int(now)
-    period_day = timestamp - (timestamp % 86400)
-    reserve = limits["request_reserve_microusd"]
+    period_day, next_day = _shanghai_day_bounds(timestamp)
     try:
         with closing(db_factory()) as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -111,8 +127,8 @@ def _reserve_usage(db_factory, username, request_hash, now, limits):
                 )
             daily_count = conn.execute(
                 "SELECT COUNT(*) FROM short_drama_advisor_usage "
-                "WHERE username=? AND period_day=?",
-                (username, period_day),
+                "WHERE username=? AND created_at>=? AND created_at<?",
+                (username, period_day, next_day),
             ).fetchone()[0]
             if daily_count >= limits["user_daily_requests"]:
                 raise AdvisorError(
@@ -122,8 +138,8 @@ def _reserve_usage(db_factory, username, request_hash, now, limits):
                 )
             reserved = conn.execute(
                 "SELECT COALESCE(SUM(reserved_microusd),0) "
-                "FROM short_drama_advisor_usage WHERE period_day=?",
-                (period_day,),
+                "FROM short_drama_advisor_usage WHERE created_at>=? AND created_at<?",
+                (period_day, next_day),
             ).fetchone()[0]
             if reserved + reserve > limits["global_daily_budget_microusd"]:
                 raise AdvisorError(
@@ -146,10 +162,13 @@ def _reserve_usage(db_factory, username, request_hash, now, limits):
         raise AdvisorError(
             "advisor_usage_store_unavailable", "创作助手额度服务暂时不可用", 503
         ) from error
-    return {"id": usage_id, "username": username, "db_factory": db_factory}
+    return {
+        "id": usage_id, "username": username, "db_factory": db_factory,
+        "reserve_microusd": reserve,
+    }
 
 
-def _acquire_usage(username, db_factory, request_hash, now=None):
+def _acquire_usage(username, db_factory, request_hash, reserve, model, now=None):
     global _GLOBAL_ACTIVE
     username = str(username or "").strip()
     if not username:
@@ -168,7 +187,11 @@ def _acquire_usage(username, db_factory, request_hash, now=None):
         _USER_ACTIVE[username] = _USER_ACTIVE.get(username, 0) + 1
         _GLOBAL_ACTIVE += 1
     try:
-        return _reserve_usage(db_factory, username, request_hash, now, limits)
+        ticket = _reserve_usage(
+            db_factory, username, request_hash, now, limits, reserve
+        )
+        ticket["model"] = model
+        return ticket
     except Exception:
         _release_usage({"username": username})
         raise
@@ -201,13 +224,26 @@ def _finalize_usage(ticket, outcome, provider_usage=None):
     usage = provider_usage if isinstance(provider_usage, dict) else {}
     prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens")
     completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens")
+    actual_cost = ticket.get("reserve_microusd")
+    if outcome == "succeeded" and prompt_tokens is not None and completion_tokens is not None:
+        try:
+            actual_cost = _token_cost(
+                ticket.get("model"), prompt_tokens, completion_tokens
+            )
+        except AdvisorError:
+            _AUDIT_LOG.warning(
+                "advisor_provider_usage_invalid usage_id=%s", ticket.get("id")
+            )
+            prompt_tokens = None
+            completion_tokens = None
     try:
         with closing(ticket["db_factory"]()) as conn:
             conn.execute(
-                "UPDATE short_drama_advisor_usage SET status=?,prompt_tokens=?,"
+                "UPDATE short_drama_advisor_usage SET status=?,reserved_microusd=?,prompt_tokens=?,"
                 "completion_tokens=?,updated_at=? WHERE id=? AND status='reserved'",
                 (
                     str(outcome or "failed")[:32],
+                    actual_cost,
                     int(prompt_tokens) if prompt_tokens is not None else None,
                     int(completion_tokens) if completion_tokens is not None else None,
                     int(time.time()),
@@ -237,6 +273,36 @@ def _provider_config():
     if not base.endswith("/v1"):
         base += "/v1"
     return base + "/chat/completions", model
+
+
+def _token_cost(model, prompt_tokens, completion_tokens):
+    prices = _MODEL_PRICES.get(str(model or ""))
+    if prices is None:
+        raise AdvisorError(
+            "advisor_provider_pricing_unavailable",
+            "创作助手模型尚未配置可信计费价格",
+            503,
+        )
+    try:
+        prompt_tokens = int(prompt_tokens)
+        completion_tokens = int(completion_tokens)
+    except (TypeError, ValueError) as error:
+        raise AdvisorError(
+            "advisor_provider_usage_invalid", "创作助手计费信息无效", 502
+        ) from error
+    if prompt_tokens < 0 or completion_tokens < 0:
+        raise AdvisorError(
+            "advisor_provider_usage_invalid", "创作助手计费信息无效", 502
+        )
+    numerator = prompt_tokens * prices[0] + completion_tokens * prices[1]
+    return (numerator + 999999) // 1000000
+
+
+def _max_output_tokens():
+    return min(
+        _MAX_OUTPUT_TOKENS,
+        _positive_env("SHORT_DRAMA_ADVISOR_MAX_TOKENS", _MAX_OUTPUT_TOKENS),
+    )
 
 
 def _provider_opener():
@@ -488,7 +554,7 @@ def _normalize(result, understanding=None):
     }
 
 
-def _advise_provider(body, opener=None):
+def _prepare_provider_request(body):
     request_body = _clean_body(body)
     if not request_body["user_message"]:
         raise AdvisorError("message_required", "\u8bf7\u8f93\u5165\u60f3\u6cd5\u6216\u95ee\u9898")
@@ -522,16 +588,43 @@ def _advise_provider(body, opener=None):
         "only be topic, protagonist, conflict, emotion, ending, audience, or style. recap must "
         "briefly state what changed, what stayed, and what remains uncertain. Reply in Chinese."
     )
+    max_tokens = _max_output_tokens()
+    user_content = json.dumps(request_body, ensure_ascii=False)
+    # One UTF-8 byte per token plus message-envelope slack is a conservative
+    # upper bound without relying on a provider-specific tokenizer.
+    input_tokens = (
+        len(system.encode("utf-8")) + len(user_content.encode("utf-8")) + 256
+    )
+    if input_tokens > _MAX_INPUT_TOKENS:
+        raise AdvisorError(
+            "advisor_input_too_large", "创作助手输入内容过长，请精简后重试", 413
+        )
     payload = json.dumps({
         "model": model,
         "temperature": 0.3,
-        "max_tokens": _positive_env("SHORT_DRAMA_ADVISOR_MAX_TOKENS", 1200),
+        "max_tokens": max_tokens,
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": system},
-            {"role": "user", "content": json.dumps(request_body, ensure_ascii=False)},
+            {"role": "user", "content": user_content},
         ],
     }, ensure_ascii=False).encode("utf-8")
+    return {
+        "request_body": request_body,
+        "url": url,
+        "model": model,
+        "payload": payload,
+        "reserve_microusd": _token_cost(
+            model, _MAX_INPUT_TOKENS, _MAX_OUTPUT_TOKENS
+        ),
+    }
+
+
+def _advise_provider(body, opener=None, prepared=None):
+    prepared = prepared or _prepare_provider_request(body)
+    request_body = prepared["request_body"]
+    url = prepared["url"]
+    payload = prepared["payload"]
     attempted_ids = set()
     request_open = opener or _provider_opener()
     while True:
@@ -581,20 +674,24 @@ def advise(body, opener=None, username=None, db_factory=None):
     request_body = _clean_body(body)
     if not request_body["user_message"]:
         raise AdvisorError("message_required", "请输入想法或问题")
+    prepared = _prepare_provider_request(request_body)
     request_hash = hashlib.sha256(
         json.dumps(request_body, ensure_ascii=False, sort_keys=True,
                    separators=(",", ":")).encode("utf-8")
     ).hexdigest()[:16]
     # Internal deterministic normalization tests may omit username; HTTP never does.
     ticket = (
-        _acquire_usage(username, db_factory, request_hash)
+        _acquire_usage(
+            username, db_factory, request_hash,
+            prepared["reserve_microusd"], prepared["model"],
+        )
         if username is not None else None
     )
     started = time.monotonic()
     outcome = "failed"
     provider_usage = {}
     try:
-        result = _advise_provider(request_body, opener=opener)
+        result = _advise_provider(request_body, opener=opener, prepared=prepared)
         provider_usage = result.pop("_provider_usage", {})
         outcome = "succeeded"
         return result

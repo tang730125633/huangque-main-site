@@ -348,7 +348,9 @@ test('移动端收起创作记忆后仍可聚焦并再次展开', async () => {
     assert.match(output, /data-responsive-memory-test="pass"/);
   } finally {
     await new Promise(resolve => server.close(resolve));
-    fs.rmSync(profile, {recursive:true,force:true});
+    fs.rmSync(profile, {
+      recursive:true, force:true, maxRetries:8, retryDelay:100,
+    });
   }
 });
 

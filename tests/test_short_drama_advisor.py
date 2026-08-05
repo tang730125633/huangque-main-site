@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 import urllib.error
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -408,8 +409,7 @@ class ShortDramaAdvisorTests(unittest.TestCase):
         calls = []
         with mock.patch.dict(os.environ, {
             "SHORT_DRAMA_ADVISOR_API_BASE": "https://advisor.example/v1",
-            "SHORT_DRAMA_ADVISOR_REQUEST_RESERVE_MICROUSD": "5000",
-            "SHORT_DRAMA_ADVISOR_GLOBAL_DAILY_BUDGET_MICROUSD": "5000",
+            "SHORT_DRAMA_ADVISOR_GLOBAL_DAILY_BUDGET_MICROUSD": "5400",
         }, clear=False):
             short_drama_advisor.advise(
                 {"user_message": "第一次"}, opener=self._success_opener(calls),
@@ -460,10 +460,11 @@ class ShortDramaAdvisorTests(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {
             "SHORT_DRAMA_ADVISOR_API_BASE": "https://advisor.example/v1",
-            "SHORT_DRAMA_ADVISOR_REQUEST_RESERVE_MICROUSD": "5000",
-            "SHORT_DRAMA_ADVISOR_GLOBAL_DAILY_BUDGET_MICROUSD": "5000",
+            "SHORT_DRAMA_ADVISOR_GLOBAL_DAILY_BUDGET_MICROUSD": "5400",
             "SHORT_DRAMA_ADVISOR_GLOBAL_CONCURRENCY": "2",
-        }, clear=False):
+        }, clear=False), mock.patch.object(
+            short_drama_advisor, "_finalize_usage"
+        ):
             threads = [
                 threading.Thread(target=run, args=(username,))
                 for username in ("alice", "bob")
@@ -478,6 +479,98 @@ class ShortDramaAdvisorTests(unittest.TestCase):
             ["ok", "advisor_global_budget_exhausted"], results
         )
         self.assertEqual(1, len(provider_calls))
+
+    def test_provider_limits_are_clamped_and_reserve_covers_maximum(self):
+        with mock.patch.dict(os.environ, {
+            "SHORT_DRAMA_ADVISOR_API_BASE": "https://advisor.example/v1",
+            "SHORT_DRAMA_ADVISOR_MAX_TOKENS": "999999",
+        }, clear=False):
+            prepared = short_drama_advisor._prepare_provider_request({
+                "user_message": "继续",
+            })
+        payload = json.loads(prepared["payload"].decode("utf-8"))
+        maximum = short_drama_advisor._token_cost(
+            "grok-3-mini",
+            short_drama_advisor._MAX_INPUT_TOKENS,
+            short_drama_advisor._MAX_OUTPUT_TOKENS,
+        )
+        self.assertEqual(1200, payload["max_tokens"])
+        self.assertEqual(5400, prepared["reserve_microusd"])
+        self.assertEqual(maximum, prepared["reserve_microusd"])
+
+    def test_successful_request_settles_to_actual_model_cost(self):
+        with mock.patch.dict(os.environ, {
+            "SHORT_DRAMA_ADVISOR_API_BASE": "https://advisor.example/v1",
+        }, clear=False):
+            short_drama_advisor.advise(
+                {"user_message": "继续"}, opener=self._success_opener(),
+                username="alice", db_factory=self.db,
+            )
+        conn = self.db()
+        try:
+            row = conn.execute(
+                "SELECT reserved_microusd,prompt_tokens,completion_tokens,status "
+                "FROM short_drama_advisor_usage"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual((40, 100, 20, "succeeded"), row)
+
+    def test_missing_provider_usage_keeps_conservative_reserve(self):
+        def opener(_request, timeout=0):
+            content = {
+                "intent": "answer", "reply": "收到", "confidence": .9,
+                "field_updates": [], "missing_fields": [],
+            }
+            return Response({
+                "choices": [{"message": {"content": json.dumps(content)}}],
+            })
+
+        with mock.patch.dict(os.environ, {
+            "SHORT_DRAMA_ADVISOR_API_BASE": "https://advisor.example/v1",
+        }, clear=False):
+            short_drama_advisor.advise(
+                {"user_message": "继续"}, opener=opener,
+                username="alice", db_factory=self.db,
+            )
+        conn = self.db()
+        try:
+            row = conn.execute(
+                "SELECT reserved_microusd,status FROM short_drama_advisor_usage"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual((5400, "succeeded"), row)
+
+    def test_daily_quota_resets_at_shanghai_midnight(self):
+        before = datetime(2026, 8, 5, 15, 59, 59, tzinfo=timezone.utc).timestamp()
+        after = datetime(2026, 8, 5, 16, 0, 0, tzinfo=timezone.utc).timestamp()
+        with mock.patch.dict(os.environ, {
+            "SHORT_DRAMA_ADVISOR_USER_DAILY_REQUESTS": "1",
+            "SHORT_DRAMA_ADVISOR_REQUESTS_PER_WINDOW": "20",
+        }, clear=False):
+            first = short_drama_advisor._acquire_usage(
+                "alice", self.db, "before", 5400, "grok-3-mini", now=before
+            )
+            short_drama_advisor._finalize_usage(
+                first, "succeeded", {"prompt_tokens": 1, "completion_tokens": 1}
+            )
+            short_drama_advisor._release_usage(first)
+            second = short_drama_advisor._acquire_usage(
+                "alice", self.db, "after", 5400, "grok-3-mini", now=after
+            )
+            short_drama_advisor._release_usage(second)
+
+    def test_oversized_input_is_rejected_before_provider_claim(self):
+        with mock.patch.dict(os.environ, {
+            "SHORT_DRAMA_ADVISOR_API_BASE": "https://advisor.example/v1",
+        }, clear=False), self.assertRaises(short_drama_advisor.AdvisorError) as raised:
+            short_drama_advisor.advise({
+                "messages": ["剧" * 600 for _ in range(20)],
+                "user_message": "继续",
+            }, opener=self._success_opener(), username="alice", db_factory=self.db)
+        self.assertEqual("advisor_input_too_large", raised.exception.code)
+        self.claim_candidate.assert_not_called()
 
 
 if __name__ == "__main__":
