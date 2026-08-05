@@ -92,6 +92,24 @@ class AuthProfileTests(unittest.TestCase):
         self.assertEqual(len(first), self.auth.ACCOUNT_ID_LENGTH)
         self.assertTrue(first.startswith(self.auth.ACCOUNT_ID_PREFIX))
 
+    def test_me_returns_card_avatar_without_creating_a_card(self):
+        self.assertEqual(self._get("/api/auth/me")["user"]["avatar"], "")
+        c = self.auth.db()
+        try:
+            user_id = c.execute("SELECT id FROM users WHERE username='profile_user'").fetchone()[0]
+            self.assertIsNone(c.execute("SELECT 1 FROM business_cards WHERE user_id=?", (user_id,)).fetchone())
+            self.auth.business_cards.create_draft(c, user_id)
+            c.execute("UPDATE business_cards SET avatar_key='cards/avatar.jpg' WHERE user_id=?", (user_id,))
+            c.commit()
+        finally:
+            c.close()
+        original = self.auth.business_cards._media_url
+        self.auth.business_cards._media_url = lambda key: "/media/" + key
+        try:
+            self.assertEqual(self._get("/api/auth/me")["user"]["avatar"], "/media/cards/avatar.jpg")
+        finally:
+            self.auth.business_cards._media_url = original
+
     def test_profile_cannot_modify_account_id(self):
         before = self._get("/api/auth/me")["user"]["account_id"]
         data = self._post("/api/auth/profile", {
