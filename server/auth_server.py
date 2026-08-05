@@ -876,6 +876,7 @@ def register_account(username, password, display_name=None, invite_code="", invi
 
     salt = secrets.token_hex(16)
     password_hash = hash_pw(password, salt)  # 慢哈希必须在取得 SQLite 写锁之前完成
+    attribution = None
     c = db()
     try:
         c.execute("BEGIN IMMEDIATE")
@@ -897,6 +898,19 @@ def register_account(username, password, display_name=None, invite_code="", invi
             client_ip=client_ip, device_id=device_id, hash_secret=INVITE_HASH_SECRET,
             enforce_membership=False,
         )
+        if relation and attribution and attribution.get("journey_id"):
+            business_cards.start_referral_journey(c, attribution, relation["campaign_id"])
+            business_cards.convert_referral_journey(
+                c, attribution, cur.lastrowid, relation["id"],
+            )
+        inviter = None
+        if relation:
+            inviter_row = c.execute(
+                "SELECT display_name,account_id FROM users WHERE id=?",
+                (relation["inviter_user_id"],),
+            ).fetchone()
+            if inviter_row:
+                inviter = invites.public_inviter(inviter_row)
         if card is not None:
             business_cards.create_draft(c, cur.lastrowid, card)
         saved_card = business_cards.mine(c, cur.lastrowid) if card is not None else None
@@ -908,6 +922,7 @@ def register_account(username, password, display_name=None, invite_code="", invi
                 username, display_name, NEW_USER_TRIAL_POINTS, account_id=account_id,
             ),
             "invite_bound": bool(relation),
+            "inviter": inviter,
             "card": saved_card,
         }, None
     except invites.InviteError as exc:
@@ -5678,6 +5693,7 @@ class H(BaseHTTPRequestHandler):
             response = {
                 "token": result["token"], "user": result["user"],
                 "invite_bound": result["invite_bound"],
+                "inviter": result.get("inviter"),
             }
             if result.get("card") is not None:
                 response["card"] = result["card"]
@@ -6154,6 +6170,7 @@ class H(BaseHTTPRequestHandler):
                                 response["invite_valid"] = True
                                 response["invite_validated_at"] = now
                                 response["invite_expires_at"] = now + 7 * 24 * 3600
+                                response["inviter"] = invites.public_inviter(invite)
                                 response["invite_attribution_token"] = business_cards.attribution_token(
                                     code, public_id, owner_id, INVITE_HASH_SECRET, now=now,
                                     journey_id=secrets.token_urlsafe(18),
@@ -6343,8 +6360,12 @@ class H(BaseHTTPRequestHandler):
                 row = invites.validate_code(
                     c, code, enforce_membership=False,
                 )
+                now = int(time.time())
                 return self._send(200, {
                     "ok": True, "code": row["code"], "inviter": invites.public_inviter(row),
+                    "server_time": now,
+                    "invite_validated_at": now,
+                    "invite_expires_at": now + 7 * 24 * 3600,
                 })
             except invites.InviteError as exc:
                 return self._send(exc.http_status, {"detail": exc.detail, "code": exc.code})
