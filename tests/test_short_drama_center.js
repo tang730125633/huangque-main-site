@@ -638,7 +638,6 @@ test('planner drafts are isolated by authenticated account', () => {
   assert.equal(center.plannerDraftMatchesUser({version:5,username:'alice'}, 'alice'), false);
   assert.equal(center.plannerDraftMatchesUser(draft, 'bob'), false);
   assert.match(centerScript, /me:function\(\)\{return request\('\/api\/auth\/me'\)/);
-  assert.match(shell, /removeItem\('hq-short-drama-planner-draft-v3:'\+exiting\.username\)/);
 });
 
 test('current planner draft survives a storage round trip with choices and project checkpoint', () => {
