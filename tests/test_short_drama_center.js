@@ -14,26 +14,24 @@ const shell = fs.readFileSync(path.join(ROOT, 'site/workbench/cloud-shell.js'), 
 const centerScript = fs.readFileSync(path.join(ROOT, 'site/workbench/short-drama-center.js'), 'utf8');
 const centerStyle = fs.readFileSync(path.join(ROOT, 'site/workbench/short-drama-center.css'), 'utf8');
 
-function chromeCandidates(platform = process.platform, env = process.env) {
-  const configured = String(env.CHROME_BIN || '').trim();
-  const candidates = configured ? [configured] : [];
+function chromeCandidates(platform = process.platform) {
   if (platform === 'win32') {
-    return candidates.concat([
+    return [
       'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
       'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-    ]);
+    ];
   }
   if (platform === 'darwin') {
-    return candidates.concat([
+    return [
       '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
       '/Applications/Chromium.app/Contents/MacOS/Chromium',
       '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
-    ]);
+    ];
   }
-  return candidates.concat([
+  return [
     '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable',
     '/usr/bin/chromium', '/usr/bin/chromium-browser',
-  ]);
+  ];
 }
 
 function findChromeExecutable() {
