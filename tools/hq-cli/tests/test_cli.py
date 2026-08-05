@@ -48,7 +48,7 @@ class HqCliTests(unittest.TestCase):
         _, output, _ = self.invoke(["capabilities"])
         by_id = {item["id"]: item for item in self.payload(output)["capabilities"]}
         expected = {
-            "account", "ip12-projects", "ip12-project", "ip12-create", "ip12-report", "ip12-message",
+            "account", "channels", "ip12-projects", "ip12-project", "ip12-create", "ip12-report", "ip12-message",
             "prompt-optimize", "canvas-list", "canvas-get", "canvas-create", "canvas-agent-plan", "canvas-ops", "tasks", "task",
             "assets", "voices", "image-upload", "asset-favorite", "asset-tags",
             "image-generate", "video-generate", "audio-generate",
@@ -62,6 +62,17 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual("server_quote", by_id["canvas-agent-plan"]["cost"]["kind"])
         self.assertEqual("canvas:edit", by_id["canvas-ops"]["required_scope"])
         self.assertEqual(12, by_id["canvas-ops"]["input_schema"]["properties"]["ops"]["maxItems"])
+        self.assertIn("minimax", by_id["video-generate"]["input_schema"]["properties"]["channel"]["enum"])
+
+    def test_channels_command_uses_current_authorized_account(self):
+        self.authorize()
+        response = {"total": 15, "account": "alice", "channels": [{"id": "xai"}]}
+        with patch("hq_cli.client.request_json", return_value=(200, response)) as request:
+            code, output, error = self.invoke(["channels", "--json"])
+        self.assertEqual(0, code, error)
+        self.assertEqual(15, self.payload(output)["result"]["total"])
+        self.assertEqual({"action": "channels", "input": {}, "confirm": False}, request.call_args.kwargs["body"])
+        self.assertEqual("t" * 43, request.call_args.kwargs["token"])
 
     def test_login_uses_device_flow_saves_token_without_printing_it(self):
         responses = [

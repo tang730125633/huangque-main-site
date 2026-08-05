@@ -459,6 +459,21 @@ class HQCLIAPITests(unittest.TestCase):
                 "mask_upload_id": "img_" + "b" * 32,
             })
 
+    def test_channels_use_customer_account_authorization_and_include_minimax(self):
+        token = self._token(["profile:read"])
+        status, payload = self._request("/api/auth/cli/action", {
+            "action": "channels", "input": {}, "confirm": False,
+        }, token=token)
+        self.assertEqual(200, status)
+        self.assertEqual(15, payload["total"])
+        self.assertEqual("alice", payload["account"])
+        self.assertEqual(
+            {"channel": "minimax", "resolution": "768p"},
+            {k: self.auth.hq_cli_api.action_plan("video-generate", {
+                "prompt": "人物故事", "channel": "minimax",
+            })["payload"][k] for k in ("channel", "resolution")},
+        )
+
     def test_server_requires_confirmation_for_external_ai_and_writes(self):
         token = self._token(["prompt:optimize", "ip12:write", "ip12:chat", "canvas:write", "assets:write",
                              "video-compose:write", "digital-presenter:write"])

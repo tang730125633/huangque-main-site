@@ -10,7 +10,9 @@ curl -fsSL https://huangquechuanmei.com/downloads/hq/install.sh | sh
 ```
 
 需要 Python 3.9+。安装脚本会校验版本化 wheel 的 SHA-256，把程序放在
-`~/.local/share/hq-cli/0.5.0/`，并创建 `~/.local/bin/hq`。如果该目录不在 PATH，按安装结果提示补一次即可。
+`~/.local/share/hq-cli/0.6.0/`，并创建 `~/.local/bin/hq`。如果该目录不在 PATH，按安装结果提示补一次即可。
+
+授权后运行 `hq channels --json` 可读取后台同源的 15 个真实渠道、前端功能映射、CLI 能力入口和参数选择器。
 
 ## 给一个没有上下文的 Agent
 

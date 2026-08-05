@@ -6,7 +6,7 @@
   <meta name="description" content="黄雀 AI：从 IP12、Agent 与无限画布，到图文音视频生产和 HQ CLI。">
   <title>黄雀 AI · 会持续生长的内容系统</title>
   <link rel="icon" href="/assets/logo_sparrow.png">
-  <link rel="stylesheet" href="/homepage.css?v=20260805-capabilities">
+  <link rel="stylesheet" href="/homepage.css?v=20260805-channels">
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -145,7 +145,7 @@
               </section>
 
               <section class="story-panel panel-cli" data-panel="cli" aria-hidden="true">
-                <div class="terminal-head"><span>HQ CLI · v0.5</span><span><i></i> DEVICE AUTH</span></div>
+                <div class="terminal-head"><span>HQ CLI · v0.6</span><span><i></i> DEVICE AUTH</span></div>
                 <pre><code><span class="term-prompt">$</span> hq login --json
 <span class="term-dim">{"next":"在浏览器中确认设备授权"}</span>
 
@@ -215,8 +215,8 @@
             <span>网页 Agent</span><span>外部 Agent</span><span>人工命令行</span>
           </div>
           <dl class="capability-metrics">
-            <div><dt>45</dt><dd>已登记能力</dd></div>
-            <div><dt>32</dt><dd>可直接执行</dd></div>
+            <div><dt>46</dt><dd>已登记能力</dd></div>
+            <div><dt>33</dt><dd>可直接执行</dd></div>
             <div><dt>13</dt><dd>页面导航</dd></div>
           </dl>
         </div>
@@ -259,6 +259,34 @@
             <ul><li>灵感与采集</li><li>获客工作台</li><li>教程与设置</li></ul>
             <span class="capability-open">发现创作方向 ↗</span>
           </a>
+        </div>
+
+        <div class="channel-showcase" aria-labelledby="channel-title">
+          <div class="channel-showcase-head">
+            <div><small>REAL PROVIDERS · CLI CATALOG</small><h3 id="channel-title">后台有的渠道，CLI 全部登记。</h3></div>
+            <p>登录时授权客户自己的黄雀账号；调用仍使用该账号的权限、点数、资产和任务记录，不向 Agent 暴露网站密码或后台密钥。</p>
+          </div>
+          <div class="channel-legend" aria-label="CLI 接入状态说明">
+            <span data-access="direct">可直接调用</span><span data-access="mixed">部分直调</span><span data-access="managed">系统托管</span><span data-access="routed">系统路由</span><span data-access="registered">已登记</span>
+          </div>
+          <div class="channel-grid">
+            <article class="channel-card" data-channel="xai" data-access="direct"><header><b>xAI API</b><span>可直接调用</span></header><p>果肉视频生成</p><code>video-generate · channel=grok</code></article>
+            <article class="channel-card" data-channel="openai" data-access="mixed"><header><b>OpenAI API</b><span>部分直调</span></header><p>黄雀引擎 2 · Sora 2</p><code>image-generate · provider=openai</code></article>
+            <article class="channel-card" data-channel="gemini" data-access="mixed"><header><b>Google Gemini API</b><span>部分直调</span></header><p>纳米香蕉 · Omni 视频</p><code>video-generate · channel=omni</code></article>
+            <article class="channel-card" data-channel="seedance" data-access="direct"><header><b>火山方舟 API</b><span>可直接调用</span></header><p>Seedream · Seedance 视频</p><code>image / video-generate</code></article>
+            <article class="channel-card" data-channel="minimax" data-access="direct"><header><b>MiniMax 中国区 API</b><span>可直接调用</span></header><p>麦克视频</p><code>video-generate · channel=minimax</code></article>
+            <article class="channel-card" data-channel="zelong" data-access="routed"><header><b>小乐 AI API</b><span>系统路由</span></header><p>黄雀引擎 2 备用线路</p><code>image-generate · provider=xiaole</code></article>
+            <article class="channel-card" data-channel="zelong2" data-access="registered"><header><b>泽龙 API</b><span>已登记</span></header><p>泽龙 2 备用线路 · 维护中</p><code>channels · registered</code></article>
+            <article class="channel-card" data-channel="heygen" data-access="managed"><header><b>HeyGen API</b><span>系统托管</span></header><p>电影化身 · 数字人口播 · 数字人形象</p><code>digital-presenter-*</code></article>
+            <article class="channel-card" data-channel="heygen_relay" data-access="routed"><header><b>HeyGen 中转 API</b><span>系统路由</span></header><p>中转与下载兜底</p><code>tasks · assets</code></article>
+            <article class="channel-card" data-channel="xiaolevideo" data-access="routed"><header><b>小乐视频 API</b><span>系统路由</span></header><p>果肉生图 · 历史兼容线路</p><code>image / video-generate</code></article>
+            <article class="channel-card" data-channel="runninghub" data-access="registered"><header><b>RunningHub API</b><span>已登记</span></header><p>换装换背景 · 线路一</p><code>channels · registered</code></article>
+            <article class="channel-card" data-channel="wavespeed" data-access="registered"><header><b>WaveSpeed API</b><span>已登记</span></header><p>换装换背景 · 线路二 · AI 超清</p><code>channels · registered</code></article>
+            <article class="channel-card" data-channel="cosyvoice" data-access="direct"><header><b>阿里百炼 API</b><span>可直接调用</span></header><p>公共音色 · 声音克隆</p><code>voices · audio-generate</code></article>
+            <article class="channel-card" data-channel="tikhub" data-access="navigation"><header><b>TikHub API</b><span>页面引导</span></header><p>抖音 · 小红书 · 视频号 · 评论线索</p><code>collect · leads</code></article>
+            <article class="channel-card" data-channel="cos" data-access="managed"><header><b>腾讯云 COS</b><span>系统托管</span></header><p>生成结果 · 参考素材 · 成片存储</p><code>image-upload · assets</code></article>
+          </div>
+          <div class="channel-command"><code>hq login --json</code><span>→</span><code>hq channels --json</code><span>→</span><code>hq describe &lt;能力&gt; --json</code></div>
         </div>
       </div>
     </section>
@@ -313,10 +341,12 @@
     const indicators = [...document.querySelectorAll('[data-indicator]')];
     const stageLabel = document.querySelector('[data-stage-label]');
     const capabilityBranches = [...document.querySelectorAll('.capability-branch')];
+    const channelCards = [...document.querySelectorAll('.channel-card[data-channel]')];
 
     window.__homepageCheck = () => steps.length === 4
       && steps.every(step => panels.some(panel => panel.dataset.panel === step.dataset.story))
       && capabilityBranches.length === 6
+      && channelCards.length === 15
       && Boolean(document.querySelector('[data-logo-motion]') && document.querySelector('.story-stage') && document.querySelector('.story-chapters'));
     console.assert(window.__homepageCheck(), 'Homepage story mapping is incomplete');
 

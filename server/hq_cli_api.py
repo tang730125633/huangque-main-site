@@ -51,6 +51,38 @@ SCOPES = {
     "digital-presenter:write": "经确认后创建或更新本人画布中的数字人口播项目",
 }
 DEFAULT_SCOPES = tuple(SCOPES)
+CHANNEL_CATALOG = (
+    {"id": "xai", "provider": "xAI API", "category": "视频生成", "features": ["果肉视频生成"],
+     "access": "direct", "capabilities": ["video-generate"], "selector": {"channel": "grok"}},
+    {"id": "openai", "provider": "OpenAI API", "category": "图片 / 视频", "features": ["黄雀引擎 2", "Sora 2"],
+     "access": "mixed", "capabilities": ["image-generate"], "selector": {"provider": "openai"}},
+    {"id": "gemini", "provider": "Google Gemini API", "category": "图片 / 视频", "features": ["纳米香蕉", "Omni 视频"],
+     "access": "mixed", "capabilities": ["video-generate"], "selector": {"channel": "omni"}},
+    {"id": "seedance", "provider": "火山方舟 API", "category": "图片 / 视频", "features": ["Seedream", "Seedance 视频"],
+     "access": "direct", "capabilities": ["image-generate", "video-generate"], "selector": {"provider": "seedream", "channel": "micro"}},
+    {"id": "minimax", "provider": "MiniMax 中国区 API", "category": "视频生成", "features": ["麦克视频"],
+     "access": "direct", "capabilities": ["video-generate"], "selector": {"channel": "minimax"}},
+    {"id": "zelong", "provider": "小乐 AI API", "category": "图片生成", "features": ["黄雀引擎 2 备用线路"],
+     "access": "routed", "capabilities": ["image-generate"], "selector": {"provider": "xiaole"}},
+    {"id": "zelong2", "provider": "泽龙 API", "category": "图片生成", "features": ["泽龙 2 备用线路（维护中）"],
+     "access": "registered", "capabilities": [], "selector": {}},
+    {"id": "heygen", "provider": "HeyGen API", "category": "数字化 IP / 视频", "features": ["电影化身", "数字人口播", "数字人形象"],
+     "access": "managed", "capabilities": ["digital-presenter-capability", "digital-presenter-create"], "selector": {}},
+    {"id": "heygen_relay", "provider": "HeyGen 中转 API", "category": "数字化 IP / 视频", "features": ["中转与下载兜底"],
+     "access": "routed", "capabilities": ["tasks", "assets"], "selector": {}},
+    {"id": "xiaolevideo", "provider": "小乐视频 API", "category": "图片 / 视频", "features": ["果肉生图", "历史兼容线路"],
+     "access": "routed", "capabilities": ["image-generate", "video-generate"], "selector": {}},
+    {"id": "runninghub", "provider": "RunningHub API", "category": "视频处理", "features": ["换装换背景 · 线路一"],
+     "access": "registered", "capabilities": [], "selector": {}},
+    {"id": "wavespeed", "provider": "WaveSpeed API", "category": "视频处理", "features": ["换装换背景 · 线路二", "Seedance AI 超清"],
+     "access": "registered", "capabilities": [], "selector": {}},
+    {"id": "cosyvoice", "provider": "阿里百炼 API", "category": "音频生成", "features": ["公共音色", "声音克隆"],
+     "access": "direct", "capabilities": ["voices", "audio-generate"], "selector": {}},
+    {"id": "tikhub", "provider": "TikHub API", "category": "内容采集 / 获客", "features": ["抖音 / 小红书 / 视频号", "评论与线索"],
+     "access": "navigation", "capabilities": ["collect", "leads"], "selector": {}},
+    {"id": "cos", "provider": "腾讯云 COS", "category": "基础设施", "features": ["生成结果存储", "参考素材与成片存储"],
+     "access": "managed", "capabilities": ["image-upload", "assets"], "selector": {}},
+)
 CONFIRMATION_ACTIONS = frozenset({
     "ip12-create", "ip12-message", "prompt-optimize", "canvas-create", "canvas-ops",
     "asset-favorite", "asset-tags", "video-compose-create", "video-compose-analyze",
@@ -791,6 +823,9 @@ def action_plan(action, value):
     if action == "account":
         _strict_object(value, set())
         return _plan("profile:read", "account")
+    if action == "channels":
+        _strict_object(value, set())
+        return _plan("profile:read", "channels")
     if action == "ip12-projects":
         _strict_object(value, set())
         return _plan("ip12:read", "proxy", base=HERMES_BASE, path="/api/conversations")
@@ -1011,14 +1046,15 @@ def _generation_payload(action, value):
         return body, "image", "/api/gen/image"
     if action == "video-generate":
         _strict_object(value, {"prompt", "channel", "ratio", "duration", "resolution", "model", "generate_audio", "reference_upload_ids"}, ("prompt",))
-        channel = _enum(value.get("channel", "grok"), "channel", ("grok", "micro", "omni"))
+        channel = _enum(value.get("channel", "grok"), "channel", ("grok", "micro", "omni", "minimax"))
         body = {
             "prompt": _string(value["prompt"], "prompt", 1, 2000),
             "channel": channel,
             "ratio": _enum(value.get("ratio", "16:9" if channel in {"grok", "omni"} else "9:16"),
                            "ratio", ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3")),
             "duration": _integer(value.get("duration", 10 if channel == "grok" else 5), "duration", 1, 15),
-            "resolution": _enum(value.get("resolution", "720p"), "resolution", ("480p", "720p", "1080p")),
+            "resolution": _enum(value.get("resolution", "768p" if channel == "minimax" else "720p"),
+                                "resolution", ("480p", "720p", "768p", "1080p")),
         }
         if "model" in value:
             body["model"] = _enum(value["model"], "model", ("grok-imagine-video", "grok-imagine-video-1.5"))
@@ -1030,7 +1066,7 @@ def _generation_payload(action, value):
             body["generate_audio"] = value["generate_audio"]
         if "reference_upload_ids" in value:
             references = value["reference_upload_ids"]
-            limit = {"grok": 7, "micro": 9, "omni": 6}[channel]
+            limit = {"grok": 7, "micro": 9, "omni": 6, "minimax": 5}[channel]
             if not isinstance(references, list) or not 1 <= len(references) <= limit:
                 raise CLIAPIError(400, "reference_upload_ids 必须包含 1-%d 项" % limit)
             body["reference_upload_ids"] = []
