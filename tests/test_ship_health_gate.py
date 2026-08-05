@@ -39,6 +39,10 @@ if [ "$1" = "ls-files" ] && [ "$2" = "server/content_domains" ]; then
   printf '%s\n' "${FAKE_DOMAIN_FILES:-server/content_domains/core.py}"
   exit 0
 fi
+if [ "$1" = "ls-files" ] && [ "$2" = "server/providers" ]; then
+  printf '%s\n' "${FAKE_PROVIDER_FILES:-server/providers/lipsync/base.py}"
+  exit 0
+fi
 exit 0
 """,
         )
@@ -202,12 +206,18 @@ exit 0
             cwd=ROOT,
             text=True,
         ).splitlines()
+        provider_files = subprocess.check_output(
+            ["git", "ls-files", "server/providers"],
+            cwd=ROOT,
+            text=True,
+        ).splitlines()
         rsync_log = Path(self.tmp.name) / "rsync.log"
         ssh_log = Path(self.tmp.name) / "ssh.log"
         result = self._run_ship(
             target="server/content_domains/audio.py",
             FAKE_CURL_CODE="200",
             FAKE_DOMAIN_FILES="\n".join(domain_files),
+            FAKE_PROVIDER_FILES="\n".join(provider_files),
             FAKE_RSYNC_LOG=str(rsync_log),
             FAKE_SSH_LOG=str(ssh_log),
         )
@@ -215,10 +225,13 @@ exit 0
         self.assertIn("整目录同步", result.stdout)
         self.assertIn("import 通过", result.stdout)
         self.assertIn("server/content_domains/", rsync_log.read_text(encoding="utf-8"))
+        self.assertIn("server/providers/", rsync_log.read_text(encoding="utf-8"))
         ssh_lines = ssh_log.read_text(encoding="utf-8").splitlines()
         for marker in ("--verify-deploy", "--bless-deploy"):
             command = next(line for line in ssh_lines if marker in line)
             for path in domain_files:
+                self.assertIn(path, command)
+            for path in provider_files:
                 self.assertIn(path, command)
 
     def test_exact_content_domains_only_pushes_requested_existing_files(self):
