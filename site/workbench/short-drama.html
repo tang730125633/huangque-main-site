@@ -6,8 +6,8 @@
   <title>短剧 · 黄雀 AI 工作台</title>
   <script src="theme-init.js?v=11eb385e"></script>
   <link rel="stylesheet" href="theme.css?v=5873a2f4">
-  <link rel="stylesheet" href="short-drama-center.css?v=9bac439d">
-  <link rel="stylesheet" href="short-drama-workspace.css?v=dc6477bb">
+  <link rel="stylesheet" href="short-drama-center.css?v=d8beab21">
+  <link rel="stylesheet" href="short-drama-workspace.css?v=00316084">
 </head>
 <body>
   <div class="hq-app">
@@ -104,9 +104,16 @@
       </section>
 
       <section class="short-drama-inspiration" id="shortDramaInspiration" hidden>
-        <div class="short-drama-planner-grid">
+        <nav class="short-drama-planner-stages" id="shortDramaPlannerStages" aria-label="剧本创作进度">
+          <span data-planner-step="chat"><b>1</b><em>聊想法</em></span>
+          <span data-planner-step="directions"><b>2</b><em>选故事方向</em></span>
+          <span data-planner-step="script"><b>3</b><em>看完整剧本</em></span>
+          <span data-planner-step="review"><b>4</b><em>审稿确认</em></span>
+        </nav>
+        <div class="short-drama-planner-grid" data-planner-stage="chat" data-planner-panel="chat">
           <section class="short-drama-planner-chat" aria-label="创作助手对话">
-            <header><span>创作助手</span><strong>一起把想法聊清楚</strong><small>聊天仅用于策划，创建项目后转为只读记录。</small></header>
+            <header><div><span>创作助手</span><strong>一起把想法聊清楚</strong><small>不用学习复杂流程，像聊天一样把故事逐步说完整。</small></div><button class="short-drama-planner-switch" id="shortDramaShowCanvas" type="button" hidden>查看故事方向 →</button></header>
+            <div class="short-drama-advisor-mode" id="shortDramaAdvisorMode" role="status" hidden></div>
             <div class="short-drama-chat-log" id="shortDramaIdeaChat" aria-live="polite"></div>
             <div class="short-drama-quick-replies" id="shortDramaIdeaQuickReplies"></div>
             <form class="short-drama-chat-compose" id="shortDramaIdeaForm">
@@ -116,21 +123,37 @@
             </form>
           </section>
           <section class="short-drama-planner-canvas" aria-label="故事方案和剧本预览">
-            <header><span>结构化方案</span><strong id="shortDramaPlannerCanvasTitle">等待故事方向</strong><small>选择方案后生成可确认的完整结构。</small></header>
+            <header><div><span>创作工作台</span><strong id="shortDramaPlannerCanvasTitle">等待故事方向</strong><small>先选方向，再查看和确认完整剧本。</small></div><button class="short-drama-planner-switch" id="shortDramaShowChat" type="button">← 继续对话</button></header>
             <div class="short-drama-recommendations" id="shortDramaRecommendations" hidden></div>
             <div class="short-drama-script-preview" id="shortDramaScriptPreview" hidden></div>
           </section>
           <aside class="short-drama-planner-inspector" aria-label="当前创作理解">
-            <header><span>当前理解</span><strong id="shortDramaPlannerStatus">正在了解你的想法</strong></header>
+            <header><div><span>创作记忆</span><strong id="shortDramaPlannerStatus">正在了解你的想法</strong><small>助手会持续记录关键信息，你也可以直接修改。</small></div><div class="short-drama-planner-header-actions"><button class="short-drama-planner-undo" id="shortDramaPlannerUndo" type="button" disabled>撤销</button><button class="short-drama-planner-memory-toggle" id="shortDramaPlannerMemoryToggle" type="button" aria-expanded="true" aria-label="收起创作记忆">收起</button></div></header>
             <div class="short-drama-planner-progress"><span id="shortDramaPlannerProgress"></span></div>
+            <p class="short-drama-planner-score" id="shortDramaPlannerScore">信息完整度 0%</p>
             <dl id="shortDramaPlannerBrief"></dl>
-            <button class="short-drama-primary" id="shortDramaGeneratePreview" type="button" disabled>生成完整剧本方案</button>
-            <button class="short-drama-primary confirm" id="shortDramaConfirmScript" type="button" hidden>确认剧本并创建项目</button>
+            <div class="short-drama-planner-missing" id="shortDramaPlannerMissing"></div>
+            <details class="short-drama-planner-history" id="shortDramaPlannerHistory">
+              <summary><span>修改记录</span><em id="shortDramaPlannerHistoryCount">0 条</em></summary>
+              <div id="shortDramaPlannerHistoryList"></div>
+            </details>
+            <section class="short-drama-planner-audit" aria-label="对话质量">
+              <div><span>对话质量</span><strong id="shortDramaPlannerAuditScore">100</strong></div>
+              <p id="shortDramaPlannerAuditSummary">尚未发现重复追问或理解冲突</p>
+            </section>
+            <div class="short-drama-planner-actions">
+              <button class="short-drama-secondary" id="shortDramaCompleteBrief" type="button">让 AI 补齐缺失项</button>
+              <button class="short-drama-primary" id="shortDramaGeneratePreview" type="button" disabled>生成完整剧本</button>
+              <button class="short-drama-secondary" id="shortDramaDownloadWord" type="button" hidden>下载 Word 确认稿</button>
+              <label class="short-drama-planner-ack" id="shortDramaPlannerAck" hidden><input id="shortDramaPlannerAckInput" type="checkbox"> 我已阅读并确认当前剧本版本</label>
+              <button class="short-drama-primary confirm" id="shortDramaConfirmScript" type="button" hidden>确认剧本并创建项目</button>
+            </div>
             <p id="shortDramaPlannerNotice" role="status"></p>
           </aside>
         </div>
         <footer class="short-drama-step-footer">
           <button class="short-drama-secondary" type="button" data-action="back-create-settings">← 返回基本设置</button>
+          <button class="short-drama-secondary short-drama-restart-planner" id="shortDramaRestartPlanner" type="button">清除草稿并重新开始</button>
         </footer>
       </section>
 
@@ -171,6 +194,7 @@
             <div><span>建议</span><strong id="shortDramaImportShots">6</strong><small>个镜头</small></div>
           </div>
           <div class="short-drama-import-note"><b>识别完成</b><p id="shortDramaImportSummary"></p></div>
+          <div class="short-drama-import-global" id="shortDramaImportGlobal" hidden></div>
           <div class="short-drama-import-warnings" id="shortDramaImportWarnings" hidden></div>
           <label>项目名称<input name="title" required maxlength="80"></label>
           <div class="short-drama-form-row">
@@ -206,7 +230,7 @@
   </dialog>
 
   <script src="cloud-shell.js?v=dbd5a9e4"></script>
-  <script src="short-drama-workspace.js?v=bb3e67a7"></script>
-  <script src="short-drama-center.js?v=b60cc5b5"></script>
+  <script src="short-drama-workspace.js?v=c97ac896"></script>
+  <script src="short-drama-center.js?v=d4467f0c"></script>
 </body>
 </html>
