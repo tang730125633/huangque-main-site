@@ -75,6 +75,33 @@ class BusinessCardNetworkTests(unittest.TestCase):
     def uid(c, username):
         return c.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()[0]
 
+    def test_non_creating_card_query_keeps_legacy_default(self):
+        self.auth.create_user("nocard", "secret123")
+        token = self.auth.issue_token("nocard")
+        headers = {"Authorization": "Bearer " + token}
+
+        with self.conn() as c:
+            user_id = self.uid(c, "nocard")
+            self.assertEqual(c.execute(
+                "SELECT COUNT(*) FROM business_cards WHERE user_id=?", (user_id,),
+            ).fetchone()[0], 0)
+
+        status, body = self.get("/api/auth/card/me?create=0", headers)
+        self.assertEqual(status, 404)
+        self.assertEqual(body["code"], "card_not_found")
+        with self.conn() as c:
+            self.assertEqual(c.execute(
+                "SELECT COUNT(*) FROM business_cards WHERE user_id=?", (user_id,),
+            ).fetchone()[0], 0)
+
+        status, body = self.get("/api/auth/card/me", headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["card"]["status"], "draft")
+        with self.conn() as c:
+            self.assertEqual(c.execute(
+                "SELECT COUNT(*) FROM business_cards WHERE user_id=?", (user_id,),
+            ).fetchone()[0], 1)
+
     def test_card_privacy_and_registration_are_atomic(self):
         with self.conn() as c:
             child_id = self.uid(c, "child")
@@ -117,6 +144,51 @@ class BusinessCardNetworkTests(unittest.TestCase):
         stale = self.auth.business_cards.attribution_token(code, card["public_id"], root_id, self.auth.INVITE_HASH_SECRET, now=100)
         with self.assertRaises(self.auth.business_cards.CardError):
             self.auth.business_cards.verify_attribution(stale, self.auth.INVITE_HASH_SECRET)
+
+    def test_standard_miniprogram_registration_converts_card_journey_and_returns_inviter(self):
+        with self.conn() as c:
+            root_id = self.uid(c, "root")
+            card = self.auth.business_cards.create_draft(
+                c, root_id, {"name": "根用户", "title": "老师", "company": "黄雀"},
+            )
+            self.auth.business_cards.publish(c, root_id, "published")
+            code = self.auth.invites.ensure_user_code(
+                c, root_id, enforce_membership=False,
+            )["code"]
+
+        status, shared = self.get(
+            "/api/auth/card/public?id=%s&invite=%s" % (card["public_id"], code),
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(shared["inviter"]["name"], "根用户")
+        self.assertEqual(shared["invite_expires_at"] - shared["invite_validated_at"], 7 * 24 * 3600)
+        attribution = shared["invite_attribution_token"]
+        self.assertEqual(self.request(
+            "/api/auth/invite/journey/start",
+            {"invite_attribution_token": attribution},
+        )[0], 200)
+
+        status, registered = self.request("/api/auth/miniprogram-register", {
+            "username": "card-standard-user",
+            "password": "secret123",
+            "device_id": "card-standard-device",
+            "invite_code": code,
+            "invite_attribution_token": attribution,
+        })
+        self.assertEqual(status, 200)
+        self.assertTrue(registered["invite_bound"])
+        self.assertEqual(registered["inviter"]["name"], "根用户")
+
+        with self.conn() as c:
+            registered_id = self.uid(c, "card-standard-user")
+            relation = c.execute(
+                "SELECT * FROM user_invites WHERE invitee_user_id=?", (registered_id,),
+            ).fetchone()
+            journey = c.execute(
+                "SELECT * FROM card_referral_journeys WHERE registered_user_id=?", (registered_id,),
+            ).fetchone()
+            self.assertIsNotNone(journey)
+            self.assertEqual(journey["invite_relation_id"], relation["id"])
 
     def test_network_masks_undiscoverable_and_stops_cycles(self):
         with self.conn() as c:

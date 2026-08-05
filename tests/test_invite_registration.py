@@ -194,8 +194,9 @@ class InviteRegistrationTests(unittest.TestCase):
             {"X-Real-IP": "203.0.113.11"},
         )
         self.assertEqual(status, 200)
-        self.assertEqual(set(body), {"token", "user", "invite_bound"})
+        self.assertEqual(set(body), {"token", "user", "invite_bound", "inviter"})
         self.assertTrue(body["invite_bound"])
+        self.assertEqual(body["inviter"]["name"], "inviter")
         self.assertEqual(body["user"]["points"], 16)
         self.assertNotIn("invite", body["user"])
         conn = self._connect()
@@ -222,8 +223,13 @@ class InviteRegistrationTests(unittest.TestCase):
         finally:
             conn.close()
 
-        status, _, _ = self._request("/api/auth/invite/validate?code=" + code)
+        status, validated, _ = self._request("/api/auth/invite/validate?code=" + code)
         self.assertEqual(status, 200)
+        self.assertEqual(validated["server_time"], validated["invite_validated_at"])
+        self.assertEqual(
+            validated["invite_expires_at"] - validated["invite_validated_at"],
+            7 * 24 * 3600,
+        )
         status, body, _ = self._request(
             "/api/auth/register",
             {"username": "switch_off_user", "password": "secret123", "invite_code": code},
