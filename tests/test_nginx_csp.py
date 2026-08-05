@@ -61,7 +61,10 @@ class NginxCspTest(unittest.TestCase):
             config = self._config(relative_path)
             with self.subTest(config=relative_path):
                 self.assertIn("log_format huangque_observed", config)
-                self.assertIn("rt=$request_time rid=$request_id", config)
+                self.assertIn(
+                    "rt=$request_time rid=$request_id hq=$sent_http_x_hq_error_code",
+                    config,
+                )
                 self.assertIn(
                     "access_log /var/log/nginx/huangquechuanmei.access.log huangque_observed;",
                     config,

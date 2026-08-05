@@ -199,6 +199,8 @@ for f in "$@"; do
     server/auth_server.py|server/hq_cli_api.py|server/invites.py|server/invite_network.py|server/business_cards.py|server/wxpay.py|server/wechat_subscribe.py) dest=/home/ubuntu/auth-service/; svc=huangque-auth ;;
     server/content_domains/__init__.py|server/content_domains/cos.py|server/content_domains/miniprogram_security.py|server/content_domains/pricing.py)
              dest=/home/ubuntu/auth-service/content_domains/; svc=huangque-auth ;;
+    server/content_domains/error_contract.py)
+             dest=/home/ubuntu/auth-service/content_domains/; svc=huangque-auth ;;
     server/wechat_virtual_pay.py|server/sync_virtual_pay_goods.py)
              dest=/home/ubuntu/auth-service/; svc=huangque-auth ;;
     server/content_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-content ;;
@@ -259,17 +261,17 @@ for f in "$@"; do
   fi
   push_file "$f" "$dest" \
     && echo "  ✓ $f → $dest" || { echo "  ❌ $f 部署失败"; exit 1; }
-  if [ "$f" = "server/content_domains/pricing.py" ]; then
+  if [ "$f" = "server/content_domains/pricing.py" ] || [ "$f" = "server/content_domains/error_contract.py" ]; then
     push_file "$f" /home/ubuntu/content-api/content_domains/ \
       && echo "  ✓ $f → /home/ubuntu/content-api/content_domains/" \
       || { echo "  ❌ $f 部署到 content 失败"; exit 1; }
-    add_svc huangque-content
+    add_svc "huangque-content huangque-admin"
   fi
   add_deployed "$f"
   case "$f" in
     server/content_api.py|server/content_domains/*)
-      if [ "$f" = "server/content_domains/pricing.py" ]; then
-        echo "  ✓ 共享价格模块已分别部署到 auth 与 content"
+      if [ "$f" = "server/content_domains/pricing.py" ] || [ "$f" = "server/content_domains/error_contract.py" ]; then
+        echo "  ✓ 共享模块已分别部署到 auth 与 content"
       elif [ "$EXACT_CONTENT_DOMAINS" = "1" ] && [ "$f" != "server/content_api.py" ]; then
         echo "  ✓ file-only 模式：$f 不触发 content_domains 整目录同步"
       elif [ "$CONTENT_DOMAINS_SYNCED" = "0" ] && [ -d server/content_domains ]; then

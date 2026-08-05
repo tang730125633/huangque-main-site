@@ -92,6 +92,20 @@ def confirmed_contract():
 
 
 class ShortDramaConversationTests(unittest.TestCase):
+    def test_long_import_builds_global_structure_from_start_to_end(self):
+        source = "\n".join([
+            "第一场 家中", "林夏：我必须找到父亲。", "林夏带着旧信离开。",
+            "第二场 车站", "周野阻止林夏登车。", "林夏发现信件背后的真相。",
+            "第三场 月台", "林夏作出选择。", "父女最终和解。",
+        ])
+        structure = short_drama_conversation._import_global_structure(
+            source, ["林夏", "周野"],
+        )
+        self.assertEqual("short-drama-import-global-v1", structure["schema_version"])
+        self.assertTrue(structure["coverage"]["analyzed_from_start"])
+        self.assertTrue(structure["coverage"]["analyzed_from_end"])
+        self.assertIn("和解", structure["ending"])
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.database = str(Path(self.tmp.name) / "content.db")
@@ -175,6 +189,35 @@ class ShortDramaConversationTests(unittest.TestCase):
             "duration_seconds": 30,
             "shot_count": 6,
             "visual_style": "电影感写实",
+            "creative_memory": {
+                "schema_version": "short-drama-creative-memory-v1",
+                "fields": {
+                    "topic": "旧友重逢", "protagonist": "林夏",
+                    "conflict": "是否相信旧友", "emotion": "温暖克制",
+                    "ending": "两人完成和解", "audience": "年轻人",
+                    "style": "电影感写实",
+                },
+            },
+            "story_plan": {
+                "schema_version": "short-drama-story-plan-v1",
+                "premise": "旧友在雨夜重逢", "theme": "信任与和解",
+                "audience": "年轻人", "emotion": "温暖克制",
+                "dramatic_question": "林夏能否在末班车前说出真相？",
+                "character_goal": "在末班车前说出真相", "obstacle": "是否相信旧友",
+                "stakes": "失败会永远失去这段关系", "hook": "旧友突然出现",
+                "turning_point": "旧信证明当年的误会", "climax": "林夏选择相信旧友",
+                "resolution": "两人完成和解",
+                "acts": [
+                    {"act": 1, "name": "建立", "purpose": "建立处境", "summary": "旧友出现"},
+                    {"act": 2, "name": "冲突", "purpose": "升级阻力", "summary": "旧信出现"},
+                    {"act": 3, "name": "选择", "purpose": "兑现结局", "summary": "完成和解"},
+                ],
+            },
+            "scenes": [
+                {"index": 1, "phase": "建立", "location": "雨夜车站", "characters": ["林夏", "周野"], "objective": "建立误会", "conflict": "林夏拒绝交流", "turn": "周野拿出旧信", "shot_start": 1, "shot_end": 3},
+                {"index": 2, "phase": "选择", "location": "站台", "characters": ["林夏", "周野"], "objective": "完成选择", "conflict": "末班车即将离开", "turn": "林夏留下", "shot_start": 4, "shot_end": 6},
+            ],
+            "script_review": {"schema_version": "short-drama-script-review-v1", "score": 94, "status": "needs_revision", "issues": [{"severity": "warning", "scope": "shot", "index": 1, "code": "performance_tight", "message": "表演时间略紧", "repairable": True}]},
             "characters": ["林夏", "周野"],
             "beats": beats,
             "shots": shots,
