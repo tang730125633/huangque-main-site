@@ -554,7 +554,7 @@
             <option value="fail">失败</option>
             <option value="running">进行中</option>
           </select>
-          <input class="field" id="reqSearch" type="search" name="hq_admin_request_search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="搜索请求日志" placeholder="路径 / 用户 / 功能 / 请求号">
+          <input class="field" id="reqSearch" type="search" name="hq_admin_request_search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="搜索请求日志" placeholder="路径 / 用户 / 功能 / 黄雀错误码 / 请求号">
           <label class="switch"><input type="checkbox" id="reqNoise"> 显示轮询噪音</label>
           <button id="reqRefresh">刷新日志</button>
         </div>
@@ -833,11 +833,12 @@
   }
   function renderActivity(d){
     var items=d.items||[];
+    var errorCatalog={};(d.error_catalog||[]).forEach(function(x){errorCatalog[x.code]=x});
     var total=Number(d.total||0),pages=Math.max(1,Math.ceil(total/state.reqPageSize));
     if(state.reqPage>pages){state.reqPage=pages;return loadReqLogs()}
     el('reqCount').textContent='第 '+state.reqPage+' / '+pages+' 页 · 共 '+total+' 条';
     if(!items.length){el('reqBox').innerHTML='<div class="empty">'+esc(d.message||'没有匹配的日志')+'</div>';return}
-    el('reqBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>时间</th><th>类型</th><th>用户</th><th>功能</th><th>状态</th><th>耗时</th><th>点数</th><th>请求号</th><th>路径</th><th>来源 IP</th></tr></thead><tbody>'+items.map(function(x){
+    el('reqBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>时间</th><th>类型</th><th>用户</th><th>功能</th><th>HTTP</th><th>黄雀码</th><th>耗时</th><th>点数</th><th>请求号</th><th>路径</th><th>来源 IP</th></tr></thead><tbody>'+items.map(function(x){
       var isJob=x.source==='job';
       var isIp12=x.source==='ip12';
       var type=isJob?'<span class="pill">任务</span>':(isIp12?'<span class="pill warn">IP12</span>':'<span class="pill neutral">请求</span>');
@@ -848,7 +849,9 @@
       var pathCell=x.path?'<div class="truncate" style="max-width:300px" title="'+esc(x.path)+'"><code>'+esc(x.path)+'</code></div>':'<span class="muted">-</span>';
       var ipCell=x.ip?'<code title="'+esc(x.ua||'')+'">'+esc(x.ip)+'</code>':'<span class="muted">-</span>';
       var requestId=x.request_id?'<code title="'+esc(x.request_id)+'">'+esc(x.request_id.slice(0,8))+'</code>':'<span class="muted">-</span>';
-      return '<tr><td><code>'+esc(x.time)+'</code></td><td>'+type+'</td><td>'+user+'</td><td>'+(x.func?esc(x.func):'<span class="muted">-</span>')+'</td><td>'+st+'</td><td><code>'+(x.duration_sec!=null?esc(fmtDuration(x.duration_sec)):'-')+'</code></td><td class="right"><code>'+(x.cost!=null?Number(x.cost).toLocaleString():'-')+'</code></td><td>'+requestId+'</td><td>'+pathCell+'</td><td>'+ipCell+'</td></tr>';
+      var errorInfo=errorCatalog[x.hq_code]||{};
+      var hqCode=x.hq_code?'<code class="pill '+(x.cat==='fail'?'warn':'neutral')+'" title="'+esc((errorInfo.message||'黄雀统一错误码')+(errorInfo.retryable?' · 可重试':' · 不建议原样重试'))+'">'+esc(x.hq_code)+'</code>':'<span class="muted">-</span>';
+      return '<tr><td><code>'+esc(x.time)+'</code></td><td>'+type+'</td><td>'+user+'</td><td>'+(x.func?esc(x.func):'<span class="muted">-</span>')+'</td><td>'+st+'</td><td>'+hqCode+'</td><td><code>'+(x.duration_sec!=null?esc(fmtDuration(x.duration_sec)):'-')+'</code></td><td class="right"><code>'+(x.cost!=null?Number(x.cost).toLocaleString():'-')+'</code></td><td>'+requestId+'</td><td>'+pathCell+'</td><td>'+ipCell+'</td></tr>';
     }).join('')+'</tbody></table></div><div class="pager"><button data-req-page="-1" '+(state.reqPage<=1?'disabled':'')+'>上一页</button><span class="pager-info">第 '+state.reqPage+' / '+pages+' 页 · 每页 '+state.reqPageSize+' 条</span><button data-req-page="1" '+(state.reqPage>=pages?'disabled':'')+'>下一页</button></div>';
     Array.prototype.forEach.call(el('reqBox').querySelectorAll('[data-req-page]'),function(btn){
       btn.onclick=function(){state.reqPage+=Number(btn.getAttribute('data-req-page'));loadReqLogs()};
