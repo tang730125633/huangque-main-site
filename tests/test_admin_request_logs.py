@@ -10,7 +10,7 @@ SAMPLE = "\n".join(
     [
         '127.0.0.1 - - [09/Jul/2026:08:41:19 +0800] "GET /api/claim?token=worker-secret HTTP/1.1" 200 12 "-" "Python-urllib/3.11"',
         '127.0.0.1 - - [09/Jul/2026:08:41:30 +0800] "GET /api/admin/overview?days=7 HTTP/1.1" 200 900 "-" "Mozilla/5.0"',
-        '1.2.3.4 - - [09/Jul/2026:08:42:00 +0800] "POST /api/gen/image HTTP/1.1" 500 88 "-" "Mozilla/5.0" rt=1.234 rid=req_image_1234',
+        '1.2.3.4 - - [09/Jul/2026:08:42:00 +0800] "POST /api/gen/image HTTP/1.1" 502 88 "-" "Mozilla/5.0" rt=1.234 rid=req_image_1234 hq=HQ-UPSTREAM-001',
         '5.6.7.8 - - [09/Jul/2026:08:42:30 +0800] "GET /api/gen/job/42?api_key=abc&ratio=1:1 HTTP/1.1" 200 55 "-" "Mozilla/5.0"',
         # 畸形分号分隔 + 嵌套 URL 编码密钥 + basic auth 用户名带空格
         '2.2.2.2 - - [09/Jul/2026:08:42:40 +0800] "GET /api/gen/x?a=1;token=evil HTTP/1.1" 200 10 "-" "curl/8"',
@@ -74,7 +74,7 @@ class RequestLogTests(unittest.TestCase):
 
     def test_status_filter(self):
         items = admin_api.request_logs(status="5")["items"]
-        self.assertEqual([x["status"] for x in items], [500])
+        self.assertEqual([x["status"] for x in items], [502])
         items = admin_api.request_logs(status="200")["items"]
         self.assertTrue(items and all(x["status"] == 200 for x in items))
 
@@ -88,8 +88,14 @@ class RequestLogTests(unittest.TestCase):
         items = {x["path"]: x for x in admin_api.request_logs(include_noise=True)["items"]}
         self.assertEqual(items["/api/gen/image"]["duration_sec"], 1.234)
         self.assertEqual(items["/api/gen/image"]["request_id"], "req_image_1234")
+        self.assertEqual(items["/api/gen/image"]["hq_code"], "HQ-UPSTREAM-001")
         self.assertIsNone(items["/api/gen/health"]["duration_sec"])
         self.assertEqual(items["/api/gen/health"]["request_id"], "")
+        self.assertEqual(items["/api/gen/health"]["hq_code"], "")
+
+    def test_hq_error_code_is_searchable(self):
+        items = admin_api.request_logs(q="HQ-UPSTREAM-001")["items"]
+        self.assertEqual([x["path"] for x in items], ["/api/gen/image"])
 
     def test_missing_log_file(self):
         admin_api.NGINX_ACCESS_LOGS = [pathlib.Path(str(self.files[0]) + ".nope")]
@@ -195,6 +201,7 @@ class RequestLogUserTests(unittest.TestCase):
         self.assertEqual(ip12["func"], "IP12 · 生成初稿 PDF")
         self.assertAlmostEqual(ip12["duration_sec"], 0.4321)
         self.assertEqual(ip12["request_id"], "hermes_req_1234")
+        self.assertIn("error_catalog", data)
 
     def test_activity_filters(self):
         # source 过滤

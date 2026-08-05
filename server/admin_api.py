@@ -35,6 +35,7 @@ egress = import_module(_DOMAIN_PACKAGE + ".egress")
 feature_flags = import_module(_DOMAIN_PACKAGE + ".feature_flags")
 provider_keys = import_module(_DOMAIN_PACKAGE + ".provider_keys")
 pricing = import_module(_DOMAIN_PACKAGE + ".pricing")
+error_contract = import_module(_DOMAIN_PACKAGE + ".error_contract")
 
 
 def _optional_content_domain(name):
@@ -591,7 +592,8 @@ LOG_LINE_RE = re.compile(
     r'(?P<status>\d{3}) (?P<size>\d+|-) "[^"]*" "(?P<ua>[^"]*)"'
 )
 LOG_META_RE = re.compile(
-    r"\srt=(?P<duration>[0-9]+(?:\.[0-9]+)?)\srid=(?P<request_id>[A-Za-z0-9_-]+)\s*$"
+    r"\srt=(?P<duration>[0-9]+(?:\.[0-9]+)?)\srid=(?P<request_id>[A-Za-z0-9_-]+)"
+    r"(?:\shq=(?P<hq_code>[A-Z0-9-]+|-))?\s*$"
 )
 _MONTHS = {
     "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
@@ -1422,6 +1424,7 @@ def _collect_request_entries(limit, status="", q="", include_noise=False):
             code = m.group("status")
             meta = LOG_META_RE.search(line)
             request_id = meta.group("request_id") if meta else ""
+            hq_code = "" if not meta or meta.group("hq_code") in (None, "-") else meta.group("hq_code")
             if status:
                 # ok/fail = 统一语义(给合并时间线用)；单数字=状态码前缀；三位=精确
                 if status == "ok":
@@ -1432,7 +1435,7 @@ def _collect_request_entries(limit, status="", q="", include_noise=False):
                         continue
                 elif code[:1] != status if len(status) == 1 else code != status:
                     continue
-            if q and q not in path and q not in request_id:
+            if q and q not in path and q not in request_id and q not in hq_code:
                 continue
             sort_key, disp = _parse_log_time(m.group("time"))
             jid_match = JOB_PATH_RE.match(path)
@@ -1451,6 +1454,7 @@ def _collect_request_entries(limit, status="", q="", include_noise=False):
                         "ua": m.group("ua")[:120],
                         "duration_sec": float(meta.group("duration")) if meta else None,
                         "request_id": request_id,
+                        "hq_code": hq_code,
                         "_jid": int(jid_match.group(1)) if jid_match else None,
                     },
                 )
@@ -1543,6 +1547,7 @@ def _collect_hermes_entries(limit):
                 "ip": str(row.get("ip") or "")[:80],
                 "ua": "",
                 "request_id": str(row.get("request_id") or "")[:128],
+                "hq_code": error_contract.code_for(status_code) if failed and status_code is not None else "",
             }))
     entries.sort(key=lambda x: x[0], reverse=True)
     return entries[:limit]
@@ -1596,6 +1601,7 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
                         "ip": it["ip"],
                         "ua": it["ua"],
                         "request_id": it["request_id"],
+                        "hq_code": it.get("hq_code") or "",
                     },
                 )
             )
@@ -1625,6 +1631,7 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
                         "ip": "",
                         "ua": "",
                         "request_id": "",
+                        "hq_code": "",
                     },
                 )
             )
@@ -1633,7 +1640,7 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
     for key, it in sorted(merged, key=lambda x: x[0], reverse=True):
         if category and it["cat"] != category:
             continue
-        if q and all(q not in (it.get(field) or "") for field in ("path", "user", "func", "request_id")):
+        if q and all(q not in (it.get(field) or "") for field in ("path", "user", "func", "request_id", "hq_code")):
             continue
         matching.append(it)
     total = len(matching)
@@ -1644,6 +1651,7 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
         "offset": offset,
         "total": total,
         "days": days,
+        "error_catalog": error_contract.public_catalog(),
     }
     if message and source != "job":
         out["message"] = message
@@ -2030,10 +2038,16 @@ class H(BaseHTTPRequestHandler):
         pass
 
     def _send(self, code, obj):
-        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        req_id = error_contract.request_id(self.headers)
+        public_obj, hq_code = error_contract.normalize(code, obj, req_id)
+        error_contract.audit(code, obj, req_id, hq_code)
+        body = json.dumps(public_obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        if hq_code:
+            self.send_header("X-HQ-Error-Code", hq_code)
+            self.send_header("X-HQ-Request-ID", req_id)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

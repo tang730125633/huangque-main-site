@@ -43,9 +43,9 @@ except ImportError:  # 生产环境以脚本方式从 /home/ubuntu/auth-service 
     import hq_cli_api
 
 try:
-    from .content_domains import pricing
+    from .content_domains import pricing, error_contract
 except ImportError:  # 生产环境以脚本方式从 /home/ubuntu/auth-service 启动
-    from content_domains import pricing
+    from content_domains import pricing, error_contract
 
 DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.db")
 PORT = 8095
@@ -4218,9 +4218,15 @@ def clear_auth_cookie_header():
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def _send(self, code, obj, extra_headers=None):
-        body = json.dumps(obj, ensure_ascii=False).encode()
+        req_id = error_contract.request_id(self.headers)
+        public_obj, hq_code = error_contract.normalize(code, obj, req_id)
+        error_contract.audit(code, obj, req_id, hq_code)
+        body = json.dumps(public_obj, ensure_ascii=False).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        if hq_code:
+            self.send_header("X-HQ-Error-Code", hq_code)
+            self.send_header("X-HQ-Request-ID", req_id)
         for key, value in (extra_headers or {}).items():
             self.send_header(key, value)
         self.send_header("Content-Length", str(len(body)))
