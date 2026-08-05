@@ -14,6 +14,32 @@ const shell = fs.readFileSync(path.join(ROOT, 'site/workbench/cloud-shell.js'), 
 const centerScript = fs.readFileSync(path.join(ROOT, 'site/workbench/short-drama-center.js'), 'utf8');
 const centerStyle = fs.readFileSync(path.join(ROOT, 'site/workbench/short-drama-center.css'), 'utf8');
 
+function chromeCandidates(platform = process.platform, env = process.env) {
+  const configured = String(env.CHROME_BIN || '').trim();
+  const candidates = configured ? [configured] : [];
+  if (platform === 'win32') {
+    return candidates.concat([
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    ]);
+  }
+  if (platform === 'darwin') {
+    return candidates.concat([
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Chromium.app/Contents/MacOS/Chromium',
+      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+    ]);
+  }
+  return candidates.concat([
+    '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium', '/usr/bin/chromium-browser',
+  ]);
+}
+
+function findChromeExecutable() {
+  return chromeCandidates().find(candidate => fs.existsSync(candidate));
+}
+
 test('一级导航包含独立短剧入口和专用图标', () => {
   assert.match(shell, /\{k:'short-drama',l:'短剧创作',i:'clapper'\}/);
   assert.match(shell, /clapper:/);
@@ -296,10 +322,7 @@ test('剧本共创室使用两栏、阶段导航和按需切换的对话优先�
 });
 
 test('移动端收起创作记忆后仍可聚焦并再次展开', async () => {
-  const chromeCandidates = process.platform === 'win32'
-    ? ['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe']
-    : ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
-  const chrome = chromeCandidates.find(candidate => fs.existsSync(candidate));
+  const chrome = findChromeExecutable();
   assert.ok(chrome, '真实响应式测试需要 Chrome 或 Chromium');
   const probe = `<script>addEventListener('DOMContentLoaded',function(){setTimeout(function(){try{var dialog=document.getElementById('shortDramaDialog'),inspiration=document.getElementById('shortDramaInspiration'),grid=document.querySelector('.short-drama-planner-grid'),inspector=document.querySelector('.short-drama-planner-inspector'),button=document.getElementById('shortDramaPlannerMemoryToggle'),brief=document.getElementById('shortDramaPlannerBrief');inspiration.hidden=false;dialog.showModal();button.click();button.focus();var checks=[matchMedia('(max-width:900px)').matches,grid.classList.contains('memory-collapsed'),getComputedStyle(inspector).display!=='none',button.getClientRects().length>0,document.activeElement===button,button.getAttribute('aria-expanded')==='false'];button.click();checks.push(!grid.classList.contains('memory-collapsed'),button.getAttribute('aria-expanded')==='true',getComputedStyle(brief).display!=='none');document.documentElement.setAttribute('data-responsive-memory-test',checks.every(Boolean)?'pass':'fail-'+checks.map(function(value){return value?'1':'0';}).join(''));}catch(error){document.documentElement.setAttribute('data-responsive-memory-test','error');}},200);});<\/script>`;
   const testHtml = html.replace('</body>', probe + '</body>');

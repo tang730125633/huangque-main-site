@@ -9,6 +9,9 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from contextlib import closing
+
+from . import egress, provider_keys
 
 
 ALLOWED_FIELDS = {
@@ -23,10 +26,28 @@ ALLOWED_STATUSES = {"confirmed", "inferred", "suggested", "conflicted", "removed
 ALLOWED_NEXT_ACTIONS = {"ask", "recommend", "confirm", "continue", "undo", "clarify"}
 
 _USAGE_LOCK = threading.Lock()
-_USER_WINDOWS = {}
 _USER_ACTIVE = {}
 _GLOBAL_ACTIVE = 0
 _AUDIT_LOG = logging.getLogger("short_drama.advisor.usage")
+
+_USAGE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS short_drama_advisor_usage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  period_day INTEGER NOT NULL,
+  reserved_microusd INTEGER NOT NULL,
+  prompt_tokens INTEGER,
+  completion_tokens INTEGER,
+  status TEXT NOT NULL DEFAULT 'reserved',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_short_drama_advisor_usage_user_time
+  ON short_drama_advisor_usage(username, created_at);
+CREATE INDEX IF NOT EXISTS idx_short_drama_advisor_usage_day
+  ON short_drama_advisor_usage(period_day, status);
+"""
 
 
 class AdvisorError(ValueError):
@@ -48,12 +69,87 @@ def _usage_limits():
     return {
         "window_seconds": _positive_env("SHORT_DRAMA_ADVISOR_WINDOW_SECONDS", 300),
         "requests_per_window": _positive_env("SHORT_DRAMA_ADVISOR_REQUESTS_PER_WINDOW", 12),
+        "user_daily_requests": _positive_env("SHORT_DRAMA_ADVISOR_USER_DAILY_REQUESTS", 60),
+        "request_reserve_microusd": _positive_env(
+            "SHORT_DRAMA_ADVISOR_REQUEST_RESERVE_MICROUSD", 10000
+        ),
+        "global_daily_budget_microusd": _positive_env(
+            "SHORT_DRAMA_ADVISOR_GLOBAL_DAILY_BUDGET_MICROUSD", 1000000
+        ),
         "user_concurrency": _positive_env("SHORT_DRAMA_ADVISOR_USER_CONCURRENCY", 1),
         "global_concurrency": _positive_env("SHORT_DRAMA_ADVISOR_GLOBAL_CONCURRENCY", 4),
     }
 
 
-def _acquire_usage(username, now=None):
+def init_db(db_factory):
+    with closing(db_factory()) as conn:
+        conn.executescript(_USAGE_SCHEMA)
+        conn.commit()
+
+
+def _reserve_usage(db_factory, username, request_hash, now, limits):
+    if not callable(db_factory):
+        raise AdvisorError(
+            "advisor_usage_store_unavailable", "创作助手额度服务暂时不可用", 503
+        )
+    timestamp = int(now)
+    period_day = timestamp - (timestamp % 86400)
+    reserve = limits["request_reserve_microusd"]
+    try:
+        with closing(db_factory()) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            window_count = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_advisor_usage "
+                "WHERE username=? AND created_at>=?",
+                (username, timestamp - limits["window_seconds"]),
+            ).fetchone()[0]
+            if window_count >= limits["requests_per_window"]:
+                raise AdvisorError(
+                    "advisor_rate_limited",
+                    "创作助手免费额度已达当前时间窗口上限，请稍后再试",
+                    429,
+                )
+            daily_count = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_advisor_usage "
+                "WHERE username=? AND period_day=?",
+                (username, period_day),
+            ).fetchone()[0]
+            if daily_count >= limits["user_daily_requests"]:
+                raise AdvisorError(
+                    "advisor_daily_quota_exhausted",
+                    "创作助手今日免费额度已用完，请明日再试",
+                    429,
+                )
+            reserved = conn.execute(
+                "SELECT COALESCE(SUM(reserved_microusd),0) "
+                "FROM short_drama_advisor_usage WHERE period_day=?",
+                (period_day,),
+            ).fetchone()[0]
+            if reserved + reserve > limits["global_daily_budget_microusd"]:
+                raise AdvisorError(
+                    "advisor_global_budget_exhausted",
+                    "创作助手今日全局费用预算已用完",
+                    503,
+                )
+            cursor = conn.execute(
+                "INSERT INTO short_drama_advisor_usage"
+                "(username,request_hash,period_day,reserved_microusd,status,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (username, request_hash, period_day, reserve, "reserved", timestamp, timestamp),
+            )
+            usage_id = cursor.lastrowid
+            conn.commit()
+    except AdvisorError:
+        raise
+    except Exception as error:
+        _AUDIT_LOG.exception("advisor_usage_reservation_failed username=%s", username)
+        raise AdvisorError(
+            "advisor_usage_store_unavailable", "创作助手额度服务暂时不可用", 503
+        ) from error
+    return {"id": usage_id, "username": username, "db_factory": db_factory}
+
+
+def _acquire_usage(username, db_factory, request_hash, now=None):
     global _GLOBAL_ACTIVE
     username = str(username or "").strip()
     if not username:
@@ -61,15 +157,6 @@ def _acquire_usage(username, now=None):
     now = time.time() if now is None else float(now)
     limits = _usage_limits()
     with _USAGE_LOCK:
-        window = [
-            value for value in _USER_WINDOWS.get(username, [])
-            if now - value < limits["window_seconds"]
-        ]
-        _USER_WINDOWS[username] = window
-        if len(window) >= limits["requests_per_window"]:
-            raise AdvisorError(
-                "advisor_rate_limited", "创作助手免费额度已达当前时间窗口上限，请稍后再试", 429
-            )
         if _USER_ACTIVE.get(username, 0) >= limits["user_concurrency"]:
             raise AdvisorError(
                 "advisor_user_busy", "当前账号已有创作助手请求处理中", 429
@@ -78,15 +165,18 @@ def _acquire_usage(username, now=None):
             raise AdvisorError(
                 "advisor_capacity_reached", "创作助手当前繁忙，请稍后再试", 429
             )
-        window.append(now)
-        _USER_WINDOWS[username] = window
         _USER_ACTIVE[username] = _USER_ACTIVE.get(username, 0) + 1
         _GLOBAL_ACTIVE += 1
-    return username
+    try:
+        return _reserve_usage(db_factory, username, request_hash, now, limits)
+    except Exception:
+        _release_usage({"username": username})
+        raise
 
 
-def _release_usage(username):
+def _release_usage(ticket):
     global _GLOBAL_ACTIVE
+    username = ticket.get("username") if isinstance(ticket, dict) else ticket
     if not username:
         return
     with _USAGE_LOCK:
@@ -101,9 +191,34 @@ def _release_usage(username):
 def _reset_usage_for_tests():
     global _GLOBAL_ACTIVE
     with _USAGE_LOCK:
-        _USER_WINDOWS.clear()
         _USER_ACTIVE.clear()
         _GLOBAL_ACTIVE = 0
+
+
+def _finalize_usage(ticket, outcome, provider_usage=None):
+    if not isinstance(ticket, dict) or not ticket.get("id"):
+        return
+    usage = provider_usage if isinstance(provider_usage, dict) else {}
+    prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens")
+    completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens")
+    try:
+        with closing(ticket["db_factory"]()) as conn:
+            conn.execute(
+                "UPDATE short_drama_advisor_usage SET status=?,prompt_tokens=?,"
+                "completion_tokens=?,updated_at=? WHERE id=? AND status='reserved'",
+                (
+                    str(outcome or "failed")[:32],
+                    int(prompt_tokens) if prompt_tokens is not None else None,
+                    int(completion_tokens) if completion_tokens is not None else None,
+                    int(time.time()),
+                    ticket["id"],
+                ),
+            )
+            conn.commit()
+    except Exception:
+        _AUDIT_LOG.exception(
+            "advisor_usage_finalize_failed usage_id=%s", ticket.get("id")
+        )
 
 
 def _provider_config():
@@ -112,13 +227,8 @@ def _provider_config():
         or os.getenv("XAI_API_BASE")
         or ""
     ).strip().rstrip("/")
-    key = str(
-        os.getenv("SHORT_DRAMA_ADVISOR_API_KEY")
-        or os.getenv("XAI_API_KEY")
-        or ""
-    ).strip()
     model = str(os.getenv("SHORT_DRAMA_ADVISOR_MODEL") or "grok-3-mini").strip()
-    if not base or not key:
+    if not base:
         raise AdvisorError(
             "advisor_provider_not_configured",
             "\u524d\u7f6e\u521b\u4f5c\u52a9\u624b Provider \u5c1a\u672a\u914d\u7f6e",
@@ -126,7 +236,53 @@ def _provider_config():
         )
     if not base.endswith("/v1"):
         base += "/v1"
-    return base + "/chat/completions", key, model
+    return base + "/chat/completions", model
+
+
+def _provider_opener():
+    """Reuse the same preflight-selected xAI egress route as official video."""
+    proxy = egress.preferred_proxy()
+    if proxy:
+        return urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+        ).open
+    return urllib.request.build_opener().open
+
+
+def _claim_provider_candidate(attempted_ids):
+    try:
+        candidate = provider_keys.claim_candidate("xai")
+    except provider_keys.KeyStoreUnavailable as error:
+        raise AdvisorError(
+            "advisor_provider_not_configured",
+            "\u524d\u7f6e\u521b\u4f5c\u52a9\u624b Provider \u5c1a\u672a\u914d\u7f6e",
+            503,
+        ) from error
+    if not candidate or candidate.get("id") in attempted_ids:
+        if attempted_ids:
+            raise AdvisorError(
+                "advisor_provider_failed",
+                "\u521b\u4f5c\u52a9\u624b\u6682\u65f6\u4e0d\u53ef\u7528\uff08xAI \u5bc6\u94a5\u5747\u5df2\u5931\u6548\uff09",
+                502,
+            )
+        raise AdvisorError(
+            "advisor_provider_not_configured",
+            "\u524d\u7f6e\u521b\u4f5c\u52a9\u624b Provider \u5c1a\u672a\u914d\u7f6e",
+            503,
+        )
+    return candidate
+
+
+def _set_candidate_health(candidate, ok, latency_ms=None, error=""):
+    try:
+        provider_keys.set_health(
+            candidate["id"], ok, latency_ms, str(error or "")[:180]
+        )
+    except Exception:
+        _AUDIT_LOG.exception(
+            "advisor_provider_key_health_write_failed key_id=%s",
+            candidate.get("id"),
+        )
 
 
 def _clean_body(body):
@@ -336,7 +492,7 @@ def _advise_provider(body, opener=None):
     request_body = _clean_body(body)
     if not request_body["user_message"]:
         raise AdvisorError("message_required", "\u8bf7\u8f93\u5165\u60f3\u6cd5\u6216\u95ee\u9898")
-    url, key, model = _provider_config()
+    url, model = _provider_config()
     system = (
         "You are a Chinese short-drama interview assistant. Classify whether the user "
         "is answering, asking a question, requesting a recommendation, modifying a fact, "
@@ -369,53 +525,81 @@ def _advise_provider(body, opener=None):
     payload = json.dumps({
         "model": model,
         "temperature": 0.3,
+        "max_tokens": _positive_env("SHORT_DRAMA_ADVISOR_MAX_TOKENS", 1200),
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": json.dumps(request_body, ensure_ascii=False)},
         ],
     }, ensure_ascii=False).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=payload,
-        headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with (opener or urllib.request.urlopen)(request, timeout=45) as response:
-            result = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        raise AdvisorError(
-            "advisor_provider_failed",
-            "\u521b\u4f5c\u52a9\u624b\u6682\u65f6\u4e0d\u53ef\u7528\uff08HTTP %s\uff09" % error.code,
-            502,
-        ) from error
-    except (OSError, ValueError) as error:
-        raise AdvisorError(
-            "advisor_provider_failed", "\u521b\u4f5c\u52a9\u624b\u6682\u65f6\u4e0d\u53ef\u7528", 502
-        ) from error
+    attempted_ids = set()
+    request_open = opener or _provider_opener()
+    while True:
+        candidate = _claim_provider_candidate(attempted_ids)
+        attempted_ids.add(candidate["id"])
+        request = urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "Authorization": "Bearer " + candidate["secret"],
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        started = time.monotonic()
+        try:
+            with request_open(request, timeout=45) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            latency_ms = int((time.monotonic() - started) * 1000)
+            if error.code in (401, 403):
+                _set_candidate_health(
+                    candidate, False, latency_ms, "HTTP %s" % error.code
+                )
+                continue
+            raise AdvisorError(
+                "advisor_provider_failed",
+                "\u521b\u4f5c\u52a9\u624b\u6682\u65f6\u4e0d\u53ef\u7528\uff08HTTP %s\uff09" % error.code,
+                502,
+            ) from error
+        except (OSError, ValueError) as error:
+            raise AdvisorError(
+                "advisor_provider_failed", "\u521b\u4f5c\u52a9\u624b\u6682\u65f6\u4e0d\u53ef\u7528", 502
+            ) from error
+        _set_candidate_health(
+            candidate, True, int((time.monotonic() - started) * 1000), ""
+        )
+        break
     choices = result.get("choices") or []
     content = (((choices[0] if choices else {}).get("message") or {}).get("content") or "")
-    return _normalize(_json_content(content), request_body["understanding"])
+    normalized = _normalize(_json_content(content), request_body["understanding"])
+    normalized["_provider_usage"] = result.get("usage") or {}
+    return normalized
 
 
-def advise(body, opener=None, username=None):
+def advise(body, opener=None, username=None, db_factory=None):
     request_body = _clean_body(body)
     if not request_body["user_message"]:
         raise AdvisorError("message_required", "请输入想法或问题")
-    # Internal deterministic tests may omit username; the authenticated HTTP route never does.
-    ticket = _acquire_usage(username) if username is not None else None
     request_hash = hashlib.sha256(
         json.dumps(request_body, ensure_ascii=False, sort_keys=True,
                    separators=(",", ":")).encode("utf-8")
     ).hexdigest()[:16]
+    # Internal deterministic normalization tests may omit username; HTTP never does.
+    ticket = (
+        _acquire_usage(username, db_factory, request_hash)
+        if username is not None else None
+    )
     started = time.monotonic()
     outcome = "failed"
+    provider_usage = {}
     try:
         result = _advise_provider(request_body, opener=opener)
+        provider_usage = result.pop("_provider_usage", {})
         outcome = "succeeded"
         return result
     finally:
+        _finalize_usage(ticket, outcome, provider_usage)
         _release_usage(ticket)
         _AUDIT_LOG.info(
             "advisor_usage username=%s request_hash=%s outcome=%s duration_ms=%d",

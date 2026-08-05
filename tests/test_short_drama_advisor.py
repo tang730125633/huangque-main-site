@@ -1,9 +1,12 @@
 import io
 import json
 import os
+import sqlite3
 import sys
+import tempfile
 import threading
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -32,6 +35,28 @@ class Response:
 class ShortDramaAdvisorTests(unittest.TestCase):
     def setUp(self):
         short_drama_advisor._reset_usage_for_tests()
+        self.tempdir = tempfile.TemporaryDirectory(prefix="hq-advisor-")
+        self.db_path = Path(self.tempdir.name) / "content.db"
+
+        def db_factory():
+            return sqlite3.connect(self.db_path, timeout=5)
+
+        self.db = db_factory
+        short_drama_advisor.init_db(self.db)
+        self.claim_patch = mock.patch.object(
+            short_drama_advisor.provider_keys, "claim_candidate",
+            return_value={"id": "xai-key-1", "secret": "pool-secret"},
+        )
+        self.health_patch = mock.patch.object(
+            short_drama_advisor.provider_keys, "set_health"
+        )
+        self.claim_candidate = self.claim_patch.start()
+        self.set_health = self.health_patch.start()
+
+    def tearDown(self):
+        self.health_patch.stop()
+        self.claim_patch.stop()
+        self.tempdir.cleanup()
 
     def test_recommendation_context_is_cleaned_and_selection_is_canonical(self):
         cleaned = short_drama_advisor._clean_body({
@@ -62,7 +87,10 @@ class ShortDramaAdvisorTests(unittest.TestCase):
                 "intent": "answer", "reply": "收到", "confidence": .9,
                 "field_updates": [], "missing_fields": [],
             }
-            return Response({"choices": [{"message": {"content": json.dumps(content)}}]})
+            return Response({
+                "choices": [{"message": {"content": json.dumps(content)}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            })
         return opener
 
     def test_question_does_not_extract_business_fields(self):
@@ -71,6 +99,7 @@ class ShortDramaAdvisorTests(unittest.TestCase):
         def opener(request, timeout=0):
             captured["payload"] = json.loads(request.data.decode("utf-8"))
             captured["timeout"] = timeout
+            captured["authorization"] = request.get_header("Authorization")
             content = {
                 "intent": "ask_recommendation",
                 "reply": "可以，我给你三个冲突方向。",
@@ -83,7 +112,6 @@ class ShortDramaAdvisorTests(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {
             "SHORT_DRAMA_ADVISOR_API_BASE": "https://advisor.example/v1",
-            "SHORT_DRAMA_ADVISOR_API_KEY": "test-key",
         }, clear=False):
             result = short_drama_advisor.advise({
                 "messages": ["青春期学生", "你觉得呢"],
@@ -97,6 +125,8 @@ class ShortDramaAdvisorTests(unittest.TestCase):
         self.assertEqual(result["missing_fields"], ["conflict"])
         self.assertEqual(captured["timeout"], 45)
         self.assertEqual(captured["payload"]["model"], "grok-3-mini")
+        self.assertEqual(captured["payload"]["max_tokens"], 1200)
+        self.assertEqual("Bearer pool-secret", captured["authorization"])
 
     def test_response_is_normalized_to_public_contract(self):
         result = short_drama_advisor._normalize({
@@ -171,9 +201,7 @@ class ShortDramaAdvisorTests(unittest.TestCase):
     def test_missing_provider_is_explicit_and_route_is_allowlisted(self):
         with mock.patch.dict(os.environ, {
             "SHORT_DRAMA_ADVISOR_API_BASE": "",
-            "SHORT_DRAMA_ADVISOR_API_KEY": "",
             "XAI_API_BASE": "",
-            "XAI_API_KEY": "",
         }, clear=False):
             with self.assertRaises(short_drama_advisor.AdvisorError) as raised:
                 short_drama_advisor.advise({"user_message": "你觉得呢"})
@@ -185,18 +213,19 @@ class ShortDramaAdvisorTests(unittest.TestCase):
         calls = []
         with mock.patch.dict(os.environ, {
             "SHORT_DRAMA_ADVISOR_API_BASE": "https://advisor.example/v1",
-            "SHORT_DRAMA_ADVISOR_API_KEY": "test-key",
             "SHORT_DRAMA_ADVISOR_REQUESTS_PER_WINDOW": "2",
         }, clear=False):
             for _index in range(2):
                 short_drama_advisor.advise(
                     {"user_message": "继续完善故事"},
                     opener=self._success_opener(calls), username="alice",
+                    db_factory=self.db,
                 )
             with self.assertRaises(short_drama_advisor.AdvisorError) as raised:
                 short_drama_advisor.advise(
                     {"user_message": "再次调用"},
                     opener=self._success_opener(calls), username="alice",
+                    db_factory=self.db,
                 )
         self.assertEqual(429, raised.exception.status)
         self.assertEqual("advisor_rate_limited", raised.exception.code)
@@ -216,32 +245,31 @@ class ShortDramaAdvisorTests(unittest.TestCase):
         errors = []
         with mock.patch.dict(os.environ, {
             "SHORT_DRAMA_ADVISOR_API_BASE": "https://advisor.example/v1",
-            "SHORT_DRAMA_ADVISOR_API_KEY": "test-key",
             "SHORT_DRAMA_ADVISOR_REQUESTS_PER_WINDOW": "20",
             "SHORT_DRAMA_ADVISOR_USER_CONCURRENCY": "1",
             "SHORT_DRAMA_ADVISOR_GLOBAL_CONCURRENCY": "1",
         }, clear=False):
             thread = threading.Thread(target=lambda: short_drama_advisor.advise(
                 {"user_message": "阻塞请求"}, opener=blocking_opener,
-                username="alice",
+                username="alice", db_factory=self.db,
             ))
             thread.start()
             self.assertTrue(started.wait(2))
             with self.assertRaises(short_drama_advisor.AdvisorError) as same_user:
                 short_drama_advisor.advise(
                     {"user_message": "并发请求"}, opener=self._success_opener(errors),
-                    username="alice",
+                    username="alice", db_factory=self.db,
                 )
             with self.assertRaises(short_drama_advisor.AdvisorError) as global_limit:
                 short_drama_advisor.advise(
                     {"user_message": "另一账号请求"}, opener=self._success_opener(errors),
-                    username="bob",
+                    username="bob", db_factory=self.db,
                 )
             release.set()
             thread.join(5)
             result = short_drama_advisor.advise(
                 {"user_message": "槽位释放后继续"}, opener=self._success_opener(errors),
-                username="bob",
+                username="bob", db_factory=self.db,
             )
         self.assertEqual("advisor_user_busy", same_user.exception.code)
         self.assertEqual("advisor_capacity_reached", global_limit.exception.code)
@@ -258,7 +286,6 @@ class ShortDramaAdvisorTests(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {
             "SHORT_DRAMA_ADVISOR_API_BASE": "https://advisor.example/v1",
-            "SHORT_DRAMA_ADVISOR_API_KEY": "test-key",
             "SHORT_DRAMA_ADVISOR_REQUESTS_PER_WINDOW": "20",
             "SHORT_DRAMA_ADVISOR_USER_CONCURRENCY": "1",
             "SHORT_DRAMA_ADVISOR_GLOBAL_CONCURRENCY": "1",
@@ -266,14 +293,191 @@ class ShortDramaAdvisorTests(unittest.TestCase):
             with self.assertRaises(short_drama_advisor.AdvisorError):
                 short_drama_advisor.advise(
                     {"user_message": "第一次失败"}, opener=failed_opener,
-                    username="alice",
+                    username="alice", db_factory=self.db,
                 )
             result = short_drama_advisor.advise(
                 {"user_message": "失败后重试"}, opener=self._success_opener(calls),
-                username="alice",
+                username="alice", db_factory=self.db,
             )
         self.assertEqual("answer", result["intent"])
         self.assertEqual(2, len(calls))
+
+    def test_pool_key_works_when_legacy_environment_keys_are_empty(self):
+        with mock.patch.dict(os.environ, {
+            "SHORT_DRAMA_ADVISOR_API_BASE": "https://advisor.example/v1",
+            "SHORT_DRAMA_ADVISOR_API_KEY": "",
+            "XAI_API_KEY": "",
+        }, clear=False):
+            result = short_drama_advisor.advise(
+                {"user_message": "继续完善故事"},
+                opener=self._success_opener(), username="alice",
+                db_factory=self.db,
+            )
+        self.assertEqual("answer", result["intent"])
+        self.claim_candidate.assert_called_with("xai")
+
+    def test_auth_failure_marks_key_unhealthy_and_switches_candidate(self):
+        self.claim_candidate.side_effect = [
+            {"id": "xai-key-1", "secret": "expired-secret"},
+            {"id": "xai-key-2", "secret": "healthy-secret"},
+        ]
+        authorizations = []
+
+        def opener(request, timeout=0):
+            authorizations.append(request.get_header("Authorization"))
+            if len(authorizations) == 1:
+                raise urllib.error.HTTPError(
+                    request.full_url, 401, "Unauthorized", {}, io.BytesIO(b"{}")
+                )
+            return self._success_opener()(request, timeout)
+
+        with mock.patch.dict(os.environ, {
+            "SHORT_DRAMA_ADVISOR_API_BASE": "https://advisor.example/v1",
+        }, clear=False):
+            result = short_drama_advisor.advise(
+                {"user_message": "给我三个方向"}, opener=opener,
+                username="alice", db_factory=self.db,
+            )
+
+        self.assertEqual("answer", result["intent"])
+        self.assertEqual(
+            ["Bearer expired-secret", "Bearer healthy-secret"], authorizations
+        )
+        self.assertEqual(2, self.claim_candidate.call_count)
+        self.assertEqual("xai-key-1", self.set_health.call_args_list[0].args[0])
+        self.assertFalse(self.set_health.call_args_list[0].args[1])
+        self.assertEqual("xai-key-2", self.set_health.call_args_list[1].args[0])
+        self.assertTrue(self.set_health.call_args_list[1].args[1])
+
+    def test_ambiguous_network_failure_does_not_switch_key(self):
+        def opener(_request, timeout=0):
+            raise OSError("connection reset after request")
+
+        with mock.patch.dict(os.environ, {
+            "SHORT_DRAMA_ADVISOR_API_BASE": "https://advisor.example/v1",
+        }, clear=False):
+            with self.assertRaises(short_drama_advisor.AdvisorError):
+                short_drama_advisor.advise(
+                    {"user_message": "继续"}, opener=opener,
+                    username="alice", db_factory=self.db,
+                )
+        self.assertEqual(1, self.claim_candidate.call_count)
+        self.set_health.assert_not_called()
+
+    def test_egress_opener_covers_primary_fallback_and_no_proxy(self):
+        for proxy in (
+            "http://127.0.0.1:10809",
+            "http://127.0.0.1:7897",
+            "",
+        ):
+            built = mock.Mock()
+            with self.subTest(proxy=proxy or "direct"), \
+                    mock.patch.object(
+                        short_drama_advisor.egress, "preferred_proxy",
+                        return_value=proxy,
+                    ), mock.patch.object(
+                        short_drama_advisor.urllib.request, "build_opener",
+                        return_value=built,
+                    ) as build_opener:
+                request_open = short_drama_advisor._provider_opener()
+                self.assertIs(request_open, built.open)
+                if proxy:
+                    handler = build_opener.call_args.args[0]
+                    self.assertEqual(proxy, handler.proxies["https"])
+                else:
+                    build_opener.assert_called_once_with()
+
+    def test_persisted_window_survives_runtime_reset(self):
+        with mock.patch.dict(os.environ, {
+            "SHORT_DRAMA_ADVISOR_API_BASE": "https://advisor.example/v1",
+            "SHORT_DRAMA_ADVISOR_REQUESTS_PER_WINDOW": "1",
+        }, clear=False):
+            short_drama_advisor.advise(
+                {"user_message": "第一次"}, opener=self._success_opener(),
+                username="alice", db_factory=self.db,
+            )
+            short_drama_advisor._reset_usage_for_tests()
+            with self.assertRaises(short_drama_advisor.AdvisorError) as raised:
+                short_drama_advisor.advise(
+                    {"user_message": "重启后第二次"}, opener=self._success_opener(),
+                    username="alice", db_factory=self.db,
+                )
+        self.assertEqual("advisor_rate_limited", raised.exception.code)
+
+    def test_global_budget_exhaustion_blocks_before_provider_call(self):
+        calls = []
+        with mock.patch.dict(os.environ, {
+            "SHORT_DRAMA_ADVISOR_API_BASE": "https://advisor.example/v1",
+            "SHORT_DRAMA_ADVISOR_REQUEST_RESERVE_MICROUSD": "5000",
+            "SHORT_DRAMA_ADVISOR_GLOBAL_DAILY_BUDGET_MICROUSD": "5000",
+        }, clear=False):
+            short_drama_advisor.advise(
+                {"user_message": "第一次"}, opener=self._success_opener(calls),
+                username="alice", db_factory=self.db,
+            )
+            with self.assertRaises(short_drama_advisor.AdvisorError) as raised:
+                short_drama_advisor.advise(
+                    {"user_message": "另一账号"}, opener=self._success_opener(calls),
+                    username="bob", db_factory=self.db,
+                )
+        self.assertEqual("advisor_global_budget_exhausted", raised.exception.code)
+        self.assertEqual(1, len(calls))
+
+    def test_daily_user_quota_survives_runtime_reset(self):
+        with mock.patch.dict(os.environ, {
+            "SHORT_DRAMA_ADVISOR_API_BASE": "https://advisor.example/v1",
+            "SHORT_DRAMA_ADVISOR_REQUESTS_PER_WINDOW": "20",
+            "SHORT_DRAMA_ADVISOR_USER_DAILY_REQUESTS": "1",
+        }, clear=False):
+            short_drama_advisor.advise(
+                {"user_message": "第一次"}, opener=self._success_opener(),
+                username="alice", db_factory=self.db,
+            )
+            short_drama_advisor._reset_usage_for_tests()
+            with self.assertRaises(short_drama_advisor.AdvisorError) as raised:
+                short_drama_advisor.advise(
+                    {"user_message": "今天再次调用"}, opener=self._success_opener(),
+                    username="alice", db_factory=self.db,
+                )
+        self.assertEqual("advisor_daily_quota_exhausted", raised.exception.code)
+
+    def test_global_budget_reservation_is_atomic_across_threads(self):
+        start = threading.Barrier(3)
+        results = []
+        provider_calls = []
+
+        def run(username):
+            start.wait(3)
+            try:
+                short_drama_advisor.advise(
+                    {"user_message": username},
+                    opener=self._success_opener(provider_calls),
+                    username=username, db_factory=self.db,
+                )
+                results.append("ok")
+            except short_drama_advisor.AdvisorError as error:
+                results.append(error.code)
+
+        with mock.patch.dict(os.environ, {
+            "SHORT_DRAMA_ADVISOR_API_BASE": "https://advisor.example/v1",
+            "SHORT_DRAMA_ADVISOR_REQUEST_RESERVE_MICROUSD": "5000",
+            "SHORT_DRAMA_ADVISOR_GLOBAL_DAILY_BUDGET_MICROUSD": "5000",
+            "SHORT_DRAMA_ADVISOR_GLOBAL_CONCURRENCY": "2",
+        }, clear=False):
+            threads = [
+                threading.Thread(target=run, args=(username,))
+                for username in ("alice", "bob")
+            ]
+            for thread in threads:
+                thread.start()
+            start.wait(3)
+            for thread in threads:
+                thread.join(5)
+
+        self.assertCountEqual(
+            ["ok", "advisor_global_budget_exhausted"], results
+        )
+        self.assertEqual(1, len(provider_calls))
 
 
 if __name__ == "__main__":

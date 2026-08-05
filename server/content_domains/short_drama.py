@@ -1177,6 +1177,7 @@ def init_db(db_factory):
         conn.commit()
     finally:
         conn.close()
+    short_drama_advisor.init_db(db_factory)
     short_drama_production.init_db(db_factory)
     short_drama_voice.init_db(db_factory)
     short_drama_alignment.init_db(db_factory)
@@ -4088,7 +4089,7 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             handler._send(200, actions[path]())
         elif method == "POST" and path == "/api/gen/short-drama/advisor":
             handler._send(200, short_drama_advisor.advise(
-                _request_object(handler), username=username,
+                _request_object(handler), username=username, db_factory=db_factory,
             ))
         elif (
             method == "GET"
