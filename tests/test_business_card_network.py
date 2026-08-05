@@ -480,6 +480,23 @@ class BusinessCardNetworkTests(unittest.TestCase):
             self.assertTrue(public_work["url"].startswith("https://signed.example/"))
             self.assertNotEqual(public_work["url"], owner_work["url"])
 
+    def test_account_avatar_upload_is_shared_with_auth_profile(self):
+        headers = {"Authorization": "Bearer " + self.child["token"]}
+        image = io.BytesIO()
+        Image.new("RGB", (2, 2), (30, 60, 90)).save(image, "PNG")
+        image_data = "data:image/png;base64," + base64.b64encode(image.getvalue()).decode("ascii")
+        with patch.object(self.auth.business_cards.miniprogram_security, "check_image"), \
+             patch("server.content_domains.cos.enabled", return_value=True), \
+             patch("server.content_domains.cos.put_bytes"), \
+             patch.object(self.auth.business_cards, "_media_url", side_effect=lambda key: "/media/" + key if key else ""):
+            status, uploaded = self.request("/api/auth/card/media", {
+                "field": "avatar", "data": image_data,
+            }, headers)
+            self.assertEqual(status, 200)
+            status, me = self.get("/api/auth/me", headers)
+            self.assertEqual(status, 200)
+            self.assertEqual(me["user"]["avatar"], uploaded["url"])
+
     def test_work_image_rejection_names_the_failed_slot(self):
         headers = {"Authorization": "Bearer " + self.child["token"]}
         image = io.BytesIO()
