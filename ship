@@ -100,6 +100,7 @@ TIMERS=""
 DEPLOYED=""
 NEED_RELOAD=0   # 部署过 systemd 单元/drop-in 时置 1，重启前必须 daemon-reload，否则改动不生效
 CONTENT_DOMAINS_SYNCED=0
+PROVIDERS_SYNCED=0
 add_svc(){ for s in $1; do case " $RESTART " in *" $s "*) ;; *) RESTART="$RESTART $s";; esac; done; }
 add_timer(){ for t in $1; do case " $TIMERS " in *" $t "*) ;; *) TIMERS="$TIMERS $t";; esac; done; }
 add_deployed(){ case " $DEPLOYED " in *" $1 "*) ;; *) DEPLOYED="$DEPLOYED $1";; esac; }
@@ -203,6 +204,10 @@ for f in "$@"; do
     server/content_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-content ;;
     server/func_names.py)  dest=/home/ubuntu/content-api/;  svc="huangque-content huangque-admin" ;;
     server/content_domains/*) dest=/home/ubuntu/content-api/content_domains/;  svc=huangque-content ;;
+    server/providers/*)
+             rel="${f#server/providers/}"
+             case "$rel" in */*) dest="/home/ubuntu/content-api/providers/${rel%/*}/" ;; *) dest=/home/ubuntu/content-api/providers/ ;; esac
+             svc=huangque-content ;;
     server/admin_api.py)   dest=/home/ubuntu/content-api/;  svc=huangque-admin ;;
     server/leadgen_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-leadgen-api ;;
     server/imggen_api.py)  dest=/home/ubuntu/content-api/;  svc=huangque-imggen-api ;;
@@ -236,6 +241,8 @@ for f in "$@"; do
     *) echo "  ⚠ 不认识 $f —— 不知道部署到哪，跳过（需要的话告诉我加进映射）"; continue ;;
   esac
   case "$dest" in /etc/systemd/system/*)
+    $SSHC "$REMOTE" "sudo mkdir -p $dest" || { echo "  ❌ $dest 创建失败"; exit 1; } ;;
+    /home/ubuntu/content-api/providers/*)
     $SSHC "$REMOTE" "sudo mkdir -p $dest" || { echo "  ❌ $dest 创建失败"; exit 1; } ;;
   esac
   if [ "$f" = "scripts/drift_sentinel.py" ]; then
@@ -276,6 +283,22 @@ for f in "$@"; do
           || { echo "  ❌ content_domains 整目录部署失败"; exit 1; }
         for tracked in $CONTENT_DOMAIN_FILES; do add_deployed "$tracked"; done
         CONTENT_DOMAINS_SYNCED=1
+      fi
+      ;;
+  esac
+  case "$f" in
+    server/providers/*|server/content_api.py|server/content_domains/*)
+      if [ "$PROVIDERS_SYNCED" = "0" ] && { [ "$EXACT_CONTENT_DOMAINS" = "0" ] || [ "${f#server/providers/}" != "$f" ]; }; then
+        PROVIDER_FILES="$(git ls-files server/providers)" \
+          || { echo "❌ 无法读取 providers Git 文件清单"; exit 1; }
+        [ -n "$PROVIDER_FILES" ] \
+          || { echo "❌ providers Git 文件清单为空"; exit 1; }
+        $SSHC "$REMOTE" "sudo mkdir -p /home/ubuntu/content-api/providers" || { echo "  ❌ providers 目录创建失败"; exit 1; }
+        push_dir server/providers/ /home/ubuntu/content-api/providers/ \
+          && echo "  ✓ server/providers/ → /home/ubuntu/content-api/providers/（依赖闭包同步）" \
+          || { echo "  ❌ providers 依赖闭包部署失败"; exit 1; }
+        for tracked in $PROVIDER_FILES; do add_deployed "$tracked"; done
+        PROVIDERS_SYNCED=1
       fi
       ;;
   esac

@@ -4413,6 +4413,10 @@ class H(BaseHTTPRequestHandler):
             if plan["kind"] == "account":
                 return self._cli_send(200, {"user": self._cli_public_user(row), "scopes": list(scopes),
                                             "expires_at": int(row["cli_expires_at"])})
+            if plan["kind"] == "channels":
+                return self._cli_send(200, {"channels": list(hq_cli_api.CHANNEL_CATALOG),
+                                            "total": len(hq_cli_api.CHANNEL_CATALOG),
+                                            "account": row["username"]})
             if plan["kind"] == "canvas-list":
                 boards, total, err = list_canvas_boards(row["username"], plan["limit"], plan["offset"])
                 if err:

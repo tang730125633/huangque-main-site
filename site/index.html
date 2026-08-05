@@ -6,7 +6,7 @@
   <meta name="description" content="黄雀 AI：从 IP12、Agent 与无限画布，到图文音视频生产和 HQ CLI。">
   <title>黄雀 AI · 会持续生长的内容系统</title>
   <link rel="icon" href="/assets/logo_sparrow.png">
-  <link rel="stylesheet" href="/homepage.css">
+  <link rel="stylesheet" href="/homepage.css?v=20260805-channels">
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -22,7 +22,7 @@
         <a href="#flow">产品链路</a>
         <a href="#ip12">IP12</a>
         <a href="#agent">Agent + Canvas</a>
-        <a href="#video">视频</a>
+        <a href="#capabilities">能力地图</a>
         <a href="#cli">CLI</a>
       </div>
 
@@ -38,6 +38,7 @@
           <a href="#ip12" onclick="this.closest('details').open=false">IP12</a>
           <a href="#agent" onclick="this.closest('details').open=false">Agent + Canvas</a>
           <a href="#video" onclick="this.closest('details').open=false">视频生成</a>
+          <a href="#capabilities" onclick="this.closest('details').open=false">能力地图</a>
           <a href="#cli" onclick="this.closest('details').open=false">HQ CLI</a>
           <a href="/login">登录 / 注册</a>
         </div>
@@ -144,7 +145,7 @@
               </section>
 
               <section class="story-panel panel-cli" data-panel="cli" aria-hidden="true">
-                <div class="terminal-head"><span>HQ CLI · v0.4</span><span><i></i> DEVICE AUTH</span></div>
+                <div class="terminal-head"><span>HQ CLI · v0.6</span><span><i></i> DEVICE AUTH</span></div>
                 <pre><code><span class="term-prompt">$</span> hq login --json
 <span class="term-dim">{"next":"在浏览器中确认设备授权"}</span>
 
@@ -193,6 +194,103 @@
       </div>
     </section>
 
+    <section class="capabilities" id="capabilities" aria-labelledby="capability-title">
+      <div class="page-shell capability-head" data-reveal>
+        <div>
+          <p class="kicker">ONE CONTRACT · EVERY CAPABILITY</p>
+          <h2 id="capability-title">一个入口，<br><em>看懂整个黄雀。</em></h2>
+        </div>
+        <p>网页 Agent、外部 Agent 和人工命令行，共用同一份能力合同。每项操作都带着明确参数、账号权限、费用边界和下一步去向。</p>
+      </div>
+
+      <div class="page-shell capability-tree" data-reveal>
+        <div class="capability-root">
+          <span class="capability-root-icon"><img src="/assets/icons-duotone/hq_bot.svg" alt=""></span>
+          <div>
+            <small>HUANGQUE CAPABILITY LAYER</small>
+            <h3>HQ CLI · 统一能力中枢</h3>
+            <p>Agent 不必猜页面和 API，只需发现、理解，再按规则调用。</p>
+          </div>
+          <div class="capability-consumers" aria-label="能力调用入口">
+            <span>网页 Agent</span><span>外部 Agent</span><span>人工命令行</span>
+          </div>
+          <dl class="capability-metrics">
+            <div><dt>46</dt><dd>已登记能力</dd></div>
+            <div><dt>33</dt><dd>可直接执行</dd></div>
+            <div><dt>13</dt><dd>页面导航</dd></div>
+          </dl>
+        </div>
+
+        <div class="capability-trunk" aria-hidden="true"></div>
+        <div class="capability-branches">
+          <a class="capability-branch" href="/workbench/settings">
+            <span class="capability-branch-top"><span class="capability-icon"><img src="/assets/icons-duotone/hq_account.svg" alt=""></span><small>已接入</small></span>
+            <b>01</b><h3>身份与控制</h3>
+            <ul><li>设备授权</li><li>账号与点数</li><li>报价与确认</li></ul>
+            <span class="capability-open">查看账号能力 ↗</span>
+          </a>
+          <a class="capability-branch" href="/workbench/ip12/">
+            <span class="capability-branch-top"><span class="capability-icon"><img src="/assets/icons-duotone/hq_human.svg" alt=""></span><small>持续扩展</small></span>
+            <b>02</b><h3>IP12 与引导</h3>
+            <ul><li>项目与报告</li><li>AI 教练对话</li><li>提示词优化</li></ul>
+            <span class="capability-open">建立 IP 底座 ↗</span>
+          </a>
+          <a class="capability-branch" href="/workbench/canvas">
+            <span class="capability-branch-top"><span class="capability-icon"><img src="/assets/icons-duotone/hq_canvas.svg" alt=""></span><small>已接入</small></span>
+            <b>03</b><h3>Canvas Agent</h3>
+            <ul><li>画布读写</li><li>Agent 规划</li><li>安全节点操作</li></ul>
+            <span class="capability-open">打开创作画布 ↗</span>
+          </a>
+          <a class="capability-branch" href="/workbench/video">
+            <span class="capability-branch-top"><span class="capability-icon"><img src="/assets/icons-duotone/hq_video.svg" alt=""></span><small>持续扩展</small></span>
+            <b>04</b><h3>AI 内容创作</h3>
+            <ul><li>图像 · 音频 · 视频</li><li>一键成片</li><li>数字人口播 · 短剧</li></ul>
+            <span class="capability-open">进入视频工作台 ↗</span>
+          </a>
+          <a class="capability-branch" href="/workbench/assets">
+            <span class="capability-branch-top"><span class="capability-icon"><img src="/assets/icons-duotone/hq_assets.svg" alt=""></span><small>已接入</small></span>
+            <b>05</b><h3>任务与资产</h3>
+            <ul><li>任务状态</li><li>素材上传</li><li>收藏与标签</li></ul>
+            <span class="capability-open">查看我的资产 ↗</span>
+          </a>
+          <a class="capability-branch" href="/workbench/inspiration">
+            <span class="capability-branch-top"><span class="capability-icon"><img src="/assets/icons-duotone/hq_viral.svg" alt=""></span><small>导航已接入</small></span>
+            <b>06</b><h3>增长与发现</h3>
+            <ul><li>灵感与采集</li><li>获客工作台</li><li>教程与设置</li></ul>
+            <span class="capability-open">发现创作方向 ↗</span>
+          </a>
+        </div>
+
+        <div class="channel-showcase" aria-labelledby="channel-title">
+          <div class="channel-showcase-head">
+            <div><small>REAL PROVIDERS · CLI CATALOG</small><h3 id="channel-title">后台有的渠道，CLI 全部登记。</h3></div>
+            <p>登录时授权客户自己的黄雀账号；调用仍使用该账号的权限、点数、资产和任务记录，不向 Agent 暴露网站密码或后台密钥。</p>
+          </div>
+          <div class="channel-legend" aria-label="CLI 接入状态说明">
+            <span data-access="direct">可直接调用</span><span data-access="mixed">部分直调</span><span data-access="managed">系统托管</span><span data-access="routed">系统路由</span><span data-access="registered">已登记</span>
+          </div>
+          <div class="channel-grid">
+            <article class="channel-card" data-channel="xai" data-access="direct"><header><b>xAI API</b><span>可直接调用</span></header><p>果肉视频生成</p><code>video-generate · channel=grok</code></article>
+            <article class="channel-card" data-channel="openai" data-access="mixed"><header><b>OpenAI API</b><span>部分直调</span></header><p>黄雀引擎 2 · Sora 2</p><code>image-generate · provider=openai</code></article>
+            <article class="channel-card" data-channel="gemini" data-access="mixed"><header><b>Google Gemini API</b><span>部分直调</span></header><p>纳米香蕉 · Omni 视频</p><code>video-generate · channel=omni</code></article>
+            <article class="channel-card" data-channel="seedance" data-access="direct"><header><b>火山方舟 API</b><span>可直接调用</span></header><p>Seedream · Seedance 视频</p><code>image / video-generate</code></article>
+            <article class="channel-card" data-channel="minimax" data-access="direct"><header><b>MiniMax 中国区 API</b><span>可直接调用</span></header><p>麦克视频</p><code>video-generate · channel=minimax</code></article>
+            <article class="channel-card" data-channel="zelong" data-access="routed"><header><b>小乐 AI API</b><span>系统路由</span></header><p>黄雀引擎 2 备用线路</p><code>image-generate · provider=xiaole</code></article>
+            <article class="channel-card" data-channel="zelong2" data-access="registered"><header><b>泽龙 API</b><span>已登记</span></header><p>泽龙 2 备用线路 · 维护中</p><code>channels · registered</code></article>
+            <article class="channel-card" data-channel="heygen" data-access="managed"><header><b>HeyGen API</b><span>系统托管</span></header><p>电影化身 · 数字人口播 · 数字人形象</p><code>digital-presenter-*</code></article>
+            <article class="channel-card" data-channel="heygen_relay" data-access="routed"><header><b>HeyGen 中转 API</b><span>系统路由</span></header><p>中转与下载兜底</p><code>tasks · assets</code></article>
+            <article class="channel-card" data-channel="xiaolevideo" data-access="routed"><header><b>小乐视频 API</b><span>系统路由</span></header><p>果肉生图 · 历史兼容线路</p><code>image / video-generate</code></article>
+            <article class="channel-card" data-channel="runninghub" data-access="registered"><header><b>RunningHub API</b><span>已登记</span></header><p>换装换背景 · 线路一</p><code>channels · registered</code></article>
+            <article class="channel-card" data-channel="wavespeed" data-access="registered"><header><b>WaveSpeed API</b><span>已登记</span></header><p>换装换背景 · 线路二 · AI 超清</p><code>channels · registered</code></article>
+            <article class="channel-card" data-channel="cosyvoice" data-access="direct"><header><b>阿里百炼 API</b><span>可直接调用</span></header><p>公共音色 · 声音克隆</p><code>voices · audio-generate</code></article>
+            <article class="channel-card" data-channel="tikhub" data-access="navigation"><header><b>TikHub API</b><span>页面引导</span></header><p>抖音 · 小红书 · 视频号 · 评论线索</p><code>collect · leads</code></article>
+            <article class="channel-card" data-channel="cos" data-access="managed"><header><b>腾讯云 COS</b><span>系统托管</span></header><p>生成结果 · 参考素材 · 成片存储</p><code>image-upload · assets</code></article>
+          </div>
+          <div class="channel-command"><code>hq login --json</code><span>→</span><code>hq channels --json</code><span>→</span><code>hq describe &lt;能力&gt; --json</code></div>
+        </div>
+      </div>
+    </section>
+
     <section class="samples" id="samples">
       <div class="page-shell samples-head" data-reveal>
         <div><p class="kicker">CREATIVE OUTPUT</p><h2>不只讲机制，<br><em>也让结果被看见。</em></h2></div>
@@ -232,7 +330,7 @@
     <div class="page-shell footer-inner">
       <a class="brand" href="#top"><span class="brand-mark"><img src="/assets/logo_sparrow.png" alt=""></span><span><strong>黄雀 AI</strong><small>HUANGQUE</small></span></a>
       <p>让生意拥有会持续生长的内容系统。</p>
-      <div><a href="#flow">产品链路</a><a href="/login">登录</a><a href="/workbench/inspiration">工作台</a></div>
+      <div><a href="#flow">产品链路</a><a href="#capabilities">能力地图</a><a href="/login">登录</a><a href="/workbench/inspiration">工作台</a></div>
     </div>
   </footer>
 
@@ -242,6 +340,15 @@
     const panels = [...document.querySelectorAll('[data-panel]')];
     const indicators = [...document.querySelectorAll('[data-indicator]')];
     const stageLabel = document.querySelector('[data-stage-label]');
+    const capabilityBranches = [...document.querySelectorAll('.capability-branch')];
+    const channelCards = [...document.querySelectorAll('.channel-card[data-channel]')];
+
+    window.__homepageCheck = () => steps.length === 4
+      && steps.every(step => panels.some(panel => panel.dataset.panel === step.dataset.story))
+      && capabilityBranches.length === 6
+      && channelCards.length === 15
+      && Boolean(document.querySelector('[data-logo-motion]') && document.querySelector('.story-stage') && document.querySelector('.story-chapters'));
+    console.assert(window.__homepageCheck(), 'Homepage story mapping is incomplete');
 
     function activateStory(id) {
       steps.forEach(step => {
@@ -382,10 +489,6 @@
       }
     });
 
-    window.__homepageCheck = () => steps.length === 4
-      && steps.every(step => panels.some(panel => panel.dataset.panel === step.dataset.story))
-      && Boolean(logoCanvas && storyStage && storyChapters);
-    console.assert(window.__homepageCheck(), 'Homepage story mapping is incomplete');
   })();
   </script>
 </body>

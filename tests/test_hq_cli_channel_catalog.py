@@ -1,0 +1,33 @@
+import sys
+import re
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SERVER = ROOT / "server"
+if str(SERVER) not in sys.path:
+    sys.path.insert(0, str(SERVER))
+
+import admin_api  # noqa: E402
+import hq_cli_api  # noqa: E402
+
+
+class HqCliChannelCatalogTests(unittest.TestCase):
+    def test_admin_cli_and_homepage_keep_the_same_channel_ids(self):
+        admin_ids = {item["key"] for item in admin_api.KEY_GROUPS}
+        cli_ids = {item["id"] for item in hq_cli_api.CHANNEL_CATALOG}
+        html = (ROOT / "site" / "index.html").read_text(encoding="utf-8")
+        homepage = dict(re.findall(r'data-channel="([a-z0-9_]+)" data-access="([a-z]+)"', html))
+        self.assertEqual(admin_ids, cli_ids)
+        self.assertEqual(
+            {item["key"]: item["name"] for item in admin_api.KEY_GROUPS},
+            {item["id"]: item["provider"] for item in hq_cli_api.CHANNEL_CATALOG},
+        )
+        self.assertEqual(cli_ids, set(homepage))
+        self.assertEqual({item["id"]: item["access"] for item in hq_cli_api.CHANNEL_CATALOG}, homepage)
+        self.assertEqual(15, len(cli_ids))
+
+
+if __name__ == "__main__":
+    unittest.main()
