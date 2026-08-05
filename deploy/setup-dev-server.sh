@@ -42,6 +42,8 @@ sudo cp "$R"/server/content_api.py "$R"/server/leadgen_api.py "$R"/server/imggen
   "$R"/server/admin_api.py "$R"/server/tikhub.py "$R"/server/func_names.py /home/ubuntu/content-api/
 sudo mkdir -p /home/ubuntu/content-api/content_domains
 sudo rsync -a --delete "$R"/server/content_domains/ /home/ubuntu/content-api/content_domains/
+sudo mkdir -p /home/ubuntu/content-api/providers
+sudo rsync -a --delete "$R"/server/providers/ /home/ubuntu/content-api/providers/
 sudo cp "$R"/server/dl_service.py /home/ubuntu/dl-service/
 
 echo "== [4/8] 环境文件（全新随机 token；API Key 留空待各自独立 Key）=="
