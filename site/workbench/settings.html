@@ -22,7 +22,11 @@
   .settings-card-title{font-size:16px;font-weight:800;color:#eaf1fa}
   .settings-card-note{font-size:12px;color:#6f7f96;line-height:1.6}
   .profile-top{display:flex;align-items:center;gap:16px;margin-bottom:18px}
-  .profile-avatar{width:54px;height:54px;border-radius:12px;background:linear-gradient(150deg,#9a6a3a,#5a3d22);display:flex;align-items:center;justify-content:center;color:#fff;font-size:22px;font-weight:800;flex:none}
+  .profile-avatar{position:relative;width:54px;height:54px;padding:0;overflow:hidden;border:1px solid rgba(231,178,76,.35);border-radius:12px;background:linear-gradient(150deg,#9a6a3a,#5a3d22);display:flex;align-items:center;justify-content:center;color:#fff;font-family:inherit;font-size:22px;font-weight:800;cursor:pointer;flex:none}
+  .profile-avatar:hover,.profile-avatar:focus-visible{border-color:#e7b24c;outline:none;box-shadow:0 0 0 3px rgba(231,178,76,.12)}
+  .profile-avatar img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+  .profile-avatar-action{position:absolute;left:0;right:0;bottom:0;padding:3px 0;background:rgba(2,6,14,.72);color:#fff;font-size:9px;line-height:1;letter-spacing:.04em}
+  .profile-avatar.busy{cursor:wait;opacity:.75}
   .profile-main{min-width:0;flex:1}
   .profile-name{font-size:20px;font-weight:800;color:#eaf1fa;line-height:1.25}
   .profile-user{margin-top:5px;color:#94a4bb;font-size:13px}
@@ -178,7 +182,8 @@
             <span id="accountStatus" class="badge">读取中</span>
           </div>
           <div class="profile-top">
-            <div id="profileAvatar" class="profile-avatar">--</div>
+            <button id="profileAvatar" class="profile-avatar" type="button" aria-label="更换头像" title="更换头像"><span id="profileAvatarFallback">--</span><img id="profileAvatarImage" alt="" hidden><span id="profileAvatarAction" class="profile-avatar-action" aria-hidden="true">更换</span></button>
+            <input id="profileAvatarInput" type="file" accept="image/jpeg,image/png,image/webp" hidden>
             <div class="profile-main">
               <div id="displayName" class="profile-name">正在读取账号</div>
               <div id="username" class="profile-user">--</div>
@@ -560,7 +565,7 @@
     var name = localProfile.nickname || user.name || user.display_name || user.username || '未命名账号';
     $('displayName').textContent = name;
     $('username').textContent = '@' + (user.username || '--');
-    $('profileAvatar').textContent = initial(name);
+    renderProfileAvatar(user.avatar,name);
     $('role').textContent = roleText(user.role);
     $('points').textContent = Number(user.points || 0).toLocaleString();
     var accountId=accountIdForUser(user);
@@ -574,6 +579,48 @@
     try{localStorage.setItem('hq_user', JSON.stringify(user));}catch(e){}
     loadPreferences();
   }
+
+  function renderProfileAvatar(url,name){
+    var img=$('profileAvatarImage'), fallback=$('profileAvatarFallback');
+    fallback.textContent=initial(name);
+    url=typeof url==='string'?url.trim():'';
+    if(url){ img.src=url; img.hidden=false; fallback.hidden=true; }
+    else{ img.removeAttribute('src'); img.hidden=true; fallback.hidden=false; }
+  }
+
+  function setAvatarBusy(on){
+    var btn=$('profileAvatar');
+    btn.disabled=!!on;
+    btn.classList.toggle('busy',!!on);
+    $('profileAvatarAction').textContent=on?'上传中':'更换';
+  }
+
+  function uploadAvatar(file){
+    if(!file) return;
+    if(['image/jpeg','image/png','image/webp'].indexOf(file.type)<0){ toast('请选择 JPG、PNG 或 WebP 图片'); return; }
+    if(file.size<1||file.size>4*1024*1024){ toast('头像需小于 4MB'); return; }
+    var reader=new FileReader();
+    reader.onerror=function(){ toast('头像读取失败'); };
+    reader.onload=function(){
+      setAvatarBusy(true);
+      apiFetch('/api/auth/card/media',{
+        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({field:'avatar',data:reader.result})
+      }).then(function(res){
+        var url=res&&res.data&&(res.data.url||(res.data.card&&res.data.card.avatar));
+        if(!res||!res.ok||!url) throw new Error(res&&res.data&&res.data.detail||'头像上传失败');
+        activeUser=Object.assign({},activeUser||{},{avatar:url});
+        renderUser(activeUser);
+        if(window.HQ&&typeof window.HQ.refreshPoints==='function') window.HQ.refreshPoints();
+        toast('头像已同步到网页和小程序');
+      }).catch(function(err){ toast(err.message||'头像上传失败'); })
+        .finally(function(){ setAvatarBusy(false); });
+    };
+    reader.readAsDataURL(file);
+  }
+
+  $('profileAvatar').addEventListener('click',function(){ $('profileAvatarInput').click(); });
+  $('profileAvatarInput').addEventListener('change',function(){ var file=this.files&&this.files[0]; this.value=''; uploadAvatar(file); });
+  $('profileAvatarImage').addEventListener('error',function(){ this.hidden=true; $('profileAvatarFallback').hidden=false; });
 
   function loadReferrer(){
     apiFetch('/api/invite/referrer').then(function(res){
