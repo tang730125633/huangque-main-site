@@ -6167,8 +6167,13 @@ class H(BaseHTTPRequestHandler):
                 c = db()
                 try:
                     c.execute("BEGIN IMMEDIATE")
-                    business_cards.create_draft(c, row["id"])
+                    create_value = str((query.get("create") or ["1"])[0]).strip().lower()
+                    if create_value not in {"0", "false", "no"}:
+                        business_cards.create_draft(c, row["id"])
                     card = card_for_owner(c, row["id"])
+                    if not card:
+                        c.rollback()
+                        return self._send(404, {"detail": "尚未创建名片", "code": "card_not_found"})
                     c.commit()
                     return self._send(200, {
                         "ok": True, "card": card,

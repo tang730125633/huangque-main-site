@@ -75,6 +75,33 @@ class BusinessCardNetworkTests(unittest.TestCase):
     def uid(c, username):
         return c.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()[0]
 
+    def test_non_creating_card_query_keeps_legacy_default(self):
+        self.auth.create_user("nocard", "secret123")
+        token = self.auth.issue_token("nocard")
+        headers = {"Authorization": "Bearer " + token}
+
+        with self.conn() as c:
+            user_id = self.uid(c, "nocard")
+            self.assertEqual(c.execute(
+                "SELECT COUNT(*) FROM business_cards WHERE user_id=?", (user_id,),
+            ).fetchone()[0], 0)
+
+        status, body = self.get("/api/auth/card/me?create=0", headers)
+        self.assertEqual(status, 404)
+        self.assertEqual(body["code"], "card_not_found")
+        with self.conn() as c:
+            self.assertEqual(c.execute(
+                "SELECT COUNT(*) FROM business_cards WHERE user_id=?", (user_id,),
+            ).fetchone()[0], 0)
+
+        status, body = self.get("/api/auth/card/me", headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["card"]["status"], "draft")
+        with self.conn() as c:
+            self.assertEqual(c.execute(
+                "SELECT COUNT(*) FROM business_cards WHERE user_id=?", (user_id,),
+            ).fetchone()[0], 1)
+
     def test_card_privacy_and_registration_are_atomic(self):
         with self.conn() as c:
             child_id = self.uid(c, "child")
