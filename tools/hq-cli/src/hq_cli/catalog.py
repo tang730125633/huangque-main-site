@@ -152,6 +152,11 @@ for item in (
 
 CAPABILITIES["account"] = _api(
     "account", "账号资料", "account", "读取当前授权账号、会员、点数和授权范围。")
+CAPABILITIES["channels"] = _api(
+    "channels", "渠道目录", "channels", "按当前授权账号读取黄雀全部真实 API 渠道、前端功能映射和 CLI 调用入口。")
+CAPABILITIES["channels"]["next_actions"] = [
+    "根据 access、capabilities 和 selector 选择可直接调用的能力；registered 表示已登记但尚无独立执行入口。",
+]
 CAPABILITIES["ip12-projects"] = _api(
     "ip12-projects", "IP12 项目列表", "ip12-projects", "读取当前账号在主站 Hermes IP12 中的全部诊断项目。", scope="ip12:read")
 CAPABILITIES["ip12-project"] = _api(
@@ -321,10 +326,10 @@ IMAGE_FIELDS = {
 VIDEO_FIELDS = {
     "prompt": {"type": "string", "minLength": 1, "maxLength": 2000,
                "description": "可用 @图片1、@图片2 按 reference_upload_ids 顺序引用"},
-    "channel": {"type": "string", "enum": ["grok", "micro", "omni"]},
+    "channel": {"type": "string", "enum": ["grok", "micro", "omni", "minimax"]},
     "ratio": {"type": "string", "enum": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"]},
     "duration": {"type": "integer", "minimum": 1, "maximum": 15},
-    "resolution": {"type": "string", "enum": ["480p", "720p", "1080p"]},
+    "resolution": {"type": "string", "enum": ["480p", "720p", "768p", "1080p"]},
     "model": {"type": "string", "enum": ["grok-imagine-video", "grok-imagine-video-1.5"]},
     "generate_audio": {"type": "boolean"},
     "reference_upload_ids": {"type": "array", "maxItems": 9,
@@ -356,7 +361,7 @@ CAPABILITIES["image-generate"]["constraints"] = [
     "mask_upload_id requires image_upload_id, provider=openai, PNG mask, and count=1",
 ]
 CAPABILITIES["video-generate"]["constraints"] = [
-    "reference_upload_ids limits: grok=7, micro=9, omni=6",
+    "reference_upload_ids limits: grok=7, micro=9, omni=6, minimax=5",
     "@图片N references the Nth item in reference_upload_ids",
 ]
 
