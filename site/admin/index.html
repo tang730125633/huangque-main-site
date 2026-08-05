@@ -118,6 +118,19 @@
     .pool-editor{margin:0 0 14px;padding:14px;border:1px solid rgba(240,190,85,.35);border-radius:8px;background:rgba(240,190,85,.055)}
     .pool-editor[hidden]{display:none}
     .pool-editor .toolbar{margin:10px 0 0}
+    .channel-map{margin:0 0 14px;padding:18px;border:1px solid rgba(240,190,85,.22);border-radius:10px;background:linear-gradient(145deg,rgba(240,190,85,.055),rgba(17,22,19,.86) 42%,rgba(34,197,165,.035))}
+    .channel-map-head{display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:18px;align-items:end;padding-bottom:16px;border-bottom:1px solid var(--line)}
+    .channel-map-head h3{margin:0;font-size:18px}.channel-map-head p{margin:5px 0 0;color:var(--muted);font-size:12px}
+    .channel-map-stats{display:grid;grid-template-columns:repeat(3,minmax(86px,1fr));border:1px solid var(--line);border-radius:8px;background:rgba(11,15,13,.55)}
+    .channel-map-stat{padding:9px 12px;border-right:1px solid var(--line)}.channel-map-stat:last-child{border-right:0}.channel-map-stat b{display:block;color:var(--gold);font-size:20px;font-variant-numeric:tabular-nums}.channel-map-stat span{display:block;color:var(--muted);font-size:10px}
+    .channel-map-core{position:relative;width:min(420px,100%);margin:18px auto 0;padding:13px 16px;border:1px solid rgba(240,190,85,.34);border-radius:8px;background:linear-gradient(135deg,rgba(240,190,85,.12),rgba(32,40,34,.9));text-align:center}.channel-map-core b{display:block;color:#f6dfa9}.channel-map-core span{display:block;margin-top:3px;color:var(--muted);font-size:11px}
+    .channel-map-trunk{position:relative;height:34px}.channel-map-trunk:before{content:"";position:absolute;top:0;bottom:0;left:50%;width:1px;background:linear-gradient(var(--gold),var(--primary))}
+    .channel-map-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+    .channel-map-card{position:relative;min-width:0;padding:13px;border:1px solid var(--line);border-radius:8px;background:rgba(17,22,19,.82)}.channel-map-card:before{content:"";position:absolute;bottom:100%;left:50%;width:1px;height:10px;background:var(--primary)}
+    .channel-map-card[data-state="missing"]{border-color:rgba(224,107,100,.28)}.channel-map-card[data-state="warning"]{border-color:rgba(217,155,53,.28)}.channel-map-card[data-state="healthy"]{border-color:rgba(79,212,126,.25)}
+    .channel-map-title{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.channel-map-title b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.channel-map-title .pill{flex:none}
+    .channel-map-category{margin-top:5px;color:var(--gold);font-size:10px;font-weight:800}.channel-map-features{display:flex;flex-wrap:wrap;gap:5px;margin-top:10px}.channel-map-features span{padding:4px 6px;border:1px solid rgba(154,166,159,.16);border-radius:5px;background:rgba(154,166,159,.055);color:var(--muted);font-size:10px}.channel-map-meta{display:flex;justify-content:space-between;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid rgba(46,56,50,.75);color:var(--muted);font-size:10px}
+    .channel-detail{border:1px solid var(--line);border-radius:8px;background:rgba(17,22,19,.54)}.channel-detail>summary{padding:12px 14px;color:#f6dfa9;font-weight:800;cursor:pointer}.channel-detail[open]>summary{border-bottom:1px solid var(--line)}.channel-detail .table-wrap{border-radius:0 0 8px 8px}
     .ops-note{padding:10px 12px;border:1px solid rgba(110,168,255,.2);border-radius:7px;background:rgba(110,168,255,.055);color:var(--muted);font-size:12px}
     .pager{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding-top:14px}
     .pager-info{min-width:180px;text-align:center;color:var(--muted);font-size:12px}
@@ -192,7 +205,8 @@
     .pricing-input{width:92px;text-align:right;font-variant-numeric:tabular-nums}.pricing-name{min-width:190px}.pricing-unit{white-space:nowrap}.pricing-updated{min-width:150px}
     #announcementHistoryRefresh{white-space:nowrap}
     @media (max-width:1100px){header{grid-template-columns:auto minmax(280px,1fr) auto}.page-heading{display:none}.support-hero{grid-template-columns:1fr}.issue-row{grid-template-columns:90px minmax(100px,.7fr) minmax(160px,1.3fr) 80px}}
-    @media (max-width:900px){.admin-sidebar{position:fixed;left:0;transform:translateX(-100%);transition:transform .18s ease}.admin-layout.nav-open .admin-sidebar{transform:none}.admin-layout.nav-open .sidebar-backdrop{display:block;position:fixed;inset:0;z-index:35;width:100%;height:100%;border:0;border-radius:0;background:rgba(2,5,3,.68)}.nav-toggle{display:block}.shell{padding:18px 14px 36px}header{grid-template-columns:auto minmax(0,1fr) auto;gap:10px}.top-search button{font-size:0;width:42px;padding:0}.top-search button:after{content:"搜";font-size:13px}.span3,.span4,.span6,.span8{grid-column:span 12}.channels,.feature-grid,.invite-config,.membership-recharge,.detail-grid,.case-workspace,.announcement-workspace{grid-template-columns:1fr}.ledger-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ledger-stat:nth-child(2){border-right:0}.ledger-stat:nth-child(-n+2){border-bottom:1px solid var(--line)}.user{padding:7px}.user>div:last-child{display:none}.case-list{max-height:none}.network-node{align-items:stretch}.network-node .actions{width:100%}.customer-drawer{width:100vw}.issue-row{grid-template-columns:90px 1fr}.issue-row>*:nth-child(3){grid-column:1/-1}.issue-row>*:nth-child(4){grid-column:2}}
+    @media (max-width:900px){.admin-sidebar{position:fixed;left:0;transform:translateX(-100%);transition:transform .18s ease}.admin-layout.nav-open .admin-sidebar{transform:none}.admin-layout.nav-open .sidebar-backdrop{display:block;position:fixed;inset:0;z-index:35;width:100%;height:100%;border:0;border-radius:0;background:rgba(2,5,3,.68)}.nav-toggle{display:block}.shell{padding:18px 14px 36px}header{grid-template-columns:auto minmax(0,1fr) auto;gap:10px}.top-search button{font-size:0;width:42px;padding:0}.top-search button:after{content:"搜";font-size:13px}.span3,.span4,.span6,.span8{grid-column:span 12}.channels,.feature-grid,.invite-config,.membership-recharge,.detail-grid,.case-workspace,.announcement-workspace{grid-template-columns:1fr}.channel-map-head{grid-template-columns:1fr}.channel-map-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.ledger-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ledger-stat:nth-child(2){border-right:0}.ledger-stat:nth-child(-n+2){border-bottom:1px solid var(--line)}.user{padding:7px}.user>div:last-child{display:none}.case-list{max-height:none}.network-node{align-items:stretch}.network-node .actions{width:100%}.customer-drawer{width:100vw}.issue-row{grid-template-columns:90px 1fr}.issue-row>*:nth-child(3){grid-column:1/-1}.issue-row>*:nth-child(4){grid-column:2}}
+    @media (max-width:560px){.channel-map{padding:14px}.channel-map-stats{grid-template-columns:1fr}.channel-map-stat{border-right:0;border-bottom:1px solid var(--line)}.channel-map-stat:last-child{border-bottom:0}.channel-map-grid{grid-template-columns:1fr}.channel-map-card:before{display:none}}
     @media (max-width:560px){.top-search{grid-column:1/-1;grid-row:2}.user{grid-column:3;grid-row:1}.nav-toggle{grid-column:1;grid-row:1}.case-fields,.case-upload,.support-path,.quick-links,.announcement-tiers{grid-template-columns:1fr}.announcement-tiers{margin-left:24px}.case-item{grid-template-columns:72px 1fr}.case-thumb{width:72px;height:92px}.drawer-head{padding:0 12px}.user-detail{padding:12px}.row{align-items:flex-start;flex-direction:column}.row>.actions{width:100%}}
   </style>
 </head>
@@ -385,6 +399,7 @@
           </div>
         </div>
         <div class="ops-note" style="margin-bottom:12px">安全说明：完整 Key 默认隐藏；管理员点击「查看 5 秒」后，按钮会在 5 秒内变成「复制」，随后自动清除。每次查看都会写入审计记录。</div>
+        <div id="channelMap" class="channel-map" aria-label="API 渠道关系图"></div>
         <div id="channelKeyBox"></div>
       </section>
       <section class="card span12 module-card" data-module="features" hidden>
@@ -748,6 +763,17 @@
   function renderChannelConsole(envItems,data){
     clearSecretWindows();data=data||{};var items=data.items||[],rows=[];
     el('providerKeyState').textContent=data.configured?'保险箱已启用':'保险箱未配置';
+    var channelCards=(envItems||[]).map(function(meta){
+      var pool=meta.pool_provider?items.filter(function(k){return k.provider===meta.pool_provider}):[];
+      var configured=Boolean(meta.configured||pool.length),healthy=pool.some(function(k){return k.health_status==='healthy'}),unhealthy=pool.some(function(k){return k.health_status==='unhealthy'});
+      var state=!configured?'missing':(unhealthy&&!healthy?'warning':'healthy');
+      var label=!configured?'未配置':(healthy?'健康':'已配置');
+      var pill=!configured?'fail':(unhealthy&&!healthy?'warn':'ok');
+      var features=(meta.features||[]).map(function(x){return '<span>'+esc(x)+'</span>'}).join('');
+      return '<article class="channel-map-card" role="listitem" data-state="'+state+'"><div class="channel-map-title"><b>'+esc(meta.name)+'</b><span class="pill '+pill+'">'+label+'</span></div><div class="channel-map-category">'+esc(meta.category||'API 服务')+'</div><div class="channel-map-features">'+features+'</div><div class="channel-map-meta"><span>接口 '+Number((meta.endpoints||[]).length)+'</span><span>线路 '+Number(pool.length+(meta.configured?1:0))+'</span></div></article>';
+    }).join('');
+    var mapped=(envItems||[]).reduce(function(n,meta){return n+(meta.features||[]).length},0),configuredCount=(envItems||[]).filter(function(meta){return meta.configured||(meta.pool_provider&&items.some(function(k){return k.provider===meta.pool_provider}))}).length;
+    el('channelMap').innerHTML='<div class="channel-map-head"><div><h3>API 渠道关系图</h3><p>黄雀前台功能 → 真实供应商 → 当前线路状态。密钥仍在下方明细中默认脱敏。</p></div><div class="channel-map-stats"><div class="channel-map-stat"><b>'+Number((envItems||[]).length)+'</b><span>供应商渠道</span></div><div class="channel-map-stat"><b>'+configuredCount+'</b><span>已配置</span></div><div class="channel-map-stat"><b>'+mapped+'</b><span>功能映射</span></div></div></div><div class="channel-map-core"><b>黄雀前台产品能力</b><span>统一调度 · 账号权限 · 点数与任务记录</span></div><div class="channel-map-trunk" aria-hidden="true"></div><div class="channel-map-grid" role="list">'+channelCards+'</div>';
     function serverRow(meta,features,scope,baseHost){
       var src=(meta.sources||[]).map(function(s){return '<code>'+esc(s.env)+'</code>'}).join('、')||'未检测到变量';
       var test=meta.pingable?'<button class="mini" data-ping-key="'+esc(meta.key)+'">测试</button> <span data-ping-out="key:'+esc(meta.key)+'"></span>':'<span class="muted">需服务器签名检测</span>';
@@ -774,7 +800,7 @@
       if(provider)return;
       rows.push(serverRow(meta,envFeatures,meta.category,meta.env_base_host));
     });
-    el('channelKeyBox').innerHTML='<div class="table-wrap"><table class="channel-table"><thead><tr><th>API 提供方 / 前端功能</th><th>API Key（默认脱敏）</th><th>实际使用</th><th>健康 / 轮询</th><th>操作</th></tr></thead><tbody>'+rows.join('')+'</tbody></table></div>';
+    el('channelKeyBox').innerHTML='<details class="channel-detail"><summary>展开线路与密钥明细 · '+rows.length+' 条</summary><div class="table-wrap"><table class="channel-table"><thead><tr><th>API 提供方 / 前端功能</th><th>API Key（默认脱敏）</th><th>实际使用</th><th>健康 / 轮询</th><th>操作</th></tr></thead><tbody>'+rows.join('')+'</tbody></table></div></details>';
     bindPing('channelKeyBox','data-ping-key','key','key');
     Array.prototype.forEach.call(el('channelKeyBox').querySelectorAll('[data-provider-key-open]'),function(btn){btn.onclick=function(){openProviderEditor(btn.getAttribute('data-provider-key-open'))}});
     Array.prototype.forEach.call(el('channelKeyBox').querySelectorAll('[data-provider-key-test]'),function(btn){
