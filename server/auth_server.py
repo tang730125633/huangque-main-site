@@ -6670,6 +6670,12 @@ class H(BaseHTTPRequestHandler):
                 row["username"], row["display_name"], row["points"], row["role"], row["must_change"], account_id,
                 row["membership_tier"], row["membership_started_at"], row["membership_expires_at"],
             )
+            c = db()
+            try:
+                card = c.execute("SELECT avatar_key FROM business_cards WHERE user_id=?", (row["id"],)).fetchone()
+                user["avatar"] = business_cards._media_url(card["avatar_key"]) if card else ""
+            finally:
+                c.close()
             user["initial_password"] = initial_password_change_required(row)
             return self._send(200, {
                 "user": user,

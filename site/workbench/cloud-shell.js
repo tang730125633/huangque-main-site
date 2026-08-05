@@ -180,6 +180,15 @@
       '.hq-aside-compact #hqUserCard{width:44px}'+
       '.hq-aside-compact .hq-user-row,.hq-aside-compact .hq-login-row{justify-content:center!important;padding:5px!important}'+
       '.hq-aside-compact .hq-user-copy,.hq-aside-compact .hq-user-logout{display:none!important}'+
+      '.hq-account-trigger{color:inherit;font:inherit}.hq-account-trigger:hover,.hq-account-trigger:focus-visible{background:rgba(231,178,76,.08)!important;outline:1px solid rgba(231,178,76,.28)}'+
+      '.hq-account-avatar{position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at 32% 26%,#f6d488,#e7b24c 46%,#a8721f 100%);color:#1a1206;box-shadow:inset 0 1px 0 rgba(255,255,255,.45),inset 0 -2px 4px rgba(0,0,0,.28),0 2px 8px rgba(0,0,0,.35)}'+
+      '.hq-account-avatar img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}'+
+      '.hq-account-menu{position:fixed;z-index:9600;width:226px;padding:7px;border:1px solid rgba(148,164,187,.2);border-radius:13px;background:#111827;box-shadow:0 18px 48px rgba(0,0,0,.42);opacity:0;visibility:hidden;transform:translateY(-4px);transition:opacity .12s ease,transform .12s ease,visibility .12s}'+
+      '.hq-account-menu.on{opacity:1;visibility:visible;transform:none}'+
+      '.hq-account-menu-head{padding:10px 11px 9px;border-bottom:1px solid rgba(148,164,187,.12);margin-bottom:5px}'+
+      '.hq-account-menu a,.hq-account-menu button{width:100%;box-sizing:border-box;display:flex;align-items:center;gap:10px;padding:10px 11px;border:0;border-radius:9px;background:transparent;color:#cbd5e1;font:600 13px inherit;text-decoration:none;cursor:pointer;text-align:left}'+
+      '.hq-account-menu a:hover,.hq-account-menu a:focus-visible,.hq-account-menu button:hover,.hq-account-menu button:focus-visible{background:rgba(231,178,76,.09);color:#fff;outline:none}'+
+      '.hq-account-menu .danger{color:#f490a5}'+
       '.hq-main-scroll{flex:1;min-height:0;overflow-y:auto;padding:26px 30px 40px}'+
       '.hq-main-scroll-flush{overflow:hidden;padding:0}'+
       '.hq-topbar-flush{border-bottom:0!important}'+
@@ -346,7 +355,7 @@
   }
   function refreshPoints(){
     fetch('/api/auth/me',{credentials:'same-origin',cache:'no-store',headers:authHeaders()}).then(function(r){ if(!r.ok) return null; return r.json(); }).then(function(d){
-      if(d&&d.user){ try{ localStorage.removeItem('hq_token'); localStorage.setItem('hq_user',JSON.stringify(d.user)); }catch(e){} renderUser(); }
+      if(d&&d.user){ _accountAvatar=d.user.avatar||''; try{ localStorage.removeItem('hq_token'); localStorage.setItem('hq_user',JSON.stringify(d.user)); }catch(e){} renderUser(); }
       var p=d&&d.user&&d.user.points; if(p==null) return;
       var a=document.getElementById('hqPointsSide'), b=document.getElementById('hqPointsTop');
       if(a) a.textContent=p; if(b) b.textContent=p;
@@ -987,6 +996,7 @@
 
   // ===== 用户登录态显示（左下侧栏卡 + 右上注册/登录）=====
   function currentUser(){ try{ return JSON.parse(localStorage.getItem('hq_user')||'null'); }catch(e){ return null; } }
+  var _accountAvatar='';
   function membershipRoleName(user){
     if(user&&user.role==='admin') return '管理员';
     if(!user||!user.membership_active) return '非会员';
@@ -1001,20 +1011,50 @@
     try{ localStorage.removeItem('hq_token'); localStorage.removeItem('hq_user'); localStorage.removeItem('hq_role'); }catch(e){}
     fetch('/api/auth/logout',{method:'POST',credentials:'same-origin',headers:h}).finally(function(){ location.reload(); });
   }
+  function avatarHTML(ch,size){
+    return '<span class="hq-account-avatar" style="width:'+size+'px;height:'+size+'px;border-radius:'+(size>36?'11px':'50%')+';flex:none;font-size:13px;font-weight:700;">'+escapeHtml(ch)+(_accountAvatar?'<img src="'+escapeAttr(safeUrl(_accountAvatar))+'" alt="">':'')+'</span>';
+  }
+  function ensureAccountMenu(){
+    var menu=document.getElementById('hqAccountMenu');
+    if(menu) return menu;
+    menu=document.createElement('div');
+    menu.id='hqAccountMenu'; menu.className='hq-account-menu'; menu.setAttribute('role','menu');
+    menu.innerHTML='<div class="hq-account-menu-head"><div id="hqAccountMenuName" style="font-size:13px;font-weight:800;color:#eaf1fa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div><div id="hqAccountMenuRole" style="margin-top:3px;font-size:11px;color:#e7b24c;"></div></div>'+
+      '<a href="settings.html" role="menuitem">'+icon('gear','16px')+'<span>账户设置</span></a>'+
+      '<a href="recharge.html" role="menuitem">'+icon('coins','16px')+'<span>会员与点数</span></a>'+
+      '<a href="invite.html" role="menuitem">'+iconDuo('users','16px','#e7b24c')+'<span>邀请中心</span></a>'+
+      '<button type="button" class="danger" data-logout="1" role="menuitem">'+icon('logout','16px')+'<span>退出登录</span></button>';
+    document.body.appendChild(menu);
+    menu.addEventListener('click',function(e){ if(e.target.closest('[data-logout]')) _logout(); });
+    return menu;
+  }
+  function closeAccountMenu(){
+    var menu=document.getElementById('hqAccountMenu'); if(menu) menu.classList.remove('on');
+    document.querySelectorAll('[data-account-menu-trigger]').forEach(function(x){ x.setAttribute('aria-expanded','false'); });
+  }
+  function openAccountMenu(anchor){
+    var u=currentUser(); if(!u) return;
+    var menu=ensureAccountMenu(), rect=anchor.getBoundingClientRect(), width=226, gap=8;
+    document.getElementById('hqAccountMenuName').textContent=u.name||u.nickname||u.username||'我的账号';
+    document.getElementById('hqAccountMenuRole').textContent=membershipRoleName(u);
+    menu.style.left=Math.max(8,Math.min(window.innerWidth-width-8,rect.right-width))+'px';
+    menu.style.top=(rect.top>window.innerHeight/2?Math.max(8,rect.top-menu.offsetHeight-gap):Math.min(window.innerHeight-menu.offsetHeight-8,rect.bottom+gap))+'px';
+    menu.classList.add('on'); anchor.setAttribute('aria-expanded','true');
+    var first=menu.querySelector('[role="menuitem"]'); if(first) first.focus();
+  }
   function renderUser(){
     var u=currentUser(), inn=!!u;
     var profile=readAccountJson('hq_profile_v1',u);
     var card=document.getElementById('hqUserCard'), auth=document.getElementById('hqAuthArea');
-    var av='radial-gradient(circle at 32% 26%, #f6d488, #e7b24c 46%, #a8721f 100%)';
     if(inn){
       var name=profile.nickname||(u&&(u.name||u.nickname||u.username))||'我的账号', ch=(String(name).trim()[0]||'我').toUpperCase();
-      var safeName=escapeHtml(name), safeCh=escapeHtml(ch);
+      var safeName=escapeHtml(name);
       var role=membershipRoleName(u);
-      if(card) card.innerHTML='<div class="hq-user-row" title="'+safeName+'" style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-radius:10px;">'+
-        '<div style="width:34px;height:34px;border-radius:50%;flex:none;background:'+av+';box-shadow:inset 0 1px 0 rgba(255,255,255,.45), inset 0 -2px 4px rgba(0,0,0,.28), 0 2px 8px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;color:#1a1206;font-size:13px;font-weight:600;">'+safeCh+'</div>'+
+      if(card) card.innerHTML='<button type="button" class="hq-user-row hq-account-trigger" data-account-menu-trigger="1" aria-label="打开账户菜单" aria-haspopup="menu" aria-expanded="false" aria-controls="hqAccountMenu" title="打开账户菜单" style="width:100%;display:flex;align-items:center;gap:10px;padding:8px 6px;border:0;border-radius:10px;background:transparent;text-align:left;cursor:pointer;">'+
+        avatarHTML(ch,34)+
         '<div class="hq-user-copy" style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+safeName+'</div><div style="font-size:11px;color:#e7b24c;">'+role+'</div></div>'+
-        '<button type="button" class="hq-user-logout" data-logout="1" aria-label="退出登录" title="退出登录" style="display:flex;width:24px;height:24px;align-items:center;justify-content:center;color:#5c6b82;cursor:pointer;border:0;background:transparent;padding:0;">'+icon('logout','16px')+'</button></div>';
-      if(auth) auth.innerHTML='<div style="width:38px;height:38px;border-radius:11px;background:'+av+';box-shadow:inset 0 1px 0 rgba(255,255,255,.45), inset 0 -2px 4px rgba(0,0,0,.28), 0 2px 8px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;color:#1a1206;font-size:14px;font-weight:600;">'+safeCh+'</div>';
+        '<span class="hq-user-logout" style="display:flex;width:16px;color:#5c6b82;">'+icon('chevronDown','16px')+'</span></button>';
+      if(auth) auth.innerHTML='<button type="button" class="hq-account-trigger" data-account-menu-trigger="1" aria-label="打开账户菜单" aria-haspopup="menu" aria-expanded="false" aria-controls="hqAccountMenu" title="打开账户菜单" style="display:flex;border:0;border-radius:11px;background:transparent;padding:0;cursor:pointer;">'+avatarHTML(ch,38)+'</button>';
     } else {
       if(card) card.innerHTML='<button type="button" class="hq-login-row" data-login="1" aria-label="登录" title="登录" style="width:100%;display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:11px;cursor:pointer;border:1px solid rgba(148,164,187,.16);background:rgba(148,164,187,.04);font-family:inherit;text-align:left;">'+
         '<div style="width:32px;height:32px;border-radius:50%;flex:none;background:rgba(148,164,187,.12);display:flex;align-items:center;justify-content:center;color:#94a4bb;"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/></svg></div>'+
@@ -1024,12 +1064,19 @@
         '<button type="button" data-login="1" style="height:36px;padding:0 16px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:600;color:#1c1402;background:linear-gradient(135deg,#f6d488,#e7b24c);border:0;">登录</button>';
     }
     [card,auth].forEach(function(el){ if(!el) return; el.onclick=function(e){
-      var t=e.target.closest?e.target.closest('[data-login],[data-register],[data-logout]'):null; if(!t) return;
+      var t=e.target.closest?e.target.closest('[data-login],[data-register],[data-logout],[data-account-menu-trigger]'):null; if(!t) return;
       if(t.getAttribute('data-logout')) _logout();
+      else if(t.getAttribute('data-account-menu-trigger')){ var menu=document.getElementById('hqAccountMenu'); if(menu&&menu.classList.contains('on')) closeAccountMenu(); else openAccountMenu(t); }
       else if(t.getAttribute('data-register')&&window.HQ&&HQ.register) HQ.register();
       else if(window.HQ&&HQ.login) HQ.login();
     };});
   }
+  document.addEventListener('click',function(e){
+    var menu=document.getElementById('hqAccountMenu');
+    if(menu&&menu.classList.contains('on')&&!menu.contains(e.target)&&!e.target.closest('[data-account-menu-trigger]')) closeAccountMenu();
+  });
+  document.addEventListener('keydown',function(e){ if(e.key==='Escape') closeAccountMenu(); });
+  window.addEventListener('resize',closeAccountMenu);
 
   // 全局任务追踪器独立成 tasks.js，由共享外壳统一加载，避免每个页面各自维护 script 标签。
   // 复用 cloud-shell 的内容戳作为依赖版本：本文件改动时 stamp_assets 会刷新所有页面引用，
