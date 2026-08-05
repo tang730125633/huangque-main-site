@@ -5296,7 +5296,28 @@ def validate_avatar_payload(body):
         raise ValueError("请先上传人物照片")
     if not _is_valid_data_url(image_data, VALID_IMAGE_MIMES):
         raise ValueError("image_data 不是有效的图片（支持 jpg/png/webp）")
-    return {"image_data": image_data, "name": (body.get("name") or "").strip()[:40]}
+    result = {
+        "image_data": image_data,
+        "name": (body.get("name") or "").strip()[:40],
+    }
+    binding = body.get("short_drama_binding")
+    if binding is not None:
+        expected = {"project_id", "project_revision", "character_key"}
+        if (
+            not isinstance(binding, dict)
+            or set(binding) != expected
+            or not str(binding.get("project_id") or "").strip()
+            or not str(binding.get("character_key") or "").strip()
+            or type(binding.get("project_revision")) is not int
+            or binding["project_revision"] < 1
+        ):
+            raise ValueError("短剧角色自动绑定参数无效")
+        result["short_drama_binding"] = {
+            "project_id": str(binding["project_id"]).strip()[:160],
+            "project_revision": binding["project_revision"],
+            "character_key": str(binding["character_key"]).strip()[:160],
+        }
+    return result
 
 
 def gen_avatar(payload):

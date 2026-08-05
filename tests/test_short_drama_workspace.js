@@ -148,11 +148,22 @@ test('导入原稿展示模式化理解快照与待确认优化边界', () => {
 
 test('客户端使用 Cookie 会话、独立接口和幂等键', async () => {
   const calls = [];
+  const previousStorage = global.localStorage;
+  const storage = new Map();
+  const storageMock = {
+    getItem:key => storage.has(key) ? storage.get(key) : null,
+    setItem:(key,value) => storage.set(key,String(value)),
+    removeItem:key => storage.delete(key),
+    key:index => Array.from(storage.keys())[index]||null
+  };
+  Object.defineProperty(storageMock,'length',{get:() => storage.size});
+  global.localStorage = storageMock;
   const fetchImpl = async (url, options) => {
     calls.push({url, options});
     return {ok:true, status:200, text:async ()=>'{}'};
   };
   const client = workspace.createClient(fetchImpl);
+  try {
   await client.workspace('project a');
   await client.message({project_id:'a', conversation_revision:1, message:'你好'});
   await client.generate({project_id:'a', conversation_revision:2});
@@ -161,7 +172,7 @@ test('客户端使用 Cookie 会话、独立接口和幂等键', async () => {
   await client.characterStudio('project a');
   await client.saveCharacterProfile({project_id:'a', project_revision:1, character_key:'lead', identity_text:'记者', personality:'敏锐', appearance_prompt:'短发', wardrobe_prompt:'风衣'});
   await client.bindCharacterAvatar({project_id:'a', project_revision:2, character_key:'lead', avatar_id:'7'});
-  await client.generateCharacterImage({project_id:'a', revision:3, character_key:'lead'});
+  await client.generateCharacterImage({project_id:'a', revision:3, character_key:'lead'},'alice');
   await client.preflight('project a');
   await client.prepare({project_id:'a', conversation_revision:5, quality_route:'quick_draft'});
   await client.confirmPlan({project_id:'a', plan_id:'p1', plan_version:1, accepted_issue_keys:[]});
@@ -193,6 +204,250 @@ test('客户端使用 Cookie 会话、独立接口和幂等键', async () => {
   }
   for (const call of calls.filter(call => call.options.method === 'POST')) {
     assert.ok(call.options.headers['Idempotency-Key']);
+  }
+  } finally {
+    global.localStorage = previousStorage;
+  }
+});
+
+test('Avatar response loss replays the immutable request across project revisions', async () => {
+  const calls = [];
+  const storage = new Map();
+  const previousStorage = global.localStorage;
+  const storageMock = {
+    getItem:key => storage.has(key) ? storage.get(key) : null,
+    setItem:(key,value) => storage.set(key,String(value)),
+    removeItem:key => storage.delete(key),
+    key:index => Array.from(storage.keys())[index]||null
+  };
+  Object.defineProperty(storageMock,'length',{get:() => storage.size});
+  global.localStorage = storageMock;
+  let avatarPosts = 0;
+  const client = workspace.createClient(async (url, options) => {
+    calls.push({url, options});
+    if (url === '/api/gen/avatar' && avatarPosts++ === 0) throw new Error('response lost');
+    const response = url.startsWith('/api/gen/job/') ? {status:'done'} : {job_id:7};
+    return {ok:true, status:200, text:async () => JSON.stringify(response)};
+  });
+  const payload = {
+    image_data:'data:image/jpeg;base64,AA==', name:'林雨',
+    short_drama_binding:{project_id:'p1',project_revision:4,character_key:'lead'}
+  };
+  try {
+    await assert.rejects(client.createAvatar(payload,'alice'), /response lost/);
+    await client.createAvatar(Object.assign({}, payload, {
+      short_drama_binding:Object.assign({}, payload.short_drama_binding, {project_revision:5})
+    }),'alice');
+    assert.equal(calls[0].url, '/api/gen/avatar');
+    assert.equal(
+      calls[0].options.headers['Idempotency-Key'],
+      calls[1].options.headers['Idempotency-Key']
+    );
+    assert.deepEqual(
+      JSON.parse(calls[1].options.body).short_drama_binding,
+      payload.short_drama_binding
+    );
+    assert.equal(storage.size,1);
+    await client.recoverAvatarOperations('alice');
+    assert.equal(storage.size,0);
+    assert.match(workspaceSource, /reference_image_url/);
+    assert.match(workspaceSource, /创建电影化身并自动绑定/);
+    assert.match(workspaceSource, /电影化身正在生成/);
+  } finally {
+    global.localStorage = previousStorage;
+  }
+});
+
+test('Paid Avatar recovery is isolated to the trusted session account', async () => {
+  const storage = new Map();
+  const previousStorage = global.localStorage;
+  const storageMock = {
+    getItem:key => storage.has(key) ? storage.get(key) : null,
+    setItem:(key,value) => storage.set(key,String(value)),
+    removeItem:key => storage.delete(key),
+    key:index => Array.from(storage.keys())[index]||null
+  };
+  Object.defineProperty(storageMock,'length',{get:() => storage.size});
+  global.localStorage = storageMock;
+  const payload = {
+    image_data:'data:image/jpeg;base64,QUxJQ0U=',name:'Alice',
+    short_drama_binding:{project_id:'alice-project',project_revision:4,character_key:'lead'}
+  };
+  let aliceKey = '';
+  let bobRequests = 0;
+  let aliceRecoveryPosts = 0;
+  try {
+    const aliceClient = workspace.createClient(async (_url,options) => {
+      aliceKey = options.headers['Idempotency-Key'];
+      throw new Error('response lost');
+    });
+    await assert.rejects(aliceClient.createAvatar(payload,'alice'), /response lost/);
+    storage.set('hq-short-drama-avatar-operation:legacy-unowned',JSON.stringify({
+      key:'legacy-key',payload:payload
+    }));
+
+    const bobClient = workspace.createClient(async () => {
+      bobRequests += 1;
+      return {ok:true,status:200,text:async () => JSON.stringify({job_id:77})};
+    });
+    await bobClient.recoverAvatarOperations('bob');
+    assert.equal(bobRequests,0);
+
+    const restoredAliceClient = workspace.createClient(async (url,options) => {
+      if(url==='/api/gen/avatar'){
+        aliceRecoveryPosts += 1;
+        assert.equal(options.headers['Idempotency-Key'],aliceKey);
+        assert.deepEqual(JSON.parse(options.body),payload);
+        return {ok:true,status:200,text:async () => JSON.stringify({job_id:77})};
+      }
+      return {ok:true,status:200,text:async () => JSON.stringify({status:'running'})};
+    });
+    await restoredAliceClient.recoverAvatarOperations('alice');
+    assert.equal(aliceRecoveryPosts,1);
+  } finally {
+    global.localStorage = previousStorage;
+  }
+});
+
+test('Paid operation owner is resolved from the server session', async () => {
+  const calls = [];
+  const client = workspace.createClient(async (url) => {
+    calls.push(url);
+    return {
+      ok:true,status:200,
+      text:async () => JSON.stringify({user:{username:'alice'}})
+    };
+  });
+  assert.equal(await client.currentUsername(),'alice');
+  assert.deepEqual(calls,['/api/auth/me']);
+  assert.match(workspaceSource,/client\.currentUsername\(\)/);
+  assert.match(workspaceSource,/recoverAvatarOperations\(accountUsername\)/);
+});
+
+test('Paid character operations fail closed when browser storage rejects persistence', async () => {
+  const previousStorage = global.localStorage;
+  let requests = 0;
+  const storageMock = {
+    getItem:() => null,
+    setItem:() => { const error = new Error('quota full'); error.name = 'QuotaExceededError'; throw error; },
+    removeItem:() => {},
+    key:() => null,
+    length:0
+  };
+  global.localStorage = storageMock;
+  const client = workspace.createClient(async () => {
+    requests += 1;
+    return {ok:true,status:200,text:async () => JSON.stringify({job_id:91})};
+  });
+  try {
+    await assert.rejects(
+      async () => client.createAvatar({
+        image_data:'data:image/jpeg;base64,AA==',name:'林雨',
+        short_drama_binding:{project_id:'p1',project_revision:4,character_key:'lead'}
+      },'alice'),
+      /浏览器.*存储|storage/i
+    );
+    await assert.rejects(
+      async () => client.generateCharacterImage({project_id:'p1',revision:4,character_key:'lead'},'alice'),
+      /浏览器.*存储|storage/i
+    );
+    assert.equal(requests,0);
+    global.localStorage = {
+      getItem:() => null,
+      setItem:() => {},
+      removeItem:() => {},
+      key:() => null,
+      length:0
+    };
+    await assert.rejects(
+      async () => client.createAvatar({
+        image_data:'data:image/jpeg;base64,AA==',name:'林雨',
+        short_drama_binding:{project_id:'p1',project_revision:4,character_key:'lead'}
+      },'alice'),
+      /浏览器.*存储|storage/i
+    );
+    assert.equal(requests,0);
+  } finally {
+    global.localStorage = previousStorage;
+  }
+});
+
+test('Character reference response loss is recovered with one stable paid operation', async () => {
+  const calls = [];
+  const storage = new Map();
+  const previousStorage = global.localStorage;
+  const storageMock = {
+    getItem:key => storage.has(key) ? storage.get(key) : null,
+    setItem:(key,value) => storage.set(key,String(value)),
+    removeItem:key => storage.delete(key),
+    key:index => Array.from(storage.keys())[index]||null
+  };
+  Object.defineProperty(storageMock,'length',{get:() => storage.size});
+  global.localStorage = storageMock;
+  let posts = 0;
+  const fetchImpl = async (url, options) => {
+    calls.push({url, options});
+    if (url === '/api/gen/short-drama/generate-character-reference' && posts++ === 0) {
+      throw new Error('response lost');
+    }
+    const response = url.startsWith('/api/gen/job/') ? {status:'running'} : {job_id:19};
+    return {ok:true, status:200, text:async () => JSON.stringify(response)};
+  };
+  const payload = {project_id:'p1',revision:7,character_key:'lead'};
+  try {
+    const client = workspace.createClient(fetchImpl);
+    await assert.rejects(client.generateCharacterImage(payload,'alice'), /response lost/);
+    const restoredClient = workspace.createClient(fetchImpl);
+    await restoredClient.recoverCharacterImageOperations('alice');
+    const submissions = calls.filter(call => call.url === '/api/gen/short-drama/generate-character-reference');
+    assert.equal(submissions.length,2);
+    assert.equal(submissions[0].options.headers['Idempotency-Key'],submissions[1].options.headers['Idempotency-Key']);
+    assert.deepEqual(JSON.parse(submissions[1].options.body),payload);
+    assert.equal(storage.size,1);
+  } finally {
+    global.localStorage = previousStorage;
+  }
+});
+
+test('角色参考图读取不会把登录凭据发送给外部地址', async () => {
+  const calls = [];
+  const PreviousFileReader = global.FileReader;
+  const previousLocation = global.location;
+  global.FileReader = class {
+    readAsDataURL() {
+      this.result = 'data:image/png;base64,AA==';
+      this.onload();
+    }
+  };
+  try {
+    const client = workspace.createClient(async (url, options) => {
+      calls.push({url, options});
+      return {
+        ok:true,
+        status:200,
+        blob:async () => ({type:'image/png'})
+      };
+    });
+    global.location = new URL('https://workbench.example.com/project/1');
+    await client.imageData('https://cdn.example.com/role.png');
+    await client.imageData('//evil.example/role.png');
+    await client.imageData('http://workbench.example.com/role.png');
+    await client.imageData('https://workbench.example.com:444/role.png');
+    await client.imageData('https://workbench.example.com/assets/role.png');
+    await client.imageData('/assets/role.png');
+    assert.equal(calls[0].options.credentials, 'omit');
+    assert.equal(Object.hasOwn(calls[0].options.headers, 'Authorization'), false);
+    for (const call of calls.slice(1,4)) {
+      assert.equal(call.options.credentials, 'omit');
+      assert.equal(Object.hasOwn(call.options.headers, 'Authorization'), false);
+    }
+    for (const call of calls.slice(4)) {
+      assert.equal(call.options.credentials, 'same-origin');
+      assert.equal(call.options.headers.Authorization, 'Bearer __cookie__');
+    }
+  } finally {
+    global.FileReader = PreviousFileReader;
+    global.location = previousLocation;
   }
 });
 
@@ -253,11 +508,31 @@ test('角色工作室包含档案、形象生成、形象库绑定和角色感�
   assert.match(source, /先锁定剧本，再选择人物形象/);
   assert.match(source, /锁定后可选择/);
   assert.match(source, /data-action="retry-character-studio"/);
+  assert.match(source, /data-action="edit-character-name"/);
+  assert.match(source, /data-action="save-character-name"/);
+  assert.match(source, /name:requestedName/);
+  assert.match(source, /characterNameError/);
+  assert.match(source, /compatibility_name_local_only/);
+  assert.match(source, /delete legacyRequest\.name/);
+  assert.match(source, /generationStage='保存角色视觉设定'/);
+  assert.match(source, /generationStage='提交角色形象生成任务'/);
+  assert.match(source, /characterImageOperation/);
+  assert.match(source, /id="sdCharacterImageStatus"/);
+  assert.match(source, /正在保存角色视觉设定/);
+  assert.match(source, /检查生成结果/);
+  assert.match(source, /不要重复提交/);
+  assert.match(source, /characterImageFailureMessage/);
+  assert.match(css, /\.sd-character-image-status/);
+  assert.match(css, /@keyframes sd-character-spin/);
+  assert.match(source, /角色标识：/);
   assert.match(source, /avatar_id:providerShot\.primary_avatar_id/);
   assert.match(source, /character_key:providerShot\.primary_character_key/);
   assert.match(css, /\.sd-character-modal/);
   assert.match(css, /\.sd-character-card/);
   assert.match(css, /\.sd-character-prerequisite/);
+  assert.match(css, /\.sd-character-workspace/);
+  assert.match(css, /\.sd-character-actions\{position:sticky/);
+  assert.match(css, /width:min\(96vw,1680px\)/);
 });
 
 test('锁定后对话区变为可折叠只读历史并支持复制为新项目', () => {
@@ -777,10 +1052,6 @@ test('Provider PoC directs missing character bindings to the left character card
   assert.doesNotMatch(output, /data-action="create-provider-avatar"/);
   assert.doesNotMatch(output, /data-action="refresh-provider-avatars"/);
   assert.match(controls, /data-action="provider-preflight" data-shot-key="shot_01" type="button" disabled/);
-  assert.equal(
-    workspace.avatarCreateUrl(),
-    '/workbench/video.html?function=cinematic&action=create-avatar'
-  );
 });
 
 test('all Provider shots expose the 720p assembly stage without charging again', () => {
