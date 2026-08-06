@@ -126,6 +126,19 @@ class PointsAuditTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(self.auth.list_points_audit(username="ghost")["items"], [])
 
+    def test_admin_target_resolves_masked_list_user_id(self):
+        user_id = self.auth.list_admin_users(query="fang")["items"][0]["id"]
+        username, err = self.auth.admin_target_username(user_id=user_id)
+        self.assertEqual((username, err), ("fang", None))
+        result, err = self.auth.adjust_points_admin("boss", username, 5, "manual credit")
+        self.assertIsNone(err)
+        self.assertEqual(result["after"], 15)
+
+    def test_admin_target_keeps_legacy_username_and_rejects_bad_id(self):
+        self.assertEqual(self.auth.admin_target_username("fang"), ("fang", None))
+        self.assertEqual(self.auth.admin_target_username(user_id="bad"), (None, "invalid_user_id"))
+        self.assertEqual(self.auth.admin_target_username(user_id=999999), (None, "not_found"))
+
     def test_list_filters_direction_and_summarizes_full_result(self):
         self.auth.deduct_points("fang", 3, "job:collect")
         self.auth.refund_points("fang", 1, "job#1")
