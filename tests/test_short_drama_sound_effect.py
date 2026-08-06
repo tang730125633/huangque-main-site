@@ -1,5 +1,7 @@
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +15,20 @@ from server.providers.sound_effects import (
 
 
 class ShortDramaSoundEffectProviderTests(unittest.TestCase):
+    def test_sound_modules_import_from_flattened_runtime(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import content_domains.short_drama_sound_effect; "
+                "import content_domains.short_drama_sound_design",
+            ],
+            cwd=Path(__file__).resolve().parents[1] / "server",
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+
     def test_mock_provider_is_test_only(self):
         with self.assertRaises(ProviderConfigurationError):
             configured_provider({

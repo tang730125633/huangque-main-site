@@ -15,7 +15,10 @@ import time
 import uuid
 from contextlib import closing
 
-from server.providers.sound_effects import capability as provider_capability
+try:
+    from server.providers.sound_effects import capability as provider_capability
+except ModuleNotFoundError:
+    from providers.sound_effects import capability as provider_capability
 
 from . import jobs_store
 
