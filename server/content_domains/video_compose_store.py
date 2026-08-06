@@ -228,20 +228,49 @@ def save_analysis(username, project_id, expected_revision, analysis, transcript_
     return get_project(username, project_id)
 
 
+def begin_render(username, project_id, expected_revision):
+    now = int(time.time())
+    with closing(db()) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT * FROM video_compose_projects WHERE id=? AND username=?",
+            (str(project_id), str(username)),
+        ).fetchone()
+        if not row:
+            raise ProjectNotFound("一键成片项目不存在")
+        if row["status"] in {"rendering", "completed"}:
+            return _public(row), False
+        if int(row["revision"]) != int(expected_revision):
+            raise RevisionConflict("项目已更新，请刷新后重试")
+        if row["status"] not in {"review_confirmed", "failed"}:
+            raise ValueError("当前项目状态不能渲染")
+        revision = int(row["revision"]) + 1
+        changed = connection.execute(
+            """UPDATE video_compose_projects SET status='rendering',revision=?,error=NULL,updated_at=?
+               WHERE id=? AND username=? AND revision=?""",
+            (revision, now, str(project_id), str(username), int(expected_revision)),
+        ).rowcount
+        if changed != 1:
+            raise RevisionConflict("项目已更新，请刷新后重试")
+        _event(connection, project_id, username, "render_started", revision, {})
+        connection.commit()
+    return get_project(username, project_id), True
+
+
 def save_render_result(username, project_id, expected_revision, render_input,
                        clean_master_file, output_file, output_asset_id, quality):
     now = int(time.time())
     with closing(db()) as connection:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
-            "SELECT status,revision FROM video_compose_projects WHERE id=? AND username=?",
+            "SELECT * FROM video_compose_projects WHERE id=? AND username=?",
             (str(project_id), str(username)),
         ).fetchone()
         if not row:
             raise ProjectNotFound("一键成片项目不存在")
         if int(row["revision"]) != int(expected_revision):
             raise RevisionConflict("项目已更新，请刷新后重试")
-        if row["status"] != "review_confirmed":
+        if row["status"] != "rendering":
             raise ValueError("当前项目状态不能渲染")
         revision = int(row["revision"]) + 1
         connection.execute(
@@ -260,6 +289,51 @@ def save_render_result(username, project_id, expected_revision, render_input,
         })
         connection.commit()
     return get_project(username, project_id)
+
+
+def fail_render(username, project_id, expected_revision, error):
+    now = int(time.time())
+    with closing(db()) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT status,revision FROM video_compose_projects WHERE id=? AND username=?",
+            (str(project_id), str(username)),
+        ).fetchone()
+        if not row:
+            raise ProjectNotFound("一键成片项目不存在")
+        if row["status"] != "rendering" or int(row["revision"]) != int(expected_revision):
+            return _public(row)
+        revision = int(row["revision"]) + 1
+        detail = str(error or "模板渲染失败")[:220]
+        connection.execute(
+            """UPDATE video_compose_projects SET status='failed',revision=?,error=?,updated_at=?
+               WHERE id=? AND username=? AND revision=?""",
+            (revision, detail, now, str(project_id), str(username), int(expected_revision)),
+        )
+        _event(connection, project_id, username, "render_failed", revision, {"error": detail})
+        connection.commit()
+    return get_project(username, project_id)
+
+
+def recover_interrupted_renders():
+    now = int(time.time())
+    with closing(db()) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        rows = connection.execute(
+            "SELECT id,username,revision FROM video_compose_projects WHERE status='rendering'"
+        ).fetchall()
+        for row in rows:
+            revision = int(row["revision"]) + 1
+            detail = "服务重启中断了渲染，请重新提交"
+            connection.execute(
+                """UPDATE video_compose_projects SET status='failed',revision=?,error=?,updated_at=?
+                   WHERE id=? AND username=? AND status='rendering' AND revision=?""",
+                (revision, detail, now, row["id"], row["username"], row["revision"]),
+            )
+            _event(connection, row["id"], row["username"], "render_failed", revision,
+                   {"error": detail})
+        connection.commit()
+    return len(rows)
 
 
 def confirm_edit_decisions(username, project_id, expected_revision, decisions, edl):
