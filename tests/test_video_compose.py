@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -241,8 +242,11 @@ class VideoComposeStoreTests(unittest.TestCase):
         confirmed = store.confirm_edit_decisions("fang", project["id"], 2, decisions, edl)
         self.assertEqual("review_confirmed", confirmed["status"])
         self.assertEqual(1, confirmed["edit_decision_version"])
+        rendering, started = store.begin_render("fang", project["id"], 3)
+        self.assertTrue(started)
+        self.assertEqual("rendering", rendering["status"])
         completed = store.save_render_result(
-            "fang", project["id"], 3,
+            "fang", project["id"], rendering["revision"],
             {"template_id": "viral-talking-head-v1", "template_version": "1.0.0"},
             "video-compose/fang/clean.mp4", "video-compose/fang/output.mp4", 77,
             {"output": {"duration_ms": 3000}},
@@ -253,6 +257,23 @@ class VideoComposeStoreTests(unittest.TestCase):
         self.assertEqual(77, completed["output_asset_id"])
         with self.assertRaises(store.ProjectNotFound):
             store.get_project("other-user", project["id"])
+
+    def test_interrupted_render_can_be_retried(self):
+        project = store.create_project("fang", 7, "source-sha", {"asset_id": 7})
+        detected = analysis.detect_candidates(1200, [
+            {"text": "测试", "start_ms": 100, "end_ms": 900},
+        ])
+        ready = store.save_analysis("fang", project["id"], 1, detected, "hash")
+        decisions = {item["id"]: "keep" for item in ready["candidates"]}
+        edl = analysis.build_edl(ready["duration_ms"], ready["candidates"], decisions)
+        confirmed = store.confirm_edit_decisions("fang", project["id"], 2, decisions, edl)
+        rendering, _ = store.begin_render("fang", project["id"], confirmed["revision"])
+        self.assertEqual(1, store.recover_interrupted_renders())
+        failed = store.get_project("fang", project["id"])
+        self.assertEqual("failed", failed["status"])
+        retried, started = store.begin_render("fang", project["id"], failed["revision"])
+        self.assertTrue(started)
+        self.assertGreater(retried["revision"], rendering["revision"])
 
 
 class VideoComposeHttpTests(unittest.TestCase):
@@ -379,7 +400,11 @@ class VideoComposeHttpTests(unittest.TestCase):
         def build_clean(_source, _edl, output):
             pathlib.Path(output).write_bytes(b"clean")
             return {"duration_ms": 2400, "video_codec": "h264", "audio_codec": "aac", "has_audio": True}
+        render_started = threading.Event()
+        allow_render = threading.Event()
         def render_video(_clean, _payload, output):
+            render_started.set()
+            allow_render.wait(2)
             pathlib.Path(output).write_bytes(b"finished-video")
             return {"template_id": "viral-talking-head-v1", "template_version": "1.0.0",
                     "output": {"duration_ms": 2400, "video_codec": "h264", "audio_codec": "aac", "has_audio": True}}
@@ -402,10 +427,28 @@ class VideoComposeHttpTests(unittest.TestCase):
                 {"expected_revision": ready["revision"], "decisions": decisions},
             )
             confirmed = reviewed["project"]
-            _, rendered = self.request(
+            status, accepted = self.request(
                 "POST", "/api/gen/video-compose/projects/%s/render" % project["id"],
                 {"expected_revision": confirmed["revision"], "hook": {}, "headlines": [], "brand": {}},
             )
+            self.assertEqual(202, status)
+            self.assertEqual("rendering", accepted["project"]["status"])
+            self.assertTrue(render_started.wait(1))
+            replay_status, replayed = self.request(
+                "POST", "/api/gen/video-compose/projects/%s/render" % project["id"],
+                {"expected_revision": confirmed["revision"], "hook": {}, "headlines": [], "brand": {}},
+            )
+            self.assertEqual(202, replay_status)
+            self.assertEqual(accepted["project"]["revision"], replayed["project"]["revision"])
+            allow_render.set()
+            deadline = time.time() + 3
+            while time.time() < deadline:
+                _, rendered = self.request(
+                    "GET", "/api/gen/video-compose/projects/%s" % project["id"]
+                )
+                if rendered["project"]["status"] == "completed":
+                    break
+                time.sleep(.02)
             _, replayed = self.request(
                 "POST", "/api/gen/video-compose/projects/%s/render" % project["id"],
                 {"expected_revision": confirmed["revision"], "hook": {}, "headlines": [], "brand": {}},
@@ -459,6 +502,7 @@ class VideoComposeDeploymentTests(unittest.TestCase):
             renderer_source,
         )
         self.assertIn("hyperframes@0.7.90", renderer_source)
+        self.assertIn("max(900", renderer_source)
         for package_path in (
             ROOT / "site/assets/one-click/templates/viral-talking-head-v1/package.json",
             ROOT / "tools/hyperframes/viral-talking-head-v1/package.json",
