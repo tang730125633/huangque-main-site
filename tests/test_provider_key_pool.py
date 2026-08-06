@@ -39,6 +39,7 @@ class ProviderKeyPoolTests(unittest.TestCase):
                 "ARK_API_KEY": "",
                 "GEMINI_API_KEY": "",
                 "XAI_API_KEY": "",
+                "MINIMAX_API_KEY": "",
             },
             clear=False,
         )

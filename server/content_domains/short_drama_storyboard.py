@@ -197,6 +197,31 @@ def _reading_seconds(line):
     return round(0.45 + characters / 3.5, 2)
 
 
+def _fit_dialogue_to_duration(line, duration_seconds):
+    """Keep generated dialogue inside the shot before the quality gate runs."""
+    if line.get("kind") == "silence" or _reading_seconds(line) <= duration_seconds:
+        return line
+    budget = max(0, int((float(duration_seconds) - 0.45) * 3.5))
+    if budget < 2:
+        return {
+            "kind": "silence",
+            "character_key": "",
+            "speaker": "",
+            "text": "",
+        }
+    kept = []
+    counted = 0
+    for character in str(line.get("text") or ""):
+        if not re.match(r"[\s，。！？、；：“”\"…]", character):
+            if counted >= budget:
+                break
+            counted += 1
+        kept.append(character)
+    fitted = dict(line)
+    fitted["text"] = "".join(kept).rstrip("，；：、 ") + "…"
+    return fitted
+
+
 def _emotional_shift(phase_key):
     return {
         "setup": "平静或未知 → 意识到问题",
@@ -330,7 +355,9 @@ def compile_storyboard(project, clauses, characters, instruction="", ending="", 
         speaker = _speaker(characters, source, phase_key)
         action = _concrete_action(source, phase_key)
         camera = CAMERAS[phase_key]
-        line = _dialogue(source, phase_key, speaker)
+        line = _fit_dialogue_to_duration(
+            _dialogue(source, phase_key, speaker), durations[index]
+        )
         normalized_line = _NORMALIZE_RE.sub("", str(line.get("text") or "")).lower()
         if normalized_line and normalized_line in used_dialogue:
             line = {

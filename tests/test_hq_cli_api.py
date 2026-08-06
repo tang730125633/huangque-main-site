@@ -459,14 +459,32 @@ class HQCLIAPITests(unittest.TestCase):
                 "mask_upload_id": "img_" + "b" * 32,
             })
 
+    def test_channels_use_customer_account_authorization_and_include_minimax(self):
+        token = self._token(["profile:read"])
+        status, payload = self._request("/api/auth/cli/action", {
+            "action": "channels", "input": {}, "confirm": False,
+        }, token=token)
+        self.assertEqual(200, status)
+        self.assertEqual(15, payload["total"])
+        self.assertEqual("alice", payload["account"])
+        self.assertEqual(
+            {"channel": "minimax", "resolution": "768p"},
+            {k: self.auth.hq_cli_api.action_plan("video-generate", {
+                "prompt": "人物故事", "channel": "minimax",
+            })["payload"][k] for k in ("channel", "resolution")},
+        )
+
     def test_server_requires_confirmation_for_external_ai_and_writes(self):
-        token = self._token(["prompt:optimize", "ip12:write", "ip12:chat", "canvas:write", "assets:write"])
+        token = self._token(["prompt:optimize", "ip12:write", "ip12:chat", "canvas:write", "assets:write",
+                             "video-compose:write", "digital-presenter:write"])
         cases = [
             ("prompt-optimize", {"prompt": "portrait", "kind": "image"}),
             ("ip12-create", {"title": "my project"}),
             ("ip12-message", {"project_id": "ip_1", "message": "我的客户是餐饮老板", "request_id": "turn-001"}),
             ("canvas-create", {"name": "my board"}),
             ("asset-tags", {"kind": "image", "key": "asset-1", "tags": ["客户案例"]}),
+            ("video-compose-create", {"source_asset_id": 7}),
+            ("digital-presenter-create", {"board_id": "cb_1", "request_id": "hqcli-dp-001"}),
         ]
         with mock.patch.object(self.auth.hq_cli_api, "proxy_json") as proxy:
             for action, input_body in cases:
@@ -476,6 +494,24 @@ class HQCLIAPITests(unittest.TestCase):
                 self.assertEqual(409, status)
                 self.assertEqual("confirmation_required", payload["code"])
         proxy.assert_not_called()
+
+    def test_new_project_actions_use_fixed_routes_headers_and_strict_inputs(self):
+        compose = self.auth.hq_cli_api.action_plan("video-compose-review", {
+            "project_id": "compose_" + "a" * 32, "expected_revision": 3,
+            "decisions": {"candidate_" + "b" * 16: "remove"},
+        })
+        self.assertEqual(("video-compose:write", "POST"), (compose["scope"], compose["method"]))
+        self.assertTrue(compose["path"].endswith("/edit-decisions"))
+        presenter = self.auth.hq_cli_api.action_plan("digital-presenter-create", {
+            "board_id": "cb_1", "request_id": "hqcli-dp-001", "title": "口播一号",
+        })
+        self.assertEqual("cb_1", presenter["headers"]["X-Canvas-Board-Id"])
+        self.assertEqual("hqcli-dp-001", presenter["headers"]["Idempotency-Key"])
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan("video-compose-review", {
+                "project_id": "compose_" + "a" * 32, "expected_revision": 3,
+                "decisions": {"candidate_" + "b" * 16: "maybe"},
+            })
 
     def test_ip12_message_has_separate_scope_and_fixed_non_streaming_proxy(self):
         input_body = {"project_id": "ip_1", "message": "我的客户是餐饮老板", "request_id": "turn-001"}

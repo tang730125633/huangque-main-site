@@ -194,8 +194,9 @@ class InviteRegistrationTests(unittest.TestCase):
             {"X-Real-IP": "203.0.113.11"},
         )
         self.assertEqual(status, 200)
-        self.assertEqual(set(body), {"token", "user", "invite_bound"})
+        self.assertEqual(set(body), {"token", "user", "invite_bound", "inviter"})
         self.assertTrue(body["invite_bound"])
+        self.assertEqual(body["inviter"]["name"], "inviter")
         self.assertEqual(body["user"]["points"], 16)
         self.assertNotIn("invite", body["user"])
         conn = self._connect()
@@ -222,8 +223,13 @@ class InviteRegistrationTests(unittest.TestCase):
         finally:
             conn.close()
 
-        status, _, _ = self._request("/api/auth/invite/validate?code=" + code)
+        status, validated, _ = self._request("/api/auth/invite/validate?code=" + code)
         self.assertEqual(status, 200)
+        self.assertEqual(validated["server_time"], validated["invite_validated_at"])
+        self.assertEqual(
+            validated["invite_expires_at"] - validated["invite_validated_at"],
+            7 * 24 * 3600,
+        )
         status, body, _ = self._request(
             "/api/auth/register",
             {"username": "switch_off_user", "password": "secret123", "invite_code": code},
@@ -556,6 +562,45 @@ class InviteRegistrationTests(unittest.TestCase):
             ).fetchone()
             self.assertIsNone(relation["ip_hash"])
             self.assertIsNone(relation["device_hash"])
+        finally:
+            conn.close()
+
+    def test_risk_hashes_expire_and_unknown_sources_are_rejected(self):
+        code = self._invite_code()
+        result, err = self.auth.register_account(
+            "old_hash", "secret123", invite_code=code,
+            client_ip="203.0.113.40", device_id="old-device",
+        )
+        self.assertIsNone(err)
+        conn = self._connect()
+        try:
+            conn.execute(
+                "UPDATE user_invites SET bound_at=? WHERE invitee_user_id=?",
+                (int(time.time()) - self.auth.invites.RISK_HASH_RETENTION - 1, self._user_id("old_hash")),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        result, err = self.auth.register_account(
+            "new_hash", "secret123", invite_code=code,
+            client_ip="203.0.113.41", device_id="new-device",
+        )
+        self.assertIsNone(err)
+        self.auth.create_user("bad_source", "secret123")
+        conn = self._connect()
+        try:
+            old = conn.execute(
+                "SELECT ip_hash,device_hash FROM user_invites WHERE invitee_user_id=?",
+                (self._user_id("old_hash"),),
+            ).fetchone()
+            self.assertIsNone(old["ip_hash"])
+            self.assertIsNone(old["device_hash"])
+            with self.assertRaises(self.auth.invites.InviteError) as raised:
+                self.auth.invites.bind_registration(
+                    conn, self._user_id("bad_source"), code, "unknown",
+                    hash_secret=self.auth.INVITE_HASH_SECRET,
+                )
+            self.assertEqual(raised.exception.code, "invalid_source")
         finally:
             conn.close()
 

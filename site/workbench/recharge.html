@@ -17,6 +17,7 @@
   .txscroll{ max-height:368px; overflow:auto; }
   .txhead{ position:sticky; top:0; z-index:2; background:rgba(10,15,26,.96); backdrop-filter:blur(8px); }
   .membership-offer{position:relative;overflow:hidden;padding:28px;border:1px solid rgba(231,178,76,.38);border-radius:18px;background:linear-gradient(135deg,rgba(231,178,76,.15),rgba(15,21,34,.72));margin-bottom:28px}.membership-offer:after{content:"";position:absolute;width:280px;height:280px;right:-90px;top:-130px;border-radius:50%;background:radial-gradient(circle,rgba(244,205,114,.24),transparent 68%);pointer-events:none}.membership-benefits{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:20px 0}.membership-benefits div{padding:13px 15px;border:1px solid rgba(148,164,187,.13);border-radius:11px;background:rgba(5,10,18,.26);color:#b9c5d5;font-size:13px}.membership-cta{min-width:230px;padding:12px 20px;border:0;border-radius:11px;cursor:pointer;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);font:800 15px inherit}
+  .pay-brand{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;flex:none}.pay-brand img{width:19px;height:19px;display:block}.pay-brand.wechat{background:#07c160}.pay-brand.alipay{background:#1677ff}
   @media (max-width:1100px){ .gPkg{ grid-template-columns:repeat(2,1fr);} }
   @media (max-width:620px){ .gPkg{ grid-template-columns:1fr;} .gPay{ grid-template-columns:1fr;} }
 </style>
@@ -41,7 +42,7 @@
     </div>
 
     <section id="membershipOffer" class="membership-offer" hidden>
-      <div style="position:relative;z-index:1"><div id="membershipOfferEyebrow" style="font-size:12px;font-weight:800;letter-spacing:.16em;color:#e7b24c">EXPERIENCE MEMBERSHIP</div><div id="membershipOfferTitle" style="margin-top:10px;font-size:25px;font-weight:800">开通体验官会员</div><div id="membershipOfferDescription" style="margin-top:8px;color:#94a4bb;font-size:13px">非会员无法使用生成能力或充值点数。开通后一年内有效。</div><div class="membership-benefits"><div><b id="membershipOfferDuration" style="color:#f4d27e">一年</b><br>会员有效期</div><div><b id="membershipOfferPoints" style="color:#f4d27e">1000 点</b><br><span id="membershipOfferPointsNote">开通即赠送</span></div><div><b style="color:#f4d27e">全部功能</b><br>获得使用资格</div></div><button id="membershipOfferAction" class="membership-cta" data-recharge data-amount="499" data-product="membership_experience">¥499 开通体验官 · 赠 1000 点</button><div id="membershipOfferFoot" style="margin-top:13px;color:#718096;font-size:11px">合伙人、发起人由管理员在后台设置，会员期限同为一年。</div></div>
+      <div style="position:relative;z-index:1"><div id="membershipOfferEyebrow" style="font-size:12px;font-weight:800;letter-spacing:.16em;color:#e7b24c">EXPERIENCE MEMBERSHIP</div><div id="membershipOfferTitle" style="margin-top:10px;font-size:25px;font-weight:800">开通体验官会员</div><div id="membershipOfferDescription" style="margin-top:8px;color:#94a4bb;font-size:13px">非会员无法使用生成能力或充值点数。开通后一年内有效。</div><div class="membership-benefits"><div><b id="membershipOfferDuration" style="color:#f4d27e">一年</b><br>会员有效期</div><div><b id="membershipOfferPoints" style="color:#f4d27e">读取中</b><br><span id="membershipOfferPointsNote">开通即赠送</span></div><div><b style="color:#f4d27e">全部功能</b><br>获得使用资格</div></div><button id="membershipOfferAction" class="membership-cta" data-recharge data-product="membership_experience" disabled>价格读取中</button><div id="membershipOfferFoot" style="margin-top:13px;color:#718096;font-size:11px">合伙人、发起人由管理员在后台设置，会员期限同为一年。</div></div>
     </section>
 
     <!-- 点数套餐 -->
@@ -88,12 +89,12 @@
     <div style="font-size:17px; font-weight:600; margin-bottom:14px;">提交信息</div>
     <div class="gPay" style="display:grid; gap:16px; max-width:660px; margin-bottom:28px;">
       <div data-method="wechat" style="display:flex; align-items:center; gap:12px; padding:16px 20px; border:1px solid rgba(231,178,76,.3); border-radius:14px; background:rgba(231,178,76,.05); cursor:pointer; transition:.16s;">
-        <div style="width:26px; height:26px; border-radius:7px; flex:none; background:#07c160; display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:700;">微</div>
+        <span class="pay-brand wechat"><img src="../assets/brands/wechat.svg" alt="微信"></span>
         <span style="flex:1; font-size:14.5px; font-weight:500;">微信支付</span>
         <span style="width:18px; height:18px; border-radius:50%; border:2px solid #e7b24c; display:flex; align-items:center; justify-content:center;"><span style="width:9px; height:9px; border-radius:50%; background:#e7b24c; transform:scale(1); transition:.14s;"></span></span>
       </div>
       <div data-method="alipay" style="display:flex; align-items:center; gap:12px; padding:16px 20px; border:1px solid rgba(148,164,187,.14); border-radius:14px; background:rgba(148,164,187,.04); cursor:pointer; transition:.16s;">
-        <div style="width:26px; height:26px; border-radius:7px; flex:none; background:#1677ff; display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:700;">支</div>
+        <span class="pay-brand alipay"><img src="../assets/brands/alipay.svg" alt="支付宝"></span>
         <span style="flex:1; font-size:14.5px; font-weight:500;">支付宝</span>
         <span style="width:18px; height:18px; border-radius:50%; border:2px solid rgba(148,164,187,.3); display:flex; align-items:center; justify-content:center;"><span style="width:9px; height:9px; border-radius:50%; background:#e7b24c; transform:scale(0); transition:.14s;"></span></span>
       </div>
@@ -210,13 +211,15 @@
 </div>
 <script src="qrcode.min.js?v=1"></script>
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=4de5465a"></script>
+<script src="cloud-shell.js?v=dbd5a9e4"></script>
 <script>
 (function(){
   var token='__cookie__';
   var membershipActive=false;
   var membershipTier='';
   var membershipRequired=false;
+  var currentUser=null;
+  var commercePricing=null;
   function membershipDisplayName(user){
     if(!user||!user.membership_active) return '非会员';
     return user.membership_name||({experience:'体验官',partner:'合伙人',initiator:'发起人'}[user.membership_tier])||'会员等级待同步';
@@ -224,19 +227,20 @@
   var membershipDiscountBps=10000;
   var $=function(id){return document.getElementById(id)};
   function setTip(msg,color){var el=$('rechargeTip'); if(el){el.textContent=msg; el.style.color=color||'#94a4bb'}}
-  function membershipOrderText(type){return type==='membership_experience_renewal'?'体验会员续费 · 不赠点':(type==='membership_experience'?'体验官 + 1000 点':'')}
+  function membershipOrderText(type){return type==='membership_experience_renewal'?'体验会员续费 · 不赠点':(type==='membership_experience'?'体验官 + '+(commercePricing?commercePricing.bonusPoints.toLocaleString():'—')+' 点':'')}
   function renderMembershipOffer(user,failed){
     var offer=$('membershipOffer'),action=$('membershipOfferAction'),tier=user&&user.membership_tier;
-    offer.hidden=false;action.disabled=!!failed;
+    offer.hidden=false;action.disabled=!!failed||!commercePricing;
+    if(!commercePricing){action.hidden=false;action.textContent='价格读取中';return}
     if(failed){$('membershipOfferTitle').textContent='会员信息读取失败';$('membershipOfferDescription').textContent='暂时无法确认会员资格，请刷新后再试。';$('membershipOfferFoot').textContent='资格读取失败时不会开放购买。';action.hidden=true;return}
     action.hidden=false;
     if(membershipActive&&tier==='experience'){
-      $('membershipOfferEyebrow').textContent='EXPERIENCE RENEWAL';$('membershipOfferTitle').textContent='体验会员续费一年';$('membershipOfferDescription').textContent='续费从当前到期日顺延一年，价格 ¥499，不赠 1000 点。';$('membershipOfferDuration').textContent='续一年';$('membershipOfferPoints').textContent='0 点';$('membershipOfferPointsNote').textContent='续费不赠点';action.textContent='¥499 续费一年 · 不赠点';action.setAttribute('data-product','membership_experience_renewal');$('membershipOfferFoot').textContent='仅当前体验会员可自助续费。';return;
+      $('membershipOfferEyebrow').textContent='EXPERIENCE RENEWAL';$('membershipOfferTitle').textContent='体验会员续费一年';$('membershipOfferDescription').textContent='续费从当前到期日顺延一年，不赠首购点数。';$('membershipOfferDuration').textContent='续一年';$('membershipOfferPoints').textContent='0 点';$('membershipOfferPointsNote').textContent='续费不赠点';action.textContent='¥'+commercePricing.priceYuan+' 续费一年 · 不赠点';action.setAttribute('data-amount',commercePricing.priceYuan);action.setAttribute('data-product','membership_experience_renewal');$('membershipOfferFoot').textContent='仅当前体验会员可自助续费。';return;
     }
     if(membershipActive&&(tier==='partner'||tier==='initiator')){
       $('membershipOfferEyebrow').textContent='MEMBERSHIP SERVICE';$('membershipOfferTitle').textContent='会员续费请联系管理员';$('membershipOfferDescription').textContent='合伙人、发起人暂不开放自助续费。';$('membershipOfferDuration').textContent='管理员处理';$('membershipOfferPoints').textContent='—';$('membershipOfferPointsNote').textContent='不涉及赠点';$('membershipOfferFoot').textContent='请联系管理员确认续费安排。';action.hidden=true;return;
     }
-    $('membershipOfferEyebrow').textContent='EXPERIENCE MEMBERSHIP';$('membershipOfferTitle').textContent='开通体验官会员';$('membershipOfferDescription').textContent='非会员无法使用生成能力或充值点数。开通后一年内有效。';$('membershipOfferDuration').textContent='一年';$('membershipOfferPoints').textContent='1000 点';$('membershipOfferPointsNote').textContent='开通即赠送';action.textContent='¥499 开通体验官 · 赠 1000 点';action.setAttribute('data-product','membership_experience');$('membershipOfferFoot').textContent='合伙人、发起人由管理员在后台设置，会员期限同为一年。';
+    $('membershipOfferEyebrow').textContent='EXPERIENCE MEMBERSHIP';$('membershipOfferTitle').textContent='开通体验官会员';$('membershipOfferDescription').textContent='非会员无法使用生成能力或充值点数。开通后一年内有效。';$('membershipOfferDuration').textContent='一年';$('membershipOfferPoints').textContent=commercePricing.bonusPoints.toLocaleString()+' 点';$('membershipOfferPointsNote').textContent='开通即赠送';action.textContent='¥'+commercePricing.priceYuan+' 开通体验官 · 赠 '+commercePricing.bonusPoints.toLocaleString()+' 点';action.setAttribute('data-amount',commercePricing.priceYuan);action.setAttribute('data-product','membership_experience');$('membershipOfferFoot').textContent='合伙人、发起人由管理员在后台设置，会员期限同为一年。';
   }
   function api(path,opt){
     opt=opt||{};
@@ -271,9 +275,18 @@
       $('membershipDiscountHint').textContent=e.message||'价格读取失败';
     });
   }
+  function loadCommercePricing(){
+    return api('/api/gen/pricing').then(function(d){
+      var values={};(d.items||[]).forEach(function(x){values[x.key]=Number(x.points)});
+      if(!Number.isInteger(values['membership.experience.price_yuan'])||!Number.isInteger(values['membership.experience.bonus_points']))throw new Error('会员价格配置不完整');
+      commercePricing={priceYuan:values['membership.experience.price_yuan'],bonusPoints:values['membership.experience.bonus_points']};
+      if(currentUser)renderMembershipOffer(currentUser);
+    }).catch(function(){commercePricing=null;if(currentUser)renderMembershipOffer(currentUser,true)});
+  }
   function loadMe(){
     api('/api/auth/me').then(function(d){
       var user=(d&&d.user)||{},p=user.points;
+      currentUser=user;
       membershipActive=!!user.membership_active;
       membershipTier=user.membership_tier||'';
       membershipRequired=!!d.membership_enforcement_enabled;
@@ -332,7 +345,7 @@
         var o=(d.items||[]).filter(function(x){return x.order_id===orderId})[0];
         if(o&&o.status==='approved'){
           clearInterval(wxpayPoll); wxpayPoll=null;
-          $('wxpayStatus').textContent=o.order_type==='membership_experience_renewal'?'体验会员已续费一年，不赠点 ✅':(o.order_type==='membership_experience'?'体验官已开通，1000 点已到账 ✅':'支付成功，点数已到账 ✅'); $('wxpayStatus').style.color='#2bd576';
+          $('wxpayStatus').textContent=o.order_type==='membership_experience_renewal'?'体验会员已续费一年，不赠点 ✅':(o.order_type==='membership_experience'?'体验官已开通，'+Number(o.points||0).toLocaleString()+' 点已到账 ✅':'支付成功，点数已到账 ✅'); $('wxpayStatus').style.color='#2bd576';
           loadMe(); loadOrders();
           setTimeout(closeWxpay,1600);
         }
@@ -350,7 +363,7 @@
         var qr=$('wxpayQr'); qr.innerHTML='';
         new QRCode(qr,{text:d.code_url,width:180,height:180,correctLevel:QRCode.CorrectLevel.M});
         var pts=(d.order&&d.order.points)||pointsFor(amount);
-        $('wxpayAmount').textContent=productType==='membership_experience_renewal'?'¥499 · 体验会员续费一年 · 不赠点':(productType==='membership_experience'?'¥499 · 体验官一年 · 赠 1000 点':'¥'+Number((d.order&&d.order.amount)||amount).toFixed(2)+' · '+pts+' 点');
+        $('wxpayAmount').textContent=productType==='membership_experience_renewal'?'¥'+Number((d.order&&d.order.amount)||amount).toFixed(2)+' · 体验会员续费一年 · 不赠点':(productType==='membership_experience'?'¥'+Number((d.order&&d.order.amount)||amount).toFixed(2)+' · 体验官一年 · 赠 '+Number((d.order&&d.order.points)||0).toLocaleString()+' 点':'¥'+Number((d.order&&d.order.amount)||amount).toFixed(2)+' · '+pts+' 点');
         $('wxpayStatus').textContent='请用微信扫一扫完成支付'; $('wxpayStatus').style.color='#e7b24c';
         $('wxpayModal').style.display='flex';
         pollPaid(d.order.order_id);
@@ -395,7 +408,8 @@
     btn.addEventListener('click',function(){submitOrder(btn)});
   });
   if($('orderRefresh')) $('orderRefresh').onclick=loadOrders;
-  loadMe();
+  loadCommercePricing().then(loadMe);
+  setInterval(loadCommercePricing,30000);
   loadOrders();
 })();
 </script>

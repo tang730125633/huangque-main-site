@@ -101,6 +101,8 @@ ASSETS = (
     Asset("canvas/canvas-short-drama-completion.js", required=False),
     Asset("canvas/canvas-short-drama-workspace.js", required=False),
     Asset("canvas/canvas-short-drama-workspace.css", required=False),
+    Asset("canvas/canvas-digital-presenter.js", required=False),
+    Asset("canvas/canvas-digital-presenter.css", required=False),
 )
 
 

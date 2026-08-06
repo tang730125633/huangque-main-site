@@ -30,6 +30,7 @@ LOGIN_SCOPES = [
     "profile:read", "ip12:read", "ip12:write", "ip12:chat", "prompt:optimize", "canvas:read",
     "canvas:write", "canvas:agent", "canvas:edit", "tasks:read", "assets:read", "assets:write", "assets:upload",
     "generation:quote", "generation:submit",
+    "video-compose:read", "video-compose:write", "digital-presenter:read", "digital-presenter:write",
 ]
 
 
@@ -135,6 +136,14 @@ def _validate(capability, payload):
             raise CliError(EXIT_INPUT, "input_error", "input field %s must be an integer" % key)
         if value_type == "boolean" and not isinstance(value, bool):
             raise CliError(EXIT_INPUT, "input_error", "input field %s must be a boolean" % key)
+        if value_type == "object":
+            if not isinstance(value, dict):
+                raise CliError(EXIT_INPUT, "input_error", "input field %s must be an object" % key)
+            if len(value) < definition.get("minProperties", 0) or len(value) > definition.get("maxProperties", len(value)):
+                raise CliError(EXIT_INPUT, "input_error", "input field %s has an invalid number of properties" % key)
+            child = definition.get("additionalProperties") or {}
+            if child.get("enum") and any(entry not in child["enum"] for entry in value.values()):
+                raise CliError(EXIT_INPUT, "input_error", "input field %s contains an invalid value" % key)
         if value_type == "array":
             if not isinstance(value, list):
                 raise CliError(EXIT_INPUT, "input_error", "input field %s must be an array" % key)
@@ -255,7 +264,7 @@ def build_parser():
     parser = JsonArgumentParser(prog="hq", add_help=False, allow_abbrev=False)
     _add_common(parser, "show_help")
     subcommands = parser.add_subparsers(dest="command")
-    for name in ("version", "capabilities", "help", "status", "logout"):
+    for name in ("version", "capabilities", "channels", "help", "status", "logout"):
         command = subcommands.add_parser(name, add_help=False, allow_abbrev=False)
         _add_common(command, "show_command_help")
     login = subcommands.add_parser("login", add_help=False, allow_abbrev=False)
@@ -282,7 +291,7 @@ def build_parser():
 def _help(command=None):
     return _envelope(
         "hq.help/v1", command=command,
-        commands=["login", "status", "logout", "capabilities", "describe ID", "run ID", "doctor", "version"],
+        commands=["login", "status", "logout", "capabilities", "channels", "describe ID", "run ID", "doctor", "version"],
         next_actions=["Run `hq login --json`, then `hq capabilities --json`, then inspect and run one capability."],
     )
 
@@ -300,6 +309,14 @@ def main(argv=None):
         if args.command == "capabilities":
             _write(sys.stdout, _envelope("hq.capabilities/v1", capabilities=capability_list(),
                                          next_actions=["Inspect one capability with `hq describe ID --json` before running it."]))
+            return 0
+        if args.command == "channels":
+            credentials = _credentials()
+            result = _request("/api/auth/cli/action", "POST", {
+                "action": "channels", "input": {}, "confirm": False,
+            }, credentials["access_token"])
+            _write(sys.stdout, _envelope("hq.channels/v1", result=result,
+                                         next_actions=["Use each channel's capabilities and selector with `hq run`. "]))
             return 0
         if args.command == "login":
             result = _login(args.no_browser)

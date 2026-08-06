@@ -53,6 +53,7 @@ class HeyGenCinematicShotProvider(ShotVisualProvider):
                 "visual_duration_unsupported", "镜头时长超出 Provider 支持范围"
             )
         return {
+            "provider": self.name,
             "provider_avatar_id": avatar_id,
             "prompt": prompt,
             "ratio": ratio,

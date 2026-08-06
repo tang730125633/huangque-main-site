@@ -1,4 +1,4 @@
-# 黄雀主站 HQ CLI 0.4
+# 黄雀主站 HQ CLI 0.5
 
 `hq` 是给用户和 Agent 使用的黄雀主站命令行工具。它固定连接
 `https://huangquechuanmei.com`，不接受自定义服务器、任意 HTTP 方法、密码或 Cookie。
@@ -10,7 +10,9 @@ curl -fsSL https://huangquechuanmei.com/downloads/hq/install.sh | sh
 ```
 
 需要 Python 3.9+。安装脚本会校验版本化 wheel 的 SHA-256，把程序放在
-`~/.local/share/hq-cli/0.4.0/`，并创建 `~/.local/bin/hq`。如果该目录不在 PATH，按安装结果提示补一次即可。
+`~/.local/share/hq-cli/0.6.0/`，并创建 `~/.local/bin/hq`。如果该目录不在 PATH，按安装结果提示补一次即可。
+
+授权后运行 `hq channels --json` 可读取后台同源的 15 个真实渠道、前端功能映射、CLI 能力入口和参数选择器。
 
 ## 给一个没有上下文的 Agent
 
@@ -25,7 +27,7 @@ hq describe ip12-projects --json
 
 `hq login` 使用浏览器设备授权：用户在黄雀主站登录并查看权限后同意，CLI 不接触账号密码或网页 Cookie。
 访问令牌仅保存在本机 `~/.config/hq-cli/credentials.json`，权限为 `0600`，8 小时后失效；`hq logout` 会在服务端撤销。
-从旧版升级后需重新执行一次 `hq login`，才能取得新增的 `canvas:agent` 和 `canvas:edit` 权限。
+从旧版升级后需重新执行一次 `hq login`，才能取得新增的一键成片和数字人口播权限。
 
 ## 能力
 
@@ -38,6 +40,8 @@ hq describe ip12-projects --json
 - 读取任务详情、点数流水、图片/音频/视频等资产与可用音色；可收藏资产并管理标签。
 - 流式上传本人本地 PNG/JPG/WebP，得到短期私有 `upload_id`，用于单参考图、果肉多参考图或 OpenAI PNG 蒙版生成。
 - 图片、视频、音频生成：先取服务器报价，再以相同输入、`quote_token` 和 `--confirm` 二次提交并扣点。
+- 一键成片：从本人已完成的视频资产创建项目，分析删减候选，逐项确认后使用默认模板渲染 MP4；成片会进入本人视频资产。
+- 数字人口播：查询功能开关，在有编辑权限的协作画布中创建、读取和更新项目基础设置。
 - 返回黄雀主站各工作台的安全深链接。
 
 所有能力和参数均可机器读取：
@@ -74,6 +78,19 @@ hq run image-generate --input @image.json --confirm --quote-token '<quote_token>
 
 画布 Agent 同样分两步：先用 `canvas-get` 读取协作画布并构造 `canvas-agent-plan` 所需的严格文本快照，再报价和确认。任务完成后先审核 `result.plan.actions`；只有确实要落盘时，才把允许的动作转换为 `canvas-ops`，带最新 `base_version`、唯一的 `hqcli-...` 操作号和 `--confirm` 提交。`canvas-ops` 不接受删除、整板覆盖、生成结果、成员管理或脚本。
 
+一键成片按项目版本逐步执行，每个写步骤都要确认：
+
+```sh
+hq run video-compose-create --input @compose-create.json --confirm --json
+hq run video-compose-analyze --input @compose-analyze.json --confirm --json
+hq run video-compose-review --input @compose-review.json --confirm --json
+hq run video-compose-render --input @compose-render.json --confirm --json
+```
+
+先用 `hq describe <能力名> --json` 读取每一步的严格参数。`video-compose-review` 的 `decisions`
+必须覆盖项目返回的全部候选 ID，值只能是 `keep` 或 `remove`。数字人口播创建必须提供画布 ID 和唯一
+`request_id`，更新必须携带读取结果中的最新 `revision`。
+
 继续 IP12 对话会写入本人项目并调用 AI，必须显式确认：
 
 ```sh
@@ -100,5 +117,6 @@ hq run image-generate --input @image.json --confirm --quote-token '<quote_token>
 - Agent 只能运行内置能力，不能借 CLI 请求任意 URL 或旧业务 API。
 - 读取、外部 AI、普通写入、付费写入分别声明；IP12 对话使用独立 `ip12:chat` 权限，提示词优化、创建 IP12/画布和付费生成都要求显式确认。
 - 本地图片只经固定主站上传端点进入当前账号的临时私有区；CLI 不读取目录、不上传符号链接、不回显本地路径或原始文件名。
-- V0.4 支持受控画布 Agent 规划与非破坏性画布写入，不提供删除资产、删除项目、画布删除、管理员接口、充值或批量破坏性操作。
+- V0.5 增加一键成片与数字人口播项目基础能力；不提供删除资产、删除项目、画布删除、管理员接口、充值或批量破坏性操作。
+- 数字人口播的脚本分段、素材编排、媒体生成和时间线尚未在主站实现，因此 CLI 不暴露这些占位接口。
 - 成功与错误都输出一个带 `schema`、`cli_version` 的 JSON；用进程退出码判断结果。

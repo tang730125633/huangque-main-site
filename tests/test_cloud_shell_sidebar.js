@@ -71,14 +71,14 @@ test('shared navigation animates from pointer position with reduced-motion fallb
   assert.match(shell, /prefers-reduced-motion:reduce/);
 });
 
-test('compact mode hides the logout overlay but keeps expanded logout', () => {
+test('compact and expanded account cards open the shared account menu', () => {
   const navDisplayMode = readNavDisplayMode();
-  assert.match(shell, /class="hq-user-logout" data-logout="1"/);
+  assert.equal((shell.match(/data-account-menu-trigger="1"/g) || []).length, 2);
+  assert.match(shell, /class="danger" data-logout="1" role="menuitem"/);
   assert.equal(navDisplayMode('inspiration', false), 'expanded');
   assert.equal(navDisplayMode('canvas', true), 'expanded');
   assert.match(shell, /\.hq-aside-compact \.hq-user-copy,\.hq-aside-compact \.hq-user-logout\{display:none!important/);
-  assert.doesNotMatch(shell, /['"]\.hq-user-logout\{display:none!important/);
-  assert.doesNotMatch(shell, /\.hq-aside-compact button\.hq-user-logout\{display:flex!important/);
+  assert.match(shell, /function openAccountMenu\(anchor\)/);
 });
 
 test('signed-in users display their concrete membership tier', () => {
@@ -86,6 +86,13 @@ test('signed-in users display their concrete membership tier', () => {
   assert.match(shell, /experience:'体验官',partner:'合伙人',initiator:'发起人'/);
   assert.match(shell, /var role=membershipRoleName\(u\)/);
   assert.doesNotMatch(shell, /\?'管理员':'会员'/);
+});
+
+test('point prices are visible and refresh on open pages', () => {
+  assert.match(shell, /\{k:'pricing',l:'点数价格'/);
+  assert.match(shell, /fetch\('\/api\/gen\/pricing'/);
+  assert.match(shell, /pricingListeners\.forEach/);
+  assert.match(shell, /,30000\)/);
 });
 
 test('generation routes alone use the flush workspace shell', () => {

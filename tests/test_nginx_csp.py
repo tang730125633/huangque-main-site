@@ -61,7 +61,10 @@ class NginxCspTest(unittest.TestCase):
             config = self._config(relative_path)
             with self.subTest(config=relative_path):
                 self.assertIn("log_format huangque_observed", config)
-                self.assertIn("rt=$request_time rid=$request_id", config)
+                self.assertIn(
+                    "rt=$request_time rid=$request_id hq=$sent_http_x_hq_error_code",
+                    config,
+                )
                 self.assertIn(
                     "access_log /var/log/nginx/huangquechuanmei.access.log huangque_observed;",
                     config,
@@ -134,6 +137,17 @@ class NginxCspTest(unittest.TestCase):
                     config,
                 )
                 self.assertIn('proxy_set_header X-HQ-Internal-Token "";', block)
+
+    def test_card_media_upload_has_a_bounded_streaming_route(self):
+        config = self._config("deploy/nginx-huangquechuanmei.conf")
+        start = config.index("location = /api/auth/card/media {")
+        end = config.index("\n    }", start)
+        block = config[start:end]
+        self.assertIn("proxy_pass http://127.0.0.1:8095;", block)
+        self.assertIn("proxy_request_buffering off;", block)
+        self.assertIn("client_max_body_size 30m;", block)
+        self.assertIn("client_body_timeout 90s;", block)
+        self.assertIn("limit_conn hq_cli_upload_conn 2;", block)
 
     def test_hermes_runbook_updates_the_actively_loaded_main_site_config(self):
         runbook = self._config("deploy/生产环境清单与还原手册.md")

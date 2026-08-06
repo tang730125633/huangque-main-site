@@ -9,8 +9,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "site/downloads/hq/install.sh"
-RELEASE = ROOT / "site/downloads/hq/v0.4.0"
-WHEEL = RELEASE / "huangque_hq_cli-0.4.0-py3-none-any.whl"
+RELEASE = ROOT / "site/downloads/hq/v0.6.0"
+WHEEL = RELEASE / "huangque_hq_cli-0.6.0-py3-none-any.whl"
 SOURCE = ROOT / "tools/hq-cli/src/hq_cli"
 
 
@@ -21,7 +21,7 @@ class HQCLIDistributionTests(unittest.TestCase):
         self.assertEqual(expected, hashlib.sha256(WHEEL.read_bytes()).hexdigest())
         source = INSTALLER.read_text(encoding="utf-8")
         self.assertIn('wheel_sha256="%s"' % expected, source)
-        self.assertIn('wheel_url="https://huangquechuanmei.com/downloads/hq/v0.4.0/$wheel_name"', source)
+        self.assertIn('wheel_url="https://huangquechuanmei.com/downloads/hq/v0.6.0/$wheel_name"', source)
         self.assertNotIn("sudo", source)
         self.assertNotIn("eval", source)
         self.assertNotIn("HQ_INSTALL", source)
@@ -36,7 +36,7 @@ class HQCLIDistributionTests(unittest.TestCase):
     def test_moved_venv_entrypoint_can_be_repaired_from_final_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             stage = Path(tmp) / "stage"
-            target = Path(tmp) / "0.4.0"
+            target = Path(tmp) / "0.6.0"
             subprocess.run([sys.executable, "-m", "venv", stage / "venv"], check=True)
             subprocess.run(
                 [stage / "venv/bin/python", "-m", "pip", "install", "--no-index", "--no-deps", WHEEL],

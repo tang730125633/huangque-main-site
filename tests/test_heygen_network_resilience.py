@@ -226,14 +226,18 @@ class PollRetriesTransientNetworkTests(unittest.TestCase):
 
         def req(*a, **k):
             calls.append(1)
-            return {"data": {"status": "failed", "error": "content policy"}}
+            return {"data": {
+                "status": "failed", "video_url": None, "provider_video_id": "secret-id",
+                "failure_message": "Your content was flagged by our moderation system. Please try different images or prompts.",
+            }}
 
         with patch.object(video, "_heygen_request_json", side_effect=req), \
              patch.object(video.time, "time", lambda: clock[0]), \
              patch.object(video.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s)):
-            with self.assertRaises(RuntimeError):
+            with self.assertRaisesRegex(RuntimeError, "内容审核未通过，请更换人物图片、参考视频或提示词") as ctx:
                 video._heygen_poll_video("vid1", direct=True, deadline_s=600)
         self.assertEqual(len(calls), 1, "真失败被反复重试了")
+        self.assertNotIn("secret-id", str(ctx.exception), "用户错误不应暴露整段上游响应")
 
     def test_poll_gives_up_after_deadline_if_network_never_recovers(self):
         """网络一直不恢复：deadline 是总上限，不会无限转，最终超时抛出。"""
