@@ -1256,6 +1256,9 @@ def validate_xiaole_video_payload(payload, username=None):
         raise ValueError("未知视频渠道：%s" % channel)
     if channel in DISABLED_XIAOLE_VIDEO_CHANNELS:
         raise ValueError("该视频渠道维护中，请使用果肉视频生成")
+    if channel == "grok":
+        from . import feature_flags
+        feature_flags.require_enabled("grok_video")
     prompt = str(cleaned.get("prompt") or "").strip()
     if not prompt:
         raise ValueError("请输入视频提示词")
