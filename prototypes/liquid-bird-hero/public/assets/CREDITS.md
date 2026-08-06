@@ -11,7 +11,7 @@
 - 文件、用途、作者、来源链接、许可
 
 ### 交互实现参考
-- React Bits `BlobCursor` / `LightRays` — 多级阻尼拖尾与鼠标影响光线思路；作者 David Haz；来源 https://github.com/DavidHDev/react-bits；许可 MIT + Commons Clause。当前样机为原生 WebGL/CSS 重写，不分发原组件。
+- React Bits `LightRays` — 鼠标影响光线思路；作者 David Haz；来源 https://github.com/DavidHDev/react-bits；许可 MIT + Commons Clause。当前样机为原生 WebGL 重写，不分发原组件。
 
 ## 已退役的第三方资产
 - 曾用过什么、何时为何移除、许可(保留记录方便回溯)

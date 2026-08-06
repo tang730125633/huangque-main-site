@@ -3,7 +3,6 @@
 
   const root = document.documentElement;
   const canvas = document.querySelector('[data-light-field]');
-  const wake = [...document.querySelectorAll('[data-cursor-wake] span')];
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
   const gl = canvas?.getContext('webgl', { alpha: true, antialias: false, powerPreference: 'high-performance' });
   const status = { ready: false, reducedMotion: reduced.matches, version: 'liquid-bird-1' };
@@ -14,13 +13,8 @@
   let pointerY = 0;
   let targetX = 0;
   let targetY = 0;
-  let cursorX = innerWidth * .5;
-  let cursorY = innerHeight * .5;
   let cursorActive = 0;
   let cursorActiveTarget = 0;
-  const wakeX = wake.map(() => cursorX);
-  const wakeY = wake.map(() => cursorY);
-  const wakeDamping = [.24, .13, .075, .045];
   let scrollProgress = 0;
   let frame = 0;
 
@@ -35,15 +29,11 @@
       if (event.pointerType === 'touch') return;
       targetX = event.clientX / innerWidth * 2 - 1;
       targetY = event.clientY / innerHeight * 2 - 1;
-      cursorX = event.clientX;
-      cursorY = event.clientY;
       cursorActiveTarget = 1;
-      root.classList.add('cursor-active');
     }, { passive: true });
     addEventListener('mouseout', event => {
       if (event.relatedTarget) return;
       cursorActiveTarget = 0;
-      root.classList.remove('cursor-active');
     });
   }
   addEventListener('scroll', updatePageState, { passive: true });
@@ -62,6 +52,7 @@
     precision highp float;
     uniform vec2 uResolution;
     uniform vec2 uPointer;
+    uniform vec2 uPointerTarget;
     uniform float uTime;
     uniform float uScroll;
     uniform float uPointerActive;
@@ -80,9 +71,16 @@
       wave+=(noise(vec2(p.x*.72+offset,uTime*.05))-.5)*.22;
       return width/(abs(p.y-wave)+width);
     }
+    float segmentDistance(vec2 point,vec2 start,vec2 end){
+      vec2 segment=end-start;
+      float amount=clamp(dot(point-start,segment)/max(dot(segment,segment),.0001),0.,1.);
+      return length(point-start-segment*amount);
+    }
     void main(){
       vec2 baseUv=(2.*gl_FragCoord.xy-uResolution.xy)/min(uResolution.x,uResolution.y);
-      vec2 cursorUv=baseUv-uPointer*vec2(uResolution.x,uResolution.y)/min(uResolution.x,uResolution.y);
+      vec2 cursorScale=vec2(uResolution.x,uResolution.y)/min(uResolution.x,uResolution.y);
+      vec2 cursorNow=uPointer*cursorScale;
+      vec2 cursorTarget=uPointerTarget*cursorScale;
       vec2 uv=baseUv;
       uv+=uPointer*vec2(.055,.035);
       uv.x-=.52-uScroll*.18;
@@ -98,10 +96,12 @@
       color+=(blue*f1*.12+violet*f2*.09+amber*f3*.05)*taper;
       float haze=exp(-1.8*length((uv-vec2(.45,.05))*vec2(.8,1.6)));
       color+=mix(blue,violet,.45)*haze*.026;
-      float cursorDistance=length(cursorUv*vec2(.78,1.));
-      float cursorLens=exp(-18.*cursorDistance*cursorDistance);
-      float cursorRing=exp(-95.*abs(cursorDistance-.12));
-      color+=(mix(blue,amber,.28)*cursorLens*.04+mix(violet,blue,.5)*cursorRing*.022)*uPointerActive;
+      float cursorSpeed=clamp(length(cursorTarget-cursorNow)*3.2,0.,1.);
+      float streakDistance=segmentDistance(baseUv,cursorNow,cursorTarget);
+      float streakHalo=exp(-38.*streakDistance)*cursorSpeed;
+      float streakCore=exp(-145.*streakDistance)*cursorSpeed;
+      float cursorHead=exp(-46.*dot(baseUv-cursorTarget,baseUv-cursorTarget));
+      color+=(blue*streakHalo*.018+mix(violet,amber,.24)*streakCore*.045+amber*cursorHead*.012)*uPointerActive;
       float grain=hash(gl_FragCoord.xy+floor(uTime*9.));
       color+=(grain-.5)*.008;
       gl_FragColor=vec4(color,1.);
@@ -136,6 +136,7 @@
   gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
   const resolution = gl.getUniformLocation(program, 'uResolution');
   const pointer = gl.getUniformLocation(program, 'uPointer');
+  const pointerTarget = gl.getUniformLocation(program, 'uPointerTarget');
   const time = gl.getUniformLocation(program, 'uTime');
   const scroll = gl.getUniformLocation(program, 'uScroll');
   const pointerActive = gl.getUniformLocation(program, 'uPointerActive');
@@ -155,16 +156,11 @@
     pointerX += (targetX - pointerX) * .055;
     pointerY += (targetY - pointerY) * .055;
     cursorActive += (cursorActiveTarget - cursorActive) * .09;
-    for (let index = 0; index < wake.length; index += 1) {
-      wakeX[index] += (cursorX - wakeX[index]) * wakeDamping[index];
-      wakeY[index] += (cursorY - wakeY[index]) * wakeDamping[index];
-      const stretch = 1 + Math.min(.42, Math.hypot(cursorX - wakeX[index], cursorY - wakeY[index]) / 230);
-      wake[index].style.transform = `translate3d(${wakeX[index].toFixed(1)}px,${wakeY[index].toFixed(1)}px,0) rotate(-14deg) scaleX(${stretch.toFixed(3)})`;
-    }
     root.style.setProperty('--px', pointerX.toFixed(4));
     root.style.setProperty('--py', pointerY.toFixed(4));
     gl.uniform2f(resolution, canvas.width, canvas.height);
     gl.uniform2f(pointer, pointerX, pointerY);
+    gl.uniform2f(pointerTarget, targetX, targetY);
     gl.uniform1f(time, reduced.matches ? 0 : now * .001);
     gl.uniform1f(scroll, scrollProgress);
     gl.uniform1f(pointerActive, cursorActive);
