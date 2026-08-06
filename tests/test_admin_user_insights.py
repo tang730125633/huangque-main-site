@@ -5,6 +5,7 @@ import os
 import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -256,6 +257,7 @@ class AdminTaskInsightsTests(unittest.TestCase):
         os.close(fd)
         self.path = Path(path)
         self.admin.JOB_DB = self.path
+        now = int(time.time())
         with closing(sqlite3.connect(self.path)) as c:
             c.execute(
                 """CREATE TABLE jobs(
@@ -265,10 +267,10 @@ class AdminTaskInsightsTests(unittest.TestCase):
             c.executemany(
                 "INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?)",
                 [
-                    (1, "xiaole_video", "alice", 20, "done", '{"channel":"micro","model":"seedance"}', 10, 20),
-                    (2, "xiaole_video", "alice", 30, "error", '{"channel":"omni","model":"omni"}', 30, 40),
-                    (3, "image", "alice", 8, "pending", '{"provider":"seedream","model":"seedream"}', 50, 50),
-                    (4, "image", "bob", 8, "done", '{"provider":"openai"}', 60, 70),
+                    (1, "xiaole_video", "alice", 20, "done", '{"channel":"micro","model":"seedance"}', now - 60, now - 50),
+                    (2, "xiaole_video", "alice", 30, "error", '{"channel":"omni","model":"omni"}', now - 40, now - 30),
+                    (3, "image", "alice", 8, "pending", '{"provider":"seedream","model":"seedream"}', now - 20, now - 20),
+                    (4, "image", "bob", 8, "done", '{"provider":"openai"}', now - 10, now - 10),
                 ],
             )
             c.commit()
@@ -285,6 +287,14 @@ class AdminTaskInsightsTests(unittest.TestCase):
         self.assertEqual({x["name"] for x in data["by_model"]}, {"seedance", "omni", "seedream"})
         self.assertEqual([x["id"] for x in data["recent"]], [3, 2, 1])
         self.assertEqual(self.admin._job_payload('{"channel":"micro"}')["channel"], "micro")
+
+    def test_operations_stats_use_customer_feature_names(self):
+        by_kind = {item["kind"]: item for item in self.admin.job_stats(7)["by_kind"]}
+        self.assertEqual(by_kind["seedance_video"]["done"], 1)
+        self.assertEqual(by_kind["omni_video"]["error"], 1)
+        self.assertNotIn("xiaole_video", by_kind)
+        self.assertEqual(self.admin.feature_flags.CATALOG_MAP["grok_video"]["page"], "视频生成")
+        self.assertEqual(self.admin.feature_flags.CATALOG_MAP["tryon"]["name"], "换装换背景")
 
 
 class AdminUserInsightsFrontendTests(unittest.TestCase):
@@ -322,7 +332,8 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             'data-module-tab="operations"', 'data-module-tab="services"', 'data-module-tab="channels"',
             'data-module-tab="features"', 'data-module="dashboard"',
             'data-module="operations"', 'id="operationsBox"', "function renderOperations(data)",
-            "健康接口可达", "不等于作品已验收", "未纳入功能目录",
+            "健康接口可达", "不等于作品已验收", "先按客户前台功能页分组",
+            'data-operations-page=', "个可操作功能",
             "Array.isArray(key.feature_keys)", "未按功能 ID 关联", "现有接口只有全局配置",
             'id="globalUserSearch"', 'id="customerLayer"',
             "/api/admin/activity?limit=8", "/api/admin/recharge/orders?status=pending",
@@ -335,6 +346,7 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             self.assertIn(marker, html)
         self.assertNotIn('data-module-tab="ops"', html)
         self.assertNotIn("function operationTerms", html)
+        self.assertNotIn("rows.push({key:stat.kind", html)
         self.assertNotIn('class="module-tabs', html)
 
 

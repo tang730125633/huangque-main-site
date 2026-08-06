@@ -138,7 +138,7 @@
     .truncate{max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .feature-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
     .ops-flow{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin:0 0 14px}.ops-flow span{position:relative;padding:10px 12px;border:1px solid var(--line);border-radius:7px;background:rgba(17,22,19,.72);color:var(--muted);font-size:12px}.ops-flow b{display:block;color:var(--text);font-size:13px}.ops-flow span+span:before{content:"→";position:absolute;right:calc(100% + 1px);top:50%;width:10px;color:var(--gold);text-align:center;transform:translateY(-50%)}
-    .ops-list{display:grid;gap:9px}.ops-item{display:grid;grid-template-columns:minmax(190px,1.25fr) repeat(4,minmax(120px,.9fr)) minmax(170px,1.1fr);gap:10px;align-items:stretch;padding:12px;border:1px solid var(--line);border-left:3px solid rgba(79,212,126,.5);border-radius:8px;background:rgba(17,22,19,.64)}.ops-item.attention{border-left-color:var(--warn)}.ops-feature,.ops-stage,.ops-result{min-width:0}.ops-stage,.ops-result{padding-left:10px;border-left:1px solid rgba(46,56,50,.78)}.ops-stage small,.ops-result small{display:block;margin-bottom:6px;color:var(--muted);font-size:10px;font-weight:800;letter-spacing:.06em}.ops-stage .muted,.ops-result .muted{margin-top:5px;font-size:11px;line-height:1.45}.ops-feature b{display:block}.ops-feature code{display:block;margin-top:4px;overflow-wrap:anywhere}.ops-actions{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}.ops-summary{margin-top:0}.ops-summary .ledger-stat b{color:var(--gold)}
+    .ops-list,.ops-page-list{display:grid;gap:9px}.ops-page{display:grid;gap:9px}.ops-page+.ops-page{margin-top:8px}.ops-page-head{display:flex;align-items:center;justify-content:space-between;padding:9px 11px;border:1px solid rgba(240,190,85,.18);border-radius:7px;background:rgba(240,190,85,.045)}.ops-page-head b{color:#f6dfa9}.ops-page-head span{color:var(--muted);font-size:11px}.ops-item{display:grid;grid-template-columns:minmax(190px,1.25fr) repeat(4,minmax(120px,.9fr)) minmax(170px,1.1fr);gap:10px;align-items:stretch;padding:12px;border:1px solid var(--line);border-left:3px solid rgba(79,212,126,.5);border-radius:8px;background:rgba(17,22,19,.64)}.ops-item.attention{border-left-color:var(--warn)}.ops-feature,.ops-stage,.ops-result{min-width:0}.ops-stage,.ops-result{padding-left:10px;border-left:1px solid rgba(46,56,50,.78)}.ops-stage small,.ops-result small{display:block;margin-bottom:6px;color:var(--muted);font-size:10px;font-weight:800;letter-spacing:.06em}.ops-stage .muted,.ops-result .muted{margin-top:5px;font-size:11px;line-height:1.45}.ops-feature b{display:block}.ops-feature code{display:block;margin-top:4px;overflow-wrap:anywhere}.ops-actions{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}.ops-summary{margin-top:0}.ops-summary .ledger-stat b{color:var(--gold)}
     .invite-config{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
     .invite-config label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12px}
     .invite-config .field,.invite-config select{width:100%;min-width:0}
@@ -378,7 +378,7 @@
 
       <section class="card span12 module-card" data-module="operations" hidden>
         <div class="section-head">
-          <div><h2>功能运行中心</h2><div class="hint">从客户功能出发，把接单开关、服务连通、线路配置和真实任务结果放在同一条链上。</div></div>
+          <div><h2>功能运行中心</h2><div class="hint">先按客户前台功能页分组，再把每个可操作功能的接单开关、服务、线路和真实任务结果放在同一条链上。</div></div>
           <div class="actions"><span class="pill neutral" id="operationsRouteSummary">-</span><span class="pill warn" id="operationsAttentionCount">-</span></div>
         </div>
         <div class="ops-note" style="margin-bottom:14px">证据边界：服务“健康接口可达”不等于客户能生成作品；“有完成任务”也不等于作品已经下载、解码和人工验收。</div>
@@ -1572,28 +1572,26 @@
     return !!provider&&(((data.provider_keys||{}).items||[]).some(function(item){return item.provider===provider&&item.state!=='retired'&&item.health_status!=='unhealthy'}));
   }
   function renderOperations(data){
-    var features=data.features||[],stats=((data.stats||{}).by_kind)||[],services={},statByKey={},featureByKey={};
+    var features=data.features||[],stats=((data.stats||{}).by_kind)||[],services={},statByKey={};
     (data.services||[]).forEach(function(item){services[item.key]=item});
     stats.forEach(function(item){statByKey[item.kind]=item});
-    features.forEach(function(item){featureByKey[item.key]=item});
     var rows=features.map(function(feature){return {key:feature.key,name:feature.name||kindName(feature.key),feature:feature,stat:statByKey[feature.key]||null}});
-    stats.forEach(function(stat){if(!featureByKey[stat.kind])rows.push({key:stat.kind,name:kindName(stat.kind),feature:null,stat:stat})});
+    var pageOrder=[];features.forEach(function(feature){var page=feature.page||'其他功能';if(pageOrder.indexOf(page)<0)pageOrder.push(page)});
     var evaluated=rows.map(function(row){
       var feature=row.feature,stat=row.stat,service=feature?(services[feature.service]||null):null,routes=operationRouteGroups(row,data);
       var ready=routes.filter(function(key){return operationRouteReady(key,data)}).length;
       var verdict=['ok','有完成任务证据','不等于作品已验收'];
       if(stat&&Number(stat.error||0)>0)verdict=['fail','有失败任务','请进入任务明细定位失败'];
-      else if(!feature)verdict=['warn','未纳入功能目录','任务存在，但没有统一开关与服务关联'];
       else if(!feature.enabled)verdict=['warn','暂停接单','当前不接受新任务'];
       else if(feature.online===false)verdict=['fail','服务不可达','健康接口当前未通过'];
       else if(feature.online!==true)verdict=['warn','服务状态未知','不能据此判断客户侧可用'];
       else if(routes.length&&!ready)verdict=['fail','线路未配置','已声明线路，但没有可用配置'];
       else if(!stat)verdict=['warn','尚无任务证据','不能证明客户侧可用'];
       else if(!Number(stat.done||0))verdict=['neutral','任务尚未完成','等待终态结果'];
-      var attention=verdict[0]!=='ok'||!feature||feature.online!==true||!routes.length||!ready||!stat;
+      var attention=verdict[0]!=='ok'||feature.online!==true||!routes.length||!ready||!stat;
       return {row:row,service:service,routes:routes,ready:ready,verdict:verdict,attention:attention,search:[row.key,row.name,feature&&feature.desc,feature&&feature.service_name].concat(routes.map(function(x){return x.name})).join(' ').toLowerCase()};
     });
-    evaluated.sort(function(a,b){return Number((b.row.stat||{}).error||0)-Number((a.row.stat||{}).error||0)||Number(b.attention)-Number(a.attention)||a.row.name.localeCompare(b.row.name,'zh-CN')});
+    evaluated.sort(function(a,b){return pageOrder.indexOf(a.row.feature.page||'其他功能')-pageOrder.indexOf(b.row.feature.page||'其他功能')||Number((b.row.stat||{}).error||0)-Number((a.row.stat||{}).error||0)||Number(b.attention)-Number(a.attention)||a.row.name.localeCompare(b.row.name,'zh-CN')});
     var done=stats.reduce(function(sum,x){return sum+Number(x.done||0)},0),failed=stats.reduce(function(sum,x){return sum+Number(x.error||0)},0);
     var enabled=features.filter(function(x){return x.enabled}).length,online=(data.services||[]).filter(function(x){return x.online}).length;
     el('operationsSummary').innerHTML='<div class="ledger-stat"><span>接受新任务</span><b>'+enabled+' / '+features.length+'</b></div><div class="ledger-stat"><span>健康接口可达</span><b>'+online+' / '+(data.services||[]).length+'</b></div><div class="ledger-stat"><span>近 '+Number((data.stats||{}).days||state.days)+' 天完成</span><b>'+done.toLocaleString()+'</b></div><div class="ledger-stat"><span>近 '+Number((data.stats||{}).days||state.days)+' 天失败</span><b>'+failed.toLocaleString()+'</b></div>';
@@ -1605,15 +1603,17 @@
     var query=String(state.operationsQuery||'').trim().toLowerCase();
     evaluated=evaluated.filter(function(item){return (!state.operationsAttentionOnly||item.attention)&&(!query||item.search.indexOf(query)>=0)});
     if(!evaluated.length){el('operationsBox').innerHTML='<div class="empty">没有匹配的功能运行证据</div>';return}
-    el('operationsBox').innerHTML='<div class="ops-list">'+evaluated.map(function(item){
+    function operationCard(item){
       var row=item.row,feature=row.feature,stat=row.stat,routes=item.routes,service=item.service;
-      var accept=feature?'<span class="pill '+(feature.enabled?'ok':'warn')+'">'+(feature.enabled?'接受新任务':'暂停接单')+'</span>':'<span class="pill warn">未纳入开关</span>';
-      var serviceHtml=!feature?'<span class="pill warn">未关联</span>':(feature.online===true?'<span class="pill ok">健康接口可达</span>':(feature.online===false?'<span class="pill fail">服务不可达</span>':'<span class="pill warn">状态未知</span>'));
+      var accept='<span class="pill '+(feature.enabled?'ok':'warn')+'">'+(feature.enabled?'接受新任务':'暂停接单')+'</span>';
+      var serviceHtml=feature.online===true?'<span class="pill ok">健康接口可达</span>':(feature.online===false?'<span class="pill fail">服务不可达</span>':'<span class="pill warn">状态未知</span>');
       var routeHtml=!routes.length?'<span class="pill warn">功能 ID 映射待补</span><div class="muted">现有接口只有全局配置，不能证明实际走哪条线路</div>':'<span class="pill '+(item.ready?'ok':'fail')+'">配置 '+item.ready+' / '+routes.length+'</span><div class="muted" title="'+esc(routes.map(function(x){return x.name}).join('、'))+'">'+esc(routes.slice(0,2).map(function(x){return x.name}).join('、'))+(routes.length>2?' 等':'')+'</div>';
       var taskHtml='<span class="pill warn">尚无任务证据</span><div class="muted">不能证明客户侧可用</div>';
       if(stat){var terminal=Number(stat.done||0)+Number(stat.error||0),rate=terminal?Math.round(Number(stat.done||0)*100/terminal)+'%':'-';taskHtml='<span class="pill '+(Number(stat.error||0)?'fail':(Number(stat.done||0)?'ok':'neutral'))+'">完成 '+Number(stat.done||0).toLocaleString()+' · 失败 '+Number(stat.error||0).toLocaleString()+'</span><div class="muted">进行中 '+Number(stat.running||0).toLocaleString()+' · 终态成功率 '+rate+'</div>'}
-      return '<article class="ops-item '+(item.attention?'attention':'')+'"><div class="ops-feature"><b>'+esc(row.name)+'</b><code>'+esc(row.key)+'</code><div class="muted">'+esc(feature?(feature.desc||''):'该任务类型已有真实记录，但尚未纳入统一功能目录')+'</div></div><div class="ops-stage"><small>1 · 接单开关</small>'+accept+'</div><div class="ops-stage"><small>2 · 服务连通</small>'+serviceHtml+'<div class="muted">'+esc(feature?(feature.service_name||feature.service||'未命名服务'):'缺少功能关联')+(service&&service.latency_ms!=null?' · '+esc(service.latency_ms)+'ms':'')+'</div></div><div class="ops-stage"><small>3 · 线路映射</small>'+routeHtml+'</div><div class="ops-stage"><small>4 · 任务结果</small>'+taskHtml+'</div><div class="ops-result"><small>当前判断</small><span class="pill '+item.verdict[0]+'">'+esc(item.verdict[1])+'</span><div class="muted">'+esc(item.verdict[2])+'</div><div class="ops-actions"><button class="mini" data-operations-module="logs" '+(stat&&Number(stat.error||0)?'data-operations-fail="1"':'')+'>'+(stat&&Number(stat.error||0)?'全部失败任务':'任务总表')+'</button><button class="mini" data-operations-module="services">服务</button><button class="mini" data-operations-module="channels">线路</button>'+(feature?'<button class="mini" data-operations-module="features">开关</button>':'')+'</div></div></article>';
-    }).join('')+'</div>';
+      return '<article class="ops-item '+(item.attention?'attention':'')+'"><div class="ops-feature"><b>'+esc(row.name)+'</b><code>'+esc(row.key)+'</code><div class="muted">'+esc(feature.desc||'')+'</div></div><div class="ops-stage"><small>1 · 接单开关</small>'+accept+'</div><div class="ops-stage"><small>2 · 服务连通</small>'+serviceHtml+'<div class="muted">'+esc(feature.service_name||feature.service||'未命名服务')+(service&&service.latency_ms!=null?' · '+esc(service.latency_ms)+'ms':'')+'</div></div><div class="ops-stage"><small>3 · 线路映射</small>'+routeHtml+'</div><div class="ops-stage"><small>4 · 任务结果</small>'+taskHtml+'</div><div class="ops-result"><small>当前判断</small><span class="pill '+item.verdict[0]+'">'+esc(item.verdict[1])+'</span><div class="muted">'+esc(item.verdict[2])+'</div><div class="ops-actions"><button class="mini" data-operations-module="logs" '+(stat&&Number(stat.error||0)?'data-operations-fail="1"':'')+'>'+(stat&&Number(stat.error||0)?'全部失败任务':'任务总表')+'</button><button class="mini" data-operations-module="services">服务</button><button class="mini" data-operations-module="channels">线路</button><button class="mini" data-operations-module="features">开关</button></div></div></article>';
+    }
+    var groups=[];evaluated.forEach(function(item){var page=item.row.feature.page||'其他功能',group=groups[groups.length-1];if(!group||group.page!==page){group={page:page,items:[]};groups.push(group)}group.items.push(item)});
+    el('operationsBox').innerHTML='<div class="ops-list">'+groups.map(function(group){return '<section class="ops-page" data-operations-page="'+esc(group.page)+'"><div class="ops-page-head"><b>'+esc(group.page)+'页</b><span>'+group.items.length+' 个可操作功能</span></div><div class="ops-page-list">'+group.items.map(operationCard).join('')+'</div></section>'}).join('')+'</div>';
     Array.prototype.forEach.call(el('operationsBox').querySelectorAll('[data-operations-module]'),function(btn){btn.onclick=function(){if(btn.getAttribute('data-operations-module')==='logs'&&btn.hasAttribute('data-operations-fail'))el('reqStatus').value='fail';switchModule(btn.getAttribute('data-operations-module'))}});
   }
   function switchModule(name){
