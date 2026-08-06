@@ -182,6 +182,11 @@ make_manifest() {
     mapped="$(map_path "$path")"; IFS='|' read -r rank target service reload <<EOF
 $mapped
 EOF
+    case "$path" in
+      server/content_domains/__init__.py|server/content_domains/cos.py|server/content_domains/miniprogram_security.py|server/content_domains/pricing.py|server/content_domains/error_contract.py)
+        rest="${path#server/content_domains/}"
+        printf '10\t%s\t/home/ubuntu/auth-service/content_domains/%s\t%s\tauth\t0\n' "$path" "$rest" "$hash" >>"$out" ;;
+    esac
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$rank" "$path" "$target" "$hash" "$service" "$reload" >>"$out"
   done <"$list"
   LC_ALL=C sort -t "$(printf '\t')" -k1,1n -k2,2 "$out" -o "$out"
