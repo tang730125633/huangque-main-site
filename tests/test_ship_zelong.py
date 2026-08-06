@@ -157,11 +157,10 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
         restarts = re.findall(r"systemctl restart ([A-Za-z0-9_-]+)", SRC)
         self.assertTrue(restarts)
         self.assertEqual({"huangque-auth", "huangque-content", "huangque-imggen-api",
-                          "huangque-leadgen-api"}, set(restarts))
+                          "huangque-leadgen-api", "huangque-admin"}, set(restarts))
 
     def test_rejects_non_whitelisted_backend_and_sensitive_paths(self):
         for path in (
-            "server/admin_api.py",
             "deploy/systemd/huangque-admin.service",
             "server/secret.env",
             "data/users.db",
@@ -184,6 +183,7 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
             "server/content_api.py": (30, "/home/ubuntu/content-api/content_api.py", "content", 0),
             "server/imggen_api.py": (30, "/home/ubuntu/content-api/imggen_api.py", "imggen", 0),
             "server/leadgen_api.py": (30, "/home/ubuntu/content-api/leadgen_api.py", "leadgen", 0),
+            "server/admin_api.py": (30, "/home/ubuntu/content-api/admin_api.py", "admin", 0),
             "site/workbench/cloud-shell.js": (40, "/var/www/huangquechuanmei/workbench/cloud-shell.js", "-", 0),
             "site/workbench/video.html": (50, "/var/www/huangquechuanmei/workbench/video.html", "-", 0),
         }
@@ -244,8 +244,8 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
             "--retry-connrefused --max-time 5"
         )
         # deploy has remote + caller-side checks, and rollback has remote checks;
-        # all four managed services tolerate the brief nginx 502 startup window.
-        self.assertEqual(10, SRC.count(retry_options))
+        # all five managed services tolerate the brief nginx 502 startup window.
+        self.assertEqual(12, SRC.count(retry_options))
         self.assertNotIn("curl -fsS --max-time 15", SRC)
         self.assertEqual(
             2,
