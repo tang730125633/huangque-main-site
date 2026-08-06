@@ -815,7 +815,13 @@
 
     <aside class="vid-card vid-side">
       <div class="output-card"><div class="output-scroll">
-        <div class="history-title">生成记录</div>
+        <div class="history-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+          <span>生成记录</span>
+          <label style="padding:6px 9px;border:1px solid rgba(231,178,76,.35);border-radius:8px;color:#e7b24c;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;">
+            导入 H3 成片<input id="h3ImportFile" type="file" accept="video/mp4" multiple hidden>
+          </label>
+        </div>
+        <div id="h3ImportStatus" class="faint" style="display:none;font-size:11px;margin:0 0 8px;"></div>
         <div id="outputHistory" class="history-list">
           <div style="padding:18px 10px;border:1px dashed rgba(148,164,187,.16);border-radius:8px;color:#5c6b82;font-size:12px;text-align:center;">正在读取生成记录...</div>
         </div>
@@ -1535,6 +1541,23 @@
         else renderVideoHistoryState('生成记录加载失败',true);
       });
   }
+  function importH3Videos(files){
+    files=Array.prototype.slice.call(files||[]);
+    if(!files.length) return;
+    var status=$('h3ImportStatus'); status.style.display='block';
+    var done=0;
+    files.reduce(function(chain,file,index){
+      return chain.then(function(){
+        if(!/\.mp4$/i.test(file.name)||file.size>100*1024*1024) throw new Error(file.name+' 不是 100MB 以内的 MP4');
+        status.textContent='正在导入 '+(index+1)+'/'+files.length+'：'+file.name;
+        return fetch('/api/gen/video/import',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':file.type||'video/mp4','X-Video-Title':encodeURIComponent(file.name.replace(/\.mp4$/i,''))},body:file})
+          .then(function(r){return r.json().catch(function(){return {};}).then(function(d){if(!r.ok) throw new Error(d.detail||'导入失败'); done++;});});
+      });
+    },Promise.resolve()).then(function(){
+      status.textContent='已导入 '+done+' 条 H3 成片'; loadVideoHistory();
+    }).catch(function(e){ status.textContent='已导入 '+done+' 条；'+e.message; loadVideoHistory(); });
+  }
+  $('h3ImportFile').onchange=function(){var files=this.files;this.value='';importH3Videos(files);};
   function refreshCompletedVideoAsset(jobId,attempt){
     // jobs 先写 done，video_assets 随后入库。固定延迟拉一次会撞上竞态，把刚完成的下载卡片
     // 覆盖成空历史；保留 jobs 返回的临时卡片，直到资产端点确实返回可下载 URL 再替换。
