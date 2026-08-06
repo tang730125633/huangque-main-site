@@ -5,7 +5,7 @@ import hashlib
 import json
 import pathlib
 import re
-import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 
 from . import video_compose_analysis as analysis
@@ -22,7 +22,7 @@ SOURCE_ANALYSIS_RE = re.compile(r"^/api/gen/video-compose/projects/(compose_[0-9
 DECISIONS_RE = re.compile(r"^/api/gen/video-compose/projects/(compose_[0-9a-f]{32})/edit-decisions$")
 RENDER_RE = re.compile(r"^/api/gen/video-compose/projects/(compose_[0-9a-f]{32})/render$")
 OUTPUT_RE = re.compile(r"^/api/gen/video-compose/projects/(compose_[0-9a-f]{32})/output$")
-_RENDER_LOCK = threading.BoundedSemaphore(1)
+_RENDER_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video-compose")
 
 
 def _body(handler):
@@ -239,32 +239,23 @@ def _record_output_asset(asset_db_factory, username, output_rel, render_input):
         return int(cursor.lastrowid)
 
 
-def _render_project(handler, user, project_id, asset_db_factory, source_resolver, out_dir):
-    body = _body(handler)
-    _only(body, {"expected_revision", "hook", "headlines", "brand"})
-    expected_revision = _revision(body.get("expected_revision"))
-    with _RENDER_LOCK:
-        current = store.get_project(user["username"], project_id)
-        if current["status"] == "completed" and current.get("output_file"):
-            return handler._send(200, {
-                "project": current,
-                "output_url": BASE_PATH + "/" + project_id + "/output",
-            })
-        if current["revision"] != expected_revision:
-            raise store.RevisionConflict("项目已更新，请刷新后重试")
-        if current["status"] != "review_confirmed" or not current.get("edl"):
-            raise ValueError("请先确认粗剪方案")
+def _run_render(username, project_id, expected_revision, render_input,
+                asset_db_factory, source_resolver, out_dir):
+    output_asset_id = None
+    try:
+        current = store.get_project(username, project_id)
+        if current["status"] != "rendering" or current["revision"] != expected_revision:
+            return
         source_file = str((current.get("source") or {}).get("video_file") or "").strip()
         source_path = source_resolver(source_file) if source_resolver and source_file else None
         if not source_path:
             raise ValueError("当前视频资产没有可渲染的本地源文件")
-        owner_hash = hashlib.sha256(user["username"].encode()).hexdigest()[:16]
+        owner_hash = hashlib.sha256(username.encode()).hexdigest()[:16]
         folder = pathlib.Path(out_dir) / "video-compose" / owner_hash
         folder.mkdir(parents=True, exist_ok=True)
         clean_path = folder / (project_id + "-clean.mp4")
         output_path = folder / (project_id + "-viral-v1.mp4")
         media.build_clean_master(source_path, current["edl"], clean_path)
-        render_input = _default_render_input(current, body)
         rendered = renderer.render(clean_path, render_input, output_path)
         quality = {"template_id": rendered["template_id"],
                    "template_version": rendered["template_version"],
@@ -273,23 +264,53 @@ def _render_project(handler, user, project_id, asset_db_factory, source_resolver
         clean_rel = clean_path.resolve().relative_to(base).as_posix()
         output_rel = output_path.resolve().relative_to(base).as_posix()
         output_asset_id = _record_output_asset(
-            asset_db_factory, user["username"], output_rel, render_input)
+            asset_db_factory, username, output_rel, render_input)
         try:
-            project = store.save_render_result(
-                user["username"], project_id, expected_revision, render_input,
+            store.save_render_result(
+                username, project_id, expected_revision, render_input,
                 clean_rel, output_rel, output_asset_id, quality,
             )
         except Exception:
             try:
                 with closing(asset_db_factory()) as connection:
                     connection.execute("DELETE FROM video_assets WHERE id=? AND username=?",
-                                       (output_asset_id, user["username"]))
+                                       (output_asset_id, username))
                     connection.commit()
             except Exception:
                 pass
             raise
-    return handler._send(200, {"project": project,
-                               "output_url": BASE_PATH + "/" + project_id + "/output"})
+    except Exception as error:
+        try:
+            store.fail_render(username, project_id, expected_revision, error)
+        except Exception:
+            pass
+        print("[video-compose] %s render failed: %s" % (project_id, str(error)[:220]), flush=True)
+
+
+def _render_project(handler, user, project_id, asset_db_factory, source_resolver, out_dir):
+    body = _body(handler)
+    _only(body, {"expected_revision", "hook", "headlines", "brand"})
+    expected_revision = _revision(body.get("expected_revision"))
+    current = store.get_project(user["username"], project_id)
+    if current["status"] == "completed" and current.get("output_file"):
+        return handler._send(200, {
+            "project": current,
+            "output_url": BASE_PATH + "/" + project_id + "/output",
+        })
+    if not current.get("edl"):
+        raise ValueError("请先确认粗剪方案")
+    render_input = _default_render_input(current, body)
+    project, started = store.begin_render(user["username"], project_id, expected_revision)
+    if started:
+        _RENDER_EXECUTOR.submit(
+            _run_render, user["username"], project_id, project["revision"], render_input,
+            asset_db_factory, source_resolver, out_dir,
+        )
+    return handler._send(202, {"project": project, "accepted": True})
+
+
+def recover_interrupted_renders():
+    return store.recover_interrupted_renders()
 
 
 def _send_output(handler, user, project_id, out_dir):
@@ -361,7 +382,11 @@ def dispatch_http(handler, method, verify_token, must_change_password, asset_db_
             return handler._send(200, {"items": store.list_projects(user["username"])}) or True
         match = PROJECT_RE.match(path)
         if method == "GET" and match:
-            return handler._send(200, {"project": store.get_project(user["username"], match.group(1))}) or True
+            project = store.get_project(user["username"], match.group(1))
+            payload = {"project": project}
+            if project["status"] == "completed" and project.get("output_file"):
+                payload["output_url"] = BASE_PATH + "/" + match.group(1) + "/output"
+            return handler._send(200, payload) or True
         handler._send(404, {"detail": "not found"})
         return True
     except (ValueError, LookupError, store.RevisionConflict) as error:

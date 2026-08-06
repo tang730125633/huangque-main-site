@@ -240,7 +240,7 @@ def render(clean_video, payload, output_path, timeout=None):
             environment["HYPERFRAMES_BROWSER_PATH"] = "/usr/bin/chromium-browser"
         try:
             completed = subprocess.run(
-                command, check=True, timeout=timeout or max(300, int(data["duration_ms"] / 1000 * 20)),
+                command, check=True, timeout=timeout or max(900, int(data["duration_ms"] / 1000 * 20)),
                 cwd=str(workspace), env=environment,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )

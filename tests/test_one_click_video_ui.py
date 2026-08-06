@@ -39,6 +39,10 @@ class OneClickVideoUiTests(unittest.TestCase):
     def test_output_and_private_assets_are_fetched_with_authentication(self):
         self.assertIn("Authorization:'Bearer '+token", self.html)
         self.assertIn("protectedUrl(d.output_url)", self.html)
+        self.assertIn("function waitForRender()", self.html)
+        self.assertIn("project.status==='failed'", self.html)
+        self.assertIn("服务处理超时，请稍后重试", self.html)
+        self.assertNotIn("服务返回格式异常", self.html)
 
     def test_mobile_shell_can_scroll_to_review_and_render_panels(self):
         self.assertIn('@media(max-width:900px){.hq-app{overflow:auto!important}}', self.html)

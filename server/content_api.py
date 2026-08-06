@@ -46,6 +46,7 @@ class H(DigitalPresenterH):
 def main():
     core.init_db()
     digital_presenter.init_db(core.jdb)
+    video_compose.recover_interrupted_renders()
     # 回收上次遗留的 running 孤儿 → 秒退点。
     # 优雅停机（drain）之后这里应该【一条都收不到】—— 收到就说明上次是崩溃/被 SIGKILL 了，
     # 它现在是【兜底】，不再是常态。常态下的部署不该再产生孤儿。
