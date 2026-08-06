@@ -720,6 +720,33 @@ def delete_user_asset(username, kind, asset_id):
         raise LookupError("资产不存在或不属于当前账号")
     _delete_asset_mark(username, "video", str(asset_id))
     return {"kind": kind, "id": asset_id, "deleted": True}
+
+
+def delete_failed_job(username, job_id):
+    try:
+        job_id = int(job_id)
+    except Exception:
+        raise ValueError("缺少任务标识")
+    with closing(jdb()) as c:
+        _ensure_column(c, "jobs", "deleted", "INTEGER DEFAULT 0")
+        row = c.execute(
+            "SELECT id,kind,status FROM jobs WHERE id=? AND username=? AND COALESCE(deleted,0)=0",
+            (job_id, username),
+        ).fetchone()
+        if not row:
+            raise LookupError("任务不存在或不属于当前账号")
+        if str(row["status"] or "").lower() not in {"error", "failed"}:
+            raise ValueError("只能删除已失败的生成记录")
+        if row["kind"] in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video"}:
+            with closing(adb()) as assets:
+                assets.execute(
+                "UPDATE video_assets SET status='deleted',updated_at=? WHERE job_id=? AND username=? AND status!='deleted'",
+                (int(time.time()), job_id, username),
+                )
+                assets.commit()
+        c.execute("UPDATE jobs SET deleted=1,updated_at=? WHERE id=?", (int(time.time()), job_id))
+        c.commit()
+    return {"job_id": job_id, "deleted": True}
 # ============ 鉴权（向 auth 服务核验 token） ============
 _verify_cache = {}; _verify_cache_lock = threading.Lock()
 AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
@@ -2359,6 +2386,16 @@ class H(BaseHTTPRequestHandler):
                 return self._send(404, {"detail": str(e)[:160]})
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:160]})
+        if p == "/api/gen/job/delete":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
+            try:
+                deleted = delete_failed_job(user["username"], self._json_body().get("job_id"))
+                return self._send(200, {"ok": True, "job": deleted})
+            except LookupError as e:
+                return self._send(404, {"detail": str(e)[:160]})
+            except Exception as e:
+                return self._send(400, {"detail": str(e)[:160]})
         if p == "/api/gen/asset/batch-delete":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
@@ -3100,13 +3137,18 @@ class H(BaseHTTPRequestHandler):
             except Exception: offset = 0
             kind = (q.get("kind") or ["image"])[0]
             if kind not in HANDLERS: kind = "image"
+            include_failed = kind == "image" and (q.get("include_failed") or [""])[0] == "1"
             with closing(jdb()) as c:
                 _ensure_column(c, "jobs", "deleted", "INTEGER DEFAULT 0")
-                rows = c.execute("""SELECT id,result,created_at FROM jobs
-                                 WHERE username=? AND status='done' AND kind=? AND COALESCE(deleted,0)=0
+                rows = c.execute("""SELECT id,status,payload,result,error,created_at FROM jobs
+                                 WHERE username=? AND (status='done' OR (?=1 AND status IN ('error','failed')))
+                                   AND kind=? AND COALESCE(deleted,0)=0
                                  ORDER BY id DESC LIMIT ?""",
-                                 (user["username"], kind, lim + offset)).fetchall()
-            items = history.expand_job_results(rows, lim, offset)
+                                 (user["username"], int(include_failed), kind, lim + offset)).fetchall()
+            if include_failed:
+                items = history.expand_job_results(rows, lim, offset, include_failed=True)
+            else:
+                items = history.expand_job_results(rows, lim, offset)
             return self._send(200, {"items": items})
         if p == "/api/gen/collect/search":   # 关键词搜（即时，扣 1 点）— 采集页选片用
             user = verify(self._token())

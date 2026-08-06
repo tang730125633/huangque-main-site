@@ -205,6 +205,8 @@
   .history-actions{display:grid;grid-template-columns:1fr;gap:8px;width:100%}
   .history-link{min-height:38px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(148,164,187,.1);border-radius:11px;background:rgba(148,164,187,.03);color:#94a4bb;text-decoration:none;font-size:11.5px;font-weight:800}
   .history-link:hover{color:#e7b24c;border-color:rgba(231,178,76,.24)}
+  button.history-delete{cursor:pointer;color:#f4708a;border-color:rgba(244,112,138,.28);background:rgba(244,112,138,.08)}
+  button.history-delete:hover{color:#ff9bae;border-color:rgba(244,112,138,.5)}
   .video-poster{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:.9}
   .output-overlay{position:relative;z-index:2;padding:18px;color:#f6d78a;font-size:13px;line-height:1.45;font-weight:700;text-shadow:0 1px 12px rgba(0,0,0,.52)}
   .output-info{display:flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:#f6b729;color:#1b1205;font-weight:900;margin:0 auto 10px}
@@ -1428,6 +1430,7 @@
         :'<div class="blur-bg" style="background:url(&quot;'+esc(image)+'&quot;) center/cover"></div><div class="output-overlay"><div class="output-info">i</div><div>'+esc(statusLabel(x.status))+'</div></div>';
       var duration=videoDurationTag(x);
       var quality=videoQualityTag(x);
+      var failed=['failed','error'].indexOf(String(x.status||'').toLowerCase())>=0;
       var progress=(!x.video_url && (x.phase || x.status==='processing' || x.status==='running'))?progressMarkup(phaseInfo(x.phase,x.status)):'';
       card.innerHTML=head
         +'<p class="history-text">'+esc(x.text||'视频生成记录')+'</p>'
@@ -1439,7 +1442,7 @@
         +'<div class="history-stage"><div class="history-preview">'+preview+'</div></div>'
         +'<div class="history-created">创建于：'+esc(formatTime(x.created_at)||'最近创建')+'</div>'
         +'<div class="history-actions">'
-        +(x.video_url?'<a class="history-link" href="'+esc(x.video_url)+'" download>下载</a>':'<span class="history-link" style="color:#5c6b82;">等待</span>')
+        +(x.video_url?'<a class="history-link" href="'+esc(x.video_url)+'" download>下载</a>':(failed&&jid?'<button class="history-link history-delete" type="button">删除记录</button>':'<span class="history-link" style="color:#5c6b82;">等待</span>'))
         +'</div>';
       var audioBtn=card.querySelector('.history-audio');
       var historyThumb=card.querySelector('[data-asset-src]');
@@ -1468,6 +1471,20 @@
       if(downloadLink && isProtectedLocal(x.video_url)){
         downloadLink.onclick=function(e){e.preventDefault();downloadAsset(x.video_url,'huangque-video.mp4').catch(function(){toast('下载失败');});};
       }
+      var deleteButton=card.querySelector('.history-delete');
+      if(deleteButton) deleteButton.onclick=function(e){
+        e.stopPropagation();
+        if(!confirm('确定删除这条失败记录吗？')) return;
+        deleteButton.disabled=true;
+        fetch('/api/gen/job/delete',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify({job_id:jid})})
+          .then(function(r){return r.json().catch(function(){return {};}).then(function(d){if(!r.ok) throw new Error(d.detail||'删除失败');return d;});})
+          .then(function(){
+            videoDrafts=videoDrafts.filter(function(item){return String(item&&item.job_id)!=String(jid);});
+            videoHistoryItems=videoHistoryItems.filter(function(item){return String(item&&(item.job_id!=null?item.job_id:item.id))!=String(jid);});
+            renderVideoOutput(); toast('失败记录已删除');
+          })
+          .catch(function(err){deleteButton.disabled=false;toast(err.message||'删除失败');});
+      };
       card.onclick=function(e){
         if(e.target && (e.target.tagName==='A' || e.target.tagName==='BUTTON' || e.target.tagName==='VIDEO')) return;
       };
