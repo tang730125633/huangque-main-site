@@ -197,6 +197,12 @@ def sora_video_is_open(today=None):
     return bool(SORA_VIDEO_ENABLED and today < SORA_VIDEO_SUNSET)
 
 
+def sora_video_health_enabled(flags):
+    from . import video_openai
+    return bool(sora_video_is_open() and video_openai.available()
+                and flags.is_enabled("sora_video"))
+
+
 def omni_video_is_open():
     from . import video_gemini_omni
     return video_gemini_omni.available()

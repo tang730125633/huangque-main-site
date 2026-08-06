@@ -57,6 +57,13 @@ class SoraPayloadTests(unittest.TestCase):
             self.assertFalse(video.sora_video_is_open("2026-09-24"))
             self.assertFalse(video.sora_video_is_open("2026-09-25"))
 
+    def test_health_requires_a_managed_provider_key(self):
+        with patch.object(video, "sora_video_is_open", return_value=True), \
+                patch.object(video_openai, "available", side_effect=(False, True)), \
+                patch.object(feature_flags, "is_enabled", return_value=True):
+            self.assertFalse(video.sora_video_health_enabled(feature_flags))
+            self.assertTrue(video.sora_video_health_enabled(feature_flags))
+
     def test_sora_2_only_accepts_720p_portrait_or_landscape(self):
         self.assertEqual(self.validate()["size"], "720x1280")
         self.assertEqual(self.validate(ratio="16:9")["size"], "1280x720")
