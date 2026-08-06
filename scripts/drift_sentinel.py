@@ -51,6 +51,7 @@ BACKEND_RUNTIME = {
     'server/hq_cli_api.py': '/home/ubuntu/auth-service/hq_cli_api.py',
     'server/wechat_subscribe.py': '/home/ubuntu/auth-service/wechat_subscribe.py',
     'server/invites.py': '/home/ubuntu/auth-service/invites.py',
+    'server/invite_network.py': '/home/ubuntu/auth-service/invite_network.py',
     'server/business_cards.py': '/home/ubuntu/auth-service/business_cards.py',
     'server/wxpay.py': '/home/ubuntu/auth-service/wxpay.py',
     'server/wechat_virtual_pay.py': '/home/ubuntu/auth-service/wechat_virtual_pay.py',
@@ -64,14 +65,18 @@ BACKEND_RUNTIME = {
     'server/dl_service.py': '/home/ubuntu/dl-service/dl_service.py',
     'server/admin_api.py': '/home/ubuntu/content-api/admin_api.py',
     'scripts/hq_bitable_sync_server.py': '/home/ubuntu/hq_bitable_sync_server.py',
+    'scripts/process_invite_reward_claims.py': '/home/ubuntu/auth-service/process_invite_reward_claims.py',
     'scripts/drift_sentinel.py': '/home/ubuntu/hq-drift/drift_sentinel.py',
 }
 
 CONTENT_DOMAINS_RUNTIME = os.environ.get('HQ_CONTENT_DOMAINS_RUNTIME', '/home/ubuntu/content-api/content_domains')
+PROVIDERS_RUNTIME = os.environ.get('HQ_PROVIDERS_RUNTIME', '/home/ubuntu/content-api/providers')
 AUTH_SHARED_RUNTIME = {
     'server/content_domains/__init__.py': '/home/ubuntu/auth-service/content_domains/__init__.py',
     'server/content_domains/cos.py': '/home/ubuntu/auth-service/content_domains/cos.py',
     'server/content_domains/miniprogram_security.py': '/home/ubuntu/auth-service/content_domains/miniprogram_security.py',
+    'server/content_domains/pricing.py': '/home/ubuntu/auth-service/content_domains/pricing.py',
+    'server/content_domains/error_contract.py': '/home/ubuntu/auth-service/content_domains/error_contract.py',
 }
 SYSTEMD_DIR = os.environ.get('HQ_SYSTEMD_DIR', '/etc/systemd/system')
 
@@ -141,6 +146,8 @@ def git_path_to_runtime(git_path):
         return BACKEND_RUNTIME[git_path]
     if git_path.startswith('server/content_domains/') and git_path.endswith('.py'):
         return os.path.join(CONTENT_DOMAINS_RUNTIME, os.path.basename(git_path))
+    if git_path.startswith('server/providers/') and git_path.endswith('.py'):
+        return os.path.join(PROVIDERS_RUNTIME, git_path[len('server/providers/'):])
     if git_path.startswith('deploy/systemd/'):
         # ship 现在会部署 systemd 单元与 drop-in。没有这段映射，--verify-deploy 会把它们静默跳过，
         # 然后报「N 个文件校验通过」—— 一个虚假的确认，比不校验更糟。
@@ -178,6 +185,9 @@ def runtime_to_git_path(path):
     domain_dir = os.path.normpath(CONTENT_DOMAINS_RUNTIME)
     if path.startswith(domain_dir + os.sep) and path.endswith('.py') and '__pycache__' not in path:
         return 'server/content_domains/' + os.path.basename(path)
+    providers_dir = os.path.normpath(PROVIDERS_RUNTIME)
+    if path.startswith(providers_dir + os.sep) and path.endswith('.py') and '__pycache__' not in path:
+        return 'server/providers/' + os.path.relpath(path, providers_dir).replace(os.sep, '/')
     systemd_dir = os.path.normpath(SYSTEMD_DIR)
     if path.startswith(systemd_dir + os.sep):
         return 'deploy/systemd/' + os.path.relpath(path, systemd_dir).replace(os.sep, '/')
@@ -196,6 +206,9 @@ def expected_git_paths():
     for p in git_ls_tree('server/content_domains'):
         if p.endswith('.py') and '__pycache__' not in p:
             paths.append(p)
+    for p in git_ls_tree('server/providers'):
+        if p.endswith('.py') and '__pycache__' not in p:
+            paths.append(p)
     return sorted(set(paths))
 
 
@@ -211,6 +224,9 @@ def runtime_files():
         if os.path.isfile(p):
             files.append(p)
     for p in glob.glob(os.path.join(CONTENT_DOMAINS_RUNTIME, '*.py')):
+        if os.path.isfile(p) and runtime_to_git_path(p):
+            files.append(p)
+    for p in glob.glob(os.path.join(PROVIDERS_RUNTIME, '**', '*.py'), recursive=True):
         if os.path.isfile(p) and runtime_to_git_path(p):
             files.append(p)
     return sorted(set(files))

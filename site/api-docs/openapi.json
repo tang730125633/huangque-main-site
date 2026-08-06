@@ -1439,6 +1439,52 @@
         }
       }
     },
+    "/api/auth/card/wechat/bind": {
+      "post": {
+        "tags": ["认证"], "summary": "为当前账号名片绑定微信小程序身份",
+        "description": "需要现有 Bearer 或登录 Cookie；只绑定 business_cards，不读取或写入 users.wx_openid。成功后返回独立 card_token。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["wx_code"], "properties": { "wx_code": { "type": "string", "writeOnly": true } } } } } },
+        "responses": { "200": { "description": "已绑定（同一账号重复绑定幂等）" }, "401": { "description": "未登录" }, "409": { "description": "openid_in_use" } }
+      }
+    },
+    "/api/auth/miniprogram/card-login": {
+      "post": {
+        "tags": ["认证"], "summary": "兼容旧版：以已绑定名片的微信身份登录工作台", "security": [],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["wx_code"], "properties": { "wx_code": { "type": "string", "writeOnly": true } } } } } },
+        "responses": { "200": { "description": "token、user 和 owner-only card" }, "404": { "description": "card_unbound" } }
+      }
+    },
+    "/api/auth/miniprogram/card-session": {
+      "post": {
+        "tags": ["认证"], "summary": "以微信身份恢复独立名片会话", "security": [],
+        "description": "只返回 card_token，不创建黄雀 AI 工作台登录态。card_token 仅可访问本人名片及修改其绑定账号密码。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["wx_code"], "properties": { "wx_code": { "type": "string", "writeOnly": true } } } } } },
+        "responses": { "200": { "description": "card_token 和 owner-only card" }, "404": { "description": "card_unbound" } }
+      }
+    },
+    "/api/auth/miniprogram/card-account-login": {
+      "post": {
+        "tags": ["认证"], "summary": "明确使用名片绑定账号登录工作台",
+        "description": "需要 X-HQ-Card-Token；仅在用户主动选择后把名片身份换成黄雀 AI 工作台 token。",
+        "responses": { "200": { "description": "token 和 user" }, "401": { "description": "card_session_invalid" } }
+      }
+    },
+    "/api/auth/miniprogram/card-register": {
+      "post": {
+        "tags": ["认证"], "summary": "用手机号、新名片和微信身份注册小程序", "security": [],
+        "description": "手机号同时作为账号和初始密码；服务端只返回 must_change/initial_password 提示，不返回任何明文密码。separate_sessions=true 时只返回 card_token，不自动登录工作台。有效且仍可验证的名片归因按后台当前邀请奖励配置发放，否则不发放。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["wx_code", "phone", "card", "device_id"], "properties": { "wx_code": { "type": "string", "writeOnly": true }, "phone": { "type": "string", "pattern": "^1[3-9]\\d{9}$" }, "card": { "type": "object" }, "device_id": { "type": "string", "maxLength": 256 }, "invite_code": { "type": "string" }, "invite_attribution_token": { "type": "string", "writeOnly": true }, "separate_sessions": { "type": "boolean" } } } } } },
+        "responses": { "200": { "description": "card_token（独立会话）或兼容 token、user、card，以及 created、invite_rewarded、ai_account、initial_password 等幂等回执" }, "409": { "description": "account_exists 或 invalid_invite_attribution" } }
+      }
+    },
+    "/api/auth/invite/journey/start": {
+      "post": {
+        "tags": ["认证"], "summary": "记录访客开始制作邀请名片", "security": [],
+        "description": "只接受公开名片接口签发的服务端归因令牌，用于转化分析；本接口不建立邀请关系，也不发放点数或会员权益。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["invite_attribution_token"], "properties": { "invite_attribution_token": { "type": "string", "writeOnly": true } } } } } },
+        "responses": { "200": { "description": "记录成功或兼容旧令牌" }, "409": { "description": "invalid_invite_attribution" } }
+      }
+    },
     "/api/auth/invite/code": {
       "get": {
         "tags": ["认证"], "summary": "获取当前用户的稳定邀请码",
@@ -1468,9 +1514,10 @@
     },
     "/api/auth/change_password": {
       "post": {
-        "tags": ["认证"], "summary": "改密码(需当前密码，成功后旧 token 全部失效)",
+        "tags": ["认证"], "summary": "改密码(需当前密码，成功后该账号的工作台 token 全部失效)",
+        "description": "支持工作台 Bearer/Cookie 或 X-HQ-Card-Token；名片会话不因改密失效。",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["old_password", "new_password"], "properties": { "old_password": { "type": "string", "description": "当前密码" }, "new_password": { "type": "string", "description": "至少 6 位" } } } } } },
-        "responses": { "200": { "description": "OK，当前用户所有已签发 token 失效，需要重新登录" }, "400": { "description": "当前密码错误 / 新密码太短" }, "401": { "description": "未登录" } }
+        "responses": { "200": { "description": "OK，该账号的工作台 token 失效，需要重新登录" }, "400": { "description": "当前密码错误 / 新密码太短" }, "401": { "description": "未登录" } }
       }
     },
     "/api/auth/me": {

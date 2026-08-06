@@ -19,8 +19,9 @@ from providers.short_drama_visual import capability_snapshot
 from providers.short_drama_visual.heygen_cinematic import (
     HeyGenCinematicShotProvider,
 )
-from providers.short_drama_visual.runtime import load_from_environment
+from providers.short_drama_visual.runtime import load_by_name, load_from_environment
 
+from . import points as points_domain
 from . import short_drama_assembly_plan as media_plan
 
 
@@ -34,6 +35,21 @@ PROVIDER_QUOTE_TTL_SECONDS = 300
 PROVIDER_ACTIVE = {"billing", "queued", "submitting", "running", "submit_unknown"}
 PROVIDER_BILLING_OBSERVE_AFTER_SECONDS = 300
 PROVIDER_BILLING_CONFIRM_SECONDS = 60
+
+
+def _positive_env_int(name, default):
+    try:
+        return max(1, int(os.environ.get(name, str(default)) or default))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+PROVIDER_SHOT_DEADLINE_SECONDS = _positive_env_int(
+    "HQ_SHORT_DRAMA_PROVIDER_SHOT_DEADLINE_SECONDS", 1800
+)
+PROVIDER_SHOT_MAX_POLLS = _positive_env_int(
+    "HQ_SHORT_DRAMA_PROVIDER_SHOT_MAX_POLLS", 720
+)
 
 
 class AutodraftError(ValueError):
@@ -613,6 +629,8 @@ def _render_provider_preview(project_id, job_id, assembly):
 def _provider_poc_inputs(
     plan, owner_username, avatar_list=None, conn=None, project_id="",
 ):
+    provider = load_from_environment() or HeyGenCinematicShotProvider()
+    provider_name = provider.name
     shots = []
     for index, shot in enumerate(plan.get("material_plan") or []):
         if not isinstance(shot, dict):
@@ -633,10 +651,16 @@ def _provider_poc_inputs(
         except Exception:
             candidates = []
         for avatar in candidates or []:
+            if not isinstance(avatar, dict):
+                continue
+            provider_ready = bool(
+                str(avatar.get("image_url") or "").strip()
+                if provider_name == "grok"
+                else str(avatar.get("provider_avatar_id") or "").strip()
+            )
             if (
-                not isinstance(avatar, dict)
-                or str(avatar.get("status") or "") != "ready"
-                or not str(avatar.get("provider_avatar_id") or "").strip()
+                str(avatar.get("status") or "") != "ready"
+                or not provider_ready
             ):
                 continue
             avatars.append({
@@ -651,11 +675,28 @@ def _provider_poc_inputs(
     if conn is not None and project_id:
         avatar_by_id = {str(item["id"]): item for item in avatars}
         for row in conn.execute(
-            "SELECT character_key,name,avatar_id,reference_url "
+            "SELECT character_key,name,avatar_id,reference_file,reference_url,"
+            "reference_locked "
             "FROM short_drama_characters WHERE project_id=? ORDER BY sort_order,id",
             (project_id,),
         ).fetchall():
             avatar = avatar_by_id.get(str(row["avatar_id"] or ""))
+            character_reference_ready = bool(
+                row["reference_locked"]
+                and (
+                    str(row["reference_file"] or "").strip()
+                    or str(row["reference_url"] or "").strip().startswith(
+                        ("http://", "https://")
+                    )
+                )
+            )
+            generation_identity_id = (
+                str(avatar["id"])
+                if avatar
+                else "character:" + str(row["character_key"])
+                if provider_name == "grok" and character_reference_ready
+                else ""
+            )
             item = {
                 "character_key": str(row["character_key"]),
                 "name": str(row["name"]),
@@ -664,11 +705,12 @@ def _provider_poc_inputs(
                     str(avatar.get("image_url") or "") if avatar
                     else str(row["reference_url"] or "")
                 ),
-                "binding_ready": bool(avatar),
+                "binding_ready": bool(generation_identity_id),
+                "generation_identity_id": generation_identity_id,
             }
             characters.append(item)
-            if avatar:
-                bindings[item["character_key"]] = item["avatar_id"]
+            if generation_identity_id:
+                bindings[item["character_key"]] = generation_identity_id
         material_by_key = {
             str(item.get("shot_key") or ""): item
             for item in plan.get("material_plan") or []
@@ -698,7 +740,7 @@ def _provider_poc_inputs(
                 shot["primary_character_key"], ""
             )
     return {
-        "provider": "heygen_cinematic",
+        "provider": provider_name,
         "shots": shots,
         "avatars": avatars,
         "characters": characters,
@@ -792,12 +834,13 @@ def preview_provider_request(
     db_factory, owner_username, actor_username, body, avatar_lookup=None,
     include_private=False,
 ):
-    """Compile one exact HeyGen cinematic request without billing or I/O."""
+    """Compile one exact visual-provider request without billing or I/O."""
     project_id = str(body.get("project_id") or "").strip()
     plan_id = str(body.get("plan_id") or "").strip()
     shot_key = str(body.get("shot_key") or "").strip()
     avatar_id = str(body.get("avatar_id") or "").strip()
     character_key = str(body.get("character_key") or "").strip()
+    provider = load_from_environment() or HeyGenCinematicShotProvider()
     conn = _connection(db_factory)
     try:
         project = _project(conn, owner_username, project_id)
@@ -858,23 +901,65 @@ def preview_provider_request(
         conn = _connection(db_factory)
         try:
             row = conn.execute(
-                "SELECT avatar_id FROM short_drama_characters "
+                "SELECT avatar_id,reference_file,reference_url,reference_locked "
+                "FROM short_drama_characters "
                 "WHERE project_id=? AND character_key=?",
                 (project_id, character_key),
             ).fetchone()
             avatar_id = str(row["avatar_id"] or "") if row else ""
+            if (
+                provider.name == "grok"
+                and row
+                and not avatar_id
+                and row["reference_locked"]
+                and (
+                    str(row["reference_file"] or "").strip()
+                    or str(row["reference_url"] or "").strip().startswith(
+                        ("http://", "https://")
+                    )
+                )
+            ):
+                avatar_id = "character:" + character_key
         finally:
             conn.close()
-    if not avatar_id or not callable(avatar_lookup):
+    if not avatar_id:
         raise AutodraftError(
-            "provider_avatar_required", "请选择已绑定 Provider 的电影化身", 422
+            "provider_avatar_required", "请先为当前角色锁定一张标准形象图", 422
         )
-    try:
-        avatar = avatar_lookup(owner_username, avatar_id)
-    except Exception as error:
-        raise AutodraftError(
-            "provider_avatar_not_found", "所选电影化身不存在或已不可用", 422
-        ) from error
+    if provider.name == "grok" and avatar_id == "character:" + character_key:
+        conn = _connection(db_factory)
+        try:
+            reference = conn.execute(
+                "SELECT name,reference_file,reference_url,reference_locked "
+                "FROM short_drama_characters "
+                "WHERE project_id=? AND character_key=?",
+                (project_id, character_key),
+            ).fetchone()
+        finally:
+            conn.close()
+        if not reference:
+            raise AutodraftError(
+                "provider_avatar_not_found", "当前角色的标准形象图不存在", 422
+            )
+        avatar = {
+            "id": avatar_id,
+            "username": owner_username,
+            "name": str(reference["name"] or "未命名角色"),
+            "status": "ready" if reference["reference_locked"] else "pending",
+            "image_file": str(reference["reference_file"] or ""),
+            "image_url": str(reference["reference_url"] or ""),
+        }
+    else:
+        if not callable(avatar_lookup):
+            raise AutodraftError(
+                "provider_avatar_lookup_unavailable", "形象库服务暂不可用", 503
+            )
+        try:
+            avatar = avatar_lookup(owner_username, avatar_id)
+        except Exception as error:
+            raise AutodraftError(
+                "provider_avatar_not_found", "所选电影化身不存在或已不可用", 422
+            ) from error
     if (
         not isinstance(avatar, dict)
         or str(avatar.get("username") or "") != owner_username
@@ -882,17 +967,23 @@ def preview_provider_request(
         raise AutodraftError(
             "provider_avatar_forbidden", "无权使用所选电影化身", 403
         )
-    if (
-        str(avatar.get("status") or "") != "ready"
-        or not str(avatar.get("provider_avatar_id") or "").strip()
-    ):
+    reference_image_url = str(avatar.get("image_url") or "").strip()
+    reference_image_file = str(avatar.get("image_file") or "").strip()
+    provider_identity_ready = bool(
+        reference_image_url or reference_image_file
+        if provider.name == "grok"
+        else str(avatar.get("provider_avatar_id") or "").strip()
+    )
+    if str(avatar.get("status") or "") != "ready" or not provider_identity_ready:
         raise AutodraftError(
-            "provider_avatar_not_ready", "所选电影化身尚未完成 Provider 绑定", 422
+            "provider_avatar_not_ready", "所选电影化身缺少当前 Provider 所需的形象资产", 422
         )
     duration_ms = int(shot.get("duration_ms") or 0)
     duration_seconds = max(1, (duration_ms + 999) // 1000)
     outbound = {
-        "provider_avatar_id": str(avatar["provider_avatar_id"]),
+        "provider_avatar_id": str(avatar.get("provider_avatar_id") or ""),
+        "reference_image_url": reference_image_url,
+        "reference_image_file": reference_image_file,
         "prompt": _visual_prompt(shot),
         "ratio": str(project.get("ratio") or "16:9"),
         "resolution": str(
@@ -900,7 +991,6 @@ def preview_provider_request(
         ).lower(),
         "duration_seconds": duration_seconds,
     }
-    provider = load_from_environment() or HeyGenCinematicShotProvider()
     try:
         validated = provider.validate_request(outbound)
     except Exception as error:
@@ -954,7 +1044,7 @@ def preview_provider_request(
         "next_action": (
             "可进入单镜头付费确认"
             if capability.get("configured")
-            else "配置 HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER 和 HEYGEN_API_KEY"
+            else "配置短剧画面 Provider 及其 API Key"
         ),
         "message": (
             "预检通过；本次没有调用 Provider，也没有扣点。"
@@ -962,21 +1052,42 @@ def preview_provider_request(
             else "镜头请求已编译通过，但 Provider 尚未配置；本次没有外部调用。"
         ),
     }
+    if validated.get("model"):
+        result["request"]["model"] = str(validated["model"])
     if include_private:
         result["_provider_request"] = validated
     return result
 
 
-def _provider_shot_cost(preview):
-    try:
-        points_per_second = int(
-            os.getenv("HQ_SHORT_DRAMA_PROVIDER_SHOT_POINTS_PER_SECOND") or 10
+def _provider_shot_cost(provider_request):
+    request = provider_request if isinstance(provider_request, dict) else {}
+    provider_name = str(request.get("provider") or "").strip()
+    if provider_name == "heygen_cinematic":
+        return points_domain.cost_of("cinematic", {
+            "cine_mode": "open",
+            "duration": int(request.get("duration_seconds") or 0),
+        })
+    if provider_name != "grok":
+        raise AutodraftError(
+            "provider_quote_request_invalid",
+            "Provider 规范化请求缺少有效渠道",
+            500,
         )
-    except (TypeError, ValueError):
-        points_per_second = 10
-    points_per_second = max(1, min(points_per_second, 1000))
-    duration = int((preview.get("request") or {}).get("duration_seconds") or 0)
-    return max(1, duration) * points_per_second
+    model = str(request.get("model") or "").strip()
+    resolution = str(request.get("resolution") or "").strip().lower()
+    duration = int(request.get("duration_seconds") or 0)
+    if not model or not resolution or duration <= 0:
+        raise AutodraftError(
+            "provider_quote_request_invalid",
+            "Grok 规范化请求缺少必要计费参数",
+            500,
+        )
+    return points_domain.cost_of("xiaole_video", {
+        "channel": "grok",
+        "model": model,
+        "resolution": resolution,
+        "duration": duration,
+    })
 
 
 def _provider_job(row):
@@ -1019,7 +1130,7 @@ def create_provider_quote(
         )
     now = int(time.time())
     token = uuid.uuid4().hex
-    cost = _provider_shot_cost(preview)
+    cost = _provider_shot_cost(provider_request)
     conn = _connection(db_factory)
     try:
         conn.execute(
@@ -1137,12 +1248,6 @@ def start_provider_job(
     # binding changed later. A genuinely new request is recompiled so a stale
     # quote can never charge against an unbound/replaced avatar or changed shot.
     if not inspect_existing:
-        if not callable(avatar_lookup):
-            raise AutodraftError(
-                "provider_avatar_lookup_unavailable",
-                "角色形象校验服务暂不可用，不能执行付费生成",
-                503,
-            )
         refreshed = preview_provider_request(
             db_factory,
             owner_username,
@@ -1164,6 +1269,30 @@ def start_provider_job(
                 "镜头或角色形象已变化，请重新预检并报价",
                 409,
             )
+    prepared_request_json = inspect_quote["request_json"]
+    prepared_provider_name = str(
+        _json(prepared_request_json, {}).get("provider") or "heygen_cinematic"
+    ).strip()
+    if not inspect_existing:
+        provider = load_by_name(prepared_provider_name)
+        if provider is None or not provider.configured:
+            raise AutodraftError(
+                "provider_not_configured",
+                "真实画面 Provider 配置已失效，任务未扣点",
+                503,
+            )
+        prepare_job = getattr(provider, "prepare_job", None)
+        if callable(prepare_job):
+            try:
+                prepared_request_json = _json_text(
+                    prepare_job(_json(prepared_request_json, {}))
+                )
+            except Exception as error:
+                raise AutodraftError(
+                    "provider_not_configured",
+                    "真实画面 Provider 密钥保险箱不可用，任务未扣点",
+                    503,
+                ) from error
     conn = _connection(db_factory)
     attempt_id = None
     job_id = None
@@ -1241,6 +1370,7 @@ def start_provider_job(
         job_id = uuid.uuid4().hex
         charge_key = "short-drama-provider-shot-charge:" + attempt_id
         refund_key = "short-drama-provider-shot-refund:" + attempt_id
+        provider_name = prepared_provider_name
         conn.execute(
             "INSERT INTO short_drama_provider_shot_jobs "
             "(id,project_id,owner_username,actor_username,plan_id,shot_key,"
@@ -1250,8 +1380,8 @@ def start_provider_job(
             (
                 job_id, quote["project_id"], owner_username, actor_username,
                 quote["plan_id"], quote["shot_key"], quote["character_key"],
-                quote["avatar_id"], "heygen_cinematic", quote["request_hash"],
-                quote["request_json"], cost, now, now,
+                quote["avatar_id"], provider_name, quote["request_hash"],
+                prepared_request_json, cost, now, now,
             ),
         )
         conn.execute(
@@ -1382,7 +1512,93 @@ def _recover_provider_refund(db_factory, job_id, refund_points=None):
         conn.close()
 
 
+def _provider_job_timeout_reason(row, now=None, next_poll=False):
+    now = int(time.time() if now is None else now)
+    elapsed = max(0, now - int(row["created_at"] or now))
+    poll_count = int(row["poll_count"] or 0) + (1 if next_poll else 0)
+    if elapsed >= PROVIDER_SHOT_DEADLINE_SECONDS:
+        return {
+            "reason": "deadline",
+            "elapsed_seconds": elapsed,
+            "poll_count": poll_count,
+        }
+    if poll_count >= PROVIDER_SHOT_MAX_POLLS:
+        return {
+            "reason": "poll_limit",
+            "elapsed_seconds": elapsed,
+            "poll_count": poll_count,
+        }
+    return None
+
+
+def _expire_provider_job(db_factory, job_id, reason, refund_points=None):
+    """Claim a running job's timeout before issuing its idempotent refund."""
+    now = int(time.time())
+    payload = {
+        "code": "provider_generation_timeout",
+        "detail": "Provider 生成超过最长等待时间，任务已失败并退点",
+        "retryable": False,
+        "timeout_reason": reason["reason"],
+        "elapsed_seconds": int(reason["elapsed_seconds"]),
+        "poll_count": int(reason["poll_count"]),
+    }
+    claimed = False
+    conn = _connection(db_factory)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        job = conn.execute(
+            "SELECT * FROM short_drama_provider_shot_jobs WHERE id=?",
+            (job_id,),
+        ).fetchone()
+        attempt = _provider_attempt_for_job(conn, job_id)
+        if job and job["status"] == "running":
+            changed = conn.execute(
+                "UPDATE short_drama_provider_shot_jobs SET status='failed',"
+                "error_json=?,updated_at=? WHERE id=? AND status='running'",
+                (_json_text(payload), now, job_id),
+            ).rowcount
+            if changed == 1:
+                claimed = True
+                if attempt:
+                    needs_refund = (
+                        int(attempt["cost"] or 0) > 0
+                        and attempt["state"] in {
+                            "charged", "linked", "refund_pending",
+                        }
+                    )
+                    conn.execute(
+                        "UPDATE short_drama_provider_shot_attempts SET state=?,"
+                        "error_json=?,updated_at=? WHERE id=? "
+                        "AND state NOT IN ('done','refunded')",
+                        (
+                            "refund_pending" if needs_refund else "failed",
+                            _json_text(payload), now, attempt["id"],
+                        ),
+                    )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    if claimed:
+        _recover_provider_refund(
+            db_factory, job_id, refund_points=refund_points,
+        )
+    return claimed
+
+
 def _finish_provider_job(db_factory, row, provider, provider_state):
+    inspect_conn = _connection(db_factory)
+    try:
+        current_status = inspect_conn.execute(
+            "SELECT status FROM short_drama_provider_shot_jobs WHERE id=?",
+            (row["id"],),
+        ).fetchone()
+    finally:
+        inspect_conn.close()
+    if not current_status or current_status["status"] != "running":
+        return
     result = provider.fetch_result(
         row["provider_job_id"], provider_state.get("result_url")
     )
@@ -1394,7 +1610,7 @@ def _finish_provider_job(db_factory, row, provider, provider_state):
             "SELECT * FROM short_drama_provider_shot_jobs WHERE id=?",
             (row["id"],),
         ).fetchone()
-        if not current or current["status"] == "succeeded":
+        if not current or current["status"] != "running":
             conn.commit()
             return
         version = int(conn.execute(
@@ -1418,7 +1634,8 @@ def _finish_provider_job(db_factory, row, provider, provider_state):
         final_result = dict(result, version_id=version_id, version=version)
         conn.execute(
             "UPDATE short_drama_provider_shot_jobs SET status='succeeded',"
-            "progress=100,result_json=?,error_json=NULL,updated_at=? WHERE id=?",
+            "progress=100,result_json=?,error_json=NULL,updated_at=? "
+            "WHERE id=? AND status='running'",
             (_json_text(final_result), now, row["id"]),
         )
         conn.execute(
@@ -1556,7 +1773,7 @@ def reconcile_provider_job(
         finally:
             conn.close()
         if changed.rowcount == 1:
-            provider = load_from_environment()
+            provider = load_by_name(current.get("provider"))
             if provider is None or not provider.configured:
                 error = AutodraftError(
                     "provider_not_configured",
@@ -1620,57 +1837,88 @@ def reconcile_provider_job(
     finally:
         conn.close()
     if row and row["status"] == "running":
-        provider = load_from_environment()
-        if provider is None or not provider.configured:
-            return _provider_job(row)
-        try:
-            provider_state = provider.get_job(row["provider_job_id"])
-            status = str(provider_state.get("status") or "unknown").lower()
-            if status in {"completed", "complete", "succeeded", "success"}:
-                _finish_provider_job(db_factory, row, provider, provider_state)
-            elif status in {"failed", "error", "canceled", "cancelled"}:
-                error = AutodraftError(
-                    "provider_generation_failed",
-                    "Provider 未能生成当前镜头",
-                    502,
-                )
-                _refund_provider_job(
-                    db_factory, job_id, error, refund_points=refund_points
-                )
-            else:
-                conn = _connection(db_factory)
-                try:
-                    conn.execute(
-                        "UPDATE short_drama_provider_shot_jobs SET progress=?,"
-                        "poll_count=poll_count+1,error_json=NULL,updated_at=? "
-                        "WHERE id=? AND status='running'",
-                        (
-                            min(90, 30 + int(row["poll_count"] or 0) * 5),
-                            int(time.time()), job_id,
-                        ),
-                    )
-                    conn.commit()
-                finally:
-                    conn.close()
-        except Exception as error:
-            conn = _connection(db_factory)
+        timeout_reason = _provider_job_timeout_reason(row)
+        if timeout_reason:
+            _expire_provider_job(
+                db_factory, job_id, timeout_reason,
+                refund_points=refund_points,
+            )
+        else:
+            provider = load_by_name(row["provider"])
+            if provider is None:
+                return _provider_job(row)
             try:
-                conn.execute(
-                    "UPDATE short_drama_provider_shot_jobs "
-                    "SET poll_count=poll_count+1,error_json=?,updated_at=? "
-                    "WHERE id=? AND status='running'",
-                    (
-                        _json_text({
-                            "code": getattr(error, "code", "provider_poll_failed"),
-                            "detail": str(error)[:500],
-                            "retryable": True,
-                        }),
-                        int(time.time()), job_id,
-                    ),
+                provider_state = provider.get_job(row["provider_job_id"])
+                status = str(provider_state.get("status") or "unknown").lower()
+                if status in {"completed", "complete", "succeeded", "success"}:
+                    _finish_provider_job(db_factory, row, provider, provider_state)
+                elif status in {"failed", "error", "canceled", "cancelled"}:
+                    error = AutodraftError(
+                        "provider_generation_failed",
+                        "Provider 未能生成当前镜头",
+                        502,
+                    )
+                    _refund_provider_job(
+                        db_factory, job_id, error, refund_points=refund_points
+                    )
+                else:
+                    timeout_reason = _provider_job_timeout_reason(
+                        row, next_poll=True,
+                    )
+                    if timeout_reason:
+                        _expire_provider_job(
+                            db_factory, job_id, timeout_reason,
+                            refund_points=refund_points,
+                        )
+                    else:
+                        conn = _connection(db_factory)
+                        try:
+                            conn.execute(
+                                "UPDATE short_drama_provider_shot_jobs SET progress=?,"
+                                "poll_count=poll_count+1,error_json=NULL,updated_at=? "
+                                "WHERE id=? AND status='running'",
+                                (
+                                    min(90, 30 + int(row["poll_count"] or 0) * 5),
+                                    int(time.time()), job_id,
+                                ),
+                            )
+                            conn.commit()
+                        finally:
+                            conn.close()
+            except Exception as error:
+                code = getattr(error, "code", "provider_poll_failed")
+                recovery_required = code == "provider_key_unavailable"
+                timeout_reason = (
+                    None if recovery_required else _provider_job_timeout_reason(
+                        row, next_poll=True,
+                    )
                 )
-                conn.commit()
-            finally:
-                conn.close()
+                if timeout_reason:
+                    _expire_provider_job(
+                        db_factory, job_id, timeout_reason,
+                        refund_points=refund_points,
+                    )
+                else:
+                    conn = _connection(db_factory)
+                    try:
+                        conn.execute(
+                            "UPDATE short_drama_provider_shot_jobs SET status=?,"
+                            "poll_count=poll_count+1,error_json=?,updated_at=? "
+                            "WHERE id=? AND status='running'",
+                            (
+                                "submit_unknown" if recovery_required else "running",
+                                _json_text({
+                                    "code": code,
+                                    "detail": str(error)[:500],
+                                    "retryable": not recovery_required,
+                                    "requires_reconciliation": recovery_required,
+                                }),
+                                int(time.time()), job_id,
+                            ),
+                        )
+                        conn.commit()
+                    finally:
+                        conn.close()
     _recover_provider_refund(
         db_factory, job_id, refund_points=refund_points,
     )

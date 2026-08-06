@@ -6,6 +6,7 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/auth-service
 EnvironmentFile=-/home/ubuntu/auth-service/auth.env
+Environment=FEATURE_FLAGS_DB=/home/ubuntu/content-api/feature_flags.db
 ExecStart=/usr/bin/python3 /home/ubuntu/auth-service/auth_server.py
 Restart=always
 RestartSec=3

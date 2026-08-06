@@ -11,11 +11,16 @@ from .core import (
 from .points import _auth_points_request
 from . import cosyvoice, cos
 from . import points as points_domain
+from . import pricing
 
 VOICE_SLOT_COST = 50
 VOICE_SLOT_MAX_PER_USER = 5
 VALID_VOICE_SLOT_STATUSES = ("active", "training", "ready", "failed")
 _voice_slot_purchase_lock = threading.Lock()
+
+
+def voice_slot_cost():
+    return pricing.get_price("audio.voice_slot")
 
 
 class VoiceSlotError(Exception):
@@ -106,7 +111,8 @@ def purchase_audio_voice_slot(username):
             raise VoiceSlotLimitError("最多 %d 个音色槽位" % VOICE_SLOT_MAX_PER_USER)
 
         user_id = get_user_id(username)
-        points_left = points_domain.deduct_points(username, VOICE_SLOT_COST, "voice_slot")
+        cost = voice_slot_cost()
+        points_left = points_domain.deduct_points(username, cost, "voice_slot")
         slot_id = "slot_" + uuid.uuid4().hex
         now = int(time.time())
         try:
@@ -126,16 +132,16 @@ def purchase_audio_voice_slot(username):
                     raise
         except Exception as exc:
             points_domain.safe_refund_points(
-                username, VOICE_SLOT_COST, "voice_slot:insert_failed")
+                username, cost, "voice_slot:insert_failed")
             if isinstance(exc, VoiceSlotLimitError):
                 raise
             raise VoiceSlotPurchaseError(
-                "购买音色槽位失败，%d 点已退回" % VOICE_SLOT_COST) from exc
+                "购买音色槽位失败，%d 点已退回" % cost) from exc
 
         return {
             "slot_id": slot_id,
             "status": "active",
-            "cost": VOICE_SLOT_COST,
+            "cost": cost,
             "points_left": points_left,
         }
 

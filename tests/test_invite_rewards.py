@@ -121,6 +121,46 @@ class InviteRewardTests(unittest.TestCase):
         self.assertIsNone(err)
         self.assertEqual(user["membership_tier"], "initiator")
 
+    def test_admin_upgrade_unlocks_pending_rewards_for_the_upgraded_inviter(self):
+        self.auth.create_user("free-inviter", "secret123", 0)
+        c = self._connect()
+        try:
+            free_id = self._user_id(c, "free-inviter")
+            code = self.auth.invites.ensure_user_code(
+                c, free_id, now=self.now, enforce_membership=False,
+            )["code"]
+            c.commit()
+        finally:
+            c.close()
+        _, err = self.auth.register_account("partner-child", "secret123", invite_code=code)
+        self.assertIsNone(err)
+        _, err = self.auth.set_membership_admin(
+            "admin", "partner-child", "partner", "下线升级", now=self.now + 1,
+        )
+        self.assertIsNone(err)
+        c = self._connect()
+        try:
+            self.assertEqual(c.execute(
+                "SELECT status FROM invite_reward_claims WHERE direct_inviter_user_id=?",
+                (free_id,),
+            ).fetchone()[0], "pending_upgrade")
+        finally:
+            c.close()
+        upgraded, err = self.auth.set_membership_admin(
+            "admin", "free-inviter", "partner", "领取邀请奖励", now=self.now + 2,
+        )
+        self.assertIsNone(err)
+        self.assertEqual(upgraded["invite_reward_result"]["count"], 1)
+        self.assertEqual(upgraded["invite_reward_result"]["total_points"], 1500)
+        c = self._connect()
+        try:
+            self.assertEqual(c.execute(
+                "SELECT status FROM invite_reward_claims WHERE direct_inviter_user_id=?",
+                (free_id,),
+            ).fetchone()[0], "credited")
+        finally:
+            c.close()
+
     def test_pending_review_progression_holds_cap(self):
         code = self._invite_code()
         _, err = self.auth.register_account("review-user", "secret123", invite_code=code)

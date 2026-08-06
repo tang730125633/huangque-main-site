@@ -32,6 +32,10 @@
   .result-preview{position:relative;display:flex;align-items:center;justify-content:center;min-height:320px;max-height:calc(100vh - 300px);overflow:hidden;border:1px solid rgba(231,178,76,.18);border-radius:8px;background:var(--hq-surface-soft)}
   #bResult{display:block!important;width:100%!important;height:100%!important;max-height:calc(100vh - 300px);aspect-ratio:auto!important;object-fit:contain!important}
   .recent-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}
+  .recent-failed{min-height:160px;padding:14px;border:1px solid rgba(244,112,138,.24);border-radius:8px;background:rgba(244,112,138,.06);display:flex;flex-direction:column;gap:8px;color:#94a4bb}
+  .recent-failed strong{color:#f4708a;font-size:13px}.recent-failed p{margin:0;flex:1;font-size:11.5px;line-height:1.55;overflow-wrap:anywhere}
+  .recent-delete{min-height:34px;border:1px solid rgba(244,112,138,.3);border-radius:8px;background:rgba(244,112,138,.08);color:#f4708a;font:inherit;font-size:12px;font-weight:700;cursor:pointer}
+  .recent-delete:hover{border-color:rgba(244,112,138,.55);color:#ff9bae}
   html[data-theme="light"] .hq-content[data-active="banana"] .banana-results-pane{
     border-color:transparent!important;
     background:transparent!important;
@@ -231,7 +235,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=4de5465a"></script>
+<script src="cloud-shell.js?v=dbd5a9e4"></script>
 <script src="image-mentions.js?v=20260802f"></script>
 <script>
 /* 作图页接后端能力中心 /api/gen/image + /api/gen/banana，点数后端统一扣。 */
@@ -310,6 +314,21 @@
   //    seedream_std/seedream_pro 对 points.SEEDREAM_VARIANT_COST。否则前端显示和实际扣点对不上。
   // gpt 按官方 $30/M image output token 实测折算(1点=0.1元)：标准≈¥0.30~0.37，高清=4倍≈¥1.20~1.50。
   var COSTBASE={nb2:{std:18,hd:35}, pro:{std:35,hd:44}, gpt:{std:20,hd:35}, seedream_std:{std:8,hd:12}, seedream_pro:{std:15,hd:20}, xiaole:{std:12,hd:16}, zelong2:{std:8,hd:12}};
+  var reverseCost=2;
+  if(window.HQ&&HQ.onPricing) HQ.onPricing(function(p){
+    COSTBASE={
+      nb2:{std:p['image.banana.nb2.std']||18,hd:p['image.banana.nb2.hd']||35},
+      pro:{std:p['image.banana.pro.std']||35,hd:p['image.banana.pro.hd']||44},
+      gpt:{std:p['image.openai.std']||20,hd:p['image.openai.hd']||35},
+      seedream_std:{std:p['image.seedream.std.std']||8,hd:p['image.seedream.std.hd']||12},
+      seedream_pro:{std:p['image.seedream.pro.std']||15,hd:p['image.seedream.pro.hd']||20},
+      xiaole:{std:p['image.xiaole.std']||12,hd:p['image.xiaole.hd']||16},
+      zelong2:{std:p['image.zelong2.std']||8,hd:p['image.zelong2.hd']||12}
+    };
+    reverseCost=p['image.reverse']||2;
+    var button=document.getElementById('revBtn');if(button&&!button.disabled)button.textContent='反推提示词（'+reverseCost+' 点）';
+    updateCost();
+  });
   // 数量上限(中转/循环慢→低)。必须与后端 points.cost_of 的 cap 一致，否则按 N 扣点却只出 cap 张。
   var ENGINE_MAXN={banana:4, gpt:4, seedream:2, xiaole:2, zelong2:1};
   var zelongCard=document.querySelector('#engineRow [data-engine="zelong2"]');
@@ -715,7 +734,7 @@
           if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
           loadHistory();
         }
-        else if(d.status==='error'||d.status==='failed'){ endJob(id); flash(errMsg(d.error||d.detail||d.status||''),'#f4708a'); }
+        else if(d.status==='error'||d.status==='failed'){ endJob(id); flash(errMsg(d.error||d.detail||d.status||''),'#f4708a'); loadHistory(); }
         else if(sec>JOB_POLL_TIMEOUT_SEC){ endJob(id); flash('生成仍在处理中，请稍后到资产库查看（'+sec+'s）','#2dd4bf'); loadHistory(); }
         else tickNote();
       }).catch(function(){
@@ -925,14 +944,14 @@
     fetch('/api/gen/reverse',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify({image:revImgData})})
       .then(function(r){ return r.json().then(function(d){ return {s:r.status,d:d}; }); })
       .then(function(x){
-        revBtn.disabled=false; revBtn.textContent='反推提示词（2 点）';
+        revBtn.disabled=false; revBtn.textContent='反推提示词（'+reverseCost+' 点）';
         if(x.s===401){ HQ.login(); return; }
         if(x.s===402){ revMsg('点数不足 · 去充值','#f4708a'); return; }
         if(!x.d.prompt){ revMsg('反推失败：'+brandedErrorText((x.d&&x.d.detail)||'未知'),'#f4708a'); return; }
         revPrompt.value=x.d.prompt; revResult.style.display='block';
         revMsg('✅ 反推完成，可编辑后填入','#2bd576');
         if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
-      }).catch(function(){ revBtn.disabled=false; revBtn.textContent='反推提示词（2 点）'; revMsg('网络错误，请重试','#f4708a'); });
+      }).catch(function(){ revBtn.disabled=false; revBtn.textContent='反推提示词（'+reverseCost+' 点）'; revMsg('网络错误，请重试','#f4708a'); });
   };
   if(revFill) revFill.onclick=function(){ pr.value=revPrompt.value||''; if(typeof updCount==='function') updCount(); try{pr.focus();}catch(e){} setNote('✅ 反推提示词已填入','#2bd576'); };
   if(revFillImg) revFillImg.onclick=function(){ pr.value=revPrompt.value||''; if(typeof updCount==='function') updCount();
@@ -1169,12 +1188,22 @@
   }
   function loadHistory(){
     var grid=document.getElementById('recentGrid'); if(!grid||!tok()) return;
-    fetch('/api/gen/history?limit=9',{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
-      if(!d.items||!d.items.length) return;
+    fetch('/api/gen/history?limit=9&include_failed=1',{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
+      if(!d.items||!d.items.length){grid.innerHTML='<div style="grid-column:1/-1;padding:18px 0;text-align:center;font-size:12.5px;color:#5c6b82;">还没有作品，生成第一张吧</div>';return;}
       var items=d.items.slice(0,9);
-      var urls=items.map(function(it){ return it.url; });
-      grid.innerHTML=items.map(function(it){ return '<img src="'+it.url+'" class="hv-lift" data-url="'+it.url+'" style="display:block; width:100%; aspect-ratio:3/4; border-radius:8px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">'; }).join('');
+      var urls=items.filter(function(it){return it.url;}).map(function(it){ return it.url; });
+      grid.innerHTML=items.map(function(it){
+        if(it.status==='error') return '<div class="recent-failed"><strong>生成失败</strong><p>'+brandedErrorText(it.error||'生成失败').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];})+'</p><button class="recent-delete" type="button" data-job="'+it.job_id+'">删除记录</button></div>';
+        return '<img src="'+it.url+'" class="hv-lift" data-url="'+it.url+'" style="display:block; width:100%; aspect-ratio:3/4; border-radius:8px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">';
+      }).join('');
       grid.querySelectorAll('img').forEach(function(im,i){ im.onclick=function(){ openRecentLightbox(urls,i); }; });
+      grid.querySelectorAll('.recent-delete').forEach(function(button){button.onclick=function(){
+        if(!confirm('确定删除这条失败记录吗？')) return;
+        button.disabled=true;
+        fetch('/api/gen/job/delete',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify({job_id:button.getAttribute('data-job')})})
+          .then(function(r){return r.json().catch(function(){return {};}).then(function(data){if(!r.ok) throw new Error(data.detail||'删除失败');});})
+          .then(loadHistory).catch(function(error){button.disabled=false;flash(error.message||'删除失败','#f4708a');});
+      };});
     }).catch(function(){});
   }
   loadHistory();

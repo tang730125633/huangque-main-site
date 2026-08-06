@@ -19,10 +19,15 @@ except ImportError:
 TEXT_FIELDS = ("name", "headline", "company", "bio", "phone", "email", "address")
 JSON_FIELDS = ("tags", "works", "links")
 MEDIA_FIELDS = ("avatar", "wechat_qr")
+WORK_IMAGE_FIELDS = ("work_image_1", "work_image_2", "work_image_3")
+WORK_VIDEO_FIELDS = ("work_video_1", "work_video_2", "work_video_3")
 SENSITIVE_FIELDS = ("phone", "email", "address", "wechat_qr")
 MAX_JSON_BYTES = 64 * 1024
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
+MAX_VIDEO_BYTES = 20 * 1024 * 1024
 MAX_PIXELS = 16_000_000
+ANONYMOUS_JOURNEY_RETENTION = 30 * 24 * 3600
+CONVERTED_JOURNEY_RETENTION = 365 * 24 * 3600
 
 
 class CardError(Exception):
@@ -35,12 +40,14 @@ def _b64(data):
     return base64.urlsafe_b64encode(data).decode().rstrip("=")
 
 
-def attribution_token(code, public_id, owner_user_id, secret, now=None):
+def attribution_token(code, public_id, owner_user_id, secret, now=None, journey_id=""):
     if not secret:
         return ""
     now = int(now or time.time())
     payload = {"code": str(code), "card_public_id": str(public_id), "owner_user_id": int(owner_user_id),
                "validated_at": now, "exp": now + 7 * 24 * 3600}
+    if journey_id:
+        payload["journey_id"] = str(journey_id)
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
     return _b64(raw) + "." + _b64(hmac.new(secret.encode(), raw, hashlib.sha256).digest())
 
@@ -77,9 +84,83 @@ def public_owner(conn, public_id):
     return int(row["user_id"]) if row else 0
 
 
+def cleanup_referral_journeys(conn, now=None):
+    now = int(now or time.time())
+    conn.execute(
+        "DELETE FROM card_referral_journeys WHERE registered_user_id IS NULL AND visited_at<?",
+        (now - ANONYMOUS_JOURNEY_RETENTION,),
+    )
+    conn.execute(
+        "DELETE FROM card_referral_journeys WHERE registered_user_id IS NOT NULL AND registered_at<?",
+        (now - CONVERTED_JOURNEY_RETENTION,),
+    )
+
+
+def _referral_journey(conn, attribution, now=None):
+    journey_id = str((attribution or {}).get("journey_id") or "")
+    if not journey_id:
+        return None
+    row = conn.execute(
+        "SELECT * FROM card_referral_journeys WHERE journey_id=?", (journey_id,),
+    ).fetchone()
+    now = int(now or time.time())
+    if (
+        not row or int(row["expires_at"] or 0) <= now
+        or row["card_public_id"] != str(attribution.get("card_public_id") or "")
+        or int(row["inviter_user_id"]) != int(attribution.get("owner_user_id") or 0)
+    ):
+        raise CardError("invalid_invite_attribution", "邀请归因已失效", 409)
+    return row
+
+
+def start_referral_journey(conn, attribution, campaign_id, now=None):
+    journey_id = str((attribution or {}).get("journey_id") or "")
+    if not journey_id:
+        return None
+    now = int(now or time.time())
+    cleanup_referral_journeys(conn, now)
+    conn.execute(
+        """INSERT OR IGNORE INTO card_referral_journeys(
+               journey_id,campaign_id,card_public_id,inviter_user_id,source,
+               visited_at,card_started_at,expires_at
+           ) VALUES(?,?,?,?,'miniprogram_card',?,?,?)""",
+        (journey_id, int(campaign_id), str(attribution["card_public_id"]),
+         int(attribution["owner_user_id"]), min(now, int(attribution["validated_at"])),
+         now, int(attribution["exp"])),
+    )
+    row = _referral_journey(conn, attribution, now)
+    conn.execute(
+        "UPDATE card_referral_journeys SET card_started_at=COALESCE(card_started_at,?) WHERE journey_id=?",
+        (now, row["journey_id"]),
+    )
+    return dict(conn.execute(
+        "SELECT * FROM card_referral_journeys WHERE journey_id=?", (row["journey_id"],),
+    ).fetchone())
+
+
+def convert_referral_journey(conn, attribution, registered_user_id, relation_id, now=None):
+    row = _referral_journey(conn, attribution, now)
+    if not row:
+        return None
+    registered_user_id = int(registered_user_id)
+    if row["registered_user_id"] is not None and int(row["registered_user_id"]) != registered_user_id:
+        raise CardError("invite_journey_used", "本次邀请归因已被使用，请重新打开邀请名片", 409)
+    now = int(now or time.time())
+    conn.execute(
+        """UPDATE card_referral_journeys
+              SET registered_user_id=?,invite_relation_id=?,registered_at=COALESCE(registered_at,?)
+            WHERE journey_id=?""",
+        (registered_user_id, int(relation_id), now, row["journey_id"]),
+    )
+    return dict(conn.execute(
+        "SELECT * FROM card_referral_journeys WHERE journey_id=?", (row["journey_id"],),
+    ).fetchone())
+
+
 def init_schema(conn):
     conn.execute("""CREATE TABLE IF NOT EXISTS business_cards(
         user_id INTEGER PRIMARY KEY, public_id TEXT NOT NULL UNIQUE,
+        miniprogram_openid TEXT,
         name TEXT NOT NULL DEFAULT '', headline TEXT NOT NULL DEFAULT '', company TEXT NOT NULL DEFAULT '', bio TEXT NOT NULL DEFAULT '',
         phone TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '', address TEXT NOT NULL DEFAULT '',
         tags_json TEXT NOT NULL DEFAULT '[]', works_json TEXT NOT NULL DEFAULT '[]', links_json TEXT NOT NULL DEFAULT '[]',
@@ -93,11 +174,41 @@ def init_schema(conn):
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(business_cards)").fetchall()}
     if "name" not in columns:
         conn.execute("ALTER TABLE business_cards ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+    if "miniprogram_openid" not in columns:
+        conn.execute("ALTER TABLE business_cards ADD COLUMN miniprogram_openid TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cards_public ON business_cards(public_id,status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cards_network ON business_cards(user_id,status,discoverable_in_network)")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_cards_miniprogram_openid
+                    ON business_cards(miniprogram_openid)
+                    WHERE miniprogram_openid IS NOT NULL""")
     conn.execute("""CREATE TABLE IF NOT EXISTS network_node_ids(
         user_id INTEGER PRIMARY KEY, node_id TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS card_referral_journeys(
+        journey_id TEXT PRIMARY KEY,
+        campaign_id INTEGER NOT NULL,
+        card_public_id TEXT NOT NULL,
+        inviter_user_id INTEGER NOT NULL,
+        source TEXT NOT NULL,
+        visited_at INTEGER NOT NULL,
+        card_started_at INTEGER,
+        registered_user_id INTEGER,
+        invite_relation_id INTEGER,
+        registered_at INTEGER,
+        published_at INTEGER,
+        expires_at INTEGER NOT NULL
+    )""")
+    journey_columns = {row["name"] for row in conn.execute("PRAGMA table_info(card_referral_journeys)").fetchall()}
+    if "published_at" not in journey_columns:
+        conn.execute("ALTER TABLE card_referral_journeys ADD COLUMN published_at INTEGER")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_card_referral_inviter_time ON card_referral_journeys(inviter_user_id,visited_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_card_referral_expiry ON card_referral_journeys(expires_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_card_referral_anonymous_time ON card_referral_journeys(visited_at) WHERE registered_user_id IS NULL")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_card_referral_registered_time ON card_referral_journeys(registered_at) WHERE registered_user_id IS NOT NULL")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_card_referral_registered_user
+                    ON card_referral_journeys(registered_user_id)
+                    WHERE registered_user_id IS NOT NULL""")
+    cleanup_referral_journeys(conn)
 
 
 def node_id(conn, user_id):
@@ -134,6 +245,31 @@ def create_draft(conn, user_id, payload=None, now=None):
     return dict(conn.execute("SELECT * FROM business_cards WHERE user_id=?", (int(user_id),)).fetchone())
 
 
+def openid_owner(conn, openid):
+    row = conn.execute(
+        "SELECT user_id FROM business_cards WHERE miniprogram_openid=?",
+        (str(openid or "").strip(),),
+    ).fetchone()
+    return int(row["user_id"]) if row else 0
+
+
+def bind_miniprogram_openid(conn, user_id, openid, now=None):
+    """Bind one WeChat Mini Program identity to one card in the caller's transaction."""
+    openid = str(openid or "").strip()
+    if not openid or len(openid) > 256:
+        raise CardError("invalid_openid", "微信登录态无效", 400)
+    user_id = int(user_id)
+    create_draft(conn, user_id, now=now)
+    existing_owner = openid_owner(conn, openid)
+    if existing_owner and existing_owner != user_id:
+        raise CardError("openid_in_use", "该微信已绑定其他名片", 409)
+    conn.execute(
+        "UPDATE business_cards SET miniprogram_openid=?,updated_at=? WHERE user_id=?",
+        (openid, int(now or time.time()), user_id),
+    )
+    return dict(conn.execute("SELECT * FROM business_cards WHERE user_id=?", (user_id,)).fetchone())
+
+
 def _json(value, field):
     if value is None:
         raise CardError("invalid_" + field)
@@ -143,6 +279,51 @@ def _json(value, field):
     if len(raw.encode()) > MAX_JSON_BYTES:
         raise CardError("card_too_large")
     return raw
+
+
+def _work_media_key(user_id, media_type, slot, key):
+    extension = {"image": ".jpg", "video": ".mp4"}.get(media_type)
+    prefix = "cards/%s/work_%s_%s/" % (int(user_id), media_type, int(slot))
+    return bool(extension and isinstance(key, str) and key.startswith(prefix) and key.endswith(extension) and len(key) <= 512)
+
+
+def _work_image_key(user_id, slot, key):
+    return _work_media_key(user_id, "image", slot, key)
+
+
+def _work_slots(works):
+    groups, other = {"image": {}, "video": {}}, []
+    for item in works if isinstance(works, list) else []:
+        media_type = item.get("type") if isinstance(item, dict) else ""
+        if media_type not in groups:
+            other.append(item)
+            continue
+        try:
+            slot = int(item.get("slot") or 0)
+        except (TypeError, ValueError):
+            slot = 0
+        slots = groups[media_type]
+        if slot not in (1, 2, 3) or slot in slots:
+            slot = next((value for value in (1, 2, 3) if value not in slots), 0)
+        if slot:
+            slots[slot] = {**item, "type": media_type, "slot": slot}
+    return groups["image"], groups["video"], other
+
+
+def _works(value, user_id):
+    if not isinstance(value, list):
+        raise CardError("invalid_works")
+    images, videos, other = _work_slots(value)
+    for media_type, slots in (("image", images), ("video", videos)):
+        for slot, item in slots.items():
+            key = item.get("key")
+            if key and not _work_media_key(user_id, media_type, slot, key):
+                raise CardError("invalid_work_" + media_type, "作品媒体无效")
+            item.pop("url", None)
+    return _json(
+        [images[slot] for slot in sorted(images)] + [videos[slot] for slot in sorted(videos)] + other,
+        "works",
+    )
 
 
 def _text(value, field):
@@ -181,7 +362,7 @@ def update(conn, user_id, payload, now=None):
         if key in TEXT_FIELDS:
             values[key] = _text(value, key)
         elif key in JSON_FIELDS:
-            values[key + "_json"] = _json(value, key)
+            values[key + "_json"] = _works(value, user_id) if key == "works" else _json(value, key)
         else:
             if not isinstance(value, bool):
                 raise CardError("invalid_" + key)
@@ -204,6 +385,35 @@ def set_media_key(conn, user_id, field, key, now=None):
     return dict(conn.execute("SELECT * FROM business_cards WHERE user_id=?", (int(user_id),)).fetchone())
 
 
+def set_work_media_key(conn, user_id, media_type, slot, key, title=None, now=None):
+    slot = int(slot)
+    if slot not in (1, 2, 3) or not _work_media_key(user_id, media_type, slot, key):
+        raise CardError("invalid_work_" + str(media_type), "作品媒体无效")
+    if title is not None:
+        title = _text(title, "title")
+    row = create_draft(conn, user_id, now=now)
+    images, videos, other = _work_slots(json.loads(row["works_json"] or "[]"))
+    slots = images if media_type == "image" else videos
+    item = slots.get(slot, {"type": media_type, "slot": slot, "title": ""})
+    item.update({"type": media_type, "slot": slot, "key": key})
+    item.pop("url", None)
+    if title is not None:
+        item["title"] = title
+    slots[slot] = item
+    conn.execute(
+        "UPDATE business_cards SET works_json=?,updated_at=? WHERE user_id=?",
+        (_json(
+            [images[value] for value in sorted(images)] + [videos[value] for value in sorted(videos)] + other,
+            "works",
+        ), int(now or time.time()), int(user_id)),
+    )
+    return item
+
+
+def set_work_image_key(conn, user_id, slot, key, title=None, now=None):
+    return set_work_media_key(conn, user_id, "image", slot, key, title, now)
+
+
 def _media_url(key):
     if not key:
         return ""
@@ -222,10 +432,25 @@ def _media_url(key):
 
 def _decode(row, owner=False):
     privacy = {field: bool(row[field + "_public"]) for field in SENSITIVE_FIELDS}
+    works = json.loads(row["works_json"] or "[]")
+    for item in works:
+        if not isinstance(item, dict) or item.get("type") not in ("image", "video"):
+            continue
+        try:
+            slot = int(item.get("slot") or 0)
+        except (TypeError, ValueError):
+            slot = 0
+        key = item.get("key")
+        if key and _work_media_key(row["user_id"], item["type"], slot, key):
+            item["url"] = _media_url(key)
+        else:
+            item.pop("url", None)
+        if not owner:
+            item.pop("key", None)
     result = {
         "public_id": row["public_id"], "name": row["name"] or row["display_name"] or "黄雀用户",
         "title": row["headline"], "headline": row["headline"], "company": row["company"], "bio": row["bio"],
-        "tags": json.loads(row["tags_json"] or "[]"), "works": json.loads(row["works_json"] or "[]"),
+        "tags": json.loads(row["tags_json"] or "[]"), "works": works,
         "links": json.loads(row["links_json"] or "[]"), "avatar": _media_url(row["avatar_key"]),
     }
     if owner:
@@ -305,12 +530,15 @@ def public_network_person(conn, user_id, admin=False):
 
 def _admin_relation_fields(conn, relation):
     user = conn.execute("SELECT id,username FROM users WHERE id=?", (relation["person_user_id"],)).fetchone()
+    username = str(user["username"] or "")
+    if len(username) == 11 and username.startswith("1") and username.isdigit():
+        username = username[:3] + "****" + username[-4:]
     reward = conn.execute(
         "SELECT event_type,status,reward_points FROM invite_reward_point_records WHERE invite_relation_id=? ORDER BY id DESC LIMIT 1",
         (relation["id"],),
     ).fetchone()
     return {
-        "user_id": int(user["id"]), "username": user["username"],
+        "user_id": int(user["id"]), "username": username,
         "relation_status": relation["status"], "risk_status": relation["risk_status"],
         "reward_event": ({"event_type": reward["event_type"], "status": reward["status"], "points": int(reward["reward_points"])} if reward else None),
     }
@@ -370,7 +598,7 @@ def children(conn, user_id, cursor=0, limit=20, admin=False):
 
 
 def upload_image(payload, field, prefix="cards"):
-    if field not in MEDIA_FIELDS or not isinstance(payload, str) or not payload.startswith("data:image/"):
+    if field not in MEDIA_FIELDS + WORK_IMAGE_FIELDS or not isinstance(payload, str) or not payload.startswith("data:image/"):
         raise CardError("invalid_image")
     try:
         header, encoded = payload.split(",", 1)
@@ -393,10 +621,15 @@ def upload_image(payload, field, prefix="cards"):
         raise
     except Exception as exc:
         raise CardError("invalid_image") from exc
-    # Security rejection/unavailability deliberately bubbles up; a card image must fail closed.
     if miniprogram_security is None:
         raise CardError("media_unavailable", "媒体服务暂不可用", 503)
-    miniprogram_security.check_image(raw, field + ".jpg", "image/jpeg")
+    try:
+        miniprogram_security.check_image(raw, field + ".jpg", "image/jpeg")
+    except miniprogram_security.ContentRejected as exc:
+        label = {"avatar": "头像", "wechat_qr": "微信二维码"}.get(field, "作品图片%s" % field[-1])
+        raise CardError("content_rejected", "%s未通过微信安全检测：%s" % (label, exc), 400) from exc
+    except miniprogram_security.SecurityUnavailable as exc:
+        raise CardError("content_security_unavailable", str(exc), 503) from exc
     try:
         from .content_domains import cos
     except ImportError:
@@ -405,4 +638,26 @@ def upload_image(payload, field, prefix="cards"):
         raise CardError("media_unavailable", "媒体服务暂不可用", 503)
     key = "%s/%s/%s.jpg" % (prefix, field, secrets.token_urlsafe(16))
     cos.put_bytes(raw, key, "image/jpeg", private=True)
+    return key
+
+
+def upload_video(payload, field, prefix="cards"):
+    if field not in WORK_VIDEO_FIELDS or not isinstance(payload, str) or not payload.startswith("data:video/mp4;base64,"):
+        raise CardError("invalid_video", "仅支持 MP4 视频")
+    try:
+        raw = base64.b64decode(payload.split(",", 1)[1], validate=True)
+    except Exception as exc:
+        raise CardError("invalid_video", "视频文件无效") from exc
+    if len(raw) > MAX_VIDEO_BYTES:
+        raise CardError("video_too_large", "请上传 20MB 以内的视频", 413)
+    if len(raw) < 12 or raw[4:8] != b"ftyp":
+        raise CardError("invalid_video", "视频文件无效")
+    try:
+        from .content_domains import cos
+    except ImportError:
+        from content_domains import cos
+    if not cos.enabled():
+        raise CardError("media_unavailable", "媒体服务暂不可用", 503)
+    key = "%s/%s/%s.mp4" % (prefix, field, secrets.token_urlsafe(16))
+    cos.put_bytes(raw, key, "video/mp4", private=True)
     return key

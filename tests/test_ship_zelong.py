@@ -145,6 +145,8 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
         cases = {
             "server/hq_cli_api.py": (10, "/home/ubuntu/auth-service/hq_cli_api.py", "auth", 0),
             "server/invites.py": (10, "/home/ubuntu/auth-service/invites.py", "auth", 0),
+            "server/invite_network.py": (10, "/home/ubuntu/auth-service/invite_network.py", "auth", 0),
+            "server/business_cards.py": (10, "/home/ubuntu/auth-service/business_cards.py", "auth", 0),
             "server/wechat_subscribe.py": (10, "/home/ubuntu/auth-service/wechat_subscribe.py", "auth", 0),
             "server/tikhub.py": (10, "/home/ubuntu/content-api/tikhub.py", "content", 0),
             "server/content_domains/core.py": (20, "/home/ubuntu/content-api/content_domains/core.py", "content", 0),

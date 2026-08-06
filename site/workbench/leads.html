@@ -60,7 +60,7 @@
         <input id="kw" type="search" name="hq_leads_search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="搜索行业关键词" placeholder="输入行业关键词，如 美业获客 / 皮肤管理…（也可直接粘抖音视频/主页链接）" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; font-family:inherit;">
       </div>
       <button id="goBtn" class="btn-gold" style="padding:0 24px; height:44px; font-size:14px; font-weight:600; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:12px; cursor:pointer; font-family:inherit; box-shadow:0 8px 20px -8px rgba(231,178,76,.55);">开始获客</button>
-      <span style="display:inline-flex; align-items:center; gap:4px; padding:4px 10px; font-size:12px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.18); border-radius:8px; font-family:'JetBrains Mono',monospace; white-space:nowrap;">30 点</span>
+      <span id="leadCostBadge" style="display:inline-flex; align-items:center; gap:4px; padding:4px 10px; font-size:12px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.18); border-radius:8px; font-family:'JetBrains Mono',monospace; white-space:nowrap;">11 点</span>
     </div>
 
     <!-- 平台选择 -->
@@ -121,7 +121,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=4de5465a"></script>
+<script src="cloud-shell.js?v=dbd5a9e4"></script>
 <script>
 (function(){
   "use strict";
@@ -130,6 +130,7 @@
   var dot=document.getElementById('statusDot'), stat=document.getElementById('statusText');
   var kLeads=document.getElementById('kLeads'),kSpam=document.getElementById('kSpam'),kChat=document.getElementById('kChat'),kTotal=document.getElementById('kTotal');
   var poll=null, running=false, lastLeads=[];
+  if(window.HQ&&HQ.onPricing) HQ.onPricing(function(p){var cost=(p['leads.base']||6)+5*(p['leads.per_four']||1),badge=document.getElementById('leadCostBadge');if(badge)badge.textContent=cost+' 点';});
   var GRAD=['150deg,#9a6a3a,#5a3d22','150deg,#b04a60,#6a2d3d','150deg,#2c8478,#15534a','150deg,#7a5aa8,#3d2d5a','150deg,#3a6a9a,#22405a'];
   var CRM_STATUSES=['待跟进','跟进中','已加微','已成交','无效'];
   var CRM_INTENTS=['高意向','咨询','价格敏感','围观'];

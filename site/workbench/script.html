@@ -145,7 +145,7 @@
 
         <button id="scGen" class="hv-lift" style="width:100%; height:54px; margin-top:24px; font-size:16px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(231,178,76,.7); transition:.2s; font-family:inherit; display:flex; align-items:center; justify-content:center; gap:9px;">
           <span class="sc-ico" style="width:19px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 14l.7 1.9L22 17l-2.3.6L19 20l-.7-2.4L16 17l2.3-.5z"/></svg></span>
-          生成脚本（3 点）
+          <span id="scGenText">生成脚本（3 点）</span>
         </button>
         <div style="text-align:center; margin-top:11px;"><span class="sc-hint">每次生成 1 套 3 分镜脚本 · 失败自动退点</span></div>
       </div>
@@ -176,7 +176,7 @@
         </div>
         <div id="bdLocalCard" class="bd-source-card" style="display:none;">
           <div style="font-size:13.5px;font-weight:700;color:#c4b5fd;margin-bottom:5px;">本地图片 / 视频反推</div>
-          <div class="sc-hint" style="margin-bottom:12px;">单独上传，不经过链接下载；每个文件固定 20 点</div>
+          <div id="bdLocalCostHint" class="sc-hint" style="margin-bottom:12px;">单独上传，不经过链接下载；每个文件固定 20 点</div>
           <input id="bdLocalImage" type="file" accept="image/jpeg,image/png,image/webp" style="display:none;">
           <input id="bdLocalVideo" type="file" accept="video/mp4,video/quicktime,video/webm" style="display:none;">
           <div class="bd-local-row">
@@ -342,7 +342,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=4de5465a"></script>
+<script src="cloud-shell.js?v=dbd5a9e4"></script>
 <script>
 /* 编导页接 /api/gen/copy（format=script）+ /api/gen/breakdown → 脚本/拆解双模式 */
 (function(){
@@ -380,8 +380,24 @@
       initialPreviewTitle=previewTitle?previewTitle.textContent:'脚本 · 分镜预览',
       initialBatchHint=batchHint?batchHint.textContent:'';
   var BREAKDOWN_HISTORY_KEY='hq_script_breakdown_history';
+  var COPY_POINTS=3, BREAKDOWN_POINTS=20, GROK_DRAMA_RATE=12;
   var BD_SCENES_LABEL='开始拆解（20 点）';
   var BD_REVERSE_LABEL='开始反推（20 点）';
+  if(window.HQ&&HQ.onPricing) HQ.onPricing(function(p){
+    COPY_POINTS=p['text.copy']||3;
+    BREAKDOWN_POINTS=p['breakdown.item']||20;
+    GROK_DRAMA_RATE=p['video.grok.v1.720p']||12;
+    BD_SCENES_LABEL='开始拆解（'+BREAKDOWN_POINTS+' 点）';
+    BD_REVERSE_LABEL='开始反推（'+BREAKDOWN_POINTS+' 点）';
+    var copyLabel=document.getElementById('scGenText');
+    if(copyLabel) copyLabel.textContent='生成脚本（'+COPY_POINTS+' 点）';
+    var localHint=document.getElementById('bdLocalCostHint');
+    if(localHint) localHint.textContent='单独上传，不经过链接下载；每个文件固定 '+BREAKDOWN_POINTS+' 点';
+    if(bdImageReverse) bdImageReverse.textContent='反推图片（'+BREAKDOWN_POINTS+' 点）';
+    if(bdVideoReverse) bdVideoReverse.textContent='反推视频（'+BREAKDOWN_POINTS+' 点）';
+    orig=gen.innerHTML;
+    syncModeUi();
+  });
 
   function tok(){ return '__cookie__'; }
   function _readApiResponse(response){
@@ -657,7 +673,7 @@
     if(panelWrite) panelWrite.style.display=currentMode==='write'?'':'none';
     if(panelBreakdown) panelBreakdown.style.display=currentMode==='breakdown'?'':'none';
     if(bdIntroText) bdIntroText.textContent=reverseMode?'粘贴竞品视频链接，AI 读取关键画面与口播语境，直接反推出可复用的中文提示词':'粘贴竞品视频链接，AI 拆出分镜结构，再沿当前主线生成同款视频';
-    if(bdUrlHint) bdUrlHint.textContent=reverseMode?'支持抖音、小红书公开视频链接，链接视频最大 200MB；提示词反推暂仅支持单条链接（20 点）':'支持抖音、小红书公开视频链接，链接视频最大 200MB；最多 5 条（每行一个，每个链接 20 点）';
+    if(bdUrlHint) bdUrlHint.textContent=reverseMode?'支持抖音、小红书公开视频链接，链接视频最大 200MB；提示词反推暂仅支持单条链接（'+BREAKDOWN_POINTS+' 点）':'支持抖音、小红书公开视频链接，链接视频最大 200MB；最多 5 条（每行一个，每个链接 '+BREAKDOWN_POINTS+' 点）';
     if(bdGenText) bdGenText.textContent=reverseMode?BD_REVERSE_LABEL:BD_SCENES_LABEL;
     if(bdActionHint) bdActionHint.textContent=reverseMode?'下载 → 抽帧 → 转写 → AI反推 · 约 40-90 秒':'下载 → 抽帧 → 转写 → AI分析 · 约 40-90 秒';
     if(previewTitle) previewTitle.textContent=currentMode==='breakdown' ? (reverseMode?'拆解结果 · 提示词反推':'拆解结果 · 分镜预览') : initialPreviewTitle;
@@ -1208,7 +1224,7 @@
     return fetch('/api/auth/me',{credentials:'same-origin',cache:'no-store'}).then(function(r){
       if(r.status===401) throw {login:true,message:'请先登录'};
       return r.json().then(function(d){ if(!r.ok) throw {message:d.detail||'点数检查失败'}; return d; });
-    }).then(function(d){ if(Number(d&&d.user&&d.user.points||0)<20) throw {points:true,message:'点数不足（需要 20 点）'}; });
+    }).then(function(d){ if(Number(d&&d.user&&d.user.points||0)<BREAKDOWN_POINTS) throw {points:true,message:'点数不足（需要 '+BREAKDOWN_POINTS+' 点）'}; });
   }
   function _videoDuration(file){
     return new Promise(function(resolve,reject){
@@ -1260,7 +1276,7 @@
       });
     }).then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});}).then(function(x){
       if(x.s===401){_localBusy(btn,false);if(window.HQ)HQ.login();return;}
-      if(x.s===402){_localBusy(btn,false);_localFail('点数不足（需要 20 点）');return;}
+      if(x.s===402){_localBusy(btn,false);_localFail('点数不足（需要 '+BREAKDOWN_POINTS+' 点）');return;}
       if(!x.d.job_id){_localBusy(btn,false);_localFail((x.d&&x.d.detail)||'提交失败');return;}
       if(bdLocalStatus)bdLocalStatus.textContent='上传完成，正在反推…';
       _pollLocalReverse(x.d.job_id,btn);
@@ -1791,7 +1807,7 @@
     return Math.min(15, Math.max(1, sum||30));
   }
   function _confirmDramaVideo(list){
-    var duration=_dramaDuration(list), cost=duration*12;
+    var duration=_dramaDuration(list), cost=duration*GROK_DRAMA_RATE;
     return window.confirm('将生成 '+duration+' 秒剧情视频，预计消耗 '+cost+' 点。\n\n确认提交生成吗？');
   }
   var ACTIVE_VIDEO_JOB_KEY='hq_script_active_video_job';

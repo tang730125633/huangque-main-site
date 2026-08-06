@@ -692,8 +692,6 @@ def _script_v3(project, messages, instruction="", understanding=None):
         "dialogue_lines": dialogue,
         "shots": shots,
     }
-
-
 def _source_anchors(source):
     source = str(source or "")
     if not source:
@@ -736,6 +734,62 @@ def _source_dialogues(source):
         return found
     positions = (0, len(found) // 2, len(found) - 1)
     return [found[index] for index in positions]
+
+
+def _import_global_structure(source, characters):
+    source = str(source or "")
+    lines = [line.strip() for line in source.splitlines() if line.strip()]
+    narrative = [
+        line for line in lines
+        if not _IMPORT_DIALOGUE_RE.match(line)
+        and not re.match(r"^(场景\s*[一二三四五六七八九十\d]*|内景|外景|第.{0,8}[场幕集]|INT\.|EXT\.)", line, re.I)
+    ] or lines
+
+    def node(ratio):
+        if not narrative:
+            return ""
+        index = min(len(narrative) - 1, int(len(narrative) * ratio))
+        return narrative[index][:240]
+
+    conflict = next((
+        line for line in narrative
+        if re.search(r"冲突|但是|却|不能|必须|被迫|秘密|真相|误会|选择|失去|阻止", line)
+    ), node(.3))
+    arcs = []
+    for name in characters[:12]:
+        evidence = [line for line in lines if name in line]
+        arcs.append({
+            "character": name,
+            "opening": (evidence[0] if evidence else "待确认")[:160],
+            "ending": (evidence[-1] if evidence else "待确认")[:160],
+            "evidence_count": len(evidence),
+        })
+    relationships = []
+    for index, first in enumerate(characters[:8]):
+        for second in characters[index + 1:8]:
+            count = sum(1 for line in lines if first in line and second in line)
+            if count:
+                relationships.append({
+                    "characters": [first, second], "evidence_count": count,
+                })
+    return {
+        "schema_version": "short-drama-import-global-v1",
+        "premise": node(0),
+        "setup": node(.08),
+        "development": node(.3),
+        "turning_point": node(.55),
+        "climax": node(.78),
+        "ending": node(.96),
+        "central_conflict": str(conflict or "")[:300],
+        "character_arcs": arcs,
+        "relationships": relationships[:20],
+        "coverage": {
+            "source_length": len(source),
+            "line_count": len(lines),
+            "analyzed_from_start": True,
+            "analyzed_from_end": True,
+        },
+    }
 
 
 _OPTIMIZATION_CHANGES = (
@@ -808,6 +862,7 @@ def _import_contract(source_import):
         "revision": 1,
         "source_length": len(source),
         "characters": characters,
+        "global_structure": _import_global_structure(source, characters),
         "plot_points": _source_anchors(source),
         "key_dialogues": dialogues,
         "proposed_changes": changes,
@@ -1085,7 +1140,7 @@ def _import_assistant_reply(source_import, understanding):
     character_text = "、".join(contract["characters"][:6]) or "待人工确认"
     if mode == "faithful":
         content = (
-            "我已完整读取原稿并建立理解快照。识别人物：%s；已提取开场、中段、结尾剧情节点"
+            "我已完整读取原稿并建立全局理解快照，覆盖开场、发展、关键转折、高潮和结局。识别人物：%s；已提取首、中、尾剧情节点"
             "以及 %d 条关键对白。选择“尊重原稿”后，这些内容会形成可追溯的保留映射。"
             "请核对后确认，确认前不会生成剧本。"
             % (character_text, len(contract["key_dialogues"]))
@@ -1093,7 +1148,7 @@ def _import_assistant_reply(source_import, understanding):
         replies = ["确认尊重原稿并生成", "补充必须保留的对白"]
     else:
         content = (
-            "我已完整读取原稿并建立理解快照。识别人物：%s；拟优化结构节奏、重复对白和"
+            "我已完整读取原稿并建立全局理解快照，覆盖开场、发展、关键转折、高潮和结局。识别人物：%s；拟优化结构节奏、重复对白和"
             "画面化表达，不改变核心人物关系与结局。以上属于重要改动边界，请确认后再生成。"
             % character_text
         )
@@ -1623,15 +1678,290 @@ def send_message(db_factory, owner_username, actor_username, body, idempotency_k
         conn.close()
 
 
-def _create_version(conn, project, actor, current, instruction, parent_id=None):
+def _confirmed_contract_text(value, field, limit, required=True):
+    text = str(value or "").strip()
+    if required and not text:
+        raise ConversationError("confirmed_contract_invalid", "%s 不能为空" % field, 422)
+    if len(text) > limit:
+        raise ConversationError("confirmed_contract_invalid", "%s 内容过长" % field, 422)
+    return text
+
+
+def _normalize_confirmed_contract(project, value):
+    if not isinstance(value, dict):
+        raise ConversationError("confirmed_contract_invalid", "确认剧本合同格式无效", 422)
+    if value.get("schema_version") != "preproject-confirmed-shot-contract-v1":
+        raise ConversationError("confirmed_contract_invalid", "确认剧本合同版本不受支持", 422)
+    characters = []
+    for item in value.get("characters") or []:
+        name = _confirmed_contract_text(item, "characters", 40)
+        if name not in characters:
+            characters.append(name)
+    if not characters or len(characters) > 8:
+        raise ConversationError("confirmed_contract_invalid", "确认剧本角色数量无效", 422)
+    shot_count = int(value.get("shot_count") or 0)
+    duration_seconds = int(value.get("duration_seconds") or 0)
+    if shot_count != int(project.get("shot_count") or 0):
+        raise ConversationError("confirmed_contract_project_mismatch", "确认镜头数与项目不一致", 409)
+    if duration_seconds != int(project.get("target_duration") or 0):
+        raise ConversationError("confirmed_contract_project_mismatch", "确认时长与项目不一致", 409)
+    if str(value.get("ratio") or "") != str(project.get("ratio") or ""):
+        raise ConversationError("confirmed_contract_project_mismatch", "确认画幅与项目不一致", 409)
+    raw_shots = value.get("shots") or []
+    if not isinstance(raw_shots, list) or len(raw_shots) != shot_count:
+        raise ConversationError("confirmed_contract_invalid", "确认镜头列表不完整", 422)
+    shots = []
+    allowed_kinds = {"dialogue", "voiceover", "on_screen_text", "silence"}
+    for position, raw in enumerate(raw_shots, 1):
+        if not isinstance(raw, dict) or int(raw.get("index") or 0) != position:
+            raise ConversationError("confirmed_contract_invalid", "确认镜头顺序无效", 422)
+        visible = []
+        for name in raw.get("characters") or []:
+            name = _confirmed_contract_text(name, "shot.characters", 40)
+            if name not in characters:
+                raise ConversationError("confirmed_contract_invalid", "镜头包含未知角色", 422)
+            if name not in visible:
+                visible.append(name)
+        kind = _confirmed_contract_text(raw.get("dialogue_kind") or "silence", "dialogue_kind", 30)
+        if kind not in allowed_kinds:
+            raise ConversationError("confirmed_contract_invalid", "镜头台词类型无效", 422)
+        speaker = _confirmed_contract_text(raw.get("speaker"), "speaker", 40, required=False)
+        dialogue = _confirmed_contract_text(raw.get("dialogue"), "dialogue", 120, required=False)
+        if kind in {"dialogue", "voiceover"} and (speaker not in characters or not dialogue):
+            raise ConversationError("confirmed_contract_invalid", "镜头说话角色或台词无效", 422)
+        if kind == "silence":
+            speaker, dialogue = "", ""
+        shots.append({
+            "index": position,
+            "phase": _confirmed_contract_text(raw.get("phase"), "phase", 40),
+            "duration": int(raw.get("duration") or 0),
+            "scene": _confirmed_contract_text(raw.get("scene"), "scene", 80),
+            "characters": visible,
+            "action": _confirmed_contract_text(raw.get("action"), "action", 360),
+            "expression": _confirmed_contract_text(raw.get("expression"), "expression", 180),
+            "speaker": speaker,
+            "dialogue_kind": kind,
+            "dialogue": dialogue,
+            "camera": _confirmed_contract_text(raw.get("camera"), "camera", 180),
+            "sound": _confirmed_contract_text(raw.get("sound"), "sound", 220),
+            "transition": _confirmed_contract_text(raw.get("transition"), "transition", 120),
+            "continuity": _confirmed_contract_text(raw.get("continuity"), "continuity", 220),
+            "summary": _confirmed_contract_text(raw.get("summary"), "summary", 220),
+            "locked": bool(raw.get("locked")),
+        })
+    if any(item["duration"] < 1 for item in shots) or sum(item["duration"] for item in shots) != duration_seconds:
+        raise ConversationError("confirmed_contract_invalid", "确认镜头总时长无效", 422)
+    beats = []
+    for position, raw in enumerate(value.get("beats") or [], 1):
+        if not isinstance(raw, dict):
+            raise ConversationError("confirmed_contract_invalid", "确认节拍格式无效", 422)
+        beats.append({
+            "index": int(raw.get("index") or position),
+            "phase": _confirmed_contract_text(raw.get("phase"), "beat.phase", 40),
+            "summary": _confirmed_contract_text(raw.get("summary"), "beat.summary", 220),
+            "duration": int(raw.get("duration") or 0),
+        })
+    if beats and len(beats) != shot_count:
+        raise ConversationError("confirmed_contract_invalid", "确认节拍列表不完整", 422)
+    normalized = {
+        "schema_version": "preproject-confirmed-shot-contract-v1",
+        "title": _confirmed_contract_text(value.get("title"), "title", 120),
+        "logline": _confirmed_contract_text(value.get("logline"), "logline", 2000),
+        "protagonist": _confirmed_contract_text(value.get("protagonist"), "protagonist", 80),
+        "conflict": _confirmed_contract_text(value.get("conflict"), "conflict", 500),
+        "ending": _confirmed_contract_text(value.get("ending"), "ending", 220),
+        "ratio": str(value.get("ratio") or ""),
+        "duration_seconds": duration_seconds,
+        "shot_count": shot_count,
+        "visual_style": _confirmed_contract_text(value.get("visual_style"), "visual_style", 120),
+        "characters": characters,
+        "beats": beats,
+        "shots": shots,
+    }
+    raw_memory = value.get("creative_memory")
+    if isinstance(raw_memory, dict):
+        if raw_memory.get("schema_version") != "short-drama-creative-memory-v1":
+            raise ConversationError("confirmed_contract_invalid", "创作记忆版本不受支持", 422)
+        raw_fields = raw_memory.get("fields") or {}
+        if not isinstance(raw_fields, dict):
+            raise ConversationError("confirmed_contract_invalid", "创作记忆格式无效", 422)
+        normalized["creative_memory"] = {
+            "schema_version": "short-drama-creative-memory-v1",
+            "fields": {
+                key: _confirmed_contract_text(
+                    raw_fields.get(key), "creative_memory.%s" % key, 500, required=False
+                )
+                for key in ("topic", "protagonist", "conflict", "emotion", "ending", "audience", "style")
+            },
+        }
+    raw_plan = value.get("story_plan")
+    if isinstance(raw_plan, dict):
+        if raw_plan.get("schema_version") != "short-drama-story-plan-v1":
+            raise ConversationError("confirmed_contract_invalid", "故事策划版本不受支持", 422)
+        plan = {"schema_version": "short-drama-story-plan-v1"}
+        for key in (
+            "premise", "theme", "audience", "emotion", "dramatic_question",
+            "character_goal", "obstacle", "stakes", "hook", "turning_point",
+            "climax", "resolution",
+        ):
+            plan[key] = _confirmed_contract_text(
+                raw_plan.get(key), "story_plan.%s" % key, 500,
+            )
+        acts = []
+        for position, raw in enumerate(raw_plan.get("acts") or [], 1):
+            if not isinstance(raw, dict) or int(raw.get("act") or 0) != position:
+                raise ConversationError("confirmed_contract_invalid", "故事幕结构无效", 422)
+            acts.append({
+                "act": position,
+                "name": _confirmed_contract_text(raw.get("name"), "story_plan.act.name", 80),
+                "purpose": _confirmed_contract_text(raw.get("purpose"), "story_plan.act.purpose", 300),
+                "summary": _confirmed_contract_text(raw.get("summary"), "story_plan.act.summary", 500),
+            })
+        if len(acts) != 3:
+            raise ConversationError("confirmed_contract_invalid", "故事策划必须包含三幕", 422)
+        plan["acts"] = acts
+        normalized["story_plan"] = plan
+    raw_scenes = value.get("scenes")
+    if isinstance(raw_scenes, list):
+        scenes = []
+        last_end = 0
+        for position, raw in enumerate(raw_scenes, 1):
+            if not isinstance(raw, dict) or int(raw.get("index") or 0) != position:
+                raise ConversationError("confirmed_contract_invalid", "分场顺序无效", 422)
+            start, end = int(raw.get("shot_start") or 0), int(raw.get("shot_end") or 0)
+            if start != last_end + 1 or end < start or end > shot_count:
+                raise ConversationError("confirmed_contract_invalid", "分场镜头范围无效", 422)
+            scene_characters = []
+            for name in raw.get("characters") or []:
+                name = _confirmed_contract_text(name, "scene.characters", 40)
+                if name not in characters:
+                    raise ConversationError("confirmed_contract_invalid", "分场包含未知角色", 422)
+                if name not in scene_characters:
+                    scene_characters.append(name)
+            scenes.append({
+                "index": position,
+                "phase": _confirmed_contract_text(raw.get("phase"), "scene.phase", 80),
+                "location": _confirmed_contract_text(raw.get("location"), "scene.location", 120),
+                "characters": scene_characters,
+                "objective": _confirmed_contract_text(raw.get("objective"), "scene.objective", 400),
+                "conflict": _confirmed_contract_text(raw.get("conflict"), "scene.conflict", 500),
+                "turn": _confirmed_contract_text(raw.get("turn"), "scene.turn", 500),
+                "shot_start": start,
+                "shot_end": end,
+            })
+            last_end = end
+        if not scenes or last_end != shot_count:
+            raise ConversationError("confirmed_contract_invalid", "分场没有覆盖全部镜头", 422)
+        normalized["scenes"] = scenes
+    raw_review = value.get("script_review")
+    if isinstance(raw_review, dict):
+        if raw_review.get("schema_version") != "short-drama-script-review-v1":
+            raise ConversationError("confirmed_contract_invalid", "剧本审稿版本不受支持", 422)
+        status = _confirmed_contract_text(raw_review.get("status"), "script_review.status", 30)
+        if status not in {"passed", "needs_revision", "blocked"}:
+            raise ConversationError("confirmed_contract_invalid", "剧本审稿状态无效", 422)
+        issues = []
+        for raw in (raw_review.get("issues") or [])[:50]:
+            if not isinstance(raw, dict):
+                continue
+            issues.append({
+                "severity": _confirmed_contract_text(raw.get("severity"), "script_review.severity", 30),
+                "scope": _confirmed_contract_text(raw.get("scope"), "script_review.scope", 30),
+                "index": int(raw.get("index") or 0),
+                "code": _confirmed_contract_text(raw.get("code"), "script_review.code", 80),
+                "message": _confirmed_contract_text(raw.get("message"), "script_review.message", 300),
+                "repairable": bool(raw.get("repairable")),
+            })
+        normalized["script_review"] = {
+            "schema_version": "short-drama-script-review-v1",
+            "score": max(0, min(100, int(raw_review.get("score") or 0))),
+            "status": status,
+            "issues": issues,
+        }
+    return normalized
+
+
+def _script_from_confirmed_contract(project, value, instruction):
+    contract = _normalize_confirmed_contract(project, value)
+    characters = [
+        {
+            "character_key": "character_%d" % (index + 1),
+            "name": name,
+            "identity": "用户确认逐镜合同中的%s" % name,
+            "personality": "以用户确认的动作、表情、台词和连续性为准",
+        }
+        for index, name in enumerate(contract["characters"])
+    ]
+    character_keys = {item["name"]: item["character_key"] for item in characters}
+    script = short_drama_storyboard.compile_storyboard(
+        dict(project, title=contract["title"], synopsis=contract["logline"]),
+        [contract["logline"]],
+        characters,
+        instruction=instruction,
+        ending=contract["ending"],
+        understanding={"creative_brief": contract["logline"]},
+    )
+    script["overview"].update({
+        "title": contract["title"], "logline": contract["logline"],
+        "theme": contract["conflict"], "duration_seconds": contract["duration_seconds"],
+        "ratio": contract["ratio"], "visual_style": contract["visual_style"],
+    })
+    for index, confirmed in enumerate(contract["shots"]):
+        shot = script["shots"][index]
+        line = script["dialogue_lines"][index]
+        beat = script["story_beats"][index]
+        line.update({
+            "kind": confirmed["dialogue_kind"],
+            "character_key": character_keys.get(confirmed["speaker"], ""),
+            "speaker": confirmed["speaker"], "text": confirmed["dialogue"],
+        })
+        line["estimated_reading_seconds"] = short_drama_storyboard._reading_seconds(line)
+        shot.update({
+            "duration_seconds": confirmed["duration"], "scene": confirmed["scene"],
+            "beat": confirmed["phase"], "purpose": confirmed["summary"],
+            "visual": "%s；表情：%s；确认镜头：%d" % (
+                confirmed["action"], confirmed["expression"], confirmed["index"]
+            ),
+            "action": confirmed["action"], "expression": confirmed["expression"],
+            "camera": confirmed["camera"], "sound": confirmed["sound"],
+            "transition": confirmed["transition"], "continuity": confirmed["continuity"],
+            "character_keys": [character_keys[name] for name in confirmed["characters"]],
+            "provider_prompt": "%s；场景：%s；动作：%s；表情：%s；镜头：%s；连续性：%s" % (
+                contract["visual_style"], confirmed["scene"], confirmed["action"],
+                confirmed["expression"], confirmed["camera"], confirmed["continuity"],
+            ),
+            "locked": confirmed["locked"],
+        })
+        beat.update({
+            "phase": confirmed["phase"], "label": confirmed["phase"],
+            "purpose": confirmed["summary"], "source_fact": confirmed["summary"],
+            "action": confirmed["action"],
+        })
+        script["scenes"][index].update({
+            "location": confirmed["scene"], "summary": confirmed["action"],
+        })
+    script["confirmed_contract"] = contract
+    script["confirmed_contract_hash"] = _hash(contract)
+    _validate_script(script)
+    return script
+
+
+def _create_version(
+    conn, project, actor, current, instruction, parent_id=None,
+    confirmed_contract=None,
+):
     messages = _messages(conn, project["id"])
     source_import = _import_snapshot(conn, project["id"])
     understanding = _json(current.get("understanding_json"), {})
     if not understanding:
         understanding = _understanding(project, messages)
-    script = _script(
-        project, messages, instruction, understanding,
-        source_import=source_import,
+    script = (
+        _script_from_confirmed_contract(project, confirmed_contract, instruction)
+        if confirmed_contract is not None
+        else _script(
+            project, messages, instruction, understanding,
+            source_import=source_import,
+        )
     )
     _validate_script(script)
     version = int(conn.execute(
@@ -1670,10 +2000,22 @@ def _create_version(conn, project, actor, current, instruction, parent_id=None):
                     ).get("contract_hash"),
                 } if source_import else None),
             }),
-            "creative-advisor-local",
-            short_drama_storyboard.MODEL_VERSION,
+            (
+                "preproject-confirmed-contract"
+                if confirmed_contract is not None
+                else "creative-advisor-local"
+            ),
+            (
+                "preproject-confirmed-shot-contract-v1"
+                if confirmed_contract is not None
+                else short_drama_storyboard.MODEL_VERSION
+            ),
             instruction,
-            ("根据修改要求生成新版本" if parent_id else "根据对话生成首版结构化剧本"),
+            (
+                "固化用户确认的完整逐镜合同"
+                if confirmed_contract is not None
+                else ("根据修改要求生成新版本" if parent_id else "根据对话生成首版结构化剧本")
+            ),
             actor,
             now,
         ),
@@ -1690,8 +2032,13 @@ def generate_script(db_factory, owner_username, actor_username, body, idempotenc
     project_id = str(body.get("project_id") or "").strip()
     revision = _request_revision(body)
     instruction = str(body.get("instruction") or "").strip()[:2000]
+    confirmed_contract = body.get("confirmed_contract")
     key = _idempotency_key(idempotency_key)
-    request_hash = _hash({"revision": revision, "instruction": instruction})
+    request_hash = _hash({
+        "revision": revision,
+        "instruction": instruction,
+        "confirmed_contract": confirmed_contract,
+    })
     conn = _connection(db_factory)
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -1751,7 +2098,13 @@ def generate_script(db_factory, owner_username, actor_username, body, idempotenc
             ),
         )
         version_id = _create_version(
-            conn, project, actor_username, current, instruction, current["current_version_id"]
+            conn,
+            project,
+            actor_username,
+            current,
+            instruction,
+            current["current_version_id"],
+            confirmed_contract=confirmed_contract,
         )
         conn.execute(
             "UPDATE short_drama_conversation_jobs SET status='succeeded',"

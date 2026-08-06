@@ -21,6 +21,11 @@ import time
 import urllib.parse
 import urllib.request
 
+try:
+    from .content_domains import pricing
+except ImportError:  # 生产环境以脚本方式从 /home/ubuntu/auth-service 启动
+    from content_domains import pricing
+
 
 API_BASE = "https://api.weixin.qq.com"
 _TOKEN_LOCK = threading.Lock()
@@ -67,8 +72,6 @@ MEMBERSHIP_PRODUCT = {
     "id": "membership_experience",
     "product_id": "hq_member_exp_1y",
     "title": "一年体验官",
-    "price_fen": 49900,
-    "points": 1000,
     "recommended": False,
     "order_type": "membership_experience",
 }
@@ -76,8 +79,6 @@ MEMBERSHIP_RENEWAL_PRODUCT = {
     "id": "membership_experience_renewal",
     "product_id": "hq_exp_renew_1y",
     "title": "体验官续费一年",
-    "price_fen": 49900,
-    "points": 0,
     "recommended": False,
     "order_type": "membership_experience_renewal",
 }
@@ -286,8 +287,10 @@ def products():
     raw = (os.environ.get("WX_VIRTUAL_PAY_PRODUCTS_JSON") or "").strip()
     values = json.loads(raw) if raw else list(DEFAULT_PRODUCTS)
     values = [item for item in values if str(item.get("id") or "").strip() not in (MEMBERSHIP_PRODUCT["id"], MEMBERSHIP_RENEWAL_PRODUCT["id"])]
-    values.append(MEMBERSHIP_PRODUCT)
-    values.append(MEMBERSHIP_RENEWAL_PRODUCT)
+    membership_price_fen = pricing.get_price("membership.experience.price_yuan") * 100
+    membership_points = pricing.get_price("membership.experience.bonus_points")
+    values.append(dict(MEMBERSHIP_PRODUCT, price_fen=membership_price_fen, points=membership_points))
+    values.append(dict(MEMBERSHIP_RENEWAL_PRODUCT, price_fen=membership_price_fen, points=0))
     result = []
     seen = set()
     for item in values:

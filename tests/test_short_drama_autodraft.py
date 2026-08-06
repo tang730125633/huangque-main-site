@@ -15,12 +15,14 @@ if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
 from content_domains import (
+    provider_keys,
     short_drama,
     short_drama_autodraft,
     short_drama_conversation,
     short_drama_preflight,
 )
 from providers.short_drama_visual.heygen_cinematic import HeyGenCinematicShotProvider
+from providers.short_drama_visual.base import VisualProviderError
 
 
 class Handler:
@@ -159,6 +161,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             "name": "记者林夏",
             "status": "ready",
             "provider_avatar_id": "heygen-avatar-1",
+            "image_url": "https://cdn.example/reference.png",
         }
 
     def _provider_quote(self):
@@ -179,6 +182,207 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             },
             avatar_lookup=lambda _username, _avatar_id: avatar,
         )
+
+    def _running_provider_job(self, key):
+        charged = []
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "heygen_cinematic",
+            "HEYGEN_API_KEY": "configured-for-test",
+            "HQ_SHORT_DRAMA_PROVIDER_SHOT_POINTS_PER_SECOND": "10",
+        }):
+            quote = self._provider_quote()
+            job = short_drama_autodraft.start_provider_job(
+                self.db, "alice", "alice",
+                {"quote_token": quote["quote_token"]}, key,
+                avatar_lookup=lambda *_args: self._provider_avatar(),
+                deduct_points=lambda user, cost, reason, charge_key: charged.append(
+                    (user, cost, reason, charge_key)
+                ),
+                project_usage=short_drama._project_point_usage,
+            )
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs SET status='running',"
+                "provider_job_id='provider-timeout-job',created_at=100,"
+                "updated_at=100 WHERE id=?",
+                (job["id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertGreater(quote["cost"], 0)
+        self.assertEqual(1, len(charged))
+        return job, quote
+
+    def test_provider_shot_cost_uses_shared_dynamic_model_pricing(self):
+        rates = {
+            "video.grok.v1.480p": 10,
+            "video.grok.v1.720p": 12,
+            "video.grok.v1_5.480p": 15,
+            "video.grok.v1_5.720p": 25,
+            "video.grok.v1_5.1080p": 44,
+        }
+
+        def price(key):
+            return rates[key]
+
+        def cost(model, resolution, duration=5):
+            return short_drama_autodraft._provider_shot_cost({
+                "provider": "grok",
+                "model": model,
+                "resolution": resolution,
+                "duration_seconds": duration,
+            })
+
+        with mock.patch(
+            "content_domains.points.pricing.get_price", side_effect=price
+        ), mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_PROVIDER_SHOT_POINTS_PER_SECOND": "999"
+        }):
+            self.assertEqual(50, cost("grok-imagine-video", "480p"))
+            self.assertEqual(60, cost("grok-imagine-video", "720p"))
+            self.assertEqual(125, cost("grok-imagine-video-1.5", "720p"))
+            self.assertEqual(220, cost("grok-imagine-video-1.5", "1080p"))
+            rates["video.grok.v1.720p"] = 17
+            self.assertEqual(85, cost("grok-imagine-video", "720p"))
+            rates["video.cinematic.open"] = 9
+            self.assertEqual(45, short_drama_autodraft._provider_shot_cost({
+                "provider": "heygen_cinematic",
+                "duration_seconds": 5,
+            }))
+
+    def test_provider_quote_request_errors_are_readable_utf8(self):
+        cases = [
+            ({}, "Provider 规范化请求缺少有效渠道"),
+            (
+                {"provider": "grok", "resolution": "720p", "duration_seconds": 5},
+                "Grok 规范化请求缺少必要计费参数",
+            ),
+            (
+                {
+                    "provider": "grok",
+                    "model": "grok-imagine-video-1.5",
+                    "duration_seconds": 5,
+                },
+                "Grok 规范化请求缺少必要计费参数",
+            ),
+            (
+                {
+                    "provider": "grok",
+                    "model": "grok-imagine-video-1.5",
+                    "resolution": "720p",
+                    "duration_seconds": 0,
+                },
+                "Grok 规范化请求缺少必要计费参数",
+            ),
+        ]
+        for request, expected_detail in cases:
+            with self.subTest(request=request):
+                with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                    short_drama_autodraft._provider_shot_cost(request)
+                self.assertEqual("provider_quote_request_invalid", raised.exception.code)
+                self.assertEqual(500, raised.exception.status)
+                self.assertEqual(expected_detail, str(raised.exception))
+                self.assertEqual(
+                    expected_detail,
+                    str(raised.exception).encode("utf-8").decode("utf-8"),
+                )
+
+    def test_grok_15_quote_uses_the_normalized_persisted_request(self):
+        avatar = self._provider_avatar()
+        rates = {"video.grok.v1_5.720p": 25}
+        conn = self.db()
+        try:
+            row = conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()
+            plan = json.loads(row[0])
+            target_shot = plan["material_plan"][0]
+            target_shot["duration_ms"] = 5000
+            target_shot["input_hash"] = short_drama_autodraft._hash(target_shot)
+            conn.execute(
+                "UPDATE short_drama_production_plans SET plan_json=? WHERE id=?",
+                (json.dumps(plan, ensure_ascii=False), self.plan_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "grok",
+            "HQ_SHORT_DRAMA_GROK_MODEL": "grok-imagine-video-1.5",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True
+        ), mock.patch(
+            "content_domains.points.pricing.get_price",
+            side_effect=lambda key: rates[key],
+        ):
+            workspace = short_drama_autodraft.workspace(
+                self.db, "alice", "alice", self.project["id"],
+                avatar_list=lambda _username, _limit: [avatar],
+            )
+            shot = next(
+                item for item in workspace["provider_poc"]["shots"]
+                if item["shot_key"] == target_shot["shot_key"]
+            )
+            body = {
+                "project_id": self.project["id"],
+                "plan_id": self.plan_id,
+                "shot_key": shot["shot_key"],
+                "avatar_id": avatar["id"],
+            }
+            quote = short_drama_autodraft.create_provider_quote(
+                self.db, "alice", "alice", body,
+                avatar_lookup=lambda _username, _avatar_id: avatar,
+            )
+            self.assertEqual("grok-imagine-video-1.5", quote["request"]["model"])
+            self.assertEqual(125, quote["cost"])
+
+            conn = self.db()
+            try:
+                row = conn.execute(
+                    "SELECT request_json,cost FROM short_drama_provider_shot_quotes "
+                    "WHERE token=?", (quote["quote_token"],),
+                ).fetchone()
+            finally:
+                conn.close()
+            persisted_request = json.loads(row[0])
+            self.assertEqual("grok", persisted_request["provider"])
+            self.assertEqual("grok-imagine-video-1.5", persisted_request["model"])
+            self.assertEqual("720p", persisted_request["resolution"])
+            self.assertEqual(5, persisted_request["duration_seconds"])
+            self.assertEqual(125, row[1])
+
+            deduct = mock.Mock()
+            with mock.patch.object(
+                provider_keys,
+                "claim_candidate",
+                return_value={"id": "grok-15-key", "secret": "test-secret"},
+            ):
+                job = short_drama_autodraft.start_provider_job(
+                    self.db,
+                    "alice",
+                    "alice",
+                    {"quote_token": quote["quote_token"]},
+                    "grok-15-normalized-submit",
+                    avatar_lookup=lambda _username, _avatar_id: avatar,
+                    deduct_points=deduct,
+                    project_usage=short_drama._project_point_usage,
+                )
+            self.assertEqual(125, job["cost"])
+            self.assertEqual("grok-imagine-video-1.5", job["request"]["model"])
+            self.assertEqual("720p", job["request"]["resolution"])
+            self.assertEqual(5, job["request"]["duration_seconds"])
+            deduct.assert_called_once()
+
+            rates["video.grok.v1_5.720p"] = 31
+            repriced = short_drama_autodraft.create_provider_quote(
+                self.db, "alice", "alice", body,
+                avatar_lookup=lambda _username, _avatar_id: avatar,
+            )
+            self.assertEqual(155, repriced["cost"])
 
     def test_confirmed_plan_starts_free_local_pollable_job(self):
         job = self._start()
@@ -352,6 +556,146 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         )
         self.assertEqual(64, len(result["request_hash"]))
         create_job.assert_not_called()
+
+    def test_grok_preflight_uses_avatar_reference_without_heygen_binding(self):
+        avatar = {
+            "id": "avatar-grok-1",
+            "username": "alice",
+            "name": "记者林夏",
+            "status": "ready",
+            "image_url": "https://cdn.example/avatar-grok-1.png",
+            "image_file": "avatar/avatar-grok-1.png",
+        }
+        with mock.patch.dict(
+            os.environ,
+            {
+                "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "grok",
+                "XAI_API_KEY": "configured-for-preflight-only",
+            },
+        ), mock.patch.object(provider_keys, "has_candidate", return_value=True):
+            workspace = short_drama_autodraft.workspace(
+                self.db, "alice", "alice", self.project["id"],
+                avatar_list=lambda _username, _limit: [avatar],
+            )
+            shot = workspace["provider_poc"]["shots"][0]
+            result = short_drama_autodraft.preview_provider_request(
+                self.db,
+                "alice",
+                "alice",
+                {
+                    "project_id": self.project["id"],
+                    "plan_id": self.plan_id,
+                    "shot_key": shot["shot_key"],
+                    "avatar_id": avatar["id"],
+                },
+                avatar_lookup=lambda _username, _avatar_id: avatar,
+                include_private=True,
+            )
+        self.assertEqual("grok", workspace["provider_poc"]["provider"])
+        self.assertEqual(1, len(workspace["provider_poc"]["avatars"]))
+        self.assertTrue(result["ready"])
+        self.assertEqual("grok", result["provider"])
+        self.assertEqual(
+            "https://cdn.example/avatar-grok-1.png",
+            result["_provider_request"]["reference_image_url"],
+        )
+        self.assertNotIn("provider_avatar_id", result["request"])
+
+    def test_grok_preflight_uses_locked_ai_character_reference_directly(self):
+        conn = self.db()
+        try:
+            plan_row = conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()
+            plan = json.loads(plan_row[0])
+            character_key = next(
+                str(key)
+                for shot in plan["material_plan"]
+                for key in shot.get("character_keys") or []
+                if str(key)
+            )
+            conn.execute(
+                "INSERT INTO short_drama_characters "
+                "(id,project_id,character_key,name,source_type,reference_file,"
+                "reference_locked,sort_order) VALUES (?,?,?,?,?,?,1,1)",
+                (
+                    "character-grok-direct",
+                    self.project["id"],
+                    character_key,
+                    "直接参考图角色",
+                    "ai_character",
+                    "image/locked-character.png",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        with mock.patch.dict(
+            os.environ,
+            {
+                "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "grok",
+                "XAI_API_KEY": "configured-for-preflight-only",
+            },
+        ), mock.patch.object(provider_keys, "has_candidate", return_value=True), \
+             mock.patch.object(
+                 provider_keys,
+                 "claim_candidate",
+                 return_value={"id": "grok-test-key", "secret": "test-only-secret"},
+             ):
+            workspace = short_drama_autodraft.workspace(
+                self.db, "alice", "alice", self.project["id"],
+                avatar_list=lambda _username, _limit: [],
+            )
+            shot = next(
+                item for item in workspace["provider_poc"]["shots"]
+                if item["primary_character_key"] == character_key
+            )
+            self.assertEqual(
+                "character:" + character_key, shot["primary_avatar_id"]
+            )
+            result = short_drama_autodraft.preview_provider_request(
+                self.db,
+                "alice",
+                "alice",
+                {
+                    "project_id": self.project["id"],
+                    "plan_id": self.plan_id,
+                    "shot_key": shot["shot_key"],
+                    "character_key": character_key,
+                    "avatar_id": shot["primary_avatar_id"],
+                },
+                include_private=True,
+            )
+            quote = short_drama_autodraft.create_provider_quote(
+                self.db,
+                "alice",
+                "alice",
+                {
+                    "project_id": self.project["id"],
+                    "plan_id": self.plan_id,
+                    "shot_key": shot["shot_key"],
+                    "character_key": character_key,
+                    "avatar_id": shot["primary_avatar_id"],
+                },
+            )
+            deduct = mock.Mock()
+            job = short_drama_autodraft.start_provider_job(
+                self.db,
+                "alice",
+                "alice",
+                {"quote_token": quote["quote_token"]},
+                "grok-direct-reference-start",
+                deduct_points=deduct,
+                project_usage=short_drama._project_point_usage,
+            )
+        self.assertTrue(result["ready"])
+        self.assertEqual(
+            "image/locked-character.png",
+            result["_provider_request"]["reference_image_file"],
+        )
+        self.assertEqual("grok", job["provider"])
+        self.assertEqual(1, deduct.call_count)
 
     def test_provider_preflight_uses_locked_provider_prompt_as_source_of_truth(self):
         conn = self.db()
@@ -849,7 +1193,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             )
             provider = FakeProvider()
             with mock.patch(
-                "content_domains.short_drama_autodraft.load_from_environment",
+                "content_domains.short_drama_autodraft.load_by_name",
                 return_value=provider,
             ):
                 completed = short_drama_autodraft.reconcile_provider_job(
@@ -875,6 +1219,287 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             conn.close()
         self.assertEqual(("ready", "/api/files/video/provider-job-1.mp4"), version)
         self.assertEqual("done", attempt[0])
+
+    def test_running_job_polls_bound_key_when_provider_has_no_active_candidate(self):
+        class RecoveringProvider:
+            name = "heygen_cinematic"
+
+            def __init__(self):
+                self.active = True
+                self.polls = 0
+
+            @property
+            def configured(self):
+                return self.active
+
+            def create_job(self, request):
+                return {"provider_job_id": "bound-retired-key-job"}
+
+            def get_job(self, provider_job_id):
+                self.polls += 1
+                if self.polls == 1:
+                    return {"status": "pending"}
+                return {
+                    "status": "completed",
+                    "result_url": "https://provider.example/retired-result.mp4",
+                }
+
+            def fetch_result(self, provider_job_id, result_url):
+                return {
+                    "provider_job_id": provider_job_id,
+                    "file": "video/retired-result.mp4",
+                    "url": "/api/files/video/retired-result.mp4",
+                }
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "heygen_cinematic",
+            "HEYGEN_API_KEY": "configured-for-test",
+        }):
+            quote = self._provider_quote()
+            job = short_drama_autodraft.start_provider_job(
+                self.db, "alice", "alice", {"quote_token": quote["quote_token"]},
+                "retired-key-recovery", deduct_points=mock.Mock(),
+                avatar_lookup=lambda *_args: self._provider_avatar(),
+                project_usage=short_drama._project_point_usage,
+            )
+        provider = RecoveringProvider()
+        with mock.patch(
+            "content_domains.short_drama_autodraft.load_by_name",
+            return_value=provider,
+        ):
+            running = short_drama_autodraft.reconcile_provider_job(
+                self.db, "alice", self.project["id"], job["id"]
+            )
+            provider.active = False
+            completed = short_drama_autodraft.reconcile_provider_job(
+                self.db, "alice", self.project["id"], job["id"]
+            )
+        self.assertEqual("running", running["status"])
+        self.assertEqual("succeeded", completed["status"])
+        self.assertEqual(2, provider.polls)
+
+    def test_missing_bound_key_enters_observable_recovery_state(self):
+        class MissingKeyProvider:
+            name = "heygen_cinematic"
+            configured = True
+
+            def create_job(self, request):
+                return {"provider_job_id": "missing-bound-key-job"}
+
+            def get_job(self, provider_job_id):
+                raise VisualProviderError(
+                    "provider_key_unavailable",
+                    "任务绑定的密钥快照不可用",
+                    submitted=True,
+                )
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "heygen_cinematic",
+            "HEYGEN_API_KEY": "configured-for-test",
+        }):
+            quote = self._provider_quote()
+            job = short_drama_autodraft.start_provider_job(
+                self.db, "alice", "alice", {"quote_token": quote["quote_token"]},
+                "missing-key-recovery", deduct_points=mock.Mock(),
+                avatar_lookup=lambda *_args: self._provider_avatar(),
+                project_usage=short_drama._project_point_usage,
+            )
+        with mock.patch(
+            "content_domains.short_drama_autodraft.load_by_name",
+            return_value=MissingKeyProvider(),
+        ):
+            result = short_drama_autodraft.reconcile_provider_job(
+                self.db, "alice", self.project["id"], job["id"]
+            )
+        self.assertEqual("submit_unknown", result["status"])
+        self.assertEqual("provider_key_unavailable", result["error"]["code"])
+        self.assertFalse(result["error"]["retryable"])
+        self.assertTrue(result["error"]["requires_reconciliation"])
+
+    def test_single_shot_pending_deadline_fails_and_refunds_once(self):
+        class PendingProvider:
+            def __init__(self):
+                self.polls = 0
+
+            def get_job(self, _provider_job_id):
+                self.polls += 1
+                return {"status": "pending"}
+
+        job, quote = self._running_provider_job("pending-timeout")
+        provider = PendingProvider()
+        refunds = []
+        refund = lambda user, cost, reason, key: refunds.append(
+            (user, cost, reason, key)
+        )
+        with mock.patch.object(
+            short_drama_autodraft, "PROVIDER_SHOT_DEADLINE_SECONDS", 10
+        ), mock.patch.object(
+            short_drama_autodraft, "PROVIDER_SHOT_MAX_POLLS", 99
+        ), mock.patch(
+            "content_domains.short_drama_autodraft.load_by_name",
+            return_value=provider,
+        ):
+            with mock.patch(
+                "content_domains.short_drama_autodraft.time.time",
+                return_value=105,
+            ):
+                running = short_drama_autodraft.reconcile_provider_job(
+                    self.db, "alice", self.project["id"], job["id"],
+                    refund_points=refund,
+                )
+            with mock.patch(
+                "content_domains.short_drama_autodraft.time.time",
+                return_value=111,
+            ):
+                failed = short_drama_autodraft.reconcile_provider_job(
+                    self.db, "alice", self.project["id"], job["id"],
+                    refund_points=refund,
+                )
+                replay = short_drama_autodraft.reconcile_provider_job(
+                    self.db, "alice", self.project["id"], job["id"],
+                    refund_points=refund,
+                )
+        self.assertEqual("running", running["status"])
+        self.assertEqual("failed", failed["status"])
+        self.assertEqual("provider_generation_timeout", failed["error"]["code"])
+        self.assertEqual("deadline", failed["error"]["timeout_reason"])
+        self.assertEqual("failed", replay["status"])
+        self.assertEqual(1, provider.polls)
+        self.assertEqual(1, len(refunds))
+        self.assertEqual(quote["cost"], refunds[0][1])
+        late_provider = mock.Mock()
+        short_drama_autodraft._finish_provider_job(
+            self.db,
+            {"id": job["id"], "provider_job_id": "provider-timeout-job"},
+            late_provider,
+            {"status": "completed", "result_url": "https://late.example/video"},
+        )
+        late_provider.fetch_result.assert_not_called()
+        conn = self.db()
+        try:
+            state = conn.execute(
+                "SELECT state FROM short_drama_provider_shot_attempts "
+                "WHERE job_id=?", (job["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual("refunded", state)
+
+    def test_single_shot_poll_failures_hit_limit_and_refund(self):
+        class FailingProvider:
+            def __init__(self):
+                self.polls = 0
+
+            def get_job(self, _provider_job_id):
+                self.polls += 1
+                raise RuntimeError("temporary provider network failure")
+
+        job, quote = self._running_provider_job("poll-failure-timeout")
+        provider = FailingProvider()
+        refunds = []
+        with mock.patch.object(
+            short_drama_autodraft, "PROVIDER_SHOT_DEADLINE_SECONDS", 9999
+        ), mock.patch.object(
+            short_drama_autodraft, "PROVIDER_SHOT_MAX_POLLS", 2
+        ), mock.patch(
+            "content_domains.short_drama_autodraft.load_by_name",
+            return_value=provider,
+        ), mock.patch(
+            "content_domains.short_drama_autodraft.time.time",
+            return_value=105,
+        ):
+            running = short_drama_autodraft.reconcile_provider_job(
+                self.db, "alice", self.project["id"], job["id"],
+                refund_points=lambda user, cost, reason, key: refunds.append(
+                    (user, cost, reason, key)
+                ),
+            )
+            failed = short_drama_autodraft.reconcile_provider_job(
+                self.db, "alice", self.project["id"], job["id"],
+                refund_points=lambda user, cost, reason, key: refunds.append(
+                    (user, cost, reason, key)
+                ),
+            )
+        self.assertEqual("running", running["status"])
+        self.assertEqual("failed", failed["status"])
+        self.assertEqual("poll_limit", failed["error"]["timeout_reason"])
+        self.assertEqual(2, failed["error"]["poll_count"])
+        self.assertEqual(2, provider.polls)
+        self.assertEqual([(quote["cost"],)], [(item[1],) for item in refunds])
+
+    def test_single_shot_timeout_refund_recovers_idempotently(self):
+        job, quote = self._running_provider_job("timeout-refund-recovery")
+        calls = []
+
+        def flaky_refund(user, cost, reason, key):
+            calls.append((user, cost, reason, key))
+            if len(calls) == 1:
+                raise RuntimeError("points service unavailable")
+
+        with mock.patch.object(
+            short_drama_autodraft, "PROVIDER_SHOT_DEADLINE_SECONDS", 10
+        ), mock.patch(
+            "content_domains.short_drama_autodraft.time.time",
+            return_value=111,
+        ):
+            failed = short_drama_autodraft.reconcile_provider_job(
+                self.db, "alice", self.project["id"], job["id"],
+                refund_points=flaky_refund,
+            )
+            recovered = short_drama_autodraft.reconcile_provider_job(
+                self.db, "alice", self.project["id"], job["id"],
+                refund_points=flaky_refund,
+            )
+            short_drama_autodraft.reconcile_provider_job(
+                self.db, "alice", self.project["id"], job["id"],
+                refund_points=flaky_refund,
+            )
+        self.assertEqual("failed", failed["status"])
+        self.assertEqual("failed", recovered["status"])
+        self.assertEqual(2, len(calls))
+        self.assertEqual(quote["cost"], calls[-1][1])
+        self.assertEqual(calls[0][3], calls[1][3])
+        conn = self.db()
+        try:
+            state = conn.execute(
+                "SELECT state FROM short_drama_provider_shot_attempts "
+                "WHERE job_id=?", (job["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual("refunded", state)
+
+    def test_grok_vault_failure_blocks_before_charge_and_submission(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "grok",
+                "XAI_API_KEY": "late-environment-key",
+                "HQ_SHORT_DRAMA_PROVIDER_SHOT_POINTS_PER_SECOND": "10",
+            },
+        ), mock.patch.object(provider_keys, "has_candidate", return_value=True):
+            quote = self._provider_quote()
+            deduct = mock.Mock()
+            with mock.patch.object(
+                provider_keys,
+                "claim_candidate",
+                side_effect=provider_keys.KeyStoreUnavailable(
+                    "视频密钥保险箱未配置，已停止新付费任务"
+                ),
+            ), mock.patch("content_domains.video_xai._create") as create:
+                with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                    short_drama_autodraft.start_provider_job(
+                        self.db,
+                        "alice",
+                        "alice",
+                        {"quote_token": quote["quote_token"]},
+                        "grok-vault-blocked-before-charge",
+                        avatar_lookup=lambda *_args: self._provider_avatar(),
+                        deduct_points=deduct,
+                    )
+        self.assertEqual("provider_not_configured", raised.exception.code)
+        deduct.assert_not_called()
+        create.assert_not_called()
 
     def test_single_shot_idempotency_replay_does_not_charge_twice(self):
         with mock.patch.dict(
@@ -1011,7 +1636,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             )
             refunds = []
             with mock.patch(
-                "content_domains.short_drama_autodraft.load_from_environment",
+                "content_domains.short_drama_autodraft.load_by_name",
                 return_value=RejectingProvider(),
             ):
                 failed = short_drama_autodraft.reconcile_provider_job(

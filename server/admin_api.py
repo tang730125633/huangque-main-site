@@ -34,6 +34,8 @@ _DOMAIN_PACKAGE = (
 egress = import_module(_DOMAIN_PACKAGE + ".egress")
 feature_flags = import_module(_DOMAIN_PACKAGE + ".feature_flags")
 provider_keys = import_module(_DOMAIN_PACKAGE + ".provider_keys")
+pricing = import_module(_DOMAIN_PACKAGE + ".pricing")
+error_contract = import_module(_DOMAIN_PACKAGE + ".error_contract")
 
 
 def _optional_content_domain(name):
@@ -165,6 +167,11 @@ KEY_GROUPS = [
      "env_base_env": ["ARK_BASE"], "env_base_default": "https://ark.cn-beijing.volces.com/api/v3",
      "pool_base_env": ["ARK_BASE"], "pool_base_default": "https://ark.cn-beijing.volces.com/api/v3",
      "env": ["ARK_API_KEY"], "pool_provider": "seedance"},
+    {"key": "minimax", "name": "MiniMax 中国区 API", "category": "视频生成",
+     "features": ["视频模块 → 麦克视频"], "env_features": [],
+     "pool_features": ["视频模块 → 麦克视频"],
+     "pool_base_env": ["MINIMAX_API_BASE"], "pool_base_default": "https://api.minimaxi.com",
+     "env": ["MINIMAX_API_KEY"], "pool_provider": "minimax"},
     {"key": "zelong", "name": "小乐 AI API", "category": "图片生成",
      "features": ["图片生成 → 黄雀引擎 2 备用线路"], "env": ["ZELONG_KEY"]},
     {"key": "zelong2", "name": "泽龙 API", "category": "图片生成",
@@ -585,7 +592,8 @@ LOG_LINE_RE = re.compile(
     r'(?P<status>\d{3}) (?P<size>\d+|-) "[^"]*" "(?P<ua>[^"]*)"'
 )
 LOG_META_RE = re.compile(
-    r"\srt=(?P<duration>[0-9]+(?:\.[0-9]+)?)\srid=(?P<request_id>[A-Za-z0-9_-]+)\s*$"
+    r"\srt=(?P<duration>[0-9]+(?:\.[0-9]+)?)\srid=(?P<request_id>[A-Za-z0-9_-]+)"
+    r"(?:\shq=(?P<hq_code>[A-Z0-9-]+|-))?\s*$"
 )
 _MONTHS = {
     "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
@@ -682,6 +690,7 @@ def init_db():
         c.commit()
     if feature_flags is not None:
         feature_flags.init_db()
+    pricing.init_db()
     if provider_keys is not None:
         provider_keys.init_db()
     if short_drama_lipsync_rollout is not None:
@@ -1029,6 +1038,13 @@ def _key_ping_seedance():
     return probe_provider_secret("seedance", key)
 
 
+def _key_ping_minimax():
+    key = _env_value(["MINIMAX_API_KEY"])
+    if not key:
+        return {"ok": False, "error": "密钥未配置", "mode": "auth"}
+    return probe_provider_secret("minimax", key)
+
+
 def _openai_compat_ping(key_names, base_names, default_base):
     key = _env_value(key_names)
     if not key:
@@ -1102,6 +1118,7 @@ KEY_PINGS = {
     "openai": _key_ping_openai,
     "gemini": _key_ping_gemini,
     "seedance": _key_ping_seedance,
+    "minimax": _key_ping_minimax,
     "zelong": _key_ping_zelong,
     "zelong2": _key_ping_zelong2,
     "heygen": _key_ping_heygen,
@@ -1119,6 +1136,7 @@ PROVIDER_KEY_NAMES = {
     "sora": "OpenAI Sora",
     "seedance": "火山 Seedance",
     "omni": "Gemini Omni",
+    "minimax": "MiniMax H3",
 }
 
 
@@ -1159,6 +1177,15 @@ def probe_provider_secret(provider, secret):
             base + "/contents/generations/tasks?page_num=1&page_size=1",
             headers={"Authorization": "Bearer " + secret},
             proxied=False,
+        )
+    if provider == "minimax":
+        base = (
+            _env_value(["MINIMAX_API_BASE"])
+            or "https://api.minimaxi.com"
+        ).rstrip("/")
+        return _ping_upstream(
+            "GET", base + "/v2/query/video_generation?page_num=1&page_size=1",
+            headers={"Authorization": "Bearer " + secret}, proxied=False,
         )
     base = (
         _env_value(["GEMINI_OMNI_BASE", "GEMINI_BASE"])
@@ -1397,6 +1424,7 @@ def _collect_request_entries(limit, status="", q="", include_noise=False):
             code = m.group("status")
             meta = LOG_META_RE.search(line)
             request_id = meta.group("request_id") if meta else ""
+            hq_code = "" if not meta or meta.group("hq_code") in (None, "-") else meta.group("hq_code")
             if status:
                 # ok/fail = 统一语义(给合并时间线用)；单数字=状态码前缀；三位=精确
                 if status == "ok":
@@ -1407,7 +1435,7 @@ def _collect_request_entries(limit, status="", q="", include_noise=False):
                         continue
                 elif code[:1] != status if len(status) == 1 else code != status:
                     continue
-            if q and q not in path and q not in request_id:
+            if q and q not in path and q not in request_id and q not in hq_code:
                 continue
             sort_key, disp = _parse_log_time(m.group("time"))
             jid_match = JOB_PATH_RE.match(path)
@@ -1426,6 +1454,7 @@ def _collect_request_entries(limit, status="", q="", include_noise=False):
                         "ua": m.group("ua")[:120],
                         "duration_sec": float(meta.group("duration")) if meta else None,
                         "request_id": request_id,
+                        "hq_code": hq_code,
                         "_jid": int(jid_match.group(1)) if jid_match else None,
                     },
                 )
@@ -1518,6 +1547,7 @@ def _collect_hermes_entries(limit):
                 "ip": str(row.get("ip") or "")[:80],
                 "ua": "",
                 "request_id": str(row.get("request_id") or "")[:128],
+                "hq_code": error_contract.code_for(status_code) if failed and status_code is not None else "",
             }))
     entries.sort(key=lambda x: x[0], reverse=True)
     return entries[:limit]
@@ -1571,6 +1601,7 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
                         "ip": it["ip"],
                         "ua": it["ua"],
                         "request_id": it["request_id"],
+                        "hq_code": it.get("hq_code") or "",
                     },
                 )
             )
@@ -1600,6 +1631,7 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
                         "ip": "",
                         "ua": "",
                         "request_id": "",
+                        "hq_code": "",
                     },
                 )
             )
@@ -1608,7 +1640,7 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
     for key, it in sorted(merged, key=lambda x: x[0], reverse=True):
         if category and it["cat"] != category:
             continue
-        if q and all(q not in (it.get(field) or "") for field in ("path", "user", "func", "request_id")):
+        if q and all(q not in (it.get(field) or "") for field in ("path", "user", "func", "request_id", "hq_code")):
             continue
         matching.append(it)
     total = len(matching)
@@ -1619,6 +1651,7 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
         "offset": offset,
         "total": total,
         "days": days,
+        "error_catalog": error_contract.public_catalog(),
     }
     if message and source != "job":
         out["message"] = message
@@ -1704,6 +1737,10 @@ def load_features(services=None):
     return feature_flags.list_features(services or service_status())
 
 
+def load_pricing():
+    return pricing.list_prices()
+
+
 def _validate_config(value, prefix="config"):
     if not isinstance(value, dict):
         raise ValueError("config must be an object")
@@ -1766,6 +1803,27 @@ def save_feature(actor, body):
             (actor, "feature.toggle", feature, json.dumps(detail, ensure_ascii=False), now),
         )
         c.commit()
+    return item
+
+
+def save_pricing(actor, body):
+    key = str(body.get("key") or body.get("rule") or "").strip()
+    reason = str(body.get("reason") or "").strip()[:200]
+    if not reason:
+        raise ValueError("请填写改价原因")
+    old = pricing.get_rule(key)
+    item = pricing.set_price(key, body.get("points"), actor)
+    detail = {
+        "old_points": old["points"],
+        "new_points": item["points"],
+        "reason": reason,
+    }
+    with closing(db()) as conn:
+        conn.execute(
+            "INSERT INTO admin_audit(actor, action, target, detail, created_at) VALUES(?,?,?,?,?)",
+            (actor, "pricing.update", key, json.dumps(detail, ensure_ascii=False), int(time.time())),
+        )
+        conn.commit()
     return item
 
 
@@ -1980,10 +2038,16 @@ class H(BaseHTTPRequestHandler):
         pass
 
     def _send(self, code, obj):
-        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        req_id = error_contract.request_id(self.headers)
+        public_obj, hq_code = error_contract.normalize(code, obj, req_id)
+        error_contract.audit(code, obj, req_id, hq_code)
+        body = json.dumps(public_obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        if hq_code:
+            self.send_header("X-HQ-Error-Code", hq_code)
+            self.send_header("X-HQ-Request-ID", req_id)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -2041,6 +2105,8 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"items": load_channels()})
         if path == "/api/admin/features":
             return self._send(200, {"items": load_features()})
+        if path == "/api/admin/pricing":
+            return self._send(200, {"items": load_pricing()})
         if path == "/api/admin/short-drama/lipsync/health":
             if short_drama_lipsync_observability is None:
                 return self._send(503, {"detail": "lipsync observability unavailable"})
@@ -2108,14 +2174,18 @@ class H(BaseHTTPRequestHandler):
         if path == "/api/admin/users/detail":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             username = (q.get("username") or [""])[0].strip()
-            if not username:
-                return self._send(400, {"detail": "缺少用户账号"})
+            user_id = (q.get("user_id") or [""])[0].strip()
+            if not username and not user_id:
+                return self._send(400, {"detail": "缺少用户账号或 ID"})
             try:
+                identity = ("user_id=" + urllib.parse.quote(user_id)) if user_id else (
+                    "username=" + urllib.parse.quote(username)
+                )
                 data = auth_admin_request(
-                    "/api/auth/admin/user-insights?username=" + urllib.parse.quote(username),
+                    "/api/auth/admin/user-insights?" + identity,
                     self._token(),
                 )
-                data["tasks"] = user_job_insights(username)
+                data["tasks"] = user_job_insights(data["user"]["username"])
                 return self._send(200, data)
             except ValueError as e:
                 return self._send(400, {"detail": str(e)})
@@ -2138,7 +2208,8 @@ class H(BaseHTTPRequestHandler):
         if path in {
             "/api/admin/invite/config", "/api/admin/invite/stats",
             "/api/admin/invite/relations", "/api/admin/invite/audit",
-            "/api/admin/invite/reward-points", "/api/admin/invite/network",
+            "/api/admin/invite/reward-points", "/api/admin/invite/reward-claims",
+            "/api/admin/invite/journeys", "/api/admin/invite/network",
         }:
             q = urllib.parse.urlparse(self.path).query
             suffix = path.replace("/api/admin/", "/api/auth/admin/", 1) + (("?" + q) if q else "")
@@ -2226,6 +2297,7 @@ class H(BaseHTTPRequestHandler):
                     "provider_keys": provider_key_list(),
                     "channels": load_channels(),
                     "features": load_features(services),
+                    "pricing": load_pricing(),
                     "stats": job_stats(days),
                 },
             )
@@ -2476,6 +2548,14 @@ class H(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send(500, {"detail": str(e)[:160] or "保存失败"})
             return self._send(200, {"ok": True, "feature": item})
+        if path == "/api/admin/pricing":
+            try:
+                item = save_pricing(user.get("username") or "admin", self._body())
+            except (ValueError, KeyError) as e:
+                return self._send(400, {"detail": str(e)})
+            except Exception as e:
+                return self._send(500, {"detail": str(e)[:160] or "保存失败"})
+            return self._send(200, {"ok": True, "pricing": item})
         if path == "/api/admin/points/adjust":
             try:
                 return self._send(
@@ -2528,6 +2608,8 @@ class H(BaseHTTPRequestHandler):
                                 "request_id": campaign.get("request_id"),
                                 "audience": campaign.get("audience"),
                                 "recipient_count": campaign.get("recipient_count", 0),
+                                "wechat_push_requested": campaign.get("wechat_push_requested", False),
+                                "wechat_recipient_count": campaign.get("wechat_recipient_count", 0),
                             },
                         )
                     except Exception as audit_error:

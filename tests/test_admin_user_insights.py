@@ -149,21 +149,37 @@ class AuthUserInsightsTests(unittest.TestCase):
         self.assertEqual(data["invite_rewards"]["voided_points"], 1260)
         self.assertEqual(data["invite_rewards"]["total"], 2)
         self.assertEqual(
-            [item["invitee_username"] for item in data["invite_rewards"]["items"]],
+            [item["invitee_account"] for item in data["invite_rewards"]["items"]],
             ["bob", "bob"],
         )
         self.assertIsNone(data["invite_relations"]["referrer"])
         self.assertEqual(data["invite_relations"]["invitees"]["total"], 1)
         self.assertEqual(
-            data["invite_relations"]["invitees"]["items"][0]["username"], "bob",
+            data["invite_relations"]["invitees"]["items"][0]["account"], "bob",
         )
         bob = self.auth.admin_user_insights("bob")
-        self.assertEqual(bob["invite_relations"]["referrer"]["username"], "alice")
+        self.assertEqual(bob["invite_relations"]["referrer"]["account"], "alice")
         self.assertEqual(bob["invite_relations"]["invitees"]["total"], 0)
         self.assertEqual(
             bob["invite_rewards"]["total"], 0,
         )
         self.assertIsNone(self.auth.admin_user_insights("missing"))
+
+    def test_phone_accounts_are_masked_in_nested_invite_data(self):
+        with closing(sqlite3.connect(self.auth.DB)) as c:
+            c.execute("UPDATE users SET username='13800000031',display_name='13800000031' WHERE username='bob'")
+            c.commit()
+        data = self.auth.admin_user_insights("alice")
+        relation = data["invite_relations"]["invitees"]["items"][0]
+        reward = data["invite_rewards"]["items"][0]
+        self.assertEqual(relation["account"], "138****0031")
+        self.assertEqual(relation["display_name"], "138****0031")
+        self.assertEqual(reward["invitee_account"], "138****0031")
+        self.assertNotIn("invitee_username", reward)
+        self.assertEqual(
+            self.auth.admin_user_insights(user_id=relation["user_id"])["user"]["username"],
+            "13800000031",
+        )
 
     def test_notification_admin_boundary_and_user_isolation(self):
         admin = self.client("admin")
@@ -275,6 +291,7 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
     def test_admin_and_notification_center_are_wired(self):
         root = Path(__file__).resolve().parents[1]
         html = (root / "site/admin/index.html").read_text(encoding="utf-8")
+        admin_api = (root / "server/admin_api.py").read_text(encoding="utf-8")
         shell = (root / "site/workbench/cloud-shell.js").read_text(encoding="utf-8")
         for marker in (
             'id="userDetailBox"', 'data-act="detail"', 'data-act="notice"',
@@ -283,8 +300,13 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             "/api/admin/users/password/reset", "invite_rewards", "inviteRewardRows",
             "invite_relations", "inviteRelationRows", "邀请关系", "直接邀请用户",
             "邀请奖励明细", "有效奖励", "已作废奖励",
+            'id="inviteClaimBox"', 'id="inviteClaimStatus"',
+            "/api/admin/invite/reward-claims", "待升级领取", "无合格领取人",
+            'id="inviteJourneyBox"', 'id="inviteJourneyStats"',
+            "/api/admin/invite/journeys", "权益只以服务端邀请关系与奖励台账为准",
         ):
             self.assertIn(marker, html)
+        self.assertIn('"/api/admin/invite/journeys"', admin_api)
         self.assertIn("/api/auth/notifications?limit=50", shell)
         self.assertIn("server-notice-", shell)
         self.assertIn("escapeHtml(x.title)", shell)
