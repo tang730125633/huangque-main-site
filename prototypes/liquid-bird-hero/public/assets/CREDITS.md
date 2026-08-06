@@ -10,5 +10,8 @@
 - assets/glass-bird.webp — 液态玻璃飞鸟首屏主视觉,作者 黄雀 AI / OpenAI image generation,来源 Codex session 2026-08-06,许可 自有生成资产
 - 文件、用途、作者、来源链接、许可
 
+### 交互实现参考
+- React Bits `BlobCursor` / `LightRays` — 多级阻尼拖尾与鼠标影响光线思路；作者 David Haz；来源 https://github.com/DavidHDev/react-bits；许可 MIT + Commons Clause。当前样机为原生 WebGL/CSS 重写，不分发原组件。
+
 ## 已退役的第三方资产
 - 曾用过什么、何时为何移除、许可(保留记录方便回溯)

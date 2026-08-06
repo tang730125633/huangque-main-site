@@ -14,10 +14,13 @@ class LiquidBirdPrototypeTest(unittest.TestCase):
         bird = PROTOTYPE / "public" / "assets" / "glass-bird.webp"
 
         self.assertIn("data-light-field", html)
+        self.assertIn("data-cursor-wake", html)
         self.assertIn("public/assets/glass-bird.webp", html)
         self.assertIn("prefers-reduced-motion", css)
         self.assertIn("@media (max-width:560px)", css)
         self.assertIn("__liquidBirdCheck", script)
+        self.assertIn("uPointerActive", script)
+        self.assertIn("wakeDamping", script)
         self.assertLess(bird.stat().st_size, 300_000)
 
 
