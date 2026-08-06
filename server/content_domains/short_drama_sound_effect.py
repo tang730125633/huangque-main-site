@@ -7,7 +7,10 @@ import subprocess
 import time
 import uuid
 
-from server.providers.sound_effects import configured_provider
+try:
+    from server.providers.sound_effects import configured_provider
+except ModuleNotFoundError:
+    from providers.sound_effects import configured_provider
 
 from .core import _out_path, public_url
 
