@@ -69,7 +69,6 @@ h1 span{color:#dcb77b}
 @keyframes pulse{0%,100%{transform:scaleY(.35);opacity:.35}50%{transform:scaleY(1);opacity:1}}
 
 @media (max-width:900px){
-  .prism-wake{display:none}
   .topbar{grid-template-columns:1fr auto;padding:18px 20px}.topbar nav{display:none}
   .hero{align-items:flex-start;padding:132px 22px 60px}.hero-copy{width:92vw}.eyebrow{font-size:8px}h1{font-size:clamp(52px,12vw,82px)}
   .bird-stage{top:30%;right:-32%;width:128vw;height:70%;opacity:.82}.lead{max-width:500px}.coordinates{display:none}
