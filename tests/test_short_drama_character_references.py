@@ -33,7 +33,7 @@ class ShortDramaCharacterReferenceTests(unittest.TestCase):
             "reference_locked": True,
         }
 
-    def test_owned_completed_banana_job_becomes_locked_reference(self):
+    def test_completed_owned_job_preserves_explicit_lock(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / "character.png").write_bytes(b"\x89PNG\r\n\x1a\nreference")
@@ -56,7 +56,7 @@ class ShortDramaCharacterReferenceTests(unittest.TestCase):
         self.assertEqual(1, characters[0]["reference_version"])
         self.assertTrue(characters[0]["reference_locked"])
 
-    def test_completed_owned_job_is_locked_even_if_client_sends_false(self):
+    def test_completed_owned_job_remains_preview_until_explicit_confirmation(self):
         self.connection.execute(
             "INSERT INTO jobs VALUES (1,'alice','image','done',?,?)",
             (
@@ -76,7 +76,7 @@ class ShortDramaCharacterReferenceTests(unittest.TestCase):
                 short_drama._resolve_ai_character_references(
                     self.connection, "alice", [character]
                 )
-        self.assertTrue(character["reference_locked"])
+        self.assertFalse(character["reference_locked"])
 
     def test_cross_user_reference_job_is_rejected(self):
         self.connection.execute(

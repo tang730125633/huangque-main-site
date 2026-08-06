@@ -78,6 +78,55 @@
           "sort_order": { "type": "integer", "readOnly": true }
         }
       },
+      "ShortDramaCharacterContractItem": {
+        "type": "object",
+        "description": "role_type、gender、age、identity_text、relationships 以分号派生为实体 identity_text，合计不得超过 2,000 个字符。",
+        "x-derivedIdentityMaxLength": 2000,
+        "required": ["character_key", "name", "role_type", "reference_views"],
+        "additionalProperties": false,
+        "properties": {
+          "character_key": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+          "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "role_type": { "type": "string", "enum": ["main", "support", "crowd"] },
+          "gender": { "type": "string", "maxLength": 500 },
+          "identity_text": { "type": "string", "maxLength": 500 },
+          "relationships": { "type": "string", "maxLength": 500 },
+          "personality": { "type": "string", "maxLength": 500 },
+          "age": { "type": "string", "maxLength": 500 },
+          "face_shape": { "type": "string", "maxLength": 500 },
+          "hairstyle": { "type": "string", "maxLength": 500 },
+          "hair_color": { "type": "string", "maxLength": 500 },
+          "height_body": { "type": "string", "maxLength": 500 },
+          "fixed_clothing": { "type": "string", "maxLength": 500 },
+          "fixed_colors": { "type": "string", "maxLength": 500 },
+          "accessories": { "type": "string", "maxLength": 500 },
+          "appearance_prompt": { "type": "string", "maxLength": 500 },
+          "wardrobe_prompt": { "type": "string", "maxLength": 500 },
+          "reference_views": { "type": "array", "enum": [["front_full", "side_full", "front_half"]] }
+        }
+      },
+      "ShortDramaCharacterContract": {
+        "type": "array", "maxItems": 20,
+        "items": { "$ref": "#/components/schemas/ShortDramaCharacterContractItem" }
+      },
+      "ShortDramaImportRequest": {
+        "type": "object",
+        "required": ["title", "synopsis", "ratio", "target_duration", "shot_count", "visual_style", "source_text", "filename", "import_mode"],
+        "additionalProperties": false,
+        "properties": {
+          "title": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "synopsis": { "type": "string", "minLength": 8, "maxLength": 4000 },
+          "ratio": { "type": "string", "enum": ["9:16", "16:9"] },
+          "target_duration": { "type": "integer", "enum": [30, 45, 60] },
+          "shot_count": { "type": "integer", "minimum": 6, "maximum": 10 },
+          "visual_style": { "type": "string", "maxLength": 80 },
+          "source_text": { "type": "string", "minLength": 8, "maxLength": 50000 },
+          "filename": { "type": "string", "maxLength": 255 },
+          "import_mode": { "type": "string", "enum": ["faithful", "optimize"] },
+          "content_type": { "type": "string", "enum": ["live_action"] },
+          "character_contract": { "$ref": "#/components/schemas/ShortDramaCharacterContract" }
+        }
+      },
       "ShortDramaScriptVersion": {
         "type": "object", "required": ["title", "logline", "hook", "conflict_text", "turn_text", "ending", "dialogue_lines"],
         "properties": {
@@ -3374,6 +3423,30 @@
         }
       }
     },
+    "/api/gen/short-drama/projects/import": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "原子导入完整短剧原稿和真人角色契约",
+        "description": "Free / no points. 使用 Idempotency-Key 原子创建本地 draft 项目、完整原稿快照和真人角色契约；相同键与相同规范化请求重放原项目，不同请求返回 409。",
+        "parameters": [{
+          "name": "Idempotency-Key", "in": "header", "required": true,
+          "schema": { "type": "string", "minLength": 1, "maxLength": 160 }
+        }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaImportRequest" } } }
+        },
+        "responses": {
+          "200": { "description": "项目、原稿和角色契约已原子创建或按幂等键重放", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaProject" } } } },
+          "400": { "description": "字段、角色契约或 Idempotency-Key 无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "未登录", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "账号必须先修改初始密码", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": { "description": "相同 Idempotency-Key 被用于不同导入请求", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "413": { "description": "source_text 超过 50,000 个字符", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "429": { "description": "当前用户的短剧项目数量达到上限", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
     "/api/gen/short-drama/project": {
       "get": {
         "tags": ["短剧策划"], "summary": "读取短剧项目详情", "description": "Free / no points. 本地项目仅创建者可读；共享项目需携带匹配的 X-Canvas-Board-Id，owner/editor/viewer 可读。无权发现、画布不匹配与不存在均返回相同的 404。",
@@ -3405,7 +3478,17 @@
           },
           {
             "type": "object", "required": ["revision", "characters"], "additionalProperties": false,
+            "description": "普通短剧角色分区保存；真人短剧人工角色流程使用下一个带 character_contract 的变体。",
             "properties": { "revision": { "type": "integer", "minimum": 1 }, "characters": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "$ref": "#/components/schemas/ShortDramaCharacter" } } }
+          },
+          {
+            "type": "object", "required": ["revision", "characters", "character_contract"], "additionalProperties": false,
+            "description": "真人短剧保存以 character_contract 为权威输入；characters 必须与服务端从该契约派生的规范化角色完全一致，否则原子拒绝。",
+            "properties": {
+              "revision": { "type": "integer", "minimum": 1 },
+              "characters": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "$ref": "#/components/schemas/ShortDramaCharacter" } },
+              "character_contract": { "$ref": "#/components/schemas/ShortDramaCharacterContract" }
+            }
           },
           {
             "type": "object", "required": ["revision", "script"], "additionalProperties": false,
@@ -3426,6 +3509,40 @@
         }
       }
     },
+    "/api/gen/short-drama/projects/live-action/abandon": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "幂等放弃真人短剧临时项目",
+        "description": "Free / no points. 仅项目 owner 可放弃尚处于 draft、没有付费活动且没有角色标准图活动的真人短剧导入临时项目。Idempotency-Key 与 project_id、revision 绑定；首次软删除与幂等记录在同一事务提交，响应丢失后使用同一键重试会返回已提交的成功结果。不同请求复用同一键、真实 revision 冲突、已付费或已有角色标准图活动均返回 409，客户端不得把任意 404/409 当作成功。",
+        "parameters": [
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 160 } }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["project_id", "revision"], "additionalProperties": false,
+          "properties": {
+            "project_id": { "type": "string", "minLength": 1 },
+            "revision": { "type": "integer", "minimum": 1 }
+          }
+        } } } },
+        "responses": {
+          "200": { "description": "首次放弃或同键重放均成功", "content": { "application/json": { "schema": {
+            "type": "object", "required": ["id", "revision", "deleted", "replayed"],
+            "properties": {
+              "id": { "type": "string" },
+              "revision": { "type": "integer", "minimum": 2 },
+              "deleted": { "type": "boolean", "const": true },
+              "replayed": { "type": "boolean" }
+            }
+          } } } },
+          "400": { "description": "请求字段、类型或 Idempotency-Key 无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "未登录；认证先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "账号必须先修改初始密码", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "项目不存在、已删除、不是当前用户所有或不是真人短剧导入项目", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": { "description": "idempotency_conflict、revision_conflict、live_action_abandon_blocked 或 short_drama_unapplied_paid_job", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+
     "/api/gen/short-drama/project/delete": {
       "post": {
         "tags": ["短剧策划"], "summary": "软删除短剧项目", "description": "Free / no points. 项目创建者，或同一画布中具写权限的 owner/editor，可按当前 revision 软删除项目；viewer 或其他无写权限角色不可删除。删除后项目不再出现在列表或详情中，并释放一个项目名额。关联内容和付费任务保留用于审计。若项目仍有已扣点但尚未应用或退款的策划任务，删除会被拒绝。",
@@ -3509,6 +3626,35 @@
           "409": { "description": "revision_conflict、idempotency_conflict 或已终止操作" },
           "429": { "description": "活动任务或队列已满；失败任务自动退款" },
           "503": { "description": "图片/Nano Banana 功能维护或内容安全不可用" }
+        }
+      }
+    },
+    "/api/gen/short-drama/confirm-character-reference": {
+      "post": {
+        "tags": ["短剧"],
+        "summary": "确认并锁定角色标准图",
+        "description": "Free / no points. Locks a completed character reference only after the user has previewed it. The submitted reference_version must match the current generated reference. Editing prompt-relevant character fields invalidates the lock and requires a new reference image.",
+        "parameters": [
+          { "$ref": "#/components/parameters/XCanvasBoardId" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object",
+          "required": ["project_id", "revision", "character_key", "reference_version"],
+          "additionalProperties": false,
+          "properties": {
+            "project_id": { "type": "string", "minLength": 1 },
+            "revision": { "type": "integer", "minimum": 1 },
+            "character_key": { "type": "string", "minLength": 1 },
+            "reference_version": { "type": "integer", "minimum": 1 }
+          }
+        } } } },
+        "responses": {
+          "200": { "description": "The updated short-drama project with the selected character reference locked." },
+          "400": { "description": "Invalid fields, stage, character reference state, or reference file." },
+          "401": { "description": "Not authenticated." },
+          "403": { "description": "Password change required, or the canvas role cannot write." },
+          "404": { "description": "Project, character, or completed character reference not found." },
+          "409": { "description": "revision_conflict or character_reference_version_conflict." }
         }
       }
     },

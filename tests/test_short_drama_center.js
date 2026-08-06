@@ -54,13 +54,19 @@ test('项目中心提供列表筛选、创建和详情入口', () => {
   assert.doesNotMatch(html, /value="1:1"/);
 });
 
-test('创建短剧提供想法、灵感和导入已有剧本三种入口', () => {
-  assert.match(html, /data-create-mode="idea"/);
-  assert.match(html, /data-create-mode="inspiration"/);
-  assert.match(html, /data-create-mode="import"/);
-  assert.match(html, /我有想法/);
-  assert.match(html, /我没有想法/);
-  assert.match(html, /导入已有剧本/);
+test('创建短剧提供真人、漫剧和数字人口播三种内容类型入口', () => {
+  assert.match(html, /data-content-type="live_action"/);
+  assert.match(html, /data-content-type="comic"/);
+  assert.match(html, /data-content-type="digital_presenter"/);
+  assert.match(html, /AI 真人短剧/);
+  assert.match(html, /AI 漫剧/);
+  assert.match(html, /AI 数字人口播/);
+  assert.match(html, /id="shortDramaLiveActionForm"/);
+  assert.match(html, /id="shortDramaRoleConfirm"/);
+  assert.match(html, /id="shortDramaRoleTabs"/);
+  assert.match(html, /id="shortDramaSaveRole"/);
+  assert.match(html, /下一步：角色确认/);
+  assert.match(centerScript, /团队正在努力开发该功能/);
   assert.match(html, /id="shortDramaIdeaChat"/);
   assert.match(html, /id="shortDramaRecommendations"/);
   for (const id of ['shortDramaImport', 'shortDramaImportFile', 'shortDramaImportText',
@@ -390,6 +396,7 @@ test('客户端使用 Cookie 会话并支持安全删除独立短剧', async () 
   await client.generate({project_id:'project-1', conversation_revision:2}, 'planner-generate');
   await client.lock({project_id:'project-1', conversation_revision:3, version_id:'script-1'}, 'planner-lock');
   await client.deleteProject({id:'project-1', revision:4});
+  await client.abandonLiveActionProject({id:'live-action-1', revision:7}, 'live-action-abandon-key');
   assert.equal(calls[0].url, '/api/gen/short-drama/projects?page=1&page_size=50');
   assert.equal(calls[0].options.credentials, 'same-origin');
   assert.equal(calls[0].options.headers.Authorization, 'Bearer __cookie__');
@@ -401,6 +408,9 @@ test('客户端使用 Cookie 会话并支持安全删除独立短剧', async () 
   assert.equal(calls[5].url, '/api/gen/short-drama/project/delete');
   assert.equal(calls[5].options.method, 'POST');
   assert.deepEqual(JSON.parse(calls[5].options.body), {project_id:'project-1', revision:4});
+  assert.equal(calls[6].url, '/api/gen/short-drama/projects/live-action/abandon');
+  assert.equal(calls[6].options.headers['Idempotency-Key'], 'live-action-abandon-key');
+  assert.deepEqual(JSON.parse(calls[6].options.body), {project_id:'live-action-1', revision:7});
   for (const call of calls) assert.equal(Object.hasOwn(call.options.headers, 'X-Canvas-Board-Id'), false);
 });
 
@@ -719,4 +729,148 @@ test('planner conversation audit detects repeated questions and negative feedbac
 test('浏览器运行时只使用模块内已定义的全局引用', () => {
   assert.match(centerScript, /var runtimeRoot=/);
   assert.doesNotMatch(centerScript, /\broot\.location\b/);
+});
+
+test('live action role confirmation starts with two manual role cards', () => {
+  const analysis = center.analyzeImportedScript('人物：张三、李四\n张三：我们现在出发。\n李四：好。');
+  assert.deepEqual(analysis.characters, ['张三', '李四']);
+  const contract = center.defaultManualCharacterContract(2);
+  assert.equal(contract.length, 2);
+  assert.deepEqual(contract.map(item => item.character_key), ['character_1', 'character_2']);
+  assert.deepEqual(contract.map(item => item.name), ['角色1', '角色2']);
+  assert.notDeepEqual(contract.map(item => item.name), analysis.characters);
+  assert.deepEqual(contract[0].reference_views, ['front_full', 'side_full', 'front_half']);
+  assert.match(html, /系统不再从剧本自动识别人物/);
+  assert.doesNotMatch(centerScript, /liveActionRoles=characterContractFromAnalysis\(liveActionAnalysis\)/);
+  assert.match(centerScript, /renderLiveActionRoleTabs/);
+  assert.match(centerScript, /data-role-select/);
+  assert.match(centerScript, /基础信息/);
+  assert.match(centerScript, /人物特征/);
+  assert.match(centerScript, /固定造型/);
+  assert.match(centerStyle, /grid-template-columns:230px minmax\(0,1fr\)/);
+});
+
+test('live action import payload carries the confirmed role contract', () => {
+  const analysis = center.analyzeImportedScript('人物：林夏\n林夏：你好。');
+  const contract = center.defaultManualCharacterContract(2);
+  const payload = center.importProjectPayload({title:'真人短剧',source_text:'人物：林夏\n林夏：你好。'}, analysis, 'faithful', {
+    content_type:'live_action', character_contract:contract
+  });
+  assert.equal(payload.content_type, 'live_action');
+  assert.deepEqual(payload.character_contract, contract);
+  assert.match(centerScript, /importProjectPayload\(liveActionForm,liveActionAnalysis,'faithful',\{content_type:'live_action',character_contract:contract\}\)/);
+  assert.match(centerScript, /\{characters:contract\.map\(backendCharacterFromRole\),character_contract:contract\}/);
+  const normalized = center.normalizeCharacterContract(contract);
+  assert.equal(Object.hasOwn(normalized[0], 'reference_locked'), false);
+  assert.equal(Object.hasOwn(normalized[0], 'reference_job_id'), false);
+});
+
+test('editing a persisted live action draft replaces it unless reference work exists', async () => {
+  const draft = {id:'draft-1', revision:4, characters:[{
+    character_key:'character_1', reference_job_id:null, reference_file:'',
+    reference_url:'', reference_locked:false
+  }]};
+  assert.equal(center.liveActionProjectHasReferenceActivity(draft), false);
+  let deleted = null;
+  await center.discardPendingLiveActionProject({
+    abandonLiveActionProject:async (project, key) => {
+      deleted = {project, key}; return {deleted:true};
+    }
+  }, draft, false, 'stable-abandon-key');
+  assert.equal(deleted.project.id, 'draft-1');
+  assert.equal(deleted.key, 'stable-abandon-key');
+  for (const marker of [
+    {reference_job_id:9}, {reference_file:'role.png'},
+    {reference_url:'https://example.test/role.png'}, {reference_version:1},
+    {reference_locked:true}
+  ]) {
+    const protectedDraft = {...draft, characters:[{...draft.characters[0], ...marker}]};
+    await assert.rejects(
+      center.discardPendingLiveActionProject({abandonLiveActionProject:async () => {
+        throw new Error('must not delete');
+      }}, protectedDraft, false, 'protected-key'),
+      /角色标准图/
+    );
+  }
+  assert.equal(center.liveActionProjectHasReferenceActivity({...draft, spent_points:35}), true);
+  await assert.rejects(
+    center.discardPendingLiveActionProject({abandonLiveActionProject:async () => {
+      throw new Error('delete failed');
+    }}, draft, false, 'retry-key'),
+    /delete failed/
+  );
+  await assert.rejects(
+    center.discardPendingLiveActionProject({abandonLiveActionProject:async () => {
+      throw new Error('must not delete');
+    }}, draft, true, 'busy-key'),
+    /正在生成/
+  );
+  const retryKeys = [];
+  const uncertainClient = {abandonLiveActionProject:async (_project, key) => {
+    retryKeys.push(key);
+    if(retryKeys.length === 1)throw new Error('response lost after commit');
+    return {deleted:true,replayed:true};
+  }};
+  await assert.rejects(
+    center.discardPendingLiveActionProject(uncertainClient, draft, false, 'stable-retry-key'),
+    /response lost/
+  );
+  await center.discardPendingLiveActionProject(
+    uncertainClient, draft, false, 'stable-retry-key'
+  );
+  assert.deepEqual(retryKeys, ['stable-retry-key', 'stable-retry-key']);
+  assert.match(centerScript, /if\(pendingLiveActionProject&&!pendingLiveActionDiscardKey\)pendingLiveActionDiscardKey=newLiveActionAbandonKey\(\)/);
+  assert.match(centerScript, /discardPendingLiveActionProject\(client,pendingLiveActionProject,liveActionReferenceBusy,pendingLiveActionDiscardKey\)/);
+  assert.match(centerScript, /pendingLiveActionProject=null;pendingLiveActionKey='';pendingLiveActionDiscardKey='';savedLiveActionRoleSignatures=\{\}/);
+});
+
+test('live action roles only require name gender and fixed clothing before reference generation', () => {
+  assert.match(centerScript, /var fields=\['name','gender','fixed_clothing'\]/);
+  assert.match(centerScript, /function validateLiveActionRole\(index\)/);
+  assert.match(centerScript, /persistLiveActionRoles\(\{partial:true,roleIndex:activeLiveActionRole\}\)/);
+  assert.match(centerScript, /生成角色标准图（35点）/);
+  assert.match(centerScript, /reference_locked/);
+  assert.match(centerScript, /confirm-character-reference/);
+  assert.match(centerScript, /确认并锁定此标准图/);
+  assert.match(html, /角色名称、性别和固定服装为必填项/);
+  assert.doesNotMatch(centerScript, /if\(!item\.age\)missing\.push/);
+  assert.doesNotMatch(centerScript, /if\(!item\.appearance_prompt\)missing\.push/);
+});
+
+test('live action role must be explicitly saved before reference generation', () => {
+  assert.match(centerScript, /savedLiveActionRoleSignatures/);
+  assert.match(centerScript, /function isLiveActionRoleSaved\(item\)/);
+  assert.match(centerScript, /function focusLiveActionRoleError\(index\)/);
+  assert.match(centerScript, /请先保存当前角色/);
+  assert.match(centerScript, /请先保存当前角色并生成角色标准图/);
+  const start = centerScript.indexOf("var button=event.target.closest('[data-generate-role-reference]')");
+  const end = centerScript.indexOf("roleTabs.addEventListener", start);
+  const handler = centerScript.slice(start, end);
+  assert.match(handler, /isLiveActionRoleSaved/);
+  assert.doesNotMatch(handler, /persistLiveActionRoles/);
+});
+
+test('generated character reference requires explicit confirmation before locking', async () => {
+  const calls = [];
+  const client = center.createClient(async (url, options) => {
+    calls.push({url, options});
+    return {ok:true, status:200, text:async ()=>'{}'};
+  });
+  await client.confirmCharacterReference(
+    {id:'project-1', revision:7},
+    {character_key:'character_1', reference_version:3}
+  );
+  assert.equal(calls[0].url, '/api/gen/short-drama/confirm-character-reference');
+  assert.equal(calls[0].options.method, 'POST');
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    project_id:'project-1', revision:7,
+    character_key:'character_1', reference_version:3
+  });
+});
+
+test('live action entry exposes unavailable content types without project creation', () => {
+  assert.match(html, /data-content-type="live_action"/);
+  assert.match(html, /data-content-type="comic"/);
+  assert.match(html, /data-content-type="digital_presenter"/);
+  assert.match(centerScript, /团队正在努力开发该功能/);
 });

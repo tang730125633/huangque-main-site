@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import hashlib
 import sys
@@ -279,6 +280,366 @@ class ShortDramaConversationTests(unittest.TestCase):
         value.update(changes)
         return value
 
+    def test_import_filename_limit_rejects_instead_of_truncating(self):
+        source = "A complete live action script."
+        accepted = short_drama.import_script_project(
+            self.db, "alice", self.import_payload(source, filename="f" * 255),
+            "filename-255",
+        )
+        conn = self.db()
+        try:
+            stored_filename = conn.execute(
+                "SELECT filename FROM short_drama_script_imports WHERE project_id=?",
+                (accepted["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual("f" * 255, stored_filename)
+        with self.assertRaises(short_drama.ScriptImportError) as rejected:
+            short_drama.import_script_project(
+                self.db, "alice", self.import_payload(source, filename="f" * 256),
+                "filename-256",
+            )
+        self.assertEqual("invalid_filename", rejected.exception.code)
+        self.assertEqual(400, rejected.exception.status)
+
+    def test_live_action_derived_identity_limit_is_explicit_and_atomic(self):
+        contract = [{
+            "character_key": "character_1", "name": "Boundary Role",
+            "role_type": "main", "gender": "g" * 500, "age": "a" * 500,
+            "identity_text": "i" * 500, "relationships": "r" * 492,
+            "personality": "", "face_shape": "", "hairstyle": "",
+            "hair_color": "", "height_body": "", "fixed_clothing": "coat",
+            "fixed_colors": "", "accessories": "", "appearance_prompt": "",
+            "wardrobe_prompt": "", "reference_views": [
+                "front_full", "side_full", "front_half",
+            ],
+        }]
+        project = short_drama.import_script_project(
+            self.db, "alice", self.import_payload(
+                "A complete boundary script.", content_type="live_action",
+                character_contract=contract,
+            ), "identity-2000",
+        )
+        self.assertEqual(2000, len(project["characters"][0]["identity_text"]))
+        conn = self.db()
+        try:
+            before = {
+                "revision": conn.execute(
+                    "SELECT revision FROM short_drama_projects WHERE id=?", (project["id"],),
+                ).fetchone()[0],
+                "characters": conn.execute(
+                    "SELECT character_key,identity_text FROM short_drama_characters "
+                    "WHERE project_id=?", (project["id"],),
+                ).fetchall(),
+                "contract": conn.execute(
+                    "SELECT character_contract_json FROM short_drama_script_imports "
+                    "WHERE project_id=?", (project["id"],),
+                ).fetchone()[0],
+            }
+        finally:
+            conn.close()
+        too_long_contract = [dict(contract[0], relationships="r" * 493)]
+        too_long_characters = [dict(
+            project["characters"][0], identity_text="x" * 2001,
+        )]
+        with self.assertRaises(short_drama.ScriptImportError) as update_error:
+            short_drama.update_characters(
+                self.db, "alice", project["id"], project["revision"],
+                too_long_characters, character_contract=too_long_contract,
+            )
+        self.assertEqual("character_identity_too_long", update_error.exception.code)
+        self.assertEqual(400, update_error.exception.status)
+        conn = self.db()
+        try:
+            self.assertEqual(before["revision"], conn.execute(
+                "SELECT revision FROM short_drama_projects WHERE id=?", (project["id"],),
+            ).fetchone()[0])
+            self.assertEqual(before["characters"], conn.execute(
+                "SELECT character_key,identity_text FROM short_drama_characters "
+                "WHERE project_id=?", (project["id"],),
+            ).fetchall())
+            self.assertEqual(before["contract"], conn.execute(
+                "SELECT character_contract_json FROM short_drama_script_imports "
+                "WHERE project_id=?", (project["id"],),
+            ).fetchone()[0])
+        finally:
+            conn.close()
+        with self.assertRaises(short_drama.ScriptImportError) as import_error:
+            short_drama.import_script_project(
+                self.db, "alice", self.import_payload(
+                    "A second complete boundary script.", content_type="live_action",
+                    character_contract=too_long_contract,
+                ), "identity-2001",
+            )
+        self.assertEqual("character_identity_too_long", import_error.exception.code)
+        self.assertEqual(400, import_error.exception.status)
+        conn = self.db()
+        try:
+            self.assertIsNone(conn.execute(
+                "SELECT project_id FROM short_drama_script_imports "
+                "WHERE idempotency_key='identity-2001'",
+            ).fetchone())
+        finally:
+            conn.close()
+
+    def test_replacing_saved_live_action_draft_uses_second_story_snapshot(self):
+        contract = [{
+            "character_key": "character_1", "name": "Lin Xia",
+            "role_type": "main", "gender": "female", "identity_text": "clerk",
+            "relationships": "", "personality": "calm", "age": "26",
+            "face_shape": "oval", "hairstyle": "short", "hair_color": "black",
+            "height_body": "165cm", "fixed_clothing": "white shirt",
+            "fixed_colors": "white", "accessories": "watch",
+            "appearance_prompt": "cinematic portrait", "wardrobe_prompt": "white shirt",
+            "reference_views": ["front_full", "side_full", "front_half"],
+        }]
+        scenarios = (
+            ("title", {"title": "Second confirmed title"}),
+            ("source", {"source_text": "Second confirmed source with a new ending."}),
+            ("spec", {
+                "target_duration": 45, "shot_count": 9,
+                "visual_style": "documentary realism",
+            }),
+        )
+        for index, (label, changes) in enumerate(scenarios):
+            with self.subTest(change=label):
+                first_body = self.import_payload(
+                    "First complete source before editing.", title="First title",
+                    target_duration=30, shot_count=6, visual_style="cinematic",
+                    content_type="live_action", character_contract=contract,
+                )
+                first = short_drama.import_script_project(
+                    self.db, "alice", first_body, "replace-old-%d" % index,
+                )
+                saved = short_drama.update_characters(
+                    self.db, "alice", first["id"], first["revision"],
+                    short_drama._characters_from_import_contract(contract),
+                    character_contract=contract,
+                )
+                with mock.patch.object(
+                        short_drama, "_has_unapplied_charged_job", return_value=False):
+                    self.assertTrue(short_drama.delete_project(
+                        self.db, "alice", saved["id"], saved["revision"],
+                    ))
+                second_body = dict(first_body)
+                second_body.update(changes)
+                second = short_drama.import_script_project(
+                    self.db, "alice", second_body, "replace-new-%d" % index,
+                )
+                conn = self.db()
+                try:
+                    project_row = conn.execute(
+                        "SELECT title,target_duration,shot_count,visual_style "
+                        "FROM short_drama_projects WHERE id=? AND deleted=0",
+                        (second["id"],),
+                    ).fetchone()
+                    import_row = conn.execute(
+                        "SELECT source_text,character_contract_json "
+                        "FROM short_drama_script_imports WHERE project_id=?",
+                        (second["id"],),
+                    ).fetchone()
+                finally:
+                    conn.close()
+                self.assertEqual(second_body["title"], project_row[0])
+                self.assertEqual(second_body["target_duration"], project_row[1])
+                self.assertEqual(second_body["shot_count"], project_row[2])
+                self.assertEqual(second_body["visual_style"], project_row[3])
+                self.assertEqual(second_body["source_text"], import_row[0])
+                self.assertEqual(contract, json.loads(import_row[1]))
+                with mock.patch.object(
+                        short_drama, "_has_unapplied_charged_job", return_value=False):
+                    self.assertTrue(short_drama.delete_project(
+                        self.db, "alice", second["id"], second["revision"],
+                    ))
+
+    def test_live_action_import_persists_confirmed_character_contract(self):
+        contract = [{
+            "character_key": "character_1",
+            "name": "林夏",
+            "role_type": "main",
+            "gender": "女",
+            "identity_text": "便利店店员",
+            "relationships": "与周野是同事",
+            "personality": "克制、善良",
+            "age": "26 岁",
+            "face_shape": "鹅蛋脸",
+            "hairstyle": "黑色齐肩短发",
+            "hair_color": "黑色",
+            "height_body": "165cm，匀称",
+            "fixed_clothing": "米白衬衫和深色长裤",
+            "fixed_colors": "米白、深灰",
+            "accessories": "银色腕表",
+            "appearance_prompt": "年轻女性，鹅蛋脸，黑色齐肩短发",
+            "wardrobe_prompt": "固定穿米白衬衫和深色长裤",
+            "reference_views": ["front_full", "side_full", "front_half"],
+        }]
+        source = "人物：林夏\n林夏：雨停以后我们就出发。"
+        verify = lambda _: {"username": "alice"}
+        import_request = Handler(
+            "/api/gen/short-drama/projects/import",
+            body=self.import_payload(
+                source, content_type="live_action", character_contract=contract,
+            ),
+            idempotency_key="live-action-contract-1",
+        )
+        self.assertTrue(short_drama.dispatch_http(import_request, "POST", self.db, verify))
+        self.assertEqual(200, import_request.response[0])
+        imported = import_request.response[1]
+        self.assertEqual("live_action", imported["script_import"]["content_type"])
+        self.assertEqual(1, imported["script_import"]["role_count"])
+        self.assertEqual(len(source), imported["script_import"]["character_count"])
+        conn = self.db()
+        try:
+            row = conn.execute(
+                "SELECT content_type,character_contract_json "
+                "FROM short_drama_script_imports WHERE project_id=?",
+                (imported["id"],),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual("live_action", row[0])
+        self.assertEqual(contract, json.loads(row[1]))
+        workspace_request = Handler(
+            "/api/gen/short-drama/conversation?project_id=" + imported["id"]
+        )
+        self.assertTrue(short_drama.dispatch_http(workspace_request, "GET", self.db, verify))
+        self.assertEqual(200, workspace_request.response[0])
+        workspace = workspace_request.response[1]
+        self.assertEqual(
+            contract,
+            workspace["conversation"]["understanding"]["import_contract"]["character_contract"],
+        )
+
+        conn = self.db()
+        try:
+            before_conflict = {
+                "revision": conn.execute(
+                    "SELECT revision FROM short_drama_projects WHERE id=?",
+                    (imported["id"],),
+                ).fetchone()[0],
+                "characters": conn.execute(
+                    "SELECT character_key,name,identity_text,personality,source_type,avatar_id,"
+                    "appearance_prompt,wardrobe_prompt,voice_key,voice_settings_json "
+                    "FROM short_drama_characters "
+                    "WHERE project_id=? ORDER BY sort_order,id",
+                    (imported["id"],),
+                ).fetchall(),
+                "contract": conn.execute(
+                    "SELECT character_contract_json FROM short_drama_script_imports "
+                    "WHERE project_id=?",
+                    (imported["id"],),
+                ).fetchone()[0],
+            }
+        finally:
+            conn.close()
+        bypass_characters = short_drama._characters_from_import_contract(contract)
+        bypass_characters[0]["identity_text"] = "tampered characters-only identity"
+        bypass_request = Handler(
+            "/api/gen/short-drama/project?id=" + imported["id"], body={
+                "revision": imported["revision"],
+                "characters": bypass_characters,
+            },
+        )
+        self.assertTrue(short_drama.dispatch_http(bypass_request, "PUT", self.db, verify))
+        self.assertEqual(400, bypass_request.response[0])
+        conn = self.db()
+        try:
+            self.assertEqual(before_conflict["revision"], conn.execute(
+                "SELECT revision FROM short_drama_projects WHERE id=?",
+                (imported["id"],),
+            ).fetchone()[0])
+            self.assertEqual(before_conflict["characters"], conn.execute(
+                "SELECT character_key,name,identity_text,personality,source_type,avatar_id,"
+                "appearance_prompt,wardrobe_prompt,voice_key,voice_settings_json "
+                "FROM short_drama_characters WHERE project_id=? ORDER BY sort_order,id",
+                (imported["id"],),
+            ).fetchall())
+            self.assertEqual(before_conflict["contract"], conn.execute(
+                "SELECT character_contract_json FROM short_drama_script_imports "
+                "WHERE project_id=?",
+                (imported["id"],),
+            ).fetchone()[0])
+        finally:
+            conn.close()
+        conflicting_characters = short_drama._characters_from_import_contract(contract)
+        conflicting_characters[0]["appearance_prompt"] = "conflicting appearance"
+        conflict_request = Handler(
+            "/api/gen/short-drama/project?id=" + imported["id"], body={
+                "revision": imported["revision"],
+                "characters": conflicting_characters,
+                "character_contract": contract,
+            },
+        )
+        self.assertTrue(short_drama.dispatch_http(conflict_request, "PUT", self.db, verify))
+        self.assertEqual(400, conflict_request.response[0])
+        conn = self.db()
+        try:
+            self.assertEqual(before_conflict["revision"], conn.execute(
+                "SELECT revision FROM short_drama_projects WHERE id=?",
+                (imported["id"],),
+            ).fetchone()[0])
+            self.assertEqual(before_conflict["characters"], conn.execute(
+                "SELECT character_key,name,identity_text,personality,source_type,avatar_id,"
+                "appearance_prompt,wardrobe_prompt,voice_key,voice_settings_json "
+                "FROM short_drama_characters "
+                "WHERE project_id=? ORDER BY sort_order,id",
+                (imported["id"],),
+            ).fetchall())
+            self.assertEqual(before_conflict["contract"], conn.execute(
+                "SELECT character_contract_json FROM short_drama_script_imports "
+                "WHERE project_id=?",
+                (imported["id"],),
+            ).fetchone()[0])
+        finally:
+            conn.close()
+
+        changed_contract = [dict(contract[0], name="Lin Xia Updated"), {
+            **dict(contract[0]),
+            "character_key": "character_2",
+            "name": "Zhou Ye",
+            "role_type": "support",
+        }]
+        update_request = Handler(
+            "/api/gen/short-drama/project?id=" + imported["id"], body={
+                "revision": imported["revision"],
+                "characters": short_drama._characters_from_import_contract(changed_contract),
+                "character_contract": changed_contract,
+            },
+        )
+        self.assertTrue(short_drama.dispatch_http(update_request, "PUT", self.db, verify))
+        self.assertEqual(200, update_request.response[0])
+        updated = update_request.response[1]
+        changed_workspace_request = Handler(
+            "/api/gen/short-drama/conversation?project_id=" + imported["id"]
+        )
+        self.assertTrue(short_drama.dispatch_http(changed_workspace_request, "GET", self.db, verify))
+        self.assertEqual(200, changed_workspace_request.response[0])
+        changed_workspace = changed_workspace_request.response[1]
+        changed_import_contract = changed_workspace["conversation"]["understanding"]["import_contract"]
+        self.assertEqual(["Lin Xia Updated", "Zhou Ye"], changed_import_contract["characters"])
+        self.assertEqual(changed_contract, changed_import_contract["character_contract"])
+
+        final_contract = [changed_contract[1]]
+        final_update_request = Handler(
+            "/api/gen/short-drama/project?id=" + imported["id"], body={
+                "revision": updated["revision"],
+                "characters": short_drama._characters_from_import_contract(final_contract),
+                "character_contract": final_contract,
+            },
+        )
+        self.assertTrue(short_drama.dispatch_http(final_update_request, "PUT", self.db, verify))
+        self.assertEqual(200, final_update_request.response[0])
+        final_workspace_request = Handler(
+            "/api/gen/short-drama/conversation?project_id=" + imported["id"]
+        )
+        self.assertTrue(short_drama.dispatch_http(final_workspace_request, "GET", self.db, verify))
+        self.assertEqual(200, final_workspace_request.response[0])
+        final_workspace = final_workspace_request.response[1]
+        final_import_contract = final_workspace["conversation"]["understanding"]["import_contract"]
+        self.assertEqual(["Zhou Ye"], final_import_contract["characters"])
+        self.assertEqual(final_contract, final_import_contract["character_contract"])
+
     def test_full_import_is_atomic_idempotent_and_generation_uses_all_anchors(self):
         start = "MARKER_START_72 开场关键对白。\n"
         middle = "MARKER_MIDDLE_72 中段关键转折。\n"
@@ -306,6 +667,12 @@ class ShortDramaConversationTests(unittest.TestCase):
             self.db, "alice", "alice", imported["id"],
         )
         self.assertEqual(50000, workspace["script_import"]["character_count"])
+        with self.assertRaises(short_drama.ScriptImportError) as too_long:
+            short_drama.import_script_project(
+                self.db, "alice", self.import_payload(source + "X"), "source-50001",
+            )
+        self.assertEqual("script_too_long", too_long.exception.code)
+        self.assertEqual(413, too_long.exception.status)
         self.assertEqual("import_review", workspace["conversation"]["understanding"]["phase"])
         self.assertEqual("import_understanding", workspace["messages"][0]["metadata"]["kind"])
         with self.assertRaises(short_drama_conversation.ConversationError) as blocked:
