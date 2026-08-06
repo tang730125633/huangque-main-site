@@ -2346,6 +2346,22 @@ def list_admin_users(query="", sort="created_at", direction="desc", limit=100, o
         c.close()
 
 
+def admin_target_username(username="", user_id=None):
+    if user_id not in (None, ""):
+        try:
+            user_id = int(user_id)
+        except (TypeError, ValueError):
+            return None, "invalid_user_id"
+        c = db()
+        try:
+            row = c.execute("SELECT username FROM users WHERE id=?", (user_id,)).fetchone()
+            return (row["username"], None) if row else (None, "not_found")
+        finally:
+            c.close()
+    username = str(username or "").strip()
+    return (username, None) if username else (None, "missing_target")
+
+
 def reset_password_admin(username, new_password):
     username = str(username or "").strip()
     if not username:
@@ -5001,7 +5017,12 @@ class H(BaseHTTPRequestHandler):
             if self._bad_json() or not isinstance(d, dict):
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
             try:
-                result, err = reset_password_admin(d.get("username"), d.get("new_password"))
+                username, target_err = admin_target_username(d.get("username"), d.get("user_id"))
+                if target_err == "not_found":
+                    return self._send(404, {"detail": "用户不存在"})
+                if target_err:
+                    return self._send(400, {"detail": "缺少或无效的用户标识"})
+                result, err = reset_password_admin(username, d.get("new_password"))
                 messages = {
                     "missing_username": "缺少用户账号",
                     "invalid_password": "新密码格式不正确",
@@ -5025,14 +5046,16 @@ class H(BaseHTTPRequestHandler):
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
-            username = (d.get("username") or "").strip()
+            username, target_err = admin_target_username(d.get("username"), d.get("user_id"))
             reason = (d.get("reason") or "").strip()
             try:
                 delta = int(d.get("delta") or 0)
             except Exception:
                 return self._send(400, {"detail": "delta must be an integer"})
-            if not username:
-                return self._send(400, {"detail": "missing username"})
+            if target_err == "not_found":
+                return self._send(404, {"detail": "user not found"})
+            if target_err:
+                return self._send(400, {"detail": "missing or invalid user target"})
             if delta == 0:
                 return self._send(400, {"detail": "delta cannot be 0"})
             try:
