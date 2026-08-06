@@ -1838,6 +1838,21 @@ def _empty_stats(message=None):
     }
 
 
+_XIAOLE_FEATURE_BY_CHANNEL = {
+    "grok": "grok_video",
+    "micro": "seedance_video",
+    "omni": "omni_video",
+    "minimax": "minimax_h3_video",
+}
+
+
+def _operation_feature_key(kind, channel=""):
+    kind = str(kind or "unknown")
+    if kind == "xiaole_video":
+        return _XIAOLE_FEATURE_BY_CHANNEL.get(str(channel or "grok").lower(), kind)
+    return kind
+
+
 def job_stats(days=7):
     days = max(1, min(int(days or 7), 90))
     if not JOB_DB.exists():
@@ -1848,21 +1863,29 @@ def job_stats(days=7):
     with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as c:
         c.row_factory = sqlite3.Row
         rows = c.execute(
-            """SELECT kind, status, COUNT(*) AS n
+            """SELECT kind,
+                      CASE WHEN kind='xiaole_video' AND json_valid(payload)
+                           THEN LOWER(COALESCE(json_extract(payload, '$.channel'), ''))
+                           ELSE '' END AS channel,
+                      status, COUNT(*) AS n
                FROM jobs WHERE created_at >= ?
-               GROUP BY kind, status ORDER BY kind, status""",
+               GROUP BY kind, channel, status ORDER BY kind, channel, status""",
             (since,),
         ).fetchall()
         trend_rows = c.execute(
-            """SELECT date(created_at, 'unixepoch') AS day, kind, status, COUNT(*) AS n
+            """SELECT date(created_at, 'unixepoch') AS day, kind,
+                      CASE WHEN kind='xiaole_video' AND json_valid(payload)
+                           THEN LOWER(COALESCE(json_extract(payload, '$.channel'), ''))
+                           ELSE '' END AS channel,
+                      status, COUNT(*) AS n
                FROM jobs WHERE created_at >= ?
-               GROUP BY day, kind, status ORDER BY day, kind""",
+               GROUP BY day, kind, channel, status ORDER BY day, kind, channel""",
             (since,),
         ).fetchall()
     by_kind = {}
     total = 0
     for row in rows:
-        kind = row["kind"] or "unknown"
+        kind = _operation_feature_key(row["kind"], row["channel"])
         status = row["status"] or "unknown"
         count = int(row["n"] or 0)
         total += count
@@ -1887,7 +1910,7 @@ def job_stats(days=7):
         if item["total"] >= 3 and failure_rate >= 0.5:
             high_failure.append(item)
     trend = [
-        {"day": row["day"], "kind": row["kind"], "status": row["status"], "count": int(row["n"] or 0)}
+        {"day": row["day"], "kind": _operation_feature_key(row["kind"], row["channel"]), "status": row["status"], "count": int(row["n"] or 0)}
         for row in trend_rows
     ]
     return {
