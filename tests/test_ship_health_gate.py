@@ -55,13 +55,17 @@ if [ -n "$FAKE_SSH_LOG" ]; then printf '%s\n' "$*" >> "$FAKE_SSH_LOG"; fi
 #   smoke_import         → bash -s -- <svc> <python 路径>
 #   check_restart_effective → bash -s -- <svc> <时间戳>
 case "$*" in
-  *"test -f"*)
+  *"test -f '/home/ubuntu/content-api/content_domains/"*)
     if [ "$FAKE_REMOTE_FILE_MISSING" = "1" ]; then exit 1; fi
     ;;
   *"bash -s"*)
     remote_script=$(cat)
     case "$*" in
       *python3*)
+        if [ "$FAKE_EXACT_DOMAIN_IMPORT_FAIL" = "1" ] && printf '%s' "$*" | grep -q digital_ip; then
+          echo "    ❌ content domain import 失败"
+          exit 1
+        fi
         if [ "$FAKE_IMPORT_FAIL" = "1" ]; then echo "    ❌ import 失败 —— 中止，不重启"; exit 1; fi
         if [ "$FAKE_SEEDANCE_CONTRACT_FAIL" = "1" ] && printf '%s' "$remote_script" | grep -q before_charge; then
           echo "    ❌ Seedance 参考图跨模块契约失败 —— 中止，不重启"
@@ -263,15 +267,35 @@ exit 0
             self.assertIn(path, verify)
         self.assertNotIn("server/content_domains/video.py", verify)
 
-    def test_exact_content_domains_refuses_new_remote_module(self):
+    def test_exact_content_domains_allows_tracked_new_remote_module(self):
+        rsync_log = Path(self.tmp.name) / "rsync.log"
+        ssh_log = Path(self.tmp.name) / "ssh.log"
         result = self._run_ship(
             target="server/content_domains/digital_ip.py",
             exact_content_domains=True,
             FAKE_REMOTE_FILE_MISSING="1",
             FAKE_CURL_CODE="200",
+            FAKE_RSYNC_LOG=str(rsync_log),
+            FAKE_SSH_LOG=str(ssh_log),
+        )
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertIn("file-only 模式", result.stdout)
+        self.assertIn(
+            "server/content_domains/digital_ip.py",
+            rsync_log.read_text(encoding="utf-8"),
+        )
+        self.assertIn("bash -s -- digital_ip", ssh_log.read_text(encoding="utf-8"))
+        self.assertIn("上线完成", result.stdout)
+
+    def test_exact_content_domains_blocks_new_module_import_failure(self):
+        result = self._run_ship(
+            target="server/content_domains/digital_ip.py",
+            exact_content_domains=True,
+            FAKE_EXACT_DOMAIN_IMPORT_FAIL="1",
+            FAKE_CURL_CODE="200",
         )
         self.assertNotEqual(0, result.returncode, result.stdout)
-        self.assertIn("只允许覆盖已存在", result.stdout)
+        self.assertIn("content domain import 失败", result.stdout)
         self.assertNotIn("上线完成", result.stdout)
 
     def test_exact_content_domains_refuses_content_api(self):
