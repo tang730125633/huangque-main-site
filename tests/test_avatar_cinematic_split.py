@@ -27,8 +27,10 @@
   aspect_ratio: 16:9 / 9:16 / 1:1
   references（参考视频）是【可选】的：只给提示词也能生成。
 """
+import base64
 import importlib
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
