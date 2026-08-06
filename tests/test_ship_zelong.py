@@ -185,6 +185,7 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
             "server/leadgen_api.py": (30, "/home/ubuntu/content-api/leadgen_api.py", "leadgen", 0),
             "server/admin_api.py": (30, "/home/ubuntu/content-api/admin_api.py", "admin", 0),
             "server/inspiration_cases.py": (10, "/home/ubuntu/content-api/inspiration_cases.py", "admin", 0),
+            "server/content_domains/function_registry.py": (20, "/home/ubuntu/content-api/content_domains/function_registry.py", "admin", 0),
             "site/workbench/cloud-shell.js": (40, "/var/www/huangquechuanmei/workbench/cloud-shell.js", "-", 0),
             "site/workbench/video.html": (50, "/var/www/huangquechuanmei/workbench/video.html", "-", 0),
         }

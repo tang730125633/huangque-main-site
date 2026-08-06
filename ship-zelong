@@ -92,6 +92,8 @@ map_path() {
       printf '30|/home/ubuntu/content-api/admin_api.py|admin|0\n' ;;
     server/inspiration_cases.py)
       printf '10|/home/ubuntu/content-api/inspiration_cases.py|admin|0\n' ;;
+    server/content_domains/function_registry.py)
+      printf '20|/home/ubuntu/content-api/content_domains/function_registry.py|admin|0\n' ;;
     server/tikhub.py|server/func_names.py)
       printf '10|/home/ubuntu/content-api/%s|content|0\n' "${path#server/}" ;;
     server/content_domains/*.py)
