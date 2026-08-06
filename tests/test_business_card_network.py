@@ -1,4 +1,5 @@
 import base64
+import gc
 import importlib
 import io
 import json
@@ -44,6 +45,7 @@ class BusinessCardNetworkTests(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=3)
+        gc.collect()
         self.tmp.cleanup()
 
     def conn(self):
@@ -190,19 +192,55 @@ class BusinessCardNetworkTests(unittest.TestCase):
             self.assertIsNotNone(journey)
             self.assertEqual(journey["invite_relation_id"], relation["id"])
 
-    def test_network_masks_undiscoverable_and_stops_cycles(self):
-        with self.conn() as c:
+    def test_network_uses_account_identity_when_card_is_not_discoverable(self):
+        c = self.conn()
+        try:
             root_id, child_id = self.uid(c, "root"), self.uid(c, "child")
             self.auth.business_cards.create_draft(c, root_id, {"name": "根用户", "title": "老师", "company": "黄雀"})
             self.auth.business_cards.publish(c, root_id, "published")
-            tree = self.auth.business_cards.children(c, root_id)
-            self.assertEqual(tree["items"][0]["name"], "匿名用户")
+            c.execute("UPDATE business_cards SET avatar_key='cards/child-avatar.jpg' WHERE user_id=?", (child_id,))
+            with patch.object(self.auth.business_cards, "_media_url", return_value="https://example.test/child-avatar.jpg"):
+                tree = self.auth.business_cards.children(c, root_id)
+            self.assertEqual(tree["items"][0]["name"], "子用户")
+            self.assertEqual(tree["items"][0]["avatar"], "https://example.test/child-avatar.jpg")
+            self.assertEqual(tree["items"][0]["public_id"], "")
+            self.assertEqual(tree["items"][0]["title"], "")
+            self.assertEqual(tree["items"][0]["company"], "")
             self.assertTrue(tree["items"][0]["node_id"])
             self.assertIn("children_count", tree["items"][0])
             self.assertEqual(tree["next_before_id"], tree["next_cursor"])
             c.execute("UPDATE business_cards SET status='published',discoverable_in_network=1 WHERE user_id=?", (child_id,))
             c.execute("UPDATE user_invites SET inviter_user_id=? WHERE invitee_user_id=?", (child_id, root_id))
             self.assertLessEqual(len(self.auth.business_cards.ancestors(c, root_id)), 100)
+            c.commit()
+        finally:
+            c.close()
+
+    def test_network_never_returns_a_phone_number_as_the_person_name(self):
+        self.auth.create_user("13800001234", "secret123")
+        c = self.conn()
+        try:
+            user_id = self.uid(c, "13800001234")
+            c.execute("UPDATE users SET display_name='客户13800001234' WHERE id=?", (user_id,))
+            row = c.execute("SELECT account_id FROM users WHERE id=?", (user_id,)).fetchone()
+            person = self.auth.business_cards.public_network_person(c, user_id)
+            c.commit()
+        finally:
+            c.close()
+        self.assertEqual(person["name"], row["account_id"])
+        self.assertNotIn("13800001234", json.dumps(person, ensure_ascii=False))
+
+    def test_network_uses_a_non_phone_login_name_when_no_nickname_exists(self):
+        self.auth.create_user("fang", "secret123")
+        c = self.conn()
+        try:
+            user_id = self.uid(c, "fang")
+            c.execute("UPDATE users SET display_name='' WHERE id=?", (user_id,))
+            person = self.auth.business_cards.public_network_person(c, user_id)
+            c.commit()
+        finally:
+            c.close()
+        self.assertEqual(person["name"], "fang")
 
     def test_two_renewals_reward_independently_without_points_or_voice_grant(self):
         now = int(time.time())

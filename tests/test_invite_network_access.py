@@ -1,9 +1,11 @@
+import json
 import os
 from pathlib import Path
 import sqlite3
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 from server import business_cards, invite_network, invites
 
@@ -31,6 +33,7 @@ class InviteNetworkAccessTests(unittest.TestCase):
             id INTEGER PRIMARY KEY,
             username TEXT NOT NULL,
             display_name TEXT,
+            account_id TEXT,
             membership_tier TEXT NOT NULL DEFAULT '',
             membership_expires_at INTEGER,
             account_status TEXT NOT NULL DEFAULT 'active'
@@ -38,12 +41,12 @@ class InviteNetworkAccessTests(unittest.TestCase):
         invites.init_schema(self.conn, now=NOW)
         business_cards.init_schema(self.conn)
         self.conn.executemany(
-            "INSERT INTO users(id,username,display_name,membership_tier,membership_expires_at) VALUES(?,?,?,?,?)",
+            "INSERT INTO users(id,username,display_name,account_id,membership_tier,membership_expires_at) VALUES(?,?,?,?,?,?)",
             [
-                (1, "root", "根用户", "partner", NOW + 999999),
-                (2, "viewer", "查看者", "", None),
-                (3, "child", "下线", "experience", NOW + 999999),
-                (4, "grandchild", "下线的下线", "experience", NOW + 999999),
+                (1, "root", "根用户", "HQROOT01", "partner", NOW + 999999),
+                (2, "viewer", "查看者", "HQVIEW02", "", None),
+                (3, "child", "下线", "HQCHILD3", "experience", NOW + 999999),
+                (4, "grandchild", "下线的下线", "HQGRAND4", "experience", NOW + 999999),
             ],
         )
         self.conn.executemany("""INSERT INTO user_invites(
@@ -58,9 +61,18 @@ class InviteNetworkAccessTests(unittest.TestCase):
             self.conn, 3, {"name": "下线名片", "title": "设计师", "company": "黄雀"}, NOW,
         )
         business_cards.publish(self.conn, 3, "published", NOW)
+        self.conn.execute(
+            "UPDATE business_cards SET avatar_key='cards/child-avatar.jpg' WHERE user_id=3"
+        )
         self.child_card_id = card["public_id"]
+        self.media_patch = patch.object(
+            business_cards, "_media_url",
+            side_effect=lambda key: "https://example.test/" + key if key else "",
+        )
+        self.media_patch.start()
 
     def tearDown(self):
+        self.media_patch.stop()
         self.conn.close()
 
     def test_nonmember_sees_own_children_but_cannot_open_network(self):
@@ -68,12 +80,12 @@ class InviteNetworkAccessTests(unittest.TestCase):
             self.conn, 2, SECRET, cursor=0, limit=20, now=NOW,
         )
         self.assertFalse(page["can_browse_network"])
-        self.assertEqual(page["items"][0]["username"], "child")
+        self.assertNotIn("username", page["items"][0])
         self.assertEqual(page["items"][0]["membership_name"], "体验官")
         self.assertEqual(page["items"][0]["card_public_id"], self.child_card_id)
-        self.assertEqual(page["items"][0]["name"], "下线名片")
+        self.assertEqual(page["items"][0]["name"], "下线")
         self.assertEqual(page["items"][0]["title"], "设计师")
-        self.assertEqual(page["items"][0]["avatar"], "")
+        self.assertEqual(page["items"][0]["avatar"], "https://example.test/cards/child-avatar.jpg")
         self.assertEqual(page["items"][0]["node_grant"], "")
 
     def test_member_grant_opens_one_layer_and_allows_parent_and_child_navigation(self):
@@ -88,14 +100,14 @@ class InviteNetworkAccessTests(unittest.TestCase):
             self.conn, 2, home["items"][0]["node_grant"], SECRET,
             cursor=0, limit=20, now=NOW,
         )
-        self.assertEqual(opened["node"]["username"], "child")
-        self.assertEqual(opened["parent"]["username"], "viewer")
-        self.assertEqual(opened["items"][0]["username"], "grandchild")
+        self.assertEqual(opened["node"]["name"], "下线")
+        self.assertEqual(opened["parent"]["name"], "查看者")
+        self.assertEqual(opened["items"][0]["name"], "下线的下线")
         parent = invite_network.network_page(
             self.conn, 2, opened["parent"]["node_grant"], SECRET,
             cursor=0, limit=20, now=NOW,
         )
-        self.assertEqual(parent["node"]["username"], "viewer")
+        self.assertEqual(parent["node"]["name"], "查看者")
 
     def test_grants_are_viewer_bound_and_expire(self):
         grant = invite_network.issue_node_grant(2, 3, SECRET, NOW)
@@ -112,7 +124,7 @@ class InviteNetworkAccessTests(unittest.TestCase):
             self.conn, 2, SECRET, cursor=0, limit=20, now=NOW,
         )["items"][0]
         self.assertEqual(set(item), {
-            "username", "membership_tier", "membership_name", "relation",
+            "membership_tier", "membership_name", "relation",
             "card_available", "card_public_id", "name", "title", "avatar",
             "node_grant", "reward_points",
             "reward_status", "reward_expires_at",
@@ -122,7 +134,7 @@ class InviteNetworkAccessTests(unittest.TestCase):
         self.assertNotIn("address", item)
         self.assertNotIn("wechat_qr", item)
 
-    def test_unpublished_card_does_not_expose_profile_fields(self):
+    def test_unpublished_card_keeps_account_identity_but_hides_card_fields(self):
         self.conn.execute(
             "UPDATE business_cards SET status='unpublished' WHERE user_id=3"
         )
@@ -131,9 +143,9 @@ class InviteNetworkAccessTests(unittest.TestCase):
         )["items"][0]
         self.assertFalse(item["card_available"])
         self.assertEqual(item["card_public_id"], "")
-        self.assertEqual(item["name"], "")
+        self.assertEqual(item["name"], "下线")
         self.assertEqual(item["title"], "")
-        self.assertEqual(item["avatar"], "")
+        self.assertEqual(item["avatar"], "https://example.test/cards/child-avatar.jpg")
 
     def test_inactive_card_owner_does_not_expose_profile_fields(self):
         self.conn.execute(
@@ -144,11 +156,11 @@ class InviteNetworkAccessTests(unittest.TestCase):
         )["items"][0]
         self.assertFalse(item["card_available"])
         self.assertEqual(item["card_public_id"], "")
-        self.assertEqual(item["name"], "")
+        self.assertEqual(item["name"], "已停用用户")
         self.assertEqual(item["title"], "")
         self.assertEqual(item["avatar"], "")
 
-    def test_undiscoverable_card_does_not_expose_profile_fields(self):
+    def test_undiscoverable_card_keeps_account_identity_but_hides_card_fields(self):
         self.conn.execute(
             "UPDATE users SET membership_tier='experience',membership_expires_at=? WHERE id=2",
             (NOW + 999999,),
@@ -166,9 +178,25 @@ class InviteNetworkAccessTests(unittest.TestCase):
         for item in (downline, network_node):
             self.assertFalse(item["card_available"])
             self.assertEqual(item["card_public_id"], "")
-            self.assertEqual(item["name"], "")
+            self.assertEqual(item["name"], "下线")
             self.assertEqual(item["title"], "")
-            self.assertEqual(item["avatar"], "")
+            self.assertEqual(item["avatar"], "https://example.test/cards/child-avatar.jpg")
+
+    def test_phone_login_is_not_returned_and_uses_public_account_id(self):
+        self.conn.execute(
+            """INSERT INTO users(id,username,display_name,account_id,membership_tier,membership_expires_at)
+               VALUES(5,'13800001234','客户13800001234','HQPHONE5','',NULL)"""
+        )
+        self.conn.execute("""INSERT INTO user_invites(
+            campaign_id,inviter_user_id,invitee_user_id,invite_code,source,status,
+            risk_status,bound_at,updated_at
+        ) VALUES(1,2,5,'PHONE5','admin','bound','normal',?,?)""", (NOW, NOW))
+        items = invite_network.downlines_page(
+            self.conn, 2, SECRET, cursor=0, limit=20, now=NOW,
+        )["items"]
+        self.assertIn("HQPHONE5", [item["name"] for item in items])
+        self.assertNotIn("13800001234", json.dumps(items, ensure_ascii=False))
+        self.assertTrue(all("username" not in item for item in items))
 
     def test_partner_reward_display_is_zero_even_when_real_ledger_exists(self):
         self.conn.execute("""INSERT INTO membership_upgrade_records(

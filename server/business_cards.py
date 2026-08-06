@@ -515,17 +515,42 @@ def media_key(conn, public_id, field, owner_id=None):
     return row[field + "_key"] or ""
 
 
+def _looks_like_mobile_number(value):
+    compact = "".join(ch for ch in str(value or "").strip() if ch not in " -()")
+    if compact.startswith("+86"):
+        compact = compact[3:]
+    elif compact.startswith("86") and len(compact) == 13:
+        compact = compact[2:]
+    return any(
+        compact[index] == "1" and compact[index:index + 11].isdigit()
+        for index in range(max(0, len(compact) - 10))
+    )
+
+
+def network_account_name(row):
+    for field in ("display_name", "username"):
+        value = str(row[field] or "").strip()
+        if value and not _looks_like_mobile_number(value):
+            return value
+    return str(row["account_id"] or "").strip() or "黄雀用户"
+
+
 def public_network_person(conn, user_id, admin=False):
-    row = conn.execute("""SELECT u.display_name,u.account_status,c.public_id,c.name,c.headline,c.company,c.avatar_key,c.status,c.discoverable_in_network
+    row = conn.execute("""SELECT u.username,u.display_name,u.account_id,u.account_status,
+                                 c.public_id,c.headline,c.company,c.avatar_key,c.status,c.discoverable_in_network
                           FROM users u LEFT JOIN business_cards c ON c.user_id=u.id WHERE u.id=?""", (int(user_id),)).fetchone()
     count_sql = "SELECT COUNT(*) FROM user_invites WHERE inviter_user_id=?"
     if not admin:
         count_sql += " AND status='bound' AND risk_status='normal'"
     children_count = conn.execute(count_sql, (int(user_id),)).fetchone()[0]
     base = {"node_id": node_id(conn, user_id), "children_count": int(children_count or 0), "has_children": bool(children_count)}
-    if row and row["account_status"] == "active" and row["status"] == "published" and row["discoverable_in_network"]:
-        return {**base, "public_id": row["public_id"], "name": row["name"] or row["display_name"] or "黄雀用户", "avatar": _media_url(row["avatar_key"]), "headline": row["headline"] or "", "title": row["headline"] or "", "company": row["company"] or ""}
-    return {**base, "public_id": "", "name": "匿名用户", "avatar": "", "headline": "", "title": "", "company": ""}
+    if not row or row["account_status"] != "active":
+        return {**base, "public_id": "", "name": "已停用用户", "avatar": "", "headline": "", "title": "", "company": ""}
+    name = network_account_name(row)
+    avatar = _media_url(row["avatar_key"])
+    if row["status"] == "published" and row["discoverable_in_network"]:
+        return {**base, "public_id": row["public_id"], "name": name, "avatar": avatar, "headline": row["headline"] or "", "title": row["headline"] or "", "company": row["company"] or ""}
+    return {**base, "public_id": "", "name": name, "avatar": avatar, "headline": "", "title": "", "company": ""}
 
 
 def _admin_relation_fields(conn, relation):
