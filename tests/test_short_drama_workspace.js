@@ -409,6 +409,36 @@ test('Character reference response loss is recovered with one stable paid operat
   }
 });
 
+test('Completed stale character reference can be regenerated from the latest profile', () => {
+  const character = {
+    character_key:'lead',
+    reference_job_id:19,
+    reference_job_status:'ready',
+    reference_image_url:''
+  };
+  const operation = workspace.characterImageOperationState(character, {
+    character_key:'lead',
+    phase:'pending',
+    message:'仍在生成',
+    error:false,
+    active:false
+  });
+
+  assert.equal(operation.phase,'stale');
+  assert.equal(operation.active,false);
+  assert.match(operation.message,/角色资料已更新/);
+  assert.match(operation.message,/重新生成/);
+  assert.equal(workspace.characterImageAction(operation),'generate');
+  assert.equal(workspace.characterImageAction(
+    workspace.characterImageOperationState({
+      character_key:'lead',
+      reference_job_id:20,
+      reference_job_status:'linked',
+      reference_image_url:''
+    })
+  ),'check');
+});
+
 test('角色参考图读取不会把登录凭据发送给外部地址', async () => {
   const calls = [];
   const PreviousFileReader = global.FileReader;

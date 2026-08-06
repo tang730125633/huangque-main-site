@@ -61,6 +61,22 @@
     if(!operation||!operation.storage_key)return;
     try{if(typeof localStorage!=='undefined')localStorage.removeItem(operation.storage_key);}catch(ignore){}
   }
+  function characterImageOperationState(character,currentOperation){
+    character=character||{};
+    if(character.reference_job_status==='ready'&&!character.reference_image_url){
+      return {character_key:character.character_key||'',phase:'stale',message:'角色资料已更新，旧任务结果未自动采用；可按最新资料重新生成。',error:false,active:false};
+    }
+    if(currentOperation&&currentOperation.character_key===character.character_key)return currentOperation;
+    if(character.reference_job_status==='linked'&&character.reference_job_id&&!character.reference_image_url){
+      return {character_key:character.character_key||'',phase:'pending',message:'后台已有角色形象生成任务，请检查生成结果；不要重复提交。',error:false,active:false};
+    }
+    return {character_key:character.character_key||'',phase:'idle',message:'',error:false,active:false};
+  }
+  function characterImageAction(operation){
+    if(operation&&operation.active)return 'blocked';
+    if(operation&&operation.phase==='pending')return 'check';
+    return 'generate';
+  }
   function createClient(fetchImpl){
     fetchImpl=fetchImpl||(typeof fetch==='function'?fetch.bind(globalThis):null);
     if(!fetchImpl)throw new Error('fetch unavailable');
@@ -492,18 +508,15 @@
     function busy(flag){root.classList.toggle('busy',!!flag);root.querySelectorAll('button,textarea,input,select').forEach(function(node){var readOnlyAction=node.getAttribute('data-action')==='toggle-history';node.disabled=!!flag||(!readOnlyAction&&!state.permissions.can_edit&&node.closest('form,section'));});}
     function show(message,error){notice.textContent=message||'';notice.classList.toggle('error',!!error);notice.hidden=!message;}
     function characterImageOperationFor(characterKey){
-      if(characterImageOperation.character_key===characterKey)return characterImageOperation;
       var character=studioCharacter(characterKey);
-      if(character&&character.reference_job_id&&!character.reference_image_url){
-        return {character_key:characterKey,phase:'pending',message:'后台已有角色形象生成任务，请检查生成结果；不要重复提交。',error:false,active:false};
-      }
-      return {character_key:characterKey,phase:'idle',message:'',error:false,active:false};
+      return characterImageOperationState(character||{character_key:characterKey},characterImageOperation);
     }
     function characterImageButtonLabel(operation){
       if(operation.phase==='saving')return '正在保存视觉设定…';
       if(operation.phase==='submitting')return '正在提交生成任务…';
       if(operation.phase==='generating')return '角色形象生成中…';
       if(operation.phase==='pending')return '检查生成结果';
+      if(operation.phase==='stale')return '按最新资料重新生成';
       if(operation.phase==='success')return '重新生成角色形象图';
       return '生成角色形象图（按规则扣点）';
     }
@@ -1107,8 +1120,9 @@
         var characterForImage=studioCharacter(selectedCharacterKey),profileForm=doc.getElementById('sdCharacterProfile');
         if(!characterForImage||!profileForm)return;
         var currentImageOperation=characterImageOperationFor(characterForImage.character_key);
-        if(currentImageOperation.active)return;
-        if(currentImageOperation.phase==='pending'){
+        var currentImageAction=characterImageAction(currentImageOperation);
+        if(currentImageAction==='blocked')return;
+        if(currentImageAction==='check'){
           setCharacterImageOperation(characterForImage.character_key,'generating','正在检查后台生成结果…',false,true);
           loadCharacterStudio(true).then(function(){
             var pendingCharacter=studioCharacter(characterForImage.character_key);
@@ -1352,5 +1366,5 @@
     }).then(function(){render();schedulePoll();}).catch(function(error){show(error.message||'工作区加载失败',true);}).finally(function(){busy(false);render();});
     return {render:render,getState:function(){return state;},getPreflight:function(){return preflight;},getAutodraft:function(){return autodraft;},getRefinement:function(){return refinement;}};
   }
-  return {createClient:createClient,cloneProjectPayload:cloneProjectPayload,normalize:normalize,quickReplyPresentation:quickReplyPresentation,messageHtml:messageHtml,importContractHtml:importContractHtml,shotMediaIndex:shotMediaIndex,shotMediaHtml:shotMediaHtml,providerShotControlsHtml:providerShotControlsHtml,scriptHtml:scriptHtml,versionHtml:versionHtml,preflightHtml:preflightHtml,autodraftActionsHtml:autodraftActionsHtml,draftHtml:draftHtml,refinementHtml:refinementHtml,refinementActionsHtml:refinementActionsHtml,refinementProviderHtml:refinementProviderHtml,shellHtml:shellHtml,mount:mount};
+  return {createClient:createClient,characterImageOperationState:characterImageOperationState,characterImageAction:characterImageAction,cloneProjectPayload:cloneProjectPayload,normalize:normalize,quickReplyPresentation:quickReplyPresentation,messageHtml:messageHtml,importContractHtml:importContractHtml,shotMediaIndex:shotMediaIndex,shotMediaHtml:shotMediaHtml,providerShotControlsHtml:providerShotControlsHtml,scriptHtml:scriptHtml,versionHtml:versionHtml,preflightHtml:preflightHtml,autodraftActionsHtml:autodraftActionsHtml,draftHtml:draftHtml,refinementHtml:refinementHtml,refinementActionsHtml:refinementActionsHtml,refinementProviderHtml:refinementProviderHtml,shellHtml:shellHtml,mount:mount};
 });

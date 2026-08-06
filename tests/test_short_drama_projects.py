@@ -19,7 +19,10 @@ SERVER_DIR = str(Path(__file__).resolve().parents[1] / "server")
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
-from content_domains import core, image, short_drama, short_drama_production, video
+from content_domains import (
+    core, image, short_drama, short_drama_character_studio,
+    short_drama_production, video,
+)
 
 
 def valid_project(**changes):
@@ -1999,6 +2002,106 @@ class ShortDramaRouteTests(unittest.TestCase):
             db.commit()
         with core._job_queue_lock:
             core._queued_job_ids.discard(accepted["job_id"])
+
+    def test_character_reference_can_regenerate_after_profile_changes_while_running(self):
+        project = self.applied_project()
+        character = project["characters"][0]
+        snapshot_id = "locked-script-for-stale-character-reference"
+        now = 1_700_000_000
+        with closing(core.jdb()) as db:
+            db.execute(
+                "INSERT INTO short_drama_script_snapshots "
+                "(id,project_id,version,status,script_json,readable_text,input_hash,"
+                "provider,model_version,created_by,created_at,locked_by,locked_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    snapshot_id, project["id"], 1, "locked",
+                    json.dumps({"characters": project["characters"]}),
+                    "locked", "stale-character-input", "test", "test-v1",
+                    "alice", now, "alice", now,
+                ),
+            )
+            db.execute(
+                "INSERT INTO short_drama_conversations "
+                "(project_id,state,understanding_json,current_version_id,"
+                "locked_version_id,revision,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    project["id"], "script_locked", "{}", snapshot_id,
+                    snapshot_id, 1, now, now,
+                ),
+            )
+            db.commit()
+        request = {
+            "project_id": project["id"],
+            "revision": project["revision"],
+            "character_key": character["character_key"],
+        }
+        status, accepted = self.request(
+            "POST", "/api/gen/short-drama/generate-character-reference",
+            body=request, idempotency_key="character-before-profile-change",
+        )
+        self.assertEqual(200, status)
+
+        saved = short_drama_character_studio.save_profile(
+            core.jdb,
+            "alice",
+            {
+                "project_id": project["id"],
+                "project_revision": project["revision"],
+                "character_key": character["character_key"],
+                "name": character["name"],
+                "identity_text": "调查记者",
+                "personality": "敏锐、坚定",
+                "appearance_prompt": "短发，清晰面部特征",
+                "wardrobe_prompt": "米色风衣",
+            },
+        )
+        output = Path(self.tmp.name)
+        (output / "stale-character.png").write_bytes(
+            b"\x89PNG\r\n\x1a\nstale-reference"
+        )
+        with closing(core.jdb()) as db:
+            db.execute(
+                "UPDATE jobs SET status='done',result=? WHERE id=?",
+                (
+                    json.dumps({
+                        "file": "stale-character.png",
+                        "url": "/api/gen/file/stale-character.png",
+                    }),
+                    accepted["job_id"],
+                ),
+            )
+            db.commit()
+        with core._job_queue_lock:
+            core._queued_job_ids.discard(accepted["job_id"])
+        with patch.object(image, "OUT_DIR", output):
+            short_drama.reconcile_character_reference_job(
+                core.jdb, accepted["job_id"], "alice"
+            )
+
+        studio = short_drama_character_studio.workspace(
+            core.jdb, "alice", "alice", project["id"]
+        )
+        current = next(
+            item for item in studio["characters"]
+            if item["character_key"] == character["character_key"]
+        )
+        self.assertEqual(saved["project_revision"], studio["project_revision"])
+        self.assertEqual("ready", current["reference_job_status"])
+        self.assertFalse(current["reference_image_url"])
+
+        status, regenerated = self.request(
+            "POST", "/api/gen/short-drama/generate-character-reference",
+            body=dict(request, revision=studio["project_revision"]),
+            idempotency_key="character-after-profile-change",
+        )
+        self.assertEqual(200, status)
+        self.assertFalse(regenerated["replayed"])
+        self.assertNotEqual(accepted["job_id"], regenerated["job_id"])
+        self.assertEqual(2, len(self.points.deduct_calls))
+        with core._job_queue_lock:
+            core._queued_job_ids.discard(regenerated["job_id"])
 
     def test_character_reference_is_globally_exclusive_across_collaborators(self):
         self.enable_board_roles({"alice": "owner", "bob": "editor"})
