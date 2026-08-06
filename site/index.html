@@ -3,13 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="黄雀 AI：从 IP12、Agent 与无限画布，到图文音视频生产和 HQ CLI。">
-  <title>黄雀 AI · 会持续生长的内容系统</title>
+  <meta name="description" content="黄雀 AI：先听懂你的生意，再让文字、图片、声音与视频从同一个故事里持续生长。">
+  <title>黄雀 AI · 从散落，到生长</title>
   <link rel="icon" href="/assets/logo_sparrow.png">
-  <link rel="stylesheet" href="/homepage.css?v=20260805-fusion-violet2">
+  <link rel="stylesheet" href="/homepage.css?v=20260806-webgl-story1">
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
+  <canvas class="webgl-stage" data-webgl-stage aria-hidden="true"></canvas>
+  <div class="webgl-vignette" aria-hidden="true"></div>
 
   <header class="site-header">
     <nav class="nav-shell" aria-label="主导航">
@@ -23,7 +25,7 @@
         <a href="#ip12">IP12</a>
         <a href="#agent">Agent + Canvas</a>
         <a href="#capabilities">能力地图</a>
-        <a href="#cli">CLI</a>
+        <a href="#growth">内容生长</a>
       </div>
 
       <div class="nav-actions">
@@ -39,7 +41,7 @@
           <a href="#agent" onclick="this.closest('details').open=false">Agent + Canvas</a>
           <a href="#video" onclick="this.closest('details').open=false">视频生成</a>
           <a href="#capabilities" onclick="this.closest('details').open=false">能力地图</a>
-          <a href="#cli" onclick="this.closest('details').open=false">HQ CLI</a>
+          <a href="#growth" onclick="this.closest('details').open=false">内容生长</a>
           <a href="/login">登录 / 注册</a>
         </div>
       </details>
@@ -51,12 +53,15 @@
       <div class="starfield" aria-hidden="true"></div>
       <div class="hero-moon" aria-hidden="true"><img src="/assets/home/moon.webp" alt=""></div>
       <div class="hero-inner" data-reveal>
-        <p class="hero-badge"><i></i> 短剧顾问 · 一键成片已上线 2026</p>
-        <h1>让你的生意，<br class="mobile-break">拥有一套<br><em>会持续生长的<br class="mobile-break">内容系统。</em></h1>
-        <p class="hero-lead">IP12 定义你是谁，Agent 先给计划，Canvas 把图文音视频串成可审核的生产链路。</p>
+        <p class="hero-badge"><i></i> HUANGQUE · LIVING CONTENT SYSTEM</p>
+        <p class="hero-eyebrow">你的生意，早已有自己的故事。</p>
+        <h1>我们让它，<br><em>从散落开始生长。</em></h1>
+        <p class="hero-lead">先听懂你的经验、产品和判断，再让文字、图片、声音与视频，从同一个故事里长出来。</p>
         <div class="hero-actions">
-          <a class="button button-primary" href="/workbench/inspiration">开始你的创作 →</a>
+          <a class="button button-primary" href="#flow">看它如何生长 ↓</a>
+          <a class="button button-secondary" href="/workbench/inspiration">进入工作台</a>
         </div>
+        <div class="hero-orbit-label" aria-hidden="true"><span>LISTEN</span><span>PLAN</span><span>CREATE</span><span>GROW</span></div>
       </div>
     </section>
 
@@ -82,9 +87,9 @@
 
     <section class="story" id="flow">
       <div class="page-shell story-intro" data-reveal>
-        <p class="kicker">THE HUANGQUE FLOW</p>
-        <h2>向下滚动，<br><em>看同一条内容链路逐步长出来。</em></h2>
-        <p>不是功能卡片的堆叠。每一步的结果，都会成为下一步的输入。</p>
+        <p class="kicker">FROM SCATTERED TO GROWING</p>
+        <h2>不是立刻生成，<br><em>而是先找到属于你的那条线。</em></h2>
+        <p>黄雀把散落的经验、产品与灵感连起来。你向下滚动，也在亲手推进这条内容生长路径。</p>
       </div>
 
       <div class="page-shell story-layout">
@@ -92,10 +97,10 @@
           <div class="story-stage">
             <div class="stage-head"><span>黄雀任务台 · 新品内容启动</span><span data-stage-label aria-live="polite">01 / IP12</span></div>
             <div class="stage-track" aria-hidden="true">
-              <span class="is-active" data-indicator="ip12"><b>01</b> IP12</span>
-              <span data-indicator="agent"><b>02</b> AGENT</span>
-              <span data-indicator="video"><b>03</b> VIDEO</span>
-              <span data-indicator="cli"><b>04</b> CLI</span>
+              <span class="is-active" data-indicator="ip12"><b>01</b> LISTEN</span>
+              <span data-indicator="agent"><b>02</b> PLAN</span>
+              <span data-indicator="video"><b>03</b> CREATE</span>
+              <span data-indicator="growth"><b>04</b> GROW</span>
             </div>
 
             <div class="stage-panels">
@@ -153,17 +158,16 @@
                 </div>
               </section>
 
-              <section class="story-panel panel-cli" data-panel="cli" aria-hidden="true">
-                <div class="terminal-head"><span>HQ CLI · v0.6</span><span><i></i> DEVICE AUTH</span></div>
-                <pre><code><span class="term-prompt">$</span> hq login --json
-<span class="term-dim">{"next":"在浏览器中确认设备授权"}</span>
-
-<span class="term-prompt">$</span> hq capabilities --json
-<span class="term-good">✓</span> IP12 · Canvas · Assets · Generation
-
-<span class="term-prompt">$</span> hq describe canvas-agent-plan --json
-<span class="term-gold">→ 付费动作仍然先报价、再确认</span></code></pre>
-                <div class="install-line"><code data-command>curl -fsSL https://huangquechuanmei.com/downloads/hq/install.sh | sh</code><button type="button" data-copy>[ 复制 ]</button></div>
+              <section class="story-panel panel-growth" data-panel="growth" aria-hidden="true">
+                <div class="growth-core"><span><img src="/assets/logo_sparrow.png" alt=""></span><small>HUANGQUE MEMORY</small><strong>这次创作，<br>会成为下一次的起点。</strong></div>
+                <div class="growth-orbit" aria-label="可复用的内容资产">
+                  <span class="asset-pill asset-script">品牌故事</span>
+                  <span class="asset-pill asset-image">主视觉</span>
+                  <span class="asset-pill asset-voice">声音资产</span>
+                  <span class="asset-pill asset-video">成片</span>
+                  <span class="asset-pill asset-topic">下一个选题</span>
+                </div>
+                <div class="growth-return"><span>作品回到资产库</span><i></i><b>继续生长</b></div>
               </section>
             </div>
 
@@ -193,11 +197,11 @@
             <a href="/workbench/video">进入视频工作台 ↗</a>
           </article>
 
-          <article class="story-step" id="cli" data-story="cli" data-label="04 / HQ CLI">
-            <span class="step-no">04 / HQ CLI</span>
-            <h3>你自己的 Agent，<br>也能受控使用黄雀。</h3>
-            <p>HQ CLI 使用浏览器设备授权和能力范围，不要求把主站密码交给外部 Agent；付费动作仍然遵守报价与确认边界。</p>
-            <a href="/downloads/hq/install.sh">获取 HQ CLI ↗</a>
+          <article class="story-step" id="growth" data-story="growth" data-label="04 / GROW">
+            <span class="step-no">04 / LIVING CONTENT MEMORY</span>
+            <h3>一次创作不是终点，<br>它会反过来丰富你。</h3>
+            <p>文案、图片、声音与视频回到资产库，成为新选题和新作品的起点。你的生意，从此不再每次从零开始。</p>
+            <a href="/workbench/assets">查看我的资产 ↗</a>
           </article>
         </div>
       </div>
@@ -337,6 +341,7 @@
     </div>
   </footer>
 
+  <script src="/homepage-webgl.js?v=20260806-story1" defer></script>
   <script>
   (() => {
     const steps = [...document.querySelectorAll('[data-story]')];
@@ -440,22 +445,6 @@
     addEventListener('resize', scheduleStoryIntro);
     reducedMotion.addEventListener('change', scheduleStoryIntro);
     desktopStory.addEventListener('change', scheduleStoryIntro);
-
-    const copyButton = document.querySelector('[data-copy]');
-    copyButton.addEventListener('click', async () => {
-      const original = copyButton.textContent;
-      copyButton.textContent = '[ 正在复制 ]';
-      const fallback = setTimeout(() => copyButton.textContent = '[ 请手动复制 ]', 800);
-      setTimeout(() => copyButton.textContent = original, 2400);
-      try {
-        await navigator.clipboard.writeText(document.querySelector('[data-command]').textContent.trim());
-        clearTimeout(fallback);
-        copyButton.textContent = '[ 已复制 ]';
-      } catch {
-        clearTimeout(fallback);
-        copyButton.textContent = '[ 请手动复制 ]';
-      }
-    });
 
   })();
   </script>
