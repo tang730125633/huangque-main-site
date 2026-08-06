@@ -90,6 +90,8 @@ map_path() {
       printf '30|/home/ubuntu/content-api/leadgen_api.py|leadgen|0\n' ;;
     server/admin_api.py)
       printf '30|/home/ubuntu/content-api/admin_api.py|admin|0\n' ;;
+    server/inspiration_cases.py)
+      printf '10|/home/ubuntu/content-api/inspiration_cases.py|admin|0\n' ;;
     server/tikhub.py|server/func_names.py)
       printf '10|/home/ubuntu/content-api/%s|content|0\n' "${path#server/}" ;;
     server/content_domains/*.py)
