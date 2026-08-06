@@ -319,18 +319,22 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             'data-module-tab="users"', 'data-module-tab="logs"',
             'data-module-tab="recharge"', 'data-module-tab="points"',
             'data-module-tab="invite"', 'data-module-tab="inspirations"',
-            'data-module-tab="services"', 'data-module-tab="channels"',
+            'data-module-tab="operations"', 'data-module-tab="services"', 'data-module-tab="channels"',
             'data-module-tab="features"', 'data-module="dashboard"',
+            'data-module="operations"', 'id="operationsBox"', "function renderOperations(data)",
+            "健康接口可达", "不等于作品已验收", "未纳入功能目录",
+            "Array.isArray(key.feature_keys)", "未按功能 ID 关联", "现有接口只有全局配置",
             'id="globalUserSearch"', 'id="customerLayer"',
             "/api/admin/activity?limit=8", "/api/admin/recharge/orders?status=pending",
             "module:'dashboard'", "aria-current", "/workbench/hq-icons-duotone.js",
             'class="side-nav-icon"', "prefers-reduced-motion:reduce",
             "dashboard:'home'", "users:'users'", "logs:'clock'", "recharge:'coins'",
             "points:'trend'", "invite:'userPlus'", "inspirations:'sparkles'",
-            "services:'checkCircle'", "channels:'lock'", "features:'sliders'",
+            "operations:'layers'", "services:'checkCircle'", "channels:'lock'", "features:'sliders'",
         ):
             self.assertIn(marker, html)
         self.assertNotIn('data-module-tab="ops"', html)
+        self.assertNotIn("function operationTerms", html)
         self.assertNotIn('class="module-tabs', html)
 
 
