@@ -1226,6 +1226,36 @@ def _project_username_for_access(db_factory, username, project_id, access=None, 
     return owner
 
 
+def validate_avatar_binding_submission(
+    db_factory, username, binding, require_revision=True,
+):
+    if not binding:
+        return
+    project_id = str(binding.get("project_id") or "").strip()
+    character_key = str(binding.get("character_key") or "").strip()
+    revision = binding.get("project_revision")
+    conn = _connection(db_factory)
+    try:
+        project = conn.execute(
+            "SELECT revision FROM short_drama_projects "
+            "WHERE id=? AND username=? AND deleted=0",
+            (project_id, username),
+        ).fetchone()
+        if not project:
+            raise LookupError("short drama project does not exist")
+        if require_revision and int(project[0]) != revision:
+            raise RevisionConflict("项目已更新，请刷新后重试")
+        character = conn.execute(
+            "SELECT 1 FROM short_drama_characters "
+            "WHERE project_id=? AND character_key=?",
+            (project_id, character_key),
+        ).fetchone()
+        if not character:
+            raise LookupError("short drama character does not exist")
+    finally:
+        conn.close()
+
+
 def _project_create_request_data(data):
     return {
         "board_id": data.get("board_id"),
@@ -2974,7 +3004,8 @@ def record_character_reference_job(connection, prepared, username, job_id):
         raise LookupError("短剧项目不存在")
     if int(project[0]) != request["revision"]:
         raise RevisionConflict("项目已在其他页面更新，请刷新后重试")
-    if project[1] not in _CHARACTER_REFERENCE_STAGES:
+    if not _character_reference_stage_allowed(
+            connection, request["project_id"], project[1]):
         raise ValueError("当前阶段不能生成角色标准图")
     character = connection.execute(
         "SELECT character_key,name,identity_text,personality,"

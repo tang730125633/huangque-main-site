@@ -11,8 +11,71 @@
     if(typeof crypto!=='undefined'&&crypto.randomUUID)return prefix+'-'+crypto.randomUUID();
     return prefix+'-'+Date.now()+'-'+Math.random().toString(16).slice(2);
   }
-  function avatarCreateUrl(){
-    return '/workbench/video.html?function=cinematic&action=create-avatar';
+  function hash(value){
+    var first=2166136261,second=2246822519,input=text(value);
+    for(var i=0;i<input.length;i+=1){first=Math.imul(first^input.charCodeAt(i),16777619);second=Math.imul(second^input.charCodeAt(i),3266489917);}
+    return (first>>>0).toString(16).padStart(8,'0')+(second>>>0).toString(16).padStart(8,'0');
+  }
+  function persistPaidOperation(storageKey,operation){
+    var serialized=JSON.stringify(operation);
+    try{
+      if(typeof localStorage==='undefined')throw new Error('localStorage unavailable');
+      localStorage.setItem(storageKey,serialized);
+      if(localStorage.getItem(storageKey)!==serialized)throw new Error('localStorage verification failed');
+    }catch(cause){
+      try{if(typeof localStorage!=='undefined')localStorage.removeItem(storageKey);}catch(ignore){}
+      var error=new Error('浏览器安全存储不可用或空间不足，未发送付费请求。请释放本站存储空间、允许网站存储后重试。');
+      error.code='paid_operation_persistence_unavailable';error.cause=cause;throw error;
+    }
+    return operation;
+  }
+  function operationOwner(value){
+    var owner=text(value).trim();
+    if(!owner){var error=new Error('无法确认当前登录账号，未发送付费请求。请重新登录后重试。');error.code='paid_operation_owner_required';throw error;}
+    return owner;
+  }
+  function avatarOperation(payload,ownerUsername){
+    payload=payload||{};var binding=payload.short_drama_binding||{},owner=operationOwner(ownerUsername);
+    var signature=JSON.stringify({project_id:binding.project_id||'',character_key:binding.character_key||'',name:payload.name||'',image_data:payload.image_data||''});
+    var storageKey='hq-short-drama-avatar-operation:'+hash(owner)+':'+hash(signature),value='';
+    try{if(typeof localStorage!=='undefined')value=localStorage.getItem(storageKey)||'';}catch(ignore){}
+    if(value){try{var saved=JSON.parse(value);if(saved&&saved.key&&saved.owner===owner){var restored={key:saved.key,storage_key:storageKey,job_id:saved.job_id||null,payload:saved.payload||payload,owner:owner};return saved.payload?restored:persistPaidOperation(storageKey,restored);}}catch(error){if(error&&error.code==='paid_operation_persistence_unavailable')throw error;}}
+    value='character-avatar-create-'+hash(signature)+'-'+key('op').split('-').slice(-1)[0];
+    var operation={key:value,storage_key:storageKey,job_id:null,payload:JSON.parse(JSON.stringify(payload)),owner:owner};
+    return persistPaidOperation(storageKey,operation);
+  }
+  function finishAvatarOperation(operation){
+    if(!operation||!operation.storage_key)return;
+    try{if(typeof localStorage!=='undefined')localStorage.removeItem(operation.storage_key);}catch(ignore){}
+  }
+  function characterImageOperation(payload,ownerUsername){
+    payload=payload||{};var owner=operationOwner(ownerUsername);
+    var signature=JSON.stringify({project_id:payload.project_id||'',revision:Number(payload.revision||0),character_key:payload.character_key||''});
+    var storageKey='hq-short-drama-character-image-operation:'+hash(owner)+':'+hash(signature),value='';
+    try{if(typeof localStorage!=='undefined')value=localStorage.getItem(storageKey)||'';}catch(ignore){}
+    if(value){try{var saved=JSON.parse(value);if(saved&&saved.key&&saved.owner===owner){saved.storage_key=storageKey;if(saved.payload)return saved;saved.payload=payload;return persistPaidOperation(storageKey,saved);}}catch(error){if(error&&error.code==='paid_operation_persistence_unavailable')throw error;}}
+    var operation={key:'character-image-'+hash(signature)+'-'+key('op').split('-').slice(-1)[0],storage_key:storageKey,job_id:null,payload:JSON.parse(JSON.stringify(payload)),owner:owner};
+    return persistPaidOperation(storageKey,operation);
+  }
+  function finishCharacterImageOperation(operation){
+    if(!operation||!operation.storage_key)return;
+    try{if(typeof localStorage!=='undefined')localStorage.removeItem(operation.storage_key);}catch(ignore){}
+  }
+  function characterImageOperationState(character,currentOperation){
+    character=character||{};
+    if(character.reference_job_status==='ready'&&!character.reference_image_url){
+      return {character_key:character.character_key||'',phase:'stale',message:'角色资料已更新，旧任务结果未自动采用；可按最新资料重新生成。',error:false,active:false};
+    }
+    if(currentOperation&&currentOperation.character_key===character.character_key)return currentOperation;
+    if(character.reference_job_status==='linked'&&character.reference_job_id&&!character.reference_image_url){
+      return {character_key:character.character_key||'',phase:'pending',message:'后台已有角色形象生成任务，请检查生成结果；不要重复提交。',error:false,active:false};
+    }
+    return {character_key:character.character_key||'',phase:'idle',message:'',error:false,active:false};
+  }
+  function characterImageAction(operation){
+    if(operation&&operation.active)return 'blocked';
+    if(operation&&operation.phase==='pending')return 'check';
+    return 'generate';
   }
   function createClient(fetchImpl){
     fetchImpl=fetchImpl||(typeof fetch==='function'?fetch.bind(globalThis):null);
@@ -25,13 +88,103 @@
       return fetchImpl(path,{method:options.method||'GET',credentials:'same-origin',cache:'no-store',headers:headers,body:body})
         .then(function(response){return response.text().then(function(raw){
           var data={};try{data=raw?JSON.parse(raw):{};}catch(ignore){data={detail:raw};}
-          if(!response.ok){var error=new Error(data.detail||('HTTP '+response.status));error.status=response.status;error.code=data.code;throw error;}
+          if(!response.ok){var error=new Error(data.detail||('HTTP '+response.status));error.status=response.status;error.code=data.code;error.operation_terminal=!!data.operation_terminal;throw error;}
           return data;
         });});
     }
     function mutate(path,payload,prefix){return request(path,{method:'POST',headers:{'Idempotency-Key':key(prefix)},body:payload});}
+    function createAvatar(payload,ownerUsername){
+      var operation;try{operation=avatarOperation(payload,ownerUsername);}catch(error){return Promise.reject(error);}
+      return request('/api/gen/avatar',{method:'POST',headers:{'Idempotency-Key':operation.key},body:operation.payload||payload}).then(function(result){
+        result=result||{};operation.job_id=result.job_id||operation.job_id||null;
+        try{if(typeof localStorage!=='undefined')localStorage.setItem(operation.storage_key,JSON.stringify(operation));}catch(ignore){}
+        result._avatar_operation=operation;return result;
+      }).catch(function(error){if(error&&error.operation_terminal)finishAvatarOperation(operation);throw error;});
+    }
+    function recoverAvatarOperations(ownerUsername){
+      var operations=[];
+      try{
+        var owner=operationOwner(ownerUsername),accountPrefix='hq-short-drama-avatar-operation:'+hash(owner)+':';
+        if(typeof localStorage==='undefined')return Promise.resolve([]);
+        for(var i=0;i<localStorage.length;i+=1){
+          var storageKey=localStorage.key(i);
+          if(!storageKey||storageKey.indexOf(accountPrefix)!==0)continue;
+          var operation=JSON.parse(localStorage.getItem(storageKey)||'{}');
+          if(operation&&operation.owner===owner&&operation.key&&(operation.job_id||operation.payload)){operation.storage_key=storageKey;operations.push(operation);}
+        }
+      }catch(ignore){return Promise.resolve([]);}
+      return Promise.all(operations.map(function(operation){
+        var submitted=operation.job_id?Promise.resolve(operation):request('/api/gen/avatar',{method:'POST',headers:{'Idempotency-Key':operation.key},body:operation.payload}).then(function(result){
+          operation.job_id=result&&result.job_id||null;
+          try{localStorage.setItem(operation.storage_key,JSON.stringify(operation));}catch(ignore){}
+          return operation;
+        });
+        return submitted.then(function(){if(!operation.job_id)return null;return request('/api/gen/job/'+encodeURIComponent(operation.job_id));}).then(function(job){
+          if(!job)return null;
+          var binding=job&&job.result&&job.result.short_drama_binding||{};
+          if(['error','failed'].indexOf(job&&job.status)>=0||(job&&job.status==='done'&&binding.status!=='pending'))finishAvatarOperation(operation);
+          return job;
+        }).catch(function(error){if(error&&error.operation_terminal)finishAvatarOperation(operation);return null;});
+      }));
+    }
+    function generateCharacterImage(payload,ownerUsername){
+      var operation;try{operation=characterImageOperation(payload,ownerUsername);}catch(error){return Promise.reject(error);}
+      return request('/api/gen/short-drama/generate-character-reference',{method:'POST',headers:{'Idempotency-Key':operation.key},body:operation.payload||payload}).then(function(result){
+        result=result||{};operation.job_id=result.job_id||operation.job_id||null;
+        try{if(typeof localStorage!=='undefined')localStorage.setItem(operation.storage_key,JSON.stringify(operation));}catch(ignore){}
+        result._character_image_operation=operation;return result;
+      }).catch(function(error){if(error&&error.operation_terminal)finishCharacterImageOperation(operation);throw error;});
+    }
+    function recoverCharacterImageOperations(ownerUsername){
+      var operations=[];
+      try{
+        var owner=operationOwner(ownerUsername),accountPrefix='hq-short-drama-character-image-operation:'+hash(owner)+':';
+        if(typeof localStorage==='undefined')return Promise.resolve([]);
+        for(var i=0;i<localStorage.length;i+=1){
+          var storageKey=localStorage.key(i);
+          if(!storageKey||storageKey.indexOf(accountPrefix)!==0)continue;
+          var operation=JSON.parse(localStorage.getItem(storageKey)||'{}');
+          if(operation&&operation.owner===owner&&operation.key&&(operation.job_id||operation.payload)){operation.storage_key=storageKey;operations.push(operation);}
+        }
+      }catch(ignore){return Promise.resolve([]);}
+      return Promise.all(operations.map(function(operation){
+        var submitted=operation.job_id?Promise.resolve(operation):request('/api/gen/short-drama/generate-character-reference',{method:'POST',headers:{'Idempotency-Key':operation.key},body:operation.payload}).then(function(result){
+          operation.job_id=result&&result.job_id||null;
+          try{localStorage.setItem(operation.storage_key,JSON.stringify(operation));}catch(ignore){}
+          return operation;
+        });
+        return submitted.then(function(){if(!operation.job_id)return null;return request('/api/gen/job/'+encodeURIComponent(operation.job_id));}).then(function(job){
+          if(job&&['done','error','failed'].indexOf(job.status)>=0)finishCharacterImageOperation(operation);
+          return job;
+        }).catch(function(error){if(error&&error.operation_terminal)finishCharacterImageOperation(operation);return null;});
+      }));
+    }
+    function imageData(url){
+      url=text(url).trim();
+      if(!url)return Promise.reject(new Error('请先生成角色形象图'));
+      if(/^data:image\/(?:jpeg|png|webp);base64,/i.test(url))return Promise.resolve(url);
+      var base=(typeof location!=='undefined'&&location.href)||'http://localhost/';
+      var relative=false;
+      try{relative=new URL(url,base).origin===new URL(base).origin;}catch(ignore){relative=false;}
+      var headers={'Accept':'image/jpeg,image/png,image/webp'};
+      if(relative)headers.Authorization='Bearer __cookie__';
+      return fetchImpl(url,{method:'GET',credentials:relative?'same-origin':'omit',cache:'no-store',headers:headers})
+        .then(function(response){
+          if(!response.ok)throw new Error('角色形象图读取失败（HTTP '+response.status+'）');
+          return response.blob();
+        }).then(function(blob){
+          if(!/^image\/(?:jpeg|png|webp)$/i.test(blob.type||''))throw new Error('角色形象图格式必须为 JPG、PNG 或 WebP');
+          return new Promise(function(resolve,reject){
+            var reader=new FileReader();
+            reader.onload=function(){resolve(String(reader.result||''));};
+            reader.onerror=function(){reject(new Error('角色形象图读取失败'));};
+            reader.readAsDataURL(blob);
+          });
+        });
+    }
     return {
       workspace:function(id){return request('/api/gen/short-drama/conversation?project_id='+encodeURIComponent(id));},
+      currentUsername:function(){return request('/api/auth/me').then(function(result){return operationOwner(result&&result.user&&result.user.username);});},
       message:function(payload){return mutate('/api/gen/short-drama/conversation/messages',payload,'message');},
       generate:function(payload){return mutate('/api/gen/short-drama/conversation/script/generate',payload,'generate');},
       updateShot:function(payload){return mutate('/api/gen/short-drama/conversation/script/shot/update',payload,'shot-update');},
@@ -42,7 +195,14 @@
       characterStudio:function(id){return request('/api/gen/short-drama/character-studio?project_id='+encodeURIComponent(id));},
       saveCharacterProfile:function(payload){return mutate('/api/gen/short-drama/character-studio/profile',payload,'character-profile');},
       bindCharacterAvatar:function(payload){return mutate('/api/gen/short-drama/character-studio/bind-avatar',payload,'character-avatar');},
-      generateCharacterImage:function(payload){return mutate('/api/gen/short-drama/generate-character-reference',payload,'character-image');},
+      generateCharacterImage:generateCharacterImage,
+      recoverCharacterImageOperations:recoverCharacterImageOperations,
+      finishCharacterImageOperation:finishCharacterImageOperation,
+      createAvatar:createAvatar,
+      finishAvatarOperation:finishAvatarOperation,
+      recoverAvatarOperations:recoverAvatarOperations,
+      job:function(id){return request('/api/gen/job/'+encodeURIComponent(id));},
+      imageData:imageData,
       preflight:function(id){return request('/api/gen/short-drama/preflight?project_id='+encodeURIComponent(id));},
       prepare:function(payload){return mutate('/api/gen/short-drama/preflight/generate',payload,'preflight');},
       confirmPlan:function(payload){return mutate('/api/gen/short-drama/preflight/confirm',payload,'confirm-plan');},
@@ -340,15 +500,67 @@
   }
   function mount(doc,options){
     options=options||{};
-    var projectId=text(options.projectId).trim(),client=options.client||createClient(options.fetchImpl),state=normalize({}),preflight={state:'script_required',current_plan:null,versions:[]},autodraft={state:'plan_required',versions:[]},refinement=null,characterStudio=null,selectedCharacterKey='',selectedShotKey='',selectedProviderShotKey='',pollTimer=null,historyExpanded=false,inspectorExpanded=!(doc.defaultView&&doc.defaultView.innerWidth<=1050);
+    var projectId=text(options.projectId).trim(),client=options.client||createClient(options.fetchImpl),accountUsername='',state=normalize({}),preflight={state:'script_required',current_plan:null,versions:[]},autodraft={state:'plan_required',versions:[]},refinement=null,characterStudio=null,selectedCharacterKey='',selectedShotKey='',selectedProviderShotKey='',pollTimer=null,historyExpanded=false,inspectorExpanded=!(doc.defaultView&&doc.defaultView.innerWidth<=1050),characterNameEditing=false,characterProfileDirty=false,characterImageOperation={character_key:'',phase:'idle',message:'',error:false,active:false};
     var root=doc.getElementById('shortDramaWorkspace');
     if(!root||!projectId)throw new Error('workspace target unavailable');
-    root.innerHTML=shellHtml();root.insertAdjacentHTML('beforeend','<div class="sd-character-modal" id="sdCharacterModal" hidden><div class="sd-character-modal-backdrop" data-action="close-character"></div><section role="dialog" aria-modal="true" aria-labelledby="sdCharacterModalTitle"><header><div><span>角色形象工作室</span><h2 id="sdCharacterModalTitle">准备角色</h2></div><button type="button" data-action="close-character" aria-label="关闭">×</button></header><div id="sdCharacterModalBody"></div></section></div><div class="sd-character-modal sd-shot-modal" id="sdShotModal" hidden><div class="sd-character-modal-backdrop" data-action="close-shot-editor"></div><section role="dialog" aria-modal="true" aria-labelledby="sdShotModalTitle"><header><div><span>单镜头编辑器</span><h2 id="sdShotModalTitle">编辑镜头</h2></div><button type="button" data-action="close-shot-editor" aria-label="关闭">×</button></header><div id="sdShotModalBody"></div></section></div>');root.hidden=false;
+    root.innerHTML=shellHtml();root.insertAdjacentHTML('beforeend','<div class="sd-character-modal" id="sdCharacterModal" hidden><div class="sd-character-modal-backdrop" data-action="close-character"></div><section role="dialog" aria-modal="true" aria-labelledby="sdCharacterModalTitle"><header><div class="sd-character-modal-heading"><span>角色形象工作室</span><div class="sd-character-name-view" id="sdCharacterNameView"><h2 id="sdCharacterModalTitle">准备角色</h2><button type="button" class="sd-character-name-action" data-action="edit-character-name">✎ 修改名称</button></div><div class="sd-character-name-editor" id="sdCharacterNameEditor" hidden><input id="sdCharacterNameInput" maxlength="20" aria-label="角色显示名称"><button type="button" class="sd-character-name-save" data-action="save-character-name">保存</button><button type="button" class="sd-character-name-cancel" data-action="cancel-character-name">取消</button></div><small id="sdCharacterKeyLabel"></small></div><button type="button" class="sd-character-modal-close" data-action="close-character" aria-label="关闭">×</button></header><div id="sdCharacterModalBody"></div></section></div><div class="sd-character-modal sd-shot-modal" id="sdShotModal" hidden><div class="sd-character-modal-backdrop" data-action="close-shot-editor"></div><section role="dialog" aria-modal="true" aria-labelledby="sdShotModalTitle"><header><div><span>单镜头编辑器</span><h2 id="sdShotModalTitle">编辑镜头</h2></div><button type="button" data-action="close-shot-editor" aria-label="关闭">×</button></header><div id="sdShotModalBody"></div></section></div>');root.hidden=false;
     var notice=doc.getElementById('sdWorkspaceNotice');
-    function busy(flag){root.classList.toggle('busy',!!flag);root.querySelectorAll('button,textarea').forEach(function(node){var readOnlyAction=node.getAttribute('data-action')==='toggle-history';node.disabled=!!flag||(!readOnlyAction&&!state.permissions.can_edit&&node.closest('form,section'));});}
+    function busy(flag){root.classList.toggle('busy',!!flag);root.querySelectorAll('button,textarea,input,select').forEach(function(node){var readOnlyAction=node.getAttribute('data-action')==='toggle-history';node.disabled=!!flag||(!readOnlyAction&&!state.permissions.can_edit&&node.closest('form,section'));});}
     function show(message,error){notice.textContent=message||'';notice.classList.toggle('error',!!error);notice.hidden=!message;}
+    function characterImageOperationFor(characterKey){
+      var character=studioCharacter(characterKey);
+      return characterImageOperationState(character||{character_key:characterKey},characterImageOperation);
+    }
+    function characterImageButtonLabel(operation){
+      if(operation.phase==='saving')return '正在保存视觉设定…';
+      if(operation.phase==='submitting')return '正在提交生成任务…';
+      if(operation.phase==='generating')return '角色形象生成中…';
+      if(operation.phase==='pending')return '检查生成结果';
+      if(operation.phase==='stale')return '按最新资料重新生成';
+      if(operation.phase==='success')return '重新生成角色形象图';
+      return '生成角色形象图（按规则扣点）';
+    }
+    function setCharacterImageOperation(characterKey,phase,message,error,active){
+      characterImageOperation={character_key:characterKey,phase:phase||'idle',message:message||'',error:!!error,active:!!active};
+      var status=doc.getElementById('sdCharacterImageStatus');
+      if(status){
+        status.className='sd-character-image-status '+(characterImageOperation.error?'error':phase==='success'?'success':characterImageOperation.active?'active':phase==='pending'?'pending':'');
+        status.innerHTML=(characterImageOperation.active?'<i aria-hidden="true"></i>':'')+'<span>'+escapeHtml(characterImageOperation.message)+'</span>';
+        status.hidden=!characterImageOperation.message;
+      }
+      var button=root.querySelector('[data-action="generate-character-image"]');
+      if(button){button.disabled=characterImageOperation.active;button.textContent=characterImageButtonLabel(characterImageOperation);}
+    }
+    function characterImageFailureMessage(error,stage){
+      var detail=text(error&&error.message).trim()||'请稍后重试';
+      if(Number(error&&error.status)===402)return '点数不足，无法生成角色形象：'+detail;
+      if(Number(error&&error.status)===409)return '角色资料或项目版本已经变化，请刷新后再试：'+detail;
+      if(Number(error&&error.status)===429)return '当前生成任务较多，请稍后再试：'+detail;
+      if(Number(error&&error.status)>=500)return '角色生图服务暂时不可用：'+detail;
+      return stage+'失败：'+detail;
+    }
     function studioCharacter(characterKey){
       return characterStudio&&characterStudio.characters&&characterStudio.characters.filter(function(item){return item.character_key===characterKey;})[0];
+    }
+    function characterNameStorageKey(characterKey){
+      return 'hq-short-drama-character-name:'+projectId+':'+text(characterKey).trim();
+    }
+    function storedCharacterName(characterKey){
+      try{return text(doc.defaultView.localStorage.getItem(characterNameStorageKey(characterKey))).trim();}catch(ignore){return '';}
+    }
+    function rememberCharacterName(characterKey,name){
+      try{doc.defaultView.localStorage.setItem(characterNameStorageKey(characterKey),text(name).trim());}catch(ignore){}
+    }
+    function forgetStoredCharacterName(characterKey){
+      try{doc.defaultView.localStorage.removeItem(characterNameStorageKey(characterKey));}catch(ignore){}
+    }
+    function applyStoredCharacterNames(studio){
+      if(!studio||!Array.isArray(studio.characters))return studio;
+      studio.characters.forEach(function(character){
+        var localName=storedCharacterName(character.character_key);
+        if(localName)character.name=localName;
+      });
+      return studio;
     }
     function currentShot(shotKey){
       var script=state.current_script&&state.current_script.script;
@@ -409,14 +621,26 @@
         }
         return;
       }
-      modal.hidden=false;doc.getElementById('sdCharacterModalTitle').textContent=character.name||'准备角色';
+      modal.hidden=false;
+      var title=doc.getElementById('sdCharacterModalTitle'),nameView=doc.getElementById('sdCharacterNameView'),nameEditor=doc.getElementById('sdCharacterNameEditor'),nameInput=doc.getElementById('sdCharacterNameInput'),keyLabel=doc.getElementById('sdCharacterKeyLabel');
+      title.textContent=character.name||'准备角色';
+      nameView.hidden=characterNameEditing;
+      nameEditor.hidden=!characterNameEditing;
+      nameInput.value=character.name||'';
+      keyLabel.textContent='角色标识：'+character.character_key+' · 内部关联保持不变';
       var avatars=(characterStudio&&characterStudio.avatars)||[];
-      var affected=(character.affected_shots||[]).map(function(item){return '#'+Number(item.sort_order||0);}).join('、')||'暂无镜头';
-      body.innerHTML='<div class="sd-character-editor"><div class="sd-character-preview">'+
-        (character.image_url?'<img src="'+escapeHtml(character.image_url)+'" alt="'+escapeHtml(character.name)+'">':'<i>'+escapeHtml((character.name||'?').slice(0,1))+'</i>')+
-        '<b>'+escapeHtml(character.binding_ready?'已绑定电影化身':character.image_url?'形象已准备':'尚未准备形象')+'</b><small>影响镜头：'+escapeHtml(affected)+'</small></div>'+
-        '<form id="sdCharacterProfile"><label>角色身份<textarea name="identity_text" required>'+escapeHtml(character.identity_text||'')+'</textarea></label><label>人物性格<textarea name="personality" required>'+escapeHtml(character.personality||'')+'</textarea></label><label>外貌特征<textarea name="appearance_prompt" required placeholder="年龄、脸型、发型、体态、辨识特征">'+escapeHtml(character.appearance_prompt||'')+'</textarea></label><label>服装穿着<textarea name="wardrobe_prompt" required placeholder="服装风格、颜色、材质、配饰">'+escapeHtml(character.wardrobe_prompt||'')+'</textarea></label><button type="submit">保存角色档案</button><button type="button" class="secondary" data-action="generate-character-image">生成角色形象图（按现有规则扣点）</button></form></div>'+
-        '<section class="sd-character-library"><header><div><b>我的电影化身库</b><small>选择后会绑定到该角色，并用于对应镜头预检</small></div><button type="button" data-action="refresh-character-library">刷新</button></header><div>'+avatars.map(function(avatar){return '<button type="button" class="'+(String(character.avatar_id||'')===String(avatar.id)?'selected':'')+'" data-action="bind-character-avatar" data-avatar-id="'+escapeHtml(avatar.id)+'">'+(avatar.image_url?'<img src="'+escapeHtml(avatar.image_url)+'" alt="'+escapeHtml(avatar.name)+'">':'<i>像</i>')+'<span>'+escapeHtml(avatar.name)+'</span></button>';}).join('')+'</div>'+(avatars.length?'':'<p>暂无可用电影化身。请先创建并等待状态变为可用。</p>')+'<button type="button" class="secondary" data-action="create-character-avatar">去视频生成创建电影化身</button>'+(character.avatar_id?'<button type="button" class="ghost" data-action="unbind-character-avatar">解除当前绑定</button>':'')+'</section>';
+      var selectedAvatar=avatars.filter(function(avatar){return String(character.avatar_id||'')===String(avatar.id);})[0];
+      var affected=(character.affected_shots||[]).map(function(item){return '<span>#'+Number(item.sort_order||0)+'</span>';}).join('')||'<em>暂无关联镜头</em>';
+      var referenceImage=character.reference_image_url||(!character.avatar_id?character.image_url:'');
+      var canCreateAvatar=!!(characterStudio&&characterStudio.permissions&&characterStudio.permissions.can_create_avatar);
+      var imageOperation=characterImageOperationFor(character.character_key);
+      var portrait=character.image_url?'<img src="'+escapeHtml(character.image_url)+'" alt="'+escapeHtml(character.name)+'">':'<i>'+escapeHtml((character.name||'?').slice(0,1))+'</i>';
+      var selectedPreview=selectedAvatar&&selectedAvatar.image_url?'<img src="'+escapeHtml(selectedAvatar.image_url)+'" alt="'+escapeHtml(selectedAvatar.name)+'">':portrait;
+      body.innerHTML='<div class="sd-character-workspace"><section class="sd-character-profile-panel">'+
+        '<div class="sd-character-overview"><div class="sd-character-preview">'+portrait+'</div><div><span class="sd-section-kicker">角色档案</span><h3>'+escapeHtml(character.name)+'</h3><p>'+escapeHtml(character.binding_ready?'已绑定电影化身，可用于镜头生成':character.image_url?'角色形象已准备，可继续绑定电影化身':'请先完善角色设定并准备形象')+'</p><div class="sd-affected-shots"><b>影响镜头</b>'+affected+'</div></div></div>'+
+        '<form id="sdCharacterProfile"><section class="sd-character-form-section"><div><span class="sd-section-kicker">01</span><h3>角色定位</h3><p>描述人物在故事中的身份和行为方式。</p></div><div class="sd-character-fields"><label>角色身份<textarea name="identity_text" required>'+escapeHtml(character.identity_text||'')+'</textarea></label><label>人物性格<textarea name="personality" required>'+escapeHtml(character.personality||'')+'</textarea></label></div></section><section class="sd-character-form-section"><div><span class="sd-section-kicker">02</span><h3>视觉设定</h3><p>这些信息会作为角色形象生成依据。</p></div><div class="sd-character-fields"><label>外貌特征<textarea name="appearance_prompt" required placeholder="年龄、脸型、发型、体态、辨识特征">'+escapeHtml(character.appearance_prompt||'')+'</textarea></label><label>服装穿着<textarea name="wardrobe_prompt" required placeholder="服装风格、颜色、材质、配饰">'+escapeHtml(character.wardrobe_prompt||'')+'</textarea></label></div></section></form></section>'+
+        '<section class="sd-character-library"><header><div><span class="sd-section-kicker">形象资源</span><h3>电影化身库</h3><small>选择一个形象绑定到当前角色，镜头会自动引用。</small></div><button type="button" data-action="refresh-character-library">刷新</button></header><div class="sd-character-selected"><div>'+selectedPreview+'</div><span><small>当前选择</small><b>'+escapeHtml(selectedAvatar&&selectedAvatar.name|| (character.binding_ready?'已绑定形象':'尚未绑定'))+'</b></span></div><div class="sd-character-avatar-grid">'+avatars.map(function(avatar){return '<button type="button" class="'+(String(character.avatar_id||'')===String(avatar.id)?'selected':'')+'" data-action="bind-character-avatar" data-avatar-id="'+escapeHtml(avatar.id)+'">'+(avatar.image_url?'<img src="'+escapeHtml(avatar.image_url)+'" alt="'+escapeHtml(avatar.name)+'">':'<i>像</i>')+'<span><b>'+escapeHtml(avatar.name)+'</b><small>'+(String(character.avatar_id||'')===String(avatar.id)?'当前绑定':'点击选择')+'</small></span></button>';}).join('')+'</div>'+(avatars.length?'':'<p class="sd-character-empty">暂无可用电影化身。请先创建并等待状态变为可用。</p>')+'</section></div>'+
+        '<footer class="sd-character-actions"><div class="sd-character-action-status"><p id="sdCharacterSaveState" class="'+(characterProfileDirty?'dirty':'')+'">'+(characterProfileDirty?'有未保存的修改':referenceImage?'角色形象图已准备，可创建电影化身':'请先生成角色形象图')+'</p><p id="sdCharacterImageStatus" class="sd-character-image-status '+(imageOperation.error?'error':imageOperation.phase==='success'?'success':imageOperation.active?'active':imageOperation.phase==='pending'?'pending':'')+'" '+(imageOperation.message?'':'hidden')+'>'+(imageOperation.active?'<i aria-hidden="true"></i>':'')+'<span>'+escapeHtml(imageOperation.message)+'</span></p></div><div class="sd-character-action-buttons">'+(character.avatar_id?'<button type="button" class="ghost" data-action="unbind-character-avatar">解除绑定</button>':'')+'<button type="button" class="secondary" data-action="create-character-avatar" '+(!referenceImage||!canCreateAvatar?'disabled ':'')+'title="'+escapeHtml(!canCreateAvatar?'仅项目所有者可以创建电影化身':!referenceImage?'请先生成角色形象图':'使用当前角色形象图创建并自动绑定')+'">'+(referenceImage?'创建电影化身并自动绑定':'请先生成角色形象图')+'</button><button type="button" class="secondary" data-action="generate-character-image" '+(imageOperation.active?'disabled ':'')+'>'+escapeHtml(characterImageButtonLabel(imageOperation))+'</button><button type="submit" form="sdCharacterProfile" class="primary">保存角色档案</button></div></footer>';
     }
     function enhanceProviderPreflight(){
       var poc=autodraft&&autodraft.provider_poc,shotField=doc.getElementById('sdProviderShot'),summary=doc.getElementById('sdProviderShotCharacter');
@@ -567,7 +791,7 @@
     }
     function loadCharacterStudio(silent){
       return client.characterStudio(projectId).then(function(result){
-        characterStudio=result||null;
+        characterStudio=applyStoredCharacterNames(result||null);
         render();
         return characterStudio;
       }).catch(function(error){
@@ -589,16 +813,41 @@
         return characterStudio;
       });
     }
-    function saveCharacterProfile(character,form){
+    function characterNameError(character,name){
+      name=text(name).trim();
+      if(!name||name.length>20)return '角色名称需为 1 至 20 个字符';
+      var duplicate=(characterStudio&&characterStudio.characters||[]).some(function(item){
+        return item.character_key!==character.character_key&&text(item.name).trim().toLocaleLowerCase()===name.toLocaleLowerCase();
+      });
+      return duplicate?'角色名称已被其他角色使用':'';
+    }
+    function saveCharacterProfile(character,form,nameOverride){
       var fields=form.elements;
-      return client.saveCharacterProfile({
+      var requestedName=text(nameOverride==null?character.name:nameOverride).trim();
+      var request={
         project_id:projectId,
         project_revision:Number(characterStudio.project_revision),
         character_key:character.character_key,
+        name:requestedName,
         identity_text:text(fields.identity_text.value).trim(),
         personality:text(fields.personality.value).trim(),
         appearance_prompt:text(fields.appearance_prompt.value).trim(),
         wardrobe_prompt:text(fields.wardrobe_prompt.value).trim()
+      };
+      return client.saveCharacterProfile(request).then(function(result){
+        forgetStoredCharacterName(character.character_key);
+        return result;
+      }).catch(function(error){
+        var oldProfileContract=error&&error.code==='character_profile_invalid'&&(error.status===400||error.status===422);
+        if(!oldProfileContract)throw error;
+        var legacyRequest=Object.assign({},request);
+        delete legacyRequest.name;
+        return client.saveCharacterProfile(legacyRequest).then(function(result){
+          rememberCharacterName(character.character_key,requestedName);
+          result=result||{};
+          result.compatibility_name_local_only=true;
+          return result;
+        });
       });
     }
     root.addEventListener('submit',function(event){
@@ -607,9 +856,16 @@
       var character=studioCharacter(selectedCharacterKey);
       if(!character)return;
       busy(true);show('',false);
-      saveCharacterProfile(character,event.target)
-        .then(function(){return refreshCharacterContext('角色档案已保存，相关制作计划已标记为需要重新确认');})
-        .catch(function(error){show(error.message||'角色档案保存失败',true);})
+      var proposedName=doc.getElementById('sdCharacterNameInput').value||character.name;
+      var nameError=characterNameError(character,proposedName);
+      if(nameError){busy(false);show(nameError,true);return;}
+      saveCharacterProfile(character,event.target,proposedName)
+        .then(function(result){
+          characterNameEditing=false;characterProfileDirty=false;
+          var message=result&&result.compatibility_name_local_only?'角色档案已保存；名称已在本地预览，待服务端升级后会永久保存':'角色档案已保存，相关制作计划已标记为需要重新确认';
+          return refreshCharacterContext(message);
+        })
+        .catch(function(error){show('角色档案保存失败：'+(error.message||'服务端未接受本次修改'),true);})
         .finally(function(){busy(false);render();});
     });
     root.addEventListener('submit',function(event){
@@ -647,6 +903,23 @@
       event.preventDefault();var field=event.currentTarget.elements.message,value=text(field.value).trim();if(!value)return;
       sendConversationMessage(value);
     });
+    root.addEventListener('input',function(event){
+      if(event.target.closest('#sdCharacterProfile')||event.target.id==='sdCharacterNameInput'){
+        characterProfileDirty=true;
+        var saveState=doc.getElementById('sdCharacterSaveState');
+        if(saveState){saveState.classList.add('dirty');saveState.textContent='有未保存的修改';}
+      }
+    });
+    root.addEventListener('keydown',function(event){
+      if(event.target.id!=='sdCharacterNameInput')return;
+      if(event.key==='Escape'){
+        event.preventDefault();characterNameEditing=false;renderCharacterModal();
+      }else if(event.key==='Enter'){
+        event.preventDefault();
+        var saveButton=root.querySelector('[data-action="save-character-name"]');
+        if(saveButton)saveButton.click();
+      }
+    });
     root.addEventListener('click',function(event){
       var action=event.target.closest('[data-action]');
       if(action&&action.getAttribute('data-action')==='edit-shot'){
@@ -681,7 +954,37 @@
       }
       if(action&&action.getAttribute('data-action')==='open-character'){
         selectedCharacterKey=action.getAttribute('data-character-key')||'';
+        characterNameEditing=false;
+        characterProfileDirty=false;
         renderCharacterModal();
+        return;
+      }
+      if(action&&action.getAttribute('data-action')==='edit-character-name'){
+        characterNameEditing=true;
+        renderCharacterModal();
+        var editName=doc.getElementById('sdCharacterNameInput');
+        if(editName){editName.focus();editName.select();}
+        return;
+      }
+      if(action&&action.getAttribute('data-action')==='cancel-character-name'){
+        characterNameEditing=false;
+        renderCharacterModal();
+        return;
+      }
+      if(action&&action.getAttribute('data-action')==='save-character-name'){
+        var characterForName=studioCharacter(selectedCharacterKey),profileForm=doc.getElementById('sdCharacterProfile'),proposed=doc.getElementById('sdCharacterNameInput').value;
+        if(!characterForName||!profileForm)return;
+        var validationError=characterNameError(characterForName,proposed);
+        if(validationError){show(validationError,true);return;}
+        busy(true);show('',false);
+        saveCharacterProfile(characterForName,profileForm,proposed)
+          .then(function(result){
+            characterNameEditing=false;characterProfileDirty=false;
+            var message=result&&result.compatibility_name_local_only?'名称已用于本地预览；测试服务端升级后会永久保存，内部角色标识不变':'角色名称已更新，内部角色标识保持不变';
+            return refreshCharacterContext(message);
+          })
+          .catch(function(error){show('角色名称保存失败：'+(error.message||'服务端未接受角色名称'),true);})
+          .finally(function(){busy(false);render();});
         return;
       }
       if(action&&action.getAttribute('data-action')==='lock-script-for-character'){
@@ -701,7 +1004,10 @@
         return;
       }
       if(action&&action.getAttribute('data-action')==='close-character'){
+        if((characterProfileDirty||characterNameEditing)&&doc.defaultView&&typeof doc.defaultView.confirm==='function'&&!doc.defaultView.confirm('还有未保存的角色修改，确定关闭吗？'))return;
         selectedCharacterKey='';
+        characterNameEditing=false;
+        characterProfileDirty=false;
         renderCharacterModal();
         return;
       }
@@ -715,11 +1021,71 @@
       }
       if(action&&action.getAttribute('data-action')==='create-character-avatar'){
         var characterForCreate=studioCharacter(selectedCharacterKey);
-        var returnTo=doc.defaultView&&doc.defaultView.location?doc.defaultView.location.href:'';
-        var target=avatarCreateUrl()+'&return_to='+encodeURIComponent(returnTo)+'&project_id='+encodeURIComponent(projectId)+'&character_key='+encodeURIComponent(characterForCreate&&characterForCreate.character_key||'');
-        var opened=doc.defaultView&&typeof doc.defaultView.open==='function'?doc.defaultView.open(target,'_blank','noopener'):null;
-        if(!opened&&doc.defaultView&&doc.defaultView.location)doc.defaultView.location.href=target;
-        show('请在视频生成页完成电影化身创建，返回后刷新形象库并绑定',false);
+        var createForm=doc.getElementById('sdCharacterProfile');
+        if(!characterForCreate||!createForm)return;
+        if(!(characterStudio&&characterStudio.permissions&&characterStudio.permissions.can_create_avatar)){
+          show('只有项目所有者可以创建电影化身',true);return;
+        }
+        var createName=doc.getElementById('sdCharacterNameInput').value||characterForCreate.name;
+        var createNameError=characterNameError(characterForCreate,createName);
+        if(createNameError){show(createNameError,true);return;}
+        if(!doc.defaultView.confirm('将使用当前角色形象图创建电影化身，并在成功后自动绑定到“'+createName+'”。创建任务会按现有规则扣点，失败自动退款。确认继续吗？'))return;
+        busy(true);show('正在保存角色资料…',false);
+        var avatarStage='保存角色资料';
+        var avatarCharacter=null;
+        var avatarOperationState=null;
+        saveCharacterProfile(characterForCreate,createForm,createName).then(function(result){
+          characterNameEditing=false;characterProfileDirty=false;
+          if(Number(result&&result.project_revision)>0)characterStudio.project_revision=Number(result.project_revision);
+          avatarStage='读取角色形象图';
+          return loadCharacterStudio(true);
+        }).then(function(){
+          avatarCharacter=studioCharacter(characterForCreate.character_key);
+          var referenceUrl=avatarCharacter&&(avatarCharacter.reference_image_url||(!avatarCharacter.avatar_id?avatarCharacter.image_url:''));
+          if(!referenceUrl)throw new Error('角色资料已保存，但当前没有可用的角色形象图。请先点击“生成角色形象图”。');
+          show('正在读取角色形象图…',false);
+          return client.imageData(referenceUrl);
+        }).then(function(dataUrl){
+          avatarStage='提交电影化身任务';
+          show('正在提交电影化身任务…',false);
+          return client.createAvatar({
+            image_data:dataUrl,name:text(createName).trim(),
+            short_drama_binding:{
+              project_id:projectId,
+              project_revision:Number(characterStudio.project_revision),
+              character_key:characterForCreate.character_key
+            }
+          },accountUsername);
+        }).then(function(created){
+          var jobId=created&&created.job_id;
+          if(!jobId)throw new Error('电影化身任务未返回任务编号');
+          avatarOperationState=created._avatar_operation||null;
+          avatarStage='等待电影化身生成';
+          var attempts=0;
+          function pollAvatar(){
+            attempts+=1;
+            return client.job(jobId).then(function(job){
+              if(job.status==='done'){
+                var completed=job.result||{},completedBinding=completed.short_drama_binding||{};
+                if(completedBinding.status==='pending'&&attempts<180){return new Promise(function(resolve){setTimeout(resolve,250);}).then(pollAvatar);}
+                client.finishAvatarOperation(avatarOperationState);return completed;
+              }
+              if(job.status==='error'||job.status==='failed'){client.finishAvatarOperation(avatarOperationState);throw new Error(job.error||'电影化身生成失败，点数将自动退回');}
+              if(attempts>=180)throw new Error('电影化身仍在生成，可稍后刷新形象库查看');
+              show('电影化身正在生成（任务 #'+jobId+'），请勿重复提交…',false);
+              return new Promise(function(resolve){setTimeout(resolve,1000);}).then(pollAvatar);
+            });
+          }
+          return pollAvatar();
+        }).then(function(result){
+          if(!result.avatar_id)throw new Error('电影化身已生成，但缺少可绑定的形象编号');
+          var binding=result.short_drama_binding||{};
+          if(binding.status!=='bound')throw new Error(binding.message||'电影化身已生成，但自动绑定尚未完成，请刷新角色工作室');
+          avatarStage='刷新角色工作室';
+          return loadCharacterStudio(true);
+        }).then(function(){return refreshCharacterContext('电影化身创建成功，并已自动绑定到 '+createName);})
+          .catch(function(error){show(avatarStage+'失败：'+(error.message||'请稍后重试'),true);})
+          .finally(function(){busy(false);render();renderCharacterModal();});
         return;
       }
       if(action&&action.getAttribute('data-action')==='bind-character-avatar'){
@@ -753,32 +1119,55 @@
       if(action&&action.getAttribute('data-action')==='generate-character-image'){
         var characterForImage=studioCharacter(selectedCharacterKey),profileForm=doc.getElementById('sdCharacterProfile');
         if(!characterForImage||!profileForm)return;
+        var currentImageOperation=characterImageOperationFor(characterForImage.character_key);
+        var currentImageAction=characterImageAction(currentImageOperation);
+        if(currentImageAction==='blocked')return;
+        if(currentImageAction==='check'){
+          setCharacterImageOperation(characterForImage.character_key,'generating','正在检查后台生成结果…',false,true);
+          loadCharacterStudio(true).then(function(){
+            var pendingCharacter=studioCharacter(characterForImage.character_key);
+            if(pendingCharacter&&pendingCharacter.reference_image_url){
+              setCharacterImageOperation(characterForImage.character_key,'success','角色形象已生成，可继续创建或绑定电影化身。',false,false);
+              render();renderCharacterModal();
+            }else setCharacterImageOperation(characterForImage.character_key,'pending','任务仍在后台生成，请稍后再次检查；请勿重复提交扣点任务。',false,false);
+          }).catch(function(error){setCharacterImageOperation(characterForImage.character_key,'pending','暂时无法查询生成结果：'+(error.message||'请稍后重试'),true,false);})
+            .finally(function(){busy(false);});
+          return;
+        }
+        var imageName=doc.getElementById('sdCharacterNameInput').value||characterForImage.name;
+        var imageNameError=characterNameError(characterForImage,imageName);
+        if(imageNameError){setCharacterImageOperation(characterForImage.character_key,'failed',imageNameError,true,false);return;}
         if(!doc.defaultView.confirm('生成角色形象将按现有计费规则执行，确认继续吗？'))return;
-        busy(true);show('',false);
-        saveCharacterProfile(characterForImage,profileForm).then(function(result){
-          characterStudio.project_revision=Number(result.project_revision);
+        busy(true);show('',false);setCharacterImageOperation(characterForImage.character_key,'saving','正在保存角色视觉设定…',false,true);
+        var generationStage='保存角色视觉设定';
+        saveCharacterProfile(characterForImage,profileForm,imageName).then(function(result){
+          characterNameEditing=false;characterProfileDirty=false;
+          if(Number(result&&result.project_revision)>0)characterStudio.project_revision=Number(result.project_revision);
+          generationStage='提交角色形象生成任务';
+          setCharacterImageOperation(characterForImage.character_key,'submitting','视觉设定已保存，正在提交角色形象生成任务…',false,true);
           return client.generateCharacterImage({
             project_id:projectId,
             revision:Number(characterStudio.project_revision),
             character_key:characterForImage.character_key
-          });
+          },accountUsername);
         }).then(function(){
-          show('角色形象生成任务已提交，完成后会显示在角色卡旁',false);
+          setCharacterImageOperation(characterForImage.character_key,'generating','生成任务已提交，正在等待角色形象图…',false,true);
           var attempts=0;
           function poll(){
             attempts+=1;
             return loadCharacterStudio(true).then(function(){
               var current=studioCharacter(characterForImage.character_key);
-              if(current&&current.image_url)return current;
+              if(current&&current.reference_image_url)return current;
               if(attempts>=30)return null;
               return new Promise(function(resolve){setTimeout(resolve,1000);}).then(poll);
             });
           }
           return poll();
         }).then(function(result){
-          if(result)show('角色形象已生成，可继续创建或绑定电影化身',false);
-        }).catch(function(error){show(error.message||'角色形象生成失败',true);})
-          .finally(function(){busy(false);render();});
+          if(result)setCharacterImageOperation(characterForImage.character_key,'success','角色形象已生成，可继续创建或绑定电影化身。',false,false);
+          else setCharacterImageOperation(characterForImage.character_key,'pending','任务已提交并仍在后台生成。请稍后点击“检查生成结果”，不要重复提交。',false,false);
+        }).catch(function(error){setCharacterImageOperation(characterForImage.character_key,'failed',characterImageFailureMessage(error,generationStage),true,false);})
+          .finally(function(){busy(false);render();renderCharacterModal();});
         return;
       }
       if(action&&action.getAttribute('data-action')==='quick-reply'){
@@ -968,7 +1357,7 @@
       }
     });
     busy(true);
-    Promise.all([client.workspace(projectId),client.preflight(projectId),client.autodraft(projectId)]).then(function(results){
+    client.currentUsername().then(function(username){accountUsername=username;return Promise.all([client.workspace(projectId),client.preflight(projectId),client.autodraft(projectId),client.recoverAvatarOperations(accountUsername),client.recoverCharacterImageOperations(accountUsername)]);}).then(function(results){
       state=normalize(results[0]);preflight=results[1]||{};autodraft=results[2]||{};
       var tasks=[];
       if(state.conversation.state==='script_locked')tasks.push(client.characterStudio(projectId).then(function(value){characterStudio=value||null;}));
@@ -977,5 +1366,5 @@
     }).then(function(){render();schedulePoll();}).catch(function(error){show(error.message||'工作区加载失败',true);}).finally(function(){busy(false);render();});
     return {render:render,getState:function(){return state;},getPreflight:function(){return preflight;},getAutodraft:function(){return autodraft;},getRefinement:function(){return refinement;}};
   }
-  return {createClient:createClient,avatarCreateUrl:avatarCreateUrl,cloneProjectPayload:cloneProjectPayload,normalize:normalize,quickReplyPresentation:quickReplyPresentation,messageHtml:messageHtml,importContractHtml:importContractHtml,shotMediaIndex:shotMediaIndex,shotMediaHtml:shotMediaHtml,providerShotControlsHtml:providerShotControlsHtml,scriptHtml:scriptHtml,versionHtml:versionHtml,preflightHtml:preflightHtml,autodraftActionsHtml:autodraftActionsHtml,draftHtml:draftHtml,refinementHtml:refinementHtml,refinementActionsHtml:refinementActionsHtml,refinementProviderHtml:refinementProviderHtml,shellHtml:shellHtml,mount:mount};
+  return {createClient:createClient,characterImageOperationState:characterImageOperationState,characterImageAction:characterImageAction,cloneProjectPayload:cloneProjectPayload,normalize:normalize,quickReplyPresentation:quickReplyPresentation,messageHtml:messageHtml,importContractHtml:importContractHtml,shotMediaIndex:shotMediaIndex,shotMediaHtml:shotMediaHtml,providerShotControlsHtml:providerShotControlsHtml,scriptHtml:scriptHtml,versionHtml:versionHtml,preflightHtml:preflightHtml,autodraftActionsHtml:autodraftActionsHtml,draftHtml:draftHtml,refinementHtml:refinementHtml,refinementActionsHtml:refinementActionsHtml,refinementProviderHtml:refinementProviderHtml,shellHtml:shellHtml,mount:mount};
 });

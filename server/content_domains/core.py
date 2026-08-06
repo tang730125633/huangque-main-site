@@ -720,6 +720,33 @@ def delete_user_asset(username, kind, asset_id):
         raise LookupError("资产不存在或不属于当前账号")
     _delete_asset_mark(username, "video", str(asset_id))
     return {"kind": kind, "id": asset_id, "deleted": True}
+
+
+def delete_failed_job(username, job_id):
+    try:
+        job_id = int(job_id)
+    except Exception:
+        raise ValueError("缺少任务标识")
+    with closing(jdb()) as c:
+        _ensure_column(c, "jobs", "deleted", "INTEGER DEFAULT 0")
+        row = c.execute(
+            "SELECT id,kind,status FROM jobs WHERE id=? AND username=? AND COALESCE(deleted,0)=0",
+            (job_id, username),
+        ).fetchone()
+        if not row:
+            raise LookupError("任务不存在或不属于当前账号")
+        if str(row["status"] or "").lower() not in {"error", "failed"}:
+            raise ValueError("只能删除已失败的生成记录")
+        if row["kind"] in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video"}:
+            with closing(adb()) as assets:
+                assets.execute(
+                "UPDATE video_assets SET status='deleted',updated_at=? WHERE job_id=? AND username=? AND status!='deleted'",
+                (int(time.time()), job_id, username),
+                )
+                assets.commit()
+        c.execute("UPDATE jobs SET deleted=1,updated_at=? WHERE id=?", (int(time.time()), job_id))
+        c.commit()
+    return {"job_id": job_id, "deleted": True}
 # ============ 鉴权（向 auth 服务核验 token） ============
 _verify_cache = {}; _verify_cache_lock = threading.Lock()
 AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
@@ -1309,11 +1336,29 @@ def run_job(job_id):
         if kind == "breakdown":
             breakdown_refund_prepared = _prepare_breakdown_refund(
                 _domains()[1], username, cost, result, job_id)
+        if kind == "avatar" and payload.get("short_drama_binding"):
+            result = dict(result or {})
+            result["short_drama_binding"] = dict(
+                payload["short_drama_binding"],
+                status="pending",
+                message="电影化身已生成，正在自动绑定角色",
+            )
         # 先 CAS 抢 done 终态：仅当仍是 running 才写 done，防 reaper 已判 error 又被无条件覆盖(既出片又退点)
         if not _set_terminal(job_id, "done", result=result):
             if breakdown_refund_prepared:
                 _domains()[1].cancel_breakdown_refund(job_id)
             return  # 已被 reaper 接管为 error+退点：放弃成功副作用(不入库、不覆盖状态)
+        if kind == "avatar" and payload.get("short_drama_binding"):
+            try:
+                _short_drama_domain().short_drama_character_studio.reconcile_avatar_job(
+                    jdb, job_id, username
+                )
+            except Exception as binding_error:
+                print(
+                    "[short-drama-avatar-binding] job#%s 将在工作区读取时重试: %s"
+                    % (job_id, str(binding_error)[:160]),
+                    flush=True,
+                )
         # 口播按成片真实时长结算：预扣(cost)是 hold，跑完多退少不补。只在抢到 done 后调 —— done CAS
         # 互斥 + reaper/reclaim 不碰 done → 每 job 至多结算一次，不重复退。结算失败不影响出片。
         if kind == "video" or (kind == "script_to_video" and (result or {}).get("pipeline") in {"talking", "talking_with_materials"}):
@@ -2359,6 +2404,16 @@ class H(BaseHTTPRequestHandler):
                 return self._send(404, {"detail": str(e)[:160]})
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:160]})
+        if p == "/api/gen/job/delete":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
+            try:
+                deleted = delete_failed_job(user["username"], self._json_body().get("job_id"))
+                return self._send(200, {"ok": True, "job": deleted})
+            except LookupError as e:
+                return self._send(404, {"detail": str(e)[:160]})
+            except Exception as e:
+                return self._send(400, {"detail": str(e)[:160]})
         if p == "/api/gen/asset/batch-delete":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
@@ -2454,6 +2509,26 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "avatar": video_domain.delete_video_avatar(user["username"], body.get("id"))})
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:160]})
+        if p == "/api/gen/video/import":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                if length <= 0 or length > video_domain.VIDEO_IMPORT_MAX_BYTES:
+                    raise ValueError("H3 成片不能为空且不能超过 %dMB" %
+                                     (video_domain.VIDEO_IMPORT_MAX_BYTES // 1024 // 1024))
+                raw = self.rfile.read(length)
+                if len(raw) != length:
+                    raise ValueError("H3 成片上传不完整，请重试")
+                title = urllib.parse.unquote(self.headers.get("X-Video-Title") or "")
+                asset = video_domain.import_h3_video_asset(
+                    user["username"], raw, self.headers.get("Content-Type"), title)
+                return self._send(200, {"ok": True, "asset": asset})
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)[:220]})
+            except Exception as e:
+                return self._send(500, {"detail": "H3 成片导入失败：%s" % str(e)[:160]})
         if p == "/api/gen/leads/crm":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
@@ -2571,6 +2646,12 @@ class H(BaseHTTPRequestHandler):
                     if not idem_key: raise ValueError("关键帧提交必须提供 Idempotency-Key")
                 elif kind in {"image", "xiaole_video"}:
                     body = cli_uploads.expand_image_payload(body, user["username"])
+                if kind == "avatar":
+                    body = video_domain.validate_avatar_payload(body)
+                    _short_drama_domain().validate_avatar_binding_submission(
+                        jdb, user["username"], body.get("short_drama_binding"),
+                        require_revision=False,
+                    )
                 # 微信内容安全必须在校验、扣点和入队前完成；服务异常时不收单。
                 miniprogram_security.check_payload(body)
                 if is_still_route:
@@ -2594,7 +2675,6 @@ class H(BaseHTTPRequestHandler):
                 elif kind == "video": body = video_domain.validate_video_payload(body, user["username"])
                 elif kind == "tryon": body = video_domain.validate_tryon_payload(body)
                 elif kind == "cinematic": body = video_domain.validate_cinematic_payload(body, user["username"])
-                elif kind == "avatar": body = video_domain.validate_avatar_payload(body)
                 elif kind == "xiaole_video": body = video_domain.validate_xiaole_video_payload(body, user["username"])
                 elif kind == "sora_video": body = video_domain.validate_sora_video_payload(body)
                 elif kind == "script_to_video":
@@ -2624,9 +2704,11 @@ class H(BaseHTTPRequestHandler):
                     )
                 if not is_still_route: request_body = dict(body) if isinstance(body, dict) else body
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
-                if not is_still_route: idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "audio", "video", "tryon", "xiaole_video", "sora_video", "cinematic", "canvas_agent", "script_to_video", "breakdown"} else ""
+                if not is_still_route: idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "audio", "video", "tryon", "xiaole_video", "sora_video", "cinematic", "avatar", "canvas_agent", "script_to_video", "breakdown"} else ""
                 if kind == "canvas_agent" and not idem_key:
                     raise ValueError("画布 Agent 提交必须提供 Idempotency-Key")
+                if kind == "avatar" and not idem_key:
+                    raise ValueError("电影化身提交必须提供 Idempotency-Key")
                 if kind == "sora_video" and not idem_key: raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
                 if kind == "xiaole_video" and str(body.get("channel") or "").lower() in {"micro", "omni", "minimax"} and not idem_key: raise ValueError("官方视频提交必须提供 Idempotency-Key")
             except feature_flags.FeatureDisabled as e:
@@ -2727,6 +2809,17 @@ class H(BaseHTTPRequestHandler):
                 if idem_state == "replay": replay = dict(idem_response or {}); return self._send(int(replay.pop("_http_status", 200)), replay)
                 if idem_state == "conflict": return self._send(409, {"detail": "同一个 Idempotency-Key 不能用于不同请求", "code": "idempotency_conflict"})
                 if idem_state == "processing" and not is_still_route: return self._send(409, {"detail": "相同请求正在受理，请稍后查询", "code": "idempotency_in_progress", "retry_after_ms": 1000})
+                if kind == "avatar" and body.get("short_drama_binding"):
+                    try:
+                        _short_drama_domain().validate_avatar_binding_submission(
+                            jdb, user["username"], body["short_drama_binding"]
+                        )
+                    except (LookupError, _short_drama_domain().RevisionConflict) as e:
+                        _idempotency_abort(user["username"], p, idem_key)
+                        _short_drama_domain()._http_error(
+                            self, e, operation_terminal=True
+                        )
+                        return
                 if is_still_route and not still_attempt:
                     try: cost = int(prepared["quoted_cost"]); _short_drama_domain().short_drama_production.check_production_budget(jdb, user["username"], prepared["project"]["id"], cost, still_access)
                     except (LookupError, PermissionError, _short_drama_domain().PointBudgetExceeded, ValueError) as e:
@@ -3100,13 +3193,18 @@ class H(BaseHTTPRequestHandler):
             except Exception: offset = 0
             kind = (q.get("kind") or ["image"])[0]
             if kind not in HANDLERS: kind = "image"
+            include_failed = kind == "image" and (q.get("include_failed") or [""])[0] == "1"
             with closing(jdb()) as c:
                 _ensure_column(c, "jobs", "deleted", "INTEGER DEFAULT 0")
-                rows = c.execute("""SELECT id,result,created_at FROM jobs
-                                 WHERE username=? AND status='done' AND kind=? AND COALESCE(deleted,0)=0
+                rows = c.execute("""SELECT id,status,payload,result,error,created_at FROM jobs
+                                 WHERE username=? AND (status='done' OR (?=1 AND status IN ('error','failed')))
+                                   AND kind=? AND COALESCE(deleted,0)=0
                                  ORDER BY id DESC LIMIT ?""",
-                                 (user["username"], kind, lim + offset)).fetchall()
-            items = history.expand_job_results(rows, lim, offset)
+                                 (user["username"], int(include_failed), kind, lim + offset)).fetchall()
+            if include_failed:
+                items = history.expand_job_results(rows, lim, offset, include_failed=True)
+            else:
+                items = history.expand_job_results(rows, lim, offset)
             return self._send(200, {"items": items})
         if p == "/api/gen/collect/search":   # 关键词搜（即时，扣 1 点）— 采集页选片用
             user = verify(self._token())
@@ -3141,7 +3239,7 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/gen/health":
             return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS), "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS, "talking_job_workers": TALKING_JOB_WORKERS, "image_job_workers": IMAGE_JOB_WORKERS, "job_queue_max": JOB_QUEUE_MAX, "talking_job_queue_max": TALKING_JOB_QUEUE_MAX,
                                     "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_active_xiaole_video": MAX_USER_ACTIVE_XIAOLE_VIDEO, "max_user_active_sora_video": MAX_USER_ACTIVE_SORA_VIDEO, "max_user_active_tryon": MAX_USER_ACTIVE_TRYON, "max_user_active_cinematic": MAX_USER_ACTIVE_CINEMATIC,
-                                    "sora_video_enabled": bool(video_domain.sora_video_is_open() and OPENAI_KEY and feature_flags.is_enabled("sora_video")),
+                                    "sora_video_enabled": video_domain.sora_video_health_enabled(feature_flags),
                                     "omni_video_enabled": bool(video_domain.omni_video_is_open() and feature_flags.is_enabled("omni_video")), "seedance_video_enabled": bool(video_domain.seedance_video_is_open() and feature_flags.is_enabled("seedance_video")), "minimax_h3_video_enabled": bool(video_domain.minimax_h3_video_is_open() and feature_flags.is_enabled("minimax_h3_video")), "reverse_remake_video_offer": (reverse_remake_offer := video_domain.reverse_remake_video_offer(feature_flags, points_domain.cost_of)), "reverse_remake_video_channel": reverse_remake_offer["channel"], "seedance_reference_images_enabled": video_domain.seedance_reference_upload_is_open(), "seedance_upscale_enabled": bool(video_domain.seedance_upscale_is_open() and feature_flags.is_enabled("seedance_video")),
                                     "max_user_running_talking": MAX_USER_RUNNING_TALKING, "max_user_running_image": MAX_USER_RUNNING_IMAGE, "video_cost": pricing.get_price("video.talking.block"), "video_batch_max": min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS), "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
         self._send(404, {"detail": "not found"})

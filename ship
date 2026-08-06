@@ -98,6 +98,7 @@ echo "==> 3/5 部署到服务器"
 RESTART=""
 TIMERS=""
 DEPLOYED=""
+EXACT_DOMAIN_MODULES=""
 NEED_RELOAD=0   # 部署过 systemd 单元/drop-in 时置 1，重启前必须 daemon-reload，否则改动不生效
 CONTENT_DOMAINS_SYNCED=0
 PROVIDERS_SYNCED=0
@@ -252,10 +253,13 @@ for f in "$@"; do
   fi
   if [ "$EXACT_CONTENT_DOMAINS" = "1" ]; then
     case "$f" in
-      server/content_domains/*)
-        remote_file="${dest%/}/$(basename "$f")"
-        $SSHC "$REMOTE" "test -f '$remote_file'" \
-          || { echo "  ❌ file-only 模式只允许覆盖已存在的 content domain：$f"; exit 1; }
+      server/content_domains/*.py)
+        domain_module="${f#server/content_domains/}"
+        domain_module="${domain_module%.py}"
+        case "$domain_module" in
+          ''|*[!A-Za-z0-9_]*) echo "  ❌ content domain 模块名非法：$f"; exit 1 ;;
+        esac
+        EXACT_DOMAIN_MODULES="$EXACT_DOMAIN_MODULES $domain_module"
         ;;
     esac
   fi
@@ -307,6 +311,21 @@ for f in "$@"; do
   add_svc "$svc"
   add_timer "$timer"
 done
+
+# exact 模式不会同步依赖目录，因此逐个导入明确点名的模块，避免首次客户请求才暴露缺依赖。
+if [ -n "$EXACT_DOMAIN_MODULES" ]; then
+  echo "==> 3.4/5 file-only 内容模块 import 冒烟"
+  for domain_module in $EXACT_DOMAIN_MODULES; do
+    $SSHC "$REMOTE" bash -s -- "$domain_module" "$CONTENT_PYTHON" <<'RS' || exit 1
+set -u
+module="$1"; py_bin="$2"
+case "$module" in ''|*[!A-Za-z0-9_]*) exit 2;; esac
+cd /home/ubuntu/content-api
+PYTHONDONTWRITEBYTECODE=1 "$py_bin" -c "from content_domains import $module"
+RS
+    echo "  ✓ content_domains.$domain_module import 通过"
+  done
+fi
 
 # 代码已同步但旧进程仍在运行。先对每个待重启服务做纯 import 冒烟，
 # 把缺模块/坏引用挡在 restart 前，避免把可用服务重启成崩溃循环。
