@@ -30,8 +30,9 @@
     root.style.setProperty('--flight', scrollProgress.toFixed(4));
   }
 
-  if (matchMedia('(pointer:fine)').matches && !reduced.matches) {
+  if (!reduced.matches) {
     addEventListener('pointermove', event => {
+      if (event.pointerType === 'touch') return;
       targetX = event.clientX / innerWidth * 2 - 1;
       targetY = event.clientY / innerHeight * 2 - 1;
       cursorX = event.clientX;

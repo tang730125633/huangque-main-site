@@ -16,11 +16,13 @@ class LiquidBirdPrototypeTest(unittest.TestCase):
         self.assertIn("data-light-field", html)
         self.assertIn("data-cursor-wake", html)
         self.assertIn("public/assets/glass-bird.webp", html)
+        self.assertIn("experience.js?v=cursor2", html)
         self.assertIn("prefers-reduced-motion", css)
         self.assertIn("@media (max-width:560px)", css)
         self.assertIn("__liquidBirdCheck", script)
         self.assertIn("uPointerActive", script)
         self.assertIn("wakeDamping", script)
+        self.assertNotIn("pointer:fine", script)
         self.assertLess(bird.stat().st_size, 300_000)
 
 
