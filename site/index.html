@@ -6,7 +6,7 @@
   <meta name="description" content="黄雀 AI：从 IP12、Agent 与无限画布，到图文音视频生产和 HQ CLI。">
   <title>黄雀 AI · 会持续生长的内容系统</title>
   <link rel="icon" href="/assets/logo_sparrow.png">
-  <link rel="stylesheet" href="/homepage.css?v=20260805-public-boundary">
+  <link rel="stylesheet" href="/homepage.css?v=20260805-fusion-violet2">
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -48,26 +48,35 @@
 
   <main id="main">
     <section class="hero" id="top">
+      <div class="starfield" aria-hidden="true"></div>
+      <div class="hero-moon" aria-hidden="true"><img src="/assets/home/moon.webp" alt=""></div>
       <div class="hero-inner" data-reveal>
-        <div class="hero-logo" data-logo-motion>
-          <img src="/assets/logo_sparrow.png" alt="">
-          <canvas class="hero-logo-canvas" aria-hidden="true"></canvas>
-        </div>
-        <p class="kicker">IP12 · AGENT · CANVAS · VIDEO · CLI</p>
-        <h1>让你的生意，<br class="mobile-break">拥有一套<br><em>会持续生长的内容系统。</em></h1>
+        <p class="hero-badge"><i></i> 短剧顾问 · 一键成片已上线 2026</p>
+        <h1>让你的生意，<br class="mobile-break">拥有一套<br><em>会持续生长的<br class="mobile-break">内容系统。</em></h1>
         <p class="hero-lead">IP12 定义你是谁，Agent 先给计划，Canvas 把图文音视频串成可审核的生产链路。</p>
         <div class="hero-actions">
-          <a class="button button-primary" href="#flow">看它如何工作 ↓</a>
-          <a class="button button-secondary" href="/workbench/inspiration">进入工作台</a>
+          <a class="button button-primary" href="/workbench/inspiration">开始你的创作 →</a>
         </div>
+      </div>
+    </section>
 
-        <div class="hero-console" aria-label="黄雀产品原则">
-          <div class="console-title"><span>HUANGQUE · CONTENT OS</span><span class="status"><i></i> READY</span></div>
-          <div class="console-line"><span class="prompt">→</span><code>从 IP 底座，到一条可继续生产的内容链路</code><a href="#flow">[ 开始演示 ]</a></div>
-          <div class="console-rules"><span>计划先审核</span><span>生成先报价</span><span>资产可复用</span></div>
+    <section class="metrics" aria-label="黄雀平台数据">
+      <div class="page-shell metrics-grid" data-reveal>
+        <div class="metric">
+          <div class="metric-num"><strong data-count="46">0</strong><span>+</span></div>
+          <p>已登记的平台能力</p>
+          <small>每项能力都带明确参数、权限与费用边界</small>
         </div>
-
-        <a class="scroll-cue" href="#flow"><span>向下，见证链路生长</span><i aria-hidden="true"></i></a>
+        <div class="metric">
+          <div class="metric-num"><strong data-count="33">0</strong><span>+</span></div>
+          <p>可直接执行的能力</p>
+          <small>网页 Agent、外部 Agent 与命令行共用同一合同</small>
+        </div>
+        <div class="metric">
+          <div class="metric-num"><strong data-count="13">0</strong><span>个</span></div>
+          <p>前台创作渠道</p>
+          <small>图文、音视频、数字人，一站连通</small>
+        </div>
       </div>
     </section>
 
@@ -341,7 +350,7 @@
       && steps.every(step => panels.some(panel => panel.dataset.panel === step.dataset.story))
       && capabilityBranches.length === 6
       && productChannels.length === 13
-      && Boolean(document.querySelector('[data-logo-motion]') && document.querySelector('.story-stage') && document.querySelector('.story-chapters'));
+      && Boolean(document.querySelector('.story-stage') && document.querySelector('.story-chapters'));
     console.assert(window.__homepageCheck(), 'Homepage story mapping is incomplete');
 
     function activateStory(id) {
@@ -371,59 +380,25 @@
     });
 
     const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
-    const logo = document.querySelector('[data-logo-motion]');
-    const logoImage = logo?.querySelector('img');
-    const logoCanvas = logo?.querySelector('canvas');
 
-    async function assembleLogo() {
-      if (reducedMotion.matches || document.hidden || !logoCanvas?.getContext('2d')) return;
-      try { await logoImage.decode(); } catch {}
-      if (!logoImage.naturalWidth) return;
-
-      const rect = logoCanvas.getBoundingClientRect();
-      const dpr = Math.min(devicePixelRatio || 1, 2);
-      const context = logoCanvas.getContext('2d');
-      logoCanvas.width = Math.round(rect.width * dpr);
-      logoCanvas.height = Math.round(rect.height * dpr);
-      context.scale(dpr, dpr);
-      logo.classList.add('is-assembling');
-
-      const order = [0, 8, 2, 6, 4, 1, 7, 3, 5];
-      const offsets = [[-70,-58],[0,-76],[70,-58],[-78,0],[0,-34],[78,0],[-68,60],[0,78],[68,60]];
-      const started = performance.now();
-      const draw = now => {
-        context.clearRect(0, 0, rect.width, rect.height);
-        if (reducedMotion.matches) {
-          logo.classList.remove('is-assembling');
-          return;
-        }
-        let complete = true;
-        order.forEach((cell, index) => {
-          const column = cell % 3;
-          const row = Math.floor(cell / 3);
-          const progress = Math.max(0, Math.min(1, (now - started - index * 58) / 540));
-          const eased = 1 - Math.pow(1 - progress, 3);
-          const tileWidth = rect.width / 3;
-          const tileHeight = rect.height / 3;
-          const x = column * tileWidth + tileWidth / 2;
-          const y = row * tileHeight + tileHeight / 2;
-          complete &&= progress === 1;
-          context.save();
-          context.globalAlpha = progress;
-          context.translate(x + offsets[cell][0] * (1 - eased), y + offsets[cell][1] * (1 - eased));
-          context.rotate((column - row) * .2 * (1 - eased));
-          context.scale(.5 + .5 * eased, .5 + .5 * eased);
-          context.drawImage(logoImage, column * logoImage.naturalWidth / 3, row * logoImage.naturalHeight / 3, logoImage.naturalWidth / 3, logoImage.naturalHeight / 3, -tileWidth / 2, -tileHeight / 2, tileWidth, tileHeight);
-          context.restore();
-        });
-        if (!complete) requestAnimationFrame(draw);
-        else {
-          logo.classList.remove('is-assembling');
-          logo.classList.add('is-settled');
-        }
-      };
-      requestAnimationFrame(draw);
-    }
+    const counters = [...document.querySelectorAll('[data-count]')];
+    const counterObserver = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (!entry.isIntersecting) return;
+        counterObserver.unobserve(entry.target);
+        const el = entry.target;
+        const target = Number(el.dataset.count);
+        if (reducedMotion.matches) { el.textContent = target; return; }
+        const t0 = performance.now();
+        const tick = now => {
+          const p = Math.min(1, (now - t0) / 1400);
+          el.textContent = Math.round(target * (1 - Math.pow(1 - p, 3)));
+          if (p < 1) requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      });
+    }, { threshold: .4 });
+    counters.forEach(el => counterObserver.observe(el));
 
     const storyLayout = document.querySelector('.story-layout');
     const storyStage = storyLayout?.querySelector('.story-stage');
@@ -460,7 +435,6 @@
       if (!storyFrame) storyFrame = requestAnimationFrame(renderStoryIntro);
     }
 
-    assembleLogo();
     renderStoryIntro();
     addEventListener('scroll', scheduleStoryIntro, { passive: true });
     addEventListener('resize', scheduleStoryIntro);
