@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import base64
+import io
 import sys
 import unittest
 from pathlib import Path
@@ -15,8 +16,18 @@ from content_domains import points, video, video_minimax_h3  # noqa: E402
 
 
 class MiniMaxH3VideoTests(unittest.TestCase):
+    @staticmethod
+    def _image(fmt="PNG", size=(256, 256)):
+        from PIL import Image
+        output = io.BytesIO()
+        Image.new("RGB", size, (40, 80, 120)).save(output, fmt)
+        mime = "jpeg" if fmt == "JPEG" else fmt.lower()
+        return "data:image/%s;base64,%s" % (
+            mime, base64.b64encode(output.getvalue()).decode("ascii")
+        )
+
     def test_reference_request_and_20_percent_markup(self):
-        image = "data:image/png;base64," + base64.b64encode(b"png").decode()
+        image = self._image()
         body = video_minimax_h3.build_request(
             "第1张参考图仅作为人物身份参考", [image], "9:16", 15, "768p"
         )
@@ -29,7 +40,7 @@ class MiniMaxH3VideoTests(unittest.TestCase):
             }), 90)
 
     def test_create_once_then_resume_only_queries(self):
-        image = "data:image/png;base64," + base64.b64encode(b"png").decode()
+        image = self._image()
         succeeded = {"task": {
             "status": "succeeded", "content": {"url": "https://cdn.example/h3.mp4"},
             "duration": 5, "ratio": "9:16",
@@ -51,6 +62,27 @@ class MiniMaxH3VideoTests(unittest.TestCase):
         self.assertEqual(created["source_video_url"], "https://cdn.example/h3.mp4")
         self.assertEqual(resumed["request_id"], "h3-task-1")
         self.assertEqual([method for method, _path in calls], ["POST", "GET", "GET"])
+
+    def test_jpeg_reference_is_normalized_to_clean_png(self):
+        body = video_minimax_h3.build_request(
+            "人物走进电梯", [self._image("JPEG", (257, 455))], duration=5
+        )
+        normalized = body["content"][1]["image_url"]["url"]
+        self.assertTrue(normalized.startswith("data:image/png;base64,"))
+
+        from PIL import Image
+        with Image.open(io.BytesIO(base64.b64decode(normalized.split(",", 1)[1]))) as image:
+            self.assertEqual((257, 455), image.size)
+            self.assertEqual("PNG", image.format)
+
+    def test_invalid_image_and_provider_2013_are_user_readable(self):
+        corrupt = "data:image/jpeg;base64," + base64.b64encode(b"not-jpeg").decode()
+        with self.assertRaisesRegex(ValueError, "无法识别"):
+            video_minimax_h3.build_request("人物走进电梯", [corrupt], duration=5)
+        self.assertEqual(
+            "麦克视频参考图无法识别，请重新上传 JPG 或 PNG 图片",
+            video_minimax_h3._human_error(400, "media metadata is invalid (2013)"),
+        )
 
     def test_shared_video_job_uses_minimax_adapter(self):
         rendered = {

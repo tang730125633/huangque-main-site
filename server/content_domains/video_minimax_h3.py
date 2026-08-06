@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """MiniMax 中国区 H3 官方异步视频适配器。"""
 import base64
+import io
 import json
 import os
 import re
@@ -78,6 +79,8 @@ def _human_error(code, detail):
         return "麦克视频通道余额不足，请联系管理员"
     if any(x in low for x in ("moderation", "sensitive", "risk", "审核", "敏感")):
         return "麦克视频内容未通过安全审核，请调整提示词或参考图"
+    if "media metadata is invalid" in low or "2013" in low:
+        return "麦克视频参考图无法识别，请重新上传 JPG 或 PNG 图片"
     if code == 429:
         return "麦克视频当前并发繁忙，请稍后重试"
     return "麦克视频接口失败：HTTP %s %s" % (code, detail)
@@ -142,6 +145,27 @@ def _image_item(value):
             raise ValueError("麦克视频参考图数据无效") from exc
         if not raw or len(raw) > MAX_IMAGE_BYTES:
             raise ValueError("麦克视频单张参考图必须小于 30MB")
+        try:
+            from PIL import Image
+            with Image.open(io.BytesIO(raw)) as image:
+                expected = "JPEG" if match.group(1).lower() in {"image/jpeg", "image/jpg"} else match.group(1)[6:].upper()
+                if image.format != expected:
+                    raise ValueError("麦克视频参考图格式与图片内容不一致")
+                if not 256 <= image.width <= 5760 or not 256 <= image.height <= 5760:
+                    raise ValueError("麦克视频参考图宽高必须为 256～5760 像素")
+                image.load()
+                if image.format != "PNG" or image.mode not in {"RGB", "RGBA"}:
+                    clean = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+                    output = io.BytesIO()
+                    clean.save(output, "PNG", optimize=True)
+                    raw = output.getvalue()
+                    value = "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
+        except ValueError:
+            raise
+        except Exception:
+            raise ValueError("麦克视频参考图无法识别，请重新上传 JPG 或 PNG 图片") from None
+        if len(raw) > MAX_IMAGE_BYTES:
+            raise ValueError("麦克视频规范化后的参考图必须小于 30MB")
     else:
         parsed = urllib.parse.urlsplit(value)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
