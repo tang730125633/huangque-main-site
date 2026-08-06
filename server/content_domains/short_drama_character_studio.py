@@ -135,13 +135,14 @@ def _sync_locked_characters(conn, project_id, locked):
     now = int(time.time())
     for item in characters:
         existing = conn.execute(
-            "SELECT id,identity_text,personality FROM short_drama_characters "
+            "SELECT id,name,identity_text,personality FROM short_drama_characters "
             "WHERE project_id=? AND character_key=?",
             (project_id, item["character_key"]),
         ).fetchone()
         if existing:
             conn.execute(
-                "UPDATE short_drama_characters SET name=?,"
+                "UPDATE short_drama_characters SET "
+                "name=CASE WHEN name='' THEN ? ELSE name END,"
                 "identity_text=CASE WHEN identity_text='' THEN ? ELSE identity_text END,"
                 "personality=CASE WHEN personality='' THEN ? ELSE personality END,"
                 "sort_order=? WHERE project_id=? AND character_key=?",
@@ -216,10 +217,178 @@ def _avatar_items(owner_username, avatar_list):
     return result
 
 
+def _write_job_binding(conn, job_id, result, binding, status, message,
+                       project_revision=None):
+    outcome = dict(binding)
+    outcome.update({"status": status, "message": message})
+    if project_revision is not None:
+        outcome["project_revision"] = int(project_revision)
+    result = dict(result)
+    result["short_drama_binding"] = outcome
+    conn.execute(
+        "UPDATE jobs SET result=?,updated_at=? WHERE id=? AND kind='avatar' "
+        "AND status='done'",
+        (json.dumps(result, ensure_ascii=False), int(time.time()), int(job_id)),
+    )
+    return outcome
+
+
+def reconcile_avatar_job(db_factory, job_id, owner_username=None):
+    """Idempotently bind a completed Avatar job to its persisted role target."""
+    conn = _connection(db_factory)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        job = conn.execute(
+            "SELECT id,username,kind,status,payload,result FROM jobs WHERE id=?",
+            (int(job_id),),
+        ).fetchone()
+        if (
+            not job or job["kind"] != "avatar" or job["status"] != "done"
+            or (owner_username and job["username"] != owner_username)
+        ):
+            conn.rollback()
+            return None
+        payload = _json(job["payload"], {})
+        result = _json(job["result"], {})
+        binding = payload.get("short_drama_binding") or {}
+        if not isinstance(binding, dict) or not binding:
+            conn.rollback()
+            return None
+        previous = result.get("short_drama_binding") or {}
+        if previous.get("status") in {"bound", "conflict", "failed"}:
+            conn.rollback()
+            return previous
+        project_id = _text(binding.get("project_id"), 160)
+        character_key = _text(binding.get("character_key"), 160)
+        expected_revision = binding.get("project_revision")
+        avatar_id = result.get("avatar_id")
+        if (
+            not project_id or not character_key
+            or type(expected_revision) is not int or expected_revision < 1
+            or not str(avatar_id or "").isdigit()
+        ):
+            outcome = _write_job_binding(
+                conn, job_id, result, binding, "failed",
+                "自动绑定参数不完整，请手动选择电影化身",
+            )
+            conn.commit()
+            return outcome
+        project = conn.execute(
+            "SELECT revision FROM short_drama_projects WHERE id=? AND username=? "
+            "AND deleted=0",
+            (project_id, job["username"]),
+        ).fetchone()
+        character = conn.execute(
+            "SELECT avatar_id FROM short_drama_characters WHERE project_id=? "
+            "AND character_key=?",
+            (project_id, character_key),
+        ).fetchone()
+        avatar = conn.execute(
+            "SELECT id,username,status,provider_avatar_id FROM avatars WHERE id=?",
+            (int(avatar_id),),
+        ).fetchone()
+        if not project or not character:
+            outcome = _write_job_binding(
+                conn, job_id, result, binding, "failed",
+                "项目或角色已不存在，未执行自动绑定",
+            )
+            conn.commit()
+            return outcome
+        if (
+            not avatar or avatar["username"] != job["username"]
+            or avatar["status"] != "ready"
+            or not _text(avatar["provider_avatar_id"], 400)
+        ):
+            outcome = _write_job_binding(
+                conn, job_id, result, binding, "failed",
+                "电影化身不可用或归属不匹配，未执行自动绑定",
+                project["revision"],
+            )
+            conn.commit()
+            return outcome
+        if character["avatar_id"] == int(avatar_id):
+            outcome = _write_job_binding(
+                conn, job_id, result, binding, "bound", "电影化身已绑定",
+                project["revision"],
+            )
+            conn.commit()
+            return outcome
+        if int(project["revision"]) != expected_revision:
+            outcome = _write_job_binding(
+                conn, job_id, result, binding, "conflict",
+                "项目已更新，请刷新后手动确认电影化身绑定",
+                project["revision"],
+            )
+            conn.commit()
+            return outcome
+        if conn.execute(
+            "SELECT 1 FROM short_drama_characters WHERE project_id=? "
+            "AND character_key<>? AND avatar_id=? LIMIT 1",
+            (project_id, character_key, int(avatar_id)),
+        ).fetchone():
+            outcome = _write_job_binding(
+                conn, job_id, result, binding, "conflict",
+                "该电影化身已绑定到其他角色",
+                project["revision"],
+            )
+            conn.commit()
+            return outcome
+        changed = conn.execute(
+            "UPDATE short_drama_characters SET source_type='cinematic_avatar',"
+            "avatar_id=? WHERE project_id=? AND character_key=?",
+            (int(avatar_id), project_id, character_key),
+        )
+        project_changed = conn.execute(
+            "UPDATE short_drama_projects SET revision=revision+1,updated_at=? "
+            "WHERE id=? AND username=? AND revision=? AND deleted=0",
+            (int(time.time()), project_id, job["username"], expected_revision),
+        )
+        if changed.rowcount != 1 or project_changed.rowcount != 1:
+            raise CharacterStudioError(
+                "project_revision_conflict", "项目已更新，请刷新后重试", 409
+            )
+        outcome = _write_job_binding(
+            conn, job_id, result, binding, "bound", "电影化身已自动绑定",
+            expected_revision + 1,
+        )
+        conn.commit()
+        return outcome
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _reconcile_completed_avatar_jobs(db_factory, owner_username, project_id):
+    conn = _connection(db_factory)
+    try:
+        rows = conn.execute(
+            "SELECT id,payload FROM jobs WHERE username=? AND kind='avatar' "
+            "AND status='done' ORDER BY id DESC LIMIT 200",
+            (owner_username,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return
+    finally:
+        conn.close()
+    for row in rows:
+        binding = _json(row["payload"], {}).get("short_drama_binding") or {}
+        if str(binding.get("project_id") or "") != str(project_id):
+            continue
+        try:
+            reconcile_avatar_job(db_factory, row["id"], owner_username)
+        except (sqlite3.Error, CharacterStudioError, TypeError, ValueError):
+            # Job completion already succeeded; a transient reconciliation
+            # failure must not make the whole character workspace unavailable.
+            continue
+
+
 def workspace(
     db_factory, owner_username, actor_username, project_id, can_edit=True,
     avatar_list=None,
 ):
+    _reconcile_completed_avatar_jobs(db_factory, owner_username, project_id)
     conn = _connection(db_factory)
     try:
         project = conn.execute(
@@ -239,9 +408,26 @@ def workspace(
             "ORDER BY sort_order,id",
             (project_id,),
         ).fetchall()
+        active_reference_jobs = {}
+        for reference_row in conn.execute(
+            "SELECT character_key,job_id,status "
+            "FROM short_drama_character_reference_jobs "
+            "WHERE project_id=? AND owner_username=? "
+            "AND status IN ('linked','ready') ORDER BY updated_at DESC",
+            (project_id, owner_username),
+        ).fetchall():
+            active_reference_jobs.setdefault(
+                reference_row["character_key"], reference_row
+            )
         characters = []
         for row in rows:
             item = dict(row)
+            active_reference = active_reference_jobs.get(item["character_key"])
+            if active_reference:
+                item["reference_job_id"] = int(active_reference["job_id"])
+                item["reference_job_status"] = active_reference["status"]
+            elif item.get("reference_job_id"):
+                item["reference_job_status"] = "done"
             avatar = avatars_by_id.get(str(item.get("avatar_id") or ""))
             image_url = (
                 avatar.get("image_url", "") if avatar
@@ -256,6 +442,9 @@ def workspace(
             )
             item.update({
                 "image_url": image_url,
+                "reference_image_url": _text(
+                    item.get("reference_url"), 4000
+                ),
                 "avatar": avatar,
                 "profile_ready": profile_ready,
                 "binding_ready": binding_ready,
@@ -294,16 +483,24 @@ def workspace(
 
 
 def save_profile(db_factory, owner_username, body):
-    expected = {
+    required = {
         "project_id", "project_revision", "character_key", "identity_text",
         "personality", "appearance_prompt", "wardrobe_prompt",
     }
-    if not isinstance(body, dict) or set(body) != expected:
+    allowed = required | {"name"}
+    if (
+        not isinstance(body, dict)
+        or not required.issubset(body)
+        or set(body) - allowed
+    ):
         raise CharacterStudioError(
             "character_profile_invalid", "角色档案字段不完整", 422
         )
     project_id = _text(body.get("project_id"), 160)
     character_key = _text(body.get("character_key"), 160)
+    supplied_name = "name" in body
+    raw_name = str(body.get("name") or "").strip() if supplied_name else ""
+    name = _text(raw_name, 20) if supplied_name else None
     revision = body.get("project_revision")
     values = {
         field: _text(body.get(field), 4000)
@@ -321,6 +518,10 @@ def save_profile(db_factory, owner_username, body):
             "请完整填写身份、性格、外貌和穿着信息",
             422,
         )
+    if supplied_name and (not name or len(raw_name) > 20):
+        raise CharacterStudioError(
+            "character_name_invalid", "角色名称需为 1 至 20 个字符", 422
+        )
     conn = _connection(db_factory)
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -337,7 +538,7 @@ def save_profile(db_factory, owner_username, body):
                 "project_revision_conflict", "项目已更新，请刷新后重试", 409
             )
         current = conn.execute(
-            "SELECT appearance_prompt,wardrobe_prompt "
+            "SELECT name,identity_text,personality,appearance_prompt,wardrobe_prompt "
             "FROM short_drama_characters WHERE project_id=? AND character_key=?",
             (project_id, character_key),
         ).fetchone()
@@ -345,12 +546,38 @@ def save_profile(db_factory, owner_username, body):
             raise CharacterStudioError(
                 "character_not_found", "剧本中不存在该角色", 404
             )
+        if supplied_name:
+            duplicate = conn.execute(
+                "SELECT 1 FROM short_drama_characters "
+                "WHERE project_id=? AND character_key<>? "
+                "AND name=? COLLATE NOCASE LIMIT 1",
+                (project_id, character_key, name),
+            ).fetchone()
+            if duplicate:
+                raise CharacterStudioError(
+                    "character_name_duplicate", "角色名称已被其他角色使用", 409
+                )
         prompt_changed = (
             current["appearance_prompt"] != values["appearance_prompt"]
             or current["wardrobe_prompt"] != values["wardrobe_prompt"]
         )
+        profile_changed = (
+            (supplied_name and current["name"] != name)
+            or current["identity_text"] != values["identity_text"]
+            or current["personality"] != values["personality"]
+            or prompt_changed
+        )
+        if not profile_changed:
+            conn.commit()
+            return {
+                "ok": True,
+                "project_revision": revision,
+                "name": current["name"],
+            }
         conn.execute(
-            "UPDATE short_drama_characters SET identity_text=?,personality=?,"
+            "UPDATE short_drama_characters SET "
+            "name=CASE WHEN ? IS NULL THEN name ELSE ? END,"
+            "identity_text=?,personality=?,"
             "appearance_prompt=?,wardrobe_prompt=?,"
             "reference_job_id=CASE WHEN ? THEN NULL ELSE reference_job_id END,"
             "reference_file=CASE WHEN ? THEN '' ELSE reference_file END,"
@@ -358,6 +585,7 @@ def save_profile(db_factory, owner_username, body):
             "reference_locked=CASE WHEN ? THEN 0 ELSE reference_locked END "
             "WHERE project_id=? AND character_key=?",
             (
+                name, name,
                 values["identity_text"], values["personality"],
                 values["appearance_prompt"], values["wardrobe_prompt"],
                 int(prompt_changed), int(prompt_changed), int(prompt_changed),
@@ -374,7 +602,11 @@ def save_profile(db_factory, owner_username, body):
                 "project_revision_conflict", "项目已更新，请刷新后重试", 409
             )
         conn.commit()
-        return {"ok": True, "project_revision": revision + 1}
+        return {
+            "ok": True,
+            "project_revision": revision + 1,
+            "name": name if supplied_name else current["name"],
+        }
     except Exception:
         conn.rollback()
         raise

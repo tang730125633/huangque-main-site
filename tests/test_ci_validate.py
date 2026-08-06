@@ -5,6 +5,8 @@ from scripts.ci_validate import (
     candidate_paths,
     check_redlines,
     is_dynamic_or_external,
+    load_json_strict,
+    parse_json_strict,
 )
 
 
@@ -42,3 +44,22 @@ class HtmlReferenceTests(TestCase):
         self.assertTrue(is_dynamic_or_external("${result.url}"))
         self.assertTrue(is_dynamic_or_external("#pricing"))
         self.assertFalse(is_dynamic_or_external("../assets/cloud.css?v=8"))
+class StrictJsonTests(TestCase):
+    def test_rejects_duplicate_object_keys(self) -> None:
+        with self.assertRaisesRegex(ValueError, "duplicate JSON key: schema"):
+            parse_json_strict('{"schema": 1, "schema": 2}')
+
+    def test_openapi_copies_are_strict_and_identical(self) -> None:
+        docs = Path("docs/api/openapi.json")
+        site = Path("site/api-docs/openapi.json")
+
+        docs_spec = load_json_strict(docs)
+        self.assertEqual(docs_spec, load_json_strict(site))
+        profile = docs_spec["components"]["schemas"][
+            "ShortDramaCharacterProfileMutation"
+        ]
+        self.assertEqual(
+            {"type": "string", "minLength": 1, "maxLength": 20,
+             "description": "可选的角色显示名称；同一项目内不可重复"},
+            profile["properties"]["name"],
+        )

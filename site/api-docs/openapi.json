@@ -1282,6 +1282,7 @@
           "project_id": { "type": "string" },
           "project_revision": { "type": "integer", "minimum": 1 },
           "character_key": { "type": "string" },
+          "name": { "type": "string", "minLength": 1, "maxLength": 20, "description": "可选的角色显示名称；同一项目内不可重复" },
           "identity_text": { "type": "string", "minLength": 1, "maxLength": 4000 },
           "personality": { "type": "string", "minLength": 1, "maxLength": 4000 },
           "appearance_prompt": { "type": "string", "minLength": 1, "maxLength": 4000 },
@@ -3174,7 +3175,7 @@
         "summary": "保存角色身份、性格、外貌和穿着档案",
         "parameters": [{ "$ref": "#/components/parameters/IdempotencyKeyRequired" }, { "$ref": "#/components/parameters/XCanvasBoardId" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaCharacterProfileMutation" } } } },
-        "responses": { "200": { "description": "保存成功并返回新的项目 revision" }, "409": { "description": "项目版本冲突" }, "422": { "description": "角色档案不完整" } }
+        "responses": { "200": { "description": "保存成功并返回新的项目 revision 和角色名称" }, "409": { "description": "项目版本冲突，或角色名称与同项目其他角色重复（character_name_duplicate）" }, "422": { "description": "角色档案不完整，或角色名称不是 1–20 个字符" } }
       }
     },
     "/api/gen/short-drama/character-studio/bind-avatar": {
