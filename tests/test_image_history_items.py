@@ -89,6 +89,24 @@ class ImageHistoryItemsTests(unittest.TestCase):
 
         self.assertEqual(expand_job_results(rows, limit=9), [])
 
+    def test_includes_failed_job_when_requested(self):
+        rows = [{
+            "id": 13,
+            "status": "error",
+            "payload": json.dumps({"prompt": "demo"}),
+            "result": None,
+            "error": "上游失败",
+            "created_at": 300,
+        }]
+
+        self.assertEqual(expand_job_results(rows, limit=9, include_failed=True), [{
+            "job_id": 13,
+            "status": "error",
+            "error": "上游失败",
+            "prompt": "demo",
+            "created_at": 300,
+        }])
+
 
 if __name__ == "__main__":
     unittest.main()
