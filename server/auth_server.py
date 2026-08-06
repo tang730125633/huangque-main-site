@@ -216,6 +216,10 @@ REVOKED_TOKENS = set()
 ACCOUNT_ID_LENGTH = 8
 ACCOUNT_ID_PREFIX = "HQ"
 ACCOUNT_ID_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+POINT_TRANSFER_DAILY_LIMIT = 100000
+POINT_TRANSFER_NOTE_MAX_LENGTH = 80
+POINT_TRANSFER_REQUEST_ID_MAX_LENGTH = 80
+POINT_TRANSFER_ACTOR = "用户赠送"
 CANVAS_NAME_MAX = 48
 CANVAS_DATA_MAX_BYTES = int(os.environ.get("HQ_CANVAS_DATA_MAX_BYTES", str(6 * 1024 * 1024)))
 CANVAS_ROLES = {"viewer", "editor"}
@@ -325,6 +329,27 @@ def init_db():
     # 只能命中原流水，不能再次加点。NULL 不参与冲突，老调用方保持原行为。
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_points_audit_transaction_key "
               "ON points_audit(transaction_key)")
+    c.execute("""CREATE TABLE IF NOT EXISTS point_transfers(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        transfer_id TEXT NOT NULL UNIQUE,
+        request_id TEXT NOT NULL,
+        sender_user_id INTEGER NOT NULL,
+        recipient_user_id INTEGER NOT NULL,
+        amount INTEGER NOT NULL,
+        note TEXT NOT NULL DEFAULT '',
+        sender_before INTEGER NOT NULL,
+        sender_after INTEGER NOT NULL,
+        recipient_before INTEGER NOT NULL,
+        recipient_after INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        CHECK(amount > 0),
+        CHECK(sender_user_id <> recipient_user_id),
+        UNIQUE(sender_user_id, request_id)
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_point_transfers_sender_created "
+              "ON point_transfers(sender_user_id, created_at DESC, id DESC)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_point_transfers_recipient_created "
+              "ON point_transfers(recipient_user_id, created_at DESC, id DESC)")
     c.execute("""CREATE TABLE IF NOT EXISTS announcement_campaigns(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         title TEXT NOT NULL,
@@ -2294,6 +2319,270 @@ def refund_points(username, amount, reason="", transaction_key=""):
     except Exception:
         c.rollback()
         raise
+    finally:
+        c.close()
+
+
+class PointTransferError(Exception):
+    def __init__(self, code, detail, status=400, extra=None):
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
+        self.status = status
+        self.extra = dict(extra or {})
+
+
+def _point_transfer_day_range(now):
+    current = datetime.datetime.fromtimestamp(int(now), SHANGHAI_TZ)
+    start = current.replace(hour=0, minute=0, second=0, microsecond=0)
+    return int(start.timestamp()), int((start + datetime.timedelta(days=1)).timestamp())
+
+
+def _point_transfer_daily_summary(c, sender_user_id, now):
+    day_start, day_end = _point_transfer_day_range(now)
+    used = int(c.execute(
+        """SELECT COALESCE(SUM(amount),0) AS total FROM point_transfers
+           WHERE sender_user_id=? AND created_at>=? AND created_at<?""",
+        (int(sender_user_id), day_start, day_end),
+    ).fetchone()["total"] or 0)
+    return {
+        "daily_limit": POINT_TRANSFER_DAILY_LIMIT,
+        "daily_used": used,
+        "daily_remaining": max(0, POINT_TRANSFER_DAILY_LIMIT - used),
+    }
+
+
+def _point_transfer_party(c, user_id):
+    row = c.execute(
+        """SELECT u.username,u.display_name,u.account_id,u.account_status,c.avatar_key
+           FROM users u LEFT JOIN business_cards c ON c.user_id=u.id
+           WHERE u.id=?""",
+        (int(user_id),),
+    ).fetchone()
+    if not row:
+        return {"account_id": "", "name": "已停用用户", "avatar": ""}
+    display_name = str(row["display_name"] or "").strip()
+    if (not display_name or display_name == str(row["username"] or "").strip()
+            or business_cards._looks_like_mobile_number(display_name)):
+        display_name = "黄雀用户"
+    return {
+        "account_id": row["account_id"] or "",
+        "name": display_name,
+        "avatar": business_cards._media_url(row["avatar_key"]),
+    }
+
+
+def _public_point_transfer(c, row, viewer_user_id):
+    sent = int(row["sender_user_id"]) == int(viewer_user_id)
+    counterpart_id = row["recipient_user_id"] if sent else row["sender_user_id"]
+    return {
+        "transfer_id": row["transfer_id"],
+        "direction": "sent" if sent else "received",
+        "amount": int(row["amount"]),
+        "note": row["note"] or "",
+        "counterpart": _point_transfer_party(c, counterpart_id),
+        "balance_after": int(row["sender_after"] if sent else row["recipient_after"]),
+        "created_at": int(row["created_at"]),
+    }
+
+
+def point_transfer_recipient(sender_username, account_id):
+    account_id = str(account_id or "").strip().upper()
+    if (len(account_id) != ACCOUNT_ID_LENGTH or not account_id.startswith(ACCOUNT_ID_PREFIX)
+            or any(ch not in ACCOUNT_ID_ALPHABET for ch in account_id[len(ACCOUNT_ID_PREFIX):])):
+        raise PointTransferError("invalid_recipient", "请输入正确的用户 ID")
+    c = db()
+    try:
+        sender = c.execute(
+            "SELECT id FROM users WHERE username=? AND COALESCE(account_status,'active')='active'",
+            ((sender_username or "").strip(),),
+        ).fetchone()
+        if not sender:
+            raise PointTransferError("sender_not_found", "当前账号不可用", 404)
+        recipient = c.execute(
+            """SELECT id FROM users WHERE account_id=?
+               AND COALESCE(account_status,'active')='active'""",
+            (account_id,),
+        ).fetchone()
+        if not recipient:
+            raise PointTransferError("recipient_not_found", "未找到该收款账号", 404)
+        if int(recipient["id"]) == int(sender["id"]):
+            raise PointTransferError("self_transfer", "不能向自己赠送点数")
+        return _point_transfer_party(c, recipient["id"])
+    finally:
+        c.close()
+
+
+def transfer_points(sender_username, recipient_account_id, amount, password, request_id, note="", now=None):
+    if isinstance(amount, bool) or not isinstance(amount, int):
+        raise PointTransferError("invalid_amount", "赠送点数必须是整数")
+    if amount <= 0 or amount > POINT_TRANSFER_DAILY_LIMIT:
+        raise PointTransferError(
+            "invalid_amount", "单次赠送点数必须在 1 到 %s 之间" % POINT_TRANSFER_DAILY_LIMIT,
+        )
+    if not isinstance(password, str) or not password or len(password) > PASSWORD_MAX_LENGTH:
+        raise PointTransferError("password_required", "请输入当前登录密码")
+    request_id = str(request_id or "").strip()
+    if (len(request_id) < 16 or len(request_id) > POINT_TRANSFER_REQUEST_ID_MAX_LENGTH
+            or not re.fullmatch(r"[A-Za-z0-9._:-]+", request_id)):
+        raise PointTransferError("invalid_request_id", "请求标识无效")
+    if not isinstance(note, str):
+        raise PointTransferError("invalid_note", "赠送备注格式不正确")
+    note = note.strip()
+    if len(note) > POINT_TRANSFER_NOTE_MAX_LENGTH:
+        raise PointTransferError("invalid_note", "赠送备注不能超过 80 个字")
+    recipient_account_id = str(recipient_account_id or "").strip().upper()
+    if (len(recipient_account_id) != ACCOUNT_ID_LENGTH
+            or not recipient_account_id.startswith(ACCOUNT_ID_PREFIX)
+            or any(ch not in ACCOUNT_ID_ALPHABET
+                   for ch in recipient_account_id[len(ACCOUNT_ID_PREFIX):])):
+        raise PointTransferError("invalid_recipient", "请输入正确的用户 ID")
+    now = int(time.time() if now is None else now)
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        sender = c.execute(
+            """SELECT * FROM users WHERE username=?
+               AND COALESCE(account_status,'active')='active'""",
+            ((sender_username or "").strip(),),
+        ).fetchone()
+        if not sender:
+            raise PointTransferError("sender_not_found", "当前账号不可用", 404)
+        if initial_password_change_required(sender):
+            raise PointTransferError(
+                "initial_password_change_required", "赠送点数前请先修改初始密码", 403,
+            )
+        supplied_hash = hash_pw(password, sender["pw_salt"])
+        if not secrets.compare_digest(str(sender["pw_hash"]), supplied_hash):
+            raise PointTransferError("password_invalid", "当前登录密码不正确", 403)
+
+        prior = c.execute(
+            "SELECT * FROM point_transfers WHERE sender_user_id=? AND request_id=?",
+            (sender["id"], request_id),
+        ).fetchone()
+        if prior:
+            prior_recipient = c.execute(
+                "SELECT account_id FROM users WHERE id=?", (prior["recipient_user_id"],),
+            ).fetchone()
+            if (not prior_recipient or prior_recipient["account_id"] != recipient_account_id
+                    or int(prior["amount"]) != amount or (prior["note"] or "") != note):
+                raise PointTransferError(
+                    "transaction_conflict", "该请求标识已用于另一笔赠送", 409,
+                )
+            result = _public_point_transfer(c, prior, sender["id"])
+            result.update(_point_transfer_daily_summary(c, sender["id"], now))
+            current = c.execute("SELECT points FROM users WHERE id=?", (sender["id"],)).fetchone()
+            result["points"] = int(current["points"] or 0)
+            c.rollback()
+            return result
+
+        recipient = c.execute(
+            """SELECT * FROM users WHERE account_id=?
+               AND COALESCE(account_status,'active')='active'""",
+            (recipient_account_id,),
+        ).fetchone()
+        if not recipient:
+            raise PointTransferError("recipient_not_found", "未找到该收款账号", 404)
+        if int(recipient["id"]) == int(sender["id"]):
+            raise PointTransferError("self_transfer", "不能向自己赠送点数")
+
+        daily = _point_transfer_daily_summary(c, sender["id"], now)
+        if amount > daily["daily_remaining"]:
+            raise PointTransferError(
+                "daily_limit_exceeded", "今日赠送额度不足", 409, daily,
+            )
+        sender_before = int(sender["points"] or 0)
+        recipient_before = int(recipient["points"] or 0)
+        if sender_before < amount:
+            raise PointTransferError(
+                "insufficient_points", "可赠送点数不足", 409,
+                {"available_points": sender_before},
+            )
+        changed = c.execute(
+            "UPDATE users SET points=points-? WHERE id=? AND points>=?",
+            (amount, sender["id"], amount),
+        )
+        if changed.rowcount != 1:
+            raise PointTransferError("insufficient_points", "可赠送点数不足", 409)
+        c.execute("UPDATE users SET points=points+? WHERE id=?", (amount, recipient["id"]))
+        sender_after = sender_before - amount
+        recipient_after = recipient_before + amount
+        transfer_id = "PT" + secrets.token_hex(12).upper()
+        c.execute(
+            """INSERT INTO point_transfers(
+                   transfer_id,request_id,sender_user_id,recipient_user_id,amount,note,
+                   sender_before,sender_after,recipient_before,recipient_after,created_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (transfer_id, request_id, sender["id"], recipient["id"], amount, note,
+             sender_before, sender_after, recipient_before, recipient_after, now),
+        )
+        recipient_party = _point_transfer_party(c, recipient["id"])
+        sender_party = _point_transfer_party(c, sender["id"])
+        _write_audit(
+            c, POINT_TRANSFER_ACTOR, sender["username"], -amount, sender_before, sender_after,
+            "赠送给 %s（%s）" % (recipient_party["name"], recipient_party["account_id"]),
+            "points-transfer:%s:out" % transfer_id,
+        )
+        _write_audit(
+            c, POINT_TRANSFER_ACTOR, recipient["username"], amount, recipient_before, recipient_after,
+            "收到 %s（%s）赠送" % (sender_party["name"], sender_party["account_id"]),
+            "points-transfer:%s:in" % transfer_id,
+        )
+        row = c.execute("SELECT * FROM point_transfers WHERE transfer_id=?", (transfer_id,)).fetchone()
+        result = _public_point_transfer(c, row, sender["id"])
+        result.update({
+            "points": sender_after,
+            "daily_limit": daily["daily_limit"],
+            "daily_used": daily["daily_used"] + amount,
+            "daily_remaining": daily["daily_remaining"] - amount,
+        })
+        c.commit()
+        return result
+    except PointTransferError:
+        c.rollback()
+        raise
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+
+def list_point_transfers(username, limit=20, offset=0, now=None):
+    try:
+        limit = max(1, min(50, int(limit or 20)))
+        offset = max(0, int(offset or 0))
+    except (TypeError, ValueError):
+        raise PointTransferError("invalid_pagination", "分页参数无效")
+    now = int(time.time() if now is None else now)
+    c = db()
+    try:
+        user = c.execute(
+            """SELECT id,points FROM users WHERE username=?
+               AND COALESCE(account_status,'active')='active'""",
+            ((username or "").strip(),),
+        ).fetchone()
+        if not user:
+            raise PointTransferError("sender_not_found", "当前账号不可用", 404)
+        rows = c.execute(
+            """SELECT * FROM point_transfers
+               WHERE sender_user_id=? OR recipient_user_id=?
+               ORDER BY id DESC LIMIT ? OFFSET ?""",
+            (user["id"], user["id"], limit, offset),
+        ).fetchall()
+        total = int(c.execute(
+            """SELECT COUNT(*) AS total FROM point_transfers
+               WHERE sender_user_id=? OR recipient_user_id=?""",
+            (user["id"], user["id"]),
+        ).fetchone()["total"] or 0)
+        return {
+            "items": [_public_point_transfer(c, row, user["id"]) for row in rows],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "points": int(user["points"] or 0),
+            **_point_transfer_daily_summary(c, user["id"], now),
+        }
     finally:
         c.close()
 
@@ -4625,6 +4914,39 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
+        if p == "/api/auth/points/transfer":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录或登录已过期"})
+            if self._login_limited(row["username"]):
+                return self._send(429, {
+                    "detail": "密码验证失败次数过多，请稍后再试",
+                    "code": "password_attempts_limited",
+                })
+            if self._content_length_exceeds(4096):
+                return self._send(413, {"detail": "请求内容过大"})
+            d = self._body()
+            if self._bad_json() or not isinstance(d, dict):
+                return self._send(400, {"detail": "请求体必须是合法 JSON 对象"})
+            allowed = {"recipient_account_id", "amount", "password", "request_id", "note"}
+            unknown = sorted(set(d) - allowed)
+            if unknown:
+                return self._send(400, {"detail": "不支持的参数：" + unknown[0]})
+            try:
+                transfer = transfer_points(
+                    row["username"], d.get("recipient_account_id"), d.get("amount"),
+                    d.get("password"), d.get("request_id"), d.get("note", ""),
+                )
+                self._clear_login_failures(row["username"])
+                return self._send(200, {"ok": True, "transfer": transfer, "points": transfer["points"]})
+            except PointTransferError as exc:
+                if exc.code == "password_invalid":
+                    self._record_login_failure(row["username"])
+                return self._send(
+                    exc.status, {"detail": exc.detail, "code": exc.code, **exc.extra},
+                )
+            except Exception:
+                return self._send(500, {"detail": "点数赠送失败，请稍后重试"})
         if p == "/api/auth/internal/canvas/access":
             if not self._require_internal():
                 return
@@ -6139,6 +6461,29 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path.split("?")[0]
+        if p in ("/api/auth/points/transfer/recipient", "/api/auth/points/transfers"):
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录或登录已过期"})
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                if p == "/api/auth/points/transfer/recipient":
+                    recipient = point_transfer_recipient(
+                        row["username"], (query.get("account_id") or [""])[0],
+                    )
+                    return self._send(200, {"ok": True, "recipient": recipient})
+                result = list_point_transfers(
+                    row["username"],
+                    (query.get("limit") or ["20"])[0],
+                    (query.get("offset") or ["0"])[0],
+                )
+                return self._send(200, {"ok": True, **result})
+            except PointTransferError as exc:
+                return self._send(
+                    exc.status, {"detail": exc.detail, "code": exc.code, **exc.extra},
+                )
+            except Exception:
+                return self._send(500, {"detail": "点数赠送记录暂时无法读取"})
         if p == "/api/auth/points/transaction":
             if not self._require_internal():
                 return
