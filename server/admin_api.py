@@ -33,6 +33,7 @@ _DOMAIN_PACKAGE = (
 )
 egress = import_module(_DOMAIN_PACKAGE + ".egress")
 feature_flags = import_module(_DOMAIN_PACKAGE + ".feature_flags")
+function_registry = import_module(_DOMAIN_PACKAGE + ".function_registry")
 provider_keys = import_module(_DOMAIN_PACKAGE + ".provider_keys")
 pricing = import_module(_DOMAIN_PACKAGE + ".pricing")
 error_contract = import_module(_DOMAIN_PACKAGE + ".error_contract")
@@ -84,6 +85,8 @@ PORT = int(os.environ.get("ADMIN_API_PORT", "8099"))
 AUTH_BASE = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095").rstrip("/")
 AUTH_INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
 JOB_DB = pathlib.Path(os.environ.get("CONTENT_JOB_DB", str(BASE / "content_jobs.db")))
+ASSET_DB = pathlib.Path(os.environ.get("AUDIO_DB", str(BASE / "audio_assets.db")))
+VIDEO_COMPOSE_DB = pathlib.Path(os.environ.get("VIDEO_COMPOSE_DB", str(BASE / "video_compose.db")))
 ADMIN_DB = pathlib.Path(os.environ.get("ADMIN_DB", str(BASE / "admin_config.db")))
 
 ENV_FILES = [
@@ -181,7 +184,7 @@ KEY_GROUPS = [
      "env_base_env": ["HEYGEN_API_BASE"], "env_base_default": "https://api.heygen.com/v3",
      "env": ["HEYGEN_API_KEY"]},
     {"key": "heygen_relay", "name": "HeyGen 中转 API", "category": "数字化 IP / 视频生成",
-     "features": ["电影化身 / 数字人口播 → 中转与下载兜底"],
+     "features": ["数字化 IP → 中转与下载兜底"],
      "env_base_env": ["HEYGEN_RELAY_BASE"], "env_base_default": "",
      "env": ["HEYGEN_RELAY_TOKEN"]},
     {"key": "xiaolevideo", "name": "小乐视频 API", "category": "图片生成 / 视频生成",
@@ -1737,6 +1740,30 @@ def load_features(services=None):
     return feature_flags.list_features(services or service_status())
 
 
+def load_function_registry(services=None):
+    pages = function_registry.list_pages()
+    content = next(
+        (item for item in (services or []) if item.get("key") == "content"), {}
+    )
+    health = content.get("detail") or {}
+    for page in pages:
+        for feature in page.get("functions", []):
+            visibility_key = feature.get("surface_visibility_key")
+            acceptance_key = feature.get("acceptance_health_key") or visibility_key
+            feature["runtime_visible"] = (
+                health.get(visibility_key) is True if visibility_key else True
+            )
+            feature["acceptance_health"] = (
+                health.get(acceptance_key) if acceptance_key else None
+            )
+            selections = {}
+            for group, config in feature.get("alternative_selections", {}).items():
+                selected = _env_value([config["env"]]) or config.get("default")
+                selections[group] = str(selected or "").strip().lower()
+            feature["selected_alternatives"] = selections
+    return pages
+
+
 def load_pricing():
     return pricing.list_prices()
 
@@ -1832,6 +1859,9 @@ def _empty_stats(message=None):
         "days": 7,
         "total": 0,
         "by_kind": [],
+        "by_operation": [],
+        "unmapped": [],
+        "evidence_errors": [],
         "trend": [],
         "high_failure": [],
         "message": message,
@@ -1845,7 +1875,6 @@ _XIAOLE_FEATURE_BY_CHANNEL = {
     "minimax": "minimax_h3_video",
 }
 
-
 def _operation_feature_key(kind, channel=""):
     kind = str(kind or "unknown")
     if kind == "xiaole_video":
@@ -1853,72 +1882,290 @@ def _operation_feature_key(kind, channel=""):
     return kind
 
 
+def _count_status(bucket, status, count=1):
+    bucket["total"] += count
+    if status in {"done", "completed"}:
+        bucket["done"] += count
+    elif status in {"error", "failed", "refunded"}:
+        bucket["error"] += count
+    elif status in {"pending", "queued", "running", "processing"}:
+        bucket["running"] += count
+    else:
+        bucket["other"] += count
+
+
+def _finish_stats(items):
+    for item in items:
+        terminal = item["done"] + item["error"]
+        item["success_rate"] = round(item["done"] / terminal, 4) if terminal else 0
+        item["failure_rate"] = round(item["error"] / terminal, 4) if terminal else 0
+    return items
+
+
+def _video_asset_evidence(job_ids):
+    if not job_ids:
+        return {}, None
+    if not ASSET_DB.exists():
+        return {}, "视频资产证据库不存在"
+    placeholders = ",".join("?" for _ in job_ids)
+    try:
+        with closing(sqlite3.connect(str(ASSET_DB), timeout=10)) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                """SELECT job_id,phase,provider_video_id,video_file,video_url,status,error,updated_at
+                   FROM video_assets WHERE job_id IN (%s)""" % placeholders,
+                tuple(job_ids),
+            ).fetchall()
+        return {int(row["job_id"]): dict(row) for row in rows if row["job_id"]}, None
+    except sqlite3.Error:
+        return {}, "视频资产证据读取失败"
+
+
+def _job_evidence(row, asset=None):
+    asset = asset or {}
+    status = str(row["status"] or "unknown").lower()
+    cost = int(row["cost"] or 0)
+    refunded = int(row["refunded"] or 0)
+    result_url = str(row["result_url"] or asset.get("video_url") or "").strip()
+    result_file = str(row["result_file"] or asset.get("video_file") or "").strip()
+    provider_task_id = str(
+        asset.get("provider_video_id") or row["provider_result_id"] or ""
+    ).strip()
+    if status in {"error", "failed"}:
+        if cost <= 0:
+            billing_state = "not_charged"
+        elif refunded == 1:
+            billing_state = "refunded"
+        elif refunded == 2:
+            billing_state = "refund_pending"
+        else:
+            billing_state = "needs_review"
+    elif status in {"done", "completed"}:
+        # jobs.cost is the intended charge, not proof that the points ledger agrees.
+        billing_state = "unverified"
+    else:
+        billing_state = "in_flight"
+    return {
+        "job_id": int(row["id"]),
+        "project_id": None,
+        "status": status,
+        "phase": asset.get("phase"),
+        "created_at": int(row["created_at"] or 0),
+        "updated_at": int(row["updated_at"] or 0),
+        "business_accepted": True,
+        "provider_task_id": provider_task_id or None,
+        "provider_accepted": True if provider_task_id else None,
+        "completed": status in {"done", "completed"},
+        "result_url": result_url or None,
+        "result_file": result_file or None,
+        "output_reference_present": bool(result_url or result_file),
+        "delivery_verified": False,
+        "artifact_check": "not_recorded",
+        "cost": cost,
+        "refund_state": refunded,
+        "billing_state": billing_state,
+        "asset_status": asset.get("status"),
+        "error": str(row["error"] or asset.get("error") or "")[:300],
+    }
+
+
+def _compose_operation_stat(since):
+    if not VIDEO_COMPOSE_DB.exists():
+        return None, None
+    try:
+        with closing(sqlite3.connect(str(VIDEO_COMPOSE_DB), timeout=10)) as connection:
+            connection.row_factory = sqlite3.Row
+            columns = {row["name"] for row in connection.execute(
+                "PRAGMA table_info(video_compose_projects)"
+            )}
+            if not columns:
+                return None, None
+            error_sql = "COALESCE(error,'')" if "error" in columns else "''"
+            rows = connection.execute(
+                """SELECT id,status,output_file,output_asset_id,created_at,updated_at,%s AS error
+                   FROM video_compose_projects WHERE created_at>=?
+                   ORDER BY created_at DESC""" % error_sql,
+                (since,),
+            ).fetchall()
+    except sqlite3.Error:
+        return None, "一键成片证据读取失败"
+    if not rows:
+        return None, None
+    bucket = {
+        "operation": "video.one_click.compose", "total": 0, "done": 0,
+        "error": 0, "running": 0, "other": 0,
+    }
+    for row in rows:
+        status = str(row["status"] or "unknown").lower()
+        _count_status(
+            bucket,
+            status if status in {"completed", "failed", "refunded"} else "running",
+        )
+    latest = rows[0]
+    bucket["latest"] = {
+        "job_id": None,
+        "project_id": latest["id"],
+        "status": latest["status"],
+        "created_at": int(latest["created_at"] or 0),
+        "updated_at": int(latest["updated_at"] or 0),
+        "business_accepted": True,
+        "business_id_type": "project_id",
+        "provider_task_id": None,
+        "provider_accepted": None,
+        "provider_task_state": "not_applicable",
+        "completed": latest["status"] == "completed",
+        "result_file": latest["output_file"] or None,
+        "result_url": None,
+        "output_reference_present": bool(latest["output_file"]),
+        "delivery_verified": False,
+        "artifact_check": "not_recorded",
+        "cost": 0,
+        "refund_state": 0,
+        "billing_state": "not_applicable",
+        "balance_state": "not_applicable",
+        "asset_status": "done" if latest["output_asset_id"] else None,
+        "error": str(latest["error"] or "")[:300],
+        "evidence_note": "一键成片使用本地 project_id，不经过外部供应商任务",
+    }
+    return _finish_stats([bucket])[0], None
+
+
 def job_stats(days=7):
     days = max(1, min(int(days or 7), 90))
-    if not JOB_DB.exists():
-        data = _empty_stats("content_jobs.db not found")
-        data["days"] = days
-        return data
     since = int(time.time()) - days * 86400
-    with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as c:
-        c.row_factory = sqlite3.Row
-        rows = c.execute(
-            """SELECT kind,
-                      CASE WHEN kind='xiaole_video' AND json_valid(payload)
-                           THEN LOWER(COALESCE(json_extract(payload, '$.channel'), ''))
-                           ELSE '' END AS channel,
-                      status, COUNT(*) AS n
-               FROM jobs WHERE created_at >= ?
-               GROUP BY kind, channel, status ORDER BY kind, channel, status""",
-            (since,),
-        ).fetchall()
-        trend_rows = c.execute(
-            """SELECT date(created_at, 'unixepoch') AS day, kind,
-                      CASE WHEN kind='xiaole_video' AND json_valid(payload)
-                           THEN LOWER(COALESCE(json_extract(payload, '$.channel'), ''))
-                           ELSE '' END AS channel,
-                      status, COUNT(*) AS n
-               FROM jobs WHERE created_at >= ?
-               GROUP BY day, kind, channel, status ORDER BY day, kind, channel""",
-            (since,),
-        ).fetchall()
+    rows = []
+    evidence_errors = []
+    if not JOB_DB.exists():
+        evidence_errors.append("任务证据库不存在")
+    else:
+        try:
+            with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as connection:
+                connection.row_factory = sqlite3.Row
+                columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
+                refunded_sql = "COALESCE(refunded,0)" if "refunded" in columns else "0"
+                error_sql = "COALESCE(error,'')" if "error" in columns else "''"
+                result_sql = "result" if "result" in columns else "NULL"
+                # ponytail: scan only the selected time window; add a rollup table when this
+                # becomes measurably slower than the existing admin refresh budget.
+                rows = connection.execute(
+                    """SELECT id,kind,status,cost,%s AS refunded,%s AS error,created_at,updated_at,
+                              date(created_at, 'unixepoch') AS day,
+                              CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.channel'),'')) ELSE '' END AS channel,
+                              CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.mode'),'')) ELSE '' END AS mode,
+                              CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.cine_mode'),'')) ELSE '' END AS cine_mode,
+                              CASE WHEN json_valid(payload) THEN CAST(COALESCE(json_extract(payload,'$.line'),'') AS TEXT) ELSE '' END AS line,
+                              CASE WHEN json_valid(payload) AND json_type(payload,'$.reference_images')='array'
+                                   THEN json_array_length(payload,'$.reference_images') ELSE 0 END AS reference_count,
+                              CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload,'$.batch_id'),'') ELSE '' END AS batch_id,
+                              CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.operation'),'')) ELSE '' END AS operation,
+                              CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload,'$.upscale'),0) ELSE 0 END AS upscale,
+                              CASE WHEN json_valid(payload) AND
+                                        (json_type(payload,'$._short_drama_video')='object' OR
+                                         json_type(payload,'$.short_drama_binding')='object')
+                                   THEN 'short-drama' ELSE '' END AS source_page,
+                              CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_url'),json_extract(%s,'$.url'),'') ELSE '' END AS result_url,
+                              CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_file'),json_extract(%s,'$.file'),'') ELSE '' END AS result_file,
+                              CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.provider_video_id'),json_extract(%s,'$.video_id'),json_extract(%s,'$.provider_avatar_id'),'') ELSE '' END AS provider_result_id
+                       FROM jobs WHERE created_at>=? ORDER BY created_at DESC""" % (
+                           refunded_sql, error_sql,
+                           result_sql, result_sql, result_sql,
+                           result_sql, result_sql, result_sql,
+                           result_sql, result_sql, result_sql, result_sql,
+                       ),
+                    (since,),
+                ).fetchall()
+        except sqlite3.Error:
+            evidence_errors.append("任务证据读取失败")
     by_kind = {}
-    total = 0
+    by_operation = {}
+    unmapped = {}
+    latest_rows = {}
+    trend_counts = {}
     for row in rows:
+        status = str(row["status"] or "unknown").lower()
         kind = _operation_feature_key(row["kind"], row["channel"])
-        status = row["status"] or "unknown"
-        count = int(row["n"] or 0)
-        total += count
-        bucket = by_kind.setdefault(kind, {"kind": kind, "total": 0, "done": 0, "error": 0, "running": 0, "other": 0})
-        bucket["total"] += count
-        if status == "done":
-            bucket["done"] += count
-        elif status == "error":
-            bucket["error"] += count
-        elif status in {"queued", "running"}:
-            bucket["running"] += count
+        bucket = by_kind.setdefault(kind, {
+            "kind": kind, "total": 0, "done": 0, "error": 0,
+            "running": 0, "other": 0, "sources": [],
+        })
+        source = {"kind": str(row["kind"] or "unknown")}
+        if row["channel"]:
+            source["channel"] = str(row["channel"])
+        if source not in bucket["sources"]:
+            bucket["sources"].append(source)
+        _count_status(bucket, status)
+        metadata = {
+            "channel": row["channel"], "mode": row["mode"],
+            "cine_mode": row["cine_mode"], "line": row["line"],
+            "reference_count": row["reference_count"], "batch_id": row["batch_id"],
+            "operation": row["operation"], "upscale": row["upscale"],
+            "source_page": row["source_page"],
+        }
+        operation = function_registry.classify_task(row["kind"], metadata)
+        if operation:
+            operation_bucket = by_operation.setdefault(operation, {
+                "operation": operation, "total": 0, "done": 0, "error": 0,
+                "running": 0, "other": 0,
+            })
+            _count_status(operation_bucket, status)
+            latest_rows.setdefault(operation, row)
         else:
-            bucket["other"] += count
-    items = []
-    high_failure = []
-    for item in by_kind.values():
-        success_rate = item["done"] / item["total"] if item["total"] else 0
-        failure_rate = item["error"] / item["total"] if item["total"] else 0
-        item["success_rate"] = round(success_rate, 4)
-        item["failure_rate"] = round(failure_rate, 4)
-        items.append(item)
-        if item["total"] >= 3 and failure_rate >= 0.5:
-            high_failure.append(item)
+            page_key = str(row["source_page"] or "")
+            if not page_key and str(row["kind"] or "") in {
+                "video", "avatar", "cinematic", "tryon", "xiaole_video", "sora_video",
+            }:
+                page_key = "video"
+            signature = str(row["kind"] or "unknown")
+            for key in ("channel", "mode", "cine_mode", "line"):
+                if row[key]:
+                    signature += "/" + str(row[key])
+            missing = unmapped.setdefault((page_key, signature), {
+                "signature": signature, "kind": str(row["kind"] or "unknown"),
+                "channel": str(row["channel"] or ""), "page_key": page_key, "total": 0,
+                "done": 0, "error": 0, "running": 0, "other": 0,
+                "latest_at": int(row["created_at"] or 0), "latest_error": "",
+            })
+            _count_status(missing, status)
+            if not missing["latest_error"] and row["error"]:
+                missing["latest_error"] = str(row["error"])[:220]
+        trend_key = (row["day"], kind, status)
+        trend_counts[trend_key] = trend_counts.get(trend_key, 0) + 1
+
+    assets, asset_error = _video_asset_evidence(
+        [int(row["id"]) for row in latest_rows.values()]
+    )
+    if asset_error:
+        evidence_errors.append(asset_error)
+    for operation, row in latest_rows.items():
+        by_operation[operation]["latest"] = _job_evidence(
+            row, assets.get(int(row["id"]))
+        )
+    compose, compose_error = _compose_operation_stat(since)
+    if compose_error:
+        evidence_errors.append(compose_error)
+    if compose:
+        by_operation[compose["operation"]] = compose
+    items = _finish_stats(list(by_kind.values()))
+    operation_items = _finish_stats(list(by_operation.values()))
+    unmapped_items = _finish_stats(list(unmapped.values()))
+    high_failure = [
+        item for item in items
+        if item["total"] >= 3 and item["failure_rate"] >= 0.5
+    ]
     trend = [
-        {"day": row["day"], "kind": _operation_feature_key(row["kind"], row["channel"]), "status": row["status"], "count": int(row["n"] or 0)}
-        for row in trend_rows
+        {"day": day, "kind": kind, "status": status, "count": count}
+        for (day, kind, status), count in sorted(trend_counts.items())
     ]
     return {
         "days": days,
-        "total": total,
+        "total": len(rows),
         "by_kind": sorted(items, key=lambda x: x["total"], reverse=True),
+        "by_operation": sorted(operation_items, key=lambda x: x["operation"]),
+        "unmapped": sorted(unmapped_items, key=lambda x: x["total"], reverse=True),
+        "evidence_errors": evidence_errors,
         "trend": trend,
         "high_failure": sorted(high_failure, key=lambda x: x["failure_rate"], reverse=True),
+        "message": "；".join(evidence_errors) if evidence_errors else None,
     }
 
 
@@ -2319,6 +2566,7 @@ class H(BaseHTTPRequestHandler):
                     "keys": key_status(),
                     "provider_keys": provider_key_list(),
                     "channels": load_channels(),
+                    "function_registry": load_function_registry(services),
                     "features": load_features(services),
                     "pricing": load_pricing(),
                     "stats": job_stats(days),

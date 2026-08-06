@@ -332,9 +332,10 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             'data-module-tab="operations"', 'data-module-tab="services"', 'data-module-tab="channels"',
             'data-module-tab="features"', 'data-module="dashboard"',
             'data-module="operations"', 'id="operationsBox"', "function renderOperations(data)",
-            "健康接口可达", "不等于作品已验收", "先按客户前台功能页分组",
-            'data-operations-page=', "个可操作功能",
-            "Array.isArray(key.feature_keys)", "未按功能 ID 关联", "现有接口只有全局配置",
+            "健康接口可达", "都不能单独证明客户已经拿到可播放作品", "功能注册表",
+            'id="operationsPage"', 'data-operations-page=', "该客户页尚未盘点",
+            "开发待归档", "当前不会自动发起付费任务", "未接入统一证据",
+            "任务记录了点数，账务台账待核对", "operationsPage:'video'",
             'id="globalUserSearch"', 'id="customerLayer"',
             "/api/admin/activity?limit=8", "/api/admin/recharge/orders?status=pending",
             "module:'dashboard'", "aria-current", "/workbench/hq-icons-duotone.js",
@@ -345,6 +346,7 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
         ):
             self.assertIn(marker, html)
         self.assertNotIn('data-module-tab="ops"', html)
+        self.assertNotIn('id="operationsSearch"', html)
         self.assertNotIn("function operationTerms", html)
         self.assertNotIn("rows.push({key:stat.kind", html)
         self.assertNotIn('class="module-tabs', html)
