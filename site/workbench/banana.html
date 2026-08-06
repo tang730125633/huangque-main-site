@@ -32,6 +32,10 @@
   .result-preview{position:relative;display:flex;align-items:center;justify-content:center;min-height:320px;max-height:calc(100vh - 300px);overflow:hidden;border:1px solid rgba(231,178,76,.18);border-radius:8px;background:var(--hq-surface-soft)}
   #bResult{display:block!important;width:100%!important;height:100%!important;max-height:calc(100vh - 300px);aspect-ratio:auto!important;object-fit:contain!important}
   .recent-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}
+  .recent-failed{min-height:160px;padding:14px;border:1px solid rgba(244,112,138,.24);border-radius:8px;background:rgba(244,112,138,.06);display:flex;flex-direction:column;gap:8px;color:#94a4bb}
+  .recent-failed strong{color:#f4708a;font-size:13px}.recent-failed p{margin:0;flex:1;font-size:11.5px;line-height:1.55;overflow-wrap:anywhere}
+  .recent-delete{min-height:34px;border:1px solid rgba(244,112,138,.3);border-radius:8px;background:rgba(244,112,138,.08);color:#f4708a;font:inherit;font-size:12px;font-weight:700;cursor:pointer}
+  .recent-delete:hover{border-color:rgba(244,112,138,.55);color:#ff9bae}
   html[data-theme="light"] .hq-content[data-active="banana"] .banana-results-pane{
     border-color:transparent!important;
     background:transparent!important;
@@ -730,7 +734,7 @@
           if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
           loadHistory();
         }
-        else if(d.status==='error'||d.status==='failed'){ endJob(id); flash(errMsg(d.error||d.detail||d.status||''),'#f4708a'); }
+        else if(d.status==='error'||d.status==='failed'){ endJob(id); flash(errMsg(d.error||d.detail||d.status||''),'#f4708a'); loadHistory(); }
         else if(sec>JOB_POLL_TIMEOUT_SEC){ endJob(id); flash('生成仍在处理中，请稍后到资产库查看（'+sec+'s）','#2dd4bf'); loadHistory(); }
         else tickNote();
       }).catch(function(){
@@ -1184,12 +1188,22 @@
   }
   function loadHistory(){
     var grid=document.getElementById('recentGrid'); if(!grid||!tok()) return;
-    fetch('/api/gen/history?limit=9',{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
-      if(!d.items||!d.items.length) return;
+    fetch('/api/gen/history?limit=9&include_failed=1',{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
+      if(!d.items||!d.items.length){grid.innerHTML='<div style="grid-column:1/-1;padding:18px 0;text-align:center;font-size:12.5px;color:#5c6b82;">还没有作品，生成第一张吧</div>';return;}
       var items=d.items.slice(0,9);
-      var urls=items.map(function(it){ return it.url; });
-      grid.innerHTML=items.map(function(it){ return '<img src="'+it.url+'" class="hv-lift" data-url="'+it.url+'" style="display:block; width:100%; aspect-ratio:3/4; border-radius:8px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">'; }).join('');
+      var urls=items.filter(function(it){return it.url;}).map(function(it){ return it.url; });
+      grid.innerHTML=items.map(function(it){
+        if(it.status==='error') return '<div class="recent-failed"><strong>生成失败</strong><p>'+brandedErrorText(it.error||'生成失败').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];})+'</p><button class="recent-delete" type="button" data-job="'+it.job_id+'">删除记录</button></div>';
+        return '<img src="'+it.url+'" class="hv-lift" data-url="'+it.url+'" style="display:block; width:100%; aspect-ratio:3/4; border-radius:8px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">';
+      }).join('');
       grid.querySelectorAll('img').forEach(function(im,i){ im.onclick=function(){ openRecentLightbox(urls,i); }; });
+      grid.querySelectorAll('.recent-delete').forEach(function(button){button.onclick=function(){
+        if(!confirm('确定删除这条失败记录吗？')) return;
+        button.disabled=true;
+        fetch('/api/gen/job/delete',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify({job_id:button.getAttribute('data-job')})})
+          .then(function(r){return r.json().catch(function(){return {};}).then(function(data){if(!r.ok) throw new Error(data.detail||'删除失败');});})
+          .then(loadHistory).catch(function(error){button.disabled=false;flash(error.message||'删除失败','#f4708a');});
+      };});
     }).catch(function(){});
   }
   loadHistory();
