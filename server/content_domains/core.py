@@ -1336,11 +1336,29 @@ def run_job(job_id):
         if kind == "breakdown":
             breakdown_refund_prepared = _prepare_breakdown_refund(
                 _domains()[1], username, cost, result, job_id)
+        if kind == "avatar" and payload.get("short_drama_binding"):
+            result = dict(result or {})
+            result["short_drama_binding"] = dict(
+                payload["short_drama_binding"],
+                status="pending",
+                message="电影化身已生成，正在自动绑定角色",
+            )
         # 先 CAS 抢 done 终态：仅当仍是 running 才写 done，防 reaper 已判 error 又被无条件覆盖(既出片又退点)
         if not _set_terminal(job_id, "done", result=result):
             if breakdown_refund_prepared:
                 _domains()[1].cancel_breakdown_refund(job_id)
             return  # 已被 reaper 接管为 error+退点：放弃成功副作用(不入库、不覆盖状态)
+        if kind == "avatar" and payload.get("short_drama_binding"):
+            try:
+                _short_drama_domain().short_drama_character_studio.reconcile_avatar_job(
+                    jdb, job_id, username
+                )
+            except Exception as binding_error:
+                print(
+                    "[short-drama-avatar-binding] job#%s 将在工作区读取时重试: %s"
+                    % (job_id, str(binding_error)[:160]),
+                    flush=True,
+                )
         # 口播按成片真实时长结算：预扣(cost)是 hold，跑完多退少不补。只在抢到 done 后调 —— done CAS
         # 互斥 + reaper/reclaim 不碰 done → 每 job 至多结算一次，不重复退。结算失败不影响出片。
         if kind == "video" or (kind == "script_to_video" and (result or {}).get("pipeline") in {"talking", "talking_with_materials"}):
@@ -2628,6 +2646,12 @@ class H(BaseHTTPRequestHandler):
                     if not idem_key: raise ValueError("关键帧提交必须提供 Idempotency-Key")
                 elif kind in {"image", "xiaole_video"}:
                     body = cli_uploads.expand_image_payload(body, user["username"])
+                if kind == "avatar":
+                    body = video_domain.validate_avatar_payload(body)
+                    _short_drama_domain().validate_avatar_binding_submission(
+                        jdb, user["username"], body.get("short_drama_binding"),
+                        require_revision=False,
+                    )
                 # 微信内容安全必须在校验、扣点和入队前完成；服务异常时不收单。
                 miniprogram_security.check_payload(body)
                 if is_still_route:
@@ -2651,7 +2675,6 @@ class H(BaseHTTPRequestHandler):
                 elif kind == "video": body = video_domain.validate_video_payload(body, user["username"])
                 elif kind == "tryon": body = video_domain.validate_tryon_payload(body)
                 elif kind == "cinematic": body = video_domain.validate_cinematic_payload(body, user["username"])
-                elif kind == "avatar": body = video_domain.validate_avatar_payload(body)
                 elif kind == "xiaole_video": body = video_domain.validate_xiaole_video_payload(body, user["username"])
                 elif kind == "sora_video": body = video_domain.validate_sora_video_payload(body)
                 elif kind == "script_to_video":
@@ -2681,9 +2704,11 @@ class H(BaseHTTPRequestHandler):
                     )
                 if not is_still_route: request_body = dict(body) if isinstance(body, dict) else body
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
-                if not is_still_route: idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "audio", "video", "tryon", "xiaole_video", "sora_video", "cinematic", "canvas_agent", "script_to_video", "breakdown"} else ""
+                if not is_still_route: idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "audio", "video", "tryon", "xiaole_video", "sora_video", "cinematic", "avatar", "canvas_agent", "script_to_video", "breakdown"} else ""
                 if kind == "canvas_agent" and not idem_key:
                     raise ValueError("画布 Agent 提交必须提供 Idempotency-Key")
+                if kind == "avatar" and not idem_key:
+                    raise ValueError("电影化身提交必须提供 Idempotency-Key")
                 if kind == "sora_video" and not idem_key: raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
                 if kind == "xiaole_video" and str(body.get("channel") or "").lower() in {"micro", "omni", "minimax"} and not idem_key: raise ValueError("官方视频提交必须提供 Idempotency-Key")
             except feature_flags.FeatureDisabled as e:
@@ -2784,6 +2809,17 @@ class H(BaseHTTPRequestHandler):
                 if idem_state == "replay": replay = dict(idem_response or {}); return self._send(int(replay.pop("_http_status", 200)), replay)
                 if idem_state == "conflict": return self._send(409, {"detail": "同一个 Idempotency-Key 不能用于不同请求", "code": "idempotency_conflict"})
                 if idem_state == "processing" and not is_still_route: return self._send(409, {"detail": "相同请求正在受理，请稍后查询", "code": "idempotency_in_progress", "retry_after_ms": 1000})
+                if kind == "avatar" and body.get("short_drama_binding"):
+                    try:
+                        _short_drama_domain().validate_avatar_binding_submission(
+                            jdb, user["username"], body["short_drama_binding"]
+                        )
+                    except (LookupError, _short_drama_domain().RevisionConflict) as e:
+                        _idempotency_abort(user["username"], p, idem_key)
+                        _short_drama_domain()._http_error(
+                            self, e, operation_terminal=True
+                        )
+                        return
                 if is_still_route and not still_attempt:
                     try: cost = int(prepared["quoted_cost"]); _short_drama_domain().short_drama_production.check_production_budget(jdb, user["username"], prepared["project"]["id"], cost, still_access)
                     except (LookupError, PermissionError, _short_drama_domain().PointBudgetExceeded, ValueError) as e:

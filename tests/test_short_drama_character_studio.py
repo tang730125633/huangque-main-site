@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import sys
 import tempfile
@@ -147,12 +148,28 @@ class ShortDramaCharacterStudioTests(unittest.TestCase):
                 "project_id": self.project["id"],
                 "project_revision": initial["project_revision"],
                 "character_key": character["character_key"],
+                "name": "林雨",
                 "identity_text": "故事主角",
                 "personality": "坚韧、温柔",
                 "appearance_prompt": "三十岁，短发，沉静面容",
                 "wardrobe_prompt": "深蓝色风衣，银色耳钉",
             },
         )
+        unchanged = short_drama_character_studio.save_profile(
+            self.db,
+            "alice",
+            {
+                "project_id": self.project["id"],
+                "project_revision": saved["project_revision"],
+                "character_key": character["character_key"],
+                "name": "林雨",
+                "identity_text": "故事主角",
+                "personality": "坚韧、温柔",
+                "appearance_prompt": "三十岁，短发，沉静面容",
+                "wardrobe_prompt": "深蓝色风衣，银色耳钉",
+            },
+        )
+        self.assertEqual(saved["project_revision"], unchanged["project_revision"])
         with self.assertRaises(
             short_drama_character_studio.CharacterStudioError
         ) as stale:
@@ -191,10 +208,87 @@ class ShortDramaCharacterStudioTests(unittest.TestCase):
             if item["character_key"] == character["character_key"]
         )
         self.assertEqual(bound["project_revision"], current["project_revision"])
+        self.assertEqual("林雨", saved["name"])
+        self.assertEqual("林雨", selected["name"])
+        self.assertEqual(character["character_key"], selected["character_key"])
         self.assertTrue(selected["profile_ready"])
         self.assertTrue(selected["binding_ready"])
         self.assertEqual("/assets/mother.png", selected["image_url"])
         self.assertTrue(selected["affected_shots"])
+
+    def test_profile_name_rejects_duplicates_without_changing_character_key(self):
+        initial = short_drama_character_studio.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )
+        self.assertGreaterEqual(len(initial["characters"]), 2)
+        character, other = initial["characters"][:2]
+        with self.assertRaises(
+            short_drama_character_studio.CharacterStudioError
+        ) as duplicate:
+            short_drama_character_studio.save_profile(
+                self.db,
+                "alice",
+                {
+                    "project_id": self.project["id"],
+                    "project_revision": initial["project_revision"],
+                    "character_key": character["character_key"],
+                    "name": other["name"],
+                    "identity_text": "故事主角",
+                    "personality": "坚定",
+                    "appearance_prompt": "短发，沉静面容",
+                    "wardrobe_prompt": "深蓝色风衣",
+                },
+            )
+        self.assertEqual("character_name_duplicate", duplicate.exception.code)
+        current = short_drama_character_studio.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )
+        selected = next(
+            item for item in current["characters"]
+            if item["character_key"] == character["character_key"]
+        )
+        self.assertEqual(character["name"], selected["name"])
+
+    def test_workspace_keeps_reference_image_separate_from_bound_avatar(self):
+        initial = short_drama_character_studio.workspace(
+            self.db, "alice", "alice", self.project["id"],
+            avatar_list=self.avatars,
+        )
+        character = initial["characters"][0]
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_characters SET reference_url=? "
+                "WHERE project_id=? AND character_key=?",
+                ("/assets/reference.png", self.project["id"],
+                 character["character_key"]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        short_drama_character_studio.bind_avatar(
+            self.db,
+            "alice",
+            {
+                "project_id": self.project["id"],
+                "project_revision": initial["project_revision"],
+                "character_key": character["character_key"],
+                "avatar_id": "7",
+            },
+            avatar_lookup=self.avatar,
+        )
+        current = short_drama_character_studio.workspace(
+            self.db, "alice", "alice", self.project["id"],
+            avatar_list=self.avatars,
+        )
+        selected = next(
+            item for item in current["characters"]
+            if item["character_key"] == character["character_key"]
+        )
+        self.assertEqual("/assets/mother.png", selected["image_url"])
+        self.assertEqual(
+            "/assets/reference.png", selected["reference_image_url"]
+        )
 
     def test_profile_changes_invalidate_preflight_character_snapshot(self):
         initial = short_drama_character_studio.workspace(
@@ -278,6 +372,151 @@ class ShortDramaCharacterStudioTests(unittest.TestCase):
         finally:
             conn.close()
         self.assertEqual([], blockers)
+
+    def test_character_reference_prompt_uses_current_visual_profile(self):
+        prompt = short_drama._character_reference_prompt({
+            "name": "奶奶",
+            "identity_text": "退休教师",
+            "personality": "慈祥坚定",
+            "appearance_prompt": "68岁东亚女性，满头花白短发，圆脸",
+            "wardrobe_prompt": "深蓝色布衫，米色围巾",
+        })
+        self.assertIn("68岁东亚女性，满头花白短发，圆脸", prompt)
+        self.assertIn("深蓝色布衫，米色围巾", prompt)
+        self.assertIn("奶奶", prompt)
+
+    def test_workspace_surfaces_active_character_reference_job(self):
+        initial = short_drama_character_studio.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )
+        character = initial["characters"][0]
+        conn = self.db()
+        try:
+            conn.execute(
+                "INSERT INTO short_drama_character_reference_jobs "
+                "(id,username,owner_username,project_id,character_key,"
+                "project_revision,character_snapshot_hash,idempotency_key,"
+                "job_id,cost,status,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?, 'linked',1,1)",
+                (
+                    "active-reference", "alice", "alice", self.project["id"],
+                    character["character_key"], initial["project_revision"],
+                    "snapshot", "reference-operation", 321, 2,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        recovered = short_drama_character_studio.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )
+        current = next(
+            item for item in recovered["characters"]
+            if item["character_key"] == character["character_key"]
+        )
+        self.assertEqual(321, current["reference_job_id"])
+        self.assertEqual("linked", current["reference_job_status"])
+
+    def test_workspace_recovers_completed_avatar_job_and_binds_once(self):
+        initial = short_drama_character_studio.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )
+        character = initial["characters"][0]
+        binding = {
+            "project_id": self.project["id"],
+            "project_revision": initial["project_revision"],
+            "character_key": character["character_key"],
+        }
+        conn = self.db()
+        try:
+            conn.executescript("""
+                CREATE TABLE avatars(
+                    id INTEGER PRIMARY KEY,username TEXT,name TEXT,image_file TEXT,
+                    provider_avatar_id TEXT,provider_avatar_group_id TEXT,status TEXT
+                );
+                CREATE TABLE jobs(
+                    id INTEGER PRIMARY KEY,kind TEXT,username TEXT,status TEXT,
+                    payload TEXT,result TEXT,updated_at INTEGER
+                );
+            """)
+            conn.execute(
+                "INSERT INTO avatars VALUES(7,'alice','林雨','avatar.jpg',"
+                "'provider-7',NULL,'ready')"
+            )
+            conn.execute(
+                "INSERT INTO avatars VALUES(8,'alice','林雪','avatar-8.jpg',"
+                "'provider-8',NULL,'ready')"
+            )
+            conn.execute(
+                "INSERT INTO jobs VALUES(99,'avatar','alice','done',?,?,1)",
+                (
+                    json.dumps({"short_drama_binding": binding}),
+                    json.dumps({"avatar_id": 7, "status": "ready"}),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        recovered = short_drama_character_studio.workspace(
+            self.db, "alice", "alice", self.project["id"],
+            avatar_list=self.avatars,
+        )
+        selected = next(
+            item for item in recovered["characters"]
+            if item["character_key"] == character["character_key"]
+        )
+        self.assertEqual("7", str(selected["avatar_id"]))
+        self.assertEqual(initial["project_revision"] + 1,
+                         recovered["project_revision"])
+
+        repeated = short_drama_character_studio.workspace(
+            self.db, "alice", "alice", self.project["id"],
+            avatar_list=self.avatars,
+        )
+        self.assertEqual(recovered["project_revision"],
+                         repeated["project_revision"])
+        conn = self.db()
+        try:
+            result = json.loads(conn.execute(
+                "SELECT result FROM jobs WHERE id=99"
+            ).fetchone()[0])
+        finally:
+            conn.close()
+        self.assertEqual("bound", result["short_drama_binding"]["status"])
+
+        conn = self.db()
+        try:
+            conn.execute(
+                "INSERT INTO jobs VALUES(100,'avatar','alice','done',?,?,1)",
+                (
+                    json.dumps({"short_drama_binding": binding}),
+                    json.dumps({"avatar_id": 8, "status": "ready"}),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        stale = short_drama_character_studio.workspace(
+            self.db, "alice", "alice", self.project["id"],
+            avatar_list=self.avatars,
+        )
+        stale_character = next(
+            item for item in stale["characters"]
+            if item["character_key"] == character["character_key"]
+        )
+        self.assertEqual("7", str(stale_character["avatar_id"]))
+        conn = self.db()
+        try:
+            stale_result = json.loads(conn.execute(
+                "SELECT result FROM jobs WHERE id=100"
+            ).fetchone()[0])
+        finally:
+            conn.close()
+        self.assertEqual(
+            "conflict", stale_result["short_drama_binding"]["status"]
+        )
 
 
 if __name__ == "__main__":
