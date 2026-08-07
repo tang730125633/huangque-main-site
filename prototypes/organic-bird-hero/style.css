@@ -39,14 +39,10 @@ p,h1,h2,h3,figure,dl,dd{margin:0}
 .hero-note{max-width:470px;margin-top:28px;color:rgba(36,48,39,.68);font-size:14px;line-height:2}
 .hero-index{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:42px}.hero-index div{padding-top:12px;border-top:1px solid var(--line)}.hero-index dt{font:600 10px/1 var(--mono);letter-spacing:.1em}.hero-index dd{margin-top:10px;color:rgba(36,48,39,.56);font-size:11px}
 
-.organic-scene{position:relative;min-height:min(76vh,720px);isolation:isolate;transform:translate3d(calc(var(--mx) * 15px),calc(var(--my) * 10px),0)}
-.paper-field{position:absolute;border:1px solid rgba(36,48,39,.12);box-shadow:0 24px 60px rgba(75,67,48,.07)}
-.field-earth{inset:8% 3% 7% 7%;background:rgba(223,210,189,.78);border-radius:55% 45% 38% 62% / 42% 58% 42% 58%;transform:rotate(-4deg)}
-.field-moss{inset:23% 15% 15% 20%;background:rgba(101,116,92,.42);border-radius:43% 57% 61% 39% / 58% 43% 57% 42%;transform:rotate(8deg)}
-.field-clay{inset:37% 28% 24% 31%;background:rgba(184,103,69,.64);border-radius:62% 38% 46% 54% / 47% 61% 39% 53%;transform:rotate(-10deg)}
-.contour-lines{position:absolute;z-index:2;inset:4% 0 2% 0;width:100%;height:94%;fill:none;stroke:rgba(36,48,39,.62);stroke-width:1.5;stroke-linecap:round}
-.material-note{position:absolute;z-index:3;right:8%;top:12%;color:rgba(36,48,39,.5);font:500 9px/1 var(--mono);letter-spacing:.3em;writing-mode:vertical-rl}
-.organic-scene figcaption{position:absolute;z-index:3;right:4%;bottom:4%;max-width:250px;color:rgba(36,48,39,.55);font-size:10px;line-height:1.7;text-align:right}
+.organic-scene{position:relative;min-height:min(76vh,720px);isolation:isolate;transform:translate3d(calc(var(--mx) * 9px),calc(var(--my) * 7px),0)}
+.botanical-plate{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;filter:saturate(.82) contrast(.96);-webkit-mask-image:radial-gradient(ellipse 82% 88% at 55% 52%,#000 74%,transparent 100%);mask-image:radial-gradient(ellipse 82% 88% at 55% 52%,#000 74%,transparent 100%)}
+.material-note{position:absolute;z-index:2;right:8%;top:12%;color:rgba(36,48,39,.46);font:500 9px/1 var(--mono);letter-spacing:.3em;writing-mode:vertical-rl}
+.organic-scene figcaption{position:absolute;z-index:2;left:8%;top:15%;max-width:230px;color:rgba(36,48,39,.54);font-size:10px;line-height:1.9;text-align:left}
 .scroll-cue{position:absolute;bottom:34px;left:clamp(24px,6.6vw,128px);display:flex;align-items:center;gap:13px;color:rgba(36,48,39,.55);font:500 9px/1 var(--mono);letter-spacing:.12em}.scroll-cue span{width:42px;height:1px;background:linear-gradient(90deg,var(--clay),transparent)}
 
 .origin,.path,.canopy,.closing{position:relative;min-height:94svh;padding:120px clamp(24px,7vw,140px);border-bottom:1px solid var(--line)}
