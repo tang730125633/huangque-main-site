@@ -50,8 +50,7 @@ main{position:relative;z-index:3}
 .primary{display:inline-flex;min-height:52px;align-items:center;gap:28px;padding:0 24px;background:var(--paper);color:#080a10;font-size:13px;font-weight:650;transition:transform .25s ease,background .25s ease}.primary:hover{transform:translateY(-3px);background:#fff}
 
 .bird-fallback{position:fixed;z-index:2;top:3%;right:-9%;width:min(76vw,1220px);height:94%;margin:0;pointer-events:none;transition:opacity .5s ease}
-.bird-fallback img{width:100%;height:100%;object-fit:contain;mix-blend-mode:screen;filter:saturate(1.18) contrast(1.09) drop-shadow(0 0 28px rgba(54,92,255,.22))}
-html.three-ready .bird-fallback{opacity:0}
+.bird-fallback video{width:100%;height:100%;object-fit:contain;mix-blend-mode:screen;filter:saturate(1.18) contrast(1.09) drop-shadow(0 0 28px rgba(54,92,255,.22));transform:translate3d(var(--bird-shift-x,0),var(--bird-shift-y,0),0);transition:transform .18s ease-out}
 .coordinates{position:absolute;z-index:5;right:clamp(24px,4vw,72px);bottom:48px;color:#666b78;font:500 8px/1.9 var(--mono);letter-spacing:.16em;text-align:right}
 .scroll{position:absolute;z-index:5;bottom:44px;left:clamp(24px,6.8vw,132px);display:flex;align-items:center;gap:15px;color:#7c808d;font:500 9px/1 var(--mono);letter-spacing:.16em}.scroll span{width:1px;height:42px;background:linear-gradient(var(--amber),transparent);animation:pulse 1.9s ease-in-out infinite}
 

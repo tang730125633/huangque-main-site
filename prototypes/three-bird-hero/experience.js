@@ -3,11 +3,10 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { animate } from 'animejs';
-import 'animejs/adapters/three';
 
 const root = document.documentElement;
 const canvas = document.querySelector('[data-three-stage]');
+const heroVideo = document.querySelector('[data-bird-video]');
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 const status = { ready: false, reducedMotion: reduced.matches, version: 'three-bird-4', meshes: 0, scrollProgress: 0 };
 window.__threeBirdStatus = status;
@@ -36,49 +35,6 @@ if (renderer) {
   const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), .16, .58, .3);
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
-
-  scene.add(new THREE.HemisphereLight(0x3558ff, 0x05020d, .85));
-  const key = new THREE.DirectionalLight(0x8ba8ff, 1.1);
-  key.position.set(-4, 5, 6);
-  scene.add(key);
-  const blueLight = new THREE.PointLight(0x245cff, 8, 14, 2);
-  blueLight.position.set(2, -2, 4);
-  scene.add(blueLight);
-  const violetLight = new THREE.PointLight(0x8f35ff, 6, 12, 2);
-  violetLight.position.set(2, 3, -2);
-  scene.add(violetLight);
-  const amberLight = new THREE.PointLight(0xffa12c, 2, 10, 2);
-  amberLight.position.set(-3, -1, 3);
-  scene.add(amberLight);
-
-  const glass = new THREE.MeshPhysicalMaterial({
-    color: 0x061ea8,
-    emissive: 0x06176e,
-    emissiveIntensity: .18,
-    metalness: .08,
-    roughness: .24,
-    transmission: .18,
-    thickness: .7,
-    ior: 1.38,
-    clearcoat: 1,
-    clearcoatRoughness: .1,
-    iridescence: 1,
-    iridescenceIOR: 1.6,
-    iridescenceThicknessRange: [120, 520],
-    attenuationColor: new THREE.Color(0x2148ff),
-    attenuationDistance: .95,
-    transparent: true,
-    opacity: .98,
-    side: THREE.DoubleSide
-  });
-  if (!reduced.matches) {
-    glass.opacity = .06;
-    key.intensity = 0;
-    bloom.strength = 0;
-    animate(glass, { opacity: .98, duration: 1600, ease: 'out(3)' });
-    animate(key, { intensity: 1.1, duration: 1800, ease: 'outExpo' });
-    animate(bloom, { strength: .16, duration: 1800, ease: 'outExpo' });
-  }
 
   const glowTexture = (() => {
     const textureCanvas = document.createElement('canvas');
@@ -174,14 +130,14 @@ if (renderer) {
     const time = reduced.matches ? 0 : now * .001;
     pointerX += (pointerTargetX - pointerX) * .045;
     pointerY += (pointerTargetY - pointerY) * .045;
+    root.style.setProperty('--bird-shift-x', `${(pointerX * 14).toFixed(2)}px`);
+    root.style.setProperty('--bird-shift-y', `${(-pointerY * 9).toFixed(2)}px`);
     scrollProgress += (scrollTarget - scrollProgress) * (reduced.matches ? 1 : .055);
     applyScene(scrollProgress);
     camera.position.x = pointerX * .2;
     camera.position.y = pointerY * .14;
     camera.lookAt(0, 0, 0);
     starField.rotation.z = time * .006;
-    blueLight.position.x = 2 + Math.sin(time * .7) * 1.5;
-    violetLight.position.y = 3 + Math.cos(time * .6) * 1.2;
     composer.render();
     frame = requestAnimationFrame(render);
   }
@@ -191,7 +147,13 @@ if (renderer) {
     if (document.hidden) cancelAnimationFrame(frame);
     else frame = requestAnimationFrame(render);
   });
-  reduced.addEventListener('change', event => { status.reducedMotion = event.matches; });
+  function syncVideoMotion() {
+    status.reducedMotion = reduced.matches;
+    if (reduced.matches) heroVideo?.pause();
+    else heroVideo?.play().catch(() => {});
+  }
+  reduced.addEventListener('change', syncVideoMotion);
+  syncVideoMotion();
   updateScroll();
   resize();
   frame = requestAnimationFrame(render);

@@ -12,7 +12,10 @@
   <canvas class="three-stage" data-three-stage aria-label="随鼠标和滚动变化的星粒与流光背景"></canvas>
   <div class="aurora" aria-hidden="true"></div>
   <figure class="bird-fallback" aria-hidden="true">
-    <img src="./public/assets/glass-bird.webp" alt="一只由蓝紫色液态玻璃构成、正振翅飞行的黄雀">
+    <video data-bird-video autoplay muted loop playsinline preload="auto" poster="./public/assets/glass-bird.webp">
+      <source src="./public/assets/liquid-bird-h3-alpha.webm" type="video/webm">
+      <source src="./public/assets/liquid-bird-h3.mp4" type="video/mp4">
+    </video>
   </figure>
 
   <header class="topbar">
@@ -101,8 +104,8 @@
   </main>
 
   <script type="importmap">
-    {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/","animejs":"https://cdn.jsdelivr.net/npm/animejs@4.5.0/dist/modules/index.js","animejs/adapters/three":"https://cdn.jsdelivr.net/npm/animejs@4.5.0/dist/modules/adapters/three/index.js"}}
+    {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"}}
   </script>
-  <script type="module" src="./experience.js?v=three5"></script>
+  <script type="module" src="./experience.js?v=three7"></script>
 </body>
 </html>
