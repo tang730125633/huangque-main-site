@@ -17,6 +17,8 @@ class OrganicBirdPrototypeTest(unittest.TestCase):
         self.assertEqual(html.count('class="root-list"'), 1)
         self.assertEqual(html.count("<article><span>0"), 4)
         self.assertNotIn("glass-bird.webp", html + css)
+        self.assertNotIn("bird-body", html + css)
+        self.assertIn('class="growth-mark"', html)
         self.assertNotIn("WebGL", html + css + script)
         self.assertIn("prefers-reduced-motion", css)
         self.assertIn("IntersectionObserver", script)
