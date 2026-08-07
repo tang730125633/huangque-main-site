@@ -151,7 +151,10 @@ class FunctionRegistryTests(unittest.TestCase):
                 target = mode["validation"]["target_path"].split("?", 1)[0]
                 self.assertTrue((Path(__file__).resolve().parents[1] / "site" / target.lstrip("/")).is_file())
                 prefill = mode["validation"]["prefill"]
-                assets = [prefill.get("image_url"), prefill.get("reference_video_url")]
+                assets = [
+                    prefill.get("image_url"), prefill.get("reference_video_url"),
+                    prefill.get("audio_url"), prefill.get("background_url"),
+                ]
                 assets += prefill.get("reference_images") or []
                 for asset in filter(None, assets):
                     self.assertTrue((Path(__file__).resolve().parents[1] / "site" / asset.lstrip("/")).is_file())
