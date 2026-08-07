@@ -77,6 +77,7 @@ def prepare_script_to_video_payload(payload, username):
     body = dict(payload or {})
     if str(body.get("pipeline") or "").strip() == "pixelle":
         from . import pixelle_video
+        pixelle_video.require_available()
         return pixelle_video.prepare_payload(body)
     scenes = [dict(scene) for scene in (body.get("scenes") or []) if isinstance(scene, dict)]
     if not scenes:

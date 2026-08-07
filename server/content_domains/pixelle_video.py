@@ -2,7 +2,6 @@
 """Pixelle text-to-video adapter for the authenticated content job pipeline."""
 
 import json
-import math
 import os
 import pathlib
 import re
@@ -13,6 +12,7 @@ import urllib.request
 import uuid
 
 from .core import OUT_DIR, public_url
+from . import feature_flags
 
 
 def _env_int(name, default, minimum, maximum):
@@ -69,43 +69,49 @@ TEMPLATES = tuple(
     for filename, name in _TEMPLATE_NAMES.items()
 )
 TEMPLATE_KEYS = {item["key"] for item in TEMPLATES}
+FEATURE_KEY = "pixelle_text_video"
+_HEALTH_CACHE = {"checked_at": 0.0, "ready": False}
+_HEALTH_TTL = 5
 
 
 def public_templates():
     return [dict(item) for item in TEMPLATES]
 
 
-def _speech_units(text):
-    value = str(text or "")
-    chinese = len(re.findall(r"[\u3400-\u9fff]", value))
-    words = len(re.findall(r"[A-Za-z0-9]+(?:['.-][A-Za-z0-9]+)*", value))
-    pauses = len(re.findall(r"[，。！？；：,.!?;:]", value))
-    return max(1.0, chinese + words * 1.7 + pauses * 0.45)
+def _fixed_segments(text):
+    normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    return [part.strip() for part in re.split(r"\n\s*\n", normalized) if part.strip()]
 
 
 def prepare_payload(payload):
     body = dict(payload or {})
-    text = re.sub(r"\s+", " ", str(body.get("text") or "")).strip()
+    raw_text = str(body.get("text") or "")
+    mode = str(body.get("mode") or "generate").strip()
+    if mode not in {"generate", "fixed"}:
+        raise ValueError("请选择主题创作或完整文案")
+    if mode == "fixed":
+        segments = _fixed_segments(raw_text)
+        text = "\n\n".join(segments)
+    else:
+        text = re.sub(r"\s+", " ", raw_text).strip()
+        segments = [text] if text else []
     if len(text) < 2:
         raise ValueError("请输入至少 2 个字的主题或文案")
     if len(text) > 1000:
         raise ValueError("文案不能超过 1000 个字")
-    mode = str(body.get("mode") or "generate").strip()
-    if mode not in {"generate", "fixed"}:
-        raise ValueError("请选择主题创作或完整文案")
+    if mode == "fixed" and len(segments) > 20:
+        raise ValueError("完整文案最多支持 20 个段落，请合并后再提交")
     template = str(body.get("template") or "1080x1920/image_default.html").strip()
     if template not in TEMPLATE_KEYS:
         raise ValueError("请选择有效的视频模板")
-    scene_count = 5 if mode == "generate" else max(
-        1, min(20, int(math.ceil(_speech_units(text) / 21.0)))
-    )
+    scene_count = 5 if mode == "generate" else len(segments)
     return {
         "pipeline": "pixelle",
         "text": text,
         "mode": mode,
         "template": template,
         "n_scenes": scene_count,
-        "scenes": [{"line": text}],
+        "scenes": [{"line": line} for line in segments],
     }
 
 
@@ -134,6 +140,29 @@ def _json_request(method, path, payload=None, timeout=30):
     except (urllib.error.URLError, TimeoutError) as exc:
         reason = getattr(exc, "reason", exc)
         raise RuntimeError("无法连接视频生成服务：%s" % str(reason)[:160])
+
+
+def availability(force=False):
+    enabled = feature_flags.is_enabled(FEATURE_KEY)
+    if not enabled:
+        return {"enabled": False, "ready": False, "available": False}
+    now = time.monotonic()
+    if force or now - _HEALTH_CACHE["checked_at"] > _HEALTH_TTL:
+        ready = False
+        try:
+            health = _json_request("GET", "/health", timeout=3)
+            ready = str(health.get("status") or "").lower() == "healthy"
+        except Exception:
+            ready = False
+        _HEALTH_CACHE.update({"checked_at": now, "ready": ready})
+    ready = bool(_HEALTH_CACHE["ready"])
+    return {"enabled": True, "ready": ready, "available": ready}
+
+
+def require_available():
+    feature_flags.require_enabled(FEATURE_KEY)
+    if not availability().get("ready"):
+        raise feature_flags.FeatureDisabled("文案成片服务暂不可用，请稍后重试")
 
 
 def _prepared_text(text, mode):
@@ -229,7 +258,7 @@ def generate(payload):
         "video_file": video_file,
         "video_url": public_url(video_file, "video/mp4", private=True),
         "duration": round(float(result.get("duration") or 0), 3),
-        "scene_count": int(payload.get("n_scenes") or 1),
+        "scene_count": int(result.get("scene_count") or payload.get("n_scenes") or 1),
         "template": payload["template"],
         "input_mode": payload["mode"],
         "file_size": int(result.get("file_size") or file_size),

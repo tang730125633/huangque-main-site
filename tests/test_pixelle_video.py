@@ -20,6 +20,10 @@ class PixelleVideoTests(unittest.TestCase):
         self.assertEqual(len({item["key"] for item in templates}), 20)
         self.assertTrue(all(item["key"].startswith("1080x1920/") for item in templates))
 
+    def test_feature_catalog_is_fail_closed_by_default(self):
+        meta = self.pixelle.feature_flags.CATALOG_MAP[self.pixelle.FEATURE_KEY]
+        self.assertIs(meta["default_enabled"], False)
+
     def test_prepare_topic_and_fixed_copy(self):
         topic = self.pixelle.prepare_payload({
             "text": " AI 培训如何提升团队效率 ",
@@ -31,11 +35,25 @@ class PixelleVideoTests(unittest.TestCase):
         self.assertEqual(topic["text"], "AI 培训如何提升团队效率")
 
         fixed = self.pixelle.prepare_payload({
-            "text": "第一句讲清问题。第二句给出方案。第三句总结价值。",
+            "text": "第一段讲清问题。\r\n\r\n  第二段给出方案。\n \n第三段总结价值。  ",
             "mode": "fixed",
         })
-        self.assertGreaterEqual(fixed["n_scenes"], 1)
-        self.assertLessEqual(fixed["n_scenes"], 20)
+        self.assertEqual(fixed["n_scenes"], 3)
+        self.assertEqual(fixed["text"], "第一段讲清问题。\n\n第二段给出方案。\n\n第三段总结价值。")
+        self.assertEqual(
+            [scene["line"] for scene in fixed["scenes"]],
+            ["第一段讲清问题。", "第二段给出方案。", "第三段总结价值。"],
+        )
+
+    def test_fixed_copy_uses_upstream_paragraph_count_not_character_estimate(self):
+        long_paragraph = "这是一段很长但没有空行的完整文案。" * 20
+        prepared = self.pixelle.prepare_payload({"text": long_paragraph, "mode": "fixed"})
+        self.assertEqual(prepared["n_scenes"], 1)
+
+    def test_fixed_copy_rejects_more_than_twenty_upstream_paragraphs(self):
+        text = "\n\n".join("第%d段" % index for index in range(21))
+        with self.assertRaisesRegex(ValueError, "最多支持 20 个段落"):
+            self.pixelle.prepare_payload({"text": text, "mode": "fixed"})
 
     def test_prepare_rejects_invalid_template_before_charge(self):
         with self.assertRaisesRegex(ValueError, "有效的视频模板"):
@@ -53,6 +71,39 @@ class PixelleVideoTests(unittest.TestCase):
         self.assertEqual(body["frame_template"], payload["template"])
         self.assertEqual(body["n_scenes"], 5)
         self.assertIn("简体中文", body["text"])
+
+    def test_availability_is_fail_closed_and_checks_upstream_health(self):
+        self.pixelle._HEALTH_CACHE.update({"checked_at": 0.0, "ready": False})
+        with mock.patch.object(
+            self.pixelle.feature_flags, "is_enabled", return_value=False
+        ), mock.patch.object(self.pixelle, "_json_request") as request:
+            self.assertEqual(self.pixelle.availability(), {
+                "enabled": False, "ready": False, "available": False,
+            })
+        request.assert_not_called()
+
+        self.pixelle._HEALTH_CACHE.update({"checked_at": 0.0, "ready": False})
+        with mock.patch.object(
+            self.pixelle.feature_flags, "is_enabled", return_value=True
+        ), mock.patch.object(
+            self.pixelle, "_json_request", return_value={"status": "healthy"}
+        ) as request:
+            self.assertTrue(self.pixelle.availability(force=True)["available"])
+        request.assert_called_once_with("GET", "/health", timeout=3)
+
+    def test_require_available_rejects_enabled_but_unhealthy_service(self):
+        self.pixelle._HEALTH_CACHE.update({"checked_at": 0.0, "ready": False})
+        with mock.patch.object(
+            self.pixelle.feature_flags, "require_enabled"
+        ), mock.patch.object(
+            self.pixelle.feature_flags, "is_enabled", return_value=True
+        ), mock.patch.object(
+            self.pixelle, "_json_request", side_effect=RuntimeError("offline")
+        ):
+            with self.assertRaisesRegex(
+                self.pixelle.feature_flags.FeatureDisabled, "暂不可用"
+            ):
+                self.pixelle.require_available()
 
     def test_wait_returns_result_and_surfaces_failure(self):
         with mock.patch.object(self.pixelle, "_json_request", return_value={

@@ -62,10 +62,12 @@ class ScriptToVideoTests(unittest.TestCase):
             "template": "1080x1920/image_default.html", "n_scenes": 5,
             "scenes": [{"line": "AI 培训"}],
         }
-        with mock.patch.object(pixelle, "prepare_payload", return_value=prepared) as prepare:
+        with mock.patch.object(pixelle, "require_available") as available, \
+             mock.patch.object(pixelle, "prepare_payload", return_value=prepared) as prepare:
             result = self.script_to_video.prepare_script_to_video_payload(
                 {"pipeline": "pixelle", "text": "AI 培训"}, "fang"
             )
+        available.assert_called_once_with()
         prepare.assert_called_once()
         self.assertEqual(result, prepared)
 

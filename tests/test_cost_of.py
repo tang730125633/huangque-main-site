@@ -49,6 +49,20 @@ class CostOfTests(unittest.TestCase):
             self.assertEqual(self.points.cost_of("script_to_video", body), 50)
         self.assertEqual(body["cost_breakdown"]["copywriting"], 0)
 
+    def test_pixelle_fixed_price_uses_exact_upstream_paragraph_count(self):
+        pixelle = importlib.import_module("content_domains.pixelle_video")
+        body = pixelle.prepare_payload({
+            "pipeline": "pixelle", "mode": "fixed",
+            "text": "第一段。\n\n第二段很长。" + "补充内容。" * 30 + "\n\n第三段。",
+        })
+        prices = {"image.openai.std": 20, "audio.tts": 10}
+        with mock.patch.object(
+            self.points.pricing, "get_price", side_effect=lambda key: prices[key]
+        ):
+            self.assertEqual(self.points.cost_of("script_to_video", body), 70)
+        self.assertEqual(body["n_scenes"], 3)
+        self.assertEqual(body["cost_breakdown"]["scene_count"], 3)
+
     def test_script_to_video_talking_has_minimum_hold(self):
         """口播预扣保底一档 30 点。"""
         self.assertEqual(

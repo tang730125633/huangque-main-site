@@ -2743,7 +2743,10 @@ class H(BaseHTTPRequestHandler):
             except feature_flags.FeatureDisabled as e:
                 if still_idem_started:
                     _idempotency_abort(user["username"], p, idem_key)
-                return self._send(503, {"detail": str(e)})
+                disabled = {"detail": str(e)}
+                if kind == "script_to_video" and isinstance(body, dict) and body.get("pipeline") == "pixelle":
+                    disabled["operation_terminal"] = True
+                return self._send(503, disabled)
             except miniprogram_security.ContentRejected as e:
                 terminal = is_still_route and bool(locals().get("idem_key"))
                 return self._send(400, {"detail": str(e), "code": "content_rejected",
@@ -3006,11 +3009,19 @@ class H(BaseHTTPRequestHandler):
         audio_domain, points_domain, video_domain = _domains()
         if p == "/api/gen/pricing":
             return self._send(200, pricing.public_catalog())
-        if p == "/api/gen/text-video/templates":
+        if p in {"/api/gen/text-video/capability", "/api/gen/text-video/templates"}:
             user = verify(self._token())
             if not user:
                 return self._send(401, {"detail": "未登录或登录已过期"})
             from . import pixelle_video
+            if p == "/api/gen/text-video/capability":
+                return self._send(200, pixelle_video.availability())
+            try:
+                pixelle_video.require_available()
+            except feature_flags.FeatureDisabled as error:
+                return self._send(503, {
+                    "detail": str(error), "operation_terminal": True,
+                })
             return self._send(200, {"templates": pixelle_video.public_templates()})
         if _dispatch_short_drama(
                 self, "GET", jdb, verify,

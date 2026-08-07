@@ -55,6 +55,14 @@ CATALOG = [
     {"key": "dl", "name": "下载代理", "desc": "无水印视频下载代理", "page": "内容爬取", "service": "dl"},
     {"key": "copy", "name": "文案生成", "desc": "营销文案生成", "page": "文案编导", "service": "content"},
     {"key": "canvas_agent", "name": "画布 Agent", "desc": "读取画布并生成需确认的操作建议", "page": "无限画布", "service": "content", "default_enabled": False},
+    {
+        "key": "pixelle_text_video",
+        "name": "文案成片",
+        "desc": "主题或完整文案自动生成配音、画面并套用模板成片",
+        "page": "文案成片",
+        "service": "content",
+        "default_enabled": False,
+    },
 ]
 CATALOG_MAP = {item["key"]: item for item in CATALOG}
 

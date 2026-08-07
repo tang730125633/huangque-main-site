@@ -84,6 +84,7 @@
 <script>
 (function(){
   var token='__cookie__', activeBlob='', startedAt=0, pollTimer=0, activeTemplate='', activeMode='generate';
+  var pendingStorageKey='hq-text-video-pending-v1';
   var el=function(id){return document.getElementById(id);};
   function toast(message){var node=el('toast');node.textContent=message;node.classList.add('show');setTimeout(function(){node.classList.remove('show');},1800);}
   function updateCount(){el('charCount').textContent=el('videoText').value.length+' / 1000';}
@@ -92,6 +93,20 @@
   function elapsed(){return Math.max(0,Math.round((Date.now()-startedAt)/1000));}
   function phaseText(){var seconds=elapsed();if(seconds<20)return '正在处理文案与配音';if(seconds<180)return '正在生成画面素材';return '正在套用模板并渲染视频';}
   function requestKey(){return 'text-video-'+(window.crypto&&crypto.randomUUID?crypto.randomUUID():Date.now()+'-'+Math.random().toString(16).slice(2));}
+  function pendingSubmission(payload){
+    var body=JSON.stringify(payload),saved=null;
+    try{saved=JSON.parse(sessionStorage.getItem(pendingStorageKey)||'null');}catch(_){}
+    if(saved&&saved.body===body&&saved.key)return saved;
+    var pending={body:body,key:requestKey()};
+    try{sessionStorage.setItem(pendingStorageKey,JSON.stringify(pending));}catch(_){}
+    return pending;
+  }
+  function confirmSubmission(pending){
+    try{
+      var saved=JSON.parse(sessionStorage.getItem(pendingStorageKey)||'null');
+      if(saved&&saved.body===pending.body&&saved.key===pending.key)sessionStorage.removeItem(pendingStorageKey);
+    }catch(_){}
+  }
   function authHeaders(json){var headers={Authorization:'Bearer '+token};if(json)headers['Content-Type']='application/json';return headers;}
   function readJson(response){
     return response.text().then(function(text){
@@ -132,10 +147,15 @@
     if(text.length<2){toast(activeMode==='generate'?'请输入至少 2 个字的主题':'请输入至少 2 个字的完整文案');return;}
     if(!activeTemplate){toast('模板库尚未加载完成');return;}
     clearTimeout(pollTimer);setBusy(true);startedAt=Date.now();setStatus('正在提交任务','running');
-    var headers=authHeaders(true);headers['Idempotency-Key']=requestKey();
-    fetch('/api/gen/script_to_video',{method:'POST',headers:headers,body:JSON.stringify({pipeline:'pixelle',text:text,template:activeTemplate,mode:activeMode})}).then(readJson).then(function(response){
-      if(response.status===401){location.href='../login.html?redirect=workbench/text-video';return;}
-      if(!response.data.job_id)throw new Error(response.data.detail||'任务提交失败');
+    var payload={pipeline:'pixelle',text:text,template:activeTemplate,mode:activeMode};
+    var pending=pendingSubmission(payload),headers=authHeaders(true);headers['Idempotency-Key']=pending.key;
+    fetch('/api/gen/script_to_video',{method:'POST',headers:headers,body:pending.body}).then(readJson).then(function(response){
+      if(response.status===401){confirmSubmission(pending);location.href='../login.html?redirect=workbench/text-video';return;}
+      if(!response.data.job_id){
+        if(response.status<500||response.data.operation_terminal===true)confirmSubmission(pending);
+        throw new Error(response.data.detail||'任务提交失败');
+      }
+      confirmSubmission(pending);
       var cost=response.data.cost?'，预计扣除 '+response.data.cost+' 点':'';
       setStatus((activeMode==='generate'?'正在根据主题创作中文文案':'正在使用完整文案生成视频')+cost,'running');
       poll(response.data.job_id);
