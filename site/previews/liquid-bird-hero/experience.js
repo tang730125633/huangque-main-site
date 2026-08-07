@@ -77,21 +77,24 @@
       return length(point-start-segment*amount);
     }
     float starField(vec2 point,vec2 cursor){
-      float density=11.;
+      float density=8.;
       vec2 base=floor(point*density);
       float light=0.;
       for(int y=-1;y<=1;y++){
         for(int x=-1;x<=1;x++){
           vec2 cell=base+vec2(float(x),float(y));
           float seed=hash(cell);
-          if(seed<.42) continue;
+          if(seed<.45) continue;
           vec2 home=(cell+vec2(seed,hash(cell+19.17)))/density;
           vec2 away=home-cursor;
-          float force=smoothstep(.58,.04,length(away))*uPointerActive;
-          vec2 star=home+normalize(away+vec2(.0001))*force*.19;
-          float radius=mix(.0022,.0052,hash(cell+7.31));
+          float force=smoothstep(.66,.04,length(away))*uPointerActive;
+          vec2 star=home+normalize(away+vec2(.0001))*force*.24;
+          float radius=mix(.0045,.011,hash(cell+7.31));
           float twinkle=.58+.42*sin(uTime*(1.2+seed)+seed*18.);
-          light+=(1.-smoothstep(0.,radius,length(point-star)))*twinkle;
+          float distanceToStar=length(point-star);
+          float core=1.-smoothstep(0.,radius,distanceToStar);
+          float halo=1.-smoothstep(radius,radius*4.,distanceToStar);
+          light+=(core+halo*.2)*twinkle;
         }
       }
       return light;
