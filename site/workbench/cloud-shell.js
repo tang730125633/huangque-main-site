@@ -112,7 +112,7 @@
   var NAV=[
     {k:'dashboard',l:'今日',i:'home', admin:true}, {k:'inspiration',l:'灵感设计',i:'sparkles'},
     {k:'leads',l:'平台获客',i:'search'}, {k:'collect',l:'内容爬取',i:'link'}, {k:'banana',l:'图片生成',i:'image'},
-    {k:'video',l:'视频生成',i:'video'}, {k:'audio',l:'音频生成',i:'mic'}, {k:'script',l:'文案编导',i:'edit'},
+    {k:'video',l:'视频生成',i:'video'}, {k:'text-video',l:'文案成片',i:'clapper',feature:'pixelle_text_video'}, {k:'audio',l:'音频生成',i:'mic'}, {k:'script',l:'文案编导',i:'edit'},
     {k:'short-drama',l:'短剧创作',i:'clapper'}, {k:'canvas',l:'无限画布',i:'layers'}, {k:'assets',l:'我的资产',i:'folder'}, {k:'pricing',l:'点数价格',i:'coins'}, {k:'invite',l:'邀请中心',i:'users'},
     {k:'cost',l:'成本',i:'coins', admin:true}, {k:'tutorials',l:'教程视频',i:'play'}, {k:'settings',l:'通用设置',i:'gear'}
   ];
@@ -135,10 +135,20 @@
     return NAV.filter(function(it){ return admin || !it.admin; }).map(function(it){
       var on=it.k===active;
       var ntxt=on?'#eaf1fa':'#94a4bb', nbg=on?'rgba(231,178,76,.08)':'transparent', nfg=on?'#e7b24c':'#94a4bb', nbar=on?'1':'0';
-      return '<a href="'+escapeAttr(safeUrl(it.k+'.html'))+'" class="hq-navitem" aria-label="'+escapeAttr(it.l)+'" data-nav-label="'+escapeAttr(it.l)+'" style="position:relative; display:flex; align-items:center; gap:12px; padding:10px 13px; border-radius:11px; cursor:pointer; color:'+ntxt+'; background:'+nbg+'; font-size:14px; font-weight:500; transition:.16s;">'+
+      var featureAttr=it.feature?' data-nav-feature="'+escapeAttr(it.feature)+'" hidden':'';
+      return '<a href="'+escapeAttr(safeUrl(it.k+'.html'))+'" class="hq-navitem" aria-label="'+escapeAttr(it.l)+'" data-nav-label="'+escapeAttr(it.l)+'"'+featureAttr+' style="position:relative; display:'+(it.feature?'none':'flex')+'; align-items:center; gap:12px; padding:10px 13px; border-radius:11px; cursor:pointer; color:'+ntxt+'; background:'+nbg+'; font-size:14px; font-weight:500; transition:.16s;">'+
         '<span class="hq-nav-active-bar" style="position:absolute; left:-12px; top:50%; transform:translateY(-50%); width:3px; height:18px; border-radius:0 3px 3px 0; background:#e7b24c; opacity:'+nbar+';"></span>'+
         '<span class="hq-nav-icon" style="display:flex; width:18px; flex:none; opacity:'+(on?'1':'.55')+'; transition:.16s;">'+iconDuo(it.i)+'</span><span class="hq-nav-label">'+escapeHtml(it.l)+'</span></a>';
     }).join('');
+  }
+
+  function revealReadyFeatureNav(aside){
+    var item=aside.querySelector('[data-nav-feature="pixelle_text_video"]');
+    if(!item) return;
+    fetch('/api/gen/text-video/capability',{credentials:'same-origin',cache:'no-store'})
+      .then(function(response){if(!response.ok)return null;return response.json();})
+      .then(function(data){if(data&&data.available){item.hidden=false;item.style.display='flex';}})
+      .catch(function(){});
   }
 
   function ensureNavStyles(){
@@ -205,7 +215,7 @@
   }
 
   function usesFlushWorkspace(active){
-    return active==='banana' || active==='video' || active==='audio';
+    return active==='banana' || active==='video' || active==='text-video' || active==='audio';
   }
 
   function bindNavTooltips(aside){
@@ -315,6 +325,7 @@
     app.appendChild(aside); app.appendChild(main);
     bindNavTooltips(aside);
     bindNavMotion(aside);
+    revealReadyFeatureNav(aside);
 
     // 响应式：窄屏抽屉
     var burger=header.querySelector('.hq-burger');

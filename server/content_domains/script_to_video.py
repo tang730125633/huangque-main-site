@@ -75,6 +75,10 @@ def _match_image_asset(username, prompt):
 def prepare_script_to_video_payload(payload, username):
     """提交扣点前冻结素材计划，保证能一次算清总价且不发生生成到一半欠费。"""
     body = dict(payload or {})
+    if str(body.get("pipeline") or "").strip() == "pixelle":
+        from . import pixelle_video
+        pixelle_video.require_available()
+        return pixelle_video.prepare_payload(body)
     scenes = [dict(scene) for scene in (body.get("scenes") or []) if isinstance(scene, dict)]
     if not scenes:
         raise ValueError("没有可生成的分镜")
@@ -103,6 +107,9 @@ def prepare_script_to_video_payload(payload, username):
 
 def gen_script_to_video(payload):
     """由 run_job 调用，走标准 job 生命周期。"""
+    if payload.get("pipeline") == "pixelle":
+        from . import pixelle_video
+        return pixelle_video.generate(payload)
     username = (payload.get("_username") or "").strip()
     scenes = payload.get("scenes") or []
     style = (payload.get("style") or "口播").strip()
