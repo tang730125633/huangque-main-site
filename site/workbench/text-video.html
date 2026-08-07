@@ -107,6 +107,10 @@
       if(saved&&saved.body===pending.body&&saved.key===pending.key)sessionStorage.removeItem(pendingStorageKey);
     }catch(_){}
   }
+  function shouldConfirmSubmission(response){
+    var inProgress=response.status===409&&response.data.code==='idempotency_in_progress';
+    return !inProgress&&(response.status<500||response.data.operation_terminal===true);
+  }
   function authHeaders(json){var headers={Authorization:'Bearer '+token};if(json)headers['Content-Type']='application/json';return headers;}
   function readJson(response){
     return response.text().then(function(text){
@@ -152,7 +156,7 @@
     fetch('/api/gen/script_to_video',{method:'POST',headers:headers,body:pending.body}).then(readJson).then(function(response){
       if(response.status===401){confirmSubmission(pending);location.href='../login.html?redirect=workbench/text-video';return;}
       if(!response.data.job_id){
-        if(response.status<500||response.data.operation_terminal===true)confirmSubmission(pending);
+        if(shouldConfirmSubmission(response))confirmSubmission(pending);
         throw new Error(response.data.detail||'任务提交失败');
       }
       confirmSubmission(pending);

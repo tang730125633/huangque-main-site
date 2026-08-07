@@ -1,4 +1,6 @@
 import unittest
+import json
+import subprocess
 from pathlib import Path
 
 
@@ -22,8 +24,37 @@ class TextVideoPageTests(unittest.TestCase):
         self.assertIn("saved.body===body&&saved.key", PAGE)
         self.assertIn("body:pending.body", PAGE)
         self.assertIn("headers['Idempotency-Key']=pending.key", PAGE)
-        self.assertIn("response.status<500||response.data.operation_terminal===true", PAGE)
+        self.assertIn("response.status===409&&response.data.code==='idempotency_in_progress'", PAGE)
+        self.assertIn("if(shouldConfirmSubmission(response))confirmSubmission(pending)", PAGE)
         self.assertIn("confirmSubmission(pending);", PAGE)
+
+    def test_idempotency_in_progress_keeps_original_retry_key(self):
+        helpers = PAGE.split("function requestKey()", 1)[1].split("function authHeaders", 1)[0]
+        script = "var pendingStorageKey='hq-text-video-pending-v1';\nfunction requestKey()" + helpers + """
+const values = new Map();
+global.sessionStorage = {
+  getItem: (key) => values.has(key) ? values.get(key) : null,
+  setItem: (key, value) => values.set(key, value),
+  removeItem: (key) => values.delete(key),
+};
+global.window = {crypto: {randomUUID: () => 'stable-key'}};
+global.crypto = global.window.crypto;
+const payload = {pipeline: 'pixelle', text: 'test'};
+const first = pendingSubmission(payload);
+const response = {status: 409, data: {code: 'idempotency_in_progress'}};
+if (shouldConfirmSubmission(response)) confirmSubmission(first);
+const retry = pendingSubmission(payload);
+process.stdout.write(JSON.stringify({first: first.key, retry: retry.key}));
+"""
+        result = subprocess.run(
+            ["node", "-e", script],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        keys = json.loads(result.stdout)
+        self.assertTrue(keys["first"].startswith("text-video-"))
+        self.assertEqual(keys["first"], keys["retry"])
 
     def test_template_catalog_is_authenticated_and_not_hardcoded_to_service(self):
         self.assertIn("/api/gen/text-video/templates", PAGE)
