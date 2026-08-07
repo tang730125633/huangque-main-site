@@ -373,7 +373,7 @@ class ProviderKeyPoolTests(unittest.TestCase):
         ):
             self.assertIn(text, html)
         self.assertNotIn("data-provider-key-rename", html)
-        self.assertNotIn("state.module==='operations')&&!state.poolActions", html)
+        self.assertIn("(state.module==='dashboard'||state.module==='operations')&&!state.poolActions", html)
         self.assertNotIn("/api/admin/provider-keys/rename", html)
         self.assertNotIn("其他上游", html)
         self.assertIn("Date.now()+ttl", html)

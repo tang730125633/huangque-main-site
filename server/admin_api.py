@@ -11,10 +11,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from contextlib import closing
 from http import cookies
 from importlib import import_module
+import hashlib
 import json
 import os
 import pathlib
 import re
+import threading
 
 try:
     import func_names                    # 生产：admin_api.py 直接跑，同目录下就是 func_names.py
@@ -201,6 +203,17 @@ KEY_GROUPS = [
      "features": ["我的资产 → 生成结果存储", "视频模块 → 参考素材与成片存储"], "env": ["COS_SECRET_ID", "COS_SECRET_KEY", "COS_REGION", "COS_BUCKET"]},
 ]
 KEY_GROUP_MAP = {item["key"]: item for item in KEY_GROUPS}
+_CREDENTIAL_VERSION_SALT = os.urandom(16)
+_PROBE_CONFIG_ENVS = {
+    "openai": ["OPENAI_BASE"],
+    "xai": ["XAI_API_BASE"],
+    "gemini": ["GEMINI_BASE"],
+    "heygen": ["HEYGEN_MCP_CREDENTIALS"],
+    "tikhub": ["TIKHUB_BASE"],
+    "heygen_relay": ["HEYGEN_RELAY_BASE"],
+    "xiaolevideo": ["XIAOLEVIDEO_API_BASE"],
+    "cos": ["COS_DOMAIN"],
+}
 
 # 各渠道实际在用的业务接口清单(2026-07-09 全代码扫描产出,展示用;fee=调用计费)
 ENDPOINT_CATALOG = json.loads(r"""
@@ -835,6 +848,38 @@ def _key_group_base_host(item, prefix, sources):
         return ""
 
 
+def _key_group_version(item, sources=None):
+    """Opaque per-process version; detects every credential/base change without exposing it."""
+    sources = env_sources() if sources is None else sources
+    names = list(item.get("env", []))
+    names += list(item.get("env_base_env", []))
+    names += list(item.get("pool_base_env", []))
+    names += list(_PROBE_CONFIG_ENVS.get(item.get("key"), []))
+    values = []
+    for name in names:
+        value = next(
+            ((src["values"].get(name) or "").strip() for src in sources
+             if (src["values"].get(name) or "").strip()),
+            "",
+        )
+        values.append(name + "=" + value)
+        if name == "HEYGEN_MCP_CREDENTIALS" and value:
+            try:
+                content = pathlib.Path(value).read_bytes()
+                values.append("HEYGEN_MCP_FILE=" + hashlib.sha256(_CREDENTIAL_VERSION_SALT + content).hexdigest())
+            except OSError:
+                values.append("HEYGEN_MCP_FILE=unreadable")
+    if not any(value.rsplit("=", 1)[-1] for value in values):
+        return ""
+    payload = "\0".join(values).encode("utf-8")
+    return hashlib.sha256(_CREDENTIAL_VERSION_SALT + payload).hexdigest()[:16]
+
+
+def _credential_version(key):
+    item = KEY_GROUP_MAP.get(str(key or "").strip().lower())
+    return _key_group_version(item) if item else ""
+
+
 def key_status():
     sources = env_sources()
     items = []
@@ -863,8 +908,11 @@ def key_status():
                 "required_env": item["env"],
                 "sources": found,
                 "last4": last4,
+                "credential_version": _key_group_version(item, sources),
                 "management": "server_env",
                 "pingable": item["key"] in KEY_PINGS,
+                "auto_probe": item["key"] in AUTO_KEY_PING_INTERVALS,
+                "probe_interval": AUTO_KEY_PING_INTERVALS.get(item["key"]),
                 "endpoints": ENDPOINT_CATALOG.get(item["key"], []),
             }
         )
@@ -909,6 +957,14 @@ def _find_balance(detail, depth=0):
     return None
 
 
+def _heygen_balances(detail):
+    details = ((detail or {}).get("data") or {}).get("details") or {}
+    try:
+        return float(details["plan_credit"]), float(details.get("api") or 0)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _ping_upstream(method, url, headers=None, body=None, proxied=False, timeout=12,
                    proxy_url=None):
     """真实调一次上游 API。只返回状态码/耗时/错误摘要，绝不含密钥。"""
@@ -937,15 +993,30 @@ def _ping_upstream(method, url, headers=None, body=None, proxied=False, timeout=
         try:
             detail = json.loads(raw.decode("utf-8"))
             if isinstance(detail, dict):
+                if detail.get("error") or (detail.get("result") or {}).get("isError"):
+                    out.update({"ok": False, "error": "上游业务错误"})
                 code = detail.get("code")
                 if code is not None and str(code) not in ("0", "200"):
                     out["ok"] = False
                     out["error"] = "业务码 %s: %s" % (code, str(detail.get("msg") or detail.get("message") or "")[:120])
-                balance = _find_balance(detail)
-                if balance is not None:
-                    out["balance"] = balance
+                heygen = _heygen_balances(detail)
+                if heygen is not None:
+                    out["plan_credit"], out["api_wallet"] = heygen
+                else:
+                    balance = _find_balance(detail)
+                    if balance is not None:
+                        out["balance"] = balance
         except Exception:
-            pass
+            try:
+                messages = [
+                    json.loads(line[6:]) for line in raw.decode("utf-8").splitlines()
+                    if line.startswith("data: ")
+                ]
+                message = messages[-1] if messages else {}
+                if message.get("error") or (message.get("result") or {}).get("isError"):
+                    out.update({"ok": False, "error": "MCP 业务错误"})
+            except Exception:
+                pass
     except urllib.error.HTTPError as e:
         out.update({"http_status": e.code, "latency_ms": int((time.time() - start) * 1000), "error": "HTTP %s" % e.code})
     except Exception as e:
@@ -990,14 +1061,58 @@ def _key_ping_xai():
     )
 
 
+def _key_ping_heygen_mcp():
+    value = _env_value(["HEYGEN_MCP_CREDENTIALS"])
+    path = pathlib.Path(value) if value else None
+    if not path or not path.is_file():
+        return {"ok": False, "status": "not_configured", "mode": "auth"}
+    try:
+        if path.stat().st_mode & 0o077:
+            return {"ok": False, "status": "credential_rejected", "mode": "auth"}
+        credentials = json.loads(path.read_text(encoding="utf-8"))
+        token = str(credentials.get("access_token") or "").strip()
+        expires_at = float(credentials.get("expires_at") or 0)
+    except Exception:
+        return {"ok": False, "status": "credential_rejected", "mode": "auth"}
+    if not token:
+        return {"ok": False, "status": "credential_rejected", "mode": "auth"}
+    if expires_at <= time.time() + 60:
+        status = "credential_refresh_pending" if credentials.get("refresh_token") else "credential_rejected"
+        return {"ok": False, "status": status, "mode": "auth"}
+    return _ping_upstream(
+        "POST", "https://mcp.heygen.com/mcp/v1/",
+        headers={
+            "Authorization": "Bearer " + token,
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "MCP-Protocol-Version": "2025-06-18",
+        },
+        body={
+            "jsonrpc": "2.0", "id": "huangque-healthcheck", "method": "tools/call",
+            "params": {"name": "get_current_user", "arguments": {}},
+        },
+        proxy_url=_heygen_proxy_url(),
+    )
+
+
 def _key_ping_heygen():
     key = _env_value(["HEYGEN_API_KEY"])
     if not key:
         return {"ok": False, "error": "密钥未配置"}
-    return _ping_upstream(
+    api = _ping_upstream(
         "GET", "https://api.heygen.com/v2/user/remaining_quota",
         headers={"X-Api-Key": key}, proxy_url=_heygen_proxy_url(),
     )
+    api["components"] = "API Key"
+    if not api.get("ok") or not _env_value(["HEYGEN_MCP_CREDENTIALS"]):
+        return api
+    mcp = _key_ping_heygen_mcp()
+    for field in ("plan_credit", "api_wallet"):
+        if api.get(field) is not None:
+            mcp[field] = api[field]
+    mcp["latency_ms"] = int(api.get("latency_ms") or 0) + int(mcp.get("latency_ms") or 0)
+    mcp["components"] = "API Key + MCP OAuth"
+    return mcp
 
 
 def _key_ping_tikhub():
@@ -1133,6 +1248,193 @@ KEY_PINGS = {
     "tikhub": _key_ping_tikhub,
     "cos": _key_ping_cos,
 }
+
+# 只自动检查明确的非生成接口；未知合约渠道仍保留管理员手动测试。
+AUTO_KEY_PING_INTERVALS = {
+    "openai": 600,
+    "xai": 600,
+    "gemini": 600,
+    "heygen": 300,
+    "runninghub": 300,
+    "wavespeed": 300,
+    "tikhub": 300,
+    "heygen_relay": 600,
+    "xiaolevideo": 600,
+    "cos": 600,
+    "cosyvoice": 3600,
+}
+_KEY_PING_CACHE = {}
+_KEY_PING_LOCKS = {}
+_KEY_PING_GUARD = threading.Lock()
+_KEY_PROBE_MONITOR_STARTED_AT = 0
+_KEY_PROBE_MONITOR_LAST_CYCLE = 0
+
+
+def _public_probe(value):
+    return {key: val for key, val in value.items() if not key.startswith("_")}
+
+
+def _probe_status(key, raw):
+    mode = str(raw.get("mode") or "auth")
+    explicit = str(raw.get("status") or "")
+    explicit_messages = {
+        "not_configured": "服务器凭据未配置完整",
+        "credential_rejected": "凭据已被拒绝",
+        "credential_refresh_pending": "MCP OAuth 待刷新验证",
+    }
+    if explicit in explicit_messages:
+        return explicit, explicit_messages[explicit]
+    try:
+        code = int(raw.get("http_status") or 0)
+    except (TypeError, ValueError):
+        code = 0
+    if raw.get("ok"):
+        if mode == "reach":
+            return "reachable_only", "仅连通，未验证凭据"
+        if key == "heygen" and isinstance(raw.get("plan_credit"), (int, float)) and raw["plan_credit"] <= 0:
+            # 当前 HeyGen 客户链路统一优先使用套餐额度；禁止无提示切到高价 API 钱包。
+            if isinstance(raw.get("api_wallet"), (int, float)) and raw["api_wallet"] > 0:
+                return "quota_or_plan", "套餐额度已空，已阻断高价 API 钱包兜底"
+            return "quota_or_plan", "套餐额度已耗尽"
+        return "auth_ok", "鉴权通过"
+    if code == 401:
+        return "credential_rejected", "凭据已被拒绝"
+    if code == 402:
+        return "quota_or_plan", "额度或套餐不足"
+    if code == 403:
+        return "permission_denied", "权限或模型未开通"
+    if code == 429:
+        return "throttled", "渠道限流"
+    if code >= 500:
+        return "upstream_unavailable", "渠道暂时不可用"
+    if code in (400, 404):
+        return "probe_contract_error", "检测接口可能已变更"
+    error = str(raw.get("error") or "")
+    if "未配置" in error or "配置不全" in error:
+        return "not_configured", "服务器凭据未配置完整"
+    if code:
+        return "business_error", "渠道返回业务异常"
+    return "network_error", "网络连接失败"
+
+
+def _probe_cache_fresh(cached, key, now, version):
+    if not cached or cached.get("credential_version") != version:
+        return False
+    ttl = AUTO_KEY_PING_INTERVALS.get(key, 60)
+    if cached.get("status") in {"network_error", "upstream_unavailable", "throttled"}:
+        ttl = min(ttl, 60)
+    return now - float(cached.get("_monotonic_at") or 0) < ttl
+
+
+def key_probe_status():
+    with _KEY_PING_GUARD:
+        snapshot = {key: dict(value) for key, value in _KEY_PING_CACHE.items()}
+    return {
+        key: _public_probe(value)
+        for key, value in snapshot.items()
+        if value.get("credential_version") == _credential_version(key)
+    }
+
+
+def probe_key(key, force=False):
+    key = str(key or "").strip().lower()
+    fn = KEY_PINGS.get(key)
+    if not fn:
+        raise ValueError("该密钥不支持在线测试")
+    now = time.monotonic()
+    version = _credential_version(key)
+    with _KEY_PING_GUARD:
+        cached = _KEY_PING_CACHE.get(key)
+        if not force and _probe_cache_fresh(cached, key, now, version):
+            return dict(_public_probe(cached), cached=True)
+        lock = _KEY_PING_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        now = time.monotonic()
+        version = _credential_version(key)
+        with _KEY_PING_GUARD:
+            cached = _KEY_PING_CACHE.get(key)
+            if not force and _probe_cache_fresh(cached, key, now, version):
+                return dict(_public_probe(cached), cached=True)
+        try:
+            raw = fn() or {}
+        except Exception:
+            raw = {"ok": False}
+        current_version = _credential_version(key)
+        if current_version != version:
+            return {
+                "channel": key, "ok": False, "mode": "auth",
+                "status": "credential_changed", "message": "凭据刚刚变更，等待重新检测",
+                "checked_at": int(time.time()), "credential_version": current_version,
+                "cached": False,
+            }
+        status, message = _probe_status(key, raw)
+        result = {
+            "channel": key,
+            "ok": status in {"auth_ok", "reachable_only"},
+            "mode": str(raw.get("mode") or "auth"),
+            "status": status,
+            "message": message,
+            "checked_at": int(time.time()),
+            "credential_version": version,
+            "_monotonic_at": time.monotonic(),
+        }
+        if raw.get("components") in {"API Key", "API Key + MCP OAuth"}:
+            result["components"] = raw["components"]
+        for field in ("http_status", "latency_ms"):
+            try:
+                if raw.get(field) is not None:
+                    result[field] = int(raw[field])
+            except (TypeError, ValueError):
+                pass
+        if key in {"runninghub", "wavespeed", "tikhub"} and isinstance(raw.get("balance"), (int, float)):
+            result["balance"] = raw["balance"]
+        if key == "heygen":
+            for field in ("plan_credit", "api_wallet"):
+                if isinstance(raw.get(field), (int, float)):
+                    result[field] = raw[field]
+        with _KEY_PING_GUARD:
+            _KEY_PING_CACHE[key] = result
+        return dict(_public_probe(result), cached=False)
+
+
+def probe_configured_keys():
+    configured = {item["key"] for item in key_status() if item["configured"]}
+    for key in AUTO_KEY_PING_INTERVALS:
+        if key in configured:
+            try:
+                probe_key(key)
+            except Exception:
+                continue
+
+
+def key_probe_monitor(stop_event):
+    global _KEY_PROBE_MONITOR_LAST_CYCLE
+    while not stop_event.is_set():
+        try:
+            probe_configured_keys()
+        except Exception:
+            pass
+        _KEY_PROBE_MONITOR_LAST_CYCLE = int(time.time())
+        stop_event.wait(30)
+
+
+def start_key_probe_monitor():
+    global _KEY_PROBE_MONITOR_STARTED_AT
+    _KEY_PROBE_MONITOR_STARTED_AT = int(time.time())
+    thread = threading.Thread(
+        target=key_probe_monitor, args=(threading.Event(),),
+        daemon=True, name="admin-key-probe-monitor",
+    )
+    thread.start()
+    return thread
+
+
+def key_probe_monitor_status():
+    return {
+        "running": bool(_KEY_PROBE_MONITOR_STARTED_AT),
+        "started_at": _KEY_PROBE_MONITOR_STARTED_AT,
+        "last_cycle_at": _KEY_PROBE_MONITOR_LAST_CYCLE,
+    }
 
 PROVIDER_KEY_NAMES = {
     "xai": "果肉视频",
@@ -2520,16 +2822,17 @@ class H(BaseHTTPRequestHandler):
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             svc_key = (q.get("service") or [""])[0].strip()
             key_name = (q.get("key") or [""])[0].strip()
+            force = (q.get("force") or [""])[0].strip().lower() in {"1", "true", "yes"}
             if svc_key:
                 svc = next((s for s in SERVICES if s["key"] == svc_key), None)
                 if not svc:
                     return self._send(404, {"detail": "unknown service"})
                 return self._send(200, probe_service(svc))
             if key_name:
-                fn = KEY_PINGS.get(key_name)
-                if not fn:
-                    return self._send(400, {"detail": "该密钥不支持在线测试"})
-                return self._send(200, fn())
+                try:
+                    return self._send(200, probe_key(key_name, force=force))
+                except ValueError as exc:
+                    return self._send(400, {"detail": str(exc)})
             return self._send(400, {"detail": "需要 service 或 key 参数"})
         if path == "/api/admin/request-logs":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -2585,6 +2888,8 @@ class H(BaseHTTPRequestHandler):
                     "user": {"username": user.get("username"), "name": user.get("name"), "role": user.get("role")},
                     "services": services,
                     "keys": key_status(),
+                    "key_probes": key_probe_status(),
+                    "key_probe_monitor": key_probe_monitor_status(),
                     "provider_keys": provider_key_list(),
                     "channels": load_channels(),
                     "function_registry": load_function_registry(services),
@@ -3041,5 +3346,6 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     init_db()
+    start_key_probe_monitor()
     print("huangque-admin on 127.0.0.1:%d" % PORT)
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()

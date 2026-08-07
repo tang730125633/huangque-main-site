@@ -652,7 +652,8 @@
     poolEpoch:0, refreshPending:false, announcementPreview:null, announcementPreviewSignature:'',
     announcementRequestId:'', announcementPreviewLoading:false, announcementPublishing:false,
     announcementHistoryLoading:false, operationsPage:'video', operationsMode:'', operationsAttentionOnly:false,
-    operationsChannelMode:'', operationsChannelReturnFocus:null
+    operationsChannelMode:'', operationsChannelReturnFocus:null, overviewUpdatedAt:0,
+    keyProbes:{}, keyProbePending:{}, keyProbeMonitor:{}
   };
   var secretWindows = [];
   var sidebarDragPointer = null;
@@ -726,17 +727,20 @@
   }
   function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
   function pingResultHtml(d){
-    var reach=d.mode==='reach';
-    if(d.online===true || d.ok===true){
-      var code=d.http_status||200;
-      var bal=d.balance!=null?' <span class="pill" style="color:var(--gold)">余额 '+esc(Number(d.balance).toLocaleString())+'</span>':'';
+    var reach=d.mode==='reach'||d.status==='reachable_only';
+    if(d.online===true || d.status==='auth_ok' || d.status==='reachable_only'){
+      var bal='';
+      if(d.plan_credit!=null)bal=' <span class="pill" style="color:var(--gold)">套餐额度 '+esc(Number(d.plan_credit).toLocaleString())+'</span>'+(d.api_wallet!=null?' <span class="pill neutral">API 钱包 '+esc(Number(d.api_wallet).toLocaleString())+'</span>':'');
+      else if(d.balance!=null)bal=' <span class="pill" style="color:var(--gold)">余额 '+esc(Number(d.balance).toLocaleString())+'</span>';
       var serviceProbe=Boolean(d.service_file),label=serviceProbe?'基础服务可达':(reach?'HTTP 可达':'鉴权探针通过');
       return '<span class="pill '+(serviceProbe||reach?'neutral':'ok')+'">'+esc(label)+' · '+esc(d.latency_ms)+'ms</span>'+bal
+        +(d.components?' <span class="muted">'+esc(d.components)+'</span>':'')
         +(serviceProbe?' <span class="muted">不代表生成成功</span>':(reach?' <span class="muted">仅测连通，不验密钥</span>':' <span class="muted">尚未验证生成</span>'))
         +(d.checked_at?' <span class="muted">'+esc(fmtTime(d.checked_at))+'</span>':'');
     }
-    var text=d.error||(d.http_status?('HTTP '+d.http_status):'失败');
-    return '<span class="pill fail" title="'+esc(text)+'">'+esc(String(text).slice(0,40))+'</span>';
+    var text=d.message||(d.http_status?('HTTP '+d.http_status):'检测失败');
+    var bal=d.plan_credit!=null?' · 套餐额度 '+Number(d.plan_credit).toLocaleString()+(d.api_wallet!=null?' · API 钱包 '+Number(d.api_wallet).toLocaleString():''):'';
+    return '<span class="pill '+(['throttled','upstream_unavailable','network_error','probe_contract_error'].indexOf(d.status)>=0?'warn':'fail')+'" title="'+esc(text+bal)+'">'+esc(String(text+bal).slice(0,64))+'</span>';
   }
   function bindPing(boxId, attr, param, prefix){
     Array.prototype.forEach.call(el(boxId).querySelectorAll('['+attr+']'), function(btn){
@@ -748,8 +752,8 @@
         var put=function(html){var n=out(); if(n) n.innerHTML=html};
         btn.disabled=true;
         put('<span class="muted">测试中…</span>');
-        api('/api/admin/ping?'+param+'='+encodeURIComponent(key))
-          .then(function(d){put(pingResultHtml(d))})
+        api('/api/admin/ping?'+param+'='+encodeURIComponent(key)+(param==='key'?'&force=1':''))
+          .then(function(d){put(pingResultHtml(d));if(param==='key'&&state.data){var route=(state.data.keys||[]).find(function(item){return item.key===key});if(route){state.keyProbes[key]={signature:String(route.credential_version||''),loading:false,result:d};updateServerProbeNodes(key);if(state.module==='operations')renderOperations(state.data)}}})
           .catch(function(e){put('<span class="pill fail">'+esc(e.message)+'</span>')})
           .finally(function(){btn.disabled=false});
       };
@@ -874,12 +878,10 @@
     el('providerKeyState').textContent=data.configured?'保险箱已启用':'保险箱未配置';
     var channelCards=(envItems||[]).map(function(meta){
       var pool=meta.pool_provider?items.filter(function(k){return k.provider===meta.pool_provider}):[];
-      var configured=Boolean(meta.configured||pool.length),healthy=pool.some(function(k){return k.health_status==='healthy'}),unhealthy=pool.some(function(k){return k.health_status==='unhealthy'});
-      var state=!configured?'missing':(unhealthy&&!healthy?'warning':'healthy');
-      var label=!configured?'未配置':(healthy?'鉴权探针通过':'已配置');
-      var pill=!configured?'fail':(unhealthy&&!healthy?'warn':'ok');
+      var evidence=registryRouteEvidence({key:meta.key},state.data||{keys:envItems,provider_keys:data});
+      var cardState=evidence.state==='ok'?'healthy':(evidence.state==='fail'?'missing':'warning');
       var features=(meta.features||[]).map(function(x){return '<span>'+esc(x)+'</span>'}).join('');
-      return '<article class="channel-map-card" role="listitem" data-channel="'+esc(meta.key)+'" data-state="'+state+'"><div class="channel-map-title"><b>'+esc(meta.name)+'</b><span class="pill '+pill+'">'+label+'</span></div><div class="channel-map-category">'+esc(meta.category||'API 服务')+'</div><div class="channel-map-features">'+features+'</div><div class="channel-map-meta"><span>接口 '+Number((meta.endpoints||[]).length)+'</span><span>线路 '+Number(pool.length+(meta.configured?1:0))+'</span></div></article>';
+      return '<article class="channel-map-card" role="listitem" data-channel="'+esc(meta.key)+'" data-state="'+cardState+'"><div class="channel-map-title"><b>'+esc(meta.name)+'</b><span class="pill '+evidence.state+'">'+esc(evidence.label)+'</span></div><div class="channel-map-category">'+esc(meta.category||'API 服务')+'</div><div class="channel-map-features">'+features+'</div><div class="channel-map-meta"><span>接口 '+Number((meta.endpoints||[]).length)+'</span><span>线路 '+Number(pool.length+(meta.configured?1:0))+'</span></div></article>';
     }).join('');
     var mapped=(envItems||[]).reduce(function(n,meta){return n+(meta.features||[]).length},0),configuredCount=(envItems||[]).filter(function(meta){return meta.configured||(meta.pool_provider&&items.some(function(k){return k.provider===meta.pool_provider}))}).length;
     el('channelMap').innerHTML='<div class="channel-map-head"><div><h3>API 渠道关系图</h3><p>黄雀前台功能 → 真实供应商 → 当前线路状态。密钥仍在下方明细中默认脱敏。</p></div><div class="channel-map-stats"><div class="channel-map-stat"><b>'+Number((envItems||[]).length)+'</b><span>供应商渠道</span></div><div class="channel-map-stat"><b>'+configuredCount+'</b><span>已配置</span></div><div class="channel-map-stat"><b>'+mapped+'</b><span>功能映射</span></div></div></div><div class="channel-map-core"><b>黄雀前台产品能力</b><span>统一调度 · 账号权限 · 点数与任务记录</span></div><div class="channel-map-trunk" aria-hidden="true"></div><div class="channel-map-grid" role="list">'+channelCards+'</div>';
@@ -888,7 +890,8 @@
       var test=meta.pingable?'<button class="mini" data-ping-key="'+esc(meta.key)+'">测试</button> <span data-ping-out="key:'+esc(meta.key)+'"></span>':'<span class="muted">需服务器签名检测</span>';
       var reveal=meta.configured?'<button class="mini" data-server-key-reveal="'+esc(meta.key)+'" data-last4="'+esc(meta.last4)+'">查看 5 秒</button>':'';
       var label=scope==='图片 / 直连'?'服务器环境变量（图片）':'服务器环境变量（直连）';
-      return '<tr data-channel="'+esc(meta.key)+'"><td>'+channelIdentity(meta,features,scope,baseHost)+'</td><td><code class="key-value" data-server-key-value="'+esc(meta.key)+'">'+(meta.last4?'••••'+esc(meta.last4):'未配置')+'</code><div class="key-meta">'+src+'</div></td><td>'+(meta.configured?'<span class="pill neutral">'+label+'</span>':'<span class="pill fail">缺失</span>')+'</td><td>'+statusPill(meta.configured,meta.configured?'已配置 · 不参与加密号池轮询':'未配置')+'</td><td><div class="actions">'+test+reveal+'</div></td></tr>';
+      var evidence=registryRouteEvidence({key:meta.key,credential_source:'env'},state.data||{keys:envItems,provider_keys:data});
+      return '<tr data-channel="'+esc(meta.key)+'"><td>'+channelIdentity(meta,features,scope,baseHost)+'</td><td><code class="key-value" data-server-key-value="'+esc(meta.key)+'">'+(meta.last4?'••••'+esc(meta.last4):'未配置')+'</code><div class="key-meta">'+src+'</div></td><td>'+(meta.configured?'<span class="pill neutral">'+label+'</span>':'<span class="pill fail">缺失</span>')+'</td><td><span class="pill '+evidence.state+'" data-server-probe-status="'+esc(meta.key)+'" data-server-probe-source="env">'+esc(evidence.label)+'</span></td><td><div class="actions">'+test+reveal+'</div></td></tr>';
     }
     (envItems||[]).forEach(function(meta){
       var provider=meta.pool_provider,own=provider?items.filter(function(k){return k.provider===provider}):[];
@@ -1617,20 +1620,46 @@
     return {accepting:true,status:'enabled',html:'<span class="pill neutral">接单开关已开启</span><div>'+esc(keys.join('、'))+' · 尚未证明全链路</div>'};
   }
   function registryRouteEvidence(dependency,data){
-    var route=(data.keys||[]).find(function(item){return item.key===dependency.key}),pools=[],state='fail',label='未配置',source=dependency.credential_source||'auto';
+    var route=(data.keys||[]).find(function(item){return item.key===dependency.key}),pools=[],tone='fail',label='未配置',source=dependency.credential_source||'auto';
     if(route&&source!=='env'&&route.pool_provider)pools=((data.provider_keys||{}).items||[]).filter(function(item){return item.provider===route.pool_provider&&item.state!=='retired'&&item.managed!==false});
     if(pools.length){
-      var healthy=pools.filter(function(item){return item.health_status==='healthy'}).length;
-      var unhealthy=pools.filter(function(item){return item.health_status==='unhealthy'}).length;
-      var unknown=pools.filter(function(item){return item.health_status!=='healthy'&&item.health_status!=='unhealthy'}).length;
-      if(healthy){state='ok';label='鉴权探针通过 '+healthy+' / '+pools.length+(unhealthy?' · 异常 '+unhealthy:'')+(unknown?' · 待检测 '+unknown:'')}
-      else if(unhealthy){state='fail';label='号池无可用线路 · 异常 '+unhealthy+' / '+pools.length}
-      else if(unknown){state='warn';label='号池待检测 '+unknown+' / '+pools.length}
-    }else if(source==='pool'){state='fail';label='加密号池未配置'}
-    else if(route&&route.configured){state='warn';label='已发现服务器凭据 · 尚未鉴权'}
-    else if(route){state='fail';label='未配置'}
+      var cutoff=Math.floor(Date.now()/1000)-300,fresh=pools.filter(function(item){return Number(item.last_checked_at||0)>=cutoff});
+      var healthy=fresh.filter(function(item){return item.health_status==='healthy'}).length;
+      var unhealthy=fresh.filter(function(item){return item.health_status==='unhealthy'}).length;
+      var unknown=pools.length-healthy-unhealthy,latest=Math.max.apply(null,pools.map(function(item){return Number(item.last_checked_at||0)}));
+      if(healthy){tone='ok';label='鉴权探针通过 '+healthy+' / '+pools.length+(unhealthy?' · 异常 '+unhealthy:'')+(unknown?' · 待检测 '+unknown:'')}
+      else if(unhealthy){tone='fail';label='号池无可用线路 · 异常 '+unhealthy+' / '+pools.length}
+      else if(latest){tone='warn';label='号池鉴权证据已过期 · 上次 '+fmtTime(latest)}
+      else if(unknown){tone='warn';label='号池待检测 '+unknown+' / '+pools.length}
+    }else if(source==='pool'){tone='fail';label='加密号池未配置'}
+    else if(route&&route.configured){
+      var signature=String(route.credential_version||''),probe=state.keyProbes[route.key],result=probe&&probe.signature===signature&&probe.result;
+      if(probe&&probe.signature===signature&&probe.loading&&!result){tone='neutral';label='正在获取最新鉴权…'}
+      else if(result){
+        var checked=Number(result.checked_at||0),maxAge=Math.max(300,Number(route.probe_interval||300)*2),age=Math.floor(Date.now()/1000)-checked;
+        var latency=result.latency_ms==null?'':(' · '+Number(result.latency_ms)+'ms'),when=checked?(' · '+fmtTime(checked)):'';
+        var components=result.components?(' · '+result.components):'';
+        var balance=result.plan_credit!=null?(' · 套餐额度 '+Number(result.plan_credit).toLocaleString()+(result.api_wallet!=null?' · API 钱包 '+Number(result.api_wallet).toLocaleString():'')):(result.balance==null?'':(' · 余额 '+Number(result.balance).toLocaleString()));
+        if(!checked||age>maxAge){tone='warn';label='探针数据已过期'+when}
+        else if(result.status==='auth_ok'){tone='ok';label='最近鉴权通过'+components+latency+balance+when}
+        else if(result.status==='reachable_only'){tone='warn';label='最近连通 · 未验证凭据'+latency+when}
+        else if(result.status==='credential_rejected'){tone='fail';label='凭据已失效'+components+when}
+        else if(result.status==='quota_or_plan'){tone='fail';label=String(result.message||'额度或套餐不足')+components+balance+when}
+        else if(result.status==='permission_denied'){tone='fail';label='权限或模型未开通'+components+when}
+        else if(result.status==='not_configured'){tone='fail';label='服务器凭据未配置完整'+when}
+        else {tone='warn';label=String(result.message||'检测暂时失败')+components+when}
+      }else if(route.auto_probe){tone='neutral';label='等待后台首次鉴权'}
+      else if(route.pingable){tone='warn';label='已配置 · 需人工检测'}
+      else {tone='warn';label='已配置 · 暂无鉴权探针'}
+    }
+    else if(route){tone='fail';label='未配置'}
     else {label='渠道未登记'}
-    return {route:route||{key:dependency.key,name:dependency.key},state:state,label:label};
+    return {route:route||{key:dependency.key,name:dependency.key},state:tone,label:label};
+  }
+  function updateServerProbeNodes(key){
+    if(!state.data)return;
+    var evidence=registryRouteEvidence({key:key,credential_source:'env'},state.data);
+    Array.prototype.forEach.call(document.querySelectorAll('[data-server-probe-status="'+key+'"][data-server-probe-source="env"]'),function(node){node.className='pill '+evidence.state;node.textContent=evidence.label});
   }
   function registrySelections(feature,mode){return Object.assign({},feature.selected_alternatives||{},mode.selected_alternatives||{})}
   function registryDependencyApplies(dependency,selections){var when=dependency.when||{};return !when.alternative_group||selections[when.alternative_group]===when.equals}
@@ -1642,15 +1671,42 @@
     });
   }
   function registryDependencies(feature,mode,data){
-    var deps=(feature.dependencies||[]).concat(mode.dependencies||[]),seen={},selections=registrySelections(feature,mode);
+    var deps=registryActiveDependencies(feature,mode),seen={};
     var requirementLabels={required:'必需',optional:'可选',alternative:'备用组'};
-    return deps.filter(function(dep){if(seen[dep.key+'|'+dep.role])return false;seen[dep.key+'|'+dep.role]=true;return true}).map(function(dep){var applies=registryDependencyApplies(dep,selections),evidence=registryRouteEvidence(dep,data),requirement=requirementLabels[dep.requirement]||'未声明',selection=dep.alternative_group?(selections[dep.alternative_group]===(dep.selection_value||dep.key)?' · 当前选中':' · 未选中'):'';if(!applies)evidence={route:evidence.route,state:'neutral',label:'当前配置不参与'};return '<div class="ops-dependency"><div class="ops-dependency-main"><b>'+esc(dep.role+' · '+evidence.route.name)+'</b><span>'+esc(requirement+(dep.alternative_group?' '+dep.alternative_group+selection:'')+' · '+(dep.condition||'固定依赖'))+'</span></div><span class="pill '+evidence.state+'">'+esc(evidence.label)+'</span></div>'}).join('');
+    return deps.filter(function(dep){if(seen[dep.key+'|'+dep.role])return false;seen[dep.key+'|'+dep.role]=true;return true}).map(function(dep){var evidence=registryRouteEvidence(dep,data),requirement=requirementLabels[dep.requirement]||'未声明',selection=dep.alternative_group?' · 当前选中':'',source=dep.credential_source||'auto',live=source==='env'?(' data-server-probe-status="'+esc(evidence.route.key)+'" data-server-probe-source="env"'):'';return '<div class="ops-dependency"><div class="ops-dependency-main"><b>'+esc(dep.role+' · '+evidence.route.name)+'</b><span>'+esc(requirement+(dep.alternative_group?' '+dep.alternative_group+selection:'')+' · '+(dep.condition||'固定依赖'))+'</span></div><span class="pill '+evidence.state+'"'+live+'>'+esc(evidence.label)+'</span></div>'}).join('');
   }
   function findOperationContext(operationKey){
     var found=null;
     ((state.data||{}).function_registry||[]).some(function(page){return (page.functions||[]).some(function(feature){return (feature.modes||[]).some(function(mode){if(mode.key!==operationKey)return false;found={page:page,feature:feature,mode:mode};return true})})});
     return found;
   }
+  function probeSelectedOperation(force){
+    if(document.hidden||state.module!=='operations'||!state.data)return;
+    var ctx=findOperationContext(state.operationsMode);if(!ctx)return;
+    var routes={},poolItems=((state.data.provider_keys||{}).items||[]),now=Date.now(),requests=[];
+    registryActiveDependencies(ctx.feature,ctx.mode).forEach(function(dep){
+      var route=(state.data.keys||[]).find(function(item){return item.key===dep.key}),source=dep.credential_source||'auto';
+      if(!route||!route.configured||!route.auto_probe)return;
+      var pools=route.pool_provider?poolItems.filter(function(item){return item.provider===route.pool_provider&&item.state!=='retired'&&item.managed!==false}):[];
+      if(source==='pool'||(source!=='env'&&pools.length))return;
+      routes[route.key]=route;
+    });
+    Object.keys(routes).forEach(function(key){
+      var route=routes[key],signature=String(route.credential_version||''),cached=state.keyProbes[key],interval=Math.max(30,Number(route.probe_interval||300))*1000;
+      if(state.keyProbePending[key])return;
+      if(!force&&cached&&cached.signature===signature&&cached.result&&now-Number(cached.result.checked_at||0)*1000<interval)return;
+      state.keyProbePending[key]=true;
+      state.keyProbes[key]={signature:signature,loading:true,result:cached&&cached.signature===signature?cached.result:null};
+      updateServerProbeNodes(key);
+      requests.push(api('/api/admin/ping?key='+encodeURIComponent(route.key)+(force?'&force=1':'')).then(function(result){
+        state.keyProbes[key]={signature:signature,loading:false,result:result};
+      }).catch(function(){
+        state.keyProbes[key]={signature:signature,loading:false,result:{ok:false,mode:'auth',status:'network_error',message:'检测请求失败',checked_at:Math.floor(Date.now()/1000),credential_version:signature}};
+      }).finally(function(){delete state.keyProbePending[key];updateServerProbeNodes(key)}));
+    });
+    if(requests.length){renderOperations(state.data);Promise.allSettled(requests).then(function(){if(state.module==='operations'&&state.data)renderOperations(state.data)})}
+  }
+  function operationsUpdatedText(){var monitor=state.keyProbeMonitor||{},prefix=monitor.running?'后台按渠道定时巡检':'后台巡检尚未启动';return state.overviewUpdatedAt?prefix+' · 页面数据截至 '+new Date(state.overviewUpdatedAt).toLocaleTimeString()+' · 每 30 秒同步':prefix}
   function renderOperationsChannelDrawer(){
     var ctx=findOperationContext(state.operationsChannelMode),box=el('operationsChannelBox');
     restoreProviderEditor();
@@ -1700,8 +1756,10 @@
     deps.filter(function(dep){return dep.requirement==='alternative'}).forEach(function(dep){(alternatives[dep.alternative_group]||(alternatives[dep.alternative_group]=[])).push({dependency:dep,evidence:registryRouteEvidence(dep,data)})});
     var routes=required.map(function(dep){return registryRouteEvidence(dep,data)}),alternativeGroups=Object.keys(alternatives).map(function(key){var selected=selections[key],group=alternatives[key];return (selected?group.filter(function(item){return (item.dependency.selection_value||item.dependency.key)===selected}):group).map(function(item){return item.evidence})});
     var routeFailed=routes.some(function(item){return item.state==='fail'})||alternativeGroups.some(function(group){return group.every(function(item){return item.state==='fail'})});
+    var routeUnverified=routes.some(function(item){return item.state!=='ok'})||alternativeGroups.some(function(group){return !group.length||group.every(function(item){return item.state!=='ok'})});
     if(routeFailed&&latest&&(latest.provider_task_id||latest.completed))return ['warn','证据不一致','最近任务有执行证据，但当前渠道记录没有可用线路','断点 · 4 当前渠道'];
     if(routeFailed)return ['fail','渠道不可用','必需线路或当前备用组没有可用凭据','断点 · 4 渠道与凭据'];
+    if(routeUnverified)return ['warn','渠道待验证','必需线路尚无新鲜鉴权证据，不能判为端到端正常','断点 · 4 渠道与凭据'];
     if(!stat||!latest)return ['warn','未验证','尚无该客户模式的真实任务证据','断点 · 1 端到端测试'];
     if(['pending','queued','running','processing','created','rendering'].indexOf(String(latest.status||'').toLowerCase())>=0)return ['neutral','进行中','最近任务尚未到达终态',latest.provider_task_id?'当前 · 6 生成执行':'当前 · 5 等待供应商接单'];
     var acceptanceType=contract.acceptance_id_type||'job_id';
@@ -1778,7 +1836,7 @@
       el('operationsAttentionCount').textContent='待盘点';
       el('operationsSummary').innerHTML='<div class="ledger-stat"><span>客户功能</span><b>—</b></div><div class="ledger-stat"><span>客户模式</span><b>—</b></div><div class="ledger-stat"><span>完成任务</span><b>—</b></div><div class="ledger-stat"><span>失败任务</span><b>—</b></div>';
       el('operationsBox').innerHTML='<div class="empty">该功能页将在逐项核对客户按钮、模式和真实调用链后再进入注册表。现在不展示推测出来的功能。</div>';
-      el('operationsUpdatedAt').textContent='证据刷新 '+new Date().toLocaleTimeString();
+      el('operationsUpdatedAt').textContent=operationsUpdatedText();
       renderOperationsDeveloper(hiddenFeatures,stats,page.auxiliary_actions||[],page.key);return;
     }
     var evaluations=[],done=0,failed=0,modeCount=0,attentionCount=0;
@@ -1793,7 +1851,7 @@
     var selected=entries.find(function(entry){return entry.mode.key===state.operationsMode});
     if(!selected){
       el('operationsBox').innerHTML='<div class="empty">当前筛选下没有需要展示的客户模式。</div>';
-      el('operationsUpdatedAt').textContent='证据刷新 '+new Date().toLocaleTimeString();
+      el('operationsUpdatedAt').textContent=operationsUpdatedText();
       renderOperationsDeveloper(hiddenFeatures,stats,page.auxiliary_actions||[],page.key);return;
     }
     var catalog=evaluations.map(function(item){return '<div class="ops-catalog-feature"><strong>'+esc(item.feature.name)+'</strong>'+item.modes.map(function(entry){var active=entry.mode.key===selected.mode.key,dot=entry.verdict[0]==='neutral'?'':entry.verdict[0];return '<button class="ops-catalog-mode'+(active?' active':'')+'" data-operation-select="'+esc(entry.mode.key)+'" aria-pressed="'+(active?'true':'false')+'"><span class="dot '+dot+'"></span><span><b>'+esc(entry.mode.name)+'</b><small>'+esc(entry.verdict[1])+' · '+esc(entry.mode.key)+'</small></span></button>'}).join('')+'</div>'}).join('');
@@ -1804,10 +1862,10 @@
     var inspectorPanel='<aside class="ops-inspector"><div class="ops-inspector-kicker">当前判断</div><h3>'+esc(selected.mode.name)+'</h3><p>'+esc(selected.mode.key)+'</p><div class="ops-inspector-verdict"><span class="pill '+selected.verdict[0]+'">'+esc(selected.verdict[1])+'</span><b>'+esc(selected.verdict[3])+'</b><span>'+esc(selected.verdict[2])+'</span></div><dl class="ops-inspector-facts"><div><dt>客户页面</dt><dd>'+esc(page.name)+'</dd></div><div><dt>最近证据</dt><dd>'+(latest?esc(fmtTime(latest.updated_at||latest.created_at)):'无记录')+'</dd></div><div><dt>任务终态</dt><dd>'+Number((selected.stat||{}).done||0)+' 成 / '+Number((selected.stat||{}).error||0)+' 败</dd></div><div><dt>终态成功率</dt><dd>'+rate+'</dd></div></dl><div class="actions"><button class="mini" data-operations-module="logs" data-operation-key="'+esc(selected.mode.key)+'">任务诊断</button><button class="mini" data-operation-channel-open="'+esc(selected.mode.key)+'">线路与凭据</button><button class="mini" data-operations-module="features">接单与定价</button></div><div class="ops-note" style="margin-top:12px">只有同一次执行的所有适用证据通过，才允许显示绿色；服务可达或任务 completed 都不够。</div></aside>';
     el('operationsBox').innerHTML='<section class="ops-workspace" data-operations-page="'+esc(page.key)+'">'+catalogPanel+selectedPanel+inspectorPanel+'</section>';
     var selectedDetails=el('operationsBox').querySelector('.ops-selected .ops-mode-details');if(selectedDetails)selectedDetails.open=true;
-    el('operationsUpdatedAt').textContent='证据刷新 '+new Date().toLocaleTimeString();
+    el('operationsUpdatedAt').textContent=operationsUpdatedText();
     renderOperationsDeveloper(hiddenFeatures,stats,page.auxiliary_actions||[],page.key);
     bindPing('operationsBox','data-ping-svc','service','svc');
-    Array.prototype.forEach.call(document.querySelectorAll('[data-operation-select]'),function(btn){btn.onclick=function(){state.operationsMode=btn.getAttribute('data-operation-select')||'';renderOperations(data);if(matchMedia('(max-width:900px)').matches){var selectedPanel=el('operationsBox').querySelector('.ops-selected');if(selectedPanel)selectedPanel.scrollIntoView({behavior:'smooth',block:'start'})}}});
+    Array.prototype.forEach.call(document.querySelectorAll('[data-operation-select]'),function(btn){btn.onclick=function(){state.operationsMode=btn.getAttribute('data-operation-select')||'';renderOperations(data);probeSelectedOperation(false);if(matchMedia('(max-width:900px)').matches){var selectedPanel=el('operationsBox').querySelector('.ops-selected');if(selectedPanel)selectedPanel.scrollIntoView({behavior:'smooth',block:'start'})}}});
     Array.prototype.forEach.call(el('operationsBox').querySelectorAll('[data-operation-channel-open]'),function(btn){btn.onclick=function(){openOperationsChannels(btn.getAttribute('data-operation-channel-open'))}});
     Array.prototype.forEach.call(document.querySelectorAll('[data-operations-module]'),function(btn){btn.onclick=function(){var module=btn.getAttribute('data-operations-module');if(module==='logs'){el('reqSource').value='job';el('reqStatus').value='';el('reqSearch').value=btn.getAttribute('data-operation-key')||'';state.reqPage=1;switchModule('logs');return}switchModule(module);setTimeout(function(){if(module==='channels')focusRegisteredTarget('data-channel',btn.getAttribute('data-operation-channels'));if(module==='features')focusRegisteredTarget('data-feature',btn.getAttribute('data-operation-flags'))},0)}});
   }
@@ -1827,10 +1885,12 @@
     if(name==='invite'){loadInvite()}
     if(name==='announcements'){loadAnnouncements()}
     if(name==='inspirations'){loadInspirations()}
-    if(name==='operations'&&state.data){renderOperations(state.data)}
+    if(name==='operations'&&state.data){renderOperations(state.data);probeSelectedOperation(false)}
   }
   function render(d){
-    state.data=d; setUser(d.user||{});
+    state.data=d;state.keyProbeMonitor=d.key_probe_monitor||{};setUser(d.user||{});
+    var routeMap={};(d.keys||[]).forEach(function(route){routeMap[route.key]=route});
+    Object.keys(d.key_probes||{}).forEach(function(key){var result=d.key_probes[key]||{},current=state.keyProbes[key],route=routeMap[key]||{},signature=String(route.credential_version||'');if(result.credential_version===signature&&(!current||Number(result.checked_at||0)>=Number((current.result||{}).checked_at||0)))state.keyProbes[key]={signature:signature,loading:false,result:result}});
     el('app').style.display='block'; el('gate').style.display='none';
     var registry=d.function_registry||[],verifiedPages=registry.filter(function(page){return page.inventory_status==='verified'}).length;
     var keys=(d.keys||[]).filter(function(x){return x.configured}).length;
@@ -1841,6 +1901,7 @@
     el('failKinds').textContent=((d.stats&&d.stats.high_failure)||[]).length;
     renderChannelConsole(d.keys||[],d.provider_keys||{}); renderFeatures(d.features||[]); renderPricing(d.pricing||[]); renderStats(d.stats||{}); renderOperations(d);
     if(state.operationsChannelMode&&!el('operationsChannelLayer').hidden&&el('providerKeyEditor').hidden)renderOperationsChannelDrawer();
+    if(state.module==='operations')setTimeout(function(){probeSelectedOperation(false)},0);
     if(state.module==='dashboard')loadSupportQueue();
   }
   function load(silent){
@@ -1850,7 +1911,7 @@
     if(!silent)el('operationsRefresh').disabled=true;
     api('/api/admin/overview?days='+state.days).then(function(d){
       if(state.poolActions||requestPoolEpoch!==state.poolEpoch){state.refreshPending=true;return}
-      render(d);
+      state.overviewUpdatedAt=Date.now();render(d);
     }).catch(function(e){
       if(state.poolActions||requestPoolEpoch!==state.poolEpoch){state.refreshPending=true;return}
       if(silent){toast('自动刷新失败：'+e.message);return}
@@ -1863,12 +1924,12 @@
   }
   function startAutoRefresh(){
     clearInterval(state.refreshTimer);
-    state.refreshTimer=setInterval(function(){if(!document.hidden&&state.module==='dashboard'&&!state.poolActions)load(true)},30000);
+    state.refreshTimer=setInterval(function(){if(!document.hidden&&(state.module==='dashboard'||state.module==='operations')&&!state.poolActions)load(true)},30000);
   }
-  el('operationsPage').onchange=function(){state.operationsPage=el('operationsPage').value;state.operationsMode='';if(state.data)renderOperations(state.data)};
-  el('operationsAttentionOnly').onchange=function(){state.operationsAttentionOnly=el('operationsAttentionOnly').checked;if(state.data)renderOperations(state.data)};
+  el('operationsPage').onchange=function(){state.operationsPage=el('operationsPage').value;state.operationsMode='';if(state.data){renderOperations(state.data);probeSelectedOperation(false)}};
+  el('operationsAttentionOnly').onchange=function(){state.operationsAttentionOnly=el('operationsAttentionOnly').checked;if(state.data){renderOperations(state.data);probeSelectedOperation(false)}};
   el('operationsDays').onchange=function(){state.days=Number(el('operationsDays').value)||7;load(false)};
-  el('operationsRefresh').onclick=function(){load(false)};
+  el('operationsRefresh').onclick=function(){load(false);probeSelectedOperation(true)};
   el('providerKeyOpen').onclick=function(){openProviderEditor()};
   el('providerKeyCancel').onclick=function(){closeProviderEditor();if(state.operationsChannelMode&&!el('operationsChannelLayer').hidden)renderOperationsChannelDrawer()};
   el('providerKeyAdd').onclick=addProviderKey;
@@ -1933,7 +1994,7 @@
   el('drawerClose').onclick=closeUserDetail;el('userDetailBackdrop').onclick=closeUserDetail;
   el('operationsChannelClose').onclick=closeOperationsChannels;el('operationsChannelBackdrop').onclick=closeOperationsChannels;
   document.addEventListener('keydown',function(e){if(e.key!=='Escape')return;if(!el('operationsChannelLayer').hidden)closeOperationsChannels();else if(!el('customerLayer').hidden)closeUserDetail();else closeSidebar()});
-  document.addEventListener('visibilitychange',function(){if(document.hidden){clearSecretWindows();return}if(state.module==='dashboard'&&!state.poolActions)load(true)});
+  document.addEventListener('visibilitychange',function(){if(document.hidden){clearSecretWindows();return}if((state.module==='dashboard'||state.module==='operations')&&!state.poolActions)load(true)});
   window.addEventListener('pagehide',clearSecretWindows);
   window.addEventListener('pageshow',clearSecretWindows);
   document.addEventListener('freeze',clearSecretWindows);
