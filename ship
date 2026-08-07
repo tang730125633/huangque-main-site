@@ -221,6 +221,7 @@ for f in "$@"; do
              case "$rel" in */*) dest="/home/ubuntu/content-api/providers/${rel%/*}/" ;; *) dest=/home/ubuntu/content-api/providers/ ;; esac
              svc=huangque-content ;;
     server/admin_api.py)   dest=/home/ubuntu/content-api/;  svc=huangque-admin ;;
+    server/qa_fixtures/*)  dest=/home/ubuntu/content-api/qa_fixtures/; svc=huangque-admin ;;
     server/leadgen_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-leadgen-api ;;
     server/imggen_api.py)  dest=/home/ubuntu/content-api/;  svc=huangque-imggen-api ;;
     server/dl_service.py)  dest=/home/ubuntu/dl-service/;   svc=huangque-dl ;;
@@ -254,7 +255,7 @@ for f in "$@"; do
   esac
   case "$dest" in /etc/systemd/system/*)
     $SSHC "$REMOTE" "sudo mkdir -p $dest" || { echo "  ❌ $dest 创建失败"; exit 1; } ;;
-    /home/ubuntu/content-api/providers/*)
+    /home/ubuntu/content-api/providers/*|/home/ubuntu/content-api/qa_fixtures/*)
     $SSHC "$REMOTE" "sudo mkdir -p $dest" || { echo "  ❌ $dest 创建失败"; exit 1; } ;;
   esac
   if [ "$f" = "scripts/drift_sentinel.py" ]; then
@@ -274,6 +275,14 @@ for f in "$@"; do
   fi
   push_file "$f" "$dest" \
     && echo "  ✓ $f → $dest" || { echo "  ❌ $f 部署失败"; exit 1; }
+  case "$f" in
+    server/qa_fixtures/*)
+      old_public="$WWW/workbench/assets/qa/$(basename "$f")"
+      $SSHC "$REMOTE" "sudo rm -f '$old_public'" \
+        && echo "  ✓ 已移除旧公开测试素材：$old_public" \
+        || { echo "  ❌ 旧公开测试素材移除失败"; exit 1; }
+      ;;
+  esac
   if [ "$f" = "server/content_domains/pricing.py" ] || [ "$f" = "server/content_domains/error_contract.py" ]; then
     push_file "$f" /home/ubuntu/content-api/content_domains/ \
       && echo "  ✓ $f → /home/ubuntu/content-api/content_domains/" \

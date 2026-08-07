@@ -11,12 +11,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from contextlib import closing
 from http import cookies
 from importlib import import_module
+import base64
 import hashlib
 import json
+import mimetypes
 import os
 import pathlib
 import re
+import subprocess
 import threading
+import uuid
 
 try:
     import func_names                    # 生产：admin_api.py 直接跑，同目录下就是 func_names.py
@@ -85,11 +89,16 @@ def request_token(headers):
 BASE = pathlib.Path(__file__).resolve().parent
 PORT = int(os.environ.get("ADMIN_API_PORT", "8099"))
 AUTH_BASE = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095").rstrip("/")
+CONTENT_BASE = os.environ.get("CONTENT_BASE", "http://127.0.0.1:8096").rstrip("/")
 AUTH_INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
 JOB_DB = pathlib.Path(os.environ.get("CONTENT_JOB_DB", str(BASE / "content_jobs.db")))
 ASSET_DB = pathlib.Path(os.environ.get("AUDIO_DB", str(BASE / "audio_assets.db")))
 VIDEO_COMPOSE_DB = pathlib.Path(os.environ.get("VIDEO_COMPOSE_DB", str(BASE / "video_compose.db")))
 ADMIN_DB = pathlib.Path(os.environ.get("ADMIN_DB", str(BASE / "admin_config.db")))
+QA_FIXTURE_DIR = pathlib.Path(os.environ.get("HQ_QA_FIXTURE_DIR", str(BASE / "qa_fixtures")))
+CONTENT_OUT = pathlib.Path(os.environ.get("CONTENT_OUT", str(BASE / "content_out")))
+E2E_TEST_USERNAME = os.environ.get("HQ_E2E_TEST_USERNAME", "").strip()
+E2E_RUN_LOCK = threading.Lock()
 
 ENV_FILES = [
     pathlib.Path("/home/ubuntu/content-api/content.env"),
@@ -703,6 +712,26 @@ def init_db():
                 created_at INTEGER NOT NULL
             )"""
         )
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS admin_e2e_runs(
+                run_id TEXT PRIMARY KEY,
+                operation_id TEXT NOT NULL,
+                username TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL,
+                job_id INTEGER,
+                cost INTEGER NOT NULL DEFAULT 0,
+                points_before INTEGER,
+                points_after INTEGER,
+                transaction_key TEXT NOT NULL DEFAULT '',
+                error TEXT NOT NULL DEFAULT '',
+                created_by TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )"""
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_admin_e2e_operation ON admin_e2e_runs(operation_id, created_at DESC)"
+        )
         c.commit()
     if feature_flags is not None:
         feature_flags.init_db()
@@ -754,6 +783,116 @@ def auth_admin_request(path, token, method="GET", payload=None):
             body = {}
         err = RuntimeError(body.get("detail") or "auth admin request failed")
         err.status = e.code
+        err.body = body
+        raise err
+
+
+def _fixture_data_url(value):
+    prefix = "@fixture/"
+    if not isinstance(value, str) or not value.startswith(prefix):
+        return value
+    name = value[len(prefix):]
+    if not name or pathlib.Path(name).name != name:
+        raise ValueError("测试素材名称无效")
+    path = (QA_FIXTURE_DIR / name).resolve()
+    if path.parent != QA_FIXTURE_DIR.resolve() or not path.is_file():
+        raise ValueError("测试素材未部署：" + name)
+    mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+    return "data:%s;base64,%s" % (
+        mime, base64.b64encode(path.read_bytes()).decode("ascii")
+    )
+
+
+def _e2e_payload(operation_id, runner):
+    prefill = runner.get("prefill") or {}
+    resolve = lambda value: _fixture_data_url(value)
+    prompt = str(prefill.get("prompt") or "").strip()
+    payload = {"qa_operation_id": operation_id}
+    if operation_id == "video.digital_ip.text.single":
+        payload.update({
+            "mode": "text", "image_data": resolve(prefill["image_url"]),
+            "text": prompt, "voice": "S_d21F8OR62", "resolution": "720p",
+            "ratio": "9:16", "motion": "medium", "subtitle": False,
+            "bgm_data": "", "bgm_volume": 0.18,
+        })
+    elif operation_id == "video.digital_ip.audio":
+        payload.update({
+            "mode": "audio", "image_data": resolve(prefill["image_url"]),
+            "audio_data": resolve(prefill["audio_url"]), "resolution": "720p",
+            "ratio": "9:16", "motion": "medium", "subtitle": False,
+            "bgm_data": "", "bgm_volume": 0.18,
+        })
+    elif operation_id == "video.tryon.fast":
+        payload.update({
+            "line": "2", "person_image_data": resolve(prefill["reference_video_url"]),
+            "clothes_data": resolve(prefill["image_url"]), "seconds": 5,
+        })
+    elif operation_id == "video.tryon.classic":
+        payload.update({
+            "line": "1", "person_video_data": resolve(prefill["reference_video_url"]),
+            "clothes_data": resolve(prefill["image_url"]),
+            "background_data": resolve(prefill["background_url"]), "seconds": 5,
+        })
+    elif operation_id.startswith("video.sora."):
+        payload.update({
+            "mode": "sora", "prompt": prompt, "model": "sora-2", "seconds": 4,
+            "resolution": "720p", "ratio": "9:16",
+            "reference_images": [resolve(item) for item in prefill.get("reference_images") or []],
+        })
+    elif operation_id.startswith("video.grok."):
+        payload.update({
+            "channel": "grok", "operation": "generate", "model": "grok-imagine-video",
+            "prompt": prompt, "duration": 5, "resolution": "480p", "ratio": "9:16",
+            "reference_images": [resolve(item) for item in prefill.get("reference_images") or []],
+        })
+    elif operation_id.startswith("video.minimax."):
+        payload.update({
+            "channel": "minimax", "operation": "generate", "prompt": prompt,
+            "duration": 5, "resolution": "768p", "ratio": "9:16",
+            "reference_images": [resolve(item) for item in prefill.get("reference_images") or []],
+        })
+    elif operation_id.startswith("video.omni."):
+        payload.update({
+            "channel": "omni", "operation": "generate", "prompt": prompt,
+            "duration": 4, "resolution": "720p", "ratio": "9:16",
+            "reference_images": [resolve(item) for item in prefill.get("reference_images") or []],
+        })
+    elif operation_id.startswith("video.seedance."):
+        payload.update({
+            "channel": "micro", "operation": "generate", "prompt": prompt,
+            "duration": 4, "resolution": "480p", "ratio": "9:16",
+            "generate_audio": False, "upscale": False,
+            "reference_images": [resolve(item) for item in prefill.get("reference_images") or []],
+        })
+    else:
+        raise ValueError("该模式尚未接入后台托管测试")
+    return payload
+
+
+def _content_e2e_request(path, account_token, payload, idempotency_key, expected_cost):
+    headers = {
+        "Authorization": "Bearer " + account_token,
+        "Content-Type": "application/json; charset=utf-8",
+        "Idempotency-Key": idempotency_key,
+        "X-HQ-Internal-Token": AUTH_INTERNAL_TOKEN,
+        "X-HQ-Expected-Cost": str(int(expected_cost)),
+    }
+    req = urllib.request.Request(
+        CONTENT_BASE + path,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=35) as response:
+            return json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            body = json.loads(exc.read() or b"{}")
+        except Exception:
+            body = {}
+        err = RuntimeError(body.get("detail") or "业务接口拒绝测试任务")
+        err.status = exc.code
         err.body = body
         raise err
 
@@ -2318,6 +2457,195 @@ def _job_evidence(row, asset=None):
     }
 
 
+def _e2e_job_evidence(job_id):
+    if not job_id or not JOB_DB.exists():
+        return None
+    try:
+        with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as connection:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute(
+                """SELECT id,status,cost,COALESCE(refunded,0) AS refunded,
+                          COALESCE(error,'') AS error,created_at,updated_at,
+                          CASE WHEN json_valid(result) THEN COALESCE(json_extract(result,'$.video_url'),json_extract(result,'$.url'),'') ELSE '' END AS result_url,
+                          CASE WHEN json_valid(result) THEN COALESCE(json_extract(result,'$.video_file'),json_extract(result,'$.file'),'') ELSE '' END AS result_file,
+                          CASE WHEN json_valid(result) THEN COALESCE(json_extract(result,'$.provider_video_id'),json_extract(result,'$.video_id'),'') ELSE '' END AS provider_result_id
+                   FROM jobs WHERE id=?""",
+                (int(job_id),),
+            ).fetchone()
+        if not row:
+            return None
+        assets, _ = _video_asset_evidence([int(job_id)])
+        evidence = _job_evidence(row, assets.get(int(job_id)))
+        result_file = str(evidence.get("result_file") or "").strip()
+        if result_file and not pathlib.Path(result_file).is_absolute():
+            root = CONTENT_OUT.resolve()
+            path = (root / result_file).resolve()
+            if path == root or root not in path.parents or not path.is_file() or path.stat().st_size <= 0:
+                evidence.update({"artifact_check": "missing", "delivery_verified": False})
+            elif path.suffix.lower() in {".mp4", ".mov", ".webm"}:
+                try:
+                    probe = subprocess.run(
+                        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                         "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(path)],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12,
+                    )
+                    ok = probe.returncode == 0 and bool(probe.stdout.strip())
+                except (OSError, subprocess.SubprocessError):
+                    ok = False
+                evidence.update({
+                    "artifact_check": "decodable" if ok else "decode_failed",
+                    "delivery_verified": ok,
+                })
+            else:
+                evidence.update({"artifact_check": "file_exists", "delivery_verified": True})
+        elif evidence.get("result_url"):
+            evidence["artifact_check"] = "reference_only"
+        return evidence
+    except (OSError, sqlite3.Error, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def _e2e_stage(key, name, state, detail):
+    return {"key": key, "name": name, "state": state, "detail": detail}
+
+
+def _public_e2e_run(row):
+    item = dict(row)
+    item.pop("transaction_key", None)
+    evidence = _e2e_job_evidence(item.get("job_id"))
+    if evidence:
+        job_status = evidence["status"]
+        item["status"] = {
+            "pending": "queued", "queued": "queued", "running": "running",
+            "done": "completed", "completed": "completed",
+            "error": "failed", "failed": "failed",
+        }.get(job_status, job_status)
+        item["error"] = evidence.get("error") or item.get("error") or ""
+    billing_ok = (
+        item.get("points_before") is not None
+        and item.get("points_after") is not None
+        and int(item["points_before"]) - int(item["points_after"]) == int(item.get("cost") or 0)
+    )
+    failed = item["status"] in {"failed", "unknown"}
+    provider_id = evidence and evidence.get("provider_task_id")
+    completed = bool(evidence and evidence.get("completed"))
+    delivered = bool(evidence and evidence.get("delivery_verified"))
+    refunded = bool(evidence and evidence.get("billing_state") == "refunded")
+    settlement_pending = completed and item["operation_id"].startswith("video.digital_ip.")
+    billing_passed = refunded or (completed and billing_ok and not settlement_pending)
+    item["stages"] = [
+        _e2e_stage("accepted", "后台测试受理", "passed", "已建立独立测试批次 " + item["run_id"][:8]),
+        _e2e_stage("account", "专用账号与点数", "passed" if item.get("username") else "waiting",
+                   (item.get("username") or "正在取得专用账号") + (" · 提交前 %s 点" % item["points_before"] if item.get("points_before") is not None else "")),
+        _e2e_stage("job", "业务接口 / job_id", "passed" if item.get("job_id") else ("failed" if failed else "waiting"),
+                   "job_id=%s" % item["job_id"] if item.get("job_id") else (item.get("error") or "等待业务接口受理")),
+        _e2e_stage("route", "渠道与凭据", "passed" if provider_id else ("failed" if failed else "waiting"),
+                   "已进入真实供应商线路" if provider_id else "等待供应商提交；不会用免费连通探针冒充通过"),
+        _e2e_stage("provider", "供应商接单", "passed" if provider_id else ("failed" if failed else "waiting"),
+                   ("provider_task_id=" + str(provider_id)) if provider_id else "尚无供应商任务编号"),
+        _e2e_stage("generation", "供应商生成", "passed" if completed else ("failed" if failed else "waiting"),
+                   "已到 completed" if completed else (item.get("error") or "等待生成终态")),
+        _e2e_stage("delivery", "作品交付", "passed" if delivered else ("failed" if completed else "waiting"),
+                   ({"decodable": "文件存在且可解码", "file_exists": "文件存在且非空",
+                     "decode_failed": "文件返回但无法解码", "missing": "作品文件缺失",
+                     "reference_only": "只有作品地址，尚未完成本地验收"}.get(
+                         (evidence or {}).get("artifact_check"), "等待作品文件"))),
+        _e2e_stage("billing", "账务闭环", "passed" if billing_passed else ("failed" if failed else "waiting"),
+                   "失败任务已退款" if refunded else ("扣点与任务一致" if billing_passed else ("预扣一致；口播按成片时长结算仍待台账证据" if settlement_pending else "等待终态扣点 / 退款证据"))),
+    ]
+    item["evidence"] = evidence
+    return item
+
+
+def list_e2e_runs(limit=30):
+    with closing(db()) as connection:
+        rows = connection.execute(
+            "SELECT * FROM admin_e2e_runs ORDER BY created_at DESC LIMIT ?",
+            (max(1, min(int(limit or 30), 100)),),
+        ).fetchall()
+    stored_status = {row["run_id"]: row["status"] for row in rows}
+    runs = [_public_e2e_run(row) for row in rows]
+    now = int(time.time())
+    terminal = {"completed", "failed"}
+    with closing(db()) as connection:
+        for run in runs:
+            if run["status"] in terminal and run["status"] != stored_status[run["run_id"]]:
+                connection.execute(
+                    "UPDATE admin_e2e_runs SET status=?,error=?,updated_at=? WHERE run_id=?",
+                    (run["status"], run.get("error") or "", now, run["run_id"]),
+                )
+        connection.commit()
+    return runs
+
+
+def start_e2e_run(actor, admin_token, operation_id):
+    runner = function_registry.e2e_runner(operation_id)
+    if not runner:
+        raise ValueError("功能注册表中不存在该模式")
+    if not runner.get("supported"):
+        raise ValueError(runner.get("blocked_reason") or "该模式尚未接入后台托管测试")
+    if not points_domain:
+        raise RuntimeError("点数模块不可用")
+    with E2E_RUN_LOCK:
+        current = list_e2e_runs(100)
+        if any(run["operation_id"] == operation_id and run["status"] in {"submitting", "queued", "running", "unknown"} for run in current):
+            raise ValueError("该模式已有测试任务在运行，请等待终态后再提交")
+        run_id = uuid.uuid4().hex
+        now = int(time.time())
+        with closing(db()) as connection:
+            connection.execute(
+                """INSERT INTO admin_e2e_runs(run_id,operation_id,status,created_by,created_at,updated_at)
+                   VALUES(?,?, 'submitting', ?,?,?)""",
+                (run_id, operation_id, actor, now, now),
+            )
+            connection.commit()
+        try:
+            session = auth_admin_request(
+                "/api/auth/admin/e2e/session", admin_token, method="POST", payload={}
+            )
+            account = session["account"]
+            payload = _e2e_payload(operation_id, runner)
+            payload["qa_run_id"] = run_id
+            endpoint = runner["endpoint"]["path"]
+            kind = {
+                "/api/gen/video": "video", "/api/gen/tryon": "tryon",
+                "/api/gen/xiaole_video": "xiaole_video", "/api/gen/sora_video": "sora_video",
+            }.get(endpoint)
+            if not kind:
+                raise ValueError("该模式的业务接口尚未接入后台托管测试")
+            cost = int(points_domain.cost_of(kind, dict(payload)))
+            if int(account.get("points") or 0) < cost:
+                raise ValueError("专用测试账号点数不足：需要 %s 点，当前 %s 点" % (cost, account.get("points") or 0))
+            idem = "e2e:" + run_id
+            transaction_key = "job-charge:%s:%s:%s" % (account["username"], endpoint, idem)
+            result = _content_e2e_request(endpoint, session["token"], payload, idem, cost)
+            with closing(db()) as connection:
+                connection.execute(
+                    """UPDATE admin_e2e_runs SET username=?,status='queued',job_id=?,cost=?,
+                              points_before=?,points_after=?,transaction_key=?,updated_at=? WHERE run_id=?""",
+                    (account["username"], int(result["job_id"]), cost, int(account["points"]),
+                     int(result.get("points_left") or 0), transaction_key, int(time.time()), run_id),
+                )
+                connection.commit()
+        except urllib.error.URLError as exc:
+            with closing(db()) as connection:
+                connection.execute(
+                    "UPDATE admin_e2e_runs SET status='unknown',error=?,updated_at=? WHERE run_id=?",
+                    ("提交结果未知，禁止自动重试：" + str(exc.reason)[:140], int(time.time()), run_id),
+                )
+                connection.commit()
+            raise RuntimeError("提交结果未知；请先按测试批次核对，禁止再次点击")
+        except Exception as exc:
+            with closing(db()) as connection:
+                connection.execute(
+                    "UPDATE admin_e2e_runs SET status='failed',error=?,updated_at=? WHERE run_id=?",
+                    (str(exc)[:300], int(time.time()), run_id),
+                )
+                connection.commit()
+            raise
+    return next(run for run in list_e2e_runs(30) if run["run_id"] == run_id)
+
+
 def _compose_operation_stat(since):
     if not VIDEO_COMPOSE_DB.exists():
         return None, None
@@ -2942,6 +3270,11 @@ class H(BaseHTTPRequestHandler):
                     "features": load_features(services),
                     "pricing": load_pricing(),
                     "stats": job_stats(days),
+                    "e2e_test": {
+                        "configured": bool(E2E_TEST_USERNAME),
+                        "username": E2E_TEST_USERNAME,
+                    },
+                    "e2e_runs": list_e2e_runs(),
                 },
             )
         return self._send(404, {"detail": "not found"})
@@ -2962,6 +3295,22 @@ class H(BaseHTTPRequestHandler):
         user = self._admin()
         if not user:
             return
+        if path == "/api/admin/e2e/run":
+            try:
+                body = self._body()
+                if set(body) != {"operation_id", "confirmation"}:
+                    raise ValueError("请求字段必须是 operation_id 和 confirmation")
+                if body.get("confirmation") != "RUN":
+                    raise ValueError("请明确确认本次真实扣点测试")
+                run = start_e2e_run(
+                    user.get("username") or "admin", self._token(),
+                    str(body.get("operation_id") or "").strip(),
+                )
+                return self._send(200, {"ok": True, "run": run})
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
+            except Exception as exc:
+                return self._send(getattr(exc, "status", 500), {"detail": str(exc)[:220]})
         if path == "/api/admin/short-drama/lipsync/rollout":
             actor = user.get("username") or "admin"
             try:

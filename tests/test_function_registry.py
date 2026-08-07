@@ -146,18 +146,25 @@ class FunctionRegistryTests(unittest.TestCase):
             for mode in feature["modes"]:
                 self.assertTrue(mode["smoke_inputs"])
                 self.assertIn("price_keys", mode)
-                self.assertTrue(mode["validation"]["target_path"])
-                self.assertIs(mode["validation"]["auto_submit"], False)
-                target = mode["validation"]["target_path"].split("?", 1)[0]
-                self.assertTrue((Path(__file__).resolve().parents[1] / "site" / target.lstrip("/")).is_file())
-                prefill = mode["validation"]["prefill"]
+                public = mode["validation"]
+                self.assertNotIn("target_path", public)
+                self.assertNotIn("prefill", public)
+                self.assertNotIn("@fixture/", json.dumps(public, ensure_ascii=False))
+                runner = self.admin.function_registry.e2e_runner(mode["key"])
+                self.assertIsNotNone(runner)
+                self.assertEqual(public["supported"], runner["supported"])
+                prefill = runner["prefill"]
                 assets = [
                     prefill.get("image_url"), prefill.get("reference_video_url"),
                     prefill.get("audio_url"), prefill.get("background_url"),
                 ]
                 assets += prefill.get("reference_images") or []
                 for asset in filter(None, assets):
-                    self.assertTrue((Path(__file__).resolve().parents[1] / "site" / asset.lstrip("/")).is_file())
+                    self.assertTrue(asset.startswith("@fixture/"))
+                    self.assertTrue((Path(__file__).resolve().parents[1] / "server/qa_fixtures" / asset.removeprefix("@fixture/")).is_file())
+
+        modes = [mode for feature in video["functions"] for mode in feature["modes"]]
+        self.assertEqual(sum(mode["validation"]["supported"] for mode in modes), 13)
 
         root = Path(__file__).resolve().parents[1]
         for page in pages:
@@ -169,7 +176,7 @@ class FunctionRegistryTests(unittest.TestCase):
             'data-cine-mode="open"', 'data-function="tryon"', 'data-line="2"',
             'data-line="1"', 'data-function="grok"', 'data-function="sora"',
             'data-function="minimax"', 'data-function="omni"', 'data-function="micro"',
-            "xiaoleRefRenderers", "后台验收模式：素材已预填", "qa_operation",
+            "xiaoleRefRenderers",
         ):
             self.assertIn(marker, frontend)
 

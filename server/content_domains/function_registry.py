@@ -12,23 +12,23 @@ def _endpoint(method, path):
     return {"method": method, "path": path}
 
 
-QA_FACE_IMAGE = "/workbench/assets/qa/zelong-portrait.jpg"
-QA_FULL_BODY_IMAGE = "/workbench/assets/qa/zelong-full-body.jpg"
-QA_OUTFIT_IMAGE = "/workbench/assets/qa/tryon-outfit.jpg"
-QA_BACKGROUND_IMAGE = "/workbench/assets/qa/tryon-background.jpg"
-QA_VOICE_AUDIO = "/workbench/assets/qa/zelong-voice-5s.mp3"
-QA_PRODUCT_IMAGE = "/assets/inspirations/beauty_001.webp"
-QA_MOTION_VIDEO = "/workbench/assets/qa/zelong-motion.mp4"
+QA_FACE_IMAGE = "@fixture/zelong-portrait.jpg"
+QA_FULL_BODY_IMAGE = "@fixture/zelong-full-body.jpg"
+QA_OUTFIT_IMAGE = "@fixture/tryon-outfit.jpg"
+QA_BACKGROUND_IMAGE = "@fixture/tryon-background.jpg"
+QA_VOICE_AUDIO = "@fixture/zelong-voice-5s.mp3"
+QA_PRODUCT_IMAGE = "@fixture/tryon-outfit.jpg"
+QA_MOTION_VIDEO = "@fixture/zelong-motion.mp4"
 QA_PROMPT = "琥珀色精华瓶置于石台上，晨光缓慢扫过瓶身，镜头平稳推进，无文字无标识"
 
 
-def _validation(prefill=None, manual_requirements=None, target_path=None):
-    """Describe a manual QA handoff; opening it never submits a paid job."""
+def _validation(prefill=None, manual_requirements=None, supported=True, blocked_reason=""):
+    """Private server-side fixture contract; list_pages() strips its inputs."""
     return {
-        "target_path": target_path or "/workbench/video.html?prefill=asset",
         "prefill": deepcopy(prefill or {}),
         "manual_requirements": list(manual_requirements or []),
-        "auto_submit": False,
+        "supported": bool(supported),
+        "blocked_reason": str(blocked_reason or ""),
     }
 
 
@@ -58,7 +58,8 @@ VIDEO_FUNCTIONS = [
             "evidence_source": "video_compose_projects",
             "validation": _validation(
                 manual_requirements=["从测试账号的视频资产选择一条短视频"],
-                target_path="/workbench/one-click-video.html",
+                supported=False,
+                blocked_reason="专用测试账号尚未登记可重复使用的成片资产",
             ),
             "dependencies": [{
                 "key": "openai", "role": "源视频语音识别", "requirement": "required",
@@ -121,7 +122,7 @@ VIDEO_FUNCTIONS = [
                     "mode": "text", "batch": True,
                     "reference_images": [QA_FACE_IMAGE, QA_FACE_IMAGE],
                     "prompt": "大家好，这是黄雀批量口播链路验收。",
-                }),
+                }, supported=False, blocked_reason="批量入口尚未接入幂等提交保护"),
             },
             {
                 "key": "video.digital_ip.audio",
@@ -179,6 +180,8 @@ VIDEO_FUNCTIONS = [
                     {"mode": "cinematic", "cine_mode": "motion",
                      "reference_video_url": QA_MOTION_VIDEO},
                     ["测试账号至少有 1 个已就绪电影化身形象"],
+                    supported=False,
+                    blocked_reason="专用测试账号尚未登记已就绪电影化身形象",
                 ),
             },
             {
@@ -194,6 +197,8 @@ VIDEO_FUNCTIONS = [
                      "prompt": "人物在明亮工作室自然走向镜头，柔和运镜，无文字无标识",
                      "reference_images": [QA_PRODUCT_IMAGE]},
                     ["测试账号至少有 1 个已就绪电影化身形象"],
+                    supported=False,
+                    blocked_reason="专用测试账号尚未登记已就绪电影化身形象",
                 ),
             },
         ],
@@ -514,7 +519,37 @@ FUNCTION_REGISTRY = [
 
 
 def list_pages():
-    return deepcopy(FUNCTION_REGISTRY)
+    pages = deepcopy(FUNCTION_REGISTRY)
+    for page in pages:
+        for feature in page["functions"]:
+            for mode in feature.get("modes", []):
+                private = mode.get("validation") or {}
+                prefill = private.get("prefill") or {}
+                prompt = str(prefill.get("prompt") or prefill.get("text") or "")
+                mode["validation"] = {
+                    "supported": bool(private.get("supported")),
+                    "blocked_reason": private.get("blocked_reason") or "",
+                    "manual_requirements": private.get("manual_requirements") or [],
+                    "fixture_summary": list(mode.get("smoke_inputs") or []),
+                    "prompt_preview": prompt,
+                    "requires_paid_confirmation": True,
+                }
+    return pages
+
+
+def e2e_runner(operation_key):
+    """Return one private runner contract; never send this object to a browser."""
+    for page in FUNCTION_REGISTRY:
+        for feature in page["functions"]:
+            for mode in feature.get("modes", []):
+                if mode["key"] == operation_key:
+                    private = deepcopy(mode.get("validation") or {})
+                    private.update({
+                        "operation_id": mode["key"],
+                        "endpoint": deepcopy(mode["entrypoints"][0]),
+                    })
+                    return private
+    return None
 
 
 def _task_rules():
@@ -602,10 +637,12 @@ def validate_registry():
                 if "price_keys" not in mode:
                     raise ValueError("customer mode needs an explicit billing contract")
                 validation = mode.get("validation") or {}
-                if not validation.get("target_path"):
-                    raise ValueError("customer mode needs a validation target")
-                if validation.get("auto_submit") is not False:
-                    raise ValueError("customer validation must never auto-submit paid work")
+                if "supported" not in validation:
+                    raise ValueError("customer mode needs an explicit E2E runner state")
+                if validation.get("supported") and not validation.get("prefill"):
+                    raise ValueError("runnable customer mode needs private fixtures")
+                if not validation.get("supported") and not validation.get("blocked_reason"):
+                    raise ValueError("blocked E2E runner needs a reason")
                 invalid = set((mode.get("evidence_contract") or {}).get("not_applicable", [])) - {
                     "provider_task", "balance", "billing",
                 }
