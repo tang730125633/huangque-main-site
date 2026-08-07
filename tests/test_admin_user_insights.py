@@ -339,7 +339,7 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             'class="ops-workspace"', 'class="ops-catalog"', 'class="ops-selected"', 'class="ops-inspector"',
             'data-operation-select=', "sidebarModule = {points:'recharge',pricing:'features'}",
             'id="operationsPage"', 'data-operations-page=', "该客户页尚未盘点",
-            "开发待归档", "当前不会自动发起付费任务", "未接入统一证据",
+            "开发待归档", "只预填素材，不自动提交付费任务", "未接入统一证据",
             "任务记录了点数，账务台账待核对", "operationsPage:'video'",
             'id="globalUserSearch"', 'id="customerLayer"',
             "/api/admin/activity?limit=8", "/api/admin/recharge/orders?status=pending",
@@ -372,6 +372,8 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             "state.module==='dashboard'||state.module==='operations'", "credential_version",
             "var routeUnverified=", "&force=1",
             "var evidence=registryRouteEvidence({key:meta.key}",
+            "完整旅程验收", "data-operation-validation-enable=", "openOperationValidation",
+            "打开真实客户页验收", "hq_video_prefill", "qa_operation",
         ):
             self.assertIn(marker, html)
         self.assertNotIn('data-module-tab="ops"', html)

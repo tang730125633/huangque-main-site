@@ -146,6 +146,15 @@ class FunctionRegistryTests(unittest.TestCase):
             for mode in feature["modes"]:
                 self.assertTrue(mode["smoke_inputs"])
                 self.assertIn("price_keys", mode)
+                self.assertTrue(mode["validation"]["target_path"])
+                self.assertIs(mode["validation"]["auto_submit"], False)
+                target = mode["validation"]["target_path"].split("?", 1)[0]
+                self.assertTrue((Path(__file__).resolve().parents[1] / "site" / target.lstrip("/")).is_file())
+                prefill = mode["validation"]["prefill"]
+                assets = [prefill.get("image_url"), prefill.get("reference_video_url")]
+                assets += prefill.get("reference_images") or []
+                for asset in filter(None, assets):
+                    self.assertTrue((Path(__file__).resolve().parents[1] / "site" / asset.lstrip("/")).is_file())
 
         root = Path(__file__).resolve().parents[1]
         for page in pages:
@@ -157,6 +166,7 @@ class FunctionRegistryTests(unittest.TestCase):
             'data-cine-mode="open"', 'data-function="tryon"', 'data-line="2"',
             'data-line="1"', 'data-function="grok"', 'data-function="sora"',
             'data-function="minimax"', 'data-function="omni"', 'data-function="micro"',
+            "xiaoleRefRenderers", "后台验收模式：素材已预填", "qa_operation",
         ):
             self.assertIn(marker, frontend)
 
