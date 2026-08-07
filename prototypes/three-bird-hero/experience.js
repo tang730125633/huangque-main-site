@@ -3,16 +3,15 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { animate } from 'animejs';
 import 'animejs/adapters/three';
 
 const root = document.documentElement;
 const canvas = document.querySelector('[data-three-stage]');
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
-const status = { ready: false, reducedMotion: reduced.matches, version: 'three-bird-3', meshes: 0, scrollProgress: 0 };
+const status = { ready: false, reducedMotion: reduced.matches, version: 'three-bird-4', meshes: 0, scrollProgress: 0 };
 window.__threeBirdStatus = status;
-window.__threeBirdCheck = () => status.ready && status.meshes >= 6 && canvas.width > 0;
+window.__threeBirdCheck = () => status.ready && canvas.width > 0;
 
 let renderer;
 try {
@@ -81,41 +80,6 @@ if (renderer) {
     animate(bloom, { strength: .16, duration: 1800, ease: 'outExpo' });
   }
 
-  const bird = new THREE.Group();
-  let mixer;
-  new GLTFLoader().load('./public/assets/huangque-eagle.glb', gltf => {
-    const model = gltf.scene;
-    const box = new THREE.Box3().setFromObject(model);
-    const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
-    model.position.sub(center);
-    const pivot = new THREE.Group();
-    pivot.scale.setScalar(3.15 / Math.max(size.x, size.y, size.z));
-    pivot.rotation.set(.04, -1.16, -.04);
-    pivot.add(model);
-    model.traverse(child => {
-      if (!child.isMesh) return;
-      child.material = glass;
-      child.frustumCulled = false;
-    });
-    bird.add(pivot);
-    const flying = gltf.animations.find(clip => clip.name.includes('Flying'));
-    if (flying && !reduced.matches) {
-      mixer = new THREE.AnimationMixer(model);
-      mixer.clipAction(flying).setDuration(1.55).play();
-    }
-    status.meshes = scene.getObjectsByProperty('isMesh', true).length;
-    status.ready = true;
-    root.classList.add('three-ready');
-  }, undefined, error => {
-    root.classList.add('webgl-fallback');
-    console.warn('Three.js bird model unavailable:', error);
-  });
-
-  const flight = new THREE.Group();
-  flight.add(bird);
-  scene.add(flight);
-
   const glowTexture = (() => {
     const textureCanvas = document.createElement('canvas');
     textureCanvas.width = textureCanvas.height = 64;
@@ -152,15 +116,9 @@ if (renderer) {
     scene.add(trail);
   }
 
-  const scenes = [
-    { at: 0, x: 1.72, y: -.12, z: 0, scale: .94, ry: -.16, rz: -.04 },
-    { at: .2, x: -1.2, y: .45, z: -1, scale: .72, ry: .42, rz: -.08 },
-    { at: .42, x: 1.1, y: -.25, z: -.3, scale: .82, ry: -.38, rz: .04 },
-    { at: .64, x: -1.45, y: .2, z: -1.25, scale: .67, ry: .5, rz: -.08 },
-    { at: .84, x: .8, y: -.35, z: -.45, scale: .84, ry: -.3, rz: .04 },
-    { at: 1, x: -2.4, y: .7, z: -2.4, scale: .48, ry: .7, rz: -.1 }
-  ];
-  const lerp = THREE.MathUtils.lerp;
+  status.meshes = scene.getObjectsByProperty('isMesh', true).length;
+  status.ready = true;
+  root.classList.add('three-effects-ready');
   let scrollTarget = 0;
   let scrollProgress = 0;
   let pointerTargetX = 0;
@@ -168,22 +126,8 @@ if (renderer) {
   let pointerX = 0;
   let pointerY = 0;
   let frame = 0;
-  let previousFrame = performance.now();
 
   function applyScene(progress) {
-    const end = scenes.findIndex(item => item.at >= progress);
-    const nextIndex = end < 0 ? scenes.length - 1 : end;
-    const previous = scenes[Math.max(0, nextIndex - 1)];
-    const next = scenes[nextIndex];
-    const amount = previous === next ? 0 : (progress - previous.at) / (next.at - previous.at);
-    const mobile = innerWidth < 520;
-    const compact = innerWidth < 900;
-    const x = lerp(previous.x, next.x, amount);
-    const y = lerp(previous.y, next.y, amount);
-    flight.position.set(compact ? x * .05 + (mobile ? -.2 : .55) : x, compact ? y - (mobile ? .52 : 1.65) : y, lerp(previous.z, next.z, amount));
-    flight.scale.setScalar(lerp(previous.scale, next.scale, amount) * (mobile ? .42 : compact ? .58 : 1));
-    flight.rotation.y = lerp(previous.ry, next.ry, amount) + pointerX * .22;
-    flight.rotation.z = lerp(previous.rz, next.rz, amount) - pointerY * .06;
     root.style.setProperty('--scene-hue', (progress * 18 - 7).toFixed(3));
     root.style.setProperty('--scene-glow', (1 + Math.sin(progress * Math.PI * 4) * .16).toFixed(3));
     status.scrollProgress = Number(progress.toFixed(4));
@@ -228,8 +172,6 @@ if (renderer) {
 
   function render(now) {
     const time = reduced.matches ? 0 : now * .001;
-    const delta = Math.min(.05, (now - previousFrame) / 1000);
-    previousFrame = now;
     pointerX += (pointerTargetX - pointerX) * .045;
     pointerY += (pointerTargetY - pointerY) * .045;
     scrollProgress += (scrollTarget - scrollProgress) * (reduced.matches ? 1 : .055);
@@ -237,8 +179,6 @@ if (renderer) {
     camera.position.x = pointerX * .2;
     camera.position.y = pointerY * .14;
     camera.lookAt(0, 0, 0);
-    mixer?.update(delta);
-    bird.position.y = Math.sin(time * .85) * .055;
     starField.rotation.z = time * .006;
     blueLight.position.x = 2 + Math.sin(time * .7) * 1.5;
     violetLight.position.y = 3 + Math.cos(time * .6) * 1.2;

@@ -1,11 +1,7 @@
 # 3D assets and licenses
 
 ## 当前版本
-场景/构图/交互为原创实现。第三方资产仅使用许可清晰的 CC0 / MIT 资源。
-
-### 模型清单(逐个列表)
-| 文件 | 模型 | 用途 | 来源(带链接) |
-| `huangque-eagle.glb` | Eagle | 飞鸟网格、骨骼与 Flying 动画 | Quaternius / https://opengameart.org/content/animated-animales-low-poly / CC0 |
+场景/构图/交互为原创实现。第三方资产仅使用许可清晰的 MIT 资源。
 
 ### 字体/贴图/音频
 - assets/glass-bird.webp — 液态玻璃飞鸟首屏主视觉,作者 黄雀 AI / OpenAI image generation,来源 Codex session 2026-08-06,许可 自有生成资产
