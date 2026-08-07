@@ -5,7 +5,7 @@
   const canvas = document.querySelector('[data-light-field]');
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
   const gl = canvas?.getContext('webgl', { alpha: true, antialias: false, powerPreference: 'high-performance' });
-  const status = { ready: false, reducedMotion: reduced.matches, version: 'liquid-bird-1' };
+  const status = { ready: false, reducedMotion: reduced.matches, version: 'liquid-bird-2', scrollProgress: 0, sceneIndex: 0, pointerSpeed: 0 };
   window.__liquidBirdStatus = status;
   window.__liquidBirdCheck = () => status.ready && canvas.width > 0 && canvas.height > 0;
 
@@ -16,12 +16,44 @@
   let cursorActive = 0;
   let cursorActiveTarget = 0;
   let scrollProgress = 0;
+  let scrollTarget = 0;
   let frame = 0;
 
+  const scenes = [
+    { at: 0, x: 0, y: 0, scale: 1, rotate: 0, opacity: 1, hue: 0, glow: 1 },
+    { at: .2, x: -24, y: 7, scale: .72, rotate: -3, opacity: .34, hue: 7, glow: .78 },
+    { at: .42, x: -8, y: -8, scale: .8, rotate: 1.5, opacity: .43, hue: -8, glow: 1.08 },
+    { at: .64, x: -27, y: 9, scale: .66, rotate: -2.5, opacity: .34, hue: 10, glow: .72 },
+    { at: .84, x: -7, y: -9, scale: .81, rotate: 1, opacity: .42, hue: -5, glow: 1.04 },
+    { at: 1, x: -38, y: -14, scale: .5, rotate: -4, opacity: .08, hue: 14, glow: .62 }
+  ];
+
+  const lerp = (start, end, amount) => start + (end - start) * amount;
+
+  function applyScene(progress) {
+    const end = scenes.findIndex(scene => scene.at >= progress);
+    const nextIndex = end < 0 ? scenes.length - 1 : end;
+    const previousIndex = Math.max(0, nextIndex - 1);
+    const previous = scenes[previousIndex];
+    const next = scenes[nextIndex];
+    const amount = previous === next ? 0 : (progress - previous.at) / (next.at - previous.at);
+    ['x', 'y', 'scale', 'rotate', 'opacity', 'hue', 'glow'].forEach(key => {
+      const name = key === 'x' || key === 'y' || key === 'scale' || key === 'rotate' || key === 'opacity'
+        ? `--orbit-${key}`.replace('--orbit-opacity', '--bird-opacity')
+        : `--scene-${key}`;
+      root.style.setProperty(name, lerp(previous[key], next[key], amount).toFixed(4));
+    });
+    status.scrollProgress = Number(progress.toFixed(4));
+    status.sceneIndex = previousIndex;
+  }
+
   function updatePageState() {
-    const range = Math.max(1, innerHeight * .9);
-    scrollProgress = Math.min(1, Math.max(0, scrollY / range));
-    root.style.setProperty('--flight', scrollProgress.toFixed(4));
+    const range = Math.max(1, document.documentElement.scrollHeight - innerHeight);
+    scrollTarget = Math.min(1, Math.max(0, scrollY / range));
+    if (!gl || reduced.matches) {
+      scrollProgress = scrollTarget;
+      applyScene(scrollProgress);
+    }
   }
 
   if (!reduced.matches) {
@@ -38,6 +70,21 @@
   }
   addEventListener('scroll', updatePageState, { passive: true });
   updatePageState();
+
+  const revealTargets = document.querySelectorAll('.story,.chapter,.closing');
+  if (reduced.matches || !('IntersectionObserver' in window)) {
+    revealTargets.forEach(target => target.classList.add('is-visible'));
+  } else {
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (!entry.isIntersecting) return;
+        entry.target.classList.add('is-visible');
+        observer.unobserve(entry.target);
+      });
+    }, { threshold: .22 });
+    revealTargets.forEach(target => observer.observe(target));
+  }
+  root.classList.add('motion-ready');
 
   if (!gl) {
     root.classList.add('webgl-fallback');
@@ -76,7 +123,7 @@
       float amount=clamp(dot(point-start,segment)/max(dot(segment,segment),.0001),0.,1.);
       return length(point-start-segment*amount);
     }
-    float starField(vec2 point,vec2 cursor){
+    float starField(vec2 point,vec2 cursor,float velocity){
       float density=8.;
       vec2 base=floor(point*density);
       float light=0.;
@@ -87,8 +134,10 @@
           if(seed<.45) continue;
           vec2 home=(cell+vec2(seed,hash(cell+19.17)))/density;
           vec2 away=home-cursor;
-          float force=smoothstep(.66,.04,length(away))*uPointerActive;
-          vec2 star=home+normalize(away+vec2(.0001))*force*.24;
+          vec2 radial=normalize(away+vec2(.0001));
+          vec2 tangent=vec2(-radial.y,radial.x);
+          float force=smoothstep(.72,.05,length(away))*uPointerActive;
+          vec2 star=home+radial*force*(.035+velocity*.21)+tangent*force*velocity*.16;
           float radius=mix(.0045,.011,hash(cell+7.31));
           float twinkle=.58+.42*sin(uTime*(1.2+seed)+seed*18.);
           float distanceToStar=length(point-star);
@@ -104,13 +153,14 @@
       vec2 cursorScale=vec2(uResolution.x,uResolution.y)/min(uResolution.x,uResolution.y);
       vec2 cursorNow=uPointer*cursorScale;
       vec2 cursorTarget=uPointerTarget*cursorScale;
+      vec2 fieldCursor=mix(cursorNow,cursorTarget,.7);
       vec2 uv=baseUv;
       uv+=uPointer*vec2(.055,.035);
       uv.x-=.52-uScroll*.18;
       uv.y+=.08-uScroll*.15;
       vec3 color=vec3(0.);
-      vec3 blue=vec3(.07,.22,1.);
-      vec3 violet=vec3(.34,.08,.92);
+      vec3 blue=mix(vec3(.07,.22,1.),vec3(.04,.42,.92),smoothstep(.15,.75,uScroll));
+      vec3 violet=mix(vec3(.34,.08,.92),vec3(.47,.12,.78),uScroll);
       vec3 amber=vec3(1.,.48,.09);
       float f1=filament(uv,0.,.16,.0032);
       float f2=filament(uv,1.7,-.11,.0021);
@@ -125,7 +175,7 @@
       float streakCore=exp(-65.*streakDistance)*cursorSpeed;
       float cursorHead=exp(-34.*dot(baseUv-cursorTarget,baseUv-cursorTarget));
       color+=(blue*streakHalo*.055+mix(violet,amber,.24)*streakCore*.105+amber*cursorHead*.02)*uPointerActive;
-      float stars=starField(baseUv,cursorTarget);
+      float stars=starField(baseUv,fieldCursor,cursorSpeed);
       color+=mix(vec3(.26,.46,1.),vec3(1.,.62,.24),.18)*stars*.72;
       float grain=hash(gl_FragCoord.xy+floor(uTime*9.));
       color+=(grain-.5)*.008;
@@ -181,6 +231,9 @@
     pointerX += (targetX - pointerX) * .035;
     pointerY += (targetY - pointerY) * .035;
     cursorActive += (cursorActiveTarget - cursorActive) * .09;
+    scrollProgress += (scrollTarget - scrollProgress) * (reduced.matches ? 1 : .055);
+    applyScene(scrollProgress);
+    status.pointerSpeed = Number(Math.min(1, Math.hypot(targetX - pointerX, targetY - pointerY) * 4.6).toFixed(4));
     root.style.setProperty('--px', pointerX.toFixed(4));
     root.style.setProperty('--py', pointerY.toFixed(4));
     gl.uniform2f(resolution, canvas.width, canvas.height);
