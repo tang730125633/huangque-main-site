@@ -64,7 +64,9 @@ class NginxCspTest(unittest.TestCase):
                 block = config[start:end]
                 self.assertIn("frame-ancestors 'self'", block)
                 self.assertIn('X-Frame-Options "SAMEORIGIN"', block)
-                self.assertIn("try_files $uri.html =404;", block)
+                self.assertIn("default_type text/html;", block)
+                self.assertIn("alias /var/www/huangquechuanmei/workbench/$1.html;", block)
+                self.assertNotIn("try_files", block)
 
     def test_root_serves_the_marketing_homepage(self):
         for relative_path in self.CONFIGS:
