@@ -28,7 +28,7 @@
     addEventListener('pointermove', event => {
       if (event.pointerType === 'touch') return;
       targetX = event.clientX / innerWidth * 2 - 1;
-      targetY = event.clientY / innerHeight * 2 - 1;
+      targetY = 1 - event.clientY / innerHeight * 2;
       cursorActiveTarget = 1;
     }, { passive: true });
     addEventListener('mouseout', event => {
@@ -96,12 +96,12 @@
       color+=(blue*f1*.12+violet*f2*.09+amber*f3*.05)*taper;
       float haze=exp(-1.8*length((uv-vec2(.45,.05))*vec2(.8,1.6)));
       color+=mix(blue,violet,.45)*haze*.026;
-      float cursorSpeed=clamp(length(cursorTarget-cursorNow)*3.2,0.,1.);
+      float cursorSpeed=clamp(length(cursorTarget-cursorNow)*4.6,0.,1.);
       float streakDistance=segmentDistance(baseUv,cursorNow,cursorTarget);
-      float streakHalo=exp(-38.*streakDistance)*cursorSpeed;
-      float streakCore=exp(-145.*streakDistance)*cursorSpeed;
-      float cursorHead=exp(-46.*dot(baseUv-cursorTarget,baseUv-cursorTarget));
-      color+=(blue*streakHalo*.018+mix(violet,amber,.24)*streakCore*.045+amber*cursorHead*.012)*uPointerActive;
+      float streakHalo=exp(-18.*streakDistance)*cursorSpeed;
+      float streakCore=exp(-65.*streakDistance)*cursorSpeed;
+      float cursorHead=exp(-34.*dot(baseUv-cursorTarget,baseUv-cursorTarget));
+      color+=(blue*streakHalo*.055+mix(violet,amber,.24)*streakCore*.105+amber*cursorHead*.02)*uPointerActive;
       float grain=hash(gl_FragCoord.xy+floor(uTime*9.));
       color+=(grain-.5)*.008;
       gl_FragColor=vec4(color,1.);
@@ -153,8 +153,8 @@
 
   function render(now) {
     resize();
-    pointerX += (targetX - pointerX) * .055;
-    pointerY += (targetY - pointerY) * .055;
+    pointerX += (targetX - pointerX) * .035;
+    pointerY += (targetY - pointerY) * .035;
     cursorActive += (cursorActiveTarget - cursorActive) * .09;
     root.style.setProperty('--px', pointerX.toFixed(4));
     root.style.setProperty('--py', pointerY.toFixed(4));
