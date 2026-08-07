@@ -44,7 +44,87 @@ test('project workspace uses immersive shell and a collapsible summary panel', (
   assert.match(workspaceStyle, /\.sd-workspace-grid\.project-ready\.inspector-collapsed/);
 });
 
-test('创作助手展示确认门禁、修改后重确认和结构化理解摘要', () => {
+test('direction-confirmed workspace hides chat and offers first-script generation', () => {
+  assert.match(workspaceSource, /messageForm\.hidden=projectReady/);
+  assert.match(workspaceSource, /生成第一版完整剧本/);
+  assert.match(workspaceSource, /项目摘要/);
+  assert.match(workspaceSource, /querySelectorAll\('\[data-action="generate"\]'\)/);
+  assert.match(workspaceStyle, /\.sd-script-empty-action/);
+});
+
+test('workspace mode renderer keeps unconfirmed phases editable and only archives authoritative ready states', () => {
+  function mountedConversationDom() {
+    const nodes = {};
+    function node() {
+      const classes = new Set();
+      return {
+        hidden:false, disabled:false, textContent:'', attributes:{},
+        classList:{
+          toggle:(name, enabled) => enabled ? classes.add(name) : classes.delete(name),
+          contains:name => classes.has(name),
+        },
+        setAttribute(name, value) { this.attributes[name] = value; },
+      };
+    }
+    for (const id of [
+      'sdWorkspaceGrid','sdChatToggle','sdHistoryButton','sdMessageForm',
+      'sdChatTitle','sdChatDescription',
+    ]) nodes[id] = node();
+    const textarea = node(), button = node();
+    return {
+      doc:{getElementById:id => nodes[id]},
+      root:{querySelector:selector => selector.endsWith('textarea') ? textarea : button},
+      nodes, textarea, button,
+    };
+  }
+  function state(phase, changes) {
+    return Object.assign({
+      conversation:{state:'direction_review', current_version_id:null,
+        understanding:{phase, direction_confirmed:false}},
+      current_script:null,
+      permissions:{can_edit:true},
+    }, changes||{});
+  }
+  for (const phase of ['discovering','recommending','refining','import_review','direction_ready']) {
+    const mounted = mountedConversationDom();
+    const mode = workspace.conversationWorkspaceMode(state(phase));
+    workspace.applyConversationMode(mounted.doc, mounted.root, mode, false);
+    assert.equal(mode.projectReady, false, phase);
+    assert.equal(mode.canMessage, true, phase);
+    assert.equal(mounted.nodes.sdMessageForm.hidden, false, phase);
+    assert.equal(mounted.textarea.disabled, false, phase);
+  }
+  const archived = [
+    state('direction_ready', {conversation:{state:'direction_review',current_version_id:null,
+      understanding:{phase:'direction_ready',direction_confirmed:true}}}),
+    state('refining', {conversation:{state:'direction_review',current_version_id:'script-1',
+      understanding:{phase:'refining',direction_confirmed:false}}}),
+    state('refining', {conversation:{state:'script_locked',current_version_id:'script-1',
+      understanding:{phase:'refining',direction_confirmed:false}}}),
+    state('import_review', {permissions:{can_edit:false}}),
+  ];
+  for (const current of archived) {
+    const mounted = mountedConversationDom();
+    const mode = workspace.conversationWorkspaceMode(current);
+    workspace.applyConversationMode(mounted.doc, mounted.root, mode, false);
+    assert.equal(mode.canMessage, false);
+    assert.equal(mounted.nodes.sdMessageForm.hidden, true);
+    assert.equal(mounted.textarea.disabled, true);
+  }
+});
+
+test('read-only creation history removes actions and the event path has a defensive write gate', () => {
+  const item = {role:'assistant', content:'Choose one', metadata:{
+    recommendations:[{title:'Direction A',hook:'Hook',summary:'Summary'}],
+    quick_replies:['Confirm direction'],
+  }};
+  assert.match(workspace.messageHtml(item, false), /data-action="quick-reply"/);
+  assert.doesNotMatch(workspace.messageHtml(item, true), /data-action="quick-reply"/);
+  assert.match(workspaceSource, /if\(!conversationWorkspaceMode\(state\)\.canMessage\)return Promise\.resolve\(state\)/);
+  assert.match(workspaceSource, /if\(!conversationWorkspaceMode\(state\)\.canMessage\)return;/);
+});
+
+test('项目概要展示确认门禁、修改后重确认和结构化理解摘要', () => {
   const source = fs.readFileSync(
     path.join(ROOT, 'site/workbench/short-drama-workspace.js'), 'utf8'
   );
@@ -54,7 +134,10 @@ test('创作助手展示确认门禁、修改后重确认和结构化理解摘�
   assert.match(source, /请先确认创作方向/);
   assert.match(source, /修改后需要重新确认/);
   assert.match(source, /understanding\.direction_confirmed/);
-  assert.match(source, /助手建议/);
+  assert.match(source, /创作概要/);
+  assert.match(source, /生成前检查/);
+  assert.match(source, /id="sdOverviewTitle"/);
+  assert.match(source, /id="sdTechnicalContract"/);
   assert.match(source, /用户补充/);
   assert.match(source, /refining:'修改后待确认'/);
   assert.match(css, /\.sd-direction-gate\.pending/);
@@ -125,10 +208,16 @@ test('导入原稿展示模式化理解快照与待确认优化边界', () => {
   assert.match(faithful, /尊重原稿/);
   assert.match(faithful, /开场/);
   assert.match(faithful, /真相在这里|别走/);
-  assert.match(faithful, /第 2 版/);
-  assert.match(faithful, /contract-abc/);
+  assert.doesNotMatch(faithful, /contract-abc/);
   assert.match(faithful, /用户追加的必须保留内容/);
   assert.match(faithful, /原稿位置 32/);
+  const technical = workspace.importContractTechnicalHtml({
+    source_hash:'abc123', import_mode:'faithful',
+    revision:2, contract_hash:'contract-abc'
+  });
+  assert.match(technical, /第 2 版/);
+  assert.match(technical, /contract-abc/);
+  assert.match(technical, /abc123/);
   const optimize = workspace.importContractHtml({
     source_hash:'def456', import_mode:'optimize', characters:['林夏'],
     proposed_changes:[

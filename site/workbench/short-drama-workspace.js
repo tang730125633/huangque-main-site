@@ -252,6 +252,38 @@
       billing:raw.billing||{cost:0,charged:false}
     };
   }
+  function conversationWorkspaceMode(raw){
+    raw=raw||{};
+    var conversation=raw.conversation||{},understanding=conversation.understanding||{};
+    var locked=conversation.state==='script_locked';
+    var hasScript=!!conversation.current_version_id||!!raw.current_script;
+    var directionConfirmed=!!understanding.direction_confirmed;
+    var canEdit=!!(raw.permissions&&raw.permissions.can_edit);
+    var projectReady=locked||hasScript||directionConfirmed;
+    return {
+      locked:locked,hasScript:hasScript,directionConfirmed:directionConfirmed,
+      projectReady:projectReady,readOnly:projectReady||!canEdit,
+      canMessage:canEdit&&!projectReady
+    };
+  }
+  function applyConversationMode(doc,root,mode,historyExpanded){
+    mode=mode||{};var projectReady=!!mode.readOnly;
+    var grid=doc.getElementById('sdWorkspaceGrid'),chatToggle=doc.getElementById('sdChatToggle'),historyButton=doc.getElementById('sdHistoryButton'),messageForm=doc.getElementById('sdMessageForm');
+    grid.classList.toggle('chat-readonly',projectReady);
+    grid.classList.toggle('project-ready',projectReady);
+    grid.classList.toggle('history-open',projectReady&&historyExpanded);
+    doc.getElementById('sdChatTitle').textContent=projectReady?'历史创作记录（只读）':'和创作助手对话';
+    doc.getElementById('sdChatDescription').textContent=projectReady?'项目创建前的讨论记录，仅供追溯。':'说清人物、冲突、情绪和结局。';
+    chatToggle.hidden=!projectReady;
+    chatToggle.textContent='关闭创作记录';
+    chatToggle.setAttribute('aria-expanded',historyExpanded?'true':'false');
+    historyButton.hidden=!projectReady;
+    historyButton.textContent=historyExpanded?'关闭创作记录':'创作记录';
+    historyButton.setAttribute('aria-expanded',historyExpanded?'true':'false');
+    messageForm.hidden=projectReady;
+    root.querySelector('#sdMessageForm textarea').disabled=!mode.canMessage;
+    root.querySelector('#sdMessageForm button').disabled=!mode.canMessage;
+  }
   function quickReplyPresentation(value,index){
     value=text(value).trim();
     var normalized=value.replace(/[，。！？\s]/g,'');
@@ -273,8 +305,9 @@
     }
     return result;
   }
-  function messageHtml(item){
+  function messageHtml(item,readOnly){
     var metadata=item&&item.metadata||{},recommendations=Array.isArray(metadata.recommendations)?metadata.recommendations:[],quickReplies=Array.isArray(metadata.quick_replies)?metadata.quick_replies:[];
+    if(readOnly){recommendations=[];quickReplies=[];}
     var recommendationTitles=recommendations.map(function(item){return text(item.title);});
     quickReplies=quickReplies.filter(function(value){return recommendationTitles.indexOf(text(value))<0;});
     var cards=recommendations.length?'<div class="sd-advisor-recommendations">'+recommendations.map(function(option){
@@ -297,7 +330,13 @@
     var changes=(contract.proposed_changes||[]).map(function(item){var status=item.status||'pending';var statusText=status==='confirmed'?'已确认':(status==='denied'?'已排除':'待确认');return '<li class="'+escapeHtml(status)+'"><b>'+escapeHtml(item.label||'优化项')+'</b><span>'+escapeHtml(item.summary||'')+'</span><em>'+statusText+'</em></li>';}).join('');
     var preservations=(contract.required_preservations||[]).map(function(item){return '<li class="confirmed"><b>'+escapeHtml(item.kind==='dialogue'?'必保对白':'必保内容')+'</b><span>'+escapeHtml(item.source||'')+'</span><em>原稿位置 '+Number(item.source_offset||0)+'</em></li>';}).join('');
     var global=contract.global_structure||{},globalItems=[['开场设定',global.setup],['故事发展',global.development],['关键转折',global.turning_point],['高潮选择',global.climax],['结局落点',global.ending],['核心冲突',global.central_conflict]].filter(function(item){return item[1];}).map(function(item){return '<li><b>'+item[0]+'</b><span>'+escapeHtml(item[1])+'</span></li>';}).join('');
-    return '<dt class="sd-import-contract-label">原稿理解快照</dt><dd class="sd-import-contract"><header><b>完整原稿处理契约</b><em>'+escapeHtml(mode)+'</em></header><p><span>契约版本</span><b>第 '+Number(contract.revision||1)+' 版</b></p><p><span>契约哈希</span><code>'+escapeHtml(contract.contract_hash||'待生成')+'</code></p><p><span>原稿哈希</span><code>'+escapeHtml(contract.source_hash)+'</code></p><p><span>识别人物</span><b>'+characters+'</b></p>'+(globalItems?'<h4>长剧本全局结构</h4><ul>'+globalItems+'</ul>':'')+(points?'<h4>首 / 中 / 尾剧情节点</h4><ul>'+points+'</ul>':'')+(dialogues?'<h4>关键对白</h4><ul>'+dialogues+'</ul>':'')+(preservations?'<h4>用户追加的必须保留内容</h4><ul>'+preservations+'</ul>':'')+(changes?'<h4>重要优化边界</h4><ul>'+changes+'</ul>':'')+'</dd>';
+    return '<section class="sd-overview-card sd-import-contract"><header><div><span>剧本结构</span><b>原稿理解快照</b></div><em>'+escapeHtml(mode)+'</em></header><p><span>识别人物</span><b>'+characters+'</b></p>'+(globalItems?'<h4>长剧本全局结构</h4><ul>'+globalItems+'</ul>':'')+(points?'<h4>首 / 中 / 尾剧情节点</h4><ul>'+points+'</ul>':'')+(dialogues?'<h4>关键对白</h4><ul>'+dialogues+'</ul>':'')+(preservations?'<h4>用户追加的必须保留内容</h4><ul>'+preservations+'</ul>':'')+(changes?'<h4>重要优化边界</h4><ul>'+changes+'</ul>':'')+'</section>';
+  }
+  function importContractTechnicalHtml(contract){
+    contract=contract||{};
+    if(!contract.source_hash)return '<p class="sd-placeholder">当前项目没有原稿导入技术记录。</p>';
+    var mode=contract.import_mode==='optimize'?'AI 协助优化':'尊重原稿';
+    return '<dl class="sd-tech-list"><dt>处理方式</dt><dd>'+escapeHtml(mode)+'</dd><dt>契约版本</dt><dd>第 '+Number(contract.revision||1)+' 版</dd><dt>契约哈希</dt><dd><code>'+escapeHtml(contract.contract_hash||'待生成')+'</code></dd><dt>原稿哈希</dt><dd><code>'+escapeHtml(contract.source_hash)+'</code></dd></dl>';
   }
   function shotMediaIndex(autodraft){
     autodraft=autodraft||{};
@@ -357,8 +396,11 @@
     if(quoteForShot)actions+='<button data-action="provider-start" data-shot-key="'+escapeHtml(shotKey)+'" type="button"'+(canGenerate&&!active?'':' disabled')+'>确认扣 '+Number(quote.cost||0)+' 点并生成</button>';
     return '<div class="sd-shot-provider-entry expanded">'+toggle+'<section class="sd-shot-provider-panel"><header><div><span>视频生成</span><b>'+escapeHtml((autodraft.production&&autodraft.production.provider&&autodraft.production.provider.selected)||poc.provider||'Provider')+'</b></div><em>预检、报价不扣点</em></header>'+binding+(blockedByOther?'<div class="sd-check warning"><b>另一个镜头正在生成</b><p>请等待当前任务结束后再提交本镜头，避免重复建单。</p></div>':'')+result+quoteHtml+jobHtml+'<div class="sd-shot-provider-actions">'+actions+'</div></section></div>';
   }
-  function scriptHtml(version,canEdit,autodraft,selectedProviderShotKey,canGenerate){
-    if(!version||!version.script)return '<div class="sd-script-empty"><strong>还没有剧本</strong><p>先在左侧补充创作方向，然后生成第一版结构化剧本。</p></div>';
+  function scriptHtml(version,canEdit,autodraft,selectedProviderShotKey,canGenerate,understanding){
+    if(!version||!version.script){
+      var directionConfirmed=!!(understanding&&understanding.direction_confirmed);
+      return '<div class="sd-script-empty sd-script-empty-action"><span>'+(directionConfirmed?'创作方向已确认':'创作方向待确认')+'</span><strong>'+(directionConfirmed?'准备生成第一版完整剧本':'还没有剧本')+'</strong><p>'+(directionConfirmed?'系统将依据右侧项目摘要生成结构化剧本，生成后可继续审阅和修改。':'请先完成创作方向确认，再生成第一版结构化剧本。')+'</p><button data-action="generate" type="button"'+(canGenerate&&directionConfirmed?'':' disabled')+'>生成第一版完整剧本</button><small>生成不会锁定项目，确认内容后再进入后续制作。</small></div>';
+    }
     var script=version.script,overview=script.overview||{},mediaByShot=shotMediaIndex(autodraft);
     var legacy=version.model_version==='conversation-script-v2'?'<div class="sd-preflight-stale">该版本由旧通用模板生成，镜头可能与故事摘要不一致。请基于当前项目创建新版本后重新生成剧本。</div>':'';
     var dialogueById={};(script.dialogue_lines||[]).forEach(function(line){dialogueById[text(line.id)]=line;});
@@ -495,7 +537,7 @@
       '<div class="sd-workspace-grid" id="sdWorkspaceGrid">'+
       '<aside class="sd-chat"><header><button type="button" class="sd-chat-toggle" data-action="toggle-history" id="sdChatToggle" hidden aria-expanded="false">展开历史记录</button><h2 id="sdChatTitle">和创作助手对话</h2><p id="sdChatDescription">说清人物、冲突、情绪和结局。</p></header><div id="sdMessages"></div><form id="sdMessageForm"><textarea name="message" maxlength="8000" placeholder="例如：结尾要反转，但不要悲剧" required></textarea><button type="submit">发送</button></form><div class="sd-chat-locked-actions" id="sdChatLockedActions" hidden><p>这里仅保留本项目的历史沟通记录，不会修改已锁定或已交付内容。</p><button type="button" data-action="clone-project">基于当前项目创建新版本</button><small>将复制创作规格并建立新项目，当前交付快照保持不变。</small></div></aside>'+
       '<main class="sd-script" id="sdScript"></main>'+
-      '<aside class="sd-inspector"><section><h2>理解摘要</h2><dl id="sdUnderstanding"></dl></section><div id="sdActions"></div><section><h2>版本历史</h2><div id="sdVersions"></div></section><div class="sd-workspace-notice" id="sdWorkspaceNotice" hidden></div></aside>'+
+      '<aside class="sd-inspector"><section class="sd-overview-shell"><header class="sd-overview-header"><div><span class="sd-stage-label">创作概要</span><h2 id="sdOverviewTitle">项目概要</h2></div><span class="sd-overview-phase" id="sdOverviewPhase"></span></header><div id="sdUnderstanding" class="sd-overview-content"></div></section><section class="sd-preflight-shell"><header><span class="sd-stage-label">生成前检查</span><h2>下一步操作</h2></header><div id="sdActions"></div></section><details class="sd-tech-details"><summary>版本与技术信息</summary><div id="sdTechnicalContract"></div><section><h3>版本历史</h3><div id="sdVersions"></div></section></details><div class="sd-workspace-notice" id="sdWorkspaceNotice" hidden></div></aside>'+
       '</div>';
   }
   function mount(doc,options){
@@ -665,46 +707,41 @@
     }
     function render(){
       state=normalize(state);
+      var understanding=state.conversation.understanding||{};
+      var conversationMode=conversationWorkspaceMode(state),locked=conversationMode.locked;
       doc.getElementById('sdWorkspaceTitle').textContent=state.project.title||'短剧项目';
       doc.getElementById('sdWorkspaceState').textContent=state.conversation.state;
-      doc.getElementById('sdMessages').innerHTML=state.messages.map(messageHtml).join('')||'<p class="sd-placeholder">从一句创作想法开始吧。</p>';
-      doc.getElementById('sdScript').innerHTML=refinementHtml(refinement)||draftHtml(autodraft)||scriptHtml(state.current_script,state.permissions.can_edit&&state.conversation.state!=='script_locked',autodraft,selectedProviderShotKey,state.permissions.can_edit);
+      doc.getElementById('sdMessages').innerHTML=state.messages.map(function(item){return messageHtml(item,conversationMode.readOnly);}).join('')||'<p class="sd-placeholder">从一句创作想法开始吧。</p>';
+      doc.getElementById('sdScript').innerHTML=refinementHtml(refinement)||draftHtml(autodraft)||scriptHtml(state.current_script,state.permissions.can_edit&&!locked,autodraft,selectedProviderShotKey,state.permissions.can_edit&&!locked,understanding);
       if(!refinement&&!autodraft.current_version)renderCharacterCards();
-      var understanding=state.conversation.understanding||{};
       var phaseLabel={discovering:'正在了解想法',recommending:'正在选择方向',refining:'修改后待确认',import_review:'原稿理解待确认',direction_ready:'创作方向已确认'}[understanding.phase]||'等待创作想法';
       var selected=(understanding.recommendations||[]).filter(function(item){return item.id===understanding.selected_recommendation_id;})[0];
       var selectedDirection=understanding.selected_direction||selected||{};
       var missing=(understanding.missing_fields||[]).join('、');
-      doc.getElementById('sdUnderstanding').innerHTML='<dt>助手状态</dt><dd><span class="sd-advisor-state '+escapeHtml(understanding.phase||'discovering')+'">'+escapeHtml(phaseLabel)+'</span></dd><dt>核心故事</dt><dd>'+escapeHtml(understanding.premise||state.project.synopsis||'待补充')+'</dd>'+(selectedDirection.title?'<dt>助手建议</dt><dd>'+escapeHtml(selectedDirection.title)+'<small>'+escapeHtml(selectedDirection.summary||'')+'</small></dd>':'')+'<dt>用户补充</dt><dd>'+escapeHtml((understanding.story_notes||[]).join('；')||'待补充')+'</dd><dt>风格</dt><dd>'+escapeHtml(understanding.tone||state.project.visual_style||'待补充')+'</dd>'+(missing?'<dt>仍需了解</dt><dd>'+escapeHtml(missing)+'</dd>':'')+'<dt>规格</dt><dd>'+Number(understanding.duration_seconds||state.project.target_duration||0)+' 秒 · '+escapeHtml(understanding.ratio||state.project.ratio||'')+'</dd>'+importContractHtml(understanding.import_contract);
+      doc.getElementById('sdOverviewTitle').textContent=state.project.title||'未命名短剧';
+      doc.getElementById('sdOverviewPhase').innerHTML='<span class="sd-advisor-state '+escapeHtml(understanding.phase||'discovering')+'">'+escapeHtml(phaseLabel)+'</span>';
+      var overviewMeta='<div class="sd-overview-meta"><span>'+Number(understanding.duration_seconds||state.project.target_duration||0)+' 秒</span><span>'+escapeHtml(understanding.ratio||state.project.ratio||'待设置')+'</span><span>'+escapeHtml(understanding.tone||state.project.visual_style||'风格待补充')+'</span></div>';
+      var storyCard='<section class="sd-overview-card"><header><div><span>故事设定</span><b>核心故事</b></div></header><p class="sd-overview-copy">'+escapeHtml(understanding.premise||state.project.synopsis||'待补充')+'</p>'+(selectedDirection.title?'<p><span>创作方向</span><b>'+escapeHtml(selectedDirection.title)+'</b><small>'+escapeHtml(selectedDirection.summary||'')+'</small></p>':'')+((understanding.story_notes||[]).length?'<p><span>用户补充</span><b>'+escapeHtml((understanding.story_notes||[]).join('；'))+'</b></p>':'')+'</section>';
+      var productionCard='<section class="sd-overview-card"><header><div><span>制作设定</span><b>画面与交付</b></div></header><p><span>视觉风格</span><b>'+escapeHtml(understanding.tone||state.project.visual_style||'待补充')+'</b></p>'+(missing?'<div class="sd-overview-warning"><b>还需补充</b><span>'+escapeHtml(missing)+'</span></div>':'<div class="sd-overview-ready">关键信息已完整</div>')+'</section>';
+      doc.getElementById('sdUnderstanding').innerHTML=overviewMeta+storyCard+productionCard+importContractHtml(understanding.import_contract);
+      doc.getElementById('sdTechnicalContract').innerHTML=importContractTechnicalHtml(understanding.import_contract);
       doc.getElementById('sdVersions').innerHTML=state.versions.map(function(item){return versionHtml(item,state.conversation.current_version_id);}).join('')||'<p class="sd-placeholder">暂无版本</p>';
-      var locked=state.conversation.state==='script_locked';
-      var grid=doc.getElementById('sdWorkspaceGrid'),chatToggle=doc.getElementById('sdChatToggle'),historyButton=doc.getElementById('sdHistoryButton'),inspectorButton=doc.getElementById('sdInspectorButton'),lockedActions=doc.getElementById('sdChatLockedActions'),messageForm=doc.getElementById('sdMessageForm');
-      grid.classList.toggle('chat-readonly',locked);
-      grid.classList.toggle('project-ready',locked);
-      grid.classList.toggle('history-open',locked&&historyExpanded);
+      var grid=doc.getElementById('sdWorkspaceGrid'),inspectorButton=doc.getElementById('sdInspectorButton'),lockedActions=doc.getElementById('sdChatLockedActions');
       grid.classList.toggle('inspector-collapsed',!inspectorExpanded);
       inspectorButton.textContent=inspectorExpanded?'收起摘要':'查看摘要';
       inspectorButton.setAttribute('aria-expanded',inspectorExpanded?'true':'false');
-      doc.getElementById('sdChatTitle').textContent=locked?'历史创作记录（只读）':'和创作助手对话';
-      doc.getElementById('sdChatDescription').textContent=locked?'剧本已锁定，以下内容仅供追溯。':'说清人物、冲突、情绪和结局。';
-      chatToggle.hidden=!locked;
-      chatToggle.textContent='关闭创作记录';
-      chatToggle.setAttribute('aria-expanded',historyExpanded?'true':'false');
-      historyButton.hidden=!locked;
-      historyButton.textContent=historyExpanded?'关闭创作记录':'创作记录';
-      historyButton.setAttribute('aria-expanded',historyExpanded?'true':'false');
       lockedActions.hidden=!locked;
-      messageForm.hidden=locked;
+      applyConversationMode(doc,root,conversationMode,historyExpanded);
       doc.getElementById('sdActions').innerHTML=refinement?(refinementActionsHtml(refinement,state.permissions.can_edit)+refinementProviderHtml(autodraft,refinement,state.permissions.can_edit)):(autodraft.confirmed_plan?autodraftActionsHtml(autodraft,state.permissions.can_edit):preflightHtml(state.conversation,preflight,state.permissions.can_edit));
       enhanceProviderPreflight();
       renderCharacterModal();
       renderShotModal();
-      var generate=root.querySelector('[data-action="generate"]'),lock=root.querySelector('[data-action="lock"]');
-      if(generate)generate.disabled=locked||!state.permissions.can_edit||(!state.conversation.current_version_id&&!understanding.direction_confirmed);
+      var generateButtons=root.querySelectorAll('[data-action="generate"]'),lock=root.querySelector('[data-action="lock"]');
+      Array.prototype.forEach.call(generateButtons,function(generate){
+        generate.disabled=locked||!state.permissions.can_edit||(!state.conversation.current_version_id&&!understanding.direction_confirmed);
+      });
       if(lock)lock.disabled=locked||!state.current_script||!state.permissions.can_edit||!!(state.current_script&&state.current_script.script&&state.current_script.script.quality_gate&&state.current_script.script.quality_gate.status==='blocked');
-      root.querySelector('#sdMessageForm textarea').disabled=locked||!state.permissions.can_edit;
-      root.querySelector('#sdMessageForm button').disabled=locked||!state.permissions.can_edit;
-      if(!locked){
+      if(conversationMode.canMessage){
         root.querySelector('#sdMessageForm textarea').placeholder=understanding.phase==='direction_ready'?'方向已确认；还可以补充一条硬性要求':understanding.phase==='import_review'?'核对原稿理解，或补充必须保留 / 允许优化的内容':understanding.phase==='refining'?'继续调整，或发送“确认调整后的方向”':'说说人物、冲突、情绪、结局，或让助手推荐方向';
       }
     }
@@ -716,6 +753,7 @@
         .finally(function(){busy(false);render();});
     }
     function sendConversationMessage(value){
+      if(!conversationWorkspaceMode(state).canMessage)return Promise.resolve(state);
       value=text(value).trim();
       if(!value)return Promise.resolve(state);
       var field=doc.getElementById('sdMessageForm').elements.message;
@@ -1171,6 +1209,7 @@
         return;
       }
       if(action&&action.getAttribute('data-action')==='quick-reply'){
+        if(!conversationWorkspaceMode(state).canMessage)return;
         var actionGroup=action.closest('.sd-advisor-actions');
         if(actionGroup){
           action.classList.add('selected');
@@ -1366,5 +1405,5 @@
     }).then(function(){render();schedulePoll();}).catch(function(error){show(error.message||'工作区加载失败',true);}).finally(function(){busy(false);render();});
     return {render:render,getState:function(){return state;},getPreflight:function(){return preflight;},getAutodraft:function(){return autodraft;},getRefinement:function(){return refinement;}};
   }
-  return {createClient:createClient,characterImageOperationState:characterImageOperationState,characterImageAction:characterImageAction,cloneProjectPayload:cloneProjectPayload,normalize:normalize,quickReplyPresentation:quickReplyPresentation,messageHtml:messageHtml,importContractHtml:importContractHtml,shotMediaIndex:shotMediaIndex,shotMediaHtml:shotMediaHtml,providerShotControlsHtml:providerShotControlsHtml,scriptHtml:scriptHtml,versionHtml:versionHtml,preflightHtml:preflightHtml,autodraftActionsHtml:autodraftActionsHtml,draftHtml:draftHtml,refinementHtml:refinementHtml,refinementActionsHtml:refinementActionsHtml,refinementProviderHtml:refinementProviderHtml,shellHtml:shellHtml,mount:mount};
+  return {createClient:createClient,characterImageOperationState:characterImageOperationState,characterImageAction:characterImageAction,avatarCreateUrl:avatarCreateUrl,cloneProjectPayload:cloneProjectPayload,normalize:normalize,conversationWorkspaceMode:conversationWorkspaceMode,applyConversationMode:applyConversationMode,quickReplyPresentation:quickReplyPresentation,messageHtml:messageHtml,importContractHtml:importContractHtml,importContractTechnicalHtml:importContractTechnicalHtml,shotMediaIndex:shotMediaIndex,shotMediaHtml:shotMediaHtml,providerShotControlsHtml:providerShotControlsHtml,scriptHtml:scriptHtml,versionHtml:versionHtml,preflightHtml:preflightHtml,autodraftActionsHtml:autodraftActionsHtml,draftHtml:draftHtml,refinementHtml:refinementHtml,refinementActionsHtml:refinementActionsHtml,refinementProviderHtml:refinementProviderHtml,shellHtml:shellHtml,mount:mount};
 });
