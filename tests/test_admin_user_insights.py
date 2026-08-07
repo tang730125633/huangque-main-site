@@ -343,6 +343,7 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             "dashboard:'home'", "users:'users'", "logs:'clock'", "recharge:'coins'",
             "points:'trend'", "invite:'userPlus'", "inspirations:'sparkles'",
             "operations:'layers'", "channels:'lock'", "features:'sliders'",
+            '.module-card[data-module="operations"]>.section-head{flex-direction:column}',
         ):
             self.assertIn(marker, html)
         self.assertNotIn('data-module-tab="ops"', html)
