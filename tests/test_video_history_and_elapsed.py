@@ -68,6 +68,7 @@ class HistoryIsNotClobberedByTheDraftTests(unittest.TestCase):
         self.assertIn("function videoChannelInfo(x)", HTML)
         self.assertIn("videoChannelInfo(x).key===historyChannelFilter", HTML)
         self.assertIn("$('historyChannelFilter').onchange", HTML)
+        self.assertIn("video_compose:'一键成片'", HTML)
 
 
 class ElapsedTimeSurvivesARefreshTests(unittest.TestCase):
