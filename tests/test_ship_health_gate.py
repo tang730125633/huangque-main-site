@@ -287,6 +287,39 @@ exit 0
         self.assertIn("bash -s -- digital_ip", ssh_log.read_text(encoding="utf-8"))
         self.assertIn("上线完成", result.stdout)
 
+    def test_function_registry_restarts_only_admin(self):
+        ssh_log = Path(self.tmp.name) / "ssh.log"
+        result = self._run_ship(
+            target="server/content_domains/function_registry.py",
+            exact_content_domains=True,
+            FAKE_REMOTE_FILE_MISSING="1",
+            FAKE_CURL_CODE="200",
+            FAKE_SSH_LOG=str(ssh_log),
+        )
+        self.assertEqual(0, result.returncode, result.stdout)
+        restart = next(
+            line for line in ssh_log.read_text(encoding="utf-8").splitlines()
+            if "sudo systemctl restart" in line
+        )
+        self.assertIn("huangque-admin", restart)
+        self.assertNotIn("huangque-content", restart)
+
+    def test_feature_flags_restarts_content_and_admin(self):
+        ssh_log = Path(self.tmp.name) / "ssh.log"
+        result = self._run_ship(
+            target="server/content_domains/feature_flags.py",
+            exact_content_domains=True,
+            FAKE_CURL_CODE="200",
+            FAKE_SSH_LOG=str(ssh_log),
+        )
+        self.assertEqual(0, result.returncode, result.stdout)
+        restart = next(
+            line for line in ssh_log.read_text(encoding="utf-8").splitlines()
+            if "sudo systemctl restart" in line
+        )
+        self.assertIn("huangque-content", restart)
+        self.assertIn("huangque-admin", restart)
+
     def test_exact_content_domains_blocks_new_module_import_failure(self):
         result = self._run_ship(
             target="server/content_domains/digital_ip.py",
