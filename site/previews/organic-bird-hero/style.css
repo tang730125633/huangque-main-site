@@ -41,9 +41,8 @@ p,h1,h2,h3,figure,dl,dd{margin:0}
 
 .organic-scene{position:relative;min-height:min(76vh,720px);transform:translate3d(calc(var(--mx) * 15px),calc(var(--my) * 10px),0)}
 .scene-blob{position:absolute;inset:7% 1% 12% 8%;border-radius:47% 53% 63% 37% / 46% 38% 62% 54%;background:var(--paper-deep);box-shadow:inset 0 0 0 1px rgba(36,48,39,.08);animation:breathe 9s ease-in-out infinite}
-.organic-scene svg{position:absolute;z-index:2;inset:1% -2% 7% 1%;width:103%;height:92%;overflow:visible;filter:drop-shadow(0 24px 30px rgba(54,59,42,.11))}
-.sun-disc{fill:var(--clay);opacity:.78}.blade{stroke:rgba(36,48,39,.16);stroke-width:1.4}.blade-one{fill:#66765e}.blade-two{fill:#97a681;opacity:.94}.blade-three{fill:#c7b985;opacity:.92}
-.quill,.wind{fill:none;stroke:var(--ink);stroke-linecap:round}.quill{stroke-width:3}.wind{stroke-width:1.4;opacity:.52}.kernel{fill:var(--paper);stroke:var(--ink);stroke-width:2}
+.sun-disc{position:absolute;z-index:1;left:28%;top:15%;width:48%;aspect-ratio:1;border-radius:50%;background:var(--clay);opacity:.72}
+.growth-mark{position:absolute;z-index:2;inset:3% -5% 5% -2%;width:108%;height:92%;object-fit:contain;mix-blend-mode:multiply;filter:saturate(.82) contrast(.97) drop-shadow(0 24px 30px rgba(54,59,42,.09))}
 .seed{position:absolute;z-index:1;width:14px;height:22px;border-radius:70% 30% 65% 35%;background:var(--clay);transform:rotate(28deg);animation:seed-float 6s ease-in-out infinite}.seed-one{top:13%;left:15%}.seed-two{top:24%;right:8%;width:10px;height:16px;animation-delay:-2s}.seed-three{right:18%;bottom:15%;width:18px;height:28px;background:var(--straw);animation-delay:-4s}
 .organic-scene figcaption{position:absolute;z-index:3;right:4%;bottom:4%;max-width:250px;color:rgba(36,48,39,.55);font-size:10px;line-height:1.7;text-align:right}
 .scroll-cue{position:absolute;bottom:34px;left:clamp(24px,6.6vw,128px);display:flex;align-items:center;gap:13px;color:rgba(36,48,39,.55);font:500 9px/1 var(--mono);letter-spacing:.12em}.scroll-cue span{width:42px;height:1px;background:linear-gradient(90deg,var(--clay),transparent)}
