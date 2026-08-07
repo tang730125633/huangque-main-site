@@ -3505,7 +3505,7 @@
           "401": { "description": "未登录；认证先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "403": { "description": "账号必须先修改初始密码；或共享画布角色为 viewer/无写权限；检查先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "404": { "description": "项目不存在、画布不匹配或当前用户无权发现", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "409": { "description": "revision_conflict：提交的 revision 已过期，须刷新后重试", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RevisionConflict" } } } }
+          "409": { "description": "revision_conflict：提交的 revision 已过期，须刷新后重试；character_reference_protected：角色已有付费或锁定的标准图活动，禁止修改资料或删除角色", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RevisionConflict" } } } }
         }
       }
     },

@@ -55,11 +55,12 @@
       visual_style:value('visual_style')||'电影感写实'
     };
   }
+  function liveActionRoleHasReferenceActivity(character){
+    return !!(character&&(character.reference_job_id||character.reference_file||character.reference_url||Number(character.reference_version)>0||character.reference_locked));
+  }
   function liveActionProjectHasReferenceActivity(project){
     project=normalizeProject(project);
-    return project.spent_points>0||project.characters.some(function(character){
-      return !!(character&&(character.reference_job_id||character.reference_file||character.reference_url||Number(character.reference_version)>0||character.reference_locked));
-    });
+    return project.spent_points>0||project.characters.some(liveActionRoleHasReferenceActivity);
   }
   function discardPendingLiveActionProject(client,project,referenceBusy,idempotencyKey){
     if(referenceBusy)return Promise.reject(new Error('角色标准图正在生成或确认，请等待任务结束后再修改故事设定。'));
@@ -1247,10 +1248,10 @@
     function renderLiveActionRoleTabs(){
       if(!roleTabs)return;
       roleTabs.innerHTML=liveActionRoles.map(function(item,index){
-        var progress=liveActionRoleCompletion(item),initial=text(item.name||('角色 '+(index+1))).trim().slice(0,1)||String(index+1);
+        var progress=liveActionRoleCompletion(item),initial=text(item.name||('角色 '+(index+1))).trim().slice(0,1)||String(index+1),protectedRole=liveActionRoleHasReferenceActivity(item);
         return '<article class="short-drama-role-tab'+(index===activeLiveActionRole?' active':'')+'">'+
           '<button type="button" data-role-select="'+index+'"><b>'+escapeHtml(initial)+'</b><span><strong>'+escapeHtml(item.name||('角色 '+(index+1)))+'</strong><small>'+escapeHtml(liveActionRoleTypeLabel(item.role_type))+' · '+progress.done+'/'+progress.total+' 项</small><i><em style="width:'+progress.percent+'%"></em></i></span></button>'+
-          '<button type="button" class="short-drama-role-tab-remove" data-role-remove="'+index+'" aria-label="删除角色">×</button></article>';
+          '<button type="button" class="short-drama-role-tab-remove" data-role-remove="'+index+'" aria-label="'+(protectedRole?'该角色已有付费或锁定的角色标准图，不能删除':'删除角色')+'" title="'+(protectedRole?'该角色已有付费或锁定的角色标准图，不能删除':'删除角色')+'"'+(protectedRole?' disabled aria-disabled="true"':'')+'>×</button></article>';
       }).join('');
       var count=doc.getElementById('shortDramaRoleCount');if(count)count.textContent='共 '+liveActionRoles.length+' 个角色';
       var current=liveActionRoles[activeLiveActionRole],status=doc.getElementById('shortDramaRoleStatus');
@@ -1259,9 +1260,11 @@
     function renderLiveActionRoles(){
       if(!liveActionRoles.length){roleList.innerHTML='';if(roleTabs)roleTabs.innerHTML='';return;}
       activeLiveActionRole=Math.max(0,Math.min(activeLiveActionRole,liveActionRoles.length-1));
-      var index=activeLiveActionRole,item=liveActionRoles[index],roleType=text(item.role_type)||'support';
+      var index=activeLiveActionRole,item=liveActionRoles[index],roleType=text(item.role_type)||'support',roleProtected=liveActionRoleHasReferenceActivity(item);
       roleList.innerHTML='<article class="short-drama-role-card" data-role-index="'+index+'">'+
           '<header><div><span>角色 '+(index+1)+' · '+escapeHtml(liveActionRoleTypeLabel(roleType))+'</span><strong>'+escapeHtml(item.name||'待命名角色')+'</strong><small>内部标识 '+escapeHtml(item.character_key)+'，角色改名不会改变内部关联</small></div><div class="short-drama-role-completion">'+liveActionRoleCompletion(item).percent+'%</div></header>'+
+          (roleProtected?'<p class="short-drama-role-protected">该角色已有付费或锁定的角色标准图，不能直接修改或删除。角色标准图仍可在下方重新生成或确认。</p>':'')+
+          '<fieldset class="short-drama-role-profile"'+(roleProtected?' disabled':'')+'>'+
           '<section class="short-drama-role-section"><div class="short-drama-role-section-title"><b>01</b><span><strong>基础信息</strong><small>角色是谁，以及在故事中的作用</small></span></div><div class="short-drama-role-fields">'+
           '<label>角色名称 <em class="short-drama-required">*</em><input data-role-field="name" maxlength="80" value="'+escapeHtml(item.name)+'"></label>'+
           '<label>角色类型<select data-role-field="role_type"><option value="main"'+(roleType==='main'?' selected':'')+'>主要角色</option><option value="support"'+(roleType==='support'?' selected':'')+'>次要角色</option><option value="crowd"'+(roleType==='crowd'?' selected':'')+'>群演</option></select></label>'+
@@ -1280,7 +1283,7 @@
           '<label>固定颜色<input data-role-field="fixed_colors" maxlength="160" placeholder="例如：米白上衣、深蓝长裤" value="'+escapeHtml(item.fixed_colors)+'"></label>'+
           '<label>固定配饰<input data-role-field="accessories" maxlength="160" placeholder="眼镜、手表、包等" value="'+escapeHtml(item.accessories)+'"></label>'+
           '<label class="wide">外貌补充<textarea data-role-field="appearance_prompt" maxlength="500" placeholder="其他需要保持一致的视觉特征">'+escapeHtml(item.appearance_prompt)+'</textarea></label>'+
-          '</div><div class="short-drama-role-views"><span>角色参考图将包含</span><b>正面全身</b><b>侧面全身</b><b>正面半身</b></div></section>'+
+          '</div><div class="short-drama-role-views"><span>角色参考图将包含</span><b>正面全身</b><b>侧面全身</b><b>正面半身</b></div></section></fieldset>'+
           '<section class="short-drama-role-reference"><div class="short-drama-role-section-title"><b>04</b><span><strong>角色标准图</strong><small>确认后与角色绑定，后续视频镜头统一引用</small></span></div><div class="short-drama-role-reference-card">'+
           (item.reference_url||item.reference_file?'<img src="'+escapeHtml(item.reference_url||item.reference_file)+'" alt="'+escapeHtml(item.name||'角色')+'标准图">':'<div class="short-drama-role-reference-empty">尚未生成角色标准图</div>')+
           '<div><strong>'+(item.reference_locked?'标准图已锁定':(item.reference_url||item.reference_file?'标准图待确认':'等待生成'))+'</strong><small>'+(item.reference_locked?'版本 v'+(Number(item.reference_version)||1)+' 已绑定，后续视频将优先使用此形象。':(item.reference_url||item.reference_file?'请预览三视图，确认人物、服装与体型无误后再锁定。':'先保存当前角色资料，再生成标准图；生成完成不会自动锁定。'))+'</small>'+
@@ -1604,8 +1607,10 @@
       var select=event.target.closest('[data-role-select]'),remove=event.target.closest('[data-role-remove]');collectLiveActionRoles();
       if(remove){
         if(liveActionRoles.length<=1)return showLiveActionError('至少需要保留一个角色。',true);
+        var removeIndex=Number(remove.getAttribute('data-role-remove')),removed=liveActionRoles[removeIndex];
+        if(liveActionRoleHasReferenceActivity(removed))return showLiveActionError('该角色已有付费或锁定的角色标准图，不能直接修改或删除。',true);
         if(runtimeRoot.confirm&& !runtimeRoot.confirm('确定删除这个角色吗？已填写的资料将一并移除。'))return;
-        var removeIndex=Number(remove.getAttribute('data-role-remove')),removed=liveActionRoles[removeIndex];if(removed)delete savedLiveActionRoleSignatures[text(removed.character_key)];liveActionRoles.splice(removeIndex,1);
+        if(removed)delete savedLiveActionRoleSignatures[text(removed.character_key)];liveActionRoles.splice(removeIndex,1);
         if(activeLiveActionRole>removeIndex)activeLiveActionRole-=1;else if(activeLiveActionRole>=liveActionRoles.length)activeLiveActionRole=liveActionRoles.length-1;
         renderLiveActionRoles();showLiveActionError('',true);return;
       }
@@ -1613,6 +1618,7 @@
     });
     doc.getElementById('shortDramaSaveRole').addEventListener('click',function(){
       var button=doc.getElementById('shortDramaSaveRole');if(button.disabled)return;
+      if(liveActionRoleHasReferenceActivity(liveActionRoles[activeLiveActionRole]))return showLiveActionError('该角色已有付费或锁定的角色标准图，不能直接修改或删除。',true);
       collectLiveActionRoles();var error=validateLiveActionRole(activeLiveActionRole);if(error){showLiveActionError(error,true);focusLiveActionRoleError(activeLiveActionRole);return;}
       button.disabled=true;button.textContent='正在保存…';showLiveActionError('',true);
       persistLiveActionRoles({partial:true,roleIndex:activeLiveActionRole}).then(function(){
@@ -1711,5 +1717,5 @@
     load().catch(function(){});
     return {reload:load,render:render};
   }
-  return {STAGES:STAGES,LABELS:LABELS,normalizeProject:normalizeProject,progress:progress,filterProjects:filterProjects,metrics:metrics,deleteErrorMessage:deleteErrorMessage,createPayload:createPayload,liveActionProjectHasReferenceActivity:liveActionProjectHasReferenceActivity,discardPendingLiveActionProject:discardPendingLiveActionProject,compactIdea:compactIdea,plannerChoiceIndex:plannerChoiceIndex,plannerResolveChoice:plannerResolveChoice,plannerUnderstanding:plannerUnderstanding,plannerCompleteness:plannerCompleteness,plannerFlowState:plannerFlowState,buildRecommendations:buildRecommendations,advisorStep:advisorStep,plannerLocalIntent:plannerLocalIntent,plannerLocalFieldUpdates:plannerLocalFieldUpdates,plannerLocalAdvice:plannerLocalAdvice,applyAdvisorResult:applyAdvisorResult,plannerMetaSnapshot:plannerMetaSnapshot,applyAdvisorMetadata:applyAdvisorMetadata,plannerConversationAudit:plannerConversationAudit,plannerAnswerSnapshot:plannerAnswerSnapshot,plannerChangedFields:plannerChangedFields,plannerRecap:plannerRecap,plannerProgress:plannerProgress,plannerAffectedLayers:plannerAffectedLayers,rebuildPlannerPreview:rebuildPlannerPreview,plannerDurations:plannerDurations,plannerRoles:plannerRoles,plannerReadingSeconds:plannerReadingSeconds,plannerStoryPlan:plannerStoryPlan,plannerScenePlan:plannerScenePlan,plannerDialogueSet:plannerDialogueSet,plannerQuality:plannerQuality,plannerReview:plannerReview,repairPlannerPreview:repairPlannerPreview,buildPlannerPreview:buildPlannerPreview,plannerPromotionMessages:plannerPromotionMessages,plannerConfirmedContract:plannerConfirmedContract,plannerWordDocumentHtml:plannerWordDocumentHtml,plannerWordFilename:plannerWordFilename,confirmedContractMatches:confirmedContractMatches,continuePlannerContract:continuePlannerContract,importedTitle:importedTitle,importedGlobalUnderstanding:importedGlobalUnderstanding,analyzeImportedScript:analyzeImportedScript,importProjectPayload:importProjectPayload,characterContractFromAnalysis:characterContractFromAnalysis,defaultManualCharacterContract:defaultManualCharacterContract,normalizeCharacterContract:normalizeCharacterContract,newImportKey:newImportKey,newProjectKey:newProjectKey,plannerDraftStorageKey:plannerDraftStorageKey,plannerDraftMatchesUser:plannerDraftMatchesUser,plannerDraftActiveChoices:plannerDraftActiveChoices,readPlannerDraftRecord:readPlannerDraftRecord,writePlannerDraftRecord:writePlannerDraftRecord,readLimitedStream:readLimitedStream,extractPdfText:extractPdfText,extractDocxText:extractDocxText,readScriptFile:readScriptFile,createClient:createClient,projectUrl:projectUrl,cardHtml:cardHtml,mount:mount};
+  return {STAGES:STAGES,LABELS:LABELS,normalizeProject:normalizeProject,progress:progress,filterProjects:filterProjects,metrics:metrics,deleteErrorMessage:deleteErrorMessage,createPayload:createPayload,liveActionRoleHasReferenceActivity:liveActionRoleHasReferenceActivity,liveActionProjectHasReferenceActivity:liveActionProjectHasReferenceActivity,discardPendingLiveActionProject:discardPendingLiveActionProject,compactIdea:compactIdea,plannerChoiceIndex:plannerChoiceIndex,plannerResolveChoice:plannerResolveChoice,plannerUnderstanding:plannerUnderstanding,plannerCompleteness:plannerCompleteness,plannerFlowState:plannerFlowState,buildRecommendations:buildRecommendations,advisorStep:advisorStep,plannerLocalIntent:plannerLocalIntent,plannerLocalFieldUpdates:plannerLocalFieldUpdates,plannerLocalAdvice:plannerLocalAdvice,applyAdvisorResult:applyAdvisorResult,plannerMetaSnapshot:plannerMetaSnapshot,applyAdvisorMetadata:applyAdvisorMetadata,plannerConversationAudit:plannerConversationAudit,plannerAnswerSnapshot:plannerAnswerSnapshot,plannerChangedFields:plannerChangedFields,plannerRecap:plannerRecap,plannerProgress:plannerProgress,plannerAffectedLayers:plannerAffectedLayers,rebuildPlannerPreview:rebuildPlannerPreview,plannerDurations:plannerDurations,plannerRoles:plannerRoles,plannerReadingSeconds:plannerReadingSeconds,plannerStoryPlan:plannerStoryPlan,plannerScenePlan:plannerScenePlan,plannerDialogueSet:plannerDialogueSet,plannerQuality:plannerQuality,plannerReview:plannerReview,repairPlannerPreview:repairPlannerPreview,buildPlannerPreview:buildPlannerPreview,plannerPromotionMessages:plannerPromotionMessages,plannerConfirmedContract:plannerConfirmedContract,plannerWordDocumentHtml:plannerWordDocumentHtml,plannerWordFilename:plannerWordFilename,confirmedContractMatches:confirmedContractMatches,continuePlannerContract:continuePlannerContract,importedTitle:importedTitle,importedGlobalUnderstanding:importedGlobalUnderstanding,analyzeImportedScript:analyzeImportedScript,importProjectPayload:importProjectPayload,characterContractFromAnalysis:characterContractFromAnalysis,defaultManualCharacterContract:defaultManualCharacterContract,normalizeCharacterContract:normalizeCharacterContract,newImportKey:newImportKey,newProjectKey:newProjectKey,plannerDraftStorageKey:plannerDraftStorageKey,plannerDraftMatchesUser:plannerDraftMatchesUser,plannerDraftActiveChoices:plannerDraftActiveChoices,readPlannerDraftRecord:readPlannerDraftRecord,writePlannerDraftRecord:writePlannerDraftRecord,readLimitedStream:readLimitedStream,extractPdfText:extractPdfText,extractDocxText:extractDocxText,readScriptFile:readScriptFile,createClient:createClient,projectUrl:projectUrl,cardHtml:cardHtml,mount:mount};
 });

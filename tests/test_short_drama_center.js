@@ -874,6 +874,26 @@ test('editing a persisted live action draft replaces it unless reference work ex
   assert.match(centerScript, /pendingLiveActionProject=null;pendingLiveActionKey='';pendingLiveActionDiscardKey='';savedLiveActionRoleSignatures=\{\}/);
 });
 
+test('paid or locked live action roles expose reference asset protection', () => {
+  const empty = {
+    character_key:'character_1', reference_job_id:null, reference_file:'',
+    reference_url:'', reference_version:0, reference_locked:false
+  };
+  assert.equal(center.liveActionRoleHasReferenceActivity(empty), false);
+  for (const marker of [
+    {reference_job_id:9}, {reference_file:'role.png'},
+    {reference_url:'https://example.test/role.png'}, {reference_version:1},
+    {reference_locked:true}
+  ]) {
+    assert.equal(
+      center.liveActionRoleHasReferenceActivity({...empty, ...marker}), true
+    );
+  }
+  assert.match(centerScript, /该角色已有付费或锁定的角色标准图，不能直接修改或删除/);
+  assert.match(centerScript, /liveActionRoleHasReferenceActivity\(removed\)/);
+  assert.match(centerScript, /class="short-drama-role-profile".*disabled/);
+});
+
 test('live action roles only require name gender and fixed clothing before reference generation', () => {
   assert.match(centerScript, /var fields=\['name','gender','fixed_clothing'\]/);
   assert.match(centerScript, /function validateLiveActionRole\(index\)/);

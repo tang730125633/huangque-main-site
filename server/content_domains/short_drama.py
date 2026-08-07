@@ -83,6 +83,10 @@ class CharacterReferenceIdempotencyConflict(ValueError):
     pass
 
 
+class CharacterReferenceProtected(ValueError):
+    pass
+
+
 class ProjectLimitExceeded(ValueError):
     def __init__(self, max_projects):
         super().__init__("短剧项目数量已达上限")
@@ -3581,6 +3585,47 @@ def _live_action_contract_character_payload(characters):
     ]
 
 
+def _character_has_reference_asset(character):
+    return bool(
+        character.get("reference_job_id")
+        or character.get("reference_file")
+        or character.get("reference_url")
+        or int(character.get("reference_version") or 0) > 0
+        or character.get("reference_locked")
+    )
+
+
+def _character_reference_activity_keys(conn, project_id):
+    protected = set()
+    if _table_columns(conn, "short_drama_character_reference_attempts"):
+        protected.update(
+            row[0] for row in conn.execute(
+                "SELECT DISTINCT character_key FROM "
+                "short_drama_character_reference_attempts WHERE project_id=? "
+                "AND state IN ('accepted','charged','linked','refund_pending')",
+                (project_id,),
+            ).fetchall()
+        )
+    if _table_columns(conn, "short_drama_character_reference_jobs"):
+        job_columns = _table_columns(conn, "jobs")
+        if job_columns:
+            refund_clause = (
+                "AND (j.id IS NULL OR COALESCE(j.refunded,0)<>1) "
+                if "refunded" in job_columns else ""
+            )
+            protected.update(
+                row[0] for row in conn.execute(
+                    "SELECT DISTINCT r.character_key FROM "
+                    "short_drama_character_reference_jobs r "
+                    "LEFT JOIN jobs j ON j.id=r.job_id WHERE r.project_id=? "
+                    "AND r.status='linked' "
+                    + refund_clause,
+                    (project_id,),
+                ).fetchall()
+            )
+    return protected
+
+
 def update_characters(db_factory, username, project_id, revision, characters, avatar_lookup=None,
                       *, character_contract=None):
     required_stage = "characters_review"
@@ -3668,6 +3713,19 @@ def update_characters(db_factory, username, project_id, revision, characters, av
         existing_by_key = {
             character["character_key"]: character for character in project["characters"]
         }
+        reference_activity_keys = _character_reference_activity_keys(
+            conn, project_id
+        )
+        submitted_keys = {
+            character["character_key"] for character in normalized_characters
+        }
+        for character_key, existing in existing_by_key.items():
+            if ((_character_has_reference_asset(existing)
+                 or character_key in reference_activity_keys)
+                    and character_key not in submitted_keys):
+                raise CharacterReferenceProtected(
+                    "该角色已有付费或锁定的角色标准图，不能删除"
+                )
         reference_fields = (
             "name", "identity_text", "personality", "source_type", "avatar_id",
             "appearance_prompt", "wardrobe_prompt",
@@ -3678,6 +3736,14 @@ def update_characters(db_factory, username, project_id, revision, characters, av
             reference_changed = bool(existing) and any(
                 character.get(field) != existing.get(field) for field in reference_fields
             )
+            reference_protected = bool(existing) and (
+                _character_has_reference_asset(existing)
+                or character["character_key"] in reference_activity_keys
+            )
+            if reference_changed and reference_protected:
+                raise CharacterReferenceProtected(
+                    "该角色已有付费或锁定的角色标准图，不能直接修改资料"
+                )
             if existing and not reference_changed:
                 character["reference_job_id"] = existing.get("reference_job_id")
                 character["reference_file"] = existing.get("reference_file") or ""
@@ -4226,6 +4292,12 @@ def _http_error(handler, error, *, operation_terminal=False):
     elif isinstance(error, ScriptImportError):
         handler._send(error.status, {
             "detail": str(error)[:220], "code": error.code, **terminal,
+        })
+    elif isinstance(error, CharacterReferenceProtected):
+        handler._send(409, {
+            "detail": str(error)[:220],
+            "code": "character_reference_protected",
+            **terminal,
         })
     elif isinstance(error, ProjectCreationError):
         handler._send(error.status, {
