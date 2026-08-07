@@ -42,12 +42,11 @@ main{position:relative;z-index:2}
 .hero::after{content:"";position:absolute;right:0;bottom:0;left:0;height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.16),transparent)}
 .hero-copy{position:relative;z-index:5;width:min(680px,47vw);transform:translate3d(calc(var(--px) * -5px),calc(var(--py) * -3px),0)}
 .eyebrow{display:flex;align-items:center;gap:10px;color:#a8abb8;font:500 10px/1.4 var(--mono);letter-spacing:.16em}.eyebrow span{width:5px;height:5px;border-radius:50%;background:var(--amber);box-shadow:0 0 18px var(--amber)}
-h1{margin-top:35px;font:500 clamp(58px,6.4vw,116px)/1.06 var(--serif);letter-spacing:-.075em;text-wrap:balance;text-shadow:0 2px 28px rgba(0,0,0,.5)}
-h1 span{color:#dcb77b}
-.lead{margin-top:32px;color:#a3a7b4;font-size:15px;line-height:2;letter-spacing:.025em}
-.actions{display:flex;align-items:center;gap:30px;margin-top:42px}
+.hero-manifesto{margin-top:42px;font:500 clamp(30px,3.2vw,52px)/1.42 var(--serif);letter-spacing:-.035em;text-shadow:0 2px 28px rgba(0,0,0,.5)}
+.hero-note{margin-top:22px;color:#a3a7b4;font-size:14px;line-height:2;letter-spacing:.025em}
+.hero-route{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;max-width:520px;margin:44px 0 0;padding:0;list-style:none;color:#c7c9d1;font:500 10px/1 var(--mono);letter-spacing:.12em}
+.hero-route li{display:grid;gap:10px;padding-top:11px;border-top:1px solid rgba(255,255,255,.18)}.hero-route span{color:#b98c4d;font-size:8px}
 .primary{display:inline-flex;min-height:52px;align-items:center;gap:28px;padding:0 24px;background:var(--paper);color:#080a10;font-size:13px;font-weight:650;transition:transform .25s ease,background .25s ease}.primary:hover{transform:translateY(-3px);background:#fff}
-.secondary{padding:10px 0;color:#d4d5db;font-size:12px;border-bottom:1px solid rgba(255,255,255,.25)}.secondary span{margin-left:14px;color:var(--amber)}
 
 .bird-stage{position:absolute;z-index:3;top:3%;right:-9%;width:min(76vw,1220px);height:94%;transform:translate3d(calc(var(--px) * 18px),calc(var(--py) * 12px + var(--flight) * -13vh),0) rotate(calc(var(--px) * .7deg + var(--flight) * -3deg)) scale(calc(1 + var(--flight) * .12));transform-origin:58% 58%;will-change:transform}
 .bird-stage img{position:absolute;z-index:2;inset:0;width:100%;height:100%;object-fit:contain;mix-blend-mode:screen;filter:saturate(1.18) contrast(1.09) drop-shadow(0 0 28px rgba(54,92,255,.22));opacity:calc(1 - var(--flight) * .12)}
@@ -77,15 +76,15 @@ h1 span{color:#dcb77b}
 
 @media (max-width:900px){
   .topbar{grid-template-columns:1fr auto;padding:18px 20px}.topbar nav{display:none}
-  .hero{align-items:flex-start;padding:132px 22px 60px}.hero-copy{width:92vw}.eyebrow{font-size:8px}h1{font-size:clamp(52px,12vw,82px)}
-  .bird-stage{top:30%;right:-32%;width:128vw;height:70%;opacity:.82}.lead{max-width:500px}.coordinates{display:none}
+  .hero{align-items:flex-start;padding:132px 22px 60px}.hero-copy{width:92vw}.eyebrow{font-size:8px}
+  .bird-stage{top:30%;right:-32%;width:128vw;height:70%;opacity:.82}.hero-note{max-width:500px}.coordinates{display:none}
   .chapter{grid-template-columns:1fr;min-height:84svh}.chapter-copy,.chapter:nth-child(even) .chapter-copy{grid-column:1}.chapter-word{font-size:24vw}
 }
 
 @media (max-width:560px){
   .brand small{display:none}.workspace{font-size:10px}.workspace span{margin-left:6px}
-  .hero{min-height:100svh;padding:118px 16px 54px}.hero-copy{width:100%}h1{margin-top:26px;font-size:clamp(46px,15vw,68px);line-height:1.08}.lead{margin-top:22px;font-size:13px;line-height:1.85}.lead br{display:none}
-  .actions{align-items:flex-start;flex-direction:column;gap:18px;margin-top:28px}.primary{min-height:48px}.bird-stage{top:38%;right:-42%;width:154vw;height:64%;opacity:.68}.scroll{bottom:20px;left:16px}.story{padding:100px 18px}.story h2{font-size:clamp(40px,12vw,58px)}
+  .hero{min-height:100svh;padding:118px 16px 54px}.hero-copy{width:100%}.hero-manifesto{margin-top:26px;font-size:clamp(28px,9vw,42px)}.hero-note{margin-top:18px;font-size:13px;line-height:1.85}.hero-note br{display:none}.hero-route{grid-template-columns:repeat(2,minmax(0,110px));gap:16px 22px;margin-top:28px}
+  .primary{min-height:48px}.bird-stage{top:38%;right:-42%;width:154vw;height:64%;opacity:.68}.scroll{bottom:20px;left:16px}.story{padding:100px 18px}.story h2{font-size:clamp(40px,12vw,58px)}
   .chapter{min-height:78svh;padding:96px 18px}.chapter h2{font-size:clamp(42px,12vw,58px)}.chapter-copy>p:not(.chapter-kicker){font-size:13px}.chapter-word{font-size:28vw}.closing{min-height:82svh;padding:100px 18px}
 }
 
