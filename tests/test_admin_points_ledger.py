@@ -10,7 +10,8 @@ class AdminPointsLedgerTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
     def test_has_dedicated_points_module_and_filters(self):
-        self.assertIn('data-module-tab="points"', self.html)
+        self.assertIn('data-module-switch="points"', self.html)
+        self.assertIn("sidebarModule = {points:'recharge',pricing:'features'}", self.html)
         self.assertIn('data-module="points"', self.html)
         self.assertIn('id="pointsUser"', self.html)
         self.assertIn('id="pointsActor"', self.html)
