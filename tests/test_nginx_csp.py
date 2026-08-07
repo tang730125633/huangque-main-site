@@ -21,21 +21,24 @@ class NginxCspTest(unittest.TestCase):
                     config,
                 )
 
-                self.assertEqual(len(policies), 4)
-                self.assertTrue(all(policy == policies[0] for policy in policies))
+                self.assertEqual(len(policies), 5)
+                self.assertEqual(
+                    sum("frame-ancestors 'none'" in policy for policy in policies), 4,
+                )
+                self.assertEqual(
+                    sum("frame-ancestors 'self'" in policy for policy in policies), 1,
+                )
                 for directive in (
                     "base-uri 'self'",
                     "object-src 'none'",
-                    "frame-ancestors 'none'",
                     "script-src 'self' 'unsafe-inline' https://unpkg.com",
                     "style-src 'self' 'unsafe-inline' https://unpkg.com",
                 ):
-                    self.assertIn(directive, policies[0])
+                    self.assertTrue(all(directive in policy for policy in policies))
 
     def test_security_headers_cover_server_and_header_overrides(self):
-        expected = (
+        inherited = (
             'add_header Strict-Transport-Security "max-age=31536000" always;',
-            'add_header X-Frame-Options "DENY" always;',
             'add_header X-Content-Type-Options "nosniff" always;',
             'add_header Referrer-Policy "strict-origin-when-cross-origin" always;',
         )
@@ -43,8 +46,25 @@ class NginxCspTest(unittest.TestCase):
             config = self._config(relative_path)
             with self.subTest(config=relative_path):
                 self.assertEqual(config.count("server_tokens off;"), 2)
-                for header in expected:
-                    self.assertEqual(config.count(header), 4, header)
+                for header in inherited:
+                    self.assertEqual(config.count(header), 5, header)
+                self.assertEqual(
+                    config.count('add_header X-Frame-Options "DENY" always;'), 4,
+                )
+                self.assertEqual(
+                    config.count('add_header X-Frame-Options "SAMEORIGIN" always;'), 1,
+                )
+
+    def test_only_video_journeys_allow_same_origin_admin_embedding(self):
+        for relative_path in self.CONFIGS:
+            config = self._config(relative_path)
+            with self.subTest(config=relative_path):
+                start = config.index("location ~ ^/workbench/(video|one-click-video)$ {")
+                end = config.index("\n    }", start)
+                block = config[start:end]
+                self.assertIn("frame-ancestors 'self'", block)
+                self.assertIn('X-Frame-Options "SAMEORIGIN"', block)
+                self.assertIn("try_files $uri.html =404;", block)
 
     def test_root_serves_the_marketing_homepage(self):
         for relative_path in self.CONFIGS:

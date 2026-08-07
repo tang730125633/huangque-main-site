@@ -12,9 +12,13 @@ def _endpoint(method, path):
     return {"method": method, "path": path}
 
 
-QA_FACE_IMAGE = "/workbench/assets/mock_result_1.webp"
+QA_FACE_IMAGE = "/workbench/assets/qa/zelong-portrait.jpg"
+QA_FULL_BODY_IMAGE = "/workbench/assets/qa/zelong-full-body.jpg"
+QA_OUTFIT_IMAGE = "/workbench/assets/qa/tryon-outfit.jpg"
+QA_BACKGROUND_IMAGE = "/workbench/assets/qa/tryon-background.jpg"
+QA_VOICE_AUDIO = "/workbench/assets/qa/zelong-voice-5s.mp3"
 QA_PRODUCT_IMAGE = "/assets/inspirations/beauty_001.webp"
-QA_MOTION_VIDEO = "/workbench/assets/motions/gesture-01.mp4"
+QA_MOTION_VIDEO = "/workbench/assets/qa/zelong-motion.mp4"
 QA_PROMPT = "琥珀色精华瓶置于石台上，晨光缓慢扫过瓶身，镜头平稳推进，无文字无标识"
 
 
@@ -127,8 +131,8 @@ VIDEO_FUNCTIONS = [
                 "price_keys": ["video.talking.block"],
                 "smoke_inputs": ["正脸人物图或已有形象", "短 MP3/WAV/M4A 音频"],
                 "validation": _validation(
-                    {"mode": "audio", "image_url": QA_FACE_IMAGE},
-                    ["从测试账号音频资产选择一段 3–5 秒口播音频"],
+                    {"mode": "audio", "image_url": QA_FACE_IMAGE,
+                     "audio_url": QA_VOICE_AUDIO},
                 ),
             },
         ],
@@ -217,8 +221,8 @@ VIDEO_FUNCTIONS = [
                 "price_keys": ["video.tryon.single"],
                 "smoke_inputs": ["人物照片", "衣服图"],
                 "validation": _validation(
-                    {"mode": "tryon", "reference_video_url": QA_FACE_IMAGE},
-                    ["在客户页补一张授权测试衣服图"],
+                    {"mode": "tryon", "reference_video_url": QA_FULL_BODY_IMAGE,
+                     "image_url": QA_OUTFIT_IMAGE},
                 ),
             },
             {
@@ -236,8 +240,9 @@ VIDEO_FUNCTIONS = [
                 "price_keys": ["video.tryon.single", "video.tryon.double"],
                 "smoke_inputs": ["人物视频", "衣服图或背景图"],
                 "validation": _validation(
-                    {"mode": "tryon", "reference_video_url": QA_MOTION_VIDEO},
-                    ["在客户页补一张授权测试衣服图或背景图"],
+                    {"mode": "tryon", "reference_video_url": QA_MOTION_VIDEO,
+                     "image_url": QA_OUTFIT_IMAGE,
+                     "background_url": QA_BACKGROUND_IMAGE},
                 ),
             },
         ],

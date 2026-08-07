@@ -373,9 +373,14 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             "var routeUnverified=", "&force=1",
             "var evidence=registryRouteEvidence({key:meta.key}",
             "完整旅程验收", "data-operation-validation-enable=", "openOperationValidation",
-            "打开真实客户页验收", "hq_video_prefill", "qa_operation",
+            "载入预设并开始完整验收", "hq_video_prefill", "qa_operation",
+            'id="operationsValidationLayer"', 'id="operationsValidationFrame"',
+            "function closeOperationValidation", "固定夹具 → 后台内嵌客户页",
+            '.ops-validation-media{display:grid;grid-template-columns:repeat(3,64px)',
+            '.ops-catalog{position:static;max-height:none}',
         ):
             self.assertIn(marker, html)
+        self.assertNotIn("window.open(target", html)
         self.assertNotIn('data-module-tab="ops"', html)
         self.assertNotIn('data-module-tab="points"', html)
         self.assertNotIn('data-module-tab="pricing"', html)
