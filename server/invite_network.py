@@ -66,7 +66,8 @@ def verify_node_grant(token, viewer_id, secret, now=None):
 
 def _membership(conn, user_id, now):
     row = conn.execute(
-        """SELECT id,username,membership_tier,membership_expires_at,account_status
+        """SELECT id,username,display_name,account_id,membership_tier,
+                  membership_expires_at,account_status
              FROM users WHERE id=?""",
         (int(user_id),),
     ).fetchone()
@@ -108,7 +109,7 @@ def _person(conn, user_id, viewer_id, secret, relation, can_browse, now,
     if not row:
         raise NetworkError("not_found", "用户不存在", 404)
     card = conn.execute(
-        """SELECT public_id,status,discoverable_in_network
+        """SELECT public_id,status,discoverable_in_network,avatar_key
             FROM business_cards WHERE user_id=?""",
         (int(user_id),),
     ).fetchone()
@@ -126,16 +127,18 @@ def _person(conn, user_id, viewer_id, secret, relation, can_browse, now,
     points, reward_status, expires_at = (0, "", 0)
     if relation_id is not None:
         points, reward_status, expires_at = _reward_display(conn, relation_id, hide_rewards)
+    active_account = str(row["account_status"] or "active") == "active"
+    name = business_cards.network_account_name(row) if active_account else "已停用用户"
+    avatar = business_cards._media_url(card["avatar_key"]) if active_account and card else ""
     return {
-        "username": row["username"],
         "membership_tier": tier,
         "membership_name": MEMBERSHIP_NAMES.get(tier, "非会员"),
         "relation": relation,
         "card_available": bool(card_public_id),
         "card_public_id": card_public_id,
-        "name": public_card.get("name", ""),
+        "name": name,
         "title": public_card.get("title", ""),
-        "avatar": public_card.get("avatar", ""),
+        "avatar": avatar,
         "node_grant": issue_node_grant(viewer_id, user_id, secret, now) if can_browse else "",
         "reward_points": int(points),
         "reward_status": reward_status,
