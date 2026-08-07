@@ -209,14 +209,31 @@ def _wait(task_id):
 
 def _safe_upstream_video_url(value):
     base = urllib.parse.urlsplit(PIXELLE_API_URL)
+    base_prefix = base.path.rstrip("/")
     parsed = urllib.parse.urlsplit(str(value or ""))
     if not parsed.scheme and not parsed.netloc:
-        parsed = urllib.parse.urlsplit(PIXELLE_API_URL + "/" + str(value).lstrip("/"))
+        relative_path = "/" + str(value).lstrip("/")
+        if base_prefix and relative_path.startswith(base_prefix + "/"):
+            resolved_path = relative_path
+        else:
+            resolved_path = base_prefix + relative_path
+        parsed = urllib.parse.urlsplit(urllib.parse.urlunsplit((
+            base.scheme,
+            base.netloc,
+            resolved_path,
+            "",
+            "",
+        )))
     if (parsed.scheme, parsed.netloc) != (base.scheme, base.netloc):
         raise RuntimeError("视频生成服务返回了无效的文件地址")
-    if not parsed.path.startswith("/api/files/"):
+    prefixed_files = base_prefix + "/api/files/"
+    if parsed.path.startswith(prefixed_files):
+        return urllib.parse.urlunsplit(parsed)
+    if parsed.path.startswith("/api/files/"):
+        parsed = parsed._replace(path=base_prefix + parsed.path)
+        return urllib.parse.urlunsplit(parsed)
+    else:
         raise RuntimeError("视频生成服务返回了无效的文件路径")
-    return urllib.parse.urlunsplit(parsed)
 
 
 def _download_video(url, job_id):
