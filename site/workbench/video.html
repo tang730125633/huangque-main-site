@@ -1294,6 +1294,7 @@
     var m=String((x&&x.mode)||(x&&x.channel)||'').toLowerCase();
     if(!m||m==='text'||m==='audio') return '数字化 IP';
     if(m==='cinematic') return '电影化身';
+    if(m==='video_compose') return '一键成片';
     if(m==='motion') return '影视级模仿';
     if(m==='tryon') return '换装换背景';
     if(m==='grok') return '果肉视频';
@@ -1411,14 +1412,14 @@
     var mode=String((x&&x.mode)||(x&&x.channel)||'').toLowerCase();
     if(!mode||mode==='text'||mode==='audio') return {key:'talking',label:'数字化 IP'};
     if(mode==='cinematic'||mode==='motion') return {key:'cinematic',label:'电影化身'};
-    var labels={tryon:'换装换背景',grok:'果肉视频',sora:'Sora 2',minimax:'麦克视频',omni:'Omni 视频',micro:'Seedance 视频'};
+    var labels={video_compose:'一键成片',tryon:'换装换背景',grok:'果肉视频',sora:'Sora 2',minimax:'麦克视频',omni:'Omni 视频',micro:'Seedance 视频'};
     return {key:mode,label:labels[mode]||videoModeTag(x)};
   }
   function syncHistoryChannelFilter(items){
     var select=$('historyChannelFilter'); if(!select) return;
     var channels={};
     (items||[]).forEach(function(x){var info=videoChannelInfo(x);channels[info.key]=info.label;});
-    var order=['talking','cinematic','tryon','grok','sora','minimax','omni','micro'];
+    var order=['talking','cinematic','video_compose','tryon','grok','sora','minimax','omni','micro'];
     select.innerHTML='<option value="all">全部渠道</option>';
     Object.keys(channels).sort(function(a,b){
       var ai=order.indexOf(a),bi=order.indexOf(b);
