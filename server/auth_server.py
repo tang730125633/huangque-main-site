@@ -92,6 +92,7 @@ MEMBERSHIP_DISCOUNT_BPS = {
 ANNOUNCEMENT_REQUEST_ID_MAX_LENGTH = 128
 SHANGHAI_TZ = datetime.timezone(datetime.timedelta(hours=8))
 MEMBERSHIP_ENFORCEMENT_ENV = "HQ_MEMBERSHIP_ENFORCEMENT_ENABLED"
+E2E_TEST_USERNAME = os.environ.get("HQ_E2E_TEST_USERNAME", "").strip()
 VIRTUAL_PAY_RECONCILE_INTERVAL_SECONDS = 60
 VIRTUAL_PAY_RECONCILE_BATCH = 100
 VIRTUAL_PAY_RECONCILE_MIN_AGE_SECONDS = 10
@@ -4933,6 +4934,40 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
+        if p == "/api/auth/admin/e2e/session":
+            if not self._require_internal():
+                return
+            if not self._require_admin_user():
+                return
+            if not E2E_TEST_USERNAME:
+                return self._send(503, {"detail": "尚未配置专用 E2E 测试账号"})
+            c = db()
+            try:
+                row = c.execute(
+                    "SELECT * FROM users WHERE username=? AND COALESCE(account_status,'active')='active'",
+                    (E2E_TEST_USERNAME,),
+                ).fetchone()
+                if not row or row["role"] != "member":
+                    return self._send(503, {"detail": "专用 E2E 测试账号不可用"})
+                if initial_password_change_required(row):
+                    return self._send(503, {"detail": "专用 E2E 测试账号仍需修改初始密码"})
+                membership = membership_for_row(row)
+                if membership_enforcement_enabled() and not membership["membership_active"]:
+                    return self._send(503, {"detail": "专用 E2E 测试账号会员已失效"})
+                token = issue_token(row["username"], c=c, ttl=120, scope="account")
+                c.commit()
+                return self._send(200, {
+                    "ok": True,
+                    "token": token,
+                    "account": {
+                        "username": row["username"],
+                        "points": int(row["points"] or 0),
+                        "membership_active": membership["membership_active"],
+                    },
+                    "expires_in": 120,
+                })
+            finally:
+                c.close()
         if p == "/api/auth/points/transfer":
             row = self._user()
             if not row:

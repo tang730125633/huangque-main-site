@@ -16,6 +16,7 @@ INTERNAL_AUTH_PATHS = (
     "/api/auth/admin/points/adjust",
     "/api/auth/admin/points/audit",
     "/api/auth/admin/users",
+    "/api/auth/admin/e2e/session",
     "/api/auth/admin/password/reset",
     "/api/auth/admin/recharge/review",
     "/api/auth/admin/recharge/orders",

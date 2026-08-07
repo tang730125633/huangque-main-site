@@ -21,12 +21,12 @@ class NginxCspTest(unittest.TestCase):
                     config,
                 )
 
-                self.assertEqual(len(policies), 5)
+                self.assertEqual(len(policies), 4)
                 self.assertEqual(
                     sum("frame-ancestors 'none'" in policy for policy in policies), 4,
                 )
                 self.assertEqual(
-                    sum("frame-ancestors 'self'" in policy for policy in policies), 1,
+                    sum("frame-ancestors 'self'" in policy for policy in policies), 0,
                 )
                 for directive in (
                     "base-uri 'self'",
@@ -47,26 +47,20 @@ class NginxCspTest(unittest.TestCase):
             with self.subTest(config=relative_path):
                 self.assertEqual(config.count("server_tokens off;"), 2)
                 for header in inherited:
-                    self.assertEqual(config.count(header), 5, header)
+                    self.assertEqual(config.count(header), 4, header)
                 self.assertEqual(
                     config.count('add_header X-Frame-Options "DENY" always;'), 4,
                 )
                 self.assertEqual(
-                    config.count('add_header X-Frame-Options "SAMEORIGIN" always;'), 1,
+                    config.count('add_header X-Frame-Options "SAMEORIGIN" always;'), 0,
                 )
 
-    def test_only_video_journeys_allow_same_origin_admin_embedding(self):
+    def test_customer_pages_cannot_be_embedded_by_admin(self):
         for relative_path in self.CONFIGS:
             config = self._config(relative_path)
             with self.subTest(config=relative_path):
-                start = config.index("location ~ ^/workbench/(video|one-click-video)$ {")
-                end = config.index("\n    }", start)
-                block = config[start:end]
-                self.assertIn("frame-ancestors 'self'", block)
-                self.assertIn('X-Frame-Options "SAMEORIGIN"', block)
-                self.assertIn("default_type text/html;", block)
-                self.assertIn("alias /var/www/huangquechuanmei/workbench/$1.html;", block)
-                self.assertNotIn("try_files", block)
+                self.assertNotIn("location ~ ^/workbench/(video|one-click-video)$", config)
+                self.assertNotIn("frame-ancestors 'self'", config)
 
     def test_root_serves_the_marketing_homepage(self):
         for relative_path in self.CONFIGS:
