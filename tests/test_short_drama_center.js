@@ -38,6 +38,8 @@ function findChromeExecutable() {
   return chromeCandidates().find(candidate => fs.existsSync(candidate));
 }
 
+const CHROME_TEST_TIMEOUT_MS = process.env.CI ? 30000 : 15000;
+
 test('一级导航包含独立短剧入口和专用图标', () => {
   assert.match(shell, /\{k:'short-drama',l:'短剧创作',i:'clapper'\}/);
   assert.match(shell, /clapper:/);
@@ -348,7 +350,7 @@ test('移动端收起创作记忆后仍可聚焦并再次展开', async () => {
     const output = await new Promise((resolve, reject) => {
       const browser = spawn(chrome, ['--headless=new','--no-sandbox','--disable-gpu','--disable-dev-shm-usage','--hide-scrollbars','--window-size=390,844','--virtual-time-budget=3000','--user-data-dir='+profile,'--dump-dom',`http://127.0.0.1:${address.port}/workbench/short-drama.html`]);
       let stdout='',stderr='';browser.stdout.on('data',chunk => {stdout+=chunk;});browser.stderr.on('data',chunk => {stderr+=chunk;});
-      const timeout = setTimeout(() => {browser.kill();reject(new Error('Chrome 响应式测试超时'));},15000);
+      const timeout = setTimeout(() => {browser.kill();reject(new Error('Chrome 响应式测试超时'));},CHROME_TEST_TIMEOUT_MS);
       browser.on('error',reject);browser.on('close',code => {clearTimeout(timeout);code===0?resolve(stdout):reject(new Error(stderr||`Chrome exited ${code}`));});
     });
     assert.match(output, /data-responsive-memory-test="pass"/);
@@ -742,7 +744,7 @@ test('saved planner draft remains optional and clearing it returns to content ty
     const output = await new Promise((resolve, reject) => {
       const browser = spawn(chrome, ['--headless=new','--no-sandbox','--disable-gpu','--disable-dev-shm-usage','--hide-scrollbars','--virtual-time-budget=4000','--user-data-dir='+profile,'--dump-dom',`http://127.0.0.1:${address.port}/workbench/short-drama.html`]);
       let stdout='',stderr='';browser.stdout.on('data',chunk => {stdout+=chunk;});browser.stderr.on('data',chunk => {stderr+=chunk;});
-      const timeout = setTimeout(() => {browser.kill();reject(new Error('Chrome 草稿入口测试超时'));},15000);
+      const timeout = setTimeout(() => {browser.kill();reject(new Error('Chrome 草稿入口测试超时'));},CHROME_TEST_TIMEOUT_MS);
       browser.on('error',reject);browser.on('close',code => {clearTimeout(timeout);code===0?resolve(stdout):reject(new Error(stderr||`Chrome exited ${code}`));});
     });
     assert.match(output, /data-draft-entry-test="pass"/);
