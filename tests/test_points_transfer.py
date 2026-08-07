@@ -34,8 +34,9 @@ class PointTransferTests(unittest.TestCase):
             c.execute(
                 """INSERT INTO users(
                        username,pw_hash,pw_salt,display_name,points,role,must_change,
-                       card_initial_password,account_id,account_status
-                   ) VALUES(?,?,?,?,?,'member',0,0,?,'active')""",
+                       card_initial_password,account_id,account_status,membership_tier,
+                       membership_started_at,membership_expires_at
+                   ) VALUES(?,?,?,?,?,'member',0,0,?,'active','partner',1,4102444800)""",
                 ("sender", password_hash, salt, "发送者", 200000, "HQAAAAAA"),
             )
             c.execute(
@@ -86,6 +87,44 @@ class PointTransferTests(unittest.TestCase):
         self.assertIn("sender_before", columns)
         self.assertIn("recipient_after", columns)
         self.assertTrue(any(name.startswith("sqlite_autoindex_point_transfers") for name in indexes))
+
+    def test_only_active_partner_and_initiator_can_send_points(self):
+        c = self.auth.db()
+        try:
+            c.execute(
+                "UPDATE users SET membership_tier='experience',membership_expires_at=4102444800 "
+                "WHERE username='sender'"
+            )
+            c.commit()
+        finally:
+            c.close()
+        self._error_code("point_transfer_not_allowed")
+        with self.assertRaises(self.auth.PointTransferError) as lookup:
+            self.auth.point_transfer_recipient("sender", "HQBBBBBB")
+        self.assertEqual(lookup.exception.code, "point_transfer_not_allowed")
+
+        c = self.auth.db()
+        try:
+            c.execute(
+                "UPDATE users SET membership_tier='partner',membership_expires_at=1 "
+                "WHERE username='sender'"
+            )
+            c.commit()
+        finally:
+            c.close()
+        self._error_code("point_transfer_not_allowed")
+
+        c = self.auth.db()
+        try:
+            c.execute(
+                "UPDATE users SET membership_tier='initiator',membership_expires_at=4102444800 "
+                "WHERE username='sender'"
+            )
+            c.commit()
+        finally:
+            c.close()
+        result = self._transfer(amount=1, request_id="transfer-initiator-0001")
+        self.assertEqual(result["points"], 199999)
 
     def test_success_is_atomic_and_writes_paired_audit_rows(self):
         result = self._transfer(amount=123)

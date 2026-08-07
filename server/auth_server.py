@@ -217,6 +217,7 @@ ACCOUNT_ID_LENGTH = 8
 ACCOUNT_ID_PREFIX = "HQ"
 ACCOUNT_ID_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 POINT_TRANSFER_DAILY_LIMIT = 100000
+POINT_TRANSFER_ALLOWED_TIERS = {"partner", "initiator"}
 POINT_TRANSFER_NOTE_MAX_LENGTH = 80
 POINT_TRANSFER_REQUEST_ID_MAX_LENGTH = 80
 POINT_TRANSFER_ACTOR = "用户赠送"
@@ -2372,6 +2373,21 @@ def _point_transfer_party(c, user_id):
     }
 
 
+def point_transfer_allowed(row, now=None):
+    membership = membership_for_row(row, now)
+    return bool(
+        membership["membership_active"]
+        and membership["membership_tier"] in POINT_TRANSFER_ALLOWED_TIERS
+    )
+
+
+def _require_point_transfer_allowed(row, now=None):
+    if not point_transfer_allowed(row, now):
+        raise PointTransferError(
+            "point_transfer_not_allowed", "仅有效合伙人和发起人可赠送点数", 403,
+        )
+
+
 def _public_point_transfer(c, row, viewer_user_id):
     sent = int(row["sender_user_id"]) == int(viewer_user_id)
     counterpart_id = row["recipient_user_id"] if sent else row["sender_user_id"]
@@ -2394,11 +2410,13 @@ def point_transfer_recipient(sender_username, account_id):
     c = db()
     try:
         sender = c.execute(
-            "SELECT id FROM users WHERE username=? AND COALESCE(account_status,'active')='active'",
+            """SELECT id,membership_tier,membership_started_at,membership_expires_at
+               FROM users WHERE username=? AND COALESCE(account_status,'active')='active'""",
             ((sender_username or "").strip(),),
         ).fetchone()
         if not sender:
             raise PointTransferError("sender_not_found", "当前账号不可用", 404)
+        _require_point_transfer_allowed(sender)
         recipient = c.execute(
             """SELECT id FROM users WHERE account_id=?
                AND COALESCE(account_status,'active')='active'""",
@@ -2448,6 +2466,7 @@ def transfer_points(sender_username, recipient_account_id, amount, password, req
         ).fetchone()
         if not sender:
             raise PointTransferError("sender_not_found", "当前账号不可用", 404)
+        _require_point_transfer_allowed(sender, now)
         if initial_password_change_required(sender):
             raise PointTransferError(
                 "initial_password_change_required", "赠送点数前请先修改初始密码", 403,

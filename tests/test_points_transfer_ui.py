@@ -17,6 +17,9 @@ class PointTransferUiTests(unittest.TestCase):
             '邀请奖励独立记录，不计入可赠送余额',
         ):
             self.assertIn(text, SETTINGS)
+        self.assertIn('id="pointsGiftCard" class="settings-card" hidden', SETTINGS)
+        self.assertIn("user.membership_tier==='partner'||user.membership_tier==='initiator'", SETTINGS)
+        self.assertIn("if(canGiftPoints(res.data.user)) loadGiftHistory(true);", SETTINGS)
 
     def test_recipient_is_resolved_before_password_confirmed_transfer(self):
         self.assertIn("/api/auth/points/transfer/recipient?account_id=", SETTINGS)

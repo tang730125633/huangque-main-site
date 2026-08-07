@@ -17,6 +17,7 @@
   .settings-sub{margin:8px 0 0;color:#94a4bb;font-size:13.5px;line-height:1.7}
   .settings-grid{display:grid;grid-template-columns:minmax(0,1.04fr) minmax(320px,.76fr);gap:18px;align-items:start}
   .settings-card{border:1px solid rgba(148,164,187,.12);border-radius:12px;background:linear-gradient(165deg,rgba(16,24,39,.66),rgba(12,18,32,.48));box-shadow:0 16px 42px rgba(0,0,0,.13);overflow:hidden}
+  .settings-card[hidden]{display:none}
   .settings-card-body{padding:20px}
   .settings-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:16px}
   .settings-card-title{font-size:16px;font-weight:800;color:#eaf1fa}
@@ -394,7 +395,7 @@
         </div>
       </section>
 
-      <section id="pointsGiftCard" class="settings-card">
+      <section id="pointsGiftCard" class="settings-card" hidden>
         <div class="settings-card-body">
           <div class="settings-card-head">
             <div>
@@ -650,9 +651,14 @@
     });
   }
 
+  function canGiftPoints(user){
+    return !!(user&&user.membership_active&&(user.membership_tier==='partner'||user.membership_tier==='initiator'));
+  }
+
   function renderUser(user){
     user = user || {};
     activeUser = user;
+    $('pointsGiftCard').hidden=!canGiftPoints(user);
     var localProfile=readJson(accountKey('hq_profile_v1'));
     var name = localProfile.nickname || user.name || user.display_name || user.username || '未命名账号';
     $('displayName').textContent = name;
@@ -1582,7 +1588,7 @@
       renderUser(res.data.user);
       loadReferrer();
       loadFriendState();
-      loadGiftHistory(true);
+      if(canGiftPoints(res.data.user)) loadGiftHistory(true);
       if(window.HQ && typeof window.HQ.refreshPoints === 'function') window.HQ.refreshPoints();
     }).catch(function(e){
       $('accountStatus').textContent = '读取失败';
