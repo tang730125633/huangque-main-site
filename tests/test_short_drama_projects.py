@@ -1669,16 +1669,34 @@ class ShortDramaRouteTests(unittest.TestCase):
             )
             db.commit()
 
-    def test_avatar_requires_idempotency_and_replays_without_second_charge(self):
+    def test_legacy_avatar_without_binding_accepts_missing_idempotency(self):
+        image_data = "data:image/png;base64," + base64.b64encode(
+            b"\x89PNG\r\n\x1a\nlegacy-payload"
+        ).decode("ascii")
+        with patch.dict(core.HANDLERS, {"avatar": lambda payload: payload}), \
+                patch.object(core, "enqueue_job", return_value=True):
+            status, response = self.request(
+                "POST", "/api/gen/avatar",
+                body={"image_data": image_data, "name": "旧版小程序"},
+            )
+        self.assertEqual(200, status)
+        self.assertIn("job_id", response)
+        self.assertEqual(1, len(self.points.deduct_calls))
+        with closing(core.jdb()) as db:
+            self.assertEqual(
+                1,
+                db.execute(
+                    "SELECT COUNT(*) FROM jobs WHERE kind='avatar'"
+                ).fetchone()[0],
+            )
+
+    def test_avatar_idempotency_replays_without_second_charge(self):
         image_data = "data:image/png;base64," + base64.b64encode(
             b"\x89PNG\r\n\x1a\npayload"
         ).decode("ascii")
         body = {"image_data": image_data, "name": "林雨"}
         with patch.dict(core.HANDLERS, {"avatar": lambda payload: payload}), \
                 patch.object(core, "enqueue_job", return_value=True):
-            missing_status, missing = self.request(
-                "POST", "/api/gen/avatar", body=body
-            )
             first_status, first = self.request(
                 "POST", "/api/gen/avatar", body=body,
                 idempotency_key="avatar-create-stable-001",
@@ -1692,8 +1710,6 @@ class ShortDramaRouteTests(unittest.TestCase):
                 body=dict(body, name="林雪"),
                 idempotency_key="avatar-create-stable-001",
             )
-        self.assertEqual(400, missing_status)
-        self.assertIn("Idempotency-Key", missing["detail"])
         self.assertEqual(200, first_status)
         self.assertEqual((first_status, first), (replay_status, replay))
         self.assertEqual(409, conflict_status)
@@ -1723,10 +1739,16 @@ class ShortDramaRouteTests(unittest.TestCase):
         with patch.dict(core.HANDLERS, {"avatar": lambda payload: payload}), \
                 patch.object(core, "enqueue_job", return_value=True), \
                 patch.object(core.miniprogram_security, "check_payload") as security_check:
+            missing_status, missing = self.request(
+                "POST", "/api/gen/avatar", body=body,
+            )
+            security_check.reset_mock()
             status, response = self.request(
                 "POST", "/api/gen/avatar", username="bob", body=body,
                 idempotency_key="bob-must-not-charge-alice-avatar",
             )
+        self.assertEqual(400, missing_status)
+        self.assertIn("Idempotency-Key", missing["detail"])
         self.assertEqual(404, status)
         security_check.assert_not_called()
         self.assertEqual(0, len(self.points.deduct_calls))
