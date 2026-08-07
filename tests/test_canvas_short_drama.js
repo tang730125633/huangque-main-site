@@ -153,9 +153,9 @@ function testOpenApiContract() {
     productionSchema.properties.handoff_blockers.items.required.includes('shot_id'),
     false,
   );
-  assert.match(voiceOperation.responses['403'].description, /??|??????/);
-  assert.doesNotMatch(voiceOperation.responses['403'].description, /????/);
-  assert.match(voiceOperation.responses['404'].description, /???|????/);
+  assert.match(voiceOperation.responses['403'].description, /密码|画布基础访问/);
+  assert.doesNotMatch(voiceOperation.responses['403'].description, /项目权限/);
+  assert.match(voiceOperation.responses['404'].description, /不存在|无权发现/);
   const voiceShot = voiceSchema.properties.shots.items;
   for (const field of [
     'id', 'shot_key', 'sort_order', 'duration', 'locked',
@@ -221,10 +221,10 @@ function testOpenApiContract() {
     'copy result uses planning shot key before persistence');
   const copyOperation = spec.paths['/api/gen/copy'].post;
   assert.doesNotMatch(copyOperation.summary + copyOperation.description + copyOperation.responses['200'].description,
-    /(?:current|currently|??|??)\s*3|3\s*?/i, 'copy pricing must come from the authenticated quote');
-  assert.match(copyOperation.responses['400'].description, /before deduction|???/i);
-  assert.match(copyOperation.responses['400'].description, /budget|??/i);
-  assert.match(copyOperation.description, /asynchronous|??/i,
+    /(?:current|currently|目前|当前)\s*3|3\s*点/i, 'copy pricing must come from the authenticated quote');
+  assert.match(copyOperation.responses['400'].description, /before deduction|未扣点/i);
+  assert.match(copyOperation.responses['400'].description, /budget|预算/i);
+  assert.match(copyOperation.description, /asynchronous|异步/i,
     'copy documentation distinguishes accepted-job failures from synchronous validation');
   const characterSchema = spec.components.schemas.ShortDramaCharacter;
   assert.equal(characterSchema.oneOf.length, 2);
@@ -232,7 +232,7 @@ function testOpenApiContract() {
     candidate.properties.source_type.enum.includes('cinematic_avatar'));
   assert.ok(cinematicAvatar.required.includes('avatar_id'));
   assert.equal(cinematicAvatar.properties.avatar_id.minLength, 1);
-  assert.match(characterSchema.description || '', /owner|????|??/i);
+  assert.match(characterSchema.description || '', /owner|当前用户|本人/i);
   const jobResult = spec.components.schemas.JobStatus.properties.result.oneOf;
   assert.equal(jobResult.some((candidate) => candidate.$ref === '#/components/schemas/ShortDramaPlanningResult'), true);
   const genericJobResult = jobResult.find((candidate) => candidate.type === 'object');
@@ -339,7 +339,7 @@ function testOpenApiContract() {
   const stillSubmissionResponses =
     spec.paths['/api/gen/short-drama/generate-stills'].post.responses;
   assert.ok(stillSubmissionResponses['502'], 'points service failures return HTTP 502');
-  assert.match(stillSubmissionResponses['502'].description, /points|??/i);
+  assert.match(stillSubmissionResponses['502'].description, /points|点数/i);
   const pointsFailure =
     stillSubmissionResponses['502'].content['application/json'].schema;
   assert.deepEqual(pointsFailure.required, ['detail', 'need']);
@@ -376,8 +376,8 @@ function testOpenApiContract() {
   }
   assert.ok(spec.paths['/api/gen/short-drama/projects'].post.responses['429'],
     'project creation documents the per-user cap');
-  assert.match(spec.components.schemas.ShortDramaProject.properties.spent_points.description, /deduct|refund|??|??/i);
-  assert.doesNotMatch(spec.paths['/api/gen/short-drama/apply-plan'].post.description, /spent_points ??/,
+  assert.match(spec.components.schemas.ShortDramaProject.properties.spent_points.description, /deduct|refund|扣点|退款/i);
+  assert.doesNotMatch(spec.paths['/api/gen/short-drama/apply-plan'].post.description, /spent_points 增加/,
     'applying a paid plan must not claim to charge or count the job a second time');
 }
 
@@ -422,9 +422,9 @@ function testCanvasIntegration() {
   assert.equal((html.match(/data-add="shortDrama"/g) || []).length, 2);
   assert.equal((html.match(/data-add="image"/g) || []).length, 2);
   assert.equal((html.match(/data-add="reverse"/g) || []).length, 2);
-  assert.match(html, /???????????/);
-  assert.match(html, /id="ncFsAdd"[^>]*>\+ ????<\/button>/);
-  assert.match(app, /shortDrama:\s*\{name:'????',\s*color:'#[a-f0-9]+'\}/);
+  assert.match(html, /双击画布空白处添加节点/);
+  assert.match(html, /id="ncFsAdd"[^>]*>\+ 添加节点<\/button>/);
+  assert.match(app, /shortDrama:\s*\{name:'短剧项目',\s*color:'#[a-f0-9]+'\}/);
   assert.ok(app.includes('data-f="openShortDrama"'));
   assert.ok(app.includes('shortDramaModule.createWorkspace('));
   assert.match(app, /projectId:projectId,\s*apiClient:apiClient,\s*poll:apiModule\.poll,\s*boardId:currentBoardScope==='collab'\?currentBoardId:null,\s*canEdit:canEdit,\s*onChange:onChange/);
@@ -471,12 +471,12 @@ function testNodePersistenceHelpers() {
   const dirty = {
     id: 'n7', type: 'shortDrama',
     params: {
-      project_id: 'project-7', title: '????', ratio: '16:9', target_duration: 45,
+      project_id: 'project-7', title: '雨夜来客', ratio: '16:9', target_duration: 45,
       stage: 'script_review', progress: 50, spent_points: 3, estimated_points: 12,
-      characters: [{ name: '??' }], script: { hook: 'secret' }, shots: [{ key: 's1' }],
+      characters: [{ name: '侦探' }], script: { hook: 'secret' }, shots: [{ key: 's1' }],
     },
     outputs: {
-      characters: [{ name: '??' }], script: { hook: 'secret' }, shots: [{ key: 's1' }],
+      characters: [{ name: '侦探' }], script: { hook: 'secret' }, shots: [{ key: 's1' }],
       video: 'must-not-persist',
     },
   };
@@ -492,7 +492,7 @@ function testNodePersistenceHelpers() {
 
   const payload = shortDrama.creationPayload(clean.params);
   assert.deepEqual(payload, {
-    title: '????', synopsis: '?????????????', ratio: '16:9',
+    title: '雨夜来客', synopsis: '请在短剧工作区完善故事梗概', ratio: '16:9',
     target_duration: 45, shot_count: 6,
   });
   assert.ok(payload.synopsis.length >= 8, 'lazy creation payload must satisfy backend synopsis validation');
@@ -506,8 +506,8 @@ async function testCreateProjectCoordinatorIsBoardScoped() {
   let saves = 0;
   let resolveCreate;
   let activeScope = 'local:board-a';
-  const boardAOld = { id: 'n1', type: 'shortDrama', params: shortDrama.normalizeNodeParams({ title: 'A ???' }), outputs: {} };
-  const boardBNode = { id: 'n1', type: 'shortDrama', params: shortDrama.normalizeNodeParams({ title: 'B ??' }), outputs: {} };
+  const boardAOld = { id: 'n1', type: 'shortDrama', params: shortDrama.normalizeNodeParams({ title: 'A 旧节点' }), outputs: {} };
+  const boardBNode = { id: 'n1', type: 'shortDrama', params: shortDrama.normalizeNodeParams({ title: 'B 节点' }), outputs: {} };
   const boards = {
     'local:board-a': { n1: boardAOld },
     'local:board-b': { n1: boardBNode },
@@ -516,7 +516,7 @@ async function testCreateProjectCoordinatorIsBoardScoped() {
     getNode(scopeKey, nodeId) { return activeScope === scopeKey ? boards[scopeKey] && boards[scopeKey][nodeId] : null; },
     create(payload) {
       createCalls += 1;
-      assert.equal(payload.title, 'A ???');
+      assert.equal(payload.title, 'A 旧节点');
       return new Promise((resolve) => { resolveCreate = resolve; });
     },
     apply(node, project) {
@@ -532,7 +532,7 @@ async function testCreateProjectCoordinatorIsBoardScoped() {
   activeScope = 'local:board-b';
   await Promise.resolve();
   assert.equal(createCalls, 1);
-  resolveCreate({ id: 'project-a', title: 'A ?????', ratio: '9:16', target_duration: 30, stage: 'draft' });
+  resolveCreate({ id: 'project-a', title: 'A 服务端标题', ratio: '9:16', target_duration: 30, stage: 'draft' });
   assert.equal(await first, 'project-a');
   assert.equal(boardBNode.params.project_id, null, 'same node id on board B is untouched');
   assert.equal(boardAOld.params.project_id, null, 'inactive board A object is not mutated');
@@ -540,7 +540,7 @@ async function testCreateProjectCoordinatorIsBoardScoped() {
   assert.equal(coordinator.hasPending('local:board-a', 'n1'), false, 'pending entry is cleaned after settlement');
   assert.equal(coordinator.hasCompleted('local:board-a', 'n1'), true, 'inactive result is retained by board scope');
 
-  const boardARestored = { id: 'n1', type: 'shortDrama', params: shortDrama.normalizeNodeParams({ title: 'A ????' }), outputs: { shots: ['secret'] } };
+  const boardARestored = { id: 'n1', type: 'shortDrama', params: shortDrama.normalizeNodeParams({ title: 'A 恢复节点' }), outputs: { shots: ['secret'] } };
   boards['local:board-a'].n1 = boardARestored;
   activeScope = 'local:board-a';
   const consumed = coordinator.ensure('local:board-a', 'n1', shortDrama.creationPayload(boardARestored.params), true, null);
@@ -552,8 +552,8 @@ async function testCreateProjectCoordinatorIsBoardScoped() {
   assert.equal(coordinator.hasCompleted('local:board-a', 'n1'), false, 'completed entry clears after application');
 
   await assert.rejects(
-    coordinator.ensure('local:board-a', 'n8', shortDrama.creationPayload({ title: '????' }), false, null),
-    /??/,
+    coordinator.ensure('local:board-a', 'n8', shortDrama.creationPayload({ title: '只读节点' }), false, null),
+    /只读/,
   );
   assert.equal(createCalls, 1, 'id-less readonly node never creates a project');
 
@@ -562,14 +562,14 @@ async function testCreateProjectCoordinatorIsBoardScoped() {
     create() { return Promise.reject(new Error('create failed')); },
     apply() { throw new Error('apply must not run'); },
   });
-  await assert.rejects(failed.ensure('local:board-f', 'n9', shortDrama.creationPayload({ title: '????' }), true, null), /create failed/);
+  await assert.rejects(failed.ensure('local:board-f', 'n9', shortDrama.creationPayload({ title: '失败节点' }), true, null), /create failed/);
   assert.equal(failed.hasPending('local:board-f', 'n9'), false, 'in-flight entry is also cleaned after rejection');
 }
 
 async function testCreateProjectCoordinatorPreservesConflictingLink() {
   let resolveCreate;
   let applyCalls = 0;
-  const node = { id: 'n1', type: 'shortDrama', params: shortDrama.normalizeNodeParams({ title: '????' }), outputs: {} };
+  const node = { id: 'n1', type: 'shortDrama', params: shortDrama.normalizeNodeParams({ title: '冲突节点' }), outputs: {} };
   const coordinator = shortDrama.createProjectCoordinator({
     getNode(scopeKey, nodeId) { return scopeKey === 'collab:board-c' && nodeId === 'n1' ? node : null; },
     create() { return new Promise((resolve) => { resolveCreate = resolve; }); },
@@ -578,7 +578,7 @@ async function testCreateProjectCoordinatorPreservesConflictingLink() {
   const pending = coordinator.ensure('collab:board-c', 'n1', shortDrama.creationPayload(node.params), true, null);
   await Promise.resolve();
   node.params.project_id = 'project-from-collaboration';
-  resolveCreate({ id: 'project-from-post', title: '????' });
+  resolveCreate({ id: 'project-from-post', title: '迟到结果' });
   assert.equal(await pending, 'project-from-collaboration');
   assert.equal(node.params.project_id, 'project-from-collaboration');
   assert.equal(applyCalls, 0, 'late POST never overwrites a different project link');
@@ -592,7 +592,7 @@ async function testCreateProjectCoordinatorScopeCleanup() {
     create() { return new Promise((resolve) => { resolveCreate = resolve; }); },
     apply() { throw new Error('deleted scope must never apply'); },
   });
-  const pending = coordinator.ensure('local:deleted-board', 'n1', shortDrama.creationPayload({ title: '???' }), true, null);
+  const pending = coordinator.ensure('local:deleted-board', 'n1', shortDrama.creationPayload({ title: '待删除' }), true, null);
   await Promise.resolve();
   coordinator.cleanupScope('local:deleted-board');
   resolveCreate({ id: 'orphaned-project' });
@@ -603,7 +603,7 @@ async function testCreateProjectCoordinatorScopeCleanup() {
 
 async function testPureHelpers() {
   const settings = shortDrama.normalizeSettings({
-    title: '????', synopsis: '??????????', ratio: '1:1',
+    title: '雨夜来客', synopsis: '陌生女孩敲开侦探的门', ratio: '1:1',
     target_duration: 45, shot_count: 8,
   });
   assert.equal(settings.ratio, '9:16');
@@ -618,17 +618,17 @@ async function testPureHelpers() {
   assert.deepEqual(shortDrama.validShotCounts(45), [6, 7, 8, 9]);
   assert.deepEqual(shortDrama.validShotCounts(60), [6, 7, 8, 9, 10]);
   assert.ok(shortDrama.validateSettings({
-    title: '??', synopsis: '??????????', ratio: '9:16',
-    target_duration: 30, shot_count: 7, visual_style: '??', target_platform: '??',
-  }).some((message) => message.includes('???')));
+    title: '短剧', synopsis: '这是足够长的故事梗概', ratio: '9:16',
+    target_duration: 30, shot_count: 7, visual_style: '写实', target_platform: '抖音',
+  }).some((message) => message.includes('不匹配')));
 
   const project = workspaceProject();
   const tooManyCharacters = Array.from({ length: 21 }, (_, index) => ({
-    ...project.characters[0], character_key: `character-${index}`, name: `??${index}`,
+    ...project.characters[0], character_key: `character-${index}`, name: `角色${index}`,
   }));
   assert.ok(shortDrama.validateCharacters(tooManyCharacters).some((message) => message.includes('20')));
   const tooManyLines = Array.from({ length: 121 }, (_, index) => ({
-    id: `line-${index}`, character_key: project.characters[0].character_key, text: `??${index}`,
+    id: `line-${index}`, character_key: project.characters[0].character_key, text: `台词${index}`,
   }));
   assert.ok(shortDrama.validateScript({
     ...project.script_versions[0], dialogue_lines: tooManyLines,
@@ -649,8 +649,8 @@ async function testPureHelpers() {
   assert.equal(shortDrama.summarizeProject({ stage: 'voice_review' }).progress, 63);
   assert.equal(shortDrama.summarizeProject({ stage: 'completed' }).progress, 100);
   assert.equal(shortDrama.summarizeProject({
-    title: '????', ratio: '9:16', target_duration: 45, stage: 'script_review',
-  }).title, '????');
+    title: '雨夜来客', ratio: '9:16', target_duration: 45, stage: 'script_review',
+  }).title, '雨夜来客');
 }
 
 async function testProjectRoutesAndPlanningFlow() {
@@ -664,7 +664,7 @@ async function testProjectRoutesAndPlanningFlow() {
       if (path.startsWith('/api/gen/short-drama/planning-job?')) return Promise.resolve({ job_id: null });
       if (path === '/api/gen/copy') return Promise.resolve({ job_id: 42, cost: 3 });
       if (path === '/api/gen/job/42') return Promise.resolve({
-        status: 'done', result: JSON.stringify({ mode: 'short_drama', plan: { title: '????' } }),
+        status: 'done', result: JSON.stringify({ mode: 'short_drama', plan: { title: '雨夜来客' } }),
       });
       if (path === '/api/gen/short-drama/apply-plan') return Promise.resolve({
         id: 'project-1', revision: 8, spent_points: 3,
@@ -678,9 +678,9 @@ async function testProjectRoutesAndPlanningFlow() {
     return options.request().then((job) => {
       assert.deepEqual(options.inspect(job), {
         done: true,
-        value: { mode: 'short_drama', plan: { title: '????' } },
+        value: { mode: 'short_drama', plan: { title: '雨夜来客' } },
       });
-      return { mode: 'short_drama', plan: { title: '????' } };
+      return { mode: 'short_drama', plan: { title: '雨夜来客' } };
     });
   }
   const client = shortDrama.createClient(api, poll);
@@ -688,14 +688,14 @@ async function testProjectRoutesAndPlanningFlow() {
   assert.deepEqual(await client.getPlanningQuote(), { cost: 7 });
   await client.list();
   await client.get('project 1');
-  await client.create({ title: '????' });
-  await client.update('project 1', 5, { revision: 99, title: '???' });
+  await client.create({ title: '雨夜来客' });
+  await client.update('project 1', 5, { revision: 99, title: '新标题' });
   await client.applyPlan('project 1', 6, 41);
   await client.confirm('project 1', 7, 'characters_review');
   await client.delete('project 1', 8);
   const applied = await client.generatePlan({
-    id: 'project-1', revision: 7, synopsis: '??????????', target_duration: 45,
-    ratio: '16:9', shot_count: 8, visual_style: '????', target_platform: '??',
+    id: 'project-1', revision: 7, synopsis: '陌生女孩敲开侦探的门', target_duration: 45,
+    ratio: '16:9', shot_count: 8, visual_style: '电影写实', target_platform: '抖音',
   }, {
     onCost(cost) { planningCosts.push(cost); },
     onProgress(progress) { planningProgress.push(progress); },
@@ -710,11 +710,11 @@ async function testProjectRoutesAndPlanningFlow() {
     { path: '/api/gen/short-drama/project?id=project%201', options: undefined },
     {
       path: '/api/gen/short-drama/projects',
-      options: { method: 'POST', body: { title: '????' } },
+      options: { method: 'POST', body: { title: '雨夜来客' } },
     },
     {
       path: '/api/gen/short-drama/project?id=project%201',
-      options: { method: 'PUT', body: { revision: 5, title: '???' } },
+      options: { method: 'PUT', body: { revision: 5, title: '新标题' } },
     },
     {
       path: '/api/gen/short-drama/apply-plan',
@@ -736,8 +736,8 @@ async function testProjectRoutesAndPlanningFlow() {
       options: {
         method: 'POST', body: {
           format: 'short_drama', project_id: 'project-1', project_revision: 7,
-          prompt: '??????????', dur: '45s', ratio: '16:9',
-          shot_count: 8, style: '????', platform: '??',
+          prompt: '陌生女孩敲开侦探的门', dur: '45s', ratio: '16:9',
+          shot_count: 8, style: '电影写实', platform: '抖音',
         },
       },
     },
@@ -759,12 +759,12 @@ async function testAvatarCandidateClientUsesCompatibilityFallback() {
         error.status = 404;
         return Promise.reject(error);
       }
-      return Promise.resolve({ items: [{ id: 7, name: '????' }] });
+      return Promise.resolve({ items: [{ id: 7, name: '兼容形象' }] });
     },
   };
   const result = await shortDrama.createClient(api, () => Promise.resolve())
     .getAvatarCandidates('project 7', false);
-  assert.deepEqual(result.items, [{ id: 7, name: '????' }]);
+  assert.deepEqual(result.items, [{ id: 7, name: '兼容形象' }]);
   assert.deepEqual(calls, [
     '/api/gen/short-drama/avatar-candidates?project_id=project%207',
     '/api/gen/short-drama/video-cast/avatars?project_id=project%207',
@@ -794,8 +794,8 @@ async function testPaidPlanningRecoveryReusesJobWithoutAnotherCopyPost() {
   };
   const poll = (options) => options.request().then((job) => options.inspect(job).value);
   const result = await shortDrama.createClient(api, poll).generatePlan({
-    id: 'project-1', revision, synopsis: '????????????', ratio: '9:16',
-    target_duration: 30, shot_count: 6, visual_style: '????', target_platform: '??',
+    id: 'project-1', revision, synopsis: '刷新后仍可恢复的故事梗概', ratio: '9:16',
+    target_duration: 30, shot_count: 6, visual_style: '电影写实', target_platform: '抖音',
   });
   assert.equal(result.revision, 9);
   assert.equal(calls.filter((call) => call.path === '/api/gen/copy').length, 0);
@@ -825,7 +825,7 @@ async function testTerminalJobFailureDoesNotApplyPlan() {
     });
   }
   await assert.rejects(
-    shortDrama.createClient(api, poll).generatePlan({ id: 'project-1', revision: 1, synopsis: '????' }),
+    shortDrama.createClient(api, poll).generatePlan({ id: 'project-1', revision: 1, synopsis: '故事梗概' }),
     (error) => error.message === 'model refused plan' && error.code === 'model_failed',
   );
   assert.equal(applyCalled, false);
@@ -849,7 +849,7 @@ async function testPlanningErrorsPropagateWithoutApplying() {
     poll() { throw new Error('poll must not run after submit failure'); },
   };
   await assert.rejects(
-    shortDrama.createClient(copyApi).generatePlan({ id: 'project-1', revision: 1, synopsis: '????' }),
+    shortDrama.createClient(copyApi).generatePlan({ id: 'project-1', revision: 1, synopsis: '故事梗概' }),
     (error) => error === copyError,
   );
 
@@ -865,7 +865,7 @@ async function testPlanningErrorsPropagateWithoutApplying() {
     poll() { return Promise.reject(pollError); },
   };
   await assert.rejects(
-    shortDrama.createClient(pollApi).generatePlan({ id: 'project-1', revision: 1, synopsis: '????' }),
+    shortDrama.createClient(pollApi).generatePlan({ id: 'project-1', revision: 1, synopsis: '故事梗概' }),
     (error) => error === pollError,
   );
   assert.equal(applyCalled, false);
@@ -894,35 +894,35 @@ async function testPlanningQuoteFailureDoesNotSubmit() {
 function workspaceProject(overrides = {}) {
   const characters = [
     {
-      character_key: 'detective', name: '??', identity_text: '????', personality: '??',
-      source_type: 'ai_character', avatar_id: null, appearance_prompt: '?????',
-      wardrobe_prompt: '????', voice_key: 'calm', voice_settings: { speed: 1 }, sort_order: 0,
+      character_key: 'detective', name: '侦探', identity_text: '私家侦探', personality: '冷静',
+      source_type: 'ai_character', avatar_id: null, appearance_prompt: '年轻女侦探',
+      wardrobe_prompt: '黑色风衣', voice_key: 'calm', voice_settings: { speed: 1 }, sort_order: 0,
     },
     {
-      character_key: 'visitor', name: '??', identity_text: '????', personality: '??',
-      source_type: 'cinematic_avatar', avatar_id: 'avatar-2', appearance_prompt: '??????',
-      wardrobe_prompt: '????', voice_key: null, voice_settings: {}, sort_order: 1,
+      character_key: 'visitor', name: '访客', identity_text: '神秘访客', personality: '紧张',
+      source_type: 'cinematic_avatar', avatar_id: 'avatar-2', appearance_prompt: '湿透的中年人',
+      wardrobe_prompt: '灰色大衣', voice_key: null, voice_settings: {}, sort_order: 1,
     },
   ];
   const dialogue = [
-    { id: 'line-1', character_key: 'visitor', text: '???????' },
-    { id: 'line-2', character_key: 'detective', text: '???????' },
+    { id: 'line-1', character_key: 'visitor', text: '我只有五分钟。' },
+    { id: 'line-2', character_key: 'detective', text: '足够找到真相。' },
   ];
   const shots = Array.from({ length: 6 }, (_, index) => ({
     shot_key: `shot-${index + 1}`, sort_order: index, script_version: 1, duration: 5,
-    scene_description: `????? ${index + 1}`, camera_description: '????',
+    scene_description: `雨夜办公室 ${index + 1}`, camera_description: '缓慢推近',
     character_keys: index % 2 ? ['detective'] : ['visitor'], dialogue_line_ids: [dialogue[index % 2].id],
     image_prompt: `cinematic rainy office ${index + 1}`, video_prompt: `slow push in ${index + 1}`,
   }));
   return Object.assign({
-    id: 'project-1', revision: 7, title: '????',
-    synopsis: '???????????????', ratio: '9:16',
-    target_duration: 30, shot_count: 6, visual_style: '????', target_platform: '??',
+    id: 'project-1', revision: 7, title: '雨夜来客',
+    synopsis: '陌生访客在雨夜带来一宗危险委托', ratio: '9:16',
+    target_duration: 30, shot_count: 6, visual_style: '电影写实', target_platform: '抖音',
     point_budget: 30, spent_points: 3, estimated_points: 12, stage: 'characters_review',
     characters,
     script_versions: [{
-      version: 1, title: '????', logline: '????????', hook: '???????',
-      conflict_text: '??????', turn_text: '??????', ending: '??????',
+      version: 1, title: '雨夜来客', logline: '五分钟内找出真相', hook: '门外响起脚步声',
+      conflict_text: '线索即将被毁', turn_text: '访客才是目标', ending: '侦探推开暗门',
       dialogue_lines: dialogue,
     }],
     shots,
@@ -935,9 +935,9 @@ async function testWorkspaceSourceAndRenderContract() {
   const css = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-short-drama.css'), 'utf8');
   const app = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-app.js'), 'utf8');
   for (const text of [
-    '????', '????', '????', '????', '?????',
-    '???????', '???????', '????',
-    '?????????????????',
+    '项目设置', '角色确认', '剧本确认', '分镜确认', '按实时报价',
+    '确认角色并继续', '确认剧本并继续', '确认分镜',
+    '项目已在其他页面更新，请刷新后重试',
   ]) assert.ok(source.includes(text), `workspace source must include ${text}`);
   for (const endpoint of [
     '/api/gen/short-drama/project', '/api/gen/short-drama/confirm', '/api/gen/copy',
@@ -954,7 +954,7 @@ async function testWorkspaceSourceAndRenderContract() {
     /querySelectorAll\('\[data-dialogue-index\]'\)/,
     'copy/delete controls must never be parsed as empty dialogue lines',
   );
-  assert.doesNotMatch(source, /3\s*?/, 'workspace must not hard-code the planning price as fact');
+  assert.doesNotMatch(source, /3\s*点/, 'workspace must not hard-code the planning price as fact');
   assert.ok(css.includes('.nc-short-drama-workspace'));
   assert.ok(css.includes('.nc-short-drama-character-rail'));
   assert.ok(css.includes('.nc-short-drama-editor'));
@@ -1014,15 +1014,15 @@ async function testWorkspaceSourceAndRenderContract() {
     const end = html.indexOf('class="nc-short-drama-shot-card"', start + marker.length);
     const card = html.slice(start, end < 0 ? html.length : end);
     assert.match(card, /data-field="duration"/);
-    assert.ok(card.includes('??'));
-    assert.ok(card.includes('????'));
-    assert.ok(card.includes('?????'));
-    assert.ok(card.includes('?????'));
-    assert.match(card, /(?:5|10)?/);
+    assert.ok(card.includes('角色'));
+    assert.ok(card.includes('台词摘要'));
+    assert.ok(card.includes('画面提示词'));
+    assert.ok(card.includes('视频提示词'));
+    assert.match(card, /(?:5|10)秒/);
   }
   assert.match(shortDrama.renderWorkspace(workspaceProject({ stage: 'stills_review' }), {
     activeStage: 'settings', canEdit: true,
-  }), /data-tab="stills_review"[^>]*>[\s\S]*????/,
+  }), /data-tab="stills_review"[^>]*>[\s\S]*画面确认/,
   'production has a labelled navigation tab');
   assert.doesNotMatch(shortDrama.renderWorkspace(workspaceProject({ stage: 'characters_review' }), {
     activeStage: 'stills_review', canEdit: true,
@@ -1115,39 +1115,39 @@ async function testWorkspaceSourceAndRenderContract() {
     cost: 30, count: 4, kind: 'still-batch', shot_count: 2,
     quotes: [
       {
-        shot_id: 'shot-4', base_prompt: '????????',
-        user_direction: '???????', compiled_prompt: '??????????',
+        shot_id: 'shot-4', base_prompt: '第四镜分镜提示词',
+        user_direction: '第四镜补充要求', compiled_prompt: '第四镜最终提交提示词',
         source_prompt_hash: '4'.repeat(64),
       },
       {
-        shot_id: 'shot-2', base_prompt: '????????',
-        user_direction: '', compiled_prompt: '??????????',
+        shot_id: 'shot-2', base_prompt: '第二镜分镜提示词',
+        user_direction: '', compiled_prompt: '第二镜最终提交提示词',
         source_prompt_hash: '2'.repeat(64),
       },
     ],
   }, [
     { shot_id: 'shot-2', count: 2 }, { shot_id: 'shot-4', count: 2 },
   ]);
-  assert.match(confirmMessages[0], /???? shot-2 ? 2 ????????? 24 ?/);
-  assert.match(confirmMessages[1], /???? 2 ???????[\s\S]*??? 30 ?/);
+  assert.match(confirmMessages[0], /生成镜头 shot-2 的 2 张关键帧候选将消耗 24 点/);
+  assert.match(confirmMessages[1], /批量生成 2 个镜头的关键帧[\s\S]*将消耗 30 点/);
   assert.match(confirmMessages[1],
-    /?? 1?shot-2?[\s\S]*????????[\s\S]*??????????/);
+    /镜头 1（shot-2）[\s\S]*第二镜分镜提示词[\s\S]*第二镜最终提交提示词/);
   assert.match(confirmMessages[1],
-    /?? 2?shot-4?[\s\S]*????????[\s\S]*???????[\s\S]*??????????/);
-  assert.ok(confirmMessages[1].indexOf('??????????')<
-    confirmMessages[1].indexOf('??????????'),
+    /镜头 2（shot-4）[\s\S]*第四镜分镜提示词[\s\S]*第四镜补充要求[\s\S]*第四镜最终提交提示词/);
+  assert.ok(confirmMessages[1].indexOf('第二镜最终提交提示词')<
+    confirmMessages[1].indexOf('第四镜最终提交提示词'),
   'batch confirmation follows request order rather than quote response order');
   await assert.rejects(async () => delegatedOptions[0].confirm(30, {
     cost: 30, count: 4, kind: 'still-batch', shot_count: 2,
     quotes: [
-      { shot_id: 'shot-2', base_prompt: '???', user_direction: '',
+      { shot_id: 'shot-2', base_prompt: '第二镜', user_direction: '',
         compiled_prompt: '', source_prompt_hash: '2'.repeat(64) },
-      { shot_id: 'shot-4', base_prompt: '???', user_direction: '',
-        compiled_prompt: '????????', source_prompt_hash: '4'.repeat(64) },
+      { shot_id: 'shot-4', base_prompt: '第四镜', user_direction: '',
+        compiled_prompt: '第四镜最终提示词', source_prompt_hash: '4'.repeat(64) },
     ],
   }, [
     { shot_id: 'shot-2', count: 2 }, { shot_id: 'shot-4', count: 2 },
-  ]), /???????????/);
+  ]), /批量报价缺少完整提示词/);
   assert.equal(confirmMessages.length, 2,
     'an incomplete batch quote fails before the paid confirmation hook');
   assert.notStrictEqual(delegatedOptions[0].onChange, onChange,
@@ -1160,7 +1160,7 @@ async function testWorkspaceSourceAndRenderContract() {
   await delegatedOptions[0].onChange(voiceSummary);
   assert.equal(stillsWorkspace.getProject().stage, 'voice_review');
   assert.deepEqual(canvasSummaries, [{
-    project_id: 'project-stills', title: '????', ratio: '16:9', target_duration: 30,
+    project_id: 'project-stills', title: '雨夜来客', ratio: '16:9', target_duration: 30,
     stage: 'voice_review', progress: 63, spent_points: 24, estimated_points: 12,
   }]);
   assert.doesNotMatch(JSON.stringify(canvasSummaries), /shot|asset|version|job|url/i);
@@ -1172,7 +1172,7 @@ async function testWorkspaceSourceAndRenderContract() {
   assert.strictEqual(voiceOptions[0].client, apiClient);
   assert.strictEqual(voiceOptions[0].host, productionHost);
   assert.equal(confirmMessages.length, 2, 'voice workspace does not invoke the still confirmation adapter');
-  assert.match(stillsWorkspace.render(), /????[\s\S]*data-action="close"[\s\S]*voice-workspace/);
+  assert.match(stillsWorkspace.render(), /配音字幕[\s\S]*data-action="close"[\s\S]*voice-workspace/);
 
   await delegatedOptions[0].onChange(voiceSummary);
   await voiceOptions[0].onChange(voiceSummary);
@@ -1339,7 +1339,7 @@ async function testWorkspaceSourceAndRenderContract() {
     client: { get() { return Promise.resolve(workspaceProject({ id: 'missing-production', stage: 'stills_review' })); } },
   });
   assert.equal(await missing.ready, null);
-  assert.match(missing.render(), /????????[\s\S]*data-action="reload"[\s\S]*data-action="close"/,
+  assert.match(missing.render(), /生产工作区未加载[\s\S]*data-action="reload"[\s\S]*data-action="close"/,
     'a missing production module renders a recoverable error instead of crashing');
   missing.destroy();
 }
@@ -1355,10 +1355,10 @@ function testScriptValidationReportsTheExactBrokenDialogue() {
     ],
   });
   const errors = shortDrama.validateScript(script, project);
-  assert.ok(errors.includes('?? 2????????'));
-  assert.ok(errors.includes('?? 2??????????????'));
-  assert.ok(errors.includes('?? 2???????? missing-role'));
-  assert.ok(errors.every((message) => !message.includes('?? 3')),
+  assert.ok(errors.includes('台词 2：请填写台词内容'));
+  assert.ok(errors.includes('台词 2：新增台词缺少客户端请求标识'));
+  assert.ok(errors.includes('台词 2：引用了未知角色 missing-role'));
+  assert.ok(errors.every((message) => !message.includes('台词 3')),
     'one broken dialogue must not be expanded into synthetic button rows');
 }
 
@@ -1373,7 +1373,7 @@ async function testScriptSaveIgnoresDialogueActionControls() {
   const dialogueFields = {
     '[data-field="id"]': field('line-1'),
     '[data-field="character_key"]': field('visitor'),
-    '[data-field="text"]': field('???????'),
+    '[data-field="text"]': field('我只有五分钟。'),
   };
   const dialogueCard = {
     className: 'nc-short-drama-dialogue',
@@ -1435,7 +1435,7 @@ async function testScriptSaveIgnoresDialogueActionControls() {
   assert.equal(scriptForm.querySelectorAll('[data-dialogue-index]').length, 2,
     'fixture contains both a real dialogue card and an indexed action control');
   assert.deepEqual(savedPatch.script.dialogue_lines, [{
-    id: 'line-1', character_key: 'visitor', text: '???????',
+    id: 'line-1', character_key: 'visitor', text: '我只有五分钟。',
   }], 'saved payload contains only the real dialogue card');
   assert.deepEqual(Object.keys(savedPatch.script.dialogue_lines[0]).sort(),
     ['character_key', 'id', 'text'], 'saved payload keeps the existing backend contract');
@@ -1506,7 +1506,7 @@ async function testProductionWorkspaceCanReturnToPhaseOneReview() {
   await workspace.ready;
   assert.equal(creates, 1);
   assert.equal(workspace.selectStage('storyboard_review'), true);
-  assert.match(workspace.render(), /????[\s\S]*data-field="image_prompt"/);
+  assert.match(workspace.render(), /分镜确认[\s\S]*data-field="image_prompt"/);
   assert.doesNotMatch(workspace.render(), /class="nc-short-drama-production"/);
   assert.equal(destroys, 1);
 
@@ -1532,7 +1532,7 @@ function testWorkspacePureStateAndPayloadHelpers() {
 
   const placeholder = workspaceProject({ stage: 'draft', synopsis: shortDrama.PLACEHOLDER_SYNOPSIS });
   assert.equal(shortDrama.canGeneratePlan(placeholder, true), false);
-  assert.equal(shortDrama.canGeneratePlan(workspaceProject({ stage: 'draft', synopsis: '??' }), true), false);
+  assert.equal(shortDrama.canGeneratePlan(workspaceProject({ stage: 'draft', synopsis: '太短' }), true), false);
   assert.equal(shortDrama.canGeneratePlan(workspaceProject({ stage: 'draft' }), true), true);
   assert.equal(shortDrama.canGeneratePlan(workspaceProject({ stage: 'characters_review' }), true), false);
 
@@ -1557,33 +1557,33 @@ function testWorkspacePureStateAndPayloadHelpers() {
 
   const baseCharacters = project.characters.map((character) => Object.assign({}, character));
   const localCharacters = baseCharacters.map((character, index) => Object.assign(
-    {}, character, index === 0 ? { name: '????' } : {},
+    {}, character, index === 0 ? { name: '本地侦探' } : {},
   ));
   const remoteCharacters = baseCharacters.map((character, index) => Object.assign(
-    {}, character, index === 0 ? { personality: '?????' } : {},
+    {}, character, index === 0 ? { personality: '服务端更新' } : {},
   ));
   const merged = shortDrama.mergeCharacterDrafts(baseCharacters, remoteCharacters, localCharacters);
   assert.deepEqual(merged.conflicts, []);
-  assert.equal(merged.characters[0].name, '????');
-  assert.equal(merged.characters[0].personality, '?????');
+  assert.equal(merged.characters[0].name, '本地侦探');
+  assert.equal(merged.characters[0].personality, '服务端更新');
   const conflicting = shortDrama.mergeCharacterDrafts(
     baseCharacters,
-    baseCharacters.map((character, index) => Object.assign({}, character, index === 0 ? { name: '????' } : {})),
+    baseCharacters.map((character, index) => Object.assign({}, character, index === 0 ? { name: '远端名称' } : {})),
     localCharacters,
   );
-  assert.equal(conflicting.characters[0].name, '????',
+  assert.equal(conflicting.characters[0].name, '本地侦探',
     'same-field conflicts retain the unsaved local draft for manual resolution');
   assert.deepEqual(conflicting.conflicts.map((item) => [item.character_key, item.field]),
     [['detective', 'name']]);
   const remotelyAdded = shortDrama.mergeCharacterDrafts(
     baseCharacters,
     remoteCharacters.concat([Object.assign({}, baseCharacters[0], {
-      character_key: 'new-role', name: '??????',
+      character_key: 'new-role', name: '远端新增角色',
     })]),
     localCharacters,
   );
-  assert.equal(remotelyAdded.characters[0].name, '????');
-  assert.equal(remotelyAdded.characters.at(-1).name, '??????',
+  assert.equal(remotelyAdded.characters[0].name, '本地侦探');
+  assert.equal(remotelyAdded.characters.at(-1).name, '远端新增角色',
     'revision recovery never drops a role added by another editor');
   assert.deepEqual(remotelyAdded.conflicts.at(-1),
     { character_key: 'new-role', field: 'character_key', reason: 'added' });
@@ -1592,13 +1592,13 @@ function testWorkspacePureStateAndPayloadHelpers() {
     remoteCharacters,
     baseCharacters.map((character, index) => Object.assign(
       {}, character, index === 0 ? {
-        character_key: 'renamed-detective', name: '??????',
+        character_key: 'renamed-detective', name: '本地改名侦探',
       } : {},
     )),
   );
   assert.deepEqual(locallyRenamed.conflicts, []);
   assert.equal(locallyRenamed.characters[0].character_key, 'renamed-detective');
-  assert.equal(locallyRenamed.characters[0].name, '??????');
+  assert.equal(locallyRenamed.characters[0].name, '本地改名侦探');
   assert.equal(locallyRenamed.characters[0].personality, remoteCharacters[0].personality,
     'a local key rename remains associated with remote edits to the original role');
   const bothRenamed = shortDrama.mergeCharacterDrafts(
@@ -1608,12 +1608,12 @@ function testWorkspacePureStateAndPayloadHelpers() {
     )),
     baseCharacters.map((character, index) => Object.assign(
       {}, character, index === 0 ? {
-        character_key: 'local-detective', name: '??????',
+        character_key: 'local-detective', name: '完整本地草稿',
       } : {},
     )),
   );
   assert.equal(bothRenamed.characters[0].character_key, 'local-detective');
-  assert.equal(bothRenamed.characters[0].name, '??????');
+  assert.equal(bothRenamed.characters[0].name, '完整本地草稿');
   assert.ok(bothRenamed.conflicts.some((item) => (
     item.character_key === 'local-detective' &&
     item.field === 'character_key' &&
@@ -1623,11 +1623,11 @@ function testWorkspacePureStateAndPayloadHelpers() {
     baseCharacters,
     [remoteCharacters[1]],
     baseCharacters.map((character, index) => Object.assign(
-      {}, character, index === 0 ? { name: '??????????' } : {},
+      {}, character, index === 0 ? { name: '删除冲突中的本地草稿' } : {},
     )),
   );
   assert.equal(remotelyDeleted.characters[0].character_key, 'detective');
-  assert.equal(remotelyDeleted.characters[0].name, '??????????');
+  assert.equal(remotelyDeleted.characters[0].name, '删除冲突中的本地草稿');
   assert.ok(remotelyDeleted.conflicts.some((item) => (
     item.character_key === 'detective' && item.reason === 'removed'
   )));
@@ -1635,22 +1635,22 @@ function testWorkspacePureStateAndPayloadHelpers() {
     baseCharacters,
     [remoteCharacters[1]],
     baseCharacters.map((character, index) => Object.assign(
-      {}, character, index === 1 ? { name: '??????' } : {},
+      {}, character, index === 1 ? { name: '本地访客草稿' } : {},
     )),
   );
   assert.deepEqual(acceptedRemoteDelete.conflicts, []);
   assert.equal(acceptedRemoteDelete.characters.length, 1);
   assert.equal(acceptedRemoteDelete.characters[0].character_key, 'visitor');
-  assert.equal(acceptedRemoteDelete.characters[0].name, '??????');
+  assert.equal(acceptedRemoteDelete.characters[0].name, '本地访客草稿');
 
   const selectorHtml = shortDrama.renderWorkspace(project, {
     activeStage: 'characters_review', canEdit: true,
     avatarCandidates: {
       loaded: true, loading: false, error: '', canCreate: true,
-      items: [{ id: 'avatar-2', name: '????', image_url: '/assets/avatar-2.jpg', status: 'ready' }],
+      items: [{ id: 'avatar-2', name: '雨夜访客', image_url: '/assets/avatar-2.jpg', status: 'ready' }],
     },
   });
-  assert.match(selectorHtml, /????/);
+  assert.match(selectorHtml, /雨夜访客/);
   assert.match(selectorHtml, /data-action="select-character-avatar"/);
   assert.match(selectorHtml, /data-action="create-character-avatar"/);
   assert.doesNotMatch(selectorHtml, />Avatar ID</,
@@ -1666,8 +1666,8 @@ function testWorkspacePureStateAndPayloadHelpers() {
   }), {
     activeStage: 'script_review', canEdit: true,
   });
-  assert.match(scriptEditor, /????/);
-  assert.match(scriptEditor, /??/);
+  assert.match(scriptEditor, /说话角色/);
+  assert.match(scriptEditor, /访客/);
   assert.match(scriptEditor, /data-action="add-dialogue"/);
   assert.match(scriptEditor, /data-action="copy-dialogue"/);
   assert.match(scriptEditor, /data-action="delete-dialogue"/);
@@ -1676,25 +1676,25 @@ function testWorkspacePureStateAndPayloadHelpers() {
   assert.doesNotMatch(scriptEditor, /data-field="character_key"[^>]*value="visitor"/,
     'speaker selection must not expose character keys as editable text');
   assert.deepEqual(shortDrama.makeShotsPatch(project.shots).shots[0], {
-    shot_key: 'shot-1', duration: 5, scene_description: '????? 1', camera_description: '????',
+    shot_key: 'shot-1', duration: 5, scene_description: '雨夜办公室 1', camera_description: '缓慢推近',
     character_keys: ['visitor'], dialogue_line_ids: ['line-1'],
     image_prompt: 'cinematic rainy office 1', video_prompt: 'slow push in 1',
   });
   assert.deepEqual(shortDrama.validateShots(project.shots, project), []);
-  assert.match(shortDrama.validateShots(project.shots.slice(0, 5), project).join(' '), /6?10/);
+  assert.match(shortDrama.validateShots(project.shots.slice(0, 5), project).join(' '), /6–10/);
   assert.match(shortDrama.validateShots(project.shots.map((shot, index) => Object.assign({}, shot,
-    index === 0 ? { image_prompt: '' } : {})), project).join(' '), /?????/);
+    index === 0 ? { image_prompt: '' } : {})), project).join(' '), /画面提示词/);
 
   const ownerOnly = shortDrama.renderLoadState({
     canEdit: false, busy: false, loadFailed: true, loadStatus: 404, error: 'not found',
   });
-  assert.ok(ownerOnly.includes('?????????????'));
+  assert.ok(ownerOnly.includes('仅项目创建者可查看短剧详情'));
   assert.match(ownerOnly, /data-action="reload"/);
   assert.match(ownerOnly, /data-action="close"/);
   const networkFailure = shortDrama.renderLoadState({
-    canEdit: true, busy: false, loadFailed: true, loadStatus: 0, error: '??????',
+    canEdit: true, busy: false, loadFailed: true, loadStatus: 0, error: '网络连接失败',
   });
-  assert.ok(networkFailure.includes('??????'));
+  assert.ok(networkFailure.includes('网络连接失败'));
   assert.match(networkFailure, /data-action="reload"[\s\S]*data-action="close"/);
   assert.match(shortDrama.renderLoadState({ canEdit: true, busy: true }), /data-action="close"/,
     'initial loading state is always escapable');
@@ -1730,7 +1730,7 @@ async function testWorkspaceSavesUseExactRevisionedBodiesAndSummaries() {
     onChange(summary) { summaries.push(summary); },
   });
   await workspace.ready;
-  const settings = Object.assign({}, project, { title: '???' });
+  const settings = Object.assign({}, project, { title: '新标题' });
   await workspace.saveSettings(settings);
   await workspace.saveCharacters(project.characters);
   const beforeScript = workspace.getProject();
@@ -1782,7 +1782,7 @@ async function testConfirmSavesChangedSectionThenUsesReturnedRevisionAndSkipsUnc
   const workspace = shortDrama.createWorkspace({ projectId: project.id, client, document: null });
   await workspace.ready;
   const changedCharacters = project.characters.map((character, index) => Object.assign(
-    {}, character, index === 0 ? { name: '????????' } : {},
+    {}, character, index === 0 ? { name: '保存后确认的侦探' } : {},
   ));
   await workspace.confirm('characters_review', changedCharacters);
   const versionsBefore = workspace.getProject().script_versions.length;
@@ -1801,7 +1801,7 @@ async function testStoryboardConfirmRejectsServerPromptDriftBeforeAdvancing() {
   let project = workspaceProject({ stage: 'storyboard_review', revision: 20 });
   let confirmations = 0;
   const editedShots = project.shots.map((shot, index) => Object.assign({}, shot,
-    index === 0 ? { image_prompt: '??????????' } : {}));
+    index === 0 ? { image_prompt: '用户刚保存的画面要求' } : {}));
   const client = {
     get() { return Promise.resolve(project); },
     update(id, revision) {
@@ -1824,7 +1824,7 @@ async function testStoryboardConfirmRejectsServerPromptDriftBeforeAdvancing() {
 
   await assert.rejects(
     workspace.confirm('storyboard_review', editedShots),
-    /???????????????????/,
+    /服务器保存后的分镜与当前编辑内容不一致/,
   );
   assert.equal(confirmations, 0, 'a mismatched server echo must never advance the stage');
   workspace.destroy();
@@ -1834,8 +1834,8 @@ async function testHistoricalScriptVersionCannotBeConfirmedOrResavedAsLatest() {
   const base = workspaceProject({ stage: 'script_review', revision: 9 });
   let project = Object.assign({}, base, {
     script_versions: [
-      Object.assign({}, base.script_versions[0], { version: 1, title: '????' }),
-      Object.assign({}, base.script_versions[0], { version: 2, title: '????' }),
+      Object.assign({}, base.script_versions[0], { version: 1, title: '历史版本' }),
+      Object.assign({}, base.script_versions[0], { version: 2, title: '最新版本' }),
     ],
   });
   let updates = 0;
@@ -1851,11 +1851,11 @@ async function testHistoricalScriptVersionCannotBeConfirmedOrResavedAsLatest() {
 
   await assert.rejects(
     workspace.saveScript(project.script_versions[0]),
-    /????/,
+    /最新版本/,
   );
   await assert.rejects(
     workspace.confirm('script_review', project.script_versions[0]),
-    /????/,
+    /最新版本/,
   );
   assert.equal(updates, 0, 'historical script confirmation must not create a new latest version');
   assert.equal(confirmations, 0, 'historical script confirmation must not advance the stage');
@@ -1873,8 +1873,8 @@ async function testScriptSaveSelectsReturnedLatestVersion() {
   const base = workspaceProject({ stage: 'script_review', revision: 9 });
   let project = Object.assign({}, base, {
     script_versions: [
-      Object.assign({}, base.script_versions[0], { version: 1, title: '????' }),
-      Object.assign({}, base.script_versions[0], { version: 2, title: '??????' }),
+      Object.assign({}, base.script_versions[0], { version: 1, title: '历史版本' }),
+      Object.assign({}, base.script_versions[0], { version: 2, title: '保存前最新版' }),
     ],
   });
   let clickHandler = null;
@@ -1912,15 +1912,15 @@ async function testScriptSaveSelectsReturnedLatestVersion() {
   });
   assert.equal(workspace.getState().scriptVersion, 2, 'test setup explicitly selects the current latest version');
 
-  await workspace.saveScript(Object.assign({}, project.script_versions[1], { title: '???????' }));
+  await workspace.saveScript(Object.assign({}, project.script_versions[1], { title: '保存后的新版本' }));
 
   assert.equal(workspace.getState().scriptVersion, null,
     'a newly returned latest version must clear the stale explicit selection');
   assert.match(workspace.render(), /data-script-version="3" class="is-active"/,
     'the newly created latest version must render as active immediately');
-  assert.match(workspace.render(), /data-action="save-script">??????/,
+  assert.match(workspace.render(), /data-action="save-script">保存为新版本/,
     'the save action must be enabled for the returned latest version');
-  assert.match(workspace.render(), /data-confirm-stage="script_review">???????/,
+  assert.match(workspace.render(), /data-confirm-stage="script_review">确认剧本并继续/,
     'the confirm action must be enabled for the returned latest version');
   workspace.destroy();
 }
@@ -1946,7 +1946,7 @@ async function testWorkspaceLoadRecoveryOwnerIsolationAndDestroy() {
   assert.equal(await workspace.ready, null);
   assert.equal(workspace.getState().loadFailed, true);
   assert.equal(workspace.getState().loadStatus, 404);
-  assert.ok(workspace.render().includes('?????????????'));
+  assert.ok(workspace.render().includes('仅项目创建者可查看短剧详情'));
   assert.match(workspace.render(), /data-action="reload"[\s\S]*data-action="close"/);
 
   assert.equal((await workspace.reload()).id, project.id, 'retry replaces the load error with the owner-readable project');
@@ -2188,7 +2188,7 @@ async function testWorkspaceOrderConflictReadonlyAndPlanning() {
     get() { return Promise.resolve(project); },
     update(id, revision, patch) {
       updates += 1;
-      if (patch.characters && patch.characters[0] && patch.characters[0].name === '??') {
+      if (patch.characters && patch.characters[0] && patch.characters[0].name === '冲突') {
         const error = new Error('stale'); error.status = 409; error.code = 'revision_conflict';
         return Promise.reject(error);
       }
@@ -2215,8 +2215,8 @@ async function testWorkspaceOrderConflictReadonlyAndPlanning() {
   await assert.rejects(workspace.confirm('script_review'), /current stage|order/i);
   assert.equal(confirms, 0, 'confirmation cannot skip the current stage');
   await assert.rejects(workspace.saveCharacters(project.characters.map((character, index) => Object.assign({}, character,
-    index === 0 ? { name: '??' } : {}))), /stale/);
-  assert.equal(workspace.getState().error, '?????????????????');
+    index === 0 ? { name: '冲突' } : {}))), /stale/);
+  assert.equal(workspace.getState().error, '项目已在其他页面更新，请刷新后重试');
   assert.equal(workspace.getState().stale, true);
 
   const readonly = shortDrama.createWorkspace({ projectId: project.id, client, document: null, canEdit: false });
@@ -2243,13 +2243,13 @@ async function testWorkspaceOrderConflictReadonlyAndPlanning() {
   assert.equal(planningCalls, 1);
   assert.equal(planning.getState().planning.running, true);
   assert.ok(planning.getState().planning.percent > 0);
-  assert.match(planning.render(), /??????/);
+  assert.match(planning.render(), /正在生成策划/);
   project = workspaceProject({ revision: 9, spent_points: 6 });
   resolvePlan(project);
   await pending;
   assert.equal(planning.getState().planning.running, false);
   assert.equal(planning.getState().planning.percent, 100);
-  assert.ok(confirmMessages.some((message) => message.includes('7') && message.includes('?')));
+  assert.ok(confirmMessages.some((message) => message.includes('7') && message.includes('点')));
 
   const placeholder = shortDrama.createWorkspace({
     projectId: 'placeholder', document: null, canEdit: true, confirm: () => true,
@@ -2264,7 +2264,7 @@ async function testWorkspaceOrderConflictReadonlyAndPlanning() {
   await assert.rejects(placeholder.generatePlan(), /synopsis|placeholder/i);
   assert.equal(placeholder.canGeneratePlan(), false);
   await placeholder.saveSettings(Object.assign({}, placeholder.getProject(), {
-    synopsis: '??????????????',
+    synopsis: '用户已保存的全新故事梗概内容',
   }));
   assert.equal(placeholder.canGeneratePlan(), true, 'a replacement synopsis unlocks planning only after save');
 }
@@ -2272,14 +2272,14 @@ async function testWorkspaceOrderConflictReadonlyAndPlanning() {
 async function testNoChargeFortyFiveSecondControllerAcceptance() {
   const clone = (value) => JSON.parse(JSON.stringify(value));
   const planned = workspaceProject({
-    revision: 3, stage: 'characters_review', title: '??????',
-    synopsis: '????????????????????????',
+    revision: 3, stage: 'characters_review', title: '横屏雨夜来客',
+    synopsis: '一名侦探在暴雨夜必须用四十五秒识破危险访客的谎言',
     ratio: '16:9', target_duration: 45, shot_count: 8, spent_points: 7,
   });
   planned.shots = Array.from({ length: 8 }, (_, index) => ({
     id: `shot-id-${index + 1}`, project_id: planned.id, script_version: 1,
     shot_key: `shot-${index + 1}`, sort_order: index, duration: index === 0 ? 10 : 5,
-    scene_description: `?????? ${index + 1}`, camera_description: `???? ${index + 1}`,
+    scene_description: `横屏雨夜场景 ${index + 1}`, camera_description: `镜头调度 ${index + 1}`,
     character_keys: [index % 2 ? 'detective' : 'visitor'],
     dialogue_line_ids: [index % 2 ? 'line-2' : 'line-1'],
     image_prompt: `16:9 cinematic still ${index + 1}`,
@@ -2287,7 +2287,7 @@ async function testNoChargeFortyFiveSecondControllerAcceptance() {
   }));
 
   let persisted = workspaceProject({
-    revision: 1, stage: 'draft', title: '?????', synopsis: '???????????????',
+    revision: 1, stage: 'draft', title: '待完善短剧', synopsis: '这是一个等待完善的有效故事梗概',
     ratio: '9:16', target_duration: 30, shot_count: 6, spent_points: 0,
     characters: [], script_versions: [], shots: [],
   });
@@ -2393,25 +2393,25 @@ async function testNoChargeFortyFiveSecondControllerAcceptance() {
   await workspace.ready;
 
   await workspace.saveSettings(Object.assign({}, workspace.getProject(), {
-    title: '??????', synopsis: planned.synopsis, ratio: '16:9',
+    title: '横屏雨夜来客', synopsis: planned.synopsis, ratio: '16:9',
     target_duration: 45, shot_count: 8,
   }));
   assert.equal(persisted.spent_points, 0, 'settings save is free');
 
-  persisted = Object.assign({}, persisted, { revision: persisted.revision + 1, title: '?????????' });
+  persisted = Object.assign({}, persisted, { revision: persisted.revision + 1, title: '另一页面保存的标题' });
   await assert.rejects(
-    workspace.saveSettings(Object.assign({}, workspace.getProject(), { title: '??????' })),
+    workspace.saveSettings(Object.assign({}, workspace.getProject(), { title: '过期页面标题' })),
     (error) => error.status === 409 && error.code === 'revision_conflict',
   );
   assert.equal(workspace.getState().stale, true);
-  assert.equal(workspace.getState().error, '?????????????????');
+  assert.equal(workspace.getState().error, '项目已在其他页面更新，请刷新后重试');
   await workspace.reload();
-  assert.equal(workspace.getProject().title, '?????????');
+  assert.equal(workspace.getProject().title, '另一页面保存的标题');
 
   await workspace.generatePlan();
   assert.equal(copySubmissions, 1, 'confirmed acceptance submits exactly one intercepted paid planning request');
   assert.equal(jobPolls, 2, 'intercepted job is polled through running and done states');
-  assert.ok(paidPrompts.some((message) => message.includes('7') && message.includes('?')));
+  assert.ok(paidPrompts.some((message) => message.includes('7') && message.includes('点')));
   const quoteIndex = routeCalls.findIndex(({ route }) => route === '/api/gen/short-drama/planning-quote');
   const submitIndex = routeCalls.findIndex(({ route }) => route === '/api/gen/copy');
   assert.ok(quoteIndex >= 0 && quoteIndex < submitIndex, 'quote precedes confirmed copy submission');
@@ -2421,16 +2421,16 @@ async function testNoChargeFortyFiveSecondControllerAcceptance() {
   assert.equal(workspace.getProject().shots.reduce((total, shot) => total + shot.duration, 0), 45);
 
   const editedCharacters = workspace.getProject().characters.map((character, index) =>
-    Object.assign({}, character, index === 0 ? { name: `${character.name}?????` } : {}));
+    Object.assign({}, character, index === 0 ? { name: `${character.name}（已确认）` } : {}));
   await workspace.saveCharacters(editedCharacters);
   await workspace.confirm('characters_review');
   const editedScript = Object.assign({}, workspace.getProject().script_versions.at(-1), {
-    ending: '??????????????',
+    ending: '侦探在横屏画面中揭开最终真相',
   });
   await workspace.saveScript(editedScript);
   await workspace.confirm('script_review');
   const editedShots = workspace.getProject().shots.map((shot, index) =>
-    Object.assign({}, shot, index === 7 ? { scene_description: '??????????' } : {}));
+    Object.assign({}, shot, index === 7 ? { scene_description: '第八张分镜：真相揭晓' } : {}));
   await workspace.saveShots(editedShots);
   await workspace.confirm('storyboard_review');
   assert.equal(workspace.getProject().stage, 'stills_review');
@@ -2439,9 +2439,9 @@ async function testNoChargeFortyFiveSecondControllerAcceptance() {
 
   await workspace.reload();
   assert.equal(workspace.getProject().stage, 'stills_review');
-  assert.equal(workspace.getProject().characters[0].name.endsWith('?????'), true);
+  assert.equal(workspace.getProject().characters[0].name.endsWith('（已确认）'), true);
   assert.equal(workspace.getProject().script_versions.length, 2);
-  assert.equal(workspace.getProject().shots[7].scene_description, '??????????');
+  assert.equal(workspace.getProject().shots[7].scene_description, '第八张分镜：真相揭晓');
 
   const summary = summaries.at(-1);
   const node = shortDrama.sanitizeNodeData({
@@ -2461,9 +2461,9 @@ async function testNoChargeFortyFiveSecondControllerAcceptance() {
 
 async function testWorkspaceDeletesProjectWithRevision() {
   const project = {
-    id: 'project-delete', revision: 4, stage: 'characters_review', title: '?????',
-    synopsis: '?????????????', ratio: '9:16', target_duration: 30,
-    shot_count: 6, visual_style: '????', target_platform: '??',
+    id: 'project-delete', revision: 4, stage: 'characters_review', title: '待删除短剧',
+    synopsis: '这是一个准备删除的短剧项目', ratio: '9:16', target_duration: 30,
+    shot_count: 6, visual_style: '电影写实', target_platform: '抖音',
     characters: [], script_versions: [], shots: [],
   };
   let deleted = null;
@@ -2483,7 +2483,7 @@ async function testWorkspaceDeletesProjectWithRevision() {
   });
   await workspace.ready;
   assert.equal(workspace.selectStage('settings'), true);
-  assert.match(workspace.render(), /data-action="delete-project">????<\/button>/,
+  assert.match(workspace.render(), /data-action="delete-project">删除项目<\/button>/,
     'owners can delete after planning while no mutation is active');
   const result = await workspace.deleteProject();
   assert.deepEqual(deleted, { projectId: 'project-delete', revision: 4 });
@@ -2496,7 +2496,7 @@ async function testWorkspaceDeletesProjectWithRevision() {
     client: {
       get() { return Promise.resolve(project); },
       delete() {
-        const error = new Error('???????????????');
+        const error = new Error('项目存在尚未处理的付费策划任务');
         error.status = 409; error.code = 'short_drama_unapplied_paid_job';
         return Promise.reject(error);
       },
@@ -2504,9 +2504,9 @@ async function testWorkspaceDeletesProjectWithRevision() {
     confirmDelete() { return true; },
   });
   await blocked.ready;
-  await assert.rejects(blocked.deleteProject(), /????/);
+  await assert.rejects(blocked.deleteProject(), /尚未处理/);
   assert.equal(blocked.getState().stale, false, 'non-revision 409 does not force a stale reload state');
-  assert.equal(blocked.getState().error, '???????????????');
+  assert.equal(blocked.getState().error, '项目存在尚未处理的付费策划任务');
   blocked.destroy();
 
   const scopedCalls = [];
@@ -2571,9 +2571,9 @@ async function testCharacterReferencePersistsEditedPromptsBeforeGeneration() {
   calls.length = 0;
   const edited = project.characters.map((character, index) => Object.assign(
     {}, character, index === 0 ? {
-      personality: '????????',
-      appearance_prompt: '?????????????',
-      wardrobe_prompt: '??????????',
+      personality: '谨慎但富有同理心',
+      appearance_prompt: '短发、琥珀色眼睛、自然妆容',
+      wardrobe_prompt: '深绿色风衣与棕色短靴',
     } : {},
   ));
 
@@ -2592,9 +2592,9 @@ async function testCharacterReferenceLocksMountedFormWhileSaving() {
   let resolveUpdate;
   let updateStarted;
   const updateStartedPromise = new Promise((resolve) => { updateStarted = resolve; });
-  const personality = { value: '????????', disabled: false };
-  const appearance = { value: '?????????????', disabled: false };
-  const wardrobe = { value: '??????????', disabled: false };
+  const personality = { value: '谨慎但富有同理心', disabled: false };
+  const appearance = { value: '短发、琥珀色眼睛、自然妆容', disabled: false };
+  const wardrobe = { value: '深绿色风衣与棕色短靴', disabled: false };
   const permanentlyDisabled = { value: 'locked', disabled: true };
   const controls = [personality, appearance, wardrobe, permanentlyDisabled];
   const attributes = {};
@@ -2669,10 +2669,10 @@ async function testCharacterReferenceLocksMountedFormWhileSaving() {
 }
 
 function testPlanningFormatErrorsUseActionableMessage() {
-  const legacy = new Error('????????: id');
+  const legacy = new Error('短剧规划缺少字段: id');
   assert.equal(
     shortDrama.workspaceErrorMessage(legacy),
-    'AI ???????????????????????????????????',
+    'AI 返回的剧本格式不完整，系统自动修复失败。本次失败会自动退款，请重新生成',
   );
 }
 
@@ -2688,7 +2688,7 @@ async function testCharacterDraftsRecoverAcrossRevisionConflict() {
         persisted = Object.assign({}, persisted, {
           revision: 8,
           characters: persisted.characters.map((character, index) => Object.assign(
-            {}, character, index === 0 ? { personality: '?????' } : {},
+            {}, character, index === 0 ? { personality: '远端新性格' } : {},
           )),
         });
         const error = new Error('stale revision');
@@ -2707,18 +2707,18 @@ async function testCharacterDraftsRecoverAcrossRevisionConflict() {
   await workspace.ready;
   const local = base.characters.map((character, index) => Object.assign(
     {}, character, index === 0 ? {
-      character_key: 'local-detective', name: '?????',
+      character_key: 'local-detective', name: '本地新名称',
     } : {},
   ));
   await workspace.saveCharacters(local);
   assert.equal(updates, 2, 'a non-overlapping revision conflict is retried exactly once');
   assert.equal(workspace.getProject().characters[0].character_key, 'local-detective');
-  assert.equal(workspace.getProject().characters[0].name, '?????');
-  assert.equal(workspace.getProject().characters[0].personality, '?????');
+  assert.equal(workspace.getProject().characters[0].name, '本地新名称');
+  assert.equal(workspace.getProject().characters[0].personality, '远端新性格');
   const state = workspace.getState();
   assert.equal(state.characterDraftDirty, false);
   assert.equal(state.characterDrafts[0].character_key, 'local-detective');
-  assert.equal(state.characterDrafts[0].personality, '?????');
+  assert.equal(state.characterDrafts[0].personality, '远端新性格');
   workspace.destroy();
 }
 
@@ -2729,8 +2729,8 @@ async function testCharacterRenameConflictKeepsWorkspaceDrafts() {
   const local = base.characters.map((character, index) => Object.assign(
     {}, character, index === 0 ? {
       character_key: 'local-detective',
-      name: '??????',
-      identity_text: '??????',
+      name: '完整本地角色',
+      identity_text: '完整本地身份',
     } : {},
   ));
   const client = {
@@ -2742,7 +2742,7 @@ async function testCharacterRenameConflictKeepsWorkspaceDrafts() {
         characters: persisted.characters.map((character, index) => Object.assign(
           {}, character, index === 0 ? {
             character_key: 'remote-detective',
-            personality: '????',
+            personality: '远端性格',
           } : {},
         )),
       });
@@ -2764,9 +2764,9 @@ async function testCharacterRenameConflictKeepsWorkspaceDrafts() {
   assert.equal(updates, 1, 'ambiguous rename conflicts are never auto-submitted');
   assert.equal(state.characterDraftDirty, true);
   assert.equal(state.characterDrafts[0].character_key, 'local-detective');
-  assert.equal(state.characterDrafts[0].name, '??????');
-  assert.equal(state.characterDrafts[0].identity_text, '??????');
-  assert.equal(state.characterDrafts[0].personality, '????');
+  assert.equal(state.characterDrafts[0].name, '完整本地角色');
+  assert.equal(state.characterDrafts[0].identity_text, '完整本地身份');
+  assert.equal(state.characterDrafts[0].personality, '远端性格');
   assert.ok(state.characterConflicts.some((item) => (
     item.character_key === 'local-detective' &&
     item.field === 'character_key'
@@ -3043,7 +3043,7 @@ async function testScriptDraftConflictBlocksSilentOverwrite() {
   assert.equal(state.scriptDraft.ending, 'local ending');
   assert.equal(state.scriptConflicts.length, 1);
   assert.equal(state.scriptConflicts[0].field, 'ending');
-  await assert.rejects(workspace.saveScript(state.scriptDraft), /????????/);
+  await assert.rejects(workspace.saveScript(state.scriptDraft), /处理全部剧本冲突/);
   assert.equal(updates, 1, 'unresolved conflicts must never be submitted');
   workspace.destroy();
 }

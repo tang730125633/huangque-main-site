@@ -26,7 +26,7 @@ class RedlineTests(TestCase):
         files = [
             PurePosixPath("site/index.html"),
             PurePosixPath("server/app.py"),
-            PurePosixPath("docs/????.md"),
+            PurePosixPath("docs/部署记录.md"),
         ]
 
         self.assertEqual(check_redlines(files), [])
@@ -60,7 +60,7 @@ class StrictJsonTests(TestCase):
         ]
         self.assertEqual(
             {"type": "string", "minLength": 1, "maxLength": 20,
-             "description": "???????????????????"},
+             "description": "可选的角色显示名称；同一项目内不可重复"},
             profile["properties"]["name"],
         )
 
@@ -151,7 +151,7 @@ class StrictJsonTests(TestCase):
             conflict_schema["oneOf"],
         )
         self._assert_openapi_sample(spec, conflict_schema, {
-            "detail": "?????????????????????????",
+            "detail": "该角色已有付费或锁定的角色标准图，不能直接修改资料",
             "code": "character_reference_protected",
         })
 
