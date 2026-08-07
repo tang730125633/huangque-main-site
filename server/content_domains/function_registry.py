@@ -12,6 +12,22 @@ def _endpoint(method, path):
     return {"method": method, "path": path}
 
 
+QA_FACE_IMAGE = "/workbench/assets/mock_result_1.webp"
+QA_PRODUCT_IMAGE = "/assets/inspirations/beauty_001.webp"
+QA_MOTION_VIDEO = "/workbench/assets/motions/gesture-01.mp4"
+QA_PROMPT = "琥珀色精华瓶置于石台上，晨光缓慢扫过瓶身，镜头平稳推进，无文字无标识"
+
+
+def _validation(prefill=None, manual_requirements=None, target_path=None):
+    """Describe a manual QA handoff; opening it never submits a paid job."""
+    return {
+        "target_path": target_path or "/workbench/video.html?prefill=asset",
+        "prefill": deepcopy(prefill or {}),
+        "manual_requirements": list(manual_requirements or []),
+        "auto_submit": False,
+    }
+
+
 VIDEO_FUNCTIONS = [
     {
         "key": "one_click",
@@ -36,6 +52,10 @@ VIDEO_FUNCTIONS = [
                 _endpoint("GET", "/api/gen/video-compose/projects/{project_id}/output"),
             ],
             "evidence_source": "video_compose_projects",
+            "validation": _validation(
+                manual_requirements=["从测试账号的视频资产选择一条短视频"],
+                target_path="/workbench/one-click-video.html",
+            ),
             "dependencies": [{
                 "key": "openai", "role": "源视频语音识别", "requirement": "required",
                 "credential_source": "env", "condition": "分析源视频时调用同步 ASR",
@@ -75,6 +95,10 @@ VIDEO_FUNCTIONS = [
                 ],
                 "price_keys": ["video.talking.block"],
                 "smoke_inputs": ["正脸人物图或已有形象", "短口播文案", "预设公共音色"],
+                "validation": _validation({
+                    "mode": "text", "image_url": QA_FACE_IMAGE,
+                    "prompt": "大家好，这是黄雀视频功能的完整链路验收。",
+                }),
             },
             {
                 "key": "video.digital_ip.text.batch",
@@ -89,6 +113,11 @@ VIDEO_FUNCTIONS = [
                 ],
                 "price_keys": ["video.talking.block"],
                 "smoke_inputs": ["2 张正脸人物图", "短口播文案", "预设公共音色"],
+                "validation": _validation({
+                    "mode": "text", "batch": True,
+                    "reference_images": [QA_FACE_IMAGE, QA_FACE_IMAGE],
+                    "prompt": "大家好，这是黄雀批量口播链路验收。",
+                }),
             },
             {
                 "key": "video.digital_ip.audio",
@@ -97,6 +126,10 @@ VIDEO_FUNCTIONS = [
                 "task_match": {"kind": "video", "mode": "audio"},
                 "price_keys": ["video.talking.block"],
                 "smoke_inputs": ["正脸人物图或已有形象", "短 MP3/WAV/M4A 音频"],
+                "validation": _validation(
+                    {"mode": "audio", "image_url": QA_FACE_IMAGE},
+                    ["从测试账号音频资产选择一段 3–5 秒口播音频"],
+                ),
             },
         ],
     },
@@ -138,6 +171,11 @@ VIDEO_FUNCTIONS = [
                 "task_match": {"kind": "cinematic", "cine_mode": "motion"},
                 "price_keys": ["video.cinematic.motion"],
                 "smoke_inputs": ["1 个已就绪形象", "1 段短参考视频"],
+                "validation": _validation(
+                    {"mode": "cinematic", "cine_mode": "motion",
+                     "reference_video_url": QA_MOTION_VIDEO},
+                    ["测试账号至少有 1 个已就绪电影化身形象"],
+                ),
             },
             {
                 "key": "video.cinematic.open",
@@ -147,6 +185,12 @@ VIDEO_FUNCTIONS = [
                 "task_match": {"kind": "cinematic", "cine_mode": "open"},
                 "price_keys": ["video.cinematic.open"],
                 "smoke_inputs": ["1 个已就绪形象", "短提示词", "可选参考图或视频"],
+                "validation": _validation(
+                    {"mode": "cinematic", "cine_mode": "open",
+                     "prompt": "人物在明亮工作室自然走向镜头，柔和运镜，无文字无标识",
+                     "reference_images": [QA_PRODUCT_IMAGE]},
+                    ["测试账号至少有 1 个已就绪电影化身形象"],
+                ),
             },
         ],
     },
@@ -172,6 +216,10 @@ VIDEO_FUNCTIONS = [
                 "evidence_gaps": ["WaveSpeed prediction_id 尚未持久化，无法证明供应商已接单"],
                 "price_keys": ["video.tryon.single"],
                 "smoke_inputs": ["人物照片", "衣服图"],
+                "validation": _validation(
+                    {"mode": "tryon", "reference_video_url": QA_FACE_IMAGE},
+                    ["在客户页补一张授权测试衣服图"],
+                ),
             },
             {
                 "key": "video.tryon.classic",
@@ -187,6 +235,10 @@ VIDEO_FUNCTIONS = [
                 "evidence_gaps": ["换装与换背景可能产生两个任务，当前尚未分别持久化 task_id"],
                 "price_keys": ["video.tryon.single", "video.tryon.double"],
                 "smoke_inputs": ["人物视频", "衣服图或背景图"],
+                "validation": _validation(
+                    {"mode": "tryon", "reference_video_url": QA_MOTION_VIDEO},
+                    ["在客户页补一张授权测试衣服图或背景图"],
+                ),
             },
         ],
     },
@@ -220,6 +272,10 @@ VIDEO_FUNCTIONS = [
                 "task_match": {"kind": "xiaole_video", "channel": "grok", "operation": "generate", "reference_count": 0},
                 "price_keys": ["video.grok.v1.480p", "video.grok.v1.720p"],
                 "smoke_inputs": ["短提示词"],
+                "validation": _validation({
+                    "mode": "grok", "prompt": QA_PROMPT,
+                    "duration": 5, "resolution": "480p", "ratio": "9:16",
+                }),
             },
             {
                 "key": "video.grok.image",
@@ -232,6 +288,11 @@ VIDEO_FUNCTIONS = [
                 ],
                 "price_keys": ["video.grok.v1.720p", "video.grok.v1_5.720p"],
                 "smoke_inputs": ["短提示词", "1 张低成本参考图"],
+                "validation": _validation({
+                    "mode": "grok", "prompt": QA_PROMPT,
+                    "duration": 5, "resolution": "480p", "ratio": "9:16",
+                    "reference_images": [QA_PRODUCT_IMAGE],
+                }),
             },
         ],
     },
@@ -261,6 +322,10 @@ VIDEO_FUNCTIONS = [
                     "video.sora.pro.1024p", "video.sora.pro.1080p",
                 ],
                 "smoke_inputs": ["短提示词"],
+                "validation": _validation({
+                    "mode": "sora", "prompt": QA_PROMPT,
+                    "duration": 4, "resolution": "720p", "ratio": "9:16",
+                }),
             },
             {
                 "key": "video.sora.image",
@@ -272,6 +337,11 @@ VIDEO_FUNCTIONS = [
                     "video.sora.pro.1024p", "video.sora.pro.1080p",
                 ],
                 "smoke_inputs": ["短提示词", "1 张非真人参考图"],
+                "validation": _validation({
+                    "mode": "sora", "prompt": QA_PROMPT,
+                    "duration": 4, "resolution": "720p", "ratio": "9:16",
+                    "reference_images": [QA_PRODUCT_IMAGE],
+                }),
             },
         ],
     },
@@ -297,6 +367,12 @@ VIDEO_FUNCTIONS = [
             "task_match": {"kind": "xiaole_video", "channel": "minimax"},
             "price_keys": ["video.minimax_h3.768p"],
             "smoke_inputs": ["短提示词", "1 张人物参考图"],
+            "validation": _validation({
+                "mode": "minimax",
+                "prompt": "@图片1仅作为人物身份参考。人物在明亮工作室自然看向镜头并微笑，无文字无标识。",
+                "duration": 5, "ratio": "9:16",
+                "reference_images": [QA_FACE_IMAGE],
+            }),
         }],
     },
     {
@@ -322,6 +398,10 @@ VIDEO_FUNCTIONS = [
                 "task_match": {"kind": "xiaole_video", "channel": "omni", "reference_count": 0},
                 "price_keys": ["video.omni"],
                 "smoke_inputs": ["短提示词"],
+                "validation": _validation({
+                    "mode": "omni", "prompt": QA_PROMPT,
+                    "duration": 4, "ratio": "9:16",
+                }),
             },
             {
                 "key": "video.omni.image",
@@ -330,6 +410,11 @@ VIDEO_FUNCTIONS = [
                 "task_match": {"kind": "xiaole_video", "channel": "omni", "reference_count": ">0"},
                 "price_keys": ["video.omni"],
                 "smoke_inputs": ["短提示词", "1 张低成本参考图"],
+                "validation": _validation({
+                    "mode": "omni", "prompt": QA_PROMPT,
+                    "duration": 4, "ratio": "9:16",
+                    "reference_images": [QA_PRODUCT_IMAGE],
+                }),
             },
         ],
     },
@@ -359,6 +444,11 @@ VIDEO_FUNCTIONS = [
                 "task_match": {"kind": "xiaole_video", "channel": "micro", "reference_count": 0},
                 "price_keys": ["video.seedance"],
                 "smoke_inputs": ["短提示词"],
+                "validation": _validation({
+                    "mode": "micro", "prompt": QA_PROMPT,
+                    "duration": 4, "resolution": "480p", "ratio": "9:16",
+                    "generate_audio": False,
+                }),
             },
             {
                 "key": "video.seedance.image",
@@ -370,6 +460,12 @@ VIDEO_FUNCTIONS = [
                 ],
                 "price_keys": ["video.seedance"],
                 "smoke_inputs": ["短提示词", "1 张低成本参考图"],
+                "validation": _validation({
+                    "mode": "micro", "prompt": QA_PROMPT,
+                    "duration": 4, "resolution": "480p", "ratio": "9:16",
+                    "generate_audio": False,
+                    "reference_images": [QA_PRODUCT_IMAGE],
+                }),
             },
         ],
     },
@@ -500,6 +596,11 @@ def validate_registry():
                     raise ValueError("customer mode needs reusable test inputs")
                 if "price_keys" not in mode:
                     raise ValueError("customer mode needs an explicit billing contract")
+                validation = mode.get("validation") or {}
+                if not validation.get("target_path"):
+                    raise ValueError("customer mode needs a validation target")
+                if validation.get("auto_submit") is not False:
+                    raise ValueError("customer validation must never auto-submit paid work")
                 invalid = set((mode.get("evidence_contract") or {}).get("not_applicable", [])) - {
                     "provider_task", "balance", "billing",
                 }

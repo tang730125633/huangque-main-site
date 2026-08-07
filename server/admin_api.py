@@ -1263,6 +1263,7 @@ AUTO_KEY_PING_INTERVALS = {
     "cos": 600,
     "cosyvoice": 3600,
 }
+PROVIDER_KEY_PING_INTERVAL = 240
 _KEY_PING_CACHE = {}
 _KEY_PING_LOCKS = {}
 _KEY_PING_GUARD = threading.Lock()
@@ -1412,6 +1413,7 @@ def key_probe_monitor(stop_event):
     while not stop_event.is_set():
         try:
             probe_configured_keys()
+            probe_provider_keys()
         except Exception:
             pass
         _KEY_PROBE_MONITOR_LAST_CYCLE = int(time.time())
@@ -1448,6 +1450,50 @@ PROVIDER_KEY_NAMES = {
 def _probe_is_credential_rejection(probe):
     # 403 也可能只是模型/功能未开通；探针拿不到足够错误细节时宁可保留 Key。
     return int((probe or {}).get("http_status") or 0) == 401
+
+
+_PROVIDER_KEY_PING_ATTEMPTS = {}
+
+
+def probe_provider_keys(now=None):
+    """Refresh stale encrypted video keys with the existing non-generating probes."""
+    if provider_keys is None:
+        return []
+    now = int(now or time.time())
+    checked = []
+    for item in provider_keys.list_public():
+        if item.get("state") != "active" or item.get("managed") is False:
+            continue
+        key_id = str(item.get("id") or "")
+        last = max(
+            int(item.get("last_checked_at") or 0),
+            int(_PROVIDER_KEY_PING_ATTEMPTS.get(key_id) or 0),
+        )
+        if not key_id or now - last < PROVIDER_KEY_PING_INTERVAL:
+            continue
+        _PROVIDER_KEY_PING_ATTEMPTS[key_id] = now
+        try:
+            candidate = provider_keys.candidates(
+                item["provider"], preferred_id=key_id,
+            )[0]
+            probe = probe_provider_secret(item["provider"], candidate["secret"])
+            if probe.get("ok") or _probe_is_credential_rejection(probe):
+                provider_keys.set_health(
+                    key_id,
+                    bool(probe.get("ok")),
+                    probe.get("latency_ms"),
+                    probe.get("error") or (
+                        "HTTP %s" % probe.get("http_status")
+                        if probe.get("http_status") else ""
+                    ),
+                )
+            checked.append({
+                "id": key_id, "provider": item["provider"],
+                "ok": bool(probe.get("ok")),
+            })
+        except Exception:
+            checked.append({"id": key_id, "provider": item["provider"], "ok": False})
+    return checked
 
 
 def probe_provider_secret(provider, secret):
