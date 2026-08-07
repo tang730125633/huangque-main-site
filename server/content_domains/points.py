@@ -137,6 +137,22 @@ def cost_of(kind, body):
         seconds = max(4, min(12, seconds))
         return rate * seconds
     if kind == "script_to_video":
+        if body.get("pipeline") == "pixelle":
+            try:
+                scenes = max(1, min(20, int(body.get("n_scenes") or 1)))
+            except (TypeError, ValueError):
+                scenes = 1
+            visuals = scenes * pricing.get_price("image.openai.std")
+            narration = pricing.get_price("audio.tts")
+            copywriting = pricing.get_price("text.copy") if body.get("mode") == "generate" else 0
+            body["cost_breakdown"] = {
+                "visual_scenes": visuals,
+                "scene_count": scenes,
+                "narration": narration,
+                "copywriting": copywriting,
+                "total": visuals + narration + copywriting,
+            }
+            return visuals + narration + copywriting
         style = (body.get("style") or "口播").strip()
         if style == "剧情":
             try:
