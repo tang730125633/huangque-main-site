@@ -11,6 +11,9 @@
     if(typeof crypto!=='undefined'&&crypto.randomUUID)return prefix+'-'+crypto.randomUUID();
     return prefix+'-'+Date.now()+'-'+Math.random().toString(16).slice(2);
   }
+  function avatarCreateUrl(){
+    return '/workbench/video.html?function=cinematic&action=create-avatar';
+  }
   function hash(value){
     var first=2166136261,second=2246822519,input=text(value);
     for(var i=0;i<input.length;i+=1){first=Math.imul(first^input.charCodeAt(i),16777619);second=Math.imul(second^input.charCodeAt(i),3266489917);}
