@@ -39,7 +39,7 @@ class HistoryIsNotClobberedByTheDraftTests(unittest.TestCase):
         """renderVideoHistory 降级成纯渲染器 —— 只能由 renderVideoOutput 调，
         任何别的地方直接调它，就又能绕过历史层把列表整个换掉。"""
         calls = re.findall(r"[^n]renderVideoHistory\((.*?)\);", HTML)
-        self.assertEqual(calls, ["videoDrafts.concat(rest)"])
+        self.assertEqual(calls, ["items"])
 
     def test_the_merge_dedupes_on_job_id(self):
         """草稿一拿到 job_id，服务端历史里也会有同一条。不去重就会显示两遍。"""
@@ -62,6 +62,12 @@ class HistoryIsNotClobberedByTheDraftTests(unittest.TestCase):
         block = HTML.split("if(d.status==='done' && d.result)")[1].split("if(d.status==='error'")[0]
         self.assertIn("videoHistoryItems.unshift(", block)
         self.assertIn("renderVideoDrafts([])", block, "成品进了历史，草稿就该收掉")
+
+    def test_history_can_be_filtered_by_the_recorded_video_channel(self):
+        self.assertIn('id="historyChannelFilter"', HTML)
+        self.assertIn("function videoChannelInfo(x)", HTML)
+        self.assertIn("videoChannelInfo(x).key===historyChannelFilter", HTML)
+        self.assertIn("$('historyChannelFilter').onchange", HTML)
 
 
 class ElapsedTimeSurvivesARefreshTests(unittest.TestCase):
