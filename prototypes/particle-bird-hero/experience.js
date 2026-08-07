@@ -3,7 +3,7 @@ import * as THREE from 'three';
 const canvas = document.querySelector('[data-particle-stage]');
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 const isMobile = matchMedia('(max-width: 700px)').matches;
-const status = { ready: false, points: 0, reducedMotion: reducedMotion.matches, morph: 0, pointerStrength: 0 };
+const status = { ready: false, points: 0, reducedMotion: reducedMotion.matches, timeline: 0, scene: 'scatter', pointerStrength: 0 };
 window.__particleBirdStatus = status;
 window.__particleBirdCheck = () => status.ready && status.points > 0 && canvas.width > 0;
 
@@ -43,44 +43,73 @@ async function start() {
     seeds[index] = random();
   }
 
+  const feather = makeFeatherTarget(count, random);
+  const flow = makeFlowTarget(count, random);
+  const flock = makeFlockTarget(bird, seeds);
+  const logo = makeLogoTarget(count, seeds, random);
+
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(bird, 3));
   geometry.setAttribute('aScatter', new THREE.BufferAttribute(scatter, 3));
+  geometry.setAttribute('aFeather', new THREE.BufferAttribute(feather, 3));
+  geometry.setAttribute('aFlow', new THREE.BufferAttribute(flow, 3));
+  geometry.setAttribute('aFlock', new THREE.BufferAttribute(flock, 3));
+  geometry.setAttribute('aLogo', new THREE.BufferAttribute(logo, 3));
   geometry.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 1));
   geometry.setDrawRange(0, isMobile ? Math.min(24576, count) : count);
 
   const uniforms = {
     uTime: { value: 0 },
-    uMorph: { value: reducedMotion.matches ? 1 : 0 },
+    uTimeline: { value: reducedMotion.matches ? 2 : 0 },
     uPointer: { value: new THREE.Vector3(99, 99, 0) },
     uPointerStrength: { value: 0 },
     uPixelRatio: { value: 1 },
+    uTextMask: { value: isMobile ? 0 : 1 },
   };
 
   const material = new THREE.ShaderMaterial({
     uniforms,
     vertexShader: `
       uniform float uTime;
-      uniform float uMorph;
+      uniform float uTimeline;
       uniform float uPointerStrength;
       uniform float uPixelRatio;
+      uniform float uTextMask;
       uniform vec3 uPointer;
       attribute vec3 aScatter;
+      attribute vec3 aFeather;
+      attribute vec3 aFlow;
+      attribute vec3 aFlock;
+      attribute vec3 aLogo;
       attribute float aSeed;
       varying float vAlpha;
       varying float vGold;
       varying float vEnergy;
 
       void main() {
-        float stagger = aSeed * .17;
-        float formation = smoothstep(stagger, .82 + stagger, uMorph);
-        vec3 bird = position;
-        bird.y += sin(uTime * .72 + aSeed * 18.0) * .012 * formation;
-        vec3 transformed = mix(aScatter, bird, formation);
+        float rawStage = min(uTimeline, 4.999);
+        float stage = floor(rawStage);
+        float localProgress = uTimeline >= 5.0 ? 1.0 : fract(rawStage);
+        vec3 currentTarget = aScatter;
+        vec3 nextTarget = aFeather;
+        if (stage > .5) { currentTarget = aFeather; nextTarget = position; }
+        if (stage > 1.5) { currentTarget = position; nextTarget = aFlow; }
+        if (stage > 2.5) { currentTarget = aFlow; nextTarget = aFlock; }
+        if (stage > 3.5) { currentTarget = aFlock; nextTarget = aLogo; }
+
+        float stagger = aSeed * .1;
+        float shapeBlend = smoothstep(stagger, .9 + stagger, localProgress);
+        vec3 transformed = mix(currentTarget, nextTarget, shapeBlend);
+        float formed = smoothstep(.05, .45, uTimeline);
+        float flowEnergy = 1.0 - smoothstep(.65, 1.25, abs(uTimeline - 3.0));
+        float flockEnergy = 1.0 - smoothstep(.65, 1.2, abs(uTimeline - 4.0));
+        transformed.y += sin(uTime * .72 + aSeed * 18.0) * .012 * formed;
+        transformed.x += sin(uTime * .45 + aSeed * 24.0) * .055 * flowEnergy;
+        transformed.z += cos(uTime * .55 + aSeed * 16.0) * .045 * (flowEnergy + flockEnergy);
 
         vec2 delta = transformed.xy - uPointer.xy;
         float distanceToPointer = length(delta);
-        float repel = pow(smoothstep(.28, .01, distanceToPointer), 2.0) * uPointerStrength * formation;
+        float repel = pow(smoothstep(.28, .01, distanceToPointer), 2.0) * uPointerStrength * formed;
         vec2 direction = normalize(delta + vec2(.001));
         vec2 tangent = vec2(-direction.y, direction.x);
         transformed.xy += direction * repel * (.018 + aSeed * .014);
@@ -90,9 +119,11 @@ async function start() {
         vec4 modelPosition = modelMatrix * vec4(transformed, 1.0);
         vec4 viewPosition = viewMatrix * modelPosition;
         gl_Position = projectionMatrix * viewPosition;
-        gl_PointSize = (1.25 + aSeed * 2.35 + formation * .85 + repel * 1.1) * uPixelRatio * (8.0 / -viewPosition.z);
-        vAlpha = mix(.3, 1.0, formation) * (.62 + aSeed * .38);
-        vGold = smoothstep(.72, .98, aSeed + position.y * .055);
+        gl_PointSize = (1.25 + aSeed * 2.35 + formed * .85 + repel * 1.1) * uPixelRatio * (8.0 / -viewPosition.z);
+        vAlpha = mix(.3, 1.0, formed) * (.62 + aSeed * .38);
+        float textSafety = smoothstep(-2.2, -.7, transformed.x);
+        vAlpha *= mix(1.0, mix(.06, 1.0, textSafety), uTextMask);
+        vGold = max(smoothstep(.72, .98, aSeed + position.y * .055), smoothstep(4.55, 5.0, uTimeline) * .72);
         vEnergy = repel;
       }
     `,
@@ -117,9 +148,17 @@ async function start() {
   });
 
   const birdPoints = new THREE.Points(geometry, material);
-  birdPoints.rotation.set(-.04, -.72, -.03);
-  birdPoints.scale.setScalar(isMobile ? .72 : .88);
-  birdPoints.position.set(isMobile ? .48 : 1.25, .05, 0);
+  const visualPath = isMobile ? {
+    x: [.2, .12, .38, 0, .08, .12],
+    scale: [.66, .65, .72, .62, .62, .55],
+  } : {
+    x: [1.1, 1.45, 1.25, .65, 1.15, 1.55],
+    scale: [.88, .88, .88, .78, .82, .82],
+  };
+  const rotationYPath = [0, -.12, -.72, 0, -.42, 0];
+  const rotationXPath = [0, -.03, -.04, 0, -.02, 0];
+  birdPoints.position.set(visualPath.x[0], .05, 0);
+  birdPoints.scale.setScalar(visualPath.scale[0]);
   scene.add(birdPoints);
 
   const stars = makeStars(isMobile ? 420 : 1100, random);
@@ -131,8 +170,8 @@ async function start() {
   const pointerCurrent = pointerTarget.clone();
   const interactionPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
   let pointerStrengthTarget = 0;
-  let scrollTarget = reducedMotion.matches ? 1 : 0;
-  let morph = scrollTarget;
+  let scrollTarget = reducedMotion.matches ? 2 : 0;
+  let timeline = scrollTarget;
 
   addEventListener('pointermove', (event) => {
     if (reducedMotion.matches || event.pointerType === 'touch') return;
@@ -149,7 +188,7 @@ async function start() {
   function updateScroll() {
     const range = Math.max(1, document.documentElement.scrollHeight - innerHeight);
     const progress = Math.min(1, Math.max(0, scrollY / range));
-    scrollTarget = reducedMotion.matches ? 1 : smoothstep(.04, .78, progress);
+    scrollTarget = reducedMotion.matches ? 2 : progress * 5;
     document.body.classList.toggle('has-scrolled', scrollY > 20);
   }
 
@@ -163,17 +202,21 @@ async function start() {
   }
 
   function render(now) {
-    morph += (scrollTarget - morph) * (reducedMotion.matches ? 1 : .065);
+    timeline += (scrollTarget - timeline) * (reducedMotion.matches ? 1 : .065);
     pointerCurrent.lerp(pointerTarget, .16);
     uniforms.uPointer.value.copy(pointerCurrent);
     uniforms.uPointerStrength.value += (pointerStrengthTarget - uniforms.uPointerStrength.value) * .12;
     uniforms.uTime.value = reducedMotion.matches ? 0 : now * .001;
-    uniforms.uMorph.value = morph;
-    birdPoints.rotation.y = -.72 + morph * .12 + pointerNdc.x * .018;
-    birdPoints.rotation.x = -.04 - pointerNdc.y * .012;
+    uniforms.uTimeline.value = timeline;
+    birdPoints.position.x = samplePath(visualPath.x, timeline);
+    birdPoints.scale.setScalar(samplePath(visualPath.scale, timeline));
+    birdPoints.rotation.y = samplePath(rotationYPath, timeline) + pointerNdc.x * .014;
+    birdPoints.rotation.x = samplePath(rotationXPath, timeline) - pointerNdc.y * .01;
     stars.rotation.z = now * .000004;
-    status.morph = Number(morph.toFixed(3));
+    status.timeline = Number(timeline.toFixed(3));
+    status.scene = ['scatter', 'feather', 'bird', 'flow', 'flock', 'logo'][Math.min(5, Math.round(timeline))];
     status.pointerStrength = Number(uniforms.uPointerStrength.value.toFixed(3));
+    document.body.dataset.scene = status.scene;
     renderer.render(scene, camera);
     requestAnimationFrame(render);
   }
@@ -187,6 +230,97 @@ async function start() {
   requestAnimationFrame(render);
 }
 
+function makeFeatherTarget(count, random) {
+  const target = new Float32Array(count * 3);
+  for (let index = 0; index < count; index += 1) {
+    const offset = index * 3;
+    const along = Math.floor(random() * 180) / 179;
+    const y = -2.0 + along * 4.2;
+    if (random() < .14) {
+      target[offset] = (random() - .5) * .055;
+      target[offset + 1] = -2.82 + random() * 5.1;
+    } else {
+      const side = random() < .5 ? -1 : 1;
+      const asymmetry = side < 0 ? 1 : .56 + along * .1;
+      const reach = Math.pow(Math.sin(Math.PI * along), .68) * 1.42 * asymmetry * (.84 + random() * .16);
+      const distance = .08 + Math.pow(random(), .78) * .92;
+      const curve = Math.sin(along * Math.PI) * .2;
+      target[offset] = curve + side * reach * distance;
+      target[offset + 1] = y - distance * (.38 + (1 - along) * .22) + (random() - .5) * .025;
+    }
+    target[offset + 2] = (random() - .5) * .12;
+  }
+  return target;
+}
+
+function makeFlowTarget(count, random) {
+  const target = new Float32Array(count * 3);
+  for (let index = 0; index < count; index += 1) {
+    const offset = index * 3;
+    const band = index % 4;
+    const x = (random() - .5) * 11.5;
+    target[offset] = x;
+    target[offset + 1] = (band - 1.5) * .92 + Math.sin(x * .72 + band * 1.7) * .2 + (random() - .5) * .16;
+    target[offset + 2] = (random() - .5) * .75 + band * .08;
+  }
+  return target;
+}
+
+function makeFlockTarget(bird, seeds) {
+  const target = new Float32Array(bird.length);
+  const placements = [
+    [-3.2, 1.2, -1.2, .2], [-1.7, 1.75, -.4, .24], [0, 1.2, .4, .28],
+    [1.8, 1.65, -.2, .22], [3.3, .8, -1.1, .18], [-2.45, -.45, .1, .24],
+    [-.65, -.2, .7, .2], [1.05, -.55, .35, .24], [2.7, -.35, -.6, .18],
+  ];
+  for (let index = 0; index < seeds.length; index += 1) {
+    const offset = index * 3;
+    const placement = placements[Math.min(placements.length - 1, Math.floor(seeds[index] * placements.length))];
+    target[offset] = bird[offset] * placement[3] + placement[0];
+    target[offset + 1] = bird[offset + 1] * placement[3] + placement[1];
+    target[offset + 2] = bird[offset + 2] * placement[3] + placement[2];
+  }
+  return target;
+}
+
+function makeLogoTarget(count, seeds, random) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 320;
+  canvas.height = 320;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) throw new Error('2d canvas unavailable');
+  context.fillStyle = '#fff';
+  context.font = '700 230px "Songti SC", "Noto Serif CJK SC", serif';
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.fillText('雀', 160, 168);
+  const pixels = context.getImageData(0, 0, 320, 320).data;
+  const ink = [];
+  for (let y = 28; y < 292; y += 2) {
+    for (let x = 28; x < 292; x += 2) {
+      if (pixels[(y * 320 + x) * 4 + 3] > 96) ink.push([x, y]);
+    }
+  }
+  if (!ink.length) throw new Error('logo target unavailable');
+
+  const target = new Float32Array(count * 3);
+  for (let index = 0; index < count; index += 1) {
+    const offset = index * 3;
+    if (seeds[index] < .18) {
+      const angle = random() * Math.PI * 2;
+      const radius = 2.28 + (random() - .5) * .06;
+      target[offset] = Math.cos(angle) * radius;
+      target[offset + 1] = Math.sin(angle) * radius;
+    } else {
+      const point = ink[Math.floor(random() * ink.length)];
+      target[offset] = (point[0] / 320 - .5) * 3.55 + (random() - .5) * .025;
+      target[offset + 1] = (.5 - point[1] / 320) * 3.55 + (random() - .5) * .025;
+    }
+    target[offset + 2] = (random() - .5) * .09;
+  }
+  return target;
+}
+
 function makeStars(count, random) {
   const positions = new Float32Array(count * 3);
   for (let index = 0; index < count; index += 1) {
@@ -197,6 +331,12 @@ function makeStars(count, random) {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   return new THREE.Points(geometry, new THREE.PointsMaterial({ color: 0x4068d8, size: .025, transparent: true, opacity: .52, depthWrite: false }));
+}
+
+function samplePath(values, value) {
+  const index = Math.min(values.length - 2, Math.floor(Math.max(0, value)));
+  const progress = Math.min(1, Math.max(0, value - index));
+  return values[index] + (values[index + 1] - values[index]) * smoothstep(0, 1, progress);
 }
 
 function smoothstep(edge0, edge1, value) {

@@ -9,6 +9,10 @@ const [html, css, script, asset] = await Promise.all([
 ]);
 
 if (!html.includes('data-particle-stage') || !css.includes('prefers-reduced-motion')) throw new Error('missing page contract');
+if ((html.match(/<section class="story/g) || []).length !== 6 || !html.includes('final-action')) throw new Error('missing six-act story');
 if (!script.includes('ShaderMaterial') || !script.includes('uPointerStrength')) throw new Error('missing particle interaction');
+for (const target of ['aFeather', 'aFlow', 'aFlock', 'aLogo']) {
+  if (!script.includes(target)) throw new Error(`missing morph target: ${target}`);
+}
 if (asset.size !== 65536 * 3 * 4) throw new Error(`unexpected point asset size: ${asset.size}`);
 console.log('particle-bird-hero verify: ok (65,536 points)');
