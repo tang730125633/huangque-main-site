@@ -91,6 +91,9 @@ jobs:
       - name: 测试工作台侧栏
         run: node tests/test_cloud_shell_sidebar.js
 
+      - name: 测试编导页字段保留与上传上限
+        run: node tests/test_script_director_fields.js
+
       - name: 测试画布 API 与短剧工作区
         run: |
           node tests/test_short_drama_center.js

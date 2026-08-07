@@ -82,13 +82,14 @@ class ScriptSubmissionGuardTests(unittest.TestCase):
             self.assertIn(expected, captured["system"])
             self.assertIn(expected, captured["user"])
         for expected in (
-            "80-140字",
+            "200-300 字",
             "动作起点—过程—终点",
             "运镜起止路线",
-            "与前后镜的连续性",
+            "与下一镜的转场方式及依据",
             "禁止使用“人物出现”",
         ):
             self.assertIn(expected, captured["user"])
+        self.assertNotIn("80-140", captured["user"])
 
     def test_script_result_removes_unsupported_claims_and_offer_details(self):
         scenes = [{
@@ -115,7 +116,15 @@ class ScriptSubmissionGuardTests(unittest.TestCase):
         scenes = [{"dur": "30s", "scene": "展示活动海报", "line": "限时立减 100 元。"}]
         cleaned = text.sanitize_script_scenes(scenes, "品牌活动：限时立减 100 元")
 
-        self.assertEqual(cleaned, scenes)
+        self.assertEqual(1, len(cleaned))
+        item = cleaned[0]
+        # 用户提供的事实内容（促销/品牌信息）在清洗后原样保留
+        self.assertEqual("30s", item["dur"])
+        self.assertEqual("展示活动海报", item["scene"])
+        self.assertEqual("限时立减 100 元。", item["line"])
+        # 7 字段明细 schema 规范化生效：缺失的新字段补空串
+        for field in ("shot", "camera", "lighting", "audio", "transition"):
+            self.assertEqual("", item[field])
 
     def test_http_submission_validates_copy_before_pricing_and_paid_job_creation(self):
         source = (SERVER / "content_domains" / "core.py").read_text(encoding="utf-8")
