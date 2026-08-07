@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>文案成片 · 黄雀 AI 工作台</title>
+<link rel="icon" href="../assets/cloud/logo-bird.png">
+<link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
+<link rel="stylesheet" href="../assets/cloud.css?v=8">
+<script src="theme-init.js?v=11eb385e"></script>
+<style>
+  body{overflow:hidden}
+  .hq-content[data-active="text-video"]{height:100%;min-height:0}
+  .tv-layout{display:grid;grid-template-columns:minmax(420px,1fr) minmax(340px,.72fr);height:100%;min-height:0;border-top:1px solid rgba(148,164,187,.1)}
+  .tv-editor{min-width:0;padding:28px 30px;overflow-y:auto;border-right:1px solid rgba(148,164,187,.12)}
+  .tv-preview{min-width:0;padding:24px;display:flex;align-items:center;justify-content:center;background:#090e18;overflow:hidden}
+  .tv-heading{margin:0;color:#eaf1fa;font-size:23px;line-height:1.25;font-weight:800;letter-spacing:0}
+  .tv-label{display:flex;align-items:center;justify-content:space-between;margin:28px 0 10px;color:#eaf1fa;font-size:13px;font-weight:700}
+  .tv-template-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;max-height:270px;overflow-y:auto;padding-right:4px}
+  .tv-template{position:relative;min-width:0;height:72px;padding:10px;border:1px solid rgba(148,164,187,.18);border-radius:6px;background:#0b111d;color:#cbd6e5;text-align:left;cursor:pointer;overflow:hidden;transition:border-color .16s,background .16s,transform .16s}
+  .tv-template:hover{transform:translateY(-1px);border-color:rgba(231,178,76,.42)}
+  .tv-template.active{border-color:#e7b24c;background:#141720;color:#fff;box-shadow:inset 0 -2px #e7b24c}
+  .tv-template-swatch{display:block;width:30px;height:4px;margin-bottom:8px;background:var(--swatch);box-shadow:10px 0 0 var(--swatch2)}
+  .tv-template strong{display:block;font-size:12px;line-height:1.2;letter-spacing:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tv-template span:last-child{display:block;margin-top:4px;color:#65748a;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tv-template-loading{grid-column:1/-1;padding:22px;border:1px dashed rgba(148,164,187,.2);color:#65748a;text-align:center;font-size:12px}
+  .tv-input-wrap{border:1px solid rgba(148,164,187,.18);background:#0b111d;border-radius:8px;padding:14px 15px;transition:border-color .18s}
+  .tv-input-wrap:focus-within{border-color:rgba(231,178,76,.62)}
+  .tv-text{display:block;width:100%;min-height:310px;resize:vertical;border:0;outline:0;background:transparent;color:#eaf1fa;font:14px/1.85 inherit;letter-spacing:0}
+  .tv-count{margin-top:9px;text-align:right;color:#65748a;font:11px "JetBrains Mono",monospace}
+  .tv-action{width:100%;height:50px;margin-top:18px;border:0;border-radius:8px;background:#e7b24c;color:#171006;font:800 15px inherit;cursor:pointer;transition:background .16s,opacity .16s}
+  .tv-mode{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px;margin:4px 0 18px;background:#0b111d;border:1px solid rgba(148,164,187,.18);border-radius:8px}
+  .tv-mode button{height:40px;border:0;border-radius:6px;background:transparent;color:#94a4bb;font:600 13px inherit;cursor:pointer}
+  .tv-mode button.active{background:#1a2433;color:#f5c86f;box-shadow:inset 0 0 0 1px rgba(231,178,76,.28)}
+  .tv-action:hover{background:#f1c66a}.tv-action:disabled{opacity:.58;cursor:wait}
+  .tv-status{min-height:46px;margin-top:14px;padding:12px 14px;border-left:3px solid #344258;background:#0b111d;color:#94a4bb;font-size:12.5px;line-height:1.7}
+  .tv-status.running{border-color:#e7b24c;color:#dbe4f0}.tv-status.done{border-color:#2dd4bf;color:#d8fff8}.tv-status.error{border-color:#f87171;color:#ffdede}
+  .tv-stage{position:relative;width:min(100%,390px);aspect-ratio:9/16;background:#05070b;border:1px solid rgba(148,164,187,.16);box-shadow:0 20px 55px rgba(0,0,0,.34);overflow:hidden}
+  .tv-stage video{display:none;width:100%;height:100%;object-fit:contain;background:#000}
+  .tv-empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:#65748a;text-align:center;padding:32px}
+  .tv-empty-icon{width:58px;height:58px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(231,178,76,.28);border-radius:50%;color:#e7b24c;font-size:22px}
+  .tv-download{display:none;position:absolute;right:12px;top:12px;width:38px;height:38px;border:1px solid rgba(255,255,255,.2);border-radius:50%;background:rgba(5,7,11,.78);color:#fff;align-items:center;justify-content:center;text-decoration:none;font-size:18px}
+  .tv-meta{display:none;position:absolute;left:12px;right:58px;top:12px;color:#fff;font:11px "JetBrains Mono",monospace;text-shadow:0 1px 4px #000}
+  .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(10px);opacity:0;pointer-events:none;transition:.18s;background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:8px;padding:10px 15px;color:#eaf1fa;font-size:13px;z-index:90}.toast.show{opacity:1;transform:translateX(-50%)}
+  @media(max-width:980px){body{overflow:auto}.hq-content[data-active="text-video"]{height:auto}.tv-layout{grid-template-columns:1fr;height:auto}.tv-editor{border-right:0;border-bottom:1px solid rgba(148,164,187,.12)}.tv-preview{min-height:680px}.tv-text{min-height:220px}}
+  @media(max-width:560px){.tv-template-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.tv-editor{padding:22px 18px}}
+</style>
+<link rel="stylesheet" href="theme.css?v=5873a2f4">
+</head>
+<body>
+<div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
+<div class="hq-app"><div class="hq-content" data-active="text-video">
+  <main class="tv-layout">
+    <section class="tv-editor">
+      <h1 class="tv-heading">文案成片</h1>
+      <div class="tv-label"><span>视频模板</span><span id="templateName" style="color:#e7b24c;font-weight:600">正在加载</span></div>
+      <div id="templateGrid" class="tv-template-grid" role="listbox" aria-label="视频模板"><div class="tv-template-loading">正在读取专业模板库</div></div>
+      <div class="tv-label"><span>输入方式</span></div>
+      <div class="tv-mode" role="radiogroup" aria-label="输入方式">
+        <button class="active" type="button" role="radio" aria-checked="true" data-mode="generate">主题创作</button>
+        <button type="button" role="radio" aria-checked="false" data-mode="fixed">完整文案</button>
+      </div>
+      <div class="tv-label"><label id="videoTextLabel" for="videoText">输入主题</label><button id="clearText" type="button" style="border:0;background:transparent;color:#94a4bb;cursor:pointer;font:12px inherit">清空</button></div>
+      <div class="tv-input-wrap">
+        <textarea id="videoText" class="tv-text" maxlength="1000" placeholder="例如：AI 如何帮助美业门店提升复购率"></textarea>
+        <div id="charCount" class="tv-count">0 / 1000</div>
+      </div>
+      <button id="generateBtn" class="tv-action" type="button">生成视频</button>
+      <div id="statusText" class="tv-status">输入主题或文案，选择模板后生成</div>
+    </section>
+    <section class="tv-preview" aria-label="视频预览">
+      <div class="tv-stage">
+        <div id="emptyState" class="tv-empty"><div class="tv-empty-icon">▶</div><div>视频生成后在此预览</div></div>
+        <video id="resultVideo" controls playsinline></video>
+        <div id="resultMeta" class="tv-meta"></div>
+        <a id="downloadBtn" class="tv-download" href="#" title="下载视频" download>↓</a>
+      </div>
+    </section>
+  </main>
+</div></div>
+<div id="toast" class="toast"></div>
+<script src="../assets/cloud.js?v=8"></script>
+<script src="cloud-shell.js?v=912bc54d"></script>
+<script>
+(function(){
+  var token='__cookie__', activeBlob='', startedAt=0, pollTimer=0, activeTemplate='', activeMode='generate';
+  var el=function(id){return document.getElementById(id);};
+  function toast(message){var node=el('toast');node.textContent=message;node.classList.add('show');setTimeout(function(){node.classList.remove('show');},1800);}
+  function updateCount(){el('charCount').textContent=el('videoText').value.length+' / 1000';}
+  function setStatus(message,state){var node=el('statusText');node.textContent=message;node.className='tv-status'+(state?' '+state:'');}
+  function setBusy(value){el('generateBtn').disabled=value;el('generateBtn').textContent=value?'正在生成':'生成视频';}
+  function elapsed(){return Math.max(0,Math.round((Date.now()-startedAt)/1000));}
+  function phaseText(){var seconds=elapsed();if(seconds<20)return '正在处理文案与配音';if(seconds<180)return '正在生成画面素材';return '正在套用模板并渲染视频';}
+  function requestKey(){return 'text-video-'+(window.crypto&&crypto.randomUUID?crypto.randomUUID():Date.now()+'-'+Math.random().toString(16).slice(2));}
+  function authHeaders(json){var headers={Authorization:'Bearer '+token};if(json)headers['Content-Type']='application/json';return headers;}
+  function readJson(response){
+    return response.text().then(function(text){
+      var data;
+      try{data=JSON.parse(text);}catch(_){
+        throw new Error(response.ok?'服务返回格式错误':'生成服务未启动或接口地址错误（HTTP '+response.status+'）');
+      }
+      return {status:response.status,data:data};
+    });
+  }
+  function playableUrl(url){
+    if(String(url||'').indexOf('/api/gen/file/')!==0)return Promise.resolve(url);
+    return fetch(url,{cache:'no-store',headers:authHeaders(false)}).then(function(response){
+      if(response.status===401){location.href='../login.html?redirect=workbench/text-video';throw new Error('登录已过期');}
+      if(!response.ok)throw new Error('视频读取失败');
+      return response.blob();
+    }).then(function(blob){if(activeBlob)URL.revokeObjectURL(activeBlob);activeBlob=URL.createObjectURL(blob);return activeBlob;});
+  }
+  function showResult(result){
+    playableUrl(result.video_url).then(function(url){
+      var video=el('resultVideo');video.src=url;video.style.display='block';el('emptyState').style.display='none';
+      el('resultMeta').style.display='block';el('resultMeta').textContent=Number(result.duration||0).toFixed(1)+'s · '+(result.scene_count||0)+' 个画面';
+      var download=el('downloadBtn');download.style.display='flex';download.href=url;
+      video.play().catch(function(){});
+    }).catch(function(error){setStatus(error.message||'视频读取失败','error');});
+  }
+  function poll(jobId){
+    fetch('/api/gen/job/'+jobId,{cache:'no-store',headers:authHeaders(false)}).then(readJson).then(function(response){
+      var data=response.data;
+      if(response.status===401){location.href='../login.html?redirect=workbench/text-video';return;}
+      if(data.status==='done'&&data.result){clearTimeout(pollTimer);setBusy(false);setStatus('生成完成，用时 '+elapsed()+' 秒','done');showResult(data.result);return;}
+      if(data.status==='error'||data.status==='failed')throw new Error(data.error||'生成失败，点数已自动退回');
+      setStatus((data.stage||phaseText())+' · '+elapsed()+' 秒','running');pollTimer=setTimeout(function(){poll(jobId);},2500);
+    }).catch(function(error){clearTimeout(pollTimer);setBusy(false);setStatus(error.message||'任务查询失败','error');toast(error.message||'任务查询失败');});
+  }
+  function generate(){
+    var text=el('videoText').value.trim();
+    if(text.length<2){toast(activeMode==='generate'?'请输入至少 2 个字的主题':'请输入至少 2 个字的完整文案');return;}
+    if(!activeTemplate){toast('模板库尚未加载完成');return;}
+    clearTimeout(pollTimer);setBusy(true);startedAt=Date.now();setStatus('正在提交任务','running');
+    var headers=authHeaders(true);headers['Idempotency-Key']=requestKey();
+    fetch('/api/gen/script_to_video',{method:'POST',headers:headers,body:JSON.stringify({pipeline:'pixelle',text:text,template:activeTemplate,mode:activeMode})}).then(readJson).then(function(response){
+      if(response.status===401){location.href='../login.html?redirect=workbench/text-video';return;}
+      if(!response.data.job_id)throw new Error(response.data.detail||'任务提交失败');
+      var cost=response.data.cost?'，预计扣除 '+response.data.cost+' 点':'';
+      setStatus((activeMode==='generate'?'正在根据主题创作中文文案':'正在使用完整文案生成视频')+cost,'running');
+      poll(response.data.job_id);
+    }).catch(function(error){setBusy(false);setStatus(error.message||'任务提交失败','error');toast(error.message||'任务提交失败');});
+  }
+  function selectMode(button){
+    activeMode=button.getAttribute('data-mode')||'generate';
+    Array.prototype.forEach.call(document.querySelectorAll('.tv-mode button'),function(item){var selected=item===button;item.classList.toggle('active',selected);item.setAttribute('aria-checked',selected?'true':'false');});
+    var isTopic=activeMode==='generate';
+    el('videoTextLabel').textContent=isTopic?'输入主题':'输入完整文案';
+    el('videoText').placeholder=isTopic?'例如：AI 如何帮助美业门店提升复购率':'粘贴需要原样配音和排版的完整中文文案';
+    setStatus(isTopic?'输入主题，选择模板后生成':'输入完整文案，选择模板后生成');
+  }
+  function selectTemplate(button){
+    activeTemplate=button.getAttribute('data-template')||'';
+    Array.prototype.forEach.call(document.querySelectorAll('.tv-template'),function(item){var selected=item===button;item.classList.toggle('active',selected);item.setAttribute('aria-selected',selected?'true':'false');});
+    el('templateName').textContent=button.getAttribute('data-name')||'专业模板';
+  }
+  function loadTemplates(){
+    fetch('/api/gen/text-video/templates',{cache:'no-store',headers:authHeaders(false)}).then(readJson).then(function(response){
+      if(!response.data.templates||!response.data.templates.length)throw new Error(response.data.detail||'没有可用模板');
+      var colors=[['#e8c26a','#68d6c2'],['#58d3b6','#f7fffc'],['#e83b3b','#f4eee6'],['#26f7e8','#ff4fd8'],['#9f7aea','#f6ad55'],['#60a5fa','#f8fafc']];
+      var grid=el('templateGrid');grid.textContent='';
+      response.data.templates.forEach(function(template,index){
+        var button=document.createElement('button'),swatch=document.createElement('span'),title=document.createElement('strong'),meta=document.createElement('span'),palette=colors[index%colors.length];
+        button.className='tv-template';button.type='button';button.setAttribute('data-template',template.key);button.setAttribute('data-name',template.name);button.setAttribute('aria-selected','false');button.style.setProperty('--swatch',palette[0]);button.style.setProperty('--swatch2',palette[1]);
+        swatch.className='tv-template-swatch';title.textContent=template.name;meta.textContent=template.width+'×'+template.height+' · 竖屏';
+        button.appendChild(swatch);button.appendChild(title);button.appendChild(meta);button.onclick=function(){selectTemplate(button);};grid.appendChild(button);
+      });
+      selectTemplate(grid.querySelector('.tv-template'));
+    }).catch(function(error){el('templateGrid').innerHTML='<div class="tv-template-loading">'+error.message+'</div>';el('templateName').textContent='加载失败';setStatus('模板库不可用，请检查生成服务','error');});
+  }
+  el('videoText').addEventListener('input',updateCount);
+  Array.prototype.forEach.call(document.querySelectorAll('.tv-mode button'),function(button){button.onclick=function(){selectMode(button);};});
+  el('clearText').onclick=function(){el('videoText').value='';updateCount();el('videoText').focus();};
+  el('generateBtn').onclick=generate;
+  updateCount();loadTemplates();
+})();
+</script>
+</body>
+</html>

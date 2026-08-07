@@ -55,6 +55,26 @@ class ScriptToVideoTests(unittest.TestCase):
         self.assertEqual(result["scene_count"], 2)
         self.assertEqual(result["type"], "script_to_video")
 
+    def test_pixelle_pipeline_dispatches_prepare_and_generate(self):
+        pixelle = importlib.import_module("content_domains.pixelle_video")
+        prepared = {
+            "pipeline": "pixelle", "text": "AI 培训", "mode": "generate",
+            "template": "1080x1920/image_default.html", "n_scenes": 5,
+            "scenes": [{"line": "AI 培训"}],
+        }
+        with mock.patch.object(pixelle, "prepare_payload", return_value=prepared) as prepare:
+            result = self.script_to_video.prepare_script_to_video_payload(
+                {"pipeline": "pixelle", "text": "AI 培训"}, "fang"
+            )
+        prepare.assert_called_once()
+        self.assertEqual(result, prepared)
+
+        generated = {"type": "script_to_video", "pipeline": "pixelle"}
+        with mock.patch.object(pixelle, "generate", return_value=generated) as generate:
+            result = self.script_to_video.gen_script_to_video(dict(prepared))
+        generate.assert_called_once()
+        self.assertEqual(result, generated)
+
     def test_talking_style_uses_selected_avatar_id(self):
         calls = {}
 

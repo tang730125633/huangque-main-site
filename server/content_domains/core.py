@@ -3006,6 +3006,12 @@ class H(BaseHTTPRequestHandler):
         audio_domain, points_domain, video_domain = _domains()
         if p == "/api/gen/pricing":
             return self._send(200, pricing.public_catalog())
+        if p == "/api/gen/text-video/templates":
+            user = verify(self._token())
+            if not user:
+                return self._send(401, {"detail": "未登录或登录已过期"})
+            from . import pixelle_video
+            return self._send(200, {"templates": pixelle_video.public_templates()})
         if _dispatch_short_drama(
                 self, "GET", jdb, verify,
                 getattr(points_domain, "cost_of", None),
