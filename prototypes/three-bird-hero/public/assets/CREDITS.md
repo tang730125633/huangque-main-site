@@ -5,6 +5,7 @@
 
 ### 模型清单(逐个列表)
 | 文件 | 模型 | 用途 | 来源(带链接) |
+| `huangque-eagle.glb` | Eagle | 飞鸟网格、骨骼与 Flying 动画 | Quaternius / https://opengameart.org/content/animated-animales-low-poly / CC0 |
 
 ### 字体/贴图/音频
 - assets/glass-bird.webp — 液态玻璃飞鸟首屏主视觉,作者 黄雀 AI / OpenAI image generation,来源 Codex session 2026-08-06,许可 自有生成资产
@@ -14,4 +15,4 @@
 - React Bits `LightRays` — 鼠标影响光线思路；作者 David Haz；来源 https://github.com/DavidHDev/react-bits；许可 MIT + Commons Clause。当前样机为原生 WebGL 重写，不分发原组件。
 
 ## 已退役的第三方资产
-- 曾用过什么、何时为何移除、许可(保留记录方便回溯)
+- Three.js `Stork.glb` 仅用于本地结构检查，因原 ROME 模型为 CC BY-NC-SA 3.0，未进入仓库或页面。

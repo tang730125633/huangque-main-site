@@ -3,15 +3,16 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { animate, stagger } from 'animejs';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { animate } from 'animejs';
 import 'animejs/adapters/three';
 
 const root = document.documentElement;
 const canvas = document.querySelector('[data-three-stage]');
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
-const status = { ready: false, reducedMotion: reduced.matches, version: 'three-bird-2', meshes: 0, scrollProgress: 0 };
+const status = { ready: false, reducedMotion: reduced.matches, version: 'three-bird-3', meshes: 0, scrollProgress: 0 };
 window.__threeBirdStatus = status;
-window.__threeBirdCheck = () => status.ready && status.meshes >= 18 && canvas.width > 0;
+window.__threeBirdCheck = () => status.ready && status.meshes >= 6 && canvas.width > 0;
 
 let renderer;
 try {
@@ -25,7 +26,7 @@ if (renderer) {
   renderer.setClearColor(0x000000, 0);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.22;
+  renderer.toneMappingExposure = 1.05;
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(34, innerWidth / innerHeight, .1, 40);
@@ -33,30 +34,32 @@ if (renderer) {
 
   const composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
-  const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), .42, .58, .3);
+  const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), .16, .58, .3);
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
 
-  scene.add(new THREE.HemisphereLight(0x6d84ff, 0x08030f, 1.9));
-  const key = new THREE.DirectionalLight(0xc6ddff, 4.4);
+  scene.add(new THREE.HemisphereLight(0x3558ff, 0x05020d, .85));
+  const key = new THREE.DirectionalLight(0x8ba8ff, 1.1);
   key.position.set(-4, 5, 6);
   scene.add(key);
-  const blueLight = new THREE.PointLight(0x245cff, 32, 14, 2);
+  const blueLight = new THREE.PointLight(0x245cff, 8, 14, 2);
   blueLight.position.set(2, -2, 4);
   scene.add(blueLight);
-  const violetLight = new THREE.PointLight(0x8f35ff, 25, 12, 2);
+  const violetLight = new THREE.PointLight(0x8f35ff, 6, 12, 2);
   violetLight.position.set(2, 3, -2);
   scene.add(violetLight);
-  const amberLight = new THREE.PointLight(0xffa12c, 20, 10, 2);
+  const amberLight = new THREE.PointLight(0xffa12c, 2, 10, 2);
   amberLight.position.set(-3, -1, 3);
   scene.add(amberLight);
 
   const glass = new THREE.MeshPhysicalMaterial({
-    color: 0x183bce,
+    color: 0x061ea8,
+    emissive: 0x06176e,
+    emissiveIntensity: .18,
     metalness: .08,
-    roughness: .2,
-    transmission: .3,
-    thickness: 1.1,
+    roughness: .24,
+    transmission: .18,
+    thickness: .7,
     ior: 1.38,
     clearcoat: 1,
     clearcoatRoughness: .1,
@@ -64,124 +67,50 @@ if (renderer) {
     iridescenceIOR: 1.6,
     iridescenceThicknessRange: [120, 520],
     attenuationColor: new THREE.Color(0x2148ff),
-    attenuationDistance: 1.6,
+    attenuationDistance: .95,
     transparent: true,
-    opacity: .96,
+    opacity: .98,
     side: THREE.DoubleSide
   });
-  const violetGlass = glass.clone();
-  violetGlass.color.set(0x5422c8);
-  violetGlass.attenuationColor.set(0x7b35ff);
-  const amberGlass = glass.clone();
-  amberGlass.color.set(0xbd5e13);
-  amberGlass.attenuationColor.set(0xff9b22);
-  amberGlass.transmission = .24;
-
   if (!reduced.matches) {
-    [glass, violetGlass, amberGlass].forEach(material => { material.opacity = .06; });
+    glass.opacity = .06;
     key.intensity = 0;
     bloom.strength = 0;
-    animate([glass, violetGlass, amberGlass], { opacity: .96, duration: 1600, delay: stagger(130), ease: 'out(3)' });
-    animate(key, { intensity: 4.4, duration: 1800, ease: 'outExpo' });
-    animate(bloom, { strength: .42, duration: 1800, ease: 'outExpo' });
-  }
-
-  function ribbonGeometry(length, width) {
-    const shape = new THREE.Shape();
-    shape.moveTo(0, 0);
-    shape.bezierCurveTo(width, length * .2, width * .48, length * .78, 0, length);
-    shape.bezierCurveTo(-width * .3, length * .72, -width * .42, length * .18, 0, 0);
-    const geometry = new THREE.ExtrudeGeometry(shape, {
-      depth: .045,
-      bevelEnabled: true,
-      bevelSegments: 3,
-      bevelSize: .018,
-      bevelThickness: .014,
-      curveSegments: 12
-    });
-    geometry.translate(0, 0, -.0225);
-    return geometry;
-  }
-
-  function wingGeometry() {
-    const shape = new THREE.Shape();
-    shape.moveTo(-.28, -.03);
-    shape.bezierCurveTo(.08, .72, .78, 2.05, 1.78, 2.56);
-    shape.bezierCurveTo(1.5, 1.58, 1.2, .52, .26, -.18);
-    shape.bezierCurveTo(.02, -.25, -.2, -.16, -.28, -.03);
-    return new THREE.ExtrudeGeometry(shape, {
-      depth: .08,
-      bevelEnabled: true,
-      bevelSegments: 3,
-      bevelSize: .035,
-      bevelThickness: .025,
-      curveSegments: 18
-    });
+    animate(glass, { opacity: .98, duration: 1600, ease: 'out(3)' });
+    animate(key, { intensity: 1.1, duration: 1800, ease: 'outExpo' });
+    animate(bloom, { strength: .16, duration: 1800, ease: 'outExpo' });
   }
 
   const bird = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 32), glass);
-  body.scale.set(1.72, .3, .36);
-  body.rotation.z = -.06;
-  bird.add(body);
-
-  const head = new THREE.Mesh(new THREE.SphereGeometry(.32, 36, 24), violetGlass);
-  head.position.set(-1.55, .09, .02);
-  head.scale.set(1.45, .72, .82);
-  head.rotation.z = -.08;
-  bird.add(head);
-
-  const beak = new THREE.Mesh(new THREE.ConeGeometry(.09, .52, 8), glass);
-  beak.position.set(-1.95, .065, .01);
-  beak.rotation.z = Math.PI / 2;
-  bird.add(beak);
-
-  function makeWing(mirrored = false) {
-    const wing = new THREE.Group();
-    const geometry = wingGeometry();
-    [
-      { scale: 1, x: 0, y: 0, z: 0, material: glass },
-      { scale: .76, x: .18, y: .04, z: .09, material: violetGlass }
-    ].forEach(panel => {
-      const mesh = new THREE.Mesh(geometry, panel.material);
-      mesh.position.set(panel.x, panel.y, panel.z);
-      mesh.scale.setScalar(panel.scale);
-      wing.add(mesh);
+  let mixer;
+  new GLTFLoader().load('./public/assets/huangque-eagle.glb', gltf => {
+    const model = gltf.scene;
+    const box = new THREE.Box3().setFromObject(model);
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    model.position.sub(center);
+    const pivot = new THREE.Group();
+    pivot.scale.setScalar(3.15 / Math.max(size.x, size.y, size.z));
+    pivot.rotation.set(.04, -1.16, -.04);
+    pivot.add(model);
+    model.traverse(child => {
+      if (!child.isMesh) return;
+      child.material = glass;
+      child.frustumCulled = false;
     });
-    for (let index = 0; index < 4; index += 1) {
-      const amount = index / 3;
-      const curve = new THREE.CatmullRomCurve3([
-        new THREE.Vector3(-.05 + amount * .12, .02, .19),
-        new THREE.Vector3(.36 + amount * .2, .62 + amount * .14, .2),
-        new THREE.Vector3(.82 + amount * .36, 1.38 + amount * .22, .2),
-        new THREE.Vector3(1.22 + amount * .5, 2.02 + amount * .3, .2)
-      ]);
-      wing.add(new THREE.Mesh(
-        new THREE.TubeGeometry(curve, 28, .012, 6, false),
-        new THREE.MeshBasicMaterial({ color: index === 1 ? 0xf0a94d : 0x96b8ff, transparent: true, opacity: .65 })
-      ));
+    bird.add(pivot);
+    const flying = gltf.animations.find(clip => clip.name.includes('Flying'));
+    if (flying && !reduced.matches) {
+      mixer = new THREE.AnimationMixer(model);
+      mixer.clipAction(flying).setDuration(1.55).play();
     }
-    wing.position.set(-.05, mirrored ? -.05 : .05, mirrored ? -.16 : .08);
-    wing.scale.y = mirrored ? -.78 : 1;
-    wing.rotation.x = mirrored ? -.12 : .06;
-    return wing;
-  }
-
-  const upperWing = makeWing(false);
-  const lowerWing = makeWing(true);
-  upperWing.rotation.z = -.22;
-  lowerWing.rotation.z = .16;
-  bird.add(lowerWing, upperWing);
-
-  const tail = new THREE.Group();
-  for (let index = 0; index < 3; index += 1) {
-    const amount = index / 2;
-    const feather = new THREE.Mesh(ribbonGeometry(1.62 - Math.abs(amount - .5) * .28, .18), index === 1 ? violetGlass : glass);
-    feather.rotation.z = -Math.PI / 2 + THREE.MathUtils.lerp(-.15, .15, amount);
-    feather.position.set(1.25, -.05 + amount * .05, (amount - .5) * .12);
-    tail.add(feather);
-  }
-  bird.add(tail);
+    status.meshes = scene.getObjectsByProperty('isMesh', true).length;
+    status.ready = true;
+    root.classList.add('three-ready');
+  }, undefined, error => {
+    root.classList.add('webgl-fallback');
+    console.warn('Three.js bird model unavailable:', error);
+  });
 
   const flight = new THREE.Group();
   flight.add(bird);
@@ -239,6 +168,7 @@ if (renderer) {
   let pointerX = 0;
   let pointerY = 0;
   let frame = 0;
+  let previousFrame = performance.now();
 
   function applyScene(progress) {
     const end = scenes.findIndex(item => item.at >= progress);
@@ -246,11 +176,12 @@ if (renderer) {
     const previous = scenes[Math.max(0, nextIndex - 1)];
     const next = scenes[nextIndex];
     const amount = previous === next ? 0 : (progress - previous.at) / (next.at - previous.at);
-    const compact = innerWidth < 700;
+    const mobile = innerWidth < 520;
+    const compact = innerWidth < 900;
     const x = lerp(previous.x, next.x, amount);
     const y = lerp(previous.y, next.y, amount);
-    flight.position.set(compact ? x * .05 - .2 : x, compact ? y - .52 : y, lerp(previous.z, next.z, amount));
-    flight.scale.setScalar(lerp(previous.scale, next.scale, amount) * (compact ? .42 : 1));
+    flight.position.set(compact ? x * .05 + (mobile ? -.2 : .55) : x, compact ? y - (mobile ? .52 : 1.65) : y, lerp(previous.z, next.z, amount));
+    flight.scale.setScalar(lerp(previous.scale, next.scale, amount) * (mobile ? .42 : compact ? .58 : 1));
     flight.rotation.y = lerp(previous.ry, next.ry, amount) + pointerX * .22;
     flight.rotation.z = lerp(previous.rz, next.rz, amount) - pointerY * .06;
     root.style.setProperty('--scene-hue', (progress * 18 - 7).toFixed(3));
@@ -297,6 +228,8 @@ if (renderer) {
 
   function render(now) {
     const time = reduced.matches ? 0 : now * .001;
+    const delta = Math.min(.05, (now - previousFrame) / 1000);
+    previousFrame = now;
     pointerX += (pointerTargetX - pointerX) * .045;
     pointerY += (pointerTargetY - pointerY) * .045;
     scrollProgress += (scrollTarget - scrollProgress) * (reduced.matches ? 1 : .055);
@@ -304,20 +237,12 @@ if (renderer) {
     camera.position.x = pointerX * .2;
     camera.position.y = pointerY * .14;
     camera.lookAt(0, 0, 0);
-    upperWing.rotation.x = Math.sin(time * 1.1) * .07;
-    upperWing.rotation.z = -.22 + Math.sin(time * 1.1) * .025;
-    lowerWing.rotation.x = -Math.sin(time * 1.1) * .055;
-    lowerWing.rotation.z = .16 - Math.sin(time * 1.1) * .02;
+    mixer?.update(delta);
     bird.position.y = Math.sin(time * .85) * .055;
     starField.rotation.z = time * .006;
     blueLight.position.x = 2 + Math.sin(time * .7) * 1.5;
     violetLight.position.y = 3 + Math.cos(time * .6) * 1.2;
     composer.render();
-    if (!status.ready) {
-      status.meshes = scene.getObjectsByProperty('isMesh', true).length;
-      status.ready = true;
-      root.classList.add('three-ready');
-    }
     frame = requestAnimationFrame(render);
   }
 
