@@ -9,9 +9,9 @@ import 'animejs/adapters/three';
 const root = document.documentElement;
 const canvas = document.querySelector('[data-three-stage]');
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
-const status = { ready: false, reducedMotion: reduced.matches, version: 'three-bird-1', meshes: 0, scrollProgress: 0 };
+const status = { ready: false, reducedMotion: reduced.matches, version: 'three-bird-2', meshes: 0, scrollProgress: 0 };
 window.__threeBirdStatus = status;
-window.__threeBirdCheck = () => status.ready && status.meshes >= 40 && canvas.width > 0;
+window.__threeBirdCheck = () => status.ready && status.meshes >= 18 && canvas.width > 0;
 
 let renderer;
 try {
@@ -86,91 +86,99 @@ if (renderer) {
     animate(bloom, { strength: .42, duration: 1800, ease: 'outExpo' });
   }
 
-  function featherGeometry(length, width) {
+  function ribbonGeometry(length, width) {
     const shape = new THREE.Shape();
     shape.moveTo(0, 0);
-    shape.bezierCurveTo(width * .66, length * .22, width * .52, length * .7, 0, length);
-    shape.bezierCurveTo(-width * .46, length * .72, -width * .58, length * .2, 0, 0);
+    shape.bezierCurveTo(width, length * .2, width * .48, length * .78, 0, length);
+    shape.bezierCurveTo(-width * .3, length * .72, -width * .42, length * .18, 0, 0);
     const geometry = new THREE.ExtrudeGeometry(shape, {
-      depth: .055,
+      depth: .045,
       bevelEnabled: true,
-      bevelSegments: 2,
-      bevelSize: .025,
-      bevelThickness: .018,
-      curveSegments: 6
+      bevelSegments: 3,
+      bevelSize: .018,
+      bevelThickness: .014,
+      curveSegments: 12
     });
-    geometry.translate(0, 0, -.0275);
+    geometry.translate(0, 0, -.0225);
     return geometry;
+  }
+
+  function wingGeometry() {
+    const shape = new THREE.Shape();
+    shape.moveTo(-.28, -.03);
+    shape.bezierCurveTo(.08, .72, .78, 2.05, 1.78, 2.56);
+    shape.bezierCurveTo(1.5, 1.58, 1.2, .52, .26, -.18);
+    shape.bezierCurveTo(.02, -.25, -.2, -.16, -.28, -.03);
+    return new THREE.ExtrudeGeometry(shape, {
+      depth: .08,
+      bevelEnabled: true,
+      bevelSegments: 3,
+      bevelSize: .035,
+      bevelThickness: .025,
+      curveSegments: 18
+    });
   }
 
   const bird = new THREE.Group();
   const body = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 32), glass);
-  body.scale.set(1.5, .5, .56);
-  body.rotation.z = -.12;
+  body.scale.set(1.72, .3, .36);
+  body.rotation.z = -.06;
   bird.add(body);
 
-  const chest = new THREE.Mesh(new THREE.SphereGeometry(.56, 36, 24), violetGlass);
-  chest.position.set(-.7, -.04, .04);
-  chest.scale.set(1.3, .76, .84);
-  bird.add(chest);
-
-  const head = new THREE.Mesh(new THREE.SphereGeometry(.43, 36, 24), glass);
-  head.position.set(-1.38, .18, .02);
-  head.scale.set(1.04, .95, .96);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(.32, 36, 24), violetGlass);
+  head.position.set(-1.55, .09, .02);
+  head.scale.set(1.45, .72, .82);
+  head.rotation.z = -.08;
   bird.add(head);
 
-  const beak = new THREE.Mesh(new THREE.ConeGeometry(.17, .7, 5), amberGlass);
-  beak.position.set(-1.84, .13, .01);
+  const beak = new THREE.Mesh(new THREE.ConeGeometry(.09, .52, 8), glass);
+  beak.position.set(-1.95, .065, .01);
   beak.rotation.z = Math.PI / 2;
   bird.add(beak);
 
-  const eye = new THREE.Mesh(new THREE.SphereGeometry(.09, 18, 12), new THREE.MeshPhysicalMaterial({ color: 0x02030a, roughness: .08, clearcoat: 1 }));
-  eye.position.set(-1.5, .29, .36);
-  bird.add(eye);
-  const iris = new THREE.Mesh(new THREE.SphereGeometry(.037, 12, 8), new THREE.MeshBasicMaterial({ color: 0xffc35a }));
-  iris.position.set(-1.525, .3, .43);
-  bird.add(iris);
-
   function makeWing(mirrored = false) {
     const wing = new THREE.Group();
-    for (let index = 0; index < 14; index += 1) {
-      const amount = index / 13;
-      const length = 1.25 + Math.sin(amount * Math.PI) * 1.3 + amount * .3;
-      const feather = new THREE.Mesh(featherGeometry(length, .28 + amount * .05), index % 5 === 0 ? amberGlass : index % 2 ? violetGlass : glass);
-      feather.position.set(.22 - amount * .66, .05 + amount * .08, index * .012);
-      feather.rotation.z = THREE.MathUtils.lerp(-.55, .52, amount);
-      feather.rotation.x = (amount - .5) * .12;
-      wing.add(feather);
+    const geometry = wingGeometry();
+    [
+      { scale: 1, x: 0, y: 0, z: 0, material: glass },
+      { scale: .76, x: .18, y: .04, z: .09, material: violetGlass }
+    ].forEach(panel => {
+      const mesh = new THREE.Mesh(geometry, panel.material);
+      mesh.position.set(panel.x, panel.y, panel.z);
+      mesh.scale.setScalar(panel.scale);
+      wing.add(mesh);
+    });
+    for (let index = 0; index < 4; index += 1) {
+      const amount = index / 3;
+      const curve = new THREE.CatmullRomCurve3([
+        new THREE.Vector3(-.05 + amount * .12, .02, .19),
+        new THREE.Vector3(.36 + amount * .2, .62 + amount * .14, .2),
+        new THREE.Vector3(.82 + amount * .36, 1.38 + amount * .22, .2),
+        new THREE.Vector3(1.22 + amount * .5, 2.02 + amount * .3, .2)
+      ]);
+      wing.add(new THREE.Mesh(
+        new THREE.TubeGeometry(curve, 28, .012, 6, false),
+        new THREE.MeshBasicMaterial({ color: index === 1 ? 0xf0a94d : 0x96b8ff, transparent: true, opacity: .65 })
+      ));
     }
-    wing.position.set(.12, .12, mirrored ? -.34 : .2);
-    wing.scale.set(1, mirrored ? -.74 : 1, mirrored ? .86 : 1);
-    wing.rotation.x = mirrored ? -.18 : .08;
+    wing.position.set(-.05, mirrored ? -.05 : .05, mirrored ? -.16 : .08);
+    wing.scale.y = mirrored ? -.78 : 1;
+    wing.rotation.x = mirrored ? -.12 : .06;
     return wing;
   }
 
   const upperWing = makeWing(false);
   const lowerWing = makeWing(true);
-  upperWing.rotation.z = -.66;
-  lowerWing.rotation.z = .56;
+  upperWing.rotation.z = -.22;
+  lowerWing.rotation.z = .16;
   bird.add(lowerWing, upperWing);
 
-  const upperCover = new THREE.Mesh(new THREE.SphereGeometry(.78, 32, 20), glass);
-  upperCover.position.set(.18, .34, .17);
-  upperCover.scale.set(1.12, .5, .2);
-  upperCover.rotation.z = -.06;
-  bird.add(upperCover);
-  const lowerCover = new THREE.Mesh(new THREE.SphereGeometry(.68, 32, 20), violetGlass);
-  lowerCover.position.set(.18, -.28, -.2);
-  lowerCover.scale.set(1.06, .48, .18);
-  lowerCover.rotation.z = .08;
-  bird.add(lowerCover);
-
   const tail = new THREE.Group();
-  for (let index = 0; index < 9; index += 1) {
-    const amount = index / 8;
-    const feather = new THREE.Mesh(featherGeometry(1.35 + Math.sin(amount * Math.PI) * .42, .22), index === 4 ? amberGlass : index % 2 ? violetGlass : glass);
-    feather.rotation.z = -Math.PI / 2 + THREE.MathUtils.lerp(-.28, .28, amount);
-    feather.position.set(.8, -.18 + amount * .09, (amount - .5) * .18);
+  for (let index = 0; index < 3; index += 1) {
+    const amount = index / 2;
+    const feather = new THREE.Mesh(ribbonGeometry(1.62 - Math.abs(amount - .5) * .28, .18), index === 1 ? violetGlass : glass);
+    feather.rotation.z = -Math.PI / 2 + THREE.MathUtils.lerp(-.15, .15, amount);
+    feather.position.set(1.25, -.05 + amount * .05, (amount - .5) * .12);
     tail.add(feather);
   }
   bird.add(tail);
@@ -241,8 +249,8 @@ if (renderer) {
     const compact = innerWidth < 700;
     const x = lerp(previous.x, next.x, amount);
     const y = lerp(previous.y, next.y, amount);
-    flight.position.set(compact ? x * .2 + .25 : x, compact ? y - .52 : y, lerp(previous.z, next.z, amount));
-    flight.scale.setScalar(lerp(previous.scale, next.scale, amount) * (compact ? .55 : 1));
+    flight.position.set(compact ? x * .05 - .2 : x, compact ? y - .52 : y, lerp(previous.z, next.z, amount));
+    flight.scale.setScalar(lerp(previous.scale, next.scale, amount) * (compact ? .42 : 1));
     flight.rotation.y = lerp(previous.ry, next.ry, amount) + pointerX * .22;
     flight.rotation.z = lerp(previous.rz, next.rz, amount) - pointerY * .06;
     root.style.setProperty('--scene-hue', (progress * 18 - 7).toFixed(3));
@@ -296,10 +304,10 @@ if (renderer) {
     camera.position.x = pointerX * .2;
     camera.position.y = pointerY * .14;
     camera.lookAt(0, 0, 0);
-    upperWing.rotation.x = Math.sin(time * 1.25) * .12;
-    upperWing.rotation.z = -.66 + Math.sin(time * 1.25) * .035;
-    lowerWing.rotation.x = -Math.sin(time * 1.25) * .08;
-    lowerWing.rotation.z = .56 - Math.sin(time * 1.25) * .028;
+    upperWing.rotation.x = Math.sin(time * 1.1) * .07;
+    upperWing.rotation.z = -.22 + Math.sin(time * 1.1) * .025;
+    lowerWing.rotation.x = -Math.sin(time * 1.1) * .055;
+    lowerWing.rotation.z = .16 - Math.sin(time * 1.1) * .02;
     bird.position.y = Math.sin(time * .85) * .055;
     starField.rotation.z = time * .006;
     blueLight.position.x = 2 + Math.sin(time * .7) * 1.5;
