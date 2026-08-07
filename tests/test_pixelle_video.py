@@ -24,6 +24,18 @@ class PixelleVideoTests(unittest.TestCase):
         meta = self.pixelle.feature_flags.CATALOG_MAP[self.pixelle.FEATURE_KEY]
         self.assertIs(meta["default_enabled"], False)
 
+    def test_production_dropin_uses_private_generation_bridge(self):
+        root = Path(__file__).resolve().parents[1]
+        dropin = (
+            root
+            / "deploy/systemd/huangque-content.service.d/pixelle.conf"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "PIXELLE_API_URL=https://fang.huangquechuanmei.com/internal/pixelle",
+            dropin,
+        )
+        self.assertNotIn("127.0.0.1:8103", dropin)
+
     def test_prepare_topic_and_fixed_copy(self):
         topic = self.pixelle.prepare_payload({
             "text": " AI 培训如何提升团队效率 ",
@@ -125,6 +137,21 @@ class PixelleVideoTests(unittest.TestCase):
             self.pixelle._safe_upstream_video_url("https://example.com/api/files/result.mp4")
         with self.assertRaisesRegex(RuntimeError, "无效的文件路径"):
             self.pixelle._safe_upstream_video_url("/admin/secrets")
+
+    def test_prefixed_service_url_rewrites_rooted_file_url_through_bridge(self):
+        api_url = "https://fang.huangquechuanmei.com/internal/pixelle"
+        with mock.patch.object(self.pixelle, "PIXELLE_API_URL", api_url):
+            rooted = self.pixelle._safe_upstream_video_url(
+                "https://fang.huangquechuanmei.com/api/files/result.mp4"
+            )
+            relative = self.pixelle._safe_upstream_video_url("/api/files/result.mp4")
+            prefixed = self.pixelle._safe_upstream_video_url(
+                "/internal/pixelle/api/files/result.mp4"
+            )
+        expected = api_url + "/api/files/result.mp4"
+        self.assertEqual(rooted, expected)
+        self.assertEqual(relative, expected)
+        self.assertEqual(prefixed, expected)
 
     def test_generate_persists_service_result_in_authenticated_asset_path(self):
         payload = self.pixelle.prepare_payload({"text": "AI 培训", "mode": "generate"})
