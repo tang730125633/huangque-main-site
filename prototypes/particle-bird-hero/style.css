@@ -1,0 +1,69 @@
+:root {
+  color-scheme: dark;
+  --ink: #f3f0e9;
+  --muted: #929aaa;
+  --gold: #d8a84b;
+  --line: rgba(216, 168, 75, .42);
+  font-family: Inter, "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
+  background: #05070b;
+  color: var(--ink);
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: auto; background: #05070b; }
+body { margin: 0; min-width: 320px; overflow-x: hidden; background: radial-gradient(circle at 72% 38%, #11162a 0, #070911 36%, #030406 76%); }
+a { color: inherit; text-decoration: none; }
+
+.particle-stage { position: fixed; inset: 0; z-index: 0; width: 100%; height: 100%; display: block; }
+.reading-shade { position: fixed; inset: 0; z-index: 1; pointer-events: none; background: linear-gradient(90deg, rgba(3, 4, 6, .98) 0, rgba(3, 4, 6, .86) 27%, rgba(3, 4, 6, .18) 57%, transparent 76%); }
+
+.site-header { position: fixed; z-index: 5; top: 0; left: 0; right: 0; display: flex; align-items: center; justify-content: space-between; padding: 28px 34px; pointer-events: none; }
+.brand, .workspace-link { pointer-events: auto; }
+.brand { display: flex; gap: 14px; align-items: center; }
+.brand-mark { display: grid; place-items: center; width: 48px; height: 48px; border: 1px solid var(--line); border-radius: 50%; color: var(--gold); font: 500 21px/1 "Songti SC", serif; }
+.brand strong { display: block; font: 600 20px/1 "Songti SC", serif; letter-spacing: .13em; }
+.brand small { display: block; margin-top: 7px; color: var(--muted); font-size: 9px; letter-spacing: .32em; }
+.workspace-link { padding: 10px 0 13px; border-bottom: 1px solid var(--line); color: #e2bd75; font: 500 15px/1 sans-serif; letter-spacing: .08em; }
+.workspace-link span { margin-left: 18px; }
+
+main { position: relative; z-index: 2; }
+.story { min-height: 100vh; display: flex; align-items: center; padding: 120px 7vw; }
+.story-intro { min-height: 115vh; }
+.story-final { min-height: 125vh; align-items: flex-start; padding-top: 34vh; }
+.story-copy { width: min(520px, 44vw); text-shadow: 0 2px 28px #020309; }
+.kicker, .chapter { margin: 0 0 42px; color: #adb3c0; font: 500 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .24em; }
+.kicker span { display: inline-block; width: 7px; height: 7px; margin-right: 12px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 18px rgba(216, 168, 75, .7); }
+.chapter { color: var(--gold); }
+h1, h2 { margin: 0; font-family: "Songti SC", "Noto Serif CJK SC", serif; font-weight: 500; letter-spacing: -.035em; }
+h1 { font-size: clamp(42px, 5.2vw, 76px); line-height: 1.18; }
+h2 { font-size: clamp(34px, 4vw, 58px); line-height: 1.26; }
+.story-copy > p:last-child { margin: 34px 0 0; max-width: 460px; color: var(--muted); font-size: 16px; line-height: 1.9; letter-spacing: .03em; }
+
+.scroll-cue { position: fixed; z-index: 5; left: 7vw; bottom: 34px; color: #7e8797; font-size: 11px; letter-spacing: .15em; transition: opacity .35s ease; }
+.scroll-cue span { display: inline-block; width: 1px; height: 24px; margin: 0 15px -8px 0; background: linear-gradient(var(--gold), transparent); }
+body.has-scrolled .scroll-cue { opacity: 0; }
+.load-message, .fallback-message { position: fixed; z-index: 6; right: 30px; bottom: 24px; margin: 0; color: #727c91; font-size: 11px; letter-spacing: .1em; }
+body.is-ready .load-message { opacity: 0; transition: opacity .5s ease; }
+body.webgl-fallback .particle-stage { display: none; }
+
+@media (max-width: 700px) {
+  .site-header { padding: 20px 18px; }
+  .brand-mark { width: 42px; height: 42px; }
+  .workspace-link { font-size: 12px; }
+  .workspace-link span { margin-left: 8px; }
+  .reading-shade { background: linear-gradient(180deg, rgba(3, 4, 6, .78), transparent 32%, transparent 64%, rgba(3, 4, 6, .88)); }
+  .story { align-items: flex-start; min-height: 105vh; padding: 20vh 20px 100px; }
+  .story:nth-child(even) { align-items: flex-end; padding-bottom: 16vh; }
+  .story-copy { width: 100%; }
+  .kicker, .chapter { margin-bottom: 26px; }
+  h1 { font-size: clamp(40px, 12vw, 58px); }
+  h2 { font-size: clamp(32px, 9vw, 46px); }
+  .story-copy > p:last-child { font-size: 14px; }
+  .scroll-cue { left: 20px; }
+  .load-message { right: 18px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scroll-cue { display: none; }
+  .story { min-height: 80vh; }
+}

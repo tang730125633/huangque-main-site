@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#05070b">
+  <title>黄雀 AI · 粒子飞鸟技术样机</title>
+  <link rel="stylesheet" href="./style.css?v=particle3">
+</head>
+<body>
+  <canvas class="particle-stage" data-particle-stage aria-label="由滚动控制、可被鼠标轻柔推散的粒子黄雀"></canvas>
+  <div class="reading-shade" aria-hidden="true"></div>
+
+  <header class="site-header">
+    <a class="brand" href="#top" aria-label="黄雀 AI 首页">
+      <span class="brand-mark">雀</span>
+      <span><strong>黄雀</strong><small>HUANGQUE AI</small></span>
+    </a>
+    <a class="workspace-link" href="/workbench/">进入工作台 <span aria-hidden="true">↗</span></a>
+  </header>
+
+  <main id="top">
+    <section class="story story-intro">
+      <div class="story-copy">
+        <p class="kicker"><span></span> HUANGQUE · LIVING CONTENT SYSTEM</p>
+        <h1>每个故事，<br>最初都只是一点微光。</h1>
+        <p>它还没有名字，也不知道要去哪里。移动鼠标，看看那些尚未成形的念头。</p>
+      </div>
+    </section>
+
+    <section class="story">
+      <div class="story-copy">
+        <p class="chapter">01 / LISTEN</p>
+        <h2>被听见以后，<br>一个念头才开始拥有形状。</h2>
+      </div>
+    </section>
+
+    <section class="story">
+      <div class="story-copy">
+        <p class="chapter">02 / FORM</p>
+        <h2>散落的经验与判断，<br>正在认出彼此。</h2>
+      </div>
+    </section>
+
+    <section class="story story-final">
+      <div class="story-copy">
+        <p class="chapter">03 / BECOME</p>
+        <h2>原来，它一直在成为黄雀。</h2>
+        <p>这一版只验证最重要的事：真实鸟形、滚动汇聚、鼠标排斥与自然回位。</p>
+      </div>
+    </section>
+  </main>
+
+  <div class="scroll-cue" aria-hidden="true"><span></span> 向下滚动</div>
+  <p class="load-message" role="status" aria-live="polite">正在唤醒微光…</p>
+  <noscript><p class="fallback-message">启用 JavaScript 后可体验粒子飞鸟。</p></noscript>
+
+  <script type="importmap">
+    {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js"}}
+  </script>
+  <script type="module" src="./experience.js?v=particle3"></script>
+</body>
+</html>
