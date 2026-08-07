@@ -351,6 +351,7 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             'id="sidebarCollapse"', 'sidebar-collapsed', '@media (min-width:901px)',
             'id="operationsChannelLayer"', 'function renderOperationsChannelDrawer',
             '.operations-channel-drawer .channel-table{min-width:980px}',
+            '.operations-channel-drawer .channel-table td:nth-child(5):before{content:"操作"}',
             'data-operation-channel-open=', '当前接单配置，不代表历史任务实际使用线路',
             '完整 Key 可在当前抽屉按 5 秒审计查看',
             "bindSecretRevealActions('operationsChannelBox')", 'value="minimax"',
