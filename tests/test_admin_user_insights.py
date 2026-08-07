@@ -348,7 +348,9 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             "operations:'layers'", "channels:'lock'", "features:'sliders'",
             '@media (max-width:1280px){.ops-workspace',
             '.module-card[data-module="operations"]>.section-head{flex-direction:column}',
-            'id="sidebarCollapse"', 'sidebar-collapsed', '@media (min-width:901px)',
+            'id="sidebarResizer"', 'role="separator"', 'aria-orientation="vertical"',
+            'function setSidebarWidth', 'setPointerCapture(e.pointerId)', 'setSidebarWidth(e.clientX)',
+            '.sidebar-resizer{display:none}', '@media (min-width:901px)',
             'id="operationsChannelLayer"', 'function renderOperationsChannelDrawer',
             '.operations-channel-drawer .channel-table{min-width:980px}',
             '.operations-channel-drawer .channel-table td:nth-child(5):before{content:"操作"}',
@@ -366,6 +368,8 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
         self.assertNotIn('data-module-tab="pricing"', html)
         self.assertNotIn('data-module-tab="services"', html)
         self.assertNotIn('data-module-tab="channels"', html)
+        self.assertNotIn('id="sidebarCollapse"', html)
+        self.assertNotIn('sidebar-collapsed', html)
         self.assertNotIn('data-module="services"', html)
         self.assertNotIn("function renderServices", html)
         self.assertNotIn("服务在线", html)
