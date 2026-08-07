@@ -4,6 +4,7 @@ import copy
 import json
 import hashlib
 import os
+import re
 import sqlite3
 import time
 import urllib.parse
@@ -79,6 +80,10 @@ class CharacterReferenceInProgress(ValueError):
 
 
 class CharacterReferenceIdempotencyConflict(ValueError):
+    pass
+
+
+class CharacterReferenceProtected(ValueError):
     pass
 
 
@@ -220,6 +225,9 @@ CREATE TABLE IF NOT EXISTS short_drama_script_imports (
   source_text TEXT NOT NULL,
   source_hash TEXT NOT NULL,
   filename TEXT NOT NULL DEFAULT '',
+  content_type TEXT NOT NULL DEFAULT 'live_action',
+  character_contract_json TEXT NOT NULL DEFAULT '[]',
+  roles_saved_at INTEGER,
   import_mode TEXT NOT NULL CHECK(import_mode IN ('faithful','optimize')),
   status TEXT NOT NULL CHECK(status IN ('completed')),
   created_at INTEGER NOT NULL,
@@ -1174,6 +1182,19 @@ def init_db(db_factory):
                     "ALTER TABLE short_drama_characters ADD COLUMN %s %s"
                     % (name, declaration)
                 )
+        import_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(short_drama_script_imports)")
+        }
+        for name, declaration in {
+            "content_type": "TEXT NOT NULL DEFAULT 'live_action'",
+            "character_contract_json": "TEXT NOT NULL DEFAULT '[]'",
+            "roles_saved_at": "INTEGER",
+        }.items():
+            if name not in import_columns:
+                conn.execute(
+                    "ALTER TABLE short_drama_script_imports ADD COLUMN %s %s"
+                    % (name, declaration)
+                )
         conn.commit()
     finally:
         conn.close()
@@ -1522,12 +1543,103 @@ def promote_planner_project(
         conn.close()
 
 
+def _validate_import_character_contract(value):
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > 20:
+        raise ScriptImportError("invalid_character_contract", "角色确认数据无效")
+    allowed = {
+        "character_key", "name", "role_type", "gender", "identity_text", "relationships",
+        "personality", "age", "face_shape", "hairstyle", "hair_color",
+        "height_body", "fixed_clothing", "fixed_colors", "accessories",
+        "appearance_prompt", "wardrobe_prompt", "reference_views",
+    }
+    text_fields = allowed - {"reference_views"}
+    normalized = []
+    keys = set()
+    names = set()
+    for item in value:
+        if not isinstance(item, dict) or not set(item).issubset(allowed):
+            raise ScriptImportError("invalid_character_contract", "角色确认字段无效")
+        clean = {field: str(item.get(field) or "").strip() for field in text_fields}
+        key = clean["character_key"]
+        name = clean["name"]
+        if not re.match(r"^[a-z][a-z0-9_]{0,63}$", key):
+            raise ScriptImportError("invalid_character_key", "角色标识格式无效")
+        if not name or len(name) > 80:
+            raise ScriptImportError("invalid_character_name", "角色名称无效")
+        if key in keys or name.casefold() in names:
+            raise ScriptImportError("duplicate_character", "角色标识或名称重复")
+        if clean["role_type"] not in {"main", "support", "crowd"}:
+            raise ScriptImportError("invalid_role_type", "角色类型无效")
+        if any(len(clean[field]) > 500 for field in text_fields - {"character_key", "name", "role_type"}):
+            raise ScriptImportError("character_field_too_long", "角色信息过长")
+        views = item.get("reference_views")
+        if views != ["front_full", "side_full", "front_half"]:
+            raise ScriptImportError("invalid_reference_views", "角色卡必须包含正面、侧面和半身图")
+        clean["reference_views"] = list(views)
+        keys.add(key)
+        names.add(name.casefold())
+        normalized.append(clean)
+    return normalized
+
+
+def _characters_from_import_contract(contract):
+    """Materialize the user-confirmed live-action roles as editable project characters."""
+    characters = []
+    for index, item in enumerate(contract or []):
+        identity_parts = [
+            item.get("role_type"), item.get("gender"), item.get("age"),
+            item.get("identity_text"), item.get("relationships"),
+        ]
+        appearance_parts = [
+            item.get("appearance_prompt"), item.get("gender"), item.get("age"),
+            item.get("face_shape"), item.get("hairstyle"),
+            item.get("hair_color"), item.get("height_body"),
+        ]
+        wardrobe_parts = [
+            item.get("wardrobe_prompt"), item.get("fixed_clothing"),
+            item.get("fixed_colors"), item.get("accessories"),
+        ]
+        identity_text = "；".join(
+            str(value).strip() for value in identity_parts if value
+        )
+        if len(identity_text) > 2000:
+            raise ScriptImportError(
+                "character_identity_too_long",
+                "角色类型、性别、年龄、身份和人物关系合并后不能超过 2,000 个字符",
+            )
+        characters.append({
+            "character_key": item["character_key"],
+            "name": item["name"],
+            "identity_text": identity_text,
+            "personality": item.get("personality") or "以用户确认的动作、表情、台词和连续性为准",
+            "source_type": "ai_character",
+            "appearance_prompt": "；".join(
+                str(value).strip() for value in appearance_parts if value
+            ) or "电影写实人物，单人，清晰正面五官",
+            "wardrobe_prompt": "；".join(
+                str(value).strip() for value in wardrobe_parts if value
+            ),
+            "reference_job_id": None,
+            "reference_file": "",
+            "reference_url": "",
+            "reference_version": 0,
+            "reference_locked": False,
+            "voice_settings": {},
+            "sort_order": index,
+        })
+    return _normalize_characters(characters, require_complete=False)
+
+
 def import_script_project(db_factory, username, payload, idempotency_key):
-    expected = {
+    required = {
         "title", "synopsis", "ratio", "target_duration", "shot_count",
         "visual_style", "source_text", "filename", "import_mode",
     }
-    if not isinstance(payload, dict) or set(payload) != expected:
+    optional = {"content_type", "character_contract"}
+    if (not isinstance(payload, dict) or not required.issubset(payload)
+            or not set(payload).issubset(required | optional)):
         raise ScriptImportError("invalid_request", "剧本导入请求字段无效")
     project_data = validate_project_payload({
         key: payload[key] for key in (
@@ -1543,7 +1655,15 @@ def import_script_project(db_factory, username, payload, idempotency_key):
     mode = str(payload.get("import_mode") or "").strip()
     if mode not in {"faithful", "optimize"}:
         raise ScriptImportError("invalid_import_mode", "剧本导入模式无效")
-    filename = str(payload.get("filename") or "").strip()[:255]
+    filename = str(payload.get("filename") or "").strip()
+    if len(filename) > 255:
+        raise ScriptImportError("invalid_filename", "导入文件名最多 255 个字符")
+    content_type = str(payload.get("content_type") or "live_action").strip()
+    if content_type != "live_action":
+        raise ScriptImportError("unsupported_content_type", "该短剧类型尚未开放")
+    character_contract = _validate_import_character_contract(
+        payload.get("character_contract")
+    )
     key = str(idempotency_key or "").strip()
     if not key or len(key) > 160:
         raise ScriptImportError("idempotency_key_required", "缺少有效的幂等键")
@@ -1553,6 +1673,8 @@ def import_script_project(db_factory, username, payload, idempotency_key):
         "source_hash": source_hash,
         "filename": filename,
         "import_mode": mode,
+        "content_type": content_type,
+        "character_contract": character_contract,
     }
     request_hash = hashlib.sha256(
         json.dumps(request_data, ensure_ascii=False, sort_keys=True,
@@ -1578,7 +1700,10 @@ def import_script_project(db_factory, username, payload, idempotency_key):
             result = _project_detail(conn, username, existing[0])
             result["script_import"] = {
                 "status": "completed", "source_hash": source_hash,
-                "import_mode": mode, "character_count": len(source),
+                "import_mode": mode, "content_type": content_type,
+                "character_count": len(source),
+                "role_count": len(character_contract),
+                "character_contract": character_contract,
                 "replayed": True,
             }
             conn.rollback()
@@ -1606,20 +1731,29 @@ def import_script_project(db_factory, username, payload, idempotency_key):
         conn.execute(
             "INSERT INTO short_drama_script_imports "
             "(id,username,project_id,idempotency_key,request_hash,source_text,"
-            "source_hash,filename,import_mode,status,created_at,updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,'completed',?,?)",
+            "source_hash,filename,content_type,character_contract_json,import_mode,status,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,'completed',?,?)",
             (
                 str(uuid.uuid4()), username, project_id, key, request_hash,
-                source, source_hash, filename, mode, now, now,
+                source, source_hash, filename, content_type,
+                json.dumps(character_contract, ensure_ascii=False, separators=(",", ":")),
+                mode, now, now,
             ),
         )
+        if character_contract:
+            _insert_characters(
+                conn, project_id, _characters_from_import_contract(character_contract)
+            )
         short_drama_conversation.seed_import_conversation(
             conn, username, project_id,
         )
         result = _project_detail(conn, username, project_id)
         result["script_import"] = {
             "status": "completed", "source_hash": source_hash,
-            "import_mode": mode, "character_count": len(source),
+            "import_mode": mode, "content_type": content_type,
+            "character_count": len(source),
+            "role_count": len(character_contract),
+            "character_contract": character_contract,
             "replayed": False,
         }
         conn.commit()
@@ -1700,6 +1834,118 @@ def delete_project(db_factory, username, project_id, revision):
             _raise_cas_error(conn, username, project_id.strip())
         conn.commit()
         return {"id": project_id.strip(), "revision": revision + 1, "deleted": True}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def abandon_live_action_project(db_factory, username, payload, idempotency_key):
+    """Idempotently abandon an unpaid, unreferenced live-action import draft."""
+    if not isinstance(payload, dict):
+        raise ValueError("真人短剧临时项目放弃请求无效")
+    _validate_project_request(payload, {"project_id", "revision"})
+    project_id = payload["project_id"].strip()
+    revision = payload["revision"]
+    if revision < 1:
+        raise ValueError("项目版本无效")
+    key = str(idempotency_key or "").strip()
+    if not key:
+        raise ScriptImportError(
+            "idempotency_key_required", "缺少有效的 Idempotency-Key",
+        )
+    if len(key) > 160:
+        raise ScriptImportError(
+            "idempotency_key_invalid", "Idempotency-Key 长度不能超过 160 个字符",
+        )
+    request_hash = hashlib.sha256(json.dumps(
+        {"project_id": project_id, "revision": revision},
+        sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    now = int(time.time())
+    operation = "live_action_abandon"
+    conn = _connection(db_factory)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            "SELECT project_id,request_hash FROM short_drama_project_requests "
+            "WHERE username=? AND operation=? AND idempotency_key=?",
+            (username, operation, key),
+        ).fetchone()
+        if existing:
+            if str(existing[1]) != request_hash:
+                raise ScriptImportError(
+                    "idempotency_conflict",
+                    "同一 Idempotency-Key 不能用于不同的真人短剧放弃请求",
+                    409,
+                )
+            deleted = conn.execute(
+                "SELECT revision,deleted FROM short_drama_projects "
+                "WHERE id=? AND username=?",
+                (existing[0], username),
+            ).fetchone()
+            if not deleted or int(deleted[1] or 0) != 1:
+                raise ScriptImportError(
+                    "idempotency_state_invalid", "真人短剧放弃结果不完整", 409,
+                )
+            conn.rollback()
+            return {
+                "id": str(existing[0]), "revision": int(deleted[0]),
+                "deleted": True, "replayed": True,
+            }
+
+        project = conn.execute(
+            "SELECT p.revision,p.stage,p.deleted,p.board_id,p.completion_id "
+            "FROM short_drama_projects p "
+            "JOIN short_drama_script_imports i ON i.project_id=p.id "
+            "WHERE p.id=? AND p.username=? AND i.username=? "
+            "AND i.content_type='live_action' AND i.status='completed'",
+            (project_id, username, username),
+        ).fetchone()
+        if not project or int(project[2] or 0) != 0:
+            raise LookupError("真人短剧临时项目不存在")
+        if int(project[0]) != revision:
+            raise RevisionConflict("项目版本已变化，请刷新后重试")
+        if project[1] != "draft" or project[3] or project[4]:
+            raise ScriptImportError(
+                "live_action_abandon_blocked", "仅可放弃未进入制作的真人短剧临时项目", 409,
+            )
+        if _has_unapplied_charged_job(conn, username, project_id):
+            raise ProjectHasUnappliedJobs("项目存在尚未结束或退款的付费任务")
+        if _project_point_usage(conn, project_id)["spent_points"] > 0:
+            raise ScriptImportError(
+                "live_action_abandon_blocked", "真人短剧临时项目已有点数活动，不能放弃", 409,
+            )
+        reference = conn.execute(
+            "SELECT 1 FROM short_drama_characters WHERE project_id=? AND ("
+            "reference_job_id IS NOT NULL OR reference_file<>'' OR reference_url<>'' "
+            "OR reference_version>0 OR reference_locked=1) LIMIT 1",
+            (project_id,),
+        ).fetchone()
+        if reference:
+            raise ScriptImportError(
+                "live_action_abandon_blocked", "真人短剧临时项目已有角色标准图活动，不能放弃", 409,
+            )
+        conn.execute(
+            "INSERT INTO short_drama_project_requests "
+            "(id,username,operation,idempotency_key,request_hash,project_id,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (str(uuid.uuid4()), username, operation, key, request_hash,
+             project_id, now, now),
+        )
+        updated = conn.execute(
+            "UPDATE short_drama_projects SET deleted=1,revision=revision+1,updated_at=? "
+            "WHERE id=? AND username=? AND revision=? AND deleted=0",
+            (now, project_id, username, revision),
+        )
+        if updated.rowcount != 1:
+            _raise_cas_error(conn, username, project_id)
+        conn.commit()
+        return {
+            "id": project_id, "revision": revision + 1,
+            "deleted": True, "replayed": False,
+        }
     except Exception:
         conn.rollback()
         raise
@@ -1866,12 +2112,19 @@ def update_project(db_factory, username, project_id, revision, patch, avatar_loo
     original_patch = dict(patch)
     content_keys = set(original_patch) & CONTENT_KEYS
     if content_keys:
-        if len(content_keys) != 1 or len(original_patch) != 1:
+        character_contract = original_patch.get("character_contract")
+        allowed_character_update = (
+            content_keys == {"characters"}
+            and set(original_patch).issubset({"characters", "character_contract"})
+        )
+        if len(content_keys) != 1 or (
+                len(original_patch) != 1 and not allowed_character_update):
             raise ValueError("每次只能更新一个短剧内容分区")
         key = next(iter(content_keys))
         if key == "characters":
             return update_characters(
-                db_factory, username, project_id, revision, original_patch[key], avatar_lookup
+                db_factory, username, project_id, revision, original_patch[key],
+                avatar_lookup, character_contract=character_contract,
             )
         if key == "script":
             return update_script(db_factory, username, project_id, revision, original_patch[key])
@@ -2476,9 +2729,9 @@ def _resolve_ai_character_references(conn, username, characters):
         character["reference_version"] = max(
             1, int(character.get("reference_version") or 0) + (1 if changed else 0)
         )
-        # A completed, owned Nano Banana job is the server-side lock proof.
-        # Never trust a client-controlled boolean to unlock or suppress it.
-        character["reference_locked"] = True
+        # A completed job only proves that the preview is valid. Locking is a
+        # separate, explicit user action handled by confirm_character_reference.
+        character["reference_locked"] = bool(character.get("reference_locked"))
 
 
 _CHARACTER_REFERENCE_STAGES = {
@@ -2486,13 +2739,16 @@ _CHARACTER_REFERENCE_STAGES = {
 }
 _CHARACTER_SNAPSHOT_FIELDS = (
     "character_key", "name", "identity_text", "personality",
-    "appearance_prompt", "wardrobe_prompt",
+    "source_type", "avatar_id", "appearance_prompt", "wardrobe_prompt",
 )
 
 
 def _character_snapshot_hash(character):
     snapshot = {
-        field: str(character[field] or "").strip()
+        # Old accepted attempts may predate newly-added optional character
+        # fields. Missing keys must hash as empty values so recovery remains
+        # backward compatible instead of crashing.
+        field: str(character.get(field) or "").strip()
         for field in _CHARACTER_SNAPSHOT_FIELDS
     }
     canonical = json.dumps(
@@ -2501,11 +2757,24 @@ def _character_snapshot_hash(character):
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _character_reference_stage_allowed(conn, project_id, stage):
-    if stage in _CHARACTER_REFERENCE_STAGES:
+def _live_action_role_setup(conn, project_id):
+    return conn.execute(
+        "SELECT roles_saved_at FROM short_drama_script_imports "
+        "WHERE project_id=? AND content_type='live_action' "
+        "AND status='completed' LIMIT 1",
+        (project_id,),
+    ).fetchone()
+
+
+def _draft_character_profile_stage_allowed(conn, project_id):
+    if _live_action_role_setup(conn, project_id):
         return True
-    if stage != "draft":
-        return False
+    conversation = conn.execute(
+        "SELECT state FROM short_drama_conversations WHERE project_id=?",
+        (project_id,),
+    ).fetchone()
+    if conversation and conversation[0] == "direction_review":
+        return True
     return bool(conn.execute(
         "SELECT 1 FROM short_drama_conversations conversation "
         "JOIN short_drama_script_snapshots snapshot "
@@ -2516,16 +2785,36 @@ def _character_reference_stage_allowed(conn, project_id, stage):
     ).fetchone())
 
 
+def _character_reference_stage_allowed(conn, project_id, stage):
+    if stage in _CHARACTER_REFERENCE_STAGES:
+        return True
+    if stage != "draft":
+        return False
+    live_action_setup = _live_action_role_setup(conn, project_id)
+    if live_action_setup:
+        # The imported contract only seeds the form.  Reference generation is
+        # enabled after update_characters durably records an explicit save.
+        return live_action_setup[0] is not None
+    return _draft_character_profile_stage_allowed(conn, project_id)
+
+
 def _character_reference_prompt(character):
-    return "\n".join([
-        "为短剧角色生成一张电影写实角色标准图，干净中性背景，单人，半身正面，清晰面部。",
-        "角色：" + str(character["name"]),
-        "身份：" + str(character["identity_text"]),
-        "性格：" + str(character["personality"]),
-        "外观：" + str(character["appearance_prompt"]),
-        "服装：" + str(character["wardrobe_prompt"]),
-        "不要文字、水印、额外人物、遮挡脸部或夸张姿势。",
-    ])
+    lines = [
+        "生成一张电影写实短剧角色标准图（三视图角色设定板）。",
+        "同一个人物横向排列为：正面全身、侧面全身、正面半身。",
+        "三幅视图必须保持同一张脸、同一年龄、同一发型、同一体型、同一套服装、颜色和配饰。",
+        "干净中性浅色背景，均匀棚拍光线，自然站姿，清晰五官，完整身体比例。",
+        "角色名称：" + str(character["name"]),
+    ]
+    optional = (
+        ("身份", character.get("identity_text")),
+        ("性格与气质", character.get("personality")),
+        ("性别、年龄、脸型、发型、发色、身高体型及外貌", character.get("appearance_prompt")),
+        ("固定服装、固定颜色与配饰", character.get("wardrobe_prompt")),
+    )
+    lines.extend(label + "：" + str(value).strip() for label, value in optional if str(value or "").strip())
+    lines.append("禁止文字、标签、水印、额外人物、服装变化、脸部变化、遮挡脸部或夸张动作。")
+    return "\n".join(lines)
 
 
 def _normalize_character_reference_request(body):
@@ -2642,7 +2931,8 @@ def accept_character_reference_attempt(db_factory, prepared, username):
             raise ValueError("当前阶段不能生成角色标准图")
         character = conn.execute(
             "SELECT character_key,name,identity_text,personality,"
-            "appearance_prompt,wardrobe_prompt FROM short_drama_characters "
+            "source_type,avatar_id,appearance_prompt,wardrobe_prompt "
+            "FROM short_drama_characters "
             "WHERE project_id=? AND character_key=?",
             (request["project_id"], request["character_key"]),
         ).fetchone()
@@ -2951,10 +3241,9 @@ def prepare_character_reference_submission(
         if not character or character["source_type"] != "ai_character":
             raise ValueError("AI 角色不存在或不支持生成标准图")
         character = dict(character)
-        for field in ("name", "identity_text", "personality",
-                      "appearance_prompt", "wardrobe_prompt"):
+        for field in ("name", "appearance_prompt", "wardrobe_prompt"):
             if not str(character.get(field) or "").strip():
-                raise ValueError("请先完整填写角色名称、身份、性格、外观和服装描述")
+                raise ValueError("请先完整填写角色名称、性别和固定服装")
         from . import image as image_domain
         payload = image_domain.validate_image_payload({
             "provider": "banana",
@@ -3009,7 +3298,7 @@ def record_character_reference_job(connection, prepared, username, job_id):
         raise ValueError("当前阶段不能生成角色标准图")
     character = connection.execute(
         "SELECT character_key,name,identity_text,personality,"
-        "appearance_prompt,wardrobe_prompt "
+        "source_type,avatar_id,appearance_prompt,wardrobe_prompt "
         "FROM short_drama_characters WHERE project_id=? AND character_key=?",
         (request["project_id"], request["character_key"]),
     ).fetchone()
@@ -3132,7 +3421,7 @@ def reconcile_character_reference_job(db_factory, job_id, username=None, result=
         now = int(time.time())
         conn.execute(
             "UPDATE short_drama_characters SET reference_job_id=?,reference_file=?,"
-            "reference_url=?,reference_version=?,reference_locked=1 "
+            "reference_url=?,reference_version=?,reference_locked=0 "
             "WHERE project_id=? AND character_key=?",
             (
                 int(job_id), trusted_file, url_value, next_version,
@@ -3179,7 +3468,166 @@ def reconcile_project_character_references(db_factory, owner_username, project_i
             pass
 
 
-def update_characters(db_factory, username, project_id, revision, characters, avatar_lookup=None):
+def confirm_character_reference(db_factory, username, project_id, revision,
+                                character_key, reference_version):
+    """Explicitly lock a generated character preview after user review."""
+    if type(revision) is not int or type(reference_version) is not int:
+        raise ValueError("角色标准图确认版本无效")
+    project_id = str(project_id or "").strip()
+    character_key = str(character_key or "").strip()
+    if not project_id or not character_key or revision < 1 or reference_version < 1:
+        raise ValueError("角色标准图确认参数无效")
+    conn = _connection(db_factory)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        project = conn.execute(
+            "SELECT revision,stage FROM short_drama_projects "
+            "WHERE id=? AND username=? AND deleted=0",
+            (project_id, username),
+        ).fetchone()
+        if not project:
+            raise LookupError("短剧项目不存在")
+        if int(project[0]) != revision:
+            raise RevisionConflict("项目已在其他页面更新，请刷新后重试")
+        if not _character_reference_stage_allowed(conn, project_id, project[1]):
+            raise ValueError("当前阶段不能确认角色标准图")
+        character = conn.execute(
+            "SELECT reference_job_id,reference_file,reference_url,reference_version "
+            "FROM short_drama_characters WHERE project_id=? AND character_key=?",
+            (project_id, character_key),
+        ).fetchone()
+        if not character:
+            raise LookupError("角色不存在")
+        if (not character[0] or not character[1] or not character[2]
+                or int(character[3] or 0) != reference_version):
+            raise ValueError("角色标准图尚未生成、已失效或版本不匹配")
+        # The job may have been submitted by an editor on a shared canvas while
+        # the project is still owned by ``username``.  Project/character
+        # ownership above is the authority boundary; do not incorrectly reject
+        # a valid collaborator-generated preview here.
+        job = conn.execute(
+            "SELECT status FROM jobs WHERE id=? AND kind='image'",
+            (int(character[0]),),
+        ).fetchone()
+        if not job or job[0] != "done":
+            raise ValueError("角色标准图任务尚未完成")
+        conn.execute(
+            "UPDATE short_drama_characters SET reference_locked=1 "
+            "WHERE project_id=? AND character_key=?",
+            (project_id, character_key),
+        )
+        _cas_content_update(conn, username, project_id, revision, project[1])
+        conn.commit()
+        return _project_detail(conn, username, project_id)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _live_action_character_contract(conn, project_id, characters, provided=None):
+    """Return the persisted live-action role contract for this exact role list."""
+    if provided is not None:
+        contract = _validate_import_character_contract(provided)
+    else:
+        row = conn.execute(
+            "SELECT character_contract_json FROM short_drama_script_imports "
+            "WHERE project_id=? AND content_type='live_action' AND status='completed'",
+            (project_id,),
+        ).fetchone()
+        stored = _json(row[0], []) if row else []
+        stored_by_key = {
+            str(item.get("character_key") or ""): dict(item)
+            for item in stored if isinstance(item, dict)
+        }
+        contract = []
+        for index, character in enumerate(characters):
+            key = character["character_key"]
+            item = stored_by_key.get(key, {
+                "character_key": key,
+                "role_type": "main" if index == 0 else "support",
+                "gender": "", "identity_text": "", "relationships": "",
+                "age": "", "face_shape": "", "hairstyle": "",
+                "hair_color": "", "height_body": "", "fixed_clothing": "",
+                "fixed_colors": "", "accessories": "",
+                "reference_views": ["front_full", "side_full", "front_half"],
+            })
+            item.update({
+                "character_key": key,
+                "name": character["name"],
+                "personality": character["personality"],
+                "appearance_prompt": character["appearance_prompt"],
+                "wardrobe_prompt": character["wardrobe_prompt"],
+            })
+            contract.append(item)
+        contract = _validate_import_character_contract(contract)
+    expected = [
+        (character["character_key"], character["name"]) for character in characters
+    ]
+    actual = [(item["character_key"], item["name"]) for item in contract]
+    if actual != expected:
+        raise ValueError("character_contract must match the persisted character list")
+    return contract
+
+
+_LIVE_ACTION_CONTRACT_CHARACTER_FIELDS = (
+    "character_key", "name", "identity_text", "personality", "source_type",
+    "avatar_id", "appearance_prompt", "wardrobe_prompt", "voice_key",
+    "voice_settings", "sort_order",
+)
+
+
+def _live_action_contract_character_payload(characters):
+    return [
+        {field: character.get(field) for field in _LIVE_ACTION_CONTRACT_CHARACTER_FIELDS}
+        for character in characters
+    ]
+
+
+def _character_has_reference_asset(character):
+    return bool(
+        character.get("reference_job_id")
+        or character.get("reference_file")
+        or character.get("reference_url")
+        or int(character.get("reference_version") or 0) > 0
+        or character.get("reference_locked")
+    )
+
+
+def _character_reference_activity_keys(conn, project_id):
+    protected = set()
+    if _table_columns(conn, "short_drama_character_reference_attempts"):
+        protected.update(
+            row[0] for row in conn.execute(
+                "SELECT DISTINCT character_key FROM "
+                "short_drama_character_reference_attempts WHERE project_id=? "
+                "AND state IN ('accepted','charged','linked','refund_pending')",
+                (project_id,),
+            ).fetchall()
+        )
+    if _table_columns(conn, "short_drama_character_reference_jobs"):
+        job_columns = _table_columns(conn, "jobs")
+        if job_columns:
+            refund_clause = (
+                "AND (j.id IS NULL OR COALESCE(j.refunded,0)<>1) "
+                if "refunded" in job_columns else ""
+            )
+            protected.update(
+                row[0] for row in conn.execute(
+                    "SELECT DISTINCT r.character_key FROM "
+                    "short_drama_character_reference_jobs r "
+                    "LEFT JOIN jobs j ON j.id=r.job_id WHERE r.project_id=? "
+                    "AND r.status='linked' "
+                    + refund_clause,
+                    (project_id,),
+                ).fetchall()
+            )
+    return protected
+
+
+def update_characters(db_factory, username, project_id, revision, characters, avatar_lookup=None,
+                      *, character_contract=None):
     required_stage = "characters_review"
     if type(revision) is not int:
         raise ValueError("revision 必须是整数")
@@ -3196,14 +3644,60 @@ def update_characters(db_factory, username, project_id, revision, characters, av
         if int(row[0]) != revision:
             raise RevisionConflict("项目已在其他页面更新，请刷新后重试")
         current_stage = row[1]
-        reference_only = current_stage != required_stage
+        editable_draft = (
+            current_stage == "draft"
+            and _draft_character_profile_stage_allowed(conn, project_id)
+        )
+        reference_only = current_stage != required_stage and not editable_draft
         if reference_only and current_stage not in {
                 "script_review", "storyboard_review", "stills_review"}:
             raise ValueError("当前阶段不能修改角色标准图")
         project = _project_detail(conn, username, project_id)
-        normalized_characters, _script, normalized_shots = _current_content_bundle(
-            project, characters=characters, prune_character_refs=True
+        live_action_setup = (
+            _live_action_role_setup(conn, project_id) if editable_draft else None
         )
+        role_setup_only = bool(
+            live_action_setup
+            and not project["script_versions"]
+            and not project["shots"]
+        )
+        validated_character_contract = None
+        if live_action_setup and not reference_only:
+            if character_contract is None:
+                raise ValueError(
+                    "live-action character updates require character_contract"
+                )
+            validated_character_contract = _validate_import_character_contract(
+                character_contract
+            )
+            canonical_characters = _characters_from_import_contract(
+                validated_character_contract
+            )
+            submitted_characters = _normalize_characters(
+                characters, require_complete=True
+            )
+            if (
+                _live_action_contract_character_payload(submitted_characters)
+                != _live_action_contract_character_payload(canonical_characters)
+            ):
+                raise ValueError(
+                    "characters must be derived from the submitted character_contract"
+                )
+            characters = canonical_characters
+        if role_setup_only:
+            # A live-action import project is intentionally created before its
+            # script and storyboard are materialized.  Saving the role form is
+            # therefore a standalone content operation at this point; later
+            # stages continue to validate the complete character/script/shot
+            # bundle atomically.
+            normalized_characters = _normalize_characters(
+                characters, require_complete=True
+            )
+            normalized_shots = []
+        else:
+            normalized_characters, _script, normalized_shots = _current_content_bundle(
+                project, characters=characters, prune_character_refs=True
+            )
         if reference_only:
             stable_fields = (
                 "character_key", "name", "identity_text", "personality",
@@ -3219,15 +3713,55 @@ def update_characters(db_factory, username, project_id, revision, characters, av
         existing_by_key = {
             character["character_key"]: character for character in project["characters"]
         }
+        reference_activity_keys = _character_reference_activity_keys(
+            conn, project_id
+        )
+        submitted_keys = {
+            character["character_key"] for character in normalized_characters
+        }
+        for character_key, existing in existing_by_key.items():
+            if ((_character_has_reference_asset(existing)
+                 or character_key in reference_activity_keys)
+                    and character_key not in submitted_keys):
+                raise CharacterReferenceProtected(
+                    "该角色已有付费或锁定的角色标准图，不能删除"
+                )
+        reference_fields = (
+            "name", "identity_text", "personality", "source_type", "avatar_id",
+            "appearance_prompt", "wardrobe_prompt",
+        )
         for character in normalized_characters:
             existing = existing_by_key.get(character["character_key"]) or {}
             character["reference_version"] = int(existing.get("reference_version") or 0)
-            if (character.get("reference_job_id")
-                    and character.get("reference_job_id") == existing.get("reference_job_id")):
+            reference_changed = bool(existing) and any(
+                character.get(field) != existing.get(field) for field in reference_fields
+            )
+            reference_protected = bool(existing) and (
+                _character_has_reference_asset(existing)
+                or character["character_key"] in reference_activity_keys
+            )
+            if reference_changed and reference_protected:
+                raise CharacterReferenceProtected(
+                    "该角色已有付费或锁定的角色标准图，不能直接修改资料"
+                )
+            if existing and not reference_changed:
+                character["reference_job_id"] = existing.get("reference_job_id")
                 character["reference_file"] = existing.get("reference_file") or ""
                 character["reference_url"] = existing.get("reference_url") or ""
+                character["reference_locked"] = bool(existing.get("reference_locked"))
+            elif reference_changed:
+                character["reference_job_id"] = None
+                character["reference_file"] = ""
+                character["reference_url"] = ""
+                character["reference_locked"] = False
         _validate_owned_avatars(username, normalized_characters, avatar_lookup)
         _resolve_ai_character_references(conn, username, normalized_characters)
+        synced_character_contract = None
+        if live_action_setup and not reference_only:
+            synced_character_contract = _live_action_character_contract(
+                conn, project_id, normalized_characters,
+                validated_character_contract,
+            )
         if reference_only:
             for character in normalized_characters:
                 conn.execute(
@@ -3250,7 +3784,22 @@ def update_characters(db_factory, username, project_id, revision, characters, av
                     "UPDATE short_drama_shots SET character_keys_json=? WHERE id=? AND project_id=?",
                     (_json_text(shot["character_keys"], []), original["id"], project_id),
                 )
-            _cas_content_update(conn, username, project_id, revision, required_stage)
+            _cas_content_update(
+                conn, username, project_id, revision,
+                current_stage if editable_draft else required_stage,
+            )
+            if live_action_setup:
+                saved_at = int(time.time())
+                conn.execute(
+                    "UPDATE short_drama_script_imports "
+                    "SET character_contract_json=?,roles_saved_at=?,updated_at=? "
+                    "WHERE project_id=?",
+                    (
+                        json.dumps(synced_character_contract, ensure_ascii=False,
+                                   separators=(",", ":")),
+                        saved_at, saved_at, project_id,
+                    ),
+                )
         conn.commit()
         return _project_detail(conn, username, project_id)
     except Exception:
@@ -3599,6 +4148,7 @@ _HTTP_ROUTES = {
         "/api/gen/short-drama/projects",
         "/api/gen/short-drama/projects/promote",
         "/api/gen/short-drama/projects/import",
+        "/api/gen/short-drama/projects/live-action/abandon",
         "/api/gen/short-drama/project/delete",
         "/api/gen/short-drama/apply-plan",
         "/api/gen/short-drama/confirm",
@@ -3742,6 +4292,12 @@ def _http_error(handler, error, *, operation_terminal=False):
     elif isinstance(error, ScriptImportError):
         handler._send(error.status, {
             "detail": str(error)[:220], "code": error.code, **terminal,
+        })
+    elif isinstance(error, CharacterReferenceProtected):
+        handler._send(409, {
+            "detail": str(error)[:220],
+            "code": "character_reference_protected",
+            **terminal,
         })
     elif isinstance(error, ProjectCreationError):
         handler._send(error.status, {
@@ -5382,6 +5938,20 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                     db_factory, owner, project_id, revision, body, avatar_lookup=avatar_lookup
                 )
             handler._send(200, updated)
+        elif path.endswith("/projects/live-action/abandon"):
+            body = _request_object(handler)
+            if mutation_lock is not None:
+                with mutation_lock:
+                    deleted = abandon_live_action_project(
+                        db_factory, username, body,
+                        str(handler.headers.get("Idempotency-Key") or ""),
+                    )
+            else:
+                deleted = abandon_live_action_project(
+                    db_factory, username, body,
+                    str(handler.headers.get("Idempotency-Key") or ""),
+                )
+            handler._send(200, deleted)
         elif path.endswith("/project/delete"):
             body = _request_object(handler)
             _validate_project_request(body, {"project_id", "revision"})
