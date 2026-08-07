@@ -76,6 +76,26 @@
       float amount=clamp(dot(point-start,segment)/max(dot(segment,segment),.0001),0.,1.);
       return length(point-start-segment*amount);
     }
+    float starField(vec2 point,vec2 cursor){
+      float density=9.;
+      vec2 base=floor(point*density);
+      float light=0.;
+      for(int y=-1;y<=1;y++){
+        for(int x=-1;x<=1;x++){
+          vec2 cell=base+vec2(float(x),float(y));
+          float seed=hash(cell);
+          if(seed<.52) continue;
+          vec2 home=(cell+vec2(seed,hash(cell+19.17)))/density;
+          vec2 away=home-cursor;
+          float force=smoothstep(.48,.04,length(away))*uPointerActive;
+          vec2 star=home+normalize(away+vec2(.0001))*force*.16;
+          float radius=mix(.0018,.0048,hash(cell+7.31));
+          float twinkle=.58+.42*sin(uTime*(1.2+seed)+seed*18.);
+          light+=(1.-smoothstep(0.,radius,length(point-star)))*twinkle;
+        }
+      }
+      return light;
+    }
     void main(){
       vec2 baseUv=(2.*gl_FragCoord.xy-uResolution.xy)/min(uResolution.x,uResolution.y);
       vec2 cursorScale=vec2(uResolution.x,uResolution.y)/min(uResolution.x,uResolution.y);
@@ -102,6 +122,8 @@
       float streakCore=exp(-65.*streakDistance)*cursorSpeed;
       float cursorHead=exp(-34.*dot(baseUv-cursorTarget,baseUv-cursorTarget));
       color+=(blue*streakHalo*.055+mix(violet,amber,.24)*streakCore*.105+amber*cursorHead*.02)*uPointerActive;
+      float stars=starField(baseUv,cursorTarget);
+      color+=mix(vec3(.26,.46,1.),vec3(1.,.62,.24),.18)*stars*.72;
       float grain=hash(gl_FragCoord.xy+floor(uTime*9.));
       color+=(grain-.5)*.008;
       gl_FragColor=vec4(color,1.);

@@ -50,9 +50,8 @@ h1 span{color:#dcb77b}
 .secondary{padding:10px 0;color:#d4d5db;font-size:12px;border-bottom:1px solid rgba(255,255,255,.25)}.secondary span{margin-left:14px;color:var(--amber)}
 
 .bird-stage{position:absolute;z-index:3;top:3%;right:-9%;width:min(76vw,1220px);height:94%;transform:translate3d(calc(var(--px) * 18px),calc(var(--py) * 12px + var(--flight) * -13vh),0) rotate(calc(var(--px) * .7deg + var(--flight) * -3deg)) scale(calc(1 + var(--flight) * .12));transform-origin:58% 58%;will-change:transform}
-.bird-stage img{position:absolute;z-index:2;inset:0;width:100%;height:100%;object-fit:contain;filter:saturate(1.18) contrast(1.09) drop-shadow(0 0 28px rgba(54,92,255,.22));opacity:calc(1 - var(--flight) * .12)}
+.bird-stage img{position:absolute;z-index:2;inset:0;width:100%;height:100%;object-fit:contain;mix-blend-mode:screen;filter:saturate(1.18) contrast(1.09) drop-shadow(0 0 28px rgba(54,92,255,.22));opacity:calc(1 - var(--flight) * .12)}
 .bird-halo{position:absolute;z-index:1;inset:19% 8% 6% 21%;border-radius:50%;background:radial-gradient(ellipse,rgba(52,85,255,.21),rgba(105,53,255,.08) 42%,transparent 70%);filter:blur(30px);transform:scale(calc(1 + var(--flight) * .2))}
-.bird-glint{position:absolute;z-index:3;top:10%;left:23%;width:68%;height:76%;background:linear-gradient(112deg,transparent 34%,rgba(255,203,120,.17) 45%,rgba(121,163,255,.2) 50%,transparent 58%);mix-blend-mode:screen;mask:linear-gradient(90deg,transparent,#000 30%,#000 70%,transparent);transform:translateX(calc(var(--px) * 22px));opacity:.65}
 .coordinates{position:absolute;z-index:5;right:clamp(24px,4vw,72px);bottom:48px;color:#666b78;font:500 8px/1.9 var(--mono);letter-spacing:.16em;text-align:right}
 .scroll{position:absolute;z-index:5;bottom:44px;left:clamp(24px,6.8vw,132px);display:flex;align-items:center;gap:15px;color:#7c808d;font:500 9px/1 var(--mono);letter-spacing:.16em}.scroll span{width:1px;height:42px;background:linear-gradient(var(--amber),transparent);animation:pulse 1.9s ease-in-out infinite}
 
@@ -75,5 +74,5 @@ h1 span{color:#dcb77b}
 }
 
 @media (prefers-reduced-motion:reduce){
-  html{scroll-behavior:auto}*,*::before,*::after{animation:none!important;transition:none!important}.bird-stage,.hero-copy{transform:none}.bird-glint{display:none}
+  html{scroll-behavior:auto}*,*::before,*::after{animation:none!important;transition:none!important}.bird-stage,.hero-copy{transform:none}
 }
