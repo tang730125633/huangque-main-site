@@ -206,8 +206,15 @@ for f in "$@"; do
              dest=/home/ubuntu/auth-service/; svc=huangque-auth ;;
     server/content_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-content ;;
     server/func_names.py)  dest=/home/ubuntu/content-api/;  svc="huangque-content huangque-admin" ;;
-    server/content_domains/function_registry.py) dest=/home/ubuntu/content-api/content_domains/; svc=huangque-admin ;;
-    server/content_domains/feature_flags.py) dest=/home/ubuntu/content-api/content_domains/; svc="huangque-content huangque-admin" ;;
+    server/content_domains/function_registry.py)
+             dest=/home/ubuntu/content-api/content_domains/
+             if [ "$EXACT_CONTENT_DOMAINS" = "1" ]; then
+               svc=huangque-admin
+             else
+               svc="huangque-content huangque-admin"
+             fi
+             ;;
+    server/content_domains/feature_flags.py) dest=/home/ubuntu/content-api/content_domains/; svc="huangque-content huangque-admin huangque-imggen-api" ;;
     server/content_domains/*) dest=/home/ubuntu/content-api/content_domains/;  svc=huangque-content ;;
     server/providers/*)
              rel="${f#server/providers/}"

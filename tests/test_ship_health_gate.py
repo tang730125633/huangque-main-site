@@ -304,7 +304,23 @@ exit 0
         self.assertIn("huangque-admin", restart)
         self.assertNotIn("huangque-content", restart)
 
-    def test_feature_flags_restarts_content_and_admin(self):
+    def test_non_exact_function_registry_restarts_content_and_admin(self):
+        ssh_log = Path(self.tmp.name) / "ssh.log"
+        result = self._run_ship(
+            target="server/content_domains/function_registry.py",
+            FAKE_CURL_CODE="200",
+            FAKE_SSH_LOG=str(ssh_log),
+        )
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertIn("整目录同步", result.stdout)
+        restart = next(
+            line for line in ssh_log.read_text(encoding="utf-8").splitlines()
+            if "sudo systemctl restart" in line
+        )
+        self.assertIn("huangque-content", restart)
+        self.assertIn("huangque-admin", restart)
+
+    def test_feature_flags_restarts_all_importers(self):
         ssh_log = Path(self.tmp.name) / "ssh.log"
         result = self._run_ship(
             target="server/content_domains/feature_flags.py",
@@ -319,6 +335,7 @@ exit 0
         )
         self.assertIn("huangque-content", restart)
         self.assertIn("huangque-admin", restart)
+        self.assertIn("huangque-imggen-api", restart)
 
     def test_exact_content_domains_blocks_new_module_import_failure(self):
         result = self._run_ship(
