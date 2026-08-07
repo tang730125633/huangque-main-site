@@ -6,8 +6,8 @@
   <title>短剧 · 黄雀 AI 工作台</title>
   <script src="theme-init.js?v=11eb385e"></script>
   <link rel="stylesheet" href="theme.css?v=5873a2f4">
-  <link rel="stylesheet" href="short-drama-center.css?v=d8beab21">
-  <link rel="stylesheet" href="short-drama-workspace.css?v=fc62c562">
+  <link rel="stylesheet" href="short-drama-center.css?v=61c72b0d">
+  <link rel="stylesheet" href="short-drama-workspace.css?v=005ef34f">
 </head>
 <body>
   <div class="hq-app">
@@ -83,24 +83,63 @@
       </header>
 
       <section class="short-drama-start-options" id="shortDramaStartOptions">
-        <button class="short-drama-start-card idea" type="button" data-create-mode="idea">
-          <span class="short-drama-start-icon">✦</span>
-          <strong>我有想法</strong>
-          <span>已经知道大概拍什么，直接填写故事和制作规格。</span>
-          <em>直接开始设置 →</em>
+        <aside class="short-drama-draft-resume" id="shortDramaDraftResume" hidden>
+          <div>
+            <strong>发现未完成的剧本共创草稿</strong>
+            <span>你可以继续上次共创，也可以放弃草稿后选择新的内容类型。</span>
+          </div>
+          <div class="short-drama-draft-actions">
+            <button class="short-drama-secondary" id="shortDramaDiscardPlannerDraft" type="button">放弃草稿</button>
+            <button class="short-drama-primary" id="shortDramaResumePlanner" type="button">继续上次共创</button>
+          </div>
+        </aside>
+        <button class="short-drama-start-card idea" type="button" data-content-type="live_action">
+          <span class="short-drama-start-icon">🎬</span>
+          <strong>AI 真人短剧</strong>
+          <span>录入完整剧本，再由你手动填写和确认角色卡，进入真人短剧制作流程。</span>
+          <em>开始创建 →</em>
         </button>
-        <button class="short-drama-start-card inspiration" type="button" data-create-mode="inspiration">
+        <button class="short-drama-start-card inspiration is-coming" type="button" data-content-type="comic" aria-disabled="true">
           <span class="short-drama-start-icon">◌</span>
-          <strong>我没有想法</strong>
-          <span>和创作助手聊一聊，从题材、情绪和结局中找到方向。</span>
-          <em>让助手帮我推荐 →</em>
+          <strong>AI 漫剧</strong>
+          <span>面向漫画角色、分镜画格和动态漫的专属创作流程。</span>
+          <em>即将开放</em>
         </button>
-        <button class="short-drama-start-card import" type="button" data-create-mode="import">
-          <span class="short-drama-start-icon">⇧</span>
-          <strong>导入已有剧本</strong>
-          <span>上传文件或粘贴现有脚本，由助手识别人物、场景和制作规格。</span>
-          <em>导入并智能整理 →</em>
+        <button class="short-drama-start-card import is-coming" type="button" data-content-type="digital_presenter" aria-disabled="true">
+          <span class="short-drama-start-icon">◉</span>
+          <strong>AI 数字人口播</strong>
+          <span>面向单人讲解、营销口播和知识播报的快速生产流程。</span>
+          <em>即将开放</em>
         </button>
+        <p class="short-drama-type-notice" id="shortDramaTypeNotice" role="status" hidden></p>
+      </section>
+
+      <section class="short-drama-live-action" id="shortDramaLiveAction" hidden>
+        <form id="shortDramaLiveActionForm">
+          <div class="short-drama-live-action-intro"><span>STEP 1</span><strong>录入真人短剧剧本</strong><p>项目不会立即创建。下一步默认提供两个角色供你手动填写，确认前不生成图片、不扣点。</p></div>
+          <label>项目名称<input name="title" required maxlength="80" placeholder="例如：雨夜来信"></label>
+          <label>完整剧本<textarea name="source_text" required minlength="8" maxlength="50000" placeholder="建议使用“角色名：台词”的格式，并写清场景、动作和对白。"></textarea><small><span id="shortDramaLiveActionCount">0</span> / 50,000 字</small></label>
+          <div class="short-drama-form-row">
+            <label>画面比例<select name="ratio"><option value="16:9">16:9 横屏</option><option value="9:16">9:16 竖屏</option></select></label>
+            <label>目标时长<select name="target_duration"><option value="30">30 秒</option><option value="45">45 秒</option><option value="60">60 秒</option></select></label>
+            <label>镜头数量<select name="shot_count"><option value="6">6 镜</option><option value="8">8 镜</option><option value="10">10 镜</option></select></label>
+          </div>
+          <label>视觉风格<input name="visual_style" maxlength="120" value="电影感写实"></label>
+          <div class="short-drama-import-error" id="shortDramaLiveActionError" hidden></div>
+          <footer><button class="short-drama-secondary" type="button" data-action="back-create-choice">← 返回</button><button class="short-drama-primary" type="submit">下一步：角色确认</button></footer>
+        </form>
+        <section class="short-drama-role-confirm" id="shortDramaRoleConfirm" hidden>
+          <header><div><span>STEP 2 · CHARACTER SETUP</span><strong>建立角色资料</strong><p>系统不再从剧本自动识别人物。角色名称、性别和固定服装为必填项，其余信息可按需要补充；角色可以逐个保存、逐个生成并锁定标准图。</p></div></header>
+          <div class="short-drama-role-layout">
+            <aside class="short-drama-role-sidebar">
+              <header><div><strong>角色列表</strong><small id="shortDramaRoleCount">共 2 个角色</small></div><button class="short-drama-secondary" id="shortDramaAddRole" type="button">+ 新增</button></header>
+              <div class="short-drama-role-tabs" id="shortDramaRoleTabs"></div>
+            </aside>
+            <div class="short-drama-role-list" id="shortDramaRoleList"></div>
+          </div>
+          <div class="short-drama-import-error" id="shortDramaRoleError" hidden></div>
+          <footer><button class="short-drama-secondary" id="shortDramaEditLiveAction" type="button">← 修改故事设定</button><span class="short-drama-role-status" id="shortDramaRoleStatus">请完善当前角色</span><button class="short-drama-secondary" id="shortDramaSaveRole" type="button">保存当前角色</button><button class="short-drama-primary" id="shortDramaConfirmRoles" type="button">确认角色并创建项目</button></footer>
+        </section>
       </section>
 
       <section class="short-drama-inspiration" id="shortDramaInspiration" hidden>
@@ -230,7 +269,7 @@
   </dialog>
 
   <script src="cloud-shell.js?v=dbd5a9e4"></script>
-  <script src="short-drama-workspace.js?v=4711f0e8"></script>
-  <script src="short-drama-center.js?v=d4467f0c"></script>
+  <script src="short-drama-workspace.js?v=6d3aae3a"></script>
+  <script src="short-drama-center.js?v=f17687d1"></script>
 </body>
 </html>

@@ -13,6 +13,7 @@ function testOpenApiContract() {
     ['post', '/api/gen/short-drama/projects'],
     ['get', '/api/gen/short-drama/project'],
     ['put', '/api/gen/short-drama/project'],
+    ['post', '/api/gen/short-drama/projects/live-action/abandon'],
     ['post', '/api/gen/short-drama/project/delete'],
     ['post', '/api/gen/short-drama/apply-plan'],
     ['post', '/api/gen/short-drama/confirm'],
@@ -56,12 +57,23 @@ function testOpenApiContract() {
     ['post', '/api/gen/short-drama/apply-plan'],
   ]) {
     assert.ok(spec.paths[route][method].responses['404'], `${method.toUpperCase()} ${route} must document owner isolation`);
-    assert.equal(
-      spec.paths[route][method].responses['409'].content['application/json'].schema.$ref,
-      '#/components/schemas/RevisionConflict',
-      `${method.toUpperCase()} ${route} must document optimistic-concurrency conflict`,
-    );
   }
+  const projectUpdateConflicts = spec.paths['/api/gen/short-drama/project'].put
+    .responses['409'].content['application/json'].schema.oneOf;
+  assert.deepEqual(
+    new Set(projectUpdateConflicts.map((candidate) => candidate.$ref)),
+    new Set([
+      '#/components/schemas/RevisionConflict',
+      '#/components/schemas/CharacterReferenceProtectedConflict',
+    ]),
+    'project update must document revision and protected-reference conflicts',
+  );
+  assert.equal(
+    spec.paths['/api/gen/short-drama/apply-plan'].post.responses['409']
+      .content['application/json'].schema.$ref,
+    '#/components/schemas/RevisionConflict',
+    'apply-plan must document optimistic-concurrency conflict',
+  );
   const confirmConflicts = spec.paths['/api/gen/short-drama/confirm'].post
     .responses['409'].content['application/json'].schema.oneOf;
   assert.deepEqual(
@@ -164,13 +176,23 @@ function testOpenApiContract() {
 
   const updateSchema = spec.paths['/api/gen/short-drama/project'].put
     .requestBody.content['application/json'].schema;
-  assert.equal(updateSchema.oneOf.length, 4, 'PUT project must document settings plus three content variants');
+  assert.equal(updateSchema.oneOf.length, 5, 'PUT project must document settings plus four content variants');
   for (const section of ['characters', 'script', 'shots']) {
     const variant = updateSchema.oneOf.find((candidate) => candidate.required && candidate.required.includes(section));
     assert.ok(variant, `PUT project must document the ${section} content variant`);
     assert.deepEqual(variant.required.sort(), ['revision', section].sort());
     assert.equal(variant.additionalProperties, false, `${section} PUT accepts exactly revision plus one content section`);
   }
+  const contractVariant = updateSchema.oneOf.find((candidate) =>
+    candidate.required && candidate.required.includes('character_contract'));
+  assert.ok(contractVariant, 'PUT project must document canonical live-action role saves');
+  assert.deepEqual(
+    contractVariant.required.sort(),
+    ['revision', 'characters', 'character_contract'].sort(),
+  );
+  assert.equal(contractVariant.additionalProperties, false);
+  assert.ok(spec.paths['/api/gen/short-drama/projects/import'].post);
+  assert.ok(spec.components.schemas.ShortDramaCharacterContract);
 
   const copySchema = spec.paths['/api/gen/copy'].post.requestBody.content['application/json'].schema;
   const variants = copySchema.oneOf.map((candidate) => {

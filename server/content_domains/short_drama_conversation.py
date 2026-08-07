@@ -816,6 +816,7 @@ def _contract_hash_payload(contract):
         "source_hash": contract["source_hash"],
         "import_mode": contract["import_mode"],
         "revision": int(contract["revision"]),
+        "character_contract_hash": contract.get("character_contract_hash", ""),
         "optimization": [
             {"key": item["key"], "enabled": bool(item.get("enabled"))}
             for item in contract.get("proposed_changes", [])
@@ -845,6 +846,17 @@ def _import_contract(source_import):
     for item in all_dialogues:
         if item["speaker"] not in characters:
             characters.append(item["speaker"])
+    stored_characters = source_import.get("character_contract")
+    if stored_characters is None:
+        stored_characters = _json(
+            source_import.get("character_contract_json") or "[]", []
+        )
+    if isinstance(stored_characters, list) and stored_characters:
+        characters = [
+            str(item.get("name") or "").strip()
+            for item in stored_characters if isinstance(item, dict)
+            and str(item.get("name") or "").strip()
+        ]
     mode = source_import.get("import_mode")
     changes = []
     if mode == "optimize":
@@ -856,12 +868,18 @@ def _import_contract(source_import):
             "enabled": True,
             "status": "pending",
         } for key, label, summary, _aliases in _OPTIMIZATION_CHANGES]
+    character_contract_hash = _hash(
+        stored_characters if isinstance(stored_characters, list) else []
+    )
     contract = {
         "source_hash": source_import["source_hash"],
         "import_mode": mode,
         "revision": 1,
         "source_length": len(source),
         "characters": characters,
+        "character_contract": stored_characters if isinstance(stored_characters, list) else [],
+        "character_contract_hash": character_contract_hash,
+        "content_type": str(source_import.get("content_type") or "live_action"),
         "global_structure": _import_global_structure(source, characters),
         "plot_points": _source_anchors(source),
         "key_dialogues": dialogues,
@@ -1194,9 +1212,12 @@ def _hydrate_import_conversation(conn, project):
     current = _conversation(conn, project["id"])
     understanding = _json(current.get("understanding_json"), {})
     contract = understanding.get("import_contract") or {}
+    expected_contract = _import_contract(source_import)
     if (
         contract.get("source_hash") == source_import["source_hash"]
         and contract.get("import_mode") == source_import["import_mode"]
+        and contract.get("character_contract_hash")
+        == expected_contract["character_contract_hash"]
     ):
         return
     messages = _messages(conn, project["id"])
@@ -1460,11 +1481,18 @@ def _messages(conn, project_id):
 def _import_snapshot(conn, project_id):
     conn.row_factory = sqlite3.Row
     row = conn.execute(
-        "SELECT source_text,source_hash,filename,import_mode,status,created_at "
+        "SELECT source_text,source_hash,filename,content_type,character_contract_json,"
+        "import_mode,status,created_at "
         "FROM short_drama_script_imports WHERE project_id=? AND status='completed'",
         (project_id,),
     ).fetchone()
-    return dict(row) if row else None
+    if not row:
+        return None
+    result = dict(row)
+    result["character_contract"] = _json(
+        result.pop("character_contract_json", "[]"), []
+    )
+    return result
 
 
 def _versions(conn, project_id):
