@@ -517,11 +517,22 @@
   }
   function normalizeBreakdownScenes(list){
     return (list||[]).map(function(s){
-      return {dur:s&&s.dur||'', scene:s&&s.scene||'', line:s&&s.line||''};
+      // 保留明细等扩展字段(shot/camera/lighting/audio/transition),只规范化三主字段
+      var item={};
+      if(s&&typeof s==='object') Object.keys(s).forEach(function(k){ item[k]=s[k]; });
+      item.dur=s&&s.dur||''; item.scene=s&&s.scene||''; item.line=s&&s.line||'';
+      return item;
     }).filter(function(s){ return s.scene||s.line; });
   }
   function sceneText(s,i){
-    return '镜号'+('0'+(i+1)).slice(-2)+'（'+(s.dur||'')+'）\n画面：'+(s.scene||'')+'\n口播：'+(s.line||'');
+    var txt='镜号'+('0'+(i+1)).slice(-2)+'（'+(s.dur||'')+'）\n画面：'+(s.scene||'')+'\n口播：'+(s.line||'');
+    // 7 字段明细存在时一并序列化(复制/导出),空字段不输出,兼容旧数据
+    var rows=[['景别',s&&s.shot],['运镜',s&&s.camera],['光线',s&&s.lighting],['音效',s&&s.audio],['转场',s&&s.transition]];
+    rows.forEach(function(row){
+      var value=String(row[1]==null?'':row[1]).trim();
+      if(value) txt+='\n'+row[0]+'：'+value;
+    });
+    return txt;
   }
   function scriptText(list){
     return (list||[]).map(function(s,i){
@@ -530,15 +541,19 @@
   }
   function readEditingScenes(){
     if(!scenes) return [];
-    return Array.prototype.slice.call(scenes.querySelectorAll('.sc-card')).map(function(card){
+    // 以当前状态对象为底合并编辑值,未编辑的扩展字段不丢失
+    var base=currentMode==='breakdown'&&lastBreakdown ? (lastBreakdown.scenes||[]) : lastScenes;
+    return Array.prototype.slice.call(scenes.querySelectorAll('.sc-card')).map(function(card,i){
       var durInput=card.querySelector('[data-scene-dur]');
       var textInput=card.querySelector('[data-scene-text]');
       var lineInput=card.querySelector('[data-scene-line]');
-      return {
-        dur:(durInput&&durInput.value)||'',
-        scene:(textInput&&textInput.value)||'',
-        line:(lineInput&&lineInput.value)||''
-      };
+      var merged={};
+      var prev=base[i];
+      if(prev&&typeof prev==='object') Object.keys(prev).forEach(function(k){ merged[k]=prev[k]; });
+      merged.dur=(durInput&&durInput.value)||'';
+      merged.scene=(textInput&&textInput.value)||'';
+      merged.line=(lineInput&&lineInput.value)||'';
+      return merged;
     }).filter(function(s){ return s.scene||s.line; });
   }
   function parseSceneSeconds(value){
@@ -1126,25 +1141,34 @@
     if(scRefImageName) scRefImageName.textContent=refImages.length?('已上传 '+refImages.length+'/'+REF_IMAGE_MAX+' 张'):'';
     if(scRefClear) scRefClear.style.display=refImages.length?'':'none';
   }
+  // 按剩余名额截断后再启动读取,onload 内原子复查,双重防多选/快选越限
+  function acceptRefFiles(fileList){
+    var files=Array.prototype.slice.call(fileList||[]);
+    var room=REF_IMAGE_MAX-refImages.length;
+    if(files.length>room){
+      if(window.HQ&&window.HQ.toast) HQ.toast('最多 4 张参考图');
+      files=files.slice(0,Math.max(0,room));
+    }
+    files.forEach(function(f){
+      var reader=new FileReader();
+      reader.onload=function(){
+        if(refImages.length>=REF_IMAGE_MAX) return;
+        var dataUrl=String(reader.result||'');
+        if(dataUrl.length>REF_DATAURL_MAX){ if(window.HQ&&window.HQ.toast) HQ.toast('单张参考图不能超过 5MB'); return; }
+        refImages.push(dataUrl);
+        syncRefImages();
+      };
+      reader.readAsDataURL(f);
+    });
+  }
   if(scRefImage&&scRefImageBtn){
     scRefImageBtn.onclick=function(){
       if(refImages.length>=REF_IMAGE_MAX){ if(window.HQ&&window.HQ.toast) HQ.toast('最多 4 张参考图'); return; }
       scRefImage.click();
     };
     scRefImage.onchange=function(){
-      var files=Array.prototype.slice.call(scRefImage.files||[]);
+      acceptRefFiles(scRefImage.files);
       scRefImage.value='';
-      files.forEach(function(f){
-        if(refImages.length>=REF_IMAGE_MAX){ if(window.HQ&&window.HQ.toast) HQ.toast('最多 4 张参考图'); return; }
-        var reader=new FileReader();
-        reader.onload=function(){
-          var dataUrl=String(reader.result||'');
-          if(dataUrl.length>REF_DATAURL_MAX){ if(window.HQ&&window.HQ.toast) HQ.toast('单张参考图不能超过 5MB'); return; }
-          refImages.push(dataUrl);
-          syncRefImages();
-        };
-        reader.readAsDataURL(f);
-      });
     };
     if(scRefThumbs) scRefThumbs.addEventListener('click',function(e){
       var del=e.target.closest('[data-ref-del]'); if(!del) return;
