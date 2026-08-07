@@ -704,6 +704,54 @@ test('deployed v3 planner draft remains readable with safe choice defaults', () 
   assert.equal(value, stored);
 });
 
+test('saved planner draft remains optional and clearing it returns to content type choice', async () => {
+  const chrome = findChromeExecutable();
+  assert.ok(chrome, '草稿入口测试需要 Chrome 或 Chromium');
+  const draft = {
+    version:4, username:'alice', saved_at:Date.now(), create_mode:'inspiration',
+    payload:{title:'旧策划草稿',ratio:'16:9',target_duration:30,shot_count:6,visual_style:'电影感写实'},
+    answers:{topic:'家庭情感'}, meta:{}, dirty_fields:[], history:[], transcript:[], feedback:[],
+    correction_count:0, selected_direction:null, preview:null, active_field:'protagonist',
+    active_choices:{field:'protagonist',items:['独居老人','返乡女儿','社区少年'],updated_at:Date.now()},
+    advisor_degraded:false, panel:'auto', pending_create_key:''
+  };
+  const seed = `<script>localStorage.setItem('hq-short-drama-planner-draft-v3:alice',${JSON.stringify(JSON.stringify(draft))});window.confirm=function(){return true;};</script>`;
+  const probe = `<script>addEventListener('DOMContentLoaded',function(){setTimeout(function(){try{var create=document.getElementById('shortDramaCreate'),choice=document.getElementById('shortDramaStartOptions'),planner=document.getElementById('shortDramaInspiration');create.click();setTimeout(function(){var resume=document.getElementById('shortDramaResumePlanner'),initial=[!choice.hidden,planner.hidden,!!resume&&!resume.hidden];if(!initial.every(Boolean)){document.documentElement.setAttribute('data-draft-entry-test','fail-initial-'+initial.map(Number).join(''));return;}resume.click();setTimeout(function(){var resumed=[choice.hidden,!planner.hidden];if(!resumed.every(Boolean)){document.documentElement.setAttribute('data-draft-entry-test','fail-resume-'+resumed.map(Number).join(''));return;}document.getElementById('shortDramaRestartPlanner').click();setTimeout(function(){var cleared=[!choice.hidden,planner.hidden,localStorage.getItem('hq-short-drama-planner-draft-v3:alice')===null];document.documentElement.setAttribute('data-draft-entry-test',cleared.every(Boolean)?'pass':'fail-clear-'+cleared.map(Number).join(''));},80);},80);},80);}catch(error){document.documentElement.setAttribute('data-draft-entry-test','error-'+error.name);}},500);});</script>`;
+  const testHtml = html.replace('<script src="cloud-shell.js', seed + '<script src="cloud-shell.js').replace('</body>', probe + '</body>');
+  const siteRoot = path.join(ROOT, 'site');
+  const server = http.createServer((request, response) => {
+    const pathname = decodeURIComponent(new URL(request.url, 'http://127.0.0.1').pathname);
+    if (pathname === '/api/auth/me') {
+      response.writeHead(200, {'Content-Type':'application/json'});response.end('{"user":{"username":"alice"}}');return;
+    }
+    if (pathname === '/api/gen/short-drama/projects') {
+      response.writeHead(200, {'Content-Type':'application/json'});response.end('{"items":[]}');return;
+    }
+    if (pathname === '/workbench/short-drama.html') {
+      response.writeHead(200, {'Content-Type':'text/html; charset=utf-8'});response.end(testHtml);return;
+    }
+    const filename = path.resolve(siteRoot, pathname.replace(/^\/+/, ''));
+    if (!filename.startsWith(siteRoot) || !fs.existsSync(filename) || !fs.statSync(filename).isFile()) {response.writeHead(404);response.end('not found');return;}
+    const contentType = filename.endsWith('.css') ? 'text/css' : filename.endsWith('.js') ? 'text/javascript' : 'application/octet-stream';
+    response.writeHead(200, {'Content-Type':contentType});response.end(fs.readFileSync(filename));
+  });
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hq-draft-entry-'));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    const output = await new Promise((resolve, reject) => {
+      const browser = spawn(chrome, ['--headless=new','--no-sandbox','--disable-gpu','--disable-dev-shm-usage','--hide-scrollbars','--virtual-time-budget=4000','--user-data-dir='+profile,'--dump-dom',`http://127.0.0.1:${address.port}/workbench/short-drama.html`]);
+      let stdout='',stderr='';browser.stdout.on('data',chunk => {stdout+=chunk;});browser.stderr.on('data',chunk => {stderr+=chunk;});
+      const timeout = setTimeout(() => {browser.kill();reject(new Error('Chrome 草稿入口测试超时'));},15000);
+      browser.on('error',reject);browser.on('close',code => {clearTimeout(timeout);code===0?resolve(stdout):reject(new Error(stderr||`Chrome exited ${code}`));});
+    });
+    assert.match(output, /data-draft-entry-test="pass"/);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    fs.rmSync(profile, {recursive:true, force:true, maxRetries:8, retryDelay:100});
+  }
+});
+
 test('atomic promotion idempotency checkpoint is persisted before request', () => {
   const requestAt = centerScript.indexOf('client.promote({');
   const beforeAt = centerScript.lastIndexOf('savePlannerDraft(true)', requestAt);

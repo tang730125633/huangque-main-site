@@ -949,7 +949,7 @@
     var advisorSubmit=ideaForm.querySelector('button[type="submit"]'),advisorSubmitLabel=advisorSubmit?advisorSubmit.textContent:'发送',advisorThinkingNode=null,advisorThinkingTimer=null;
     var recommendations=doc.getElementById('shortDramaRecommendations'),ideaMessages=[],selectedProjectId='',importFilename='',importAnalysis=null,pendingImportKey='';
     var liveActionAnalysis=null,liveActionRoles=[],activeLiveActionRole=0,pendingLiveActionKey='',pendingLiveActionDiscardKey='',pendingLiveActionProject=null,liveActionReferenceBusy=false,savedLiveActionRoleSignatures={};
-    var createMode='idea',plannerPayload=null,selectedDirection=null,plannerPreview=null,pendingCreateKey='',plannerAnswers={},plannerMeta={},plannerDirtyFields=[],plannerHistory=[],plannerTranscript=[],plannerFeedback=[],plannerCorrectionCount=0,plannerPersistenceReady=false,activePlannerField='',activePlannerChoices={field:'',items:[]},advisorBusy=false,advisorDegraded=false,plannerPanel='auto',currentUsername='';
+    var createMode='idea',plannerPayload=null,selectedDirection=null,plannerPreview=null,pendingCreateKey='',plannerAnswers={},plannerMeta={},plannerDirtyFields=[],plannerHistory=[],plannerTranscript=[],plannerFeedback=[],plannerCorrectionCount=0,plannerPersistenceReady=false,activePlannerField='',activePlannerChoices={field:'',items:[]},advisorBusy=false,advisorDegraded=false,plannerPanel='auto',currentUsername='',resumePlannerDraft=null;
     var LEGACY_PLANNER_DRAFT_KEY='hq-short-drama-planner-draft-v3';
     var deleteButton=doc.getElementById('shortDramaDeleteProject');
     var confirmDelete=options.confirmImpl||function(message){return typeof runtimeRoot.confirm==='function'&&runtimeRoot.confirm(message);};
@@ -1128,6 +1128,10 @@
     function plannerDraftKey(){return plannerDraftStorageKey(currentUsername);}
     function readPlannerDraft(){
       try{var storage=plannerStorage(),key=plannerDraftKey();if(!storage||!key)return null;storage.removeItem(LEGACY_PLANNER_DRAFT_KEY);return readPlannerDraftRecord(storage,key,currentUsername,Date.now());}catch(error){return null;}
+    }
+    function renderPlannerDraftResume(draft){
+      resumePlannerDraft=draft||null;
+      doc.getElementById('shortDramaDraftResume').hidden=!resumePlannerDraft;
     }
     function savePlannerDraft(required){
       if(!plannerPersistenceReady||!plannerPayload)return !required;
@@ -1319,6 +1323,7 @@
       if(step==='import') setCreateHeading('IMPORT A SCRIPT','导入已有剧本','上传文件或粘贴原稿，助手会先识别内容，再与你确认如何成片。');
     }
     function resetCreate(){
+      renderPlannerDraftResume(null);
       liveActionForm.reset();liveActionAnalysis=null;liveActionRoles=[];activeLiveActionRole=0;pendingLiveActionKey='';pendingLiveActionDiscardKey='';pendingLiveActionProject=null;liveActionReferenceBusy=false;savedLiveActionRoleSignatures={};roleList.innerHTML='';if(roleTabs)roleTabs.innerHTML='';
       doc.getElementById('shortDramaLiveActionCount').textContent='0';showLiveActionError('',false);showLiveActionError('',true);
       plannerPersistenceReady=false;form.reset();ideaMessages=[];chat.innerHTML='';recommendations.innerHTML='';recommendations.hidden=true;createMode='idea';plannerPayload=null;selectedDirection=null;plannerPreview=null;pendingCreateKey='';plannerAnswers={};plannerMeta={};plannerDirtyFields=[];plannerHistory=[];plannerTranscript=[];plannerFeedback=[];plannerCorrectionCount=0;activePlannerField='';activePlannerChoices={field:'',items:[]};advisorDegraded=false;plannerPanel='auto';
@@ -1329,7 +1334,7 @@
       var opening=advisorStep([],{},plannerAnswers,plannerMeta);activePlannerField=opening.field||'';chatBubble('assistant',opening.message);renderQuickReplies(opening.quick);renderScriptPreview(null);plannerNotice('',false);doc.getElementById('shortDramaPlannerAckInput').checked=false;renderPlanner();
       showCreateStep('choice');
     }
-    function openCreate(){if(!currentUsername){setNotice('正在确认登录账号，请稍后重试。',true);return;}var draft=readPlannerDraft();if(draft)restorePlannerDraft(draft);else resetCreate();dialog.showModal();}
+    function openCreate(){if(!currentUsername){setNotice('正在确认登录账号，请稍后重试。',true);return;}var draft=readPlannerDraft();resetCreate();renderPlannerDraftResume(draft);dialog.showModal();}
     function submitIdea(value){
       value=compactIdea(value);if(!value||advisorBusy)return Promise.resolve(false);
       var choiceContext={field:activePlannerChoices.field||activePlannerField||'',items:(activePlannerChoices.items||[]).slice(0,3)};
@@ -1522,6 +1527,8 @@
     doc.querySelectorAll('[data-action="open-create"]').forEach(function(node){node.addEventListener('click',openCreate);});
     doc.querySelectorAll('[data-action="close-create"]').forEach(function(node){node.addEventListener('click',function(){dialog.close();});});
     doc.querySelectorAll('[data-action="back-create-choice"]').forEach(function(node){node.addEventListener('click',function(){showCreateStep('choice');});});
+    doc.getElementById('shortDramaResumePlanner').addEventListener('click',function(){var draft=resumePlannerDraft;if(!draft)return;renderPlannerDraftResume(null);restorePlannerDraft(draft);});
+    doc.getElementById('shortDramaDiscardPlannerDraft').addEventListener('click',function(){clearPlannerDraft();resetCreate();});
     doc.querySelectorAll('[data-content-type]').forEach(function(node){node.addEventListener('click',function(){
       var type=node.getAttribute('data-content-type'),typeNotice=doc.getElementById('shortDramaTypeNotice');
       if(type!=='live_action'){
@@ -1663,7 +1670,7 @@
       button.textContent=collapsed?'展开':'收起';
     });
     doc.getElementById('shortDramaPlannerHistoryList').addEventListener('click',function(event){var button=event.target.closest('[data-planner-history-index]');if(button)restorePlannerHistory(button.getAttribute('data-planner-history-index'));});
-    doc.getElementById('shortDramaRestartPlanner').addEventListener('click',function(){if(!confirmDelete('这会清除当前未完成的对话、创作记忆和剧本草稿。确认重新开始？'))return;clearPlannerDraft();resetCreate();createMode='inspiration';startPlanner();});
+    doc.getElementById('shortDramaRestartPlanner').addEventListener('click',function(){if(!confirmDelete('这会清除当前未完成的对话、创作记忆和剧本草稿。确认重新开始？'))return;clearPlannerDraft();resetCreate();});
     chat.addEventListener('click',function(event){
       var button=event.target.closest('[data-advisor-feedback]');if(!button)return;var bubble=button.closest('[data-planner-message-id]'),messageId=bubble&&bubble.getAttribute('data-planner-message-id');if(!messageId||plannerFeedback.some(function(item){return item.message_id===messageId;}))return;
       var entry=plannerTranscript.find(function(item){return item.id===messageId;}),userEntry=plannerTranscript.slice(0,plannerTranscript.indexOf(entry)).reverse().find(function(item){return item.role==='user';});

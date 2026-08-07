@@ -6,7 +6,7 @@
   <title>短剧 · 黄雀 AI 工作台</title>
   <script src="theme-init.js?v=11eb385e"></script>
   <link rel="stylesheet" href="theme.css?v=5873a2f4">
-  <link rel="stylesheet" href="short-drama-center.css?v=49c366ab">
+  <link rel="stylesheet" href="short-drama-center.css?v=465eec0f">
   <link rel="stylesheet" href="short-drama-workspace.css?v=005ef34f">
 </head>
 <body>
@@ -83,6 +83,16 @@
       </header>
 
       <section class="short-drama-start-options" id="shortDramaStartOptions">
+        <aside class="short-drama-draft-resume" id="shortDramaDraftResume" hidden>
+          <div>
+            <strong>发现未完成的剧本共创草稿</strong>
+            <span>你可以继续上次共创，也可以放弃草稿后选择新的内容类型。</span>
+          </div>
+          <div class="short-drama-draft-actions">
+            <button class="short-drama-secondary" id="shortDramaDiscardPlannerDraft" type="button">放弃草稿</button>
+            <button class="short-drama-primary" id="shortDramaResumePlanner" type="button">继续上次共创</button>
+          </div>
+        </aside>
         <button class="short-drama-start-card idea" type="button" data-content-type="live_action">
           <span class="short-drama-start-icon">🎬</span>
           <strong>AI 真人短剧</strong>
