@@ -18,9 +18,9 @@ class OrganicBirdPrototypeTest(unittest.TestCase):
         self.assertEqual(html.count("<article><span>0"), 4)
         self.assertNotIn("glass-bird.webp", html + css)
         self.assertNotIn("bird-body", html + css)
-        self.assertIn('class="growth-mark"', html)
-        self.assertIn("organic-huangque.png", html)
-        self.assertTrue((ROOT / "site" / "assets" / "home" / "organic-huangque.png").is_file())
+        self.assertIn('class="contour-lines"', html)
+        self.assertNotIn("organic-huangque", html + css)
+        self.assertNotIn('<img class="growth-mark"', html)
         self.assertNotIn("WebGL", html + css + script)
         self.assertIn("prefers-reduced-motion", css)
         self.assertIn("IntersectionObserver", script)
@@ -30,9 +30,7 @@ class OrganicBirdPrototypeTest(unittest.TestCase):
     def test_deployable_preview_matches_prototype(self):
         preview = ROOT / "site" / "previews" / "organic-bird-hero"
         self.assertEqual(
-            (preview / "index.html").read_text(encoding="utf-8").replace(
-                "../../assets/home/", "../../site/assets/home/"
-            ),
+            (preview / "index.html").read_text(encoding="utf-8"),
             (PROTOTYPE / "index.html").read_text(encoding="utf-8"),
         )
         self.assertEqual(
