@@ -350,6 +350,7 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             '.module-card[data-module="operations"]>.section-head{flex-direction:column}',
             'id="sidebarResizer"', 'role="separator"', 'aria-orientation="vertical"',
             'function setSidebarWidth', 'setPointerCapture(e.pointerId)', 'setSidebarWidth(e.clientX)',
+            "window.addEventListener('pointermove'", 'function stopSidebarResize',
             '.sidebar-resizer{display:none}', '@media (min-width:901px)',
             'id="operationsChannelLayer"', 'function renderOperationsChannelDrawer',
             '.operations-channel-drawer .channel-table{min-width:980px}',

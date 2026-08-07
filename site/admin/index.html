@@ -655,6 +655,7 @@
     operationsChannelMode:'', operationsChannelReturnFocus:null
   };
   var secretWindows = [];
+  var sidebarDragPointer = null;
   var el = function(id){return document.getElementById(id)};
   var providerEditorHome=el('providerKeyEditor').parentNode,providerEditorNext=el('providerKeyEditor').nextSibling;
   var moduleMeta = {
@@ -1921,10 +1922,10 @@
   Array.prototype.forEach.call(document.querySelectorAll('[data-module-switch]'),function(btn){btn.onclick=function(){switchModule(btn.getAttribute('data-module-switch'))}});
   Array.prototype.forEach.call(document.querySelectorAll('[data-jump-module]'),function(btn){btn.onclick=function(){switchModule(btn.getAttribute('data-jump-module'))}});
   el('navToggle').onclick=function(){var open=el('adminLayout').classList.toggle('nav-open');el('navToggle').setAttribute('aria-expanded',open?'true':'false')};
-  el('sidebarResizer').onpointerdown=function(e){if(e.button!==0)return;this.setPointerCapture(e.pointerId);document.body.classList.add('sidebar-resizing');e.preventDefault()};
-  el('sidebarResizer').onpointermove=function(e){if(this.hasPointerCapture(e.pointerId))setSidebarWidth(e.clientX)};
-  el('sidebarResizer').onpointerup=el('sidebarResizer').onpointercancel=function(e){if(this.hasPointerCapture(e.pointerId))this.releasePointerCapture(e.pointerId)};
-  el('sidebarResizer').onlostpointercapture=function(){document.body.classList.remove('sidebar-resizing')};
+  el('sidebarResizer').onpointerdown=function(e){if(e.button!==0)return;sidebarDragPointer=e.pointerId;this.setPointerCapture(e.pointerId);document.body.classList.add('sidebar-resizing');e.preventDefault()};
+  window.addEventListener('pointermove',function(e){if(sidebarDragPointer===e.pointerId)setSidebarWidth(e.clientX)});
+  function stopSidebarResize(e){if(sidebarDragPointer!==e.pointerId)return;sidebarDragPointer=null;document.body.classList.remove('sidebar-resizing');if(el('sidebarResizer').hasPointerCapture(e.pointerId))el('sidebarResizer').releasePointerCapture(e.pointerId)}
+  window.addEventListener('pointerup',stopSidebarResize);window.addEventListener('pointercancel',stopSidebarResize);
   el('sidebarResizer').onkeydown=function(e){var width=parseInt(getComputedStyle(el('adminSidebar')).width,10)||236;if(e.key==='ArrowLeft'){setSidebarWidth(width-12);e.preventDefault()}else if(e.key==='ArrowRight'){setSidebarWidth(width+12);e.preventDefault()}};
   el('sidebarBackdrop').onclick=closeSidebar;
   el('globalUserSearchBtn').onclick=searchCustomer;
