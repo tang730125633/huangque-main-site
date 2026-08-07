@@ -329,7 +329,7 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             'data-module-tab="users"', 'data-module-tab="logs"',
             'data-module-tab="recharge"', 'data-module-switch="points"',
             'data-module-tab="invite"', 'data-module-tab="inspirations"',
-            'data-module-tab="operations"', 'data-module-tab="channels"',
+            'data-module-tab="operations"',
             'data-module-tab="features"', 'data-module-switch="pricing"', 'data-module="dashboard"',
             'data-module="operations"', 'id="operationsBox"', "function renderOperations(data)",
             "基础运行探针（非功能验收）", "可达 · 仅辅助定位", "不会假绿", "功能运行中心",
@@ -348,12 +348,22 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             "operations:'layers'", "channels:'lock'", "features:'sliders'",
             '@media (max-width:1280px){.ops-workspace',
             '.module-card[data-module="operations"]>.section-head{flex-direction:column}',
+            'id="sidebarCollapse"', 'sidebar-collapsed', '@media (min-width:901px)',
+            'id="operationsChannelLayer"', 'function renderOperationsChannelDrawer',
+            'data-operation-channel-open=', '当前接单配置，不代表历史任务实际使用线路',
+            '完整 Key 可在当前抽屉按 5 秒审计查看',
+            "bindSecretRevealActions('operationsChannelBox')", 'value="minimax"',
+            'clearSecretWindows();restoreProviderEditor()',
+            "boxId==='operationsChannelBox'&&el('operationsChannelLayer').hidden",
+            "&&el('providerKeyEditor').hidden)renderOperationsChannelDrawer()",
+            "selections[dep.alternative_group]===(dep.selection_value||dep.key)",
         ):
             self.assertIn(marker, html)
         self.assertNotIn('data-module-tab="ops"', html)
         self.assertNotIn('data-module-tab="points"', html)
         self.assertNotIn('data-module-tab="pricing"', html)
         self.assertNotIn('data-module-tab="services"', html)
+        self.assertNotIn('data-module-tab="channels"', html)
         self.assertNotIn('data-module="services"', html)
         self.assertNotIn("function renderServices", html)
         self.assertNotIn("服务在线", html)
