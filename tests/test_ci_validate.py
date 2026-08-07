@@ -26,7 +26,7 @@ class RedlineTests(TestCase):
         files = [
             PurePosixPath("site/index.html"),
             PurePosixPath("server/app.py"),
-            PurePosixPath("docs/部署记录.md"),
+            PurePosixPath("docs/????.md"),
         ]
 
         self.assertEqual(check_redlines(files), [])
@@ -60,7 +60,7 @@ class StrictJsonTests(TestCase):
         ]
         self.assertEqual(
             {"type": "string", "minLength": 1, "maxLength": 20,
-             "description": "可选的角色显示名称；同一项目内不可重复"},
+             "description": "???????????????????"},
             profile["properties"]["name"],
         )
 
@@ -131,6 +131,29 @@ class StrictJsonTests(TestCase):
             2000,
             schemas["ShortDramaCharacterContractItem"]["x-derivedIdentityMaxLength"],
         )
+
+    def test_openapi_models_protected_character_reference_conflict(self) -> None:
+        spec = load_json_strict(Path("docs/api/openapi.json"))
+        schemas = spec["components"]["schemas"]
+        conflict_schema = spec["paths"]["/api/gen/short-drama/project"]["put"][
+            "responses"
+        ]["409"]["content"]["application/json"]["schema"]
+
+        self.assertEqual(
+            ["revision_conflict", "job_already_applied"],
+            schemas["RevisionConflict"]["properties"]["code"]["enum"],
+        )
+        self.assertEqual(
+            [
+                {"$ref": "#/components/schemas/RevisionConflict"},
+                {"$ref": "#/components/schemas/CharacterReferenceProtectedConflict"},
+            ],
+            conflict_schema["oneOf"],
+        )
+        self._assert_openapi_sample(spec, conflict_schema, {
+            "detail": "?????????????????????????",
+            "code": "character_reference_protected",
+        })
 
     def _assert_openapi_sample(self, spec, schema, value) -> None:
         if "$ref" in schema:
