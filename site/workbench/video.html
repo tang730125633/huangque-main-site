@@ -166,6 +166,9 @@
   .output-card{height:100%;width:100%;display:flex;flex-direction:column;gap:14px;align-items:flex-start;min-height:0}
   .output-scroll{width:100%;height:100%;min-height:0;display:flex;flex-direction:column;gap:14px}
   .history-title{font-size:13px;color:#94a4bb;font-weight:800;margin:2px 0 0}
+  .history-title-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:0}
+  .history-channel-filter{height:30px;max-width:112px;padding:0 26px 0 9px;border:1px solid rgba(148,164,187,.18);border-radius:8px;background:#10151e;color:#cbd5e1;font-family:inherit;font-size:11px;font-weight:700;cursor:pointer}
+  .history-channel-filter:hover,.history-channel-filter:focus{border-color:rgba(231,178,76,.4);color:#e7b24c;outline:none}
   .history-list{width:100%;min-height:0;overflow-y:auto;overflow-x:hidden;padding-right:4px;display:flex;flex-direction:column;gap:12px;flex:1}
   .history-list::-webkit-scrollbar{width:7px}
   .history-list::-webkit-scrollbar-thumb{background:rgba(148,164,187,.24);border-radius:99px}
@@ -817,9 +820,14 @@
       <div class="output-card"><div class="output-scroll">
         <div class="history-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
           <span>生成记录</span>
-          <label style="padding:6px 9px;border:1px solid rgba(231,178,76,.35);border-radius:8px;color:#e7b24c;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;">
-            导入 H3 成片<input id="h3ImportFile" type="file" accept="video/mp4" multiple hidden>
-          </label>
+          <div class="history-title-actions">
+            <select id="historyChannelFilter" class="history-channel-filter" aria-label="按视频渠道筛选">
+              <option value="all">全部渠道</option>
+            </select>
+            <label style="padding:6px 9px;border:1px solid rgba(231,178,76,.35);border-radius:8px;color:#e7b24c;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;">
+              导入 H3 成片<input id="h3ImportFile" type="file" accept="video/mp4" multiple hidden>
+            </label>
+          </div>
         </div>
         <div id="h3ImportStatus" class="faint" style="display:none;font-size:11px;margin:0 0 8px;"></div>
         <div id="outputHistory" class="history-list">
@@ -1284,6 +1292,8 @@
   }
   function videoModeTag(x){
     var m=String((x&&x.mode)||(x&&x.channel)||'').toLowerCase();
+    if(!m||m==='text'||m==='audio') return '数字化 IP';
+    if(m==='cinematic') return '电影化身';
     if(m==='motion') return '影视级模仿';
     if(m==='tryon') return '换装换背景';
     if(m==='grok') return '果肉视频';
@@ -1395,6 +1405,30 @@
   // 草稿是本地的、还没落库的东西，它没资格覆盖服务端的历史。
   var videoHistoryItems=[];   // 服务端 /video/assets 拉回来的历史
   var videoDrafts=[];         // 本地在飞草稿（批量出片时有多条）
+  var historyChannelFilter='all';
+
+  function videoChannelInfo(x){
+    var mode=String((x&&x.mode)||(x&&x.channel)||'').toLowerCase();
+    if(!mode||mode==='text'||mode==='audio') return {key:'talking',label:'数字化 IP'};
+    if(mode==='cinematic'||mode==='motion') return {key:'cinematic',label:'电影化身'};
+    var labels={tryon:'换装换背景',grok:'果肉视频',sora:'Sora 2',minimax:'麦克视频',omni:'Omni 视频',micro:'Seedance 视频'};
+    return {key:mode,label:labels[mode]||videoModeTag(x)};
+  }
+  function syncHistoryChannelFilter(items){
+    var select=$('historyChannelFilter'); if(!select) return;
+    var channels={};
+    (items||[]).forEach(function(x){var info=videoChannelInfo(x);channels[info.key]=info.label;});
+    var order=['talking','cinematic','tryon','grok','sora','minimax','omni','micro'];
+    select.innerHTML='<option value="all">全部渠道</option>';
+    Object.keys(channels).sort(function(a,b){
+      var ai=order.indexOf(a),bi=order.indexOf(b);
+      return (ai<0?99:ai)-(bi<0?99:bi);
+    }).forEach(function(key){
+      var option=document.createElement('option'); option.value=key; option.textContent=channels[key]; select.appendChild(option);
+    });
+    if(channels[historyChannelFilter]) select.value=historyChannelFilter;
+    else historyChannelFilter=select.value='all';
+  }
 
   function renderVideoOutput(){
     // 草稿一拿到 job_id，服务端历史里也会出现同一条 —— 去重，以草稿为准（它带着实时进度）
@@ -1404,7 +1438,10 @@
       var jid=(x && x.job_id!=null) ? x.job_id : (x && x.id);
       return !(jid!=null && drafted[String(jid)]);
     });
-    renderVideoHistory(videoDrafts.concat(rest));
+    var items=videoDrafts.concat(rest);
+    syncHistoryChannelFilter(items);
+    if(historyChannelFilter!=='all') items=items.filter(function(x){return videoChannelInfo(x).key===historyChannelFilter;});
+    renderVideoHistory(items);
   }
   function renderVideoDrafts(list){
     videoDrafts=(list||[]).filter(Boolean);
@@ -1415,7 +1452,7 @@
     var box=$('outputHistory'); if(!box) return;
     box.innerHTML='';
     if(!items || !items.length){
-      box.innerHTML='<div style="padding:18px 10px;border:1px dashed rgba(148,164,187,.16);border-radius:8px;color:#5c6b82;font-size:12px;text-align:center;">暂无历史记录</div>';
+      box.innerHTML='<div style="padding:18px 10px;border:1px dashed rgba(148,164,187,.16);border-radius:8px;color:#5c6b82;font-size:12px;text-align:center;">'+(historyChannelFilter==='all'?'暂无历史记录':'该渠道暂无生成记录')+'</div>';
       return;
     }
     items.forEach(function(raw,idx){
@@ -3527,6 +3564,7 @@
   applyAssetPrefill();
   applyDirectVideoAction();
   applyIP12Handoff();
+  $('historyChannelFilter').onchange=function(){historyChannelFilter=this.value;renderVideoOutput();};
   videoHealthReady.then(applyInspirationPrefill);
   loadVoices();
   loadVideoHistory();
