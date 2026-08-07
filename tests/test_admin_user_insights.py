@@ -350,6 +350,7 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             '.module-card[data-module="operations"]>.section-head{flex-direction:column}',
             'id="sidebarCollapse"', 'sidebar-collapsed', '@media (min-width:901px)',
             'id="operationsChannelLayer"', 'function renderOperationsChannelDrawer',
+            '.operations-channel-drawer .channel-table{min-width:980px}',
             'data-operation-channel-open=', '当前接单配置，不代表历史任务实际使用线路',
             '完整 Key 可在当前抽屉按 5 秒审计查看',
             "bindSecretRevealActions('operationsChannelBox')", 'value="minimax"',
