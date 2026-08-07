@@ -12,6 +12,7 @@ class LiquidBirdPrototypeTest(unittest.TestCase):
         css = (PROTOTYPE / "style.css").read_text(encoding="utf-8")
         script = (PROTOTYPE / "experience.js").read_text(encoding="utf-8")
         bird = PROTOTYPE / "public" / "assets" / "glass-bird.webp"
+        preview = ROOT / "site" / "previews" / "liquid-bird-hero"
 
         self.assertIn("data-light-field", html)
         self.assertNotIn("data-cursor-wake", html)
@@ -34,6 +35,15 @@ class LiquidBirdPrototypeTest(unittest.TestCase):
         self.assertNotIn("wakeDamping", script)
         self.assertNotIn("pointer:fine", script)
         self.assertLess(bird.stat().st_size, 300_000)
+        self.assertEqual((preview / "index.html").read_text(encoding="utf-8"), html)
+        self.assertEqual((preview / "experience.js").read_text(encoding="utf-8"), script)
+        self.assertEqual((preview / "public/assets/glass-bird.webp").read_bytes(), bird.read_bytes())
+        self.assertEqual(
+            (preview / "style.css").read_text(encoding="utf-8").replace(
+                "../../assets/fonts/", "../../site/assets/fonts/"
+            ),
+            css,
+        )
 
 
 if __name__ == "__main__":
