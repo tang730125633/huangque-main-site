@@ -346,6 +346,7 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             "dashboard:'home'", "users:'users'", "logs:'clock'", "recharge:'coins'",
             "points:'trend'", "invite:'userPlus'", "inspirations:'sparkles'",
             "operations:'layers'", "channels:'lock'", "features:'sliders'",
+            '@media (max-width:1280px){.ops-workspace',
             '.module-card[data-module="operations"]>.section-head{flex-direction:column}',
         ):
             self.assertIn(marker, html)
