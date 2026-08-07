@@ -112,13 +112,15 @@
           <textarea id="scSell" rows="2" placeholder="一句话说清产品/活动的核心利益点" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.7; font-family:inherit;">夏日焕新精华 · 清爽不黏腻 · 三秒吸收 · 到店体验立减 100</textarea>
         </div>
 
-        <div class="sc-lab">参考图 <span style="font-weight:400;font-size:11px;color:#5c6b82;">（可选，上传产品/场景图辅助生成）</span></div>
-        <div style="position:relative; border:1px dashed rgba(148,164,187,.16); border-radius:12px; padding:12px; text-align:center;">
-          <input id="scRefImage" type="file" accept="image/*" style="display:none;">
-          <button id="scRefImageBtn" class="sc-btn" type="button" style="font-size:12px;">📷 上传参考图</button>
-          <span id="scRefImageName" style="font-size:11px;color:#5c6b82;margin-left:8px;"></span>
-          <img id="scRefPreview" src="" style="display:none;max-width:100%;max-height:120px;margin-top:8px;border-radius:8px;">
-          <span id="scRefClear" style="display:none;position:absolute;top:4px;right:8px;cursor:pointer;color:#f4708a;font-size:18px;">&times;</span>
+        <div class="sc-lab">参考图 <span style="font-weight:400;font-size:11px;color:#5c6b82;">（可选，上传产品/场景图辅助生成，最多 4 张）</span></div>
+        <div style="position:relative; border:1px dashed rgba(148,164,187,.16); border-radius:12px; padding:12px;">
+          <input id="scRefImage" type="file" accept="image/*" multiple style="display:none;">
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <button id="scRefImageBtn" class="sc-btn" type="button" style="font-size:12px;">📷 上传参考图</button>
+            <span id="scRefImageName" style="font-size:11px;color:#5c6b82;"></span>
+            <button id="scRefClear" class="sc-btn" type="button" style="display:none;font-size:11px;padding:5px 10px;">清空</button>
+          </div>
+          <div id="scRefThumbs" style="display:none; gap:8px; flex-wrap:wrap; margin-top:10px;"></div>
         </div>
 
         <div class="sc-lab">风格</div>
@@ -250,6 +252,7 @@
             <div style="font-size:12px; color:#94a4bb; margin-bottom:7px;"><span style="color:#5c6b82;">画面：</span>开场特写，博主手持新品，柔光打在金色瓶身上，背景虚化门店环境。</div>
             <div style="font-size:13px; color:#eaf1fa; line-height:1.7; margin-bottom:12px;"><span style="color:#5c6b82; font-size:12px;">口播：</span>“姐妹们，最近脸又干又暗沉？这瓶夏日焕新精华，我用两周就回购了。”</div>
             <div style="display:flex; gap:9px;">
+              <button type="button" class="sc-btn" disabled title="生成分镜后可转作图" style="opacity:.45;cursor:not-allowed;">转作图</button>
               <a href="video.html" class="sc-btn" target="_blank" rel="noopener"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span>转视频</a>
               <a href="audio.html" class="sc-btn" target="_blank" rel="noopener"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg></span>转口播</a>
             </div>
@@ -270,6 +273,7 @@
             <div style="font-size:12px; color:#94a4bb; margin-bottom:7px;"><span style="color:#5c6b82;">画面：</span>半身镜头，博主上脸演示，镜头推近至吸收瞬间，肤色透亮。</div>
             <div style="font-size:13px; color:#eaf1fa; line-height:1.7; margin-bottom:12px;"><span style="color:#5c6b82; font-size:12px;">口播：</span>“质地清爽不黏腻，上脸三秒吸收，油皮干皮都能闭眼入。”</div>
             <div style="display:flex; gap:9px;">
+              <button type="button" class="sc-btn" disabled title="生成分镜后可转作图" style="opacity:.45;cursor:not-allowed;">转作图</button>
               <a href="video.html" class="sc-btn" target="_blank" rel="noopener"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span>转视频</a>
               <a href="audio.html" class="sc-btn" target="_blank" rel="noopener"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg></span>转口播</a>
             </div>
@@ -290,6 +294,7 @@
             <div style="font-size:12px; color:#94a4bb; margin-bottom:7px;"><span style="color:#5c6b82;">画面：</span>产品与活动海报同框，价格标签弹出，二维码与门店地址露出。</div>
             <div style="font-size:13px; color:#eaf1fa; line-height:1.7; margin-bottom:12px;"><span style="color:#5c6b82; font-size:12px;">口播：</span>“本周到店体验立减 100，名额有限，点下方链接预约。”</div>
             <div style="display:flex; gap:9px;">
+              <button type="button" class="sc-btn" disabled title="生成分镜后可转作图" style="opacity:.45;cursor:not-allowed;">转作图</button>
               <a href="video.html" class="sc-btn" target="_blank" rel="noopener"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span>转视频</a>
               <a href="audio.html" class="sc-btn" target="_blank" rel="noopener"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg></span>转口播</a>
             </div>
@@ -315,7 +320,7 @@
       </div>
 
       <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:16px; padding-top:16px; border-top:1px solid rgba(148,164,187,.1);">
-        <span id="scBatchHint" class="sc-hint">每张分镜可单独转视频/转口播，或使用下方一键生成</span>
+        <span id="scBatchHint" class="sc-hint">每张分镜可单独转作图/转视频/转口播，或使用下方一键生成</span>
         <div style="display:flex; gap:9px; flex-wrap:wrap; justify-content:flex-end;">
           <button id="bdRemakeBtn" class="sc-btn" type="button" style="display:none; color:#0f172a; background:linear-gradient(135deg,#93c5fd,#60a5fa); border-color:rgba(96,165,250,.35); font-weight:700;">🎬 生成同款视频</button>
           <button id="bdEditBtn" class="sc-btn" type="button" style="display:none; color:#60a5fa; background:rgba(96,165,250,.08); border-color:rgba(96,165,250,.24);">✏️ 编辑分镜</button>
@@ -323,6 +328,7 @@
           <button id="bdReverseCopyBtn" class="sc-btn" type="button" style="display:none; color:#0f172a; background:linear-gradient(135deg,#f4cd72,#e7b24c); border-color:rgba(231,178,76,.4); font-weight:700;">📋 复制提示词</button>
           <button id="bdReverseDrawBtn" class="sc-btn" type="button" style="display:none; color:#111827; background:linear-gradient(135deg,#c4b5fd,#a78bfa); border-color:rgba(167,139,250,.36); font-weight:700;">🎨 去作图页精修</button>
           <button id="bdToImageBtn" class="sc-btn" type="button" style="display:none; color:#e7b24c; background:rgba(231,178,76,.08); border-color:rgba(231,178,76,.24);">🎨 一键做图</button>
+          <button id="scToImageAll" class="sc-btn" type="button" style="color:#e7b24c; background:rgba(231,178,76,.08); border-color:rgba(231,178,76,.24);">🎨 全部转作图</button>
           <button id="scGenVideo" class="sc-btn" type="button" style="color:#0f172a; background:linear-gradient(135deg,#93c5fd,#60a5fa); border-color:rgba(96,165,250,.35); font-weight:700;">🎬 一键生成视频</button>
           <button id="scGenAudio" class="sc-btn" type="button" style="color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border-color:rgba(231,178,76,.4); font-weight:700;">🎙 一键生成口播</button>
           <button id="scExport" class="sc-btn" type="button" style="color:#e7b24c; background:rgba(231,178,76,.08); border-color:rgba(231,178,76,.24);"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></span>导出脚本</button>
@@ -358,6 +364,7 @@
       wordCountStat=document.getElementById('scWordCount'), estimateDurationStat=document.getElementById('scEstimateDuration');
   var panelWrite=document.getElementById('panelWrite'), panelBreakdown=document.getElementById('panelBreakdown');
   var genVideoBtn=document.getElementById('scGenVideo'), genAudioBtn=document.getElementById('scGenAudio'),
+      scToImageAllBtn=document.getElementById('scToImageAll'),
       bdRemakeBtn=document.getElementById('bdRemakeBtn'), bdEditBtn=document.getElementById('bdEditBtn'),
       bdEditCancelBtn=document.getElementById('bdEditCancelBtn'),
       bdReverseCopyBtn=document.getElementById('bdReverseCopyBtn'), bdReverseDrawBtn=document.getElementById('bdReverseDrawBtn'),
@@ -375,7 +382,7 @@
       bdImageReverse=document.getElementById('bdImageReverse'), bdVideoReverse=document.getElementById('bdVideoReverse'),
       bdLocalImageName=document.getElementById('bdLocalImageName'), bdLocalVideoName=document.getElementById('bdLocalVideoName'),
       bdLocalStatus=document.getElementById('bdLocalStatus');
-  var orig=gen.innerHTML, lastScenes=[], lastStyle='口播', lastBreakdown=null, lastBreakdownReverse=null, currentMode='write', currentBreakdownTool='scenes', refImageData=null, bdEditing=false;
+  var orig=gen.innerHTML, lastScenes=[], lastStyle='口播', lastBreakdown=null, lastBreakdownReverse=null, currentMode='write', currentBreakdownTool='scenes', refImages=[], bdEditing=false;
   var initialMeta=meta?meta.innerHTML:'', initialScenes=scenes?scenes.innerHTML:'',
       initialPreviewTitle=previewTitle?previewTitle.textContent:'脚本 · 分镜预览',
       initialBatchHint=batchHint?batchHint.textContent:'';
@@ -607,6 +614,17 @@
       });
     });
   }
+  function sceneDetailRowsHTML(s){
+    // 后端扩展字段（景别/运镜/光线/音效/转场），空或不存在时不渲染，兼容旧数据
+    var rows=[['景别',s&&s.shot],['运镜',s&&s.camera],['光线',s&&s.lighting],['音效',s&&s.audio],['转场',s&&s.transition]];
+    var html='';
+    rows.forEach(function(row){
+      var value=String(row[1]==null?'':row[1]).trim();
+      if(!value) return;
+      html+='<div style="font-size:11.5px; color:#94a4bb; line-height:1.6; margin-bottom:4px;"><span style="color:#5c6b82;">'+row[0]+'：</span>'+esc(value)+'</div>';
+    });
+    return html?'<div style="margin:-4px 0 12px;">'+html+'</div>':'';
+  }
   function sceneCardHTML(s,i){
     var no=('0'+(i+1)).slice(-2);
     return '<div class="sc-card" draggable="true" data-scene-idx="'+i+'"><div class="sc-shot"><span style="display:flex; width:20px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 3v18M17 3v18M3 8h4M3 16h4M17 8h4M17 16h4"/></svg></span><span class="mono" style="font-size:13px; font-weight:700; color:#e7b24c;">'+no+'</span><span style="font-size:10px; line-height:1.45;">拖拽排序<br>点击编辑</span></div>'
@@ -614,7 +632,8 @@
       +'<div style="display:flex; align-items:center; gap:9px; margin-bottom:9px; flex-wrap:wrap;"><span class="mono" style="font-size:13px; font-weight:700; color:#e7b24c;">镜号 '+no+'</span><span style="display:inline-flex; align-items:center; gap:4px; padding:3px 9px; font-size:11px; border-radius:7px; color:#94a4bb; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.12);"><span class="mono">'+esc(s.dur||'')+'</span></span><span style="font-size:10.5px;color:#5c6b82;">点击卡片可直接编辑</span></div>'
       +'<div style="font-size:12px; color:#94a4bb; margin-bottom:7px;"><span style="color:#5c6b82;">画面：</span>'+esc(s.scene||'')+'</div>'
       +((s.line||'').trim()?'<div style="font-size:13px; color:#eaf1fa; line-height:1.7; margin-bottom:12px;"><span style="color:#5c6b82; font-size:12px;">口播：</span>'+esc(s.line||'')+'</div>':'')
-      +'<div style="display:flex; gap:9px; flex-wrap:wrap;"><button type="button" data-scene-copy="'+i+'" class="sc-btn">📋 复制本镜</button><a data-to-video="'+escAttr(s.scene||'')+'" class="sc-btn" target="_blank" rel="noopener">转视频</a>'+((s.line||'').trim()?'<a data-to-audio="'+escAttr(s.line||'')+'" class="sc-btn" target="_blank" rel="noopener">转口播</a>':'')+'</div>'
+      +sceneDetailRowsHTML(s)
+      +'<div style="display:flex; gap:9px; flex-wrap:wrap;"><button type="button" data-scene-copy="'+i+'" class="sc-btn">📋 复制本镜</button><a data-to-image="'+escAttr(s.scene||'')+'" class="sc-btn" target="_blank" rel="noopener">转作图</a><a data-to-video="'+escAttr(s.scene||'')+'" class="sc-btn" target="_blank" rel="noopener">转视频</a>'+((s.line||'').trim()?'<a data-to-audio="'+escAttr(s.line||'')+'" class="sc-btn" target="_blank" rel="noopener">转口播</a>':'')+'</div>'
       +'</div></div>';
   }
   function getDisplayedScenes(){
@@ -687,6 +706,7 @@
     if(bdReverseDrawBtn) bdReverseDrawBtn.style.display=currentMode==='breakdown'&&reverseMode&&hasReversePrompt?'':'none';
     if(bdToImageBtn) bdToImageBtn.style.display=currentMode==='breakdown'&&!reverseMode&&hasBreakdownScenes?'':'none';
     if(genVideoBtn) genVideoBtn.style.display=currentMode==='breakdown'?'none':'';
+    if(scToImageAllBtn) scToImageAllBtn.style.display=currentMode==='breakdown'?'none':'';
     if(genAudioBtn) genAudioBtn.style.display=currentMode==='breakdown'?'none':'';
     if(exportBtn) exportBtn.style.display=currentMode==='breakdown'&&reverseMode?'none':'';
   }
@@ -1081,20 +1101,59 @@
     });
   }
   document.querySelectorAll('.sc-tag').forEach(function(tag){ tag.onclick=function(){ this.classList.toggle('on'); }; });
-  // 参考图上传
+  // 参考图上传（最多 4 张，单张 data URL 超 7*1024*1024 字符拒绝）
   var scRefImage=document.getElementById('scRefImage'), scRefImageBtn=document.getElementById('scRefImageBtn'),
-      scRefImageName=document.getElementById('scRefImageName'), scRefPreview=document.getElementById('scRefPreview'),
+      scRefImageName=document.getElementById('scRefImageName'), scRefThumbs=document.getElementById('scRefThumbs'),
       scRefClear=document.getElementById('scRefClear');
+  var REF_IMAGE_MAX=4, REF_DATAURL_MAX=7*1024*1024;
+  function syncRefImages(){
+    if(scRefThumbs){
+      scRefThumbs.innerHTML=refImages.map(function(src,i){
+        return '<span style="position:relative;display:inline-block;flex:none;">'
+          +'<img src="'+escAttr(src)+'" style="width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid rgba(148,164,187,.2);display:block;">'
+          +'<span data-ref-del="'+i+'" title="删除" style="position:absolute;top:-6px;right:-6px;width:18px;height:18px;line-height:17px;text-align:center;border-radius:50%;background:rgba(244,112,138,.92);color:#fff;font-size:12px;cursor:pointer;">&times;</span>'
+          +'</span>';
+      }).join('');
+      scRefThumbs.style.display=refImages.length?'flex':'none';
+    }
+    var full=refImages.length>=REF_IMAGE_MAX;
+    if(scRefImageBtn){
+      scRefImageBtn.disabled=full;
+      scRefImageBtn.style.opacity=full?'.5':'1';
+      scRefImageBtn.style.cursor=full?'not-allowed':'pointer';
+      scRefImageBtn.textContent=full?'最多 4 张参考图':'📷 上传参考图';
+    }
+    if(scRefImageName) scRefImageName.textContent=refImages.length?('已上传 '+refImages.length+'/'+REF_IMAGE_MAX+' 张'):'';
+    if(scRefClear) scRefClear.style.display=refImages.length?'':'none';
+  }
   if(scRefImage&&scRefImageBtn){
-    scRefImageBtn.onclick=function(){ scRefImage.click(); };
-    scRefImage.onchange=function(){
-      var f=scRefImage.files&&scRefImage.files[0]; if(!f) return;
-      if(f.size>5*1024*1024){ if(window.HQ&&window.HQ.toast) HQ.toast('图片不能超过 5MB'); return; }
-      var reader=new FileReader();
-      reader.onload=function(){ refImageData=reader.result; scRefPreview.src=reader.result; scRefPreview.style.display=''; scRefClear.style.display=''; scRefImageName.textContent=f.name; scRefImageBtn.textContent='已上传 ✓'; };
-      reader.readAsDataURL(f);
+    scRefImageBtn.onclick=function(){
+      if(refImages.length>=REF_IMAGE_MAX){ if(window.HQ&&window.HQ.toast) HQ.toast('最多 4 张参考图'); return; }
+      scRefImage.click();
     };
-    scRefClear.onclick=function(){ refImageData=null; scRefPreview.src=''; scRefPreview.style.display='none'; scRefClear.style.display='none'; scRefImageName.textContent=''; scRefImageBtn.textContent='📷 上传参考图'; scRefImage.value=''; };
+    scRefImage.onchange=function(){
+      var files=Array.prototype.slice.call(scRefImage.files||[]);
+      scRefImage.value='';
+      files.forEach(function(f){
+        if(refImages.length>=REF_IMAGE_MAX){ if(window.HQ&&window.HQ.toast) HQ.toast('最多 4 张参考图'); return; }
+        var reader=new FileReader();
+        reader.onload=function(){
+          var dataUrl=String(reader.result||'');
+          if(dataUrl.length>REF_DATAURL_MAX){ if(window.HQ&&window.HQ.toast) HQ.toast('单张参考图不能超过 5MB'); return; }
+          refImages.push(dataUrl);
+          syncRefImages();
+        };
+        reader.readAsDataURL(f);
+      });
+    };
+    if(scRefThumbs) scRefThumbs.addEventListener('click',function(e){
+      var del=e.target.closest('[data-ref-del]'); if(!del) return;
+      var idx=Number(del.getAttribute('data-ref-del')||'-1');
+      if(idx<0||idx>=refImages.length) return;
+      refImages.splice(idx,1);
+      syncRefImages();
+    });
+    if(scRefClear) scRefClear.onclick=function(){ refImages=[]; scRefImage.value=''; syncRefImages(); };
   }
   document.querySelectorAll('.sc-mode-tab').forEach(function(tab){ tab.onclick=function(){ switchMode(this.getAttribute('data-mode')); }; });
   document.querySelectorAll('[data-bd-tool]').forEach(function(tab){ tab.onclick=function(){ switchBreakdownTool(this.getAttribute('data-bd-tool')); }; });
@@ -1132,6 +1191,7 @@
         });
         return;
       }
+      var img=e.target.closest('[data-to-image]'); if(img){ e.preventDefault(); window.open(handoffUrl('banana.html',img.getAttribute('data-to-image')),'_blank','noopener'); return; }
       var a=e.target.closest('[data-to-video]'); if(a){ e.preventDefault(); window.open(handoffUrl('video.html',a.getAttribute('data-to-video')),'_blank','noopener'); return; }
       var b=e.target.closest('[data-to-audio]'); if(b){ e.preventDefault(); window.open(handoffUrl('audio.html',b.getAttribute('data-to-audio')),'_blank','noopener'); return; }
       var card=e.target.closest('.sc-card[data-scene-idx]');
@@ -1179,6 +1239,13 @@
   bindSceneHandoffs();
   renderSceneStats(readScenesFromDom());
   syncModeUi();
+  // 「全部转作图」：带入第 1 个分镜画面描述跳转作图页（方案 A，批量队列留二期）
+  if(scToImageAllBtn) scToImageAllBtn.onclick=function(){
+    var list=getDisplayedScenes();
+    if(!list.length){ if(window.HQ&&window.HQ.toast) HQ.toast('请先生成分镜脚本'); return; }
+    window.open(handoffUrl('banana.html',(list[0]&&list[0].scene)||''),'_blank','noopener');
+    if(window.HQ&&window.HQ.toast) HQ.toast('已带入第 1 个分镜，其余请逐条转');
+  };
 
   gen.onclick=function(){
     var t=(topic.value||'').trim(), s=(sell.value||'').trim();
@@ -1192,7 +1259,7 @@
     var payload={prompt:t+(s?('\n卖点：'+s):''), format:'script', style:style, dur:dur, platform:plat, ctype:'分镜脚本'};
     var tags=[]; document.querySelectorAll('.sc-tag.on').forEach(function(tag){ tags.push(tag.textContent.trim()); });
     if(tags.length) payload.prompt+='\n标签：'+tags.join('、');
-    if(refImageData) payload.reference_images=[refImageData];
+    if(refImages.length) payload.reference_images=refImages.slice();
     fetch('/api/gen/copy',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
       .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
       .then(function(x){

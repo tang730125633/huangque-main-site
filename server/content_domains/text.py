@@ -93,6 +93,18 @@ def validate_copy_payload(payload):
     if not brief:
         raise ValueError("请输入文案需求")
     cleaned["prompt"] = brief
+    ref_images = cleaned.get("reference_images")
+    if ref_images is not None:
+        if not isinstance(ref_images, list):
+            raise ValueError("参考图格式不正确")
+        if len(ref_images) > 4:
+            raise ValueError("参考图最多 4 张")
+        for image in ref_images:
+            image = str(image or "")
+            if not image.startswith("data:image/"):
+                raise ValueError("参考图仅支持上传的图片文件")
+            if len(image) > 7 * 1024 * 1024:  # data URL 字符数,约 5MB 原图
+                raise ValueError("单张参考图不能超过 5MB")
     return cleaned
 
 
@@ -119,7 +131,7 @@ def sanitize_script_scenes(scenes, brief):
     cleaned = []
     for scene in scenes or []:
         item = dict(scene) if isinstance(scene, dict) else {}
-        for field in ("scene", "line"):
+        for field in ("scene", "line", "shot", "camera", "lighting", "audio", "transition"):
             value = str(item.get(field) or "")
             for source, replacement in _SCRIPT_CLAIM_REPLACEMENTS:
                 value = value.replace(source, replacement)
@@ -273,17 +285,24 @@ def gen_copy(payload):
             "只输出 JSON 本身，不要解释、不要 markdown 代码块。"
         )
         usermsg = ("为以下选题生成一套可拍的%s短视频分镜脚本（平台%s，总时长约%s）。\n选题/卖点：%s\n"
-                    "严格输出 JSON：{\"scenes\":[{\"dur\":\"3s\",\"scene\":\"80-140字的执行级画面描述\",\"line\":\"%s\"}]}。"
-                    "生成 %d 个分镜，各 dur 之和≈总时长；每个 scene 写 80-140 字并明确："
+                    "严格输出 JSON：{\"scenes\":[{\"dur\":\"3s\",\"scene\":\"200-300字执行级画面描述\",\"line\":\"%s\","
+                    "\"shot\":\"景别与机位\",\"camera\":\"运镜起止路线\",\"lighting\":\"光线方向与色温色调\","
+                    "\"audio\":\"环境音/音效\",\"transition\":\"与下一镜的转场方式及依据\"}]}。"
+                    "生成 %d 个分镜，各 dur 之和≈总时长；每个 scene 写 200-300 字，聚焦："
                     "主体可见外观与位置、动作起点—过程—终点、表情视线和身体姿态、道具互动、"
-                    "场景前中后景关系、景别与机位、构图、运镜起止路线、光线方向、色温色调、"
-                    "材质质感、环境音/音效、转场依据及与前后镜的连续性。"
+                    "场景前中后景关系、材质质感；景别机位、运镜、光线、音效、转场分别由 "
+                    "shot/camera/lighting/audio/transition 字段承担，不要混入 scene。"
                     "禁止使用“人物出现”“展示产品”“镜头切换”等空泛描述。"
                     % (style, plat, dur, brief, line_desc, n_scenes))
         sysmsg += SCRIPT_FACT_GUARD
         usermsg += "\n事实约束：" + SCRIPT_FACT_GUARD
         if ref_images:
-            usermsg += "\n（可参考上传的图片来构思分镜画面）"
+            usermsg += (
+                "\n参考图使用要求:先逐张归纳参考图中的可用要素(主体外观/穿着、产品外观与包装、"
+                "场景环境、色调风格、道具),然后让每个分镜的 scene 显式继承这些要素——出现主体时"
+                "外观必须与参考图一致,出现产品/场景时细节必须取自参考图;不得编造参考图之外的"
+                "主体形象。参考图未提供的信息(如动态、声音)正常发挥。"
+            )
             raw = _director_chat_multimodal(sysmsg, usermsg, ref_images)
         else:
             raw = _director_chat(sysmsg, usermsg, 0.85)

@@ -632,6 +632,61 @@ setImmediate(function(){
         self.assertIn("renderSceneStats(readEditingScenes())", self.html)
         self.assertIn("修改口播会实时刷新字数 / 时长", self.html)
 
+    # === PR-B: 编导增强（多参考图 / 分镜明细 / 转作图 #252） ===
+
+    def test_multi_reference_images_upload_contract(self):
+        """多参考图：上限 4 张、缩略图 × 删除、单张超限拒绝、满员禁用"""
+        self.assertIn("var REF_IMAGE_MAX=4", self.html)
+        self.assertIn("REF_DATAURL_MAX=7*1024*1024", self.html)
+        self.assertIn("function syncRefImages()", self.html)
+        self.assertIn('id="scRefThumbs"', self.html)
+        self.assertIn('data-ref-del', self.html)
+        self.assertIn("refImages.splice(idx,1)", self.html)
+        self.assertIn("单张参考图不能超过 5MB", self.html)
+        self.assertIn("dataUrl.length>REF_DATAURL_MAX", self.html)
+        self.assertIn("scRefImageBtn.disabled=full", self.html)
+        self.assertIn("最多 4 张参考图", self.html)
+        self.assertIn('id="scRefImage" type="file" accept="image/*" multiple', self.html)
+        # 旧单图实现必须移除
+        self.assertNotIn("refImageData", self.html)
+        self.assertNotIn("scRefPreview", self.html)
+
+    def test_reference_images_payload_submits_array(self):
+        """payload.reference_images 提交数组，而非旧的单值 [refImageData]"""
+        self.assertIn("if(refImages.length) payload.reference_images=refImages.slice();", self.html)
+        self.assertNotIn("payload.reference_images=[refImageData]", self.html)
+
+    def test_scene_detail_rows_render_extended_fields(self):
+        """分镜明细：shot/camera/lighting/audio/transition 五行，转义渲染，空字段跳过"""
+        self.assertIn("function sceneDetailRowsHTML(s)", self.html)
+        self.assertIn("+sceneDetailRowsHTML(s)", self.html)
+        self.assertIn(
+            "[['景别',s&&s.shot],['运镜',s&&s.camera],['光线',s&&s.lighting],['音效',s&&s.audio],['转场',s&&s.transition]]",
+            self.html,
+        )
+        self.assertIn("+esc(value)+", self.html)
+        self.assertIn("if(!value) return;", self.html)
+
+    def test_scene_to_image_handoff_carries_scene(self):
+        """#252 回归：分镜「转作图」带画面描述跳 banana.html?prompt="""
+        self.assertIn('data-to-image="', self.html)
+        self.assertIn('<a data-to-image="\'+escAttr(s.scene||\'\')', self.html)
+        self.assertIn("handoffUrl('banana.html',img.getAttribute('data-to-image')", self.html)
+        self.assertIn("'?prompt='+encodeURIComponent(prompt||'')", self.html)
+
+    def test_to_image_all_button_flow(self):
+        """「全部转作图」：带第 1 个分镜并提示，无分镜拒绝，占位卡禁用"""
+        self.assertIn('id="scToImageAll"', self.html)
+        self.assertIn("scToImageAllBtn.onclick=function()", self.html)
+        self.assertIn("请先生成分镜脚本", self.html)
+        self.assertIn("handoffUrl('banana.html',(list[0]&&list[0].scene)||'')", self.html)
+        self.assertIn("已带入第 1 个分镜，其余请逐条转", self.html)
+        # 三张静态占位分镜的「转作图」在生成前禁用
+        self.assertEqual(
+            3,
+            self.html.count('disabled title="生成分镜后可转作图"'),
+        )
+
 
 class ReverseVideoPickerRuntimeTests(unittest.TestCase):
     @classmethod

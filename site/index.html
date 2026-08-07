@@ -6,7 +6,8 @@
   <meta name="description" content="黄雀 AI：从 IP12、Agent 与无限画布，到图文音视频生产和 HQ CLI。">
   <title>黄雀 AI · 会持续生长的内容系统</title>
   <link rel="icon" href="/assets/logo_sparrow.png">
-  <link rel="stylesheet" href="/homepage.css?v=20260806-fusion-violet3">
+  <link rel="stylesheet" href="/homepage.css?v=20260807-polish3">
+  <script src="/assets/home/moon3d.js?v=20260807-3" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -49,10 +50,10 @@
   <main id="main">
     <section class="hero" id="top">
       <div class="starfield" aria-hidden="true"></div>
-      <div class="hero-moon" aria-hidden="true"><img src="/assets/home/moon.webp" alt=""></div>
+      <div class="hero-moon" aria-hidden="true"><img src="/assets/home/moon.webp" alt=""><canvas class="moon-3d"></canvas></div>
       <div class="hero-inner" data-reveal>
         <p class="hero-badge"><i></i> 短剧顾问 · 一键成片已上线 2026</p>
-        <h1>让你的生意，<br class="mobile-break">拥有一套<br><em>会持续生长的<br class="mobile-break">内容系统。</em></h1>
+        <h1><span class="line">让你的生意，<br class="mobile-break">拥有一套</span><br><span class="line"><em>会持续生长的<br class="mobile-break">内容系统。</em></span></h1>
         <p class="hero-lead">IP12 定义你是谁，Agent 先给计划，Canvas 把图文音视频串成可审核的生产链路。</p>
         <div class="hero-actions">
           <a class="button button-primary" href="/workbench/inspiration">开始你的创作 →</a>
@@ -380,6 +381,15 @@
     });
 
     const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+
+    const heroMoon = document.querySelector('.hero-moon');
+    const finePointer = matchMedia('(pointer: fine)');
+    const clampParallax = value => Math.max(-18, Math.min(18, value));
+    addEventListener('pointermove', event => {
+      if (!heroMoon || reducedMotion.matches || !finePointer.matches) return;
+      heroMoon.style.setProperty('--moon-parallax-x', `${clampParallax((event.clientX - innerWidth / 2) * -.03)}px`);
+      heroMoon.style.setProperty('--moon-parallax-y', `${clampParallax((event.clientY - innerHeight / 2) * -.03)}px`);
+    }, { passive: true });
 
     const counters = [...document.querySelectorAll('[data-count]')];
     const counterObserver = new IntersectionObserver(entries => {
