@@ -363,16 +363,17 @@ class ProviderKeyPoolTests(unittest.TestCase):
             item = video.get_resumable_sora_request(9)
         self.assertEqual(item["provider_key_id"], "key-9")
 
-    def test_admin_console_exposes_real_pool_controls_and_auto_refresh(self):
+    def test_admin_console_exposes_real_pool_controls_and_non_disruptive_refresh(self):
         html = (ROOT / "site" / "admin" / "index.html").read_text(encoding="utf-8")
         for text in (
-            "每 30 秒刷新", "xAI API · 果肉视频", "查看 5 秒",
+            "state.module==='dashboard'", "xAI API · 果肉视频", "查看 5 秒",
             "data-provider-key-replace", "data-server-key-reveal",
             "data-provider-key-delete",
             "前端功能对应关系", "navigator.clipboard",
         ):
             self.assertIn(text, html)
         self.assertNotIn("data-provider-key-rename", html)
+        self.assertNotIn("state.module==='operations')&&!state.poolActions", html)
         self.assertNotIn("/api/admin/provider-keys/rename", html)
         self.assertNotIn("其他上游", html)
         self.assertIn("Date.now()+ttl", html)

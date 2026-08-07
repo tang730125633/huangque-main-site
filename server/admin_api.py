@@ -1624,12 +1624,12 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
                         "source": "job",
                         "time": "%02d-%02d %02d:%02d:%02d" % key[1:] if t else "-",
                         "user": j["username"],
-                        "func": j["func"],
+                        "func": j["func"] + ((" · " + j["operation"]) if j.get("operation") else ""),
                         "cat": cat,
                         "status_text": j["status"],
                         "duration_sec": j["duration_sec"],
                         "cost": j["cost"],
-                        "path": "",
+                        "path": "任务 #%s" % j["id"],
                         "method": "",
                         "ip": "",
                         "ua": "",
@@ -1694,6 +1694,7 @@ def probe_service(svc):
                 "error": str(e)[:180],
             }
         )
+    out["checked_at"] = int(time.time())
     return out
 
 
@@ -1878,7 +1879,7 @@ _XIAOLE_FEATURE_BY_CHANNEL = {
 def _operation_feature_key(kind, channel=""):
     kind = str(kind or "unknown")
     if kind == "xiaole_video":
-        return _XIAOLE_FEATURE_BY_CHANNEL.get(str(channel or "grok").lower(), kind)
+        return _XIAOLE_FEATURE_BY_CHANNEL.get(str(channel or "").lower(), kind)
     return kind
 
 
@@ -2063,13 +2064,13 @@ def job_stats(days=7):
                                         (json_type(payload,'$._short_drama_video')='object' OR
                                          json_type(payload,'$.short_drama_binding')='object')
                                    THEN 'short-drama' ELSE '' END AS source_page,
-                              CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_url'),json_extract(%s,'$.url'),'') ELSE '' END AS result_url,
-                              CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_file'),json_extract(%s,'$.file'),'') ELSE '' END AS result_file,
+                              CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_url'),json_extract(%s,'$.image_url'),json_extract(%s,'$.url'),'') ELSE '' END AS result_url,
+                              CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_file'),json_extract(%s,'$.image_file'),json_extract(%s,'$.file'),'') ELSE '' END AS result_file,
                               CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.provider_video_id'),json_extract(%s,'$.video_id'),json_extract(%s,'$.provider_avatar_id'),'') ELSE '' END AS provider_result_id
                        FROM jobs WHERE created_at>=? ORDER BY created_at DESC""" % (
                            refunded_sql, error_sql,
-                           result_sql, result_sql, result_sql,
-                           result_sql, result_sql, result_sql,
+                           result_sql, result_sql, result_sql, result_sql,
+                           result_sql, result_sql, result_sql, result_sql,
                            result_sql, result_sql, result_sql, result_sql,
                        ),
                     (since,),
@@ -2200,7 +2201,19 @@ def call_logs(days=7, limit=200):
         # 依赖 jobs(created_at) 索引(idx_jobs_created,2026-07-09 已建),否则 310MB 全表扫要 2 秒
         rows = c.execute(
             """SELECT id, username, kind, cost, status,
-                      substr(payload, 1, 4096) AS payload, created_at, updated_at
+                      substr(payload, 1, 4096) AS payload, created_at, updated_at,
+                      CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.channel'),'')) ELSE '' END AS channel,
+                      CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.mode'),'')) ELSE '' END AS mode,
+                      CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.cine_mode'),'')) ELSE '' END AS cine_mode,
+                      CASE WHEN json_valid(payload) THEN CAST(COALESCE(json_extract(payload,'$.line'),'') AS TEXT) ELSE '' END AS line,
+                      CASE WHEN json_valid(payload) AND json_type(payload,'$.reference_images')='array'
+                           THEN json_array_length(payload,'$.reference_images') ELSE 0 END AS reference_count,
+                      CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload,'$.batch_id'),'') ELSE '' END AS batch_id,
+                      CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.operation'),'')) ELSE '' END AS operation,
+                      CASE WHEN json_valid(payload) AND
+                                (json_type(payload,'$._short_drama_video')='object' OR
+                                 json_type(payload,'$.short_drama_binding')='object')
+                           THEN 'short-drama' ELSE '' END AS source_page
                FROM jobs
                WHERE created_at >= ?
                ORDER BY created_at DESC, id DESC
@@ -2213,6 +2226,13 @@ def call_logs(days=7, limit=200):
         updated_at = int(row["updated_at"] or 0)
         kind = row["kind"] or "unknown"
         payload = _job_payload(row["payload"])
+        payload.update({
+            "channel": row["channel"], "mode": row["mode"],
+            "cine_mode": row["cine_mode"], "line": row["line"],
+            "reference_count": row["reference_count"], "batch_id": row["batch_id"],
+            "operation": row["operation"], "source_page": row["source_page"],
+        })
+        operation = function_registry.classify_task(kind, payload)
         duration = None
         if created_at and updated_at and updated_at >= created_at:
             duration = updated_at - created_at
@@ -2222,6 +2242,7 @@ def call_logs(days=7, limit=200):
                 "username": row["username"] or "-",
                 "kind": kind,
                 "func": call_func_name(kind, payload),
+                "operation": operation,
                 "cost": int(row["cost"] or 0),
                 "status": row["status"] or "unknown",
                 "created_at": created_at,

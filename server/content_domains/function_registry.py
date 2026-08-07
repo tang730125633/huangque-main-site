@@ -25,16 +25,22 @@ VIDEO_FUNCTIONS = [
             "name": "已有视频智能成片",
             "evidence_contract": {
                 "acceptance_id_type": "project_id",
-                "not_applicable": ["provider_task", "balance", "billing"],
+                "not_applicable": ["provider_task", "billing"],
             },
             "entrypoints": [
                 _endpoint("POST", "/api/gen/video-compose/projects"),
+                _endpoint("GET", "/api/gen/video-compose/projects/{project_id}"),
                 _endpoint("POST", "/api/gen/video-compose/projects/{project_id}/analyze-source"),
                 _endpoint("POST", "/api/gen/video-compose/projects/{project_id}/edit-decisions"),
                 _endpoint("POST", "/api/gen/video-compose/projects/{project_id}/render"),
                 _endpoint("GET", "/api/gen/video-compose/projects/{project_id}/output"),
             ],
             "evidence_source": "video_compose_projects",
+            "dependencies": [{
+                "key": "openai", "role": "源视频语音识别", "requirement": "required",
+                "credential_source": "env", "condition": "分析源视频时调用同步 ASR",
+            }],
+            "evidence_gaps": ["分析失败与用户中途退出尚未形成可区分的阶段证据"],
             "price_keys": [],
             "smoke_inputs": ["一条已完成的视频资产", "预设标题与字幕样式"],
         }],
@@ -54,6 +60,7 @@ VIDEO_FUNCTIONS = [
             {"key": "cos", "role": "作品云存储", "requirement": "optional",
              "condition": "未配置时回退本地文件"},
         ],
+        "evidence_gaps": ["配音、HeyGen 与后处理仍共用一条任务证据，子步骤尚未拆开"],
         "modes": [
             {
                 "key": "video.digital_ip.text.single",
@@ -63,6 +70,7 @@ VIDEO_FUNCTIONS = [
                 "dependencies": [
                     {"key": "cosyvoice", "role": "默认与个人音色配音", "requirement": "required"},
                     {"key": "openai", "role": "兼容音色配音", "requirement": "optional",
+                     "credential_source": "env",
                      "condition": "仅非 S_ / vip_ / cosyvoice- 音色使用"},
                 ],
                 "price_keys": ["video.talking.block"],
@@ -76,6 +84,7 @@ VIDEO_FUNCTIONS = [
                 "dependencies": [
                     {"key": "cosyvoice", "role": "默认与个人音色配音", "requirement": "required"},
                     {"key": "openai", "role": "兼容音色配音", "requirement": "optional",
+                     "credential_source": "env",
                      "condition": "仅非 S_ / vip_ / cosyvoice- 音色使用"},
                 ],
                 "price_keys": ["video.talking.block"],
@@ -160,6 +169,7 @@ VIDEO_FUNCTIONS = [
                     {"key": "wavespeed", "role": "主生成", "requirement": "required"},
                     {"key": "cos", "role": "生成素材传输", "requirement": "required"},
                 ],
+                "evidence_gaps": ["WaveSpeed prediction_id 尚未持久化，无法证明供应商已接单"],
                 "price_keys": ["video.tryon.single"],
                 "smoke_inputs": ["人物照片", "衣服图"],
             },
@@ -174,6 +184,7 @@ VIDEO_FUNCTIONS = [
                     {"key": "cos", "role": "作品云存储", "requirement": "optional",
                      "condition": "未配置时回退本地文件"},
                 ],
+                "evidence_gaps": ["换装与换背景可能产生两个任务，当前尚未分别持久化 task_id"],
                 "price_keys": ["video.tryon.single", "video.tryon.double"],
                 "smoke_inputs": ["人物视频", "衣服图或背景图"],
             },
@@ -193,6 +204,7 @@ VIDEO_FUNCTIONS = [
         "dependencies": [
             {"key": "xai", "role": "生成线路", "requirement": "alternative",
              "alternative_group": "grok_provider", "selection_value": "xai",
+             "credential_source": "pool",
              "condition": "服务器选择 xai 时使用"},
             {"key": "xiaolevideo", "role": "生成线路", "requirement": "alternative",
              "alternative_group": "grok_provider", "selection_value": "xiaole",
@@ -233,7 +245,8 @@ VIDEO_FUNCTIONS = [
         "flag_keys": ["sora_video"],
         "acceptance_health_key": "sora_video_enabled",
         "dependencies": [
-            {"key": "openai", "role": "主生成", "requirement": "required"},
+            {"key": "openai", "role": "主生成", "requirement": "required",
+             "credential_source": "pool"},
             {"key": "cos", "role": "作品云存储", "requirement": "optional",
              "condition": "未配置时回退本地文件"},
         ],
@@ -272,7 +285,8 @@ VIDEO_FUNCTIONS = [
         "flag_keys": ["minimax_h3_video"],
         "surface_visibility_key": "minimax_h3_video_enabled",
         "dependencies": [
-            {"key": "minimax", "role": "主生成", "requirement": "required"},
+            {"key": "minimax", "role": "主生成", "requirement": "required",
+             "credential_source": "pool"},
             {"key": "cos", "role": "作品云存储", "requirement": "optional",
              "condition": "未配置时回退本地文件"},
         ],
@@ -295,7 +309,8 @@ VIDEO_FUNCTIONS = [
         "flag_keys": ["omni_video"],
         "surface_visibility_key": "omni_video_enabled",
         "dependencies": [
-            {"key": "gemini", "role": "主生成", "requirement": "required"},
+            {"key": "gemini", "role": "主生成", "requirement": "required",
+             "credential_source": "pool"},
             {"key": "cos", "role": "作品云存储", "requirement": "optional",
              "condition": "未配置时回退本地文件"},
         ],
@@ -328,12 +343,14 @@ VIDEO_FUNCTIONS = [
         "flag_keys": ["seedance_video"],
         "surface_visibility_key": "seedance_video_enabled",
         "dependencies": [
-            {"key": "seedance", "role": "主生成", "requirement": "required"},
+            {"key": "seedance", "role": "主生成", "requirement": "required",
+             "credential_source": "pool"},
             {"key": "wavespeed", "role": "条件超清", "requirement": "optional",
              "condition": "勾选 AI 超清 1080p"},
             {"key": "cos", "role": "参考图与作品云存储", "requirement": "optional",
              "condition": "文生可回退本地；参考图上传与超清需配置"},
         ],
+        "evidence_gaps": ["勾选 AI 超清时的第二段 WaveSpeed 任务尚未在调用链中单独展示"],
         "modes": [
             {
                 "key": "video.seedance.text",
@@ -433,13 +450,17 @@ def classify_task(kind, metadata=None):
         references = int(metadata.get("reference_count") or 0)
     except (TypeError, ValueError):
         references = 0
+    channel = str(metadata.get("channel") or "").strip().lower()
     actual = {
         "kind": kind,
         "mode": str(metadata.get("mode") or ("text" if kind == "video" else "")).strip().lower(),
         "cine_mode": str(metadata.get("cine_mode") or "").strip().lower(),
         "line": str(metadata.get("line") or "").strip(),
-        "channel": str(metadata.get("channel") or ("grok" if kind == "xiaole_video" else "")).strip().lower(),
-        "operation": str(metadata.get("operation") or ("generate" if kind == "xiaole_video" else "")).strip().lower(),
+        "channel": channel,
+        "operation": str(
+            metadata.get("operation")
+            or ("generate" if kind == "xiaole_video" and channel == "grok" else "")
+        ).strip().lower(),
         "reference_count": references,
         "batch": bool(metadata.get("batch") or metadata.get("batch_id")),
     }
@@ -453,15 +474,37 @@ def validate_registry():
     operation_keys = []
     for page in FUNCTION_REGISTRY:
         for feature in page["functions"]:
-            leaves = feature.get("shared_steps", []) + feature.get("modes", [])
+            if not feature.get("frontend_selector") or not feature.get("service"):
+                raise ValueError("customer feature needs a frontend entry and business service")
+            shared_steps = feature.get("shared_steps", [])
+            modes = feature.get("modes", [])
+            if not modes:
+                raise ValueError("customer feature needs at least one mode")
+            leaves = shared_steps + modes
             operation_keys.extend(leaf["key"] for leaf in leaves)
             for leaf in leaves:
+                if not leaf.get("entrypoints"):
+                    raise ValueError("registry operation needs a business entrypoint")
+                if not (leaf.get("task_match") or leaf.get("evidence_source")):
+                    raise ValueError("registry operation needs a durable evidence source")
                 for dependency in feature.get("dependencies", []) + leaf.get("dependencies", []):
                     requirement = dependency.get("requirement")
                     if requirement not in {"required", "optional", "alternative"}:
                         raise ValueError("invalid dependency requirement")
                     if requirement == "alternative" and not dependency.get("alternative_group"):
                         raise ValueError("alternative dependency needs a group")
+                    if dependency.get("credential_source") not in {None, "env", "pool"}:
+                        raise ValueError("invalid credential source")
+            for mode in modes:
+                if not mode.get("smoke_inputs"):
+                    raise ValueError("customer mode needs reusable test inputs")
+                if "price_keys" not in mode:
+                    raise ValueError("customer mode needs an explicit billing contract")
+                invalid = set((mode.get("evidence_contract") or {}).get("not_applicable", [])) - {
+                    "provider_task", "balance", "billing",
+                }
+                if invalid:
+                    raise ValueError("unknown not-applicable evidence step")
     if len(operation_keys) != len(set(operation_keys)):
         raise ValueError("duplicate operation key")
     return True
