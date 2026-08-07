@@ -11,10 +11,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from contextlib import closing
 from http import cookies
 from importlib import import_module
+import hashlib
 import json
 import os
 import pathlib
 import re
+import threading
 
 try:
     import func_names                    # 生产：admin_api.py 直接跑，同目录下就是 func_names.py
@@ -33,6 +35,7 @@ _DOMAIN_PACKAGE = (
 )
 egress = import_module(_DOMAIN_PACKAGE + ".egress")
 feature_flags = import_module(_DOMAIN_PACKAGE + ".feature_flags")
+function_registry = import_module(_DOMAIN_PACKAGE + ".function_registry")
 provider_keys = import_module(_DOMAIN_PACKAGE + ".provider_keys")
 pricing = import_module(_DOMAIN_PACKAGE + ".pricing")
 error_contract = import_module(_DOMAIN_PACKAGE + ".error_contract")
@@ -84,6 +87,8 @@ PORT = int(os.environ.get("ADMIN_API_PORT", "8099"))
 AUTH_BASE = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095").rstrip("/")
 AUTH_INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
 JOB_DB = pathlib.Path(os.environ.get("CONTENT_JOB_DB", str(BASE / "content_jobs.db")))
+ASSET_DB = pathlib.Path(os.environ.get("AUDIO_DB", str(BASE / "audio_assets.db")))
+VIDEO_COMPOSE_DB = pathlib.Path(os.environ.get("VIDEO_COMPOSE_DB", str(BASE / "video_compose.db")))
 ADMIN_DB = pathlib.Path(os.environ.get("ADMIN_DB", str(BASE / "admin_config.db")))
 
 ENV_FILES = [
@@ -181,7 +186,7 @@ KEY_GROUPS = [
      "env_base_env": ["HEYGEN_API_BASE"], "env_base_default": "https://api.heygen.com/v3",
      "env": ["HEYGEN_API_KEY"]},
     {"key": "heygen_relay", "name": "HeyGen 中转 API", "category": "数字化 IP / 视频生成",
-     "features": ["电影化身 / 数字人口播 → 中转与下载兜底"],
+     "features": ["数字化 IP → 中转与下载兜底"],
      "env_base_env": ["HEYGEN_RELAY_BASE"], "env_base_default": "",
      "env": ["HEYGEN_RELAY_TOKEN"]},
     {"key": "xiaolevideo", "name": "小乐视频 API", "category": "图片生成 / 视频生成",
@@ -198,6 +203,17 @@ KEY_GROUPS = [
      "features": ["我的资产 → 生成结果存储", "视频模块 → 参考素材与成片存储"], "env": ["COS_SECRET_ID", "COS_SECRET_KEY", "COS_REGION", "COS_BUCKET"]},
 ]
 KEY_GROUP_MAP = {item["key"]: item for item in KEY_GROUPS}
+_CREDENTIAL_VERSION_SALT = os.urandom(16)
+_PROBE_CONFIG_ENVS = {
+    "openai": ["OPENAI_BASE"],
+    "xai": ["XAI_API_BASE"],
+    "gemini": ["GEMINI_BASE"],
+    "heygen": ["HEYGEN_MCP_CREDENTIALS"],
+    "tikhub": ["TIKHUB_BASE"],
+    "heygen_relay": ["HEYGEN_RELAY_BASE"],
+    "xiaolevideo": ["XIAOLEVIDEO_API_BASE"],
+    "cos": ["COS_DOMAIN"],
+}
 
 # 各渠道实际在用的业务接口清单(2026-07-09 全代码扫描产出,展示用;fee=调用计费)
 ENDPOINT_CATALOG = json.loads(r"""
@@ -832,6 +848,38 @@ def _key_group_base_host(item, prefix, sources):
         return ""
 
 
+def _key_group_version(item, sources=None):
+    """Opaque per-process version; detects every credential/base change without exposing it."""
+    sources = env_sources() if sources is None else sources
+    names = list(item.get("env", []))
+    names += list(item.get("env_base_env", []))
+    names += list(item.get("pool_base_env", []))
+    names += list(_PROBE_CONFIG_ENVS.get(item.get("key"), []))
+    values = []
+    for name in names:
+        value = next(
+            ((src["values"].get(name) or "").strip() for src in sources
+             if (src["values"].get(name) or "").strip()),
+            "",
+        )
+        values.append(name + "=" + value)
+        if name == "HEYGEN_MCP_CREDENTIALS" and value:
+            try:
+                content = pathlib.Path(value).read_bytes()
+                values.append("HEYGEN_MCP_FILE=" + hashlib.sha256(_CREDENTIAL_VERSION_SALT + content).hexdigest())
+            except OSError:
+                values.append("HEYGEN_MCP_FILE=unreadable")
+    if not any(value.rsplit("=", 1)[-1] for value in values):
+        return ""
+    payload = "\0".join(values).encode("utf-8")
+    return hashlib.sha256(_CREDENTIAL_VERSION_SALT + payload).hexdigest()[:16]
+
+
+def _credential_version(key):
+    item = KEY_GROUP_MAP.get(str(key or "").strip().lower())
+    return _key_group_version(item) if item else ""
+
+
 def key_status():
     sources = env_sources()
     items = []
@@ -860,8 +908,11 @@ def key_status():
                 "required_env": item["env"],
                 "sources": found,
                 "last4": last4,
+                "credential_version": _key_group_version(item, sources),
                 "management": "server_env",
                 "pingable": item["key"] in KEY_PINGS,
+                "auto_probe": item["key"] in AUTO_KEY_PING_INTERVALS,
+                "probe_interval": AUTO_KEY_PING_INTERVALS.get(item["key"]),
                 "endpoints": ENDPOINT_CATALOG.get(item["key"], []),
             }
         )
@@ -906,6 +957,14 @@ def _find_balance(detail, depth=0):
     return None
 
 
+def _heygen_balances(detail):
+    details = ((detail or {}).get("data") or {}).get("details") or {}
+    try:
+        return float(details["plan_credit"]), float(details.get("api") or 0)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _ping_upstream(method, url, headers=None, body=None, proxied=False, timeout=12,
                    proxy_url=None):
     """真实调一次上游 API。只返回状态码/耗时/错误摘要，绝不含密钥。"""
@@ -934,15 +993,30 @@ def _ping_upstream(method, url, headers=None, body=None, proxied=False, timeout=
         try:
             detail = json.loads(raw.decode("utf-8"))
             if isinstance(detail, dict):
+                if detail.get("error") or (detail.get("result") or {}).get("isError"):
+                    out.update({"ok": False, "error": "上游业务错误"})
                 code = detail.get("code")
                 if code is not None and str(code) not in ("0", "200"):
                     out["ok"] = False
                     out["error"] = "业务码 %s: %s" % (code, str(detail.get("msg") or detail.get("message") or "")[:120])
-                balance = _find_balance(detail)
-                if balance is not None:
-                    out["balance"] = balance
+                heygen = _heygen_balances(detail)
+                if heygen is not None:
+                    out["plan_credit"], out["api_wallet"] = heygen
+                else:
+                    balance = _find_balance(detail)
+                    if balance is not None:
+                        out["balance"] = balance
         except Exception:
-            pass
+            try:
+                messages = [
+                    json.loads(line[6:]) for line in raw.decode("utf-8").splitlines()
+                    if line.startswith("data: ")
+                ]
+                message = messages[-1] if messages else {}
+                if message.get("error") or (message.get("result") or {}).get("isError"):
+                    out.update({"ok": False, "error": "MCP 业务错误"})
+            except Exception:
+                pass
     except urllib.error.HTTPError as e:
         out.update({"http_status": e.code, "latency_ms": int((time.time() - start) * 1000), "error": "HTTP %s" % e.code})
     except Exception as e:
@@ -987,14 +1061,58 @@ def _key_ping_xai():
     )
 
 
+def _key_ping_heygen_mcp():
+    value = _env_value(["HEYGEN_MCP_CREDENTIALS"])
+    path = pathlib.Path(value) if value else None
+    if not path or not path.is_file():
+        return {"ok": False, "status": "not_configured", "mode": "auth"}
+    try:
+        if path.stat().st_mode & 0o077:
+            return {"ok": False, "status": "credential_rejected", "mode": "auth"}
+        credentials = json.loads(path.read_text(encoding="utf-8"))
+        token = str(credentials.get("access_token") or "").strip()
+        expires_at = float(credentials.get("expires_at") or 0)
+    except Exception:
+        return {"ok": False, "status": "credential_rejected", "mode": "auth"}
+    if not token:
+        return {"ok": False, "status": "credential_rejected", "mode": "auth"}
+    if expires_at <= time.time() + 60:
+        status = "credential_refresh_pending" if credentials.get("refresh_token") else "credential_rejected"
+        return {"ok": False, "status": status, "mode": "auth"}
+    return _ping_upstream(
+        "POST", "https://mcp.heygen.com/mcp/v1/",
+        headers={
+            "Authorization": "Bearer " + token,
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "MCP-Protocol-Version": "2025-06-18",
+        },
+        body={
+            "jsonrpc": "2.0", "id": "huangque-healthcheck", "method": "tools/call",
+            "params": {"name": "get_current_user", "arguments": {}},
+        },
+        proxy_url=_heygen_proxy_url(),
+    )
+
+
 def _key_ping_heygen():
     key = _env_value(["HEYGEN_API_KEY"])
     if not key:
         return {"ok": False, "error": "密钥未配置"}
-    return _ping_upstream(
+    api = _ping_upstream(
         "GET", "https://api.heygen.com/v2/user/remaining_quota",
         headers={"X-Api-Key": key}, proxy_url=_heygen_proxy_url(),
     )
+    api["components"] = "API Key"
+    if not api.get("ok") or not _env_value(["HEYGEN_MCP_CREDENTIALS"]):
+        return api
+    mcp = _key_ping_heygen_mcp()
+    for field in ("plan_credit", "api_wallet"):
+        if api.get(field) is not None:
+            mcp[field] = api[field]
+    mcp["latency_ms"] = int(api.get("latency_ms") or 0) + int(mcp.get("latency_ms") or 0)
+    mcp["components"] = "API Key + MCP OAuth"
+    return mcp
 
 
 def _key_ping_tikhub():
@@ -1130,6 +1248,193 @@ KEY_PINGS = {
     "tikhub": _key_ping_tikhub,
     "cos": _key_ping_cos,
 }
+
+# 只自动检查明确的非生成接口；未知合约渠道仍保留管理员手动测试。
+AUTO_KEY_PING_INTERVALS = {
+    "openai": 600,
+    "xai": 600,
+    "gemini": 600,
+    "heygen": 300,
+    "runninghub": 300,
+    "wavespeed": 300,
+    "tikhub": 300,
+    "heygen_relay": 600,
+    "xiaolevideo": 600,
+    "cos": 600,
+    "cosyvoice": 3600,
+}
+_KEY_PING_CACHE = {}
+_KEY_PING_LOCKS = {}
+_KEY_PING_GUARD = threading.Lock()
+_KEY_PROBE_MONITOR_STARTED_AT = 0
+_KEY_PROBE_MONITOR_LAST_CYCLE = 0
+
+
+def _public_probe(value):
+    return {key: val for key, val in value.items() if not key.startswith("_")}
+
+
+def _probe_status(key, raw):
+    mode = str(raw.get("mode") or "auth")
+    explicit = str(raw.get("status") or "")
+    explicit_messages = {
+        "not_configured": "服务器凭据未配置完整",
+        "credential_rejected": "凭据已被拒绝",
+        "credential_refresh_pending": "MCP OAuth 待刷新验证",
+    }
+    if explicit in explicit_messages:
+        return explicit, explicit_messages[explicit]
+    try:
+        code = int(raw.get("http_status") or 0)
+    except (TypeError, ValueError):
+        code = 0
+    if raw.get("ok"):
+        if mode == "reach":
+            return "reachable_only", "仅连通，未验证凭据"
+        if key == "heygen" and isinstance(raw.get("plan_credit"), (int, float)) and raw["plan_credit"] <= 0:
+            # 当前 HeyGen 客户链路统一优先使用套餐额度；禁止无提示切到高价 API 钱包。
+            if isinstance(raw.get("api_wallet"), (int, float)) and raw["api_wallet"] > 0:
+                return "quota_or_plan", "套餐额度已空，已阻断高价 API 钱包兜底"
+            return "quota_or_plan", "套餐额度已耗尽"
+        return "auth_ok", "鉴权通过"
+    if code == 401:
+        return "credential_rejected", "凭据已被拒绝"
+    if code == 402:
+        return "quota_or_plan", "额度或套餐不足"
+    if code == 403:
+        return "permission_denied", "权限或模型未开通"
+    if code == 429:
+        return "throttled", "渠道限流"
+    if code >= 500:
+        return "upstream_unavailable", "渠道暂时不可用"
+    if code in (400, 404):
+        return "probe_contract_error", "检测接口可能已变更"
+    error = str(raw.get("error") or "")
+    if "未配置" in error or "配置不全" in error:
+        return "not_configured", "服务器凭据未配置完整"
+    if code:
+        return "business_error", "渠道返回业务异常"
+    return "network_error", "网络连接失败"
+
+
+def _probe_cache_fresh(cached, key, now, version):
+    if not cached or cached.get("credential_version") != version:
+        return False
+    ttl = AUTO_KEY_PING_INTERVALS.get(key, 60)
+    if cached.get("status") in {"network_error", "upstream_unavailable", "throttled"}:
+        ttl = min(ttl, 60)
+    return now - float(cached.get("_monotonic_at") or 0) < ttl
+
+
+def key_probe_status():
+    with _KEY_PING_GUARD:
+        snapshot = {key: dict(value) for key, value in _KEY_PING_CACHE.items()}
+    return {
+        key: _public_probe(value)
+        for key, value in snapshot.items()
+        if value.get("credential_version") == _credential_version(key)
+    }
+
+
+def probe_key(key, force=False):
+    key = str(key or "").strip().lower()
+    fn = KEY_PINGS.get(key)
+    if not fn:
+        raise ValueError("该密钥不支持在线测试")
+    now = time.monotonic()
+    version = _credential_version(key)
+    with _KEY_PING_GUARD:
+        cached = _KEY_PING_CACHE.get(key)
+        if not force and _probe_cache_fresh(cached, key, now, version):
+            return dict(_public_probe(cached), cached=True)
+        lock = _KEY_PING_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        now = time.monotonic()
+        version = _credential_version(key)
+        with _KEY_PING_GUARD:
+            cached = _KEY_PING_CACHE.get(key)
+            if not force and _probe_cache_fresh(cached, key, now, version):
+                return dict(_public_probe(cached), cached=True)
+        try:
+            raw = fn() or {}
+        except Exception:
+            raw = {"ok": False}
+        current_version = _credential_version(key)
+        if current_version != version:
+            return {
+                "channel": key, "ok": False, "mode": "auth",
+                "status": "credential_changed", "message": "凭据刚刚变更，等待重新检测",
+                "checked_at": int(time.time()), "credential_version": current_version,
+                "cached": False,
+            }
+        status, message = _probe_status(key, raw)
+        result = {
+            "channel": key,
+            "ok": status in {"auth_ok", "reachable_only"},
+            "mode": str(raw.get("mode") or "auth"),
+            "status": status,
+            "message": message,
+            "checked_at": int(time.time()),
+            "credential_version": version,
+            "_monotonic_at": time.monotonic(),
+        }
+        if raw.get("components") in {"API Key", "API Key + MCP OAuth"}:
+            result["components"] = raw["components"]
+        for field in ("http_status", "latency_ms"):
+            try:
+                if raw.get(field) is not None:
+                    result[field] = int(raw[field])
+            except (TypeError, ValueError):
+                pass
+        if key in {"runninghub", "wavespeed", "tikhub"} and isinstance(raw.get("balance"), (int, float)):
+            result["balance"] = raw["balance"]
+        if key == "heygen":
+            for field in ("plan_credit", "api_wallet"):
+                if isinstance(raw.get(field), (int, float)):
+                    result[field] = raw[field]
+        with _KEY_PING_GUARD:
+            _KEY_PING_CACHE[key] = result
+        return dict(_public_probe(result), cached=False)
+
+
+def probe_configured_keys():
+    configured = {item["key"] for item in key_status() if item["configured"]}
+    for key in AUTO_KEY_PING_INTERVALS:
+        if key in configured:
+            try:
+                probe_key(key)
+            except Exception:
+                continue
+
+
+def key_probe_monitor(stop_event):
+    global _KEY_PROBE_MONITOR_LAST_CYCLE
+    while not stop_event.is_set():
+        try:
+            probe_configured_keys()
+        except Exception:
+            pass
+        _KEY_PROBE_MONITOR_LAST_CYCLE = int(time.time())
+        stop_event.wait(30)
+
+
+def start_key_probe_monitor():
+    global _KEY_PROBE_MONITOR_STARTED_AT
+    _KEY_PROBE_MONITOR_STARTED_AT = int(time.time())
+    thread = threading.Thread(
+        target=key_probe_monitor, args=(threading.Event(),),
+        daemon=True, name="admin-key-probe-monitor",
+    )
+    thread.start()
+    return thread
+
+
+def key_probe_monitor_status():
+    return {
+        "running": bool(_KEY_PROBE_MONITOR_STARTED_AT),
+        "started_at": _KEY_PROBE_MONITOR_STARTED_AT,
+        "last_cycle_at": _KEY_PROBE_MONITOR_LAST_CYCLE,
+    }
 
 PROVIDER_KEY_NAMES = {
     "xai": "果肉视频",
@@ -1621,12 +1926,12 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
                         "source": "job",
                         "time": "%02d-%02d %02d:%02d:%02d" % key[1:] if t else "-",
                         "user": j["username"],
-                        "func": j["func"],
+                        "func": j["func"] + ((" · " + j["operation"]) if j.get("operation") else ""),
                         "cat": cat,
                         "status_text": j["status"],
                         "duration_sec": j["duration_sec"],
                         "cost": j["cost"],
-                        "path": "",
+                        "path": "任务 #%s" % j["id"],
                         "method": "",
                         "ip": "",
                         "ua": "",
@@ -1691,6 +1996,7 @@ def probe_service(svc):
                 "error": str(e)[:180],
             }
         )
+    out["checked_at"] = int(time.time())
     return out
 
 
@@ -1735,6 +2041,30 @@ def load_features(services=None):
     if feature_flags is None:
         return []
     return feature_flags.list_features(services or service_status())
+
+
+def load_function_registry(services=None):
+    pages = function_registry.list_pages()
+    content = next(
+        (item for item in (services or []) if item.get("key") == "content"), {}
+    )
+    health = content.get("detail") or {}
+    for page in pages:
+        for feature in page.get("functions", []):
+            visibility_key = feature.get("surface_visibility_key")
+            acceptance_key = feature.get("acceptance_health_key") or visibility_key
+            feature["runtime_visible"] = (
+                health.get(visibility_key) is True if visibility_key else True
+            )
+            feature["acceptance_health"] = (
+                health.get(acceptance_key) if acceptance_key else None
+            )
+            selections = {}
+            for group, config in feature.get("alternative_selections", {}).items():
+                selected = _env_value([config["env"]]) or config.get("default")
+                selections[group] = str(selected or "").strip().lower()
+            feature["selected_alternatives"] = selections
+    return pages
 
 
 def load_pricing():
@@ -1832,70 +2162,313 @@ def _empty_stats(message=None):
         "days": 7,
         "total": 0,
         "by_kind": [],
+        "by_operation": [],
+        "unmapped": [],
+        "evidence_errors": [],
         "trend": [],
         "high_failure": [],
         "message": message,
     }
 
 
+_XIAOLE_FEATURE_BY_CHANNEL = {
+    "grok": "grok_video",
+    "micro": "seedance_video",
+    "omni": "omni_video",
+    "minimax": "minimax_h3_video",
+}
+
+def _operation_feature_key(kind, channel=""):
+    kind = str(kind or "unknown")
+    if kind == "xiaole_video":
+        return _XIAOLE_FEATURE_BY_CHANNEL.get(str(channel or "").lower(), kind)
+    return kind
+
+
+def _count_status(bucket, status, count=1):
+    bucket["total"] += count
+    if status in {"done", "completed"}:
+        bucket["done"] += count
+    elif status in {"error", "failed", "refunded"}:
+        bucket["error"] += count
+    elif status in {"pending", "queued", "running", "processing"}:
+        bucket["running"] += count
+    else:
+        bucket["other"] += count
+
+
+def _finish_stats(items):
+    for item in items:
+        terminal = item["done"] + item["error"]
+        item["success_rate"] = round(item["done"] / terminal, 4) if terminal else 0
+        item["failure_rate"] = round(item["error"] / terminal, 4) if terminal else 0
+    return items
+
+
+def _video_asset_evidence(job_ids):
+    if not job_ids:
+        return {}, None
+    if not ASSET_DB.exists():
+        return {}, "视频资产证据库不存在"
+    placeholders = ",".join("?" for _ in job_ids)
+    try:
+        with closing(sqlite3.connect(str(ASSET_DB), timeout=10)) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                """SELECT job_id,phase,provider_video_id,video_file,video_url,status,error,updated_at
+                   FROM video_assets WHERE job_id IN (%s)""" % placeholders,
+                tuple(job_ids),
+            ).fetchall()
+        return {int(row["job_id"]): dict(row) for row in rows if row["job_id"]}, None
+    except sqlite3.Error:
+        return {}, "视频资产证据读取失败"
+
+
+def _job_evidence(row, asset=None):
+    asset = asset or {}
+    status = str(row["status"] or "unknown").lower()
+    cost = int(row["cost"] or 0)
+    refunded = int(row["refunded"] or 0)
+    result_url = str(row["result_url"] or asset.get("video_url") or "").strip()
+    result_file = str(row["result_file"] or asset.get("video_file") or "").strip()
+    provider_task_id = str(
+        asset.get("provider_video_id") or row["provider_result_id"] or ""
+    ).strip()
+    if status in {"error", "failed"}:
+        if cost <= 0:
+            billing_state = "not_charged"
+        elif refunded == 1:
+            billing_state = "refunded"
+        elif refunded == 2:
+            billing_state = "refund_pending"
+        else:
+            billing_state = "needs_review"
+    elif status in {"done", "completed"}:
+        # jobs.cost is the intended charge, not proof that the points ledger agrees.
+        billing_state = "unverified"
+    else:
+        billing_state = "in_flight"
+    return {
+        "job_id": int(row["id"]),
+        "project_id": None,
+        "status": status,
+        "phase": asset.get("phase"),
+        "created_at": int(row["created_at"] or 0),
+        "updated_at": int(row["updated_at"] or 0),
+        "business_accepted": True,
+        "provider_task_id": provider_task_id or None,
+        "provider_accepted": True if provider_task_id else None,
+        "completed": status in {"done", "completed"},
+        "result_url": result_url or None,
+        "result_file": result_file or None,
+        "output_reference_present": bool(result_url or result_file),
+        "delivery_verified": False,
+        "artifact_check": "not_recorded",
+        "cost": cost,
+        "refund_state": refunded,
+        "billing_state": billing_state,
+        "asset_status": asset.get("status"),
+        "error": str(row["error"] or asset.get("error") or "")[:300],
+    }
+
+
+def _compose_operation_stat(since):
+    if not VIDEO_COMPOSE_DB.exists():
+        return None, None
+    try:
+        with closing(sqlite3.connect(str(VIDEO_COMPOSE_DB), timeout=10)) as connection:
+            connection.row_factory = sqlite3.Row
+            columns = {row["name"] for row in connection.execute(
+                "PRAGMA table_info(video_compose_projects)"
+            )}
+            if not columns:
+                return None, None
+            error_sql = "COALESCE(error,'')" if "error" in columns else "''"
+            rows = connection.execute(
+                """SELECT id,status,output_file,output_asset_id,created_at,updated_at,%s AS error
+                   FROM video_compose_projects WHERE created_at>=?
+                   ORDER BY created_at DESC""" % error_sql,
+                (since,),
+            ).fetchall()
+    except sqlite3.Error:
+        return None, "一键成片证据读取失败"
+    if not rows:
+        return None, None
+    bucket = {
+        "operation": "video.one_click.compose", "total": 0, "done": 0,
+        "error": 0, "running": 0, "other": 0,
+    }
+    for row in rows:
+        status = str(row["status"] or "unknown").lower()
+        _count_status(
+            bucket,
+            status if status in {"completed", "failed", "refunded"} else "running",
+        )
+    latest = rows[0]
+    bucket["latest"] = {
+        "job_id": None,
+        "project_id": latest["id"],
+        "status": latest["status"],
+        "created_at": int(latest["created_at"] or 0),
+        "updated_at": int(latest["updated_at"] or 0),
+        "business_accepted": True,
+        "business_id_type": "project_id",
+        "provider_task_id": None,
+        "provider_accepted": None,
+        "provider_task_state": "not_applicable",
+        "completed": latest["status"] == "completed",
+        "result_file": latest["output_file"] or None,
+        "result_url": None,
+        "output_reference_present": bool(latest["output_file"]),
+        "delivery_verified": False,
+        "artifact_check": "not_recorded",
+        "cost": 0,
+        "refund_state": 0,
+        "billing_state": "not_applicable",
+        "balance_state": "not_applicable",
+        "asset_status": "done" if latest["output_asset_id"] else None,
+        "error": str(latest["error"] or "")[:300],
+        "evidence_note": "一键成片使用本地 project_id，不经过外部供应商任务",
+    }
+    return _finish_stats([bucket])[0], None
+
+
 def job_stats(days=7):
     days = max(1, min(int(days or 7), 90))
-    if not JOB_DB.exists():
-        data = _empty_stats("content_jobs.db not found")
-        data["days"] = days
-        return data
     since = int(time.time()) - days * 86400
-    with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as c:
-        c.row_factory = sqlite3.Row
-        rows = c.execute(
-            """SELECT kind, status, COUNT(*) AS n
-               FROM jobs WHERE created_at >= ?
-               GROUP BY kind, status ORDER BY kind, status""",
-            (since,),
-        ).fetchall()
-        trend_rows = c.execute(
-            """SELECT date(created_at, 'unixepoch') AS day, kind, status, COUNT(*) AS n
-               FROM jobs WHERE created_at >= ?
-               GROUP BY day, kind, status ORDER BY day, kind""",
-            (since,),
-        ).fetchall()
+    rows = []
+    evidence_errors = []
+    if not JOB_DB.exists():
+        evidence_errors.append("任务证据库不存在")
+    else:
+        try:
+            with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as connection:
+                connection.row_factory = sqlite3.Row
+                columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
+                refunded_sql = "COALESCE(refunded,0)" if "refunded" in columns else "0"
+                error_sql = "COALESCE(error,'')" if "error" in columns else "''"
+                result_sql = "result" if "result" in columns else "NULL"
+                # ponytail: scan only the selected time window; add a rollup table when this
+                # becomes measurably slower than the existing admin refresh budget.
+                rows = connection.execute(
+                    """SELECT id,kind,status,cost,%s AS refunded,%s AS error,created_at,updated_at,
+                              date(created_at, 'unixepoch') AS day,
+                              CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.channel'),'')) ELSE '' END AS channel,
+                              CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.mode'),'')) ELSE '' END AS mode,
+                              CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.cine_mode'),'')) ELSE '' END AS cine_mode,
+                              CASE WHEN json_valid(payload) THEN CAST(COALESCE(json_extract(payload,'$.line'),'') AS TEXT) ELSE '' END AS line,
+                              CASE WHEN json_valid(payload) AND json_type(payload,'$.reference_images')='array'
+                                   THEN json_array_length(payload,'$.reference_images') ELSE 0 END AS reference_count,
+                              CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload,'$.batch_id'),'') ELSE '' END AS batch_id,
+                              CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.operation'),'')) ELSE '' END AS operation,
+                              CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload,'$.upscale'),0) ELSE 0 END AS upscale,
+                              CASE WHEN json_valid(payload) AND
+                                        (json_type(payload,'$._short_drama_video')='object' OR
+                                         json_type(payload,'$.short_drama_binding')='object')
+                                   THEN 'short-drama' ELSE '' END AS source_page,
+                              CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_url'),json_extract(%s,'$.image_url'),json_extract(%s,'$.url'),'') ELSE '' END AS result_url,
+                              CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_file'),json_extract(%s,'$.image_file'),json_extract(%s,'$.file'),'') ELSE '' END AS result_file,
+                              CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.provider_video_id'),json_extract(%s,'$.video_id'),json_extract(%s,'$.provider_avatar_id'),'') ELSE '' END AS provider_result_id
+                       FROM jobs WHERE created_at>=? ORDER BY created_at DESC""" % (
+                           refunded_sql, error_sql,
+                           result_sql, result_sql, result_sql, result_sql,
+                           result_sql, result_sql, result_sql, result_sql,
+                           result_sql, result_sql, result_sql, result_sql,
+                       ),
+                    (since,),
+                ).fetchall()
+        except sqlite3.Error:
+            evidence_errors.append("任务证据读取失败")
     by_kind = {}
-    total = 0
+    by_operation = {}
+    unmapped = {}
+    latest_rows = {}
+    trend_counts = {}
     for row in rows:
-        kind = row["kind"] or "unknown"
-        status = row["status"] or "unknown"
-        count = int(row["n"] or 0)
-        total += count
-        bucket = by_kind.setdefault(kind, {"kind": kind, "total": 0, "done": 0, "error": 0, "running": 0, "other": 0})
-        bucket["total"] += count
-        if status == "done":
-            bucket["done"] += count
-        elif status == "error":
-            bucket["error"] += count
-        elif status in {"queued", "running"}:
-            bucket["running"] += count
+        status = str(row["status"] or "unknown").lower()
+        kind = _operation_feature_key(row["kind"], row["channel"])
+        bucket = by_kind.setdefault(kind, {
+            "kind": kind, "total": 0, "done": 0, "error": 0,
+            "running": 0, "other": 0, "sources": [],
+        })
+        source = {"kind": str(row["kind"] or "unknown")}
+        if row["channel"]:
+            source["channel"] = str(row["channel"])
+        if source not in bucket["sources"]:
+            bucket["sources"].append(source)
+        _count_status(bucket, status)
+        metadata = {
+            "channel": row["channel"], "mode": row["mode"],
+            "cine_mode": row["cine_mode"], "line": row["line"],
+            "reference_count": row["reference_count"], "batch_id": row["batch_id"],
+            "operation": row["operation"], "upscale": row["upscale"],
+            "source_page": row["source_page"],
+        }
+        operation = function_registry.classify_task(row["kind"], metadata)
+        if operation:
+            operation_bucket = by_operation.setdefault(operation, {
+                "operation": operation, "total": 0, "done": 0, "error": 0,
+                "running": 0, "other": 0,
+            })
+            _count_status(operation_bucket, status)
+            latest_rows.setdefault(operation, row)
         else:
-            bucket["other"] += count
-    items = []
-    high_failure = []
-    for item in by_kind.values():
-        success_rate = item["done"] / item["total"] if item["total"] else 0
-        failure_rate = item["error"] / item["total"] if item["total"] else 0
-        item["success_rate"] = round(success_rate, 4)
-        item["failure_rate"] = round(failure_rate, 4)
-        items.append(item)
-        if item["total"] >= 3 and failure_rate >= 0.5:
-            high_failure.append(item)
+            page_key = str(row["source_page"] or "")
+            if not page_key and str(row["kind"] or "") in {
+                "video", "avatar", "cinematic", "tryon", "xiaole_video", "sora_video",
+            }:
+                page_key = "video"
+            signature = str(row["kind"] or "unknown")
+            for key in ("channel", "mode", "cine_mode", "line"):
+                if row[key]:
+                    signature += "/" + str(row[key])
+            missing = unmapped.setdefault((page_key, signature), {
+                "signature": signature, "kind": str(row["kind"] or "unknown"),
+                "channel": str(row["channel"] or ""), "page_key": page_key, "total": 0,
+                "done": 0, "error": 0, "running": 0, "other": 0,
+                "latest_at": int(row["created_at"] or 0), "latest_error": "",
+            })
+            _count_status(missing, status)
+            if not missing["latest_error"] and row["error"]:
+                missing["latest_error"] = str(row["error"])[:220]
+        trend_key = (row["day"], kind, status)
+        trend_counts[trend_key] = trend_counts.get(trend_key, 0) + 1
+
+    assets, asset_error = _video_asset_evidence(
+        [int(row["id"]) for row in latest_rows.values()]
+    )
+    if asset_error:
+        evidence_errors.append(asset_error)
+    for operation, row in latest_rows.items():
+        by_operation[operation]["latest"] = _job_evidence(
+            row, assets.get(int(row["id"]))
+        )
+    compose, compose_error = _compose_operation_stat(since)
+    if compose_error:
+        evidence_errors.append(compose_error)
+    if compose:
+        by_operation[compose["operation"]] = compose
+    items = _finish_stats(list(by_kind.values()))
+    operation_items = _finish_stats(list(by_operation.values()))
+    unmapped_items = _finish_stats(list(unmapped.values()))
+    high_failure = [
+        item for item in items
+        if item["total"] >= 3 and item["failure_rate"] >= 0.5
+    ]
     trend = [
-        {"day": row["day"], "kind": row["kind"], "status": row["status"], "count": int(row["n"] or 0)}
-        for row in trend_rows
+        {"day": day, "kind": kind, "status": status, "count": count}
+        for (day, kind, status), count in sorted(trend_counts.items())
     ]
     return {
         "days": days,
-        "total": total,
+        "total": len(rows),
         "by_kind": sorted(items, key=lambda x: x["total"], reverse=True),
+        "by_operation": sorted(operation_items, key=lambda x: x["operation"]),
+        "unmapped": sorted(unmapped_items, key=lambda x: x["total"], reverse=True),
+        "evidence_errors": evidence_errors,
         "trend": trend,
         "high_failure": sorted(high_failure, key=lambda x: x["failure_rate"], reverse=True),
+        "message": "；".join(evidence_errors) if evidence_errors else None,
     }
 
 
@@ -1930,7 +2503,19 @@ def call_logs(days=7, limit=200):
         # 依赖 jobs(created_at) 索引(idx_jobs_created,2026-07-09 已建),否则 310MB 全表扫要 2 秒
         rows = c.execute(
             """SELECT id, username, kind, cost, status,
-                      substr(payload, 1, 4096) AS payload, created_at, updated_at
+                      substr(payload, 1, 4096) AS payload, created_at, updated_at,
+                      CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.channel'),'')) ELSE '' END AS channel,
+                      CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.mode'),'')) ELSE '' END AS mode,
+                      CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.cine_mode'),'')) ELSE '' END AS cine_mode,
+                      CASE WHEN json_valid(payload) THEN CAST(COALESCE(json_extract(payload,'$.line'),'') AS TEXT) ELSE '' END AS line,
+                      CASE WHEN json_valid(payload) AND json_type(payload,'$.reference_images')='array'
+                           THEN json_array_length(payload,'$.reference_images') ELSE 0 END AS reference_count,
+                      CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload,'$.batch_id'),'') ELSE '' END AS batch_id,
+                      CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.operation'),'')) ELSE '' END AS operation,
+                      CASE WHEN json_valid(payload) AND
+                                (json_type(payload,'$._short_drama_video')='object' OR
+                                 json_type(payload,'$.short_drama_binding')='object')
+                           THEN 'short-drama' ELSE '' END AS source_page
                FROM jobs
                WHERE created_at >= ?
                ORDER BY created_at DESC, id DESC
@@ -1943,6 +2528,13 @@ def call_logs(days=7, limit=200):
         updated_at = int(row["updated_at"] or 0)
         kind = row["kind"] or "unknown"
         payload = _job_payload(row["payload"])
+        payload.update({
+            "channel": row["channel"], "mode": row["mode"],
+            "cine_mode": row["cine_mode"], "line": row["line"],
+            "reference_count": row["reference_count"], "batch_id": row["batch_id"],
+            "operation": row["operation"], "source_page": row["source_page"],
+        })
+        operation = function_registry.classify_task(kind, payload)
         duration = None
         if created_at and updated_at and updated_at >= created_at:
             duration = updated_at - created_at
@@ -1952,6 +2544,7 @@ def call_logs(days=7, limit=200):
                 "username": row["username"] or "-",
                 "kind": kind,
                 "func": call_func_name(kind, payload),
+                "operation": operation,
                 "cost": int(row["cost"] or 0),
                 "status": row["status"] or "unknown",
                 "created_at": created_at,
@@ -2229,16 +2822,17 @@ class H(BaseHTTPRequestHandler):
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             svc_key = (q.get("service") or [""])[0].strip()
             key_name = (q.get("key") or [""])[0].strip()
+            force = (q.get("force") or [""])[0].strip().lower() in {"1", "true", "yes"}
             if svc_key:
                 svc = next((s for s in SERVICES if s["key"] == svc_key), None)
                 if not svc:
                     return self._send(404, {"detail": "unknown service"})
                 return self._send(200, probe_service(svc))
             if key_name:
-                fn = KEY_PINGS.get(key_name)
-                if not fn:
-                    return self._send(400, {"detail": "该密钥不支持在线测试"})
-                return self._send(200, fn())
+                try:
+                    return self._send(200, probe_key(key_name, force=force))
+                except ValueError as exc:
+                    return self._send(400, {"detail": str(exc)})
             return self._send(400, {"detail": "需要 service 或 key 参数"})
         if path == "/api/admin/request-logs":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -2294,8 +2888,11 @@ class H(BaseHTTPRequestHandler):
                     "user": {"username": user.get("username"), "name": user.get("name"), "role": user.get("role")},
                     "services": services,
                     "keys": key_status(),
+                    "key_probes": key_probe_status(),
+                    "key_probe_monitor": key_probe_monitor_status(),
                     "provider_keys": provider_key_list(),
                     "channels": load_channels(),
+                    "function_registry": load_function_registry(services),
                     "features": load_features(services),
                     "pricing": load_pricing(),
                     "stats": job_stats(days),
@@ -2749,5 +3346,6 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     init_db()
+    start_key_probe_monitor()
     print("huangque-admin on 127.0.0.1:%d" % PORT)
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()

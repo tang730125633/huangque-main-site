@@ -215,6 +215,12 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertEqual(body["ratio"], "2:3")
         self.assertEqual(body["duration"], 10)
 
+    def test_grok_customer_switch_is_checked_before_payload_work(self):
+        from content_domains import feature_flags
+        with patch.object(feature_flags, "require_enabled", side_effect=feature_flags.FeatureDisabled("维护中")):
+            with self.assertRaisesRegex(feature_flags.FeatureDisabled, "维护中"):
+                self.video.validate_xiaole_video_payload({"channel": "grok", "prompt": "demo"})
+
     def test_validate_official_grok_accepts_text_only_duration_15(self):
         with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"):
             body = self.video.validate_xiaole_video_payload({

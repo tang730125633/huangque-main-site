@@ -2,9 +2,12 @@ import http.cookiejar
 import importlib
 import json
 import os
+import shutil
 import sqlite3
+import subprocess
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -256,6 +259,7 @@ class AdminTaskInsightsTests(unittest.TestCase):
         os.close(fd)
         self.path = Path(path)
         self.admin.JOB_DB = self.path
+        now = int(time.time())
         with closing(sqlite3.connect(self.path)) as c:
             c.execute(
                 """CREATE TABLE jobs(
@@ -265,10 +269,10 @@ class AdminTaskInsightsTests(unittest.TestCase):
             c.executemany(
                 "INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?)",
                 [
-                    (1, "xiaole_video", "alice", 20, "done", '{"channel":"micro","model":"seedance"}', 10, 20),
-                    (2, "xiaole_video", "alice", 30, "error", '{"channel":"omni","model":"omni"}', 30, 40),
-                    (3, "image", "alice", 8, "pending", '{"provider":"seedream","model":"seedream"}', 50, 50),
-                    (4, "image", "bob", 8, "done", '{"provider":"openai"}', 60, 70),
+                    (1, "xiaole_video", "alice", 20, "done", '{"channel":"micro","model":"seedance"}', now - 60, now - 50),
+                    (2, "xiaole_video", "alice", 30, "error", '{"channel":"omni","model":"omni"}', now - 40, now - 30),
+                    (3, "image", "alice", 8, "pending", '{"provider":"seedream","model":"seedream"}', now - 20, now - 20),
+                    (4, "image", "bob", 8, "done", '{"provider":"openai"}', now - 10, now - 10),
                 ],
             )
             c.commit()
@@ -285,6 +289,14 @@ class AdminTaskInsightsTests(unittest.TestCase):
         self.assertEqual({x["name"] for x in data["by_model"]}, {"seedance", "omni", "seedream"})
         self.assertEqual([x["id"] for x in data["recent"]], [3, 2, 1])
         self.assertEqual(self.admin._job_payload('{"channel":"micro"}')["channel"], "micro")
+
+    def test_operations_stats_use_customer_feature_names(self):
+        by_kind = {item["kind"]: item for item in self.admin.job_stats(7)["by_kind"]}
+        self.assertEqual(by_kind["seedance_video"]["done"], 1)
+        self.assertEqual(by_kind["omni_video"]["error"], 1)
+        self.assertNotIn("xiaole_video", by_kind)
+        self.assertEqual(self.admin.feature_flags.CATALOG_MAP["grok_video"]["page"], "视频生成")
+        self.assertEqual(self.admin.feature_flags.CATALOG_MAP["tryon"]["name"], "换装换背景")
 
 
 class AdminUserInsightsFrontendTests(unittest.TestCase):
@@ -317,21 +329,96 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
         for marker in (
             'class="admin-sidebar"', 'data-module-tab="dashboard"',
             'data-module-tab="users"', 'data-module-tab="logs"',
-            'data-module-tab="recharge"', 'data-module-tab="points"',
+            'data-module-tab="recharge"', 'data-module-switch="points"',
             'data-module-tab="invite"', 'data-module-tab="inspirations"',
-            'data-module-tab="services"', 'data-module-tab="channels"',
-            'data-module-tab="features"', 'data-module="dashboard"',
+            'data-module-tab="operations"',
+            'data-module-tab="features"', 'data-module-switch="pricing"', 'data-module="dashboard"',
+            'data-module="operations"', 'id="operationsBox"', "function renderOperations(data)",
+            "基础运行探针（非功能验收）", "可达 · 仅辅助定位", "不会假绿", "功能运行中心",
+            "生产中心", "客户经营", "内容运营", "系统管理", "消息与公告", "灵感案例",
+            'class="ops-workspace"', 'class="ops-catalog"', 'class="ops-selected"', 'class="ops-inspector"',
+            'data-operation-select=', "sidebarModule = {points:'recharge',pricing:'features'}",
+            'id="operationsPage"', 'data-operations-page=', "该客户页尚未盘点",
+            "开发待归档", "当前不会自动发起付费任务", "未接入统一证据",
+            "任务记录了点数，账务台账待核对", "operationsPage:'video'",
             'id="globalUserSearch"', 'id="customerLayer"',
             "/api/admin/activity?limit=8", "/api/admin/recharge/orders?status=pending",
             "module:'dashboard'", "aria-current", "/workbench/hq-icons-duotone.js",
             'class="side-nav-icon"', "prefers-reduced-motion:reduce",
             "dashboard:'home'", "users:'users'", "logs:'clock'", "recharge:'coins'",
             "points:'trend'", "invite:'userPlus'", "inspirations:'sparkles'",
-            "services:'checkCircle'", "channels:'lock'", "features:'sliders'",
+            "operations:'layers'", "channels:'lock'", "features:'sliders'",
+            '@media (max-width:1280px){.ops-workspace',
+            '.module-card[data-module="operations"]>.section-head{flex-direction:column}',
+            'id="sidebarResizer"', 'role="separator"', 'aria-orientation="vertical"',
+            'function setSidebarWidth', 'setPointerCapture(e.pointerId)', 'setSidebarWidth(e.clientX)',
+            "window.addEventListener('pointermove'", 'function stopSidebarResize',
+            '.sidebar-resizer{display:none}', '@media (min-width:901px)',
+            'id="operationsChannelLayer"', 'function renderOperationsChannelDrawer',
+            '.operations-channel-drawer .channel-table{min-width:980px}',
+            '.operations-channel-drawer .channel-table td:nth-child(5):before{content:"操作"}',
+            'data-operation-channel-open=', '当前接单配置，不代表历史任务实际使用线路',
+            '完整 Key 可在当前抽屉按 5 秒审计查看',
+            "bindSecretRevealActions('operationsChannelBox')", 'value="minimax"',
+            'clearSecretWindows();restoreProviderEditor()',
+            "boxId==='operationsChannelBox'&&el('operationsChannelLayer').hidden",
+            "&&el('providerKeyEditor').hidden)renderOperationsChannelDrawer()",
+            "selections[dep.alternative_group]===(dep.selection_value||dep.key)",
+            "function probeSelectedOperation(force)", "key_probes", "keyProbes:{}",
+            "最近鉴权通过", "凭据已失效", "最近连通 · 未验证凭据",
+            "探针数据已过期", "号池鉴权证据已过期", "后台按渠道定时巡检",
+            "var deps=registryActiveDependencies(feature,mode)",
+            "data-server-probe-status", "function updateServerProbeNodes(key)",
+            "state.module==='dashboard'||state.module==='operations'", "credential_version",
+            "var routeUnverified=", "&force=1",
+            "var evidence=registryRouteEvidence({key:meta.key}",
         ):
             self.assertIn(marker, html)
         self.assertNotIn('data-module-tab="ops"', html)
+        self.assertNotIn('data-module-tab="points"', html)
+        self.assertNotIn('data-module-tab="pricing"', html)
+        self.assertNotIn('data-module-tab="services"', html)
+        self.assertNotIn('data-module-tab="channels"', html)
+        self.assertNotIn('id="sidebarCollapse"', html)
+        self.assertNotIn('sidebar-collapsed', html)
+        self.assertNotIn('data-module="services"', html)
+        self.assertNotIn("function renderServices", html)
+        self.assertNotIn("服务在线", html)
+        self.assertNotIn("健康接口可达", html)
+        self.assertNotIn('id="operationsSearch"', html)
+        self.assertNotIn("function operationTerms", html)
+        self.assertNotIn("已发现服务器凭据 · 尚未鉴权", html)
+        self.assertNotIn("var label=!configured?'未配置':(healthy?'鉴权探针通过':'已配置')", html)
+        self.assertNotIn("rows.push({key:stat.kind", html)
         self.assertNotIn('class="module-tabs', html)
+
+    @unittest.skipUnless(shutil.which("node"), "node is required for admin probe behavior test")
+    def test_route_evidence_executes_and_never_marks_unverified_route_green(self):
+        html = (Path(__file__).resolve().parents[1] / "site/admin/index.html").read_text(encoding="utf-8")
+        script = html.split("<script>", 1)[1].split("</script>", 1)[0]
+        route_start = script.index("function registryRouteEvidence")
+        route_end = script.index("function updateServerProbeNodes", route_start)
+        verdict_start = script.index("function registryVerdict")
+        verdict_end = script.index("function registryModeCard", verdict_start)
+        probe = "\n".join([
+            "var state={keyProbes:{openai:{signature:'v1',loading:false,result:{status:'auth_ok',checked_at:Math.floor(Date.now()/1000),latency_ms:7}}}};",
+            "function fmtTime(){return '12:00';}",
+            script[route_start:route_end],
+            "var data={keys:[{key:'openai',name:'OpenAI',configured:true,auto_probe:true,probe_interval:600,credential_version:'v1'}],provider_keys:{items:[]}};",
+            "var evidence=registryRouteEvidence({key:'openai',credential_source:'env'},data);",
+            "if(evidence.state!=='ok')throw new Error('configured auth result did not render');",
+            "state.keyProbes.openai={signature:'old',loading:false,result:{status:'auth_ok',checked_at:Math.floor(Date.now()/1000)}};",
+            "if(registryRouteEvidence({key:'openai',credential_source:'env'},data).state==='ok')throw new Error('rotated credential reused stale success');",
+            "function registrySelections(){return {};}",
+            "function registryDependencyApplies(){return true;}",
+            "function registryFailureBreakpoint(){return 'break';}",
+            "registryRouteEvidence=function(dep){return {state:dep.testState};};",
+            script[verdict_start:verdict_end],
+            "var verdict=registryVerdict({acceptance_health:true,dependencies:[{requirement:'required',testState:'warn'}]}, {evidence_contract:{},dependencies:[]}, null, {status:'enabled'}, {online:true}, {});",
+            "if(verdict[0]==='ok')throw new Error('unverified required route became green');",
+        ])
+        result = subprocess.run([shutil.which("node"), "-e", probe], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":
