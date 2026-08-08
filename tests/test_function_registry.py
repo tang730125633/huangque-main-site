@@ -481,22 +481,27 @@ class FunctionRegistryTests(unittest.TestCase):
             self.assertIsNone(latest["provider_task_id"])
         self.assertEqual(stats["evidence_errors"], [])
 
-    def test_damaged_audio_artifact_is_not_delivery_verified(self):
-        broken = self.admin.CONTENT_OUT / "broken.wav"
-        broken.write_bytes(b"not-audio")
+    def test_damaged_audio_artifact_is_not_delivery_verified_for_any_extension(self):
+        for name in ("broken.bin", "broken.mp4"):
+            (self.admin.CONTENT_OUT / name).write_bytes(b"not-audio")
         with mock.patch.object(self.admin.subprocess, "run") as ffprobe:
             ffprobe.return_value = mock.Mock(returncode=1, stdout=b"", stderr=b"invalid data")
-            evidence = self.admin._verify_local_artifact({
-                "result_file": "broken.wav",
-                "result_url": "/api/gen/file/broken.wav",
-                "delivery_verified": False,
-                "artifact_check": "not_recorded",
-            })
-        command = ffprobe.call_args.args[0]
-        self.assertIn("a:0", command)
-        self.assertNotIn("v:0", command)
-        self.assertEqual(evidence["artifact_check"], "decode_failed")
-        self.assertFalse(evidence["delivery_verified"])
+            for name in ("broken.bin", "broken.mp4"):
+                evidence = self.admin._verify_local_artifact({
+                    "result_file": name,
+                    "result_url": "/api/gen/file/" + name,
+                    "delivery_verified": False,
+                    "artifact_check": "not_recorded",
+                    "_artifact_media_type": "audio",
+                })
+                self.assertEqual(evidence["artifact_check"], "decode_failed")
+                self.assertFalse(evidence["delivery_verified"])
+                self.assertNotIn("_artifact_media_type", evidence)
+        self.assertEqual(ffprobe.call_count, 2)
+        for call in ffprobe.call_args_list:
+            command = call.args[0]
+            self.assertIn("a:0", command)
+            self.assertNotIn("v:0", command)
 
 
 if __name__ == "__main__":

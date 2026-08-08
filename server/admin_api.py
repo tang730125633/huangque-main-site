@@ -2618,6 +2618,7 @@ def _audio_asset_evidence(job_ids):
                 metadata = {}
             evidence[int(row["job_id"])] = {
                 "asset_id": int(row["id"]),
+                "media_type": "audio",
                 "audio_file": row["file"],
                 "audio_url": row["url"],
                 "asset_kind": row["asset_kind"],
@@ -2632,6 +2633,7 @@ def _audio_asset_evidence(job_ids):
 
 
 def _verify_local_artifact(evidence):
+    media_type = str(evidence.pop("_artifact_media_type", "") or "").strip().lower()
     result_file = str(evidence.get("result_file") or "").strip()
     if not result_file:
         if evidence.get("result_url"):
@@ -2643,9 +2645,9 @@ def _verify_local_artifact(evidence):
         path = (candidate if candidate.is_absolute() else root / candidate).resolve()
         if path == root or root not in path.parents or not path.is_file() or path.stat().st_size <= 0:
             evidence.update({"artifact_check": "missing", "delivery_verified": False})
-        elif path.suffix.lower() in {".mp4", ".mov", ".webm"}:
+        elif media_type == "audio" or path.suffix.lower() in {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}:
             probe = subprocess.run(
-                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                ["ffprobe", "-v", "error", "-select_streams", "a:0",
                  "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(path)],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12,
             )
@@ -2654,9 +2656,9 @@ def _verify_local_artifact(evidence):
                 "artifact_check": "decodable" if ok else "decode_failed",
                 "delivery_verified": ok,
             })
-        elif path.suffix.lower() in {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}:
+        elif path.suffix.lower() in {".mp4", ".mov", ".webm"}:
             probe = subprocess.run(
-                ["ffprobe", "-v", "error", "-select_streams", "a:0",
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
                  "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(path)],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12,
             )
@@ -2723,6 +2725,7 @@ def _job_evidence(row, asset=None):
         "asset_status": asset.get("status"),
         "asset_id": asset.get("asset_id"),
         "asset_kind": asset.get("asset_kind"),
+        "_artifact_media_type": asset.get("media_type"),
         "error": str(row["error"] or asset.get("error") or "")[:300],
     })
 
