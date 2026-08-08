@@ -57,7 +57,7 @@ class AdminE2ERunnerTests(unittest.TestCase):
             self.assertTrue(payload["image_data"].startswith("data:image/"))
             self.assertNotIn("short-lived-secret", json.dumps(run))
             self.assertNotIn("image_data", json.dumps(run))
-            with self.assertRaisesRegex(ValueError, "已有一条测试旅程"):
+            with self.assertRaisesRegex(ValueError, "已有一条生产链测试"):
                 self.admin.start_e2e_run(
                     "root", "admin-token", "video.digital_ip.audio"
                 )
@@ -136,7 +136,7 @@ class AdminE2ERunnerTests(unittest.TestCase):
         }):
             result = self.admin.e2e_preflight("admin-token", "video.grok.text")
         self.assertFalse(result["ready"])
-        self.assertIn("另一条测试旅程", result["blocker"])
+        self.assertIn("另一条生产链测试", result["blocker"])
 
     def test_grok_image_uses_matching_product_fixture_and_supported_resolution(self):
         runner = self.admin.function_registry.e2e_runner("video.grok.image")

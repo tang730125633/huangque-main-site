@@ -991,7 +991,7 @@ def e2e_preflight(admin_token, operation_id):
                    if run["status"] in {"submitting", "queued", "running", "unknown"}), None)
     if active:
         return {"operation_id": operation_id, "ready": False,
-                "blocker": "另一条测试旅程正在运行，请等待终态后再继续"}
+                "blocker": "另一条生产链测试正在运行，请等待终态后再继续"}
     if not points_domain:
         raise RuntimeError("点数模块不可用")
     session = auth_admin_request("/api/auth/admin/e2e/session", admin_token, method="POST", payload={})
@@ -2743,7 +2743,7 @@ def start_e2e_run(actor, admin_token, operation_id):
     with E2E_RUN_LOCK:
         current = list_e2e_runs(100)
         if any(run["status"] in {"submitting", "queued", "running", "unknown"} for run in current):
-            raise ValueError("已有一条测试旅程在运行，请等待终态后再提交")
+            raise ValueError("已有一条生产链测试在运行，请等待终态后再提交")
         run_id = uuid.uuid4().hex
         now = int(time.time())
         with closing(db()) as connection:

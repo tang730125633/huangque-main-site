@@ -1749,10 +1749,10 @@
   function registryE2EFresh(run){return registryE2EPassed(run)&&Number(run.updated_at||run.created_at||0)>=Math.floor(Date.now()/1000)-86400}
   function registryAcceptanceLabel(mode,data){
     var run=registryE2ERun(mode,data);
-    if(registryE2EFresh(run))return ['ok','已验收 · 8/8'];
-    if(run&&['submitting','queued','running'].indexOf(run.status)>=0)return ['neutral','完整旅程运行中'];
+    if(registryE2EFresh(run))return ['ok','生产链已验收 · 8/8'];
+    if(run&&['submitting','queued','running'].indexOf(run.status)>=0)return ['neutral','生产链运行中'];
     if(!(mode.validation||{}).supported)return ['neutral','测试包未准备好'];
-    return ['warn','测试包已准备 · 待你运行'];
+    return ['warn','测试包已准备 · 待执行'];
   }
   function registryVerdict(feature,mode,stat,flagState,service,data){
     var latest=stat&&stat.latest,contract=mode.evidence_contract||{},notApplicable=contract.not_applicable||[];
@@ -1770,7 +1770,7 @@
     var routeUnverified=routes.some(function(item){return item.state!=='ok'})||alternativeGroups.some(function(group){return !group.length||group.every(function(item){return item.state!=='ok'})});
     if(routeFailed&&latest&&(latest.provider_task_id||latest.completed))return ['warn','证据不一致','最近任务有执行证据，但当前渠道记录没有可用线路','断点 · 4 当前渠道'];
     if(routeFailed)return ['fail','渠道不可用','必需线路或当前备用组没有可用凭据','断点 · 4 渠道与凭据'];
-    if(registryE2EFresh(registryE2ERun(mode,data)))return ['ok','完整旅程通过','客户已拿到可用作品，扣点流水一致','闭环 · 8 / 8'];
+    if(registryE2EFresh(registryE2ERun(mode,data)))return ['ok','生产链通过','业务接口到作品与扣点一致；客户页面交互另行验收','闭环 · 8 / 8'];
     if(routeUnverified)return ['warn','渠道待验证','必需线路尚无新鲜鉴权证据，不能判为端到端正常','断点 · 4 渠道与凭据'];
     if(!stat||!latest)return ['warn','未验证','尚无该客户模式的真实任务证据','断点 · 1 端到端测试'];
     if(['pending','queued','running','processing','created','rendering'].indexOf(String(latest.status||'').toLowerCase())>=0)return ['neutral','进行中','最近任务尚未到达终态',latest.provider_task_id?'当前 · 6 生成执行':'当前 · 5 等待供应商接单'];
@@ -1806,11 +1806,11 @@
     var artifact=latest&&latest.delivery_verified?'<span class="pill ok">已验收</span> '+esc(artifactLabels[latest.artifact_check]||'作品文件可用'):'<span class="pill warn">未验证</span> '+esc(latest&&latest.artifact_check==='reference_only'?'只有作品地址，尚未下载验收':'暂无可下载、可解码的作品证据');
     var billingLabels={consistent:'扣点与任务一致',unverified:'任务记录了点数，账务台账待核对',refunded:'失败已退款',refund_pending:'退款待确认',needs_review:'账务需核对',not_charged:'未扣点',not_applicable:'当前流程不计点',in_flight:'任务进行中'};
     var billing=notApplicable.indexOf('billing')>=0?'不适用 · 当前流程无独立计点':(runStage('billing')&&runStage('billing').state==='passed'?'<span class="pill ok">扣点流水一致</span>':(latest?esc(billingLabels[latest.billing_state]||'账务未验证'):'无任务账务证据'));
-    var balance=notApplicable.indexOf('balance')>=0?'<span class="pill neutral">不适用</span>':(runStage('route')&&runStage('route').state==='passed'?'<span class="pill ok">真实旅程已接单</span>':'<span class="pill warn">尚无真实接单证据</span>');
+    var balance=notApplicable.indexOf('balance')>=0?'<span class="pill neutral">不适用</span>':(runStage('route')&&runStage('route').state==='passed'?'<span class="pill ok">真实生产链已接单</span>':'<span class="pill warn">尚无真实接单证据</span>');
     var dependencyHtml=registryDependencies(feature,mode,data)||'<span>未登记外部渠道依赖</span>';
     var prices=(mode.price_keys||[]).length?'<div>点数规则：<code>'+esc(mode.price_keys.join('、'))+'</code></div>':'<div>点数规则：无独立计费项</div>';
     var smoke=(mode.smoke_inputs||[]).length?esc(mode.smoke_inputs.join(' + ')):'测试素材尚未登记';
-    var testRunner=mode.validation&&mode.validation.supported?'<span class="pill neutral">后台托管 E2E</span>，专用测试账号真实提交并保留八段证据':'<span class="pill warn">待接入后台托管 E2E</span>';
+    var testRunner=mode.validation&&mode.validation.supported?'<span class="pill neutral">后台生产链测试</span>，专用测试账号真实提交并保留八段证据':'<span class="pill warn">待接入后台生产链测试</span>';
     var error=latest&&latest.error?'<div style="color:var(--error)">最近错误：'+esc(latest.error)+'</div>':'';
     var phase=latest&&latest.phase?'<div>内部阶段：<code>'+esc(latest.phase)+'</code></div>':'';
     var gaps=(feature.evidence_gaps||[]).concat(mode.evidence_gaps||[]),gapHtml=gaps.length?'<div class="ops-evidence-gap"><b>当前监控缺口：</b>'+esc(gaps.join('；'))+'</div>':'';
@@ -1825,10 +1825,10 @@
   function registryValidationPanel(feature,mode,data){
     var validation=mode.validation||null;if(!validation)return '';
     var test=data.e2e_test||{},run=registryE2ERun(mode,data),active=run&&['submitting','queued','running'].indexOf(run.status)>=0,allPassed=registryE2EPassed(run),fresh=registryE2EFresh(run),expired=allPassed&&!fresh,stages=run&&run.stages||[],passed=stages.filter(function(stage){return stage.state==='passed'}).length,first=stages.find(function(stage){return stage.state==='failed'})||stages.find(function(stage){return stage.state==='waiting'}),preflight=state.e2ePreflights[mode.key],preparing=!!state.e2ePreflightPending[mode.key];
-    var status=!validation.supported?'<span class="pill neutral">测试包未准备</span>':(!test.configured?'<span class="pill fail">测试账号未配置</span>':(active?'<span class="pill warn">正在运行</span>':(fresh?'<span class="pill ok">完整通过</span>':(expired?'<span class="pill warn">需要重测</span>':(first&&first.state==='failed'?'<span class="pill fail">明确阻断</span>':(preflight&&preflight.ready?'<span class="pill warn">等待你运行</span>':'<span class="pill neutral">正在准备</span>'))))));
+    var status=!validation.supported?'<span class="pill neutral">测试包未准备</span>':(!test.configured?'<span class="pill fail">测试账号未配置</span>':(active?'<span class="pill warn">正在运行</span>':(fresh?'<span class="pill ok">生产链通过</span>':(expired?'<span class="pill warn">需要重测</span>':(first&&first.state==='failed'?'<span class="pill fail">明确阻断</span>':(preflight&&preflight.ready?'<span class="pill warn">等待执行</span>':'<span class="pill neutral">正在准备</span>'))))));
     var nextActions={accepted:'检查后台受理',account:'检查测试账号与点数',job:'查看业务接口和任务日志',route:'检查线路、凭据与额度',provider:'查看供应商接单',generation:'查看生成错误',delivery:'检查作品下载与解码',billing:'核对扣点或退款流水'};
     var elapsed=run&&Number(run.updated_at||0)>Number(run.created_at||0)?' · '+(Number(run.updated_at)-Number(run.created_at))+' 秒':'';
-    var conclusion=fresh?'客户可以正常拿到作品，扣点一致':(expired?'上次完整通过，但证据已超过 24 小时，请重新运行':(active?'正在等待完整旅程返回证据':(first?'当前停在「'+first.name+'」':(run?'本次旅程尚未形成完整证据':'还没有运行过完整旅程'))));
+    var conclusion=fresh?'后台生产链可交付，客户页面仍需浏览器验收':(expired?'上次生产链通过，但证据已超过 24 小时，请重新运行':(active?'正在等待生产链返回证据':(first?'当前停在「'+first.name+'」':(run?'本次生产链尚未形成完整证据':'还没有运行过生产链测试'))));
     var summary='<div class="ops-validation-summary"><b>'+esc(conclusion)+'</b><span>'+(run?'最近批次 '+esc(String(run.run_id||'').slice(0,8))+' · '+passed+'/'+stages.length+' 通过'+elapsed+' · '+esc(fmtTime(run.updated_at||run.created_at)):'使用专用测试账号，从提交、生成、交付一直核对到账务')+'</span></div>';
     var stageDetails=stages.length?'<details class="ops-e2e-details"><summary>查看 '+stages.length+' 段证据 · '+passed+'/'+stages.length+' 通过</summary><div class="ops-e2e-stages">'+stages.map(function(stage){return '<div class="ops-e2e-stage"><i class="'+esc(stage.state)+'"></i><b>'+esc(stage.name)+'</b><span>'+esc(stage.detail)+'</span></div>'}).join('')+'</div></details>':'';
     var next=first?'<div class="ops-validation-next"><b>下一步：</b>'+esc(nextActions[first.key]||'查看该阶段证据')+(first.detail?' · '+esc(first.detail):'')+'</div>':'';
@@ -1836,8 +1836,8 @@
     var pack='<div class="ops-fixture-pack"><b>本次预设测试包</b><span>'+(preparing?'正在核对私有素材、测试账号和实时价格…':(preflight&&preflight.ready?'已备妥 · 点运行后自动带入，不需要上传或填写':'素材只在服务器私有目录使用，不会显示图片'))+'</span><div class="ops-fixture-items">'+fixtures+'</div>'+prompt+(meta?'<div class="ops-fixture-meta">'+meta+'</div>':'')+'</div>';
     var blocker=!validation.supported?(validation.blocked_reason||'尚未接入后台托管测试'):(!test.configured?'服务器尚未绑定专用测试账号':(run&&run.status==='unknown'?'上次提交结果未知；请先按批次核对任务与扣点，禁止重复提交':(preflight&&!preflight.ready?preflight.blocker:'')));
     var ready=validation.supported&&preflight&&preflight.ready&&!active;
-    var controls=blocker?'<small class="error">'+esc(blocker)+'</small>':(preparing||!preflight?'<small>这一步只检查素材和报价，不生成作品、不扣点。</small>':'<label class="ops-validation-confirm"><input type="checkbox" data-operation-validation-enable="'+esc(mode.key)+'" '+(active?'disabled':'')+'>确认使用专用测试账号，预计扣 '+Number(preflight.cost||0)+' 点，并且只提交一次</label><button class="mini primary" data-operation-validation-open="'+esc(mode.key)+'" disabled>'+(active?'完整旅程运行中…':'运行一次完整旅程')+'</button>');
-    return '<div class="ops-validation" data-validation-panel="'+esc(mode.key)+'"><div class="ops-validation-head"><div><b>完整旅程控制台</b><span>从真实提交一直验收到作品与扣点</span></div>'+status+'</div>'+summary+next+pack+(ready||preparing||!preflight?controls:'<button class="mini" data-e2e-preflight="'+esc(mode.key)+'">重新检查测试包</button>'+controls)+stageDetails+'</div>';
+    var controls=blocker?'<small class="error">'+esc(blocker)+'</small>':(preparing||!preflight?'<small>这一步只检查素材和报价，不生成作品、不扣点。</small>':'<label class="ops-validation-confirm"><input type="checkbox" data-operation-validation-enable="'+esc(mode.key)+'" '+(active?'disabled':'')+'>确认使用专用测试账号，预计扣 '+Number(preflight.cost||0)+' 点，并且只提交一次</label><button class="mini primary" data-operation-validation-open="'+esc(mode.key)+'" disabled>'+(active?'生产链运行中…':'运行一次生产链验收')+'</button>');
+    return '<div class="ops-validation" data-validation-panel="'+esc(mode.key)+'"><div class="ops-validation-head"><div><b>后台生产链控制台</b><span>验证业务接口、供应商、作品与扣点；不冒充客户页面交互</span></div>'+status+'</div>'+summary+next+pack+(ready||preparing||!preflight?controls:'<button class="mini" data-e2e-preflight="'+esc(mode.key)+'">重新检查测试包</button>'+controls)+stageDetails+'</div>';
   }
   function loadE2EPreflight(operationKey,force){
     var ctx=findOperationContext(operationKey),validation=ctx&&ctx.mode.validation;if(!validation||!validation.supported||state.e2ePreflightPending[operationKey]||(!force&&state.e2ePreflights[operationKey]))return;
@@ -1847,7 +1847,7 @@
   function openOperationValidation(operationKey){
     var ctx=findOperationContext(operationKey),validation=ctx&&ctx.mode.validation;if(!validation||!validation.supported){toast((validation&&validation.blocked_reason)||'该模式尚未接入后台托管测试');return}
     var button=el('operationsBox').querySelector('[data-operation-validation-open="'+operationKey+'"]');if(button)button.disabled=true;
-    api('/api/admin/e2e/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({operation_id:operationKey,confirmation:'RUN'})}).then(function(){delete state.e2ePreflights[operationKey];toast('测试任务已由专用账号提交；正在等待八段证据');load(true);startE2EPoll()}).catch(function(error){toast('测试未提交：'+error.message);load(true)});
+    api('/api/admin/e2e/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({operation_id:operationKey,confirmation:'RUN'})}).then(function(){delete state.e2ePreflights[operationKey];toast('生产链测试已由专用账号提交；正在等待八段证据');load(true);startE2EPoll()}).catch(function(error){toast('测试未提交：'+error.message);load(true)});
   }
   function startE2EPoll(){
     clearInterval(state.e2ePollTimer);var ticks=0;state.e2ePollTimer=setInterval(function(){ticks++;load(true);var active=((state.data||{}).e2e_runs||[]).some(function(run){return ['submitting','queued','running'].indexOf(run.status)>=0});if(!active||ticks>=120){clearInterval(state.e2ePollTimer);state.e2ePollTimer=null}},5000);
@@ -1889,7 +1889,7 @@
       var modes=[];(feature.modes||[]).forEach(function(mode){var stat=statByOperation[mode.key],flag=registryFlagState(feature,mode,data),verdict=registryVerdict(feature,mode,stat,flag,services[feature.service]||null,data),attention=verdict[0]!=='ok',acceptance=registryAcceptanceLabel(mode,data);done+=Number((stat||{}).done||0);failed+=Number((stat||{}).error||0);modeCount++;if(acceptance[0]==='ok')passedCount++;else if((mode.validation||{}).supported)runnableCount++;else blockedCount++;if(attention)attentionCount++;if(!state.operationsAttentionOnly||attention)modes.push({mode:mode,stat:stat,verdict:verdict,acceptance:acceptance})});
       if(modes.length)evaluations.push({feature:feature,modes:modes});
     });
-    el('operationsAttentionCount').textContent='已通过 '+passedCount+' · 待你验收 '+runnableCount+' · 未准备 '+blockedCount;
+    el('operationsAttentionCount').textContent='生产链已通过 '+passedCount+' · 待执行 '+runnableCount+' · 未准备 '+blockedCount;
     el('operationsSummary').innerHTML='<div class="ledger-stat"><span>客户当前可见功能</span><b>'+visibleFeatures.length+'</b></div><div class="ledger-stat"><span>已登记客户模式</span><b>'+modeCount+'</b></div><div class="ledger-stat"><span>近 '+Number(stats.days||state.days)+' 天完成</span><b>'+done.toLocaleString()+'</b></div><div class="ledger-stat"><span>近 '+Number(stats.days||state.days)+' 天失败</span><b>'+failed.toLocaleString()+'</b></div>';
     var entries=[];evaluations.forEach(function(item){item.modes.forEach(function(entry){entries.push({feature:item.feature,mode:entry.mode,stat:entry.stat,verdict:entry.verdict})})});
     if(!entries.some(function(entry){return entry.mode.key===state.operationsMode}))state.operationsMode=(entries[0]||{mode:{key:''}}).mode.key;
