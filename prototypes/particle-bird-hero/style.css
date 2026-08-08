@@ -15,6 +15,12 @@ body { margin: 0; min-width: 320px; overflow-x: hidden; background: radial-gradi
 a { color: inherit; text-decoration: none; }
 
 .particle-stage { position: fixed; inset: 0; z-index: 0; width: 100%; height: 100%; display: block; }
+.cursor-ripple { position: fixed; z-index: 4; top: 0; left: 0; width: 76px; height: 76px; pointer-events: none; opacity: 0; transform: translate3d(-100px, -100px, 0); transition: opacity .24s ease; }
+.cursor-ripple::before, .cursor-ripple::after { content: ""; position: absolute; inset: 0; border-radius: 50%; border: 1px solid rgba(116, 166, 255, .34); box-shadow: inset 0 0 18px rgba(84, 137, 255, .08), 0 0 24px rgba(67, 113, 255, .12); }
+.cursor-ripple::after { inset: 15px; border-color: rgba(232, 190, 109, .3); box-shadow: 0 0 18px rgba(232, 190, 109, .1); }
+.cursor-ripple.is-active { opacity: 1; }
+.cursor-ripple.is-active::before { animation: cursor-wave 1.35s ease-out infinite; }
+.cursor-ripple.is-active::after { animation: cursor-wave 1.35s .34s ease-out infinite; }
 .reading-shade { position: fixed; inset: 0; z-index: 1; pointer-events: none; background: linear-gradient(90deg, rgba(3, 4, 6, .98) 0, rgba(3, 4, 6, .86) 27%, rgba(3, 4, 6, .18) 57%, transparent 76%); }
 
 .site-header { position: fixed; z-index: 5; top: 0; left: 0; right: 0; display: flex; align-items: center; justify-content: space-between; padding: 28px 34px; pointer-events: none; }
@@ -52,7 +58,13 @@ body.has-scrolled .scroll-cue { opacity: 0; }
 body.is-ready .load-message { opacity: 0; transition: opacity .5s ease; }
 body.webgl-fallback .particle-stage { display: none; }
 
+@keyframes cursor-wave {
+  0% { opacity: .7; transform: scale(.62); }
+  72%, 100% { opacity: 0; transform: scale(1.18); }
+}
+
 @media (max-width: 700px) {
+  .cursor-ripple { display: none; }
   .site-header { padding: 20px 18px; }
   .brand-mark { width: 42px; height: 42px; }
   .workspace-link { font-size: 12px; }
@@ -72,6 +84,7 @@ body.webgl-fallback .particle-stage { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .cursor-ripple { display: none; }
   .scroll-cue { display: none; }
   .story { min-height: 80vh; }
 }

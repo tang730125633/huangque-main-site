@@ -11,6 +11,8 @@ const [html, css, script, asset] = await Promise.all([
 if (!html.includes('data-particle-stage') || !css.includes('prefers-reduced-motion')) throw new Error('missing page contract');
 if ((html.match(/<section class="story/g) || []).length !== 6 || !html.includes('final-action')) throw new Error('missing six-act story');
 if (!script.includes('ShaderMaterial') || !script.includes('uPointerStrength')) throw new Error('missing particle interaction');
+if (!html.includes('data-cursor-ripple') || !css.includes('cursor-wave') || !script.includes('cursorRipple')) throw new Error('missing cursor ripple');
+if (!script.includes('role < .025')) throw new Error('feather shaft density regressed');
 for (const target of ['aFeather', 'aFlow', 'aFlock', 'aLogo']) {
   if (!script.includes(target)) throw new Error(`missing morph target: ${target}`);
 }

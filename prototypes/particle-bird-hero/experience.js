@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
 const canvas = document.querySelector('[data-particle-stage]');
+const cursorRipple = document.querySelector('[data-cursor-ripple]');
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 const isMobile = matchMedia('(max-width: 700px)').matches;
 const status = { ready: false, points: 0, reducedMotion: reducedMotion.matches, timeline: 0, scene: 'scatter', pointerStrength: 0 };
@@ -170,18 +171,27 @@ async function start() {
   const pointerCurrent = pointerTarget.clone();
   const interactionPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
   let pointerStrengthTarget = 0;
+  let cursorRippleTimer = 0;
   let scrollTarget = reducedMotion.matches ? 2 : 0;
   let timeline = scrollTarget;
 
   addEventListener('pointermove', (event) => {
     if (reducedMotion.matches || event.pointerType === 'touch') return;
+    cursorRipple.style.transform = `translate3d(${event.clientX - 38}px, ${event.clientY - 38}px, 0)`;
+    cursorRipple.classList.add('is-active');
+    clearTimeout(cursorRippleTimer);
+    cursorRippleTimer = setTimeout(() => cursorRipple.classList.remove('is-active'), 720);
     pointerNdc.set(event.clientX / innerWidth * 2 - 1, 1 - event.clientY / innerHeight * 2);
     raycaster.setFromCamera(pointerNdc, camera);
     if (!raycaster.ray.intersectPlane(interactionPlane, pointerTarget)) return;
     birdPoints.worldToLocal(pointerTarget);
     pointerStrengthTarget = 1;
   }, { passive: true });
-  addEventListener('pointerout', () => { pointerStrengthTarget = 0; }, { passive: true });
+  addEventListener('pointerout', () => {
+    pointerStrengthTarget = 0;
+    clearTimeout(cursorRippleTimer);
+    cursorRipple.classList.remove('is-active');
+  }, { passive: true });
   addEventListener('scroll', updateScroll, { passive: true });
   addEventListener('resize', resize);
 
@@ -234,20 +244,27 @@ function makeFeatherTarget(count, random) {
   const target = new Float32Array(count * 3);
   for (let index = 0; index < count; index += 1) {
     const offset = index * 3;
-    const along = Math.floor(random() * 180) / 179;
-    const y = -2.0 + along * 4.2;
-    if (random() < .14) {
-      target[offset] = (random() - .5) * .055;
-      target[offset + 1] = -2.82 + random() * 5.1;
+    const role = random();
+    const along = role < .42 ? Math.floor(random() * 46) / 45 : random();
+    const y = -1.12 + along * 3.48;
+    let x;
+    let shapedY;
+    if (role < .025) {
+      const shaftAlong = random();
+      shapedY = -2.68 + shaftAlong * 4.82;
+      x = -.2 + shaftAlong * .2 + (random() - .5) * .026;
     } else {
       const side = random() < .5 ? -1 : 1;
-      const asymmetry = side < 0 ? 1 : .56 + along * .1;
-      const reach = Math.pow(Math.sin(Math.PI * along), .68) * 1.42 * asymmetry * (.84 + random() * .16);
-      const distance = .08 + Math.pow(random(), .78) * .92;
-      const curve = Math.sin(along * Math.PI) * .2;
-      target[offset] = curve + side * reach * distance;
-      target[offset + 1] = y - distance * (.38 + (1 - along) * .22) + (random() - .5) * .025;
+      const asymmetry = side < 0 ? 1 : .58 + along * .06;
+      const reach = Math.pow(Math.sin(Math.PI * along), .7) * 1.48 * asymmetry * (.88 + random() * .12);
+      const distance = .04 + Math.pow(random(), .7) * .96;
+      const shaftX = -.2 + along * .2;
+      x = shaftX + side * reach * distance;
+      shapedY = y - distance * (.46 + (1 - along) * .24) + (random() - .5) * .018;
     }
+    const angle = -.22;
+    target[offset] = x * Math.cos(angle) - shapedY * Math.sin(angle);
+    target[offset + 1] = x * Math.sin(angle) + shapedY * Math.cos(angle);
     target[offset + 2] = (random() - .5) * .12;
   }
   return target;
