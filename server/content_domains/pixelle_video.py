@@ -40,6 +40,10 @@ PIXELLE_MAX_VIDEO_BYTES = _env_int(
 )
 _NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
+
+class PixelleTransientError(RuntimeError):
+    """A temporary transport failure that is safe to retry while polling."""
+
 _PORTRAIT_ILLUSTRATION_NAMES = {
     "image_blur_card.html": "玻璃模糊卡片",
     "image_book.html": "书页阅读",
@@ -186,7 +190,9 @@ def _json_request(method, path, payload=None, timeout=30):
         )
     except (urllib.error.URLError, TimeoutError) as exc:
         reason = getattr(exc, "reason", exc)
-        raise RuntimeError("无法连接视频生成服务：%s" % str(reason)[:160])
+        raise PixelleTransientError(
+            "无法连接视频生成服务：%s" % str(reason)[:160]
+        )
 
 
 def availability(force=False):
@@ -248,9 +254,13 @@ def _submit(payload):
 def _wait(task_id):
     deadline = time.monotonic() + PIXELLE_JOB_TIMEOUT
     while time.monotonic() < deadline:
-        task = _json_request(
-            "GET", "/api/tasks/" + urllib.parse.quote(task_id, safe=""), timeout=20
-        )
+        try:
+            task = _json_request(
+                "GET", "/api/tasks/" + urllib.parse.quote(task_id, safe=""), timeout=20
+            )
+        except PixelleTransientError:
+            time.sleep(PIXELLE_POLL_INTERVAL)
+            continue
         status = str(task.get("status") or "pending").lower()
         if status == "completed":
             return dict(task.get("result") or {})
