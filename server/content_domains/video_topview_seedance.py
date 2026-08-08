@@ -218,10 +218,10 @@ def _poll(opener, request_id, model, duration, ratio, resolution, generate_audio
     now, sleep = now or time.time, sleep or time.sleep
     deadline = now() + TIMEOUT
     route, separator, task_id = str(request_id or "").partition(":")
-    if separator != ":" or route not in {"omni", "t2v"} or not task_id:
+    if separator != ":" or route not in {"i2v", "t2v"} or not task_id:
         raise ValueError("恢复 Topview Seedance 缺少有效 task id")
     query_path = (
-        "/v1/common_task/omni_reference/task/query" if route == "omni"
+        "/v2/common_task/image2video/task/query" if route == "i2v"
         else "/v1/common_task/text2video/task/query"
     )
     while now() < deadline:
@@ -265,14 +265,10 @@ def generate(model=SEEDANCE_MODEL, prompt="", duration=5, ratio="9:16",
     body = _build_payload(model, prompt, duration, ratio, resolution, generate_audio, refs)
     opener = _opener()
     if refs:
-        body.pop("sound", None)
-        body["prompt"] = "以 <IMAGE1> 作为唯一视觉参考，保持主体身份、外观、配色和画风一致。\n" + body["prompt"]
-        body["inputImages"] = [{
-            "fileId": _upload_image(opener, refs[0], api_key),
-            "name": "Image1",
-        }]
-        route = "omni"
-        path = "/v1/common_task/omni_reference/task/submit"
+        body.pop("aspectRatio", None)
+        body["firstFrameFileId"] = _upload_image(opener, refs[0], api_key)
+        route = "i2v"
+        path = "/v2/common_task/image2video/task/submit"
     else:
         route = "t2v"
         path = "/v1/common_task/text2video/task/submit"
