@@ -2,6 +2,7 @@ import json
 import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 import urllib.request
 import urllib.error
@@ -29,10 +30,14 @@ class AdminE2ERunnerTests(unittest.TestCase):
         self.admin.CONTENT_OUT.mkdir()
         with closing(sqlite3.connect(self.admin.ADMIN_DB)) as connection:
             connection.execute("""CREATE TABLE admin_e2e_runs(
-                run_id TEXT PRIMARY KEY,operation_id TEXT,username TEXT DEFAULT '',status TEXT,
+                run_id TEXT PRIMARY KEY,batch_id TEXT DEFAULT '',operation_id TEXT,
+                username TEXT DEFAULT '',status TEXT,
                 job_id INTEGER,cost INTEGER DEFAULT 0,points_before INTEGER,points_after INTEGER,
                 transaction_key TEXT DEFAULT '',error TEXT DEFAULT '',created_by TEXT,
                 created_at INTEGER,updated_at INTEGER)""")
+            connection.execute("""CREATE TABLE admin_audit(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,actor TEXT,action TEXT,target TEXT,
+                detail TEXT,created_at INTEGER)""")
             connection.commit()
 
     def tearDown(self):
@@ -123,7 +128,10 @@ class AdminE2ERunnerTests(unittest.TestCase):
     def test_preflight_blocks_every_mode_while_another_journey_is_running(self):
         with closing(sqlite3.connect(self.admin.ADMIN_DB)) as connection:
             connection.execute(
-                "INSERT INTO admin_e2e_runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                """INSERT INTO admin_e2e_runs(
+                       run_id,operation_id,username,status,job_id,cost,points_before,
+                       points_after,transaction_key,error,created_by,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 ("active-run", "video.omni.text", "qa-dedicated", "running", 77,
                  30, 500, 470, "ledger-77", "", "root", 1, 2),
             )
@@ -208,6 +216,66 @@ class AdminE2ERunnerTests(unittest.TestCase):
         self.assertEqual(next(stage for stage in run["stages"] if stage["key"] == "delivery")["state"], "passed")
         self.assertEqual(next(stage for stage in run["stages"] if stage["key"] == "billing")["detail"], "扣点流水一致")
         self.assertNotIn("transaction_key", run)
+
+    def test_batch_preflight_quotes_all_stale_prepared_modes_without_submitting(self):
+        session = {"token": "short-lived-secret", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        modes = [
+            {"key": "video.grok.text", "validation": {"supported": True}},
+            {"key": "video.grok.image", "validation": {"supported": True}},
+            {"key": "video.sora.text", "validation": {"supported": True}},
+            {"key": "video.unprepared", "validation": {"supported": False}},
+        ]
+        fresh = {"operation_id": "video.sora.text", "status": "completed",
+                 "updated_at": int(time.time()), "stages": [{"state": "passed"}]}
+        with patch.object(self.admin, "list_e2e_runs", return_value=[fresh]), \
+             patch.object(self.admin, "_e2e_page_modes", return_value=modes), \
+             patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "points_domain", SimpleNamespace()), \
+             patch.object(self.admin, "_e2e_prepare_operation", side_effect=[
+                 {"cost": 30}, {"cost": 40},
+             ]) as prepare, \
+             patch.object(self.admin, "_content_e2e_request") as submit:
+            result = self.admin.e2e_batch_preflight("admin-token", "video")
+        self.assertTrue(result["ready"])
+        self.assertEqual((result["ready_count"], result["fresh_count"], result["unprepared_count"]), (2, 1, 1))
+        self.assertEqual((result["total_cost"], result["points"]), (70, 500))
+        self.assertEqual(prepare.call_count, 2)
+        submit.assert_not_called()
+
+    def test_start_batch_creates_one_group_and_starts_one_scheduler(self):
+        preflight = {
+            "ready": True, "account": "qa-dedicated", "target_count": 2,
+            "ready_count": 2, "total_cost": 70,
+            "items": [
+                {"operation_id": "video.grok.text", "ready": True, "cost": 30, "blocker": ""},
+                {"operation_id": "video.grok.image", "ready": True, "cost": 40, "blocker": ""},
+            ],
+        }
+        with patch.object(self.admin, "e2e_batch_preflight", return_value=preflight), \
+             patch.object(self.admin.threading, "Thread") as thread:
+            batch = self.admin.start_e2e_batch("root", "admin-token", "video")
+        self.assertEqual((batch["total"], batch["waiting"], batch["status"]), (2, 2, "running"))
+        self.assertTrue(batch["batch_id"])
+        thread.return_value.start.assert_called_once_with()
+        with closing(sqlite3.connect(self.admin.ADMIN_DB)) as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT batch_id,status FROM admin_e2e_runs ORDER BY status"
+            ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][1], "planned")
+
+    def test_batch_scheduler_respects_global_and_task_kind_caps(self):
+        counts = {"total": 2, "by_kind": {"sora_video": 1, "xiaole_video": 1}}
+        caps = {"total": 5, "sora_video": 1, "xiaole_video": 2}
+        with patch.object(self.admin.function_registry, "e2e_runner", side_effect=lambda operation: {
+            "endpoint": {"path": "/api/gen/sora_video" if operation == "sora" else "/api/gen/xiaole_video"}
+        }):
+            self.assertFalse(self.admin._e2e_batch_can_submit("sora", counts, caps))
+            self.assertTrue(self.admin._e2e_batch_can_submit("xiaole", counts, caps))
+            counts["total"] = 5
+            self.assertFalse(self.admin._e2e_batch_can_submit("xiaole", counts, caps))
 
     def test_release_moves_fixtures_to_private_runtime_and_removes_public_copy(self):
         root = Path(__file__).resolve().parents[1]

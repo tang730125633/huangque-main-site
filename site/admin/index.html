@@ -136,6 +136,7 @@
     .channel-map-category{margin-top:5px;color:var(--gold);font-size:10px;font-weight:800}.channel-map-features{display:flex;flex-wrap:wrap;gap:5px;margin-top:10px}.channel-map-features span{padding:4px 6px;border:1px solid rgba(154,166,159,.16);border-radius:5px;background:rgba(154,166,159,.055);color:var(--muted);font-size:10px}.channel-map-meta{display:flex;justify-content:space-between;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid rgba(46,56,50,.75);color:var(--muted);font-size:10px}
     .channel-detail{border:1px solid var(--line);border-radius:8px;background:rgba(17,22,19,.54)}.channel-detail>summary{padding:12px 14px;color:#f6dfa9;font-weight:800;cursor:pointer}.channel-detail[open]>summary{border-bottom:1px solid var(--line)}.channel-detail .table-wrap{border-radius:0 0 8px 8px}
     .ops-note{padding:10px 12px;border:1px solid rgba(110,168,255,.2);border-radius:7px;background:rgba(110,168,255,.055);color:var(--muted);font-size:12px}
+    .ops-batch{display:grid;gap:10px;margin-bottom:12px;padding:13px;border:1px solid rgba(240,190,85,.28);border-radius:9px;background:rgba(240,190,85,.055)}.ops-batch-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.ops-batch-head b{display:block;color:#f6dfa9}.ops-batch-head span,.ops-batch-state{display:block;margin-top:3px;color:var(--muted);font-size:11px}.ops-batch-counts{display:flex;gap:6px;flex-wrap:wrap}.ops-batch-action{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:10px;border-top:1px solid var(--line)}.ops-batch-action button{min-width:220px}.ops-batch-results{border-top:1px solid var(--line)}.ops-batch-results>summary{padding-top:10px;color:var(--info);font-size:11px;font-weight:800;cursor:pointer}.ops-batch-items{display:grid;gap:5px;margin-top:8px}.ops-batch-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:7px;border:1px solid var(--line);border-radius:6px;font-size:10px}.ops-batch-item span{color:var(--muted);overflow-wrap:anywhere}
     .pager{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding-top:14px}
     .pager-info{min-width:180px;text-align:center;color:var(--muted);font-size:12px}
     .pager button{min-width:72px}
@@ -229,7 +230,7 @@
     @media (max-width:900px){.admin-sidebar{position:fixed;left:0;transform:translateX(-100%);transition:transform .18s ease}.admin-layout.nav-open .admin-sidebar{transform:none}.admin-layout.nav-open .sidebar-backdrop{display:block;position:fixed;inset:0;z-index:35;width:100%;height:100%;border:0;border-radius:0;background:rgba(2,5,3,.68)}.sidebar-resizer{display:none}.nav-toggle{display:block}.shell{padding:18px 14px 36px}header{grid-template-columns:auto minmax(0,1fr) auto;gap:10px}.top-search button{font-size:0;width:42px;padding:0}.top-search button:after{content:"搜";font-size:13px}.span3,.span4,.span6,.span8{grid-column:span 12}.channels,.feature-grid,.invite-config,.membership-recharge,.detail-grid,.case-workspace,.announcement-workspace{grid-template-columns:1fr}.ops-workspace{grid-template-columns:1fr}.ops-catalog,.ops-inspector{position:static}.ops-catalog-list{grid-template-columns:repeat(2,minmax(0,1fr))}.ops-mode-head{grid-template-columns:minmax(160px,1fr) auto}.ops-mode-head>.ops-mode-meta{grid-column:1/-1}.ops-standard-body{grid-template-columns:repeat(2,minmax(0,1fr))}.channel-map-head{grid-template-columns:1fr}.channel-map-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.ledger-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ledger-stat:nth-child(2){border-right:0}.ledger-stat:nth-child(-n+2){border-bottom:1px solid var(--line)}.user{padding:7px}.user>div:last-child{display:none}.case-list{max-height:none}.network-node{align-items:stretch}.network-node .actions{width:100%}.customer-drawer{width:100vw}.operations-channel-context{grid-template-columns:1fr}.issue-row{grid-template-columns:90px 1fr}.issue-row>*:nth-child(3){grid-column:1/-1}.issue-row>*:nth-child(4){grid-column:2}}
     @media (max-width:900px){.operations-channel-drawer .table-wrap{overflow:visible}.operations-channel-drawer .channel-table,.operations-channel-drawer .channel-table tbody,.operations-channel-drawer .channel-table tr,.operations-channel-drawer .channel-table td{display:block;width:100%;min-width:0}.operations-channel-drawer .channel-table thead{display:none}.operations-channel-drawer .channel-table tr{padding:10px 0;border-bottom:1px solid var(--line)}.operations-channel-drawer .channel-table td{padding:5px 0;border:0}.operations-channel-drawer .channel-table td:not(:first-child):before{display:block;margin-bottom:3px;color:var(--muted);font-size:10px;font-weight:800}.operations-channel-drawer .channel-table td:nth-child(2):before{content:"凭据"}.operations-channel-drawer .channel-table td:nth-child(3):before{content:"当前配置"}.operations-channel-drawer .channel-table td:nth-child(4):before{content:"健康与轮询"}.operations-channel-drawer .channel-table td:nth-child(5):before{content:"操作"}}
     @media (max-width:560px){.channel-map{padding:14px}.channel-map-stats{grid-template-columns:1fr}.channel-map-stat{border-right:0;border-bottom:1px solid var(--line)}.channel-map-stat:last-child{border-bottom:0}.channel-map-grid{grid-template-columns:1fr}.channel-map-card:before{display:none}}
-    @media (max-width:560px){.top-search{grid-column:1/-1;grid-row:2}.user{grid-column:3;grid-row:1}.nav-toggle{grid-column:1;grid-row:1}.case-fields,.case-upload,.support-path,.quick-links,.announcement-tiers{grid-template-columns:1fr}.module-subnav{width:100%;display:grid;grid-template-columns:1fr 1fr}.module-card[data-module="operations"]>.section-head{flex-direction:column}.module-card[data-module="operations"]>.section-head>.actions{justify-content:flex-start}.ops-registry-toolbar{align-items:stretch}.ops-registry-toolbar .ops-page-picker{width:100%;display:grid;gap:6px}.ops-page-picker select,.ops-registry-toolbar select,.ops-registry-toolbar button{width:100%;min-width:0}.ops-catalog-list,.ops-inspector-facts{grid-template-columns:1fr}.ops-feature-head,.ops-page-head{align-items:flex-start;flex-direction:column}.ops-feature-head .meta{justify-content:flex-start}.ops-mode-head,.ops-chain-step,.ops-standard-body,.ops-dev-row{grid-template-columns:1fr}.ops-mode-head>.ops-mode-meta{grid-column:auto}.ops-mode-details>summary,.ops-standard>summary,.ops-dev>summary{min-height:48px}.ops-dependency{flex-direction:column}.announcement-tiers{margin-left:24px}.case-item{grid-template-columns:72px 1fr}.case-thumb{width:72px;height:92px}.drawer-head{padding:0 12px}.user-detail{padding:12px}.row{align-items:flex-start;flex-direction:column}.row>.actions{width:100%}}
+    @media (max-width:560px){.top-search{grid-column:1/-1;grid-row:2}.user{grid-column:3;grid-row:1}.nav-toggle{grid-column:1;grid-row:1}.case-fields,.case-upload,.support-path,.quick-links,.announcement-tiers{grid-template-columns:1fr}.module-subnav{width:100%;display:grid;grid-template-columns:1fr 1fr}.module-card[data-module="operations"]>.section-head{flex-direction:column}.module-card[data-module="operations"]>.section-head>.actions{justify-content:flex-start}.ops-registry-toolbar{align-items:stretch}.ops-registry-toolbar .ops-page-picker{width:100%;display:grid;gap:6px}.ops-page-picker select,.ops-registry-toolbar select,.ops-registry-toolbar button{width:100%;min-width:0}.ops-batch-head,.ops-batch-action{align-items:stretch;flex-direction:column}.ops-batch-action button{width:100%;min-width:0}.ops-catalog-list,.ops-inspector-facts{grid-template-columns:1fr}.ops-feature-head,.ops-page-head{align-items:flex-start;flex-direction:column}.ops-feature-head .meta{justify-content:flex-start}.ops-mode-head,.ops-chain-step,.ops-standard-body,.ops-dev-row{grid-template-columns:1fr}.ops-mode-head>.ops-mode-meta{grid-column:auto}.ops-mode-details>summary,.ops-standard>summary,.ops-dev>summary{min-height:48px}.ops-dependency{flex-direction:column}.announcement-tiers{margin-left:24px}.case-item{grid-template-columns:72px 1fr}.case-thumb{width:72px;height:92px}.drawer-head{padding:0 12px}.user-detail{padding:12px}.row{align-items:flex-start;flex-direction:column}.row>.actions{width:100%}}
     @media (max-width:900px){.page-heading{display:block;grid-column:2;grid-row:1;min-width:0}.page-heading h1{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.page-heading .sub{display:none}.top-search{grid-column:1/-1;grid-row:2}.user{grid-column:3;grid-row:1}.nav-toggle{grid-column:1;grid-row:1}.ops-catalog{max-height:none}}
   </style>
 </head>
@@ -410,6 +411,7 @@
           <span class="muted" id="operationsUpdatedAt">尚未刷新</span>
         </div>
         <div class="ops-page-state" id="operationsPageState"></div>
+        <div id="operationsBatch"></div>
         <div class="ledger-summary ops-summary" id="operationsSummary"></div>
         <div class="ops-note" style="margin-bottom:12px">证据边界：密钥已配置、基础服务可达或任务表 completed，都不能单独证明客户已经拿到可播放作品。当前尚未统一采集多段供应商子任务、作品下载解码、余额与账务对账；缺少证据的环节只显示“未验证”，不会假绿。</div>
         <details class="ops-standard">
@@ -653,7 +655,9 @@
     announcementRequestId:'', announcementPreviewLoading:false, announcementPublishing:false,
     announcementHistoryLoading:false, operationsPage:'video', operationsMode:'', operationsAttentionOnly:false,
     operationsChannelMode:'', operationsChannelReturnFocus:null,
-    e2ePollTimer:null, e2ePreflights:{}, e2ePreflightPending:{}, overviewUpdatedAt:0, overviewPromise:null,
+    e2ePollTimer:null, e2ePreflights:{}, e2ePreflightPending:{}, e2eBatchPollTimer:null,
+    e2eBatchPreflights:{}, e2eBatchPreflightPending:{}, e2eBatchSubmitting:false,
+    overviewUpdatedAt:0, overviewPromise:null,
     keyProbes:{}, keyProbePending:{}, keyProbeMonitor:{}
   };
   var secretWindows = [];
@@ -1745,12 +1749,13 @@
     return notApplicable.indexOf('provider_task')>=0?'断点 · 6 内部执行':'断点 · 4–5 渠道或供应商接单';
   }
   function registryE2ERun(mode,data){return (data.e2e_runs||[]).find(function(item){return item.operation_id===mode.key})}
+  function e2eActive(status){return ['planned','submitting','queued','running'].indexOf(status)>=0}
   function registryE2EPassed(run){return !!(run&&run.status==='completed'&&run.stages&&run.stages.length&&run.stages.every(function(stage){return stage.state==='passed'}))}
   function registryE2EFresh(run){return registryE2EPassed(run)&&Number(run.updated_at||run.created_at||0)>=Math.floor(Date.now()/1000)-86400}
   function registryAcceptanceLabel(mode,data){
     var run=registryE2ERun(mode,data);
     if(registryE2EFresh(run))return ['ok','生产链已验收 · 8/8'];
-    if(run&&['submitting','queued','running'].indexOf(run.status)>=0)return ['neutral','生产链运行中'];
+    if(run&&e2eActive(run.status))return ['neutral','生产链运行中'];
     if(!(mode.validation||{}).supported)return ['neutral','测试包未准备好'];
     return ['warn','测试包已准备 · 待执行'];
   }
@@ -1824,7 +1829,7 @@
   }
   function registryValidationPanel(feature,mode,data){
     var validation=mode.validation||null;if(!validation)return '';
-    var test=data.e2e_test||{},run=registryE2ERun(mode,data),active=run&&['submitting','queued','running'].indexOf(run.status)>=0,allPassed=registryE2EPassed(run),fresh=registryE2EFresh(run),expired=allPassed&&!fresh,stages=run&&run.stages||[],passed=stages.filter(function(stage){return stage.state==='passed'}).length,first=stages.find(function(stage){return stage.state==='failed'})||stages.find(function(stage){return stage.state==='waiting'}),preflight=state.e2ePreflights[mode.key],preparing=!!state.e2ePreflightPending[mode.key];
+    var test=data.e2e_test||{},run=registryE2ERun(mode,data),active=run&&e2eActive(run.status),allPassed=registryE2EPassed(run),fresh=registryE2EFresh(run),expired=allPassed&&!fresh,stages=run&&run.stages||[],passed=stages.filter(function(stage){return stage.state==='passed'}).length,first=stages.find(function(stage){return stage.state==='failed'})||stages.find(function(stage){return stage.state==='waiting'}),preflight=state.e2ePreflights[mode.key],preparing=!!state.e2ePreflightPending[mode.key];
     var status=!validation.supported?'<span class="pill neutral">测试包未准备</span>':(!test.configured?'<span class="pill fail">测试账号未配置</span>':(active?'<span class="pill warn">正在运行</span>':(fresh?'<span class="pill ok">生产链通过</span>':(expired?'<span class="pill warn">需要重测</span>':(first&&first.state==='failed'?'<span class="pill fail">明确阻断</span>':(preflight&&preflight.ready?'<span class="pill warn">等待执行</span>':'<span class="pill neutral">正在准备</span>'))))));
     var nextActions={accepted:'检查后台受理',account:'检查测试账号与点数',job:'查看业务接口和任务日志',route:'检查线路、凭据与额度',provider:'查看供应商接单',generation:'查看生成错误',delivery:'检查作品下载与解码',billing:'核对扣点或退款流水'};
     var elapsed=run&&Number(run.updated_at||0)>Number(run.created_at||0)?' · '+(Number(run.updated_at)-Number(run.created_at))+' 秒':'';
@@ -1850,7 +1855,31 @@
     api('/api/admin/e2e/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({operation_id:operationKey,confirmation:'RUN'})}).then(function(){delete state.e2ePreflights[operationKey];toast('生产链测试已由专用账号提交；正在等待八段证据');load(true);startE2EPoll()}).catch(function(error){toast('测试未提交：'+error.message);load(true)});
   }
   function startE2EPoll(){
-    clearInterval(state.e2ePollTimer);var ticks=0,operationKey=state.operationsMode;state.e2ePollTimer=setInterval(function(){ticks++;load(true).then(function(){var active=((state.data||{}).e2e_runs||[]).some(function(run){return ['submitting','queued','running'].indexOf(run.status)>=0});if(!active||ticks>=120){clearInterval(state.e2ePollTimer);state.e2ePollTimer=null;if(!active&&operationKey){delete state.e2ePreflights[operationKey];loadE2EPreflight(operationKey,true)}}})},5000);
+    clearInterval(state.e2ePollTimer);var ticks=0,operationKey=state.operationsMode;state.e2ePollTimer=setInterval(function(){ticks++;load(true).then(function(){var active=((state.data||{}).e2e_runs||[]).some(function(run){return e2eActive(run.status)});if(!active||ticks>=120){clearInterval(state.e2ePollTimer);state.e2ePollTimer=null;if(!active&&operationKey){delete state.e2ePreflights[operationKey];loadE2EPreflight(operationKey,true)}}})},5000);
+  }
+  function latestE2EBatch(data,pageKey){return ((data||{}).e2e_batches||[]).find(function(batch){return batch.page_key===pageKey})}
+  function loadE2EBatchPreflight(pageKey,force){
+    if(!pageKey||state.e2eBatchPreflightPending[pageKey]||(!force&&state.e2eBatchPreflights[pageKey]))return;
+    state.e2eBatchPreflightPending[pageKey]=true;if(state.module==='operations'&&state.data)renderOperations(state.data);
+    api('/api/admin/e2e/batch/preflight?page_key='+encodeURIComponent(pageKey)).then(function(result){state.e2eBatchPreflights[pageKey]=result}).catch(function(error){state.e2eBatchPreflights[pageKey]={ready:false,blocker:error.message,items:[]}}).finally(function(){delete state.e2eBatchPreflightPending[pageKey];if(state.module==='operations'&&state.data)renderOperations(state.data)});
+  }
+  function runE2EBatch(pageKey){
+    if(state.e2eBatchSubmitting)return;state.e2eBatchSubmitting=true;if(state.data)renderOperations(state.data);
+    api('/api/admin/e2e/batch/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({page_key:pageKey,confirmation:'RUN_BATCH'})}).then(function(result){delete state.e2eBatchPreflights[pageKey];toast('一键验收已启动；后台会自动分批跑完');return load(true).then(function(){startE2EBatchPoll(result.batch.batch_id,pageKey)})}).catch(function(error){toast('一键验收未启动：'+error.message);load(true)}).finally(function(){state.e2eBatchSubmitting=false;if(state.data)renderOperations(state.data)});
+  }
+  function startE2EBatchPoll(batchId,pageKey){
+    clearInterval(state.e2eBatchPollTimer);var ticks=0;state.e2eBatchPollTimer=setInterval(function(){ticks++;load(true).then(function(){var batch=((state.data||{}).e2e_batches||[]).find(function(item){return item.batch_id===batchId}),active=batch&&batch.status==='running';if(!active||ticks>=1440){clearInterval(state.e2eBatchPollTimer);state.e2eBatchPollTimer=null;state.e2ePreflights={};delete state.e2eBatchPreflights[pageKey];if(!active)loadE2EBatchPreflight(pageKey,true)}})},5000);
+  }
+  function renderE2EBatch(page,data,passedCount,runnableCount,blockedCount){
+    var target=el('operationsBatch');if(page.inventory_status!=='verified'){target.innerHTML='';return}
+    var modeNames={};(page.functions||[]).forEach(function(feature){(feature.modes||[]).forEach(function(mode){modeNames[mode.key]=feature.name+' · '+mode.name})});
+    var latest=latestE2EBatch(data,page.key),active=latest&&latest.status==='running',preflight=state.e2eBatchPreflights[page.key],preparing=!!state.e2eBatchPreflightPending[page.key],items=latest&&latest.items||[];
+    var result=latest?'<div class="ops-batch-counts"><span class="pill '+(active?'warn':(latest.failed?'fail':'ok'))+'">'+(active?'批次运行中':(latest.failed?'批次有失败':'批次已通过'))+'</span><span class="pill neutral">通过 '+Number(latest.passed||0)+' / '+Number(latest.total||0)+'</span><span class="pill '+(latest.failed?'fail':'neutral')+'">失败 '+Number(latest.failed||0)+'</span><span class="pill neutral">等待 '+Number(latest.waiting||0)+'</span></div>':'';
+    var details=items.length?'<details class="ops-batch-results"><summary>查看最近批次每项结果</summary><div class="ops-batch-items">'+items.map(function(item){var failed=item.status==='failed'||item.status==='unknown';return '<div class="ops-batch-item"><b>'+esc(modeNames[item.operation_id]||item.operation_id)+'</b><span class="'+(failed?'error':'')+'">'+(failed?esc(item.error||'失败'):(Number(item.passed||0)+' / '+Number(item.stages||0)+' 段通过'))+'</span></div>'}).join('')+'</div></details>':'';
+    var blocker=preflight&&!preflight.ready?preflight.blocker:'',cost=Number((preflight||{}).total_cost||0),ready=preflight&&preflight.ready&&!active&&!state.e2eBatchSubmitting;
+    var action=active?'<div class="ops-batch-state">后台正在按账号并发上限自动排队，不需要停留在本页。</div>':(preparing||!preflight?'<div class="ops-batch-state">正在核对全部私有素材、实时价格和测试账号点数，不生成作品、不扣点。</div>':'<div class="ops-batch-action"><div><b>'+(blocker?'暂不能启动':'已经通过的模式不会重复扣点')+'</b><span class="ops-batch-state">'+esc(blocker||('本次将自动验收 '+Number(preflight.ready_count||0)+' 项，预计共扣 '+cost+' 点'))+'</span></div><button class="primary" data-e2e-batch-run="'+esc(page.key)+'" '+(ready?'':'disabled')+'>'+(state.e2eBatchSubmitting?'正在启动…':('一键验收剩余 '+Number(preflight.ready_count||0)+' 项 · '+cost+' 点'))+'</button></div>');
+    target.innerHTML='<section class="ops-batch"><div class="ops-batch-head"><div><b>一键完整旅程验收</b><span>只点一次；后台自动加载预设素材、分批提交并汇总八段证据。</span></div><span class="pill neutral">当前 '+passedCount+' 已通过 · '+runnableCount+' 待测 · '+blockedCount+' 未准备</span></div>'+result+action+details+'</section>';
+    var button=target.querySelector('[data-e2e-batch-run]');if(button)button.onclick=function(){runE2EBatch(button.getAttribute('data-e2e-batch-run'))};
   }
   function renderOperationsDeveloper(hiddenFeatures,stats,auxiliaryActions,pageKey){
     var unmapped=(stats.unmapped||[]).filter(function(item){return item.page_key===pageKey}),evidenceErrors=stats.evidence_errors||[],html='';
@@ -1879,6 +1908,7 @@
     if(page.inventory_status!=='verified'){
       state.operationsMode='';
       el('operationsAttentionCount').textContent='待盘点';
+      renderE2EBatch(page,data,0,0,0);
       el('operationsSummary').innerHTML='<div class="ledger-stat"><span>客户功能</span><b>—</b></div><div class="ledger-stat"><span>客户模式</span><b>—</b></div><div class="ledger-stat"><span>完成任务</span><b>—</b></div><div class="ledger-stat"><span>失败任务</span><b>—</b></div>';
       el('operationsBox').innerHTML='<div class="empty">该功能页将在逐项核对客户按钮、模式和真实调用链后再进入注册表。现在不展示推测出来的功能。</div>';
       el('operationsUpdatedAt').textContent=operationsUpdatedText();
@@ -1890,6 +1920,7 @@
       if(modes.length)evaluations.push({feature:feature,modes:modes});
     });
     el('operationsAttentionCount').textContent='生产链已通过 '+passedCount+' · 待执行 '+runnableCount+' · 未准备 '+blockedCount;
+    renderE2EBatch(page,data,passedCount,runnableCount,blockedCount);
     el('operationsSummary').innerHTML='<div class="ledger-stat"><span>客户当前可见功能</span><b>'+visibleFeatures.length+'</b></div><div class="ledger-stat"><span>已登记客户模式</span><b>'+modeCount+'</b></div><div class="ledger-stat"><span>近 '+Number(stats.days||state.days)+' 天完成</span><b>'+done.toLocaleString()+'</b></div><div class="ledger-stat"><span>近 '+Number(stats.days||state.days)+' 天失败</span><b>'+failed.toLocaleString()+'</b></div>';
     var entries=[];evaluations.forEach(function(item){item.modes.forEach(function(entry){entries.push({feature:item.feature,mode:entry.mode,stat:entry.stat,verdict:entry.verdict})})});
     if(!entries.some(function(entry){return entry.mode.key===state.operationsMode}))state.operationsMode=(entries[0]||{mode:{key:''}}).mode.key;
@@ -1897,7 +1928,8 @@
     if(!selected){
       el('operationsBox').innerHTML='<div class="empty">当前筛选下没有需要展示的客户模式。</div>';
       el('operationsUpdatedAt').textContent=operationsUpdatedText();
-      renderOperationsDeveloper(hiddenFeatures,stats,page.auxiliary_actions||[],page.key);return;
+      renderOperationsDeveloper(hiddenFeatures,stats,page.auxiliary_actions||[],page.key);
+      if((latestE2EBatch(data,page.key)||{}).status!=='running')loadE2EBatchPreflight(page.key,false);return;
     }
     var catalog=evaluations.map(function(item){return '<div class="ops-catalog-feature"><strong>'+esc(item.feature.name)+'</strong>'+item.modes.map(function(entry){var active=entry.mode.key===selected.mode.key,dot=entry.acceptance[0]==='neutral'?'':entry.acceptance[0];return '<button class="ops-catalog-mode'+(active?' active':'')+'" data-operation-select="'+esc(entry.mode.key)+'" aria-pressed="'+(active?'true':'false')+'"><span class="dot '+dot+'"></span><span><b>'+esc(entry.mode.name)+'</b><small>'+esc(entry.acceptance[1])+'</small></span></button>'}).join('')+'</div>'}).join('');
     var modeCard=registryModeCard(selected.feature,selected.mode,selected.stat,statByOperation,data,services),latest=selected.stat&&selected.stat.latest;
@@ -1917,6 +1949,7 @@
     Array.prototype.forEach.call(el('operationsBox').querySelectorAll('[data-e2e-preflight]'),function(btn){btn.onclick=function(){delete state.e2ePreflights[btn.getAttribute('data-e2e-preflight')];loadE2EPreflight(btn.getAttribute('data-e2e-preflight'),true)}});
     Array.prototype.forEach.call(document.querySelectorAll('[data-operations-module]'),function(btn){btn.onclick=function(){var module=btn.getAttribute('data-operations-module');if(module==='logs'){el('reqSource').value='job';el('reqStatus').value='';el('reqSearch').value=btn.getAttribute('data-operation-key')||'';state.reqPage=1;switchModule('logs');return}switchModule(module);setTimeout(function(){if(module==='channels')focusRegisteredTarget('data-channel',btn.getAttribute('data-operation-channels'));if(module==='features')focusRegisteredTarget('data-feature',btn.getAttribute('data-operation-flags'))},0)}});
     loadE2EPreflight(selected.mode.key,false);
+    if((latestE2EBatch(data,page.key)||{}).status!=='running')loadE2EBatchPreflight(page.key,false);
   }
   function switchModule(name){
     if(!moduleMeta[name])name='dashboard';
