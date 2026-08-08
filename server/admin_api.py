@@ -822,15 +822,22 @@ def _e2e_payload(operation_id, runner, ready_avatar_ids=None):
             "ratio": "9:16", "motion": "medium", "subtitle": False,
             "bgm_data": "", "bgm_volume": 0.18,
         })
-    elif operation_id == "video.cinematic.open":
+    elif operation_id.startswith("video.cinematic."):
         avatar_ids = [int(item) for item in (ready_avatar_ids or []) if item]
         if not avatar_ids:
             raise ValueError("专用测试账号尚未登记已就绪电影化身形象")
-        payload.update({
-            "cine_mode": "open", "avatar_ids": avatar_ids[:1],
-            "prompt": prompt, "duration": 4, "resolution": "720p",
-            "ratio": "9:16", "enhance_prompt": False,
-        })
+        if operation_id == "video.cinematic.motion":
+            payload.update({
+                "cine_mode": "motion", "avatar_ids": avatar_ids[:1],
+                "reference_video_data": resolve(prefill["reference_video_url"]),
+                "ratio": "9:16",
+            })
+        else:
+            payload.update({
+                "cine_mode": "open", "avatar_ids": avatar_ids[:1],
+                "prompt": prompt, "duration": 4, "resolution": "720p",
+                "ratio": "9:16", "enhance_prompt": False,
+            })
     elif operation_id == "video.tryon.fast":
         payload.update({
             "line": "2", "person_image_data": resolve(prefill["reference_video_url"]),
@@ -923,6 +930,98 @@ def _content_e2e_get(path, account_token):
         raise RuntimeError(body.get("detail") or "读取测试账号素材失败")
     except urllib.error.URLError as exc:
         raise RuntimeError("读取测试账号素材失败：" + str(exc.reason)[:140])
+
+
+def _content_e2e_post(path, account_token, payload):
+    request = urllib.request.Request(
+        CONTENT_BASE + path,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Authorization": "Bearer " + account_token,
+            "Content-Type": "application/json; charset=utf-8",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=35) as response:
+            return json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            body = json.loads(exc.read() or b"{}")
+        except Exception:
+            body = {}
+        raise ValueError(body.get("detail") or "测试包参数校验失败")
+
+
+def _e2e_kind(endpoint):
+    return {
+        "/api/gen/video": "video", "/api/gen/tryon": "tryon",
+        "/api/gen/xiaole_video": "xiaole_video", "/api/gen/sora_video": "sora_video",
+        "/api/gen/cinematic": "cinematic",
+    }.get(endpoint)
+
+
+def _ready_avatar_ids(operation_id, account_token):
+    if not operation_id.startswith("video.cinematic."):
+        return []
+    avatar_data = _content_e2e_get("/api/gen/video/avatars?limit=120", account_token)
+    return [
+        item.get("id") for item in avatar_data.get("items") or []
+        if item.get("status") == "ready" and item.get("id")
+    ]
+
+
+def _e2e_cost(operation_id, kind, payload, account_token):
+    if operation_id == "video.cinematic.motion":
+        return int(_content_e2e_post("/api/gen/cinematic/quote", account_token, payload)["cost"])
+    return int(points_domain.cost_of(kind, dict(payload)))
+
+
+def e2e_preflight(admin_token, operation_id):
+    """Resolve the private fixture and current quote without creating a paid task."""
+    runner = function_registry.e2e_runner(operation_id)
+    if not runner:
+        raise ValueError("功能注册表中不存在该模式")
+    if not runner.get("supported"):
+        return {"operation_id": operation_id, "ready": False,
+                "blocker": runner.get("blocked_reason") or "测试包尚未准备完成"}
+    if not points_domain:
+        raise RuntimeError("点数模块不可用")
+    session = auth_admin_request("/api/auth/admin/e2e/session", admin_token, method="POST", payload={})
+    account = session["account"]
+    avatars = _ready_avatar_ids(operation_id, session["token"])
+    payload = _e2e_payload(operation_id, runner, avatars)
+    endpoint = runner["endpoint"]["path"]
+    kind = _e2e_kind(endpoint)
+    if not kind:
+        return {"operation_id": operation_id, "ready": False,
+                "blocker": "该模式的业务接口尚未接入后台托管测试"}
+    cost = _e2e_cost(operation_id, kind, payload, session["token"])
+    points = int(account.get("points") or 0)
+    membership = bool(account.get("membership_active"))
+    blocker = ""
+    if not membership:
+        blocker = "专用测试账号会员未生效"
+    elif points < cost:
+        blocker = "专用测试账号点数不足：需要 %s 点，当前 %s 点" % (cost, points)
+    parameters = []
+    values = {
+        "cine_mode": {"motion": "动作模仿", "open": "开放式生成"}.get(payload.get("cine_mode"), payload.get("cine_mode")),
+        "duration": "随参考视频" if operation_id == "video.cinematic.motion" else payload.get("duration") or payload.get("seconds"),
+        "resolution": payload.get("resolution"), "ratio": payload.get("ratio"),
+        "generate_audio": "开启" if payload.get("generate_audio") else ("关闭" if "generate_audio" in payload else None),
+    }
+    labels = {"cine_mode": "模式", "duration": "时长", "resolution": "清晰度", "ratio": "画面比例", "generate_audio": "生成音频"}
+    for key in ("cine_mode", "duration", "resolution", "ratio", "generate_audio"):
+        if values[key] is not None:
+            suffix = " 秒" if key == "duration" and isinstance(values[key], int) else ""
+            parameters.append("%s：%s%s" % (labels[key], values[key], suffix))
+    return {
+        "operation_id": operation_id, "ready": not blocker, "blocker": blocker,
+        "account": account.get("username") or "专用测试账号", "points": points,
+        "cost": cost, "parameters": parameters,
+        "fixture_ready": True, "ready_avatar": bool(avatars) if operation_id.startswith("video.cinematic.") else None,
+    }
 
 
 def auth_admin_raw(path, token):
@@ -2652,26 +2751,14 @@ def start_e2e_run(actor, admin_token, operation_id):
                 "/api/auth/admin/e2e/session", admin_token, method="POST", payload={}
             )
             account = session["account"]
-            ready_avatar_ids = []
-            if operation_id == "video.cinematic.open":
-                avatar_data = _content_e2e_get(
-                    "/api/gen/video/avatars?limit=120", session["token"]
-                )
-                ready_avatar_ids = [
-                    item.get("id") for item in avatar_data.get("items") or []
-                    if item.get("status") == "ready" and item.get("id")
-                ]
+            ready_avatar_ids = _ready_avatar_ids(operation_id, session["token"])
             payload = _e2e_payload(operation_id, runner, ready_avatar_ids)
             payload["qa_run_id"] = run_id
             endpoint = runner["endpoint"]["path"]
-            kind = {
-                "/api/gen/video": "video", "/api/gen/tryon": "tryon",
-                "/api/gen/xiaole_video": "xiaole_video", "/api/gen/sora_video": "sora_video",
-                "/api/gen/cinematic": "cinematic",
-            }.get(endpoint)
+            kind = _e2e_kind(endpoint)
             if not kind:
                 raise ValueError("该模式的业务接口尚未接入后台托管测试")
-            cost = int(points_domain.cost_of(kind, dict(payload)))
+            cost = _e2e_cost(operation_id, kind, payload, session["token"])
             if int(account.get("points") or 0) < cost:
                 raise ValueError("专用测试账号点数不足：需要 %s 点，当前 %s 点" % (cost, account.get("points") or 0))
             idem = "e2e:" + run_id
@@ -3300,6 +3387,16 @@ class H(BaseHTTPRequestHandler):
         if path == "/api/admin/stats":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._send(200, job_stats((q.get("days") or ["7"])[0]))
+        if path == "/api/admin/e2e/preflight":
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                return self._send(200, e2e_preflight(
+                    self._token(), (q.get("operation_id") or [""])[0].strip()
+                ))
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
+            except Exception as exc:
+                return self._send(getattr(exc, "status", 500), {"detail": str(exc)[:220]})
         if path == "/api/admin/call-logs":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._send(

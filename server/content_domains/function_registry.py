@@ -180,8 +180,6 @@ VIDEO_FUNCTIONS = [
                     {"mode": "cinematic", "cine_mode": "motion",
                      "reference_video_url": QA_MOTION_VIDEO},
                     ["测试账号至少有 1 个已就绪电影化身形象"],
-                    supported=False,
-                    blocked_reason="专用测试账号尚未登记已就绪电影化身形象",
                 ),
             },
             {
