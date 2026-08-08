@@ -1,4 +1,5 @@
 import sys
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -57,6 +58,22 @@ class TryonCoverTests(unittest.TestCase):
         self.assertEqual(result["tryon_mode"], "both")
         self.assertEqual(result["image_file"], "image/cloth.jpg")
         self.assertEqual(phases[0][2]["image_file"], "image/cloth.jpg")
+
+    def test_runninghub_failure_keeps_task_id_and_reason(self):
+        client = types.SimpleNamespace(
+            get_status=lambda _task_id: "FAILED",
+            query_v2=lambda _task_id: types.SimpleNamespace(
+                failed_reason=types.SimpleNamespace(exception_message="input video is invalid"),
+                error_message="", error_code="",
+            ),
+        )
+        with patch.object(self.video, "update_video_asset_phase") as phase:
+            with self.assertRaisesRegex(RuntimeError, "input video is invalid"):
+                self.video._rh_wait_success(client, "rh-123", 42, "tryon_running", "换装失败")
+        phase.assert_called_once_with(
+            42, "tryon_failed", provider_video_id="rh-123",
+            status="error", error="换装失败：input video is invalid",
+        )
 
 
 if __name__ == "__main__":

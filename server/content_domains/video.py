@@ -4295,9 +4295,31 @@ def _rh_wait_success(client, task_id, job_id, phase, fail_msg):
         if s.endswith("SUCCESS"):
             return
         if s.endswith("FAILED"):
-            raise RuntimeError(fail_msg)
+            detail = ""
+            try:
+                result = client.query_v2(task_id)
+                reason = getattr(result, "failed_reason", None)
+                detail = str(
+                    getattr(reason, "exception_message", "")
+                    or getattr(result, "error_message", "")
+                    or getattr(result, "error_code", "")
+                    or ""
+                ).strip()
+            except Exception:
+                pass
+            error = fail_msg + (("：" + detail[:160]) if detail else "")
+            update_video_asset_phase(
+                job_id, phase.replace("_running", "_failed"),
+                provider_video_id=task_id, status="error", error=error,
+            )
+            raise RuntimeError(error)
         if time.time() > deadline:
-            raise TimeoutError(fail_msg + "(超时)")
+            error = fail_msg + "(超时)"
+            update_video_asset_phase(
+                job_id, phase.replace("_running", "_failed"),
+                provider_video_id=task_id, status="error", error=error,
+            )
+            raise TimeoutError(error)
         update_video_asset_phase(job_id, phase)  # 心跳
         time.sleep(20)
 
@@ -4376,6 +4398,7 @@ def generate_tryon_video(person_video_file, clothes_file, background_file, secon
         ]
         resp = client.run_ai_app(TRYON_WEBAPP_ID, node_info_list=nodes)
         task_id = _rh_task_id(resp)
+        update_video_asset_phase(job_id, "tryon_running", provider_video_id=task_id)
         _rh_wait_success(client, task_id, job_id, "tryon_running", "换装失败")
         outputs = client.get_outputs(task_id)
         paths = client.download_outputs(outputs, work_dir, overwrite=True)
@@ -4397,6 +4420,7 @@ def generate_tryon_video(person_video_file, clothes_file, background_file, secon
         ]
         resp = client.run_ai_app(BG_WEBAPP_ID, node_info_list=nodes)
         task_id = _rh_task_id(resp)
+        update_video_asset_phase(job_id, "bg_running", provider_video_id=task_id)
         _rh_wait_success(client, task_id, job_id, "bg_running", "换背景失败")
         outputs = client.get_outputs(task_id)
         paths = client.download_outputs(outputs, work_dir, overwrite=True)
