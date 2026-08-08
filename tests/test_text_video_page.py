@@ -62,6 +62,21 @@ process.stdout.write(JSON.stringify({first: first.key, retry: retry.key}));
         self.assertNotIn("127.0.0.1:8103", PAGE)
         self.assertNotIn("/api/video/generate/async", PAGE)
 
+    def test_template_gallery_uses_preview_images_and_filters(self):
+        self.assertIn('data-kind="illustration"', PAGE)
+        self.assertIn('data-kind="video"', PAGE)
+        self.assertIn('data-orientation="portrait"', PAGE)
+        self.assertIn('data-orientation="landscape"', PAGE)
+        self.assertIn("template.preview_url", PAGE)
+        self.assertIn("image.loading='lazy'", PAGE)
+        self.assertIn("image.onerror=function()", PAGE)
+        self.assertIn("tv-template-selected", PAGE)
+
+    def test_selected_template_updates_result_aspect_ratio(self):
+        self.assertIn("template.orientation==='landscape'", PAGE)
+        self.assertIn("stage.classList.toggle('landscape',isLandscape)", PAGE)
+        self.assertIn(".tv-stage.landscape{aspect-ratio:16/9", PAGE)
+
     def test_feature_is_default_off_and_all_entry_points_use_readiness_gate(self):
         self.assertIn('"key": "pixelle_text_video"', FLAGS)
         self.assertIn('"default_enabled": False', FLAGS)

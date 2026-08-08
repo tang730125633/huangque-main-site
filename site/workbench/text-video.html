@@ -16,13 +16,24 @@
   .tv-preview{min-width:0;padding:24px;display:flex;align-items:center;justify-content:center;background:#090e18;overflow:hidden}
   .tv-heading{margin:0;color:#eaf1fa;font-size:23px;line-height:1.25;font-weight:800;letter-spacing:0}
   .tv-label{display:flex;align-items:center;justify-content:space-between;margin:28px 0 10px;color:#eaf1fa;font-size:13px;font-weight:700}
-  .tv-template-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;max-height:270px;overflow-y:auto;padding-right:4px}
-  .tv-template{position:relative;min-width:0;height:72px;padding:10px;border:1px solid rgba(148,164,187,.18);border-radius:6px;background:#0b111d;color:#cbd6e5;text-align:left;cursor:pointer;overflow:hidden;transition:border-color .16s,background .16s,transform .16s}
+  .tv-template-controls{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+  .tv-template-tabs{display:flex;align-items:center;gap:4px;padding:3px;border:1px solid rgba(148,164,187,.16);border-radius:7px;background:#0b111d}
+  .tv-template-tabs button{height:32px;padding:0 13px;border:0;border-radius:5px;background:transparent;color:#74849a;font:700 12px inherit;cursor:pointer}
+  .tv-template-tabs button.active{background:#202938;color:#f5c86f}
+  .tv-template-tabs[hidden]{display:none}
+  .tv-template-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:10px;max-height:380px;overflow-y:auto;padding:1px 4px 1px 1px}
+  .tv-template{position:relative;min-width:0;padding:0;border:1px solid rgba(148,164,187,.18);border-radius:6px;background:#0b111d;color:#cbd6e5;text-align:left;cursor:pointer;overflow:hidden;transition:border-color .16s,background .16s,transform .16s}
   .tv-template:hover{transform:translateY(-1px);border-color:rgba(231,178,76,.42)}
-  .tv-template.active{border-color:#e7b24c;background:#141720;color:#fff;box-shadow:inset 0 -2px #e7b24c}
-  .tv-template-swatch{display:block;width:30px;height:4px;margin-bottom:8px;background:var(--swatch);box-shadow:10px 0 0 var(--swatch2)}
+  .tv-template.active{border-color:#e7b24c;background:#171a21;color:#fff;box-shadow:0 0 0 1px #e7b24c}
+  .tv-template-media{position:relative;display:flex;align-items:center;justify-content:center;width:100%;aspect-ratio:9/16;overflow:hidden;background:#141b26;color:#65748a;font-size:11px;text-align:center}
+  .tv-template[data-orientation="landscape"] .tv-template-media{aspect-ratio:16/9}
+  .tv-template-media img{display:block;width:100%;height:100%;object-fit:cover}
+  .tv-template-media.missing::after{content:"预览暂不可用";padding:10px}
+  .tv-template-info{display:block;padding:9px 8px 10px}
   .tv-template strong{display:block;font-size:12px;line-height:1.2;letter-spacing:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .tv-template span:last-child{display:block;margin-top:4px;color:#65748a;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tv-template-meta{display:block;margin-top:4px;color:#65748a;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tv-template-selected{position:absolute;right:6px;top:6px;display:none;width:22px;height:22px;border-radius:50%;background:#e7b24c;color:#171006;align-items:center;justify-content:center;font-size:13px;font-weight:900;box-shadow:0 2px 8px rgba(0,0,0,.35)}
+  .tv-template.active .tv-template-selected{display:flex}
   .tv-template-loading{grid-column:1/-1;padding:22px;border:1px dashed rgba(148,164,187,.2);color:#65748a;text-align:center;font-size:12px}
   .tv-input-wrap{border:1px solid rgba(148,164,187,.18);background:#0b111d;border-radius:8px;padding:14px 15px;transition:border-color .18s}
   .tv-input-wrap:focus-within{border-color:rgba(231,178,76,.62)}
@@ -35,7 +46,8 @@
   .tv-action:hover{background:#f1c66a}.tv-action:disabled{opacity:.58;cursor:wait}
   .tv-status{min-height:46px;margin-top:14px;padding:12px 14px;border-left:3px solid #344258;background:#0b111d;color:#94a4bb;font-size:12.5px;line-height:1.7}
   .tv-status.running{border-color:#e7b24c;color:#dbe4f0}.tv-status.done{border-color:#2dd4bf;color:#d8fff8}.tv-status.error{border-color:#f87171;color:#ffdede}
-  .tv-stage{position:relative;width:min(100%,390px);aspect-ratio:9/16;background:#05070b;border:1px solid rgba(148,164,187,.16);box-shadow:0 20px 55px rgba(0,0,0,.34);overflow:hidden}
+  .tv-stage{position:relative;width:min(100%,390px);aspect-ratio:9/16;background:#05070b;border:1px solid rgba(148,164,187,.16);box-shadow:0 20px 55px rgba(0,0,0,.34);overflow:hidden;transition:width .2s,aspect-ratio .2s}
+  .tv-stage.landscape{aspect-ratio:16/9;width:min(100%,720px)}
   .tv-stage video{display:none;width:100%;height:100%;object-fit:contain;background:#000}
   .tv-empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:#65748a;text-align:center;padding:32px}
   .tv-empty-icon{width:58px;height:58px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(231,178,76,.28);border-radius:50%;color:#e7b24c;font-size:22px}
@@ -43,7 +55,7 @@
   .tv-meta{display:none;position:absolute;left:12px;right:58px;top:12px;color:#fff;font:11px "JetBrains Mono",monospace;text-shadow:0 1px 4px #000}
   .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(10px);opacity:0;pointer-events:none;transition:.18s;background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:8px;padding:10px 15px;color:#eaf1fa;font-size:13px;z-index:90}.toast.show{opacity:1;transform:translateX(-50%)}
   @media(max-width:980px){body{overflow:auto}.hq-content[data-active="text-video"]{height:auto}.tv-layout{grid-template-columns:1fr;height:auto}.tv-editor{border-right:0;border-bottom:1px solid rgba(148,164,187,.12)}.tv-preview{min-height:680px}.tv-text{min-height:220px}}
-  @media(max-width:560px){.tv-template-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.tv-editor{padding:22px 18px}}
+  @media(max-width:560px){.tv-template-controls{align-items:flex-start;flex-direction:column}.tv-template-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.tv-editor{padding:22px 18px}}
 </style>
 <link rel="stylesheet" href="theme.css?v=5873a2f4">
 </head>
@@ -54,6 +66,16 @@
     <section class="tv-editor">
       <h1 class="tv-heading">文案成片</h1>
       <div class="tv-label"><span>视频模板</span><span id="templateName" style="color:#e7b24c;font-weight:600">正在加载</span></div>
+      <div class="tv-template-controls">
+        <div id="kindTabs" class="tv-template-tabs" role="tablist" aria-label="模板类型">
+          <button class="active" type="button" role="tab" aria-selected="true" data-kind="illustration">插画模板</button>
+          <button type="button" role="tab" aria-selected="false" data-kind="video">视频模板</button>
+        </div>
+        <div id="orientationTabs" class="tv-template-tabs" role="tablist" aria-label="画面方向">
+          <button class="active" type="button" role="tab" aria-selected="true" data-orientation="portrait">竖屏</button>
+          <button type="button" role="tab" aria-selected="false" data-orientation="landscape">横屏</button>
+        </div>
+      </div>
       <div id="templateGrid" class="tv-template-grid" role="listbox" aria-label="视频模板"><div class="tv-template-loading">正在读取专业模板库</div></div>
       <div class="tv-label"><span>输入方式</span></div>
       <div class="tv-mode" role="radiogroup" aria-label="输入方式">
@@ -69,7 +91,7 @@
       <div id="statusText" class="tv-status">输入主题或文案，选择模板后生成</div>
     </section>
     <section class="tv-preview" aria-label="视频预览">
-      <div class="tv-stage">
+      <div id="videoStage" class="tv-stage">
         <div id="emptyState" class="tv-empty"><div class="tv-empty-icon">▶</div><div>视频生成后在此预览</div></div>
         <video id="resultVideo" controls playsinline></video>
         <div id="resultMeta" class="tv-meta"></div>
@@ -83,7 +105,7 @@
 <script src="cloud-shell.js?v=5c2643d5"></script>
 <script>
 (function(){
-  var token='__cookie__', activeBlob='', startedAt=0, pollTimer=0, activeTemplate='', activeMode='generate';
+  var token='__cookie__', activeBlob='', startedAt=0, pollTimer=0, activeTemplate='', activeMode='generate',templates=[],activeKind='illustration',activeOrientation='portrait';
   var pendingStorageKey='hq-text-video-pending-v1';
   var el=function(id){return document.getElementById(id);};
   function toast(message){var node=el('toast');node.textContent=message;node.classList.add('show');setTimeout(function(){node.classList.remove('show');},1800);}
@@ -173,27 +195,46 @@
     el('videoText').placeholder=isTopic?'例如：AI 如何帮助美业门店提升复购率':'粘贴需要原样配音和排版的完整中文文案';
     setStatus(isTopic?'输入主题，选择模板后生成':'输入完整文案，选择模板后生成');
   }
-  function selectTemplate(button){
+  function selectTemplate(button,template){
     activeTemplate=button.getAttribute('data-template')||'';
     Array.prototype.forEach.call(document.querySelectorAll('.tv-template'),function(item){var selected=item===button;item.classList.toggle('active',selected);item.setAttribute('aria-selected',selected?'true':'false');});
     el('templateName').textContent=button.getAttribute('data-name')||'专业模板';
+    var isLandscape=template.orientation==='landscape',stage=el('videoStage');
+    stage.classList.toggle('landscape',isLandscape);
+  }
+  function updateTabState(container,attribute,value){
+    Array.prototype.forEach.call(container.querySelectorAll('button'),function(button){var selected=button.getAttribute(attribute)===value;button.classList.toggle('active',selected);button.setAttribute('aria-selected',selected?'true':'false');});
+  }
+  function renderTemplates(){
+    var visible=templates.filter(function(template){return template.kind===activeKind&&(activeKind==='video'||template.orientation===activeOrientation);});
+    var grid=el('templateGrid');grid.textContent='';
+    visible.forEach(function(template){
+      var button=document.createElement('button'),media=document.createElement('span'),image=document.createElement('img'),info=document.createElement('span'),title=document.createElement('strong'),meta=document.createElement('span'),selected=document.createElement('span');
+      button.className='tv-template';button.type='button';button.setAttribute('data-template',template.key);button.setAttribute('data-name',template.name);button.setAttribute('data-orientation',template.orientation);button.setAttribute('aria-selected','false');
+      media.className='tv-template-media';image.src=template.preview_url;image.alt=template.name+'模板预览';image.loading='lazy';image.onerror=function(){image.style.display='none';media.classList.add('missing');};
+      info.className='tv-template-info';title.textContent=template.name;meta.className='tv-template-meta';meta.textContent=template.width+'×'+template.height+' · '+(template.orientation==='landscape'?'横屏':'竖屏');
+      selected.className='tv-template-selected';selected.textContent='✓';selected.setAttribute('aria-hidden','true');
+      media.appendChild(image);info.appendChild(title);info.appendChild(meta);button.appendChild(media);button.appendChild(info);button.appendChild(selected);button.onclick=function(){selectTemplate(button,template);};grid.appendChild(button);
+    });
+    if(visible.length)selectTemplate(grid.querySelector('.tv-template'),visible[0]);
+    else{activeTemplate='';grid.innerHTML='<div class="tv-template-loading">该分类暂无模板</div>';el('templateName').textContent='暂无模板';}
+  }
+  function selectKind(button){
+    activeKind=button.getAttribute('data-kind')||'illustration';updateTabState(el('kindTabs'),'data-kind',activeKind);el('orientationTabs').hidden=activeKind==='video';renderTemplates();
+  }
+  function selectOrientation(button){
+    activeOrientation=button.getAttribute('data-orientation')||'portrait';updateTabState(el('orientationTabs'),'data-orientation',activeOrientation);renderTemplates();
   }
   function loadTemplates(){
     fetch('/api/gen/text-video/templates',{cache:'no-store',headers:authHeaders(false)}).then(readJson).then(function(response){
       if(!response.data.templates||!response.data.templates.length)throw new Error(response.data.detail||'没有可用模板');
-      var colors=[['#e8c26a','#68d6c2'],['#58d3b6','#f7fffc'],['#e83b3b','#f4eee6'],['#26f7e8','#ff4fd8'],['#9f7aea','#f6ad55'],['#60a5fa','#f8fafc']];
-      var grid=el('templateGrid');grid.textContent='';
-      response.data.templates.forEach(function(template,index){
-        var button=document.createElement('button'),swatch=document.createElement('span'),title=document.createElement('strong'),meta=document.createElement('span'),palette=colors[index%colors.length];
-        button.className='tv-template';button.type='button';button.setAttribute('data-template',template.key);button.setAttribute('data-name',template.name);button.setAttribute('aria-selected','false');button.style.setProperty('--swatch',palette[0]);button.style.setProperty('--swatch2',palette[1]);
-        swatch.className='tv-template-swatch';title.textContent=template.name;meta.textContent=template.width+'×'+template.height+' · 竖屏';
-        button.appendChild(swatch);button.appendChild(title);button.appendChild(meta);button.onclick=function(){selectTemplate(button);};grid.appendChild(button);
-      });
-      selectTemplate(grid.querySelector('.tv-template'));
+      templates=response.data.templates;renderTemplates();
     }).catch(function(error){el('templateGrid').innerHTML='<div class="tv-template-loading">'+error.message+'</div>';el('templateName').textContent='加载失败';setStatus('模板库不可用，请检查生成服务','error');});
   }
   el('videoText').addEventListener('input',updateCount);
   Array.prototype.forEach.call(document.querySelectorAll('.tv-mode button'),function(button){button.onclick=function(){selectMode(button);};});
+  Array.prototype.forEach.call(el('kindTabs').querySelectorAll('button'),function(button){button.onclick=function(){selectKind(button);};});
+  Array.prototype.forEach.call(el('orientationTabs').querySelectorAll('button'),function(button){button.onclick=function(){selectOrientation(button);};});
   el('clearText').onclick=function(){el('videoText').value='';updateCount();el('videoText').focus();};
   el('generateBtn').onclick=generate;
   updateCount();loadTemplates();
