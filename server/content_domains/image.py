@@ -352,6 +352,7 @@ def _gen_image_xiaole_locked(prompt, ratio, quality, count, img, references=None
     if not files_out:
         raise ValueError("出图返回为空")
     return {"type": "image", "mode": ("img2img" if refs else "text2img"), "provider": "xiaole",
+            "provider_task_id": str(rid),
             "count": len(files_out), "file": files_out[0], "url": urls[0],
             "files": files_out, "urls": urls, "ratio": ratio, "prompt": prompt}
 

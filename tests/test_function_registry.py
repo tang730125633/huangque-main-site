@@ -211,7 +211,7 @@ class FunctionRegistryTests(unittest.TestCase):
                 prefill = runner["prefill"]
                 assets = [
                     prefill.get("image_url"), prefill.get("reference_video_url"),
-                    prefill.get("audio_url"), prefill.get("background_url"),
+                    prefill.get("audio_url"), prefill.get("background_url"), prefill.get("mask_url"),
                 ]
                 assets += prefill.get("reference_images") or []
                 for asset in filter(None, assets):
@@ -221,7 +221,24 @@ class FunctionRegistryTests(unittest.TestCase):
         modes = [mode for feature in video["functions"] for mode in feature["modes"]]
         self.assertEqual(sum(mode["validation"]["supported"] for mode in modes), 15)
         image_modes = [mode for feature in image["functions"] for mode in feature["modes"]]
-        self.assertEqual(sum(mode["validation"]["supported"] for mode in image_modes), 0)
+        self.assertEqual(sum(mode["validation"]["supported"] for mode in image_modes), 13)
+        for mode in image_modes:
+            runner = self.admin.function_registry.e2e_runner(mode["key"])
+            self.assertEqual(runner["prefill"]["quality"], "std")
+            self.assertEqual(runner["prefill"]["count"], 1)
+            self.assertEqual(runner["prefill"]["ratio"], "1:1")
+            self.assertEqual(runner["endpoint"], mode["entrypoints"][0])
+            public = json.dumps(mode["validation"], ensure_ascii=False)
+            self.assertNotIn("qa-serum", public)
+        self.assertEqual(
+            self.admin.function_registry.e2e_runner("image.openai.inpaint")["prefill"]["mask_url"],
+            "@fixture/qa-serum.png",
+        )
+        for operation in ("image.xiaole.text", "image.xiaole.reference"):
+            self.assertNotIn(
+                "provider_task",
+                self.admin.function_registry.e2e_runner(operation)["evidence_contract"]["not_applicable"],
+            )
         audio_modes = [mode for feature in audio["functions"] for mode in feature["modes"]]
         self.assertEqual(sum(mode["validation"]["supported"] for mode in audio_modes), 2)
         for mode in audio_modes:
@@ -399,7 +416,9 @@ class FunctionRegistryTests(unittest.TestCase):
             connection.executemany(
                 "INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 [(job_id, "image", "qa", 1, "done", json.dumps(payload),
-                  json.dumps({"urls": ["https://cdn.example/image.png"], "files": ["grok.bin"]}) if job_id == 20 else "{}", "",
+                  (json.dumps({"urls": ["https://cdn.example/image.png"], "files": ["grok.bin"]})
+                   if job_id == 20 else json.dumps({"provider_task_id": "xiaole-23"})
+                   if job_id == 23 else "{}"), "",
                   now - job_id, now - job_id + 1, 0) for job_id, payload in rows],
             )
             connection.commit()
@@ -418,6 +437,10 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertIn("image.openai.text", by_operation)
         self.assertIn("image.seedream.std.reference", by_operation)
         self.assertIn("image.xiaole.reference", by_operation)
+        self.assertEqual(
+            by_operation["image.xiaole.reference"]["latest"]["provider_task_id"],
+            "xiaole-23",
+        )
         banana = by_operation["image.banana.pro.reference"]["latest"]
         self.assertEqual(banana["result_url"], "https://cdn.example/image.png")
         self.assertEqual(banana["artifact_check"], "file_exists")

@@ -10,7 +10,7 @@ from contextlib import closing
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 class AdminE2ERunnerTests(unittest.TestCase):
@@ -182,6 +182,98 @@ class AdminE2ERunnerTests(unittest.TestCase):
         self.assertTrue(payload["reference_images"][0].startswith("data:image/png;base64,"))
         self.assertIn("精华瓶", payload["prompt"])
 
+    def test_image_page_exposes_exactly_thirteen_low_cost_private_runners(self):
+        page = next(item for item in self.admin.function_registry.list_pages()
+                    if item["key"] == "banana")
+        modes = [mode for feature in page["functions"] for mode in feature["modes"]]
+        session = {"token": "short-lived-secret", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        def image_cost(_kind, payload):
+            provider = payload.get("provider") or "openai"
+            quality = "hd" if payload.get("quality") == "hd" else "std"
+            if provider == "banana":
+                key = "image.banana.%s.%s" % (payload["model"], quality)
+            elif provider == "seedream":
+                key = "image.seedream.%s.%s" % (payload["variant"], quality)
+            else:
+                key = "image.%s.%s" % (provider, quality)
+            return self.admin.pricing.get_price(key)
+        with patch.object(self.admin, "list_e2e_runs", return_value=[]), \
+             patch.object(self.admin, "_e2e_page_modes", return_value=modes), \
+             patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "points_domain", SimpleNamespace(cost_of=image_cost)), \
+             patch.object(self.admin, "_content_e2e_request") as submit:
+            result = self.admin.e2e_batch_preflight("admin-token", "banana")
+        self.assertTrue(result["ready"])
+        self.assertEqual((result["target_count"], result["ready_count"]), (13, 13))
+        self.assertEqual(result["total_cost"], 236)
+        self.assertEqual(len(page["auxiliary_actions"]), 2)
+        submit.assert_not_called()
+
+        payloads = {
+            mode["key"]: self.admin._e2e_payload(
+                mode["key"], self.admin.function_registry.e2e_runner(mode["key"])
+            ) for mode in modes
+        }
+        self.assertTrue(all(item["source_page"] == "banana" for item in payloads.values()))
+        self.assertTrue(all(item["provider"] == operation.split(".")[1]
+                            for operation, item in payloads.items()))
+        self.assertTrue(all(self.admin._e2e_kind(
+            self.admin.function_registry.e2e_runner(operation)["endpoint"]["path"]
+        ) == "image" for operation in payloads))
+        self.assertEqual(payloads["image.banana.pro.text"]["model"], "pro")
+        self.assertEqual(payloads["image.seedream.pro.reference"]["variant"], "pro")
+        self.assertEqual(len(payloads["image.xiaole.reference"]["reference_images"]), 1)
+        for operation, item in payloads.items():
+            if operation.endswith(".reference"):
+                self.assertEqual(len(item["reference_images"]), 1)
+            elif operation != "image.openai.inpaint":
+                self.assertNotIn("reference_images", item)
+        self.assertIn("mask", payloads["image.openai.inpaint"])
+        self.assertIn("image", payloads["image.openai.inpaint"])
+
+    def test_image_batch_is_all_or_nothing(self):
+        session = {"token": "short-lived-secret", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        modes = [
+            {"key": "image.openai.text", "validation": {"supported": True}},
+            {"key": "image.openai.reference", "validation": {"supported": True}},
+        ]
+        with patch.object(self.admin, "list_e2e_runs", return_value=[]), \
+             patch.object(self.admin, "_e2e_page_modes", return_value=modes), \
+             patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "points_domain", SimpleNamespace()), \
+             patch.object(self.admin, "_e2e_prepare_operation", side_effect=[
+                 {"cost": 20}, ValueError("测试素材未部署"),
+             ]):
+            result = self.admin.e2e_batch_preflight("admin-token", "banana")
+        self.assertFalse(result["ready"])
+        self.assertIn("图片完整旅程", result["blocker"])
+        self.assertEqual((result["ready_count"], result["blocked_count"]), (1, 1))
+
+    def test_banana_submit_uses_dedicated_imggen_service(self):
+        response = MagicMock()
+        response.read.return_value = json.dumps({
+            "job_id": 7, "cost": 18, "points_left": 482,
+        }).encode()
+        response.__enter__.return_value = response
+        with patch.object(self.admin.urllib.request, "urlopen", return_value=response) as urlopen, \
+             patch.object(self.admin, "IMGGEN_BASE", "http://imggen.test"), \
+             patch.object(self.admin, "CONTENT_BASE", "http://content.test"):
+            self.admin._content_e2e_request(
+                "/api/gen/banana", "account-token", {"prompt": "qa"}, "e2e:image", 18
+            )
+            self.admin._content_e2e_request(
+                "/api/gen/image", "account-token", {"prompt": "qa"}, "e2e:image2", 20
+            )
+        banana_request, image_request = [call.args[0] for call in urlopen.call_args_list]
+        self.assertEqual(banana_request.full_url, "http://imggen.test/api/gen/banana")
+        self.assertEqual(image_request.full_url, "http://content.test/api/gen/image")
+        self.assertEqual(banana_request.headers["Idempotency-key"], "e2e:image")
+        self.assertEqual(banana_request.headers["X-hq-expected-cost"], "18")
+
     def test_cinematic_motion_uses_private_video_and_server_quote(self):
         session = {"token": "short-lived-secret", "account": {
             "username": "qa-dedicated", "points": 500, "membership_active": True,
@@ -308,6 +400,44 @@ class AdminE2ERunnerTests(unittest.TestCase):
         self.assertIn("不适用", stages["provider"]["detail"])
         self.assertEqual(stages["delivery"]["detail"], "文件存在且可解码")
         self.assertEqual(stages["billing"]["detail"], "扣点流水一致")
+
+    def test_image_e2e_joins_provider_output_decode_and_ledger_evidence(self):
+        image_bytes = (Path(__file__).resolve().parents[1] / "server/qa_fixtures/qa-serum.png").read_bytes()
+        (self.admin.CONTENT_OUT / "result.png").write_bytes(image_bytes)
+        with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
+            connection.execute("""CREATE TABLE jobs(
+                id INTEGER PRIMARY KEY,kind TEXT,status TEXT,cost INTEGER,refunded INTEGER,error TEXT,
+                created_at INTEGER,updated_at INTEGER,payload TEXT,result TEXT)""")
+            connection.execute(
+                "INSERT INTO jobs VALUES(201,'image','done',12,0,'',1,2,?,?)",
+                (json.dumps({"source_page": "banana", "provider": "xiaole"}),
+                 json.dumps({"files": ["result.png"], "urls": ["/api/gen/file/result.png"],
+                             "provider_task_id": "xiaole-201"})),
+            )
+            connection.commit()
+        row = {
+            "run_id": "image-201", "operation_id": "image.xiaole.text",
+            "username": "qa-dedicated", "status": "completed", "job_id": 201,
+            "cost": 12, "points_before": 500, "points_after": 488,
+            "transaction_key": "ledger-image-201", "error": "", "created_by": "root",
+            "created_at": 1, "updated_at": 2,
+        }
+        ledger = {"username": "qa-dedicated", "delta": -12, "after_points": 488}
+        with patch.object(self.admin, "points_domain", SimpleNamespace(get_points_transaction=lambda key: ledger)):
+            run = self.admin._public_e2e_run(row)
+        stages = {stage["key"]: stage for stage in run["stages"]}
+        self.assertTrue(all(stage["state"] == "passed" for stage in run["stages"]))
+        self.assertIn("xiaole-201", stages["provider"]["detail"])
+        self.assertEqual(stages["delivery"]["detail"], "文件存在且可解码")
+
+    def test_corrupt_image_cannot_pass_delivery_stage(self):
+        (self.admin.CONTENT_OUT / "broken.png").write_bytes(b"not-an-image")
+        evidence = self.admin._verify_local_artifact({
+            "result_file": "broken.png", "result_url": "/api/gen/file/broken.png",
+            "delivery_verified": False, "artifact_check": "not_recorded",
+        })
+        self.assertFalse(evidence["delivery_verified"])
+        self.assertEqual(evidence["artifact_check"], "decode_failed")
 
     def test_task_card_and_e2e_share_delivery_and_ledger_evidence(self):
         (self.admin.CONTENT_OUT / "result.mp4").write_bytes(b"video")
