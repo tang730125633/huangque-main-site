@@ -6,8 +6,7 @@
   <meta name="description" content="黄雀 AI：从 IP12、Agent 与无限画布，到图文音视频生产和 HQ CLI。">
   <title>黄雀 AI · 会持续生长的内容系统</title>
   <link rel="icon" href="/assets/logo_sparrow.png">
-  <link rel="stylesheet" href="/homepage.css?v=20260807-polish3">
-  <script src="/assets/home/moon3d.js?v=20260808-4k" defer></script>
+  <link rel="stylesheet" href="/homepage.css?v=20260808-video1">
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -50,7 +49,14 @@
   <main id="main">
     <section class="hero" id="top">
       <div class="starfield" aria-hidden="true"></div>
-      <div class="hero-moon" aria-hidden="true"><img src="/assets/home/moon.webp" alt=""><canvas class="moon-3d"></canvas></div>
+      <div class="hero-media" aria-hidden="true">
+        <video class="hero-video-eye is-active" autoplay muted playsinline preload="metadata">
+          <source src="/assets/home/hero-banner-monochrome-eye.mp4" type="video/mp4">
+        </video>
+        <video class="hero-video-courtyard" muted playsinline preload="metadata">
+          <source src="/assets/home/hero-banner-ancient-courtyard.mp4" type="video/mp4">
+        </video>
+      </div>
       <div class="hero-inner" data-reveal>
         <p class="hero-badge"><i></i> 短剧顾问 · 一键成片已上线 2026</p>
         <h1><span class="line">让你的生意，<br class="mobile-break">拥有一套</span><br><span class="line"><em>会持续生长的<br class="mobile-break">内容系统。</em></span></h1>
@@ -382,14 +388,37 @@
 
     const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 
-    const heroMoon = document.querySelector('.hero-moon');
-    const finePointer = matchMedia('(pointer: fine)');
-    const clampParallax = value => Math.max(-18, Math.min(18, value));
-    addEventListener('pointermove', event => {
-      if (!heroMoon || reducedMotion.matches || !finePointer.matches) return;
-      heroMoon.style.setProperty('--moon-parallax-x', `${clampParallax((event.clientX - innerWidth / 2) * -.03)}px`);
-      heroMoon.style.setProperty('--moon-parallax-y', `${clampParallax((event.clientY - innerHeight / 2) * -.03)}px`);
-    }, { passive: true });
+    const heroVideos = [...document.querySelectorAll('.hero-media video')];
+    let activeHeroVideo = 0;
+    const showNextHeroVideo = () => {
+      if (reducedMotion.matches || heroVideos.length < 2) return;
+      const current = heroVideos[activeHeroVideo];
+      const nextIndex = (activeHeroVideo + 1) % heroVideos.length;
+      const next = heroVideos[nextIndex];
+      next.currentTime = 0;
+      next.play().then(() => {
+        next.classList.add('is-active');
+        current.classList.remove('is-active');
+        setTimeout(() => { current.pause(); current.currentTime = 0; }, 1000);
+        activeHeroVideo = nextIndex;
+      }).catch(() => {});
+    };
+    heroVideos.forEach(video => video.addEventListener('ended', showNextHeroVideo));
+    const syncHeroVideoMotion = () => {
+      if (!heroVideos.length) return;
+      heroVideos.forEach(video => video.pause());
+      if (reducedMotion.matches) {
+        heroVideos.forEach((video, index) => {
+          video.currentTime = 0;
+          video.classList.toggle('is-active', index === 0);
+        });
+        activeHeroVideo = 0;
+        return;
+      }
+      heroVideos[activeHeroVideo].play().catch(() => {});
+    };
+    syncHeroVideoMotion();
+    reducedMotion.addEventListener?.('change', syncHeroVideoMotion);
 
     const counters = [...document.querySelectorAll('[data-count]')];
     const counterObserver = new IntersectionObserver(entries => {
