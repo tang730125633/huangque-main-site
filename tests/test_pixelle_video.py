@@ -16,9 +16,40 @@ class PixelleVideoTests(unittest.TestCase):
 
     def test_public_template_catalog_matches_deployed_allowlist(self):
         templates = self.pixelle.public_templates()
-        self.assertEqual(len(templates), 20)
-        self.assertEqual(len({item["key"] for item in templates}), 20)
-        self.assertTrue(all(item["key"].startswith("1080x1920/") for item in templates))
+        self.assertEqual(len(templates), 27)
+        self.assertEqual(len({item["key"] for item in templates}), 27)
+        self.assertEqual(
+            sum(
+                item["kind"] == "illustration"
+                and item["orientation"] == "portrait"
+                for item in templates
+            ),
+            20,
+        )
+        self.assertEqual(
+            sum(
+                item["kind"] == "illustration"
+                and item["orientation"] == "landscape"
+                for item in templates
+            ),
+            5,
+        )
+        self.assertEqual(
+            sum(item["kind"] == "video" for item in templates),
+            2,
+        )
+        self.assertTrue(all(item["orientation"] in {"portrait", "landscape"} for item in templates))
+        self.assertTrue(all(item["preview_url"].startswith("../assets/pixelle-templates/") for item in templates))
+        self.assertIn("1080x1920/image_default.html", self.pixelle.TEMPLATE_KEYS)
+
+    def test_public_template_previews_exist(self):
+        site_dir = Path(__file__).resolve().parents[1] / "site/workbench"
+        for template in self.pixelle.public_templates():
+            with self.subTest(template=template["key"]):
+                self.assertIn("preview_url", template)
+                preview = (site_dir / template["preview_url"]).resolve()
+                self.assertTrue(preview.is_file())
+                self.assertGreater(preview.stat().st_size, 0)
 
     def test_feature_catalog_is_fail_closed_by_default(self):
         meta = self.pixelle.feature_flags.CATALOG_MAP[self.pixelle.FEATURE_KEY]

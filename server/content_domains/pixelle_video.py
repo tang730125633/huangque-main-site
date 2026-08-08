@@ -37,7 +37,7 @@ PIXELLE_MAX_VIDEO_BYTES = _env_int(
 )
 _NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-_TEMPLATE_NAMES = {
+_PORTRAIT_ILLUSTRATION_NAMES = {
     "image_blur_card.html": "玻璃模糊卡片",
     "image_book.html": "书页阅读",
     "image_cartoon.html": "卡通插画",
@@ -59,14 +59,57 @@ _TEMPLATE_NAMES = {
     "image_simple_black.html": "极简黑色",
     "image_simple_line_drawing.html": "线稿插画",
 }
-TEMPLATES = tuple(
-    {
-        "key": "1080x1920/" + filename,
+_LANDSCAPE_ILLUSTRATION_NAMES = {
+    "image_book.html": "横版书页",
+    "image_film.html": "电影叙事",
+    "image_full.html": "横版沉浸",
+    "image_ultrawide_minimal.html": "超宽极简",
+    "image_wide_darktech.html": "暗黑科技",
+}
+_PORTRAIT_VIDEO_NAMES = {
+    "video_default.html": "动态图文",
+    "video_healing.html": "治愈动态",
+}
+_PNG_PREVIEWS = {
+    "1080x1920/image_blur_card.html",
+    "1080x1920/image_cartoon.html",
+    "1080x1920/video_default.html",
+    "1080x1920/video_healing.html",
+}
+
+
+def _template_record(size, filename, name, kind):
+    width, height = (int(value) for value in size.split("x", 1))
+    key = size + "/" + filename
+    extension = ".png" if key in _PNG_PREVIEWS else ".jpg"
+    return {
+        "key": key,
         "name": name,
-        "width": 1080,
-        "height": 1920,
+        "width": width,
+        "height": height,
+        "kind": kind,
+        "orientation": "portrait" if height > width else "landscape",
+        "preview_url": "../assets/pixelle-templates/%s/%s%s" % (
+            size,
+            pathlib.Path(filename).stem,
+            extension,
+        ),
     }
-    for filename, name in _TEMPLATE_NAMES.items()
+
+
+TEMPLATES = tuple(
+    [
+        _template_record("1080x1920", filename, name, "illustration")
+        for filename, name in _PORTRAIT_ILLUSTRATION_NAMES.items()
+    ]
+    + [
+        _template_record("1920x1080", filename, name, "illustration")
+        for filename, name in _LANDSCAPE_ILLUSTRATION_NAMES.items()
+    ]
+    + [
+        _template_record("1080x1920", filename, name, "video")
+        for filename, name in _PORTRAIT_VIDEO_NAMES.items()
+    ]
 )
 TEMPLATE_KEYS = {item["key"] for item in TEMPLATES}
 FEATURE_KEY = "pixelle_text_video"
