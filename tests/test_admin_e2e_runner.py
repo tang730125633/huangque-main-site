@@ -67,6 +67,34 @@ class AdminE2ERunnerTests(unittest.TestCase):
                     "root", "admin-token", "video.digital_ip.audio"
                 )
 
+    def test_uncertain_submit_is_persisted_and_blocks_a_new_idempotency_key(self):
+        session = {"token": "short-lived-secret", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        with patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "points_domain", SimpleNamespace(cost_of=lambda kind, payload: 10)), \
+             patch.object(self.admin, "_content_e2e_get", return_value={"items": [
+                 {"id": 1, "scope": "public", "voice_key": "S_public"},
+             ]}), \
+             patch.object(self.admin, "_content_e2e_request",
+                          side_effect=self.admin.E2ESubmitUncertain("response timeout")):
+            with self.assertRaisesRegex(RuntimeError, "提交结果未知"):
+                self.admin.start_e2e_run("root", "admin-token", "audio.tts.public")
+            with self.assertRaisesRegex(ValueError, "已有一条生产链测试"):
+                self.admin.start_e2e_run("root", "admin-token", "audio.tts.public")
+        with closing(sqlite3.connect(self.admin.ADMIN_DB)) as connection:
+            row = connection.execute("SELECT status,error FROM admin_e2e_runs").fetchone()
+        self.assertEqual(row[0], "unknown")
+        self.assertIn("禁止自动重试", row[1])
+
+    def test_response_read_timeout_is_an_uncertain_submit(self):
+        with patch.object(self.admin.urllib.request, "urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.side_effect = TimeoutError("late")
+            with self.assertRaises(self.admin.E2ESubmitUncertain):
+                self.admin._content_e2e_request(
+                    "/api/gen/audio", "account-token", {"text": "qa"}, "e2e:one", 10
+                )
+
     def test_fixture_reader_rejects_paths_outside_private_directory(self):
         with self.assertRaisesRegex(ValueError, "名称无效"):
             self.admin._fixture_data_url("@fixture/../admin_api.py")
@@ -178,6 +206,109 @@ class AdminE2ERunnerTests(unittest.TestCase):
         self.assertTrue(payload["reference_video_data"].startswith("data:video/"))
         self.assertEqual(run["cost"], 90)
 
+    def test_audio_public_runner_resolves_voice_server_side_and_quotes_ten_points(self):
+        session = {"token": "short-lived-secret", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        voices = {"items": [{
+            "id": 1, "scope": "public", "voice_key": "S_public",
+            "provider_voice": "longwan",
+        }]}
+        with patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "_content_e2e_get", return_value=voices), \
+             patch.object(self.admin, "points_domain", SimpleNamespace(cost_of=lambda kind, payload: 10)), \
+             patch.object(self.admin, "_content_e2e_request", return_value={
+                 "job_id": 101, "cost": 10, "points_left": 490,
+             }) as submit:
+            ready = self.admin.e2e_preflight("admin-token", "audio.tts.public")
+            run = self.admin.start_e2e_run("root", "admin-token", "audio.tts.public")
+        payload = submit.call_args.args[2]
+        self.assertEqual(submit.call_args.args[:2], ("/api/gen/audio", "short-lived-secret"))
+        self.assertEqual(payload["voice"], "S_public")
+        self.assertEqual(payload["source_page"], "audio")
+        self.assertEqual((payload["speed"], payload["pitch"], payload["volume"]), (1.0, 0, 0))
+        self.assertEqual((ready["cost"], run["cost"]), (10, 10))
+        self.assertNotIn("S_public", json.dumps(ready))
+        self.assertNotIn("S_public", json.dumps(run))
+
+    def test_audio_personal_runner_requires_ready_owned_cosyvoice(self):
+        session = {"token": "short-lived-secret", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        with patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "_content_e2e_get", side_effect=[
+                 {"items": []}, {"items": [{"status": "active", "voice_id": None}]},
+             ]), \
+             patch.object(self.admin, "points_domain", SimpleNamespace(cost_of=lambda kind, payload: 10)), \
+             patch.object(self.admin, "_content_e2e_request") as submit:
+            with self.assertRaisesRegex(ValueError, "个人测试音色尚未准备"):
+                self.admin.start_e2e_run("root", "admin-token", "audio.tts.personal")
+        submit.assert_not_called()
+
+    def test_audio_private_fixture_bootstrap_is_idempotent_and_sanitized(self):
+        session = {"token": "short-lived-secret", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        with patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "_ready_audio_voice_key", side_effect=ValueError("missing")), \
+             patch.object(self.admin, "_content_e2e_get", side_effect=[
+                 {"items": [{"slot_id": "private-slot", "status": "active"}]},
+                 {"items": [{"slot_id": "private-slot", "status": "training"}]},
+             ]), \
+             patch.object(self.admin, "_fixture_data_url", return_value="data:audio/mpeg;base64,PRIVATE"), \
+             patch.object(self.admin, "_content_e2e_post", return_value={"ok": True}) as clone:
+            result = self.admin.prepare_audio_e2e_personal_fixture("admin-token")
+            repeated = self.admin.prepare_audio_e2e_personal_fixture("admin-token")
+        self.assertEqual(result["state"], "training")
+        self.assertEqual(repeated["state"], "training")
+        self.assertNotIn("private-slot", json.dumps(result))
+        self.assertNotIn("PRIVATE", json.dumps(result))
+        clone_payload = clone.call_args.args[2]
+        self.assertEqual(clone.call_args.args[:2], ("/api/gen/audio/clone-vip", "short-lived-secret"))
+        self.assertEqual(clone_payload["slot_id"], "private-slot")
+        self.assertTrue(clone_payload["audio"].startswith("data:audio/"))
+        clone.assert_called_once()
+
+    def test_audio_e2e_uses_sync_route_asset_decode_and_ledger_evidence(self):
+        (self.admin.CONTENT_OUT / "result.mp3").write_bytes(b"audio")
+        with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
+            connection.execute("""CREATE TABLE jobs(
+                id INTEGER PRIMARY KEY,kind TEXT,status TEXT,cost INTEGER,refunded INTEGER,error TEXT,
+                created_at INTEGER,updated_at INTEGER,payload TEXT,result TEXT)""")
+            connection.execute(
+                "INSERT INTO jobs VALUES(101,'audio','done',10,0,'',1,2,?,?)",
+                (json.dumps({"provider": "cosyvoice", "voice_scope": "public"}),
+                 json.dumps({"file": "result.mp3", "url": "/api/gen/file/audio/result.mp3"})),
+            )
+            connection.commit()
+        with closing(sqlite3.connect(self.admin.ASSET_DB)) as connection:
+            connection.execute("""CREATE TABLE audio_assets(
+                id INTEGER PRIMARY KEY,job_id INTEGER,file TEXT,url TEXT,
+                asset_kind TEXT,metadata_json TEXT,created_at INTEGER)""")
+            connection.execute(
+                "INSERT INTO audio_assets VALUES(1,101,'result.mp3','/api/gen/file/audio/result.mp3',"
+                "'voice','{}',2)"
+            )
+            connection.commit()
+        row = {
+            "run_id": "audio-101", "operation_id": "audio.tts.public",
+            "username": "qa-dedicated", "status": "completed", "job_id": 101,
+            "cost": 10, "points_before": 500, "points_after": 490,
+            "transaction_key": "ledger-audio-101", "error": "", "created_by": "root",
+            "created_at": 1, "updated_at": 2,
+        }
+        ledger = {"username": "qa-dedicated", "delta": -10, "after_points": 490}
+        with patch.object(self.admin.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=b"mp3\n")), \
+             patch.object(self.admin, "points_domain", SimpleNamespace(get_points_transaction=lambda key: ledger)):
+            run = self.admin._public_e2e_run(row)
+        stages = {stage["key"]: stage for stage in run["stages"]}
+        self.assertTrue(all(stage["state"] == "passed" for stage in run["stages"]))
+        self.assertEqual(stages["route"]["detail"], "任务已选择 CosyVoice 音频线路")
+        self.assertEqual(stages["provider"]["name"], "同步生产协议")
+        self.assertIn("不适用", stages["provider"]["detail"])
+        self.assertEqual(stages["delivery"]["detail"], "文件存在且可解码")
+        self.assertEqual(stages["billing"]["detail"], "扣点流水一致")
+
     def test_task_card_and_e2e_share_delivery_and_ledger_evidence(self):
         (self.admin.CONTENT_OUT / "result.mp4").write_bytes(b"video")
         with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
@@ -265,6 +396,37 @@ class AdminE2ERunnerTests(unittest.TestCase):
         html = (Path(__file__).resolve().parents[1] / "site/admin/index.html").read_text(encoding="utf-8")
         self.assertIn("重新验收全部 ", html)
         self.assertIn("RERUN_BATCH", html)
+
+    def test_audio_batch_is_all_or_nothing_and_totals_twenty_points(self):
+        session = {"token": "short-lived-secret", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        modes = [
+            {"key": "audio.tts.public", "validation": {"supported": True}},
+            {"key": "audio.tts.personal", "validation": {"supported": True}},
+        ]
+        with patch.object(self.admin, "list_e2e_runs", return_value=[]), \
+             patch.object(self.admin, "_e2e_page_modes", return_value=modes), \
+             patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "points_domain", SimpleNamespace()), \
+             patch.object(self.admin, "_e2e_prepare_operation", side_effect=[
+                 {"cost": 10}, ValueError("个人测试音色尚未准备"),
+             ]):
+            blocked = self.admin.e2e_batch_preflight("admin-token", "audio")
+        self.assertFalse(blocked["ready"])
+        self.assertEqual((blocked["ready_count"], blocked["blocked_count"], blocked["total_cost"]), (1, 1, 10))
+        self.assertTrue(blocked["audio_fixture_required"])
+        with patch.object(self.admin, "list_e2e_runs", return_value=[]), \
+             patch.object(self.admin, "_e2e_page_modes", return_value=modes), \
+             patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "points_domain", SimpleNamespace()), \
+             patch.object(self.admin, "_e2e_prepare_operation", side_effect=[
+                 {"cost": 10}, {"cost": 10},
+             ]):
+            ready = self.admin.e2e_batch_preflight("admin-token", "audio")
+        self.assertTrue(ready["ready"])
+        self.assertEqual((ready["ready_count"], ready["blocked_count"], ready["total_cost"]), (2, 0, 20))
+        self.assertFalse(ready["audio_fixture_required"])
 
     def test_start_batch_creates_one_group_and_starts_one_scheduler(self):
         preflight = {
