@@ -413,7 +413,7 @@
         <div class="ops-page-state" id="operationsPageState"></div>
         <div id="operationsBatch"></div>
         <div class="ledger-summary ops-summary" id="operationsSummary"></div>
-        <div class="ops-note" style="margin-bottom:12px">证据边界：密钥已配置、基础服务可达或任务表 completed，都不能单独证明客户已经拿到可播放作品。当前尚未统一采集多段供应商子任务、作品下载解码、余额与账务对账；缺少证据的环节只显示“未验证”，不会假绿。</div>
+        <div class="ops-note" style="margin-bottom:12px">证据规则：密钥已配置、基础服务可达或任务表 completed，都不能单独证明客户已经拿到可播放作品。系统按每个模式的真实旅程逐层核对；同步或内部步骤没有上游任务 ID 时标记“不适用”，缺少证据才显示“未验证”，同一次旅程全部通过才显示 8/8，不会假绿。</div>
         <details class="ops-standard">
           <summary>查看统一调用链证据标准</summary>
           <div class="ops-standard-body"><span><b>1 · 客户入口</b>页面、功能、模式与测试素材</span><span><b>2 · 接单</b>开关与当前接单条件</span><span><b>3 · 业务接口</b>返回真实 job_id</span><span><b>4 · 渠道与额度</b>API、密钥、余额与线路</span><span><b>5 · 供应商接单</b>返回 provider_task_id / video_id</span><span><b>6 · 生成完成</b>到达 completed 并返回作品地址</span><span><b>7 · 作品交付</b>可下载、可解码、时长与格式合格</span><span><b>8 · 账务一致</b>扣点、退款、任务与资产一致</span></div>
@@ -1623,7 +1623,7 @@
     var missing=keys.filter(function(key){return !map[key]}),disabled=keys.filter(function(key){return map[key]&&!map[key].enabled});
     if(missing.length)return {accepting:false,status:'missing',html:'<span class="pill fail">开关未登记</span><div>'+esc(missing.join('、'))+'</div>'};
     if(disabled.length)return {accepting:false,status:'disabled',html:'<span class="pill warn">暂停接单</span><div>'+esc(disabled.join('、'))+'</div>'};
-    return {accepting:true,status:'enabled',html:'<span class="pill neutral">接单开关已开启</span><div>'+esc(keys.join('、'))+' · 尚未证明全链路</div>'};
+    return {accepting:true,status:'enabled',html:'<span class="pill neutral">接单开关已开启</span><div>'+esc(keys.join('、'))+' · 仅表示当前允许接单</div>'};
   }
   function registryRouteEvidence(dependency,data){
     var route=(data.keys||[]).find(function(item){return item.key===dependency.key}),pools=[],tone='fail',label='未配置',source=dependency.credential_source||'auto';

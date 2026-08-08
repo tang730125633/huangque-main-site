@@ -381,6 +381,9 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             "/api/admin/e2e/audio-fixture/prepare", "准备个人测试音色",
             "prepareAudioE2EFixture", "audio_fixture_required",
             "后台自动加载预设素材、分批提交并汇总八段证据",
+            "同步或内部步骤没有上游任务 ID 时标记“不适用”",
+            "同一次旅程全部通过才显示 8/8",
+            "仅表示当前允许接单",
             "return state.overviewPromise", "loadE2EPreflight(operationKey,true)",
             "本次预设测试包", "素材只在服务器私有目录使用", "查看 '+stages.length+' 段证据",
             "/api/admin/e2e/preflight", "测试包已准备 · 待执行",
@@ -407,6 +410,8 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
         self.assertNotIn("function renderServices", html)
         self.assertNotIn("服务在线", html)
         self.assertNotIn("健康接口可达", html)
+        self.assertNotIn("尚未证明全链路", html)
+        self.assertNotIn("当前尚未统一采集", html)
         self.assertNotIn('id="operationsSearch"', html)
         self.assertNotIn("function operationTerms", html)
         self.assertNotIn("已发现服务器凭据 · 尚未鉴权", html)
