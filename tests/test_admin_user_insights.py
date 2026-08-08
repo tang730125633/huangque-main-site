@@ -376,6 +376,7 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             "data-operation-validation-enable=", "openOperationValidation",
             "运行一次完整旅程", "/api/admin/e2e/run", "startE2EPoll",
             "预设提示词与素材由服务器私有加载", "查看 '+stages.length+' 段证据",
+            "产物已登记 · 私有测试素材不展示",
             ".ops-e2e-stages{display:grid",
             ".ops-e2e-stage span{min-width:0;overflow-wrap:anywhere",
             '.ops-catalog{position:static;max-height:none}',
@@ -385,6 +386,7 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
         self.assertNotIn('id="operationsValidationLayer"', html)
         self.assertNotIn('id="operationsValidationFrame"', html)
         self.assertNotIn("hq_video_prefill", html)
+        self.assertNotIn("产物：<code>'+esc(x.result_url", html)
         self.assertNotIn("<img src=", html[html.index("function registryValidationPanel"):html.index("function renderOperationsDeveloper")])
         self.assertNotIn('data-module-tab="ops"', html)
         self.assertNotIn('data-module-tab="points"', html)
