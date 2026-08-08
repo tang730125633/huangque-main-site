@@ -19,10 +19,14 @@ class FunctionRegistryTests(unittest.TestCase):
         base = Path(self.tmp.name)
         self.old_paths = (
             self.admin.JOB_DB, self.admin.ASSET_DB, self.admin.VIDEO_COMPOSE_DB,
+            self.admin.CONTENT_OUT,
         )
         self.admin.JOB_DB = base / "jobs.db"
         self.admin.ASSET_DB = base / "assets.db"
         self.admin.VIDEO_COMPOSE_DB = base / "compose.db"
+        self.admin.CONTENT_OUT = base / "content_out"
+        self.admin.CONTENT_OUT.mkdir()
+        (self.admin.CONTENT_OUT / "grok.bin").write_bytes(b"video")
         now = int(time.time())
         with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
             connection.execute(
@@ -65,7 +69,7 @@ class FunctionRegistryTests(unittest.TestCase):
                        video_url TEXT,status TEXT,error TEXT,updated_at INTEGER)"""
             )
             connection.execute(
-                "INSERT INTO video_assets VALUES(1,'completed','provider-1','grok.mp4',"
+                "INSERT INTO video_assets VALUES(1,'completed','provider-1','grok.bin',"
                 "'https://cdn.example/grok.mp4','done','',?)",
                 (now - 20,),
             )
@@ -84,7 +88,7 @@ class FunctionRegistryTests(unittest.TestCase):
             connection.commit()
 
     def tearDown(self):
-        self.admin.JOB_DB, self.admin.ASSET_DB, self.admin.VIDEO_COMPOSE_DB = self.old_paths
+        self.admin.JOB_DB, self.admin.ASSET_DB, self.admin.VIDEO_COMPOSE_DB, self.admin.CONTENT_OUT = self.old_paths
         self.tmp.cleanup()
 
     def test_customer_tree_is_the_registry_root(self):
@@ -208,8 +212,8 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertEqual((grok["done"], grok["error"]), (1, 0))
         self.assertEqual(grok["latest"]["provider_task_id"], "provider-1")
         self.assertTrue(grok["latest"]["output_reference_present"])
-        self.assertFalse(grok["latest"]["delivery_verified"])
-        self.assertEqual(grok["latest"]["artifact_check"], "not_recorded")
+        self.assertTrue(grok["latest"]["delivery_verified"])
+        self.assertEqual(grok["latest"]["artifact_check"], "file_exists")
         self.assertEqual(grok["latest"]["billing_state"], "unverified")
         motion = operations["video.cinematic.motion"]
         self.assertEqual(motion["latest"]["billing_state"], "refunded")

@@ -2409,6 +2409,36 @@ def _video_asset_evidence(job_ids):
         return {}, "视频资产证据读取失败"
 
 
+def _verify_local_artifact(evidence):
+    result_file = str(evidence.get("result_file") or "").strip()
+    if not result_file:
+        if evidence.get("result_url"):
+            evidence["artifact_check"] = "reference_only"
+        return evidence
+    try:
+        root = CONTENT_OUT.resolve()
+        candidate = pathlib.Path(result_file)
+        path = (candidate if candidate.is_absolute() else root / candidate).resolve()
+        if path == root or root not in path.parents or not path.is_file() or path.stat().st_size <= 0:
+            evidence.update({"artifact_check": "missing", "delivery_verified": False})
+        elif path.suffix.lower() in {".mp4", ".mov", ".webm"}:
+            probe = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(path)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12,
+            )
+            ok = probe.returncode == 0 and bool(probe.stdout.strip())
+            evidence.update({
+                "artifact_check": "decodable" if ok else "decode_failed",
+                "delivery_verified": ok,
+            })
+        else:
+            evidence.update({"artifact_check": "file_exists", "delivery_verified": True})
+    except (OSError, subprocess.SubprocessError):
+        evidence.update({"artifact_check": "decode_failed", "delivery_verified": False})
+    return evidence
+
+
 def _job_evidence(row, asset=None):
     asset = asset or {}
     status = str(row["status"] or "unknown").lower()
@@ -2433,7 +2463,7 @@ def _job_evidence(row, asset=None):
         billing_state = "unverified"
     else:
         billing_state = "in_flight"
-    return {
+    return _verify_local_artifact({
         "job_id": int(row["id"]),
         "project_id": None,
         "status": status,
@@ -2454,7 +2484,7 @@ def _job_evidence(row, asset=None):
         "billing_state": billing_state,
         "asset_status": asset.get("status"),
         "error": str(row["error"] or asset.get("error") or "")[:300],
-    }
+    })
 
 
 def _e2e_job_evidence(job_id):
@@ -2475,32 +2505,7 @@ def _e2e_job_evidence(job_id):
         if not row:
             return None
         assets, _ = _video_asset_evidence([int(job_id)])
-        evidence = _job_evidence(row, assets.get(int(job_id)))
-        result_file = str(evidence.get("result_file") or "").strip()
-        if result_file and not pathlib.Path(result_file).is_absolute():
-            root = CONTENT_OUT.resolve()
-            path = (root / result_file).resolve()
-            if path == root or root not in path.parents or not path.is_file() or path.stat().st_size <= 0:
-                evidence.update({"artifact_check": "missing", "delivery_verified": False})
-            elif path.suffix.lower() in {".mp4", ".mov", ".webm"}:
-                try:
-                    probe = subprocess.run(
-                        ["ffprobe", "-v", "error", "-select_streams", "v:0",
-                         "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(path)],
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12,
-                    )
-                    ok = probe.returncode == 0 and bool(probe.stdout.strip())
-                except (OSError, subprocess.SubprocessError):
-                    ok = False
-                evidence.update({
-                    "artifact_check": "decodable" if ok else "decode_failed",
-                    "delivery_verified": ok,
-                })
-            else:
-                evidence.update({"artifact_check": "file_exists", "delivery_verified": True})
-        elif evidence.get("result_url"):
-            evidence["artifact_check"] = "reference_only"
-        return evidence
+        return _job_evidence(row, assets.get(int(job_id)))
     except (OSError, sqlite3.Error, subprocess.SubprocessError, ValueError):
         return None
 
@@ -2511,7 +2516,7 @@ def _e2e_stage(key, name, state, detail):
 
 def _public_e2e_run(row):
     item = dict(row)
-    item.pop("transaction_key", None)
+    transaction_key = str(item.pop("transaction_key", "") or "").strip()
     evidence = _e2e_job_evidence(item.get("job_id"))
     if evidence:
         job_status = evidence["status"]
@@ -2526,17 +2531,32 @@ def _public_e2e_run(row):
         and item.get("points_after") is not None
         and int(item["points_before"]) - int(item["points_after"]) == int(item.get("cost") or 0)
     )
+    ledger = None
+    get_transaction = getattr(points_domain, "get_points_transaction", None)
+    if transaction_key and callable(get_transaction):
+        try:
+            ledger = get_transaction(transaction_key)
+        except Exception:
+            ledger = None
+    try:
+        ledger_ok = bool(
+            ledger
+            and str(ledger.get("username") or "") == str(item.get("username") or "")
+            and int(ledger.get("delta") or 0) == -int(item.get("cost") or 0)
+            and int(ledger.get("after_points") or 0) == int(item.get("points_after") or 0)
+        )
+    except (TypeError, ValueError):
+        ledger_ok = False
     failed = item["status"] in {"failed", "unknown"}
     provider_id = evidence and evidence.get("provider_task_id")
     completed = bool(evidence and evidence.get("completed"))
     delivered = bool(evidence and evidence.get("delivery_verified"))
     refunded = bool(evidence and evidence.get("billing_state") == "refunded")
-    settlement_pending = completed and item["operation_id"].startswith("video.digital_ip.")
-    billing_passed = refunded or (completed and billing_ok and not settlement_pending)
+    billing_passed = refunded or (completed and billing_ok and ledger_ok)
     item["stages"] = [
         _e2e_stage("accepted", "后台测试受理", "passed", "已建立独立测试批次 " + item["run_id"][:8]),
         _e2e_stage("account", "专用账号与点数", "passed" if item.get("username") else "waiting",
-                   (item.get("username") or "正在取得专用账号") + (" · 提交前 %s 点" % item["points_before"] if item.get("points_before") is not None else "")),
+                   ("专用测试账号已就绪" if item.get("username") else "正在取得专用账号") + (" · 提交前 %s 点" % item["points_before"] if item.get("points_before") is not None else "")),
         _e2e_stage("job", "业务接口 / job_id", "passed" if item.get("job_id") else ("failed" if failed else "waiting"),
                    "job_id=%s" % item["job_id"] if item.get("job_id") else (item.get("error") or "等待业务接口受理")),
         _e2e_stage("route", "渠道与凭据", "passed" if provider_id else ("failed" if failed else "waiting"),
@@ -2551,7 +2571,7 @@ def _public_e2e_run(row):
                      "reference_only": "只有作品地址，尚未完成本地验收"}.get(
                          (evidence or {}).get("artifact_check"), "等待作品文件"))),
         _e2e_stage("billing", "账务闭环", "passed" if billing_passed else ("failed" if failed else "waiting"),
-                   "失败任务已退款" if refunded else ("扣点与任务一致" if billing_passed else ("预扣一致；口播按成片时长结算仍待台账证据" if settlement_pending else "等待终态扣点 / 退款证据"))),
+                   "失败任务已退款" if refunded else ("扣点流水一致" if billing_passed else ("点数变化一致，尚未找到扣点流水" if billing_ok else "等待终态扣点 / 退款证据"))),
     ]
     item["evidence"] = evidence
     return item

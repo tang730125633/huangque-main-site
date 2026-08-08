@@ -21,10 +21,12 @@ class AdminE2ERunnerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
-        self.old = self.admin.ADMIN_DB, self.admin.JOB_DB, self.admin.ASSET_DB
+        self.old = self.admin.ADMIN_DB, self.admin.JOB_DB, self.admin.ASSET_DB, self.admin.CONTENT_OUT
         self.admin.ADMIN_DB = root / "admin.db"
         self.admin.JOB_DB = root / "jobs.db"
         self.admin.ASSET_DB = root / "assets.db"
+        self.admin.CONTENT_OUT = root / "content_out"
+        self.admin.CONTENT_OUT.mkdir()
         with closing(sqlite3.connect(self.admin.ADMIN_DB)) as connection:
             connection.execute("""CREATE TABLE admin_e2e_runs(
                 run_id TEXT PRIMARY KEY,operation_id TEXT,username TEXT DEFAULT '',status TEXT,
@@ -34,7 +36,7 @@ class AdminE2ERunnerTests(unittest.TestCase):
             connection.commit()
 
     def tearDown(self):
-        self.admin.ADMIN_DB, self.admin.JOB_DB, self.admin.ASSET_DB = self.old
+        self.admin.ADMIN_DB, self.admin.JOB_DB, self.admin.ASSET_DB, self.admin.CONTENT_OUT = self.old
         self.tmp.cleanup()
 
     def test_server_runs_once_without_exposing_fixture_or_account_token(self):
@@ -63,6 +65,45 @@ class AdminE2ERunnerTests(unittest.TestCase):
     def test_fixture_reader_rejects_paths_outside_private_directory(self):
         with self.assertRaisesRegex(ValueError, "名称无效"):
             self.admin._fixture_data_url("@fixture/../admin_api.py")
+
+    def test_task_card_and_e2e_share_delivery_and_ledger_evidence(self):
+        (self.admin.CONTENT_OUT / "result.mp4").write_bytes(b"video")
+        with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
+            connection.execute("""CREATE TABLE jobs(
+                id INTEGER PRIMARY KEY,status TEXT,cost INTEGER,refunded INTEGER,error TEXT,
+                created_at INTEGER,updated_at INTEGER,result TEXT)""")
+            connection.execute(
+                "INSERT INTO jobs VALUES(77,'done',30,0,'',1,2,?)",
+                (json.dumps({"video_file": "result.mp4", "video_url": "https://cdn.example/result.mp4",
+                             "provider_video_id": "provider-77"}),),
+            )
+            connection.commit()
+        with closing(sqlite3.connect(self.admin.ASSET_DB)) as connection:
+            connection.execute("""CREATE TABLE video_assets(
+                job_id INTEGER,phase TEXT,provider_video_id TEXT,video_file TEXT,
+                video_url TEXT,status TEXT,error TEXT,updated_at INTEGER)""")
+            connection.execute(
+                "INSERT INTO video_assets VALUES(77,'completed','provider-77','result.mp4',"
+                "'https://cdn.example/result.mp4','done','',2)"
+            )
+            connection.commit()
+        row = {
+            "run_id": "run-77", "operation_id": "video.digital_ip.text.single",
+            "username": "qa-dedicated", "status": "completed", "job_id": 77,
+            "cost": 30, "points_before": 500, "points_after": 470,
+            "transaction_key": "ledger-77", "error": "", "created_by": "root",
+            "created_at": 1, "updated_at": 2,
+        }
+        ledger = {"username": "qa-dedicated", "delta": -30, "after_points": 470}
+        with patch.object(self.admin.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=b"h264\n")), \
+             patch.object(self.admin, "points_domain", SimpleNamespace(get_points_transaction=lambda key: ledger)):
+            evidence = self.admin._e2e_job_evidence(77)
+            run = self.admin._public_e2e_run(row)
+        self.assertTrue(evidence["delivery_verified"])
+        self.assertEqual(evidence["artifact_check"], "decodable")
+        self.assertEqual(next(stage for stage in run["stages"] if stage["key"] == "delivery")["state"], "passed")
+        self.assertEqual(next(stage for stage in run["stages"] if stage["key"] == "billing")["detail"], "扣点流水一致")
+        self.assertNotIn("transaction_key", run)
 
     def test_release_moves_fixtures_to_private_runtime_and_removes_public_copy(self):
         root = Path(__file__).resolve().parents[1]
