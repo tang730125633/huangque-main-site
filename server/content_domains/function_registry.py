@@ -477,6 +477,198 @@ VIDEO_FUNCTIONS = [
 ]
 
 
+IMAGE_E2E_BLOCKED = "后台托管完整旅程尚未启用（本轮已完成客户功能登记与真实任务归类）"
+
+
+IMAGE_FUNCTIONS = [
+    {
+        "key": "banana",
+        "name": "纳米香蕉",
+        "desc": "选择纳米香蕉 2 或 Pro，支持文生图与多图参考生成",
+        "order": 10,
+        "frontend_selector": '[data-engine="banana"]',
+        "service": "imggen",
+        "flag_keys": ["banana"],
+        "dependencies": [
+            {"key": "gemini", "role": "主生成", "requirement": "required", "credential_source": "env"},
+        ],
+        "modes": [
+            {
+                "key": "image.banana.nb2.text",
+                "name": "纳米香蕉 2 · 文生图",
+                "frontend_selector": '[data-variant="nb2"]',
+                "entrypoints": [_endpoint("POST", "/api/gen/banana")],
+                "task_match": {"kind": "image", "source_page": "banana", "provider": "banana", "model": "nb2", "reference_count": 0},
+                "evidence_contract": {"not_applicable": ["provider_task"]},
+                "price_keys": ["image.banana.nb2.std", "image.banana.nb2.hd"],
+                "smoke_inputs": ["短提示词"],
+                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+            },
+            {
+                "key": "image.banana.nb2.reference",
+                "name": "纳米香蕉 2 · 参考图生成",
+                "frontend_selector": '[data-variant="nb2"]',
+                "entrypoints": [_endpoint("POST", "/api/gen/banana")],
+                "task_match": {"kind": "image", "source_page": "banana", "provider": "banana", "model": "nb2", "reference_count": ">0"},
+                "evidence_contract": {"not_applicable": ["provider_task"]},
+                "price_keys": ["image.banana.nb2.std", "image.banana.nb2.hd"],
+                "smoke_inputs": ["短提示词", "1 张低成本参考图"],
+                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+            },
+            {
+                "key": "image.banana.pro.text",
+                "name": "纳米香蕉 Pro · 文生图",
+                "frontend_selector": '[data-variant="pro"]',
+                "entrypoints": [_endpoint("POST", "/api/gen/banana")],
+                "task_match": {"kind": "image", "source_page": "banana", "provider": "banana", "model": "pro", "reference_count": 0},
+                "evidence_contract": {"not_applicable": ["provider_task"]},
+                "price_keys": ["image.banana.pro.std", "image.banana.pro.hd"],
+                "smoke_inputs": ["短提示词"],
+                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+            },
+            {
+                "key": "image.banana.pro.reference",
+                "name": "纳米香蕉 Pro · 参考图生成",
+                "frontend_selector": '[data-variant="pro"]',
+                "entrypoints": [_endpoint("POST", "/api/gen/banana")],
+                "task_match": {"kind": "image", "source_page": "banana", "provider": "banana", "model": "pro", "reference_count": ">0"},
+                "evidence_contract": {"not_applicable": ["provider_task"]},
+                "price_keys": ["image.banana.pro.std", "image.banana.pro.hd"],
+                "smoke_inputs": ["短提示词", "1 张低成本参考图"],
+                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+            },
+        ],
+    },
+    {
+        "key": "openai",
+        "name": "黄雀引擎 2",
+        "desc": "支持文生图、参考图生成与局部修改",
+        "order": 20,
+        "frontend_selector": '[data-engine="gpt"]',
+        "service": "content",
+        "dependencies": [
+            {"key": "openai", "role": "主生成", "requirement": "required", "credential_source": "env"},
+        ],
+        "modes": [
+            {
+                "key": "image.openai.text",
+                "name": "文生图",
+                "entrypoints": [_endpoint("POST", "/api/gen/image")],
+                "task_match": {"kind": "image", "source_page": "banana", "provider": "openai", "reference_count": 0, "mask_present": False},
+                "evidence_contract": {"not_applicable": ["provider_task"]},
+                "price_keys": ["image.openai.std", "image.openai.hd"],
+                "smoke_inputs": ["短提示词"],
+                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+            },
+            {
+                "key": "image.openai.reference",
+                "name": "参考图生成",
+                "entrypoints": [_endpoint("POST", "/api/gen/image")],
+                "task_match": {"kind": "image", "source_page": "banana", "provider": "openai", "reference_count": ">0", "mask_present": False},
+                "evidence_contract": {"not_applicable": ["provider_task"]},
+                "price_keys": ["image.openai.std", "image.openai.hd"],
+                "smoke_inputs": ["短提示词", "1 张参考图"],
+                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+            },
+            {
+                "key": "image.openai.inpaint",
+                "name": "局部修改",
+                "frontend_selector": "#inpBtn",
+                "entrypoints": [_endpoint("POST", "/api/gen/image")],
+                "task_match": {"kind": "image", "source_page": "banana", "provider": "openai", "reference_count": ">0", "mask_present": True},
+                "evidence_contract": {"not_applicable": ["provider_task"]},
+                "price_keys": ["image.openai.std", "image.openai.hd"],
+                "smoke_inputs": ["修改提示词", "1 张参考图", "1 张涂抹蒙版"],
+                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+            },
+        ],
+    },
+    {
+        "key": "seedream",
+        "name": "黄雀引擎 1",
+        "desc": "选择标准或 Pro，支持文生图与多图参考生成",
+        "order": 30,
+        "frontend_selector": '[data-engine="seedream"]',
+        "service": "content",
+        "dependencies": [
+            {"key": "seedance", "role": "火山方舟主生成", "requirement": "required", "credential_source": "env"},
+        ],
+        "modes": [
+            {
+                "key": "image.seedream.std.text", "name": "标准 · 文生图",
+                "frontend_selector": '#seedreamVariantRow [data-variant="std"]',
+                "entrypoints": [_endpoint("POST", "/api/gen/image")],
+                "task_match": {"kind": "image", "source_page": "banana", "provider": "seedream", "variant": "std", "reference_count": 0},
+                "evidence_contract": {"not_applicable": ["provider_task"]},
+                "price_keys": ["image.seedream.std.std", "image.seedream.std.hd"],
+                "smoke_inputs": ["短提示词"],
+                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+            },
+            {
+                "key": "image.seedream.std.reference", "name": "标准 · 参考图生成",
+                "frontend_selector": '#seedreamVariantRow [data-variant="std"]',
+                "entrypoints": [_endpoint("POST", "/api/gen/image")],
+                "task_match": {"kind": "image", "source_page": "banana", "provider": "seedream", "variant": "std", "reference_count": ">0"},
+                "evidence_contract": {"not_applicable": ["provider_task"]},
+                "price_keys": ["image.seedream.std.std", "image.seedream.std.hd"],
+                "smoke_inputs": ["短提示词", "1 张参考图"],
+                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+            },
+            {
+                "key": "image.seedream.pro.text", "name": "Pro · 文生图",
+                "frontend_selector": '#seedreamVariantRow [data-variant="pro"]',
+                "entrypoints": [_endpoint("POST", "/api/gen/image")],
+                "task_match": {"kind": "image", "source_page": "banana", "provider": "seedream", "variant": "pro", "reference_count": 0},
+                "evidence_contract": {"not_applicable": ["provider_task"]},
+                "price_keys": ["image.seedream.pro.std", "image.seedream.pro.hd"],
+                "smoke_inputs": ["短提示词"],
+                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+            },
+            {
+                "key": "image.seedream.pro.reference", "name": "Pro · 参考图生成",
+                "frontend_selector": '#seedreamVariantRow [data-variant="pro"]',
+                "entrypoints": [_endpoint("POST", "/api/gen/image")],
+                "task_match": {"kind": "image", "source_page": "banana", "provider": "seedream", "variant": "pro", "reference_count": ">0"},
+                "evidence_contract": {"not_applicable": ["provider_task"]},
+                "price_keys": ["image.seedream.pro.std", "image.seedream.pro.hd"],
+                "smoke_inputs": ["短提示词", "1 张参考图"],
+                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+            },
+        ],
+    },
+    {
+        "key": "xiaole",
+        "name": "果肉生图",
+        "desc": "支持文生图与多图参考生成",
+        "order": 40,
+        "frontend_selector": '[data-engine="xiaole"]',
+        "service": "content",
+        "dependencies": [
+            {"key": "xiaolevideo", "role": "主生成", "requirement": "required", "credential_source": "env"},
+        ],
+        "evidence_gaps": ["上游 request_id/task_id 尚未写回任务结果，供应商接单证据仍缺失"],
+        "modes": [
+            {
+                "key": "image.xiaole.text", "name": "文生图",
+                "entrypoints": [_endpoint("POST", "/api/gen/image")],
+                "task_match": {"kind": "image", "source_page": "banana", "provider": "xiaole", "reference_count": 0},
+                "price_keys": ["image.xiaole.std", "image.xiaole.hd"],
+                "smoke_inputs": ["短提示词"],
+                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+            },
+            {
+                "key": "image.xiaole.reference", "name": "参考图生成",
+                "entrypoints": [_endpoint("POST", "/api/gen/image")],
+                "task_match": {"kind": "image", "source_page": "banana", "provider": "xiaole", "reference_count": ">0"},
+                "price_keys": ["image.xiaole.std", "image.xiaole.hd"],
+                "smoke_inputs": ["短提示词", "1 张参考图"],
+                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+            },
+        ],
+    },
+]
+
+
 _PAGE_DEFS = [
     ("inspiration", "灵感设计", "/workbench/inspiration.html"),
     ("leads", "平台获客", "/workbench/leads.html"),
@@ -500,14 +692,22 @@ FUNCTION_REGISTRY = [
         "name": name,
         "path": path,
         "order": order,
-        "inventory_status": "verified" if key == "video" else "pending",
-        "functions": VIDEO_FUNCTIONS if key == "video" else [],
+        "inventory_status": "verified" if key in {"banana", "video"} else "pending",
+        "functions": VIDEO_FUNCTIONS if key == "video" else IMAGE_FUNCTIONS if key == "banana" else [],
         "auxiliary_actions": ([{
-            "key": "video.asset.import_h3",
-            "name": "导入 H3 成片",
+            "key": "video.asset.import_h3", "name": "导入 H3 成片",
             "entrypoint": _endpoint("POST", "/api/gen/video/import"),
             "scope": "资产导入，不计入生成渠道健康率",
-        }] if key == "video" else []),
+        }] if key == "video" else [{
+            "key": "image.prompt.optimize", "name": "优化提示词",
+            "entrypoint": _endpoint("POST", "/api/gen/reverse"),
+            "scope": "同步免费工具，不创建生成任务",
+        }, {
+            "key": "image.prompt.reverse", "name": "反推提示词",
+            "entrypoint": _endpoint("POST", "/api/gen/reverse"),
+            "scope": "同步扣点工具，不创建生成任务",
+            "price_keys": ["image.reverse"],
+        }] if key == "banana" else []),
     }
     for order, (key, name, path) in enumerate(_PAGE_DEFS)
 ]
@@ -575,10 +775,15 @@ def classify_task(kind, metadata=None):
     """Return the registry leaf matched by a durable job row."""
     metadata = metadata or {}
     kind = str(kind or "").strip().lower()
-    if metadata.get("source_page") not in {None, "", "video"}:
+    source_page = str(metadata.get("source_page") or "").strip().lower()
+    if source_page not in {"", "video", "banana"}:
+        return None
+    if kind == "image" and source_page != "banana":
+        return None
+    if kind != "image" and source_page == "banana":
         return None
     try:
-        references = int(metadata.get("reference_count") or 0)
+        references = int(metadata.get("reference_count") or (1 if metadata.get("image") else 0))
     except (TypeError, ValueError):
         references = 0
     channel = str(metadata.get("channel") or "").strip().lower()
@@ -588,6 +793,11 @@ def classify_task(kind, metadata=None):
         "cine_mode": str(metadata.get("cine_mode") or "").strip().lower(),
         "line": str(metadata.get("line") or "").strip(),
         "channel": channel,
+        "source_page": source_page,
+        "provider": str(metadata.get("provider") or ("openai" if kind == "image" else "")).strip().lower(),
+        "model": str(metadata.get("model") or "").strip().lower(),
+        "variant": str(metadata.get("variant") or "").strip().lower(),
+        "mask_present": bool(metadata.get("mask_present") or metadata.get("mask")),
         "operation": str(
             metadata.get("operation")
             or ("generate" if kind == "xiaole_video" and channel == "grok" else "")

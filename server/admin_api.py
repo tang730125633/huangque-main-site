@@ -3200,21 +3200,29 @@ def job_stats(days=7):
                               CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.cine_mode'),'')) ELSE '' END AS cine_mode,
                               CASE WHEN json_valid(payload) THEN CAST(COALESCE(json_extract(payload,'$.line'),'') AS TEXT) ELSE '' END AS line,
                               CASE WHEN json_valid(payload) AND json_type(payload,'$.reference_images')='array'
-                                   THEN json_array_length(payload,'$.reference_images') ELSE 0 END AS reference_count,
+                                   THEN json_array_length(payload,'$.reference_images')
+                                   WHEN json_valid(payload) AND json_type(payload,'$.image')='text'
+                                   THEN 1 ELSE 0 END AS reference_count,
                               CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload,'$.batch_id'),'') ELSE '' END AS batch_id,
                               CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.operation'),'')) ELSE '' END AS operation,
                               CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload,'$.upscale'),0) ELSE 0 END AS upscale,
                               CASE WHEN json_valid(payload) AND
                                         (json_type(payload,'$._short_drama_video')='object' OR
                                          json_type(payload,'$.short_drama_binding')='object')
-                                   THEN 'short-drama' ELSE '' END AS source_page,
-                              CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_url'),json_extract(%s,'$.image_url'),json_extract(%s,'$.url'),'') ELSE '' END AS result_url,
-                              CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_file'),json_extract(%s,'$.image_file'),json_extract(%s,'$.file'),'') ELSE '' END AS result_file,
+                                   THEN 'short-drama'
+                                   WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.source_page'),''))
+                                   ELSE '' END AS source_page,
+                              CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.provider'),'')) ELSE '' END AS provider,
+                              CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.model'),'')) ELSE '' END AS model,
+                              CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.variant'),'')) ELSE '' END AS variant,
+                              CASE WHEN json_valid(payload) AND json_type(payload,'$.mask')='text' THEN 1 ELSE 0 END AS mask_present,
+                              CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_url'),json_extract(%s,'$.image_url'),json_extract(%s,'$.url'),json_extract(%s,'$.urls[0]'),'') ELSE '' END AS result_url,
+                              CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_file'),json_extract(%s,'$.image_file'),json_extract(%s,'$.file'),json_extract(%s,'$.files[0]'),'') ELSE '' END AS result_file,
                               CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.provider_video_id'),json_extract(%s,'$.video_id'),json_extract(%s,'$.provider_avatar_id'),'') ELSE '' END AS provider_result_id
                        FROM jobs WHERE created_at>=? ORDER BY created_at DESC""" % (
                            refunded_sql, error_sql,
-                           result_sql, result_sql, result_sql, result_sql,
-                           result_sql, result_sql, result_sql, result_sql,
+                           result_sql, result_sql, result_sql, result_sql, result_sql,
+                           result_sql, result_sql, result_sql, result_sql, result_sql,
                            result_sql, result_sql, result_sql, result_sql,
                        ),
                     (since,),
@@ -3244,7 +3252,9 @@ def job_stats(days=7):
             "cine_mode": row["cine_mode"], "line": row["line"],
             "reference_count": row["reference_count"], "batch_id": row["batch_id"],
             "operation": row["operation"], "upscale": row["upscale"],
-            "source_page": row["source_page"],
+            "source_page": row["source_page"], "provider": row["provider"],
+            "model": row["model"], "variant": row["variant"],
+            "mask_present": bool(row["mask_present"]),
         }
         operation = function_registry.classify_task(row["kind"], metadata)
         if operation:
@@ -3261,7 +3271,7 @@ def job_stats(days=7):
             }:
                 page_key = "video"
             signature = str(row["kind"] or "unknown")
-            for key in ("channel", "mode", "cine_mode", "line"):
+            for key in ("channel", "mode", "cine_mode", "line", "provider", "model", "variant"):
                 if row[key]:
                     signature += "/" + str(row[key])
             missing = unmapped.setdefault((page_key, signature), {
@@ -3314,7 +3324,7 @@ def job_stats(days=7):
     }
 
 
-_PAYLOAD_FIELD_RE = re.compile(r'"(model|provider|channel|mode|keyword|url|line)"\s*:\s*"([^"]*)"')
+_PAYLOAD_FIELD_RE = re.compile(r'"(model|provider|channel|mode|keyword|url|line|variant|source_page)"\s*:\s*"([^"]*)"')
 
 
 def _job_payload(raw):
@@ -3351,13 +3361,21 @@ def call_logs(days=7, limit=200):
                       CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.cine_mode'),'')) ELSE '' END AS cine_mode,
                       CASE WHEN json_valid(payload) THEN CAST(COALESCE(json_extract(payload,'$.line'),'') AS TEXT) ELSE '' END AS line,
                       CASE WHEN json_valid(payload) AND json_type(payload,'$.reference_images')='array'
-                           THEN json_array_length(payload,'$.reference_images') ELSE 0 END AS reference_count,
+                           THEN json_array_length(payload,'$.reference_images')
+                           WHEN json_valid(payload) AND json_type(payload,'$.image')='text'
+                           THEN 1 ELSE 0 END AS reference_count,
                       CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload,'$.batch_id'),'') ELSE '' END AS batch_id,
                       CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.operation'),'')) ELSE '' END AS operation,
                       CASE WHEN json_valid(payload) AND
                                 (json_type(payload,'$._short_drama_video')='object' OR
                                  json_type(payload,'$.short_drama_binding')='object')
-                           THEN 'short-drama' ELSE '' END AS source_page
+                           THEN 'short-drama'
+                           WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.source_page'),''))
+                           ELSE '' END AS source_page,
+                      CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.provider'),'')) ELSE '' END AS provider,
+                      CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.model'),'')) ELSE '' END AS model,
+                      CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.variant'),'')) ELSE '' END AS variant,
+                      CASE WHEN json_valid(payload) AND json_type(payload,'$.mask')='text' THEN 1 ELSE 0 END AS mask_present
                FROM jobs
                WHERE created_at >= ?
                ORDER BY created_at DESC, id DESC
@@ -3375,6 +3393,8 @@ def call_logs(days=7, limit=200):
             "cine_mode": row["cine_mode"], "line": row["line"],
             "reference_count": row["reference_count"], "batch_id": row["batch_id"],
             "operation": row["operation"], "source_page": row["source_page"],
+            "provider": row["provider"], "model": row["model"],
+            "variant": row["variant"], "mask_present": bool(row["mask_present"]),
         })
         operation = function_registry.classify_task(kind, payload)
         duration = None

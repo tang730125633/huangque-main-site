@@ -99,7 +99,31 @@ class FunctionRegistryTests(unittest.TestCase):
              "文案编导", "短剧创作", "无限画布", "我的资产", "点数价格", "邀请中心",
              "教程视频", "通用设置"],
         )
-        self.assertEqual([page["inventory_status"] for page in pages].count("verified"), 1)
+        self.assertEqual([page["inventory_status"] for page in pages].count("verified"), 2)
+        image = next(page for page in pages if page["key"] == "banana")
+        self.assertEqual(
+            [feature["name"] for feature in image["functions"]],
+            ["纳米香蕉", "黄雀引擎 2", "黄雀引擎 1", "果肉生图"],
+        )
+        self.assertEqual(
+            [mode["key"] for feature in image["functions"] for mode in feature["modes"]],
+            [
+                "image.banana.nb2.text", "image.banana.nb2.reference",
+                "image.banana.pro.text", "image.banana.pro.reference",
+                "image.openai.text", "image.openai.reference", "image.openai.inpaint",
+                "image.seedream.std.text", "image.seedream.std.reference",
+                "image.seedream.pro.text", "image.seedream.pro.reference",
+                "image.xiaole.text", "image.xiaole.reference",
+            ],
+        )
+        self.assertEqual(
+            [item["name"] for item in image["auxiliary_actions"]],
+            ["优化提示词", "反推提示词"],
+        )
+        self.assertNotIn(
+            "zelong2",
+            json.dumps(image, ensure_ascii=False),
+        )
         video = next(page for page in pages if page["key"] == "video")
         self.assertEqual(
             [feature["name"] for feature in video["functions"]],
@@ -129,9 +153,9 @@ class FunctionRegistryTests(unittest.TestCase):
         flags = self.admin.feature_flags.CATALOG_MAP
         routes = self.admin.KEY_GROUP_MAP
         prices = self.admin.pricing.CATALOG_MAP
-        for feature in video["functions"]:
+        for feature in image["functions"] + video["functions"]:
             self.assertTrue(feature["frontend_selector"])
-            self.assertEqual(feature["service"], "content")
+            self.assertIn(feature["service"], {"content", "imggen"})
             for flag in feature.get("flag_keys", []):
                 self.assertIn(flag, flags)
             leaves = feature.get("shared_steps", []) + feature.get("modes", [])
@@ -170,6 +194,8 @@ class FunctionRegistryTests(unittest.TestCase):
 
         modes = [mode for feature in video["functions"] for mode in feature["modes"]]
         self.assertEqual(sum(mode["validation"]["supported"] for mode in modes), 15)
+        image_modes = [mode for feature in image["functions"] for mode in feature["modes"]]
+        self.assertEqual(sum(mode["validation"]["supported"] for mode in image_modes), 0)
 
         root = Path(__file__).resolve().parents[1]
         for page in pages:
@@ -184,6 +210,19 @@ class FunctionRegistryTests(unittest.TestCase):
             "xiaoleRefRenderers",
         ):
             self.assertIn(marker, frontend)
+
+        image_frontend = (root / "site/workbench/banana.html").read_text(encoding="utf-8")
+        for marker in (
+            'data-engine="banana"', 'data-engine="gpt"', 'data-engine="seedream"',
+            'data-engine="xiaole"', "inpBtn.id='inpBtn'", "source_page:'banana'",
+        ):
+            self.assertIn(marker, image_frontend)
+        imggen = (root / "server/imggen_api.py").read_text(encoding="utf-8")
+        banana_route = imggen.split('if p == "/api/gen/banana":', 1)[1].split(
+            'if p == "/api/gen/reverse":', 1
+        )[0]
+        self.assertNotIn('body["source_page"] =', banana_route)
+        self.assertIn('body["provider"] = "banana"', banana_route)
 
     def test_runtime_visibility_and_task_evidence_stay_separate(self):
         pages = self.admin.load_function_registry([{
@@ -244,6 +283,20 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertEqual(classify("xiaole_video", {"channel": "grok"}), "video.grok.text")
         self.assertIsNone(classify("xiaole_video", {}))
         self.assertIsNone(classify("xiaole_video", {"channel": "grok", "operation": "edit"}))
+        self.assertEqual(
+            classify("image", {"source_page": "banana", "provider": "banana", "model": "nb2"}),
+            "image.banana.nb2.text",
+        )
+        self.assertEqual(
+            classify("image", {"source_page": "banana", "provider": "openai", "image": "x", "mask": "x"}),
+            "image.openai.inpaint",
+        )
+        self.assertEqual(
+            classify("image", {"source_page": "banana", "provider": "seedream", "variant": "pro", "reference_count": 1}),
+            "image.seedream.pro.reference",
+        )
+        self.assertIsNone(classify("image", {"provider": "openai"}))
+        self.assertIsNone(classify("image", {"source_page": "script", "provider": "openai"}))
 
         filtered = self.admin.activity_logs(7, 20, q="video.grok.image", source="job")
         self.assertEqual(filtered["total"], 1)
@@ -277,6 +330,49 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertEqual(operations[8], "video.omni.image")
         self.assertEqual(operations[9], "video.cinematic.motion")
         self.assertEqual(operations[10], "video.digital_ip.text.batch")
+
+    def test_image_page_jobs_are_classified_without_stealing_other_image_jobs(self):
+        now = int(time.time())
+        rows = [
+            (20, {"source_page": "banana", "provider": "banana", "model": "pro",
+                  "reference_images": ["ref"]}),
+            (21, {"source_page": "banana", "prompt": "text only"}),
+            (22, {"source_page": "banana", "provider": "seedream", "variant": "std",
+                  "reference_images": ["ref"]}),
+            (23, {"source_page": "banana", "provider": "xiaole", "image": "old-ref"}),
+            (24, {"source_page": "script", "provider": "openai"}),
+            (25, {"provider": "openai"}),
+        ]
+        with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
+            connection.executemany(
+                "INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                [(job_id, "image", "qa", 1, "done", json.dumps(payload),
+                  json.dumps({"urls": ["https://cdn.example/image.png"], "files": ["grok.bin"]}) if job_id == 20 else "{}", "",
+                  now - job_id, now - job_id + 1, 0) for job_id, payload in rows],
+            )
+            connection.commit()
+
+        operations = {item["id"]: item["operation"] for item in self.admin.call_logs(7, 50)["items"]}
+        self.assertEqual(operations[20], "image.banana.pro.reference")
+        self.assertEqual(operations[21], "image.openai.text")
+        self.assertEqual(operations[22], "image.seedream.std.reference")
+        self.assertEqual(operations[23], "image.xiaole.reference")
+        self.assertIsNone(operations[24])
+        self.assertIsNone(operations[25])
+
+        stats = self.admin.job_stats(7)
+        by_operation = {item["operation"]: item for item in stats["by_operation"]}
+        self.assertIn("image.banana.pro.reference", by_operation)
+        self.assertIn("image.openai.text", by_operation)
+        self.assertIn("image.seedream.std.reference", by_operation)
+        self.assertIn("image.xiaole.reference", by_operation)
+        banana = by_operation["image.banana.pro.reference"]["latest"]
+        self.assertEqual(banana["result_url"], "https://cdn.example/image.png")
+        self.assertEqual(banana["artifact_check"], "file_exists")
+        self.assertTrue(banana["delivery_verified"])
+        unmapped = {(item["page_key"], item["signature"]) for item in stats["unmapped"]}
+        self.assertIn(("script", "image/openai"), unmapped)
+        self.assertIn(("", "image/openai"), unmapped)
 
 
 if __name__ == "__main__":
