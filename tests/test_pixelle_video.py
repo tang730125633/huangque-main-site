@@ -51,6 +51,33 @@ class PixelleVideoTests(unittest.TestCase):
                 self.assertTrue(preview.is_file())
                 self.assertGreater(preview.stat().st_size, 0)
 
+    def test_public_style_catalog_matches_private_allowlist(self):
+        styles = self.pixelle.public_styles()
+        self.assertEqual(len(styles), 10)
+        self.assertEqual(len({item["key"] for item in styles}), 10)
+        self.assertEqual(
+            [item["key"] for item in styles],
+            [
+                "realistic_commercial",
+                "cinematic",
+                "future_tech",
+                "healing_fresh",
+                "chinese_illustration",
+                "cartoon_3d",
+                "retro_film",
+                "minimal_line",
+                "medical_beauty",
+                "ecommerce_product",
+            ],
+        )
+        self.assertEqual(self.pixelle.DEFAULT_STYLE, "realistic_commercial")
+        self.assertTrue(all(set(item) == {"key", "name"} for item in styles))
+        self.assertTrue(all("prompt_prefix" not in item for item in styles))
+        self.assertTrue(all(
+            self.pixelle.STYLE_PRESETS_BY_KEY[item["key"]]["prompt_prefix"]
+            for item in styles
+        ))
+
     def test_feature_catalog_is_fail_closed_by_default(self):
         meta = self.pixelle.feature_flags.CATALOG_MAP[self.pixelle.FEATURE_KEY]
         self.assertIs(meta["default_enabled"], False)
@@ -105,6 +132,22 @@ class PixelleVideoTests(unittest.TestCase):
     def test_prepare_rejects_invalid_template_before_charge(self):
         with self.assertRaisesRegex(ValueError, "有效的视频模板"):
             self.pixelle.prepare_payload({"text": "测试主题", "template": "../../bad.html"})
+
+    def test_prepare_uses_default_and_preserves_selected_style(self):
+        default = self.pixelle.prepare_payload({"text": "AI 培训"})
+        selected = self.pixelle.prepare_payload({
+            "text": "AI 培训",
+            "style": "future_tech",
+        })
+        self.assertEqual(default["style"], "realistic_commercial")
+        self.assertEqual(selected["style"], "future_tech")
+
+    def test_prepare_rejects_invalid_style_before_charge(self):
+        with self.assertRaisesRegex(ValueError, "请选择有效的素材风格"):
+            self.pixelle.prepare_payload({
+                "text": "AI 培训",
+                "style": "custom prompt injection",
+            })
 
     def test_submit_uses_async_service_contract(self):
         payload = self.pixelle.prepare_payload({"text": "AI 培训", "mode": "generate"})

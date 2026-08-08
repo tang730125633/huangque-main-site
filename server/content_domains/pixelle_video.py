@@ -40,6 +40,106 @@ PIXELLE_MAX_VIDEO_BYTES = _env_int(
 )
 _NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
+DEFAULT_STYLE = "realistic_commercial"
+_STYLE_COMMON_RESTRICTIONS = (
+    "No watermark, no logo, no garbled or unreadable text, "
+    "no malformed people, objects, hands, or anatomy."
+)
+STYLE_PRESETS = (
+    {
+        "key": "realistic_commercial",
+        "name": "写实商业",
+        "prompt_prefix": (
+            "Photorealistic commercial advertising, authentic people or products, "
+            "modern business environment, natural professional lighting, credible "
+            "editorial composition, realistic materials and balanced colors. "
+            + _STYLE_COMMON_RESTRICTIONS
+        ),
+    },
+    {
+        "key": "cinematic",
+        "name": "电影质感",
+        "prompt_prefix": (
+            "Cinematic visual storytelling, motivated film lighting, narrative composition, "
+            "shallow depth of field, restrained color grading, realistic texture, subtle film grain. "
+            + _STYLE_COMMON_RESTRICTIONS
+        ),
+    },
+    {
+        "key": "future_tech",
+        "name": "科技未来",
+        "prompt_prefix": (
+            "Premium near-future AI visual design, clean advanced spaces, precise blue and cyan "
+            "accent lighting, refined interface motifs, crisp geometry, high-end technology campaign. "
+            + _STYLE_COMMON_RESTRICTIONS
+        ),
+    },
+    {
+        "key": "healing_fresh",
+        "name": "治愈清新",
+        "prompt_prefix": (
+            "Bright healing lifestyle visual, soft natural daylight, gentle low-saturation palette, "
+            "airy everyday setting, calm composition, light and optimistic atmosphere. "
+            + _STYLE_COMMON_RESTRICTIONS
+        ),
+    },
+    {
+        "key": "chinese_illustration",
+        "name": "国风插画",
+        "prompt_prefix": (
+            "Contemporary Chinese illustration, elegant ink wash and fine brush textures, intentional "
+            "negative space, refined oriental palette, poetic layered composition, delicate paper texture. "
+            + _STYLE_COMMON_RESTRICTIONS
+        ),
+    },
+    {
+        "key": "cartoon_3d",
+        "name": "3D 卡通",
+        "prompt_prefix": (
+            "Polished 3D cartoon scene, appealing rounded characters or objects, soft tactile materials, "
+            "bright studio lighting, expressive but coherent forms, premium animated-film rendering. "
+            + _STYLE_COMMON_RESTRICTIONS
+        ),
+    },
+    {
+        "key": "retro_film",
+        "name": "复古胶片",
+        "prompt_prefix": (
+            "Documentary retro film aesthetic, organic analog grain, soft highlight roll-off, nostalgic "
+            "muted colors, natural candid composition, authentic period camera texture. "
+            + _STYLE_COMMON_RESTRICTIONS
+        ),
+    },
+    {
+        "key": "minimal_line",
+        "name": "极简线稿",
+        "prompt_prefix": (
+            "Minimal line-art illustration, precise clean strokes, limited color palette, generous negative "
+            "space, editorial infographic composition, clear visual hierarchy, refined paper-white ground. "
+            + _STYLE_COMMON_RESTRICTIONS
+        ),
+    },
+    {
+        "key": "medical_beauty",
+        "name": "医美高级感",
+        "prompt_prefix": (
+            "Premium medical-aesthetics campaign, immaculate contemporary clinic, soft clean lighting, "
+            "natural skin texture, restrained luxury, trustworthy professional mood, elegant neutral palette. "
+            + _STYLE_COMMON_RESTRICTIONS
+        ),
+    },
+    {
+        "key": "ecommerce_product",
+        "name": "电商产品广告",
+        "prompt_prefix": (
+            "High-conversion ecommerce product advertising, unmistakable hero product, controlled studio "
+            "lighting, crisp material details, clean background, premium commercial composition and depth. "
+            + _STYLE_COMMON_RESTRICTIONS
+        ),
+    },
+)
+STYLE_PRESETS_BY_KEY = {item["key"]: item for item in STYLE_PRESETS}
+
 
 class PixelleTransientError(RuntimeError):
     """A temporary transport failure that is safe to retry while polling."""
@@ -129,6 +229,13 @@ def public_templates():
     return [dict(item) for item in TEMPLATES]
 
 
+def public_styles():
+    return [
+        {"key": item["key"], "name": item["name"]}
+        for item in STYLE_PRESETS
+    ]
+
+
 def _fixed_segments(text):
     normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
     return [part.strip() for part in re.split(r"\n\s*\n", normalized) if part.strip()]
@@ -155,12 +262,16 @@ def prepare_payload(payload):
     template = str(body.get("template") or "1080x1920/image_default.html").strip()
     if template not in TEMPLATE_KEYS:
         raise ValueError("请选择有效的视频模板")
+    style = str(body.get("style") or DEFAULT_STYLE).strip()
+    if style not in STYLE_PRESETS_BY_KEY:
+        raise ValueError("请选择有效的素材风格")
     scene_count = 5 if mode == "generate" else len(segments)
     return {
         "pipeline": "pixelle",
         "text": text,
         "mode": mode,
         "template": template,
+        "style": style,
         "n_scenes": scene_count,
         "scenes": [{"line": line} for line in segments],
     }
