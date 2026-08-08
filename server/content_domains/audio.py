@@ -966,6 +966,13 @@ def validate_audio_payload(payload, username=""):
     voice_key = raw_voice_key.strip()
     if username:
         resolve_audio_provider_voice(username, voice_key)
+        # The customer audio page exposes exactly the four preset voices and
+        # owned cloned voices. Persist that server-derived scope so operations
+        # evidence never has to infer a customer mode from a mutable label.
+        body["voice_scope"] = (
+            "public" if voice_key in cosyvoice.PUBLIC_VOICE_PRESETS else "personal"
+        )
+        body["provider"] = "cosyvoice"
     raw_speed = body.get("speed")
     if isinstance(raw_speed, (int, float)):
         if isinstance(raw_speed, bool) or raw_speed != raw_speed or not 0.5 <= float(raw_speed) <= 2.0:
