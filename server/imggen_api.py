@@ -614,6 +614,10 @@ class H(BaseHTTPRequestHandler):
                 body = validate_banana_payload(body)
             except ValueError as e:
                 return self._send(400, {"detail": str(e)})
+            # The same endpoint is also used by Canvas.  Keep source_page only
+            # when the customer image page supplied it; forcing it here would
+            # mix Canvas work into the image-page operations report.
+            body["provider"] = "banana"
             mk = body["model"]
             cq = body["quality"]
             cn = body["count"]
