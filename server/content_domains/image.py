@@ -56,11 +56,12 @@ SEEDREAM_MAX_REF_BYTES = 10 * 1024 * 1024   # 参考图上限，与 imggen_api �
 _ZELONG2_POOL_LOCK = threading.Lock()
 _ZELONG2_POOL_NEXT = 0
 
-# 出图死线。必须留在 reaper KIND_GRACE["image"]=900s 之内（否则任务被判超时退点），
-# 前端 banana 轮询也容忍 900s（#331）。600s 给两档慢引擎足够余量、又不越界。
+# 果肉异步出图在渠道拥堵时已出现 600s 仍在 processing 的真实任务。任务一旦被上游
+# 接单就可能已经计费，过早判死会同时造成「客户收到退款、上游稍后仍出图」的双重损失。
+# 默认等 1200s；reaper image 宽限与前端轮询必须比它更长，见 core.py / banana.html。
 #   xiaole : 轮询循环的总死线，天然受控
 #   zelong2: 号池的**总**死线（不是单次 timeout），见 _post_zelong2
-XIAOLE_IMG_DEADLINE = int(os.environ.get("XIAOLE_IMG_DEADLINE", "600") or 600)
+XIAOLE_IMG_DEADLINE = int(os.environ.get("XIAOLE_IMG_DEADLINE", "1200") or 1200)
 ZELONG2_DEADLINE = int(os.environ.get("ZELONG2_DEADLINE", "600") or 600)
 _MIN_ATTEMPT_SECONDS = 5        # 剩余预算不足这么多秒就别再发请求了
 
@@ -71,8 +72,8 @@ _MIN_ATTEMPT_SECONDS = 5        # 剩余预算不足这么多秒就别再发请�
 # 排队等（worker 池本来就只有 10），总比创建被 429 当场判死退点强。
 XIAOLE_IMG_MAX_CONCURRENCY = max(1, int(os.environ.get("XIAOLE_IMG_MAX_CONCURRENCY", "5") or 5))
 # 创建调用限流重试总预算：与 seedream 429 同一逻辑——只有限流能确定任务未创建未计费，
-# 重试绝对安全；其余错误照旧立刻失败退点。300s 退避 + 600s 轮询贴 reaper image 900s 红线，
-# 极端排队会被 reaper 判超时退点（不丢钱只是白等），可接受。
+# 重试绝对安全；其余错误照旧立刻失败退点。创建预算与轮询预算叠加后仍由
+# reaper image 1500s 兜底；上游已接单时宁可继续等，不提前退款丢弃稍后作品。
 XIAOLE_IMG_CREATE_MAX_WAIT = max(0, int(os.environ.get("XIAOLE_IMG_CREATE_MAX_WAIT", "300") or 300))
 _XIAOLE_IMG_SEM = threading.BoundedSemaphore(XIAOLE_IMG_MAX_CONCURRENCY)
 
@@ -309,10 +310,11 @@ def _gen_image_xiaole_locked(prompt, ratio, quality, count, img, references=None
     if not rid:
         raise ValueError("渠道未返回任务ID")
     status_url = data.get("status_url") or ("/api/v1/generations/" + rid)
-    # 300s 太紧：hd 图生图(2k+参考图)实测稳定 ~300s，全站近7天成功任务中位193s、最大446s，
-    # 失败任务中位315s —— 死线正好卡在实际耗时上。放宽到 600s（仍 < reaper 900s / 前端 900s）。
+    # 300s 太紧：hd 图生图(2k+参考图)实测稳定 ~300s；生产自动质检又捕获到
+    # 两条 600s 后仍持续更新的 processing 任务。给渠道 1200s 完成，避免已接单任务
+    # 被本地提前判死；reaper 保持 1500s，客户页还要覆盖最多 300s 的创建退避，等 1800s。
     deadline = time.time() + XIAOLE_IMG_DEADLINE
-    images, poll_errors = None, 0
+    images, poll_errors, last_status = None, 0, ""
     while time.time() < deadline:
         try:
             st = _xiaole_request("GET", status_url, timeout=30)
@@ -327,7 +329,8 @@ def _gen_image_xiaole_locked(prompt, ratio, quality, count, img, references=None
             continue
         sdata = st.get("data") or {}
         status = str(sdata.get("status") or "").lower()
-        if status == "succeeded":
+        last_status = status or last_status
+        if status in ("succeeded", "completed", "success", "done"):
             images = (sdata.get("output") or {}).get("images") or []
             break
         if status in ("failed", "error", "cancelled", "canceled"):
@@ -335,7 +338,7 @@ def _gen_image_xiaole_locked(prompt, ratio, quality, count, img, references=None
             raise ValueError("出图失败: %s" % ((err.get("message") if isinstance(err, dict) else None) or str(err) or status))
         time.sleep(3)
     else:
-        raise ValueError("出图超时")
+        raise ValueError("出图超时（渠道状态：%s）" % (last_status or "未知"))
     files_out, urls = [], []
     for item in (images or []):
         b64 = item.get("b64_json") if isinstance(item, dict) else None

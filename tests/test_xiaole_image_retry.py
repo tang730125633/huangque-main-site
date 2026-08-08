@@ -143,6 +143,13 @@ class XiaoleImageRetryTest(unittest.TestCase):
         self.assertEqual(result["provider"], "xiaole")
         self.assertEqual(result["count"], 1)
 
+    def test_poll_accepts_completed_terminal_status(self):
+        """兼容渠道把成功终态从 succeeded 改为 completed，不能一直等到超时。"""
+        completed = {"code": 200, "data": {"status": "completed", "output": {"images": [{"b64_json": PNG_B64}]}}}
+        result, _ = self._run([CREATE_OK], [completed])
+        self.assertEqual(result["provider_task_id"], "r1")
+        self.assertEqual(result["count"], 1)
+
     def test_poll_gives_up_after_consecutive_errors(self):
         """轮询连续 5 次失败才放弃（避免单边网络故障无限占 worker）。"""
         with self.assertRaises(ValueError) as ctx:
