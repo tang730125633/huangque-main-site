@@ -774,7 +774,7 @@
           <textarea id="microPrompt" rows="4" maxlength="2000" placeholder="例如：一只纸艺小鸟从桌面起飞，镜头缓慢跟随，暖色晨光，轻柔纸张摩擦声，无文字无标识" style="width:100%;min-height:110px;resize:vertical;background:rgba(7,11,19,.5);border:1px solid rgba(148,164,187,.16);border-radius:12px;color:#eaf1fa;padding:12px 14px;font:inherit;font-size:14px;"></textarea>
         </div>
         <div class="panel" style="margin-top:12px;">
-          <div class="faint" style="font-size:12px;margin-bottom:8px;">参考图 <span style="color:#5c6b82;">· 可选，最多 9 张；也可在提示词框 Ctrl/⌘V 粘贴</span></div>
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">参考图 <span style="color:#5c6b82;">· 可选，测试首期最多 1 张；也可在提示词框 Ctrl/⌘V 粘贴</span></div>
           <div id="microRefGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px;">
             <label id="microRefAdd" style="position:relative;display:flex;align-items:center;justify-content:center;min-height:74px;border:1px dashed rgba(148,164,187,.28);border-radius:12px;background:rgba(7,11,19,.4);cursor:pointer;">
               <input id="microRefFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
@@ -2988,7 +2988,7 @@
         selectedSeedanceResolution=['480p','720p','1080p'].indexOf(payload.resolution)>=0?payload.resolution:'720p';
         selectedSeedanceUpscale=payload.upscale===true&&selectedSeedanceResolution==='480p';
         selectedSeedanceAudio=payload.generate_audio!==false;
-        microRefData=(payload.reference_images||[]).slice(0,9);
+        microRefData=(payload.reference_images||[]).slice(0,1);
         if($('microPrompt'))$('microPrompt').value=String(payload.prompt);
         if($('microStatus'))$('microStatus').textContent='检测到一笔结果未确认的提交；保持当前参数重试会复用原请求编号';
       }
@@ -3337,7 +3337,7 @@
     render();
   }
   setupXiaoleRefPanel('sora', soraRefData, 1);
-  setupXiaoleRefPanel('micro', microRefData, 9);
+  setupXiaoleRefPanel('micro', microRefData, 1);
   setupXiaoleRefPanel('omni', omniRefData, 6);
   setupXiaoleRefPanel('minimax', minimaxRefData, 5);
   if($('refreshAvatarBtn')) $('refreshAvatarBtn').onclick=function(){loadMotionAvatars(true);};
