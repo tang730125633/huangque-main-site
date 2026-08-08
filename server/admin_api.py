@@ -856,10 +856,12 @@ def _e2e_payload(operation_id, runner, ready_avatar_ids=None):
             "reference_images": [resolve(item) for item in prefill.get("reference_images") or []],
         })
     elif operation_id.startswith("video.grok."):
+        references = [resolve(item) for item in prefill.get("reference_images") or []]
         payload.update({
             "channel": "grok", "operation": "generate", "model": "grok-imagine-video",
-            "prompt": prompt, "duration": 5, "resolution": "480p", "ratio": "9:16",
-            "reference_images": [resolve(item) for item in prefill.get("reference_images") or []],
+            "prompt": prompt, "duration": 5,
+            "resolution": "720p" if references else "480p", "ratio": "9:16",
+            "reference_images": references,
         })
     elif operation_id.startswith("video.minimax."):
         payload.update({
@@ -985,6 +987,11 @@ def e2e_preflight(admin_token, operation_id):
     if not runner.get("supported"):
         return {"operation_id": operation_id, "ready": False,
                 "blocker": runner.get("blocked_reason") or "测试包尚未准备完成"}
+    active = next((run for run in list_e2e_runs(100)
+                   if run["status"] in {"submitting", "queued", "running", "unknown"}), None)
+    if active:
+        return {"operation_id": operation_id, "ready": False,
+                "blocker": "另一条生产链测试正在运行，请等待终态后再继续"}
     if not points_domain:
         raise RuntimeError("点数模块不可用")
     session = auth_admin_request("/api/auth/admin/e2e/session", admin_token, method="POST", payload={})
@@ -2735,8 +2742,8 @@ def start_e2e_run(actor, admin_token, operation_id):
         raise RuntimeError("点数模块不可用")
     with E2E_RUN_LOCK:
         current = list_e2e_runs(100)
-        if any(run["operation_id"] == operation_id and run["status"] in {"submitting", "queued", "running", "unknown"} for run in current):
-            raise ValueError("该模式已有测试任务在运行，请等待终态后再提交")
+        if any(run["status"] in {"submitting", "queued", "running", "unknown"} for run in current):
+            raise ValueError("已有一条生产链测试在运行，请等待终态后再提交")
         run_id = uuid.uuid4().hex
         now = int(time.time())
         with closing(db()) as connection:

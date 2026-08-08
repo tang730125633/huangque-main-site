@@ -4465,7 +4465,8 @@ def gen_tryon(payload):
             "person_image_file": person_image_file, "clothes_file": clothes2,
             "image_file": person_image_file, "image_url": _file_url(person_image_file),
             "video_file": wres.get("video_file"), "video_url": wres.get("video_url"),
-            "provider": "wavespeed", "text": "换装", "duration": seconds, "seconds": seconds,
+            "provider": "wavespeed", "provider_video_id": wres.get("provider_video_id"),
+            "text": "换装", "duration": seconds, "seconds": seconds,
             "message": "换装完成",
         }
     person_video_file = _save_data_file(payload.get("person_video_data"), "tryon_person", [".mp4", ".mov", ".webm"])
