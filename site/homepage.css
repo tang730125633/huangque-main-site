@@ -63,7 +63,9 @@ button{color:inherit}
 .hero-media::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(4,4,7,.52),rgba(4,4,7,.2) 42%,rgba(4,4,7,.76)),radial-gradient(circle at 50% 42%,transparent 10%,rgba(3,3,5,.36) 78%)}
 .hero-media video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;opacity:0;filter:saturate(.78) contrast(1.05) brightness(.8);transform:scale(1.01);transition:opacity 1s ease}
 .hero-media video.is-active{opacity:1}
-.hero-inner{position:relative;z-index:2;width:min(1080px,calc(100% - 48px));margin:auto;padding-top:9vh;text-align:center}
+.hero-particle-stage{position:absolute;z-index:2;inset:0;width:100%;height:100%;pointer-events:none;opacity:0;mix-blend-mode:screen;transition:opacity .9s ease;mask-image:linear-gradient(90deg,transparent 18%,rgba(0,0,0,.16) 42%,#000 72%);-webkit-mask-image:linear-gradient(90deg,transparent 18%,rgba(0,0,0,.16) 42%,#000 72%)}
+.hero-particles-ready .hero-particle-stage{opacity:.72}
+.hero-inner{position:relative;z-index:3;width:min(1080px,calc(100% - 48px));margin:auto;padding-top:9vh;text-align:center}
 .hero-logo{width:76px;height:76px;display:grid;place-items:center;margin:auto;border:1px solid var(--line-strong);background:linear-gradient(145deg,#12161c,#0b0d11);box-shadow:0 24px 70px rgba(0,0,0,.28)}
 .hero-logo img{width:58px;height:52px;object-fit:contain}
 
@@ -251,7 +253,7 @@ main,footer{position:relative;z-index:1}
   .site-header{padding-top:10px}.nav-shell{width:calc(100% - 24px);min-height:56px;grid-template-columns:1fr auto;padding-inline:0}.nav-links,.nav-actions{display:none}
   .mobile-menu{display:block}.mobile-menu summary{width:42px;height:42px;display:grid;place-content:center;gap:6px;cursor:pointer;list-style:none}.mobile-menu summary::-webkit-details-marker{display:none}.mobile-menu summary span{width:21px;height:1px;background:#aeb7c3;transition:transform .2s}.mobile-menu[open] summary span:first-child{transform:translateY(3.5px) rotate(45deg)}.mobile-menu[open] summary span:last-child{transform:translateY(-3.5px) rotate(-45deg)}
   .mobile-menu>div{position:absolute;top:48px;right:0;width:min(290px,calc(100vw - 24px));display:grid;padding:10px;border:1px solid var(--line-strong);border-radius:18px;background:rgba(12,13,16,.96);backdrop-filter:blur(18px);box-shadow:0 24px 60px rgba(0,0,0,.45)}.mobile-menu a{min-height:44px;display:flex;align-items:center;padding:0 12px;border-bottom:1px solid var(--line);color:#aeb7c3;font:500 11px/1 var(--sans)}.mobile-menu a:last-child{border-bottom:0;color:var(--gold-soft)}
-  .hero{padding-top:110px}.hero-inner{width:min(100% - 32px,720px)}.hero h1{font-size:clamp(40px,7.6vw,60px)}
+  .hero{padding-top:110px}.hero-particle-stage{opacity:0!important}.hero-inner{width:min(100% - 32px,720px)}.hero h1{font-size:clamp(40px,7.6vw,60px)}
   .metrics{padding-block:72px}.metrics-grid{grid-template-columns:1fr;gap:34px}.metric{padding:0 0 34px;border-left:0;border-bottom:1px solid var(--line)}.metric:last-child{border-bottom:0;padding-bottom:0}
   .story{padding-block:96px 110px}.story-layout{position:relative;display:grid;grid-template-columns:1fr;gap:0;margin-top:56px}.story-visual,.story-chapters{grid-area:1/1}.story-visual{z-index:1;height:100%}.story-stage{top:78px;height:50vh;min-height:400px;max-height:500px}.story-chapters{z-index:2;padding-top:53vh;pointer-events:none}.story-step{min-height:76vh;justify-content:flex-end;padding:39vh 0 7vh;background:linear-gradient(transparent 30%,rgba(6,6,7,.78) 58%,var(--bg) 72%);pointer-events:none}.story-step>*{pointer-events:auto}.story-step p{max-width:620px}.story-step h3{font-size:38px}
   .capability-head{grid-template-columns:1fr;gap:22px}.capability-head>p{max-width:620px}.capability-root{width:100%}.channel-showcase-head{grid-template-columns:1fr;gap:16px}
@@ -278,7 +280,7 @@ main,footer{position:relative;z-index:1}
 }
 
 @media (prefers-reduced-motion:reduce){
-  html{scroll-behavior:auto}*,*::before,*::after{scroll-behavior:auto!important;animation:none!important;transition:none!important}[data-reveal]{opacity:1!important;transform:none!important}
+  html{scroll-behavior:auto}*,*::before,*::after{scroll-behavior:auto!important;animation:none!important;transition:none!important}[data-reveal]{opacity:1!important;transform:none!important}.hero-particle-stage{display:none}
 }
 
 @keyframes twinkle{from{opacity:.55}to{opacity:1}}
