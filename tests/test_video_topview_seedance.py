@@ -43,7 +43,7 @@ def encoded(payload):
 
 
 class TopviewSeedanceTests(unittest.TestCase):
-    def test_image_submit_once_then_poll_success(self):
+    def test_reference_submit_once_then_poll_success(self):
         opener = Opener([
             Response(b"image", "image/jpeg"),
             encoded({"code": "200", "result": {"fileId": "f1", "uploadUrl": "https://upload.test/f1"}}),
@@ -61,9 +61,12 @@ class TopviewSeedanceTests(unittest.TestCase):
         self.assertEqual(len(posts), 1)
         submitted = json.loads(posts[0].data)
         self.assertEqual(submitted["model"], "Standard")
-        self.assertEqual(submitted["firstFrameFileId"], "f1")
-        self.assertNotIn("aspectRatio", submitted)
-        self.assertEqual(result["request_id"], "i2v:task1")
+        self.assertEqual(submitted["inputImages"], [{"fileId": "f1", "name": "Image1"}])
+        self.assertIn("<IMAGE1>", submitted["prompt"])
+        self.assertEqual(submitted["aspectRatio"], "9:16")
+        self.assertNotIn("sound", submitted)
+        self.assertIn("/v1/common_task/omni_reference/task/query", opener.requests[-1][0].full_url)
+        self.assertEqual(result["request_id"], "omni:task1")
         self.assertEqual(result["source_video_url"], "https://cdn.test/out.mp4")
         self.assertEqual(result["provider_cost_credit"], "10.00")
 
