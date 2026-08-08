@@ -1156,6 +1156,10 @@ def _e2e_prepare_operation(session, operation_id):
         raise ValueError("功能注册表中不存在该模式")
     if not runner.get("supported"):
         raise ValueError(runner.get("blocked_reason") or "该模式尚未接入后台托管测试")
+    disabled_flags = [key for key in runner.get("flag_keys") or []
+                      if not feature_flags.is_enabled(key)]
+    if disabled_flags:
+        raise ValueError("该模式已暂停接单，自动质检不会提交付费任务")
     account_token = session["token"]
     avatars = _ready_avatar_ids(operation_id, account_token)
     audio_voice_key = _ready_audio_voice_key(operation_id, account_token)
@@ -3223,7 +3227,10 @@ def _e2e_page_modes(page_key):
         raise ValueError("该客户功能页尚未完成盘点，不能批量验收")
     return [mode for feature in page.get("functions") or []
             if feature.get("runtime_visible") is not False
-            for mode in feature.get("modes") or []]
+            for mode in feature.get("modes") or []
+            if all(feature_flags.is_enabled(key)
+                   for key in (list(feature.get("flag_keys") or [])
+                               + list(mode.get("flag_keys") or [])))]
 
 
 def e2e_batch_preflight(admin_token, page_key, include_fresh=False):

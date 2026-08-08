@@ -1763,12 +1763,12 @@
   function registryVerdict(feature,mode,stat,flagState,service,data){
     var latest=stat&&stat.latest,contract=mode.evidence_contract||{},notApplicable=contract.not_applicable||[];
     if(flagState.status==='missing')return ['fail','注册缺失','该客户模式依赖的接单开关尚未登记','断点 · 2 接单开关'];
+    if(latest&&(latest.status==='error'||latest.status==='failed'||latest.status==='refunded'))return ['fail','最近一次失败',latest.error||'请展开查看现有阶段证据',registryFailureBreakpoint(latest,notApplicable)];
     if(flagState.status==='disabled')return ['warn','暂停接单','接单开关当前已关闭','断点 · 2 接单开关'];
     if(feature.acceptance_health===false)return ['fail','当前不可接单','前台入口仍可见，但接单条件未通过','断点 · 2 接单条件'];
     if(!service)return ['warn','服务未关联','缺少该业务服务的基础运行探针','断点 · 3 监控缺口'];
     if(service&&service.online===false)return ['fail','基础服务不可达','业务服务探针失败；只定位提交层，不代表其他层已核验','断点 · 3 业务接口'];
     if(latest&&Number(latest.updated_at||latest.created_at||0)<Math.floor(Date.now()/1000)-86400)return ['warn','证据已过期','最近真实任务超过 24 小时，不能证明当前可用','断点 · 1 需要重测'];
-    if(latest&&(latest.status==='error'||latest.status==='failed'||latest.status==='refunded'))return ['fail','最近一次失败',latest.error||'请展开查看现有阶段证据',registryFailureBreakpoint(latest,notApplicable)];
     var selections=registrySelections(feature,mode),deps=(feature.dependencies||[]).concat(mode.dependencies||[]).filter(function(dep){return registryDependencyApplies(dep,selections)}),required=deps.filter(function(dep){return dep.requirement==='required'}),alternatives={};
     deps.filter(function(dep){return dep.requirement==='alternative'}).forEach(function(dep){(alternatives[dep.alternative_group]||(alternatives[dep.alternative_group]=[])).push({dependency:dep,evidence:registryRouteEvidence(dep,data)})});
     var routes=required.map(function(dep){return registryRouteEvidence(dep,data)}),alternativeGroups=Object.keys(alternatives).map(function(key){var selected=selections[key],group=alternatives[key];return (selected?group.filter(function(item){return (item.dependency.selection_value||item.dependency.key)===selected}):group).map(function(item){return item.evidence})});
