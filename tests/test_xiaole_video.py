@@ -99,7 +99,8 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertIn("gemini-omni-flash-preview", html)
         self.assertIn("doubao-seedance-2-0-260128", html)
         self.assertIn("doubao-seedance-2-0-fast-260128", html)
-        self.assertIn('data-seedance-model="doubao-seedance-2-0-fast-260128" disabled', html)
+        self.assertIn("Topview Seedance 2.5 测试接入", html)
+        self.assertNotIn('data-seedance-model="doubao-seedance-2-0-fast-260128" disabled', html)
         for seconds in range(3, 11):
             self.assertIn('data-omni-duration="%d"' % seconds, html)
         for seconds in range(4, 16):

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Topview Seedance 2.0 async adapter for the existing Huangque video job."""
+"""Topview Seedance 2.5 async adapter for the existing Huangque video job."""
 import json
 import os
 import re
@@ -15,7 +15,7 @@ TOPVIEW_BASE = os.environ.get("TOPVIEW_API_BASE", "https://api.topview.ai").rstr
 TOPVIEW_UID = os.environ.get("TOPVIEW_UID", "").strip()
 SEEDANCE_MODEL = "doubao-seedance-2-0-260128"
 SEEDANCE_FAST_MODEL = "doubao-seedance-2-0-fast-260128"
-MODEL_NAMES = {SEEDANCE_MODEL: "Standard"}
+MODEL_NAMES = {SEEDANCE_MODEL: "seedance-2.5"}
 RATIOS = {"21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"}
 RESOLUTIONS = {"480p", "720p", "1080p"}
 TIMEOUT = int(os.environ.get("TOPVIEW_VIDEO_TIMEOUT", "1200") or 1200)
@@ -136,7 +136,7 @@ def _request_json(opener, method, path, body=None, timeout=90, api_key=None,
 def _build_payload(model, prompt, duration, ratio, resolution, generate_audio,
                    reference_images=None):
     if str(model or "").strip() not in MODEL_NAMES:
-        raise ValueError("Topview 测试通道仅支持 Seedance 2.0 标准版")
+        raise ValueError("Topview 测试通道仅支持 Seedance 2.5")
     prompt = str(prompt or "").strip()
     if not prompt:
         raise ValueError("请输入 Seedance 视频提示词")

@@ -60,7 +60,7 @@ class TopviewSeedanceTests(unittest.TestCase):
         posts = [request for request, _ in opener.requests if request.get_method() == "POST"]
         self.assertEqual(len(posts), 1)
         submitted = json.loads(posts[0].data)
-        self.assertEqual(submitted["model"], "Standard")
+        self.assertEqual(submitted["model"], "seedance-2.5")
         self.assertEqual(submitted["firstFrameFileId"], "f1")
         self.assertEqual(submitted["prompt"], "portrait waves")
         self.assertNotIn("aspectRatio", submitted)

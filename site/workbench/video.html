@@ -759,13 +759,13 @@
         <div class="row">
           <div>
             <div class="label">Seedance 视频</div>
-            <div class="muted" style="font-size:12px;margin-top:6px;">Topview Seedance 2.0 测试接入 · 文生 / 单图人脸参考</div>
+            <div class="muted" style="font-size:12px;margin-top:6px;">Topview Seedance 2.5 测试接入 · 文生 / 单图人脸参考</div>
           </div>
           <span class="faint" style="font-size:11.5px;">生成失败自动退点</span>
         </div>
         <div class="cine-notice">
           <b>提交前请确认</b>
-          <span>· Standard 支持 480p / 720p / 1080p；Fast 当前账号暂未开通</span>
+          <span>· Seedance 2.5 支持 480p / 720p / 1080p</span>
           <span>· 图生视频比例由首帧图片决定；比例选择仅用于文生视频</span>
           <span>· 上传真人素材前，请确认已取得本人肖像和素材授权</span>
         </div>
@@ -784,7 +784,7 @@
         </div>
         <div class="panel" style="margin-top:12px;">
           <div class="faint" style="font-size:12px;margin-bottom:8px;">官方模型</div>
-          <div class="seg" style="grid-template-columns:repeat(2,1fr);"><button class="on" data-seedance-model="doubao-seedance-2-0-260128">Seedance 2.0 · 标准</button><button data-seedance-model="doubao-seedance-2-0-fast-260128" disabled title="Topview 测试首期仅开放标准版">Seedance 2.0 · Fast（暂未开通）</button></div>
+          <div class="seg"><button class="on" data-seedance-model="doubao-seedance-2-0-260128">Seedance 2.5</button></div>
         </div>
         <div class="panel" style="margin-top:12px;">
           <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例</div>
@@ -2349,7 +2349,7 @@
       $('modeSummary').textContent='Sora 2 / Pro：输入画面描述，生成非真人高质量视频';
       if($('modeName')) $('modeName').textContent='Sora 2';
     }else if(videoFunction==='micro'){
-      $('modeSummary').textContent='Seedance 2.0 官方视频：选择模型、比例、时长、分辨率和声音生成';
+      $('modeSummary').textContent='Seedance 2.5 官方视频：选择比例、时长、分辨率和声音生成';
       if($('modeName')) $('modeName').textContent='Seedance 视频';
     }else if(videoFunction==='omni'){
       $('modeSummary').textContent='Gemini Omni Flash 官方视频：720p 有声，支持 3–10 秒与参考图';
