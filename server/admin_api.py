@@ -2900,7 +2900,7 @@ def _e2e_page_modes(page_key):
             for mode in feature.get("modes") or []]
 
 
-def e2e_batch_preflight(admin_token, page_key):
+def e2e_batch_preflight(admin_token, page_key, include_fresh=False):
     if not points_domain:
         raise RuntimeError("点数模块不可用")
     runs = list_e2e_runs(100)
@@ -2910,7 +2910,7 @@ def e2e_batch_preflight(admin_token, page_key):
                    if active.get("status") == "unknown" else "已有生产链验收批次在运行")
         return {"page_key": page_key, "ready": False, "blocker": blocker,
                 "items": [], "target_count": 0, "fresh_count": 0, "unprepared_count": 0,
-                "total_cost": 0, "points": 0}
+                "total_cost": 0, "points": 0, "include_fresh": bool(include_fresh)}
     latest = {}
     for run in runs:
         latest.setdefault(run.get("operation_id"), run)
@@ -2919,7 +2919,7 @@ def e2e_batch_preflight(admin_token, page_key):
     unprepared_count = sum(1 for mode in modes if not (mode.get("validation") or {}).get("supported"))
     targets = [mode for mode in modes
                if (mode.get("validation") or {}).get("supported")
-               and not _e2e_run_fresh(latest.get(mode.get("key"), {}))]
+               and (include_fresh or not _e2e_run_fresh(latest.get(mode.get("key"), {})))]
     session = auth_admin_request("/api/auth/admin/e2e/session", admin_token, method="POST", payload={})
     account = session["account"]
     items = []
@@ -2947,6 +2947,7 @@ def e2e_batch_preflight(admin_token, page_key):
         "items": items, "target_count": len(items), "ready_count": len(ready_items),
         "blocked_count": len(items) - len(ready_items), "fresh_count": fresh_count,
         "unprepared_count": unprepared_count, "total_cost": total_cost,
+        "include_fresh": bool(include_fresh),
     }
 
 
@@ -3083,9 +3084,9 @@ def _e2e_operation_page_key(operation_id):
     return ""
 
 
-def start_e2e_batch(actor, admin_token, page_key):
+def start_e2e_batch(actor, admin_token, page_key, include_fresh=False):
     with E2E_RUN_LOCK:
-        preflight = e2e_batch_preflight(admin_token, page_key)
+        preflight = e2e_batch_preflight(admin_token, page_key, include_fresh=include_fresh)
         if not preflight.get("ready"):
             raise ValueError(preflight.get("blocker") or "当前批次不能运行")
         batch_id = uuid.uuid4().hex
@@ -3102,7 +3103,8 @@ def start_e2e_batch(actor, admin_token, page_key):
                 (actor, "e2e.batch.start", batch_id,
                  json.dumps({"page_key": page_key, "target_count": preflight["target_count"],
                              "ready_count": preflight["ready_count"],
-                             "total_cost": preflight["total_cost"]}, ensure_ascii=False), now),
+                             "total_cost": preflight["total_cost"],
+                             "include_fresh": bool(include_fresh)}, ensure_ascii=False), now),
             )
             connection.commit()
         threading.Thread(
@@ -3722,7 +3724,9 @@ class H(BaseHTTPRequestHandler):
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             try:
                 return self._send(200, e2e_batch_preflight(
-                    self._token(), (q.get("page_key") or [""])[0].strip()
+                    self._token(), (q.get("page_key") or [""])[0].strip(),
+                    include_fresh=(q.get("include_fresh") or [""])[0].strip().lower()
+                    in {"1", "true", "yes"},
                 ))
             except ValueError as exc:
                 return self._send(400, {"detail": str(exc)})
@@ -3802,13 +3806,18 @@ class H(BaseHTTPRequestHandler):
         if path == "/api/admin/e2e/batch/run":
             try:
                 body = self._body()
-                if set(body) != {"page_key", "confirmation"}:
-                    raise ValueError("请求字段必须是 page_key 和 confirmation")
-                if body.get("confirmation") != "RUN_BATCH":
+                if not {"page_key", "confirmation"}.issubset(body) or not set(body).issubset(
+                    {"page_key", "confirmation", "include_fresh"}
+                ):
+                    raise ValueError("请求字段必须是 page_key、confirmation 和可选 include_fresh")
+                include_fresh = body.get("include_fresh") is True
+                confirmation = "RERUN_BATCH" if include_fresh else "RUN_BATCH"
+                if body.get("confirmation") != confirmation:
                     raise ValueError("请明确确认本次一键真实扣点验收")
                 batch = start_e2e_batch(
                     user.get("username") or "admin", self._token(),
                     str(body.get("page_key") or "").strip(),
+                    include_fresh=include_fresh,
                 )
                 return self._send(200, {"ok": True, "batch": batch})
             except ValueError as exc:
