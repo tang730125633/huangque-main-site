@@ -2911,6 +2911,8 @@ def _job_evidence(row, asset=None):
         asset.get("provider_video_id") or asset.get("provider_request_id")
         or row["provider_result_id"] or ""
     ).strip()
+    if provider_task_id.lower() in {"none", "null", "undefined"}:
+        provider_task_id = ""
     if status in {"error", "failed"}:
         if cost <= 0:
             billing_state = "not_charged"

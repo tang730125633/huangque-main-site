@@ -113,6 +113,19 @@ class XiaoleImageRetryTest(unittest.TestCase):
             self._run([{"code": 400, "message": "内容审核未通过"}])
         self.assertIn("出图创建失败", str(ctx.exception))
 
+    def test_status_url_without_task_id_fails_before_polling(self):
+        """仅有 status_url 不能代替可审计任务 ID，失败后由 worker 走退点。"""
+        calls = []
+        create_without_id = {
+            "code": 200,
+            "data": {"status_url": "/api/v1/generations/status-only"},
+        }
+        fake = _fake_request(calls, [create_without_id], [POLL_OK])
+        with patch.object(image, "_xiaole_request", fake):
+            with self.assertRaisesRegex(ValueError, "任务ID"):
+                image._gen_image_xiaole_locked("一只猫", "1:1", "high", 1, None)
+        self.assertEqual(calls, [("POST", "/api/v1/generations")])
+
     def test_rate_limit_budget_exhausted(self):
         """持续限流超过预算 → 放弃并给「限流」人话（走失败退点，不会死等）。"""
         with patch.object(image, "XIAOLE_IMG_CREATE_MAX_WAIT", 25):

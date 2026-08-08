@@ -305,10 +305,10 @@ def _gen_image_xiaole_locked(prompt, ratio, quality, count, img, references=None
             delay, elapsed, XIAOLE_IMG_CREATE_MAX_WAIT), flush=True)
         time.sleep(delay)
     data = create.get("data") or {}
-    rid = data.get("request_id") or data.get("task_id")
-    status_url = data.get("status_url") or (("/api/v1/generations/" + str(rid)) if rid else "")
-    if not status_url:
+    rid = str(data.get("request_id") or data.get("task_id") or "").strip()
+    if not rid:
         raise ValueError("渠道未返回任务ID")
+    status_url = data.get("status_url") or ("/api/v1/generations/" + rid)
     # 300s 太紧：hd 图生图(2k+参考图)实测稳定 ~300s，全站近7天成功任务中位193s、最大446s，
     # 失败任务中位315s —— 死线正好卡在实际耗时上。放宽到 600s（仍 < reaper 900s / 前端 900s）。
     deadline = time.time() + XIAOLE_IMG_DEADLINE
@@ -352,7 +352,7 @@ def _gen_image_xiaole_locked(prompt, ratio, quality, count, img, references=None
     if not files_out:
         raise ValueError("出图返回为空")
     return {"type": "image", "mode": ("img2img" if refs else "text2img"), "provider": "xiaole",
-            "provider_task_id": str(rid),
+            "provider_task_id": rid,
             "count": len(files_out), "file": files_out[0], "url": urls[0],
             "files": files_out, "urls": urls, "ratio": ratio, "prompt": prompt}
 

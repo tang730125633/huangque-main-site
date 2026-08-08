@@ -430,6 +430,34 @@ class AdminE2ERunnerTests(unittest.TestCase):
         self.assertIn("xiaole-201", stages["provider"]["detail"])
         self.assertEqual(stages["delivery"]["detail"], "文件存在且可解码")
 
+    def test_image_placeholder_provider_id_cannot_pass_provider_stage(self):
+        image_bytes = (Path(__file__).resolve().parents[1] / "server/qa_fixtures/qa-serum.png").read_bytes()
+        (self.admin.CONTENT_OUT / "result.png").write_bytes(image_bytes)
+        with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
+            connection.execute("""CREATE TABLE jobs(
+                id INTEGER PRIMARY KEY,kind TEXT,status TEXT,cost INTEGER,refunded INTEGER,error TEXT,
+                created_at INTEGER,updated_at INTEGER,payload TEXT,result TEXT)""")
+            connection.execute(
+                "INSERT INTO jobs VALUES(202,'image','done',12,0,'',1,2,?,?)",
+                (json.dumps({"source_page": "banana", "provider": "xiaole"}),
+                 json.dumps({"files": ["result.png"], "urls": ["/api/gen/file/result.png"],
+                             "provider_task_id": "None"})),
+            )
+            connection.commit()
+        row = {
+            "run_id": "image-202", "operation_id": "image.xiaole.text",
+            "username": "qa-dedicated", "status": "completed", "job_id": 202,
+            "cost": 12, "points_before": 500, "points_after": 488,
+            "transaction_key": "ledger-image-202", "error": "", "created_by": "root",
+            "created_at": 1, "updated_at": 2,
+        }
+        ledger = {"username": "qa-dedicated", "delta": -12, "after_points": 488}
+        with patch.object(self.admin, "points_domain", SimpleNamespace(get_points_transaction=lambda key: ledger)):
+            run = self.admin._public_e2e_run(row)
+        stages = {stage["key"]: stage for stage in run["stages"]}
+        self.assertNotEqual(stages["provider"]["state"], "passed")
+        self.assertEqual(stages["provider"]["detail"], "尚无供应商任务编号")
+
     def test_corrupt_image_cannot_pass_delivery_stage(self):
         (self.admin.CONTENT_OUT / "broken.png").write_bytes(b"not-an-image")
         evidence = self.admin._verify_local_artifact({
