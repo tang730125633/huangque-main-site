@@ -99,6 +99,7 @@ QA_FIXTURE_DIR = pathlib.Path(os.environ.get("HQ_QA_FIXTURE_DIR", str(BASE / "qa
 CONTENT_OUT = pathlib.Path(os.environ.get("CONTENT_OUT", str(BASE / "content_out")))
 E2E_TEST_USERNAME = os.environ.get("HQ_E2E_TEST_USERNAME", "").strip()
 E2E_RUN_LOCK = threading.Lock()
+E2E_FIXTURE_LOCK = threading.Lock()
 E2E_ACTIVE_STATUSES = {"planned", "submitting", "queued", "running", "unknown"}
 E2E_BATCH_DEADLINE_SECONDS = 2 * 60 * 60
 
@@ -824,7 +825,7 @@ def _fixture_data_url(value):
     )
 
 
-def _e2e_payload(operation_id, runner, ready_avatar_ids=None):
+def _e2e_payload(operation_id, runner, ready_avatar_ids=None, ready_audio_voice_key=""):
     prefill = runner.get("prefill") or {}
     resolve = lambda value: _fixture_data_url(value)
     prompt = str(prefill.get("prompt") or "").strip()
@@ -903,6 +904,17 @@ def _e2e_payload(operation_id, runner, ready_avatar_ids=None):
             "generate_audio": False, "upscale": False,
             "reference_images": [resolve(item) for item in prefill.get("reference_images") or []],
         })
+    elif operation_id.startswith("audio.tts."):
+        if not ready_audio_voice_key:
+            raise ValueError("专用测试账号尚未登记可用测试音色")
+        payload.update({
+            "text": str(prefill.get("text") or "").strip(),
+            "voice": ready_audio_voice_key,
+            "speed": float(prefill.get("speed", 1.0)),
+            "pitch": int(prefill.get("pitch", 0)),
+            "volume": int(prefill.get("volume", 0)),
+            "source_page": "audio",
+        })
     else:
         raise ValueError("该模式尚未接入后台托管测试")
     return payload
@@ -978,6 +990,7 @@ def _content_e2e_post(path, account_token, payload):
 
 def _e2e_kind(endpoint):
     return {
+        "/api/gen/audio": "audio",
         "/api/gen/video": "video", "/api/gen/tryon": "tryon",
         "/api/gen/xiaole_video": "xiaole_video", "/api/gen/sora_video": "sora_video",
         "/api/gen/cinematic": "cinematic",
@@ -992,6 +1005,32 @@ def _ready_avatar_ids(operation_id, account_token):
         item.get("id") for item in avatar_data.get("items") or []
         if item.get("status") == "ready" and item.get("id")
     ]
+
+
+def _ready_audio_voice_key(operation_id, account_token):
+    if not operation_id.startswith("audio.tts."):
+        return ""
+    voice_data = _content_e2e_get("/api/gen/audio/voices", account_token)
+    voices = voice_data.get("items") or []
+    if operation_id == "audio.tts.public":
+        public = next((item for item in voices
+                       if item.get("scope") == "public" and item.get("voice_key")), None)
+        if not public:
+            raise ValueError("专用测试账号未读取到公共音色")
+        return str(public["voice_key"])
+    slot_data = _content_e2e_get("/api/gen/audio/slots", account_token)
+    ready_ids = {
+        int(item["voice_id"]) for item in slot_data.get("items") or []
+        if item.get("status") == "ready" and item.get("voice_id")
+    }
+    personal = next((item for item in voices
+                     if item.get("scope") == "personal"
+                     and item.get("id") in ready_ids
+                     and str(item.get("provider_voice") or "").startswith("cosyvoice-")
+                     and item.get("voice_key")), None)
+    if not personal:
+        raise ValueError("专用测试账号个人测试音色尚未准备")
+    return str(personal["voice_key"])
 
 
 def _e2e_cost(operation_id, kind, payload, account_token):
@@ -1021,6 +1060,14 @@ def _e2e_parameters(operation_id, payload):
         if values[key] is not None:
             suffix = " 秒" if key == "duration" and isinstance(values[key], int) else ""
             parameters.append("%s：%s%s" % (labels[key], values[key], suffix))
+    if operation_id.startswith("audio.tts."):
+        parameters.extend([
+            "音色范围：%s" % ("个人" if operation_id.endswith(".personal") else "公共"),
+            "文案长度：%s 字" % len(str(payload.get("text") or "")),
+            "语速：%s" % payload.get("speed"),
+            "音调：%s" % payload.get("pitch"),
+            "音量：%s" % payload.get("volume"),
+        ])
     return parameters
 
 
@@ -1032,7 +1079,8 @@ def _e2e_prepare_operation(session, operation_id):
         raise ValueError(runner.get("blocked_reason") or "该模式尚未接入后台托管测试")
     account_token = session["token"]
     avatars = _ready_avatar_ids(operation_id, account_token)
-    payload = _e2e_payload(operation_id, runner, avatars)
+    audio_voice_key = _ready_audio_voice_key(operation_id, account_token)
+    payload = _e2e_payload(operation_id, runner, avatars, audio_voice_key)
     endpoint = runner["endpoint"]["path"]
     kind = _e2e_kind(endpoint)
     if not kind:
@@ -1078,6 +1126,36 @@ def e2e_preflight(admin_token, operation_id):
         "fixture_ready": True,
         "ready_avatar": True if operation_id.startswith("video.cinematic.") else None,
     }
+
+
+def prepare_audio_e2e_personal_fixture(admin_token):
+    """Create the private QA voice once; never return its sample, slot, or voice id."""
+    with E2E_FIXTURE_LOCK:
+        session = auth_admin_request(
+            "/api/auth/admin/e2e/session", admin_token, method="POST", payload={}
+        )
+        account_token = session["token"]
+        try:
+            _ready_audio_voice_key("audio.tts.personal", account_token)
+            return {"ready": True, "state": "ready", "detail": "个人测试音色已就绪"}
+        except ValueError:
+            pass
+        slot_data = _content_e2e_get("/api/gen/audio/slots", account_token)
+        slots = slot_data.get("items") or []
+        if any(item.get("status") == "training" for item in slots):
+            return {"ready": False, "state": "training", "detail": "个人测试音色正在准备"}
+        slot = next((item for item in slots if item.get("status") in {"active", "failed"}
+                     and item.get("slot_id")), None)
+        if not slot:
+            raise ValueError("专用测试账号没有可用的会员测试音色槽位")
+        audio_data = _fixture_data_url(function_registry.QA_VOICE_AUDIO)
+        _content_e2e_post("/api/gen/audio/clone-vip", account_token, {
+            "slot_id": slot["slot_id"],
+            "name": "后台自动质检音色",
+            "audio": audio_data,
+            "audio_format": "mp3",
+        })
+        return {"ready": False, "state": "training", "detail": "个人测试音色已开始准备"}
 
 
 def auth_admin_raw(path, token):
@@ -2736,19 +2814,39 @@ def _e2e_job_evidence(job_id):
     try:
         with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as connection:
             connection.row_factory = sqlite3.Row
+            columns = {item[1] for item in connection.execute("PRAGMA table_info(jobs)")}
+            kind_sql = "COALESCE(kind,'')" if "kind" in columns else "''"
+            provider_sql = (
+                "CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload,'$.provider'),'') ELSE '' END"
+                if "payload" in columns else "''"
+            )
+            voice_scope_sql = (
+                "CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload,'$.voice_scope'),'') ELSE '' END"
+                if "payload" in columns else "''"
+            )
             row = connection.execute(
                 """SELECT id,status,cost,COALESCE(refunded,0) AS refunded,
                           COALESCE(error,'') AS error,created_at,updated_at,
                           CASE WHEN json_valid(result) THEN COALESCE(json_extract(result,'$.video_url'),json_extract(result,'$.url'),'') ELSE '' END AS result_url,
                           CASE WHEN json_valid(result) THEN COALESCE(json_extract(result,'$.video_file'),json_extract(result,'$.file'),'') ELSE '' END AS result_file,
-                          CASE WHEN json_valid(result) THEN COALESCE(json_extract(result,'$.provider_video_id'),json_extract(result,'$.video_id'),'') ELSE '' END AS provider_result_id
-                   FROM jobs WHERE id=?""",
+                          CASE WHEN json_valid(result) THEN COALESCE(json_extract(result,'$.provider_video_id'),json_extract(result,'$.video_id'),'') ELSE '' END AS provider_result_id,
+                          %s AS kind,%s AS route_provider,%s AS voice_scope
+                   FROM jobs WHERE id=?""" % (kind_sql, provider_sql, voice_scope_sql),
                 (int(job_id),),
             ).fetchone()
         if not row:
             return None
-        assets, _ = _video_asset_evidence([int(job_id)])
-        return _job_evidence(row, assets.get(int(job_id)))
+        if row["kind"] == "audio":
+            assets, _ = _audio_asset_evidence([int(job_id)])
+        else:
+            assets, _ = _video_asset_evidence([int(job_id)])
+        asset = dict(assets.get(int(job_id)) or {})
+        asset["route_provider"] = row["route_provider"]
+        asset["voice_scope"] = row["voice_scope"]
+        evidence = _job_evidence(row, asset)
+        evidence["route_provider"] = row["route_provider"] or None
+        evidence["voice_scope"] = row["voice_scope"] or None
+        return evidence
     except (OSError, sqlite3.Error, subprocess.SubprocessError, ValueError):
         return None
 
@@ -2760,6 +2858,10 @@ def _e2e_stage(key, name, state, detail):
 def _public_e2e_run(row):
     item = dict(row)
     transaction_key = str(item.pop("transaction_key", "") or "").strip()
+    runner = function_registry.e2e_runner(item.get("operation_id")) or {}
+    not_applicable = set(
+        ((runner.get("evidence_contract") or {}).get("not_applicable") or [])
+    )
     evidence = _e2e_job_evidence(item.get("job_id"))
     if evidence:
         job_status = evidence["status"]
@@ -2792,6 +2894,11 @@ def _public_e2e_run(row):
         ledger_ok = False
     failed = item["status"] in {"failed", "unknown"}
     provider_id = evidence and evidence.get("provider_task_id")
+    route_provider = str((evidence or {}).get("route_provider") or "").strip()
+    route_label = "CosyVoice 音频线路" if route_provider == "cosyvoice" else route_provider
+    route_ok = bool(provider_id or route_provider)
+    provider_not_applicable = "provider_task" in not_applicable
+    provider_ok = bool(provider_id or (provider_not_applicable and route_ok))
     completed = bool(evidence and evidence.get("completed"))
     delivered = bool(evidence and evidence.get("delivery_verified"))
     refunded = bool(evidence and evidence.get("billing_state") == "refunded")
@@ -2802,11 +2909,16 @@ def _public_e2e_run(row):
                    ("专用测试账号已就绪" if item.get("username") else "正在取得专用账号") + (" · 提交前 %s 点" % item["points_before"] if item.get("points_before") is not None else "")),
         _e2e_stage("job", "业务接口 / job_id", "passed" if item.get("job_id") else ("failed" if failed else "waiting"),
                    "job_id=%s" % item["job_id"] if item.get("job_id") else (item.get("error") or "等待业务接口受理")),
-        _e2e_stage("route", "渠道与凭据", "passed" if provider_id else ("failed" if failed else "waiting"),
-                   "已进入真实供应商线路" if provider_id else "等待供应商提交；不会用免费连通探针冒充通过"),
-        _e2e_stage("provider", "供应商接单", "passed" if provider_id else ("failed" if failed else "waiting"),
-                   ("provider_task_id=" + str(provider_id)) if provider_id else "尚无供应商任务编号"),
-        _e2e_stage("generation", "供应商生成", "passed" if completed else ("failed" if failed else "waiting"),
+        _e2e_stage("route", "渠道与凭据", "passed" if route_ok else ("failed" if failed else "waiting"),
+                   ("任务已选择 " + route_label) if route_provider else (
+                       "已进入真实供应商线路" if provider_id else "等待任务选择真实线路；不会用免费连通探针冒充通过")),
+        _e2e_stage("provider", "同步生产协议" if provider_not_applicable else "供应商接单",
+                   "passed" if provider_ok else ("failed" if failed else "waiting"),
+                   (("provider_task_id=" + str(provider_id)) if provider_id else (
+                       "同步生产链不产生供应商任务编号，此项不适用" if provider_not_applicable
+                       else "尚无供应商任务编号"))),
+        _e2e_stage("generation", "音频生成" if route_provider == "cosyvoice" else "供应商生成",
+                   "passed" if completed else ("failed" if failed else "waiting"),
                    "已到 completed" if completed else (item.get("error") or "等待生成终态")),
         _e2e_stage("delivery", "作品交付", "passed" if delivered else ("failed" if completed else "waiting"),
                    ({"decodable": "文件存在且可解码", "file_exists": "文件存在且非空",
@@ -3894,6 +4006,17 @@ class H(BaseHTTPRequestHandler):
                     str(body.get("operation_id") or "").strip(),
                 )
                 return self._send(200, {"ok": True, "run": run})
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
+            except Exception as exc:
+                return self._send(getattr(exc, "status", 500), {"detail": str(exc)[:220]})
+        if path == "/api/admin/e2e/audio-fixture/prepare":
+            try:
+                body = self._body()
+                if set(body) != {"confirmation"} or body.get("confirmation") != "PREPARE":
+                    raise ValueError("请明确确认准备专用测试账号的私有音色")
+                result = prepare_audio_e2e_personal_fixture(self._token())
+                return self._send(200, {"ok": True, "fixture": result})
             except ValueError as exc:
                 return self._send(400, {"detail": str(exc)})
             except Exception as exc:

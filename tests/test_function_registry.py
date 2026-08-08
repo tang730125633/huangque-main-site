@@ -223,7 +223,15 @@ class FunctionRegistryTests(unittest.TestCase):
         image_modes = [mode for feature in image["functions"] for mode in feature["modes"]]
         self.assertEqual(sum(mode["validation"]["supported"] for mode in image_modes), 0)
         audio_modes = [mode for feature in audio["functions"] for mode in feature["modes"]]
-        self.assertEqual(sum(mode["validation"]["supported"] for mode in audio_modes), 0)
+        self.assertEqual(sum(mode["validation"]["supported"] for mode in audio_modes), 2)
+        for mode in audio_modes:
+            runner = self.admin.function_registry.e2e_runner(mode["key"])
+            self.assertEqual(runner["prefill"]["voice_scope"], mode["key"].rsplit(".", 1)[-1])
+            self.assertEqual(runner["endpoint"], {"method": "POST", "path": "/api/gen/audio"})
+            self.assertIn("provider_task", runner["evidence_contract"]["not_applicable"])
+            public = json.dumps(mode["validation"], ensure_ascii=False)
+            self.assertNotIn("voice_key", public)
+            self.assertNotIn("provider_voice", public)
 
         root = Path(__file__).resolve().parents[1]
         for page in pages:

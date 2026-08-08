@@ -20,6 +20,7 @@ QA_VOICE_AUDIO = "@fixture/zelong-voice-5s.mp3"
 QA_PRODUCT_IMAGE = "@fixture/qa-serum.png"
 QA_MOTION_VIDEO = "@fixture/zelong-motion.mp4"
 QA_PROMPT = "琥珀色精华瓶置于石台上，柔和晨光缓慢扫过瓶身，镜头平稳推进，无人物、无文字、无标识"
+QA_AUDIO_TEXT = "你好，这是黄雀音频功能的自动质检。现在正在验证生成、播放、下载和点数记录。"
 
 
 def _validation(prefill=None, manual_requirements=None, supported=True, blocked_reason=""):
@@ -669,9 +670,6 @@ IMAGE_FUNCTIONS = [
 ]
 
 
-AUDIO_E2E_BLOCKED = "后台托管完整旅程尚未启用（本轮仅登记客户模式与真实任务、资产、账务证据）"
-
-
 AUDIO_FUNCTIONS = [
     {
         "key": "tts",
@@ -707,7 +705,13 @@ AUDIO_FUNCTIONS = [
                 "evidence_contract": {"not_applicable": ["provider_task", "balance"]},
                 "price_keys": ["audio.tts"],
                 "smoke_inputs": ["短配音文案", "任一公共音色", "语速/音调/音量默认值"],
-                "validation": _validation(supported=False, blocked_reason=AUDIO_E2E_BLOCKED),
+                "validation": _validation({
+                    "text": QA_AUDIO_TEXT,
+                    "voice_scope": "public",
+                    "speed": 1.0,
+                    "pitch": 0,
+                    "volume": 0,
+                }),
             },
             {
                 "key": "audio.tts.personal",
@@ -726,7 +730,13 @@ AUDIO_FUNCTIONS = [
                 "evidence_contract": {"not_applicable": ["provider_task", "balance"]},
                 "price_keys": ["audio.tts"],
                 "smoke_inputs": ["短配音文案", "一个已就绪的个人音色", "语速/音调/音量默认值"],
-                "validation": _validation(supported=False, blocked_reason=AUDIO_E2E_BLOCKED),
+                "validation": _validation({
+                    "text": QA_AUDIO_TEXT,
+                    "voice_scope": "personal",
+                    "speed": 1.0,
+                    "pitch": 0,
+                    "volume": 0,
+                }),
             },
         ],
     },
@@ -811,6 +821,7 @@ def e2e_runner(operation_key):
                     private.update({
                         "operation_id": mode["key"],
                         "endpoint": deepcopy(mode["entrypoints"][0]),
+                        "evidence_contract": deepcopy(mode.get("evidence_contract") or {}),
                     })
                     return private
     return None
