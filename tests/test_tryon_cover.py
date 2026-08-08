@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -74,6 +75,24 @@ class TryonCoverTests(unittest.TestCase):
             42, "tryon_failed", provider_video_id="rh-123",
             status="error", error="换装失败：input video is invalid",
         )
+
+    def test_silent_tryon_video_gets_audio_before_upload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "silent.mp4"
+            source.write_bytes(b"video")
+
+            def run(command, **_kwargs):
+                if command[0] == "ffprobe":
+                    return types.SimpleNamespace(stdout="")
+                Path(command[-1]).write_bytes(b"video-with-audio")
+                return types.SimpleNamespace(stdout="")
+
+            with patch.object(self.video.subprocess, "run", side_effect=run) as runner:
+                output = self.video._ensure_tryon_audio(source)
+        self.assertTrue(str(output).endswith("_audio.mp4"))
+        ffmpeg = runner.call_args_list[1].args[0]
+        self.assertIn("anullsrc=channel_layout=stereo:sample_rate=44100", ffmpeg)
+        self.assertIn("copy", ffmpeg)
 
 
 if __name__ == "__main__":
