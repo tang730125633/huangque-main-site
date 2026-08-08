@@ -375,6 +375,7 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             "后台生产链控制台", "后台生产链可交付，客户页面仍需浏览器验收",
             "data-operation-validation-enable=", "openOperationValidation",
             "运行一次生产链验收", "/api/admin/e2e/run", "startE2EPoll",
+            "return state.overviewPromise", "loadE2EPreflight(operationKey,true)",
             "本次预设测试包", "素材只在服务器私有目录使用", "查看 '+stages.length+' 段证据",
             "/api/admin/e2e/preflight", "测试包已准备 · 待执行",
             "产物已登记 · 私有测试素材不展示",

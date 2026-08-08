@@ -653,7 +653,7 @@
     announcementRequestId:'', announcementPreviewLoading:false, announcementPublishing:false,
     announcementHistoryLoading:false, operationsPage:'video', operationsMode:'', operationsAttentionOnly:false,
     operationsChannelMode:'', operationsChannelReturnFocus:null,
-    e2ePollTimer:null, e2ePreflights:{}, e2ePreflightPending:{}, overviewUpdatedAt:0,
+    e2ePollTimer:null, e2ePreflights:{}, e2ePreflightPending:{}, overviewUpdatedAt:0, overviewPromise:null,
     keyProbes:{}, keyProbePending:{}, keyProbeMonitor:{}
   };
   var secretWindows = [];
@@ -1850,7 +1850,7 @@
     api('/api/admin/e2e/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({operation_id:operationKey,confirmation:'RUN'})}).then(function(){delete state.e2ePreflights[operationKey];toast('生产链测试已由专用账号提交；正在等待八段证据');load(true);startE2EPoll()}).catch(function(error){toast('测试未提交：'+error.message);load(true)});
   }
   function startE2EPoll(){
-    clearInterval(state.e2ePollTimer);var ticks=0;state.e2ePollTimer=setInterval(function(){ticks++;load(true);var active=((state.data||{}).e2e_runs||[]).some(function(run){return ['submitting','queued','running'].indexOf(run.status)>=0});if(!active||ticks>=120){clearInterval(state.e2ePollTimer);state.e2ePollTimer=null}},5000);
+    clearInterval(state.e2ePollTimer);var ticks=0,operationKey=state.operationsMode;state.e2ePollTimer=setInterval(function(){ticks++;load(true).then(function(){var active=((state.data||{}).e2e_runs||[]).some(function(run){return ['submitting','queued','running'].indexOf(run.status)>=0});if(!active||ticks>=120){clearInterval(state.e2ePollTimer);state.e2ePollTimer=null;if(!active&&operationKey){delete state.e2ePreflights[operationKey];loadE2EPreflight(operationKey,true)}}})},5000);
   }
   function renderOperationsDeveloper(hiddenFeatures,stats,auxiliaryActions,pageKey){
     var unmapped=(stats.unmapped||[]).filter(function(item){return item.page_key===pageKey}),evidenceErrors=stats.evidence_errors||[],html='';
@@ -1954,11 +1954,11 @@
     if(state.module==='dashboard')loadSupportQueue();
   }
   function load(silent){
-    if(!token){el('gate').style.display='block';return}
-    if(state.overviewLoading)return;
+    if(!token){el('gate').style.display='block';return Promise.resolve()}
+    if(state.overviewLoading)return state.overviewPromise||Promise.resolve();
     state.overviewLoading=true;var requestPoolEpoch=state.poolEpoch;
     if(!silent)el('operationsRefresh').disabled=true;
-    api('/api/admin/overview?days='+state.days).then(function(d){
+    state.overviewPromise=api('/api/admin/overview?days='+state.days).then(function(d){
       if(state.poolActions||requestPoolEpoch!==state.poolEpoch){state.refreshPending=true;return}
       state.overviewUpdatedAt=Date.now();render(d);
     }).catch(function(e){
@@ -1967,9 +1967,10 @@
       el('app').style.display='none'; el('gate').style.display='block';
       el('gate').innerHTML='<div class="error">'+esc(e.message)+'</div>';
     }).finally(function(){
-      state.overviewLoading=false;el('operationsRefresh').disabled=false;
+      state.overviewLoading=false;state.overviewPromise=null;el('operationsRefresh').disabled=false;
       if(!state.poolActions&&state.refreshPending){state.refreshPending=false;load(true)}
     });
+    return state.overviewPromise;
   }
   function startAutoRefresh(){
     clearInterval(state.refreshTimer);
