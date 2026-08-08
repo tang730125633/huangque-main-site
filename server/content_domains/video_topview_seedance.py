@@ -265,6 +265,7 @@ def generate(model=SEEDANCE_MODEL, prompt="", duration=5, ratio="9:16",
     body = _build_payload(model, prompt, duration, ratio, resolution, generate_audio, refs)
     opener = _opener()
     if refs:
+        body.pop("aspectRatio", None)
         body["firstFrameFileId"] = _upload_image(opener, refs[0], api_key)
         route = "i2v"
         path = "/v2/common_task/image2video/task/submit"

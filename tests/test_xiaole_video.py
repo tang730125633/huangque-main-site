@@ -100,7 +100,7 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertIn("targetMode==='omni'", html)
         self.assertIn("targetMode==='micro'", html)
         self.assertIn("setupXiaoleRefPanel('omni', omniRefData, 6)", html)
-        self.assertIn("setupXiaoleRefPanel('micro', microRefData, 9)", html)
+        self.assertIn("setupXiaoleRefPanel('micro', microRefData, 1)", html)
         self.assertIn("setupXiaoleRefPanel('minimax', minimaxRefData, 5)", html)
 
     def test_generate_xiaole_video_sends_size_without_aspect_ratio(self):
