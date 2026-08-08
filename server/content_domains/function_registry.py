@@ -655,6 +655,7 @@ IMAGE_FUNCTIONS = [
         "order": 40,
         "frontend_selector": '[data-engine="xiaole"]',
         "service": "content",
+        "flag_keys": ["image_xiaole"],
         "dependencies": [
             {"key": "xiaolevideo", "role": "主生成", "requirement": "required", "credential_source": "env"},
         ],
@@ -834,6 +835,10 @@ def e2e_runner(operation_key):
                         "operation_id": mode["key"],
                         "endpoint": deepcopy(mode["entrypoints"][0]),
                         "evidence_contract": deepcopy(mode.get("evidence_contract") or {}),
+                        "flag_keys": list(dict.fromkeys(
+                            list(feature.get("flag_keys") or [])
+                            + list(mode.get("flag_keys") or [])
+                        )),
                     })
                     return private
     return None

@@ -202,6 +202,7 @@ class AdminE2ERunnerTests(unittest.TestCase):
         with patch.object(self.admin, "list_e2e_runs", return_value=[]), \
              patch.object(self.admin, "_e2e_page_modes", return_value=modes), \
              patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin.feature_flags, "is_enabled", return_value=True), \
              patch.object(self.admin, "points_domain", SimpleNamespace(cost_of=image_cost)), \
              patch.object(self.admin, "_content_e2e_request") as submit:
             result = self.admin.e2e_batch_preflight("admin-token", "banana")
@@ -232,6 +233,39 @@ class AdminE2ERunnerTests(unittest.TestCase):
                 self.assertNotIn("reference_images", item)
         self.assertIn("mask", payloads["image.openai.inpaint"])
         self.assertIn("image", payloads["image.openai.inpaint"])
+
+    def test_disabled_image_channel_is_excluded_from_one_click_batch(self):
+        page = {"key": "banana", "inventory_status": "verified", "functions": [
+            {"key": "openai", "runtime_visible": True, "modes": [
+                {"key": "image.openai.text", "validation": {"supported": True}},
+            ]},
+            {"key": "xiaole", "runtime_visible": True,
+             "flag_keys": ["image_xiaole"], "modes": [
+                {"key": "image.xiaole.text", "validation": {"supported": True}},
+                {"key": "image.xiaole.reference", "validation": {"supported": True}},
+             ]},
+        ]}
+        with patch.object(self.admin, "load_function_registry", return_value=[page]), \
+             patch.object(self.admin, "service_status", return_value=[]), \
+             patch.object(self.admin.feature_flags, "is_enabled",
+                          side_effect=lambda key: key != "image_xiaole"):
+            modes = self.admin._e2e_page_modes("banana")
+        self.assertEqual([mode["key"] for mode in modes], ["image.openai.text"])
+
+    def test_disabled_mode_cannot_be_submitted_individually(self):
+        runner = {
+            "supported": True, "flag_keys": ["image_xiaole"],
+            "endpoint": {"method": "POST", "path": "/api/gen/image"},
+        }
+        with patch.object(self.admin.function_registry, "e2e_runner", return_value=runner), \
+             patch.object(self.admin.feature_flags, "is_enabled", return_value=False), \
+             patch.object(self.admin, "_content_e2e_request") as submit:
+            with self.assertRaisesRegex(ValueError, "暂停接单"):
+                self.admin._e2e_prepare_operation(
+                    {"token": "short-lived-secret", "account": {}},
+                    "image.xiaole.text",
+                )
+        submit.assert_not_called()
 
     def test_image_batch_is_all_or_nothing(self):
         session = {"token": "short-lived-secret", "account": {

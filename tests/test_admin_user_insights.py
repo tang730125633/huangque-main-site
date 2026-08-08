@@ -446,6 +446,10 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             script[verdict_start:verdict_end],
             "var verdict=registryVerdict({acceptance_health:true,dependencies:[{requirement:'required',testState:'warn'}]}, {evidence_contract:{},dependencies:[]}, null, {status:'enabled'}, {online:true}, {});",
             "if(verdict[0]==='ok')throw new Error('unverified required route became green');",
+            "verdict=registryVerdict({acceptance_health:true,dependencies:[]}, {evidence_contract:{},dependencies:[]}, {latest:{status:'failed',error:'timeout'}}, {status:'disabled'}, {online:true}, {});",
+            "if(verdict[0]!=='fail'||verdict[1]!=='最近一次失败')throw new Error('disabled flag hid latest failure');",
+            "verdict=registryVerdict({acceptance_health:true,dependencies:[]}, {evidence_contract:{},dependencies:[]}, null, {status:'disabled'}, {online:true}, {});",
+            "if(verdict[0]!=='warn'||verdict[1]!=='暂停接单')throw new Error('disabled flag without failure was not yellow');",
         ])
         result = subprocess.run([shutil.which("node"), "-e", probe], capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
