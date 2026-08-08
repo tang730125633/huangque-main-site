@@ -51,6 +51,33 @@ class PixelleVideoTests(unittest.TestCase):
                 self.assertTrue(preview.is_file())
                 self.assertGreater(preview.stat().st_size, 0)
 
+    def test_public_style_catalog_matches_private_allowlist(self):
+        styles = self.pixelle.public_styles()
+        self.assertEqual(len(styles), 10)
+        self.assertEqual(len({item["key"] for item in styles}), 10)
+        self.assertEqual(
+            [item["key"] for item in styles],
+            [
+                "realistic_commercial",
+                "cinematic",
+                "future_tech",
+                "healing_fresh",
+                "chinese_illustration",
+                "cartoon_3d",
+                "retro_film",
+                "minimal_line",
+                "medical_beauty",
+                "ecommerce_product",
+            ],
+        )
+        self.assertEqual(self.pixelle.DEFAULT_STYLE, "realistic_commercial")
+        self.assertTrue(all(set(item) == {"key", "name"} for item in styles))
+        self.assertTrue(all("prompt_prefix" not in item for item in styles))
+        self.assertTrue(all(
+            self.pixelle.STYLE_PRESETS_BY_KEY[item["key"]]["prompt_prefix"]
+            for item in styles
+        ))
+
     def test_feature_catalog_is_fail_closed_by_default(self):
         meta = self.pixelle.feature_flags.CATALOG_MAP[self.pixelle.FEATURE_KEY]
         self.assertIs(meta["default_enabled"], False)
@@ -106,8 +133,59 @@ class PixelleVideoTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "有效的视频模板"):
             self.pixelle.prepare_payload({"text": "测试主题", "template": "../../bad.html"})
 
+    def test_prepare_uses_default_and_preserves_selected_style(self):
+        default = self.pixelle.prepare_payload({"text": "AI 培训"})
+        selected = self.pixelle.prepare_payload({
+            "text": "AI 培训",
+            "style": "future_tech",
+        })
+        self.assertEqual(default["style"], "realistic_commercial")
+        self.assertEqual(selected["style"], "future_tech")
+
+    def test_prepare_rejects_invalid_style_before_charge(self):
+        with self.assertRaisesRegex(ValueError, "请选择有效的素材风格"):
+            self.pixelle.prepare_payload({
+                "text": "AI 培训",
+                "style": "custom prompt injection",
+            })
+
+    def test_submit_legacy_payload_uses_default_style(self):
+        legacy_payload = {
+            "text": "AI training",
+            "mode": "generate",
+            "template": "1080x1920/image_default.html",
+            "n_scenes": 5,
+        }
+        with mock.patch.object(
+            self.pixelle, "_json_request", return_value={"task_id": "task-legacy"}
+        ) as request:
+            self.assertEqual(self.pixelle._submit(legacy_payload), "task-legacy")
+
+        body = request.call_args.args[2]
+        self.assertEqual(
+            body["prompt_prefix"],
+            self.pixelle.STYLE_PRESETS_BY_KEY[
+                self.pixelle.DEFAULT_STYLE
+            ]["prompt_prefix"],
+        )
+
+    def test_submit_rejects_invalid_style_at_execution_boundary(self):
+        legacy_payload = {
+            "text": "AI training",
+            "mode": "generate",
+            "template": "1080x1920/image_default.html",
+            "n_scenes": 5,
+            "style": "untrusted-style",
+        }
+        with self.assertRaisesRegex(ValueError, "请选择有效的素材风格"):
+            self.pixelle._submit(legacy_payload)
+
     def test_submit_uses_async_service_contract(self):
-        payload = self.pixelle.prepare_payload({"text": "AI 培训", "mode": "generate"})
+        payload = self.pixelle.prepare_payload({
+            "text": "AI 培训",
+            "mode": "generate",
+            "style": "medical_beauty",
+        })
         with mock.patch.object(
             self.pixelle, "_json_request", return_value={"task_id": "task-1"}
         ) as request:
@@ -118,6 +196,10 @@ class PixelleVideoTests(unittest.TestCase):
         self.assertEqual(body["frame_template"], payload["template"])
         self.assertEqual(body["n_scenes"], 5)
         self.assertIn("简体中文", body["text"])
+        self.assertEqual(
+            body["prompt_prefix"],
+            self.pixelle.STYLE_PRESETS_BY_KEY["medical_beauty"]["prompt_prefix"],
+        )
         self.assertEqual(body["media_workflow"], self.pixelle.PIXELLE_MEDIA_WORKFLOW)
 
     def test_submit_video_template_uses_video_workflow(self):
@@ -125,6 +207,7 @@ class PixelleVideoTests(unittest.TestCase):
             "text": "AI 培训",
             "mode": "generate",
             "template": "1080x1920/video_default.html",
+            "style": "medical_beauty",
         })
         with mock.patch.object(
             self.pixelle, "_json_request", return_value={"task_id": "task-video"}
@@ -132,6 +215,10 @@ class PixelleVideoTests(unittest.TestCase):
             self.assertEqual(self.pixelle._submit(payload), "task-video")
 
         body = request.call_args.args[2]
+        self.assertEqual(
+            body["prompt_prefix"],
+            self.pixelle.STYLE_PRESETS_BY_KEY["medical_beauty"]["prompt_prefix"],
+        )
         self.assertEqual(body["media_workflow"], self.pixelle.PIXELLE_VIDEO_WORKFLOW)
         self.assertNotEqual(body["media_workflow"], self.pixelle.PIXELLE_MEDIA_WORKFLOW)
 
@@ -253,6 +340,29 @@ class PixelleVideoTests(unittest.TestCase):
         self.assertEqual(result["video_url"], "/api/gen/file/token")
         self.assertEqual(result["duration"], 31.25)
         self.assertEqual(result["scene_count"], 5)
+        self.assertEqual(result["style"], payload["style"])
+        self.assertNotIn("prompt_prefix", result)
+
+    def test_generate_legacy_payload_records_default_style(self):
+        legacy_payload = {
+            "text": "AI training",
+            "mode": "generate",
+            "template": "1080x1920/image_default.html",
+            "n_scenes": 5,
+            "_job_id": 43,
+        }
+        with mock.patch.object(self.pixelle, "_submit", return_value="task-43"), \
+             mock.patch.object(self.pixelle, "_wait", return_value={
+                 "video_url": "/api/files/result.mp4", "duration": 30,
+             }), \
+             mock.patch.object(self.pixelle, "_download_video", return_value=(
+                 "video/pixelle_43.mp4", 4096,
+             )), \
+             mock.patch.object(self.pixelle, "public_url", return_value="/api/gen/file/token"):
+            result = self.pixelle.generate(legacy_payload)
+
+        self.assertEqual(result["style"], self.pixelle.DEFAULT_STYLE)
+        self.assertNotIn("style", legacy_payload)
 
     def test_download_checks_only_header_without_reading_whole_file(self):
         source = b"\x00\x00\x00\x18ftypisom" + b"x" * 2048

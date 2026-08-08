@@ -39,7 +39,7 @@ global.sessionStorage = {
 };
 global.window = {crypto: {randomUUID: () => 'stable-key'}};
 global.crypto = global.window.crypto;
-const payload = {pipeline: 'pixelle', text: 'test'};
+const payload = {pipeline: 'pixelle', text: 'test', style: 'future_tech'};
 const first = pendingSubmission(payload);
 const response = {status: 409, data: {code: 'idempotency_in_progress'}};
 if (shouldConfirmSubmission(response)) confirmSubmission(first);
@@ -58,9 +58,43 @@ process.stdout.write(JSON.stringify({first: first.key, retry: retry.key}));
 
     def test_template_catalog_is_authenticated_and_not_hardcoded_to_service(self):
         self.assertIn("/api/gen/text-video/templates", PAGE)
-        self.assertIn('"/api/gen/text-video/capability", "/api/gen/text-video/templates"', CORE)
+        for path in (
+            "/api/gen/text-video/capability",
+            "/api/gen/text-video/templates",
+        ):
+            self.assertIn(path, CORE)
         self.assertNotIn("127.0.0.1:8103", PAGE)
         self.assertNotIn("/api/video/generate/async", PAGE)
+
+    def test_style_catalog_is_authenticated_sanitized_and_readiness_gated(self):
+        for path in (
+            "/api/gen/text-video/capability",
+            "/api/gen/text-video/templates",
+            "/api/gen/text-video/styles",
+        ):
+            self.assertIn(path, CORE)
+        self.assertIn('"styles": pixelle_video.public_styles()', CORE)
+        self.assertIn('"default_style": pixelle_video.DEFAULT_STYLE', CORE)
+
+    def test_material_style_dropdown_loads_public_catalog_without_thumbnails(self):
+        self.assertIn('id="materialStyle"', PAGE)
+        self.assertIn('aria-label="素材风格"', PAGE)
+        self.assertIn("/api/gen/text-video/styles", PAGE)
+        self.assertIn("response.data.default_style", PAGE)
+        self.assertIn("option.value=style.key", PAGE)
+        self.assertIn("option.textContent=style.name", PAGE)
+        self.assertNotIn("style.preview_url", PAGE)
+
+    def test_generation_requires_loaded_style_and_submits_it_idempotently(self):
+        self.assertIn("if(!stylesReady)", PAGE)
+        self.assertIn("素材风格暂不可用", PAGE)
+        self.assertIn("style:el('materialStyle').value", PAGE)
+        self.assertIn("var pending=pendingSubmission(payload)", PAGE)
+
+    def test_style_load_failure_keeps_generation_disabled(self):
+        self.assertIn("stylesReady=false", PAGE)
+        self.assertIn("syncGenerateButton()", PAGE)
+        self.assertIn("select.disabled=true", PAGE)
 
     def test_template_gallery_uses_preview_images_and_filters(self):
         self.assertIn('data-kind="illustration"', PAGE)
