@@ -967,7 +967,8 @@ def _content_e2e_request(path, account_token, payload, idempotency_key, expected
             body = json.loads(exc.read() or b"{}")
         except Exception:
             body = {}
-        err = E2ESubmitRejected(body.get("detail") or "业务接口拒绝测试任务")
+        error_type = E2ESubmitUncertain if exc.code >= 500 or exc.code in {408, 409} else E2ESubmitRejected
+        err = error_type(body.get("detail") or "业务接口拒绝测试任务")
         err.status = exc.code
         err.body = body
         raise err
