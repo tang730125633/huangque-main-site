@@ -57,9 +57,9 @@ class AdminE2ERunnerTests(unittest.TestCase):
             self.assertTrue(payload["image_data"].startswith("data:image/"))
             self.assertNotIn("short-lived-secret", json.dumps(run))
             self.assertNotIn("image_data", json.dumps(run))
-            with self.assertRaisesRegex(ValueError, "已有测试任务"):
+            with self.assertRaisesRegex(ValueError, "已有一条测试旅程"):
                 self.admin.start_e2e_run(
-                    "root", "admin-token", "video.digital_ip.text.single"
+                    "root", "admin-token", "video.digital_ip.audio"
                 )
 
     def test_fixture_reader_rejects_paths_outside_private_directory(self):
@@ -119,6 +119,32 @@ class AdminE2ERunnerTests(unittest.TestCase):
         self.assertNotIn("short-lived-secret", json.dumps(result))
         self.assertNotIn("data:image", json.dumps(result))
         submit.assert_not_called()
+
+    def test_preflight_blocks_every_mode_while_another_journey_is_running(self):
+        with closing(sqlite3.connect(self.admin.ADMIN_DB)) as connection:
+            connection.execute(
+                "INSERT INTO admin_e2e_runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("active-run", "video.omni.text", "qa-dedicated", "running", 77,
+                 30, 500, 470, "ledger-77", "", "root", 1, 2),
+            )
+            connection.commit()
+        with patch.object(self.admin, "_e2e_job_evidence", return_value={
+                "status": "running", "provider_task_id": "provider-77",
+                "completed": False, "delivery_verified": False,
+                "billing_state": "in_flight", "artifact_check": "not_recorded",
+                "error": "",
+        }):
+            result = self.admin.e2e_preflight("admin-token", "video.grok.text")
+        self.assertFalse(result["ready"])
+        self.assertIn("另一条测试旅程", result["blocker"])
+
+    def test_grok_image_uses_matching_product_fixture_and_supported_resolution(self):
+        runner = self.admin.function_registry.e2e_runner("video.grok.image")
+        payload = self.admin._e2e_payload("video.grok.image", runner)
+        self.assertEqual(payload["resolution"], "720p")
+        self.assertEqual(len(payload["reference_images"]), 1)
+        self.assertTrue(payload["reference_images"][0].startswith("data:image/png;base64,"))
+        self.assertIn("精华瓶", payload["prompt"])
 
     def test_cinematic_motion_uses_private_video_and_server_quote(self):
         session = {"token": "short-lived-secret", "account": {

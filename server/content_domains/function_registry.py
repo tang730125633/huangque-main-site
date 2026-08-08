@@ -17,9 +17,9 @@ QA_FULL_BODY_IMAGE = "@fixture/zelong-full-body.jpg"
 QA_OUTFIT_IMAGE = "@fixture/tryon-outfit.jpg"
 QA_BACKGROUND_IMAGE = "@fixture/tryon-background.jpg"
 QA_VOICE_AUDIO = "@fixture/zelong-voice-5s.mp3"
-QA_PRODUCT_IMAGE = "@fixture/tryon-outfit.jpg"
+QA_PRODUCT_IMAGE = "@fixture/qa-serum.png"
 QA_MOTION_VIDEO = "@fixture/zelong-motion.mp4"
-QA_PROMPT = "琥珀色精华瓶置于石台上，晨光缓慢扫过瓶身，镜头平稳推进，无文字无标识"
+QA_PROMPT = "琥珀色精华瓶置于石台上，柔和晨光缓慢扫过瓶身，镜头平稳推进，无人物、无文字、无标识"
 
 
 def _validation(prefill=None, manual_requirements=None, supported=True, blocked_reason=""):
@@ -295,7 +295,7 @@ VIDEO_FUNCTIONS = [
                 "smoke_inputs": ["短提示词", "1 张低成本参考图"],
                 "validation": _validation({
                     "mode": "grok", "prompt": QA_PROMPT,
-                    "duration": 5, "resolution": "480p", "ratio": "9:16",
+                    "duration": 5, "resolution": "720p", "ratio": "9:16",
                     "reference_images": [QA_PRODUCT_IMAGE],
                 }),
             },
