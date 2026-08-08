@@ -241,6 +241,13 @@ def _fixed_segments(text):
     return [part.strip() for part in re.split(r"\n\s*\n", normalized) if part.strip()]
 
 
+def _style_key(payload):
+    style = str((payload or {}).get("style") or DEFAULT_STYLE).strip()
+    if style not in STYLE_PRESETS_BY_KEY:
+        raise ValueError("请选择有效的素材风格")
+    return style
+
+
 def prepare_payload(payload):
     body = dict(payload or {})
     raw_text = str(body.get("text") or "")
@@ -262,9 +269,7 @@ def prepare_payload(payload):
     template = str(body.get("template") or "1080x1920/image_default.html").strip()
     if template not in TEMPLATE_KEYS:
         raise ValueError("请选择有效的视频模板")
-    style = str(body.get("style") or DEFAULT_STYLE).strip()
-    if style not in STYLE_PRESETS_BY_KEY:
-        raise ValueError("请选择有效的素材风格")
+    style = _style_key(body)
     scene_count = 5 if mode == "generate" else len(segments)
     return {
         "pipeline": "pixelle",
@@ -341,7 +346,7 @@ def _prepared_text(text, mode):
 
 def _submit(payload):
     template = TEMPLATES_BY_KEY[payload["template"]]
-    style = STYLE_PRESETS_BY_KEY[payload["style"]]
+    style = STYLE_PRESETS_BY_KEY[_style_key(payload)]
     media_workflow = (
         PIXELLE_VIDEO_WORKFLOW
         if template["kind"] == "video"
@@ -441,6 +446,7 @@ def _download_video(url, job_id):
 
 
 def generate(payload):
+    style = _style_key(payload)
     task_id = _submit(payload)
     result = _wait(task_id)
     source_url = _safe_upstream_video_url(result.get("video_url"))
@@ -453,7 +459,7 @@ def generate(payload):
         "duration": round(float(result.get("duration") or 0), 3),
         "scene_count": int(result.get("scene_count") or payload.get("n_scenes") or 1),
         "template": payload["template"],
-        "style": payload["style"],
+        "style": style,
         "input_mode": payload["mode"],
         "file_size": int(result.get("file_size") or file_size),
         "upstream_task_id": task_id,
