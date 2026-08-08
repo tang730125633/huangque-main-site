@@ -2654,6 +2654,17 @@ def _verify_local_artifact(evidence):
                 "artifact_check": "decodable" if ok else "decode_failed",
                 "delivery_verified": ok,
             })
+        elif path.suffix.lower() in {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}:
+            probe = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "a:0",
+                 "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(path)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12,
+            )
+            ok = probe.returncode == 0 and bool(probe.stdout.strip())
+            evidence.update({
+                "artifact_check": "decodable" if ok else "decode_failed",
+                "delivery_verified": ok,
+            })
         else:
             evidence.update({"artifact_check": "file_exists", "delivery_verified": True})
     except (OSError, subprocess.SubprocessError):

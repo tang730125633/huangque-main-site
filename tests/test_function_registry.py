@@ -5,6 +5,7 @@ import time
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest import mock
 
 
 class FunctionRegistryTests(unittest.TestCase):
@@ -460,7 +461,14 @@ class FunctionRegistryTests(unittest.TestCase):
         for job_id in range(32, 39):
             self.assertIsNone(operations[job_id])
 
-        stats = self.admin.job_stats(7)
+        with mock.patch.object(self.admin.subprocess, "run") as ffprobe:
+            ffprobe.return_value = mock.Mock(returncode=0, stdout=b"mp3\n", stderr=b"")
+            stats = self.admin.job_stats(7)
+        self.assertEqual(ffprobe.call_count, 2)
+        for call in ffprobe.call_args_list:
+            command = call.args[0]
+            self.assertIn("a:0", command)
+            self.assertNotIn("v:0", command)
         by_operation = {item["operation"]: item for item in stats["by_operation"]}
         for operation, asset_id in (("audio.tts.public", 1), ("audio.tts.personal", 2)):
             latest = by_operation[operation]["latest"]
@@ -468,10 +476,27 @@ class FunctionRegistryTests(unittest.TestCase):
             self.assertEqual(latest["asset_status"], "done")
             self.assertEqual(latest["asset_kind"], "voice")
             self.assertTrue(latest["delivery_verified"])
-            self.assertEqual(latest["artifact_check"], "file_exists")
+            self.assertEqual(latest["artifact_check"], "decodable")
             self.assertEqual(latest["billing_state"], "unverified")
             self.assertIsNone(latest["provider_task_id"])
         self.assertEqual(stats["evidence_errors"], [])
+
+    def test_damaged_audio_artifact_is_not_delivery_verified(self):
+        broken = self.admin.CONTENT_OUT / "broken.wav"
+        broken.write_bytes(b"not-audio")
+        with mock.patch.object(self.admin.subprocess, "run") as ffprobe:
+            ffprobe.return_value = mock.Mock(returncode=1, stdout=b"", stderr=b"invalid data")
+            evidence = self.admin._verify_local_artifact({
+                "result_file": "broken.wav",
+                "result_url": "/api/gen/file/broken.wav",
+                "delivery_verified": False,
+                "artifact_check": "not_recorded",
+            })
+        command = ffprobe.call_args.args[0]
+        self.assertIn("a:0", command)
+        self.assertNotIn("v:0", command)
+        self.assertEqual(evidence["artifact_check"], "decode_failed")
+        self.assertFalse(evidence["delivery_verified"])
 
 
 if __name__ == "__main__":
