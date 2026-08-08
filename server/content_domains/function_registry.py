@@ -20,6 +20,8 @@ QA_VOICE_AUDIO = "@fixture/zelong-voice-5s.mp3"
 QA_PRODUCT_IMAGE = "@fixture/qa-serum.png"
 QA_MOTION_VIDEO = "@fixture/zelong-motion.mp4"
 QA_PROMPT = "琥珀色精华瓶置于石台上，柔和晨光缓慢扫过瓶身，镜头平稳推进，无人物、无文字、无标识"
+QA_IMAGE_PROMPT = "琥珀色精华瓶置于浅灰石台中央，柔和晨光，干净电商摄影，无人物、无文字、无标识"
+QA_IMAGE_EDIT_PROMPT = "仅将瓶身左侧背景改为柔和浅金色，保持产品主体、构图和光线不变，无文字、无标识"
 QA_AUDIO_TEXT = "你好，这是黄雀音频功能的自动质检。现在正在验证生成、播放、下载和点数记录。"
 
 
@@ -478,7 +480,16 @@ VIDEO_FUNCTIONS = [
 ]
 
 
-IMAGE_E2E_BLOCKED = "后台托管完整旅程尚未启用（本轮已完成客户功能登记与真实任务归类）"
+def _image_validation(reference=False, inpaint=False):
+    prefill = {
+        "prompt": QA_IMAGE_EDIT_PROMPT if inpaint else QA_IMAGE_PROMPT,
+        "ratio": "1:1", "quality": "std", "count": 1,
+    }
+    if inpaint:
+        prefill.update({"image_url": QA_PRODUCT_IMAGE, "mask_url": QA_PRODUCT_IMAGE})
+    elif reference:
+        prefill["reference_images"] = [QA_PRODUCT_IMAGE]
+    return _validation(prefill)
 
 
 IMAGE_FUNCTIONS = [
@@ -503,7 +514,7 @@ IMAGE_FUNCTIONS = [
                 "evidence_contract": {"not_applicable": ["provider_task"]},
                 "price_keys": ["image.banana.nb2.std", "image.banana.nb2.hd"],
                 "smoke_inputs": ["短提示词"],
-                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+                "validation": _image_validation(),
             },
             {
                 "key": "image.banana.nb2.reference",
@@ -514,7 +525,7 @@ IMAGE_FUNCTIONS = [
                 "evidence_contract": {"not_applicable": ["provider_task"]},
                 "price_keys": ["image.banana.nb2.std", "image.banana.nb2.hd"],
                 "smoke_inputs": ["短提示词", "1 张低成本参考图"],
-                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+                "validation": _image_validation(reference=True),
             },
             {
                 "key": "image.banana.pro.text",
@@ -525,7 +536,7 @@ IMAGE_FUNCTIONS = [
                 "evidence_contract": {"not_applicable": ["provider_task"]},
                 "price_keys": ["image.banana.pro.std", "image.banana.pro.hd"],
                 "smoke_inputs": ["短提示词"],
-                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+                "validation": _image_validation(),
             },
             {
                 "key": "image.banana.pro.reference",
@@ -536,7 +547,7 @@ IMAGE_FUNCTIONS = [
                 "evidence_contract": {"not_applicable": ["provider_task"]},
                 "price_keys": ["image.banana.pro.std", "image.banana.pro.hd"],
                 "smoke_inputs": ["短提示词", "1 张低成本参考图"],
-                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+                "validation": _image_validation(reference=True),
             },
         ],
     },
@@ -559,7 +570,7 @@ IMAGE_FUNCTIONS = [
                 "evidence_contract": {"not_applicable": ["provider_task"]},
                 "price_keys": ["image.openai.std", "image.openai.hd"],
                 "smoke_inputs": ["短提示词"],
-                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+                "validation": _image_validation(),
             },
             {
                 "key": "image.openai.reference",
@@ -569,7 +580,7 @@ IMAGE_FUNCTIONS = [
                 "evidence_contract": {"not_applicable": ["provider_task"]},
                 "price_keys": ["image.openai.std", "image.openai.hd"],
                 "smoke_inputs": ["短提示词", "1 张参考图"],
-                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+                "validation": _image_validation(reference=True),
             },
             {
                 "key": "image.openai.inpaint",
@@ -580,7 +591,7 @@ IMAGE_FUNCTIONS = [
                 "evidence_contract": {"not_applicable": ["provider_task"]},
                 "price_keys": ["image.openai.std", "image.openai.hd"],
                 "smoke_inputs": ["修改提示词", "1 张参考图", "1 张涂抹蒙版"],
-                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+                "validation": _image_validation(inpaint=True),
             },
         ],
     },
@@ -603,7 +614,7 @@ IMAGE_FUNCTIONS = [
                 "evidence_contract": {"not_applicable": ["provider_task"]},
                 "price_keys": ["image.seedream.std.std", "image.seedream.std.hd"],
                 "smoke_inputs": ["短提示词"],
-                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+                "validation": _image_validation(),
             },
             {
                 "key": "image.seedream.std.reference", "name": "标准 · 参考图生成",
@@ -613,7 +624,7 @@ IMAGE_FUNCTIONS = [
                 "evidence_contract": {"not_applicable": ["provider_task"]},
                 "price_keys": ["image.seedream.std.std", "image.seedream.std.hd"],
                 "smoke_inputs": ["短提示词", "1 张参考图"],
-                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+                "validation": _image_validation(reference=True),
             },
             {
                 "key": "image.seedream.pro.text", "name": "Pro · 文生图",
@@ -623,7 +634,7 @@ IMAGE_FUNCTIONS = [
                 "evidence_contract": {"not_applicable": ["provider_task"]},
                 "price_keys": ["image.seedream.pro.std", "image.seedream.pro.hd"],
                 "smoke_inputs": ["短提示词"],
-                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+                "validation": _image_validation(),
             },
             {
                 "key": "image.seedream.pro.reference", "name": "Pro · 参考图生成",
@@ -633,7 +644,7 @@ IMAGE_FUNCTIONS = [
                 "evidence_contract": {"not_applicable": ["provider_task"]},
                 "price_keys": ["image.seedream.pro.std", "image.seedream.pro.hd"],
                 "smoke_inputs": ["短提示词", "1 张参考图"],
-                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+                "validation": _image_validation(reference=True),
             },
         ],
     },
@@ -647,23 +658,24 @@ IMAGE_FUNCTIONS = [
         "dependencies": [
             {"key": "xiaolevideo", "role": "主生成", "requirement": "required", "credential_source": "env"},
         ],
-        "evidence_gaps": ["上游 request_id/task_id 尚未写回任务结果，供应商接单证据仍缺失"],
         "modes": [
             {
                 "key": "image.xiaole.text", "name": "文生图",
                 "entrypoints": [_endpoint("POST", "/api/gen/image")],
                 "task_match": {"kind": "image", "source_page": "banana", "provider": "xiaole", "reference_count": 0},
+                "evidence_contract": {"not_applicable": []},
                 "price_keys": ["image.xiaole.std", "image.xiaole.hd"],
                 "smoke_inputs": ["短提示词"],
-                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+                "validation": _image_validation(),
             },
             {
                 "key": "image.xiaole.reference", "name": "参考图生成",
                 "entrypoints": [_endpoint("POST", "/api/gen/image")],
                 "task_match": {"kind": "image", "source_page": "banana", "provider": "xiaole", "reference_count": ">0"},
+                "evidence_contract": {"not_applicable": []},
                 "price_keys": ["image.xiaole.std", "image.xiaole.hd"],
                 "smoke_inputs": ["短提示词", "1 张参考图"],
-                "validation": _validation(supported=False, blocked_reason=IMAGE_E2E_BLOCKED),
+                "validation": _image_validation(reference=True),
             },
         ],
     },

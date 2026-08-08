@@ -35,6 +35,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+try:
+    from PIL import Image as PILImage
+except ImportError:
+    PILImage = None
+
 _DOMAIN_PACKAGE = (
     __package__ + ".content_domains" if __package__ else "content_domains"
 )
@@ -92,6 +97,7 @@ BASE = pathlib.Path(__file__).resolve().parent
 PORT = int(os.environ.get("ADMIN_API_PORT", "8099"))
 AUTH_BASE = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095").rstrip("/")
 CONTENT_BASE = os.environ.get("CONTENT_BASE", "http://127.0.0.1:8096").rstrip("/")
+IMGGEN_BASE = os.environ.get("IMGGEN_BASE", "http://127.0.0.1:8101").rstrip("/")
 AUTH_INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
 JOB_DB = pathlib.Path(os.environ.get("CONTENT_JOB_DB", str(BASE / "content_jobs.db")))
 ASSET_DB = pathlib.Path(os.environ.get("AUDIO_DB", str(BASE / "audio_assets.db")))
@@ -933,6 +939,26 @@ def _e2e_payload(operation_id, runner, ready_avatar_ids=None, ready_audio_voice_
             "volume": int(prefill.get("volume", 0)),
             "source_page": "audio",
         })
+    elif operation_id.startswith("image."):
+        parts = operation_id.split(".")
+        payload.update({
+            "prompt": prompt, "ratio": str(prefill.get("ratio") or "1:1"),
+            "quality": str(prefill.get("quality") or "std"),
+            "count": int(prefill.get("count") or 1), "source_page": "banana",
+        })
+        provider = parts[1]
+        payload["provider"] = provider
+        if provider == "banana":
+            payload["model"] = parts[2]
+        elif provider == "seedream":
+            payload["variant"] = parts[2]
+        if operation_id == "image.openai.inpaint":
+            payload["image"] = resolve(prefill["image_url"])
+            payload["mask"] = resolve(prefill["mask_url"])
+        else:
+            references = [resolve(item) for item in prefill.get("reference_images") or []]
+            if references:
+                payload["reference_images"] = references
     else:
         raise ValueError("该模式尚未接入后台托管测试")
     return payload
@@ -946,8 +972,9 @@ def _content_e2e_request(path, account_token, payload, idempotency_key, expected
         "X-HQ-Internal-Token": AUTH_INTERNAL_TOKEN,
         "X-HQ-Expected-Cost": str(int(expected_cost)),
     }
+    base = IMGGEN_BASE if path == "/api/gen/banana" else CONTENT_BASE
     req = urllib.request.Request(
-        CONTENT_BASE + path,
+        base + path,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         headers=headers,
         method="POST",
@@ -1022,6 +1049,7 @@ def _content_e2e_post(path, account_token, payload):
 
 def _e2e_kind(endpoint):
     return {
+        "/api/gen/image": "image", "/api/gen/banana": "image",
         "/api/gen/audio": "audio",
         "/api/gen/video": "video", "/api/gen/tryon": "tryon",
         "/api/gen/xiaole_video": "xiaole_video", "/api/gen/sora_video": "sora_video",
@@ -1101,6 +1129,24 @@ def _e2e_parameters(operation_id, payload):
             "音调：%s" % payload.get("pitch"),
             "音量：%s" % payload.get("volume"),
         ])
+    elif operation_id.startswith("image."):
+        provider = payload.get("provider")
+        provider_label = {
+            "banana": "纳米香蕉", "openai": "黄雀引擎 2",
+            "seedream": "黄雀引擎 1", "xiaole": "果肉生图",
+        }.get(provider, provider)
+        references = payload.get("reference_images") or ([] if not payload.get("image") else [payload["image"]])
+        parameters.extend([
+            "生成线路：%s" % provider_label,
+            "清晰度：%s" % payload.get("quality"),
+            "参考图：%s 张" % len(references),
+        ])
+        if payload.get("model"):
+            parameters.append("型号：%s" % payload["model"])
+        if payload.get("variant"):
+            parameters.append("型号：%s" % payload["variant"])
+        if payload.get("mask"):
+            parameters.append("局部蒙版：已准备")
     return parameters
 
 
@@ -2822,6 +2868,16 @@ def _verify_local_artifact(evidence):
                 "artifact_check": "decodable" if ok else "decode_failed",
                 "delivery_verified": ok,
             })
+        elif path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
+            ok = False
+            if PILImage is not None:
+                with PILImage.open(path) as image:
+                    image.verify()
+                    ok = bool(image.format)
+            evidence.update({
+                "artifact_check": "decodable" if ok else "decode_failed",
+                "delivery_verified": ok,
+            })
         elif path.suffix.lower() in {".mp4", ".mov", ".webm"}:
             probe = subprocess.run(
                 ["ffprobe", "-v", "error", "-select_streams", "v:0",
@@ -2855,6 +2911,8 @@ def _job_evidence(row, asset=None):
         asset.get("provider_video_id") or asset.get("provider_request_id")
         or row["provider_result_id"] or ""
     ).strip()
+    if provider_task_id.lower() in {"none", "null", "undefined"}:
+        provider_task_id = ""
     if status in {"error", "failed"}:
         if cost <= 0:
             billing_state = "not_charged"
@@ -2915,9 +2973,9 @@ def _e2e_job_evidence(job_id):
             row = connection.execute(
                 """SELECT id,status,cost,COALESCE(refunded,0) AS refunded,
                           COALESCE(error,'') AS error,created_at,updated_at,
-                          CASE WHEN json_valid(result) THEN COALESCE(json_extract(result,'$.video_url'),json_extract(result,'$.url'),'') ELSE '' END AS result_url,
-                          CASE WHEN json_valid(result) THEN COALESCE(json_extract(result,'$.video_file'),json_extract(result,'$.file'),'') ELSE '' END AS result_file,
-                          CASE WHEN json_valid(result) THEN COALESCE(json_extract(result,'$.provider_video_id'),json_extract(result,'$.video_id'),'') ELSE '' END AS provider_result_id,
+                          CASE WHEN json_valid(result) THEN COALESCE(json_extract(result,'$.video_url'),json_extract(result,'$.image_url'),json_extract(result,'$.url'),json_extract(result,'$.urls[0]'),'') ELSE '' END AS result_url,
+                          CASE WHEN json_valid(result) THEN COALESCE(json_extract(result,'$.video_file'),json_extract(result,'$.image_file'),json_extract(result,'$.file'),json_extract(result,'$.files[0]'),'') ELSE '' END AS result_file,
+                          CASE WHEN json_valid(result) THEN COALESCE(json_extract(result,'$.provider_task_id'),json_extract(result,'$.request_id'),json_extract(result,'$.provider_video_id'),json_extract(result,'$.video_id'),'') ELSE '' END AS provider_result_id,
                           %s AS kind,%s AS route_provider,%s AS voice_scope
                    FROM jobs WHERE id=?""" % (kind_sql, provider_sql, voice_scope_sql),
                 (int(job_id),),
@@ -2926,6 +2984,8 @@ def _e2e_job_evidence(job_id):
             return None
         if row["kind"] == "audio":
             assets, _ = _audio_asset_evidence([int(job_id)])
+        elif row["kind"] == "image":
+            assets = {}
         else:
             assets, _ = _video_asset_evidence([int(job_id)])
         asset = dict(assets.get(int(job_id)) or {})
@@ -3111,7 +3171,8 @@ def _submit_e2e_run(run_id, admin_token, retry_capacity=False):
             connection.commit()
         raise RuntimeError("提交结果未知；请先按测试批次核对，禁止再次点击")
     except Exception as exc:
-        if retry_capacity and getattr(exc, "status", 0) == 429:
+        if (retry_capacity and getattr(exc, "status", 0) == 429
+                and (getattr(exc, "body", {}) or {}).get("code") == "active_job_cap"):
             with closing(db()) as connection:
                 connection.execute(
                     "UPDATE admin_e2e_runs SET status='planned',error=?,updated_at=? WHERE run_id=?",
@@ -3203,8 +3264,9 @@ def e2e_batch_preflight(admin_token, page_key, include_fresh=False):
     blocker = ""
     if not account.get("membership_active"):
         blocker = "专用测试账号会员未生效"
-    elif page_key == "audio" and blocked_items:
-        blocker = "音频完整旅程要求公共与个人模式全部准备好，当前仍有 %s 项未准备" % len(blocked_items)
+    elif page_key in {"audio", "banana"} and blocked_items:
+        page_name = "音频" if page_key == "audio" else "图片"
+        blocker = "%s完整旅程要求客户模式全部准备好，当前仍有 %s 项未准备" % (page_name, len(blocked_items))
     elif not ready_items:
         blocker = "当前没有需要重测且测试包已准备的模式"
     elif points < total_cost:
@@ -3493,12 +3555,12 @@ def job_stats(days=7):
                               CASE WHEN json_valid(payload) AND json_type(payload,'$.mask')='text' THEN 1 ELSE 0 END AS mask_present,
                               CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_url'),json_extract(%s,'$.image_url'),json_extract(%s,'$.url'),json_extract(%s,'$.urls[0]'),'') ELSE '' END AS result_url,
                               CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_file'),json_extract(%s,'$.image_file'),json_extract(%s,'$.file'),json_extract(%s,'$.files[0]'),'') ELSE '' END AS result_file,
-                              CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.provider_video_id'),json_extract(%s,'$.video_id'),json_extract(%s,'$.provider_avatar_id'),'') ELSE '' END AS provider_result_id
+                              CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.provider_task_id'),json_extract(%s,'$.request_id'),json_extract(%s,'$.provider_video_id'),json_extract(%s,'$.video_id'),json_extract(%s,'$.provider_avatar_id'),'') ELSE '' END AS provider_result_id
                        FROM jobs WHERE created_at>=? ORDER BY created_at DESC""" % (
                            refunded_sql, error_sql,
                            result_sql, result_sql, result_sql, result_sql, result_sql,
                            result_sql, result_sql, result_sql, result_sql, result_sql,
-                           result_sql, result_sql, result_sql, result_sql,
+                           result_sql, result_sql, result_sql, result_sql, result_sql, result_sql,
                        ),
                     (since,),
                 ).fetchall()
