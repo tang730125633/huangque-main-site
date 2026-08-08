@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
-"""首页动态月球与质感层的字符串契约测试。
+"""首页动态月球与质感层的契约测试。
 
 覆盖 feature/home-dynamic-moon 的新行为:
-- WebGL 3D 月球(canvas + moon3d.js + NASA 纹理 + 静态图兜底)
+- WebGL 3D 月球(canvas + moon3d.js + 4K/2K 纹理 + 静态图兜底)
 - 全页星空背景(starfield fixed)
 - 动效 reduced-motion 兜底
 """
 import os
+import struct
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -15,6 +16,27 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def _read(rel):
     with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
         return fh.read()
+
+
+def _webp_size(rel):
+    """读取本项目无损/有损 WebP 的画布尺寸，不引入 Pillow 测试依赖。"""
+    with open(os.path.join(ROOT, rel), "rb") as fh:
+        data = fh.read(32)
+    if data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+        raise AssertionError(f"not a WebP file: {rel}")
+    kind = data[12:16]
+    if kind == b"VP8X":
+        width = 1 + int.from_bytes(data[24:27], "little")
+        height = 1 + int.from_bytes(data[27:30], "little")
+    elif kind == b"VP8 ":
+        if data[23:26] != b"\x9d\x01\x2a":
+            raise AssertionError(f"invalid VP8 frame header: {rel}")
+        width, height = struct.unpack_from("<HH", data, 26)
+        width &= 0x3FFF
+        height &= 0x3FFF
+    else:
+        raise AssertionError(f"unsupported WebP encoding {kind!r}: {rel}")
+    return width, height
 
 
 class DynamicMoonMarkupTests(unittest.TestCase):
@@ -63,6 +85,17 @@ class Moon3dScriptTests(unittest.TestCase):
     def test_webgl_setup_and_texture(self):
         self.assertIn("getContext('webgl'", self.js)
         self.assertIn("/assets/home/moon_map.webp", self.js)
+        self.assertIn("/assets/home/moon_map_2k.webp", self.js)
+
+    def test_4k_texture_and_2k_fallback_dimensions(self):
+        self.assertEqual(_webp_size("site/assets/home/moon_map.webp"), (4096, 2048))
+        self.assertEqual(_webp_size("site/assets/home/moon_map_2k.webp"), (2048, 1024))
+
+    def test_texture_quality_guards(self):
+        self.assertIn("gl.MAX_TEXTURE_SIZE", self.js)
+        self.assertIn("navigator.connection", self.js)
+        self.assertIn("EXT_texture_filter_anisotropic", self.js)
+        self.assertIn("const LAT = 128, LON = 128", self.js)
 
     def test_static_fallback_when_no_webgl(self):
         self.assertIn("if (!gl) { canvas.remove(); return; }", self.js)

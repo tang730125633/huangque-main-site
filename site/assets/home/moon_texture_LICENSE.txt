@@ -1,0 +1,12 @@
+Moon texture attribution
+========================
+
+Source: Solar System Scope, "8K Moon Texture"
+Source page: https://www.solarsystemscope.com/textures/
+Archive page: https://commons.wikimedia.org/wiki/File:Solarsystemscope_texture_8k_moon.jpg
+License: Creative Commons Attribution 4.0 International (CC BY 4.0)
+License URL: https://creativecommons.org/licenses/by/4.0/
+
+The source is an equirectangular lunar surface map based on NASA elevation and
+imagery data. For this site it was resized from 8192x4096 to 4096x2048,
+lightly sharpened after downsampling, and encoded as WebP.
