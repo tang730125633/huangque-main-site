@@ -376,6 +376,7 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             "data-operation-validation-enable=", "openOperationValidation",
             "运行一次生产链验收", "/api/admin/e2e/run", "startE2EPoll",
             'id="operationsBatch"', "一键完整旅程验收", "runE2EBatch",
+            "Number((preflight||{}).ready_count||0)",
             "/api/admin/e2e/batch/preflight", "/api/admin/e2e/batch/run", "RUN_BATCH",
             "/api/admin/e2e/audio-fixture/prepare", "准备个人测试音色",
             "prepareAudioE2EFixture", "audio_fixture_required",
