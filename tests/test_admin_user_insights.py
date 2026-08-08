@@ -377,6 +377,7 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             "运行一次完整旅程", "/api/admin/e2e/run", "startE2EPoll",
             "预设提示词与素材由服务器私有加载", "查看 '+stages.length+' 段证据",
             ".ops-e2e-stages{display:grid",
+            ".ops-e2e-stage span{min-width:0;overflow-wrap:anywhere",
             '.ops-catalog{position:static;max-height:none}',
         ):
             self.assertIn(marker, html)
