@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """果肉(xiaole) / 泽龙2(zelong2) 出图死线。
 
-背景：xiaole hd 图生图实测稳定 ~300s，原来死线正好也是 300s —— 用户 15544499908
-近 10 次失败里 6 次是「出图超时」。放宽到 600s。
+背景：xiaole hd 图生图实测稳定 ~300s，且生产自动质检捕获到 600s 后仍持续
+更新 processing 的真实任务。已接单任务可能已经计费，不能过早判死退款。
 
 守的不变量：
-1. 两档死线都 < reaper KIND_GRACE["image"]=900s（否则放宽了死线，任务照样被 reaper 判超时退点）
+1. 两档死线都 < reaper KIND_GRACE["image"]（否则放宽了死线，任务照样被 reaper 判超时退点）
 2. zelong2 是**总**死线，不是单次 timeout —— 号池 N 个账号 × _retry 2 次，
    若只放宽单次 timeout，最坏耗时 N×2×timeout 会冲破 900s
 3. 每次实际发请求都按剩余预算收紧 timeout；预算耗尽不再试下一个号
@@ -25,15 +25,21 @@ core = importlib.import_module("content_domains.core")
 
 
 class DeadlineBoundsTests(unittest.TestCase):
-    def test_both_deadlines_are_600_by_default(self):
-        self.assertEqual(600, image.XIAOLE_IMG_DEADLINE)
+    def test_xiaole_deadline_covers_slow_accepted_jobs(self):
+        self.assertEqual(1200, image.XIAOLE_IMG_DEADLINE)
         self.assertEqual(600, image.ZELONG2_DEADLINE)
 
     def test_deadlines_stay_within_reaper_image_grace(self):
         """放宽死线不能越过 reaper 宽限，否则只是把「出图超时」换成「生成超时自动结束」。"""
         grace = core.KIND_GRACE["image"]
+        self.assertEqual(1500, grace)
         self.assertLess(image.XIAOLE_IMG_DEADLINE, grace)
         self.assertLess(image.ZELONG2_DEADLINE, grace)
+
+    def test_customer_page_waits_longer_than_provider_deadline(self):
+        html = (Path(__file__).resolve().parents[1] / "site" / "workbench" / "banana.html").read_text(encoding="utf-8")
+        self.assertIn("JOB_POLL_TIMEOUT_SEC=1800", html)
+        self.assertGreaterEqual(1800, image.XIAOLE_IMG_CREATE_MAX_WAIT + image.XIAOLE_IMG_DEADLINE)
 
     def test_env_overridable(self):
         with patch.dict(os.environ, {"XIAOLE_IMG_DEADLINE": "420", "ZELONG2_DEADLINE": "450"}):
