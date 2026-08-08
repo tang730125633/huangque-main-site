@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 
 image = importlib.import_module("content_domains.image")
 
-PNG_B64 = base64.b64encode(b"\x89PNG\r\n\x1a\n-fake").decode("ascii")
+PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
 CREATE_OK = {"code": 200, "data": {"request_id": "r1", "status_url": "/api/v1/generations/r1"}}
 POLL_OK = {"code": 200, "data": {"status": "succeeded", "output": {"images": [{"b64_json": PNG_B64}]}}}
 RATE_LIMIT_MSG = "当前 API Key 媒体任务过多，请稍后再试"
@@ -149,6 +149,13 @@ class XiaoleImageRetryTest(unittest.TestCase):
         result, _ = self._run([CREATE_OK], [completed])
         self.assertEqual(result["provider_task_id"], "r1")
         self.assertEqual(result["count"], 1)
+
+    def test_completed_with_corrupt_image_cannot_succeed(self):
+        """渠道终态成功也不够；作品无法解码时必须失败，不能给客户假绿。"""
+        corrupt = base64.b64encode(b"not-an-image").decode("ascii")
+        completed = {"code": 200, "data": {"status": "completed", "output": {"images": [{"b64_json": corrupt}]}}}
+        with self.assertRaisesRegex(ValueError, "无法解码"):
+            self._run([CREATE_OK], [completed])
 
     def test_poll_gives_up_after_consecutive_errors(self):
         """轮询连续 5 次失败才放弃（避免单边网络故障无限占 worker）。"""

@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
 import http.client
+import io
 import os
 import random
 import threading
 import time
 import urllib.error
+
+from PIL import Image, UnidentifiedImageError
 
 from .core import (
     OPENAI_BASE, OPENAI_KEY, OUT_DIR, SIZES, ZELONG2_BASE, ZELONG2_KEY,
@@ -345,12 +348,18 @@ def _gen_image_xiaole_locked(prompt, ratio, quality, count, img, references=None
         url = item.get("url") if isinstance(item, dict) else None
         fn = "img_%s.png" % uuid.uuid4().hex  # 不可猜键(#185)
         if b64:
-            (OUT_DIR / fn).write_bytes(base64.b64decode(b64))
+            raw = base64.b64decode(b64)
         elif url:
             with urllib.request.urlopen(url, timeout=120) as rr:
-                (OUT_DIR / fn).write_bytes(rr.read())
+                raw = rr.read()
         else:
             continue
+        try:
+            with Image.open(io.BytesIO(raw)) as decoded:
+                decoded.verify()
+        except (UnidentifiedImageError, OSError, SyntaxError, ValueError):
+            raise ValueError("出图返回的图片无法解码")
+        (OUT_DIR / fn).write_bytes(raw)
         files_out.append(fn); urls.append(public_url(fn, "image/png"))
     if not files_out:
         raise ValueError("出图返回为空")
