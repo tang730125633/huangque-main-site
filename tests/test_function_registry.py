@@ -169,7 +169,7 @@ class FunctionRegistryTests(unittest.TestCase):
                     self.assertTrue((Path(__file__).resolve().parents[1] / "server/qa_fixtures" / asset.removeprefix("@fixture/")).is_file())
 
         modes = [mode for feature in video["functions"] for mode in feature["modes"]]
-        self.assertEqual(sum(mode["validation"]["supported"] for mode in modes), 14)
+        self.assertEqual(sum(mode["validation"]["supported"] for mode in modes), 15)
 
         root = Path(__file__).resolve().parents[1]
         for page in pages:

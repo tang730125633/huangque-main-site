@@ -103,6 +103,47 @@ class AdminE2ERunnerTests(unittest.TestCase):
                 )
         submit.assert_not_called()
 
+    def test_preflight_quotes_fixture_without_creating_paid_task_or_exposing_bytes(self):
+        session = {"token": "short-lived-secret", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        with patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "points_domain", SimpleNamespace(cost_of=lambda kind, payload: 30)), \
+             patch.object(self.admin, "_content_e2e_request") as submit:
+            result = self.admin.e2e_preflight(
+                "admin-token", "video.digital_ip.text.single"
+            )
+        self.assertTrue(result["ready"])
+        self.assertEqual((result["cost"], result["points"]), (30, 500))
+        self.assertIn("清晰度：720p", result["parameters"])
+        self.assertNotIn("short-lived-secret", json.dumps(result))
+        self.assertNotIn("data:image", json.dumps(result))
+        submit.assert_not_called()
+
+    def test_cinematic_motion_uses_private_video_and_server_quote(self):
+        session = {"token": "short-lived-secret", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        with patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "_content_e2e_get", return_value={"items": [
+                 {"id": 41, "status": "ready"},
+             ]}), \
+             patch.object(self.admin, "points_domain", SimpleNamespace(cost_of=lambda kind, payload: 90)), \
+             patch.object(self.admin, "_content_e2e_post", return_value={"cost": 90}) as quote, \
+             patch.object(self.admin, "_content_e2e_request", return_value={
+                 "job_id": 89, "cost": 90, "points_left": 410,
+             }) as submit:
+            ready = self.admin.e2e_preflight("admin-token", "video.cinematic.motion")
+            run = self.admin.start_e2e_run("root", "admin-token", "video.cinematic.motion")
+        self.assertTrue(ready["ready"])
+        self.assertIn("时长：随参考视频", ready["parameters"])
+        self.assertEqual(quote.call_args.args[0], "/api/gen/cinematic/quote")
+        payload = submit.call_args.args[2]
+        self.assertEqual(payload["cine_mode"], "motion")
+        self.assertEqual(payload["avatar_ids"], [41])
+        self.assertTrue(payload["reference_video_data"].startswith("data:video/"))
+        self.assertEqual(run["cost"], 90)
+
     def test_task_card_and_e2e_share_delivery_and_ledger_evidence(self):
         (self.admin.CONTENT_OUT / "result.mp4").write_bytes(b"video")
         with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
