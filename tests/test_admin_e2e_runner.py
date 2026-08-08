@@ -67,6 +67,34 @@ class AdminE2ERunnerTests(unittest.TestCase):
                     "root", "admin-token", "video.digital_ip.audio"
                 )
 
+    def test_uncertain_submit_is_persisted_and_blocks_a_new_idempotency_key(self):
+        session = {"token": "short-lived-secret", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        with patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "points_domain", SimpleNamespace(cost_of=lambda kind, payload: 10)), \
+             patch.object(self.admin, "_content_e2e_get", return_value={"items": [
+                 {"id": 1, "scope": "public", "voice_key": "S_public"},
+             ]}), \
+             patch.object(self.admin, "_content_e2e_request",
+                          side_effect=self.admin.E2ESubmitUncertain("response timeout")):
+            with self.assertRaisesRegex(RuntimeError, "提交结果未知"):
+                self.admin.start_e2e_run("root", "admin-token", "audio.tts.public")
+            with self.assertRaisesRegex(ValueError, "已有一条生产链测试"):
+                self.admin.start_e2e_run("root", "admin-token", "audio.tts.public")
+        with closing(sqlite3.connect(self.admin.ADMIN_DB)) as connection:
+            row = connection.execute("SELECT status,error FROM admin_e2e_runs").fetchone()
+        self.assertEqual(row[0], "unknown")
+        self.assertIn("禁止自动重试", row[1])
+
+    def test_response_read_timeout_is_an_uncertain_submit(self):
+        with patch.object(self.admin.urllib.request, "urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.side_effect = TimeoutError("late")
+            with self.assertRaises(self.admin.E2ESubmitUncertain):
+                self.admin._content_e2e_request(
+                    "/api/gen/audio", "account-token", {"text": "qa"}, "e2e:one", 10
+                )
+
     def test_fixture_reader_rejects_paths_outside_private_directory(self):
         with self.assertRaisesRegex(ValueError, "名称无效"):
             self.admin._fixture_data_url("@fixture/../admin_api.py")
@@ -223,19 +251,23 @@ class AdminE2ERunnerTests(unittest.TestCase):
         }}
         with patch.object(self.admin, "auth_admin_request", return_value=session), \
              patch.object(self.admin, "_ready_audio_voice_key", side_effect=ValueError("missing")), \
-             patch.object(self.admin, "_content_e2e_get", return_value={"items": [
-                 {"slot_id": "private-slot", "status": "active"},
-             ]}), \
+             patch.object(self.admin, "_content_e2e_get", side_effect=[
+                 {"items": [{"slot_id": "private-slot", "status": "active"}]},
+                 {"items": [{"slot_id": "private-slot", "status": "training"}]},
+             ]), \
              patch.object(self.admin, "_fixture_data_url", return_value="data:audio/mpeg;base64,PRIVATE"), \
              patch.object(self.admin, "_content_e2e_post", return_value={"ok": True}) as clone:
             result = self.admin.prepare_audio_e2e_personal_fixture("admin-token")
+            repeated = self.admin.prepare_audio_e2e_personal_fixture("admin-token")
         self.assertEqual(result["state"], "training")
+        self.assertEqual(repeated["state"], "training")
         self.assertNotIn("private-slot", json.dumps(result))
         self.assertNotIn("PRIVATE", json.dumps(result))
         clone_payload = clone.call_args.args[2]
         self.assertEqual(clone.call_args.args[:2], ("/api/gen/audio/clone-vip", "short-lived-secret"))
         self.assertEqual(clone_payload["slot_id"], "private-slot")
         self.assertTrue(clone_payload["audio"].startswith("data:audio/"))
+        clone.assert_called_once()
 
     def test_audio_e2e_uses_sync_route_asset_decode_and_ledger_evidence(self):
         (self.admin.CONTENT_OUT / "result.mp3").write_bytes(b"audio")
@@ -364,6 +396,37 @@ class AdminE2ERunnerTests(unittest.TestCase):
         html = (Path(__file__).resolve().parents[1] / "site/admin/index.html").read_text(encoding="utf-8")
         self.assertIn("重新验收全部 ", html)
         self.assertIn("RERUN_BATCH", html)
+
+    def test_audio_batch_is_all_or_nothing_and_totals_twenty_points(self):
+        session = {"token": "short-lived-secret", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        modes = [
+            {"key": "audio.tts.public", "validation": {"supported": True}},
+            {"key": "audio.tts.personal", "validation": {"supported": True}},
+        ]
+        with patch.object(self.admin, "list_e2e_runs", return_value=[]), \
+             patch.object(self.admin, "_e2e_page_modes", return_value=modes), \
+             patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "points_domain", SimpleNamespace()), \
+             patch.object(self.admin, "_e2e_prepare_operation", side_effect=[
+                 {"cost": 10}, ValueError("个人测试音色尚未准备"),
+             ]):
+            blocked = self.admin.e2e_batch_preflight("admin-token", "audio")
+        self.assertFalse(blocked["ready"])
+        self.assertEqual((blocked["ready_count"], blocked["blocked_count"], blocked["total_cost"]), (1, 1, 10))
+        self.assertTrue(blocked["audio_fixture_required"])
+        with patch.object(self.admin, "list_e2e_runs", return_value=[]), \
+             patch.object(self.admin, "_e2e_page_modes", return_value=modes), \
+             patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "points_domain", SimpleNamespace()), \
+             patch.object(self.admin, "_e2e_prepare_operation", side_effect=[
+                 {"cost": 10}, {"cost": 10},
+             ]):
+            ready = self.admin.e2e_batch_preflight("admin-token", "audio")
+        self.assertTrue(ready["ready"])
+        self.assertEqual((ready["ready_count"], ready["blocked_count"], ready["total_cost"]), (2, 0, 20))
+        self.assertFalse(ready["audio_fixture_required"])
 
     def test_start_batch_creates_one_group_and_starts_one_scheduler(self):
         preflight = {

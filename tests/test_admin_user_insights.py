@@ -377,6 +377,8 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             "运行一次生产链验收", "/api/admin/e2e/run", "startE2EPoll",
             'id="operationsBatch"', "一键完整旅程验收", "runE2EBatch",
             "/api/admin/e2e/batch/preflight", "/api/admin/e2e/batch/run", "RUN_BATCH",
+            "/api/admin/e2e/audio-fixture/prepare", "准备个人测试音色",
+            "prepareAudioE2EFixture", "audio_fixture_required",
             "后台自动加载预设素材、分批提交并汇总八段证据",
             "return state.overviewPromise", "loadE2EPreflight(operationKey,true)",
             "本次预设测试包", "素材只在服务器私有目录使用", "查看 '+stages.length+' 段证据",

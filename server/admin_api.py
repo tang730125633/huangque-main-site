@@ -10,6 +10,7 @@ read/event routes are consumed by the public gallery.
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from contextlib import closing
 from http import cookies
+import http.client
 from importlib import import_module
 import base64
 import hashlib
@@ -53,6 +54,7 @@ def _optional_content_domain(name):
 
 
 points_domain = _optional_content_domain("points")
+cosyvoice_domain = _optional_content_domain("cosyvoice")
 short_drama_lipsync_diagnostics = _optional_content_domain(
     "short_drama_lipsync_diagnostics"
 )
@@ -102,6 +104,14 @@ E2E_RUN_LOCK = threading.Lock()
 E2E_FIXTURE_LOCK = threading.Lock()
 E2E_ACTIVE_STATUSES = {"planned", "submitting", "queued", "running", "unknown"}
 E2E_BATCH_DEADLINE_SECONDS = 2 * 60 * 60
+
+
+class E2ESubmitRejected(RuntimeError):
+    """The business API returned a definite HTTP rejection."""
+
+
+class E2ESubmitUncertain(RuntimeError):
+    """The POST may have been accepted; a new idempotency key is unsafe."""
 
 ENV_FILES = [
     pathlib.Path("/home/ubuntu/content-api/content.env"),
@@ -733,6 +743,14 @@ def init_db():
                 updated_at INTEGER NOT NULL
             )"""
         )
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS admin_e2e_fixture_attempts(
+                fixture_key TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                error TEXT NOT NULL DEFAULT '',
+                updated_at INTEGER NOT NULL
+            )"""
+        )
         columns = {row[1] for row in c.execute("PRAGMA table_info(admin_e2e_runs)")}
         if "batch_id" not in columns:
             c.execute("ALTER TABLE admin_e2e_runs ADD COLUMN batch_id TEXT NOT NULL DEFAULT ''")
@@ -936,16 +954,29 @@ def _content_e2e_request(path, account_token, payload, idempotency_key, expected
     )
     try:
         with urllib.request.urlopen(req, timeout=35) as response:
-            return json.loads(response.read() or b"{}")
+            raw = response.read()
+        try:
+            result = json.loads(raw or b"{}")
+        except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError) as exc:
+            raise E2ESubmitUncertain("业务接口响应不完整") from exc
+        if not isinstance(result, dict) or not result.get("job_id"):
+            raise E2ESubmitUncertain("业务接口响应缺少 job_id")
+        return result
     except urllib.error.HTTPError as exc:
         try:
             body = json.loads(exc.read() or b"{}")
         except Exception:
             body = {}
-        err = RuntimeError(body.get("detail") or "业务接口拒绝测试任务")
+        err = E2ESubmitRejected(body.get("detail") or "业务接口拒绝测试任务")
         err.status = exc.code
         err.body = body
         raise err
+    except E2ESubmitUncertain:
+        raise
+    except (urllib.error.URLError, TimeoutError, ConnectionError,
+            http.client.IncompleteRead, http.client.RemoteDisconnected,
+            OSError) as exc:
+        raise E2ESubmitUncertain("提交连接中断或响应超时") from exc
 
 
 def _content_e2e_get(path, account_token):
@@ -1023,10 +1054,11 @@ def _ready_audio_voice_key(operation_id, account_token):
         int(item["voice_id"]) for item in slot_data.get("items") or []
         if item.get("status") == "ready" and item.get("voice_id")
     }
+    clone_model = str(getattr(cosyvoice_domain, "CLONE_MODEL", "cosyvoice-") or "cosyvoice-")
     personal = next((item for item in voices
                      if item.get("scope") == "personal"
                      and item.get("id") in ready_ids
-                     and str(item.get("provider_voice") or "").startswith("cosyvoice-")
+                     and str(item.get("provider_voice") or "").startswith(clone_model)
                      and item.get("voice_key")), None)
     if not personal:
         raise ValueError("专用测试账号个人测试音色尚未准备")
@@ -1128,6 +1160,37 @@ def e2e_preflight(admin_token, operation_id):
     }
 
 
+def _audio_e2e_fixture_attempt():
+    with closing(db()) as connection:
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS admin_e2e_fixture_attempts(
+                   fixture_key TEXT PRIMARY KEY,status TEXT NOT NULL,
+                   error TEXT NOT NULL DEFAULT '',updated_at INTEGER NOT NULL)"""
+        )
+        row = connection.execute(
+            "SELECT status,error,updated_at FROM admin_e2e_fixture_attempts WHERE fixture_key='audio.personal'"
+        ).fetchone()
+        connection.commit()
+    return dict(row) if row else None
+
+
+def _set_audio_e2e_fixture_attempt(status, error=""):
+    with closing(db()) as connection:
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS admin_e2e_fixture_attempts(
+                   fixture_key TEXT PRIMARY KEY,status TEXT NOT NULL,
+                   error TEXT NOT NULL DEFAULT '',updated_at INTEGER NOT NULL)"""
+        )
+        connection.execute(
+            """INSERT INTO admin_e2e_fixture_attempts(fixture_key,status,error,updated_at)
+               VALUES('audio.personal',?,?,?)
+               ON CONFLICT(fixture_key) DO UPDATE SET
+                 status=excluded.status,error=excluded.error,updated_at=excluded.updated_at""",
+            (status, str(error or "")[:240], int(time.time())),
+        )
+        connection.commit()
+
+
 def prepare_audio_e2e_personal_fixture(admin_token):
     """Create the private QA voice once; never return its sample, slot, or voice id."""
     with E2E_FIXTURE_LOCK:
@@ -1137,24 +1200,48 @@ def prepare_audio_e2e_personal_fixture(admin_token):
         account_token = session["token"]
         try:
             _ready_audio_voice_key("audio.tts.personal", account_token)
+            _set_audio_e2e_fixture_attempt("ready")
             return {"ready": True, "state": "ready", "detail": "个人测试音色已就绪"}
         except ValueError:
             pass
         slot_data = _content_e2e_get("/api/gen/audio/slots", account_token)
         slots = slot_data.get("items") or []
         if any(item.get("status") == "training" for item in slots):
+            _set_audio_e2e_fixture_attempt("training")
             return {"ready": False, "state": "training", "detail": "个人测试音色正在准备"}
-        slot = next((item for item in slots if item.get("status") in {"active", "failed"}
+        attempt = _audio_e2e_fixture_attempt() or {}
+        if attempt.get("status") in {"unknown", "submitting"}:
+            raise ValueError("个人测试音色上次提交结果未知，已禁止重复复刻，请先核对槽位状态")
+        if attempt.get("status") == "failed" or any(item.get("status") == "failed" for item in slots):
+            _set_audio_e2e_fixture_attempt("failed", "个人测试音色准备失败")
+            raise ValueError("个人测试音色准备失败；普通验收不会自动重新复刻")
+        slot = next((item for item in slots if item.get("status") == "active"
                      and item.get("slot_id")), None)
         if not slot:
             raise ValueError("专用测试账号没有可用的会员测试音色槽位")
         audio_data = _fixture_data_url(function_registry.QA_VOICE_AUDIO)
-        _content_e2e_post("/api/gen/audio/clone-vip", account_token, {
-            "slot_id": slot["slot_id"],
-            "name": "后台自动质检音色",
-            "audio": audio_data,
-            "audio_format": "mp3",
-        })
+        _set_audio_e2e_fixture_attempt("submitting")
+        try:
+            _content_e2e_post("/api/gen/audio/clone-vip", account_token, {
+                "slot_id": slot["slot_id"],
+                "name": "后台自动质检音色",
+                "audio": audio_data,
+                "audio_format": "mp3",
+            })
+        except (urllib.error.URLError, TimeoutError, ConnectionError,
+                http.client.IncompleteRead, http.client.RemoteDisconnected,
+                json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+            refreshed = _content_e2e_get("/api/gen/audio/slots", account_token)
+            if any(item.get("status") in {"training", "ready"}
+                   for item in refreshed.get("items") or []):
+                _set_audio_e2e_fixture_attempt("training")
+                return {"ready": False, "state": "training", "detail": "个人测试音色正在准备"}
+            _set_audio_e2e_fixture_attempt("unknown", str(exc))
+            raise ValueError("个人测试音色提交结果未知，已禁止重复复刻")
+        except ValueError as exc:
+            _set_audio_e2e_fixture_attempt("failed", str(exc))
+            raise
+        _set_audio_e2e_fixture_attempt("training")
         return {"ready": False, "state": "training", "detail": "个人测试音色已开始准备"}
 
 
@@ -3001,19 +3088,24 @@ def _submit_e2e_run(run_id, admin_token, retry_capacity=False):
         idem = "e2e:" + run_id
         transaction_key = "job-charge:%s:%s:%s" % (account["username"], endpoint, idem)
         result = _content_e2e_request(endpoint, session["token"], payload, idem, cost)
-        with closing(db()) as connection:
-            connection.execute(
-                """UPDATE admin_e2e_runs SET username=?,status='queued',job_id=?,cost=?,
-                          points_before=?,points_after=?,transaction_key=?,updated_at=? WHERE run_id=?""",
-                (account["username"], int(result["job_id"]), cost, int(account["points"]),
-                 int(result.get("points_left") or 0), transaction_key, int(time.time()), run_id),
-            )
-            connection.commit()
-    except urllib.error.URLError as exc:
+        try:
+            job_id = int(result["job_id"])
+            points_after = int(result["points_left"])
+            with closing(db()) as connection:
+                connection.execute(
+                    """UPDATE admin_e2e_runs SET username=?,status='queued',job_id=?,cost=?,
+                              points_before=?,points_after=?,transaction_key=?,updated_at=? WHERE run_id=?""",
+                    (account["username"], job_id, cost, int(account["points"]),
+                     points_after, transaction_key, int(time.time()), run_id),
+                )
+                connection.commit()
+        except (KeyError, TypeError, ValueError, sqlite3.Error) as exc:
+            raise E2ESubmitUncertain("任务已提交，但本地受理证据写入不完整") from exc
+    except E2ESubmitUncertain as exc:
         with closing(db()) as connection:
             connection.execute(
                 "UPDATE admin_e2e_runs SET status='unknown',error=?,updated_at=? WHERE run_id=?",
-                ("提交结果未知，禁止自动重试：" + str(exc.reason)[:140], int(time.time()), run_id),
+                ("提交结果未知，禁止自动重试：" + str(exc)[:140], int(time.time()), run_id),
             )
             connection.commit()
         raise RuntimeError("提交结果未知；请先按测试批次核对，禁止再次点击")
@@ -3104,11 +3196,14 @@ def e2e_batch_preflight(admin_token, page_key, include_fresh=False):
             items.append({"operation_id": mode["key"], "ready": False,
                           "cost": 0, "blocker": str(exc)[:220]})
     ready_items = [item for item in items if item["ready"]]
+    blocked_items = [item for item in items if not item["ready"]]
     total_cost = sum(item["cost"] for item in ready_items)
     points = int(account.get("points") or 0)
     blocker = ""
     if not account.get("membership_active"):
         blocker = "专用测试账号会员未生效"
+    elif page_key == "audio" and blocked_items:
+        blocker = "音频完整旅程要求公共与个人模式全部准备好，当前仍有 %s 项未准备" % len(blocked_items)
     elif not ready_items:
         blocker = "当前没有需要重测且测试包已准备的模式"
     elif points < total_cost:
@@ -3119,6 +3214,12 @@ def e2e_batch_preflight(admin_token, page_key, include_fresh=False):
         "items": items, "target_count": len(items), "ready_count": len(ready_items),
         "blocked_count": len(items) - len(ready_items), "fresh_count": fresh_count,
         "unprepared_count": unprepared_count, "total_cost": total_cost,
+        "audio_fixture_required": bool(
+            page_key == "audio" and any(
+                item["operation_id"] == "audio.tts.personal" and not item["ready"]
+                for item in items
+            )
+        ),
         "include_fresh": bool(include_fresh),
     }
 
