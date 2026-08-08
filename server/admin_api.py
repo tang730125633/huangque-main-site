@@ -99,6 +99,8 @@ QA_FIXTURE_DIR = pathlib.Path(os.environ.get("HQ_QA_FIXTURE_DIR", str(BASE / "qa
 CONTENT_OUT = pathlib.Path(os.environ.get("CONTENT_OUT", str(BASE / "content_out")))
 E2E_TEST_USERNAME = os.environ.get("HQ_E2E_TEST_USERNAME", "").strip()
 E2E_RUN_LOCK = threading.Lock()
+E2E_ACTIVE_STATUSES = {"planned", "submitting", "queued", "running", "unknown"}
+E2E_BATCH_DEADLINE_SECONDS = 2 * 60 * 60
 
 ENV_FILES = [
     pathlib.Path("/home/ubuntu/content-api/content.env"),
@@ -715,6 +717,7 @@ def init_db():
         c.execute(
             """CREATE TABLE IF NOT EXISTS admin_e2e_runs(
                 run_id TEXT PRIMARY KEY,
+                batch_id TEXT NOT NULL DEFAULT '',
                 operation_id TEXT NOT NULL,
                 username TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL,
@@ -729,8 +732,26 @@ def init_db():
                 updated_at INTEGER NOT NULL
             )"""
         )
+        columns = {row[1] for row in c.execute("PRAGMA table_info(admin_e2e_runs)")}
+        if "batch_id" not in columns:
+            c.execute("ALTER TABLE admin_e2e_runs ADD COLUMN batch_id TEXT NOT NULL DEFAULT ''")
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_admin_e2e_operation ON admin_e2e_runs(operation_id, created_at DESC)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_admin_e2e_batch ON admin_e2e_runs(batch_id, created_at)"
+        )
+        # ponytail: the first batch queue is process-local; on an Admin restart, fail only
+        # never-submitted rows. Move orchestration to a durable worker if restarts become common.
+        c.execute(
+            """UPDATE admin_e2e_runs SET status='failed',error=?,updated_at=?
+               WHERE batch_id<>'' AND status='planned'""",
+            ("后台重启，尚未提交的批次项目已安全停止，未扣点", int(time.time())),
+        )
+        c.execute(
+            """UPDATE admin_e2e_runs SET status='unknown',error=?,updated_at=?
+               WHERE batch_id<>'' AND status='submitting' AND job_id IS NULL""",
+            ("后台在提交阶段重启，结果未知；禁止自动重试", int(time.time())),
         )
         c.commit()
     if feature_flags is not None:
@@ -979,6 +1000,51 @@ def _e2e_cost(operation_id, kind, payload, account_token):
     return int(points_domain.cost_of(kind, dict(payload)))
 
 
+def _e2e_parameters(operation_id, payload):
+    values = {
+        "cine_mode": {"motion": "动作模仿", "open": "开放式生成"}.get(
+            payload.get("cine_mode"), payload.get("cine_mode")
+        ),
+        "duration": "随参考视频" if operation_id == "video.cinematic.motion"
+        else payload.get("duration") or payload.get("seconds"),
+        "resolution": payload.get("resolution"), "ratio": payload.get("ratio"),
+        "generate_audio": "开启" if payload.get("generate_audio") else (
+            "关闭" if "generate_audio" in payload else None
+        ),
+    }
+    labels = {
+        "cine_mode": "模式", "duration": "时长", "resolution": "清晰度",
+        "ratio": "画面比例", "generate_audio": "生成音频",
+    }
+    parameters = []
+    for key in ("cine_mode", "duration", "resolution", "ratio", "generate_audio"):
+        if values[key] is not None:
+            suffix = " 秒" if key == "duration" and isinstance(values[key], int) else ""
+            parameters.append("%s：%s%s" % (labels[key], values[key], suffix))
+    return parameters
+
+
+def _e2e_prepare_operation(session, operation_id):
+    runner = function_registry.e2e_runner(operation_id)
+    if not runner:
+        raise ValueError("功能注册表中不存在该模式")
+    if not runner.get("supported"):
+        raise ValueError(runner.get("blocked_reason") or "该模式尚未接入后台托管测试")
+    account_token = session["token"]
+    avatars = _ready_avatar_ids(operation_id, account_token)
+    payload = _e2e_payload(operation_id, runner, avatars)
+    endpoint = runner["endpoint"]["path"]
+    kind = _e2e_kind(endpoint)
+    if not kind:
+        raise ValueError("该模式的业务接口尚未接入后台托管测试")
+    return {
+        "operation_id": operation_id, "runner": runner, "payload": payload,
+        "endpoint": endpoint, "kind": kind,
+        "cost": _e2e_cost(operation_id, kind, payload, account_token),
+        "parameters": _e2e_parameters(operation_id, payload),
+    }
+
+
 def e2e_preflight(admin_token, operation_id):
     """Resolve the private fixture and current quote without creating a paid task."""
     runner = function_registry.e2e_runner(operation_id)
@@ -988,7 +1054,7 @@ def e2e_preflight(admin_token, operation_id):
         return {"operation_id": operation_id, "ready": False,
                 "blocker": runner.get("blocked_reason") or "测试包尚未准备完成"}
     active = next((run for run in list_e2e_runs(100)
-                   if run["status"] in {"submitting", "queued", "running", "unknown"}), None)
+                   if run["status"] in E2E_ACTIVE_STATUSES), None)
     if active:
         return {"operation_id": operation_id, "ready": False,
                 "blocker": "另一条生产链测试正在运行，请等待终态后再继续"}
@@ -996,14 +1062,8 @@ def e2e_preflight(admin_token, operation_id):
         raise RuntimeError("点数模块不可用")
     session = auth_admin_request("/api/auth/admin/e2e/session", admin_token, method="POST", payload={})
     account = session["account"]
-    avatars = _ready_avatar_ids(operation_id, session["token"])
-    payload = _e2e_payload(operation_id, runner, avatars)
-    endpoint = runner["endpoint"]["path"]
-    kind = _e2e_kind(endpoint)
-    if not kind:
-        return {"operation_id": operation_id, "ready": False,
-                "blocker": "该模式的业务接口尚未接入后台托管测试"}
-    cost = _e2e_cost(operation_id, kind, payload, session["token"])
+    prepared = _e2e_prepare_operation(session, operation_id)
+    cost = prepared["cost"]
     points = int(account.get("points") or 0)
     membership = bool(account.get("membership_active"))
     blocker = ""
@@ -1011,23 +1071,12 @@ def e2e_preflight(admin_token, operation_id):
         blocker = "专用测试账号会员未生效"
     elif points < cost:
         blocker = "专用测试账号点数不足：需要 %s 点，当前 %s 点" % (cost, points)
-    parameters = []
-    values = {
-        "cine_mode": {"motion": "动作模仿", "open": "开放式生成"}.get(payload.get("cine_mode"), payload.get("cine_mode")),
-        "duration": "随参考视频" if operation_id == "video.cinematic.motion" else payload.get("duration") or payload.get("seconds"),
-        "resolution": payload.get("resolution"), "ratio": payload.get("ratio"),
-        "generate_audio": "开启" if payload.get("generate_audio") else ("关闭" if "generate_audio" in payload else None),
-    }
-    labels = {"cine_mode": "模式", "duration": "时长", "resolution": "清晰度", "ratio": "画面比例", "generate_audio": "生成音频"}
-    for key in ("cine_mode", "duration", "resolution", "ratio", "generate_audio"):
-        if values[key] is not None:
-            suffix = " 秒" if key == "duration" and isinstance(values[key], int) else ""
-            parameters.append("%s：%s%s" % (labels[key], values[key], suffix))
     return {
         "operation_id": operation_id, "ready": not blocker, "blocker": blocker,
         "account": account.get("username") or "专用测试账号", "points": points,
-        "cost": cost, "parameters": parameters,
-        "fixture_ready": True, "ready_avatar": bool(avatars) if operation_id.startswith("video.cinematic.") else None,
+        "cost": cost, "parameters": prepared["parameters"],
+        "fixture_ready": True,
+        "ready_avatar": True if operation_id.startswith("video.cinematic.") else None,
     }
 
 
@@ -2732,6 +2781,89 @@ def list_e2e_runs(limit=30):
     return runs
 
 
+def _insert_e2e_run(actor, operation_id, *, status="submitting", batch_id="",
+                    username="", cost=0, error=""):
+    run_id = uuid.uuid4().hex
+    now = int(time.time())
+    with closing(db()) as connection:
+        connection.execute(
+            """INSERT INTO admin_e2e_runs(
+                   run_id,batch_id,operation_id,username,status,cost,error,
+                   created_by,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (run_id, batch_id, operation_id, username, status, int(cost or 0),
+             str(error or "")[:300], actor, now, now),
+        )
+        connection.commit()
+    return run_id
+
+
+def _submit_e2e_run(run_id, admin_token, retry_capacity=False):
+    with closing(db()) as connection:
+        row = connection.execute(
+            "SELECT * FROM admin_e2e_runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if not row:
+            raise ValueError("生产链测试批次不存在")
+        operation_id = row["operation_id"]
+        quoted_cost = int(row["cost"] or 0)
+        connection.execute(
+            "UPDATE admin_e2e_runs SET status='submitting',error='',updated_at=? WHERE run_id=?",
+            (int(time.time()), run_id),
+        )
+        connection.commit()
+    try:
+        session = auth_admin_request(
+            "/api/auth/admin/e2e/session", admin_token, method="POST", payload={}
+        )
+        account = session["account"]
+        prepared = _e2e_prepare_operation(session, operation_id)
+        cost = int(prepared["cost"])
+        if quoted_cost and cost != quoted_cost:
+            raise ValueError("实时价格已从 %s 点变化为 %s 点，本批次已安全停止该项目" % (quoted_cost, cost))
+        if int(account.get("points") or 0) < cost:
+            raise ValueError("专用测试账号点数不足：需要 %s 点，当前 %s 点" % (cost, account.get("points") or 0))
+        payload = prepared["payload"]
+        payload["qa_run_id"] = run_id
+        endpoint = prepared["endpoint"]
+        idem = "e2e:" + run_id
+        transaction_key = "job-charge:%s:%s:%s" % (account["username"], endpoint, idem)
+        result = _content_e2e_request(endpoint, session["token"], payload, idem, cost)
+        with closing(db()) as connection:
+            connection.execute(
+                """UPDATE admin_e2e_runs SET username=?,status='queued',job_id=?,cost=?,
+                          points_before=?,points_after=?,transaction_key=?,updated_at=? WHERE run_id=?""",
+                (account["username"], int(result["job_id"]), cost, int(account["points"]),
+                 int(result.get("points_left") or 0), transaction_key, int(time.time()), run_id),
+            )
+            connection.commit()
+    except urllib.error.URLError as exc:
+        with closing(db()) as connection:
+            connection.execute(
+                "UPDATE admin_e2e_runs SET status='unknown',error=?,updated_at=? WHERE run_id=?",
+                ("提交结果未知，禁止自动重试：" + str(exc.reason)[:140], int(time.time()), run_id),
+            )
+            connection.commit()
+        raise RuntimeError("提交结果未知；请先按测试批次核对，禁止再次点击")
+    except Exception as exc:
+        if retry_capacity and getattr(exc, "status", 0) == 429:
+            with closing(db()) as connection:
+                connection.execute(
+                    "UPDATE admin_e2e_runs SET status='planned',error=?,updated_at=? WHERE run_id=?",
+                    ("等待测试账号任务位：" + str(exc)[:240], int(time.time()), run_id),
+                )
+                connection.commit()
+            return None
+        with closing(db()) as connection:
+            connection.execute(
+                "UPDATE admin_e2e_runs SET status='failed',error=?,updated_at=? WHERE run_id=?",
+                (str(exc)[:300], int(time.time()), run_id),
+            )
+            connection.commit()
+        raise
+    return next(run for run in list_e2e_runs(100) if run["run_id"] == run_id)
+
+
 def start_e2e_run(actor, admin_token, operation_id):
     runner = function_registry.e2e_runner(operation_id)
     if not runner:
@@ -2741,61 +2873,243 @@ def start_e2e_run(actor, admin_token, operation_id):
     if not points_domain:
         raise RuntimeError("点数模块不可用")
     with E2E_RUN_LOCK:
-        current = list_e2e_runs(100)
-        if any(run["status"] in {"submitting", "queued", "running", "unknown"} for run in current):
-            raise ValueError("已有一条生产链测试在运行，请等待终态后再提交")
-        run_id = uuid.uuid4().hex
+        if any(run["status"] in E2E_ACTIVE_STATUSES for run in list_e2e_runs(100)):
+            raise ValueError("已有一条生产链测试或验收批次在运行，请等待终态后再提交")
+        run_id = _insert_e2e_run(actor, operation_id)
+        return _submit_e2e_run(run_id, admin_token)
+
+
+def _e2e_run_passed(run):
+    stages = run.get("stages") or []
+    return bool(run.get("status") == "completed" and stages
+                and all(stage.get("state") == "passed" for stage in stages))
+
+
+def _e2e_run_fresh(run):
+    return bool(_e2e_run_passed(run)
+                and int(run.get("updated_at") or run.get("created_at") or 0) >= int(time.time()) - 86400)
+
+
+def _e2e_page_modes(page_key):
+    pages = load_function_registry(service_status())
+    page = next((item for item in pages if item.get("key") == page_key), None)
+    if not page or page.get("inventory_status") != "verified":
+        raise ValueError("该客户功能页尚未完成盘点，不能批量验收")
+    return [mode for feature in page.get("functions") or []
+            if feature.get("runtime_visible") is not False
+            for mode in feature.get("modes") or []]
+
+
+def e2e_batch_preflight(admin_token, page_key):
+    if not points_domain:
+        raise RuntimeError("点数模块不可用")
+    runs = list_e2e_runs(100)
+    active = next((run for run in runs if run.get("status") in E2E_ACTIVE_STATUSES), None)
+    if active:
+        blocker = ("上次提交结果未知；请先核对任务与扣点，禁止重复提交"
+                   if active.get("status") == "unknown" else "已有生产链验收批次在运行")
+        return {"page_key": page_key, "ready": False, "blocker": blocker,
+                "items": [], "target_count": 0, "fresh_count": 0, "unprepared_count": 0,
+                "total_cost": 0, "points": 0}
+    latest = {}
+    for run in runs:
+        latest.setdefault(run.get("operation_id"), run)
+    modes = _e2e_page_modes(page_key)
+    fresh_count = sum(1 for mode in modes if _e2e_run_fresh(latest.get(mode.get("key"), {})))
+    unprepared_count = sum(1 for mode in modes if not (mode.get("validation") or {}).get("supported"))
+    targets = [mode for mode in modes
+               if (mode.get("validation") or {}).get("supported")
+               and not _e2e_run_fresh(latest.get(mode.get("key"), {}))]
+    session = auth_admin_request("/api/auth/admin/e2e/session", admin_token, method="POST", payload={})
+    account = session["account"]
+    items = []
+    for mode in targets:
+        try:
+            prepared = _e2e_prepare_operation(session, mode["key"])
+            items.append({"operation_id": mode["key"], "ready": True,
+                          "cost": int(prepared["cost"]), "blocker": ""})
+        except Exception as exc:
+            items.append({"operation_id": mode["key"], "ready": False,
+                          "cost": 0, "blocker": str(exc)[:220]})
+    ready_items = [item for item in items if item["ready"]]
+    total_cost = sum(item["cost"] for item in ready_items)
+    points = int(account.get("points") or 0)
+    blocker = ""
+    if not account.get("membership_active"):
+        blocker = "专用测试账号会员未生效"
+    elif not ready_items:
+        blocker = "当前没有需要重测且测试包已准备的模式"
+    elif points < total_cost:
+        blocker = "专用测试账号点数不足：一键验收需要 %s 点，当前 %s 点" % (total_cost, points)
+    return {
+        "page_key": page_key, "ready": not blocker, "blocker": blocker,
+        "account": account.get("username") or "专用测试账号", "points": points,
+        "items": items, "target_count": len(items), "ready_count": len(ready_items),
+        "blocked_count": len(items) - len(ready_items), "fresh_count": fresh_count,
+        "unprepared_count": unprepared_count, "total_cost": total_cost,
+    }
+
+
+def _e2e_user_active_counts(username):
+    if not username or not JOB_DB.exists():
+        return {"total": 0, "by_kind": {}}
+    try:
+        with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as connection:
+            rows = connection.execute(
+                """SELECT kind,COUNT(*) FROM jobs
+                   WHERE username=? AND status IN ('pending','running') GROUP BY kind""",
+                (username,),
+            ).fetchall()
+        by_kind = {str(kind): int(count) for kind, count in rows}
+        return {"total": sum(by_kind.values()), "by_kind": by_kind}
+    except sqlite3.Error:
+        return {"total": 0, "by_kind": {}}
+
+
+def _e2e_batch_caps(account_token):
+    try:
+        health = _content_e2e_get("/api/gen/health", account_token)
+    except Exception:
+        health = {}
+    return {
+        "total": int(health.get("max_user_active_jobs") or 5),
+        "xiaole_video": int(health.get("max_user_active_xiaole_video") or 2),
+        "sora_video": int(health.get("max_user_active_sora_video") or 1),
+        "tryon": int(health.get("max_user_active_tryon") or 1),
+        "cinematic": int(health.get("max_user_active_cinematic") or 2),
+    }
+
+
+def _e2e_batch_can_submit(operation_id, counts, caps):
+    runner = function_registry.e2e_runner(operation_id) or {}
+    kind = _e2e_kind((runner.get("endpoint") or {}).get("path"))
+    if counts.get("total", 0) >= caps["total"]:
+        return False
+    return kind not in caps or counts.get("by_kind", {}).get(kind, 0) < caps[kind]
+
+
+def _stop_planned_batch_rows(batch_id, message):
+    with closing(db()) as connection:
+        connection.execute(
+            """UPDATE admin_e2e_runs SET status='failed',error=?,updated_at=?
+               WHERE batch_id=? AND status='planned'""",
+            (message[:300], int(time.time()), batch_id),
+        )
+        connection.commit()
+
+
+def _run_e2e_batch(batch_id, admin_token):
+    try:
+        session = auth_admin_request(
+            "/api/auth/admin/e2e/session", admin_token, method="POST", payload={}
+        )
+        username = session["account"]["username"]
+        caps = _e2e_batch_caps(session["token"])
+        deadline = time.time() + E2E_BATCH_DEADLINE_SECONDS
+        while True:
+            runs = [run for run in list_e2e_runs(100) if run.get("batch_id") == batch_id]
+            if any(run.get("status") == "unknown" for run in runs):
+                _stop_planned_batch_rows(batch_id, "批次遇到提交结果未知，为防重复扣点已停止后续项目")
+                return
+            planned = [run for run in runs if run.get("status") == "planned"]
+            active = [run for run in runs if run.get("status") in {"submitting", "queued", "running"}]
+            if not planned:
+                if not active:
+                    return
+                time.sleep(5)
+                continue
+            if time.time() >= deadline:
+                _stop_planned_batch_rows(batch_id, "批次超过两小时，尚未提交的项目已安全停止，未扣点")
+                return
+            counts = _e2e_user_active_counts(username)
+            selected = next((run for run in planned
+                             if _e2e_batch_can_submit(run["operation_id"], counts, caps)), None)
+            if not selected:
+                time.sleep(5)
+                continue
+            try:
+                result = _submit_e2e_run(
+                    selected["run_id"], admin_token, retry_capacity=True
+                )
+            except Exception as exc:
+                if getattr(exc, "status", 0) in {401, 403} or any(
+                    marker in str(exc) for marker in ("点数不足", "实时价格已")
+                ):
+                    _stop_planned_batch_rows(batch_id, "批次安全停止：" + str(exc)[:240])
+                    return
+                continue
+            if result is None:
+                time.sleep(5)
+    except Exception as exc:
+        _stop_planned_batch_rows(batch_id, "批次调度停止：" + str(exc)[:240])
+
+
+def list_e2e_batches(runs=None):
+    groups = {}
+    for run in runs or list_e2e_runs(100):
+        batch_id = str(run.get("batch_id") or "")
+        if batch_id:
+            groups.setdefault(batch_id, []).append(run)
+    batches = []
+    for batch_id, items in groups.items():
+        passed = sum(1 for item in items if _e2e_run_passed(item))
+        failed = sum(1 for item in items if item.get("status") in {"failed", "unknown"}
+                     or any(stage.get("state") == "failed" for stage in item.get("stages") or []))
+        active = sum(1 for item in items
+                     if item.get("status") in {"planned", "submitting", "queued", "running"})
+        status = "running" if active else ("completed_with_failures" if failed else "completed")
+        batches.append({
+            "batch_id": batch_id, "page_key": _e2e_operation_page_key(items[0]["operation_id"]),
+            "status": status, "total": len(items), "passed": passed, "failed": failed,
+            "waiting": max(0, len(items) - passed - failed),
+            "total_cost": sum(int(item.get("cost") or 0) for item in items),
+            "created_at": min(int(item.get("created_at") or 0) for item in items),
+            "updated_at": max(int(item.get("updated_at") or 0) for item in items),
+            "items": [{
+                "operation_id": item["operation_id"], "status": item.get("status"),
+                "error": item.get("error") or "",
+                "passed": sum(1 for stage in item.get("stages") or [] if stage.get("state") == "passed"),
+                "stages": len(item.get("stages") or []),
+            } for item in items],
+        })
+    return sorted(batches, key=lambda item: item["created_at"], reverse=True)[:10]
+
+
+def _e2e_operation_page_key(operation_id):
+    for page in function_registry.list_pages():
+        for feature in page.get("functions") or []:
+            if any(mode.get("key") == operation_id for mode in feature.get("modes") or []):
+                return page.get("key") or ""
+    return ""
+
+
+def start_e2e_batch(actor, admin_token, page_key):
+    with E2E_RUN_LOCK:
+        preflight = e2e_batch_preflight(admin_token, page_key)
+        if not preflight.get("ready"):
+            raise ValueError(preflight.get("blocker") or "当前批次不能运行")
+        batch_id = uuid.uuid4().hex
+        for item in preflight["items"]:
+            _insert_e2e_run(
+                actor, item["operation_id"], batch_id=batch_id,
+                status="planned" if item["ready"] else "failed",
+                username=preflight["account"], cost=item["cost"], error=item["blocker"],
+            )
         now = int(time.time())
         with closing(db()) as connection:
             connection.execute(
-                """INSERT INTO admin_e2e_runs(run_id,operation_id,status,created_by,created_at,updated_at)
-                   VALUES(?,?, 'submitting', ?,?,?)""",
-                (run_id, operation_id, actor, now, now),
+                "INSERT INTO admin_audit(actor,action,target,detail,created_at) VALUES(?,?,?,?,?)",
+                (actor, "e2e.batch.start", batch_id,
+                 json.dumps({"page_key": page_key, "target_count": preflight["target_count"],
+                             "ready_count": preflight["ready_count"],
+                             "total_cost": preflight["total_cost"]}, ensure_ascii=False), now),
             )
             connection.commit()
-        try:
-            session = auth_admin_request(
-                "/api/auth/admin/e2e/session", admin_token, method="POST", payload={}
-            )
-            account = session["account"]
-            ready_avatar_ids = _ready_avatar_ids(operation_id, session["token"])
-            payload = _e2e_payload(operation_id, runner, ready_avatar_ids)
-            payload["qa_run_id"] = run_id
-            endpoint = runner["endpoint"]["path"]
-            kind = _e2e_kind(endpoint)
-            if not kind:
-                raise ValueError("该模式的业务接口尚未接入后台托管测试")
-            cost = _e2e_cost(operation_id, kind, payload, session["token"])
-            if int(account.get("points") or 0) < cost:
-                raise ValueError("专用测试账号点数不足：需要 %s 点，当前 %s 点" % (cost, account.get("points") or 0))
-            idem = "e2e:" + run_id
-            transaction_key = "job-charge:%s:%s:%s" % (account["username"], endpoint, idem)
-            result = _content_e2e_request(endpoint, session["token"], payload, idem, cost)
-            with closing(db()) as connection:
-                connection.execute(
-                    """UPDATE admin_e2e_runs SET username=?,status='queued',job_id=?,cost=?,
-                              points_before=?,points_after=?,transaction_key=?,updated_at=? WHERE run_id=?""",
-                    (account["username"], int(result["job_id"]), cost, int(account["points"]),
-                     int(result.get("points_left") or 0), transaction_key, int(time.time()), run_id),
-                )
-                connection.commit()
-        except urllib.error.URLError as exc:
-            with closing(db()) as connection:
-                connection.execute(
-                    "UPDATE admin_e2e_runs SET status='unknown',error=?,updated_at=? WHERE run_id=?",
-                    ("提交结果未知，禁止自动重试：" + str(exc.reason)[:140], int(time.time()), run_id),
-                )
-                connection.commit()
-            raise RuntimeError("提交结果未知；请先按测试批次核对，禁止再次点击")
-        except Exception as exc:
-            with closing(db()) as connection:
-                connection.execute(
-                    "UPDATE admin_e2e_runs SET status='failed',error=?,updated_at=? WHERE run_id=?",
-                    (str(exc)[:300], int(time.time()), run_id),
-                )
-                connection.commit()
-            raise
-    return next(run for run in list_e2e_runs(30) if run["run_id"] == run_id)
+        threading.Thread(
+            target=_run_e2e_batch, args=(batch_id, admin_token), daemon=True,
+            name="admin-e2e-batch-" + batch_id[:8],
+        ).start()
+    return next(batch for batch in list_e2e_batches() if batch["batch_id"] == batch_id)
 
 
 def _compose_operation_stat(since):
@@ -3404,6 +3718,16 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": str(exc)})
             except Exception as exc:
                 return self._send(getattr(exc, "status", 500), {"detail": str(exc)[:220]})
+        if path == "/api/admin/e2e/batch/preflight":
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                return self._send(200, e2e_batch_preflight(
+                    self._token(), (q.get("page_key") or [""])[0].strip()
+                ))
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
+            except Exception as exc:
+                return self._send(getattr(exc, "status", 500), {"detail": str(exc)[:220]})
         if path == "/api/admin/call-logs":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._send(
@@ -3417,6 +3741,7 @@ class H(BaseHTTPRequestHandler):
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             services = service_status()
             days = (q.get("days") or ["7"])[0]
+            e2e_runs = list_e2e_runs()
             return self._send(
                 200,
                 {
@@ -3436,7 +3761,8 @@ class H(BaseHTTPRequestHandler):
                         "configured": bool(E2E_TEST_USERNAME),
                         "username": E2E_TEST_USERNAME,
                     },
-                    "e2e_runs": list_e2e_runs(),
+                    "e2e_runs": e2e_runs,
+                    "e2e_batches": list_e2e_batches(e2e_runs),
                 },
             )
         return self._send(404, {"detail": "not found"})
@@ -3469,6 +3795,22 @@ class H(BaseHTTPRequestHandler):
                     str(body.get("operation_id") or "").strip(),
                 )
                 return self._send(200, {"ok": True, "run": run})
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
+            except Exception as exc:
+                return self._send(getattr(exc, "status", 500), {"detail": str(exc)[:220]})
+        if path == "/api/admin/e2e/batch/run":
+            try:
+                body = self._body()
+                if set(body) != {"page_key", "confirmation"}:
+                    raise ValueError("请求字段必须是 page_key 和 confirmation")
+                if body.get("confirmation") != "RUN_BATCH":
+                    raise ValueError("请明确确认本次一键真实扣点验收")
+                batch = start_e2e_batch(
+                    user.get("username") or "admin", self._token(),
+                    str(body.get("page_key") or "").strip(),
+                )
+                return self._send(200, {"ok": True, "batch": batch})
             except ValueError as exc:
                 return self._send(400, {"detail": str(exc)})
             except Exception as exc:
