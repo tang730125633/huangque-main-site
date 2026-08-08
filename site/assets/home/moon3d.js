@@ -1,4 +1,5 @@
-/* 首页 3D 月球:原生 WebGL 球体 + NASA 等距柱状月面纹理,无第三方依赖。
+/* 首页 3D 月球:原生 WebGL 球体 + 4K 等距柱状月面纹理,无第三方依赖。
+   纹理来源与许可见 moon_texture_LICENSE.txt；低规格 GPU/省流量模式回退 2K。
    WebGL 不可用时保留静态 <img> 兜底;prefers-reduced-motion 只渲染单帧。 */
 (() => {
   const wrap = document.querySelector('.hero-moon');
@@ -7,6 +8,13 @@
 
   const gl = canvas.getContext('webgl', { alpha: true, premultipliedAlpha: false, antialias: true });
   if (!gl) { canvas.remove(); return; }
+
+  const supports4K = gl.getParameter(gl.MAX_TEXTURE_SIZE) >= 4096;
+  const saveData = Boolean(navigator.connection && navigator.connection.saveData);
+  const texture4K = '/assets/home/moon_map.webp?v=20260808-4k';
+  const texture2K = '/assets/home/moon_map_2k.webp?v=20260808-2k';
+  const textureSrc = supports4K && !saveData ? texture4K : texture2K;
+  wrap.dataset.moonTexture = textureSrc === texture4K ? '4k' : '2k';
 
   const VERT = `
 attribute vec3 aPos; attribute vec3 aNormal; attribute vec2 aUV;
@@ -52,7 +60,7 @@ void main() {
   gl.useProgram(prog);
 
   // UV 球体网格
-  const LAT = 64, LON = 64;
+  const LAT = 128, LON = 128;
   const positions = [], normals = [], uvs = [], indices = [];
   for (let lat = 0; lat <= LAT; lat++) {
     const theta = lat * Math.PI / LAT;
@@ -91,9 +99,10 @@ void main() {
   gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
     new Uint8Array([30, 30, 32, 255])); // 加载完成前的占位色
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   let ready = false;
   const img = new Image();
   img.onload = () => {
@@ -102,12 +111,19 @@ void main() {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, img);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.generateMipmap(gl.TEXTURE_2D);
+    const anisotropy = gl.getExtension('EXT_texture_filter_anisotropic') ||
+      gl.getExtension('WEBKIT_EXT_texture_filter_anisotropic') ||
+      gl.getExtension('MOZ_EXT_texture_filter_anisotropic');
+    if (anisotropy) {
+      const max = gl.getParameter(anisotropy.MAX_TEXTURE_MAX_ANISOTROPY_EXT);
+      gl.texParameterf(gl.TEXTURE_2D, anisotropy.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, max));
+    }
     ready = true;
     wrap.classList.add('gl-on');
     render(performance.now());
   };
   img.onerror = () => { canvas.remove(); };
-  img.src = '/assets/home/moon_map.webp';
+  img.src = textureSrc;
 
   // 矩阵工具(列主序)
   const multiply = (a, b) => {
@@ -135,7 +151,7 @@ void main() {
   const SPEED = 2 * Math.PI / 90000; // 90 秒一圈
 
   function resize() {
-    const dpr = Math.min(devicePixelRatio || 1, 2);
+    const dpr = Math.min(devicePixelRatio || 1, 2.5);
     const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
     if (w && h && (canvas.width !== w || canvas.height !== h)) { canvas.width = w; canvas.height = h; }
   }
