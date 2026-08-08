@@ -78,6 +78,71 @@ class PixelleVideoTests(unittest.TestCase):
             for item in styles
         ))
 
+    def test_voice_catalog_sanitizes_public_and_ready_owned_personal_voices(self):
+        upstream = {
+            "items": [
+                {"id": "zh-CN-XiaoxiaoNeural", "name": "raw", "locale": "zh-CN", "gender": "female"},
+                {"id": "en-US-AriaNeural", "name": "English", "locale": "en-US", "gender": "female"},
+                {"id": "../../bad", "name": "Bad", "locale": "zh-CN", "gender": "female"},
+            ]
+        }
+        voices = [
+            {"scope": "personal", "username": "alice", "voice_key": "vip_ready", "display_name": "我的音色", "slot_id": "slot-1", "provider_voice": "secret-provider", "preview_url": "/preview.mp3"},
+            {"scope": "personal", "username": "alice", "voice_key": "vip_training", "display_name": "训练中", "slot_id": "slot-2", "provider_voice": "secret-provider-2"},
+        ]
+        def resolve(_username, voice_key):
+            if voice_key == "vip_ready":
+                return "cosyvoice-secret-provider"
+            raise ValueError("not ready")
+        with mock.patch.object(self.pixelle, "_json_request", return_value=upstream), \
+             mock.patch("content_domains.audio.list_audio_voices", return_value=voices), \
+             mock.patch("content_domains.audio.require_owned_ready_personal_voice", side_effect=resolve):
+            catalog = self.pixelle.public_voices("alice")
+
+        self.assertEqual([item["id"] for item in catalog], [
+            "public:zh-CN-XiaoxiaoNeural", "personal:vip_ready",
+        ])
+        self.assertEqual(catalog[0]["name"], "女声-温柔（晓晓）")
+        self.assertNotIn("provider_voice", str(catalog))
+        self.assertNotIn("username", str(catalog))
+
+    def test_prepare_freezes_namespaced_public_and_personal_voice_before_charge(self):
+        public_items = [{
+            "id": "public:zh-CN-YunjianNeural", "name": "男声-专业（云健）",
+            "scope": "public", "gender": "male", "locale": "zh-CN",
+        }]
+        with mock.patch.object(self.pixelle, "public_voices", return_value=public_items):
+            public = self.pixelle.prepare_payload({
+                "text": "AI 培训", "voice": "public:zh-CN-YunjianNeural",
+            }, "alice")
+        self.assertEqual(public["voice_scope"], "public")
+        self.assertEqual(public["voice_id"], "zh-CN-YunjianNeural")
+        self.assertNotIn("voice_key", public)
+
+        with mock.patch.object(
+            self.pixelle.audio_domain, "require_owned_ready_personal_voice",
+            return_value="cosyvoice-secret-provider",
+        ) as resolve:
+            personal = self.pixelle.prepare_payload({
+                "text": "第一段\n\n第二段", "mode": "fixed",
+                "voice": "personal:vip_ready",
+            }, "alice")
+        resolve.assert_called_once_with("alice", "vip_ready")
+        self.assertEqual(personal["voice_scope"], "personal")
+        self.assertEqual(personal["voice_key"], "vip_ready")
+        self.assertNotIn("provider_voice", personal)
+
+    def test_prepare_rejects_unknown_or_unowned_voice_before_charge(self):
+        with mock.patch.object(self.pixelle, "public_voices", return_value=[]):
+            with self.assertRaisesRegex(ValueError, "音色"):
+                self.pixelle.prepare_payload({"text": "AI 培训", "voice": "public:bad"}, "alice")
+        with mock.patch.object(
+            self.pixelle.audio_domain, "require_owned_ready_personal_voice",
+            side_effect=ValueError("个人音色不存在或不可用"),
+        ):
+            with self.assertRaisesRegex(ValueError, "个人音色不存在"):
+                self.pixelle.prepare_payload({"text": "AI 培训", "voice": "personal:vip_bob"}, "alice")
+
     def test_feature_catalog_is_fail_closed_by_default(self):
         meta = self.pixelle.feature_flags.CATALOG_MAP[self.pixelle.FEATURE_KEY]
         self.assertIs(meta["default_enabled"], False)
@@ -201,6 +266,56 @@ class PixelleVideoTests(unittest.TestCase):
             self.pixelle.STYLE_PRESETS_BY_KEY["medical_beauty"]["prompt_prefix"],
         )
         self.assertEqual(body["media_workflow"], self.pixelle.PIXELLE_MEDIA_WORKFLOW)
+
+    def test_submit_public_voice_uses_resolved_upstream_voice_id(self):
+        payload = self.pixelle.prepare_payload({"text": "AI 培训"})
+        payload.update({"voice_scope": "public", "voice_id": "zh-CN-YunjianNeural"})
+        with mock.patch.object(
+            self.pixelle, "_json_request", return_value={"task_id": "task-public"}
+        ) as request:
+            self.assertEqual(self.pixelle._submit(payload), "task-public")
+        body = request.call_args.args[2]
+        self.assertEqual(body["voice_id"], "zh-CN-YunjianNeural")
+        self.assertEqual(body["tts_workflow"], self.pixelle.PIXELLE_TTS_WORKFLOW)
+        self.assertNotIn("narration_segments", body)
+
+    def test_submit_personal_voice_plans_synthesizes_and_uploads_each_segment(self):
+        payload = self.pixelle.prepare_payload({"text": "AI 培训"})
+        payload.update({
+            "voice_scope": "personal", "voice_key": "vip_ready", "_username": "alice",
+            "_job_id": 52,
+        })
+        responses = {
+            "/api/content/narration": {"narrations": ["第一句", "第二句"]},
+            "/api/video/generate/async": {"task_id": "task-personal"},
+        }
+        def fake_json(method, path, body=None, timeout=30):
+            return responses[path]
+        synth_results = [
+            {"content": b"ID3-one", "content_type": "audio/mpeg"},
+            {"content": b"ID3-two", "content_type": "audio/mpeg"},
+        ]
+        upload_results = [
+            {"asset_id": "audio_" + "a" * 32},
+            {"asset_id": "audio_" + "b" * 32},
+        ]
+        with mock.patch.object(self.pixelle, "_json_request", side_effect=fake_json) as request, \
+             mock.patch.object(self.pixelle.audio_domain, "synthesize_owned_voice_segment", side_effect=synth_results) as synth, \
+             mock.patch.object(self.pixelle, "_binary_request", side_effect=upload_results) as upload:
+            self.assertEqual(self.pixelle._submit(payload), "task-personal")
+
+        self.assertEqual(synth.call_count, 2)
+        self.assertEqual(upload.call_count, 2)
+        self.assertEqual(upload.call_args_list[0].args[3], "text-video-52-0")
+        video_body = request.call_args_list[-1].args[2]
+        self.assertEqual(video_body["mode"], "fixed")
+        self.assertEqual(video_body["text"], "第一句\n\n第二句")
+        self.assertEqual(video_body["narration_segments"], [
+            {"text": "第一句", "audio_asset_id": "audio_" + "a" * 32},
+            {"text": "第二句", "audio_asset_id": "audio_" + "b" * 32},
+        ])
+        self.assertNotIn("voice_id", video_body)
+        self.assertNotIn("tts_workflow", video_body)
 
     def test_submit_video_template_uses_video_workflow(self):
         payload = self.pixelle.prepare_payload({
@@ -342,6 +457,10 @@ class PixelleVideoTests(unittest.TestCase):
         self.assertEqual(result["scene_count"], 5)
         self.assertEqual(result["style"], payload["style"])
         self.assertNotIn("prompt_prefix", result)
+        self.assertNotIn("upstream_task_id", result)
+        self.assertNotIn("voice_id", result)
+        self.assertNotIn("voice_key", result)
+        self.assertNotIn("narration_segments", result)
 
     def test_generate_legacy_payload_records_default_style(self):
         legacy_payload = {

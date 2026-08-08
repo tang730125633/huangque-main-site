@@ -3013,6 +3013,7 @@ class H(BaseHTTPRequestHandler):
             "/api/gen/text-video/capability",
             "/api/gen/text-video/templates",
             "/api/gen/text-video/styles",
+            "/api/gen/text-video/voices",
         }:
             user = verify(self._token())
             if not user:
@@ -3030,6 +3031,17 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {
                     "templates": pixelle_video.public_templates(),
                 })
+            if p == "/api/gen/text-video/voices":
+                try:
+                    return self._send(200, {
+                        "voices": pixelle_video.public_voices(user["username"]),
+                        "default_voice": "public:" + pixelle_video.DEFAULT_PUBLIC_VOICE,
+                    })
+                except Exception:
+                    return self._send(503, {
+                        "detail": "音色列表暂不可用，请稍后重试",
+                        "operation_terminal": True,
+                    })
             return self._send(200, {
                 "styles": pixelle_video.public_styles(),
                 "default_style": pixelle_video.DEFAULT_STYLE,
