@@ -1360,13 +1360,16 @@ def validate_xiaole_video_payload(payload, username=None):
                 raise ValueError("Seedance AI 超清服务暂未配置")
         cleaned.pop("upscale_prediction_id", None)
         max_refs = 1 if SEEDANCE_VIDEO_PROVIDER == "topview" else 9
+        if SEEDANCE_VIDEO_PROVIDER == "topview" and not refs:
+            raise ValueError("Topview 人脸测试请先上传 1 张首帧参考图（本次未扣点）")
         if len(refs) > max_refs:
             raise ValueError("Topview 人脸测试首期仅支持 1 张首帧参考图" if max_refs == 1 else "Seedance 最多支持 9 张参考图")
         if SEEDANCE_VIDEO_PROVIDER == "topview" and any(not ref.startswith("data:") for ref in refs):
             raise ValueError("Topview 人脸测试请重新上传 1 张本地参考图")
         refs = _validate_seedance_references(refs, username)
         video_seedance._build_payload(
-            model, prompt, duration, ratio, resolution, generate_audio, []
+            model, prompt, duration, ratio, resolution, generate_audio,
+            refs if SEEDANCE_VIDEO_PROVIDER == "topview" else [],
         )
         cleaned.update({
             "operation": "generate",

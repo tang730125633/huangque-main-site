@@ -774,7 +774,7 @@
           <textarea id="microPrompt" rows="4" maxlength="2000" placeholder="例如：一只纸艺小鸟从桌面起飞，镜头缓慢跟随，暖色晨光，轻柔纸张摩擦声，无文字无标识" style="width:100%;min-height:110px;resize:vertical;background:rgba(7,11,19,.5);border:1px solid rgba(148,164,187,.16);border-radius:12px;color:#eaf1fa;padding:12px 14px;font:inherit;font-size:14px;"></textarea>
         </div>
         <div class="panel" style="margin-top:12px;">
-          <div class="faint" style="font-size:12px;margin-bottom:8px;">参考图 <span style="color:#5c6b82;">· 可选，测试首期最多 1 张；也可在提示词框 Ctrl/⌘V 粘贴</span></div>
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">首帧参考图 <span style="color:#5c6b82;">· 必选，测试首期仅支持 1 张；也可在提示词框 Ctrl/⌘V 粘贴</span></div>
           <div id="microRefGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px;">
             <label id="microRefAdd" style="position:relative;display:flex;align-items:center;justify-content:center;min-height:74px;border:1px dashed rgba(148,164,187,.28);border-radius:12px;background:rgba(7,11,19,.4);cursor:pointer;">
               <input id="microRefFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
@@ -3012,6 +3012,7 @@
     if(editing && !grokEditVideoData){toast('请先上传不超过 8.7 秒的 MP4 参考视频');return;}
     var ratio=channel==='grok'?(editing?null:selectedGrokRatio):(channel==='omni'?selectedOmniRatio:(channel==='minimax'?selectedMiniMaxRatio:selectedSeedanceRatio));
     var _refArr=channel==='grok'?grokRefData:(channel==='micro'?microRefData:(channel==='omni'?omniRefData:(channel==='minimax'?minimaxRefData:null)));
+    if(channel==='micro'&&(!_refArr||!_refArr.length)){toast('请先上传 1 张首帧参考图；当前 Topview 测试仅开放图生视频');return;}
     if(channel==='minimax'&&(!_refArr||!_refArr.length)){toast('请至少上传 1 张人物参考图');return;}
     if(channel==='grok' && !editing && selectedGrokModel==='grok-imagine-video-1.5' && (!_refArr||!_refArr.length)){
       toast('Grok Video 1.5 至少上传1张参考图（最多7张）'); return;

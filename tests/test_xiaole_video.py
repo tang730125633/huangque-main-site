@@ -63,6 +63,18 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertEqual(omni["duration"], 3)
         self.assertEqual(seedance["resolution"], "480p")
 
+    def test_topview_micro_requires_reference_before_charge(self):
+        from content_domains import feature_flags, video_topview_seedance
+        with patch.object(self.video, "SEEDANCE_VIDEO_PROVIDER", "topview"), \
+                patch.object(feature_flags, "is_enabled", return_value=True), \
+                patch.object(video_topview_seedance, "available", return_value=True):
+            with self.assertRaisesRegex(ValueError, "请先上传 1 张首帧参考图"):
+                self.video.validate_xiaole_video_payload({
+                    "channel": "micro", "prompt": "保持参考图中的猫咪",
+                    "model": "doubao-seedance-2-0-260128", "ratio": "9:16",
+                    "duration": 5, "resolution": "720p", "generate_audio": False,
+                })
+
     def test_official_channels_default_closed_and_tabs_follow_health(self):
         from content_domains import feature_flags
         with patch.object(feature_flags, "_cached_rows", return_value={}):
@@ -101,6 +113,7 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertIn("targetMode==='micro'", html)
         self.assertIn("setupXiaoleRefPanel('omni', omniRefData, 6)", html)
         self.assertIn("setupXiaoleRefPanel('micro', microRefData, 1)", html)
+        self.assertIn("当前 Topview 测试仅开放图生视频", html)
         self.assertIn("setupXiaoleRefPanel('minimax', minimaxRefData, 5)", html)
 
     def test_generate_xiaole_video_sends_size_without_aspect_ratio(self):
