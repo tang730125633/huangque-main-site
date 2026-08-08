@@ -191,6 +191,7 @@ def validate_image_payload(payload):
         raise ValueError("\u8bf7\u6c42\u4f53\u5fc5\u987b\u662f JSON \u5bf9\u8c61")
     body = dict(payload)
     provider = str(body.get("provider") or "openai").strip().lower()
+    body["provider"] = provider
     if provider == "banana":
         from . import banana_provider
         banana_body = banana_provider.validate_payload(body)

@@ -761,6 +761,7 @@
     if(!payload.prompt){ flash('请先输入提示词','#f4708a'); return; }
     if(submitting) return;
     if(activeCount()){ flash('已有任务生成中，请等待完成','#f4708a'); return; }
+    payload=Object.assign({},payload,{source_page:'banana'});
     if(sourceInspirationId)payload=Object.assign({source_inspiration_id:sourceInspirationId},payload);
     lastPayload=payload; submitting=true; syncGen();
     var hint = endpoint==='/api/gen/banana'
