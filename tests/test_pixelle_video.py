@@ -181,6 +181,40 @@ class PixelleVideoTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "render failed"):
                 self.pixelle._wait("task-2")
 
+    def test_wait_retries_transient_poll_timeout_until_task_completes(self):
+        class JsonResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return b'{"status":"completed","result":{"video_url":"/api/files/result.mp4"}}'
+
+        with mock.patch.object(
+            self.pixelle._NO_PROXY,
+            "open",
+            side_effect=[TimeoutError("read timed out"), JsonResponse()],
+        ) as request, mock.patch.object(self.pixelle.time, "sleep") as sleep:
+            result = self.pixelle._wait("task-transient")
+
+        self.assertEqual(result["video_url"], "/api/files/result.mp4")
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once_with(self.pixelle.PIXELLE_POLL_INTERVAL)
+
+    def test_wait_reports_job_timeout_after_repeated_transient_poll_errors(self):
+        with mock.patch.object(self.pixelle, "PIXELLE_JOB_TIMEOUT", 1), \
+             mock.patch.object(
+                 self.pixelle.time, "monotonic", side_effect=[0, 0, 1]
+             ), \
+             mock.patch.object(
+                 self.pixelle._NO_PROXY, "open", side_effect=TimeoutError("read timed out")
+             ), \
+             mock.patch.object(self.pixelle.time, "sleep"):
+            with self.assertRaisesRegex(RuntimeError, "超时"):
+                self.pixelle._wait("task-timeout")
+
     def test_upstream_video_url_is_confined_to_service_files(self):
         accepted = self.pixelle._safe_upstream_video_url("/api/files/result.mp4")
         self.assertTrue(accepted.endswith("/api/files/result.mp4"))
