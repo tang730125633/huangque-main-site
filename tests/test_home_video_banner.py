@@ -39,6 +39,12 @@ class HomeVideoBannerTests(unittest.TestCase):
         self.assertIn("if (reducedMotion.matches)", self.html)
         self.assertIn("heroVideos.forEach(video => video.pause())", self.html)
 
+    def test_liquid_glass_uses_pointer_driven_highlight(self):
+        self.assertIn("Huang Que AI Hub", self.html)
+        self.assertGreaterEqual(self.html.count("data-liquid-glass"), 5)
+        self.assertIn("addEventListener('pointermove'", self.html)
+        self.assertIn("at var(--glass-x) var(--glass-y)", self.css)
+
 
 if __name__ == "__main__":
     unittest.main()

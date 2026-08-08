@@ -6,7 +6,7 @@
   <meta name="description" content="黄雀 AI：从 IP12、Agent 与无限画布，到图文音视频生产和 HQ CLI。">
   <title>黄雀 AI · 会持续生长的内容系统</title>
   <link rel="icon" href="/assets/logo_sparrow.png">
-  <link rel="stylesheet" href="/homepage.css?v=20260808-glass2">
+  <link rel="stylesheet" href="/homepage.css?v=20260809-liquid3">
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -14,7 +14,7 @@
   <canvas class="page-particle-stage" data-hero-particles aria-hidden="true"></canvas>
 
   <header class="site-header">
-    <nav class="nav-shell" aria-label="主导航">
+    <nav class="nav-shell" data-liquid-glass aria-label="主导航">
       <a class="brand" href="#top" aria-label="黄雀首页">
         <span class="brand-mark"><img src="/assets/logo_sparrow.png" alt=""></span>
       </a>
@@ -29,7 +29,7 @@
 
       <div class="nav-actions">
         <a href="/login">登录</a>
-        <a class="nav-primary" href="/workbench/inspiration">ENTER ↗</a>
+        <a class="nav-primary" data-liquid-glass href="/workbench/inspiration">ENTER ↗</a>
       </div>
 
       <details class="mobile-menu">
@@ -58,9 +58,9 @@
         </video>
       </div>
       <div class="hero-inner" data-reveal>
-        <h1><span class="line">黄雀</span></h1>
+        <h1><span class="line">Huang Que AI Hub</span></h1>
         <div class="hero-actions">
-          <a class="button button-primary" href="/workbench/inspiration">ENTER HUANGQUE <span aria-hidden="true">↗</span></a>
+          <a class="button button-primary" data-liquid-glass href="/workbench/inspiration">ENTER HUANGQUE <span aria-hidden="true">↗</span></a>
         </div>
       </div>
     </section>
@@ -329,7 +329,7 @@
         <div class="hero-logo"><img src="/assets/logo_sparrow.png" alt=""></div>
         <p class="kicker">YOUR DIGITAL IP STARTS HERE</p>
         <h2>TURN YOUR STORY INTO<br><em>A SYSTEM THAT KEEPS GROWING.</em></h2>
-        <div><a class="button button-primary" href="/workbench/ip12/">START IP12</a><a class="button button-secondary" href="/workbench/inspiration">ENTER WORKSPACE</a></div>
+        <div><a class="button button-primary" data-liquid-glass href="/workbench/ip12/">START IP12</a><a class="button button-secondary" data-liquid-glass href="/workbench/inspiration">ENTER WORKSPACE</a></div>
       </div>
     </section>
   </main>
@@ -477,6 +477,18 @@
     addEventListener('resize', scheduleStoryIntro);
     reducedMotion.addEventListener('change', scheduleStoryIntro);
     desktopStory.addEventListener('change', scheduleStoryIntro);
+
+    document.querySelectorAll('[data-liquid-glass]').forEach(element => {
+      element.addEventListener('pointermove', event => {
+        const rect = element.getBoundingClientRect();
+        element.style.setProperty('--glass-x', `${((event.clientX - rect.left) / rect.width) * 100}%`);
+        element.style.setProperty('--glass-y', `${((event.clientY - rect.top) / rect.height) * 100}%`);
+      });
+      element.addEventListener('pointerleave', () => {
+        element.style.removeProperty('--glass-x');
+        element.style.removeProperty('--glass-y');
+      });
+    });
 
     const copyButton = document.querySelector('[data-copy]');
     copyButton.addEventListener('click', async () => {
