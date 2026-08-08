@@ -669,6 +669,70 @@ IMAGE_FUNCTIONS = [
 ]
 
 
+AUDIO_E2E_BLOCKED = "后台托管完整旅程尚未启用（本轮仅登记客户模式与真实任务、资产、账务证据）"
+
+
+AUDIO_FUNCTIONS = [
+    {
+        "key": "tts",
+        "name": "AI 配音",
+        "desc": "输入文案，选择公共或个人音色，并调整语速、音调与音量生成配音",
+        "order": 10,
+        "frontend_selector": "#generateBtn",
+        "service": "content",
+        "flag_keys": ["audio"],
+        "dependencies": [{
+            "key": "cosyvoice", "role": "公共与个人音色合成",
+            "requirement": "required", "credential_source": "env",
+        }],
+        "evidence_gaps": [
+            "CosyVoice 同步合成不提供可稳定落库的上游 task_id/request_id",
+            "当前鉴权探针可验证 DASHSCOPE_API_KEY，但没有可归一化的余额字段",
+        ],
+        "modes": [
+            {
+                "key": "audio.tts.public",
+                "name": "公共音色配音",
+                "frontend_selector": '[data-voice-tab="public"]',
+                "entrypoints": [
+                    _endpoint("POST", "/api/gen/audio"),
+                    _endpoint("GET", "/api/gen/audio/voices"),
+                    _endpoint("GET", "/api/gen/job/{id}"),
+                    _endpoint("GET", "/api/gen/audio/assets"),
+                ],
+                "task_match": {
+                    "kind": "audio", "source_page": "audio",
+                    "provider": "cosyvoice", "voice_scope": "public",
+                },
+                "evidence_contract": {"not_applicable": ["provider_task", "balance"]},
+                "price_keys": ["audio.tts"],
+                "smoke_inputs": ["短配音文案", "任一公共音色", "语速/音调/音量默认值"],
+                "validation": _validation(supported=False, blocked_reason=AUDIO_E2E_BLOCKED),
+            },
+            {
+                "key": "audio.tts.personal",
+                "name": "个人音色配音",
+                "frontend_selector": '[data-voice-tab="personal"]',
+                "entrypoints": [
+                    _endpoint("POST", "/api/gen/audio"),
+                    _endpoint("GET", "/api/gen/audio/voices"),
+                    _endpoint("GET", "/api/gen/job/{id}"),
+                    _endpoint("GET", "/api/gen/audio/assets"),
+                ],
+                "task_match": {
+                    "kind": "audio", "source_page": "audio",
+                    "provider": "cosyvoice", "voice_scope": "personal",
+                },
+                "evidence_contract": {"not_applicable": ["provider_task", "balance"]},
+                "price_keys": ["audio.tts"],
+                "smoke_inputs": ["短配音文案", "一个已就绪的个人音色", "语速/音调/音量默认值"],
+                "validation": _validation(supported=False, blocked_reason=AUDIO_E2E_BLOCKED),
+            },
+        ],
+    },
+]
+
+
 _PAGE_DEFS = [
     ("inspiration", "灵感设计", "/workbench/inspiration.html"),
     ("leads", "平台获客", "/workbench/leads.html"),
@@ -692,8 +756,13 @@ FUNCTION_REGISTRY = [
         "name": name,
         "path": path,
         "order": order,
-        "inventory_status": "verified" if key in {"banana", "video"} else "pending",
-        "functions": VIDEO_FUNCTIONS if key == "video" else IMAGE_FUNCTIONS if key == "banana" else [],
+        "inventory_status": "verified" if key in {"banana", "video", "audio"} else "pending",
+        "functions": (
+            VIDEO_FUNCTIONS if key == "video"
+            else IMAGE_FUNCTIONS if key == "banana"
+            else AUDIO_FUNCTIONS if key == "audio"
+            else []
+        ),
         "auxiliary_actions": ([{
             "key": "video.asset.import_h3", "name": "导入 H3 成片",
             "entrypoint": _endpoint("POST", "/api/gen/video/import"),
@@ -776,11 +845,15 @@ def classify_task(kind, metadata=None):
     metadata = metadata or {}
     kind = str(kind or "").strip().lower()
     source_page = str(metadata.get("source_page") or "").strip().lower()
-    if source_page not in {"", "video", "banana"}:
+    if source_page not in {"", "video", "banana", "audio"}:
         return None
     if kind == "image" and source_page != "banana":
         return None
     if kind != "image" and source_page == "banana":
+        return None
+    if kind == "audio" and source_page != "audio":
+        return None
+    if kind != "audio" and source_page == "audio":
         return None
     try:
         references = int(metadata.get("reference_count") or (1 if metadata.get("image") else 0))
@@ -797,6 +870,7 @@ def classify_task(kind, metadata=None):
         "provider": str(metadata.get("provider") or ("openai" if kind == "image" else "")).strip().lower(),
         "model": str(metadata.get("model") or "").strip().lower(),
         "variant": str(metadata.get("variant") or "").strip().lower(),
+        "voice_scope": str(metadata.get("voice_scope") or "").strip().lower(),
         "mask_present": bool(metadata.get("mask_present") or metadata.get("mask")),
         "operation": str(
             metadata.get("operation")

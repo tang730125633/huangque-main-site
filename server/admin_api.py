@@ -2592,6 +2592,45 @@ def _video_asset_evidence(job_ids):
         return {}, "视频资产证据读取失败"
 
 
+def _audio_asset_evidence(job_ids):
+    if not job_ids:
+        return {}, None
+    if not ASSET_DB.exists():
+        return {}, "音频资产证据库不存在"
+    placeholders = ",".join("?" for _ in job_ids)
+    try:
+        with closing(sqlite3.connect(str(ASSET_DB), timeout=10)) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                """SELECT id,job_id,file,url,asset_kind,metadata_json,created_at
+                   FROM audio_assets WHERE job_id IN (%s)""" % placeholders,
+                tuple(job_ids),
+            ).fetchall()
+        evidence = {}
+        for row in rows:
+            if not row["job_id"]:
+                continue
+            try:
+                metadata = json.loads(row["metadata_json"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            evidence[int(row["job_id"])] = {
+                "asset_id": int(row["id"]),
+                "audio_file": row["file"],
+                "audio_url": row["url"],
+                "asset_kind": row["asset_kind"],
+                "provider_request_id": metadata.get("provider_request_id"),
+                "phase": "asset_recorded",
+                "status": "done",
+                "updated_at": int(row["created_at"] or 0),
+            }
+        return evidence, None
+    except sqlite3.Error:
+        return {}, "音频资产证据读取失败"
+
+
 def _verify_local_artifact(evidence):
     result_file = str(evidence.get("result_file") or "").strip()
     if not result_file:
@@ -2627,10 +2666,15 @@ def _job_evidence(row, asset=None):
     status = str(row["status"] or "unknown").lower()
     cost = int(row["cost"] or 0)
     refunded = int(row["refunded"] or 0)
-    result_url = str(row["result_url"] or asset.get("video_url") or "").strip()
-    result_file = str(row["result_file"] or asset.get("video_file") or "").strip()
+    result_url = str(
+        row["result_url"] or asset.get("video_url") or asset.get("audio_url") or ""
+    ).strip()
+    result_file = str(
+        row["result_file"] or asset.get("video_file") or asset.get("audio_file") or ""
+    ).strip()
     provider_task_id = str(
-        asset.get("provider_video_id") or row["provider_result_id"] or ""
+        asset.get("provider_video_id") or asset.get("provider_request_id")
+        or row["provider_result_id"] or ""
     ).strip()
     if status in {"error", "failed"}:
         if cost <= 0:
@@ -2666,6 +2710,8 @@ def _job_evidence(row, asset=None):
         "refund_state": refunded,
         "billing_state": billing_state,
         "asset_status": asset.get("status"),
+        "asset_id": asset.get("asset_id"),
+        "asset_kind": asset.get("asset_kind"),
         "error": str(row["error"] or asset.get("error") or "")[:300],
     })
 
@@ -3215,6 +3261,7 @@ def job_stats(days=7):
                               CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.provider'),'')) ELSE '' END AS provider,
                               CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.model'),'')) ELSE '' END AS model,
                               CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.variant'),'')) ELSE '' END AS variant,
+                              CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.voice_scope'),'')) ELSE '' END AS voice_scope,
                               CASE WHEN json_valid(payload) AND json_type(payload,'$.mask')='text' THEN 1 ELSE 0 END AS mask_present,
                               CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_url'),json_extract(%s,'$.image_url'),json_extract(%s,'$.url'),json_extract(%s,'$.urls[0]'),'') ELSE '' END AS result_url,
                               CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_file'),json_extract(%s,'$.image_file'),json_extract(%s,'$.file'),json_extract(%s,'$.files[0]'),'') ELSE '' END AS result_file,
@@ -3254,6 +3301,7 @@ def job_stats(days=7):
             "operation": row["operation"], "upscale": row["upscale"],
             "source_page": row["source_page"], "provider": row["provider"],
             "model": row["model"], "variant": row["variant"],
+            "voice_scope": row["voice_scope"],
             "mask_present": bool(row["mask_present"]),
         }
         operation = function_registry.classify_task(row["kind"], metadata)
@@ -3271,7 +3319,7 @@ def job_stats(days=7):
             }:
                 page_key = "video"
             signature = str(row["kind"] or "unknown")
-            for key in ("channel", "mode", "cine_mode", "line", "provider", "model", "variant"):
+            for key in ("channel", "mode", "cine_mode", "line", "provider", "model", "variant", "voice_scope"):
                 if row[key]:
                     signature += "/" + str(row[key])
             missing = unmapped.setdefault((page_key, signature), {
@@ -3291,9 +3339,20 @@ def job_stats(days=7):
     )
     if asset_error:
         evidence_errors.append(asset_error)
+    audio_assets, audio_asset_error = _audio_asset_evidence([
+        int(row["id"]) for row in latest_rows.values()
+        if str(row["kind"] or "").lower() == "audio"
+    ])
+    if audio_asset_error:
+        evidence_errors.append(audio_asset_error)
     for operation, row in latest_rows.items():
+        asset = (
+            audio_assets.get(int(row["id"]))
+            if str(row["kind"] or "").lower() == "audio"
+            else assets.get(int(row["id"]))
+        )
         by_operation[operation]["latest"] = _job_evidence(
-            row, assets.get(int(row["id"]))
+            row, asset
         )
     compose, compose_error = _compose_operation_stat(since)
     if compose_error:
@@ -3324,7 +3383,7 @@ def job_stats(days=7):
     }
 
 
-_PAYLOAD_FIELD_RE = re.compile(r'"(model|provider|channel|mode|keyword|url|line|variant|source_page)"\s*:\s*"([^"]*)"')
+_PAYLOAD_FIELD_RE = re.compile(r'"(model|provider|channel|mode|keyword|url|line|variant|source_page|voice_scope)"\s*:\s*"([^"]*)"')
 
 
 def _job_payload(raw):
@@ -3375,6 +3434,7 @@ def call_logs(days=7, limit=200):
                       CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.provider'),'')) ELSE '' END AS provider,
                       CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.model'),'')) ELSE '' END AS model,
                       CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.variant'),'')) ELSE '' END AS variant,
+                      CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.voice_scope'),'')) ELSE '' END AS voice_scope,
                       CASE WHEN json_valid(payload) AND json_type(payload,'$.mask')='text' THEN 1 ELSE 0 END AS mask_present
                FROM jobs
                WHERE created_at >= ?
@@ -3394,7 +3454,8 @@ def call_logs(days=7, limit=200):
             "reference_count": row["reference_count"], "batch_id": row["batch_id"],
             "operation": row["operation"], "source_page": row["source_page"],
             "provider": row["provider"], "model": row["model"],
-            "variant": row["variant"], "mask_present": bool(row["mask_present"]),
+            "variant": row["variant"], "voice_scope": row["voice_scope"],
+            "mask_present": bool(row["mask_present"]),
         })
         operation = function_registry.classify_task(kind, payload)
         duration = None

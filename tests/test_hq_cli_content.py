@@ -113,6 +113,22 @@ class HQCLIContentTests(unittest.TestCase):
         clean = audio.validate_audio_payload({"text": " hello ", "speed": 1.2, "pitch": 0, "volume": 0})
         self.assertEqual(("hello", 1.2), (clean["text"], clean["speed"]))
 
+        original = audio.resolve_audio_provider_voice
+        audio.resolve_audio_provider_voice = lambda username, voice_key: voice_key
+        try:
+            public = audio.validate_audio_payload(
+                {"text": "hello", "voice": "S_d21F8OR62", "voice_scope": "personal", "provider": "openai"},
+                "qa",
+            )
+            personal = audio.validate_audio_payload(
+                {"text": "hello", "voice": "vip_slot_1", "voice_scope": "public", "provider": "openai"},
+                "qa",
+            )
+        finally:
+            audio.resolve_audio_provider_voice = original
+        self.assertEqual((public["voice_scope"], public["provider"]), ("public", "cosyvoice"))
+        self.assertEqual((personal["voice_scope"], personal["provider"]), ("personal", "cosyvoice"))
+
 
 if __name__ == "__main__":
     unittest.main()

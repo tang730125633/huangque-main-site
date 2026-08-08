@@ -99,7 +99,7 @@ class FunctionRegistryTests(unittest.TestCase):
              "文案编导", "短剧创作", "无限画布", "我的资产", "点数价格", "邀请中心",
              "教程视频", "通用设置"],
         )
-        self.assertEqual([page["inventory_status"] for page in pages].count("verified"), 2)
+        self.assertEqual([page["inventory_status"] for page in pages].count("verified"), 3)
         image = next(page for page in pages if page["key"] == "banana")
         self.assertEqual(
             [feature["name"] for feature in image["functions"]],
@@ -124,6 +124,31 @@ class FunctionRegistryTests(unittest.TestCase):
             "zelong2",
             json.dumps(image, ensure_ascii=False),
         )
+        audio = next(page for page in pages if page["key"] == "audio")
+        self.assertEqual([feature["name"] for feature in audio["functions"]], ["AI 配音"])
+        self.assertEqual(
+            [mode["key"] for feature in audio["functions"] for mode in feature["modes"]],
+            ["audio.tts.public", "audio.tts.personal"],
+        )
+        self.assertEqual(audio["auxiliary_actions"], [])
+        self.assertNotIn(
+            "/api/gen/audio/clone-vip",
+            json.dumps(audio, ensure_ascii=False),
+        )
+        audio_tts = audio["functions"][0]
+        dependency = audio_tts["dependencies"][0]
+        self.assertEqual(
+            (dependency["key"], dependency["credential_source"]),
+            ("cosyvoice", "env"),
+        )
+        for mode in audio_tts["modes"]:
+            self.assertEqual(mode["entrypoints"][0], {"method": "POST", "path": "/api/gen/audio"})
+            self.assertEqual(mode["price_keys"], ["audio.tts"])
+            self.assertEqual(
+                set(mode["evidence_contract"]["not_applicable"]),
+                {"provider_task", "balance"},
+            )
+            self.assertNotIn("billing", mode["evidence_contract"]["not_applicable"])
         video = next(page for page in pages if page["key"] == "video")
         self.assertEqual(
             [feature["name"] for feature in video["functions"]],
@@ -153,7 +178,7 @@ class FunctionRegistryTests(unittest.TestCase):
         flags = self.admin.feature_flags.CATALOG_MAP
         routes = self.admin.KEY_GROUP_MAP
         prices = self.admin.pricing.CATALOG_MAP
-        for feature in image["functions"] + video["functions"]:
+        for feature in image["functions"] + video["functions"] + audio["functions"]:
             self.assertTrue(feature["frontend_selector"])
             self.assertIn(feature["service"], {"content", "imggen"})
             for flag in feature.get("flag_keys", []):
@@ -196,6 +221,8 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertEqual(sum(mode["validation"]["supported"] for mode in modes), 15)
         image_modes = [mode for feature in image["functions"] for mode in feature["modes"]]
         self.assertEqual(sum(mode["validation"]["supported"] for mode in image_modes), 0)
+        audio_modes = [mode for feature in audio["functions"] for mode in feature["modes"]]
+        self.assertEqual(sum(mode["validation"]["supported"] for mode in audio_modes), 0)
 
         root = Path(__file__).resolve().parents[1]
         for page in pages:
@@ -223,6 +250,15 @@ class FunctionRegistryTests(unittest.TestCase):
         )[0]
         self.assertNotIn('body["source_page"] =', banana_route)
         self.assertIn('body["provider"] = "banana"', banana_route)
+
+        audio_frontend = (root / "site/workbench/audio.html").read_text(encoding="utf-8")
+        self.assertEqual(audio_frontend.count('data-voice-tab="'), len(audio_modes))
+        for marker in (
+            'data-voice-tab="public"', 'data-voice-tab="personal"',
+            "source_page:'audio'", "id=\"speedVal\"", "id=\"pitchVal\"",
+            "id=\"volumeVal\"", "id=\"generateBtn\"",
+        ):
+            self.assertIn(marker, audio_frontend)
 
     def test_runtime_visibility_and_task_evidence_stay_separate(self):
         pages = self.admin.load_function_registry([{
@@ -297,6 +333,13 @@ class FunctionRegistryTests(unittest.TestCase):
         )
         self.assertIsNone(classify("image", {"provider": "openai"}))
         self.assertIsNone(classify("image", {"source_page": "script", "provider": "openai"}))
+        self.assertEqual(
+            classify("audio", {"source_page": "audio", "provider": "cosyvoice", "voice_scope": "public"}),
+            "audio.tts.public",
+        )
+        self.assertIsNone(classify("audio", {"provider": "cosyvoice", "voice_scope": "public"}))
+        self.assertIsNone(classify("video", {"source_page": "audio", "mode": "text"}))
+        self.assertIsNone(classify("image", {"source_page": "audio", "provider": "openai"}))
 
         filtered = self.admin.activity_logs(7, 20, q="video.grok.image", source="job")
         self.assertEqual(filtered["total"], 1)
@@ -373,6 +416,62 @@ class FunctionRegistryTests(unittest.TestCase):
         unmapped = {(item["page_key"], item["signature"]) for item in stats["unmapped"]}
         self.assertIn(("script", "image/openai"), unmapped)
         self.assertIn(("", "image/openai"), unmapped)
+
+    def test_audio_page_jobs_join_assets_without_stealing_other_pages(self):
+        now = int(time.time())
+        rows = [
+            (30, "audio", {"source_page": "audio", "provider": "cosyvoice", "voice_scope": "public"}),
+            (31, "audio", {"source_page": "audio", "provider": "cosyvoice", "voice_scope": "personal"}),
+            (32, "audio", {"provider": "cosyvoice", "voice_scope": "public"}),
+            (33, "audio", {"source_page": "video", "provider": "cosyvoice", "voice_scope": "public"}),
+            (34, "video", {"source_page": "audio", "mode": "text"}),
+            (35, "image", {"source_page": "audio", "provider": "openai"}),
+            (36, "canvas_agent", {"source_page": "audio"}),
+            (37, "short_drama_sound_effect", {"source_page": "audio"}),
+            (38, "audio", {"source_page": "canvas", "provider": "cosyvoice", "voice_scope": "personal"}),
+        ]
+        with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
+            connection.executemany(
+                "INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                [(job_id, kind, "qa", 10, "done", json.dumps(payload), "{}", "",
+                  now - job_id, now - job_id + 1, 0) for job_id, kind, payload in rows],
+            )
+            connection.commit()
+        (self.admin.CONTENT_OUT / "public.mp3").write_bytes(b"ID3-public")
+        (self.admin.CONTENT_OUT / "personal.mp3").write_bytes(b"ID3-personal")
+        with closing(sqlite3.connect(self.admin.ASSET_DB)) as connection:
+            connection.execute(
+                """CREATE TABLE audio_assets(
+                       id INTEGER PRIMARY KEY,job_id INTEGER,file TEXT,url TEXT,
+                       asset_kind TEXT,metadata_json TEXT,created_at INTEGER)"""
+            )
+            connection.executemany(
+                "INSERT INTO audio_assets VALUES(?,?,?,?,?,?,?)",
+                [
+                    (1, 30, "public.mp3", "/api/gen/file/public.mp3", "voice", "{}", now - 29),
+                    (2, 31, "personal.mp3", "/api/gen/file/personal.mp3", "voice", "{}", now - 30),
+                ],
+            )
+            connection.commit()
+
+        operations = {item["id"]: item["operation"] for item in self.admin.call_logs(7, 100)["items"]}
+        self.assertEqual(operations[30], "audio.tts.public")
+        self.assertEqual(operations[31], "audio.tts.personal")
+        for job_id in range(32, 39):
+            self.assertIsNone(operations[job_id])
+
+        stats = self.admin.job_stats(7)
+        by_operation = {item["operation"]: item for item in stats["by_operation"]}
+        for operation, asset_id in (("audio.tts.public", 1), ("audio.tts.personal", 2)):
+            latest = by_operation[operation]["latest"]
+            self.assertEqual(latest["asset_id"], asset_id)
+            self.assertEqual(latest["asset_status"], "done")
+            self.assertEqual(latest["asset_kind"], "voice")
+            self.assertTrue(latest["delivery_verified"])
+            self.assertEqual(latest["artifact_check"], "file_exists")
+            self.assertEqual(latest["billing_state"], "unverified")
+            self.assertIsNone(latest["provider_task_id"])
+        self.assertEqual(stats["evidence_errors"], [])
 
 
 if __name__ == "__main__":
