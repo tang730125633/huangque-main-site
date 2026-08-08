@@ -218,6 +218,13 @@ class FunctionRegistryTests(unittest.TestCase):
                     self.assertTrue(asset.startswith("@fixture/"))
                     self.assertTrue((Path(__file__).resolve().parents[1] / "server/qa_fixtures" / asset.removeprefix("@fixture/")).is_file())
 
+        xiaole = next(item for item in image["functions"] if item["key"] == "xiaole")
+        self.assertEqual(xiaole["flag_keys"], ["image_xiaole"])
+        self.assertEqual(
+            self.admin.function_registry.e2e_runner("image.xiaole.text")["flag_keys"],
+            ["image_xiaole"],
+        )
+
         modes = [mode for feature in video["functions"] for mode in feature["modes"]]
         self.assertEqual(sum(mode["validation"]["supported"] for mode in modes), 15)
         image_modes = [mode for feature in image["functions"] for mode in feature["modes"]]
