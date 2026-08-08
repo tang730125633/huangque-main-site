@@ -244,6 +244,28 @@ class AdminE2ERunnerTests(unittest.TestCase):
         self.assertEqual(prepare.call_count, 2)
         submit.assert_not_called()
 
+    def test_batch_preflight_can_quote_fresh_modes_for_manual_rerun(self):
+        session = {"token": "short-lived-secret", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        modes = [{"key": "video.sora.text", "validation": {"supported": True}}]
+        fresh = {"operation_id": "video.sora.text", "status": "completed",
+                 "updated_at": int(time.time()), "stages": [{"state": "passed"}]}
+        with patch.object(self.admin, "list_e2e_runs", return_value=[fresh]), \
+             patch.object(self.admin, "_e2e_page_modes", return_value=modes), \
+             patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "points_domain", SimpleNamespace()), \
+             patch.object(self.admin, "_e2e_prepare_operation", return_value={"cost": 120}):
+            result = self.admin.e2e_batch_preflight(
+                "admin-token", "video", include_fresh=True
+            )
+        self.assertTrue(result["ready"])
+        self.assertTrue(result["include_fresh"])
+        self.assertEqual((result["ready_count"], result["fresh_count"], result["total_cost"]), (1, 1, 120))
+        html = (Path(__file__).resolve().parents[1] / "site/admin/index.html").read_text(encoding="utf-8")
+        self.assertIn("重新验收全部 ", html)
+        self.assertIn("RERUN_BATCH", html)
+
     def test_start_batch_creates_one_group_and_starts_one_scheduler(self):
         preflight = {
             "ready": True, "account": "qa-dedicated", "target_count": 2,
