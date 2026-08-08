@@ -341,6 +341,7 @@ def _prepared_text(text, mode):
 
 def _submit(payload):
     template = TEMPLATES_BY_KEY[payload["template"]]
+    style = STYLE_PRESETS_BY_KEY[payload["style"]]
     media_workflow = (
         PIXELLE_VIDEO_WORKFLOW
         if template["kind"] == "video"
@@ -351,6 +352,7 @@ def _submit(payload):
         "mode": payload["mode"],
         "n_scenes": payload["n_scenes"],
         "frame_template": payload["template"],
+        "prompt_prefix": style["prompt_prefix"],
         "media_workflow": media_workflow,
         "tts_workflow": PIXELLE_TTS_WORKFLOW,
         "video_fps": 30,
@@ -451,6 +453,7 @@ def generate(payload):
         "duration": round(float(result.get("duration") or 0), 3),
         "scene_count": int(result.get("scene_count") or payload.get("n_scenes") or 1),
         "template": payload["template"],
+        "style": payload["style"],
         "input_mode": payload["mode"],
         "file_size": int(result.get("file_size") or file_size),
         "upstream_task_id": task_id,

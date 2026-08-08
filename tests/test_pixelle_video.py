@@ -150,7 +150,11 @@ class PixelleVideoTests(unittest.TestCase):
             })
 
     def test_submit_uses_async_service_contract(self):
-        payload = self.pixelle.prepare_payload({"text": "AI 培训", "mode": "generate"})
+        payload = self.pixelle.prepare_payload({
+            "text": "AI 培训",
+            "mode": "generate",
+            "style": "medical_beauty",
+        })
         with mock.patch.object(
             self.pixelle, "_json_request", return_value={"task_id": "task-1"}
         ) as request:
@@ -161,6 +165,10 @@ class PixelleVideoTests(unittest.TestCase):
         self.assertEqual(body["frame_template"], payload["template"])
         self.assertEqual(body["n_scenes"], 5)
         self.assertIn("简体中文", body["text"])
+        self.assertEqual(
+            body["prompt_prefix"],
+            self.pixelle.STYLE_PRESETS_BY_KEY["medical_beauty"]["prompt_prefix"],
+        )
         self.assertEqual(body["media_workflow"], self.pixelle.PIXELLE_MEDIA_WORKFLOW)
 
     def test_submit_video_template_uses_video_workflow(self):
@@ -168,6 +176,7 @@ class PixelleVideoTests(unittest.TestCase):
             "text": "AI 培训",
             "mode": "generate",
             "template": "1080x1920/video_default.html",
+            "style": "medical_beauty",
         })
         with mock.patch.object(
             self.pixelle, "_json_request", return_value={"task_id": "task-video"}
@@ -175,6 +184,10 @@ class PixelleVideoTests(unittest.TestCase):
             self.assertEqual(self.pixelle._submit(payload), "task-video")
 
         body = request.call_args.args[2]
+        self.assertEqual(
+            body["prompt_prefix"],
+            self.pixelle.STYLE_PRESETS_BY_KEY["medical_beauty"]["prompt_prefix"],
+        )
         self.assertEqual(body["media_workflow"], self.pixelle.PIXELLE_VIDEO_WORKFLOW)
         self.assertNotEqual(body["media_workflow"], self.pixelle.PIXELLE_MEDIA_WORKFLOW)
 
@@ -296,6 +309,8 @@ class PixelleVideoTests(unittest.TestCase):
         self.assertEqual(result["video_url"], "/api/gen/file/token")
         self.assertEqual(result["duration"], 31.25)
         self.assertEqual(result["scene_count"], 5)
+        self.assertEqual(result["style"], payload["style"])
+        self.assertNotIn("prompt_prefix", result)
 
     def test_download_checks_only_header_without_reading_whole_file(self):
         source = b"\x00\x00\x00\x18ftypisom" + b"x" * 2048
