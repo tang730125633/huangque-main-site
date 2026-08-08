@@ -803,7 +803,7 @@ def _fixture_data_url(value):
     )
 
 
-def _e2e_payload(operation_id, runner):
+def _e2e_payload(operation_id, runner, ready_avatar_ids=None):
     prefill = runner.get("prefill") or {}
     resolve = lambda value: _fixture_data_url(value)
     prompt = str(prefill.get("prompt") or "").strip()
@@ -821,6 +821,15 @@ def _e2e_payload(operation_id, runner):
             "audio_data": resolve(prefill["audio_url"]), "resolution": "720p",
             "ratio": "9:16", "motion": "medium", "subtitle": False,
             "bgm_data": "", "bgm_volume": 0.18,
+        })
+    elif operation_id == "video.cinematic.open":
+        avatar_ids = [int(item) for item in (ready_avatar_ids or []) if item]
+        if not avatar_ids:
+            raise ValueError("专用测试账号尚未登记已就绪电影化身形象")
+        payload.update({
+            "cine_mode": "open", "avatar_ids": avatar_ids[:1],
+            "prompt": prompt, "duration": 4, "resolution": "720p",
+            "ratio": "9:16", "enhance_prompt": False,
         })
     elif operation_id == "video.tryon.fast":
         payload.update({
@@ -895,6 +904,25 @@ def _content_e2e_request(path, account_token, payload, idempotency_key, expected
         err.status = exc.code
         err.body = body
         raise err
+
+
+def _content_e2e_get(path, account_token):
+    req = urllib.request.Request(
+        CONTENT_BASE + path,
+        headers={"Authorization": "Bearer " + account_token},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            return json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            body = json.loads(exc.read() or b"{}")
+        except Exception:
+            body = {}
+        raise RuntimeError(body.get("detail") or "读取测试账号素材失败")
+    except urllib.error.URLError as exc:
+        raise RuntimeError("读取测试账号素材失败：" + str(exc.reason)[:140])
 
 
 def auth_admin_raw(path, token):
@@ -2624,12 +2652,22 @@ def start_e2e_run(actor, admin_token, operation_id):
                 "/api/auth/admin/e2e/session", admin_token, method="POST", payload={}
             )
             account = session["account"]
-            payload = _e2e_payload(operation_id, runner)
+            ready_avatar_ids = []
+            if operation_id == "video.cinematic.open":
+                avatar_data = _content_e2e_get(
+                    "/api/gen/video/avatars?limit=120", session["token"]
+                )
+                ready_avatar_ids = [
+                    item.get("id") for item in avatar_data.get("items") or []
+                    if item.get("status") == "ready" and item.get("id")
+                ]
+            payload = _e2e_payload(operation_id, runner, ready_avatar_ids)
             payload["qa_run_id"] = run_id
             endpoint = runner["endpoint"]["path"]
             kind = {
                 "/api/gen/video": "video", "/api/gen/tryon": "tryon",
                 "/api/gen/xiaole_video": "xiaole_video", "/api/gen/sora_video": "sora_video",
+                "/api/gen/cinematic": "cinematic",
             }.get(endpoint)
             if not kind:
                 raise ValueError("该模式的业务接口尚未接入后台托管测试")

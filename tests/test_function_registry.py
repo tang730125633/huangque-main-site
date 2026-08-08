@@ -109,6 +109,7 @@ class FunctionRegistryTests(unittest.TestCase):
         cinematic = next(item for item in video["functions"] if item["key"] == "cinematic")
         self.assertEqual([item["name"] for item in cinematic["modes"]], ["动作模仿", "开放式生成"])
         self.assertEqual(cinematic["shared_steps"][0]["name"], "创建或选择形象")
+        self.assertTrue(cinematic["modes"][1]["validation"]["supported"])
         self.assertNotIn("xiaole_video", [item["key"] for item in video["functions"]])
         one_click = video["functions"][0]["modes"][0]
         self.assertEqual(one_click["evidence_contract"]["acceptance_id_type"], "project_id")
@@ -168,7 +169,7 @@ class FunctionRegistryTests(unittest.TestCase):
                     self.assertTrue((Path(__file__).resolve().parents[1] / "server/qa_fixtures" / asset.removeprefix("@fixture/")).is_file())
 
         modes = [mode for feature in video["functions"] for mode in feature["modes"]]
-        self.assertEqual(sum(mode["validation"]["supported"] for mode in modes), 13)
+        self.assertEqual(sum(mode["validation"]["supported"] for mode in modes), 14)
 
         root = Path(__file__).resolve().parents[1]
         for page in pages:

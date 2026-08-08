@@ -66,6 +66,43 @@ class AdminE2ERunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "名称无效"):
             self.admin._fixture_data_url("@fixture/../admin_api.py")
 
+    def test_cinematic_open_uses_one_ready_qa_avatar_and_four_second_quote(self):
+        session = {"token": "short-lived-secret", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        with patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "_content_e2e_get", return_value={"items": [
+                 {"id": 41, "status": "ready"}, {"id": 42, "status": "ready"},
+             ]}), \
+             patch.object(self.admin, "points_domain", SimpleNamespace(cost_of=lambda kind, payload: 120)), \
+             patch.object(self.admin, "_content_e2e_request", return_value={
+                 "job_id": 88, "cost": 120, "points_left": 380,
+             }) as submit:
+            run = self.admin.start_e2e_run(
+                "root", "admin-token", "video.cinematic.open"
+            )
+        payload = submit.call_args.args[2]
+        self.assertEqual(submit.call_args.args[:2], ("/api/gen/cinematic", "short-lived-secret"))
+        self.assertEqual(payload["avatar_ids"], [41])
+        self.assertEqual(payload["cine_mode"], "open")
+        self.assertEqual(payload["duration"], 4)
+        self.assertEqual(run["job_id"], 88)
+        self.assertNotIn("short-lived-secret", json.dumps(run))
+
+    def test_cinematic_open_fails_before_submission_without_ready_avatar(self):
+        session = {"token": "short-lived-secret", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        with patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "_content_e2e_get", return_value={"items": []}), \
+             patch.object(self.admin, "points_domain", SimpleNamespace(cost_of=lambda kind, payload: 120)), \
+             patch.object(self.admin, "_content_e2e_request") as submit:
+            with self.assertRaisesRegex(ValueError, "尚未登记已就绪"):
+                self.admin.start_e2e_run(
+                    "root", "admin-token", "video.cinematic.open"
+                )
+        submit.assert_not_called()
+
     def test_task_card_and_e2e_share_delivery_and_ledger_evidence(self):
         (self.admin.CONTENT_OUT / "result.mp4").write_bytes(b"video")
         with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:

@@ -194,11 +194,8 @@ VIDEO_FUNCTIONS = [
                 "smoke_inputs": ["1 个已就绪形象", "短提示词", "可选参考图或视频"],
                 "validation": _validation(
                     {"mode": "cinematic", "cine_mode": "open",
-                     "prompt": "人物在明亮工作室自然走向镜头，柔和运镜，无文字无标识",
-                     "reference_images": [QA_PRODUCT_IMAGE]},
+                     "prompt": "人物在明亮工作室自然面向镜头，轻轻点头并挥手，固定机位，无文字无标识"},
                     ["测试账号至少有 1 个已就绪电影化身形象"],
-                    supported=False,
-                    blocked_reason="专用测试账号尚未登记已就绪电影化身形象",
                 ),
             },
         ],
