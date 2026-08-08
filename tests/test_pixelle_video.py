@@ -66,6 +66,10 @@ class PixelleVideoTests(unittest.TestCase):
             dropin,
         )
         self.assertNotIn("127.0.0.1:8103", dropin)
+        self.assertIn(
+            "PIXELLE_VIDEO_WORKFLOW=runninghub/video_wan2.1_fusionx.json",
+            dropin,
+        )
 
     def test_prepare_topic_and_fixed_copy(self):
         topic = self.pixelle.prepare_payload({
@@ -114,6 +118,22 @@ class PixelleVideoTests(unittest.TestCase):
         self.assertEqual(body["frame_template"], payload["template"])
         self.assertEqual(body["n_scenes"], 5)
         self.assertIn("简体中文", body["text"])
+        self.assertEqual(body["media_workflow"], self.pixelle.PIXELLE_MEDIA_WORKFLOW)
+
+    def test_submit_video_template_uses_video_workflow(self):
+        payload = self.pixelle.prepare_payload({
+            "text": "AI 培训",
+            "mode": "generate",
+            "template": "1080x1920/video_default.html",
+        })
+        with mock.patch.object(
+            self.pixelle, "_json_request", return_value={"task_id": "task-video"}
+        ) as request:
+            self.assertEqual(self.pixelle._submit(payload), "task-video")
+
+        body = request.call_args.args[2]
+        self.assertEqual(body["media_workflow"], self.pixelle.PIXELLE_VIDEO_WORKFLOW)
+        self.assertNotEqual(body["media_workflow"], self.pixelle.PIXELLE_MEDIA_WORKFLOW)
 
     def test_availability_is_fail_closed_and_checks_upstream_health(self):
         self.pixelle._HEALTH_CACHE.update({"checked_at": 0.0, "ready": False})

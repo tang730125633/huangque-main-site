@@ -4,7 +4,7 @@
 
 ## 上线前
 
-1. 在生成服务器部署并启动 Pixelle-Video API，主站通过 `PIXELLE_API_URL` 访问它。生产环境建议使用回环地址，例如 `http://127.0.0.1:8103`。
+1. 在生成服务器部署并启动 Pixelle-Video API，主站通过 `PIXELLE_API_URL` 访问它。生产环境建议使用回环地址，例如 `http://127.0.0.1:8103`。图片模板使用 `PIXELLE_MEDIA_WORKFLOW`，视频模板必须单独配置 `PIXELLE_VIDEO_WORKFLOW`，默认值为 `runninghub/video_wan2.1_fusionx.json`。
 2. 在主站服务器确认服务健康：
 
    ```bash

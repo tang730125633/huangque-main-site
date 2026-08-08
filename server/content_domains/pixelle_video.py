@@ -27,6 +27,9 @@ PIXELLE_API_URL = os.environ.get("PIXELLE_API_URL", "http://127.0.0.1:8103").rst
 PIXELLE_MEDIA_WORKFLOW = os.environ.get(
     "PIXELLE_MEDIA_WORKFLOW", "runninghub/image_flux.json"
 ).strip()
+PIXELLE_VIDEO_WORKFLOW = os.environ.get(
+    "PIXELLE_VIDEO_WORKFLOW", "runninghub/video_wan2.1_fusionx.json"
+).strip()
 PIXELLE_TTS_WORKFLOW = os.environ.get(
     "PIXELLE_TTS_WORKFLOW", "selfhost/tts_edge.json"
 ).strip()
@@ -111,6 +114,7 @@ TEMPLATES = tuple(
         for filename, name in _PORTRAIT_VIDEO_NAMES.items()
     ]
 )
+TEMPLATES_BY_KEY = {item["key"]: item for item in TEMPLATES}
 TEMPLATE_KEYS = {item["key"] for item in TEMPLATES}
 FEATURE_KEY = "pixelle_text_video"
 _HEALTH_CACHE = {"checked_at": 0.0, "ready": False}
@@ -219,12 +223,18 @@ def _prepared_text(text, mode):
 
 
 def _submit(payload):
+    template = TEMPLATES_BY_KEY[payload["template"]]
+    media_workflow = (
+        PIXELLE_VIDEO_WORKFLOW
+        if template["kind"] == "video"
+        else PIXELLE_MEDIA_WORKFLOW
+    )
     response = _json_request("POST", "/api/video/generate/async", {
         "text": _prepared_text(payload["text"], payload["mode"]),
         "mode": payload["mode"],
         "n_scenes": payload["n_scenes"],
         "frame_template": payload["template"],
-        "media_workflow": PIXELLE_MEDIA_WORKFLOW,
+        "media_workflow": media_workflow,
         "tts_workflow": PIXELLE_TTS_WORKFLOW,
         "video_fps": 30,
         "bgm_volume": 0.18,
