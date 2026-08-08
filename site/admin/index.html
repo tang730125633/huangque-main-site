@@ -1787,7 +1787,7 @@
     var lastTime=latest?fmtTime(latest.updated_at||latest.created_at):'无记录';
     var shared=(feature.shared_steps||[]).map(function(step){
       var sharedStat=statByOperation[step.key],x=sharedStat&&sharedStat.latest,ids=x?('job_id <code>#'+esc(x.job_id)+'</code>'+(x.provider_task_id?' · provider <code>'+esc(x.provider_task_id)+'</code>':'')):'未记录';
-      var result=x&&(x.result_url||x.result_file)?'<div>产物：<code>'+esc(x.result_url||x.result_file)+'</code></div>':'';
+      var result=x&&(x.result_url||x.result_file)?'<div>产物已登记 · 私有测试素材不展示</div>':'';
       return '<div class="ops-chain-step"><strong>共用前置动作</strong><div class="ops-chain-body"><b>'+esc(step.name)+'</b>'+registryEndpoints(step.entrypoints)+'<div>最近证据：'+ids+(x?' · '+esc(x.status):'')+'</div>'+result+'</div></div>';
     }).join('');
     var taskMatch=mode.task_match?'<div>任务归类：<code>'+esc(JSON.stringify(mode.task_match))+'</code></div>':'';
