@@ -759,7 +759,7 @@
         <div class="row">
           <div>
             <div class="label">Seedance 视频</div>
-            <div class="muted" style="font-size:12px;margin-top:6px;">火山方舟 Seedance 2.0 官方接入 · 文生 / 图生视频</div>
+            <div class="muted" style="font-size:12px;margin-top:6px;">Topview Seedance 2.0 测试接入 · 文生 / 单图人脸参考</div>
           </div>
           <span class="faint" style="font-size:11.5px;">生成失败自动退点</span>
         </div>
@@ -784,7 +784,7 @@
         </div>
         <div class="panel" style="margin-top:12px;">
           <div class="faint" style="font-size:12px;margin-bottom:8px;">官方模型</div>
-          <div class="seg" style="grid-template-columns:repeat(2,1fr);"><button class="on" data-seedance-model="doubao-seedance-2-0-260128">Seedance 2.0 · 标准</button><button data-seedance-model="doubao-seedance-2-0-fast-260128" disabled title="当前火山账号未开通 Fast 模型">Seedance 2.0 · Fast（暂未开通）</button></div>
+          <div class="seg" style="grid-template-columns:repeat(2,1fr);"><button class="on" data-seedance-model="doubao-seedance-2-0-260128">Seedance 2.0 · 标准</button><button data-seedance-model="doubao-seedance-2-0-fast-260128" disabled title="Topview 测试首期仅开放标准版">Seedance 2.0 · Fast（暂未开通）</button></div>
         </div>
         <div class="panel" style="margin-top:12px;">
           <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例</div>
@@ -917,7 +917,7 @@
   var soraRetryKey='', soraRetryBody='';
   var selectedOmniRatio='16:9', selectedOmniDuration=5;
   var selectedMiniMaxRatio='9:16', selectedMiniMaxDuration=15;
-  var selectedSeedanceModel='doubao-seedance-2-0-260128', selectedSeedanceRatio='adaptive';
+  var selectedSeedanceModel='doubao-seedance-2-0-260128', selectedSeedanceRatio='9:16';
   var selectedSeedanceDuration=5, selectedSeedanceResolution='720p', selectedSeedanceUpscale=false, selectedSeedanceAudio=true;
   var omniAvailable=false, seedanceAvailable=false, minimaxAvailable=false, seedanceUpscaleAvailable=false, officialVideoHealthKnown=false;
   var OFFICIAL_VIDEO_RETRY_STORAGE={omni:'hq_omni_pending_submit',micro:'hq_seedance_pending_submit',minimax:'hq_minimax_pending_submit'};

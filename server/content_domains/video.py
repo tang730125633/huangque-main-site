@@ -66,6 +66,7 @@ XIAOLE_IMAGE_CHANNELS = {"grok", "micro", "omni", "minimax"}  # 支持参考图�
 XIAOLE_CHANNEL_DURATION = {}
 XIAOLE_MAX_REF = int(os.environ.get("XIAOLEVIDEO_MAX_REF", "7"))  # Grok 图生视频最多参考图数(实测上游pydantic硬上限7张,超过422)
 GROK_VIDEO_PROVIDER = os.environ.get("GROK_VIDEO_PROVIDER", "xai").strip().lower()
+SEEDANCE_VIDEO_PROVIDER = os.environ.get("SEEDANCE_VIDEO_PROVIDER", "ark").strip().lower()
 XAI_GROK_MODELS = {"grok-imagine-video", "grok-imagine-video-1.5"}
 XAI_GROK_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"}
 XAI_GROK_RESOLUTIONS = {"480p", "720p"}
@@ -209,8 +210,15 @@ def omni_video_is_open():
 
 
 def seedance_video_is_open():
+    return _seedance_adapter().available()
+
+
+def _seedance_adapter():
+    if SEEDANCE_VIDEO_PROVIDER == "topview":
+        from . import video_topview_seedance
+        return video_topview_seedance
     from . import video_seedance
-    return video_seedance.available()
+    return video_seedance
 
 
 def minimax_h3_video_is_open():
@@ -267,8 +275,7 @@ def reverse_remake_video_offer(flags, cost_of):
         return empty
     try:
         if channel == "micro":
-            from . import video_seedance
-            model = video_seedance.SEEDANCE_MODEL
+            model = _seedance_adapter().SEEDANCE_MODEL
         else:
             model = "grok-imagine-video"
         resolution = "720p"
@@ -1207,8 +1214,7 @@ def seedance_reference_cleanup_delay(kind, payload, error):
     if kind != "xiaole_video" or str((payload or {}).get("channel") or "").lower() != "micro":
         return 0
     try:
-        from . import video_seedance
-        if isinstance(error, video_seedance.CreateOutcomeUnknown):
+        if isinstance(error, _seedance_adapter().CreateOutcomeUnknown):
             return SEEDANCE_UNKNOWN_CLEANUP_DELAY
     except Exception:
         pass
@@ -1334,7 +1340,7 @@ def validate_xiaole_video_payload(payload, username=None):
             })
             return cleaned
 
-        from . import video_seedance
+        video_seedance = _seedance_adapter()
         if not feature_flags.is_enabled("seedance_video"):
             raise ValueError("Seedance 视频测试通道未开启")
         if not video_seedance.available():
@@ -1353,8 +1359,11 @@ def validate_xiaole_video_payload(payload, username=None):
             if not seedance_upscale_is_open():
                 raise ValueError("Seedance AI 超清服务暂未配置")
         cleaned.pop("upscale_prediction_id", None)
-        if len(refs) > 9:
-            raise ValueError("Seedance 最多支持 9 张参考图")
+        max_refs = 1 if SEEDANCE_VIDEO_PROVIDER == "topview" else 9
+        if len(refs) > max_refs:
+            raise ValueError("Topview 人脸测试首期仅支持 1 张首帧参考图" if max_refs == 1 else "Seedance 最多支持 9 张参考图")
+        if SEEDANCE_VIDEO_PROVIDER == "topview" and any(not ref.startswith("data:") for ref in refs):
+            raise ValueError("Topview 人脸测试请重新上传 1 张本地参考图")
         refs = _validate_seedance_references(refs, username)
         video_seedance._build_payload(
             model, prompt, duration, ratio, resolution, generate_audio, []
@@ -2279,7 +2288,8 @@ def recover_paid_video_error(job_id, kind, payload, error, requeue=None,
     channel = str((payload or {}).get("channel") or "").lower()
     if kind != "xiaole_video" or channel not in {"grok", "micro", "omni", "minimax"}:
         return False
-    from . import video_gemini_omni, video_minimax_h3, video_seedance, video_xai, wavespeed
+    from . import video_gemini_omni, video_minimax_h3, video_xai, wavespeed
+    video_seedance = _seedance_adapter()
     if isinstance(error, (
             video_xai.XaiCreateUnavailableError,
             video_xai.XaiCreateRejected,
@@ -4894,6 +4904,9 @@ def gen_xiaole_video(payload):
     if channel in XIAOLE_IMAGE_CHANNELS:
         raw_refs = payload.get("reference_images") or None
         if raw_refs and not existing:
+            if SEEDANCE_VIDEO_PROVIDER == "topview" and channel == "micro" and any(
+                    not str(ref).startswith(SEEDANCE_COS_KEY_SCHEME) for ref in raw_refs):
+                raise ValueError("Topview 人脸测试只接受泽龙私有暂存的参考图")
             ref_images = (
                 list(raw_refs)
                 if channel in {"omni", "minimax"}
@@ -4910,7 +4923,7 @@ def gen_xiaole_video(payload):
     }.get(channel, model)
     if not existing and channel == "micro":
         # COS 回退可能仍是 data URL；必须在写 submitting 前用最终引用做完整校验。
-        from . import video_seedance
+        video_seedance = _seedance_adapter()
         video_seedance._build_payload(
             model, prompt, int(payload.get("duration") or 5), ratio,
             str(payload.get("resolution") or "720p"),
@@ -5021,7 +5034,9 @@ def gen_xiaole_video(payload):
             "reference_video_url": reference_video_url,
         }
     elif channel == "micro":
-        from . import video_seedance, wavespeed
+        from . import wavespeed
+        video_seedance = _seedance_adapter()
+        key_provider = "topview" if SEEDANCE_VIDEO_PROVIDER == "topview" else "seedance"
 
         provider_id_persisted = bool(existing and existing.get("request_id"))
 
@@ -5042,7 +5057,7 @@ def gen_xiaole_video(payload):
         generate_audio = payload.get("generate_audio", True)
         if existing:
             candidate = _bound_provider_key(
-                "seedance", existing.get("provider_key_id")
+                key_provider, existing.get("provider_key_id")
             )
             rendered = video_seedance.resume(
                 existing["request_id"], existing.get("model") or model,
@@ -5053,7 +5068,7 @@ def gen_xiaole_video(payload):
             )
         else:
             rendered, candidate = _create_with_provider_key(
-                "seedance",
+                key_provider,
                 job_id,
                 "seedance_submitting",
                 video_seedance.SeedanceCredentialRejected,
@@ -5186,9 +5201,11 @@ def gen_xiaole_video(payload):
             "generate_audio": rendered.get("generate_audio"),
             "completion_tokens": rendered.get("completion_tokens"),
             "provider": (
-                "volcengine_seedance+wavespeed_seedvr2"
-                if upscale else "volcengine_seedance"
+                "topview_seedance" if SEEDANCE_VIDEO_PROVIDER == "topview"
+                else ("volcengine_seedance+wavespeed_seedvr2"
+                      if upscale else "volcengine_seedance")
             ),
+            "provider_cost_credit": rendered.get("provider_cost_credit"),
             "upscale": upscale,
             "upscale_provider": "wavespeed_seedvr2" if upscale else None,
             "image_file": cover,
@@ -5349,6 +5366,7 @@ def gen_xiaole_video(payload):
         "provider": result.get("provider"),
         "generate_audio": result.get("generate_audio"),
         "completion_tokens": result.get("completion_tokens"),
+        "provider_cost_credit": result.get("provider_cost_credit"),
         "reference_storyboard_count": payload.get("_reference_storyboard_count"),
         "reference_storyboard_source_hashes": payload.get("_reference_storyboard_source_hashes"),
         "source_resolution": result.get("source_resolution"),
