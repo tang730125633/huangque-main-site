@@ -4355,6 +4355,32 @@ def _cap_tryon_input(person_fp):
     return (capped if capped.is_file() and capped.stat().st_size > 0 else person_fp), dur
 
 
+def _ensure_tryon_audio(person_fp):
+    """RunningHub 工作流会强制提取音频；静音视频提交前补一条静音 AAC。"""
+    try:
+        probe = subprocess.run([
+            "ffprobe", "-v", "error", "-select_streams", "a",
+            "-show_entries", "stream=index", "-of", "csv=p=0", str(person_fp),
+        ], capture_output=True, text=True, check=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("换装视频音轨检测失败") from exc
+    if (probe.stdout or "").strip():
+        return person_fp
+    with_audio = pathlib.Path(str(person_fp).rsplit(".", 1)[0] + "_audio.mp4")
+    try:
+        subprocess.run([
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(person_fp),
+            "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+            "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac",
+            "-shortest", str(with_audio),
+        ], check=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("换装视频缺少音轨且自动补音失败") from exc
+    if not with_audio.is_file() or with_audio.stat().st_size <= 0:
+        raise RuntimeError("换装视频缺少音轨且自动补音失败")
+    return with_audio
+
+
 def generate_tryon_video(person_video_file, clothes_file, background_file, seconds, job_id=None, username=None):
     """RunningHub 两段式换装/换背景驱动。返回 {video_file, video_url, ...}。"""
     try:
@@ -4370,6 +4396,7 @@ def generate_tryon_video(person_video_file, clothes_file, background_file, secon
     if not person_fp:
         raise ValueError("换装视频文件不存在")
     person_fp, _orig_dur = _cap_tryon_input(person_fp)  # 超 10s 截取,保证 5 分钟内出片
+    person_fp = _ensure_tryon_audio(person_fp)
     if _orig_dur and _orig_dur > TRYON_MAX_INPUT_SEC + 0.5:
         print("[tryon] 输入视频 %.1fs 超上限,截取前 %ds 保证时效" % (_orig_dur, TRYON_MAX_INPUT_SEC), flush=True)
     clothes_fp = _resolve_out_file(clothes_file) if clothes_file else None
