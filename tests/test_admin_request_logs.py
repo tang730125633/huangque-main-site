@@ -381,7 +381,7 @@ class KeyPingTests(unittest.TestCase):
             set(admin_api.KEY_PINGS),
             {
                 "openai", "xai", "gemini", "seedance", "minimax", "zelong", "zelong2", "heygen", "heygen_relay",
-                "xiaolevideo", "runninghub", "wavespeed", "cosyvoice", "tikhub", "cos",
+                "xiaolevideo", "runninghub", "wavespeed", "cosyvoice", "tikhub", "zhipu", "cos",
             },
         )
 

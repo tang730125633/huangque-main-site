@@ -80,6 +80,8 @@ CHANNEL_CATALOG = (
      "access": "direct", "capabilities": ["voices", "audio-generate"], "selector": {}},
     {"id": "tikhub", "provider": "TikHub API", "category": "内容采集 / 获客", "features": ["抖音 / 小红书 / 视频号", "评论与线索"],
      "access": "navigation", "capabilities": ["collect", "leads"], "selector": {}},
+    {"id": "zhipu", "provider": "智谱视觉 API", "category": "内容分析", "features": ["链接分镜拆解"],
+     "access": "managed", "capabilities": [], "selector": {}},
     {"id": "cos", "provider": "腾讯云 COS", "category": "基础设施", "features": ["生成结果存储", "参考素材与成片存储"],
      "access": "managed", "capabilities": ["image-upload", "assets"], "selector": {}},
 )

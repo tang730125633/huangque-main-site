@@ -24,7 +24,7 @@ class HqCliChannelCatalogTests(unittest.TestCase):
         )
         self.assertNotIn('data-channel=', html)
         self.assertNotIn('data-access=', html)
-        self.assertEqual(15, len(cli_ids))
+        self.assertEqual(16, len(cli_ids))
 
 
 if __name__ == "__main__":
