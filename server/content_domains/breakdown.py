@@ -12,7 +12,7 @@ from contextlib import closing
 from .core import jdb
 from . import egress
 
-ZHIPU_API_BASE = "https://open.bigmodel.cn/api/paas/v4"
+ZHIPU_API_BASE = (os.environ.get("REVERSE_ZHIPU_BASE") or "https://open.bigmodel.cn/api/paas/v4").rstrip("/")
 ZHIPU_API_KEY = (os.environ.get("REVERSE_ZHIPU_KEY") or "").strip()
 ZHIPU_MODEL = (os.environ.get("REVERSE_ZHIPU_MODEL") or "glm-4v-plus").strip()
 BREAKDOWN_DOWNLOAD_BUDGET = max(
@@ -169,7 +169,7 @@ def validate_breakdown_payload(payload):
         body.pop("urls", None)
         body["_resolved_link"] = _resolved_link(body["url"])
     body["mode"] = mode
-    body["provider"] = "tikhub+zhipu"
+    body["provider"] = "tikhub+google" if mode == "reverse_prompt" else "tikhub+zhipu"
     return body
 
 

@@ -192,7 +192,7 @@ KEY_GROUPS = [
      "pool_base_env": ["OPENAI_BASE"], "pool_base_default": "https://api.openai.com",
      "env": ["OPENAI_API_KEY"], "pool_provider": "sora"},
     {"key": "gemini", "name": "Google Gemini API", "category": "图片生成 / 视频生成",
-     "features": ["图片生成 → 纳米香蕉", "视频模块 → Omni 视频"],
+     "features": ["图片生成 → 纳米香蕉", "视频模块 → Omni 视频", "文案编导 → 链接提示词反推"],
      "env_features": ["图片生成 → 纳米香蕉"], "pool_features": ["视频模块 → Omni 视频"],
      "env_base_env": ["GEMINI_OFFICIAL_BASE"], "env_base_default": "https://generativelanguage.googleapis.com",
      "pool_base_env": ["GEMINI_OMNI_BASE", "GEMINI_BASE"], "pool_base_default": "https://generativelanguage.googleapis.com",
@@ -228,8 +228,12 @@ KEY_GROUPS = [
      "features": ["视频模块 → 换装换背景 · 线路二", "视频模块 → Seedance AI 超清"], "env": ["WAVESPEED_API_KEY"]},
     {"key": "cosyvoice", "name": "阿里百炼 API", "category": "音频生成",
      "features": ["AI 配音 → 公共音色", "AI 配音 → 声音克隆"], "env": ["DASHSCOPE_API_KEY"]},
+    {"key": "zhipu", "name": "智谱视觉 API", "category": "内容分析",
+     "features": ["文案编导 → 链接分镜拆解"],
+     "env_base_env": ["REVERSE_ZHIPU_BASE"], "env_base_default": "https://open.bigmodel.cn/api/paas/v4",
+     "env": ["REVERSE_ZHIPU_KEY"]},
     {"key": "tikhub", "name": "TikHub API", "category": "内容采集 / 获客",
-     "features": ["内容采集 → 抖音 / 小红书 / 视频号", "获客分析 → 评论与线索"], "env": ["TIKHUB_KEY", "TIKHUB_API_KEY"]},
+     "features": ["内容采集 → 抖音 / 小红书 / 视频号", "获客分析 → 评论与线索", "文案编导 → 公开视频下载"], "env": ["TIKHUB_KEY", "TIKHUB_API_KEY"]},
     {"key": "cos", "name": "腾讯云 COS", "category": "基础设施",
      "features": ["我的资产 → 生成结果存储", "视频模块 → 参考素材与成片存储"], "env": ["COS_SECRET_ID", "COS_SECRET_KEY", "COS_REGION", "COS_BUCKET"]},
 ]
@@ -1757,6 +1761,17 @@ def _key_ping_tikhub():
     )
 
 
+def _key_ping_zhipu():
+    key = _env_value(["REVERSE_ZHIPU_KEY"])
+    if not key:
+        return {"ok": False, "error": "密钥未配置", "mode": "auth"}
+    base = (_env_value(["REVERSE_ZHIPU_BASE"]) or "https://open.bigmodel.cn/api/paas/v4").rstrip("/")
+    return _ping_upstream(
+        "GET", base + "/models",
+        headers={"Authorization": "Bearer " + key}, proxied=False,
+    )
+
+
 def _key_ping_runninghub():
     key = _env_value(["RUNNINGHUB_API_KEY", "RUNNINGHUB_KEY"])
     if not key:
@@ -1878,6 +1893,7 @@ KEY_PINGS = {
     "wavespeed": _key_ping_wavespeed,
     "cosyvoice": _key_ping_cosyvoice,
     "tikhub": _key_ping_tikhub,
+    "zhipu": _key_ping_zhipu,
     "cos": _key_ping_cos,
 }
 
@@ -1890,6 +1906,7 @@ AUTO_KEY_PING_INTERVALS = {
     "runninghub": 300,
     "wavespeed": 300,
     "tikhub": 300,
+    "zhipu": 600,
     "heygen_relay": 600,
     "xiaolevideo": 600,
     "cos": 600,
@@ -3345,6 +3362,7 @@ def _public_e2e_run(row):
         "cosyvoice": "CosyVoice 音频线路",
         "copy_model": "文案模型线路",
         "tikhub+zhipu": "TikHub 下载 + 智谱视觉分析",
+        "tikhub+google": "TikHub 下载 + Gemini 视频分析",
         "openai_responses": "OpenAI Responses 结构化计划",
     }.get(route_provider, route_provider)
     route_ok = bool(provider_id or route_provider)
@@ -3371,7 +3389,7 @@ def _public_e2e_run(row):
                        else "尚无供应商任务编号"))),
         _e2e_stage("generation", "音频生成" if route_provider == "cosyvoice" else (
                        "数据采集" if route_provider == "tikhub" else (
-                       "结构化内容生成" if route_provider in {"copy_model", "tikhub+zhipu", "openai_responses"}
+                       "结构化内容生成" if route_provider in {"copy_model", "tikhub+zhipu", "tikhub+google", "openai_responses"}
                        else "供应商生成")),
                    "passed" if completed else ("failed" if failed else "waiting"),
                    "已到 completed" if completed else (item.get("error") or "等待生成终态")),
