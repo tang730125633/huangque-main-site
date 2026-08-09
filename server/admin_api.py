@@ -4194,7 +4194,10 @@ def _finalize_short_drama_shot_e2e(run_id, admin_token):
         "_artifact_media_type": "video",
     })
     points_before = int(row["points_before"] or 0)
-    points_after = int(session["account"]["points"])
+    refreshed = auth_admin_request(
+        "/api/auth/admin/e2e/session", admin_token, method="POST", payload={}
+    )
+    points_after = int(refreshed["account"]["points"])
     cost = int(row["cost"] or 0)
     charge_key = str(state.get("charge_key") or row["transaction_key"] or "")
     refund_key = str(state.get("refund_key") or "")

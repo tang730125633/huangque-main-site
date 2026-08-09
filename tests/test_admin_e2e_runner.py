@@ -438,7 +438,7 @@ class AdminE2ERunnerTests(unittest.TestCase):
              )), \
              patch.object(self.admin, "points_domain", points), \
              patch.object(self.admin, "auth_admin_request",
-                          side_effect=[before, after, after]), \
+                          side_effect=[before, after, after, after]), \
              patch.object(self.admin, "_short_drama_e2e_request", side_effect=request), \
              patch.object(self.admin, "_content_e2e_get", side_effect=get), \
              patch.object(self.admin, "_short_drama_shot_state",
