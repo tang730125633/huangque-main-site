@@ -439,6 +439,9 @@ class AdminE2ERunnerTests(unittest.TestCase):
              patch.object(self.admin, "points_domain", points), \
              patch.object(self.admin, "auth_admin_request",
                           side_effect=[before, after, after, after]), \
+             patch.object(self.admin, "_content_e2e_request", return_value={
+                 "revision": 2, "characters": [character],
+             }) as save_character, \
              patch.object(self.admin, "_short_drama_e2e_request", side_effect=request), \
              patch.object(self.admin, "_content_e2e_get", side_effect=get), \
              patch.object(self.admin, "_short_drama_shot_state",
@@ -454,6 +457,10 @@ class AdminE2ERunnerTests(unittest.TestCase):
                 run["run_id"], "admin-token"
             ))
             finished = self.admin.list_e2e_runs(1)[0]
+        self.assertEqual(save_character.call_args.kwargs["method"], "PUT")
+        self.assertEqual(
+            save_character.call_args.args[2]["character_contract"][0]["name"], "林夏"
+        )
         self.assertEqual(finished["status"], "completed")
         self.assertTrue(all(stage["state"] == "passed" for stage in finished["stages"]))
         self.assertEqual(finished["evidence"]["artifact_check"], "decodable")

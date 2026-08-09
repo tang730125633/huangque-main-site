@@ -4008,6 +4008,19 @@ def _submit_short_drama_shot_e2e_run(run_id, admin_token, session, prepared):
             (project_id, int(time.time()), run_id),
         )
         connection.commit()
+    saved = _content_e2e_request(
+        "/api/gen/short-drama/project?id=" + urllib.parse.quote(project_id),
+        token,
+        {"revision": int(imported["revision"]),
+         "characters": list(imported.get("characters") or []),
+         "character_contract": list(
+             prepared["payload"].get("character_contract") or []
+         )},
+        "e2e:%s:save-shot-character" % run_id, 0,
+        require_job_id=False, method="PUT",
+    )
+    if not any(item.get("character_key") for item in saved.get("characters") or []):
+        raise ValueError("短剧角色卡保存后没有可绑定角色")
     confirmed = _short_drama_e2e_request(
         "/api/gen/short-drama/conversation/messages", token,
         {"project_id": project_id, "conversation_revision": 1,
