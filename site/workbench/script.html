@@ -1284,12 +1284,22 @@
     var tags=[]; document.querySelectorAll('.sc-tag.on').forEach(function(tag){ tags.push(tag.textContent.trim()); });
     if(tags.length) payload.prompt+='\n标签：'+tags.join('、');
     if(refImages.length) payload.reference_images=refImages.slice();
-    fetch('/api/gen/copy',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
+    var copyPending=_pendingSubmission('script-copy',payload);
+    fetch('/api/gen/copy',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json','Idempotency-Key':copyPending.key},body:copyPending.body})
       .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
       .then(function(x){
-        if(x.s===401){ setBtn(orig,false); if(window.HQ) HQ.login(); return; }
-        if(x.s===402){ setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
-        if(!x.d.job_id){ setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+((x.d&&x.d.detail)||'未知')+'</div>'; return; }
+        if(x.s===401){ _confirmSubmission(copyPending); setBtn(orig,false); if(window.HQ) HQ.login(); return; }
+        if(x.s===402){ _confirmSubmission(copyPending); setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
+        if(!x.d.job_id){
+          setBtn(orig,false);
+          if(x.d&&x.d.code==='idempotency_in_progress'){
+            scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4a460;">请求已受理，点击“生成脚本”可使用同一凭证继续确认，不会重复扣点</div>';
+            return;
+          }
+          if(x.s<500||(x.d&&x.d.operation_terminal===true)) _confirmSubmission(copyPending);
+          scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+((x.d&&x.d.detail)||'未知')+'</div>'; return;
+        }
+        _confirmSubmission(copyPending);
         var iv=setInterval(function(){
           pollCount++;
           fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
