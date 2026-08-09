@@ -1035,7 +1035,9 @@ def _e2e_payload(operation_id, runner, ready_avatar_ids=None, ready_audio_voice_
             "mode": str(prefill.get("mode") or "scenes"),
             "source_page": "script",
         })
-    elif operation_id == "short_drama.live_action.script_planning":
+    elif operation_id in {
+            "short_drama.live_action.script_planning",
+            "short_drama.live_action.character_reference"}:
         payload = dict(prefill)
     elif operation_id == "canvas.agent.plan":
         payload.update({
@@ -1062,7 +1064,7 @@ def _e2e_payload(operation_id, runner, ready_avatar_ids=None, ready_audio_voice_
 
 
 def _content_e2e_request(path, account_token, payload, idempotency_key, expected_cost,
-                         require_job_id=True):
+                         require_job_id=True, method="POST"):
     headers = {
         "Authorization": "Bearer " + account_token,
         "Content-Type": "application/json; charset=utf-8",
@@ -1076,7 +1078,7 @@ def _content_e2e_request(path, account_token, payload, idempotency_key, expected
         base + path,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         headers=headers,
-        method="POST",
+        method=method,
     )
     try:
         with urllib.request.urlopen(req, timeout=35) as response:
@@ -1337,6 +1339,12 @@ def _e2e_parameters(operation_id, payload):
             "验收范围：导入、确认、生成、锁定、制作预检与自动清理",
             "费用：0 点，不执行角色图或视频生成",
         ])
+    elif operation_id == "short_drama.live_action.character_reference":
+        parameters.extend([
+            "固定真人短剧：1 个文字角色卡",
+            "验收范围：导入、保存角色、生成并锁定标准图、自动清理",
+            "生成线路：纳米香蕉 2 · 高清 · 3:4 · 1 张",
+        ])
     elif operation_id == "canvas.agent.plan":
         parameters.extend([
             "固定画布：1 个产品卖点文本节点",
@@ -1364,6 +1372,17 @@ def _e2e_prepare_operation(session, operation_id):
         return {
             "operation_id": operation_id, "runner": runner, "payload": payload,
             "endpoint": endpoint, "kind": "short_drama_project", "cost": 0,
+            "parameters": _e2e_parameters(operation_id, payload),
+        }
+    if operation_id == "short_drama.live_action.character_reference":
+        image_payload = {
+            "provider": "banana", "model": "nb2", "quality": "hd",
+            "ratio": "3:4", "count": 1, "prompt": "后台短剧角色标准图质检",
+        }
+        return {
+            "operation_id": operation_id, "runner": runner, "payload": payload,
+            "endpoint": endpoint, "kind": "image",
+            "cost": int(points_domain.cost_of("image", image_payload)),
             "parameters": _e2e_parameters(operation_id, payload),
         }
     kind = _e2e_kind(endpoint)
@@ -3433,7 +3452,8 @@ def _public_e2e_run(row):
     not_applicable = set(
         ((runner.get("evidence_contract") or {}).get("not_applicable") or [])
     )
-    if item.get("acceptance_id") and project_evidence:
+    if (item.get("operation_id") == "short_drama.live_action.script_planning"
+            and item.get("acceptance_id") and project_evidence):
         planned = all(project_evidence.get(key) for key in (
             "imported", "direction_confirmed", "script_generated", "script_locked",
             "preflight_ready", "preflight_confirmed",
@@ -3480,6 +3500,17 @@ def _public_e2e_run(row):
             "error": "failed", "failed": "failed",
         }.get(job_status, job_status)
         item["error"] = evidence.get("error") or item.get("error") or ""
+    character_reference = (
+        item.get("operation_id") == "short_drama.live_action.character_reference"
+    )
+    character_finalized = bool(
+        project_evidence.get("reference_locked")
+        and project_evidence.get("project_cleaned")
+    )
+    if (character_reference and evidence
+            and evidence.get("status") in {"done", "completed"}
+            and not character_finalized):
+        item["status"] = "failed" if row["status"] == "failed" else "running"
     billing_ok = (
         item.get("points_before") is not None
         and item.get("points_after") is not None
@@ -3518,6 +3549,7 @@ def _public_e2e_run(row):
     provider_ok = bool(provider_id or (provider_not_applicable and route_ok))
     completed = bool(evidence and evidence.get("completed"))
     delivered = bool(evidence and evidence.get("delivery_verified"))
+    journey_delivered = delivered and (not character_reference or character_finalized)
     delivery_checking = bool(evidence and evidence.get("artifact_check") == "checking")
     refunded = bool(evidence and evidence.get("billing_state") == "refunded")
     billing_passed = refunded or (completed and billing_ok and ledger_ok)
@@ -3535,15 +3567,19 @@ def _public_e2e_run(row):
                    (("provider_task_id=" + str(provider_id)) if provider_id else (
                        "同步生产链不产生供应商任务编号，此项不适用" if provider_not_applicable
                        else "尚无供应商任务编号"))),
-        _e2e_stage("generation", "音频生成" if route_provider == "cosyvoice" else (
+        _e2e_stage("generation", "角色标准图生成" if character_reference else (
+                       "音频生成" if route_provider == "cosyvoice" else (
                        "数据采集" if route_provider == "tikhub" else (
                        "结构化内容生成" if route_provider in {"copy_model", "tikhub+zhipu", "tikhub+google", "openai_responses"}
-                       else "供应商生成")),
+                       else "供应商生成"))),
                    "passed" if completed else ("failed" if failed else "waiting"),
                    "已到 completed" if completed else (item.get("error") or "等待生成终态")),
-        _e2e_stage("delivery", "作品交付", "passed" if delivered else (
+        _e2e_stage("delivery", "角色锁定与清理" if character_reference else "作品交付",
+                   "passed" if journey_delivered else (
                        "waiting" if delivery_checking or not completed else "failed"),
-                   ({"decodable": "文件存在且可解码", "file_exists": "文件存在且非空",
+                   ("图片可解码、角色已锁定、临时项目已清理" if character_reference and journey_delivered else
+                    ("图片已生成，正在锁定角色并清理临时项目" if character_reference and delivered else
+                    {"decodable": "文件存在且可解码", "file_exists": "文件存在且非空",
                      "structured_asset": "结构化结果已验收并写入资产库",
                      "structured_result": "结构化结果完整且可供客户页面读取",
                      "download_proxy": "下载代理返回完整视频，文件可解码",
@@ -3551,11 +3587,11 @@ def _public_e2e_run(row):
                      "invalid_structured": "结果结构不完整或没有可用结果",
                      "decode_failed": "文件返回但无法解码", "missing": "作品文件缺失",
                      "reference_only": "只有作品地址，尚未完成本地验收"}.get(
-                         (evidence or {}).get("artifact_check"), "等待作品文件"))),
+                         (evidence or {}).get("artifact_check"), "等待作品文件")))),
         _e2e_stage("billing", "账务闭环", "passed" if billing_passed else ("failed" if failed else "waiting"),
                    "失败任务已退款" if refunded else ("扣点流水一致" if billing_passed else ("点数变化一致，尚未找到扣点流水" if billing_ok else "等待终态扣点 / 退款证据"))),
     ]
-    item["evidence"] = evidence
+    item["evidence"] = dict(evidence or {}, **project_evidence)
     return item
 
 
@@ -3609,6 +3645,198 @@ def _short_drama_e2e_request(path, account_token, payload, run_id, step):
                 raise E2ESubmitRejected(str(exc)) from exc
             if attempt:
                 raise
+
+
+def _e2e_project_evidence(run_id, **values):
+    with closing(db()) as connection:
+        row = connection.execute(
+            "SELECT evidence_json FROM admin_e2e_runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        try:
+            evidence = json.loads((row[0] if row else "{}") or "{}")
+        except (json.JSONDecodeError, TypeError, ValueError):
+            evidence = {}
+        evidence.update(values)
+        connection.execute(
+            "UPDATE admin_e2e_runs SET evidence_json=?,updated_at=? WHERE run_id=?",
+            (json.dumps(evidence, ensure_ascii=False, separators=(",", ":")),
+             int(time.time()), run_id),
+        )
+        connection.commit()
+    return evidence
+
+
+def _submit_short_drama_character_e2e_run(run_id, admin_token, session, prepared):
+    account, token = session["account"], session["token"]
+    with closing(db()) as connection:
+        row = connection.execute(
+            "SELECT acceptance_id,evidence_json,points_before FROM admin_e2e_runs WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+        evidence = json.loads((row[1] if row else "{}") or "{}")
+        connection.execute(
+            """UPDATE admin_e2e_runs SET username=?,status='submitting',cost=?,
+                      points_before=COALESCE(points_before,?),updated_at=? WHERE run_id=?""",
+            (account["username"], int(prepared["cost"]), int(account["points"]),
+             int(time.time()), run_id),
+        )
+        connection.commit()
+    project_id = str((row[0] if row else "") or evidence.get("project_id") or "")
+    if not evidence.get("role_saved"):
+        imported = _short_drama_e2e_request(
+            "/api/gen/short-drama/projects/import", token,
+            prepared["payload"], run_id, "import-character-project",
+        )
+        project_id = str(imported["id"])
+        evidence = _e2e_project_evidence(
+            run_id, imported=True, project_id=project_id,
+        )
+        with closing(db()) as connection:
+            connection.execute(
+                "UPDATE admin_e2e_runs SET acceptance_id=?,updated_at=? WHERE run_id=?",
+                (project_id, int(time.time()), run_id),
+            )
+            connection.commit()
+        contract = list(prepared["payload"].get("character_contract") or [])
+        saved = _content_e2e_request(
+            "/api/gen/short-drama/project?id=" + urllib.parse.quote(project_id),
+            token,
+            {"revision": int(imported["revision"]),
+             "characters": list(imported.get("characters") or []),
+             "character_contract": contract},
+            "e2e:%s:save-character" % run_id, 0,
+            require_job_id=False, method="PUT",
+        )
+        character = next((item for item in saved.get("characters") or []
+                          if item.get("character_key")), None)
+        if not character:
+            raise ValueError("短剧角色卡保存后没有可生成的角色")
+        evidence = _e2e_project_evidence(
+            run_id, role_saved=True, project_revision=int(saved["revision"]),
+            character_key=str(character["character_key"]),
+        )
+    idem = "e2e:%s:generate-character" % run_id
+    result = _content_e2e_request(
+        prepared["endpoint"], token,
+        {"project_id": project_id,
+         "revision": int(evidence["project_revision"]),
+         "character_key": evidence["character_key"]},
+        idem, int(prepared["cost"]),
+    )
+    try:
+        job_id = int(result["job_id"])
+        points_after = int(result["points_left"])
+        digest = hashlib.sha256(
+            (account["username"] + "\0" + idem).encode("utf-8")
+        ).hexdigest()
+        with closing(db()) as connection:
+            connection.execute(
+                """UPDATE admin_e2e_runs SET status='queued',job_id=?,cost=?,
+                          points_after=?,transaction_key=?,error='',updated_at=? WHERE run_id=?""",
+                (job_id, int(prepared["cost"]), points_after,
+                 "short-drama-character-charge:" + digest,
+                 int(time.time()), run_id),
+            )
+            connection.commit()
+    except (KeyError, TypeError, ValueError, sqlite3.Error) as exc:
+        raise E2ESubmitUncertain("角色标准图已提交，但本地受理证据写入不完整") from exc
+    return next(run for run in list_e2e_runs(100) if run["run_id"] == run_id)
+
+
+def _finalize_short_drama_character_e2e(run_id, admin_token):
+    with closing(db()) as connection:
+        row = connection.execute(
+            "SELECT * FROM admin_e2e_runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+    if not row or not row["job_id"]:
+        return False
+    evidence = json.loads(row["evidence_json"] or "{}")
+    if evidence.get("project_cleaned"):
+        return True
+    job = _e2e_job_evidence(row["job_id"])
+    if not job or job.get("status") not in {"done", "completed", "error", "failed"}:
+        return False
+    session = auth_admin_request(
+        "/api/auth/admin/e2e/session", admin_token, method="POST", payload={}
+    )
+    token = session["token"]
+    project_id = str(row["acceptance_id"] or evidence.get("project_id") or "")
+    try:
+        project = _content_e2e_get(
+            "/api/gen/short-drama/project?id=" + urllib.parse.quote(project_id), token
+        )
+    except RuntimeError as exc:
+        if evidence.get("imported") and "不存在" in str(exc):
+            _e2e_project_evidence(run_id, project_cleaned=True)
+            return True
+        raise
+    if job.get("status") in {"done", "completed"}:
+        character = next((item for item in project.get("characters") or []
+                          if item.get("character_key") == evidence.get("character_key")), None)
+        if not character or not character.get("reference_file") or not character.get("reference_url"):
+            raise ValueError("角色标准图完成后没有写回短剧项目")
+        if not character.get("reference_locked"):
+            project = _short_drama_e2e_request(
+                "/api/gen/short-drama/confirm-character-reference", token,
+                {"project_id": project_id, "revision": int(project["revision"]),
+                 "character_key": character["character_key"],
+                 "reference_version": int(character["reference_version"])},
+                run_id, "confirm-character-reference",
+            )
+            character = next(item for item in project["characters"]
+                             if item["character_key"] == evidence["character_key"])
+        if not character.get("reference_locked"):
+            raise ValueError("角色标准图没有锁定")
+        evidence = _e2e_project_evidence(
+            run_id, reference_locked=True,
+            reference_version=int(character["reference_version"]),
+        )
+    deleted = _short_drama_e2e_request(
+        "/api/gen/short-drama/project/delete", token,
+        {"project_id": project_id, "revision": int(project["revision"])},
+        run_id, "delete-character-project",
+    )
+    if not deleted.get("deleted"):
+        raise ValueError("角色标准图质检项目没有清理")
+    _e2e_project_evidence(run_id, project_cleaned=True)
+    return True
+
+
+def _cleanup_short_drama_character_draft(run_id, account_token):
+    with closing(db()) as connection:
+        row = connection.execute(
+            "SELECT acceptance_id,job_id FROM admin_e2e_runs WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+    if not row or row[1] or not row[0]:
+        return
+    project_id = str(row[0])
+    project = _content_e2e_get(
+        "/api/gen/short-drama/project?id=" + urllib.parse.quote(project_id),
+        account_token,
+    )
+    deleted = _short_drama_e2e_request(
+        "/api/gen/short-drama/projects/live-action/abandon", account_token,
+        {"project_id": project_id, "revision": int(project["revision"])},
+        run_id, "abandon-character-project",
+    )
+    _e2e_project_evidence(run_id, project_cleaned=bool(deleted.get("deleted")))
+
+
+def _resume_short_drama_character_runs(admin_token):
+    with closing(db()) as connection:
+        run_ids = [row[0] for row in connection.execute(
+            """SELECT run_id FROM admin_e2e_runs
+               WHERE operation_id='short_drama.live_action.character_reference'
+                 AND status IN ('queued','running','failed') AND job_id IS NOT NULL
+                 AND COALESCE(json_extract(evidence_json,'$.project_cleaned'),0)=0
+               ORDER BY created_at"""
+        ).fetchall()]
+    for run_id in run_ids:
+        try:
+            _finalize_short_drama_character_e2e(run_id, admin_token)
+        except Exception:
+            pass
 
 
 def _recover_short_drama_unknown(admin_token):
@@ -3832,6 +4060,10 @@ def _submit_e2e_run(run_id, admin_token, retry_capacity=False):
             raise ValueError("专用测试账号点数不足：需要 %s 点，当前 %s 点" % (cost, account.get("points") or 0))
         if operation_id == "short_drama.live_action.script_planning":
             return _submit_short_drama_e2e_run(run_id, admin_token, session, prepared)
+        if operation_id == "short_drama.live_action.character_reference":
+            return _submit_short_drama_character_e2e_run(
+                run_id, admin_token, session, prepared
+            )
         payload = prepared["payload"]
         payload["qa_run_id"] = run_id
         endpoint = prepared["endpoint"]
@@ -3871,6 +4103,11 @@ def _submit_e2e_run(run_id, admin_token, retry_capacity=False):
                 )
                 connection.commit()
             return None
+        if operation_id == "short_drama.live_action.character_reference":
+            try:
+                _cleanup_short_drama_character_draft(run_id, session["token"])
+            except Exception as cleanup_exc:
+                exc = RuntimeError("%s；临时项目清理失败：%s" % (exc, cleanup_exc))
         with closing(db()) as connection:
             connection.execute(
                 "UPDATE admin_e2e_runs SET status='failed',error=?,updated_at=? WHERE run_id=?",
@@ -4040,6 +4277,7 @@ def _run_e2e_batch(batch_id, admin_token):
         caps = _e2e_batch_caps(session["token"])
         deadline = time.time() + E2E_BATCH_DEADLINE_SECONDS
         while True:
+            _resume_short_drama_character_runs(admin_token)
             runs = [run for run in list_e2e_runs(100) if run.get("batch_id") == batch_id]
             if any(run.get("status") == "unknown" for run in runs):
                 _stop_planned_batch_rows(batch_id, "批次遇到提交结果未知，为防重复扣点已停止后续项目")
@@ -4816,6 +5054,8 @@ class H(BaseHTTPRequestHandler):
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             services = service_status()
             days = (q.get("days") or ["7"])[0]
+            _recover_short_drama_unknown(self._token())
+            _resume_short_drama_character_runs(self._token())
             e2e_runs = list_e2e_runs()
             return self._send(
                 200,

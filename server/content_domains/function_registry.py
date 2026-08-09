@@ -35,6 +35,18 @@ QA_SHORT_DRAMA_SOURCE = """场景一 旧书店 日 内
 场景二 旧书店门口 黄昏 外
 雨停了，两人把照片拼好，安静地看向镜头。
 林夏：那就从今天开始，把故事补完整。"""
+QA_SHORT_DRAMA_CHARACTER_CONTRACT = [{
+    "character_key": "character_1", "name": "林夏", "role_type": "main",
+    "gender": "女", "age": "28 岁", "identity_text": "旧书店店主",
+    "relationships": "周野的旧友", "personality": "安静、坚定、克制",
+    "face_shape": "自然鹅蛋脸", "hairstyle": "齐肩微卷发",
+    "hair_color": "深棕色", "height_body": "中等身高、匀称体型",
+    "fixed_clothing": "米白色针织衫与深棕色长裙",
+    "fixed_colors": "米白、深棕", "accessories": "无",
+    "appearance_prompt": "28 岁东亚女性，自然鹅蛋脸，齐肩深棕微卷发，中等身高，匀称体型",
+    "wardrobe_prompt": "米白色针织衫，深棕色长裙，无配饰",
+    "reference_views": ["front_full", "side_full", "front_half"],
+}]
 
 
 def _validation(prefill=None, manual_requirements=None, supported=True, blocked_reason=""):
@@ -1022,8 +1034,16 @@ SHORT_DRAMA_FUNCTIONS = [{
             "key": "short_drama.live_action.character_reference", "name": "角色标准图",
             "entrypoints": [_endpoint("POST", "/api/gen/short-drama/generate-character-reference"), _endpoint("POST", "/api/gen/short-drama/confirm-character-reference")],
             "evidence_source": "short_drama_character_reference_jobs",
+            "evidence_contract": {"not_applicable": ["provider_task"]},
             "price_keys": ["image.banana.nb2.hd"], "smoke_inputs": ["已确认角色卡", "角色标准图生成与锁定"],
-            "validation": _validation(supported=False, blocked_reason="需要一次性 QA 短剧项目、角色版本和付费媒体对账"),
+            "validation": _validation(prefill={
+                "title": "后台质检 · 角色标准图", "synopsis": "验证短剧角色标准图生成、锁定、交付和点数闭环。",
+                "ratio": "16:9", "target_duration": 30, "shot_count": 6,
+                "visual_style": "电影感写实", "source_text": QA_SHORT_DRAMA_SOURCE,
+                "filename": "后台质检角色标准图.txt", "import_mode": "faithful",
+                "content_type": "live_action",
+                "character_contract": QA_SHORT_DRAMA_CHARACTER_CONTRACT,
+            }),
         },
         {
             "key": "short_drama.live_action.shot_video", "name": "逐镜视频生成",

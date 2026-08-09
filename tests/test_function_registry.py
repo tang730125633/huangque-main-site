@@ -215,11 +215,13 @@ class FunctionRegistryTests(unittest.TestCase):
              "short_drama.live_action.delivery"],
         )
         short_drama_modes = short_drama["functions"][0]["modes"]
-        self.assertTrue(short_drama_modes[0]["validation"]["supported"])
+        self.assertTrue(all(
+            mode["validation"]["supported"] for mode in short_drama_modes[:2]
+        ))
         self.assertTrue(all(
             not mode["validation"]["supported"]
             and bool(mode["validation"]["blocked_reason"])
-            for mode in short_drama_modes[1:]
+            for mode in short_drama_modes[2:]
         ))
         self.assertNotIn("旧书店", json.dumps(short_drama, ensure_ascii=False))
         self.assertIn(
