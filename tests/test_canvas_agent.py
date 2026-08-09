@@ -117,6 +117,14 @@ class CanvasAgentTests(unittest.TestCase):
                 "page": "other", "path": "/admin", "title": "后台", "can_edit": True, "selected_count": 0,
             }))
 
+    def test_validated_job_payload_can_run_through_worker_validation_again(self):
+        clean = canvas_agent.validate_payload(payload(
+            qa_operation_id="canvas.agent.plan", qa_run_id="qa-run-worker",
+        ))
+        self.assertEqual(canvas_agent.validate_payload(clean), clean)
+        with self.assertRaisesRegex(ValueError, "模型渠道"):
+            canvas_agent.validate_payload(payload(provider="unknown"))
+
     def test_http_boundary_only_accepts_qa_run_id_from_internal_service(self):
         requested = payload(qa_run_id="qa-run-http")
         sent, validate = self._post_canvas_agent(requested)
