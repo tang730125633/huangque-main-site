@@ -33,7 +33,8 @@ class AdminE2ERunnerTests(unittest.TestCase):
             connection.execute("""CREATE TABLE admin_e2e_runs(
                 run_id TEXT PRIMARY KEY,batch_id TEXT DEFAULT '',operation_id TEXT,
                 username TEXT DEFAULT '',status TEXT,
-                job_id INTEGER,cost INTEGER DEFAULT 0,points_before INTEGER,points_after INTEGER,
+                job_id INTEGER,acceptance_id TEXT DEFAULT '',evidence_json TEXT DEFAULT '{}',
+                cost INTEGER DEFAULT 0,points_before INTEGER,points_after INTEGER,
                 transaction_key TEXT DEFAULT '',error TEXT DEFAULT '',created_by TEXT,
                 created_at INTEGER,updated_at INTEGER)""")
             connection.execute("""CREATE TABLE admin_audit(
@@ -170,9 +171,8 @@ class AdminE2ERunnerTests(unittest.TestCase):
         self.assertEqual(self.admin._e2e_kind("/api/gen/breakdown"), "breakdown")
         self.assertEqual(self.admin._e2e_kind("/api/gen/canvas_agent"), "canvas_agent")
 
-    def test_short_drama_modes_are_individually_blocked_before_auth_or_charge(self):
+    def test_paid_short_drama_modes_stay_blocked_before_auth_or_charge(self):
         operations = [
-            "short_drama.live_action.script_planning",
             "short_drama.live_action.character_reference",
             "short_drama.live_action.shot_video",
             "short_drama.live_action.preview",
@@ -184,6 +184,290 @@ class AdminE2ERunnerTests(unittest.TestCase):
                 self.assertFalse(result["ready"])
                 self.assertTrue(result["blocker"])
             auth.assert_not_called()
+
+    def test_short_drama_script_planning_runs_real_project_journey_and_cleans_up(self):
+        session = {"token": "short-lived-secret", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        responses = {
+            "/api/gen/short-drama/projects/import": {"id": "project-qa", "revision": 1},
+            "/api/gen/short-drama/conversation/messages": {
+                "conversation": {"revision": 2, "understanding": {"direction_confirmed": True}},
+            },
+            "/api/gen/short-drama/conversation/script/generate": {
+                "conversation": {"revision": 3}, "current_script": {"id": "script-qa"},
+            },
+            "/api/gen/short-drama/conversation/script/lock": {
+                "conversation": {"revision": 4, "state": "script_locked"},
+                "current_script": {"id": "script-qa", "status": "locked"},
+            },
+            "/api/gen/short-drama/preflight/generate": {
+                "state": "ready_for_confirmation", "current_plan": {
+                    "id": "plan-qa", "version": 1,
+                    "plan": {"ready": True, "required_acceptance": ["recommended_assets"]},
+                },
+            },
+            "/api/gen/short-drama/preflight/confirm": {
+                "state": "confirmed", "current_plan": {"status": "confirmed"},
+            },
+            "/api/gen/short-drama/projects/live-action/abandon": {"deleted": True},
+        }
+        calls = []
+
+        def request(path, _token, _payload, idem, cost, require_job_id=True):
+            calls.append((path, idem, cost, require_job_id))
+            return responses[path]
+
+        with patch.object(self.admin, "auth_admin_request", side_effect=[session, session]) as auth, \
+             patch.object(self.admin, "points_domain", SimpleNamespace()), \
+             patch.object(self.admin, "_content_e2e_request", side_effect=request):
+            run = self.admin.start_e2e_run(
+                "root", "admin-token", "short_drama.live_action.script_planning"
+            )
+        self.assertEqual((run["status"], run["acceptance_id"], run["cost"]),
+                         ("completed", "project-qa", 0))
+        self.assertTrue(all(stage["state"] == "passed" for stage in run["stages"]))
+        self.assertEqual([item[0] for item in calls], list(responses))
+        self.assertTrue(all(item[2:] == (0, False) for item in calls))
+        self.assertEqual(len({item[1] for item in calls}), len(calls))
+        self.assertEqual(auth.call_count, 2)
+        self.assertNotIn("short-lived-secret", json.dumps(run))
+        html = (Path(__file__).resolve().parents[1] / "site/admin/index.html").read_text(encoding="utf-8")
+        self.assertIn("确认使用专用测试账号；本次 0 点，只运行一次", html)
+
+    def test_short_drama_project_is_cleaned_when_a_middle_step_fails(self):
+        session = {"token": "short-lived-secret", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        paths = []
+
+        def request(path, _token, _payload, _idem, _cost, require_job_id=True):
+            paths.append(path)
+            if path.endswith("/projects/import"):
+                return {"id": "project-failed", "revision": 1}
+            if path.endswith("/conversation/messages"):
+                raise self.admin.E2ESubmitRejected("方向确认失败")
+            if path.endswith("/projects/live-action/abandon"):
+                raise self.admin.E2ESubmitRejected("临时项目清理失败")
+            self.fail("unexpected request " + path)
+
+        with patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "points_domain", SimpleNamespace()), \
+             patch.object(self.admin, "_content_e2e_request", side_effect=request):
+            with self.assertRaisesRegex(Exception, "方向确认失败.*临时项目清理失败"):
+                self.admin.start_e2e_run(
+                    "root", "admin-token", "short_drama.live_action.script_planning"
+                )
+        self.assertEqual(paths[-1], "/api/gen/short-drama/projects/live-action/abandon")
+        with closing(sqlite3.connect(self.admin.ADMIN_DB)) as connection:
+            row = connection.execute(
+                "SELECT status,acceptance_id,evidence_json,error FROM admin_e2e_runs"
+            ).fetchone()
+        status, acceptance_id, evidence_json, error = row
+        self.assertEqual(status, "failed")
+        self.assertEqual(acceptance_id, "project-failed")
+        self.assertIn("临时项目清理失败", json.loads(evidence_json)["cleanup_error"])
+        self.assertIn("临时项目清理失败", error)
+
+    def test_short_drama_zero_point_journey_rechecks_balance_before_passing(self):
+        before = {"token": "qa-token", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        after = {"token": "qa-token-2", "account": {
+            "username": "qa-dedicated", "points": 499, "membership_active": True,
+        }}
+        responses = iter([
+            {"id": "project-billing", "revision": 1},
+            {"conversation": {"revision": 2, "understanding": {"direction_confirmed": True}}},
+            {"conversation": {"revision": 3}, "current_script": {"id": "script-billing"}},
+            {"conversation": {"revision": 4, "state": "script_locked"}},
+            {"state": "ready_for_confirmation", "current_plan": {
+                "id": "plan-billing", "version": 1,
+                "plan": {"ready": True, "required_acceptance": []},
+            }},
+            {"state": "confirmed", "current_plan": {"status": "confirmed"}},
+            {"deleted": True},
+        ])
+        with patch.object(self.admin, "auth_admin_request", side_effect=[before, after]), \
+             patch.object(self.admin, "points_domain", SimpleNamespace()), \
+             patch.object(self.admin, "_content_e2e_request",
+                          side_effect=lambda *_args, **_kwargs: next(responses)):
+            with self.assertRaisesRegex(ValueError, "点数变化"):
+                self.admin.start_e2e_run(
+                    "root", "admin-token", "short_drama.live_action.script_planning"
+                )
+        run = self.admin.list_e2e_runs(1)[0]
+        self.assertEqual((run["status"], run["points_before"], run["points_after"]),
+                         ("failed", 500, 499))
+        self.assertEqual(next(stage for stage in run["stages"] if stage["key"] == "billing")["state"],
+                         "failed")
+
+    def test_cleaned_uncertain_short_drama_step_becomes_failed_not_global_unknown(self):
+        session = {"token": "qa-token", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        message_attempts = 0
+
+        def request(path, _token, _payload, _idem, _cost, require_job_id=True):
+            nonlocal message_attempts
+            if path.endswith("/projects/import"):
+                return {"id": "project-uncertain", "revision": 1}
+            if path.endswith("/conversation/messages"):
+                message_attempts += 1
+                raise self.admin.E2ESubmitUncertain("response lost")
+            if path.endswith("/projects/live-action/abandon"):
+                return {"deleted": True}
+            self.fail("unexpected request " + path)
+
+        with patch.object(self.admin, "auth_admin_request", side_effect=[session, session]), \
+             patch.object(self.admin, "points_domain", SimpleNamespace()), \
+             patch.object(self.admin, "_content_e2e_request", side_effect=request):
+            with self.assertRaises(self.admin.E2ESubmitRejected):
+                self.admin.start_e2e_run(
+                    "root", "admin-token", "short_drama.live_action.script_planning"
+                )
+        self.assertEqual(message_attempts, 2)
+        run = self.admin.list_e2e_runs(1)[0]
+        self.assertEqual(run["status"], "failed")
+        self.assertEqual(run["acceptance_id"], "project-uncertain")
+        self.assertEqual(run["evidence"]["delivery_verified"], False)
+
+    def test_uncertain_import_stays_recoverable_when_balance_refresh_also_fails(self):
+        session = {"token": "qa-token", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        with patch.object(self.admin, "auth_admin_request",
+                          side_effect=[session, RuntimeError("auth down")]), \
+             patch.object(self.admin, "points_domain", SimpleNamespace()), \
+             patch.object(self.admin, "_content_e2e_request",
+                          side_effect=self.admin.E2ESubmitUncertain("import response lost")):
+            with self.assertRaisesRegex(RuntimeError, "结果未知"):
+                self.admin.start_e2e_run(
+                    "root", "admin-token", "short_drama.live_action.script_planning"
+                )
+        self.assertEqual(self.admin.list_e2e_runs(1)[0]["status"], "unknown")
+
+    def test_uncertain_cleanup_stays_recoverable_after_definite_step_failure(self):
+        session = {"token": "qa-token", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+
+        def request(path, _token, _payload, _idem, _cost, require_job_id=True):
+            if path.endswith("/projects/import"):
+                return {"id": "project-cleanup-unknown", "revision": 1}
+            if path.endswith("/conversation/messages"):
+                raise self.admin.E2ESubmitRejected("direction rejected")
+            if path.endswith("/projects/live-action/abandon"):
+                raise self.admin.E2ESubmitUncertain("cleanup response lost")
+            self.fail("unexpected request " + path)
+
+        with patch.object(self.admin, "auth_admin_request", side_effect=[session, session]), \
+             patch.object(self.admin, "points_domain", SimpleNamespace()), \
+             patch.object(self.admin, "_content_e2e_request", side_effect=request):
+            with self.assertRaisesRegex(RuntimeError, "结果未知"):
+                self.admin.start_e2e_run(
+                    "root", "admin-token", "short_drama.live_action.script_planning"
+                )
+        run = self.admin.list_e2e_runs(1)[0]
+        self.assertEqual((run["status"], run["acceptance_id"]),
+                         ("unknown", "project-cleanup-unknown"))
+
+    def test_admin_restart_marks_running_short_drama_for_idempotent_recovery(self):
+        with closing(sqlite3.connect(self.admin.ADMIN_DB)) as connection:
+            connection.execute(
+                """INSERT INTO admin_e2e_runs(
+                       run_id,operation_id,username,status,acceptance_id,evidence_json,
+                       created_by,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                ("restart-run", "short_drama.live_action.script_planning", "qa-dedicated",
+                 "running", "project-restart", '{"imported":true}', "root", 1, 2),
+            )
+            connection.commit()
+        with patch.object(self.admin, "feature_flags", None), \
+             patch.object(self.admin, "provider_keys", None), \
+             patch.object(self.admin.pricing, "init_db"), \
+             patch.object(self.admin.inspiration_cases, "init_db"), \
+             patch.object(self.admin, "short_drama_lipsync_rollout", None), \
+             patch.object(self.admin, "short_drama_lipsync_observability", None):
+            self.admin.init_db()
+        with closing(sqlite3.connect(self.admin.ADMIN_DB)) as connection:
+            status, error = connection.execute(
+                "SELECT status,error FROM admin_e2e_runs WHERE run_id='restart-run'"
+            ).fetchone()
+        self.assertEqual(status, "unknown")
+        self.assertIn("按原幂等键恢复并清理", error)
+
+    def test_admin_restart_recovers_unknown_import_by_original_idempotency_key(self):
+        with closing(sqlite3.connect(self.admin.ADMIN_DB)) as connection:
+            connection.execute(
+                """INSERT INTO admin_e2e_runs(
+                       run_id,operation_id,username,status,created_by,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?)""",
+                ("restart-unknown", "short_drama.live_action.script_planning",
+                 "qa-dedicated", "running", "root", 1, 2),
+            )
+            connection.commit()
+        with patch.object(self.admin, "feature_flags", None), \
+             patch.object(self.admin, "provider_keys", None), \
+             patch.object(self.admin.pricing, "init_db"), \
+             patch.object(self.admin.inspiration_cases, "init_db"), \
+             patch.object(self.admin, "short_drama_lipsync_rollout", None), \
+             patch.object(self.admin, "short_drama_lipsync_observability", None):
+            self.admin.init_db()
+        with closing(sqlite3.connect(self.admin.ADMIN_DB)) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT status FROM admin_e2e_runs WHERE run_id='restart-unknown'"
+                ).fetchone()[0],
+                "unknown",
+            )
+        session = {"token": "qa-token", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        calls = []
+
+        responses = {
+            "/api/gen/short-drama/projects/import": {"id": "project-recovered", "revision": 1},
+            "/api/gen/short-drama/conversation/messages": {
+                "conversation": {"revision": 2, "understanding": {"direction_confirmed": True}},
+            },
+            "/api/gen/short-drama/conversation/script/generate": {
+                "conversation": {"revision": 3}, "current_script": {"id": "script-recovered"},
+            },
+            "/api/gen/short-drama/conversation/script/lock": {
+                "conversation": {"revision": 4, "state": "script_locked"},
+            },
+            "/api/gen/short-drama/preflight/generate": {
+                "state": "ready_for_confirmation", "current_plan": {
+                    "id": "plan-recovered", "version": 1,
+                    "plan": {"ready": True, "required_acceptance": []},
+                },
+            },
+            "/api/gen/short-drama/preflight/confirm": {
+                "state": "confirmed", "current_plan": {"status": "confirmed"},
+            },
+            "/api/gen/short-drama/projects/live-action/abandon": {"deleted": True},
+        }
+
+        def request(path, _token, _payload, idem, _cost, require_job_id=True):
+            calls.append((path, idem))
+            return responses[path]
+
+        with patch.object(self.admin, "auth_admin_request",
+                          side_effect=[session, session, session]), \
+             patch.object(self.admin, "points_domain", SimpleNamespace()), \
+             patch.object(self.admin, "_content_e2e_request", side_effect=request):
+            preflight = self.admin.e2e_preflight(
+                "admin-token", "short_drama.live_action.script_planning"
+            )
+        self.assertTrue(preflight["ready"])
+        self.assertEqual([path for path, _key in calls], list(responses))
+        self.assertTrue(all(key.startswith("e2e:restart-unknown:") for _path, key in calls))
+        with closing(sqlite3.connect(self.admin.ADMIN_DB)) as connection:
+            status, acceptance_id = connection.execute(
+                "SELECT status,acceptance_id FROM admin_e2e_runs WHERE run_id='restart-unknown'"
+            ).fetchone()
+        self.assertEqual((status, acceptance_id), ("completed", "project-recovered"))
 
     def test_copy_and_canvas_structured_delivery_are_verified(self):
         with closing(sqlite3.connect(self.admin.ASSET_DB)) as connection:

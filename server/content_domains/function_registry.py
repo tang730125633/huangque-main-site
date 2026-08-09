@@ -27,6 +27,14 @@ QA_COLLECT_URL = "@env/HQ_E2E_COLLECT_URL"
 QA_LEADS_KEYWORD = "美容院如何拓客"
 QA_SCRIPT_PROMPT = "为一款无品牌的琥珀色保湿精华写一条可拍摄短视频脚本，卖点是清爽、易吸收；不得虚构功效、价格或品牌信息"
 QA_CANVAS_PROMPT = "根据画布中的产品卖点，创建一条短视频文案草稿和一条图片生成草稿；只规划，不执行媒体生成"
+QA_SHORT_DRAMA_SOURCE = """场景一 旧书店 日 内
+林夏整理旧相册，发现一张被撕掉一半的合影。
+林夏：这张照片为什么只剩下一半？
+周野推门进来，把另一半照片放在桌上。
+周野：因为另一半，一直在等你回来。
+场景二 旧书店门口 黄昏 外
+雨停了，两人把照片拼好，安静地看向镜头。
+林夏：那就从今天开始，把故事补完整。"""
 
 
 def _validation(prefill=None, manual_requirements=None, supported=True, blocked_reason=""):
@@ -990,10 +998,25 @@ SHORT_DRAMA_FUNCTIONS = [{
     "modes": [
         {
             "key": "short_drama.live_action.script_planning", "name": "剧本与分镜策划",
-            "entrypoints": [_endpoint("POST", "/api/gen/short-drama/projects/import"), _endpoint("POST", "/api/gen/short-drama/conversation/script/generate"), _endpoint("POST", "/api/gen/short-drama/preflight/generate")],
+            "entrypoints": [
+                _endpoint("POST", "/api/gen/short-drama/projects/import"),
+                _endpoint("POST", "/api/gen/short-drama/conversation/messages"),
+                _endpoint("POST", "/api/gen/short-drama/conversation/script/generate"),
+                _endpoint("POST", "/api/gen/short-drama/conversation/script/lock"),
+                _endpoint("POST", "/api/gen/short-drama/preflight/generate"),
+                _endpoint("POST", "/api/gen/short-drama/preflight/confirm"),
+                _endpoint("POST", "/api/gen/short-drama/projects/live-action/abandon"),
+            ],
             "evidence_source": "short_drama_projects", "evidence_contract": {"acceptance_id_type": "project_id", "not_applicable": ["provider_task", "billing", "balance"]},
             "price_keys": [], "smoke_inputs": ["固定真人短剧脚本", "两个固定角色", "首版剧本与制作预检"],
-            "validation": _validation(supported=False, blocked_reason="项目型多步骤旅程尚未接入后台专用适配器；不能用单个 job_id 冒充通过"),
+            "validation": _validation(prefill={
+                "title": "后台质检 · 被补完整的合影",
+                "synopsis": "两位旧友在旧书店重逢，并把一张被撕开的合影重新拼好。",
+                "ratio": "16:9", "target_duration": 30, "shot_count": 6,
+                "visual_style": "电影感写实", "source_text": QA_SHORT_DRAMA_SOURCE,
+                "filename": "后台质检真人短剧.txt", "import_mode": "faithful",
+                "content_type": "live_action", "character_contract": [],
+            }),
         },
         {
             "key": "short_drama.live_action.character_reference", "name": "角色标准图",

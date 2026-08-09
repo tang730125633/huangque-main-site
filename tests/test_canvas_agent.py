@@ -180,6 +180,20 @@ class CanvasAgentTests(unittest.TestCase):
         self.assertNotIn("execute", action)
         self.assertNotIn("url", json.dumps(result, ensure_ascii=False).lower())
 
+    def test_text_draft_drops_incompatible_existing_connection_with_warning(self):
+        request = canvas_agent.validate_payload(payload())
+        raw = json.dumps({
+            "content": "已准备文案草稿。",
+            "actions": [{
+                "type": "create_generation_draft", "mode": "text", "title": "口播文案",
+                "prompt": "写一条清爽的通勤口播", "connect_from": ["n1"],
+            }],
+            "guides": [], "warnings": [],
+        }, ensure_ascii=False)
+        result = canvas_agent.normalize_model_result(raw, request)
+        self.assertEqual(result["plan"]["actions"][0]["connect_from"], [])
+        self.assertIn("不兼容的节点连线", result["plan"]["warnings"][0])
+
     def test_guides_only_target_known_huangque_pages(self):
         request = canvas_agent.validate_payload(payload())
         raw = json.dumps({
