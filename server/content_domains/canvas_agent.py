@@ -178,7 +178,8 @@ def validate_payload(payload, access=None):
     if not isinstance(payload, dict):
         raise ValueError("请求体必须是 JSON 对象")
     allowed = {"prompt", "project_id", "snapshot_digest", "scope", "nodes", "edges",
-               "selected_node_ids", "history", "quoted_cost", "page_context", "ip12_context"}
+               "selected_node_ids", "history", "quoted_cost", "page_context", "ip12_context",
+               "source_page", "provider", "qa_operation_id", "qa_run_id"}
     if set(payload) - allowed:
         raise ValueError("请求包含不支持的字段")
     cleaned = {
@@ -187,7 +188,17 @@ def validate_payload(payload, access=None):
         "snapshot_digest": _text(payload.get("snapshot_digest"), 32, "画布版本"),
         "scope": _text(payload.get("scope"), 16, "画布范围"),
         "quoted_cost": payload.get("quoted_cost"),
+        "source_page": "canvas",
+        "provider": "openai_responses",
     }
+    if payload.get("source_page") not in (None, "", "canvas"):
+        raise ValueError("页面来源无效")
+    if payload.get("provider") not in (None, "", "openai_responses"):
+        raise ValueError("模型渠道无效")
+    if payload.get("qa_operation_id"):
+        cleaned["qa_operation_id"] = _text(payload.get("qa_operation_id"), 120, "质检操作标识")
+    if payload.get("qa_run_id"):
+        cleaned["qa_run_id"] = _text(payload.get("qa_run_id"), 120, "质检批次标识")
     if not cleaned["prompt"]:
         raise ValueError("请输入要让 Agent 完成的任务")
     if not cleaned["project_id"] or not re.fullmatch(r"[A-Za-z0-9:_-]+", cleaned["project_id"]):
@@ -339,8 +350,13 @@ def normalize_model_result(raw, request):
                 raise ValueError("生成草稿类型或来源无效")
             sources = [_text(node_id, 128, "来源节点") for node_id in sources]
             target_type = {"text": "text", "image": "gen", "video": "video"}[mode]
-            if any(node_id not in node_map or not _ports_compatible(node_map[node_id]["type"], target_type) for node_id in sources):
-                raise ValueError("生成草稿引用了不兼容的来源节点")
+            if any(node_id not in node_map for node_id in sources):
+                raise ValueError("生成草稿引用了不存在的来源节点")
+            compatible = [node_id for node_id in sources
+                          if _ports_compatible(node_map[node_id]["type"], target_type)]
+            if len(compatible) != len(sources):
+                warnings.append("已忽略生成草稿中不兼容的节点连线")
+            sources = compatible
             item.update(mode=mode, title=_text(action.get("title"), 120, "草稿标题") or "Agent 草稿",
                         prompt=_text(action.get("prompt"), 5000, "草稿提示词"), connect_from=sources)
             if not item["prompt"]:

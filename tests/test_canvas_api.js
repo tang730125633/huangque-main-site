@@ -320,6 +320,8 @@ function testCanvasIntegration() {
   const root = path.join(__dirname, '..');
   const html = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas.html'), 'utf8');
   const app = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-app.js'), 'utf8');
+  const agent = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-agent.js'), 'utf8');
+  const requestSources = app + '\n' + agent;
   const order = [
     'canvas/canvas-graph.js?v=',
     'canvas/canvas-state.js?v=',
@@ -350,7 +352,7 @@ function testCanvasIntegration() {
     '/api/gen/banana',
     '/api/gen/xiaole_video',
     '/api/gen/job/',
-  ]) assert.ok(app.includes(endpoint), endpoint);
+  ]) assert.ok(requestSources.includes(endpoint), endpoint);
   assert.equal((app.match(/intervalMs:3000/g) || []).length, 2, 'image and video jobs retain 3000 ms polling');
   for (const state of ['提交中…', '生成中… 已用 ', '提交中...', '生成中，已用 ', '点数不足', '等待队列空位']) {
     assert.ok(app.includes(state), state);

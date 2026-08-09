@@ -28,6 +28,7 @@ core = importlib.import_module("content_domains.core")
 points = importlib.import_module("content_domains.points")
 BANANA = (ROOT / "site" / "workbench" / "banana.html").read_text(encoding="utf-8")
 IMGGEN_SRC = (ROOT / "server" / "imggen_api.py").read_text(encoding="utf-8")
+CORE_SRC = (ROOT / "server" / "content_domains" / "core.py").read_text(encoding="utf-8")
 image_domain = importlib.import_module("content_domains.image")
 
 FRONTEND_RATIOS = ["1:1", "9:16", "16:9", "3:4"]
@@ -43,6 +44,21 @@ class ChannelShutdownTests(unittest.TestCase):
     def test_zelong2_card_is_hidden(self):
         self.assertRegex(BANANA, r'data-engine="zelong2"[^>]*aria-hidden="true"[^>]*display:none')
         self.assertIn("location.hostname==='zelong.huangquechuanmei.com'", BANANA)
+
+    def test_xiaole_card_fails_closed_until_runtime_flag_is_confirmed(self):
+        self.assertRegex(BANANA, r'data-engine="xiaole"[^>]*aria-hidden="true"[^>]*display:none')
+        self.assertIn("data.image_xiaole_enabled===true", BANANA)
+        self.assertIn("target.getAttribute('aria-hidden')!=='true'", BANANA)
+
+    def test_xiaole_provider_is_gated_before_image_cost_and_paid_job(self):
+        gate = CORE_SRC.index('feature_flags.require_enabled("image_xiaole")')
+        replay = CORE_SRC.index('if idem_state == "replay"')
+        cost = CORE_SRC.index("cost = points_domain.cost_of(kind, body)")
+        paid_job = CORE_SRC.index("jobs_store.create_paid_job(", cost)
+        self.assertLess(replay, gate)
+        self.assertLess(cost, gate)
+        self.assertLess(gate, paid_job)
+        self.assertIn('"image_xiaole_enabled": feature_flags.is_enabled("image_xiaole")', CORE_SRC)
 
 
 def _wh(size):

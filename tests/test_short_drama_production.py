@@ -3478,6 +3478,50 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         self.assertNotIn("_http_status", replay)
         self.assertEqual(1, create_paid_job.call_count)
 
+    def test_disabled_xiaole_image_rejects_new_work_before_charge_and_job(self):
+        original = core.feature_flags.require_enabled
+        def require_enabled(key):
+            if key == "image_xiaole":
+                raise core.feature_flags.FeatureDisabled("维护中")
+        core.feature_flags.require_enabled = require_enabled
+        try:
+            status, response = self.request(
+                "/api/gen/image",
+                body={"provider": "xiaole", "prompt": "rainy doorway", "ratio": "1:1"},
+                idempotency_key="disabled-xiaole-new-001",
+            )
+        finally:
+            core.feature_flags.require_enabled = original
+        self.assertEqual(503, status)
+        self.assertEqual("feature_disabled", response["code"])
+        self.assertIs(response.get("operation_terminal"), True)
+        self.assertEqual([], self.points.deduct_calls)
+        self.assertEqual([], self._jobs())
+        self.assertEqual(0, core._image_job_queue.qsize())
+
+    def test_disabling_xiaole_preserves_idempotent_replay_of_accepted_job(self):
+        body = {"provider": "xiaole", "prompt": "rainy doorway", "ratio": "1:1"}
+        status, accepted = self.request(
+            "/api/gen/image", body=body, idempotency_key="xiaole-replay-after-off-001"
+        )
+        original = core.feature_flags.require_enabled
+        def require_enabled(key):
+            if key == "image_xiaole":
+                raise core.feature_flags.FeatureDisabled("维护中")
+        core.feature_flags.require_enabled = require_enabled
+        try:
+            replay_status, replayed = self.request(
+                "/api/gen/image", body=body,
+                idempotency_key="xiaole-replay-after-off-001",
+            )
+        finally:
+            core.feature_flags.require_enabled = original
+        self.assertEqual((200, 200), (status, replay_status))
+        self.assertEqual(accepted, replayed)
+        self.assertEqual(1, len(self.points.deduct_calls))
+        self.assertEqual(1, len(self._jobs()))
+        self.assertEqual(1, core._image_job_queue.qsize())
+
     def test_generic_insert_failure_with_pending_refund_is_not_terminal(self):
         path = "/api/gen/image"
         body = {
