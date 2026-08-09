@@ -677,6 +677,10 @@ class AdminE2ERunnerTests(unittest.TestCase):
                      {"type": "create_generation_draft", "mode": "text"},
                      {"type": "create_generation_draft", "mode": "image"},
                  ]}}, "canvas.agent.plan", True),
+            (97, "breakdown", 20, {"provider": "local+zhipu", "source_page": "script",
+                                    "source_type": "image", "mode": "reverse_prompt"},
+             {"type": "breakdown_reverse", "prompt": "暖色产品静物特写"},
+             "script.breakdown.local_image", True),
             (94, "copy", 4, {"provider": "copy_model", "source_page": "script"},
              {"type": "copy", "scenes": [{"scene": "未入资产库"}]}, "script.write.spoken", False),
             (95, "breakdown", 20, {"provider": "tikhub+zhipu", "source_page": "script", "mode": "scenes"},
@@ -703,7 +707,7 @@ class AdminE2ERunnerTests(unittest.TestCase):
                 id INTEGER PRIMARY KEY,job_id INTEGER,kind TEXT,stage TEXT,deleted INTEGER DEFAULT 0)""")
             connection.executemany(
                 "INSERT INTO assets VALUES(?,?,?,'work',0)",
-                [(1, 91, "copy"), (2, 92, "breakdown")],
+                [(1, 91, "copy"), (2, 92, "breakdown"), (3, 97, "breakdown")],
             )
             connection.commit()
         ledgers = {}

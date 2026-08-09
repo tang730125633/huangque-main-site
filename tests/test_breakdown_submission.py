@@ -567,6 +567,7 @@ class BreakdownLocalUploadHttpTests(unittest.TestCase):
                 self.assertEqual(("breakdown", "fang", 20), tuple(row[:3]))
                 self.assertEqual("image", payload["media_type"])
                 self.assertEqual((payload["source_page"], payload["source_type"]), ("script", "image"))
+                self.assertEqual("local+zhipu", payload["provider"])
                 self.assertTrue(os.path.isfile(uploaded_path))
                 self.assertEqual(1, core._job_queue.qsize())
 
