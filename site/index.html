@@ -6,7 +6,7 @@
   <meta name="description" content="黄雀 AI：从 IP12、Agent 与无限画布，到图文音视频生产和 HQ CLI。">
   <title>黄雀 AI · 会持续生长的内容系统</title>
   <link rel="icon" href="/assets/logo_sparrow.png">
-  <link rel="stylesheet" href="/homepage.css?v=20260809-drawer2">
+  <link rel="stylesheet" href="/homepage.css?v=20260809-particle2">
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -23,15 +23,21 @@
 
         <div class="nav-links" aria-label="产品功能">
           <span class="nav-link-slider" data-nav-slider aria-hidden="true"><i class="nav-slider-trail"></i><i class="nav-slider-blob"></i></span>
-          <button type="button" data-nav-trigger="creation" aria-controls="nav-drawer-creation" aria-expanded="false">产品链路</button>
+          <button type="button" data-nav-trigger="creation" data-nav-zh="产品链路" data-nav-en="PRODUCT" aria-controls="nav-drawer-creation" aria-expanded="false">产品链路</button>
           <button type="button" data-nav-trigger="ip12" aria-controls="nav-drawer-ip12" aria-expanded="false">IP12</button>
           <button type="button" data-nav-trigger="agent" aria-controls="nav-drawer-agent" aria-expanded="false">Agent + Canvas</button>
-          <button type="button" data-nav-trigger="video" aria-controls="nav-drawer-video" aria-expanded="false">视频生成</button>
+          <button type="button" data-nav-trigger="video" data-nav-zh="视频生成" data-nav-en="VIDEO" aria-controls="nav-drawer-video" aria-expanded="false">视频生成</button>
           <button type="button" data-nav-trigger="cli" aria-controls="nav-drawer-cli" aria-expanded="false">CLI</button>
         </div>
 
         <div class="nav-actions">
-          <a href="/login">登录</a>
+          <details class="language-switcher">
+            <summary aria-label="切换语言" title="切换语言">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"></circle><path d="M3.8 12h16.4M12 3.5c2.3 2.4 3.4 5.2 3.4 8.5S14.3 18.1 12 20.5M12 3.5C9.7 5.9 8.6 8.7 8.6 12s1.1 6.1 3.4 8.5"></path></svg>
+            </summary>
+            <div role="group" aria-label="界面语言"><button type="button" data-language="zh-CN">中文</button><button type="button" data-language="en">English</button></div>
+          </details>
+          <a href="/login" data-nav-zh="登录" data-nav-en="LOGIN">登录</a>
           <a class="nav-primary" data-liquid-glass href="/workbench/inspiration">ENTER ↗</a>
         </div>
 
@@ -433,6 +439,22 @@
     const capabilityBranches = [...document.querySelectorAll('.capability-branch')];
     const productChannels = [...document.querySelectorAll('[data-product-channel]')];
 
+    const languageSwitcher = document.querySelector('.language-switcher');
+    const setLanguage = language => {
+      const next = language === 'en' ? 'en' : 'zh-CN';
+      document.documentElement.lang = next;
+      document.querySelectorAll('[data-nav-zh]').forEach(element => {
+        element.textContent = next === 'en' ? element.dataset.navEn : element.dataset.navZh;
+      });
+      languageSwitcher?.querySelectorAll('[data-language]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.language === next)));
+      languageSwitcher?.removeAttribute('open');
+      try { localStorage.setItem('huangque-language', next); } catch {}
+    };
+    languageSwitcher?.querySelectorAll('[data-language]').forEach(button => button.addEventListener('click', () => setLanguage(button.dataset.language)));
+    let savedLanguage = 'zh-CN';
+    try { savedLanguage = localStorage.getItem('huangque-language') || 'zh-CN'; } catch {}
+    setLanguage(savedLanguage);
+
     window.__homepageCheck = () => steps.length === 4
       && steps.every(step => panels.some(panel => panel.dataset.panel === step.dataset.story))
       && capabilityBranches.length === 6
@@ -685,7 +707,7 @@
 
   })();
   </script>
-  <script src="/homepage-liquid-glass.js?v=20260809-optical2" defer></script>
-  <script type="module" src="/homepage-particles.js?v=20260809-pointcloud1"></script>
+  <script src="/homepage-liquid-glass.js?v=20260809-optical3" defer></script>
+  <script type="module" src="/homepage-particles.js?v=20260809-pointcloud2"></script>
 </body>
 </html>
