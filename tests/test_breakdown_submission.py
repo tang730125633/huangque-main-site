@@ -47,6 +47,7 @@ class BreakdownBatchTests(unittest.TestCase):
             })
         self.assertEqual("https://v.douyin.com/AbCdEf/", body["url"])
         self.assertEqual("reverse_prompt", body["mode"])
+        self.assertEqual("tikhub+google", body["provider"])
         self.assertEqual("1234567890123456789", body["_resolved_link"]["id"])
 
     def test_submission_validation_requires_specific_work_id(self):
@@ -83,6 +84,7 @@ class BreakdownBatchTests(unittest.TestCase):
             ["douyin", "xhs"],
             [item["platform"] for item in body["_resolved_links"]],
         )
+        self.assertEqual("tikhub+zhipu", body["provider"])
 
     def test_submission_validation_rejects_unknown_host_and_oversized_batch(self):
         with self.assertRaisesRegex(ValueError, "仅支持"):

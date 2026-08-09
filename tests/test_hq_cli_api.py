@@ -465,7 +465,7 @@ class HQCLIAPITests(unittest.TestCase):
             "action": "channels", "input": {}, "confirm": False,
         }, token=token)
         self.assertEqual(200, status)
-        self.assertEqual(15, payload["total"])
+        self.assertEqual(16, payload["total"])
         self.assertEqual("alice", payload["account"])
         self.assertEqual(
             {"channel": "minimax", "resolution": "768p"},

@@ -130,10 +130,15 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("data-bd-tool=\"reverse_prompt\"", self.html)
         self.assertIn('id="bdGen"', self.html)
         self.assertIn("fetch('/api/gen/breakdown'", self.html)
-        self.assertIn("var reqBody=isBatch?{urls:lines,mode:'scenes'}:{url:lines[0],mode:submitMode};", self.html)
+        self.assertIn("var reqBody=isBatch?{urls:lines,mode:'scenes',source_page:'script'}:{url:lines[0],mode:submitMode,source_page:'script'};", self.html)
         self.assertIn("function normalizeBreakdownUrl(text)", self.html)
         self.assertIn("链接格式不正确", self.html)
         self.assertIn("链接视频最大 200MB", self.html)
+
+    def test_script_and_breakdown_submissions_keep_customer_page_attribution(self):
+        self.assertIn("ctype:'分镜脚本',source_page:'script'", self.html)
+        self.assertIn("mode:'scenes',source_page:'script'", self.html)
+        self.assertIn("mode:submitMode,source_page:'script'", self.html)
 
     def test_breakdown_progress_and_history_restore_exist(self):
         self.assertIn('id="bdProgress"', self.html)
@@ -255,16 +260,17 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertTrue(self.html.count("pollErrors=0") >= 6)
         self.assertTrue(self.html.count("网络不稳定，正在重试") >= 3)
 
-    def test_breakdown_and_image_submissions_are_idempotent(self):
+    def test_copy_breakdown_image_and_video_submissions_are_idempotent(self):
+        self.assertIn("'Idempotency-Key':copyPending.key", self.html)
         self.assertIn("'Idempotency-Key':breakdownPending.key", self.html)
         self.assertIn("'Idempotency-Key':imagePending.key", self.html)
         self.assertIn("requestHeaders['Idempotency-Key']=videoPending.key", self.html)
-        self.assertIn('"script_to_video", "breakdown"}', self.core)
+        self.assertIn('"script_to_video", "breakdown", "copy"}', self.core)
         self.assertIn("sessionStorage.setItem(storageKey", self.html)
         self.assertIn("saved&&saved.body===body&&saved.key", self.html)
         self.assertIn("code==='idempotency_in_progress'", self.html)
         self.assertEqual(
-            3,
+            4,
             self.html.count(
                 "if(x.s<500||(x.d&&x.d.operation_terminal===true)) "
                 "_confirmSubmission"
@@ -277,10 +283,15 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("saved&&saved.body===body&&saved.key", self.html)
         self.assertIn("return {storageKey:storageKey,body:body,key:saved.key}", self.html)
         self.assertIn("fetch('/api/gen/breakdown'", self.html)
+        self.assertIn("body:copyPending.body", self.html)
         self.assertIn("body:breakdownPending.body", self.html)
         self.assertIn("body:imagePending.body", self.html)
         self.assertIn("videoPending?videoPending.body:JSON.stringify(payload)", self.html)
         # Network catches intentionally do not confirm/clear the pending key.
+        self.assertNotIn(
+            ".catch(function(){ _confirmSubmission(copyPending)",
+            self.html,
+        )
         self.assertNotIn(
             ".catch(function(){ _confirmSubmission(breakdownPending)",
             self.html,
@@ -295,7 +306,7 @@ class ScriptActionsUiTests(unittest.TestCase):
             "if(x.s<500||(x.d&&x.d.operation_terminal===true)) "
             "_confirmSubmission"
         )
-        self.assertEqual(3, self.html.count(confirmation))
+        self.assertEqual(4, self.html.count(confirmation))
         self.assertIn("code==='idempotency_in_progress'", self.html)
         self.assertNotIn("x.s>=500) _confirmSubmission", self.html)
 
@@ -504,7 +515,7 @@ setImmediate(function(){
 
     def test_write_gen_401_resets_button(self):
         """写脚本 401 必须复位生成按钮，否则按钮卡死在生成中"""
-        self.assertIn("if(x.s===401){ setBtn(orig,false); if(window.HQ) HQ.login(); return; }", self.html)
+        self.assertIn("if(x.s===401){ _confirmSubmission(copyPending); setBtn(orig,false); if(window.HQ) HQ.login(); return; }", self.html)
 
     def test_remake_validates_scenes_by_style(self):
         """生成同款视频按风格前置校验：剧情要画面、口播/种草要文案"""

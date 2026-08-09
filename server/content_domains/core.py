@@ -2717,6 +2717,9 @@ class H(BaseHTTPRequestHandler):
                     body = text_domain.validate_copy_payload(body)
                 elif kind == "canvas_agent":
                     from . import canvas_agent as canvas_agent_domain
+                    if (isinstance(body, dict) and body.get("qa_run_id")
+                            and not cli_gateway._internal_auth(self, AUTH_INTERNAL_TOKEN)):
+                        raise PermissionError("后台质检批次仅允许内部服务提交")
                     body = canvas_agent_domain.validate_payload(
                         body, _short_drama_canvas_access(self)
                     )
@@ -2733,7 +2736,7 @@ class H(BaseHTTPRequestHandler):
                     )
                 if not is_still_route: request_body = dict(body) if isinstance(body, dict) else body
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
-                if not is_still_route: idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "audio", "video", "tryon", "xiaole_video", "sora_video", "cinematic", "avatar", "canvas_agent", "script_to_video", "breakdown"} else ""
+                if not is_still_route: idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "audio", "video", "tryon", "xiaole_video", "sora_video", "cinematic", "avatar", "canvas_agent", "script_to_video", "breakdown", "copy"} else ""
                 if kind == "canvas_agent" and not idem_key:
                     raise ValueError("画布 Agent 提交必须提供 Idempotency-Key")
                 if kind == "avatar" and body.get("short_drama_binding") and not idem_key:
@@ -2841,6 +2844,15 @@ class H(BaseHTTPRequestHandler):
                 if idem_state == "replay": replay = dict(idem_response or {}); return self._send(int(replay.pop("_http_status", 200)), replay)
                 if idem_state == "conflict": return self._send(409, {"detail": "同一个 Idempotency-Key 不能用于不同请求", "code": "idempotency_conflict"})
                 if idem_state == "processing" and not is_still_route: return self._send(409, {"detail": "相同请求正在受理，请稍后查询", "code": "idempotency_in_progress", "retry_after_ms": 1000})
+                if kind == "image" and body.get("provider") == "xiaole":
+                    try:
+                        feature_flags.require_enabled("image_xiaole")
+                    except feature_flags.FeatureDisabled as error:
+                        _idempotency_abort(user["username"], p, idem_key)
+                        return self._send(503, {
+                            "detail": str(error), "code": "feature_disabled",
+                            "operation_terminal": True,
+                        })
                 if kind == "avatar" and body.get("short_drama_binding"):
                     try:
                         _short_drama_domain().validate_avatar_binding_submission(
@@ -3297,6 +3309,7 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS), "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS, "talking_job_workers": TALKING_JOB_WORKERS, "image_job_workers": IMAGE_JOB_WORKERS, "job_queue_max": JOB_QUEUE_MAX, "talking_job_queue_max": TALKING_JOB_QUEUE_MAX,
                                     "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_active_xiaole_video": MAX_USER_ACTIVE_XIAOLE_VIDEO, "max_user_active_sora_video": MAX_USER_ACTIVE_SORA_VIDEO, "max_user_active_tryon": MAX_USER_ACTIVE_TRYON, "max_user_active_cinematic": MAX_USER_ACTIVE_CINEMATIC,
                                     "sora_video_enabled": video_domain.sora_video_health_enabled(feature_flags),
+                                    "image_xiaole_enabled": feature_flags.is_enabled("image_xiaole"),
                                     "omni_video_enabled": bool(video_domain.omni_video_is_open() and feature_flags.is_enabled("omni_video")), "seedance_video_enabled": bool(video_domain.seedance_video_is_open() and feature_flags.is_enabled("seedance_video")), "minimax_h3_video_enabled": bool(video_domain.minimax_h3_video_is_open() and feature_flags.is_enabled("minimax_h3_video")), "reverse_remake_video_offer": (reverse_remake_offer := video_domain.reverse_remake_video_offer(feature_flags, points_domain.cost_of)), "reverse_remake_video_channel": reverse_remake_offer["channel"], "seedance_reference_images_enabled": video_domain.seedance_reference_upload_is_open(), "seedance_upscale_enabled": bool(video_domain.seedance_upscale_is_open() and feature_flags.is_enabled("seedance_video")),
                                     "max_user_running_talking": MAX_USER_RUNNING_TALKING, "max_user_running_image": MAX_USER_RUNNING_IMAGE, "video_cost": pricing.get_price("video.talking.block"), "video_batch_max": min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS), "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
         self._send(404, {"detail": "not found"})

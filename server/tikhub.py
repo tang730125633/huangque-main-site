@@ -712,6 +712,13 @@ def _log_asr_step(step, start, **extra):
     suffix = (" " + " ".join(fields)) if fields else ""
     print("[asr] %s %.2fs%s" % (step, time.time() - start, suffix), flush=True)
 
+
+def _openai_url(path):
+    base = str(OPENAI_BASE or "https://api.openai.com").strip().rstrip("/")
+    if not base.endswith("/v1"):
+        base += "/v1"
+    return base + "/" + str(path or "").lstrip("/")
+
 def _srt_to_text(srt):
     out = []
     for line in srt.splitlines():
@@ -755,7 +762,7 @@ def _whisper(mp4_path, filename="v.mp4"):
                  ("--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\nContent-Type: %s\r\n\r\n" % (b, aname, ctype)).encode(),
                  audio, b"\r\n", ("--%s--\r\n" % b).encode()]
         body = b"".join(parts)
-        req = urllib.request.Request(OPENAI_BASE + "/v1/audio/transcriptions", data=body,
+        req = urllib.request.Request(_openai_url("audio/transcriptions"), data=body,
                                      headers={"Authorization": "Bearer " + OPENAI_KEY,
                                               "Content-Type": "multipart/form-data; boundary=" + b}, method="POST")
         try:
