@@ -78,7 +78,7 @@ def prepare_script_to_video_payload(payload, username):
     if str(body.get("pipeline") or "").strip() == "pixelle":
         from . import pixelle_video
         pixelle_video.require_available()
-        return pixelle_video.prepare_payload(body)
+        return pixelle_video.prepare_payload(body, username)
     scenes = [dict(scene) for scene in (body.get("scenes") or []) if isinstance(scene, dict)]
     if not scenes:
         raise ValueError("没有可生成的分镜")

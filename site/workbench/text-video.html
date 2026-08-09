@@ -88,6 +88,12 @@
           <option value="">正在加载素材风格</option>
         </select>
       </div>
+      <div class="tv-style-field">
+        <label for="videoVoice">配音音色</label>
+        <select id="videoVoice" aria-label="配音音色" disabled>
+          <option value="">正在加载音色</option>
+        </select>
+      </div>
       <div class="tv-label"><span>输入方式</span></div>
       <div class="tv-mode" role="radiogroup" aria-label="输入方式">
         <button class="active" type="button" role="radio" aria-checked="true" data-mode="generate">主题创作</button>
@@ -116,13 +122,13 @@
 <script src="cloud-shell.js?v=5c2643d5"></script>
 <script>
 (function(){
-  var token='__cookie__',activeBlob='',startedAt=0,pollTimer=0,activeTemplate='',activeMode='generate',templates=[],activeKind='illustration',activeOrientation='portrait',stylesReady=false,isBusy=false;
+  var token='__cookie__',activeBlob='',startedAt=0,pollTimer=0,activeTemplate='',activeMode='generate',templates=[],activeKind='illustration',activeOrientation='portrait',stylesReady=false,voicesReady=false,isBusy=false;
   var pendingStorageKey='hq-text-video-pending-v1';
   var el=function(id){return document.getElementById(id);};
   function toast(message){var node=el('toast');node.textContent=message;node.classList.add('show');setTimeout(function(){node.classList.remove('show');},1800);}
   function updateCount(){el('charCount').textContent=el('videoText').value.length+' / 1000';}
   function setStatus(message,state){var node=el('statusText');node.textContent=message;node.className='tv-status'+(state?' '+state:'');}
-  function syncGenerateButton(){el('generateBtn').disabled=isBusy||!stylesReady;el('generateBtn').textContent=isBusy?'正在生成':'生成视频';}
+  function syncGenerateButton(){el('generateBtn').disabled=isBusy||!stylesReady||!voicesReady;el('generateBtn').textContent=isBusy?'正在生成':'生成视频';}
   function setBusy(value){isBusy=value;syncGenerateButton();}
   function elapsed(){return Math.max(0,Math.round((Date.now()-startedAt)/1000));}
   function phaseText(){var seconds=elapsed();if(seconds<20)return '正在处理文案与配音';if(seconds<180)return '正在生成画面素材';return '正在套用模板并渲染视频';}
@@ -186,8 +192,10 @@
     if(!activeTemplate){toast('模板库尚未加载完成');return;}
     if(!stylesReady){toast('素材风格暂不可用');return;}
     if(!el('materialStyle').value){toast('请选择素材风格');return;}
+    if(!voicesReady){toast('音色暂不可用');return;}
+    if(!el('videoVoice').value){toast('请选择配音音色');return;}
     clearTimeout(pollTimer);setBusy(true);startedAt=Date.now();setStatus('正在提交任务','running');
-    var payload={pipeline:'pixelle',text:text,template:activeTemplate,mode:activeMode,style:el('materialStyle').value};
+    var payload={pipeline:'pixelle',text:text,template:activeTemplate,mode:activeMode,style:el('materialStyle').value,voice:el('videoVoice').value};
     var pending=pendingSubmission(payload),headers=authHeaders(true);headers['Idempotency-Key']=pending.key;
     fetch('/api/gen/script_to_video',{method:'POST',headers:headers,body:pending.body}).then(readJson).then(function(response){
       if(response.status===401){confirmSubmission(pending);location.href='../login.html?redirect=workbench/text-video';return;}
@@ -257,13 +265,32 @@
       select.value=defaultStyle;select.disabled=false;stylesReady=true;syncGenerateButton();
     }).catch(function(){stylesReady=false;select.disabled=true;select.innerHTML='<option value="">素材风格暂不可用</option>';syncGenerateButton();setStatus('素材风格暂不可用','error');});
   }
+  function loadVoices(){
+    var select=el('videoVoice');
+    voicesReady=false;select.disabled=true;syncGenerateButton();
+    fetch('/api/gen/text-video/voices',{cache:'no-store',headers:authHeaders(false)}).then(readJson).then(function(response){
+      var voices=response.data.voices||[],defaultVoice=response.data.default_voice||'';
+      if(!voices.length||!defaultVoice)throw new Error(response.data.detail||'没有可用音色');
+      select.textContent='';
+      var publicGroup=document.createElement('optgroup'),personalGroup=document.createElement('optgroup');
+      publicGroup.label='公共音色';personalGroup.label='个人音色';
+      voices.forEach(function(voice){
+        var option=document.createElement('option');option.value=voice.id;option.textContent=voice.name;
+        (voice.scope==='personal'?personalGroup:publicGroup).appendChild(option);
+      });
+      if(publicGroup.children.length)select.appendChild(publicGroup);
+      if(personalGroup.children.length)select.appendChild(personalGroup);
+      if(!voices.some(function(voice){return voice.id===defaultVoice;}))defaultVoice=voices[0].id;
+      select.value=defaultVoice;select.disabled=false;voicesReady=true;syncGenerateButton();
+    }).catch(function(){voicesReady=false;select.disabled=true;select.innerHTML='<option value="">音色暂不可用</option>';syncGenerateButton();setStatus('音色暂不可用','error');});
+  }
   el('videoText').addEventListener('input',updateCount);
   Array.prototype.forEach.call(document.querySelectorAll('.tv-mode button'),function(button){button.onclick=function(){selectMode(button);};});
   Array.prototype.forEach.call(el('kindTabs').querySelectorAll('button'),function(button){button.onclick=function(){selectKind(button);};});
   Array.prototype.forEach.call(el('orientationTabs').querySelectorAll('button'),function(button){button.onclick=function(){selectOrientation(button);};});
   el('clearText').onclick=function(){el('videoText').value='';updateCount();el('videoText').focus();};
   el('generateBtn').onclick=generate;
-  updateCount();loadTemplates();loadStyles();
+  updateCount();loadTemplates();loadStyles();loadVoices();
 })();
 </script>
 </body>
