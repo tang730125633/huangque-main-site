@@ -8,6 +8,18 @@ import tikhub
 
 
 class TikhubAsrTests(unittest.TestCase):
+    def test_openai_url_does_not_duplicate_v1(self):
+        with patch.object(tikhub, "OPENAI_BASE", "https://relay.example/openai/v1/"):
+            self.assertEqual(
+                tikhub._openai_url("audio/transcriptions"),
+                "https://relay.example/openai/v1/audio/transcriptions",
+            )
+        with patch.object(tikhub, "OPENAI_BASE", "https://api.openai.com"):
+            self.assertEqual(
+                tikhub._openai_url("audio/transcriptions"),
+                "https://api.openai.com/v1/audio/transcriptions",
+            )
+
     def test_whisper_openai_timeout_is_bounded_and_clear(self):
         original_key = tikhub.OPENAI_KEY
         original_timeout = tikhub.TRANSCRIBE_TIMEOUT
