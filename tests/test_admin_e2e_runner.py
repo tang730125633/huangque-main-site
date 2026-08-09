@@ -470,10 +470,11 @@ class AdminE2ERunnerTests(unittest.TestCase):
             "username": "qa-dedicated", "points": 1000, "membership_active": True,
         }}
         character = {"character_key": "character_1", "name": "林夏"}
+        durations = [4000, 4000, 5000, 5000, 6000, 6000]
         shots = [{
-            "shot_key": "shot_%02d" % index, "duration_ms": 5000,
+            "shot_key": "shot_%02d" % index, "duration_ms": duration,
             "character_keys": ["character_1"],
-        } for index in range(1, 7)]
+        } for index, duration in enumerate(durations, 1)]
         responses = {
             "/api/gen/short-drama/projects/import": {
                 "id": "preview-project", "revision": 1,
@@ -504,6 +505,9 @@ class AdminE2ERunnerTests(unittest.TestCase):
             "required_shot_keys": [item["shot_key"] for item in shots],
             "ready_shot_keys": [],
             "missing_shot_keys": [item["shot_key"] for item in shots],
+            "shot_durations": {
+                item["shot_key"]: item["duration_ms"] for item in shots
+            },
             "latest_jobs": {}, "all_ready": False,
         }
 
@@ -518,7 +522,7 @@ class AdminE2ERunnerTests(unittest.TestCase):
                  has_candidate=lambda _provider: True,
              )), \
              patch.object(self.admin, "points_domain", SimpleNamespace(
-                 cost_of=lambda _kind, _payload: 60,
+                 cost_of=lambda _kind, payload: int(payload["duration"]) * 12,
              )), \
              patch.object(self.admin, "auth_admin_request", return_value=session), \
              patch.object(self.admin, "_content_e2e_get", side_effect=get), \
@@ -538,6 +542,35 @@ class AdminE2ERunnerTests(unittest.TestCase):
         self.assertEqual(len(run["evidence"]["required_shot_keys"]), 6)
         advance.assert_called_once_with(run["run_id"], "admin-token")
 
+    def test_short_drama_preview_quotes_each_real_shot_duration(self):
+        evidence = {
+            "project_id": "preview-project", "plan_id": "preview-plan",
+            "provider_jobs": {}, "quote_tokens": {}, "submitted_job_ids": [],
+        }
+        responses = iter([
+            {"ready": True, "provider": "grok", "request": {
+                "model": "grok-imagine-video", "resolution": "720p",
+                "duration_seconds": 4,
+            }},
+            {"quote_token": "private-quote", "cost": 48},
+            {"id": "provider-shot-01", "status": "queued"},
+        ])
+
+        def merge(_run_id, **values):
+            evidence.update(values)
+            return dict(evidence)
+
+        with patch.object(self.admin, "points_domain", SimpleNamespace(
+                cost_of=lambda _kind, payload: int(payload["duration"]) * 12)), \
+             patch.object(self.admin, "_short_drama_e2e_request",
+                          side_effect=lambda *_args: next(responses)), \
+             patch.object(self.admin, "_e2e_project_evidence", side_effect=merge):
+            result = self.admin._preview_submit_shot(
+                "preview-run", "qa-token", evidence, "shot_01"
+            )
+        self.assertEqual(result["provider_jobs"]["shot_01"], "provider-shot-01")
+        self.assertEqual(result["submitted_job_ids"], ["provider-shot-01"])
+
     def test_short_drama_preview_finishes_file_and_six_charge_ledger_chain(self):
         run_id = "preview-run"
         job_ids = ["provider-%s" % index for index in range(1, 7)]
@@ -547,7 +580,7 @@ class AdminE2ERunnerTests(unittest.TestCase):
             "ready_shot_keys": ["shot_%02d" % index for index in range(1, 7)],
             "missing_shot_keys": [], "provider": "grok",
             "provider_jobs": {}, "submitted_job_ids": job_ids,
-            "provider_task_ids": {}, "shot_cost": 60,
+            "provider_task_ids": {},
             "preview_job_id": "preview-job",
         }
         now = int(time.time())
