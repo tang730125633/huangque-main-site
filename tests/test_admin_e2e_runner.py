@@ -170,6 +170,21 @@ class AdminE2ERunnerTests(unittest.TestCase):
         self.assertEqual(self.admin._e2e_kind("/api/gen/breakdown"), "breakdown")
         self.assertEqual(self.admin._e2e_kind("/api/gen/canvas_agent"), "canvas_agent")
 
+    def test_short_drama_modes_are_individually_blocked_before_auth_or_charge(self):
+        operations = [
+            "short_drama.live_action.script_planning",
+            "short_drama.live_action.character_reference",
+            "short_drama.live_action.shot_video",
+            "short_drama.live_action.preview",
+            "short_drama.live_action.delivery",
+        ]
+        with patch.object(self.admin, "auth_admin_request") as auth:
+            for operation in operations:
+                result = self.admin.e2e_preflight("admin-token", operation)
+                self.assertFalse(result["ready"])
+                self.assertTrue(result["blocker"])
+            auth.assert_not_called()
+
     def test_copy_and_canvas_structured_delivery_are_verified(self):
         with closing(sqlite3.connect(self.admin.ASSET_DB)) as connection:
             connection.execute(
@@ -208,6 +223,40 @@ class AdminE2ERunnerTests(unittest.TestCase):
             }),
         })
         self.assertFalse(incomplete["delivery_verified"])
+        for result in (
+            {"type": "copy", "scenes": []},
+            {"type": "copy", "scenes": "不是分镜数组"},
+        ):
+            invalid_copy = self.admin._structured_asset_evidence({
+                "id": 12, "kind": "copy", "collect_mode": "",
+                "result_json": json.dumps(result),
+            })
+            self.assertFalse(invalid_copy["delivery_verified"])
+        missing_asset = self.admin._structured_asset_evidence({
+            "id": 99, "kind": "copy", "collect_mode": "",
+            "result_json": json.dumps({"type": "copy", "scenes": [{"scene": "产品特写"}]}),
+        })
+        self.assertFalse(missing_asset["delivery_verified"])
+        for plan in (
+            {"content": "计划", "requires_confirmation": False, "actions": [
+                {"type": "create_generation_draft", "mode": "text"},
+                {"type": "create_generation_draft", "mode": "image"},
+            ]},
+            {"content": "", "requires_confirmation": True, "actions": [
+                {"type": "create_generation_draft", "mode": "text"},
+                {"type": "create_generation_draft", "mode": "image"},
+            ]},
+            {"content": "计划", "requires_confirmation": True, "actions": [
+                {"type": "run_generation", "mode": "text"},
+                {"type": "run_generation", "mode": "image"},
+            ]},
+            {"content": "计划", "requires_confirmation": True, "actions": ["text", "image"]},
+        ):
+            invalid_canvas = self.admin._structured_asset_evidence({
+                "id": 13, "kind": "canvas_agent", "collect_mode": "",
+                "result_json": json.dumps({"type": "canvas_agent", "content": plan["content"], "plan": plan}),
+            })
+            self.assertFalse(invalid_canvas["delivery_verified"])
 
     def test_breakdown_delivery_must_match_the_requested_mode(self):
         with closing(sqlite3.connect(self.admin.ASSET_DB)) as connection:
@@ -230,6 +279,11 @@ class AdminE2ERunnerTests(unittest.TestCase):
             "result_json": json.dumps({"type": "breakdown_reverse", "prompt": "镜头缓慢推进"}),
         })
         self.assertTrue(right["delivery_verified"])
+        scenes = self.admin._structured_asset_evidence({
+            "id": 21, "kind": "breakdown", "collect_mode": "", "request_mode": "scenes",
+            "result_json": json.dumps({"type": "breakdown", "scenes": [{"scene": "开场产品特写"}]}),
+        })
+        self.assertTrue(scenes["delivery_verified"])
         for request_mode, result in (
             ("reverse_prompt", {"type": "breakdown_reverse", "prompt": {"bad": True}}),
             ("scenes", {"type": "breakdown", "scenes": "不是分镜数组"}),
@@ -239,6 +293,57 @@ class AdminE2ERunnerTests(unittest.TestCase):
                 "request_mode": request_mode, "result_json": json.dumps(result),
             })
             self.assertFalse(invalid["delivery_verified"])
+
+    def test_script_and_canvas_jobs_complete_the_same_eight_stage_contract(self):
+        jobs = [
+            (91, "copy", 4, {"provider": "copy_model", "source_page": "script"},
+             {"type": "copy", "scenes": [{"scene": "产品特写"}]}, "script.write.spoken"),
+            (92, "breakdown", 20, {"provider": "tikhub+zhipu", "source_page": "script", "mode": "scenes"},
+             {"type": "breakdown", "scenes": [{"scene": "三秒开场"}]}, "script.breakdown.scenes"),
+            (93, "canvas_agent", 3, {"provider": "openai_responses", "source_page": "canvas"},
+             {"type": "canvas_agent", "content": "计划已生成", "plan": {
+                 "content": "计划已生成", "requires_confirmation": True, "actions": [
+                     {"type": "create_generation_draft", "mode": "text"},
+                     {"type": "create_generation_draft", "mode": "image"},
+                 ]}}, "canvas.agent.plan"),
+        ]
+        with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
+            connection.execute("""CREATE TABLE jobs(
+                id INTEGER PRIMARY KEY,kind TEXT,status TEXT,cost INTEGER,refunded INTEGER,error TEXT,
+                created_at INTEGER,updated_at INTEGER,payload TEXT,result TEXT)""")
+            connection.executemany(
+                "INSERT INTO jobs VALUES(?,?, 'done', ?,0,'',1,2,?,?)",
+                [(job_id, kind, cost, json.dumps(payload), json.dumps(result))
+                 for job_id, kind, cost, payload, result, _operation in jobs],
+            )
+            connection.commit()
+        with closing(sqlite3.connect(self.admin.ASSET_DB)) as connection:
+            connection.execute("""CREATE TABLE assets(
+                id INTEGER PRIMARY KEY,job_id INTEGER,kind TEXT,stage TEXT,deleted INTEGER DEFAULT 0)""")
+            connection.executemany(
+                "INSERT INTO assets VALUES(?,?,?,'work',0)",
+                [(1, 91, "copy"), (2, 92, "breakdown")],
+            )
+            connection.commit()
+        ledgers = {}
+        rows = []
+        for job_id, _kind, cost, _payload, _result, operation in jobs:
+            key = "ledger-%s" % job_id
+            ledgers[key] = {"username": "qa-dedicated", "delta": -cost, "after_points": 100 - cost}
+            rows.append({
+                "run_id": "run-%s" % job_id, "operation_id": operation,
+                "username": "qa-dedicated", "status": "completed", "job_id": job_id,
+                "cost": cost, "points_before": 100, "points_after": 100 - cost,
+                "transaction_key": key, "error": "", "created_by": "root",
+                "created_at": 1, "updated_at": 2,
+            })
+        with patch.object(self.admin, "points_domain", SimpleNamespace(
+                get_points_transaction=lambda key: ledgers.get(key))):
+            runs = [self.admin._public_e2e_run(row) for row in rows]
+        for run in runs:
+            self.assertTrue(all(stage["state"] == "passed" for stage in run["stages"]), run)
+            self.assertTrue(run["evidence"]["delivery_verified"])
+            self.assertTrue(run["evidence"]["route_provider"])
 
     def test_cinematic_open_uses_one_ready_qa_avatar_and_four_second_quote(self):
         session = {"token": "short-lived-secret", "account": {

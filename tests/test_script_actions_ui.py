@@ -135,6 +135,11 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("链接格式不正确", self.html)
         self.assertIn("链接视频最大 200MB", self.html)
 
+    def test_script_and_breakdown_submissions_keep_customer_page_attribution(self):
+        self.assertIn("ctype:'分镜脚本',source_page:'script'", self.html)
+        self.assertIn("mode:'scenes',source_page:'script'", self.html)
+        self.assertIn("mode:submitMode,source_page:'script'", self.html)
+
     def test_breakdown_progress_and_history_restore_exist(self):
         self.assertIn('id="bdProgress"', self.html)
         self.assertIn('data-phase="downloading"', self.html)

@@ -3842,22 +3842,14 @@
       var prompt=inputVal(id,'prompt')||node.params.text||'';
       if(!prompt.trim()){ setNodeState(node,'error','需要提示词（自己填或从上游连入）','#f4708a'); updateState('缺少提示词'); return Promise.reject('无词'); }
       var refImgs=refImagesForNode(node); var refImg=refImgs[0]||''; var eng=node.params.engine||'nb2';
-      var bp={prompt:prompt.trim(), ratio:node.params.ratio||'9:16', quality:node.params.quality||'hd', count:1,source_page:'canvas'};
-      if(refImg) bp.image=refImg.indexOf(',')>=0?refImg.split(',')[1]:refImg;
-      if(refImgs.length>1) bp.images=refImgs.map(function(img){ return img.indexOf(',')>=0?img.split(',')[1]:img; });
-      var endpoint, gbtn=node.el.querySelector('[data-f="run"]');
-      if(eng==='gpt'||eng==='zelong'){
-        endpoint='/api/gen/image';
-        if(eng==='zelong') bp.provider='zelong';
-      } else {
-        endpoint='/api/gen/banana'; bp.model=eng;
-      }
+      var imageRequest=agentModule.imageRequest({engine:eng,prompt:prompt,ratio:node.params.ratio,quality:node.params.quality,references:refImgs});
+      var gbtn=node.el.querySelector('[data-f="run"]');
       gbtn.disabled=true; setNodeState(node,'running','提交中…','#2dd4bf'); updateState('运行中');
-      var imageSubmissionKey='canvas-image-'+node.id+'-'+Date.now().toString(36);
-      return apiClient.json(endpoint,{method:'POST',body:bp,headers:{'Idempotency-Key':imageSubmissionKey}})
+      var imageSubmissionKey=node._imageSubmissionKey||(node._imageSubmissionKey='canvas-image-'+node.id+'-'+Date.now().toString(36));
+      return agentModule.submitRequest(apiClient,imageRequest,imageSubmissionKey)
         .catch(function(error){
           var data=error&&error.data||{};
-          if(error&&error.status===402) throw makeRunNodeError('点数不足',{code:'insufficient_points'});
+          if(error&&error.status===402){ node._imageSubmissionKey=''; throw makeRunNodeError('点数不足',{code:'insufficient_points'}); }
           if(error&&error.status===429) throw makeRunNodeError(data.detail||'任务排队中，请稍后再试',{
             code:data.code||(data.active_jobs!=null?'active_job_cap':'queue_full'),
             retryable:true,
@@ -3880,7 +3872,7 @@
             timeoutError:function(){ return makeRunNodeError('超时',{code:'timeout'}); }
           });
         })
-        .then(function(result){ gbtn.disabled=false;
+        .then(function(result){ gbtn.disabled=false; node._imageSubmissionKey='';
           var url=(result&&(result.url||(result.urls&&result.urls[0])))||'';
           node.outputs.image=url;
           var box=node.el.querySelector('[data-f="result"]'); if(box){ box.style.display='block'; box.style.backgroundImage='url("'+url+'?t='+Date.now()+'")'; box.innerHTML=''; }
@@ -3892,6 +3884,8 @@
             updateState('等待队列空位');
             throw e;
           }
+          if(e&&e.status>=400&&e.status<500) node._imageSubmissionKey='';
+          if(e&&e.code==='job_failed') node._imageSubmissionKey='';
           setNodeState(node,'error','失败：'+(e.message||e),'#f4708a'); updateState('有错误'); throw e;
         });
     }
@@ -3900,15 +3894,14 @@
       if(!videoPrompt.trim()){ setNodeState(node,'error','需要视频提示词（自己填或从上游连入）','#f4708a'); updateState('缺少提示词'); return Promise.reject('无词'); }
       var videoRefs=refImagesForNode(node).slice(0,4);
       var videoChannel=node.params.channel||'grok';
-      var payload={channel:videoChannel,prompt:videoPrompt.trim(),duration:Number(node.params.duration||5),ratio:node.params.ratio||'16:9',source_page:'canvas'};
-      if(videoRefs.length) payload.reference_images=videoRefs.map(function(img){ return img.indexOf(',')>=0?img.split(',')[1]:img; });
+      var videoRequest=agentModule.videoRequest({channel:videoChannel,prompt:videoPrompt,duration:node.params.duration,ratio:node.params.ratio,references:videoRefs});
       var vbtn=node.el.querySelector('[data-f="run"]');
       vbtn.disabled=true; setNodeState(node,'running','提交中...','#2dd4bf'); updateState('运行中');
-      var videoSubmissionKey='canvas-video-'+node.id+'-'+Date.now().toString(36);
-      return apiClient.json('/api/gen/xiaole_video',{method:'POST',body:payload,headers:{'Idempotency-Key':videoSubmissionKey}})
+      var videoSubmissionKey=node._videoSubmissionKey||(node._videoSubmissionKey='canvas-video-'+node.id+'-'+Date.now().toString(36));
+      return agentModule.submitRequest(apiClient,videoRequest,videoSubmissionKey)
         .catch(function(error){
           var data=error&&error.data||{};
-          if(error&&error.status===402) throw makeRunNodeError('点数不足',{code:'insufficient_points'});
+          if(error&&error.status===402){ node._videoSubmissionKey=''; throw makeRunNodeError('点数不足',{code:'insufficient_points'}); }
           if(error&&error.status===429) throw makeRunNodeError(data.detail||'任务排队中，请稍后再试',{
             code:data.code||(data.active_jobs!=null?'active_job_cap':'queue_full'),
             retryable:true,
@@ -3931,7 +3924,7 @@
             timeoutError:function(){ return makeRunNodeError('超时',{code:'timeout'}); }
           });
         })
-        .then(function(result){ vbtn.disabled=false;
+        .then(function(result){ vbtn.disabled=false; node._videoSubmissionKey='';
           var url=(result&&(result.video_url||result.source_video_url||result.url||(result.urls&&result.urls[0])))||'';
           if(!url) throw makeRunNodeError('未返回视频地址',{code:'missing_video_url'});
           node.outputs.video=url;
@@ -3945,6 +3938,8 @@
             updateState('等待队列空位');
             throw e;
           }
+          if(e&&e.status>=400&&e.status<500) node._videoSubmissionKey='';
+          if(e&&e.code==='job_failed') node._videoSubmissionKey='';
           setNodeState(node,'error','失败：'+normalizeVideoNodeError(node,e),'#f4708a'); updateState('有错误'); throw e;
         });
     }

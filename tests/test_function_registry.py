@@ -202,8 +202,17 @@ class FunctionRegistryTests(unittest.TestCase):
         )
         short_drama = next(page for page in pages if page["key"] == "short-drama")
         self.assertEqual([item["name"] for item in short_drama["functions"]], ["AI 真人短剧"])
+        self.assertEqual(
+            [mode["key"] for mode in short_drama["functions"][0]["modes"]],
+            ["short_drama.live_action.script_planning",
+             "short_drama.live_action.character_reference",
+             "short_drama.live_action.shot_video",
+             "short_drama.live_action.preview",
+             "short_drama.live_action.delivery"],
+        )
         self.assertTrue(all(
             not mode["validation"]["supported"]
+            and bool(mode["validation"]["blocked_reason"])
             for mode in short_drama["functions"][0]["modes"]
         ))
         canvas = next(page for page in pages if page["key"] == "canvas")
@@ -225,6 +234,25 @@ class FunctionRegistryTests(unittest.TestCase):
             }),
             "canvas.video.grok",
         )
+        classify = self.admin.function_registry.classify_task
+        for metadata, operation in (
+            ({"source_page": "canvas", "provider": "banana", "model": "pro"}, "canvas.image.banana.pro"),
+            ({"source_page": "canvas", "provider": "openai"}, "canvas.image.openai"),
+            ({"source_page": "canvas", "provider": "zelong"}, "canvas.image.zelong"),
+        ):
+            self.assertEqual(classify("image", metadata), operation)
+        self.assertEqual(classify("xiaole_video", {"source_page": "canvas", "channel": "micro"}), "canvas.video.micro")
+        for style, operation in (("口播", "script.write.spoken"), ("剧情", "script.write.story"), ("种草", "script.write.recommend")):
+            self.assertEqual(classify("copy", {"source_page": "script", "format": "script", "style": style}), operation)
+        for metadata, operation in (
+            ({"source_page": "script", "mode": "scenes"}, "script.breakdown.scenes"),
+            ({"source_page": "script", "mode": "reverse_prompt"}, "script.breakdown.reverse"),
+            ({"source_page": "script", "source_type": "image"}, "script.breakdown.local_image"),
+            ({"source_page": "script", "source_type": "video"}, "script.breakdown.local_video"),
+        ):
+            self.assertEqual(classify("breakdown", metadata), operation)
+        self.assertIsNone(classify("copy", {"source_page": "canvas", "format": "script", "style": "口播"}))
+        self.assertIsNone(classify("breakdown", {"source_page": "video", "mode": "scenes"}))
 
         flags = self.admin.feature_flags.CATALOG_MAP
         routes = self.admin.KEY_GROUP_MAP
