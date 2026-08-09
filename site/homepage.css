@@ -292,7 +292,7 @@ main,footer{position:relative;z-index:1}
 }
 
 @supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
-  .nav-shell,.button,.nav-actions .nav-primary{background:rgba(18,21,26,.88)}.nav-slider-blob,.nav-slider-trail{animation:none!important}
+  .nav-shell,.button,.nav-actions .nav-primary{background:rgba(18,21,26,.88)}
 }
 
 @keyframes twinkle{from{opacity:.55}to{opacity:1}}
