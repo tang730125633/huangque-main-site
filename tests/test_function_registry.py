@@ -237,6 +237,12 @@ class FunctionRegistryTests(unittest.TestCase):
             }),
             "canvas.image.banana.nb2",
         )
+        canvas_image_modes = canvas["functions"][1]["modes"]
+        self.assertTrue(all(mode["validation"]["supported"] for mode in canvas_image_modes))
+        for mode in canvas_image_modes:
+            runner = self.admin.function_registry.e2e_runner(mode["key"])
+            self.assertEqual(runner["prefill"], self.admin.function_registry._image_validation()["prefill"])
+            self.assertIn("provider_task", runner["evidence_contract"]["not_applicable"])
         self.assertEqual(
             self.admin.function_registry.classify_task("xiaole_video", {
                 "source_page": "canvas", "channel": "grok", "operation": "generate",

@@ -971,19 +971,22 @@ def _e2e_payload(operation_id, runner, ready_avatar_ids=None, ready_audio_voice_
             "volume": int(prefill.get("volume", 0)),
             "source_page": "audio",
         })
-    elif operation_id.startswith("image."):
+    elif operation_id.startswith(("image.", "canvas.image.")):
         parts = operation_id.split(".")
+        canvas_image = parts[0] == "canvas"
+        provider_index = 2 if canvas_image else 1
         payload.update({
             "prompt": prompt, "ratio": str(prefill.get("ratio") or "1:1"),
             "quality": str(prefill.get("quality") or "std"),
-            "count": int(prefill.get("count") or 1), "source_page": "banana",
+            "count": int(prefill.get("count") or 1),
+            "source_page": "canvas" if canvas_image else "banana",
         })
-        provider = parts[1]
+        provider = parts[provider_index]
         payload["provider"] = provider
         if provider == "banana":
-            payload["model"] = parts[2]
+            payload["model"] = parts[provider_index + 1]
         elif provider == "seedream":
-            payload["variant"] = parts[2]
+            payload["variant"] = parts[provider_index + 1]
         if operation_id == "image.openai.inpaint":
             payload["image"] = resolve(prefill["image_url"])
             payload["mask"] = resolve(prefill["mask_url"])
@@ -1217,7 +1220,7 @@ def _e2e_parameters(operation_id, payload):
             "音调：%s" % payload.get("pitch"),
             "音量：%s" % payload.get("volume"),
         ])
-    elif operation_id.startswith("image."):
+    elif operation_id.startswith(("image.", "canvas.image.")):
         provider = payload.get("provider")
         provider_label = {
             "banana": "纳米香蕉", "openai": "黄雀引擎 2",

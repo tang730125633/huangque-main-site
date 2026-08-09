@@ -70,6 +70,8 @@ assert.ok(app.includes("canvasShell.classList.toggle('agent-open'"));
 assert.ok(app.includes("session.draft='';"));
 assert.ok(app.includes("node._imageSubmissionKey||(node._imageSubmissionKey="));
 assert.ok(app.includes("node._videoSubmissionKey||(node._videoSubmissionKey="));
+assert.ok(app.includes('node.outputs.image=url;'));
+assert.ok(app.includes("setNodeState(node,'done','出图完成'"));
 
 (async function(){
   const calls = [];
