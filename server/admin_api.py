@@ -4445,6 +4445,48 @@ def _compose_operation_stat(since):
     return _finish_stats([bucket])[0], None
 
 
+def _character_reference_operation_stat(since):
+    if not JOB_DB.exists():
+        return None, None
+    try:
+        with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as connection:
+            connection.row_factory = sqlite3.Row
+            if not connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='short_drama_character_reference_jobs'").fetchone():
+                return None, None
+            rows = connection.execute(
+                """SELECT job_id,status,error,created_at,updated_at
+                   FROM short_drama_character_reference_jobs
+                   WHERE created_at>=? ORDER BY created_at DESC""",
+                (since,),
+            ).fetchall()
+    except sqlite3.Error:
+        return None, "角色标准图证据读取失败"
+    if not rows:
+        return None, None
+    bucket = {
+        "operation": "short_drama.live_action.character_reference",
+        "total": 0, "done": 0, "error": 0, "running": 0, "other": 0,
+    }
+    for row in rows:
+        _count_status(bucket, {
+            "done": "completed", "failed": "failed",
+            "linked": "running", "ready": "running",
+        }.get(str(row["status"] or "").lower(), "unknown"))
+    latest = _e2e_job_evidence(rows[0]["job_id"])
+    if not latest:
+        return None, "角色标准图关联的任务证据不存在"
+    state = str(rows[0]["status"] or "").lower()
+    if state == "failed":
+        latest["status"] = "failed"
+        latest["error"] = str(rows[0]["error"] or latest.get("error") or "")[:300]
+    elif state in {"linked", "ready"} and latest.get("status") in {"done", "completed"}:
+        latest["status"] = "processing"
+    bucket["latest"] = latest
+    return _finish_stats([bucket])[0], None
+
+
 def job_stats(days=7):
     days = max(1, min(int(days or 7), 90))
     since = int(time.time()) - days * 86400
@@ -4587,6 +4629,11 @@ def job_stats(days=7):
         evidence_errors.append(compose_error)
     if compose:
         by_operation[compose["operation"]] = compose
+    character_reference, character_reference_error = _character_reference_operation_stat(since)
+    if character_reference_error:
+        evidence_errors.append(character_reference_error)
+    if character_reference:
+        by_operation[character_reference["operation"]] = character_reference
     items = _finish_stats(list(by_kind.values()))
     operation_items = _finish_stats(list(by_operation.values()))
     unmapped_items = _finish_stats(list(unmapped.values()))

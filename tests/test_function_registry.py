@@ -496,6 +496,38 @@ class FunctionRegistryTests(unittest.TestCase):
         stats = self.admin.job_stats(7)
         self.assertNotIn("一键成片证据库不存在", stats["evidence_errors"])
 
+    def test_character_reference_evidence_source_maps_to_customer_operation(self):
+        now = int(time.time())
+        (self.admin.CONTENT_OUT / "character.bin").write_bytes(b"generated-character")
+        with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
+            connection.execute(
+                "INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (7, "image", "qa", 35, "done",
+                 json.dumps({"provider": "banana", "model": "nb2"}),
+                 json.dumps({"file": "character.bin", "url": "https://cdn.example/character.bin"}),
+                 "", now - 8, now - 2, 0),
+            )
+            connection.execute(
+                """CREATE TABLE short_drama_character_reference_jobs(
+                       job_id INTEGER,status TEXT,error TEXT,created_at INTEGER,updated_at INTEGER)"""
+            )
+            connection.execute(
+                "INSERT INTO short_drama_character_reference_jobs VALUES(7,'done','',?,?)",
+                (now - 8, now - 2),
+            )
+            connection.commit()
+
+        stats = self.admin.job_stats(7)
+        operation = next(
+            item for item in stats["by_operation"]
+            if item["operation"] == "short_drama.live_action.character_reference"
+        )
+        self.assertEqual((operation["done"], operation["error"]), (1, 0))
+        self.assertEqual(operation["latest"]["job_id"], 7)
+        self.assertEqual(operation["latest"]["route_provider"], "banana")
+        self.assertTrue(operation["latest"]["delivery_verified"])
+        self.assertEqual(operation["latest"]["artifact_check"], "file_exists")
+
     def test_task_drilldown_classifies_large_payloads_from_full_json(self):
         now = int(time.time())
         large = "x" * 10000
