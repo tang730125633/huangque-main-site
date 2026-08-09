@@ -350,8 +350,13 @@ def normalize_model_result(raw, request):
                 raise ValueError("生成草稿类型或来源无效")
             sources = [_text(node_id, 128, "来源节点") for node_id in sources]
             target_type = {"text": "text", "image": "gen", "video": "video"}[mode]
-            if any(node_id not in node_map or not _ports_compatible(node_map[node_id]["type"], target_type) for node_id in sources):
-                raise ValueError("生成草稿引用了不兼容的来源节点")
+            if any(node_id not in node_map for node_id in sources):
+                raise ValueError("生成草稿引用了不存在的来源节点")
+            compatible = [node_id for node_id in sources
+                          if _ports_compatible(node_map[node_id]["type"], target_type)]
+            if len(compatible) != len(sources):
+                warnings.append("已忽略生成草稿中不兼容的节点连线")
+            sources = compatible
             item.update(mode=mode, title=_text(action.get("title"), 120, "草稿标题") or "Agent 草稿",
                         prompt=_text(action.get("prompt"), 5000, "草稿提示词"), connect_from=sources)
             if not item["prompt"]:

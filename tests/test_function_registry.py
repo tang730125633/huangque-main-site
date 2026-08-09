@@ -210,11 +210,20 @@ class FunctionRegistryTests(unittest.TestCase):
              "short_drama.live_action.preview",
              "short_drama.live_action.delivery"],
         )
+        short_drama_modes = short_drama["functions"][0]["modes"]
+        self.assertTrue(short_drama_modes[0]["validation"]["supported"])
         self.assertTrue(all(
             not mode["validation"]["supported"]
             and bool(mode["validation"]["blocked_reason"])
-            for mode in short_drama["functions"][0]["modes"]
+            for mode in short_drama_modes[1:]
         ))
+        self.assertNotIn("旧书店", json.dumps(short_drama, ensure_ascii=False))
+        self.assertIn(
+            "旧书店",
+            self.admin.function_registry.e2e_runner(
+                "short_drama.live_action.script_planning"
+            )["prefill"]["source_text"],
+        )
         canvas = next(page for page in pages if page["key"] == "canvas")
         self.assertEqual([item["name"] for item in canvas["functions"]], ["画布 Agent", "图片节点", "视频节点"])
         self.assertEqual(canvas["functions"][0]["modes"][0]["key"], "canvas.agent.plan")
