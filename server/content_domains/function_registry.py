@@ -1033,6 +1033,7 @@ SHORT_DRAMA_FUNCTIONS = [{
         {
             "key": "short_drama.live_action.character_reference", "name": "角色标准图",
             "entrypoints": [_endpoint("POST", "/api/gen/short-drama/generate-character-reference"), _endpoint("POST", "/api/gen/short-drama/confirm-character-reference")],
+            "dependencies": [{"key": "gemini", "role": "主生成", "requirement": "required", "credential_source": "env"}],
             "evidence_source": "short_drama_character_reference_jobs",
             "evidence_contract": {"not_applicable": ["provider_task"]},
             "price_keys": ["image.banana.nb2.hd"], "smoke_inputs": ["已确认角色卡", "角色标准图生成与锁定"],
