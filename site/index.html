@@ -6,7 +6,7 @@
   <meta name="description" content="黄雀 AI：从 IP12、Agent 与无限画布，到图文音视频生产和 HQ CLI。">
   <title>黄雀 AI · 会持续生长的内容系统</title>
   <link rel="icon" href="/assets/logo_sparrow.png">
-  <link rel="stylesheet" href="/homepage.css?v=20260809-morph1">
+  <link rel="stylesheet" href="/homepage.css?v=20260809-drawer2">
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -555,6 +555,7 @@
       let openNav = '';
       let selectedNav = '';
       let sliderWidth = 0;
+      let navCloseTimer;
 
       const moveNavSlider = name => {
         const trigger = navCluster.querySelector(`[data-nav-trigger="${name}"]`);
@@ -617,7 +618,11 @@
           setOpenNav(trigger.dataset.navTrigger);
         });
       });
-      navCluster.addEventListener('pointerleave', () => setOpenNav(''));
+      navCluster.addEventListener('pointerenter', () => clearTimeout(navCloseTimer));
+      navCluster.addEventListener('pointerleave', () => {
+        clearTimeout(navCloseTimer);
+        navCloseTimer = setTimeout(() => setOpenNav(''), 320);
+      });
       navCluster.addEventListener('focusout', event => {
         if (!navCluster.contains(event.relatedTarget)) setOpenNav('');
       });
