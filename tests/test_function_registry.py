@@ -100,7 +100,7 @@ class FunctionRegistryTests(unittest.TestCase):
              "文案编导", "短剧创作", "无限画布", "我的资产", "点数价格", "邀请中心",
              "教程视频", "通用设置"],
         )
-        self.assertEqual([page["inventory_status"] for page in pages].count("verified"), 3)
+        self.assertEqual([page["inventory_status"] for page in pages].count("verified"), 5)
         image = next(page for page in pages if page["key"] == "banana")
         self.assertEqual(
             [feature["name"] for feature in image["functions"]],
@@ -175,13 +175,31 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertEqual(cosyvoice["requirement"], "required")
         tryon_fast = video["functions"][3]["modes"][0]
         self.assertEqual(next(item for item in tryon_fast["dependencies"] if item["key"] == "cos")["requirement"], "required")
+        collect = next(page for page in pages if page["key"] == "collect")
+        self.assertEqual(
+            [mode["key"] for feature in collect["functions"] for mode in feature["modes"]],
+            ["collect.content.comments", "collect.content.video", "collect.content.transcript"],
+        )
+        self.assertEqual([item["name"] for item in collect["auxiliary_actions"]], ["关键词搜内容"])
+        leads = next(page for page in pages if page["key"] == "leads")
+        self.assertEqual(
+            [mode["key"] for feature in leads["functions"] for mode in feature["modes"]],
+            ["leads.keyword.search"],
+        )
+        self.assertEqual([item["name"] for item in leads["auxiliary_actions"]], ["线索跟进保存"])
+        self.assertNotIn("HQ_E2E_COLLECT_URL", json.dumps(collect, ensure_ascii=False))
+        self.assertEqual(
+            self.admin.function_registry.e2e_runner("collect.content.comments")["prefill"]["url"],
+            "@env/HQ_E2E_COLLECT_URL",
+        )
 
         flags = self.admin.feature_flags.CATALOG_MAP
         routes = self.admin.KEY_GROUP_MAP
         prices = self.admin.pricing.CATALOG_MAP
-        for feature in image["functions"] + video["functions"] + audio["functions"]:
+        for feature in (image["functions"] + video["functions"] + audio["functions"]
+                        + collect["functions"] + leads["functions"]):
             self.assertTrue(feature["frontend_selector"])
-            self.assertIn(feature["service"], {"content", "imggen"})
+            self.assertIn(feature["service"], {"content", "imggen", "leadgen"})
             for flag in feature.get("flag_keys", []):
                 self.assertIn(flag, flags)
             leaves = feature.get("shared_steps", []) + feature.get("modes", [])
@@ -373,6 +391,15 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertIsNone(classify("audio", {"provider": "cosyvoice", "voice_scope": "public"}))
         self.assertIsNone(classify("video", {"source_page": "audio", "mode": "text"}))
         self.assertIsNone(classify("image", {"source_page": "audio", "provider": "openai"}))
+        self.assertEqual(
+            classify("collect", {"source_page": "collect", "want": ["video"]}),
+            "collect.content.video",
+        )
+        self.assertEqual(
+            classify("collect", {"source_page": "collect", "collect_mode": "transcript"}),
+            "collect.content.transcript",
+        )
+        self.assertEqual(classify("leads", {"source_page": "leads"}), "leads.keyword.search")
 
         filtered = self.admin.activity_logs(7, 20, q="video.grok.image", source="job")
         self.assertEqual(filtered["total"], 1)

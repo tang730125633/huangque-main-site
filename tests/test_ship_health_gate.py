@@ -336,6 +336,7 @@ exit 0
         self.assertIn("huangque-content", restart)
         self.assertIn("huangque-admin", restart)
         self.assertIn("huangque-imggen-api", restart)
+        self.assertIn("huangque-leadgen-api", restart)
 
     def test_exact_content_domains_blocks_new_module_import_failure(self):
         result = self._run_ship(

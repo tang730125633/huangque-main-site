@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import tempfile
 import threading
@@ -98,6 +99,40 @@ class AdminE2ERunnerTests(unittest.TestCase):
     def test_fixture_reader_rejects_paths_outside_private_directory(self):
         with self.assertRaisesRegex(ValueError, "名称无效"):
             self.admin._fixture_data_url("@fixture/../admin_api.py")
+
+    def test_collect_fixture_stays_server_side_and_submits_to_leadgen(self):
+        private_url = "https://www.douyin.com/video/1234567890"
+        runner = self.admin.function_registry.e2e_runner("collect.content.comments")
+        with patch.dict(os.environ, {"HQ_E2E_COLLECT_URL": private_url}):
+            payload = self.admin._e2e_payload("collect.content.comments", runner)
+        self.assertEqual(payload["url"], private_url)
+        self.assertNotIn(private_url, json.dumps(
+            self.admin._e2e_parameters("collect.content.comments", payload),
+            ensure_ascii=False,
+        ))
+        response = MagicMock()
+        response.read.return_value = b'{"job_id":12,"cost":3,"points_left":97}'
+        with patch.object(self.admin.urllib.request, "urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value = response
+            result = self.admin._content_e2e_request(
+                "/api/gen/collect", "qa-token", payload, "e2e:collect", 3
+            )
+        self.assertEqual(result["job_id"], 12)
+        self.assertEqual(urlopen.call_args.args[0].full_url, self.admin.LEADGEN_BASE + "/api/gen/collect")
+
+    def test_missing_collect_fixture_blocks_before_paid_submission(self):
+        runner = self.admin.function_registry.e2e_runner("collect.content.video")
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(ValueError, "HQ_E2E_COLLECT_URL"):
+                self.admin._e2e_payload("collect.content.video", runner)
+
+    def test_leads_runner_uses_one_public_result_candidate(self):
+        runner = self.admin.function_registry.e2e_runner("leads.keyword.search")
+        payload = self.admin._e2e_payload("leads.keyword.search", runner)
+        self.assertEqual((payload["platforms"], payload["count"], payload["pages"]),
+                         (["douyin"], 1, 1))
+        self.assertEqual((payload["provider"], payload["source_page"]), ("tikhub", "leads"))
+        self.assertEqual(self.admin._e2e_kind("/api/gen/leads"), "leads")
 
     def test_cinematic_open_uses_one_ready_qa_avatar_and_four_second_quote(self):
         session = {"token": "short-lived-secret", "account": {
@@ -539,6 +574,229 @@ class AdminE2ERunnerTests(unittest.TestCase):
         self.assertEqual(next(stage for stage in run["stages"] if stage["key"] == "delivery")["state"], "passed")
         self.assertEqual(next(stage for stage in run["stages"] if stage["key"] == "billing")["detail"], "扣点流水一致")
         self.assertNotIn("transaction_key", run)
+
+    def test_collect_structured_result_and_asset_complete_all_eight_stages(self):
+        with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
+            connection.execute("""CREATE TABLE jobs(
+                id INTEGER PRIMARY KEY,kind TEXT,status TEXT,cost INTEGER,refunded INTEGER,error TEXT,
+                created_at INTEGER,updated_at INTEGER,payload TEXT,result TEXT)""")
+            connection.execute(
+                "INSERT INTO jobs VALUES(81,'collect','done',3,0,'',1,2,?,?)",
+                (json.dumps({"provider": "tikhub", "want": ["comments"]}),
+                 json.dumps({"type": "collect", "video": {"title": "测试内容"},
+                             "copy": {}, "comments": [{"text": "测试评论"}]})),
+            )
+            connection.commit()
+        with closing(sqlite3.connect(self.admin.ASSET_DB)) as connection:
+            connection.execute("""CREATE TABLE assets(
+                id INTEGER PRIMARY KEY,job_id INTEGER,kind TEXT,stage TEXT,deleted INTEGER DEFAULT 0)""")
+            connection.execute("INSERT INTO assets VALUES(9,81,'collect','material',0)")
+            connection.commit()
+        row = {
+            "run_id": "run-81", "operation_id": "collect.content.comments",
+            "username": "qa-dedicated", "status": "completed", "job_id": 81,
+            "cost": 3, "points_before": 100, "points_after": 97,
+            "transaction_key": "ledger-81", "error": "", "created_by": "root",
+            "created_at": 1, "updated_at": 2,
+        }
+        ledger = {"username": "qa-dedicated", "delta": -3, "after_points": 97}
+        with patch.object(self.admin, "points_domain", SimpleNamespace(
+                get_points_transaction=lambda key: ledger)):
+            run = self.admin._public_e2e_run(row)
+        self.assertEqual(run["evidence"]["artifact_check"], "structured_asset")
+        self.assertEqual(run["evidence"]["route_provider"], "tikhub")
+        self.assertTrue(all(stage["state"] == "passed" for stage in run["stages"]))
+        self.assertEqual(
+            next(stage for stage in run["stages"] if stage["key"] == "generation")["name"],
+            "数据采集",
+        )
+
+    def test_collect_empty_comments_are_not_delivery_evidence(self):
+        evidence = self.admin._structured_asset_evidence({
+            "id": 82,
+            "kind": "collect",
+            "collect_mode": "comments",
+            "result_json": json.dumps({
+                "type": "collect", "video": {"title": "测试内容"},
+                "copy": {}, "comments": [],
+            }),
+        })
+        self.assertFalse(evidence["delivery_verified"])
+        self.assertEqual(evidence["artifact_check"], "invalid_structured")
+
+    def test_collect_video_checks_download_proxy_once_and_caches_result(self):
+        response = MagicMock()
+        response.headers = {"Content-Type": "video/mp4"}
+        response.read.side_effect = [b"complete-video-payload", b""]
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        with patch.object(self.admin, "AUTH_INTERNAL_TOKEN", "internal-test-token"), \
+             patch.object(self.admin.urllib.request, "urlopen", return_value=response) as open_url, \
+             patch.object(self.admin.subprocess, "run", return_value=SimpleNamespace(
+                 returncode=0, stdout=b"h264\n", stderr=b"")) as probe:
+            first = self.admin._download_proxy_evidence(83, {
+                "play_url": "https://video.huangquechuanmei.com/collect/test.mp4",
+                "title": "测试视频",
+            })
+            second = self.admin._download_proxy_evidence(83, {
+                "play_url": "https://video.huangquechuanmei.com/collect/test.mp4",
+                "title": "测试视频",
+            })
+        self.assertEqual(first, second)
+        self.assertTrue(first[0])
+        self.assertEqual(open_url.call_count, 1)
+        self.assertEqual(probe.call_count, 1)
+        request = open_url.call_args.args[0]
+        self.assertIn("/api/gen/dl?", request.full_url)
+        self.assertEqual(request.get_header("X-hq-internal-token"), "internal-test-token")
+
+    def test_collect_video_concurrent_check_is_waiting_not_failed(self):
+        entered = threading.Event()
+        release = threading.Event()
+        response = MagicMock()
+        response.headers = {"Content-Type": "video/mp4"}
+
+        def read(_size):
+            if not entered.is_set():
+                entered.set()
+                release.wait(2)
+                return b"complete-video-payload"
+            return b""
+
+        response.read.side_effect = read
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        first = []
+        with patch.object(self.admin, "AUTH_INTERNAL_TOKEN", "internal-test-token"), \
+             patch.object(self.admin.urllib.request, "urlopen", return_value=response) as open_url, \
+             patch.object(self.admin.subprocess, "run", return_value=SimpleNamespace(
+                 returncode=0, stdout=b"h264\n", stderr=b"")):
+            worker = threading.Thread(target=lambda: first.append(
+                self.admin._download_proxy_evidence(87, {
+                    "play_url": "https://video.huangquechuanmei.com/collect/test.mp4",
+                })
+            ))
+            worker.start()
+            self.assertTrue(entered.wait(2))
+            pending = self.admin._download_proxy_evidence(87, {
+                "play_url": "https://video.huangquechuanmei.com/collect/test.mp4",
+            })
+            release.set()
+            worker.join(2)
+
+        self.assertIsNone(pending[0])
+        self.assertIn("正在", pending[1])
+        self.assertTrue(first[0][0])
+        self.assertEqual(open_url.call_count, 1)
+
+        with closing(sqlite3.connect(self.admin.ADMIN_DB)) as connection:
+            connection.execute(
+                "INSERT INTO admin_e2e_delivery_checks VALUES(88,'checking','正在验收',?)",
+                (int(time.time()),),
+            )
+            connection.commit()
+        evidence = self.admin._structured_asset_evidence({
+            "id": 88,
+            "kind": "collect",
+            "collect_mode": "video",
+            "result_json": json.dumps({"video": {"play_url": "https://example.com/video.mp4"}}),
+        })
+        self.assertEqual(evidence["artifact_check"], "checking")
+        self.assertTrue(evidence["output_reference_present"])
+
+        with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
+            connection.execute("""CREATE TABLE jobs(
+                id INTEGER PRIMARY KEY,kind TEXT,status TEXT,cost INTEGER,refunded INTEGER,error TEXT,
+                created_at INTEGER,updated_at INTEGER,payload TEXT,result TEXT)""")
+            connection.execute(
+                "INSERT INTO jobs VALUES(88,'collect','done',3,0,'',1,2,?,?)",
+                (json.dumps({"provider": "tikhub", "want": ["video"]}),
+                 json.dumps({"video": {"play_url": "https://example.com/video.mp4"}})),
+            )
+            connection.commit()
+        with closing(sqlite3.connect(self.admin.ASSET_DB)) as connection:
+            connection.execute("""CREATE TABLE assets(
+                id INTEGER PRIMARY KEY,job_id INTEGER,kind TEXT,stage TEXT,deleted INTEGER DEFAULT 0)""")
+            connection.execute("INSERT INTO assets VALUES(10,88,'collect','material',0)")
+            connection.commit()
+        row = {
+            "run_id": "run-88", "operation_id": "collect.content.video",
+            "username": "qa-dedicated", "status": "completed", "job_id": 88,
+            "cost": 3, "points_before": 100, "points_after": 97,
+            "transaction_key": "ledger-88", "error": "", "created_by": "root",
+            "created_at": 1, "updated_at": 2,
+        }
+        ledger = {"username": "qa-dedicated", "delta": -3, "after_points": 97}
+        with patch.object(self.admin, "points_domain", SimpleNamespace(
+                get_points_transaction=lambda key: ledger)):
+            run = self.admin._public_e2e_run(row)
+        delivery = next(stage for stage in run["stages"] if stage["key"] == "delivery")
+        self.assertEqual(delivery["state"], "waiting")
+
+    def test_collect_video_retries_a_stale_failed_download_check(self):
+        with closing(sqlite3.connect(self.admin.ADMIN_DB)) as connection:
+            connection.execute("""CREATE TABLE admin_e2e_delivery_checks(
+                job_id INTEGER PRIMARY KEY,status TEXT,detail TEXT,updated_at INTEGER)""")
+            connection.execute(
+                "INSERT INTO admin_e2e_delivery_checks VALUES(84,'failed','temporary',?)",
+                (int(time.time()) - 61,),
+            )
+            connection.commit()
+        response = MagicMock()
+        response.headers = {"Content-Type": "video/mp4"}
+        response.read.side_effect = [b"complete-video-payload", b""]
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        with patch.object(self.admin, "AUTH_INTERNAL_TOKEN", "internal-test-token"), \
+             patch.object(self.admin.urllib.request, "urlopen", return_value=response) as open_url, \
+             patch.object(self.admin.subprocess, "run", return_value=SimpleNamespace(
+                 returncode=0, stdout=b"h264\n", stderr=b"")):
+            passed, _detail = self.admin._download_proxy_evidence(84, {
+                "play_url": "https://video.huangquechuanmei.com/collect/test.mp4",
+            })
+        self.assertTrue(passed)
+        self.assertEqual(open_url.call_count, 1)
+
+    def test_collect_video_rejects_early_eof_even_when_probe_would_pass(self):
+        response = MagicMock()
+        response.headers = {"Content-Type": "video/mp4", "Content-Length": "100"}
+        response.read.side_effect = [b"short", b""]
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        with patch.object(self.admin, "AUTH_INTERNAL_TOKEN", "internal-test-token"), \
+             patch.object(self.admin.urllib.request, "urlopen", return_value=response), \
+             patch.object(self.admin.subprocess, "run", return_value=SimpleNamespace(
+                 returncode=0, stdout=b"h264\n", stderr=b"")) as probe:
+            passed, detail = self.admin._download_proxy_evidence(85, {
+                "play_url": "https://video.huangquechuanmei.com/collect/test.mp4",
+            })
+        self.assertFalse(passed)
+        self.assertIn("不完整", detail)
+        probe.assert_not_called()
+
+    def test_collect_video_stale_claim_cannot_overwrite_newer_check(self):
+        response = MagicMock()
+        response.headers = {"Content-Type": "video/mp4"}
+        response.read.side_effect = [b"complete-video-payload", b""]
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+
+        def supersede_claim(*_args, **_kwargs):
+            with closing(sqlite3.connect(self.admin.ADMIN_DB)) as connection:
+                connection.execute(
+                    "UPDATE admin_e2e_delivery_checks SET detail='new claim',updated_at=updated_at+1 WHERE job_id=86"
+                )
+                connection.commit()
+            return SimpleNamespace(returncode=0, stdout=b"h264\n", stderr=b"")
+
+        with patch.object(self.admin, "AUTH_INTERNAL_TOKEN", "internal-test-token"), \
+             patch.object(self.admin.urllib.request, "urlopen", return_value=response), \
+             patch.object(self.admin.subprocess, "run", side_effect=supersede_claim):
+            passed, detail = self.admin._download_proxy_evidence(86, {
+                "play_url": "https://video.huangquechuanmei.com/collect/test.mp4",
+            })
+        self.assertIsNone(passed)
+        self.assertEqual(detail, "new claim")
 
     def test_batch_preflight_quotes_all_stale_prepared_modes_without_submitting(self):
         session = {"token": "short-lived-secret", "account": {
