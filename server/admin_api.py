@@ -3509,6 +3509,8 @@ def _public_e2e_run(row):
         "copy_model": "文案模型线路",
         "tikhub+zhipu": "TikHub 下载 + 智谱视觉分析",
         "tikhub+google": "TikHub 下载 + Gemini 视频分析",
+        "local+zhipu": "本地素材 + 智谱视觉分析",
+        "local+google": "本地素材 + Gemini 视频分析",
         "openai_responses": "OpenAI Responses 结构化计划",
     }.get(route_provider, route_provider)
     route_ok = bool(provider_id or route_provider)

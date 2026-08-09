@@ -240,6 +240,7 @@ def handle_local_upload(handler, user):
             "upload_token": upload_token, "media_type": media_type,
             "mode": "reverse_prompt", "source_page": "script",
             "source_type": media_type,
+            "provider": "local+zhipu" if media_type == "image" else "local+google",
         }
         if (core.cli_gateway._internal_auth(handler, core.AUTH_INTERNAL_TOKEN)
                 and re.fullmatch(r"[0-9a-f]{32}", str(handler.headers.get("X-HQ-QA-Run-ID") or ""))):
