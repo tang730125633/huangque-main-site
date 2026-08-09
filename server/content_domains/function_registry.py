@@ -35,6 +35,15 @@ QA_SHORT_DRAMA_SOURCE = """场景一 旧书店 日 内
 场景二 旧书店门口 黄昏 外
 雨停了，两人把照片拼好，安静地看向镜头。
 林夏：那就从今天开始，把故事补完整。"""
+QA_SHORT_DRAMA_PREVIEW_SOURCE = """场景一 旧书店 日 内
+林夏走进旧书店，拉开窗帘，晨光落在一本旧相册上。
+林夏拿起相册，拂去灰尘，在书架间缓慢翻看。
+林夏：有些故事，只是暂时被遗忘了。
+她发现一张折叠的便签，将它夹回相册。
+场景二 旧书店门口 黄昏 外
+林夏抱着相册走到门口，雨后的街道映着暖色灯光。
+林夏合上相册，微笑着看向镜头。
+林夏：今天，我们把它重新写下来。"""
 QA_SHORT_DRAMA_CHARACTER_CONTRACT = [{
     "character_key": "character_1", "name": "林夏", "role_type": "main",
     "gender": "女", "age": "28 岁", "identity_text": "旧书店店主",
@@ -1064,9 +1073,19 @@ SHORT_DRAMA_FUNCTIONS = [{
         {
             "key": "short_drama.live_action.preview", "name": "短剧预览合成",
             "entrypoints": [_endpoint("POST", "/api/gen/short-drama/autodraft/jobs")],
-            "evidence_source": "short_drama_autodraft_jobs", "price_keys": [],
+            "dependencies": [{"key": "xai", "role": "逐镜素材生成", "requirement": "required", "credential_source": "pool"}],
+            "evidence_source": "short_drama_autodraft_jobs",
+            "price_keys": ["video.grok.v1.720p", "video.grok.v1_5.720p"],
             "smoke_inputs": ["已锁定逐镜素材", "720p 预览文件"],
-            "validation": _validation(supported=False, blocked_reason="缺少可重复使用的已锁音轨、字幕时间线和逐镜素材快照"),
+            "validation": _validation(prefill={
+                "title": "后台质检 · 短剧预览合成",
+                "synopsis": "单角色在旧书店重新发现并记录一段被遗忘的故事。",
+                "ratio": "16:9", "target_duration": 30, "shot_count": 6,
+                "visual_style": "电影感写实", "source_text": QA_SHORT_DRAMA_PREVIEW_SOURCE,
+                "filename": "后台质检短剧预览.txt", "import_mode": "faithful",
+                "content_type": "live_action",
+                "character_contract": QA_SHORT_DRAMA_CHARACTER_CONTRACT,
+            }),
         },
         {
             "key": "short_drama.live_action.delivery", "name": "正式交付",

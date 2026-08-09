@@ -216,7 +216,7 @@ class FunctionRegistryTests(unittest.TestCase):
         )
         short_drama_modes = short_drama["functions"][0]["modes"]
         self.assertTrue(all(
-            mode["validation"]["supported"] for mode in short_drama_modes[:3]
+            mode["validation"]["supported"] for mode in short_drama_modes[:4]
         ))
         self.assertEqual(short_drama_modes[1]["dependencies"], [{
             "key": "gemini", "role": "主生成", "requirement": "required",
@@ -225,7 +225,7 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertTrue(all(
             not mode["validation"]["supported"]
             and bool(mode["validation"]["blocked_reason"])
-            for mode in short_drama_modes[3:]
+            for mode in short_drama_modes[4:]
         ))
         self.assertNotIn("旧书店", json.dumps(short_drama, ensure_ascii=False))
         self.assertIn(
@@ -240,6 +240,11 @@ class FunctionRegistryTests(unittest.TestCase):
             )["prefill"]["character_contract"],
             self.admin.function_registry.QA_SHORT_DRAMA_CHARACTER_CONTRACT,
         )
+        preview_runner = self.admin.function_registry.e2e_runner(
+            "short_drama.live_action.preview"
+        )
+        self.assertEqual(preview_runner["prefill"]["shot_count"], 6)
+        self.assertEqual(short_drama_modes[3]["dependencies"][0]["key"], "xai")
         canvas = next(page for page in pages if page["key"] == "canvas")
         self.assertEqual([item["name"] for item in canvas["functions"]], ["画布 Agent", "图片节点", "视频节点"])
         self.assertEqual(canvas["functions"][0]["modes"][0]["key"], "canvas.agent.plan")
