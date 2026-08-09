@@ -930,8 +930,10 @@ SCRIPT_FUNCTIONS = [
         "dependencies": [
             {"key": "tikhub", "role": "公开视频下载与素材信息", "requirement": "required", "credential_source": "env"},
             {"key": "openai", "role": "无字幕视频的语音识别", "requirement": "optional", "credential_source": "env", "condition": "视频无可用字幕时调用"},
+            {"key": "zhipu", "role": "链接分镜拆解", "requirement": "required", "credential_source": "env", "condition": "mode=scenes"},
+            {"key": "gemini", "role": "链接视频提示词反推", "requirement": "required", "credential_source": "env", "condition": "mode=reverse_prompt"},
         ],
-        "evidence_gaps": ["智谱视觉拆解线路尚未归一到渠道凭据面板"],
+        "evidence_gaps": ["智谱与 Gemini 分析线路尚未归一到渠道凭据面板"],
         "modes": [
             {
                 "key": "script.breakdown.scenes", "name": "链接分解拆解",

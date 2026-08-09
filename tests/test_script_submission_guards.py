@@ -129,11 +129,13 @@ class ScriptSubmissionGuardTests(unittest.TestCase):
     def test_http_submission_validates_copy_before_pricing_and_paid_job_creation(self):
         source = (SERVER / "content_domains" / "core.py").read_text(encoding="utf-8")
         validate_at = source.index("body = text_domain.validate_copy_payload(body)")
+        idempotency_at = source.index("if not is_still_route: idem_key", validate_at)
         price_at = source.index("cost = points_domain.cost_of(kind, body)", validate_at)
         paid_job_at = source.index("jobs_store.create_paid_job(", validate_at)
 
         self.assertLess(validate_at, price_at)
         self.assertLess(validate_at, paid_job_at)
+        self.assertIn('"copy"', source[idempotency_at:price_at])
 
     def test_breakdown_partial_refund_intent_precedes_done_and_is_recoverable(self):
         source = (SERVER / "content_domains" / "core.py").read_text(encoding="utf-8")
