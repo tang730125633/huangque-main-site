@@ -171,6 +171,26 @@ class AdminE2ERunnerTests(unittest.TestCase):
         self.assertEqual(self.admin._e2e_kind("/api/gen/breakdown"), "breakdown")
         self.assertEqual(self.admin._e2e_kind("/api/gen/canvas_agent"), "canvas_agent")
 
+    def test_canvas_image_nodes_reuse_private_image_fixture_on_canvas_routes(self):
+        expected = {
+            "canvas.image.banana.nb2": ("/api/gen/banana", "banana", "nb2"),
+            "canvas.image.banana.pro": ("/api/gen/banana", "banana", "pro"),
+            "canvas.image.openai": ("/api/gen/image", "openai", None),
+            "canvas.image.zelong": ("/api/gen/image", "zelong", None),
+        }
+        for operation, (endpoint, provider, model) in expected.items():
+            runner = self.admin.function_registry.e2e_runner(operation)
+            payload = self.admin._e2e_payload(operation, runner)
+            self.assertTrue(runner["supported"])
+            self.assertEqual((runner["endpoint"]["path"], payload["source_page"]),
+                             (endpoint, "canvas"))
+            self.assertEqual(payload["provider"], provider)
+            self.assertEqual(payload.get("model"), model)
+            self.assertEqual(self.admin._e2e_kind(endpoint), "image")
+            self.assertNotIn("qa-serum", json.dumps(
+                self.admin.function_registry.list_pages(), ensure_ascii=False
+            ))
+
     def test_paid_short_drama_modes_stay_blocked_before_auth_or_charge(self):
         operations = [
             "short_drama.live_action.character_reference",
