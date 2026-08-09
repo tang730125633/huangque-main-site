@@ -70,6 +70,7 @@ class HomeVideoBannerTests(unittest.TestCase):
         self.assertIn("setTimeout(() => setOpenNav(''), 320)", self.html)
         self.assertIn('class="language-switcher"', self.html)
         self.assertIn('data-language="en"', self.html)
+        self.assertIn('.nav-shell{--glass-x:50%;--glass-y:-30%;position:relative;isolation:isolate;overflow:visible', self.css)
         self.assertIn("localStorage.setItem('huangque-language', next)", self.html)
         self.assertIn("nav-current-backdrop", self.liquid_glass)
         self.assertIn("key==='nav'&&!navOverHero", self.liquid_glass)
