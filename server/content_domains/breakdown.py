@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """爆款拆解：竞品视频链接 → 下载 → 抽帧 → ASR → GLM-4V 多模态 → 分镜脚本"""
-import os, json, time, base64, tempfile, subprocess, shutil, mimetypes, io, math
+import os, json, time, base64, tempfile, subprocess, shutil, mimetypes, io, math, hashlib
 import http.client
 import re
 import socket
@@ -203,20 +203,18 @@ def handle_local_upload(handler, user):
     maximum = 20 * 1024 * 1024 if media_type == "image" else 200 * 1024 * 1024
     if content_length <= 0 or content_length > maximum:
         return handler._send(413, {"detail": "图片最大 20MB，视频最大 200MB"})
-    active_jobs = core._user_active_job_count(user["username"])
-    if active_jobs >= core.MAX_USER_ACTIVE_JOBS:
-        return handler._send(429, {
-            "detail": "当前生成任务较多，请完成后再提交", "code": "active_job_cap",
-            "active_jobs": active_jobs, "max_active_jobs": core.MAX_USER_ACTIVE_JOBS,
-            "retry_after_ms": 4000,
-        })
-
     temp_path = ""
+    job_id = 0
+    idem_key = ""
+    idem_started = False
+    idem_endpoint = handler.path
     upload_token = __import__("uuid").uuid4().hex
     suffix = allowed[media_type][content_type]
     try:
+        idem_key = core._idempotency_key(handler.headers.get("Idempotency-Key"))
         root = _upload_root()
         temp_path = str(root / (upload_token + suffix))
+        digest = hashlib.sha256()
         with open(temp_path, "xb") as uploaded:
             remaining = content_length
             while remaining:
@@ -224,6 +222,7 @@ def handle_local_upload(handler, user):
                 if not chunk:
                     raise ValueError("上传文件读取不完整")
                 uploaded.write(chunk)
+                digest.update(chunk)
                 remaining -= len(chunk)
         with open(temp_path, "rb") as uploaded:
             signature = uploaded.read(16)
@@ -237,8 +236,52 @@ def handle_local_upload(handler, user):
         }[content_type]
         if not valid_signature:
             raise ValueError("文件内容与声明格式不一致")
-        body = {"upload_token": upload_token, "media_type": media_type, "mode": "reverse_prompt"}
+        body = {
+            "upload_token": upload_token, "media_type": media_type,
+            "mode": "reverse_prompt", "source_page": "script",
+            "source_type": media_type,
+        }
+        if (core.cli_gateway._internal_auth(handler, core.AUTH_INTERNAL_TOKEN)
+                and re.fullmatch(r"[0-9a-f]{32}", str(handler.headers.get("X-HQ-QA-Run-ID") or ""))):
+            body["qa_run_id"] = str(handler.headers.get("X-HQ-QA-Run-ID"))
+        if idem_key:
+            state, replay = core._idempotency_begin(user["username"], idem_endpoint, idem_key, {
+                "media_type": media_type, "content_type": content_type,
+                "content_length": content_length, "sha256": digest.hexdigest(),
+            })
+            if state == "replay":
+                _remove_upload(temp_path)
+                response = dict(replay or {})
+                return handler._send(int(response.pop("_http_status", 200)), response)
+            if state == "processing":
+                _remove_upload(temp_path)
+                return handler._send(409, {
+                    "detail": "相同上传请求正在处理，请勿重复提交",
+                    "code": "idempotency_in_progress", "retry_after_ms": 2000,
+                })
+            if state == "conflict":
+                _remove_upload(temp_path)
+                return handler._send(409, {
+                    "detail": "同一 Idempotency-Key 不能用于不同上传文件",
+                    "code": "idempotency_conflict",
+                })
+            idem_started = state == "new"
+        active_jobs = core._user_active_job_count(user["username"])
+        if active_jobs >= core.MAX_USER_ACTIVE_JOBS:
+            if idem_started:
+                core._idempotency_abort(user["username"], idem_endpoint, idem_key)
+            _remove_upload(temp_path)
+            return handler._send(429, {
+                "detail": "当前生成任务较多，请完成后再提交", "code": "active_job_cap",
+                "active_jobs": active_jobs, "max_active_jobs": core.MAX_USER_ACTIVE_JOBS,
+                "retry_after_ms": 4000,
+            })
         cost = points_domain.cost_of("breakdown", body)
+        if core.cli_gateway.reject_changed_cost(handler, cost, core.AUTH_INTERNAL_TOKEN):
+            if idem_started:
+                core._idempotency_abort(user["username"], idem_endpoint, idem_key)
+            _remove_upload(temp_path)
+            return
         with core._submission_lock:
             with closing(core.jdb()) as connection:
                 _ensure_upload_table(connection)
@@ -254,29 +297,49 @@ def handle_local_upload(handler, user):
                 core.jdb, points_domain.deduct_points, points_domain.refund_points,
                 "breakdown", user["username"], cost, body, core.SERVICE_OWNER,
                 before_commit=record_upload,
+                charge_transaction_key=("job-charge:%s:%s:%s" % (
+                    user["username"], idem_endpoint, idem_key)) if idem_key else "",
             )
+            response = {"job_id": job_id, "cost": cost, "points_left": points_left}
             if not core.enqueue_job(job_id, "breakdown", "reverse_prompt"):
                 core._reject_pending_job(job_id, user["username"], cost, "任务队列已满，请稍后再试")
                 _remove_trusted_upload(upload_token, user["username"], job_id, temp_path)
-                return handler._send(429, {
+                response = {
                     "detail": "任务队列已满，请稍后再试", "code": "queue_full",
-                    "retry_after_ms": 4000,
-                })
-        return handler._send(200, {"job_id": job_id, "cost": cost, "points_left": points_left})
+                    "retry_after_ms": 4000, "_http_status": 429,
+                }
+                if idem_started:
+                    core._idempotency_complete(user["username"], idem_endpoint, idem_key, response)
+                return handler._send(429, {key: value for key, value in response.items()
+                                           if key != "_http_status"})
+            if idem_started:
+                core._idempotency_complete(user["username"], idem_endpoint, idem_key, response)
+        return handler._send(200, response)
     except points_domain.AuthPointsError as exc:
+        if idem_started:
+            core._idempotency_abort(user["username"], idem_endpoint, idem_key)
         _remove_upload(temp_path)
         return handler._send(
             exc.status if exc.status in (402, 403) else 502,
             points_domain.public_error_body(exc, 20),
         )
     except core.jobs_store.PaidJobInsertError as exc:
+        if idem_started:
+            core._idempotency_abort(user["username"], idem_endpoint, idem_key)
         _remove_upload(temp_path)
         return handler._send(500, {
             "detail": "任务创建失败，点数已退回", "submission_ref": exc.submission_ref,
         })
     except Exception as exc:
-        _remove_upload(temp_path)
-        return handler._send(400, {"detail": str(exc)[:180]})
+        if idem_started and not job_id:
+            core._idempotency_abort(user["username"], idem_endpoint, idem_key)
+        if not job_id:
+            _remove_upload(temp_path)
+            return handler._send(400, {"detail": str(exc)[:180]})
+        return handler._send(500, {
+            "detail": "任务已受理但响应证据不完整，请勿重复提交",
+            "code": "submission_outcome_unknown",
+        })
 
 
 def _remove_upload(path):

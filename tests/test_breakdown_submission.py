@@ -534,12 +534,18 @@ class BreakdownLocalUploadHttpTests(unittest.TestCase):
                     "http://127.0.0.1:%d/api/gen/breakdown/local-upload?media_type=image"
                     % server.server_address[1]
                 )
-                request = urllib.request.Request(
-                    url, data=b"\x89PNG\r\n\x1a\nmock-image", method="POST",
-                    headers={"Authorization": "Bearer test", "Content-Type": "image/png"},
-                )
+                upload_data = b"\x89PNG\r\n\x1a\nmock-image"
+                headers = {
+                    "Authorization": "Bearer test", "Content-Type": "image/png",
+                    "Idempotency-Key": "local-upload-test-1",
+                }
+                request = urllib.request.Request(url, data=upload_data, method="POST", headers=headers)
                 with urllib.request.urlopen(request, timeout=5) as response:
                     accepted = json.loads(response.read())
+                replay = urllib.request.Request(url, data=upload_data, method="POST", headers=headers)
+                with urllib.request.urlopen(replay, timeout=5) as response:
+                    replayed = json.loads(response.read())
+                self.assertEqual(replayed, accepted)
                 self.assertEqual(20, accepted["cost"])
                 self.assertEqual(980, accepted["points_left"])
                 self.assertEqual([("fang", 20)], fake.deductions)
@@ -560,6 +566,7 @@ class BreakdownLocalUploadHttpTests(unittest.TestCase):
                     core.OUT_DIR / "_breakdown_uploads" / (upload["token"] + upload["suffix"]))
                 self.assertEqual(("breakdown", "fang", 20), tuple(row[:3]))
                 self.assertEqual("image", payload["media_type"])
+                self.assertEqual((payload["source_page"], payload["source_type"]), ("script", "image"))
                 self.assertTrue(os.path.isfile(uploaded_path))
                 self.assertEqual(1, core._job_queue.qsize())
 

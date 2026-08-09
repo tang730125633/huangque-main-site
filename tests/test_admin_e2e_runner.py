@@ -97,6 +97,52 @@ class AdminE2ERunnerTests(unittest.TestCase):
                     "/api/gen/audio", "account-token", {"text": "qa"}, "e2e:one", 10
                 )
 
+    def test_private_binary_runner_uploads_raw_fixture_with_idempotency(self):
+        payload = self.admin._e2e_payload(
+            "script.breakdown.local_image",
+            self.admin.function_registry.e2e_runner("script.breakdown.local_image"),
+        )
+        payload["qa_run_id"] = "a" * 32
+        response = MagicMock()
+        response.read.return_value = b'{"job_id":23,"cost":20,"points_left":480}'
+        with patch.object(self.admin.urllib.request, "urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value = response
+            result = self.admin._content_e2e_upload(
+                "/api/gen/breakdown/local-upload?media_type=image",
+                "qa-token", payload, "e2e:binary", 20,
+            )
+        request = urlopen.call_args.args[0]
+        self.assertEqual(result["job_id"], 23)
+        self.assertTrue(request.data.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertEqual(request.headers["Content-type"], "image/png")
+        self.assertEqual(request.headers["Idempotency-key"], "e2e:binary")
+        self.assertEqual(request.headers["X-hq-qa-run-id"], "a" * 32)
+        self.assertNotIn("file_data", json.dumps(result))
+
+    def test_local_reverse_run_uses_binary_submitter_once(self):
+        session = {"token": "short-lived-secret", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        with patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "points_domain", SimpleNamespace(
+                 cost_of=lambda kind, payload: 20,
+             )), \
+             patch.object(self.admin, "_content_e2e_upload", return_value={
+                 "job_id": 24, "cost": 20, "points_left": 480,
+             }) as upload, \
+             patch.object(self.admin, "_content_e2e_request") as json_submit:
+            run = self.admin.start_e2e_run(
+                "root", "admin-token", "script.breakdown.local_image"
+            )
+        self.assertEqual(run["job_id"], 24)
+        endpoint, token, payload, idem, cost = upload.call_args.args
+        self.assertEqual(endpoint, "/api/gen/breakdown/local-upload?media_type=image")
+        self.assertEqual((token, cost), ("short-lived-secret", 20))
+        self.assertEqual((payload["source_page"], payload["source_type"]), ("script", "image"))
+        self.assertEqual(payload["qa_run_id"], run["run_id"])
+        self.assertEqual(idem, "e2e:" + run["run_id"])
+        json_submit.assert_not_called()
+
     def test_fixture_reader_rejects_paths_outside_private_directory(self):
         with self.assertRaisesRegex(ValueError, "名称无效"):
             self.admin._fixture_data_url("@fixture/../admin_api.py")
@@ -151,6 +197,15 @@ class AdminE2ERunnerTests(unittest.TestCase):
             (breakdown["source_page"], breakdown["mode"]),
             ("script", "reverse_prompt"),
         )
+        local_image = self.admin._e2e_payload(
+            "script.breakdown.local_image",
+            self.admin.function_registry.e2e_runner("script.breakdown.local_image"),
+        )
+        self.assertTrue(local_image["file_data"].startswith("data:image/png;base64,"))
+        self.assertEqual(
+            (local_image["source_page"], local_image["source_type"], local_image["media_type"]),
+            ("script", "image", "image"),
+        )
         canvas = self.admin._e2e_payload(
             "canvas.agent.plan",
             self.admin.function_registry.e2e_runner("canvas.agent.plan"),
@@ -169,7 +224,19 @@ class AdminE2ERunnerTests(unittest.TestCase):
                          ("/api/gen/canvas_agent", "canvas_agent"))
         self.assertEqual(self.admin._e2e_kind("/api/gen/copy"), "copy")
         self.assertEqual(self.admin._e2e_kind("/api/gen/breakdown"), "breakdown")
+        self.assertEqual(
+            self.admin._e2e_kind("/api/gen/breakdown/local-upload?media_type=image"),
+            "breakdown",
+        )
         self.assertEqual(self.admin._e2e_kind("/api/gen/canvas_agent"), "canvas_agent")
+
+        for operation, channel in (("canvas.video.grok", "grok"),
+                                   ("canvas.video.micro", "micro")):
+            video = self.admin._e2e_payload(
+                operation, self.admin.function_registry.e2e_runner(operation)
+            )
+            self.assertEqual((video["source_page"], video["channel"]), ("canvas", channel))
+            self.assertEqual(video["resolution"], "480p")
 
     def test_canvas_image_nodes_reuse_private_image_fixture_on_canvas_routes(self):
         expected = {

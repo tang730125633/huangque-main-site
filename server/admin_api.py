@@ -13,6 +13,7 @@ from http import cookies
 import http.client
 from importlib import import_module
 import base64
+import binascii
 import hashlib
 import json
 import mimetypes
@@ -933,12 +934,13 @@ def _e2e_payload(operation_id, runner, ready_avatar_ids=None, ready_audio_voice_
             "resolution": "720p", "ratio": "9:16",
             "reference_images": [resolve(item) for item in prefill.get("reference_images") or []],
         })
-    elif operation_id.startswith("video.grok."):
+    elif operation_id.startswith("video.grok.") or operation_id == "canvas.video.grok":
         references = [resolve(item) for item in prefill.get("reference_images") or []]
         payload.update({
             "channel": "grok", "operation": "generate", "model": "grok-imagine-video",
-            "prompt": prompt, "duration": 5,
-            "resolution": "720p" if references else "480p", "ratio": "9:16",
+            "prompt": prompt, "duration": int(prefill.get("duration") or 5),
+            "resolution": str(prefill.get("resolution") or ("720p" if references else "480p")),
+            "ratio": str(prefill.get("ratio") or "9:16"),
             "reference_images": references,
         })
     elif operation_id.startswith("video.minimax."):
@@ -953,11 +955,13 @@ def _e2e_payload(operation_id, runner, ready_avatar_ids=None, ready_audio_voice_
             "duration": 4, "resolution": "720p", "ratio": "9:16",
             "reference_images": [resolve(item) for item in prefill.get("reference_images") or []],
         })
-    elif operation_id.startswith("video.seedance."):
+    elif operation_id.startswith("video.seedance.") or operation_id == "canvas.video.micro":
         payload.update({
             "channel": "micro", "operation": "generate", "prompt": prompt,
-            "duration": 4, "resolution": "480p", "ratio": "9:16",
-            "generate_audio": False, "upscale": False,
+            "duration": int(prefill.get("duration") or 4),
+            "resolution": str(prefill.get("resolution") or "480p"),
+            "ratio": str(prefill.get("ratio") or "9:16"),
+            "generate_audio": bool(prefill.get("generate_audio", False)), "upscale": False,
             "reference_images": [resolve(item) for item in prefill.get("reference_images") or []],
         })
     elif operation_id.startswith("audio.tts."):
@@ -1018,6 +1022,13 @@ def _e2e_payload(operation_id, runner, ready_avatar_ids=None, ready_audio_voice_
             "ctype": str(prefill.get("ctype") or "分镜脚本"),
             "source_page": "script",
         })
+    elif operation_id.startswith("script.breakdown.local_"):
+        media_type = str(prefill.get("media_type") or "").strip().lower()
+        payload.update({
+            "file_data": resolve(prefill["file_url"]), "media_type": media_type,
+            "mode": "reverse_prompt", "source_page": "script",
+            "source_type": media_type,
+        })
     elif operation_id.startswith("script.breakdown."):
         payload.update({
             "url": resolve(prefill["url"]),
@@ -1045,6 +1056,8 @@ def _e2e_payload(operation_id, runner, ready_avatar_ids=None, ready_audio_voice_
         })
     else:
         raise ValueError("该模式尚未接入后台托管测试")
+    if operation_id.startswith("canvas.video."):
+        payload["source_page"] = "canvas"
     return payload
 
 
@@ -1095,6 +1108,55 @@ def _content_e2e_request(path, account_token, payload, idempotency_key, expected
         raise E2ESubmitUncertain("提交连接中断或响应超时") from exc
 
 
+def _content_e2e_upload(path, account_token, payload, idempotency_key, expected_cost):
+    data_url = str(payload.get("file_data") or "")
+    try:
+        header, encoded = data_url.split(",", 1)
+        content_type = header[5:].split(";", 1)[0].strip().lower()
+        raw = base64.b64decode(encoded, validate=True)
+    except (ValueError, TypeError, binascii.Error) as exc:
+        raise ValueError("后台私有二进制测试素材无效") from exc
+    allowed = {
+        "image": {"image/jpeg", "image/png", "image/webp"},
+        "video": {"video/mp4", "video/quicktime", "video/webm"},
+    }
+    media_type = str(payload.get("media_type") or "").strip().lower()
+    if not raw or content_type not in allowed.get(media_type, set()):
+        raise ValueError("后台私有二进制测试素材格式不匹配")
+    headers = {
+        "Authorization": "Bearer " + account_token,
+        "Content-Type": content_type,
+        "Content-Length": str(len(raw)),
+        "Idempotency-Key": idempotency_key,
+        "X-HQ-Internal-Token": AUTH_INTERNAL_TOKEN,
+        "X-HQ-Expected-Cost": str(int(expected_cost)),
+        "X-HQ-QA-Run-ID": str(payload.get("qa_run_id") or ""),
+    }
+    request = urllib.request.Request(CONTENT_BASE + path, data=raw, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=35) as response:
+            result = json.loads(response.read() or b"{}")
+        if not isinstance(result, dict) or not result.get("job_id"):
+            raise E2ESubmitUncertain("业务接口响应缺少 job_id")
+        return result
+    except urllib.error.HTTPError as exc:
+        try:
+            body = json.loads(exc.read() or b"{}")
+        except Exception:
+            body = {}
+        error_type = E2ESubmitUncertain if exc.code >= 500 or exc.code in {408, 409} else E2ESubmitRejected
+        err = error_type(body.get("detail") or "业务接口拒绝二进制测试任务")
+        err.status = exc.code
+        err.body = body
+        raise err
+    except E2ESubmitUncertain:
+        raise
+    except (urllib.error.URLError, TimeoutError, ConnectionError,
+            http.client.IncompleteRead, http.client.RemoteDisconnected,
+            OSError, json.JSONDecodeError) as exc:
+        raise E2ESubmitUncertain("二进制提交连接中断或响应超时") from exc
+
+
 def _content_e2e_get(path, account_token):
     req = urllib.request.Request(
         CONTENT_BASE + path,
@@ -1136,6 +1198,7 @@ def _content_e2e_post(path, account_token, payload):
 
 
 def _e2e_kind(endpoint):
+    endpoint = str(endpoint or "").split("?", 1)[0]
     return {
         "/api/gen/image": "image", "/api/gen/banana": "image",
         "/api/gen/audio": "audio",
@@ -1144,6 +1207,7 @@ def _e2e_kind(endpoint):
         "/api/gen/cinematic": "cinematic",
         "/api/gen/collect": "collect", "/api/gen/leads": "leads",
         "/api/gen/copy": "copy", "/api/gen/breakdown": "breakdown",
+        "/api/gen/breakdown/local-upload": "breakdown",
         "/api/gen/canvas_agent": "canvas_agent",
     }.get(endpoint)
 
@@ -1255,6 +1319,12 @@ def _e2e_parameters(operation_id, payload):
             "脚本风格：%s" % payload.get("style"),
             "目标时长：%s" % payload.get("dur"),
             "发布平台：%s" % payload.get("platform"),
+        ])
+    elif operation_id.startswith("script.breakdown.local_"):
+        parameters.extend([
+            "私有测试素材：已准备",
+            "素材类型：%s" % ("本地图片" if payload.get("media_type") == "image" else "本地短视频"),
+            "验收内容：非空视觉提示词",
         ])
     elif operation_id.startswith("script.breakdown."):
         parameters.extend([
@@ -3765,7 +3835,9 @@ def _submit_e2e_run(run_id, admin_token, retry_capacity=False):
         endpoint = prepared["endpoint"]
         idem = "e2e:" + run_id
         transaction_key = "job-charge:%s:%s:%s" % (account["username"], endpoint, idem)
-        result = _content_e2e_request(endpoint, session["token"], payload, idem, cost)
+        result = (_content_e2e_upload(endpoint, session["token"], payload, idem, cost)
+                  if endpoint.startswith("/api/gen/breakdown/local-upload?")
+                  else _content_e2e_request(endpoint, session["token"], payload, idem, cost))
         try:
             job_id = int(result["job_id"])
             points_after = int(result["points_left"])

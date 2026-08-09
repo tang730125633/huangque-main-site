@@ -971,7 +971,7 @@ SCRIPT_FUNCTIONS = [
                 "evidence_contract": {"not_applicable": ["provider_task", "balance"]},
                 "price_keys": ["breakdown.item"],
                 "smoke_inputs": ["1 张本地图片", "非空图片提示词"],
-                "validation": _validation(supported=False, blocked_reason="二进制上传入口尚未接入后台托管测试"),
+                "validation": _validation({"file_url": QA_PRODUCT_IMAGE, "media_type": "image"}),
             },
             {
                 "key": "script.breakdown.local_video", "name": "本地视频反推",
@@ -981,7 +981,7 @@ SCRIPT_FUNCTIONS = [
                 "evidence_contract": {"not_applicable": ["provider_task", "balance"]},
                 "price_keys": ["breakdown.item"],
                 "smoke_inputs": ["1 段本地短视频", "非空视频提示词"],
-                "validation": _validation(supported=False, blocked_reason="二进制上传入口尚未接入后台托管测试"),
+                "validation": _validation({"file_url": QA_MOTION_VIDEO, "media_type": "video"}),
             },
         ],
     },
@@ -1126,8 +1126,11 @@ CANVAS_FUNCTIONS = [{
             "dependencies": [{"key": "xai", "role": "主生成", "requirement": "alternative", "alternative_group": "grok_provider", "selection_value": "xai", "credential_source": "pool"}, {"key": "xiaolevideo", "role": "主生成", "requirement": "alternative", "alternative_group": "grok_provider", "selection_value": "xiaole"}],
             "task_match": {"kind": "xiaole_video", "source_page": "canvas", "channel": "grok"},
             "price_keys": ["video.grok.v1.720p"],
-            "smoke_inputs": ["固定产品提示词", "画布视频节点结果写回"],
-            "validation": _validation(supported=False, blocked_reason="画布视频节点的固定素材与节点结果写回验收尚未接入后台托管测试"),
+            "smoke_inputs": ["固定产品提示词", "画布视频节点业务结果"],
+            "validation": _validation({
+                "mode": "grok", "prompt": QA_PROMPT, "duration": 5,
+                "resolution": "480p", "ratio": "16:9",
+            }),
         }, {
             "key": "canvas.video.micro", "name": "豆姐视频",
             "entrypoints": [_endpoint("POST", "/api/gen/xiaole_video"), _endpoint("GET", "/api/gen/job/{id}")],
@@ -1135,8 +1138,11 @@ CANVAS_FUNCTIONS = [{
             "dependencies": [{"key": "seedance", "role": "主生成", "requirement": "required", "credential_source": "pool"}],
             "task_match": {"kind": "xiaole_video", "source_page": "canvas", "channel": "micro"},
             "price_keys": ["video.seedance"],
-            "smoke_inputs": ["固定产品提示词", "画布视频节点结果写回"],
-            "validation": _validation(supported=False, blocked_reason="画布视频节点的固定素材与节点结果写回验收尚未接入后台托管测试"),
+            "smoke_inputs": ["固定产品提示词", "画布视频节点业务结果"],
+            "validation": _validation({
+                "mode": "micro", "prompt": QA_PROMPT, "duration": 4,
+                "resolution": "480p", "ratio": "16:9", "generate_audio": False,
+            }),
         },
     ],
 }]
