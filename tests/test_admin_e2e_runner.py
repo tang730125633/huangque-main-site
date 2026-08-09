@@ -704,6 +704,35 @@ class AdminE2ERunnerTests(unittest.TestCase):
         self.assertEqual(evidence["artifact_check"], "checking")
         self.assertTrue(evidence["output_reference_present"])
 
+        with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
+            connection.execute("""CREATE TABLE jobs(
+                id INTEGER PRIMARY KEY,kind TEXT,status TEXT,cost INTEGER,refunded INTEGER,error TEXT,
+                created_at INTEGER,updated_at INTEGER,payload TEXT,result TEXT)""")
+            connection.execute(
+                "INSERT INTO jobs VALUES(88,'collect','done',3,0,'',1,2,?,?)",
+                (json.dumps({"provider": "tikhub", "want": ["video"]}),
+                 json.dumps({"video": {"play_url": "https://example.com/video.mp4"}})),
+            )
+            connection.commit()
+        with closing(sqlite3.connect(self.admin.ASSET_DB)) as connection:
+            connection.execute("""CREATE TABLE assets(
+                id INTEGER PRIMARY KEY,job_id INTEGER,kind TEXT,stage TEXT,deleted INTEGER DEFAULT 0)""")
+            connection.execute("INSERT INTO assets VALUES(10,88,'collect','material',0)")
+            connection.commit()
+        row = {
+            "run_id": "run-88", "operation_id": "collect.content.video",
+            "username": "qa-dedicated", "status": "completed", "job_id": 88,
+            "cost": 3, "points_before": 100, "points_after": 97,
+            "transaction_key": "ledger-88", "error": "", "created_by": "root",
+            "created_at": 1, "updated_at": 2,
+        }
+        ledger = {"username": "qa-dedicated", "delta": -3, "after_points": 97}
+        with patch.object(self.admin, "points_domain", SimpleNamespace(
+                get_points_transaction=lambda key: ledger)):
+            run = self.admin._public_e2e_run(row)
+        delivery = next(stage for stage in run["stages"] if stage["key"] == "delivery")
+        self.assertEqual(delivery["state"], "waiting")
+
     def test_collect_video_retries_a_stale_failed_download_check(self):
         with closing(sqlite3.connect(self.admin.ADMIN_DB)) as connection:
             connection.execute("""CREATE TABLE admin_e2e_delivery_checks(
@@ -766,7 +795,7 @@ class AdminE2ERunnerTests(unittest.TestCase):
             passed, detail = self.admin._download_proxy_evidence(86, {
                 "play_url": "https://video.huangquechuanmei.com/collect/test.mp4",
             })
-        self.assertFalse(passed)
+        self.assertIsNone(passed)
         self.assertEqual(detail, "new claim")
 
     def test_batch_preflight_quotes_all_stale_prepared_modes_without_submitting(self):

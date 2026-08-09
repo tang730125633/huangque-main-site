@@ -3023,8 +3023,10 @@ def _download_proxy_evidence(job_id, video):
             current = connection.execute(
                 "SELECT status,detail FROM admin_e2e_delivery_checks WHERE job_id=?", (int(job_id),)
             ).fetchone()
-            return (bool(current and current["status"] == "passed"),
-                    str(current["detail"] or "") if current else "验收状态已更新")
+            state = None if current and current["status"] == "checking" else bool(
+                current and current["status"] == "passed"
+            )
+            return state, str(current["detail"] or "") if current else "验收状态已更新"
     return status == "passed", detail
 
 
