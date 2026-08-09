@@ -13,6 +13,7 @@ class HomeVideoBannerTests(unittest.TestCase):
         cls.html = (ROOT / "site/index.html").read_text(encoding="utf-8")
         cls.css = (ROOT / "site/homepage.css").read_text(encoding="utf-8")
         cls.liquid_glass = (ROOT / "site/homepage-liquid-glass.js").read_text(encoding="utf-8")
+        cls.particles = (ROOT / "site/homepage-particles.js").read_text(encoding="utf-8")
         cls.videos = [
             ROOT / "site/assets/home/hero-banner-monochrome-eye.mp4",
             ROOT / "site/assets/home/hero-banner-ancient-courtyard.mp4",
@@ -70,6 +71,13 @@ class HomeVideoBannerTests(unittest.TestCase):
         nav = self.html.split('<header class="site-header">', 1)[1].split("</header>", 1)[0]
         for anchor in ('href="#flow"', 'href="#ip12"', 'href="#agent"', 'href="#video"', 'href="#cli"'):
             self.assertNotIn(anchor, nav)
+
+    def test_background_particles_morph_into_scroll_driven_bird(self):
+        self.assertIn("homepage-particles.js?v=20260809-bird1", self.html)
+        self.assertIn("birdPoints: 980", self.particles)
+        self.assertIn("function birdTarget(point, progress)", self.particles)
+        self.assertIn("birdMix = birdIn * birdOut", self.particles)
+        self.assertIn("canvas.dataset.bird", self.particles)
 
 
 if __name__ == "__main__":
