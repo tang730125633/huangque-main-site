@@ -55,6 +55,18 @@ class HomeVideoBannerTests(unittest.TestCase):
         self.assertIn("hero-liquid-glass-ready", self.liquid_glass)
         self.assertIn("nav-liquid-glass-ready", self.liquid_glass)
 
+    def test_nav_uses_function_drawers_instead_of_page_anchors(self):
+        self.assertEqual(self.html.count('<button type="button" data-nav-trigger='), 5)
+        self.assertEqual(self.html.count('<section class="nav-drawer"'), 5)
+        self.assertIn("/workbench/video", self.html)
+        self.assertIn("/workbench/ip12", self.html)
+        self.assertIn("panel.inert = !active", self.html)
+        self.assertIn("data-nav-slider", self.html)
+        self.assertIn("--nav-slider-x", self.css)
+        nav = self.html.split('<header class="site-header">', 1)[1].split("</header>", 1)[0]
+        for anchor in ('href="#flow"', 'href="#ip12"', 'href="#agent"', 'href="#video"', 'href="#cli"'):
+            self.assertNotIn(anchor, nav)
+
 
 if __name__ == "__main__":
     unittest.main()
