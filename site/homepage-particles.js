@@ -113,7 +113,7 @@ async function start() {
 
         vec2 delta = transformed.xy - uPointer.xy;
         float distanceToPointer = length(delta);
-        float repel = pow(smoothstep(.28, .01, distanceToPointer), 2.0) * uPointerStrength * formed;
+        float repel = pow(smoothstep(.28, .01, distanceToPointer), 2.0) * uPointerStrength;
         vec2 direction = normalize(delta + vec2(.001));
         vec2 tangent = vec2(-direction.y, direction.x);
         transformed.xy += direction * repel * (.018 + aSeed * .014);

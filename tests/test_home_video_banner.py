@@ -68,6 +68,11 @@ class HomeVideoBannerTests(unittest.TestCase):
         self.assertIn("navSliderBlob.animate", self.html)
         self.assertIn("scaleX(1.34) scaleY(.84)", self.html)
         self.assertIn("setTimeout(() => setOpenNav(''), 320)", self.html)
+        self.assertIn('class="language-switcher"', self.html)
+        self.assertIn('data-language="en"', self.html)
+        self.assertIn("localStorage.setItem('huangque-language', next)", self.html)
+        self.assertIn("nav-current-backdrop", self.liquid_glass)
+        self.assertIn("key==='nav'&&!navOverHero", self.liquid_glass)
         self.assertIn(".nav-drawer-layer{position:absolute;top:100%", self.css)
         nav = self.html.split('<header class="site-header">', 1)[1].split("</header>", 1)[0]
         for anchor in ('href="#flow"', 'href="#ip12"', 'href="#agent"', 'href="#video"', 'href="#cli"'):
@@ -75,9 +80,11 @@ class HomeVideoBannerTests(unittest.TestCase):
 
     def test_background_particles_use_the_real_scroll_driven_point_cloud_bird(self):
         self.assertIn('data-particle-story', self.html)
-        self.assertIn('type="module" src="/homepage-particles.js?v=20260809-pointcloud1"', self.html)
+        self.assertIn('type="module" src="/homepage-particles.js?v=20260809-pointcloud2"', self.html)
+        self.assertIn('.page-particle-stage{position:fixed;z-index:2', self.css)
         self.assertIn("ShaderMaterial", self.particles)
         self.assertIn("uPointerStrength", self.particles)
+        self.assertIn("* uPointerStrength;", self.particles)
         self.assertIn("data-particle-scene", self.particles)
         self.assertTrue(self.bird_points.is_file())
         self.assertEqual(self.bird_points.stat().st_size, 65536 * 3 * 4)
