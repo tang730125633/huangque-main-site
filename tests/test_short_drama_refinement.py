@@ -320,6 +320,98 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.assertEqual("local_ffmpeg", capability["adapter"])
         self.assertEqual("local_1080p_renderer", capability["reason"])
 
+    def _archived_preview_workspace(self, audio):
+        source = Path(self.tmp.name) / "drafts" / "preview.mp4"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"archived-preview")
+        conn = self.db()
+        try:
+            manifest = json.loads(conn.execute(
+                "SELECT manifest_json FROM short_drama_autodraft_versions "
+                "WHERE id='draft-v1'"
+            ).fetchone()[0])
+            manifest["issues"] = [{
+                "code": "locked_voice_timeline_missing",
+                "message": "缺少锁定配音时间线",
+            }]
+            manifest["media_contract"] = {
+                "delivery_eligible": False,
+                "reason": "locked_voice_timeline_missing",
+                "material_hash": "material-hash",
+            }
+            for shot in manifest["shots"]:
+                shot.update({"status": "ready", "issue": None})
+            conn.execute(
+                "UPDATE short_drama_autodraft_versions SET url=?,manifest_json=? "
+                "WHERE id='draft-v1'",
+                ("/api/gen/file/drafts/preview.mp4", json.dumps(manifest)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        capability = {
+            "delivery_enabled": True, "deliverable": True,
+            "mode": "local_ffmpeg", "adapter": "local_ffmpeg",
+            "formal_cost": 0, "reason": "local_1080p_renderer",
+        }
+        probe = {
+            "duration_ms": 10000,
+            "video": {"width": 1280, "height": 720},
+            "audio": {"codec_name": "aac"} if audio else None,
+        }
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_FORMAL_DELIVERY_MODE": "local_ffmpeg",
+            "CONTENT_OUT": self.tmp.name,
+        }), mock.patch.object(
+            short_drama_refinement, "_delivery_capability", return_value=capability,
+        ), mock.patch.object(
+            short_drama_refinement.media_plan, "probe_media", return_value=probe,
+        ):
+            workspace = short_drama_refinement.workspace(
+                self.db, "alice", "alice", self.project["id"]
+            )
+            if audio:
+                version = workspace["current_refinement"]
+                confirmed = short_drama_refinement.confirm_refinement(
+                    self.db, "alice", "alice", {
+                        "project_id": self.project["id"], "version_id": version["id"],
+                        "checklist": {
+                            key: True for key in short_drama_refinement.ACCEPTANCE_CHECKS
+                        },
+                        "source_hashes": workspace["acceptance_requirements"]["source_hashes"],
+                    },
+                )
+                quote = short_drama_refinement.create_delivery_quote(
+                    self.db, "alice", {
+                        "project_id": self.project["id"], "version_id": confirmed["id"],
+                    },
+                )
+                return workspace, quote
+            return workspace, None
+
+    def test_archived_preview_audio_is_a_real_zero_cost_delivery_contract(self):
+        workspace, quote = self._archived_preview_workspace(audio=True)
+        self.assertEqual([], workspace["current_refinement"]["issues"])
+        contract = workspace["current_refinement"]["media"]["media_contract"]
+        self.assertTrue(contract["delivery_eligible"])
+        self.assertEqual("archived_preview_audio", contract["evidence_source"])
+        self.assertFalse(contract["subtitle_required"])
+        self.assertEqual(("1080p", 0, True), (
+            quote["resolution"], quote["cost"], quote["deliverable"],
+        ))
+
+    def test_archived_preview_without_audio_remains_blocked(self):
+        workspace, quote = self._archived_preview_workspace(audio=False)
+        self.assertIsNone(quote)
+        self.assertEqual(
+            ["locked_voice_timeline_missing"],
+            [item["code"] for item in workspace["current_refinement"]["issues"]],
+        )
+        self.assertFalse(
+            workspace["current_refinement"]["media"]["media_contract"]
+            .get("delivery_eligible", False)
+        )
+
     def _assert_real_formal_delivery(self, ratio, preview_size, expected_size):
         ffmpeg = shutil.which(os.environ.get("FFMPEG_BIN", "ffmpeg"))
         ffprobe = shutil.which(os.environ.get("FFPROBE_BIN", "ffprobe"))

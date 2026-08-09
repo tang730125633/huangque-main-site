@@ -221,6 +221,71 @@ def _file_hash(path):
     return digest.hexdigest()
 
 
+def _controlled_content_file(url):
+    prefix = "/api/gen/file/"
+    if not str(url or "").startswith(prefix):
+        raise RefinementError(
+            "delivery_source_uncontrolled",
+            "正式导出只允许使用已归档的项目预览文件", 409,
+        )
+    root = Path(os.environ.get(
+        "CONTENT_OUT", str(Path(__file__).resolve().parents[1] / "content_out")
+    )).resolve()
+    target = (root / unquote(str(url)[len(prefix):])).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as error:
+        raise RefinementError(
+            "delivery_source_uncontrolled", "正式导出来源路径不安全", 409
+        ) from error
+    if not target.is_file():
+        raise RefinementError(
+            "delivery_source_missing", "720p 合成预览文件不存在", 409
+        )
+    return target
+
+
+def _draft_delivery_media(draft):
+    manifest = draft["manifest"]
+    current = manifest.get("media_contract") or {}
+    if current.get("delivery_eligible") is True:
+        return {"media_contract": current}
+    if os.getenv("HQ_SHORT_DRAMA_FORMAL_DELIVERY_MODE", "").strip().lower() != "local_ffmpeg":
+        return {"media_contract": current}
+    try:
+        path = _controlled_content_file(draft["url"])
+        probe = media_plan.probe_media(path)
+    except (OSError, RefinementError, media_plan.MediaPlanError):
+        return {"media_contract": current}
+    expected = int(manifest.get("duration_ms") or 0)
+    actual = int(probe.get("duration_ms") or 0)
+    if (not probe.get("video") or not probe.get("audio") or actual <= 0
+            or (expected and abs(actual - expected) > 1500)):
+        return {"media_contract": current}
+    digest = _file_hash(path)
+    relative = unquote(str(draft["url"])[len("/api/gen/file/"):])
+    return {
+        "preview_file": relative,
+        "preview_file_hash": digest,
+        "media_validation": probe,
+        "media_contract": {
+            "contract_version": "short-drama-archived-preview-media-v1",
+            "delivery_eligible": True,
+            "reason": "archived_preview_audio",
+            "evidence_source": "archived_preview_audio",
+            "audio_tracks": [{"file": relative, "source": "archived_preview"}],
+            "subtitles": [],
+            "audio_hash": digest,
+            "subtitle_hash": "",
+            "timeline_hash": str(draft["input_hash"]),
+            "material_hash": str(current.get("material_hash") or _hash(
+                manifest.get("shots") or []
+            )),
+            "subtitle_required": False,
+        },
+    }
+
+
 def _provider_asset(conn, project_id, shot_key, version_id=None):
     values = [project_id, shot_key]
     where = "v.project_id=? AND v.shot_key=? AND v.status='ready'"
@@ -406,8 +471,10 @@ def _acceptance_evidence(conn, project, refinement):
             "refinement_source_stale", "精修版本对应的自动草稿已经过期", 409
         )
     manifest = draft["manifest"]
-    refinement_media = refinement.get("media") or {}
-    draft_media = manifest.get("media_contract") or {}
+    archived_media = _draft_delivery_media(draft)
+    refinement_media = refinement.get("media") or archived_media
+    draft_media = (archived_media.get("media_contract")
+                   or manifest.get("media_contract") or {})
     media = (
         refinement_media.get("media_contract")
         or draft_media or {}
@@ -583,7 +650,32 @@ def _latest_refinement(conn, project_id):
 def _seed_refinement(conn, project_id, actor_username):
     draft = _current_draft(conn, project_id)
     current = _latest_refinement(conn, project_id)
+    media = _draft_delivery_media(draft)
+    issues = list(draft["manifest"].get("issues") or [])
+    archived = (
+        (media.get("media_contract") or {}).get("evidence_source")
+        == "archived_preview_audio"
+    )
+    if archived:
+        issues = [item for item in issues
+                  if str(item.get("code") or "") != "locked_voice_timeline_missing"]
     if current and current["source_draft_version_id"] == draft["id"]:
+        current_issues = [item for item in current["issues"]
+                          if str(item.get("code") or "") != "locked_voice_timeline_missing"]
+        if current["status"] == "draft" and archived and (
+            current["issues"] != current_issues or current.get("media") != media
+        ):
+            conn.execute(
+                "UPDATE short_drama_refinement_versions SET issues_json=?,"
+                "preview_file_hash=?,media_json=? WHERE id=? AND status='draft'",
+                (_json_text(current_issues), str(media.get("preview_file_hash") or ""),
+                 _json_text(media), current["id"]),
+            )
+            current.update({
+                "issues": current_issues,
+                "preview_file_hash": str(media.get("preview_file_hash") or ""),
+                "media": media,
+            })
         return current
     manifest = draft["manifest"]
     now = int(time.time())
@@ -599,8 +691,10 @@ def _seed_refinement(conn, project_id, actor_username):
         "status": "draft",
         "url": draft["url"],
         "shots": list(manifest.get("shots") or []),
-        "issues": list(manifest.get("issues") or []),
+        "issues": issues,
         "input_hash": draft["input_hash"],
+        "preview_file_hash": str(media.get("preview_file_hash") or ""),
+        "media": media,
         "change_summary": "从 720p 自动草稿创建精修工作副本",
         "created_by": actor_username,
         "confirmed_at": None,
@@ -609,12 +703,13 @@ def _seed_refinement(conn, project_id, actor_username):
     conn.execute(
         "INSERT INTO short_drama_refinement_versions "
         "(id,project_id,source_draft_version_id,version,status,url,shots_json,"
-        "issues_json,input_hash,change_summary,created_by,confirmed_at,created_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "issues_json,input_hash,preview_file_hash,media_json,change_summary,"
+        "created_by,confirmed_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             item["id"], project_id, draft["id"], version, "draft", draft["url"],
             _json_text(item["shots"]), _json_text(item["issues"]),
-            item["input_hash"], item["change_summary"], actor_username, None, now,
+            item["input_hash"], item["preview_file_hash"], _json_text(item["media"]),
+            item["change_summary"], actor_username, None, now,
         ),
     )
     return item
@@ -1166,27 +1261,10 @@ def _complete_delivery(conn, row):
     output_file = ""
     output_hash = ""
     if deliverable:
-        prefix = "/api/gen/file/"
-        if not source_url.startswith(prefix):
-            raise RefinementError(
-                "delivery_source_uncontrolled",
-                "1080p 导出只允许使用已归档的项目预览文件", 409,
-            )
-        server_dir = Path(__file__).resolve().parents[1]
         root = Path(os.environ.get(
-            "CONTENT_OUT", str(server_dir / "content_out")
+            "CONTENT_OUT", str(Path(__file__).resolve().parents[1] / "content_out")
         )).resolve()
-        source_file = (root / unquote(source_url[len(prefix):])).resolve()
-        try:
-            source_file.relative_to(root)
-        except ValueError as error:
-            raise RefinementError(
-                "delivery_source_uncontrolled", "正式导出来源路径不安全", 409
-            ) from error
-        if not source_file.is_file():
-            raise RefinementError(
-                "delivery_source_missing", "720p 合成预览文件不存在", 409
-            )
+        source_file = _controlled_content_file(source_url)
         target = root / "short_drama_delivery" / job["project_id"] / job["id"]
         temp = target.with_name(".%s.tmp" % target.name)
         if temp.exists():

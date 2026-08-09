@@ -1090,9 +1090,19 @@ SHORT_DRAMA_FUNCTIONS = [{
         {
             "key": "short_drama.live_action.delivery", "name": "正式交付",
             "entrypoints": [_endpoint("POST", "/api/gen/short-drama/delivery/quote"), _endpoint("POST", "/api/gen/short-drama/delivery/jobs")],
-            "evidence_source": "short_drama_delivery_jobs", "price_keys": [],
-            "smoke_inputs": ["人工验收通过的短剧版本", "1080p 正式交付文件"],
-            "validation": _validation(supported=False, blocked_reason="正式交付执行器与人工验收契约尚未确认，不能自动扣点测试"),
+            "evidence_source": "short_drama_delivery_jobs",
+            "evidence_contract": {"acceptance_id_type": "project_id", "not_applicable": ["provider_task", "balance"]},
+            "price_keys": [],
+            "smoke_inputs": ["已验收的 30 秒私有预览", "1080p 正式交付文件", "0 点账务核对"],
+            "validation": _validation(prefill={
+                "title": "后台质检 · 短剧预览合成",
+                "synopsis": "单角色在旧书店重新发现并记录一段被遗忘的故事。",
+                "ratio": "16:9", "target_duration": 30, "shot_count": 6,
+                "visual_style": "电影感写实", "source_text": QA_SHORT_DRAMA_PREVIEW_SOURCE,
+                "filename": "后台质检短剧正式交付.txt", "import_mode": "faithful",
+                "content_type": "live_action",
+                "character_contract": QA_SHORT_DRAMA_CHARACTER_CONTRACT,
+            }),
         },
     ],
 }]
