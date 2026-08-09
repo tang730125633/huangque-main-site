@@ -65,6 +65,8 @@ class HomeVideoBannerTests(unittest.TestCase):
         self.assertIn("nav-slider-trail", self.html)
         self.assertIn("navSliderBlob.animate", self.html)
         self.assertIn("scaleX(1.34) scaleY(.84)", self.html)
+        self.assertIn("setTimeout(() => setOpenNav(''), 320)", self.html)
+        self.assertIn(".nav-drawer-layer{position:absolute;top:100%", self.css)
         nav = self.html.split('<header class="site-header">', 1)[1].split("</header>", 1)[0]
         for anchor in ('href="#flow"', 'href="#ip12"', 'href="#agent"', 'href="#video"', 'href="#cli"'):
             self.assertNotIn(anchor, nav)
