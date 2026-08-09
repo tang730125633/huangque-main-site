@@ -36,7 +36,14 @@
 
   const pointer={x:innerWidth*.35,y:innerHeight*.7};
   let visible=true;
+  const hero=document.querySelector('.hero');
+  let navOverHero=true;
+  const syncNavBackdrop=()=>{
+    navOverHero=(hero?.getBoundingClientRect().bottom||0)>(document.querySelector('.site-header')?.offsetHeight||0);
+    document.documentElement.classList.toggle('nav-current-backdrop',!navOverHero);
+  };
   addEventListener('pointermove',event=>{pointer.x=event.clientX;pointer.y=event.clientY;},{passive:true});
+  addEventListener('scroll',syncNavBackdrop,{passive:true});addEventListener('resize',syncNavBackdrop);syncNavBackdrop();
   document.addEventListener('visibilitychange',()=>{visible=!document.hidden;});
   const status=window.__homepageLiquidGlassStatus={supported:true,hero:false,nav:false,active:false};
 
@@ -54,7 +61,9 @@
       const video=document.querySelector('.hero-media video.is-active');const canvasRect=canvas.getBoundingClientRect();const targetRect=target.getBoundingClientRect();const ratio=Math.min(devicePixelRatio||1,maxDpr);
       const width=Math.round(canvasRect.width*ratio),height=Math.round(canvasRect.height*ratio);if(canvas.width!==width||canvas.height!==height){canvas.width=width;canvas.height=height;gl.viewport(0,0,width,height);}
       gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);
+      if(key==='nav'&&!navOverHero){status.navBackdrop='current';requestAnimationFrame(render);return;}
       if(visible&&video?.readyState>=2&&video.videoWidth&&width&&height){
+        if(key==='nav')status.navBackdrop='video';
         gl.uniform1f(uniform.dpr,ratio);gl.uniform1f(uniform.radius,targetRect.height/2);gl.uniform2f(uniform.resolution,canvasRect.width,canvasRect.height);gl.uniform2f(uniform.videoSize,video.videoWidth,video.videoHeight);
         gl.uniform2f(uniform.mouse,pointer.x-canvasRect.left,canvasRect.bottom-pointer.y);gl.uniform4f(uniform.shape,targetRect.left-canvasRect.left+targetRect.width/2,canvasRect.bottom-targetRect.top-targetRect.height/2,targetRect.width/2,targetRect.height/2);
         gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,video);gl.drawArrays(gl.TRIANGLES,0,6);
