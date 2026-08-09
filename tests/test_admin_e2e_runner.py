@@ -260,7 +260,6 @@ class AdminE2ERunnerTests(unittest.TestCase):
 
     def test_paid_short_drama_modes_stay_blocked_before_auth_or_charge(self):
         operations = [
-            "short_drama.live_action.character_reference",
             "short_drama.live_action.shot_video",
             "short_drama.live_action.preview",
             "short_drama.live_action.delivery",
@@ -271,6 +270,92 @@ class AdminE2ERunnerTests(unittest.TestCase):
                 self.assertFalse(result["ready"])
                 self.assertTrue(result["blocker"])
             auth.assert_not_called()
+
+    def test_short_drama_character_reference_runs_customer_endpoints_then_locks_and_cleans(self):
+        session = {"token": "qa-token", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        character = {
+            "character_key": "character_1", "name": "林夏",
+            "reference_file": "", "reference_url": "",
+            "reference_version": 0, "reference_locked": False,
+        }
+        calls = []
+
+        def submit(path, _token, payload, idem, cost, require_job_id=True, method="POST"):
+            calls.append((path, payload, idem, cost, require_job_id, method))
+            if path.endswith("/projects/import"):
+                return {"id": "project-character", "revision": 1,
+                        "characters": [character]}
+            if path.startswith("/api/gen/short-drama/project?"):
+                return {"id": "project-character", "revision": 2,
+                        "characters": [character]}
+            if path.endswith("/generate-character-reference"):
+                return {"job_id": 77, "cost": 35, "points_left": 465}
+            self.fail("unexpected request " + path)
+
+        with patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "points_domain", SimpleNamespace(
+                 cost_of=lambda _kind, _payload: 35,
+             )), \
+             patch.object(self.admin, "_content_e2e_request", side_effect=submit):
+            run = self.admin.start_e2e_run(
+                "root", "admin-token", "short_drama.live_action.character_reference"
+            )
+        self.assertEqual((run["status"], run["job_id"], run["cost"]),
+                         ("queued", 77, 35))
+        self.assertEqual([item[5] for item in calls], ["POST", "PUT", "POST"])
+        self.assertEqual(calls[1][1]["characters"], [character])
+        self.assertEqual(calls[2][1], {
+            "project_id": "project-character", "revision": 2,
+            "character_key": "character_1",
+        })
+        ready_character = dict(
+            character, reference_file="image/character.png",
+            reference_url="/api/gen/file/image/character.png",
+            reference_version=1,
+        )
+        locked_character = dict(ready_character, reference_locked=True)
+        final_calls = []
+
+        def finish(path, _token, _payload, _run_id, _step):
+            final_calls.append(path)
+            if path.endswith("/confirm-character-reference"):
+                return {"id": "project-character", "revision": 4,
+                        "characters": [locked_character]}
+            return {"deleted": True}
+
+        job_evidence = {
+            "status": "done", "provider_task_id": None,
+            "route_provider": "banana", "completed": True,
+            "delivery_verified": True, "billing_state": "charged",
+            "artifact_check": "decodable", "error": "",
+        }
+        with patch.object(self.admin, "_e2e_job_evidence", return_value=job_evidence), \
+             patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "_content_e2e_get", return_value={
+                 "id": "project-character", "revision": 3,
+                 "characters": [ready_character],
+             }), \
+             patch.object(self.admin, "_short_drama_e2e_request", side_effect=finish):
+            self.assertTrue(self.admin._finalize_short_drama_character_e2e(
+                run["run_id"], "admin-token"
+            ))
+        self.assertEqual(final_calls, [
+            "/api/gen/short-drama/confirm-character-reference",
+            "/api/gen/short-drama/project/delete",
+        ])
+        with patch.object(self.admin, "_e2e_job_evidence", return_value=job_evidence), \
+             patch.object(self.admin, "points_domain", SimpleNamespace(
+                 get_points_transaction=lambda _key: {
+                     "username": "qa-dedicated", "delta": -35, "after_points": 465,
+                 }
+             )):
+            finished = self.admin.list_e2e_runs(1)[0]
+        self.assertEqual(finished["status"], "completed")
+        self.assertTrue(all(stage["state"] == "passed" for stage in finished["stages"]))
+        self.assertTrue(finished["evidence"]["reference_locked"])
+        self.assertTrue(finished["evidence"]["project_cleaned"])
 
     def test_short_drama_script_planning_runs_real_project_journey_and_cleans_up(self):
         session = {"token": "short-lived-secret", "account": {
