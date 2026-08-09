@@ -12,6 +12,7 @@ import urllib.request
 import uuid
 
 from .core import OUT_DIR, public_url
+from . import audio as audio_domain
 from . import feature_flags
 
 
@@ -41,6 +42,18 @@ PIXELLE_MAX_VIDEO_BYTES = _env_int(
 _NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 DEFAULT_STYLE = "realistic_commercial"
+DEFAULT_PUBLIC_VOICE = "zh-CN-YunjianNeural"
+_PUBLIC_VOICE_RE = re.compile(r"^zh-CN(?:-[a-z]+)?-[A-Za-z]+Neural$")
+_PUBLIC_VOICE_NAMES = {
+    "zh-CN-XiaoxiaoNeural": "女声-温柔（晓晓）",
+    "zh-CN-XiaoyiNeural": "女声-甜美（晓伊）",
+    "zh-CN-YunjianNeural": "男声-专业（云健）",
+    "zh-CN-YunxiNeural": "男声-磁性（云希）",
+    "zh-CN-YunyangNeural": "男声-新闻（云扬）",
+    "zh-CN-YunyeNeural": "男声-自然（云野）",
+    "zh-CN-YunfengNeural": "男声-沉稳（云枫）",
+    "zh-CN-liaoning-XiaobeiNeural": "女声-东北（晓北）",
+}
 _STYLE_COMMON_RESTRICTIONS = (
     "No watermark, no logo, no garbled or unreadable text, "
     "no malformed people, objects, hands, or anatomy."
@@ -236,6 +249,55 @@ def public_styles():
     ]
 
 
+def _sanitized_public_voices():
+    response = _json_request("GET", "/api/voices/public", timeout=10)
+    items = []
+    for raw in response.get("items") or []:
+        if not isinstance(raw, dict):
+            continue
+        voice_id = str(raw.get("id") or "").strip()
+        locale = str(raw.get("locale") or "").strip()
+        gender = str(raw.get("gender") or "").strip().lower()
+        if (
+            not _PUBLIC_VOICE_RE.fullmatch(voice_id)
+            or locale != "zh-CN"
+            or gender not in {"male", "female"}
+        ):
+            continue
+        items.append({
+            "id": "public:" + voice_id,
+            "name": _PUBLIC_VOICE_NAMES.get(voice_id, voice_id),
+            "scope": "public",
+            "gender": gender,
+            "locale": locale,
+        })
+    return items
+
+
+def public_voices(username):
+    items = _sanitized_public_voices()
+    for voice in audio_domain.list_audio_voices(username):
+        if not isinstance(voice, dict) or voice.get("scope") != "personal":
+            continue
+        voice_key = str(voice.get("voice_key") or "").strip()
+        if not voice_key or len(voice_key) > 128:
+            continue
+        try:
+            audio_domain.require_owned_ready_personal_voice(username, voice_key)
+        except ValueError:
+            continue
+        item = {
+            "id": "personal:" + voice_key,
+            "name": str(voice.get("display_name") or "个人音色")[:40],
+            "scope": "personal",
+        }
+        preview_url = str(voice.get("preview_url") or "").strip()
+        if preview_url.startswith("/api/gen/file/"):
+            item["preview_url"] = preview_url
+        items.append(item)
+    return items
+
+
 def _fixed_segments(text):
     normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
     return [part.strip() for part in re.split(r"\n\s*\n", normalized) if part.strip()]
@@ -248,7 +310,28 @@ def _style_key(payload):
     return style
 
 
-def prepare_payload(payload):
+def _freeze_voice(body, username):
+    selection = str(body.get("voice") or ("public:" + DEFAULT_PUBLIC_VOICE)).strip()
+    scope, separator, value = selection.partition(":")
+    if not separator or scope not in {"public", "personal"} or not value:
+        raise ValueError("请选择有效的配音音色")
+    if scope == "public":
+        if username:
+            allowed = {
+                item["id"].split(":", 1)[1]
+                for item in public_voices(username)
+                if item.get("scope") == "public"
+            }
+            if value not in allowed:
+                raise ValueError("请选择有效的配音音色")
+        elif value != DEFAULT_PUBLIC_VOICE and not _PUBLIC_VOICE_RE.fullmatch(value):
+            raise ValueError("请选择有效的配音音色")
+        return {"voice_scope": "public", "voice_id": value}
+    audio_domain.require_owned_ready_personal_voice(username, value)
+    return {"voice_scope": "personal", "voice_key": value}
+
+
+def prepare_payload(payload, username=""):
     body = dict(payload or {})
     raw_text = str(body.get("text") or "")
     mode = str(body.get("mode") or "generate").strip()
@@ -271,7 +354,7 @@ def prepare_payload(payload):
         raise ValueError("请选择有效的视频模板")
     style = _style_key(body)
     scene_count = 5 if mode == "generate" else len(segments)
-    return {
+    prepared = {
         "pipeline": "pixelle",
         "text": text,
         "mode": mode,
@@ -280,6 +363,8 @@ def prepare_payload(payload):
         "n_scenes": scene_count,
         "scenes": [{"line": line} for line in segments],
     }
+    prepared.update(_freeze_voice(body, username))
+    return prepared
 
 
 def _json_request(method, path, payload=None, timeout=30):
@@ -309,6 +394,33 @@ def _json_request(method, path, payload=None, timeout=30):
         raise PixelleTransientError(
             "无法连接视频生成服务：%s" % str(reason)[:160]
         )
+
+
+def _binary_request(method, path, content, request_id, timeout=60):
+    request = urllib.request.Request(
+        PIXELLE_API_URL + path,
+        data=content,
+        headers={
+            "Content-Type": "audio/mpeg",
+            "X-Request-Id": request_id,
+        },
+        method=method,
+    )
+    try:
+        with _NO_PROXY.open(request, timeout=timeout) as response:
+            return json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            error = json.loads(exc.read() or b"{}")
+            detail = error.get("detail") or error.get("message")
+        except Exception:
+            detail = ""
+        raise RuntimeError(
+            "个人配音上传失败（HTTP %s）：%s" % (exc.code, detail or "未知错误")
+        )
+    except (urllib.error.URLError, TimeoutError) as exc:
+        reason = getattr(exc, "reason", exc)
+        raise PixelleTransientError("个人配音上传失败：%s" % str(reason)[:160])
 
 
 def availability(force=False):
@@ -344,6 +456,45 @@ def _prepared_text(text, mode):
     )
 
 
+def _personal_narrations(payload):
+    if payload["mode"] == "fixed":
+        narrations = [
+            str(scene.get("line") or "").strip()
+            for scene in payload.get("scenes") or []
+        ]
+    else:
+        response = _json_request("POST", "/api/content/narration", {
+            "text": _prepared_text(payload["text"], payload["mode"]),
+            "n_scenes": payload["n_scenes"],
+            "min_words": 5,
+            "max_words": 20,
+        })
+        narrations = response.get("narrations") or []
+    cleaned = [str(item or "").strip() for item in narrations if str(item or "").strip()]
+    if not cleaned or len(cleaned) > 20 or any(len(item) > 1000 for item in cleaned):
+        raise RuntimeError("旁白分段生成失败")
+    return cleaned
+
+
+def _personal_narration_segments(payload):
+    username = str(payload.get("_username") or "").strip()
+    voice_key = str(payload.get("voice_key") or "").strip()
+    if not username or not voice_key:
+        raise ValueError("个人音色任务缺少用户或音色信息")
+    segments = []
+    for index, text in enumerate(_personal_narrations(payload)):
+        audio = audio_domain.synthesize_owned_voice_segment(username, voice_key, text)
+        request_id = "text-video-%s-%d" % (payload.get("_job_id") or "pending", index)
+        uploaded = _binary_request(
+            "POST", "/api/audio-assets", audio["content"], request_id
+        )
+        asset_id = str(uploaded.get("asset_id") or "").strip()
+        if not re.fullmatch(r"audio_[0-9a-f]{32}", asset_id):
+            raise RuntimeError("个人配音上传未返回有效资源 ID")
+        segments.append({"text": text, "audio_asset_id": asset_id})
+    return segments
+
+
 def _submit(payload):
     template = TEMPLATES_BY_KEY[payload["template"]]
     style = STYLE_PRESETS_BY_KEY[_style_key(payload)]
@@ -352,7 +503,7 @@ def _submit(payload):
         if template["kind"] == "video"
         else PIXELLE_MEDIA_WORKFLOW
     )
-    response = _json_request("POST", "/api/video/generate/async", {
+    body = {
         "text": _prepared_text(payload["text"], payload["mode"]),
         "mode": payload["mode"],
         "n_scenes": payload["n_scenes"],
@@ -362,7 +513,19 @@ def _submit(payload):
         "tts_workflow": PIXELLE_TTS_WORKFLOW,
         "video_fps": 30,
         "bgm_volume": 0.18,
-    })
+    }
+    if payload.get("voice_scope") == "personal":
+        narration_segments = _personal_narration_segments(payload)
+        body.update({
+            "text": "\n\n".join(item["text"] for item in narration_segments),
+            "mode": "fixed",
+            "n_scenes": len(narration_segments),
+            "narration_segments": narration_segments,
+        })
+        body.pop("tts_workflow", None)
+    else:
+        body["voice_id"] = str(payload.get("voice_id") or DEFAULT_PUBLIC_VOICE)
+    response = _json_request("POST", "/api/video/generate/async", body)
     task_id = str(response.get("task_id") or "").strip()
     if not task_id:
         raise RuntimeError("视频生成服务没有返回任务 ID")
@@ -462,5 +625,4 @@ def generate(payload):
         "style": style,
         "input_mode": payload["mode"],
         "file_size": int(result.get("file_size") or file_size),
-        "upstream_task_id": task_id,
     }

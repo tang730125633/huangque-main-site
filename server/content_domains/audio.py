@@ -984,6 +984,11 @@ def _resolve_owned_ready_personal_voice(username, voice_key):
         raise ValueError("个人音色不存在或不可用")
     return provider_voice
 
+
+def require_owned_ready_personal_voice(username, voice_key):
+    """Validate ownership/readiness without exposing the provider voice ID."""
+    _resolve_owned_ready_personal_voice(username, voice_key)
+
 def validate_audio_payload(payload, username=""):
     if not isinstance(payload, dict):
         raise ValueError("请求体必须是 JSON 对象")
