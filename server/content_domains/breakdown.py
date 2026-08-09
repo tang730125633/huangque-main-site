@@ -169,6 +169,7 @@ def validate_breakdown_payload(payload):
         body.pop("urls", None)
         body["_resolved_link"] = _resolved_link(body["url"])
     body["mode"] = mode
+    body["provider"] = "tikhub+zhipu"
     return body
 
 

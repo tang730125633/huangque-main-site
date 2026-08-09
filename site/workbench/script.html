@@ -1280,7 +1280,7 @@
     setBtn('生成中…',true);
     scenes.innerHTML='<div style="padding:34px; text-align:center; color:#2dd4bf; font-size:13px;">编导生成中…（约 10-20 秒）</div>';
     hideBreakdownMeta();
-    var payload={prompt:t+(s?('\n卖点：'+s):''), format:'script', style:style, dur:dur, platform:plat, ctype:'分镜脚本'};
+    var payload={prompt:t+(s?('\n卖点：'+s):''), format:'script', style:style, dur:dur, platform:plat, ctype:'分镜脚本',source_page:'script'};
     var tags=[]; document.querySelectorAll('.sc-tag.on').forEach(function(tag){ tags.push(tag.textContent.trim()); });
     if(tags.length) payload.prompt+='\n标签：'+tags.join('、');
     if(refImages.length) payload.reference_images=refImages.slice();
@@ -1421,7 +1421,7 @@
     hideBreakdownMeta();
     var pollCount=0, lastPhase='downloading', pollErrors=0;
     var maxPolls=isBatch?(100*lines.length):120;  // 批量按条数放宽：每条最长约90s，5条≈450s+，避免后端还在跑前端先报超时
-    var reqBody=isBatch?{urls:lines,mode:'scenes'}:{url:lines[0],mode:submitMode};
+    var reqBody=isBatch?{urls:lines,mode:'scenes',source_page:'script'}:{url:lines[0],mode:submitMode,source_page:'script'};
     var breakdownPending=_pendingSubmission('script-breakdown',reqBody);
     fetch('/api/gen/breakdown',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json','Idempotency-Key':breakdownPending.key},body:breakdownPending.body})
       .then(_readApiResponse)

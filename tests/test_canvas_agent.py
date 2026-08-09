@@ -2,6 +2,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -33,6 +34,36 @@ def payload(**updates):
 
 
 class CanvasAgentTests(unittest.TestCase):
+    def _post_canvas_agent(self, body, *, internal=False, validator=None):
+        sent = []
+        handler = core.H.__new__(core.H)
+        handler.path = "/api/gen/canvas_agent"
+        handler.headers = {
+            "Idempotency-Key": "canvas-agent-http-test",
+            **({"X-HQ-Internal-Token": "internal-test-token"} if internal else {}),
+        }
+        handler._token = lambda: "qa-token"
+        handler._json_body_strict = lambda: body
+        handler._send = lambda status, payload: sent.append((status, payload))
+        video = SimpleNamespace(SeedanceReferenceUnavailable=type(
+            "SeedanceReferenceUnavailable", (Exception,), {}
+        ))
+        validate = validator or canvas_agent.validate_payload
+        with mock.patch.object(core, "AUTH_INTERNAL_TOKEN", "internal-test-token"), \
+             mock.patch.object(core, "HANDLERS", registry.HANDLERS), \
+             mock.patch.object(core.cli_gateway, "handle_image_upload", return_value=False), \
+             mock.patch.object(core.cli_gateway, "handle_quote", return_value=False), \
+             mock.patch.object(core, "_domains", return_value=(SimpleNamespace(), SimpleNamespace(), video)), \
+             mock.patch.object(core, "verify", return_value={"username": "qa-dedicated"}), \
+             mock.patch.object(core, "_must_change_password", return_value=False), \
+             mock.patch.object(core.feature_flags, "require_enabled"), \
+             mock.patch.object(core, "is_shutting_down", return_value=False), \
+             mock.patch.object(core.miniprogram_security, "check_payload"), \
+             mock.patch.object(core, "_short_drama_canvas_access", return_value=None), \
+             mock.patch.object(canvas_agent, "validate_payload", side_effect=validate) as validate_mock:
+            core.H.do_POST(handler)
+        return sent, validate_mock
+
     def test_registered_with_safe_price_and_disabled_default(self):
         self.assertIs(registry.HANDLERS["canvas_agent"], canvas_agent.gen_canvas_agent)
         self.assertEqual(core.COST["canvas_agent"], 3)
@@ -62,6 +93,8 @@ class CanvasAgentTests(unittest.TestCase):
 
     def test_page_and_ip12_context_are_bounded(self):
         clean = canvas_agent.validate_payload(payload(
+            source_page="canvas",
+            qa_run_id="qa-run-1",
             page_context={
                 "page": "canvas", "path": "/workbench/canvas", "title": "黄雀画布",
                 "can_edit": True, "selected_count": 1,
@@ -73,11 +106,36 @@ class CanvasAgentTests(unittest.TestCase):
             },
         ))
         self.assertEqual(clean["page_context"]["page"], "canvas")
+        self.assertEqual((clean["source_page"], clean["provider"]),
+                         ("canvas", "openai_responses"))
+        self.assertEqual(clean["qa_run_id"], "qa-run-1")
+        with self.assertRaisesRegex(ValueError, "页面来源"):
+            canvas_agent.validate_payload(payload(source_page="audio"))
         self.assertEqual(clean["ip12_context"]["facts"][0]["label"], "定位")
         with self.assertRaisesRegex(ValueError, "页面上下文"):
             canvas_agent.validate_payload(payload(page_context={
                 "page": "other", "path": "/admin", "title": "后台", "can_edit": True, "selected_count": 0,
             }))
+
+    def test_http_boundary_only_accepts_qa_run_id_from_internal_service(self):
+        requested = payload(qa_run_id="qa-run-http")
+        sent, validate = self._post_canvas_agent(requested)
+        self.assertEqual(sent[0][0], 403)
+        self.assertIn("仅允许内部服务", sent[0][1]["detail"])
+        validate.assert_not_called()
+
+        reached = ValueError("validator reached")
+        sent, validate = self._post_canvas_agent(
+            requested, internal=True, validator=mock.Mock(side_effect=reached)
+        )
+        self.assertEqual((sent[0][0], sent[0][1]["detail"]), (400, "validator reached"))
+        validate.assert_called_once()
+
+    def test_http_boundary_rejects_non_object_json_without_crashing(self):
+        sent, validate = self._post_canvas_agent([])
+        self.assertEqual(sent[0][0], 400)
+        self.assertIn("请求体", sent[0][1]["detail"])
+        validate.assert_called_once()
 
     def test_plan_copies_snapshot_and_only_updates_selected_text(self):
         request = canvas_agent.validate_payload(payload())

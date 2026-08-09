@@ -100,7 +100,7 @@ class FunctionRegistryTests(unittest.TestCase):
              "文案编导", "短剧创作", "无限画布", "我的资产", "点数价格", "邀请中心",
              "教程视频", "通用设置"],
         )
-        self.assertEqual([page["inventory_status"] for page in pages].count("verified"), 5)
+        self.assertEqual([page["inventory_status"] for page in pages].count("verified"), 8)
         image = next(page for page in pages if page["key"] == "banana")
         self.assertEqual(
             [feature["name"] for feature in image["functions"]],
@@ -192,12 +192,74 @@ class FunctionRegistryTests(unittest.TestCase):
             self.admin.function_registry.e2e_runner("collect.content.comments")["prefill"]["url"],
             "@env/HQ_E2E_COLLECT_URL",
         )
+        script = next(page for page in pages if page["key"] == "script")
+        self.assertEqual([item["name"] for item in script["functions"]], ["AI 写脚本", "拆解视频"])
+        self.assertEqual(
+            [mode["key"] for feature in script["functions"] for mode in feature["modes"]],
+            ["script.write.spoken", "script.write.story", "script.write.recommend",
+             "script.breakdown.scenes", "script.breakdown.reverse",
+             "script.breakdown.local_image", "script.breakdown.local_video"],
+        )
+        short_drama = next(page for page in pages if page["key"] == "short-drama")
+        self.assertEqual([item["name"] for item in short_drama["functions"]], ["AI 真人短剧"])
+        self.assertEqual(
+            [mode["key"] for mode in short_drama["functions"][0]["modes"]],
+            ["short_drama.live_action.script_planning",
+             "short_drama.live_action.character_reference",
+             "short_drama.live_action.shot_video",
+             "short_drama.live_action.preview",
+             "short_drama.live_action.delivery"],
+        )
+        self.assertTrue(all(
+            not mode["validation"]["supported"]
+            and bool(mode["validation"]["blocked_reason"])
+            for mode in short_drama["functions"][0]["modes"]
+        ))
+        canvas = next(page for page in pages if page["key"] == "canvas")
+        self.assertEqual([item["name"] for item in canvas["functions"]], ["画布 Agent", "图片节点", "视频节点"])
+        self.assertEqual(canvas["functions"][0]["modes"][0]["key"], "canvas.agent.plan")
+        self.assertEqual(
+            [item["name"] for item in canvas["auxiliary_actions"]],
+            ["反推提示词", "本地画布编辑与协作同步"],
+        )
+        self.assertEqual(
+            self.admin.function_registry.classify_task("image", {
+                "source_page": "canvas", "provider": "banana", "model": "nb2",
+            }),
+            "canvas.image.banana.nb2",
+        )
+        self.assertEqual(
+            self.admin.function_registry.classify_task("xiaole_video", {
+                "source_page": "canvas", "channel": "grok", "operation": "generate",
+            }),
+            "canvas.video.grok",
+        )
+        classify = self.admin.function_registry.classify_task
+        for metadata, operation in (
+            ({"source_page": "canvas", "provider": "banana", "model": "pro"}, "canvas.image.banana.pro"),
+            ({"source_page": "canvas", "provider": "openai"}, "canvas.image.openai"),
+            ({"source_page": "canvas", "provider": "zelong"}, "canvas.image.zelong"),
+        ):
+            self.assertEqual(classify("image", metadata), operation)
+        self.assertEqual(classify("xiaole_video", {"source_page": "canvas", "channel": "micro"}), "canvas.video.micro")
+        for style, operation in (("口播", "script.write.spoken"), ("剧情", "script.write.story"), ("种草", "script.write.recommend")):
+            self.assertEqual(classify("copy", {"source_page": "script", "format": "script", "style": style}), operation)
+        for metadata, operation in (
+            ({"source_page": "script", "mode": "scenes"}, "script.breakdown.scenes"),
+            ({"source_page": "script", "mode": "reverse_prompt"}, "script.breakdown.reverse"),
+            ({"source_page": "script", "source_type": "image"}, "script.breakdown.local_image"),
+            ({"source_page": "script", "source_type": "video"}, "script.breakdown.local_video"),
+        ):
+            self.assertEqual(classify("breakdown", metadata), operation)
+        self.assertIsNone(classify("copy", {"source_page": "canvas", "format": "script", "style": "口播"}))
+        self.assertIsNone(classify("breakdown", {"source_page": "video", "mode": "scenes"}))
 
         flags = self.admin.feature_flags.CATALOG_MAP
         routes = self.admin.KEY_GROUP_MAP
         prices = self.admin.pricing.CATALOG_MAP
         for feature in (image["functions"] + video["functions"] + audio["functions"]
-                        + collect["functions"] + leads["functions"]):
+                        + collect["functions"] + leads["functions"] + script["functions"]
+                        + short_drama["functions"] + canvas["functions"]):
             self.assertTrue(feature["frontend_selector"])
             self.assertIn(feature["service"], {"content", "imggen", "leadgen"})
             for flag in feature.get("flag_keys", []):
