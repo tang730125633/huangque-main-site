@@ -1448,19 +1448,29 @@ def _e2e_prepare_operation(session, operation_id):
             in set(fixture.get("missing_shot_keys") or [])
         ):
             raise ValueError("短剧预览私有逐镜素材仍在生成，请等待终态")
-        missing = len(fixture.get("missing_shot_keys") or []) if fixture else 6
+        missing_keys = list(fixture.get("missing_shot_keys") or []) if fixture else []
+        durations = (
+            [
+                max(1, (int((fixture.get("shot_durations") or {}).get(key) or 0) + 999) // 1000)
+                for key in missing_keys
+            ]
+            if fixture else [15, max(1, int(payload.get("target_duration") or 30) - 15)]
+        )
         model = str(
             os.environ.get("HQ_SHORT_DRAMA_GROK_MODEL")
             or "grok-imagine-video"
         )
-        shot_cost = int(points_domain.cost_of("xiaole_video", {
-            "channel": "grok", "model": model,
-            "resolution": "720p", "duration": 5,
-        }))
+        cost = sum(
+            int(points_domain.cost_of("xiaole_video", {
+                "channel": "grok", "model": model,
+                "resolution": "720p", "duration": duration,
+            }))
+            for duration in durations
+        )
         return {
             "operation_id": operation_id, "runner": runner, "payload": payload,
             "endpoint": endpoint, "kind": "short_drama_preview",
-            "cost": missing * shot_cost, "shot_cost": shot_cost,
+            "cost": cost,
             "avatar_id": int(avatars[0]),
             "reuse_project_id": str((fixture or {}).get("project_id") or ""),
             "parameters": _e2e_parameters(operation_id, payload),
@@ -3607,7 +3617,7 @@ def _public_short_drama_preview_run(item, evidence):
                    "%s / %s 个镜头已取得真实生产证据" % (ready_count, total)),
         _e2e_stage("generation", "六镜头生成",
                    "passed" if ready_count == total else ("failed" if failed else "waiting"),
-                   "%s / %s 个 5 秒镜头已生成" % (ready_count, total)),
+                   "%s / %s 个镜头已生成" % (ready_count, total)),
         _e2e_stage("delivery", "720p 预览合成与交付",
                    "passed" if preview_done and delivered else ("failed" if failed else "waiting"),
                    "预览可下载、可解码，私有逐镜快照已保留"
@@ -4092,6 +4102,11 @@ def _short_drama_preview_fixture_state(username, project_id=""):
                 for item in plan.get("material_plan") or []
                 if isinstance(item, dict) and item.get("shot_key")
             ]
+            durations = {
+                str(item.get("shot_key")): int(item.get("duration_ms") or 0)
+                for item in plan.get("material_plan") or []
+                if isinstance(item, dict) and item.get("shot_key")
+            }
             ready = {}
             for row in connection.execute(
                 "SELECT * FROM short_drama_provider_shot_versions "
@@ -4114,6 +4129,7 @@ def _short_drama_preview_fixture_state(username, project_id=""):
             "required_shot_keys": required,
             "ready_shot_keys": [key for key in required if key in ready],
             "missing_shot_keys": [key for key in required if key not in ready],
+            "shot_durations": durations,
             "ready_versions": ready, "latest_jobs": latest,
             "all_ready": bool(required) and all(key in ready for key in required),
         }
@@ -4586,8 +4602,11 @@ def _prepare_short_drama_preview_project(run_id, token, prepared):
         raise ValueError("短剧预览制作计划没有确认")
     shots = [item for item in plan.get("material_plan") or []
              if isinstance(item, dict) and item.get("shot_key")]
-    if len(shots) != 6 or any(int(item.get("duration_ms") or 0) != 5000 for item in shots):
-        raise ValueError("固定预览必须生成 6 个 5 秒镜头")
+    durations = [int(item.get("duration_ms") or 0) for item in shots]
+    if len(shots) != 6 or sum(durations) != 30000 or any(
+        duration <= 0 or duration % 1000 for duration in durations
+    ):
+        raise ValueError("固定预览必须生成 6 个合计 30 秒的整秒镜头")
     _e2e_project_evidence(
         run_id, project_id=project_id, plan_id=str(current_plan["id"]),
         character_key=str(characters[0]["character_key"]),
@@ -4614,7 +4633,7 @@ def _preview_e2e_row(run_id):
     return row, evidence
 
 
-def _preview_submit_shot(run_id, token, evidence, shot_key, shot_cost):
+def _preview_submit_shot(run_id, token, evidence, shot_key):
     project_id = str(evidence["project_id"])
     request = {
         "project_id": project_id, "plan_id": str(evidence["plan_id"]),
@@ -4628,13 +4647,20 @@ def _preview_submit_shot(run_id, token, evidence, shot_key, shot_cost):
             request, run_id, "preview-shot-preflight-" + str(shot_key),
         )
         if (not preview.get("ready") or preview.get("provider") != "grok"
-                or int((preview.get("request") or {}).get("duration_seconds") or 0) != 5):
+                or int((preview.get("request") or {}).get("duration_seconds") or 0) <= 0):
             raise ValueError("短剧预览镜头 %s 真实 Provider 预检失败" % shot_key)
         quote = _short_drama_e2e_request(
             "/api/gen/short-drama/autodraft/provider-quote", token,
             request, run_id, "preview-shot-quote-" + str(shot_key),
         )
-        if int(quote.get("cost") or 0) != int(shot_cost):
+        provider_request = preview.get("request") or {}
+        expected_cost = int(points_domain.cost_of("xiaole_video", {
+            "channel": "grok",
+            "model": str(provider_request.get("model") or "grok-imagine-video"),
+            "resolution": str(provider_request.get("resolution") or "720p"),
+            "duration": int(provider_request.get("duration_seconds") or 0),
+        }))
+        if int(quote.get("cost") or 0) != expected_cost:
             raise ValueError("逐镜实时价格已变化，本次在新镜头扣点前停止")
         quote_token = str(quote["quote_token"])
         quote_tokens[str(shot_key)] = quote_token
@@ -4763,7 +4789,7 @@ def _advance_short_drama_preview_e2e(run_id, admin_token):
         }:
             continue
         evidence = _preview_submit_shot(
-            run_id, token, evidence, shot_key, int(evidence["shot_cost"]),
+            run_id, token, evidence, shot_key,
         )
         active += 1
     state = _short_drama_preview_fixture_state(row["username"], project_id) or state
@@ -4887,7 +4913,6 @@ def _submit_short_drama_preview_e2e_run(run_id, admin_token, session, prepared):
         )
         if not state:
             raise ValueError("短剧预览私有素材项目建立失败")
-    _e2e_project_evidence(run_id, shot_cost=int(prepared["shot_cost"]))
     with closing(db()) as connection:
         connection.execute(
             "UPDATE admin_e2e_runs SET status='queued',error='',updated_at=? WHERE run_id=?",
