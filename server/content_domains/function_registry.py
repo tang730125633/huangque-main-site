@@ -23,6 +23,8 @@ QA_PROMPT = "琥珀色精华瓶置于石台上，柔和晨光缓慢扫过瓶身�
 QA_IMAGE_PROMPT = "琥珀色精华瓶置于浅灰石台中央，柔和晨光，干净电商摄影，无人物、无文字、无标识"
 QA_IMAGE_EDIT_PROMPT = "仅将瓶身左侧背景改为柔和浅金色，保持产品主体、构图和光线不变，无文字、无标识"
 QA_AUDIO_TEXT = "你好，这是黄雀音频功能的自动质检。现在正在验证生成、播放、下载和点数记录。"
+QA_COLLECT_URL = "@env/HQ_E2E_COLLECT_URL"
+QA_LEADS_KEYWORD = "美容院如何拓客"
 
 
 def _validation(prefill=None, manual_requirements=None, supported=True, blocked_reason=""):
@@ -756,6 +758,107 @@ AUDIO_FUNCTIONS = [
 ]
 
 
+COLLECT_FUNCTIONS = [
+    {
+        "key": "collect",
+        "name": "内容采集",
+        "desc": "从抖音或小红书链接采集内容、解析视频或提取口播文案",
+        "order": 10,
+        "frontend_selector": "#colBtn",
+        "service": "leadgen",
+        "flag_keys": ["collect"],
+        "dependencies": [
+            {"key": "tikhub", "role": "内容解析与评论采集", "requirement": "required",
+             "credential_source": "env"},
+            {"key": "cos", "role": "采集素材长期存储", "requirement": "optional",
+             "condition": "未配置或转存失败时回退原始素材地址"},
+        ],
+        "modes": [
+            {
+                "key": "collect.content.comments",
+                "name": "内容与评论采集",
+                "frontend_selector": "#tabLink",
+                "entrypoints": [_endpoint("POST", "/api/gen/collect")],
+                "task_match": {"kind": "collect", "collect_mode": "comments"},
+                "evidence_contract": {"not_applicable": ["provider_task", "balance"]},
+                "price_keys": ["collect.base"],
+                "smoke_inputs": ["1 条已授权固定内容链接", "标题/正文/媒体与评论结果"],
+                "validation": _validation({
+                    "url": QA_COLLECT_URL, "want": ["comments"],
+                    "provider": "tikhub", "source_page": "collect",
+                }),
+            },
+            {
+                "key": "collect.content.video",
+                "name": "视频解析下载",
+                "frontend_selector": "#tabDl",
+                "entrypoints": [
+                    _endpoint("POST", "/api/gen/collect"),
+                    _endpoint("GET", "/api/gen/dl"),
+                ],
+                "task_match": {"kind": "collect", "collect_mode": "video"},
+                "evidence_contract": {"not_applicable": ["provider_task", "balance"]},
+                "price_keys": ["collect.base"],
+                "smoke_inputs": ["1 条已授权固定视频链接", "可下载的视频结果"],
+                "validation": _validation({
+                    "url": QA_COLLECT_URL, "want": ["video"],
+                    "provider": "tikhub", "source_page": "collect",
+                }),
+            },
+            {
+                "key": "collect.content.transcript",
+                "name": "口播文案提取",
+                "frontend_selector": "#transcriptExtractBtn",
+                "entrypoints": [_endpoint("POST", "/api/gen/collect")],
+                "task_match": {"kind": "collect", "collect_mode": "transcript"},
+                "evidence_contract": {"not_applicable": ["provider_task", "balance"]},
+                "dependencies": [
+                    {"key": "openai", "role": "无字幕视频的口播识别", "requirement": "optional",
+                     "credential_source": "env", "condition": "素材没有平台字幕时调用"},
+                ],
+                "price_keys": ["collect.base", "collect.transcript_extra"],
+                "smoke_inputs": ["1 条已授权固定短视频链接", "非空口播文案"],
+                "validation": _validation({
+                    "url": QA_COLLECT_URL, "want": ["transcript"],
+                    "provider": "tikhub", "source_page": "collect",
+                }),
+            },
+        ],
+    },
+]
+
+
+LEADS_FUNCTIONS = [
+    {
+        "key": "keyword",
+        "name": "关键词获客",
+        "desc": "按关键词搜索公开内容评论并筛选可跟进线索",
+        "order": 10,
+        "frontend_selector": "#goBtn",
+        "service": "leadgen",
+        "flag_keys": ["leads"],
+        "dependencies": [{
+            "key": "tikhub", "role": "公开内容搜索与评论采集",
+            "requirement": "required", "credential_source": "env",
+        }],
+        "modes": [{
+            "key": "leads.keyword.search",
+            "name": "关键词筛选线索",
+            "entrypoints": [_endpoint("POST", "/api/gen/leads")],
+            "task_match": {"kind": "leads"},
+            "evidence_contract": {"not_applicable": ["provider_task", "balance"]},
+            "price_keys": ["leads.base", "leads.per_four"],
+            "smoke_inputs": ["预设通用关键词", "抖音公开内容", "最低采集量 1"],
+            "validation": _validation({
+                "keyword": QA_LEADS_KEYWORD, "platforms": ["douyin"],
+                "count": 1, "pages": 1, "channels_targets": [],
+                "provider": "tikhub", "source_page": "leads",
+            }),
+        }],
+    },
+]
+
+
 _PAGE_DEFS = [
     ("inspiration", "灵感设计", "/workbench/inspiration.html"),
     ("leads", "平台获客", "/workbench/leads.html"),
@@ -779,11 +882,13 @@ FUNCTION_REGISTRY = [
         "name": name,
         "path": path,
         "order": order,
-        "inventory_status": "verified" if key in {"banana", "video", "audio"} else "pending",
+        "inventory_status": "verified" if key in {"leads", "collect", "banana", "video", "audio"} else "pending",
         "functions": (
             VIDEO_FUNCTIONS if key == "video"
             else IMAGE_FUNCTIONS if key == "banana"
             else AUDIO_FUNCTIONS if key == "audio"
+            else COLLECT_FUNCTIONS if key == "collect"
+            else LEADS_FUNCTIONS if key == "leads"
             else []
         ),
         "auxiliary_actions": ([{
@@ -799,7 +904,17 @@ FUNCTION_REGISTRY = [
             "entrypoint": _endpoint("POST", "/api/gen/reverse"),
             "scope": "同步扣点工具，不创建生成任务",
             "price_keys": ["image.reverse"],
-        }] if key == "banana" else []),
+        }] if key == "banana" else [{
+            "key": "collect.keyword.search", "name": "关键词搜内容",
+            "entrypoint": _endpoint("GET", "/api/gen/collect/search"),
+            "scope": "付费选片工具，不创建异步任务",
+            "price_keys": ["collect.search"],
+        }] if key == "collect" else [{
+            "key": "leads.crm.update", "name": "线索跟进保存",
+            "entrypoint": _endpoint("POST", "/api/gen/leads/crm"),
+            "scope": "保存当前用户的意向、跟进状态和备注，不创建生成任务、不扣点",
+            "price_keys": [],
+        }] if key == "leads" else []),
     }
     for order, (key, name, path) in enumerate(_PAGE_DEFS)
 ]
@@ -873,10 +988,13 @@ def classify_task(kind, metadata=None):
     metadata = metadata or {}
     kind = str(kind or "").strip().lower()
     source_page = str(metadata.get("source_page") or "").strip().lower()
-    if source_page not in {"", "video", "banana", "audio"}:
+    if source_page not in {"", "video", "banana", "audio", "collect", "leads"}:
         return None
     if kind == "image" and source_page != "banana":
         return None
+    want = metadata.get("want") or []
+    if isinstance(want, str):
+        want = [want]
     if kind != "image" and source_page == "banana":
         return None
     if kind == "audio" and source_page != "audio":
@@ -906,6 +1024,10 @@ def classify_task(kind, metadata=None):
         ).strip().lower(),
         "reference_count": references,
         "batch": bool(metadata.get("batch") or metadata.get("batch_id")),
+        "collect_mode": str(
+            metadata.get("collect_mode")
+            or next(iter(want), "comments")
+        ).strip().lower(),
     }
     return next((key for key, rule in TASK_RULES if _matches(actual, rule)), None)
 

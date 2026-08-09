@@ -23,10 +23,10 @@ INTERNAL_AUTH_PATHS = (
 )
 
 
-def location_block(config, path):
+def location_block(config, path, modifier="^~"):
     matches = list(
         re.finditer(
-            rf"(?m)^[ \t]*location[ \t]+\^~[ \t]+{re.escape(path)}[ \t]*\{{",
+            rf"(?m)^[ \t]*location[ \t]+{re.escape(modifier)}[ \t]+{re.escape(path)}[ \t]*\{{",
             config,
         )
     )
@@ -72,6 +72,8 @@ class NginxInternalBoundaryTests(unittest.TestCase):
                 with self.subTest(config=relative_path, path=path):
                     _, block = location_block(config, path)
                     self.assertEqual(len(header.findall(block)), 1)
+            _, download = location_block(config, "/api/gen/dl", "=")
+            self.assertEqual(len(header.findall(download)), 1)
 
 
 if __name__ == "__main__":

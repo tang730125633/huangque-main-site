@@ -20,6 +20,7 @@ import os
 import pathlib
 import re
 import subprocess
+import tempfile
 import threading
 import uuid
 
@@ -98,6 +99,8 @@ PORT = int(os.environ.get("ADMIN_API_PORT", "8099"))
 AUTH_BASE = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095").rstrip("/")
 CONTENT_BASE = os.environ.get("CONTENT_BASE", "http://127.0.0.1:8096").rstrip("/")
 IMGGEN_BASE = os.environ.get("IMGGEN_BASE", "http://127.0.0.1:8101").rstrip("/")
+LEADGEN_BASE = os.environ.get("LEADGEN_BASE", "http://127.0.0.1:8100").rstrip("/")
+DL_BASE = os.environ.get("DL_BASE", "http://127.0.0.1:8097").rstrip("/")
 AUTH_INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
 JOB_DB = pathlib.Path(os.environ.get("CONTENT_JOB_DB", str(BASE / "content_jobs.db")))
 ASSET_DB = pathlib.Path(os.environ.get("AUDIO_DB", str(BASE / "audio_assets.db")))
@@ -849,9 +852,21 @@ def _fixture_data_url(value):
     )
 
 
+def _e2e_fixture_value(value):
+    if not isinstance(value, str) or not value.startswith("@env/"):
+        return _fixture_data_url(value)
+    name = value[5:]
+    if not re.fullmatch(r"[A-Z][A-Z0-9_]{1,63}", name):
+        raise ValueError("测试参数名称无效")
+    resolved = os.environ.get(name, "").strip()
+    if not resolved:
+        raise ValueError("测试参数未配置：" + name)
+    return resolved
+
+
 def _e2e_payload(operation_id, runner, ready_avatar_ids=None, ready_audio_voice_key=""):
     prefill = runner.get("prefill") or {}
-    resolve = lambda value: _fixture_data_url(value)
+    resolve = _e2e_fixture_value
     prompt = str(prefill.get("prompt") or "").strip()
     payload = {"qa_operation_id": operation_id}
     if operation_id == "video.digital_ip.text.single":
@@ -959,6 +974,20 @@ def _e2e_payload(operation_id, runner, ready_avatar_ids=None, ready_audio_voice_
             references = [resolve(item) for item in prefill.get("reference_images") or []]
             if references:
                 payload["reference_images"] = references
+    elif operation_id.startswith("collect.content."):
+        payload.update({
+            "url": resolve(prefill["url"]), "want": list(prefill.get("want") or []),
+            "provider": "tikhub", "source_page": "collect",
+        })
+    elif operation_id == "leads.keyword.search":
+        payload.update({
+            "keyword": str(prefill.get("keyword") or "").strip(),
+            "platforms": list(prefill.get("platforms") or ["douyin"]),
+            "count": int(prefill.get("count") or 1),
+            "pages": int(prefill.get("pages") or 1),
+            "channels_targets": list(prefill.get("channels_targets") or []),
+            "provider": "tikhub", "source_page": "leads",
+        })
     else:
         raise ValueError("该模式尚未接入后台托管测试")
     return payload
@@ -972,7 +1001,8 @@ def _content_e2e_request(path, account_token, payload, idempotency_key, expected
         "X-HQ-Internal-Token": AUTH_INTERNAL_TOKEN,
         "X-HQ-Expected-Cost": str(int(expected_cost)),
     }
-    base = IMGGEN_BASE if path == "/api/gen/banana" else CONTENT_BASE
+    base = (IMGGEN_BASE if path == "/api/gen/banana" else
+            LEADGEN_BASE if path in {"/api/gen/collect", "/api/gen/leads"} else CONTENT_BASE)
     req = urllib.request.Request(
         base + path,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -1054,6 +1084,7 @@ def _e2e_kind(endpoint):
         "/api/gen/video": "video", "/api/gen/tryon": "tryon",
         "/api/gen/xiaole_video": "xiaole_video", "/api/gen/sora_video": "sora_video",
         "/api/gen/cinematic": "cinematic",
+        "/api/gen/collect": "collect", "/api/gen/leads": "leads",
     }.get(endpoint)
 
 
@@ -1147,6 +1178,18 @@ def _e2e_parameters(operation_id, payload):
             parameters.append("型号：%s" % payload["variant"])
         if payload.get("mask"):
             parameters.append("局部蒙版：已准备")
+    elif operation_id.startswith("collect.content."):
+        mode = next(iter(payload.get("want") or []), "comments")
+        parameters.extend([
+            "固定授权链接：已准备",
+            "验收内容：%s" % {"comments": "内容与评论", "video": "视频解析下载",
+                             "transcript": "口播文案"}.get(mode, mode),
+        ])
+    elif operation_id == "leads.keyword.search":
+        parameters.extend([
+            "平台：抖音", "关键词：预设通用关键词",
+            "最低采集量：%s" % payload.get("count", 1),
+        ])
     return parameters
 
 
@@ -2900,6 +2943,147 @@ def _verify_local_artifact(evidence):
     return evidence
 
 
+def _download_proxy_evidence(job_id, video):
+    now = int(time.time())
+    with closing(db()) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS admin_e2e_delivery_checks(
+                job_id INTEGER PRIMARY KEY,status TEXT NOT NULL,
+                detail TEXT NOT NULL DEFAULT '',updated_at INTEGER NOT NULL)"""
+        )
+        cached = connection.execute(
+            "SELECT status,detail,updated_at FROM admin_e2e_delivery_checks WHERE job_id=?",
+            (int(job_id),),
+        ).fetchone()
+        fresh_for = 300 if cached and cached["status"] == "checking" else 60
+        if cached and (cached["status"] == "passed"
+                       or int(cached["updated_at"] or 0) > now - fresh_for):
+            connection.commit()
+            state = None if cached["status"] == "checking" else cached["status"] == "passed"
+            return state, str(cached["detail"] or "")
+        connection.execute(
+            """INSERT INTO admin_e2e_delivery_checks(job_id,status,detail,updated_at)
+               VALUES(?,?,?,?) ON CONFLICT(job_id) DO UPDATE SET
+               status=excluded.status,detail=excluded.detail,updated_at=excluded.updated_at""",
+            (int(job_id), "checking", "正在通过下载代理验收完整视频", now),
+        )
+        connection.commit()
+
+    claim_at = now
+    status, detail = "failed", "下载代理未返回可用视频"
+    try:
+        query = urllib.parse.urlencode({
+            "url": str(video.get("play_url") or ""),
+            "dk": str(video.get("decode_key") or ""),
+            "name": str(video.get("title") or "qa-video")[:30],
+        })
+        request = urllib.request.Request(
+            DL_BASE + "/api/gen/dl?" + query,
+            headers={"X-HQ-Internal-Token": AUTH_INTERNAL_TOKEN},
+        )
+        with urllib.request.urlopen(request, timeout=35) as response:
+            declared = int(response.headers.get("Content-Length") or 0)
+            limit = 200 * 1024 * 1024
+            deadline = time.monotonic() + 180
+            if declared > limit:
+                raise ValueError("验收视频超过 200MB 上限")
+            total = 0
+            with tempfile.NamedTemporaryFile(suffix=".mp4") as output:
+                while True:
+                    if time.monotonic() > deadline:
+                        raise TimeoutError("完整视频验收超时")
+                    chunk = response.read(64 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > limit:
+                        raise ValueError("验收视频超过 200MB 上限")
+                    output.write(chunk)
+                output.flush()
+                if declared and total != declared:
+                    raise ValueError("下载内容不完整")
+                probe = subprocess.run(
+                    ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                     "-show_entries", "stream=codec_name", "-of", "csv=p=0", output.name],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
+                )
+        if total and probe.returncode == 0 and probe.stdout.strip():
+            status, detail = "passed", "下载代理返回完整视频，文件可解码"
+    except Exception as exc:
+        detail = ("下载代理验收失败：" + str(exc))[:300]
+    with closing(db()) as connection:
+        updated = connection.execute(
+            """UPDATE admin_e2e_delivery_checks SET status=?,detail=?,updated_at=?
+               WHERE job_id=? AND status='checking' AND updated_at=?""",
+            (status, detail, int(time.time()), int(job_id), claim_at),
+        )
+        connection.commit()
+        if updated.rowcount == 0:
+            current = connection.execute(
+                "SELECT status,detail FROM admin_e2e_delivery_checks WHERE job_id=?", (int(job_id),)
+            ).fetchone()
+            return (bool(current and current["status"] == "passed"),
+                    str(current["detail"] or "") if current else "验收状态已更新")
+    return status == "passed", detail
+
+
+def _structured_asset_evidence(row):
+    kind = str(row["kind"] or "").lower()
+    if kind not in {"collect", "leads"}:
+        return None
+    try:
+        result = json.loads(row["result_json"] or "{}")
+    except (TypeError, json.JSONDecodeError):
+        result = {}
+    download_detail = ""
+    download_pending = False
+    if kind == "leads":
+        valid = (result.get("type") == "leads"
+                 and bool(result.get("leads"))
+                 and int(result.get("leads_count") or 0) > 0)
+    else:
+        mode = str(row["collect_mode"] or "comments").lower()
+        video, copy = result.get("video") or {}, result.get("copy") or {}
+        if mode == "video":
+            valid = bool(video.get("play_url"))
+            if valid:
+                valid, download_detail = _download_proxy_evidence(row["id"], video)
+                download_pending = valid is None
+        elif mode == "transcript":
+            transcript = result.get("transcript") or {}
+            valid = bool(transcript.get("text") if isinstance(transcript, dict) else transcript)
+        else:
+            valid = (result.get("type") == "collect"
+                     and bool(video.get("title") or copy.get("title") or copy.get("desc"))
+                     and bool(result.get("comments")))
+    asset = None
+    if ASSET_DB.exists():
+        try:
+            with closing(sqlite3.connect(str(ASSET_DB), timeout=10)) as connection:
+                connection.row_factory = sqlite3.Row
+                asset = connection.execute(
+                    "SELECT id,kind,stage FROM assets WHERE job_id=? AND kind=? AND deleted=0",
+                    (int(row["id"]), kind),
+                ).fetchone()
+        except sqlite3.Error:
+            asset = None
+    return {
+        "delivery_verified": bool(valid and asset),
+        "artifact_check": ("checking" if download_pending else (
+            "download_proxy" if valid and asset and kind == "collect"
+                            and str(row["collect_mode"] or "").lower() == "video"
+                            else "structured_asset") if valid and asset else (
+            "invalid_structured" if not valid else "missing"
+        )),
+        "output_reference_present": bool(valid or download_pending),
+        "asset_id": int(asset["id"]) if asset else None,
+        "asset_kind": str(asset["kind"]) if asset else None,
+        "asset_status": str(asset["stage"]) if asset else None,
+        "delivery_detail": download_detail if kind == "collect" and mode == "video" else "",
+    }
+
+
 def _job_evidence(row, asset=None):
     asset = asset or {}
     status = str(row["status"] or "unknown").lower()
@@ -2931,7 +3115,7 @@ def _job_evidence(row, asset=None):
         billing_state = "unverified"
     else:
         billing_state = "in_flight"
-    return _verify_local_artifact({
+    evidence = _verify_local_artifact({
         "job_id": int(row["id"]),
         "project_id": None,
         "status": status,
@@ -2956,6 +3140,11 @@ def _job_evidence(row, asset=None):
         "_artifact_media_type": asset.get("media_type"),
         "error": str(row["error"] or asset.get("error") or "")[:300],
     })
+    if status in {"done", "completed"}:
+        structured = _structured_asset_evidence(row)
+        if structured is not None:
+            evidence.update(structured)
+    return evidence
 
 
 def _e2e_job_evidence(job_id):
@@ -2974,21 +3163,28 @@ def _e2e_job_evidence(job_id):
                 "CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload,'$.voice_scope'),'') ELSE '' END"
                 if "payload" in columns else "''"
             )
+            result_sql = "result" if "result" in columns else "NULL"
+            collect_mode_sql = (
+                "CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.want[0]'),'comments')) ELSE 'comments' END"
+                if "payload" in columns else "'comments'"
+            )
             row = connection.execute(
                 """SELECT id,status,cost,COALESCE(refunded,0) AS refunded,
                           COALESCE(error,'') AS error,created_at,updated_at,
                           CASE WHEN json_valid(result) THEN COALESCE(json_extract(result,'$.video_url'),json_extract(result,'$.image_url'),json_extract(result,'$.url'),json_extract(result,'$.urls[0]'),'') ELSE '' END AS result_url,
                           CASE WHEN json_valid(result) THEN COALESCE(json_extract(result,'$.video_file'),json_extract(result,'$.image_file'),json_extract(result,'$.file'),json_extract(result,'$.files[0]'),'') ELSE '' END AS result_file,
                           CASE WHEN json_valid(result) THEN COALESCE(json_extract(result,'$.provider_task_id'),json_extract(result,'$.request_id'),json_extract(result,'$.provider_video_id'),json_extract(result,'$.video_id'),'') ELSE '' END AS provider_result_id,
-                          %s AS kind,%s AS route_provider,%s AS voice_scope
-                   FROM jobs WHERE id=?""" % (kind_sql, provider_sql, voice_scope_sql),
+                          %s AS kind,%s AS route_provider,%s AS voice_scope,
+                          %s AS result_json,%s AS collect_mode
+                   FROM jobs WHERE id=?""" % (
+                       kind_sql, provider_sql, voice_scope_sql, result_sql, collect_mode_sql),
                 (int(job_id),),
             ).fetchone()
         if not row:
             return None
         if row["kind"] == "audio":
             assets, _ = _audio_asset_evidence([int(job_id)])
-        elif row["kind"] == "image":
+        elif row["kind"] in {"image", "collect", "leads"}:
             assets = {}
         else:
             assets, _ = _video_asset_evidence([int(job_id)])
@@ -3053,6 +3249,7 @@ def _public_e2e_run(row):
     provider_ok = bool(provider_id or (provider_not_applicable and route_ok))
     completed = bool(evidence and evidence.get("completed"))
     delivered = bool(evidence and evidence.get("delivery_verified"))
+    delivery_checking = bool(evidence and evidence.get("artifact_check") == "checking")
     refunded = bool(evidence and evidence.get("billing_state") == "refunded")
     billing_passed = refunded or (completed and billing_ok and ledger_ok)
     item["stages"] = [
@@ -3069,11 +3266,17 @@ def _public_e2e_run(row):
                    (("provider_task_id=" + str(provider_id)) if provider_id else (
                        "同步生产链不产生供应商任务编号，此项不适用" if provider_not_applicable
                        else "尚无供应商任务编号"))),
-        _e2e_stage("generation", "音频生成" if route_provider == "cosyvoice" else "供应商生成",
+        _e2e_stage("generation", "音频生成" if route_provider == "cosyvoice" else (
+                       "数据采集" if route_provider == "tikhub" else "供应商生成"),
                    "passed" if completed else ("failed" if failed else "waiting"),
                    "已到 completed" if completed else (item.get("error") or "等待生成终态")),
-        _e2e_stage("delivery", "作品交付", "passed" if delivered else ("failed" if completed else "waiting"),
+        _e2e_stage("delivery", "作品交付", "passed" if delivered else (
+                       "waiting" if delivery_checking or not completed else "failed"),
                    ({"decodable": "文件存在且可解码", "file_exists": "文件存在且非空",
+                     "structured_asset": "结构化结果已验收并写入资产库",
+                     "download_proxy": "下载代理返回完整视频，文件可解码",
+                     "checking": "另一条后台质检正在验收同一视频",
+                     "invalid_structured": "结果结构不完整或没有可用结果",
                      "decode_failed": "文件返回但无法解码", "missing": "作品文件缺失",
                      "reference_only": "只有作品地址，尚未完成本地验收"}.get(
                          (evidence or {}).get("artifact_check"), "等待作品文件"))),
@@ -3271,8 +3474,8 @@ def e2e_batch_preflight(admin_token, page_key, include_fresh=False):
     blocker = ""
     if not account.get("membership_active"):
         blocker = "专用测试账号会员未生效"
-    elif page_key in {"audio", "banana"} and blocked_items:
-        page_name = "音频" if page_key == "audio" else "图片"
+    elif page_key in {"audio", "banana", "collect"} and blocked_items:
+        page_name = {"audio": "音频", "banana": "图片", "collect": "内容爬取"}[page_key]
         blocker = "%s完整旅程要求客户模式全部准备好，当前仍有 %s 项未准备" % (page_name, len(blocked_items))
     elif not ready_items:
         blocker = "当前没有需要重测且测试包已准备的模式"
@@ -3540,6 +3743,7 @@ def job_stats(days=7):
                               date(created_at, 'unixepoch') AS day,
                               CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.channel'),'')) ELSE '' END AS channel,
                               CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.mode'),'')) ELSE '' END AS mode,
+                              CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.want[0]'),'comments')) ELSE 'comments' END AS collect_mode,
                               CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.cine_mode'),'')) ELSE '' END AS cine_mode,
                               CASE WHEN json_valid(payload) THEN CAST(COALESCE(json_extract(payload,'$.line'),'') AS TEXT) ELSE '' END AS line,
                               CASE WHEN json_valid(payload) AND json_type(payload,'$.reference_images')='array'
@@ -3562,12 +3766,14 @@ def job_stats(days=7):
                               CASE WHEN json_valid(payload) AND json_type(payload,'$.mask')='text' THEN 1 ELSE 0 END AS mask_present,
                               CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_url'),json_extract(%s,'$.image_url'),json_extract(%s,'$.url'),json_extract(%s,'$.urls[0]'),'') ELSE '' END AS result_url,
                               CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_file'),json_extract(%s,'$.image_file'),json_extract(%s,'$.file'),json_extract(%s,'$.files[0]'),'') ELSE '' END AS result_file,
-                              CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.provider_task_id'),json_extract(%s,'$.request_id'),json_extract(%s,'$.provider_video_id'),json_extract(%s,'$.video_id'),json_extract(%s,'$.provider_avatar_id'),'') ELSE '' END AS provider_result_id
+                              CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.provider_task_id'),json_extract(%s,'$.request_id'),json_extract(%s,'$.provider_video_id'),json_extract(%s,'$.video_id'),json_extract(%s,'$.provider_avatar_id'),'') ELSE '' END AS provider_result_id,
+                              %s AS result_json
                        FROM jobs WHERE created_at>=? ORDER BY created_at DESC""" % (
                            refunded_sql, error_sql,
                            result_sql, result_sql, result_sql, result_sql, result_sql,
                            result_sql, result_sql, result_sql, result_sql, result_sql,
                            result_sql, result_sql, result_sql, result_sql, result_sql, result_sql,
+                           result_sql,
                        ),
                     (since,),
                 ).fetchall()
@@ -3593,6 +3799,7 @@ def job_stats(days=7):
         _count_status(bucket, status)
         metadata = {
             "channel": row["channel"], "mode": row["mode"],
+            "collect_mode": row["collect_mode"],
             "cine_mode": row["cine_mode"], "line": row["line"],
             "reference_count": row["reference_count"], "batch_id": row["batch_id"],
             "operation": row["operation"], "upscale": row["upscale"],
