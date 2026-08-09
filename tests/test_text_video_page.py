@@ -96,6 +96,22 @@ process.stdout.write(JSON.stringify({first: first.key, retry: retry.key}));
         self.assertIn("syncGenerateButton()", PAGE)
         self.assertIn("select.disabled=true", PAGE)
 
+    def test_voice_catalog_is_authenticated_and_generation_is_readiness_gated(self):
+        self.assertIn("/api/gen/text-video/voices", CORE)
+        self.assertIn('"voices": pixelle_video.public_voices(user["username"])', CORE)
+        self.assertIn('id="videoVoice"', PAGE)
+        self.assertIn('aria-label="配音音色"', PAGE)
+        self.assertIn("/api/gen/text-video/voices", PAGE)
+        self.assertIn("voicesReady=false", PAGE)
+        self.assertIn("isBusy||!stylesReady||!voicesReady", PAGE)
+
+    def test_generation_submits_namespaced_voice_selection(self):
+        self.assertIn("voice:el('videoVoice').value", PAGE)
+        self.assertIn("if(!voicesReady)", PAGE)
+        self.assertIn("音色暂不可用", PAGE)
+        self.assertIn("option.value=voice.id", PAGE)
+        self.assertIn("个人音色", PAGE)
+
     def test_template_gallery_uses_preview_images_and_filters(self):
         self.assertIn('data-kind="illustration"', PAGE)
         self.assertIn('data-kind="video"', PAGE)

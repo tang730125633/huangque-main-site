@@ -68,7 +68,9 @@ class ScriptToVideoTests(unittest.TestCase):
                 {"pipeline": "pixelle", "text": "AI 培训"}, "fang"
             )
         available.assert_called_once_with()
-        prepare.assert_called_once()
+        prepare.assert_called_once_with(
+            {"pipeline": "pixelle", "text": "AI 培训"}, "fang"
+        )
         self.assertEqual(result, prepared)
 
         generated = {"type": "script_to_video", "pipeline": "pixelle"}
