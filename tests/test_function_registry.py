@@ -200,6 +200,10 @@ class FunctionRegistryTests(unittest.TestCase):
              "script.breakdown.scenes", "script.breakdown.reverse",
              "script.breakdown.local_image", "script.breakdown.local_video"],
         )
+        self.assertTrue(all(
+            mode["validation"]["supported"]
+            for feature in script["functions"] for mode in feature["modes"]
+        ))
         short_drama = next(page for page in pages if page["key"] == "short-drama")
         self.assertEqual([item["name"] for item in short_drama["functions"]], ["AI 真人短剧"])
         self.assertEqual(
@@ -257,6 +261,8 @@ class FunctionRegistryTests(unittest.TestCase):
         ):
             self.assertEqual(classify("image", metadata), operation)
         self.assertEqual(classify("xiaole_video", {"source_page": "canvas", "channel": "micro"}), "canvas.video.micro")
+        canvas_video_modes = canvas["functions"][2]["modes"]
+        self.assertTrue(all(mode["validation"]["supported"] for mode in canvas_video_modes))
         for style, operation in (("口播", "script.write.spoken"), ("剧情", "script.write.story"), ("种草", "script.write.recommend")):
             self.assertEqual(classify("copy", {"source_page": "script", "format": "script", "style": style}), operation)
         for metadata, operation in (
@@ -307,6 +313,7 @@ class FunctionRegistryTests(unittest.TestCase):
                 assets = [
                     prefill.get("image_url"), prefill.get("reference_video_url"),
                     prefill.get("audio_url"), prefill.get("background_url"), prefill.get("mask_url"),
+                    prefill.get("file_url"),
                 ]
                 assets += prefill.get("reference_images") or []
                 for asset in filter(None, assets):
