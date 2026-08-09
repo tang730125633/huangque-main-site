@@ -12,6 +12,7 @@ class HomeVideoBannerTests(unittest.TestCase):
     def setUpClass(cls):
         cls.html = (ROOT / "site/index.html").read_text(encoding="utf-8")
         cls.css = (ROOT / "site/homepage.css").read_text(encoding="utf-8")
+        cls.liquid_glass = (ROOT / "site/homepage-liquid-glass.js").read_text(encoding="utf-8")
         cls.videos = [
             ROOT / "site/assets/home/hero-banner-monochrome-eye.mp4",
             ROOT / "site/assets/home/hero-banner-ancient-courtyard.mp4",
@@ -33,7 +34,7 @@ class HomeVideoBannerTests(unittest.TestCase):
             self.assertIn(b"ftyp", video.read_bytes()[:32])
 
     def test_video_fills_hero_and_respects_reduced_motion(self):
-        self.assertIn(".hero-media video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover", self.css)
+        self.assertIn(".hero-media video{position:absolute;z-index:0;inset:0;width:100%;height:100%;object-fit:cover", self.css)
         self.assertIn("transition:opacity 1s ease", self.css)
         self.assertIn("video.addEventListener('ended', showNextHeroVideo)", self.html)
         self.assertIn("if (reducedMotion.matches)", self.html)
@@ -44,6 +45,13 @@ class HomeVideoBannerTests(unittest.TestCase):
         self.assertGreaterEqual(self.html.count("data-liquid-glass"), 5)
         self.assertIn("addEventListener('pointermove'", self.html)
         self.assertIn("at var(--glass-x) var(--glass-y)", self.css)
+
+    def test_hero_cta_uses_optical_liquid_glass_with_fallback(self):
+        self.assertIn("data-hero-liquid-glass", self.html)
+        self.assertIn("/homepage-liquid-glass.js", self.html)
+        self.assertIn("prefers-reduced-motion:reduce", self.liquid_glass)
+        self.assertIn("refractedPoint", self.liquid_glass)
+        self.assertIn("hero-liquid-glass-ready", self.liquid_glass)
 
 
 if __name__ == "__main__":
