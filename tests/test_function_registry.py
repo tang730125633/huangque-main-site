@@ -234,6 +234,12 @@ class FunctionRegistryTests(unittest.TestCase):
                 "short_drama.live_action.script_planning"
             )["prefill"]["source_text"],
         )
+        self.assertEqual(
+            self.admin.function_registry.e2e_runner(
+                "short_drama.live_action.shot_video"
+            )["prefill"]["character_contract"],
+            self.admin.function_registry.QA_SHORT_DRAMA_CHARACTER_CONTRACT,
+        )
         canvas = next(page for page in pages if page["key"] == "canvas")
         self.assertEqual([item["name"] for item in canvas["functions"]], ["画布 Agent", "图片节点", "视频节点"])
         self.assertEqual(canvas["functions"][0]["modes"][0]["key"], "canvas.agent.plan")

@@ -1057,7 +1057,8 @@ SHORT_DRAMA_FUNCTIONS = [{
                 "ratio": "16:9", "target_duration": 30, "shot_count": 6,
                 "visual_style": "电影感写实", "source_text": QA_SHORT_DRAMA_SOURCE,
                 "filename": "后台质检单镜头视频.txt", "import_mode": "faithful",
-                "content_type": "live_action", "character_contract": [],
+                "content_type": "live_action",
+                "character_contract": QA_SHORT_DRAMA_CHARACTER_CONTRACT,
             }),
         },
         {
