@@ -6,7 +6,7 @@
   <meta name="description" content="黄雀 AI：从 IP12、Agent 与无限画布，到图文音视频生产和 HQ CLI。">
   <title>黄雀 AI · 会持续生长的内容系统</title>
   <link rel="icon" href="/assets/logo_sparrow.png">
-  <link rel="stylesheet" href="/homepage.css?v=20260809-liquid5">
+  <link rel="stylesheet" href="/homepage.css?v=20260809-drawers1">
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -14,38 +14,90 @@
   <canvas class="page-particle-stage" data-hero-particles aria-hidden="true"></canvas>
 
   <header class="site-header">
-    <nav class="nav-shell" data-liquid-glass aria-label="主导航">
-      <canvas class="nav-liquid-glass" data-nav-liquid-glass aria-hidden="true"></canvas>
-      <a class="brand" href="#top" aria-label="黄雀首页">
-        <span class="brand-mark"><img src="/assets/logo_sparrow.png" alt=""></span>
-      </a>
+    <div class="nav-cluster" data-nav-cluster>
+      <nav class="nav-shell" data-liquid-glass aria-label="主导航">
+        <canvas class="nav-liquid-glass" data-nav-liquid-glass aria-hidden="true"></canvas>
+        <a class="brand" href="/" aria-label="黄雀首页">
+          <span class="brand-mark"><img src="/assets/logo_sparrow.png" alt=""></span>
+        </a>
 
-      <div class="nav-links">
-        <a href="#flow">产品链路</a>
-        <a href="#ip12">IP12</a>
-        <a href="#agent">Agent + Canvas</a>
-        <a href="#capabilities">能力地图</a>
-        <a href="#cli">CLI</a>
-      </div>
-
-      <div class="nav-actions">
-        <a href="/login">登录</a>
-        <a class="nav-primary" data-liquid-glass href="/workbench/inspiration">ENTER ↗</a>
-      </div>
-
-      <details class="mobile-menu">
-        <summary aria-label="打开导航菜单"><span></span><span></span></summary>
-        <div>
-          <a href="#flow" onclick="this.closest('details').open=false">产品链路</a>
-          <a href="#ip12" onclick="this.closest('details').open=false">IP12</a>
-          <a href="#agent" onclick="this.closest('details').open=false">Agent + Canvas</a>
-          <a href="#video" onclick="this.closest('details').open=false">视频生成</a>
-          <a href="#capabilities" onclick="this.closest('details').open=false">能力地图</a>
-          <a href="#cli" onclick="this.closest('details').open=false">HQ CLI</a>
-          <a href="/login">登录 / 注册</a>
+        <div class="nav-links" aria-label="产品功能">
+          <span class="nav-link-slider" data-nav-slider aria-hidden="true"></span>
+          <button type="button" data-nav-trigger="creation" aria-controls="nav-drawer-creation" aria-expanded="false">产品链路</button>
+          <button type="button" data-nav-trigger="ip12" aria-controls="nav-drawer-ip12" aria-expanded="false">IP12</button>
+          <button type="button" data-nav-trigger="agent" aria-controls="nav-drawer-agent" aria-expanded="false">Agent + Canvas</button>
+          <button type="button" data-nav-trigger="video" aria-controls="nav-drawer-video" aria-expanded="false">视频生成</button>
+          <button type="button" data-nav-trigger="cli" aria-controls="nav-drawer-cli" aria-expanded="false">CLI</button>
         </div>
-      </details>
-    </nav>
+
+        <div class="nav-actions">
+          <a href="/login">登录</a>
+          <a class="nav-primary" data-liquid-glass href="/workbench/inspiration">ENTER ↗</a>
+        </div>
+
+        <details class="mobile-menu">
+          <summary aria-label="打开导航菜单"><span></span><span></span></summary>
+          <div>
+            <details class="mobile-nav-group"><summary>产品链路</summary><div><a href="/workbench/inspiration">灵感设计</a><a href="/workbench/script">文案编导</a><a href="/workbench/banana">图片生成</a><a href="/workbench/audio">AI 配音</a></div></details>
+            <details class="mobile-nav-group"><summary>IP12</summary><div><a href="/workbench/ip12">进入 IP12</a><a href="/workbench/script?prefill=ip12">带入文案</a><a href="/workbench/video?prefill=ip12">带入视频</a></div></details>
+            <details class="mobile-nav-group"><summary>Agent + Canvas</summary><div><a href="/workbench/canvas">无限画布</a><a href="/workbench/short-drama">短剧创作</a><a href="/workbench/collect">内容爬取</a></div></details>
+            <details class="mobile-nav-group"><summary>视频生成</summary><div><a href="/workbench/video">视频生成中心</a><a href="/workbench/text-video">文案成片</a><a href="/workbench/one-click-video">一键成片</a><a href="/workbench/assets">视频资产</a></div></details>
+            <details class="mobile-nav-group"><summary>CLI</summary><div><a href="/downloads/hq/install.sh">安装 HQ CLI</a><a href="/workbench/device">设备授权</a></div></details>
+            <a class="mobile-login" href="/login">登录 / 注册</a>
+          </div>
+        </details>
+      </nav>
+
+      <div class="nav-drawer-layer">
+        <section class="nav-drawer" id="nav-drawer-creation" data-nav-panel="creation" aria-hidden="true" inert>
+          <div class="nav-drawer-intro"><span>CREATE</span><h2>从灵感到成品</h2><p>选择内容生产环节，直接进入对应工作台。</p></div>
+          <div class="nav-drawer-grid">
+            <a href="/workbench/inspiration"><b>灵感设计</b><span>找案例，开始一次创作</span></a>
+            <a href="/workbench/script"><b>文案编导</b><span>脚本、标题与内容结构</span></a>
+            <a href="/workbench/banana"><b>图片生成</b><span>参考图与视觉创作</span></a>
+            <a href="/workbench/audio"><b>AI 配音</b><span>音色、语速与声音资产</span></a>
+          </div>
+        </section>
+
+        <section class="nav-drawer" id="nav-drawer-ip12" data-nav-panel="ip12" aria-hidden="true" inert>
+          <div class="nav-drawer-intro"><span>IP12</span><h2>建立长期内容底座</h2><p>定位、人设、价值与故事，会继续流入后续创作。</p></div>
+          <div class="nav-drawer-grid">
+            <a href="/workbench/ip12"><b>进入 IP12</b><span>继续你的 12 模块成长档案</span></a>
+            <a href="/workbench/script?prefill=ip12"><b>带入文案</b><span>用已确认底座开始编导</span></a>
+            <a href="/workbench/video?prefill=ip12"><b>带入视频</b><span>把定位与人设交给视频工作台</span></a>
+          </div>
+        </section>
+
+        <section class="nav-drawer" id="nav-drawer-agent" data-nav-panel="agent" aria-hidden="true" inert>
+          <div class="nav-drawer-intro"><span>AGENT</span><h2>让创作成为工作流</h2><p>在画布中组织素材、节点与可执行任务。</p></div>
+          <div class="nav-drawer-grid">
+            <a href="/workbench/canvas"><b>无限画布</b><span>Agent 与节点协同生产</span></a>
+            <a href="/workbench/short-drama"><b>短剧创作</b><span>从故事、角色到分镜视频</span></a>
+            <a href="/workbench/collect"><b>内容爬取</b><span>把真实素材带入工作流</span></a>
+            <a href="/workbench/leads"><b>平台获客</b><span>从内容线索进入行动</span></a>
+          </div>
+        </section>
+
+        <section class="nav-drawer" id="nav-drawer-video" data-nav-panel="video" aria-hidden="true" inert>
+          <div class="nav-drawer-intro"><span>VIDEO</span><h2>选择视频生产方式</h2><p>黄雀引擎、果肉视频、数字化 IP 与成片工具集中在这里。</p></div>
+          <div class="nav-drawer-grid">
+            <a href="/workbench/video"><b>视频生成中心</b><span>黄雀引擎 1 / 黄雀引擎 2 / 果肉视频</span></a>
+            <a href="/workbench/video"><b>数字化 IP</b><span>口播、电影化身与换装视频</span></a>
+            <a href="/workbench/text-video"><b>文案成片</b><span>从文字直接生成完整视频</span></a>
+            <a href="/workbench/one-click-video"><b>一键成片</b><span>已有素材快速剪成作品</span></a>
+          </div>
+        </section>
+
+        <section class="nav-drawer" id="nav-drawer-cli" data-nav-panel="cli" aria-hidden="true" inert>
+          <div class="nav-drawer-intro"><span>HQ CLI</span><h2>把能力接入你的 Agent</h2><p>使用设备授权调用黄雀能力，不交出网页登录密码。</p></div>
+          <div class="nav-drawer-grid">
+            <a href="/downloads/hq/install.sh"><b>安装 HQ CLI</b><span>下载官方安装脚本</span></a>
+            <a href="/workbench/device"><b>设备授权</b><span>查看并确认授权范围</span></a>
+            <a href="/workbench/assets"><b>我的资产</b><span>查看 Agent 生产结果</span></a>
+          </div>
+        </section>
+      </div>
+    </div>
   </header>
 
   <main id="main">
@@ -492,6 +544,59 @@
         element.style.removeProperty('--glass-y');
       });
     });
+
+    const navCluster = document.querySelector('[data-nav-cluster]');
+    if (navCluster) {
+      const navTriggers = [...navCluster.querySelectorAll('[data-nav-trigger]')];
+      const navPanels = [...navCluster.querySelectorAll('[data-nav-panel]')];
+      const navSlider = navCluster.querySelector('[data-nav-slider]');
+      let openNav = '';
+      let selectedNav = '';
+
+      const moveNavSlider = name => {
+        const trigger = navCluster.querySelector(`[data-nav-trigger="${name}"]`);
+        navSlider.classList.toggle('is-visible', Boolean(trigger));
+        if (!trigger) return;
+        navSlider.style.setProperty('--nav-slider-x', `${trigger.offsetLeft}px`);
+        navSlider.style.setProperty('--nav-slider-w', `${trigger.offsetWidth}px`);
+      };
+
+      const setOpenNav = name => {
+        openNav = name || '';
+        moveNavSlider(openNav || selectedNav);
+        navTriggers.forEach(trigger => trigger.setAttribute('aria-expanded', String(trigger.dataset.navTrigger === openNav)));
+        navPanels.forEach(panel => {
+          const active = panel.dataset.navPanel === openNav;
+          panel.classList.toggle('is-open', active);
+          panel.setAttribute('aria-hidden', String(!active));
+          panel.inert = !active;
+        });
+      };
+
+      navTriggers.forEach(trigger => {
+        trigger.addEventListener('pointerenter', () => setOpenNav(trigger.dataset.navTrigger));
+        trigger.addEventListener('focus', () => setOpenNav(trigger.dataset.navTrigger));
+        trigger.addEventListener('click', () => {
+          selectedNav = trigger.dataset.navTrigger;
+          setOpenNav(trigger.dataset.navTrigger);
+        });
+      });
+      navCluster.addEventListener('pointerleave', () => setOpenNav(''));
+      navCluster.addEventListener('focusout', event => {
+        if (!navCluster.contains(event.relatedTarget)) setOpenNav('');
+      });
+      document.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && openNav) {
+          const trigger = navCluster.querySelector(`[data-nav-trigger="${openNav}"]`);
+          setOpenNav('');
+          trigger?.focus();
+        }
+      });
+      document.addEventListener('pointerdown', event => {
+        if (!navCluster.contains(event.target)) setOpenNav('');
+      });
+      addEventListener('resize', () => moveNavSlider(openNav || selectedNav));
+    }
 
     const copyButton = document.querySelector('[data-copy]');
     copyButton.addEventListener('click', async () => {
