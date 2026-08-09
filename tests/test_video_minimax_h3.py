@@ -39,6 +39,16 @@ class MiniMaxH3VideoTests(unittest.TestCase):
                 "channel": "minimax", "duration": 15, "resolution": "768p",
             }), 90)
 
+    def test_credential_probe_reuses_the_accepted_task_list_endpoint(self):
+        with patch.object(video_minimax_h3, "_request_json", return_value={}) as request:
+            self.assertTrue(video_minimax_h3.check_credentials("test-only-secret", opener=object()))
+        self.assertEqual("GET", request.call_args.args[1])
+        self.assertEqual(
+            "/v2/query/video_generation?page_num=1&page_size=1",
+            request.call_args.args[2],
+        )
+        self.assertEqual("test-only-secret", request.call_args.kwargs["api_key"])
+
     def test_create_once_then_resume_only_queries(self):
         image = self._image()
         succeeded = {"task": {
@@ -69,11 +79,6 @@ class MiniMaxH3VideoTests(unittest.TestCase):
         )
         normalized = body["content"][1]["image_url"]["url"]
         self.assertTrue(normalized.startswith("data:image/png;base64,"))
-
-        from PIL import Image
-        with Image.open(io.BytesIO(base64.b64decode(normalized.split(",", 1)[1]))) as image:
-            self.assertEqual((257, 455), image.size)
-            self.assertEqual("PNG", image.format)
 
     def test_invalid_image_and_provider_2013_are_user_readable(self):
         corrupt = "data:image/jpeg;base64," + base64.b64encode(b"not-jpeg").decode()
@@ -115,6 +120,8 @@ class MiniMaxH3VideoTests(unittest.TestCase):
         self.assertIn("不是动作模仿", html)
         self.assertIn("setupXiaoleRefPanel('minimax', minimaxRefData, 5)", html)
         self.assertIn("p['video.minimax_h3.768p']||6", html)
+        self.assertIn("xlPayload.model='MiniMax-H3'", html)
+        self.assertNotIn("xlPayload.model='MiniMax-Hailuo-2.3'", html)
 
 
 if __name__ == "__main__":

@@ -102,7 +102,7 @@
           "accessories": { "type": "string", "maxLength": 500 },
           "appearance_prompt": { "type": "string", "maxLength": 500 },
           "wardrobe_prompt": { "type": "string", "maxLength": 500 },
-          "reference_views": { "type": "array", "enum": [["front_full", "side_full", "front_half"]] }
+          "reference_views": { "type": "array", "enum": [["front_full", "side_full", "back_full"]] }
         }
       },
       "ShortDramaCharacterContract": {

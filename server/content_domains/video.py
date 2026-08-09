@@ -1,5 +1,22 @@
 # -*- coding: utf-8 -*-
-import fcntl
+try:
+    import fcntl
+except ImportError:  # Windows does not provide POSIX fcntl.
+    import msvcrt
+
+    class _WindowsFcntlCompat:
+        LOCK_EX = 2
+
+        @staticmethod
+        def flock(file_descriptor, _operation):
+            current = os.lseek(file_descriptor, 0, os.SEEK_CUR)
+            try:
+                os.lseek(file_descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(file_descriptor, msvcrt.LK_LOCK, 1)
+            finally:
+                os.lseek(file_descriptor, current, os.SEEK_SET)
+
+    fcntl = _WindowsFcntlCompat()
 import hashlib
 import importlib.util
 import io
@@ -3344,11 +3361,12 @@ def _heygen_mcp_access_token(force_refresh=False):
     with _heygen_mcp_auth_lock:
         if not path.is_file():
             raise HeyGenMCPAuthError("HeyGen MCP OAuth 未配置")
-        if path.stat().st_mode & 0o077:
+        if os.name != "nt" and path.stat().st_mode & 0o077:
             raise HeyGenMCPAuthError("HeyGen MCP OAuth 凭据权限必须为 600")
         lock_fd = os.open(str(path) + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            os.fchmod(lock_fd, 0o600)
+            if hasattr(os, "fchmod"):
+                os.fchmod(lock_fd, 0o600)
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             credentials = json.loads(path.read_text(encoding="utf-8"))
             if not force_refresh and credentials.get("access_token") and float(credentials.get("expires_at") or 0) > time.time() + 60:

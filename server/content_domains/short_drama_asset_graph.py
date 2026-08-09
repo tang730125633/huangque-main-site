@@ -1,7 +1,9 @@
 """Versioned asset graph and immutable per-shot generation packages."""
 
+import base64
 import hashlib
 import json
+import re
 import sqlite3
 import time
 import uuid
@@ -289,11 +291,38 @@ def sync_foundation(db_factory, owner, actor, project_id, expected_revision=None
                     conn, project_id, "asset", entity_id, "wears",
                     costume_id, None, {}, actor, now,
                 ) or relation_changed
-        for shot in conn.execute(
+        foundation_shots = [dict(row) for row in conn.execute(
             "SELECT id,shot_key,scene_description,character_keys_json "
             "FROM short_drama_shots WHERE project_id=? ORDER BY sort_order,id",
             (project_id,),
-        ):
+        )]
+        if not foundation_shots:
+            tables = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )}
+            if {"short_drama_conversations", "short_drama_script_snapshots"}.issubset(tables):
+                snapshot = conn.execute(
+                    "SELECT snapshot.script_json FROM short_drama_conversations conversation "
+                    "JOIN short_drama_script_snapshots snapshot "
+                    "ON snapshot.id=conversation.current_version_id "
+                    "WHERE conversation.project_id=?", (project_id,),
+                ).fetchone()
+                script = _json(snapshot[0], {}) if snapshot else {}
+                for index, item in enumerate(script.get("shots") or []):
+                    if not isinstance(item, dict):
+                        continue
+                    shot_key = _text(item.get("shot_key"), 160) or "shot_%02d" % (index + 1)
+                    foundation_shots.append({
+                        "id": "script:" + shot_key,
+                        "shot_key": shot_key,
+                        "sort_order": int(item.get("sort_order") or index + 1),
+                        "scene_description": _text(
+                            item.get("scene_description") or item.get("scene") or item.get("visual"),
+                            4000,
+                        ),
+                        "character_keys_json": _canonical(item.get("character_keys") or []),
+                    })
+        for shot in foundation_shots:
             scene_id, added = _seed_entity(
                 conn, project_id, "scene:" + shot["id"], "scene",
                 "%s·场景" % shot["shot_key"], _text(shot["scene_description"]), actor, now,
@@ -302,7 +331,11 @@ def sync_foundation(db_factory, owner, actor, project_id, expected_revision=None
                 created.append(scene_id)
             relation_changed = _upsert_relation(
                 conn, project_id, "shot", shot["id"], "located_in",
-                scene_id, None, {}, actor, now,
+                scene_id, None, {
+                    "shot_key": shot["shot_key"],
+                    "sort_order": int(shot.get("sort_order") or 0),
+                    "scene_description": _text(shot["scene_description"]),
+                }, actor, now,
             ) or relation_changed
             for character_key in _json(shot["character_keys_json"], []):
                 entity_id = character_ids.get(str(character_key))
@@ -376,6 +409,296 @@ def workspace(db_factory, owner, project_id):
         return {"project_id": project_id, "graph_revision": revision,
                 "entities": entities, "relations": relations,
                 "asset_types": sorted(ASSET_TYPES)}
+
+
+def _scene_group_key(value):
+    normalized = re.sub(r"\s+", " ", _text(value, 4000)).strip().lower()
+    return "scene-group:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:20]
+
+
+def _scene_rows(conn, project_id):
+    rows = conn.execute(
+        "SELECT entity.*,relation.source_id AS relation_source_id,relation.metadata_json,"
+        "shot.id AS shot_id,shot.shot_key,shot.sort_order,shot.scene_description "
+        "FROM short_drama_graph_entities entity "
+        "JOIN short_drama_graph_relations relation ON relation.entity_id=entity.id "
+        "AND relation.project_id=entity.project_id AND relation.source_scope='shot' "
+        "AND relation.relation_type='located_in' "
+        "LEFT JOIN short_drama_shots shot ON shot.id=relation.source_id "
+        "AND shot.project_id=entity.project_id WHERE entity.project_id=? "
+        "AND entity.asset_type='scene' AND entity.status='active' "
+        "ORDER BY COALESCE(shot.sort_order,999999),relation.source_id",
+        (project_id,),
+    ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        metadata = _json(item.pop("metadata_json", "{}"), {})
+        item["shot_id"] = item.get("shot_id") or item.get("relation_source_id")
+        item["shot_key"] = item.get("shot_key") or _text(metadata.get("shot_key"), 160)
+        item["sort_order"] = item.get("sort_order") or int(metadata.get("sort_order") or 0)
+        item["scene_description"] = (
+            item.get("scene_description") or _text(metadata.get("scene_description"), 4000)
+            or item.get("description") or item.get("name")
+        )
+        result.append(item)
+    return result
+
+
+def _scene_version(conn, entity_id):
+    return conn.execute(
+        "SELECT * FROM short_drama_graph_versions WHERE entity_id=? "
+        "ORDER BY version DESC LIMIT 1", (entity_id,),
+    ).fetchone()
+
+
+def scene_workspace(db_factory, owner, project_id):
+    """Return user-facing scene groups without exposing graph internals."""
+    with closing(_connection(db_factory)) as conn:
+        _project(conn, owner, project_id)
+        state = conn.execute(
+            "SELECT revision FROM short_drama_graph_state WHERE project_id=?",
+            (project_id,),
+        ).fetchone()
+        groups = {}
+        for row in _scene_rows(conn, project_id):
+            group_key = _scene_group_key(row["scene_description"])
+            group = groups.setdefault(group_key, {
+                "scene_key": group_key,
+                "name": _text(row["scene_description"], 200) or "未命名场景",
+                "description": _text(row["scene_description"]),
+                "shots": [], "entity_ids": [], "locked": True,
+                "preview": None,
+            })
+            group["shots"].append({
+                "id": row["shot_id"], "shot_key": row["shot_key"],
+                "sort_order": int(row["sort_order"] or 0),
+            })
+            group["entity_ids"].append(row["id"])
+            version = _scene_version(conn, row["id"])
+            if not version:
+                group["locked"] = False
+                continue
+            references = _json(version["references_json"], [])
+            reference = references[0] if references and isinstance(references[0], dict) else {}
+            candidate = {
+                "version_id": version["id"], "version": int(version["version"]),
+                "status": version["status"], "prompt": version["prompt"],
+                "source": _json(version["attributes_json"], {}).get("source", ""),
+                "file": _text(reference.get("file"), 1000),
+                "url": _text(reference.get("url"), 2000),
+                "name": _text(reference.get("name"), 240),
+            }
+            if group["preview"] is None or candidate["version"] > group["preview"]["version"]:
+                group["preview"] = candidate
+            if version["status"] != "locked" or not (candidate["file"] or candidate["url"]):
+                group["locked"] = False
+        items = list(groups.values())
+        for item in items:
+            item["locked"] = bool(item["locked"] and item["preview"])
+            if item["preview"] and item["preview"]["status"] != "locked":
+                item["locked"] = False
+        return {
+            "project_id": project_id,
+            "graph_revision": int(state[0]) if state else 1,
+            "scenes": items,
+        }
+
+
+def _resolve_scene_reference(conn, actor, body):
+    from . import cli_uploads, image as image_domain
+
+    source = _text(body.get("source"), 40).lower()
+    created_path = None
+    if source == "upload":
+        match = re.fullmatch(
+            r"data:(image/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=\r\n]+)",
+            str(body.get("image_data") or ""),
+        )
+        if not match:
+            raise AssetGraphError("scene_image_invalid", "请上传 JPG、PNG 或 WebP 场景图", 422)
+        try:
+            raw = base64.b64decode(match.group(2), validate=True)
+        except Exception as error:
+            raise AssetGraphError("scene_image_invalid", "上传的场景图内容无效", 422) from error
+        if not raw or len(raw) > cli_uploads.MAX_BYTES:
+            raise AssetGraphError("scene_image_invalid", "场景图大小必须在 10MB 以内", 422)
+        mime = cli_uploads.detect_mime(raw[:16])
+        if mime not in cli_uploads.MIME_EXTENSIONS:
+            raise AssetGraphError("scene_image_invalid", "场景图不是有效的 JPG、PNG 或 WebP 图片", 422)
+        relative = "short_drama_scene_uploads/scene_%s%s" % (
+            uuid.uuid4().hex, cli_uploads.MIME_EXTENSIONS[mime],
+        )
+        created_path = (image_domain.OUT_DIR / relative).resolve()
+        created_path.parent.mkdir(parents=True, exist_ok=True)
+        created_path.write_bytes(raw)
+        return ({"file": relative, "url": "/api/gen/file/" + relative,
+                 "name": _text(body.get("filename"), 240) or "本地场景图"}, created_path)
+    if source == "asset":
+        try:
+            job_id = int(body.get("asset_job_id"))
+        except (TypeError, ValueError) as error:
+            raise AssetGraphError("scene_asset_invalid", "请选择有效的场景图片资产", 422) from error
+        job = conn.execute(
+            "SELECT result FROM jobs WHERE id=? AND username=? AND kind='image' AND status='done'",
+            (job_id, actor),
+        ).fetchone()
+        if not job:
+            raise AssetGraphError("scene_asset_invalid", "场景图片资产不存在或不属于当前用户", 422)
+        result = _json(job[0], {})
+        urls = result.get("urls") if isinstance(result.get("urls"), list) else []
+        files = result.get("files") if isinstance(result.get("files"), list) else []
+        if not urls and result.get("url"):
+            urls = [result.get("url")]
+        if not files and result.get("file"):
+            files = [result.get("file")]
+        requested_url = _text(body.get("asset_url"), 2000)
+        index = urls.index(requested_url) if requested_url and requested_url in urls else 0
+        url = _text(urls[index] if index < len(urls) else "", 2000)
+        file_value = files[index] if index < len(files) else (files[0] if files else "")
+        file_name = (
+            image_domain._trusted_short_drama_file(file_value)
+            or image_domain._trusted_short_drama_file(url, file_url=True)
+        )
+        if not file_name or not url:
+            raise AssetGraphError("scene_asset_invalid", "该图片资产无法用作场景图", 422)
+        return ({"file": file_name, "url": url,
+                 "name": _text(body.get("filename"), 240) or "生成的场景图",
+                 "asset_job_id": job_id}, None)
+    raise AssetGraphError("scene_source_invalid", "场景图来源无效", 422)
+
+
+def set_scene_reference(db_factory, owner, actor, body):
+    required = {"project_id", "graph_revision", "scene_key", "source"}
+    if not isinstance(body, dict) or not required.issubset(body) or type(body["graph_revision"]) is not int:
+        raise AssetGraphError("scene_reference_invalid", "场景图参数不完整", 422)
+    project_id = _text(body["project_id"], 160)
+    scene_key = _text(body["scene_key"], 80)
+    created_path = None
+    try:
+        with closing(_connection(db_factory)) as lookup:
+            _project(lookup, owner, project_id)
+            reference, created_path = _resolve_scene_reference(lookup, actor, body)
+        now = int(time.time())
+        with closing(_connection(db_factory)) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            _project(conn, owner, project_id)
+            revision = int(_ensure_state(conn, project_id, now))
+            if revision != body["graph_revision"]:
+                raise AssetGraphError("graph_revision_conflict", "场景已在其他页面更新，请刷新后重试", 409)
+            rows = [row for row in _scene_rows(conn, project_id)
+                    if _scene_group_key(row["scene_description"]) == scene_key]
+            if not rows:
+                raise AssetGraphError("scene_not_found", "场景不存在", 404)
+            operation_id = str(uuid.uuid4())
+            source = _text(body.get("reference_source") or body.get("source"), 40)
+            prompt = _text(body.get("prompt") or rows[0]["scene_description"], 8000)
+            for row in rows:
+                number = int(conn.execute(
+                    "SELECT COALESCE(MAX(version),0)+1 FROM short_drama_graph_versions WHERE entity_id=?",
+                    (row["id"],),
+                ).fetchone()[0])
+                current = conn.execute(
+                    "SELECT current_version_id FROM short_drama_graph_entities WHERE id=?",
+                    (row["id"],),
+                ).fetchone()[0]
+                content = {"prompt": prompt, "negative_prompt": "人物、文字、Logo、水印",
+                           "references": [reference],
+                           "attributes": {"source": source, "scene_operation_id": operation_id},
+                           "valid_from": "", "valid_to": ""}
+                conn.execute(
+                    "INSERT INTO short_drama_graph_versions"
+                    "(id,entity_id,version,parent_id,status,prompt,negative_prompt,references_json,"
+                    "attributes_json,valid_from,valid_to,content_hash,created_by,created_at) "
+                    "VALUES (?,?,?,?, 'draft',?,?,?,?,?,?,?,?,?)",
+                    (str(uuid.uuid4()), row["id"], number, current, prompt,
+                     content["negative_prompt"], _canonical([reference]),
+                     _canonical(content["attributes"]), "", "", _hash(content), actor, now),
+                )
+            revision = _bump(conn, project_id, revision, now)
+            _audit(conn, project_id, actor, "set_scene_reference", scene_key,
+                   {"source": source, "shot_count": len(rows)}, now)
+            conn.commit()
+        return scene_workspace(db_factory, owner, project_id)
+    except Exception:
+        if created_path is not None:
+            try:
+                created_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
+
+
+def lock_scene_reference(db_factory, owner, actor, body):
+    required = {"project_id", "graph_revision", "scene_key"}
+    if not isinstance(body, dict) or set(body) != required or type(body["graph_revision"]) is not int:
+        raise AssetGraphError("scene_lock_invalid", "场景锁定参数不完整", 422)
+    project_id = _text(body["project_id"], 160)
+    scene_key = _text(body["scene_key"], 80)
+    now = int(time.time())
+    with closing(_connection(db_factory)) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _project(conn, owner, project_id)
+        revision = int(_ensure_state(conn, project_id, now))
+        if revision != body["graph_revision"]:
+            raise AssetGraphError("graph_revision_conflict", "场景已在其他页面更新，请刷新后重试", 409)
+        rows = [row for row in _scene_rows(conn, project_id)
+                if _scene_group_key(row["scene_description"]) == scene_key]
+        if not rows:
+            raise AssetGraphError("scene_not_found", "场景不存在", 404)
+        locked_ids = []
+        for row in rows:
+            version = conn.execute(
+                "SELECT * FROM short_drama_graph_versions WHERE entity_id=? AND status='draft' "
+                "ORDER BY version DESC LIMIT 1", (row["id"],),
+            ).fetchone()
+            references = _json(version["references_json"], []) if version else []
+            if not version or not references:
+                raise AssetGraphError("scene_reference_missing", "请先上传或生成场景图", 422)
+            conn.execute(
+                "UPDATE short_drama_graph_versions SET status='retired' "
+                "WHERE entity_id=? AND status='locked'", (row["id"],),
+            )
+            conn.execute(
+                "UPDATE short_drama_graph_versions SET status='locked',locked_at=? WHERE id=?",
+                (now, version["id"]),
+            )
+            conn.execute(
+                "UPDATE short_drama_graph_entities SET current_version_id=?,updated_at=? WHERE id=?",
+                (version["id"], now, row["id"]),
+            )
+            locked_ids.append(version["id"])
+        revision = _bump(conn, project_id, revision, now)
+        _audit(conn, project_id, actor, "lock_scene_reference", scene_key,
+               {"versions": locked_ids, "shot_count": len(rows)}, now)
+        conn.commit()
+    return scene_workspace(db_factory, owner, project_id)
+
+
+def locked_scene_reference(conn, project_id, shot_key):
+    """Return the locked scene image bound to a storyboard shot, if configured."""
+    conn.row_factory = sqlite3.Row
+    scene = next((row for row in _scene_rows(conn, project_id)
+                  if row.get("shot_key") == shot_key), None)
+    if not scene or not scene.get("current_version_id"):
+        return None
+    version = conn.execute(
+        "SELECT prompt,references_json,status FROM short_drama_graph_versions WHERE id=?",
+        (scene["current_version_id"],),
+    ).fetchone()
+    if not version or version["status"] != "locked":
+        return None
+    references = _json(version["references_json"], [])
+    reference = references[0] if references and isinstance(references[0], dict) else {}
+    if not (_text(reference.get("file"), 1000) or _text(reference.get("url"), 2000)):
+        return None
+    return {
+        "scene_key": _scene_group_key(scene["scene_description"]),
+        "name": _text(scene["scene_description"], 200) or "锁定场景",
+        "prompt": _text(version["prompt"], 8000),
+        "file": _text(reference.get("file"), 1000),
+        "url": _text(reference.get("url"), 2000),
+    }
 
 
 def create_asset(db_factory, owner, actor, body):

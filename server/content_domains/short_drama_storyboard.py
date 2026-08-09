@@ -112,16 +112,34 @@ def _speaker(characters, clause, phase_key):
         if phase_key == "resolution" and len(mentioned) > 1:
             return mentioned[-1]
         return mentioned[0]
-    return characters[min(len(characters) - 1, 1 if phase_key == "resolution" else 0)]
+    narrative = _narrative_characters(characters)
+    return narrative[min(
+        len(narrative) - 1, 1 if phase_key == "resolution" else 0
+    )]
 
 
 def _visible_characters(characters, clause, phase_key):
     mentioned = [item for item in characters if item["name"] in clause]
     if mentioned:
         return mentioned
+    narrative = _narrative_characters(characters)
     if phase_key in {"conflict", "resolution"}:
-        return characters[:2]
-    return characters[:1]
+        return narrative[:2]
+    return narrative[:1]
+
+
+def _narrative_characters(characters):
+    """Prioritize protagonists, then supporting roles; never invent crowd focus."""
+    priority = {"main": 0, "support": 1, "crowd": 2}
+    ordered = sorted(
+        enumerate(characters),
+        key=lambda pair: (
+            priority.get(str(pair[1].get("role_type") or "support"), 1),
+            pair[0],
+        ),
+    )
+    narrative = [item for _, item in ordered if item.get("role_type") != "crowd"]
+    return narrative or [item for _, item in ordered]
 
 
 def _concrete_action(clause, phase_key):
@@ -234,7 +252,12 @@ def _emotional_shift(phase_key):
 
 
 def _provider_prompt(project, visible, scene, action, camera, phase_key):
-    names = "、".join(item["name"] for item in visible) or "无人物空镜"
+    labels = {"main": "主要角色", "support": "次要角色", "crowd": "群演"}
+    names = "、".join(
+        "%s（%s）" % (
+            item["name"], labels.get(item.get("role_type"), "次要角色")
+        ) for item in visible
+    ) or "无人物空镜"
     return (
         "%s短剧镜头。%s，角色：%s。具体动作：%s。"
         "镜头设计：%s。情绪变化：%s。画幅%s，保持已绑定角色的脸部、"

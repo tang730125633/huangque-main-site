@@ -20,9 +20,11 @@ from providers.short_drama_visual.heygen_cinematic import (
     HeyGenCinematicShotProvider,
 )
 from providers.short_drama_visual.runtime import load_by_name, load_from_environment
+from providers.short_drama_visual.base import VisualProviderError
 
 from . import points as points_domain
 from . import short_drama_assembly_plan as media_plan
+from . import short_drama_asset_graph
 
 
 ACTIVE = {"queued", "running"}
@@ -198,6 +200,20 @@ CREATE TABLE IF NOT EXISTS short_drama_provider_shot_versions (
   created_at INTEGER NOT NULL,
   UNIQUE(project_id, shot_key, version)
 );
+CREATE TABLE IF NOT EXISTS short_drama_provider_shot_execution_overrides (
+  project_id TEXT NOT NULL REFERENCES short_drama_projects(id) ON DELETE CASCADE,
+  shot_key TEXT NOT NULL,
+  execution_json TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(project_id, shot_key)
+);
+CREATE TABLE IF NOT EXISTS short_drama_provider_shot_selections (
+  project_id TEXT NOT NULL REFERENCES short_drama_projects(id) ON DELETE CASCADE,
+  shot_key TEXT NOT NULL,
+  version_id TEXT NOT NULL REFERENCES short_drama_provider_shot_versions(id) ON DELETE CASCADE,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(project_id, shot_key)
+);
 """
 
 
@@ -316,7 +332,7 @@ def _production_capability():
     }
 
 
-def _provider_assembly_snapshot(conn, project_id, plan):
+def _provider_assembly_snapshot(conn, project_id, plan, provider_name=""):
     """Return one immutable latest ready Provider asset for every planned shot."""
     required = [
         str(item.get("shot_key") or "shot_%02d" % (index + 1))
@@ -324,6 +340,13 @@ def _provider_assembly_snapshot(conn, project_id, plan):
         if isinstance(item, dict)
     ]
     latest = {}
+    selected = {
+        str(row["shot_key"]): str(row["version_id"])
+        for row in conn.execute(
+            "SELECT shot_key,version_id FROM short_drama_provider_shot_selections "
+            "WHERE project_id=?", (project_id,),
+        ).fetchall()
+    }
     for row in conn.execute(
         "SELECT * FROM short_drama_provider_shot_versions "
         "WHERE project_id=? AND status='ready' "
@@ -331,7 +354,13 @@ def _provider_assembly_snapshot(conn, project_id, plan):
         (project_id,),
     ).fetchall():
         item = _provider_version(row)
-        latest.setdefault(str(item["shot_key"]), item)
+        if provider_name and item.get("provider") != provider_name:
+            continue
+        key = str(item["shot_key"])
+        if selected.get(key) == str(item["id"]):
+            latest[key] = item
+        else:
+            latest.setdefault(key, item)
     shots = [latest[key] for key in required if key in latest]
     return {
         "required_shot_keys": required,
@@ -655,7 +684,7 @@ def _provider_poc_inputs(
                 continue
             provider_ready = bool(
                 str(avatar.get("image_url") or "").strip()
-                if provider_name == "grok"
+                if provider_name in {"grok", "minimax_h3"}
                 else str(avatar.get("provider_avatar_id") or "").strip()
             )
             if (
@@ -673,6 +702,21 @@ def _provider_poc_inputs(
     bindings = {}
     characters = []
     if conn is not None and project_id:
+        required_character_keys = []
+        for material in plan.get("material_plan") or []:
+            if not isinstance(material, dict):
+                continue
+            for dialogue in material.get("dialogue") or []:
+                key = str(
+                    dialogue.get("character_key")
+                    if isinstance(dialogue, dict) else ""
+                ).strip()
+                if key and key not in required_character_keys:
+                    required_character_keys.append(key)
+            for value in material.get("character_keys") or []:
+                key = str(value or "").strip()
+                if key and key not in required_character_keys:
+                    required_character_keys.append(key)
         avatar_by_id = {str(item["id"]): item for item in avatars}
         for row in conn.execute(
             "SELECT character_key,name,avatar_id,reference_file,reference_url,"
@@ -680,6 +724,11 @@ def _provider_poc_inputs(
             "FROM short_drama_characters WHERE project_id=? ORDER BY sort_order,id",
             (project_id,),
         ).fetchall():
+            if (
+                required_character_keys
+                and str(row["character_key"]) not in required_character_keys
+            ):
+                continue
             avatar = avatar_by_id.get(str(row["avatar_id"] or ""))
             character_reference_ready = bool(
                 row["reference_locked"]
@@ -694,7 +743,7 @@ def _provider_poc_inputs(
                 str(avatar["id"])
                 if avatar
                 else "character:" + str(row["character_key"])
-                if provider_name == "grok" and character_reference_ready
+                if provider_name in {"grok", "minimax_h3"} and character_reference_ready
                 else ""
             )
             item = {
@@ -753,17 +802,30 @@ def _provider_poc_inputs(
     }
 
 
-def _character_binding_blockers(conn, project_id, plan):
+def _character_binding_blockers(conn, project_id, plan, provider_name=""):
     """Require prepared standalone roles without breaking untouched legacy plans."""
     rows = conn.execute(
-        "SELECT character_key,name,avatar_id FROM short_drama_characters "
+        "SELECT character_key,name,avatar_id,reference_file,reference_url,"
+        "reference_locked FROM short_drama_characters "
         "WHERE project_id=? ORDER BY sort_order,id",
         (project_id,),
     ).fetchall()
     if not rows:
         return []
     bound = {
-        str(row["character_key"]): bool(row["avatar_id"])
+        str(row["character_key"]): bool(
+            row["avatar_id"]
+            or (
+                provider_name in {"grok", "minimax_h3"}
+                and row["reference_locked"]
+                and (
+                    str(row["reference_file"] or "").strip()
+                    or str(row["reference_url"] or "").strip().startswith(
+                        ("http://", "https://")
+                    )
+                )
+            )
+        )
         for row in rows
     }
     names = {
@@ -830,6 +892,60 @@ def _visual_prompt(shot):
     return " ".join(parts)
 
 
+_EXECUTION_LIMITS = {
+    "visual": 600, "camera": 300, "performance": 300, "scene": 160,
+    "lighting": 240, "composition_style": 240, "continuity": 360,
+    "negative_prompt": 600, "provider_prompt": 1600,
+}
+
+
+def _clean_execution(value):
+    if not isinstance(value, dict):
+        raise AutodraftError("provider_execution_invalid", "镜头生成要求格式不正确", 422)
+    result = {}
+    for key, limit in _EXECUTION_LIMITS.items():
+        text = str(value.get(key) or "").strip()
+        if len(text) > limit:
+            raise AutodraftError(
+                "provider_execution_too_long", "镜头生成要求中的内容过长", 422,
+            )
+        result[key] = text
+    if not result["provider_prompt"]:
+        parts = [
+            result["visual"], result["camera"], result["performance"],
+            result["scene"], result["lighting"], result["composition_style"],
+            result["continuity"],
+        ]
+        result["provider_prompt"] = "；".join(item for item in parts if item)
+    if not result["provider_prompt"]:
+        raise AutodraftError("provider_prompt_required", "请填写视频生成提示词", 422)
+    return result
+
+
+def _execution_override(conn, project_id, shot_key):
+    row = conn.execute(
+        "SELECT execution_json,updated_at FROM short_drama_provider_shot_execution_overrides "
+        "WHERE project_id=? AND shot_key=?", (project_id, shot_key),
+    ).fetchone()
+    if not row:
+        return None
+    result = _json(row["execution_json"], {})
+    result["updated_at"] = int(row["updated_at"])
+    return result
+
+
+def _save_execution_override(conn, project_id, shot_key, execution):
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO short_drama_provider_shot_execution_overrides "
+        "(project_id,shot_key,execution_json,updated_at) VALUES (?,?,?,?) "
+        "ON CONFLICT(project_id,shot_key) DO UPDATE SET "
+        "execution_json=excluded.execution_json,updated_at=excluded.updated_at",
+        (project_id, shot_key, _json_text(execution), now),
+    )
+    return dict(execution, updated_at=now)
+
+
 def preview_provider_request(
     db_factory, owner_username, actor_username, body, avatar_lookup=None,
     include_private=False,
@@ -865,6 +981,36 @@ def preview_provider_request(
         raise AutodraftError(
             "provider_shot_not_found", "请选择制作计划中的有效镜头", 422
         )
+    execution = None
+    conn = _connection(db_factory)
+    try:
+        _project(conn, owner_username, project_id)
+        if "execution" in body:
+            execution = _clean_execution(body.get("execution"))
+            execution = _save_execution_override(
+                conn, project_id, shot_key, execution,
+            )
+            conn.commit()
+        else:
+            execution = _execution_override(conn, project_id, shot_key)
+    finally:
+        conn.close()
+    if execution:
+        shot = dict(shot)
+        for key in (
+            "scene", "camera", "continuity", "negative_prompt",
+            "provider_prompt",
+        ):
+            if str(execution.get(key) or "").strip():
+                shot[key] = execution[key]
+        visual_parts = [
+            str(execution.get("visual") or "").strip(),
+            str(execution.get("performance") or "").strip(),
+            str(execution.get("lighting") or "").strip(),
+            str(execution.get("composition_style") or "").strip(),
+        ]
+        if any(visual_parts):
+            shot["visual_prompt"] = "；".join(item for item in visual_parts if item)
     if not str(shot.get("provider_prompt") or "").strip():
         source_shot = next(
             (
@@ -897,7 +1043,88 @@ def preview_provider_request(
             or ((shot.get("character_keys") or [""])[0])
             or ""
         ).strip()
-    if not avatar_id and character_key:
+    required_character_keys = []
+    for item in shot.get("dialogue") or []:
+        key = str(item.get("character_key") or "").strip() if isinstance(item, dict) else ""
+        if key and key not in required_character_keys:
+            required_character_keys.append(key)
+    for value in shot.get("character_keys") or []:
+        key = str(value or "").strip()
+        if key and key not in required_character_keys:
+            required_character_keys.append(key)
+    if character_key and character_key not in required_character_keys:
+        required_character_keys.insert(0, character_key)
+
+    reference_images = []
+    scene_reference = None
+    avatar = None
+    if provider.name == "minimax_h3":
+        if not required_character_keys:
+            raise AutodraftError(
+                "provider_character_required", "当前镜头没有可用于生成的出镜角色", 422
+            )
+        conn = _connection(db_factory)
+        try:
+            scene_reference = short_drama_asset_graph.locked_scene_reference(
+                conn, project_id, shot_key,
+            )
+        finally:
+            conn.close()
+        maximum_characters = 4 if scene_reference else 5
+        if len(required_character_keys) > maximum_characters:
+            raise AutodraftError(
+                "provider_reference_limit_exceeded",
+                "当前镜头的角色与场景参考图总数超过视频服务上限",
+                422,
+            )
+        conn = _connection(db_factory)
+        try:
+            placeholders = ",".join("?" for _ in required_character_keys)
+            rows = conn.execute(
+                "SELECT character_key,name,reference_file,reference_url,reference_locked "
+                "FROM short_drama_characters WHERE project_id=? AND character_key IN ("
+                + placeholders + ")",
+                tuple([project_id] + required_character_keys),
+            ).fetchall()
+        finally:
+            conn.close()
+        by_key = {str(row["character_key"]): row for row in rows}
+        for key in required_character_keys:
+            row = by_key.get(key)
+            if not row or not row["reference_locked"] or not (
+                str(row["reference_file"] or "").strip()
+                or str(row["reference_url"] or "").strip()
+            ):
+                raise AutodraftError(
+                    "provider_avatar_not_ready",
+                    "请先为镜头中的全部角色确认并锁定标准图",
+                    422,
+                )
+            reference_images.append({
+                "character_key": key,
+                "name": str(row["name"] or key),
+                "file": str(row["reference_file"] or "").strip(),
+                "url": str(row["reference_url"] or "").strip(),
+            })
+        if scene_reference:
+            reference_images.append({
+                "scene_key": scene_reference["scene_key"],
+                "name": scene_reference["name"],
+                "file": scene_reference["file"],
+                "url": scene_reference["url"],
+            })
+        primary = by_key[required_character_keys[0]]
+        character_key = required_character_keys[0]
+        avatar_id = "character:" + character_key
+        avatar = {
+            "id": avatar_id,
+            "username": owner_username,
+            "name": str(primary["name"] or character_key),
+            "status": "ready",
+            "image_file": str(primary["reference_file"] or ""),
+            "image_url": str(primary["reference_url"] or ""),
+        }
+    if avatar is None and not avatar_id and character_key:
         conn = _connection(db_factory)
         try:
             row = conn.execute(
@@ -922,11 +1149,11 @@ def preview_provider_request(
                 avatar_id = "character:" + character_key
         finally:
             conn.close()
-    if not avatar_id:
+    if avatar is None and not avatar_id:
         raise AutodraftError(
             "provider_avatar_required", "请先为当前角色锁定一张标准形象图", 422
         )
-    if provider.name == "grok" and avatar_id == "character:" + character_key:
+    if avatar is None and provider.name == "grok" and avatar_id == "character:" + character_key:
         conn = _connection(db_factory)
         try:
             reference = conn.execute(
@@ -949,7 +1176,7 @@ def preview_provider_request(
             "image_file": str(reference["reference_file"] or ""),
             "image_url": str(reference["reference_url"] or ""),
         }
-    else:
+    elif avatar is None:
         if not callable(avatar_lookup):
             raise AutodraftError(
                 "provider_avatar_lookup_unavailable", "形象库服务暂不可用", 503
@@ -970,7 +1197,9 @@ def preview_provider_request(
     reference_image_url = str(avatar.get("image_url") or "").strip()
     reference_image_file = str(avatar.get("image_file") or "").strip()
     provider_identity_ready = bool(
-        reference_image_url or reference_image_file
+        reference_images
+        if provider.name == "minimax_h3"
+        else reference_image_url or reference_image_file
         if provider.name == "grok"
         else str(avatar.get("provider_avatar_id") or "").strip()
     )
@@ -980,15 +1209,24 @@ def preview_provider_request(
         )
     duration_ms = int(shot.get("duration_ms") or 0)
     duration_seconds = max(1, (duration_ms + 999) // 1000)
+    prompt = _visual_prompt(shot)
+    if scene_reference:
+        prompt += (
+            " 场景环境必须与锁定场景参考图保持一致，包括空间布局、背景物体、"
+            "光线和色调；场景参考图只用于环境，不要把图中可能出现的人物复制到视频。"
+        )
     outbound = {
         "provider_avatar_id": str(avatar.get("provider_avatar_id") or ""),
         "reference_image_url": reference_image_url,
         "reference_image_file": reference_image_file,
-        "prompt": _visual_prompt(shot),
+        "reference_images": reference_images,
+        "prompt": prompt,
         "ratio": str(project.get("ratio") or "16:9"),
-        "resolution": str(
-            (plan["plan"].get("estimate") or {}).get("resolution") or "720p"
-        ).lower(),
+        "resolution": (
+            "768p" if provider.name == "minimax_h3" else str(
+                (plan["plan"].get("estimate") or {}).get("resolution") or "720p"
+            ).lower()
+        ),
         "duration_seconds": duration_seconds,
     }
     try:
@@ -1031,13 +1269,20 @@ def preview_provider_request(
             "provider_bound": True,
         },
         "character_key": character_key,
+        "character_keys": required_character_keys,
+        "scene_reference": ({
+            "locked": True, "name": scene_reference["name"],
+            "scene_key": scene_reference["scene_key"],
+        } if scene_reference else {"locked": False}),
         "request": {
             "prompt": validated["prompt"],
             "ratio": validated["ratio"],
             "resolution": validated["resolution"],
             "duration_seconds": validated["duration_seconds"],
+            "reference_count": len(reference_images) if reference_images else 1,
             "provider_avatar": "[已绑定]",
         },
+        "execution": execution,
         "request_hash": request_hash,
         "billable": False,
         "external_submission": False,
@@ -1066,6 +1311,20 @@ def _provider_shot_cost(provider_request):
         return points_domain.cost_of("cinematic", {
             "cine_mode": "open",
             "duration": int(request.get("duration_seconds") or 0),
+        })
+    if provider_name == "minimax_h3":
+        duration = int(request.get("duration_seconds") or 0)
+        if duration <= 0:
+            raise AutodraftError(
+                "provider_quote_request_invalid",
+                "麦克视频规范化请求缺少必要计费参数",
+                500,
+            )
+        return points_domain.cost_of("xiaole_video", {
+            "channel": "minimax",
+            "model": "MiniMax-H3",
+            "resolution": "768p",
+            "duration": duration,
         })
     if provider_name != "grok":
         raise AutodraftError(
@@ -1111,7 +1370,52 @@ def _provider_version(row):
         return None
     item = dict(row)
     item["version"] = int(item["version"])
+    if "request_json" in item:
+        request = _json(item.pop("request_json"), {})
+        item["request_snapshot"] = {
+            "prompt": str(request.get("prompt") or ""),
+            "negative_prompt": str(request.get("negative_prompt") or ""),
+            "ratio": str(request.get("ratio") or ""),
+            "resolution": str(request.get("resolution") or ""),
+            "duration_seconds": int(request.get("duration_seconds") or 0),
+        }
+    item["selected"] = bool(item.pop("selected", 0))
     return item
+
+
+def select_provider_version(db_factory, owner_username, body):
+    project_id = str(body.get("project_id") or "").strip()
+    shot_key = str(body.get("shot_key") or "").strip()
+    version_id = str(body.get("version_id") or "").strip()
+    conn = _connection(db_factory)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _project(conn, owner_username, project_id)
+        row = conn.execute(
+            "SELECT * FROM short_drama_provider_shot_versions "
+            "WHERE id=? AND project_id=? AND shot_key=? AND status='ready'",
+            (version_id, project_id, shot_key),
+        ).fetchone()
+        if not row:
+            raise AutodraftError(
+                "provider_version_not_found", "所选镜头视频版本不存在", 404,
+            )
+        conn.execute(
+            "INSERT INTO short_drama_provider_shot_selections "
+            "(project_id,shot_key,version_id,updated_at) VALUES (?,?,?,?) "
+            "ON CONFLICT(project_id,shot_key) DO UPDATE SET "
+            "version_id=excluded.version_id,updated_at=excluded.updated_at",
+            (project_id, shot_key, version_id, int(time.time())),
+        )
+        conn.commit()
+        result = _provider_version(row)
+        result["selected"] = True
+        return result
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def create_provider_quote(
@@ -1287,6 +1591,12 @@ def start_provider_job(
                 prepared_request_json = _json_text(
                     prepare_job(_json(prepared_request_json, {}))
                 )
+            except VisualProviderError as error:
+                raise AutodraftError(
+                    error.code,
+                    str(error),
+                    503,
+                ) from error
             except Exception as error:
                 raise AutodraftError(
                     "provider_not_configured",
@@ -2252,14 +2562,41 @@ def workspace(
         ).fetchone())
         provider_versions = [
             _provider_version(row) for row in conn.execute(
-                "SELECT * FROM short_drama_provider_shot_versions "
-                "WHERE project_id=? ORDER BY created_at DESC",
+                "SELECT v.*,j.request_json,CASE WHEN s.version_id=v.id THEN 1 ELSE 0 END selected "
+                "FROM short_drama_provider_shot_versions v "
+                "JOIN short_drama_provider_shot_jobs j ON j.id=v.job_id "
+                "LEFT JOIN short_drama_provider_shot_selections s "
+                "ON s.project_id=v.project_id AND s.shot_key=v.shot_key "
+                "WHERE v.project_id=? ORDER BY v.created_at DESC",
                 (project_id,),
             ).fetchall()
         ]
+        provider_execution_overrides = {
+            str(row["shot_key"]): dict(
+                _json(row["execution_json"], {}),
+                updated_at=int(row["updated_at"]),
+            )
+            for row in conn.execute(
+                "SELECT shot_key,execution_json,updated_at "
+                "FROM short_drama_provider_shot_execution_overrides "
+                "WHERE project_id=?", (project_id,),
+            ).fetchall()
+        }
         capability = _production_capability()
+        selected_provider = str(
+            (capability.get("provider") or {}).get("selected") or ""
+        )
+        if provider_job and provider_job.get("provider") != selected_provider:
+            provider_job = None
+        if selected_provider:
+            provider_versions = [
+                item for item in provider_versions
+                if item.get("provider") == selected_provider
+            ]
         assembly = (
-            _provider_assembly_snapshot(conn, project_id, plan["plan"])
+            _provider_assembly_snapshot(
+                conn, project_id, plan["plan"], selected_provider
+            )
             if plan else {
                 "required_shot_keys": [], "ready_shot_keys": [],
                 "required_count": 0, "ready_count": 0,
@@ -2313,6 +2650,7 @@ def workspace(
             "production": capability,
             "provider_job": provider_job,
             "provider_versions": provider_versions,
+            "provider_execution_overrides": provider_execution_overrides,
             "provider_poc": (
                 _provider_poc_inputs(
                     plan["plan"], owner_username, avatar_list,
@@ -2339,17 +2677,22 @@ def start_job(
         conn.execute("BEGIN IMMEDIATE")
         _project(conn, owner_username, project_id)
         plan = _confirmed_plan(conn, project_id, plan_id)
+        capability = _production_capability()
+        selected_provider = str(
+            (capability.get("provider") or {}).get("selected") or ""
+        )
         binding_blockers = _character_binding_blockers(
-            conn, project_id, plan["plan"]
+            conn, project_id, plan["plan"], selected_provider
         )
         if binding_blockers:
             raise AutodraftError(
                 "character_bindings_incomplete",
-                "请先为所有出镜和说话角色绑定可用的电影化身",
+                "请先为所有出镜和说话角色准备可用的锁定形象",
                 422,
             )
-        capability = _production_capability()
-        assembly = _provider_assembly_snapshot(conn, project_id, plan["plan"])
+        assembly = _provider_assembly_snapshot(
+            conn, project_id, plan["plan"], selected_provider
+        )
         provider_assembly = (
             capability["mode"] == "provider_poc" and assembly["all_ready"]
         )

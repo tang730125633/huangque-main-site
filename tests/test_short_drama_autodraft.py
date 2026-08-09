@@ -746,6 +746,55 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         )
         self.assertNotIn("旧画面描述", result["request"]["prompt"])
 
+    def test_provider_preflight_persists_generation_only_execution_override(self):
+        conn = self.db()
+        try:
+            plan = json.loads(conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()[0])
+            shot = plan["material_plan"][0]
+        finally:
+            conn.close()
+        avatar = self._provider_avatar()
+        execution = {
+            "visual": "男孩把糖果递给女孩",
+            "camera": "中近景，缓慢推近",
+            "performance": "先犹豫，再露出真诚微笑",
+            "scene": "傍晚的小区长椅",
+            "lighting": "暖色夕阳",
+            "composition_style": "电影感写实",
+            "continuity": "服装和糖果袋与上一镜一致",
+            "negative_prompt": "字幕，水印，人物变脸",
+            "provider_prompt": "傍晚长椅，中近景缓慢推近，男孩真诚分享糖果",
+        }
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "heygen_cinematic",
+            "HEYGEN_API_KEY": "configured-for-preflight-only",
+        }):
+            result = short_drama_autodraft.preview_provider_request(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"], "plan_id": self.plan_id,
+                    "shot_key": shot["shot_key"], "avatar_id": avatar["id"],
+                    "execution": execution,
+                }, avatar_lookup=lambda _username, _avatar_id: avatar,
+            )
+            repeated = short_drama_autodraft.preview_provider_request(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"], "plan_id": self.plan_id,
+                    "shot_key": shot["shot_key"], "avatar_id": avatar["id"],
+                }, avatar_lookup=lambda _username, _avatar_id: avatar,
+            )
+        self.assertIn(execution["provider_prompt"], result["request"]["prompt"])
+        self.assertEqual(result["request"]["prompt"], repeated["request"]["prompt"])
+        workspace = short_drama_autodraft.workspace(
+            self.db, "alice", "alice", self.project["id"],
+        )
+        self.assertEqual(
+            execution["provider_prompt"],
+            workspace["provider_execution_overrides"][shot["shot_key"]]["provider_prompt"],
+        )
+
     def test_legacy_plan_recovers_prompt_from_its_locked_script_snapshot(self):
         conversation = short_drama_conversation.workspace(
             self.db, "alice", "alice", self.project["id"]
@@ -931,6 +980,20 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             self.assertEqual([shot_keys[-1]], partial["missing_shot_keys"])
             self.assertEqual(
                 "version-%s-2" % shot_keys[0], partial["shots"][0]["id"]
+            )
+            conn.commit()
+            short_drama_autodraft.select_provider_version(
+                self.db, "alice", {
+                    "project_id": self.project["id"],
+                    "shot_key": shot_keys[0],
+                    "version_id": "version-%s-1" % shot_keys[0],
+                },
+            )
+            selected = short_drama_autodraft._provider_assembly_snapshot(
+                conn, self.project["id"], plan,
+            )
+            self.assertEqual(
+                "version-%s-1" % shot_keys[0], selected["shots"][0]["id"]
             )
         finally:
             conn.close()

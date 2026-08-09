@@ -1584,6 +1584,34 @@ class H(BaseHTTPRequestHandler):
                 self, p, verify, _must_change_password, is_shutting_down,
                 feature_flags, points_domain, audio_domain, video_domain,
                 AUTH_INTERNAL_TOKEN): return
+        if p == "/api/gen/short-drama/select-character-reference":
+            user = verify(self._token())
+            if not user:
+                return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user):
+                return self._send(403, {"detail": "请先修改初始密码"})
+            try:
+                request_body = self._json_body_strict()
+                allowed = {
+                    "project_id", "revision", "character_key", "source",
+                    "asset_job_id", "asset_url", "filename", "image_data",
+                }
+                if not isinstance(request_body, dict) or set(request_body) != allowed:
+                    raise ValueError("角色标准图请求字段无效")
+                access = _short_drama_canvas_access(self)
+                owner = _short_drama_domain()._project_username_for_access(
+                    jdb, user["username"],
+                    str(request_body.get("project_id") or ""),
+                    access, write=True,
+                )
+                project = _short_drama_domain().select_character_reference(
+                    jdb, owner, user["username"], request_body,
+                )
+                return self._send(200, project)
+            except (LookupError, PermissionError, ValueError,
+                    _short_drama_domain().RevisionConflict) as error:
+                _short_drama_domain()._http_error(self, error)
+                return
         if p == "/api/gen/short-drama/confirm-character-reference":
             user = verify(self._token())
             if not user:

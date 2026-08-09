@@ -76,7 +76,7 @@ class StrictJsonTests(TestCase):
             "fixed_colors": "white", "accessories": "watch",
             "appearance_prompt": "cinematic portrait",
             "wardrobe_prompt": "white shirt",
-            "reference_views": ["front_full", "side_full", "front_half"],
+            "reference_views": ["front_full", "side_full", "back_full"],
         }]
         import_path = spec["paths"]["/api/gen/short-drama/projects/import"]["post"]
         self.assertIn("Idempotency-Key", [
