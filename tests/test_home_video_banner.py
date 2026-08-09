@@ -14,6 +14,7 @@ class HomeVideoBannerTests(unittest.TestCase):
         cls.css = (ROOT / "site/homepage.css").read_text(encoding="utf-8")
         cls.liquid_glass = (ROOT / "site/homepage-liquid-glass.js").read_text(encoding="utf-8")
         cls.particles = (ROOT / "site/homepage-particles.js").read_text(encoding="utf-8")
+        cls.bird_points = ROOT / "site/assets/home/bird-points.bin"
         cls.videos = [
             ROOT / "site/assets/home/hero-banner-monochrome-eye.mp4",
             ROOT / "site/assets/home/hero-banner-ancient-courtyard.mp4",
@@ -72,12 +73,14 @@ class HomeVideoBannerTests(unittest.TestCase):
         for anchor in ('href="#flow"', 'href="#ip12"', 'href="#agent"', 'href="#video"', 'href="#cli"'):
             self.assertNotIn(anchor, nav)
 
-    def test_background_particles_morph_into_scroll_driven_bird(self):
-        self.assertIn("homepage-particles.js?v=20260809-bird1", self.html)
-        self.assertIn("birdPoints: 980", self.particles)
-        self.assertIn("function birdTarget(point, progress)", self.particles)
-        self.assertIn("birdMix = birdIn * birdOut", self.particles)
-        self.assertIn("canvas.dataset.bird", self.particles)
+    def test_background_particles_use_the_real_scroll_driven_point_cloud_bird(self):
+        self.assertIn('data-particle-story', self.html)
+        self.assertIn('type="module" src="/homepage-particles.js?v=20260809-pointcloud1"', self.html)
+        self.assertIn("ShaderMaterial", self.particles)
+        self.assertIn("uPointerStrength", self.particles)
+        self.assertIn("data-particle-scene", self.particles)
+        self.assertTrue(self.bird_points.is_file())
+        self.assertEqual(self.bird_points.stat().st_size, 65536 * 3 * 4)
 
 
 if __name__ == "__main__":
