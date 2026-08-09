@@ -392,11 +392,12 @@ def gen_collect(payload):
             cm = tikhub.comments(platform, det.get("id") or ident, count=int(payload.get("comment_count") or 20))
             out["comments"] = cm["items"]; out["comments_more"] = bool(cm.get("has_more"))
         if "transcript" in want:
-            try:
-                # video_path 是上面转存时下好的同一个 play_url；非 None 时 ASR 不再重复下载
-                out["transcript"] = tikhub.transcript(det, video_path=video_path)
-            except tikhub.TikHubError as e:
-                out["transcript"] = {"text": None, "error": str(e)[:120]}
+            # video_path 是上面转存时下好的同一个 play_url；非 None 时 ASR 不再重复下载。
+            # 请求了口播文案却没有文本就必须让任务失败并走统一退款，不能假完成后扣点。
+            transcript = tikhub.transcript(det, video_path=video_path)
+            if not transcript or not str(transcript.get("text") or "").strip():
+                raise tikhub.TikHubError("口播文案生成失败")
+            out["transcript"] = transcript
         return out
     finally:
         if video_path:   # 临时文件归本函数删，无论成败

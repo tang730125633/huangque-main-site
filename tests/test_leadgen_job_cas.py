@@ -142,6 +142,17 @@ class LeadgenJobCasTests(unittest.TestCase):
         finally:
             self.lg.leads_domain.LEADS_CRM_DB = old_crm
 
+    def test_requested_transcript_failure_is_not_a_completed_result(self):
+        detail = {"id": "v1", "platform": "douyin", "title": "测试", "play_url": None}
+        payload = {"id": "v1", "platform": "douyin", "want": ["transcript"]}
+        for result in (None, {"text": ""}, self.lg.tikhub.TikHubError("ASR 失败")):
+            kwargs = {"side_effect": result} if isinstance(result, Exception) else {"return_value": result}
+            with self.subTest(result=result), \
+                 mock.patch.object(self.lg.tikhub, "detail", return_value=detail), \
+                 mock.patch.object(self.lg.tikhub, "transcript", **kwargs):
+                with self.assertRaises(self.lg.tikhub.TikHubError):
+                    self.lg.gen_collect(payload)
+
     # --- 核心回归：reaper 判超时退点在先，worker 随后成功 → 不得覆写 done、不得二次退点 ---
     def test_reaper_wins_then_worker_success_cannot_overwrite(self):
         jid = self._insert(6)
