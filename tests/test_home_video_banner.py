@@ -48,10 +48,12 @@ class HomeVideoBannerTests(unittest.TestCase):
 
     def test_hero_cta_uses_optical_liquid_glass_with_fallback(self):
         self.assertIn("data-hero-liquid-glass", self.html)
+        self.assertIn("data-nav-liquid-glass", self.html)
         self.assertIn("/homepage-liquid-glass.js", self.html)
         self.assertIn("prefers-reduced-motion:reduce", self.liquid_glass)
         self.assertIn("refractedPoint", self.liquid_glass)
         self.assertIn("hero-liquid-glass-ready", self.liquid_glass)
+        self.assertIn("nav-liquid-glass-ready", self.liquid_glass)
 
 
 if __name__ == "__main__":
