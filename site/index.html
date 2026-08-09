@@ -6,7 +6,7 @@
   <meta name="description" content="黄雀 AI：从 IP12、Agent 与无限画布，到图文音视频生产和 HQ CLI。">
   <title>黄雀 AI · 会持续生长的内容系统</title>
   <link rel="icon" href="/assets/logo_sparrow.png">
-  <link rel="stylesheet" href="/homepage.css?v=20260809-liquid3">
+  <link rel="stylesheet" href="/homepage.css?v=20260809-liquid4">
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -56,6 +56,7 @@
         <video class="hero-video-courtyard" muted playsinline preload="metadata">
           <source src="/assets/home/hero-banner-ancient-courtyard.mp4" type="video/mp4">
         </video>
+        <canvas class="hero-liquid-glass" data-hero-liquid-glass></canvas>
       </div>
       <div class="hero-inner" data-reveal>
         <h1><span class="line">Huang Que AI Hub</span></h1>
@@ -355,7 +356,8 @@
       && steps.every(step => panels.some(panel => panel.dataset.panel === step.dataset.story))
       && capabilityBranches.length === 6
       && productChannels.length === 13
-      && Boolean(document.querySelector('.story-stage') && document.querySelector('.story-chapters'));
+      && Boolean(document.querySelector('.story-stage') && document.querySelector('.story-chapters'))
+      && Boolean(document.querySelector('[data-hero-liquid-glass]'));
     console.assert(window.__homepageCheck(), 'Homepage story mapping is incomplete');
 
     function activateStory(id) {
@@ -508,6 +510,7 @@
 
   })();
   </script>
+  <script src="/homepage-liquid-glass.js?v=20260809-optical1" defer></script>
   <script src="/homepage-particles.js?v=20260808-editorial1" defer></script>
 </body>
 </html>
