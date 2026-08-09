@@ -260,7 +260,6 @@ class AdminE2ERunnerTests(unittest.TestCase):
 
     def test_paid_short_drama_modes_stay_blocked_before_auth_or_charge(self):
         operations = [
-            "short_drama.live_action.shot_video",
             "short_drama.live_action.preview",
             "short_drama.live_action.delivery",
         ]
@@ -356,6 +355,111 @@ class AdminE2ERunnerTests(unittest.TestCase):
         self.assertTrue(all(stage["state"] == "passed" for stage in finished["stages"]))
         self.assertTrue(finished["evidence"]["reference_locked"])
         self.assertTrue(finished["evidence"]["project_cleaned"])
+
+    def test_short_drama_single_shot_runs_provider_delivery_and_ledger_chain(self):
+        before = {"token": "qa-token", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        after = {"token": "qa-token-2", "account": {
+            "username": "qa-dedicated", "points": 440, "membership_active": True,
+        }}
+        (self.admin.CONTENT_OUT / "shot.mp4").write_bytes(b"valid-video")
+        character = {"character_key": "character_1", "name": "林夏"}
+        responses = {
+            "/api/gen/short-drama/projects/import": {"id": "project-shot", "revision": 1},
+            "/api/gen/short-drama/conversation/messages": {
+                "conversation": {"revision": 2, "understanding": {"direction_confirmed": True}},
+            },
+            "/api/gen/short-drama/conversation/script/generate": {
+                "conversation": {"revision": 3}, "current_script": {"id": "script-shot"},
+            },
+            "/api/gen/short-drama/conversation/script/lock": {
+                "conversation": {"revision": 4, "state": "script_locked"},
+            },
+            "/api/gen/short-drama/character-studio/bind-avatar": {"binding_ready": True},
+            "/api/gen/short-drama/preflight/generate": {
+                "current_plan": {"id": "plan-shot", "version": 1, "plan": {
+                    "required_acceptance": [], "material_plan": [{
+                        "shot_key": "shot_01", "duration_ms": 5000,
+                        "character_keys": ["character_1"],
+                    }],
+                }},
+            },
+            "/api/gen/short-drama/preflight/confirm": {
+                "current_plan": {"status": "confirmed"},
+            },
+            "/api/gen/short-drama/autodraft/provider-preflight": {
+                "ready": True, "provider": "grok",
+                "request": {"duration_seconds": 5, "resolution": "720p"},
+            },
+            "/api/gen/short-drama/autodraft/provider-quote": {
+                "quote_token": "private-quote", "cost": 60,
+            },
+            "/api/gen/short-drama/autodraft/provider-jobs": {
+                "id": "provider-job-local", "status": "queued",
+            },
+            "/api/gen/short-drama/project/delete": {"deleted": True},
+        }
+
+        def request(path, _token, _payload, _run_id, _step):
+            return responses[path]
+
+        get_calls = []
+
+        def get(path, _token):
+            get_calls.append(path)
+            if path.startswith("/api/gen/video/avatars"):
+                return {"items": [{"id": 7, "status": "ready"}]}
+            if path.startswith("/api/gen/short-drama/autodraft/provider-jobs/"):
+                return {
+                    "id": "provider-job-local", "status": "succeeded",
+                    "provider_job_id": "xai-task-1",
+                    "result": {"file": "shot.mp4", "url": "/api/gen/file/shot.mp4"},
+                }
+            return {"id": "project-shot", "revision": 5,
+                    "characters": [character]}
+
+        provider_state = {
+            "status": "succeeded", "provider_job_id": "xai-task-1",
+            "attempt_state": "done", "charge_key": "charge-shot",
+            "refund_key": "refund-shot", "version_file": "shot.mp4",
+            "version_url": "/api/gen/file/shot.mp4", "error": {},
+        }
+        points = SimpleNamespace(
+            cost_of=lambda _kind, _payload: 60,
+            get_points_transaction=lambda key: ({
+                "username": "qa-dedicated", "delta": -60,
+                "after_points": 440,
+            } if key == "charge-shot" else None),
+        )
+        with patch.dict(os.environ, {"HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "grok"}), \
+             patch.object(self.admin, "provider_keys", SimpleNamespace(
+                 has_candidate=lambda _provider: True,
+             )), \
+             patch.object(self.admin, "points_domain", points), \
+             patch.object(self.admin, "auth_admin_request",
+                          side_effect=[before, after, after]), \
+             patch.object(self.admin, "_short_drama_e2e_request", side_effect=request), \
+             patch.object(self.admin, "_content_e2e_get", side_effect=get), \
+             patch.object(self.admin, "_short_drama_shot_state",
+                          return_value=provider_state), \
+             patch.object(self.admin.subprocess, "run", return_value=SimpleNamespace(
+                 returncode=0, stdout=b"h264\n", stderr=b"",
+             )):
+            run = self.admin.start_e2e_run(
+                "root", "admin-token", "short_drama.live_action.shot_video"
+            )
+            self.assertEqual((run["status"], run["cost"]), ("queued", 60))
+            self.assertTrue(self.admin._finalize_short_drama_shot_e2e(
+                run["run_id"], "admin-token"
+            ))
+            finished = self.admin.list_e2e_runs(1)[0]
+        self.assertEqual(finished["status"], "completed")
+        self.assertTrue(all(stage["state"] == "passed" for stage in finished["stages"]))
+        self.assertEqual(finished["evidence"]["artifact_check"], "decodable")
+        self.assertTrue(finished["evidence"]["billing_verified"])
+        self.assertNotIn("quote_token", finished["evidence"])
+        self.assertEqual(get_calls[-1], "/api/gen/short-drama/project?id=project-shot")
 
     def test_short_drama_script_planning_runs_real_project_journey_and_cleans_up(self):
         session = {"token": "short-lived-secret", "account": {

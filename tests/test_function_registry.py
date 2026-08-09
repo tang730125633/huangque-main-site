@@ -216,7 +216,7 @@ class FunctionRegistryTests(unittest.TestCase):
         )
         short_drama_modes = short_drama["functions"][0]["modes"]
         self.assertTrue(all(
-            mode["validation"]["supported"] for mode in short_drama_modes[:2]
+            mode["validation"]["supported"] for mode in short_drama_modes[:3]
         ))
         self.assertEqual(short_drama_modes[1]["dependencies"], [{
             "key": "gemini", "role": "主生成", "requirement": "required",
@@ -225,7 +225,7 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertTrue(all(
             not mode["validation"]["supported"]
             and bool(mode["validation"]["blocked_reason"])
-            for mode in short_drama_modes[2:]
+            for mode in short_drama_modes[3:]
         ))
         self.assertNotIn("旧书店", json.dumps(short_drama, ensure_ascii=False))
         self.assertIn(

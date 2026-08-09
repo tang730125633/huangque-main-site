@@ -1049,9 +1049,16 @@ SHORT_DRAMA_FUNCTIONS = [{
         {
             "key": "short_drama.live_action.shot_video", "name": "逐镜视频生成",
             "entrypoints": [_endpoint("POST", "/api/gen/short-drama/autodraft/provider-preflight"), _endpoint("POST", "/api/gen/short-drama/autodraft/provider-quote"), _endpoint("POST", "/api/gen/short-drama/autodraft/provider-jobs")],
-            "evidence_source": "short_drama_provider_jobs", "price_keys": ["video.cinematic.open", "video.grok.v1.720p"],
+            "dependencies": [{"key": "xai", "role": "单镜头主生成", "requirement": "required", "credential_source": "pool"}],
+            "evidence_source": "short_drama_provider_shot_jobs", "price_keys": ["video.grok.v1.720p", "video.grok.v1_5.720p"],
             "smoke_inputs": ["已锁定角色与分镜", "单个最短镜头", "真实 Provider 任务与作品"],
-            "validation": _validation(supported=False, blocked_reason="需先固定已锁角色图和单镜头安全报价，禁止直接批量付费"),
+            "validation": _validation(prefill={
+                "title": "后台质检 · 单镜头视频", "synopsis": "验证短剧单镜头预检、报价、生成、交付和点数闭环。",
+                "ratio": "16:9", "target_duration": 30, "shot_count": 6,
+                "visual_style": "电影感写实", "source_text": QA_SHORT_DRAMA_SOURCE,
+                "filename": "后台质检单镜头视频.txt", "import_mode": "faithful",
+                "content_type": "live_action", "character_contract": [],
+            }),
         },
         {
             "key": "short_drama.live_action.preview", "name": "短剧预览合成",
