@@ -3850,11 +3850,14 @@
         .catch(function(error){
           var data=error&&error.data||{};
           if(error&&error.status===402){ node._imageSubmissionKey=''; throw makeRunNodeError('点数不足',{code:'insufficient_points'}); }
-          if(error&&error.status===429) throw makeRunNodeError(data.detail||'任务排队中，请稍后再试',{
-            code:data.code||(data.active_jobs!=null?'active_job_cap':'queue_full'),
+          var retry=agentModule.submissionRetryPolicy(error);
+          if(retry.retryable){
+            if(!retry.keepKey) node._imageSubmissionKey='';
+            throw makeRunNodeError(data.detail||'任务排队中，请稍后再试',{
+            code:retry.code,
             retryable:true,
-            retryAfterMs:data.retry_after_ms||RUN_ALL_RETRY_MS
-          });
+            retryAfterMs:retry.retryAfterMs||RUN_ALL_RETRY_MS
+          }); }
           throw error;
         })
         .then(function(data){
@@ -3902,11 +3905,14 @@
         .catch(function(error){
           var data=error&&error.data||{};
           if(error&&error.status===402){ node._videoSubmissionKey=''; throw makeRunNodeError('点数不足',{code:'insufficient_points'}); }
-          if(error&&error.status===429) throw makeRunNodeError(data.detail||'任务排队中，请稍后再试',{
-            code:data.code||(data.active_jobs!=null?'active_job_cap':'queue_full'),
+          var retry=agentModule.submissionRetryPolicy(error);
+          if(retry.retryable){
+            if(!retry.keepKey) node._videoSubmissionKey='';
+            throw makeRunNodeError(data.detail||'任务排队中，请稍后再试',{
+            code:retry.code,
             retryable:true,
-            retryAfterMs:data.retry_after_ms||RUN_ALL_RETRY_MS
-          });
+            retryAfterMs:retry.retryAfterMs||RUN_ALL_RETRY_MS
+          }); }
           throw error;
         })
         .then(function(data){

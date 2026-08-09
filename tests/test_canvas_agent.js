@@ -97,7 +97,7 @@ assert.ok(app.includes("node._videoSubmissionKey||(node._videoSubmissionKey="));
     assert.equal(call.options.headers['Idempotency-Key'], 'video-'+channel);
     assert.deepEqual(call.options.body, {channel, prompt:'产品视频', duration:10, ratio:'16:9', source_page:'canvas', reference_images:['BBBB']});
   }
-  for (const failure of [{status:429, code:'queue_full'}, {status:0, code:'timeout'}]) {
+  for (const failure of [{status:429, code:'active_job_cap'}, {status:0, code:'timeout'}]) {
     const attempted = [];
     const failing = {json(endpoint, options){ attempted.push(options.headers['Idempotency-Key']); return Promise.reject(failure); }};
     const request = agent.imageRequest({engine:'nb2', prompt:'重试保持同一订单'});
@@ -105,5 +105,13 @@ assert.ok(app.includes("node._videoSubmissionKey||(node._videoSubmissionKey="));
     await assert.rejects(agent.submitRequest(failing, request, 'stable-key'));
     assert.deepEqual(attempted, ['stable-key', 'stable-key']);
   }
+  assert.deepEqual(agent.submissionRetryPolicy({status:429,data:{code:'queue_full',retry_after_ms:5000}}),
+    {retryable:true,keepKey:false,code:'queue_full',retryAfterMs:5000});
+  assert.deepEqual(agent.submissionRetryPolicy({status:429,data:{code:'active_job_cap',retry_after_ms:4000}}),
+    {retryable:true,keepKey:true,code:'active_job_cap',retryAfterMs:4000});
+  assert.deepEqual(agent.submissionRetryPolicy({status:409,data:{code:'idempotency_in_progress',retry_after_ms:1000}}),
+    {retryable:true,keepKey:true,code:'idempotency_in_progress',retryAfterMs:1000});
+  assert.deepEqual(agent.submissionRetryPolicy({status:0,code:'timeout'}),
+    {retryable:false,keepKey:true,code:'timeout',retryAfterMs:0});
   console.log('canvas agent tests passed');
 })().catch(function(error){ console.error(error); process.exitCode=1; });

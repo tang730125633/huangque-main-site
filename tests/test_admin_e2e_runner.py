@@ -297,15 +297,25 @@ class AdminE2ERunnerTests(unittest.TestCase):
     def test_script_and_canvas_jobs_complete_the_same_eight_stage_contract(self):
         jobs = [
             (91, "copy", 4, {"provider": "copy_model", "source_page": "script"},
-             {"type": "copy", "scenes": [{"scene": "产品特写"}]}, "script.write.spoken"),
+             {"type": "copy", "scenes": [{"scene": "产品特写"}]}, "script.write.spoken", True),
             (92, "breakdown", 20, {"provider": "tikhub+zhipu", "source_page": "script", "mode": "scenes"},
-             {"type": "breakdown", "scenes": [{"scene": "三秒开场"}]}, "script.breakdown.scenes"),
+             {"type": "breakdown", "scenes": [{"scene": "三秒开场"}]}, "script.breakdown.scenes", True),
             (93, "canvas_agent", 3, {"provider": "openai_responses", "source_page": "canvas"},
              {"type": "canvas_agent", "content": "计划已生成", "plan": {
                  "content": "计划已生成", "requires_confirmation": True, "actions": [
                      {"type": "create_generation_draft", "mode": "text"},
                      {"type": "create_generation_draft", "mode": "image"},
-                 ]}}, "canvas.agent.plan"),
+                 ]}}, "canvas.agent.plan", True),
+            (94, "copy", 4, {"provider": "copy_model", "source_page": "script"},
+             {"type": "copy", "scenes": [{"scene": "未入资产库"}]}, "script.write.spoken", False),
+            (95, "breakdown", 20, {"provider": "tikhub+zhipu", "source_page": "script", "mode": "scenes"},
+             {"type": "breakdown_reverse", "prompt": "结果类型错误"}, "script.breakdown.scenes", False),
+            (96, "canvas_agent", 3, {"provider": "openai_responses", "source_page": "canvas"},
+             {"type": "canvas_agent", "content": "未等待确认", "plan": {
+                 "content": "未等待确认", "requires_confirmation": False, "actions": [
+                     {"type": "create_generation_draft", "mode": "text"},
+                     {"type": "create_generation_draft", "mode": "image"},
+                 ]}}, "canvas.agent.plan", False),
         ]
         with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
             connection.execute("""CREATE TABLE jobs(
@@ -314,7 +324,7 @@ class AdminE2ERunnerTests(unittest.TestCase):
             connection.executemany(
                 "INSERT INTO jobs VALUES(?,?, 'done', ?,0,'',1,2,?,?)",
                 [(job_id, kind, cost, json.dumps(payload), json.dumps(result))
-                 for job_id, kind, cost, payload, result, _operation in jobs],
+                 for job_id, kind, cost, payload, result, _operation, _valid in jobs],
             )
             connection.commit()
         with closing(sqlite3.connect(self.admin.ASSET_DB)) as connection:
@@ -327,7 +337,7 @@ class AdminE2ERunnerTests(unittest.TestCase):
             connection.commit()
         ledgers = {}
         rows = []
-        for job_id, _kind, cost, _payload, _result, operation in jobs:
+        for job_id, _kind, cost, _payload, _result, operation, _valid in jobs:
             key = "ledger-%s" % job_id
             ledgers[key] = {"username": "qa-dedicated", "delta": -cost, "after_points": 100 - cost}
             rows.append({
@@ -340,9 +350,14 @@ class AdminE2ERunnerTests(unittest.TestCase):
         with patch.object(self.admin, "points_domain", SimpleNamespace(
                 get_points_transaction=lambda key: ledgers.get(key))):
             runs = [self.admin._public_e2e_run(row) for row in rows]
-        for run in runs:
-            self.assertTrue(all(stage["state"] == "passed" for stage in run["stages"]), run)
-            self.assertTrue(run["evidence"]["delivery_verified"])
+        for run, job in zip(runs, jobs):
+            expected_delivery = job[-1]
+            delivery = next(stage for stage in run["stages"] if stage["key"] == "delivery")
+            self.assertEqual(delivery["state"], "passed" if expected_delivery else "failed", run)
+            self.assertTrue(all(
+                stage["state"] == "passed" for stage in run["stages"] if stage["key"] != "delivery"
+            ), run)
+            self.assertEqual(run["evidence"]["delivery_verified"], expected_delivery)
             self.assertTrue(run["evidence"]["route_provider"])
 
     def test_cinematic_open_uses_one_ready_qa_avatar_and_four_second_quote(self):

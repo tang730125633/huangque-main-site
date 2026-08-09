@@ -132,5 +132,11 @@
     if(!client||typeof client.json!=='function'||!request||!request.endpoint||!idempotencyKey) return Promise.reject(new Error('画布生成请求缺少必要参数'));
     return client.json(request.endpoint,{method:'POST',body:request.body,headers:{'Idempotency-Key':idempotencyKey}});
   }
-  return {createSnapshot:createSnapshot,validatePlan:validatePlan,actionLabel:actionLabel,connectionPorts:connectionPorts,digest:digest,buildIP12Context:buildIP12Context,imageRequest:imageRequest,videoRequest:videoRequest,submitRequest:submitRequest};
+  function submissionRetryPolicy(error){
+    var data=error&&error.data||{}, code=data.code||error&&error.code||'';
+    if(error&&error.status===429) return {retryable:true,keepKey:code!=='queue_full',code:code||'queue_full',retryAfterMs:data.retry_after_ms||0};
+    if(error&&error.status===409&&code==='idempotency_in_progress') return {retryable:true,keepKey:true,code:code,retryAfterMs:data.retry_after_ms||0};
+    return {retryable:false,keepKey:code==='timeout',code:code,retryAfterMs:0};
+  }
+  return {createSnapshot:createSnapshot,validatePlan:validatePlan,actionLabel:actionLabel,connectionPorts:connectionPorts,digest:digest,buildIP12Context:buildIP12Context,imageRequest:imageRequest,videoRequest:videoRequest,submitRequest:submitRequest,submissionRetryPolicy:submissionRetryPolicy};
 });
