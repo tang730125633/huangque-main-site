@@ -218,6 +218,10 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertTrue(all(
             mode["validation"]["supported"] for mode in short_drama_modes[:2]
         ))
+        self.assertEqual(short_drama_modes[1]["dependencies"], [{
+            "key": "gemini", "role": "主生成", "requirement": "required",
+            "credential_source": "env",
+        }])
         self.assertTrue(all(
             not mode["validation"]["supported"]
             and bool(mode["validation"]["blocked_reason"])
