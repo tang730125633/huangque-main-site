@@ -130,7 +130,7 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("data-bd-tool=\"reverse_prompt\"", self.html)
         self.assertIn('id="bdGen"', self.html)
         self.assertIn("fetch('/api/gen/breakdown'", self.html)
-        self.assertIn("var reqBody=isBatch?{urls:lines,mode:'scenes'}:{url:lines[0],mode:submitMode};", self.html)
+        self.assertIn("var reqBody=isBatch?{urls:lines,mode:'scenes',source_page:'script'}:{url:lines[0],mode:submitMode,source_page:'script'};", self.html)
         self.assertIn("function normalizeBreakdownUrl(text)", self.html)
         self.assertIn("链接格式不正确", self.html)
         self.assertIn("链接视频最大 200MB", self.html)

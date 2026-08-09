@@ -100,7 +100,7 @@ class FunctionRegistryTests(unittest.TestCase):
              "文案编导", "短剧创作", "无限画布", "我的资产", "点数价格", "邀请中心",
              "教程视频", "通用设置"],
         )
-        self.assertEqual([page["inventory_status"] for page in pages].count("verified"), 5)
+        self.assertEqual([page["inventory_status"] for page in pages].count("verified"), 8)
         image = next(page for page in pages if page["key"] == "banana")
         self.assertEqual(
             [feature["name"] for feature in image["functions"]],
@@ -192,12 +192,34 @@ class FunctionRegistryTests(unittest.TestCase):
             self.admin.function_registry.e2e_runner("collect.content.comments")["prefill"]["url"],
             "@env/HQ_E2E_COLLECT_URL",
         )
+        script = next(page for page in pages if page["key"] == "script")
+        self.assertEqual([item["name"] for item in script["functions"]], ["AI 写脚本", "拆解视频"])
+        self.assertEqual(
+            [mode["key"] for feature in script["functions"] for mode in feature["modes"]],
+            ["script.write.spoken", "script.write.story", "script.write.recommend",
+             "script.breakdown.scenes", "script.breakdown.reverse",
+             "script.breakdown.local_image", "script.breakdown.local_video"],
+        )
+        short_drama = next(page for page in pages if page["key"] == "short-drama")
+        self.assertEqual([item["name"] for item in short_drama["functions"]], ["AI 真人短剧"])
+        self.assertTrue(all(
+            not mode["validation"]["supported"]
+            for mode in short_drama["functions"][0]["modes"]
+        ))
+        canvas = next(page for page in pages if page["key"] == "canvas")
+        self.assertEqual([item["name"] for item in canvas["functions"]], ["画布 Agent"])
+        self.assertEqual(canvas["functions"][0]["modes"][0]["key"], "canvas.agent.plan")
+        self.assertEqual(
+            [item["name"] for item in canvas["auxiliary_actions"]],
+            ["反推提示词", "图片节点生成", "视频节点生成", "本地画布编辑与协作同步"],
+        )
 
         flags = self.admin.feature_flags.CATALOG_MAP
         routes = self.admin.KEY_GROUP_MAP
         prices = self.admin.pricing.CATALOG_MAP
         for feature in (image["functions"] + video["functions"] + audio["functions"]
-                        + collect["functions"] + leads["functions"]):
+                        + collect["functions"] + leads["functions"] + script["functions"]
+                        + short_drama["functions"] + canvas["functions"]):
             self.assertTrue(feature["frontend_selector"])
             self.assertIn(feature["service"], {"content", "imggen", "leadgen"})
             for flag in feature.get("flag_keys", []):

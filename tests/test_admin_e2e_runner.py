@@ -134,6 +134,60 @@ class AdminE2ERunnerTests(unittest.TestCase):
         self.assertEqual((payload["provider"], payload["source_page"]), ("tikhub", "leads"))
         self.assertEqual(self.admin._e2e_kind("/api/gen/leads"), "leads")
 
+    def test_script_and_canvas_runners_use_customer_page_payloads(self):
+        script = self.admin.function_registry.e2e_runner("script.write.spoken")
+        script_payload = self.admin._e2e_payload("script.write.spoken", script)
+        self.assertEqual(
+            (script_payload["source_page"], script_payload["format"], script_payload["style"]),
+            ("script", "script", "口播"),
+        )
+        with patch.dict(os.environ, {"HQ_E2E_COLLECT_URL": "https://www.douyin.com/video/1234567890"}):
+            breakdown = self.admin._e2e_payload(
+                "script.breakdown.reverse",
+                self.admin.function_registry.e2e_runner("script.breakdown.reverse"),
+            )
+        self.assertEqual(
+            (breakdown["source_page"], breakdown["mode"]),
+            ("script", "reverse_prompt"),
+        )
+        canvas = self.admin._e2e_payload(
+            "canvas.agent.plan",
+            self.admin.function_registry.e2e_runner("canvas.agent.plan"),
+        )
+        self.assertEqual((canvas["source_page"], canvas["scope"]), ("canvas", "local"))
+        self.assertEqual(canvas["selected_node_ids"], ["qa_product"])
+        self.assertEqual(canvas["quoted_cost"], 3)
+        self.assertEqual(self.admin._e2e_kind("/api/gen/copy"), "copy")
+        self.assertEqual(self.admin._e2e_kind("/api/gen/breakdown"), "breakdown")
+        self.assertEqual(self.admin._e2e_kind("/api/gen/canvas_agent"), "canvas_agent")
+
+    def test_copy_and_canvas_structured_delivery_are_verified(self):
+        with closing(sqlite3.connect(self.admin.ASSET_DB)) as connection:
+            connection.execute(
+                """CREATE TABLE assets(
+                       id INTEGER PRIMARY KEY,job_id INTEGER,kind TEXT,stage TEXT,
+                       deleted INTEGER DEFAULT 0)"""
+            )
+            connection.execute(
+                "INSERT INTO assets(job_id,kind,stage,deleted) VALUES(12,'copy','work',0)"
+            )
+            connection.commit()
+        copy = self.admin._structured_asset_evidence({
+            "id": 12, "kind": "copy", "collect_mode": "",
+            "result_json": json.dumps({"type": "copy", "scenes": [{"scene": "产品特写"}]}),
+        })
+        self.assertTrue(copy["delivery_verified"])
+        self.assertEqual(copy["artifact_check"], "structured_asset")
+        canvas = self.admin._structured_asset_evidence({
+            "id": 13, "kind": "canvas_agent", "collect_mode": "",
+            "result_json": json.dumps({
+                "type": "canvas_agent", "content": "计划已生成",
+                "plan": {"content": "计划已生成", "actions": []},
+            }),
+        })
+        self.assertTrue(canvas["delivery_verified"])
+        self.assertEqual(canvas["artifact_check"], "structured_result")
+
     def test_cinematic_open_uses_one_ready_qa_avatar_and_four_second_quote(self):
         session = {"token": "short-lived-secret", "account": {
             "username": "qa-dedicated", "points": 500, "membership_active": True,

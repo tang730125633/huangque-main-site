@@ -25,6 +25,8 @@ QA_IMAGE_EDIT_PROMPT = "仅将瓶身左侧背景改为柔和浅金色，保持�
 QA_AUDIO_TEXT = "你好，这是黄雀音频功能的自动质检。现在正在验证生成、播放、下载和点数记录。"
 QA_COLLECT_URL = "@env/HQ_E2E_COLLECT_URL"
 QA_LEADS_KEYWORD = "美容院如何拓客"
+QA_SCRIPT_PROMPT = "为一款无品牌的琥珀色保湿精华写一条可拍摄短视频脚本，卖点是清爽、易吸收；不得虚构功效、价格或品牌信息"
+QA_CANVAS_PROMPT = "根据画布中的产品卖点，创建一条短视频文案草稿和一条图片生成草稿；只规划，不执行媒体生成"
 
 
 def _validation(prefill=None, manual_requirements=None, supported=True, blocked_reason=""):
@@ -859,6 +861,191 @@ LEADS_FUNCTIONS = [
 ]
 
 
+SCRIPT_FUNCTIONS = [
+    {
+        "key": "script_writer",
+        "name": "AI 写脚本",
+        "desc": "按客户选择的口播、剧情或种草风格生成可编辑分镜脚本",
+        "order": 10,
+        "frontend_selector": '#scModeTabs [data-mode="write"]',
+        "service": "content",
+        "dependencies": [{
+            "key": "openai", "role": "文案模型兼容线路", "requirement": "optional",
+            "credential_source": "env", "condition": "未配置专用文案线路时回退",
+        }],
+        "evidence_gaps": ["专用 COPY_API / 智谱线路尚未归一到渠道凭据面板"],
+        "modes": [
+            {
+                "key": "script.write.spoken", "name": "口播脚本",
+                "frontend_selector": '#segStyle .sc-opt:nth-child(1)',
+                "entrypoints": [_endpoint("POST", "/api/gen/copy"), _endpoint("GET", "/api/gen/job/{id}")],
+                "task_match": {"kind": "copy", "source_page": "script", "format": "script", "style": "口播"},
+                "evidence_contract": {"not_applicable": ["provider_task", "balance"]},
+                "price_keys": ["text.copy"],
+                "smoke_inputs": ["预设合规产品选题与卖点", "口播", "15 秒", "抖音"],
+                "validation": _validation({
+                    "prompt": QA_SCRIPT_PROMPT, "format": "script", "style": "口播",
+                    "dur": "15s", "platform": "抖音", "ctype": "分镜脚本",
+                    "source_page": "script",
+                }),
+            },
+            {
+                "key": "script.write.story", "name": "剧情脚本",
+                "frontend_selector": '#segStyle .sc-opt:nth-child(2)',
+                "entrypoints": [_endpoint("POST", "/api/gen/copy"), _endpoint("GET", "/api/gen/job/{id}")],
+                "task_match": {"kind": "copy", "source_page": "script", "format": "script", "style": "剧情"},
+                "evidence_contract": {"not_applicable": ["provider_task", "balance"]},
+                "price_keys": ["text.copy"],
+                "smoke_inputs": ["预设合规产品选题与卖点", "剧情", "15 秒", "抖音"],
+                "validation": _validation({
+                    "prompt": QA_SCRIPT_PROMPT, "format": "script", "style": "剧情",
+                    "dur": "15s", "platform": "抖音", "ctype": "分镜脚本",
+                    "source_page": "script",
+                }),
+            },
+            {
+                "key": "script.write.recommend", "name": "种草脚本",
+                "frontend_selector": '#segStyle .sc-opt:nth-child(3)',
+                "entrypoints": [_endpoint("POST", "/api/gen/copy"), _endpoint("GET", "/api/gen/job/{id}")],
+                "task_match": {"kind": "copy", "source_page": "script", "format": "script", "style": "种草"},
+                "evidence_contract": {"not_applicable": ["provider_task", "balance"]},
+                "price_keys": ["text.copy"],
+                "smoke_inputs": ["预设合规产品选题与卖点", "种草", "15 秒", "抖音"],
+                "validation": _validation({
+                    "prompt": QA_SCRIPT_PROMPT, "format": "script", "style": "种草",
+                    "dur": "15s", "platform": "抖音", "ctype": "分镜脚本",
+                    "source_page": "script",
+                }),
+            },
+        ],
+    },
+    {
+        "key": "breakdown",
+        "name": "拆解视频",
+        "desc": "从公开视频链接生成分镜拆解或视频提示词反推",
+        "order": 20,
+        "frontend_selector": '#scModeTabs [data-mode="breakdown"]',
+        "service": "content",
+        "flag_keys": ["breakdown"],
+        "dependencies": [
+            {"key": "tikhub", "role": "公开视频下载与素材信息", "requirement": "required", "credential_source": "env"},
+            {"key": "openai", "role": "无字幕视频的语音识别", "requirement": "optional", "credential_source": "env", "condition": "视频无可用字幕时调用"},
+        ],
+        "evidence_gaps": ["智谱视觉拆解线路尚未归一到渠道凭据面板"],
+        "modes": [
+            {
+                "key": "script.breakdown.scenes", "name": "链接分解拆解",
+                "frontend_selector": "#bdToolScenes",
+                "entrypoints": [_endpoint("POST", "/api/gen/breakdown"), _endpoint("GET", "/api/gen/job/{id}")],
+                "task_match": {"kind": "breakdown", "source_page": "script", "mode": "scenes"},
+                "evidence_contract": {"not_applicable": ["provider_task", "balance"]},
+                "price_keys": ["breakdown.item"],
+                "smoke_inputs": ["1 条已授权固定视频链接", "分镜结构结果"],
+                "validation": _validation({"url": QA_COLLECT_URL, "mode": "scenes", "source_page": "script"}),
+            },
+            {
+                "key": "script.breakdown.reverse", "name": "链接提示词反推",
+                "frontend_selector": "#bdToolReverse",
+                "entrypoints": [_endpoint("POST", "/api/gen/breakdown"), _endpoint("GET", "/api/gen/job/{id}")],
+                "task_match": {"kind": "breakdown", "source_page": "script", "mode": "reverse_prompt"},
+                "evidence_contract": {"not_applicable": ["provider_task", "balance"]},
+                "price_keys": ["breakdown.item"],
+                "smoke_inputs": ["1 条已授权固定视频链接", "非空视频提示词"],
+                "validation": _validation({"url": QA_COLLECT_URL, "mode": "reverse_prompt", "source_page": "script"}),
+            },
+            {
+                "key": "script.breakdown.local_image", "name": "本地图片反推",
+                "frontend_selector": "#bdImageReverse",
+                "entrypoints": [_endpoint("POST", "/api/gen/breakdown/local-upload?media_type=image")],
+                "task_match": {"kind": "breakdown", "source_page": "script", "source_type": "image"},
+                "evidence_contract": {"not_applicable": ["provider_task", "balance"]},
+                "price_keys": ["breakdown.item"],
+                "smoke_inputs": ["1 张本地图片", "非空图片提示词"],
+                "validation": _validation(supported=False, blocked_reason="二进制上传入口尚未接入后台托管测试"),
+            },
+            {
+                "key": "script.breakdown.local_video", "name": "本地视频反推",
+                "frontend_selector": "#bdVideoReverse",
+                "entrypoints": [_endpoint("POST", "/api/gen/breakdown/local-upload?media_type=video")],
+                "task_match": {"kind": "breakdown", "source_page": "script", "source_type": "video"},
+                "evidence_contract": {"not_applicable": ["provider_task", "balance"]},
+                "price_keys": ["breakdown.item"],
+                "smoke_inputs": ["1 段本地短视频", "非空视频提示词"],
+                "validation": _validation(supported=False, blocked_reason="二进制上传入口尚未接入后台托管测试"),
+            },
+        ],
+    },
+]
+
+
+SHORT_DRAMA_FUNCTIONS = [{
+    "key": "live_action",
+    "name": "AI 真人短剧",
+    "desc": "从真人剧本、角色确认、逐镜生产到预览与交付的项目型生产线",
+    "order": 10,
+    "frontend_selector": '[data-content-type="live_action"]',
+    "service": "content",
+    "modes": [
+        {
+            "key": "short_drama.live_action.script_planning", "name": "剧本与分镜策划",
+            "entrypoints": [_endpoint("POST", "/api/gen/short-drama/projects/import"), _endpoint("POST", "/api/gen/short-drama/conversation/script/generate"), _endpoint("POST", "/api/gen/short-drama/preflight/generate")],
+            "evidence_source": "short_drama_projects", "evidence_contract": {"acceptance_id_type": "project_id", "not_applicable": ["provider_task", "billing", "balance"]},
+            "price_keys": [], "smoke_inputs": ["固定真人短剧脚本", "两个固定角色", "首版剧本与制作预检"],
+            "validation": _validation(supported=False, blocked_reason="项目型多步骤旅程尚未接入后台专用适配器；不能用单个 job_id 冒充通过"),
+        },
+        {
+            "key": "short_drama.live_action.character_reference", "name": "角色标准图",
+            "entrypoints": [_endpoint("POST", "/api/gen/short-drama/generate-character-reference"), _endpoint("POST", "/api/gen/short-drama/confirm-character-reference")],
+            "evidence_source": "short_drama_character_reference_jobs",
+            "price_keys": ["image.banana.nb2.hd"], "smoke_inputs": ["已确认角色卡", "角色标准图生成与锁定"],
+            "validation": _validation(supported=False, blocked_reason="需要一次性 QA 短剧项目、角色版本和付费媒体对账"),
+        },
+        {
+            "key": "short_drama.live_action.shot_video", "name": "逐镜视频生成",
+            "entrypoints": [_endpoint("POST", "/api/gen/short-drama/autodraft/provider-preflight"), _endpoint("POST", "/api/gen/short-drama/autodraft/provider-quote"), _endpoint("POST", "/api/gen/short-drama/autodraft/provider-jobs")],
+            "evidence_source": "short_drama_provider_jobs", "price_keys": ["video.cinematic.open", "video.grok.v1.720p"],
+            "smoke_inputs": ["已锁定角色与分镜", "单个最短镜头", "真实 Provider 任务与作品"],
+            "validation": _validation(supported=False, blocked_reason="需先固定已锁角色图和单镜头安全报价，禁止直接批量付费"),
+        },
+        {
+            "key": "short_drama.live_action.preview", "name": "短剧预览合成",
+            "entrypoints": [_endpoint("POST", "/api/gen/short-drama/autodraft/jobs")],
+            "evidence_source": "short_drama_autodraft_jobs", "price_keys": [],
+            "smoke_inputs": ["已锁定逐镜素材", "720p 预览文件"],
+            "validation": _validation(supported=False, blocked_reason="缺少可重复使用的已锁音轨、字幕时间线和逐镜素材快照"),
+        },
+        {
+            "key": "short_drama.live_action.delivery", "name": "正式交付",
+            "entrypoints": [_endpoint("POST", "/api/gen/short-drama/delivery/quote"), _endpoint("POST", "/api/gen/short-drama/delivery/jobs")],
+            "evidence_source": "short_drama_delivery_jobs", "price_keys": [],
+            "smoke_inputs": ["人工验收通过的短剧版本", "1080p 正式交付文件"],
+            "validation": _validation(supported=False, blocked_reason="正式交付执行器与人工验收契约尚未确认，不能自动扣点测试"),
+        },
+    ],
+}]
+
+
+CANVAS_FUNCTIONS = [{
+    "key": "agent",
+    "name": "画布 Agent",
+    "desc": "读取当前画布并返回需要测试人员确认后才会应用的创作计划",
+    "order": 10,
+    "frontend_selector": '[data-side="agent"]',
+    "service": "content",
+    "flag_keys": ["canvas_agent"],
+    "dependencies": [{"key": "openai", "role": "结构化创作计划", "requirement": "required", "credential_source": "env"}],
+    "modes": [{
+        "key": "canvas.agent.plan", "name": "生成创作计划",
+        "entrypoints": [_endpoint("POST", "/api/gen/canvas-agent/quote"), _endpoint("POST", "/api/gen/canvas_agent"), _endpoint("GET", "/api/gen/job/{id}")],
+        "task_match": {"kind": "canvas_agent", "source_page": "canvas"},
+        "evidence_contract": {"not_applicable": ["provider_task", "balance"]},
+        "price_keys": ["canvas.agent"],
+        "smoke_inputs": ["固定产品卖点文本节点", "预设创作要求", "只返回计划、不自动应用"],
+        "validation": _validation({"prompt": QA_CANVAS_PROMPT, "source_page": "canvas"}),
+    }],
+}]
+
+
 _PAGE_DEFS = [
     ("inspiration", "灵感设计", "/workbench/inspiration.html"),
     ("leads", "平台获客", "/workbench/leads.html"),
@@ -882,13 +1069,16 @@ FUNCTION_REGISTRY = [
         "name": name,
         "path": path,
         "order": order,
-        "inventory_status": "verified" if key in {"leads", "collect", "banana", "video", "audio"} else "pending",
+        "inventory_status": "verified" if key in {"leads", "collect", "banana", "video", "audio", "script", "short-drama", "canvas"} else "pending",
         "functions": (
             VIDEO_FUNCTIONS if key == "video"
             else IMAGE_FUNCTIONS if key == "banana"
             else AUDIO_FUNCTIONS if key == "audio"
             else COLLECT_FUNCTIONS if key == "collect"
             else LEADS_FUNCTIONS if key == "leads"
+            else SCRIPT_FUNCTIONS if key == "script"
+            else SHORT_DRAMA_FUNCTIONS if key == "short-drama"
+            else CANVAS_FUNCTIONS if key == "canvas"
             else []
         ),
         "auxiliary_actions": ([{
@@ -914,7 +1104,24 @@ FUNCTION_REGISTRY = [
             "entrypoint": _endpoint("POST", "/api/gen/leads/crm"),
             "scope": "保存当前用户的意向、跟进状态和备注，不创建生成任务、不扣点",
             "price_keys": [],
-        }] if key == "leads" else []),
+        }] if key == "leads" else [{
+            "key": "canvas.prompt.reverse", "name": "反推提示词",
+            "entrypoint": _endpoint("POST", "/api/gen/reverse"),
+            "scope": "同步付费工具；直接返回提示词，不创建异步任务",
+            "price_keys": ["image.reverse"],
+        }, {
+            "key": "canvas.image.generate", "name": "图片节点生成",
+            "entrypoint": _endpoint("POST", "/api/gen/image"),
+            "scope": "按画布节点选择的图片线路创建任务；结果仍需写回节点",
+        }, {
+            "key": "canvas.video.generate", "name": "视频节点生成",
+            "entrypoint": _endpoint("POST", "/api/gen/xiaole_video"),
+            "scope": "按画布节点选择的果肉或 Seedance 线路创建任务；结果仍需写回节点",
+        }, {
+            "key": "canvas.local.edit", "name": "本地画布编辑与协作同步",
+            "entrypoint": _endpoint("POST", "/api/auth/canvas/boards/{id}/ops"),
+            "scope": "拖拽、连线、撤销和同步不是 AI 生成，不计入渠道健康率",
+        }] if key == "canvas" else []),
     }
     for order, (key, name, path) in enumerate(_PAGE_DEFS)
 ]
@@ -988,7 +1195,7 @@ def classify_task(kind, metadata=None):
     metadata = metadata or {}
     kind = str(kind or "").strip().lower()
     source_page = str(metadata.get("source_page") or "").strip().lower()
-    if source_page not in {"", "video", "banana", "audio", "collect", "leads"}:
+    if source_page not in {"", "video", "banana", "audio", "collect", "leads", "script", "canvas"}:
         return None
     if kind == "image" and source_page != "banana":
         return None
@@ -1000,6 +1207,12 @@ def classify_task(kind, metadata=None):
     if kind == "audio" and source_page != "audio":
         return None
     if kind != "audio" and source_page == "audio":
+        return None
+    if kind == "copy" and source_page != "script":
+        return None
+    if kind == "breakdown" and source_page != "script":
+        return None
+    if kind == "canvas_agent" and source_page != "canvas":
         return None
     try:
         references = int(metadata.get("reference_count") or (1 if metadata.get("image") else 0))
@@ -1028,6 +1241,9 @@ def classify_task(kind, metadata=None):
             metadata.get("collect_mode")
             or next(iter(want), "comments")
         ).strip().lower(),
+        "format": str(metadata.get("format") or "").strip().lower(),
+        "style": str(metadata.get("style") or "").strip(),
+        "source_type": str(metadata.get("source_type") or "").strip().lower(),
     }
     return next((key for key, rule in TASK_RULES if _matches(actual, rule)), None)
 

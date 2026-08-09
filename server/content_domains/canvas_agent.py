@@ -178,7 +178,8 @@ def validate_payload(payload, access=None):
     if not isinstance(payload, dict):
         raise ValueError("请求体必须是 JSON 对象")
     allowed = {"prompt", "project_id", "snapshot_digest", "scope", "nodes", "edges",
-               "selected_node_ids", "history", "quoted_cost", "page_context", "ip12_context"}
+               "selected_node_ids", "history", "quoted_cost", "page_context", "ip12_context",
+               "source_page", "qa_operation_id"}
     if set(payload) - allowed:
         raise ValueError("请求包含不支持的字段")
     cleaned = {
@@ -187,7 +188,13 @@ def validate_payload(payload, access=None):
         "snapshot_digest": _text(payload.get("snapshot_digest"), 32, "画布版本"),
         "scope": _text(payload.get("scope"), 16, "画布范围"),
         "quoted_cost": payload.get("quoted_cost"),
+        "source_page": "canvas",
+        "provider": "openai_responses",
     }
+    if payload.get("source_page") not in (None, "", "canvas"):
+        raise ValueError("页面来源无效")
+    if payload.get("qa_operation_id"):
+        cleaned["qa_operation_id"] = _text(payload.get("qa_operation_id"), 120, "质检操作标识")
     if not cleaned["prompt"]:
         raise ValueError("请输入要让 Agent 完成的任务")
     if not cleaned["project_id"] or not re.fullmatch(r"[A-Za-z0-9:_-]+", cleaned["project_id"]):

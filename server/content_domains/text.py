@@ -93,6 +93,7 @@ def validate_copy_payload(payload):
     if not brief:
         raise ValueError("请输入文案需求")
     cleaned["prompt"] = brief
+    cleaned["provider"] = "copy_model"
     ref_images = cleaned.get("reference_images")
     if ref_images is not None:
         if not isinstance(ref_images, list):

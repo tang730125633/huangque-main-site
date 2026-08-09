@@ -988,6 +988,39 @@ def _e2e_payload(operation_id, runner, ready_avatar_ids=None, ready_audio_voice_
             "channels_targets": list(prefill.get("channels_targets") or []),
             "provider": "tikhub", "source_page": "leads",
         })
+    elif operation_id.startswith("script.write."):
+        payload.update({
+            "prompt": prompt,
+            "format": str(prefill.get("format") or "script"),
+            "style": str(prefill.get("style") or "口播"),
+            "dur": str(prefill.get("dur") or "15s"),
+            "platform": str(prefill.get("platform") or "抖音"),
+            "ctype": str(prefill.get("ctype") or "分镜脚本"),
+            "source_page": "script",
+        })
+    elif operation_id.startswith("script.breakdown."):
+        payload.update({
+            "url": resolve(prefill["url"]),
+            "mode": str(prefill.get("mode") or "scenes"),
+            "source_page": "script",
+        })
+    elif operation_id == "canvas.agent.plan":
+        payload.update({
+            "prompt": prompt,
+            "project_id": "qa-canvas-registry",
+            "snapshot_digest": "a1b2c3d4e5f60718",
+            "scope": "local",
+            "nodes": [{
+                "id": "qa_product", "type": "text", "title": "产品卖点",
+                "content": "琥珀色保湿精华；清爽、易吸收；不得虚构品牌或功效",
+                "selected": True,
+            }],
+            "edges": [], "selected_node_ids": ["qa_product"], "history": [],
+            "quoted_cost": int(pricing.get_price("canvas.agent")),
+            "page_context": {"page": "canvas", "path": "/workbench/canvas.html",
+                             "title": "无限画布", "can_edit": True, "selected_count": 1},
+            "source_page": "canvas",
+        })
     else:
         raise ValueError("该模式尚未接入后台托管测试")
     return payload
@@ -1085,6 +1118,8 @@ def _e2e_kind(endpoint):
         "/api/gen/xiaole_video": "xiaole_video", "/api/gen/sora_video": "sora_video",
         "/api/gen/cinematic": "cinematic",
         "/api/gen/collect": "collect", "/api/gen/leads": "leads",
+        "/api/gen/copy": "copy", "/api/gen/breakdown": "breakdown",
+        "/api/gen/canvas_agent": "canvas_agent",
     }.get(endpoint)
 
 
@@ -1189,6 +1224,22 @@ def _e2e_parameters(operation_id, payload):
         parameters.extend([
             "平台：抖音", "关键词：预设通用关键词",
             "最低采集量：%s" % payload.get("count", 1),
+        ])
+    elif operation_id.startswith("script.write."):
+        parameters.extend([
+            "脚本风格：%s" % payload.get("style"),
+            "目标时长：%s" % payload.get("dur"),
+            "发布平台：%s" % payload.get("platform"),
+        ])
+    elif operation_id.startswith("script.breakdown."):
+        parameters.extend([
+            "固定授权链接：已准备",
+            "验收内容：%s" % ("视频提示词" if payload.get("mode") == "reverse_prompt" else "分镜结构"),
+        ])
+    elif operation_id == "canvas.agent.plan":
+        parameters.extend([
+            "固定画布：1 个产品卖点文本节点",
+            "执行边界：只返回计划，不自动应用或生成媒体",
         ])
     return parameters
 
@@ -3032,7 +3083,7 @@ def _download_proxy_evidence(job_id, video):
 
 def _structured_asset_evidence(row):
     kind = str(row["kind"] or "").lower()
-    if kind not in {"collect", "leads"}:
+    if kind not in {"collect", "leads", "copy", "breakdown", "canvas_agent"}:
         return None
     try:
         result = json.loads(row["result_json"] or "{}")
@@ -3040,11 +3091,12 @@ def _structured_asset_evidence(row):
         result = {}
     download_detail = ""
     download_pending = False
+    mode = ""
     if kind == "leads":
         valid = (result.get("type") == "leads"
                  and bool(result.get("leads"))
                  and int(result.get("leads_count") or 0) > 0)
-    else:
+    elif kind == "collect":
         mode = str(row["collect_mode"] or "comments").lower()
         video, copy = result.get("video") or {}, result.get("copy") or {}
         if mode == "video":
@@ -3059,8 +3111,25 @@ def _structured_asset_evidence(row):
             valid = (result.get("type") == "collect"
                      and bool(video.get("title") or copy.get("title") or copy.get("desc"))
                      and bool(result.get("comments")))
+    elif kind == "copy":
+        valid = (result.get("type") == "copy"
+                 and isinstance(result.get("scenes"), list)
+                 and bool(result.get("scenes")))
+    elif kind == "breakdown":
+        mode = str(result.get("type") or "")
+        valid = bool(
+            (mode == "breakdown_reverse" and str(result.get("prompt") or "").strip())
+            or (mode == "breakdown_batch" and result.get("results"))
+            or (mode not in {"breakdown_reverse", "breakdown_batch"}
+                and result.get("scenes"))
+        )
+    else:
+        plan = result.get("plan") or {}
+        valid = (result.get("type") == "canvas_agent" and isinstance(plan, dict)
+                 and bool(str(result.get("content") or plan.get("content") or "").strip())
+                 and isinstance(plan.get("actions"), list))
     asset = None
-    if ASSET_DB.exists():
+    if kind != "canvas_agent" and ASSET_DB.exists():
         try:
             with closing(sqlite3.connect(str(ASSET_DB), timeout=10)) as connection:
                 connection.row_factory = sqlite3.Row
@@ -3070,12 +3139,14 @@ def _structured_asset_evidence(row):
                 ).fetchone()
         except sqlite3.Error:
             asset = None
+    requires_asset = kind != "canvas_agent"
     return {
-        "delivery_verified": bool(valid and asset),
+        "delivery_verified": bool(valid and (asset or not requires_asset)),
         "artifact_check": ("checking" if download_pending else (
             "download_proxy" if valid and asset and kind == "collect"
                             and str(row["collect_mode"] or "").lower() == "video"
-                            else "structured_asset") if valid and asset else (
+                            else "structured_result" if valid and not requires_asset
+                            else "structured_asset") if valid and (asset or not requires_asset) else (
             "invalid_structured" if not valid else "missing"
         )),
         "output_reference_present": bool(valid or download_pending),
@@ -3186,7 +3257,7 @@ def _e2e_job_evidence(job_id):
             return None
         if row["kind"] == "audio":
             assets, _ = _audio_asset_evidence([int(job_id)])
-        elif row["kind"] in {"image", "collect", "leads"}:
+        elif row["kind"] in {"image", "collect", "leads", "copy", "breakdown", "canvas_agent"}:
             assets = {}
         else:
             assets, _ = _video_asset_evidence([int(job_id)])
@@ -3245,7 +3316,12 @@ def _public_e2e_run(row):
     failed = item["status"] in {"failed", "unknown"}
     provider_id = evidence and evidence.get("provider_task_id")
     route_provider = str((evidence or {}).get("route_provider") or "").strip()
-    route_label = "CosyVoice 音频线路" if route_provider == "cosyvoice" else route_provider
+    route_label = {
+        "cosyvoice": "CosyVoice 音频线路",
+        "copy_model": "文案模型线路",
+        "tikhub+zhipu": "TikHub 下载 + 智谱视觉分析",
+        "openai_responses": "OpenAI Responses 结构化计划",
+    }.get(route_provider, route_provider)
     route_ok = bool(provider_id or route_provider)
     provider_not_applicable = "provider_task" in not_applicable
     provider_ok = bool(provider_id or (provider_not_applicable and route_ok))
@@ -3269,13 +3345,16 @@ def _public_e2e_run(row):
                        "同步生产链不产生供应商任务编号，此项不适用" if provider_not_applicable
                        else "尚无供应商任务编号"))),
         _e2e_stage("generation", "音频生成" if route_provider == "cosyvoice" else (
-                       "数据采集" if route_provider == "tikhub" else "供应商生成"),
+                       "数据采集" if route_provider == "tikhub" else (
+                       "结构化内容生成" if route_provider in {"copy_model", "tikhub+zhipu", "openai_responses"}
+                       else "供应商生成")),
                    "passed" if completed else ("failed" if failed else "waiting"),
                    "已到 completed" if completed else (item.get("error") or "等待生成终态")),
         _e2e_stage("delivery", "作品交付", "passed" if delivered else (
                        "waiting" if delivery_checking or not completed else "failed"),
                    ({"decodable": "文件存在且可解码", "file_exists": "文件存在且非空",
                      "structured_asset": "结构化结果已验收并写入资产库",
+                     "structured_result": "结构化结果完整且可供客户页面读取",
                      "download_proxy": "下载代理返回完整视频，文件可解码",
                      "checking": "另一条后台质检正在验收同一视频",
                      "invalid_structured": "结果结构不完整或没有可用结果",
