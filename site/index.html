@@ -6,7 +6,7 @@
   <meta name="description" content="黄雀 AI：从 IP12、Agent 与无限画布，到图文音视频生产和 HQ CLI。">
   <title>黄雀 AI · 会持续生长的内容系统</title>
   <link rel="icon" href="/assets/logo_sparrow.png">
-  <link rel="stylesheet" href="/homepage.css?v=20260809-drawers1">
+  <link rel="stylesheet" href="/homepage.css?v=20260809-morph1">
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -22,7 +22,7 @@
         </a>
 
         <div class="nav-links" aria-label="产品功能">
-          <span class="nav-link-slider" data-nav-slider aria-hidden="true"></span>
+          <span class="nav-link-slider" data-nav-slider aria-hidden="true"><i class="nav-slider-trail"></i><i class="nav-slider-blob"></i></span>
           <button type="button" data-nav-trigger="creation" aria-controls="nav-drawer-creation" aria-expanded="false">产品链路</button>
           <button type="button" data-nav-trigger="ip12" aria-controls="nav-drawer-ip12" aria-expanded="false">IP12</button>
           <button type="button" data-nav-trigger="agent" aria-controls="nav-drawer-agent" aria-expanded="false">Agent + Canvas</button>
@@ -550,15 +550,51 @@
       const navTriggers = [...navCluster.querySelectorAll('[data-nav-trigger]')];
       const navPanels = [...navCluster.querySelectorAll('[data-nav-panel]')];
       const navSlider = navCluster.querySelector('[data-nav-slider]');
+      const navSliderBlob = navSlider.querySelector('.nav-slider-blob');
+      const navSliderTrail = navSlider.querySelector('.nav-slider-trail');
       let openNav = '';
       let selectedNav = '';
+      let sliderWidth = 0;
 
       const moveNavSlider = name => {
         const trigger = navCluster.querySelector(`[data-nav-trigger="${name}"]`);
         navSlider.classList.toggle('is-visible', Boolean(trigger));
         if (!trigger) return;
-        navSlider.style.setProperty('--nav-slider-x', `${trigger.offsetLeft}px`);
-        navSlider.style.setProperty('--nav-slider-w', `${trigger.offsetWidth}px`);
+        const nextX = trigger.offsetLeft;
+        const nextWidth = trigger.offsetWidth;
+        const firstMove = !sliderWidth;
+        const sliderRect = navSlider.getBoundingClientRect();
+        const blobRect = navSliderBlob.getBoundingClientRect();
+        const fromX = firstMove ? nextX : blobRect.left - sliderRect.left;
+        const fromWidth = firstMove ? nextWidth : blobRect.width;
+        navSliderBlob.getAnimations().forEach(animation => animation.cancel());
+        navSliderTrail.getAnimations().forEach(animation => animation.cancel());
+        navSliderBlob.style.width = `${nextWidth}px`;
+        navSliderBlob.style.transform = `translateX(${nextX}px)`;
+
+        if (!firstMove && !reducedMotion.matches && navSliderBlob.animate) {
+          const distance = nextX - fromX;
+          const direction = Math.sign(distance) || 1;
+          const overshoot = direction * Math.min(12, Math.abs(distance) * .08);
+          const left = Math.min(fromX, nextX);
+          const right = Math.max(fromX + fromWidth, nextX + nextWidth);
+          const fromClip = direction > 0 ? 'inset(20% 100% 20% 0 round 999px)' : 'inset(20% 0 20% 100% round 999px)';
+          const toClip = direction > 0 ? 'inset(20% 0 20% 100% round 999px)' : 'inset(20% 100% 20% 0 round 999px)';
+          navSliderTrail.style.left = `${left}px`;
+          navSliderTrail.style.width = `${right - left}px`;
+          navSliderTrail.animate([
+            { clipPath: fromClip, opacity: 0 },
+            { clipPath: 'inset(20% 0 20% 0 round 999px)', opacity: .72, offset: .46 },
+            { clipPath: toClip, opacity: 0 }
+          ], { duration: 520, easing: 'cubic-bezier(.2,.75,.2,1)' });
+          navSliderBlob.animate([
+            { transform: `translateX(${fromX}px) scale(1)`, width: `${fromWidth}px` },
+            { transform: `translateX(${fromX + distance * .42}px) scaleX(1.34) scaleY(.84)`, width: `${fromWidth + (nextWidth - fromWidth) * .45}px`, offset: .36 },
+            { transform: `translateX(${nextX + overshoot}px) scaleX(.9) scaleY(1.09)`, width: `${nextWidth}px`, offset: .78 },
+            { transform: `translateX(${nextX}px) scale(1)`, width: `${nextWidth}px` }
+          ], { duration: 560, easing: 'cubic-bezier(.16,.8,.24,1)' });
+        }
+        sliderWidth = nextWidth;
       };
 
       const setOpenNav = name => {
