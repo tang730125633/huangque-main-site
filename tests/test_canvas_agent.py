@@ -63,6 +63,7 @@ class CanvasAgentTests(unittest.TestCase):
     def test_page_and_ip12_context_are_bounded(self):
         clean = canvas_agent.validate_payload(payload(
             source_page="canvas",
+            qa_run_id="qa-run-1",
             page_context={
                 "page": "canvas", "path": "/workbench/canvas", "title": "黄雀画布",
                 "can_edit": True, "selected_count": 1,
@@ -76,6 +77,7 @@ class CanvasAgentTests(unittest.TestCase):
         self.assertEqual(clean["page_context"]["page"], "canvas")
         self.assertEqual((clean["source_page"], clean["provider"]),
                          ("canvas", "openai_responses"))
+        self.assertEqual(clean["qa_run_id"], "qa-run-1")
         with self.assertRaisesRegex(ValueError, "页面来源"):
             canvas_agent.validate_payload(payload(source_page="audio"))
         self.assertEqual(clean["ip12_context"]["facts"][0]["label"], "定位")

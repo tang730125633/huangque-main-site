@@ -3092,6 +3092,10 @@ def _structured_asset_evidence(row):
     download_detail = ""
     download_pending = False
     mode = ""
+    try:
+        request_mode = str(row["request_mode"] or "").lower()
+    except (KeyError, IndexError):
+        request_mode = ""
     if kind == "leads":
         valid = (result.get("type") == "leads"
                  and bool(result.get("leads"))
@@ -3117,17 +3121,33 @@ def _structured_asset_evidence(row):
                  and bool(result.get("scenes")))
     elif kind == "breakdown":
         mode = str(result.get("type") or "")
+        prompt = result.get("prompt")
+        scenes = result.get("scenes")
         valid = bool(
-            (mode == "breakdown_reverse" and str(result.get("prompt") or "").strip())
-            or (mode == "breakdown_batch" and result.get("results"))
-            or (mode not in {"breakdown_reverse", "breakdown_batch"}
-                and result.get("scenes"))
+            request_mode == "reverse_prompt"
+            and mode == "breakdown_reverse"
+            and isinstance(prompt, str)
+            and prompt.strip()
+        ) if request_mode == "reverse_prompt" else bool(
+            mode == "breakdown"
+            and isinstance(scenes, list)
+            and scenes
+            and all(isinstance(scene, dict) and (scene.get("scene") or scene.get("line"))
+                    for scene in scenes)
         )
     else:
         plan = result.get("plan") or {}
+        actions = plan.get("actions") or []
+        draft_modes = {
+            action.get("mode") for action in actions
+            if isinstance(action, dict)
+            and action.get("type") == "create_generation_draft"
+        }
         valid = (result.get("type") == "canvas_agent" and isinstance(plan, dict)
                  and bool(str(result.get("content") or plan.get("content") or "").strip())
-                 and isinstance(plan.get("actions"), list))
+                 and isinstance(plan.get("actions"), list)
+                 and plan.get("requires_confirmation") is True
+                 and {"text", "image"}.issubset(draft_modes))
     asset = None
     if kind != "canvas_agent" and ASSET_DB.exists():
         try:
@@ -3241,6 +3261,10 @@ def _e2e_job_evidence(job_id):
                 "CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.want[0]'),'comments')) ELSE 'comments' END"
                 if "payload" in columns else "'comments'"
             )
+            request_mode_sql = (
+                "CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.mode'),'')) ELSE '' END"
+                if "payload" in columns else "''"
+            )
             row = connection.execute(
                 """SELECT id,status,cost,COALESCE(refunded,0) AS refunded,
                           COALESCE(error,'') AS error,created_at,updated_at,
@@ -3248,9 +3272,10 @@ def _e2e_job_evidence(job_id):
                           CASE WHEN json_valid(result) THEN COALESCE(json_extract(result,'$.video_file'),json_extract(result,'$.image_file'),json_extract(result,'$.file'),json_extract(result,'$.files[0]'),'') ELSE '' END AS result_file,
                           CASE WHEN json_valid(result) THEN COALESCE(json_extract(result,'$.provider_task_id'),json_extract(result,'$.request_id'),json_extract(result,'$.provider_video_id'),json_extract(result,'$.video_id'),'') ELSE '' END AS provider_result_id,
                           %s AS kind,%s AS route_provider,%s AS voice_scope,
-                          %s AS result_json,%s AS collect_mode
+                          %s AS result_json,%s AS collect_mode,%s AS request_mode
                    FROM jobs WHERE id=?""" % (
-                       kind_sql, provider_sql, voice_scope_sql, result_sql, collect_mode_sql),
+                       kind_sql, provider_sql, voice_scope_sql, result_sql,
+                       collect_mode_sql, request_mode_sql),
                 (int(job_id),),
             ).fetchone()
         if not row:

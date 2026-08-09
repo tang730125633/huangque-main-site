@@ -154,9 +154,18 @@ class AdminE2ERunnerTests(unittest.TestCase):
             "canvas.agent.plan",
             self.admin.function_registry.e2e_runner("canvas.agent.plan"),
         )
+        self.assertEqual(
+            self.admin.function_registry.e2e_runner("canvas.agent.plan")["endpoint"]["path"],
+            "/api/gen/canvas_agent",
+        )
         self.assertEqual((canvas["source_page"], canvas["scope"]), ("canvas", "local"))
         self.assertEqual(canvas["selected_node_ids"], ["qa_product"])
         self.assertEqual(canvas["quoted_cost"], 3)
+        with patch.object(self.admin.feature_flags, "is_enabled", return_value=True), \
+             patch.object(self.admin, "points_domain", SimpleNamespace(cost_of=lambda kind, payload: 3)):
+            prepared = self.admin._e2e_prepare_operation({"token": "qa", "account": {}}, "canvas.agent.plan")
+        self.assertEqual((prepared["endpoint"], prepared["kind"]),
+                         ("/api/gen/canvas_agent", "canvas_agent"))
         self.assertEqual(self.admin._e2e_kind("/api/gen/copy"), "copy")
         self.assertEqual(self.admin._e2e_kind("/api/gen/breakdown"), "breakdown")
         self.assertEqual(self.admin._e2e_kind("/api/gen/canvas_agent"), "canvas_agent")
@@ -182,11 +191,54 @@ class AdminE2ERunnerTests(unittest.TestCase):
             "id": 13, "kind": "canvas_agent", "collect_mode": "",
             "result_json": json.dumps({
                 "type": "canvas_agent", "content": "计划已生成",
-                "plan": {"content": "计划已生成", "actions": []},
+                "plan": {"content": "计划已生成", "requires_confirmation": True, "actions": [
+                    {"type": "create_generation_draft", "mode": "text"},
+                    {"type": "create_generation_draft", "mode": "image"},
+                ]},
             }),
         })
         self.assertTrue(canvas["delivery_verified"])
         self.assertEqual(canvas["artifact_check"], "structured_result")
+        incomplete = self.admin._structured_asset_evidence({
+            "id": 14, "kind": "canvas_agent", "collect_mode": "",
+            "result_json": json.dumps({
+                "type": "canvas_agent", "content": "只返回了文案草稿",
+                "plan": {"content": "只返回了文案草稿", "requires_confirmation": True,
+                         "actions": [{"type": "create_generation_draft", "mode": "text"}]},
+            }),
+        })
+        self.assertFalse(incomplete["delivery_verified"])
+
+    def test_breakdown_delivery_must_match_the_requested_mode(self):
+        with closing(sqlite3.connect(self.admin.ASSET_DB)) as connection:
+            connection.execute(
+                """CREATE TABLE assets(
+                       id INTEGER PRIMARY KEY,job_id INTEGER,kind TEXT,stage TEXT,
+                       deleted INTEGER DEFAULT 0)"""
+            )
+            connection.execute(
+                "INSERT INTO assets(job_id,kind,stage,deleted) VALUES(21,'breakdown','work',0)"
+            )
+            connection.commit()
+        wrong = self.admin._structured_asset_evidence({
+            "id": 21, "kind": "breakdown", "collect_mode": "", "request_mode": "reverse_prompt",
+            "result_json": json.dumps({"type": "breakdown", "scenes": [{"scene": "错误模式"}]}),
+        })
+        self.assertFalse(wrong["delivery_verified"])
+        right = self.admin._structured_asset_evidence({
+            "id": 21, "kind": "breakdown", "collect_mode": "", "request_mode": "reverse_prompt",
+            "result_json": json.dumps({"type": "breakdown_reverse", "prompt": "镜头缓慢推进"}),
+        })
+        self.assertTrue(right["delivery_verified"])
+        for request_mode, result in (
+            ("reverse_prompt", {"type": "breakdown_reverse", "prompt": {"bad": True}}),
+            ("scenes", {"type": "breakdown", "scenes": "不是分镜数组"}),
+        ):
+            invalid = self.admin._structured_asset_evidence({
+                "id": 21, "kind": "breakdown", "collect_mode": "",
+                "request_mode": request_mode, "result_json": json.dumps(result),
+            })
+            self.assertFalse(invalid["delivery_verified"])
 
     def test_cinematic_open_uses_one_ready_qa_avatar_and_four_second_quote(self):
         session = {"token": "short-lived-secret", "account": {

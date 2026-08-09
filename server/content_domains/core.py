@@ -2717,6 +2717,9 @@ class H(BaseHTTPRequestHandler):
                     body = text_domain.validate_copy_payload(body)
                 elif kind == "canvas_agent":
                     from . import canvas_agent as canvas_agent_domain
+                    if (isinstance(body, dict) and body.get("qa_run_id")
+                            and not cli_gateway._internal_auth(self, AUTH_INTERNAL_TOKEN)):
+                        raise PermissionError("后台质检批次仅允许内部服务提交")
                     body = canvas_agent_domain.validate_payload(
                         body, _short_drama_canvas_access(self)
                     )

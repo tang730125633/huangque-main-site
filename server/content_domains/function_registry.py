@@ -1036,13 +1036,80 @@ CANVAS_FUNCTIONS = [{
     "dependencies": [{"key": "openai", "role": "结构化创作计划", "requirement": "required", "credential_source": "env"}],
     "modes": [{
         "key": "canvas.agent.plan", "name": "生成创作计划",
-        "entrypoints": [_endpoint("POST", "/api/gen/canvas-agent/quote"), _endpoint("POST", "/api/gen/canvas_agent"), _endpoint("GET", "/api/gen/job/{id}")],
+        "entrypoints": [_endpoint("POST", "/api/gen/canvas_agent"), _endpoint("POST", "/api/gen/canvas-agent/quote"), _endpoint("GET", "/api/gen/job/{id}")],
         "task_match": {"kind": "canvas_agent", "source_page": "canvas"},
         "evidence_contract": {"not_applicable": ["provider_task", "balance"]},
         "price_keys": ["canvas.agent"],
         "smoke_inputs": ["固定产品卖点文本节点", "预设创作要求", "只返回计划、不自动应用"],
         "validation": _validation({"prompt": QA_CANVAS_PROMPT, "source_page": "canvas"}),
     }],
+}, {
+    "key": "image_node", "name": "图片节点", "desc": "在画布节点内选择图片引擎生成作品",
+    "order": 20, "frontend_selector": '[data-add="gen"]', "service": "content",
+    "modes": [
+        {
+            "key": "canvas.image.banana.nb2", "name": "纳米香蕉 2",
+            "entrypoints": [_endpoint("POST", "/api/gen/banana"), _endpoint("GET", "/api/gen/job/{id}")],
+            "flag_keys": ["banana"],
+            "dependencies": [{"key": "gemini", "role": "主生成", "requirement": "required", "credential_source": "env"}],
+            "task_match": {"kind": "image", "source_page": "canvas", "provider": "banana", "model": "nb2"},
+            "price_keys": ["image.banana.nb2.hd"],
+            "smoke_inputs": ["固定产品提示词", "画布图片节点结果写回"],
+            "validation": _validation(supported=False, blocked_reason="画布图片节点的固定素材与结果写回验收尚未接入后台托管测试"),
+        }, {
+            "key": "canvas.image.banana.pro", "name": "纳米香蕉 Pro",
+            "entrypoints": [_endpoint("POST", "/api/gen/banana"), _endpoint("GET", "/api/gen/job/{id}")],
+            "flag_keys": ["banana"],
+            "dependencies": [{"key": "gemini", "role": "主生成", "requirement": "required", "credential_source": "env"}],
+            "task_match": {"kind": "image", "source_page": "canvas", "provider": "banana", "model": "pro"},
+            "price_keys": ["image.banana.pro.hd"],
+            "smoke_inputs": ["固定产品提示词", "画布图片节点结果写回"],
+            "validation": _validation(supported=False, blocked_reason="画布图片节点的固定素材与结果写回验收尚未接入后台托管测试"),
+        }, {
+            "key": "canvas.image.openai", "name": "黄雀引擎 2",
+            "entrypoints": [_endpoint("POST", "/api/gen/image"), _endpoint("GET", "/api/gen/job/{id}")],
+            "flag_keys": ["image"],
+            "dependencies": [{"key": "openai", "role": "主生成", "requirement": "required", "credential_source": "env"}],
+            "task_match": {"kind": "image", "source_page": "canvas", "provider": "openai"},
+            "price_keys": ["image.openai.hd"],
+            "smoke_inputs": ["固定产品提示词", "画布图片节点结果写回"],
+            "validation": _validation(supported=False, blocked_reason="画布图片节点的固定素材与结果写回验收尚未接入后台托管测试"),
+        }, {
+            "key": "canvas.image.zelong", "name": "泽龙 AI",
+            "entrypoints": [_endpoint("POST", "/api/gen/image"), _endpoint("GET", "/api/gen/job/{id}")],
+            "flag_keys": ["image"],
+            "dependencies": [{"key": "zelong", "role": "主生成", "requirement": "required", "credential_source": "env"}],
+            "task_match": {"kind": "image", "source_page": "canvas", "provider": "zelong"},
+            "price_keys": ["image.zelong.hd"],
+            "smoke_inputs": ["固定产品提示词", "画布图片节点结果写回"],
+            "validation": _validation(supported=False, blocked_reason="画布图片节点的固定素材与结果写回验收尚未接入后台托管测试"),
+        },
+    ],
+}, {
+    "key": "video_node", "name": "视频节点", "desc": "在画布节点内选择视频引擎生成作品",
+    "order": 30, "frontend_selector": '[data-add="video"]', "service": "content",
+    "alternative_selections": {"grok_provider": {"env": "GROK_VIDEO_PROVIDER", "default": "xai"}},
+    "modes": [
+        {
+            "key": "canvas.video.grok", "name": "果肉视频",
+            "entrypoints": [_endpoint("POST", "/api/gen/xiaole_video"), _endpoint("GET", "/api/gen/job/{id}")],
+            "flag_keys": ["grok_video"],
+            "dependencies": [{"key": "xai", "role": "主生成", "requirement": "alternative", "alternative_group": "grok_provider", "selection_value": "xai", "credential_source": "pool"}, {"key": "xiaolevideo", "role": "主生成", "requirement": "alternative", "alternative_group": "grok_provider", "selection_value": "xiaole"}],
+            "task_match": {"kind": "xiaole_video", "source_page": "canvas", "channel": "grok"},
+            "price_keys": ["video.grok.v1.720p"],
+            "smoke_inputs": ["固定产品提示词", "画布视频节点结果写回"],
+            "validation": _validation(supported=False, blocked_reason="画布视频节点的固定素材与节点结果写回验收尚未接入后台托管测试"),
+        }, {
+            "key": "canvas.video.micro", "name": "豆姐视频",
+            "entrypoints": [_endpoint("POST", "/api/gen/xiaole_video"), _endpoint("GET", "/api/gen/job/{id}")],
+            "flag_keys": ["seedance_video"],
+            "dependencies": [{"key": "seedance", "role": "主生成", "requirement": "required", "credential_source": "pool"}],
+            "task_match": {"kind": "xiaole_video", "source_page": "canvas", "channel": "micro"},
+            "price_keys": ["video.seedance"],
+            "smoke_inputs": ["固定产品提示词", "画布视频节点结果写回"],
+            "validation": _validation(supported=False, blocked_reason="画布视频节点的固定素材与节点结果写回验收尚未接入后台托管测试"),
+        },
+    ],
 }]
 
 
@@ -1109,14 +1176,6 @@ FUNCTION_REGISTRY = [
             "entrypoint": _endpoint("POST", "/api/gen/reverse"),
             "scope": "同步付费工具；直接返回提示词，不创建异步任务",
             "price_keys": ["image.reverse"],
-        }, {
-            "key": "canvas.image.generate", "name": "图片节点生成",
-            "entrypoint": _endpoint("POST", "/api/gen/image"),
-            "scope": "按画布节点选择的图片线路创建任务；结果仍需写回节点",
-        }, {
-            "key": "canvas.video.generate", "name": "视频节点生成",
-            "entrypoint": _endpoint("POST", "/api/gen/xiaole_video"),
-            "scope": "按画布节点选择的果肉或 Seedance 线路创建任务；结果仍需写回节点",
         }, {
             "key": "canvas.local.edit", "name": "本地画布编辑与协作同步",
             "entrypoint": _endpoint("POST", "/api/auth/canvas/boards/{id}/ops"),
@@ -1197,7 +1256,7 @@ def classify_task(kind, metadata=None):
     source_page = str(metadata.get("source_page") or "").strip().lower()
     if source_page not in {"", "video", "banana", "audio", "collect", "leads", "script", "canvas"}:
         return None
-    if kind == "image" and source_page != "banana":
+    if kind == "image" and source_page not in {"banana", "canvas"}:
         return None
     want = metadata.get("want") or []
     if isinstance(want, str):
@@ -1245,7 +1304,9 @@ def classify_task(kind, metadata=None):
         "style": str(metadata.get("style") or "").strip(),
         "source_type": str(metadata.get("source_type") or "").strip().lower(),
     }
-    return next((key for key, rule in TASK_RULES if _matches(actual, rule)), None)
+    return next((key for key, rule in TASK_RULES
+                 if (source_page != "canvas" or key.startswith("canvas."))
+                 and _matches(actual, rule)), None)
 
 
 def validate_registry():

@@ -207,11 +207,23 @@ class FunctionRegistryTests(unittest.TestCase):
             for mode in short_drama["functions"][0]["modes"]
         ))
         canvas = next(page for page in pages if page["key"] == "canvas")
-        self.assertEqual([item["name"] for item in canvas["functions"]], ["画布 Agent"])
+        self.assertEqual([item["name"] for item in canvas["functions"]], ["画布 Agent", "图片节点", "视频节点"])
         self.assertEqual(canvas["functions"][0]["modes"][0]["key"], "canvas.agent.plan")
         self.assertEqual(
             [item["name"] for item in canvas["auxiliary_actions"]],
-            ["反推提示词", "图片节点生成", "视频节点生成", "本地画布编辑与协作同步"],
+            ["反推提示词", "本地画布编辑与协作同步"],
+        )
+        self.assertEqual(
+            self.admin.function_registry.classify_task("image", {
+                "source_page": "canvas", "provider": "banana", "model": "nb2",
+            }),
+            "canvas.image.banana.nb2",
+        )
+        self.assertEqual(
+            self.admin.function_registry.classify_task("xiaole_video", {
+                "source_page": "canvas", "channel": "grok", "operation": "generate",
+            }),
+            "canvas.video.grok",
         )
 
         flags = self.admin.feature_flags.CATALOG_MAP
