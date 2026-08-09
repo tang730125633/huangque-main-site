@@ -258,16 +258,13 @@ class AdminE2ERunnerTests(unittest.TestCase):
                 self.admin.function_registry.list_pages(), ensure_ascii=False
             ))
 
-    def test_paid_short_drama_modes_stay_blocked_before_auth_or_charge(self):
-        operations = [
-            "short_drama.live_action.preview",
-            "short_drama.live_action.delivery",
-        ]
+    def test_unprepared_short_drama_delivery_stays_blocked_before_auth_or_charge(self):
         with patch.object(self.admin, "auth_admin_request") as auth:
-            for operation in operations:
-                result = self.admin.e2e_preflight("admin-token", operation)
-                self.assertFalse(result["ready"])
-                self.assertTrue(result["blocker"])
+            result = self.admin.e2e_preflight(
+                "admin-token", "short_drama.live_action.delivery"
+            )
+            self.assertFalse(result["ready"])
+            self.assertTrue(result["blocker"])
             auth.assert_not_called()
 
     def test_short_drama_character_reference_runs_customer_endpoints_then_locks_and_cleans(self):
@@ -467,6 +464,147 @@ class AdminE2ERunnerTests(unittest.TestCase):
         self.assertTrue(finished["evidence"]["billing_verified"])
         self.assertNotIn("quote_token", finished["evidence"])
         self.assertEqual(get_calls[-1], "/api/gen/short-drama/project?id=project-shot")
+
+    def test_short_drama_preview_prepares_six_real_shots_before_assembly(self):
+        session = {"token": "qa-token", "account": {
+            "username": "qa-dedicated", "points": 1000, "membership_active": True,
+        }}
+        character = {"character_key": "character_1", "name": "林夏"}
+        shots = [{
+            "shot_key": "shot_%02d" % index, "duration_ms": 5000,
+            "character_keys": ["character_1"],
+        } for index in range(1, 7)]
+        responses = {
+            "/api/gen/short-drama/projects/import": {
+                "id": "preview-project", "revision": 1,
+            },
+            "/api/gen/short-drama/conversation/messages": {
+                "conversation": {"revision": 2, "understanding": {"direction_confirmed": True}},
+            },
+            "/api/gen/short-drama/conversation/script/generate": {
+                "conversation": {"revision": 3}, "current_script": {"id": "preview-script"},
+            },
+            "/api/gen/short-drama/conversation/script/lock": {
+                "conversation": {"revision": 4, "state": "script_locked"},
+            },
+            "/api/gen/short-drama/character-studio/bind-avatar": {
+                "ok": True, "project_revision": 3,
+            },
+            "/api/gen/short-drama/preflight/generate": {
+                "current_plan": {"id": "preview-plan", "version": 1, "plan": {
+                    "required_acceptance": [], "material_plan": shots,
+                }},
+            },
+            "/api/gen/short-drama/preflight/confirm": {
+                "current_plan": {"status": "confirmed"},
+            },
+        }
+        fixture = {
+            "project_id": "preview-project", "plan_id": "preview-plan",
+            "required_shot_keys": [item["shot_key"] for item in shots],
+            "ready_shot_keys": [],
+            "missing_shot_keys": [item["shot_key"] for item in shots],
+            "latest_jobs": {}, "all_ready": False,
+        }
+
+        def get(path, _token):
+            if path.startswith("/api/gen/video/avatars"):
+                return {"items": [{"id": 7, "status": "ready"}]}
+            return {"id": "preview-project", "revision": 2,
+                    "characters": [character]}
+
+        with patch.dict(os.environ, {"HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "grok"}), \
+             patch.object(self.admin, "provider_keys", SimpleNamespace(
+                 has_candidate=lambda _provider: True,
+             )), \
+             patch.object(self.admin, "points_domain", SimpleNamespace(
+                 cost_of=lambda _kind, _payload: 60,
+             )), \
+             patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "_content_e2e_get", side_effect=get), \
+             patch.object(self.admin, "_content_e2e_request", return_value={
+                 "revision": 2, "characters": [character],
+             }) as save_character, \
+             patch.object(self.admin, "_short_drama_e2e_request",
+                          side_effect=lambda path, *_args: responses[path]), \
+             patch.object(self.admin, "_short_drama_preview_fixture_state",
+                          side_effect=[None, fixture]), \
+             patch.object(self.admin, "_advance_short_drama_preview_e2e") as advance:
+            run = self.admin.start_e2e_run(
+                "root", "admin-token", "short_drama.live_action.preview"
+            )
+        self.assertEqual((run["status"], run["cost"]), ("queued", 360))
+        self.assertEqual(save_character.call_args.kwargs["method"], "PUT")
+        self.assertEqual(len(run["evidence"]["required_shot_keys"]), 6)
+        advance.assert_called_once_with(run["run_id"], "admin-token")
+
+    def test_short_drama_preview_finishes_file_and_six_charge_ledger_chain(self):
+        run_id = "preview-run"
+        job_ids = ["provider-%s" % index for index in range(1, 7)]
+        evidence = {
+            "project_id": "preview-project", "plan_id": "preview-plan",
+            "required_shot_keys": ["shot_%02d" % index for index in range(1, 7)],
+            "ready_shot_keys": ["shot_%02d" % index for index in range(1, 7)],
+            "missing_shot_keys": [], "provider": "grok",
+            "provider_jobs": {}, "submitted_job_ids": job_ids,
+            "provider_task_ids": {}, "shot_cost": 60,
+            "preview_job_id": "preview-job",
+        }
+        now = int(time.time())
+        with closing(sqlite3.connect(self.admin.ADMIN_DB)) as connection:
+            connection.execute(
+                "INSERT INTO admin_e2e_runs(run_id,batch_id,operation_id,username,status,"
+                "acceptance_id,evidence_json,cost,points_before,error,created_by,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (run_id, "", "short_drama.live_action.preview", "qa-dedicated",
+                 "running", "preview-project", json.dumps(evidence), 360, 1000,
+                 "", "root", now, now),
+            )
+            connection.commit()
+        fixture = {
+            "project_id": "preview-project", "plan_id": "preview-plan",
+            "required_shot_keys": evidence["required_shot_keys"],
+            "ready_shot_keys": evidence["ready_shot_keys"],
+            "missing_shot_keys": [], "latest_jobs": {}, "all_ready": True,
+        }
+        session = {"token": "qa-token", "account": {
+            "username": "qa-dedicated", "points": 640, "membership_active": True,
+        }}
+
+        def shot_state(job_id):
+            return {"id": job_id, "status": "succeeded", "attempt_state": "done",
+                    "cost": 60, "charge_key": "charge-" + job_id}
+
+        points = SimpleNamespace(get_points_transaction=lambda key: {
+            "username": "qa-dedicated", "delta": -60,
+        } if key.startswith("charge-provider-") else None)
+        with patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "_short_drama_preview_fixture_state",
+                          return_value=fixture), \
+             patch.object(self.admin, "_short_drama_shot_state",
+                          side_effect=shot_state), \
+             patch.object(self.admin, "_content_e2e_get", return_value={
+                 "id": "preview-job", "status": "succeeded",
+                 "result": {"version_id": "preview-version"},
+             }), \
+             patch.object(self.admin, "_short_drama_preview_job_state", return_value={
+                 "status": "succeeded", "version_url": "/api/gen/file/preview.mp4",
+                 "manifest": {"playback_file": "preview.mp4",
+                              "playback_url": "/api/gen/file/preview.mp4"},
+             }), \
+             patch.object(self.admin, "_verify_local_artifact", return_value={
+                 "result_file": "preview.mp4", "result_url": "/api/gen/file/preview.mp4",
+                 "artifact_check": "decodable", "delivery_verified": True,
+             }), \
+             patch.object(self.admin, "points_domain", points):
+            self.assertTrue(self.admin._advance_short_drama_preview_e2e(
+                run_id, "admin-token"
+            ))
+            finished = self.admin.list_e2e_runs(1)[0]
+        self.assertEqual(finished["status"], "completed")
+        self.assertTrue(all(stage["state"] == "passed" for stage in finished["stages"]))
+        self.assertEqual(finished["points_after"], 640)
+        self.assertTrue(finished["evidence"]["fixture_retained"])
 
     def test_short_drama_script_planning_runs_real_project_journey_and_cleans_up(self):
         session = {"token": "short-lived-secret", "account": {

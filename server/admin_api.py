@@ -1038,7 +1038,8 @@ def _e2e_payload(operation_id, runner, ready_avatar_ids=None, ready_audio_voice_
     elif operation_id in {
             "short_drama.live_action.script_planning",
             "short_drama.live_action.character_reference",
-            "short_drama.live_action.shot_video"}:
+            "short_drama.live_action.shot_video",
+            "short_drama.live_action.preview"}:
         payload = dict(prefill)
     elif operation_id == "canvas.agent.plan":
         payload.update({
@@ -1217,7 +1218,10 @@ def _e2e_kind(endpoint):
 
 def _ready_avatar_ids(operation_id, account_token):
     if not (operation_id.startswith("video.cinematic.")
-            or operation_id == "short_drama.live_action.shot_video"):
+            or operation_id in {
+                "short_drama.live_action.shot_video",
+                "short_drama.live_action.preview",
+            }):
         return []
     avatar_data = _content_e2e_get("/api/gen/video/avatars?limit=120", account_token)
     return [
@@ -1353,6 +1357,12 @@ def _e2e_parameters(operation_id, payload):
             "固定素材：专用测试账号已就绪形象",
             "验收范围：预检、报价、Grok 接单、视频解码、扣点与自动清理",
         ])
+    elif operation_id == "short_drama.live_action.preview":
+        parameters.extend([
+            "固定真人短剧：30 秒、6 个真实镜头",
+            "素材策略：首次生成后保留为私有测试快照",
+            "验收范围：Grok 逐镜作品、720p 合成、文件解码与扣点闭环",
+        ])
     elif operation_id == "canvas.agent.plan":
         parameters.extend([
             "固定画布：1 个产品卖点文本节点",
@@ -1372,6 +1382,7 @@ def _e2e_prepare_operation(session, operation_id):
     if disabled_flags:
         raise ValueError("该模式已暂停接单，自动质检不会提交付费任务")
     account_token = session["token"]
+    account = session["account"]
     avatars = _ready_avatar_ids(operation_id, account_token)
     audio_voice_key = _ready_audio_voice_key(operation_id, account_token)
     payload = _e2e_payload(operation_id, runner, avatars, audio_voice_key)
@@ -1415,6 +1426,43 @@ def _e2e_prepare_operation(session, operation_id):
             "operation_id": operation_id, "runner": runner, "payload": payload,
             "endpoint": endpoint, "kind": "short_drama_provider_shot",
             "cost": cost, "avatar_id": int(avatars[0]),
+            "parameters": _e2e_parameters(operation_id, payload),
+        }
+    if operation_id == "short_drama.live_action.preview":
+        selected = str(
+            os.environ.get("HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER") or ""
+        ).strip().lower()
+        if selected not in {"grok", "grok_xai"}:
+            raise ValueError("短剧预览尚未选择 Grok 真实生产线路")
+        if provider_keys is None or not provider_keys.has_candidate("xai"):
+            raise ValueError("短剧预览缺少可用的 xAI / Grok 凭据")
+        if not avatars:
+            raise ValueError("专用测试账号尚未登记可用的固定测试形象")
+        fixture = _short_drama_preview_fixture_state(account["username"])
+        if fixture and any(
+            str(item.get("status") or "") in {
+                "billing", "queued", "submitting", "running", "submit_unknown",
+            }
+            for item in (fixture.get("latest_jobs") or {}).values()
+            if str(item.get("shot_key") or "")
+            in set(fixture.get("missing_shot_keys") or [])
+        ):
+            raise ValueError("短剧预览私有逐镜素材仍在生成，请等待终态")
+        missing = len(fixture.get("missing_shot_keys") or []) if fixture else 6
+        model = str(
+            os.environ.get("HQ_SHORT_DRAMA_GROK_MODEL")
+            or "grok-imagine-video"
+        )
+        shot_cost = int(points_domain.cost_of("xiaole_video", {
+            "channel": "grok", "model": model,
+            "resolution": "720p", "duration": 5,
+        }))
+        return {
+            "operation_id": operation_id, "runner": runner, "payload": payload,
+            "endpoint": endpoint, "kind": "short_drama_preview",
+            "cost": missing * shot_cost, "shot_cost": shot_cost,
+            "avatar_id": int(avatars[0]),
+            "reuse_project_id": str((fixture or {}).get("project_id") or ""),
             "parameters": _e2e_parameters(operation_id, payload),
         }
     kind = _e2e_kind(endpoint)
@@ -1462,7 +1510,10 @@ def e2e_preflight(admin_token, operation_id):
         "fixture_ready": True,
         "ready_avatar": True if (
             operation_id.startswith("video.cinematic.")
-            or operation_id == "short_drama.live_action.shot_video"
+            or operation_id in {
+                "short_drama.live_action.shot_video",
+                "short_drama.live_action.preview",
+            }
         ) else None,
     }
 
@@ -3526,6 +3577,56 @@ def _public_short_drama_shot_run(item, evidence):
     return item
 
 
+def _public_short_drama_preview_run(item, evidence):
+    failed = item.get("status") in {"failed", "unknown"}
+    required = list(evidence.get("required_shot_keys") or [])
+    ready = list(evidence.get("ready_shot_keys") or [])
+    total = len(required) or 6
+    ready_count = len(ready)
+    preview_job_id = str(evidence.get("preview_job_id") or "")
+    preview_done = evidence.get("preview_status") == "succeeded"
+    delivered = bool(evidence.get("delivery_verified"))
+    billing_ok = bool(evidence.get("billing_verified"))
+    item["stages"] = [
+        _e2e_stage("accepted", "后台测试受理", "passed",
+                   "已建立独立测试批次 " + item["run_id"][:8]),
+        _e2e_stage("account", "专用账号与点数",
+                   "passed" if item.get("username") else "waiting",
+                   "专用测试账号已就绪 · 提交前 %s 点" % item.get("points_before")
+                   if item.get("username") else "正在取得专用账号"),
+        _e2e_stage("job", "业务项目 / project_id",
+                   "passed" if item.get("acceptance_id") else ("failed" if failed else "waiting"),
+                   "project_id=" + str(item.get("acceptance_id"))
+                   if item.get("acceptance_id") else (item.get("error") or "等待短剧项目受理")),
+        _e2e_stage("route", "渠道与凭据",
+                   "passed" if evidence.get("provider") == "grok" else ("failed" if failed else "waiting"),
+                   "已选择 Grok 逐镜生产线路" if evidence.get("provider") == "grok"
+                   else "等待选择真实逐镜线路"),
+        _e2e_stage("provider", "供应商逐镜接单",
+                   "passed" if ready_count == total else ("failed" if failed else "waiting"),
+                   "%s / %s 个镜头已取得真实生产证据" % (ready_count, total)),
+        _e2e_stage("generation", "六镜头生成",
+                   "passed" if ready_count == total else ("failed" if failed else "waiting"),
+                   "%s / %s 个 5 秒镜头已生成" % (ready_count, total)),
+        _e2e_stage("delivery", "720p 预览合成与交付",
+                   "passed" if preview_done and delivered else ("failed" if failed else "waiting"),
+                   "预览可下载、可解码，私有逐镜快照已保留"
+                   if preview_done and delivered else (
+                       "preview_job_id=" + preview_job_id if preview_job_id
+                       else "等待六镜头齐备后合成")),
+        _e2e_stage("billing", "账务闭环",
+                   "passed" if billing_ok else ("failed" if failed else "waiting"),
+                   "逐镜扣点流水与余额一致" if billing_ok and int(item.get("cost") or 0)
+                   else ("复用私有快照，本次合成 0 点" if billing_ok
+                         else "等待逐镜扣点或退点证据")),
+    ]
+    public_evidence = dict(evidence)
+    public_evidence.pop("quote_tokens", None)
+    public_evidence.pop("provider_task_ids", None)
+    item["evidence"] = public_evidence
+    return item
+
+
 def _public_e2e_run(row):
     item = dict(row)
     transaction_key = str(item.pop("transaction_key", "") or "").strip()
@@ -3539,6 +3640,8 @@ def _public_e2e_run(row):
     )
     if item.get("operation_id") == "short_drama.live_action.shot_video":
         return _public_short_drama_shot_run(item, project_evidence)
+    if item.get("operation_id") == "short_drama.live_action.preview":
+        return _public_short_drama_preview_run(item, project_evidence)
     if (item.get("operation_id") == "short_drama.live_action.script_planning"
             and item.get("acceptance_id") and project_evidence):
         planned = all(project_evidence.get(key) for key in (
@@ -3954,6 +4057,100 @@ def _short_drama_shot_state(provider_job_id):
         return None
 
 
+def _short_drama_preview_fixture_state(username, project_id=""):
+    if not username or not JOB_DB.exists():
+        return None
+    try:
+        with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as connection:
+            connection.row_factory = sqlite3.Row
+            if project_id:
+                project = connection.execute(
+                    "SELECT id,username,title,revision FROM short_drama_projects "
+                    "WHERE id=? AND username=? AND deleted=0",
+                    (str(project_id), str(username)),
+                ).fetchone()
+            else:
+                project = connection.execute(
+                    "SELECT id,username,title,revision FROM short_drama_projects "
+                    "WHERE username=? AND title=? AND deleted=0 "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (str(username), "后台质检 · 短剧预览合成"),
+                ).fetchone()
+            if not project:
+                return None
+            plan_row = connection.execute(
+                "SELECT id,plan_json FROM short_drama_production_plans "
+                "WHERE project_id=? AND status='confirmed' "
+                "ORDER BY created_at DESC LIMIT 1",
+                (project["id"],),
+            ).fetchone()
+            if not plan_row:
+                return None
+            plan = json.loads(plan_row["plan_json"] or "{}")
+            required = [
+                str(item.get("shot_key") or "")
+                for item in plan.get("material_plan") or []
+                if isinstance(item, dict) and item.get("shot_key")
+            ]
+            ready = {}
+            for row in connection.execute(
+                "SELECT * FROM short_drama_provider_shot_versions "
+                "WHERE project_id=? AND status='ready' "
+                "ORDER BY shot_key,version DESC,created_at DESC",
+                (project["id"],),
+            ).fetchall():
+                ready.setdefault(str(row["shot_key"]), dict(row))
+            latest = {}
+            for row in connection.execute(
+                """SELECT j.*,a.state AS attempt_state,a.charge_key,a.refund_key
+                   FROM short_drama_provider_shot_jobs j
+                   LEFT JOIN short_drama_provider_shot_attempts a ON a.job_id=j.id
+                   WHERE j.project_id=? ORDER BY j.created_at DESC""",
+                (project["id"],),
+            ).fetchall():
+                latest.setdefault(str(row["shot_key"]), dict(row))
+        return {
+            "project_id": str(project["id"]), "plan_id": str(plan_row["id"]),
+            "required_shot_keys": required,
+            "ready_shot_keys": [key for key in required if key in ready],
+            "missing_shot_keys": [key for key in required if key not in ready],
+            "ready_versions": ready, "latest_jobs": latest,
+            "all_ready": bool(required) and all(key in ready for key in required),
+        }
+    except (sqlite3.Error, json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
+def _short_drama_preview_job_state(project_id, preview_job_id):
+    if not project_id or not preview_job_id or not JOB_DB.exists():
+        return None
+    try:
+        with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as connection:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute(
+                "SELECT * FROM short_drama_autodraft_jobs WHERE id=? AND project_id=?",
+                (str(preview_job_id), str(project_id)),
+            ).fetchone()
+            version = connection.execute(
+                "SELECT manifest_json,url,status FROM short_drama_autodraft_versions "
+                "WHERE job_id=? ORDER BY version DESC LIMIT 1",
+                (str(preview_job_id),),
+            ).fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        item["request"] = json.loads(item.pop("request_json") or "{}")
+        item["result"] = json.loads(item.pop("result_json") or "null")
+        item["error"] = json.loads(item.pop("error_json") or "null")
+        if version:
+            item["version_status"] = str(version["status"] or "")
+            item["version_url"] = str(version["url"] or "")
+            item["manifest"] = json.loads(version["manifest_json"] or "{}")
+        return item
+    except (sqlite3.Error, json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
 def _delete_short_drama_shot_project(run_id, account_token):
     with closing(db()) as connection:
         row = connection.execute(
@@ -4306,6 +4503,415 @@ def _resume_short_drama_shot_runs(admin_token):
             pass
 
 
+def _prepare_short_drama_preview_project(run_id, token, prepared):
+    imported = _short_drama_e2e_request(
+        "/api/gen/short-drama/projects/import", token,
+        prepared["payload"], run_id, "import-preview-project",
+    )
+    project_id = str(imported["id"])
+    with closing(db()) as connection:
+        connection.execute(
+            "UPDATE admin_e2e_runs SET acceptance_id=?,updated_at=? WHERE run_id=?",
+            (project_id, int(time.time()), run_id),
+        )
+        connection.commit()
+    saved = _content_e2e_request(
+        "/api/gen/short-drama/project?id=" + urllib.parse.quote(project_id),
+        token,
+        {"revision": int(imported["revision"]),
+         "characters": list(imported.get("characters") or []),
+         "character_contract": list(
+             prepared["payload"].get("character_contract") or []
+         )},
+        "e2e:%s:save-preview-character" % run_id, 0,
+        require_job_id=False, method="PUT",
+    )
+    character = next((item for item in saved.get("characters") or []
+                      if item.get("character_key")), None)
+    if not character:
+        raise ValueError("短剧预览角色卡保存失败")
+    confirmed = _short_drama_e2e_request(
+        "/api/gen/short-drama/conversation/messages", token,
+        {"project_id": project_id, "conversation_revision": 1,
+         "message": "确认尊重原稿并生成"}, run_id, "confirm-preview-direction",
+    )
+    conversation = confirmed["conversation"]
+    if not (conversation.get("understanding") or {}).get("direction_confirmed"):
+        raise ValueError("短剧预览原稿方向没有确认")
+    generated = _short_drama_e2e_request(
+        "/api/gen/short-drama/conversation/script/generate", token,
+        {"project_id": project_id,
+         "conversation_revision": int(conversation["revision"]),
+         "instruction": "尊重原稿"}, run_id, "generate-preview-script",
+    )
+    locked = _short_drama_e2e_request(
+        "/api/gen/short-drama/conversation/script/lock", token,
+        {"project_id": project_id,
+         "conversation_revision": int(generated["conversation"]["revision"]),
+         "version_id": generated["current_script"]["id"]},
+        run_id, "lock-preview-script",
+    )
+    if (locked.get("conversation") or {}).get("state") != "script_locked":
+        raise ValueError("短剧预览剧本没有锁定")
+    project = _content_e2e_get(
+        "/api/gen/short-drama/project?id=" + urllib.parse.quote(project_id), token
+    )
+    characters = [item for item in project.get("characters") or []
+                  if item.get("character_key")]
+    if len(characters) != 1:
+        raise ValueError("短剧预览固定素材必须只包含 1 个可绑定角色")
+    bound = _short_drama_e2e_request(
+        "/api/gen/short-drama/character-studio/bind-avatar", token,
+        {"project_id": project_id, "project_revision": int(project["revision"]),
+         "character_key": characters[0]["character_key"],
+         "avatar_id": str(prepared["avatar_id"])},
+        run_id, "bind-preview-avatar",
+    )
+    prepared_plan = _short_drama_e2e_request(
+        "/api/gen/short-drama/preflight/generate", token,
+        {"project_id": project_id,
+         "conversation_revision": int(locked["conversation"]["revision"]),
+         "quality_route": "quick_draft"}, run_id, "generate-preview-preflight",
+    )
+    current_plan = prepared_plan["current_plan"]
+    plan = current_plan["plan"]
+    accepted = _short_drama_e2e_request(
+        "/api/gen/short-drama/preflight/confirm", token,
+        {"project_id": project_id, "plan_id": current_plan["id"],
+         "plan_version": int(current_plan["version"]),
+         "accepted_issue_keys": list(plan.get("required_acceptance") or [])},
+        run_id, "confirm-preview-preflight",
+    )
+    if (accepted.get("current_plan") or {}).get("status") != "confirmed":
+        raise ValueError("短剧预览制作计划没有确认")
+    shots = [item for item in plan.get("material_plan") or []
+             if isinstance(item, dict) and item.get("shot_key")]
+    if len(shots) != 6 or any(int(item.get("duration_ms") or 0) != 5000 for item in shots):
+        raise ValueError("固定预览必须生成 6 个 5 秒镜头")
+    _e2e_project_evidence(
+        run_id, project_id=project_id, plan_id=str(current_plan["id"]),
+        character_key=str(characters[0]["character_key"]),
+        avatar_bound=bool(bound.get("ok", bound.get("binding_ready", True))),
+        required_shot_keys=[str(item["shot_key"]) for item in shots],
+        provider_jobs={}, quote_tokens={}, submitted_job_ids=[],
+    )
+    return _short_drama_preview_fixture_state(
+        prepared["account_username"], project_id
+    )
+
+
+def _preview_e2e_row(run_id):
+    with closing(db()) as connection:
+        row = connection.execute(
+            "SELECT * FROM admin_e2e_runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+    if not row:
+        return None, {}
+    try:
+        evidence = json.loads(row["evidence_json"] or "{}")
+    except (json.JSONDecodeError, TypeError, ValueError):
+        evidence = {}
+    return row, evidence
+
+
+def _preview_submit_shot(run_id, token, evidence, shot_key, shot_cost):
+    project_id = str(evidence["project_id"])
+    request = {
+        "project_id": project_id, "plan_id": str(evidence["plan_id"]),
+        "shot_key": str(shot_key),
+    }
+    quote_tokens = dict(evidence.get("quote_tokens") or {})
+    quote_token = str(quote_tokens.get(shot_key) or "")
+    if not quote_token:
+        preview = _short_drama_e2e_request(
+            "/api/gen/short-drama/autodraft/provider-preflight", token,
+            request, run_id, "preview-shot-preflight-" + str(shot_key),
+        )
+        if (not preview.get("ready") or preview.get("provider") != "grok"
+                or int((preview.get("request") or {}).get("duration_seconds") or 0) != 5):
+            raise ValueError("短剧预览镜头 %s 真实 Provider 预检失败" % shot_key)
+        quote = _short_drama_e2e_request(
+            "/api/gen/short-drama/autodraft/provider-quote", token,
+            request, run_id, "preview-shot-quote-" + str(shot_key),
+        )
+        if int(quote.get("cost") or 0) != int(shot_cost):
+            raise ValueError("逐镜实时价格已变化，本次在新镜头扣点前停止")
+        quote_token = str(quote["quote_token"])
+        quote_tokens[str(shot_key)] = quote_token
+        evidence = _e2e_project_evidence(run_id, quote_tokens=quote_tokens)
+    result = _short_drama_e2e_request(
+        "/api/gen/short-drama/autodraft/provider-jobs", token,
+        {"project_id": project_id, "quote_token": quote_token},
+        run_id, "preview-shot-submit-" + str(shot_key),
+    )
+    provider_job_id = str(result.get("id") or "")
+    if not provider_job_id:
+        raise E2ESubmitUncertain("短剧预览逐镜响应缺少 provider_job_id")
+    provider_jobs = dict(evidence.get("provider_jobs") or {})
+    provider_jobs[str(shot_key)] = provider_job_id
+    submitted = list(dict.fromkeys(
+        list(evidence.get("submitted_job_ids") or []) + [provider_job_id]
+    ))
+    return _e2e_project_evidence(
+        run_id, provider_jobs=provider_jobs, submitted_job_ids=submitted,
+    )
+
+
+def _preview_billing_verified(row, evidence, points_after):
+    job_ids = [str(item) for item in evidence.get("submitted_job_ids") or []]
+    if not job_ids:
+        return int(row["cost"] or 0) == 0 and int(row["points_before"] or 0) == points_after
+    get_transaction = getattr(points_domain, "get_points_transaction", None)
+    if not callable(get_transaction):
+        return False
+    charged = 0
+    for job_id in job_ids:
+        state = _short_drama_shot_state(job_id) or {}
+        if state.get("attempt_state") != "done":
+            return False
+        cost = int(state.get("cost") or 0)
+        transaction = get_transaction(str(state.get("charge_key") or ""))
+        if not transaction or int(transaction.get("delta") or 0) != -cost:
+            return False
+        charged += cost
+    return (
+        charged == int(row["cost"] or 0)
+        and int(row["points_before"] or 0) - points_after == charged
+    )
+
+
+def _finalize_short_drama_preview_failure(run_id, admin_token, message):
+    row, evidence = _preview_e2e_row(run_id)
+    if not row:
+        return False
+    session = auth_admin_request(
+        "/api/auth/admin/e2e/session", admin_token, method="POST", payload={}
+    )
+    points_after = int(session["account"]["points"])
+    pending_refund = any(
+        (_short_drama_shot_state(job_id) or {}).get("attempt_state") == "refund_pending"
+        for job_id in evidence.get("submitted_job_ids") or []
+    )
+    evidence.update({
+        "billing_state": "refund_pending" if pending_refund else "partial",
+        "billing_verified": False,
+    })
+    with closing(db()) as connection:
+        connection.execute(
+            "UPDATE admin_e2e_runs SET status=?,points_after=?,evidence_json=?,error=?,updated_at=? WHERE run_id=?",
+            ("running" if pending_refund else "failed", points_after,
+             json.dumps(evidence, ensure_ascii=False, separators=(",", ":")),
+             str(message)[:300], int(time.time()), run_id),
+        )
+        connection.commit()
+    return not pending_refund
+
+
+def _advance_short_drama_preview_e2e(run_id, admin_token):
+    row, evidence = _preview_e2e_row(run_id)
+    if not row:
+        return False
+    session = auth_admin_request(
+        "/api/auth/admin/e2e/session", admin_token, method="POST", payload={}
+    )
+    token = session["token"]
+    project_id = str(row["acceptance_id"] or evidence.get("project_id") or "")
+    provider_jobs = dict(evidence.get("provider_jobs") or {})
+    for shot_key, provider_job_id in provider_jobs.items():
+        state = _short_drama_shot_state(provider_job_id) or {}
+        if str(state.get("status") or "") in {
+            "billing", "queued", "submitting", "running",
+        }:
+            result = _content_e2e_get(
+                "/api/gen/short-drama/autodraft/provider-jobs/"
+                + urllib.parse.quote(str(provider_job_id))
+                + "?project_id=" + urllib.parse.quote(project_id), token,
+            )
+            if result.get("provider_job_id"):
+                provider_task_ids = dict(evidence.get("provider_task_ids") or {})
+                provider_task_ids[str(shot_key)] = str(result["provider_job_id"])
+                evidence["provider_task_ids"] = provider_task_ids
+    state = _short_drama_preview_fixture_state(row["username"], project_id)
+    if not state:
+        return _finalize_short_drama_preview_failure(
+            run_id, admin_token, "短剧预览私有素材项目不存在"
+        )
+    missing = list(state.get("missing_shot_keys") or [])
+    latest = state.get("latest_jobs") or {}
+    submitted_ids = set(str(item) for item in evidence.get("submitted_job_ids") or [])
+    failed = [key for key in missing
+              if str((latest.get(key) or {}).get("id") or "") in submitted_ids
+              and str((latest.get(key) or {}).get("status") or "")
+              in {"failed", "canceled", "submit_unknown"}]
+    if failed:
+        detail = (latest.get(failed[0]) or {}).get("error_json") or ""
+        return _finalize_short_drama_preview_failure(
+            run_id, admin_token,
+            "短剧预览镜头 %s 生成失败：%s" % (failed[0], str(detail)[:180]),
+        )
+    active = sum(
+        str((latest.get(key) or {}).get("status") or "")
+        in {"billing", "queued", "submitting", "running"}
+        for key in missing
+    )
+    for shot_key in missing:
+        if active >= 2:
+            break
+        current = latest.get(shot_key) or {}
+        if str(current.get("status") or "") in {
+            "billing", "queued", "submitting", "running",
+        }:
+            continue
+        evidence = _preview_submit_shot(
+            run_id, token, evidence, shot_key, int(evidence["shot_cost"]),
+        )
+        active += 1
+    state = _short_drama_preview_fixture_state(row["username"], project_id) or state
+    evidence = _e2e_project_evidence(
+        run_id, provider="grok",
+        ready_shot_keys=list(state.get("ready_shot_keys") or []),
+        missing_shot_keys=list(state.get("missing_shot_keys") or []),
+        provider_task_ids=evidence.get("provider_task_ids") or {},
+    )
+    if not state.get("all_ready"):
+        with closing(db()) as connection:
+            connection.execute(
+                "UPDATE admin_e2e_runs SET status='running',evidence_json=?,error='',updated_at=? WHERE run_id=?",
+                (json.dumps(evidence, ensure_ascii=False, separators=(",", ":")),
+                 int(time.time()), run_id),
+            )
+            connection.commit()
+        return False
+    preview_job_id = str(evidence.get("preview_job_id") or "")
+    if not preview_job_id:
+        result = _short_drama_e2e_request(
+            "/api/gen/short-drama/autodraft/jobs", token,
+            {"project_id": project_id, "plan_id": str(state["plan_id"])},
+            run_id, "submit-preview-assembly",
+        )
+        preview_job_id = str(result.get("id") or "")
+        if not preview_job_id:
+            raise E2ESubmitUncertain("短剧预览合成响应缺少 job_id")
+        evidence = _e2e_project_evidence(
+            run_id, preview_job_id=preview_job_id,
+            preview_status=str(result.get("status") or "queued"),
+        )
+    result = _content_e2e_get(
+        "/api/gen/short-drama/autodraft/jobs/"
+        + urllib.parse.quote(preview_job_id)
+        + "?project_id=" + urllib.parse.quote(project_id), token,
+    )
+    preview = _short_drama_preview_job_state(project_id, preview_job_id) or {}
+    status = str(result.get("status") or preview.get("status") or "unknown")
+    evidence = _e2e_project_evidence(
+        run_id, preview_status=status,
+        preview_version_id=(result.get("result") or {}).get("version_id"),
+    )
+    if status not in {"succeeded", "failed", "canceled"}:
+        with closing(db()) as connection:
+            connection.execute(
+                "UPDATE admin_e2e_runs SET status='running',error='',updated_at=? WHERE run_id=?",
+                (int(time.time()), run_id),
+            )
+            connection.commit()
+        return False
+    if status != "succeeded":
+        error = result.get("error") or preview.get("error") or {}
+        return _finalize_short_drama_preview_failure(
+            run_id, admin_token,
+            str(error.get("detail") if isinstance(error, dict) else error or "短剧预览合成失败"),
+        )
+    manifest = preview.get("manifest") or {}
+    artifact = _verify_local_artifact({
+        "result_file": str(manifest.get("playback_file") or ""),
+        "result_url": str(manifest.get("playback_url") or preview.get("version_url") or ""),
+        "_artifact_media_type": "video",
+    })
+    points_after = int(auth_admin_request(
+        "/api/auth/admin/e2e/session", admin_token, method="POST", payload={}
+    )["account"]["points"])
+    billing_ok = _preview_billing_verified(row, evidence, points_after)
+    evidence.update({
+        "result_file": artifact.get("result_file") or None,
+        "result_url": artifact.get("result_url") or None,
+        "artifact_check": artifact.get("artifact_check") or "missing",
+        "delivery_verified": bool(artifact.get("delivery_verified")),
+        "billing_state": "charged" if int(row["cost"] or 0) else "fixture_reused",
+        "billing_verified": billing_ok, "fixture_retained": True,
+    })
+    passed = bool(evidence["delivery_verified"] and billing_ok)
+    with closing(db()) as connection:
+        connection.execute(
+            "UPDATE admin_e2e_runs SET status=?,points_after=?,evidence_json=?,error=?,updated_at=? WHERE run_id=?",
+            ("completed" if passed else "failed", points_after,
+             json.dumps(evidence, ensure_ascii=False, separators=(",", ":")),
+             "" if passed else "短剧预览文件或账务证据未闭环",
+             int(time.time()), run_id),
+        )
+        connection.commit()
+    return True
+
+
+def _submit_short_drama_preview_e2e_run(run_id, admin_token, session, prepared):
+    account = session["account"]
+    prepared = dict(prepared, account_username=account["username"])
+    with closing(db()) as connection:
+        connection.execute(
+            "UPDATE admin_e2e_runs SET username=?,status='submitting',cost=?,points_before=?,updated_at=? WHERE run_id=?",
+            (account["username"], int(prepared["cost"]), int(account["points"]),
+             int(time.time()), run_id),
+        )
+        connection.commit()
+    project_id = str(prepared.get("reuse_project_id") or "")
+    if project_id:
+        state = _short_drama_preview_fixture_state(account["username"], project_id)
+        if not state:
+            raise ValueError("短剧预览私有素材快照已失效")
+        with closing(db()) as connection:
+            connection.execute(
+                "UPDATE admin_e2e_runs SET acceptance_id=?,updated_at=? WHERE run_id=?",
+                (project_id, int(time.time()), run_id),
+            )
+            connection.commit()
+        _e2e_project_evidence(
+            run_id, project_id=project_id, plan_id=state["plan_id"],
+            required_shot_keys=state["required_shot_keys"],
+            ready_shot_keys=state["ready_shot_keys"],
+            missing_shot_keys=state["missing_shot_keys"],
+            provider_jobs={}, quote_tokens={}, submitted_job_ids=[],
+            fixture_reused=True,
+        )
+    else:
+        state = _prepare_short_drama_preview_project(
+            run_id, session["token"], prepared
+        )
+        if not state:
+            raise ValueError("短剧预览私有素材项目建立失败")
+    _e2e_project_evidence(run_id, shot_cost=int(prepared["shot_cost"]))
+    with closing(db()) as connection:
+        connection.execute(
+            "UPDATE admin_e2e_runs SET status='queued',error='',updated_at=? WHERE run_id=?",
+            (int(time.time()), run_id),
+        )
+        connection.commit()
+    _advance_short_drama_preview_e2e(run_id, admin_token)
+    return next(run for run in list_e2e_runs(100) if run["run_id"] == run_id)
+
+
+def _resume_short_drama_preview_runs(admin_token):
+    with closing(db()) as connection:
+        run_ids = [row[0] for row in connection.execute(
+            "SELECT run_id FROM admin_e2e_runs "
+            "WHERE operation_id='short_drama.live_action.preview' "
+            "AND status IN ('queued','running') ORDER BY created_at"
+        ).fetchall()]
+    for run_id in run_ids:
+        try:
+            _advance_short_drama_preview_e2e(run_id, admin_token)
+        except Exception:
+            pass
+
+
 def _recover_short_drama_unknown(admin_token):
     with closing(db()) as connection:
         row = connection.execute(
@@ -4535,6 +5141,10 @@ def _submit_e2e_run(run_id, admin_token, retry_capacity=False):
             return _submit_short_drama_shot_e2e_run(
                 run_id, admin_token, session, prepared
             )
+        if operation_id == "short_drama.live_action.preview":
+            return _submit_short_drama_preview_e2e_run(
+                run_id, admin_token, session, prepared
+            )
         payload = prepared["payload"]
         payload["qa_run_id"] = run_id
         endpoint = prepared["endpoint"]
@@ -4584,6 +5194,18 @@ def _submit_e2e_run(run_id, admin_token, retry_capacity=False):
                 _delete_short_drama_shot_project(run_id, session["token"])
             except Exception as cleanup_exc:
                 exc = RuntimeError("%s；临时项目清理失败：%s" % (exc, cleanup_exc))
+        elif operation_id == "short_drama.live_action.preview":
+            _, evidence = _preview_e2e_row(run_id)
+            if evidence.get("submitted_job_ids"):
+                with closing(db()) as connection:
+                    connection.execute(
+                        "UPDATE admin_e2e_runs SET status='running',error=?,updated_at=? WHERE run_id=?",
+                        ("预览编排暂时中断，将按原幂等键继续：" + str(exc)[:180],
+                         int(time.time()), run_id),
+                    )
+                    connection.commit()
+                return next(run for run in list_e2e_runs(100)
+                            if run["run_id"] == run_id)
         with closing(db()) as connection:
             connection.execute(
                 "UPDATE admin_e2e_runs SET status='failed',error=?,updated_at=? WHERE run_id=?",
@@ -5652,6 +6274,7 @@ class H(BaseHTTPRequestHandler):
             _recover_short_drama_unknown(self._token())
             _resume_short_drama_character_runs(self._token())
             _resume_short_drama_shot_runs(self._token())
+            _resume_short_drama_preview_runs(self._token())
             e2e_runs = list_e2e_runs()
             return self._send(
                 200,
