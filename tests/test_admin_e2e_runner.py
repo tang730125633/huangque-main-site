@@ -258,14 +258,86 @@ class AdminE2ERunnerTests(unittest.TestCase):
                 self.admin.function_registry.list_pages(), ensure_ascii=False
             ))
 
-    def test_unprepared_short_drama_delivery_stays_blocked_before_auth_or_charge(self):
-        with patch.object(self.admin, "auth_admin_request") as auth:
-            result = self.admin.e2e_preflight(
-                "admin-token", "short_drama.live_action.delivery"
+    def test_short_drama_delivery_requires_the_private_preview_before_submission(self):
+        session = {"token": "qa-token", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        with patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "points_domain", SimpleNamespace(cost_of=lambda *_: 0)), \
+             patch.object(self.admin, "_short_drama_preview_fixture_state", return_value=None), \
+             patch.object(self.admin, "_content_e2e_request") as submit:
+            with self.assertRaisesRegex(ValueError, "30 秒私有预览"):
+                self.admin.e2e_preflight(
+                    "admin-token", "short_drama.live_action.delivery"
+                )
+        submit.assert_not_called()
+
+    def test_short_drama_delivery_runs_confirm_quote_render_media_and_zero_point_checks(self):
+        session = {"token": "qa-token", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        run_id = self.admin._insert_e2e_run(
+            "root", "short_drama.live_action.delivery"
+        )
+        before = {
+            "billing": {"deliverable": True, "mode": "local_ffmpeg"},
+            "current_refinement": {"id": "ref-v1", "status": "draft", "issues": []},
+            "acceptance": None,
+            "acceptance_requirements": {"source_hashes": {"draft": "hash"}},
+        }
+        after = {
+            "current_delivery": {
+                "job_id": "delivery-job", "url": "/api/gen/file/final.mp4",
+                "snapshot": {
+                    "deliverable": True, "resolution": "1080p",
+                    "output_file": "short_drama_delivery/final.mp4",
+                    "playback_url": "/api/gen/file/short_drama_delivery/final.mp4",
+                    "media_validation": {"probe": {
+                        "duration_ms": 30000,
+                        "video": {"width": 1920, "height": 1080},
+                        "audio": {"codec_name": "aac"},
+                    }},
+                },
+            },
+        }
+        requests = []
+
+        def request(path, _token, payload, _run_id, step):
+            requests.append((path, payload, step))
+            if path.endswith("/refinement/confirm"):
+                return {"id": "ref-v1", "status": "confirmed"}
+            if path.endswith("/delivery/quote"):
+                return {"quote_token": "private-quote", "deliverable": True,
+                        "resolution": "1080p", "cost": 0}
+            if path.endswith("/delivery/jobs"):
+                return {"id": "delivery-job", "status": "queued"}
+            self.fail("unexpected request " + path)
+
+        with patch.object(self.admin, "auth_admin_request", return_value=session), \
+             patch.object(self.admin, "_content_e2e_get", side_effect=[
+                 before,
+                 {"id": "delivery-job", "status": "succeeded", "phase": "completed"},
+                 after,
+             ]), \
+             patch.object(self.admin, "_short_drama_e2e_request", side_effect=request), \
+             patch.object(self.admin, "_short_drama_delivery_attempt_state", return_value={
+                 "attempt_state": "linked", "attempt_cost": 0,
+                 "job_status": "succeeded", "job_cost": 0,
+             }), \
+             patch.object(self.admin, "_verify_local_artifact", return_value={
+                 "delivery_verified": True, "artifact_check": "decodable",
+             }):
+            run = self.admin._submit_short_drama_delivery_e2e_run(
+                run_id, "admin-token", session, {"reuse_project_id": "preview-project"}
             )
-            self.assertFalse(result["ready"])
-            self.assertTrue(result["blocker"])
-            auth.assert_not_called()
+        self.assertEqual((run["status"], run["cost"], run["points_before"], run["points_after"]),
+                         ("completed", 0, 500, 500))
+        self.assertTrue(all(stage["state"] == "passed" for stage in run["stages"]))
+        self.assertEqual(len(run["stages"]), 8)
+        self.assertNotIn("private-quote", json.dumps(run))
+        self.assertEqual([item[2] for item in requests], [
+            "confirm-formal-delivery", "quote-formal-delivery", "submit-formal-delivery",
+        ])
 
     def test_short_drama_character_reference_runs_customer_endpoints_then_locks_and_cleans(self):
         session = {"token": "qa-token", "account": {

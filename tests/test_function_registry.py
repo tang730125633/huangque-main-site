@@ -216,17 +216,19 @@ class FunctionRegistryTests(unittest.TestCase):
         )
         short_drama_modes = short_drama["functions"][0]["modes"]
         self.assertTrue(all(
-            mode["validation"]["supported"] for mode in short_drama_modes[:4]
+            mode["validation"]["supported"] for mode in short_drama_modes
         ))
         self.assertEqual(short_drama_modes[1]["dependencies"], [{
             "key": "gemini", "role": "主生成", "requirement": "required",
             "credential_source": "env",
         }])
-        self.assertTrue(all(
-            not mode["validation"]["supported"]
-            and bool(mode["validation"]["blocked_reason"])
-            for mode in short_drama_modes[4:]
-        ))
+        self.assertIn("provider_task", short_drama_modes[4]["evidence_contract"]["not_applicable"])
+        self.assertEqual(
+            self.admin.function_registry.e2e_runner(
+                "short_drama.live_action.delivery"
+            )["prefill"]["shot_count"],
+            6,
+        )
         self.assertNotIn("旧书店", json.dumps(short_drama, ensure_ascii=False))
         self.assertIn(
             "旧书店",
