@@ -964,7 +964,6 @@ SCRIPT_FUNCTIONS = [
             {"key": "zhipu", "role": "链接分镜拆解", "requirement": "required", "credential_source": "env", "condition": "mode=scenes"},
             {"key": "gemini", "role": "链接视频提示词反推", "requirement": "required", "credential_source": "env", "condition": "mode=reverse_prompt"},
         ],
-        "evidence_gaps": ["智谱与 Gemini 分析线路尚未归一到渠道凭据面板"],
         "modes": [
             {
                 "key": "script.breakdown.scenes", "name": "链接分解拆解",
@@ -1068,6 +1067,7 @@ SCRIPT_FUNCTIONS = [
                 "key": "script.output.image", "name": "拆解结果一键做图",
                 "entrypoints": [_endpoint("POST", "/api/gen/image")],
                 "task_match": {"kind": "image", "source_page": "script"},
+                "evidence_contract": {"not_applicable": ["provider_task"]},
                 "price_keys": ["image.openai.std"],
                 "smoke_inputs": ["已生成分镜", "分镜画面描述"],
                 "validation": _image_validation(),
