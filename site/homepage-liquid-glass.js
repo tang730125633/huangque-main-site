@@ -11,7 +11,8 @@
     uniform vec4 shape;
     uniform float radius,dpr;
     float roundedBox(vec2 p,vec2 halfSize,float r){vec2 q=abs(p)-halfSize+r;return min(max(q.x,q.y),0.0)+length(max(q,0.0))-r;}
-    float field(vec2 p){float d=roundedBox(p-shape.xy,shape.zw,radius);float h=clamp(-d/24.0,0.0,1.0);return h*h*(3.0-2.0*h);}
+    float lensDistance(vec2 p){float edgeInset=2.0;return roundedBox(p-shape.xy,max(shape.zw-vec2(edgeInset),vec2(1.0)),max(radius-edgeInset,1.0));}
+    float field(vec2 p){float d=lensDistance(p);float h=clamp(-d/24.0,0.0,1.0);return h*h*(3.0-2.0*h);}
     vec2 coverUV(vec2 p){
       vec2 uv=p/resolution;float screenAspect=resolution.x/resolution.y;float sourceAspect=videoSize.x/videoSize.y;
       if(sourceAspect>screenAspect)uv.x=(uv.x-.5)*screenAspect/sourceAspect+.5;else uv.y=(uv.y-.5)*sourceAspect/screenAspect+.5;
@@ -19,7 +20,7 @@
     }
     vec3 backdrop(vec2 p){vec3 color=texture2D(image,coverUV(p)).rgb;float luma=dot(color,vec3(.2126,.7152,.0722));color=mix(vec3(luma),color,.78);return ((color-.5)*1.05+.5)*.8;}
     void main(){
-      vec2 p=gl_FragCoord.xy/dpr;float d=roundedBox(p-shape.xy,shape.zw,radius);if(d>1.5)discard;
+      vec2 p=gl_FragCoord.xy/dpr;float d=lensDistance(p);if(d>1.5)discard;
       float depth=-d;float e=1.25;
       vec2 gradient=vec2(field(p+vec2(e,0.0))-field(p-vec2(e,0.0)),field(p+vec2(0.0,e))-field(p-vec2(0.0,e)))/(2.0*e);
       vec2 n=normalize(gradient+vec2(.0001));vec3 N=normalize(vec3(-gradient*13.0,1.0));
@@ -31,7 +32,7 @@
       vec3 lightDir=normalize(vec3((mouse-shape.xy)/resolution*2.2,.72));float spec=pow(max(dot(N,lightDir),0.0),13.0)*bevel;float fresnel=pow(1.0-max(N.z,0.0),1.8)*bevel;
       vec3 reflected=reflect(vec3(0.0,0.0,-1.0),N);float envBand=pow(max(1.0-abs(reflected.x*.7+reflected.y*.5-.12),0.0),9.0)*bevel;
       color*=1.0-cavity*.22;color=mix(color,vec3(.98,1.0,1.0),envBand*.48);color+=vec3(.78,.92,1.0)*(spec*.62+fresnel*.3);
-      color+=outer*(vec3(.08,.22,.34)*max(n.x,0.0)+vec3(.34,.07,.015)*max(-n.x,0.0));gl_FragColor=vec4(color,smoothstep(1.5,-1.5,d));
+      color+=outer*(vec3(.08,.22,.34)*max(n.x,0.0)+vec3(.34,.07,.015)*max(-n.x,0.0));float alpha=smoothstep(1.5,-1.5,d);gl_FragColor=vec4(color*alpha,alpha);
     }`;
 
   const pointer={x:innerWidth*.35,y:innerHeight*.7};
