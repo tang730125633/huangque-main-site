@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import sqlite3
@@ -96,6 +97,17 @@ class AdminE2ERunnerTests(unittest.TestCase):
                 self.admin._content_e2e_request(
                     "/api/gen/audio", "account-token", {"text": "qa"}, "e2e:one", 10
                 )
+
+    def test_changed_quote_is_a_definite_rejection(self):
+        error = urllib.error.HTTPError(
+            "http://content.test", 409, "conflict", {},
+            io.BytesIO(b'{"detail":"changed","code":"quote_cost_changed"}'),
+        )
+        with patch.object(self.admin.urllib.request, "urlopen", side_effect=error), \
+             self.assertRaises(self.admin.E2ESubmitRejected):
+            self.admin._content_e2e_request(
+                "/api/gen/script_to_video", "account-token", {}, "e2e:quote", 30
+            )
 
     def test_private_binary_runner_uploads_raw_fixture_with_idempotency(self):
         payload = self.admin._e2e_payload(
@@ -267,7 +279,6 @@ class AdminE2ERunnerTests(unittest.TestCase):
                 self.admin._ready_audio_voice_key("text_video.topic", "qa-token"),
                 "public:zh-CN-YunjianNeural",
             )
-
         for operation, channel in (("canvas.video.grok", "grok"),
                                    ("canvas.video.micro", "micro")):
             video = self.admin._e2e_payload(
@@ -275,6 +286,27 @@ class AdminE2ERunnerTests(unittest.TestCase):
             )
             self.assertEqual((video["source_page"], video["channel"]), ("canvas", channel))
             self.assertEqual(video["resolution"], "480p")
+
+    def test_text_video_preflight_prices_the_prepared_scene_count(self):
+        session = {"token": "qa-token", "account": {
+            "username": "qa-dedicated", "points": 500, "membership_active": True,
+        }}
+        prepared_payload = {"pipeline": "pixelle", "mode": "fixed", "n_scenes": 2}
+        pixelle = SimpleNamespace(prepare_payload=MagicMock(return_value=prepared_payload))
+        with patch.object(self.admin.feature_flags, "is_enabled", return_value=True), \
+             patch.object(self.admin, "_ready_audio_voice_key",
+                          return_value="public:zh-CN-YunjianNeural"), \
+             patch.object(self.admin, "pixelle_video", pixelle), \
+             patch.object(self.admin, "points_domain", SimpleNamespace(
+                 cost_of=lambda kind, payload: 10 + 20 * payload["n_scenes"],
+             )):
+            result = self.admin._e2e_prepare_operation(session, "text_video.fixed")
+
+        self.assertEqual(result["cost"], 50)
+        self.assertNotIn("n_scenes", result["payload"])
+        pixelle.prepare_payload.assert_called_once_with(
+            result["payload"], "qa-dedicated"
+        )
 
     def test_canvas_image_nodes_reuse_private_image_fixture_on_canvas_routes(self):
         expected = {
