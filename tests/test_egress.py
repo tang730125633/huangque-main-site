@@ -182,6 +182,15 @@ class FailoverTests(unittest.TestCase):
         self.assertIsNone(out)
         self.assertEqual(len(calls), 1)
 
+    def test_http_429_fails_over_after_explicit_rejection(self):
+        """429 明确表示未接单，不会重复生成或计费，可以安全切出口。"""
+        import io
+        rejected = urllib.error.HTTPError("u", 429, "rate limited", {}, io.BytesIO(b"{}"))
+        out, calls, err = self._run([rejected, b'{"ok":2}'])
+        self.assertEqual(out, {"ok": 2})
+        self.assertIsNone(err)
+        self.assertEqual([call[0] for call in calls], ["http://p1", "http://p2"])
+
     def test_dns_failure_fails_over(self):
         out, calls, err = self._run([urllib.error.URLError(socket.gaierror("no dns")), b'{"ok":2}'])
         self.assertEqual(out, {"ok": 2})

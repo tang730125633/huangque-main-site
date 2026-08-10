@@ -1,4 +1,5 @@
 import importlib
+import http.client
 import sys
 import tempfile
 import unittest
@@ -383,6 +384,20 @@ class PixelleVideoTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "render failed"):
                 self.pixelle._wait("task-2")
 
+        with mock.patch.object(self.pixelle, "_json_request", return_value={
+            "status": "failed", "error": "RunningHub API error: TASK_QUEUE_MAXED",
+        }):
+            with self.assertRaisesRegex(RuntimeError, "TASK_QUEUE_MAXED"):
+                self.pixelle._wait("task-capacity")
+        with mock.patch.object(
+            self.pixelle.feature_flags, "is_enabled", return_value=True
+        ), mock.patch.object(self.pixelle, "_json_request") as request:
+            self.assertEqual(self.pixelle.availability(force=True), {
+                "enabled": True, "ready": False, "available": False,
+            })
+        request.assert_not_called()
+        self.pixelle._CAPACITY_BLOCKED_UNTIL = 0.0
+
     def test_wait_retries_transient_poll_timeout_until_task_completes(self):
         class JsonResponse:
             def __enter__(self):
@@ -400,6 +415,28 @@ class PixelleVideoTests(unittest.TestCase):
             side_effect=[TimeoutError("read timed out"), JsonResponse()],
         ) as request, mock.patch.object(self.pixelle.time, "sleep") as sleep:
             result = self.pixelle._wait("task-transient")
+
+        self.assertEqual(result["video_url"], "/api/files/result.mp4")
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once_with(self.pixelle.PIXELLE_POLL_INTERVAL)
+
+    def test_wait_retries_remote_disconnect_until_task_completes(self):
+        class JsonResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return b'{"status":"completed","result":{"video_url":"/api/files/result.mp4"}}'
+
+        with mock.patch.object(
+            self.pixelle._NO_PROXY, "open", side_effect=[
+                http.client.RemoteDisconnected("server disconnected"), JsonResponse(),
+            ],
+        ) as request, mock.patch.object(self.pixelle.time, "sleep") as sleep:
+            result = self.pixelle._wait("task-disconnected")
 
         self.assertEqual(result["video_url"], "/api/files/result.mp4")
         self.assertEqual(request.call_count, 2)
