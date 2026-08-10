@@ -4836,7 +4836,8 @@ class H(BaseHTTPRequestHandler):
                     }
                     submit_headers.update(plan.get("submit_headers") or {})
                     submit_plan = {
-                        "base": hq_cli_api.CONTENT_BASE, "path": plan["endpoint"], "method": "POST",
+                        "base": plan.get("submit_base", hq_cli_api.CONTENT_BASE),
+                        "path": plan["endpoint"], "method": "POST",
                         "body": submit_body, "timeout": 30, "internal": True,
                         "headers": submit_headers,
                     }

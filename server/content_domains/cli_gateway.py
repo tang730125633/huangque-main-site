@@ -1,8 +1,9 @@
 """Internal quote and price-binding checks for the public HQ CLI gateway."""
 
 import hmac
+import urllib.parse
 
-from . import cli_uploads
+from . import cli_uploads, pricing
 
 
 def _internal_auth(handler, secret):
@@ -17,6 +18,95 @@ def _require_ready_avatar(video, username, avatar_id, cinematic=False):
     if cinematic and not avatar.get("provider_avatar_id"):
         raise ValueError("所选电影化身尚未就绪")
     return avatar
+
+
+def _strict_payload(payload, allowed, required=()):
+    if not isinstance(payload, dict):
+        raise ValueError("payload 必须是 JSON 对象")
+    unknown = sorted(set(payload) - set(allowed))
+    if unknown:
+        raise ValueError("不支持的参数：" + unknown[0])
+    missing = [key for key in required if key not in payload]
+    if missing:
+        raise ValueError("缺少参数：" + missing[0])
+
+
+def _text(value, field, minimum=0, maximum=120):
+    if not isinstance(value, str):
+        raise ValueError(field + " 必须是字符串")
+    value = value.strip()
+    if not minimum <= len(value) <= maximum or any(ord(char) < 32 for char in value):
+        raise ValueError(field + " 长度或内容不合法")
+    return value
+
+
+def _number(value, field, minimum, maximum):
+    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+        raise ValueError("%s 必须是 %d-%d 的整数" % (field, minimum, maximum))
+    return value
+
+
+def _collect_payload(payload):
+    _strict_payload(payload, {"url", "want"}, ("url", "want"))
+    url = _text(payload["url"], "url", 1, 2048)
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        host = (parsed.hostname or "").lower()
+        port = parsed.port
+    except ValueError:
+        raise ValueError("url 格式不合法")
+    allowed = ("douyin.com", "iesdouyin.com", "xiaohongshu.com", "xhslink.com", "xhslink.cn")
+    if (parsed.scheme not in {"http", "https"} or parsed.username or parsed.password
+            or port not in (None, 80, 443)
+            or not any(host == suffix or host.endswith("." + suffix) for suffix in allowed)):
+        raise ValueError("url 仅支持抖音或小红书公开链接")
+    want = payload["want"]
+    if not isinstance(want, list) or len(want) != 1 or want[0] not in {"comments", "video", "transcript"}:
+        raise ValueError("want 仅支持 comments、video 或 transcript 中的一项")
+    return {"url": url, "want": list(want)}
+
+
+def _collect_search_payload(payload):
+    _strict_payload(payload, {"platform", "keyword", "page"}, ("platform", "keyword", "page"))
+    platform = _text(payload["platform"], "platform", 1, 20)
+    if platform not in {"douyin", "xhs"}:
+        raise ValueError("platform 仅支持 douyin 或 xhs")
+    return {
+        "platform": platform,
+        "keyword": _text(payload["keyword"], "keyword", 1, 120),
+        "page": _number(payload["page"], "page", 1, 50),
+    }
+
+
+def _leads_payload(payload):
+    _strict_payload(payload, {"keyword", "platforms", "count", "pages", "channels_targets"},
+                    ("keyword", "platforms", "count", "pages", "channels_targets"))
+    raw_platforms = payload["platforms"]
+    if not isinstance(raw_platforms, list) or not 1 <= len(raw_platforms) <= 3:
+        raise ValueError("platforms 必须是包含 1-3 项的平台数组")
+    platforms = []
+    for item in raw_platforms:
+        item = _text(item, "platforms", 1, 20)
+        if item not in {"douyin", "xhs", "channels"} or item in platforms:
+            raise ValueError("platforms 包含不支持或重复的平台")
+        platforms.append(item)
+    raw_targets = payload["channels_targets"]
+    if not isinstance(raw_targets, list) or len(raw_targets) > 20:
+        raise ValueError("channels_targets 必须是最多 20 项的数组")
+    targets = [_text(item, "channels_targets", 1, 120) for item in raw_targets]
+    if len(targets) != len(set(targets)):
+        raise ValueError("channels_targets 不能重复")
+    keyword = _text(payload["keyword"], "keyword", 0, 120)
+    if any(platform != "channels" for platform in platforms) and not keyword:
+        raise ValueError("抖音或小红书获客必须提供 keyword")
+    if "channels" in platforms and not targets:
+        raise ValueError("视频号获客必须提供 channels_targets")
+    return {
+        "keyword": keyword, "platforms": platforms,
+        "count": _number(payload["count"], "count", 1, 30),
+        "pages": _number(payload["pages"], "pages", 1, 3),
+        "channels_targets": targets,
+    }
 
 
 def handle_image_upload(handler, path, verify, must_change_password, secret):
@@ -144,14 +234,22 @@ def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
         elif kind == "tryon":
             payload = cli_uploads.expand_role_media_payload(payload, user["username"])
             payload = video.validate_tryon_payload(payload)
+        elif kind == "collect":
+            payload = _collect_payload(payload)
+        elif kind == "collect_search":
+            payload = _collect_search_payload(payload)
+        elif kind == "leads":
+            payload = _leads_payload(payload)
         else:
             raise ValueError("CLI 报价不支持该生成类型")
         feature_flags.require_enabled(
             "banana" if kind == "image" and payload.get("provider") == "banana"
-            else "video" if kind == "video_batch" else kind
+            else "video" if kind == "video_batch"
+            else "collect" if kind == "collect_search" else kind
         )
         cost = (sum(points.cost_of("video", item) for item in payload)
-                if kind == "video_batch" else points.cost_of(kind, payload))
+                if kind == "video_batch" else pricing.get_price("collect.search")
+                if kind == "collect_search" else points.cost_of(kind, payload))
         handler._send(200, {"kind": kind, "cost": cost,
                             "points": points.get_points(user["username"])})
     except feature_flags.FeatureDisabled as exc:

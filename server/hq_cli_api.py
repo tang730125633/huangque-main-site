@@ -26,6 +26,7 @@ ACTION_REQUEST_TTL = 30 * 24 * 60 * 60
 ACTION_INFLIGHT_TTL = 10 * 60
 CLI_CHAT_REQUESTS_PER_MINUTE = 6
 CONTENT_BASE = "http://127.0.0.1:8096"
+LEADGEN_BASE = "http://127.0.0.1:8100"
 IMGGEN_BASE = "http://127.0.0.1:8101"
 HERMES_BASE = "http://127.0.0.1:3102"
 ADMIN_BASE = "http://127.0.0.1:8098"
@@ -49,8 +50,8 @@ SCOPES = {
     "leads:read": "读取本人线索跟进记录",
     "leads:write": "经确认后更新本人线索跟进记录",
     "short-drama:read": "读取本人短剧项目与生产准备状态",
-    "generation:quote": "查询图片、视频、音频所需点数",
-    "generation:submit": "经二次确认后提交生成并扣点",
+    "generation:quote": "查询生成、采集或获客任务所需点数",
+    "generation:submit": "经二次确认后提交付费任务并扣点",
     "video-compose:read": "读取本人一键成片项目",
     "video-compose:write": "经确认后创建、分析、审核或渲染本人一键成片项目",
     "digital-presenter:read": "读取本人画布中的数字人口播项目",
@@ -93,7 +94,10 @@ CHANNEL_CATALOG = (
     {"id": "cosyvoice", "provider": "阿里百炼 API", "category": "音频生成", "features": ["公共音色", "声音克隆"],
      "access": "direct", "capabilities": ["voices", "audio-generate"], "selector": {}},
     {"id": "tikhub", "provider": "TikHub API", "category": "内容采集 / 获客", "features": ["抖音 / 小红书 / 视频号", "评论与线索"],
-     "access": "navigation", "capabilities": ["collect", "leads"], "selector": {}},
+     "access": "mixed", "capabilities": [
+         "collect", "collect-content", "collect-video", "collect-transcript", "collect-search",
+         "leads", "leads-generate",
+     ], "selector": {}},
     {"id": "zhipu", "provider": "智谱视觉 API", "category": "内容分析", "features": ["链接分镜拆解"],
      "access": "managed", "capabilities": [], "selector": {}},
     {"id": "cos", "provider": "腾讯云 COS", "category": "基础设施", "features": ["生成结果存储", "参考素材与成片存储"],
@@ -127,7 +131,7 @@ IMAGE_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
 VIDEO_UPLOAD_MAX_BYTES = 32 * 1024 * 1024
 VIDEO_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
 _TASK_KINDS = {
-    "", "image", "audio", "video", "xiaole_video", "copy", "collect", "leads",
+    "", "image", "audio", "video", "xiaole_video", "copy", "collect", "collect_search", "leads",
     "tryon", "cinematic", "avatar", "breakdown", "script_to_video", "sora_video",
 }
 
@@ -861,6 +865,50 @@ def _digital_presenter_fields(value):
     return fields
 
 
+def _collect_url(value):
+    url = _string(value, "url", 1, 2048)
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        host = (parsed.hostname or "").lower()
+        port = parsed.port
+    except ValueError:
+        raise CLIAPIError(400, "url 格式不合法")
+    allowed = ("douyin.com", "iesdouyin.com", "xiaohongshu.com", "xhslink.com", "xhslink.cn")
+    if (parsed.scheme not in {"http", "https"} or parsed.username or parsed.password
+            or port not in (None, 80, 443)
+            or not any(host == suffix or host.endswith("." + suffix) for suffix in allowed)):
+        raise CLIAPIError(400, "url 仅支持抖音或小红书公开链接")
+    return url
+
+
+def _leads_payload(value):
+    _strict_object(value, {"keyword", "platforms", "count", "pages", "channels_targets"},
+                   ("platforms",))
+    raw_platforms = value["platforms"]
+    if not isinstance(raw_platforms, list) or not 1 <= len(raw_platforms) <= 3:
+        raise CLIAPIError(400, "platforms 必须是包含 1-3 项的平台数组")
+    platforms = [_enum(item, "platforms", ("douyin", "xhs", "channels")) for item in raw_platforms]
+    if len(platforms) != len(set(platforms)):
+        raise CLIAPIError(400, "platforms 不能重复")
+    keyword = _string(value.get("keyword", ""), "keyword", 0, 120)
+    raw_targets = value.get("channels_targets", [])
+    if not isinstance(raw_targets, list) or len(raw_targets) > 20:
+        raise CLIAPIError(400, "channels_targets 必须是最多 20 项的数组")
+    targets = [_string(item, "channels_targets", 1, 120) for item in raw_targets]
+    if len(targets) != len(set(targets)):
+        raise CLIAPIError(400, "channels_targets 不能重复")
+    if any(platform != "channels" for platform in platforms) and not keyword:
+        raise CLIAPIError(400, "抖音或小红书获客必须提供 keyword")
+    if "channels" in platforms and not targets:
+        raise CLIAPIError(400, "视频号获客必须提供 channels_targets")
+    return {
+        "keyword": keyword, "platforms": platforms,
+        "count": _integer(value.get("count", 20), "count", 1, 30),
+        "pages": _integer(value.get("pages", 1), "pages", 1, 3),
+        "channels_targets": targets,
+    }
+
+
 def action_plan(action, value):
     if not isinstance(value, dict):
         raise CLIAPIError(400, "input 必须是 JSON 对象")
@@ -918,6 +966,35 @@ def action_plan(action, value):
             body["follow_note"] = _string(value["follow_note"], "follow_note", 0, 300)
         return _plan("leads:write", "proxy", base=CONTENT_BASE,
                      path="/api/gen/leads/crm", method="POST", body=body)
+    if action in {"collect-content", "collect-video", "collect-transcript"}:
+        _strict_object(value, {"url"}, ("url",))
+        want = {
+            "collect-content": "comments",
+            "collect-video": "video",
+            "collect-transcript": "transcript",
+        }[action]
+        return _plan(
+            "generation:quote", "generation", generation_kind="collect",
+            endpoint="/api/gen/collect", submit_base=LEADGEN_BASE,
+            payload={"url": _collect_url(value["url"]), "want": [want]},
+        )
+    if action == "collect-search":
+        _strict_object(value, {"platform", "keyword", "page"}, ("platform", "keyword"))
+        return _plan(
+            "generation:quote", "generation", generation_kind="collect_search",
+            endpoint="/api/gen/collect_search", submit_base=LEADGEN_BASE,
+            payload={
+                "platform": _enum(value["platform"], "platform", ("douyin", "xhs")),
+                "keyword": _string(value["keyword"], "keyword", 1, 120),
+                "page": _integer(value.get("page", 1), "page", 1, 50),
+            },
+        )
+    if action == "leads-generate":
+        return _plan(
+            "generation:quote", "generation", generation_kind="leads",
+            endpoint="/api/gen/leads", submit_base=LEADGEN_BASE,
+            payload=_leads_payload(value),
+        )
     if action == "video-avatars":
         _strict_object(value, {"limit"})
         limit = _integer(value.get("limit", 120), "limit", 1, 120)

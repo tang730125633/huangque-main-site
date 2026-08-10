@@ -2,6 +2,7 @@ import io
 import hashlib
 import json
 import os
+import re
 import stat
 import tempfile
 import unittest
@@ -41,7 +42,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.8.0", self.payload(output)["cli_version"])
+        self.assertEqual("0.9.0", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -59,6 +60,7 @@ class HqCliTests(unittest.TestCase):
             "digital-ip-projects", "digital-ip-project", "digital-ip-report",
             "text-video-capability", "text-video-templates", "text-video-styles", "text-video-voices", "pricing",
             "inspiration-catalog", "inspiration-likes", "inspiration-like",
+            "collect-content", "collect-video", "collect-transcript", "collect-search", "leads-generate",
             "leads-crm", "leads-crm-upsert", "video-avatars", "audio-slots",
             "short-drama-projects", "short-drama-project", "short-drama-conversation", "short-drama-preflight",
         }
@@ -109,6 +111,28 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual("leads:write", by_id["leads-crm-upsert"]["required_scope"])
         self.assertTrue(by_id["inspiration-like"]["confirmation_required"])
         self.assertTrue(by_id["leads-crm-upsert"]["confirmation_required"])
+        for identifier in ("collect-content", "collect-video", "collect-transcript", "collect-search", "leads-generate"):
+            self.assertEqual("paid", by_id[identifier]["side_effect"])
+            self.assertEqual("generation:quote", by_id[identifier]["required_scope"])
+            self.assertEqual("server_quote", by_id[identifier]["cost"]["kind"])
+
+        collect_url = by_id["collect-video"]["input_schema"]["properties"]["url"]
+        self.assertTrue(re.match(collect_url["pattern"], "https://v.douyin.com/abc123/"))
+        self.assertTrue(re.match(collect_url["pattern"], "https://douyin.com:80/video"))
+        self.assertTrue(re.match(collect_url["pattern"], "https://xiaohongshu.com:443/explore/123"))
+        self.assertFalse(re.match(collect_url["pattern"], "https://douyin.com:8080/video"))
+        self.assertTrue(re.match(collect_url["pattern"], "https://www.xiaohongshu.com/explore/123"))
+        self.assertFalse(re.match(collect_url["pattern"], "https://example.com/video"))
+        search = by_id["collect-search"]["input_schema"]
+        self.assertEqual(["douyin", "xhs"], search["properties"]["platform"]["enum"])
+        self.assertEqual(50, search["properties"]["page"]["maximum"])
+        self.assertEqual(["platform", "keyword"], search["required"])
+        leads = by_id["leads-generate"]["input_schema"]
+        self.assertEqual(["platforms"], leads["required"])
+        self.assertEqual(30, leads["properties"]["count"]["maximum"])
+        self.assertEqual(3, leads["properties"]["pages"]["maximum"])
+        self.assertEqual(120, leads["properties"]["channels_targets"]["items"]["maxLength"])
+        self.assertEqual(["douyin", "xhs", "channels"], leads["properties"]["platforms"]["items"]["enum"])
 
     def test_p0_navigation_reads_and_website_modes_are_discoverable(self):
         _, output, _ = self.invoke(["capabilities"])
@@ -155,6 +179,10 @@ class HqCliTests(unittest.TestCase):
             "text-video-capability": {"text_video"}, "digital-ip-projects": {"digital_ip"},
             "pricing": {"pricing.catalog"},
             "inspiration-catalog": {"inspiration.browse"}, "inspiration-like": {"inspiration.like"},
+            "collect": {"collect.content.comments", "collect.content.video", "collect.content.transcript", "collect.keyword.search"},
+            "collect-content": {"collect.content.comments"}, "collect-video": {"collect.content.video"},
+            "collect-transcript": {"collect.content.transcript"}, "collect-search": {"collect.keyword.search"},
+            "leads": {"leads.keyword.search"}, "leads-generate": {"leads.keyword.search"},
             "leads-crm": {"leads.crm.update"}, "video-avatars": {"cinematic", "digital_ip", "live_action"},
             "audio-slots": {"tts"}, "short-drama-projects": {"live_action"},
         }
@@ -277,7 +305,7 @@ class HqCliTests(unittest.TestCase):
                 self.assertEqual({"action": identifier, "input": payload, "confirm": False},
                                  request.call_args.kwargs["body"])
 
-    def test_video_actions_use_the_existing_quote_confirm_flow(self):
+    def test_paid_actions_use_the_existing_quote_confirm_flow(self):
         self.authorize()
         cases = {
             "digital-ip-text-generate": {
@@ -308,6 +336,13 @@ class HqCliTests(unittest.TestCase):
             "tryon-classic-generate": {
                 "person_video_upload_id": "vid_" + "c" * 32,
                 "background_upload_id": "img_" + "d" * 32, "seconds": 6,
+            },
+            "collect-content": {"url": "https://v.douyin.com/abc123/"},
+            "collect-video": {"url": "https://www.xiaohongshu.com/explore/123"},
+            "collect-transcript": {"url": "https://xhslink.com/a1b2c3"},
+            "collect-search": {"platform": "douyin", "keyword": "AI 创业"},
+            "leads-generate": {
+                "keyword": "AI 获客", "platforms": ["douyin", "xhs"],
             },
         }
         for identifier, payload in cases.items():
@@ -686,6 +721,11 @@ class HqCliTests(unittest.TestCase):
             (["run", "video-generate", "--input", "@-"], b'{"prompt":"x","generate_audio":1}'),
             (["run", "video-generate", "--input", "@-"], b'{"prompt":"x","channel":"sora","seconds":5}'),
             (["run", "asset-tags", "--input", "@-"], b'{"kind":"image","key":"x","tags":"not-array"}'),
+            (["run", "leads-generate", "--input", "@-"], b'{"keyword":"x","platforms":["twitter"]}'),
+            (["run", "leads-generate", "--input", "@-"], b'{"platforms":["douyin"],"channels_targets":["target"]}'),
+            (["run", "leads-generate", "--input", "@-"], b'{"keyword":"x","platforms":["channels"]}'),
+            (["run", "leads-generate", "--input", "@-"], b'{"keyword":"x","platforms":["douyin","channels"]}'),
+            (["run", "leads-generate", "--input", "@-"], b'{"platforms":["douyin","channels"],"channels_targets":["target"]}'),
             (["run", "image", "--base-url", "https://evil.example"], b""),
         ]
         with patch("hq_cli.client.request_json") as request:

@@ -26,7 +26,7 @@ $ hq capabilities --json
 需要 Python 3.10+：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/tang730125633/huangque-cli/v0.8.0/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/tang730125633/huangque-cli/v0.9.0/install.sh | sh
 ```
 
 安装脚本会校验版本化 wheel 的 SHA-256，将程序放到 `~/.local/share/hq-cli/`，并创建 `~/.local/bin/hq`。
@@ -97,6 +97,33 @@ hq run video-upload --file /absolute/path/reference.mp4 --confirm --json
 
 上传只取得短期私有 `upload_id`；真正生成仍需先获取报价，再以完全相同的输入携带 `--confirm --quote-token` 提交。
 
+## 内容采集与获客
+
+CLI 可以直接执行采集页和获客页的核心动作，不必先打开网页：
+
+| 想做什么 | CLI 能力 | 输入 | 完成后去哪里拿结果 |
+|---|---|---|---|
+| 把一条内容的文案和评论采下来 | `collect-content` | 抖音或小红书公开内容 `url` | `task.result` 的完整文案和评论；`assets` 只存摘要 |
+| 保存一条内容的原视频 | `collect-video` | 抖音或小红书公开内容 `url` | `assets` 的 `collect` 视频链接；`task.result` 也保留结果 |
+| 提取视频里的口播文字 | `collect-transcript` | 抖音或小红书公开内容 `url` | `task.result` 的完整口播文字；`assets` 只记录是否已有口播 |
+| 按关键词搜索平台内容 | `collect-search` | `platform=douyin|xhs`、`keyword`，可选 `page` | `task.result` 的任务结果 |
+| 从多平台评论里筛选潜在客户 | `leads-generate` | 平台，以及对应的关键词 / 视频号目标；数量和页数可选 | `assets` 的 `leads` 资产 |
+
+这五项都是付费异步任务：先运行一次看报价，用户确认后用**完全相同的 JSON**和返回的 `quote_token` 提交一次。拿到 `job_id` 后只轮询任务，不要再次提交。三个链接采集任务完成后都会写入资产库，但资产只保存摘要和视频链接；完整评论与口播文字必须从 `task.result` 读取。关键词搜索结果直接保留在 `task.result`，获客结果同时写入完整的 `leads` 资产：
+
+```sh
+printf '%s\n' '{"url":"https://v.douyin.com/abc123/"}' > collect.json
+hq run collect-video --input @collect.json --json
+hq run collect-video --input @collect.json --confirm --quote-token '<quote_token>' --json
+
+printf '%s\n' '{"job_id":123}' > task.json
+hq run task --input @task.json --json
+printf '%s\n' '{"kind":"collect","limit":20}' > assets.json
+hq run assets --input @assets.json --json
+```
+
+三个按链接采集的能力只接受完整的抖音 / 小红书公开 HTTP(S) URL，端口只能省略或使用 80 / 443；不接受口令、分享文案、账号密码、本机路径或其他网站链接。`leads-generate` 支持 `douyin`、`xhs`、`channels`：包含抖音或小红书时必须提供 `keyword`，包含视频号时必须提供 `channels_targets`，混合平台时两者都要提供；`count` 和 `pages` 可省略。
+
 ## 当前能力
 
 - 账号、点数、权限和渠道目录读取。
@@ -107,6 +134,7 @@ hq run video-upload --file /absolute/path/reference.mp4 --confirm --json
 - 私有图片/视频上传、画布创建、画布 Agent 方案与受限写入。
 - 任务、流水、资产、音色、收藏与标签。
 - 灵感案例与收藏、获客跟进、数字人形象、声音克隆槽位，以及短剧项目的安全读取。
+- 抖音 / 小红书内容、原视频、口播文案和关键词结果采集，以及多平台评论获客。
 - 一键成片项目的创建、分析、审核与渲染。
 - 数字人口播项目的能力检查、创建、读取与基础设置。
 - 黄雀主站工作台的安全深链接。
