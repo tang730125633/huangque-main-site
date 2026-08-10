@@ -195,7 +195,7 @@
     if(!voicesReady){toast('音色暂不可用');return;}
     if(!el('videoVoice').value){toast('请选择配音音色');return;}
     clearTimeout(pollTimer);setBusy(true);startedAt=Date.now();setStatus('正在提交任务','running');
-    var payload={pipeline:'pixelle',text:text,template:activeTemplate,mode:activeMode,style:el('materialStyle').value,voice:el('videoVoice').value};
+    var payload={pipeline:'pixelle',text:text,template:activeTemplate,mode:activeMode,style:el('materialStyle').value,voice:el('videoVoice').value,source_page:'text-video'};
     var pending=pendingSubmission(payload),headers=authHeaders(true);headers['Idempotency-Key']=pending.key;
     fetch('/api/gen/script_to_video',{method:'POST',headers:headers,body:pending.body}).then(readJson).then(function(response){
       if(response.status===401){confirmSubmission(pending);location.href='../login.html?redirect=workbench/text-video';return;}

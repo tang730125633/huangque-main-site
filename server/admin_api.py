@@ -113,6 +113,10 @@ E2E_TEST_USERNAME = os.environ.get("HQ_E2E_TEST_USERNAME", "").strip()
 E2E_RUN_LOCK = threading.Lock()
 E2E_FIXTURE_LOCK = threading.Lock()
 E2E_ACTIVE_STATUSES = {"planned", "submitting", "queued", "running", "unknown"}
+E2E_STAGE_KEYS = (
+    "accepted", "account", "job", "route",
+    "provider", "generation", "delivery", "billing",
+)
 E2E_BATCH_DEADLINE_SECONDS = 2 * 60 * 60
 
 
@@ -975,6 +979,18 @@ def _e2e_payload(operation_id, runner, ready_avatar_ids=None, ready_audio_voice_
             "volume": int(prefill.get("volume", 0)),
             "source_page": "audio",
         })
+    elif operation_id.startswith("text_video."):
+        if not ready_audio_voice_key:
+            raise ValueError("专用测试账号未读取到文案成片公共音色")
+        payload.update({
+            "pipeline": "pixelle",
+            "mode": str(prefill.get("mode") or "generate"),
+            "text": str(prefill.get("text") or "").strip(),
+            "template": str(prefill.get("template") or "1080x1920/image_default.html"),
+            "style": str(prefill.get("style") or "realistic_commercial"),
+            "voice": ready_audio_voice_key,
+            "provider": "pixelle", "source_page": "text-video",
+        })
     elif operation_id.startswith(("image.", "canvas.image.")):
         parts = operation_id.split(".")
         canvas_image = parts[0] == "canvas"
@@ -1214,6 +1230,7 @@ def _e2e_kind(endpoint):
         "/api/gen/copy": "copy", "/api/gen/breakdown": "breakdown",
         "/api/gen/breakdown/local-upload": "breakdown",
         "/api/gen/canvas_agent": "canvas_agent",
+        "/api/gen/script_to_video": "script_to_video",
     }.get(endpoint)
 
 
@@ -1232,6 +1249,13 @@ def _ready_avatar_ids(operation_id, account_token):
 
 
 def _ready_audio_voice_key(operation_id, account_token):
+    if operation_id.startswith("text_video."):
+        voice_data = _content_e2e_get("/api/gen/text-video/voices", account_token)
+        public = next((item for item in voice_data.get("voices") or []
+                       if item.get("scope") == "public" and item.get("id")), None)
+        if not public:
+            raise ValueError("专用测试账号未读取到文案成片公共音色")
+        return str(public["id"])
     if not operation_id.startswith("audio.tts."):
         return ""
     voice_data = _content_e2e_get("/api/gen/audio/voices", account_token)
@@ -1292,6 +1316,13 @@ def _e2e_parameters(operation_id, payload):
             "语速：%s" % payload.get("speed"),
             "音调：%s" % payload.get("pitch"),
             "音量：%s" % payload.get("volume"),
+        ])
+    elif operation_id.startswith("text_video."):
+        parameters.extend([
+            "输入方式：%s" % ("主题创作" if payload.get("mode") == "generate" else "完整文案"),
+            "模板：%s" % payload.get("template"),
+            "素材风格：%s" % payload.get("style"),
+            "公共中文音色：已准备",
         ])
     elif operation_id.startswith(("image.", "canvas.image.")):
         provider = payload.get("provider")
@@ -3555,6 +3586,16 @@ def _e2e_job_evidence(job_id):
         asset["route_provider"] = row["route_provider"]
         asset["voice_scope"] = row["voice_scope"]
         evidence = _job_evidence(row, asset)
+        if row["kind"] in {
+            "video", "tryon", "xiaole_video", "sora_video", "cinematic",
+            "script_to_video",
+        }:
+            asset_status = str(asset.get("status") or "").lower()
+            asset_consistent = bool(asset and asset_status in {"done", "completed", "succeeded"})
+            evidence["asset_consistent"] = asset_consistent
+            if evidence.get("completed") and not asset_consistent:
+                evidence["delivery_verified"] = False
+                evidence["artifact_check"] = "asset_pending" if asset else "asset_missing"
         evidence["route_provider"] = row["route_provider"] or None
         evidence["voice_scope"] = row["voice_scope"] or None
         return evidence
@@ -3829,7 +3870,8 @@ def _public_e2e_run(row):
     journey_delivered = delivered and (not character_reference or character_finalized)
     delivery_checking = bool(evidence and evidence.get("artifact_check") == "checking")
     refunded = bool(evidence and evidence.get("billing_state") == "refunded")
-    billing_passed = refunded or (completed and billing_ok and ledger_ok)
+    asset_consistent = (evidence or {}).get("asset_consistent") is not False
+    billing_passed = refunded or (completed and billing_ok and ledger_ok and asset_consistent)
     item["stages"] = [
         _e2e_stage("accepted", "后台测试受理", "passed", "已建立独立测试批次 " + item["run_id"][:8]),
         _e2e_stage("account", "专用账号与点数", "passed" if item.get("username") else "waiting",
@@ -3860,6 +3902,8 @@ def _public_e2e_run(row):
                      "structured_asset": "结构化结果已验收并写入资产库",
                      "structured_result": "结构化结果完整且可供客户页面读取",
                      "download_proxy": "下载代理返回完整视频，文件可解码",
+                     "asset_missing": "作品文件存在，但尚未写入客户资产库",
+                     "asset_pending": "作品文件存在，但客户资产状态尚未完成",
                      "checking": "另一条后台质检正在验收同一视频",
                      "invalid_structured": "结果结构不完整或没有可用结果",
                      "decode_failed": "文件返回但无法解码", "missing": "作品文件缺失",
@@ -3872,12 +3916,7 @@ def _public_e2e_run(row):
     return item
 
 
-def list_e2e_runs(limit=30):
-    with closing(db()) as connection:
-        rows = connection.execute(
-            "SELECT * FROM admin_e2e_runs ORDER BY created_at DESC LIMIT ?",
-            (max(1, min(int(limit or 30), 100)),),
-        ).fetchall()
+def _public_e2e_rows(rows):
     stored_status = {row["run_id"]: row["status"] for row in rows}
     runs = [_public_e2e_run(row) for row in rows]
     now = int(time.time())
@@ -3891,6 +3930,31 @@ def list_e2e_runs(limit=30):
                 )
         connection.commit()
     return runs
+
+
+def list_e2e_runs(limit=30):
+    with closing(db()) as connection:
+        rows = connection.execute(
+            "SELECT * FROM admin_e2e_runs ORDER BY created_at DESC LIMIT ?",
+            (max(1, min(int(limit or 30), 100)),),
+        ).fetchall()
+    return _public_e2e_rows(rows)
+
+
+def list_latest_e2e_runs():
+    with closing(db()) as connection:
+        rows = connection.execute(
+            """SELECT current.* FROM admin_e2e_runs AS current
+               WHERE NOT EXISTS (
+                   SELECT 1 FROM admin_e2e_runs AS newer
+                   WHERE newer.operation_id=current.operation_id
+                     AND (newer.created_at>current.created_at
+                          OR (newer.created_at=current.created_at
+                              AND newer.rowid>current.rowid))
+               )
+               ORDER BY current.created_at DESC,current.rowid DESC"""
+        ).fetchall()
+    return _public_e2e_rows(rows)
 
 
 def _insert_e2e_run(actor, operation_id, *, status="submitting", batch_id="",
@@ -5562,8 +5626,11 @@ def start_e2e_run(actor, admin_token, operation_id):
 
 def _e2e_run_passed(run):
     stages = run.get("stages") or []
-    return bool(run.get("status") == "completed" and stages
-                and all(stage.get("state") == "passed" for stage in stages))
+    return bool(
+        run.get("status") == "completed"
+        and tuple(stage.get("key") for stage in stages) == E2E_STAGE_KEYS
+        and all(stage.get("state") == "passed" for stage in stages)
+    )
 
 
 def _e2e_run_fresh(run):
@@ -6022,6 +6089,10 @@ def job_stats(days=7):
                               CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.model'),'')) ELSE '' END AS model,
                               CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.variant'),'')) ELSE '' END AS variant,
                               CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.voice_scope'),'')) ELSE '' END AS voice_scope,
+                              CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.pipeline'),'')) ELSE '' END AS pipeline,
+                              CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.format'),'')) ELSE '' END AS format,
+                              CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload,'$.style'),'') ELSE '' END AS style,
+                              CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.source_type'),'')) ELSE '' END AS source_type,
                               CASE WHEN json_valid(payload) AND json_type(payload,'$.mask')='text' THEN 1 ELSE 0 END AS mask_present,
                               CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_url'),json_extract(%s,'$.image_url'),json_extract(%s,'$.url'),json_extract(%s,'$.urls[0]'),'') ELSE '' END AS result_url,
                               CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_file'),json_extract(%s,'$.image_file'),json_extract(%s,'$.file'),json_extract(%s,'$.files[0]'),'') ELSE '' END AS result_file,
@@ -6065,6 +6136,8 @@ def job_stats(days=7):
             "source_page": row["source_page"], "provider": row["provider"],
             "model": row["model"], "variant": row["variant"],
             "voice_scope": row["voice_scope"],
+            "pipeline": row["pipeline"], "format": row["format"],
+            "style": row["style"], "source_type": row["source_type"],
             "mask_present": bool(row["mask_present"]),
         }
         operation = function_registry.classify_task(row["kind"], metadata)
@@ -6604,7 +6677,8 @@ class H(BaseHTTPRequestHandler):
             _resume_short_drama_shot_runs(self._token())
             _resume_short_drama_preview_runs(self._token())
             _resume_short_drama_delivery_runs(self._token())
-            e2e_runs = list_e2e_runs()
+            recent_e2e_runs = list_e2e_runs(100)
+            e2e_runs = list_latest_e2e_runs()
             return self._send(
                 200,
                 {
@@ -6625,7 +6699,7 @@ class H(BaseHTTPRequestHandler):
                         "username": E2E_TEST_USERNAME,
                     },
                     "e2e_runs": e2e_runs,
-                    "e2e_batches": list_e2e_batches(e2e_runs),
+                    "e2e_batches": list_e2e_batches(recent_e2e_runs),
                 },
             )
         return self._send(404, {"detail": "not found"})

@@ -441,7 +441,9 @@ class PixelleVideoTests(unittest.TestCase):
         self.assertEqual(prefixed, expected)
 
     def test_generate_persists_service_result_in_authenticated_asset_path(self):
-        payload = self.pixelle.prepare_payload({"text": "AI 培训", "mode": "generate"})
+        payload = self.pixelle.prepare_payload({
+            "text": "AI 培训", "mode": "generate", "source_page": "text-video",
+        })
         payload["_job_id"] = 42
         with mock.patch.object(self.pixelle, "_submit", return_value="task-42"), \
              mock.patch.object(self.pixelle, "_wait", return_value={
@@ -456,6 +458,11 @@ class PixelleVideoTests(unittest.TestCase):
         self.assertEqual(result["duration"], 31.25)
         self.assertEqual(result["scene_count"], 5)
         self.assertEqual(result["style"], payload["style"])
+        self.assertEqual(payload["source_page"], "text-video")
+        self.assertEqual(payload["provider"], "pixelle")
+        self.assertEqual(result["provider_task_id"], "task-42")
+        self.assertEqual(result["provider_video_id"], "task-42")
+        self.assertEqual((result["status"], result["mode"]), ("done", "generate"))
         self.assertNotIn("prompt_prefix", result)
         self.assertNotIn("upstream_task_id", result)
         self.assertNotIn("voice_id", result)

@@ -356,6 +356,8 @@ def prepare_payload(payload, username=""):
     scene_count = 5 if mode == "generate" else len(segments)
     prepared = {
         "pipeline": "pixelle",
+        "provider": "pixelle",
+        "source_page": "text-video" if body.get("source_page") == "text-video" else "script",
         "text": text,
         "mode": mode,
         "template": template,
@@ -617,6 +619,10 @@ def generate(payload):
     return {
         "type": "script_to_video",
         "pipeline": "pixelle",
+        "provider_task_id": task_id,
+        "provider_video_id": task_id,
+        "status": "done",
+        "mode": payload["mode"],
         "video_file": video_file,
         "video_url": public_url(video_file, "video/mp4", private=True),
         "duration": round(float(result.get("duration") or 0), 3),

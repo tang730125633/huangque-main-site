@@ -2026,6 +2026,7 @@
   }
   function _doGenerate(payload,btn,options){
     options=options||{};
+    payload.source_page='script';
     var endpoint=options.endpoint||'/api/gen/script_to_video';
     var sceneCount=options.sceneCount==null?(payload.scenes||[]).length:options.sceneCount;
     if(_readActiveVideoJob()){
@@ -2214,7 +2215,7 @@
     _setGenerateBusy(btn,true);
     scenes.innerHTML='<div style="padding:34px;text-align:center;color:#e7b24c;font-size:13px;">🎨 正在生成图片…</div>';
     var pollCount=0, pollErrors=0;
-    var imagePayload={prompt:prompt,ratio:'9:16',quality:'standard'};
+    var imagePayload={prompt:prompt,ratio:'9:16',quality:'standard',source_page:'script'};
     var imagePending=_pendingSubmission('script-image',imagePayload);
     fetch('/api/gen/image',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json','Idempotency-Key':imagePending.key},body:imagePending.body})
       .then(_readApiResponse)

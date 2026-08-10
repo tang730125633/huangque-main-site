@@ -230,6 +230,31 @@ class AdminE2ERunnerTests(unittest.TestCase):
         )
         self.assertEqual(self.admin._e2e_kind("/api/gen/canvas_agent"), "canvas_agent")
 
+        text_video = self.admin._e2e_payload(
+            "text_video.topic",
+            self.admin.function_registry.e2e_runner("text_video.topic"),
+            ready_audio_voice_key="public:zh-CN-YunjianNeural",
+        )
+        self.assertEqual(
+            (text_video["source_page"], text_video["pipeline"], text_video["mode"]),
+            ("text-video", "pixelle", "generate"),
+        )
+        self.assertEqual(text_video["voice"], "public:zh-CN-YunjianNeural")
+        self.assertEqual(
+            self.admin.function_registry.e2e_runner("text_video.topic")["endpoint"]["path"],
+            "/api/gen/script_to_video",
+        )
+        self.assertEqual(self.admin._e2e_kind("/api/gen/script_to_video"), "script_to_video")
+
+    def test_text_video_voice_preflight_uses_the_customer_api_shape(self):
+        with patch.object(self.admin, "_content_e2e_get", return_value={"voices": [{
+            "id": "public:zh-CN-YunjianNeural", "scope": "public",
+        }]}):
+            self.assertEqual(
+                self.admin._ready_audio_voice_key("text_video.topic", "qa-token"),
+                "public:zh-CN-YunjianNeural",
+            )
+
         for operation, channel in (("canvas.video.grok", "grok"),
                                    ("canvas.video.micro", "micro")):
             video = self.admin._e2e_payload(
@@ -1615,6 +1640,44 @@ class AdminE2ERunnerTests(unittest.TestCase):
         self.assertEqual(next(stage for stage in run["stages"] if stage["key"] == "billing")["detail"], "扣点流水一致")
         self.assertNotIn("transaction_key", run)
 
+    def test_completed_video_with_pending_asset_cannot_pass_eight_stages(self):
+        (self.admin.CONTENT_OUT / "result.mp4").write_bytes(b"video")
+        with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
+            connection.execute("""CREATE TABLE jobs(
+                id INTEGER PRIMARY KEY,kind TEXT,status TEXT,cost INTEGER,refunded INTEGER,error TEXT,
+                created_at INTEGER,updated_at INTEGER,payload TEXT,result TEXT)""")
+            connection.execute(
+                "INSERT INTO jobs VALUES(78,'script_to_video','done',30,0,'',1,2,?,?)",
+                (json.dumps({"provider": "pixelle"}),
+                 json.dumps({"video_file": "result.mp4", "video_url": "/api/gen/file/result.mp4",
+                             "provider_task_id": "pixelle-78"})),
+            )
+            connection.commit()
+        with closing(sqlite3.connect(self.admin.ASSET_DB)) as connection:
+            connection.execute("""CREATE TABLE video_assets(
+                job_id INTEGER,phase TEXT,provider_video_id TEXT,video_file TEXT,
+                video_url TEXT,status TEXT,error TEXT,updated_at INTEGER)""")
+            connection.execute(
+                "INSERT INTO video_assets VALUES(78,'downloaded','pixelle-78','result.mp4',"
+                "'/api/gen/file/result.mp4','pending','',2)"
+            )
+            connection.commit()
+        row = {
+            "run_id": "run-78", "operation_id": "text_video.topic",
+            "username": "qa-dedicated", "status": "completed", "job_id": 78,
+            "cost": 30, "points_before": 500, "points_after": 470,
+            "transaction_key": "ledger-78", "error": "", "created_by": "root",
+            "created_at": 1, "updated_at": 2,
+        }
+        ledger = {"username": "qa-dedicated", "delta": -30, "after_points": 470}
+        with patch.object(self.admin.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=b"h264\n")), \
+             patch.object(self.admin, "points_domain", SimpleNamespace(get_points_transaction=lambda key: ledger)):
+            run = self.admin._public_e2e_run(row)
+        stages = {stage["key"]: stage for stage in run["stages"]}
+        self.assertEqual(stages["delivery"]["state"], "failed")
+        self.assertEqual(stages["billing"]["state"], "waiting")
+        self.assertFalse(run["evidence"]["asset_consistent"])
+
     def test_collect_structured_result_and_asset_complete_all_eight_stages(self):
         with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
             connection.execute("""CREATE TABLE jobs(
@@ -1849,7 +1912,10 @@ class AdminE2ERunnerTests(unittest.TestCase):
             {"key": "video.unprepared", "validation": {"supported": False}},
         ]
         fresh = {"operation_id": "video.sora.text", "status": "completed",
-                 "updated_at": int(time.time()), "stages": [{"state": "passed"}]}
+                 "updated_at": int(time.time()), "stages": [
+                     {"key": key, "state": "passed"}
+                     for key in self.admin.E2E_STAGE_KEYS
+                 ]}
         with patch.object(self.admin, "list_e2e_runs", return_value=[fresh]), \
              patch.object(self.admin, "_e2e_page_modes", return_value=modes), \
              patch.object(self.admin, "auth_admin_request", return_value=session), \
@@ -1871,7 +1937,10 @@ class AdminE2ERunnerTests(unittest.TestCase):
         }}
         modes = [{"key": "video.sora.text", "validation": {"supported": True}}]
         fresh = {"operation_id": "video.sora.text", "status": "completed",
-                 "updated_at": int(time.time()), "stages": [{"state": "passed"}]}
+                 "updated_at": int(time.time()), "stages": [
+                     {"key": key, "state": "passed"}
+                     for key in self.admin.E2E_STAGE_KEYS
+                 ]}
         with patch.object(self.admin, "list_e2e_runs", return_value=[fresh]), \
              patch.object(self.admin, "_e2e_page_modes", return_value=modes), \
              patch.object(self.admin, "auth_admin_request", return_value=session), \
@@ -1886,6 +1955,57 @@ class AdminE2ERunnerTests(unittest.TestCase):
         html = (Path(__file__).resolve().parents[1] / "site/admin/index.html").read_text(encoding="utf-8")
         self.assertIn("重新验收全部 ", html)
         self.assertIn("RERUN_BATCH", html)
+
+    def test_green_gate_requires_exactly_the_eight_canonical_stages(self):
+        stages = [
+            {"key": key, "state": "passed"}
+            for key in self.admin.E2E_STAGE_KEYS
+        ]
+        self.assertTrue(self.admin._e2e_run_passed({
+            "status": "completed", "stages": stages,
+        }))
+        self.assertFalse(self.admin._e2e_run_passed({
+            "status": "completed", "stages": stages[:-1],
+        }))
+        self.assertFalse(self.admin._e2e_run_passed({
+            "status": "completed", "stages": stages[:-1] + [stages[-2]],
+        }))
+        self.assertFalse(self.admin._e2e_run_passed({
+            "status": "completed", "stages": list(reversed(stages)),
+        }))
+        html = (Path(__file__).resolve().parents[1] / "site/admin/index.html").read_text(encoding="utf-8")
+        self.assertIn("stages.length===e2eStageKeys.length", html)
+        self.assertIn("stage.key===e2eStageKeys[index]", html)
+
+    def test_latest_runs_returns_one_row_per_operation_beyond_global_limit(self):
+        now = int(time.time())
+        with closing(sqlite3.connect(self.admin.ADMIN_DB)) as connection:
+            for index in range(35):
+                connection.execute(
+                    """INSERT INTO admin_e2e_runs(
+                           run_id,operation_id,status,created_by,created_at,updated_at)
+                       VALUES(?,?,?,?,?,?)""",
+                    ("run-%02d" % index, "operation.%02d" % index,
+                     "completed", "root", now + index, now + index),
+                )
+            connection.execute(
+                """INSERT INTO admin_e2e_runs(
+                       run_id,operation_id,status,error,created_by,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?)""",
+                ("target-old", "operation.target", "completed", "", "root", now, now),
+            )
+            connection.execute(
+                """INSERT INTO admin_e2e_runs(
+                       run_id,operation_id,status,error,created_by,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?)""",
+                ("target-new", "operation.target", "failed", "latest failure",
+                 "root", now + 100, now + 100),
+            )
+            connection.commit()
+        latest = self.admin.list_latest_e2e_runs()
+        self.assertEqual(len(latest), 36)
+        target = next(run for run in latest if run["operation_id"] == "operation.target")
+        self.assertEqual((target["run_id"], target["status"]), ("target-new", "failed"))
 
     def test_audio_batch_is_all_or_nothing_and_totals_twenty_points(self):
         session = {"token": "short-lived-secret", "account": {

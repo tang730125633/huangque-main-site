@@ -1751,7 +1751,8 @@
   }
   function registryE2ERun(mode,data){return (data.e2e_runs||[]).find(function(item){return item.operation_id===mode.key})}
   function e2eActive(status){return ['planned','submitting','queued','running'].indexOf(status)>=0}
-  function registryE2EPassed(run){return !!(run&&run.status==='completed'&&run.stages&&run.stages.length&&run.stages.every(function(stage){return stage.state==='passed'}))}
+  var e2eStageKeys=['accepted','account','job','route','provider','generation','delivery','billing'];
+  function registryE2EPassed(run){var stages=run&&run.stages||[];return !!(run&&run.status==='completed'&&stages.length===e2eStageKeys.length&&stages.every(function(stage,index){return stage.key===e2eStageKeys[index]&&stage.state==='passed'}))}
   function registryE2EFresh(run){return registryE2EPassed(run)&&Number(run.updated_at||run.created_at||0)>=Math.floor(Date.now()/1000)-86400}
   function registryAcceptanceLabel(mode,data,flagState,verdict){
     var run=registryE2ERun(mode,data);
@@ -1888,6 +1889,7 @@
   function renderE2EBatch(page,data,passedCount,runnableCount,pausedCount,blockedCount){
     var target=el('operationsBatch');if(page.inventory_status!=='verified'){target.innerHTML='';return}
     var modeNames={};(page.functions||[]).forEach(function(feature){(feature.modes||[]).forEach(function(mode){modeNames[mode.key]=feature.name+' · '+mode.name})});
+    if(!Object.keys(modeNames).length){target.innerHTML='<section class="ops-batch"><div class="ops-batch-head"><div><b>客户浏览器旅程</b><span>本页不创建生成任务；按入口、交互、结果回读和账号状态验收，不伪造供应商或扣点证据。</span></div><span class="pill neutral">生产链八段不适用</span></div></section>';return}
     var latest=latestE2EBatch(data,page.key),active=latest&&latest.status==='running',preflight=state.e2eBatchPreflights[page.key],preparing=!!state.e2eBatchPreflightPending[page.key],items=latest&&latest.items||[];
     var result=latest?'<div class="ops-batch-counts"><span class="pill '+(active?'warn':(latest.failed?'fail':'ok'))+'">'+(active?'批次运行中':(latest.failed?'批次有失败':'批次已通过'))+'</span><span class="pill neutral">通过 '+Number(latest.passed||0)+' / '+Number(latest.total||0)+'</span><span class="pill '+(latest.failed?'fail':'neutral')+'">失败 '+Number(latest.failed||0)+'</span><span class="pill neutral">等待 '+Number(latest.waiting||0)+'</span></div>':'';
     var details=items.length?'<details class="ops-batch-results"><summary>查看最近批次每项结果</summary><div class="ops-batch-items">'+items.map(function(item){var failed=item.status==='failed'||item.status==='unknown';return '<div class="ops-batch-item"><b>'+esc(modeNames[item.operation_id]||item.operation_id)+'</b><span class="'+(failed?'error':'')+'">'+(failed?esc(item.error||'失败'):(Number(item.passed||0)+' / '+Number(item.stages||0)+' 段通过'))+'</span></div>'}).join('')+'</div></details>':'';
@@ -1907,6 +1909,10 @@
     html+='<details class="ops-dev" '+(unmapped.length?'open':'')+'><summary>开发待归档 · 发现 '+unmapped.length+' 种真实任务尚未登记</summary><div class="ops-dev-body">'+(unmapped.length?unmapped.map(function(item){return '<div class="ops-dev-row"><code>'+esc(item.signature)+'</code><span>共 '+Number(item.total||0)+'</span><span>最近 '+esc(fmtTime(item.latest_at))+'</span><span>'+esc(item.latest_error||('完成 '+Number(item.done||0)+' · 失败 '+Number(item.error||0)))+'</span></div>'}).join(''):'<div class="muted">当前统计窗口没有发现未登记任务。</div>')+'</div></details>';
     el('operationsDeveloper').innerHTML=html;
   }
+  function registryBrowserJourneyPanel(page){
+    var journeys=page.browser_journeys||[];if(!journeys.length)return '';
+    return '<section class="ops-feature-card"><div class="ops-feature-head"><div><h3>客户浏览器旅程</h3><p>从客户真实入口检查页面、交互和结果回读；它不冒充生成任务八段。</p></div><div class="meta"><span class="pill neutral">已盘点 '+journeys.length+' 项</span><span class="pill warn">待浏览器验收</span></div></div><div class="ops-mode-list">'+journeys.map(function(journey){var endpoints=(journey.entrypoints||[]).map(function(endpoint){return '<code>'+esc(endpoint.method+' '+endpoint.path)+'</code>'}).join(' '),checks=(journey.checks||[]).map(function(check){return '<li>'+esc(check)+'</li>'}).join('');return '<article class="ops-mode"><div class="ops-mode-head"><div class="ops-mode-name"><b>'+esc(journey.name)+'</b><code>'+esc(journey.key)+'</code></div><div class="ops-verdict"><span class="pill neutral">用户旅程已登记</span><span class="pill warn">尚未自动执行</span></div></div><div class="ops-chain-body"><div>'+endpoints+'</div><ul>'+checks+'</ul></div></article>'}).join('')+'</div></section>';
+  }
   function focusRegisteredTarget(attr,values){
     values=String(values||'').split(',').filter(Boolean);var target=null;
     Array.prototype.some.call(document.querySelectorAll('['+attr+']'),function(node){if(values.indexOf(node.getAttribute(attr))>=0){target=node;return true}return false});
@@ -1917,12 +1923,12 @@
     (stats.by_operation||[]).forEach(function(item){statByOperation[item.operation]=item});
     (data.services||[]).forEach(function(item){services[item.key]=item});
     if(!pages.some(function(page){return page.key===state.operationsPage}))state.operationsPage=pages.some(function(page){return page.key==='video'})?'video':((pages[0]||{}).key||'');
-    var page=pages.find(function(item){return item.key===state.operationsPage})||{key:'',name:'客户功能页',inventory_status:'pending',functions:[]};
+    var page=pages.find(function(item){return item.key===state.operationsPage})||{key:'',name:'客户功能页',inventory_status:'pending',functions:[],browser_journeys:[]};
     el('operationsPage').innerHTML=pages.map(function(item){return '<option value="'+esc(item.key)+'">'+esc(item.name)+'（'+(item.inventory_status==='verified'?'已盘点':'待盘点')+'）</option>'}).join('');
     el('operationsPage').value=page.key;el('operationsDays').value=String(state.days);
     el('operationsRouteSummary').textContent='已盘点 '+pages.filter(function(item){return item.inventory_status==='verified'}).length+' / '+pages.length;
-    el('operationsPageState').innerHTML='<b>客户前台 · '+esc(page.name)+'</b><span>'+(page.inventory_status==='verified'?'该页面已按客户入口核对；内部任务不会自动混入目录。':'该客户页尚未盘点，暂不归类历史任务，避免误判。')+'</span>';
-    var allFeatures=(page.functions||[]).slice().sort(function(a,b){return Number(a.order||0)-Number(b.order||0)}),visibleFeatures=allFeatures.filter(function(feature){return feature.runtime_visible!==false}),hiddenFeatures=allFeatures.filter(function(feature){return feature.runtime_visible===false});
+    el('operationsPageState').innerHTML='<b>客户前台 · '+esc(page.name)+'</b><span>'+(page.inventory_status==='verified'?'客户入口与检查项已登记；是否可用仍以生产链或浏览器验收为准。':'该客户页尚未盘点，暂不归类历史任务，避免误判。')+'</span>';
+    var allFeatures=(page.functions||[]).slice().sort(function(a,b){return Number(a.order||0)-Number(b.order||0)}),visibleFeatures=allFeatures.filter(function(feature){return feature.runtime_visible!==false}),hiddenFeatures=allFeatures.filter(function(feature){return feature.runtime_visible===false}),browserJourneyPanel=registryBrowserJourneyPanel(page);
     if(page.inventory_status!=='verified'){
       state.operationsMode='';
       el('operationsAttentionCount').textContent='待盘点';
@@ -1945,10 +1951,11 @@
     if(!entries.some(function(entry){return entry.mode.key===state.operationsMode}))state.operationsMode=(entries[0]||{mode:{key:''}}).mode.key;
     var selected=entries.find(function(entry){return entry.mode.key===state.operationsMode});
     if(!selected){
-      el('operationsBox').innerHTML='<div class="empty">当前筛选下没有需要展示的客户模式。</div>';
+      el('operationsAttentionCount').textContent=(page.browser_journeys||[]).length?'浏览器旅程 '+(page.browser_journeys||[]).length+' · 待验收':'暂无客户模式';
+      el('operationsBox').innerHTML=browserJourneyPanel||'<div class="empty">当前筛选下没有需要展示的客户模式。</div>';
       el('operationsUpdatedAt').textContent=operationsUpdatedText();
       renderOperationsDeveloper(hiddenFeatures,stats,page.auxiliary_actions||[],page.key);
-      if((latestE2EBatch(data,page.key)||{}).status!=='running')loadE2EBatchPreflight(page.key,false);return;
+      if(modeCount&&(latestE2EBatch(data,page.key)||{}).status!=='running')loadE2EBatchPreflight(page.key,false);return;
     }
     var catalog=evaluations.map(function(item){return '<div class="ops-catalog-feature"><strong>'+esc(item.feature.name)+'</strong>'+item.modes.map(function(entry){var active=entry.mode.key===selected.mode.key,dot=entry.acceptance[0]==='neutral'?'':entry.acceptance[0];return '<button class="ops-catalog-mode'+(active?' active':'')+'" data-operation-select="'+esc(entry.mode.key)+'" aria-pressed="'+(active?'true':'false')+'"><span class="dot '+dot+'"></span><span><b>'+esc(entry.mode.name)+'</b><small>'+esc(entry.acceptance[1])+'</small></span></button>'}).join('')+'</div>'}).join('');
     var modeCard=registryModeCard(selected.feature,selected.mode,selected.stat,statByOperation,data,services),latest=selected.stat&&selected.stat.latest;
@@ -1956,7 +1963,7 @@
     var catalogPanel='<aside class="ops-catalog"><div class="ops-catalog-head"><div><b>'+esc(page.name)+'</b><span>客户功能 → 具体模式</span></div>'+(page.path?'<a href="'+esc(page.path)+'" target="_blank" rel="noopener">查看前台</a>':'')+'</div><div class="ops-catalog-list">'+catalog+'</div></aside>';
     var selectedPanel='<section class="ops-selected"><div class="ops-page-head"><div><b>'+esc(selected.feature.name)+' · '+esc(selected.mode.name)+'</b><span>'+esc(page.name)+' → '+esc(selected.feature.name)+' → '+esc(selected.mode.name)+'</span></div><span class="pill neutral">'+esc(selected.mode.key)+'</span></div><article class="ops-feature-card"><div class="ops-feature-head"><div><h3>'+esc(selected.feature.name)+'</h3><p>'+esc(selected.feature.desc||'')+'</p></div><div class="meta"><span class="pill neutral">入口已登记</span><span class="pill neutral">当前模式</span></div></div><div class="ops-mode-list">'+modeCard+'</div></article></section>';
     var inspectorPanel='<aside class="ops-inspector"><div class="ops-inspector-kicker">当前判断</div><h3>'+esc(selected.mode.name)+'</h3><p>'+esc(selected.mode.key)+'</p><div class="ops-inspector-verdict"><span class="pill '+selected.verdict[0]+'">'+esc(selected.verdict[1])+'</span><b>'+esc(selected.verdict[3])+'</b><span>'+esc(selected.verdict[2])+'</span></div><dl class="ops-inspector-facts"><div><dt>客户页面</dt><dd>'+esc(page.name)+'</dd></div><div><dt>最近证据</dt><dd>'+(latest?esc(fmtTime(latest.updated_at||latest.created_at)):'无记录')+'</dd></div><div><dt>任务终态</dt><dd>'+Number((selected.stat||{}).done||0)+' 成 / '+Number((selected.stat||{}).error||0)+' 败</dd></div><div><dt>终态成功率</dt><dd>'+rate+'</dd></div></dl><div class="actions"><button class="mini" data-operations-module="logs" data-operation-key="'+esc(selected.mode.key)+'">任务诊断</button><button class="mini" data-operation-channel-open="'+esc(selected.mode.key)+'">线路与凭据</button><button class="mini" data-operations-module="features">接单与定价</button></div>'+registryValidationPanel(selected.feature,selected.mode,data,selected.verdict)+'<div class="ops-note" style="margin-top:12px">只有同一次执行的所有适用证据通过，才允许显示绿色；服务可达或任务 completed 都不够。</div></aside>';
-    el('operationsBox').innerHTML='<section class="ops-workspace" data-operations-page="'+esc(page.key)+'">'+catalogPanel+selectedPanel+inspectorPanel+'</section>';
+    el('operationsBox').innerHTML='<section class="ops-workspace" data-operations-page="'+esc(page.key)+'">'+catalogPanel+selectedPanel+inspectorPanel+'</section>'+browserJourneyPanel;
     var selectedDetails=el('operationsBox').querySelector('.ops-selected .ops-mode-details');if(selectedDetails)selectedDetails.open=true;
     el('operationsUpdatedAt').textContent=operationsUpdatedText();
     renderOperationsDeveloper(hiddenFeatures,stats,page.auxiliary_actions||[],page.key);

@@ -97,10 +97,10 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertEqual(
             [page["name"] for page in pages],
             ["灵感设计", "平台获客", "内容爬取", "图片生成", "视频生成", "音频生成",
-             "文案编导", "短剧创作", "无限画布", "我的资产", "点数价格", "邀请中心",
+             "文案编导", "文案成片", "短剧创作", "无限画布", "我的资产", "点数价格", "邀请中心",
              "教程视频", "通用设置"],
         )
-        self.assertEqual([page["inventory_status"] for page in pages].count("verified"), 8)
+        self.assertTrue(all(page["inventory_status"] == "verified" for page in pages))
         image = next(page for page in pages if page["key"] == "banana")
         self.assertEqual(
             [feature["name"] for feature in image["functions"]],
@@ -193,17 +193,59 @@ class FunctionRegistryTests(unittest.TestCase):
             "@env/HQ_E2E_COLLECT_URL",
         )
         script = next(page for page in pages if page["key"] == "script")
-        self.assertEqual([item["name"] for item in script["functions"]], ["AI 写脚本", "拆解视频"])
+        self.assertEqual(
+            [item["name"] for item in script["functions"]],
+            ["AI 写脚本", "拆解视频", "脚本结果生产"],
+        )
         self.assertEqual(
             [mode["key"] for feature in script["functions"] for mode in feature["modes"]],
             ["script.write.spoken", "script.write.story", "script.write.recommend",
              "script.breakdown.scenes", "script.breakdown.reverse",
-             "script.breakdown.local_image", "script.breakdown.local_video"],
+             "script.breakdown.local_image", "script.breakdown.local_video",
+             "script.output.video.story", "script.output.video.spoken",
+             "script.output.video.recommend", "script.output.remake.cinematic",
+             "script.output.remake.grok", "script.output.remake.micro",
+             "script.output.image"],
         )
         self.assertTrue(all(
             mode["validation"]["supported"]
-            for feature in script["functions"] for mode in feature["modes"]
+            for feature in script["functions"][:2] for mode in feature["modes"]
         ))
+        self.assertTrue(all(
+            not mode["validation"]["supported"]
+            for mode in script["functions"][2]["modes"]
+        ))
+        text_video = next(page for page in pages if page["key"] == "text-video")
+        self.assertEqual(
+            [mode["key"] for mode in text_video["functions"][0]["modes"]],
+            ["text_video.topic", "text_video.fixed"],
+        )
+        self.assertTrue(all(
+            mode["validation"]["supported"]
+            for mode in text_video["functions"][0]["modes"]
+        ))
+        assets = next(page for page in pages if page["key"] == "assets")
+        self.assertEqual(assets["functions"][0]["modes"][0]["key"], "assets.audio.clone_vip")
+        self.assertFalse(assets["functions"][0]["modes"][0]["validation"]["supported"])
+        for key in {"inspiration", "script", "short-drama", "canvas", "assets",
+                    "pricing", "invite", "tutorials", "settings"}:
+            self.assertTrue(next(page for page in pages if page["key"] == key)["browser_journeys"])
+        settings = next(page for page in pages if page["key"] == "settings")
+        settings_endpoints = {
+            (endpoint["method"], endpoint["path"])
+            for journey in settings["browser_journeys"]
+            for endpoint in journey["entrypoints"]
+        }
+        self.assertIn(("POST", "/api/auth/friend-requests/respond"), settings_endpoints)
+        self.assertIn(("DELETE", "/api/auth/friends/{username}"), settings_endpoints)
+        self.assertIn(("POST", "/api/auth/points/transfer"), settings_endpoints)
+        self.assertIn(("POST", "/api/auth/change_password"), settings_endpoints)
+        self.assertNotIn(
+            "canvas.digital_presenter.project",
+            {journey["key"] for journey in next(
+                page for page in pages if page["key"] == "canvas"
+            )["browser_journeys"]},
+        )
         short_drama = next(page for page in pages if page["key"] == "short-drama")
         self.assertEqual([item["name"] for item in short_drama["functions"]], ["AI 真人短剧"])
         self.assertEqual(
@@ -286,11 +328,33 @@ class FunctionRegistryTests(unittest.TestCase):
             self.assertEqual(classify("copy", {"source_page": "script", "format": "script", "style": style}), operation)
         for metadata, operation in (
             ({"source_page": "script", "mode": "scenes"}, "script.breakdown.scenes"),
-            ({"source_page": "script", "mode": "reverse_prompt"}, "script.breakdown.reverse"),
+            ({"source_page": "script", "mode": "reverse_prompt", "source_type": ""}, "script.breakdown.reverse"),
             ({"source_page": "script", "source_type": "image"}, "script.breakdown.local_image"),
             ({"source_page": "script", "source_type": "video"}, "script.breakdown.local_video"),
         ):
             self.assertEqual(classify("breakdown", metadata), operation)
+        for kind, metadata, operation in (
+            ("script_to_video", {"source_page": "script", "style": "剧情"}, "script.output.video.story"),
+            ("script_to_video", {"source_page": "script", "style": "口播"}, "script.output.video.spoken"),
+            ("script_to_video", {"source_page": "script", "style": "种草"}, "script.output.video.recommend"),
+            ("cinematic", {"source_page": "script", "cine_mode": "open"}, "script.output.remake.cinematic"),
+            ("xiaole_video", {"source_page": "script", "channel": "grok"}, "script.output.remake.grok"),
+            ("xiaole_video", {"source_page": "script", "channel": "micro"}, "script.output.remake.micro"),
+            ("image", {"source_page": "script", "provider": "openai"}, "script.output.image"),
+        ):
+            self.assertEqual(classify(kind, metadata), operation)
+        self.assertEqual(
+            classify("script_to_video", {
+                "source_page": "text-video", "pipeline": "pixelle", "mode": "generate",
+            }),
+            "text_video.topic",
+        )
+        self.assertEqual(
+            classify("script_to_video", {
+                "source_page": "text-video", "pipeline": "pixelle", "mode": "fixed",
+            }),
+            "text_video.fixed",
+        )
         self.assertIsNone(classify("copy", {"source_page": "canvas", "format": "script", "style": "口播"}))
         self.assertIsNone(classify("breakdown", {"source_page": "video", "mode": "scenes"}))
 
@@ -299,7 +363,8 @@ class FunctionRegistryTests(unittest.TestCase):
         prices = self.admin.pricing.CATALOG_MAP
         for feature in (image["functions"] + video["functions"] + audio["functions"]
                         + collect["functions"] + leads["functions"] + script["functions"]
-                        + short_drama["functions"] + canvas["functions"]):
+                        + text_video["functions"] + short_drama["functions"]
+                        + canvas["functions"] + assets["functions"]):
             self.assertTrue(feature["frontend_selector"])
             self.assertIn(feature["service"], {"content", "imggen", "leadgen"})
             for flag in feature.get("flag_keys", []):
@@ -486,7 +551,10 @@ class FunctionRegistryTests(unittest.TestCase):
             "image.seedream.pro.reference",
         )
         self.assertIsNone(classify("image", {"provider": "openai"}))
-        self.assertIsNone(classify("image", {"source_page": "script", "provider": "openai"}))
+        self.assertEqual(
+            classify("image", {"source_page": "script", "provider": "openai"}),
+            "script.output.image",
+        )
         self.assertEqual(
             classify("audio", {"source_page": "audio", "provider": "cosyvoice", "voice_scope": "public"}),
             "audio.tts.public",
@@ -597,7 +665,7 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertEqual(operations[21], "image.openai.text")
         self.assertEqual(operations[22], "image.seedream.std.reference")
         self.assertEqual(operations[23], "image.xiaole.reference")
-        self.assertIsNone(operations[24])
+        self.assertEqual(operations[24], "script.output.image")
         self.assertIsNone(operations[25])
 
         stats = self.admin.job_stats(7)
@@ -606,6 +674,7 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertIn("image.openai.text", by_operation)
         self.assertIn("image.seedream.std.reference", by_operation)
         self.assertIn("image.xiaole.reference", by_operation)
+        self.assertIn("script.output.image", by_operation)
         self.assertEqual(
             by_operation["image.xiaole.reference"]["latest"]["provider_task_id"],
             "xiaole-23",
@@ -615,7 +684,7 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertEqual(banana["artifact_check"], "file_exists")
         self.assertTrue(banana["delivery_verified"])
         unmapped = {(item["page_key"], item["signature"]) for item in stats["unmapped"]}
-        self.assertIn(("script", "image/openai"), unmapped)
+        self.assertNotIn(("script", "image/openai"), unmapped)
         self.assertIn(("", "image/openai"), unmapped)
 
     def test_audio_page_jobs_join_assets_without_stealing_other_pages(self):

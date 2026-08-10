@@ -23,6 +23,8 @@ QA_PROMPT = "琥珀色精华瓶置于石台上，柔和晨光缓慢扫过瓶身�
 QA_IMAGE_PROMPT = "琥珀色精华瓶置于浅灰石台中央，柔和晨光，干净电商摄影，无人物、无文字、无标识"
 QA_IMAGE_EDIT_PROMPT = "仅将瓶身左侧背景改为柔和浅金色，保持产品主体、构图和光线不变，无文字、无标识"
 QA_AUDIO_TEXT = "你好，这是黄雀音频功能的自动质检。现在正在验证生成、播放、下载和点数记录。"
+QA_TEXT_VIDEO_TOPIC = "AI 如何帮助一家本地门店把复杂服务讲得更清楚"
+QA_TEXT_VIDEO_SCRIPT = "先说清客户的问题。\n\n再用一个具体场景展示解决方式。"
 QA_COLLECT_URL = "@env/HQ_E2E_COLLECT_URL"
 QA_LEADS_KEYWORD = "美容院如何拓客"
 QA_SCRIPT_PROMPT = "为一款无品牌的琥珀色保湿精华写一条可拍摄短视频脚本，卖点是清爽、易吸收；不得虚构功效、价格或品牌信息"
@@ -978,7 +980,7 @@ SCRIPT_FUNCTIONS = [
                 "key": "script.breakdown.reverse", "name": "链接提示词反推",
                 "frontend_selector": "#bdToolReverse",
                 "entrypoints": [_endpoint("POST", "/api/gen/breakdown"), _endpoint("GET", "/api/gen/job/{id}")],
-                "task_match": {"kind": "breakdown", "source_page": "script", "mode": "reverse_prompt"},
+                "task_match": {"kind": "breakdown", "source_page": "script", "mode": "reverse_prompt", "source_type": ""},
                 "evidence_contract": {"not_applicable": ["provider_task", "balance"]},
                 "price_keys": ["breakdown.item"],
                 "smoke_inputs": ["1 条已授权固定视频链接", "非空视频提示词"],
@@ -1003,6 +1005,72 @@ SCRIPT_FUNCTIONS = [
                 "price_keys": ["breakdown.item"],
                 "smoke_inputs": ["1 段本地短视频", "非空视频提示词"],
                 "validation": _validation({"file_url": QA_MOTION_VIDEO, "media_type": "video"}),
+            },
+        ],
+    },
+    {
+        "key": "output",
+        "name": "脚本结果生产",
+        "desc": "把当前脚本或拆解结果继续生成剧情视频、数字人口播、同款视频或图片",
+        "order": 30,
+        "frontend_selector": "#scGenVideo, #scGenAudio, #bdRemakeBtn, #bdToImageBtn",
+        "service": "content",
+        "modes": [
+            {
+                "key": "script.output.video.story", "name": "一键生成剧情视频",
+                "entrypoints": [_endpoint("POST", "/api/gen/script_to_video")],
+                "task_match": {"kind": "script_to_video", "source_page": "script", "pipeline": "", "style": "剧情"},
+                "price_keys": ["video.grok.v1.720p"],
+                "smoke_inputs": ["已生成剧情分镜", "分镜画面与时长"],
+                "validation": _validation(supported=False, blocked_reason="尚未准备可重复使用的剧情分镜测试包"),
+            },
+            {
+                "key": "script.output.video.spoken", "name": "一键生成口播视频",
+                "entrypoints": [_endpoint("POST", "/api/gen/script_to_video")],
+                "task_match": {"kind": "script_to_video", "source_page": "script", "pipeline": "", "style": "口播"},
+                "price_keys": ["video.talking.block"],
+                "smoke_inputs": ["已生成口播分镜", "已就绪形象", "公共音色"],
+                "validation": _validation(supported=False, blocked_reason="尚未登记编导页专用形象与口播测试包"),
+            },
+            {
+                "key": "script.output.video.recommend", "name": "一键生成种草口播",
+                "entrypoints": [_endpoint("POST", "/api/gen/script_to_video")],
+                "task_match": {"kind": "script_to_video", "source_page": "script", "pipeline": "", "style": "种草"},
+                "price_keys": ["video.talking.block"],
+                "smoke_inputs": ["已生成种草分镜", "已就绪形象", "公共音色"],
+                "validation": _validation(supported=False, blocked_reason="尚未登记编导页专用形象与种草口播测试包"),
+            },
+            {
+                "key": "script.output.remake.cinematic", "name": "同款视频 · 电影化身",
+                "entrypoints": [_endpoint("POST", "/api/gen/cinematic")],
+                "task_match": {"kind": "cinematic", "source_page": "script", "cine_mode": "open"},
+                "price_keys": ["video.cinematic.open"],
+                "smoke_inputs": ["反推提示词", "参考关键帧", "已就绪形象"],
+                "validation": _validation(supported=False, blocked_reason="尚未登记编导同款专用形象测试包"),
+            },
+            {
+                "key": "script.output.remake.grok", "name": "同款视频 · 果肉",
+                "entrypoints": [_endpoint("POST", "/api/gen/xiaole_video")],
+                "task_match": {"kind": "xiaole_video", "source_page": "script", "channel": "grok"},
+                "price_keys": ["video.grok.v1.720p", "video.grok.v1_5.720p"],
+                "smoke_inputs": ["反推提示词", "参考关键帧"],
+                "validation": _validation(supported=False, blocked_reason="尚未准备编导同款关键帧测试包"),
+            },
+            {
+                "key": "script.output.remake.micro", "name": "同款视频 · Seedance",
+                "entrypoints": [_endpoint("POST", "/api/gen/xiaole_video")],
+                "task_match": {"kind": "xiaole_video", "source_page": "script", "channel": "micro"},
+                "price_keys": ["video.seedance"],
+                "smoke_inputs": ["反推提示词", "参考关键帧"],
+                "validation": _validation(supported=False, blocked_reason="尚未准备编导同款关键帧测试包"),
+            },
+            {
+                "key": "script.output.image", "name": "拆解结果一键做图",
+                "entrypoints": [_endpoint("POST", "/api/gen/image")],
+                "task_match": {"kind": "image", "source_page": "script"},
+                "price_keys": ["image.openai.std"],
+                "smoke_inputs": ["已生成分镜", "分镜画面描述"],
+                "validation": _validation(supported=False, blocked_reason="尚未准备编导分镜转图片测试包"),
             },
         ],
     },
@@ -1206,6 +1274,186 @@ CANVAS_FUNCTIONS = [{
 }]
 
 
+TEXT_VIDEO_FUNCTIONS = [{
+    "key": "text_video",
+    "name": "文案成片",
+    "desc": "从主题或完整文案生成旁白、画面素材并套用模板输出视频",
+    "order": 10,
+    "frontend_selector": '#generateBtn',
+    "service": "content",
+    "flag_keys": ["pixelle_text_video"],
+    "modes": [{
+        "key": "text_video.topic", "name": "主题创作",
+        "frontend_selector": '[data-mode="generate"]',
+        "entrypoints": [
+            _endpoint("POST", "/api/gen/script_to_video"),
+            _endpoint("GET", "/api/gen/text-video/templates"),
+            _endpoint("GET", "/api/gen/text-video/styles"),
+            _endpoint("GET", "/api/gen/text-video/voices"),
+            _endpoint("GET", "/api/gen/job/{id}"),
+        ],
+        "task_match": {
+            "kind": "script_to_video", "source_page": "text-video",
+            "pipeline": "pixelle", "mode": "generate",
+        },
+        "price_keys": ["text.copy", "image.openai.std", "audio.tts"],
+        "smoke_inputs": ["预设中文主题", "竖屏插画模板", "写实商业风格", "公共中文音色"],
+        "validation": _validation({
+            "mode": "generate", "text": QA_TEXT_VIDEO_TOPIC,
+            "template": "1080x1920/image_default.html",
+            "style": "realistic_commercial", "source_page": "text-video",
+        }),
+    }, {
+        "key": "text_video.fixed", "name": "完整文案",
+        "frontend_selector": '[data-mode="fixed"]',
+        "entrypoints": [
+            _endpoint("POST", "/api/gen/script_to_video"),
+            _endpoint("GET", "/api/gen/text-video/templates"),
+            _endpoint("GET", "/api/gen/text-video/styles"),
+            _endpoint("GET", "/api/gen/text-video/voices"),
+            _endpoint("GET", "/api/gen/job/{id}"),
+        ],
+        "task_match": {
+            "kind": "script_to_video", "source_page": "text-video",
+            "pipeline": "pixelle", "mode": "fixed",
+        },
+        "price_keys": ["image.openai.std", "audio.tts"],
+        "smoke_inputs": ["两段预设中文文案", "竖屏插画模板", "写实商业风格", "公共中文音色"],
+        "validation": _validation({
+            "mode": "fixed", "text": QA_TEXT_VIDEO_SCRIPT,
+            "template": "1080x1920/image_default.html",
+            "style": "realistic_commercial", "source_page": "text-video",
+        }),
+    }],
+}]
+
+
+ASSET_FUNCTIONS = [{
+    "key": "personal_voice",
+    "name": "个人音色",
+    "desc": "购买专属槽位、上传样音并生成可复用的个人音色与试听资产",
+    "order": 10,
+    "frontend_selector": '#cloneVoiceVip',
+    "service": "content",
+    "flag_keys": ["audio"],
+    "dependencies": [{
+        "key": "cosyvoice", "role": "VIP 音色复刻", "requirement": "required",
+        "credential_source": "env",
+    }, {
+        "key": "cos", "role": "参考音频与试听存储", "requirement": "required",
+        "credential_source": "env",
+    }],
+    "modes": [{
+        "key": "assets.audio.clone_vip", "name": "VIP 音色复刻",
+        "entrypoints": [
+            _endpoint("POST", "/api/gen/audio/clone-vip"),
+            _endpoint("GET", "/api/gen/audio/clone-status?slot_id={slot_id}"),
+            _endpoint("GET", "/api/gen/audio/voices"),
+        ],
+        "evidence_source": "audio_voice_slots",
+        "evidence_contract": {
+            "acceptance_id_type": "slot_id", "not_applicable": ["billing", "balance"],
+        },
+        "price_keys": [],
+        "smoke_inputs": ["专用测试账号自有音色槽位", "私有短样音", "试听音频"],
+        "validation": _validation(
+            supported=False,
+            blocked_reason="异步复刻尚未绑定统一 run_id；完成前不能用页面轮询冒充八段证据",
+        ),
+    }],
+}]
+
+
+BROWSER_JOURNEYS = {
+    "inspiration": [{
+        "key": "inspiration.browse", "name": "浏览、筛选与查看案例",
+        "entrypoints": [_endpoint("GET", "/api/admin/public/inspirations")],
+        "checks": ["案例列表与分类可见", "详情图片或视频可播放", "提示词可复制、样图可下载"],
+    }, {
+        "key": "inspiration.like", "name": "收藏案例",
+        "entrypoints": [_endpoint("GET", "/api/gen/inspiration/likes"), _endpoint("POST", "/api/gen/inspiration/like")],
+        "checks": ["专用测试账号收藏状态可读写", "刷新后状态一致"],
+    }, {
+        "key": "inspiration.handoff", "name": "做同款预填",
+        "entrypoints": [_endpoint("NAVIGATE", "/workbench/banana.html 或 /workbench/video.html")],
+        "checks": ["目标功能页正确", "提示词与参考素材预填正确", "生成结果仍由目标页八段验收"],
+    }],
+    "script": [{
+        "key": "script.output.handoff", "name": "脚本结果转视频、同款或图片",
+        "entrypoints": [
+            _endpoint("POST", "/api/gen/script_to_video"),
+            _endpoint("POST", "/api/gen/cinematic"),
+            _endpoint("POST", "/api/gen/xiaole_video"),
+            _endpoint("POST", "/api/gen/image"),
+        ],
+        "checks": ["来源固定为 source_page=script", "目标任务归入脚本结果生产模式", "作品与账务由对应生产模式验收"],
+    }],
+    "short-drama": [{
+        "key": "short_drama.autodraft.review", "name": "自动制作与预览复核",
+        "entrypoints": [_endpoint("POST", "/api/gen/short-drama/autodraft/jobs")],
+        "checks": ["新镜头生产与已有镜头合成可区分", "已有付费镜头不重复扣点", "预览版本可播放"],
+    }],
+    "canvas": [{
+        "key": "canvas.short_drama.node", "name": "短剧节点",
+        "entrypoints": [_endpoint("UI", "/workbench/canvas.html")],
+        "checks": ["节点可创建与连接", "进入短剧工作区时上下文不丢失"],
+    }],
+    "assets": [{
+        "key": "assets.library.read", "name": "查询、预览与下载资产",
+        "entrypoints": [_endpoint("GET", "/api/gen/history"), _endpoint("GET", "/api/gen/audio/assets"), _endpoint("GET", "/api/gen/video/assets")],
+        "checks": ["七类资产可切换与搜索", "预览可播放", "单个与批量下载内容有效"],
+    }, {
+        "key": "assets.library.manage", "name": "收藏、标签、改名与删除",
+        "entrypoints": [_endpoint("POST", "/api/gen/asset/batch-delete"), _endpoint("POST", "/api/gen/audio/voice-name"), _endpoint("POST", "/api/gen/video/avatar-name")],
+        "checks": ["只修改专用测试账号资产", "刷新后状态一致", "删除操作另行人工确认"],
+    }, {
+        "key": "assets.voice.slot", "name": "购买个人音色槽位",
+        "entrypoints": [_endpoint("POST", "/api/gen/audio/buy-slot"), _endpoint("GET", "/api/gen/audio/slots")],
+        "checks": ["槽位增加一次", "扣点流水、余额与槽位价格一致"],
+    }],
+    "pricing": [{
+        "key": "pricing.catalog", "name": "查看实时点数价格",
+        "entrypoints": [_endpoint("GET", "/api/gen/pricing")],
+        "checks": ["价格分类可渲染", "30 秒刷新不丢失", "请求失败显示明确错误而非旧价格"],
+    }],
+    "invite": [{
+        "key": "invite.dashboard", "name": "查看邀请活动与奖励",
+        "entrypoints": [_endpoint("GET", "/api/invite/config"), _endpoint("GET", "/api/invite/dashboard"), _endpoint("GET", "/api/invite/users"), _endpoint("GET", "/api/invite/reward-points")],
+        "checks": ["邀请码、人数和奖励记录一致", "分页与刷新可用"],
+    }, {
+        "key": "invite.poster", "name": "复制邀请信息与下载海报",
+        "entrypoints": [_endpoint("GET", "/api/invite/code"), _endpoint("LOCAL", "Clipboard + Canvas/QRCode")],
+        "checks": ["复制内容正确", "海报二维码包含当前邀请码"],
+    }],
+    "tutorials": [{
+        "key": "tutorials.playback", "name": "筛选并播放教程",
+        "entrypoints": [_endpoint("GET", "/workbench/tutorials.json")],
+        "checks": ["教程目录可加载", "MP4 或 iframe 可播放", "失败与超时有明确降级"],
+    }],
+    "settings": [{
+        "key": "settings.profile", "name": "账号资料与昵称",
+        "entrypoints": [_endpoint("POST", "/api/auth/profile")],
+        "checks": ["服务端保存成功后才提示成功", "刷新与跨设备读取一致"],
+    }, {
+        "key": "settings.preferences", "name": "主题与通知偏好",
+        "entrypoints": [_endpoint("LOCAL", "localStorage")],
+        "checks": ["主题作为当前浏览器全局偏好保留", "通知偏好按账号隔离"],
+    }, {
+        "key": "settings.friends", "name": "好友申请与关系管理",
+        "entrypoints": [_endpoint("POST", "/api/auth/friends/request"), _endpoint("POST", "/api/auth/friend-requests/respond"), _endpoint("DELETE", "/api/auth/friends/{username}")],
+        "checks": ["只以服务端响应为准", "申请、同意、拒绝和删除状态一致"],
+    }, {
+        "key": "settings.points", "name": "会员点数赠送",
+        "entrypoints": [_endpoint("POST", "/api/auth/points/transfer")],
+        "checks": ["仅使用专用测试账号", "双方余额与唯一流水一致"],
+    }, {
+        "key": "settings.security", "name": "修改密码与退出",
+        "entrypoints": [_endpoint("POST", "/api/auth/change_password"), _endpoint("POST", "/api/auth/logout")],
+        "checks": ["仅使用可恢复的专用账号", "旧会话失效、新密码可登录"],
+    }],
+}
+
+
 _PAGE_DEFS = [
     ("inspiration", "灵感设计", "/workbench/inspiration.html"),
     ("leads", "平台获客", "/workbench/leads.html"),
@@ -1214,6 +1462,7 @@ _PAGE_DEFS = [
     ("video", "视频生成", "/workbench/video.html"),
     ("audio", "音频生成", "/workbench/audio.html"),
     ("script", "文案编导", "/workbench/script.html"),
+    ("text-video", "文案成片", "/workbench/text-video.html"),
     ("short-drama", "短剧创作", "/workbench/short-drama.html"),
     ("canvas", "无限画布", "/workbench/canvas.html"),
     ("assets", "我的资产", "/workbench/assets.html"),
@@ -1229,7 +1478,7 @@ FUNCTION_REGISTRY = [
         "name": name,
         "path": path,
         "order": order,
-        "inventory_status": "verified" if key in {"leads", "collect", "banana", "video", "audio", "script", "short-drama", "canvas"} else "pending",
+        "inventory_status": "verified",
         "functions": (
             VIDEO_FUNCTIONS if key == "video"
             else IMAGE_FUNCTIONS if key == "banana"
@@ -1237,10 +1486,13 @@ FUNCTION_REGISTRY = [
             else COLLECT_FUNCTIONS if key == "collect"
             else LEADS_FUNCTIONS if key == "leads"
             else SCRIPT_FUNCTIONS if key == "script"
+            else TEXT_VIDEO_FUNCTIONS if key == "text-video"
             else SHORT_DRAMA_FUNCTIONS if key == "short-drama"
             else CANVAS_FUNCTIONS if key == "canvas"
+            else ASSET_FUNCTIONS if key == "assets"
             else []
         ),
+        "browser_journeys": deepcopy(BROWSER_JOURNEYS.get(key, [])),
         "auxiliary_actions": ([{
             "key": "video.asset.import_h3", "name": "导入 H3 成片",
             "entrypoint": _endpoint("POST", "/api/gen/video/import"),
@@ -1325,7 +1577,7 @@ def _task_rules():
             for leaf in feature.get("shared_steps", []) + feature.get("modes", []):
                 if leaf.get("task_match"):
                     rules.append((leaf["key"], leaf["task_match"]))
-    return rules
+    return sorted(rules, key=lambda item: len(item[1]), reverse=True)
 
 
 TASK_RULES = _task_rules()
@@ -1347,9 +1599,9 @@ def classify_task(kind, metadata=None):
     metadata = metadata or {}
     kind = str(kind or "").strip().lower()
     source_page = str(metadata.get("source_page") or "").strip().lower()
-    if source_page not in {"", "video", "banana", "audio", "collect", "leads", "script", "canvas"}:
+    if source_page not in {"", "video", "banana", "audio", "collect", "leads", "script", "text-video", "canvas", "assets"}:
         return None
-    if kind == "image" and source_page not in {"banana", "canvas"}:
+    if kind == "image" and source_page not in {"banana", "canvas", "script"}:
         return None
     want = metadata.get("want") or []
     if isinstance(want, str):
@@ -1396,9 +1648,11 @@ def classify_task(kind, metadata=None):
         "format": str(metadata.get("format") or "").strip().lower(),
         "style": str(metadata.get("style") or "").strip(),
         "source_type": str(metadata.get("source_type") or "").strip().lower(),
+        "pipeline": str(metadata.get("pipeline") or "").strip().lower(),
     }
+    page_prefix = {"canvas": "canvas.", "script": "script.", "text-video": "text_video."}.get(source_page)
     return next((key for key, rule in TASK_RULES
-                 if (source_page != "canvas" or key.startswith("canvas."))
+                 if (not page_prefix or key.startswith(page_prefix))
                  and _matches(actual, rule)), None)
 
 
