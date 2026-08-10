@@ -23,7 +23,8 @@ if SERVER_DIR not in sys.path:
 
 from content_domains import (
     core, image, short_drama, short_drama_character_studio,
-    short_drama_production, short_drama_reference_validation, video,
+    short_drama_asset_graph, short_drama_production,
+    short_drama_reference_validation, video,
 )
 
 
@@ -207,6 +208,31 @@ class ShortDramaProjectTests(unittest.TestCase):
             conn.commit()
         finally:
             conn.close()
+
+    def test_project_list_scans_global_job_ledger_once_per_page(self):
+        projects = [
+            short_drama.create_project(self.db, "alice", valid_project(title="Project %d" % index))
+            for index in range(3)
+        ]
+        for index, project in enumerate(projects, 1):
+            self.insert_planning_job(project, 700 + index, cost=index)
+        statements = []
+
+        def tracked_db():
+            conn = sqlite3.connect(self.path)
+            conn.set_trace_callback(statements.append)
+            return conn
+
+        result = short_drama.list_projects(tracked_db, "alice", page_size=10)
+        self.assertEqual([3, 2, 1], sorted(
+            (item["spent_points"] for item in result["items"]), reverse=True
+        ))
+        global_job_scans = [
+            statement for statement in statements
+            if " FROM jobs WHERE kind" in statement
+            and "payload" in statement
+        ]
+        self.assertEqual(1, len(global_job_scans), global_job_scans)
 
     def _assert_plan_rejected_without_side_effects(self, project, plan, job_id):
         before = short_drama.get_project(self.db, "alice", project["id"])
@@ -2284,6 +2310,73 @@ class ShortDramaRouteTests(unittest.TestCase):
         self.assertEqual(200, status)
         return project
 
+    def scene_image_project(self, board_id=None):
+        project = self.applied_project()
+        with closing(core.jdb()) as db:
+            if board_id:
+                db.execute(
+                    "UPDATE short_drama_projects SET board_id=? WHERE id=?",
+                    (board_id, project["id"]),
+                )
+            spent = short_drama._project_point_usage(
+                db, project["id"]
+            )["spent_points"]
+            db.execute(
+                "UPDATE short_drama_projects SET point_budget=? WHERE id=?",
+                (spent + 7, project["id"]),
+            )
+            db.commit()
+        short_drama_asset_graph.sync_foundation(
+            core.jdb, "alice", "alice", project["id"]
+        )
+        workspace = short_drama_asset_graph.scene_workspace(
+            core.jdb, "alice", project["id"]
+        )
+        return project, workspace["scenes"][0]["scene_key"]
+
+    @staticmethod
+    def scene_image_body(project_id, scene_key):
+        return {
+            "provider": "banana", "model": "nb2", "quality": "hd",
+            "count": 1, "ratio": "16:9",
+            "prompt": "empty cinematic railway station at night",
+            "short_drama_scene_binding": {
+                "project_id": project_id, "scene_key": scene_key,
+            },
+        }
+
+    def test_scene_image_response_loss_replays_before_budget_check(self):
+        project, scene_key = self.scene_image_project()
+        body = self.scene_image_body(project["id"], scene_key)
+        with patch.dict(core.HANDLERS, {"image": lambda payload: payload}), \
+                patch.object(core, "enqueue_job", return_value=True):
+            first_status, first = self.request(
+                "POST", "/api/gen/image", body=body,
+                idempotency_key="scene-response-lost",
+            )
+            replay_status, replay = self.request(
+                "POST", "/api/gen/image", body=body,
+                idempotency_key="scene-response-lost",
+            )
+        self.assertEqual(200, first_status, first)
+        self.assertEqual((first_status, first), (replay_status, replay))
+        self.assertEqual(1, len(self.points.deduct_calls))
+
+    def test_canvas_editor_can_generate_scene_image_for_project_owner(self):
+        board_id = "shared-scene-board"
+        self.enable_board_roles({"alice": "owner", "bob": "editor"})
+        project, scene_key = self.scene_image_project(board_id=board_id)
+        with patch.dict(core.HANDLERS, {"image": lambda payload: payload}), \
+                patch.object(core, "enqueue_job", return_value=True):
+            status, created = self.request(
+                "POST", "/api/gen/image", username="bob", board_id=board_id,
+                body=self.scene_image_body(project["id"], scene_key),
+                idempotency_key="editor-scene-image",
+            )
+        self.assertEqual(200, status, created)
+        self.assertTrue(created["job_id"])
+        self.assertEqual("bob", self.points.deduct_calls[-1][0])
+
     def confirm(self, project, stage):
         status, confirmed = self.request("POST", "/api/gen/short-drama/confirm", body={
             "project_id": project["id"], "revision": project["revision"], "stage": stage,
@@ -2935,6 +3028,33 @@ class ShortDramaRouteTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertTrue(locked["characters"][0]["reference_locked"])
 
+    def test_committed_character_upload_survives_response_assembly_failure(self):
+        project = self.applied_project()
+        character = project["characters"][0]
+        output = Path(self.tmp.name) / "outputs"
+        raw = b"\x89PNG\r\n\x1a\ncommitted-role"
+        body = {
+            "project_id": project["id"], "revision": project["revision"],
+            "character_key": character["character_key"], "source": "upload",
+            "asset_job_id": None, "asset_url": "", "filename": "role.png",
+            "image_data": "data:image/png;base64," + base64.b64encode(raw).decode(),
+        }
+        with patch.object(image, "OUT_DIR", output), patch.object(
+                short_drama_reference_validation, "validate_character_reference",
+                return_value={"has_real_person": True, "visible_extent": "half_body"},
+        ), patch.object(
+                short_drama, "_project_detail",
+                side_effect=RuntimeError("response assembly failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "response assembly failed"):
+                short_drama.select_character_reference(
+                    core.jdb, "alice", "alice", body
+                )
+        persisted = short_drama.get_project(core.jdb, "alice", project["id"])
+        reference_file = persisted["characters"][0]["reference_file"]
+        self.assertTrue(reference_file)
+        self.assertTrue((output / reference_file).is_file())
+
     def test_local_upload_normalizes_supported_mislabeled_image(self):
         project = self.applied_project()
         character = project["characters"][0]
@@ -2960,6 +3080,54 @@ class ShortDramaRouteTests(unittest.TestCase):
         self.assertTrue(selected_character["reference_file"].endswith(".jpg"))
         self.assertTrue((output / selected_character["reference_file"]).is_file())
         validate.assert_called_once_with(jpeg, "image/jpeg")
+
+    def test_concurrent_character_uploads_pay_for_one_external_validation(self):
+        project = self.applied_project()
+        character = project["characters"][0]
+        output = Path(self.tmp.name) / "outputs"
+        raw = b"\x89PNG\r\n\x1a\nconcurrent-role"
+        body = {
+            "project_id": project["id"], "revision": project["revision"],
+            "character_key": character["character_key"], "source": "upload",
+            "asset_job_id": None, "asset_url": "", "filename": "role.png",
+            "image_data": "data:image/png;base64," + base64.b64encode(raw).decode(),
+        }
+        start = threading.Barrier(2)
+        validation_calls = []
+        call_lock = threading.Lock()
+
+        def validate(_raw, _mime):
+            with call_lock:
+                validation_calls.append(1)
+            time.sleep(0.15)
+            return {"has_real_person": True, "visible_extent": "half_body"}
+
+        def select():
+            start.wait()
+            try:
+                short_drama.select_character_reference(
+                    core.jdb, "alice", "alice", dict(body)
+                )
+                return "success"
+            except short_drama.RevisionConflict:
+                return "conflict"
+
+        with patch.object(image, "OUT_DIR", output), patch.object(
+            short_drama_reference_validation,
+            "validate_character_reference",
+            side_effect=validate,
+        ):
+            threads = []
+            results = []
+            for _ in range(2):
+                thread = threading.Thread(target=lambda: results.append(select()))
+                thread.start()
+                threads.append(thread)
+            for thread in threads:
+                thread.join(timeout=5)
+
+        self.assertEqual(["conflict", "success"], sorted(results))
+        self.assertEqual(1, len(validation_calls))
 
     def test_local_reference_rejects_non_person_without_saving_or_updating(self):
         project = self.applied_project()

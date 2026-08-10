@@ -154,6 +154,20 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
             download.call_args.kwargs,
         )
 
+    def test_minimax_bound_key_read_failure_is_retryable_not_missing(self):
+        provider = MiniMaxH3ShotProvider()
+        provider_job_id = provider._encode_job_id("minimax-key-2", "task-8")
+        with mock.patch.object(
+            provider_keys,
+            "candidates",
+            side_effect=provider_keys.KeyStoreUnavailable("temporary vault failure"),
+        ), mock.patch("content_domains.video_minimax_h3.query_task") as query:
+            with self.assertRaises(VisualProviderError) as raised:
+                provider.get_job(provider_job_id)
+        self.assertEqual("provider_key_read_failed", raised.exception.code)
+        self.assertTrue(raised.exception.submitted)
+        query.assert_not_called()
+
     def test_restricted_video_download_rejects_private_destination(self):
         with mock.patch.object(video, "_heygen_direct_opener") as opener:
             with self.assertRaises(ValueError):
@@ -204,6 +218,47 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
                         allowed_hosts={"filecdn.minimax.chat"},
                         max_bytes=2048,
                     )
+
+    def test_restricted_video_download_probes_before_atomic_publish(self):
+        forged = b"\x00\x00\x00\x18ftypisom" + b"garbage" * 8
+
+        class Response:
+            headers = {"Content-Length": str(len(forged))}
+
+            def __init__(self):
+                self.data = forged
+                self.read_sizes = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, size=-1):
+                self.read_sizes.append(size)
+                value, self.data = self.data[:size], self.data[size:]
+                return value
+
+        public_dns = [(2, 1, 6, "", ("8.8.8.8", 443))]
+        response = Response()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "result.mp4"
+            failed_probe = mock.Mock(returncode=1, stdout="", stderr="invalid")
+            with mock.patch("socket.getaddrinfo", return_value=public_dns), \
+                    mock.patch.object(video, "_restricted_download_opener") as opener, \
+                    mock.patch.object(video, "_out_path", return_value=output), \
+                    mock.patch.object(video.subprocess, "run", return_value=failed_probe):
+                opener.return_value.open.return_value = response
+                with self.assertRaisesRegex(ValueError, "视频流|媒体"):
+                    video._download_video_file_direct(
+                        "https://filecdn.minimax.chat/result.mp4",
+                        allowed_hosts={"filecdn.minimax.chat"}, max_bytes=2048,
+                    )
+            self.assertFalse(output.exists())
+            self.assertEqual([], list(Path(directory).glob("*.part-*")))
+        self.assertTrue(response.read_sizes)
+        self.assertTrue(all(0 < size <= 1024 * 1024 for size in response.read_sizes))
 
     def test_minimax_invalid_key_is_blocked_before_charge(self):
         provider = MiniMaxH3ShotProvider()

@@ -523,6 +523,67 @@ test('Character reference response loss is recovered with one stable paid operat
   }
 });
 
+test('Scene image response loss recovers the paid job and binds with the latest graph revision', async () => {
+  const calls = [];
+  const storage = new Map();
+  const previousStorage = global.localStorage;
+  const storageMock = {
+    getItem:key => storage.has(key) ? storage.get(key) : null,
+    setItem:(key,value) => storage.set(key,String(value)),
+    removeItem:key => storage.delete(key),
+    key:index => Array.from(storage.keys())[index]||null
+  };
+  Object.defineProperty(storageMock,'length',{get:() => storage.size});
+  global.localStorage = storageMock;
+  const payload = {
+    project_id:'project-1',scene_key:'station',
+    prompt:'empty cinematic station',ratio:'16:9'
+  };
+  let firstKey = '';
+  try {
+    const interrupted = workspace.createClient(async (url,options) => {
+      firstKey = options.headers['Idempotency-Key'];
+      throw new Error('response lost');
+    });
+    await assert.rejects(
+      interrupted.generateSceneImage(payload,'alice'), /response lost/
+    );
+    assert.equal(storage.size,1);
+
+    const restored = workspace.createClient(async (url,options) => {
+      calls.push({url,options});
+      let response = {};
+      if(url==='/api/gen/image'){
+        assert.equal(options.headers['Idempotency-Key'],firstKey);
+        response={job_id:41};
+      }else if(url==='/api/gen/job/41'){
+        response={status:'done',result:{urls:['/content_out/station.png']}};
+      }else if(url==='/api/gen/short-drama/asset-graph/scenes?project_id=project-1'){
+        response={project_id:'project-1',graph_revision:9,scenes:[]};
+      }else if(url==='/api/gen/short-drama/asset-graph/scenes/reference'){
+        const body=JSON.parse(options.body);
+        assert.equal(body.graph_revision,9);
+        assert.equal(body.scene_key,'station');
+        assert.equal(body.asset_job_id,41);
+        assert.equal(body.asset_url,'/content_out/station.png');
+        response={graph_revision:10,scenes:[]};
+      }
+      return {ok:true,status:200,text:async()=>JSON.stringify(response)};
+    });
+    const recovered = await restored.recoverSceneImageOperations('alice');
+    assert.equal(recovered.length,1);
+    assert.equal(storage.size,0);
+    assert.deepEqual(calls.map(call=>call.url),[
+      '/api/gen/image',
+      '/api/gen/job/41',
+      '/api/gen/short-drama/asset-graph/scenes?project_id=project-1',
+      '/api/gen/short-drama/asset-graph/scenes/reference'
+    ]);
+  } finally {
+    global.localStorage = previousStorage;
+  }
+});
+
 test('Completed stale character reference can be regenerated from the latest profile', () => {
   const character = {
     character_key:'lead',

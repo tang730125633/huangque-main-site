@@ -3627,6 +3627,83 @@ def _heygen_read_retry(open_fn, what, max_bytes=None):
     raise HeyGenNetworkError("%s 多次网络失败: %s" % (what, str(getattr(last, "reason", last))[:150]))
 
 
+def _stream_download_retry(open_fn, destination, what, max_bytes):
+    """Stream an idempotent GET into one temporary file with bounded memory."""
+    last = None
+    for attempt in range(HEYGEN_NET_RETRIES):
+        completed = False
+        try:
+            total = 0
+            with open_fn() as response:
+                declared = response.headers.get("Content-Length")
+                if declared:
+                    try:
+                        declared_size = int(declared)
+                    except (TypeError, ValueError) as error:
+                        raise ValueError("下载响应的 Content-Length 无效") from error
+                    if declared_size > max_bytes:
+                        raise ValueError("下载文件超过大小限制")
+                with destination.open("wb") as output:
+                    while True:
+                        chunk = response.read(min(1024 * 1024, max_bytes + 1 - total))
+                        if not chunk:
+                            break
+                        output.write(chunk)
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise ValueError("下载文件超过大小限制")
+                    output.flush()
+                    os.fsync(output.fileno())
+            if total:
+                completed = True
+                return total
+            last = RuntimeError("下载内容为空")
+        except OSError as error:
+            last = error
+            print("[heygen] %s 网络抖动，重试(%d/%d): %s" % (
+                what, attempt + 1, HEYGEN_NET_RETRIES,
+                str(getattr(error, "reason", error))[:120],
+            ), flush=True)
+        finally:
+            if not completed:
+                try:
+                    destination.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        if attempt < HEYGEN_NET_RETRIES - 1:
+            time.sleep(2.0 * (attempt + 1))
+    raise HeyGenNetworkError("%s 多次网络失败: %s" % (
+        what, str(getattr(last, "reason", last))[:150]
+    ))
+
+
+def _validate_downloaded_video_file(path):
+    try:
+        result = subprocess.run(
+            [os.environ.get("FFPROBE_BIN", "ffprobe"), "-v", "error",
+             "-select_streams", "v:0", "-show_entries",
+             "stream=codec_type,width,height", "-of", "json", str(path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=60, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ValueError("下载媒体无法完成视频流校验") from error
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except (TypeError, ValueError) as error:
+        raise ValueError("下载媒体的视频流信息无效") from error
+    streams = payload.get("streams") if isinstance(payload, dict) else []
+    valid = result.returncode == 0 and any(
+        isinstance(stream, dict)
+        and stream.get("codec_type") == "video"
+        and int(stream.get("width") or 0) > 0
+        and int(stream.get("height") or 0) > 0
+        for stream in (streams or [])
+    )
+    if not valid:
+        raise ValueError("下载媒体不包含可解析的视频流")
+
+
 # 429 退避重试。不重试的话，一次突发就把用户的任务判死退点、白等几分钟——
 # 而实测 20 路里有 13 路是过的，被拒的那 7 个退避几秒重发几乎必成。
 HEYGEN_429_TRIES = int(os.environ.get("HEYGEN_429_TRIES", "6") or 6)
@@ -3878,17 +3955,32 @@ def _download_video_file_direct(url, prefix="vid", *, allowed_hosts=None, max_by
             raise ValueError("受限下载必须设置有效的大小上限")
     else:
         opener = _heygen_direct_opener()
-    req = urllib.request.Request(url, headers={"User-Agent": "huangque-content/1.0"})
-    # 幂等 GET 下载成片：瞬时网络错误退避重试（不计费、可安全重试，#605）
-    data = _heygen_read_retry(
-        lambda: opener.open(req, timeout=360), "成片直连下载", max_bytes=max_bytes
-    )
-    if allowed_hosts is not None and not (
-        len(data) >= 12 and data[4:8] == b"ftyp"
-    ):
-        raise ValueError("下载结果不是有效的 MP4 容器")
     fn = "video/%s_%s.mp4" % (prefix, uuid.uuid4().hex)  # 不可猜键(#185)
-    _out_path(fn).write_bytes(data)
+    target = _out_path(fn)
+    req = urllib.request.Request(url, headers={"User-Agent": "huangque-content/1.0"})
+    if allowed_hosts is not None:
+        temporary = target.with_name(target.name + ".part-" + uuid.uuid4().hex)
+        try:
+            _stream_download_retry(
+                lambda: opener.open(req, timeout=360), temporary,
+                "成片直连下载", max_bytes,
+            )
+            with temporary.open("rb") as downloaded:
+                if downloaded.read(8)[4:8] != b"ftyp":
+                    raise ValueError("下载结果不是有效的 MP4 容器")
+            _validate_downloaded_video_file(temporary)
+            temporary.replace(target)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+    else:
+        # Legacy HeyGen callers retain their existing unbounded contract.
+        data = _heygen_read_retry(
+            lambda: opener.open(req, timeout=360), "成片直连下载"
+        )
+        target.write_bytes(data)
     return _faststart_video_file(fn)
 
 def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, motion):

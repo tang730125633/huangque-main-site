@@ -1049,7 +1049,7 @@
     var chat=doc.getElementById('shortDramaIdeaChat'),quickReplies=doc.getElementById('shortDramaIdeaQuickReplies');
     var advisorSubmit=ideaForm.querySelector('button[type="submit"]'),advisorSubmitLabel=advisorSubmit?advisorSubmit.textContent:'发送',advisorThinkingNode=null,advisorThinkingTimer=null;
     var recommendations=doc.getElementById('shortDramaRecommendations'),ideaMessages=[],selectedProjectId='',importFilename='',importAnalysis=null,pendingImportKey='';
-    var liveActionAnalysis=null,liveActionRoles=[],liveActionCoreStory={},activeLiveActionRole=0,pendingLiveActionKey='',pendingLiveActionDiscardKey='',pendingLiveActionProject=null,liveActionReferenceBusy=false,liveActionStoryBusy=false,liveActionStoryRequestToken=0,savedLiveActionRoleSignatures={},resumeLiveActionDraft=null,liveActionDraftTimer=null,liveActionNoticeTimers={setup:null,role:null,story:null},currentCreateStep='choice',liveActionReferencePreview=null,liveActionReferencePreviewTrigger=null;
+    var liveActionAnalysis=null,liveActionRoles=[],liveActionCoreStory={},activeLiveActionRole=0,pendingLiveActionKey='',pendingLiveActionDiscardKey='',pendingLiveActionProject=null,liveActionReferenceBusy=false,liveActionStoryBusy=false,liveActionStoryRequestToken=0,savedLiveActionRoleSignatures={},resumeLiveActionDraft=null,liveActionDraftTimer=null,liveActionNoticeTimers={setup:null,role:null,story:null},currentCreateStep='choice',liveActionReferencePreview=null,liveActionReferencePreviewTrigger=null,draftCloseReturnFocus=null;
     var createMode='idea',plannerPayload=null,selectedDirection=null,plannerPreview=null,pendingCreateKey='',plannerAnswers={},plannerMeta={},plannerDirtyFields=[],plannerHistory=[],plannerTranscript=[],plannerFeedback=[],plannerCorrectionCount=0,plannerPersistenceReady=false,activePlannerField='',activePlannerChoices={field:'',items:[]},advisorBusy=false,advisorDegraded=false,plannerPanel='auto',currentUsername='',resumePlannerDraft=null;
     var LEGACY_PLANNER_DRAFT_KEY='hq-short-drama-planner-draft-v3';
     var deleteButton=doc.getElementById('shortDramaDeleteProject');
@@ -1701,16 +1701,21 @@
     }
     function openCreate(){if(!currentUsername){setNotice('正在确认登录账号，请稍后重试。',true);return;}var plannerDraft=readPlannerDraft(),liveDraft=readLiveActionDraft();resetCreate();renderPlannerDraftResume(plannerDraft);renderLiveActionDraftResume(liveDraft);dialog.showModal();}
     function closeCreateNow(){closeLiveActionReferencePicker();doc.getElementById('shortDramaCloseDraftPrompt').hidden=true;if(dialog.open)dialog.close();}
+    function dismissDraftClosePrompt(){
+      var prompt=doc.getElementById('shortDramaCloseDraftPrompt');prompt.hidden=true;
+      if(draftCloseReturnFocus&&doc.contains(draftCloseReturnFocus))draftCloseReturnFocus.focus();
+      draftCloseReturnFocus=null;
+    }
     function requestCreateClose(){
       if(liveActionStoryBusy){showLiveActionNotice('正在确认剧本，请等待完成后再关闭。','live_action_story');return;}
       if(liveActionReferenceBusy){showLiveActionNotice('正在处理标准图，请完成后再关闭。',currentCreateStep);return;}
       if(['live_action_setup','live_action_story','live_action_roles'].indexOf(currentCreateStep)<0||!liveActionDraftHasContent()){closeCreateNow();return;}
-      var prompt=doc.getElementById('shortDramaCloseDraftPrompt'),error=doc.getElementById('shortDramaCloseDraftError');error.hidden=true;error.textContent='';prompt.hidden=false;var first=prompt.querySelector('[data-draft-close="save"]');if(first)first.focus();
+      var prompt=doc.getElementById('shortDramaCloseDraftPrompt'),error=doc.getElementById('shortDramaCloseDraftError');error.hidden=true;error.textContent='';draftCloseReturnFocus=doc.activeElement;prompt.hidden=false;var first=prompt.querySelector('[data-draft-close="save"]');if(first)first.focus();
     }
     function setDraftCloseBusy(busy){doc.querySelectorAll('[data-draft-close]').forEach(function(button){button.disabled=!!busy;});}
     function handleDraftClose(action){
       var prompt=doc.getElementById('shortDramaCloseDraftPrompt'),error=doc.getElementById('shortDramaCloseDraftError');
-      if(action==='continue'){prompt.hidden=true;return;}
+      if(action==='continue'){dismissDraftClosePrompt();return;}
       if(action==='save'){
         if(saveLiveActionDraft(true)){syncLocalDraftProject();render();prompt.hidden=true;closeCreateNow();return;}
         error.textContent='草稿保存失败，请检查浏览器存储空间后重试。为避免丢失，窗口会继续保留。';error.hidden=false;return;
@@ -1914,6 +1919,7 @@
     dialog.addEventListener('cancel',function(event){event.preventDefault();requestCreateClose();});
     dialog.addEventListener('click',function(event){if(event.target===dialog)requestCreateClose();});
     doc.getElementById('shortDramaCloseDraftPrompt').addEventListener('click',function(event){var button=event.target.closest('[data-draft-close]');if(button)handleDraftClose(button.getAttribute('data-draft-close'));});
+    doc.getElementById('shortDramaCloseDraftPrompt').addEventListener('keydown',function(event){var prompt=event.currentTarget;liveActionModalKeydown(prompt,event,dismissDraftClosePrompt);});
     doc.querySelectorAll('[data-action="back-create-choice"]').forEach(function(node){node.addEventListener('click',function(){showCreateStep('choice');});});
     doc.getElementById('shortDramaResumePlanner').addEventListener('click',function(){var draft=resumePlannerDraft;if(!draft)return;renderPlannerDraftResume(null);restorePlannerDraft(draft);});
     doc.getElementById('shortDramaDiscardPlannerDraft').addEventListener('click',function(){clearPlannerDraft();resetCreate();});

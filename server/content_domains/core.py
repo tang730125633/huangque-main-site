@@ -2744,6 +2744,7 @@ class H(BaseHTTPRequestHandler):
             still_attempt = None
             cinematic_idem_reserved = False
             still_access = _short_drama_canvas_access(self) if is_still_route else None
+            scene_access = None
             try:
                 body = self._json_body_strict() if is_still_route or kind in {"video", "tryon", "sora_video", "cinematic", "avatar", "script_to_video", "copy", "canvas_agent"} else self._json_body()
                 if kind == "cinematic":
@@ -2831,8 +2832,10 @@ class H(BaseHTTPRequestHandler):
                     if not is_still_route:
                         body.pop("short_drama_references", None)
                     if body.get("short_drama_scene_binding"):
+                        scene_access = _short_drama_canvas_access(self)
                         body["short_drama_scene_binding"] = _short_drama_domain().validate_scene_image_binding(
-                            jdb, user["username"], body["short_drama_scene_binding"]
+                            jdb, user["username"], body["short_drama_scene_binding"],
+                            access=scene_access,
                         )
                 elif kind == "audio":
                     body = audio_domain.validate_audio_payload(
@@ -2884,10 +2887,6 @@ class H(BaseHTTPRequestHandler):
                 return self._send(503, {"detail": blocked, "code": "upstream_exhausted", "retry_after_ms": 60000})
             is_short_drama = kind == "copy" and isinstance(body, dict) and body.get("format") == "short_drama"
             cost = points_domain.cost_of(kind, body) if not is_short_drama and not is_still_route else None
-            if kind == "image" and body.get("short_drama_scene_binding"):
-                _short_drama_domain().validate_scene_image_binding(
-                    jdb, user["username"], body["short_drama_scene_binding"], cost
-                )
             if kind == "canvas_agent" and body.get("quoted_cost") != cost:
                 return self._send(400, {"detail": "画布 Agent 价格已变化，请重新报价"})
             if cli_gateway.reject_changed_cost(
@@ -2895,13 +2894,6 @@ class H(BaseHTTPRequestHandler):
             staged_ref_keys, seedance_idem_reserved, seedance_early = video_domain.prepare_xiaole_reference_submission(kind, body, cost, user.get("points"), user["username"], idem_key, p, _submission_lock, lambda: _idempotency_begin(user["username"], p, idem_key, request_body), lambda: _idempotency_abort(user["username"], p, idem_key), lambda: _user_video_submit_limit(kind, body, user["username"], cost), lambda: _user_active_job_count(user["username"]), MAX_USER_ACTIVE_JOBS) if kind == "xiaole_video" else ([], False, None)
             if seedance_early: return self._send(*seedance_early)
             with _submission_lock:
-                # Recheck the project budget while submissions are serialized so
-                # concurrent scene-image requests cannot both spend the same
-                # remaining allowance.
-                if kind == "image" and body.get("short_drama_scene_binding"):
-                    _short_drama_domain().validate_scene_image_binding(
-                        jdb, user["username"], body["short_drama_scene_binding"], cost
-                    )
                 if seedance_idem_reserved and is_shutting_down(): video_domain.abort_xiaole_reference_submission(staged_ref_keys, user["username"], p, idem_key, lambda: _idempotency_abort(user["username"], p, idem_key)); return self._send(503, {"detail": "服务正在更新，请稍等几秒后重试（未扣点）", "code": "shutting_down", "retry_after_ms": 5000})
                 if (is_still_route and is_shutting_down()
                         and (not still_attempt or still_attempt.get("state") in {"accepted", "charged"})):
@@ -2959,6 +2951,21 @@ class H(BaseHTTPRequestHandler):
                 if idem_state == "replay": replay = dict(idem_response or {}); return self._send(int(replay.pop("_http_status", 200)), replay)
                 if idem_state == "conflict": return self._send(409, {"detail": "同一个 Idempotency-Key 不能用于不同请求", "code": "idempotency_conflict"})
                 if idem_state == "processing" and not is_still_route: return self._send(409, {"detail": "相同请求正在受理，请稍后查询", "code": "idempotency_in_progress", "retry_after_ms": 1000})
+                if kind == "image" and body.get("short_drama_scene_binding"):
+                    try:
+                        _short_drama_domain().validate_scene_image_binding(
+                            jdb, user["username"], body["short_drama_scene_binding"],
+                            cost, access=scene_access,
+                        )
+                    except (
+                        LookupError, PermissionError, ValueError,
+                        _short_drama_domain().PointBudgetExceeded,
+                    ) as error:
+                        _idempotency_abort(user["username"], p, idem_key)
+                        _short_drama_domain()._http_error(
+                            self, error, operation_terminal=True
+                        )
+                        return
                 if kind == "image" and not still_attempt:
                     try:
                         feature_flags.require_enabled(

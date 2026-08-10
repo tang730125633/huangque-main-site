@@ -1060,7 +1060,8 @@ def preview_provider_request(
     if character_key and character_key not in required_character_keys:
         required_character_keys.insert(0, character_key)
     if imported:
-        identity_required = short_drama._character_reference_required_keys(
+        from . import short_drama as short_drama_domain
+        identity_required = short_drama_domain._character_reference_required_keys(
             imported["source_text"], _json(imported["character_contract_json"], [])
         )
         required_character_keys = [
@@ -1072,10 +1073,6 @@ def preview_provider_request(
     scene_reference = None
     avatar = None
     if provider.name == "minimax_h3":
-        if not required_character_keys:
-            raise AutodraftError(
-                "provider_character_required", "当前镜头没有可用于生成的出镜角色", 422
-            )
         conn = _connection(db_factory)
         try:
             scene_reference = short_drama_asset_graph.locked_scene_reference(
@@ -1090,17 +1087,19 @@ def preview_provider_request(
                 "当前镜头的角色与场景参考图总数超过视频服务上限",
                 422,
             )
-        conn = _connection(db_factory)
-        try:
-            placeholders = ",".join("?" for _ in required_character_keys)
-            rows = conn.execute(
-                "SELECT character_key,name,reference_file,reference_url,reference_locked "
-                "FROM short_drama_characters WHERE project_id=? AND character_key IN ("
-                + placeholders + ")",
-                tuple([project_id] + required_character_keys),
-            ).fetchall()
-        finally:
-            conn.close()
+        rows = []
+        if required_character_keys:
+            conn = _connection(db_factory)
+            try:
+                placeholders = ",".join("?" for _ in required_character_keys)
+                rows = conn.execute(
+                    "SELECT character_key,name,reference_file,reference_url,reference_locked "
+                    "FROM short_drama_characters WHERE project_id=? AND character_key IN ("
+                    + placeholders + ")",
+                    tuple([project_id] + required_character_keys),
+                ).fetchall()
+            finally:
+                conn.close()
         by_key = {str(row["character_key"]): row for row in rows}
         for key in required_character_keys:
             row = by_key.get(key)
@@ -1126,17 +1125,27 @@ def preview_provider_request(
                 "file": scene_reference["file"],
                 "url": scene_reference["url"],
             })
-        primary = by_key[required_character_keys[0]]
-        character_key = required_character_keys[0]
-        avatar_id = "character:" + character_key
-        avatar = {
-            "id": avatar_id,
-            "username": owner_username,
-            "name": str(primary["name"] or character_key),
-            "status": "ready",
-            "image_file": str(primary["reference_file"] or ""),
-            "image_url": str(primary["reference_url"] or ""),
-        }
+        if required_character_keys:
+            primary = by_key[required_character_keys[0]]
+            character_key = required_character_keys[0]
+            avatar_id = "character:" + character_key
+            avatar = {
+                "id": avatar_id,
+                "username": owner_username,
+                "name": str(primary["name"] or character_key),
+                "status": "ready",
+                "image_file": str(primary["reference_file"] or ""),
+                "image_url": str(primary["reference_url"] or ""),
+            }
+        else:
+            avatar = {
+                "id": "",
+                "username": owner_username,
+                "name": "",
+                "status": "ready",
+                "image_file": "",
+                "image_url": "",
+            }
     if avatar is None and not avatar_id and character_key:
         conn = _connection(db_factory)
         try:
@@ -1210,7 +1219,7 @@ def preview_provider_request(
     reference_image_url = str(avatar.get("image_url") or "").strip()
     reference_image_file = str(avatar.get("image_file") or "").strip()
     provider_identity_ready = bool(
-        reference_images
+        reference_images or not required_character_keys
         if provider.name == "minimax_h3"
         else reference_image_url or reference_image_file
         if provider.name == "grok"
@@ -1297,7 +1306,7 @@ def preview_provider_request(
             "ratio": validated["ratio"],
             "resolution": validated["resolution"],
             "duration_seconds": validated["duration_seconds"],
-            "reference_count": len(reference_images) if reference_images else 1,
+            "reference_count": len(reference_images),
             "provider_avatar": "[已绑定]",
         },
         "execution": execution,

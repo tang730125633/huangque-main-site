@@ -269,6 +269,31 @@ class ShortDramaPr94SchemaMigrationTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_creation_status_backfill_resumes_after_alter_table_crash_window(self):
+        self._seed_legacy_database()
+        conn = self.db()
+        try:
+            conn.execute(
+                "ALTER TABLE short_drama_projects ADD COLUMN creation_status "
+                "TEXT NOT NULL DEFAULT 'formal'"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        short_drama.init_db(self.db)
+        migrated = short_drama.get_project(self.db, "alice", "legacy-project")
+        self.assertEqual("draft", migrated["creation_status"])
+        conn = self.db()
+        try:
+            marker = conn.execute(
+                "SELECT 1 FROM short_drama_schema_migrations WHERE name=?",
+                ("creation_status_live_action_backfill_v1",),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual((1,), marker)
+
     def test_ordinary_upload_cannot_complete_three_view_migration(self):
         self._seed_legacy_database()
         short_drama.init_db(self.db)

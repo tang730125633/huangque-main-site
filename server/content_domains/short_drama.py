@@ -1015,18 +1015,51 @@ def _table_columns(conn, table):
     return {row[1] for row in conn.execute("PRAGMA table_info(%s)" % table).fetchall()}
 
 
-def _project_point_usage(conn, project_id):
+def _page_job_point_usage(conn, project_ids):
+    project_ids = set(project_ids or ())
+    usage = {
+        project_id: {"actual": 0, "has_activity": False}
+        for project_id in project_ids
+    }
+    job_columns = _table_columns(conn, "jobs")
+    if not project_ids or not job_columns:
+        return usage
+    refunded_expr = "COALESCE(refunded,0)" if "refunded" in job_columns else "0"
+    rows = conn.execute(
+        "SELECT kind,cost,payload," + refunded_expr + " FROM jobs "
+        "WHERE kind IN ('copy','image')"
+    ).fetchall()
+    for kind, cost, payload_json, refunded in rows:
+        payload = _json(payload_json, {})
+        project_id = ""
+        if isinstance(payload, dict) and kind == "copy" \
+                and payload.get("format") == "short_drama":
+            project_id = str(payload.get("project_id") or "")
+        elif isinstance(payload, dict) and kind == "image":
+            binding = payload.get("short_drama_scene_binding")
+            if isinstance(binding, dict):
+                project_id = str(binding.get("project_id") or "")
+        if project_id not in usage:
+            continue
+        usage[project_id]["has_activity"] = True
+        if int(refunded or 0) != 1:
+            usage[project_id]["actual"] += max(0, int(cost or 0))
+    return usage
+
+
+def _project_point_usage(conn, project_id, page_job_usage=None):
     """Return one project-scoped ledger across planning and production charges."""
     project = conn.execute(
         "SELECT spent_points FROM short_drama_projects WHERE id=?", (project_id,)
     ).fetchone()
     legacy_spent = int(project[0] or 0) if project else 0
-    actual = 0
+    page_usage = (page_job_usage or {}).get(project_id, {})
+    actual = int(page_usage.get("actual") or 0)
     reserved = 0
-    has_activity = False
+    has_activity = bool(page_usage.get("has_activity"))
 
     job_columns = _table_columns(conn, "jobs")
-    if job_columns:
+    if job_columns and page_job_usage is None:
         refunded_expr = "COALESCE(refunded,0)" if "refunded" in job_columns else "0"
         for row in conn.execute(
                 "SELECT cost,payload," + refunded_expr + " FROM jobs WHERE kind='copy'"
@@ -1455,6 +1488,17 @@ def init_db(db_factory):
                 "ALTER TABLE short_drama_projects ADD COLUMN creation_status "
                 "TEXT NOT NULL DEFAULT 'formal'"
             )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS short_drama_schema_migrations ("
+            "name TEXT PRIMARY KEY,completed_at INTEGER NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS short_drama_character_reference_validations ("
+            "project_id TEXT NOT NULL REFERENCES short_drama_projects(id) ON DELETE CASCADE,"
+            "character_key TEXT NOT NULL,project_revision INTEGER NOT NULL,"
+            "token TEXT NOT NULL UNIQUE,created_at INTEGER NOT NULL,"
+            "PRIMARY KEY(project_id,character_key))"
+        )
         character_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(short_drama_characters)")
         }
@@ -1557,12 +1601,22 @@ def init_db(db_factory):
                     "SET character_contract_migration_json=? WHERE id=?",
                     (_json_text(migration, {}), import_id),
                 )
-        if creation_status_added:
+        creation_status_migration = "creation_status_live_action_backfill_v1"
+        migration_completed = conn.execute(
+            "SELECT 1 FROM short_drama_schema_migrations WHERE name=?",
+            (creation_status_migration,),
+        ).fetchone()
+        if not migration_completed:
             conn.execute(
                 "UPDATE short_drama_projects SET creation_status='draft' "
                 "WHERE creation_status='formal' AND stage='draft' AND id IN ("
                 "SELECT project_id FROM short_drama_script_imports "
                 "WHERE content_type='live_action' AND status='completed')"
+            )
+            conn.execute(
+                "INSERT INTO short_drama_schema_migrations(name,completed_at) "
+                "VALUES (?,?)",
+                (creation_status_migration, int(time.time())),
             )
         conn.commit()
     finally:
@@ -2177,9 +2231,14 @@ def list_projects(db_factory, username, page=1, page_size=DEFAULT_PROJECT_PAGE_S
             " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
             params + (page_size, (page - 1) * page_size),
         )
+        page_job_usage = _page_job_point_usage(
+            conn, [row["id"] for row in rows]
+        )
         for row in rows:
             row["revision"] = int(row["revision"])
-            row["spent_points"] = _project_point_usage(conn, row["id"])["spent_points"]
+            row["spent_points"] = _project_point_usage(
+                conn, row["id"], page_job_usage
+            )["spent_points"]
         return {
             "items": rows,
             "page": page,
@@ -2327,25 +2386,28 @@ def _character_reference_required_keys(source_text, character_contract):
     return required
 
 
-def validate_scene_image_binding(db_factory, username, binding, quoted_cost=None):
+def validate_scene_image_binding(
+        db_factory, username, binding, quoted_cost=None, access=None):
     if not isinstance(binding, dict) or set(binding) != {"project_id", "scene_key"}:
         raise ValueError("场景图生成必须绑定 project_id 与 scene_key")
     project_id = str(binding.get("project_id") or "").strip()
     scene_key = str(binding.get("scene_key") or "").strip()
     if not project_id or not scene_key:
         raise ValueError("场景图生成缺少项目或场景标识")
+    owner_username = _project_username_for_access(
+        db_factory, username, project_id, access, write=True
+    )
     conn = db_factory()
     try:
         project = conn.execute(
             "SELECT point_budget FROM short_drama_projects "
             "WHERE id=? AND username=? AND deleted=0",
-            (project_id, username),
+            (project_id, owner_username),
         ).fetchone()
-        scene = conn.execute(
-            "SELECT 1 FROM short_drama_graph_entities "
-            "WHERE project_id=? AND asset_key=? AND asset_type='scene' AND status='active'",
-            (project_id, scene_key),
-        ).fetchone()
+        from . import short_drama_asset_graph
+        scene = next((item for item in short_drama_asset_graph.scene_workspace(
+            db_factory, owner_username, project_id
+        )["scenes"] if item.get("scene_key") == scene_key), None)
         if not project or not scene:
             raise LookupError("短剧场景不存在或不属于当前账号")
         if quoted_cost is not None and int(project[0] or 0) > 0:
@@ -4116,6 +4178,22 @@ def reconcile_project_character_references(db_factory, owner_username, project_i
             pass
 
 
+def _release_character_reference_validation(
+        db_factory, project_id, character_key, token):
+    if not token:
+        return
+    conn = _connection(db_factory)
+    try:
+        conn.execute(
+            "DELETE FROM short_drama_character_reference_validations "
+            "WHERE project_id=? AND character_key=? AND token=?",
+            (project_id, character_key, token),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def select_character_reference(db_factory, owner_username, actor_username, body):
     """Attach an owned image asset or a validated local upload as an unlocked preview."""
     from . import (
@@ -4139,6 +4217,7 @@ def select_character_reference(db_factory, owner_username, actor_username, body)
     trusted_three_view_job_id = None
     reference_file = reference_url = reference_asset_id = reference_name = ""
     created_path = None
+    validation_token = ""
     raw = b""
     mime = ""
     conn = _connection(db_factory)
@@ -4247,6 +4326,32 @@ def select_character_reference(db_factory, owner_username, actor_username, body)
             # instead of rejecting a JPEG that happens to be named .png, etc.
             mime = detected_mime
             reference_name = _text(body.get("filename"), 240) or "本地上传图片"
+        if not trusted_generated_reference:
+            validation_token = uuid.uuid4().hex
+            now = int(time.time())
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "DELETE FROM short_drama_character_reference_validations "
+                "WHERE project_id=? AND character_key=? AND created_at<?",
+                (project_id, character_key, now - 900),
+            )
+            current_revision = conn.execute(
+                "SELECT revision FROM short_drama_projects "
+                "WHERE id=? AND username=? AND deleted=0",
+                (project_id, owner_username),
+            ).fetchone()
+            if not current_revision or int(current_revision[0]) != revision:
+                raise RevisionConflict("项目已在其他页面更新，请刷新后重试")
+            try:
+                conn.execute(
+                    "INSERT INTO short_drama_character_reference_validations "
+                    "(project_id,character_key,project_revision,token,created_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (project_id, character_key, revision, validation_token, now),
+                )
+            except sqlite3.IntegrityError as error:
+                raise RevisionConflict("角色标准图正在校验，请稍后重试") from error
+            conn.commit()
     finally:
         conn.close()
 
@@ -4257,17 +4362,30 @@ def select_character_reference(db_factory, owner_username, actor_username, body)
     # synthetic/non-person image.  Other library assets and local uploads still
     # receive the full content check.
     if not trusted_generated_reference:
-        short_drama_reference_validation.validate_character_reference(raw, mime)
+        try:
+            short_drama_reference_validation.validate_character_reference(raw, mime)
+        except Exception:
+            _release_character_reference_validation(
+                db_factory, project_id, character_key, validation_token,
+            )
+            raise
 
     if source == "upload":
-        extension = cli_uploads.MIME_EXTENSIONS[mime]
-        relative = "short_drama_role_uploads/role_%s%s" % (uuid.uuid4().hex, extension)
-        created_path = (image_domain.OUT_DIR / relative).resolve()
-        created_path.parent.mkdir(parents=True, exist_ok=True)
-        created_path.write_bytes(raw)
-        reference_file = relative
-        reference_url = "/api/gen/file/" + relative
+        try:
+            extension = cli_uploads.MIME_EXTENSIONS[mime]
+            relative = "short_drama_role_uploads/role_%s%s" % (uuid.uuid4().hex, extension)
+            created_path = (image_domain.OUT_DIR / relative).resolve()
+            created_path.parent.mkdir(parents=True, exist_ok=True)
+            created_path.write_bytes(raw)
+            reference_file = relative
+            reference_url = "/api/gen/file/" + relative
+        except Exception:
+            _release_character_reference_validation(
+                db_factory, project_id, character_key, validation_token,
+            )
+            raise
 
+    committed = False
     conn = _connection(db_factory)
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -4303,16 +4421,29 @@ def select_character_reference(db_factory, owner_username, actor_username, body)
             conn, project_id, character_key, next_version,
             trusted_three_view_job_id,
         )
+        if validation_token:
+            deleted = conn.execute(
+                "DELETE FROM short_drama_character_reference_validations "
+                "WHERE project_id=? AND character_key=? AND token=?",
+                (project_id, character_key, validation_token),
+            ).rowcount
+            if deleted != 1:
+                raise RevisionConflict("角色标准图校验已失效，请重新上传")
         _cas_content_update(conn, owner_username, project_id, revision, project[1])
         conn.commit()
+        committed = True
         return _project_detail(conn, owner_username, project_id)
     except Exception:
-        conn.rollback()
-        if created_path is not None:
+        if conn.in_transaction:
+            conn.rollback()
+        if created_path is not None and not committed:
             try:
                 created_path.unlink(missing_ok=True)
             except OSError:
                 pass
+        _release_character_reference_validation(
+            db_factory, project_id, character_key, validation_token,
+        )
         raise
     finally:
         conn.close()

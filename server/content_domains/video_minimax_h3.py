@@ -207,8 +207,8 @@ def build_request(prompt, reference_images, ratio="9:16", duration=5, resolution
     if not prompt or len(prompt) > 7000:
         raise ValueError("麦克视频提示词必须为 1～7000 个字符")
     refs = list(reference_images or [])
-    if not 1 <= len(refs) <= MAX_REFERENCE_IMAGES:
-        raise ValueError("麦克视频需要 1～5 张人物参考图")
+    if len(refs) > MAX_REFERENCE_IMAGES:
+        raise ValueError("麦克视频最多使用 5 张参考图")
     if isinstance(duration, bool):
         raise ValueError("麦克视频时长必须为 4～15 秒整数")
     try:
