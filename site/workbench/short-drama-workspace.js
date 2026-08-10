@@ -176,7 +176,7 @@
     }
     function generateSceneImage(payload,ownerUsername){
       var operation;try{operation=sceneImageOperation(payload,ownerUsername);}catch(error){return Promise.reject(error);}
-      var imagePayload={provider:'banana',model:'nb2',quality:'hd',count:1,ratio:payload.ratio||'16:9',prompt:payload.prompt};
+      var imagePayload={provider:'banana',model:'nb2',quality:'hd',count:1,ratio:payload.ratio||'16:9',prompt:payload.prompt,short_drama_scene_binding:{project_id:payload.project_id,scene_key:payload.scene_key}};
       return request('/api/gen/image',{method:'POST',headers:{'Idempotency-Key':operation.key},body:imagePayload}).then(function(result){
         result=result||{};operation.job_id=result.job_id||operation.job_id||null;
         try{if(typeof localStorage!=='undefined')localStorage.setItem(operation.storage_key,JSON.stringify(operation));}catch(ignore){}
@@ -654,6 +654,17 @@
   function providerLabel(){
     return '视频生成服务';
   }
+  function modalKeydown(modal,event,onClose){
+    if(!modal||!event)return false;
+    if(event.key==='Escape'){event.preventDefault();event.stopPropagation();if(onClose)onClose();return true;}
+    if(event.key!=='Tab')return false;
+    var focusable=Array.prototype.slice.call(modal.querySelectorAll('button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[href],[tabindex]:not([tabindex="-1"])')).filter(function(node){return !node.hidden&&node.getAttribute('aria-hidden')!=='true'&&Number(node.tabIndex)>=0;});
+    if(!focusable.length){event.preventDefault();return true;}
+    var first=focusable[0],last=focusable[focusable.length-1],active=modal.ownerDocument.activeElement;
+    if(event.shiftKey&&(active===first||!modal.contains(active))){event.preventDefault();last.focus();return true;}
+    if(!event.shiftKey&&(active===last||!modal.contains(active))){event.preventDefault();first.focus();return true;}
+    return false;
+  }
   function mount(doc,options){
     options=options||{};
     var projectId=text(options.projectId).trim(),client=options.client||createClient(options.fetchImpl),accountUsername='',state=normalize({}),projectDetail={characters:[]},preflight={state:'script_required',current_plan:null,versions:[]},autodraft={state:'plan_required',versions:[]},refinement=null,characterStudio=null,sceneWorkspace={graph_revision:1,scenes:[]},selectedCharacterKey='',selectedShotKey='',shotEditorMode='script',selectedProviderShotKey='',pollTimer=null,historyExpanded=false,inspectorExpanded=!(doc.defaultView&&doc.defaultView.innerWidth<=1050),characterNameEditing=false,characterProfileDirty=false,characterImageOperation={character_key:'',phase:'idle',message:'',error:false,active:false};
@@ -661,7 +672,7 @@
     if(!root||!projectId)throw new Error('workspace target unavailable');
     root.innerHTML=shellHtml();root.insertAdjacentHTML('beforeend','<div class="sd-character-modal sd-shot-modal" id="sdShotModal" hidden><div class="sd-character-modal-backdrop" data-action="close-shot-editor"></div><section role="dialog" aria-modal="true" aria-labelledby="sdShotModalTitle"><header><div><span>单镜头编辑器</span><h2 id="sdShotModalTitle">编辑镜头</h2></div><button type="button" data-action="close-shot-editor" aria-label="关闭">×</button></header><div id="sdShotModalBody"></div></section></div><div class="sd-character-image-lightbox" id="sdCharacterImageLightbox" hidden><button type="button" class="sd-character-image-lightbox-backdrop" data-action="close-character-image-preview" aria-label="关闭图片预览"></button><section role="dialog" aria-modal="true" aria-labelledby="sdCharacterImagePreviewTitle"><header><div><span>图片预览</span><h2 id="sdCharacterImagePreviewTitle">大图预览</h2></div><button type="button" data-action="close-character-image-preview" aria-label="关闭">×</button></header><div class="sd-character-image-lightbox-stage"><img id="sdCharacterImagePreview" alt=""></div></section></div>');root.hidden=false;
     var notice=doc.getElementById('sdWorkspaceNotice');
-    var characterImagePreviewTrigger=null;
+    var characterImagePreviewTrigger=null,shotEditorTrigger=null;
     function busy(flag){root.classList.toggle('busy',!!flag);root.querySelectorAll('button,textarea,input,select').forEach(function(node){var readOnlyAction=node.getAttribute('data-action')==='toggle-history';node.disabled=!!flag||(!readOnlyAction&&!state.permissions.can_edit&&node.closest('form,section'));});}
     function show(message,error){message=userFacingVideoMessage(message,'');notice.textContent=message;notice.classList.toggle('error',!!error);notice.hidden=!message;}
     function characterImageOperationFor(characterKey){
@@ -748,7 +759,8 @@
       var modal=doc.getElementById('sdShotModal'),body=doc.getElementById('sdShotModalBody'),shot=currentShot(selectedShotKey);
       if(!selectedShotKey||!shot||!state.current_script){modal.hidden=true;return;}
       var script=state.current_script.script,line=currentShotLine(shot)||{},locked=!!shot.locked;
-      modal.hidden=false;
+      var wasHidden=modal.hidden;modal.hidden=false;
+      if(wasHidden){var initialClose=modal.querySelector('[data-action="close-shot-editor"]');if(initialClose)initialClose.focus();}
       doc.getElementById('sdShotModalTitle').textContent='镜头 #'+Number(shot.sort_order||0)+(locked?' · 已锁定':'');
       if(shotEditorMode==='execution'){
         var saved=(autodraft.provider_execution_overrides||{})[shot.shot_key]||{};
@@ -1136,6 +1148,9 @@
     });
     root.addEventListener('keydown',function(event){
       var imageLightbox=doc.getElementById('sdCharacterImageLightbox');
+      var shotModal=doc.getElementById('sdShotModal');
+      if(shotModal&&!shotModal.hidden&&modalKeydown(shotModal,event,function(){selectedShotKey='';renderShotModal();if(shotEditorTrigger)shotEditorTrigger.focus();shotEditorTrigger=null;}))return;
+      if(imageLightbox&&!imageLightbox.hidden&&event.key==='Tab'){modalKeydown(imageLightbox,event);return;}
       if(event.key==='Escape'&&imageLightbox&&!imageLightbox.hidden){
         event.preventDefault();
         imageLightbox.hidden=true;
@@ -1217,12 +1232,14 @@
         return;
       }
       if(action&&action.getAttribute('data-action')==='edit-shot'){
+        shotEditorTrigger=action;
         shotEditorMode='script';
         selectedShotKey=action.getAttribute('data-shot-key')||'';
         renderShotModal();
         return;
       }
       if(action&&action.getAttribute('data-action')==='edit-shot-execution'){
+        shotEditorTrigger=action;
         shotEditorMode='execution';
         selectedShotKey=action.getAttribute('data-shot-key')||'';
         renderShotModal();
@@ -1231,6 +1248,7 @@
       if(action&&action.getAttribute('data-action')==='close-shot-editor'){
         selectedShotKey='';
         renderShotModal();
+        if(shotEditorTrigger)shotEditorTrigger.focus();shotEditorTrigger=null;
         return;
       }
       if(action&&action.getAttribute('data-action')==='regenerate-shot'){

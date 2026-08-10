@@ -23,6 +23,7 @@ from . import (
     short_drama_autodraft,
     short_drama_preflight,
     short_drama_refinement,
+    short_drama_reference_validation,
     short_drama_lipsync,
     short_drama_lipsync_faces,
     short_drama_lipsync_observability,
@@ -1033,6 +1034,16 @@ def _project_point_usage(conn, project_id):
             payload = _json(row[1], {})
             if (not isinstance(payload, dict) or payload.get("format") != "short_drama"
                     or payload.get("project_id") != project_id):
+                continue
+            has_activity = True
+            if int(row[2] or 0) != 1:
+                actual += max(0, int(row[0] or 0))
+        for row in conn.execute(
+                "SELECT cost,payload," + refunded_expr + " FROM jobs WHERE kind='image'"
+        ).fetchall():
+            payload = _json(row[1], {})
+            binding = payload.get("short_drama_scene_binding") if isinstance(payload, dict) else None
+            if not isinstance(binding, dict) or binding.get("project_id") != project_id:
                 continue
             has_activity = True
             if int(row[2] or 0) != 1:
@@ -2314,6 +2325,40 @@ def _character_reference_required_keys(source_text, character_contract):
         if occurrence_count >= 2 or has_dialogue:
             required.add(key)
     return required
+
+
+def validate_scene_image_binding(db_factory, username, binding, quoted_cost=None):
+    if not isinstance(binding, dict) or set(binding) != {"project_id", "scene_key"}:
+        raise ValueError("场景图生成必须绑定 project_id 与 scene_key")
+    project_id = str(binding.get("project_id") or "").strip()
+    scene_key = str(binding.get("scene_key") or "").strip()
+    if not project_id or not scene_key:
+        raise ValueError("场景图生成缺少项目或场景标识")
+    conn = db_factory()
+    try:
+        project = conn.execute(
+            "SELECT point_budget FROM short_drama_projects "
+            "WHERE id=? AND username=? AND deleted=0",
+            (project_id, username),
+        ).fetchone()
+        scene = conn.execute(
+            "SELECT 1 FROM short_drama_graph_entities "
+            "WHERE project_id=? AND asset_key=? AND asset_type='scene' AND status='active'",
+            (project_id, scene_key),
+        ).fetchone()
+        if not project or not scene:
+            raise LookupError("短剧场景不存在或不属于当前账号")
+        if quoted_cost is not None and int(project[0] or 0) > 0:
+            usage = _project_point_usage(conn, project_id)
+            if (
+                int(usage.get("spent_points") or 0)
+                + int(usage.get("reserved_points") or 0)
+                + int(quoted_cost) > int(project[0])
+            ):
+                raise PointBudgetExceeded("短剧项目点数预算不足，无法生成场景图")
+    finally:
+        conn.close()
+    return {"project_id": project_id, "scene_key": scene_key}
 
 
 _CORE_STORY_FIELDS = (
@@ -5269,6 +5314,10 @@ def _http_error(handler, error, *, operation_terminal=False):
             "detail": str(error)[:220], "code": error.code, **terminal,
         })
     elif isinstance(error, short_drama_sound_design.SoundDesignError):
+        handler._send(error.status, {
+            "detail": str(error)[:220], "code": error.code, **terminal,
+        })
+    elif isinstance(error, short_drama_reference_validation.ReferenceValidationError):
         handler._send(error.status, {
             "detail": str(error)[:220], "code": error.code, **terminal,
         })

@@ -1,5 +1,7 @@
 import os
+import base64
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -16,7 +18,7 @@ from providers.short_drama_visual.heygen_cinematic import (
 )
 from providers.short_drama_visual.grok_xai import GrokXaiShotProvider
 from providers.short_drama_visual.minimax_h3 import MiniMaxH3ShotProvider
-from content_domains import provider_keys, video_minimax_h3
+from content_domains import provider_keys, video, video_minimax_h3
 
 
 class ShortDramaVisualProviderTests(unittest.TestCase):
@@ -52,12 +54,13 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
 
     def test_minimax_h3_encodes_local_png_without_public_storage(self):
         provider = MiniMaxH3ShotProvider()
-        image_path = mock.Mock()
-        image_path.is_file.return_value = True
-        image_path.stat.return_value.st_size = 12
-        image_path.read_bytes.return_value = b"\x89PNG\r\n\x1a\nTEST"
-        with mock.patch("content_domains.core._out_path", return_value=image_path):
-            value = provider._reference_value({"file": "image/role.png"})
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "role.png"
+            Image.new("RGB", (256, 256), "white").save(image_path, "PNG")
+            with mock.patch("content_domains.core._out_path", return_value=image_path):
+                value = provider._reference_value({"file": "image/role.png"})
         self.assertTrue(value.startswith("data:image/png;base64,"))
 
     def test_minimax_h3_preflight_rejects_missing_local_reference(self):
@@ -73,6 +76,39 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
                     "reference_images": [{"file": "image/missing.png"}],
                 })
         self.assertEqual("visual_reference_unavailable", raised.exception.code)
+
+    def test_minimax_h3_preflight_rejects_corrupt_local_reference(self):
+        provider = MiniMaxH3ShotProvider()
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "corrupt.png"
+            image_path.write_bytes(b"\x89PNG\r\n\x1a\nnot-an-image")
+            with mock.patch("content_domains.core._out_path", return_value=image_path):
+                with self.assertRaises(VisualProviderError) as raised:
+                    provider.validate_request({
+                        "prompt": "two characters share candy",
+                        "ratio": "16:9",
+                        "duration_seconds": 5,
+                        "reference_images": [{"file": "image/corrupt.png"}],
+                    })
+        self.assertEqual("visual_reference_invalid", raised.exception.code)
+
+    def test_minimax_h3_preflight_rejects_reference_below_minimum_dimensions(self):
+        provider = MiniMaxH3ShotProvider()
+        tiny_png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "tiny.png"
+            image_path.write_bytes(tiny_png)
+            with mock.patch("content_domains.core._out_path", return_value=image_path):
+                with self.assertRaises(VisualProviderError) as raised:
+                    provider.validate_request({
+                        "prompt": "two characters share candy",
+                        "ratio": "16:9",
+                        "duration_seconds": 5,
+                        "reference_images": [{"file": "image/tiny.png"}],
+                    })
+        self.assertEqual("visual_reference_invalid", raised.exception.code)
 
     def test_minimax_h3_create_poll_and_fetch_preserve_key_affinity(self):
         provider = MiniMaxH3ShotProvider()
@@ -93,7 +129,7 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
                  {"task_id": "task-8"},
                  {"task": {"status": "succeeded", "content": {"url": "https://cdn.example/result.mp4"}}},
              ]) as request_json, \
-             mock.patch("content_domains.video._download_video_file_direct", return_value="video/minimax-result.mp4"):
+             mock.patch("content_domains.video._download_video_file_direct", return_value="video/minimax-result.mp4") as download:
             created = provider.create_job(request)
             state = provider.get_job(created["provider_job_id"])
             result = provider.fetch_result(created["provider_job_id"], state["result_url"])
@@ -106,6 +142,68 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
         self.assertEqual("/v2/query/video_generation/task-8", request_json.call_args_list[1].args[2])
         self.assertEqual("test-only-secret", request_json.call_args_list[0].kwargs["api_key"])
         self.assertEqual("test-only-secret", request_json.call_args_list[1].kwargs["api_key"])
+        self.assertEqual(
+            {
+                "prefix": "short_drama_minimax_h3",
+                "allowed_hosts": {
+                    "cdn.hailuoai.com", "cdn.minimax.chat",
+                    "file.cdn.minimax.io", "filecdn.minimax.chat",
+                },
+                "max_bytes": 250 * 1024 * 1024,
+            },
+            download.call_args.kwargs,
+        )
+
+    def test_restricted_video_download_rejects_private_destination(self):
+        with mock.patch.object(video, "_heygen_direct_opener") as opener:
+            with self.assertRaises(ValueError):
+                video._download_video_file_direct(
+                    "https://127.0.0.1/result.mp4",
+                    allowed_hosts={"127.0.0.1"},
+                    max_bytes=1024,
+                )
+        opener.assert_not_called()
+
+    def test_restricted_video_download_revalidates_redirect_destination(self):
+        handler = video._RestrictedDownloadRedirectHandler(
+            {"filecdn.minimax.chat"}
+        )
+        request = mock.Mock(full_url="https://filecdn.minimax.chat/result.mp4")
+        with self.assertRaises(ValueError):
+            handler.redirect_request(
+                request, None, 302, "Found", {}, "https://169.254.169.254/latest/meta-data"
+            )
+
+    def test_restricted_video_download_rejects_oversized_or_non_mp4_body(self):
+        class Response:
+            def __init__(self, data, content_length=None):
+                self.data = data
+                self.headers = {} if content_length is None else {
+                    "Content-Length": str(content_length)
+                }
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, size=-1):
+                value, self.data = self.data[:size], self.data[size:]
+                return value
+
+        public_dns = [(2, 1, 6, "", ("8.8.8.8", 443))]
+        for response in (Response(b"x", 2049), Response(b"not-an-mp4")):
+            with self.subTest(headers=response.headers), \
+                 mock.patch("socket.getaddrinfo", return_value=public_dns), \
+                 mock.patch.object(video, "_restricted_download_opener") as opener:
+                opener.return_value.open.return_value = response
+                with self.assertRaises(ValueError):
+                    video._download_video_file_direct(
+                        "https://filecdn.minimax.chat/result.mp4",
+                        allowed_hosts={"filecdn.minimax.chat"},
+                        max_bytes=2048,
+                    )
 
     def test_minimax_invalid_key_is_blocked_before_charge(self):
         provider = MiniMaxH3ShotProvider()

@@ -14,6 +14,21 @@ const workspaceStyle = fs.readFileSync(
   path.join(ROOT, 'site/workbench/short-drama-workspace.css'), 'utf8'
 );
 
+test('scene image generation carries project billing identity', () => {
+  assert.match(
+    workspaceSource,
+    /short_drama_scene_binding:\{project_id:payload\.project_id,scene_key:payload\.scene_key\}/
+  );
+});
+
+test('workspace aria modals trap focus, close on Escape, and restore trigger focus', () => {
+  assert.match(workspaceSource, /function modalKeydown\(modal,event,onClose\)/);
+  assert.match(workspaceSource, /event\.key==='Escape'/);
+  assert.match(workspaceSource, /event\.key!=='Tab'/);
+  assert.match(workspaceSource, /if\(shotEditorTrigger\)shotEditorTrigger\.focus\(\)/);
+  assert.match(workspaceSource, /if\(characterImagePreviewTrigger\)characterImagePreviewTrigger\.focus\(\)/);
+});
+
 test('独立页面加载三栏对话工作区资源', () => {
   assert.match(html, /id="shortDramaWorkspace"/);
   assert.match(html, /short-drama-workspace\.css\?v=/);

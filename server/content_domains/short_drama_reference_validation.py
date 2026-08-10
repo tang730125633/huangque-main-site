@@ -34,6 +34,23 @@ INSTRUCTION = (
 )
 
 
+class ReferenceValidationError(ValueError):
+    def __init__(self, code, message, status):
+        super().__init__(message)
+        self.code = code
+        self.status = int(status)
+
+
+class ReferenceValidationUnavailable(ReferenceValidationError):
+    def __init__(self, message):
+        super().__init__("character_reference_validation_unavailable", message, 503)
+
+
+class ReferenceIneligible(ReferenceValidationError):
+    def __init__(self, message):
+        super().__init__("character_reference_ineligible", message, 422)
+
+
 def _candidate_payload(response):
     candidates = response.get("candidates") if isinstance(response, dict) else None
     parts = (
@@ -60,11 +77,11 @@ def validate_character_reference(raw, mime_type):
     """Raise the exact user-facing error when the supplied image is ineligible."""
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not api_key or not MODEL:
-        raise ValueError("人物图片检测暂时不可用，请稍后重试")
+        raise ReferenceValidationUnavailable("人物图片检测暂时不可用，请稍后重试")
     if not isinstance(raw, (bytes, bytearray)) or not raw:
-        raise ValueError("请上传人物图")
+        raise ReferenceIneligible("请上传人物图")
     if mime_type not in {"image/jpeg", "image/png", "image/webp"}:
-        raise ValueError("请上传人物图")
+        raise ReferenceIneligible("请上传人物图")
 
     body = {
         "contents": [{"parts": [
@@ -107,10 +124,10 @@ def validate_character_reference(raw, mime_type):
             % type(error).__name__,
             flush=True,
         )
-        raise ValueError("人物图片检测暂时不可用，请稍后重试")
+        raise ReferenceValidationUnavailable("人物图片检测暂时不可用，请稍后重试")
 
     if not result["has_real_person"]:
-        raise ValueError("请上传人物图")
+        raise ReferenceIneligible("请上传人物图")
     if result["visible_extent"] not in ACCEPTED_EXTENTS:
-        raise ValueError("请上传至少包含半身的人物图")
+        raise ReferenceIneligible("请上传至少包含半身的人物图")
     return result

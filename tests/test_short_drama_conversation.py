@@ -191,6 +191,22 @@ class ShortDramaConversationTests(unittest.TestCase):
         self.assertEqual(2, script["storyboard_source"]["explicit_shot_count"])
         self.assertEqual(0, script["storyboard_source"]["generated_shot_count"])
 
+    def test_explicit_storyboard_finds_dialogue_for_later_character(self):
+        characters = [
+            {"character_key": "first", "name": "甲"},
+            {"character_key": "second", "name": "乙"},
+        ]
+        source = "镜头 1（0-4s）近景，乙抬头。乙：我已经准备好了。"
+        project = payload(shot_count=1, target_duration=4)
+        script = short_drama_conversation.short_drama_storyboard.compile_storyboard(
+            project, ["乙抬头"], characters,
+        )
+        result = short_drama_conversation._apply_explicit_storyboard(
+            script, project, source,
+        )
+        self.assertEqual("second", result["dialogue_lines"][0]["character_key"])
+        self.assertEqual("我已经准备好了", result["dialogue_lines"][0]["text"])
+
     def test_explicit_storyboard_rejects_duration_conflict(self):
         source = "镜头 1（0-8s）近景，人物出现。\n镜头 2（8-16s）全景，人物离开。"
         source_import = {

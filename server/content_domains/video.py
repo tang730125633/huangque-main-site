@@ -23,6 +23,7 @@ import io
 import ipaddress
 import math
 import sqlite3
+import socket
 import tempfile
 
 from .core import (
@@ -3577,7 +3578,28 @@ def _heygen_retry_net(fn, what=""):
     raise last
 
 
-def _heygen_read_retry(open_fn, what):
+def _read_download_limited(response, max_bytes):
+    declared = response.headers.get("Content-Length")
+    if declared:
+        try:
+            declared_size = int(declared)
+        except (TypeError, ValueError) as error:
+            raise ValueError("下载响应的 Content-Length 无效") from error
+        if declared_size > max_bytes:
+            raise ValueError("下载文件超过大小限制")
+    chunks, total = [], 0
+    while True:
+        chunk = response.read(min(1024 * 1024, max_bytes + 1 - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError("下载文件超过大小限制")
+    return b"".join(chunks)
+
+
+def _heygen_read_retry(open_fn, what, max_bytes=None):
     """打开并读取一个【幂等 GET】(下载成片)，对传输层瞬时网络错误退避重试，返回字节。
 
     open_fn: 无参、每次调用返回一个新的 response 上下文管理器（每次重试都重新 open，
@@ -3589,7 +3611,10 @@ def _heygen_read_retry(open_fn, what):
     for i in range(HEYGEN_NET_RETRIES):
         try:
             with open_fn() as r:
-                data = r.read()
+                data = (
+                    _read_download_limited(r, max_bytes)
+                    if max_bytes is not None else r.read()
+                )
             if data:
                 return data
             last = RuntimeError("下载内容为空")
@@ -3793,12 +3818,75 @@ def _heygen_direct_req(method, url, body=None, ctype="application/json", timeout
         detail = e.read().decode("utf-8", "replace").replace("\n", " ")[:400]
         raise RuntimeError("HeyGen直连失败: HTTP %s %s" % (e.code, detail)) from e
 
-def _download_video_file_direct(url, prefix="vid"):
+def _validate_restricted_download_url(url, allowed_hosts):
+    try:
+        parsed = urllib.parse.urlsplit(str(url or ""))
+        host = (parsed.hostname or "").lower().rstrip(".")
+        port = parsed.port
+    except (TypeError, ValueError) as error:
+        raise ValueError("下载地址无效") from error
+    if (
+        parsed.scheme != "https" or not host or parsed.username or parsed.password
+        or port not in (None, 443) or host not in allowed_hosts
+    ):
+        raise ValueError("下载地址不在允许的 HTTPS CDN 范围内")
+    try:
+        addresses = {
+            info[4][0] for info in socket.getaddrinfo(
+                host, 443, type=socket.SOCK_STREAM
+            )
+        }
+    except OSError as error:
+        raise ValueError("下载地址无法解析") from error
+    if not addresses:
+        raise ValueError("下载地址无法解析")
+    for address in addresses:
+        try:
+            public = ipaddress.ip_address(address).is_global
+        except ValueError as error:
+            raise ValueError("下载地址解析结果无效") from error
+        if not public:
+            raise ValueError("下载地址解析到非公网目标")
+    return str(url)
+
+
+class _RestrictedDownloadRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def __init__(self, allowed_hosts):
+        super().__init__()
+        self.allowed_hosts = frozenset(allowed_hosts)
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _validate_restricted_download_url(newurl, self.allowed_hosts)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _restricted_download_opener(allowed_hosts):
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        _RestrictedDownloadRedirectHandler(allowed_hosts),
+    )
+
+
+def _download_video_file_direct(url, prefix="vid", *, allowed_hosts=None, max_bytes=None):
     if not url:
         raise RuntimeError("直连未返回视频地址")
+    if allowed_hosts is not None:
+        hosts = frozenset(str(host).lower().rstrip(".") for host in allowed_hosts)
+        _validate_restricted_download_url(url, hosts)
+        opener = _restricted_download_opener(hosts)
+        if not max_bytes or max_bytes <= 0:
+            raise ValueError("受限下载必须设置有效的大小上限")
+    else:
+        opener = _heygen_direct_opener()
     req = urllib.request.Request(url, headers={"User-Agent": "huangque-content/1.0"})
     # 幂等 GET 下载成片：瞬时网络错误退避重试（不计费、可安全重试，#605）
-    data = _heygen_read_retry(lambda: _heygen_direct_opener().open(req, timeout=360), "成片直连下载")
+    data = _heygen_read_retry(
+        lambda: opener.open(req, timeout=360), "成片直连下载", max_bytes=max_bytes
+    )
+    if allowed_hosts is not None and not (
+        len(data) >= 12 and data[4:8] == b"ftyp"
+    ):
+        raise ValueError("下载结果不是有效的 MP4 容器")
     fn = "video/%s_%s.mp4" % (prefix, uuid.uuid4().hex)  # 不可猜键(#185)
     _out_path(fn).write_bytes(data)
     return _faststart_video_file(fn)
