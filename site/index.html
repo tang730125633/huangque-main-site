@@ -7,6 +7,7 @@
   <title>黄雀 AI · 会持续生长的内容系统</title>
   <link rel="icon" href="/assets/logo_sparrow.png">
   <link rel="stylesheet" href="/homepage.css?v=20260810-glass-edge1">
+  <script src="/assets/home/orbit-gallery.js?v=20260810-concave4" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -392,12 +393,39 @@
         <div><p class="kicker">CREATIVE OUTPUT</p><h2>NOT JUST A PROCESS.<br><em>RESULTS YOU CAN SEE.</em></h2></div>
         <p>以下为黄雀创作样片，用于展示可实现的视觉方向，不作为客户案例或经营效果证明。</p>
       </div>
-      <div class="page-shell sample-grid">
-        <figure data-reveal><img src="/assets/inspirations/beauty_001.webp" alt="暖色香水产品视觉样片"><figcaption><span>01 · PRODUCT</span><strong>让质感先于卖点出现</strong></figcaption></figure>
-        <figure data-reveal><img src="/assets/inspirations/beauty_049.webp" alt="金色日落与海岸氛围视觉样片"><figcaption><span>02 · MOOD</span><strong>建立可识别的情绪</strong></figcaption></figure>
-        <figure data-reveal><img src="/assets/inspirations/beauty_011.webp" alt="水下玫瑰洁面产品视觉样片"><figcaption><span>03 · STORY</span><strong>让产品进入叙事场景</strong></figcaption></figure>
+      <div class="samples-gallery-shell" data-reveal>
+        <div
+          class="orbit-gallery"
+          data-orbit-gallery
+          data-gallery-manifest="/assets/home/orbit-gallery/gallery.json"
+          data-gallery-state="loading"
+          tabindex="0"
+          aria-label="可拖动的黄雀图片与视频环形画廊，使用左右方向键切换，按回车放大预览"
+        >
+          <div class="orbit-gallery-ambient" aria-hidden="true"></div>
+          <div class="orbit-gallery-viewport">
+            <div class="orbit-gallery-track" data-gallery-track></div>
+            <div class="orbit-gallery-focus" aria-hidden="true"></div>
+          </div>
+          <div class="orbit-gallery-fallback" data-gallery-fallback>
+            <figure><img src="/assets/home/orbit-gallery/desktop-image-01.webp" alt="黄雀创作图片样片 01"></figure>
+            <figure><img src="/assets/home/orbit-gallery/desktop-video-02.webp" alt="黄雀创作视频样片 02 的静态封面"></figure>
+            <figure><img src="/assets/home/orbit-gallery/desktop-image-04.webp" alt="黄雀创作图片样片 04"></figure>
+          </div>
+          <div class="orbit-gallery-meta">
+            <span>DRAG TO EXPLORE</span>
+            <p data-gallery-status aria-live="polite">正在载入 21 个创作样片…</p>
+            <span>← / → · ENTER</span>
+          </div>
+        </div>
       </div>
     </section>
+
+    <dialog class="orbit-preview" data-gallery-preview aria-labelledby="gallery-preview-title">
+      <button class="orbit-preview-close" type="button" data-gallery-preview-close aria-label="关闭预览">×</button>
+      <div class="orbit-preview-stage" data-gallery-preview-stage></div>
+      <p id="gallery-preview-title" data-gallery-preview-title></p>
+    </dialog>
 
     <section class="control" id="control">
       <div class="page-shell control-head" data-reveal>
