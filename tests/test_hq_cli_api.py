@@ -529,6 +529,20 @@ class HQCLIAPITests(unittest.TestCase):
             cinematic["payload"]["resolution"], cinematic["payload"]["duration"]))
         self.assertNotIn("reference_videos", cinematic["payload"])
 
+        for avatar_ids, allowed in (([7], 8), ([7, 8], 7), ([7, 8, 9], 6)):
+            accepted = self.auth.hq_cli_api.action_plan("cinematic-open-generate", {
+                "avatar_ids": avatar_ids, "prompt": "共享参考图额度",
+                "reference_image_upload_ids": ["img_" + str(index) * 32 for index in range(allowed)],
+            })
+            self.assertEqual(allowed, len(accepted["payload"]["reference_image_upload_ids"]))
+            with self.assertRaisesRegex(self.auth.hq_cli_api.CLIAPIError, "共用 9 张额度"):
+                self.auth.hq_cli_api.action_plan("cinematic-open-generate", {
+                    "avatar_ids": avatar_ids, "prompt": "超出共享参考图额度",
+                    "reference_image_upload_ids": [
+                        "img_" + str(index) * 32 for index in range(allowed + 1)
+                    ],
+                })
+
         with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
             self.auth.hq_cli_api.action_plan("digital-ip-text-generate", {
                 "avatar_id": 7, "text": "越权输入", "voice": "S_d21F8OR62",

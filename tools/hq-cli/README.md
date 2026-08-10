@@ -82,9 +82,9 @@ hq run image-generate --input @image.json --confirm --quote-token '<quote_token>
 | 客户说法 | CLI 能力 | 必填输入 | 素材边界 |
 |---|---|---|---|
 | “用我的数字人形象和这段文案做一条口播视频” | `digital-ip-text-generate` | `avatar_id`、`text`、`voice` | 单个本人已就绪形象；不接收人物图片上传 |
-| “用我的数字人形象和资产库这条音频做口播视频” | `digital-ip-audio-generate` | `avatar_id`、`audio_file` | `audio_file` 必须原样取自本人资产结果；不接收 URL、本机路径或音频上传 |
+| “用我的数字人形象和资产库这条音频做口播视频” | `digital-ip-audio-generate` | `avatar_id`、`audio_file` | `audio_file` 最长 500 字符且必须原样取自本人资产结果；不接收 URL、本机路径或音频上传 |
 | “让 2–5 个我的数字人分别讲同一段文案” | `digital-ip-batch-generate` | `avatars`、`text`、`voice` | `avatars` 每项是本人已就绪的 `avatar_id`，可带 `label`；共用文案、音色和字幕设置 |
-| “让 1–3 个电影化身按描述生成，也可以参考我的图或视频” | `cinematic-open-generate` | `avatar_id` 或 `avatar_ids`、`prompt` | 最多 8 个图片 `upload_id`、3 个视频 `upload_id`；时长 4–15 秒 |
+| “让 1–3 个电影化身按描述生成，也可以参考我的图或视频” | `cinematic-open-generate` | `avatar_id` 或 `avatar_ids`、`prompt` | 形象和参考图共用 9 张额度：1/2/3 个形象最多再传 8/7/6 个图片 `upload_id`；另可传 3 个视频 `upload_id`；时长 4–15 秒 |
 | “让我的电影化身模仿这段视频的动作” | `cinematic-motion-generate` | `avatar_id`、`reference_video_upload_ids` | 必须且只能放 1 个本人短期私有视频 `upload_id` |
 | “用人物照片和衣服图快速做换装视频” | `tryon-fast-generate` | `person_image_upload_id`、`clothes_upload_id` | 两项都先通过 `image-upload` 上传；时长 5–15 秒 |
 | “以人物视频为底片，更换衣服或背景” | `tryon-classic-generate` | `person_video_upload_id` | 衣服图、背景图至少提供一项；人物视频先通过 `video-upload` 上传；时长 1–6 秒 |

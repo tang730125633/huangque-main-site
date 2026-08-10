@@ -304,6 +304,108 @@ class HQCLIContentTests(unittest.TestCase):
         expand.assert_called_once_with(with_reference, "alice")
         validate.assert_called_once_with(expanded, "alice", [])
 
+    def test_cinematic_submit_replays_before_upload_expansion_and_cleans_queue_failure(self):
+        raw = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl9l1sAAAAASUVORK5CYII="
+        )
+        claims = {}
+        created = []
+
+        def begin(_username, _endpoint, key, body):
+            digest = json.dumps(body, sort_keys=True, separators=(",", ":"))
+            if key not in claims:
+                claims[key] = {"digest": digest, "response": None}
+                return "new", None
+            if claims[key]["digest"] != digest:
+                return "conflict", None
+            response = claims[key]["response"]
+            return ("replay", response) if response else ("processing", None)
+
+        def complete(_username, _endpoint, key, response):
+            claims[key]["response"] = response
+
+        def abort(_username, _endpoint, key):
+            if key in claims and claims[key]["response"] is None:
+                claims.pop(key)
+
+        def create_job(*args, **_kwargs):
+            created.append(args[6])
+            return 40 + len(created), 76
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            upload_root, output_root = root / "uploads", root / "output"
+
+            def out_path(relative):
+                path = output_root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                return path
+
+            with mock.patch.object(cli_uploads, "UPLOAD_ROOT", upload_root):
+                uploaded = cli_uploads.store_image(
+                    io.BytesIO(raw), len(raw), "alice", "image/png",
+                    hashlib.sha256(raw).hexdigest(),
+                )
+            request = {
+                "cine_mode": "open", "avatar_ids": [3], "prompt": "在工作室交流",
+                "resolution": "720p", "ratio": "9:16", "duration": 8,
+                "reference_image_upload_ids": [uploaded["upload_id"]],
+            }
+
+            with mock.patch.object(cli_uploads, "UPLOAD_ROOT", upload_root), \
+                    mock.patch.object(core, "HANDLERS", {"cinematic": lambda payload: payload}), \
+                    mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                    mock.patch.object(core, "_idempotency_begin", side_effect=begin), \
+                    mock.patch.object(core, "_idempotency_complete", side_effect=complete), \
+                    mock.patch.object(core, "_idempotency_abort", side_effect=abort), \
+                    mock.patch.object(core, "_user_video_submit_limit", return_value=None), \
+                    mock.patch.object(core, "_user_active_job_count", return_value=0), \
+                    mock.patch.object(core.jobs_store, "create_paid_job", side_effect=create_job), \
+                    mock.patch.object(core, "_reject_pending_job"), \
+                    mock.patch.object(video, "get_video_avatar", return_value={
+                        "id": 3, "status": "ready", "provider_avatar_id": "look-3",
+                    }), \
+                    mock.patch.object(video, "_out_path", side_effect=out_path), \
+                    mock.patch.object(video, "record_video_pending_asset"), \
+                    mock.patch.object(video, "update_video_asset_phase"), \
+                    mock.patch.object(core, "enqueue_job", side_effect=(True, False)), \
+                    mock.patch.object(cli_uploads, "expand_role_media_payload",
+                                      wraps=cli_uploads.expand_role_media_payload) as expand:
+                status, first = self._post(
+                    "/api/gen/cinematic", request, expected=24,
+                    idempotency_key="hqcli-cinematic-retry-001",
+                )
+                self.assertEqual((200, 41), (status, first["job_id"]))
+                kept = {path for path in output_root.rglob("*") if path.is_file()}
+                self.assertEqual(1, len(kept))
+
+                # Replay must not touch the short-lived upload again.
+                for path in upload_root.iterdir():
+                    path.unlink()
+                status, replay = self._post(
+                    "/api/gen/cinematic", request, expected=24,
+                    idempotency_key="hqcli-cinematic-retry-001",
+                )
+                self.assertEqual((200, first), (status, replay))
+                self.assertEqual((1, 1), (len(created), expand.call_count))
+                self.assertEqual(kept, {
+                    path for path in output_root.rglob("*") if path.is_file()
+                })
+
+                # A fresh request that cannot enter the queue must remove its files.
+                with mock.patch.object(cli_uploads, "_load_image", return_value=(
+                    base64.b64encode(raw).decode("ascii"), {"mime": "image/png"},
+                )):
+                    status, failed = self._post(
+                        "/api/gen/cinematic", dict(request, prompt="队列失败"), expected=24,
+                        idempotency_key="hqcli-cinematic-retry-002",
+                    )
+                self.assertEqual((429, "queue_full"), (status, failed["code"]))
+                self.assertEqual(2, len(created))
+                self.assertEqual(kept, {
+                    path for path in output_root.rglob("*") if path.is_file()
+                })
+
     def test_batch_and_tryon_quotes_use_server_validation_and_total_cost(self):
         batch = {
             "mode": "text", "text": "欢迎到店", "voice": "owned-voice",

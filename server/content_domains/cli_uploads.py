@@ -246,12 +246,18 @@ def _store_image(stream, length, username, content_type, expected_sha256, now):
 def _probe_video_duration(path):
     try:
         result = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=index,codec_type:format=duration",
+             "-of", "json", str(path)],
             check=True, timeout=20, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
-        duration = float(result.stdout.strip())
-    except (FileNotFoundError, subprocess.SubprocessError, TypeError, ValueError) as exc:
+        probe = json.loads(result.stdout)
+        streams = probe.get("streams") or []
+        if not any(stream.get("codec_type") == "video" for stream in streams):
+            raise ValueError("missing video stream")
+        duration = float((probe.get("format") or {}).get("duration"))
+    except (FileNotFoundError, subprocess.SubprocessError, TypeError, ValueError,
+            json.JSONDecodeError, AttributeError) as exc:
         raise ValueError("无法读取视频时长，请换用完整的 MP4 / MOV / WebM") from exc
     if not 0 < duration <= VIDEO_MAX_SECONDS:
         raise ValueError("视频时长必须在 0-%d 秒之间" % VIDEO_MAX_SECONDS)
@@ -493,8 +499,16 @@ def expand_role_media_payload(payload, username, now=None):
     if image_ids is not None:
         if body.get("reference_images"):
             raise ValueError("reference_image_upload_ids 不能与 reference_images 同时使用")
-        if not isinstance(image_ids, list) or not 1 <= len(image_ids) <= 8:
-            raise ValueError("reference_image_upload_ids 必须包含 1-8 项")
+        raw_avatar_ids = body.get("avatar_ids")
+        if isinstance(raw_avatar_ids, (list, tuple)) and raw_avatar_ids:
+            avatar_count = len(raw_avatar_ids)
+        elif raw_avatar_ids is None and body.get("avatar_id") is not None:
+            avatar_count = 1
+        else:
+            avatar_count = 3
+        image_limit = max(0, 9 - avatar_count)
+        if not isinstance(image_ids, list) or not 1 <= len(image_ids) <= image_limit:
+            raise ValueError("reference_image_upload_ids 超出额度（与形象共用 9 张，当前最多 %d 项）" % image_limit)
         body["reference_images"] = []
         for upload_id in image_ids:
             data, meta = _load_image(upload_id, username, now)

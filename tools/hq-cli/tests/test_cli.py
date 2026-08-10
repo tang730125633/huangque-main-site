@@ -91,10 +91,18 @@ class HqCliTests(unittest.TestCase):
             ["avatar_id", "audio_file"],
             by_id["digital-ip-audio-generate"]["input_schema"]["required"],
         )
+        self.assertEqual(
+            500,
+            by_id["digital-ip-audio-generate"]["input_schema"]["properties"]["audio_file"]["maxLength"],
+        )
         cinematic = by_id["cinematic-open-generate"]["input_schema"]
         self.assertEqual(3, cinematic["properties"]["avatar_ids"]["maxItems"])
         self.assertEqual(8, cinematic["properties"]["reference_image_upload_ids"]["maxItems"])
         self.assertEqual(3, cinematic["properties"]["reference_video_upload_ids"]["maxItems"])
+        self.assertTrue(any(
+            "1 avatar allows 8 references, 2 allow 7, and 3 allow 6" in item
+            for item in by_id["cinematic-open-generate"]["constraints"]
+        ))
         self.assertEqual(5, by_id["digital-ip-batch-generate"]["input_schema"]["properties"]["avatars"]["maxItems"])
         self.assertEqual(1, by_id["cinematic-motion-generate"]["input_schema"]["properties"]["reference_video_upload_ids"]["maxItems"])
         self.assertEqual("inspiration:write", by_id["inspiration-like"]["required_scope"])
@@ -335,6 +343,9 @@ class HqCliTests(unittest.TestCase):
             },
             "cinematic-open-generate": {
                 "avatar_id": 17, "avatar_ids": [18], "prompt": "x",
+            },
+            "digital-ip-audio-generate": {
+                "avatar_id": 17, "audio_file": "a" * 501,
             },
             "tryon-classic-generate": {
                 "person_video_upload_id": "vid_" + "c" * 32,

@@ -1224,8 +1224,12 @@ def _generation_payload(action, value):
         }
         image_ids = value.get("reference_image_upload_ids")
         if image_ids is not None:
-            if not isinstance(image_ids, list) or not 1 <= len(image_ids) <= 8:
-                raise CLIAPIError(400, "reference_image_upload_ids 必须包含 1-8 项")
+            image_limit = 9 - len(avatar_ids)
+            if not isinstance(image_ids, list) or not 1 <= len(image_ids) <= image_limit:
+                raise CLIAPIError(
+                    400,
+                    "reference_image_upload_ids 必须包含 1-%d 项（与形象共用 9 张额度）" % image_limit,
+                )
             body["reference_image_upload_ids"] = [
                 _upload_id(item, "reference_image_upload_ids") for item in image_ids
             ]

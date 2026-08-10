@@ -448,7 +448,7 @@ DIGITAL_IP_TEXT_FIELDS = {
 DIGITAL_IP_AUDIO_FIELDS = {
     "avatar_id": AVATAR_ID,
     "audio_file": {
-        "type": "string", "minLength": 1, "maxLength": 512,
+        "type": "string", "minLength": 1, "maxLength": 500,
         "description": "从当前账号资产结果取得的 audio_file；不是 URL 或本机路径",
     },
     **TALKING_VIDEO_FIELDS,
@@ -477,6 +477,7 @@ CINEMATIC_OPEN_FIELDS = {
     "enhance_prompt": {"type": "boolean"},
     "reference_image_upload_ids": {
         "type": "array", "minItems": 1, "maxItems": 8, "items": IMAGE_UPLOAD_ID,
+        "description": "形象和参考图共用 9 张额度：1/2/3 个形象最多再传 8/7/6 张参考图",
     },
     "reference_video_upload_ids": {
         "type": "array", "minItems": 1, "maxItems": 3, "items": VIDEO_UPLOAD_ID,
@@ -566,7 +567,7 @@ CAPABILITIES["digital-ip-batch-generate"]["constraints"] = [
 ]
 CAPABILITIES["cinematic-open-generate"]["constraints"] = [
     "provide either avatar_id or 1-3 distinct avatar_ids owned by the current account, never both",
-    "reference_image_upload_ids accepts 1-8 private image uploads when present",
+    "avatar looks and reference_image_upload_ids share 9 image slots: 1 avatar allows 8 references, 2 allow 7, and 3 allow 6",
     "reference_video_upload_ids accepts 1-3 private video uploads when present",
     "duration defaults to 10 seconds and is limited to 4-15 seconds",
     "output resolution is fixed by the main site at 720p",
