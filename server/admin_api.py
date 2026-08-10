@@ -1547,7 +1547,7 @@ def _e2e_prepare_operation(session, operation_id):
     if kind == "script_to_video" and payload.get("pipeline") == "pixelle":
         if pixelle_video is None:
             raise RuntimeError("文案成片模块不可用")
-        cost_payload = pixelle_video.prepare_payload(payload, account["username"])
+        cost_payload = pixelle_video.prepare_payload(payload)
     return {
         "operation_id": operation_id, "runner": runner, "payload": payload,
         "endpoint": endpoint, "kind": kind,

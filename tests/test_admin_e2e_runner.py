@@ -304,9 +304,7 @@ class AdminE2ERunnerTests(unittest.TestCase):
 
         self.assertEqual(result["cost"], 50)
         self.assertNotIn("n_scenes", result["payload"])
-        pixelle.prepare_payload.assert_called_once_with(
-            result["payload"], "qa-dedicated"
-        )
+        pixelle.prepare_payload.assert_called_once_with(result["payload"])
 
     def test_canvas_image_nodes_reuse_private_image_fixture_on_canvas_routes(self):
         expected = {
