@@ -70,7 +70,7 @@ jobs:
           cmp "$cli_tmp"/wheels-a/*.whl "$cli_tmp"/wheels-b/*.whl
           sh -n ../../site/downloads/hq/install.sh
           python -m venv "$cli_tmp/venv"
-          "$cli_tmp/venv/bin/pip" install --no-index --no-deps ../../site/downloads/hq/v0.6.0/huangque_hq_cli-0.6.0-py3-none-any.whl
+          "$cli_tmp/venv/bin/pip" install --no-index --no-deps "$cli_tmp"/wheels-a/*.whl
           "$cli_tmp/venv/bin/hq" version --json
           "$cli_tmp/venv/bin/hq" capabilities --json
           "$cli_tmp/venv/bin/python" -m hq_cli version --json

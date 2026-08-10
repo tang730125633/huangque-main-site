@@ -117,6 +117,58 @@ class LeadgenJobCasTests(unittest.TestCase):
             server.server_close()
             self.lg.INTERNAL_TOKEN = old_internal
 
+    def test_cli_collect_search_reuses_paid_job_guards(self):
+        with mock.patch.object(self.lg.tikhub, "search", return_value={
+            "items": [{"id": "v1", "title": "案例", "like": 9, "comment": 2}],
+            "has_more": True,
+        }) as search:
+            result = self.lg.gen_collect_search(
+                {"platform": "douyin", "keyword": "AI 剪辑", "page": 2})
+        search.assert_called_once_with("douyin", "AI 剪辑", page=2, video_only=False)
+        self.assertEqual(result["items"][0]["stats"], {"like": 9, "comment": 2})
+        self.assertTrue(result["has_more"])
+
+        deductions = []
+        self.lg.deduct_points = lambda username, amount, reason="", transaction_key="": (
+            deductions.append((username, amount, transaction_key)), (200, {"points": 96})
+        )[1]
+        old_internal = self.lg.INTERNAL_TOKEN
+        self.lg.INTERNAL_TOKEN = "internal-test-token"
+        server = ThreadingHTTPServer(("127.0.0.1", 0), self.lg.H)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            body = json.dumps({"platform": "douyin", "keyword": "AI 剪辑", "page": 1}).encode()
+            cost = self.lg.pricing.get_price("collect.search")
+
+            def submit():
+                request = urllib.request.Request(
+                    "http://127.0.0.1:%d/api/gen/collect_search" % server.server_address[1],
+                    data=body, method="POST", headers={
+                        "Authorization": "Bearer qa-token",
+                        "Content-Type": "application/json",
+                        "Idempotency-Key": "e2e:collect:search",
+                        "X-HQ-Internal-Token": self.lg.INTERNAL_TOKEN,
+                        "X-HQ-Expected-Cost": str(cost),
+                    },
+                )
+                with urllib.request.urlopen(request, timeout=3) as response:
+                    return json.loads(response.read())
+
+            with mock.patch.object(self.lg, "verify", return_value={"username": "qa"}), \
+                 mock.patch.object(self.lg.feature_flags, "require_enabled") as enabled, \
+                 mock.patch.object(self.lg, "run_job"):
+                first, replay = submit(), submit()
+            self.assertEqual(first, replay)
+            self.assertEqual(len(deductions), 1)
+            self.assertEqual(deductions[0][1], cost)
+            self.assertEqual(deductions[0][2],
+                             "job-charge:qa:/api/gen/collect_search:e2e:collect:search")
+            enabled.assert_called_with("collect")
+        finally:
+            server.shutdown()
+            server.server_close()
+            self.lg.INTERNAL_TOKEN = old_internal
+
     def test_leads_have_stable_crm_ids_and_restore_saved_follow_state(self):
         old_crm = self.lg.leads_domain.LEADS_CRM_DB
         self.lg.leads_domain.LEADS_CRM_DB = os.path.join(self.tmp.name, "leads-crm.db")

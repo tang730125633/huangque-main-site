@@ -10,7 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "site/downloads/hq/install.sh"
-VERSION = "0.8.0"
+VERSION = "0.9.0"
 RELEASE = ROOT / ("site/downloads/hq/v" + VERSION)
 WHEEL = RELEASE / ("huangque_hq_cli-%s-py3-none-any.whl" % VERSION)
 SOURCE = ROOT / "tools/hq-cli/src/hq_cli"
