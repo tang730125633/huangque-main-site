@@ -159,6 +159,42 @@ class ShortDramaPr94SchemaMigrationTests(unittest.TestCase):
         self.assertEqual(job_id, character["reference_job_id"])
         return attached
 
+    def _seed_trusted_ai_evidence(self, job_id=701):
+        self._seed_legacy_database()
+        short_drama.init_db(self.db)
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_script_imports SET core_story_confirmed_at=101 "
+                "WHERE project_id='legacy-project'"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self._attach_trusted_ai_three_view(
+            "character_1", 2, job_id
+        )
+
+    def _replace_three_view_evidence(self, evidence):
+        conn = self.db()
+        try:
+            row = conn.execute(
+                "SELECT character_contract_migration_json "
+                "FROM short_drama_script_imports "
+                "WHERE project_id='legacy-project'"
+            ).fetchone()
+            migration = json.loads(row[0])
+            migration["three_view_evidence"] = {"character_1": evidence}
+            conn.execute(
+                "UPDATE short_drama_script_imports "
+                "SET character_contract_migration_json=? "
+                "WHERE project_id='legacy-project'",
+                (json.dumps(migration),),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     def test_legacy_database_upgrade_is_idempotent_and_preserves_old_contract(self):
         contract = self._seed_legacy_database()
 
@@ -302,24 +338,21 @@ class ShortDramaPr94SchemaMigrationTests(unittest.TestCase):
         )
 
     def test_trusted_ai_three_view_evidence_completes_migration(self):
-        self._seed_legacy_database()
-        short_drama.init_db(self.db)
-        conn = self.db()
-        try:
-            conn.execute(
-                "UPDATE short_drama_script_imports SET core_story_confirmed_at=101 "
-                "WHERE project_id='legacy-project'"
-            )
-            conn.commit()
-        finally:
-            conn.close()
-        self._attach_trusted_ai_three_view("character_1", 2, 701)
-        ready = short_drama.get_project(self.db, "alice", "legacy-project")
+        ready = self._seed_trusted_ai_evidence()
         evidence = ready["script_import"]["character_contract_migration"][
             "three_view_evidence"
         ]["character_1"]
         self.assertEqual(2, evidence["reference_version"])
         self.assertEqual(701, evidence["job_id"])
+
+        short_drama.init_db(self.db)
+        short_drama.init_db(self.db)
+        ready = short_drama.get_project(self.db, "alice", "legacy-project")
+        self.assertEqual(
+            evidence,
+            ready["script_import"]["character_contract_migration"]
+            ["three_view_evidence"]["character_1"],
+        )
 
         confirmed = short_drama.confirm_character_reference(
             self.db, "alice", "legacy-project", ready["revision"],
@@ -334,6 +367,129 @@ class ShortDramaPr94SchemaMigrationTests(unittest.TestCase):
         short_drama.init_db(self.db)
         stable = short_drama.get_project(self.db, "alice", "legacy-project")
         self.assertEqual({}, stable["script_import"]["character_contract_migration"])
+        formal = short_drama.finalize_live_action_project(
+            self.db, "alice", {
+                "project_id": "legacy-project",
+                "revision": stable["revision"],
+            },
+        )
+        self.assertEqual("formal", formal["creation_status"])
+
+    def test_init_db_drops_wrong_job_or_version_evidence(self):
+        self._seed_trusted_ai_evidence()
+        for evidence in (
+                {
+                    "source": "ordinary_upload",
+                    "reference_version": 2,
+                    "job_id": 701,
+                },
+                {
+                    "source": "trusted_ai_three_view",
+                    "reference_version": 2,
+                    "job_id": 999,
+                },
+                {
+                    "source": "trusted_ai_three_view",
+                    "reference_version": 99,
+                    "job_id": 701,
+                }):
+            with self.subTest(evidence=evidence):
+                self._replace_three_view_evidence(evidence)
+                short_drama.init_db(self.db)
+                short_drama.init_db(self.db)
+                project = short_drama.get_project(
+                    self.db, "alice", "legacy-project"
+                )
+                self.assertEqual(
+                    {},
+                    project["script_import"]["character_contract_migration"]
+                    ["three_view_evidence"],
+                )
+
+    def test_init_db_rebuilds_missing_evidence_from_current_binding(self):
+        ready = self._seed_trusted_ai_evidence()
+        expected = ready["script_import"]["character_contract_migration"][
+            "three_view_evidence"
+        ]["character_1"]
+        conn = self.db()
+        try:
+            row = conn.execute(
+                "SELECT character_contract_migration_json "
+                "FROM short_drama_script_imports "
+                "WHERE project_id='legacy-project'"
+            ).fetchone()
+            migration = json.loads(row[0])
+            migration.pop("three_view_evidence", None)
+            conn.execute(
+                "UPDATE short_drama_script_imports "
+                "SET character_contract_migration_json=? "
+                "WHERE project_id='legacy-project'",
+                (json.dumps(migration),),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        short_drama.init_db(self.db)
+        short_drama.init_db(self.db)
+        rebuilt = short_drama.get_project(self.db, "alice", "legacy-project")
+        self.assertEqual(
+            expected,
+            rebuilt["script_import"]["character_contract_migration"]
+            ["three_view_evidence"]["character_1"],
+        )
+
+    def test_init_db_drops_wrong_role_binding(self):
+        self._seed_trusted_ai_evidence()
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_character_reference_jobs "
+                "SET character_key='character_2' WHERE job_id=701"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        short_drama.init_db(self.db)
+        short_drama.init_db(self.db)
+        project = short_drama.get_project(self.db, "alice", "legacy-project")
+        self.assertEqual(
+            {},
+            project["script_import"]["character_contract_migration"]
+            ["three_view_evidence"],
+        )
+
+    def test_ordinary_upload_overwrite_stays_untrusted_after_restart(self):
+        ready = self._seed_trusted_ai_evidence()
+        output = Path(self.tmp.name) / "ordinary-overwrite"
+        raw = b"\x89PNG\r\n\x1a\nordinary-overwrite"
+        with patch.object(image, "OUT_DIR", output), patch.object(
+                short_drama_reference_validation,
+                "validate_character_reference",
+                return_value={"has_real_person": True, "visible_extent": "half_body"},
+        ):
+            selected = short_drama.select_character_reference(
+                self.db, "alice", "alice", {
+                    "project_id": "legacy-project",
+                    "revision": ready["revision"],
+                    "character_key": "character_1",
+                    "source": "upload",
+                    "asset_job_id": None,
+                    "asset_url": "",
+                    "filename": "ordinary.png",
+                    "image_data": "data:image/png;base64,"
+                    + base64.b64encode(raw).decode(),
+                },
+            )
+        self.assertIsNone(selected["characters"][0]["reference_job_id"])
+        short_drama.init_db(self.db)
+        short_drama.init_db(self.db)
+        restarted = short_drama.get_project(
+            self.db, "alice", "legacy-project"
+        )
+        migration = restarted["script_import"]["character_contract_migration"]
+        self.assertTrue(migration["required"])
+        self.assertNotIn("three_view_evidence", migration)
 
     def test_old_locked_reference_cannot_clear_marker_or_finalize(self):
         self._seed_legacy_database()

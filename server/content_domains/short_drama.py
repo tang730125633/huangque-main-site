@@ -430,6 +430,50 @@ def _legacy_character_contract_migration(value, reference_versions=None):
     }
 
 
+def _trusted_character_contract_migration_evidence(
+        conn, project_id, character_key, expected=None):
+    """Return normalized evidence only for the currently attached AI job."""
+    jobs_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='jobs'"
+    ).fetchone()
+    if not jobs_table:
+        return None
+    row = conn.execute(
+        "SELECT c.reference_job_id,c.reference_version "
+        "FROM short_drama_characters c "
+        "JOIN short_drama_projects p ON p.id=c.project_id "
+        "JOIN short_drama_character_reference_jobs r "
+        "ON r.job_id=c.reference_job_id AND r.project_id=c.project_id "
+        "AND r.character_key=c.character_key "
+        "JOIN jobs j ON j.id=r.job_id AND j.username=r.username "
+        "WHERE c.project_id=? AND c.character_key=? AND p.deleted=0 "
+        "AND r.owner_username=p.username AND r.status='done' "
+        "AND j.kind='image' AND j.status='done'",
+        (project_id, character_key),
+    ).fetchone()
+    if not row:
+        return None
+    evidence = {
+        "source": "trusted_ai_three_view",
+        "reference_version": _reference_version(row[1]),
+        "job_id": int(row[0]),
+    }
+    if expected is None:
+        return evidence
+    if not isinstance(expected, dict):
+        return None
+    try:
+        expected_job_id = int(expected.get("job_id"))
+        expected_version = int(expected.get("reference_version"))
+    except (TypeError, ValueError):
+        return None
+    if (expected.get("source") != evidence["source"]
+            or expected_job_id != evidence["job_id"]
+            or expected_version != evidence["reference_version"]):
+        return None
+    return evidence
+
+
 def _record_character_contract_migration_evidence(
         conn, project_id, character_key, reference_version, job_id=None):
     """Bind trusted three-view evidence to one concrete preview version."""
@@ -523,26 +567,12 @@ def _confirm_character_contract_migration(conn, project_id, character_key,
         return
     evidence_map = migration.get("three_view_evidence")
     evidence_map = evidence_map if isinstance(evidence_map, dict) else {}
-    evidence = evidence_map.get(character_key)
-    evidence = evidence if isinstance(evidence, dict) else {}
-    try:
-        evidence_job_id = int(evidence.get("job_id"))
-    except (TypeError, ValueError):
-        evidence_job_id = -1
-    if (evidence.get("source") != "trusted_ai_three_view"
-            or _reference_version(evidence.get("reference_version"), -1)
-            != reference_version
-            or reference_job_id is None
-            or evidence_job_id != int(reference_job_id)):
-        return
-    trusted = conn.execute(
-        "SELECT 1 FROM short_drama_character_reference_jobs r "
-        "JOIN jobs j ON j.id=r.job_id "
-        "WHERE r.job_id=? AND r.project_id=? AND r.character_key=? "
-        "AND r.status='done' AND j.status='done'",
-        (evidence_job_id, project_id, character_key),
-    ).fetchone()
-    if not trusted:
+    evidence = _trusted_character_contract_migration_evidence(
+        conn, project_id, character_key, evidence_map.get(character_key)
+    )
+    if (not evidence or reference_job_id is None
+            or evidence["reference_version"] != reference_version
+            or evidence["job_id"] != int(reference_job_id)):
         return
     contract = _json(row[1], [])
     upgraded_contract = []
@@ -1479,6 +1509,37 @@ def init_db(db_factory):
             migration = _legacy_character_contract_migration(
                 contract, current_versions
             )
+            if migration.get("required"):
+                baselines = migration.get("reference_version_baselines") or {}
+                evidence_field_present = (
+                    "three_view_evidence" in existing_migration
+                )
+                existing_evidence = existing_migration.get(
+                    "three_view_evidence"
+                )
+                existing_evidence = (
+                    existing_evidence
+                    if isinstance(existing_evidence, dict) else {}
+                )
+                evidence = {}
+                for key in migration.get("character_keys") or []:
+                    expected = None
+                    if key in existing_evidence:
+                        expected = existing_evidence[key]
+                        if not isinstance(expected, dict):
+                            expected = {}
+                    elif evidence_field_present:
+                        continue
+                    trusted = _trusted_character_contract_migration_evidence(
+                        conn, project_id, key, expected,
+                    )
+                    if (trusted and trusted["reference_version"]
+                            > _reference_version(baselines.get(key))):
+                        evidence[key] = trusted
+                if evidence:
+                    migration["three_view_evidence"] = evidence
+                elif evidence_field_present:
+                    migration["three_view_evidence"] = {}
             if migration.get("required") and migration != existing_migration:
                 conn.execute(
                     "UPDATE short_drama_script_imports "
