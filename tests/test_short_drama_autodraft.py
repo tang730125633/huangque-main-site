@@ -164,6 +164,56 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             "image_url": "https://cdn.example/reference.png",
         }
 
+    def _lock_project_character_references(self):
+        conn = self.db()
+        try:
+            plan_row = conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()
+            plan = json.loads(plan_row[0])
+            required_keys = []
+            for shot in plan.get("material_plan") or []:
+                for dialogue in shot.get("dialogue") or []:
+                    key = str(dialogue.get("character_key") or "")
+                    if key and key not in required_keys:
+                        required_keys.append(key)
+                for value in shot.get("character_keys") or []:
+                    key = str(value or "")
+                    if key and key not in required_keys:
+                        required_keys.append(key)
+            for index, key in enumerate(required_keys, 1):
+                conn.execute(
+                    "INSERT OR IGNORE INTO short_drama_characters "
+                    "(id,project_id,character_key,name,source_type,sort_order) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (
+                        "character-minimax-%d" % index,
+                        self.project["id"], key, "角色 %d" % index,
+                        "ai_character", index,
+                    ),
+                )
+            rows = conn.execute(
+                "SELECT character_key FROM short_drama_characters "
+                "WHERE project_id=? ORDER BY sort_order",
+                (self.project["id"],),
+            ).fetchall()
+            self.assertTrue(rows)
+            for index, row in enumerate(rows, 1):
+                conn.execute(
+                    "UPDATE short_drama_characters SET reference_file=?,"
+                    "reference_url=?,reference_version=1,reference_locked=1 "
+                    "WHERE project_id=? AND character_key=?",
+                    (
+                        "short_drama_refs/character-%d.png" % index,
+                        "https://cdn.example/short-drama/character-%d.png" % index,
+                        self.project["id"], row[0],
+                    ),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
     def _provider_quote(self):
         workspace = short_drama_autodraft.workspace(
             self.db, "alice", "alice", self.project["id"]
@@ -856,28 +906,32 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             self.db, "alice", "alice", self.project["id"]
         )
         shot = workspace["provider_poc"]["shots"][0]
-        with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
-            short_drama_autodraft.preview_provider_request(
-                self.db,
-                "alice",
-                "alice",
-                {
-                    "project_id": self.project["id"],
-                    "plan_id": self.plan_id,
-                    "shot_key": shot["shot_key"],
-                    "avatar_id": "avatar-bob",
-                },
-                avatar_lookup=lambda _username, _avatar_id: {
-                    "id": "avatar-bob",
-                    "username": "bob",
-                    "status": "ready",
-                    "provider_avatar_id": "provider-bob",
-                },
-            )
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "heygen_cinematic",
+        }):
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft.preview_provider_request(
+                    self.db,
+                    "alice",
+                    "alice",
+                    {
+                        "project_id": self.project["id"],
+                        "plan_id": self.plan_id,
+                        "shot_key": shot["shot_key"],
+                        "avatar_id": "avatar-bob",
+                    },
+                    avatar_lookup=lambda _username, _avatar_id: {
+                        "id": "avatar-bob",
+                        "username": "bob",
+                        "status": "ready",
+                        "provider_avatar_id": "provider-bob",
+                    },
+                )
         self.assertEqual("provider_avatar_forbidden", raised.exception.code)
         self.assertEqual(403, raised.exception.status)
 
     def test_provider_preflight_http_route_is_non_billable(self):
+        self._lock_project_character_references()
         workspace = short_drama_autodraft.workspace(
             self.db, "alice", "alice", self.project["id"]
         )
@@ -887,29 +941,32 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                 "project_id": self.project["id"],
                 "plan_id": self.plan_id,
                 "shot_key": workspace["provider_poc"]["shots"][0]["shot_key"],
-                "avatar_id": "avatar-local-1",
+                "avatar_id": "foreign-avatar-must-be-ignored",
             },
         )
         verify = lambda token: {
             "username": token,
             "must_change": False,
         } if token else None
-        avatar = {
-            "id": "avatar-local-1",
-            "username": "alice",
-            "name": "记者林夏",
-            "status": "ready",
-            "provider_avatar_id": "heygen-avatar-1",
-        }
-        self.assertTrue(short_drama.dispatch_http(
-            handler,
-            "POST",
-            self.db,
-            verify,
-            avatar_lookup=lambda _username, _avatar_id: avatar,
+        avatar_lookup = mock.Mock(side_effect=AssertionError(
+            "MiniMax preflight must not resolve a client supplied avatar_id"
         ))
-        self.assertEqual(200, handler.response[0])
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+            "MINIMAX_API_KEY": "configured-for-preflight-only",
+        }):
+            self.assertTrue(short_drama.dispatch_http(
+                handler,
+                "POST",
+                self.db,
+                verify,
+                avatar_lookup=avatar_lookup,
+            ))
+        self.assertEqual(200, handler.response[0], handler.response[1])
+        self.assertEqual("minimax_h3", handler.response[1]["provider"])
+        self.assertFalse(handler.response[1]["billable"])
         self.assertFalse(handler.response[1]["external_submission"])
+        avatar_lookup.assert_not_called()
 
     def test_start_is_idempotent_and_rejects_changed_request(self):
         first = self._start("same-key")

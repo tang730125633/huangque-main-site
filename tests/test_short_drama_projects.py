@@ -1114,7 +1114,7 @@ class ShortDramaProjectTests(unittest.TestCase):
             "height_body": "", "fixed_clothing": "white shirt",
             "fixed_colors": "", "accessories": "",
             "appearance_prompt": "female", "wardrobe_prompt": "white shirt",
-            "reference_views": ["front_full", "side_full", "front_half"],
+            "reference_views": ["front_full", "side_full", "back_full"],
         }
         second = dict(
             first, character_key="character_2", name="Zhou Ning",
@@ -1135,7 +1135,35 @@ class ShortDramaProjectTests(unittest.TestCase):
             short_drama._characters_from_import_contract(contract),
             character_contract=contract,
         )
+        project = short_drama.confirm_live_action_core_story(
+            self.db, "alice", {
+                "project_id": project["id"],
+                "revision": project["revision"],
+                "core_story": {
+                    "title": "Paid role protection",
+                    "logline": "Lin Yi must complete a protected choice.",
+                    "setup": "Lin Yi enters the situation.",
+                    "development": "The pressure increases.",
+                    "turning_point": "New information changes the choice.",
+                    "climax": "Lin Yi makes the final choice.",
+                    "ending": "The consequence becomes clear.",
+                    "central_conflict": "Lin Yi must protect the paid work.",
+                    "theme": "Paid work remains protected.",
+                    "preservation_notes": "Keep the confirmed role unchanged.",
+                },
+            },
+        )
         with closing(self.db()) as conn:
+            legacy_contract = [
+                dict(item, reference_views=[
+                    "front_full", "side_full", "front_half",
+                ]) for item in contract
+            ]
+            conn.execute(
+                "UPDATE short_drama_script_imports "
+                "SET character_contract_json=? WHERE project_id=?",
+                (json.dumps(legacy_contract), project["id"]),
+            )
             conn.execute("ALTER TABLE jobs ADD COLUMN result TEXT")
             conn.execute(
                 "INSERT INTO jobs(id,kind,username,cost,status,payload,refunded,result) "
@@ -1156,12 +1184,19 @@ class ShortDramaProjectTests(unittest.TestCase):
                 (project["id"],),
             )
             conn.commit()
+        short_drama.init_db(self.db)
         Path(self.tmp.name, "locked.png").write_bytes(
             b"\x89PNG\r\n\x1a\nreference"
         )
         protected = short_drama.get_project(
             self.db, "alice", project["id"]
         )
+        migration = protected["script_import"]["character_contract_migration"]
+        self.assertTrue(migration["required"])
+        self.assertEqual(
+            ["character_1", "character_2"], migration["character_keys"]
+        )
+        self.assertEqual(["back_full"], migration["missing_reference_views"])
 
         with self.assertRaisesRegex(ValueError, "不能删除"):
             short_drama.update_characters(
@@ -1211,7 +1246,7 @@ class ShortDramaProjectTests(unittest.TestCase):
             "height_body": "", "fixed_clothing": "white shirt",
             "fixed_colors": "", "accessories": "",
             "appearance_prompt": "female", "wardrobe_prompt": "white shirt",
-            "reference_views": ["front_full", "side_full", "front_half"],
+            "reference_views": ["front_full", "side_full", "back_full"],
         }]
         project = short_drama.import_script_project(
             self.db, "alice", {
@@ -1226,6 +1261,43 @@ class ShortDramaProjectTests(unittest.TestCase):
             self.db, "alice", project["id"], project["revision"],
             short_drama._characters_from_import_contract(contract),
             character_contract=contract,
+        )
+        project = short_drama.confirm_live_action_core_story(
+            self.db, "alice", {
+                "project_id": project["id"],
+                "revision": project["revision"],
+                "core_story": {
+                    "title": "Paid role attempt",
+                    "logline": "Lin Yi must complete a protected choice.",
+                    "setup": "Lin Yi enters the situation.",
+                    "development": "The pressure increases.",
+                    "turning_point": "New information changes the choice.",
+                    "climax": "Lin Yi makes the final choice.",
+                    "ending": "The consequence becomes clear.",
+                    "central_conflict": "Lin Yi must protect the paid work.",
+                    "theme": "Paid work remains protected.",
+                    "preservation_notes": "Keep the confirmed role unchanged.",
+                },
+            },
+        )
+        with closing(self.db()) as conn:
+            legacy_contract = [dict(
+                contract[0], reference_views=[
+                    "front_full", "side_full", "front_half",
+                ],
+            )]
+            conn.execute(
+                "UPDATE short_drama_script_imports "
+                "SET character_contract_json=? WHERE project_id=?",
+                (json.dumps(legacy_contract), project["id"]),
+            )
+            conn.commit()
+        short_drama.init_db(self.db)
+        restored = short_drama.get_project(
+            self.db, "alice", project["id"]
+        )
+        self.assertTrue(
+            restored["script_import"]["character_contract_migration"]["required"]
         )
         request = {
             "project_id": project["id"], "revision": project["revision"],

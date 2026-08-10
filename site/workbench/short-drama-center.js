@@ -1239,7 +1239,9 @@
       if(restoredStep==='live_action_roles'&&!storyConfirmed)restoredStep='live_action_story';
       if(restoredStep==='live_action_roles'&&!liveActionRoles.length)restoredStep='live_action_story';
       showCreateStep(restoredStep);if(restoredStep!=='live_action_setup'){if(restoredStep==='live_action_story')renderLiveActionCoreStory();else renderLiveActionRoles();}
-      showLiveActionNotice('已恢复上次保存的草稿。',restoredStep,{autoHide:5000});
+      var migration=draft.character_contract_migration||{};
+      if(migration.required)showLiveActionNotice(text(migration.message)||'旧草稿缺少背面全身图，需要补图并重新确认；旧版半身参考图不会被当作背面图。',restoredStep,{autoHide:0});
+      else showLiveActionNotice('已恢复上次保存的草稿。',restoredStep,{autoHide:5000});
     }
     function liveActionDraftFromProject(project){
       project=project||{};var imported=project.script_import||{},roles=Array.isArray(imported.character_contract)?imported.character_contract:[];
@@ -1247,7 +1249,7 @@
       var signatures={};roles.forEach(function(role){var key=text(role&&role.character_key);if(key&&imported.roles_saved_at)signatures[key]=liveActionRoleSignature(role);});
       var coreStory=imported.core_story&&typeof imported.core_story==='object'?imported.core_story:{};
       var step=imported.core_story_confirmed_at?'live_action_roles':'live_action_story';
-      return {version:LIVE_ACTION_DRAFT_VERSION,username:currentUsername,saved_at:Date.now(),step:step,form:{title:text(project.title),source_text:text(imported.source_text||project.synopsis),ratio:text(project.ratio)||'16:9',target_duration:String(Number(project.target_duration)||30),shot_count:String(Number(project.shot_count)||6),visual_style:text(project.visual_style)||'电影感写实'},analysis:null,core_story:coreStory,roles:roles,active_role:0,pending_key:'',pending_discard_key:'',pending_project:project,saved_role_signatures:signatures};
+      return {version:LIVE_ACTION_DRAFT_VERSION,username:currentUsername,saved_at:Date.now(),step:step,form:{title:text(project.title),source_text:text(imported.source_text||project.synopsis),ratio:text(project.ratio)||'16:9',target_duration:String(Number(project.target_duration)||30),shot_count:String(Number(project.shot_count)||6),visual_style:text(project.visual_style)||'电影感写实'},analysis:null,core_story:coreStory,roles:roles,active_role:0,pending_key:'',pending_discard_key:'',pending_project:project,saved_role_signatures:signatures,character_contract_migration:imported.character_contract_migration||{}};
     }
     function resumeProjectDraft(){
       var summary=projects.map(normalizeProject).find(function(item){return item.id===selectedProjectId;});if(!summary)return;

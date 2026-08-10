@@ -229,6 +229,7 @@ CREATE TABLE IF NOT EXISTS short_drama_script_imports (
   filename TEXT NOT NULL DEFAULT '',
   content_type TEXT NOT NULL DEFAULT 'live_action',
   character_contract_json TEXT NOT NULL DEFAULT '[]',
+  character_contract_migration_json TEXT NOT NULL DEFAULT '{}',
   roles_saved_at INTEGER,
   core_story_json TEXT NOT NULL DEFAULT '{}',
   core_story_confirmed_at INTEGER,
@@ -379,6 +380,59 @@ def _json(value, default):
 
 def _json_text(value, default):
     return json.dumps(default if value is None else value, ensure_ascii=False, separators=(",", ":"))
+
+
+_REQUIRED_CHARACTER_REFERENCE_VIEWS = (
+    "front_full", "side_full", "back_full",
+)
+_LEGACY_CHARACTER_REFERENCE_VIEWS = (
+    "front_full", "side_full", "front_half",
+)
+
+
+def _legacy_character_contract_migration(value):
+    """Describe legacy three-view contracts without inventing a back image."""
+    character_keys = []
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        views = tuple(item.get("reference_views") or ())
+        key = str(item.get("character_key") or "").strip()
+        if views == _LEGACY_CHARACTER_REFERENCE_VIEWS and key:
+            character_keys.append(key)
+    if not character_keys:
+        return {}
+    return {
+        "required": True,
+        "code": "back_full_confirmation_required",
+        "character_keys": character_keys,
+        "missing_reference_views": ["back_full"],
+        "legacy_reference_views": list(_LEGACY_CHARACTER_REFERENCE_VIEWS),
+        "message": "旧草稿缺少背面全身图，需要补图并重新确认；旧版半身参考图不会被当作背面图。",
+    }
+
+
+def _confirm_character_contract_migration(conn, project_id, character_key):
+    """Clear one legacy-view marker only after a new preview is locked."""
+    row = conn.execute(
+        "SELECT character_contract_migration_json "
+        "FROM short_drama_script_imports WHERE project_id=?",
+        (project_id,),
+    ).fetchone()
+    migration = _json(row[0], {}) if row else {}
+    current = [str(value) for value in migration.get("character_keys") or []]
+    pending = [value for value in current if value != character_key]
+    if not migration.get("required") or len(pending) == len(current):
+        return
+    if pending:
+        migration["character_keys"] = pending
+    else:
+        migration = {}
+    conn.execute(
+        "UPDATE short_drama_script_imports "
+        "SET character_contract_migration_json=? WHERE project_id=?",
+        (_json_text(migration, {}), project_id),
+    )
 
 
 def _text(value, limit=None):
@@ -1167,6 +1221,7 @@ def _project_detail(conn, username, project_id):
     imported = conn.execute(
         "SELECT source_text,filename,content_type,character_contract_json,"
         "roles_saved_at,import_mode,updated_at,core_story_json,"
+        "character_contract_migration_json,"
         "core_story_confirmed_at FROM short_drama_script_imports "
         "WHERE project_id=? AND status='completed' LIMIT 1",
         (project_id,),
@@ -1180,7 +1235,8 @@ def _project_detail(conn, username, project_id):
             "roles_saved_at": imported[4], "import_mode": imported[5],
             "updated_at": imported[6],
             "core_story": _json(imported[7], {}),
-            "core_story_confirmed_at": imported[8],
+            "character_contract_migration": _json(imported[8], {}),
+            "core_story_confirmed_at": imported[9],
         }
         confirmed_keys = {
             str(item.get("character_key") or "")
@@ -1231,6 +1287,7 @@ def init_db(db_factory):
         for name, declaration in {
             "content_type": "TEXT NOT NULL DEFAULT 'live_action'",
             "character_contract_json": "TEXT NOT NULL DEFAULT '[]'",
+            "character_contract_migration_json": "TEXT NOT NULL DEFAULT '{}'",
             "roles_saved_at": "INTEGER",
             "core_story_json": "TEXT NOT NULL DEFAULT '{}'",
             "core_story_confirmed_at": "INTEGER",
@@ -1239,6 +1296,21 @@ def init_db(db_factory):
                 conn.execute(
                     "ALTER TABLE short_drama_script_imports ADD COLUMN %s %s"
                     % (name, declaration)
+                )
+        for import_id, contract_json, migration_json in conn.execute(
+                "SELECT id,character_contract_json,character_contract_migration_json "
+                "FROM short_drama_script_imports WHERE content_type='live_action'"):
+            existing_migration = _json(migration_json, {})
+            if existing_migration.get("required"):
+                continue
+            migration = _legacy_character_contract_migration(
+                _json(contract_json, [])
+            )
+            if migration.get("required"):
+                conn.execute(
+                    "UPDATE short_drama_script_imports "
+                    "SET character_contract_migration_json=? WHERE id=?",
+                    (_json_text(migration, {}), import_id),
                 )
         if creation_status_added:
             conn.execute(
@@ -1627,9 +1699,10 @@ def _validate_import_character_contract(value):
         if any(len(clean[field]) > 500 for field in text_fields - {"character_key", "name", "role_type"}):
             raise ScriptImportError("character_field_too_long", "角色信息过长")
         views = item.get("reference_views")
-        if views != ["front_full", "side_full", "back_full"]:
+        if (not isinstance(views, list)
+                or tuple(views) != _REQUIRED_CHARACTER_REFERENCE_VIEWS):
             raise ScriptImportError("invalid_reference_views", "角色卡必须包含正面、侧面和背面全身图")
-        clean["reference_views"] = list(views)
+        clean["reference_views"] = list(_REQUIRED_CHARACTER_REFERENCE_VIEWS)
         keys.add(key)
         names.add(name.casefold())
         normalized.append(clean)
@@ -3979,6 +4052,7 @@ def confirm_character_reference(db_factory, username, project_id, revision,
             "WHERE project_id=? AND character_key=?",
             (project_id, character_key),
         )
+        _confirm_character_contract_migration(conn, project_id, character_key)
         _cas_content_update(conn, username, project_id, revision, project[1])
         conn.commit()
         return _project_detail(conn, username, project_id)

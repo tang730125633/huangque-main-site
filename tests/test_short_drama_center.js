@@ -991,6 +991,11 @@ test('live action role captions keep required and optional controls aligned', ()
   assert.match(centerStyle, /\.short-drama-role-field-caption\{display:inline-flex;min-height:12px;align-items:center;gap:3px\}/);
 });
 
+test('live action intro remains readable in the dark theme', () => {
+  assert.match(centerStyle, /\.short-drama-live-action-intro\{[^}]*background:#fffaf0;[^}]*color:#172033/);
+  assert.match(centerStyle, /\.short-drama-live-action-intro p\{color:#667085\}/);
+});
+
 test('live action role must be explicitly saved before reference generation', () => {
   assert.match(centerScript, /savedLiveActionRoleSignatures/);
   assert.match(centerScript, /function isLiveActionRoleSaved\(item\)/);
@@ -1085,6 +1090,13 @@ test('character reference view guidance is grouped with the standard image', () 
   assert.match(centerScript, /<span>图片要求<\/span><b>真人<\/b><b>至少半身<\/b><b>无需三视图<\/b>/);
   assert.doesNotMatch(centerScript, /正面半身/);
   assert.match(centerStyle, /\.short-drama-role-reference-content\{display:grid;gap:10px\}/);
+});
+
+test('legacy role drafts keep an explicit back-view migration warning', () => {
+  assert.match(centerScript, /character_contract_migration/);
+  assert.match(centerScript, /旧草稿缺少背面全身图，需要补图并重新确认/);
+  assert.match(centerScript, /旧版半身参考图不会被当作背面图/);
+  assert.match(centerScript, /if\(migration\.required\)showLiveActionNotice/);
 });
 
 test('character reference image opens an accessible large preview', () => {
