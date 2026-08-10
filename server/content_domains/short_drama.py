@@ -390,8 +390,22 @@ _LEGACY_CHARACTER_REFERENCE_VIEWS = (
 )
 
 
-def _legacy_character_contract_migration(value):
+def _reference_version(value, default=0):
+    try:
+        parsed = int(value)
+        if parsed < 0:
+            raise ValueError("negative reference version")
+        return parsed
+    except (TypeError, ValueError):
+        try:
+            return max(0, int(default or 0))
+        except (TypeError, ValueError):
+            return 0
+
+
+def _legacy_character_contract_migration(value, reference_versions=None):
     """Describe legacy three-view contracts without inventing a back image."""
+    reference_versions = reference_versions if isinstance(reference_versions, dict) else {}
     character_keys = []
     for item in value if isinstance(value, list) else []:
         if not isinstance(item, dict):
@@ -406,32 +420,68 @@ def _legacy_character_contract_migration(value):
         "required": True,
         "code": "back_full_confirmation_required",
         "character_keys": character_keys,
+        "reference_version_baselines": {
+            key: _reference_version(reference_versions.get(key))
+            for key in character_keys
+        },
         "missing_reference_views": ["back_full"],
         "legacy_reference_views": list(_LEGACY_CHARACTER_REFERENCE_VIEWS),
         "message": "旧草稿缺少背面全身图，需要补图并重新确认；旧版半身参考图不会被当作背面图。",
     }
 
 
-def _confirm_character_contract_migration(conn, project_id, character_key):
+def _confirm_character_contract_migration(conn, project_id, character_key,
+                                            reference_version):
     """Clear one legacy-view marker only after a new preview is locked."""
     row = conn.execute(
-        "SELECT character_contract_migration_json "
+        "SELECT character_contract_migration_json,character_contract_json "
         "FROM short_drama_script_imports WHERE project_id=?",
         (project_id,),
     ).fetchone()
     migration = _json(row[0], {}) if row else {}
     current = [str(value) for value in migration.get("character_keys") or []]
-    pending = [value for value in current if value != character_key]
-    if not migration.get("required") or len(pending) == len(current):
+    baselines = migration.get("reference_version_baselines")
+    baselines = baselines if isinstance(baselines, dict) else {}
+    baseline = _reference_version(
+        baselines.get(character_key, reference_version), reference_version
+    )
+    if (not migration.get("required") or character_key not in current
+            or reference_version <= baseline):
         return
+    contract = _json(row[1], [])
+    upgraded_contract = []
+    contract_eligible = False
+    for item in contract if isinstance(contract, list) else []:
+        clean = dict(item) if isinstance(item, dict) else item
+        if (isinstance(clean, dict) and str(
+                clean.get("character_key") or "").strip() == character_key):
+            views = tuple(clean.get("reference_views") or ())
+            if views == _LEGACY_CHARACTER_REFERENCE_VIEWS:
+                clean["reference_views"] = list(
+                    _REQUIRED_CHARACTER_REFERENCE_VIEWS
+                )
+                contract_eligible = True
+            elif views == _REQUIRED_CHARACTER_REFERENCE_VIEWS:
+                contract_eligible = True
+        upgraded_contract.append(clean)
+    if not contract_eligible:
+        return
+    pending = [value for value in current if value != character_key]
+    baselines.pop(character_key, None)
     if pending:
         migration["character_keys"] = pending
+        migration["reference_version_baselines"] = baselines
     else:
         migration = {}
     conn.execute(
         "UPDATE short_drama_script_imports "
-        "SET character_contract_migration_json=? WHERE project_id=?",
-        (_json_text(migration, {}), project_id),
+        "SET character_contract_json=?,character_contract_migration_json=? "
+        "WHERE project_id=?",
+        (
+            _json_text(upgraded_contract, []),
+            _json_text(migration, {}),
+            project_id,
+        ),
     )
 
 
@@ -1297,16 +1347,38 @@ def init_db(db_factory):
                     "ALTER TABLE short_drama_script_imports ADD COLUMN %s %s"
                     % (name, declaration)
                 )
-        for import_id, contract_json, migration_json in conn.execute(
-                "SELECT id,character_contract_json,character_contract_migration_json "
+        for import_id, project_id, contract_json, migration_json in conn.execute(
+                "SELECT id,project_id,character_contract_json,"
+                "character_contract_migration_json "
                 "FROM short_drama_script_imports WHERE content_type='live_action'"):
             existing_migration = _json(migration_json, {})
-            if existing_migration.get("required"):
-                continue
-            migration = _legacy_character_contract_migration(
-                _json(contract_json, [])
+            contract = _json(contract_json, [])
+            legacy = _legacy_character_contract_migration(contract)
+            character_keys = legacy.get("character_keys") or []
+            current_versions = {}
+            if character_keys:
+                current_versions = {
+                    str(row[0]): _reference_version(row[1])
+                    for row in conn.execute(
+                        "SELECT character_key,reference_version "
+                        "FROM short_drama_characters WHERE project_id=?",
+                        (project_id,),
+                    ).fetchall()
+                    if str(row[0]) in character_keys
+                }
+            existing_baselines = existing_migration.get(
+                "reference_version_baselines"
             )
-            if migration.get("required"):
+            if isinstance(existing_baselines, dict):
+                for key in character_keys:
+                    if key in existing_baselines:
+                        current_versions[key] = _reference_version(
+                            existing_baselines.get(key), current_versions.get(key, 0)
+                        )
+            migration = _legacy_character_contract_migration(
+                contract, current_versions
+            )
+            if migration.get("required") and migration != existing_migration:
                 conn.execute(
                     "UPDATE short_drama_script_imports "
                     "SET character_contract_migration_json=? WHERE id=?",
@@ -1982,7 +2054,8 @@ def finalize_live_action_project(db_factory, username, payload):
         conn.execute("BEGIN IMMEDIATE")
         project = conn.execute(
             "SELECT p.revision,p.stage,p.creation_status,i.roles_saved_at,"
-            "i.source_text,i.character_contract_json,i.core_story_confirmed_at "
+            "i.source_text,i.character_contract_json,i.core_story_confirmed_at,"
+            "i.character_contract_migration_json "
             "FROM short_drama_projects p "
             "JOIN short_drama_script_imports i ON i.project_id=p.id "
             "WHERE p.id=? AND p.username=? AND p.deleted=0 "
@@ -2000,6 +2073,9 @@ def finalize_live_action_project(db_factory, username, payload):
             raise ValueError("请先保存全部角色资料")
         if project[6] is None:
             raise ValueError("请先确认核心故事")
+        migration = _json(project[7], {})
+        if migration.get("required") or migration.get("character_keys"):
+            raise ValueError("旧草稿角色标准图尚未完成背面全身图补充与重新确认")
         characters = conn.execute(
             "SELECT character_key,name,reference_locked FROM short_drama_characters "
             "WHERE project_id=? ORDER BY sort_order,id",
@@ -4052,7 +4128,9 @@ def confirm_character_reference(db_factory, username, project_id, revision,
             "WHERE project_id=? AND character_key=?",
             (project_id, character_key),
         )
-        _confirm_character_contract_migration(conn, project_id, character_key)
+        _confirm_character_contract_migration(
+            conn, project_id, character_key, int(character[3])
+        )
         _cas_content_update(conn, username, project_id, revision, project[1])
         conn.commit()
         return _project_detail(conn, username, project_id)

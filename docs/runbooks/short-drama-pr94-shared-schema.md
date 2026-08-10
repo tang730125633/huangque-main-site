@@ -30,7 +30,7 @@
 - 新表 `short_drama_provider_shot_execution_overrides`
 - 新表 `short_drama_provider_shot_selections`
 
-旧版 `front_full / side_full / front_half` 合同保持原文，不会把 `front_half` 改写为 `back_full`。初始化只增加 `back_full_confirmation_required` 迁移标记；用户补齐背面全身图并重新确认后才清除标记。旧程序可忽略新增列和表继续读取原有字段，因此首选代码回滚，不做破坏性降级 DDL。
+旧版 `front_full / side_full / front_half` 合同初始化时保持原文，不会把 `front_half` 直接改写为 `back_full`。初始化增加 `back_full_confirmation_required` 迁移标记，并记录各角色当时的 `reference_version` 基线；只有用户上传或生成更高版本参考图并确认后，才会原子升级该角色合同并移出待迁移列表。仍有待迁移角色时禁止转为正式项目。旧程序可忽略新增列和表继续读取原有字段，因此首选代码回滚，不做破坏性降级 DDL。
 
 ## 迁移前准备
 
@@ -45,7 +45,7 @@
 1. 部署已审核提交，启动一次内容服务，让 `short_drama.init_db` 完成增量初始化。
 2. 再执行一次初始化，确认重复执行无错误、无额外数据改写。
 3. 用 `PRAGMA table_info` / `sqlite_master` 核对上方列、表和索引均存在。
-4. 对比迁移前后项目、导入记录、角色和付费任务数量；确认旧合同 JSON 未被改写，仅产生待补图迁移标记。
+4. 对比迁移前后项目、导入记录、角色和付费任务数量；确认初始化没有改写旧合同 JSON，仅产生包含角色版本基线的待补图迁移标记。
 5. 执行 `PRAGMA integrity_check` 和 `PRAGMA foreign_key_check`，前者必须为 `ok`，后者必须为空。
 6. 冒烟验证：恢复旧草稿、旧角色补背面图并确认、已锁定角色删除保护、付费参考图任务编辑保护、MiniMax 免费预检不扣点且不提交外部任务。
 
