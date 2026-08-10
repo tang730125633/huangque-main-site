@@ -338,6 +338,23 @@ exit 0
         self.assertIn("huangque-imggen-api", restart)
         self.assertIn("huangque-leadgen-api", restart)
 
+    def test_egress_restarts_all_importers(self):
+        ssh_log = Path(self.tmp.name) / "ssh.log"
+        result = self._run_ship(
+            target="server/content_domains/egress.py",
+            exact_content_domains=True,
+            FAKE_CURL_CODE="200",
+            FAKE_SSH_LOG=str(ssh_log),
+        )
+        self.assertEqual(0, result.returncode, result.stdout)
+        restart = next(
+            line for line in ssh_log.read_text(encoding="utf-8").splitlines()
+            if "sudo systemctl restart" in line
+        )
+        self.assertIn("huangque-content", restart)
+        self.assertIn("huangque-admin", restart)
+        self.assertIn("huangque-imggen-api", restart)
+
     def test_exact_content_domains_blocks_new_module_import_failure(self):
         result = self._run_ship(
             target="server/content_domains/digital_ip.py",

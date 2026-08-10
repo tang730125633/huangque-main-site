@@ -15,7 +15,8 @@ gpt 失败率 40%。改为优先走自建出境直连官方 API，前一档超�
 官方模型名与 heygen 通用（gpt-image-2 自 2026-04 起为官方有效模型），无需按档改名。
 
 只有「通道级失败」(连不上/超时/HTTP 错误码) 触发降级；HTTP 200 直接返回，业务结果
-（如内容审核没出图）由调用方判断——那是官方 API 的决定，换通道也一样，不该白降级。
+（如内容审核没出图）由调用方判断。唯一例外是明确的 HTTP 429：上游已拒绝接单，
+不会生成或计费，可以安全切到下一条出口。
 """
 import errno
 import http.client
@@ -125,7 +126,7 @@ def _pre_delivery_failure(e):
     出图 POST 是**非幂等**的：请求一旦抵达 OpenAI/Google，就可能已经出图并计费。
     此时换通道重发 = 再出一张 + 再计一次费，用户还只拿到一张。
 
-    - HTTPError        → 上游已应答，肯定送达了。不换。
+    - HTTPError        → 上游已应答，肯定送达了。不换（429 由调用方按“明确拒单”处理）。
     - 超时(任何形态)    → **歧义**：可能连不上，也可能正在出图。宁可失败退点，让用户自己决定重试。
     - ConnectionReset  → 歧义（可能握手期被 RST，也可能请求发出后被切）。不换。
     - DNS 解析失败 / 连接被拒 / 主机不可达 / TLS 握手失败 → 应用层数据从未发出。可以换。
@@ -170,8 +171,9 @@ def post_json(official_base, heygen_base, path, data, headers, log=None):
 
       1. 发请求**之前**探这档代理通不通；不通就跳过（一个字节都没发出，绝对安全）
       2. 请求发出后再失败，只有能证明「未送达」（DNS/连接被拒/主机不可达/TLS 握手失败）
-         才换下一档。超时、连接被重置、HTTPError 一律**直接抛出**——它们都可能意味着
-         上游已经收到并出了图，换通道重发会再计一次费。
+         才换下一档。超时、连接被重置、除 429 外的 HTTPError 一律**直接抛出**——
+         它们都可能意味着上游已经收到并出了图，换通道重发会再计一次费。HTTP 429
+         是明确拒单，没有开始生成，可以安全切下一档。
 
     原实现对任何异常都降级，超时时会把同一张图付两遍甚至三遍钱。
 
@@ -191,6 +193,13 @@ def post_json(official_base, heygen_base, path, data, headers, log=None):
                 return json.loads(r.read())
         except Exception as e:
             last = e
+            if (isinstance(e, urllib.error.HTTPError)
+                    and int(getattr(e, "code", 0) or 0) == 429
+                    and label != "heygen"):
+                if log:
+                    log("[egress] %s via %s 被上游 429 明确拒单，安全切换下一档" %
+                        (path, label))
+                continue
             if not _pre_delivery_failure(e):
                 if log:
                     log("[egress] %s via %s 失败，且请求可能已送达上游（换通道会重复计费），"

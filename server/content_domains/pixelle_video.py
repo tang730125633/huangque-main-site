@@ -40,6 +40,7 @@ PIXELLE_MAX_VIDEO_BYTES = _env_int(
     "PIXELLE_MAX_VIDEO_BYTES", 512 * 1024 * 1024, 10 * 1024 * 1024, 1024 * 1024 * 1024
 )
 _NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+_CAPACITY_BLOCKED_UNTIL = 0.0
 
 DEFAULT_STYLE = "realistic_commercial"
 DEFAULT_PUBLIC_VOICE = "zh-CN-YunjianNeural"
@@ -156,6 +157,7 @@ STYLE_PRESETS_BY_KEY = {item["key"]: item for item in STYLE_PRESETS}
 
 class PixelleTransientError(RuntimeError):
     """A temporary transport failure that is safe to retry while polling."""
+
 
 _PORTRAIT_ILLUSTRATION_NAMES = {
     "image_blur_card.html": "玻璃模糊卡片",
@@ -391,7 +393,7 @@ def _json_request(method, path, payload=None, timeout=30):
         raise RuntimeError(
             "视频生成服务请求失败（HTTP %s）：%s" % (exc.code, detail or "未知错误")
         )
-    except (urllib.error.URLError, TimeoutError) as exc:
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
         reason = getattr(exc, "reason", exc)
         raise PixelleTransientError(
             "无法连接视频生成服务：%s" % str(reason)[:160]
@@ -430,6 +432,8 @@ def availability(force=False):
     if not enabled:
         return {"enabled": False, "ready": False, "available": False}
     now = time.monotonic()
+    if now < _CAPACITY_BLOCKED_UNTIL:
+        return {"enabled": True, "ready": False, "available": False}
     if force or now - _HEALTH_CACHE["checked_at"] > _HEALTH_TTL:
         ready = False
         try:
@@ -535,6 +539,7 @@ def _submit(payload):
 
 
 def _wait(task_id):
+    global _CAPACITY_BLOCKED_UNTIL
     deadline = time.monotonic() + PIXELLE_JOB_TIMEOUT
     while time.monotonic() < deadline:
         try:
@@ -548,7 +553,10 @@ def _wait(task_id):
         if status == "completed":
             return dict(task.get("result") or {})
         if status in {"failed", "cancelled"}:
-            raise RuntimeError(str(task.get("error") or "视频生成失败")[:300])
+            error = str(task.get("error") or "视频生成失败")[:300]
+            if "TASK_QUEUE_MAXED" in error:
+                _CAPACITY_BLOCKED_UNTIL = time.monotonic() + 60
+            raise RuntimeError(error)
         time.sleep(PIXELLE_POLL_INTERVAL)
     raise RuntimeError("视频生成超时，请稍后重试")
 
