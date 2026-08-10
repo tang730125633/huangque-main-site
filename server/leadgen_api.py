@@ -325,6 +325,8 @@ def cost_of(kind, body):
             pricing.get_price("collect.transcript_extra")
             if "transcript" in (body.get("want") or []) else 0
         )
+    if kind == "collect_search":
+        return pricing.get_price("collect.search")
     if kind == "leads":
         n = max(1, min(30, int(body.get("count") or 12)))
         p = max(1, min(3, int(body.get("pages") or 1)))
@@ -403,6 +405,23 @@ def gen_collect(payload):
         if video_path:   # 临时文件归本函数删，无论成败
             try: os.unlink(video_path)
             except OSError: pass
+
+
+def gen_collect_search(payload):
+    platform = str(payload.get("platform") or "").strip()
+    keyword = str(payload.get("keyword") or "").strip()
+    page = int(payload.get("page") or 1)
+    if platform not in ("douyin", "xhs") or not keyword or not 1 <= page <= 50:
+        raise ValueError("搜索参数不合法")
+    result = tikhub.search(platform, keyword, page=page, video_only=False)
+    items = [{"id": item.get("id"), "platform": item.get("platform"),
+              "title": item.get("title"), "cover": item.get("cover"),
+              "author": item.get("author"), "url": item.get("url"),
+              "note_type": item.get("note_type"),
+              "stats": {"like": item.get("like"), "comment": item.get("comment")}}
+             for item in (result.get("items") or [])]
+    return {"type": "collect_search", "platform": platform, "keyword": keyword,
+            "page": page, "items": items, "has_more": bool(result.get("has_more"))}
 
 
 # ============ 获客能力：关键词→搜视频→扒评论→意图过滤→客户名单 ============
@@ -525,7 +544,7 @@ def gen_leads(payload):
             "deduped": deduped, "total": len(raw),
             "leads": out_leads, "url": None, "prompt": keyword}
 
-HANDLERS = {"collect": gen_collect, "leads": gen_leads}
+HANDLERS = {"collect": gen_collect, "collect_search": gen_collect_search, "leads": gen_leads}
 
 
 # ============ worker（失败退点；清道夫由 content_api 统一跑） ============
@@ -562,11 +581,12 @@ def run_job(job_id):
             print("[leadgen] job %s 完成时已非 running（reaper 判超时在先），丢弃结果" % job_id, flush=True)
             return
         # 拿到 done 终态后才入资产库；入库是次要副作用，失败不改状态、不退点
-        try:
-            from content_domains import assets_store
-            assets_store.record_asset(job_id, r["username"], kind, result)
-        except Exception as e:
-            print("[leadgen] 资产入库失败 job=%s: %s" % (job_id, e), flush=True)
+        if kind != "collect_search":
+            try:
+                from content_domains import assets_store
+                assets_store.record_asset(job_id, r["username"], kind, result)
+            except Exception as e:
+                print("[leadgen] 资产入库失败 job=%s: %s" % (job_id, e), flush=True)
     except Exception as e:
         # from_states 含 pending：认领那句 UPDATE 自己抛异常时任务还停在 pending，
         # 只认 running 会导致不退点且 reaper 永远扫不到它（预扣的点永久丢失）
@@ -598,7 +618,7 @@ class H(BaseHTTPRequestHandler):
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
             body = self._json_body()
             try:
-                feature_flags.require_enabled(kind)
+                feature_flags.require_enabled("collect" if kind == "collect_search" else kind)
             except feature_flags.FeatureDisabled as e:
                 return self._send(503, {"detail": str(e)})
             body.update({

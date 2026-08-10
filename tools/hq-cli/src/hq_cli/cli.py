@@ -173,6 +173,8 @@ def _validate(capability, payload):
                     or entry < item.get("minimum", entry) or entry > item.get("maximum", entry)
                     for entry in value):
                 raise CliError(EXIT_INPUT, "input_error", "input field %s contains an invalid item" % key)
+            if item.get("enum") and any(entry not in item["enum"] for entry in value):
+                raise CliError(EXIT_INPUT, "input_error", "input field %s contains an invalid item" % key)
         if "enum" in definition and value not in definition["enum"]:
             raise CliError(EXIT_INPUT, "input_error", "input field %s must be one of: %s" % (key, ", ".join(map(str, definition["enum"]))))
         if "minLength" in definition and len(value) < definition["minLength"]:
@@ -183,6 +185,12 @@ def _validate(capability, payload):
             raise CliError(EXIT_INPUT, "input_error", "input field %s is below minimum" % key)
         if "maximum" in definition and value > definition["maximum"]:
             raise CliError(EXIT_INPUT, "input_error", "input field %s is above maximum" % key)
+    if capability.get("id") == "leads-generate":
+        platforms = payload.get("platforms") or []
+        if any(platform in {"douyin", "xhs"} for platform in platforms) and not payload.get("keyword"):
+            raise CliError(EXIT_INPUT, "input_error", "douyin or xhs leads require keyword")
+        if "channels" in platforms and not payload.get("channels_targets"):
+            raise CliError(EXIT_INPUT, "input_error", "channels leads require channels_targets")
 
 
 def _doctor(environment):

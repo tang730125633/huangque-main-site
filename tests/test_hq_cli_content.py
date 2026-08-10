@@ -16,7 +16,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
 
-from content_domains import audio, cli_uploads, core, upstream_guard, video, video_openai
+from content_domains import audio, cli_gateway, cli_uploads, core, upstream_guard, video, video_openai
 
 
 class _Points:
@@ -195,6 +195,48 @@ class HQCLIContentTests(unittest.TestCase):
         })
         self.assertEqual((200, 24), (status, result["cost"]))
         self.assertEqual(["banana"], checked)
+
+    def test_collect_search_and_leads_quotes_validate_without_external_calls(self):
+        checked = []
+        core.feature_flags.require_enabled = checked.append
+        cases = (
+            ("collect", {"url": "https://v.douyin.com/abc123/", "want": ["video"]}, 24, "collect"),
+            ("collect_search", {"platform": "xhs", "keyword": "轻食创业", "page": 2}, 1, "collect"),
+            ("leads", {
+                "keyword": "美容院拓客", "platforms": ["douyin"],
+                "count": 20, "pages": 1, "channels_targets": [],
+            }, 24, "leads"),
+        )
+        with mock.patch.object(cli_gateway.pricing, "get_price", return_value=1):
+            for kind, payload, cost, _flag in cases:
+                with self.subTest(kind=kind):
+                    status, result = self._post(
+                        "/api/gen/cli/quote", {"kind": kind, "payload": payload})
+                    self.assertEqual((200, cost, 100), (status, result["cost"], result["points"]))
+        self.assertEqual([item[3] for item in cases], checked)
+
+        status, result = self._post("/api/gen/cli/quote", {
+            "kind": "collect", "payload": {
+                "url": "https://douyin.com.evil.example/video/1", "want": ["video"],
+            },
+        })
+        self.assertEqual(400, status)
+        self.assertIn("仅支持抖音或小红书", result["detail"])
+        status, result = self._post("/api/gen/cli/quote", {
+            "kind": "leads", "payload": {
+                "keyword": "", "platforms": ["channels"], "count": 20,
+                "pages": 1, "channels_targets": [],
+            },
+        })
+        self.assertEqual(400, status)
+        self.assertIn("channels_targets", result["detail"])
+        status, result = self._post("/api/gen/cli/quote", {
+            "kind": "collect_search", "payload": {
+                "platform": "douyin", "keyword": "越界页码", "page": 51,
+            },
+        })
+        self.assertEqual(400, status)
+        self.assertIn("1-50", result["detail"])
 
     def test_digital_ip_text_quote_requires_ready_owned_avatar_and_voice(self):
         request = {

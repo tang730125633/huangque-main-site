@@ -425,6 +425,25 @@ AUDIO_FIELDS = {
     "pitch": {"type": "integer", "minimum": -12, "maximum": 12},
     "volume": {"type": "integer", "minimum": -50, "maximum": 100},
 }
+COLLECT_URL = {
+    "type": "string", "minLength": 8, "maxLength": 2048,
+    "pattern": "^https?://(?:[^/?#@]+\\.)?(?:douyin\\.com|iesdouyin\\.com|xiaohongshu\\.com|xhslink\\.com|xhslink\\.cn)(?::(?:80|443))?(?:[/?#].*)?$",
+    "description": "抖音或小红书的公开内容链接；不接受口令、账号密码、本机路径或其他站点 URL",
+}
+LEADS_FIELDS = {
+    "keyword": {"type": "string", "minLength": 1, "maxLength": 120},
+    "platforms": {
+        "type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": True,
+        "items": {"type": "string", "enum": ["douyin", "xhs", "channels"],
+                  "minLength": 3, "maxLength": 8},
+    },
+    "count": {"type": "integer", "minimum": 1, "maximum": 30},
+    "pages": {"type": "integer", "minimum": 1, "maximum": 3},
+    "channels_targets": {
+        "type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": True,
+        "items": {"type": "string", "minLength": 1, "maxLength": 120},
+    },
+}
 
 AVATAR_ID = {
     "type": "integer", "minimum": 1, "maximum": 9223372036854775807,
@@ -528,6 +547,35 @@ for identifier, name, fields, required in (
         {"kind": "server_quote", "unit": "points", "confirmation": "quote_token + --confirm"},
     )
 
+for identifier, name, fields, required in (
+    ("collect-content", "采集内容与评论", {"url": COLLECT_URL}, ["url"]),
+    ("collect-video", "采集原视频", {"url": COLLECT_URL}, ["url"]),
+    ("collect-transcript", "提取口播文案", {"url": COLLECT_URL}, ["url"]),
+    ("collect-search", "搜索平台内容", {
+        "platform": {"type": "string", "enum": ["douyin", "xhs"]},
+        "keyword": {"type": "string", "minLength": 1, "maxLength": 120},
+        "page": {"type": "integer", "minimum": 1, "maximum": 50},
+    }, ["platform", "keyword"]),
+    ("leads-generate", "生成获客名单", LEADS_FIELDS, ["platforms"]),
+):
+    CAPABILITIES[identifier] = _api(
+        identifier, name, identifier,
+        "先返回服务器报价；只有用相同参数、quote_token 和 --confirm 重试才会扣点并提交任务。",
+        fields, required, "generation:quote", "paid", True,
+        {"kind": "server_quote", "unit": "points", "confirmation": "quote_token + --confirm"},
+    )
+    CAPABILITIES[identifier]["next_actions"] = [
+        "确认提交后只用 task 轮询返回的 job_id；不要重复提交相同任务。",
+    ]
+
+CAPABILITIES["leads-generate"]["input_schema"]["anyOf"] = [
+    {"required": ["keyword"]}, {"required": ["channels_targets"]},
+]
+CAPABILITIES["leads-generate"]["constraints"] = [
+    "platforms 包含 douyin 或 xhs 时必须提供 keyword",
+    "platforms 包含 channels 时必须提供 channels_targets",
+]
+
 CAPABILITIES["cinematic-open-generate"]["input_schema"]["oneOf"] = [
     {"required": ["avatar_id"]}, {"required": ["avatar_ids"]},
 ]
@@ -620,6 +668,12 @@ for identifier, website_modes in {
     "short-drama-conversation": ["live_action"], "short-drama-preflight": ["live_action"],
     "inspiration-catalog": ["inspiration.browse"], "inspiration-likes": ["inspiration.like"],
     "inspiration-like": ["inspiration.like"],
+    "collect": ["collect.content.comments", "collect.content.video", "collect.content.transcript", "collect.keyword.search"],
+    "collect-content": ["collect.content.comments"],
+    "collect-video": ["collect.content.video"],
+    "collect-transcript": ["collect.content.transcript"],
+    "collect-search": ["collect.keyword.search"],
+    "leads": ["leads.keyword.search"], "leads-generate": ["leads.keyword.search"],
     "leads-crm": ["leads.crm.update"], "leads-crm-upsert": ["leads.crm.update"],
     "video-avatars": ["cinematic", "digital_ip", "live_action"], "audio-slots": ["tts"],
     "digital-ip-projects": ["digital_ip"], "digital-ip-project": ["digital_ip"],
