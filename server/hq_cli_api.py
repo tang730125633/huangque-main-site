@@ -28,6 +28,7 @@ CLI_CHAT_REQUESTS_PER_MINUTE = 6
 CONTENT_BASE = "http://127.0.0.1:8096"
 IMGGEN_BASE = "http://127.0.0.1:8101"
 HERMES_BASE = "http://127.0.0.1:3102"
+ADMIN_BASE = "http://127.0.0.1:8098"
 
 SCOPES = {
     "profile:read": "读取账号公开资料与点数",
@@ -43,6 +44,11 @@ SCOPES = {
     "tasks:read": "读取本人任务状态与点数流水",
     "assets:read": "读取本人资产与音色",
     "assets:write": "收藏资产并管理本人资产标签",
+    "inspiration:read": "读取灵感案例与本人收藏状态",
+    "inspiration:write": "经确认后收藏或取消收藏灵感案例",
+    "leads:read": "读取本人线索跟进记录",
+    "leads:write": "经确认后更新本人线索跟进记录",
+    "short-drama:read": "读取本人短剧项目与生产准备状态",
     "generation:quote": "查询图片、视频、音频所需点数",
     "generation:submit": "经二次确认后提交生成并扣点",
     "video-compose:read": "读取本人一键成片项目",
@@ -55,9 +61,13 @@ CHANNEL_CATALOG = (
     {"id": "xai", "provider": "xAI API", "category": "视频生成", "features": ["果肉视频生成"],
      "access": "direct", "capabilities": ["video-generate"], "selector": {"channel": "grok"}},
     {"id": "openai", "provider": "OpenAI API", "category": "图片 / 视频", "features": ["黄雀引擎 2", "Sora 2"],
-     "access": "mixed", "capabilities": ["image-generate"], "selector": {"provider": "openai"}},
+     "access": "mixed", "capabilities": ["image-generate", "video-generate"], "selector": {},
+     "selectors": [{"capability": "image-generate", "input": {"provider": "openai"}},
+                   {"capability": "video-generate", "input": {"channel": "sora"}}]},
     {"id": "gemini", "provider": "Google Gemini API", "category": "图片 / 视频", "features": ["纳米香蕉", "Omni 视频"],
-     "access": "mixed", "capabilities": ["video-generate"], "selector": {"channel": "omni"}},
+     "access": "mixed", "capabilities": ["image-generate", "video-generate"], "selector": {},
+     "selectors": [{"capability": "image-generate", "input": {"provider": "banana"}},
+                   {"capability": "video-generate", "input": {"channel": "omni"}}]},
     {"id": "seedance", "provider": "火山方舟 API", "category": "图片 / 视频", "features": ["Seedream", "Seedance 视频"],
      "access": "direct", "capabilities": ["image-generate", "video-generate"], "selector": {"provider": "seedream", "channel": "micro"}},
     {"id": "minimax", "provider": "MiniMax 中国区 API", "category": "视频生成", "features": ["麦克视频"],
@@ -90,6 +100,7 @@ CONFIRMATION_ACTIONS = frozenset({
     "asset-favorite", "asset-tags", "video-compose-create", "video-compose-analyze",
     "video-compose-review", "video-compose-render", "digital-presenter-create",
     "digital-presenter-update",
+    "inspiration-like", "leads-crm-upsert",
 })
 
 _START_HITS = {}
@@ -103,6 +114,7 @@ _CANVAS_OP_ID_RE = re.compile(r"^hqcli-[A-Za-z0-9_-]{11,122}$")
 _VIDEO_COMPOSE_PROJECT_RE = re.compile(r"^compose_[0-9a-f]{32}$")
 _VIDEO_COMPOSE_CANDIDATE_RE = re.compile(r"^candidate_[0-9a-f]{16}$")
 _DIGITAL_PRESENTER_PROJECT_RE = re.compile(r"^dp_[0-9a-f]{32}$")
+_LEAD_ID_RE = re.compile(r"^[0-9a-f]{16,40}$")
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 _CANVAS_BASE64_RE = re.compile(r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{512,}={0,2}(?![A-Za-z0-9+/_=-])")
 IMAGE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
@@ -828,6 +840,91 @@ def action_plan(action, value):
     if action == "channels":
         _strict_object(value, set())
         return _plan("profile:read", "channels")
+    if action == "pricing":
+        _strict_object(value, set())
+        return _plan("profile:read", "proxy", base=CONTENT_BASE, path="/api/gen/pricing")
+    if action in {
+            "text-video-capability", "text-video-templates",
+            "text-video-styles", "text-video-voices"}:
+        _strict_object(value, set())
+        suffix = action.removeprefix("text-video-")
+        return _plan("assets:read", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/text-video/" + suffix)
+    if action == "inspiration-catalog":
+        _strict_object(value, set())
+        return _plan("inspiration:read", "proxy", base=ADMIN_BASE,
+                     path="/api/admin/public/inspirations")
+    if action == "inspiration-likes":
+        _strict_object(value, set())
+        return _plan("inspiration:read", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/inspiration/likes")
+    if action == "inspiration-like":
+        _strict_object(value, {"id", "favorite"}, ("id", "favorite"))
+        if not isinstance(value["favorite"], bool):
+            raise CLIAPIError(400, "favorite 必须是布尔值")
+        return _plan("inspiration:write", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/inspiration/like", method="POST",
+                     body={"id": _integer(value["id"], "id", 1, 2**63 - 1),
+                           "favorite": value["favorite"]})
+    if action == "leads-crm":
+        _strict_object(value, {"lead_ids"})
+        lead_ids = value.get("lead_ids", [])
+        if not isinstance(lead_ids, list) or len(lead_ids) > 100:
+            raise CLIAPIError(400, "lead_ids 必须是最多 100 项的数组")
+        lead_ids = [_matched_string(item, "lead_id", _LEAD_ID_RE, 40) for item in lead_ids]
+        path = "/api/gen/leads/crm"
+        if lead_ids:
+            path += "?" + urllib.parse.urlencode({"ids": ",".join(dict.fromkeys(lead_ids))})
+        return _plan("leads:read", "proxy", base=CONTENT_BASE, path=path)
+    if action == "leads-crm-upsert":
+        _strict_object(value, {"lead_id", "intent", "follow_status", "follow_note"}, ("lead_id",))
+        body = {"lead_id": _matched_string(value["lead_id"], "lead_id", _LEAD_ID_RE, 40)}
+        if "intent" in value:
+            body["intent"] = _enum(value["intent"], "intent", ("高意向", "咨询", "价格敏感", "围观"))
+        if "follow_status" in value:
+            body["follow_status"] = _enum(
+                value["follow_status"], "follow_status", ("待跟进", "跟进中", "已加微", "已成交", "无效"))
+        if "follow_note" in value:
+            body["follow_note"] = _string(value["follow_note"], "follow_note", 0, 300)
+        return _plan("leads:write", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/leads/crm", method="POST", body=body)
+    if action == "video-avatars":
+        _strict_object(value, {"limit"})
+        limit = _integer(value.get("limit", 120), "limit", 1, 120)
+        return _plan("assets:read", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/video/avatars?" + urllib.parse.urlencode({"limit": limit}))
+    if action == "audio-slots":
+        _strict_object(value, set())
+        return _plan("assets:read", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/audio/slots?include_points=0")
+    if action == "short-drama-projects":
+        _strict_object(value, {"page", "page_size"})
+        query = urllib.parse.urlencode({
+            "page": _integer(value.get("page", 1), "page", 1, 100000),
+            "page_size": _integer(value.get("page_size", 20), "page_size", 1, 50),
+        })
+        return _plan("short-drama:read", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/short-drama/projects?" + query)
+    if action in {"short-drama-project", "short-drama-conversation", "short-drama-preflight"}:
+        _strict_object(value, {"project_id"}, ("project_id",))
+        project_id = urllib.parse.quote(_identifier(value["project_id"], "project_id"), safe="")
+        suffix = action.removeprefix("short-drama-")
+        if suffix == "project":
+            path = "/api/gen/short-drama/project?id=" + project_id
+        else:
+            path = "/api/gen/short-drama/%s?project_id=%s" % (suffix, project_id)
+        return _plan("short-drama:read", "proxy", base=CONTENT_BASE, path=path)
+    if action == "digital-ip-projects":
+        _strict_object(value, set())
+        return _plan("ip12:read", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/digital-ip/projects")
+    if action in {"digital-ip-project", "digital-ip-report"}:
+        _strict_object(value, {"project_id"}, ("project_id",))
+        project_id = _identifier(value["project_id"], "project_id")
+        suffix = "/report" if action == "digital-ip-report" else ""
+        return _plan("ip12:read", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/digital-ip/projects/"
+                     + urllib.parse.quote(project_id, safe="") + suffix)
     if action == "ip12-projects":
         _strict_object(value, set())
         return _plan("ip12:read", "proxy", base=HERMES_BASE, path="/api/conversations")
@@ -1010,15 +1107,33 @@ def _generation_payload(action, value):
     if action == "image-generate":
         _strict_object(value, {
             "prompt", "provider", "ratio", "quality", "count", "variant",
-            "image_upload_id", "mask_upload_id", "reference_upload_ids",
+            "model", "image_upload_id", "mask_upload_id", "reference_upload_ids",
         }, ("prompt",))
+        provider = _enum(
+            value.get("provider", "openai"), "provider",
+            ("openai", "xiaole", "seedream", "banana"),
+        )
+        ratio = _string(value.get("ratio", "1:1"), "ratio", 1, 8)
+        ratios = (
+            ("1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9")
+            if provider == "banana" else ("1:1", "9:16", "16:9", "3:4")
+        )
+        if ratio not in ratios:
+            raise CLIAPIError(400, "ratio 不支持该图片引擎")
         body = {
             "prompt": _string(value["prompt"], "prompt", 1, 2000),
-            "provider": _enum(value.get("provider", "openai"), "provider", ("openai", "xiaole", "seedream")),
-            "ratio": _enum(value.get("ratio", "1:1"), "ratio", ("1:1", "9:16", "16:9", "3:4")),
+            "provider": provider,
+            "ratio": ratio,
             "quality": _enum(value.get("quality", "hd"), "quality", ("std", "hd")),
             "count": _integer(value.get("count", 1), "count", 1, 4),
+            "source_page": "banana",
         }
+        if provider == "banana":
+            body["model"] = _enum(value.get("model", "nb2"), "model", ("nb2", "pro"))
+            if body["count"] not in {1, 2, 4}:
+                raise CLIAPIError(400, "Nano Banana count 仅支持 1、2、4")
+        elif "model" in value:
+            raise CLIAPIError(400, "model 仅用于 Nano Banana")
         if "variant" in value:
             if body["provider"] != "seedream":
                 raise CLIAPIError(400, "variant 仅用于 seedream")
@@ -1029,7 +1144,7 @@ def _generation_payload(action, value):
             body["mask_upload_id"] = _upload_id(value["mask_upload_id"], "mask_upload_id")
         if "reference_upload_ids" in value:
             references = value["reference_upload_ids"]
-            limit = {"openai": 16, "seedream": 10, "xiaole": 4}[body["provider"]]
+            limit = {"openai": 16, "seedream": 10, "xiaole": 4, "banana": 14}[body["provider"]]
             if not isinstance(references, list) or not 1 <= len(references) <= limit:
                 raise CLIAPIError(400, "reference_upload_ids 必须包含 1-%d 项" % limit)
             body["reference_upload_ids"] = []
@@ -1047,8 +1162,33 @@ def _generation_payload(action, value):
             raise CLIAPIError(400, "蒙版局部修改 count 必须为 1")
         return body, "image", "/api/gen/image"
     if action == "video-generate":
-        _strict_object(value, {"prompt", "channel", "ratio", "duration", "resolution", "model", "generate_audio", "reference_upload_ids"}, ("prompt",))
-        channel = _enum(value.get("channel", "grok"), "channel", ("grok", "micro", "omni", "minimax"))
+        _strict_object(value, {
+            "prompt", "channel", "ratio", "duration", "seconds", "resolution",
+            "model", "generate_audio", "reference_upload_ids",
+        }, ("prompt",))
+        channel = _enum(value.get("channel", "grok"), "channel", ("grok", "micro", "omni", "minimax", "sora"))
+        if channel == "sora":
+            if "duration" in value or "generate_audio" in value:
+                raise CLIAPIError(400, "Sora 使用 seconds，且不支持 generate_audio")
+            body = {
+                "prompt": _string(value["prompt"], "prompt", 1, 2000),
+                "channel": "sora",
+                "model": _enum(value.get("model", "sora-2"), "model", ("sora-2", "sora-2-pro")),
+                "seconds": _integer(value.get("seconds", 4), "seconds", 4, 12),
+                "ratio": _enum(value.get("ratio", "9:16"), "ratio", ("9:16", "16:9")),
+                "resolution": _enum(value.get("resolution", "720p"), "resolution", ("720p", "1024p", "1080p")),
+                "source_page": "video",
+            }
+            if body["seconds"] not in {4, 8, 12}:
+                raise CLIAPIError(400, "Sora seconds 仅支持 4、8、12")
+            if "reference_upload_ids" in value:
+                references = value["reference_upload_ids"]
+                if not isinstance(references, list) or len(references) != 1:
+                    raise CLIAPIError(400, "Sora reference_upload_ids 必须包含 1 项")
+                body["reference_upload_ids"] = [_upload_id(references[0], "reference_upload_ids")]
+            return body, "sora_video", "/api/gen/sora_video"
+        if "seconds" in value:
+            raise CLIAPIError(400, "seconds 仅用于 Sora")
         body = {
             "prompt": _string(value["prompt"], "prompt", 1, 2000),
             "channel": channel,
@@ -1057,6 +1197,7 @@ def _generation_payload(action, value):
             "duration": _integer(value.get("duration", 10 if channel == "grok" else 5), "duration", 1, 15),
             "resolution": _enum(value.get("resolution", "768p" if channel == "minimax" else "720p"),
                                 "resolution", ("480p", "720p", "768p", "1080p")),
+            "source_page": "video",
         }
         if "model" in value:
             body["model"] = _enum(value["model"], "model", ("grok-imagine-video", "grok-imagine-video-1.5"))
@@ -1078,7 +1219,7 @@ def _generation_payload(action, value):
                     body["reference_upload_ids"].append(clean)
         return body, "xiaole_video", "/api/gen/xiaole_video"
     _strict_object(value, {"text", "voice", "speed", "pitch", "volume"}, ("text",))
-    body = {"text": _string(value["text"], "text", 1, 1000)}
+    body = {"text": _string(value["text"], "text", 1, 1000), "source_page": "audio"}
     if "voice" in value:
         body["voice"] = _string(value["voice"], "voice", 1, 128)
     for field, default, minimum, maximum in (("pitch", 0, -12, 12), ("volume", 0, -50, 100)):

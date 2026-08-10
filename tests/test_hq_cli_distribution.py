@@ -1,4 +1,5 @@
 import hashlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -9,9 +10,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "site/downloads/hq/install.sh"
-RELEASE = ROOT / "site/downloads/hq/v0.6.0"
-WHEEL = RELEASE / "huangque_hq_cli-0.6.0-py3-none-any.whl"
+RELEASE = ROOT / "site/downloads/hq/v0.7.0"
+WHEEL = RELEASE / "huangque_hq_cli-0.7.0-py3-none-any.whl"
 SOURCE = ROOT / "tools/hq-cli/src/hq_cli"
+PYTHON = shutil.which("python3.11") or shutil.which("python3.10") or sys.executable
 
 
 class HQCLIDistributionTests(unittest.TestCase):
@@ -21,7 +23,7 @@ class HQCLIDistributionTests(unittest.TestCase):
         self.assertEqual(expected, hashlib.sha256(WHEEL.read_bytes()).hexdigest())
         source = INSTALLER.read_text(encoding="utf-8")
         self.assertIn('wheel_sha256="%s"' % expected, source)
-        self.assertIn('wheel_url="https://huangquechuanmei.com/downloads/hq/v0.6.0/$wheel_name"', source)
+        self.assertIn('wheel_url="https://huangquechuanmei.com/downloads/hq/v0.7.0/$wheel_name"', source)
         self.assertNotIn("sudo", source)
         self.assertNotIn("eval", source)
         self.assertNotIn("HQ_INSTALL", source)
@@ -29,15 +31,16 @@ class HQCLIDistributionTests(unittest.TestCase):
     def test_installer_refuses_regular_file_and_uses_versioned_target(self):
         source = INSTALLER.read_text(encoding="utf-8")
         self.assertIn('target_dir="$data_root/$version"', source)
-        self.assertIn('[ ! -L "$link_path" ]', source)
+        self.assertIn('current_target="$(readlink "$link_path")"', source)
+        self.assertIn('"$data_root"/*/venv/bin/hq)', source)
         self.assertIn('--force-reinstall "$wheel_path"', source)
         self.assertIn('ln -sfn "$target_dir/venv/bin/hq" "$link_path"', source)
 
     def test_moved_venv_entrypoint_can_be_repaired_from_final_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             stage = Path(tmp) / "stage"
-            target = Path(tmp) / "0.6.0"
-            subprocess.run([sys.executable, "-m", "venv", stage / "venv"], check=True)
+            target = Path(tmp) / "0.7.0"
+            subprocess.run([PYTHON, "-m", "venv", stage / "venv"], check=True)
             subprocess.run(
                 [stage / "venv/bin/python", "-m", "pip", "install", "--no-index", "--no-deps", WHEEL],
                 check=True,
@@ -51,6 +54,14 @@ class HQCLIDistributionTests(unittest.TestCase):
                 check=True,
             )
             subprocess.run([target / "venv/bin/hq", "version", "--json"], check=True)
+
+    def test_release_wheel_has_the_pinned_version(self):
+        with zipfile.ZipFile(WHEEL) as archive:
+            metadata = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
+            self.assertIn(b"Version: 0.7.0", archive.read(metadata))
+            self.assertIn(b"License-File: LICENSE", archive.read(metadata))
+            license_file = next(name for name in archive.namelist() if name.endswith(".dist-info/licenses/LICENSE"))
+            self.assertEqual((ROOT / "tools/hq-cli/LICENSE").read_bytes(), archive.read(license_file))
 
     def test_release_wheel_contains_exact_cli_source(self):
         expected = sorted(path for path in SOURCE.glob("*.py"))

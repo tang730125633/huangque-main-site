@@ -20,27 +20,27 @@ PNG_1X1 = base64.b64encode(
 
 
 class BananaProviderTests(unittest.TestCase):
-    def test_accepts_five_references_and_builds_inline_parts_before_prompt(self):
+    def test_accepts_fourteen_references_and_builds_inline_parts_before_prompt(self):
         payload = banana_provider.validate_payload({
             "prompt": "cinematic frame",
             "model": "nb2",
             "quality": "hd",
             "ratio": "9:16",
             "count": 2,
-            "images": [PNG_1X1] * 5,
+            "images": [PNG_1X1] * 14,
         })
         body = banana_provider.build_request_body(
             payload["prompt"], payload["ratio"], payload["images"], "2K"
         )
         parts = body["contents"][0]["parts"]
-        self.assertEqual(6, len(parts))
-        self.assertTrue(all("inlineData" in part for part in parts[:5]))
+        self.assertEqual(15, len(parts))
+        self.assertTrue(all("inlineData" in part for part in parts[:14]))
         self.assertEqual({"text": "cinematic frame"}, parts[-1])
 
-    def test_rejects_more_than_five_references(self):
-        with self.assertRaisesRegex(ValueError, "at most 5"):
+    def test_rejects_more_than_fourteen_references(self):
+        with self.assertRaisesRegex(ValueError, "at most 14"):
             banana_provider.validate_payload({
-                "prompt": "x", "images": [PNG_1X1] * 6,
+                "prompt": "x", "images": [PNG_1X1] * 15,
             })
 
     def test_short_drama_hd_batch_cost_is_seventy_points(self):

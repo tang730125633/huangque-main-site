@@ -254,6 +254,11 @@ class VoiceSlotPurchaseTest(unittest.TestCase):
                 self.assertEqual(5, slots["slot_max"])
                 self.assertEqual(50, slots["slot_cost"])
                 self.assertEqual(75, slots["points"])
+                cli_slots_request = urllib.request.Request(
+                    base + "/api/gen/audio/slots?include_points=0", headers={"Authorization": "Bearer test"}
+                )
+                with urllib.request.urlopen(cli_slots_request, timeout=5) as response:
+                    self.assertNotIn("points", json.loads(response.read()))
 
                 deprecated = urllib.request.Request(
                     base + "/api/gen/audio/redeem-slot", data=b'{}', method="POST", headers=headers

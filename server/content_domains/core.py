@@ -2658,7 +2658,9 @@ class H(BaseHTTPRequestHandler):
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
             if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
-            try: feature_flags.require_enabled(kind)
+            try:
+                if kind != "image":
+                    feature_flags.require_enabled(kind)
             except feature_flags.FeatureDisabled as e: return self._send(503, {"detail": str(e)})
             if kind == "canvas_agent" and is_shutting_down():
                 return self._send(503, {
@@ -2673,7 +2675,7 @@ class H(BaseHTTPRequestHandler):
                 if is_still_route:
                     request_body, still_idem_body = _short_drama_domain().short_drama_production.normalize_still_request(body, require_quote=True); idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
                     if not idem_key: raise ValueError("关键帧提交必须提供 Idempotency-Key")
-                elif kind in {"image", "xiaole_video"}:
+                elif kind in {"image", "xiaole_video", "sora_video"}:
                     body = cli_uploads.expand_image_payload(body, user["username"])
                 if kind == "avatar":
                     body = video_domain.validate_avatar_payload(body)
@@ -2726,8 +2728,6 @@ class H(BaseHTTPRequestHandler):
                 elif kind == "image":
                     from . import image as image_domain
                     body = image_domain.validate_image_payload(body)
-                    if body.get("provider") == "banana":
-                        feature_flags.require_enabled("banana")
                     if not is_still_route:
                         body.pop("short_drama_references", None)
                 elif kind == "audio":
@@ -2844,6 +2844,17 @@ class H(BaseHTTPRequestHandler):
                 if idem_state == "replay": replay = dict(idem_response or {}); return self._send(int(replay.pop("_http_status", 200)), replay)
                 if idem_state == "conflict": return self._send(409, {"detail": "同一个 Idempotency-Key 不能用于不同请求", "code": "idempotency_conflict"})
                 if idem_state == "processing" and not is_still_route: return self._send(409, {"detail": "相同请求正在受理，请稍后查询", "code": "idempotency_in_progress", "retry_after_ms": 1000})
+                if kind == "image" and not still_attempt:
+                    try:
+                        feature_flags.require_enabled(
+                            "banana" if body.get("provider") == "banana" else "image"
+                        )
+                    except feature_flags.FeatureDisabled as error:
+                        _idempotency_abort(user["username"], p, idem_key)
+                        return self._send(503, {
+                            "detail": str(error), "code": "feature_disabled",
+                            "operation_terminal": True,
+                        })
                 if kind == "image" and body.get("provider") == "xiaole":
                     try:
                         feature_flags.require_enabled("image_xiaole")
@@ -3252,10 +3263,12 @@ class H(BaseHTTPRequestHandler):
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
             items = audio_domain.list_user_audio_voice_slots(user["username"])
-            return self._send(200, {"items": items,
+            result = {"items": items,
                 "slot_count": sum(1 for item in items if item.get("status") in audio_domain.VALID_VOICE_SLOT_STATUSES),
-                "slot_max": audio_domain.VOICE_SLOT_MAX_PER_USER, "slot_cost": audio_domain.voice_slot_cost(),
-                "points": user.get("points")})
+                "slot_max": audio_domain.VOICE_SLOT_MAX_PER_USER, "slot_cost": audio_domain.voice_slot_cost()}
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            if (query.get("include_points") or ["1"])[0] != "0": result["points"] = user.get("points")
+            return self._send(200, result)
         if p == "/api/gen/audio/clone-status":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})

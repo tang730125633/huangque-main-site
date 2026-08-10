@@ -232,8 +232,8 @@ def expand_image_payload(payload, username, now=None):
         raise ValueError("蒙版必须同时提供原图 upload_id")
     provider = str(body.get("provider") or "openai").strip().lower()
     if reference_ids is not None:
-        limits = {"openai": 16, "seedream": 10, "xiaole": 4,
-                  "grok": 7, "micro": 9, "omni": 6}
+        limits = {"openai": 16, "seedream": 10, "xiaole": 4, "banana": 14,
+                  "grok": 7, "micro": 9, "omni": 6, "minimax": 5, "sora": 1}
         target = str(body.get("channel") or provider).strip().lower()
         limit = limits.get(target, 1)
         if not isinstance(reference_ids, list) or not 1 <= len(reference_ids) <= limit:
@@ -250,5 +250,18 @@ def expand_image_payload(payload, username, now=None):
             raise ValueError("蒙版必须是 PNG 图片")
         body["mask"] = mask
     if reference_ids is not None:
-        body["reference_images"] = [_load_image(item, username, now)[0] for item in reference_ids]
+        loaded = [_load_image(item, username, now) for item in reference_ids]
+        target = str(body.get("channel") or provider).strip().lower()
+        if target == "banana":
+            body["images"] = [
+                {"data": data, "mime_type": meta["mime"]}
+                for data, meta in loaded
+            ]
+        elif target == "sora":
+            body["reference_images"] = [
+                "data:%s;base64,%s" % (meta["mime"], data)
+                for data, meta in loaded
+            ]
+        else:
+            body["reference_images"] = [data for data, _meta in loaded]
     return body

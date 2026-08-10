@@ -34,7 +34,7 @@ def _navigation(identifier, name, path, description, fields=None, target_auth="a
         "target_auth": target_auth, "side_effect": "navigation", "confirmation_required": False,
         "cost": {"kind": "none", "detail": "导航不会调用 AI 或扣点。"},
         "deep_link": {"path": path, "query_fields": sorted((fields or {}).keys())},
-        "api_action": None,
+        "api_action": None, "website_modes": [],
         "next_actions": ["在已登录浏览器中打开返回的黄雀主站链接。"],
     }
 
@@ -47,7 +47,7 @@ def _api(identifier, name, action, description, fields=None, required=None, scop
         "output_schema": RUN_OUTPUT_SCHEMA, "requires_auth": True, "required_scope": scope,
         "target_auth": "hq_device_authorization", "side_effect": side_effect,
         "confirmation_required": confirmation, "cost": cost or {"kind": "none"},
-        "deep_link": None, "api_action": action,
+        "deep_link": None, "api_action": action, "website_modes": [],
         "next_actions": ["结果只包含当前已授权黄雀账号的数据。"],
     }
 
@@ -61,7 +61,7 @@ def _upload(identifier, name, description, scope):
     capability["file_input"] = {
         "argument": "--file", "path": "absolute", "maxBytes": 10 * 1024 * 1024,
         "mimeTypes": ["image/jpeg", "image/png", "image/webp"],
-        "accountActiveMaxFiles": 8, "accountActiveMaxBytes": 60 * 1024 * 1024,
+        "accountActiveMaxFiles": 20, "accountActiveMaxBytes": 96 * 1024 * 1024,
     }
     return capability
 
@@ -138,6 +138,10 @@ for item in (
      {"prompt": {"type": "string", "minLength": 1, "maxLength": 2000}}, "account_for_actions"),
     ("video", "视频工作台", "/workbench/video", "进入视频工作台；只预填，不提交生成。",
      {"prompt": {"type": "string", "minLength": 1, "maxLength": 2000}}, "account_for_actions"),
+    ("text-video", "文案成片", "/workbench/text-video", "进入文案成片页；页面入口不会直接提交生成。",
+     None, "account_for_actions"),
+    ("short-drama", "短剧创作", "/workbench/short-drama", "进入短剧创作页；页面入口不会直接创建项目或生成素材。",
+     None, "account_for_actions"),
     ("one-click-video", "一键成片", "/workbench/one-click-video", "用一个已完成的视频资产进入一键成片工作台。",
      {"source_asset_id": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807}}, "account_for_actions"),
     ("audio", "音频工作台", "/workbench/audio", "进入音频工作台；只预填，不提交生成。",
@@ -145,6 +149,10 @@ for item in (
     ("script", "文案", "/workbench/script", "进入文案编导工作台。", None, "account_for_actions"),
     ("canvas", "画布", "/workbench/canvas", "进入创作画布。", None, "account_for_actions"),
     ("assets-page", "资产页", "/workbench/assets", "进入我的资产。", None, "account_for_data"),
+    ("pricing-page", "点数价格", "/workbench/pricing", "进入点数价格页；只查看，不会提交任务。", None, "none"),
+    ("invite", "邀请中心", "/workbench/invite", "进入当前账号的邀请中心。", None, "account_for_data_or_actions"),
+    ("recharge", "会员与点数", "/workbench/recharge", "进入会员与点数页面；不会创建订单或付款。", None, "account_for_data_or_actions"),
+    ("bots", "Bot 矩阵", "/workbench/bots", "进入 Bot 矩阵页；不会创建或配置 Bot。", None, "account_for_data_or_actions"),
     ("tutorials", "教程", "/workbench/tutorials", "进入教程中心。", None, "none"),
     ("settings", "设置", "/workbench/settings", "进入账号设置。", None, "account_for_data_or_actions"),
 ):
@@ -155,8 +163,68 @@ CAPABILITIES["account"] = _api(
 CAPABILITIES["channels"] = _api(
     "channels", "渠道目录", "channels", "按当前授权账号读取黄雀全部真实 API 渠道、前端功能映射和 CLI 调用入口。")
 CAPABILITIES["channels"]["next_actions"] = [
-    "根据 access、capabilities 和 selector 选择可直接调用的能力；registered 表示已登记但尚无独立执行入口。",
+    "根据 access、capabilities、selector/selectors 选择可直接调用的能力；registered 表示已登记但尚无独立执行入口。",
 ]
+CAPABILITIES["digital-ip-projects"] = _api(
+    "digital-ip-projects", "数字化 IP 项目列表", "digital-ip-projects", "读取当前账号的数字化 IP 项目。",
+    scope="ip12:read")
+CAPABILITIES["digital-ip-project"] = _api(
+    "digital-ip-project", "数字化 IP 项目", "digital-ip-project", "读取当前账号的一个数字化 IP 项目。",
+    {"project_id": STRING_ID}, ["project_id"], "ip12:read")
+CAPABILITIES["digital-ip-report"] = _api(
+    "digital-ip-report", "数字化 IP 报告", "digital-ip-report", "读取一个数字化 IP 项目已经保存的报告；不会重新生成。",
+    {"project_id": STRING_ID}, ["project_id"], "ip12:read")
+for identifier, name, description in (
+    ("text-video-capability", "文案成片可用状态", "读取文案成片功能开关和可用状态。"),
+    ("text-video-templates", "文案成片模板", "读取文案成片可用模板。"),
+    ("text-video-styles", "文案成片样式", "读取文案成片可用样式。"),
+    ("text-video-voices", "文案成片音色", "读取文案成片可用音色。"),
+):
+    CAPABILITIES[identifier] = _api(identifier, name, identifier, description, scope="assets:read")
+CAPABILITIES["pricing"] = _api(
+    "pricing", "点数价格", "pricing", "读取主站当前点数价格目录。", scope="profile:read")
+CAPABILITIES["inspiration-catalog"] = _api(
+    "inspiration-catalog", "灵感案例", "inspiration-catalog", "读取主站当前公开的灵感案例。",
+    scope="inspiration:read")
+CAPABILITIES["inspiration-likes"] = _api(
+    "inspiration-likes", "灵感收藏状态", "inspiration-likes", "读取灵感案例的收藏数和当前账号已收藏案例。",
+    scope="inspiration:read")
+CAPABILITIES["inspiration-like"] = _api(
+    "inspiration-like", "收藏灵感案例", "inspiration-like", "收藏或取消收藏一个公开灵感案例。",
+    {"id": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807},
+     "favorite": {"type": "boolean"}}, ["id", "favorite"], "inspiration:write", "write", True)
+CAPABILITIES["leads-crm"] = _api(
+    "leads-crm", "获客跟进列表", "leads-crm", "读取当前账号保存的客户跟进记录。",
+    {"lead_ids": {"type": "array", "maxItems": 100,
+                  "items": {"type": "string", "pattern": "^[0-9a-f]{16,40}$",
+                            "minLength": 16, "maxLength": 40}}}, scope="leads:read")
+CAPABILITIES["leads-crm-upsert"] = _api(
+    "leads-crm-upsert", "保存客户跟进", "leads-crm-upsert", "新增或更新当前账号的一条客户跟进记录。",
+    {"lead_id": {"type": "string", "pattern": "^[0-9a-f]{16,40}$", "minLength": 16, "maxLength": 40},
+     "intent": {"type": "string", "enum": ["高意向", "咨询", "价格敏感", "围观"]},
+     "follow_status": {"type": "string", "enum": ["待跟进", "跟进中", "已加微", "已成交", "无效"]},
+     "follow_note": {"type": "string", "maxLength": 300}},
+    ["lead_id"], "leads:write", "write", True)
+CAPABILITIES["video-avatars"] = _api(
+    "video-avatars", "数字人形象", "video-avatars", "读取当前账号可用的数字人形象。",
+    {"limit": LIMIT}, scope="assets:read")
+CAPABILITIES["audio-slots"] = _api(
+    "audio-slots", "声音克隆槽位", "audio-slots", "读取当前账号的声音克隆槽位、状态和当前价格。",
+    scope="assets:read")
+CAPABILITIES["short-drama-projects"] = _api(
+    "short-drama-projects", "短剧项目列表", "short-drama-projects", "读取当前账号可访问的短剧项目。",
+    {"page": {"type": "integer", "minimum": 1, "maximum": 100000},
+     "page_size": {"type": "integer", "minimum": 1, "maximum": 50}}, scope="short-drama:read")
+for identifier, name, description in (
+    ("short-drama-project", "短剧项目", "读取当前账号可访问的一个短剧项目。"),
+    ("short-drama-conversation", "短剧创作对话", "读取一个短剧项目的创作对话与已保存脚本。"),
+    ("short-drama-preflight", "短剧开拍检查", "读取一个短剧项目已经保存的开拍检查结果；不会重新生成。"),
+):
+    CAPABILITIES[identifier] = _api(
+        identifier, name, identifier, description,
+        {"project_id": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                        "minLength": 36, "maxLength": 36}},
+        ["project_id"], "short-drama:read")
 CAPABILITIES["ip12-projects"] = _api(
     "ip12-projects", "IP12 项目列表", "ip12-projects", "读取当前账号在主站 Hermes IP12 中的全部诊断项目。", scope="ip12:read")
 CAPABILITIES["ip12-project"] = _api(
@@ -313,11 +381,12 @@ CAPABILITIES["digital-presenter-update"] = _api(
 
 IMAGE_FIELDS = {
     "prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
-    "provider": {"type": "string", "enum": ["openai", "xiaole", "seedream"]},
-    "ratio": {"type": "string", "enum": ["1:1", "9:16", "16:9", "3:4"]},
+    "provider": {"type": "string", "enum": ["openai", "xiaole", "seedream", "banana"]},
+    "ratio": {"type": "string", "enum": ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]},
     "quality": {"type": "string", "enum": ["std", "hd"]},
     "count": {"type": "integer", "minimum": 1, "maximum": 4},
     "variant": {"type": "string", "enum": ["std", "pro"]},
+    "model": {"type": "string", "enum": ["nb2", "pro"]},
     "image_upload_id": {"type": "string", "minLength": 36, "maxLength": 36},
     "mask_upload_id": {"type": "string", "minLength": 36, "maxLength": 36},
     "reference_upload_ids": {"type": "array", "maxItems": 16,
@@ -326,11 +395,12 @@ IMAGE_FIELDS = {
 VIDEO_FIELDS = {
     "prompt": {"type": "string", "minLength": 1, "maxLength": 2000,
                "description": "可用 @图片1、@图片2 按 reference_upload_ids 顺序引用"},
-    "channel": {"type": "string", "enum": ["grok", "micro", "omni", "minimax"]},
+    "channel": {"type": "string", "enum": ["grok", "micro", "omni", "minimax", "sora"]},
     "ratio": {"type": "string", "enum": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"]},
     "duration": {"type": "integer", "minimum": 1, "maximum": 15},
-    "resolution": {"type": "string", "enum": ["480p", "720p", "768p", "1080p"]},
-    "model": {"type": "string", "enum": ["grok-imagine-video", "grok-imagine-video-1.5"]},
+    "seconds": {"type": "integer", "enum": [4, 8, 12]},
+    "resolution": {"type": "string", "enum": ["480p", "720p", "768p", "1024p", "1080p"]},
+    "model": {"type": "string", "enum": ["grok-imagine-video", "grok-imagine-video-1.5", "sora-2", "sora-2-pro"]},
     "generate_audio": {"type": "boolean"},
     "reference_upload_ids": {"type": "array", "maxItems": 9,
                              "items": {"type": "string", "minLength": 36, "maxLength": 36}},
@@ -357,13 +427,52 @@ for identifier, name, fields, required in (
 
 CAPABILITIES["image-generate"]["constraints"] = [
     "image_upload_id and reference_upload_ids are mutually exclusive",
-    "reference_upload_ids limits: openai=16, seedream=10, xiaole=4",
+    "reference_upload_ids limits: openai=16, seedream=10, xiaole=4, banana=14",
+    "provider=banana supports model=nb2|pro, count=1|2|4, and ratios 1:1|2:3|3:2|3:4|4:3|4:5|5:4|9:16|16:9|21:9",
+    "model is only for provider=banana; variant is only for provider=seedream",
     "mask_upload_id requires image_upload_id, provider=openai, PNG mask, and count=1",
 ]
 CAPABILITIES["video-generate"]["constraints"] = [
     "reference_upload_ids limits: grok=7, micro=9, omni=6, minimax=5",
+    "channel=sora uses model=sora-2|sora-2-pro, seconds=4|8|12, ratio=9:16|16:9, resolution=720p|1024p|1080p, and at most one reference image",
+    "channel=sora does not accept duration or generate_audio; seconds is only for sora",
     "@图片N references the Nth item in reference_upload_ids",
 ]
+
+for identifier, website_modes in {
+    "image": ["banana", "openai", "seedream", "xiaole"],
+    "image-upload": ["banana", "openai", "seedream", "xiaole"],
+    "image-generate": ["banana", "openai", "seedream", "xiaole"],
+    "video": ["one_click", "digital_ip", "cinematic", "tryon", "grok", "sora", "minimax", "omni", "seedance"],
+    "video-generate": ["grok", "sora", "minimax", "omni", "seedance"],
+    "audio": ["tts"], "voices": ["tts"], "audio-generate": ["tts"],
+    "one-click-video": ["one_click"],
+    "video-compose-projects": ["one_click"], "video-compose-project": ["one_click"],
+    "video-compose-create": ["one_click"], "video-compose-analyze": ["one_click"],
+    "video-compose-review": ["one_click"], "video-compose-render": ["one_click"],
+    "canvas": ["agent", "image_node", "video_node", "digitalPresenter"],
+    "canvas-agent-plan": ["agent"],
+    "digital-presenter-capability": ["digitalPresenter"],
+    "digital-presenter-project": ["digitalPresenter"],
+    "digital-presenter-create": ["digitalPresenter"],
+    "digital-presenter-update": ["digitalPresenter"],
+    "text-video": ["text_video"], "text-video-capability": ["text_video"],
+    "text-video-templates": ["text_video"], "text-video-styles": ["text_video"],
+    "text-video-voices": ["text_video"],
+    "short-drama": ["live_action"],
+    "short-drama-projects": ["live_action"], "short-drama-project": ["live_action"],
+    "short-drama-conversation": ["live_action"], "short-drama-preflight": ["live_action"],
+    "inspiration-catalog": ["inspiration.browse"], "inspiration-likes": ["inspiration.like"],
+    "inspiration-like": ["inspiration.like"],
+    "leads-crm": ["leads.crm.update"], "leads-crm-upsert": ["leads.crm.update"],
+    "video-avatars": ["cinematic", "digital_ip", "live_action"], "audio-slots": ["tts"],
+    "digital-ip-projects": ["digital_ip"], "digital-ip-project": ["digital_ip"],
+    "digital-ip-report": ["digital_ip"],
+    "pricing-page": ["pricing.catalog"], "pricing": ["pricing.catalog"],
+    "invite": ["invite.dashboard", "invite.poster"],
+    "recharge": ["recharge"], "bots": ["bots"],
+}.items():
+    CAPABILITIES[identifier]["website_modes"] = website_modes
 
 
 def capability_list():

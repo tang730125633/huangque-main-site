@@ -453,11 +453,81 @@ class HQCLIAPITests(unittest.TestCase):
             "prompt": "use @图片1", "channel": "grok", "reference_upload_ids": [upload_id],
         })
         self.assertEqual([upload_id], video["payload"]["reference_upload_ids"])
+        self.assertEqual("banana", plan["payload"]["source_page"])
+        self.assertEqual("video", video["payload"]["source_page"])
+        audio = self.auth.hq_cli_api.action_plan("audio-generate", {"text": "你好"})
+        self.assertEqual("audio", audio["payload"]["source_page"])
+        banana = self.auth.hq_cli_api.action_plan("image-generate", {
+            "prompt": "海报", "provider": "banana", "model": "pro", "ratio": "21:9",
+        })
+        self.assertEqual(("banana", "pro"), (
+            banana["payload"]["provider"], banana["payload"]["model"]))
+        sora = self.auth.hq_cli_api.action_plan("video-generate", {
+            "prompt": "海边日出", "channel": "sora", "model": "sora-2",
+            "seconds": 8, "ratio": "16:9", "reference_upload_ids": [upload_id],
+        })
+        self.assertEqual(("sora_video", "/api/gen/sora_video", 8), (
+            sora["generation_kind"], sora["endpoint"], sora["payload"]["seconds"]))
         with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
             self.auth.hq_cli_api.action_plan("image-generate", {
                 "prompt": "bad", "provider": "seedream", "image_upload_id": upload_id,
                 "mask_upload_id": "img_" + "b" * 32,
             })
+
+    def test_customer_read_actions_use_fixed_owner_scoped_routes(self):
+        cases = {
+            "pricing": ("profile:read", "/api/gen/pricing"),
+            "text-video-capability": ("assets:read", "/api/gen/text-video/capability"),
+            "text-video-templates": ("assets:read", "/api/gen/text-video/templates"),
+            "text-video-styles": ("assets:read", "/api/gen/text-video/styles"),
+            "text-video-voices": ("assets:read", "/api/gen/text-video/voices"),
+            "digital-ip-projects": ("ip12:read", "/api/gen/digital-ip/projects"),
+        }
+        for action, expected in cases.items():
+            plan = self.auth.hq_cli_api.action_plan(action, {})
+            self.assertEqual(expected, (plan["scope"], plan["path"]))
+            self.assertEqual(self.auth.hq_cli_api.CONTENT_BASE, plan["base"])
+        project = self.auth.hq_cli_api.action_plan(
+            "digital-ip-project", {"project_id": "project_1"})
+        report = self.auth.hq_cli_api.action_plan(
+            "digital-ip-report", {"project_id": "project_1"})
+        self.assertEqual("/api/gen/digital-ip/projects/project_1", project["path"])
+        self.assertEqual("/api/gen/digital-ip/projects/project_1/report", report["path"])
+
+    def test_safe_customer_actions_use_fixed_routes_and_strict_inputs(self):
+        cases = {
+            "inspiration-catalog": ("inspiration:read", self.auth.hq_cli_api.ADMIN_BASE,
+                                    "/api/admin/public/inspirations"),
+            "inspiration-likes": ("inspiration:read", self.auth.hq_cli_api.CONTENT_BASE,
+                                  "/api/gen/inspiration/likes"),
+            "video-avatars": ("assets:read", self.auth.hq_cli_api.CONTENT_BASE,
+                              "/api/gen/video/avatars?limit=120"),
+            "audio-slots": ("assets:read", self.auth.hq_cli_api.CONTENT_BASE,
+                            "/api/gen/audio/slots?include_points=0"),
+        }
+        for action, expected in cases.items():
+            plan = self.auth.hq_cli_api.action_plan(action, {})
+            self.assertEqual(expected, (plan["scope"], plan["base"], plan["path"]))
+        lead_id = "a" * 16
+        crm = self.auth.hq_cli_api.action_plan("leads-crm", {"lead_ids": [lead_id, lead_id]})
+        self.assertEqual("/api/gen/leads/crm?ids=" + lead_id, crm["path"])
+        update = self.auth.hq_cli_api.action_plan("leads-crm-upsert", {
+            "lead_id": lead_id, "intent": "咨询", "follow_status": "跟进中", "follow_note": "明天回访",
+        })
+        self.assertEqual(("leads:write", "POST", lead_id),
+                         (update["scope"], update["method"], update["body"]["lead_id"]))
+        like = self.auth.hq_cli_api.action_plan("inspiration-like", {"id": 7, "favorite": True})
+        self.assertEqual({"id": 7, "favorite": True}, like["body"])
+        projects = self.auth.hq_cli_api.action_plan("short-drama-projects", {"page": 2, "page_size": 50})
+        self.assertEqual("/api/gen/short-drama/projects?page=2&page_size=50", projects["path"])
+        for action, suffix in (("short-drama-project", "project?id="),
+                               ("short-drama-conversation", "conversation?project_id="),
+                               ("short-drama-preflight", "preflight?project_id=")):
+            plan = self.auth.hq_cli_api.action_plan(action, {"project_id": "project_1"})
+            self.assertEqual("short-drama:read", plan["scope"])
+            self.assertEqual("/api/gen/short-drama/" + suffix + "project_1", plan["path"])
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan("leads-crm", {"lead_ids": ["not-a-lead"]})
 
     def test_channels_use_customer_account_authorization_and_include_minimax(self):
         token = self._token(["profile:read"])
@@ -467,6 +537,9 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual(16, payload["total"])
         self.assertEqual("alice", payload["account"])
+        channels = {item["id"]: item for item in payload["channels"]}
+        self.assertEqual({"channel": "sora"}, channels["openai"]["selectors"][1]["input"])
+        self.assertEqual({"provider": "banana"}, channels["gemini"]["selectors"][0]["input"])
         self.assertEqual(
             {"channel": "minimax", "resolution": "768p"},
             {k: self.auth.hq_cli_api.action_plan("video-generate", {
@@ -476,7 +549,7 @@ class HQCLIAPITests(unittest.TestCase):
 
     def test_server_requires_confirmation_for_external_ai_and_writes(self):
         token = self._token(["prompt:optimize", "ip12:write", "ip12:chat", "canvas:write", "assets:write",
-                             "video-compose:write", "digital-presenter:write"])
+                             "video-compose:write", "digital-presenter:write", "inspiration:write", "leads:write"])
         cases = [
             ("prompt-optimize", {"prompt": "portrait", "kind": "image"}),
             ("ip12-create", {"title": "my project"}),
@@ -485,6 +558,8 @@ class HQCLIAPITests(unittest.TestCase):
             ("asset-tags", {"kind": "image", "key": "asset-1", "tags": ["客户案例"]}),
             ("video-compose-create", {"source_asset_id": 7}),
             ("digital-presenter-create", {"board_id": "cb_1", "request_id": "hqcli-dp-001"}),
+            ("inspiration-like", {"id": 7, "favorite": True}),
+            ("leads-crm-upsert", {"lead_id": "a" * 16, "follow_status": "跟进中"}),
         ]
         with mock.patch.object(self.auth.hq_cli_api, "proxy_json") as proxy:
             for action, input_body in cases:

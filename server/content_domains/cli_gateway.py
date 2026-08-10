@@ -69,11 +69,16 @@ def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
             payload.pop("short_drama_references", None)
         elif kind == "xiaole_video":
             payload = video.validate_xiaole_video_payload(payload)
+        elif kind == "sora_video":
+            payload = cli_uploads.expand_image_payload(payload, user["username"])
+            payload = video.validate_sora_video_payload(payload)
         elif kind == "audio":
             payload = audio.validate_audio_payload(payload, user["username"])
         else:
-            raise ValueError("CLI 报价仅支持 image、xiaole_video、audio")
-        feature_flags.require_enabled(kind)
+            raise ValueError("CLI 报价仅支持 image、xiaole_video、sora_video、audio")
+        feature_flags.require_enabled(
+            "banana" if kind == "image" and payload.get("provider") == "banana" else kind
+        )
         handler._send(200, {"kind": kind, "cost": points.cost_of(kind, payload),
                             "points": points.get_points(user["username"])})
     except feature_flags.FeatureDisabled as exc:
