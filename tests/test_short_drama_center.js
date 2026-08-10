@@ -1094,8 +1094,8 @@ test('character reference view guidance is grouped with the standard image', () 
 
 test('legacy role drafts keep an explicit back-view migration warning', () => {
   assert.match(centerScript, /character_contract_migration/);
-  assert.match(centerScript, /旧草稿缺少背面全身图，需要补图并重新确认/);
-  assert.match(centerScript, /旧版半身参考图不会被当作背面图/);
+  assert.match(centerScript, /旧草稿缺少背面全身图，请生成并确认可信 AI 三视图标准图/);
+  assert.match(centerScript, /普通上传或旧版半身参考图不能作为迁移证据/);
   assert.match(centerScript, /if\(migration\.required\)showLiveActionNotice/);
 });
 

@@ -426,12 +426,85 @@ def _legacy_character_contract_migration(value, reference_versions=None):
         },
         "missing_reference_views": ["back_full"],
         "legacy_reference_views": list(_LEGACY_CHARACTER_REFERENCE_VIEWS),
-        "message": "旧草稿缺少背面全身图，需要补图并重新确认；旧版半身参考图不会被当作背面图。",
+        "message": "旧草稿缺少背面全身图，请生成并确认可信 AI 三视图标准图；普通上传或旧版半身参考图不能作为迁移证据。",
     }
 
 
+def _record_character_contract_migration_evidence(
+        conn, project_id, character_key, reference_version, job_id=None):
+    """Bind trusted three-view evidence to one concrete preview version."""
+    row = conn.execute(
+        "SELECT character_contract_migration_json "
+        "FROM short_drama_script_imports WHERE project_id=?",
+        (project_id,),
+    ).fetchone()
+    migration = _json(row[0], {}) if row else {}
+    pending = [str(value) for value in migration.get("character_keys") or []]
+    if not migration.get("required") or character_key not in pending:
+        return
+    evidence = migration.get("three_view_evidence")
+    evidence = dict(evidence) if isinstance(evidence, dict) else {}
+    if job_id is None:
+        evidence.pop(character_key, None)
+    else:
+        evidence[character_key] = {
+            "source": "trusted_ai_three_view",
+            "reference_version": _reference_version(reference_version),
+            "job_id": int(job_id),
+        }
+    if evidence:
+        migration["three_view_evidence"] = evidence
+    else:
+        migration.pop("three_view_evidence", None)
+    conn.execute(
+        "UPDATE short_drama_script_imports "
+        "SET character_contract_migration_json=? WHERE project_id=?",
+        (_json_text(migration, {}), project_id),
+    )
+
+
+def _sync_character_contract_migration_roles(conn, project_id, character_keys):
+    """Remove legally deleted roles from pending migration state atomically."""
+    row = conn.execute(
+        "SELECT character_contract_migration_json "
+        "FROM short_drama_script_imports WHERE project_id=?",
+        (project_id,),
+    ).fetchone()
+    migration = _json(row[0], {}) if row else {}
+    pending = [str(value) for value in migration.get("character_keys") or []]
+    if not migration.get("required") or not pending:
+        return
+    retained = [key for key in pending if key in character_keys]
+    if retained == pending:
+        return
+    if not retained:
+        migration = {}
+    else:
+        baselines = migration.get("reference_version_baselines")
+        baselines = baselines if isinstance(baselines, dict) else {}
+        evidence = migration.get("three_view_evidence")
+        evidence = evidence if isinstance(evidence, dict) else {}
+        migration["character_keys"] = retained
+        migration["reference_version_baselines"] = {
+            key: baselines[key] for key in retained if key in baselines
+        }
+        retained_evidence = {
+            key: evidence[key] for key in retained if key in evidence
+        }
+        if retained_evidence:
+            migration["three_view_evidence"] = retained_evidence
+        else:
+            migration.pop("three_view_evidence", None)
+    conn.execute(
+        "UPDATE short_drama_script_imports "
+        "SET character_contract_migration_json=? WHERE project_id=?",
+        (_json_text(migration, {}), project_id),
+    )
+
+
 def _confirm_character_contract_migration(conn, project_id, character_key,
-                                            reference_version):
+                                            reference_version,
+                                            reference_job_id):
     """Clear one legacy-view marker only after a new preview is locked."""
     row = conn.execute(
         "SELECT character_contract_migration_json,character_contract_json "
@@ -447,6 +520,29 @@ def _confirm_character_contract_migration(conn, project_id, character_key,
     )
     if (not migration.get("required") or character_key not in current
             or reference_version <= baseline):
+        return
+    evidence_map = migration.get("three_view_evidence")
+    evidence_map = evidence_map if isinstance(evidence_map, dict) else {}
+    evidence = evidence_map.get(character_key)
+    evidence = evidence if isinstance(evidence, dict) else {}
+    try:
+        evidence_job_id = int(evidence.get("job_id"))
+    except (TypeError, ValueError):
+        evidence_job_id = -1
+    if (evidence.get("source") != "trusted_ai_three_view"
+            or _reference_version(evidence.get("reference_version"), -1)
+            != reference_version
+            or reference_job_id is None
+            or evidence_job_id != int(reference_job_id)):
+        return
+    trusted = conn.execute(
+        "SELECT 1 FROM short_drama_character_reference_jobs r "
+        "JOIN jobs j ON j.id=r.job_id "
+        "WHERE r.job_id=? AND r.project_id=? AND r.character_key=? "
+        "AND r.status='done' AND j.status='done'",
+        (evidence_job_id, project_id, character_key),
+    ).fetchone()
+    if not trusted:
         return
     contract = _json(row[1], [])
     upgraded_contract = []
@@ -468,9 +564,14 @@ def _confirm_character_contract_migration(conn, project_id, character_key,
         return
     pending = [value for value in current if value != character_key]
     baselines.pop(character_key, None)
+    evidence_map.pop(character_key, None)
     if pending:
         migration["character_keys"] = pending
         migration["reference_version_baselines"] = baselines
+        if evidence_map:
+            migration["three_view_evidence"] = evidence_map
+        else:
+            migration.pop("three_view_evidence", None)
     else:
         migration = {}
     conn.execute(
@@ -3856,6 +3957,10 @@ def reconcile_character_reference_job(db_factory, job_id, username=None, result=
             "SET status='done',error='',updated_at=? WHERE job_id=?",
             (now, int(job_id)),
         )
+        _record_character_contract_migration_evidence(
+            conn, row["project_id"], row["character_key"],
+            next_version, int(job_id),
+        )
         conn.execute(
             "UPDATE short_drama_projects SET revision=revision+1,updated_at=? "
             "WHERE id=? AND username=? AND deleted=0",
@@ -3911,6 +4016,7 @@ def select_character_reference(db_factory, owner_username, actor_username, body)
 
     reference_job_id = None
     trusted_generated_reference = False
+    trusted_three_view_job_id = None
     reference_file = reference_url = reference_asset_id = reference_name = ""
     created_path = None
     raw = b""
@@ -3953,6 +4059,17 @@ def select_character_reference(db_factory, owner_username, actor_username, body)
                 "WHERE job_id=? AND username=? AND status IN ('ready','done')",
                 (reference_job_id, actor_username),
             ).fetchone())
+            trusted_three_view = conn.execute(
+                "SELECT 1 FROM short_drama_character_reference_jobs "
+                "WHERE job_id=? AND username=? AND owner_username=? "
+                "AND project_id=? AND character_key=? AND status='done'",
+                (
+                    reference_job_id, actor_username, owner_username,
+                    project_id, character_key,
+                ),
+            ).fetchone()
+            if trusted_three_view:
+                trusted_three_view_job_id = reference_job_id
             result = _json(job[0], {})
             urls = result.get("urls") if isinstance(result.get("urls"), list) else []
             files = result.get("files") if isinstance(result.get("files"), list) else []
@@ -4062,6 +4179,10 @@ def select_character_reference(db_factory, owner_username, actor_username, body)
                 reference_asset_id, reference_name, project_id, character_key,
             ),
         )
+        _record_character_contract_migration_evidence(
+            conn, project_id, character_key, next_version,
+            trusted_three_view_job_id,
+        )
         _cas_content_update(conn, owner_username, project_id, revision, project[1])
         conn.commit()
         return _project_detail(conn, owner_username, project_id)
@@ -4129,7 +4250,7 @@ def confirm_character_reference(db_factory, username, project_id, revision,
             (project_id, character_key),
         )
         _confirm_character_contract_migration(
-            conn, project_id, character_key, int(character[3])
+            conn, project_id, character_key, int(character[3]), character[0]
         )
         _cas_content_update(conn, username, project_id, revision, project[1])
         conn.commit()
@@ -4414,6 +4535,9 @@ def update_characters(db_factory, username, project_id, revision, characters, av
             )
             if live_action_setup:
                 saved_at = int(time.time())
+                _sync_character_contract_migration_roles(
+                    conn, project_id, submitted_keys
+                )
                 conn.execute(
                     "UPDATE short_drama_script_imports "
                     "SET character_contract_json=?,roles_saved_at=?,updated_at=? "

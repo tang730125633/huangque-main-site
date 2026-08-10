@@ -1240,7 +1240,7 @@
       if(restoredStep==='live_action_roles'&&!liveActionRoles.length)restoredStep='live_action_story';
       showCreateStep(restoredStep);if(restoredStep!=='live_action_setup'){if(restoredStep==='live_action_story')renderLiveActionCoreStory();else renderLiveActionRoles();}
       var migration=draft.character_contract_migration||{};
-      if(migration.required)showLiveActionNotice(text(migration.message)||'旧草稿缺少背面全身图，需要补图并重新确认；旧版半身参考图不会被当作背面图。',restoredStep,{autoHide:0});
+      if(migration.required)showLiveActionNotice(text(migration.message)||'旧草稿缺少背面全身图，请生成并确认可信 AI 三视图标准图；普通上传或旧版半身参考图不能作为迁移证据。',restoredStep,{autoHide:0});
       else showLiveActionNotice('已恢复上次保存的草稿。',restoredStep,{autoHide:5000});
     }
     function liveActionDraftFromProject(project){
