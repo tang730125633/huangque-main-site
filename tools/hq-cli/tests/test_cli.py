@@ -41,6 +41,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
+        self.assertEqual("0.8.0", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -50,8 +51,11 @@ class HqCliTests(unittest.TestCase):
         expected = {
             "account", "channels", "ip12-projects", "ip12-project", "ip12-create", "ip12-report", "ip12-message",
             "prompt-optimize", "canvas-list", "canvas-get", "canvas-create", "canvas-agent-plan", "canvas-ops", "tasks", "task",
-            "assets", "voices", "image-upload", "asset-favorite", "asset-tags",
+            "assets", "voices", "image-upload", "video-upload", "asset-favorite", "asset-tags",
             "image-generate", "video-generate", "audio-generate",
+            "digital-ip-text-generate", "digital-ip-audio-generate", "digital-ip-batch-generate",
+            "cinematic-open-generate", "cinematic-motion-generate",
+            "tryon-fast-generate", "tryon-classic-generate",
             "digital-ip-projects", "digital-ip-project", "digital-ip-report",
             "text-video-capability", "text-video-templates", "text-video-styles", "text-video-voices", "pricing",
             "inspiration-catalog", "inspiration-likes", "inspiration-like",
@@ -66,6 +70,11 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual("assets:upload", by_id["image-upload"]["required_scope"])
         self.assertEqual(20, by_id["image-upload"]["file_input"]["accountActiveMaxFiles"])
         self.assertEqual(96 * 1024 * 1024, by_id["image-upload"]["file_input"]["accountActiveMaxBytes"])
+        self.assertEqual(32 * 1024 * 1024, by_id["video-upload"]["file_input"]["maxBytes"])
+        self.assertEqual(
+            ["video/mp4", "video/quicktime", "video/webm"],
+            by_id["video-upload"]["file_input"]["mimeTypes"],
+        )
         self.assertEqual("server_quote", by_id["canvas-agent-plan"]["cost"]["kind"])
         self.assertEqual("canvas:edit", by_id["canvas-ops"]["required_scope"])
         self.assertEqual(12, by_id["canvas-ops"]["input_schema"]["properties"]["ops"]["maxItems"])
@@ -77,6 +86,25 @@ class HqCliTests(unittest.TestCase):
         self.assertIn("1024p", by_id["video-generate"]["input_schema"]["properties"]["resolution"]["enum"])
         self.assertIn("sora-2-pro", by_id["video-generate"]["input_schema"]["properties"]["model"]["enum"])
         self.assertEqual([4, 8, 12], by_id["video-generate"]["input_schema"]["properties"]["seconds"]["enum"])
+        self.assertEqual("server_quote", by_id["digital-ip-text-generate"]["cost"]["kind"])
+        self.assertEqual(
+            ["avatar_id", "audio_file"],
+            by_id["digital-ip-audio-generate"]["input_schema"]["required"],
+        )
+        self.assertEqual(
+            500,
+            by_id["digital-ip-audio-generate"]["input_schema"]["properties"]["audio_file"]["maxLength"],
+        )
+        cinematic = by_id["cinematic-open-generate"]["input_schema"]
+        self.assertEqual(3, cinematic["properties"]["avatar_ids"]["maxItems"])
+        self.assertEqual(8, cinematic["properties"]["reference_image_upload_ids"]["maxItems"])
+        self.assertEqual(3, cinematic["properties"]["reference_video_upload_ids"]["maxItems"])
+        self.assertTrue(any(
+            "1 avatar allows 8 references, 2 allow 7, and 3 allow 6" in item
+            for item in by_id["cinematic-open-generate"]["constraints"]
+        ))
+        self.assertEqual(5, by_id["digital-ip-batch-generate"]["input_schema"]["properties"]["avatars"]["maxItems"])
+        self.assertEqual(1, by_id["cinematic-motion-generate"]["input_schema"]["properties"]["reference_video_upload_ids"]["maxItems"])
         self.assertEqual("inspiration:write", by_id["inspiration-like"]["required_scope"])
         self.assertEqual("leads:write", by_id["leads-crm-upsert"]["required_scope"])
         self.assertTrue(by_id["inspiration-like"]["confirmation_required"])
@@ -115,6 +143,14 @@ class HqCliTests(unittest.TestCase):
             "image-generate": {"banana", "openai", "seedream", "xiaole"},
             "video-generate": {"grok", "sora", "minimax", "omni", "seedance"},
             "audio-generate": {"tts"}, "video-compose-projects": {"one_click"},
+            "digital-ip-text-generate": {"digital_ip"},
+            "digital-ip-audio-generate": {"digital_ip"},
+            "digital-ip-batch-generate": {"digital_ip"},
+            "cinematic-open-generate": {"cinematic"},
+            "cinematic-motion-generate": {"cinematic"},
+            "tryon-fast-generate": {"tryon"},
+            "tryon-classic-generate": {"tryon"},
+            "video-upload": {"cinematic", "tryon"},
             "digital-presenter-capability": {"digitalPresenter"},
             "text-video-capability": {"text_video"}, "digital-ip-projects": {"digital_ip"},
             "pricing": {"pricing.catalog"},
@@ -240,6 +276,100 @@ class HqCliTests(unittest.TestCase):
                 self.assertEqual(0, code, error)
                 self.assertEqual({"action": identifier, "input": payload, "confirm": False},
                                  request.call_args.kwargs["body"])
+
+    def test_video_actions_use_the_existing_quote_confirm_flow(self):
+        self.authorize()
+        cases = {
+            "digital-ip-text-generate": {
+                "avatar_id": 17, "text": "欢迎来到黄雀", "voice": "S_public",
+                "ratio": "9:16", "motion": "medium",
+            },
+            "digital-ip-audio-generate": {
+                "avatar_id": 17, "audio_file": "audio/mine.mp3", "ratio": "9:16",
+            },
+            "digital-ip-batch-generate": {
+                "avatars": [{"avatar_id": 17, "label": "主讲人"}, {"avatar_id": 18}],
+                "text": "欢迎来到黄雀", "voice": "S_public", "ratio": "9:16",
+            },
+            "cinematic-open-generate": {
+                "avatar_ids": [17, 18], "prompt": "人物在明亮工作室自然挥手",
+                "duration": 10, "ratio": "9:16",
+                "reference_image_upload_ids": ["img_" + "a" * 32],
+                "reference_video_upload_ids": ["vid_" + "b" * 32],
+            },
+            "cinematic-motion-generate": {
+                "avatar_id": 17, "reference_video_upload_ids": ["vid_" + "b" * 32],
+                "ratio": "16:9",
+            },
+            "tryon-fast-generate": {
+                "person_image_upload_id": "img_" + "a" * 32,
+                "clothes_upload_id": "img_" + "b" * 32, "seconds": 8,
+            },
+            "tryon-classic-generate": {
+                "person_video_upload_id": "vid_" + "c" * 32,
+                "background_upload_id": "img_" + "d" * 32, "seconds": 6,
+            },
+        }
+        for identifier, payload in cases.items():
+            quote = {"quote_token": "q.%s" % identifier, "cost": 10,
+                     "confirmation_required": True}
+            result = {"job_id": 100, "cost": 10, "points_left": 90}
+            with self.subTest(identifier=identifier), patch(
+                    "hq_cli.client.request_json", side_effect=[(200, quote), (200, result)]) as request:
+                raw = json.dumps(payload, ensure_ascii=False).encode()
+                code, _, error = self.invoke(["run", identifier, "--input", "@-"], raw)
+                self.assertEqual(0, code, error)
+                code, output, error = self.invoke([
+                    "run", identifier, "--input", "@-", "--confirm", "--quote-token",
+                    quote["quote_token"],
+                ], raw)
+                self.assertEqual(0, code, error)
+                self.assertEqual(100, self.payload(output)["result"]["job_id"])
+                first, second = request.call_args_list
+                self.assertEqual({"action": identifier, "input": payload, "confirm": False},
+                                 first.kwargs["body"])
+                self.assertEqual(payload, second.kwargs["body"]["input"])
+                self.assertTrue(second.kwargs["body"]["confirm"])
+                self.assertEqual(quote["quote_token"], second.kwargs["body"]["quote_token"])
+
+    def test_video_action_cardinality_is_rejected_before_http(self):
+        invalid = {
+            "digital-ip-batch-generate": {
+                "avatars": [{"avatar_id": 17}], "text": "x", "voice": "S_public",
+            },
+            "cinematic-motion-generate": {
+                "avatar_id": 17,
+                "reference_video_upload_ids": ["vid_" + "a" * 32, "vid_" + "b" * 32],
+            },
+            "cinematic-open-generate": {
+                "avatar_id": 17, "avatar_ids": [18], "prompt": "x",
+            },
+            "digital-ip-audio-generate": {
+                "avatar_id": 17, "audio_file": "a" * 501,
+            },
+            "tryon-classic-generate": {
+                "person_video_upload_id": "vid_" + "c" * 32,
+            },
+        }
+        with patch("hq_cli.client.request_json") as request:
+            for identifier, payload in invalid.items():
+                with self.subTest(identifier=identifier):
+                    code, _, error = self.invoke(
+                        ["run", identifier, "--input", "@-"], json.dumps(payload).encode(),
+                    )
+                    self.assertEqual(cli.EXIT_INPUT, code, error)
+        request.assert_not_called()
+
+    def test_cinematic_open_retains_single_avatar_id_compatibility(self):
+        self.authorize()
+        payload = {"avatar_id": 17, "prompt": "人物在工作室自然挥手"}
+        with patch("hq_cli.client.request_json", return_value=(200, {"quote_token": "q.compat"})) as request:
+            code, _, error = self.invoke(
+                ["run", "cinematic-open-generate", "--input", "@-"],
+                json.dumps(payload, ensure_ascii=False).encode(),
+            )
+        self.assertEqual(0, code, error)
+        self.assertEqual(payload, request.call_args.kwargs["body"]["input"])
 
     def test_external_ai_and_write_actions_require_explicit_confirmation_before_http(self):
         self.authorize()
@@ -397,6 +527,24 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual("img_" + "a" * 32, self.payload(output)["result"]["upload_id"])
         upload.assert_called_once_with(image_path, "t" * 43)
 
+    def test_video_upload_requires_confirmation_and_uses_file_transport(self):
+        self.authorize()
+        video_path = os.path.join(self.temp.name, "reference.mp4")
+        with patch.object(client, "upload_video") as upload:
+            code, _, error = self.invoke(["run", "video-upload", "--file", video_path])
+            self.assertEqual(cli.EXIT_CONFIRMATION, code)
+            upload.assert_not_called()
+            upload.return_value = (200, {
+                "upload_id": "vid_" + "a" * 32, "mime": "video/mp4", "bytes": 24,
+                "sha256": "b" * 64, "expires_in": 3600,
+            })
+            code, output, error = self.invoke([
+                "run", "video-upload", "--file", video_path, "--confirm", "--json",
+            ])
+        self.assertEqual(0, code, error)
+        self.assertEqual("vid_" + "a" * 32, self.payload(output)["result"]["upload_id"])
+        upload.assert_called_once_with(video_path, "t" * 43)
+
     def test_streaming_image_client_sends_no_local_path_or_filename(self):
         raw = b"\x89PNG\r\n\x1a\n" + b"private-image"
         image_path = Path(self.temp.name) / "secret-name.png"
@@ -455,6 +603,64 @@ class HqCliTests(unittest.TestCase):
         linked_dir.symlink_to(real_dir, target_is_directory=True)
         with self.assertRaises(ValueError):
             client.upload_image(str(linked_dir / "inside.png"), "t" * 43)
+
+    def test_streaming_video_client_enforces_magic_size_and_private_transport(self):
+        raw = b"\x00\x00\x00\x18ftypisom" + b"private-video"
+        video_path = Path(self.temp.name) / "secret-name.mp4"
+        video_path.write_bytes(raw)
+        digest = hashlib.sha256(raw).hexdigest()
+
+        class Response:
+            status = 200
+
+            def read(self, _limit):
+                return json.dumps({"upload_id": "vid_" + "a" * 32, "sha256": digest}).encode()
+
+        class Connection:
+            def __init__(self):
+                self.headers, self.sent = {}, bytearray()
+
+            def putrequest(self, method, path, **_kwargs):
+                self.method, self.path = method, path
+
+            def putheader(self, key, value):
+                self.headers[key] = value
+
+            def endheaders(self):
+                pass
+
+            def send(self, chunk):
+                self.sent.extend(chunk)
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                pass
+
+        connection = Connection()
+        with patch.object(client.http.client, "HTTPSConnection", return_value=connection):
+            status, payload = client.upload_video(str(video_path), "t" * 43)
+        self.assertEqual((200, "vid_" + "a" * 32), (status, payload["upload_id"]))
+        self.assertEqual(raw, bytes(connection.sent))
+        self.assertEqual(client.VIDEO_UPLOAD_PATH, connection.path)
+        self.assertEqual(digest, connection.headers["X-HQ-Video-SHA256"])
+        self.assertNotIn("secret-name.mp4", json.dumps(connection.headers))
+        self.assertEqual("video/quicktime", client._video_mime(b"\x00\x00\x00\x18ftypqt  "))
+        self.assertEqual("video/webm", client._video_mime(b"\x1aE\xdf\xa3"))
+
+        link = Path(self.temp.name) / "linked.mp4"
+        link.symlink_to(video_path)
+        with self.assertRaises(ValueError):
+            client.upload_video(str(link), "t" * 43)
+        with self.assertRaises(ValueError):
+            client.upload_video("relative.mp4", "t" * 43)
+        oversized = Path(self.temp.name) / "oversized.mp4"
+        with oversized.open("wb") as handle:
+            handle.write(b"\x00\x00\x00\x18ftypisom")
+            handle.truncate(client.MAX_VIDEO_UPLOAD_BYTES + 1)
+        with self.assertRaises(ValueError):
+            client.upload_video(str(oversized), "t" * 43)
 
     def test_navigation_is_main_site_only_and_never_opens_by_default(self):
         with patch("hq_cli.cli.webbrowser.open") as opened:

@@ -152,6 +152,8 @@ class VideoBatchIntegrationGuardTests(unittest.TestCase):
         end = self.core.index('if p.startswith("/api/gen/")', start)
         route = self.core[start:end]
         self.assertLess(route.index("validate_video_batch_payload"), route.index("costs ="))
+        self.assertLess(route.index("miniprogram_security.check_payload"), route.index("costs ="))
+        self.assertLess(route.index("reject_changed_cost"), route.index("deduct_points"))
         self.assertLess(route.index("active_jobs + len(payloads)"), route.index("deduct_points"))
         self.assertIn('enqueue_jobs(job_ids, "video", "text")', route)
         self.assertIn('"available_slots"', route)

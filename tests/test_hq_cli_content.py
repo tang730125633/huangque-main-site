@@ -196,6 +196,266 @@ class HQCLIContentTests(unittest.TestCase):
         self.assertEqual((200, 24), (status, result["cost"]))
         self.assertEqual(["banana"], checked)
 
+    def test_digital_ip_text_quote_requires_ready_owned_avatar_and_voice(self):
+        request = {
+            "mode": "text", "avatar_id": 7, "text": "欢迎来到黄雀",
+            "voice": "owned-voice", "resolution": "1080p", "ratio": "9:16",
+        }
+        cleaned = dict(request, motion="medium", bgm_data="", bgm_volume=0.18)
+        with mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(video, "validate_video_payload", return_value=cleaned) as validate, \
+                mock.patch.object(video, "get_video_avatar", return_value={
+                    "id": 7, "status": "ready", "image_file": "avatars/alice.jpg",
+                }) as get_avatar, \
+                mock.patch.object(audio, "resolve_audio_provider_voice",
+                                  return_value="provider-voice") as resolve_voice:
+            status, result = self._post(
+                "/api/gen/cli/quote", {"kind": "video", "payload": request})
+        self.assertEqual((200, 24), (status, result["cost"]))
+        validate.assert_called_once_with(request, "alice")
+        get_avatar.assert_called_once_with("alice", 7)
+        resolve_voice.assert_called_once_with("alice", "owned-voice")
+
+        with mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(video, "validate_video_payload", return_value=cleaned), \
+                mock.patch.object(video, "get_video_avatar", return_value={
+                    "id": 7, "status": "pending", "image_file": "avatars/alice.jpg",
+                }), \
+                mock.patch.object(audio, "resolve_audio_provider_voice") as resolve_voice:
+            status, result = self._post(
+                "/api/gen/cli/quote", {"kind": "video", "payload": request})
+        self.assertEqual(400, status)
+        self.assertIn("尚未就绪", result["detail"])
+        resolve_voice.assert_not_called()
+
+    def test_digital_ip_audio_quote_accepts_only_owned_asset_reference(self):
+        request = {
+            "mode": "audio", "avatar_id": 9, "audio_file": "audio/alice.wav",
+            "resolution": "1080p", "ratio": "9:16",
+        }
+        cleaned = dict(
+            request, motion="medium", audio_data="", bgm_data="", bgm_volume=0.18)
+        with mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(video, "validate_video_payload", return_value=cleaned) as validate, \
+                mock.patch.object(video, "get_video_avatar", return_value={
+                    "id": 9, "status": "ready", "image_file": "avatars/alice.jpg",
+                }), \
+                mock.patch.object(audio, "resolve_audio_provider_voice") as resolve_voice:
+            status, result = self._post(
+                "/api/gen/cli/quote", {"kind": "video", "payload": request})
+        self.assertEqual((200, 24), (status, result["cost"]))
+        validate.assert_called_once_with(request, "alice")
+        resolve_voice.assert_not_called()
+
+        injected = dict(request, audio_data="data:audio/wav;base64,AAAA")
+        with mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(video, "validate_video_payload") as validate:
+            status, result = self._post(
+                "/api/gen/cli/quote", {"kind": "video", "payload": injected})
+        self.assertEqual(400, status)
+        self.assertIn("本人资产音频", result["detail"])
+        validate.assert_not_called()
+
+        with mock.patch.object(core, "_domains", return_value=(audio, self.points, video)):
+            status, result = self._post(
+                "/api/gen/cli/quote", {"kind": "video", "payload": []})
+        self.assertEqual(400, status)
+        self.assertIn("合法 JSON", result["detail"])
+
+    def test_cinematic_quote_requires_ready_provider_avatar_and_expands_private_references(self):
+        request = {
+            "cine_mode": "open", "avatar_ids": [3, 4], "prompt": "在工作室交流",
+            "resolution": "720p", "ratio": "16:9", "duration": 10,
+        }
+        cleaned = dict(
+            request, reference_video_files=[], reference_image_files=[], enhance_prompt=False)
+        ready = {
+            "status": "ready", "image_file": "avatars/alice.jpg",
+            "provider_avatar_id": "look-id",
+        }
+        with mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(video, "validate_cinematic_payload", return_value=cleaned) as validate, \
+                mock.patch.object(video, "get_video_avatar", return_value=ready) as get_avatar:
+            status, result = self._post(
+                "/api/gen/cli/quote", {"kind": "cinematic", "payload": request})
+        self.assertEqual((200, 24), (status, result["cost"]))
+        validate.assert_called_once_with(request, "alice", [])
+        self.assertEqual([mock.call("alice", 3), mock.call("alice", 4)],
+                         get_avatar.call_args_list)
+
+        not_provider_ready = dict(ready, provider_avatar_id="")
+        with mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(video, "validate_cinematic_payload", return_value=cleaned), \
+                mock.patch.object(video, "get_video_avatar", return_value=not_provider_ready):
+            status, result = self._post(
+                "/api/gen/cli/quote", {"kind": "cinematic", "payload": request})
+        self.assertEqual(400, status)
+        self.assertIn("电影化身尚未就绪", result["detail"])
+
+        with_reference = dict(request, reference_video_upload_ids=["vid_" + "a" * 32])
+        expanded = dict(request, reference_videos=["data:video/mp4;base64,AAAA"])
+        with mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(cli_uploads, "expand_role_media_payload", return_value=expanded) as expand, \
+                mock.patch.object(video, "validate_cinematic_payload", return_value=cleaned) as validate, \
+                mock.patch.object(video, "get_video_avatar", return_value=ready):
+            status, result = self._post(
+                "/api/gen/cli/quote", {"kind": "cinematic", "payload": with_reference})
+        self.assertEqual((200, 24), (status, result["cost"]))
+        expand.assert_called_once_with(with_reference, "alice")
+        validate.assert_called_once_with(expanded, "alice", [])
+
+    def test_cinematic_submit_replays_before_upload_expansion_and_cleans_queue_failure(self):
+        raw = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl9l1sAAAAASUVORK5CYII="
+        )
+        claims = {}
+        created = []
+
+        def begin(_username, _endpoint, key, body):
+            digest = json.dumps(body, sort_keys=True, separators=(",", ":"))
+            if key not in claims:
+                claims[key] = {"digest": digest, "response": None}
+                return "new", None
+            if claims[key]["digest"] != digest:
+                return "conflict", None
+            response = claims[key]["response"]
+            return ("replay", response) if response else ("processing", None)
+
+        def complete(_username, _endpoint, key, response):
+            claims[key]["response"] = response
+
+        def abort(_username, _endpoint, key):
+            if key in claims and claims[key]["response"] is None:
+                claims.pop(key)
+
+        def create_job(*args, **_kwargs):
+            created.append(args[6])
+            return 40 + len(created), 76
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            upload_root, output_root = root / "uploads", root / "output"
+
+            def out_path(relative):
+                path = output_root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                return path
+
+            with mock.patch.object(cli_uploads, "UPLOAD_ROOT", upload_root):
+                uploaded = cli_uploads.store_image(
+                    io.BytesIO(raw), len(raw), "alice", "image/png",
+                    hashlib.sha256(raw).hexdigest(),
+                )
+            request = {
+                "cine_mode": "open", "avatar_ids": [3], "prompt": "在工作室交流",
+                "resolution": "720p", "ratio": "9:16", "duration": 8,
+                "reference_image_upload_ids": [uploaded["upload_id"]],
+            }
+
+            with mock.patch.object(cli_uploads, "UPLOAD_ROOT", upload_root), \
+                    mock.patch.object(core, "HANDLERS", {"cinematic": lambda payload: payload}), \
+                    mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                    mock.patch.object(core, "_idempotency_begin", side_effect=begin), \
+                    mock.patch.object(core, "_idempotency_complete", side_effect=complete), \
+                    mock.patch.object(core, "_idempotency_abort", side_effect=abort), \
+                    mock.patch.object(core, "_user_video_submit_limit", return_value=None), \
+                    mock.patch.object(core, "_user_active_job_count", return_value=0), \
+                    mock.patch.object(core.jobs_store, "create_paid_job", side_effect=create_job), \
+                    mock.patch.object(core, "_reject_pending_job"), \
+                    mock.patch.object(video, "get_video_avatar", return_value={
+                        "id": 3, "status": "ready", "provider_avatar_id": "look-3",
+                    }), \
+                    mock.patch.object(video, "_out_path", side_effect=out_path), \
+                    mock.patch.object(video, "record_video_pending_asset"), \
+                    mock.patch.object(video, "update_video_asset_phase"), \
+                    mock.patch.object(core, "enqueue_job", side_effect=(True, False)), \
+                    mock.patch.object(cli_uploads, "expand_role_media_payload",
+                                      wraps=cli_uploads.expand_role_media_payload) as expand:
+                status, first = self._post(
+                    "/api/gen/cinematic", request, expected=24,
+                    idempotency_key="hqcli-cinematic-retry-001",
+                )
+                self.assertEqual((200, 41), (status, first["job_id"]))
+                kept = {path for path in output_root.rglob("*") if path.is_file()}
+                self.assertEqual(1, len(kept))
+
+                # Replay must not touch the short-lived upload again.
+                for path in upload_root.iterdir():
+                    path.unlink()
+                status, replay = self._post(
+                    "/api/gen/cinematic", request, expected=24,
+                    idempotency_key="hqcli-cinematic-retry-001",
+                )
+                self.assertEqual((200, first), (status, replay))
+                self.assertEqual((1, 1), (len(created), expand.call_count))
+                self.assertEqual(kept, {
+                    path for path in output_root.rglob("*") if path.is_file()
+                })
+
+                # A fresh request that cannot enter the queue must remove its files.
+                with mock.patch.object(cli_uploads, "_load_image", return_value=(
+                    base64.b64encode(raw).decode("ascii"), {"mime": "image/png"},
+                )):
+                    status, failed = self._post(
+                        "/api/gen/cinematic", dict(request, prompt="队列失败"), expected=24,
+                        idempotency_key="hqcli-cinematic-retry-002",
+                    )
+                self.assertEqual((429, "queue_full"), (status, failed["code"]))
+                self.assertEqual(2, len(created))
+                self.assertEqual(kept, {
+                    path for path in output_root.rglob("*") if path.is_file()
+                })
+
+    def test_batch_and_tryon_quotes_use_server_validation_and_total_cost(self):
+        batch = {
+            "mode": "text", "text": "欢迎到店", "voice": "owned-voice",
+            "avatars": [{"avatar_id": 1}, {"avatar_id": 2}],
+        }
+        items = [
+            {"mode": "text", "avatar_id": "1", "voice": "owned-voice"},
+            {"mode": "text", "avatar_id": "2", "voice": "owned-voice"},
+        ]
+        ready = {"status": "ready", "image_file": "avatars/alice.jpg"}
+        with mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(video, "validate_video_batch_payload", return_value=items), \
+                mock.patch.object(video, "get_video_avatar", return_value=ready), \
+                mock.patch.object(audio, "resolve_audio_provider_voice", return_value="provider"):
+            status, result = self._post(
+                "/api/gen/cli/quote", {"kind": "video_batch", "payload": batch})
+        self.assertEqual((200, 48), (status, result["cost"]))
+
+        request = {
+            "line": "2", "person_image_upload_id": "img_" + "a" * 32,
+            "clothes_upload_id": "img_" + "b" * 32,
+        }
+        expanded = {"line": "2", "person_image_data": "data:image/png;base64,AAAA",
+                    "clothes_data": "data:image/png;base64,BBBB"}
+        with mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(cli_uploads, "expand_role_media_payload", return_value=expanded), \
+                mock.patch.object(video, "validate_tryon_payload", return_value=expanded):
+            status, result = self._post(
+                "/api/gen/cli/quote", {"kind": "tryon", "payload": request})
+        self.assertEqual((200, 24), (status, result["cost"]))
+
+    def test_tryon_submit_expands_private_roles_before_security_and_cost_gate(self):
+        request = {
+            "line": "2", "person_image_upload_id": "img_" + "a" * 32,
+            "clothes_upload_id": "img_" + "b" * 32,
+        }
+        expanded = {"line": "2", "person_image_data": "data:image/png;base64,AAAA",
+                    "clothes_data": "data:image/png;base64,BBBB", "seconds": 6}
+        checked = []
+        with mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(core, "HANDLERS", {"tryon": lambda payload: payload}), \
+                mock.patch.object(cli_uploads, "expand_role_media_payload", return_value=expanded) as expand, \
+                mock.patch.object(video, "validate_tryon_payload", return_value=expanded), \
+                mock.patch.object(core.miniprogram_security, "check_payload", side_effect=checked.append):
+            status, result = self._post("/api/gen/tryon", request, expected=25)
+        self.assertEqual((409, "quote_cost_changed"), (status, result["code"]))
+        expand.assert_called_once_with(request, "alice")
+        self.assertEqual([expanded], checked)
+        self.assertEqual([], self.points.deductions)
+
 
 if __name__ == "__main__":
     unittest.main()
