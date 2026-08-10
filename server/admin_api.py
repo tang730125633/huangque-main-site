@@ -991,17 +991,18 @@ def _e2e_payload(operation_id, runner, ready_avatar_ids=None, ready_audio_voice_
             "voice": ready_audio_voice_key,
             "provider": "pixelle", "source_page": "text-video",
         })
-    elif operation_id.startswith(("image.", "canvas.image.")):
+    elif operation_id.startswith(("image.", "canvas.image.")) or operation_id == "script.output.image":
         parts = operation_id.split(".")
         canvas_image = parts[0] == "canvas"
+        script_image = operation_id == "script.output.image"
         provider_index = 2 if canvas_image else 1
         payload.update({
             "prompt": prompt, "ratio": str(prefill.get("ratio") or "1:1"),
             "quality": str(prefill.get("quality") or "std"),
             "count": int(prefill.get("count") or 1),
-            "source_page": "canvas" if canvas_image else "banana",
+            "source_page": "script" if script_image else ("canvas" if canvas_image else "banana"),
         })
-        provider = parts[provider_index]
+        provider = "openai" if script_image else parts[provider_index]
         payload["provider"] = provider
         if provider == "banana":
             payload["model"] = parts[provider_index + 1]
@@ -1324,7 +1325,7 @@ def _e2e_parameters(operation_id, payload):
             "素材风格：%s" % payload.get("style"),
             "公共中文音色：已准备",
         ])
-    elif operation_id.startswith(("image.", "canvas.image.")):
+    elif operation_id.startswith(("image.", "canvas.image.")) or operation_id == "script.output.image":
         provider = payload.get("provider")
         provider_label = {
             "banana": "纳米香蕉", "openai": "黄雀引擎 2",

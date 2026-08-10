@@ -1070,7 +1070,7 @@ SCRIPT_FUNCTIONS = [
                 "task_match": {"kind": "image", "source_page": "script"},
                 "price_keys": ["image.openai.std"],
                 "smoke_inputs": ["已生成分镜", "分镜画面描述"],
-                "validation": _validation(supported=False, blocked_reason="尚未准备编导分镜转图片测试包"),
+                "validation": _image_validation(),
             },
         ],
     },
