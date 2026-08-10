@@ -1580,6 +1580,8 @@ class H(BaseHTTPRequestHandler):
         audio_domain, points_domain, video_domain = _domains()
         if cli_gateway.handle_image_upload(
                 self, p, verify, _must_change_password, AUTH_INTERNAL_TOKEN): return
+        if cli_gateway.handle_video_upload(
+                self, p, verify, _must_change_password, AUTH_INTERNAL_TOKEN): return
         if cli_gateway.handle_quote(
                 self, p, verify, _must_change_password, is_shutting_down,
                 feature_flags, points_domain, audio_domain, video_domain,
@@ -2573,15 +2575,23 @@ class H(BaseHTTPRequestHandler):
             try:
                 feature_flags.require_enabled("video")
                 request_body = self._json_body_strict()
+                miniprogram_security.check_payload(request_body)
                 payloads = video_domain.validate_video_batch_payload(
                     request_body, user["username"], min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS))
                 idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
             except feature_flags.FeatureDisabled as e:
                 return self._send(503, {"detail": str(e)})
+            except miniprogram_security.ContentRejected as e:
+                return self._send(400, {"detail": str(e), "code": "content_rejected"})
+            except miniprogram_security.SecurityUnavailable as e:
+                return self._send(503, {"detail": str(e), "code": "content_security_unavailable",
+                                        "retry_after_ms": 5000})
             except ValueError as e:
                 return self._send(400, {"detail": str(e)[:220]})
             costs = [points_domain.cost_of("video", body) for body in payloads]
             total = sum(costs)
+            if cli_gateway.reject_changed_cost(self, total, AUTH_INTERNAL_TOKEN):
+                return
             with _submission_lock:
                 idem_state, idem_response = _idempotency_begin(user["username"], p, idem_key, request_body)
                 if idem_state == "replay":
@@ -2677,6 +2687,8 @@ class H(BaseHTTPRequestHandler):
                     if not idem_key: raise ValueError("关键帧提交必须提供 Idempotency-Key")
                 elif kind in {"image", "xiaole_video", "sora_video"}:
                     body = cli_uploads.expand_image_payload(body, user["username"])
+                elif kind in {"tryon", "cinematic"}:
+                    body = cli_uploads.expand_role_media_payload(body, user["username"])
                 if kind == "avatar":
                     body = video_domain.validate_avatar_payload(body)
                     _short_drama_domain().validate_avatar_binding_submission(

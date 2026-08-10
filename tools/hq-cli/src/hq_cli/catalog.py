@@ -314,6 +314,19 @@ CAPABILITIES["image-upload"] = _upload(
 CAPABILITIES["image-upload"]["next_actions"] = [
     "把返回的 upload_id 写入 image-generate 的 image_upload_id、mask_upload_id 或 reference_upload_ids。",
 ]
+CAPABILITIES["video-upload"] = _upload(
+    "video-upload", "上传生成参考视频",
+    "把一个本地 MP4、MOV 或 WebM 流式上传为本人短期私有 upload_id；不扣点，不返回公开素材地址。",
+    "assets:upload",
+)
+CAPABILITIES["video-upload"]["file_input"] = {
+    "argument": "--file", "path": "absolute", "maxBytes": 32 * 1024 * 1024,
+    "mimeTypes": ["video/mp4", "video/quicktime", "video/webm"],
+    "accountActiveMaxFiles": 6, "accountActiveMaxBytes": 96 * 1024 * 1024,
+}
+CAPABILITIES["video-upload"]["next_actions"] = [
+    "把返回的 upload_id 写入电影化身或经典换装动作的 reference_video_upload_ids / person_video_upload_id。",
+]
 ASSET_MARK_FIELDS = {
     "kind": {"type": "string", "enum": ["image", "audio", "video", "avatar", "copy", "collect", "leads", "breakdown"]},
     "key": {"type": "string", "minLength": 1, "maxLength": 500},
@@ -413,10 +426,99 @@ AUDIO_FIELDS = {
     "volume": {"type": "integer", "minimum": -50, "maximum": 100},
 }
 
+AVATAR_ID = {
+    "type": "integer", "minimum": 1, "maximum": 9223372036854775807,
+    "description": "当前账号已有且已就绪的数字人形象 ID",
+}
+IMAGE_UPLOAD_ID = {"type": "string", "minLength": 36, "maxLength": 36}
+VIDEO_UPLOAD_ID = {"type": "string", "minLength": 36, "maxLength": 36}
+TALKING_VIDEO_FIELDS = {
+    "ratio": {"type": "string", "enum": ["9:16", "16:9", "1:1", "4:5", "5:4"]},
+    "motion": {"type": "string", "enum": ["low", "medium", "high"]},
+    "subtitle": {"type": "boolean"},
+    "subtitle_style": {"type": "string", "enum": ["white", "variety", "bar"]},
+    "subtitle_position": {"type": "string", "enum": ["top", "upper", "center", "lower", "bottom"]},
+}
+DIGITAL_IP_TEXT_FIELDS = {
+    "avatar_id": AVATAR_ID,
+    "text": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "voice": {"type": "string", "minLength": 1, "maxLength": 128},
+    **TALKING_VIDEO_FIELDS,
+}
+DIGITAL_IP_AUDIO_FIELDS = {
+    "avatar_id": AVATAR_ID,
+    "audio_file": {
+        "type": "string", "minLength": 1, "maxLength": 512,
+        "description": "从当前账号资产结果取得的 audio_file；不是 URL 或本机路径",
+    },
+    **TALKING_VIDEO_FIELDS,
+}
+DIGITAL_IP_BATCH_FIELDS = {
+    "avatars": {
+        "type": "array", "minItems": 2, "maxItems": 5,
+        "items": _schema({
+            "avatar_id": AVATAR_ID,
+            "label": {"type": "string", "minLength": 1, "maxLength": 60},
+        }, ["avatar_id"]),
+    },
+    "text": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "voice": {"type": "string", "minLength": 1, "maxLength": 128},
+    **TALKING_VIDEO_FIELDS,
+}
+CINEMATIC_OPEN_FIELDS = {
+    "avatar_id": AVATAR_ID,
+    "avatar_ids": {
+        "type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": True,
+        "items": AVATAR_ID,
+    },
+    "prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
+    "ratio": {"type": "string", "enum": ["9:16", "16:9", "1:1"]},
+    "duration": {"type": "integer", "minimum": 4, "maximum": 15},
+    "enhance_prompt": {"type": "boolean"},
+    "reference_image_upload_ids": {
+        "type": "array", "minItems": 1, "maxItems": 8, "items": IMAGE_UPLOAD_ID,
+    },
+    "reference_video_upload_ids": {
+        "type": "array", "minItems": 1, "maxItems": 3, "items": VIDEO_UPLOAD_ID,
+    },
+}
+CINEMATIC_MOTION_FIELDS = {
+    "avatar_id": AVATAR_ID,
+    "reference_video_upload_ids": {
+        "type": "array", "minItems": 1, "maxItems": 1, "items": VIDEO_UPLOAD_ID,
+    },
+    "ratio": {"type": "string", "enum": ["9:16", "16:9", "1:1"]},
+}
+TRYON_FAST_FIELDS = {
+    "person_image_upload_id": IMAGE_UPLOAD_ID,
+    "clothes_upload_id": IMAGE_UPLOAD_ID,
+    "seconds": {"type": "integer", "minimum": 5, "maximum": 15},
+}
+TRYON_CLASSIC_FIELDS = {
+    "person_video_upload_id": VIDEO_UPLOAD_ID,
+    "clothes_upload_id": IMAGE_UPLOAD_ID,
+    "background_upload_id": IMAGE_UPLOAD_ID,
+    "seconds": {"type": "integer", "minimum": 1, "maximum": 6},
+}
+
 for identifier, name, fields, required in (
     ("image-generate", "图片生成", IMAGE_FIELDS, ["prompt"]),
     ("video-generate", "视频生成", VIDEO_FIELDS, ["prompt"]),
     ("audio-generate", "音频生成", AUDIO_FIELDS, ["text"]),
+    ("digital-ip-text-generate", "数字IP单条文案生成", DIGITAL_IP_TEXT_FIELDS,
+     ["avatar_id", "text", "voice"]),
+    ("digital-ip-audio-generate", "数字IP本人资产音频生成", DIGITAL_IP_AUDIO_FIELDS,
+     ["avatar_id", "audio_file"]),
+    ("digital-ip-batch-generate", "数字IP批量文案生成", DIGITAL_IP_BATCH_FIELDS,
+     ["avatars", "text", "voice"]),
+    ("cinematic-open-generate", "电影化身开放式生成", CINEMATIC_OPEN_FIELDS,
+     ["prompt"]),
+    ("cinematic-motion-generate", "电影化身动作模仿", CINEMATIC_MOTION_FIELDS,
+     ["avatar_id", "reference_video_upload_ids"]),
+    ("tryon-fast-generate", "快速换装", TRYON_FAST_FIELDS,
+     ["person_image_upload_id", "clothes_upload_id"]),
+    ("tryon-classic-generate", "经典换装", TRYON_CLASSIC_FIELDS,
+     ["person_video_upload_id"]),
 ):
     CAPABILITIES[identifier] = _api(
         identifier, name, identifier,
@@ -424,6 +526,13 @@ for identifier, name, fields, required in (
         fields, required, "generation:quote", "paid", True,
         {"kind": "server_quote", "unit": "points", "confirmation": "quote_token + --confirm"},
     )
+
+CAPABILITIES["cinematic-open-generate"]["input_schema"]["oneOf"] = [
+    {"required": ["avatar_id"]}, {"required": ["avatar_ids"]},
+]
+CAPABILITIES["tryon-classic-generate"]["input_schema"]["anyOf"] = [
+    {"required": ["clothes_upload_id"]}, {"required": ["background_upload_id"]},
+]
 
 CAPABILITIES["image-generate"]["constraints"] = [
     "image_upload_id and reference_upload_ids are mutually exclusive",
@@ -438,13 +547,59 @@ CAPABILITIES["video-generate"]["constraints"] = [
     "channel=sora does not accept duration or generate_audio; seconds is only for sora",
     "@图片N references the Nth item in reference_upload_ids",
 ]
+CAPABILITIES["digital-ip-text-generate"]["constraints"] = [
+    "avatar_id must identify a ready avatar owned by the current account",
+    "this capability submits exactly one avatar and one script; batch input is not accepted",
+    "output resolution is fixed by the main site at 1080p",
+]
+CAPABILITIES["digital-ip-audio-generate"]["constraints"] = [
+    "avatar_id must identify a ready avatar owned by the current account",
+    "audio_file must be copied from the current account's assets result and must be mp3|wav|m4a",
+    "URLs, local paths, audio uploads, and base64 audio are not accepted",
+    "output resolution is fixed by the main site at 1080p",
+]
+CAPABILITIES["digital-ip-batch-generate"]["constraints"] = [
+    "avatars must contain 2-5 distinct ready avatar_id values owned by the current account",
+    "each avatar item may include a 1-60 character label",
+    "all avatars share the same text, voice, ratio, motion, and subtitle settings",
+    "output resolution is fixed by the main site at 1080p",
+]
+CAPABILITIES["cinematic-open-generate"]["constraints"] = [
+    "provide either avatar_id or 1-3 distinct avatar_ids owned by the current account, never both",
+    "reference_image_upload_ids accepts 1-8 private image uploads when present",
+    "reference_video_upload_ids accepts 1-3 private video uploads when present",
+    "duration defaults to 10 seconds and is limited to 4-15 seconds",
+    "output resolution is fixed by the main site at 720p",
+]
+CAPABILITIES["cinematic-motion-generate"]["constraints"] = [
+    "avatar_id must identify one ready cinematic avatar owned by the current account",
+    "reference_video_upload_ids must contain exactly one private video upload",
+    "output resolution is fixed by the main site at 720p",
+]
+CAPABILITIES["tryon-fast-generate"]["constraints"] = [
+    "person_image_upload_id and clothes_upload_id must be private image uploads owned by the current account",
+    "seconds defaults to 6 and is limited to 5-15 seconds",
+]
+CAPABILITIES["tryon-classic-generate"]["constraints"] = [
+    "person_video_upload_id must be one private video upload owned by the current account",
+    "provide clothes_upload_id, background_upload_id, or both",
+    "seconds defaults to 6 and is limited to 1-6 seconds",
+]
 
 for identifier, website_modes in {
     "image": ["banana", "openai", "seedream", "xiaole"],
     "image-upload": ["banana", "openai", "seedream", "xiaole"],
+    "video-upload": ["cinematic", "tryon"],
     "image-generate": ["banana", "openai", "seedream", "xiaole"],
     "video": ["one_click", "digital_ip", "cinematic", "tryon", "grok", "sora", "minimax", "omni", "seedance"],
     "video-generate": ["grok", "sora", "minimax", "omni", "seedance"],
+    "digital-ip-text-generate": ["digital_ip"],
+    "digital-ip-audio-generate": ["digital_ip"],
+    "digital-ip-batch-generate": ["digital_ip"],
+    "cinematic-open-generate": ["cinematic"],
+    "cinematic-motion-generate": ["cinematic"],
+    "tryon-fast-generate": ["tryon"],
+    "tryon-classic-generate": ["tryon"],
     "audio": ["tts"], "voices": ["tts"], "audio-generate": ["tts"],
     "one-click-video": ["one_click"],
     "video-compose-projects": ["one_click"], "video-compose-project": ["one_click"],

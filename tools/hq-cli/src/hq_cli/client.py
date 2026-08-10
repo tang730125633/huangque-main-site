@@ -24,7 +24,9 @@ ALLOWED_PATHS = {
 }
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_VIDEO_UPLOAD_BYTES = 32 * 1024 * 1024
 IMAGE_UPLOAD_PATH = "/api/auth/cli/image-upload"
+VIDEO_UPLOAD_PATH = "/api/auth/cli/video-upload"
 
 
 class NetworkError(Exception):
@@ -75,7 +77,15 @@ def _image_mime(header):
     return ""
 
 
-def _open_image(path):
+def _video_mime(header):
+    if header.startswith(b"\x1aE\xdf\xa3"):
+        return "video/webm"
+    if len(header) >= 12 and header[4:8] == b"ftyp":
+        return "video/quicktime" if header[8:12] == b"qt  " else "video/mp4"
+    return ""
+
+
+def _open_media(path, max_bytes, mime_detector, size_error, type_error):
     if not isinstance(path, str) or not os.path.isabs(path):
         raise ValueError("--file must be an absolute path")
     parts = Path(path).parts
@@ -112,12 +122,12 @@ def _open_image(path):
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
             raise ValueError("upload file must be a regular file")
-        if not 0 < before.st_size <= MAX_IMAGE_UPLOAD_BYTES:
-            raise ValueError("upload image must be between 1 byte and 10 MiB")
-        header = os.read(descriptor, 16)
-        mime = _image_mime(header)
+        if not 0 < before.st_size <= max_bytes:
+            raise ValueError(size_error)
+        header = os.read(descriptor, 32)
+        mime = mime_detector(header)
         if not mime:
-            raise ValueError("upload file must be PNG, JPG, or WebP")
+            raise ValueError(type_error)
         os.lseek(descriptor, 0, os.SEEK_SET)
         digest = hashlib.sha256()
         remaining = before.st_size
@@ -138,21 +148,39 @@ def _open_image(path):
         raise
 
 
-def upload_image(path, token, timeout=120):
+def _open_image(path):
+    return _open_media(
+        path, MAX_IMAGE_UPLOAD_BYTES, _image_mime,
+        "upload image must be between 1 byte and 10 MiB",
+        "upload file must be PNG, JPG, or WebP",
+    )
+
+
+def _open_video(path):
+    return _open_media(
+        path, MAX_VIDEO_UPLOAD_BYTES, _video_mime,
+        "upload video must be between 1 byte and 32 MiB",
+        "upload file must be MP4, MOV, or WebM",
+    )
+
+
+def _upload_media(path, token, upload_path, digest_header, opener, timeout):
     if not isinstance(token, str) or not token:
         raise ValueError("missing access token")
-    descriptor, file_stat, mime, digest = _open_image(path)
+    if upload_path not in {IMAGE_UPLOAD_PATH, VIDEO_UPLOAD_PATH}:
+        raise ValueError("HQ CLI only uploads to fixed main-site endpoints")
+    descriptor, file_stat, mime, digest = opener(path)
     target = urllib.parse.urlsplit(API_BASE)
     if target.scheme != "https" or target.hostname != "huangquechuanmei.com" or target.path not in {"", "/"}:
         os.close(descriptor)
         raise ValueError("HQ CLI only uploads to the fixed main-site origin")
     connection = http.client.HTTPSConnection(target.hostname, target.port or 443, timeout=timeout)
     try:
-        connection.putrequest("POST", IMAGE_UPLOAD_PATH, skip_accept_encoding=True)
+        connection.putrequest("POST", upload_path, skip_accept_encoding=True)
         connection.putheader("Authorization", "Bearer " + token)
         connection.putheader("Content-Type", mime)
         connection.putheader("Content-Length", str(file_stat.st_size))
-        connection.putheader("X-HQ-Image-SHA256", digest)
+        connection.putheader(digest_header, digest)
         connection.putheader("X-HQ-Confirm", "true")
         connection.putheader("Accept", "application/json")
         connection.putheader("User-Agent", "hq-cli/%s" % __version__)
@@ -186,6 +214,18 @@ def upload_image(path, token, timeout=120):
     if 200 <= int(status) < 300 and payload.get("sha256") != digest:
         raise NetworkError("server upload digest mismatch")
     return int(status), payload
+
+
+def upload_image(path, token, timeout=120):
+    return _upload_media(
+        path, token, IMAGE_UPLOAD_PATH, "X-HQ-Image-SHA256", _open_image, timeout,
+    )
+
+
+def upload_video(path, token, timeout=120):
+    return _upload_media(
+        path, token, VIDEO_UPLOAD_PATH, "X-HQ-Video-SHA256", _open_video, timeout,
+    )
 
 
 def credentials_path():
