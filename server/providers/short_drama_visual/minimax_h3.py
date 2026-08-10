@@ -7,6 +7,15 @@ import urllib.parse
 from .base import ShotVisualCapability, ShotVisualProvider, VisualProviderError
 
 
+MINIMAX_RESULT_HOSTS = {
+    "cdn.hailuoai.com",
+    "cdn.minimax.chat",
+    "file.cdn.minimax.io",
+    "filecdn.minimax.chat",
+}
+MINIMAX_RESULT_MAX_BYTES = 250 * 1024 * 1024
+
+
 class MiniMaxH3ShotProvider(ShotVisualProvider):
     name = "minimax_h3"
     default_model = "MiniMax-H3"
@@ -110,9 +119,18 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
                 "visual_reference_invalid",
                 "角色标准图不是有效的 JPG、PNG 或 WebP 图片",
             )
-        return "data:%s;base64,%s" % (
+        value = "data:%s;base64,%s" % (
             mime, base64.b64encode(raw).decode("ascii")
         )
+        try:
+            from content_domains.video_minimax_h3 import _image_item
+
+            return _image_item(value)["image_url"]["url"]
+        except ValueError as error:
+            raise VisualProviderError(
+                "visual_reference_invalid",
+                "角色标准图损坏、格式不符或尺寸不在 256～5760 像素范围内",
+            ) from error
 
     def validate_request(self, request):
         if not isinstance(request, dict):
@@ -250,7 +268,10 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
 
         try:
             relative = video._download_video_file_direct(
-                result_url, prefix="short_drama_minimax_h3"
+                result_url,
+                prefix="short_drama_minimax_h3",
+                allowed_hosts=MINIMAX_RESULT_HOSTS,
+                max_bytes=MINIMAX_RESULT_MAX_BYTES,
             )
         except Exception as error:
             raise VisualProviderError(

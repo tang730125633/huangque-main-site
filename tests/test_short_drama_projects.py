@@ -1,4 +1,5 @@
 import base64
+import io
 import json
 import os
 import sqlite3
@@ -2164,6 +2165,56 @@ class ShortDramaRouteTests(unittest.TestCase):
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.base = "http://127.0.0.1:%d" % self.server.server_address[1]
+
+    def test_character_reference_json_reader_rejects_unbounded_bodies(self):
+        class RecordingBody(io.BytesIO):
+            def __init__(self, value):
+                super().__init__(value)
+                self.read_sizes = []
+
+            def read(self, size=-1):
+                self.read_sizes.append(size)
+                return super().read(size)
+
+        limit = 15 * 1024 * 1024
+        for content_length in (None, "invalid", str(limit + 1)):
+            with self.subTest(content_length=content_length):
+                body = RecordingBody(b"{}")
+                handler = type("Handler", (), {
+                    "headers": {} if content_length is None else {
+                        "Content-Length": content_length
+                    },
+                    "rfile": body,
+                })()
+                with self.assertRaises(ValueError):
+                    core.H._json_body_strict(handler, max_bytes=limit)
+                self.assertFalse(body.read_sizes)
+
+        body = RecordingBody(b"{}")
+        handler = type("Handler", (), {
+            "headers": {"Content-Length": "2"},
+            "rfile": body,
+        })()
+        self.assertEqual({}, core.H._json_body_strict(handler, max_bytes=limit))
+        self.assertEqual([2], body.read_sizes)
+
+    def test_character_reference_validation_errors_match_openapi_statuses(self):
+        class Handler:
+            def __init__(self):
+                self.sent = None
+
+            def _send(self, status, payload):
+                self.sent = (status, payload)
+
+        for error, expected in (
+            (short_drama_reference_validation.ReferenceIneligible("请上传人物图"), 422),
+            (short_drama_reference_validation.ReferenceValidationUnavailable("检测不可用"), 503),
+        ):
+            with self.subTest(status=expected):
+                handler = Handler()
+                short_drama._http_error(handler, error, operation_terminal=True)
+                self.assertEqual(expected, handler.sent[0])
+                self.assertTrue(handler.sent[1]["operation_terminal"])
 
     def tearDown(self):
         self.server.shutdown()

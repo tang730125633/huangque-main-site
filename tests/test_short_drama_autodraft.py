@@ -361,6 +361,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             conn.close()
 
         with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_DEMO_FALLBACK": "0",
             "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "grok",
             "HQ_SHORT_DRAMA_GROK_MODEL": "grok-imagine-video-1.5",
         }), mock.patch.object(
@@ -433,6 +434,45 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                 avatar_lookup=lambda _username, _avatar_id: avatar,
             )
             self.assertEqual(155, repriced["cost"])
+
+    def test_minimax_short_legal_shots_are_submitted_at_provider_minimum(self):
+        self._lock_project_character_references()
+        conn = self.db()
+        try:
+            row = conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()
+            plan = json.loads(row[0])
+            shot = plan["material_plan"][0]
+            shot["duration_ms"] = 2000
+            shot["input_hash"] = short_drama_autodraft._hash(shot)
+            conn.execute(
+                "UPDATE short_drama_production_plans SET plan_json=? WHERE id=?",
+                (json.dumps(plan, ensure_ascii=False), self.plan_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_DEMO_FALLBACK": "0",
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(provider_keys, "has_candidate", return_value=True):
+            workspace = short_drama_autodraft.workspace(
+                self.db, "alice", "alice", self.project["id"]
+            )
+            target = next(
+                item for item in workspace["provider_poc"]["shots"]
+                if item["shot_key"] == shot["shot_key"]
+            )
+            preview = short_drama_autodraft.preview_provider_request(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "plan_id": self.plan_id,
+                    "shot_key": target["shot_key"],
+                },
+            )
+        self.assertEqual(4, preview["request"]["duration_seconds"])
 
     def test_confirmed_plan_starts_free_local_pollable_job(self):
         job = self._start()
@@ -1436,10 +1476,12 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertFalse(result["error"]["retryable"])
         self.assertTrue(result["error"]["requires_reconciliation"])
 
-    def test_single_shot_pending_deadline_fails_and_refunds_once(self):
+    def test_non_cancelable_shot_deadline_stays_reconcilable_without_refund(self):
         class PendingProvider:
             def __init__(self):
                 self.polls = 0
+
+            capability = type("Capability", (), {"supports_cancel": False})()
 
             def get_job(self, _provider_job_id):
                 self.polls += 1
@@ -1480,21 +1522,13 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                     refund_points=refund,
                 )
         self.assertEqual("running", running["status"])
-        self.assertEqual("failed", failed["status"])
-        self.assertEqual("provider_generation_timeout", failed["error"]["code"])
+        self.assertEqual("running", failed["status"])
+        self.assertEqual("provider_reconciliation_pending", failed["error"]["code"])
         self.assertEqual("deadline", failed["error"]["timeout_reason"])
-        self.assertEqual("failed", replay["status"])
-        self.assertEqual(1, provider.polls)
-        self.assertEqual(1, len(refunds))
-        self.assertEqual(quote["cost"], refunds[0][1])
-        late_provider = mock.Mock()
-        short_drama_autodraft._finish_provider_job(
-            self.db,
-            {"id": job["id"], "provider_job_id": "provider-timeout-job"},
-            late_provider,
-            {"status": "completed", "result_url": "https://late.example/video"},
-        )
-        late_provider.fetch_result.assert_not_called()
+        self.assertEqual("running", replay["status"])
+        self.assertGreaterEqual(provider.polls, 2)
+        self.assertEqual([], refunds)
+        self.assertEqual("provider-timeout-job", failed["provider_job_id"])
         conn = self.db()
         try:
             state = conn.execute(
@@ -1503,12 +1537,14 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             ).fetchone()[0]
         finally:
             conn.close()
-        self.assertEqual("refunded", state)
+        self.assertEqual("linked", state)
 
-    def test_single_shot_poll_failures_hit_limit_and_refund(self):
+    def test_non_cancelable_shot_poll_failures_do_not_refund(self):
         class FailingProvider:
             def __init__(self):
                 self.polls = 0
+
+            capability = type("Capability", (), {"supports_cancel": False})()
 
             def get_job(self, _provider_job_id):
                 self.polls += 1
@@ -1541,13 +1577,13 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                 ),
             )
         self.assertEqual("running", running["status"])
-        self.assertEqual("failed", failed["status"])
+        self.assertEqual("running", failed["status"])
         self.assertEqual("poll_limit", failed["error"]["timeout_reason"])
         self.assertEqual(2, failed["error"]["poll_count"])
         self.assertEqual(2, provider.polls)
-        self.assertEqual([(quote["cost"],)], [(item[1],) for item in refunds])
+        self.assertEqual([], refunds)
 
-    def test_single_shot_timeout_refund_recovers_idempotently(self):
+    def test_non_cancelable_timeout_never_calls_refund_recovery(self):
         job, quote = self._running_provider_job("timeout-refund-recovery")
         calls = []
 
@@ -1574,20 +1610,23 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                 self.db, "alice", self.project["id"], job["id"],
                 refund_points=flaky_refund,
             )
-        self.assertEqual("failed", failed["status"])
-        self.assertEqual("failed", recovered["status"])
-        self.assertEqual(2, len(calls))
-        self.assertEqual(quote["cost"], calls[-1][1])
-        self.assertEqual(calls[0][3], calls[1][3])
-        conn = self.db()
-        try:
-            state = conn.execute(
-                "SELECT state FROM short_drama_provider_shot_attempts "
-                "WHERE job_id=?", (job["id"],),
-            ).fetchone()[0]
-        finally:
-            conn.close()
-        self.assertEqual("refunded", state)
+        self.assertEqual("running", failed["status"])
+        self.assertEqual("running", recovered["status"])
+        self.assertEqual([], calls)
+
+    def test_workspace_keeps_active_paid_job_after_provider_switch(self):
+        job, _quote = self._running_provider_job("provider-switch-recovery")
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_DEMO_FALLBACK": "0",
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "grok",
+            "XAI_API_KEY": "configured-for-test",
+        }), mock.patch.object(provider_keys, "has_candidate", return_value=True):
+            result = short_drama_autodraft.workspace(
+                self.db, "alice", "alice", self.project["id"]
+            )
+        self.assertEqual(job["id"], result["provider_job"]["id"])
+        self.assertEqual("heygen_cinematic", result["provider_job"]["provider"])
+        self.assertEqual("grok", result["production"]["provider"]["selected"])
 
     def test_grok_vault_failure_blocks_before_charge_and_submission(self):
         with mock.patch.dict(

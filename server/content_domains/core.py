@@ -1568,11 +1568,25 @@ class H(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length") or 0)
             return json.loads(self.rfile.read(n) or b"{}")
         except Exception: return {}
-    def _json_body_strict(self):
+    def _json_body_strict(self, max_bytes=None):
+        length_header = self.headers.get("Content-Length")
         try:
-            n = int(self.headers.get("Content-Length") or 0)
-            raw = self.rfile.read(n) or b"{}"
+            n = int(length_header or 0)
+        except (TypeError, ValueError):
+            raise ValueError("请求体不是合法 JSON")
+        if max_bytes is not None:
+            if length_header is None or n <= 0:
+                raise ValueError("请求体缺少有效的 Content-Length")
+            if n > max_bytes:
+                raise ValueError("请求体过大")
+        try:
+            read_size = n if max_bytes is None else min(n, max_bytes + 1)
+            raw = self.rfile.read(read_size) or b"{}"
+            if max_bytes is not None and len(raw) > max_bytes:
+                raise ValueError("请求体过大")
             return json.loads(raw)
+        except ValueError:
+            raise
         except Exception:
             raise ValueError("请求体不是合法 JSON")
     def do_POST(self):
@@ -1614,7 +1628,7 @@ class H(BaseHTTPRequestHandler):
             if _must_change_password(user):
                 return self._send(403, {"detail": "请先修改初始密码"})
             try:
-                request_body = self._json_body_strict()
+                request_body = self._json_body_strict(max_bytes=15 * 1024 * 1024)
                 allowed = {
                     "project_id", "revision", "character_key", "source",
                     "asset_job_id", "asset_url", "filename", "image_data",
@@ -2816,6 +2830,10 @@ class H(BaseHTTPRequestHandler):
                     body = image_domain.validate_image_payload(body)
                     if not is_still_route:
                         body.pop("short_drama_references", None)
+                    if body.get("short_drama_scene_binding"):
+                        body["short_drama_scene_binding"] = _short_drama_domain().validate_scene_image_binding(
+                            jdb, user["username"], body["short_drama_scene_binding"]
+                        )
                 elif kind == "audio":
                     body = audio_domain.validate_audio_payload(
                         body, user["username"]
@@ -2866,6 +2884,10 @@ class H(BaseHTTPRequestHandler):
                 return self._send(503, {"detail": blocked, "code": "upstream_exhausted", "retry_after_ms": 60000})
             is_short_drama = kind == "copy" and isinstance(body, dict) and body.get("format") == "short_drama"
             cost = points_domain.cost_of(kind, body) if not is_short_drama and not is_still_route else None
+            if kind == "image" and body.get("short_drama_scene_binding"):
+                _short_drama_domain().validate_scene_image_binding(
+                    jdb, user["username"], body["short_drama_scene_binding"], cost
+                )
             if kind == "canvas_agent" and body.get("quoted_cost") != cost:
                 return self._send(400, {"detail": "画布 Agent 价格已变化，请重新报价"})
             if cli_gateway.reject_changed_cost(
@@ -2873,6 +2895,13 @@ class H(BaseHTTPRequestHandler):
             staged_ref_keys, seedance_idem_reserved, seedance_early = video_domain.prepare_xiaole_reference_submission(kind, body, cost, user.get("points"), user["username"], idem_key, p, _submission_lock, lambda: _idempotency_begin(user["username"], p, idem_key, request_body), lambda: _idempotency_abort(user["username"], p, idem_key), lambda: _user_video_submit_limit(kind, body, user["username"], cost), lambda: _user_active_job_count(user["username"]), MAX_USER_ACTIVE_JOBS) if kind == "xiaole_video" else ([], False, None)
             if seedance_early: return self._send(*seedance_early)
             with _submission_lock:
+                # Recheck the project budget while submissions are serialized so
+                # concurrent scene-image requests cannot both spend the same
+                # remaining allowance.
+                if kind == "image" and body.get("short_drama_scene_binding"):
+                    _short_drama_domain().validate_scene_image_binding(
+                        jdb, user["username"], body["short_drama_scene_binding"], cost
+                    )
                 if seedance_idem_reserved and is_shutting_down(): video_domain.abort_xiaole_reference_submission(staged_ref_keys, user["username"], p, idem_key, lambda: _idempotency_abort(user["username"], p, idem_key)); return self._send(503, {"detail": "服务正在更新，请稍等几秒后重试（未扣点）", "code": "shutting_down", "retry_after_ms": 5000})
                 if (is_still_route and is_shutting_down()
                         and (not still_attempt or still_attempt.get("state") in {"accepted", "charged"})):

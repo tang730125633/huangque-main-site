@@ -676,13 +676,17 @@ def _apply_explicit_storyboard(script, project, source):
         line = lines[index] if index < len(lines) else None
         if line is not None:
             subtitle = re.search(r"(?:^|[\n；。])\s*字幕\s*[:：]\s*([^\n；。]+)", requirement["source_text"])
-            speaker_match = next((
-                (item, re.search(
-                    r"(?:^|[\n；。])\s*" + re.escape(str(item.get("name") or "")) + r"\s*[:：]\s*([^\n；。]+)",
+            speaker_match = None
+            for item in characters:
+                if not item.get("name"):
+                    continue
+                match = re.search(
+                    r"(?:^|[\n；。])\s*" + re.escape(str(item["name"])) + r"\s*[:：]\s*([^\n；。]+)",
                     requirement["source_text"],
-                )) for item in characters if item.get("name")
-            ), None)
-            speaker_match = speaker_match if speaker_match and speaker_match[1] else None
+                )
+                if match:
+                    speaker_match = (item, match)
+                    break
             if subtitle:
                 line.update({"kind": "on_screen_text", "character_key": "", "speaker": "", "text": subtitle.group(1).strip()})
             elif speaker_match:

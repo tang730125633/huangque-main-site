@@ -967,6 +967,11 @@ def preview_provider_request(
             (plan["source_script_version_id"], project_id),
         ).fetchone()
         source_script = _json(source_row["script_json"], {}) if source_row else {}
+        imported = conn.execute(
+            "SELECT source_text,character_contract_json "
+            "FROM short_drama_script_imports WHERE project_id=?",
+            (project_id,),
+        ).fetchone()
     finally:
         conn.close()
     shots = [
@@ -1054,6 +1059,14 @@ def preview_provider_request(
             required_character_keys.append(key)
     if character_key and character_key not in required_character_keys:
         required_character_keys.insert(0, character_key)
+    if imported:
+        identity_required = short_drama._character_reference_required_keys(
+            imported["source_text"], _json(imported["character_contract_json"], [])
+        )
+        required_character_keys = [
+            key for key in required_character_keys if key in identity_required
+        ]
+        character_key = required_character_keys[0] if required_character_keys else ""
 
     reference_images = []
     scene_reference = None
@@ -1208,7 +1221,11 @@ def preview_provider_request(
             "provider_avatar_not_ready", "所选电影化身缺少当前 Provider 所需的形象资产", 422
         )
     duration_ms = int(shot.get("duration_ms") or 0)
-    duration_seconds = max(1, (duration_ms + 999) // 1000)
+    requested_duration_seconds = max(1, (duration_ms + 999) // 1000)
+    duration_seconds = max(
+        requested_duration_seconds,
+        int(getattr(getattr(provider, "capability", None), "minimum_seconds", 1) or 1),
+    )
     prompt = _visual_prompt(shot)
     if scene_reference:
         prompt += (
@@ -1228,6 +1245,7 @@ def preview_provider_request(
             ).lower()
         ),
         "duration_seconds": duration_seconds,
+        "requested_duration_seconds": requested_duration_seconds,
     }
     try:
         validated = provider.validate_request(outbound)
@@ -1844,6 +1862,64 @@ def _provider_job_timeout_reason(row, now=None, next_poll=False):
 def _expire_provider_job(db_factory, job_id, reason, refund_points=None):
     """Claim a running job's timeout before issuing its idempotent refund."""
     now = int(time.time())
+    inspect_conn = _connection(db_factory)
+    try:
+        inspected = inspect_conn.execute(
+            "SELECT * FROM short_drama_provider_shot_jobs WHERE id=?",
+            (job_id,),
+        ).fetchone()
+    finally:
+        inspect_conn.close()
+    provider = load_by_name(inspected["provider"]) if inspected else None
+    supports_cancel = bool(
+        provider
+        and getattr(getattr(provider, "capability", None), "supports_cancel", False)
+    )
+    if inspected and inspected["status"] == "running" and inspected["provider_job_id"]:
+        if not supports_cancel:
+            payload = {
+                "code": "provider_reconciliation_pending",
+                "detail": "Provider 任务仍可能在上游计费执行，已保留任务等待继续对账",
+                "retryable": True,
+                "requires_reconciliation": True,
+                "timeout_reason": reason["reason"],
+                "elapsed_seconds": int(reason["elapsed_seconds"]),
+                "poll_count": int(reason["poll_count"]),
+            }
+            conn = _connection(db_factory)
+            try:
+                conn.execute(
+                    "UPDATE short_drama_provider_shot_jobs SET error_json=?,"
+                    "updated_at=? WHERE id=? AND status='running'",
+                    (_json_text(payload), now, job_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            return False
+        try:
+            provider.cancel_job(inspected["provider_job_id"])
+        except Exception as error:
+            payload = {
+                "code": "provider_cancel_unconfirmed",
+                "detail": str(error)[:500],
+                "retryable": True,
+                "requires_reconciliation": True,
+                "timeout_reason": reason["reason"],
+                "elapsed_seconds": int(reason["elapsed_seconds"]),
+                "poll_count": int(reason["poll_count"]),
+            }
+            conn = _connection(db_factory)
+            try:
+                conn.execute(
+                    "UPDATE short_drama_provider_shot_jobs SET error_json=?,"
+                    "updated_at=? WHERE id=? AND status='running'",
+                    (_json_text(payload), now, job_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            return False
     payload = {
         "code": "provider_generation_timeout",
         "detail": "Provider 生成超过最长等待时间，任务已失败并退点",
@@ -2149,11 +2225,13 @@ def reconcile_provider_job(
     if row and row["status"] == "running":
         timeout_reason = _provider_job_timeout_reason(row)
         if timeout_reason:
-            _expire_provider_job(
+            expired = _expire_provider_job(
                 db_factory, job_id, timeout_reason,
                 refund_points=refund_points,
             )
-        else:
+            if expired:
+                row = None
+        if row is not None:
             provider = load_by_name(row["provider"])
             if provider is None:
                 return _provider_job(row)
@@ -2557,7 +2635,9 @@ def workspace(
         all_versions = _versions(conn, project_id)
         provider_job = _provider_job(conn.execute(
             "SELECT * FROM short_drama_provider_shot_jobs WHERE project_id=? "
-            "ORDER BY created_at DESC LIMIT 1",
+            "ORDER BY CASE WHEN status IN "
+            "('billing','queued','submitting','running','submit_unknown') "
+            "THEN 0 ELSE 1 END,created_at DESC LIMIT 1",
             (project_id,),
         ).fetchone())
         provider_versions = [
@@ -2583,19 +2663,9 @@ def workspace(
             ).fetchall()
         }
         capability = _production_capability()
-        selected_provider = str(
-            (capability.get("provider") or {}).get("selected") or ""
-        )
-        if provider_job and provider_job.get("provider") != selected_provider:
-            provider_job = None
-        if selected_provider:
-            provider_versions = [
-                item for item in provider_versions
-                if item.get("provider") == selected_provider
-            ]
         assembly = (
             _provider_assembly_snapshot(
-                conn, project_id, plan["plan"], selected_provider
+                conn, project_id, plan["plan"]
             )
             if plan else {
                 "required_shot_keys": [], "ready_shot_keys": [],
