@@ -785,11 +785,6 @@
       method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({display_name:name})
     }).then(function(res){
       if(!res) return;
-      if(res.status===404){
-        applyNickname(activeUser,name,true);
-        toast('昵称已保存在当前浏览器');
-        return;
-      }
       if(!res.ok||!res.data.user) throw new Error(res.data.detail||'保存昵称失败');
       applyNickname(res.data.user,name,false);
       toast('昵称已保存');
@@ -1526,24 +1521,8 @@
         }
         return;
       }
-      if(res && res.status === 404 && res.data && res.data.detail === 'not found'){
-        if(addLocalOutgoingRequest(accountId)){
-          setFriendStatus('好友申请已发送','ok');
-          toast('好友申请已发送到本地预览');
-        }else{
-          setFriendStatus('请勿重复申请','warn');
-          toast('请勿重复申请');
-        }
-        return;
-      }
       if(res && !res.ok) throw new Error(res.data.detail || '发送好友申请失败');
-      if(addLocalOutgoingRequest(accountId)){
-        setFriendStatus('好友申请已发送','ok');
-        toast('好友申请已发送到本地预览');
-      }else{
-        setFriendStatus('请勿重复申请','warn');
-        toast('请勿重复申请');
-      }
+      throw new Error('好友服务没有返回有效结果');
     }).catch(function(err){
       setFriendStatus(err.message || '发送好友申请失败','warn');
       toast(err.message || '发送好友申请失败');
