@@ -1056,6 +1056,8 @@ test('character reference picker supports assets uploads and AI generation', asy
   assert.doesNotMatch(centerScript, /data-reference-picker-content/);
   assert.match(centerScript, /className='short-drama-upload-confirm'/);
   assert.match(centerScript, /aria-label="确认本地上传图片"/);
+  assert.match(centerScript, /loading="lazy" decoding="async"/);
+  assert.match(centerScript, /if\(focusedAssetKey\).*restoredFocus\.focus\(\)/);
   assert.match(centerStyle, /\.short-drama-asset-library\{position:fixed;inset:0/);
   assert.match(centerStyle, /\.short-drama-asset-library-box\{/);
   assert.match(centerStyle, /\.short-drama-upload-confirm-box\{/);
@@ -1084,6 +1086,45 @@ test('asset search keeps pagination available until all pages are searched', () 
   );
   assert.equal(exhausted.canLoadMore, false);
   assert.match(exhausted.emptyMessage, /没有找到/);
+});
+
+test('slow live action story confirmation uses one frozen snapshot and ignores stale UI results', async () => {
+  const deferred = () => {
+    let resolve, reject;
+    const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+    return {promise, resolve, reject};
+  };
+  const projectRequest = deferred(), confirmationRequest = deferred();
+  const mutableSnapshot = {
+    source:'old script',
+    core_story:{title:'Old story', logline:'old conflict'},
+    import_payload:{source_text:'old script'},
+  };
+  let current = true, confirmedStory = null, applied = 0;
+  const pending = center.runLiveActionStorySubmission(mutableSnapshot, {
+    ensureProject(snapshot){
+      assert.equal(snapshot.source, 'old script');
+      return projectRequest.promise;
+    },
+    isCurrent(){ return current; },
+    confirm(_project, story){
+      confirmedStory = story;
+      return confirmationRequest.promise;
+    },
+    apply(){ applied += 1; },
+  });
+
+  mutableSnapshot.source = 'new script';
+  mutableSnapshot.core_story.title = 'New story';
+  mutableSnapshot.import_payload.source_text = 'new script';
+  projectRequest.resolve({id:'draft-1', revision:1});
+  await Promise.resolve();
+  assert.deepEqual(confirmedStory, {title:'Old story', logline:'old conflict'});
+
+  current = false;
+  confirmationRequest.resolve({id:'draft-1', revision:2});
+  assert.deepEqual(await pending, {stale:true});
+  assert.equal(applied, 0);
 });
 
 test('reference modals trap Tab focus and close only themselves on Escape', () => {
@@ -1122,6 +1163,35 @@ test('reference modals trap Tab focus and close only themselves on Escape', () =
   assert.equal(closed, 1);
   assert.equal(escape.prevented, true);
   assert.equal(escape.stopped, true);
+});
+
+test('reference request blocks modal dismissal and keeps deferred failures visible', async () => {
+  let rejectRequest;
+  const request = new Promise((_resolve, reject) => { rejectRequest = reject; });
+  let busy = true, connected = true, blocked = '', persistentError = '';
+  const handled = request.catch(error => {
+    persistentError = center.liveActionReferenceFailureMessage(error);
+  }).finally(() => { busy = false; });
+
+  const dismissedWhileBusy = center.dismissLiveActionReferencePicker(
+    busy,
+    message => { blocked = message; },
+    () => { connected = false; }
+  );
+  assert.equal(dismissedWhileBusy, false);
+  assert.equal(connected, true);
+  assert.match(blocked, /正在处理标准图/);
+
+  rejectRequest(new Error('人物检测超时'));
+  await handled;
+  assert.equal(connected, true);
+  assert.match(persistentError, /人物检测超时/);
+
+  assert.equal(center.dismissLiveActionReferencePicker(
+    busy, () => {}, () => { connected = false; }
+  ), true);
+  assert.equal(connected, false);
+  assert.match(centerScript, /showLiveActionError\(persistentMessage,true,\{autoHide:0\}\)/);
 });
 
 test('generated character reference requires explicit confirmation before locking', async () => {

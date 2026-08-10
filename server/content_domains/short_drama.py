@@ -1938,7 +1938,10 @@ def _validate_import_character_contract(value):
                 _REQUIRED_CHARACTER_REFERENCE_VIEWS,
                 _LEGACY_CHARACTER_REFERENCE_VIEWS,
         }:
-            raise ScriptImportError("invalid_reference_views", "角色卡必须包含正面、侧面和背面全身图")
+            raise ScriptImportError(
+                "invalid_reference_views",
+                "角色卡必须使用正面、侧面和背面全身图；兼容期也接受正面、侧面全身加正面半身图",
+            )
         clean["reference_views"] = list(view_contract)
         keys.add(key)
         names.add(name.casefold())

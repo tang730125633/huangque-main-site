@@ -94,6 +94,30 @@
     if(!event.shiftKey&&(active===last||!modal.contains(active))){event.preventDefault();first.focus();return true;}
     return false;
   }
+  function runLiveActionStorySubmission(snapshot,operations){
+    operations=operations||{};
+    var frozen=JSON.parse(JSON.stringify(snapshot||{}));
+    return Promise.resolve(operations.ensureProject(frozen)).then(function(project){
+      if(!operations.isCurrent())return {stale:true};
+      return Promise.resolve(operations.confirm(project,frozen.core_story)).then(function(confirmed){
+        if(!operations.isCurrent())return {stale:true};
+        if(typeof operations.apply==='function')operations.apply(confirmed,frozen);
+        return {stale:false,project:confirmed};
+      });
+    });
+  }
+  function dismissLiveActionReferencePicker(busy,onBlocked,onClose){
+    if(busy){
+      if(typeof onBlocked==='function')onBlocked('正在处理标准图，请等待完成后再关闭。');
+      return false;
+    }
+    if(typeof onClose==='function')onClose();
+    return true;
+  }
+  function liveActionReferenceFailureMessage(error){
+    var message=text(error&&error.message||error)||'请稍后重试。';
+    return message==='请上传人物图'?message:'标准图设置失败：'+message;
+  }
   function liveActionProjectHasReferenceActivity(project){
     project=normalizeProject(project);
     return project.spent_points>0||project.characters.some(liveActionRoleHasReferenceActivity);
@@ -1025,7 +1049,7 @@
     var chat=doc.getElementById('shortDramaIdeaChat'),quickReplies=doc.getElementById('shortDramaIdeaQuickReplies');
     var advisorSubmit=ideaForm.querySelector('button[type="submit"]'),advisorSubmitLabel=advisorSubmit?advisorSubmit.textContent:'发送',advisorThinkingNode=null,advisorThinkingTimer=null;
     var recommendations=doc.getElementById('shortDramaRecommendations'),ideaMessages=[],selectedProjectId='',importFilename='',importAnalysis=null,pendingImportKey='';
-    var liveActionAnalysis=null,liveActionRoles=[],liveActionCoreStory={},activeLiveActionRole=0,pendingLiveActionKey='',pendingLiveActionDiscardKey='',pendingLiveActionProject=null,liveActionReferenceBusy=false,savedLiveActionRoleSignatures={},resumeLiveActionDraft=null,liveActionDraftTimer=null,liveActionNoticeTimers={setup:null,role:null,story:null},currentCreateStep='choice',liveActionReferencePreview=null,liveActionReferencePreviewTrigger=null;
+    var liveActionAnalysis=null,liveActionRoles=[],liveActionCoreStory={},activeLiveActionRole=0,pendingLiveActionKey='',pendingLiveActionDiscardKey='',pendingLiveActionProject=null,liveActionReferenceBusy=false,liveActionStoryBusy=false,liveActionStoryRequestToken=0,savedLiveActionRoleSignatures={},resumeLiveActionDraft=null,liveActionDraftTimer=null,liveActionNoticeTimers={setup:null,role:null,story:null},currentCreateStep='choice',liveActionReferencePreview=null,liveActionReferencePreviewTrigger=null;
     var createMode='idea',plannerPayload=null,selectedDirection=null,plannerPreview=null,pendingCreateKey='',plannerAnswers={},plannerMeta={},plannerDirtyFields=[],plannerHistory=[],plannerTranscript=[],plannerFeedback=[],plannerCorrectionCount=0,plannerPersistenceReady=false,activePlannerField='',activePlannerChoices={field:'',items:[]},advisorBusy=false,advisorDegraded=false,plannerPanel='auto',currentUsername='',resumePlannerDraft=null;
     var LEGACY_PLANNER_DRAFT_KEY='hq-short-drama-planner-draft-v3';
     var deleteButton=doc.getElementById('shortDramaDeleteProject');
@@ -1369,6 +1393,15 @@
       collectLiveActionCoreStory();var missing=LIVE_ACTION_CORE_STORY_FIELDS.filter(function(field){return field!=='preservation_notes'&&!text(liveActionCoreStory[field]).trim();});
       return missing.length?'请补全核心故事后再确认。':'';
     }
+    function setLiveActionStoryBusy(busy){
+      liveActionStoryBusy=!!busy;
+      coreStoryForm.querySelectorAll('input,textarea,select,button').forEach(function(node){
+        if(busy){node.setAttribute('data-story-disabled-before',node.disabled?'true':'false');node.disabled=true;}
+        else{node.disabled=node.getAttribute('data-story-disabled-before')==='true';node.removeAttribute('data-story-disabled-before');}
+      });
+      var back=doc.getElementById('shortDramaBackToRoles');
+      if(back)back.setAttribute('aria-busy',busy?'true':'false');
+    }
     function collectLiveActionRoles(){
       if(!roleList)return liveActionRoles;
       roleList.querySelectorAll('[data-role-index]').forEach(function(card){
@@ -1489,7 +1522,7 @@
         syncLiveActionReferences(project);renderLiveActionRoles();showLiveActionError('',true);scheduleLiveActionDraft();
         var status=doc.getElementById('shortDramaRoleStatus'),current=liveActionRoles[index];
         if(status&&current)status.textContent=current.name+' · 标准图已选择，请确认锁定';
-      }).catch(function(error){var message=error.message||'请稍后重试。';if(options.onError)options.onError(message);else showLiveActionError(message==='请上传人物图'?message:'标准图设置失败：'+message,true);})
+      }).catch(function(error){var message=error.message||'请稍后重试。',persistentMessage=liveActionReferenceFailureMessage(error);if(options.onError)options.onError(message);showLiveActionError(persistentMessage,true,{autoHide:0});})
         .finally(function(){liveActionReferenceBusy=false;renderLiveActionRoles();if(options.onFinish)options.onFinish();});
     }
     function readLiveActionReferenceFile(file){
@@ -1509,7 +1542,7 @@
       picker.innerHTML='<input type="file" accept="image/jpeg,image/png,image/webp" data-reference-upload-input hidden>';
       roleConfirm.appendChild(picker);
       var uploadInput=picker.querySelector('[data-reference-upload-input]');
-      function dismissReferencePicker(){closeLiveActionReferencePicker();if(sourceTrigger&&sourceTrigger.isConnected)sourceTrigger.focus();}
+      function dismissReferencePicker(){return dismissLiveActionReferencePicker(liveActionReferenceBusy,function(message){showLiveActionError(message,true,{autoHide:0});},function(){closeLiveActionReferencePicker();if(sourceTrigger&&sourceTrigger.isConnected)sourceTrigger.focus();});}
       function openAssetLibrary(){
         var pageSize=60,assets=[],selectedAsset=null,loading=false,hasMore=true,query='';
         var library=doc.createElement('div');library.className='short-drama-asset-library';library.innerHTML='<section class="short-drama-asset-library-box" role="dialog" aria-modal="true" aria-label="选择图片资产"><header><div><small>MY ASSETS</small><h3>选择图片资产</h3><p>选择一张真人且至少半身的图片作为 '+escapeHtml(item.name||'角色')+' 的标准图。</p></div><button type="button" data-close-asset-library aria-label="关闭资产库">×</button></header><div class="short-drama-asset-library-tools"><input type="search" data-asset-library-search placeholder="搜索提示词或资产编号"><span data-asset-library-count>正在加载…</span></div><div class="short-drama-asset-library-body"><div class="short-drama-reference-asset-grid" data-asset-library-grid></div><button type="button" class="short-drama-asset-load-more" data-asset-load-more hidden>加载更多图片</button></div><div class="short-drama-asset-library-error" data-asset-library-error hidden></div><footer><span data-asset-library-selected>尚未选择图片</span><button type="button" class="confirm" data-confirm-reference-asset disabled>确认使用所选资产</button></footer></section>';
@@ -1517,11 +1550,14 @@
         var grid=library.querySelector('[data-asset-library-grid]'),count=library.querySelector('[data-asset-library-count]'),loadMore=library.querySelector('[data-asset-load-more]'),confirm=library.querySelector('[data-confirm-reference-asset]'),selectedLabel=library.querySelector('[data-asset-library-selected]'),errorNode=library.querySelector('[data-asset-library-error]'),search=library.querySelector('[data-asset-library-search]');
         function assetKey(asset){return String(asset.job_id)+'|'+text(asset.url);}
         function renderAssetLibrary(){
-          var searchResult=liveActionAssetSearchResult(assets,query,hasMore),visible=searchResult.items,selectedKey=selectedAsset?assetKey(selectedAsset):'';count.textContent=query?(visible.length+' 个匹配结果'):(assets.length+(hasMore?' 张已加载':' 张图片'));
-          grid.innerHTML=visible.length?visible.map(function(asset,assetIndex){var label=text(asset.prompt).trim().slice(0,42)||('图片资产 #'+asset.job_id);return '<article class="short-drama-reference-asset-item'+(assetKey(asset)===selectedKey?' selected':'')+'"><button type="button" data-reference-asset-index="'+assetIndex+'" aria-pressed="'+(assetKey(asset)===selectedKey?'true':'false')+'"><img src="'+escapeHtml(asset.url)+'" alt="'+escapeHtml(label)+'"><span>'+escapeHtml(label)+'</span><small>#'+escapeHtml(String(asset.job_id))+'</small></button><button type="button" class="preview" data-preview-asset-index="'+assetIndex+'">放大预览</button></article>';}).join(''):'<p class="short-drama-asset-empty">'+(loading?'正在读取图片资产…':searchResult.emptyMessage)+'</p>';
+          var searchResult=liveActionAssetSearchResult(assets,query,hasMore),visible=searchResult.items,selectedKey=selectedAsset?assetKey(selectedAsset):'',activeNode=doc.activeElement,focusedAssetKey='';
+          if(activeNode&&grid.contains(activeNode)&&activeNode.hasAttribute('data-reference-asset-index')){var oldFocused=visible[Number(activeNode.getAttribute('data-reference-asset-index'))];if(oldFocused)focusedAssetKey=assetKey(oldFocused);}
+          count.textContent=query?(visible.length+' 个匹配结果'):(assets.length+(hasMore?' 张已加载':' 张图片'));
+          grid.innerHTML=visible.length?visible.map(function(asset,assetIndex){var label=text(asset.prompt).trim().slice(0,42)||('图片资产 #'+asset.job_id);return '<article class="short-drama-reference-asset-item'+(assetKey(asset)===selectedKey?' selected':'')+'"><button type="button" data-reference-asset-index="'+assetIndex+'" aria-pressed="'+(assetKey(asset)===selectedKey?'true':'false')+'"><img src="'+escapeHtml(asset.url)+'" alt="'+escapeHtml(label)+'" loading="lazy" decoding="async"><span>'+escapeHtml(label)+'</span><small>#'+escapeHtml(String(asset.job_id))+'</small></button><button type="button" class="preview" data-preview-asset-index="'+assetIndex+'">放大预览</button></article>';}).join(''):'<p class="short-drama-asset-empty">'+(loading?'正在读取图片资产…':searchResult.emptyMessage)+'</p>';
           loadMore.hidden=!searchResult.canLoadMore;loadMore.disabled=loading;loadMore.textContent=loading?'正在加载…':'加载更多图片';confirm.disabled=!selectedAsset||loading;selectedLabel.textContent=selectedAsset?('已选择：'+(text(selectedAsset.prompt).trim().slice(0,36)||('图片资产 #'+selectedAsset.job_id))):'尚未选择图片';
           grid.querySelectorAll('[data-reference-asset-index]').forEach(function(button){button.addEventListener('click',function(){selectedAsset=visible[Number(button.getAttribute('data-reference-asset-index'))];errorNode.hidden=true;renderAssetLibrary();});});
           grid.querySelectorAll('[data-preview-asset-index]').forEach(function(button){button.addEventListener('click',function(){var asset=visible[Number(button.getAttribute('data-preview-asset-index'))];if(asset)openLiveActionReferencePreview(asset.url,text(asset.prompt).trim()||('图片资产 #'+asset.job_id),button);});});
+          if(focusedAssetKey){var restoredIndex=visible.findIndex(function(asset){return assetKey(asset)===focusedAssetKey;}),restoredFocus=restoredIndex>=0&&grid.querySelector('[data-reference-asset-index="'+restoredIndex+'"]');if(restoredFocus)restoredFocus.focus();}
         }
         function loadAssetPage(){
           if(loading||!hasMore)return;loading=true;errorNode.hidden=true;renderAssetLibrary();
@@ -1648,6 +1684,7 @@
       if(step==='import') setCreateHeading('IMPORT A SCRIPT','导入已有剧本','上传文件或粘贴原稿，助手会先识别内容，再与你确认如何成片。');
     }
     function resetCreate(){
+      liveActionStoryRequestToken+=1;if(liveActionStoryBusy)setLiveActionStoryBusy(false);
       renderPlannerDraftResume(null);
       renderLiveActionDraftResume(null);doc.getElementById('shortDramaCloseDraftPrompt').hidden=true;doc.getElementById('shortDramaCloseDraftError').hidden=true;
       if(liveActionDraftTimer!==null){runtimeRoot.clearTimeout(liveActionDraftTimer);liveActionDraftTimer=null;}
@@ -1665,6 +1702,7 @@
     function openCreate(){if(!currentUsername){setNotice('正在确认登录账号，请稍后重试。',true);return;}var plannerDraft=readPlannerDraft(),liveDraft=readLiveActionDraft();resetCreate();renderPlannerDraftResume(plannerDraft);renderLiveActionDraftResume(liveDraft);dialog.showModal();}
     function closeCreateNow(){closeLiveActionReferencePicker();doc.getElementById('shortDramaCloseDraftPrompt').hidden=true;if(dialog.open)dialog.close();}
     function requestCreateClose(){
+      if(liveActionStoryBusy){showLiveActionNotice('正在确认剧本，请等待完成后再关闭。','live_action_story');return;}
       if(liveActionReferenceBusy){showLiveActionNotice('正在处理标准图，请完成后再关闭。',currentCreateStep);return;}
       if(['live_action_setup','live_action_story','live_action_roles'].indexOf(currentCreateStep)<0||!liveActionDraftHasContent()){closeCreateNow();return;}
       var prompt=doc.getElementById('shortDramaCloseDraftPrompt'),error=doc.getElementById('shortDramaCloseDraftError');error.hidden=true;error.textContent='';prompt.hidden=false;var first=prompt.querySelector('[data-draft-close="save"]');if(first)first.focus();
@@ -2003,14 +2041,14 @@
       else collectLiveActionCoreStory();
       showLiveActionNotice('','live_action_story');scheduleLiveActionDraft();
     });
-    function ensureLiveActionStoryProject(){
-      var source=liveActionSourceText(),contract=normalizeCharacterContract(liveActionRoles),storedSource=text(pendingLiveActionProject&&pendingLiveActionProject.script_import&&pendingLiveActionProject.script_import.source_text).trim();
+    function ensureLiveActionStoryProject(snapshot){
+      var source=text(snapshot&&snapshot.source).trim(),storedSource=text(pendingLiveActionProject&&pendingLiveActionProject.script_import&&pendingLiveActionProject.script_import.source_text).trim();
       function createDraft(){
         if(!pendingLiveActionKey)pendingLiveActionKey=newImportKey();
         syncLiveActionSource(source);
-        return client.importProject(importProjectPayload(liveActionForm,liveActionAnalysis,'faithful',{content_type:'live_action',character_contract:contract}),pendingLiveActionKey)
+        return client.importProject(snapshot.import_payload,pendingLiveActionKey)
           .then(function(project){pendingLiveActionKey='';return client.project(project.id);})
-          .then(function(project){return syncLiveActionReferences(project);});
+          .then(function(project){return normalizeProject(project);});
       }
       if(!pendingLiveActionProject)return createDraft();
       if(storedSource===source)return Promise.resolve(pendingLiveActionProject);
@@ -2018,12 +2056,17 @@
       return discardPendingLiveActionProject(client,pendingLiveActionProject,liveActionReferenceBusy,pendingLiveActionDiscardKey).then(function(){pendingLiveActionProject=null;pendingLiveActionDiscardKey='';savedLiveActionRoleSignatures={};return createDraft();});
     }
     coreStoryForm.addEventListener('submit',function(event){
-      event.preventDefault();var storyError=validateLiveActionCoreStory();if(storyError)return showLiveActionNotice(storyError,'live_action_story');
-      var submit=coreStoryForm.querySelector('button[type="submit"]');submit.disabled=true;submit.textContent='正在确认剧本…';showLiveActionNotice('','live_action_story');
-      ensureLiveActionStoryProject().then(function(project){return client.confirmLiveActionCoreStory(project,Object.assign({},liveActionCoreStory));}).then(function(project){
-        syncLiveActionReferences(project);liveActionCoreStory=Object.assign({},pendingLiveActionProject.script_import&&pendingLiveActionProject.script_import.core_story||liveActionCoreStory);showCreateStep('live_action_roles');renderLiveActionRoles();showLiveActionError('剧本已确认，请核对并保存剧本中识别出的角色。',true,{autoHide:5000});scheduleLiveActionDraft();
-      }).catch(function(error){showLiveActionNotice('核心故事确认失败：'+(error.message||'请稍后重试。'),'live_action_story');})
-        .finally(function(){submit.disabled=false;submit.textContent='确认剧本，下一步：角色确认';});
+      event.preventDefault();if(liveActionStoryBusy)return showLiveActionNotice('正在确认剧本，请勿重复提交。','live_action_story');var storyError=validateLiveActionCoreStory();if(storyError)return showLiveActionNotice(storyError,'live_action_story');
+      collectLiveActionRoles();var source=liveActionSourceText(),contract=normalizeCharacterContract(liveActionRoles),analysisSnapshot=Object.assign({},liveActionAnalysis||analyzeImportedScript(source,''),{source:source});
+      var snapshot={source:source,core_story:Object.assign({},liveActionCoreStory),roles:JSON.parse(JSON.stringify(liveActionRoles)),import_payload:importProjectPayload(liveActionForm,analysisSnapshot,'faithful',{content_type:'live_action',character_contract:contract})};
+      var submit=coreStoryForm.querySelector('button[type="submit"]'),requestToken=++liveActionStoryRequestToken;setLiveActionStoryBusy(true);submit.textContent='正在确认剧本…';showLiveActionNotice('','live_action_story');
+      runLiveActionStorySubmission(snapshot,{
+        ensureProject:ensureLiveActionStoryProject,
+        isCurrent:function(){return requestToken===liveActionStoryRequestToken;},
+        confirm:function(project,story){return client.confirmLiveActionCoreStory(project,story);},
+        apply:function(project,frozen){syncLiveActionReferences(project);liveActionCoreStory=Object.assign({},pendingLiveActionProject.script_import&&pendingLiveActionProject.script_import.core_story||frozen.core_story);showCreateStep('live_action_roles');renderLiveActionRoles();showLiveActionError('剧本已确认，请核对并保存剧本中识别出的角色。',true,{autoHide:5000});scheduleLiveActionDraft();}
+      }).catch(function(error){if(requestToken===liveActionStoryRequestToken)showLiveActionNotice('核心故事确认失败：'+(error.message||'请稍后重试。'),'live_action_story');})
+        .finally(function(){if(requestToken===liveActionStoryRequestToken){setLiveActionStoryBusy(false);submit.textContent='确认剧本，下一步：角色确认';}});
     });
     doc.querySelectorAll('[data-create-mode]').forEach(function(node){node.addEventListener('click',function(){
       var mode=node.getAttribute('data-create-mode');createMode=mode;
@@ -2103,5 +2146,5 @@
     load().catch(function(){});
     return {reload:load,render:render};
   }
-  return {STAGES:STAGES,LABELS:LABELS,normalizeProject:normalizeProject,progress:progress,filterProjects:filterProjects,metrics:metrics,deleteErrorMessage:deleteErrorMessage,createPayload:createPayload,liveActionRoleHasReferenceActivity:liveActionRoleHasReferenceActivity,liveActionAssetSearchResult:liveActionAssetSearchResult,liveActionModalKeydown:liveActionModalKeydown,liveActionProjectHasReferenceActivity:liveActionProjectHasReferenceActivity,discardPendingLiveActionProject:discardPendingLiveActionProject,compactIdea:compactIdea,plannerChoiceIndex:plannerChoiceIndex,plannerResolveChoice:plannerResolveChoice,plannerUnderstanding:plannerUnderstanding,plannerCompleteness:plannerCompleteness,plannerFlowState:plannerFlowState,buildRecommendations:buildRecommendations,advisorStep:advisorStep,plannerLocalIntent:plannerLocalIntent,plannerLocalFieldUpdates:plannerLocalFieldUpdates,plannerLocalAdvice:plannerLocalAdvice,applyAdvisorResult:applyAdvisorResult,plannerMetaSnapshot:plannerMetaSnapshot,applyAdvisorMetadata:applyAdvisorMetadata,plannerConversationAudit:plannerConversationAudit,plannerAnswerSnapshot:plannerAnswerSnapshot,plannerChangedFields:plannerChangedFields,plannerRecap:plannerRecap,plannerProgress:plannerProgress,plannerAffectedLayers:plannerAffectedLayers,rebuildPlannerPreview:rebuildPlannerPreview,plannerDurations:plannerDurations,plannerRoles:plannerRoles,plannerReadingSeconds:plannerReadingSeconds,plannerStoryPlan:plannerStoryPlan,plannerScenePlan:plannerScenePlan,plannerDialogueSet:plannerDialogueSet,plannerQuality:plannerQuality,plannerReview:plannerReview,repairPlannerPreview:repairPlannerPreview,buildPlannerPreview:buildPlannerPreview,plannerPromotionMessages:plannerPromotionMessages,plannerConfirmedContract:plannerConfirmedContract,plannerWordDocumentHtml:plannerWordDocumentHtml,plannerWordFilename:plannerWordFilename,confirmedContractMatches:confirmedContractMatches,continuePlannerContract:continuePlannerContract,importedTitle:importedTitle,importedGlobalUnderstanding:importedGlobalUnderstanding,analyzeImportedScript:analyzeImportedScript,importProjectPayload:importProjectPayload,characterContractFromAnalysis:characterContractFromAnalysis,defaultManualCharacterContract:defaultManualCharacterContract,normalizeCharacterContract:normalizeCharacterContract,newImportKey:newImportKey,newProjectKey:newProjectKey,plannerDraftStorageKey:plannerDraftStorageKey,plannerDraftMatchesUser:plannerDraftMatchesUser,plannerDraftActiveChoices:plannerDraftActiveChoices,readPlannerDraftRecord:readPlannerDraftRecord,writePlannerDraftRecord:writePlannerDraftRecord,liveActionDraftStorageKey:liveActionDraftStorageKey,liveActionDraftMatchesUser:liveActionDraftMatchesUser,readLiveActionDraftRecord:readLiveActionDraftRecord,writeLiveActionDraftRecord:writeLiveActionDraftRecord,readLimitedStream:readLimitedStream,extractPdfText:extractPdfText,extractDocxText:extractDocxText,readScriptFile:readScriptFile,createClient:createClient,projectUrl:projectUrl,cardHtml:cardHtml,mount:mount};
+  return {STAGES:STAGES,LABELS:LABELS,normalizeProject:normalizeProject,progress:progress,filterProjects:filterProjects,metrics:metrics,deleteErrorMessage:deleteErrorMessage,createPayload:createPayload,liveActionRoleHasReferenceActivity:liveActionRoleHasReferenceActivity,liveActionAssetSearchResult:liveActionAssetSearchResult,liveActionModalKeydown:liveActionModalKeydown,runLiveActionStorySubmission:runLiveActionStorySubmission,dismissLiveActionReferencePicker:dismissLiveActionReferencePicker,liveActionReferenceFailureMessage:liveActionReferenceFailureMessage,liveActionProjectHasReferenceActivity:liveActionProjectHasReferenceActivity,discardPendingLiveActionProject:discardPendingLiveActionProject,compactIdea:compactIdea,plannerChoiceIndex:plannerChoiceIndex,plannerResolveChoice:plannerResolveChoice,plannerUnderstanding:plannerUnderstanding,plannerCompleteness:plannerCompleteness,plannerFlowState:plannerFlowState,buildRecommendations:buildRecommendations,advisorStep:advisorStep,plannerLocalIntent:plannerLocalIntent,plannerLocalFieldUpdates:plannerLocalFieldUpdates,plannerLocalAdvice:plannerLocalAdvice,applyAdvisorResult:applyAdvisorResult,plannerMetaSnapshot:plannerMetaSnapshot,applyAdvisorMetadata:applyAdvisorMetadata,plannerConversationAudit:plannerConversationAudit,plannerAnswerSnapshot:plannerAnswerSnapshot,plannerChangedFields:plannerChangedFields,plannerRecap:plannerRecap,plannerProgress:plannerProgress,plannerAffectedLayers:plannerAffectedLayers,rebuildPlannerPreview:rebuildPlannerPreview,plannerDurations:plannerDurations,plannerRoles:plannerRoles,plannerReadingSeconds:plannerReadingSeconds,plannerStoryPlan:plannerStoryPlan,plannerScenePlan:plannerScenePlan,plannerDialogueSet:plannerDialogueSet,plannerQuality:plannerQuality,plannerReview:plannerReview,repairPlannerPreview:repairPlannerPreview,buildPlannerPreview:buildPlannerPreview,plannerPromotionMessages:plannerPromotionMessages,plannerConfirmedContract:plannerConfirmedContract,plannerWordDocumentHtml:plannerWordDocumentHtml,plannerWordFilename:plannerWordFilename,confirmedContractMatches:confirmedContractMatches,continuePlannerContract:continuePlannerContract,importedTitle:importedTitle,importedGlobalUnderstanding:importedGlobalUnderstanding,analyzeImportedScript:analyzeImportedScript,importProjectPayload:importProjectPayload,characterContractFromAnalysis:characterContractFromAnalysis,defaultManualCharacterContract:defaultManualCharacterContract,normalizeCharacterContract:normalizeCharacterContract,newImportKey:newImportKey,newProjectKey:newProjectKey,plannerDraftStorageKey:plannerDraftStorageKey,plannerDraftMatchesUser:plannerDraftMatchesUser,plannerDraftActiveChoices:plannerDraftActiveChoices,readPlannerDraftRecord:readPlannerDraftRecord,writePlannerDraftRecord:writePlannerDraftRecord,liveActionDraftStorageKey:liveActionDraftStorageKey,liveActionDraftMatchesUser:liveActionDraftMatchesUser,readLiveActionDraftRecord:readLiveActionDraftRecord,writeLiveActionDraftRecord:writeLiveActionDraftRecord,readLimitedStream:readLimitedStream,extractPdfText:extractPdfText,extractDocxText:extractDocxText,readScriptFile:readScriptFile,createClient:createClient,projectUrl:projectUrl,cardHtml:cardHtml,mount:mount};
 });
