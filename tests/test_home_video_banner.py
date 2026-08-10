@@ -56,6 +56,9 @@ class HomeVideoBannerTests(unittest.TestCase):
         self.assertIn("refractedPoint", self.liquid_glass)
         self.assertIn("hero-liquid-glass-ready", self.liquid_glass)
         self.assertIn("nav-liquid-glass-ready", self.liquid_glass)
+        self.assertIn(".nav-shell>.nav-liquid-glass{position:absolute;z-index:0;inset:0;width:100%;height:100%;border-radius:inherit", self.css)
+        self.assertIn("float lensDistance(vec2 p){float edgeInset=2.0", self.liquid_glass)
+        self.assertIn("gl_FragColor=vec4(color*alpha,alpha)", self.liquid_glass)
 
     def test_nav_uses_function_drawers_instead_of_page_anchors(self):
         self.assertEqual(self.html.count('<button type="button" data-nav-trigger='), 5)
