@@ -1751,7 +1751,8 @@
   }
   function registryE2ERun(mode,data){return (data.e2e_runs||[]).find(function(item){return item.operation_id===mode.key})}
   function e2eActive(status){return ['planned','submitting','queued','running'].indexOf(status)>=0}
-  function registryE2EPassed(run){return !!(run&&run.status==='completed'&&run.stages&&run.stages.length&&run.stages.every(function(stage){return stage.state==='passed'}))}
+  var e2eStageKeys=['accepted','account','job','route','provider','generation','delivery','billing'];
+  function registryE2EPassed(run){var stages=run&&run.stages||[];return !!(run&&run.status==='completed'&&stages.length===e2eStageKeys.length&&stages.every(function(stage,index){return stage.key===e2eStageKeys[index]&&stage.state==='passed'}))}
   function registryE2EFresh(run){return registryE2EPassed(run)&&Number(run.updated_at||run.created_at||0)>=Math.floor(Date.now()/1000)-86400}
   function registryAcceptanceLabel(mode,data,flagState,verdict){
     var run=registryE2ERun(mode,data);

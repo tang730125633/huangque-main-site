@@ -113,6 +113,10 @@ E2E_TEST_USERNAME = os.environ.get("HQ_E2E_TEST_USERNAME", "").strip()
 E2E_RUN_LOCK = threading.Lock()
 E2E_FIXTURE_LOCK = threading.Lock()
 E2E_ACTIVE_STATUSES = {"planned", "submitting", "queued", "running", "unknown"}
+E2E_STAGE_KEYS = (
+    "accepted", "account", "job", "route",
+    "provider", "generation", "delivery", "billing",
+)
 E2E_BATCH_DEADLINE_SECONDS = 2 * 60 * 60
 
 
@@ -3872,12 +3876,7 @@ def _public_e2e_run(row):
     return item
 
 
-def list_e2e_runs(limit=30):
-    with closing(db()) as connection:
-        rows = connection.execute(
-            "SELECT * FROM admin_e2e_runs ORDER BY created_at DESC LIMIT ?",
-            (max(1, min(int(limit or 30), 100)),),
-        ).fetchall()
+def _public_e2e_rows(rows):
     stored_status = {row["run_id"]: row["status"] for row in rows}
     runs = [_public_e2e_run(row) for row in rows]
     now = int(time.time())
@@ -3891,6 +3890,31 @@ def list_e2e_runs(limit=30):
                 )
         connection.commit()
     return runs
+
+
+def list_e2e_runs(limit=30):
+    with closing(db()) as connection:
+        rows = connection.execute(
+            "SELECT * FROM admin_e2e_runs ORDER BY created_at DESC LIMIT ?",
+            (max(1, min(int(limit or 30), 100)),),
+        ).fetchall()
+    return _public_e2e_rows(rows)
+
+
+def list_latest_e2e_runs():
+    with closing(db()) as connection:
+        rows = connection.execute(
+            """SELECT current.* FROM admin_e2e_runs AS current
+               WHERE NOT EXISTS (
+                   SELECT 1 FROM admin_e2e_runs AS newer
+                   WHERE newer.operation_id=current.operation_id
+                     AND (newer.created_at>current.created_at
+                          OR (newer.created_at=current.created_at
+                              AND newer.rowid>current.rowid))
+               )
+               ORDER BY current.created_at DESC,current.rowid DESC"""
+        ).fetchall()
+    return _public_e2e_rows(rows)
 
 
 def _insert_e2e_run(actor, operation_id, *, status="submitting", batch_id="",
@@ -5562,8 +5586,11 @@ def start_e2e_run(actor, admin_token, operation_id):
 
 def _e2e_run_passed(run):
     stages = run.get("stages") or []
-    return bool(run.get("status") == "completed" and stages
-                and all(stage.get("state") == "passed" for stage in stages))
+    return bool(
+        run.get("status") == "completed"
+        and tuple(stage.get("key") for stage in stages) == E2E_STAGE_KEYS
+        and all(stage.get("state") == "passed" for stage in stages)
+    )
 
 
 def _e2e_run_fresh(run):
@@ -6604,7 +6631,8 @@ class H(BaseHTTPRequestHandler):
             _resume_short_drama_shot_runs(self._token())
             _resume_short_drama_preview_runs(self._token())
             _resume_short_drama_delivery_runs(self._token())
-            e2e_runs = list_e2e_runs()
+            recent_e2e_runs = list_e2e_runs(100)
+            e2e_runs = list_latest_e2e_runs()
             return self._send(
                 200,
                 {
@@ -6625,7 +6653,7 @@ class H(BaseHTTPRequestHandler):
                         "username": E2E_TEST_USERNAME,
                     },
                     "e2e_runs": e2e_runs,
-                    "e2e_batches": list_e2e_batches(e2e_runs),
+                    "e2e_batches": list_e2e_batches(recent_e2e_runs),
                 },
             )
         return self._send(404, {"detail": "not found"})
