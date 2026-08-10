@@ -762,12 +762,15 @@ test('live action drafts are account scoped and preserve role progress', () => {
 });
 
 test('closing unfinished live action creation offers save discard and continue choices', () => {
+  assert.match(html, /id="shortDramaDialog" aria-labelledby="shortDramaCreateTitle" aria-describedby="shortDramaCreateLead"/);
   assert.match(html, /id="shortDramaCloseDraftPrompt"/);
   assert.match(html, /data-draft-close="save"/);
   assert.match(html, /data-draft-close="discard"/);
   assert.match(html, /data-draft-close="continue"/);
   assert.match(html, /id="shortDramaLiveActionDraftResume"/);
   assert.match(centerScript, /dialog\.addEventListener\('cancel'/);
+  assert.match(centerScript, /liveActionModalKeydown\(prompt,event,dismissDraftClosePrompt\)/);
+  assert.match(centerScript, /draftCloseReturnFocus\.focus\(\)/);
   assert.match(centerScript, /if\(event\.target===dialog\)requestCreateClose\(\)/);
   assert.match(centerScript, /liveSteps=\['live_action_setup','live_action_story','live_action_roles'\]/);
   assert.match(centerScript, /roles:JSON\.parse\(JSON\.stringify\(liveActionRoles\|\|\[\]\)\)/);

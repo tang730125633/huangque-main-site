@@ -214,6 +214,51 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def _mark_imported_roles(self, role_types):
+        conn = self.db()
+        try:
+            plan = json.loads(conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()[0])
+            keys = []
+            for shot in plan.get("material_plan") or []:
+                for value in shot.get("character_keys") or []:
+                    key = str(value or "").strip()
+                    if key and key not in keys:
+                        keys.append(key)
+                for dialogue in shot.get("dialogue") or []:
+                    key = str((dialogue or {}).get("character_key") or "").strip()
+                    if key and key not in keys:
+                        keys.append(key)
+            contract = [
+                {
+                    "character_key": key,
+                    "name": "Role %d" % index,
+                    "role_type": role_types.get(key, "crowd"),
+                }
+                for index, key in enumerate(keys, 1)
+            ]
+            now = 1_700_000_000
+            conn.execute(
+                "INSERT INTO short_drama_script_imports "
+                "(id,username,project_id,idempotency_key,request_hash,source_text,"
+                "source_hash,filename,content_type,character_contract_json,"
+                "character_contract_migration_json,roles_saved_at,core_story_json,"
+                "core_story_confirmed_at,import_mode,status,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "import-test", "alice", self.project["id"], "import-key",
+                    "request-hash", "", "source-hash", "script.txt",
+                    "live_action", json.dumps(contract), "{}", now, "{}", now,
+                    "faithful", "completed", now, now,
+                ),
+            )
+            conn.commit()
+            return plan, keys
+        finally:
+            conn.close()
+
     def _provider_quote(self):
         workspace = short_drama_autodraft.workspace(
             self.db, "alice", "alice", self.project["id"]
@@ -473,6 +518,83 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                 },
             )
         self.assertEqual(4, preview["request"]["duration_seconds"])
+
+    def test_minimax_optional_only_shot_does_not_require_character_reference(self):
+        plan, keys = self._mark_imported_roles({})
+        shot = next(
+            item for item in plan["material_plan"]
+            if any(str(value or "").strip() in keys for value in item.get("character_keys") or [])
+        )
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_DEMO_FALLBACK": "0",
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(provider_keys, "has_candidate", return_value=True):
+            preview = short_drama_autodraft.preview_provider_request(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "plan_id": self.plan_id,
+                    "shot_key": shot["shot_key"],
+                },
+            )
+        self.assertTrue(preview["ready"])
+        self.assertEqual(0, preview["request"]["reference_count"])
+
+    def test_minimax_mixed_role_shot_requires_only_main_character_reference(self):
+        plan, keys = self._mark_imported_roles({})
+        main_key = keys[0]
+        optional_key = "optional-crowd"
+        shot = plan["material_plan"][0]
+        shot["character_keys"] = [main_key, optional_key]
+        shot["dialogue"] = []
+        shot["input_hash"] = short_drama_autodraft._hash(shot)
+        contract = [
+            {"character_key": main_key, "name": "Lead", "role_type": "main"},
+            {"character_key": optional_key, "name": "Crowd", "role_type": "crowd"},
+        ]
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_production_plans SET plan_json=? WHERE id=?",
+                (json.dumps(plan), self.plan_id),
+            )
+            conn.execute(
+                "UPDATE short_drama_script_imports SET character_contract_json=? "
+                "WHERE project_id=?",
+                (json.dumps(contract), self.project["id"]),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO short_drama_characters "
+                "(id,project_id,character_key,name,source_type,sort_order) "
+                "VALUES (?,?,?,?,?,?)",
+                ("character-main", self.project["id"], main_key, "Lead", "ai_character", 1),
+            )
+            conn.execute(
+                "UPDATE short_drama_characters SET reference_file=?,"
+                "reference_version=1,reference_locked=1 WHERE project_id=? AND character_key=?",
+                ("short_drama_refs/lead.png", self.project["id"], main_key),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_DEMO_FALLBACK": "0",
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(provider_keys, "has_candidate", return_value=True), \
+             mock.patch(
+                 "providers.short_drama_visual.minimax_h3.MiniMaxH3ShotProvider._reference_value",
+                 return_value="data:image/png;base64,AA==",
+             ):
+            preview = short_drama_autodraft.preview_provider_request(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "plan_id": self.plan_id,
+                    "shot_key": shot["shot_key"],
+                },
+                include_private=True,
+            )
+        self.assertEqual([main_key], preview["character_keys"])
+        self.assertEqual(1, preview["request"]["reference_count"])
+        self.assertEqual(main_key, preview["_provider_request"]["reference_images"][0]["character_key"])
 
     def test_confirmed_plan_starts_free_local_pollable_job(self):
         job = self._start()
@@ -1475,6 +1597,66 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertEqual("provider_key_unavailable", result["error"]["code"])
         self.assertFalse(result["error"]["retryable"])
         self.assertTrue(result["error"]["requires_reconciliation"])
+
+    def test_transient_bound_key_read_failure_retries_without_sticking_job(self):
+        class TransientKeyProvider:
+            name = "heygen_cinematic"
+            configured = True
+
+            def __init__(self):
+                self.polls = 0
+
+            def create_job(self, request):
+                return {"provider_job_id": "transient-bound-key-job"}
+
+            def get_job(self, provider_job_id):
+                self.polls += 1
+                if self.polls == 1:
+                    raise VisualProviderError(
+                        "provider_key_read_failed",
+                        "任务绑定的密钥暂时无法读取",
+                        submitted=True,
+                    )
+                return {
+                    "status": "completed",
+                    "result_url": "https://provider.example/recovered.mp4",
+                }
+
+            def fetch_result(self, provider_job_id, result_url):
+                return {
+                    "provider_job_id": provider_job_id,
+                    "file": "video/recovered.mp4",
+                    "url": "/api/files/video/recovered.mp4",
+                }
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "heygen_cinematic",
+            "HEYGEN_API_KEY": "configured-for-test",
+        }):
+            quote = self._provider_quote()
+            job = short_drama_autodraft.start_provider_job(
+                self.db, "alice", "alice", {"quote_token": quote["quote_token"]},
+                "transient-key-retry", deduct_points=mock.Mock(),
+                avatar_lookup=lambda *_args: self._provider_avatar(),
+                project_usage=short_drama._project_point_usage,
+            )
+        provider = TransientKeyProvider()
+        with mock.patch(
+            "content_domains.short_drama_autodraft.load_by_name",
+            return_value=provider,
+        ):
+            retrying = short_drama_autodraft.reconcile_provider_job(
+                self.db, "alice", self.project["id"], job["id"]
+            )
+            completed = short_drama_autodraft.reconcile_provider_job(
+                self.db, "alice", self.project["id"], job["id"]
+            )
+        self.assertEqual("running", retrying["status"])
+        self.assertEqual("provider_key_read_failed", retrying["error"]["code"])
+        self.assertTrue(retrying["error"]["retryable"])
+        self.assertFalse(retrying["error"]["requires_reconciliation"])
+        self.assertEqual("succeeded", completed["status"])
+        self.assertEqual(2, provider.polls)
 
     def test_non_cancelable_shot_deadline_stays_reconcilable_without_refund(self):
         class PendingProvider:

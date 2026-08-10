@@ -243,6 +243,36 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
         self.assertEqual("雨夜街道", reference["name"])
         self.assertTrue(reference["file"].startswith("short_drama_scene_uploads/scene_"))
 
+    def test_committed_scene_upload_survives_response_assembly_failure(self):
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        before = graph.scene_workspace(self.db, "alice", "p1")
+        scene = before["scenes"][0]
+        raw = b"\x89PNG\r\n\x1a\ncommitted-scene"
+        data_url = "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
+        output = Path(self.temp.name) / "output"
+        fake_image = types.SimpleNamespace(OUT_DIR=output)
+        fake_uploads = types.SimpleNamespace(
+            MAX_BYTES=10 * 1024 * 1024,
+            MIME_EXTENSIONS={"image/png": ".png"},
+            detect_mime=lambda value: "image/png" if value.startswith(b"\x89PNG") else "",
+        )
+        with mock.patch.dict(sys.modules, {
+            "server.content_domains.image": fake_image,
+            "server.content_domains.cli_uploads": fake_uploads,
+        }), mock.patch.object(
+            graph, "scene_workspace", side_effect=RuntimeError("response assembly failed")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "response assembly failed"):
+                graph.set_scene_reference(self.db, "alice", "alice", {
+                    "project_id": "p1", "graph_revision": before["graph_revision"],
+                    "scene_key": scene["scene_key"], "source": "upload",
+                    "image_data": data_url, "filename": "street.png",
+                })
+        persisted = graph.scene_workspace(self.db, "alice", "p1")
+        reference_file = persisted["scenes"][0]["preview"]["file"]
+        self.assertTrue(reference_file)
+        self.assertTrue((output / reference_file).is_file())
+
     def test_scene_asset_url_must_belong_to_selected_multi_image_job(self):
         graph.sync_foundation(self.db, "alice", "alice", "p1")
         before = graph.scene_workspace(self.db, "alice", "p1")

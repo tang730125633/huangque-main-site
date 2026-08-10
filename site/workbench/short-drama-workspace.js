@@ -76,6 +76,10 @@
     if(!operation||!operation.storage_key)return;
     try{if(typeof localStorage!=='undefined')localStorage.removeItem(operation.storage_key);}catch(ignore){}
   }
+  function sceneImageRequestPayload(payload){
+    payload=payload||{};
+    return {provider:'banana',model:'nb2',quality:'hd',count:1,ratio:payload.ratio||'16:9',prompt:payload.prompt,short_drama_scene_binding:{project_id:payload.project_id,scene_key:payload.scene_key}};
+  }
   function characterImageOperationState(character,currentOperation){
     character=character||{};
     if(character.reference_job_status==='ready'&&!character.reference_image_url){
@@ -176,12 +180,45 @@
     }
     function generateSceneImage(payload,ownerUsername){
       var operation;try{operation=sceneImageOperation(payload,ownerUsername);}catch(error){return Promise.reject(error);}
-      var imagePayload={provider:'banana',model:'nb2',quality:'hd',count:1,ratio:payload.ratio||'16:9',prompt:payload.prompt,short_drama_scene_binding:{project_id:payload.project_id,scene_key:payload.scene_key}};
+      var imagePayload=sceneImageRequestPayload(operation.payload||payload);
       return request('/api/gen/image',{method:'POST',headers:{'Idempotency-Key':operation.key},body:imagePayload}).then(function(result){
         result=result||{};operation.job_id=result.job_id||operation.job_id||null;
         try{if(typeof localStorage!=='undefined')localStorage.setItem(operation.storage_key,JSON.stringify(operation));}catch(ignore){}
         result._scene_image_operation=operation;return result;
       }).catch(function(error){if(error&&error.operation_terminal)finishSceneImageOperation(operation);throw error;});
+    }
+    function recoverSceneImageOperations(ownerUsername){
+      var operations=[];
+      try{
+        var owner=operationOwner(ownerUsername),accountPrefix='hq-short-drama-scene-image-operation:'+hash(owner)+':';
+        if(typeof localStorage==='undefined')return Promise.resolve([]);
+        for(var i=0;i<localStorage.length;i+=1){
+          var storageKey=localStorage.key(i);
+          if(!storageKey||storageKey.indexOf(accountPrefix)!==0)continue;
+          var operation=JSON.parse(localStorage.getItem(storageKey)||'{}');
+          if(operation&&operation.owner===owner&&operation.key&&(operation.job_id||operation.payload)){operation.storage_key=storageKey;operations.push(operation);}
+        }
+      }catch(ignore){return Promise.resolve([]);}
+      return Promise.all(operations.map(function(operation){
+        var submitted=operation.job_id?Promise.resolve(operation):request('/api/gen/image',{method:'POST',headers:{'Idempotency-Key':operation.key},body:sceneImageRequestPayload(operation.payload)}).then(function(result){
+          operation.job_id=result&&result.job_id||null;
+          try{localStorage.setItem(operation.storage_key,JSON.stringify(operation));}catch(ignore){}
+          return operation;
+        });
+        return submitted.then(function(){if(!operation.job_id)return null;return request('/api/gen/job/'+encodeURIComponent(operation.job_id));}).then(function(job){
+          if(!job)return null;
+          if(['error','failed'].indexOf(job.status)>=0){finishSceneImageOperation(operation);return job;}
+          if(job.status!=='done')return job;
+          var result=job.result||{},urls=Array.isArray(result.urls)?result.urls:[],url=result.url||urls[0]||'';
+          if(!url){finishSceneImageOperation(operation);return job;}
+          function bindLatest(attempt){
+            return request('/api/gen/short-drama/asset-graph/scenes?project_id='+encodeURIComponent(operation.payload.project_id)).then(function(workspace){
+              return request('/api/gen/short-drama/asset-graph/scenes/reference',{method:'POST',headers:{'Idempotency-Key':operation.key+'-bind'},body:{project_id:operation.payload.project_id,graph_revision:Number(workspace.graph_revision||1),scene_key:operation.payload.scene_key,source:'asset',reference_source:'ai_generation',asset_job_id:Number(operation.job_id),asset_url:url,prompt:operation.payload.prompt||'',filename:'AI 生成场景图'}});
+            }).catch(function(error){if(Number(error&&error.status)===409&&attempt<1)return bindLatest(attempt+1);throw error;});
+          }
+          return bindLatest(0).then(function(bound){finishSceneImageOperation(operation);return bound;});
+        }).catch(function(error){if(error&&error.operation_terminal)finishSceneImageOperation(operation);return null;});
+      }));
     }
     function imageData(url){
       url=text(url).trim();
@@ -228,6 +265,7 @@
       setSceneReference:function(payload){return mutate('/api/gen/short-drama/asset-graph/scenes/reference',payload,'scene-reference');},
       lockSceneReference:function(payload){return mutate('/api/gen/short-drama/asset-graph/scenes/lock',payload,'scene-lock');},
       generateSceneImage:generateSceneImage,
+      recoverSceneImageOperations:recoverSceneImageOperations,
       finishSceneImageOperation:finishSceneImageOperation,
       createAvatar:createAvatar,
       finishAvatarOperation:finishAvatarOperation,
@@ -1712,7 +1750,7 @@
       }
     });
     busy(true);
-    client.currentUsername().then(function(username){accountUsername=username;return Promise.all([client.workspace(projectId),client.preflight(projectId),client.autodraft(projectId),client.recoverAvatarOperations(accountUsername),client.recoverCharacterImageOperations(accountUsername),client.project(projectId)]);}).then(function(results){
+    client.currentUsername().then(function(username){accountUsername=username;return Promise.all([client.workspace(projectId),client.preflight(projectId),client.autodraft(projectId),client.recoverAvatarOperations(accountUsername),client.recoverCharacterImageOperations(accountUsername),client.project(projectId),client.recoverSceneImageOperations(accountUsername)]);}).then(function(results){
       state=normalize(results[0]);preflight=results[1]||{};autodraft=results[2]||{};projectDetail=results[5]||{characters:[]};
       var tasks=[];
       if(state.conversation.state==='script_locked'){

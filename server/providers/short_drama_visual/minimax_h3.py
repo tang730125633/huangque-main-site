@@ -76,8 +76,12 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
                 "minimax", preferred_id=str(key_id or "env")
             )
             return candidates[0] if candidates else None
-        except Exception:
-            return None
+        except Exception as error:
+            raise VisualProviderError(
+                "provider_key_read_failed",
+                "MiniMax 任务绑定的 API Key 暂时无法读取，请稍后重试",
+                submitted=True,
+            ) from error
 
     @staticmethod
     def _reference_value(item):
@@ -151,8 +155,8 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
             raise VisualProviderError("visual_duration_unsupported", "麦克视频镜头时长必须为 4 至 15 秒")
         if model != self.default_model:
             raise VisualProviderError("visual_model_unsupported", "短剧当前固定使用麦克视频")
-        if not 1 <= len(refs) <= 5:
-            raise VisualProviderError("visual_reference_count_invalid", "麦克视频每个镜头需要 1 至 5 张人物参考图")
+        if len(refs) > 5:
+            raise VisualProviderError("visual_reference_count_invalid", "麦克视频每个镜头最多使用 5 张参考图")
         normalized_refs = []
         for item in refs:
             if isinstance(item, str):

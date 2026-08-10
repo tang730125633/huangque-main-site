@@ -464,6 +464,73 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual("24", submitted[0]["headers"]["X-HQ-Expected-Cost"])
         self.assertTrue(all(plan["internal"] for plan in submitted))
 
+    def test_collect_and_leads_actions_are_strict_quoted_and_submit_to_leadgen(self):
+        douyin = "https://v.douyin.com/abc123/"
+        xhs = "https://www.xiaohongshu.com/explore/note-1"
+        expected = {
+            "collect-content": ("collect", "/api/gen/collect", {"url": douyin, "want": ["comments"]}),
+            "collect-video": ("collect", "/api/gen/collect", {"url": douyin, "want": ["video"]}),
+            "collect-transcript": ("collect", "/api/gen/collect", {"url": xhs, "want": ["transcript"]}),
+            "collect-search": ("collect_search", "/api/gen/collect_search",
+                               {"platform": "xhs", "keyword": "轻食创业", "page": 2}),
+            "leads-generate": ("leads", "/api/gen/leads", {
+                "keyword": "美容院拓客", "platforms": ["douyin", "channels"],
+                "count": 20, "pages": 1, "channels_targets": ["sph123"],
+            }),
+        }
+        inputs = {
+            "collect-content": {"url": douyin},
+            "collect-video": {"url": douyin},
+            "collect-transcript": {"url": xhs},
+            "collect-search": {"platform": "xhs", "keyword": "轻食创业", "page": 2},
+            "leads-generate": {
+                "keyword": "美容院拓客", "platforms": ["douyin", "channels"],
+                "channels_targets": ["sph123"],
+            },
+        }
+        for action, fields in expected.items():
+            plan = self.auth.hq_cli_api.action_plan(action, inputs[action])
+            self.assertEqual(
+                ("generation:quote", fields[0], fields[1], self.auth.hq_cli_api.LEADGEN_BASE, fields[2]),
+                (plan["scope"], plan["generation_kind"], plan["endpoint"],
+                 plan["submit_base"], plan["payload"]),
+            )
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan(
+                "collect-video", {"url": "https://douyin.com.evil.example/video/1"})
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan(
+                "collect-search", {"platform": "douyin", "keyword": "越界页码", "page": 51})
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan(
+                "leads-generate", {"platforms": ["channels"], "channels_targets": []})
+        history = self.auth.hq_cli_api.action_plan("tasks", {"kind": "collect_search"})
+        self.assertIn("kind=collect_search", history["path"])
+
+        token = self._token(["generation:quote", "generation:submit"])
+        submitted = []
+
+        def fake_proxy(plan, _web_token, _internal_token):
+            if plan["path"] == "/api/gen/cli/quote":
+                return 200, {"kind": "collect", "cost": 3, "points": 100}
+            submitted.append(plan)
+            return 200, {"job_id": 88, "cost": 3, "points_left": 97}
+
+        request = {"action": "collect-video", "input": {"url": douyin}, "confirm": False}
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            status, quote = self._request("/api/auth/cli/action", request, token=token)
+            self.assertEqual(200, status, quote)
+            status, result = self._request(
+                "/api/auth/cli/action",
+                dict(request, confirm=True, quote_token=quote["quote_token"]), token=token,
+            )
+        self.assertEqual((200, 88), (status, result["job_id"]))
+        self.assertEqual(
+            (self.auth.hq_cli_api.LEADGEN_BASE, "/api/gen/collect", {"url": douyin, "want": ["video"]}),
+            (submitted[0]["base"], submitted[0]["path"], submitted[0]["body"]),
+        )
+        self.assertEqual("3", submitted[0]["headers"]["X-HQ-Expected-Cost"])
+
     def test_image_generation_accepts_only_valid_upload_id_combinations(self):
         upload_id = "img_" + "a" * 32
         plan = self.auth.hq_cli_api.action_plan("image-generate", {
@@ -697,6 +764,10 @@ class HQCLIAPITests(unittest.TestCase):
             "digital-ip-text-generate", "digital-ip-audio-generate",
             "cinematic-open-generate",
         }.issubset(channels["heygen"]["capabilities"]))
+        self.assertEqual("mixed", channels["tikhub"]["access"])
+        self.assertTrue({
+            "collect-content", "collect-video", "collect-transcript", "collect-search", "leads-generate",
+        }.issubset(channels["tikhub"]["capabilities"]))
         self.assertEqual(
             {"channel": "minimax", "resolution": "768p"},
             {k: self.auth.hq_cli_api.action_plan("video-generate", {

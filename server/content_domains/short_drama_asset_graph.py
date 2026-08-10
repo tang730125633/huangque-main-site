@@ -584,6 +584,7 @@ def set_scene_reference(db_factory, owner, actor, body):
     project_id = _text(body["project_id"], 160)
     scene_key = _text(body["scene_key"], 80)
     created_path = None
+    committed = False
     try:
         with closing(_connection(db_factory)) as lookup:
             _project(lookup, owner, project_id)
@@ -628,9 +629,10 @@ def set_scene_reference(db_factory, owner, actor, body):
             _audit(conn, project_id, actor, "set_scene_reference", scene_key,
                    {"source": source, "shot_count": len(rows)}, now)
             conn.commit()
+            committed = True
         return scene_workspace(db_factory, owner, project_id)
     except Exception:
-        if created_path is not None:
+        if created_path is not None and not committed:
             try:
                 created_path.unlink(missing_ok=True)
             except OSError:
