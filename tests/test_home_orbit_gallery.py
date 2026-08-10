@@ -1,5 +1,6 @@
 import json
 import pathlib
+import subprocess
 import unittest
 
 
@@ -23,7 +24,8 @@ class HomeOrbitGalleryTests(unittest.TestCase):
         self.assertIn("data-gallery-preview", self.html)
         self.assertIn("data-gallery-fallback", self.html)
         self.assertNotIn('class="page-shell sample-grid"', self.html)
-        self.assertIn("orbit-gallery.js?v=20260810-concave4", self.html)
+        self.assertIn('homepage.css?v=20260810-orbitfix1', self.html)
+        self.assertIn("orbit-gallery.js?v=20260810-orbitfix1", self.html)
 
     def test_manifest_contains_all_requested_media(self):
         items = self.manifest["items"]
@@ -56,6 +58,17 @@ class HomeOrbitGalleryTests(unittest.TestCase):
         self.assertIn('data-gallery-state="loading"', self.html)
         self.assertIn('data-gallery-state="ready"', self.css)
 
+    def test_runtime_pointer_focus_loading_and_motion_behaviour(self):
+        result = subprocess.run(
+            ["node", str(ROOT / "tests" / "test_home_orbit_gallery_behavior.js")],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_orbit_uses_a_visible_concave_vertical_arc(self):
         self.assertIn("const arcLift = compact", self.js)
         self.assertIn("? 168", self.js)
@@ -76,6 +89,9 @@ class HomeOrbitGalleryTests(unittest.TestCase):
         self.assertIn("prefers-reduced-motion: reduce", self.js)
         self.assertIn("!conserveResources", self.js)
         self.assertIn("orbit-gallery-fallback", self.css)
+        self.assertIn("MEDIA_LOAD_RANGE", self.js)
+        self.assertIn("initObserver", self.js)
+        self.assertNotIn("AUTO_SPEED", self.js)
 
 
 if __name__ == "__main__":

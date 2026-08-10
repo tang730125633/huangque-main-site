@@ -16,10 +16,10 @@
   const conserveResources = saveData || lowMemory;
   const allowedImages = /\.(?:avif|gif|jpe?g|png|webp)$/i;
   const allowedVideos = /\.(?:m4v|mov|mp4|webm)$/i;
-  const AUTO_SPEED = 0.00016;
   const DRAG_SENSITIVITY = 0.0048;
   const FRAME_INTERVAL = conserveResources ? 32 : 8;
   const VISIBLE_RANGE = conserveResources ? 4.2 : 5.2;
+  const MEDIA_LOAD_RANGE = conserveResources ? 2.2 : VISIBLE_RANGE;
 
   root.dataset.galleryMode = conserveResources ? 'lite' : 'full';
 
@@ -32,12 +32,12 @@
     dragging: false,
     moved: false,
     inViewport: false,
+    initialized: false,
     originX: 0,
     startPosition: 0,
     lastPointerX: 0,
     lastPointerAt: 0,
     suppressClickUntil: 0,
-    autoResumeAt: 0,
     activeIndex: -1,
     lastFrameAt: performance.now(),
     lastRenderAt: 0,
@@ -107,7 +107,7 @@
     if (item.type === 'video') {
       const video = document.createElement('video');
       video.dataset.src = item.src;
-      video.poster = item.poster;
+      video.dataset.poster = item.poster;
       video.muted = true;
       video.defaultMuted = true;
       video.loop = true;
@@ -125,10 +125,10 @@
       card.append(badge);
     } else {
       const image = new Image();
-      image.src = item.src;
+      image.dataset.src = item.src;
       image.alt = '';
       image.decoding = 'async';
-      image.loading = index < 6 ? 'eager' : 'lazy';
+      image.loading = 'lazy';
       card.append(image);
     }
     track.append(card);
@@ -171,6 +171,24 @@
         video.load();
       }
       video.play().catch(() => {});
+    });
+  }
+
+  function syncCardMediaSources() {
+    state.cards.forEach((entry, index) => {
+      const shouldLoad = state.inViewport
+        && entry.visible
+        && Math.abs(shortestDelta(index)) <= MEDIA_LOAD_RANGE;
+      const media = entry.card.querySelector(entry.item.type === 'video' ? 'video' : 'img');
+      if (!media) return;
+      if (entry.item.type === 'video') {
+        if (shouldLoad && !media.getAttribute('poster')) media.poster = media.dataset.poster;
+        else if (!shouldLoad && conserveResources) media.removeAttribute('poster');
+      } else if (shouldLoad && !media.getAttribute('src')) {
+        media.src = media.dataset.src;
+      } else if (!shouldLoad && conserveResources) {
+        media.removeAttribute('src');
+      }
     });
   }
 
@@ -233,6 +251,7 @@
         entry.card.tabIndex = active ? 0 : -1;
       });
       status.textContent = `${activeIndex + 1} / ${state.items.length} · ${state.items[activeIndex].alt}`;
+      syncCardMediaSources();
       syncVideoPlayback();
     }
   }
@@ -243,7 +262,6 @@
     previewStage.replaceChildren();
     previewTitle.textContent = '';
     root.focus({ preventScroll: true });
-    state.autoResumeAt = performance.now() + 1400;
     syncVideoPlayback();
   }
 
@@ -283,7 +301,7 @@
     state.renderPending = true;
   }
 
-  root.addEventListener('pointerdown', event => {
+  function beginDrag(event) {
     if (event.button !== 0) return;
     state.tracking = true;
     state.dragging = false;
@@ -293,18 +311,21 @@
     state.lastPointerX = event.clientX;
     state.lastPointerAt = performance.now();
     state.velocity = 0;
-    state.autoResumeAt = performance.now() + 3200;
-  });
+    if (typeof root.setPointerCapture === 'function') root.setPointerCapture(event.pointerId);
+  }
 
-  root.addEventListener('pointermove', event => {
+  function moveDrag(event) {
     if (!state.tracking) return;
+    if ((event.buttons & 1) === 0) {
+      finishDrag(event);
+      return;
+    }
     const totalX = event.clientX - state.originX;
     if (!state.dragging && Math.abs(totalX) < 6) return;
     if (!state.dragging) {
       state.dragging = true;
       state.moved = true;
       root.classList.add('is-dragging');
-      root.setPointerCapture(event.pointerId);
     }
     const now = performance.now();
     const elapsed = Math.max(8, now - state.lastPointerAt);
@@ -315,28 +336,33 @@
     state.lastPointerAt = now;
     queueRender();
     event.preventDefault();
-  });
-
-  function finishDrag(event) {
-    if (!state.tracking) return;
-    state.tracking = false;
-    if (!state.dragging) return;
-    state.dragging = false;
-    root.classList.remove('is-dragging');
-    if (root.hasPointerCapture(event.pointerId)) root.releasePointerCapture(event.pointerId);
-    if (state.moved) state.suppressClickUntil = performance.now() + 380;
-    state.autoResumeAt = performance.now() + 1600;
   }
 
+  function finishDrag(event) {
+    const wasTracking = state.tracking;
+    state.tracking = false;
+    state.dragging = false;
+    root.classList.remove('is-dragging');
+    if (typeof root.hasPointerCapture === 'function' && root.hasPointerCapture(event.pointerId)) {
+      root.releasePointerCapture(event.pointerId);
+    }
+    if (!wasTracking) return;
+    if (state.moved) state.suppressClickUntil = performance.now() + 380;
+  }
+
+  root.addEventListener('pointerdown', beginDrag);
+  root.addEventListener('pointermove', moveDrag);
   root.addEventListener('pointerup', finishDrag);
   root.addEventListener('pointercancel', finishDrag);
+  root.addEventListener('lostpointercapture', finishDrag);
+  addEventListener('pointerup', finishDrag, true);
+  addEventListener('pointercancel', finishDrag, true);
 
   root.addEventListener('wheel', event => {
     if (preview.open || (Math.abs(event.deltaX) <= Math.abs(event.deltaY) && !event.shiftKey)) return;
     const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
     state.position += delta * 0.0016;
     state.velocity = delta * 0.000035;
-    state.autoResumeAt = performance.now() + 1800;
     queueRender();
     event.preventDefault();
   }, { passive: false });
@@ -348,18 +374,24 @@
     if (item) openPreview(item);
   });
 
-  root.addEventListener('keydown', event => {
+  function focusActiveCard() {
+    state.cards[state.activeIndex]?.card.focus({ preventScroll: true });
+  }
+
+  function handleGalleryKeydown(event) {
     if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
       event.preventDefault();
       state.velocity = 0;
       state.position += event.key === 'ArrowRight' ? 1 : -1;
-      state.autoResumeAt = performance.now() + 1800;
       render(true);
+      focusActiveCard();
     } else if ((event.key === 'Enter' || event.key === ' ') && state.items[state.activeIndex]) {
       event.preventDefault();
       openPreview(state.items[state.activeIndex]);
     }
-  });
+  }
+
+  root.addEventListener('keydown', handleGalleryKeydown);
 
   previewClose.addEventListener('click', closePreview);
   preview.addEventListener('click', event => {
@@ -370,9 +402,21 @@
 
   const visibilityObserver = new IntersectionObserver(entries => {
     state.inViewport = Boolean(entries[0]?.isIntersecting);
+    syncCardMediaSources();
     syncVideoPlayback();
   }, { rootMargin: '12% 0px' });
   visibilityObserver.observe(root);
+
+  function advanceMotion(elapsed) {
+    if (Math.abs(state.velocity) <= 0.00002) {
+      state.velocity = 0;
+      return false;
+    }
+    state.position += state.velocity * elapsed;
+    state.velocity *= Math.pow(0.93, elapsed / 16.67);
+    if (Math.abs(state.velocity) <= 0.00002) state.velocity = 0;
+    return true;
+  }
 
   function animate(now) {
     const elapsed = Math.min(50, now - state.lastFrameAt);
@@ -384,17 +428,7 @@
       && !reducedMotion.matches
       && !conserveResources;
     let positionChanged = false;
-    if (canMove) {
-      if (Math.abs(state.velocity) > 0.00002) {
-        state.position += state.velocity * elapsed;
-        state.velocity *= Math.pow(0.93, elapsed / 16.67);
-        if (Math.abs(state.velocity) <= 0.00002) state.velocity = 0;
-        positionChanged = true;
-      } else if (now >= state.autoResumeAt) {
-        state.position += AUTO_SPEED * elapsed;
-        positionChanged = true;
-      }
-    }
+    if (canMove) positionChanged = advanceMotion(elapsed);
     if ((positionChanged || state.renderPending) && now - state.lastRenderAt >= FRAME_INTERVAL) {
       state.lastRenderAt = now;
       state.renderPending = false;
@@ -404,6 +438,8 @@
   }
 
   async function init() {
+    if (state.initialized) return;
+    state.initialized = true;
     try {
       state.items = await loadItems();
       state.cards = state.items.map(createCard);
@@ -417,11 +453,19 @@
     }
   }
 
+  function handleInitIntersection(entries) {
+    if (!entries[0]?.isIntersecting) return;
+    initObserver.disconnect();
+    init();
+  }
+
+  const initObserver = new IntersectionObserver(handleInitIntersection, { rootMargin: '40% 0px' });
+  initObserver.observe(root);
+
   addEventListener('resize', () => render(true));
   reducedMotion.addEventListener?.('change', () => {
     state.velocity = 0;
     render(true);
     syncVideoPlayback();
   });
-  init();
 })();
