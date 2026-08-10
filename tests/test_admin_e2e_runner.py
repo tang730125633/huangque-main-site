@@ -246,6 +246,19 @@ class AdminE2ERunnerTests(unittest.TestCase):
         )
         self.assertEqual(self.admin._e2e_kind("/api/gen/script_to_video"), "script_to_video")
 
+        script_image = self.admin._e2e_payload(
+            "script.output.image",
+            self.admin.function_registry.e2e_runner("script.output.image"),
+        )
+        self.assertEqual(
+            (script_image["provider"], script_image["source_page"], script_image["count"]),
+            ("openai", "script", 1),
+        )
+        self.assertEqual(
+            self.admin.function_registry.e2e_runner("script.output.image")["endpoint"]["path"],
+            "/api/gen/image",
+        )
+
     def test_text_video_voice_preflight_uses_the_customer_api_shape(self):
         with patch.object(self.admin, "_content_e2e_get", return_value={"voices": [{
             "id": "public:zh-CN-YunjianNeural", "scope": "public",

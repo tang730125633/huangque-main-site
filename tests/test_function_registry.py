@@ -211,10 +211,11 @@ class FunctionRegistryTests(unittest.TestCase):
             mode["validation"]["supported"]
             for feature in script["functions"][:2] for mode in feature["modes"]
         ))
-        self.assertTrue(all(
-            not mode["validation"]["supported"]
-            for mode in script["functions"][2]["modes"]
-        ))
+        output_modes = script["functions"][2]["modes"]
+        self.assertEqual(
+            [mode["key"] for mode in output_modes if mode["validation"]["supported"]],
+            ["script.output.image"],
+        )
         text_video = next(page for page in pages if page["key"] == "text-video")
         self.assertEqual(
             [mode["key"] for mode in text_video["functions"][0]["modes"]],
