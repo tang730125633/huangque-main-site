@@ -62,6 +62,7 @@ def _optional_content_domain(name):
 
 points_domain = _optional_content_domain("points")
 cosyvoice_domain = _optional_content_domain("cosyvoice")
+pixelle_video = _optional_content_domain("pixelle_video")
 short_drama_lipsync_diagnostics = _optional_content_domain(
     "short_drama_lipsync_diagnostics"
 )
@@ -1117,7 +1118,10 @@ def _content_e2e_request(path, account_token, payload, idempotency_key, expected
             body = json.loads(exc.read() or b"{}")
         except Exception:
             body = {}
-        error_type = E2ESubmitUncertain if exc.code >= 500 or exc.code in {408, 409} else E2ESubmitRejected
+        definite_rejection = exc.code == 409 and body.get("code") == "quote_cost_changed"
+        error_type = E2ESubmitUncertain if (
+            not definite_rejection and (exc.code >= 500 or exc.code in {408, 409})
+        ) else E2ESubmitRejected
         err = error_type(body.get("detail") or "业务接口拒绝测试任务")
         err.status = exc.code
         err.body = body
@@ -1539,10 +1543,15 @@ def _e2e_prepare_operation(session, operation_id):
     kind = _e2e_kind(endpoint)
     if not kind:
         raise ValueError("该模式的业务接口尚未接入后台托管测试")
+    cost_payload = payload
+    if kind == "script_to_video" and payload.get("pipeline") == "pixelle":
+        if pixelle_video is None:
+            raise RuntimeError("文案成片模块不可用")
+        cost_payload = pixelle_video.prepare_payload(payload, account["username"])
     return {
         "operation_id": operation_id, "runner": runner, "payload": payload,
         "endpoint": endpoint, "kind": kind,
-        "cost": _e2e_cost(operation_id, kind, payload, account_token),
+        "cost": _e2e_cost(operation_id, kind, cost_payload, account_token),
         "parameters": _e2e_parameters(operation_id, payload),
     }
 
