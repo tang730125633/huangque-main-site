@@ -1576,9 +1576,32 @@ class H(BaseHTTPRequestHandler):
         except Exception:
             raise ValueError("请求体不是合法 JSON")
     def do_POST(self):
+        self._cinematic_reference_files = []
+        self._cinematic_references_enqueued = False
+        self._cinematic_early_idempotency = None
+        self._cinematic_charge_started = False
+        try:
+            return H._do_POST(self)
+        finally:
+            if (self._cinematic_reference_files
+                    and not self._cinematic_references_enqueued):
+                from . import video as cinematic_video_domain
+                cinematic_video_domain._cleanup_cinematic_reference_files(
+                    self._cinematic_reference_files)
+            if (self._cinematic_early_idempotency
+                    and not self._cinematic_charge_started):
+                try:
+                    _idempotency_abort(*self._cinematic_early_idempotency)
+                except Exception as exc:
+                    print("[cinematic] ALARM idempotency abort failed: %s" %
+                          type(exc).__name__, flush=True)
+
+    def _do_POST(self):
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
         if cli_gateway.handle_image_upload(
+                self, p, verify, _must_change_password, AUTH_INTERNAL_TOKEN): return
+        if cli_gateway.handle_video_upload(
                 self, p, verify, _must_change_password, AUTH_INTERNAL_TOKEN): return
         if cli_gateway.handle_quote(
                 self, p, verify, _must_change_password, is_shutting_down,
@@ -2573,15 +2596,23 @@ class H(BaseHTTPRequestHandler):
             try:
                 feature_flags.require_enabled("video")
                 request_body = self._json_body_strict()
+                miniprogram_security.check_payload(request_body)
                 payloads = video_domain.validate_video_batch_payload(
                     request_body, user["username"], min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS))
                 idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
             except feature_flags.FeatureDisabled as e:
                 return self._send(503, {"detail": str(e)})
+            except miniprogram_security.ContentRejected as e:
+                return self._send(400, {"detail": str(e), "code": "content_rejected"})
+            except miniprogram_security.SecurityUnavailable as e:
+                return self._send(503, {"detail": str(e), "code": "content_security_unavailable",
+                                        "retry_after_ms": 5000})
             except ValueError as e:
                 return self._send(400, {"detail": str(e)[:220]})
             costs = [points_domain.cost_of("video", body) for body in payloads]
             total = sum(costs)
+            if cli_gateway.reject_changed_cost(self, total, AUTH_INTERNAL_TOKEN):
+                return
             with _submission_lock:
                 idem_state, idem_response = _idempotency_begin(user["username"], p, idem_key, request_body)
                 if idem_state == "replay":
@@ -2669,14 +2700,40 @@ class H(BaseHTTPRequestHandler):
                 })
             still_idem_started = False
             still_attempt = None
+            cinematic_idem_reserved = False
             still_access = _short_drama_canvas_access(self) if is_still_route else None
             try:
                 body = self._json_body_strict() if is_still_route or kind in {"video", "tryon", "sora_video", "cinematic", "avatar", "script_to_video", "copy", "canvas_agent"} else self._json_body()
+                if kind == "cinematic":
+                    request_body = dict(body) if isinstance(body, dict) else body
+                    idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
+                    if idem_key:
+                        idem_state, idem_response = _idempotency_begin(
+                            user["username"], p, idem_key, request_body)
+                        if idem_state == "replay":
+                            replay = dict(idem_response or {})
+                            return self._send(int(replay.pop("_http_status", 200)), replay)
+                        if idem_state == "conflict":
+                            return self._send(409, {
+                                "detail": "同一个 Idempotency-Key 不能用于不同请求",
+                                "code": "idempotency_conflict",
+                            })
+                        if idem_state == "processing":
+                            return self._send(409, {
+                                "detail": "相同请求正在受理，请稍后查询",
+                                "code": "idempotency_in_progress", "retry_after_ms": 1000,
+                            })
+                        cinematic_idem_reserved = idem_state == "new"
+                        if cinematic_idem_reserved:
+                            self._cinematic_early_idempotency = (
+                                user["username"], p, idem_key)
                 if is_still_route:
                     request_body, still_idem_body = _short_drama_domain().short_drama_production.normalize_still_request(body, require_quote=True); idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
                     if not idem_key: raise ValueError("关键帧提交必须提供 Idempotency-Key")
                 elif kind in {"image", "xiaole_video", "sora_video"}:
                     body = cli_uploads.expand_image_payload(body, user["username"])
+                elif kind in {"tryon", "cinematic"}:
+                    body = cli_uploads.expand_role_media_payload(body, user["username"])
                 if kind == "avatar":
                     body = video_domain.validate_avatar_payload(body)
                     _short_drama_domain().validate_avatar_binding_submission(
@@ -2705,7 +2762,8 @@ class H(BaseHTTPRequestHandler):
                 elif kind == "copy" and isinstance(body, dict) and body.get("format") == "short_drama": body = _short_drama_domain().validate_planning_submission(jdb, user["username"], body, _short_drama_canvas_access(self))
                 elif kind == "video": body = video_domain.validate_video_payload(body, user["username"])
                 elif kind == "tryon": body = video_domain.validate_tryon_payload(body)
-                elif kind == "cinematic": body = video_domain.validate_cinematic_payload(body, user["username"])
+                elif kind == "cinematic": body = video_domain.validate_cinematic_payload(
+                    body, user["username"], self._cinematic_reference_files)
                 elif kind == "xiaole_video": body = video_domain.validate_xiaole_video_payload(body, user["username"])
                 elif kind == "sora_video": body = video_domain.validate_sora_video_payload(body)
                 elif kind == "script_to_video":
@@ -2734,9 +2792,9 @@ class H(BaseHTTPRequestHandler):
                     body = audio_domain.validate_audio_payload(
                         body, user["username"]
                     )
-                if not is_still_route: request_body = dict(body) if isinstance(body, dict) else body
+                if not is_still_route and kind != "cinematic": request_body = dict(body) if isinstance(body, dict) else body
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
-                if not is_still_route: idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "audio", "video", "tryon", "xiaole_video", "sora_video", "cinematic", "avatar", "canvas_agent", "script_to_video", "breakdown", "copy"} else ""
+                if not is_still_route: idem_key = idem_key if kind == "cinematic" else (_idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "audio", "video", "tryon", "xiaole_video", "sora_video", "avatar", "canvas_agent", "script_to_video", "breakdown", "copy"} else "")
                 if kind == "canvas_agent" and not idem_key:
                     raise ValueError("画布 Agent 提交必须提供 Idempotency-Key")
                 if kind == "avatar" and body.get("short_drama_binding") and not idem_key:
@@ -2840,7 +2898,7 @@ class H(BaseHTTPRequestHandler):
                         recovered["points_left"] = points_domain.get_points(user["username"])
                         _idempotency_complete(user["username"], p, idem_key, recovered)
                         return self._send(200, recovered)
-                if not is_still_route: idem_state, idem_response = ("new", None) if seedance_idem_reserved else _idempotency_begin(user["username"], p, idem_key, request_body)
+                if not is_still_route: idem_state, idem_response = ("new", None) if seedance_idem_reserved or cinematic_idem_reserved else _idempotency_begin(user["username"], p, idem_key, request_body)
                 if idem_state == "replay": replay = dict(idem_response or {}); return self._send(int(replay.pop("_http_status", 200)), replay)
                 if idem_state == "conflict": return self._send(409, {"detail": "同一个 Idempotency-Key 不能用于不同请求", "code": "idempotency_conflict"})
                 if idem_state == "processing" and not is_still_route: return self._send(409, {"detail": "相同请求正在受理，请稍后查询", "code": "idempotency_in_progress", "retry_after_ms": 1000})
@@ -2928,6 +2986,8 @@ class H(BaseHTTPRequestHandler):
                         still_attempt = _short_drama_domain().short_drama_production.get_charge_attempt(
                             jdb, user["username"], idem_key)
                     else:
+                        if kind == "cinematic":
+                            self._cinematic_charge_started = True
                         jid, points_left = jobs_store.create_paid_job(
                             jdb, points_domain.deduct_points, points_domain.refund_points,
                             kind, user["username"], cost, body, SERVICE_OWNER,
@@ -3016,6 +3076,8 @@ class H(BaseHTTPRequestHandler):
                     else:
                         _idempotency_complete(user["username"], p, idem_key, dict(queue_response, _http_status=429))
                     return self._send(429, queue_response)
+                if kind == "cinematic":
+                    self._cinematic_references_enqueued = True
             response = {"job_id": jid, "cost": cost, "points_left": points_left}
             if kind == "script_to_video" and body.get("cost_breakdown"):
                 response["cost_breakdown"] = body["cost_breakdown"]

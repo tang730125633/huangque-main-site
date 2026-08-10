@@ -154,6 +154,14 @@ class NginxCspTest(unittest.TestCase):
                 )
                 self.assertIn('proxy_set_header X-HQ-Internal-Token "";', block)
 
+                video_start = config.index("location = /api/auth/cli/video-upload {")
+                video_end = config.index("\n    }", video_start)
+                video_block = config[video_start:video_end]
+                self.assertIn("proxy_request_buffering off;", video_block)
+                self.assertIn("client_max_body_size 32m;", video_block)
+                self.assertIn("client_body_timeout 45s;", video_block)
+                self.assertIn('proxy_set_header X-HQ-Internal-Token "";', video_block)
+
     def test_card_media_upload_has_a_bounded_streaming_route(self):
         config = self._config("deploy/nginx-huangquechuanmei.conf")
         start = config.index("location = /api/auth/card/media {")
