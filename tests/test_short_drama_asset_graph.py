@@ -222,9 +222,13 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
             detect_mime=lambda value: "image/png" if value.startswith(b"\x89PNG") else "",
         )
         with mock.patch.dict(sys.modules, {
-            "server.content_domains.image": fake_image,
-            "server.content_domains.cli_uploads": fake_uploads,
-        }):
+            graph.__package__ + ".image": fake_image,
+            graph.__package__ + ".cli_uploads": fake_uploads,
+        }), mock.patch.object(
+            sys.modules[graph.__package__], "image", fake_image, create=True,
+        ), mock.patch.object(
+            sys.modules[graph.__package__], "cli_uploads", fake_uploads, create=True,
+        ):
             created = graph.set_scene_reference(self.db, "alice", "alice", {
                 "project_id": "p1", "graph_revision": scenes["graph_revision"],
                 "scene_key": scene["scene_key"], "source": "upload",
@@ -257,9 +261,13 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
             detect_mime=lambda value: "image/png" if value.startswith(b"\x89PNG") else "",
         )
         with mock.patch.dict(sys.modules, {
-            "server.content_domains.image": fake_image,
-            "server.content_domains.cli_uploads": fake_uploads,
+            graph.__package__ + ".image": fake_image,
+            graph.__package__ + ".cli_uploads": fake_uploads,
         }), mock.patch.object(
+            sys.modules[graph.__package__], "image", fake_image, create=True,
+        ), mock.patch.object(
+            sys.modules[graph.__package__], "cli_uploads", fake_uploads, create=True,
+        ), mock.patch.object(
             graph, "scene_workspace", side_effect=RuntimeError("response assembly failed")
         ):
             with self.assertRaisesRegex(RuntimeError, "response assembly failed"):
@@ -301,8 +309,10 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
         )
 
         with mock.patch.dict(sys.modules, {
-            "server.content_domains.image": fake_image,
-        }):
+            graph.__package__ + ".image": fake_image,
+        }), mock.patch.object(
+            sys.modules[graph.__package__], "image", fake_image, create=True,
+        ):
             with self.assertRaises(graph.AssetGraphError) as raised:
                 graph.set_scene_reference(self.db, "alice", "alice", {
                     "project_id": "p1",
