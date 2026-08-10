@@ -102,7 +102,14 @@
           "accessories": { "type": "string", "maxLength": 500 },
           "appearance_prompt": { "type": "string", "maxLength": 500 },
           "wardrobe_prompt": { "type": "string", "maxLength": 500 },
-          "reference_views": { "type": "array", "enum": [["front_full", "side_full", "back_full"]] }
+          "reference_views": {
+            "type": "array",
+            "description": "新版合同使用背面全身；旧客户端的正面半身合同仍可导入，并由迁移门禁要求补齐背面全身。",
+            "enum": [
+              ["front_full", "side_full", "back_full"],
+              ["front_full", "side_full", "front_half"]
+            ]
+          }
         }
       },
       "ShortDramaCharacterContract": {
@@ -1413,6 +1420,102 @@
           "plan_id": { "type": "string" },
           "plan_version": { "type": "integer", "minimum": 1 },
           "accepted_issue_keys": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "ShortDramaSceneWorkspace": {
+        "type": "object",
+        "required": ["project_id", "graph_revision", "scenes"],
+        "properties": {
+          "project_id": { "type": "string" },
+          "graph_revision": { "type": "integer", "minimum": 1 },
+          "scenes": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+        }
+      },
+      "ShortDramaSceneReferenceRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["project_id", "graph_revision", "scene_key", "source"],
+        "properties": {
+          "project_id": { "type": "string", "minLength": 1 },
+          "graph_revision": { "type": "integer", "minimum": 1 },
+          "scene_key": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "source": { "type": "string", "enum": ["upload", "asset"] },
+          "image_data": { "type": "string", "description": "upload 来源使用的 JPG/PNG/WebP data URL" },
+          "filename": { "type": "string", "maxLength": 240 },
+          "asset_job_id": { "type": "integer", "nullable": true },
+          "asset_url": { "type": "string", "maxLength": 2000 },
+          "prompt": { "type": "string", "maxLength": 8000 },
+          "reference_source": { "type": "string", "maxLength": 40 }
+        }
+      },
+      "ShortDramaSceneLockRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["project_id", "graph_revision", "scene_key"],
+        "properties": {
+          "project_id": { "type": "string", "minLength": 1 },
+          "graph_revision": { "type": "integer", "minimum": 1 },
+          "scene_key": { "type": "string", "minLength": 1, "maxLength": 80 }
+        }
+      },
+      "ShortDramaLiveActionCoreStoryRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["project_id", "revision", "core_story"],
+        "properties": {
+          "project_id": { "type": "string", "minLength": 1 },
+          "revision": { "type": "integer", "minimum": 1 },
+          "core_story": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["title", "logline", "setup", "development", "turning_point", "climax", "ending", "central_conflict", "theme", "preservation_notes"],
+            "properties": {
+              "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+              "logline": { "type": "string", "minLength": 1, "maxLength": 1200 },
+              "setup": { "type": "string", "minLength": 1, "maxLength": 1200 },
+              "development": { "type": "string", "minLength": 1, "maxLength": 1200 },
+              "turning_point": { "type": "string", "minLength": 1, "maxLength": 1200 },
+              "climax": { "type": "string", "minLength": 1, "maxLength": 1200 },
+              "ending": { "type": "string", "minLength": 1, "maxLength": 1200 },
+              "central_conflict": { "type": "string", "minLength": 1, "maxLength": 1200 },
+              "theme": { "type": "string", "minLength": 1, "maxLength": 1200 },
+              "preservation_notes": { "type": "string", "maxLength": 1200 }
+            }
+          }
+        }
+      },
+      "ShortDramaProjectRevisionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["project_id", "revision"],
+        "properties": {
+          "project_id": { "type": "string", "minLength": 1 },
+          "revision": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "ShortDramaProviderVersionSelectionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["project_id", "shot_key", "version_id"],
+        "properties": {
+          "project_id": { "type": "string", "minLength": 1 },
+          "shot_key": { "type": "string", "minLength": 1 },
+          "version_id": { "type": "string", "minLength": 1 }
+        }
+      },
+      "ShortDramaCharacterReferenceSelectionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["project_id", "revision", "character_key", "source", "asset_job_id", "asset_url", "filename", "image_data"],
+        "properties": {
+          "project_id": { "type": "string", "minLength": 1 },
+          "revision": { "type": "integer", "minimum": 1 },
+          "character_key": { "type": "string", "minLength": 1 },
+          "source": { "type": "string", "enum": ["upload", "asset"] },
+          "asset_job_id": { "type": "integer", "nullable": true },
+          "asset_url": { "type": "string", "maxLength": 2000 },
+          "filename": { "type": "string", "maxLength": 240 },
+          "image_data": { "type": "string", "description": "upload 来源使用的 JPG/PNG/WebP data URL" }
         }
       },
       "Error": { "type": "object", "properties": { "detail": { "type": "string" }, "code": { "type": "string" } } }
@@ -3253,6 +3356,57 @@
         "responses": { "200": { "description": "资产实体、版本、关系和 graph_revision" } }
       }
     },
+    "/api/gen/short-drama/asset-graph/scenes": {
+      "get": {
+        "tags": ["短剧策划"],
+        "summary": "读取按场景分组的参考图工作区",
+        "parameters": [
+          { "name": "project_id", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "$ref": "#/components/parameters/XCanvasBoardId" }
+        ],
+        "responses": {
+          "200": { "description": "场景参考图、锁定状态与 graph_revision", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaSceneWorkspace" } } } },
+          "400": { "description": "缺少项目 ID", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "未登录", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "必须修改初始密码或没有项目读取权限", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "项目不存在或当前用户无权发现", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/api/gen/short-drama/asset-graph/scenes/reference": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "为一组场景镜头设置上传图或已有图片资产",
+        "parameters": [{ "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaSceneReferenceRequest" } } } },
+        "responses": {
+          "200": { "description": "更新后的场景工作区", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaSceneWorkspace" } } } },
+          "400": { "description": "请求体不是合法 JSON", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "未登录", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "必须修改初始密码或没有项目写权限", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "项目或场景不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": { "description": "graph_revision 已过期", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "422": { "description": "图片、来源或所选资产无效；非空 asset_url 必须属于指定图片 job", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/api/gen/short-drama/asset-graph/scenes/lock": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "锁定一组场景镜头的当前参考图",
+        "parameters": [{ "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaSceneLockRequest" } } } },
+        "responses": {
+          "200": { "description": "更新后的场景工作区", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaSceneWorkspace" } } } },
+          "400": { "description": "请求体不是合法 JSON", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "未登录", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "必须修改初始密码或没有项目写权限", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "项目或场景不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": { "description": "graph_revision 已过期", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "422": { "description": "场景尚无可锁定的参考图", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
     "/api/gen/short-drama/asset-graph/shot-package": {
       "get": {
         "tags": ["短剧策划"], "summary": "读取镜头当前资产快照",
@@ -3518,6 +3672,36 @@
         }
       }
     },
+    "/api/gen/short-drama/projects/live-action/core-story": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "确认真人短剧核心故事检查点",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaLiveActionCoreStoryRequest" } } } },
+        "responses": {
+          "200": { "description": "已保存核心故事并返回新 revision", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaProject" } } } },
+          "400": { "description": "字段不完整、内容过长或当前阶段不可修改", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "未登录", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "必须修改初始密码", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "真人短剧草稿不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": { "description": "项目 revision 已变化", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RevisionConflict" } } } }
+        }
+      }
+    },
+    "/api/gen/short-drama/projects/live-action/finalize": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "将完成门禁的真人短剧草稿转为正式项目",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaProjectRevisionRequest" } } } },
+        "responses": {
+          "200": { "description": "正式项目详情；已完成请求可安全重放", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaProject" } } } },
+          "400": { "description": "角色、核心故事、标准图或旧契约背面图迁移尚未完成", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "未登录", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "必须修改初始密码", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "真人短剧草稿不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": { "description": "项目 revision 已变化", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RevisionConflict" } } } }
+        }
+      }
+    },
     "/api/gen/short-drama/projects/live-action/abandon": {
       "post": {
         "tags": ["短剧策划"],
@@ -3603,6 +3787,24 @@
           "403": { "description": "账号必须先修改初始密码；或共享画布角色为 viewer/无写权限；检查先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "404": { "description": "项目不存在、画布不匹配或当前用户无权发现", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "409": { "description": "revision_conflict：提交的 revision 已过期；或 timeline_handoff_not_ready：已启动的主时间轴尚未确认或已经失效", "content": { "application/json": { "schema": { "oneOf": [{ "$ref": "#/components/schemas/RevisionConflict" }, { "$ref": "#/components/schemas/TimelineHandoffConflict" }] } } } }
+        }
+      }
+    },
+    "/api/gen/short-drama/select-character-reference": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "从本地上传或已有图片资产设置角色标准图",
+        "parameters": [{ "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaCharacterReferenceSelectionRequest" } } } },
+        "responses": {
+          "200": { "description": "已附加待确认标准图的项目详情", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaProject" } } } },
+          "400": { "description": "请求字段、图片内容或所选资产无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "未登录或登录已过期", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "必须修改初始密码或没有项目写权限", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "项目、角色或图片资产不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": { "description": "项目 revision 已变化", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RevisionConflict" } } } },
+          "422": { "description": "图片不满足人物标准图要求", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "503": { "description": "图片检测或存储服务暂不可用", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
         }
       }
     },
@@ -3896,6 +4098,21 @@
         "responses": {
           "200": { "description": "返回五分钟有效的报价令牌、费用和请求哈希；本接口不扣点" },
           "503": { "description": "真实 Provider 尚未配置" }
+        }
+      }
+    },
+    "/api/gen/short-drama/autodraft/provider-version/select": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "选择一个已就绪的真实 Provider 镜头版本",
+        "parameters": [{ "$ref": "#/components/parameters/XCanvasBoardId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaProviderVersionSelectionRequest" } } } },
+        "responses": {
+          "200": { "description": "已选择的镜头版本", "content": { "application/json": { "schema": { "type": "object", "additionalProperties": true } } } },
+          "400": { "description": "请求字段无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "未登录", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "必须修改初始密码或没有项目写权限", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "项目、镜头或已就绪版本不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
         }
       }
     },

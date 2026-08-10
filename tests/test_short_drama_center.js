@@ -1061,6 +1061,69 @@ test('character reference picker supports assets uploads and AI generation', asy
   assert.match(centerStyle, /\.short-drama-upload-confirm-box\{/);
 });
 
+test('asset search keeps pagination available until all pages are searched', () => {
+  const firstPage = Array.from({length:60}, (_, index) => ({
+    job_id:index + 1, prompt:'asset '+(index + 1), url:'/asset/'+(index + 1)
+  }));
+  const partial = center.liveActionAssetSearchResult(
+    firstPage, 'target role', true
+  );
+  assert.equal(partial.items.length, 0);
+  assert.equal(partial.canLoadMore, true);
+  assert.match(partial.emptyMessage, /继续加载更多/);
+
+  const found = center.liveActionAssetSearchResult([
+    ...firstPage,
+    {job_id:61, prompt:'target role portrait', url:'/asset/61'}
+  ], 'target role', false);
+  assert.deepEqual(found.items.map(item => item.job_id), [61]);
+  assert.equal(found.canLoadMore, false);
+
+  const exhausted = center.liveActionAssetSearchResult(
+    firstPage, 'missing role', false
+  );
+  assert.equal(exhausted.canLoadMore, false);
+  assert.match(exhausted.emptyMessage, /没有找到/);
+});
+
+test('reference modals trap Tab focus and close only themselves on Escape', () => {
+  let activeElement = null;
+  const makeControl = () => ({
+    disabled:false, hidden:false, tabIndex:0,
+    getAttribute:() => null,
+    focus(){ activeElement = this; },
+  });
+  const first = makeControl(), middle = makeControl(), last = makeControl();
+  const modal = {
+    ownerDocument:{get activeElement(){ return activeElement; }},
+    querySelectorAll:() => [first, middle, last],
+    contains:node => [first, middle, last].includes(node),
+  };
+  const event = (key, shiftKey=false) => ({
+    key, shiftKey, prevented:false, stopped:false,
+    preventDefault(){ this.prevented = true; },
+    stopPropagation(){ this.stopped = true; },
+  });
+
+  activeElement = last;
+  const forward = event('Tab');
+  assert.equal(center.liveActionModalKeydown(modal, forward, () => {}), true);
+  assert.equal(activeElement, first);
+  assert.equal(forward.prevented, true);
+
+  activeElement = first;
+  const backward = event('Tab', true);
+  center.liveActionModalKeydown(modal, backward, () => {});
+  assert.equal(activeElement, last);
+
+  let closed = 0;
+  const escape = event('Escape');
+  center.liveActionModalKeydown(modal, escape, () => { closed += 1; });
+  assert.equal(closed, 1);
+  assert.equal(escape.prevented, true);
+  assert.equal(escape.stopped, true);
+});
+
 test('generated character reference requires explicit confirmation before locking', async () => {
   const calls = [];
   const client = center.createClient(async (url, options) => {

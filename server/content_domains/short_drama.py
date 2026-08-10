@@ -1933,10 +1933,13 @@ def _validate_import_character_contract(value):
         if any(len(clean[field]) > 500 for field in text_fields - {"character_key", "name", "role_type"}):
             raise ScriptImportError("character_field_too_long", "角色信息过长")
         views = item.get("reference_views")
-        if (not isinstance(views, list)
-                or tuple(views) != _REQUIRED_CHARACTER_REFERENCE_VIEWS):
+        view_contract = tuple(views) if isinstance(views, list) else ()
+        if view_contract not in {
+                _REQUIRED_CHARACTER_REFERENCE_VIEWS,
+                _LEGACY_CHARACTER_REFERENCE_VIEWS,
+        }:
             raise ScriptImportError("invalid_reference_views", "角色卡必须包含正面、侧面和背面全身图")
-        clean["reference_views"] = list(_REQUIRED_CHARACTER_REFERENCE_VIEWS)
+        clean["reference_views"] = list(view_contract)
         keys.add(key)
         names.add(name.casefold())
         normalized.append(clean)
@@ -2026,6 +2029,9 @@ def import_script_project(db_factory, username, payload, idempotency_key):
     character_contract = _validate_import_character_contract(
         payload.get("character_contract")
     )
+    character_contract_migration = _legacy_character_contract_migration(
+        character_contract
+    )
     key = str(idempotency_key or "").strip()
     if not key or len(key) > 160:
         raise ScriptImportError("idempotency_key_required", "缺少有效的幂等键")
@@ -2066,6 +2072,7 @@ def import_script_project(db_factory, username, payload, idempotency_key):
                 "character_count": len(source),
                 "role_count": len(character_contract),
                 "character_contract": character_contract,
+                "character_contract_migration": character_contract_migration,
                 "replayed": True,
             }
             conn.rollback()
@@ -2093,12 +2100,15 @@ def import_script_project(db_factory, username, payload, idempotency_key):
         conn.execute(
             "INSERT INTO short_drama_script_imports "
             "(id,username,project_id,idempotency_key,request_hash,source_text,"
-            "source_hash,filename,content_type,character_contract_json,import_mode,status,created_at,updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,'completed',?,?)",
+            "source_hash,filename,content_type,character_contract_json,"
+            "character_contract_migration_json,import_mode,status,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'completed',?,?)",
             (
                 str(uuid.uuid4()), username, project_id, key, request_hash,
                 source, source_hash, filename, content_type,
                 json.dumps(character_contract, ensure_ascii=False, separators=(",", ":")),
+                json.dumps(character_contract_migration, ensure_ascii=False,
+                           separators=(",", ":")),
                 mode, now, now,
             ),
         )
@@ -2116,6 +2126,7 @@ def import_script_project(db_factory, username, payload, idempotency_key):
             "character_count": len(source),
             "role_count": len(character_contract),
             "character_contract": character_contract,
+            "character_contract_migration": character_contract_migration,
             "replayed": False,
         }
         conn.commit()

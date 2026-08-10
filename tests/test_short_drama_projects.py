@@ -3785,6 +3785,55 @@ class ShortDramaRouteTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertTrue(deleted["deleted"])
 
+    def test_live_action_import_accepts_legacy_reference_views_with_migration_gate(self):
+        legacy_contract = [{
+            "character_key": "character_1",
+            "name": "Lin Yi",
+            "role_type": "main",
+            "gender": "female",
+            "identity_text": "",
+            "relationships": "",
+            "personality": "",
+            "age": "",
+            "face_shape": "",
+            "hairstyle": "",
+            "hair_color": "",
+            "height_body": "",
+            "fixed_clothing": "white shirt",
+            "fixed_colors": "",
+            "accessories": "",
+            "appearance_prompt": "female detective",
+            "wardrobe_prompt": "white shirt",
+            "reference_views": ["front_full", "side_full", "front_half"],
+        }]
+        body = {
+            **{key: value for key, value in valid_project().items()
+               if key != "point_budget"},
+            "source_text": "A complete legacy live action script snapshot.",
+            "filename": "legacy-live-action.txt",
+            "import_mode": "faithful",
+            "content_type": "live_action",
+            "character_contract": legacy_contract,
+        }
+
+        status, project = self.request(
+            "POST", "/api/gen/short-drama/projects/import", body=body,
+            idempotency_key="legacy-live-action-import",
+        )
+
+        self.assertEqual(200, status)
+        self.assertEqual(
+            ["front_full", "side_full", "front_half"],
+            project["script_import"]["character_contract"][0]["reference_views"],
+        )
+        migration = project["script_import"]["character_contract_migration"]
+        self.assertTrue(migration["required"])
+        self.assertEqual(
+            "back_full_confirmation_required", migration["code"]
+        )
+        self.assertEqual(["character_1"], migration["character_keys"])
+        self.assertEqual(["back_full"], migration["missing_reference_views"])
+
     def test_live_action_abandon_replays_committed_delete_after_response_loss(self):
         import_body = {
             **{key: value for key, value in valid_project().items()

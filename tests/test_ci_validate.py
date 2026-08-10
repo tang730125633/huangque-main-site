@@ -95,6 +95,18 @@ class StrictJsonTests(TestCase):
             "filename": "story.txt", "import_mode": "faithful",
             "content_type": "live_action", "character_contract": contract,
         })
+        legacy_contract = [{
+            **contract[0],
+            "reference_views": ["front_full", "side_full", "front_half"],
+        }]
+        self._assert_openapi_sample(spec, import_schema, {
+            "title": "Legacy live action",
+            "synopsis": "A legacy client contract awaiting back-view confirmation",
+            "ratio": "16:9", "target_duration": 30, "shot_count": 6,
+            "visual_style": "cinematic", "source_text": "Lin Xia: hello",
+            "filename": "legacy-story.txt", "import_mode": "faithful",
+            "content_type": "live_action", "character_contract": legacy_contract,
+        })
         role_variants = spec["paths"]["/api/gen/short-drama/project"]["put"][
             "requestBody"
         ]["content"]["application/json"]["schema"]["oneOf"]
@@ -154,6 +166,26 @@ class StrictJsonTests(TestCase):
             "detail": "该角色已有付费或锁定的角色标准图，不能直接修改资料",
             "code": "character_reference_protected",
         })
+
+    def test_openapi_covers_new_live_action_runtime_routes(self) -> None:
+        spec = load_json_strict(Path("docs/api/openapi.json"))
+        routes = {
+            "/api/gen/short-drama/asset-graph/scenes": "get",
+            "/api/gen/short-drama/asset-graph/scenes/reference": "post",
+            "/api/gen/short-drama/asset-graph/scenes/lock": "post",
+            "/api/gen/short-drama/projects/live-action/core-story": "post",
+            "/api/gen/short-drama/projects/live-action/finalize": "post",
+            "/api/gen/short-drama/autodraft/provider-version/select": "post",
+            "/api/gen/short-drama/select-character-reference": "post",
+        }
+
+        for path, method in routes.items():
+            with self.subTest(path=path):
+                operation = spec["paths"][path][method]
+                self.assertIn("200", operation["responses"])
+                self.assertIn("401", operation["responses"])
+                if method == "post":
+                    self.assertIn("requestBody", operation)
 
     def _assert_openapi_sample(self, spec, schema, value) -> None:
         if "$ref" in schema:

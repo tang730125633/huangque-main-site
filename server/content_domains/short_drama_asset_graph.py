@@ -553,7 +553,16 @@ def _resolve_scene_reference(conn, actor, body):
         if not files and result.get("file"):
             files = [result.get("file")]
         requested_url = _text(body.get("asset_url"), 2000)
-        index = urls.index(requested_url) if requested_url and requested_url in urls else 0
+        if requested_url:
+            if requested_url not in urls:
+                raise AssetGraphError(
+                    "scene_asset_invalid",
+                    "选择的图片与场景资产记录不匹配",
+                    422,
+                )
+            index = urls.index(requested_url)
+        else:
+            index = 0
         url = _text(urls[index] if index < len(urls) else "", 2000)
         file_value = files[index] if index < len(files) else (files[0] if files else "")
         file_name = (

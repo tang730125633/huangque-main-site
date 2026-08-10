@@ -1,4 +1,5 @@
 import base64
+import json
 import sqlite3
 import sys
 import tempfile
@@ -241,6 +242,50 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
             reference = graph.locked_scene_reference(conn, "p1", "shot_001")
         self.assertEqual("雨夜街道", reference["name"])
         self.assertTrue(reference["file"].startswith("short_drama_scene_uploads/scene_"))
+
+    def test_scene_asset_url_must_belong_to_selected_multi_image_job(self):
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        before = graph.scene_workspace(self.db, "alice", "p1")
+        scene = before["scenes"][0]
+        with closing(self.db()) as conn:
+            conn.execute(
+                "CREATE TABLE jobs ("
+                "id INTEGER PRIMARY KEY,username TEXT,kind TEXT,status TEXT,result TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO jobs(id,username,kind,status,result) "
+                "VALUES(91,'alice','image','done',?)",
+                (json.dumps({
+                    "urls": [
+                        "/api/gen/file/scene-a.png",
+                        "/api/gen/file/scene-b.png",
+                    ],
+                    "files": ["scene-a.png", "scene-b.png"],
+                }),),
+            )
+            conn.commit()
+        fake_image = types.SimpleNamespace(
+            _trusted_short_drama_file=lambda value, file_url=False: (
+                str(value or "").removeprefix("/api/gen/file/")
+            ),
+        )
+
+        with mock.patch.dict(sys.modules, {
+            "server.content_domains.image": fake_image,
+        }):
+            with self.assertRaises(graph.AssetGraphError) as raised:
+                graph.set_scene_reference(self.db, "alice", "alice", {
+                    "project_id": "p1",
+                    "graph_revision": before["graph_revision"],
+                    "scene_key": scene["scene_key"],
+                    "source": "asset",
+                    "asset_job_id": 91,
+                    "asset_url": "/api/gen/file/not-from-job.png",
+                    "filename": "tampered.png",
+                })
+
+        self.assertEqual("scene_asset_invalid", raised.exception.code)
+        self.assertEqual(before, graph.scene_workspace(self.db, "alice", "p1"))
 
     def test_scene_workspace_falls_back_to_locked_script_shots(self):
         with closing(self.db()) as conn:
