@@ -57,6 +57,7 @@ test('pointer capture starts on pointerdown and external release clears drag sta
     position: 0,
     velocity: 0,
     suppressClickUntil: 0,
+    activePointerId: null,
   };
   const root = {
     classList: {
@@ -94,12 +95,13 @@ test('pointer capture starts on pointerdown and external release clears drag sta
   finishDrag({ pointerId: 7 });
   assert.equal(state.tracking, false);
   assert.equal(state.dragging, false);
+  assert.equal(state.activePointerId, null);
   assert.equal(classes.has('is-dragging'), false);
 });
 
 test('pointer movement without a pressed button clears stale drag state', () => {
   const classes = new Set(['is-dragging']);
-  const state = { tracking: true, dragging: true, moved: true, suppressClickUntil: 0 };
+  const state = { tracking: true, dragging: true, moved: true, suppressClickUntil: 0, activePointerId: 9 };
   const root = {
     classList: { add: value => classes.add(value), remove: value => classes.delete(value) },
     hasPointerCapture: () => false,
@@ -124,6 +126,58 @@ test('pointer movement without a pressed button clears stale drag state', () => 
   assert.equal(state.tracking, false);
   assert.equal(state.dragging, false);
   assert.equal(classes.has('is-dragging'), false);
+});
+
+test('an unrelated pointer cannot replace or finish the active drag', () => {
+  let now = 3000;
+  const captures = new Set();
+  const state = {
+    activePointerId: null,
+    tracking: false,
+    dragging: false,
+    moved: false,
+    position: 2,
+    velocity: 0,
+    suppressClickUntil: 0,
+  };
+  const root = {
+    classList: { add() {}, remove() {} },
+    setPointerCapture: pointerId => captures.add(pointerId),
+    hasPointerCapture: pointerId => captures.has(pointerId),
+    releasePointerCapture: pointerId => captures.delete(pointerId),
+  };
+  const performance = { now: () => now };
+  const beginDrag = loadFunction('beginDrag', { state, root, performance, isInteractive: () => true });
+  const finishDrag = loadFunction('finishDrag', {
+    state,
+    root,
+    performance,
+    ensureAnimationFrame: () => {},
+  });
+  const moveDrag = loadFunction('moveDrag', {
+    state,
+    root,
+    performance,
+    DRAG_SENSITIVITY: 0.0048,
+    isInteractive: () => true,
+    queueRender: () => {},
+    finishDrag,
+  });
+
+  beginDrag({ button: 0, pointerId: 11, clientX: 100 });
+  beginDrag({ button: 0, pointerId: 12, clientX: 260 });
+  assert.equal(state.activePointerId, 11);
+  assert.equal(state.originX, 100, 'second pointer must not replace the drag origin');
+  moveDrag({ pointerId: 12, clientX: 300, buttons: 1, preventDefault() {} });
+  assert.equal(state.position, 2, 'second pointer must not move the gallery');
+  finishDrag({ pointerId: 12 });
+  assert.equal(state.tracking, true, 'second pointer must not finish the first drag');
+  now += 20;
+  moveDrag({ pointerId: 11, clientX: 130, buttons: 1, preventDefault() {} });
+  assert.notEqual(state.position, 2, 'active pointer must continue dragging');
+  finishDrag({ pointerId: 11 });
+  assert.equal(state.activePointerId, null);
+  assert.equal(state.tracking, false);
 });
 
 test('arrow navigation moves focus to the new active card', () => {
@@ -260,6 +314,7 @@ test('closing the preview restores focus to its triggering card', () => {
     state,
     previewStage,
     previewTitle,
+    cancelPreviewMedia: () => {},
     isInteractive: () => true,
     syncVideoPlayback: () => {},
   });
@@ -268,6 +323,83 @@ test('closing the preview restores focus to its triggering card', () => {
   assert.equal(previewTitle.textContent, '');
   assert.equal(focused, true);
   assert.equal(state.previewTrigger, null);
+});
+
+test('preview cleanup detaches errors and cancels the old media request', () => {
+  const removedAttributes = [];
+  const errorHandler = () => {};
+  let removedHandler = null;
+  let paused = 0;
+  let loaded = 0;
+  const media = {
+    removeEventListener(type, handler) {
+      assert.equal(type, 'error');
+      removedHandler = handler;
+    },
+    pause: () => { paused += 1; },
+    removeAttribute: name => removedAttributes.push(name),
+    load: () => { loaded += 1; },
+  };
+  const state = {
+    previewMedia: media,
+    previewMediaErrorHandler: errorHandler,
+    previewToken: 4,
+    previewTrigger: null,
+    cards: [],
+    activeIndex: 0,
+  };
+  const cancelPreviewMedia = loadFunction('cancelPreviewMedia', { state });
+  const cleanupPreview = loadFunction('cleanupPreview', {
+    state,
+    previewStage: { replaceChildren() {} },
+    previewTitle: { textContent: 'old' },
+    cancelPreviewMedia,
+    isInteractive: () => false,
+    syncVideoPlayback: () => {},
+  });
+
+  cleanupPreview();
+  assert.equal(removedHandler, errorHandler);
+  assert.equal(paused, 1);
+  assert.equal(loaded, 1);
+  assert.deepEqual(removedAttributes, ['src', 'poster']);
+  assert.equal(state.previewMedia, null);
+  assert.equal(state.previewMediaErrorHandler, null);
+  assert.equal(state.previewToken, 5);
+
+  const imageAttributes = [];
+  const image = {
+    removeEventListener() {},
+    removeAttribute: name => imageAttributes.push(name),
+  };
+  state.previewMedia = image;
+  state.previewMediaErrorHandler = errorHandler;
+  cancelPreviewMedia();
+  assert.deepEqual(imageAttributes, ['src'], 'image requests must also be cancelled without video-only calls');
+  assert.equal(state.previewToken, 6);
+});
+
+test('a stale preview error cannot replace the current preview', () => {
+  const oldMedia = {};
+  const currentMedia = {};
+  const state = { previewMedia: currentMedia, previewToken: 9 };
+  let cancelled = 0;
+  let replacement = null;
+  const showPreviewMediaError = loadFunction('showPreviewMediaError', {
+    state,
+    cancelPreviewMedia: () => { cancelled += 1; },
+    document: {
+      createElement: () => ({ className: '', setAttribute() {}, textContent: '' }),
+    },
+    previewStage: { replaceChildren: value => { replacement = value; } },
+  });
+
+  showPreviewMediaError(oldMedia, 8);
+  assert.equal(cancelled, 0);
+  assert.equal(replacement, null);
+  showPreviewMediaError(currentMedia, 9);
+  assert.equal(cancelled, 1);
+  assert.equal(replacement.className, 'orbit-preview-error');
 });
 
 test('render frames are requested on demand and stop when idle', () => {
@@ -413,13 +545,62 @@ test('too few valid media items restore the static fallback', () => {
   };
   const handleMediaFailure = loadFunction('handleMediaFailure', {
     state,
+    document: { activeElement: null },
     clearEntryMedia: () => {},
     MIN_VALID_ITEMS: 12,
     setFallbackState: message => { fallbackMessage = message; },
     status: { textContent: '' },
     render: () => assert.fail('fallback should replace the gallery before render'),
+    isInteractive: () => true,
   });
   handleMediaFailure(entry, '视频封面');
   assert.equal(entry.failed, true);
   assert.match(fallbackMessage, /视频封面样片加载失败/);
+});
+
+test('media failure transfers focus from the hidden card to the new active card', () => {
+  let focused = false;
+  const activeDescendant = {};
+  const failedEntry = {
+    failed: false,
+    visible: true,
+    item: { type: 'image' },
+    card: {
+      hidden: false,
+      contains: value => value === activeDescendant,
+      classList: { remove() {} },
+      setAttribute() {},
+      tabIndex: 0,
+    },
+  };
+  const nextEntry = {
+    failed: false,
+    card: { focus: options => {
+      assert.deepEqual(options, { preventScroll: true });
+      focused = true;
+    } },
+  };
+  const state = {
+    ready: true,
+    failedCount: 0,
+    activeIndex: 0,
+    cards: [failedEntry, nextEntry, ...Array.from({ length: 11 }, () => ({ failed: false }))],
+  };
+  const handleMediaFailure = loadFunction('handleMediaFailure', {
+    state,
+    document: { activeElement: activeDescendant },
+    clearEntryMedia: () => {},
+    MIN_VALID_ITEMS: 12,
+    setFallbackState: () => assert.fail('12 valid items must keep the gallery interactive'),
+    status: { textContent: '' },
+    render: force => {
+      assert.equal(force, true);
+      state.activeIndex = 1;
+    },
+    isInteractive: () => true,
+  });
+
+  handleMediaFailure(failedEntry, '图片');
+  assert.equal(failedEntry.card.hidden, true);
+  assert.equal(focused, true);
 });

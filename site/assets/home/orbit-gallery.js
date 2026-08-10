@@ -46,7 +46,11 @@
     lastRenderAt: 0,
     renderPending: false,
     rafId: 0,
+    activePointerId: null,
     previewTrigger: null,
+    previewMedia: null,
+    previewMediaErrorHandler: null,
+    previewToken: 0,
     failedCount: 0
   };
 
@@ -92,6 +96,7 @@
     state.velocity = 0;
     state.tracking = false;
     state.dragging = false;
+    state.activePointerId = null;
     state.renderPending = false;
     state.previewTrigger = null;
     root.classList.remove('is-dragging');
@@ -215,6 +220,8 @@
 
   function handleMediaFailure(entry, mediaLabel) {
     if (!state.ready || entry.failed) return;
+    const activeElement = document.activeElement;
+    const restoreFocus = activeElement === entry.card || Boolean(entry.card.contains?.(activeElement));
     entry.failed = true;
     entry.visible = false;
     state.failedCount += 1;
@@ -230,6 +237,9 @@
     }
     status.textContent = `${remaining} 个创作样片可用 · ${state.failedCount} 个暂不可用`;
     render(true);
+    if (restoreFocus && isInteractive()) {
+      state.cards[state.activeIndex]?.card.focus({ preventScroll: true });
+    }
   }
 
   function shouldLoadCardMedia(entry) {
@@ -408,9 +418,25 @@
     }
   }
 
+  function cancelPreviewMedia() {
+    const media = state.previewMedia;
+    const errorHandler = state.previewMediaErrorHandler;
+    state.previewToken += 1;
+    state.previewMedia = null;
+    state.previewMediaErrorHandler = null;
+    if (!media) return;
+    if (errorHandler) media.removeEventListener('error', errorHandler);
+    const isVideo = typeof media.pause === 'function';
+    if (isVideo) media.pause();
+    media.removeAttribute('src');
+    if (isVideo) {
+      media.removeAttribute('poster');
+      media.load();
+    }
+  }
+
   function cleanupPreview() {
-    const video = previewStage.querySelector('video');
-    if (video) video.pause();
+    cancelPreviewMedia();
     previewStage.replaceChildren();
     previewTitle.textContent = '';
     const trigger = state.previewTrigger;
@@ -434,7 +460,9 @@
     return !conserveResources && !reducedMotion.matches;
   }
 
-  function showPreviewMediaError() {
+  function showPreviewMediaError(media, previewToken) {
+    if (state.previewMedia !== media || state.previewToken !== previewToken) return;
+    cancelPreviewMedia();
     const message = document.createElement('p');
     message.className = 'orbit-preview-error';
     message.setAttribute('role', 'status');
@@ -445,6 +473,7 @@
   function openPreview(item, trigger) {
     if (!isInteractive() || !item) return;
     state.previewTrigger = trigger?.closest?.('[data-gallery-index]') || state.cards[state.activeIndex]?.card || null;
+    cancelPreviewMedia();
     previewStage.replaceChildren();
     previewTitle.textContent = item.alt;
     let media;
@@ -461,7 +490,11 @@
       media.alt = item.alt;
       media.decoding = 'async';
     }
-    media.addEventListener('error', showPreviewMediaError, { once: true });
+    const previewToken = state.previewToken;
+    const errorHandler = () => showPreviewMediaError(media, previewToken);
+    state.previewMedia = media;
+    state.previewMediaErrorHandler = errorHandler;
+    media.addEventListener('error', errorHandler, { once: true });
     previewStage.append(media);
     if (typeof preview.showModal === 'function') preview.showModal();
     else preview.setAttribute('open', '');
@@ -475,6 +508,8 @@
 
   function beginDrag(event) {
     if (!isInteractive() || event.button !== 0) return;
+    if (state.activePointerId !== null) return;
+    state.activePointerId = event.pointerId;
     state.tracking = true;
     state.dragging = false;
     state.moved = false;
@@ -487,7 +522,7 @@
   }
 
   function moveDrag(event) {
-    if (!isInteractive() || !state.tracking) return;
+    if (!isInteractive() || !state.tracking || event.pointerId !== state.activePointerId) return;
     if ((event.buttons & 1) === 0) {
       finishDrag(event);
       return;
@@ -511,12 +546,15 @@
   }
 
   function finishDrag(event) {
+    if (!state.tracking || event.pointerId !== state.activePointerId) return;
     const wasTracking = state.tracking;
+    const pointerId = state.activePointerId;
     state.tracking = false;
     state.dragging = false;
+    state.activePointerId = null;
     root.classList.remove('is-dragging');
-    if (typeof root.hasPointerCapture === 'function' && root.hasPointerCapture(event.pointerId)) {
-      root.releasePointerCapture(event.pointerId);
+    if (typeof root.hasPointerCapture === 'function' && root.hasPointerCapture(pointerId)) {
+      root.releasePointerCapture(pointerId);
     }
     if (!wasTracking) return;
     if (state.moved) state.suppressClickUntil = performance.now() + 380;
