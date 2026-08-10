@@ -6,8 +6,8 @@
   <meta name="description" content="黄雀 AI：从 IP12、Agent 与无限画布，到图文音视频生产和 HQ CLI。">
   <title>黄雀 AI · 会持续生长的内容系统</title>
   <link rel="icon" href="/assets/logo_sparrow.png">
-  <link rel="stylesheet" href="/homepage.css?v=20260810-orbitfix1">
-  <script src="/assets/home/orbit-gallery.js?v=20260810-orbitfix1" defer></script>
+  <link rel="stylesheet" href="/homepage.css?v=20260810-orbitfix2">
+  <script src="/assets/home/orbit-gallery.js?v=20260810-orbitfix2" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -397,10 +397,8 @@
         <div
           class="orbit-gallery"
           data-orbit-gallery
-          data-gallery-manifest="/assets/home/orbit-gallery/gallery.json"
-          data-gallery-state="loading"
-          tabindex="0"
-          aria-label="可拖动的黄雀图片与视频环形画廊，使用左右方向键切换，按回车放大预览"
+          data-gallery-manifest="/assets/home/orbit-gallery/gallery.json?v=20260810-orbitfix2"
+          data-gallery-state="fallback"
         >
           <div class="orbit-gallery-ambient" aria-hidden="true"></div>
           <div class="orbit-gallery-viewport">
@@ -413,9 +411,9 @@
             <figure><img src="/assets/home/orbit-gallery/desktop-image-04.webp" alt="黄雀创作图片样片 04" loading="lazy" decoding="async"></figure>
           </div>
           <div class="orbit-gallery-meta">
-            <span>DRAG TO EXPLORE</span>
-            <p data-gallery-status aria-live="polite">正在载入 21 个创作样片…</p>
-            <span>← / → · ENTER</span>
+            <span data-gallery-instruction hidden>DRAG TO EXPLORE</span>
+            <p data-gallery-status>黄雀图片与视频创作样片</p>
+            <span data-gallery-instruction hidden>← / → · ENTER</span>
           </div>
         </div>
       </div>

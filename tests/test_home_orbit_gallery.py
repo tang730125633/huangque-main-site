@@ -1,5 +1,6 @@
 import json
 import pathlib
+import re
 import subprocess
 import unittest
 
@@ -24,8 +25,9 @@ class HomeOrbitGalleryTests(unittest.TestCase):
         self.assertIn("data-gallery-preview", self.html)
         self.assertIn("data-gallery-fallback", self.html)
         self.assertNotIn('class="page-shell sample-grid"', self.html)
-        self.assertIn('homepage.css?v=20260810-orbitfix1', self.html)
-        self.assertIn("orbit-gallery.js?v=20260810-orbitfix1", self.html)
+        self.assertIn('homepage.css?v=20260810-orbitfix2', self.html)
+        self.assertIn("orbit-gallery.js?v=20260810-orbitfix2", self.html)
+        self.assertIn("gallery.json?v=20260810-orbitfix2", self.html)
 
     def test_manifest_contains_all_requested_media(self):
         items = self.manifest["items"]
@@ -45,7 +47,8 @@ class HomeOrbitGalleryTests(unittest.TestCase):
     def test_only_the_center_video_is_loaded_and_played(self):
         self.assertIn("index === state.activeIndex", self.js)
         self.assertIn("video.removeAttribute('src')", self.js)
-        self.assertIn("video.play().catch", self.js)
+        self.assertIn("const playAttempt = video.play()", self.js)
+        self.assertIn("entry.card.classList.add('is-playing')", self.js)
         self.assertIn("IntersectionObserver", self.js)
         self.assertIn("state.inViewport", self.js)
 
@@ -54,8 +57,13 @@ class HomeOrbitGalleryTests(unittest.TestCase):
         self.assertIn("ArrowLeft", self.js)
         self.assertIn("ArrowRight", self.js)
         self.assertIn("media.controls = true", self.js)
-        self.assertIn('aria-live="polite"', self.html)
-        self.assertIn('data-gallery-state="loading"', self.html)
+        root_tag = re.search(r'<div\s+class="orbit-gallery"(?P<attrs>.*?)>', self.html, re.S)
+        self.assertIsNotNone(root_tag)
+        self.assertNotIn('aria-live="polite"', root_tag.group("attrs"))
+        self.assertNotIn('tabindex="0"', root_tag.group("attrs"))
+        self.assertIn('<p data-gallery-status>黄雀图片与视频创作样片</p>', self.html)
+        self.assertIn('data-gallery-state="fallback"', self.html)
+        self.assertNotIn('data-gallery-state="loading"', self.html)
         self.assertIn('data-gallery-state="ready"', self.css)
 
     def test_runtime_pointer_focus_loading_and_motion_behaviour(self):
@@ -91,7 +99,17 @@ class HomeOrbitGalleryTests(unittest.TestCase):
         self.assertIn("orbit-gallery-fallback", self.css)
         self.assertIn("MEDIA_LOAD_RANGE", self.js)
         self.assertIn("initObserver", self.js)
+        self.assertIn("previewAutoplayAllowed", self.js)
+        self.assertIn("!conserveResources && !reducedMotion.matches", self.js)
         self.assertNotIn("AUTO_SPEED", self.js)
+
+    def test_idle_animation_is_demand_driven_and_media_failures_are_explicit(self):
+        self.assertIn("state.rafId = requestAnimationFrame(animate)", self.js)
+        self.assertNotIn("requestAnimationFrame(animate);\n  }\n\n  async function init", self.js)
+        self.assertIn("handleMediaFailure", self.js)
+        self.assertIn("probe.onerror", self.js)
+        self.assertIn("showPreviewMediaError", self.js)
+        self.assertIn("setFallbackState", self.js)
 
 
 if __name__ == "__main__":
