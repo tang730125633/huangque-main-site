@@ -1,20 +1,28 @@
+import base64
+import hashlib
+import io
 import json
 import sys
+import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
 
-from content_domains import audio, core, upstream_guard
+from content_domains import audio, cli_uploads, core, upstream_guard, video, video_openai
 
 
 class _Points:
+    class AuthPointsError(Exception):
+        pass
+
     def __init__(self):
         self.deductions = []
 
@@ -23,6 +31,12 @@ class _Points:
 
     def get_points(self, username):
         return 100
+
+    def deduct_points(self, *_args, **_kwargs):
+        return 76
+
+    def refund_points(self, *_args, **_kwargs):
+        return None
 
 
 class _DispatchNothing:
@@ -82,12 +96,14 @@ class HQCLIContentTests(unittest.TestCase):
         upstream_guard.exhausted_reason = self.originals["upstream"]
         core.HANDLERS = self.originals["handlers"]
 
-    def _post(self, path, payload, internal=True, expected=None):
+    def _post(self, path, payload, internal=True, expected=None, idempotency_key=""):
         headers = {"Authorization": "Bearer bridge-token", "Content-Type": "application/json"}
         if internal:
             headers["X-HQ-Internal-Token"] = "test-cli-secret"
         if expected is not None:
             headers["X-HQ-Expected-Cost"] = str(expected)
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
         request = urllib.request.Request(
             self.base + path, data=json.dumps(payload).encode(), headers=headers, method="POST",
         )
@@ -128,6 +144,57 @@ class HQCLIContentTests(unittest.TestCase):
             audio.resolve_audio_provider_voice = original
         self.assertEqual((public["voice_scope"], public["provider"]), ("public", "cosyvoice"))
         self.assertEqual((personal["voice_scope"], personal["provider"]), ("personal", "cosyvoice"))
+
+    def test_sora_submit_expands_cli_reference_before_validation_and_queue(self):
+        raw = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl9l1sAAAAASUVORK5CYII="
+        )
+        captured = {}
+
+        def create_job(*args, **_kwargs):
+            captured.update(args[6])
+            return 42, 76
+
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(cli_uploads, "UPLOAD_ROOT", Path(folder)), \
+                mock.patch.object(core, "HANDLERS", {"sora_video": lambda payload: payload}), \
+                mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(video, "SORA_VIDEO_ENABLED", True), \
+                mock.patch.object(video_openai, "available", return_value=True), \
+                mock.patch.object(core, "_idempotency_begin", return_value=("new", None)), \
+                mock.patch.object(core, "_idempotency_complete"), \
+                mock.patch.object(core, "_user_video_submit_limit", return_value=None), \
+                mock.patch.object(core, "_user_active_job_count", return_value=0), \
+                mock.patch.object(core.jobs_store, "create_paid_job", side_effect=create_job), \
+                mock.patch.object(video, "record_video_pending_asset"), \
+                mock.patch.object(core, "enqueue_job", return_value=True):
+            uploaded = cli_uploads.store_image(
+                io.BytesIO(raw), len(raw), "alice", "image/png",
+                hashlib.sha256(raw).hexdigest(),
+            )
+            status, result = self._post(
+                "/api/gen/sora_video", {
+                    "prompt": "让 @图片1 缓慢旋转", "channel": "sora", "model": "sora-2",
+                    "seconds": 4, "ratio": "9:16", "resolution": "720p",
+                    "reference_upload_ids": [uploaded["upload_id"]],
+                }, expected=24, idempotency_key="sora-ref-test-001",
+            )
+        self.assertEqual((200, 42), (status, result["job_id"]))
+        self.assertNotIn("reference_upload_ids", captured)
+        self.assertEqual(1, len(captured["reference_images"]))
+        self.assertTrue(captured["reference_images"][0].startswith("data:image/png;base64,"))
+
+    def test_banana_quote_checks_the_banana_flag_not_the_image_flag(self):
+        checked = []
+        core.feature_flags.require_enabled = checked.append
+        status, result = self._post("/api/gen/cli/quote", {
+            "kind": "image", "payload": {
+                "prompt": "海报", "provider": "banana", "model": "nb2",
+                "ratio": "1:1", "quality": "std", "count": 1,
+            },
+        })
+        self.assertEqual((200, 24), (status, result["cost"]))
+        self.assertEqual(["banana"], checked)
 
 
 if __name__ == "__main__":

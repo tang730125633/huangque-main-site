@@ -31,6 +31,7 @@ LOGIN_SCOPES = [
     "canvas:write", "canvas:agent", "canvas:edit", "tasks:read", "assets:read", "assets:write", "assets:upload",
     "generation:quote", "generation:submit",
     "video-compose:read", "video-compose:write", "digital-presenter:read", "digital-presenter:write",
+    "inspiration:read", "inspiration:write", "leads:read", "leads:write", "short-drama:read",
 ]
 
 
@@ -155,7 +156,7 @@ def _validate(capability, payload):
                     or len(entry) > item.get("maxLength", len(entry)) for entry in value):
                 raise CliError(EXIT_INPUT, "input_error", "input field %s contains an invalid item" % key)
         if "enum" in definition and value not in definition["enum"]:
-            raise CliError(EXIT_INPUT, "input_error", "input field %s must be one of: %s" % (key, ", ".join(definition["enum"])))
+            raise CliError(EXIT_INPUT, "input_error", "input field %s must be one of: %s" % (key, ", ".join(map(str, definition["enum"]))))
         if "minLength" in definition and len(value) < definition["minLength"]:
             raise CliError(EXIT_INPUT, "input_error", "input field %s is too short" % key)
         if "maxLength" in definition and len(value) > definition["maxLength"]:

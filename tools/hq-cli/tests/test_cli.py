@@ -52,6 +52,11 @@ class HqCliTests(unittest.TestCase):
             "prompt-optimize", "canvas-list", "canvas-get", "canvas-create", "canvas-agent-plan", "canvas-ops", "tasks", "task",
             "assets", "voices", "image-upload", "asset-favorite", "asset-tags",
             "image-generate", "video-generate", "audio-generate",
+            "digital-ip-projects", "digital-ip-project", "digital-ip-report",
+            "text-video-capability", "text-video-templates", "text-video-styles", "text-video-voices", "pricing",
+            "inspiration-catalog", "inspiration-likes", "inspiration-like",
+            "leads-crm", "leads-crm-upsert", "video-avatars", "audio-slots",
+            "short-drama-projects", "short-drama-project", "short-drama-conversation", "short-drama-preflight",
         }
         self.assertTrue(expected <= set(by_id))
         self.assertTrue(all(by_id[item]["availability"] == "available" for item in expected))
@@ -59,10 +64,66 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual("server_quote", by_id["image-generate"]["cost"]["kind"])
         self.assertEqual("hq_device_authorization", by_id["ip12-projects"]["target_auth"])
         self.assertEqual("assets:upload", by_id["image-upload"]["required_scope"])
+        self.assertEqual(20, by_id["image-upload"]["file_input"]["accountActiveMaxFiles"])
+        self.assertEqual(96 * 1024 * 1024, by_id["image-upload"]["file_input"]["accountActiveMaxBytes"])
         self.assertEqual("server_quote", by_id["canvas-agent-plan"]["cost"]["kind"])
         self.assertEqual("canvas:edit", by_id["canvas-ops"]["required_scope"])
         self.assertEqual(12, by_id["canvas-ops"]["input_schema"]["properties"]["ops"]["maxItems"])
         self.assertIn("minimax", by_id["video-generate"]["input_schema"]["properties"]["channel"]["enum"])
+        self.assertIn("banana", by_id["image-generate"]["input_schema"]["properties"]["provider"]["enum"])
+        self.assertEqual(["nb2", "pro"], by_id["image-generate"]["input_schema"]["properties"]["model"]["enum"])
+        self.assertIn("21:9", by_id["image-generate"]["input_schema"]["properties"]["ratio"]["enum"])
+        self.assertIn("sora", by_id["video-generate"]["input_schema"]["properties"]["channel"]["enum"])
+        self.assertIn("1024p", by_id["video-generate"]["input_schema"]["properties"]["resolution"]["enum"])
+        self.assertIn("sora-2-pro", by_id["video-generate"]["input_schema"]["properties"]["model"]["enum"])
+        self.assertEqual([4, 8, 12], by_id["video-generate"]["input_schema"]["properties"]["seconds"]["enum"])
+        self.assertEqual("inspiration:write", by_id["inspiration-like"]["required_scope"])
+        self.assertEqual("leads:write", by_id["leads-crm-upsert"]["required_scope"])
+        self.assertTrue(by_id["inspiration-like"]["confirmation_required"])
+        self.assertTrue(by_id["leads-crm-upsert"]["confirmation_required"])
+
+    def test_p0_navigation_reads_and_website_modes_are_discoverable(self):
+        _, output, _ = self.invoke(["capabilities"])
+        by_id = {item["id"]: item for item in self.payload(output)["capabilities"]}
+        navigation = {
+            "text-video": "/workbench/text-video", "short-drama": "/workbench/short-drama",
+            "pricing-page": "/workbench/pricing", "invite": "/workbench/invite",
+            "recharge": "/workbench/recharge", "bots": "/workbench/bots",
+        }
+        for identifier, path in navigation.items():
+            self.assertEqual("navigation", by_id[identifier]["kind"])
+            self.assertEqual("navigation", by_id[identifier]["side_effect"])
+            self.assertEqual(path, by_id[identifier]["deep_link"]["path"])
+        self.assertNotIn("device", by_id)
+
+        reads = {
+            "digital-ip-projects": "ip12:read", "digital-ip-project": "ip12:read",
+            "digital-ip-report": "ip12:read", "text-video-capability": "assets:read",
+            "text-video-templates": "assets:read", "text-video-styles": "assets:read",
+            "text-video-voices": "assets:read", "pricing": "profile:read",
+            "inspiration-catalog": "inspiration:read", "inspiration-likes": "inspiration:read",
+            "leads-crm": "leads:read", "video-avatars": "assets:read", "audio-slots": "assets:read",
+            "short-drama-projects": "short-drama:read", "short-drama-project": "short-drama:read",
+            "short-drama-conversation": "short-drama:read", "short-drama-preflight": "short-drama:read",
+        }
+        for identifier, scope in reads.items():
+            self.assertEqual("read", by_id[identifier]["side_effect"])
+            self.assertEqual(identifier, by_id[identifier]["api_action"])
+            self.assertEqual(scope, by_id[identifier]["required_scope"])
+
+        expected_modes = {
+            "image-generate": {"banana", "openai", "seedream", "xiaole"},
+            "video-generate": {"grok", "sora", "minimax", "omni", "seedance"},
+            "audio-generate": {"tts"}, "video-compose-projects": {"one_click"},
+            "digital-presenter-capability": {"digitalPresenter"},
+            "text-video-capability": {"text_video"}, "digital-ip-projects": {"digital_ip"},
+            "pricing": {"pricing.catalog"},
+            "inspiration-catalog": {"inspiration.browse"}, "inspiration-like": {"inspiration.like"},
+            "leads-crm": {"leads.crm.update"}, "video-avatars": {"cinematic", "digital_ip", "live_action"},
+            "audio-slots": {"tts"}, "short-drama-projects": {"live_action"},
+        }
+        for identifier, modes in expected_modes.items():
+            self.assertEqual(modes, set(by_id[identifier]["website_modes"]))
 
     def test_channels_command_uses_current_authorized_account(self):
         self.authorize()
@@ -125,6 +186,61 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual("t" * 43, request.call_args.kwargs["token"])
         self.assertEqual(120, request.call_args.kwargs["timeout"])
 
+    def test_new_read_capabilities_send_their_fixed_action_body(self):
+        self.authorize()
+        cases = {
+            "digital-ip-projects": {},
+            "digital-ip-project": {"project_id": "project_1"},
+            "digital-ip-report": {"project_id": "project_1"},
+            "text-video-capability": {}, "text-video-templates": {},
+            "text-video-styles": {}, "text-video-voices": {}, "pricing": {},
+            "inspiration-catalog": {}, "inspiration-likes": {},
+            "leads-crm": {"lead_ids": ["a" * 16]}, "video-avatars": {"limit": 20}, "audio-slots": {},
+            "short-drama-projects": {"page": 1, "page_size": 20},
+            "short-drama-project": {"project_id": "11111111-1111-4111-8111-111111111111"},
+            "short-drama-conversation": {"project_id": "22222222-2222-4222-8222-222222222222"},
+            "short-drama-preflight": {"project_id": "33333333-3333-4333-8333-333333333333"},
+        }
+        for identifier, payload in cases.items():
+            argv = ["run", identifier]
+            raw = b""
+            if payload:
+                argv += ["--input", "@-"]
+                raw = json.dumps(payload).encode()
+            with self.subTest(identifier=identifier), \
+                    patch("hq_cli.client.request_json", return_value=(200, {"ok": True})) as request:
+                code, output, error = self.invoke(argv, raw)
+                self.assertEqual(0, code, error)
+                self.assertTrue(self.payload(output)["result"]["ok"])
+                self.assertEqual("/api/auth/cli/action", request.call_args.args[0])
+                self.assertEqual({"action": identifier, "input": payload, "confirm": False},
+                                 request.call_args.kwargs["body"])
+
+    def test_banana_and_sora_keep_the_generic_paid_action_body(self):
+        self.authorize()
+        upload_id = "img_" + "a" * 32
+        cases = {
+            "image-generate": {
+                "prompt": "海报", "provider": "banana", "model": "pro", "ratio": "21:9",
+                "count": 4, "reference_upload_ids": [upload_id],
+            },
+            "video-generate": {
+                "prompt": "海边日出", "channel": "sora", "model": "sora-2-pro",
+                "seconds": 8, "ratio": "16:9", "resolution": "1024p",
+                "reference_upload_ids": [upload_id],
+            },
+        }
+        quote = {"quote_token": "q.new", "cost": 1, "confirmation_required": True}
+        for identifier, payload in cases.items():
+            with self.subTest(identifier=identifier), \
+                    patch("hq_cli.client.request_json", return_value=(200, quote)) as request:
+                code, _, error = self.invoke(
+                    ["run", identifier, "--input", "@-"], json.dumps(payload, ensure_ascii=False).encode(),
+                )
+                self.assertEqual(0, code, error)
+                self.assertEqual({"action": identifier, "input": payload, "confirm": False},
+                                 request.call_args.kwargs["body"])
+
     def test_external_ai_and_write_actions_require_explicit_confirmation_before_http(self):
         self.authorize()
         inputs = {
@@ -134,6 +250,8 @@ class HqCliTests(unittest.TestCase):
             "canvas-create": b'{"name":"Launch","prompt":"first idea"}',
             "canvas-ops": b'{"board_id":"cb_1","base_version":1,"op_id":"hqcli-abcdefghijkl","ops":[{"type":"node.patch","id":"n1","fields":{"x":120}}]}',
             "asset-tags": '{"kind":"image","key":"asset-1","tags":["客户案例"]}'.encode(),
+            "inspiration-like": b'{"id":1001,"favorite":true}',
+            "leads-crm-upsert": '{"lead_id":"0123456789abcdef","follow_status":"跟进中"}'.encode(),
             "video-compose-review": ('{"project_id":"compose_%s","expected_revision":2,'
                                        '"decisions":{"candidate_%s":"remove"}}' % ("a" * 32, "b" * 16)).encode(),
             "digital-presenter-create": b'{"board_id":"cb_1","request_id":"hqcli-dp-001"}',
@@ -144,6 +262,26 @@ class HqCliTests(unittest.TestCase):
                 self.assertEqual(cli.EXIT_CONFIRMATION, code)
                 self.assertEqual("confirmation_required", self.payload(error)["error"])
         request.assert_not_called()
+
+    def test_confirmed_safe_writes_send_only_the_fixed_action_and_input(self):
+        self.authorize()
+        cases = {
+            "inspiration-like": {"id": 1001, "favorite": True},
+            "leads-crm-upsert": {"lead_id": "0123456789abcdef", "follow_status": "跟进中"},
+        }
+        for identifier, payload in cases.items():
+            with self.subTest(identifier=identifier), \
+                    patch("hq_cli.client.request_json", return_value=(200, {"ok": True})) as request:
+                code, output, error = self.invoke(
+                    ["run", identifier, "--input", "@-", "--confirm"],
+                    json.dumps(payload, ensure_ascii=False).encode(),
+                )
+                self.assertEqual(0, code, error)
+                self.assertTrue(self.payload(output)["result"]["ok"])
+                self.assertEqual(
+                    {"action": identifier, "input": payload, "confirm": True},
+                    request.call_args.kwargs["body"],
+                )
 
     def test_video_compose_decisions_reject_invalid_object_values_before_http(self):
         self.authorize()
@@ -321,9 +459,17 @@ class HqCliTests(unittest.TestCase):
     def test_navigation_is_main_site_only_and_never_opens_by_default(self):
         with patch("hq_cli.cli.webbrowser.open") as opened:
             code, output, error = self.invoke(["run", "image", "--input", "@-"], b'{"prompt":"A & B"}')
-        self.assertEqual(0, code, error)
-        self.assertEqual("https://huangquechuanmei.com/workbench/banana?prompt=A+%26+B", self.payload(output)["result"]["url"])
-        opened.assert_not_called()
+            self.assertEqual(0, code, error)
+            self.assertEqual("https://huangquechuanmei.com/workbench/banana?prompt=A+%26+B", self.payload(output)["result"]["url"])
+            for identifier, path in {
+                "text-video": "/workbench/text-video", "short-drama": "/workbench/short-drama",
+                "pricing-page": "/workbench/pricing", "invite": "/workbench/invite",
+                "recharge": "/workbench/recharge", "bots": "/workbench/bots",
+            }.items():
+                code, output, error = self.invoke(["run", identifier])
+                self.assertEqual(0, code, error)
+                self.assertEqual("https://huangquechuanmei.com" + path, self.payload(output)["result"]["url"])
+            opened.assert_not_called()
         code, output, error = self.invoke(["run", "image", "--environment", "zelong"])
         self.assertEqual(cli.EXIT_USAGE, code)
 
@@ -332,6 +478,7 @@ class HqCliTests(unittest.TestCase):
             (["run", "canvas", "--input", "@-"], b'{"collab":"no"}'),
             (["run", "audio-generate", "--input", "@-"], b'{"text":"x","speed":NaN}'),
             (["run", "video-generate", "--input", "@-"], b'{"prompt":"x","generate_audio":1}'),
+            (["run", "video-generate", "--input", "@-"], b'{"prompt":"x","channel":"sora","seconds":5}'),
             (["run", "asset-tags", "--input", "@-"], b'{"kind":"image","key":"x","tags":"not-array"}'),
             (["run", "image", "--base-url", "https://evil.example"], b""),
         ]

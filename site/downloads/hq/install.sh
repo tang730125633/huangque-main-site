@@ -1,16 +1,21 @@
 #!/bin/sh
 set -eu
 
-version="0.6.0"
-wheel_name="huangque_hq_cli-0.6.0-py3-none-any.whl"
-wheel_sha256="7090f911ff9d312778be6b544a42267f00b771c26892caedbc433120817a7b6b"
-wheel_url="https://huangquechuanmei.com/downloads/hq/v0.6.0/$wheel_name"
+version="0.7.0"
+wheel_name="huangque_hq_cli-0.7.0-py3-none-any.whl"
+wheel_sha256="4395b2efab88adbcbfae965c66fc6cbf6eee11367ef6683b8f3ea16c6c4165cb"
+wheel_url="https://huangquechuanmei.com/downloads/hq/v0.7.0/$wheel_name"
 
 fail() { printf 'HQ CLI 安装失败：%s\n' "$1" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || fail "需要 curl"
-command -v python3 >/dev/null 2>&1 || fail "需要 Python 3.9 或更高版本"
-python_bin="$(command -v python3)"
-"$python_bin" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' || fail "需要 Python 3.9 或更高版本"
+python_bin=""
+for candidate in python3 python3.13 python3.12 python3.11 python3.10; do
+  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
+    python_bin="$(command -v "$candidate")"
+    break
+  fi
+done
+[ -n "$python_bin" ] || fail "需要 Python 3.10 或更高版本"
 [ -n "${HOME:-}" ] || fail "HOME 未设置"
 
 data_root="${XDG_DATA_HOME:-$HOME/.local/share}/hq-cli"
@@ -54,7 +59,13 @@ if ! "$target_dir/venv/bin/hq" version --json >/dev/null 2>&1; then
 fi
 "$target_dir/venv/bin/hq" version --json >/dev/null || fail "安装后的 hq 无法启动"
 
-if { [ -e "$link_path" ] || [ -L "$link_path" ]; } && [ ! -L "$link_path" ]; then
+if [ -L "$link_path" ]; then
+  current_target="$(readlink "$link_path")"
+  case "$current_target" in
+    "$data_root"/*/venv/bin/hq) ;;
+    *) fail "$link_path 已属于其他程序，未覆盖" ;;
+  esac
+elif [ -e "$link_path" ]; then
   fail "$link_path 已存在且不是符号链接，未覆盖"
 fi
 ln -sfn "$target_dir/venv/bin/hq" "$link_path"
