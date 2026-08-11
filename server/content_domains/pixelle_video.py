@@ -525,6 +525,9 @@ def _personal_narration_segments(payload):
 
 
 def _submit(payload):
+    speech_rate = _speech_rate(payload)
+    payload = dict(payload or {})
+    payload["speech_rate"] = speech_rate
     template = TEMPLATES_BY_KEY[payload["template"]]
     style = STYLE_PRESETS_BY_KEY[_style_key(payload)]
     media_workflow = (
@@ -540,7 +543,7 @@ def _submit(payload):
         "prompt_prefix": style["prompt_prefix"],
         "media_workflow": media_workflow,
         "tts_workflow": PIXELLE_TTS_WORKFLOW,
-        "tts_speed": float(payload.get("speech_rate", 1.0)),
+        "tts_speed": speech_rate,
         "video_fps": 30,
         "bgm_volume": 0.18,
     }
