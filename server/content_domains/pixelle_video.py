@@ -56,6 +56,9 @@ _PUBLIC_VOICE_NAMES = {
     "zh-CN-liaoning-XiaobeiNeural": "女声-东北（晓北）",
 }
 _STYLE_COMMON_RESTRICTIONS = (
+    "When people appear, depict contemporary Chinese or East Asian people with natural, "
+    "varied facial features and realistic skin texture, unless the user text explicitly "
+    "specifies another ethnicity, nationality, or region. "
     "No watermark, no logo, no garbled or unreadable text, "
     "no malformed people, objects, hands, or anatomy."
 )
