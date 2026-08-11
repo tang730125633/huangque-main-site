@@ -404,7 +404,7 @@ function stateActions(){
   return[]
 }
 function attachHarnessActions(actions,bubble){
-  if(!bubble)return;bubble.querySelectorAll('.harness-actions').forEach(function(row){row.remove()});
+  document.querySelectorAll('#chatArea .harness-actions').forEach(function(row){row.remove()});if(!bubble)return;
   if(!actions||!actions.length)return;var row=document.createElement('div');row.className='harness-actions';
   actions.forEach(function(item){var button=document.createElement('button');button.type='button';button.className='harness-action'+(item.primary?' primary':'');button.textContent=item.label;button.onclick=function(){row.querySelectorAll('button').forEach(function(node){node.disabled=true});sendHarnessAction(item)};row.appendChild(button)});
   bubble.appendChild(row)
