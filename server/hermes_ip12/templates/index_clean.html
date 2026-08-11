@@ -269,12 +269,12 @@ function renderModules() {
   const done = (coachState.completed_modules || []).filter(id=>id<=AVAILABLE_MODULE_COUNT);
   const cur = Math.min(coachState.current_module || 1, AVAILABLE_MODULE_COUNT);
   const intakePending = coachState.intake?.status !== 'complete';
-  const intakeRound = intakePending ? (coachState.intake.round || 1) : 0;
+  const intakeLabel = !intakePending ? '' : (coachState.intake.status === 'awaiting_confirmation' ? '待确认' : (coachState.intake.status === 'editing' ? '修改中' : '交谈中'));
   list.innerHTML = MODULES.map(m => {
     let cls = 'module-item', badge = '', check = '', reportBtn = '';
     const comingSoon = m.id > AVAILABLE_MODULE_COUNT;
     if (comingSoon) { cls += ' locked'; badge = '<span class="mod-badge">尚未开发，敬请期待</span>'; }
-    else if (intakePending) { cls += ' locked'; if (m.id===1) badge = `<span class="mod-badge">基础信息 ${intakeRound}/3</span>`; }
+    else if (intakePending) { cls += ' locked'; if (m.id===1) badge = `<span class="mod-badge">基础信息 ${intakeLabel}</span>`; }
     if (done.includes(m.id)) { cls += ' completed'; check = '<span class="mod-check">✓</span>';
       reportBtn = `<span class="mod-report-btn" onclick="event.stopPropagation();viewReport(${m.id})" title="查看报告">📄</span>`; }
     if (!intakePending && m.id === cur && !done.includes(m.id)) { cls += ' current'; badge = '<span class="mod-badge">进行中</span>'; }
@@ -291,7 +291,8 @@ function updateProgress() {
   document.getElementById('progressText').textContent = done===AVAILABLE_MODULE_COUNT?'🎉 六步完成':done+'/'+AVAILABLE_MODULE_COUNT;
   const cur = Math.min(coachState.current_module || 1, AVAILABLE_MODULE_COUNT);
   const mod = MODULES.find(m=>m.id===cur);
-  document.getElementById('currentModuleName').textContent = intakePending?`基础信息 · ${coachState.intake.round||1}/3`:(mod?mod.name:'—');
+  const intakeLabel = !intakePending ? '' : (coachState.intake.status === 'awaiting_confirmation' ? '待确认' : (coachState.intake.status === 'editing' ? '修改中' : '交谈中'));
+  document.getElementById('currentModuleName').textContent = intakePending?`基础信息 · ${intakeLabel}`:(mod?mod.name:'—');
   document.getElementById('stepBadge').textContent = (coachState.module_step||0)>0?` · Step ${coachState.module_step}`:'';
 }
 

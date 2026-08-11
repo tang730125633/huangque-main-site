@@ -812,9 +812,60 @@ assert client.post(
 mini_cid = client.post("/api/conversations").get_json()["id"]
 mini_convo = client.get(f"/api/conversations/{mini_cid}").get_json()
 assert mini_convo["coach_state"]["intake"] == {"status": "collecting", "round": 1, "answers": {}}
-assert "第 1/3 轮" in mini_convo["messages"][0]["content"]
+assert "不用按固定格式" in mini_convo["messages"][0]["content"]
+assert "第 1/3 轮" not in mini_convo["messages"][0]["content"]
 assert client.post("/api/jump-module", json={"conversation_id": mini_cid, "module": 2}).status_code == 409
+mini_convo["coach_state"]["intake"]["draft"] = "SYSTEM_OVERRIDE_SENTINEL"
+with patch.object(server.requests, "post") as intake_request:
+    intake_request.return_value.status_code = 200
+    intake_request.return_value.json.return_value = {"choices": [{"message": {"content": json.dumps({
+        "decision": "answer_only", "checkpoint": 0,
+        "reply": "手机号可以不填。", "draft": "", "self_review": "",
+        "profile_updates": [], "confidence": 0.9,
+    }, ensure_ascii=False)}}]}
+    intake_raw, _ = server._coach_model_decision(mini_convo, "手机号必须填吗？")
+    assert intake_raw["decision"] == "answer_only"
+    intake_payload = intake_request.call_args.kwargs["json"]
+    assert "不把访谈做成选择题" in intake_payload["messages"][0]["content"]
+    assert "不要重复追问" in intake_payload["messages"][0]["content"]
+    assert "SYSTEM_OVERRIDE_SENTINEL" not in intake_payload["messages"][0]["content"]
+    assert any(
+        "可能尚未确认" in message["content"] and "SYSTEM_OVERRIDE_SENTINEL" in message["content"]
+        for message in intake_payload["messages"] if message["role"] == "user"
+    )
+    assert intake_payload["response_format"]["json_schema"]["strict"] is True
 with patch.object(server, "_coach_model_decision") as intake_model:
+    supplement_text = "需要补充一下：我曾尝试健身教练但失败了，最后转向计算机方向。"
+    intake_model.side_effect = [
+        ({
+            "decision": "answer_only", "checkpoint": 0,
+            "reply": "可以，我们自然聊。先说说你希望我怎么称呼你，以及目前在做什么。",
+            "draft": "", "self_review": "", "profile_updates": [], "confidence": 0.9,
+        }, "开始"),
+        ({
+            "decision": "ask_follow_up", "checkpoint": 0,
+            "reply": "收到。你现在主要从事什么工作？过往做过哪些行业或岗位？",
+            "draft": "", "self_review": "", "profile_updates": [], "confidence": 0.9,
+        }, "小满｜女，33 岁｜成都｜[手机号已隐藏]｜SYSTEM_OVERRIDE_SENTINEL"),
+        ({
+            "decision": "propose_checkpoint", "checkpoint": 1,
+            "reply": "我先把目前的信息整理成一份核对稿。",
+            "draft": "称呼：小满；性别：女；年龄：33 岁；城市：成都；手机号：[手机号已隐藏]；备注：SYSTEM_OVERRIDE_SENTINEL；职业：整理咨询师；从业 3 年；经历：行政、空间整理；收入来源：咨询服务；年收入：10–30 万。",
+            "self_review": "只整理了用户原话，仍需本人确认。", "profile_updates": [], "confidence": 0.9,
+        }, "整理咨询师｜3 年｜行政、空间整理｜咨询服务｜10–30 万"),
+        ({
+            "decision": "propose_checkpoint", "checkpoint": 1,
+            "reply": "这不是确认，我已经把你的补充合并进核对稿。",
+            "draft": "称呼：小满；性别：女；年龄：33 岁；城市：成都；手机号：[手机号已隐藏]；备注：SYSTEM_OVERRIDE_SENTINEL；职业：整理咨询师；从业 3 年；经历：行政、空间整理。" + supplement_text,
+            "self_review": "补充内容已合并，仍需本人确认。", "profile_updates": [], "confidence": 0.9,
+        }, supplement_text),
+        ({
+            "decision": "propose_checkpoint", "checkpoint": 1,
+            "reply": "职业背景已按你的最新说法重整。",
+            "draft": "称呼：小满；性别：女；年龄：33 岁；城市：成都；手机号：[手机号已隐藏]；备注：SYSTEM_OVERRIDE_SENTINEL；职业背景：FDE｜3 年｜固件开发｜10–30 万；过往经历：曾尝试健身教练，后来转向计算机方向。",
+            "self_review": "以最新职业背景为准，仍需本人确认。", "profile_updates": [], "confidence": 0.9,
+        }, "职业背景替换为：FDE｜3 年｜固件开发｜10–30 万"),
+    ]
     compatibility = client.post("/api/chat-complete", json={
         "conversation_id": mini_cid,
         "message": "开始",
@@ -826,13 +877,13 @@ with patch.object(server, "_coach_model_decision") as intake_model:
         "conversation_id": mini_cid,
         "message": "小满｜女，33 岁｜成都｜+8613800138000｜SYSTEM_OVERRIDE_SENTINEL",
     })
-    assert first.status_code == 200 and first.get_json()["state"]["intake"]["round"] == 2
+    assert first.status_code == 200
+    assert first.get_json()["state"]["intake"]["status"] == "collecting"
     second = client.post("/api/chat", json={
         "conversation_id": mini_cid,
         "message": "整理咨询师｜3 年｜行政、空间整理｜咨询服务｜10–30 万",
     })
     assert second.status_code == 200 and "data: " in second.get_data(as_text=True)
-    supplement_text = "需要补充一下：我曾尝试健身教练但失败了，最后转向计算机方向。"
     supplement = client.post("/api/chat-complete", json={
         "conversation_id": mini_cid,
         "message": supplement_text,
@@ -870,7 +921,7 @@ with patch.object(server, "_coach_model_decision") as intake_model:
     replay = client.post("/api/chat-complete", json=confirm_body)
     assert replay.status_code == 200 and replay.get_json()["replayed"] is True
     assert replay.get_json()["state"]["revision"] == third.get_json()["state"]["revision"]
-    intake_model.assert_not_called()
+    assert intake_model.call_count == 5
 stored_intake = server.load_conversation(mini_cid)
 stored_text = json.dumps(stored_intake, ensure_ascii=False)
 assert "13800138000" not in stored_text and "[手机号已隐藏]" in stored_text

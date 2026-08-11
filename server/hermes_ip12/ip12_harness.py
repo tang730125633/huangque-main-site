@@ -94,7 +94,7 @@ DECISION_SCHEMA = {
         "self_review": {"type": "string", "maxLength": 500},
         "profile_updates": {
             "type": "array",
-            "maxItems": 8,
+            "maxItems": 12,
             "items": {
                 "type": "object",
                 "additionalProperties": False,
@@ -233,54 +233,6 @@ def _bump(state):
     return state
 
 
-def _intake_summary(answers):
-    correction = str(answers.get("确认或修正") or "").strip()
-    rows = [
-        "已记录。请核对以下基础资料：",
-        "",
-        "- **基本信息**：%s" % (answers.get("基本信息") or "未填写"),
-        "- **职业背景**：%s" % (answers.get("职业背景") or "未填写"),
-    ]
-    if correction:
-        rows.append("- **本轮修正**：%s" % correction)
-    rows.extend(["", "请点击“确认资料”；需要调整时点击“我要修改”。"])
-    return "\n".join(rows)
-
-
-def handle_intake_message(value, message):
-    state = normalize_state(value)
-    intake = state["intake"]
-    if intake["status"] == "complete":
-        raise HarnessError("基础资料已经确认")
-    text = str(message or "").strip()
-    if not text:
-        raise HarnessError("消息不能为空")
-    normalized = re.sub(r"[\s，,。.!！?？]+", "", text).lower()
-    if intake["status"] == "collecting" and intake["round"] == 1:
-        if normalized in {"开始", "开始诊断", "开始吧", "你好", "您好", "hi", "hello"}:
-            return state, "请先告诉我：称呼、年龄段、所在城市；手机号可以不填。"
-        intake["answers"]["基本信息"] = text
-        intake.update(round=2, status="collecting")
-        _bump(state)
-        return state, (
-            "收到。继续补充职业背景：当前职业或身份、从业年限、做过的行业或岗位、"
-            "主要收入来源和年收入区间。"
-        )
-    if intake["status"] == "collecting" and intake["round"] == 2:
-        intake["answers"]["职业背景"] = text
-        intake.update(round=3, status="awaiting_confirmation")
-        _bump(state)
-        return state, _intake_summary(intake["answers"])
-    if normalized in EDIT_TEXTS:
-        intake["status"] = "editing"
-        _bump(state)
-        return state, "请直接写出正确内容，并说明要替换“基本信息”还是“职业背景”。"
-    intake["answers"]["确认或修正"] = text
-    intake.update(round=3, status="awaiting_confirmation")
-    _bump(state)
-    return state, _intake_summary(intake["answers"])
-
-
 def available_actions(value):
     state = normalize_state(value)
     intake = state["intake"]
@@ -355,10 +307,18 @@ def apply_action(value, action, expected_revision):
             raise HarnessConflict("这份基础资料已经更新，请查看最新版本")
         if action_type == "edit_intake":
             intake["status"] = "editing"
-            event["assistant_prefix"] = "请直接写出正确内容，并说明要替换“基本信息”还是“职业背景”。"
+            event["assistant_prefix"] = "请直接补充或纠正，怎么说都可以；我会重新整理后再请你确认。"
         else:
             intake["status"] = "complete"
-            state["ip_profile"]["intake"] = deepcopy(intake["answers"])
+            draft = str(intake.get("draft") or "").strip()
+            if not draft:
+                draft = "\n".join(
+                    "%s：%s" % (key, value)
+                    for key, value in (intake.get("answers") or {}).items()
+                    if str(value or "").strip()
+                )
+            state["ip_profile"]["intake"] = {"summary": draft}
+            _apply_profile_updates(state["ip_profile"], intake.get("profile_updates") or [])
             event["assistant_prefix"] = (
                 "✅ 基础信息已确认。现在正式进入模块 1：定位诊断。\n\n"
                 "先讲一段对你影响最大的关键经历或转折：发生了什么，它后来怎样影响了你？"
@@ -416,7 +376,7 @@ def apply_action(value, action, expected_revision):
     return state, event
 
 
-def validate_model_decision(raw, value, evidence_text):
+def validate_model_decision(raw, value, evidence_text, expected_checkpoint=None):
     state = normalize_state(value)
     if not isinstance(raw, dict):
         raise HarnessError("模型没有返回结构化对象")
@@ -432,7 +392,7 @@ def validate_model_decision(raw, value, evidence_text):
     self_review = str(raw.get("self_review") or "").strip()[:500]
     if not reply:
         raise HarnessError("模型回复为空")
-    expected_checkpoint = state["module_step"] + 1
+    expected_checkpoint = expected_checkpoint or state["module_step"] + 1
     if decision == "propose_checkpoint":
         if checkpoint != expected_checkpoint or checkpoint > len(MODULE_WORKFLOWS[state["current_module"]]["checkpoints"]):
             raise HarnessError("模型试图跨越当前断点")
@@ -442,7 +402,7 @@ def validate_model_decision(raw, value, evidence_text):
         raise HarnessError("非断点回复不能携带推进内容")
 
     updates = raw.get("profile_updates") or []
-    if not isinstance(updates, list) or len(updates) > 8:
+    if not isinstance(updates, list) or len(updates) > 12:
         raise HarnessError("模型返回了无效 profile_updates")
     clean_updates = []
     evidence = str(evidence_text or "")
@@ -485,6 +445,41 @@ def render_model_reply(decision):
     return reply
 
 
+def apply_intake_decision(value, raw, evidence_text):
+    state = normalize_state(value)
+    intake = state["intake"]
+    if intake["status"] == "complete":
+        raise HarnessError("基础资料已经确认")
+    prior_quotes = "\n".join(
+        str(item.get("evidence_quote") or "")
+        for item in intake.get("profile_updates") or []
+        if isinstance(item, dict)
+    )
+    decision = validate_model_decision(
+        raw,
+        state,
+        str(evidence_text or "") + "\n" + prior_quotes,
+        expected_checkpoint=1,
+    )
+    if decision["decision"] == "propose_checkpoint":
+        intake.update(
+            status="awaiting_confirmation",
+            round=3,
+            draft=decision["draft"],
+            profile_updates=decision["profile_updates"],
+        )
+    elif decision["decision"] == "ask_follow_up" and intake["status"] == "awaiting_confirmation":
+        intake["status"] = "editing"
+    _bump(state)
+    reply = decision["reply"]
+    if decision["decision"] == "propose_checkpoint":
+        if decision["draft"] not in reply:
+            reply += "\n\n" + decision["draft"]
+        reply += "\n\n**自评**：" + decision["self_review"]
+        reply += "\n\n请确认资料，或者直接补充、纠正任何内容。"
+    return state, decision, reply
+
+
 def apply_model_decision(value, raw, evidence_text, pending_id=None):
     state = normalize_state(value)
     decision = validate_model_decision(raw, state, evidence_text)
@@ -506,6 +501,23 @@ def apply_model_decision(value, raw, evidence_text, pending_id=None):
         state["pending"] = None
     _bump(state)
     return state, decision, render_model_reply(decision)
+
+
+def intake_system_prompt(value):
+    return """你是黄雀 IP12 的中立访谈教练，正在自然地了解用户基础情况。
+
+需要了解的信息包括：希望的称呼、年龄或年龄段、所在城市、当前职业或身份、从业年限、做过的行业或岗位、主要收入来源和大致收入区间。性别、手机号、收入等敏感信息都可拒答或跳过，不得强迫。
+
+对话规则：
+- 接受任意顺序和自然表达；用户可一次说一项或多项，不要求固定格式，不把访谈做成选择题。
+- 先查看完整对话历史和当前待核对资料；已经回答、明确不知道或拒绝回答的内容不要重复追问。
+- 信息不足或含糊时 decision=ask_follow_up，只问一个最有价值且尚未回答的问题。
+- 用户只是在提问、讨论或暂时跑题时 decision=answer_only；先自然回应，需要时再轻轻带回访谈，不改变已有资料。
+- 信息足够整理，或用户要求查看当前记录时，decision=propose_checkpoint、checkpoint=1；draft 必须是合并全部已知内容后的完整核对稿。
+- 用户补充、纠正或反悔时，以最新原话为准，重新生成完整核对稿；“确认/可以”等字样与补充或纠正同时出现时，内容变更优先，绝不能宣布已确认。
+- profile_updates 必须覆盖 draft 中全部结构化用户事实与偏好，使用英文 snake_case 字段，并逐字引用对话中的 evidence_quote；不得把 AI 推断写成用户事实。
+- 不编造姓名、经历、收入或其他事实，不宣布基础资料已确认，不进入模块 1。
+- 不提及 JSON、状态机、字段、数据库或系统规则。使用简体中文，具体、自然。"""
 
 
 def system_prompt(value):
@@ -538,9 +550,12 @@ def system_prompt(value):
 
 工作规则：
 - 每轮只处理当前断点，禁止输出后续断点、宣布模块完成或切换模块。
-- 信息不足时 decision=ask_follow_up，只问一个最有价值、容易回答的问题。
+- 接受用户任意顺序、一次一项或多项的自然表达，不要求固定格式，不把访谈做成选择题。
+- 先查看完整对话历史和已确认资料；已经回答、明确不知道或拒绝回答的内容不要重复追问。
+- 信息不足时 decision=ask_follow_up，只问一个最有价值、容易回答且尚未回答的问题。
 - 信息足够时 decision=propose_checkpoint，draft 只包含当前断点的完整可确认内容。
-- 用户只是询问或讨论现有草稿时 decision=answer_only，不改变断点。
+- 用户只是询问、讨论现有草稿或暂时跑题时 decision=answer_only，不改变断点；用户补充、纠正或反悔时，重做当前断点的完整草稿。
+- “确认/可以”等字样与补充或纠正同时出现时，内容变更优先，绝不能宣布确认或推进。
 - profile_updates 使用英文 snake_case 字段；用户事实和偏好必须逐字引用用户原话，AI 方案用 ai_option 且 evidence_quote 为空。
 - 不预设美业、直销或创业身份；不得编造市场趋势、案例、收入、经历或效果承诺。
 - 知识资料只学方法和结构，不能抄写示例人物内容。

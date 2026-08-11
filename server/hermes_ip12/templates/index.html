@@ -350,14 +350,15 @@ async function runVideoAnalyzer(){
 function renderMods(){
   var done=(state.completed_modules||[]).filter(function(mid){return mid<=AVAILABLE_MODULE_COUNT}),cur=Math.min(state.current_module||1,AVAILABLE_MODULE_COUNT);
   var foundation=state.foundation_report||{};
-  var intakePending=state.intake&&state.intake.status!=='complete',intakeRound=intakePending?(state.intake.round||1):0;
+  var intakePending=state.intake&&state.intake.status!=='complete';
+  var intakeLabel=!intakePending?'':(state.intake.status==='awaiting_confirmation'?'待确认':(state.intake.status==='editing'?'修改中':'交谈中'));
   var html='';
   for(var i=0;i<M.length;i++){
     var m=M[i];
     var cls='mod-item',badge='',check='',expand='<span class="mod-expand">▶</span>';
     var comingSoon=m.id>AVAILABLE_MODULE_COUNT;
     var locked=comingSoon||intakePending||(m.id>=5&&foundation.status!=='confirmed');
-    if(locked){cls+=' locked';badge=comingSoon?'<span class="mod-badge">尚未开发，敬请期待</span>':(intakePending&&m.id===1?'<span class="mod-badge">基础信息 '+intakeRound+'/3</span>':(intakePending?'':'<span class="mod-badge">待确认 PDF</span>'))}
+    if(locked){cls+=' locked';badge=comingSoon?'<span class="mod-badge">尚未开发，敬请期待</span>':(intakePending&&m.id===1?'<span class="mod-badge">基础信息 '+intakeLabel+'</span>':(intakePending?'':'<span class="mod-badge">待确认 PDF</span>'))}
     if(done.indexOf(m.id)>=0){cls+=' done';check='<span style="color:var(--gr);font-size:12px">✓</span>'}
     if(!intakePending&&m.id===cur&&done.indexOf(m.id)<0){cls+=' cur';badge='<span class="mod-badge">进行中</span>'}
     if(intakePending&&m.id===1)cls+=' cur';
@@ -371,7 +372,7 @@ function renderMods(){
         subs+='<div class="mod-sub" onclick="event.stopPropagation();loadSkill(\''+s.id+'\')">'+moduleIcon(s.icon)+eHtml(s.name)+'</div>';
       }
     }
-    var click=comingSoon?"toast('尚未开发，敬请期待')":(locked?(intakePending?"toast('请先完成 3 轮基础信息')":"toast('请先确认模块 1-4 的 IP 定位初稿 PDF')"):(hasSub?'toggleExpand('+m.id+')':'jumpModule('+m.id+')'));
+    var click=comingSoon?"toast('尚未开发，敬请期待')":(locked?(intakePending?"toast('请先补充并确认基础资料')":"toast('请先确认模块 1-4 的 IP 定位初稿 PDF')"):(hasSub?'toggleExpand('+m.id+')':'jumpModule('+m.id+')'));
     html+='<div class="'+cls+'" onclick="'+click+'"><div class="mod-num">'+(done.indexOf(m.id)>=0?'✓':m.id)+'</div><div class="mod-info"><div class="mod-name">'+moduleIcon(m.icon)+m.name+'</div></div>'+badge+check+(hasSub?expand:'')+subs+'</div>';
   }
   document.getElementById('modScroll').innerHTML=html;
@@ -379,7 +380,7 @@ function renderMods(){
   document.getElementById('progBar').style.width=Math.round(dc/AVAILABLE_MODULE_COUNT*100)+'%';
   document.getElementById('progText').textContent=dc===AVAILABLE_MODULE_COUNT?'🎉 六步完成':dc+'/'+AVAILABLE_MODULE_COUNT;
   var mod=M.filter(function(m){return m.id===cur})[0];
-  document.getElementById('curModName').textContent=intakePending?'基础信息 · '+intakeRound+'/3':(mod?mod.name:'—');
+  document.getElementById('curModName').textContent=intakePending?'基础信息 · '+intakeLabel:(mod?mod.name:'—');
   renderArtifacts();
 }
 
