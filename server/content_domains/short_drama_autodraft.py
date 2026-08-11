@@ -158,6 +158,8 @@ CREATE TABLE IF NOT EXISTS short_drama_provider_shot_attempts (
 );
 CREATE INDEX IF NOT EXISTS idx_short_drama_provider_attempts_project
   ON short_drama_provider_shot_attempts(project_id, state, updated_at);
+CREATE INDEX IF NOT EXISTS idx_short_drama_provider_refunds_due
+  ON short_drama_provider_shot_attempts(state, refund_retry_at, updated_at);
 CREATE TABLE IF NOT EXISTS short_drama_provider_shot_jobs (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES short_drama_projects(id) ON DELETE CASCADE,
@@ -189,6 +191,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_short_drama_provider_shot_active
   WHERE status IN ('billing','queued','submitting','running','submit_unknown');
 CREATE INDEX IF NOT EXISTS idx_short_drama_provider_shot_jobs_project
   ON short_drama_provider_shot_jobs(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_short_drama_provider_shot_jobs_latest
+  ON short_drama_provider_shot_jobs(project_id, shot_key, created_at DESC, id DESC);
 CREATE TABLE IF NOT EXISTS short_drama_provider_shot_versions (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES short_drama_projects(id) ON DELETE CASCADE,
@@ -1851,24 +1855,6 @@ def start_provider_job(
         raise
 
 
-def _validate_provider_reconciliation_evidence(row, attempt, body):
-    evidence = body.get("evidence")
-    request = _json(row["request_json"], {})
-    expected_key_id = str(request.get("_provider_key_id") or "env")
-    if not isinstance(evidence, dict) or any((
-        str(evidence.get("provider") or "") != str(row["provider"]),
-        str(evidence.get("attempt_id") or "") != str(attempt["id"]),
-        str(evidence.get("request_hash") or "") != str(attempt["request_hash"]),
-        str(evidence.get("provider_key_id") or "") != expected_key_id,
-    )):
-        raise AutodraftError(
-            "provider_reconciliation_evidence_invalid",
-            "Provider 对账证据与原提交尝试不一致",
-            422,
-        )
-    return expected_key_id
-
-
 def reconcile_unknown_provider_submission(
     db_factory, owner_username, actor_username, actor_role, job_id, body,
     refund_points=None,
@@ -1982,28 +1968,18 @@ def reconcile_unknown_provider_submission(
             "SELECT * FROM short_drama_provider_shot_attempts WHERE job_id=?",
             (job_id,),
         ).fetchone()
-        if not attempt or not (
-            str(actor_role or "").lower() == "admin"
-            or str(attempt["actor_username"]) == str(actor_username)
-        ):
+        if not attempt:
+            raise AutodraftError(
+                "provider_reconciliation_not_allowed",
+                "Provider 对账尝试不存在",
+                409,
+            )
+        if str(actor_role or "").lower() != "admin":
             raise AutodraftError(
                 "provider_reconciliation_forbidden",
-                "仅任务提交人或可信管理员可执行 Provider 对账",
+                "无法由 Provider 证明归属的任务仅允许可信管理员绑定",
                 403,
             )
-        expected_key_id = _validate_provider_reconciliation_evidence(
-            row, attempt, body,
-        )
-        provider = load_by_name(row["provider"])
-        decode_job_id = getattr(provider, "_decode_job_id", None)
-        if callable(decode_job_id):
-            bound_key_id, _raw_job_id = decode_job_id(provider_job_id)
-            if str(bound_key_id or "env") != expected_key_id:
-                raise AutodraftError(
-                    "provider_reconciliation_evidence_invalid",
-                    "上游任务凭据账户与原提交尝试不一致",
-                    422,
-                )
         existing_provider_job_id = str(row["provider_job_id"] or "").strip()
         if row["status"] == "running" and existing_provider_job_id == provider_job_id:
             conn.commit()
@@ -2138,6 +2114,35 @@ def _sweep_provider_refunds(
                 "AND a.state='refund_pending' AND a.refund_retry_at<=? "
                 "ORDER BY a.updated_at LIMIT 20",
                 (owner_username, project_id, now),
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+    return sum(
+        1 for job_id in job_ids
+        if _recover_provider_refund(
+            db_factory, job_id, refund_points=refund_points, now=now,
+        )
+    )
+
+
+def retry_provider_refunds(
+    db_factory, points_domain, limit=100, now=None,
+):
+    """Recover every due single-shot refund without relying on project reads."""
+    refund_points = getattr(points_domain, "refund_points", None)
+    if not callable(refund_points):
+        return 0
+    now = int(time.time() if now is None else now)
+    limit = max(1, min(1000, int(limit or 100)))
+    conn = _connection(db_factory)
+    try:
+        job_ids = [
+            row[0] for row in conn.execute(
+                "SELECT job_id FROM short_drama_provider_shot_attempts "
+                "WHERE state='refund_pending' AND refund_retry_at<=? "
+                "ORDER BY refund_retry_at,updated_at LIMIT ?",
+                (now, limit),
             ).fetchall()
         ]
     finally:
@@ -2988,18 +2993,20 @@ def workspace(
         provider_jobs = [
             _provider_job(provider_row)
             for provider_row in conn.execute(
-                "SELECT * FROM short_drama_provider_shot_jobs "
-                "WHERE project_id=? AND status IN "
+                "SELECT j.* FROM short_drama_provider_shot_jobs j "
+                "WHERE j.project_id=? AND (j.status IN "
                 "('billing','queued','submitting','running','submit_unknown') "
-                "ORDER BY created_at DESC",
+                "OR NOT EXISTS (SELECT 1 FROM short_drama_provider_shot_jobs newer "
+                "WHERE newer.project_id=j.project_id AND newer.shot_key=j.shot_key "
+                "AND (newer.created_at>j.created_at OR "
+                "(newer.created_at=j.created_at AND newer.id>j.id)))) "
+                "ORDER BY CASE WHEN j.status IN "
+                "('billing','queued','submitting','running','submit_unknown') "
+                "THEN 0 ELSE 1 END,j.created_at DESC,j.id DESC",
                 (project_id,),
             ).fetchall()
         ]
-        provider_job = provider_jobs[0] if provider_jobs else _provider_job(conn.execute(
-            "SELECT * FROM short_drama_provider_shot_jobs WHERE project_id=? "
-            "ORDER BY created_at DESC LIMIT 1",
-            (project_id,),
-        ).fetchone())
+        provider_job = provider_jobs[0] if provider_jobs else None
         provider_versions = [
             _provider_version(row) for row in conn.execute(
                 "SELECT v.*,j.request_json,CASE WHEN s.version_id=v.id THEN 1 ELSE 0 END selected "

@@ -280,25 +280,6 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             avatar_lookup=lambda _username, _avatar_id: avatar,
         )
 
-    def _provider_reconciliation_evidence(self, job_id):
-        conn = self.db()
-        try:
-            row = conn.execute(
-                "SELECT j.provider,j.request_json,a.id AS attempt_id,a.request_hash "
-                "FROM short_drama_provider_shot_jobs j "
-                "JOIN short_drama_provider_shot_attempts a ON a.job_id=j.id "
-                "WHERE j.id=?", (job_id,),
-            ).fetchone()
-        finally:
-            conn.close()
-        request = json.loads(row[1])
-        return {
-            "provider": row[0],
-            "attempt_id": row[2],
-            "request_hash": row[3],
-            "provider_key_id": request.get("_provider_key_id") or "env",
-        }
-
     def _running_provider_job(self, key):
         charged = []
         with mock.patch.dict(os.environ, {
@@ -1696,13 +1677,12 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             "project_id": self.project["id"],
             "action": "bind_provider_job",
             "provider_job_id": "upstream-task-42",
-            "evidence": self._provider_reconciliation_evidence(job["id"]),
         }
         first = short_drama_autodraft.reconcile_unknown_provider_submission(
-            self.db, "alice", "alice", "user", job["id"], body,
+            self.db, "alice", "ops", "admin", job["id"], body,
         )
         replay = short_drama_autodraft.reconcile_unknown_provider_submission(
-            self.db, "alice", "alice", "user", job["id"], body,
+            self.db, "alice", "ops", "admin", job["id"], body,
         )
 
         self.assertEqual("running", first["status"])
@@ -1764,7 +1744,8 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         conn = self.db()
         try:
             conn.execute(
-                "UPDATE short_drama_provider_shot_jobs SET status='submit_unknown' "
+                "UPDATE short_drama_provider_shot_jobs SET status='submit_unknown',"
+                "provider_job_id=NULL "
                 "WHERE id=?", (job["id"],),
             )
             conn.commit()
@@ -1774,7 +1755,6 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             "project_id": self.project["id"],
             "action": "bind_provider_job",
             "provider_job_id": "foreign-task",
-            "evidence": self._provider_reconciliation_evidence(job["id"]),
         }
         with self.assertRaises(short_drama_autodraft.AutodraftError) as caught:
             short_drama_autodraft.reconcile_unknown_provider_submission(
@@ -1782,29 +1762,27 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             )
         self.assertEqual("provider_reconciliation_forbidden", caught.exception.code)
 
-    def test_submit_unknown_binding_requires_matching_provenance(self):
+    def test_task_actor_cannot_bind_unverifiable_raw_provider_job_id(self):
         job = self._running_provider_job("reconcile-provenance")[0]
         conn = self.db()
         try:
             conn.execute(
-                "UPDATE short_drama_provider_shot_jobs SET status='submit_unknown' "
+                "UPDATE short_drama_provider_shot_jobs SET status='submit_unknown',"
+                "provider_job_id=NULL "
                 "WHERE id=?", (job["id"],),
             )
             conn.commit()
         finally:
             conn.close()
-        evidence = self._provider_reconciliation_evidence(job["id"])
-        evidence["request_hash"] = "another-request"
         with self.assertRaises(short_drama_autodraft.AutodraftError) as caught:
             short_drama_autodraft.reconcile_unknown_provider_submission(
                 self.db, "alice", "alice", "user", job["id"], {
                     "project_id": self.project["id"],
                     "action": "bind_provider_job",
                     "provider_job_id": "wrong-task",
-                    "evidence": evidence,
                 },
             )
-        self.assertEqual("provider_reconciliation_evidence_invalid", caught.exception.code)
+        self.assertEqual("provider_reconciliation_forbidden", caught.exception.code)
 
     def test_bind_and_refund_reconciliation_compete_for_one_atomic_claim(self):
         job, _quote = self._running_provider_job("atomic-reconciliation-claim")
@@ -1825,7 +1803,6 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             "project_id": self.project["id"],
             "action": "bind_provider_job",
             "provider_job_id": "atomic-upstream-task",
-            "evidence": self._provider_reconciliation_evidence(job["id"]),
         }
         refund_body = {
             "project_id": self.project["id"],
@@ -1836,7 +1813,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             barrier.wait()
             try:
                 results.append(short_drama_autodraft.reconcile_unknown_provider_submission(
-                    self.db, "alice", "alice", "user", job["id"], bind_body,
+                    self.db, "alice", "ops", "admin", job["id"], bind_body,
                 ))
             except short_drama_autodraft.AutodraftError as error:
                 errors.append(error.code)
@@ -2110,6 +2087,41 @@ class ShortDramaAutodraftTests(unittest.TestCase):
 
         self.assertEqual(
             {first["id"], "parallel-shot-two"},
+            {item["id"] for item in result["provider_jobs"]},
+        )
+
+    def test_workspace_restores_latest_terminal_job_for_each_shot(self):
+        first, _quote = self._running_provider_job("terminal-shot-one")
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs "
+                "SET status='failed',created_at=100,updated_at=100 WHERE id=?",
+                (first["id"],),
+            )
+            conn.execute(
+                "INSERT INTO short_drama_provider_shot_jobs "
+                "(id,project_id,owner_username,actor_username,plan_id,shot_key,"
+                "character_key,avatar_id,provider,status,progress,poll_count,"
+                "input_hash,request_json,error_json,cost,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,'failed',0,0,?,?,?,0,101,101)",
+                (
+                    "terminal-shot-two", self.project["id"], "alice", "alice",
+                    self.plan_id, "shot_02", "character_1", "avatar-1",
+                    "heygen_cinematic", "terminal-hash-two", "{}",
+                    json.dumps({"code": "provider_failed"}),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = short_drama_autodraft.workspace(
+            self.db, "alice", "alice", self.project["id"],
+        )
+
+        self.assertEqual(
+            {first["id"], "terminal-shot-two"},
             {item["id"] for item in result["provider_jobs"]},
         )
 
@@ -2390,7 +2402,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             conn.close()
         self.assertEqual("refunded", state)
 
-    def test_workspace_sweeper_retries_persisted_provider_refund_with_backoff(self):
+    def test_background_sweeper_retries_refund_without_workspace_access(self):
         class RejectingProvider:
             name = "heygen_cinematic"
             configured = True
@@ -2429,14 +2441,10 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         finally:
             conn.close()
         self.assertEqual(("refund_pending", 1), pending[:2])
-        with mock.patch(
-            "content_domains.short_drama_autodraft.time.time",
-            return_value=pending[2],
-        ):
-            short_drama_autodraft.workspace(
-                self.db, "alice", "alice", self.project["id"],
-                refund_points=refunds,
-            )
+        points_service = mock.Mock(refund_points=refunds)
+        recovered = short_drama_autodraft.retry_provider_refunds(
+            self.db, points_service, now=pending[2],
+        )
         conn = self.db()
         try:
             state = conn.execute(
@@ -2446,6 +2454,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         finally:
             conn.close()
         self.assertEqual("refunded", state)
+        self.assertEqual(1, recovered)
         self.assertEqual(2, refunds.call_count)
 
 

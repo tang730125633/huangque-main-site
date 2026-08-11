@@ -1086,16 +1086,207 @@ def _page_job_point_usage(conn, project_ids):
     refunded_expr = "COALESCE(j.refunded,0)" if "refunded" in job_columns else "0"
     placeholders = ",".join("?" for _project_id in project_ids)
     rows = conn.execute(
-        "SELECT l.project_id,j.cost," + refunded_expr + " "
+        "SELECT l.project_id,SUM(CASE WHEN " + refunded_expr + "=1 THEN 0 "
+        "WHEN COALESCE(j.cost,0)>0 THEN j.cost ELSE 0 END),COUNT(*) "
         "FROM short_drama_job_project_links l JOIN jobs j ON j.id=l.job_id "
-        "WHERE l.project_id IN (" + placeholders + ")",
+        "WHERE l.project_id IN (" + placeholders + ") GROUP BY l.project_id",
         tuple(project_ids),
     ).fetchall()
-    for project_id, cost, refunded in rows:
-        usage[project_id]["has_activity"] = True
-        if int(refunded or 0) != 1:
-            usage[project_id]["actual"] += max(0, int(cost or 0))
+    for project_id, actual, count in rows:
+        usage[project_id]["has_activity"] = int(count or 0) > 0
+        usage[project_id]["actual"] = max(0, int(actual or 0))
     return usage
+
+
+def _page_project_point_usage(conn, projects):
+    """Return complete point ledgers with a fixed query count for one page."""
+    projects = list(projects or ())
+    project_ids = [row["id"] for row in projects]
+    usage = {
+        row["id"]: {
+            "legacy": int(row.get("spent_points") or 0),
+            "actual": 0,
+            "reserved": 0,
+            "has_activity": False,
+        }
+        for row in projects
+    }
+    if not project_ids:
+        return {}
+    placeholders = ",".join("?" for _project_id in project_ids)
+    params = tuple(project_ids)
+    job_columns = _table_columns(conn, "jobs")
+    refunded_expr = "COALESCE(j.refunded,0)" if "refunded" in job_columns else "0"
+
+    for project_id, values in _page_job_point_usage(conn, project_ids).items():
+        usage[project_id]["actual"] += int(values["actual"])
+        usage[project_id]["has_activity"] |= bool(values["has_activity"])
+
+    linked_production_jobs = {project_id: set() for project_id in project_ids}
+    if _table_columns(conn, "short_drama_production_jobs"):
+        production_refunded = (
+            "COALESCE(p.refunded,0)"
+            if "refunded" in _table_columns(conn, "short_drama_production_jobs")
+            else "0"
+        )
+        if job_columns:
+            rows = conn.execute(
+                "SELECT p.project_id,p.job_id,p.quoted_cost," + production_refunded
+                + ",j.id,j.cost," + refunded_expr + " "
+                "FROM short_drama_production_jobs p LEFT JOIN jobs j ON j.id=p.job_id "
+                "WHERE p.project_id IN (" + placeholders + ")", params,
+            ).fetchall()
+        else:
+            rows = [tuple(row) + (None, None, 0) for row in conn.execute(
+                "SELECT p.project_id,p.job_id,p.quoted_cost," + production_refunded
+                + " FROM short_drama_production_jobs p WHERE p.project_id IN ("
+                + placeholders + ")", params,
+            ).fetchall()]
+        for project_id, job_id, quoted, link_refunded, found_id, cost, refunded in rows:
+            item = usage[project_id]
+            item["has_activity"] = True
+            if job_id is not None:
+                linked_production_jobs[project_id].add(int(job_id))
+            if found_id is not None:
+                if int(refunded or 0) != 1:
+                    item["actual"] += max(0, int(cost or 0))
+            elif int(link_refunded or 0) != 1:
+                item["actual"] += max(0, int(quoted or 0))
+
+    def simple_attempts(table, actual_states, reserved_state=True):
+        if not _table_columns(conn, table):
+            return
+        rows = conn.execute(
+            "SELECT project_id,state,cost FROM " + table
+            + " WHERE project_id IN (" + placeholders + ")", params,
+        ).fetchall()
+        for project_id, state, cost in rows:
+            item = usage[project_id]
+            item["has_activity"] = True
+            if reserved_state and state == "accepted":
+                item["reserved"] += max(0, int(cost or 0))
+            elif state in actual_states:
+                item["actual"] += max(0, int(cost or 0))
+
+    if _table_columns(conn, "short_drama_charge_attempts"):
+        rows = conn.execute(
+            "SELECT project_id,state,cost,job_id FROM short_drama_charge_attempts "
+            "WHERE project_id IN (" + placeholders + ")", params,
+        ).fetchall()
+        for project_id, state, cost, job_id in rows:
+            item = usage[project_id]
+            item["has_activity"] = True
+            if job_id is not None and int(job_id) in linked_production_jobs[project_id]:
+                continue
+            if state == "accepted":
+                item["reserved"] += max(0, int(cost or 0))
+            elif state in {"charged", "linked", "refund_pending"}:
+                item["actual"] += max(0, int(cost or 0))
+
+    def linked_attempts(table, actual_states):
+        if not _table_columns(conn, table):
+            return
+        if job_columns:
+            rows = conn.execute(
+                "SELECT a.project_id,a.state,a.cost,a.job_id,j.id,j.cost,"
+                + refunded_expr + " FROM " + table
+                + " a LEFT JOIN jobs j ON j.id=a.job_id WHERE a.project_id IN ("
+                + placeholders + ")", params,
+            ).fetchall()
+        else:
+            rows = [tuple(row) + (None, None, 0) for row in conn.execute(
+                "SELECT project_id,state,cost,job_id FROM " + table
+                + " WHERE project_id IN (" + placeholders + ")", params,
+            ).fetchall()]
+        for project_id, state, cost, _job_id, found_id, job_cost, refunded in rows:
+            item = usage[project_id]
+            item["has_activity"] = True
+            if state == "accepted":
+                item["reserved"] += max(0, int(cost or 0))
+            elif state in actual_states:
+                if found_id is not None:
+                    if int(refunded or 0) != 1:
+                        item["actual"] += max(0, int(job_cost or 0))
+                else:
+                    item["actual"] += max(0, int(cost or 0))
+
+    linked_attempts(
+        "short_drama_voice_charge_attempts",
+        {"charged", "linked", "done", "refund_pending"},
+    )
+    linked_attempts(
+        "short_drama_video_charge_attempts",
+        {"charged", "linked", "done", "refund_pending"},
+    )
+    linked_attempts(
+        "short_drama_final_attempts",
+        {"charged", "done", "archived", "refund_pending"},
+    )
+    simple_attempts(
+        "short_drama_delivery_attempts", {"charged", "linked", "refund_pending"}
+    )
+    simple_attempts(
+        "short_drama_autodraft_attempts", {"charged", "linked", "refund_pending"}
+    )
+    simple_attempts(
+        "short_drama_provider_shot_attempts",
+        {"charged", "linked", "done", "refund_pending"},
+    )
+
+    if _table_columns(conn, "short_drama_character_reference_jobs") and job_columns:
+        rows = conn.execute(
+            "SELECT r.project_id,r.cost,r.status,j.id,j.cost," + refunded_expr + " "
+            "FROM short_drama_character_reference_jobs r "
+            "LEFT JOIN jobs j ON j.id=r.job_id WHERE r.project_id IN ("
+            + placeholders + ")", params,
+        ).fetchall()
+        for project_id, linked_cost, state, found_id, job_cost, refunded in rows:
+            item = usage[project_id]
+            item["has_activity"] = True
+            if found_id is not None:
+                if int(refunded or 0) != 1:
+                    item["actual"] += max(0, int(job_cost or 0))
+            elif state != "failed":
+                item["actual"] += max(0, int(linked_cost or 0))
+
+    if _table_columns(conn, "short_drama_character_reference_attempts"):
+        rows = conn.execute(
+            "SELECT project_id,state,cost,job_id FROM "
+            "short_drama_character_reference_attempts WHERE project_id IN ("
+            + placeholders + ")", params,
+        ).fetchall()
+        for project_id, state, cost, job_id in rows:
+            item = usage[project_id]
+            if state == "accepted":
+                item["reserved"] += max(0, int(cost or 0))
+            elif state in {"charged", "refund_pending"} and job_id is None:
+                item["has_activity"] = True
+                item["actual"] += max(0, int(cost or 0))
+
+    if _table_columns(conn, "short_drama_sound_jobs") and job_columns:
+        rows = conn.execute(
+            "SELECT s.project_id,s.cost,s.status,j.id,j.cost," + refunded_expr + " "
+            "FROM short_drama_sound_jobs s LEFT JOIN jobs j ON j.id=s.job_id "
+            "WHERE s.project_id IN (" + placeholders + ")", params,
+        ).fetchall()
+        for project_id, linked_cost, state, found_id, job_cost, refunded in rows:
+            item = usage[project_id]
+            item["has_activity"] = True
+            if found_id is not None:
+                if int(refunded or 0) != 1:
+                    item["actual"] += max(0, int(job_cost or 0))
+            elif state != "failed":
+                item["actual"] += max(0, int(linked_cost or 0))
+
+    return {
+        project_id: {
+            "spent_points": (
+                item["actual"] if item["has_activity"] else item["legacy"]
+            ),
+            "reserved_points": item["reserved"],
+        }
+        for project_id, item in usage.items()
+    }
 
 
 def _project_point_usage(conn, project_id, page_job_usage=None):
@@ -2273,14 +2464,10 @@ def list_projects(db_factory, username, page=1, page_size=DEFAULT_PROJECT_PAGE_S
             " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
             params + (page_size, (page - 1) * page_size),
         )
-        page_job_usage = _page_job_point_usage(
-            conn, [row["id"] for row in rows]
-        )
+        page_usage = _page_project_point_usage(conn, rows)
         for row in rows:
             row["revision"] = int(row["revision"])
-            row["spent_points"] = _project_point_usage(
-                conn, row["id"], page_job_usage
-            )["spent_points"]
+            row["spent_points"] = page_usage[row["id"]]["spent_points"]
         return {
             "items": rows,
             "page": page,

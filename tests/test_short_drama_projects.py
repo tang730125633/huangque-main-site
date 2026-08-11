@@ -222,14 +222,20 @@ class ShortDramaProjectTests(unittest.TestCase):
             conn.commit()
         finally:
             conn.close()
-        statements = []
+        def tracked_list(page_size):
+            statements = []
 
-        def tracked_db():
-            conn = sqlite3.connect(self.path)
-            conn.set_trace_callback(statements.append)
-            return conn
+            def tracked_db():
+                conn = sqlite3.connect(self.path)
+                conn.set_trace_callback(statements.append)
+                return conn
 
-        result = short_drama.list_projects(tracked_db, "alice", page_size=10)
+            return short_drama.list_projects(
+                tracked_db, "alice", page_size=page_size
+            ), statements
+
+        _single, single_statements = tracked_list(1)
+        result, statements = tracked_list(10)
         self.assertEqual([3, 2, 1], sorted(
             (item["spent_points"] for item in result["items"]), reverse=True
         ))
@@ -246,6 +252,19 @@ class ShortDramaProjectTests(unittest.TestCase):
         ]
         self.assertEqual(1, len(page_link_queries), page_link_queries)
         self.assertIn("project_id IN", page_link_queries[0])
+        self.assertIn("GROUP BY l.project_id", page_link_queries[0])
+        single_selects = [
+            statement for statement in single_statements
+            if statement.lstrip().upper().startswith("SELECT")
+        ]
+        page_selects = [
+            statement for statement in statements
+            if statement.lstrip().upper().startswith("SELECT")
+        ]
+        self.assertLessEqual(
+            len(page_selects), len(single_selects) + 2,
+            (len(single_selects), len(page_selects)),
+        )
 
     def _assert_plan_rejected_without_side_effects(self, project, plan, job_id):
         before = short_drama.get_project(self.db, "alice", project["id"])

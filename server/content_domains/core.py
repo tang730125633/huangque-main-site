@@ -1137,6 +1137,14 @@ def _recover_pending_jobs(limit=None):
         recovered += 1
     return recovered
 
+
+def _retry_short_drama_provider_refunds(limit=None):
+    return (
+        _short_drama_domain().short_drama_autodraft.retry_provider_refunds(
+            jdb, _domains()[1], int(limit or JOB_QUEUE_MAX),
+        )
+    )
+
 def _pending_job_scanner():
     while True:
         try:
@@ -1149,6 +1157,7 @@ def _pending_job_scanner():
                 jdb, _domains()[1], JOB_QUEUE_MAX)
             _short_drama_domain().short_drama_video.retry_video_attempt_refunds(
                 jdb, _domains()[1], JOB_QUEUE_MAX)
+            _retry_short_drama_provider_refunds(JOB_QUEUE_MAX)
             jobs_store.retry_failed_refunds(jdb, _refund_once, JOB_QUEUE_MAX)
             _short_drama_domain().short_drama_assembly.reconcile_final_refunds(
                 jdb, JOB_QUEUE_MAX)
@@ -1202,6 +1211,7 @@ def start_job_workers():
             jdb, _domains()[1], JOB_QUEUE_MAX)
         _short_drama_domain().short_drama_video.retry_video_attempt_refunds(
             jdb, _domains()[1], JOB_QUEUE_MAX)
+        _retry_short_drama_provider_refunds(JOB_QUEUE_MAX)
         _short_drama_domain().short_drama_refinement.retry_delivery_attempt_refunds(
             jdb, _domains()[1], JOB_QUEUE_MAX)
         _short_drama_domain().short_drama_assembly.retry_final_charge_attempts(

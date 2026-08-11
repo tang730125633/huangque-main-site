@@ -29,6 +29,21 @@ test('workspace aria modals trap focus, close on Escape, and restore trigger foc
   assert.match(workspaceSource, /if\(characterImagePreviewTrigger\)characterImagePreviewTrigger\.focus\(\)/);
 });
 
+test('shot progress jump moves focus and respects reduced motion', () => {
+  assert.match(
+    workspaceSource,
+    /tabindex="-1"><header>/
+  );
+  assert.match(workspaceSource, /targetShot\.focus\(\{preventScroll:true\}\)/);
+  assert.match(
+    workspaceSource,
+    /matchMedia\('\(prefers-reduced-motion: reduce\)'\)\.matches/
+  );
+  assert.match(workspaceSource, /behavior:reduceMotion\?'auto':'smooth'/);
+  assert.match(workspaceStyle, /@media\(prefers-reduced-motion:reduce\)/);
+  assert.match(workspaceStyle, /\.sd-shot\.focused\{animation:none\}/);
+});
+
 test('poll rendering preserves a dirty open shot editor', () => {
   assert.match(
     workspaceSource,

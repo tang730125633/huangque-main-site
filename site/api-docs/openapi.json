@@ -4176,21 +4176,11 @@
           "properties": {
             "project_id": { "type": "string" },
             "action": { "type": "string", "enum": ["bind_provider_job", "confirm_not_submitted"] },
-            "provider_job_id": { "type": "string", "maxLength": 200 },
-            "evidence": {
-              "type": "object", "additionalProperties": false,
-              "required": ["provider", "attempt_id", "request_hash", "provider_key_id"],
-              "properties": {
-                "provider": { "type": "string" },
-                "attempt_id": { "type": "string" },
-                "request_hash": { "type": "string" },
-                "provider_key_id": { "type": "string" }
-              }
-            }
+            "provider_job_id": { "type": "string", "maxLength": 200 }
           },
           "oneOf": [
             {
-              "required": ["provider_job_id", "evidence"],
+              "required": ["provider_job_id"],
               "properties": { "action": { "enum": ["bind_provider_job"] } }
             },
             {
@@ -4200,7 +4190,7 @@
         } } } },
         "responses": {
           "200": { "description": "已恢复轮询，或已安全释放并完成/等待退款" },
-          "403": { "description": "仅原任务提交人可绑定；仅管理员可确认未提交并退款" },
+          "403": { "description": "Only a trusted administrator may bind an unverifiable upstream task or confirm absence and refund." },
           "404": { "description": "项目或任务不存在" },
           "409": { "description": "任务状态或已绑定的上游任务 ID 冲突" },
           "422": { "description": "对账动作或上游任务 ID 无效" }
