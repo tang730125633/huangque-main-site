@@ -2,6 +2,7 @@
 """Pixelle text-to-video adapter for the authenticated content job pipeline."""
 
 import json
+import math
 import os
 import pathlib
 import re
@@ -10,6 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from decimal import Decimal, ROUND_HALF_UP
 
 from .core import OUT_DIR, public_url
 from . import audio as audio_domain
@@ -315,6 +317,18 @@ def _style_key(payload):
     return style
 
 
+def _speech_rate(payload):
+    raw_value = (payload or {}).get("speech_rate")
+    if raw_value is None:
+        return 1.0
+    if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+        raise ValueError("请选择 0.5-2.0 之间的语速值")
+    value = float(raw_value)
+    if not math.isfinite(value) or value < 0.5 or value > 2.0:
+        raise ValueError("请选择 0.5-2.0 之间的语速值")
+    return float(Decimal(str(value)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
+
+
 def _freeze_voice(body, username):
     selection = str(body.get("voice") or ("public:" + DEFAULT_PUBLIC_VOICE)).strip()
     scope, separator, value = selection.partition(":")
@@ -367,6 +381,7 @@ def prepare_payload(payload, username=""):
         "mode": mode,
         "template": template,
         "style": style,
+        "speech_rate": _speech_rate(body),
         "n_scenes": scene_count,
         "scenes": [{"line": line} for line in segments],
     }
@@ -492,7 +507,12 @@ def _personal_narration_segments(payload):
         raise ValueError("个人音色任务缺少用户或音色信息")
     segments = []
     for index, text in enumerate(_personal_narrations(payload)):
-        audio = audio_domain.synthesize_owned_voice_segment(username, voice_key, text)
+        audio = audio_domain.synthesize_owned_voice_segment(
+            username,
+            voice_key,
+            text,
+            speed=payload.get("speech_rate", 1.0),
+        )
         request_id = "text-video-%s-%d" % (payload.get("_job_id") or "pending", index)
         uploaded = _binary_request(
             "POST", "/api/audio-assets", audio["content"], request_id
@@ -520,6 +540,7 @@ def _submit(payload):
         "prompt_prefix": style["prompt_prefix"],
         "media_workflow": media_workflow,
         "tts_workflow": PIXELLE_TTS_WORKFLOW,
+        "tts_speed": float(payload.get("speech_rate", 1.0)),
         "video_fps": 30,
         "bgm_volume": 0.18,
     }
@@ -531,6 +552,7 @@ def _submit(payload):
             "n_scenes": len(narration_segments),
             "narration_segments": narration_segments,
         })
+        body.pop("tts_speed", None)
         body.pop("tts_workflow", None)
     else:
         body["voice_id"] = str(payload.get("voice_id") or DEFAULT_PUBLIC_VOICE)
