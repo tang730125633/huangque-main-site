@@ -4,12 +4,19 @@ import os
 
 from .heygen_cinematic import HeyGenCinematicShotProvider
 from .grok_xai import GrokXaiShotProvider
+from .minimax_h3 import MiniMaxH3ShotProvider
+
+
+DEFAULT_PROVIDER = "minimax_h3"
 
 
 PROVIDERS = {
     "heygen_cinematic": HeyGenCinematicShotProvider,
     "grok": GrokXaiShotProvider,
     "grok_xai": GrokXaiShotProvider,
+    "minimax": MiniMaxH3ShotProvider,
+    "minimax_h3": MiniMaxH3ShotProvider,
+    "minimax-h3": MiniMaxH3ShotProvider,
 }
 
 
@@ -19,16 +26,16 @@ def load_by_name(name):
 
 
 def load_from_environment():
-    selected = str(
-        os.getenv("HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER") or ""
-    ).strip().lower()
+    selected = str(os.getenv(
+        "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER", DEFAULT_PROVIDER
+    )).strip().lower()
     return load_by_name(selected)
 
 
 def capability_snapshot():
-    selected = str(
-        os.getenv("HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER") or ""
-    ).strip().lower()
+    selected = str(os.getenv(
+        "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER", DEFAULT_PROVIDER
+    )).strip().lower()
     provider = load_from_environment()
     if not selected:
         return {
