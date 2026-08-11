@@ -47,7 +47,12 @@ class AssetRegistryTests(unittest.TestCase):
     def test_home_assets_use_their_content_hash_stamps(self):
         assets = {a.name: a for a in stamp_assets.SITE_ASSETS}
         html = (ROOT / "site" / "index.html").read_bytes()
-        for name in ("homepage.css", "homepage-particles.js", "assets/home/orbit-gallery.js"):
+        for name in (
+            "homepage.css",
+            "homepage-particles.js",
+            "assets/home/orbit-gallery.js",
+            "assets/home/orbit-gallery/gallery.json",
+        ):
             self.assertIn(name, assets)
             asset = assets[name]
             match = asset.pattern.search(html)

@@ -150,6 +150,11 @@ SITE_ASSETS = (
         "/assets/home/orbit-gallery.js",
         ("index.html",),
     ),
+    SiteAsset(
+        "assets/home/orbit-gallery/gallery.json",
+        "/assets/home/orbit-gallery/gallery.json",
+        ("index.html",),
+    ),
 )
 
 

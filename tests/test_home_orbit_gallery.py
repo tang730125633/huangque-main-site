@@ -17,9 +17,10 @@ class HomeOrbitGalleryTests(unittest.TestCase):
         cls.html = (SITE / "index.html").read_text(encoding="utf-8")
         cls.css = (SITE / "homepage.css").read_text(encoding="utf-8")
         cls.js = (SITE / "assets" / "home" / "orbit-gallery.js").read_text(encoding="utf-8")
-        cls.manifest = json.loads(
-            (SITE / "assets" / "home" / "orbit-gallery" / "gallery.json").read_text(encoding="utf-8")
-        )
+        cls.manifest_text = (
+            SITE / "assets" / "home" / "orbit-gallery" / "gallery.json"
+        ).read_text(encoding="utf-8")
+        cls.manifest = json.loads(cls.manifest_text)
 
     def test_replaces_the_three_card_grid_with_the_orbit_gallery(self):
         self.assertIn("data-orbit-gallery", self.html)
@@ -31,7 +32,10 @@ class HomeOrbitGalleryTests(unittest.TestCase):
         self.assertIn(f"homepage.css?v={css_stamp}", self.html)
         script_stamp = hashlib.md5(self.js.replace("\r\n", "\n").encode("utf-8")).hexdigest()[:8]
         self.assertIn(f"orbit-gallery.js?v={script_stamp}", self.html)
-        self.assertIn("gallery.json?v=20260810-orbitfix2", self.html)
+        manifest_stamp = hashlib.md5(
+            self.manifest_text.replace("\r\n", "\n").encode("utf-8")
+        ).hexdigest()[:8]
+        self.assertIn(f"gallery.json?v={manifest_stamp}", self.html)
         self.assertIn("data-gallery-autoplay-toggle", self.html)
 
     def test_manifest_contains_all_requested_media(self):
