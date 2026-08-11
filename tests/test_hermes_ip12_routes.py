@@ -832,6 +832,16 @@ with patch.object(server, "_coach_model_decision") as intake_model:
         "message": "整理咨询师｜3 年｜行政、空间整理｜咨询服务｜10–30 万",
     })
     assert second.status_code == 200 and "data: " in second.get_data(as_text=True)
+    supplement_text = "需要补充一下：我曾尝试健身教练但失败了，最后转向计算机方向。"
+    supplement = client.post("/api/chat-complete", json={
+        "conversation_id": mini_cid,
+        "message": supplement_text,
+    })
+    assert supplement.status_code == 200, supplement.get_data(as_text=True)
+    supplement_body = supplement.get_json()
+    assert supplement_body["state"]["intake"]["status"] == "awaiting_confirmation"
+    assert supplement_text in supplement_body["assistant"]
+    assert "基础信息已确认" not in supplement_body["assistant"]
     intake_state = client.get(f"/api/conversations/{mini_cid}").get_json()["coach_state"]
     edit = client.post("/api/chat-complete", json={
         "conversation_id": mini_cid,
