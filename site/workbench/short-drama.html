@@ -6,8 +6,8 @@
   <title>短剧 · 黄雀 AI 工作台</title>
   <script src="theme-init.js?v=11eb385e"></script>
   <link rel="stylesheet" href="theme.css?v=5873a2f4">
-  <link rel="stylesheet" href="short-drama-center.css?v=61c72b0d">
-  <link rel="stylesheet" href="short-drama-workspace.css?v=005ef34f">
+  <link rel="stylesheet" href="short-drama-center.css?v=5a0544f8">
+  <link rel="stylesheet" href="short-drama-workspace.css?v=fcc31992">
 </head>
 <body>
   <div class="hq-app">
@@ -16,7 +16,7 @@
         <div>
           <p class="short-drama-eyebrow">SHORT DRAMA STUDIO</p>
           <h1>短剧创作</h1>
-          <p>从项目管理开始，逐步完成角色、剧本、分镜、配音、口型与成片交付。</p>
+          <p>从项目管理开始，逐步完成剧本、角色形象、分镜、配音、口型与成片交付。</p>
         </div>
         <button class="short-drama-primary" id="shortDramaCreate" type="button">＋ 创建短剧</button>
       </section>
@@ -26,6 +26,7 @@
         <article><span>制作中</span><strong id="shortDramaMetricActive">0</strong></article>
         <article><span>待处理</span><strong id="shortDramaMetricBlocked">0</strong></article>
         <article><span>已交付</span><strong id="shortDramaMetricDone">0</strong></article>
+        <article class="short-drama-draft-metric" data-project-view="draft" role="button" tabindex="0" aria-label="打开草稿箱"><span>草稿箱</span><strong id="shortDramaMetricDraft">0</strong><small>未完成的创作</small></article>
       </section>
 
       <section class="short-drama-toolbar" aria-label="项目筛选">
@@ -35,9 +36,10 @@
         </label>
         <select id="shortDramaStageFilter" aria-label="按阶段筛选">
           <option value="">全部阶段</option>
+          <option value="creation_draft">草稿箱</option>
           <option value="setup">项目设置</option>
-          <option value="character_review">角色确认</option>
           <option value="script_review">剧本输入</option>
+          <option value="character_review">角色确认</option>
           <option value="storyboard_review">分镜确认</option>
           <option value="visual_review">画面确认</option>
           <option value="voice_review">配音字幕</option>
@@ -64,6 +66,7 @@
         <p class="short-drama-drawer-note">进入对话式工作区，继续完善创作方向、生成剧本并管理版本。</p>
         <div class="short-drama-drawer-actions">
           <a class="short-drama-primary short-drama-link" id="shortDramaOpenProject" href="#">打开项目</a>
+          <button class="short-drama-primary" id="shortDramaResumeProjectDraft" type="button" hidden>继续编辑草稿</button>
           <button class="short-drama-danger" id="shortDramaDeleteProject" type="button">删除短剧</button>
         </div>
       </aside>
@@ -71,7 +74,7 @@
     </main>
   </div>
 
-  <dialog class="short-drama-dialog short-drama-create-dialog" id="shortDramaDialog">
+  <dialog class="short-drama-dialog short-drama-create-dialog" id="shortDramaDialog" aria-labelledby="shortDramaCreateTitle" aria-describedby="shortDramaCreateLead">
     <div class="short-drama-create-shell">
       <header class="short-drama-create-header">
         <div>
@@ -93,10 +96,20 @@
             <button class="short-drama-primary" id="shortDramaResumePlanner" type="button">继续上次共创</button>
           </div>
         </aside>
+        <aside class="short-drama-draft-resume short-drama-live-action-draft-resume" id="shortDramaLiveActionDraftResume" hidden>
+          <div>
+            <strong>发现未完成的真人短剧草稿</strong>
+            <span id="shortDramaLiveActionDraftTime">已保存剧本、角色资料和当前编辑位置。</span>
+          </div>
+          <div class="short-drama-draft-actions">
+            <button class="short-drama-secondary" id="shortDramaDiscardLiveActionDraft" type="button">删除草稿</button>
+            <button class="short-drama-primary" id="shortDramaResumeLiveAction" type="button">继续填写</button>
+          </div>
+        </aside>
         <button class="short-drama-start-card idea" type="button" data-content-type="live_action">
           <span class="short-drama-start-icon">🎬</span>
           <strong>AI 真人短剧</strong>
-          <span>录入完整剧本，再由你手动填写和确认角色卡，进入真人短剧制作流程。</span>
+          <span>先填写制作规格，再设计剧本、确认角色和标准形象，进入真人短剧制作流程。</span>
           <em>开始创建 →</em>
         </button>
         <button class="short-drama-start-card inspiration is-coming" type="button" data-content-type="comic" aria-disabled="true">
@@ -116,9 +129,9 @@
 
       <section class="short-drama-live-action" id="shortDramaLiveAction" hidden>
         <form id="shortDramaLiveActionForm">
-          <div class="short-drama-live-action-intro"><span>STEP 1</span><strong>录入真人短剧剧本</strong><p>项目不会立即创建。下一步默认提供两个角色供你手动填写，确认前不生成图片、不扣点。</p></div>
+          <div class="short-drama-live-action-intro"><span>STEP 1</span><strong>填写短剧基本信息</strong><p>先确定名称和制作规格，下一步再进行具体的剧本设计。此时只保存草稿，不创建正式项目、不扣点。</p></div>
           <label>项目名称<input name="title" required maxlength="80" placeholder="例如：雨夜来信"></label>
-          <label>完整剧本<textarea name="source_text" required minlength="8" maxlength="50000" placeholder="建议使用“角色名：台词”的格式，并写清场景、动作和对白。"></textarea><small><span id="shortDramaLiveActionCount">0</span> / 50,000 字</small></label>
+          <input name="source_text" type="hidden">
           <div class="short-drama-form-row">
             <label>画面比例<select name="ratio"><option value="16:9">16:9 横屏</option><option value="9:16">9:16 竖屏</option></select></label>
             <label>目标时长<select name="target_duration"><option value="30">30 秒</option><option value="45">45 秒</option><option value="60">60 秒</option></select></label>
@@ -126,10 +139,10 @@
           </div>
           <label>视觉风格<input name="visual_style" maxlength="120" value="电影感写实"></label>
           <div class="short-drama-import-error" id="shortDramaLiveActionError" hidden></div>
-          <footer><button class="short-drama-secondary" type="button" data-action="back-create-choice">← 返回</button><button class="short-drama-primary" type="submit">下一步：角色确认</button></footer>
+          <footer><button class="short-drama-secondary" type="button" data-action="back-create-choice">← 返回</button><button class="short-drama-primary" type="submit">下一步：剧本设计</button></footer>
         </form>
         <section class="short-drama-role-confirm" id="shortDramaRoleConfirm" hidden>
-          <header><div><span>STEP 2 · CHARACTER SETUP</span><strong>建立角色资料</strong><p>系统不再从剧本自动识别人物。角色名称、性别和固定服装为必填项，其余信息可按需要补充；角色可以逐个保存、逐个生成并锁定标准图。</p></div></header>
+          <header><div><span>STEP 3 · CHARACTER SETUP</span><strong>确认角色与标准形象</strong><p>角色已根据确认剧本建立，角色名称和性别为必填项。请在同一界面保存角色资料，再选择、上传或生成角色标准图。</p></div></header>
           <div class="short-drama-role-layout">
             <aside class="short-drama-role-sidebar">
               <header><div><strong>角色列表</strong><small id="shortDramaRoleCount">共 2 个角色</small></div><button class="short-drama-secondary" id="shortDramaAddRole" type="button">+ 新增</button></header>
@@ -139,6 +152,31 @@
           </div>
           <div class="short-drama-import-error" id="shortDramaRoleError" hidden></div>
           <footer><button class="short-drama-secondary" id="shortDramaEditLiveAction" type="button">← 修改故事设定</button><span class="short-drama-role-status" id="shortDramaRoleStatus">请完善当前角色</span><button class="short-drama-secondary" id="shortDramaSaveRole" type="button">保存当前角色</button><button class="short-drama-primary" id="shortDramaConfirmRoles" type="button">确认角色并创建项目</button></footer>
+        </section>
+        <section class="short-drama-core-story" id="shortDramaCoreStory" hidden>
+          <header><div><span>STEP 2 · SCRIPT DESIGN</span><strong>设计并确认剧本</strong><p>填写故事想法或完整原稿，系统会整理核心故事和剧情结构；确认后再根据剧本建立角色。</p></div></header>
+          <form id="shortDramaCoreStoryForm">
+            <div class="short-drama-core-story-scroll">
+              <label class="short-drama-script-source">剧本原稿或故事设计<textarea name="script_source" required minlength="8" maxlength="50000" placeholder="可以填写故事想法，也可以粘贴完整剧本。若已有分镜要求，请一并写明。"></textarea><small><span id="shortDramaLiveActionCount">0</span> / 50,000 字</small></label>
+              <div class="short-drama-script-design-action"><p>系统会优先保留你明确写出的情节、台词、分镜和结局。</p><button class="short-drama-secondary" id="shortDramaAnalyzeStory" type="button">整理核心故事</button></div>
+              <section class="short-drama-core-story-review" id="shortDramaCoreStoryReview" hidden>
+                <label>故事标题<input name="title" required maxlength="120"></label>
+                <label>一句话故事<textarea name="logline" required maxlength="1200" placeholder="用一两句话说清人物、目标、冲突和结果"></textarea></label>
+                <div class="short-drama-core-story-grid">
+                  <label>故事开端<textarea name="setup" required maxlength="1200"></textarea></label>
+                  <label>故事发展<textarea name="development" required maxlength="1200"></textarea></label>
+                  <label>关键转折<textarea name="turning_point" required maxlength="1200"></textarea></label>
+                  <label>高潮<textarea name="climax" required maxlength="1200"></textarea></label>
+                  <label>结局<textarea name="ending" required maxlength="1200"></textarea></label>
+                  <label>核心冲突<textarea name="central_conflict" required maxlength="1200"></textarea></label>
+                  <label>主题表达<textarea name="theme" required maxlength="1200"></textarea></label>
+                  <label>必须保留的内容<textarea name="preservation_notes" maxlength="1200" placeholder="例如：保留原稿台词、人物关系和明确结局"></textarea></label>
+                </div>
+              </section>
+            </div>
+            <div class="short-drama-import-error" id="shortDramaCoreStoryError" hidden></div>
+            <footer><button class="short-drama-secondary" id="shortDramaBackToRoles" type="button">← 返回基本信息</button><span>确认后根据剧本建立角色</span><button class="short-drama-primary" type="submit" hidden>确认剧本，下一步：角色确认</button></footer>
+          </form>
         </section>
       </section>
 
@@ -265,11 +303,25 @@
           <button class="short-drama-primary" id="shortDramaSubmit" type="submit">保存设置并进入剧本策划</button>
         </footer>
       </form>
+
+      <div class="short-drama-close-draft-prompt" id="shortDramaCloseDraftPrompt" hidden>
+        <section role="alertdialog" aria-modal="true" aria-labelledby="shortDramaCloseDraftTitle" aria-describedby="shortDramaCloseDraftLead">
+          <span>DRAFT PROTECTION</span>
+          <h3 id="shortDramaCloseDraftTitle">保存当前进度吗？</h3>
+          <p id="shortDramaCloseDraftLead">你填写的剧本、角色资料和标准图设置尚未正式创建为项目。</p>
+          <div class="short-drama-close-draft-error" id="shortDramaCloseDraftError" hidden></div>
+          <footer>
+            <button class="short-drama-secondary" type="button" data-draft-close="continue">继续编辑</button>
+            <button class="short-drama-danger" type="button" data-draft-close="discard">不保存，直接关闭</button>
+            <button class="short-drama-primary" type="button" data-draft-close="save">保存草稿并关闭</button>
+          </footer>
+        </section>
+      </div>
     </div>
   </dialog>
 
   <script src="cloud-shell.js?v=5c2643d5"></script>
-  <script src="short-drama-workspace.js?v=6d3aae3a"></script>
-  <script src="short-drama-center.js?v=f17687d1"></script>
+  <script src="short-drama-workspace.js?v=0a999ad0"></script>
+  <script src="short-drama-center.js?v=5de2b7a8"></script>
 </body>
 </html>

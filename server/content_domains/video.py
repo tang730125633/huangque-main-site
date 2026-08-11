@@ -1,11 +1,29 @@
 # -*- coding: utf-8 -*-
-import fcntl
+try:
+    import fcntl
+except ImportError:  # Windows does not provide POSIX fcntl.
+    import msvcrt
+
+    class _WindowsFcntlCompat:
+        LOCK_EX = 2
+
+        @staticmethod
+        def flock(file_descriptor, _operation):
+            current = os.lseek(file_descriptor, 0, os.SEEK_CUR)
+            try:
+                os.lseek(file_descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(file_descriptor, msvcrt.LK_LOCK, 1)
+            finally:
+                os.lseek(file_descriptor, current, os.SEEK_SET)
+
+    fcntl = _WindowsFcntlCompat()
 import hashlib
 import importlib.util
 import io
 import ipaddress
 import math
 import sqlite3
+import socket
 import tempfile
 
 from .core import (
@@ -3344,11 +3362,12 @@ def _heygen_mcp_access_token(force_refresh=False):
     with _heygen_mcp_auth_lock:
         if not path.is_file():
             raise HeyGenMCPAuthError("HeyGen MCP OAuth 未配置")
-        if path.stat().st_mode & 0o077:
+        if os.name != "nt" and path.stat().st_mode & 0o077:
             raise HeyGenMCPAuthError("HeyGen MCP OAuth 凭据权限必须为 600")
         lock_fd = os.open(str(path) + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            os.fchmod(lock_fd, 0o600)
+            if hasattr(os, "fchmod"):
+                os.fchmod(lock_fd, 0o600)
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             credentials = json.loads(path.read_text(encoding="utf-8"))
             if not force_refresh and credentials.get("access_token") and float(credentials.get("expires_at") or 0) > time.time() + 60:
@@ -3559,7 +3578,28 @@ def _heygen_retry_net(fn, what=""):
     raise last
 
 
-def _heygen_read_retry(open_fn, what):
+def _read_download_limited(response, max_bytes):
+    declared = response.headers.get("Content-Length")
+    if declared:
+        try:
+            declared_size = int(declared)
+        except (TypeError, ValueError) as error:
+            raise ValueError("下载响应的 Content-Length 无效") from error
+        if declared_size > max_bytes:
+            raise ValueError("下载文件超过大小限制")
+    chunks, total = [], 0
+    while True:
+        chunk = response.read(min(1024 * 1024, max_bytes + 1 - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError("下载文件超过大小限制")
+    return b"".join(chunks)
+
+
+def _heygen_read_retry(open_fn, what, max_bytes=None):
     """打开并读取一个【幂等 GET】(下载成片)，对传输层瞬时网络错误退避重试，返回字节。
 
     open_fn: 无参、每次调用返回一个新的 response 上下文管理器（每次重试都重新 open，
@@ -3571,7 +3611,10 @@ def _heygen_read_retry(open_fn, what):
     for i in range(HEYGEN_NET_RETRIES):
         try:
             with open_fn() as r:
-                data = r.read()
+                data = (
+                    _read_download_limited(r, max_bytes)
+                    if max_bytes is not None else r.read()
+                )
             if data:
                 return data
             last = RuntimeError("下载内容为空")
@@ -3582,6 +3625,83 @@ def _heygen_read_retry(open_fn, what):
         if i < HEYGEN_NET_RETRIES - 1:
             time.sleep(2.0 * (i + 1))
     raise HeyGenNetworkError("%s 多次网络失败: %s" % (what, str(getattr(last, "reason", last))[:150]))
+
+
+def _stream_download_retry(open_fn, destination, what, max_bytes):
+    """Stream an idempotent GET into one temporary file with bounded memory."""
+    last = None
+    for attempt in range(HEYGEN_NET_RETRIES):
+        completed = False
+        try:
+            total = 0
+            with open_fn() as response:
+                declared = response.headers.get("Content-Length")
+                if declared:
+                    try:
+                        declared_size = int(declared)
+                    except (TypeError, ValueError) as error:
+                        raise ValueError("下载响应的 Content-Length 无效") from error
+                    if declared_size > max_bytes:
+                        raise ValueError("下载文件超过大小限制")
+                with destination.open("wb") as output:
+                    while True:
+                        chunk = response.read(min(1024 * 1024, max_bytes + 1 - total))
+                        if not chunk:
+                            break
+                        output.write(chunk)
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise ValueError("下载文件超过大小限制")
+                    output.flush()
+                    os.fsync(output.fileno())
+            if total:
+                completed = True
+                return total
+            last = RuntimeError("下载内容为空")
+        except OSError as error:
+            last = error
+            print("[heygen] %s 网络抖动，重试(%d/%d): %s" % (
+                what, attempt + 1, HEYGEN_NET_RETRIES,
+                str(getattr(error, "reason", error))[:120],
+            ), flush=True)
+        finally:
+            if not completed:
+                try:
+                    destination.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        if attempt < HEYGEN_NET_RETRIES - 1:
+            time.sleep(2.0 * (attempt + 1))
+    raise HeyGenNetworkError("%s 多次网络失败: %s" % (
+        what, str(getattr(last, "reason", last))[:150]
+    ))
+
+
+def _validate_downloaded_video_file(path):
+    try:
+        result = subprocess.run(
+            [os.environ.get("FFPROBE_BIN", "ffprobe"), "-v", "error",
+             "-select_streams", "v:0", "-show_entries",
+             "stream=codec_type,width,height", "-of", "json", str(path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=60, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ValueError("下载媒体无法完成视频流校验") from error
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except (TypeError, ValueError) as error:
+        raise ValueError("下载媒体的视频流信息无效") from error
+    streams = payload.get("streams") if isinstance(payload, dict) else []
+    valid = result.returncode == 0 and any(
+        isinstance(stream, dict)
+        and stream.get("codec_type") == "video"
+        and int(stream.get("width") or 0) > 0
+        and int(stream.get("height") or 0) > 0
+        for stream in (streams or [])
+    )
+    if not valid:
+        raise ValueError("下载媒体不包含可解析的视频流")
 
 
 # 429 退避重试。不重试的话，一次突发就把用户的任务判死退点、白等几分钟——
@@ -3775,14 +3895,92 @@ def _heygen_direct_req(method, url, body=None, ctype="application/json", timeout
         detail = e.read().decode("utf-8", "replace").replace("\n", " ")[:400]
         raise RuntimeError("HeyGen直连失败: HTTP %s %s" % (e.code, detail)) from e
 
-def _download_video_file_direct(url, prefix="vid"):
+def _validate_restricted_download_url(url, allowed_hosts):
+    try:
+        parsed = urllib.parse.urlsplit(str(url or ""))
+        host = (parsed.hostname or "").lower().rstrip(".")
+        port = parsed.port
+    except (TypeError, ValueError) as error:
+        raise ValueError("下载地址无效") from error
+    if (
+        parsed.scheme != "https" or not host or parsed.username or parsed.password
+        or port not in (None, 443) or host not in allowed_hosts
+    ):
+        raise ValueError("下载地址不在允许的 HTTPS CDN 范围内")
+    try:
+        addresses = {
+            info[4][0] for info in socket.getaddrinfo(
+                host, 443, type=socket.SOCK_STREAM
+            )
+        }
+    except OSError as error:
+        raise ValueError("下载地址无法解析") from error
+    if not addresses:
+        raise ValueError("下载地址无法解析")
+    for address in addresses:
+        try:
+            public = ipaddress.ip_address(address).is_global
+        except ValueError as error:
+            raise ValueError("下载地址解析结果无效") from error
+        if not public:
+            raise ValueError("下载地址解析到非公网目标")
+    return str(url)
+
+
+class _RestrictedDownloadRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def __init__(self, allowed_hosts):
+        super().__init__()
+        self.allowed_hosts = frozenset(allowed_hosts)
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _validate_restricted_download_url(newurl, self.allowed_hosts)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _restricted_download_opener(allowed_hosts):
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        _RestrictedDownloadRedirectHandler(allowed_hosts),
+    )
+
+
+def _download_video_file_direct(url, prefix="vid", *, allowed_hosts=None, max_bytes=None):
     if not url:
         raise RuntimeError("直连未返回视频地址")
-    req = urllib.request.Request(url, headers={"User-Agent": "huangque-content/1.0"})
-    # 幂等 GET 下载成片：瞬时网络错误退避重试（不计费、可安全重试，#605）
-    data = _heygen_read_retry(lambda: _heygen_direct_opener().open(req, timeout=360), "成片直连下载")
+    if allowed_hosts is not None:
+        hosts = frozenset(str(host).lower().rstrip(".") for host in allowed_hosts)
+        _validate_restricted_download_url(url, hosts)
+        opener = _restricted_download_opener(hosts)
+        if not max_bytes or max_bytes <= 0:
+            raise ValueError("受限下载必须设置有效的大小上限")
+    else:
+        opener = _heygen_direct_opener()
     fn = "video/%s_%s.mp4" % (prefix, uuid.uuid4().hex)  # 不可猜键(#185)
-    _out_path(fn).write_bytes(data)
+    target = _out_path(fn)
+    req = urllib.request.Request(url, headers={"User-Agent": "huangque-content/1.0"})
+    if allowed_hosts is not None:
+        temporary = target.with_name(target.name + ".part-" + uuid.uuid4().hex)
+        try:
+            _stream_download_retry(
+                lambda: opener.open(req, timeout=360), temporary,
+                "成片直连下载", max_bytes,
+            )
+            with temporary.open("rb") as downloaded:
+                if downloaded.read(8)[4:8] != b"ftyp":
+                    raise ValueError("下载结果不是有效的 MP4 容器")
+            _validate_downloaded_video_file(temporary)
+            temporary.replace(target)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+    else:
+        # Legacy HeyGen callers retain their existing unbounded contract.
+        data = _heygen_read_retry(
+            lambda: opener.open(req, timeout=360), "成片直连下载"
+        )
+        target.write_bytes(data)
     return _faststart_video_file(fn)
 
 def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, motion):

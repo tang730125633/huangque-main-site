@@ -34,6 +34,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVER = str(ROOT / "server")
@@ -103,6 +104,25 @@ class TheHeartbeatActuallyBeatsTests(unittest.TestCase):
         block = CORE_SRC.split("def _start_job_heartbeat")[1].split("\ndef ")[0]
         self.assertIn("except Exception:", block)
         self.assertIn("pass", block)
+
+
+class BackgroundRefundRecoveryTests(unittest.TestCase):
+    def test_provider_refund_recovery_uses_global_periodic_worker(self):
+        short_drama_domain = mock.Mock()
+        points_domain = mock.Mock()
+        with mock.patch.object(
+            core, "_short_drama_domain", return_value=short_drama_domain,
+        ), mock.patch.object(
+            core, "_domains", return_value=(None, points_domain, None),
+        ):
+            core._retry_short_drama_provider_refunds(17)
+        short_drama_domain.short_drama_autodraft.retry_provider_refunds.assert_called_once_with(
+            core.jdb, points_domain, 17,
+        )
+        scanner = CORE_SRC.split("def _pending_job_scanner")[1].split("\ndef ")[0]
+        startup = CORE_SRC.split("def start_job_workers")[1].split("\ndef ")[0]
+        self.assertIn("_retry_short_drama_provider_refunds", scanner)
+        self.assertIn("_retry_short_drama_provider_refunds", startup)
 
 
 class TheReaperDefaultIsNotZeroTests(unittest.TestCase):

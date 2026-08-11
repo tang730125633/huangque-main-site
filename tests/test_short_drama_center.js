@@ -65,9 +65,11 @@ test('创建短剧提供真人、漫剧和数字人口播三种内容类型入�
   assert.match(html, /AI 数字人口播/);
   assert.match(html, /id="shortDramaLiveActionForm"/);
   assert.match(html, /id="shortDramaRoleConfirm"/);
+  assert.match(html, /id="shortDramaCoreStory"/);
+  assert.match(html, /id="shortDramaCoreStoryForm"/);
   assert.match(html, /id="shortDramaRoleTabs"/);
   assert.match(html, /id="shortDramaSaveRole"/);
-  assert.match(html, /下一步：角色确认/);
+  assert.match(html, /下一步：剧本设计/);
   assert.match(centerScript, /团队正在努力开发该功能/);
   assert.match(html, /id="shortDramaIdeaChat"/);
   assert.match(html, /id="shortDramaRecommendations"/);
@@ -78,6 +80,31 @@ test('创建短剧提供真人、漫剧和数字人口播三种内容类型入�
   }
   assert.match(html, /aria-label="删除已导入的剧本"/);
   assert.match(centerScript, /if\(mode==='inspiration'\)\{startPlanner\(\);return;\}/);
+});
+
+test('真人短剧先确认剧本再确认角色和角色形象', async () => {
+  assert.match(centerScript, /live_action_story/);
+  assert.doesNotMatch(centerScript, /showCreateStep\('live_action_visuals'\)/);
+  assert.match(centerScript, /确认剧本，下一步：角色确认/);
+  assert.match(centerScript, /核对并保存角色资料，然后在同一界面选择、上传或生成角色标准图/);
+  assert.match(centerScript, /确认角色并创建项目/);
+  const calls = [];
+  const client = center.createClient(async (url, options) => {
+    calls.push({url, options});
+    return {ok:true, status:200, text:async ()=>'{}'};
+  });
+  const coreStory = {
+    title:'分享糖果', logline:'两个孩子学会分享。', setup:'男孩独自吃糖。',
+    development:'女孩出现。', turning_point:'男孩决定打开糖袋。',
+    climax:'男孩把糖递给女孩。', ending:'两人一起分享。',
+    central_conflict:'独占还是分享。', theme:'分享带来友谊。',
+    preservation_notes:'保留原稿结局。'
+  };
+  await client.confirmLiveActionCoreStory({id:'project-1', revision:5}, coreStory);
+  assert.equal(calls[0].url, '/api/gen/short-drama/projects/live-action/core-story');
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    project_id:'project-1', revision:5, core_story:coreStory
+  });
 });
 
 test('导入分析识别人名、场景并映射到当前短剧规格', () => {
@@ -370,7 +397,7 @@ test('仅展示个人独立项目并正确计算概览', () => {
     {id:'d', title:'共享', synopsis:'画布', stage:'setup', board_id:'board-1'},
   ];
   assert.deepEqual(center.filterProjects(projects, '雨', '').map(p => p.id), ['b']);
-  assert.deepEqual(center.metrics(projects), {all:3, active:1, blocked:1, done:1});
+  assert.deepEqual(center.metrics(projects), {all:3, active:1, blocked:1, done:1, draft:0});
 });
 
 test('创建请求不携带 board_id 或画布身份', () => {
@@ -706,6 +733,54 @@ test('deployed v3 planner draft remains readable with safe choice defaults', () 
   assert.equal(value, stored);
 });
 
+test('live action drafts are account scoped and preserve role progress', () => {
+  const values = new Map();
+  const storage = {
+    getItem:key => values.has(key) ? values.get(key) : null,
+    setItem:(key,value) => values.set(key, String(value)),
+    removeItem:key => values.delete(key)
+  };
+  const key = center.liveActionDraftStorageKey('alice');
+  const draft = {
+    version:1, username:'alice', saved_at:1700000000000, step:'live_action_roles',
+    form:{title:'分享糖果',source_text:'男孩把糖果分给女孩。',ratio:'16:9'},
+    roles:[{character_key:'character_1',name:'男孩',fixed_clothing:'蓝色短袖'}],
+    active_role:0, pending_project:{id:'draft-project',revision:3,characters:[]}
+  };
+  assert.equal(key, 'hq-short-drama-live-action-draft-v1:alice');
+  assert.equal(center.writeLiveActionDraftRecord(storage, key, draft, 'alice'), true);
+  const restored = center.readLiveActionDraftRecord(storage, key, 'alice', 1700000001000);
+  assert.equal(restored.step, 'live_action_roles');
+  assert.equal(restored.roles[0].fixed_clothing, '蓝色短袖');
+  assert.equal(restored.pending_project.id, 'draft-project');
+  assert.equal(center.readLiveActionDraftRecord(storage, key, 'bob', 1700000001000), null);
+  assert.match(centerScript, /已恢复上次保存的草稿。'.*autoHide:5000/);
+  assert.match(centerScript, /clearTimeout\(liveActionNoticeTimers\[timerKey\]\)/);
+  assert.match(centerStyle, /height:100%;max-height:none;box-sizing:border-box;padding:16px;overflow:auto/);
+  assert.match(centerStyle, /short-drama-role-card::after\{display:block;height:104px/);
+  assert.match(centerStyle, /-webkit-line-clamp:2/);
+});
+
+test('closing unfinished live action creation offers save discard and continue choices', () => {
+  assert.match(html, /id="shortDramaDialog" aria-labelledby="shortDramaCreateTitle" aria-describedby="shortDramaCreateLead"/);
+  assert.match(html, /id="shortDramaCloseDraftPrompt"/);
+  assert.match(html, /data-draft-close="save"/);
+  assert.match(html, /data-draft-close="discard"/);
+  assert.match(html, /data-draft-close="continue"/);
+  assert.match(html, /id="shortDramaLiveActionDraftResume"/);
+  assert.match(centerScript, /dialog\.addEventListener\('cancel'/);
+  assert.match(centerScript, /liveActionModalKeydown\(prompt,event,dismissDraftClosePrompt\)/);
+  assert.match(centerScript, /draftCloseReturnFocus\.focus\(\)/);
+  assert.match(centerScript, /if\(event\.target===dialog\)requestCreateClose\(\)/);
+  assert.match(centerScript, /liveSteps=\['live_action_setup','live_action_story','live_action_roles'\]/);
+  assert.match(centerScript, /roles:JSON\.parse\(JSON\.stringify\(liveActionRoles\|\|\[\]\)\)/);
+  assert.match(centerScript, /clearLiveActionDraft\(\);dialog\.close\(\)/);
+  assert.match(html, /id="shortDramaMetricDraft"/);
+  assert.match(html, /data-project-view="draft"/);
+  assert.match(centerScript, /creation_status==='draft'/);
+  assert.match(centerScript, /finalizeLiveActionProject/);
+});
+
 test('saved planner draft remains optional and clearing it returns to content type choice', async () => {
   const chrome = findChromeExecutable();
   assert.ok(chrome, '草稿入口测试需要 Chrome 或 Chromium');
@@ -781,17 +856,17 @@ test('浏览器运行时只使用模块内已定义的全局引用', () => {
   assert.doesNotMatch(centerScript, /\broot\.location\b/);
 });
 
-test('live action role confirmation starts with two manual role cards', () => {
+test('live action role confirmation is created from the confirmed script', () => {
   const analysis = center.analyzeImportedScript('人物：张三、李四\n张三：我们现在出发。\n李四：好。');
   assert.deepEqual(analysis.characters, ['张三', '李四']);
-  const contract = center.defaultManualCharacterContract(2);
+  const contract = center.characterContractFromAnalysis(analysis);
   assert.equal(contract.length, 2);
   assert.deepEqual(contract.map(item => item.character_key), ['character_1', 'character_2']);
-  assert.deepEqual(contract.map(item => item.name), ['角色1', '角色2']);
-  assert.notDeepEqual(contract.map(item => item.name), analysis.characters);
-  assert.deepEqual(contract[0].reference_views, ['front_full', 'side_full', 'front_half']);
-  assert.match(html, /系统不再从剧本自动识别人物/);
-  assert.doesNotMatch(centerScript, /liveActionRoles=characterContractFromAnalysis\(liveActionAnalysis\)/);
+  assert.deepEqual(contract.map(item => item.name), analysis.characters);
+  assert.deepEqual(contract.map(item => item.role_type), ['main', 'support']);
+  assert.deepEqual(contract[0].reference_views, ['front_full', 'side_full', 'back_full']);
+  assert.match(html, /角色已根据确认剧本建立/);
+  assert.match(centerScript, /liveActionRoles=characterContractFromAnalysis\(liveActionAnalysis\)/);
   assert.match(centerScript, /renderLiveActionRoleTabs/);
   assert.match(centerScript, /data-role-select/);
   assert.match(centerScript, /基础信息/);
@@ -871,7 +946,7 @@ test('editing a persisted live action draft replaces it unless reference work ex
   assert.deepEqual(retryKeys, ['stable-retry-key', 'stable-retry-key']);
   assert.match(centerScript, /if\(pendingLiveActionProject&&!pendingLiveActionDiscardKey\)pendingLiveActionDiscardKey=newLiveActionAbandonKey\(\)/);
   assert.match(centerScript, /discardPendingLiveActionProject\(client,pendingLiveActionProject,liveActionReferenceBusy,pendingLiveActionDiscardKey\)/);
-  assert.match(centerScript, /pendingLiveActionProject=null;pendingLiveActionKey='';pendingLiveActionDiscardKey='';savedLiveActionRoleSignatures=\{\}/);
+  assert.match(centerScript, /pendingLiveActionProject=null;pendingLiveActionDiscardKey='';savedLiveActionRoleSignatures=\{\}/);
 });
 
 test('paid or locked live action roles expose reference asset protection', () => {
@@ -894,17 +969,34 @@ test('paid or locked live action roles expose reference asset protection', () =>
   assert.match(centerScript, /class="short-drama-role-profile".*disabled/);
 });
 
-test('live action roles only require name gender and fixed clothing before reference generation', () => {
-  assert.match(centerScript, /var fields=\['name','gender','fixed_clothing'\]/);
+test('live action roles only require fixed clothing when AI reference generation is selected', () => {
+  assert.match(centerScript, /var fields=\['name','gender'\]/);
   assert.match(centerScript, /function validateLiveActionRole\(index\)/);
   assert.match(centerScript, /persistLiveActionRoles\(\{partial:true,roleIndex:activeLiveActionRole\}\)/);
-  assert.match(centerScript, /生成角色标准图（35点）/);
+  assert.match(centerScript, /AI 生成/);
+  assert.match(centerScript, /35 点/);
   assert.match(centerScript, /reference_locked/);
   assert.match(centerScript, /confirm-character-reference/);
   assert.match(centerScript, /确认并锁定此标准图/);
-  assert.match(html, /角色名称、性别和固定服装为必填项/);
+  assert.match(html, /角色名称和性别为必填项/);
+  assert.match(centerScript, /固定服装提示词 <small>AI 生图时必填<\/small>/);
+  assert.match(centerScript, /使用 AI 生成标准图前，请先填写固定服装提示词/);
+  assert.doesNotMatch(centerScript, /\{field:'fixed_clothing',label:'固定服装'\}/);
   assert.doesNotMatch(centerScript, /if\(!item\.age\)missing\.push/);
   assert.doesNotMatch(centerScript, /if\(!item\.appearance_prompt\)missing\.push/);
+});
+
+test('live action role captions keep required and optional controls aligned', () => {
+  assert.match(centerScript, /short-drama-role-field-caption\">角色名称 <em class=\"short-drama-required\">\*<\/em><\/span><input data-role-field=\"name\"/);
+  assert.match(centerScript, /short-drama-role-field-caption\">角色类型<\/span><select data-role-field=\"role_type\"/);
+  assert.match(centerScript, /short-drama-role-field-caption\">性别 <em class=\"short-drama-required\">\*<\/em><\/span><select data-role-field=\"gender\"/);
+  assert.match(centerScript, /short-drama-role-field-caption\">年龄<\/span><input data-role-field=\"age\"/);
+  assert.match(centerStyle, /\.short-drama-role-field-caption\{display:inline-flex;min-height:12px;align-items:center;gap:3px\}/);
+});
+
+test('live action intro remains readable in the dark theme', () => {
+  assert.match(centerStyle, /\.short-drama-live-action-intro\{[^}]*background:#fffaf0;[^}]*color:#172033/);
+  assert.match(centerStyle, /\.short-drama-live-action-intro p\{color:#667085\}/);
 });
 
 test('live action role must be explicitly saved before reference generation', () => {
@@ -912,12 +1004,197 @@ test('live action role must be explicitly saved before reference generation', ()
   assert.match(centerScript, /function isLiveActionRoleSaved\(item\)/);
   assert.match(centerScript, /function focusLiveActionRoleError\(index\)/);
   assert.match(centerScript, /请先保存当前角色/);
-  assert.match(centerScript, /请先保存当前角色并生成角色标准图/);
-  const start = centerScript.indexOf("var button=event.target.closest('[data-generate-role-reference]')");
+  assert.match(centerScript, /请先保存角色资料/);
+  const start = centerScript.indexOf('function generateLiveActionReference(index)');
   const end = centerScript.indexOf("roleTabs.addEventListener", start);
   const handler = centerScript.slice(start, end);
   assert.match(handler, /isLiveActionRoleSaved/);
   assert.doesNotMatch(handler, /persistLiveActionRoles/);
+});
+
+test('role type controls reference requirements and creation gate', () => {
+  assert.match(centerScript, /function liveActionRoleReferenceRule\(item\)/);
+  assert.match(centerScript, /主要角色必须锁定标准图/);
+  assert.match(centerScript, /该次要角色有台词或多次出现，需要锁定标准图/);
+  assert.match(centerScript, /群演无需单独设置标准图/);
+  assert.match(centerScript, /liveActionRoleReferenceRule\(item\)\.required&&!\(item\.reference_url\|\|item\.reference_file\)/);
+  assert.match(centerScript, /liveActionRoleReferenceRule\(item\)\.required&&!item\.reference_locked/);
+});
+
+test('character reference picker supports assets uploads and AI generation', async () => {
+  assert.match(centerScript, /我的资产/);
+  assert.match(centerScript, /本地上传/);
+  assert.match(centerScript, /class="short-drama-reference-sources"/);
+  assert.match(centerScript, /data-reference-source="asset"/);
+  assert.match(centerScript, /data-reference-source="upload"/);
+  assert.match(centerScript, /data-reference-source="ai"/);
+  assert.doesNotMatch(centerScript, /aria-label="设置角色标准图"/);
+  assert.match(centerScript, /image\/jpeg','image\/png','image\/webp/);
+  assert.match(centerScript, /file\.size>10\*1024\*1024/);
+  assert.match(centerScript, /真人且至少半身，无需三视图，不扣点/);
+  assert.match(centerScript, /message==='请上传人物图'/);
+  assert.match(centerStyle, /\.short-drama-reference-picker\{/);
+  const calls = [];
+  const client = center.createClient(async (url, options) => {
+    calls.push({url, options});
+    return {ok:true, status:200, text:async ()=>'{}'};
+  });
+  await client.listImageAssets(0, 60);
+  await client.selectCharacterReference(
+    {id:'project-1', revision:4}, {character_key:'character_1'},
+    {source:'asset', asset_job_id:8, asset_url:'/api/gen/file/role.png', filename:'role.png'}
+  );
+  assert.equal(calls[0].url, '/api/gen/history?limit=60&offset=0&kind=image');
+  assert.equal(calls[1].url, '/api/gen/short-drama/select-character-reference');
+  assert.deepEqual(JSON.parse(calls[1].options.body), {
+    project_id:'project-1', revision:4, character_key:'character_1',
+    source:'asset', asset_job_id:8, asset_url:'/api/gen/file/role.png',
+    filename:'role.png', image_data:''
+  });
+  assert.match(centerScript, /className='short-drama-asset-library'/);
+  assert.match(centerScript, /role="dialog" aria-modal="true" aria-label="选择图片资产"/);
+  assert.match(centerScript, /加载更多图片/);
+  assert.match(centerScript, /data-preview-asset-index/);
+  assert.match(centerScript, /keepOpen:true/);
+  assert.doesNotMatch(centerScript, /data-reference-picker-content/);
+  assert.match(centerScript, /className='short-drama-upload-confirm'/);
+  assert.match(centerScript, /aria-label="确认本地上传图片"/);
+  assert.match(centerScript, /loading="lazy" decoding="async"/);
+  assert.match(centerScript, /if\(focusedAssetKey\).*restoredFocus\.focus\(\)/);
+  assert.match(centerStyle, /\.short-drama-asset-library\{position:fixed;inset:0/);
+  assert.match(centerStyle, /\.short-drama-asset-library-box\{/);
+  assert.match(centerStyle, /\.short-drama-upload-confirm-box\{/);
+});
+
+test('asset search keeps pagination available until all pages are searched', () => {
+  const firstPage = Array.from({length:60}, (_, index) => ({
+    job_id:index + 1, prompt:'asset '+(index + 1), url:'/asset/'+(index + 1)
+  }));
+  const partial = center.liveActionAssetSearchResult(
+    firstPage, 'target role', true
+  );
+  assert.equal(partial.items.length, 0);
+  assert.equal(partial.canLoadMore, true);
+  assert.match(partial.emptyMessage, /继续加载更多/);
+
+  const found = center.liveActionAssetSearchResult([
+    ...firstPage,
+    {job_id:61, prompt:'target role portrait', url:'/asset/61'}
+  ], 'target role', false);
+  assert.deepEqual(found.items.map(item => item.job_id), [61]);
+  assert.equal(found.canLoadMore, false);
+
+  const exhausted = center.liveActionAssetSearchResult(
+    firstPage, 'missing role', false
+  );
+  assert.equal(exhausted.canLoadMore, false);
+  assert.match(exhausted.emptyMessage, /没有找到/);
+});
+
+test('slow live action story confirmation uses one frozen snapshot and ignores stale UI results', async () => {
+  const deferred = () => {
+    let resolve, reject;
+    const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+    return {promise, resolve, reject};
+  };
+  const projectRequest = deferred(), confirmationRequest = deferred();
+  const mutableSnapshot = {
+    source:'old script',
+    core_story:{title:'Old story', logline:'old conflict'},
+    import_payload:{source_text:'old script'},
+  };
+  let current = true, confirmedStory = null, applied = 0;
+  const pending = center.runLiveActionStorySubmission(mutableSnapshot, {
+    ensureProject(snapshot){
+      assert.equal(snapshot.source, 'old script');
+      return projectRequest.promise;
+    },
+    isCurrent(){ return current; },
+    confirm(_project, story){
+      confirmedStory = story;
+      return confirmationRequest.promise;
+    },
+    apply(){ applied += 1; },
+  });
+
+  mutableSnapshot.source = 'new script';
+  mutableSnapshot.core_story.title = 'New story';
+  mutableSnapshot.import_payload.source_text = 'new script';
+  projectRequest.resolve({id:'draft-1', revision:1});
+  await Promise.resolve();
+  assert.deepEqual(confirmedStory, {title:'Old story', logline:'old conflict'});
+
+  current = false;
+  confirmationRequest.resolve({id:'draft-1', revision:2});
+  assert.deepEqual(await pending, {stale:true});
+  assert.equal(applied, 0);
+});
+
+test('reference modals trap Tab focus and close only themselves on Escape', () => {
+  let activeElement = null;
+  const makeControl = () => ({
+    disabled:false, hidden:false, tabIndex:0,
+    getAttribute:() => null,
+    focus(){ activeElement = this; },
+  });
+  const first = makeControl(), middle = makeControl(), last = makeControl();
+  const modal = {
+    ownerDocument:{get activeElement(){ return activeElement; }},
+    querySelectorAll:() => [first, middle, last],
+    contains:node => [first, middle, last].includes(node),
+  };
+  const event = (key, shiftKey=false) => ({
+    key, shiftKey, prevented:false, stopped:false,
+    preventDefault(){ this.prevented = true; },
+    stopPropagation(){ this.stopped = true; },
+  });
+
+  activeElement = last;
+  const forward = event('Tab');
+  assert.equal(center.liveActionModalKeydown(modal, forward, () => {}), true);
+  assert.equal(activeElement, first);
+  assert.equal(forward.prevented, true);
+
+  activeElement = first;
+  const backward = event('Tab', true);
+  center.liveActionModalKeydown(modal, backward, () => {});
+  assert.equal(activeElement, last);
+
+  let closed = 0;
+  const escape = event('Escape');
+  center.liveActionModalKeydown(modal, escape, () => { closed += 1; });
+  assert.equal(closed, 1);
+  assert.equal(escape.prevented, true);
+  assert.equal(escape.stopped, true);
+});
+
+test('reference request blocks modal dismissal and keeps deferred failures visible', async () => {
+  let rejectRequest;
+  const request = new Promise((_resolve, reject) => { rejectRequest = reject; });
+  let busy = true, connected = true, blocked = '', persistentError = '';
+  const handled = request.catch(error => {
+    persistentError = center.liveActionReferenceFailureMessage(error);
+  }).finally(() => { busy = false; });
+
+  const dismissedWhileBusy = center.dismissLiveActionReferencePicker(
+    busy,
+    message => { blocked = message; },
+    () => { connected = false; }
+  );
+  assert.equal(dismissedWhileBusy, false);
+  assert.equal(connected, true);
+  assert.match(blocked, /正在处理标准图/);
+
+  rejectRequest(new Error('人物检测超时'));
+  await handled;
+  assert.equal(connected, true);
+  assert.match(persistentError, /人物检测超时/);
+
+  assert.equal(center.dismissLiveActionReferencePicker(
+    busy, () => {}, () => { connected = false; }
+  ), true);
+  assert.equal(connected, false);
+  assert.match(centerScript, /showLiveActionError\(persistentMessage,true,\{autoHide:0\}\)/);
 });
 
 test('generated character reference requires explicit confirmation before locking', async () => {
@@ -936,6 +1213,36 @@ test('generated character reference requires explicit confirmation before lockin
     project_id:'project-1', revision:7,
     character_key:'character_1', reference_version:3
   });
+});
+
+test('character reference generation explains upstream connection timeouts', () => {
+  assert.match(centerScript, /WinError\\s\*10060/);
+  assert.match(centerScript, /图片生成服务连接超时，任务已停止；点数会自动退回，请稍后重试。/);
+});
+
+test('character reference view guidance is grouped with the standard image', () => {
+  assert.match(centerScript, /AI 标准图将包含/);
+  assert.match(centerScript, /<b>正面全身<\/b><b>侧面全身<\/b><b>背面全身<\/b>/);
+  assert.match(centerScript, /<span>图片要求<\/span><b>真人<\/b><b>至少半身<\/b><b>无需三视图<\/b>/);
+  assert.doesNotMatch(centerScript, /正面半身/);
+  assert.match(centerStyle, /\.short-drama-role-reference-content\{display:grid;gap:10px\}/);
+});
+
+test('legacy role drafts keep an explicit back-view migration warning', () => {
+  assert.match(centerScript, /character_contract_migration/);
+  assert.match(centerScript, /旧草稿缺少背面全身图，请生成并确认可信 AI 三视图标准图/);
+  assert.match(centerScript, /普通上传或旧版半身参考图不能作为迁移证据/);
+  assert.match(centerScript, /if\(migration\.required\)showLiveActionNotice/);
+});
+
+test('character reference image opens an accessible large preview', () => {
+  assert.match(centerScript, /data-preview-role-reference aria-label="放大预览/);
+  assert.match(centerScript, /createElement\('dialog'\)/);
+  assert.match(centerScript, /aria-label','角色标准图大图预览/);
+  assert.match(centerScript, /addEventListener\('cancel'.*closeLiveActionReferencePreview/);
+  assert.match(centerScript, /preview\.showModal\(\)/);
+  assert.match(centerStyle, /\.short-drama-image-preview\{position:fixed;inset:0;width:100vw;height:100vh/);
+  assert.match(centerStyle, /\.short-drama-image-preview\[open\]\{display:grid;place-items:center\}/);
 });
 
 test('live action entry exposes unavailable content types without project creation', () => {
