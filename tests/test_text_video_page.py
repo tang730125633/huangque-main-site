@@ -1,6 +1,6 @@
-import unittest
 import json
 import subprocess
+import unittest
 from pathlib import Path
 
 
@@ -105,12 +105,28 @@ process.stdout.write(JSON.stringify({first: first.key, retry: retry.key}));
         self.assertIn("voicesReady=false", PAGE)
         self.assertIn("isBusy||!stylesReady||!voicesReady", PAGE)
 
+    def test_speech_rate_control_is_accessible_and_defaults_to_one_x(self):
+        self.assertIn('id="speechRate"', PAGE)
+        self.assertIn('type="range"', PAGE)
+        self.assertIn('aria-label="语速调节"', PAGE)
+        self.assertIn('min="0.5"', PAGE)
+        self.assertIn('max="2"', PAGE)
+        self.assertIn('step="0.1"', PAGE)
+        self.assertIn('value="1"', PAGE)
+        self.assertIn('id="speechRateValue"', PAGE)
+        self.assertIn(">1.0x<", PAGE)
+
     def test_generation_submits_namespaced_voice_selection(self):
         self.assertIn("voice:el('videoVoice').value", PAGE)
         self.assertIn("if(!voicesReady)", PAGE)
         self.assertIn("音色暂不可用", PAGE)
         self.assertIn("option.value=voice.id", PAGE)
         self.assertIn("个人音色", PAGE)
+
+    def test_generation_submits_and_displays_current_speech_rate(self):
+        self.assertIn("speech_rate:Number(el('speechRate').value)", PAGE)
+        self.assertIn("el('speechRate').addEventListener('input',updateSpeechRateValue)", PAGE)
+        self.assertIn("el('speechRateValue').textContent=Number(el('speechRate').value).toFixed(1)+'x'", PAGE)
 
     def test_template_gallery_uses_preview_images_and_filters(self):
         self.assertIn('data-kind="illustration"', PAGE)
@@ -130,8 +146,8 @@ process.stdout.write(JSON.stringify({first: first.key, retry: retry.key}));
     def test_feature_is_default_off_and_all_entry_points_use_readiness_gate(self):
         self.assertIn('"key": "pixelle_text_video"', FLAGS)
         self.assertIn('"default_enabled": False', FLAGS)
-        self.assertIn('/api/gen/text-video/capability', CORE)
-        self.assertIn('pixelle_video.require_available()', CORE)
+        self.assertIn("/api/gen/text-video/capability", CORE)
+        self.assertIn("pixelle_video.require_available()", CORE)
         self.assertIn("feature:'pixelle_text_video'", SHELL)
         self.assertIn("data-nav-feature", SHELL)
         self.assertIn("if(data&&data.available){item.hidden=false;item.style.display='flex';}", SHELL)
