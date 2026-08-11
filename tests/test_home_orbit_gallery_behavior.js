@@ -299,12 +299,15 @@ test('closing the preview restores focus to its triggering card', () => {
   let replaced = false;
   const trigger = {
     isConnected: true,
+    hidden: false,
+    disabled: false,
+    getAttribute: () => null,
     focus: options => {
       assert.deepEqual(options, { preventScroll: true });
       focused = true;
     },
   };
-  const state = { previewTrigger: trigger, cards: [], activeIndex: 0 };
+  const state = { previewTrigger: trigger, cards: [{ card: trigger, failed: false }], activeIndex: 0 };
   const previewStage = {
     querySelector: () => null,
     replaceChildren: () => { replaced = true; },
@@ -315,6 +318,7 @@ test('closing the preview restores focus to its triggering card', () => {
     previewStage,
     previewTitle,
     cancelPreviewMedia: () => {},
+    canRestoreGalleryFocus: loadFunction('canRestoreGalleryFocus', { state }),
     isInteractive: () => true,
     syncVideoPlayback: () => {},
   });
@@ -322,6 +326,48 @@ test('closing the preview restores focus to its triggering card', () => {
   assert.equal(replaced, true);
   assert.equal(previewTitle.textContent, '');
   assert.equal(focused, true);
+  assert.equal(state.previewTrigger, null);
+});
+
+test('closing the preview skips a hidden failed trigger and focuses the active card', () => {
+  let activeFocused = false;
+  const failedTrigger = {
+    isConnected: true,
+    hidden: true,
+    disabled: false,
+    getAttribute: name => name === 'aria-hidden' ? 'true' : null,
+    focus: () => assert.fail('hidden failed trigger must not receive focus'),
+  };
+  const activeCard = {
+    isConnected: true,
+    hidden: false,
+    disabled: false,
+    getAttribute: () => null,
+    focus: options => {
+      assert.deepEqual(options, { preventScroll: true });
+      activeFocused = true;
+    },
+  };
+  const state = {
+    previewTrigger: failedTrigger,
+    cards: [
+      { card: failedTrigger, failed: true },
+      { card: activeCard, failed: false },
+    ],
+    activeIndex: 1,
+  };
+  const cleanupPreview = loadFunction('cleanupPreview', {
+    state,
+    previewStage: { replaceChildren() {} },
+    previewTitle: { textContent: 'old' },
+    cancelPreviewMedia: () => {},
+    canRestoreGalleryFocus: loadFunction('canRestoreGalleryFocus', { state }),
+    isInteractive: () => true,
+    syncVideoPlayback: () => {},
+  });
+
+  cleanupPreview();
+  assert.equal(activeFocused, true);
   assert.equal(state.previewTrigger, null);
 });
 
@@ -385,12 +431,15 @@ test('a stale preview error cannot replace the current preview', () => {
   const state = { previewMedia: currentMedia, previewToken: 9 };
   let cancelled = 0;
   let replacement = null;
+  const document = {
+    activeElement: null,
+    createElement: () => ({ className: '', setAttribute() {}, textContent: '' }),
+  };
   const showPreviewMediaError = loadFunction('showPreviewMediaError', {
     state,
     cancelPreviewMedia: () => { cancelled += 1; },
-    document: {
-      createElement: () => ({ className: '', setAttribute() {}, textContent: '' }),
-    },
+    document,
+    previewClose: { focus: () => assert.fail('unfocused media errors must not steal focus') },
     previewStage: { replaceChildren: value => { replacement = value; } },
   });
 
@@ -400,6 +449,31 @@ test('a stale preview error cannot replace the current preview', () => {
   showPreviewMediaError(currentMedia, 9);
   assert.equal(cancelled, 1);
   assert.equal(replacement.className, 'orbit-preview-error');
+});
+
+test('preview media errors move focused controls to the dialog close button', () => {
+  const media = { contains: () => false };
+  const state = { previewMedia: media, previewToken: 12 };
+  let focused = false;
+  const previewClose = {
+    focus: options => {
+      assert.deepEqual(options, { preventScroll: true });
+      focused = true;
+    },
+  };
+  const showPreviewMediaError = loadFunction('showPreviewMediaError', {
+    state,
+    cancelPreviewMedia: () => {},
+    document: {
+      activeElement: media,
+      createElement: () => ({ className: '', setAttribute() {}, textContent: '' }),
+    },
+    previewClose,
+    previewStage: { replaceChildren() {} },
+  });
+
+  showPreviewMediaError(media, 12);
+  assert.equal(focused, true);
 });
 
 test('render frames are requested on demand and stop when idle', () => {
@@ -504,6 +578,7 @@ test('fallback state removes interactive semantics and dynamic cards', () => {
   let instructionsHidden = false;
   const setFallbackState = loadFunction('setFallbackState', {
     state,
+    document: { activeElement: null },
     root,
     cancelAnimationFrame: () => {},
     clearEntryMedia: () => {},
@@ -520,6 +595,53 @@ test('fallback state removes interactive semantics and dynamic cards', () => {
   assert.equal(status.textContent, '已切换静态样片。');
   assert.ok(removed.includes('aria-label'));
   assert.ok(removed.includes('aria-roledescription'));
+});
+
+test('fallback moves focus from a removed gallery card to the status message', () => {
+  const activeElement = {};
+  const card = { contains: value => value === activeElement };
+  const state = {
+    ready: true,
+    velocity: 0,
+    tracking: false,
+    dragging: false,
+    activePointerId: null,
+    renderPending: false,
+    previewTrigger: null,
+    rafId: 0,
+    cards: [{ card }],
+    items: [{ id: 1 }],
+    activeIndex: 0,
+  };
+  let focused = false;
+  const status = {
+    textContent: '',
+    tabIndex: 0,
+    removeAttribute() {},
+    focus: options => {
+      assert.deepEqual(options, { preventScroll: true });
+      focused = true;
+    },
+  };
+  const setFallbackState = loadFunction('setFallbackState', {
+    state,
+    document: { activeElement },
+    root: {
+      dataset: {},
+      classList: { remove() {} },
+      removeAttribute() {},
+    },
+    cancelAnimationFrame: () => {},
+    clearEntryMedia: () => {},
+    track: { replaceChildren() {} },
+    fallback: { removeAttribute() {} },
+    setInstructionsHidden: () => {},
+    status,
+  });
+
+  setFallbackState('已恢复静态样片。');
+  assert.equal(status.tabIndex, -1);
+  assert.equal(focused, true);
 });
 
 test('too few valid media items restore the static fallback', () => {

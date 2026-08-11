@@ -92,6 +92,10 @@
   }
 
   function setFallbackState(message) {
+    const activeElement = document.activeElement;
+    const restoreFocus = state.cards.some(entry => (
+      activeElement === entry.card || Boolean(entry.card.contains?.(activeElement))
+    ));
     state.ready = false;
     state.velocity = 0;
     state.tracking = false;
@@ -114,6 +118,10 @@
     setInstructionsHidden(true);
     status.removeAttribute('aria-live');
     status.textContent = message || '动态画廊暂不可用，已显示静态创作样片。';
+    if (restoreFocus) {
+      status.tabIndex = -1;
+      status.focus({ preventScroll: true });
+    }
   }
 
   function assetPath(value, type) {
@@ -435,6 +443,18 @@
     }
   }
 
+  function canRestoreGalleryFocus(card) {
+    const entry = state.cards.find(candidate => candidate.card === card);
+    return Boolean(
+      card?.isConnected
+      && !card.hidden
+      && !card.disabled
+      && card.getAttribute?.('aria-hidden') !== 'true'
+      && entry
+      && !entry.failed
+    );
+  }
+
   function cleanupPreview() {
     cancelPreviewMedia();
     previewStage.replaceChildren();
@@ -442,7 +462,10 @@
     const trigger = state.previewTrigger;
     state.previewTrigger = null;
     if (isInteractive()) {
-      const focusTarget = trigger?.isConnected ? trigger : state.cards[state.activeIndex]?.card;
+      const activeCard = state.cards[state.activeIndex]?.card;
+      const focusTarget = canRestoreGalleryFocus(trigger)
+        ? trigger
+        : (canRestoreGalleryFocus(activeCard) ? activeCard : null);
       focusTarget?.focus({ preventScroll: true });
     }
     syncVideoPlayback();
@@ -462,12 +485,15 @@
 
   function showPreviewMediaError(media, previewToken) {
     if (state.previewMedia !== media || state.previewToken !== previewToken) return;
+    const activeElement = document.activeElement;
+    const restoreFocus = activeElement === media || Boolean(media.contains?.(activeElement));
     cancelPreviewMedia();
     const message = document.createElement('p');
     message.className = 'orbit-preview-error';
     message.setAttribute('role', 'status');
     message.textContent = '此作品暂时无法载入，请稍后重试。';
     previewStage.replaceChildren(message);
+    if (restoreFocus) previewClose.focus({ preventScroll: true });
   }
 
   function openPreview(item, trigger) {
