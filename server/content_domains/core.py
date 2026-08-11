@@ -1137,6 +1137,14 @@ def _recover_pending_jobs(limit=None):
         recovered += 1
     return recovered
 
+
+def _retry_short_drama_provider_refunds(limit=None):
+    return (
+        _short_drama_domain().short_drama_autodraft.retry_provider_refunds(
+            jdb, _domains()[1], int(limit or JOB_QUEUE_MAX),
+        )
+    )
+
 def _pending_job_scanner():
     while True:
         try:
@@ -1149,6 +1157,7 @@ def _pending_job_scanner():
                 jdb, _domains()[1], JOB_QUEUE_MAX)
             _short_drama_domain().short_drama_video.retry_video_attempt_refunds(
                 jdb, _domains()[1], JOB_QUEUE_MAX)
+            _retry_short_drama_provider_refunds(JOB_QUEUE_MAX)
             jobs_store.retry_failed_refunds(jdb, _refund_once, JOB_QUEUE_MAX)
             _short_drama_domain().short_drama_assembly.reconcile_final_refunds(
                 jdb, JOB_QUEUE_MAX)
@@ -1202,6 +1211,7 @@ def start_job_workers():
             jdb, _domains()[1], JOB_QUEUE_MAX)
         _short_drama_domain().short_drama_video.retry_video_attempt_refunds(
             jdb, _domains()[1], JOB_QUEUE_MAX)
+        _retry_short_drama_provider_refunds(JOB_QUEUE_MAX)
         _short_drama_domain().short_drama_refinement.retry_delivery_attempt_refunds(
             jdb, _domains()[1], JOB_QUEUE_MAX)
         _short_drama_domain().short_drama_assembly.retry_final_charge_attempts(
@@ -1568,11 +1578,25 @@ class H(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length") or 0)
             return json.loads(self.rfile.read(n) or b"{}")
         except Exception: return {}
-    def _json_body_strict(self):
+    def _json_body_strict(self, max_bytes=None):
+        length_header = self.headers.get("Content-Length")
         try:
-            n = int(self.headers.get("Content-Length") or 0)
-            raw = self.rfile.read(n) or b"{}"
+            n = int(length_header or 0)
+        except (TypeError, ValueError):
+            raise ValueError("请求体不是合法 JSON")
+        if max_bytes is not None:
+            if length_header is None or n <= 0:
+                raise ValueError("请求体缺少有效的 Content-Length")
+            if n > max_bytes:
+                raise error_contract.RequestBodyTooLarge("请求体过大")
+        try:
+            read_size = n if max_bytes is None else min(n, max_bytes + 1)
+            raw = self.rfile.read(read_size) or b"{}"
+            if max_bytes is not None and len(raw) > max_bytes:
+                raise error_contract.RequestBodyTooLarge("请求体过大")
             return json.loads(raw)
+        except ValueError:
+            raise
         except Exception:
             raise ValueError("请求体不是合法 JSON")
     def do_POST(self):
@@ -1607,6 +1631,34 @@ class H(BaseHTTPRequestHandler):
                 self, p, verify, _must_change_password, is_shutting_down,
                 feature_flags, points_domain, audio_domain, video_domain,
                 AUTH_INTERNAL_TOKEN): return
+        if p == "/api/gen/short-drama/select-character-reference":
+            user = verify(self._token())
+            if not user:
+                return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user):
+                return self._send(403, {"detail": "请先修改初始密码"})
+            try:
+                request_body = self._json_body_strict(max_bytes=15 * 1024 * 1024)
+                allowed = {
+                    "project_id", "revision", "character_key", "source",
+                    "asset_job_id", "asset_url", "filename", "image_data",
+                }
+                if not isinstance(request_body, dict) or set(request_body) != allowed:
+                    raise ValueError("角色标准图请求字段无效")
+                access = _short_drama_canvas_access(self)
+                owner = _short_drama_domain()._project_username_for_access(
+                    jdb, user["username"],
+                    str(request_body.get("project_id") or ""),
+                    access, write=True,
+                )
+                project = _short_drama_domain().select_character_reference(
+                    jdb, owner, user["username"], request_body,
+                )
+                return self._send(200, project)
+            except (LookupError, PermissionError, ValueError,
+                    _short_drama_domain().RevisionConflict) as error:
+                _short_drama_domain()._http_error(self, error)
+                return
         if p == "/api/gen/short-drama/confirm-character-reference":
             user = verify(self._token())
             if not user:
@@ -2702,6 +2754,7 @@ class H(BaseHTTPRequestHandler):
             still_attempt = None
             cinematic_idem_reserved = False
             still_access = _short_drama_canvas_access(self) if is_still_route else None
+            scene_access = None
             try:
                 body = self._json_body_strict() if is_still_route or kind in {"video", "tryon", "sora_video", "cinematic", "avatar", "script_to_video", "copy", "canvas_agent"} else self._json_body()
                 if kind == "cinematic":
@@ -2788,6 +2841,12 @@ class H(BaseHTTPRequestHandler):
                     body = image_domain.validate_image_payload(body)
                     if not is_still_route:
                         body.pop("short_drama_references", None)
+                    if body.get("short_drama_scene_binding"):
+                        scene_access = _short_drama_canvas_access(self)
+                        body["short_drama_scene_binding"] = _short_drama_domain().validate_scene_image_binding(
+                            jdb, user["username"], body["short_drama_scene_binding"],
+                            access=scene_access,
+                        )
                 elif kind == "audio":
                     body = audio_domain.validate_audio_payload(
                         body, user["username"]
@@ -2902,6 +2961,21 @@ class H(BaseHTTPRequestHandler):
                 if idem_state == "replay": replay = dict(idem_response or {}); return self._send(int(replay.pop("_http_status", 200)), replay)
                 if idem_state == "conflict": return self._send(409, {"detail": "同一个 Idempotency-Key 不能用于不同请求", "code": "idempotency_conflict"})
                 if idem_state == "processing" and not is_still_route: return self._send(409, {"detail": "相同请求正在受理，请稍后查询", "code": "idempotency_in_progress", "retry_after_ms": 1000})
+                if kind == "image" and body.get("short_drama_scene_binding"):
+                    try:
+                        _short_drama_domain().validate_scene_image_binding(
+                            jdb, user["username"], body["short_drama_scene_binding"],
+                            cost, access=scene_access,
+                        )
+                    except (
+                        LookupError, PermissionError, ValueError,
+                        _short_drama_domain().PointBudgetExceeded,
+                    ) as error:
+                        _idempotency_abort(user["username"], p, idem_key)
+                        _short_drama_domain()._http_error(
+                            self, error, operation_terminal=True
+                        )
+                        return
                 if kind == "image" and not still_attempt:
                     try:
                         feature_flags.require_enabled(

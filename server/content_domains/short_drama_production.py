@@ -733,7 +733,37 @@ def _project_references(conn, project, shot, *, include_internal=False):
             "ORDER BY sort_order, id" % placeholders,
             (project["id"], *keys),
         ).fetchall()
+        optional_keys = set()
+        contract_row = conn.execute(
+            "SELECT source_text,character_contract_json "
+            "FROM short_drama_script_imports WHERE project_id=? "
+            "AND content_type='live_action' AND status='completed' LIMIT 1",
+            (project["id"],),
+        ).fetchone()
+        if contract_row:
+            try:
+                contract = json.loads(contract_row[1] or "[]")
+            except (TypeError, ValueError):
+                contract = []
+            if isinstance(contract, list):
+                from . import short_drama
+                all_contract_keys = {
+                    str(item.get("character_key") or "")
+                    for item in contract if isinstance(item, dict)
+                }
+                required_keys = short_drama._character_reference_required_keys(
+                    contract_row[0], contract
+                )
+                optional_keys = all_contract_keys - required_keys
         for row in rows:
+            if (
+                row["character_key"] in optional_keys
+                and not (row["reference_locked"] and row["reference_file"])
+            ):
+                # Optional supporting roles and crowd are generated from the
+                # shot description instead of blocking on a dedicated identity
+                # reference. A user may still bind one explicitly.
+                continue
             reference = {
                 "type": "character", "id": row["id"], "name": row["name"],
                 "source_type": row["source_type"], "source_id": row["avatar_id"] or "",

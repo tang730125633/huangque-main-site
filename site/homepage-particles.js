@@ -4,6 +4,7 @@ const canvas = document.querySelector('[data-hero-particles]');
 const particleStory = document.querySelector('[data-particle-story]');
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 const isMobile = matchMedia('(max-width: 700px)').matches;
+const INITIAL_STORY_TIMELINE = 0.82;
 const status = { ready: false, points: 0, reducedMotion: reducedMotion.matches, timeline: 0, scene: 'scatter', pointerStrength: 0 };
 window.__homepageParticlesStatus = status;
 window.__homepageParticlesCheck = () => status.ready && status.points > 0 && canvas.width > 0;
@@ -174,7 +175,7 @@ async function start() {
   const pointerCurrent = pointerTarget.clone();
   const interactionPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
   let pointerStrengthTarget = 0;
-  let scrollTarget = 0;
+  let scrollTarget = INITIAL_STORY_TIMELINE;
   let timeline = scrollTarget;
   let opacityTarget = 0;
   let opacity = 0;
@@ -212,7 +213,7 @@ async function start() {
     const travel = Math.max(1, particleStory.offsetHeight - innerHeight);
     const rawProgress = (scrollY - sectionTop) / travel;
     const progress = Math.min(1, Math.max(0, rawProgress));
-    scrollTarget = progress * 5;
+    scrollTarget = INITIAL_STORY_TIMELINE + progress * (5 - INITIAL_STORY_TIMELINE);
     opacityTarget = smoothstep(-.08, .05, rawProgress) * (1 - smoothstep(.9, 1.03, rawProgress));
   }
 

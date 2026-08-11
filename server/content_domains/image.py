@@ -205,6 +205,8 @@ def validate_image_payload(payload):
             banana_body["short_drama_references"] = body["short_drama_references"]
         if "short_drama_raw_prompt" in body:
             banana_body["short_drama_raw_prompt"] = body["short_drama_raw_prompt"]
+        if "short_drama_scene_binding" in body:
+            banana_body["short_drama_scene_binding"] = body["short_drama_scene_binding"]
         return banana_body
     if provider == "zelong2":
         raise ValueError("泽龙2生图渠道维护中，请使用 Seedream 或果肉生图")
