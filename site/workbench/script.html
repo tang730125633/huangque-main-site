@@ -2001,7 +2001,9 @@
               +'<div style="font-size:40px;margin-bottom:10px;">✅</div>'
               +'<div style="font-size:15px;font-weight:700;color:#eaf1fa;margin-bottom:8px;">生成完成！</div>'
               +(videoUrl?'<video src="'+esc(videoUrl)+'" controls style="max-width:100%;max-height:260px;border-radius:10px;cursor:zoom-in;"></video>':'')
-              +'<div style="margin-top:14px;"><a href="assets.html" class="sc-btn" style="color:#e7b24c;">📁 查看资产库</a></div></div>';
+              +'<div style="margin-top:14px;display:flex;gap:9px;justify-content:center;">'
+              +(videoUrl?'<a href="'+esc(videoUrl)+'" download="huangque-final-video.mp4" class="sc-btn" style="color:#e7b24c;">下载最终成片</a>':'')
+              +'<a href="assets.html" class="sc-btn">📁 查看资产库</a></div></div>';
             if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
             loadHistory();
             return;
@@ -2089,6 +2091,7 @@
                 +'<div style="font-size:12px;color:#94a4bb;margin-bottom:14px;">'+sceneCount+' 个分镜已合成视频'+costInfo+'</div>'
                 +(vurl?'<div style="margin-bottom:12px;"><video src="'+esc(vurl)+'" controls style="max-width:100%;max-height:260px;border-radius:10px;cursor:zoom-in;"></video></div>':'')
                 +'<div style="display:flex;gap:9px;justify-content:center;">'
+                +(vurl?'<a href="'+esc(vurl)+'" download="huangque-final-video.mp4" class="sc-btn" style="color:#e7b24c;">下载最终成片</a>':'')
                 +'<a href="assets.html" class="sc-btn" style="color:#e7b24c;">📁 查看资产库</a>'
                 +'<a href="video.html" class="sc-btn">📹 去视频页</a></div></div>';
               // 成功后保留分镜列表：先重渲染分镜，再把成功横幅插到顶部

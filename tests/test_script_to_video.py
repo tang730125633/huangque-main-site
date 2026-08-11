@@ -105,6 +105,7 @@ class ScriptToVideoTests(unittest.TestCase):
         self.assertEqual(calls["avatar_lookup"], ("fang", "42"))
         self.assertEqual(calls["payload"]["avatar_id"], "42")
         self.assertEqual(calls["payload"]["text"], "第一句\n\n第二句")
+        self.assertTrue(calls["payload"]["subtitle"])
         self.assertEqual(result["pipeline"], "talking")
         self.assertEqual(result["type"], "script_to_video")
 
@@ -181,6 +182,10 @@ class ScriptToVideoTests(unittest.TestCase):
         subtitle.assert_called_once()
         self.assertEqual(result["pipeline"], "talking_with_materials")
         self.assertEqual(result["video_file"], "video/final.mp4")
+        self.assertEqual(result["video_url"], "/final.mp4")
+        self.assertEqual(result["provider_video_file"], "video/avatar.mp4")
+        self.assertEqual(result["provider_video_url"], "/old.mp4")
+        self.assertEqual(result["plain_video_file"], "video/avatar.mp4")
         self.assertEqual(result["material_generated_count"], 1)
 
     def test_photo_motion_randomly_uses_only_gentle_ken_burns_effects(self):

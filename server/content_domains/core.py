@@ -1433,6 +1433,19 @@ def run_job(job_id):
         except Exception:
             pass
     except Exception as e:
+        if kind == "script_to_video":
+            try:
+                from . import script_to_video as script_to_video_domain
+                if script_to_video_domain.recover_paid_job_error(
+                        job_id, e, _requeue_running_job):
+                    return
+                script_to_video_domain.cleanup_unsubmitted_materials(job_id)
+            except Exception as recovery_error:
+                print(
+                    "[script-to-video] recovery state unavailable; hold job#%s: %s"
+                    % (job_id, str(recovery_error)[:160]), flush=True,
+                )
+                return
         if kind in {"sora_video", "xiaole_video"}:
             try:
                 if _domains()[2].recover_paid_video_error(
@@ -1528,6 +1541,14 @@ def reaper():
                             print("[video-recovery] job#%s recovery window expired; ending" % r["id"], flush=True)
                     except Exception:
                         continue  # 恢复库读不到时也不能把付费任务误判失败。
+                if r["kind"] == "script_to_video":
+                    try:
+                        from . import script_to_video as script_to_video_domain
+                        if script_to_video_domain.recover_paid_job_error(
+                                r["id"], "文案成片执行超时", _requeue_running_job):
+                            continue
+                    except Exception:
+                        continue
                 # CAS 抢 error 终态；抢到(说明 worker 尚未写 done)才退点，退点本身再幂等一层
                 if _fail_job_and_schedule_refund(
                         r["id"], "付费视频恢复超时自动结束，退款处理中，请重新提交",
@@ -1541,18 +1562,39 @@ def _requeue_running_job(job_id):
     return startup_recovery.requeue_running_job(jdb, job_id)
 
 def reclaim_orphaned_running():
-    return startup_recovery.reclaim_orphaned_running(
+    from . import script_to_video as script_to_video_domain
+    try:
+        script_recovery = script_to_video_domain.reclaim_orphaned_jobs(
+            _requeue_running_job,
+        )
+    except script_to_video_domain.ScriptToVideoRecoveryStateUnavailable as exc:
+        # Without the durable provider phase, generic recovery cannot decide
+        # whether a paid create request is safe to refund or resubmit.
+        print(
+            "[script-to-video] startup recovery state unavailable; hold all: %s"
+            % str(exc)[:160], flush=True,
+        )
+        return 0
+    held_script_jobs = set(script_recovery.get("held") or ())
+
+    def set_startup_terminal(job_id, status, **kwargs):
+        if int(job_id) in held_script_jobs:
+            return False
+        return _fail_job_and_schedule_refund(
+            job_id, kwargs.get("error") or "服务重启中断，退款处理中，请重新提交",
+            from_states=("running",),
+        ) if status == "error" else _set_terminal(job_id, status, **kwargs)
+
+    result = startup_recovery.reclaim_orphaned_running(
         jdb=jdb,
         service_owner=SERVICE_OWNER,
         domains=_domains,
-        set_terminal=lambda job_id, status, **kwargs: _fail_job_and_schedule_refund(
-            job_id, kwargs.get("error") or "服务重启中断，退款处理中，请重新提交",
-            from_states=("running",),
-        ) if status == "error" else _set_terminal(job_id, status, **kwargs),
+        set_terminal=set_startup_terminal,
         refund_once=lambda *_args, **_kwargs: None,
         mark_video_asset_failed=_mark_video_asset_failed,
         requeue_job=_requeue_running_job,
     )
+    return result
 # ============ HTTP ============
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -3129,9 +3171,33 @@ class H(BaseHTTPRequestHandler):
                     except Exception:
                         failed_response = {"detail": "任务创建失败，退款正在自动处理", "job_id": jid}; _reject_pending_job(jid, user["username"], cost, "视频资产登记失败"); _idempotency_complete(user["username"], p, idem_key, dict(failed_response, _http_status=500))
                         return self._send(500, failed_response)
-                if not (is_still_route and is_shutting_down()) and not enqueue_job(jid, kind, body.get("mode")):
+                if kind == "script_to_video" and body.get("material_plan"):
+                    try:
+                        script_to_video_domain.freeze_reused_materials_for_job(
+                            jid, user["username"],
+                        )
+                    except Exception as exc:
+                        detail = "素材准备失败：%s" % str(exc)[:180]
+                        _reject_pending_job(jid, user["username"], cost, detail)
+                        script_to_video_domain.cleanup_unsubmitted_materials(jid)
+                        video_domain.update_video_asset_phase(
+                            jid, "failed", status="failed", error=detail,
+                        )
+                        failed_response = {
+                            "detail": detail, "job_id": jid,
+                            "operation_terminal": True,
+                        }
+                        _idempotency_complete(
+                            user["username"], p, idem_key,
+                            dict(failed_response, _http_status=400),
+                        )
+                        return self._send(400, failed_response)
+                if (not (is_still_route and is_shutting_down())
+                        and not enqueue_job(jid, kind, body.get("mode"))):
                     if not is_still_route:
                         _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
+                    if kind == "script_to_video":
+                        script_to_video_domain.cleanup_unsubmitted_materials(jid)
                     if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video"}:
                         video_domain.update_video_asset_phase(jid, "failed", status="failed", error="任务队列已满，请稍后再试")
                     if kind == "cinematic" and self._cinematic_reference_files:

@@ -610,6 +610,19 @@ setImmediate(function(){
         """一键成片/做图成功后分镜列表保留，成功横幅插入顶部"""
         self.assertIn("scenes.insertAdjacentHTML('afterbegin',successHtml)", self.html)
 
+    def test_final_composite_is_the_default_download_in_both_success_paths(self):
+        self.assertEqual(
+            self.html.count('download="huangque-final-video.mp4"'), 2
+        )
+        self.assertIn(
+            '\'<a href="\'+esc(videoUrl)+\'" download="huangque-final-video.mp4"',
+            self.html,
+        )
+        self.assertIn(
+            '\'<a href="\'+esc(vurl)+\'" download="huangque-final-video.mp4"',
+            self.html,
+        )
+
     def test_legacy_millisecond_duration_display_fixed(self):
         """存量毫秒时长显示修正（fmtDur 18320→18）"""
         self.assertIn("function fmtDur(d)", self.html)
