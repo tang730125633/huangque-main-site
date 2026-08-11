@@ -2459,6 +2459,41 @@ class ShortDramaProductionTests(unittest.TestCase):
                 self.db, "alice", self._still_request(shot_id=target_id)
             )
 
+    def test_unlocked_crowd_role_does_not_block_still_generation(self):
+        crowd_contract = [{
+            "character_key": "crowd-1", "name": "路人", "role_type": "crowd",
+        }]
+        with closing(self.db()) as conn:
+            conn.execute(
+                "INSERT INTO short_drama_script_imports "
+                "(id,username,project_id,idempotency_key,request_hash,source_text,"
+                "source_hash,filename,content_type,character_contract_json,"
+                "roles_saved_at,import_mode,status,created_at,updated_at) "
+                "VALUES('crowd-import','alice',?,'crowd-key','request','路人经过。',"
+                "'source','story.txt','live_action',?,1,'faithful','completed',1,1)",
+                (self.project["id"], json.dumps(crowd_contract, ensure_ascii=False)),
+            )
+            conn.execute(
+                "INSERT INTO short_drama_characters "
+                "(id,project_id,character_key,name,source_type,sort_order) "
+                "VALUES('crowd-character',?,'crowd-1','路人','ai_character',0)",
+                (self.project["id"],),
+            )
+            target_id = self._shot_id(0)
+            conn.execute(
+                "UPDATE short_drama_shots SET character_keys_json='[\"crowd-1\"]' "
+                "WHERE id=?", (target_id,),
+            )
+            conn.commit()
+
+        prepared = short_drama_production.prepare_still_submission(
+            self.db, "alice", self._still_request(shot_id=target_id)
+        )
+        self.assertEqual([], [
+            item for item in prepared["shot"]["references"]
+            if item["type"] == "character"
+        ])
+
     def test_first_reconciled_snapshot_has_fresh_financial_totals(self):
         self._link_job(cost=60, quoted_cost=60)
 

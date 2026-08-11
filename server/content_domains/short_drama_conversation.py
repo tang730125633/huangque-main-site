@@ -572,6 +572,152 @@ def _character_names(seed, understanding):
     return unique[:3]
 
 
+_EXPLICIT_SHOT_RE = re.compile(
+    r"(?im)^\s*(?:镜头|分镜)\s*#?\s*(\d+)\s*"
+    r"(?:[（(]\s*(?:(\d+(?:\.\d+)?)\s*(?:秒|s)?\s*[-—~至]\s*"
+    r"(\d+(?:\.\d+)?)\s*(?:秒|s)?|(\d+(?:\.\d+)?)\s*(?:秒|s))\s*[）)])?"
+    r"\s*[:：、,，]?\s*(.*)$"
+)
+_CAMERA_TERMS = (
+    "大特写", "特写", "近景", "中近景", "中景", "中远景", "远景", "全景",
+    "半身镜头", "半身", "俯拍", "仰拍", "航拍", "跟拍", "手持", "固定镜头",
+)
+
+
+def _explicit_storyboard_requirements(source):
+    """Extract user-authored numbered shots without interpreting prose mentions."""
+    source = str(source or "")
+    matches = list(_EXPLICIT_SHOT_RE.finditer(source))
+    requirements = []
+    for position, match in enumerate(matches):
+        number = int(match.group(1))
+        block_end = matches[position + 1].start() if position + 1 < len(matches) else len(source)
+        tail = match.group(5).strip()
+        continuation = source[match.end():block_end].strip()
+        content = "\n".join(value for value in (tail, continuation) if value).strip()
+        start = float(match.group(2)) if match.group(2) else None
+        end = float(match.group(3)) if match.group(3) else None
+        duration = (
+            max(1, int(round(end - start))) if start is not None and end is not None
+            else max(1, int(round(float(match.group(4))))) if match.group(4) else None
+        )
+        camera = next((term for term in _CAMERA_TERMS if term in tail[:30]), "")
+        visual = content
+        if camera and visual.startswith(camera):
+            visual = visual[len(camera):].lstrip(" ，,、：:")
+        requirements.append({
+            "number": number, "duration_seconds": duration,
+            "camera": camera, "visual": visual or content,
+            "source_text": content, "source_offset": match.start(),
+        })
+    return requirements
+
+
+def _apply_explicit_storyboard(script, project, source):
+    requirements = _explicit_storyboard_requirements(source)
+    if not requirements:
+        for shot in script.get("shots") or []:
+            shot["source_type"] = "system_generated"
+        return script
+    shots = script.get("shots") or []
+    beats = script.get("story_beats") or []
+    lines = script.get("dialogue_lines") or []
+    characters = script.get("characters") or []
+    by_number = {
+        item["number"]: item for item in requirements
+        if 1 <= item["number"] <= len(shots)
+    }
+    target = int(project.get("target_duration") or 0)
+    fixed = {
+        number - 1: int(item["duration_seconds"])
+        for number, item in by_number.items() if item.get("duration_seconds")
+    }
+    flexible = [index for index in range(len(shots)) if index not in fixed]
+    remaining = target - sum(fixed.values())
+    if remaining < len(flexible) or (not flexible and remaining != 0):
+        raise ConversationError(
+            "explicit_storyboard_duration_mismatch",
+            "用户填写的分镜总时长与项目目标时长不一致，请调整分镜时间或项目时长后重试",
+            422,
+        )
+    if flexible:
+        allocated = short_drama_storyboard.allocate_durations(remaining, len(flexible))
+        for index, duration in zip(flexible, allocated):
+            shots[index]["duration_seconds"] = duration
+    for index, duration in fixed.items():
+        shots[index]["duration_seconds"] = duration
+    for index, shot in enumerate(shots):
+        requirement = by_number.get(index + 1)
+        if not requirement:
+            shot["source_type"] = "system_generated"
+            continue
+        visual = requirement["visual"] or shot.get("visual") or ""
+        scene = short_drama_storyboard._location(visual, shot.get("scene") or "故事主要场景")
+        visible = [item for item in characters if str(item.get("name") or "") in visual]
+        if not visible:
+            visible = [
+                item for item in characters
+                if item.get("character_key") in (shot.get("character_keys") or [])
+            ]
+        camera = requirement["camera"] or shot.get("camera") or ""
+        shot.update({
+            "scene": scene, "visual": visual, "camera": camera,
+            "character_keys": [item["character_key"] for item in visible],
+            "provider_prompt": short_drama_storyboard._provider_prompt(
+                project, visible, scene, visual, camera, str((beats[index] if index < len(beats) else {}).get("phase") or "development"),
+            ),
+            "source_type": "user_storyboard",
+            "source_text": requirement["source_text"],
+            "source_offset": requirement["source_offset"],
+        })
+        if index < len(beats):
+            beats[index]["source_fact"] = requirement["source_text"][:180]
+            beats[index]["source_type"] = "user_storyboard"
+        line = lines[index] if index < len(lines) else None
+        if line is not None:
+            subtitle = re.search(r"(?:^|[\n；。])\s*字幕\s*[:：]\s*([^\n；。]+)", requirement["source_text"])
+            speaker_match = None
+            for item in characters:
+                if not item.get("name"):
+                    continue
+                match = re.search(
+                    r"(?:^|[\n；。])\s*" + re.escape(str(item["name"])) + r"\s*[:：]\s*([^\n；。]+)",
+                    requirement["source_text"],
+                )
+                if match:
+                    speaker_match = (item, match)
+                    break
+            if subtitle:
+                line.update({"kind": "on_screen_text", "character_key": "", "speaker": "", "text": subtitle.group(1).strip()})
+            elif speaker_match:
+                line.update({
+                    "kind": "dialogue", "character_key": speaker_match[0]["character_key"],
+                    "speaker": speaker_match[0]["name"], "text": speaker_match[1].group(1).strip(),
+                })
+            elif re.search(r"无台词|静默", requirement["source_text"]):
+                line.update({"kind": "silence", "character_key": "", "speaker": "", "text": ""})
+            line["estimated_reading_seconds"] = short_drama_storyboard._reading_seconds(line)
+    scenes = script.get("scenes") or []
+    for index, shot in enumerate(shots):
+        if index < len(scenes):
+            scenes[index]["location"] = shot.get("scene") or scenes[index].get("location")
+            scenes[index]["summary"] = shot.get("visual") or scenes[index].get("summary")
+    acts = script.get("acts") or []
+    if shots and beats and acts:
+        act_indices = (0, max(0, len(shots) // 2), len(shots) - 1)
+        for act, index in zip(acts, act_indices):
+            if index < len(beats):
+                act["summary"] = beats[index].get("source_fact") or act.get("summary")
+    script["storyboard_source"] = {
+        "mode": "user_priority", "explicit_shot_count": len(by_number),
+        "generated_shot_count": len(shots) - len(by_number),
+        "unmapped_shot_numbers": [
+            item["number"] for item in requirements if item["number"] not in by_number
+        ],
+    }
+    return script
+
+
 def _scene_location(clause, fallback):
     locations = (
         "房间", "家中", "医院", "学校", "教室", "公园", "车站", "办公室",
@@ -871,6 +1017,20 @@ def _import_contract(source_import):
     character_contract_hash = _hash(
         stored_characters if isinstance(stored_characters, list) else []
     )
+    global_structure = _import_global_structure(source, characters)
+    confirmed_core_story = source_import.get("core_story")
+    if confirmed_core_story is None:
+        confirmed_core_story = _json(source_import.get("core_story_json") or "{}", {})
+    if isinstance(confirmed_core_story, dict) and confirmed_core_story:
+        for key in (
+                "setup", "development", "turning_point", "climax", "ending",
+                "central_conflict"):
+            if str(confirmed_core_story.get(key) or "").strip():
+                global_structure[key] = str(confirmed_core_story[key]).strip()
+        global_structure["premise"] = str(
+            confirmed_core_story.get("logline") or global_structure.get("premise") or ""
+        ).strip()
+        global_structure["confirmed_core_story"] = dict(confirmed_core_story)
     contract = {
         "source_hash": source_import["source_hash"],
         "import_mode": mode,
@@ -880,7 +1040,7 @@ def _import_contract(source_import):
         "character_contract": stored_characters if isinstance(stored_characters, list) else [],
         "character_contract_hash": character_contract_hash,
         "content_type": str(source_import.get("content_type") or "live_action"),
-        "global_structure": _import_global_structure(source, characters),
+        "global_structure": global_structure,
         "plot_points": _source_anchors(source),
         "key_dialogues": dialogues,
         "proposed_changes": changes,
@@ -1374,19 +1534,40 @@ def _script(project, messages, instruction="", understanding=None, source_import
             import_contract = candidate
         else:
             import_contract = _import_contract(source_import)
-    if import_contract:
-        names = list(dict.fromkeys(import_contract["characters"] + names))[:8]
+    if import_contract and import_contract.get("characters"):
+        names = list(dict.fromkeys(import_contract["characters"]))[:8]
     if "独角" in seed or "一个人" in seed:
         names = names[:1]
-    characters = [
-        {
-            "character_key": "character_%d" % (index + 1),
-            "name": name,
-            "identity": "故事中的%s" % name,
-            "personality": "身份、行动和情绪均以已确认故事为准",
-        }
-        for index, name in enumerate(names)
-    ]
+    role_contract = (
+        import_contract.get("character_contract") or []
+        if import_contract else []
+    )
+    if role_contract:
+        characters = [{
+            "character_key": str(
+                item.get("character_key") or "character_%d" % (index + 1)
+            ),
+            "name": str(item.get("name") or names[index]),
+            "identity": str(
+                item.get("identity_text") or "故事中的%s" % names[index]
+            ),
+            "personality": str(
+                item.get("personality")
+                or "身份、行动和情绪均以已确认故事为准"
+            ),
+            "role_type": str(item.get("role_type") or "support"),
+        } for index, item in enumerate(role_contract[:8])]
+    else:
+        characters = [
+            {
+                "character_key": "character_%d" % (index + 1),
+                "name": name,
+                "identity": "故事中的%s" % name,
+                "personality": "身份、行动和情绪均以已确认故事为准",
+                "role_type": "main" if index == 0 else "support",
+            }
+            for index, name in enumerate(names)
+        ]
     clauses = _story_clauses(project, understanding, source_import)
     script = short_drama_storyboard.compile_storyboard(
         project,
@@ -1424,11 +1605,29 @@ def _script(project, messages, instruction="", understanding=None, source_import
             "contract_revision": import_contract["revision"],
             "contract_hash": import_contract["contract_hash"],
         }
+        script = _apply_explicit_storyboard(
+            script,
+            project,
+            source_import.get("source_text") or "",
+        )
+    else:
+        script = _apply_explicit_storyboard(script, project, "")
     return script
 
 
 def _validate_script(script):
     quality = short_drama_storyboard.validate_script(script)
+    storyboard_source = script.get("storyboard_source") or {}
+    unmapped = storyboard_source.get("unmapped_shot_numbers") or []
+    if unmapped:
+        quality.setdefault("warnings", []).append({
+            "code": "explicit_storyboard_shot_count_mismatch",
+            "message": "完整剧本中的分镜 %s 超出项目镜头数量，未写入当前版本" % "、".join(
+                str(value) for value in unmapped
+            ),
+        })
+        if quality.get("status") == "pass":
+            quality["status"] = "warning"
     script["quality_gate"] = quality
     if quality["status"] == "blocked":
         blocker = quality["blockers"][0]
@@ -1482,7 +1681,7 @@ def _import_snapshot(conn, project_id):
     conn.row_factory = sqlite3.Row
     row = conn.execute(
         "SELECT source_text,source_hash,filename,content_type,character_contract_json,"
-        "import_mode,status,created_at "
+        "core_story_json,core_story_confirmed_at,import_mode,status,created_at "
         "FROM short_drama_script_imports WHERE project_id=? AND status='completed'",
         (project_id,),
     ).fetchone()
@@ -1492,6 +1691,7 @@ def _import_snapshot(conn, project_id):
     result["character_contract"] = _json(
         result.pop("character_contract_json", "[]"), []
     )
+    result["core_story"] = _json(result.pop("core_story_json", "{}"), {})
     return result
 
 

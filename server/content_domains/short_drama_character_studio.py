@@ -129,9 +129,31 @@ def _script_characters(script):
     return declared
 
 
-def _sync_locked_characters(conn, project_id, locked):
+def _confirmed_character_contract(conn, project_id):
+    row = conn.execute(
+        "SELECT character_contract_json FROM short_drama_script_imports "
+        "WHERE project_id=? AND content_type='live_action' AND status='completed' "
+        "ORDER BY updated_at DESC LIMIT 1",
+        (project_id,),
+    ).fetchone()
+    contract = _json(row[0], []) if row else []
+    return [item for item in contract if isinstance(item, dict) and _text(
+        item.get("character_key"), 160
+    )]
+
+
+def _sync_locked_characters(conn, project_id, locked, confirmed_contract=None):
     """Idempotently add missing roles without overwriting user preparation."""
     characters = _script_characters(locked["script"])
+    confirmed_keys = {
+        _text(item.get("character_key"), 160)
+        for item in confirmed_contract or []
+    }
+    if confirmed_keys:
+        characters = [
+            item for item in characters
+            if item["character_key"] in confirmed_keys
+        ]
     now = int(time.time())
     for item in characters:
         existing = conn.execute(
@@ -399,7 +421,10 @@ def workspace(
         if not project:
             raise LookupError("short drama project does not exist")
         locked = _locked_script(conn, project_id)
-        _sync_locked_characters(conn, project_id, locked)
+        confirmed_contract = _confirmed_character_contract(conn, project_id)
+        _sync_locked_characters(
+            conn, project_id, locked, confirmed_contract=confirmed_contract
+        )
         conn.commit()
         avatars = _avatar_items(owner_username, avatar_list)
         avatars_by_id = {str(item["id"]): item for item in avatars}
@@ -408,6 +433,12 @@ def workspace(
             "ORDER BY sort_order,id",
             (project_id,),
         ).fetchall()
+        confirmed_keys = {
+            _text(item.get("character_key"), 160)
+            for item in confirmed_contract
+        }
+        if confirmed_keys:
+            rows = [row for row in rows if row["character_key"] in confirmed_keys]
         active_reference_jobs = {}
         for reference_row in conn.execute(
             "SELECT character_key,job_id,status "
