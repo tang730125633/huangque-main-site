@@ -2225,8 +2225,16 @@ class ShortDramaRouteTests(unittest.TestCase):
                     },
                     "rfile": body,
                 })()
-                with self.assertRaises(ValueError):
+                with self.assertRaises(ValueError) as caught:
                     core.H._json_body_strict(handler, max_bytes=limit)
+                if content_length == str(limit + 1):
+                    self.assertIsInstance(
+                        caught.exception,
+                        core.error_contract.RequestBodyTooLarge,
+                    )
+                    self.assertEqual(
+                        "request_body_too_large", caught.exception.code,
+                    )
                 self.assertFalse(body.read_sizes)
 
         body = RecordingBody(b"{}")
@@ -2251,7 +2259,7 @@ class ShortDramaRouteTests(unittest.TestCase):
 
             def _json_body_strict(self, *, max_bytes=None):
                 self.max_bytes = max_bytes
-                raise ValueError("请求体过大")
+                raise core.error_contract.RequestBodyTooLarge("请求体过大")
 
             def _send(self, status, payload):
                 self.sent = (status, payload)

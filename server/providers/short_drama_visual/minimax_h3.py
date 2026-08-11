@@ -68,7 +68,7 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
         return provider_keys.claim_candidate("minimax")
 
     @staticmethod
-    def _bound_key(key_id):
+    def _bound_key(key_id, submitted=True):
         try:
             from content_domains import provider_keys
 
@@ -80,7 +80,7 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
             raise VisualProviderError(
                 "provider_key_read_failed",
                 "MiniMax 任务绑定的 API Key 暂时无法读取，请稍后重试",
-                submitted=True,
+                submitted=submitted,
             ) from error
 
     @staticmethod
@@ -210,7 +210,10 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
             )
         key_id = str((request or {}).get("_provider_key_id") or "").strip()
         payload = self.validate_request(request)
-        candidate = self._bound_key(key_id) if key_id else self._claim_key()
+        candidate = (
+            self._bound_key(key_id, submitted=False)
+            if key_id else self._claim_key()
+        )
         if not candidate or not candidate.get("secret"):
             raise VisualProviderError("provider_not_configured", "没有可用的 MiniMax 开放平台 API Key")
         from content_domains import video_minimax_h3

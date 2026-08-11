@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -278,6 +279,25 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             },
             avatar_lookup=lambda _username, _avatar_id: avatar,
         )
+
+    def _provider_reconciliation_evidence(self, job_id):
+        conn = self.db()
+        try:
+            row = conn.execute(
+                "SELECT j.provider,j.request_json,a.id AS attempt_id,a.request_hash "
+                "FROM short_drama_provider_shot_jobs j "
+                "JOIN short_drama_provider_shot_attempts a ON a.job_id=j.id "
+                "WHERE j.id=?", (job_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        request = json.loads(row[1])
+        return {
+            "provider": row[0],
+            "attempt_id": row[2],
+            "request_hash": row[3],
+            "provider_key_id": request.get("_provider_key_id") or "env",
+        }
 
     def _running_provider_job(self, key):
         charged = []
@@ -1599,6 +1619,54 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertFalse(result["error"]["retryable"])
         self.assertTrue(result["error"]["requires_reconciliation"])
 
+    def test_provider_finalization_lease_prevents_duplicate_download(self):
+        job, _quote = self._running_provider_job("single-finalizer")
+        conn = short_drama_autodraft._connection(self.db)
+        try:
+            row = conn.execute(
+                "SELECT * FROM short_drama_provider_shot_jobs WHERE id=?",
+                (job["id"],),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        class ReentrantProvider:
+            def __init__(self):
+                self.downloads = 0
+
+            def fetch_result(inner_self, provider_job_id, result_url):
+                inner_self.downloads += 1
+                short_drama_autodraft._finish_provider_job(
+                    self.db, row, inner_self,
+                    {"result_url": "https://provider.example/result.mp4"},
+                )
+                return {
+                    "provider_job_id": provider_job_id,
+                    "file": "video/finalized-once.mp4",
+                    "url": "/api/gen/file/video/finalized-once.mp4",
+                }
+
+        provider = ReentrantProvider()
+        short_drama_autodraft._finish_provider_job(
+            self.db, row, provider,
+            {"result_url": "https://provider.example/result.mp4"},
+        )
+        conn = self.db()
+        try:
+            status = conn.execute(
+                "SELECT status FROM short_drama_provider_shot_jobs WHERE id=?",
+                (job["id"],),
+            ).fetchone()[0]
+            versions = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_provider_shot_versions "
+                "WHERE job_id=?", (job["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(1, provider.downloads)
+        self.assertEqual("succeeded", status)
+        self.assertEqual(1, versions)
+
     def test_submit_unknown_can_idempotently_bind_known_provider_job(self):
         with mock.patch.dict(os.environ, {
             "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "heygen_cinematic",
@@ -1628,12 +1696,13 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             "project_id": self.project["id"],
             "action": "bind_provider_job",
             "provider_job_id": "upstream-task-42",
+            "evidence": self._provider_reconciliation_evidence(job["id"]),
         }
         first = short_drama_autodraft.reconcile_unknown_provider_submission(
-            self.db, "alice", job["id"], body,
+            self.db, "alice", "alice", "user", job["id"], body,
         )
         replay = short_drama_autodraft.reconcile_unknown_provider_submission(
-            self.db, "alice", job["id"], body,
+            self.db, "alice", "alice", "user", job["id"], body,
         )
 
         self.assertEqual("running", first["status"])
@@ -1669,11 +1738,11 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             "action": "confirm_not_submitted",
         }
         first = short_drama_autodraft.reconcile_unknown_provider_submission(
-            self.db, "alice", job["id"], body,
+            self.db, "alice", "alice", "admin", job["id"], body,
             refund_points=lambda *_args: refunds.append(_args),
         )
         replay = short_drama_autodraft.reconcile_unknown_provider_submission(
-            self.db, "alice", job["id"], body,
+            self.db, "alice", "alice", "admin", job["id"], body,
             refund_points=lambda *_args: refunds.append(_args),
         )
 
@@ -1689,6 +1758,118 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertEqual("failed", replay["status"])
         self.assertEqual("refunded", attempt_state)
         self.assertEqual(1, len(refunds))
+
+    def test_submit_unknown_reconciliation_rejects_non_actor_editor(self):
+        job = self._running_provider_job("reconcile-actor-boundary")[0]
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs SET status='submit_unknown' "
+                "WHERE id=?", (job["id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        body = {
+            "project_id": self.project["id"],
+            "action": "bind_provider_job",
+            "provider_job_id": "foreign-task",
+            "evidence": self._provider_reconciliation_evidence(job["id"]),
+        }
+        with self.assertRaises(short_drama_autodraft.AutodraftError) as caught:
+            short_drama_autodraft.reconcile_unknown_provider_submission(
+                self.db, "alice", "bob", "user", job["id"], body,
+            )
+        self.assertEqual("provider_reconciliation_forbidden", caught.exception.code)
+
+    def test_submit_unknown_binding_requires_matching_provenance(self):
+        job = self._running_provider_job("reconcile-provenance")[0]
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs SET status='submit_unknown' "
+                "WHERE id=?", (job["id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        evidence = self._provider_reconciliation_evidence(job["id"])
+        evidence["request_hash"] = "another-request"
+        with self.assertRaises(short_drama_autodraft.AutodraftError) as caught:
+            short_drama_autodraft.reconcile_unknown_provider_submission(
+                self.db, "alice", "alice", "user", job["id"], {
+                    "project_id": self.project["id"],
+                    "action": "bind_provider_job",
+                    "provider_job_id": "wrong-task",
+                    "evidence": evidence,
+                },
+            )
+        self.assertEqual("provider_reconciliation_evidence_invalid", caught.exception.code)
+
+    def test_bind_and_refund_reconciliation_compete_for_one_atomic_claim(self):
+        job, _quote = self._running_provider_job("atomic-reconciliation-claim")
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs SET status='submit_unknown',"
+                "provider_job_id=NULL WHERE id=?", (job["id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        barrier = threading.Barrier(2)
+        results = []
+        errors = []
+        refunds = []
+        bind_body = {
+            "project_id": self.project["id"],
+            "action": "bind_provider_job",
+            "provider_job_id": "atomic-upstream-task",
+            "evidence": self._provider_reconciliation_evidence(job["id"]),
+        }
+        refund_body = {
+            "project_id": self.project["id"],
+            "action": "confirm_not_submitted",
+        }
+
+        def run_bind():
+            barrier.wait()
+            try:
+                results.append(short_drama_autodraft.reconcile_unknown_provider_submission(
+                    self.db, "alice", "alice", "user", job["id"], bind_body,
+                ))
+            except short_drama_autodraft.AutodraftError as error:
+                errors.append(error.code)
+
+        def run_refund():
+            barrier.wait()
+            try:
+                results.append(short_drama_autodraft.reconcile_unknown_provider_submission(
+                    self.db, "alice", "ops", "admin", job["id"], refund_body,
+                    refund_points=lambda *_args: refunds.append(_args),
+                ))
+            except short_drama_autodraft.AutodraftError as error:
+                errors.append(error.code)
+
+        threads = [threading.Thread(target=run_bind), threading.Thread(target=run_refund)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertEqual(1, len(results))
+        self.assertEqual(1, len(errors))
+        conn = self.db()
+        try:
+            final = conn.execute(
+                "SELECT j.status,a.state FROM short_drama_provider_shot_jobs j "
+                "JOIN short_drama_provider_shot_attempts a ON a.job_id=j.id "
+                "WHERE j.id=?", (job["id"],),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIn(final, {("running", "linked"), ("failed", "refunded")})
+        self.assertEqual(0 if final[0] == "running" else 1, len(refunds))
 
     def test_transient_bound_key_read_failure_retries_without_sticking_job(self):
         class TransientKeyProvider:
@@ -2208,6 +2389,64 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         finally:
             conn.close()
         self.assertEqual("refunded", state)
+
+    def test_workspace_sweeper_retries_persisted_provider_refund_with_backoff(self):
+        class RejectingProvider:
+            name = "heygen_cinematic"
+            configured = True
+
+            def create_job(self, request):
+                raise RuntimeError("provider rejected request")
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "heygen_cinematic",
+            "HEYGEN_API_KEY": "configured-for-test",
+        }):
+            quote = self._provider_quote()
+            job = short_drama_autodraft.start_provider_job(
+                self.db, "alice", "alice", {"quote_token": quote["quote_token"]},
+                "automatic-refund-retry",
+                avatar_lookup=lambda *_args: self._provider_avatar(),
+                deduct_points=lambda *_args: None,
+                project_usage=short_drama._project_point_usage,
+            )
+        refunds = mock.Mock(side_effect=[ConnectionError("ledger unavailable"), None])
+        with mock.patch(
+            "content_domains.short_drama_autodraft.load_by_name",
+            return_value=RejectingProvider(),
+        ):
+            short_drama_autodraft.reconcile_provider_job(
+                self.db, "alice", self.project["id"], job["id"],
+                refund_points=refunds,
+            )
+        conn = self.db()
+        try:
+            pending = conn.execute(
+                "SELECT state,refund_retry_count,refund_retry_at "
+                "FROM short_drama_provider_shot_attempts WHERE job_id=?",
+                (job["id"],),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(("refund_pending", 1), pending[:2])
+        with mock.patch(
+            "content_domains.short_drama_autodraft.time.time",
+            return_value=pending[2],
+        ):
+            short_drama_autodraft.workspace(
+                self.db, "alice", "alice", self.project["id"],
+                refund_points=refunds,
+            )
+        conn = self.db()
+        try:
+            state = conn.execute(
+                "SELECT state FROM short_drama_provider_shot_attempts "
+                "WHERE job_id=?", (job["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual("refunded", state)
+        self.assertEqual(2, refunds.call_count)
 
 
 if __name__ == "__main__":

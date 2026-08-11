@@ -8,6 +8,10 @@ import urllib.parse
 from .base import ShotVisualCapability, ShotVisualProvider, VisualProviderError
 
 
+GROK_RESULT_HOSTS = {"vidgen.x.ai", "files-cdn.x.ai"}
+GROK_RESULT_MAX_BYTES = 250 * 1024 * 1024
+
+
 class GrokXaiShotProvider(ShotVisualProvider):
     name = "grok"
     default_model = "grok-imagine-video"
@@ -117,7 +121,7 @@ class GrokXaiShotProvider(ShotVisualProvider):
         return provider_keys.claim_candidate("xai")
 
     @staticmethod
-    def _bound_key(key_id):
+    def _bound_key(key_id, submitted=True):
         try:
             from content_domains import provider_keys
 
@@ -129,7 +133,7 @@ class GrokXaiShotProvider(ShotVisualProvider):
             raise VisualProviderError(
                 "provider_key_read_failed",
                 "果肉任务绑定的 xAI 密钥暂时无法读取，请稍后重试",
-                submitted=True,
+                submitted=submitted,
             ) from error
 
     def prepare_job(self, request):
@@ -167,7 +171,7 @@ class GrokXaiShotProvider(ShotVisualProvider):
         prepared_key_id = str((request or {}).get("_provider_key_id") or "").strip()
         payload = self.validate_request(request)
         candidate = (
-            self._bound_key(prepared_key_id)
+            self._bound_key(prepared_key_id, submitted=False)
             if prepared_key_id
             else self._claim_key()
         )
@@ -260,7 +264,10 @@ class GrokXaiShotProvider(ShotVisualProvider):
 
         try:
             relative = video._download_video_file_direct(
-                result_url, prefix="short_drama_grok"
+                result_url,
+                prefix="short_drama_grok",
+                allowed_hosts=GROK_RESULT_HOSTS,
+                max_bytes=GROK_RESULT_MAX_BYTES,
             )
         except Exception as error:
             raise VisualProviderError(

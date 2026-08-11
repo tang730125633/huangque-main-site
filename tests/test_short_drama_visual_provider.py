@@ -168,6 +168,20 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
         self.assertTrue(raised.exception.submitted)
         query.assert_not_called()
 
+    def test_minimax_bound_key_failure_before_post_is_not_submitted(self):
+        provider = MiniMaxH3ShotProvider()
+        with mock.patch.object(
+            provider, "validate_request", return_value={"reference_images": []}
+        ), mock.patch.object(
+            provider, "_bound_key",
+            side_effect=VisualProviderError(
+                "provider_key_read_failed", "vault unavailable", submitted=False
+            ),
+        ):
+            with self.assertRaises(VisualProviderError) as raised:
+                provider.create_job({"_provider_key_id": "minimax-key-2"})
+        self.assertFalse(raised.exception.submitted)
+
     def test_restricted_video_download_rejects_private_destination(self):
         with mock.patch.object(video, "_heygen_direct_opener") as opener:
             with self.assertRaises(ValueError):
@@ -332,9 +346,9 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
              mock.patch.object(provider, "_bound_key", return_value=candidate), \
              mock.patch("content_domains.video_xai._create", return_value={"request_id": "req-9"}) as create, \
              mock.patch("content_domains.video_xai._request_json", return_value={
-                 "status": "done", "video": {"url": "https://cdn.example/result.mp4"}
+                 "status": "done", "video": {"url": "https://vidgen.x.ai/result.mp4"}
              }) as poll, \
-             mock.patch("content_domains.video._download_video_file_direct", return_value="video/grok-result.mp4"):
+             mock.patch("content_domains.video._download_video_file_direct", return_value="video/grok-result.mp4") as download:
             created = provider.create_job(request)
             state = provider.get_job(created["provider_job_id"])
             result = provider.fetch_result(created["provider_job_id"], state["result_url"])
@@ -346,6 +360,14 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
         self.assertEqual(
             [{"url": "https://cdn.example/avatar.png"}],
             create.call_args.args[2]["reference_images"],
+        )
+        self.assertEqual(
+            {
+                "prefix": "short_drama_grok",
+                "allowed_hosts": {"vidgen.x.ai", "files-cdn.x.ai"},
+                "max_bytes": 250 * 1024 * 1024,
+            },
+            download.call_args.kwargs,
         )
 
     def test_grok_vault_failure_never_falls_back_to_rotated_environment_key(self):
@@ -400,6 +422,20 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
         self.assertEqual("provider_key_read_failed", raised.exception.code)
         self.assertTrue(raised.exception.submitted)
         poll.assert_not_called()
+
+    def test_grok_bound_key_failure_before_post_is_not_submitted(self):
+        provider = GrokXaiShotProvider()
+        with mock.patch.object(
+            provider, "validate_request", return_value={}
+        ), mock.patch.object(
+            provider, "_bound_key",
+            side_effect=VisualProviderError(
+                "provider_key_read_failed", "vault unavailable", submitted=False
+            ),
+        ):
+            with self.assertRaises(VisualProviderError) as raised:
+                provider.create_job({"_provider_key_id": "xai-key-2"})
+        self.assertFalse(raised.exception.submitted)
 
     def test_valid_shot_request_is_normalized_without_network(self):
         result = HeyGenCinematicShotProvider().validate_request({

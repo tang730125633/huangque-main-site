@@ -1578,12 +1578,12 @@ class H(BaseHTTPRequestHandler):
             if length_header is None or n <= 0:
                 raise ValueError("请求体缺少有效的 Content-Length")
             if n > max_bytes:
-                raise ValueError("请求体过大")
+                raise error_contract.RequestBodyTooLarge("请求体过大")
         try:
             read_size = n if max_bytes is None else min(n, max_bytes + 1)
             raw = self.rfile.read(read_size) or b"{}"
             if max_bytes is not None and len(raw) > max_bytes:
-                raise ValueError("请求体过大")
+                raise error_contract.RequestBodyTooLarge("请求体过大")
             return json.loads(raw)
         except ValueError:
             raise

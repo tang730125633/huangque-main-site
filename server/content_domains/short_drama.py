@@ -34,6 +34,7 @@ from . import (
     short_drama_timeline,
     short_drama_video,
     short_drama_voice,
+    error_contract,
 )
 
 
@@ -102,8 +103,7 @@ class ScriptImportError(ValueError):
         self.status = int(status)
 
 
-class RequestBodyTooLarge(ValueError):
-    pass
+RequestBodyTooLarge = error_contract.RequestBodyTooLarge
 
 
 class ProjectCreationError(ValueError):
@@ -5527,8 +5527,8 @@ def _request_object(handler, *, max_bytes=None):
             else handler._json_body_strict()
         )
     except ValueError as error:
-        if max_bytes is not None and str(error) == "请求体过大":
-            raise RequestBodyTooLarge(str(error)) from error
+        if isinstance(error, RequestBodyTooLarge):
+            raise
         raise
     if not isinstance(body, dict):
         raise ValueError("请求体必须是 JSON 对象")
@@ -5873,7 +5873,7 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             handler._send(200, short_drama_autodraft.workspace(
                 db_factory, owner, username, project_id,
                 can_edit=(not role or role in {"owner", "editor"}),
-                avatar_list=avatar_list,
+                avatar_list=avatar_list, refund_points=refund_points,
             ))
         elif method == "GET" and path.endswith("/refinement"):
             project_id = _planning_project_id_from_query(handler)
@@ -5994,7 +5994,8 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             elif path.endswith("/reconcile"):
                 result = (
                     short_drama_autodraft.reconcile_unknown_provider_submission(
-                        db_factory, owner, path.split("/")[-2], body,
+                        db_factory, owner, username, user.get("role"),
+                        path.split("/")[-2], body,
                         refund_points=refund_points,
                     )
                 )
