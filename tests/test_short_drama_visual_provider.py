@@ -387,6 +387,20 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
         candidates.assert_called_once_with("xai", preferred_id="retired-key-a")
         self.assertEqual("retired-secret-a", poll.call_args.kwargs["api_key"])
 
+    def test_grok_bound_key_read_failure_is_retryable_not_missing(self):
+        provider = GrokXaiShotProvider()
+        provider_job_id = provider._encode_job_id("xai-key-2", "request-8")
+        with mock.patch.object(
+            provider_keys,
+            "candidates",
+            side_effect=provider_keys.KeyStoreUnavailable("temporary vault failure"),
+        ), mock.patch("content_domains.video_xai._request_json") as poll:
+            with self.assertRaises(VisualProviderError) as raised:
+                provider.get_job(provider_job_id)
+        self.assertEqual("provider_key_read_failed", raised.exception.code)
+        self.assertTrue(raised.exception.submitted)
+        poll.assert_not_called()
+
     def test_valid_shot_request_is_normalized_without_network(self):
         result = HeyGenCinematicShotProvider().validate_request({
             "provider_avatar_id": "avatar-1",

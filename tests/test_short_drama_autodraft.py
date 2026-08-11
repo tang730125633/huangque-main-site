@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -1598,6 +1599,97 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertFalse(result["error"]["retryable"])
         self.assertTrue(result["error"]["requires_reconciliation"])
 
+    def test_submit_unknown_can_idempotently_bind_known_provider_job(self):
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "heygen_cinematic",
+            "HEYGEN_API_KEY": "configured-for-test",
+        }):
+            quote = self._provider_quote()
+            job = short_drama_autodraft.start_provider_job(
+                self.db, "alice", "alice",
+                {"quote_token": quote["quote_token"]},
+                "bind-unknown-provider-job",
+                avatar_lookup=lambda *_args: self._provider_avatar(),
+                deduct_points=lambda *_args: None,
+                project_usage=short_drama._project_point_usage,
+            )
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs "
+                "SET status='submit_unknown',provider_job_id=NULL WHERE id=?",
+                (job["id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        body = {
+            "project_id": self.project["id"],
+            "action": "bind_provider_job",
+            "provider_job_id": "upstream-task-42",
+        }
+        first = short_drama_autodraft.reconcile_unknown_provider_submission(
+            self.db, "alice", job["id"], body,
+        )
+        replay = short_drama_autodraft.reconcile_unknown_provider_submission(
+            self.db, "alice", job["id"], body,
+        )
+
+        self.assertEqual("running", first["status"])
+        self.assertEqual("upstream-task-42", first["provider_job_id"])
+        self.assertEqual(first, replay)
+
+    def test_submit_unknown_can_confirm_absence_and_refund_idempotently(self):
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "heygen_cinematic",
+            "HEYGEN_API_KEY": "configured-for-test",
+        }):
+            quote = self._provider_quote()
+            job = short_drama_autodraft.start_provider_job(
+                self.db, "alice", "alice",
+                {"quote_token": quote["quote_token"]},
+                "release-unknown-provider-job",
+                avatar_lookup=lambda *_args: self._provider_avatar(),
+                deduct_points=lambda *_args: None,
+                project_usage=short_drama._project_point_usage,
+            )
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs "
+                "SET status='submit_unknown' WHERE id=?", (job["id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        refunds = []
+        body = {
+            "project_id": self.project["id"],
+            "action": "confirm_not_submitted",
+        }
+        first = short_drama_autodraft.reconcile_unknown_provider_submission(
+            self.db, "alice", job["id"], body,
+            refund_points=lambda *_args: refunds.append(_args),
+        )
+        replay = short_drama_autodraft.reconcile_unknown_provider_submission(
+            self.db, "alice", job["id"], body,
+            refund_points=lambda *_args: refunds.append(_args),
+        )
+
+        conn = self.db()
+        try:
+            attempt_state = conn.execute(
+                "SELECT state FROM short_drama_provider_shot_attempts "
+                "WHERE job_id=?", (job["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual("failed", first["status"])
+        self.assertEqual("failed", replay["status"])
+        self.assertEqual("refunded", attempt_state)
+        self.assertEqual(1, len(refunds))
+
     def test_transient_bound_key_read_failure_retries_without_sticking_job(self):
         class TransientKeyProvider:
             name = "heygen_cinematic"
@@ -1810,6 +1902,36 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertEqual("heygen_cinematic", result["provider_job"]["provider"])
         self.assertEqual("grok", result["production"]["provider"]["selected"])
 
+    def test_workspace_returns_every_active_provider_shot_job(self):
+        first, _quote = self._running_provider_job("parallel-shot-one")
+        conn = self.db()
+        try:
+            now = int(time.time()) + 1
+            conn.execute(
+                "INSERT INTO short_drama_provider_shot_jobs "
+                "(id,project_id,owner_username,actor_username,plan_id,shot_key,"
+                "character_key,avatar_id,provider,status,progress,poll_count,"
+                "input_hash,request_json,cost,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,'queued',5,0,?,?,0,?,?)",
+                (
+                    "parallel-shot-two", self.project["id"], "alice", "alice",
+                    self.plan_id, "shot_02", "character_1", "avatar-1",
+                    "heygen_cinematic", "parallel-hash-two", "{}", now, now,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = short_drama_autodraft.workspace(
+            self.db, "alice", "alice", self.project["id"],
+        )
+
+        self.assertEqual(
+            {first["id"], "parallel-shot-two"},
+            {item["id"] for item in result["provider_jobs"]},
+        )
+
     def test_grok_vault_failure_blocks_before_charge_and_submission(self):
         with mock.patch.dict(
             os.environ,
@@ -1952,6 +2074,41 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertEqual("failed", second["status"])
         self.assertEqual("billing_not_committed", second["error"]["code"])
 
+    def test_lost_single_shot_charge_response_stays_in_billing_reconciliation(self):
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "heygen_cinematic",
+            "HEYGEN_API_KEY": "configured-for-test",
+        }):
+            quote = self._provider_quote()
+
+            def lost_charge_response(*_args):
+                raise TimeoutError("deduction response lost")
+
+            def ledger_temporarily_unavailable(_key):
+                raise ConnectionError("ledger unavailable")
+
+            job = short_drama_autodraft.start_provider_job(
+                self.db, "alice", "alice",
+                {"quote_token": quote["quote_token"]},
+                "uncertain-provider-charge",
+                avatar_lookup=lambda *_args: self._provider_avatar(),
+                deduct_points=lost_charge_response,
+                charge_lookup=ledger_temporarily_unavailable,
+                project_usage=short_drama._project_point_usage,
+            )
+
+        conn = self.db()
+        try:
+            attempt_state = conn.execute(
+                "SELECT state FROM short_drama_provider_shot_attempts "
+                "WHERE job_id=?", (job["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual("billing", job["status"])
+        self.assertEqual("accepted", attempt_state)
+        self.assertEqual("billing_reconciliation_pending", job["error"]["code"])
+
     def test_single_shot_provider_rejection_refunds_once(self):
         class RejectingProvider:
             name = "heygen_cinematic"
@@ -1988,6 +2145,59 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                 )
         self.assertEqual("failed", failed["status"])
         self.assertEqual(1, len(refunds))
+
+    def test_single_shot_refund_intent_is_persisted_before_external_refund(self):
+        class RejectingProvider:
+            name = "heygen_cinematic"
+            configured = True
+
+            def create_job(self, request):
+                raise RuntimeError("provider rejected request")
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "heygen_cinematic",
+            "HEYGEN_API_KEY": "configured-for-test",
+        }):
+            quote = self._provider_quote()
+            job = short_drama_autodraft.start_provider_job(
+                self.db, "alice", "alice",
+                {"quote_token": quote["quote_token"]},
+                "persist-refund-provider-key",
+                avatar_lookup=lambda *_args: self._provider_avatar(),
+                deduct_points=lambda *_args: None,
+                project_usage=short_drama._project_point_usage,
+            )
+            states_seen_by_refund = []
+
+            def refund(*_args):
+                conn = self.db()
+                try:
+                    states_seen_by_refund.append(conn.execute(
+                        "SELECT state FROM short_drama_provider_shot_attempts "
+                        "WHERE job_id=?", (job["id"],),
+                    ).fetchone()[0])
+                finally:
+                    conn.close()
+
+            with mock.patch(
+                "content_domains.short_drama_autodraft.load_by_name",
+                return_value=RejectingProvider(),
+            ):
+                short_drama_autodraft.reconcile_provider_job(
+                    self.db, "alice", self.project["id"], job["id"],
+                    refund_points=refund,
+                )
+
+        conn = self.db()
+        try:
+            final_state = conn.execute(
+                "SELECT state FROM short_drama_provider_shot_attempts "
+                "WHERE job_id=?", (job["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(["refund_pending"], states_seen_by_refund)
+        self.assertEqual("refunded", final_state)
         conn = self.db()
         try:
             state = conn.execute(

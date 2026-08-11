@@ -125,8 +125,12 @@ class GrokXaiShotProvider(ShotVisualProvider):
                 "xai", preferred_id=str(key_id or "env")
             )
             return candidates[0] if candidates else None
-        except Exception:
-            return None
+        except Exception as error:
+            raise VisualProviderError(
+                "provider_key_read_failed",
+                "果肉任务绑定的 xAI 密钥暂时无法读取，请稍后重试",
+                submitted=True,
+            ) from error
 
     def prepare_job(self, request):
         """Bind a durable vault key before the caller performs billing."""

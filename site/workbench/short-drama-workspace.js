@@ -438,12 +438,23 @@
       if(!index[shotKey])index[shotKey]={versions:[],job:null};
       index[shotKey].versions.push(item);
     });
-    var job=autodraft.provider_job,jobShotKey=text(job&&job.shot_key);
-    if(jobShotKey){
+    var jobs=Array.isArray(autodraft.provider_jobs)?autodraft.provider_jobs.slice():[];
+    var legacyJob=autodraft.provider_job;
+    if(legacyJob&&!jobs.some(function(item){return item&&item.id===legacyJob.id;}))jobs.push(legacyJob);
+    jobs.forEach(function(job){
+      var jobShotKey=text(job&&job.shot_key);
+      if(!jobShotKey)return;
       if(!index[jobShotKey])index[jobShotKey]={versions:[],job:null};
-      index[jobShotKey].job=job;
-    }
+      if(!index[jobShotKey].job)index[jobShotKey].job=job;
+    });
     return index;
+  }
+  function activeProviderJobs(autodraft){
+    autodraft=autodraft||{};
+    var jobs=Array.isArray(autodraft.provider_jobs)?autodraft.provider_jobs.slice():[];
+    var legacyJob=autodraft.provider_job;
+    if(legacyJob&&!jobs.some(function(item){return item&&item.id===legacyJob.id;}))jobs.push(legacyJob);
+    return jobs.filter(function(item){return item&&['billing','queued','submitting','running'].indexOf(item.status)>=0;});
   }
   function shotGenerationOverviewHtml(shots,autodraft){
     shots=Array.isArray(shots)?shots:[];
@@ -501,7 +512,7 @@
     var shotKey=text(shot&&shot.shot_key),poc=autodraft.provider_poc||{},providerShot=(poc.shots||[]).filter(function(item){return text(item.shot_key)===shotKey;})[0];
     if(!providerShot)return '';
     var media=shotMediaIndex(autodraft)[shotKey]||{versions:[],job:null},hasVideo=(media.versions||[]).length>0;
-    var job=autodraft.provider_job||null,active=job&&['billing','queued','submitting','running'].indexOf(job.status)>=0,jobForShot=job&&text(job.shot_key)===shotKey;
+    var job=media.job||null,active=job&&['billing','queued','submitting','running'].indexOf(job.status)>=0,jobForShot=!!job;
     var selected=text(selectedProviderShotKey)===shotKey,preview=autodraft.provider_preview||null,quote=autodraft.provider_quote||null;
     var previewForShot=preview&&preview.shot&&text(preview.shot.shot_key)===shotKey,quoteForShot=quote&&quote.shot&&text(quote.shot.shot_key)===shotKey;
     var buttonLabel=jobForShot&&active?'查看生成进度':hasVideo?'管理 / 重新生成视频':'生成镜头视频';
@@ -515,12 +526,11 @@
     var result=previewForShot?'<div class="sd-check '+(preview.ready?'pass':'warning')+'"><b>'+escapeHtml(userFacingVideoMessage(preview.message,'预检完成'))+'</b><p>'+escapeHtml(preview.request&&preview.request.prompt||'')+'</p></div>':'';
     var quoteHtml=quoteForShot?'<div class="sd-estimate"><strong>'+Number(quote.cost||0)+' 点</strong><span>报价 5 分钟内有效，确认后才扣点</span></div>':'';
     var jobHtml=jobForShot?'<div class="sd-check '+(job.status==='succeeded'?'pass':(['failed','submit_unknown'].indexOf(job.status)>=0?'warning':''))+'"><b>视频任务 · '+escapeHtml(job.status||'')+' · '+Number(job.progress||0)+'%</b><p>'+escapeHtml(userFacingVideoMessage(job.error&&job.error.detail,job.status==='succeeded'?'新视频已生成，可在上方播放器查看。':'任务正在后台处理，可离开页面。'))+'</p></div>':'';
-    var blockedByOther=active&&!jobForShot;
     var disabledReason=!canGenerate?(generationReason||'请先确认并锁定当前剧本，再生成镜头视频。'):!providerShot.binding_ready?'请先确认并锁定当前镜头所需角色的标准图。':active?'已有视频任务正在处理，请等待任务结束。':'';
     var actions='<button data-action="edit-shot-execution" data-shot-key="'+escapeHtml(shotKey)+'" type="button"'+(canGenerate&&!active?'':' disabled')+'>'+(hasVideo?'调整要求并重新生成':'编辑镜头生成要求')+'</button><button data-action="provider-preflight" data-shot-key="'+escapeHtml(shotKey)+'" type="button"'+(canGenerate&&providerShot.binding_ready&&!active?'':' disabled')+'>'+(hasVideo?'按当前要求免费预检':'免费检查生成参数')+'</button>';
     if(previewForShot&&preview.ready&&!quoteForShot)actions+='<button data-action="provider-quote" data-shot-key="'+escapeHtml(shotKey)+'" type="button"'+(canGenerate&&!active?'':' disabled')+'>获取付费报价</button>';
     if(quoteForShot)actions+='<button data-action="provider-start" data-shot-key="'+escapeHtml(shotKey)+'" type="button"'+(canGenerate&&!active?'':' disabled')+'>确认扣 '+Number(quote.cost||0)+' 点并生成</button>';
-    return '<div class="sd-shot-provider-entry expanded">'+toggle+'<section class="sd-shot-provider-panel"><header><div><span>视频生成</span><b>生成服务</b></div><em>预检、报价不扣点</em></header>'+binding+(blockedByOther?'<div class="sd-check warning"><b>另一个镜头正在生成</b><p>请等待当前任务结束后再提交本镜头，避免重复建单。</p></div>':'')+result+quoteHtml+jobHtml+'<div class="sd-shot-provider-actions">'+actions+'</div>'+(disabledReason?'<p class="sd-shot-provider-disabled-reason">'+escapeHtml(disabledReason)+'</p>':'')+'</section></div>';
+    return '<div class="sd-shot-provider-entry expanded">'+toggle+'<section class="sd-shot-provider-panel"><header><div><span>视频生成</span><b>生成服务</b></div><em>预检、报价不扣点</em></header>'+binding+result+quoteHtml+jobHtml+'<div class="sd-shot-provider-actions">'+actions+'</div>'+(disabledReason?'<p class="sd-shot-provider-disabled-reason">'+escapeHtml(disabledReason)+'</p>':'')+'</section></div>';
   }
   function scriptHtml(version,canEdit,autodraft,selectedProviderShotKey,canGenerate,understanding,confirmationMessage,generationReason,sceneWorkspace){
     if(!version||!version.script){
@@ -574,7 +584,8 @@
     var plan=autodraft.confirmed_plan;
     if(!plan)return '';
     if(production.ready===false){
-      var poc=autodraft.provider_poc||{},preview=autodraft.provider_preview||null,quote=autodraft.provider_quote||null,shotJob=autodraft.provider_job||null,shots=poc.shots||[],characters=poc.characters||[],provider=production.provider||{},providerState=provider.configured?'配置已就绪':'尚未配置';
+      var poc=autodraft.provider_poc||{},preview=autodraft.provider_preview||null,quote=autodraft.provider_quote||null,shotJob=autodraft.provider_job||null,shotJobs=Array.isArray(autodraft.provider_jobs)?autodraft.provider_jobs.slice():[],shots=poc.shots||[],characters=poc.characters||[],provider=production.provider||{},providerState=provider.configured?'配置已就绪':'尚未配置';
+      if(shotJob&&!shotJobs.some(function(item){return item&&item.id===shotJob.id;}))shotJobs.push(shotJob);
       var boundCharacters=characters.filter(function(item){return item.binding_ready;});
       var missingCharacters=characters.filter(function(item){return !item.binding_ready;});
       var allRolesBound=characters.length>0&&boundCharacters.length===characters.length;
@@ -582,19 +593,16 @@
       var shotOptions=shots.map(function(item){return '<option value="'+escapeHtml(item.shot_key)+'">#'+Number(item.sort_order||0)+' · '+escapeHtml(item.scene||item.shot_key)+' · '+Math.ceil(Number(item.duration_ms||0)/1000)+'s</option>';}).join('');
       var result=preview?'<div class="sd-check '+(preview.ready?'pass':'warning')+'"><b>'+escapeHtml(userFacingVideoMessage(preview.message,'预检完成'))+'</b><p>'+escapeHtml(preview.request&&preview.request.prompt||'')+'</p><small>'+escapeHtml(preview.request&&preview.request.ratio||'')+' · '+escapeHtml(preview.request&&preview.request.resolution||'')+' · '+Number(preview.request&&preview.request.duration_seconds||0)+' 秒<br>'+escapeHtml(userFacingVideoMessage(preview.next_action,''))+'</small></div>':'';
       var quoteHtml=quote?'<div class="sd-estimate"><strong>'+Number(quote.cost||0)+' 点</strong><span>报价 '+escapeHtml(quote.shot&&quote.shot.shot_key||'')+' · 5 分钟内有效</span></div>':'';
-      var providerJobHtml='';
-      if(shotJob){
-        var jobError=shotJob.error&&shotJob.error.detail||'';
-        var jobMessage=userFacingVideoMessage(jobError,shotJob.status==='succeeded'?
-          '镜头 '+(shotJob.shot_key||'')+' 已生成完成':
-          '镜头 '+(shotJob.shot_key||'')+' 正在后台处理');
-        providerJobHtml='<div class="sd-check '+(shotJob.status==='succeeded'?'pass':(['failed','submit_unknown'].indexOf(shotJob.status)>=0?'warning':''))+'"><b>镜头任务 · '+escapeHtml(shotJob.status||'')+' · '+Number(shotJob.progress||0)+'%</b><p>'+escapeHtml(jobMessage)+'</p><button type="button" class="sd-shot-jump" data-action="jump-to-shot" data-shot-key="'+escapeHtml(shotJob.shot_key||'')+'">在镜头与台词中查看</button></div>';
-      }
+      var providerJobHtml=shotJobs.map(function(item){
+        var jobError=item.error&&item.error.detail||'';
+        var jobMessage=userFacingVideoMessage(jobError,item.status==='succeeded'?'镜头 '+(item.shot_key||'')+' 已生成完成':'镜头 '+(item.shot_key||'')+' 正在后台处理');
+        return '<div class="sd-check '+(item.status==='succeeded'?'pass':(['failed','submit_unknown'].indexOf(item.status)>=0?'warning':''))+'"><b>镜头任务 · '+escapeHtml(item.status||'')+' · '+Number(item.progress||0)+'%</b><p>'+escapeHtml(jobMessage)+'</p><button type="button" class="sd-shot-jump" data-action="jump-to-shot" data-shot-key="'+escapeHtml(item.shot_key||'')+'">在镜头与台词中查看</button></div>';
+      }).join('');
       var bindingSummary=allRolesBound?
         '<div class="sd-check pass" id="sdProviderBindingStatus"><b>'+boundCharacters.length+'/'+characters.length+' 个角色已锁定，可开始检查镜头</b><p>人物形象统一由左侧角色卡管理，当前镜头会自动使用对应角色的已锁定形象。</p></div>':
         '<div class="sd-check warning" id="sdProviderBindingStatus"><b>角色形象尚未准备完整</b><p>'+(missingCharacters.length?'未绑定：'+escapeHtml(missingCharacters.map(function(item){return item.name||item.character_key;}).join('、'))+'。':'角色资料仍在加载。')+' 请点击左侧角色卡完成形象生成、选择与锁定。</p></div>';
-      var active=shotJob&&['billing','queued','submitting','running'].indexOf(shotJob.status)>=0;
-      return '<section class="sd-autodraft-actions sd-provider-summary"><span class="sd-stage-label">PR-4 · 视频生成</span><h2>视频生成总览</h2><div class="sd-preflight-stale">'+escapeHtml(userFacingVideoMessage(production.message,'当前不能生成与剧本一致的短剧。'))+'</div><div class="sd-estimate"><strong>生成服务</strong><span>'+escapeHtml(providerState)+'</span></div>'+bindingSummary+'<div class="sd-provider-counts"><span><b>'+shots.length+'</b> 个镜头</span><span><b>'+boundCharacters.length+'/'+characters.length+'</b> 角色就绪</span><span><b>'+(active?'1':'0')+'</b> 个任务处理中</span></div><p>请在左侧“镜头与台词”中点击对应镜头的“生成镜头视频”。预检和报价不扣点，确认生成后才扣点。</p>'+providerJobHtml+'</section>';
+      var activeCount=shotJobs.filter(function(item){return item&&['billing','queued','submitting','running'].indexOf(item.status)>=0;}).length;
+      return '<section class="sd-autodraft-actions sd-provider-summary"><span class="sd-stage-label">PR-4 · 视频生成</span><h2>视频生成总览</h2><div class="sd-preflight-stale">'+escapeHtml(userFacingVideoMessage(production.message,'当前不能生成与剧本一致的短剧。'))+'</div><div class="sd-estimate"><strong>生成服务</strong><span>'+escapeHtml(providerState)+'</span></div>'+bindingSummary+'<div class="sd-provider-counts"><span><b>'+shots.length+'</b> 个镜头</span><span><b>'+boundCharacters.length+'/'+characters.length+'</b> 角色就绪</span><span><b>'+activeCount+'</b> 个任务处理中</span></div><p>请在左侧“镜头与台词”中点击对应镜头的“生成镜头视频”。预检和报价不扣点，确认生成后才扣点。</p>'+providerJobHtml+'</section>';
     }
     if(production.mode==='demo')return '<section class="sd-autodraft-actions"><span class="sd-stage-label">PR-4 · 演示模式</span><h2>生成界面联调示例</h2><p>该模式只验证任务、轮询和播放器，不会根据剧本生成真实画面。</p><div class="sd-estimate"><strong>0 点</strong><span>固定示例 · 不可交付</span></div><button data-action="start-draft" type="button"'+(canEdit?'':' disabled')+'>生成演示草稿</button></section>';
     var assembling=production.mode==='provider_poc'&&production.assembly&&production.assembly.all_ready;
@@ -705,10 +713,10 @@
   }
   function mount(doc,options){
     options=options||{};
-    var projectId=text(options.projectId).trim(),client=options.client||createClient(options.fetchImpl),accountUsername='',state=normalize({}),projectDetail={characters:[]},preflight={state:'script_required',current_plan:null,versions:[]},autodraft={state:'plan_required',versions:[]},refinement=null,characterStudio=null,sceneWorkspace={graph_revision:1,scenes:[]},selectedCharacterKey='',selectedShotKey='',shotEditorMode='script',selectedProviderShotKey='',pollTimer=null,historyExpanded=false,inspectorExpanded=!(doc.defaultView&&doc.defaultView.innerWidth<=1050),characterNameEditing=false,characterProfileDirty=false,characterImageOperation={character_key:'',phase:'idle',message:'',error:false,active:false};
+    var projectId=text(options.projectId).trim(),client=options.client||createClient(options.fetchImpl),accountUsername='',state=normalize({}),projectDetail={characters:[]},preflight={state:'script_required',current_plan:null,versions:[]},autodraft={state:'plan_required',versions:[]},refinement=null,characterStudio=null,sceneWorkspace={graph_revision:1,scenes:[]},selectedCharacterKey='',selectedShotKey='',shotEditorMode='script',shotEditorDirty=false,selectedProviderShotKey='',pollTimer=null,historyExpanded=false,inspectorExpanded=!(doc.defaultView&&doc.defaultView.innerWidth<=1050),characterNameEditing=false,characterProfileDirty=false,characterImageOperation={character_key:'',phase:'idle',message:'',error:false,active:false};
     var root=doc.getElementById('shortDramaWorkspace');
     if(!root||!projectId)throw new Error('workspace target unavailable');
-    root.innerHTML=shellHtml();root.insertAdjacentHTML('beforeend','<div class="sd-character-modal sd-shot-modal" id="sdShotModal" hidden><div class="sd-character-modal-backdrop" data-action="close-shot-editor"></div><section role="dialog" aria-modal="true" aria-labelledby="sdShotModalTitle"><header><div><span>单镜头编辑器</span><h2 id="sdShotModalTitle">编辑镜头</h2></div><button type="button" data-action="close-shot-editor" aria-label="关闭">×</button></header><div id="sdShotModalBody"></div></section></div><div class="sd-character-image-lightbox" id="sdCharacterImageLightbox" hidden><button type="button" class="sd-character-image-lightbox-backdrop" data-action="close-character-image-preview" aria-label="关闭图片预览"></button><section role="dialog" aria-modal="true" aria-labelledby="sdCharacterImagePreviewTitle"><header><div><span>图片预览</span><h2 id="sdCharacterImagePreviewTitle">大图预览</h2></div><button type="button" data-action="close-character-image-preview" aria-label="关闭">×</button></header><div class="sd-character-image-lightbox-stage"><img id="sdCharacterImagePreview" alt=""></div></section></div>');root.hidden=false;
+    root.innerHTML=shellHtml();root.insertAdjacentHTML('beforeend','<div class="sd-character-modal sd-shot-modal" id="sdShotModal" hidden><div class="sd-character-modal-backdrop" data-action="close-shot-editor"></div><section role="dialog" aria-modal="true" aria-labelledby="sdShotModalTitle"><header><div><span>单镜头编辑器</span><h2 id="sdShotModalTitle">编辑镜头</h2></div><button type="button" data-action="close-shot-editor" aria-label="关闭">×</button></header><div id="sdShotModalBody"></div></section></div><div class="sd-character-image-lightbox" id="sdCharacterImageLightbox" hidden><div class="sd-character-image-lightbox-backdrop" data-action="close-character-image-preview" aria-hidden="true"></div><section role="dialog" aria-modal="true" aria-labelledby="sdCharacterImagePreviewTitle"><header><div><span>图片预览</span><h2 id="sdCharacterImagePreviewTitle">大图预览</h2></div><button type="button" data-action="close-character-image-preview" aria-label="关闭">×</button></header><div class="sd-character-image-lightbox-stage"><img id="sdCharacterImagePreview" alt=""></div></section></div>');root.hidden=false;
     var notice=doc.getElementById('sdWorkspaceNotice');
     var characterImagePreviewTrigger=null,shotEditorTrigger=null;
     function busy(flag){root.classList.toggle('busy',!!flag);root.querySelectorAll('button,textarea,input,select').forEach(function(node){var readOnlyAction=node.getAttribute('data-action')==='toggle-history';node.disabled=!!flag||(!readOnlyAction&&!state.permissions.can_edit&&node.closest('form,section'));});}
@@ -795,10 +803,11 @@
     }
     function renderShotModal(){
       var modal=doc.getElementById('sdShotModal'),body=doc.getElementById('sdShotModalBody'),shot=currentShot(selectedShotKey);
-      if(!selectedShotKey||!shot||!state.current_script){modal.hidden=true;return;}
+      if(!selectedShotKey||!shot||!state.current_script){modal.hidden=true;shotEditorDirty=false;return;}
       var script=state.current_script.script,line=currentShotLine(shot)||{},locked=!!shot.locked;
       var wasHidden=modal.hidden;modal.hidden=false;
       if(wasHidden){var initialClose=modal.querySelector('[data-action="close-shot-editor"]');if(initialClose)initialClose.focus();}
+      if(!wasHidden&&shotEditorDirty&&body.querySelector('form'))return;
       doc.getElementById('sdShotModalTitle').textContent='镜头 #'+Number(shot.sort_order||0)+(locked?' · 已锁定':'');
       if(shotEditorMode==='execution'){
         var saved=(autodraft.provider_execution_overrides||{})[shot.shot_key]||{};
@@ -1014,20 +1023,23 @@
         },900);
         return;
       }
-      var providerJob=autodraft&&autodraft.provider_job;
-      if(providerJob&&['billing','queued','submitting','running'].indexOf(providerJob.status)>=0){
+      var providerJobs=activeProviderJobs(autodraft);
+      if(providerJobs.length){
         pollTimer=setTimeout(function(){
-          client.providerJob(projectId,providerJob.id).then(function(result){
-            autodraft.provider_job=result;
-            if(result.status==='succeeded')return client.autodraft(projectId).then(function(workspace){
+          Promise.all(providerJobs.map(function(providerJob){return client.providerJob(projectId,providerJob.id);})).then(function(results){
+            var updated={};results.forEach(function(result){updated[result.id]=result;});
+            autodraft.provider_jobs=(autodraft.provider_jobs||providerJobs).map(function(item){return updated[item.id]||item;});
+            if(autodraft.provider_job&&updated[autodraft.provider_job.id])autodraft.provider_job=updated[autodraft.provider_job.id];
+            if(results.some(function(result){return result.status==='succeeded';}))return client.autodraft(projectId).then(function(workspace){
               autodraft=workspace||{};
-              show('当前镜头已生成并保存为可复用版本',false);
+              show('镜头已生成并保存为可复用版本',false);
             });
-            if(['failed','submit_unknown'].indexOf(result.status)>=0){
-              show(result.error&&result.error.detail||'单镜头生成失败；请查看退款或人工对账状态',true);
+            var failed=results.filter(function(result){return ['failed','submit_unknown'].indexOf(result.status)>=0;})[0];
+            if(failed){
+              show(failed.error&&failed.error.detail||'单镜头生成失败；请查看退款或人工对账状态',true);
             }
           }).then(function(){render();schedulePoll();}).catch(function(error){
-            show(error.message||'单镜头任务状态更新失败',true);
+            show(error.message||'单镜头任务状态批量更新失败',true);
             schedulePoll();
           });
         },1500);
@@ -1178,6 +1190,7 @@
       });
     });
     root.addEventListener('input',function(event){
+      if(event.target.closest('#sdShotEditor,#sdShotExecutionEditor'))shotEditorDirty=true;
       if(event.target.closest('#sdCharacterProfile')||event.target.id==='sdCharacterNameInput'){
         characterProfileDirty=true;
         var saveState=doc.getElementById('sdCharacterSaveState');
@@ -1188,7 +1201,7 @@
       var imageLightbox=doc.getElementById('sdCharacterImageLightbox');
       var shotModal=doc.getElementById('sdShotModal');
       if(shotModal&&!shotModal.hidden&&modalKeydown(shotModal,event,function(){selectedShotKey='';renderShotModal();if(shotEditorTrigger)shotEditorTrigger.focus();shotEditorTrigger=null;}))return;
-      if(imageLightbox&&!imageLightbox.hidden&&event.key==='Tab'){modalKeydown(imageLightbox,event);return;}
+      if(imageLightbox&&!imageLightbox.hidden&&event.key==='Tab'){modalKeydown(imageLightbox.querySelector('[role="dialog"]'),event);return;}
       if(event.key==='Escape'&&imageLightbox&&!imageLightbox.hidden){
         event.preventDefault();
         imageLightbox.hidden=true;
@@ -1272,6 +1285,7 @@
       if(action&&action.getAttribute('data-action')==='edit-shot'){
         shotEditorTrigger=action;
         shotEditorMode='script';
+        shotEditorDirty=false;
         selectedShotKey=action.getAttribute('data-shot-key')||'';
         renderShotModal();
         return;
@@ -1279,6 +1293,7 @@
       if(action&&action.getAttribute('data-action')==='edit-shot-execution'){
         shotEditorTrigger=action;
         shotEditorMode='execution';
+        shotEditorDirty=false;
         selectedShotKey=action.getAttribute('data-shot-key')||'';
         renderShotModal();
         return;
@@ -1655,7 +1670,7 @@
         if(confirmWindow&&typeof confirmWindow.confirm==='function'&&!confirmWindow.confirm('确认扣除 '+Number(quote.cost||0)+' 点，生成镜头 '+text(quote.shot&&quote.shot.shot_key)+'？'))return;
         busy(true);show('',false);
         client.startProviderJob({project_id:projectId,quote_token:quote.quote_token}).then(function(result){
-          autodraft.provider_job=result;autodraft.provider_quote=null;render();
+          autodraft.provider_job=result;autodraft.provider_jobs=(autodraft.provider_jobs||[]).filter(function(item){return item.id!==result.id;}).concat([result]);autodraft.provider_quote=null;render();
           show('已完成扣点并创建单镜头任务；页面会自动更新进度',false);
           schedulePoll();
         }).catch(function(error){show(userFacingVideoMessage(error.message,'单镜头任务提交失败'),true);})
@@ -1762,5 +1777,5 @@
     }).then(function(){render();schedulePoll();}).catch(function(error){show(error.message||'工作区加载失败',true);}).finally(function(){busy(false);render();});
     return {render:render,getState:function(){return state;},getPreflight:function(){return preflight;},getAutodraft:function(){return autodraft;},getRefinement:function(){return refinement;}};
   }
-  return {createClient:createClient,characterImageOperationState:characterImageOperationState,characterImageAction:characterImageAction,avatarCreateUrl:avatarCreateUrl,cloneProjectPayload:cloneProjectPayload,normalize:normalize,conversationWorkspaceMode:conversationWorkspaceMode,applyConversationMode:applyConversationMode,quickReplyPresentation:quickReplyPresentation,messageHtml:messageHtml,importContractHtml:importContractHtml,importContractTechnicalHtml:importContractTechnicalHtml,storyActsHtml:storyActsHtml,storyboardQualityHtml:storyboardQualityHtml,scriptHeaderState:scriptHeaderState,shotMediaIndex:shotMediaIndex,shotGenerationOverviewHtml:shotGenerationOverviewHtml,sceneLockingHtml:sceneLockingHtml,shotMediaHtml:shotMediaHtml,providerShotControlsHtml:providerShotControlsHtml,scriptHtml:scriptHtml,versionHtml:versionHtml,preflightHtml:preflightHtml,autodraftActionsHtml:autodraftActionsHtml,draftHtml:draftHtml,refinementHtml:refinementHtml,refinementActionsHtml:refinementActionsHtml,refinementProviderHtml:refinementProviderHtml,shellHtml:shellHtml,authoritativeCharacterList:authoritativeCharacterList,movieAvatarRequired:movieAvatarRequired,userFacingVideoMessage:userFacingVideoMessage,providerLabel:providerLabel,mount:mount};
+  return {createClient:createClient,characterImageOperationState:characterImageOperationState,characterImageAction:characterImageAction,avatarCreateUrl:avatarCreateUrl,cloneProjectPayload:cloneProjectPayload,normalize:normalize,conversationWorkspaceMode:conversationWorkspaceMode,applyConversationMode:applyConversationMode,quickReplyPresentation:quickReplyPresentation,messageHtml:messageHtml,importContractHtml:importContractHtml,importContractTechnicalHtml:importContractTechnicalHtml,storyActsHtml:storyActsHtml,storyboardQualityHtml:storyboardQualityHtml,scriptHeaderState:scriptHeaderState,shotMediaIndex:shotMediaIndex,activeProviderJobs:activeProviderJobs,shotGenerationOverviewHtml:shotGenerationOverviewHtml,sceneLockingHtml:sceneLockingHtml,shotMediaHtml:shotMediaHtml,providerShotControlsHtml:providerShotControlsHtml,scriptHtml:scriptHtml,versionHtml:versionHtml,preflightHtml:preflightHtml,autodraftActionsHtml:autodraftActionsHtml,draftHtml:draftHtml,refinementHtml:refinementHtml,refinementActionsHtml:refinementActionsHtml,refinementProviderHtml:refinementProviderHtml,shellHtml:shellHtml,authoritativeCharacterList:authoritativeCharacterList,movieAvatarRequired:movieAvatarRequired,userFacingVideoMessage:userFacingVideoMessage,providerLabel:providerLabel,mount:mount};
 });

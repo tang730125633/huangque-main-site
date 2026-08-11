@@ -102,6 +102,10 @@ class ScriptImportError(ValueError):
         self.status = int(status)
 
 
+class RequestBodyTooLarge(ValueError):
+    pass
+
+
 class ProjectCreationError(ValueError):
     def __init__(self, code, message, status=400):
         super().__init__(message)
@@ -202,6 +206,15 @@ CREATE TABLE IF NOT EXISTS short_drama_projects (
 );
 CREATE INDEX IF NOT EXISTS idx_short_drama_projects_owner
   ON short_drama_projects(username, deleted, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS short_drama_job_project_links (
+  job_id INTEGER PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_short_drama_job_project_links_project
+  ON short_drama_job_project_links(project_id, job_id);
 
 CREATE TABLE IF NOT EXISTS short_drama_project_requests (
   id TEXT PRIMARY KEY,
@@ -1015,6 +1028,51 @@ def _table_columns(conn, table):
     return {row[1] for row in conn.execute("PRAGMA table_info(%s)" % table).fetchall()}
 
 
+def _ensure_job_project_links(conn):
+    if not _table_columns(conn, "jobs"):
+        return
+    migration = "short_drama_job_project_links_backfill_v1"
+    migrated = conn.execute(
+        "SELECT 1 FROM short_drama_schema_migrations WHERE name=?", (migration,)
+    ).fetchone()
+    project_expr = (
+        "CASE WHEN NEW.kind='copy' "
+        "AND json_extract(NEW.payload,'$.format')='short_drama' "
+        "THEN json_extract(NEW.payload,'$.project_id') "
+        "WHEN NEW.kind='image' THEN "
+        "json_extract(NEW.payload,'$.short_drama_scene_binding.project_id') END"
+    )
+    if not migrated:
+        conn.execute(
+            "INSERT OR IGNORE INTO short_drama_job_project_links "
+            "(job_id,project_id,kind,created_at) "
+            "SELECT id,CASE WHEN kind='copy' "
+            "AND json_extract(payload,'$.format')='short_drama' "
+            "THEN json_extract(payload,'$.project_id') "
+            "WHEN kind='image' THEN "
+            "json_extract(payload,'$.short_drama_scene_binding.project_id') END,"
+            "kind,CAST(strftime('%s','now') AS INTEGER) FROM jobs "
+            "WHERE json_valid(payload) AND ((kind='copy' "
+            "AND json_extract(payload,'$.format')='short_drama' "
+            "AND COALESCE(json_extract(payload,'$.project_id'),'')<>'') "
+            "OR (kind='image' AND COALESCE(json_extract(payload,"
+            "'$.short_drama_scene_binding.project_id'),'')<>''))"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO short_drama_schema_migrations(name,completed_at) "
+            "VALUES (?,?)", (migration, int(time.time())),
+        )
+    conn.execute(
+        "CREATE TRIGGER IF NOT EXISTS trg_short_drama_job_project_link "
+        "AFTER INSERT ON jobs WHEN json_valid(NEW.payload) "
+        "AND COALESCE(" + project_expr + ",'')<>'' BEGIN "
+        "INSERT OR IGNORE INTO short_drama_job_project_links "
+        "(job_id,project_id,kind,created_at) VALUES "
+        "(NEW.id," + project_expr + ",NEW.kind,CAST(strftime('%s','now') AS INTEGER)); "
+        "END"
+    )
+
+
 def _page_job_point_usage(conn, project_ids):
     project_ids = set(project_ids or ())
     usage = {
@@ -1024,23 +1082,16 @@ def _page_job_point_usage(conn, project_ids):
     job_columns = _table_columns(conn, "jobs")
     if not project_ids or not job_columns:
         return usage
-    refunded_expr = "COALESCE(refunded,0)" if "refunded" in job_columns else "0"
+    _ensure_job_project_links(conn)
+    refunded_expr = "COALESCE(j.refunded,0)" if "refunded" in job_columns else "0"
+    placeholders = ",".join("?" for _project_id in project_ids)
     rows = conn.execute(
-        "SELECT kind,cost,payload," + refunded_expr + " FROM jobs "
-        "WHERE kind IN ('copy','image')"
+        "SELECT l.project_id,j.cost," + refunded_expr + " "
+        "FROM short_drama_job_project_links l JOIN jobs j ON j.id=l.job_id "
+        "WHERE l.project_id IN (" + placeholders + ")",
+        tuple(project_ids),
     ).fetchall()
-    for kind, cost, payload_json, refunded in rows:
-        payload = _json(payload_json, {})
-        project_id = ""
-        if isinstance(payload, dict) and kind == "copy" \
-                and payload.get("format") == "short_drama":
-            project_id = str(payload.get("project_id") or "")
-        elif isinstance(payload, dict) and kind == "image":
-            binding = payload.get("short_drama_scene_binding")
-            if isinstance(binding, dict):
-                project_id = str(binding.get("project_id") or "")
-        if project_id not in usage:
-            continue
+    for project_id, cost, refunded in rows:
         usage[project_id]["has_activity"] = True
         if int(refunded or 0) != 1:
             usage[project_id]["actual"] += max(0, int(cost or 0))
@@ -1060,26 +1111,16 @@ def _project_point_usage(conn, project_id, page_job_usage=None):
 
     job_columns = _table_columns(conn, "jobs")
     if job_columns and page_job_usage is None:
-        refunded_expr = "COALESCE(refunded,0)" if "refunded" in job_columns else "0"
+        _ensure_job_project_links(conn)
+        refunded_expr = "COALESCE(j.refunded,0)" if "refunded" in job_columns else "0"
         for row in conn.execute(
-                "SELECT cost,payload," + refunded_expr + " FROM jobs WHERE kind='copy'"
+                "SELECT j.cost," + refunded_expr + " "
+                "FROM short_drama_job_project_links l "
+                "JOIN jobs j ON j.id=l.job_id WHERE l.project_id=?",
+                (project_id,),
         ).fetchall():
-            payload = _json(row[1], {})
-            if (not isinstance(payload, dict) or payload.get("format") != "short_drama"
-                    or payload.get("project_id") != project_id):
-                continue
             has_activity = True
-            if int(row[2] or 0) != 1:
-                actual += max(0, int(row[0] or 0))
-        for row in conn.execute(
-                "SELECT cost,payload," + refunded_expr + " FROM jobs WHERE kind='image'"
-        ).fetchall():
-            payload = _json(row[1], {})
-            binding = payload.get("short_drama_scene_binding") if isinstance(payload, dict) else None
-            if not isinstance(binding, dict) or binding.get("project_id") != project_id:
-                continue
-            has_activity = True
-            if int(row[2] or 0) != 1:
+            if int(row[1] or 0) != 1:
                 actual += max(0, int(row[0] or 0))
 
     linked_job_ids = set()
@@ -1492,6 +1533,7 @@ def init_db(db_factory):
             "CREATE TABLE IF NOT EXISTS short_drama_schema_migrations ("
             "name TEXT PRIMARY KEY,completed_at INTEGER NOT NULL)"
         )
+        _ensure_job_project_links(conn)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS short_drama_character_reference_validations ("
             "project_id TEXT NOT NULL REFERENCES short_drama_projects(id) ON DELETE CASCADE,"
@@ -5212,6 +5254,7 @@ _HTTP_ROUTES = {
         "/api/gen/short-drama/autodraft/provider-quote",
         "/api/gen/short-drama/autodraft/provider-version/select",
         "/api/gen/short-drama/autodraft/provider-jobs",
+        "/api/gen/short-drama/autodraft/provider-jobs/{job_id}/reconcile",
         "/api/gen/short-drama/autodraft/jobs",
         "/api/gen/short-drama/autodraft/jobs/{job_id}/retry",
         "/api/gen/short-drama/autodraft/jobs/{job_id}/cancel",
@@ -5297,6 +5340,12 @@ def _http_error(handler, error, *, operation_terminal=False):
     elif isinstance(error, ScriptImportError):
         handler._send(error.status, {
             "detail": str(error)[:220], "code": error.code, **terminal,
+        })
+    elif isinstance(error, RequestBodyTooLarge):
+        handler._send(413, {
+            "detail": str(error)[:220],
+            "code": "request_body_too_large",
+            **terminal,
         })
     elif isinstance(error, CharacterReferenceProtected):
         handler._send(409, {
@@ -5470,8 +5519,17 @@ def _http_error(handler, error, *, operation_terminal=False):
         handler._send(400, {"detail": str(error)[:220], **terminal})
 
 
-def _request_object(handler):
-    body = handler._json_body_strict()
+def _request_object(handler, *, max_bytes=None):
+    try:
+        body = (
+            handler._json_body_strict(max_bytes=max_bytes)
+            if max_bytes is not None
+            else handler._json_body_strict()
+        )
+    except ValueError as error:
+        if max_bytes is not None and str(error) == "请求体过大":
+            raise RequestBodyTooLarge(str(error)) from error
+        raise
     if not isinstance(body, dict):
         raise ValueError("请求体必须是 JSON 对象")
     return body
@@ -5569,7 +5627,11 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
         else:
             route_path = "/api/gen/short-drama/autodraft/jobs/{job_id}"
     elif path.startswith("/api/gen/short-drama/autodraft/provider-jobs/"):
-        route_path = "/api/gen/short-drama/autodraft/provider-jobs/{job_id}"
+        route_path = (
+            "/api/gen/short-drama/autodraft/provider-jobs/{job_id}/reconcile"
+            if path.endswith("/reconcile")
+            else "/api/gen/short-drama/autodraft/provider-jobs/{job_id}"
+        )
     elif path.startswith("/api/gen/short-drama/refinement/jobs/"):
         route_path = "/api/gen/short-drama/refinement/jobs/{job_id}"
     elif path.startswith("/api/gen/short-drama/delivery/jobs/"):
@@ -5652,7 +5714,14 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
         elif method == "POST" and path.startswith(
             "/api/gen/short-drama/asset-graph/"
         ):
-            body = _request_object(handler)
+            body = _request_object(
+                handler,
+                max_bytes=(
+                    15 * 1024 * 1024
+                    if path == "/api/gen/short-drama/asset-graph/scenes/reference"
+                    else None
+                ),
+            )
             project_id = _text(body.get("project_id"), 160)
             owner = _project_username_for_access(
                 db_factory, username, project_id, access, write=True,
@@ -5921,6 +5990,13 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             elif path == "/api/gen/short-drama/autodraft/provider-version/select":
                 result = short_drama_autodraft.select_provider_version(
                     db_factory, owner, body,
+                )
+            elif path.endswith("/reconcile"):
+                result = (
+                    short_drama_autodraft.reconcile_unknown_provider_submission(
+                        db_factory, owner, path.split("/")[-2], body,
+                        refund_points=refund_points,
+                    )
                 )
             elif path == "/api/gen/short-drama/autodraft/provider-jobs":
                 args = (

@@ -209,13 +209,19 @@ class ShortDramaProjectTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_project_list_scans_global_job_ledger_once_per_page(self):
+    def test_project_list_uses_indexed_page_scoped_job_ledger(self):
         projects = [
             short_drama.create_project(self.db, "alice", valid_project(title="Project %d" % index))
             for index in range(3)
         ]
         for index, project in enumerate(projects, 1):
             self.insert_planning_job(project, 700 + index, cost=index)
+        conn = self.db()
+        try:
+            short_drama._ensure_job_project_links(conn)
+            conn.commit()
+        finally:
+            conn.close()
         statements = []
 
         def tracked_db():
@@ -232,7 +238,14 @@ class ShortDramaProjectTests(unittest.TestCase):
             if " FROM jobs WHERE kind" in statement
             and "payload" in statement
         ]
-        self.assertEqual(1, len(global_job_scans), global_job_scans)
+        self.assertEqual([], global_job_scans)
+        page_link_queries = [
+            statement for statement in statements
+            if "short_drama_job_project_links" in statement
+            and "JOIN jobs" in statement
+        ]
+        self.assertEqual(1, len(page_link_queries), page_link_queries)
+        self.assertIn("project_id IN", page_link_queries[0])
 
     def _assert_plan_rejected_without_side_effects(self, project, plan, job_id):
         before = short_drama.get_project(self.db, "alice", project["id"])
@@ -2223,6 +2236,39 @@ class ShortDramaRouteTests(unittest.TestCase):
         })()
         self.assertEqual({}, core.H._json_body_strict(handler, max_bytes=limit))
         self.assertEqual([2], body.read_sizes)
+
+    def test_scene_reference_route_rejects_json_larger_than_15mb(self):
+        class Handler:
+            path = "/api/gen/short-drama/asset-graph/scenes/reference"
+            headers = {}
+
+            def __init__(self):
+                self.max_bytes = None
+                self.sent = None
+
+            def _token(self):
+                return "alice"
+
+            def _json_body_strict(self, *, max_bytes=None):
+                self.max_bytes = max_bytes
+                raise ValueError("请求体过大")
+
+            def _send(self, status, payload):
+                self.sent = (status, payload)
+
+        handler = Handler()
+        handled = short_drama.dispatch_http(
+            handler,
+            "POST",
+            core.jdb,
+            lambda _token: {"username": "alice", "must_change": False},
+            avatar_lookup=lambda *_args: None,
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(15 * 1024 * 1024, handler.max_bytes)
+        self.assertEqual(413, handler.sent[0])
+        self.assertEqual("request_body_too_large", handler.sent[1]["code"])
 
     def test_character_reference_validation_errors_match_openapi_statuses(self):
         class Handler:

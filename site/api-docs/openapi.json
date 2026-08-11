@@ -3386,6 +3386,7 @@
           "403": { "description": "必须修改初始密码或没有项目写权限", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "404": { "description": "项目或场景不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "409": { "description": "graph_revision 已过期", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "413": { "description": "JSON 请求体超过 15 MB", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "422": { "description": "图片、来源或所选资产无效；非空 asset_url 必须属于指定图片 job", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
         }
       }
@@ -4158,6 +4159,31 @@
         "responses": {
           "200": { "description": "返回扣点、Provider 提交、轮询、结果版本或退款状态" },
           "404": { "description": "任务不存在" }
+        }
+      }
+    },
+    "/api/gen/short-drama/autodraft/provider-jobs/{job_id}/reconcile": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "人工对账 submit_unknown 的单镜头 Provider 提交",
+        "description": "只允许绑定已确认的上游任务 ID，或确认上游未创建任务并进入幂等退款；不会重新提交 Provider。",
+        "parameters": [
+          { "name": "job_id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "$ref": "#/components/parameters/XCanvasBoardId" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["project_id", "action"], "additionalProperties": false,
+          "properties": {
+            "project_id": { "type": "string" },
+            "action": { "type": "string", "enum": ["bind_provider_job", "confirm_not_submitted"] },
+            "provider_job_id": { "type": "string", "maxLength": 200 }
+          }
+        } } } },
+        "responses": {
+          "200": { "description": "已恢复轮询，或已安全释放并完成/等待退款" },
+          "404": { "description": "项目或任务不存在" },
+          "409": { "description": "任务状态或已绑定的上游任务 ID 冲突" },
+          "422": { "description": "对账动作或上游任务 ID 无效" }
         }
       }
     },

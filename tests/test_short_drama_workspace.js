@@ -29,6 +29,32 @@ test('workspace aria modals trap focus, close on Escape, and restore trigger foc
   assert.match(workspaceSource, /if\(characterImagePreviewTrigger\)characterImagePreviewTrigger\.focus\(\)/);
 });
 
+test('poll rendering preserves a dirty open shot editor', () => {
+  assert.match(
+    workspaceSource,
+    /if\(!wasHidden&&shotEditorDirty&&body\.querySelector\('form'\)\)return/
+  );
+  assert.match(
+    workspaceSource,
+    /closest\('#sdShotEditor,#sdShotExecutionEditor'\).*shotEditorDirty=true/
+  );
+});
+
+test('image lightbox backdrop is outside the focus order and trap scope', () => {
+  assert.match(
+    workspaceSource,
+    /<div class="sd-character-image-lightbox-backdrop"[^>]*aria-hidden="true"/
+  );
+  assert.doesNotMatch(
+    workspaceSource,
+    /<button[^>]*sd-character-image-lightbox-backdrop/
+  );
+  assert.match(
+    workspaceSource,
+    /modalKeydown\(imageLightbox\.querySelector\('\[role="dialog"\]'\),event\)/
+  );
+});
+
 test('独立页面加载三栏对话工作区资源', () => {
   assert.match(html, /id="shortDramaWorkspace"/);
   assert.match(html, /short-drama-workspace\.css\?v=/);
@@ -1327,6 +1353,75 @@ test('shot generation overview shows completed active failed and pending shots',
   });
   assert.match(failed,/1 个失败/);
   assert.match(failed,/3 个未生成/);
+});
+
+test('all active Provider shot jobs are indexed by their own shot', () => {
+  const shots=[
+    {shot_key:'shot_01',sort_order:1},
+    {shot_key:'shot_02',sort_order:2},
+    {shot_key:'shot_03',sort_order:3}
+  ];
+  const state={provider_jobs:[
+    {id:'job-1',shot_key:'shot_01',status:'running',progress:20},
+    {id:'job-2',shot_key:'shot_02',status:'queued',progress:5}
+  ]};
+
+  const index=workspace.shotMediaIndex(state);
+  const output=workspace.shotGenerationOverviewHtml(shots,state);
+
+  assert.equal(index.shot_01.job.id,'job-1');
+  assert.equal(index.shot_02.job.id,'job-2');
+  assert.match(output,/2 个生成中/);
+  assert.match(output,/1 个未生成/);
+});
+
+test('an active job on one shot does not block another shot submission', () => {
+  const state={
+    provider_job:{id:'job-1',shot_key:'shot_01',status:'running',progress:20},
+    provider_jobs:[{id:'job-1',shot_key:'shot_01',status:'running',progress:20}],
+    provider_poc:{
+      shots:[{shot_key:'shot_02',binding_ready:true,character_keys:[]}],
+      characters:[]
+    }
+  };
+
+  const output=workspace.providerShotControlsHtml(
+    {shot_key:'shot_02'},state,true,'shot_02'
+  );
+
+  assert.doesNotMatch(output,/另一个镜头正在生成/);
+  assert.match(output,/data-action="provider-preflight"[^>]*>/);
+  assert.doesNotMatch(output,/data-action="provider-preflight"[^>]*disabled/);
+});
+
+test('Provider summary counts every active shot job', () => {
+  const output=workspace.autodraftActionsHtml({
+    confirmed_plan:{id:'plan-1'},
+    provider_poc:{shots:[{shot_key:'shot_01'},{shot_key:'shot_02'}],characters:[]},
+    provider_job:{id:'job-1',shot_key:'shot_01',status:'running',progress:20},
+    provider_jobs:[
+      {id:'job-1',shot_key:'shot_01',status:'running',progress:20},
+      {id:'job-2',shot_key:'shot_02',status:'queued',progress:5}
+    ],
+    production:{ready:false,mode:'provider_poc',message:'ready',provider:{configured:true}}
+  },true);
+
+  assert.match(output,/<b>2<\/b> 个任务处理中/);
+  assert.match(output,/shot_01/);
+  assert.match(output,/shot_02/);
+});
+
+test('polling selects every active Provider shot job', () => {
+  const jobs=workspace.activeProviderJobs({
+    provider_jobs:[
+      {id:'job-1',status:'running'},
+      {id:'job-2',status:'billing'},
+      {id:'job-3',status:'succeeded'}
+    ]
+  });
+
+  assert.deepEqual(jobs.map(item=>item.id),['job-1','job-2']);
+  assert.match(workspaceSource,/Promise\.all\(providerJobs\.map/);
 });
 
 test('Provider PoC directs missing character bindings to the left character cards', () => {
