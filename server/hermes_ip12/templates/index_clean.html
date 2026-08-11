@@ -88,6 +88,10 @@ body { font-family:var(--font); background:var(--bg); color:var(--text); height:
 .bubble { padding:14px 18px; border-radius:var(--radius); max-width:85%; font-size:14px; line-height:1.75; word-break:break-word; }
 .message.user .bubble { background:var(--user-bubble); }
 .message.assistant .bubble { background:var(--ai-bubble); border:1px solid var(--border); }
+.harness-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid var(--border)}
+.harness-action{padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:rgba(255,255,255,.04);color:var(--text);font:inherit;font-size:12px;cursor:pointer}
+.harness-action.primary{border-color:var(--accent);background:var(--accent-glow);color:var(--accent-bright)}
+.harness-action:disabled{opacity:.45;cursor:not-allowed}
 
 /* ── Deliverable Card ── */
 .deliverable-card { max-width:800px; width:100%; margin:0 auto; border:1px solid var(--success); border-radius:var(--radius); background:rgba(74,222,128,0.05); overflow:hidden; }
@@ -264,7 +268,7 @@ function renderModules() {
   const list = document.getElementById('moduleList');
   const done = (coachState.completed_modules || []).filter(id=>id<=AVAILABLE_MODULE_COUNT);
   const cur = Math.min(coachState.current_module || 1, AVAILABLE_MODULE_COUNT);
-  const intakePending = coachState.intake?.status === 'collecting';
+  const intakePending = coachState.intake?.status !== 'complete';
   const intakeRound = intakePending ? (coachState.intake.round || 1) : 0;
   list.innerHTML = MODULES.map(m => {
     let cls = 'module-item', badge = '', check = '', reportBtn = '';
@@ -282,7 +286,7 @@ function renderModules() {
 
 function updateProgress() {
   const done = (coachState.completed_modules || []).filter(id=>id<=AVAILABLE_MODULE_COUNT).length;
-  const intakePending = coachState.intake?.status === 'collecting';
+  const intakePending = coachState.intake?.status !== 'complete';
   document.getElementById('progressBar').style.width = Math.round(done/AVAILABLE_MODULE_COUNT*100)+'%';
   document.getElementById('progressText').textContent = done===AVAILABLE_MODULE_COUNT?'🎉 六步完成':done+'/'+AVAILABLE_MODULE_COUNT;
   const cur = Math.min(coachState.current_module || 1, AVAILABLE_MODULE_COUNT);
@@ -349,31 +353,37 @@ async function deleteConversation(id) {
 async function jumpToModule(modId) {
   if(modId>AVAILABLE_MODULE_COUNT){toast('尚未开发，敬请期待');return;}
   if(!currentConvoId||streaming)return;
-  if(coachState.intake?.status==='collecting'){toast('请先完成 3 轮基础信息');return;}
+  if(coachState.intake?.status!=='complete'){toast('请先确认基础信息');return;}
   const res=await fetch('/api/jump-module',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId,module:modId})});
-  const data=await res.json();if(!res.ok||!data.ok){toast(`❌ ${data.error||'无法切换模块'}`);return}coachState.current_module=data.current_module;coachState.module_step=0;renderModules();await sendJumpMessage(modId);
+  const data=await res.json();if(!res.ok||!data.ok){toast(`❌ ${data.error||'无法切换模块'}`);return}coachState=data.state||coachState;renderModules();await sendJumpMessage(modId);
 }
 
 async function sendJumpMessage(modId) {
-  if(!currentConvoId||streaming)return; streaming=true;
-  const area=document.getElementById('chatArea');
-  const userMsg=document.createElement('div');userMsg.className='message user';userMsg.innerHTML=`<div class="avatar">👤</div><div class="bubble">📌 跳到模块 ${modId}：${MODULES.find(m=>m.id===modId)?.name}</div>`;area.appendChild(userMsg);
-  const aiMsg=document.createElement('div');aiMsg.className='message assistant';aiMsg.innerHTML=`<div class="avatar">🧠</div><div class="bubble"><div class="typing"><span></span><span></span><span></span></div></div>`;area.appendChild(aiMsg);
-  scrollBottom();
-  let fullText='';const bubble=aiMsg.querySelector('.bubble');
-  try{
-    const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId,message:`跳到模块 ${modId}`})});
-    if(!res.ok){const errorData=await res.json();throw new Error(errorData.error||'发送失败');}
-    const reader=res.body.getReader();const decoder=new TextDecoder();let buf='';
-    while(true){const{done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});const lines=buf.split('\n');buf=lines.pop()||'';for(const line of lines){if(!line.startsWith('data: '))continue;try{const data=JSON.parse(line.slice(6));if(data.error){bubble.innerHTML=`<span style="color:#ef4444">❌ ${escHtml(data.error)}</span>`;}else if(data.content){fullText+=data.content;bubble.innerHTML=renderMarkdown(fullText)+'<span class="cursor"></span>';scrollBottom();}else if(data.done){bubble.innerHTML=renderMarkdown(fullText);if(data.state){coachState=data.state;renderModules();}if(data.auto_deliverables){handleAutoDeliverables(data.auto_deliverables);}}}catch(e){}}}
-  }catch(e){bubble.innerHTML=`<span style="color:#ef4444">❌ ${escHtml(e.message)}</span>`;}
-  streaming=false;
+  return sendTurn({message:'请从当前模块继续'},`继续模块 ${modId}：${MODULES.find(m=>m.id===modId)?.name||''}`);
 }
 
+function stateActions(){
+  if(coachState.intake?.status==='awaiting_confirmation')return[
+    {type:'confirm_intake',target_id:`intake-${coachState.revision}`,label:'确认资料',primary:true},
+    {type:'edit_intake',target_id:`intake-${coachState.revision}`,label:'我要修改',primary:false}
+  ];
+  const pending=coachState.pending;if(pending?.status==='awaiting_confirmation')return[
+    {type:'confirm_checkpoint',target_id:pending.id,label:'确认这一步',primary:true},
+    {type:'edit_checkpoint',target_id:pending.id,label:'需要修改',primary:false}
+  ];
+  return[];
+}
+function attachHarnessActions(actions,bubble){
+  if(!bubble)return;bubble.querySelectorAll('.harness-actions').forEach(row=>row.remove());
+  if(!actions?.length)return;const row=document.createElement('div');row.className='harness-actions';
+  actions.forEach(item=>{const button=document.createElement('button');button.type='button';button.className='harness-action'+(item.primary?' primary':'');button.textContent=item.label;button.onclick=()=>{row.querySelectorAll('button').forEach(node=>{node.disabled=true;});sendHarnessAction(item);};row.appendChild(button);});
+  bubble.appendChild(row);
+}
 function renderChat(messages) {
   const area=document.getElementById('chatArea');
   if(!messages||messages.length===0){area.innerHTML=document.getElementById('welcome').outerHTML;return;}
   area.innerHTML=messages.map(m=>`<div class="message ${m.role==='user'?'user':'assistant'}"><div class="avatar">${m.role==='user'?'👤':'🧠'}</div><div class="bubble">${renderMarkdown(m.content)}</div></div>`).join('');
+  attachHarnessActions(stateActions(),area.querySelector('.message.assistant:last-of-type .bubble'));
   scrollBottom();
 }
 
@@ -396,7 +406,7 @@ async function openFoundationReport(){
 
 async function confirmFoundationReport(){
   if(!currentConvoId||streaming)return;
-  try{const res=await fetch('/api/foundation-report/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId})});const data=await res.json();if(!res.ok||!data.ok)throw new Error(data.error||'确认失败');coachState=data.state;renderModules();toast(`✅ IP 定位初稿已确认，继续模块 ${coachState.current_module}`);if(!(coachState.completed_modules||[]).includes(coachState.current_module))sendJumpMessage(coachState.current_module);}
+  try{const foundation=coachState.foundation_report||{};const res=await fetch('/api/foundation-report/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId,expected_revision:coachState.revision,report_id:foundation.report_id||''})});const data=await res.json();if(!res.ok||!data.ok)throw new Error(data.error||'确认失败');coachState=data.state;renderModules();toast(`✅ IP 定位初稿已确认，继续模块 ${coachState.current_module}`);if(!(coachState.completed_modules||[]).includes(coachState.current_module))sendJumpMessage(coachState.current_module);}
   catch(e){toast(`❌ ${e.message}`);}
 }
 
@@ -451,24 +461,28 @@ function toast(msg){const t=document.createElement('div');t.className='toast';t.
 
 // ── Send ──
 function handleKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();}}
-
-async function sendMessage(){
+function newTurnRequestId(){return window.crypto&&crypto.randomUUID?crypto.randomUUID():`turn_${Date.now()}_${Math.random().toString(36).slice(2)}`;}
+function sendHarnessAction(item){return sendTurn({action:{type:item.type,target_id:item.target_id}},item.label);}
+function sendMessage(){
   if(streaming||!currentConvoId)return;
   const input=document.getElementById('userInput'),text=input.value.trim();if(!text)return;
-  input.value='';input.style.height='auto';document.getElementById('sendBtn').disabled=true;streaming=true;
+  input.value='';input.style.height='auto';return sendTurn({message:text},text);
+}
+async function sendTurn(turn,displayText){
+  if(streaming||!currentConvoId)return;document.getElementById('sendBtn').disabled=true;streaming=true;
   const area=document.getElementById('chatArea'),welcome=area.querySelector('.welcome');if(welcome)welcome.remove();
-  const userMsg=document.createElement('div');userMsg.className='message user';userMsg.innerHTML=`<div class="avatar">👤</div><div class="bubble">${escHtml(text).replace(/\n/g,'<br>')}</div>`;area.appendChild(userMsg);
+  const userMsg=document.createElement('div');userMsg.className='message user';userMsg.innerHTML=`<div class="avatar">👤</div><div class="bubble">${escHtml(displayText).replace(/\n/g,'<br>')}</div>`;area.appendChild(userMsg);
   const aiMsg=document.createElement('div');aiMsg.className='message assistant';aiMsg.innerHTML=`<div class="avatar">🧠</div><div class="bubble"><div class="typing"><span></span><span></span><span></span></div></div>`;area.appendChild(aiMsg);scrollBottom();
   let fullText='';const bubble=aiMsg.querySelector('.bubble');
-  try{const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId,message:text})});
+  try{const body=Object.assign({conversation_id:currentConvoId,request_id:newTurnRequestId(),expected_revision:coachState.revision},turn);const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     if(!res.ok){const errorData=await res.json();throw new Error(errorData.error||'发送失败');}
     const reader=res.body.getReader();const decoder=new TextDecoder();let buf='';
     while(true){const{done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});const lines=buf.split('\n');buf=lines.pop()||'';for(const line of lines){if(!line.startsWith('data: '))continue;try{const data=JSON.parse(line.slice(6));
       if(data.error){bubble.innerHTML=`<span style="color:#ef4444">❌ ${escHtml(data.error)}</span>`;}
       else if(data.content){fullText+=data.content;bubble.innerHTML=renderMarkdown(fullText)+'<span class="cursor"></span>';scrollBottom();}
-      else if(data.done){bubble.innerHTML=renderMarkdown(fullText);if(data.state){coachState=data.state;renderModules();}if(data.new_completed&&data.new_completed.length>0){data.new_completed.forEach(mid=>{toast(`✅ ${MODULES[mid-1]?.name}完成！`);});renderModules();}if(data.auto_deliverables){handleAutoDeliverables(data.auto_deliverables);}}
+      else if(data.done){bubble.innerHTML=renderMarkdown(fullText);if(data.state){coachState=data.state;renderModules();}attachHarnessActions(data.actions||stateActions(),bubble);if(data.new_completed&&data.new_completed.length>0){data.new_completed.forEach(mid=>{toast(`✅ ${MODULES[mid-1]?.name}完成！`);});renderModules();}if(data.auto_deliverables){handleAutoDeliverables(data.auto_deliverables);}}
     }catch(e){}}}
-  }catch(e){bubble.innerHTML=`<span style="color:#ef4444">❌ ${escHtml(e.message)}</span>`;}
+  }catch(e){bubble.innerHTML=`<span style="color:#ef4444">❌ ${escHtml(e.message)}</span>`;setTimeout(()=>selectConversation(currentConvoId),800);}
   streaming=false;document.getElementById('sendBtn').disabled=false;document.getElementById('userInput').focus();
 }
 
