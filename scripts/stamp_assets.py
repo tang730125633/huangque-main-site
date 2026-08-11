@@ -136,6 +136,16 @@ ASSETS = (
 
 SITE_ASSETS = (
     SiteAsset(
+        "homepage.css",
+        "/homepage.css",
+        ("index.html",),
+    ),
+    SiteAsset(
+        "homepage-particles.js",
+        "/homepage-particles.js",
+        ("index.html",),
+    ),
+    SiteAsset(
         "assets/home/orbit-gallery.js",
         "/assets/home/orbit-gallery.js",
         ("index.html",),

@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 import pathlib
 import re
 import subprocess
@@ -26,10 +27,12 @@ class HomeOrbitGalleryTests(unittest.TestCase):
         self.assertIn("data-gallery-preview", self.html)
         self.assertIn("data-gallery-fallback", self.html)
         self.assertNotIn('class="page-shell sample-grid"', self.html)
-        self.assertIn('homepage.css?v=20260810-orbitfix2', self.html)
+        css_stamp = hashlib.md5(self.css.replace("\r\n", "\n").encode("utf-8")).hexdigest()[:8]
+        self.assertIn(f"homepage.css?v={css_stamp}", self.html)
         script_stamp = hashlib.md5(self.js.replace("\r\n", "\n").encode("utf-8")).hexdigest()[:8]
         self.assertIn(f"orbit-gallery.js?v={script_stamp}", self.html)
         self.assertIn("gallery.json?v=20260810-orbitfix2", self.html)
+        self.assertIn("data-gallery-autoplay-toggle", self.html)
 
     def test_manifest_contains_all_requested_media(self):
         items = self.manifest["items"]
@@ -112,6 +115,24 @@ class HomeOrbitGalleryTests(unittest.TestCase):
         self.assertIn("probe.onerror", self.js)
         self.assertIn("showPreviewMediaError", self.js)
         self.assertIn("setFallbackState", self.js)
+
+    def test_autoplay_is_time_based_accessible_and_resource_guarded(self):
+        delay = re.search(r"const AUTO_ADVANCE_DELAY = (\d+);", self.js)
+        reference_ms = re.search(r"const MOTION_REFERENCE_MS = ([0-9.]+);", self.js)
+        decay = re.search(r"const MOTION_DECAY = ([0-9.]+);", self.js)
+        self.assertIsNotNone(delay)
+        self.assertIsNotNone(reference_ms)
+        self.assertIsNotNone(decay)
+        self.assertLessEqual(int(delay.group(1)), 3000)
+        impulse = -math.log(float(decay.group(1))) / float(reference_ms.group(1))
+        self.assertGreaterEqual(impulse, 0.004)
+        self.assertIn("const AUTO_ADVANCE_IMPULSE = -MOTION_DECAY_RATE;", self.js)
+        self.assertIn("function scheduleAutoAdvance()", self.js)
+        self.assertIn("function toggleAutoAdvance()", self.js)
+        self.assertIn("!state.autoPaused", self.js)
+        self.assertIn("!reducedMotion.matches", self.js)
+        self.assertIn("!conserveResources", self.js)
+        self.assertIn("status.removeAttribute('aria-live')", self.js)
 
 
 if __name__ == "__main__":

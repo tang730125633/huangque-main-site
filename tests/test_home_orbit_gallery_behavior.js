@@ -69,7 +69,13 @@ test('pointer capture starts on pointerdown and external release clears drag sta
     releasePointerCapture: pointerId => captures.delete(pointerId),
   };
   const performance = { now: () => now };
-  const beginDrag = loadFunction('beginDrag', { state, root, performance, isInteractive: () => true });
+  const beginDrag = loadFunction('beginDrag', {
+    state,
+    root,
+    performance,
+    isInteractive: () => true,
+    cancelAutoAdvance: () => {},
+  });
   const moveDrag = loadFunction('moveDrag', {
     state,
     root,
@@ -147,7 +153,13 @@ test('an unrelated pointer cannot replace or finish the active drag', () => {
     releasePointerCapture: pointerId => captures.delete(pointerId),
   };
   const performance = { now: () => now };
-  const beginDrag = loadFunction('beginDrag', { state, root, performance, isInteractive: () => true });
+  const beginDrag = loadFunction('beginDrag', {
+    state,
+    root,
+    performance,
+    isInteractive: () => true,
+    cancelAutoAdvance: () => {},
+  });
   const finishDrag = loadFunction('finishDrag', {
     state,
     root,
@@ -356,14 +368,225 @@ test('gallery initialization waits until the section approaches the viewport', (
   assert.equal(initialized, 1);
 });
 
-test('idle gallery does not advance without user-provided velocity', () => {
-  const state = { position: 4, velocity: 0 };
-  const advanceMotion = loadFunction('advanceMotion', { state });
+test('idle motion schedules the next auto advance without keeping RAF alive', () => {
+  const state = { position: 4, velocity: 0, autoTarget: null };
+  let scheduled = 0;
+  const advanceMotion = loadFunction('advanceMotion', {
+    state,
+    MOTION_DECAY_RATE: Math.log(0.93) / 16.67,
+    scheduleAutoAdvance: () => { scheduled += 1; },
+  });
   assert.equal(advanceMotion(5000), false);
   assert.equal(state.position, 4);
+  assert.equal(scheduled, 1);
   state.velocity = 0.001;
   assert.equal(advanceMotion(16), true);
   assert.ok(state.position > 4);
+});
+
+test('auto advance timer launches one smooth target only when allowed', () => {
+  const state = { autoTimerId: 0, autoTarget: null, position: 4.25, velocity: 0 };
+  let timerCallback = null;
+  let timerDelay = 0;
+  let requestedFrames = 0;
+  const scheduleAutoAdvance = loadFunction('scheduleAutoAdvance', {
+    state,
+    clearAutoAdvance: () => { state.autoTimerId = 0; },
+    autoAdvanceAllowed: () => true,
+    setTimeout: (callback, delay) => {
+      timerCallback = callback;
+      timerDelay = delay;
+      return 41;
+    },
+    AUTO_ADVANCE_DELAY: 2600,
+    AUTO_ADVANCE_IMPULSE: -Math.log(0.93) / 16.67,
+    ensureAnimationFrame: () => { requestedFrames += 1; },
+  });
+
+  scheduleAutoAdvance();
+  assert.equal(state.autoTimerId, 41);
+  assert.equal(timerDelay, 2600);
+  timerCallback();
+  assert.equal(state.autoTimerId, 0);
+  assert.equal(state.autoTarget, 5.25);
+  assert.equal(state.velocity, -Math.log(0.93) / 16.67);
+  assert.equal(requestedFrames, 1);
+});
+
+test('cancelling auto advance clears its timer target and velocity', () => {
+  const cleared = [];
+  const state = { autoTimerId: 19, autoTarget: 6, velocity: 0.0044 };
+  const clearAutoAdvance = loadFunction('clearAutoAdvance', {
+    state,
+    clearTimeout: id => cleared.push(id),
+  });
+  const cancelAutoAdvance = loadFunction('cancelAutoAdvance', { state, clearAutoAdvance });
+  cancelAutoAdvance();
+  assert.deepEqual(cleared, [19]);
+  assert.equal(state.autoTimerId, 0);
+  assert.equal(state.autoTarget, null);
+  assert.equal(state.velocity, 0);
+});
+
+test('auto advance targets one card and is stable across supported frame cadences', () => {
+  function settle(frameMs) {
+    const start = 7.25;
+    const state = {
+      position: start,
+      velocity: -Math.log(0.93) / 16.67,
+      autoTarget: start + 1,
+    };
+    let scheduled = 0;
+    const advanceMotion = loadFunction('advanceMotion', {
+      state,
+      MOTION_DECAY_RATE: Math.log(0.93) / 16.67,
+      scheduleAutoAdvance: () => { scheduled += 1; },
+    });
+    for (let frame = 0; state.velocity && frame < 1000; frame += 1) advanceMotion(frameMs);
+    return { ...state, scheduled };
+  }
+
+  [16.67, 33.33, 50].forEach(frameMs => {
+    const result = settle(frameMs);
+    assert.equal(result.position, 8.25, `${frameMs}ms cadence must move exactly one card`);
+    assert.equal(result.autoTarget, null);
+    assert.equal(result.velocity, 0);
+    assert.equal(result.scheduled, 1);
+  });
+});
+
+test('motion integration is independent of frame partitioning', () => {
+  function simulate(intervals) {
+    const state = { position: 2.5, velocity: 0.0044, autoTarget: null };
+    const advanceMotion = loadFunction('advanceMotion', {
+      state,
+      MOTION_DECAY_RATE: Math.log(0.93) / 16.67,
+      scheduleAutoAdvance: () => {},
+    });
+    intervals.forEach(elapsed => advanceMotion(elapsed));
+    return state;
+  }
+
+  const at60fps = simulate([...Array(59).fill(16.67), 16.47]);
+  const at30fps = simulate([...Array(30).fill(33.33), 0.1]);
+  const at20fps = simulate(Array(20).fill(50));
+  assert.ok(Math.abs(at60fps.position - at30fps.position) < 1e-10);
+  assert.ok(Math.abs(at30fps.position - at20fps.position) < 1e-10);
+  assert.ok(Math.abs(at60fps.velocity - at20fps.velocity) < 1e-12);
+});
+
+test('autoplay pause control cancels motion and can resume scheduling', () => {
+  const state = { ready: true, autoPaused: false, autoTarget: 6, velocity: 0.0044 };
+  let cancelled = 0;
+  let scheduled = 0;
+  let updated = 0;
+  const toggleAutoAdvance = loadFunction('toggleAutoAdvance', {
+    state,
+    isInteractive: () => true,
+    cancelAutoAdvance: () => {
+      cancelled += 1;
+      state.autoTarget = null;
+      state.velocity = 0;
+    },
+    scheduleAutoAdvance: () => { scheduled += 1; },
+    updateAutoAdvanceControl: () => { updated += 1; },
+  });
+
+  toggleAutoAdvance();
+  assert.equal(state.autoPaused, true);
+  assert.equal(cancelled, 1);
+  assert.equal(state.velocity, 0);
+  toggleAutoAdvance();
+  assert.equal(state.autoPaused, false);
+  assert.equal(scheduled, 1);
+  assert.equal(updated, 2);
+});
+
+test('autoplay pause control exposes its state and hides in reduced modes', () => {
+  const attributes = new Map();
+  const autoplayToggle = {
+    hidden: true,
+    textContent: '',
+    setAttribute: (name, value) => attributes.set(name, value),
+  };
+  const state = { autoPaused: false };
+  const reducedMotion = { matches: false };
+  let interactive = true;
+  const updateAutoAdvanceControl = loadFunction('updateAutoAdvanceControl', {
+    state,
+    autoplayToggle,
+    reducedMotion,
+    conserveResources: false,
+    isInteractive: () => interactive,
+  });
+
+  updateAutoAdvanceControl();
+  assert.equal(autoplayToggle.hidden, false);
+  assert.equal(attributes.get('aria-pressed'), 'false');
+  assert.equal(autoplayToggle.textContent, '暂停轮播');
+
+  state.autoPaused = true;
+  updateAutoAdvanceControl();
+  assert.equal(attributes.get('aria-pressed'), 'true');
+  assert.equal(autoplayToggle.textContent, '继续轮播');
+
+  reducedMotion.matches = true;
+  updateAutoAdvanceControl();
+  assert.equal(autoplayToggle.hidden, true);
+
+  reducedMotion.matches = false;
+  interactive = false;
+  updateAutoAdvanceControl();
+  assert.equal(autoplayToggle.hidden, true);
+});
+
+test('auto advance is blocked offscreen, during interaction, pause, and reduced modes', () => {
+  const state = { inViewport: true, tracking: false, autoPaused: false };
+  const preview = { open: false };
+  const reducedMotion = { matches: false };
+  const document = { visibilityState: 'visible', activeElement: null };
+  let focused = false;
+  const root = { matches: () => focused };
+  const autoplayToggle = {};
+  const allowed = loadFunction('autoAdvanceAllowed', {
+    state,
+    root,
+    autoplayToggle,
+    preview,
+    document,
+    reducedMotion,
+    conserveResources: false,
+    isInteractive: () => true,
+  });
+  assert.equal(allowed(), true);
+  state.inViewport = false;
+  assert.equal(allowed(), false);
+  state.inViewport = true;
+  state.tracking = true;
+  assert.equal(allowed(), false);
+  state.tracking = false;
+  state.autoPaused = true;
+  assert.equal(allowed(), false);
+  state.autoPaused = false;
+  focused = true;
+  assert.equal(allowed(), false);
+  document.activeElement = autoplayToggle;
+  assert.equal(allowed(), true, 'the visible pause control must not block resumed autoplay');
+  focused = false;
+  reducedMotion.matches = true;
+  assert.equal(allowed(), false);
+
+  const conserved = loadFunction('autoAdvanceAllowed', {
+    state: { ...state, autoPaused: false },
+    root,
+    autoplayToggle,
+    preview,
+    document: { visibilityState: 'visible', activeElement: null },
+    reducedMotion: { matches: false },
+    conserveResources: true,
+    isInteractive: () => true,
+  });
+  assert.equal(conserved(), false);
 });
 
 test('preview autoplay is disabled for reduced-motion and resource conservation', () => {
@@ -411,6 +634,7 @@ test('closing the preview restores focus to its triggering card', () => {
     canRestoreGalleryFocus: loadFunction('canRestoreGalleryFocus', { state }),
     isInteractive: () => true,
     syncVideoPlayback: () => {},
+    scheduleAutoAdvance: () => {},
   });
   cleanupPreview();
   assert.equal(replaced, true);
@@ -454,6 +678,7 @@ test('closing the preview skips a hidden failed trigger and focuses the active c
     canRestoreGalleryFocus: loadFunction('canRestoreGalleryFocus', { state }),
     isInteractive: () => true,
     syncVideoPlayback: () => {},
+    scheduleAutoAdvance: () => {},
   });
 
   cleanupPreview();
@@ -511,6 +736,7 @@ test('side-card preview becomes active before close and keyboard reopen', () => 
     canRestoreGalleryFocus,
     isInteractive: () => true,
     syncVideoPlayback: () => {},
+    scheduleAutoAdvance: () => {},
   });
   cleanupPreview();
   assert.equal(focusedIndex, 2);
@@ -555,6 +781,7 @@ test('preview cleanup detaches errors and cancels the old media request', () => 
     cancelPreviewMedia,
     isInteractive: () => false,
     syncVideoPlayback: () => {},
+    scheduleAutoAdvance: () => {},
   });
 
   cleanupPreview();
@@ -733,6 +960,8 @@ test('fallback state removes interactive semantics and dynamic cards', () => {
     state,
     document: { activeElement: null },
     root,
+    cancelAutoAdvance: () => {},
+    updateAutoAdvanceControl: () => {},
     cancelAnimationFrame: () => {},
     clearEntryMedia: () => {},
     track: { replaceChildren: () => { trackCleared = true; } },
@@ -785,6 +1014,8 @@ test('fallback moves focus from a removed gallery card to the status message', (
       removeAttribute() {},
     },
     cancelAnimationFrame: () => {},
+    cancelAutoAdvance: () => {},
+    updateAutoAdvanceControl: () => {},
     clearEntryMedia: () => {},
     track: { replaceChildren() {} },
     fallback: { removeAttribute() {} },

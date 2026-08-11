@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """首页视频横幅的最小契约测试。"""
+import hashlib
 from pathlib import Path
 import unittest
 
@@ -15,6 +16,8 @@ class HomeVideoBannerTests(unittest.TestCase):
         cls.liquid_glass = (ROOT / "site/homepage-liquid-glass.js").read_text(encoding="utf-8")
         cls.particles = (ROOT / "site/homepage-particles.js").read_text(encoding="utf-8")
         cls.bird_points = ROOT / "site/assets/home/bird-points.bin"
+        cls.three_core = ROOT / "site/vendor/three.core.min.js"
+        cls.three_module = ROOT / "site/vendor/three.module.min.js"
         cls.videos = [
             ROOT / "site/assets/home/hero-banner-monochrome-eye.mp4",
             ROOT / "site/assets/home/hero-banner-ancient-courtyard.mp4",
@@ -84,14 +87,37 @@ class HomeVideoBannerTests(unittest.TestCase):
 
     def test_background_particles_use_the_real_scroll_driven_point_cloud_bird(self):
         self.assertIn('data-particle-story', self.html)
-        self.assertIn('type="module" src="/homepage-particles.js?v=20260809-pointcloud2"', self.html)
+        particle_stamp = hashlib.md5(
+            self.particles.replace("\r\n", "\n").encode("utf-8")
+        ).hexdigest()[:8]
+        self.assertIn(
+            f'type="module" src="/homepage-particles.js?v={particle_stamp}"',
+            self.html,
+        )
         self.assertIn('.page-particle-stage{position:fixed;z-index:2', self.css)
         self.assertIn("ShaderMaterial", self.particles)
         self.assertIn("uPointerStrength", self.particles)
         self.assertIn("* uPointerStrength;", self.particles)
         self.assertIn("data-particle-scene", self.particles)
+        self.assertIn("const INITIAL_STORY_TIMELINE = 0.82", self.particles)
+        self.assertIn(
+            "scrollTarget = INITIAL_STORY_TIMELINE + progress * (5 - INITIAL_STORY_TIMELINE)",
+            self.particles,
+        )
         self.assertTrue(self.bird_points.is_file())
         self.assertEqual(self.bird_points.stat().st_size, 65536 * 3 * 4)
+
+    def test_particle_renderer_vendors_its_mit_three_modules(self):
+        for module in (self.three_core, self.three_module):
+            self.assertTrue(module.is_file(), module)
+            self.assertLess(module.stat().st_size, 500 * 1024)
+            header = module.read_text(encoding="utf-8")[:160]
+            self.assertIn("@license", header)
+            self.assertIn("SPDX-License-Identifier: MIT", header)
+        self.assertIn(
+            'from"./three.core.min.js"',
+            self.three_module.read_text(encoding="utf-8"),
+        )
 
 
 if __name__ == "__main__":
