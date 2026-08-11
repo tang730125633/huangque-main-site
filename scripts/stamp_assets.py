@@ -20,7 +20,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKBENCH_DIR = ROOT / "site" / "workbench"
+SITE_DIR = ROOT / "site"
+WORKBENCH_DIR = SITE_DIR / "workbench"
 STANDALONE_PAGES = {"device.html"}  # 设备授权页不能注入工作台外壳、登录弹窗或任务脚本。
 
 
@@ -58,6 +59,34 @@ class Asset:
     def rewrite(self, content: bytes, stamp: str) -> tuple[bytes, int]:
         replacement = self.name.encode() + rb"\g<1>" + stamp.encode("ascii")
         return self.pattern.subn(replacement, content)
+
+
+class SiteAsset:
+    """A content-hashed asset referenced by explicitly listed public pages."""
+
+    def __init__(self, name: str, reference: str, pages: tuple[str, ...]) -> None:
+        self.name = name
+        self.reference = reference
+        self.pages = pages
+
+    @property
+    def path(self) -> Path:
+        return SITE_DIR / self.name
+
+    @property
+    def pattern(self) -> "re.Pattern[bytes]":
+        return re.compile(re.escape(self.reference.encode()) + rb"(\?v=)([^\"'<>\s]+)")
+
+    def stamp(self) -> str:
+        content = self.path.read_bytes().replace(b"\r\n", b"\n")
+        return hashlib.md5(content).hexdigest()[:8]
+
+    def rewrite(self, content: bytes, stamp: str) -> tuple[bytes, int]:
+        replacement = self.reference.encode() + rb"\g<1>" + stamp.encode("ascii")
+        return self.pattern.subn(replacement, content)
+
+    def html_files(self) -> tuple[Path, ...]:
+        return tuple(SITE_DIR / page for page in self.pages)
 
 
 ASSETS = (
@@ -105,6 +134,14 @@ ASSETS = (
     Asset("canvas/canvas-digital-presenter.css", required=False),
 )
 
+SITE_ASSETS = (
+    SiteAsset(
+        "assets/home/orbit-gallery.js",
+        "/assets/home/orbit-gallery.js",
+        ("index.html",),
+    ),
+)
+
 
 def html_files() -> list[Path]:
     return sorted(path for path in WORKBENCH_DIR.glob("*.html") if path.name not in STANDALONE_PAGES)
@@ -117,12 +154,13 @@ def main() -> int:
     parser.add_argument("--check", action="store_true", help="verify stamps without writing files")
     args = parser.parse_args()
 
-    for asset in ASSETS:
+    all_assets = (*ASSETS, *SITE_ASSETS)
+    for asset in all_assets:
         if not asset.path.exists():
             print(f"missing asset: {asset.path.relative_to(ROOT)}", file=sys.stderr)
             return 2
 
-    stamps = {asset.name: asset.stamp() for asset in ASSETS}
+    stamps = {asset.name: asset.stamp() for asset in all_assets}
     missing: list[str] = []
     stale: list[str] = []
     changed: set[str] = set()
@@ -142,6 +180,23 @@ def main() -> int:
             if not args.check:
                 path.write_bytes(updated)
                 changed.add(rel)
+
+    for asset in SITE_ASSETS:
+        for path in asset.html_files():
+            if not path.exists():
+                missing.append(f"{path.relative_to(ROOT).as_posix()} ({asset.name})")
+                continue
+            content = path.read_bytes()
+            updated, count = asset.rewrite(content, stamps[asset.name])
+            rel = path.relative_to(ROOT).as_posix()
+            if count == 0:
+                missing.append(f"{rel} ({asset.name})")
+                continue
+            if updated != content:
+                stale.append(rel)
+                if not args.check:
+                    path.write_bytes(updated)
+                    changed.add(rel)
 
     summary = ", ".join(f"{name}={stamp}" for name, stamp in stamps.items())
 

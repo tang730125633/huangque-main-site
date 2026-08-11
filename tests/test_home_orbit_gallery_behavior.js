@@ -183,11 +183,13 @@ test('an unrelated pointer cannot replace or finish the active drag', () => {
 test('arrow navigation moves focus to the new active card', () => {
   let focusedIndex = -1;
   const state = {
+    ready: true,
     velocity: 1,
     position: 0,
     activeIndex: 0,
     items: [{ id: 0 }, { id: 1 }],
     cards: [0, 1].map(index => ({
+      failed: false,
       card: { focus: () => { focusedIndex = index; } },
     })),
   };
@@ -196,11 +198,18 @@ test('arrow navigation moves focus to the new active card', () => {
     state.activeIndex = 1;
   };
   const focusActiveCard = loadFunction('focusActiveCard', { state });
-  const handleGalleryKeydown = loadFunction('handleGalleryKeydown', {
+  const findNextAvailableIndex = loadFunction('findNextAvailableIndex', { state });
+  const activateCard = loadFunction('activateCard', {
     state,
     isInteractive: () => true,
     render,
     focusActiveCard,
+  });
+  const handleGalleryKeydown = loadFunction('handleGalleryKeydown', {
+    state,
+    isInteractive: () => true,
+    findNextAvailableIndex,
+    activateCard,
     openPreview: () => assert.fail('preview should not open for ArrowRight'),
   });
   let prevented = false;
@@ -208,6 +217,47 @@ test('arrow navigation moves focus to the new active card', () => {
   assert.equal(prevented, true);
   assert.equal(state.position, 1);
   assert.equal(focusedIndex, 1);
+});
+
+test('arrow navigation skips failed cards in both directions', () => {
+  let focusedIndex = -1;
+  const state = {
+    ready: true,
+    velocity: 0,
+    position: 0,
+    activeIndex: 0,
+    items: Array.from({ length: 5 }, (_, id) => ({ id })),
+    cards: Array.from({ length: 5 }, (_, index) => ({
+      failed: index === 1 || index === 2,
+      card: { focus: () => { focusedIndex = index; } },
+    })),
+  };
+  const render = force => {
+    assert.equal(force, true);
+    state.activeIndex = state.position;
+  };
+  const focusActiveCard = loadFunction('focusActiveCard', { state });
+  const findNextAvailableIndex = loadFunction('findNextAvailableIndex', { state });
+  const activateCard = loadFunction('activateCard', {
+    state,
+    isInteractive: () => true,
+    render,
+    focusActiveCard,
+  });
+  const handleGalleryKeydown = loadFunction('handleGalleryKeydown', {
+    state,
+    isInteractive: () => true,
+    findNextAvailableIndex,
+    activateCard,
+    openPreview: () => assert.fail('preview should not open for arrow navigation'),
+  });
+
+  handleGalleryKeydown({ key: 'ArrowRight', preventDefault() {} });
+  assert.equal(state.activeIndex, 3);
+  assert.equal(focusedIndex, 3);
+  handleGalleryKeydown({ key: 'ArrowLeft', preventDefault() {} });
+  assert.equal(state.activeIndex, 0);
+  assert.equal(focusedIndex, 0);
 });
 
 function fakeMedia(dataset) {
@@ -250,6 +300,46 @@ test('Save-Data mounts only nearby visible media and unloads it offscreen', () =
   state.inViewport = false;
   syncCardMediaSources();
   assert.equal(near.getAttribute('src'), null, 'Save-Data media must unload after leaving the viewport');
+});
+
+test('leaving Save-Data range cancels an in-flight poster probe without parallel duplicates', () => {
+  let probesCreated = 0;
+  const removedProbeAttributes = [];
+  const probes = [];
+  function Image() {
+    probesCreated += 1;
+    const probe = {
+      onload: null,
+      onerror: null,
+      src: '',
+      removeAttribute: name => removedProbeAttributes.push(name),
+    };
+    probes.push(probe);
+    return probe;
+  }
+  const video = fakeMedia({ poster: '/assets/poster.webp' });
+  const entry = { failed: false, posterLoading: false, posterProbe: null };
+  const cancelPosterProbe = loadFunction('cancelPosterProbe', {});
+  const mountVideoPoster = loadFunction('mountVideoPoster', {
+    Image,
+    shouldLoadCardMedia: () => true,
+    handleMediaFailure: () => assert.fail('probe should not fail in this test'),
+  });
+  const unmountVideoPoster = loadFunction('unmountVideoPoster', { cancelPosterProbe });
+
+  mountVideoPoster(entry, video);
+  mountVideoPoster(entry, video);
+  assert.equal(probesCreated, 1, 'an in-flight probe must be reused');
+  const firstProbe = probes[0];
+  unmountVideoPoster(entry, video);
+  assert.deepEqual(removedProbeAttributes, ['src']);
+  assert.equal(firstProbe.onload, null);
+  assert.equal(firstProbe.onerror, null);
+  assert.equal(entry.posterProbe, null);
+  assert.equal(entry.posterLoading, false);
+
+  mountVideoPoster(entry, video);
+  assert.equal(probesCreated, 2, 'a new probe may start only after the prior request was cancelled');
 });
 
 test('gallery initialization waits until the section approaches the viewport', () => {
@@ -369,6 +459,69 @@ test('closing the preview skips a hidden failed trigger and focuses the active c
   cleanupPreview();
   assert.equal(activeFocused, true);
   assert.equal(state.previewTrigger, null);
+});
+
+test('side-card preview becomes active before close and keyboard reopen', () => {
+  const openedItems = [];
+  let focusedIndex = -1;
+  const cards = Array.from({ length: 3 }, (_, index) => ({
+    isConnected: true,
+    hidden: false,
+    disabled: false,
+    dataset: { galleryIndex: String(index) },
+    getAttribute: () => null,
+    focus: () => { focusedIndex = index; },
+  }));
+  const state = {
+    ready: true,
+    velocity: 0,
+    position: 0,
+    activeIndex: 0,
+    previewTrigger: null,
+    items: Array.from({ length: 3 }, (_, id) => ({ id })),
+    cards: cards.map(card => ({ card, failed: false })),
+  };
+  const render = force => {
+    assert.equal(force, true);
+    state.activeIndex = state.position;
+  };
+  const focusActiveCard = loadFunction('focusActiveCard', { state });
+  const activateCard = loadFunction('activateCard', {
+    state,
+    isInteractive: () => true,
+    render,
+    focusActiveCard,
+  });
+  const openPreview = (item, trigger) => {
+    state.previewTrigger = trigger;
+    openedItems.push(item.id);
+  };
+  const openCardPreview = loadFunction('openCardPreview', { state, activateCard, openPreview });
+
+  openCardPreview(cards[2]);
+  assert.equal(state.activeIndex, 2);
+  assert.deepEqual(openedItems, [2]);
+
+  const canRestoreGalleryFocus = loadFunction('canRestoreGalleryFocus', { state });
+  const cleanupPreview = loadFunction('cleanupPreview', {
+    state,
+    previewStage: { replaceChildren() {} },
+    previewTitle: { textContent: 'before' },
+    cancelPreviewMedia: () => {},
+    canRestoreGalleryFocus,
+    isInteractive: () => true,
+    syncVideoPlayback: () => {},
+  });
+  cleanupPreview();
+  assert.equal(focusedIndex, 2);
+
+  const handleGalleryKeydown = loadFunction('handleGalleryKeydown', {
+    state,
+    isInteractive: () => true,
+    openPreview,
+  });
+  handleGalleryKeydown({ key: 'Enter', preventDefault() {} });
+  assert.deepEqual(openedItems, [2, 2]);
 });
 
 test('preview cleanup detaches errors and cancels the old media request', () => {
@@ -678,6 +831,59 @@ test('too few valid media items restore the static fallback', () => {
   handleMediaFailure(entry, '视频封面');
   assert.equal(entry.failed, true);
   assert.match(fallbackMessage, /视频封面样片加载失败/);
+});
+
+test('a continuous failed window recenters on the nearest surviving card', () => {
+  const failedIndexes = new Set([17, 18, 19, 20, 0, 1, 2, 3, 4]);
+  const makeCard = () => ({
+    classList: { toggle() {} },
+    setAttribute() {},
+    style: { setProperty() {} },
+    tabIndex: -1,
+  });
+  const state = {
+    position: 0,
+    activeIndex: 0,
+    ready: true,
+    failedCount: failedIndexes.size,
+    items: Array.from({ length: 21 }, (_, id) => ({ id })),
+    cards: Array.from({ length: 21 }, (_, index) => ({
+      failed: failedIndexes.has(index),
+      visible: null,
+      card: makeCard(),
+    })),
+  };
+  const shortestDelta = loadFunction('shortestDelta', { state });
+  const normalizePosition = loadFunction('normalizePosition', { state });
+  const nearestAvailableIndex = loadFunction('nearestAvailableIndex', { state, shortestDelta });
+  const ensureAvailablePosition = loadFunction('ensureAvailablePosition', {
+    state,
+    nearestAvailableIndex,
+    shortestDelta,
+    VISIBLE_RANGE: 4.2,
+  });
+  let fallback = false;
+  const render = loadFunction('render', {
+    state,
+    normalizePosition,
+    ensureAvailablePosition,
+    innerWidth: 1280,
+    VISIBLE_RANGE: 4.2,
+    shortestDelta,
+    setFallbackState: () => { fallback = true; },
+    status: { textContent: '' },
+    syncCardMediaSources: () => {},
+    syncVideoPlayback: () => {},
+  });
+
+  assert.equal(state.cards.filter(entry => !entry.failed).length, 12);
+  render(true);
+  assert.equal(fallback, false);
+  assert.equal(state.position, 5);
+  assert.equal(state.activeIndex, 5);
+  assert.equal(state.cards[5].card.tabIndex, 0);
+  const visibleSurvivors = state.cards.filter(entry => !entry.failed && entry.visible);
+  assert.ok(visibleSurvivors.length > 0);
 });
 
 test('media failure transfers focus from the hidden card to the new active card', () => {

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import pathlib
 import re
@@ -26,7 +27,8 @@ class HomeOrbitGalleryTests(unittest.TestCase):
         self.assertIn("data-gallery-fallback", self.html)
         self.assertNotIn('class="page-shell sample-grid"', self.html)
         self.assertIn('homepage.css?v=20260810-orbitfix2', self.html)
-        self.assertIn("orbit-gallery.js?v=20260810-orbitfix2", self.html)
+        script_stamp = hashlib.md5(self.js.replace("\r\n", "\n").encode("utf-8")).hexdigest()[:8]
+        self.assertIn(f"orbit-gallery.js?v={script_stamp}", self.html)
         self.assertIn("gallery.json?v=20260810-orbitfix2", self.html)
 
     def test_manifest_contains_all_requested_media(self):

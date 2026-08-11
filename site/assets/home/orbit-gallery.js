@@ -72,12 +72,17 @@
     setInstructionsHidden(true);
   }
 
+  function cancelPosterProbe(entry) {
+    const probe = entry.posterProbe;
+    if (!probe) return;
+    probe.onload = null;
+    probe.onerror = null;
+    probe.removeAttribute?.('src');
+    entry.posterProbe = null;
+  }
+
   function clearEntryMedia(entry) {
-    if (entry.posterProbe) {
-      entry.posterProbe.onload = null;
-      entry.posterProbe.onerror = null;
-      entry.posterProbe = null;
-    }
+    cancelPosterProbe(entry);
     entry.posterLoading = false;
     const media = entry.card.querySelector(entry.item.type === 'video' ? 'video' : 'img');
     if (!media) return;
@@ -259,11 +264,7 @@
   }
 
   function unmountVideoPoster(entry, video) {
-    if (entry.posterProbe) {
-      entry.posterProbe.onload = null;
-      entry.posterProbe.onerror = null;
-      entry.posterProbe = null;
-    }
+    cancelPosterProbe(entry);
     entry.posterLoading = false;
     video.removeAttribute('poster');
   }
@@ -274,11 +275,13 @@
     const probe = new Image();
     entry.posterProbe = probe;
     probe.onload = () => {
+      if (entry.posterProbe !== probe) return;
       entry.posterLoading = false;
       entry.posterProbe = null;
       if (!entry.failed && shouldLoadCardMedia(entry)) video.poster = video.dataset.poster;
     };
     probe.onerror = () => {
+      if (entry.posterProbe !== probe) return;
       entry.posterLoading = false;
       entry.posterProbe = null;
       handleMediaFailure(entry, '视频封面');
@@ -295,6 +298,43 @@
   function normalizePosition() {
     const count = state.items.length;
     if (count) state.position = ((state.position % count) + count) % count;
+  }
+
+  function findNextAvailableIndex(startIndex, direction) {
+    const count = state.cards.length;
+    if (!count || !direction) return -1;
+    for (let step = 1; step <= count; step += 1) {
+      const index = ((startIndex + direction * step) % count + count) % count;
+      if (!state.cards[index]?.failed) return index;
+    }
+    return -1;
+  }
+
+  function nearestAvailableIndex() {
+    let nearestIndex = -1;
+    let nearestDistance = Infinity;
+    state.cards.forEach((entry, index) => {
+      if (entry.failed) return;
+      const distance = Math.abs(shortestDelta(index));
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestIndex = index;
+      }
+    });
+    return nearestIndex;
+  }
+
+  function ensureAvailablePosition() {
+    const nearestIndex = nearestAvailableIndex();
+    if (nearestIndex < 0) return false;
+    const activeEntry = state.cards[state.activeIndex];
+    const hasVisibleEntry = state.cards.some((entry, index) => (
+      !entry.failed && Math.abs(shortestDelta(index)) <= VISIBLE_RANGE
+    ));
+    if (!hasVisibleEntry || !activeEntry || activeEntry.failed) {
+      state.position = nearestIndex;
+    }
+    return true;
   }
 
   function galleryVideoCanPlay(index) {
@@ -363,6 +403,11 @@
   function render(force = false) {
     if (!state.items.length) return;
     normalizePosition();
+    if (!ensureAvailablePosition()) {
+      setFallbackState('动态画廊暂不可用，已显示静态创作样片。');
+      return;
+    }
+    normalizePosition();
     const compact = innerWidth < 720;
     const radiusX = Math.min(compact ? innerWidth * 0.94 : innerWidth * 0.64, compact ? 540 : 800);
     const curveDepth = Math.min(compact ? 420 : 820, Math.max(compact ? 320 : 640, innerWidth * 0.52));
@@ -372,7 +417,7 @@
     const arcLift = compact
       ? 168
       : Math.min(680, Math.max(470, innerWidth * 0.34));
-    let activeIndex = 0;
+    let activeIndex = -1;
     let activeDistance = Infinity;
 
     state.cards.forEach((entry, index) => {
@@ -411,6 +456,11 @@
         activeIndex = index;
       }
     });
+
+    if (activeIndex < 0) {
+      setFallbackState('动态画廊暂不可用，已显示静态创作样片。');
+      return;
+    }
 
     if (activeIndex !== state.activeIndex || force) {
       state.activeIndex = activeIndex;
@@ -608,22 +658,37 @@
     if (!isInteractive()) return;
     const card = event.target.closest('[data-gallery-index]');
     if (!card || performance.now() < state.suppressClickUntil) return;
-    const item = state.items[Number(card.dataset.galleryIndex)];
-    if (item) openPreview(item, card);
+    openCardPreview(card);
   });
 
   function focusActiveCard() {
     state.cards[state.activeIndex]?.card.focus({ preventScroll: true });
   }
 
+  function activateCard(index, focus = false) {
+    const entry = state.cards[index];
+    if (!isInteractive() || !entry || entry.failed) return false;
+    state.velocity = 0;
+    state.position = index;
+    render(true);
+    if (state.activeIndex !== index) return false;
+    if (focus) focusActiveCard();
+    return true;
+  }
+
+  function openCardPreview(card) {
+    const index = Number(card?.dataset.galleryIndex);
+    if (!Number.isInteger(index) || !activateCard(index)) return;
+    openPreview(state.items[index], state.cards[index].card);
+  }
+
   function handleGalleryKeydown(event) {
     if (!isInteractive()) return;
     if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
       event.preventDefault();
-      state.velocity = 0;
-      state.position += event.key === 'ArrowRight' ? 1 : -1;
-      render(true);
-      focusActiveCard();
+      const direction = event.key === 'ArrowRight' ? 1 : -1;
+      const targetIndex = findNextAvailableIndex(state.activeIndex, direction);
+      if (targetIndex >= 0) activateCard(targetIndex, true);
     } else if ((event.key === 'Enter' || event.key === ' ') && state.items[state.activeIndex]) {
       event.preventDefault();
       openPreview(state.items[state.activeIndex], state.cards[state.activeIndex]?.card);

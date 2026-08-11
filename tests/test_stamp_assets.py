@@ -44,6 +44,18 @@ class AssetRegistryTests(unittest.TestCase):
         self.assertIn("theme.css", names)
         self.assertIn("theme-init.js", names)
 
+    def test_home_orbit_gallery_uses_its_content_hash_stamp(self):
+        assets = {a.name: a for a in stamp_assets.SITE_ASSETS}
+        self.assertIn("assets/home/orbit-gallery.js", assets)
+        asset = assets["assets/home/orbit-gallery.js"]
+        html = (ROOT / "site" / "index.html").read_bytes()
+        match = asset.pattern.search(html)
+        self.assertIsNotNone(match)
+        self.assertEqual(asset.stamp().encode("ascii"), match.group(2))
+        normalized = asset.path.read_bytes().replace(b"\r\n", b"\n")
+        changed_stamp = stamp_assets.hashlib.md5(normalized + b"\n// changed").hexdigest()[:8]
+        self.assertNotEqual(asset.stamp(), changed_stamp)
+
     def test_only_shell_is_required(self):
         """普通工作台页必须有 shell；独立设备授权页显式排除。"""
         required = {a.name for a in stamp_assets.ASSETS if a.required}
