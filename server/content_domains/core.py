@@ -3124,6 +3124,10 @@ class H(BaseHTTPRequestHandler):
                         _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
                     if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video"}:
                         video_domain.update_video_asset_phase(jid, "failed", status="failed", error="任务队列已满，请稍后再试")
+                    if kind == "cinematic" and self._cinematic_reference_files:
+                        video_domain._cleanup_cinematic_reference_files(
+                            self._cinematic_reference_files)
+                        self._cinematic_reference_files = []
                     queue_response = {"detail": "任务队列已满，请稍后再试", "code": "queue_full", "retry_after_ms": 4000, "need": cost}
                     if is_still_route:
                         queue_response["operation_terminal"] = True

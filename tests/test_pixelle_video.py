@@ -79,6 +79,16 @@ class PixelleVideoTests(unittest.TestCase):
             for item in styles
         ))
 
+    def test_all_material_styles_default_people_to_chinese_or_east_asian(self):
+        for style in self.pixelle.STYLE_PRESETS:
+            prompt_prefix = style["prompt_prefix"]
+            self.assertIn("Chinese or East Asian people", prompt_prefix, style["key"])
+            self.assertIn(
+                "unless the user text explicitly specifies another ethnicity, nationality, or region",
+                prompt_prefix,
+                style["key"],
+            )
+
     def test_voice_catalog_sanitizes_public_and_ready_owned_personal_voices(self):
         upstream = {
             "items": [
