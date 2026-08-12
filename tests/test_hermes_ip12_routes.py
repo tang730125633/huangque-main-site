@@ -571,6 +571,25 @@ assert client.get("/api/conversations").get_json() == []
 server.current_account_id = lambda: "acct_a"
 assert client.delete(f"/api/conversations/{cid}").get_json()["ok"] is True
 
+older_cid = "ffffffffffff"
+newer_cid = "000000000000"
+for ordered_cid, title in ((older_cid, "较早诊断"), (newer_cid, "最近诊断")):
+    server.save_conversation(ordered_cid, {
+        "id": ordered_cid,
+        "title": title,
+        "messages": [],
+        "coach_state": server.initial_coach_state(),
+        "reports": {},
+        "deliverables": {},
+        "owner_account_id": "acct_a",
+    })
+os.utime(server.conversation_path(older_cid), (100, 100))
+os.utime(server.conversation_path(newer_cid), (200, 200))
+ordered_convos = client.get("/api/conversations").get_json()
+assert [item["id"] for item in ordered_convos[:2]] == [newer_cid, older_cid], ordered_convos
+assert client.delete(f"/api/conversations/{older_cid}").status_code == 200
+assert client.delete(f"/api/conversations/{newer_cid}").status_code == 200
+
 foundation_cid = client.post("/api/conversations").get_json()["id"]
 assert client.post("/api/foundation-report/confirm", json={"conversation_id": foundation_cid}).status_code == 409
 assert client.post("/api/jump-module", json={"conversation_id": foundation_cid, "module": 5}).status_code == 409

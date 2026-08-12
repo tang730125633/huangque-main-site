@@ -273,21 +273,22 @@ def save_conversation(convo_id, data):
 def list_convos(owner_account_id=None):
     convos = []
     if CONVOS_DIR.exists():
-        for f in sorted(CONVOS_DIR.glob("*.json"), reverse=True):
+        for f in CONVOS_DIR.glob("*.json"):
             try:
                 d = json.loads(f.read_text(encoding="utf-8"))
                 if owner_account_id and d.get("owner_account_id") != owner_account_id:
                     continue
                 cs = normalize_coach_state(d.get("coach_state"))
-                convos.append({"id": f.stem, "title": d.get("title", "新诊断"),
+                convos.append((f.stat().st_mtime_ns, {"id": f.stem, "title": d.get("title", "新诊断"),
                     "updated": d.get("updated", ""),
                     "message_count": len(d.get("messages", [])),
                     "current_module": cs["current_module"],
                     "completed_modules": cs["completed_modules"],
                     "report_count": len(d.get("reports", {})),
-                    "deliverable_count": len(d.get("deliverables", {}))})
+                    "deliverable_count": len(d.get("deliverables", {}))}))
             except: pass
-    return convos
+    convos.sort(key=lambda item: item[0], reverse=True)
+    return [convo for _, convo in convos]
 
 def parse_coach_state_updates(ai_response, current_state):
     """Legacy compatibility: model prose is never allowed to mutate state."""
