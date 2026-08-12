@@ -28,6 +28,12 @@ STARTUP_RECOVERY = (
 
 
 class FailedAssetSyncTests(unittest.TestCase):
+    def test_failure_log_keeps_job_provider_phase_and_error_code(self):
+        run_job = CORE[CORE.index("def run_job("):CORE.index("# ============ 超时清道夫")]
+        self.assertIn('"event": "generation_failed"', run_job)
+        self.assertIn('"provider_task_id": diagnostics.get("provider_video_id")', run_job)
+        self.assertIn('"error_code": type(e).__name__', run_job)
+
     def test_helper_uses_update_not_insert(self):
         """_mark_video_asset_failed 必须用 update_video_asset_phase(UPDATE)——
         record_video_asset(INSERT) 会因 mode NOT NULL 对 cinematic/xiaole 抛 IntegrityError。"""
