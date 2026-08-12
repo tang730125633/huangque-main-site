@@ -22,12 +22,13 @@ def decision(state, *, kind="propose_checkpoint", reply="这是当前结果", dr
 
 
 def intake_decision(*, kind="propose_checkpoint", reply="这是我整理的基础资料", draft="基础资料核对稿", updates=None):
+    has_draft = kind in {"propose_checkpoint", "revise_intake"}
     return {
         "decision": kind,
         "checkpoint": 1 if kind == "propose_checkpoint" else 0,
         "reply": reply,
-        "draft": draft if kind == "propose_checkpoint" else "",
-        "self_review": "只整理了用户原话，仍需本人确认。" if kind == "propose_checkpoint" else "",
+        "draft": draft if has_draft else "",
+        "self_review": "只整理了用户原话，仍需本人确认。" if has_draft else "",
         "profile_updates": updates or [],
         "confidence": 0.9,
     }
@@ -249,6 +250,70 @@ class IP12HarnessTests(unittest.TestCase):
             "内容变更优先",
         ):
             self.assertIn(rule, prompt)
+
+    def test_confirmed_intake_supplement_reopens_intake_without_advancing_module(self):
+        state = self.complete_intake()
+        supplement = "我以前还做过健身教练，但是失败了，后来才转向计算机方向。"
+        raw = intake_decision(
+            kind="revise_intake",
+            reply="我把这段经历补进基础资料，先请你重新核对。",
+            draft="称呼：泽龙；职业：FDE；过往经历：曾做健身教练，后来转向计算机方向。",
+            updates=[{
+                "field": "previous_career",
+                "value": "曾做健身教练，后来转向计算机方向",
+                "kind": "user_fact",
+                "evidence_quote": "我以前还做过健身教练",
+            }],
+        )
+
+        state, _, reply = harness.apply_model_decision(state, raw, supplement)
+
+        self.assertEqual((state["current_module"], state["module_step"]), (1, 0))
+        self.assertEqual(state["completed_modules"], [])
+        self.assertEqual(state["intake"]["status"], "awaiting_confirmation")
+        self.assertEqual(state["intake"]["mode"], "revision")
+        self.assertNotIn("previous_career", state["ip_profile"]["facts"])
+        self.assertIn("当前模块不会自动推进", reply)
+
+        actions = harness.available_actions(state)
+        self.assertEqual([item["label"] for item in actions], ["确认补充", "继续修改"])
+        action = actions[0]
+        state, event = harness.apply_action(state, action, state["revision"])
+        self.assertEqual(state["intake"]["status"], "complete")
+        self.assertNotIn("mode", state["intake"])
+        self.assertEqual((state["current_module"], state["module_step"]), (1, 0))
+        self.assertEqual(
+            state["ip_profile"]["facts"]["previous_career"]["value"],
+            "曾做健身教练，后来转向计算机方向",
+        )
+        self.assertIn("基础信息补充已确认", event["assistant_prefix"])
+
+    def test_confirmed_intake_supplement_discards_only_unconfirmed_module_draft(self):
+        state = self.complete_intake()
+        state, _, _ = harness.apply_model_decision(
+            state, decision(state), "模块用户原话", pending_id="unconfirmed-module-draft"
+        )
+        raw = intake_decision(
+            kind="revise_intake",
+            draft="称呼：泽龙；职业：FDE；补充经历：做过健身教练。",
+            updates=[{
+                "field": "previous_career",
+                "value": "做过健身教练",
+                "kind": "user_fact",
+                "evidence_quote": "做过健身教练",
+            }],
+        )
+
+        state, _, _ = harness.apply_model_decision(state, raw, "补充：做过健身教练")
+
+        self.assertIsNone(state["pending"])
+        self.assertEqual((state["current_module"], state["module_step"]), (1, 0))
+
+    def test_intake_revision_is_rejected_after_a_module_checkpoint_is_confirmed(self):
+        state, _ = self.confirm_checkpoint(self.complete_intake())
+        raw = intake_decision(kind="revise_intake", draft="修改后的基础资料")
+        with self.assertRaisesRegex(harness.HarnessError, "新诊断"):
+            harness.apply_model_decision(state, raw, "修改基础资料")
 
     def test_every_open_module_supports_follow_up_discussion_revision_and_confirmation(self):
         for module in harness.MODULE_WORKFLOWS:

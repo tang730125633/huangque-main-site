@@ -764,6 +764,12 @@ def _coach_model_decision(convo, user_message):
     evidence = "\n".join(
         item["content"] for item in history if item["role"] == "user"
     ) + "\n" + clean_message
+    for bucket_name in ("facts", "preferences"):
+        bucket = (state.get("ip_profile") or {}).get(bucket_name) or {}
+        evidence += "\n" + "\n".join(
+            str(item.get("evidence_quote") or "")
+            for item in bucket.values() if isinstance(item, dict)
+        )
     return decision, evidence
 
 

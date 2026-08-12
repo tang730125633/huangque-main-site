@@ -393,10 +393,11 @@ async function selectConvo(id){cid=id;var r=await fetch('/api/conversations/'+id
 async function jumpModule(mid){if(mid>AVAILABLE_MODULE_COUNT){toast('尚未开发，敬请期待');return}if(!cid||streaming)return;var r=await fetch('/api/jump-module',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,module:mid})});var d=await r.json();if(!r.ok||!d.ok){toast('❌ '+(d.error||'无法切换模块'));return}state=d.state||state;renderMods();sendJumpMsg(mid)}
 
 function stateActions(){
-  if(state.intake&&state.intake.status==='awaiting_confirmation')return[
-    {type:'confirm_intake',target_id:'intake-'+state.revision,label:'确认资料',primary:true},
-    {type:'edit_intake',target_id:'intake-'+state.revision,label:'我要修改',primary:false}
+  if(state.intake&&state.intake.status==='awaiting_confirmation'){var revising=state.intake.mode==='revision';return[
+    {type:'confirm_intake',target_id:'intake-'+state.revision,label:revising?'确认补充':'确认资料',primary:true},
+    {type:'edit_intake',target_id:'intake-'+state.revision,label:revising?'继续修改':'我要修改',primary:false}
   ];
+  }
   var p=state.pending;if(p&&p.status==='awaiting_confirmation')return[
     {type:'confirm_checkpoint',target_id:p.id,label:'确认这一步',primary:true},
     {type:'edit_checkpoint',target_id:p.id,label:'需要修改',primary:false}

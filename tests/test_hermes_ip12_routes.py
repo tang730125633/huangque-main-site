@@ -930,6 +930,45 @@ assert "13800138000" not in server.build_system_prompt(mini_cid)
 assert server._redact_mobile_numbers("+8613800138000 / 008613800138000") == "[手机号已隐藏] / [手机号已隐藏]"
 assert "SYSTEM_OVERRIDE_SENTINEL" not in server.build_system_prompt(mini_cid)
 assert not server._intake_pending({"current_module": 1})
+post_confirm_supplement = "需要补充一下：我以前还做过健身教练，但是失败了，后来才转向计算机方向。"
+with patch.object(server, "_coach_model_decision", return_value=({
+    "decision": "revise_intake",
+    "checkpoint": 0,
+    "reply": "我把这段经历补进基础资料，先请你重新核对。",
+    "draft": "称呼：小满；职业：FDE；过往经历：曾做健身教练，后来转向计算机方向。",
+    "self_review": "保留原资料并加入本轮补充，仍需本人确认。",
+    "profile_updates": [{
+        "field": "previous_career",
+        "value": "曾做健身教练，后来转向计算机方向",
+        "kind": "user_fact",
+        "evidence_quote": "我以前还做过健身教练",
+    }],
+    "confidence": 0.95,
+}, post_confirm_supplement)):
+    reopened = client.post("/api/chat-complete", json={
+        "conversation_id": mini_cid,
+        "message": post_confirm_supplement,
+    })
+assert reopened.status_code == 200, reopened.get_data(as_text=True)
+reopened_state = reopened.get_json()["state"]
+assert reopened_state["intake"]["status"] == "awaiting_confirmation"
+assert reopened_state["intake"]["mode"] == "revision"
+assert reopened_state["current_module"] == 1 and reopened_state["module_step"] == 0
+assert "基础信息已确认" not in reopened.get_json()["assistant"]
+assert "当前模块不会自动推进" in reopened.get_json()["assistant"]
+reconfirmed = client.post("/api/chat-complete", json={
+    "conversation_id": mini_cid,
+    "action": {"type": "confirm_intake", "target_id": f"intake-{reopened_state['revision']}"},
+    "expected_revision": reopened_state["revision"],
+    "request_id": "confirm-intake-revision-runtime-1",
+})
+assert reconfirmed.status_code == 200, reconfirmed.get_data(as_text=True)
+assert reconfirmed.get_json()["state"]["intake"]["status"] == "complete"
+assert reconfirmed.get_json()["state"]["current_module"] == 1
+assert reconfirmed.get_json()["state"]["module_step"] == 0
+assert "基础信息补充已确认" in reconfirmed.get_json()["assistant"]
+assert reconfirmed.get_json()["state"]["ip_profile"]["facts"]["previous_career"]["value"].startswith("曾做健身教练")
+stored_intake = server.load_conversation(mini_cid)
 stored_intake["messages"].extend(
     {"role": "assistant", "content": f"历史消息 {index}"} for index in range(45)
 )
@@ -953,7 +992,9 @@ with patch.object(server.requests, "post") as chat_model:
     model_payload = chat_model.call_args.kwargs["json"]
     assert model_payload["stream"] is False
     assert model_payload["response_format"]["json_schema"]["strict"] is True
+    assert "revise_intake" in model_payload["response_format"]["json_schema"]["schema"]["properties"]["decision"]["enum"]
     model_messages = model_payload["messages"]
+    assert "decision=revise_intake" in model_messages[0]["content"]
     assert "SYSTEM_OVERRIDE_SENTINEL" not in model_messages[0]["content"]
     intake_contexts = [message for message in model_messages if message["role"] == "user" and "此前确认的基础资料" in message["content"]]
     assert len(intake_contexts) == 1 and "SYSTEM_OVERRIDE_SENTINEL" in intake_contexts[0]["content"]

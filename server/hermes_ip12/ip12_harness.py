@@ -86,7 +86,7 @@ DECISION_SCHEMA = {
     "properties": {
         "decision": {
             "type": "string",
-            "enum": ["ask_follow_up", "propose_checkpoint", "answer_only"],
+            "enum": ["ask_follow_up", "propose_checkpoint", "revise_intake", "answer_only"],
         },
         "checkpoint": {"type": "integer", "minimum": 0, "maximum": 5},
         "reply": {"type": "string", "maxLength": 4000},
@@ -238,9 +238,10 @@ def available_actions(value):
     intake = state["intake"]
     if intake["status"] == "awaiting_confirmation":
         target = "intake-%s" % state["revision"]
+        revising = intake.get("mode") == "revision"
         return [
-            {"type": "confirm_intake", "target_id": target, "label": "确认资料", "primary": True},
-            {"type": "edit_intake", "target_id": target, "label": "我要修改", "primary": False},
+            {"type": "confirm_intake", "target_id": target, "label": "确认补充" if revising else "确认资料", "primary": True},
+            {"type": "edit_intake", "target_id": target, "label": "继续修改" if revising else "我要修改", "primary": False},
         ]
     pending = state.get("pending")
     if isinstance(pending, dict) and pending.get("status") == "awaiting_confirmation":
@@ -302,6 +303,7 @@ def apply_action(value, action, expected_revision):
 
     if action_type in {"confirm_intake", "edit_intake"}:
         intake = state["intake"]
+        revising = intake.get("mode") == "revision"
         expected_target = "intake-%s" % state["revision"]
         if intake["status"] != "awaiting_confirmation" or target_id != expected_target:
             raise HarnessConflict("这份基础资料已经更新，请查看最新版本")
@@ -310,6 +312,7 @@ def apply_action(value, action, expected_revision):
             event["assistant_prefix"] = "请直接补充或纠正，怎么说都可以；我会重新整理后再请你确认。"
         else:
             intake["status"] = "complete"
+            intake.pop("mode", None)
             draft = str(intake.get("draft") or "").strip()
             if not draft:
                 draft = "\n".join(
@@ -319,10 +322,17 @@ def apply_action(value, action, expected_revision):
                 )
             state["ip_profile"]["intake"] = {"summary": draft}
             _apply_profile_updates(state["ip_profile"], intake.get("profile_updates") or [])
-            event["assistant_prefix"] = (
-                "✅ 基础信息已确认。现在正式进入模块 1：定位诊断。\n\n"
-                "先讲一段对你影响最大的关键经历或转折：发生了什么，它后来怎样影响了你？"
-            )
+            if revising:
+                module = state["current_module"]
+                event["assistant_prefix"] = (
+                    "✅ 基础信息补充已确认。继续模块 %s：%s；这次补充不会被当成模块回答，也不会自动推进。"
+                    % (module, MODULE_WORKFLOWS[module]["name"])
+                )
+            else:
+                event["assistant_prefix"] = (
+                    "✅ 基础信息已确认。现在正式进入模块 1：定位诊断。\n\n"
+                    "先讲一段对你影响最大的关键经历或转折：发生了什么，它后来怎样影响了你？"
+                )
         _bump(state)
         return state, event
 
@@ -381,7 +391,7 @@ def validate_model_decision(raw, value, evidence_text, expected_checkpoint=None)
     if not isinstance(raw, dict):
         raise HarnessError("模型没有返回结构化对象")
     decision = str(raw.get("decision") or "")
-    if decision not in {"ask_follow_up", "propose_checkpoint", "answer_only"}:
+    if decision not in {"ask_follow_up", "propose_checkpoint", "revise_intake", "answer_only"}:
         raise HarnessError("模型返回了无效 decision")
     try:
         checkpoint = int(raw.get("checkpoint", 0))
@@ -398,6 +408,13 @@ def validate_model_decision(raw, value, evidence_text, expected_checkpoint=None)
             raise HarnessError("模型试图跨越当前断点")
         if not draft or not self_review:
             raise HarnessError("模型没有返回可确认内容或自评")
+    elif decision == "revise_intake":
+        if state["intake"]["status"] != "complete":
+            raise HarnessError("基础资料尚未确认，不能重复发起修订")
+        if state["completed_modules"] or state["module_step"]:
+            raise HarnessError("模块已有确认结果，请通过新诊断修改基础资料")
+        if checkpoint != 0 or not draft or not self_review:
+            raise HarnessError("基础资料修订缺少完整核对稿或自评")
     elif checkpoint != 0 or draft:
         raise HarnessError("非断点回复不能携带推进内容")
 
@@ -418,8 +435,8 @@ def validate_model_decision(raw, value, evidence_text, expected_checkpoint=None)
         if kind != "ai_option" and (not quote or quote not in evidence):
             raise HarnessError("模型档案更新缺少可回查的用户原话")
         clean_updates.append({"field": field, "value": value_text, "kind": kind, "evidence_quote": quote})
-    if decision != "propose_checkpoint" and clean_updates:
-        raise HarnessError("只有待确认断点可以携带档案更新")
+    if decision not in {"propose_checkpoint", "revise_intake"} and clean_updates:
+        raise HarnessError("只有待确认断点或基础资料修订可以携带档案更新")
     try:
         confidence = min(1.0, max(0.0, float(raw.get("confidence", 0))))
     except (TypeError, ValueError):
@@ -442,6 +459,11 @@ def render_model_reply(decision):
             reply += "\n\n" + decision["draft"]
         reply += "\n\n**自评**：" + decision["self_review"]
         reply += "\n\n请确认这一步，或告诉我需要修改的地方。"
+    elif decision["decision"] == "revise_intake":
+        if decision["draft"] not in reply:
+            reply += "\n\n" + decision["draft"]
+        reply += "\n\n**自评**：" + decision["self_review"]
+        reply += "\n\n这只是更新后的基础资料核对稿。请确认补充，或继续修改；当前模块不会自动推进。"
     return reply
 
 
@@ -483,7 +505,17 @@ def apply_intake_decision(value, raw, evidence_text):
 def apply_model_decision(value, raw, evidence_text, pending_id=None):
     state = normalize_state(value)
     decision = validate_model_decision(raw, state, evidence_text)
-    if decision["decision"] == "propose_checkpoint":
+    if decision["decision"] == "revise_intake":
+        state["intake"].update(
+            status="awaiting_confirmation",
+            round=3,
+            mode="revision",
+            draft=decision["draft"],
+            profile_updates=decision["profile_updates"],
+        )
+        # Any unconfirmed module draft used the old profile and must be rebuilt.
+        state["pending"] = None
+    elif decision["decision"] == "propose_checkpoint":
         state["pending"] = {
             "id": pending_id or uuid.uuid4().hex,
             "kind": "checkpoint",
@@ -555,6 +587,7 @@ def system_prompt(value):
 - 信息不足时 decision=ask_follow_up，只问一个最有价值、容易回答且尚未回答的问题。
 - 信息足够时 decision=propose_checkpoint，draft 只包含当前断点的完整可确认内容。
 - 用户只是询问、讨论现有草稿或暂时跑题时 decision=answer_only，不改变断点；用户补充、纠正或反悔时，重做当前断点的完整草稿。
+- 仅当模块 1 尚无任何已确认断点，用户明确补充或纠正已经确认的基础资料时，decision=revise_intake、checkpoint=0；draft 必须合并原基础资料与本轮补充形成完整核对稿。这不是模块回答，不得推进模块。模块已有确认结果时不要使用 revise_intake，应说明需要新建诊断以免污染既有产出。
 - “确认/可以”等字样与补充或纠正同时出现时，内容变更优先，绝不能宣布确认或推进。
 - profile_updates 使用英文 snake_case 字段；用户事实和偏好必须逐字引用用户原话，AI 方案用 ai_option 且 evidence_quote 为空。
 - 不预设美业、直销或创业身份；不得编造市场趋势、案例、收入、经历或效果承诺。

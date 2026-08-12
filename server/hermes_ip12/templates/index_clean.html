@@ -364,10 +364,11 @@ async function sendJumpMessage(modId) {
 }
 
 function stateActions(){
-  if(coachState.intake?.status==='awaiting_confirmation')return[
-    {type:'confirm_intake',target_id:`intake-${coachState.revision}`,label:'确认资料',primary:true},
-    {type:'edit_intake',target_id:`intake-${coachState.revision}`,label:'我要修改',primary:false}
+  if(coachState.intake?.status==='awaiting_confirmation'){const revising=coachState.intake?.mode==='revision';return[
+    {type:'confirm_intake',target_id:`intake-${coachState.revision}`,label:revising?'确认补充':'确认资料',primary:true},
+    {type:'edit_intake',target_id:`intake-${coachState.revision}`,label:revising?'继续修改':'我要修改',primary:false}
   ];
+  }
   const pending=coachState.pending;if(pending?.status==='awaiting_confirmation')return[
     {type:'confirm_checkpoint',target_id:pending.id,label:'确认这一步',primary:true},
     {type:'edit_checkpoint',target_id:pending.id,label:'需要修改',primary:false}
