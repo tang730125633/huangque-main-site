@@ -25,6 +25,11 @@ JOBS_STORE = (ROOT / "server/content_domains/jobs_store.py").read_text(encoding=
 
 
 class HistoryIsNotClobberedByTheDraftTests(unittest.TestCase):
+    def test_failed_history_card_shows_the_recorded_error(self):
+        block = HTML.split("function renderVideoHistory(items)")[1].split("function updateJobProgress")[0]
+        self.assertIn("failed&&x.error", block)
+        self.assertIn("esc(x.error)", block)
+
     def test_history_and_drafts_are_separate_layers(self):
         self.assertIn("var videoHistoryItems=[]", HTML)
         self.assertIn("var videoDrafts=[]", HTML)

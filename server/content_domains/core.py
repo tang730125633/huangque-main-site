@@ -1445,11 +1445,27 @@ def run_job(job_id):
                 return
         # 生成失败：CAS 抢 error 终态；抢到才记失败资产。退点走幂等(reaper 若已退则跳过)
         # from_states 含 pending：抢 running 那句自己抛异常时任务还停在 pending，只认 running 会不退点
+        diagnostics = {}
+        if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video"}:
+            diagnostics_fn = getattr(_domains()[2], "get_video_job_diagnostics", None)
+            if diagnostics_fn:
+                diagnostics = diagnostics_fn(job_id)
         claimed = _fail_job_and_schedule_refund(
             job_id, str(e), from_states=("pending", "running"),
             username=username, cost=cost, kind=kind,
         )
         if claimed:
+            print("[generation-failed] " + json.dumps({
+                "event": "generation_failed",
+                "job_id": job_id,
+                "kind": kind,
+                "phase": diagnostics.get("phase"),
+                "provider_task_id": diagnostics.get("provider_video_id"),
+                "image_asset_id": diagnostics.get("image_asset_id"),
+                "audio_asset_id": diagnostics.get("audio_asset_id"),
+                "error_code": type(e).__name__,
+                "error_message": str(e)[:300],
+            }, ensure_ascii=False), flush=True)
             _mark_video_asset_failed(job_id, kind, e)
             if kind == "short_drama_sound_effect":
                 try:

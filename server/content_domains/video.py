@@ -2536,6 +2536,20 @@ def get_video_job_phase(job_id):
     except Exception:
         return None
 
+def get_video_job_diagnostics(job_id):
+    """Return the existing safe correlation fields for one video job."""
+    try:
+        with closing(adb()) as c:
+            row = c.execute(
+                """SELECT phase,image_asset_id,audio_asset_id,reference_asset_id,
+                          provider_video_id,provider_avatar_id,source_video_url
+                   FROM video_assets WHERE job_id=?""",
+                (job_id,),
+            ).fetchone()
+        return dict(row) if row else {}
+    except Exception:
+        return {}
+
 def _avatar_display_name(username):
     with closing(adb()) as c:
         row = c.execute("SELECT COUNT(*) AS n FROM avatars WHERE username=?", (username,)).fetchone()
@@ -3983,7 +3997,7 @@ def _download_video_file_direct(url, prefix="vid", *, allowed_hosts=None, max_by
         target.write_bytes(data)
     return _faststart_video_file(fn)
 
-def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, motion):
+def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, motion, job_id=None):
     """数字人口播直连 HeyGen v3(type=image + expressiveness)：与泽龙中转同一套 API/参数(honor resolution+expressiveness)，
     只是 direct=True 走 api.heygen.com 出境。原 v2 talking_photo 直连丢了 expressiveness 且忽略 resolution
     →出片效果不同+被硬编码720p(用户反馈"效果不一样")；改回 v3 image 后实测 1080×1920 104s。"""
@@ -3996,16 +4010,22 @@ def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, moti
     # 让整条口播失败(fang 的 cinematic/口播上传 240s 超时同源)。见 _heygen_retry_net。
     image_asset_id = _upload_heygen_image_asset(
         image_fp, "口播传图", direct=True)
+    update_video_asset_phase(job_id, "uploading_audio_asset", image_asset_id=image_asset_id)
     audio_asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(audio_fp, direct=True), "口播传音")
+    update_video_asset_phase(job_id, "submitting_video", image_asset_id=image_asset_id,
+                             audio_asset_id=audio_asset_id)
     with heygen_slot("口播直连"):   # 账号级并发上限 10，三个池共用；超了在本地排队，不让 HeyGen 甩 429
         # 429 退避重试：请求被瞬间拒绝、未计费，是唯一可以安全重发的失败。
         # 不重试的话，一次突发就把用户的任务判死退点、白等几分钟。
         video_id = _heygen_retry_429(
             lambda: _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion, direct=True),
             "口播直连")
+        update_video_asset_phase(job_id, "polling_video", provider_video_id=video_id)
         # ↓ 此刻已计费。之后任何失败都不能回退中转重发（同一账号，会再付一次），见 HeyGenBilledError
         try:
             info = _heygen_poll_video(video_id, direct=True, deadline_s=VIDEO_GEN_DEADLINE)
+            update_video_asset_phase(job_id, "downloading_video", provider_video_id=video_id,
+                                     source_video_url=info.get("video_url"))
             video_file = _download_video_file_direct(info["video_url"], "heygen")
             cover = _extract_first_frame_cover(video_file)
         except Exception as e:
@@ -4022,10 +4042,10 @@ def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, moti
         ret["image_url"] = public_url(cover, "image/jpeg")
     return ret
 
-def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
+def generate_heygen_video(image_file, audio_file, resolution, ratio, motion, job_id=None):
     if _HEYGEN_DIRECT and HEYGEN_API_KEY:
         try:
-            return generate_heygen_video_direct(image_file, audio_file, resolution, ratio, motion)
+            return generate_heygen_video_direct(image_file, audio_file, resolution, ratio, motion, job_id=job_id)
         except HeyGenBilledError:
             raise   # 已提交=已计费，重发就是再付一次钱（泽龙转发同一账号）
         except HeyGenMCPAuthError:
@@ -4040,14 +4060,20 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
     # 素材上传对瞬时网络错误重试(不计费、安全，同直连)
     image_asset_id = _upload_heygen_image_asset(
         image_fp, "口播中转传图")
+    update_video_asset_phase(job_id, "uploading_audio_asset", image_asset_id=image_asset_id)
     audio_asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(audio_fp), "口播中转传音")
+    update_video_asset_phase(job_id, "submitting_video", image_asset_id=image_asset_id,
+                             audio_asset_id=audio_asset_id)
     # 中转(泽龙)转发的是同一个 HeyGen 账号，一样占账号的并发额度 —— 不占槽就等于绕过了闸
     with heygen_slot("口播中转"):
         video_id = _heygen_retry_429(
             lambda: _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion), "口播中转")
+        update_video_asset_phase(job_id, "polling_video", provider_video_id=video_id)
         # 中转也用同一个死线。原来它回落到 HEYGEN_TIMEOUT(1200s)，比 reaper 对口播的宽限
         # (540s)还长 —— reaper 先把任务判死并退点，worker 却还在轮询，上游照样出片照样收钱。
         info = _heygen_poll_video(video_id, deadline_s=VIDEO_GEN_DEADLINE)
+        update_video_asset_phase(job_id, "downloading_video", provider_video_id=video_id,
+                                 source_video_url=info.get("video_url"))
         video_file = _download_video_file(info["video_url"], "heygen")
         cover = _extract_first_frame_cover(video_file)
     ret = {
@@ -4392,7 +4418,9 @@ def gen_video(payload):
     if motion not in {"low", "medium", "high"}:
         motion = "medium"
     created_avatar = None
-    video_result = generate_heygen_video(image_file, audio_file, resolution, ratio, motion)
+    update_video_asset_phase(job_id, "files_saved", image_file=image_file, audio_file=audio_file,
+                             resolution=resolution, ratio=ratio, motion=motion)
+    video_result = generate_heygen_video(image_file, audio_file, resolution, ratio, motion, job_id=job_id)
     bgm_error = None
     if bgm_file and video_result.get("video_file"):
         try:

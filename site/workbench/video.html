@@ -195,6 +195,7 @@
   .history-play:hover{background:#f4cd72;transform:translate(-50%,-50%) scale(1.04)}
   .history-play svg{width:20px;height:20px;margin-left:2px}
   .history-created{font-size:12px;color:#5c6b82}
+  .history-error{padding:10px 11px;border:1px solid rgba(244,112,138,.24);border-radius:9px;background:rgba(244,112,138,.08);color:#ff9bae;font-size:11.5px;line-height:1.55;overflow-wrap:anywhere}
   .job-progress{display:flex;flex-direction:column;gap:8px;padding:10px 11px;border:1px solid rgba(148,164,187,.1);border-radius:11px;background:rgba(148,164,187,.04)}
   .job-progress-top{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:11.5px;font-weight:800;color:#eaf1fa}
   .job-progress-eta{color:#e7b24c;font-weight:700;white-space:nowrap}
@@ -1331,6 +1332,8 @@
       files_saved:{label:'准备素材',step:1,percent:18,eta:'预计还需 2-4 分钟'},
       motion_parameters_ready:{label:'准备素材',step:1,percent:24,eta:'预计还需 2-4 分钟'},
       uploading_image_asset:{label:'上传素材',step:2,percent:34,eta:'预计还需 2-3 分钟'},
+      uploading_audio_asset:{label:'上传音频',step:2,percent:42,eta:'预计还需 2-3 分钟'},
+      submitting_video:{label:'提交视频任务',step:3,percent:56,eta:'正在等待上游受理'},
       uploading_reference_asset:{label:'上传素材',step:2,percent:42,eta:'预计还需 2-3 分钟'},
       creating_photo_avatar:{label:'创建数字人',step:3,percent:52,eta:'预计还需 1-3 分钟'},
       reusing_photo_avatar:{label:'复用已有形象',step:3,percent:58,eta:'预计还需 1-2 分钟'},
@@ -1483,6 +1486,7 @@
         +(quality?'<span class="history-tag">'+esc(quality)+'</span>':'')
         +'<span class="history-tag">'+esc(x.ratio||'9:16')+'</span><span class="history-tag">'+esc(duration)+'</span></div>'
         +progress
+        +(failed&&x.error?'<div class="history-error">'+esc(x.error)+'</div>':'')
         +'<div class="history-stage"><div class="history-preview">'+preview+'</div></div>'
         +'<div class="history-created">创建于：'+esc(formatTime(x.created_at)||'最近创建')+'</div>'
         +'<div class="history-actions">'
