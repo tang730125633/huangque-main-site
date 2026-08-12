@@ -471,6 +471,30 @@ class IP12HarnessTests(unittest.TestCase):
                 self.assertEqual(state["module_step"], 1)
                 self.assertEqual(state["ip_profile"]["confirmed_outputs"][f"{module}-1"]["content"], "按用户意见修改后的草稿")
 
+    def test_module_follow_up_keeps_unconfirmed_facts_until_checkpoint_confirmation(self):
+        state = self.complete_intake()
+        message = "直到转入 AI 行业之后，我开始帮助企业搭建 Agent。"
+        raw = decision(state, kind="ask_follow_up", reply="这次转向后来怎样影响了你？")
+        raw["profile_updates"] = [{
+            "field": "turning_point",
+            "value": "转入 AI 行业并开始帮助企业搭建 Agent",
+            "kind": "user_fact",
+            "evidence_quote": "直到转入 AI 行业之后",
+        }]
+
+        state, _, _ = harness.apply_model_decision(state, raw, message, pending_id="partial-1")
+
+        self.assertEqual(state["pending"]["status"], "collecting")
+        self.assertEqual(state["pending"]["profile_updates"][0]["field"], "turning_point")
+        self.assertEqual(harness.available_actions(state), [])
+        state = harness.normalize_state(state)
+        final = decision(state, draft="关键转折：转入 AI 行业，并开始帮助企业搭建 Agent。")
+        final["profile_updates"] = raw["profile_updates"]
+        state, _, _ = harness.apply_model_decision(state, final, "这让我找到了愿意长期投入的方向。")
+        action = harness.available_actions(state)[0]
+        state, _ = harness.apply_action(state, action, state["revision"])
+        self.assertEqual(state["ip_profile"]["facts"]["turning_point"]["value"], raw["profile_updates"][0]["value"])
+
     def test_confirm_action_advances_exactly_one_checkpoint(self):
         state = self.complete_intake()
         next_state, event = self.confirm_checkpoint(state)

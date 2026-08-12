@@ -1069,6 +1069,32 @@ assert reconfirmed.get_json()["state"]["current_module"] == 1
 assert reconfirmed.get_json()["state"]["module_step"] == 0
 assert "基础信息补充已确认" in reconfirmed.get_json()["assistant"]
 assert reconfirmed.get_json()["state"]["ip_profile"]["facts"]["previous_career"]["value"].startswith("曾做健身教练")
+module_turn_message = """其实最大的转折点在于，我之前也做过类似的底层工作，都是用汗水换金钱。我做过很多散工，比如当服务员、修车，也经常打螺丝，职业方向一直比较零散。
+
+直到转入 AI 行业之后，我开始做出新的尝试，帮助他们去搭建 Agent，把 AI 用到真实的业务当中去。虽然只有三个月，但这一次转向，可能让我找到了一个更愿意长期投入的方向。"""
+with patch.object(server, "_coach_model_decision", return_value=({
+    "decision": "ask_follow_up",
+    "checkpoint": 0,
+    "reply": "这次转向之后，哪一次真实结果最让你确认自己愿意长期投入？",
+    "draft": "",
+    "self_review": "",
+    "profile_updates": [{
+        "field": "turning_point",
+        "value": "从底层散工转向 AI 行业并开始帮助企业搭建 Agent",
+        "kind": "user_fact",
+        "evidence_quote": "直到转入 AI 行业之后",
+    }],
+    "confidence": 0.9,
+}, module_turn_message)):
+    module_turn = client.post("/api/chat-complete", json={
+        "conversation_id": mini_cid,
+        "message": module_turn_message,
+    })
+assert module_turn.status_code == 200, module_turn.get_data(as_text=True)
+assert module_turn.get_json()["state"]["pending"]["status"] == "collecting"
+assert module_turn.get_json()["actions"] == []
+stored_module_turn = server.load_conversation(mini_cid)
+assert sum(item["role"] == "user" and item["content"] == module_turn_message for item in stored_module_turn["messages"]) == 1
 stored_intake = server.load_conversation(mini_cid)
 stored_intake["messages"].extend(
     {"role": "assistant", "content": f"历史消息 {index}"} for index in range(45)
@@ -1099,6 +1125,8 @@ with patch.object(server.requests, "post") as chat_model:
     assert "SYSTEM_OVERRIDE_SENTINEL" not in model_messages[0]["content"]
     intake_contexts = [message for message in model_messages if message["role"] == "user" and "此前确认的基础资料" in message["content"]]
     assert len(intake_contexts) == 1 and "SYSTEM_OVERRIDE_SENTINEL" in intake_contexts[0]["content"]
+    assert "pending_module_updates" in intake_contexts[0]["content"]
+    assert "turning_point" in intake_contexts[0]["content"]
     assert "13800138000" not in json.dumps(model_messages, ensure_ascii=False)
 server.current_account_id = lambda: "acct_b"
 assert client.post(
