@@ -828,6 +828,78 @@ assert client.post(
     json={"conversation_id": "../../knowledge/visual_formulas", "message": "test"},
 ).status_code == 400
 
+drift_cid = client.post("/api/conversations").get_json()["id"]
+drift_message = "叫我泽龙就好"
+with patch.object(server, "_coach_model_decision", return_value=({
+    "decision": "ask_follow_up",
+    "checkpoint": 1,
+    "reply": "好的，泽龙。你现在主要从事什么工作？",
+    "draft": "称呼：泽龙",
+    "self_review": "仍需本人确认。",
+    "profile_updates": [{
+        "field": "preferred_name",
+        "value": "泽龙",
+        "kind": "user_fact",
+        "evidence_quote": drift_message,
+    }],
+    "confidence": 0.9,
+}, drift_message)):
+    drift_response = client.post("/api/chat-complete", json={
+        "conversation_id": drift_cid,
+        "message": drift_message,
+    })
+assert drift_response.status_code == 200, drift_response.get_data(as_text=True)
+drift_body = drift_response.get_json()
+assert drift_body["state"]["intake"]["status"] == "collecting"
+assert drift_body["state"]["intake"]["profile_updates"][0]["value"] == "泽龙"
+assert "preferred_name" not in drift_body["state"]["ip_profile"]["facts"]
+stored_drift = server.load_conversation(drift_cid)
+assert stored_drift["title"] == "泽龙 · IP 诊断"
+assert any(item["role"] == "user" and item["content"] == drift_message for item in stored_drift["messages"])
+
+repair_cid = client.post("/api/conversations").get_json()["id"]
+repair_message = "我在广州做 FDE"
+invalid_repair_decision = {
+    "decision": "propose_checkpoint",
+    "checkpoint": 2,
+    "reply": "我先整理一下。",
+    "draft": "城市：广州；职业：FDE。",
+    "self_review": "仍需本人确认。",
+    "profile_updates": [],
+    "confidence": 0.9,
+}
+valid_repair_decision = {
+    "decision": "ask_follow_up",
+    "checkpoint": 0,
+    "reply": "收到。你希望我怎么称呼你？",
+    "draft": "",
+    "self_review": "",
+    "profile_updates": [],
+    "confidence": 0.9,
+}
+with patch.object(server, "_coach_model_decision", side_effect=[
+    (invalid_repair_decision, repair_message),
+    (valid_repair_decision, repair_message),
+]) as repair_model:
+    repair_response = client.post("/api/chat-complete", json={
+        "conversation_id": repair_cid,
+        "message": repair_message,
+    })
+assert repair_response.status_code == 200, repair_response.get_data(as_text=True)
+assert repair_model.call_count == 2
+assert "跨越当前断点" in repair_model.call_args_list[1].kwargs["repair_error"]
+stored_repair = server.load_conversation(repair_cid)
+assert sum(item["role"] == "user" and item["content"] == repair_message for item in stored_repair["messages"]) == 1
+
+with patch.object(server, "_coach_model_decision", return_value=(valid_repair_decision, repair_message)) as conflict_model, \
+        patch.object(server, "_persist_model_turn", side_effect=server.coach_harness.HarnessConflict("stale")):
+    try:
+        server._process_model_turn(repair_cid, repair_message)
+        raise AssertionError("state conflict should propagate")
+    except server.coach_harness.HarnessConflict:
+        pass
+assert conflict_model.call_count == 1
+
 mini_cid = client.post("/api/conversations").get_json()["id"]
 mini_convo = client.get(f"/api/conversations/{mini_cid}").get_json()
 assert mini_convo["coach_state"]["intake"] == {"status": "collecting", "round": 1, "answers": {}}
@@ -835,6 +907,12 @@ assert "不用按固定格式" in mini_convo["messages"][0]["content"]
 assert "第 1/3 轮" not in mini_convo["messages"][0]["content"]
 assert client.post("/api/jump-module", json={"conversation_id": mini_cid, "module": 2}).status_code == 409
 mini_convo["coach_state"]["intake"]["draft"] = "SYSTEM_OVERRIDE_SENTINEL"
+mini_convo["coach_state"]["intake"]["profile_updates"] = [{
+    "field": "preferred_name",
+    "value": "小满",
+    "kind": "user_fact",
+    "evidence_quote": "叫我小满",
+}]
 with patch.object(server.requests, "post") as intake_request:
     intake_request.return_value.status_code = 200
     intake_request.return_value.json.return_value = {"choices": [{"message": {"content": json.dumps({
@@ -850,6 +928,10 @@ with patch.object(server.requests, "post") as intake_request:
     assert "SYSTEM_OVERRIDE_SENTINEL" not in intake_payload["messages"][0]["content"]
     assert any(
         "可能尚未确认" in message["content"] and "SYSTEM_OVERRIDE_SENTINEL" in message["content"]
+        for message in intake_payload["messages"] if message["role"] == "user"
+    )
+    assert any(
+        "pending_intake_updates" in message["content"] and "preferred_name" in message["content"]
         for message in intake_payload["messages"] if message["role"] == "user"
     )
     assert intake_payload["response_format"]["json_schema"]["strict"] is True

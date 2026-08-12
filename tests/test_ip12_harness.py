@@ -121,6 +121,116 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual(state["intake"]["draft"], revised_draft)
         self.assertEqual(state["current_module"], 1)
 
+    def test_intake_recovers_model_drift_and_keeps_latest_unconfirmed_facts(self):
+        state = harness.initial_state()
+        first = intake_decision(
+            kind="ask_follow_up",
+            reply="好的，泽龙。你现在主要从事什么工作？",
+            updates=[{
+                "field": "preferred_name",
+                "value": "泽龙",
+                "kind": "user_fact",
+                "evidence_quote": "叫我泽龙就好",
+            }],
+        )
+        first.update(checkpoint=1, draft="称呼：泽龙", self_review="仍需本人确认。")
+
+        state, normalized, _ = harness.apply_intake_decision(state, first, "叫我泽龙就好")
+
+        self.assertEqual(normalized["checkpoint"], 0)
+        self.assertEqual(normalized["draft"], "")
+        self.assertEqual(state["intake"]["status"], "collecting")
+        self.assertEqual(state["intake"]["profile_updates"][0]["value"], "泽龙")
+        self.assertNotIn("preferred_name", state["ip_profile"]["facts"])
+
+        state, _, _ = harness.apply_intake_decision(
+            state,
+            intake_decision(
+                kind="ask_follow_up",
+                reply="收到，叫你阿龙。你目前在哪座城市？",
+                updates=[{
+                    "field": "preferred_name",
+                    "value": "阿龙",
+                    "kind": "user_preference",
+                    "evidence_quote": "还是叫我阿龙吧",
+                }],
+            ),
+            "还是叫我阿龙吧",
+        )
+        state, _, _ = harness.apply_intake_decision(
+            state,
+            intake_decision(
+                draft="称呼：阿龙；城市：广州。",
+                updates=[
+                    {
+                        "field": "preferred_name",
+                        "value": "阿龙",
+                        "kind": "user_preference",
+                        "evidence_quote": "还是叫我阿龙吧",
+                    },
+                    {
+                        "field": "city",
+                        "value": "广州",
+                        "kind": "user_fact",
+                        "evidence_quote": "我在广州",
+                    },
+                ],
+            ),
+            "我在广州",
+        )
+
+        self.assertEqual(
+            [(item["field"], item["value"]) for item in state["intake"]["profile_updates"]],
+            [("preferred_name", "阿龙"), ("city", "广州")],
+        )
+        action = harness.available_actions(state)[0]
+        state, _ = harness.apply_action(state, action, state["revision"])
+        self.assertEqual(state["ip_profile"]["preferences"]["preferred_name"]["value"], "阿龙")
+        self.assertEqual(state["ip_profile"]["facts"]["city"]["value"], "广州")
+
+    def test_final_intake_proposal_can_remove_a_withdrawn_partial_fact(self):
+        state, _, _ = harness.apply_intake_decision(
+            harness.initial_state(),
+            intake_decision(
+                kind="ask_follow_up",
+                reply="收到。你希望我怎么称呼你？",
+                updates=[{
+                    "field": "age",
+                    "value": "22",
+                    "kind": "user_fact",
+                    "evidence_quote": "我今年 22 岁",
+                }],
+            ),
+            "我今年 22 岁",
+        )
+        state, _, _ = harness.apply_intake_decision(
+            state,
+            intake_decision(
+                draft="称呼：泽龙；年龄：不记录。",
+                updates=[{
+                    "field": "preferred_name",
+                    "value": "泽龙",
+                    "kind": "user_fact",
+                    "evidence_quote": "叫我泽龙",
+                }],
+            ),
+            "叫我泽龙，年龄不要记录",
+        )
+
+        self.assertEqual([item["field"] for item in state["intake"]["profile_updates"]], ["preferred_name"])
+        action = harness.available_actions(state)[0]
+        state, _ = harness.apply_action(state, action, state["revision"])
+        self.assertNotIn("age", state["ip_profile"]["facts"])
+
+    def test_initial_intake_revise_decision_becomes_a_confirmation_proposal(self):
+        state, decision_result, _ = harness.apply_intake_decision(
+            harness.initial_state(),
+            intake_decision(kind="revise_intake", draft="称呼：泽龙。"),
+            "叫我泽龙",
+        )
+        self.assertEqual(decision_result["decision"], "propose_checkpoint")
+        self.assertEqual(state["intake"]["status"], "awaiting_confirmation")
+
     def test_intake_changes_are_not_committed_before_explicit_confirmation(self):
         state = harness.initial_state()
         evidence = "职业背景改为：FDE，负责连接客户和研发"
