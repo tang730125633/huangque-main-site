@@ -3856,6 +3856,9 @@ def _public_e2e_run(row):
             "error": "failed", "failed": "failed",
         }.get(job_status, job_status)
         item["error"] = evidence.get("error") or item.get("error") or ""
+    if ((project_evidence.get("browser") or {}).get("status") == "running"
+            and item.get("status") == "completed"):
+        item["status"] = "browser_running"
     character_reference = (
         item.get("operation_id") == "short_drama.live_action.character_reference"
     )

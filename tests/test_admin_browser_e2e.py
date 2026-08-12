@@ -142,6 +142,22 @@ class AdminBrowserE2ETests(unittest.TestCase):
         self.assertIn("继续核对生产链", row[1])
         self.assertEqual(json.loads(row[2])["browser"]["status"], "failed")
 
+    def test_completed_job_stays_active_until_browser_finishes(self):
+        row = {
+            "run_id": "one", "operation_id": "image.banana.nb2.reference",
+            "username": "qa", "status": "queued", "job_id": 77,
+            "evidence_json": json.dumps({"browser": {"status": "running"}}),
+            "cost": 10, "points_before": 100, "points_after": 90,
+            "transaction_key": "", "error": "", "created_at": 1, "updated_at": 2,
+        }
+        with patch.object(self.admin, "_e2e_job_evidence", return_value={
+            "status": "done", "completed": True, "delivery_verified": True,
+            "artifact_check": "decodable", "route_provider": "banana",
+        }):
+            run = self.admin._public_e2e_run(row)
+        self.assertEqual(run["status"], "browser_running")
+        self.assertFalse(self.admin._e2e_run_passed(run))
+
     def test_admin_requires_browser_six_and_backend_eight(self):
         source = (Path(__file__).resolve().parents[1] / "site/admin/index.html").read_text()
         self.assertIn("/api/admin/e2e/browser/run", source)
