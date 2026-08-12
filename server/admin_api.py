@@ -808,13 +808,16 @@ def init_db():
              int(time.time())),
         )
         for row in c.execute(
-            "SELECT run_id,job_id,evidence_json FROM admin_e2e_runs WHERE status='browser_running'"
+            """SELECT run_id,status,job_id,evidence_json FROM admin_e2e_runs
+               WHERE status IN ('browser_running','queued','running')"""
         ).fetchall():
             try:
                 evidence = json.loads(row["evidence_json"] or "{}")
             except (json.JSONDecodeError, TypeError, ValueError):
                 evidence = {}
             browser = dict(evidence.get("browser") or {})
+            if browser.get("status") != "running":
+                continue
             browser.update({
                 "status": "failed", "error": "后台重启，客户页自动质检已中断",
                 "completed_at": int(time.time()),
@@ -823,7 +826,7 @@ def init_db():
             c.execute(
                 """UPDATE admin_e2e_runs SET status=?,evidence_json=?,error=?,updated_at=?
                    WHERE run_id=?""",
-                ("queued" if row["job_id"] else "unknown",
+                (row["status"] if row["job_id"] else "unknown",
                  json.dumps(evidence, ensure_ascii=False, separators=(",", ":")),
                  ("客户任务已受理，继续核对生产链；浏览器验收需稍后重跑"
                   if row["job_id"] else "客户提交是否到达业务接口未知，禁止自动重试"),

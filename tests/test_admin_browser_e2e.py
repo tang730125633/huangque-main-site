@@ -122,6 +122,26 @@ class AdminBrowserE2ETests(unittest.TestCase):
         self.assertIn("禁止自动重试", row[1])
         self.assertEqual(json.loads(row[2])["browser"]["status"], "unknown")
 
+    def test_restart_marks_captured_browser_journey_interrupted(self):
+        with closing(sqlite3.connect(self.admin.ADMIN_DB)) as connection:
+            connection.execute(
+                """INSERT INTO admin_e2e_runs(
+                    run_id,operation_id,username,status,job_id,evidence_json,
+                    created_by,created_at,updated_at)
+                    VALUES('restart','image.banana.nb2.reference','qa','queued',77,?,
+                           'root',1,1)""",
+                (json.dumps({"browser": {"status": "running"}}),),
+            )
+            connection.commit()
+        self.admin.init_db()
+        with closing(sqlite3.connect(self.admin.ADMIN_DB)) as connection:
+            row = connection.execute(
+                "SELECT status,error,evidence_json FROM admin_e2e_runs WHERE run_id='restart'"
+            ).fetchone()
+        self.assertEqual(row[0], "queued")
+        self.assertIn("继续核对生产链", row[1])
+        self.assertEqual(json.loads(row[2])["browser"]["status"], "failed")
+
     def test_admin_requires_browser_six_and_backend_eight(self):
         source = (Path(__file__).resolve().parents[1] / "site/admin/index.html").read_text()
         self.assertIn("/api/admin/e2e/browser/run", source)
