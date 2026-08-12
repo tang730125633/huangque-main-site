@@ -78,6 +78,7 @@ short_drama_lipsync_reconcile = _optional_content_domain(
 short_drama_lipsync_rollout = _optional_content_domain(
     "short_drama_lipsync_rollout"
 )
+browser_qa = _optional_content_domain("browser_qa")
 
 AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
 
@@ -113,7 +114,9 @@ CONTENT_OUT = pathlib.Path(os.environ.get("CONTENT_OUT", str(BASE / "content_out
 E2E_TEST_USERNAME = os.environ.get("HQ_E2E_TEST_USERNAME", "").strip()
 E2E_RUN_LOCK = threading.Lock()
 E2E_FIXTURE_LOCK = threading.Lock()
-E2E_ACTIVE_STATUSES = {"planned", "submitting", "queued", "running", "unknown"}
+E2E_ACTIVE_STATUSES = {
+    "planned", "submitting", "browser_running", "queued", "running", "unknown",
+}
 E2E_STAGE_KEYS = (
     "accepted", "account", "job", "route",
     "provider", "generation", "delivery", "billing",
@@ -804,6 +807,28 @@ def init_db():
             ("后台在短剧多步骤验收中重启；将在下次质检前按原幂等键恢复并清理",
              int(time.time())),
         )
+        for row in c.execute(
+            "SELECT run_id,job_id,evidence_json FROM admin_e2e_runs WHERE status='browser_running'"
+        ).fetchall():
+            try:
+                evidence = json.loads(row["evidence_json"] or "{}")
+            except (json.JSONDecodeError, TypeError, ValueError):
+                evidence = {}
+            browser = dict(evidence.get("browser") or {})
+            browser.update({
+                "status": "failed", "error": "后台重启，客户页自动质检已中断",
+                "completed_at": int(time.time()),
+            })
+            evidence["browser"] = browser
+            c.execute(
+                """UPDATE admin_e2e_runs SET status=?,evidence_json=?,error=?,updated_at=?
+                   WHERE run_id=?""",
+                ("queued" if row["job_id"] else "unknown",
+                 json.dumps(evidence, ensure_ascii=False, separators=(",", ":")),
+                 ("客户任务已受理，继续核对生产链；浏览器验收需稍后重跑"
+                  if row["job_id"] else "客户提交是否到达业务接口未知，禁止自动重试"),
+                 int(time.time()), row["run_id"]),
+            )
         c.commit()
     if feature_flags is not None:
         feature_flags.init_db()
@@ -4017,6 +4042,151 @@ def _e2e_project_evidence(run_id, **values):
     return evidence
 
 
+def _browser_job_accepted(run_id, account, endpoint, result):
+    job_id = int(result["job_id"])
+    actual_cost = int(result["actual_cost"])
+    points_after = int(result["points_after"])
+    idem = str(result["idempotency_key"])
+    transaction_key = "job-charge:%s:%s:%s" % (
+        account["username"], endpoint, idem,
+    )
+    with closing(db()) as connection:
+        row = connection.execute(
+            "SELECT job_id,evidence_json FROM admin_e2e_runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if not row:
+            raise ValueError("客户旅程批次不存在")
+        if row["job_id"] is not None and int(row["job_id"]) != job_id:
+            raise ValueError("同一客户旅程出现两个不同 job_id，已停止验收")
+        try:
+            evidence = json.loads(row["evidence_json"] or "{}")
+        except (json.JSONDecodeError, TypeError, ValueError):
+            evidence = {}
+        browser = dict(evidence.get("browser") or {})
+        browser.update({
+            "job_id": job_id,
+            "request_sha256": str(result.get("request_sha256") or ""),
+        })
+        evidence["browser"] = browser
+        connection.execute(
+            """UPDATE admin_e2e_runs SET username=?,status='queued',job_id=?,cost=?,
+                      points_before=?,points_after=?,transaction_key=?,evidence_json=?,updated_at=?
+               WHERE run_id=?""",
+            (account["username"], job_id, actual_cost, int(account["points"]), points_after,
+             transaction_key,
+             json.dumps(evidence, ensure_ascii=False, separators=(",", ":")),
+             int(time.time()), run_id),
+        )
+        connection.commit()
+
+
+def _run_browser_e2e(run_id, admin_token, session, prepared):
+    account = session["account"]
+    contract = prepared["runner"]["browser"]
+    endpoint = prepared["endpoint"]
+
+    def refresh_token():
+        refreshed = auth_admin_request(
+            "/api/auth/admin/e2e/session", admin_token, method="POST", payload={}
+        )
+        if refreshed["account"]["username"] != account["username"]:
+            raise RuntimeError("专用测试账号在客户旅程中发生变化")
+        return refreshed["token"]
+
+    try:
+        result = browser_qa.run_nb2_reference_journey(
+            origin=contract["origin"], account_token=session["token"],
+            cookie_name=AUTH_COOKIE_NAME,
+            fixture_path=QA_FIXTURE_DIR / contract["fixture"],
+            prompt=prepared["payload"]["prompt"], expected_cost=prepared["cost"],
+            run_id=run_id, refresh_token=refresh_token,
+            on_job=lambda details: _browser_job_accepted(
+                run_id, account, endpoint, details
+            ),
+            timeout_seconds=contract.get("timeout_seconds") or 300,
+        )
+        _e2e_project_evidence(run_id, browser=result)
+    except Exception as exc:
+        uncertain = isinstance(exc, browser_qa.BrowserSubmitUncertain)
+        with closing(db()) as connection:
+            row = connection.execute(
+                "SELECT job_id,evidence_json FROM admin_e2e_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            try:
+                evidence = json.loads((row["evidence_json"] if row else "{}") or "{}")
+            except (json.JSONDecodeError, TypeError, ValueError):
+                evidence = {}
+            browser = dict(evidence.get("browser") or {})
+            browser.update({
+                "status": "unknown" if uncertain else "failed",
+                "error": str(exc)[:220], "completed_at": int(time.time()),
+            })
+            evidence["browser"] = browser
+            has_job = bool(row and row["job_id"] is not None)
+            connection.execute(
+                """UPDATE admin_e2e_runs SET status=?,evidence_json=?,error=?,updated_at=?
+                   WHERE run_id=?""",
+                (("queued" if has_job else ("unknown" if uncertain else "failed")),
+                 json.dumps(evidence, ensure_ascii=False, separators=(",", ":")),
+                 ("" if has_job else (("提交结果未知，禁止自动重试：" if uncertain else "")
+                                       + str(exc)[:240])),
+                 int(time.time()), run_id),
+            )
+            connection.commit()
+
+
+def start_browser_e2e_run(actor, admin_token, operation_id):
+    runner = function_registry.e2e_runner(operation_id)
+    contract = (runner or {}).get("browser") or {}
+    if not runner or not runner.get("supported"):
+        raise ValueError((runner or {}).get("blocked_reason") or "测试包尚未准备完成")
+    if operation_id != "image.banana.nb2.reference" or not contract.get("supported"):
+        raise ValueError("该模式尚未接入客户页自动质检")
+    if browser_qa is None:
+        raise RuntimeError("服务器缺少客户页质检运行环境")
+    with E2E_RUN_LOCK:
+        if any(run["status"] in E2E_ACTIVE_STATUSES for run in list_e2e_runs(100)):
+            raise ValueError("已有生产链或客户页质检在运行，请等待终态")
+        session = auth_admin_request(
+            "/api/auth/admin/e2e/session", admin_token, method="POST", payload={}
+        )
+        account = session["account"]
+        prepared = _e2e_prepare_operation(session, operation_id)
+        if not account.get("membership_active"):
+            raise ValueError("专用测试账号会员未生效")
+        if int(account.get("points") or 0) < int(prepared["cost"]):
+            raise ValueError("专用测试账号点数不足：需要 %s 点，当前 %s 点" % (
+                prepared["cost"], account.get("points") or 0,
+            ))
+        fixture = (QA_FIXTURE_DIR / contract["fixture"]).resolve()
+        if fixture.parent != QA_FIXTURE_DIR.resolve() or not fixture.is_file():
+            raise ValueError("客户页私有测试素材未部署")
+        run_id = _insert_e2e_run(
+            actor, operation_id, status="browser_running",
+            username=account["username"], cost=prepared["cost"],
+        )
+        _e2e_project_evidence(run_id, browser={
+            "status": "running", "executor": "playwright", "checks": [],
+            "passed": 0, "total": 6, "started_at": int(time.time()),
+        })
+        thread = threading.Thread(
+            target=_run_browser_e2e,
+            args=(run_id, admin_token, session, prepared), daemon=True,
+            name="admin-browser-e2e-" + run_id[:8],
+        )
+        try:
+            thread.start()
+        except Exception as exc:
+            with closing(db()) as connection:
+                connection.execute(
+                    "UPDATE admin_e2e_runs SET status='failed',error=?,updated_at=? WHERE run_id=?",
+                    (str(exc)[:240], int(time.time()), run_id),
+                )
+                connection.commit()
+            raise
+    return next(run for run in list_e2e_runs(100) if run["run_id"] == run_id)
+
+
 def _submit_short_drama_character_e2e_run(run_id, admin_token, session, prepared):
     account, token = session["account"], session["token"]
     with closing(db()) as connection:
@@ -6738,6 +6908,22 @@ class H(BaseHTTPRequestHandler):
                 if body.get("confirmation") != "RUN":
                     raise ValueError("请明确确认本次真实扣点测试")
                 run = start_e2e_run(
+                    user.get("username") or "admin", self._token(),
+                    str(body.get("operation_id") or "").strip(),
+                )
+                return self._send(200, {"ok": True, "run": run})
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
+            except Exception as exc:
+                return self._send(getattr(exc, "status", 500), {"detail": str(exc)[:220]})
+        if path == "/api/admin/e2e/browser/run":
+            try:
+                body = self._body()
+                if set(body) != {"operation_id", "confirmation"}:
+                    raise ValueError("请求字段必须是 operation_id 和 confirmation")
+                if body.get("confirmation") != "RUN_BROWSER":
+                    raise ValueError("请明确确认本次客户页真实扣点测试")
+                run = start_browser_e2e_run(
                     user.get("username") or "admin", self._token(),
                     str(body.get("operation_id") or "").strip(),
                 )

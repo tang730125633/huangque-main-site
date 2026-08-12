@@ -60,13 +60,15 @@ QA_SHORT_DRAMA_CHARACTER_CONTRACT = [{
 }]
 
 
-def _validation(prefill=None, manual_requirements=None, supported=True, blocked_reason=""):
+def _validation(prefill=None, manual_requirements=None, supported=True, blocked_reason="",
+                browser=None):
     """Private server-side fixture contract; list_pages() strips its inputs."""
     return {
         "prefill": deepcopy(prefill or {}),
         "manual_requirements": list(manual_requirements or []),
         "supported": bool(supported),
         "blocked_reason": str(blocked_reason or ""),
+        "browser": deepcopy(browser or {}),
     }
 
 
@@ -515,7 +517,7 @@ VIDEO_FUNCTIONS = [
 ]
 
 
-def _image_validation(reference=False, inpaint=False):
+def _image_validation(reference=False, inpaint=False, browser=False):
     prefill = {
         "prompt": QA_IMAGE_EDIT_PROMPT if inpaint else QA_IMAGE_PROMPT,
         "ratio": "1:1", "quality": "std", "count": 1,
@@ -524,7 +526,16 @@ def _image_validation(reference=False, inpaint=False):
         prefill.update({"image_url": QA_PRODUCT_IMAGE, "mask_url": QA_PRODUCT_IMAGE})
     elif reference:
         prefill["reference_images"] = [QA_PRODUCT_IMAGE]
-    return _validation(prefill)
+    return _validation(prefill, browser={
+        "supported": True,
+        "origin": "https://huangquechuanmei.com",
+        "fixture": "qa-serum.png",
+        "checks": [
+            "客户页面打开", "预设素材加载", "客户按钮真实提交",
+            "作品在客户页可见", "作品下载与解码", "同一 job_id 关联生产证据",
+        ],
+        "timeout_seconds": 300,
+    } if browser else None)
 
 
 IMAGE_FUNCTIONS = [
@@ -560,7 +571,7 @@ IMAGE_FUNCTIONS = [
                 "evidence_contract": {"not_applicable": ["provider_task"]},
                 "price_keys": ["image.banana.nb2.std", "image.banana.nb2.hd"],
                 "smoke_inputs": ["短提示词", "1 张低成本参考图"],
-                "validation": _image_validation(reference=True),
+                "validation": _image_validation(reference=True, browser=True),
             },
             {
                 "key": "image.banana.pro.text",
@@ -1546,6 +1557,8 @@ def list_pages():
                     "fixture_summary": list(mode.get("smoke_inputs") or []),
                     "prompt_preview": prompt,
                     "requires_paid_confirmation": True,
+                    "browser_supported": bool((private.get("browser") or {}).get("supported")),
+                    "browser_checks": list((private.get("browser") or {}).get("checks") or []),
                 }
     return pages
 
@@ -1696,6 +1709,14 @@ def validate_registry():
                     raise ValueError("runnable customer mode needs private fixtures")
                 if not validation.get("supported") and not validation.get("blocked_reason"):
                     raise ValueError("blocked E2E runner needs a reason")
+                browser = validation.get("browser") or {}
+                if browser.get("supported"):
+                    if mode["key"] != "image.banana.nb2.reference":
+                        raise ValueError("browser E2E pilot is limited to NB2 reference generation")
+                    if browser.get("origin") != "https://huangquechuanmei.com":
+                        raise ValueError("browser E2E needs the official customer origin")
+                    if not browser.get("fixture") or len(browser.get("checks") or []) != 6:
+                        raise ValueError("browser E2E needs one private fixture and six checks")
                 invalid = set((mode.get("evidence_contract") or {}).get("not_applicable", [])) - {
                     "provider_task", "balance", "billing",
                 }
