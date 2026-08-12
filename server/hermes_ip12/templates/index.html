@@ -126,6 +126,10 @@ button:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px soli
 .bubble{padding:13px 16px;border-radius:13px;max-width:85%;font-size:13px;line-height:1.72;word-break:break-word;box-shadow:0 16px 34px -30px rgba(0,0,0,.9)}
 .msg.user .bubble{border:1px solid rgba(231,178,76,.13);background:linear-gradient(145deg,rgba(36,43,55,.94),rgba(24,35,54,.94))}
 .msg.assistant .bubble{background:var(--ab);border:1px solid var(--bd)}
+.harness-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid rgba(148,164,187,.12)}
+.harness-action{padding:7px 12px;border:1px solid rgba(148,164,187,.2);border-radius:8px;background:rgba(148,164,187,.06);color:var(--tx);font:inherit;font-size:11px;cursor:pointer}
+.harness-action.primary{border-color:rgba(231,178,76,.42);background:rgba(231,178,76,.13);color:#f4d993}
+.harness-action:disabled{opacity:.45;cursor:not-allowed}
 .input-area{position:relative;z-index:2;padding:12px 24px 17px;border-top:1px solid rgba(148,164,187,.08);background:linear-gradient(180deg,rgba(7,11,19,.18),rgba(7,11,19,.92));backdrop-filter:blur(18px)}
 .input-wrap{max-width:750px;margin:0 auto;display:flex;gap:7px;background:var(--ib);border:1px solid rgba(148,164,187,.13);border-radius:14px;padding:5px;align-items:flex-end;box-shadow:0 22px 48px -34px rgba(0,0,0,.92),inset 0 1px rgba(255,255,255,.035);transition:border-color .18s,background .18s,box-shadow .18s}
 .input-wrap:focus-within{border-color:rgba(231,178,76,.42);background:rgba(11,17,27,.96);box-shadow:0 22px 48px -34px rgba(0,0,0,.92),0 0 24px -18px rgba(231,178,76,.75),inset 0 1px rgba(255,255,255,.05)}
@@ -346,14 +350,15 @@ async function runVideoAnalyzer(){
 function renderMods(){
   var done=(state.completed_modules||[]).filter(function(mid){return mid<=AVAILABLE_MODULE_COUNT}),cur=Math.min(state.current_module||1,AVAILABLE_MODULE_COUNT);
   var foundation=state.foundation_report||{};
-  var intakePending=state.intake&&state.intake.status==='collecting',intakeRound=intakePending?(state.intake.round||1):0;
+  var intakePending=state.intake&&state.intake.status!=='complete';
+  var intakeLabel=!intakePending?'':(state.intake.status==='awaiting_confirmation'?'待确认':(state.intake.status==='editing'?'修改中':'交谈中'));
   var html='';
   for(var i=0;i<M.length;i++){
     var m=M[i];
     var cls='mod-item',badge='',check='',expand='<span class="mod-expand">▶</span>';
     var comingSoon=m.id>AVAILABLE_MODULE_COUNT;
     var locked=comingSoon||intakePending||(m.id>=5&&foundation.status!=='confirmed');
-    if(locked){cls+=' locked';badge=comingSoon?'<span class="mod-badge">尚未开发，敬请期待</span>':(intakePending&&m.id===1?'<span class="mod-badge">基础信息 '+intakeRound+'/3</span>':(intakePending?'':'<span class="mod-badge">待确认 PDF</span>'))}
+    if(locked){cls+=' locked';badge=comingSoon?'<span class="mod-badge">尚未开发，敬请期待</span>':(intakePending&&m.id===1?'<span class="mod-badge">基础信息 '+intakeLabel+'</span>':(intakePending?'':'<span class="mod-badge">待确认 PDF</span>'))}
     if(done.indexOf(m.id)>=0){cls+=' done';check='<span style="color:var(--gr);font-size:12px">✓</span>'}
     if(!intakePending&&m.id===cur&&done.indexOf(m.id)<0){cls+=' cur';badge='<span class="mod-badge">进行中</span>'}
     if(intakePending&&m.id===1)cls+=' cur';
@@ -367,7 +372,7 @@ function renderMods(){
         subs+='<div class="mod-sub" onclick="event.stopPropagation();loadSkill(\''+s.id+'\')">'+moduleIcon(s.icon)+eHtml(s.name)+'</div>';
       }
     }
-    var click=comingSoon?"toast('尚未开发，敬请期待')":(locked?(intakePending?"toast('请先完成 3 轮基础信息')":"toast('请先确认模块 1-4 的 IP 定位初稿 PDF')"):(hasSub?'toggleExpand('+m.id+')':'jumpModule('+m.id+')'));
+    var click=comingSoon?"toast('尚未开发，敬请期待')":(locked?(intakePending?"toast('请先补充并确认基础资料')":"toast('请先确认模块 1-4 的 IP 定位初稿 PDF')"):(hasSub?'toggleExpand('+m.id+')':'jumpModule('+m.id+')'));
     html+='<div class="'+cls+'" onclick="'+click+'"><div class="mod-num">'+(done.indexOf(m.id)>=0?'✓':m.id)+'</div><div class="mod-info"><div class="mod-name">'+moduleIcon(m.icon)+m.name+'</div></div>'+badge+check+(hasSub?expand:'')+subs+'</div>';
   }
   document.getElementById('modScroll').innerHTML=html;
@@ -375,7 +380,7 @@ function renderMods(){
   document.getElementById('progBar').style.width=Math.round(dc/AVAILABLE_MODULE_COUNT*100)+'%';
   document.getElementById('progText').textContent=dc===AVAILABLE_MODULE_COUNT?'🎉 六步完成':dc+'/'+AVAILABLE_MODULE_COUNT;
   var mod=M.filter(function(m){return m.id===cur})[0];
-  document.getElementById('curModName').textContent=intakePending?'基础信息 · '+intakeRound+'/3':(mod?mod.name:'—');
+  document.getElementById('curModName').textContent=intakePending?'基础信息 · '+intakeLabel:(mod?mod.name:'—');
   renderArtifacts();
 }
 
@@ -385,9 +390,27 @@ loadConvos().then(function(){var requested=new URLSearchParams(location.search).
 async function loadConvos(){var r=await fetch('/api/conversations');convos=await r.json()}
 async function newDiagnosis(){var r=await fetch('/api/conversations',{method:'POST'});var d=await r.json();convos.unshift({id:d.id,title:'新诊断',current_module:1,completed_modules:[],message_count:1});selectConvo(d.id)}
 async function selectConvo(id){cid=id;var r=await fetch('/api/conversations/'+id);var c=await r.json();state=c.coach_state||{current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}};reports=c.reports||{};deliverables=c.deliverables||{};expandedMod=0;renderMods();renderChat(c.messages||[]);document.getElementById('userInput').disabled=false;document.getElementById('sendBtn').disabled=false;document.getElementById('userInput').focus()}
-async function jumpModule(mid){if(mid>AVAILABLE_MODULE_COUNT){toast('尚未开发，敬请期待');return}if(!cid||streaming)return;var r=await fetch('/api/jump-module',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,module:mid})});var d=await r.json();if(!r.ok||!d.ok){toast('❌ '+(d.error||'无法切换模块'));return}state.current_module=d.current_module;state.module_step=0;renderMods();sendJumpMsg(mid)}
+async function jumpModule(mid){if(mid>AVAILABLE_MODULE_COUNT){toast('尚未开发，敬请期待');return}if(!cid||streaming)return;var r=await fetch('/api/jump-module',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,module:mid})});var d=await r.json();if(!r.ok||!d.ok){toast('❌ '+(d.error||'无法切换模块'));return}state=d.state||state;renderMods();sendJumpMsg(mid)}
 
-function renderChat(msgs){var a=document.getElementById('chatArea');if(!msgs||msgs.length===0){a.innerHTML=WELCOME_HTML;return}a.innerHTML=msgs.map(function(m){return '<div class="msg '+(m.role==='user'?'user':'assistant')+'"><div class="av">'+moduleIcon(m.role==='user'?'user':'sparkles')+'</div><div class="bubble">'+md(m.content)+'</div></div>'}).join('')}
+function stateActions(){
+  if(state.intake&&state.intake.status==='awaiting_confirmation'){var revising=state.intake.mode==='revision';return[
+    {type:'confirm_intake',target_id:'intake-'+state.revision,label:revising?'确认补充':'确认资料',primary:true},
+    {type:'edit_intake',target_id:'intake-'+state.revision,label:revising?'继续修改':'我要修改',primary:false}
+  ];
+  }
+  var p=state.pending;if(p&&p.status==='awaiting_confirmation')return[
+    {type:'confirm_checkpoint',target_id:p.id,label:'确认这一步',primary:true},
+    {type:'edit_checkpoint',target_id:p.id,label:'需要修改',primary:false}
+  ];
+  return[]
+}
+function attachHarnessActions(actions,bubble){
+  document.querySelectorAll('#chatArea .harness-actions').forEach(function(row){row.remove()});if(!bubble)return;
+  if(!actions||!actions.length)return;var row=document.createElement('div');row.className='harness-actions';
+  actions.forEach(function(item){var button=document.createElement('button');button.type='button';button.className='harness-action'+(item.primary?' primary':'');button.textContent=item.label;button.onclick=function(){row.querySelectorAll('button').forEach(function(node){node.disabled=true});sendHarnessAction(item)};row.appendChild(button)});
+  bubble.appendChild(row)
+}
+function renderChat(msgs){var a=document.getElementById('chatArea');if(!msgs||msgs.length===0){a.innerHTML=WELCOME_HTML;return}a.innerHTML=msgs.map(function(m){return '<div class="msg '+(m.role==='user'?'user':'assistant')+'"><div class="av">'+moduleIcon(m.role==='user'?'user':'sparkles')+'</div><div class="bubble">'+md(m.content)+'</div></div>'}).join('');var last=a.querySelector('.msg.assistant:last-of-type .bubble');attachHarnessActions(stateActions(),last)}
 function isSafeMarkdownUrl(value,base='https://huangque.invalid/'){try{var u=new URL(String(value??'').trim(),base);return u.protocol==='http:'||u.protocol==='https:'}catch(e){return false}}
 function sanitizeMarked(html){var t=document.createElement('template');t.innerHTML=html;t.content.querySelectorAll('a[href],img[src]').forEach(function(el){var attr=el.tagName==='A'?'href':'src';if(!isSafeMarkdownUrl(el.getAttribute(attr),location.href)){if(el.tagName==='A')el.replaceWith(document.createTextNode(el.textContent));else el.remove()}else if(el.tagName==='A'){el.rel='noopener noreferrer'}});return t.innerHTML}
 function md(t){if(!t)return'';try{if(typeof marked!=='undefined')return sanitizeMarked(marked.parse(eHtml(t)))}catch(e){return eHtml(t).replace(/\n/g,'<br>')}return eHtml(t).replace(/\n/g,'<br>')}
@@ -425,7 +448,7 @@ async function openFoundationReport(){
 
 async function confirmFoundationReport(){
   if(!cid||streaming)return;
-  try{var r=await fetch('/api/foundation-report/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid})});var d=await r.json();if(!d.ok)throw new Error(d.error||'确认失败');state=d.state;renderMods();toast('✅ IP 定位初稿已确认，继续模块 '+state.current_module);if((state.completed_modules||[]).indexOf(state.current_module)<0)sendJumpMsg(state.current_module)}catch(e){toast('❌ '+e.message)}
+  try{var foundation=state.foundation_report||{};var r=await fetch('/api/foundation-report/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,expected_revision:state.revision,report_id:foundation.report_id||''})});var d=await r.json();if(!d.ok)throw new Error(d.error||'确认失败');state=d.state;renderMods();toast('✅ IP 定位初稿已确认，继续模块 '+state.current_module);if((state.completed_modules||[]).indexOf(state.current_module)<0)sendJumpMsg(state.current_module)}catch(e){toast('❌ '+e.message)}
 }
 
 async function viewReport(mid){
@@ -507,35 +530,31 @@ async function runRadar(){
 
 // ── CHAT ──
 function handleKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}}
-async function sendMessage(){
+function newTurnRequestId(){return window.crypto&&crypto.randomUUID?crypto.randomUUID():'turn_'+Date.now()+'_'+Math.random().toString(36).slice(2)}
+function sendHarnessAction(item){return sendTurn({action:{type:item.type,target_id:item.target_id}},item.label)}
+function sendMessage(){
   if(streaming||!cid)return;
   var input=document.getElementById('userInput'),text=input.value.trim();if(!text)return;
-  input.value='';document.getElementById('sendBtn').disabled=true;streaming=true;
+  input.value='';return sendTurn({message:text},text)
+}
+async function sendTurn(turn,displayText){
+  if(streaming||!cid)return;document.getElementById('sendBtn').disabled=true;streaming=true;
   var area=document.getElementById('chatArea'),welcome=area.querySelector('.welcome');if(welcome)welcome.remove();
-  var um=document.createElement('div');um.className='msg user';um.innerHTML='<div class="av">'+moduleIcon('user')+'</div><div class="bubble">'+eHtml(text).replace(/\n/g,'<br>')+'</div>';area.appendChild(um);
+  var um=document.createElement('div');um.className='msg user';um.innerHTML='<div class="av">'+moduleIcon('user')+'</div><div class="bubble">'+eHtml(displayText).replace(/\n/g,'<br>')+'</div>';area.appendChild(um);
   var am=document.createElement('div');am.className='msg assistant';am.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble"><div class="typing" style="display:flex;gap:4px"><span style="width:5px;height:5px;border-radius:50%;background:var(--dim);animation:bounce 1.4s infinite"></span><span style="width:5px;height:5px;border-radius:50%;background:var(--dim);animation:bounce 1.4s infinite .2s"></span><span style="width:5px;height:5px;border-radius:50%;background:var(--dim);animation:bounce 1.4s infinite .4s"></span></div></div>';area.appendChild(am);scroll();
   var full='';var bubble=am.querySelector('.bubble');
   try{
-    var r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,message:text})});
+    var body=Object.assign({conversation_id:cid,request_id:newTurnRequestId(),expected_revision:state.revision},turn);
+    var r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     if(!r.ok){var errorData=await r.json();throw new Error(errorData.error||'发送失败')}
     var reader=r.body.getReader(),decoder=new TextDecoder(),buf='';
-    while(true){var part=await reader.read();if(part.done)break;buf+=decoder.decode(part.value,{stream:true});var lines=buf.split('\n');buf=lines.pop()||'';for(var i=0;i<lines.length;i++){var line=lines[i];if(!line.startsWith('data: '))continue;try{var data=JSON.parse(line.slice(6));if(data.error){bubble.innerHTML='<span style="color:#ef4444">❌ '+eHtml(data.error)+'</span>'}else if(data.content){full+=data.content;bubble.innerHTML=md(full)+'<span class="cursor" style="color:var(--ac)">▍</span>';scroll()}else if(data.done){bubble.innerHTML=md(full);if(data.state){state=data.state;renderMods()}if(data.auto_deliverables){Object.keys(data.auto_deliverables).forEach(function(mid){deliverables[mid]=data.auto_deliverables[mid]});renderArtifacts()}if(data.new_completed&&data.new_completed.length>0){data.new_completed.forEach(function(mid){toast('✅ '+M[mid-1].name+'完成！')});renderMods()}}}catch(e){}}}
-  }catch(e){bubble.innerHTML='<span style="color:#ef4444">❌ '+eHtml(e.message)+'</span>'}
+    while(true){var part=await reader.read();if(part.done)break;buf+=decoder.decode(part.value,{stream:true});var lines=buf.split('\n');buf=lines.pop()||'';for(var i=0;i<lines.length;i++){var line=lines[i];if(!line.startsWith('data: '))continue;try{var data=JSON.parse(line.slice(6));if(data.error){bubble.innerHTML='<span style="color:#ef4444">❌ '+eHtml(data.error)+'</span>'}else if(data.content){full+=data.content;bubble.innerHTML=md(full)+'<span class="cursor" style="color:var(--ac)">▍</span>';scroll()}else if(data.done){bubble.innerHTML=md(full);if(data.state){state=data.state;renderMods()}attachHarnessActions(data.actions||stateActions(),bubble);if(data.auto_deliverables){Object.keys(data.auto_deliverables).forEach(function(mid){deliverables[mid]=data.auto_deliverables[mid]});renderArtifacts()}if(data.new_completed&&data.new_completed.length>0){data.new_completed.forEach(function(mid){toast('✅ '+M[mid-1].name+'完成！')});renderMods()}}}catch(e){}}}
+  }catch(e){bubble.innerHTML='<span style="color:#ef4444">❌ '+eHtml(e.message)+'</span>';setTimeout(function(){selectConvo(cid)},800)}
   streaming=false;document.getElementById('sendBtn').disabled=false;document.getElementById('userInput').focus()
 }
 
 async function sendJumpMsg(mid){
-  streaming=true;var area=document.getElementById('chatArea');
-  var um=document.createElement('div');um.className='msg user';um.innerHTML='<div class="av">'+moduleIcon('user')+'</div><div class="bubble">跳到模块'+mid+'</div>';area.appendChild(um);
-  var am=document.createElement('div');am.className='msg assistant';am.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble"><div class="typing" style="display:flex;gap:4px"><span style="width:5px;height:5px;border-radius:50%;background:var(--dim);animation:bounce 1.4s infinite"></span><span style="width:5px;height:5px;border-radius:50%;background:var(--dim);animation:bounce 1.4s infinite .2s"></span><span style="width:5px;height:5px;border-radius:50%;background:var(--dim);animation:bounce 1.4s infinite .4s"></span></div></div>';area.appendChild(am);scroll();
-  var full='';var bubble=am.querySelector('.bubble');
-  try{
-    var r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,message:'跳到模块 '+mid})});
-    if(!r.ok){var errorData=await r.json();throw new Error(errorData.error||'发送失败')}
-    var reader=r.body.getReader(),decoder=new TextDecoder(),buf='';
-    while(true){var part=await reader.read();if(part.done)break;buf+=decoder.decode(part.value,{stream:true});var lines=buf.split('\n');buf=lines.pop()||'';for(var i=0;i<lines.length;i++){var line=lines[i];if(!line.startsWith('data: '))continue;try{var data=JSON.parse(line.slice(6));if(data.error){bubble.innerHTML='<span style="color:#ef4444">❌ '+eHtml(data.error)+'</span>'}else if(data.content){full+=data.content;bubble.innerHTML=md(full)+'<span class="cursor" style="color:var(--ac)">▍</span>';scroll()}else if(data.done){bubble.innerHTML=md(full);if(data.state){state=data.state;renderMods()}}}catch(e){}}}
-  }catch(e){bubble.innerHTML='<span style="color:#ef4444">❌ '+eHtml(e.message)+'</span>'}
-  streaming=false
+  return sendTurn({message:'请从当前模块继续'},'继续模块 '+mid+'：'+(M[mid-1]?M[mid-1].name:''))
 }
 
 function toggleConvos(){

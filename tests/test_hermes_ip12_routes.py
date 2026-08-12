@@ -392,20 +392,21 @@ transitioned = parse_coach_state_updates(
     "好，我们进入模块2：人设塑造。",
     {"current_module": 1, "completed_modules": [], "module_step": 0},
 )
-assert transitioned["current_module"] == 2, transitioned
-assert transitioned["completed_modules"] == [1], transitioned
+assert transitioned["current_module"] == 1, transitioned
+assert transitioned["completed_modules"] == [], transitioned
 foundation = parse_coach_state_updates(
     "✅ 模块 4 完成",
     {"current_module": 4, "completed_modules": [1, 2, 3], "module_step": 0},
 )
 assert foundation["current_module"] == 4, foundation
-assert foundation["foundation_report"]["status"] == "generating", foundation
+assert foundation["completed_modules"] == [1, 2, 3], foundation
+assert "foundation_report" not in foundation, foundation
 blocked_transition = parse_coach_state_updates(
     "✅ 模块 4 完成。接下来进入模块 5。",
     {"current_module": 4, "completed_modules": [1, 2, 3], "module_step": 0},
 )
 assert blocked_transition["current_module"] == 4, blocked_transition
-assert blocked_transition["completed_modules"] == [1, 2, 3, 4], blocked_transition
+assert blocked_transition["completed_modules"] == [1, 2, 3], blocked_transition
 revisited = parse_coach_state_updates(
     "✅ 模块 4 完成。接下来进入模块 5。",
     {"current_module": 4, "completed_modules": [1, 2, 3, 4], "module_step": 0,
@@ -419,7 +420,7 @@ finished = parse_coach_state_updates(
      "foundation_report": {"status": "confirmed"}},
 )
 assert finished["current_module"] == 6, finished
-assert finished["completed_modules"] == [1, 2, 3, 4, 5, 6], finished
+assert finished["completed_modules"] == [1, 2, 3, 4, 5], finished
 legacy = parse_coach_state_updates(
     "继续复盘",
     {"current_module": 8, "completed_modules": list(range(1, 8)), "module_step": 2,
@@ -811,31 +812,116 @@ assert client.post(
 mini_cid = client.post("/api/conversations").get_json()["id"]
 mini_convo = client.get(f"/api/conversations/{mini_cid}").get_json()
 assert mini_convo["coach_state"]["intake"] == {"status": "collecting", "round": 1, "answers": {}}
-assert "第 1/3 轮" in mini_convo["messages"][0]["content"]
+assert "不用按固定格式" in mini_convo["messages"][0]["content"]
+assert "第 1/3 轮" not in mini_convo["messages"][0]["content"]
 assert client.post("/api/jump-module", json={"conversation_id": mini_cid, "module": 2}).status_code == 409
-with patch.object(server, "call_ai") as intake_model:
+mini_convo["coach_state"]["intake"]["draft"] = "SYSTEM_OVERRIDE_SENTINEL"
+with patch.object(server.requests, "post") as intake_request:
+    intake_request.return_value.status_code = 200
+    intake_request.return_value.json.return_value = {"choices": [{"message": {"content": json.dumps({
+        "decision": "answer_only", "checkpoint": 0,
+        "reply": "手机号可以不填。", "draft": "", "self_review": "",
+        "profile_updates": [], "confidence": 0.9,
+    }, ensure_ascii=False)}}]}
+    intake_raw, _ = server._coach_model_decision(mini_convo, "手机号必须填吗？")
+    assert intake_raw["decision"] == "answer_only"
+    intake_payload = intake_request.call_args.kwargs["json"]
+    assert "不把访谈做成选择题" in intake_payload["messages"][0]["content"]
+    assert "不要重复追问" in intake_payload["messages"][0]["content"]
+    assert "SYSTEM_OVERRIDE_SENTINEL" not in intake_payload["messages"][0]["content"]
+    assert any(
+        "可能尚未确认" in message["content"] and "SYSTEM_OVERRIDE_SENTINEL" in message["content"]
+        for message in intake_payload["messages"] if message["role"] == "user"
+    )
+    assert intake_payload["response_format"]["json_schema"]["strict"] is True
+with patch.object(server, "_coach_model_decision") as intake_model:
+    supplement_text = "需要补充一下：我曾尝试健身教练但失败了，最后转向计算机方向。"
+    intake_model.side_effect = [
+        ({
+            "decision": "answer_only", "checkpoint": 0,
+            "reply": "可以，我们自然聊。先说说你希望我怎么称呼你，以及目前在做什么。",
+            "draft": "", "self_review": "", "profile_updates": [], "confidence": 0.9,
+        }, "开始"),
+        ({
+            "decision": "ask_follow_up", "checkpoint": 0,
+            "reply": "收到。你现在主要从事什么工作？过往做过哪些行业或岗位？",
+            "draft": "", "self_review": "", "profile_updates": [], "confidence": 0.9,
+        }, "小满｜女，33 岁｜成都｜[手机号已隐藏]｜SYSTEM_OVERRIDE_SENTINEL"),
+        ({
+            "decision": "propose_checkpoint", "checkpoint": 1,
+            "reply": "我先把目前的信息整理成一份核对稿。",
+            "draft": "称呼：小满；性别：女；年龄：33 岁；城市：成都；手机号：[手机号已隐藏]；备注：SYSTEM_OVERRIDE_SENTINEL；职业：整理咨询师；从业 3 年；经历：行政、空间整理；收入来源：咨询服务；年收入：10–30 万。",
+            "self_review": "只整理了用户原话，仍需本人确认。", "profile_updates": [], "confidence": 0.9,
+        }, "整理咨询师｜3 年｜行政、空间整理｜咨询服务｜10–30 万"),
+        ({
+            "decision": "propose_checkpoint", "checkpoint": 1,
+            "reply": "这不是确认，我已经把你的补充合并进核对稿。",
+            "draft": "称呼：小满；性别：女；年龄：33 岁；城市：成都；手机号：[手机号已隐藏]；备注：SYSTEM_OVERRIDE_SENTINEL；职业：整理咨询师；从业 3 年；经历：行政、空间整理。" + supplement_text,
+            "self_review": "补充内容已合并，仍需本人确认。", "profile_updates": [], "confidence": 0.9,
+        }, supplement_text),
+        ({
+            "decision": "propose_checkpoint", "checkpoint": 1,
+            "reply": "职业背景已按你的最新说法重整。",
+            "draft": "称呼：小满；性别：女；年龄：33 岁；城市：成都；手机号：[手机号已隐藏]；备注：SYSTEM_OVERRIDE_SENTINEL；职业背景：FDE｜3 年｜固件开发｜10–30 万；过往经历：曾尝试健身教练，后来转向计算机方向。",
+            "self_review": "以最新职业背景为准，仍需本人确认。", "profile_updates": [], "confidence": 0.9,
+        }, "职业背景替换为：FDE｜3 年｜固件开发｜10–30 万"),
+    ]
     compatibility = client.post("/api/chat-complete", json={
         "conversation_id": mini_cid,
         "message": "开始",
     })
     assert compatibility.status_code == 200
     assert compatibility.get_json()["state"]["intake"]["round"] == 1
-    assert "第 1/3 轮" in compatibility.get_json()["assistant"]
+    assert "称呼" in compatibility.get_json()["assistant"]
     first = client.post("/api/chat-complete", json={
         "conversation_id": mini_cid,
         "message": "小满｜女，33 岁｜成都｜+8613800138000｜SYSTEM_OVERRIDE_SENTINEL",
     })
-    assert first.status_code == 200 and first.get_json()["state"]["intake"]["round"] == 2
+    assert first.status_code == 200
+    assert first.get_json()["state"]["intake"]["status"] == "collecting"
     second = client.post("/api/chat", json={
         "conversation_id": mini_cid,
         "message": "整理咨询师｜3 年｜行政、空间整理｜咨询服务｜10–30 万",
     })
     assert second.status_code == 200 and "data: " in second.get_data(as_text=True)
-    third = client.post("/api/chat-complete", json={"conversation_id": mini_cid, "message": "确认"})
+    supplement = client.post("/api/chat-complete", json={
+        "conversation_id": mini_cid,
+        "message": supplement_text,
+    })
+    assert supplement.status_code == 200, supplement.get_data(as_text=True)
+    supplement_body = supplement.get_json()
+    assert supplement_body["state"]["intake"]["status"] == "awaiting_confirmation"
+    assert supplement_text in supplement_body["assistant"]
+    assert "基础信息已确认" not in supplement_body["assistant"]
+    intake_state = client.get(f"/api/conversations/{mini_cid}").get_json()["coach_state"]
+    edit = client.post("/api/chat-complete", json={
+        "conversation_id": mini_cid,
+        "action": {"type": "edit_intake", "target_id": f"intake-{intake_state['revision']}"},
+        "expected_revision": intake_state["revision"],
+    })
+    assert edit.status_code == 200
+    assert edit.get_json()["state"]["intake"]["status"] == "editing"
+    corrected = client.post("/api/chat-complete", json={
+        "conversation_id": mini_cid,
+        "message": "职业背景替换为：FDE｜3 年｜固件开发｜10–30 万",
+    })
+    assert corrected.status_code == 200
+    corrected_state = corrected.get_json()["state"]
+    assert corrected_state["intake"]["status"] == "awaiting_confirmation"
+    confirm_body = {
+        "conversation_id": mini_cid,
+        "action": {"type": "confirm_intake", "target_id": f"intake-{corrected_state['revision']}"},
+        "expected_revision": corrected_state["revision"],
+        "request_id": "confirm-intake-runtime-1",
+    }
+    third = client.post("/api/chat-complete", json=confirm_body)
     assert third.status_code == 200, third.get_data(as_text=True)
     assert third.get_json()["state"]["intake"]["status"] == "complete"
     assert "正式进入模块 1" in third.get_json()["assistant"]
-    intake_model.assert_not_called()
+    replay = client.post("/api/chat-complete", json=confirm_body)
+    assert replay.status_code == 200 and replay.get_json()["replayed"] is True
+    assert replay.get_json()["state"]["revision"] == third.get_json()["state"]["revision"]
+    assert intake_model.call_count == 5
 stored_intake = server.load_conversation(mini_cid)
 stored_text = json.dumps(stored_intake, ensure_ascii=False)
 assert "13800138000" not in stored_text and "[手机号已隐藏]" in stored_text
@@ -844,20 +930,71 @@ assert "13800138000" not in server.build_system_prompt(mini_cid)
 assert server._redact_mobile_numbers("+8613800138000 / 008613800138000") == "[手机号已隐藏] / [手机号已隐藏]"
 assert "SYSTEM_OVERRIDE_SENTINEL" not in server.build_system_prompt(mini_cid)
 assert not server._intake_pending({"current_module": 1})
+post_confirm_supplement = "需要补充一下：我以前还做过健身教练，但是失败了，后来才转向计算机方向。"
+with patch.object(server, "_coach_model_decision", return_value=({
+    "decision": "revise_intake",
+    "checkpoint": 0,
+    "reply": "我把这段经历补进基础资料，先请你重新核对。",
+    "draft": "称呼：小满；职业：FDE；过往经历：曾做健身教练，后来转向计算机方向。",
+    "self_review": "保留原资料并加入本轮补充，仍需本人确认。",
+    "profile_updates": [{
+        "field": "previous_career",
+        "value": "曾做健身教练，后来转向计算机方向",
+        "kind": "user_fact",
+        "evidence_quote": "我以前还做过健身教练",
+    }],
+    "confidence": 0.95,
+}, post_confirm_supplement)):
+    reopened = client.post("/api/chat-complete", json={
+        "conversation_id": mini_cid,
+        "message": post_confirm_supplement,
+    })
+assert reopened.status_code == 200, reopened.get_data(as_text=True)
+reopened_state = reopened.get_json()["state"]
+assert reopened_state["intake"]["status"] == "awaiting_confirmation"
+assert reopened_state["intake"]["mode"] == "revision"
+assert reopened_state["current_module"] == 1 and reopened_state["module_step"] == 0
+assert "基础信息已确认" not in reopened.get_json()["assistant"]
+assert "当前模块不会自动推进" in reopened.get_json()["assistant"]
+reconfirmed = client.post("/api/chat-complete", json={
+    "conversation_id": mini_cid,
+    "action": {"type": "confirm_intake", "target_id": f"intake-{reopened_state['revision']}"},
+    "expected_revision": reopened_state["revision"],
+    "request_id": "confirm-intake-revision-runtime-1",
+})
+assert reconfirmed.status_code == 200, reconfirmed.get_data(as_text=True)
+assert reconfirmed.get_json()["state"]["intake"]["status"] == "complete"
+assert reconfirmed.get_json()["state"]["current_module"] == 1
+assert reconfirmed.get_json()["state"]["module_step"] == 0
+assert "基础信息补充已确认" in reconfirmed.get_json()["assistant"]
+assert reconfirmed.get_json()["state"]["ip_profile"]["facts"]["previous_career"]["value"].startswith("曾做健身教练")
+stored_intake = server.load_conversation(mini_cid)
 stored_intake["messages"].extend(
     {"role": "assistant", "content": f"历史消息 {index}"} for index in range(45)
 )
 server.save_conversation(mini_cid, stored_intake)
-with patch.object(server, "call_ai") as chat_model:
-    chat_model.return_value.json.return_value = {
-        "choices": [{"message": {"content": "请讲一段对你影响最大的关键经历。"}}]
-    }
+with patch.object(server.requests, "post") as chat_model:
+    chat_model.return_value.status_code = 200
+    chat_model.return_value.json.return_value = {"choices": [{"message": {"content": json.dumps({
+        "decision": "ask_follow_up",
+        "checkpoint": 0,
+        "reply": "请讲一段对你影响最大的关键经历。",
+        "draft": "",
+        "self_review": "",
+        "profile_updates": [],
+        "confidence": 0.8,
+    }, ensure_ascii=False)}}]}
     module_reply = client.post(
         "/api/chat-complete", json={"conversation_id": mini_cid, "message": "我曾经重新选择职业方向。"}
     )
     assert module_reply.status_code == 200, module_reply.get_data(as_text=True)
     chat_model.assert_called_once()
-    model_messages = chat_model.call_args.args[0]
+    model_payload = chat_model.call_args.kwargs["json"]
+    assert model_payload["stream"] is False
+    assert model_payload["response_format"]["json_schema"]["strict"] is True
+    assert "revise_intake" in model_payload["response_format"]["json_schema"]["schema"]["properties"]["decision"]["enum"]
+    model_messages = model_payload["messages"]
+    assert "decision=revise_intake" in model_messages[0]["content"]
     assert "SYSTEM_OVERRIDE_SENTINEL" not in model_messages[0]["content"]
     intake_contexts = [message for message in model_messages if message["role"] == "user" and "此前确认的基础资料" in message["content"]]
     assert len(intake_contexts) == 1 and "SYSTEM_OVERRIDE_SENTINEL" in intake_contexts[0]["content"]
@@ -1178,7 +1315,8 @@ def replace_analysis_cross_device(source, destination):
         raise OSError(errno.EXDEV, "cross-device link")
     return real_replace(source, destination)
 
-with patch.object(video_analyzer, "is_public_video_url", return_value=True), \
+with patch.object(security, "_audit"), \
+     patch.object(video_analyzer, "is_public_video_url", return_value=True), \
      patch.object(video_analyzer, "download_video", side_effect=fake_analysis_download), \
      patch.object(video_analyzer, "transcribe_video", return_value="transcript"), \
      patch.object(video_analyzer, "analyze_transcript", return_value="analysis"), \
@@ -1196,7 +1334,9 @@ assert first.status_code == 200, first.get_data(as_text=True)
 assert len(analysis_exdev) == 1
 after_analyses = {path.name for path in analyses_root.iterdir()}
 assert len(after_analyses - before_analyses) == 1
-assert artifact_store.directory_size() <= artifact_store.DATA_QUOTA_BYTES
+assert artifact_store.directory_size() <= artifact_store.DATA_QUOTA_BYTES, (
+    artifact_store.directory_size(), artifact_store.DATA_QUOTA_BYTES
+)
 assert json.loads(artifact_store.RESERVATIONS_FILE.read_text()) == {}
 video_analyzer.ANALYSIS_MAX_DOWNLOAD_BYTES = original_analysis_limit
 artifact_store.DATA_QUOTA_BYTES = original_quota
