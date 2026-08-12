@@ -218,6 +218,28 @@ class PixelleVideoTests(unittest.TestCase):
         self.assertEqual(default["style"], "realistic_commercial")
         self.assertEqual(selected["style"], "future_tech")
 
+    def test_prepare_defaults_normalizes_and_rejects_invalid_speech_rate(self):
+        default = self.pixelle.prepare_payload({"text": "AI 培训"})
+        normalized = self.pixelle.prepare_payload({
+            "text": "AI 培训",
+            "speech_rate": 1.26,
+        })
+        half_up = self.pixelle.prepare_payload({
+            "text": "AI 培训",
+            "speech_rate": 1.25,
+        })
+        self.assertEqual(default["speech_rate"], 1.0)
+        self.assertEqual(normalized["speech_rate"], 1.3)
+        self.assertEqual(half_up["speech_rate"], 1.3)
+
+        invalid_values = [True, "1.1", float("nan"), float("inf"), float("-inf"), 0.4, 2.1]
+        for value in invalid_values:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.pixelle.prepare_payload({
+                    "text": "AI 培训",
+                    "speech_rate": value,
+                })
+
     def test_prepare_rejects_invalid_style_before_charge(self):
         with self.assertRaisesRegex(ValueError, "请选择有效的素材风格"):
             self.pixelle.prepare_payload({
@@ -244,6 +266,42 @@ class PixelleVideoTests(unittest.TestCase):
                 self.pixelle.DEFAULT_STYLE
             ]["prompt_prefix"],
         )
+        self.assertEqual(body["tts_speed"], 1.0)
+
+    def test_submit_normalizes_speech_rate_at_execution_boundary(self):
+        legacy_payload = {
+            "text": "AI training",
+            "mode": "generate",
+            "template": "1080x1920/image_default.html",
+            "n_scenes": 5,
+            "speech_rate": 1.26,
+            "voice_scope": "public",
+            "voice_id": "zh-CN-YunjianNeural",
+        }
+        with mock.patch.object(
+            self.pixelle, "_json_request", return_value={"task_id": "task-normalized"}
+        ) as request:
+            self.assertEqual(self.pixelle._submit(legacy_payload), "task-normalized")
+
+        body = request.call_args.args[2]
+        self.assertEqual(body["tts_speed"], 1.3)
+        self.assertEqual(body["voice_id"], "zh-CN-YunjianNeural")
+
+    def test_submit_rejects_invalid_speech_rate_at_execution_boundary(self):
+        invalid_values = [True, "1.1", float("nan"), float("inf"), float("-inf"), 0.4, 2.1]
+        for value in invalid_values:
+            legacy_payload = {
+                "text": "AI training",
+                "mode": "generate",
+                "template": "1080x1920/image_default.html",
+                "n_scenes": 5,
+                "speech_rate": value,
+            }
+            with self.subTest(value=value), \
+                 mock.patch.object(self.pixelle, "_json_request") as request, \
+                 self.assertRaisesRegex(ValueError, "语速值"):
+                self.pixelle._submit(legacy_payload)
+            request.assert_not_called()
 
     def test_submit_rejects_invalid_style_at_execution_boundary(self):
         legacy_payload = {
@@ -288,14 +346,20 @@ class PixelleVideoTests(unittest.TestCase):
         body = request.call_args.args[2]
         self.assertEqual(body["voice_id"], "zh-CN-YunjianNeural")
         self.assertEqual(body["tts_workflow"], self.pixelle.PIXELLE_TTS_WORKFLOW)
+        self.assertEqual(body["tts_speed"], 1.0)
         self.assertNotIn("narration_segments", body)
 
     def test_submit_personal_voice_plans_synthesizes_and_uploads_each_segment(self):
-        payload = self.pixelle.prepare_payload({"text": "AI 培训"})
-        payload.update({
+        payload = {
+            "text": "AI 培训",
+            "mode": "generate",
+            "template": "1080x1920/image_default.html",
+            "style": "realistic_commercial",
+            "n_scenes": 5,
+            "speech_rate": 1.44,
             "voice_scope": "personal", "voice_key": "vip_ready", "_username": "alice",
             "_job_id": 52,
-        })
+        }
         responses = {
             "/api/content/narration": {"narrations": ["第一句", "第二句"]},
             "/api/video/generate/async": {"task_id": "task-personal"},
@@ -316,6 +380,13 @@ class PixelleVideoTests(unittest.TestCase):
             self.assertEqual(self.pixelle._submit(payload), "task-personal")
 
         self.assertEqual(synth.call_count, 2)
+        self.assertEqual(
+            synth.call_args_list,
+            [
+                mock.call("alice", "vip_ready", "第一句", speed=1.4),
+                mock.call("alice", "vip_ready", "第二句", speed=1.4),
+            ],
+        )
         self.assertEqual(upload.call_count, 2)
         self.assertEqual(upload.call_args_list[0].args[3], "text-video-52-0")
         video_body = request.call_args_list[-1].args[2]
@@ -326,6 +397,7 @@ class PixelleVideoTests(unittest.TestCase):
             {"text": "第二句", "audio_asset_id": "audio_" + "b" * 32},
         ])
         self.assertNotIn("voice_id", video_body)
+        self.assertNotIn("tts_speed", video_body)
         self.assertNotIn("tts_workflow", video_body)
 
     def test_submit_video_template_uses_video_workflow(self):
