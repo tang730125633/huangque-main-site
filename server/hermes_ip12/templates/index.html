@@ -537,19 +537,20 @@ function sendMessage(){
   var input=document.getElementById('userInput'),text=input.value.trim();if(!text)return;
   input.value='';return sendTurn({message:text},text)
 }
-async function sendTurn(turn,displayText){
+async function sendTurn(turn,displayText,requestId){
   if(streaming||!cid)return;document.getElementById('sendBtn').disabled=true;streaming=true;
   var area=document.getElementById('chatArea'),welcome=area.querySelector('.welcome');if(welcome)welcome.remove();
   var um=document.createElement('div');um.className='msg user';um.innerHTML='<div class="av">'+moduleIcon('user')+'</div><div class="bubble">'+eHtml(displayText).replace(/\n/g,'<br>')+'</div>';area.appendChild(um);
   var am=document.createElement('div');am.className='msg assistant';am.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble"><div class="typing" style="display:flex;gap:4px"><span style="width:5px;height:5px;border-radius:50%;background:var(--dim);animation:bounce 1.4s infinite"></span><span style="width:5px;height:5px;border-radius:50%;background:var(--dim);animation:bounce 1.4s infinite .2s"></span><span style="width:5px;height:5px;border-radius:50%;background:var(--dim);animation:bounce 1.4s infinite .4s"></span></div></div>';area.appendChild(am);scroll();
-  var full='';var bubble=am.querySelector('.bubble');
+  var full='',replayed=false,retryNeedsRefresh=false,retryRequestId=requestId||newTurnRequestId();var bubble=am.querySelector('.bubble');
   try{
-    var body=Object.assign({conversation_id:cid,request_id:newTurnRequestId(),expected_revision:state.revision},turn);
+    var body=Object.assign({conversation_id:cid,request_id:retryRequestId,expected_revision:state.revision},turn);
     var r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(!r.ok){var errorData=await r.json();throw new Error(errorData.error||'发送失败')}
+    if(!r.ok){retryNeedsRefresh=r.status===409;throw new Error('发送失败')}
     var reader=r.body.getReader(),decoder=new TextDecoder(),buf='';
-    while(true){var part=await reader.read();if(part.done)break;buf+=decoder.decode(part.value,{stream:true});var lines=buf.split('\n');buf=lines.pop()||'';for(var i=0;i<lines.length;i++){var line=lines[i];if(!line.startsWith('data: '))continue;try{var data=JSON.parse(line.slice(6));if(data.error){bubble.innerHTML='<span style="color:#ef4444">❌ '+eHtml(data.error)+'</span>'}else if(data.content){full+=data.content;bubble.innerHTML=md(full)+'<span class="cursor" style="color:var(--ac)">▍</span>';scroll()}else if(data.done){bubble.innerHTML=md(full);if(data.state){state=data.state;renderMods()}attachHarnessActions(data.actions||stateActions(),bubble);if(data.auto_deliverables){Object.keys(data.auto_deliverables).forEach(function(mid){deliverables[mid]=data.auto_deliverables[mid]});renderArtifacts()}if(data.new_completed&&data.new_completed.length>0){data.new_completed.forEach(function(mid){toast('✅ '+M[mid-1].name+'完成！')});renderMods()}}}catch(e){}}}
-  }catch(e){bubble.innerHTML='<span style="color:#ef4444">❌ '+eHtml(e.message)+'</span>';setTimeout(function(){selectConvo(cid)},800)}
+    while(true){var part=await reader.read();if(part.done)break;buf+=decoder.decode(part.value,{stream:true});var lines=buf.split('\n');buf=lines.pop()||'';for(var i=0;i<lines.length;i++){var line=lines[i];if(!line.startsWith('data: '))continue;try{var data=JSON.parse(line.slice(6));if(data.error){bubble.innerHTML='<span style="color:#ef4444">❌ '+eHtml(data.error)+'</span>'}else if(data.content){full+=data.content;bubble.innerHTML=md(full)+'<span class="cursor" style="color:var(--ac)">▍</span>';scroll()}else if(data.done){bubble.innerHTML=md(full);replayed=!!data.replayed;if(data.state&&(!replayed||data.state.revision>=state.revision)){state=data.state;renderMods()}attachHarnessActions(data.actions||stateActions(),bubble);if(data.auto_deliverables){Object.keys(data.auto_deliverables).forEach(function(mid){deliverables[mid]=data.auto_deliverables[mid]});renderArtifacts()}if(data.new_completed&&data.new_completed.length>0){data.new_completed.forEach(function(mid){toast('✅ '+M[mid-1].name+'完成！')});renderMods()}}}catch(e){}}}
+    if(replayed)await selectConvo(cid)
+  }catch(e){bubble.innerHTML='<span style="color:#ef4444">回复暂时失败，消息已保留。</span><div class="harness-actions"><button type="button" class="harness-action primary">重试</button></div>';var retry=bubble.querySelector('button');retry.onclick=async function(){retry.disabled=true;if(retryNeedsRefresh)await selectConvo(cid);um.remove();am.remove();sendTurn(turn,displayText,retryRequestId)}}
   streaming=false;document.getElementById('sendBtn').disabled=false;document.getElementById('userInput').focus()
 }
 
