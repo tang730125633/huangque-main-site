@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path, PurePosixPath
 from unittest import TestCase
 
@@ -63,6 +64,70 @@ class StrictJsonTests(TestCase):
              "description": "可选的角色显示名称；同一项目内不可重复"},
             profile["properties"]["name"],
         )
+        operations = [
+            operation
+            for item in docs_spec["paths"].values()
+            for method, operation in item.items()
+            if method in {"get", "post", "put", "patch", "delete"}
+        ]
+        audit = docs_spec["x-hq-document-audit"]
+        self.assertEqual(len(docs_spec["paths"]), audit["total_paths"])
+        self.assertEqual(len(operations), audit["total_operations"])
+        for status, field in {
+            "active": "active_operations",
+            "pending-deployment": "production_pending_operations",
+            "routing-unavailable": "production_routing_unavailable_operations",
+            "deprecated": "deprecated_operations",
+        }.items():
+            self.assertEqual(
+                sum(operation.get("x-hq-runtime-status") == status
+                    for operation in operations),
+                audit[field],
+            )
+        self.assertTrue(all(operation.get("x-hq-test-safety") for operation in operations))
+        self.assertTrue(all(operation.get("x-hq-runtime-status") for operation in operations))
+
+    def test_openapi_covers_registered_http_endpoints(self) -> None:
+        from server.content_domains import function_registry
+
+        spec = load_json_strict(Path("docs/api/openapi.json"))
+        verbs = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"}
+
+        def endpoints(value):
+            if isinstance(value, dict):
+                method, path = value.get("method"), value.get("path")
+                if method in verbs and isinstance(path, str) and path.startswith("/api/"):
+                    yield method.lower(), path.split("?", 1)[0]
+                for child in value.values():
+                    yield from endpoints(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from endpoints(child)
+
+        registered = set(endpoints(function_registry.list_pages()))
+        documented = {
+            (method, path)
+            for path, item in spec["paths"].items()
+            for method in item
+            if method.upper() in verbs
+        }
+        self.assertEqual(77, len(registered))
+        self.assertEqual(set(), registered - documented)
+        tree = ast.parse(Path("server/content_domains/short_drama.py").read_text())
+        route_table = ast.literal_eval(next(
+            node.value
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "_HTTP_ROUTES"
+                    for target in node.targets)
+        ))
+        short_drama_registered = {
+            (method.lower(), path)
+            for method, route_paths in route_table.items()
+            for path in route_paths
+        }
+        self.assertEqual(126, len(short_drama_registered))
+        self.assertEqual(set(), short_drama_registered - documented)
 
     def test_openapi_validates_live_action_import_and_role_saves(self) -> None:
         spec = load_json_strict(Path("docs/api/openapi.json"))

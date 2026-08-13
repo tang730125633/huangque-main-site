@@ -34,12 +34,12 @@
 <div class="wrap">
   <header>
     <h1>🐦 黄雀 AI · API 管理台 <span class="lock">🔒 团队内部</span></h1>
-    <div class="sub">黄雀终极形态 = <b style="color:var(--gold2)">用 API 搭的 AI 聚合站</b>。这里是它的基建总表：把散落各处的 AI 渠道（生图 / 生视频 / 对话 / 配音 / 数字人 / 云GPU / 采集）+ 认证方式 + key 存放位置集中管理，团队共享。<br><b class="red">🔴 所有 key 真实值不在本页</b>，只标"存哪个 env / 什么认证"，真值留在各自 env（600 权限）。本页 + Swagger 由团队密码守护。</div>
-    <div><a class="cta" href="/api-docs/">🧪 打开 Swagger 测黄雀自有接口 →</a></div>
+    <div class="sub">这里是渠道、服务和凭据位置的基建概览；<b style="color:var(--gold2)">完整业务接口、请求参数和响应耗时以团队 Swagger 为准</b>。<br><b class="red">🔴 所有 key 真实值不在本页</b>，只标"存哪个 env / 什么认证"，真值留在各自 env（600 权限）。本页 + Swagger 由团队密码守护。</div>
+    <div><a class="cta" href="/api-docs/">🧪 打开完整团队 Swagger · 查看 Request duration →</a></div>
     <div class="sub" style="margin-top:8px;">状态：<span class="st-ok">●已上线/验证</span> · <span class="st-todo">●已文档待测</span> · <span class="st-warn">●待补细节</span></div>
   </header>
 
-  <h2><span class="dot"></span>一、黄雀自有后端（dapeng-server · 走 git 部署 · Bearer token）</h2>
+  <h2><span class="dot"></span>一、黄雀自有后端（dapeng-server · 走 git 部署 · 同域 Cookie / Bearer）</h2>
   <table>
     <tr><th>服务</th><th>端口</th><th>文件</th><th>能力 / 接口</th><th>状态</th></tr>
     <tr><td><b>登录鉴权</b></td><td><code>8095</code></td><td><code>auth_server.py</code></td><td>登录/点数 · <code>/api/auth/login</code> <code>/me</code></td><td class="st-ok">●</td></tr>
