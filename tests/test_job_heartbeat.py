@@ -121,15 +121,35 @@ class BackgroundRefundRecoveryTests(unittest.TestCase):
         )
         scanner = CORE_SRC.split("def _pending_job_scanner")[1].split("\ndef ")[0]
         startup = CORE_SRC.split("def start_job_workers")[1].split("\ndef ")[0]
-        self.assertIn("_retry_short_drama_provider_refunds", scanner)
-        self.assertIn("_retry_short_drama_provider_refunds", startup)
+        registry = CORE_SRC.split("def _run_short_drama_recovery")[1].split("\ndef ")[0]
+        self.assertIn("_run_short_drama_recovery", scanner)
+        self.assertIn("_run_short_drama_recovery", startup)
+        self.assertIn("_retry_short_drama_provider_refunds", registry)
 
     def test_delivery_refund_recovery_uses_periodic_worker(self):
         scanner = CORE_SRC.split("def _pending_job_scanner")[1].split("\ndef ")[0]
         startup = CORE_SRC.split("def start_job_workers")[1].split("\ndef ")[0]
+        registry = CORE_SRC.split("def _run_short_drama_recovery")[1].split("\ndef ")[0]
         call = "short_drama_refinement.retry_delivery_attempt_refunds"
-        self.assertIn(call, scanner)
-        self.assertIn(call, startup)
+        self.assertIn("_run_short_drama_recovery", scanner)
+        self.assertIn("_run_short_drama_recovery", startup)
+        self.assertIn(call, registry)
+
+    def test_one_short_drama_recovery_failure_does_not_skip_later_recovery(self):
+        domain = mock.Mock()
+        points = mock.Mock()
+        domain.short_drama_production.retry_attempt_refunds.side_effect = RuntimeError(
+            "production recovery unavailable"
+        )
+        with mock.patch.object(core, "_short_drama_domain", return_value=domain), \
+             mock.patch.object(core, "_domains", return_value=(None, points, None)), \
+             mock.patch.object(core, "_retry_short_drama_provider_refunds") as provider, \
+             mock.patch.object(core.jobs_store, "retry_failed_refunds"):
+            core._run_short_drama_recovery(17)
+        provider.assert_called_once_with(17)
+        domain.short_drama_refinement.retry_delivery_attempt_refunds.assert_called_once_with(
+            core.jdb, points, 17,
+        )
 
 
 class TheReaperDefaultIsNotZeroTests(unittest.TestCase):

@@ -142,8 +142,19 @@ class ShortDramaRefinementTests(unittest.TestCase):
             side_effect=self._fake_refinement_preview,
         )
         self.refinement_renderer_mock = self.refinement_renderer.start()
+        self.complete_assembly = mock.patch.object(
+            short_drama_refinement,
+            "_refinement_assembly_status",
+            return_value={
+                "available": True,
+                "reassembly_required": False,
+                "message": "complete preview fixture",
+            },
+        )
+        self.complete_assembly.start()
 
     def tearDown(self):
+        self.complete_assembly.stop()
         self.refinement_renderer.stop()
         self.free.stop()
         self.tmp.cleanup()
@@ -1425,6 +1436,71 @@ class ShortDramaRefinementTests(unittest.TestCase):
                 )
         self.assertEqual("refinement_reassembly_required", raised.exception.code)
 
+    def test_incomplete_assembly_blocks_quote_without_creating_one(self):
+        version = self.repaired_version("incomplete-assembly-quote")
+        self.confirm_version(version)
+        with mock.patch.object(
+            short_drama_refinement,
+            "_refinement_assembly_status",
+            return_value={"available": False, "reassembly_required": False},
+        ):
+            with self.assertRaises(short_drama_refinement.RefinementError) as raised:
+                short_drama_refinement.create_delivery_quote(
+                    self.db, "alice", {
+                        "project_id": self.project["id"],
+                        "version_id": version["id"],
+                    },
+                )
+        self.assertEqual("refinement_assembly_unavailable", raised.exception.code)
+        conn = self.db()
+        try:
+            self.assertEqual(0, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_delivery_quotes"
+            ).fetchone()[0])
+        finally:
+            conn.close()
+
+    def test_incomplete_assembly_blocks_start_before_charge_or_job(self):
+        version = self.repaired_version("incomplete-assembly-start")
+        self.confirm_version(version)
+        with mock.patch.object(
+            short_drama_refinement,
+            "_refinement_assembly_status",
+            return_value={"available": True, "reassembly_required": False},
+        ):
+            quote = short_drama_refinement.create_delivery_quote(
+                self.db, "alice", {
+                    "project_id": self.project["id"],
+                    "version_id": version["id"],
+                },
+            )
+        deduct = mock.Mock()
+        with mock.patch.object(
+            short_drama_refinement,
+            "_refinement_assembly_status",
+            return_value={"available": True, "reassembly_required": True},
+        ):
+            with self.assertRaises(short_drama_refinement.RefinementError) as raised:
+                short_drama_refinement.start_delivery_job(
+                    self.db, "alice", "alice", {
+                        "project_id": self.project["id"],
+                        "quote_token": quote["quote_token"],
+                    }, "incomplete-assembly-start", deduct_points=deduct,
+                    project_usage=short_drama._project_point_usage,
+                )
+        self.assertEqual("refinement_reassembly_required", raised.exception.code)
+        deduct.assert_not_called()
+        conn = self.db()
+        try:
+            self.assertEqual(0, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_delivery_attempts"
+            ).fetchone()[0])
+            self.assertEqual(0, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_delivery_jobs"
+            ).fetchone()[0])
+        finally:
+            conn.close()
+
     def test_mark_issue_invalidates_acceptance_until_redo_and_reacceptance(self):
         version = self.confirmed_version("accept-before-issue")
         marked = short_drama_refinement.mark_issue(
@@ -2093,6 +2169,10 @@ class ShortDramaRefinementSchemaMigrationTests(unittest.TestCase):
                 "(project_id,mode,confirmed_by,updated_at) VALUES(?,?,?,?)",
                 (self.project["id"], "voice_timeline", "alice", 123),
             )
+            conn.execute(
+                "DELETE FROM short_drama_schema_migrations WHERE name=?",
+                (short_drama_refinement._MEDIA_PREFERENCE_MIGRATION,),
+            )
             conn.commit()
         finally:
             conn.close()
@@ -2124,6 +2204,53 @@ class ShortDramaRefinementSchemaMigrationTests(unittest.TestCase):
         self.assertEqual(0, legacy)
         self.assertEqual("ok", integrity)
         self.assertEqual([], foreign_keys)
+
+    def test_legacy_media_preference_upgrade_resumes_after_rename_crash(self):
+        conn = self.db()
+        try:
+            conn.execute("DROP TABLE short_drama_refinement_media_preferences")
+            conn.execute(
+                "CREATE TABLE short_drama_refinement_media_preferences_legacy ("
+                "project_id TEXT PRIMARY KEY REFERENCES short_drama_projects(id) "
+                "ON DELETE CASCADE, mode TEXT NOT NULL CHECK(mode IN "
+                "('voice_timeline','silent')), confirmed_by TEXT NOT NULL, "
+                "updated_at INTEGER NOT NULL)"
+            )
+            conn.execute(
+                "INSERT INTO short_drama_refinement_media_preferences_legacy "
+                "VALUES(?,?,?,?)",
+                (self.project["id"], "voice_timeline", "alice", 123),
+            )
+            conn.execute(
+                "DELETE FROM short_drama_schema_migrations WHERE name=?",
+                (short_drama_refinement._MEDIA_PREFERENCE_MIGRATION,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        short_drama_refinement.init_db(self.db)
+        short_drama_refinement.init_db(self.db)
+
+        conn = self.db()
+        try:
+            row = conn.execute(
+                "SELECT project_id,mode,confirmed_by,updated_at FROM "
+                "short_drama_refinement_media_preferences"
+            ).fetchone()
+            marker = conn.execute(
+                "SELECT 1 FROM short_drama_schema_migrations WHERE name=?",
+                (short_drama_refinement._MEDIA_PREFERENCE_MIGRATION,),
+            ).fetchone()
+            legacy = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND "
+                "name='short_drama_refinement_media_preferences_legacy'"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual((self.project["id"], "voice_timeline", "alice", 123), row)
+        self.assertIsNone(legacy)
+        self.assertEqual((1,), marker)
 
     def test_reassembly_operation_schema_is_additive_idempotent_and_constrained(self):
         conn = self.db()

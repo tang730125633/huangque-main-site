@@ -1701,8 +1701,7 @@ def init_db(db_factory):
         columns = {row[1] for row in conn.execute("PRAGMA table_info(short_drama_projects)")}
         if "board_id" not in columns:
             conn.execute("ALTER TABLE short_drama_projects ADD COLUMN board_id TEXT")
-        creation_status_added = "creation_status" not in columns
-        if creation_status_added:
+        if "creation_status" not in columns:
             conn.execute(
                 "ALTER TABLE short_drama_projects ADD COLUMN creation_status "
                 "TEXT NOT NULL DEFAULT 'formal'"
@@ -1822,12 +1821,20 @@ def init_db(db_factory):
                     "SET character_contract_migration_json=? WHERE id=?",
                     (_json_text(migration, {}), import_id),
                 )
-        if creation_status_added:
+        creation_status_migration = "creation_status_live_action_backfill_v1"
+        if not conn.execute(
+            "SELECT 1 FROM short_drama_schema_migrations WHERE name=?",
+            (creation_status_migration,),
+        ).fetchone():
             conn.execute(
                 "UPDATE short_drama_projects SET creation_status='draft' "
                 "WHERE creation_status='formal' AND stage='draft' AND id IN ("
                 "SELECT project_id FROM short_drama_script_imports "
                 "WHERE content_type='live_action' AND status='completed')"
+            )
+            conn.execute(
+                "INSERT INTO short_drama_schema_migrations(name,completed_at) "
+                "VALUES(?,?)", (creation_status_migration, int(time.time())),
             )
         conn.commit()
     finally:

@@ -150,6 +150,8 @@ CREATE TABLE IF NOT EXISTS short_drama_provider_shot_attempts (
     ('accepted','charged','linked','done','refund_pending','refunded','failed')),
   job_id TEXT,
   error_json TEXT,
+  refund_retry_count INTEGER NOT NULL DEFAULT 0,
+  refund_retry_at INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   UNIQUE(actor_username, idempotency_key)
@@ -228,6 +230,26 @@ def init_db(db_factory):
     conn = _connection(db_factory)
     try:
         conn.executescript(_SCHEMA)
+        columns = {
+            row[1] for row in conn.execute(
+                "PRAGMA table_info(short_drama_provider_shot_attempts)"
+            ).fetchall()
+        }
+        if "refund_retry_count" not in columns:
+            conn.execute(
+                "ALTER TABLE short_drama_provider_shot_attempts "
+                "ADD COLUMN refund_retry_count INTEGER NOT NULL DEFAULT 0"
+            )
+        if "refund_retry_at" not in columns:
+            conn.execute(
+                "ALTER TABLE short_drama_provider_shot_attempts "
+                "ADD COLUMN refund_retry_at INTEGER NOT NULL DEFAULT 0"
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_short_drama_provider_refunds_due "
+            "ON short_drama_provider_shot_attempts"
+            "(state,refund_retry_at,updated_at)"
+        )
         conn.commit()
     finally:
         conn.close()
@@ -2198,33 +2220,98 @@ def _refund_provider_job(db_factory, job_id, error, refund_points=None):
     )
 
 
-def _recover_provider_refund(db_factory, job_id, refund_points=None):
+def _recover_provider_refund(
+    db_factory, job_id, refund_points=None, now=None, force=False,
+):
     if not callable(refund_points):
-        return
+        return False
+    now = int(time.time() if now is None else now)
     conn = _connection(db_factory)
     try:
+        conn.execute("BEGIN IMMEDIATE")
         attempt = _provider_attempt_for_job(conn, job_id)
+        if (
+            not attempt
+            or attempt["state"] != "refund_pending"
+            or (
+                int(attempt["refund_retry_at"] or 0) > now
+                and not force
+            )
+        ):
+            conn.commit()
+            return False
+        claimed = conn.execute(
+            "UPDATE short_drama_provider_shot_attempts SET refund_retry_at=?,"
+            "updated_at=? WHERE id=? AND state='refund_pending' "
+            "AND refund_retry_at=?",
+            (
+                now + 60, now, attempt["id"],
+                int(attempt["refund_retry_at"] or 0),
+            ),
+        ).rowcount
+        conn.commit()
     finally:
         conn.close()
-    if not attempt or attempt["state"] != "refund_pending":
-        return
+    if claimed != 1:
+        return False
     try:
         refund_points(
             attempt["actor_username"], int(attempt["cost"]),
             "短剧单镜头生成失败补偿", attempt["refund_key"],
         )
     except Exception:
-        return
+        retry_count = int(attempt["refund_retry_count"] or 0) + 1
+        delay = min(300, 2 ** min(retry_count, 8))
+        conn = _connection(db_factory)
+        try:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_attempts "
+                "SET refund_retry_count=?,refund_retry_at=?,updated_at=? "
+                "WHERE id=? AND state='refund_pending'",
+                (retry_count, now + delay, now, attempt["id"]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return False
     conn = _connection(db_factory)
     try:
         conn.execute(
             "UPDATE short_drama_provider_shot_attempts SET state='refunded',"
-            "updated_at=? WHERE id=? AND state='refund_pending'",
-            (int(time.time()), attempt["id"]),
+            "refund_retry_at=0,updated_at=? WHERE id=? AND state='refund_pending'",
+            (now, attempt["id"]),
         )
         conn.commit()
     finally:
         conn.close()
+    return True
+
+
+def retry_provider_refunds(db_factory, points_domain, limit=100, now=None):
+    """Recover due single-shot refunds without requiring workspace access."""
+    refund_points = getattr(points_domain, "refund_points", None)
+    if not callable(refund_points):
+        return 0
+    now = int(time.time() if now is None else now)
+    limit = max(1, min(1000, int(limit or 100)))
+    conn = _connection(db_factory)
+    try:
+        job_ids = [
+            row[0] for row in conn.execute(
+                "SELECT job_id FROM short_drama_provider_shot_attempts "
+                "WHERE state='refund_pending' AND refund_retry_at<=? "
+                "AND job_id IS NOT NULL ORDER BY refund_retry_at,updated_at LIMIT ?",
+                (now, limit),
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+    return sum(
+        1 for job_id in job_ids
+        if _recover_provider_refund(
+            db_factory, job_id, refund_points=refund_points, now=now,
+        )
+    )
 
 
 def _recover_project_provider_refunds(
@@ -2234,18 +2321,20 @@ def _recover_project_provider_refunds(
         return
     conn = _connection(db_factory)
     try:
-        job_ids = [
-            row["job_id"] for row in conn.execute(
-                "SELECT job_id FROM short_drama_provider_shot_attempts "
+        pending = [
+            (row["job_id"], int(row["refund_retry_at"] or 0))
+            for row in conn.execute(
+                "SELECT job_id,refund_retry_at FROM short_drama_provider_shot_attempts "
                 "WHERE project_id=? AND state='refund_pending' AND job_id IS NOT NULL",
                 (project_id,),
             ).fetchall()
         ]
     finally:
         conn.close()
-    for job_id in job_ids:
+    for job_id, retry_at in pending:
         _recover_provider_refund(
             db_factory, job_id, refund_points=refund_points,
+            now=max(int(time.time()), retry_at),
         )
 
 
@@ -2658,6 +2747,7 @@ def reconcile_provider_job(
                         conn.close()
     _recover_provider_refund(
         db_factory, job_id, refund_points=refund_points,
+        force=True,
     )
     conn = _connection(db_factory)
     try:

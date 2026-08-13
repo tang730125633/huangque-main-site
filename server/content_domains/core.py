@@ -1147,30 +1147,41 @@ def _retry_short_drama_provider_refunds(limit=None):
         )
     )
 
+
+def _run_short_drama_recovery(limit=None):
+    limit = int(limit or JOB_QUEUE_MAX)
+    domain = _short_drama_domain()
+    points = _domains()[1]
+    recoveries = (
+        lambda: domain.short_drama_production.retry_attempt_refunds(
+            jdb, points, limit),
+        lambda: domain.retry_character_reference_refunds(jdb, points, limit),
+        lambda: domain.short_drama_voice.retry_voice_attempt_refunds(
+            jdb, points, limit),
+        lambda: domain.short_drama_video.retry_video_attempt_refunds(
+            jdb, points, limit),
+        lambda: _retry_short_drama_provider_refunds(limit),
+        lambda: domain.short_drama_refinement.retry_delivery_attempt_refunds(
+            jdb, points, limit),
+        lambda: jobs_store.retry_failed_refunds(jdb, _refund_once, limit),
+        lambda: domain.short_drama_assembly.reconcile_final_refunds(jdb, limit),
+        lambda: domain.short_drama_assembly.retry_final_charge_attempts(
+            jdb, points, limit),
+        lambda: domain.short_drama_completion.reconcile_attempts(jdb, limit),
+    )
+    for recover in recoveries:
+        try:
+            recover()
+        except Exception:
+            pass
+
 def _pending_job_scanner():
     while True:
         try:
             _recover_pending_jobs(_PENDING_RECOVERY_LIMIT)
-            _short_drama_domain().short_drama_production.retry_attempt_refunds(
-                jdb, _domains()[1], JOB_QUEUE_MAX)
-            _short_drama_domain().retry_character_reference_refunds(
-                jdb, _domains()[1], JOB_QUEUE_MAX)
-            _short_drama_domain().short_drama_voice.retry_voice_attempt_refunds(
-                jdb, _domains()[1], JOB_QUEUE_MAX)
-            _short_drama_domain().short_drama_video.retry_video_attempt_refunds(
-                jdb, _domains()[1], JOB_QUEUE_MAX)
-            _retry_short_drama_provider_refunds(JOB_QUEUE_MAX)
-            _short_drama_domain().short_drama_refinement.retry_delivery_attempt_refunds(
-                jdb, _domains()[1], JOB_QUEUE_MAX)
-            jobs_store.retry_failed_refunds(jdb, _refund_once, JOB_QUEUE_MAX)
-            _short_drama_domain().short_drama_assembly.reconcile_final_refunds(
-                jdb, JOB_QUEUE_MAX)
-            _short_drama_domain().short_drama_assembly.retry_final_charge_attempts(
-                jdb, _domains()[1], JOB_QUEUE_MAX)
-            _short_drama_domain().short_drama_completion.reconcile_attempts(
-                jdb, JOB_QUEUE_MAX)
         except Exception:
             pass
+        _run_short_drama_recovery(JOB_QUEUE_MAX)
         time.sleep(30)
 
 _ALL_JOB_QUEUES = (_job_queue, _fast_job_queue, _talking_job_queue,
@@ -1206,24 +1217,7 @@ def start_job_workers():
             retry_breakdown(JOB_QUEUE_MAX)
     except Exception:
         pass
-    try:
-        _short_drama_domain().short_drama_production.retry_attempt_refunds(
-            jdb, _domains()[1], JOB_QUEUE_MAX)
-        _short_drama_domain().retry_character_reference_refunds(
-            jdb, _domains()[1], JOB_QUEUE_MAX)
-        _short_drama_domain().short_drama_voice.retry_voice_attempt_refunds(
-            jdb, _domains()[1], JOB_QUEUE_MAX)
-        _short_drama_domain().short_drama_video.retry_video_attempt_refunds(
-            jdb, _domains()[1], JOB_QUEUE_MAX)
-        _retry_short_drama_provider_refunds(JOB_QUEUE_MAX)
-        _short_drama_domain().short_drama_refinement.retry_delivery_attempt_refunds(
-            jdb, _domains()[1], JOB_QUEUE_MAX)
-        _short_drama_domain().short_drama_assembly.retry_final_charge_attempts(
-            jdb, _domains()[1], JOB_QUEUE_MAX)
-        _short_drama_domain().short_drama_completion.reconcile_attempts(
-            jdb, JOB_QUEUE_MAX)
-    except Exception:
-        pass
+    _run_short_drama_recovery(JOB_QUEUE_MAX)
 def drain_and_exit(signum=None, frame=None):
     """SIGTERM → 停止收新任务 → 等在飞的跑完 → 退出。
 

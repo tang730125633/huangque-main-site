@@ -1651,6 +1651,43 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             conn.close()
         self.assertEqual("refunded", state)
 
+    def test_background_sweeper_retries_refund_without_workspace_access(self):
+        job, _quote = self._running_provider_job("background-refund-recovery")
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs SET status='failed' "
+                "WHERE id=?", (job["id"],),
+            )
+            conn.execute(
+                "UPDATE short_drama_provider_shot_attempts SET "
+                "state='refund_pending',refund_retry_count=1,refund_retry_at=120 "
+                "WHERE job_id=?", (job["id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        refunds = mock.Mock()
+        recovered = short_drama_autodraft.retry_provider_refunds(
+            self.db, mock.Mock(refund_points=refunds), now=120,
+        )
+        replay = short_drama_autodraft.retry_provider_refunds(
+            self.db, mock.Mock(refund_points=refunds), now=500,
+        )
+        conn = self.db()
+        try:
+            state = conn.execute(
+                "SELECT state FROM short_drama_provider_shot_attempts "
+                "WHERE job_id=?", (job["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(1, recovered)
+        self.assertEqual(0, replay)
+        self.assertEqual("refunded", state)
+        refunds.assert_called_once()
+
     def test_provider_failure_reason_and_refund_recover_on_workspace_refresh(self):
         class RejectedProvider:
             def get_job(self, _provider_job_id):

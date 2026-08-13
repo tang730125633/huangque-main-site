@@ -1595,6 +1595,33 @@ test('refinement requires explicit full-film acceptance before locking', () => {
   assert.match(workspaceSource, /replacement_provider_version_id:preview\.replacement_provider_version_id/);
 });
 
+test('incomplete or unverifiable assembly disables full-film acceptance', () => {
+  for (const assembly_status of [
+    {available:false,reassembly_required:false},
+    {available:true,reassembly_required:true}
+  ]) {
+    const output = workspace.refinementActionsHtml({
+      current_refinement:{id:'r-blocked',status:'draft',issues:[],assembly_status},
+      acceptance_requirements:{media:{ready:true}}
+    }, true);
+    assert.match(output, /data-acceptance-check="story_continuity" disabled/);
+    assert.match(output, /data-action="confirm-refinement" disabled/);
+    assert.match(output, /完整镜头时长|重新装配/);
+  }
+});
+
+test('historically confirmed incomplete assembly cannot start delivery', () => {
+  const output = workspace.refinementActionsHtml({
+    current_refinement:{
+      id:'r-confirmed-old',status:'confirmed',issues:[],
+      assembly_status:{available:true,reassembly_required:true}
+    },
+    billing:{delivery_enabled:true,mode:'local_ffmpeg',formal_cost:0}
+  }, true);
+  assert.match(output, /正式交付不可用/);
+  assert.doesNotMatch(output, /data-action="start-delivery"/);
+});
+
 test('failed refinement assembly explains that the new shot is retained and retryable', () => {
   const output = workspace.refinementActionsHtml({
     current_refinement:{id:'r-failed',status:'draft',issues:[{shot_key:'shot_02'}]},

@@ -1,5 +1,7 @@
 import os
+import socket
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -17,7 +19,7 @@ from providers.short_drama_visual.heygen_cinematic import (
 from providers.short_drama_visual.grok_xai import GrokXaiShotProvider
 from providers.short_drama_visual import minimax_h3
 from providers.short_drama_visual.minimax_h3 import MiniMaxH3ShotProvider
-from content_domains import provider_keys, video_minimax_h3
+from content_domains import provider_keys, video, video_minimax_h3
 
 
 class ShortDramaVisualProviderTests(unittest.TestCase):
@@ -29,6 +31,84 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
         self.assertFalse(snapshot["configured"])
         self.assertEqual("minimax_h3", snapshot["selected"])
         self.assertIsInstance(provider, MiniMaxH3ShotProvider)
+
+    def test_restricted_video_download_rejects_private_destination(self):
+        with mock.patch.object(video, "_heygen_direct_opener") as opener:
+            with self.assertRaises(ValueError):
+                video._download_video_file_direct(
+                    "https://127.0.0.1/result.mp4",
+                    allowed_hosts={"127.0.0.1"}, max_bytes=1024,
+                )
+        opener.assert_not_called()
+
+    def test_restricted_video_download_revalidates_redirect_destination(self):
+        handler = video._RestrictedDownloadRedirectHandler(
+            {"filecdn.minimax.chat"}
+        )
+        request = mock.Mock(full_url="https://filecdn.minimax.chat/result.mp4")
+        with self.assertRaises(ValueError):
+            handler.redirect_request(
+                request, None, 302, "Found", {},
+                "https://169.254.169.254/latest/meta-data",
+            )
+
+    def test_restricted_video_download_rejects_oversized_or_non_mp4_body(self):
+        class Response:
+            def __init__(self, data, content_length=None):
+                self.data = data
+                self.headers = {} if content_length is None else {
+                    "Content-Length": str(content_length)
+                }
+            def __enter__(self):
+                return self
+            def __exit__(self, *_args):
+                return False
+            def read(self, _size=-1):
+                data, self.data = self.data, b""
+                return data
+
+        public_dns = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443))]
+        for response in (Response(b"x", 2049), Response(b"not-an-mp4")):
+            with self.subTest(headers=response.headers), \
+                 mock.patch("socket.getaddrinfo", return_value=public_dns), \
+                 mock.patch.object(video, "_restricted_download_opener") as opener:
+                opener.return_value.open.return_value = response
+                with self.assertRaises(ValueError):
+                    video._download_video_file_direct(
+                        "https://filecdn.minimax.chat/result.mp4",
+                        allowed_hosts={"filecdn.minimax.chat"}, max_bytes=2048,
+                    )
+
+    def test_restricted_video_download_cleans_failed_probe_before_publish(self):
+        forged = b"\x00\x00\x00\x18ftypisom" + b"garbage" * 8
+        class Response:
+            headers = {"Content-Length": str(len(forged))}
+            def __init__(self):
+                self.data = forged
+            def __enter__(self):
+                return self
+            def __exit__(self, *_args):
+                return False
+            def read(self, _size=-1):
+                data, self.data = self.data, b""
+                return data
+
+        public_dns = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443))]
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "result.mp4"
+            failed_probe = mock.Mock(returncode=1, stdout="", stderr="invalid")
+            with mock.patch("socket.getaddrinfo", return_value=public_dns), \
+                 mock.patch.object(video, "_restricted_download_opener") as opener, \
+                 mock.patch.object(video, "_out_path", return_value=output), \
+                 mock.patch.object(video.subprocess, "run", return_value=failed_probe):
+                opener.return_value.open.return_value = Response()
+                with self.assertRaisesRegex(ValueError, "视频流|媒体"):
+                    video._download_video_file_direct(
+                        "https://filecdn.minimax.chat/result.mp4",
+                        allowed_hosts={"filecdn.minimax.chat"}, max_bytes=2048,
+                    )
+            self.assertFalse(output.exists())
+            self.assertEqual([], list(Path(directory).glob("*.part-*")))
 
     def test_minimax_h3_normalizes_up_to_five_character_references(self):
         provider = MiniMaxH3ShotProvider()

@@ -37,6 +37,7 @@ ACCEPTANCE_CHECKS = (
 )
 _REASSEMBLY_ENDPOINT = "/api/gen/short-drama/refinement/reassemble"
 _REASSEMBLY_LEASE_SECONDS = 30
+_MEDIA_PREFERENCE_MIGRATION = "refinement_media_preferences_provider_audio_v1"
 
 
 class RefinementError(ValueError):
@@ -198,6 +199,10 @@ def init_db(db_factory):
     conn = _connection(db_factory)
     try:
         conn.executescript(_SCHEMA)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS short_drama_schema_migrations ("
+            "name TEXT PRIMARY KEY,completed_at INTEGER NOT NULL)"
+        )
         columns = {
             str(row[1]) for row in conn.execute(
                 "PRAGMA table_info(short_drama_refinement_jobs)"
@@ -223,29 +228,45 @@ def init_db(db_factory):
                 "ALTER TABLE short_drama_refinement_versions ADD COLUMN "
                 "media_json TEXT NOT NULL DEFAULT '{}'"
             )
-        preference_sql = str(conn.execute(
+        migration_done = conn.execute(
+            "SELECT 1 FROM short_drama_schema_migrations WHERE name=?",
+            (_MEDIA_PREFERENCE_MIGRATION,),
+        ).fetchone()
+        legacy_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND "
+            "name='short_drama_refinement_media_preferences_legacy'"
+        ).fetchone()
+        preference_row = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND "
             "name='short_drama_refinement_media_preferences'"
-        ).fetchone()[0] or "")
-        if "provider_audio" not in preference_sql:
+        ).fetchone()
+        preference_sql = str(preference_row[0] or "") if preference_row else ""
+        if not migration_done and not legacy_exists and "provider_audio" not in preference_sql:
             conn.execute(
                 "ALTER TABLE short_drama_refinement_media_preferences "
                 "RENAME TO short_drama_refinement_media_preferences_legacy"
             )
+            legacy_exists = True
+        if not migration_done and legacy_exists:
             conn.execute(
-                "CREATE TABLE short_drama_refinement_media_preferences ("
+                "CREATE TABLE IF NOT EXISTS short_drama_refinement_media_preferences ("
                 "project_id TEXT PRIMARY KEY REFERENCES short_drama_projects(id) "
                 "ON DELETE CASCADE, mode TEXT NOT NULL CHECK(mode IN "
                 "('voice_timeline','provider_audio','silent')), "
                 "confirmed_by TEXT NOT NULL, updated_at INTEGER NOT NULL)"
             )
             conn.execute(
-                "INSERT INTO short_drama_refinement_media_preferences "
+                "INSERT OR REPLACE INTO short_drama_refinement_media_preferences "
                 "SELECT project_id,mode,confirmed_by,updated_at FROM "
                 "short_drama_refinement_media_preferences_legacy"
             )
             conn.execute(
                 "DROP TABLE short_drama_refinement_media_preferences_legacy"
+            )
+        if not migration_done:
+            conn.execute(
+                "INSERT INTO short_drama_schema_migrations(name,completed_at) "
+                "VALUES(?,?)", (_MEDIA_PREFERENCE_MIGRATION, int(time.time())),
             )
         conn.commit()
     finally:
@@ -878,6 +899,21 @@ def _refinement_assembly_status(conn, project, refinement):
         "message": ("现有预览没有包含全部镜头时长，请免费重新装配完整预览"
                     if required else "当前预览已包含全部镜头"),
     }
+
+
+def _require_complete_assembly(conn, project, refinement):
+    status = _refinement_assembly_status(conn, project, refinement)
+    if not status.get("available"):
+        raise RefinementError(
+            "refinement_assembly_unavailable",
+            "暂时无法核对完整镜头时长，请稍后重试", 409,
+        )
+    if status.get("reassembly_required"):
+        raise RefinementError(
+            "refinement_reassembly_required",
+            "当前预览未包含全部镜头时长，请先免费重新装配", 409,
+        )
+    return status
 
 
 def _seed_refinement(conn, project_id, actor_username):
@@ -2423,19 +2459,7 @@ def confirm_refinement(db_factory, owner_username, actor_username, body):
             raise RefinementError(
                 "refinement_acceptance_stale", "验收输入已变化，请刷新后重新验收", 409
             )
-        assembly_status = _refinement_assembly_status(conn, project, current)
-        if not assembly_status.get("available"):
-            raise RefinementError(
-                "refinement_assembly_unavailable",
-                "暂时无法核对完整镜头时长，请稍后重试",
-                409,
-            )
-        if assembly_status.get("reassembly_required"):
-            raise RefinementError(
-                "refinement_reassembly_required",
-                "当前预览未包含全部镜头时长，请先免费重新装配",
-                409,
-            )
+        _require_complete_assembly(conn, project, current)
         now = int(time.time())
         conn.execute(
             "UPDATE short_drama_refinement_versions SET status='superseded' "
@@ -2557,6 +2581,7 @@ def create_delivery_quote(db_factory, owner_username, body):
                 "refinement_version_stale", "只能导出当前已验收的精修版本", 409
             )
         acceptance = _valid_acceptance(conn, project, source, require=True)
+        _require_complete_assembly(conn, project, source)
         media = acceptance["snapshot"].get("media_contract") or {}
         if capability.get("deliverable") and media.get("delivery_eligible") is not True:
             raise RefinementError(
@@ -2675,6 +2700,7 @@ def start_delivery_job(
                 "delivery_source_changed", "精修版本已变化，请重新询价", 409
             )
         acceptance = _valid_acceptance(conn, project, source, require=True)
+        _require_complete_assembly(conn, project, source)
         media = acceptance["snapshot"].get("media_contract") or {}
         if capability.get("deliverable") and media.get("delivery_eligible") is not True:
             raise RefinementError(
