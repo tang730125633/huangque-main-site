@@ -155,8 +155,9 @@ class ShortDramaPr94SchemaMigrationTests(unittest.TestCase):
             item for item in attached["characters"]
             if item["character_key"] == character_key
         )
-        self.assertEqual(reference_version, character["reference_version"])
-        self.assertEqual(job_id, character["reference_job_id"])
+        self.assertLess(character["reference_version"], reference_version)
+        self.assertEqual(reference_version, character["pending_reference_version"])
+        self.assertEqual(job_id, character["pending_reference_job_id"])
         return attached
 
     def _seed_trusted_ai_evidence(self, job_id=701):
@@ -269,31 +270,6 @@ class ShortDramaPr94SchemaMigrationTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_creation_status_backfill_resumes_after_alter_table_crash_window(self):
-        self._seed_legacy_database()
-        conn = self.db()
-        try:
-            conn.execute(
-                "ALTER TABLE short_drama_projects ADD COLUMN creation_status "
-                "TEXT NOT NULL DEFAULT 'formal'"
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
-        short_drama.init_db(self.db)
-        migrated = short_drama.get_project(self.db, "alice", "legacy-project")
-        self.assertEqual("draft", migrated["creation_status"])
-        conn = self.db()
-        try:
-            marker = conn.execute(
-                "SELECT 1 FROM short_drama_schema_migrations WHERE name=?",
-                ("creation_status_live_action_backfill_v1",),
-            ).fetchone()
-        finally:
-            conn.close()
-        self.assertEqual((1,), marker)
-
     def test_ordinary_upload_cannot_complete_three_view_migration(self):
         self._seed_legacy_database()
         short_drama.init_db(self.db)
@@ -332,8 +308,10 @@ class ShortDramaPr94SchemaMigrationTests(unittest.TestCase):
                 },
             )
         replacement = selected["characters"][0]
-        self.assertEqual(2, replacement["reference_version"])
-        self.assertFalse(replacement["reference_locked"])
+        self.assertEqual(1, replacement["reference_version"])
+        self.assertEqual(2, replacement["pending_reference_version"])
+        self.assertEqual("upload", replacement["pending_reference_source"])
+        self.assertTrue(replacement["reference_locked"])
 
         confirmed = short_drama.confirm_character_reference(
             self.db, "alice", "legacy-project", selected["revision"],

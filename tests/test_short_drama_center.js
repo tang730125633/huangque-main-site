@@ -47,11 +47,12 @@ test('一级导航包含独立短剧入口和专用图标', () => {
 });
 
 test('项目中心提供列表筛选、创建和详情入口', () => {
-  for (const id of ['shortDramaGrid', 'shortDramaSearch', 'shortDramaStageFilter',
+  for (const id of ['shortDramaGrid', 'shortDramaSearch',
     'shortDramaCreate', 'shortDramaDialog', 'shortDramaDrawer', 'shortDramaDeleteProject']) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
   assert.match(html, /进入对话式工作区/);
+  assert.doesNotMatch(html, /id="shortDramaStageFilter"/);
   assert.match(html, />删除短剧<\/button>/);
   assert.doesNotMatch(html, /value="1:1"/);
 });
@@ -192,10 +193,10 @@ test('前置策划生成结构化剧本并在人工确认后准备正式对话',
   }, messages, direction);
   assert.equal(preview.title, '回家吃饭');
   assert.equal(preview.ratio, '9:16');
-  assert.equal(preview.duration_seconds, 45);
+  assert.equal(preview.duration_seconds, 48);
   assert.equal(preview.beats.length, 8);
   assert.equal(preview.shots.length, 8);
-  assert.equal(preview.shots.reduce((sum, shot) => sum + shot.duration, 0), 45);
+  assert.equal(preview.shots.reduce((sum, shot) => sum + shot.duration, 0), 48);
   assert.ok(preview.shots.every(shot => shot.scene && shot.action && shot.expression && shot.camera));
   assert.ok(preview.shots.every(shot => Array.isArray(shot.characters) && shot.characters.length));
   assert.equal(preview.quality.blocking, false);
@@ -317,10 +318,41 @@ test('前置策划页面提供聊天、结构化卡片和人工确认入口', ()
 test('长剧本导入建立覆盖开场到结局的全局理解', () => {
   const source = ['第一场 家中','林夏：我必须找到父亲。','林夏带着旧信离开。','第二场 车站','周野阻止林夏登车。','林夏发现信件背后的真相。','第三场 月台','林夏作出选择。','父女最终和解。'].join('\n');
   const analysis = center.analyzeImportedScript(source, '长剧本.md');
-  assert.equal(analysis.global_structure.schema_version, 'short-drama-import-global-v1');
+  assert.equal(analysis.global_structure.schema_version, 'short-drama-import-global-v2');
   assert.equal(analysis.global_structure.coverage.analyzed_from_start, true);
   assert.equal(analysis.global_structure.coverage.analyzed_from_end, true);
   assert.match(analysis.global_structure.ending, /和解|选择/);
+});
+
+test('核心故事按分镜语义整理并过滤标题规格与重复节点', () => {
+  const source = [
+    '放学路上女孩撑伞，相册被风吹落，热心少年帮忙捡拾。',
+    '角色',
+    '女孩：17岁，学生。',
+    '少年：18岁，学生。',
+    '分镜＋台词＋视频生成提示词（9:16 竖屏）',
+    '分镜1 | 0‑5s | 全景，女孩独自走在放学路上。',
+    '提示词：9:16 竖屏，二次元动漫，黄昏街道。',
+    '分镜2 | 5-11s | 中景，女孩踩到石子脚下打滑，相册直接飞出去。',
+    '分镜3 | 11-16s | 近景，少年弯腰捡起相册并发现失主。',
+    '少年（疑惑）：这是你的吗？',
+    '分镜4 | 16-21s | 双人镜头，女孩追上少年取回相册。',
+    '分镜5 | 21-26s | 近景，少年将相册递还给女孩。',
+    '分镜6 | 26-30s | 全景，两人道谢后分别离开。',
+  ].join('\n');
+  const story = center.analyzeImportedScript(source, '').global_structure;
+  assert.deepEqual(center.analyzeImportedScript(source, '').characters, ['女孩','少年']);
+  assert.match(story.premise, /放学路上女孩撑伞/);
+  assert.doesNotMatch(Object.values(story).join(' '), /分镜＋台词＋视频生成提示词|9:16 竖屏/);
+  assert.match(story.setup, /独自走在放学路上/);
+  assert.match(story.development, /脚下打滑/);
+  assert.match(story.turning_point, /捡起相册/);
+  assert.match(story.climax, /递还给女孩/);
+  assert.match(story.ending, /分别离开/);
+  assert.match(story.central_conflict, /人物需要应对/);
+  assert.notEqual(story.central_conflict, story.development);
+  assert.equal([story.premise,story.setup,story.development,story.turning_point,story.climax,story.ending,story.central_conflict].join(' ').includes('提示词'), false);
+  assert.equal(new Set([story.setup,story.development,story.turning_point,story.climax,story.ending]).size, 5);
 });
 
 test('创作理解按主题、人物、冲突、情绪、结局和观众计算完整度', () => {
@@ -395,9 +427,75 @@ test('仅展示个人独立项目并正确计算概览', () => {
     {id:'b', title:'雨夜', synopsis:'来信', stage:'voice_review', board_id:null},
     {id:'c', title:'交付', synopsis:'完成', stage:'completed', board_id:null},
     {id:'d', title:'共享', synopsis:'画布', stage:'setup', board_id:'board-1'},
+    {id:'e', title:'未完故事', synopsis:'本地草稿', stage:'setup', board_id:null, creation_status:'draft'},
   ];
   assert.deepEqual(center.filterProjects(projects, '雨', '').map(p => p.id), ['b']);
-  assert.deepEqual(center.metrics(projects), {all:3, active:1, blocked:1, done:1, draft:0});
+  assert.deepEqual(center.filterProjects(projects, '', 'all_projects').map(p => p.id), ['a','b','c','e']);
+  assert.deepEqual(center.filterProjects(projects, '', 'active_projects').map(p => p.id), ['b']);
+  assert.deepEqual(center.filterProjects(projects, '', 'blocked_projects').map(p => p.id), ['a']);
+  assert.deepEqual(center.filterProjects(projects, '', 'completed').map(p => p.id), ['c']);
+  assert.deepEqual(center.filterProjects(projects, '', 'creation_draft').map(p => p.id), ['e']);
+  assert.deepEqual(center.metrics(projects), {all:4, active:1, blocked:1, done:1, draft:1});
+  assert.match(html, /data-project-view="all_projects"/);
+  assert.match(centerScript, /activeProjectView=view\|\|'all_projects'/);
+  assert.match(centerScript, /selectProjectView\(metric\.getAttribute\('data-project-view'\)\)/);
+  assert.match(centerScript, /aria-pressed/);
+});
+
+test('项目卡片提供快捷菜单、轻量切换和增强搜索', () => {
+  const card = center.cardHtml({
+    id:'project-1', title:'雨夜来信', synopsis:'旧友在雨夜重新相遇',
+    stage:'setup', ratio:'16:9', target_duration:30, shot_count:6,
+  }, '雨夜');
+  assert.match(card, /data-card-menu/);
+  assert.match(card, /data-card-action="rename"/);
+  assert.match(card, /data-card-action="duplicate"/);
+  assert.match(card, /data-card-action="delete"/);
+  assert.match(card, /short-drama-search-match/);
+  for (const id of ['shortDramaSearchClear', 'shortDramaSearchCount',
+    'shortDramaEmptyAction', 'shortDramaProjectActionDialog',
+    'shortDramaProjectRenameInput']) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  assert.match(centerScript, /复制基础设置、原稿和角色文字资料/);
+  assert.match(centerScript, /activeProjectView='creation_draft'/);
+  assert.match(centerScript, /projectActionDialog\.showModal\(\)/);
+  assert.match(centerStyle, /short-drama-card-enter/);
+  assert.match(centerStyle, /short-drama-count-pop/);
+  assert.match(centerStyle, /height:320px/);
+  assert.match(centerStyle, /-webkit-line-clamp:4/);
+  assert.match(card, /<p title="旧友在雨夜重新相遇">/);
+});
+
+test('项目卡片以最近更新时间替代内部修订号', () => {
+  const now = Date.UTC(2026, 7, 10, 8, 0, 0);
+  assert.equal(center.projectUpdatedAt(now - 30 * 1000, now).label, '刚刚更新');
+  assert.equal(center.projectUpdatedAt((now - 12 * 60 * 1000) / 1000, now).label, '12分钟前');
+  assert.equal(center.projectUpdatedAt(now - 3 * 60 * 60 * 1000, now).label, '3小时前');
+  assert.equal(center.projectUpdatedAt(now - 2 * 24 * 60 * 60 * 1000, now).label, '2天前');
+  const card = center.cardHtml({id:'p1', title:'项目', synopsis:'足够长度的项目简介', stage:'setup', updated_at:(Date.now() - 30 * 1000) / 1000});
+  assert.match(card, /刚刚更新/);
+  assert.doesNotMatch(card, />R\d+</);
+});
+
+test('项目卡片按真实制作里程碑展示进度与下一步', () => {
+  const card = center.cardHtml({
+    id:'p1', title:'项目', synopsis:'项目简介', stage:'draft',
+    progress_stage:'video_review', progress_percent:60,
+    progress_label:'镜头生成中 3/6', progress_detail:'还有 3 个镜头未完成',
+    ratio:'16:9', target_duration:30, shot_count:6,
+  });
+  assert.equal(center.progress({stage:'setup', progress_percent:60}), 60);
+  assert.match(card, /镜头生成中 3\/6/);
+  assert.match(card, /还有 3 个镜头未完成/);
+  assert.match(card, /aria-valuenow="60"/);
+  assert.match(card, /width:60%/);
+});
+
+test('角色资料锁定不应禁用标准图确认区域', () => {
+  assert.match(centerScript, /<\/section><\/fieldset>'\+\s*'<section class="short-drama-role-reference">/);
+  assert.match(centerScript, /data-confirm-role-reference/);
+  assert.doesNotMatch(centerScript, /<section class="short-drama-role-reference"[^]*?<\/fieldset>/);
 });
 
 test('创建请求不携带 board_id 或画布身份', () => {
@@ -754,6 +852,10 @@ test('live action drafts are account scoped and preserve role progress', () => {
   assert.equal(restored.roles[0].fixed_clothing, '蓝色短袖');
   assert.equal(restored.pending_project.id, 'draft-project');
   assert.equal(center.readLiveActionDraftRecord(storage, key, 'bob', 1700000001000), null);
+  assert.equal(center.liveActionDraftSynopsis(draft), '尚未整理一句话故事');
+  draft.core_story = {logline:'男孩最终决定与女孩分享糖果。'};
+  assert.equal(center.liveActionDraftSynopsis(draft), '男孩最终决定与女孩分享糖果。');
+  assert.doesNotMatch(center.liveActionDraftSynopsis(draft), /蓝色短袖|角色资料/);
   assert.match(centerScript, /已恢复上次保存的草稿。'.*autoHide:5000/);
   assert.match(centerScript, /clearTimeout\(liveActionNoticeTimers\[timerKey\]\)/);
   assert.match(centerStyle, /height:100%;max-height:none;box-sizing:border-box;padding:16px;overflow:auto/);
@@ -762,21 +864,18 @@ test('live action drafts are account scoped and preserve role progress', () => {
 });
 
 test('closing unfinished live action creation offers save discard and continue choices', () => {
-  assert.match(html, /id="shortDramaDialog" aria-labelledby="shortDramaCreateTitle" aria-describedby="shortDramaCreateLead"/);
   assert.match(html, /id="shortDramaCloseDraftPrompt"/);
   assert.match(html, /data-draft-close="save"/);
   assert.match(html, /data-draft-close="discard"/);
   assert.match(html, /data-draft-close="continue"/);
   assert.match(html, /id="shortDramaLiveActionDraftResume"/);
   assert.match(centerScript, /dialog\.addEventListener\('cancel'/);
-  assert.match(centerScript, /liveActionModalKeydown\(prompt,event,dismissDraftClosePrompt\)/);
-  assert.match(centerScript, /draftCloseReturnFocus\.focus\(\)/);
   assert.match(centerScript, /if\(event\.target===dialog\)requestCreateClose\(\)/);
   assert.match(centerScript, /liveSteps=\['live_action_setup','live_action_story','live_action_roles'\]/);
   assert.match(centerScript, /roles:JSON\.parse\(JSON\.stringify\(liveActionRoles\|\|\[\]\)\)/);
   assert.match(centerScript, /clearLiveActionDraft\(\);dialog\.close\(\)/);
   assert.match(html, /id="shortDramaMetricDraft"/);
-  assert.match(html, /data-project-view="draft"/);
+  assert.match(html, /data-project-view="creation_draft"/);
   assert.match(centerScript, /creation_status==='draft'/);
   assert.match(centerScript, /finalizeLiveActionProject/);
 });
@@ -945,11 +1044,11 @@ test('editing a persisted live action draft replaces it unless reference work ex
   );
   assert.deepEqual(retryKeys, ['stable-retry-key', 'stable-retry-key']);
   assert.match(centerScript, /if\(pendingLiveActionProject&&!pendingLiveActionDiscardKey\)pendingLiveActionDiscardKey=newLiveActionAbandonKey\(\)/);
-  assert.match(centerScript, /discardPendingLiveActionProject\(client,pendingLiveActionProject,liveActionReferenceBusy,pendingLiveActionDiscardKey\)/);
+  assert.match(centerScript, /discardPendingLiveActionProject\(client,pendingLiveActionProject,anyLiveActionReferenceBusy\(\),pendingLiveActionDiscardKey\)/);
   assert.match(centerScript, /pendingLiveActionProject=null;pendingLiveActionDiscardKey='';savedLiveActionRoleSignatures=\{\}/);
 });
 
-test('paid or locked live action roles expose reference asset protection', () => {
+test('paid or locked live action roles remain editable but cannot be deleted', () => {
   const empty = {
     character_key:'character_1', reference_job_id:null, reference_file:'',
     reference_url:'', reference_version:0, reference_locked:false
@@ -964,9 +1063,10 @@ test('paid or locked live action roles expose reference asset protection', () =>
       center.liveActionRoleHasReferenceActivity({...empty, ...marker}), true
     );
   }
-  assert.match(centerScript, /该角色已有付费或锁定的角色标准图，不能直接修改或删除/);
+  assert.match(centerScript, /角色资料已变更，当前标准图仍会保留/);
   assert.match(centerScript, /liveActionRoleHasReferenceActivity\(removed\)/);
-  assert.match(centerScript, /class="short-drama-role-profile".*disabled/);
+  assert.match(centerScript, /roleProtected=roleGenerating/);
+  assert.doesNotMatch(centerScript, /if\(liveActionRoleHasReferenceActivity\(liveActionRoles\[activeLiveActionRole\]\)\)return showLiveActionError/);
 });
 
 test('live action roles only require fixed clothing when AI reference generation is selected', () => {
@@ -1059,142 +1159,9 @@ test('character reference picker supports assets uploads and AI generation', asy
   assert.doesNotMatch(centerScript, /data-reference-picker-content/);
   assert.match(centerScript, /className='short-drama-upload-confirm'/);
   assert.match(centerScript, /aria-label="确认本地上传图片"/);
-  assert.match(centerScript, /loading="lazy" decoding="async"/);
-  assert.match(centerScript, /if\(focusedAssetKey\).*restoredFocus\.focus\(\)/);
   assert.match(centerStyle, /\.short-drama-asset-library\{position:fixed;inset:0/);
   assert.match(centerStyle, /\.short-drama-asset-library-box\{/);
   assert.match(centerStyle, /\.short-drama-upload-confirm-box\{/);
-});
-
-test('asset search keeps pagination available until all pages are searched', () => {
-  const firstPage = Array.from({length:60}, (_, index) => ({
-    job_id:index + 1, prompt:'asset '+(index + 1), url:'/asset/'+(index + 1)
-  }));
-  const partial = center.liveActionAssetSearchResult(
-    firstPage, 'target role', true
-  );
-  assert.equal(partial.items.length, 0);
-  assert.equal(partial.canLoadMore, true);
-  assert.match(partial.emptyMessage, /继续加载更多/);
-
-  const found = center.liveActionAssetSearchResult([
-    ...firstPage,
-    {job_id:61, prompt:'target role portrait', url:'/asset/61'}
-  ], 'target role', false);
-  assert.deepEqual(found.items.map(item => item.job_id), [61]);
-  assert.equal(found.canLoadMore, false);
-
-  const exhausted = center.liveActionAssetSearchResult(
-    firstPage, 'missing role', false
-  );
-  assert.equal(exhausted.canLoadMore, false);
-  assert.match(exhausted.emptyMessage, /没有找到/);
-});
-
-test('slow live action story confirmation uses one frozen snapshot and ignores stale UI results', async () => {
-  const deferred = () => {
-    let resolve, reject;
-    const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
-    return {promise, resolve, reject};
-  };
-  const projectRequest = deferred(), confirmationRequest = deferred();
-  const mutableSnapshot = {
-    source:'old script',
-    core_story:{title:'Old story', logline:'old conflict'},
-    import_payload:{source_text:'old script'},
-  };
-  let current = true, confirmedStory = null, applied = 0;
-  const pending = center.runLiveActionStorySubmission(mutableSnapshot, {
-    ensureProject(snapshot){
-      assert.equal(snapshot.source, 'old script');
-      return projectRequest.promise;
-    },
-    isCurrent(){ return current; },
-    confirm(_project, story){
-      confirmedStory = story;
-      return confirmationRequest.promise;
-    },
-    apply(){ applied += 1; },
-  });
-
-  mutableSnapshot.source = 'new script';
-  mutableSnapshot.core_story.title = 'New story';
-  mutableSnapshot.import_payload.source_text = 'new script';
-  projectRequest.resolve({id:'draft-1', revision:1});
-  await Promise.resolve();
-  assert.deepEqual(confirmedStory, {title:'Old story', logline:'old conflict'});
-
-  current = false;
-  confirmationRequest.resolve({id:'draft-1', revision:2});
-  assert.deepEqual(await pending, {stale:true});
-  assert.equal(applied, 0);
-});
-
-test('reference modals trap Tab focus and close only themselves on Escape', () => {
-  let activeElement = null;
-  const makeControl = () => ({
-    disabled:false, hidden:false, tabIndex:0,
-    getAttribute:() => null,
-    focus(){ activeElement = this; },
-  });
-  const first = makeControl(), middle = makeControl(), last = makeControl();
-  const modal = {
-    ownerDocument:{get activeElement(){ return activeElement; }},
-    querySelectorAll:() => [first, middle, last],
-    contains:node => [first, middle, last].includes(node),
-  };
-  const event = (key, shiftKey=false) => ({
-    key, shiftKey, prevented:false, stopped:false,
-    preventDefault(){ this.prevented = true; },
-    stopPropagation(){ this.stopped = true; },
-  });
-
-  activeElement = last;
-  const forward = event('Tab');
-  assert.equal(center.liveActionModalKeydown(modal, forward, () => {}), true);
-  assert.equal(activeElement, first);
-  assert.equal(forward.prevented, true);
-
-  activeElement = first;
-  const backward = event('Tab', true);
-  center.liveActionModalKeydown(modal, backward, () => {});
-  assert.equal(activeElement, last);
-
-  let closed = 0;
-  const escape = event('Escape');
-  center.liveActionModalKeydown(modal, escape, () => { closed += 1; });
-  assert.equal(closed, 1);
-  assert.equal(escape.prevented, true);
-  assert.equal(escape.stopped, true);
-});
-
-test('reference request blocks modal dismissal and keeps deferred failures visible', async () => {
-  let rejectRequest;
-  const request = new Promise((_resolve, reject) => { rejectRequest = reject; });
-  let busy = true, connected = true, blocked = '', persistentError = '';
-  const handled = request.catch(error => {
-    persistentError = center.liveActionReferenceFailureMessage(error);
-  }).finally(() => { busy = false; });
-
-  const dismissedWhileBusy = center.dismissLiveActionReferencePicker(
-    busy,
-    message => { blocked = message; },
-    () => { connected = false; }
-  );
-  assert.equal(dismissedWhileBusy, false);
-  assert.equal(connected, true);
-  assert.match(blocked, /正在处理标准图/);
-
-  rejectRequest(new Error('人物检测超时'));
-  await handled;
-  assert.equal(connected, true);
-  assert.match(persistentError, /人物检测超时/);
-
-  assert.equal(center.dismissLiveActionReferencePicker(
-    busy, () => {}, () => { connected = false; }
-  ), true);
-  assert.equal(connected, false);
-  assert.match(centerScript, /showLiveActionError\(persistentMessage,true,\{autoHide:0\}\)/);
 });
 
 test('generated character reference requires explicit confirmation before locking', async () => {
@@ -1215,9 +1182,43 @@ test('generated character reference requires explicit confirmation before lockin
   });
 });
 
-test('character reference generation explains upstream connection timeouts', () => {
-  assert.match(centerScript, /WinError\\s\*10060/);
-  assert.match(centerScript, /图片生成服务连接超时，任务已停止；点数会自动退回，请稍后重试。/);
+test('character reference generation remains recoverable after a long wait', () => {
+  assert.match(centerScript, /timeoutError\.recoverable=true/);
+  assert.match(centerScript, /角色标准图生成时间较长，任务仍保留，可刷新页面继续查看/);
+  assert.match(centerScript, /系统会自动恢复查询/);
+});
+
+test('character reference generation is tracked per role and can resume polling', async () => {
+  const calls = [];
+  const created = [];
+  const client = center.createClient(async (url, options) => {
+    calls.push({url, options});
+    const body = url.includes('generate-character-reference')
+      ? {job_id:91}
+      : {status:'done', result:{url:'/api/gen/file/role.png'}};
+    return {ok:true, status:200, text:async () => JSON.stringify(body)};
+  });
+  const project = {id:'project-1', revision:7};
+  const character = {character_key:'character_1'};
+  await client.generateCharacterReference(project, character, {
+    onCreated(jobId){ created.push(jobId); }
+  });
+  assert.deepEqual(created, [91]);
+  assert.equal(calls[0].url, '/api/gen/short-drama/generate-character-reference');
+  assert.equal(calls[1].url, '/api/gen/job/91');
+  calls.length = 0;
+  await client.generateCharacterReference(project, character, {job_id:91});
+  assert.deepEqual(calls.map(call => call.url), ['/api/gen/job/91']);
+  assert.match(centerScript, /liveActionReferenceTasks=\{\}/);
+  assert.match(centerScript, /reference_tasks:JSON\.parse/);
+  assert.match(centerScript, /角色标准图正在生成，请等待任务完成；你可以继续编辑其他角色/);
+  assert.match(centerScript, /当前角色资料暂时锁定。你可以切换到其他角色继续编辑和保存/);
+  assert.match(centerScript, /请等待全部角色标准图任务完成后再创建项目/);
+  assert.match(centerScript, /图片服务繁忙，正在自动重试/);
+  assert.match(centerScript, /无需重复提交/);
+  assert.match(centerScript, /HTTP\\s\*\(\?:Error\\s\*\)\?429/);
+  assert.match(centerScript, /if\(activeLiveActionRole===index\)renderLiveActionRoles\(\);else renderLiveActionRoleTabs\(\)/);
+  assert.match(centerStyle, /\.short-drama-role-tab\.generating/);
 });
 
 test('character reference view guidance is grouped with the standard image', () => {
@@ -1233,6 +1234,13 @@ test('legacy role drafts keep an explicit back-view migration warning', () => {
   assert.match(centerScript, /旧草稿缺少背面全身图，请生成并确认可信 AI 三视图标准图/);
   assert.match(centerScript, /普通上传或旧版半身参考图不能作为迁移证据/);
   assert.match(centerScript, /if\(migration\.required\)showLiveActionNotice/);
+});
+
+test('character reference validation keeps the selected image available for retry', () => {
+  assert.match(centerScript, /正在检测并自动重试/);
+  assert.match(centerScript, /重新检测此图片/);
+  assert.match(centerScript, /重新检测所选资产/);
+  assert.match(centerScript, /\^\(请上传\|人物检测\|人物图片检测\)/);
 });
 
 test('character reference image opens an accessible large preview', () => {

@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -320,98 +321,6 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.assertEqual("local_ffmpeg", capability["adapter"])
         self.assertEqual("local_1080p_renderer", capability["reason"])
 
-    def _archived_preview_workspace(self, audio):
-        source = Path(self.tmp.name) / "drafts" / "preview.mp4"
-        source.parent.mkdir(parents=True)
-        source.write_bytes(b"archived-preview")
-        conn = self.db()
-        try:
-            manifest = json.loads(conn.execute(
-                "SELECT manifest_json FROM short_drama_autodraft_versions "
-                "WHERE id='draft-v1'"
-            ).fetchone()[0])
-            manifest["issues"] = [{
-                "code": "locked_voice_timeline_missing",
-                "message": "缺少锁定配音时间线",
-            }]
-            manifest["media_contract"] = {
-                "delivery_eligible": False,
-                "reason": "locked_voice_timeline_missing",
-                "material_hash": "material-hash",
-            }
-            for shot in manifest["shots"]:
-                shot.update({"status": "ready", "issue": None})
-            conn.execute(
-                "UPDATE short_drama_autodraft_versions SET url=?,manifest_json=? "
-                "WHERE id='draft-v1'",
-                ("/api/gen/file/drafts/preview.mp4", json.dumps(manifest)),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-        capability = {
-            "delivery_enabled": True, "deliverable": True,
-            "mode": "local_ffmpeg", "adapter": "local_ffmpeg",
-            "formal_cost": 0, "reason": "local_1080p_renderer",
-        }
-        probe = {
-            "duration_ms": 10000,
-            "video": {"width": 1280, "height": 720},
-            "audio": {"codec_name": "aac"} if audio else None,
-        }
-        with mock.patch.dict(os.environ, {
-            "HQ_SHORT_DRAMA_FORMAL_DELIVERY_MODE": "local_ffmpeg",
-            "CONTENT_OUT": self.tmp.name,
-        }), mock.patch.object(
-            short_drama_refinement, "_delivery_capability", return_value=capability,
-        ), mock.patch.object(
-            short_drama_refinement.media_plan, "probe_media", return_value=probe,
-        ):
-            workspace = short_drama_refinement.workspace(
-                self.db, "alice", "alice", self.project["id"]
-            )
-            if audio:
-                version = workspace["current_refinement"]
-                confirmed = short_drama_refinement.confirm_refinement(
-                    self.db, "alice", "alice", {
-                        "project_id": self.project["id"], "version_id": version["id"],
-                        "checklist": {
-                            key: True for key in short_drama_refinement.ACCEPTANCE_CHECKS
-                        },
-                        "source_hashes": workspace["acceptance_requirements"]["source_hashes"],
-                    },
-                )
-                quote = short_drama_refinement.create_delivery_quote(
-                    self.db, "alice", {
-                        "project_id": self.project["id"], "version_id": confirmed["id"],
-                    },
-                )
-                return workspace, quote
-            return workspace, None
-
-    def test_archived_preview_audio_is_a_real_zero_cost_delivery_contract(self):
-        workspace, quote = self._archived_preview_workspace(audio=True)
-        self.assertEqual([], workspace["current_refinement"]["issues"])
-        contract = workspace["current_refinement"]["media"]["media_contract"]
-        self.assertTrue(contract["delivery_eligible"])
-        self.assertEqual("archived_preview_audio", contract["evidence_source"])
-        self.assertFalse(contract["subtitle_required"])
-        self.assertEqual(("1080p", 0, True), (
-            quote["resolution"], quote["cost"], quote["deliverable"],
-        ))
-
-    def test_archived_preview_without_audio_remains_blocked(self):
-        workspace, quote = self._archived_preview_workspace(audio=False)
-        self.assertIsNone(quote)
-        self.assertEqual(
-            ["locked_voice_timeline_missing"],
-            [item["code"] for item in workspace["current_refinement"]["issues"]],
-        )
-        self.assertFalse(
-            workspace["current_refinement"]["media"]["media_contract"]
-            .get("delivery_eligible", False)
-        )
-
     def _assert_real_formal_delivery(self, ratio, preview_size, expected_size):
         ffmpeg = shutil.which(os.environ.get("FFMPEG_BIN", "ffmpeg"))
         ffprobe = shutil.which(os.environ.get("FFPROBE_BIN", "ffprobe"))
@@ -614,13 +523,21 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.assertEqual(marked["id"], current["id"])
         self.assertEqual("newer_review_issue", current["issues"][0]["code"])
 
-    def test_real_refinement_path_validates_provider_files_and_calls_assembler(self):
+    def test_visual_refinement_uses_preview_audio_fallback_without_locked_voice(self):
         output_relative = "rendered/real-refinement.mp4"
         output = Path(self.tmp.name) / output_relative
         output.parent.mkdir(parents=True, exist_ok=True)
 
         def assemble(_project_id, _job_id, assembly):
             self.assertEqual(2, len(assembly["shots"]))
+            self.assertEqual(
+                "provider_audio", assembly["media_contract"]["media_mode"]
+            )
+            self.assertEqual(
+                "refinement_preview_audio_fallback",
+                assembly["media_contract"]["evidence_source"],
+            )
+            self.assertTrue(assembly["media_contract"]["preview_only"])
             output.write_bytes(b"new-immutable-refinement-preview")
             return {
                 "file": output_relative,
@@ -635,10 +552,10 @@ class ShortDramaRefinementTests(unittest.TestCase):
         assembler = mock.Mock(side_effect=assemble)
         locked_media = {
             "contract_version": "short-drama-locked-media-v1",
-            "delivery_eligible": True,
-            "evidence_source": "locked_voice_tables",
-            "audio_hash": "audio-hash", "subtitle_hash": "subtitle-hash",
-            "timeline_hash": "timeline-hash", "subtitle_required": True,
+            "delivery_eligible": False,
+            "reason": "locked_voice_timeline_missing",
+            "audio_hash": "", "subtitle_hash": "",
+            "timeline_hash": "", "subtitle_required": False,
             "audio_tracks": [], "subtitles": [],
         }
         provider_probe = {
@@ -647,6 +564,22 @@ class ShortDramaRefinementTests(unittest.TestCase):
             "audio": None,
         }
         from content_domains import short_drama_autodraft
+        conn = self.db()
+        try:
+            row = conn.execute(
+                "SELECT manifest_json FROM short_drama_autodraft_versions "
+                "WHERE id='draft-v1'"
+            ).fetchone()
+            manifest = json.loads(row[0])
+            manifest["media_contract"] = dict(locked_media)
+            conn.execute(
+                "UPDATE short_drama_autodraft_versions SET manifest_json=? "
+                "WHERE id='draft-v1'",
+                (json.dumps(manifest),),
+            )
+            conn.commit()
+        finally:
+            conn.close()
         with mock.patch.object(
             short_drama_refinement, "_render_refinement_preview",
             side_effect=self.real_refinement_renderer,
@@ -679,6 +612,614 @@ class ShortDramaRefinementTests(unittest.TestCase):
             short_drama_refinement._file_hash(output),
             version["preview_file_hash"],
         )
+
+    def _reassembly_source(self):
+        return short_drama_refinement.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )["current_refinement"]
+
+    def _reassembly_renderer(self, calls=None, barrier=None, fail=False):
+        from content_domains import short_drama_autodraft
+
+        def render(project_id, render_id, assembly):
+            if calls is not None:
+                calls.append(render_id)
+            if barrier is not None:
+                barrier.wait(timeout=5)
+            target = (
+                Path(self.tmp.name) / "short_drama_autodraft" /
+                project_id / render_id / "preview-720p.mp4"
+            )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"complete-reassembly-preview")
+            if fail:
+                raise short_drama_autodraft.AutodraftError(
+                    "preview_render_failed", "render failed", 409
+                )
+            return {
+                "file": target.relative_to(self.tmp.name).as_posix(),
+                "url": "/api/gen/file/" + target.relative_to(
+                    self.tmp.name
+                ).as_posix(),
+                "probe": {
+                    "duration_ms": 10000,
+                    "video": {"width": 1280, "height": 720},
+                    "audio": {"codec": "aac"},
+                },
+                "duration_ms": 10000,
+            }
+        return render
+
+    def test_reassembly_is_zero_cost_idempotent_and_preserves_history(self):
+        source = self._reassembly_source()
+        conn = self.db()
+        try:
+            conn.execute(
+                "INSERT INTO short_drama_refinement_acceptances "
+                "(id,project_id,refinement_version_id,checklist_json,"
+                "source_hashes_json,snapshot_json,snapshot_hash,accepted_by,"
+                "accepted_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    "accept-before-reassembly", self.project["id"], source["id"],
+                    "{}", "{}", "{}", "snapshot-before-reassembly", "alice",
+                    int(time.time()),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        calls = []
+        probe = {
+            "duration_ms": 5000,
+            "video": {"width": 1280, "height": 720},
+            "audio": None,
+        }
+        from content_domains import short_drama_autodraft
+        with mock.patch.object(
+            short_drama_refinement.media_plan, "probe_media", return_value=probe,
+        ), mock.patch.object(
+            short_drama_autodraft, "_render_provider_preview",
+            side_effect=self._reassembly_renderer(calls),
+        ):
+            first = short_drama_refinement.reassemble_refinement(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"], "version_id": source["id"],
+                }, "reassembly-idempotent",
+            )
+            replay = short_drama_refinement.reassemble_refinement(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"], "version_id": source["id"],
+                }, "reassembly-idempotent",
+            )
+        self.assertEqual(first["id"], replay["id"])
+        self.assertEqual(1, len(calls))
+        self.assertEqual(0, first["points_charged"])
+        self.assertFalse(first["provider_called"])
+        conn = self.db()
+        try:
+            versions = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_refinement_versions "
+                "WHERE project_id=?", (self.project["id"],),
+            ).fetchone()[0]
+            charges = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_delivery_attempts "
+                "WHERE project_id=?", (self.project["id"],),
+            ).fetchone()[0]
+            invalidation = conn.execute(
+                "SELECT invalidation_reason FROM short_drama_refinement_acceptances "
+                "WHERE refinement_version_id=?", (source["id"],),
+            ).fetchone()[0]
+            historical = conn.execute(
+                "SELECT id FROM short_drama_refinement_versions WHERE id=?",
+                (source["id"],),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(2, versions)
+        self.assertEqual(0, charges)
+        self.assertEqual("preview_reassembled", invalidation)
+        self.assertEqual(source["id"], historical[0])
+
+    def test_reassembly_rejects_missing_key_conflict_stale_and_invalid_media(self):
+        source = self._reassembly_source()
+        body = {"project_id": self.project["id"], "version_id": source["id"]}
+        with self.assertRaisesRegex(short_drama_refinement.RefinementError, "Idempotency-Key"):
+            short_drama_refinement.reassemble_refinement(
+                self.db, "alice", "alice", body, ""
+            )
+        idem_db = short_drama_refinement._idempotency_db_factory(self.db)
+        short_drama_refinement.submission_idempotency.begin(
+            idem_db, "alice", short_drama_refinement._REASSEMBLY_ENDPOINT,
+            "reassembly-conflict", body,
+        )
+        with self.assertRaisesRegex(short_drama_refinement.RefinementError, "不同重新装配请求"):
+            short_drama_refinement.reassemble_refinement(
+                self.db, "alice", "alice",
+                {"project_id": self.project["id"], "version_id": "other"},
+                "reassembly-conflict",
+            )
+        with self.assertRaisesRegex(short_drama_refinement.RefinementError, "正在处理中"):
+            short_drama_refinement.reassemble_refinement(
+                self.db, "alice", "alice", body, "reassembly-conflict"
+            )
+        with self.assertRaisesRegex(short_drama_refinement.RefinementError, "预览版本已变化"):
+            short_drama_refinement.reassemble_refinement(
+                self.db, "alice", "alice",
+                {"project_id": self.project["id"], "version_id": "stale"},
+                "reassembly-stale",
+            )
+        with mock.patch.object(
+            short_drama_refinement.media_plan, "probe_media",
+            return_value={"duration_ms": 0, "video": None, "audio": None},
+        ):
+            with self.assertRaisesRegex(short_drama_refinement.RefinementError, "有效视频流"):
+                short_drama_refinement.reassemble_refinement(
+                    self.db, "alice", "alice", body, "reassembly-invalid-media"
+                )
+
+    def test_reassembly_rejects_missing_and_uncontrolled_provider_files(self):
+        source = self._reassembly_source()
+        body = {"project_id": self.project["id"], "version_id": source["id"]}
+        conn = self.db()
+        try:
+            original = conn.execute(
+                "SELECT file FROM short_drama_provider_shot_versions WHERE id=?",
+                ("provider-version-shot_01",),
+            ).fetchone()[0]
+            for index, (provider_file, expected) in enumerate((
+                ("provider/missing.mp4", "provider_asset_missing"),
+                ("../outside.mp4", "provider_asset_path_invalid"),
+            )):
+                conn.execute(
+                    "UPDATE short_drama_provider_shot_versions SET file=? WHERE id=?",
+                    (provider_file, "provider-version-shot_01"),
+                )
+                conn.commit()
+                with self.assertRaises(short_drama_refinement.RefinementError) as raised:
+                    short_drama_refinement.reassemble_refinement(
+                        self.db, "alice", "alice", body,
+                        "reassembly-invalid-file-%d" % index,
+                    )
+                self.assertEqual(expected, raised.exception.code)
+            conn.execute(
+                "UPDATE short_drama_provider_shot_versions SET file=? WHERE id=?",
+                (original, "provider-version-shot_01"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_reassembly_failure_cleans_output_and_aborts_idempotency(self):
+        source = self._reassembly_source()
+        body = {"project_id": self.project["id"], "version_id": source["id"]}
+        from content_domains import short_drama_autodraft
+        probe = {
+            "duration_ms": 5000,
+            "video": {"width": 1280, "height": 720}, "audio": None,
+        }
+        with mock.patch.object(
+            short_drama_refinement.media_plan, "probe_media", return_value=probe,
+        ), mock.patch.object(
+            short_drama_autodraft, "_render_provider_preview",
+            side_effect=self._reassembly_renderer(fail=True),
+        ):
+            with self.assertRaises(short_drama_refinement.RefinementError):
+                short_drama_refinement.reassemble_refinement(
+                    self.db, "alice", "alice", body, "reassembly-failure"
+                )
+        root = Path(self.tmp.name) / "short_drama_autodraft" / self.project["id"]
+        self.assertFalse(any(root.glob("reassembly-*")) if root.exists() else False)
+        conn = self.db()
+        try:
+            idem = conn.execute(
+                "SELECT COUNT(*) FROM submission_idempotency WHERE idem_key=?",
+                ("reassembly-failure",),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(0, idem)
+
+    def test_concurrent_reassembly_creates_one_version_and_one_render(self):
+        source = self._reassembly_source()
+        body = {"project_id": self.project["id"], "version_id": source["id"]}
+        calls, results, errors = [], [], []
+        render_started = threading.Event()
+        release_render = threading.Event()
+        probe = {
+            "duration_ms": 5000,
+            "video": {"width": 1280, "height": 720}, "audio": None,
+        }
+        from content_domains import short_drama_autodraft
+
+        def worker(key):
+            try:
+                results.append(short_drama_refinement.reassemble_refinement(
+                    self.db, "alice", "alice", body, key
+                ))
+            except Exception as error:
+                errors.append(error)
+
+        renderer = self._reassembly_renderer(calls)
+
+        def blocking_renderer(project_id, render_id, assembly):
+            render_started.set()
+            release_render.wait(timeout=5)
+            return renderer(project_id, render_id, assembly)
+
+        with mock.patch.object(
+            short_drama_refinement.media_plan, "probe_media", return_value=probe,
+        ), mock.patch.object(
+            short_drama_autodraft, "_render_provider_preview",
+            side_effect=blocking_renderer,
+        ):
+            first = threading.Thread(
+                target=worker, args=("concurrent-reassembly-0",)
+            )
+            second = threading.Thread(
+                target=worker, args=("concurrent-reassembly-1",)
+            )
+            first.start()
+            self.assertTrue(render_started.wait(timeout=5))
+            second.start()
+            second.join(timeout=5)
+            release_render.set()
+            threads = [first, second]
+            for thread in threads:
+                thread.join(timeout=10)
+        self.assertEqual(1, len(results))
+        self.assertEqual(1, len(errors))
+        self.assertEqual(
+            "refinement_reassembly_in_progress", errors[0].code
+        )
+        self.assertEqual(1, len(calls))
+        conn = self.db()
+        try:
+            versions = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_refinement_versions "
+                "WHERE project_id=?", (self.project["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(2, versions)
+
+    def test_expired_reassembly_lease_is_taken_over_and_orphan_is_cleaned(self):
+        source = self._reassembly_source()
+        body = {"project_id": self.project["id"], "version_id": source["id"]}
+        orphan_id = "reassembly-crashed-worker"
+        orphan = (
+            Path(self.tmp.name) / "short_drama_autodraft" / self.project["id"] /
+            orphan_id / "preview-720p.mp4"
+        )
+        orphan.parent.mkdir(parents=True, exist_ok=True)
+        orphan.write_bytes(b"incomplete-output")
+        conn = self.db()
+        try:
+            now = int(time.time())
+            conn.execute(
+                "INSERT INTO short_drama_reassembly_operations "
+                "(id,project_id,source_version_id,status,lease_token,lease_owner,"
+                "lease_expires_at,heartbeat_at,render_id,created_at,updated_at) "
+                "VALUES (?,?,?,'processing',?,?,?,?,?,?,?)",
+                (
+                    "crashed-operation", self.project["id"], source["id"],
+                    "dead-token", "dead-worker", now - 1, now - 60,
+                    orphan_id, now - 60, now - 60,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        probe = {
+            "duration_ms": 5000,
+            "video": {"width": 1280, "height": 720}, "audio": None,
+        }
+        from content_domains import short_drama_autodraft
+        with mock.patch.object(
+            short_drama_refinement.media_plan, "probe_media", return_value=probe,
+        ), mock.patch.object(
+            short_drama_autodraft, "_render_provider_preview",
+            side_effect=self._reassembly_renderer(),
+        ):
+            result = short_drama_refinement.reassemble_refinement(
+                self.db, "alice", "alice", body, "expired-lease-takeover"
+            )
+        self.assertFalse(orphan.parent.exists())
+        conn = self.db()
+        try:
+            operation = conn.execute(
+                "SELECT status,lease_token,refinement_version_id FROM "
+                "short_drama_reassembly_operations WHERE id='crashed-operation'"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual("succeeded", operation[0])
+        self.assertIsNone(operation[1])
+        self.assertEqual(result["id"], operation[2])
+
+    def test_reassembly_heartbeat_prevents_takeover_during_long_render(self):
+        source = self._reassembly_source()
+        body = {"project_id": self.project["id"], "version_id": source["id"]}
+        started = threading.Event()
+        calls, result, errors = [], [], []
+        renderer = self._reassembly_renderer(calls)
+
+        def slow_renderer(project_id, render_id, assembly):
+            started.set()
+            time.sleep(4.2)
+            return renderer(project_id, render_id, assembly)
+
+        def first_worker():
+            try:
+                result.append(short_drama_refinement.reassemble_refinement(
+                    self.db, "alice", "alice", body, "heartbeat-owner"
+                ))
+            except Exception as error:
+                errors.append(error)
+
+        probe = {
+            "duration_ms": 5000,
+            "video": {"width": 1280, "height": 720}, "audio": None,
+        }
+        from content_domains import short_drama_autodraft
+        with mock.patch.object(
+            short_drama_refinement, "_REASSEMBLY_LEASE_SECONDS", 3,
+        ), mock.patch.object(
+            short_drama_refinement.media_plan, "probe_media", return_value=probe,
+        ), mock.patch.object(
+            short_drama_autodraft, "_render_provider_preview",
+            side_effect=slow_renderer,
+        ):
+            worker = threading.Thread(target=first_worker)
+            worker.start()
+            self.assertTrue(started.wait(timeout=5))
+            time.sleep(3.4)
+            with self.assertRaises(short_drama_refinement.RefinementError) as raised:
+                short_drama_refinement.reassemble_refinement(
+                    self.db, "alice", "alice", body, "heartbeat-contender"
+                )
+            self.assertEqual(
+                "refinement_reassembly_in_progress", raised.exception.code
+            )
+            worker.join(timeout=5)
+        self.assertFalse(errors)
+        self.assertEqual(1, len(result))
+        self.assertEqual(1, len(calls))
+
+    def test_reassembly_heartbeat_prevents_takeover_during_slow_preprocessing(self):
+        source = self._reassembly_source()
+        body = {"project_id": self.project["id"], "version_id": source["id"]}
+        preprocessing_started = threading.Event()
+        release_preprocessing = threading.Event()
+        calls, result, errors = [], [], []
+        probe_calls = 0
+        probe_lock = threading.Lock()
+        probe = {
+            "duration_ms": 5000,
+            "video": {"width": 1280, "height": 720}, "audio": None,
+        }
+        from content_domains import short_drama_autodraft
+
+        def slow_probe(_path):
+            nonlocal probe_calls
+            with probe_lock:
+                probe_calls += 1
+                first = probe_calls == 1
+            if first:
+                preprocessing_started.set()
+                release_preprocessing.wait(timeout=8)
+            return probe
+
+        def first_worker():
+            try:
+                result.append(short_drama_refinement.reassemble_refinement(
+                    self.db, "alice", "alice", body, "slow-preprocess-owner"
+                ))
+            except Exception as error:
+                errors.append(error)
+
+        with mock.patch.object(
+            short_drama_refinement, "_REASSEMBLY_LEASE_SECONDS", 3,
+        ), mock.patch.object(
+            short_drama_refinement.media_plan, "probe_media", side_effect=slow_probe,
+        ), mock.patch.object(
+            short_drama_autodraft, "_render_provider_preview",
+            side_effect=self._reassembly_renderer(calls),
+        ):
+            worker = threading.Thread(target=first_worker)
+            worker.start()
+            self.assertTrue(preprocessing_started.wait(timeout=5))
+            time.sleep(3.4)
+            with self.assertRaises(short_drama_refinement.RefinementError) as raised:
+                short_drama_refinement.reassemble_refinement(
+                    self.db, "alice", "alice", body, "slow-preprocess-contender"
+                )
+            self.assertEqual(
+                "refinement_reassembly_in_progress", raised.exception.code
+            )
+            release_preprocessing.set()
+            worker.join(timeout=10)
+        self.assertFalse(errors)
+        self.assertEqual(1, len(result))
+        self.assertEqual(1, len(calls))
+
+    def test_reassembly_stops_before_render_after_heartbeat_loss(self):
+        source = self._reassembly_source()
+        body = {"project_id": self.project["id"], "version_id": source["id"]}
+        calls = []
+        probe = {
+            "duration_ms": 5000,
+            "video": {"width": 1280, "height": 720}, "audio": None,
+        }
+        from content_domains import short_drama_autodraft
+        renewals = 0
+
+        def renewal(*_args, **_kwargs):
+            nonlocal renewals
+            renewals += 1
+            return renewals == 1
+
+        with mock.patch.object(
+            short_drama_refinement, "_REASSEMBLY_LEASE_SECONDS", 1,
+        ), mock.patch.object(
+            short_drama_refinement, "_heartbeat_reassembly_operation",
+            side_effect=renewal,
+        ), mock.patch.object(
+            short_drama_refinement.media_plan, "probe_media",
+            side_effect=lambda _path: (time.sleep(1.3), probe)[1],
+        ), mock.patch.object(
+            short_drama_autodraft, "_render_provider_preview",
+            side_effect=self._reassembly_renderer(calls),
+        ):
+            with self.assertRaises(short_drama_refinement.RefinementError) as raised:
+                short_drama_refinement.reassemble_refinement(
+                    self.db, "alice", "alice", body, "heartbeat-loss"
+                )
+        self.assertEqual("refinement_reassembly_lease_lost", raised.exception.code)
+        self.assertEqual([], calls)
+
+    def test_reassembly_cancels_running_renderer_after_heartbeat_loss(self):
+        source = self._reassembly_source()
+        body = {"project_id": self.project["id"], "version_id": source["id"]}
+        renderer_started = threading.Event()
+        renderer_cancelled = threading.Event()
+        successful_calls = []
+        probe = {
+            "duration_ms": 5000,
+            "video": {"width": 1280, "height": 720}, "audio": None,
+        }
+        from content_domains import short_drama_autodraft
+        renewals = 0
+
+        def renewal(*_args, **_kwargs):
+            nonlocal renewals
+            renewals += 1
+            return renewals == 1
+
+        def cancellable_renderer(project_id, render_id, assembly):
+            cancel_event = assembly["_cancel_event"]
+            partial = (
+                Path(self.tmp.name) / "short_drama_autodraft" / project_id /
+                render_id / "preview-720p.mp4"
+            )
+            partial.parent.mkdir(parents=True, exist_ok=True)
+            partial.write_bytes(b"partial")
+            renderer_started.set()
+            self.assertTrue(cancel_event.wait(timeout=5))
+            renderer_cancelled.set()
+            raise short_drama_autodraft.AutodraftError(
+                "preview_render_cancelled", "cancelled", 409,
+            )
+
+        with mock.patch.object(
+            short_drama_refinement, "_REASSEMBLY_LEASE_SECONDS", 1,
+        ), mock.patch.object(
+            short_drama_refinement, "_heartbeat_reassembly_operation",
+            side_effect=renewal,
+        ), mock.patch.object(
+            short_drama_refinement.media_plan, "probe_media", return_value=probe,
+        ), mock.patch.object(
+            short_drama_autodraft, "_render_provider_preview",
+            side_effect=cancellable_renderer,
+        ):
+            with self.assertRaises(short_drama_refinement.RefinementError) as raised:
+                short_drama_refinement.reassemble_refinement(
+                    self.db, "alice", "alice", body, "render-heartbeat-loss"
+                )
+        self.assertTrue(renderer_started.is_set())
+        self.assertTrue(renderer_cancelled.is_set())
+        self.assertEqual("refinement_reassembly_lease_lost", raised.exception.code)
+        self.assertFalse(any(
+            (Path(self.tmp.name) / "short_drama_autodraft" / self.project["id"]).glob(
+                "reassembly-*"
+            )
+        ))
+
+        with mock.patch.object(
+            short_drama_refinement.media_plan, "probe_media", return_value=probe,
+        ), mock.patch.object(
+            short_drama_autodraft, "_render_provider_preview",
+            side_effect=self._reassembly_renderer(successful_calls),
+        ):
+            result = short_drama_refinement.reassemble_refinement(
+                self.db, "alice", "alice", body, "render-heartbeat-takeover"
+            )
+        self.assertEqual(1, len(successful_calls))
+        conn = self.db()
+        try:
+            operation = conn.execute(
+                "SELECT status,refinement_version_id FROM "
+                "short_drama_reassembly_operations WHERE project_id=? "
+                "AND source_version_id=?", (self.project["id"], source["id"]),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(("succeeded", result["id"]), tuple(operation))
+
+    def test_reassembly_http_owner_editor_succeed_and_viewer_is_read_only(self):
+        source = self._reassembly_source()
+        board_id = "shared-refinement-board"
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_projects SET board_id=? WHERE id=?",
+                (board_id, self.project["id"]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        roles = {"alice": "owner", "bob": "editor", "eve": "viewer"}
+        verify = lambda token: (
+            {"username": token, "must_change": False} if token else None
+        )
+        access = lambda handler: {
+            "board_id": board_id, "role": roles[handler._token()],
+        }
+        probe = {
+            "duration_ms": 5000,
+            "video": {"width": 1280, "height": 720}, "audio": None,
+        }
+        from content_domains import short_drama_autodraft
+        with mock.patch.object(
+            short_drama_refinement.media_plan, "probe_media", return_value=probe,
+        ), mock.patch.object(
+            short_drama_autodraft, "_render_provider_preview",
+            side_effect=self._reassembly_renderer(),
+        ):
+            owner = Handler(
+                "/api/gen/short-drama/refinement/reassemble",
+                body={"project_id": self.project["id"], "version_id": source["id"]},
+                key="owner-http-reassembly", token="alice",
+            )
+            self.assertTrue(short_drama.dispatch_http(
+                owner, "POST", self.db, verify, canvas_access_resolver=access,
+            ))
+            self.assertEqual(200, owner.response[0])
+
+            editor = Handler(
+                "/api/gen/short-drama/refinement/reassemble",
+                body={
+                    "project_id": self.project["id"],
+                    "version_id": owner.response[1]["id"],
+                },
+                key="editor-http-reassembly", token="bob",
+            )
+            self.assertTrue(short_drama.dispatch_http(
+                editor, "POST", self.db, verify, canvas_access_resolver=access,
+            ))
+            self.assertEqual(200, editor.response[0])
+
+            viewer = Handler(
+                "/api/gen/short-drama/refinement/reassemble",
+                body={
+                    "project_id": self.project["id"],
+                    "version_id": editor.response[1]["id"],
+                },
+                key="viewer-http-reassembly", token="eve",
+            )
+            self.assertTrue(short_drama.dispatch_http(
+                viewer, "POST", self.db, verify, canvas_access_resolver=access,
+            ))
+        self.assertEqual(403, viewer.response[0])
 
     def test_confirm_quote_and_formal_delivery_snapshot(self):
         job = short_drama_refinement.start_refinement_job(
@@ -722,6 +1263,34 @@ class ShortDramaRefinementTests(unittest.TestCase):
         )
         self.assertFalse(workspace["current_delivery"]["snapshot"]["deliverable"])
         self.assertTrue(workspace["current_delivery"]["snapshot"]["immutable"])
+
+    def test_provider_audio_preference_reuses_generated_shot_sound(self):
+        from content_domains import short_drama_autodraft
+
+        saved = short_drama_refinement.set_media_preference(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"], "mode": "provider_audio",
+            },
+        )
+        self.assertEqual("provider_audio", saved["mode"])
+        conn = self.db()
+        conn.row_factory = sqlite3.Row
+        try:
+            project = conn.execute(
+                "SELECT * FROM short_drama_projects WHERE id=?",
+                (self.project["id"],),
+            ).fetchone()
+            contract = short_drama_autodraft._locked_media_contract(conn, project)
+        finally:
+            conn.close()
+        self.assertTrue(contract["delivery_eligible"])
+        self.assertEqual("provider_audio", contract["media_mode"])
+        self.assertEqual(
+            "explicit_provider_audio_confirmation",
+            contract["evidence_source"],
+        )
+        self.assertFalse(contract["silent_confirmed"])
+        self.assertEqual([], contract["audio_tracks"])
 
     def test_production_delivery_is_closed_without_real_executor(self):
         job = short_drama_refinement.start_refinement_job(
@@ -1460,6 +2029,146 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.assertTrue(short_drama.dispatch_http(issue, "POST", self.db, verify))
         self.assertEqual(200, issue.response[0])
         self.assertEqual("shot_01", issue.response[1]["issues"][-1]["shot_key"])
+
+
+class ShortDramaRefinementSchemaMigrationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.database = str(Path(self.tmp.name) / "legacy-content.db")
+        self.db = lambda: sqlite3.connect(self.database)
+        short_drama.init_db(self.db)
+        self.project = short_drama.create_project(
+            self.db, "alice", {
+                "title": "legacy preference migration",
+                "synopsis": "preserve existing media preference rows",
+                "ratio": "16:9", "target_duration": 30, "shot_count": 6,
+                "visual_style": "cinematic", "target_platform": "test",
+                "point_budget": 0,
+            },
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_legacy_media_preference_schema_upgrade_is_idempotent(self):
+        conn = self.db()
+        try:
+            conn.execute("DROP TABLE short_drama_refinement_media_preferences")
+            conn.execute(
+                "CREATE TABLE short_drama_refinement_media_preferences ("
+                "project_id TEXT PRIMARY KEY REFERENCES short_drama_projects(id) "
+                "ON DELETE CASCADE, mode TEXT NOT NULL CHECK(mode IN "
+                "('voice_timeline','silent')), confirmed_by TEXT NOT NULL, "
+                "updated_at INTEGER NOT NULL)"
+            )
+            conn.execute(
+                "INSERT INTO short_drama_refinement_media_preferences "
+                "(project_id,mode,confirmed_by,updated_at) VALUES(?,?,?,?)",
+                (self.project["id"], "voice_timeline", "alice", 123),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        short_drama_refinement.init_db(self.db)
+        short_drama_refinement.init_db(self.db)
+
+        conn = self.db()
+        try:
+            sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND "
+                "name='short_drama_refinement_media_preferences'"
+            ).fetchone()[0]
+            row = conn.execute(
+                "SELECT project_id,mode,confirmed_by,updated_at FROM "
+                "short_drama_refinement_media_preferences"
+            ).fetchone()
+            legacy = conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND "
+                "name='short_drama_refinement_media_preferences_legacy'"
+            ).fetchone()[0]
+            integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+            foreign_keys = conn.execute("PRAGMA foreign_key_check").fetchall()
+        finally:
+            conn.close()
+
+        self.assertIn("provider_audio", sql)
+        self.assertEqual((self.project["id"], "voice_timeline", "alice", 123), row)
+        self.assertEqual(0, legacy)
+        self.assertEqual("ok", integrity)
+        self.assertEqual([], foreign_keys)
+
+    def test_reassembly_operation_schema_is_additive_idempotent_and_constrained(self):
+        conn = self.db()
+        try:
+            conn.execute("DROP TABLE short_drama_reassembly_operations")
+            counts_before = {
+                table: conn.execute("SELECT COUNT(*) FROM " + table).fetchone()[0]
+                for table in (
+                    "short_drama_projects",
+                    "short_drama_refinement_jobs",
+                    "short_drama_refinement_versions",
+                    "short_drama_refinement_acceptances",
+                    "short_drama_delivery_jobs",
+                    "short_drama_delivery_versions",
+                )
+            }
+            conn.commit()
+        finally:
+            conn.close()
+
+        short_drama_refinement.init_db(self.db)
+        short_drama_refinement.init_db(self.db)
+
+        conn = self.db()
+        try:
+            table_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND "
+                "name='short_drama_reassembly_operations'"
+            ).fetchone()[0]
+            columns = {
+                row[1] for row in conn.execute(
+                    "PRAGMA table_info(short_drama_reassembly_operations)"
+                )
+            }
+            foreign_keys = conn.execute(
+                "PRAGMA foreign_key_list(short_drama_reassembly_operations)"
+            ).fetchall()
+            indexes = conn.execute(
+                "PRAGMA index_list(short_drama_reassembly_operations)"
+            ).fetchall()
+            unique_columns = []
+            for index in indexes:
+                if index[2]:
+                    unique_columns.append(tuple(
+                        row[2] for row in conn.execute(
+                            "PRAGMA index_info(%s)" % index[1]
+                        )
+                    ))
+            counts_after = {
+                table: conn.execute("SELECT COUNT(*) FROM " + table).fetchone()[0]
+                for table in counts_before
+            }
+            operation_count = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_reassembly_operations"
+            ).fetchone()[0]
+            integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+            violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+        finally:
+            conn.close()
+
+        self.assertIn("status IN ('processing','succeeded')", table_sql)
+        self.assertTrue({
+            "id", "project_id", "source_version_id", "status", "lease_token",
+            "lease_owner", "lease_expires_at", "heartbeat_at", "render_id",
+            "refinement_version_id", "created_at", "updated_at",
+        }.issubset(columns))
+        self.assertEqual(3, len(foreign_keys))
+        self.assertIn(("project_id", "source_version_id"), unique_columns)
+        self.assertEqual(counts_before, counts_after)
+        self.assertEqual(0, operation_count)
+        self.assertEqual("ok", integrity)
+        self.assertEqual([], violations)
 
 
 if __name__ == "__main__":

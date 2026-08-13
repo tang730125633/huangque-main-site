@@ -2,6 +2,7 @@ import base64
 import tempfile
 import unittest
 import sys
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -85,6 +86,47 @@ class BananaProviderTests(unittest.TestCase):
         self.assertEqual(1, result["reference_count"])
         self.assertEqual("1K", result["image_size"])
         self.assertIsInstance(post_json.call_args.args[3], bytes)
+
+    @mock.patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}, clear=False)
+    @mock.patch("pathlib.Path.write_bytes", return_value=1)
+    @mock.patch("content_domains.banana_provider.time.sleep")
+    @mock.patch("content_domains.egress.post_json")
+    def test_rate_limit_is_retried_without_creating_a_new_paid_job(self, post_json, sleep, _write):
+        limited = urllib.error.HTTPError(
+            "https://example.test", 429, "Too Many Requests", {"Retry-After": "1"}, None
+        )
+        post_json.side_effect = [limited, {
+            "candidates": [{"content": {"parts": [
+                {"inlineData": {"mimeType": "image/png", "data": PNG_1X1}}
+            ]}}]
+        }]
+        progress = []
+        result = banana_provider.generate({
+            "prompt": "cinematic frame", "model": "nb2", "quality": "std",
+            "ratio": "1:1", "count": 1,
+        }, Path("."), lambda name, _mime: "/file/" + name, progress.append)
+        self.assertEqual("banana", result["provider"])
+        self.assertEqual(2, post_json.call_count)
+        sleep.assert_called_once_with(1)
+        self.assertEqual("rate_limited", progress[0]["state"])
+        self.assertEqual(1000, progress[0]["retry_after_ms"])
+
+    @mock.patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}, clear=False)
+    @mock.patch("content_domains.banana_provider.time.sleep")
+    @mock.patch("content_domains.egress.post_json")
+    def test_daily_quota_error_stops_without_retry(self, post_json, sleep):
+        limited = urllib.error.HTTPError(
+            "https://example.test", 429, "Too Many Requests", {}, None
+        )
+        limited.read = mock.Mock(return_value=b'{"error":{"message":"daily quota has been exceeded"}}')
+        post_json.side_effect = limited
+        with self.assertRaisesRegex(banana_provider.BananaQuotaExhausted, "额度已用尽"):
+            banana_provider.generate({
+                "prompt": "cinematic frame", "model": "nb2", "quality": "std",
+                "ratio": "1:1", "count": 1,
+            }, Path("."), lambda name, _mime: "/file/" + name)
+        self.assertEqual(1, post_json.call_count)
+        sleep.assert_not_called()
 
 
 if __name__ == "__main__":

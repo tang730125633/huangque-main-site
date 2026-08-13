@@ -664,7 +664,10 @@ def gen_image(payload):
         if len(banana_images) > banana_provider.MAX_REFERENCE_IMAGES:
             raise ValueError("Nano Banana supports at most 5 reference images in total")
         banana_payload["images"] = banana_images
-        result = banana_provider.generate(banana_payload, OUT_DIR, public_url)
+        result = banana_provider.generate(
+            banana_payload, OUT_DIR, public_url,
+            progress=payload.get("_progress_callback"),
+        )
         result["raw_prompt"] = payload.get("short_drama_raw_prompt") or prompt
         return result
     if provider == "zelong2":

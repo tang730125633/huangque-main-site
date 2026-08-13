@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -59,10 +60,28 @@ class ShortDramaReferenceValidationTests(unittest.TestCase):
         with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}), patch.object(
                 egress, "post_json_idempotent", side_effect=TimeoutError(),
         ):
-            with self.assertRaisesRegex(ValueError, "^人物图片检测暂时不可用，请稍后重试$"):
+            with self.assertRaisesRegex(ValueError, "^人物图片检测暂时不可用，请稍后重新检测$"):
                 validation.validate_character_reference(
                     b"\x89PNG\r\n\x1a\npixels", "image/png",
                 )
+
+    def test_rate_limit_and_auth_failures_have_distinct_messages(self):
+        cases = (
+            (429, "人物检测服务繁忙，请稍后重新检测"),
+            (401, "人物检测服务配置异常，请联系管理员"),
+        )
+        for status, expected in cases:
+            error = urllib.error.HTTPError(
+                "https://example.test", status, "upstream error", {}, None,
+            )
+            with self.subTest(status=status), patch.dict(
+                    os.environ, {"GEMINI_API_KEY": "test-key"}), patch.object(
+                    egress, "post_json_idempotent", side_effect=error,
+            ):
+                with self.assertRaisesRegex(ValueError, "^%s$" % expected):
+                    validation.validate_character_reference(
+                        b"\x89PNG\r\n\x1a\npixels", "image/png",
+                    )
 
 
 if __name__ == "__main__":

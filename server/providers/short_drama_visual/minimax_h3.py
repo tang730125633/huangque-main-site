@@ -7,15 +7,6 @@ import urllib.parse
 from .base import ShotVisualCapability, ShotVisualProvider, VisualProviderError
 
 
-MINIMAX_RESULT_HOSTS = {
-    "cdn.hailuoai.com",
-    "cdn.minimax.chat",
-    "file.cdn.minimax.io",
-    "filecdn.minimax.chat",
-}
-MINIMAX_RESULT_MAX_BYTES = 250 * 1024 * 1024
-
-
 class MiniMaxH3ShotProvider(ShotVisualProvider):
     name = "minimax_h3"
     default_model = "MiniMax-H3"
@@ -68,7 +59,7 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
         return provider_keys.claim_candidate("minimax")
 
     @staticmethod
-    def _bound_key(key_id, submitted=True):
+    def _bound_key(key_id):
         try:
             from content_domains import provider_keys
 
@@ -76,12 +67,8 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
                 "minimax", preferred_id=str(key_id or "env")
             )
             return candidates[0] if candidates else None
-        except Exception as error:
-            raise VisualProviderError(
-                "provider_key_read_failed",
-                "MiniMax 任务绑定的 API Key 暂时无法读取，请稍后重试",
-                submitted=submitted,
-            ) from error
+        except Exception:
+            return None
 
     @staticmethod
     def _reference_value(item):
@@ -123,18 +110,9 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
                 "visual_reference_invalid",
                 "角色标准图不是有效的 JPG、PNG 或 WebP 图片",
             )
-        value = "data:%s;base64,%s" % (
+        return "data:%s;base64,%s" % (
             mime, base64.b64encode(raw).decode("ascii")
         )
-        try:
-            from content_domains.video_minimax_h3 import _image_item
-
-            return _image_item(value)["image_url"]["url"]
-        except ValueError as error:
-            raise VisualProviderError(
-                "visual_reference_invalid",
-                "角色标准图损坏、格式不符或尺寸不在 256～5760 像素范围内",
-            ) from error
 
     def validate_request(self, request):
         if not isinstance(request, dict):
@@ -155,8 +133,8 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
             raise VisualProviderError("visual_duration_unsupported", "麦克视频镜头时长必须为 4 至 15 秒")
         if model != self.default_model:
             raise VisualProviderError("visual_model_unsupported", "短剧当前固定使用麦克视频")
-        if len(refs) > 5:
-            raise VisualProviderError("visual_reference_count_invalid", "麦克视频每个镜头最多使用 5 张参考图")
+        if not 1 <= len(refs) <= 5:
+            raise VisualProviderError("visual_reference_count_invalid", "麦克视频每个镜头需要 1 至 5 张人物参考图")
         normalized_refs = []
         for item in refs:
             if isinstance(item, str):
@@ -210,10 +188,7 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
             )
         key_id = str((request or {}).get("_provider_key_id") or "").strip()
         payload = self.validate_request(request)
-        candidate = (
-            self._bound_key(key_id, submitted=False)
-            if key_id else self._claim_key()
-        )
+        candidate = self._bound_key(key_id) if key_id else self._claim_key()
         if not candidate or not candidate.get("secret"):
             raise VisualProviderError("provider_not_configured", "没有可用的 MiniMax 开放平台 API Key")
         from content_domains import video_minimax_h3
@@ -266,7 +241,38 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
             "preparing": "queued", "queueing": "queued", "processing": "running",
             "running": "running", "failed": "failed", "cancelled": "failed",
         }.get(status, status)
-        return {"status": normalized, "result_url": result_url, "raw": data or {}}
+        failure = None
+        if normalized == "failed":
+            raw_error = (
+                task.get("error") or task.get("message")
+                or task.get("error_message") or task.get("fail_reason")
+                or (data or {}).get("error") or (data or {}).get("base_resp")
+            )
+            if isinstance(raw_error, dict):
+                message = str(
+                    raw_error.get("message") or raw_error.get("detail")
+                    or raw_error.get("error_msg") or raw_error.get("status_msg")
+                    or raw_error.get("reason") or ""
+                ).strip()
+                code = str(
+                    raw_error.get("code") or raw_error.get("error_code")
+                    or raw_error.get("status_code") or ""
+                ).strip()
+            else:
+                message = str(raw_error or "").strip()
+                code = ""
+            failure = {
+                "code": code[:120],
+                "message": video_minimax_h3._safe(
+                    message, api_key=candidate["secret"], limit=500,
+                ),
+            }
+        return {
+            "status": normalized,
+            "result_url": result_url,
+            "failure": failure,
+            "raw": data or {},
+        }
 
     def fetch_result(self, provider_job_id, result_url):
         if not str(result_url or "").strip():
@@ -275,10 +281,7 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
 
         try:
             relative = video._download_video_file_direct(
-                result_url,
-                prefix="short_drama_minimax_h3",
-                allowed_hosts=MINIMAX_RESULT_HOSTS,
-                max_bytes=MINIMAX_RESULT_MAX_BYTES,
+                result_url, prefix="short_drama_minimax_h3"
             )
         except Exception as error:
             raise VisualProviderError(

@@ -13,6 +13,8 @@ import sqlite3
 import time
 import uuid
 
+from . import short_drama_duration
+
 
 QUALITY_ROUTES = {"quick_draft", "formal"}
 PLAN_STATUSES = {"draft", "confirmed", "superseded"}
@@ -199,7 +201,7 @@ def _dialogue_by_id(script):
     }
 
 
-def _duration_plan(script, target_seconds):
+def _duration_plan(script, target_band):
     shots = [item for item in script.get("shots", []) if isinstance(item, dict)]
     dialogue = _dialogue_by_id(script)
     if not shots:
@@ -216,6 +218,12 @@ def _duration_plan(script, target_seconds):
         speech_total_ms += speech_ms
         visual_ms = max(1800, int(float(shot.get("duration_seconds") or 3) * 1000))
         weights.append(max(visual_ms, speech_ms + (500 if speech_ms else 0)))
+    authored_seconds = sum(
+        max(0, int(float(item.get("duration_seconds") or 0))) for item in shots
+    )
+    target_seconds = short_drama_duration.choose(
+        target_band, len(shots), authored_seconds, math.ceil(speech_total_ms / 1000)
+    )
     target_ms = int(target_seconds) * 1000
     total_weight = max(1, sum(weights))
     allocations = [max(1000, int(target_ms * weight / total_weight)) for weight in weights]
@@ -383,7 +391,7 @@ def _build_plan(project, script_snapshot, quality_route):
     selected = next(item for item in routes if item["key"] == quality_route)
     required_acceptance = []
     checks = []
-    target_ms = int(project["target_duration"]) * 1000
+    target_ms = sum(int(item.get("duration_ms") or 0) for item in duration)
     if speech_total_ms > target_ms:
         required_acceptance.append("duration_compression")
         checks.append({
@@ -483,6 +491,8 @@ def _build_plan(project, script_snapshot, quality_route):
         },
         "duration": {
             "target_ms": target_ms,
+            "range_seconds": list(short_drama_duration.bounds(project["target_duration"])),
+            "actual_seconds": int(target_ms / 1000),
             "speech_estimate_ms": speech_total_ms,
             "shots": duration,
         },
