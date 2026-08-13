@@ -203,6 +203,15 @@ CREATE TABLE IF NOT EXISTS short_drama_projects (
 CREATE INDEX IF NOT EXISTS idx_short_drama_projects_owner
   ON short_drama_projects(username, deleted, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS short_drama_job_project_links (
+  job_id INTEGER PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_short_drama_job_project_links_project
+  ON short_drama_job_project_links(project_id, job_id);
+
 CREATE TABLE IF NOT EXISTS short_drama_project_requests (
   id TEXT PRIMARY KEY,
   username TEXT NOT NULL,
@@ -1031,28 +1040,265 @@ def _table_columns(conn, table):
     return {row[1] for row in conn.execute("PRAGMA table_info(%s)" % table).fetchall()}
 
 
-def _project_point_usage(conn, project_id):
+def _ensure_job_project_links(conn):
+    if not _table_columns(conn, "jobs"):
+        return
+    migration = "short_drama_job_project_links_backfill_v1"
+    migrated = conn.execute(
+        "SELECT 1 FROM short_drama_schema_migrations WHERE name=?", (migration,)
+    ).fetchone()
+    project_expr = (
+        "CASE WHEN NEW.kind='copy' "
+        "AND json_extract(NEW.payload,'$.format')='short_drama' "
+        "THEN json_extract(NEW.payload,'$.project_id') "
+        "WHEN NEW.kind='image' THEN "
+        "json_extract(NEW.payload,'$.short_drama_scene_binding.project_id') END"
+    )
+    if not migrated:
+        conn.execute(
+            "INSERT OR IGNORE INTO short_drama_job_project_links "
+            "(job_id,project_id,kind,created_at) "
+            "SELECT id,CASE WHEN kind='copy' "
+            "AND json_extract(payload,'$.format')='short_drama' "
+            "THEN json_extract(payload,'$.project_id') "
+            "WHEN kind='image' THEN "
+            "json_extract(payload,'$.short_drama_scene_binding.project_id') END,"
+            "kind,CAST(strftime('%s','now') AS INTEGER) FROM jobs "
+            "WHERE json_valid(payload) AND ((kind='copy' "
+            "AND json_extract(payload,'$.format')='short_drama' "
+            "AND COALESCE(json_extract(payload,'$.project_id'),'')<>'') "
+            "OR (kind='image' AND COALESCE(json_extract(payload,"
+            "'$.short_drama_scene_binding.project_id'),'')<>''))"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO short_drama_schema_migrations(name,completed_at) "
+            "VALUES (?,?)", (migration, int(time.time())),
+        )
+    conn.execute(
+        "CREATE TRIGGER IF NOT EXISTS trg_short_drama_job_project_link "
+        "AFTER INSERT ON jobs WHEN json_valid(NEW.payload) "
+        "AND COALESCE(" + project_expr + ",'')<>'' BEGIN "
+        "INSERT OR IGNORE INTO short_drama_job_project_links "
+        "(job_id,project_id,kind,created_at) VALUES "
+        "(NEW.id," + project_expr + ",NEW.kind,CAST(strftime('%s','now') AS INTEGER)); "
+        "END"
+    )
+
+
+def _page_job_point_usage(conn, project_ids):
+    project_ids = set(project_ids or ())
+    usage = {
+        project_id: {"actual": 0, "has_activity": False}
+        for project_id in project_ids
+    }
+    job_columns = _table_columns(conn, "jobs")
+    if not project_ids or not job_columns:
+        return usage
+    _ensure_job_project_links(conn)
+    refunded_expr = "COALESCE(j.refunded,0)" if "refunded" in job_columns else "0"
+    placeholders = ",".join("?" for _project_id in project_ids)
+    rows = conn.execute(
+        "SELECT l.project_id,SUM(CASE WHEN " + refunded_expr + "=1 THEN 0 "
+        "WHEN COALESCE(j.cost,0)>0 THEN j.cost ELSE 0 END),COUNT(*) "
+        "FROM short_drama_job_project_links l JOIN jobs j ON j.id=l.job_id "
+        "WHERE l.project_id IN (" + placeholders + ") GROUP BY l.project_id",
+        tuple(project_ids),
+    ).fetchall()
+    for project_id, actual, count in rows:
+        usage[project_id]["has_activity"] = int(count or 0) > 0
+        usage[project_id]["actual"] = max(0, int(actual or 0))
+    return usage
+
+
+def _page_project_point_usage(conn, projects):
+    """Aggregate every point ledger for one page with a fixed query count."""
+    projects = list(projects or ())
+    project_ids = [row["id"] for row in projects]
+    usage = {
+        row["id"]: {
+            "legacy": int(row.get("spent_points") or 0),
+            "actual": 0, "reserved": 0, "has_activity": False,
+        }
+        for row in projects
+    }
+    if not project_ids:
+        return {}
+    placeholders = ",".join("?" for _project_id in project_ids)
+    params = tuple(project_ids)
+    job_columns = _table_columns(conn, "jobs")
+    refunded_expr = "COALESCE(j.refunded,0)" if "refunded" in job_columns else "0"
+    for project_id, values in _page_job_point_usage(conn, project_ids).items():
+        usage[project_id]["actual"] += int(values["actual"])
+        usage[project_id]["has_activity"] |= bool(values["has_activity"])
+
+    linked_production_jobs = {project_id: set() for project_id in project_ids}
+    production_columns = _table_columns(conn, "short_drama_production_jobs")
+    if production_columns:
+        production_refunded = (
+            "COALESCE(p.refunded,0)" if "refunded" in production_columns else "0"
+        )
+        if job_columns:
+            rows = conn.execute(
+                "SELECT p.project_id,p.job_id,p.quoted_cost," + production_refunded
+                + ",j.id,j.cost," + refunded_expr + " "
+                "FROM short_drama_production_jobs p LEFT JOIN jobs j ON j.id=p.job_id "
+                "WHERE p.project_id IN (" + placeholders + ")", params,
+            ).fetchall()
+        else:
+            rows = [tuple(row) + (None, None, 0) for row in conn.execute(
+                "SELECT p.project_id,p.job_id,p.quoted_cost," + production_refunded
+                + " FROM short_drama_production_jobs p WHERE p.project_id IN ("
+                + placeholders + ")", params,
+            ).fetchall()]
+        for project_id, job_id, quoted, link_refunded, found_id, cost, refunded in rows:
+            item = usage[project_id]
+            item["has_activity"] = True
+            if job_id is not None:
+                linked_production_jobs[project_id].add(int(job_id))
+            if found_id is not None:
+                if int(refunded or 0) != 1:
+                    item["actual"] += max(0, int(cost or 0))
+            elif int(link_refunded or 0) != 1:
+                item["actual"] += max(0, int(quoted or 0))
+
+    def simple_attempts(table, actual_states):
+        if not _table_columns(conn, table):
+            return
+        for project_id, state, cost in conn.execute(
+            "SELECT project_id,state,cost FROM " + table
+            + " WHERE project_id IN (" + placeholders + ")", params,
+        ).fetchall():
+            item = usage[project_id]
+            item["has_activity"] = True
+            if state == "accepted":
+                item["reserved"] += max(0, int(cost or 0))
+            elif state in actual_states:
+                item["actual"] += max(0, int(cost or 0))
+
+    if _table_columns(conn, "short_drama_charge_attempts"):
+        for project_id, state, cost, job_id in conn.execute(
+            "SELECT project_id,state,cost,job_id FROM short_drama_charge_attempts "
+            "WHERE project_id IN (" + placeholders + ")", params,
+        ).fetchall():
+            item = usage[project_id]
+            item["has_activity"] = True
+            if job_id is not None and int(job_id) in linked_production_jobs[project_id]:
+                continue
+            if state == "accepted":
+                item["reserved"] += max(0, int(cost or 0))
+            elif state in {"charged", "linked", "refund_pending"}:
+                item["actual"] += max(0, int(cost or 0))
+
+    def linked_attempts(table, actual_states):
+        if not _table_columns(conn, table):
+            return
+        if job_columns:
+            rows = conn.execute(
+                "SELECT a.project_id,a.state,a.cost,a.job_id,j.id,j.cost,"
+                + refunded_expr + " FROM " + table
+                + " a LEFT JOIN jobs j ON j.id=a.job_id WHERE a.project_id IN ("
+                + placeholders + ")", params,
+            ).fetchall()
+        else:
+            rows = [tuple(row) + (None, None, 0) for row in conn.execute(
+                "SELECT project_id,state,cost,job_id FROM " + table
+                + " WHERE project_id IN (" + placeholders + ")", params,
+            ).fetchall()]
+        for project_id, state, cost, _job_id, found_id, job_cost, refunded in rows:
+            item = usage[project_id]
+            item["has_activity"] = True
+            if state == "accepted":
+                item["reserved"] += max(0, int(cost or 0))
+            elif state in actual_states:
+                if found_id is not None:
+                    if int(refunded or 0) != 1:
+                        item["actual"] += max(0, int(job_cost or 0))
+                else:
+                    item["actual"] += max(0, int(cost or 0))
+
+    linked_attempts("short_drama_voice_charge_attempts", {"charged", "linked", "done", "refund_pending"})
+    linked_attempts("short_drama_video_charge_attempts", {"charged", "linked", "done", "refund_pending"})
+    linked_attempts("short_drama_final_attempts", {"charged", "done", "archived", "refund_pending"})
+    simple_attempts("short_drama_delivery_attempts", {"charged", "linked", "refund_pending"})
+    simple_attempts("short_drama_autodraft_attempts", {"charged", "linked", "refund_pending"})
+    simple_attempts("short_drama_provider_shot_attempts", {"charged", "linked", "done", "refund_pending"})
+
+    if _table_columns(conn, "short_drama_character_reference_jobs") and job_columns:
+        rows = conn.execute(
+            "SELECT r.project_id,r.cost,r.status,j.id,j.cost," + refunded_expr + " "
+            "FROM short_drama_character_reference_jobs r "
+            "LEFT JOIN jobs j ON j.id=r.job_id WHERE r.project_id IN ("
+            + placeholders + ")", params,
+        ).fetchall()
+        for project_id, linked_cost, state, found_id, job_cost, refunded in rows:
+            item = usage[project_id]
+            item["has_activity"] = True
+            if found_id is not None:
+                if int(refunded or 0) != 1:
+                    item["actual"] += max(0, int(job_cost or 0))
+            elif state != "failed":
+                item["actual"] += max(0, int(linked_cost or 0))
+
+    if _table_columns(conn, "short_drama_character_reference_attempts"):
+        for project_id, state, cost, job_id in conn.execute(
+            "SELECT project_id,state,cost,job_id FROM "
+            "short_drama_character_reference_attempts WHERE project_id IN ("
+            + placeholders + ")", params,
+        ).fetchall():
+            item = usage[project_id]
+            if state == "accepted":
+                item["reserved"] += max(0, int(cost or 0))
+            elif state in {"charged", "refund_pending"} and job_id is None:
+                item["has_activity"] = True
+                item["actual"] += max(0, int(cost or 0))
+
+    if _table_columns(conn, "short_drama_sound_jobs") and job_columns:
+        rows = conn.execute(
+            "SELECT s.project_id,s.cost,s.status,j.id,j.cost," + refunded_expr + " "
+            "FROM short_drama_sound_jobs s LEFT JOIN jobs j ON j.id=s.job_id "
+            "WHERE s.project_id IN (" + placeholders + ")", params,
+        ).fetchall()
+        for project_id, linked_cost, state, found_id, job_cost, refunded in rows:
+            item = usage[project_id]
+            item["has_activity"] = True
+            if found_id is not None:
+                if int(refunded or 0) != 1:
+                    item["actual"] += max(0, int(job_cost or 0))
+            elif state != "failed":
+                item["actual"] += max(0, int(linked_cost or 0))
+
+    return {
+        project_id: {
+            "spent_points": item["actual"] if item["has_activity"] else item["legacy"],
+            "reserved_points": item["reserved"],
+        }
+        for project_id, item in usage.items()
+    }
+
+
+def _project_point_usage(conn, project_id, page_job_usage=None):
     """Return one project-scoped ledger across planning and production charges."""
     project = conn.execute(
         "SELECT spent_points FROM short_drama_projects WHERE id=?", (project_id,)
     ).fetchone()
     legacy_spent = int(project[0] or 0) if project else 0
-    actual = 0
+    page_usage = (page_job_usage or {}).get(project_id, {})
+    actual = int(page_usage.get("actual") or 0)
     reserved = 0
-    has_activity = False
+    has_activity = bool(page_usage.get("has_activity"))
 
     job_columns = _table_columns(conn, "jobs")
-    if job_columns:
-        refunded_expr = "COALESCE(refunded,0)" if "refunded" in job_columns else "0"
+    if job_columns and page_job_usage is None:
+        _ensure_job_project_links(conn)
+        refunded_expr = "COALESCE(j.refunded,0)" if "refunded" in job_columns else "0"
         for row in conn.execute(
-                "SELECT cost,payload," + refunded_expr + " FROM jobs WHERE kind='copy'"
+                "SELECT j.cost," + refunded_expr + " "
+                "FROM short_drama_job_project_links l "
+                "JOIN jobs j ON j.id=l.job_id WHERE l.project_id=?",
+                (project_id,),
         ).fetchall():
-            payload = _json(row[1], {})
-            if (not isinstance(payload, dict) or payload.get("format") != "short_drama"
-                    or payload.get("project_id") != project_id):
-                continue
             has_activity = True
-            if int(row[2] or 0) != 1:
+            if int(row[1] or 0) != 1:
                 actual += max(0, int(row[0] or 0))
 
     linked_job_ids = set()
@@ -1461,6 +1707,11 @@ def init_db(db_factory):
                 "ALTER TABLE short_drama_projects ADD COLUMN creation_status "
                 "TEXT NOT NULL DEFAULT 'formal'"
             )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS short_drama_schema_migrations ("
+            "name TEXT PRIMARY KEY,completed_at INTEGER NOT NULL)"
+        )
+        _ensure_job_project_links(conn)
         character_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(short_drama_characters)")
         }
@@ -2160,7 +2411,58 @@ def import_script_project(db_factory, username, payload, idempotency_key):
         conn.close()
 
 
-def _project_progress_summary(conn, project):
+def _page_project_progress(conn, project_ids):
+    project_ids = list(project_ids or ())
+    result = {project_id: {} for project_id in project_ids}
+    if not project_ids:
+        return result
+    placeholders = ",".join("?" for _project_id in project_ids)
+    params = tuple(project_ids)
+
+    def grouped(table, expressions):
+        if not _table_columns(conn, table):
+            return
+        rows = conn.execute(
+            "SELECT project_id," + ",".join(expressions.values())
+            + " FROM " + table + " WHERE project_id IN (" + placeholders
+            + ") GROUP BY project_id", params,
+        ).fetchall()
+        keys = list(expressions)
+        for row in rows:
+            result[row[0]].update({key: int(value or 0) for key, value in zip(keys, row[1:])})
+
+    grouped("short_drama_script_imports", {
+        "story_ready": "SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END)",
+    })
+    grouped("short_drama_characters", {
+        "character_total": "COUNT(*)",
+        "locked_characters": "SUM(CASE WHEN COALESCE(reference_locked,0)=1 THEN 1 ELSE 0 END)",
+    })
+    grouped("short_drama_script_snapshots", {
+        "script_locked": "SUM(CASE WHEN status='locked' THEN 1 ELSE 0 END)",
+    })
+    grouped("short_drama_provider_shot_versions", {
+        "ready_shots": "COUNT(DISTINCT CASE WHEN status='ready' THEN shot_key END)",
+    })
+    grouped("short_drama_autodraft_versions", {
+        "preview_ready": "SUM(CASE WHEN status='ready' THEN 1 ELSE 0 END)",
+    })
+    grouped("short_drama_refinement_versions", {
+        "acceptance_ready": "SUM(CASE WHEN status='confirmed' THEN 1 ELSE 0 END)",
+    })
+    grouped("short_drama_delivery_versions", {
+        "delivery_ready": "SUM(CASE WHEN status='ready' THEN 1 ELSE 0 END)",
+    })
+    grouped("short_drama_autodraft_jobs", {
+        "active_autodraft": "SUM(CASE WHEN status IN ('queued','running') THEN 1 ELSE 0 END)",
+    })
+    grouped("short_drama_delivery_jobs", {
+        "active_delivery": "SUM(CASE WHEN status IN ('queued','running') THEN 1 ELSE 0 END)",
+    })
+    return result
+
+
+def _project_progress_summary(conn, project, page_progress=None):
     """Summarize the deepest durable production milestone for project cards."""
     project_id = project["id"]
     target_shots = max(1, int(project.get("shot_count") or 1))
@@ -2169,7 +2471,11 @@ def _project_progress_summary(conn, project):
     label = "等待确认核心故事"
     detail = "基本信息已保存"
 
-    def count(table, where="1=1", params=()):
+    metrics = (page_progress or {}).get(project_id)
+
+    def count(table, where="1=1", params=(), metric=None):
+        if metrics is not None and metric:
+            return int(metrics.get(metric) or 0)
         if not _table_columns(conn, table):
             return 0
         return int(conn.execute(
@@ -2178,7 +2484,7 @@ def _project_progress_summary(conn, project):
         ).fetchone()[0])
 
     story_ready = count(
-        "short_drama_script_imports", "status='completed'"
+        "short_drama_script_imports", "status='completed'", metric="story_ready"
     ) > 0
     if story_ready:
         percent = 20
@@ -2186,9 +2492,9 @@ def _project_progress_summary(conn, project):
         label = "等待完成角色形象"
         detail = "核心故事已确认"
 
-    character_total = count("short_drama_characters")
+    character_total = count("short_drama_characters", metric="character_total")
     locked_characters = count(
-        "short_drama_characters", "COALESCE(reference_locked,0)=1"
+        "short_drama_characters", "COALESCE(reference_locked,0)=1", metric="locked_characters"
     )
     if character_total:
         ratio = min(1.0, locked_characters / character_total)
@@ -2202,7 +2508,7 @@ def _project_progress_summary(conn, project):
             detail = "角色形象已完成"
 
     script_locked = count(
-        "short_drama_script_snapshots", "status='locked'"
+        "short_drama_script_snapshots", "status='locked'", metric="script_locked"
     ) > 0
     if script_locked:
         percent = max(percent, 50)
@@ -2211,7 +2517,9 @@ def _project_progress_summary(conn, project):
         detail = "剧本已锁定"
 
     ready_shots = 0
-    if _table_columns(conn, "short_drama_provider_shot_versions"):
+    if metrics is not None:
+        ready_shots = int(metrics.get("ready_shots") or 0)
+    elif _table_columns(conn, "short_drama_provider_shot_versions"):
         ready_shots = int(conn.execute(
             "SELECT COUNT(DISTINCT shot_key) "
             "FROM short_drama_provider_shot_versions "
@@ -2230,7 +2538,7 @@ def _project_progress_summary(conn, project):
         detail = "全部镜头已完成"
 
     preview_ready = count(
-        "short_drama_autodraft_versions", "status='ready'"
+        "short_drama_autodraft_versions", "status='ready'", metric="preview_ready"
     ) > 0
     if preview_ready:
         percent = max(percent, 85)
@@ -2239,7 +2547,7 @@ def _project_progress_summary(conn, project):
         detail = "720p 合成预览已生成"
 
     acceptance_ready = count(
-        "short_drama_refinement_versions", "status='confirmed'"
+        "short_drama_refinement_versions", "status='confirmed'", metric="acceptance_ready"
     ) > 0
     if acceptance_ready:
         percent = max(percent, 90)
@@ -2248,7 +2556,7 @@ def _project_progress_summary(conn, project):
         detail = "全片验收已通过"
 
     delivery_ready = count(
-        "short_drama_delivery_versions", "status='ready'"
+        "short_drama_delivery_versions", "status='ready'", metric="delivery_ready"
     ) > 0
     legacy_completed = project.get("stage") == "completed"
     if delivery_ready or legacy_completed:
@@ -2257,9 +2565,9 @@ def _project_progress_summary(conn, project):
         label = "已完成正式交付"
         detail = "1080p 正式成片已生成"
         active_reassembly = count(
-            "short_drama_autodraft_jobs", "status IN ('queued','running')"
+            "short_drama_autodraft_jobs", "status IN ('queued','running')", metric="active_autodraft"
         ) + count(
-            "short_drama_delivery_jobs", "status IN ('queued','running')"
+            "short_drama_delivery_jobs", "status IN ('queued','running')", metric="active_delivery"
         )
         if active_reassembly:
             label = "已交付 · 新版本处理中"
@@ -2300,10 +2608,12 @@ def list_projects(db_factory, username, page=1, page_size=DEFAULT_PROJECT_PAGE_S
             " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
             params + (page_size, (page - 1) * page_size),
         )
+        page_usage = _page_project_point_usage(conn, rows)
+        page_progress = _page_project_progress(conn, [row["id"] for row in rows])
         for row in rows:
             row["revision"] = int(row["revision"])
-            row["spent_points"] = _project_point_usage(conn, row["id"])["spent_points"]
-            row.update(_project_progress_summary(conn, row))
+            row["spent_points"] = page_usage[row["id"]]["spent_points"]
+            row.update(_project_progress_summary(conn, row, page_progress))
         return {
             "items": rows,
             "page": page,
@@ -2449,6 +2759,43 @@ def _character_reference_required_keys(source_text, character_contract):
         if occurrence_count >= 2 or has_dialogue:
             required.add(key)
     return required
+
+
+def validate_scene_image_binding(
+        db_factory, username, binding, quoted_cost=None, access=None):
+    if not isinstance(binding, dict) or set(binding) != {"project_id", "scene_key"}:
+        raise ValueError("场景图生成必须绑定 project_id 与 scene_key")
+    project_id = str(binding.get("project_id") or "").strip()
+    scene_key = str(binding.get("scene_key") or "").strip()
+    if not project_id or not scene_key:
+        raise ValueError("场景图生成缺少项目或场景标识")
+    owner_username = _project_username_for_access(
+        db_factory, username, project_id, access, write=True
+    )
+    conn = db_factory()
+    try:
+        project = conn.execute(
+            "SELECT point_budget FROM short_drama_projects "
+            "WHERE id=? AND username=? AND deleted=0",
+            (project_id, owner_username),
+        ).fetchone()
+        from . import short_drama_asset_graph
+        scene = next((item for item in short_drama_asset_graph.scene_workspace(
+            db_factory, owner_username, project_id
+        )["scenes"] if item.get("scene_key") == scene_key), None)
+        if not project or not scene:
+            raise LookupError("短剧场景不存在或不属于当前账号")
+        if quoted_cost is not None and int(project[0] or 0) > 0:
+            usage = _project_point_usage(conn, project_id)
+            if (
+                int(usage.get("spent_points") or 0)
+                + int(usage.get("reserved_points") or 0)
+                + int(quoted_cost) > int(project[0])
+            ):
+                raise PointBudgetExceeded("短剧项目点数预算不足，无法生成场景图")
+    finally:
+        conn.close()
+    return {"project_id": project_id, "scene_key": scene_key}
 
 
 _CORE_STORY_FIELDS = (

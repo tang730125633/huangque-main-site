@@ -5,9 +5,7 @@ import base64
 import io
 import json
 import os
-import threading
 import time
-import urllib.error
 import uuid
 
 try:
@@ -22,106 +20,6 @@ RATIOS = {"1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_REFERENCE_IMAGES = 14
 MAX_TOTAL_REFERENCE_BYTES = 48 * 1024 * 1024
-BANANA_MAX_CONCURRENCY = max(1, int(os.environ.get("BANANA_MAX_CONCURRENCY", "2") or 2))
-BANANA_429_RETRY_DELAYS = tuple(
-    max(1, int(value.strip()))
-    for value in os.environ.get("BANANA_429_RETRY_DELAYS", "5,15,30,60,120").split(",")
-    if value.strip()
-)
-_BANANA_SLOTS = threading.BoundedSemaphore(BANANA_MAX_CONCURRENCY)
-
-
-class BananaRateLimited(RuntimeError):
-    pass
-
-
-class BananaQuotaExhausted(RuntimeError):
-    pass
-
-
-def _notify_progress(callback, state, message, retry_after_ms=0, attempt=0):
-    if not callable(callback):
-        return
-    try:
-        callback({
-            "code": "upstream_rate_limited" if state == "rate_limited" else state,
-            "state": state,
-            "message": message,
-            "retry_after_ms": max(0, int(retry_after_ms or 0)),
-            "retry_at": int(time.time() * 1000) + max(0, int(retry_after_ms or 0)),
-            "attempt": max(0, int(attempt or 0)),
-        })
-    except Exception:
-        pass
-
-
-def _http_error_detail(error):
-    try:
-        raw = error.read()
-        return raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw or "")
-    except Exception:
-        return ""
-
-
-def _quota_exhausted(detail):
-    value = str(detail or "").lower()
-    quota_markers = (
-        "per day", "daily", "billing", "insufficient quota", "quota exhausted",
-        "quota has been exceeded", "free_tier", "check your plan",
-    )
-    return any(marker in value for marker in quota_markers)
-
-
-def _retry_after_seconds(error, fallback):
-    try:
-        value = int(float((error.headers or {}).get("Retry-After") or 0))
-        if value > 0:
-            return min(300, value)
-    except Exception:
-        pass
-    return max(1, int(fallback))
-
-
-def _post_with_rate_limit_retry(egress, official_base, fallback_base, path,
-                                request_data, headers, progress=None):
-    acquired = _BANANA_SLOTS.acquire(blocking=False)
-    if not acquired:
-        _notify_progress(progress, "queued", "图片生成请求正在排队", 3000)
-        _BANANA_SLOTS.acquire()
-    try:
-        delays = BANANA_429_RETRY_DELAYS or (5,)
-        for attempt in range(len(delays) + 1):
-            try:
-                return egress.post_json(
-                    official_base, fallback_base, path, request_data, headers,
-                    log=lambda message: print(message, flush=True),
-                )
-            except urllib.error.HTTPError as error:
-                if int(getattr(error, "code", 0) or 0) != 429:
-                    raise
-                detail = _http_error_detail(error)
-                if _quota_exhausted(detail):
-                    raise BananaQuotaExhausted(
-                        "图片生成账户额度已用尽，请联系管理员补充额度后再试"
-                    ) from error
-                if attempt >= len(delays):
-                    raise BananaRateLimited(
-                        "图片生成服务持续繁忙，本次任务已停止并自动退还点数，请稍后重新生成"
-                    ) from error
-                delay = _retry_after_seconds(error, delays[attempt])
-                _notify_progress(
-                    progress, "rate_limited",
-                    "图片生成服务繁忙，系统正在自动重试",
-                    delay * 1000, attempt + 1,
-                )
-                print(
-                    "[banana] 429 限流，%d 秒后自动重试(%d/%d)"
-                    % (delay, attempt + 1, len(delays)),
-                    flush=True,
-                )
-                time.sleep(delay)
-    finally:
-        _BANANA_SLOTS.release()
 
 
 def clean_b64(value):
@@ -245,7 +143,7 @@ def _normalize_ratio(raw, ratio):
         return output.getvalue(), {"width": image.width, "height": image.height}
 
 
-def generate(payload, out_dir, public_url, progress=None):
+def generate(payload, out_dir, public_url):
     body = validate_payload(payload)
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not api_key:
@@ -266,12 +164,13 @@ def generate(payload, out_dir, public_url, progress=None):
 
     files, urls, dimensions = [], [], []
     for _index in range(body["count"]):
-        response = _post_with_rate_limit_retry(
-            egress, official_base, fallback_base,
+        response = egress.post_json(
+            official_base,
+            fallback_base,
             "/v1beta/models/%s:generateContent" % model_id,
             request_data,
             {"Content-Type": "application/json", "x-goog-api-key": api_key},
-            progress,
+            log=lambda message: print(message, flush=True),
         )
         parts = (response.get("candidates") or [{}])[0].get("content", {}).get("parts", [])
         inline = next((part.get("inlineData") for part in parts if part.get("inlineData")), None)

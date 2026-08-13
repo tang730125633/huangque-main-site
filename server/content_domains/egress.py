@@ -211,7 +211,7 @@ def post_json(official_base, heygen_base, path, data, headers, log=None):
 
 
 def post_json_idempotent(official_base, heygen_base, path, data, headers, log=None,
-                         max_attempts=2, retry_delays=None):
+                         max_attempts=2):
     """POST an idempotent analysis request, retrying a slow/broken read once.
 
     Unlike image generation, chat analysis can be safely repeated from the
@@ -241,25 +241,7 @@ def post_json_idempotent(official_base, heygen_base, path, data, headers, log=No
                 return json.loads(response.read())
         except urllib.error.HTTPError as error:
             last = error
-            code = int(getattr(error, "code", 0) or 0)
-            if code == 429 and number < max(1, int(max_attempts or 1)):
-                configured = tuple(retry_delays or ())
-                delay = configured[min(number - 1, len(configured) - 1)] if configured else 0
-                try:
-                    retry_after = int(float((error.headers or {}).get("Retry-After") or 0))
-                    if retry_after > 0:
-                        delay = min(60, retry_after)
-                except Exception:
-                    pass
-                if log:
-                    log(
-                        "[egress] idempotent %s hit 429 via %s; retry %d/%d in %ss"
-                        % (path, label, number + 1, max_attempts, delay)
-                    )
-                if delay:
-                    time.sleep(max(0, float(delay)))
-                continue
-            if 400 <= code < 500:
+            if 400 <= int(getattr(error, "code", 0) or 0) < 500:
                 raise
         except Exception as error:
             last = error

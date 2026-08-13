@@ -2423,6 +2423,19 @@ def confirm_refinement(db_factory, owner_username, actor_username, body):
             raise RefinementError(
                 "refinement_acceptance_stale", "验收输入已变化，请刷新后重新验收", 409
             )
+        assembly_status = _refinement_assembly_status(conn, project, current)
+        if not assembly_status.get("available"):
+            raise RefinementError(
+                "refinement_assembly_unavailable",
+                "暂时无法核对完整镜头时长，请稍后重试",
+                409,
+            )
+        if assembly_status.get("reassembly_required"):
+            raise RefinementError(
+                "refinement_reassembly_required",
+                "当前预览未包含全部镜头时长，请先免费重新装配",
+                409,
+            )
         now = int(time.time())
         conn.execute(
             "UPDATE short_drama_refinement_versions SET status='superseded' "

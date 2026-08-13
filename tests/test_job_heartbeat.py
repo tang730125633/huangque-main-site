@@ -124,6 +124,13 @@ class BackgroundRefundRecoveryTests(unittest.TestCase):
         self.assertIn("_retry_short_drama_provider_refunds", scanner)
         self.assertIn("_retry_short_drama_provider_refunds", startup)
 
+    def test_delivery_refund_recovery_uses_periodic_worker(self):
+        scanner = CORE_SRC.split("def _pending_job_scanner")[1].split("\ndef ")[0]
+        startup = CORE_SRC.split("def start_job_workers")[1].split("\ndef ")[0]
+        call = "short_drama_refinement.retry_delivery_attempt_refunds"
+        self.assertIn(call, scanner)
+        self.assertIn(call, startup)
+
 
 class TheReaperDefaultIsNotZeroTests(unittest.TestCase):
     """⚠️ 一个潜伏雷：`KIND_GRACE.get(kind, 0)` —— 默认值 0 在 reaper 里的语义是【立刻杀】。

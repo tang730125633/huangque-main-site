@@ -290,9 +290,18 @@ class ShortDramaRefinementTests(unittest.TestCase):
         }
 
     def confirm_version(self, version):
-        return short_drama_refinement.confirm_refinement(
-            self.db, "alice", "alice", self.acceptance_body(version)
-        )
+        with mock.patch.object(
+            short_drama_refinement,
+            "_refinement_assembly_status",
+            return_value={
+                "available": True,
+                "reassembly_required": False,
+                "message": "complete preview",
+            },
+        ):
+            return short_drama_refinement.confirm_refinement(
+                self.db, "alice", "alice", self.acceptance_body(version)
+            )
 
     def test_workspace_seeds_refinement_from_playable_draft(self):
         result = short_drama_refinement.workspace(
@@ -1397,6 +1406,24 @@ class ShortDramaRefinementTests(unittest.TestCase):
         confirmed = self.confirm_version(version)
         self.assertTrue(confirmed["acceptance"]["valid"])
         self.assertEqual("alice", confirmed["acceptance"]["accepted_by"])
+
+    def test_incomplete_assembly_blocks_confirmation_in_authoritative_transaction(self):
+        version = self.repaired_version("incomplete-assembly-confirmation")
+        body = self.acceptance_body(version)
+        with mock.patch.object(
+            short_drama_refinement,
+            "_refinement_assembly_status",
+            return_value={
+                "available": True,
+                "reassembly_required": True,
+                "message": "preview is missing shot duration",
+            },
+        ):
+            with self.assertRaises(short_drama_refinement.RefinementError) as raised:
+                short_drama_refinement.confirm_refinement(
+                    self.db, "alice", "alice", body,
+                )
+        self.assertEqual("refinement_reassembly_required", raised.exception.code)
 
     def test_mark_issue_invalidates_acceptance_until_redo_and_reacceptance(self):
         version = self.confirmed_version("accept-before-issue")

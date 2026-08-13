@@ -15,6 +15,7 @@ from providers.short_drama_visual.heygen_cinematic import (
     HeyGenCinematicShotProvider,
 )
 from providers.short_drama_visual.grok_xai import GrokXaiShotProvider
+from providers.short_drama_visual import minimax_h3
 from providers.short_drama_visual.minimax_h3 import MiniMaxH3ShotProvider
 from content_domains import provider_keys, video_minimax_h3
 
@@ -93,7 +94,7 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
                  {"task_id": "task-8"},
                  {"task": {"status": "succeeded", "content": {"url": "https://cdn.example/result.mp4"}}},
              ]) as request_json, \
-             mock.patch("content_domains.video._download_video_file_direct", return_value="video/minimax-result.mp4"):
+             mock.patch("content_domains.video._download_video_file_direct", return_value="video/minimax-result.mp4") as download:
             created = provider.create_job(request)
             state = provider.get_job(created["provider_job_id"])
             result = provider.fetch_result(created["provider_job_id"], state["result_url"])
@@ -106,6 +107,14 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
         self.assertEqual("/v2/query/video_generation/task-8", request_json.call_args_list[1].args[2])
         self.assertEqual("test-only-secret", request_json.call_args_list[0].kwargs["api_key"])
         self.assertEqual("test-only-secret", request_json.call_args_list[1].kwargs["api_key"])
+        self.assertEqual(
+            set(minimax_h3.MINIMAX_RESULT_HOSTS),
+            set(download.call_args.kwargs["allowed_hosts"]),
+        )
+        self.assertEqual(
+            minimax_h3.MINIMAX_RESULT_MAX_BYTES,
+            download.call_args.kwargs["max_bytes"],
+        )
 
     def test_minimax_h3_failed_job_exposes_safe_provider_reason(self):
         provider = MiniMaxH3ShotProvider()

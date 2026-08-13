@@ -207,6 +207,69 @@ class ShortDramaProjectTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_project_list_uses_indexed_page_scoped_job_ledger(self):
+        projects = [
+            short_drama.create_project(
+                self.db, "alice", valid_project(title="Project %d" % index)
+            )
+            for index in range(3)
+        ]
+        for index, project in enumerate(projects, 1):
+            self.insert_planning_job(project, 700 + index, cost=index)
+        conn = self.db()
+        try:
+            short_drama._ensure_job_project_links(conn)
+            conn.commit()
+        finally:
+            conn.close()
+        def tracked_list(page_size):
+            statements = []
+
+            def tracked_db():
+                conn = sqlite3.connect(self.path)
+                conn.set_trace_callback(statements.append)
+                return conn
+
+            return short_drama.list_projects(
+                tracked_db, "alice", page_size=page_size
+            ), statements
+
+        _single, single_statements = tracked_list(1)
+        result, statements = tracked_list(10)
+        self.assertEqual(
+            [3, 2, 1],
+            sorted((item["spent_points"] for item in result["items"]), reverse=True),
+        )
+        self.assertFalse(any(
+            " FROM jobs WHERE kind" in statement and "payload" in statement
+            for statement in statements
+        ))
+        ledger_queries = [
+            statement for statement in statements
+            if "short_drama_job_project_links" in statement and "JOIN jobs" in statement
+        ]
+        self.assertEqual(1, len(ledger_queries), ledger_queries)
+        self.assertIn("GROUP BY l.project_id", ledger_queries[0])
+        single_selects = [
+            statement for statement in single_statements
+            if statement.lstrip().upper().startswith("SELECT")
+        ]
+        page_selects = [
+            statement for statement in statements
+            if statement.lstrip().upper().startswith("SELECT")
+        ]
+        self.assertLessEqual(
+            len(page_selects), len(single_selects) + 2,
+            (len(single_selects), len(page_selects)),
+        )
+
+    def test_scene_image_binding_validator_remains_available_to_core(self):
+        self.assertTrue(callable(short_drama.validate_scene_image_binding))
+        with self.assertRaises(ValueError):
+            short_drama.validate_scene_image_binding(
+                self.db, "alice", {"project_id": "missing"}
+            )
+
     def _assert_plan_rejected_without_side_effects(self, project, plan, job_id):
         before = short_drama.get_project(self.db, "alice", project["id"])
         with self.assertRaises(ValueError):

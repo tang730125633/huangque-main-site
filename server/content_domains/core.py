@@ -934,19 +934,6 @@ def _refund_once(job_id, username, cost, transaction_key=""):
         _domains()[1].refund_points(u, c, "job#%d" % job_id, transaction_key=transaction_key), True)[1])
 
 
-def _update_job_progress(job_id, progress):
-    try:
-        value = json.dumps(progress, ensure_ascii=False) if progress else None
-        with closing(jdb()) as connection:
-            connection.execute(
-                "UPDATE jobs SET error=?,updated_at=? WHERE id=? AND status='running'",
-                (value, int(time.time()), int(job_id)),
-            )
-            connection.commit()
-    except Exception:
-        pass
-
-
 def _fail_job_and_schedule_refund(job_id, error, *, from_states=("running",),
                                   username=None, cost=None, kind=None):
     """Fail one job while preserving the single durable owner of its refund retry."""
@@ -1173,6 +1160,8 @@ def _pending_job_scanner():
             _short_drama_domain().short_drama_video.retry_video_attempt_refunds(
                 jdb, _domains()[1], JOB_QUEUE_MAX)
             _retry_short_drama_provider_refunds(JOB_QUEUE_MAX)
+            _short_drama_domain().short_drama_refinement.retry_delivery_attempt_refunds(
+                jdb, _domains()[1], JOB_QUEUE_MAX)
             jobs_store.retry_failed_refunds(jdb, _refund_once, JOB_QUEUE_MAX)
             _short_drama_domain().short_drama_assembly.reconcile_final_refunds(
                 jdb, JOB_QUEUE_MAX)
@@ -1353,14 +1342,10 @@ def run_job(job_id):
         # 抢到 running 才开心跳（前面几个 return 都还没认领，不该有心跳）。
         # 有了它，reaper 的「没心跳」才真的等于「worker 死了」—— 而不是「正在轮询/烧字幕」。
         stop_heartbeat = _start_job_heartbeat(job_id)
-        if kind in {"audio", "short_drama_sound_effect", "video", "tryon", "xiaole_video", "sora_video", "leads", "cinematic", "avatar", "breakdown", "short_drama_preview", "short_drama_final", "script_to_video", "image"}:
+        if kind in {"audio", "short_drama_sound_effect", "video", "tryon", "xiaole_video", "sora_video", "leads", "cinematic", "avatar", "breakdown", "short_drama_preview", "short_drama_final", "script_to_video"}:
             payload["_username"] = username   # 少一个 kind，handler 就拿不到用户名/job_id：
             payload["_job_id"] = job_id       # gen_avatar 记不了形象归属，gen_cinematic 查不到用户的形象
-        if kind == "image":
-            payload["_progress_callback"] = lambda progress: _update_job_progress(job_id, progress)
         result = HANDLERS[kind](payload)
-        if kind == "image":
-            _update_job_progress(job_id, None)
         breakdown_refund_prepared = False
         if kind == "breakdown":
             breakdown_refund_prepared = _prepare_breakdown_refund(

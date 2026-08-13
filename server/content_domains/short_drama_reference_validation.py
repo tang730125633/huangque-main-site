@@ -100,7 +100,6 @@ def validate_character_reference(raw, mime_type):
             json.dumps(body, ensure_ascii=False).encode("utf-8"),
             {"Content-Type": "application/json", "x-goog-api-key": api_key},
             max_attempts=4,
-            retry_delays=(2, 5, 10),
         )
         result = _candidate_payload(response)
     except urllib.error.HTTPError as error:

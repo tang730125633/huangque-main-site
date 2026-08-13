@@ -251,33 +251,6 @@ class FailoverTests(unittest.TestCase):
         self.assertEqual(result, {"ok": 3})
         self.assertEqual(len(calls), 2)
 
-    def test_idempotent_analysis_retries_http_429_on_next_channel(self):
-        calls = []
-
-        class _Opener:
-            def __init__(self, tag):
-                self.tag = tag
-            def open(self, req, timeout=None):
-                calls.append(self.tag)
-                if len(calls) == 1:
-                    raise urllib.error.HTTPError(
-                        req.full_url, 429, "Too Many Requests", {}, None,
-                    )
-                return _FakeResp(b'{"ok":4}')
-
-        with patch.object(self.eg, "_channel_usable", return_value=True), \
-             patch.object(
-                 self.eg, "_opener",
-                 side_effect=lambda proxy: _Opener("direct" if not proxy else proxy),
-             ), patch.object(self.eg.time, "sleep") as sleep:
-            result = self.eg.post_json_idempotent(
-                "https://official", "https://heygen", "/vision", b"{}", {},
-                max_attempts=2, retry_delays=(2,),
-            )
-        self.assertEqual(result, {"ok": 4})
-        self.assertEqual(calls, ["http://p1", "http://p2"])
-        sleep.assert_called_once_with(2.0)
-
 
 class ChannelPreflightTests(unittest.TestCase):
     """代理不可达时，整档跳过且一个字节都不发——最安全的降级。"""
