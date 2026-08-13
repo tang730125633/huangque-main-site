@@ -215,6 +215,8 @@ def probe_media(path, runner=subprocess.run):
             command,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=PROBE_TIMEOUT_SECONDS,
         )
     except FileNotFoundError as error:
@@ -271,6 +273,8 @@ def inspect_ffprobe(runner=subprocess.run):
             [_ffprobe(), "-version"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
     except FileNotFoundError as error:
