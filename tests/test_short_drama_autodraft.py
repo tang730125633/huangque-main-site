@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -1672,6 +1673,85 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertEqual(0, replay)
         self.assertEqual("refunded", state)
         refunds.assert_called_once()
+
+    def test_workspace_keeps_active_paid_job_after_provider_switch(self):
+        job, _quote = self._running_provider_job("provider-switch-recovery")
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_DEMO_FALLBACK": "0",
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "grok",
+            "XAI_API_KEY": "configured-for-test",
+        }), mock.patch.object(provider_keys, "has_candidate", return_value=True):
+            result = short_drama_autodraft.workspace(
+                self.db, "alice", "alice", self.project["id"]
+            )
+        self.assertEqual(job["id"], result["provider_job"]["id"])
+        self.assertEqual("heygen_cinematic", result["provider_job"]["provider"])
+        self.assertEqual("grok", result["production"]["provider"]["selected"])
+
+    def test_workspace_returns_every_active_provider_shot_job(self):
+        first, _quote = self._running_provider_job("parallel-shot-one")
+        conn = self.db()
+        try:
+            now = int(time.time()) + 1
+            conn.execute(
+                "INSERT INTO short_drama_provider_shot_jobs "
+                "(id,project_id,owner_username,actor_username,plan_id,shot_key,"
+                "character_key,avatar_id,provider,status,progress,poll_count,"
+                "input_hash,request_json,cost,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,'queued',5,0,?,?,0,?,?)",
+                (
+                    "parallel-shot-two", self.project["id"], "alice", "alice",
+                    self.plan_id, "shot_02", "character_1", "avatar-1",
+                    "heygen_cinematic", "parallel-hash-two", "{}", now, now,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = short_drama_autodraft.workspace(
+            self.db, "alice", "alice", self.project["id"],
+        )
+
+        self.assertEqual(
+            {first["id"], "parallel-shot-two"},
+            {item["id"] for item in result["provider_jobs"]},
+        )
+
+    def test_workspace_restores_latest_terminal_job_for_each_shot(self):
+        first, _quote = self._running_provider_job("terminal-shot-one")
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs "
+                "SET status='failed',created_at=100,updated_at=100 WHERE id=?",
+                (first["id"],),
+            )
+            conn.execute(
+                "INSERT INTO short_drama_provider_shot_jobs "
+                "(id,project_id,owner_username,actor_username,plan_id,shot_key,"
+                "character_key,avatar_id,provider,status,progress,poll_count,"
+                "input_hash,request_json,error_json,cost,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,'failed',0,0,?,?,?,0,101,101)",
+                (
+                    "terminal-shot-two", self.project["id"], "alice", "alice",
+                    self.plan_id, "shot_02", "character_1", "avatar-1",
+                    "heygen_cinematic", "terminal-hash-two", "{}",
+                    json.dumps({"code": "provider_failed"}),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = short_drama_autodraft.workspace(
+            self.db, "alice", "alice", self.project["id"],
+        )
+
+        self.assertEqual(
+            {first["id"], "terminal-shot-two"},
+            {item["id"] for item in result["provider_jobs"]},
+        )
 
     def test_provider_failure_reason_and_refund_recover_on_workspace_refresh(self):
         class RejectedProvider:

@@ -3341,11 +3341,23 @@ def workspace(
         current = _advance(conn, row) if row else None
         conn.commit()
         all_versions = _versions(conn, project_id)
-        provider_job = _attach_provider_attempt_state(conn, _provider_job(conn.execute(
-            "SELECT * FROM short_drama_provider_shot_jobs WHERE project_id=? "
-            "ORDER BY created_at DESC LIMIT 1",
-            (project_id,),
-        ).fetchone()))
+        provider_jobs = [
+            _attach_provider_attempt_state(conn, _provider_job(provider_row))
+            for provider_row in conn.execute(
+                "SELECT j.* FROM short_drama_provider_shot_jobs j "
+                "WHERE j.project_id=? AND (j.status IN "
+                "('billing','queued','submitting','running','submit_unknown') "
+                "OR NOT EXISTS (SELECT 1 FROM short_drama_provider_shot_jobs newer "
+                "WHERE newer.project_id=j.project_id AND newer.shot_key=j.shot_key "
+                "AND (newer.created_at>j.created_at OR "
+                "(newer.created_at=j.created_at AND newer.id>j.id)))) "
+                "ORDER BY CASE WHEN j.status IN "
+                "('billing','queued','submitting','running','submit_unknown') "
+                "THEN 0 ELSE 1 END,j.created_at DESC,j.id DESC",
+                (project_id,),
+            ).fetchall()
+        ]
+        provider_job = provider_jobs[0] if provider_jobs else None
         provider_versions = [
             _provider_version(row) for row in conn.execute(
                 "SELECT v.*,j.request_json,CASE WHEN s.version_id=v.id THEN 1 ELSE 0 END selected "
@@ -3372,13 +3384,6 @@ def workspace(
         selected_provider = str(
             (capability.get("provider") or {}).get("selected") or ""
         )
-        if provider_job and provider_job.get("provider") != selected_provider:
-            provider_job = None
-        if selected_provider:
-            provider_versions = [
-                item for item in provider_versions
-                if item.get("provider") == selected_provider
-            ]
         assembly = (
             _provider_assembly_snapshot(
                 conn, project_id, plan["plan"], selected_provider
@@ -3440,6 +3445,7 @@ def workspace(
             },
             "production": capability,
             "provider_job": provider_job,
+            "provider_jobs": provider_jobs,
             "provider_versions": provider_versions,
             "provider_execution_overrides": provider_execution_overrides,
             "provider_poc": (

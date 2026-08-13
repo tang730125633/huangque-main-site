@@ -1420,6 +1420,70 @@ test('single shot workspace defaults to failed shot and renders only the selecte
   assert.match(selected,/data-action="step-workspace-shot" data-direction="1" disabled/);
 });
 
+test('Provider jobs remain indexed per shot across providers and terminal states', () => {
+  const state={
+    provider_job:{id:'legacy-latest',shot_key:'shot_03',status:'failed',provider:'minimax_h3'},
+    provider_jobs:[
+      {id:'job-running',shot_key:'shot_01',status:'running',progress:35,provider:'heygen_cinematic'},
+      {id:'job-terminal',shot_key:'shot_02',status:'failed',progress:10,provider:'grok'},
+      {id:'legacy-latest',shot_key:'shot_03',status:'failed',provider:'minimax_h3'}
+    ]
+  };
+
+  const index=workspace.shotMediaIndex(state);
+
+  assert.equal(index.shot_01.job.id,'job-running');
+  assert.equal(index.shot_02.job.id,'job-terminal');
+  assert.equal(index.shot_03.job.id,'legacy-latest');
+});
+
+test('Provider job collection counts and polls every active shot while keeping legacy compatibility', () => {
+  const jobs=workspace.activeProviderJobs({
+    provider_job:{id:'job-running',shot_key:'shot_01',status:'running'},
+    provider_jobs:[
+      {id:'job-running',shot_key:'shot_01',status:'running'},
+      {id:'job-billing',shot_key:'shot_02',status:'billing'},
+      {id:'job-done',shot_key:'shot_03',status:'succeeded'}
+    ]
+  });
+  const legacy=workspace.activeProviderJobs({
+    provider_job:{id:'legacy-only',shot_key:'shot_04',status:'queued'}
+  });
+
+  assert.deepEqual(jobs.map(item=>item.id),['job-running','job-billing']);
+  assert.deepEqual(legacy.map(item=>item.id),['legacy-only']);
+  assert.match(workspaceSource,/Promise\.all\(providerJobs\.map/);
+});
+
+test('Provider summary reports both active shot jobs after refresh', () => {
+  const output=workspace.autodraftActionsHtml({
+    confirmed_plan:{id:'plan-1'},
+    provider_poc:{shots:[{shot_key:'shot_01'},{shot_key:'shot_02'}],characters:[]},
+    provider_job:{id:'job-newer',shot_key:'shot_02',status:'queued',progress:5},
+    provider_jobs:[
+      {id:'job-older',shot_key:'shot_01',status:'running',progress:35,provider:'heygen_cinematic'},
+      {id:'job-newer',shot_key:'shot_02',status:'queued',progress:5,provider:'grok'}
+    ],
+    production:{ready:false,mode:'provider_poc',message:'ready',provider:{configured:true}}
+  },true);
+
+  assert.match(output,/<b>2<\/b>/);
+  assert.match(output,/shot_01/);
+  assert.match(output,/shot_02/);
+});
+
+test('starting another Provider shot keeps the existing task collection', () => {
+  const jobs=workspace.providerJobsWithResult({
+    provider_job:{id:'old-same-shot',shot_key:'shot_02',status:'failed'},
+    provider_jobs:[
+      {id:'job-other-shot',shot_key:'shot_01',status:'running'},
+      {id:'old-same-shot',shot_key:'shot_02',status:'failed'}
+    ]
+  },{id:'new-same-shot',shot_key:'shot_02',status:'queued'});
+
+  assert.deepEqual(jobs.map(item=>item.id),['new-same-shot','job-other-shot']);
+});
+
 test('Provider PoC directs missing character bindings to the left character cards', () => {
   const state = {
     confirmed_plan:{id:'plan-1'},
