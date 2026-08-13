@@ -5583,6 +5583,7 @@ _HTTP_ROUTES = {
         "/api/gen/short-drama/autodraft/provider-quote",
         "/api/gen/short-drama/autodraft/provider-version/select",
         "/api/gen/short-drama/autodraft/provider-jobs",
+        "/api/gen/short-drama/autodraft/provider-jobs/{job_id}/reconcile",
         "/api/gen/short-drama/autodraft/jobs",
         "/api/gen/short-drama/autodraft/jobs/{job_id}/retry",
         "/api/gen/short-drama/autodraft/jobs/{job_id}/cancel",
@@ -5938,7 +5939,11 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
         else:
             route_path = "/api/gen/short-drama/autodraft/jobs/{job_id}"
     elif path.startswith("/api/gen/short-drama/autodraft/provider-jobs/"):
-        route_path = "/api/gen/short-drama/autodraft/provider-jobs/{job_id}"
+        route_path = (
+            "/api/gen/short-drama/autodraft/provider-jobs/{job_id}/reconcile"
+            if path.endswith("/reconcile")
+            else "/api/gen/short-drama/autodraft/provider-jobs/{job_id}"
+        )
     elif path.startswith("/api/gen/short-drama/refinement/jobs/"):
         route_path = "/api/gen/short-drama/refinement/jobs/{job_id}"
     elif path.startswith("/api/gen/short-drama/delivery/jobs/"):
@@ -6291,6 +6296,12 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             elif path == "/api/gen/short-drama/autodraft/provider-version/select":
                 result = short_drama_autodraft.select_provider_version(
                     db_factory, owner, body,
+                )
+            elif path.endswith("/reconcile"):
+                result = short_drama_autodraft.reconcile_unknown_provider_submission(
+                    db_factory, owner, username, user.get("role"),
+                    path.split("/")[-2], body,
+                    refund_points=refund_points,
                 )
             elif path == "/api/gen/short-drama/autodraft/provider-jobs":
                 args = (

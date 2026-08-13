@@ -1917,28 +1917,81 @@ class ShortDramaRefinementTests(unittest.TestCase):
         )
         self.assertEqual(1, recovered)
         points_domain.refund_points.assert_called_once()
-        self.assertEqual(
-            "short-drama-delivery-refund:",
-            points_domain.refund_points.call_args.kwargs[
-                "transaction_key"
-            ][:28],
-        )
+
+    def test_delivery_refund_lease_blocks_concurrent_scanners(self):
+        now = int(time.time())
         conn = self.db()
         try:
-            recovered_state = conn.execute(
-                "SELECT state FROM short_drama_delivery_attempts "
-                "WHERE idempotency_key='delivery-refund-pending'"
-            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO short_drama_delivery_attempts "
+                "(id,actor_username,project_id,idempotency_key,request_hash,"
+                "quote_token,cost,state,created_at,updated_at) "
+                "VALUES('refund-race','alice',?,'refund-race','hash','quote',"
+                "25,'refund_pending',?,?)", (self.project["id"], now, now),
+            )
+            conn.commit()
         finally:
             conn.close()
-        self.assertEqual("refunded", recovered_state)
-        self.assertEqual(
-            0,
-            short_drama_refinement.retry_delivery_attempt_refunds(
-                self.db, points_domain
-            ),
+        started = threading.Event()
+        release = threading.Event()
+        points_domain = mock.Mock()
+        points_domain.refund_points.side_effect = lambda *_args, **_kwargs: (
+            started.set(), release.wait(5)
         )
+        attempt = {"id": "refund-race", "state": "refund_pending"}
+        first = threading.Thread(
+            target=short_drama_refinement.reconcile_delivery_refund,
+            args=(self.db, points_domain, attempt),
+        )
+        first.start()
+        self.assertTrue(started.wait(5))
+        second = short_drama_refinement.reconcile_delivery_refund(
+            self.db, points_domain, attempt,
+        )
+        release.set()
+        first.join(5)
+        self.assertEqual("refund_pending", second["state"])
         points_domain.refund_points.assert_called_once()
+
+    def test_delivery_refund_scanner_isolates_one_database_failure(self):
+        now = int(time.time())
+        conn = self.db()
+        try:
+            for attempt_id in ("refund-bad", "refund-good"):
+                conn.execute(
+                    "INSERT INTO short_drama_delivery_attempts "
+                    "(id,actor_username,project_id,idempotency_key,request_hash,"
+                    "quote_token,cost,state,created_at,updated_at) "
+                    "VALUES(?, 'alice', ?, ?, 'hash', 'quote', 25,"
+                    "'refund_pending',?,?)",
+                    (attempt_id, self.project["id"], attempt_id, now, now),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        original = short_drama_refinement.reconcile_delivery_refund
+        def flaky(db_factory, points_domain, attempt):
+            if attempt["id"] == "refund-bad":
+                raise sqlite3.OperationalError("temporary database failure")
+            return original(db_factory, points_domain, attempt)
+        points_domain = mock.Mock()
+        with mock.patch.object(
+            short_drama_refinement, "reconcile_delivery_refund", side_effect=flaky,
+        ):
+            recovered = short_drama_refinement.retry_delivery_attempt_refunds(
+                self.db, points_domain,
+            )
+        self.assertEqual(1, recovered)
+        conn = self.db()
+        try:
+            states = dict(conn.execute(
+                "SELECT id,state FROM short_drama_delivery_attempts "
+                "WHERE id IN ('refund-bad','refund-good')"
+            ).fetchall())
+        finally:
+            conn.close()
+        self.assertEqual("refund_pending", states["refund-bad"])
+        self.assertEqual("refunded", states["refund-good"])
 
     def test_formal_delivery_rechecks_project_budget_before_reserving_points(self):
         job = short_drama_refinement.start_refinement_job(

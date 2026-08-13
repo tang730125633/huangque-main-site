@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -1498,10 +1499,12 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertFalse(result["error"]["retryable"])
         self.assertTrue(result["error"]["requires_reconciliation"])
 
-    def test_single_shot_pending_deadline_fails_and_refunds_once(self):
+    def test_non_cancelable_shot_deadline_stays_reconcilable_without_refund(self):
         class PendingProvider:
             def __init__(self):
                 self.polls = 0
+
+            capability = type("Capability", (), {"supports_cancel": False})()
 
             def get_job(self, _provider_job_id):
                 self.polls += 1
@@ -1542,21 +1545,12 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                     refund_points=refund,
                 )
         self.assertEqual("running", running["status"])
-        self.assertEqual("failed", failed["status"])
-        self.assertEqual("provider_generation_timeout", failed["error"]["code"])
+        self.assertEqual("running", failed["status"])
+        self.assertEqual("provider_reconciliation_pending", failed["error"]["code"])
         self.assertEqual("deadline", failed["error"]["timeout_reason"])
-        self.assertEqual("failed", replay["status"])
-        self.assertEqual(1, provider.polls)
-        self.assertEqual(1, len(refunds))
-        self.assertEqual(quote["cost"], refunds[0][1])
-        late_provider = mock.Mock()
-        short_drama_autodraft._finish_provider_job(
-            self.db,
-            {"id": job["id"], "provider_job_id": "provider-timeout-job"},
-            late_provider,
-            {"status": "completed", "result_url": "https://late.example/video"},
-        )
-        late_provider.fetch_result.assert_not_called()
+        self.assertEqual("running", replay["status"])
+        self.assertGreaterEqual(provider.polls, 2)
+        self.assertEqual([], refunds)
         conn = self.db()
         try:
             state = conn.execute(
@@ -1565,12 +1559,14 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             ).fetchone()[0]
         finally:
             conn.close()
-        self.assertEqual("refunded", state)
+        self.assertEqual("linked", state)
 
-    def test_single_shot_poll_failures_hit_limit_and_refund(self):
+    def test_non_cancelable_shot_poll_failures_do_not_refund(self):
         class FailingProvider:
             def __init__(self):
                 self.polls = 0
+
+            capability = type("Capability", (), {"supports_cancel": False})()
 
             def get_job(self, _provider_job_id):
                 self.polls += 1
@@ -1603,13 +1599,13 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                 ),
             )
         self.assertEqual("running", running["status"])
-        self.assertEqual("failed", failed["status"])
+        self.assertEqual("running", failed["status"])
         self.assertEqual("poll_limit", failed["error"]["timeout_reason"])
         self.assertEqual(2, failed["error"]["poll_count"])
         self.assertEqual(2, provider.polls)
-        self.assertEqual([(quote["cost"],)], [(item[1],) for item in refunds])
+        self.assertEqual([], refunds)
 
-    def test_single_shot_timeout_refund_recovers_idempotently(self):
+    def test_non_cancelable_timeout_never_calls_refund_recovery(self):
         job, quote = self._running_provider_job("timeout-refund-recovery")
         calls = []
 
@@ -1636,20 +1632,9 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                 self.db, "alice", self.project["id"], job["id"],
                 refund_points=flaky_refund,
             )
-        self.assertEqual("failed", failed["status"])
-        self.assertEqual("failed", recovered["status"])
-        self.assertEqual(2, len(calls))
-        self.assertEqual(quote["cost"], calls[-1][1])
-        self.assertEqual(calls[0][3], calls[1][3])
-        conn = self.db()
-        try:
-            state = conn.execute(
-                "SELECT state FROM short_drama_provider_shot_attempts "
-                "WHERE job_id=?", (job["id"],),
-            ).fetchone()[0]
-        finally:
-            conn.close()
-        self.assertEqual("refunded", state)
+        self.assertEqual("running", failed["status"])
+        self.assertEqual("running", recovered["status"])
+        self.assertEqual([], calls)
 
     def test_background_sweeper_retries_refund_without_workspace_access(self):
         job, _quote = self._running_provider_job("background-refund-recovery")
@@ -1931,6 +1916,93 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         finally:
             conn.close()
         self.assertEqual("refunded", state)
+
+    def test_provider_finalization_lease_prevents_duplicate_download(self):
+        job, _quote = self._running_provider_job("finalization-lease")
+        started = threading.Event()
+        release = threading.Event()
+
+        class CompletedProvider:
+            def __init__(self):
+                self.fetches = 0
+
+            def fetch_result(self, _job_id, _result_url):
+                self.fetches += 1
+                started.set()
+                release.wait(5)
+                return {"file": "provider/final.mp4", "url": "/api/gen/file/provider/final.mp4"}
+
+        provider = CompletedProvider()
+        conn = self.db()
+        try:
+            conn.row_factory = sqlite3.Row
+            row = dict(conn.execute(
+                "SELECT * FROM short_drama_provider_shot_jobs WHERE id=?", (job["id"],)
+            ).fetchone())
+        finally:
+            conn.close()
+        with mock.patch.object(short_drama_autodraft, "_extract_tail_reference", return_value=None):
+            first = threading.Thread(target=short_drama_autodraft._finish_provider_job,
+                args=(self.db, row, provider, {"result_url": "https://example.test/final"}))
+            first.start()
+            self.assertTrue(started.wait(5))
+            short_drama_autodraft._finish_provider_job(
+                self.db, row, provider, {"result_url": "https://example.test/final"}
+            )
+            release.set()
+            first.join(5)
+        self.assertEqual(1, provider.fetches)
+
+    def test_admin_can_bind_submit_unknown_and_editor_cannot(self):
+        job, _quote = self._running_provider_job("submit-unknown-reconcile")
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs SET status='submit_unknown',"
+                "provider_job_id=NULL WHERE id=?", (job["id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        body = {
+            "project_id": self.project["id"], "action": "bind_provider_job",
+            "provider_job_id": "upstream-job-1",
+        }
+        with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+            short_drama_autodraft.reconcile_unknown_provider_submission(
+                self.db, "alice", "editor", "editor", job["id"], body,
+            )
+        self.assertEqual("provider_reconciliation_forbidden", raised.exception.code)
+        result = short_drama_autodraft.reconcile_unknown_provider_submission(
+            self.db, "alice", "admin", "admin", job["id"], body,
+        )
+        self.assertEqual("running", result["status"])
+        self.assertEqual("upstream-job-1", result["provider_job_id"])
+
+    def test_reconcile_route_dispatches_to_admin_recovery(self):
+        job, _quote = self._running_provider_job("submit-unknown-http")
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs SET status='submit_unknown',"
+                "provider_job_id=NULL WHERE id=?", (job["id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        handler = Handler(
+            "/api/gen/short-drama/autodraft/provider-jobs/%s/reconcile" % job["id"],
+            body={
+                "project_id": self.project["id"], "action": "bind_provider_job",
+                "provider_job_id": "upstream-http-1",
+            },
+        )
+        verify = lambda _token: {
+            "username": "alice", "role": "admin", "must_change": False,
+        }
+        self.assertTrue(short_drama.dispatch_http(handler, "POST", self.db, verify))
+        self.assertEqual(200, handler.response[0])
+        self.assertEqual("running", handler.response[1]["status"])
 
 
 class ShortDramaContinuityChainTests(unittest.TestCase):

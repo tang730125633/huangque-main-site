@@ -169,6 +169,8 @@ CREATE TABLE IF NOT EXISTS short_drama_provider_shot_jobs (
   avatar_id TEXT NOT NULL,
   provider TEXT NOT NULL,
   provider_job_id TEXT,
+  finalizing_token TEXT,
+  finalizing_at INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL CHECK(status IN
     ('billing','queued','submitting','running','succeeded','failed',
      'canceled','submit_unknown')),
@@ -250,6 +252,21 @@ def init_db(db_factory):
             "ON short_drama_provider_shot_attempts"
             "(state,refund_retry_at,updated_at)"
         )
+        job_columns = {
+            row[1] for row in conn.execute(
+                "PRAGMA table_info(short_drama_provider_shot_jobs)"
+            ).fetchall()
+        }
+        if "finalizing_token" not in job_columns:
+            conn.execute(
+                "ALTER TABLE short_drama_provider_shot_jobs "
+                "ADD COLUMN finalizing_token TEXT"
+            )
+        if "finalizing_at" not in job_columns:
+            conn.execute(
+                "ALTER TABLE short_drama_provider_shot_jobs "
+                "ADD COLUMN finalizing_at INTEGER NOT NULL DEFAULT 0"
+            )
         conn.commit()
     finally:
         conn.close()
@@ -2166,7 +2183,32 @@ def start_provider_job(
                     except Exception:
                         pass
                 if not _charge_ledger_matches(actor_username, cost, ledger):
-                    raise
+                    observed_at = int(time.time())
+                    conn = _connection(db_factory)
+                    try:
+                        conn.execute(
+                            "UPDATE short_drama_provider_shot_jobs "
+                            "SET error_json=?,updated_at=? "
+                            "WHERE id=? AND status='billing'",
+                            (
+                                _json_text({
+                                    "code": "billing_reconciliation_pending",
+                                    "detail": "扣点响应不确定，等待权威流水二次确认",
+                                    "retryable": True,
+                                }),
+                                observed_at,
+                                job_id,
+                            ),
+                        )
+                        conn.commit()
+                        result = _provider_job(conn.execute(
+                            "SELECT * FROM short_drama_provider_shot_jobs "
+                            "WHERE id=?", (job_id,),
+                        ).fetchone())
+                    finally:
+                        conn.close()
+                    result["replayed"] = False
+                    return result
             charged = True
         conn = _connection(db_factory)
         try:
@@ -2196,6 +2238,143 @@ def start_provider_job(
             refund_points=refund_points,
         )
         raise
+
+
+def reconcile_unknown_provider_submission(
+    db_factory, owner_username, actor_username, actor_role, job_id, body,
+    refund_points=None,
+):
+    """Resolve a submission whose upstream response was lost.
+
+    Both actions are admin-only because a raw provider job id cannot prove
+    ownership, and an incorrect absence claim could refund a still-running job.
+    """
+    project_id = str(body.get("project_id") or "").strip()
+    action = str(body.get("action") or "").strip()
+    if str(actor_role or "").lower() != "admin":
+        raise AutodraftError(
+            "provider_reconciliation_forbidden",
+            "仅可信管理员可处理无法由 Provider 证明归属的任务",
+            403,
+        )
+    if action == "confirm_not_submitted":
+        conn = _connection(db_factory)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            _project(conn, owner_username, project_id)
+            row = conn.execute(
+                "SELECT * FROM short_drama_provider_shot_jobs "
+                "WHERE id=? AND project_id=?", (job_id, project_id),
+            ).fetchone()
+            if not row:
+                raise LookupError("single-shot provider job does not exist")
+            attempt = _provider_attempt_for_job(conn, job_id)
+            if not attempt:
+                raise AutodraftError(
+                    "provider_reconciliation_evidence_invalid",
+                    "Provider 对账尝试不存在", 409,
+                )
+            if row["status"] == "submit_unknown":
+                now = int(time.time())
+                payload = _json_text({
+                    "code": "provider_submission_confirmed_absent",
+                    "detail": "已由可信管理员确认上游未创建任务，开始安全退款",
+                })
+                changed = conn.execute(
+                    "UPDATE short_drama_provider_shot_jobs SET status='failed',"
+                    "error_json=?,updated_at=? WHERE id=? AND status='submit_unknown'",
+                    (payload, now, job_id),
+                ).rowcount
+                if changed != 1:
+                    raise AutodraftError(
+                        "provider_reconciliation_conflict",
+                        "任务已被另一项对账操作处理", 409,
+                    )
+                conn.execute(
+                    "UPDATE short_drama_provider_shot_attempts SET state=?,"
+                    "error_json=?,updated_at=? WHERE id=? "
+                    "AND state NOT IN ('done','refunded')",
+                    (
+                        "refund_pending" if int(attempt["cost"] or 0) > 0 else "failed",
+                        payload, now, attempt["id"],
+                    ),
+                )
+            elif not (
+                row["status"] == "failed"
+                and attempt["state"] in {"refund_pending", "refunded", "failed"}
+            ):
+                raise AutodraftError(
+                    "provider_reconciliation_not_allowed",
+                    "该任务当前不允许确认未提交", 409,
+                )
+            conn.commit()
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        finally:
+            conn.close()
+        _recover_provider_refund(db_factory, job_id, refund_points=refund_points)
+        conn = _connection(db_factory)
+        try:
+            return _provider_job(conn.execute(
+                "SELECT * FROM short_drama_provider_shot_jobs WHERE id=?",
+                (job_id,),
+            ).fetchone())
+        finally:
+            conn.close()
+    if action != "bind_provider_job":
+        raise AutodraftError(
+            "provider_reconciliation_action_invalid",
+            "未知的 Provider 提交对账动作", 422,
+        )
+    provider_job_id = str(body.get("provider_job_id") or "").strip()
+    if not provider_job_id or len(provider_job_id) > 200:
+        raise AutodraftError("provider_job_id_invalid", "上游 Provider 任务 ID 无效", 422)
+    conn = _connection(db_factory)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _project(conn, owner_username, project_id)
+        row = conn.execute(
+            "SELECT * FROM short_drama_provider_shot_jobs "
+            "WHERE id=? AND project_id=?", (job_id, project_id),
+        ).fetchone()
+        if not row:
+            raise LookupError("single-shot provider job does not exist")
+        if not _provider_attempt_for_job(conn, job_id):
+            raise AutodraftError(
+                "provider_reconciliation_not_allowed",
+                "Provider 对账尝试不存在", 409,
+            )
+        existing_provider_job_id = str(row["provider_job_id"] or "").strip()
+        if row["status"] == "running" and existing_provider_job_id == provider_job_id:
+            conn.commit()
+            return _provider_job(row)
+        if row["status"] != "submit_unknown":
+            raise AutodraftError(
+                "provider_reconciliation_not_allowed",
+                "该任务当前不需要提交对账", 409,
+            )
+        if existing_provider_job_id and existing_provider_job_id != provider_job_id:
+            raise AutodraftError(
+                "provider_job_id_conflict", "任务已绑定另一上游 Provider 任务 ID", 409,
+            )
+        conn.execute(
+            "UPDATE short_drama_provider_shot_jobs SET status='running',"
+            "provider_job_id=?,progress=MAX(progress,20),error_json=NULL,updated_at=? "
+            "WHERE id=? AND status='submit_unknown'",
+            (provider_job_id, int(time.time()), job_id),
+        )
+        conn.commit()
+        return _provider_job(conn.execute(
+            "SELECT * FROM short_drama_provider_shot_jobs WHERE id=?", (job_id,),
+        ).fetchone())
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _provider_attempt_for_job(conn, job_id):
@@ -2360,6 +2539,64 @@ def _provider_job_timeout_reason(row, now=None, next_poll=False):
 def _expire_provider_job(db_factory, job_id, reason, refund_points=None):
     """Claim a running job's timeout before issuing its idempotent refund."""
     now = int(time.time())
+    inspect_conn = _connection(db_factory)
+    try:
+        inspected = inspect_conn.execute(
+            "SELECT * FROM short_drama_provider_shot_jobs WHERE id=?",
+            (job_id,),
+        ).fetchone()
+    finally:
+        inspect_conn.close()
+    provider = load_by_name(inspected["provider"]) if inspected else None
+    supports_cancel = bool(
+        provider
+        and getattr(getattr(provider, "capability", None), "supports_cancel", False)
+    )
+    if inspected and inspected["status"] == "running" and inspected["provider_job_id"]:
+        if not supports_cancel:
+            payload = {
+                "code": "provider_reconciliation_pending",
+                "detail": "Provider 任务仍可能在上游计费执行，已保留任务等待继续对账",
+                "retryable": True,
+                "requires_reconciliation": True,
+                "timeout_reason": reason["reason"],
+                "elapsed_seconds": int(reason["elapsed_seconds"]),
+                "poll_count": int(reason["poll_count"]),
+            }
+            conn = _connection(db_factory)
+            try:
+                conn.execute(
+                    "UPDATE short_drama_provider_shot_jobs SET error_json=?,"
+                    "updated_at=? WHERE id=? AND status='running'",
+                    (_json_text(payload), now, job_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            return False
+        try:
+            provider.cancel_job(inspected["provider_job_id"])
+        except Exception as error:
+            payload = {
+                "code": "provider_cancel_unconfirmed",
+                "detail": str(error)[:500],
+                "retryable": True,
+                "requires_reconciliation": True,
+                "timeout_reason": reason["reason"],
+                "elapsed_seconds": int(reason["elapsed_seconds"]),
+                "poll_count": int(reason["poll_count"]),
+            }
+            conn = _connection(db_factory)
+            try:
+                conn.execute(
+                    "UPDATE short_drama_provider_shot_jobs SET error_json=?,"
+                    "updated_at=? WHERE id=? AND status='running'",
+                    (_json_text(payload), now, job_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            return False
     payload = {
         "code": "provider_generation_timeout",
         "detail": "Provider 生成超过最长等待时间，任务已失败并退点",
@@ -2415,33 +2652,45 @@ def _expire_provider_job(db_factory, job_id, reason, refund_points=None):
 
 
 def _finish_provider_job(db_factory, row, provider, provider_state):
+    token = uuid.uuid4().hex
+    claimed_at = int(time.time())
     inspect_conn = _connection(db_factory)
     try:
-        current_status = inspect_conn.execute(
-            "SELECT status FROM short_drama_provider_shot_jobs WHERE id=?",
-            (row["id"],),
-        ).fetchone()
+        inspect_conn.execute("BEGIN IMMEDIATE")
+        claimed = inspect_conn.execute(
+            "UPDATE short_drama_provider_shot_jobs "
+            "SET finalizing_token=?,finalizing_at=?,updated_at=? "
+            "WHERE id=? AND status='running' AND (finalizing_token IS NULL "
+            "OR finalizing_at<?)",
+            (token, claimed_at, claimed_at, row["id"], claimed_at - 600),
+        ).rowcount
+        inspect_conn.commit()
     finally:
         inspect_conn.close()
-    if not current_status or current_status["status"] != "running":
+    if claimed != 1:
         return
-    result = provider.fetch_result(
-        row["provider_job_id"], provider_state.get("result_url")
-    )
-    tail_reference = _extract_tail_reference(result.get("file"))
-    if tail_reference:
-        result["continuity_tail_file"] = tail_reference["file"]
-        result["continuity_tail_url"] = tail_reference["url"]
-    now = int(time.time())
-    conn = _connection(db_factory)
+    result = None
     try:
+        result = provider.fetch_result(
+            row["provider_job_id"], provider_state.get("result_url")
+        )
+        tail_reference = _extract_tail_reference(result.get("file"))
+        if tail_reference:
+            result["continuity_tail_file"] = tail_reference["file"]
+            result["continuity_tail_url"] = tail_reference["url"]
+        now = int(time.time())
+        conn = _connection(db_factory)
         conn.execute("BEGIN IMMEDIATE")
         current = conn.execute(
             "SELECT * FROM short_drama_provider_shot_jobs WHERE id=?",
             (row["id"],),
         ).fetchone()
-        if not current or current["status"] != "running":
+        if (
+            not current or current["status"] != "running"
+            or current["finalizing_token"] != token
+        ):
             conn.commit()
+            _discard_provider_result(result)
             return
         version = int(conn.execute(
             "SELECT COALESCE(MAX(version),0)+1 "
@@ -2464,9 +2713,10 @@ def _finish_provider_job(db_factory, row, provider, provider_state):
         final_result = dict(result, version_id=version_id, version=version)
         conn.execute(
             "UPDATE short_drama_provider_shot_jobs SET status='succeeded',"
-            "progress=100,result_json=?,error_json=NULL,updated_at=? "
-            "WHERE id=? AND status='running'",
-            (_json_text(final_result), now, row["id"]),
+            "progress=100,result_json=?,error_json=NULL,finalizing_token=NULL,"
+            "finalizing_at=0,updated_at=? WHERE id=? AND status='running' "
+            "AND finalizing_token=?",
+            (_json_text(final_result), now, row["id"], token),
         )
         conn.execute(
             "UPDATE short_drama_provider_shot_attempts SET state='done',"
@@ -2475,10 +2725,23 @@ def _finish_provider_job(db_factory, row, provider, provider_state):
         )
         conn.commit()
     except Exception:
-        conn.rollback()
+        if "conn" in locals() and conn.in_transaction:
+            conn.rollback()
+        _discard_provider_result(result)
+        release = _connection(db_factory)
+        try:
+            release.execute(
+                "UPDATE short_drama_provider_shot_jobs SET finalizing_token=NULL,"
+                "finalizing_at=0 WHERE id=? AND status='running' "
+                "AND finalizing_token=?", (row["id"], token),
+            )
+            release.commit()
+        finally:
+            release.close()
         raise
     finally:
-        conn.close()
+        if "conn" in locals():
+            conn.close()
 
 
 def reconcile_provider_job(
@@ -2669,11 +2932,13 @@ def reconcile_provider_job(
     if row and row["status"] == "running":
         timeout_reason = _provider_job_timeout_reason(row)
         if timeout_reason:
-            _expire_provider_job(
+            expired = _expire_provider_job(
                 db_factory, job_id, timeout_reason,
                 refund_points=refund_points,
             )
-        else:
+            if expired:
+                row = None
+        if row is not None:
             provider = load_by_name(row["provider"])
             if provider is None:
                 return _provider_job(row)

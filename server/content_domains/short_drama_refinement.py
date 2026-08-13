@@ -37,6 +37,7 @@ ACCEPTANCE_CHECKS = (
 )
 _REASSEMBLY_ENDPOINT = "/api/gen/short-drama/refinement/reassemble"
 _REASSEMBLY_LEASE_SECONDS = 30
+_DELIVERY_REFUND_LEASE_SECONDS = 60
 _MEDIA_PREFERENCE_MIGRATION = "refinement_media_preferences_provider_audio_v1"
 
 
@@ -109,6 +110,8 @@ CREATE TABLE IF NOT EXISTS short_drama_delivery_attempts (
     ('accepted','charged','linked','refund_pending','refunded','failed')),
   job_id TEXT,
   error TEXT,
+  refund_token TEXT,
+  refund_lease_at INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   UNIQUE(actor_username, idempotency_key)
@@ -199,6 +202,20 @@ def init_db(db_factory):
     conn = _connection(db_factory)
     try:
         conn.executescript(_SCHEMA)
+        attempt_columns = {
+            row[1] for row in conn.execute(
+                "PRAGMA table_info(short_drama_delivery_attempts)"
+            ).fetchall()
+        }
+        if "refund_token" not in attempt_columns:
+            conn.execute(
+                "ALTER TABLE short_drama_delivery_attempts ADD COLUMN refund_token TEXT"
+            )
+        if "refund_lease_at" not in attempt_columns:
+            conn.execute(
+                "ALTER TABLE short_drama_delivery_attempts "
+                "ADD COLUMN refund_lease_at INTEGER NOT NULL DEFAULT 0"
+            )
         conn.execute(
             "CREATE TABLE IF NOT EXISTS short_drama_schema_migrations ("
             "name TEXT PRIMARY KEY,completed_at INTEGER NOT NULL)"
@@ -2832,16 +2849,7 @@ def start_delivery_job(
     except Exception as error:
         if job_conn is not None and job_conn.in_transaction:
             job_conn.rollback()
-        state = "failed"
-        if charged and callable(refund_points):
-            try:
-                refund_points(
-                    actor_username, cost, "短剧正式导出建单失败补偿",
-                    "short-drama-delivery-refund:" + attempt_id,
-                )
-                state = "refunded"
-            except Exception:
-                state = "refund_pending"
+        state = "refund_pending" if charged and cost else "failed"
         recovery = _connection(db_factory)
         try:
             recovery.execute(
@@ -2852,6 +2860,14 @@ def start_delivery_job(
             recovery.commit()
         finally:
             recovery.close()
+        if state == "refund_pending" and callable(refund_points):
+            try:
+                reconcile_delivery_refund(
+                    db_factory, refund_points, {"id": attempt_id, "state": state},
+                    direct_refund=True,
+                )
+            except Exception:
+                pass
         raise
     finally:
         if job_conn is not None:
@@ -2875,44 +2891,82 @@ def get_delivery_job(db_factory, owner_username, project_id, job_id):
         conn.close()
 
 
-def reconcile_delivery_refund(db_factory, points_domain, attempt):
-    """Retry one persisted delivery refund with an idempotent ledger key."""
+def reconcile_delivery_refund(
+    db_factory, points_domain, attempt, direct_refund=False,
+):
+    """Claim and retry one durable delivery refund intent."""
     if not attempt or attempt.get("state") not in {"refund_pending", "refunded"}:
         return attempt
-    if attempt["state"] == "refund_pending":
-        refund = getattr(points_domain, "refund_points", None)
-        if not callable(refund):
-            return attempt
-        try:
-            refund(
-                attempt["actor_username"],
-                int(attempt["cost"] or 0),
-                "short-drama formal delivery compensation",
-                transaction_key="short-drama-delivery-refund:" + attempt["id"],
-            )
-        except Exception:
-            return attempt
+    refund = (
+        points_domain if direct_refund
+        else getattr(points_domain, "refund_points", None)
+    )
+    uses_points_service = not direct_refund and callable(refund)
+    if not callable(refund):
+        return attempt
+    now = int(time.time())
+    token = uuid.uuid4().hex
+    conn = _connection(db_factory)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        claimed = conn.execute(
+            "UPDATE short_drama_delivery_attempts SET refund_token=?,"
+            "refund_lease_at=?,updated_at=? WHERE id=? AND state='refund_pending' "
+            "AND job_id IS NULL AND (refund_token IS NULL OR refund_lease_at<?)",
+            (token, now, now, attempt["id"], now - _DELIVERY_REFUND_LEASE_SECONDS),
+        ).rowcount
+        current = conn.execute(
+            "SELECT * FROM short_drama_delivery_attempts WHERE id=?", (attempt["id"],),
+        ).fetchone()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    if claimed != 1:
+        return dict(current) if current else attempt
+    try:
+        args = (
+            current["actor_username"], int(current["cost"] or 0),
+            "short-drama formal delivery compensation",
+        )
+        refund_key = "short-drama-delivery-refund:" + current["id"]
+        if uses_points_service:
+            refund(*args, transaction_key=refund_key)
+        else:
+            refund(*args, refund_key)
+    except Exception:
         conn = _connection(db_factory)
         try:
-            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
-                "UPDATE short_drama_delivery_attempts "
-                "SET state='refunded',updated_at=? "
-                "WHERE id=? AND state IN ('refund_pending','refunded') "
-                "AND job_id IS NULL",
-                (int(time.time()), attempt["id"]),
+                "UPDATE short_drama_delivery_attempts SET refund_token=NULL,"
+                "refund_lease_at=0,updated_at=? WHERE id=? AND state='refund_pending' "
+                "AND refund_token=?", (int(time.time()), current["id"], token),
             )
             conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
         finally:
             conn.close()
+        return dict(current)
+    conn = _connection(db_factory)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "UPDATE short_drama_delivery_attempts SET state='refunded',"
+            "refund_token=NULL,refund_lease_at=0,updated_at=? "
+            "WHERE id=? AND state='refund_pending' AND job_id IS NULL "
+            "AND refund_token=?", (int(time.time()), current["id"], token),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
     conn = _connection(db_factory)
     try:
         row = conn.execute(
-            "SELECT * FROM short_drama_delivery_attempts WHERE id=?",
-            (attempt["id"],),
+            "SELECT * FROM short_drama_delivery_attempts WHERE id=?", (attempt["id"],),
         ).fetchone()
         return dict(row) if row else attempt
     finally:
@@ -2934,8 +2988,11 @@ def retry_delivery_attempt_refunds(db_factory, points_domain, limit=100):
         ]
     finally:
         conn.close()
-    return sum(
-        reconcile_delivery_refund(db_factory, points_domain, attempt)["state"]
-        == "refunded"
-        for attempt in attempts
-    )
+    recovered = 0
+    for attempt in attempts:
+        try:
+            result = reconcile_delivery_refund(db_factory, points_domain, attempt)
+            recovered += result.get("state") == "refunded"
+        except Exception:
+            continue
+    return recovered
