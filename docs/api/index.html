@@ -21,7 +21,8 @@
 <body>
 <div id="hq-head">
   <div style="font-size:17px;font-weight:600">🐦 黄雀 AI · 后端 API <b>Swagger UI</b></div>
-  <small>登录拿 token → 右上 Authorize 填 token → 各接口点 “Try it out” 在线测。｜ 导出给 Apifox：openapi.json / openapi-tikhub.json</small>
+  <small>网页登录可直接使用同域 Cookie；API 客户端点右上 Authorize 填 Bearer。执行后看 <b>Request duration</b>。</small><br>
+  <small><b>测速安全：</b>优先筛选 safe-read；生成、写入、删除、转点、充值和支付接口可能产生费用或真实数据，未获专项授权不要执行。｜ Apifox：openapi.json / openapi-tikhub.json</small>
   <div>
     <button class="hqbtn on" id="btnHQ" onclick="loadSpec('openapi.json',this)">黄雀后端 API（我们的接口）</button>
     <button class="hqbtn" id="btnTH" onclick="loadSpec('openapi-tikhub.json',this)">TikHub（我们在用的外部接口）</button>
@@ -39,6 +40,8 @@
       deepLinking: true,
       persistAuthorization: true,
       tryItOutEnabled: true,
+      displayRequestDuration: true,
+      filter: true,
       docExpansion: 'list'
     });
   }
