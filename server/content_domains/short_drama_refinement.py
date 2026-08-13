@@ -2585,6 +2585,7 @@ def create_delivery_quote(db_factory, owner_username, body):
     capability = _require_delivery_available()
     conn = _connection(db_factory)
     try:
+        conn.execute("BEGIN IMMEDIATE")
         project = _project(conn, owner_username, project_id)
         source = _refinement(conn.execute(
             "SELECT * FROM short_drama_refinement_versions WHERE id=? "
@@ -2637,9 +2638,9 @@ def create_delivery_quote(db_factory, owner_username, body):
             "mode": capability["mode"],
             "deliverable": capability["deliverable"],
         }
-    except RefinementError:
+    except Exception:
         if conn.in_transaction:
-            conn.commit()
+            conn.rollback()
         raise
     finally:
         conn.close()

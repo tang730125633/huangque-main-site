@@ -13,6 +13,9 @@
 - `short_drama_refinement_versions` 增加 `preview_file_hash` 与 `media_json`。
 - 新增 `short_drama_refinement_media_preferences`，支持 `voice_timeline`、`provider_audio` 与 `silent`；旧偏好表会在单一 SQLite 事务中兼容迁移。
 - 新增 `short_drama_reassembly_operations`，以 `UNIQUE(project_id, source_version_id)` 保证同一精修来源只有一个重新装配操作，并记录跨 Worker 租约、心跳、渲染和结果版本。
+- `short_drama_delivery_attempts` 增加 `refund_token` 与 `refund_lease_at`，用于正式交付退款的跨 Worker CAS 租约；旧应用可忽略这两个字段。
+- `short_drama_provider_shot_attempts` 增加 `refund_retry_count`、`refund_retry_at`，并新增 `idx_short_drama_provider_refunds_due(state, refund_retry_at, updated_at)`，用于进程重启后的全局退款扫描与退避重试。
+- `short_drama_provider_shot_jobs` 增加 `finalizing_token` 与 `finalizing_at`，用于 Provider 成片下载和归档的跨 Worker finalization 租约，防止重复下载和孤儿文件。
 
 以上均为向后兼容的增量结构。旧应用可忽略新增列和表；应用回退时保留增量 Schema，不在线执行破坏性逆向 DDL。
 
@@ -40,11 +43,13 @@
 1. 先在空数据库运行 `short_drama.init_db` 与 `short_drama_refinement.init_db`，核对新增列、表、外键、CHECK 和唯一约束。
 2. 在包含既有数据的数据库副本运行升级，确认原业务记录与计数不变。
 3. 连续运行两次初始化，确认第二次不报错、不重复建表、不改写数据。
-4. 部署已审核提交并执行初始化，再以 `PRAGMA table_info`、`PRAGMA foreign_key_list` 和 `sqlite_master` 核对结构。
+4. 部署已审核提交并执行初始化，再以 `PRAGMA table_info`、`PRAGMA foreign_key_list` 和 `sqlite_master` 核对结构；必须显式核对 delivery refund 租约列、Provider refund retry 列与 due 索引、Provider finalization 租约列均存在且默认值正确。
 5. 对比迁移前后业务计数；重新装配表在首次启用前应为空。
 6. 再次执行完整性与外键检查。
 7. 验证 active/pending 角色参考图切换、三种媒体偏好、精修验收、完整时长预览和免费重新装配；重复请求必须复用 operation，不调用视频 Provider、不重复扣点。
-8. 全部通过后才恢复写入，并记录恢复时间、验证人和最终计数。
+8. 验证正式交付退款先持久化 `refund_pending`，并发 scanner 仅一个取得退款租约，异常项不阻断同批后续项；验证 Provider 退款在重启后按 `refund_retry_at` 恢复且固定退款键不重复退点。
+9. 验证两个 Worker 同时归档同一 Provider 成片时只有一个取得 `finalizing_token`，失败会清理临时结果并释放租约，过期租约可以接管。
+10. 全部通过后才恢复写入，并记录恢复时间、验证人和最终计数。
 
 自动化回归至少包括：
 
@@ -59,7 +64,7 @@ python scripts/stamp_assets.py --check
 
 ## 回滚和数据丢失边界
 
-失败时保持全部写入暂停，保存现场数据库、WAL/SHM、应用日志和失败步骤。优先回退到迁移前稳定应用提交并保留向后兼容的增量 Schema。
+失败时保持全部写入暂停，保存现场数据库、WAL/SHM、应用日志和失败步骤。优先回退到迁移前稳定应用提交并保留向后兼容的增量 Schema。旧应用不得写入或解释新增退款/finalization 列；回退前必须确认没有 `refund_pending`、未过期退款租约、未完成 finalization 租约或仍在运行的 Provider 付费任务，必要时由恢复负责人先完成对账。
 
 仅在数据库损坏、完整性或外键检查失败、业务计数不一致，或稳定应用无法读取时，才由恢复负责人使用已校验的一致性备份整体恢复。恢复后重新执行完整性、外键和业务计数检查，全部通过才恢复流量。
 

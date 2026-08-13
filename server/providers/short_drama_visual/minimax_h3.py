@@ -119,9 +119,18 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
                 "visual_reference_invalid",
                 "角色标准图不是有效的 JPG、PNG 或 WebP 图片",
             )
-        return "data:%s;base64,%s" % (
+        value = "data:%s;base64,%s" % (
             mime, base64.b64encode(raw).decode("ascii")
         )
+        try:
+            from content_domains.video_minimax_h3 import _image_item
+
+            return _image_item(value)["image_url"]["url"]
+        except ValueError as error:
+            raise VisualProviderError(
+                "visual_reference_invalid",
+                "角色标准图损坏、格式不符或尺寸不在 256～5760 像素范围内",
+            ) from error
 
     def validate_request(self, request):
         if not isinstance(request, dict):

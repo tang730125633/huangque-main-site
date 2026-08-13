@@ -1435,6 +1435,41 @@ class ShortDramaRefinementTests(unittest.TestCase):
                     self.db, "alice", "alice", body,
                 )
         self.assertEqual("refinement_reassembly_required", raised.exception.code)
+        conn = self.db()
+        try:
+            self.assertEqual(0, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_refinement_acceptances "
+                "WHERE refinement_version_id=?", (version["id"],),
+            ).fetchone()[0])
+            self.assertEqual("draft", conn.execute(
+                "SELECT status FROM short_drama_refinement_versions WHERE id=?",
+                (version["id"],),
+            ).fetchone()[0])
+        finally:
+            conn.close()
+
+    def test_unavailable_assembly_blocks_confirmation_without_side_effects(self):
+        version = self.repaired_version("unavailable-assembly-confirmation")
+        with mock.patch.object(
+            short_drama_refinement, "_refinement_assembly_status",
+            return_value={"available": False, "reassembly_required": False},
+        ), self.assertRaises(short_drama_refinement.RefinementError) as raised:
+            short_drama_refinement.confirm_refinement(
+                self.db, "alice", "alice", self.acceptance_body(version),
+            )
+        self.assertEqual("refinement_assembly_unavailable", raised.exception.code)
+        conn = self.db()
+        try:
+            self.assertEqual(0, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_refinement_acceptances "
+                "WHERE refinement_version_id=?", (version["id"],),
+            ).fetchone()[0])
+            self.assertEqual("draft", conn.execute(
+                "SELECT status FROM short_drama_refinement_versions WHERE id=?",
+                (version["id"],),
+            ).fetchone()[0])
+        finally:
+            conn.close()
 
     def test_incomplete_assembly_blocks_quote_without_creating_one(self):
         version = self.repaired_version("incomplete-assembly-quote")
@@ -1459,6 +1494,75 @@ class ShortDramaRefinementTests(unittest.TestCase):
             ).fetchone()[0])
         finally:
             conn.close()
+
+    def test_reassembly_required_blocks_quote_without_creating_one(self):
+        version = self.repaired_version("reassembly-required-quote")
+        self.confirm_version(version)
+        with mock.patch.object(
+            short_drama_refinement, "_refinement_assembly_status",
+            return_value={"available": True, "reassembly_required": True},
+        ), self.assertRaises(short_drama_refinement.RefinementError) as raised:
+            short_drama_refinement.create_delivery_quote(
+                self.db, "alice", {
+                    "project_id": self.project["id"], "version_id": version["id"],
+                },
+            )
+        self.assertEqual("refinement_reassembly_required", raised.exception.code)
+        conn = self.db()
+        try:
+            self.assertEqual(0, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_delivery_quotes"
+            ).fetchone()[0])
+        finally:
+            conn.close()
+
+    def test_delivery_quote_serializes_with_acceptance_invalidation(self):
+        version = self.repaired_version("quote-acceptance-race")
+        self.confirm_version(version)
+        writer_started = threading.Event()
+        writer_done = threading.Event()
+        writer_errors = []
+
+        def invalidate_acceptance():
+            conn = self.db()
+            try:
+                writer_started.set()
+                conn.execute(
+                    "UPDATE short_drama_refinement_acceptances "
+                    "SET invalidated_at=?,invalidation_reason='concurrent change' "
+                    "WHERE refinement_version_id=?",
+                    (int(time.time()), version["id"]),
+                )
+                conn.commit()
+            except Exception as error:
+                writer_errors.append(error)
+            finally:
+                conn.close()
+                writer_done.set()
+
+        original = short_drama_refinement._refinement_assembly_status
+        worker = None
+        def status_during_race(conn, project, source):
+            nonlocal worker
+            worker = threading.Thread(target=invalidate_acceptance)
+            worker.start()
+            self.assertTrue(writer_started.wait(2))
+            self.assertFalse(writer_done.wait(0.2))
+            return original(conn, project, source)
+
+        with mock.patch.object(
+            short_drama_refinement, "_refinement_assembly_status",
+            side_effect=status_during_race,
+        ):
+            quote = short_drama_refinement.create_delivery_quote(
+                self.db, "alice", {
+                    "project_id": self.project["id"], "version_id": version["id"],
+                },
+            )
+        worker.join(5)
+        self.assertTrue(writer_done.is_set())
+        self.assertEqual([], writer_errors)
+        self.assertTrue(quote["quote_token"])
 
     def test_incomplete_assembly_blocks_start_before_charge_or_job(self):
         version = self.repaired_version("incomplete-assembly-start")
@@ -1489,6 +1593,43 @@ class ShortDramaRefinementTests(unittest.TestCase):
                     project_usage=short_drama._project_point_usage,
                 )
         self.assertEqual("refinement_reassembly_required", raised.exception.code)
+        deduct.assert_not_called()
+        conn = self.db()
+        try:
+            self.assertEqual(0, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_delivery_attempts"
+            ).fetchone()[0])
+            self.assertEqual(0, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_delivery_jobs"
+            ).fetchone()[0])
+        finally:
+            conn.close()
+
+    def test_unavailable_assembly_blocks_start_before_charge_or_job(self):
+        version = self.repaired_version("unavailable-assembly-start")
+        self.confirm_version(version)
+        with mock.patch.object(
+            short_drama_refinement, "_refinement_assembly_status",
+            return_value={"available": True, "reassembly_required": False},
+        ):
+            quote = short_drama_refinement.create_delivery_quote(
+                self.db, "alice", {
+                    "project_id": self.project["id"], "version_id": version["id"],
+                },
+            )
+        deduct = mock.Mock()
+        with mock.patch.object(
+            short_drama_refinement, "_refinement_assembly_status",
+            return_value={"available": False, "reassembly_required": False},
+        ), self.assertRaises(short_drama_refinement.RefinementError) as raised:
+            short_drama_refinement.start_delivery_job(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "quote_token": quote["quote_token"],
+                }, "unavailable-assembly-start", deduct_points=deduct,
+                project_usage=short_drama._project_point_usage,
+            )
+        self.assertEqual("refinement_assembly_unavailable", raised.exception.code)
         deduct.assert_not_called()
         conn = self.db()
         try:

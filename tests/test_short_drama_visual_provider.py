@@ -1,4 +1,5 @@
 import os
+import io
 import socket
 import sys
 import tempfile
@@ -20,6 +21,7 @@ from providers.short_drama_visual.grok_xai import GrokXaiShotProvider
 from providers.short_drama_visual import minimax_h3
 from providers.short_drama_visual.minimax_h3 import MiniMaxH3ShotProvider
 from content_domains import provider_keys, video, video_minimax_h3
+from PIL import Image
 
 
 class ShortDramaVisualProviderTests(unittest.TestCase):
@@ -133,13 +135,61 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
 
     def test_minimax_h3_encodes_local_png_without_public_storage(self):
         provider = MiniMaxH3ShotProvider()
-        image_path = mock.Mock()
-        image_path.is_file.return_value = True
-        image_path.stat.return_value.st_size = 12
-        image_path.read_bytes.return_value = b"\x89PNG\r\n\x1a\nTEST"
-        with mock.patch("content_domains.core._out_path", return_value=image_path):
-            value = provider._reference_value({"file": "image/role.png"})
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "role.png"
+            Image.new("RGB", (256, 256), (30, 80, 120)).save(image_path, "PNG")
+            with mock.patch("content_domains.core._out_path", return_value=image_path):
+                value = provider._reference_value({"file": "image/role.png"})
         self.assertTrue(value.startswith("data:image/png;base64,"))
+
+    def test_minimax_h3_preflight_rejects_corrupt_local_reference(self):
+        provider = MiniMaxH3ShotProvider()
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "corrupt.png"
+            image_path.write_bytes(b"\x89PNG\r\n\x1a\nnot-an-image")
+            with mock.patch("content_domains.core._out_path", return_value=image_path):
+                with self.assertRaises(VisualProviderError) as raised:
+                    provider.validate_request({
+                        "prompt": "two characters share candy", "ratio": "16:9",
+                        "duration_seconds": 5,
+                        "reference_images": [{"file": "image/corrupt.png"}],
+                    })
+        self.assertEqual("visual_reference_invalid", raised.exception.code)
+
+    def test_minimax_h3_preflight_rejects_reference_below_minimum_dimensions(self):
+        provider = MiniMaxH3ShotProvider()
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "tiny.png"
+            Image.new("RGB", (1, 1), (0, 0, 0)).save(image_path, "PNG")
+            with mock.patch("content_domains.core._out_path", return_value=image_path):
+                with self.assertRaises(VisualProviderError) as raised:
+                    provider.validate_request({
+                        "prompt": "two characters share candy", "ratio": "16:9",
+                        "duration_seconds": 5,
+                        "reference_images": [{"file": "image/tiny.png"}],
+                    })
+        self.assertEqual("visual_reference_invalid", raised.exception.code)
+
+    def test_minimax_h3_preflight_rejects_truncated_jpeg_and_webp(self):
+        provider = MiniMaxH3ShotProvider()
+        samples = {
+            "truncated.jpg": b"\xff\xd8\xff\xe0truncated",
+            "truncated.webp": b"RIFF\x10\x00\x00\x00WEBPtruncated",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for name, raw in samples.items():
+                with self.subTest(name=name):
+                    image_path = Path(directory) / name
+                    image_path.write_bytes(raw)
+                    with mock.patch(
+                        "content_domains.core._out_path", return_value=image_path,
+                    ), self.assertRaises(VisualProviderError) as raised:
+                        provider.validate_request({
+                            "prompt": "two characters share candy", "ratio": "16:9",
+                            "duration_seconds": 5,
+                            "reference_images": [{"file": "image/" + name}],
+                        })
+                    self.assertEqual("visual_reference_invalid", raised.exception.code)
 
     def test_minimax_h3_preflight_rejects_missing_local_reference(self):
         provider = MiniMaxH3ShotProvider()
