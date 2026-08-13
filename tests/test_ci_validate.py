@@ -1,4 +1,5 @@
 import ast
+import subprocess
 from pathlib import Path, PurePosixPath
 from unittest import TestCase
 
@@ -46,6 +47,31 @@ class HtmlReferenceTests(TestCase):
         self.assertTrue(is_dynamic_or_external("#pricing"))
         self.assertFalse(is_dynamic_or_external("../assets/cloud.css?v=8"))
 class StrictJsonTests(TestCase):
+    def test_api_docs_safe_filter_keeps_only_active_reads(self) -> None:
+        subprocess.run([
+            "node", "-e", r"""
+const fs = require('fs'), vm = require('vm');
+const html = fs.readFileSync('site/api-docs/index.html', 'utf8');
+const source = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)].at(-1)[1];
+const context = {
+  window: {}, setInterval: () => {},
+  document: {getElementById: () => null, querySelectorAll: () => []}
+};
+vm.createContext(context);
+vm.runInContext(source, context);
+const result = context.activeSafeSpec({
+  info: {title: 'test', description: 'test'},
+  paths: {
+    '/safe': {get: {'x-hq-test-safety': 'safe-read', 'x-hq-runtime-status': 'active'}},
+    '/pending': {get: {'x-hq-test-safety': 'safe-read', 'x-hq-runtime-status': 'pending-deployment'}},
+    '/write': {post: {'x-hq-test-safety': 'state-write', 'x-hq-runtime-status': 'active'}}
+  }
+});
+if (JSON.stringify(Object.keys(result.paths)) !== '["/safe"]') process.exit(1);
+if (!result.info.description.includes('共 1 个操作')) process.exit(1);
+"""
+        ], check=True)
+
     def test_rejects_duplicate_object_keys(self) -> None:
         with self.assertRaisesRegex(ValueError, "duplicate JSON key: schema"):
             parse_json_strict('{"schema": 1, "schema": 2}')
