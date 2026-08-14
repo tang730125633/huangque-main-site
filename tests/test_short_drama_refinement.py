@@ -465,6 +465,91 @@ class ShortDramaRefinementTests(unittest.TestCase):
         )
         self.assertEqual([], workspace["current_refinement"]["issues"])
 
+    def test_candidate_adoption_defers_full_film_reassembly(self):
+        before = short_drama_refinement.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )["current_refinement"]
+        replacement_id = self.add_provider_replacement("shot_02")
+        job = short_drama_refinement.start_refinement_job(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "shot_key": "shot_02",
+                "source_version_id": before["id"],
+                "replacement_provider_version_id": replacement_id,
+                "defer_reassembly": True,
+            }, "adopt-shot-02-without-reassembly",
+        )
+        with mock.patch.object(
+            short_drama_refinement.media_plan,
+            "probe_media",
+            return_value={
+                "duration_ms": 5000,
+                "video": {"width": 1280, "height": 720},
+                "audio": {},
+            },
+        ):
+            for _ in range(4):
+                job = short_drama_refinement.get_refinement_job(
+                    self.db, "alice", self.project["id"], job["id"]
+                )
+
+            self.assertEqual("succeeded", job["status"])
+            self.assertTrue(job["result"]["candidate_adopted"])
+            self.assertTrue(job["result"]["reassembly_required"])
+            self.assertEqual(0, self.refinement_renderer_mock.call_count)
+
+            current = short_drama_refinement.workspace(
+                self.db, "alice", "alice", self.project["id"]
+            )["current_refinement"]
+            self.assertEqual(before["url"], current["url"])
+            self.assertEqual(before["preview_file_hash"], current["preview_file_hash"])
+            self.assertEqual([], current["issues"])
+            target = next(
+                shot for shot in current["shots"] if shot["shot_key"] == "shot_02"
+            )
+            self.assertEqual(replacement_id, target["provider_version_id"])
+            self.assertEqual("provider_regeneration", target["visual_source"])
+            self.assertEqual(
+                replacement_id,
+                current["media"]["staged_replacements"][0]["provider_version_id"],
+            )
+            self.assertTrue(current["assembly_status"]["reassembly_required"])
+            self.assertEqual(1, current["assembly_status"]["staged_count"])
+
+            with self.assertRaises(short_drama_refinement.RefinementError) as blocked:
+                short_drama_refinement.confirm_refinement(
+                    self.db, "alice", "alice", self.acceptance_body(current)
+                )
+            self.assertEqual(
+                "refinement_reassembly_required", blocked.exception.code
+            )
+
+            from content_domains import short_drama_autodraft
+            reassembly_calls = []
+            with mock.patch.object(
+                short_drama_autodraft,
+                "_render_provider_preview",
+                side_effect=self._reassembly_renderer(reassembly_calls),
+            ):
+                reassembled = short_drama_refinement.reassemble_refinement(
+                    self.db, "alice", "alice", {
+                        "project_id": self.project["id"],
+                        "version_id": current["id"],
+                    }, "reassemble-after-candidate-adoption",
+                )
+            self.assertEqual(1, len(reassembly_calls))
+            self.assertNotEqual(current["id"], reassembled["id"])
+            self.assertFalse(reassembled["assembly_status"]["reassembly_required"])
+            self.assertEqual(0, reassembled["assembly_status"]["staged_count"])
+            self.assertNotIn("staged_replacements", reassembled["media"])
+            reassembled_target = next(
+                shot for shot in reassembled["shots"]
+                if shot["shot_key"] == "shot_02"
+            )
+            self.assertEqual(
+                replacement_id, reassembled_target["provider_version_id"]
+            )
+
     def test_redo_publishes_new_preview_url_and_physical_hash(self):
         before = short_drama_refinement.workspace(
             self.db, "alice", "alice", self.project["id"]

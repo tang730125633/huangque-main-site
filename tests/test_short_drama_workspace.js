@@ -1155,9 +1155,10 @@ test('PR-5 精修工作区展示问题镜头、单镜重做和确认门禁', () 
     refinement_versions:[{id:'r2'},{id:'r1'}],
   });
   assert.match(output, /PR-5 · 智能精修/);
-  assert.match(output, /data-action="refine-shot"/);
+  assert.match(output, /data-action="enter-refinement-redo"/);
   assert.match(output, /data-shot-key="shot_02"/);
   assert.match(output, /1 个待处理/);
+  assert.doesNotMatch(output, /data-action="refine-shot"/);
 
   const blocked = workspace.refinementActionsHtml({
     current_refinement:{id:'r2',status:'draft',issues:[{shot_key:'shot_02'}]},

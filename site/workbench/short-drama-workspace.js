@@ -707,8 +707,11 @@
     }
     if(refineJob&&['queued','running'].indexOf(refineJob.status)>=0)return '<section data-background-job-progress="refinement"><span class="sd-stage-label">PR-5 · 镜头精修</span><h2>正在重做 '+escapeHtml(refineJob.shot_key||'镜头')+'</h2><div class="sd-progress"><i style="width:'+Number(refineJob.progress||0)+'%"></i></div><strong>'+Number(refineJob.progress||0)+'%</strong></section>';
     if(refineJob&&refineJob.status==='failed'){
-      var refineFailure=userFacingVideoMessage(refineJob.error&&refineJob.error.detail,'新镜头已经生成并保留，但上次重新合成没有完成。');
-      return '<section><span class="sd-stage-label">PR-5 · 镜头精修</span><h2>'+escapeHtml(refineJob.shot_key||'问题镜头')+' 尚未替换到全片</h2><div class="sd-preflight-stale">'+escapeHtml(refineFailure)+'</div><p>新镜头不会丢失，也不会再次扣镜头生成费用。请回到对应镜头重新执行全片合成。</p><button type="button" data-action="jump-to-shot" data-shot-key="'+escapeHtml(refineJob.shot_key||'')+'">回到这个镜头重试</button></section>';
+      var refineFailure=userFacingVideoMessage(refineJob.error&&refineJob.error.detail,'候选镜头尚未采用，生成结果和历史版本仍然保留。');
+      var failedTitle=refineJob.defer_reassembly?(escapeHtml(refineJob.shot_key||'问题镜头')+' 尚未采用'):(escapeHtml(refineJob.shot_key||'问题镜头')+' 尚未替换到全片');
+      var failedRetention=refineJob.defer_reassembly?'候选镜头不会丢失，也不会重复扣生成费用。请回到对应镜头重新选择并采用。':'新镜头不会丢失，也不会再次扣镜头生成费用。请回到对应镜头重试装配。';
+      var failedAction=refineJob.defer_reassembly?'回到这个镜头':'回到这个镜头重试';
+      return '<section><span class="sd-stage-label">PR-5 · 单镜头精修</span><h2>'+failedTitle+'</h2><div class="sd-preflight-stale">'+escapeHtml(refineFailure)+'</div><p>'+failedRetention+'</p><button type="button" data-action="jump-to-shot" data-shot-key="'+escapeHtml(refineJob.shot_key||'')+'">'+failedAction+'</button></section>';
     }
     if(!current)return '';
     var groups=refinementIssueGroups(current),issues=groups.shots,confirmed=current.status==='confirmed';
@@ -726,18 +729,18 @@
     var title=issues.length?'还有 '+issues.length+' 个问题镜头':(!mediaReady?'还有 1 项验收准备未完成':assembly.available===false?'完整镜头时长暂时无法核对':assembly.reassembly_required?'请先重新装配完整预览':'全片可以验收并锁定');
     return '<section class="sd-full-acceptance"><span class="sd-stage-label">PR-5 · 全片验收</span><h2>'+title+'</h2>'+mediaPreparation+'<p>请完整播放 720p 预览并检查以下项目。验收通过后将锁定镜头、音轨、字幕和素材版本，用于 1080p 导出。</p><div class="sd-checks">'+acceptanceChecks.map(function(item){return '<label><input type="checkbox" data-acceptance-check="'+item[0]+'"'+(blocked?' disabled':'')+'> '+escapeHtml(item[1])+'</label>';}).join('')+'</div><button type="button" data-action="confirm-refinement" disabled>全片验收通过并锁定</button><small>'+(issues.length?'请先重做全部问题镜头。':!mediaReady?'请先完成配音/字幕准备，再开始全片验收。':assembly.available===false?'完整镜头时长暂时无法核对，请稍后重试。':assembly.reassembly_required?'请先免费重新装配完整预览。':'勾选全部验收项后可锁定当前精修版本。')+'</small></section>';
   }
-  function refinementProviderHtml(autodraft,refinement,canEdit){
+  function refinementProviderHtml(autodraft,refinement,canEdit,selectedShotKey){
     var current=refinement&&refinement.current_refinement,issues=refinementIssueGroups(current).shots;
     if(!issues.length)return '';
     var issueKeys=issues.map(function(item){return item.shot_key;});
     var poc=autodraft&&autodraft.provider_poc||{},shots=(poc.shots||[]).filter(function(item){return issueKeys.indexOf(item.shot_key)>=0;});
     var preview=autodraft&&autodraft.provider_preview,quote=autodraft&&autodraft.provider_quote,job=autodraft&&autodraft.provider_job;
-    var options=shots.map(function(item){return '<option value="'+escapeHtml(item.shot_key)+'">#'+Number(item.sort_order||0)+' · '+escapeHtml(item.scene||item.shot_key)+'</option>';}).join('');
+    var options=shots.map(function(item){return '<option value="'+escapeHtml(item.shot_key)+'"'+(text(item.shot_key)===text(selectedShotKey)?' selected':'')+'>#'+Number(item.sort_order||0)+' · '+escapeHtml(item.scene||item.shot_key)+'</option>';}).join('');
     var active=job&&['billing','queued','submitting','running'].indexOf(job.status)>=0;
     var status=job?'<div class="sd-check '+(job.status==='succeeded'?'pass':'')+'"><b>镜头生成任务 · '+escapeHtml(job.status||'')+' · '+Number(job.progress||0)+'%</b><p>'+escapeHtml(userFacingVideoMessage(job.error&&job.error.detail,'镜头生成完成后，可点击上方“预览并重做这个镜头”重新装配全片。'))+'</p></div>':'';
     var quoteHtml=quote?'<div class="sd-estimate"><strong>'+Number(quote.cost||0)+' 点</strong><span>确认后才会扣点并提交生成任务</span></div><button data-action="provider-start" type="button"'+(canEdit&&!active?'':' disabled')+'>确认扣点并生成新镜头</button>':'';
     var previewHtml=preview&&preview.ready?'<div class="sd-check pass"><b>视频生成请求预检通过</b><p>'+escapeHtml(preview.request&&preview.request.prompt||'')+'</p></div>'+(quote?'':'<button data-action="provider-quote" type="button"'+(canEdit&&!active?'':' disabled')+'>获取付费报价</button>'):'';
-    return '<section class="sd-autodraft-actions sd-refinement-provider"><span class="sd-stage-label">PR-5 · 问题镜头重新生成</span><h2>先生成新媒体，再重新装配</h2><p>精修不会复用旧视频或只改状态。请为问题镜头完成预检、报价和视频生成；成功后重新点击对应镜头的重做按钮。</p><label>问题镜头<select id="sdProviderShot"'+(shots.length&&!active?'':' disabled')+'>'+options+'</select></label><div class="sd-check" id="sdProviderShotCharacter"><b>正在读取镜头角色</b></div><button data-action="provider-preflight" type="button"'+(canEdit&&shots.length&&!active?'':' disabled')+'>免费检查当前镜头</button>'+previewHtml+quoteHtml+status+'</section>';
+    return '<section class="sd-autodraft-actions sd-refinement-provider"><span class="sd-stage-label">PR-5 · 问题镜头重新生成</span><h2>只重新生成当前问题镜头</h2><p>可以反复生成并切换多个候选版本。满意后在左侧问题镜头中点击“采用当前候选镜头”；全部问题处理完后，再统一重新合成完整视频。</p><label>问题镜头<select id="sdProviderShot"'+(shots.length&&!active?'':' disabled')+'>'+options+'</select></label><div class="sd-check" id="sdProviderShotCharacter"><b>正在读取镜头角色</b></div><button data-action="provider-preflight" type="button"'+(canEdit&&shots.length&&!active?'':' disabled')+'>免费检查当前镜头</button>'+previewHtml+quoteHtml+status+'</section>';
   }
   function shellHtml(){
     return '<div class="sd-workspace-top"><a href="short-drama.html">← 返回项目</a><div><span id="sdWorkspaceState"></span><b id="sdWorkspaceTitle"></b></div><div class="sd-workspace-top-actions"><button type="button" class="sd-inspector-button" data-action="toggle-inspector" id="sdInspectorButton" aria-expanded="true">收起摘要</button></div></div>'+
@@ -1175,11 +1178,12 @@
       doc.getElementById('sdTechnicalContract').innerHTML=importContractTechnicalHtml(understanding.import_contract);
       doc.getElementById('sdVersions').innerHTML=state.versions.map(function(item){return versionHtml(item,state.conversation.current_version_id);}).join('')||'<p class="sd-placeholder">暂无版本</p>';
       var grid=doc.getElementById('sdWorkspaceGrid'),inspectorButton=doc.getElementById('sdInspectorButton');
+      grid.classList.toggle('refinement-redo-active',refinementRedoMode);
       grid.classList.toggle('inspector-collapsed',!inspectorExpanded);
       inspectorButton.textContent=inspectorExpanded?'收起摘要':'查看摘要';
       inspectorButton.setAttribute('aria-expanded',inspectorExpanded?'true':'false');
       var qualitySummary=storyboardQualityHtml(state.current_script&&state.current_script.script);
-      doc.getElementById('sdActions').innerHTML=qualitySummary+(refinement?(refinementActionsHtml(refinement,state.permissions.can_edit)+refinementProviderHtml(autodraft,refinement,state.permissions.can_edit)):(autodraft.confirmed_plan?autodraftActionsHtml(autodraft,state.permissions.can_edit):preflightHtml(state.conversation,preflight,state.permissions.can_edit)));
+      doc.getElementById('sdActions').innerHTML=refinementRedoMode?'':qualitySummary+(refinement?(refinementActionsHtml(refinement,state.permissions.can_edit)+refinementProviderHtml(autodraft,refinement,state.permissions.can_edit,selectedProviderShotKey)):(autodraft.confirmed_plan?autodraftActionsHtml(autodraft,state.permissions.can_edit):preflightHtml(state.conversation,preflight,state.permissions.can_edit)));
       enhanceProviderPreflight();
       renderCharacterModal();
       renderShotModal();
@@ -1378,11 +1382,18 @@
       busy(true);show('',false);
       client.markRefinementIssue({project_id:projectId,version_id:issueVersion.id,shot_key:issueShot,issue_code:'user_'+issueType,message:issueMessage})
         .then(function(){closeRefinementIssueModal();return loadRefinement();})
-        .then(function(){show('问题已记录，可以在该镜头中编辑生成要求并重新生成',false);})
+        .then(function(){refinementRedoMode=true;refinementRedoShotKey=issueShot;selectedProviderShotKey=issueShot;show('问题已记录，已进入镜头重做工作区',false);})
         .catch(function(error){show(error.message||'标记问题镜头失败',true);})
         .finally(function(){busy(false);render();});
     });
     root.addEventListener('change',function(event){
+      if(event.target&&event.target.id==='sdProviderShot'){
+        selectedProviderShotKey=event.target.value||'';
+        if(refinementRedoMode)refinementRedoShotKey=selectedProviderShotKey;
+        autodraft.provider_preview=null;autodraft.provider_quote=null;
+        render();
+        return;
+      }
       if(!event.target.matches('#sdShotExecutionEditor input[name="character_keys"]'))return;
       var fields=Array.prototype.slice.call(doc.querySelectorAll('#sdShotExecutionEditor input[name="character_keys"]'));
       var selected=fields.filter(function(field){return field.checked;});
@@ -1614,6 +1625,27 @@
         shotEditorMode='execution';
         selectedShotKey=action.getAttribute('data-shot-key')||'';
         renderShotModal();
+        return;
+      }
+      if(action&&action.getAttribute('data-action')==='enter-refinement-redo'){
+        refinementRedoMode=true;
+        refinementRedoShotKey=action.getAttribute('data-shot-key')||'';
+        selectedProviderShotKey=refinementRedoShotKey;
+        render();
+        return;
+      }
+      if(action&&action.getAttribute('data-action')==='exit-refinement-redo'){
+        var redoJob=autodraft&&autodraft.provider_job;
+        if(redoJob&&['billing','queued','submitting','running'].indexOf(redoJob.status)>=0&&!window.confirm('当前镜头仍在生成。离开后任务会继续，确认返回合成预览吗？'))return;
+        refinementRedoMode=false;
+        render();
+        return;
+      }
+      if(action&&action.getAttribute('data-action')==='select-refinement-redo-shot'){
+        refinementRedoShotKey=action.getAttribute('data-shot-key')||'';
+        selectedProviderShotKey=refinementRedoShotKey;
+        autodraft.provider_preview=null;autodraft.provider_quote=null;
+        render();
         return;
       }
       if(action&&action.getAttribute('data-action')==='close-shot-editor'){
@@ -2051,8 +2083,8 @@
         busy(true);show('',false);
         client.previewRefinement({project_id:projectId,shot_key:shotKey}).then(function(preview){
           if(preview.replacement_ready!==true){throw new Error(preview.replacement_error&&preview.replacement_error.message||'请先在镜头生成区生成该镜头的新版本');}
-          show('将重做 '+preview.affected_shots.join('、')+'，预计 '+Number(preview.estimated_seconds||0)+' 秒；已建立恢复点',false);
-          return client.refineShot({project_id:projectId,shot_key:shotKey,source_version_id:preview.source_version_id,replacement_provider_version_id:preview.replacement_provider_version_id});
+          show('正在采用 '+preview.affected_shots.join('、')+' 的当前候选版本；不会立即重新合成整片',false);
+          return client.refineShot({project_id:projectId,shot_key:shotKey,source_version_id:preview.source_version_id,replacement_provider_version_id:preview.replacement_provider_version_id,defer_reassembly:true});
         }).then(function(result){refinement.current_refinement_job=result;render();schedulePoll();})
           .catch(function(error){show(error.message||'镜头精修提交失败',true);})
           .finally(function(){busy(false);render();});
