@@ -1128,6 +1128,7 @@ test('PR-5 客户端提供精修预览、镜头任务、确认、报价与正式
   await client.refinement('project a');
   await client.previewRefinement({project_id:'project a',shot_key:'shot_02'});
   await client.refineShot({project_id:'project a',shot_key:'shot_02'});
+  await client.reassembleRefinementCandidates({project_id:'project a',version_id:'rv2'});
   await client.refinementJob('project a','job/2');
   await client.confirmRefinement({project_id:'project a',version_id:'rv2'});
   await client.restoreRefinement({project_id:'project a',version_id:'rv1'});
@@ -1135,8 +1136,9 @@ test('PR-5 客户端提供精修预览、镜头任务、确认、报价与正式
   await client.startDelivery({project_id:'project a',quote_token:'quote1'});
   await client.deliveryJob('project a','delivery/1');
   assert.equal(calls[0].url, '/api/gen/short-drama/refinement?project_id=project%20a');
-  assert.equal(calls[3].url, '/api/gen/short-drama/refinement/jobs/job%2F2?project_id=project%20a');
-  assert.equal(calls[8].url, '/api/gen/short-drama/delivery/jobs/delivery%2F1?project_id=project%20a');
+  assert.equal(calls[3].url, '/api/gen/short-drama/refinement/candidates/reassemble');
+  assert.equal(calls[4].url, '/api/gen/short-drama/refinement/jobs/job%2F2?project_id=project%20a');
+  assert.equal(calls[9].url, '/api/gen/short-drama/delivery/jobs/delivery%2F1?project_id=project%20a');
   for (const call of calls.filter(call => call.options.method === 'POST')) {
     assert.ok(call.options.headers['Idempotency-Key']);
   }

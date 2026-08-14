@@ -298,6 +298,16 @@ if (!result.info.description.includes('共 1 个操作')) process.exit(1);
             if item["name"] == "Idempotency-Key"
         )["required"])
 
+        reassembly = spec["paths"][
+            "/api/gen/short-drama/refinement/candidates/reassemble"
+        ]["post"]
+        reassembly_schema = reassembly["requestBody"]["content"][
+            "application/json"
+        ]["schema"]
+        self.assertEqual(
+            ["project_id", "version_id"], reassembly_schema["required"]
+        )
+
     def _assert_openapi_sample(self, spec, schema, value) -> None:
         if "$ref" in schema:
             target = spec

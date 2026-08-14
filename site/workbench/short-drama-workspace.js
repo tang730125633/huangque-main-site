@@ -254,6 +254,7 @@
       previewRefinement:function(payload){return mutate('/api/gen/short-drama/refinement/changes/preview',payload,'refinement-preview');},
       refineShot:function(payload){return mutate('/api/gen/short-drama/refinement/jobs',payload,'refinement-shot');},
       adoptRefinementCandidate:function(payload){return mutate('/api/gen/short-drama/refinement/candidates/adopt',payload,'refinement-candidate-adopt');},
+      reassembleRefinementCandidates:function(payload){return mutate('/api/gen/short-drama/refinement/candidates/reassemble',payload,'refinement-candidate-reassemble');},
       markRefinementIssue:function(payload){return mutate('/api/gen/short-drama/refinement/issues',payload,'refinement-issue');},
       setRefinementMediaPreference:function(payload){return mutate('/api/gen/short-drama/refinement/media-preference',payload,'refinement-media');},
       reassembleRefinement:function(payload){return mutate('/api/gen/short-drama/refinement/reassemble',payload,'refinement-reassemble');},
@@ -2072,7 +2073,7 @@
         var reassemblySource=refinement&&refinement.current_refinement;
         if(!reassemblySource)return;
         busy(true);show('正在按每个镜头的实际时长重新装配完整预览…',false);
-        client.reassembleRefinement({project_id:projectId,version_id:reassemblySource.id})
+        client.reassembleRefinementCandidates({project_id:projectId,version_id:reassemblySource.id})
           .then(loadRefinement)
           .then(function(){show('完整预览已重新装配，不调用视频模型，也不扣点。',false);})
           .catch(function(error){show(error.message||'完整预览重新装配失败',true);})

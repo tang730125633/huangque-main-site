@@ -5589,6 +5589,7 @@ _HTTP_ROUTES = {
         "/api/gen/short-drama/autodraft/jobs/{job_id}/cancel",
         "/api/gen/short-drama/refinement/changes/preview",
         "/api/gen/short-drama/refinement/candidates/adopt",
+        "/api/gen/short-drama/refinement/candidates/reassemble",
         "/api/gen/short-drama/refinement/jobs",
         "/api/gen/short-drama/refinement/issues",
         "/api/gen/short-drama/refinement/media-preference",
@@ -6370,6 +6371,11 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                 )
             elif path == "/api/gen/short-drama/refinement/candidates/adopt":
                 result = short_drama_refinement.adopt_refinement_candidate(
+                    db_factory, owner, username, body,
+                    str(handler.headers.get("Idempotency-Key") or ""),
+                )
+            elif path == "/api/gen/short-drama/refinement/candidates/reassemble":
+                result = short_drama_refinement.reassemble_refinement_candidates(
                     db_factory, owner, username, body,
                     str(handler.headers.get("Idempotency-Key") or ""),
                 )

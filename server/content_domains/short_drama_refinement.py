@@ -36,6 +36,9 @@ ACCEPTANCE_CHECKS = (
     "transition_quality",
 )
 _REASSEMBLY_ENDPOINT = "/api/gen/short-drama/refinement/reassemble"
+_CANDIDATE_REASSEMBLY_ENDPOINT = (
+    "/api/gen/short-drama/refinement/candidates/reassemble"
+)
 _REASSEMBLY_LEASE_SECONDS = 30
 _DELIVERY_REFUND_LEASE_SECONDS = 60
 _MEDIA_PREFERENCE_MIGRATION = "refinement_media_preferences_provider_audio_v1"
@@ -1992,6 +1995,26 @@ def workspace(db_factory, owner_username, actor_username, project_id, can_edit=T
 def reassemble_refinement(
         db_factory, owner_username, actor_username, body, idempotency_key):
     """Idempotently create one local reassembly per source version."""
+    return _reassemble_refinement(
+        db_factory, owner_username, actor_username, body, idempotency_key,
+        endpoint=_REASSEMBLY_ENDPOINT,
+        require_all_issues_resolved=False,
+    )
+
+
+def reassemble_refinement_candidates(
+        db_factory, owner_username, actor_username, body, idempotency_key):
+    """Finish the candidate workflow only after every issue is resolved."""
+    return _reassemble_refinement(
+        db_factory, owner_username, actor_username, body, idempotency_key,
+        endpoint=_CANDIDATE_REASSEMBLY_ENDPOINT,
+        require_all_issues_resolved=True,
+    )
+
+
+def _reassemble_refinement(
+        db_factory, owner_username, actor_username, body, idempotency_key,
+        *, endpoint, require_all_issues_resolved):
     key = submission_idempotency.clean_key(idempotency_key)
     if not key:
         raise RefinementError(
@@ -2004,7 +2027,7 @@ def reassemble_refinement(
     }
     idem_db = _idempotency_db_factory(db_factory)
     state, response = submission_idempotency.begin(
-        idem_db, actor_username, _REASSEMBLY_ENDPOINT, key, request,
+        idem_db, actor_username, endpoint, key, request,
     )
     if state == "conflict":
         raise RefinementError(
@@ -2021,20 +2044,22 @@ def reassemble_refinement(
     try:
         result = _perform_reassemble_refinement(
             db_factory, owner_username, actor_username, request, key,
+            require_all_issues_resolved=require_all_issues_resolved,
         )
         submission_idempotency.complete(
-            idem_db, actor_username, _REASSEMBLY_ENDPOINT, key, result,
+            idem_db, actor_username, endpoint, key, result,
         )
         return result
     except Exception:
         submission_idempotency.abort(
-            idem_db, actor_username, _REASSEMBLY_ENDPOINT, key,
+            idem_db, actor_username, endpoint, key,
         )
         raise
 
 
 def _perform_reassemble_refinement(
-        db_factory, owner_username, actor_username, body, idempotency_key):
+        db_factory, owner_username, actor_username, body, idempotency_key,
+        *, require_all_issues_resolved=False):
     """Create a complete preview from existing paid shot files only."""
     from . import short_drama_autodraft
 
@@ -2052,6 +2077,24 @@ def _perform_reassemble_refinement(
     lease_keeper = None
     try:
         project = _project(conn, owner_username, project_id)
+        if require_all_issues_resolved:
+            requested_source = _refinement(conn.execute(
+                "SELECT * FROM short_drama_refinement_versions "
+                "WHERE id=? AND project_id=?",
+                (source_version_id, project_id),
+            ).fetchone())
+            if not requested_source:
+                raise RefinementError(
+                    "refinement_version_stale",
+                    "预览版本已变化，请刷新后重试",
+                    409,
+                )
+            if requested_source.get("issues"):
+                raise RefinementError(
+                    "refinement_issues_remaining",
+                    "仍有待处理镜头，全部采用满意候选后才能统一重新合成",
+                    409,
+                )
         completed = _reassembly_for_source(conn, project_id, source_version_id)
         if completed:
             completed["assembly_status"] = _refinement_assembly_status(
@@ -2069,7 +2112,9 @@ def _perform_reassemble_refinement(
         staged_replacements = list(
             (source.get("media") or {}).get("staged_replacements") or []
         )
-        if staged_replacements and source.get("issues"):
+        if source.get("issues") and (
+            require_all_issues_resolved or staged_replacements
+        ):
             raise RefinementError(
                 "refinement_issues_remaining",
                 "仍有待处理镜头，全部采用满意候选后才能统一重新合成",
@@ -2486,7 +2531,8 @@ def mark_issue(db_factory, owner_username, actor_username, body):
 
 
 def start_refinement_job(
-    db_factory, owner_username, actor_username, body, idempotency_key
+    db_factory, owner_username, actor_username, body, idempotency_key,
+    *, candidate_adoption=False,
 ):
     project_id = str(body.get("project_id") or "").strip()
     shot_key = str(body.get("shot_key") or "").strip()
@@ -2539,6 +2585,17 @@ def start_refinement_job(
             item for item in source["shots"]
             if str(item.get("shot_key")) == shot_key
         )
+        if candidate_adoption:
+            has_active_issue = bool(source_shot.get("issue")) and any(
+                str(item.get("shot_key") or "") == shot_key
+                for item in source.get("issues") or []
+            )
+            if not has_active_issue:
+                raise RefinementError(
+                    "refinement_candidate_not_required",
+                    "该镜头没有待处理问题，不能进入候选采用流程",
+                    409,
+                )
         replacement = _replacement_provider_asset(
             conn, project_id, source_shot,
             str(body.get("replacement_provider_version_id") or ""),
@@ -2591,10 +2648,22 @@ def adopt_refinement_candidate(
         raise RefinementError(
             "refinement_candidate_invalid", "候选镜头采用请求无效", 422
         )
+    required = (
+        "project_id", "shot_key", "source_version_id",
+        "replacement_provider_version_id",
+    )
+    missing = [name for name in required if not str(body.get(name) or "").strip()]
+    if missing:
+        raise RefinementError(
+            "refinement_candidate_invalid",
+            "候选镜头采用缺少必填字段：" + "、".join(missing),
+            422,
+        )
     payload = dict(body)
     payload["defer_reassembly"] = True
     return start_refinement_job(
-        db_factory, owner_username, actor_username, payload, idempotency_key
+        db_factory, owner_username, actor_username, payload, idempotency_key,
+        candidate_adoption=True,
     )
 
 

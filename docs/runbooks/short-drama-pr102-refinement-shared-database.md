@@ -44,7 +44,7 @@
 4. 对一个问题镜头调用 `/refinement/candidates/adopt`，并刻意提交 `defer_reassembly=false`，确认服务端返回的任务字段仍为 `true`、仅采用候选、不调用整片渲染，并保持旧预览 URL/hash；同时回归 `/refinement/jobs` 的既有即时精修兼容路径。
 5. 同一幂等键重放必须返回同一任务；不同项目、镜头、候选版本或有效 defer 语义不得错误重放。
 6. staged 候选媒体缺失、损坏或 probe 失败时，`reassembly_required` 必须保持 true，验收必须失败且旧预览不得被锁定。
-7. 仍有任一 issue 时直接调用 reassemble 必须返回 409 且不得启动 FFmpeg、创建 operation 或新 refinement version。
+7. 仍有任一 issue 时直接调用 `/refinement/candidates/reassemble` 必须返回 409，且不得启动 FFmpeg、创建 operation、幂等残留或新 refinement version；既有 `/refinement/reassemble` 仅保留旧客户端的免费重装配兼容语义。
 8. 所有问题镜头逐一采用后，只允许一次基于最新 refinement version 的免费统一合成；并发调用必须由既有 DB lease/CAS 保证唯一成功，0 扣点、0 Provider 调用，失败或失租清理临时输出且可安全重试。
 9. 合成成功后 `staged_replacements` 清空，最新预览含全部候选镜头；验收前再次校验源 hash、物理媒体、音轨/字幕和最新版本。
 10. 使用旧版本/旧 source、运行中精修任务、陈旧租约或变化中的 HEAD/base 执行必须 fail closed。
