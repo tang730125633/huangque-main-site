@@ -888,6 +888,7 @@ def _refinement_assembly_status(conn, project, refinement):
     """Compare the preview duration with all physical shot media."""
     from . import short_drama_autodraft
 
+    staged = list((refinement.get("media") or {}).get("staged_replacements") or [])
     source_duration_ms = 0
     shot_durations = []
     try:
@@ -904,8 +905,16 @@ def _refinement_assembly_status(conn, project, refinement):
             shot_durations.append({"shot_key": shot_key, "duration_ms": duration_ms})
     except (OSError, ValueError, RefinementError, media_plan.MediaPlanError,
             short_drama_autodraft.AutodraftError):
-        return {"available": False, "reassembly_required": False,
-                "message": "暂时无法核对完整镜头时长"}
+        return {
+            "available": False,
+            "reassembly_required": bool(staged),
+            "staged_replacements": staged,
+            "staged_count": len(staged),
+            "message": (
+                "候选镜头已采用，但暂时无法核对全部素材；重新合成完成前不能验收"
+                if staged else "暂时无法核对完整镜头时长"
+            ),
+        }
 
     validation = (refinement.get("media") or {}).get("media_validation") or {}
     preview_duration_ms = int(validation.get("duration_ms") or 0)
@@ -916,7 +925,6 @@ def _refinement_assembly_status(conn, project, refinement):
     if preview_duration_ms <= 0:
         preview_duration_ms = planned_duration_ms
     missing_ms = max(0, source_duration_ms - preview_duration_ms)
-    staged = list((refinement.get("media") or {}).get("staged_replacements") or [])
     required = bool(staged) or missing_ms > 500
     return {
         "available": True, "reassembly_required": required,
@@ -2058,6 +2066,15 @@ def _perform_reassemble_refinement(
             raise RefinementError(
                 "refinement_version_stale", "预览版本已变化，请刷新后重试", 409
             )
+        staged_replacements = list(
+            (source.get("media") or {}).get("staged_replacements") or []
+        )
+        if staged_replacements and source.get("issues"):
+            raise RefinementError(
+                "refinement_issues_remaining",
+                "仍有待处理镜头，全部采用满意候选后才能统一重新合成",
+                409,
+            )
         if conn.execute(
             "SELECT 1 FROM short_drama_refinement_jobs WHERE project_id=? "
             "AND status IN ('queued','running')", (project_id,),
@@ -2485,7 +2502,7 @@ def start_refinement_job(
         ).fetchone()
         if existing:
             item = _job(existing)
-            requested_replacement = str(
+            requested_replacement_id = str(
                 body.get("replacement_provider_version_id") or ""
             )
             if (
@@ -2493,8 +2510,8 @@ def start_refinement_job(
                 or item["shot_key"] != shot_key
                 or item.get("defer_reassembly") is not defer_reassembly
                 or (
-                    requested_replacement
-                    and requested_replacement
+                    requested_replacement_id
+                    and requested_replacement_id
                     != str(item.get("replacement_provider_version_id") or "")
                 )
             ):
@@ -2559,6 +2576,26 @@ def start_refinement_job(
         raise
     finally:
         conn.close()
+
+
+def adopt_refinement_candidate(
+    db_factory, owner_username, actor_username, body, idempotency_key
+):
+    """Adopt one candidate without rebuilding the full preview.
+
+    This endpoint owns the workflow invariant.  Callers cannot turn candidate
+    adoption into the legacy immediate-reassembly operation by changing a
+    client-provided boolean.
+    """
+    if not isinstance(body, dict):
+        raise RefinementError(
+            "refinement_candidate_invalid", "候选镜头采用请求无效", 422
+        )
+    payload = dict(body)
+    payload["defer_reassembly"] = True
+    return start_refinement_job(
+        db_factory, owner_username, actor_username, payload, idempotency_key
+    )
 
 
 def get_refinement_job(db_factory, owner_username, project_id, job_id):

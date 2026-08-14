@@ -253,6 +253,7 @@
       refinement:function(id){return request('/api/gen/short-drama/refinement?project_id='+encodeURIComponent(id));},
       previewRefinement:function(payload){return mutate('/api/gen/short-drama/refinement/changes/preview',payload,'refinement-preview');},
       refineShot:function(payload){return mutate('/api/gen/short-drama/refinement/jobs',payload,'refinement-shot');},
+      adoptRefinementCandidate:function(payload){return mutate('/api/gen/short-drama/refinement/candidates/adopt',payload,'refinement-candidate-adopt');},
       markRefinementIssue:function(payload){return mutate('/api/gen/short-drama/refinement/issues',payload,'refinement-issue');},
       setRefinementMediaPreference:function(payload){return mutate('/api/gen/short-drama/refinement/media-preference',payload,'refinement-media');},
       reassembleRefinement:function(payload){return mutate('/api/gen/short-drama/refinement/reassemble',payload,'refinement-reassemble');},
@@ -2084,7 +2085,7 @@
         client.previewRefinement({project_id:projectId,shot_key:shotKey}).then(function(preview){
           if(preview.replacement_ready!==true){throw new Error(preview.replacement_error&&preview.replacement_error.message||'请先在镜头生成区生成该镜头的新版本');}
           show('正在采用 '+preview.affected_shots.join('、')+' 的当前候选版本；不会立即重新合成整片',false);
-          return client.refineShot({project_id:projectId,shot_key:shotKey,source_version_id:preview.source_version_id,replacement_provider_version_id:preview.replacement_provider_version_id,defer_reassembly:true});
+          return client.adoptRefinementCandidate({project_id:projectId,shot_key:shotKey,source_version_id:preview.source_version_id,replacement_provider_version_id:preview.replacement_provider_version_id});
         }).then(function(result){refinement.current_refinement_job=result;render();schedulePoll();})
           .catch(function(error){show(error.message||'镜头精修提交失败',true);})
           .finally(function(){busy(false);render();});
