@@ -12,7 +12,7 @@ from . import short_drama_duration
 
 
 SCHEMA_VERSION = "short-drama-conversation-script-v4"
-MODEL_VERSION = "conversation-storyboard-v4"
+MODEL_VERSION = "conversation-storyboard-v5"
 PHASES = (
     ("setup", "建立", "交代时间、地点和人物当前处境"),
     ("reaction", "反应", "人物用一个可见动作回应刚发生的事件"),
@@ -91,6 +91,49 @@ def _phase(index, shot_count):
         return PHASES[-1]
     phase_index = int(round(index * (len(PHASES) - 1) / float(shot_count - 1)))
     return PHASES[min(len(PHASES) - 1, phase_index)]
+
+
+def _phase_progression(phase_key, occurrence, total):
+    """Add real intra-phase progression when a long plan repeats a phase."""
+    if total <= 1:
+        return ""
+    progressions = {
+        "setup": (
+            "先建立环境与人物位置",
+            "再交代关键物件与空间关系",
+            "最后落到触发事件的可见细节",
+        ),
+        "reaction": (
+            "先捕捉即时表情与停顿",
+            "再呈现人物调整姿态或动作",
+            "最后落到影响下一步的反应细节",
+        ),
+        "change": (
+            "先展示变化前的状态",
+            "再放大推动变化的动作细节",
+            "最后呈现变化后的表情与关系",
+        ),
+        "conflict": (
+            "先建立双方距离与对峙",
+            "再推进冲突动作与视线交锋",
+            "最后落到冲突造成的明确结果",
+        ),
+        "choice": (
+            "先呈现犹豫与备选动作",
+            "再聚焦决定发生的关键动作",
+            "最后展示选择完成后的结果",
+        ),
+        "resolution": (
+            "先回看前文留下的关键细节",
+            "再呈现人物关系的最终回应",
+            "最后以环境或人物动作完成收束",
+        ),
+    }[phase_key]
+    if occurrence == 1:
+        return progressions[0]
+    if occurrence == total:
+        return progressions[2]
+    return "%s（阶段内第%d层推进）" % (progressions[1], occurrence)
 
 
 def _clause(index, shot_count, clauses):
@@ -522,8 +565,19 @@ def compile_storyboard(project, clauses, characters, instruction="", ending="", 
     dialogue_lines = []
     previous_scene = ""
     used_dialogue = set()
+    phase_plan = [_phase(index, shot_count) for index in range(shot_count)]
+    phase_totals = {}
+    phase_occurrences = {}
+    for phase_key, _phase_name, _purpose in phase_plan:
+        phase_totals[phase_key] = phase_totals.get(phase_key, 0) + 1
     for index in range(shot_count):
-        phase_key, phase_name, purpose = _phase(index, shot_count)
+        phase_key, phase_name, purpose = phase_plan[index]
+        phase_occurrences[phase_key] = phase_occurrences.get(phase_key, 0) + 1
+        progression = _phase_progression(
+            phase_key,
+            phase_occurrences[phase_key],
+            phase_totals[phase_key],
+        )
         source = _clause(index, shot_count, clauses)
         scene = _location(source, previous_scene or "故事主要场景")
         previous_scene = scene
@@ -561,10 +615,11 @@ def compile_storyboard(project, clauses, characters, instruction="", ending="", 
             "action": action,
             "emotional_shift": _emotional_shift(phase_key),
         })
-        visual = "%s；剧情事实：%s；本镜头重点：%s" % (
+        visual = "%s；剧情事实：%s；本镜头重点：%s%s" % (
             action,
-            source[:100],
+            source[:90] if progression else source[:100],
             purpose,
+            "；阶段内推进：%s" % progression if progression else "",
         )
         shots.append({
             "shot_key": "shot_%02d" % (index + 1),

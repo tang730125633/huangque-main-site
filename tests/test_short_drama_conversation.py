@@ -198,6 +198,47 @@ class ShortDramaDialogueTimingTests(unittest.TestCase):
         self.assertEqual("shot_duration_invalid", raised.exception.code)
 
 
+class ShortDramaStoryboardQualityTests(unittest.TestCase):
+    def _compile_single_fact(self, shot_count):
+        return short_drama_storyboard.compile_storyboard(
+            payload(shot_count=shot_count, target_duration=60),
+            ["主持人在舞台上面对突发质疑，必须作出回应"],
+            [{
+                "character_key": "host", "name": "主持人",
+                "role_type": "main", "identity": "主持人",
+                "personality": "沉着",
+            }],
+        )
+
+    def test_repeated_story_phases_compile_distinct_visuals_before_generation(self):
+        script = self._compile_single_fact(10)
+
+        self.assertNotEqual("blocked", script["quality_gate"]["status"])
+        self.assertFalse(script["quality_gate"]["blockers"])
+        visuals = [shot["visual"] for shot in script["shots"]]
+        self.assertEqual(len(visuals), len(set(visuals)))
+        self.assertTrue(all(shot["provider_prompt"] for shot in script["shots"]))
+
+    def test_fifteen_shot_boundary_keeps_each_visual_distinct(self):
+        script = self._compile_single_fact(15)
+
+        self.assertNotEqual("blocked", script["quality_gate"]["status"])
+        self.assertFalse(script["quality_gate"]["blockers"])
+        visuals = [shot["visual"] for shot in script["shots"]]
+        self.assertEqual(15, len(set(visuals)))
+
+    def test_quality_gate_still_rejects_genuinely_identical_visuals(self):
+        script = self._compile_single_fact(6)
+        script["shots"][1]["visual"] = script["shots"][0]["visual"]
+
+        quality = short_drama_storyboard.analyze_quality(script)
+
+        self.assertIn(
+            "duplicate_visual",
+            [item["code"] for item in quality["blockers"]],
+        )
+
+
 class ShortDramaConversationTests(unittest.TestCase):
     def test_live_action_script_keeps_confirmed_role_keys_and_ignores_incidental_friends(self):
         role_contract = [{
@@ -1945,7 +1986,7 @@ class ShortDramaConversationTests(unittest.TestCase):
         self.assertFalse(any("剧情是怎么样" in item for item in dialogue))
         self.assertIn("两位旧友在雨夜重逢", script["overview"]["logline"])
         self.assertEqual(
-            "conversation-storyboard-v4",
+            "conversation-storyboard-v5",
             generated["current_script"]["model_version"],
         )
         self.assertEqual(
