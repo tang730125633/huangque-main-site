@@ -887,6 +887,26 @@ def _latest_refinement(conn, project_id):
     ).fetchone())
 
 
+def _candidate_reassembly_state(
+        conn, project_id, source_version_id, completed=None):
+    """Validate the live source or completed result for the strict workflow."""
+    current = _latest_refinement(conn, project_id)
+    expected_id = str((completed or {}).get("id") or source_version_id)
+    if not current or current["id"] != expected_id:
+        raise RefinementError(
+            "refinement_version_stale",
+            "预览版本已变化，请刷新后重试",
+            409,
+        )
+    if current.get("issues"):
+        raise RefinementError(
+            "refinement_issues_remaining",
+            "仍有待处理镜头，全部采用满意候选后才能统一重新合成",
+            409,
+        )
+    return current
+
+
 def _refinement_assembly_status(conn, project, refinement):
     """Compare the preview duration with all physical shot media."""
     from . import short_drama_autodraft
@@ -2040,6 +2060,15 @@ def _reassemble_refinement(
             "相同重新装配请求正在处理中", 409,
         )
     if state == "replay":
+        if require_all_issues_resolved:
+            conn = _connection(db_factory)
+            try:
+                _project(conn, owner_username, request["project_id"])
+                _candidate_reassembly_state(
+                    conn, request["project_id"], request["version_id"], response
+                )
+            finally:
+                conn.close()
         return response
     try:
         result = _perform_reassemble_refinement(
@@ -2077,25 +2106,12 @@ def _perform_reassemble_refinement(
     lease_keeper = None
     try:
         project = _project(conn, owner_username, project_id)
-        if require_all_issues_resolved:
-            requested_source = _refinement(conn.execute(
-                "SELECT * FROM short_drama_refinement_versions "
-                "WHERE id=? AND project_id=?",
-                (source_version_id, project_id),
-            ).fetchone())
-            if not requested_source:
-                raise RefinementError(
-                    "refinement_version_stale",
-                    "预览版本已变化，请刷新后重试",
-                    409,
-                )
-            if requested_source.get("issues"):
-                raise RefinementError(
-                    "refinement_issues_remaining",
-                    "仍有待处理镜头，全部采用满意候选后才能统一重新合成",
-                    409,
-                )
+        source = None
         completed = _reassembly_for_source(conn, project_id, source_version_id)
+        if require_all_issues_resolved:
+            source = _candidate_reassembly_state(
+                conn, project_id, source_version_id, completed
+            )
         if completed:
             completed["assembly_status"] = _refinement_assembly_status(
                 conn, project, completed
@@ -2104,11 +2120,12 @@ def _perform_reassemble_refinement(
             completed["provider_called"] = False
             completed["idempotent_replay"] = True
             return completed
-        source = _latest_refinement(conn, project_id)
-        if not source or source["id"] != source_version_id:
-            raise RefinementError(
-                "refinement_version_stale", "预览版本已变化，请刷新后重试", 409
-            )
+        if source is None:
+            source = _latest_refinement(conn, project_id)
+            if not source or source["id"] != source_version_id:
+                raise RefinementError(
+                    "refinement_version_stale", "预览版本已变化，请刷新后重试", 409
+                )
         staged_replacements = list(
             (source.get("media") or {}).get("staged_replacements") or []
         )
@@ -2141,6 +2158,10 @@ def _perform_reassemble_refinement(
                 raise RefinementError(
                     "refinement_reassembly_result_missing",
                     "重新装配记录缺少成功版本，请稍后重试", 409,
+                )
+            if require_all_issues_resolved:
+                _candidate_reassembly_state(
+                    conn, project_id, source_version_id, completed
                 )
             completed["assembly_status"] = _refinement_assembly_status(
                 conn, project, completed
@@ -2250,6 +2271,10 @@ def _perform_reassemble_refinement(
         lease_keeper.ensure_active()
         completed = _reassembly_for_source(conn, project_id, source_version_id)
         if completed:
+            if require_all_issues_resolved:
+                _candidate_reassembly_state(
+                    conn, project_id, source_version_id, completed
+                )
             now = int(time.time())
             conn.execute(
                 "UPDATE short_drama_reassembly_operations SET "
@@ -2536,6 +2561,7 @@ def start_refinement_job(
 ):
     project_id = str(body.get("project_id") or "").strip()
     shot_key = str(body.get("shot_key") or "").strip()
+    requested_source_id = str(body.get("source_version_id") or "").strip()
     defer_reassembly = body.get("defer_reassembly") is True
     key = _key(idempotency_key)
     conn = _connection(db_factory)
@@ -2556,6 +2582,11 @@ def start_refinement_job(
                 or item["shot_key"] != shot_key
                 or item.get("defer_reassembly") is not defer_reassembly
                 or (
+                    requested_source_id
+                    and requested_source_id
+                    != str(item.get("source_version_id") or "")
+                )
+                or (
                     requested_replacement_id
                     and requested_replacement_id
                     != str(item.get("replacement_provider_version_id") or "")
@@ -2570,8 +2601,7 @@ def start_refinement_job(
             conn.commit()
             return item
         source = _seed_refinement(conn, project_id, actor_username)
-        requested_source = str(body.get("source_version_id") or "")
-        if requested_source and requested_source != source["id"]:
+        if requested_source_id and requested_source_id != source["id"]:
             raise RefinementError(
                 "refinement_source_stale",
                 "精修来源版本已变化，请重新预览后提交",
