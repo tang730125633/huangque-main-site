@@ -468,6 +468,7 @@ class HQCLIAPITests(unittest.TestCase):
         douyin = "https://v.douyin.com/abc123/"
         xhs = "https://www.xiaohongshu.com/explore/note-1"
         channels = "https://weixin.qq.com/sph/Abc123"
+        channels_443 = "https://weixin.qq.com:443/sph/Abc123"
         expected = {
             "collect-content": ("collect", "/api/gen/collect", {"url": xhs, "want": ["comments"]}),
             "collect-video": ("collect", "/api/gen/collect", {"url": douyin, "want": ["video"]}),
@@ -496,6 +497,10 @@ class HQCLIAPITests(unittest.TestCase):
                 (plan["scope"], plan["generation_kind"], plan["endpoint"],
                  plan["submit_base"], plan["payload"]),
             )
+        self.assertEqual(
+            channels_443,
+            self.auth.hq_cli_api.action_plan("collect-video", {"url": channels_443})["payload"]["url"],
+        )
         with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
             self.auth.hq_cli_api.action_plan(
                 "collect-video", {"url": "https://douyin.com.evil.example/video/1"})
@@ -505,6 +510,9 @@ class HQCLIAPITests(unittest.TestCase):
         for invalid_channels in (
                 "http://weixin.qq.com/sph/Abc123",
                 "https://weixin.qq.com/sph/",
+                "https://weixin.qq.com/sph//Abc123",
+                "https://weixin.qq.com/sph/../Abc123",
+                "https://weixin.qq.com/sphx/Abc123",
                 "https://weixin.qq.com/not-sph/Abc123",
                 "https://evil.weixin.qq.com/sph/Abc123",
                 "https://weixin.qq.com:80/sph/Abc123",

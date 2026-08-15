@@ -202,6 +202,7 @@ class HQCLIContentTests(unittest.TestCase):
         cases = (
             ("collect", {"url": "https://v.douyin.com/abc123/", "want": ["video"]}, 24, "collect"),
             ("collect", {"url": "https://weixin.qq.com/sph/Abc123", "want": ["video"]}, 24, "collect"),
+            ("collect", {"url": "https://weixin.qq.com:443/sph/Abc123", "want": ["video"]}, 24, "collect"),
             ("collect_search", {"platform": "xhs", "keyword": "轻食创业", "page": 2}, 1, "collect"),
             ("leads", {
                 "keyword": "美容院拓客", "platforms": ["douyin"],
@@ -226,6 +227,9 @@ class HQCLIContentTests(unittest.TestCase):
         for invalid_channels in (
                 "http://weixin.qq.com/sph/Abc123",
                 "https://weixin.qq.com/sph/",
+                "https://weixin.qq.com/sph//Abc123",
+                "https://weixin.qq.com/sph/../Abc123",
+                "https://weixin.qq.com/sphx/Abc123",
                 "https://weixin.qq.com/not-sph/Abc123",
                 "https://evil.weixin.qq.com/sph/Abc123",
                 "https://weixin.qq.com:80/sph/Abc123",
