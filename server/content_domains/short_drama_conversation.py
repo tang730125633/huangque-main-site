@@ -168,7 +168,7 @@ def init_db(db_factory):
 
 def _project(conn, owner_username, project_id):
     cursor = conn.execute(
-        "SELECT id,title,synopsis,ratio,target_duration,shot_count,visual_style,"
+        "SELECT id,title,synopsis,ratio,target_duration,shot_count,genre,visual_style,"
         "target_platform,stage,revision FROM short_drama_projects "
         "WHERE id=? AND username=? AND deleted=0",
         (project_id, owner_username),
@@ -2079,10 +2079,10 @@ def _normalize_confirmed_contract(project, value):
             "speaker": speaker,
             "dialogue_kind": kind,
             "dialogue": dialogue,
-            "camera": _confirmed_contract_text(raw.get("camera"), "camera", 180),
+            "camera": _confirmed_contract_text(raw.get("camera"), "camera", 300),
             "sound": _confirmed_contract_text(raw.get("sound"), "sound", 220),
             "transition": _confirmed_contract_text(raw.get("transition"), "transition", 120),
-            "continuity": _confirmed_contract_text(raw.get("continuity"), "continuity", 220),
+            "continuity": _confirmed_contract_text(raw.get("continuity"), "continuity", 360),
             "summary": _confirmed_contract_text(raw.get("summary"), "summary", 220),
             "locked": bool(raw.get("locked")),
         })
@@ -2110,6 +2110,9 @@ def _normalize_confirmed_contract(project, value):
         "ratio": str(value.get("ratio") or ""),
         "duration_seconds": duration_seconds,
         "shot_count": shot_count,
+        "genre": _confirmed_contract_text(
+            value.get("genre", project.get("genre", "")), "genre", 40, required=False
+        ),
         "visual_style": _confirmed_contract_text(value.get("visual_style"), "visual_style", 120),
         "characters": characters,
         "beats": beats,
@@ -2220,6 +2223,7 @@ def _normalize_confirmed_contract(project, value):
 
 def _script_from_confirmed_contract(project, value, instruction):
     contract = _normalize_confirmed_contract(project, value)
+    genre = str(contract.get("genre") or project.get("genre") or "").strip()
     characters = [
         {
             "character_key": "character_%d" % (index + 1),
@@ -2231,17 +2235,18 @@ def _script_from_confirmed_contract(project, value, instruction):
     ]
     character_keys = {item["name"]: item["character_key"] for item in characters}
     script = short_drama_storyboard.compile_storyboard(
-        dict(project, title=contract["title"], synopsis=contract["logline"]),
+        dict(project, title=contract["title"], synopsis=contract["logline"], genre=genre),
         [contract["logline"]],
         characters,
         instruction=instruction,
         ending=contract["ending"],
-        understanding={"creative_brief": contract["logline"]},
+        understanding={"creative_brief": contract["logline"], "genre": genre},
     )
     script["overview"].update({
         "title": contract["title"], "logline": contract["logline"],
         "theme": contract["conflict"], "duration_seconds": contract["duration_seconds"],
-        "ratio": contract["ratio"], "visual_style": contract["visual_style"],
+        "ratio": contract["ratio"], "genre": genre,
+        "visual_style": contract["visual_style"],
     })
     for index, confirmed in enumerate(contract["shots"]):
         shot = script["shots"][index]
@@ -2263,8 +2268,8 @@ def _script_from_confirmed_contract(project, value, instruction):
             "camera": confirmed["camera"], "sound": confirmed["sound"],
             "transition": confirmed["transition"], "continuity": confirmed["continuity"],
             "character_keys": [character_keys[name] for name in confirmed["characters"]],
-            "provider_prompt": "%s；场景：%s；动作：%s；表情：%s；镜头：%s；连续性：%s" % (
-                contract["visual_style"], confirmed["scene"], confirmed["action"],
+            "provider_prompt": "%s%s；场景：%s；动作：%s；表情：%s；镜头：%s；连续性：%s" % (
+                ("题材：%s；" % genre) if genre else "", contract["visual_style"], confirmed["scene"], confirmed["action"],
                 confirmed["expression"], confirmed["camera"], confirmed["continuity"],
             ),
             "locked": confirmed["locked"],
@@ -2472,13 +2477,16 @@ _SHOT_EDIT_FIELDS = {
     "scene": 80,
     "purpose": 160,
     "visual": 360,
-    "camera": 180,
-    "continuity": 220,
+    "camera": 300,
+    "continuity": 360,
+    "sound_design": 600,
     "provider_prompt": 1200,
     "negative_prompt": 500,
 }
 _DIALOGUE_KINDS = {"dialogue", "voiceover", "on_screen_text", "silence"}
 _SPEECH_RATES = {1.0, 1.15, 1.3, 1.5, 2.0}
+_DIALOGUE_TIMING_MODES = {"sequential", "simultaneous"}
+_MAX_DIALOGUES_PER_SHOT = 6
 
 
 def _current_editable_version(conn, project_id, current, version_id):
@@ -2492,7 +2500,7 @@ def _current_editable_version(conn, project_id, current, version_id):
     return version
 
 
-def _shot_and_line(script, shot_key):
+def _shot_and_lines(script, shot_key):
     shots = script.get("shots") or []
     shot = next(
         (item for item in shots if str(item.get("shot_key")) == shot_key),
@@ -2501,17 +2509,23 @@ def _shot_and_line(script, shot_key):
     if not shot:
         raise ConversationError("shot_not_found", "镜头不存在", 404)
     line_ids = list(shot.get("dialogue_line_ids") or [])
-    line = next(
-        (
-            item
-            for item in script.get("dialogue_lines") or []
-            if str(item.get("id")) in line_ids
-        ),
-        None,
-    )
-    if not line:
+    line_by_id = {
+        str(item.get("id")): item
+        for item in script.get("dialogue_lines") or []
+        if isinstance(item, dict)
+    }
+    lines = [line_by_id.get(str(line_id)) for line_id in line_ids]
+    if any(line is None for line in lines):
         raise ConversationError("shot_dialogue_missing", "镜头台词结构不完整", 422)
-    return shot, line
+    return shot, lines
+
+
+def _shot_and_line(script, shot_key):
+    """Legacy helper for call sites that still require one generated line."""
+    shot, lines = _shot_and_lines(script, shot_key)
+    if not lines:
+        raise ConversationError("shot_dialogue_missing", "镜头台词结构不完整", 422)
+    return shot, lines[0]
 
 
 def _rebalance_duration(script, edited_shot, requested_seconds):
@@ -2564,7 +2578,7 @@ def _structure_shot(script, shot_key, action, instruction=""):
         )
     if action == "delete" and len(shots) <= 1:
         raise ConversationError("last_shot_required", "至少保留一个镜头", 422)
-    shot, line = _shot_and_line(script, shot_key)
+    shot, shot_lines = _shot_and_lines(script, shot_key)
     index = shots.index(shot)
     affected = [shot]
     for offset in neighbor_offsets[action]:
@@ -2584,10 +2598,17 @@ def _structure_shot(script, shot_key, action, instruction=""):
         ]
     elif action in {"copy", "insert_before", "insert_after", "smart_insert"}:
         clone = _json(_json_text(shot), {})
-        clone_line = _json(_json_text(line), {})
         clone["shot_key"] = _new_structure_key(script, "shot_user", "shots", "shot_key")
-        clone_line["id"] = _new_structure_key(script, "line_user", "dialogue_lines", "id")
-        clone["dialogue_line_ids"] = [clone_line["id"]]
+        cloned_lines = []
+        if action == "copy":
+            for source_line in shot_lines:
+                cloned_line = _json(_json_text(source_line), {})
+                cloned_line["id"] = _new_structure_key(
+                    script, "line_user", "dialogue_lines", "id"
+                )
+                cloned_lines.append(cloned_line)
+                script.setdefault("dialogue_lines", []).append(cloned_line)
+        clone["dialogue_line_ids"] = [line["id"] for line in cloned_lines]
         clone["locked"] = False
         insert_at = index if action == "insert_before" else index + 1
         if action == "copy":
@@ -2607,9 +2628,7 @@ def _structure_shot(script, shot_key, action, instruction=""):
             )
             clone["continuity"] = "继承相邻镜头的时间、场景、人物位置、服装和关键道具"
             clone["provider_prompt"] = "%s。保持前后镜头人物、场景、光线和动作连续。" % clone["visual"]
-            clone_line.update({"kind": "silence", "character_key": "", "speaker": "", "text": "", "estimated_reading_seconds": 0.0})
         shots.insert(insert_at, clone)
-        script.setdefault("dialogue_lines", []).append(clone_line)
     elif action in {"move_up", "move_down"}:
         target = index - 1 if action == "move_up" else index + 1
         if 0 <= target < len(shots):
@@ -2621,8 +2640,150 @@ def _structure_shot(script, shot_key, action, instruction=""):
     return script
 
 
+def _replace_shot_dialogues(script, shot, current_lines, dialogues):
+    if not isinstance(dialogues, list):
+        raise ConversationError("dialogue_invalid", "台词列表格式无效", 422)
+    if len(dialogues) > _MAX_DIALOGUES_PER_SHOT:
+        raise ConversationError(
+            "dialogue_count_invalid", "每个镜头最多填写 6 条台词", 422
+        )
+    if len(dialogues) == 1 and isinstance(dialogues[0], dict) \
+            and str(dialogues[0].get("kind") or "") == "silence":
+        dialogues = []
+    characters = {
+        str(item.get("character_key") or ""): item
+        for item in script.get("characters") or []
+        if isinstance(item, dict)
+    }
+    current_ids = [str(item.get("id") or "") for item in current_lines]
+    existing_ids = {
+        str(item.get("id") or "")
+        for item in script.get("dialogue_lines") or []
+        if isinstance(item, dict)
+    }
+    reserved_ids = set()
+
+    def next_line_id():
+        while True:
+            value = "line_user_%s" % uuid.uuid4().hex[:10]
+            if value not in existing_ids and value not in reserved_ids:
+                return value
+
+    normalized = []
+    for index, raw in enumerate(dialogues):
+        if not isinstance(raw, dict):
+            raise ConversationError("dialogue_invalid", "台词列表格式无效", 422)
+        kind = str(raw.get("kind") or "dialogue").strip()
+        if kind not in _DIALOGUE_KINDS or kind == "silence":
+            raise ConversationError(
+                "dialogue_kind_invalid", "台词列表不能混入静默条目", 422
+            )
+        value = str(raw.get("text") or "").strip()
+        if not value:
+            raise ConversationError(
+                "dialogue_text_required", "每条台词都必须填写内容", 422
+            )
+        if len(value) > 120:
+            raise ConversationError(
+                "dialogue_too_long", "每条台词不能超过 120 字", 422
+            )
+        try:
+            speech_rate = float(raw.get("speech_rate") or 1.0)
+        except (TypeError, ValueError):
+            speech_rate = 1.0
+        if speech_rate not in _SPEECH_RATES:
+            raise ConversationError("speech_rate_invalid", "请选择有效的语速", 422)
+        character_key = str(raw.get("character_key") or "").strip()
+        if kind in {"dialogue", "voiceover"}:
+            character = characters.get(character_key)
+            if not character:
+                raise ConversationError(
+                    "speaker_unknown", "每条人物对白或旁白都必须选择有效角色", 422
+                )
+            speaker = str(character.get("name") or "").strip()
+        else:
+            character_key, speaker, speech_rate = "", "画面文字", 1.0
+        requested_id = str(raw.get("id") or "").strip()
+        if requested_id in current_ids and requested_id not in reserved_ids:
+            line_id = requested_id
+        elif index < len(current_ids) and current_ids[index] not in reserved_ids:
+            line_id = current_ids[index]
+        else:
+            line_id = next_line_id()
+        reserved_ids.add(line_id)
+        timing_mode = str(raw.get("timing_mode") or "sequential").strip()
+        if timing_mode not in _DIALOGUE_TIMING_MODES:
+            raise ConversationError(
+                "dialogue_timing_mode_invalid", "请选择有效的说话顺序", 422
+            )
+        if index == 0:
+            timing_mode = "sequential"
+        line = {
+            "id": line_id,
+            "kind": kind,
+            "character_key": character_key,
+            "speaker": speaker,
+            "text": value,
+            "speech_rate": speech_rate,
+            "timing_mode": timing_mode,
+        }
+        line["estimated_reading_seconds"] = (
+            short_drama_storyboard._reading_seconds(line)
+            if kind in {"dialogue", "voiceover"} else 0.0
+        )
+        normalized.append(line)
+
+    spoken_seconds = 0.0
+    parallel_group_seconds = 0.0
+    for index, item in enumerate(normalized):
+        line_seconds = float(item.get("estimated_reading_seconds") or 0)
+        if index > 0 and item.get("timing_mode") == "simultaneous":
+            parallel_group_seconds = max(parallel_group_seconds, line_seconds)
+        else:
+            spoken_seconds += parallel_group_seconds
+            parallel_group_seconds = line_seconds
+    spoken_seconds += parallel_group_seconds
+    duration_seconds = float(shot.get("duration_seconds") or 0)
+    if spoken_seconds > duration_seconds:
+        raise ConversationError(
+            "dialogue_too_long",
+            "全部台词预计需要 %.1f 秒，超过当前镜头 %.1f 秒可用时长"
+            % (spoken_seconds, duration_seconds),
+            422,
+        )
+
+    all_lines = list(script.get("dialogue_lines") or [])
+    old_ids = set(current_ids)
+    insertion_index = next(
+        (index for index, item in enumerate(all_lines)
+         if str(item.get("id") or "") in old_ids),
+        len(all_lines),
+    )
+    remaining = [
+        item for item in all_lines if str(item.get("id") or "") not in old_ids
+    ]
+    insertion_index = min(insertion_index, len(remaining))
+    script["dialogue_lines"] = (
+        remaining[:insertion_index] + normalized + remaining[insertion_index:]
+    )
+    shot["dialogue_line_ids"] = [item["id"] for item in normalized]
+
+
+def _preserve_dialogue_timing_modes(original_lines, replacement_lines):
+    for index, line in enumerate(replacement_lines):
+        if not isinstance(line, dict):
+            continue
+        original = original_lines[index] if index < len(original_lines) else {}
+        line["timing_mode"] = (
+            "simultaneous"
+            if index > 0 and original.get("timing_mode") == "simultaneous"
+            else "sequential"
+        )
+    return replacement_lines
+
+
 def _apply_shot_patch(script, shot_key, changes):
-    shot, line = _shot_and_line(script, shot_key)
+    shot, current_lines = _shot_and_lines(script, shot_key)
     if bool(shot.get("locked")):
         raise ConversationError("shot_locked", "请先解锁当前镜头再修改", 409)
     for field, limit in _SHOT_EDIT_FIELDS.items():
@@ -2636,57 +2797,15 @@ def _apply_shot_patch(script, shot_key, changes):
         shot[field] = value
     if "duration_seconds" in changes:
         _rebalance_duration(script, shot, changes["duration_seconds"])
-    dialogue = changes.get("dialogue")
-    if dialogue is not None:
+    if "dialogues" in changes:
+        _replace_shot_dialogues(
+            script, shot, current_lines, changes.get("dialogues")
+        )
+    elif "dialogue" in changes:
+        dialogue = changes.get("dialogue")
         if not isinstance(dialogue, dict):
             raise ConversationError("dialogue_invalid", "台词修改格式无效", 422)
-        kind = str(dialogue.get("kind") or line.get("kind") or "dialogue")
-        if kind not in _DIALOGUE_KINDS:
-            raise ConversationError("dialogue_kind_invalid", "台词类型无效", 422)
-        value = str(dialogue.get("text") or "").strip()
-        if kind != "silence" and not value:
-            raise ConversationError("dialogue_text_required", "非静默镜头必须填写内容", 422)
-        if len(value) > 120:
-            raise ConversationError("dialogue_too_long", "单镜头台词不能超过 120 字", 422)
-        character_key = str(dialogue.get("character_key") or "").strip()
-        speaker = str(dialogue.get("speaker") or "").strip()
-        try:
-            speech_rate = float(
-                dialogue.get("speech_rate") or line.get("speech_rate") or 1.0
-            )
-        except (TypeError, ValueError):
-            speech_rate = 1.0
-        if speech_rate not in _SPEECH_RATES:
-            raise ConversationError("speech_rate_invalid", "请选择有效的语速", 422)
-        if kind in {"dialogue", "voiceover"}:
-            character = next(
-                (
-                    item
-                    for item in script.get("characters") or []
-                    if item.get("character_key") == character_key
-                ),
-                None,
-            )
-            if not character:
-                raise ConversationError("speaker_unknown", "请选择剧本中的有效角色", 422)
-            speaker = character["name"]
-        elif kind == "on_screen_text":
-            character_key = ""
-            speaker = "画面文字"
-        else:
-            character_key = ""
-            speaker = ""
-            value = ""
-        line.update({
-            "kind": kind,
-            "character_key": character_key,
-            "speaker": speaker,
-            "text": value,
-            "speech_rate": (
-                speech_rate if kind in {"dialogue", "voiceover"} else 1.0
-            ),
-        })
-        line["estimated_reading_seconds"] = short_drama_storyboard._reading_seconds(line)
+        _replace_shot_dialogues(script, shot, current_lines, [dialogue])
     beat = next(
         (
             item
@@ -2838,7 +2957,7 @@ def _mutate_shot(
             instruction = str(body.get("instruction") or "人工编辑镜头").strip()
             summary = "人工编辑 %s" % shot_key
         elif operation == "shot_regenerate":
-            shot, _line = _shot_and_line(script, shot_key)
+            shot, original_lines = _shot_and_lines(script, shot_key)
             if bool(shot.get("locked")):
                 raise ConversationError("shot_locked", "请先解锁当前镜头再重新生成", 409)
             instruction = str(body.get("instruction") or "").strip()[:500]
@@ -2846,26 +2965,25 @@ def _mutate_shot(
             generated = None
             if shot_key.startswith("shot_user_"):
                 replacement, replacement_line = _regenerate_user_shot(
-                    script, shot, _line, instruction,
+                    script, shot, original_lines[0], instruction,
                 )
+                replacement_lines = [replacement_line]
             else:
                 messages = _messages(conn, project_id)
                 understanding = _json(current.get("understanding_json"), {})
                 generated = _script(project, messages, instruction, understanding)
-                replacement, replacement_line = _shot_and_line(generated, shot_key)
+                replacement, replacement_lines = _shot_and_lines(generated, shot_key)
                 replacement = _json(_json_text(replacement), {})
-                replacement_line = _json(_json_text(replacement_line), {})
+                replacement_lines = _json(_json_text(replacement_lines), [])
+            _preserve_dialogue_timing_modes(original_lines, replacement_lines)
             replacement["shot_key"] = shot_key
             replacement["dialogue_line_ids"] = list(shot.get("dialogue_line_ids") or [])
             replacement["duration_seconds"] = shot["duration_seconds"]
             replacement["sort_order"] = shot.get("sort_order")
             replacement["beat_key"] = shot.get("beat_key")
             replacement["source_type"] = shot.get("source_type") or replacement.get("source_type")
+            replacement["sound_design"] = str(shot.get("sound_design") or "")
             replacement["locked"] = False
-            replacement_line["id"] = _line["id"]
-            replacement_line["source_type"] = (
-                _line.get("source_type") or replacement_line.get("source_type")
-            )
             if instruction and not shot_key.startswith("shot_user_"):
                 replacement["purpose"] = instruction[:160]
                 replacement["visual"] = "%s；调整要求：%s" % (
@@ -2877,9 +2995,9 @@ def _mutate_shot(
                     instruction[:300],
                 )
             script["shots"][shot_index] = replacement
-            target_line = _shot_and_line(script, shot_key)[1]
-            line_index = script["dialogue_lines"].index(target_line)
-            script["dialogue_lines"][line_index] = replacement_line
+            _replace_shot_dialogues(
+                script, replacement, original_lines, replacement_lines
+            )
             beat_index = next(
                 (
                     index
@@ -2896,7 +3014,7 @@ def _mutate_shot(
             _validate_script(script)
             summary = "重新生成 %s" % shot_key
         else:
-            shot, _line = _shot_and_line(script, shot_key)
+            shot, _lines = _shot_and_lines(script, shot_key)
             shot["locked"] = bool(body.get("locked"))
             _validate_script(script)
             instruction = "锁定镜头" if shot["locked"] else "解锁镜头"

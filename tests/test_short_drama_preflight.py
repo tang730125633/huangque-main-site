@@ -169,6 +169,51 @@ class ShortDramaPreflightTests(unittest.TestCase):
         self.assertEqual(0, project["spent_points"])
         self.assertEqual("draft", project["stage"])
 
+    def test_material_plan_preserves_user_sound_design(self):
+        plan = short_drama_preflight._material_plan({
+            "characters": [],
+            "dialogue_lines": [],
+            "shots": [{
+                "shot_key": "shot_01", "sort_order": 1,
+                "scene": "客厅", "visual": "人物拿起饼干", "camera": "近景",
+                "sound_design": "0–2秒客厅环境声；拿起时加入包装摩擦声；结尾音乐骤停。",
+                "dialogue_line_ids": [], "character_keys": [],
+            }],
+        }, [{"shot_key": "shot_01", "start_ms": 0, "end_ms": 5000,
+             "duration_ms": 5000}])
+        self.assertEqual(
+            "0–2秒客厅环境声；拿起时加入包装摩擦声；结尾音乐骤停。",
+            plan[0]["sound_design"],
+        )
+
+    def test_material_plan_preserves_dialogue_timing_mode(self):
+        plan = short_drama_preflight._material_plan({
+            "characters": [
+                {"character_key": "sister", "name": "姐姐"},
+                {"character_key": "brother", "name": "弟弟"},
+            ],
+            "dialogue_lines": [{
+                "id": "line_1", "kind": "dialogue", "character_key": "sister",
+                "speaker": "姐姐", "text": "最后一块！", "speech_rate": 1.0,
+                "timing_mode": "sequential",
+            }, {
+                "id": "line_2", "kind": "dialogue", "character_key": "brother",
+                "speaker": "弟弟", "text": "最后一块！", "speech_rate": 1.0,
+                "timing_mode": "simultaneous",
+            }],
+            "shots": [{
+                "shot_key": "shot_01", "sort_order": 1,
+                "dialogue_line_ids": ["line_1", "line_2"],
+                "character_keys": ["sister", "brother"],
+            }],
+        }, [{"shot_key": "shot_01", "start_ms": 0, "end_ms": 5000,
+             "duration_ms": 5000}])
+        self.assertEqual(
+            ["sequential", "simultaneous"],
+            [item["timing_mode"] for item in plan[0]["dialogue"]],
+        )
+
+
     def test_confirmation_requires_explicit_warning_acceptance(self):
         locked = self._lock_script()
         prepared = short_drama_preflight.generate_plan(

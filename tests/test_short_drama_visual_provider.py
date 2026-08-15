@@ -433,6 +433,34 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
         self.assertEqual("avatar/reference.png", result["reference_image_file"])
         self.assertEqual("720p", result["resolution"])
 
+    def test_grok_publishes_local_reference_with_signed_server_url(self):
+        provider = GrokXaiShotProvider()
+        with mock.patch(
+            "content_domains.core.local_provider_reference_url",
+            return_value=(
+                "https://media.example/api/gen/file/roles/a.png"
+                "?hq_exp=4600&hq_sig=signed"
+            ),
+        ) as publish:
+            value = provider._reference_url({
+                "reference_image_file": "roles/a.png",
+            })
+
+        publish.assert_called_once_with("roles/a.png")
+        self.assertTrue(value.startswith("https://media.example/api/gen/file/"))
+
+    def test_grok_local_reference_configuration_failure_is_public_error(self):
+        provider = GrokXaiShotProvider()
+        with mock.patch(
+            "content_domains.core.local_provider_reference_url",
+            side_effect=RuntimeError("signing secret missing"),
+        ):
+            with self.assertRaises(VisualProviderError) as raised:
+                provider._reference_url({"reference_image_file": "roles/a.png"})
+
+        self.assertEqual("visual_reference_publish_failed", raised.exception.code)
+        self.assertIn("本地服务器地址", str(raised.exception))
+
     def test_grok_create_poll_and_fetch_preserve_key_affinity(self):
         provider = GrokXaiShotProvider()
         request = {

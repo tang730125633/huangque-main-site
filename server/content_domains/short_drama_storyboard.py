@@ -607,6 +607,7 @@ def compile_storyboard(project, clauses, characters, instruction="", ending="", 
         line = _fit_dialogue_to_duration(
             _dialogue(source, phase_key, speaker), durations[index]
         )
+        line["timing_mode"] = "sequential"
         normalized_line = _NORMALIZE_RE.sub("", str(line.get("text") or "")).lower()
         if normalized_line and normalized_line in used_dialogue:
             line = {
@@ -654,6 +655,7 @@ def compile_storyboard(project, clauses, characters, instruction="", ending="", 
                 "承接上一镜头的时间、服装、角色位置和关键道具"
                 if index else "建立本场时间、空间、服装和关键道具基准"
             ),
+            "sound_design": "",
             "character_keys": [item["character_key"] for item in visible],
             "dialogue_line_ids": [line_id],
             "provider_prompt": _provider_prompt(
@@ -707,7 +709,32 @@ def compile_storyboard(project, clauses, characters, instruction="", ending="", 
 def validate_script(script):
     shots = script.get("shots") or []
     lines = script.get("dialogue_lines") or []
-    if not shots or len(shots) != len(lines):
+    line_ids = [str(item.get("id") or "") for item in lines if isinstance(item, dict)]
+    referenced_line_ids = []
+    structure_invalid = (
+        not shots
+        or len(line_ids) != len(lines)
+        or not all(line_ids)
+        or len(set(line_ids)) != len(line_ids)
+    )
+    if not structure_invalid:
+        known_line_ids = set(line_ids)
+        for shot in shots:
+            shot_line_ids = [str(value or "") for value in shot.get("dialogue_line_ids") or []]
+            if (
+                len(shot_line_ids) > 6
+                or len(set(shot_line_ids)) != len(shot_line_ids)
+                or any(line_id not in known_line_ids for line_id in shot_line_ids)
+            ):
+                structure_invalid = True
+                break
+            referenced_line_ids.extend(shot_line_ids)
+        if (
+            len(set(referenced_line_ids)) != len(referenced_line_ids)
+            or set(referenced_line_ids) != known_line_ids
+        ):
+            structure_invalid = True
+    if structure_invalid:
         return {
             "status": "blocked",
             "blockers": [{"code": "script_structure_invalid", "message": "镜头与台词结构不完整"}],

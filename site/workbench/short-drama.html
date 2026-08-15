@@ -6,8 +6,8 @@
   <title>短剧 · 黄雀 AI 工作台</title>
   <script src="theme-init.js?v=11eb385e"></script>
   <link rel="stylesheet" href="theme.css?v=5873a2f4">
-  <link rel="stylesheet" href="short-drama-center.css?v=a9587907">
-  <link rel="stylesheet" href="short-drama-workspace.css?v=daaf7f13">
+  <link rel="stylesheet" href="short-drama-center.css?v=2764c507">
+  <link rel="stylesheet" href="short-drama-workspace.css?v=8f2c6b14">
 </head>
 <body>
   <div class="hq-app">
@@ -138,6 +138,24 @@
             <label>成片时长<select name="target_duration"><option value="30">15–30 秒</option><option value="45">30–60 秒</option><option value="60">60–90 秒</option></select></label>
             <label>镜头数量<select name="shot_count"><option value="6">6 镜</option><option value="8">8 镜</option><option value="10">10 镜</option></select></label>
           </div>
+          <section class="short-drama-shot-recommendation" aria-live="polite">
+            <div class="short-drama-shot-recommendation-icon">镜</div>
+            <div class="short-drama-shot-recommendation-copy">
+              <span>推荐镜头规划</span>
+              <strong id="shortDramaRecommendedShots">预计 4–6 个镜头</strong>
+              <p id="shortDramaRecommendedShotsHint">系统会先按约 6 个镜头设计剧本，再根据故事节奏自动调整；进入视频制作后仍可自由添加、删除和排序。</p>
+            </div>
+            <details class="short-drama-shot-preference">
+              <summary>高级设置（可选）</summary>
+              <label>初始镜头密度<select name="shot_density"><option value="auto">自动规划（推荐）</option><option value="compact">精简</option><option value="balanced">均衡</option><option value="rich">丰富</option></select></label>
+              <small id="shortDramaShotPreferenceHint">无需确定死镜头数，系统会把选择转换为初始规划，后续仍可调整。</small>
+            </details>
+          </section>
+          <section class="short-drama-genre-field">
+            <label>题材类型<select name="genre_choice" required><option value="">请选择题材</option><option value="都市情感">都市情感</option><option value="校园青春">校园青春</option><option value="家庭伦理">家庭伦理</option><option value="职场商战">职场商战</option><option value="悬疑推理">悬疑推理</option><option value="轻喜剧">轻喜剧</option><option value="古装剧情">古装剧情</option><option value="__custom__">其他</option></select></label>
+            <label data-genre-custom hidden>自定义题材<input name="genre_custom" maxlength="40" placeholder="例如：科幻冒险"></label>
+            <small>题材会用于故事结构、人物冲突和分镜节奏建议。</small>
+          </section>
           <label>视觉风格<input name="visual_style" maxlength="120" value="电影感写实"></label>
           <div class="short-drama-import-error" id="shortDramaLiveActionError" hidden></div>
           <footer><button class="short-drama-secondary" type="button" data-action="back-create-choice">← 返回</button><button class="short-drama-primary" type="submit">下一步：剧本设计</button></footer>
@@ -155,11 +173,11 @@
           <footer><button class="short-drama-secondary" id="shortDramaEditLiveAction" type="button">← 修改故事设定</button><span class="short-drama-role-status" id="shortDramaRoleStatus">请完善当前角色</span><button class="short-drama-secondary" id="shortDramaSaveRole" type="button">保存当前角色</button><button class="short-drama-primary" id="shortDramaConfirmRoles" type="button">确认角色并创建项目</button></footer>
         </section>
         <section class="short-drama-core-story" id="shortDramaCoreStory" hidden>
-          <header><div><span>STEP 2 · SCRIPT DESIGN</span><strong>设计并确认剧本</strong><p>填写故事想法或完整原稿，系统会整理核心故事和剧情结构；确认后再根据剧本建立角色。</p></div></header>
+          <header><div><span>STEP 2 · COMPLETE STORY</span><strong>输入并确认完整故事</strong><p>填写包含人物、起因、发展、冲突、高潮和结局的完整故事。系统整理后，再根据故事建立角色和分镜。</p></div></header>
           <form id="shortDramaCoreStoryForm">
             <div class="short-drama-core-story-scroll">
-              <label class="short-drama-script-source">剧本原稿或故事设计<textarea name="script_source" required minlength="8" maxlength="50000" placeholder="可以填写故事想法，也可以粘贴完整剧本。若已有分镜要求，请一并写明。"></textarea><small><span id="shortDramaLiveActionCount">0</span> / 50,000 字</small></label>
-              <div class="short-drama-script-design-action"><p>系统会优先保留你明确写出的情节、台词、分镜和结局。</p><button class="short-drama-secondary" id="shortDramaAnalyzeStory" type="button">整理核心故事</button></div>
+              <label class="short-drama-script-source">完整故事<textarea name="script_source" required minlength="100" maxlength="50000" placeholder="请填写或粘贴完整故事，包括主要人物、故事背景、关键情节、核心冲突、高潮和结局。已有明确台词或画面要求也可以一并写入。"></textarea><small><span id="shortDramaLiveActionCount">0</span> / 50,000 字（至少 100 字）</small></label>
+              <div class="short-drama-script-design-action"><p>系统会忠实保留故事中的人物关系、关键情节、明确台词和结局。</p><button class="short-drama-secondary" id="shortDramaAnalyzeStory" type="button">整理故事结构</button></div>
               <section class="short-drama-core-story-review" id="shortDramaCoreStoryReview" hidden>
                 <label>故事标题<input name="title" required maxlength="120"></label>
                 <label>一句话故事<textarea name="logline" required maxlength="1200" placeholder="用一两句话说清人物、目标、冲突和结果"></textarea></label>
@@ -176,7 +194,7 @@
               </section>
             </div>
             <div class="short-drama-import-error" id="shortDramaCoreStoryError" hidden></div>
-            <footer><button class="short-drama-secondary" id="shortDramaBackToRoles" type="button">← 返回基本信息</button><span>确认后根据剧本建立角色</span><button class="short-drama-primary" type="submit" hidden>确认剧本，下一步：角色确认</button></footer>
+            <footer><button class="short-drama-secondary" id="shortDramaBackToRoles" type="button">← 返回基本信息</button><span>确认后根据完整故事建立角色</span><button class="short-drama-primary" type="submit" hidden>确认故事，下一步：角色确认</button></footer>
           </form>
         </section>
       </section>
@@ -322,7 +340,7 @@
   </dialog>
 
   <script src="cloud-shell.js?v=5c2643d5"></script>
-  <script src="short-drama-workspace.js?v=3a25fbe2"></script>
-  <script src="short-drama-center.js?v=f23e22f2"></script>
+  <script src="short-drama-workspace.js?v=8f2c6b14"></script>
+  <script src="short-drama-center.js?v=6f2ab1f2"></script>
 </body>
 </html>

@@ -23,6 +23,18 @@ test('独立页面加载三栏对话工作区资源', () => {
   assert.match(stamp, /Asset\("short-drama-workspace\.css"/);
 });
 
+test('镜头编辑允许填写更完整的运镜和连续性要求', () => {
+  assert.match(workspaceSource, /机位与运镜<textarea name="camera" maxlength="300"/);
+  assert.match(workspaceSource, /连续性要求<textarea name="continuity" maxlength="360"/);
+});
+
+test('镜头编辑提供单一声音设计区域并独立保存', () => {
+  assert.match(workspaceSource, /声音设计<textarea name="sound_design" maxlength="600"/);
+  assert.match(workspaceSource, /环境声、动作音效、音乐、声音转场/);
+  assert.match(workspaceSource, /sound_design:values\.sound_design/);
+  assert.match(workspaceSource, /sound_design:text\(fields\.sound_design/);
+});
+
 test('剧本确认后正式项目切换为两栏并将聊天收进只读创作记录', () => {
   const css = fs.readFileSync(
     path.join(ROOT, 'site/workbench/short-drama-workspace.css'), 'utf8'
@@ -1297,6 +1309,32 @@ test('adopting a non-latest candidate binds preview and adoption to that exact v
   );
 });
 
+test('redo steps keep async results inside stable cards and preserve the viewport once', () => {
+  const output = workspace.refinementRedoGenerationHtml({
+    shot_key:'shot_02',sort_order:2
+  }, {
+    provider_poc:{
+      shots:[{shot_key:'shot_02',sort_order:2,binding_ready:true,sequence_ready:true,character_keys:['hero']}],
+      characters:[{character_key:'hero',name:'主角',binding_ready:true}]
+    },
+    provider_preview:{shot:{shot_key:'shot_02'},ready:true,message:'参数检查通过',request:{prompt:'稳定镜头提示词'}},
+    provider_quote:{shot:{shot_key:'shot_02'},cost:30},
+    provider_job:{shot_key:'shot_02',status:'succeeded',progress:100}
+  }, true);
+  assert.match(output, /data-provider-step="2"[\s\S]*sd-refinement-step-status[\s\S]*参数检查通过[\s\S]*<\/article>/);
+  assert.match(output, /data-provider-step="3"[\s\S]*sd-refinement-step-status[\s\S]*30 点[\s\S]*<\/article>/);
+  assert.match(output, /data-provider-step="4"[\s\S]*sd-refinement-step-status[\s\S]*镜头任务[\s\S]*<\/article>/);
+  assert.match(output, /<details class="sd-refinement-step-details">/);
+  assert.doesNotMatch(output, /sd-refinement-redo-steps">[\s\S]*<\/article><div class="sd-check/);
+
+  const handlerSource = workspaceSource.slice(
+    workspaceSource.indexOf("==='provider-preflight'"),
+    workspaceSource.indexOf("==='jump-to-shot'")
+  );
+  assert.equal((handlerSource.match(/renderPreservingViewport\(\)/g)||[]).length, 3);
+  assert.doesNotMatch(handlerSource, /\.finally\(function\(\)\{busy\(false\);render\(\);\}\)/);
+});
+
 test('refinement redo sidebar is a read-only progress summary', () => {
   const output = workspace.refinementRedoSummaryHtml({
     current_refinement:{
@@ -2374,6 +2412,57 @@ test('镜头编辑只拦截错误字段并保留其余有效修改', () => {
   assert.match(workspaceStyle, /\.sd-shot-editor label\.has-error textarea/);
   assert.match(workspaceStyle, /\.sd-shot-field-error/);
   assert.match(workspaceStyle, /\.sd-shot-timing-hint\.ready/);
+});
+
+test('单镜头支持多角色有序台词并按总朗读时间校验', () => {
+  const dialogues = [
+    {kind:'dialogue', character_key:'character_1', text:'你终于来了。', speech_rate:1},
+    {kind:'dialogue', character_key:'character_2', text:'路上耽搁了一会儿。', speech_rate:1.15},
+  ];
+  assert.equal(workspace.shotTimingIssue({duration_seconds:6, dialogues}), null);
+  const status = workspace.shotTimingStatus({duration_seconds:6, dialogues});
+  assert.equal(status.dialogue_count, 2);
+  assert.ok(status.reading_seconds > 0);
+  assert.equal(
+    status.reading_seconds,
+    Math.round((
+      workspace.dialogueReadingSeconds(dialogues[0].text, 1) +
+      workspace.dialogueReadingSeconds(dialogues[1].text, 1.15)
+    ) * 100) / 100,
+  );
+  const tooMany = workspace.shotTimingIssue({
+    duration_seconds:15,
+    dialogues:Array.from({length:7}, (_, index) => ({
+      kind:'dialogue', character_key:'character_1', text:'第'+index+'句', speech_rate:2,
+    })),
+  });
+  assert.equal(tooMany.code, 'dialogue_count_invalid');
+  const missingSpeaker = workspace.shotTimingIssue({
+    duration_seconds:6,
+    dialogues:[{kind:'dialogue', character_key:'', text:'没有角色', speech_rate:1}],
+  });
+  assert.equal(missingSpeaker.dialogueIndex, 0);
+  assert.match(workspaceSource, /data-dialogue-row/);
+  assert.match(workspaceSource, /data-action="add-shot-dialogue"/);
+  assert.match(workspaceSource, /data-action="remove-shot-dialogue"/);
+  assert.match(workspaceSource, /data-action="move-shot-dialogue-up"/);
+  assert.match(workspaceSource, /data-action="move-shot-dialogue-down"/);
+  assert.match(workspaceSource, /changes\.dialogues=values\.dialogues/);
+});
+
+test('重复台词可保存且同时说话按并行组最长时长计算', () => {
+  const repeated = '这块饼干是我的呀';
+  const dialogues = [
+    {kind:'dialogue', character_key:'character_1', text:repeated, speech_rate:1, timing_mode:'sequential'},
+    {kind:'dialogue', character_key:'character_2', text:repeated, speech_rate:1, timing_mode:'simultaneous'},
+  ];
+  const status = workspace.shotTimingStatus({duration_seconds:4, dialogues});
+  assert.equal(status.issue, null);
+  assert.equal(status.reading_seconds, workspace.dialogueReadingSeconds(repeated, 1));
+  assert.ok(status.reading_seconds < workspace.dialogueReadingSeconds(repeated, 1) * 2);
+  assert.match(workspaceSource, /data-dialogue-field="timing_mode"/);
+  assert.match(workspaceSource, /与上一条同时说/);
+  assert.match(workspaceSource, /timing_mode:text\(field\('timing_mode'\)/);
 });
 
 test('镜头保存错误在当前编辑器内提示而不是外层通知', () => {

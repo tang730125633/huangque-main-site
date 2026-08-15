@@ -328,6 +328,7 @@ def _material_plan(script, duration):
                 ),
                 "text": str(line.get("text") or "").strip(),
                 "speech_rate": float(line.get("speech_rate") or 1.0),
+                "timing_mode": str(line.get("timing_mode") or "sequential"),
             })
         character_keys = [
             str(value) for value in shot.get("character_keys", []) if str(value)
@@ -346,6 +347,7 @@ def _material_plan(script, duration):
             ).strip(),
             "negative_prompt": str(shot.get("negative_prompt") or "").strip(),
             "camera": str(shot.get("camera") or "").strip(),
+            "sound_design": str(shot.get("sound_design") or "").strip(),
             "character_keys": character_keys,
             "character_names": [
                 characters.get(key) or key for key in character_keys

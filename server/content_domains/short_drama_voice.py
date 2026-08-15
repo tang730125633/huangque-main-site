@@ -1024,6 +1024,8 @@ def ensure_voice_workspace(conn, project_id, allowed_stages=None):
             source = dialogue.get(dialogue_line_id)
             if not source:
                 raise ValueError("分镜引用了不存在的台词")
+            if str(source.get("kind") or "dialogue") in {"silence", "on_screen_text"}:
+                continue
             character_key = str(source.get("character_key") or "")
             character = characters.get(character_key)
             if not character:
@@ -1462,14 +1464,35 @@ def _timeline_suggestions(lines, duration_limit=None):
         else:
             durations.append(duration)
     cursor = 0
+    group_start = 0
+    group_duration = 0
     suggestions = {}
-    for line, duration in zip(ordered, durations):
+    for index, (line, duration) in enumerate(zip(ordered, durations)):
+        simultaneous = (
+            index > 0 and line.get("timing_mode") == "simultaneous"
+        )
+        if not simultaneous:
+            if index > 0:
+                cursor = group_start + group_duration + VOICE_TIMELINE_GAP_MS
+            group_start = cursor
+            group_duration = 0
         if duration is None:
             suggestions[line["id"]] = (None, None)
             continue
-        suggestions[line["id"]] = (cursor, cursor + duration)
-        cursor += duration + VOICE_TIMELINE_GAP_MS
+        suggestions[line["id"]] = (group_start, group_start + duration)
+        group_duration = max(group_duration, duration)
     return suggestions
+
+
+def _parallel_group_ids(lines):
+    groups = {}
+    current_group = -1
+    for index, line in enumerate(sorted(
+            lines, key=lambda item: (item["sort_order"], item["id"]))):
+        if index == 0 or line.get("timing_mode") != "simultaneous":
+            current_group += 1
+        groups[line["id"]] = current_group
+    return groups
 
 
 def _timeline_blockers(shot):
@@ -1480,6 +1503,7 @@ def _timeline_blockers(shot):
         shot.get("lines", []),
         key=lambda item: (item["sort_order"], item["id"]),
     )
+    parallel_groups = _parallel_group_ids(lines)
     audio_intervals = []
     subtitle_intervals = []
     for line in lines:
@@ -1541,27 +1565,36 @@ def _timeline_blockers(shot):
                     if audio_overflow_ms > 0 else None
                 ),
             )
-        audio_intervals.append((start_ms, start_ms + duration, line_id))
+        audio_intervals.append((
+            start_ms, start_ms + duration, line_id,
+            parallel_groups.get(line_id),
+        ))
         if line.get("subtitle_visible"):
             if not str(line.get("subtitle_text") or "").strip():
                 _append_unique_blocker(
                     blockers, "timeline_invalid", shot_id, line_id
                 )
-            subtitle_intervals.append((start_ms, end_ms, line_id))
+            subtitle_intervals.append((
+                start_ms, end_ms, line_id, parallel_groups.get(line_id),
+            ))
     audio_intervals.sort(key=lambda interval: (interval[0], interval[1], interval[2]))
     subtitle_intervals.sort(
         key=lambda interval: (interval[0], interval[1], interval[2])
     )
-    for previous, current in zip(audio_intervals, audio_intervals[1:]):
-        if current[0] < previous[1]:
-            _append_unique_blocker(
-                blockers, "audio_overlap", shot_id, current[2]
-            )
-    for previous, current in zip(subtitle_intervals, subtitle_intervals[1:]):
-        if current[0] < previous[1]:
-            _append_unique_blocker(
-                blockers, "subtitle_overlap", shot_id, current[2]
-            )
+    for intervals, code in (
+            (audio_intervals, "audio_overlap"),
+            (subtitle_intervals, "subtitle_overlap")):
+        for index, current in enumerate(intervals):
+            for previous in intervals[:index]:
+                if current[0] >= previous[1] or previous[0] >= current[1]:
+                    continue
+                expected_parallel = (
+                    current[3] == previous[3] and current[0] == previous[0]
+                )
+                if not expected_parallel:
+                    _append_unique_blocker(
+                        blockers, code, shot_id, current[2]
+                    )
     return blockers
 
 
@@ -1603,6 +1636,22 @@ def build_voice_snapshot(conn, project):
             (project["id"],),
         )
     }
+    script = conn.execute(
+        "SELECT dialogue_lines_json FROM short_drama_scripts "
+        "WHERE project_id=? ORDER BY version DESC LIMIT 1",
+        (project["id"],),
+    ).fetchone()
+    dialogue_timing_modes = {
+        str(item.get("id") or ""): (
+            "simultaneous"
+            if str(item.get("timing_mode") or "") == "simultaneous"
+            else "sequential"
+        )
+        for item in _json_value(
+            script["dialogue_lines_json"] if script else None, []
+        )
+        if isinstance(item, dict)
+    }
     voice_shots = {
         row["shot_id"]: row for row in conn.execute(
             "SELECT * FROM short_drama_voice_shots WHERE project_id=?",
@@ -1615,9 +1664,13 @@ def build_voice_snapshot(conn, project):
         "ORDER BY shot_id,sort_order",
         (project["id"],),
     ):
-        lines.setdefault(row["shot_id"], []).append(
-            _line_snapshot(row, characters.get(row["character_key"], row["character_key"]))
+        line = _line_snapshot(
+            row, characters.get(row["character_key"], row["character_key"])
         )
+        line["timing_mode"] = dialogue_timing_modes.get(
+            str(row["dialogue_line_id"] or ""), "sequential"
+        )
+        lines.setdefault(row["shot_id"], []).append(line)
     line_map = {
         line["id"]: line for shot_lines in lines.values() for line in shot_lines
     }

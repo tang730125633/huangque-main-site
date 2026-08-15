@@ -4,6 +4,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.parse
 import urllib.request
 from contextlib import closing
 from pathlib import Path
@@ -16,6 +17,58 @@ from content_domains import core, cos
 
 
 class PrivateAssetsTest(unittest.TestCase):
+    def test_local_provider_reference_url_is_signed_and_expires(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(core, "OUT_DIR", Path(tmp)), \
+                patch.object(
+                    core, "LOCAL_FILE_PUBLIC_BASE_URL", "https://media.example"
+                ), \
+                patch.object(
+                    core, "LOCAL_FILE_SIGNING_SECRET", "s" * 32
+                ), \
+                patch.object(core, "LOCAL_FILE_URL_TTL", 3600):
+            reference = Path(tmp) / "short_drama_role_uploads" / "role one.png"
+            reference.parent.mkdir(parents=True)
+            reference.write_bytes(b"png")
+
+            url = core.local_provider_reference_url(
+                "short_drama_role_uploads/role one.png", now=1000
+            )
+            parsed = urllib.parse.urlparse(url)
+            query = urllib.parse.parse_qs(parsed.query)
+
+            self.assertEqual("https", parsed.scheme)
+            self.assertEqual("media.example", parsed.netloc)
+            self.assertEqual(
+                "/api/gen/file/short_drama_role_uploads/role%20one.png",
+                parsed.path,
+            )
+            self.assertTrue(core._valid_local_provider_file_signature(
+                "short_drama_role_uploads/role one.png", query, now=1000
+            ))
+            self.assertFalse(core._valid_local_provider_file_signature(
+                "short_drama_role_uploads/role one.png", query, now=4601
+            ))
+            query["hq_sig"] = ["0" * 64]
+            self.assertFalse(core._valid_local_provider_file_signature(
+                "short_drama_role_uploads/role one.png", query, now=1000
+            ))
+
+    def test_local_provider_reference_url_requires_public_https_and_image(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(core, "OUT_DIR", Path(tmp)), \
+                patch.object(core, "LOCAL_FILE_SIGNING_SECRET", "s" * 32):
+            source = Path(tmp) / "reference.txt"
+            source.write_text("not an image", encoding="utf-8")
+            with patch.object(
+                    core, "LOCAL_FILE_PUBLIC_BASE_URL", "http://media.example"):
+                with self.assertRaises(RuntimeError):
+                    core.local_provider_reference_url("reference.txt")
+            with patch.object(
+                    core, "LOCAL_FILE_PUBLIC_BASE_URL", "https://media.example"):
+                with self.assertRaises(ValueError):
+                    core.local_provider_reference_url("reference.txt")
+
     def test_output_file_byte_ranges_support_media_streaming(self):
         self.assertIsNone(core._parse_byte_range(None, 100))
         self.assertEqual(core._parse_byte_range("bytes=0-9", 100), (0, 9))
