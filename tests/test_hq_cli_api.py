@@ -466,9 +466,10 @@ class HQCLIAPITests(unittest.TestCase):
 
     def test_collect_and_leads_actions_are_strict_quoted_and_submit_to_leadgen(self):
         douyin = "https://v.douyin.com/abc123/"
+        xhs = "https://www.xiaohongshu.com/explore/note-1"
         channels = "https://weixin.qq.com/sph/Abc123"
         expected = {
-            "collect-content": ("collect", "/api/gen/collect", {"url": douyin, "want": ["comments"]}),
+            "collect-content": ("collect", "/api/gen/collect", {"url": xhs, "want": ["comments"]}),
             "collect-video": ("collect", "/api/gen/collect", {"url": douyin, "want": ["video"]}),
             "collect-transcript": ("collect", "/api/gen/collect", {"url": channels, "want": ["transcript"]}),
             "collect-search": ("collect_search", "/api/gen/collect_search",
@@ -479,7 +480,7 @@ class HQCLIAPITests(unittest.TestCase):
             }),
         }
         inputs = {
-            "collect-content": {"url": douyin},
+            "collect-content": {"url": xhs},
             "collect-video": {"url": douyin},
             "collect-transcript": {"url": channels},
             "collect-search": {"platform": "xhs", "keyword": "轻食创业", "page": 2},
@@ -501,6 +502,16 @@ class HQCLIAPITests(unittest.TestCase):
         with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
             self.auth.hq_cli_api.action_plan(
                 "collect-video", {"url": "https://mp.weixin.qq.com/s/Abc123"})
+        for invalid_channels in (
+                "http://weixin.qq.com/sph/Abc123",
+                "https://weixin.qq.com/sph/",
+                "https://weixin.qq.com/not-sph/Abc123",
+                "https://evil.weixin.qq.com/sph/Abc123",
+                "https://weixin.qq.com:444/sph/Abc123",
+                "https://user@weixin.qq.com/sph/Abc123",
+                "https://weixin.qq.com.evil.example/sph/Abc123"):
+            with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+                self.auth.hq_cli_api.action_plan("collect-video", {"url": invalid_channels})
         with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
             self.auth.hq_cli_api.action_plan(
                 "collect-search", {"platform": "douyin", "keyword": "越界页码", "page": 51})
