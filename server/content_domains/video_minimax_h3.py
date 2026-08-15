@@ -15,6 +15,7 @@ from . import provider_keys
 
 
 MODEL = "MiniMax-H3"
+LEGACY_API_BASE = "https://api.minimaxi.com"
 API_BASE = os.environ.get(
     "MINIMAX_API_BASE", "https://metaso.cn/api/minimax"
 ).rstrip("/")
@@ -89,7 +90,16 @@ def _human_error(code, detail):
     return "MetaSo MiniMax 接口失败：%s" % (detail or code)
 
 
-def _request_json(opener, method, path, body=None, timeout=90, api_key=None):
+def _api_base(value=None):
+    base = str(value or API_BASE).strip().rstrip("/")
+    if base not in {API_BASE, LEGACY_API_BASE}:
+        raise ValueError("麦克视频任务来源无效，已停止自动恢复")
+    return base
+
+
+def _request_json(
+    opener, method, path, body=None, timeout=90, api_key=None, api_base=None,
+):
     api_key = API_KEY if api_key is None else str(api_key).strip()
     if not api_key:
         raise MiniMaxCredentialRejected("尚未配置 MetaSo MiniMax API Key")
@@ -103,7 +113,8 @@ def _request_json(opener, method, path, body=None, timeout=90, api_key=None):
         headers["Content-Type"] = "application/json"
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
-        API_BASE + "/" + path.lstrip("/"), data=data, headers=headers, method=method
+        _api_base(api_base) + "/" + path.lstrip("/"),
+        data=data, headers=headers, method=method,
     )
     try:
         with opener.open(request, timeout=timeout) as response:
@@ -239,22 +250,22 @@ def build_request(
     }
 
 
-def query_task(task_id, api_key, opener=None):
+def query_task(task_id, api_key, opener=None, api_base=None):
     return _request_json(
         opener or _opener(), "GET",
         "/v2/query/video_generation/" + urllib.parse.quote(str(task_id), safe=""),
-        timeout=60, api_key=api_key,
+        timeout=60, api_key=api_key, api_base=api_base,
     )
 
 
 def _poll(opener, task_id, duration, ratio, resolution, job_id=None, heartbeat=None,
-          now=None, sleep=None, api_key=None, provider_key_id=None):
+          now=None, sleep=None, api_key=None, provider_key_id=None, api_base=None):
     now, sleep = now or time.time, sleep or time.sleep
     deadline = now() + TIMEOUT
     last_error = None
     while now() < deadline:
         try:
-            payload = query_task(task_id, api_key, opener)
+            payload = query_task(task_id, api_key, opener, api_base=api_base)
             last_error = None
         except TransientMiniMaxError as exc:
             last_error = exc
@@ -315,11 +326,11 @@ def generate(prompt, reference_images=None, ratio="9:16", duration=5,
 
 def resume(task_id, duration=5, ratio="9:16", job_id=None, heartbeat=None,
            now=None, sleep=None, api_key=None, provider_key_id=None,
-           resolution=DEFAULT_RESOLUTION):
+           resolution=DEFAULT_RESOLUTION, api_base=None):
     task_id = str(task_id or "").strip()
     if not task_id:
         raise ValueError("恢复麦克视频缺少任务编号")
     return _poll(
         _opener(), task_id, int(duration), ratio, resolution, job_id, heartbeat,
-        now, sleep, api_key, provider_key_id,
+        now, sleep, api_key, provider_key_id, api_base,
     )

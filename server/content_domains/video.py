@@ -1324,6 +1324,9 @@ def validate_xiaole_video_payload(payload, username=None):
                 "duration": int(duration),
                 "resolution": provider_request["resolution"].lower(),
                 "reference_images": refs,
+                # Persist the server-selected origin before provider submission.
+                # Client-supplied internal fields were stripped above.
+                "_minimax_api_base": video_minimax_h3.API_BASE,
             })
             return cleaned
 
@@ -5572,6 +5575,8 @@ def gen_xiaole_video(payload):
                 job_id=job_id, heartbeat=minimax_heartbeat,
                 api_key=candidate["secret"], provider_key_id=candidate["id"],
                 resolution=payload.get("resolution") or "2K",
+                api_base=(payload.get("_minimax_api_base")
+                          or video_minimax_h3.LEGACY_API_BASE),
             )
         else:
             rendered, candidate = _create_with_provider_key(

@@ -83,6 +83,77 @@ class MiniMaxH3VideoTests(unittest.TestCase):
         )
         self.assertEqual(body, json.loads(captured["request"].data.decode("utf-8")))
 
+    def test_new_payload_persists_metaso_origin_before_submission(self):
+        with patch.object(video_minimax_h3, "available", return_value=True), \
+                patch("content_domains.feature_flags.is_enabled", return_value=True):
+            payload = video.validate_xiaole_video_payload({
+                "channel": "minimax", "prompt": "舰队跃迁离去",
+                "duration": 5, "ratio": "16:9", "resolution": "2k",
+            })
+        self.assertEqual(video_minimax_h3.API_BASE, payload["_minimax_api_base"])
+
+    def test_task_query_uses_its_persisted_provider_origin(self):
+        captured = []
+
+        def request(_opener, method, path, body=None, timeout=90, api_key=None,
+                    api_base=None):
+            captured.append((method, path, api_base))
+            return {"task": {
+                "status": "succeeded",
+                "content": {"url": "https://cdn.example/task.mp4"},
+            }}
+
+        with patch.object(video_minimax_h3, "_request_json", side_effect=request), \
+                patch.object(video_minimax_h3, "_opener", return_value=object()):
+            video_minimax_h3.resume(
+                "legacy-task", api_key="secret", resolution="768p",
+                api_base=video_minimax_h3.LEGACY_API_BASE,
+                sleep=lambda _seconds: None,
+            )
+            video_minimax_h3.resume(
+                "metaso-task", api_key="secret", resolution="2k",
+                api_base=video_minimax_h3.API_BASE,
+                sleep=lambda _seconds: None,
+            )
+        self.assertEqual(video_minimax_h3.LEGACY_API_BASE, captured[0][2])
+        self.assertEqual(video_minimax_h3.API_BASE, captured[1][2])
+
+    def test_query_url_is_built_from_the_task_origin_and_rejects_unknown_hosts(self):
+        urls = []
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"task":{"status":"running"}}'
+
+        class Opener:
+            def open(self, request, timeout):
+                urls.append(request.full_url)
+                return Response()
+
+        video_minimax_h3.query_task(
+            "legacy-task", "secret", Opener(),
+            api_base=video_minimax_h3.LEGACY_API_BASE,
+        )
+        video_minimax_h3.query_task(
+            "metaso-task", "secret", Opener(),
+            api_base=video_minimax_h3.API_BASE,
+        )
+        self.assertEqual([
+            "https://api.minimaxi.com/v2/query/video_generation/legacy-task",
+            "https://metaso.cn/api/minimax/v2/query/video_generation/metaso-task",
+        ], urls)
+        with self.assertRaisesRegex(ValueError, "任务来源无效"):
+            video_minimax_h3.query_task(
+                "tampered-task", "secret", Opener(),
+                api_base="https://example.invalid/provider",
+            )
+
     def test_credential_probe_reuses_the_accepted_task_list_endpoint(self):
         with patch.object(video_minimax_h3, "_request_json", return_value={}) as request:
             self.assertTrue(video_minimax_h3.check_credentials("test-only-secret", opener=object()))
@@ -101,7 +172,8 @@ class MiniMaxH3VideoTests(unittest.TestCase):
         }}
         calls = []
 
-        def request(_opener, method, path, body=None, timeout=90, api_key=None):
+        def request(_opener, method, path, body=None, timeout=90, api_key=None,
+                    api_base=None):
             calls.append((method, path))
             return {"task_id": "h3-task-1"} if method == "POST" else succeeded
 
@@ -171,6 +243,38 @@ class MiniMaxH3VideoTests(unittest.TestCase):
         self.assertEqual("2k", generate.call_args.kwargs["resolution"])
         self.assertEqual(result["provider_video_id"], "h3-task-1")
         self.assertEqual(result["provider"], "minimax_h3_cn")
+
+    def test_shared_resume_routes_legacy_and_new_tasks_to_their_origin(self):
+        rendered = {
+            "request_id": "h3-task-1", "source_video_url": "https://cdn.example/h3.mp4",
+            "model": "MiniMax-H3", "duration": 5, "ratio": "16:9",
+            "resolution": "2k", "provider": "minimax_h3_cn",
+        }
+        existing = {
+            "request_id": "h3-task-1", "provider_key_id": "mm-key",
+            "provider": "minimax", "resolution": "768p", "ratio": "16:9",
+        }
+        for marker, expected in (
+            (None, video_minimax_h3.LEGACY_API_BASE),
+            (video_minimax_h3.API_BASE, video_minimax_h3.API_BASE),
+        ):
+            payload = {
+                "_job_id": 8, "channel": "minimax", "prompt": "舰队跃迁离去",
+                "model": "MiniMax-H3", "duration": 5, "ratio": "16:9",
+                "resolution": "2k", "reference_images": [],
+            }
+            if marker:
+                payload["_minimax_api_base"] = marker
+            with self.subTest(marker=marker), \
+                    patch.object(video, "get_resumable_grok_request", return_value=existing), \
+                    patch.object(video, "_bound_provider_key", return_value={"id": "mm-key", "secret": "secret"}), \
+                    patch.object(video, "update_video_asset_phase"), \
+                    patch.object(video_minimax_h3, "resume", return_value=rendered) as resume, \
+                    patch.object(video, "_download_xiaole_video", return_value="video/h3.mp4"), \
+                    patch.object(video, "_extract_first_frame_cover", return_value=None), \
+                    patch.object(video, "public_url", return_value="https://cos.example/h3.mp4"):
+                video.gen_xiaole_video(payload)
+            self.assertEqual(expected, resume.call_args.kwargs["api_base"])
 
     def test_ui_has_separate_people_story_entry(self):
         html = (ROOT / "site" / "workbench" / "video.html").read_text(encoding="utf-8")
