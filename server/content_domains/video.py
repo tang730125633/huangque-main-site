@@ -3908,6 +3908,10 @@ def _heygen_direct_req(method, url, body=None, ctype="application/json", timeout
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace").replace("\n", " ")[:400]
         raise RuntimeError("HeyGen直连失败: HTTP %s %s" % (e.code, detail)) from e
+    except OSError as e:
+        detail = str(getattr(e, "reason", e))[:300]
+        print("[heygen] direct %s %s -> network %s" % (method, url, detail), flush=True)
+        raise HeyGenNetworkError("HeyGen直连接口网络失败: %s" % detail) from e
 
 def _validate_restricted_download_url(url, allowed_hosts):
     try:
