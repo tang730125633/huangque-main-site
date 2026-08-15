@@ -8,6 +8,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
 from contextlib import closing
 from pathlib import Path
@@ -70,6 +71,32 @@ class PixelleTalkingAssetsTests(unittest.TestCase):
                  json.dumps(payload), refunded, owner),
             )
             connection.commit()
+
+    def paid_payload(self, plan, default_avatar, overrides=()):
+        scenes = [{"scene_id": "scene_01", "enabled": True}]
+        for index, asset_id in enumerate(overrides, 2):
+            scenes.append({
+                "scene_id": "scene_%02d" % index,
+                "enabled": True,
+                "avatar_asset_id": asset_id,
+            })
+        return {
+            "pipeline": "pixelle",
+            "talking_material": {
+                "enabled": True,
+                "plan_id": plan["plan_id"],
+                "source_hash": plan["source_hash"],
+                "ratio": 0.3,
+                "default_avatar_asset_id": default_avatar,
+                "scenes": scenes,
+            },
+        }
+
+    def plan_avatar_ids(self, plan_id):
+        with closing(sqlite3.connect(self.db)) as connection:
+            return [row[0] for row in connection.execute(
+                "SELECT asset_id FROM pixelle_talking_plan_avatars "
+                "WHERE plan_id=? ORDER BY asset_id", (plan_id,)).fetchall()]
 
     @staticmethod
     def image_data_url(fmt="PNG", declared_mime=None):
@@ -337,12 +364,16 @@ class PixelleTalkingAssetsTests(unittest.TestCase):
     def test_cleanup_retains_consumed_paid_plan_until_terminal_then_releases(self):
         avatar = self.store.store_avatar("alice", self.image_data_url())
         plan = self.store.create_plan("alice", {}, [{"text": "第一段"}])
-        self.store.bind_plan_avatars(
-            "alice", plan["plan_id"], [avatar["asset_id"]])
-        self.store.consume_plan("alice", plan["plan_id"], plan["source_hash"])
         self.create_jobs_table()
-        self.insert_job(7, status="running", plan=plan)
-        self.store.bind_plan_job("alice", plan["plan_id"], 7)
+        self.insert_job(7, status="pending", plan=plan, payload=self.paid_payload(
+            plan, avatar["asset_id"]))
+        with closing(sqlite3.connect(self.db, timeout=30)) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("BEGIN IMMEDIATE")
+            self.store.consume_and_bind_paid_plan(
+                connection, "alice", plan["plan_id"], plan["source_hash"], 7)
+            connection.execute("UPDATE jobs SET status='running' WHERE id=7")
+            connection.commit()
         future = plan["expires_at"] + 1
 
         self.store.cleanup_expired(now=future)
@@ -358,6 +389,114 @@ class PixelleTalkingAssetsTests(unittest.TestCase):
             self.store.get_plan("alice", plan["plan_id"])
         with self.assertRaises(LookupError):
             self.store.get_avatar("alice", avatar["asset_id"])
+
+    def test_paid_consume_atomically_binds_assets_and_same_job_retry_is_idempotent(self):
+        first = self.store.store_avatar("alice", self.image_data_url())
+        second = self.store.store_avatar("alice", self.image_data_url("JPEG"))
+        plan = self.store.create_plan(
+            "alice", {"ratio": 0.3},
+            [{"text": "first"}, {"text": "second"}],
+        )
+        self.create_jobs_table()
+        self.insert_job(31, plan=plan, payload=self.paid_payload(
+            plan, first["asset_id"], [second["asset_id"]]))
+
+        with closing(sqlite3.connect(self.db, timeout=30)) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("BEGIN IMMEDIATE")
+            self.store.consume_and_bind_paid_plan(
+                connection, "alice", plan["plan_id"], plan["source_hash"], 31)
+            connection.commit()
+        expected = sorted([first["asset_id"], second["asset_id"]])
+        self.assertEqual(self.plan_avatar_ids(plan["plan_id"]), expected)
+
+        with closing(sqlite3.connect(self.db, timeout=30)) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("BEGIN IMMEDIATE")
+            self.store.consume_and_bind_paid_plan(
+                connection, "alice", plan["plan_id"], plan["source_hash"], 31)
+            connection.commit()
+        self.assertEqual(self.plan_avatar_ids(plan["plan_id"]), expected)
+        self.assertEqual(
+            self.store.get_plan("alice", plan["plan_id"])["job_id"], 31)
+
+        replacement = self.paid_payload(plan, second["asset_id"])
+        with closing(sqlite3.connect(self.db)) as connection:
+            connection.execute(
+                "UPDATE jobs SET payload=? WHERE id=31",
+                (json.dumps(replacement),),
+            )
+            connection.commit()
+        with closing(sqlite3.connect(self.db, timeout=30)) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("BEGIN IMMEDIATE")
+            with self.assertRaises(ValueError):
+                self.store.consume_and_bind_paid_plan(
+                    connection, "alice", plan["plan_id"],
+                    plan["source_hash"], 31)
+            connection.rollback()
+        self.assertEqual(self.plan_avatar_ids(plan["plan_id"]), expected)
+
+    def test_different_job_cannot_reuse_consumed_plan_or_replace_retention(self):
+        first = self.store.store_avatar("alice", self.image_data_url())
+        second = self.store.store_avatar("alice", self.image_data_url("JPEG"))
+        plan = self.store.create_plan("alice", {"ratio": 0.3}, [{"text": "one"}])
+        self.create_jobs_table()
+        self.insert_job(32, plan=plan, payload=self.paid_payload(
+            plan, first["asset_id"]))
+        self.insert_job(33, plan=plan, payload=self.paid_payload(
+            plan, second["asset_id"]))
+
+        with closing(sqlite3.connect(self.db, timeout=30)) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("BEGIN IMMEDIATE")
+            self.store.consume_and_bind_paid_plan(
+                connection, "alice", plan["plan_id"], plan["source_hash"], 32)
+            connection.commit()
+        with closing(sqlite3.connect(self.db, timeout=30)) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("BEGIN IMMEDIATE")
+            with self.assertRaises(ValueError):
+                self.store.consume_and_bind_paid_plan(
+                    connection, "alice", plan["plan_id"], plan["source_hash"], 33)
+            connection.rollback()
+
+        self.assertEqual(self.plan_avatar_ids(plan["plan_id"]), [first["asset_id"]])
+        self.assertEqual(
+            self.store.get_plan("alice", plan["plan_id"])["job_id"], 32)
+
+    def test_two_paid_jobs_racing_for_one_plan_allow_only_one_winner(self):
+        avatar = self.store.store_avatar("alice", self.image_data_url())
+        plan = self.store.create_plan("alice", {"ratio": 0.3}, [{"text": "one"}])
+        self.create_jobs_table()
+        for job_id in (34, 35):
+            self.insert_job(job_id, plan=plan, payload=self.paid_payload(
+                plan, avatar["asset_id"]))
+        barrier = threading.Barrier(2)
+
+        def compete(job_id):
+            barrier.wait(timeout=5)
+            try:
+                with closing(sqlite3.connect(self.db, timeout=30)) as connection:
+                    connection.row_factory = sqlite3.Row
+                    connection.execute("BEGIN IMMEDIATE")
+                    self.store.consume_and_bind_paid_plan(
+                        connection, "alice", plan["plan_id"],
+                        plan["source_hash"], job_id)
+                    connection.commit()
+                return job_id
+            except ValueError:
+                return None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            winners = list(pool.map(compete, (34, 35)))
+        winner_ids = [item for item in winners if item is not None]
+        self.assertEqual(len(winner_ids), 1)
+        self.assertEqual(
+            self.store.get_plan("alice", plan["plan_id"])["job_id"],
+            winner_ids[0],
+        )
+        self.assertEqual(self.plan_avatar_ids(plan["plan_id"]), [avatar["asset_id"]])
 
     def test_running_paid_plan_keeps_expired_avatar_resolvable(self):
         avatar = self.store.store_avatar("alice", self.image_data_url())

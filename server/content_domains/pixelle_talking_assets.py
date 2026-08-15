@@ -586,6 +586,8 @@ def bind_plan_avatars(username: str, plan_id: str, asset_ids) -> dict:
     with closing(_connect()) as connection:
         connection.execute("BEGIN IMMEDIATE")
         plan = _owned_plan(connection, username, plan_id)
+        if plan["status"] != "active" or plan["job_id"] is not None:
+            raise ValueError("分镜方案已经用于其他任务")
         for asset_id in unique_ids:
             _owned_avatar(connection, username, asset_id)
         connection.execute(
@@ -683,6 +685,31 @@ def consume_and_bind_paid_plan(connection, username: str, plan_id: str,
             or talking.get("plan_id") != plan_id
             or talking.get("source_hash") != expected_hash):
         raise LookupError("付费任务与分镜方案不匹配")
+    default_avatar = str(talking.get("default_avatar_asset_id") or "").strip()
+    asset_ids = [default_avatar] if default_avatar else []
+    for scene in talking.get("scenes") or []:
+        if isinstance(scene, dict):
+            override = str(scene.get("avatar_asset_id") or "").strip()
+            if override:
+                asset_ids.append(override)
+    asset_ids = list(dict.fromkeys(asset_ids))
+    retained = [item["asset_id"] for item in connection.execute(
+        "SELECT asset_id FROM pixelle_talking_plan_avatars "
+        "WHERE plan_id=? ORDER BY asset_id", (plan_id,)).fetchall()]
+    expected_assets = sorted(asset_ids)
+    if row["status"] == "consumed" and row["job_id"] == int(job_id):
+        if retained != expected_assets:
+            raise ValueError("分镜方案的人物素材绑定不一致")
+        return
+    for asset_id in asset_ids:
+        _owned_avatar(connection, username, asset_id)
+    connection.execute(
+        "DELETE FROM pixelle_talking_plan_avatars WHERE plan_id=?", (plan_id,))
+    if asset_ids:
+        connection.executemany(
+            "INSERT INTO pixelle_talking_plan_avatars(plan_id,asset_id) VALUES(?,?)",
+            [(plan_id, asset_id) for asset_id in asset_ids],
+        )
     connection.execute(
         """UPDATE pixelle_talking_plans
            SET status='consumed',job_id=?,consumed_at=COALESCE(consumed_at,?),updated_at=?

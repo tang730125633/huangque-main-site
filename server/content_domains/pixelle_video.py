@@ -418,6 +418,8 @@ def _prepare_talking_material(raw, prepared, username):
     plan = pixelle_talking_assets.get_plan(username, plan_id)
     if source_hash != str(plan.get("source_hash") or ""):
         raise ValueError("分镜方案摘要不匹配")
+    if plan.get("status") != "active" or plan.get("job_id") is not None:
+        raise ValueError("分镜方案已经用于其他任务")
     source = dict(plan.get("source") or {})
     frozen_voice = (
         ("public", str(source.get("voice_id") or ""))
@@ -441,6 +443,9 @@ def _prepare_talking_material(raw, prepared, username):
         raise ValueError("提交内容与已确认的分镜方案不一致")
 
     ratio = _talking_ratio(raw)
+    frozen_ratio = _talking_ratio({"ratio": source.get("ratio")})
+    if ratio != frozen_ratio:
+        raise ValueError("提交内容与已确认的分镜方案不一致")
     raw_scenes = raw.get("scenes")
     if not isinstance(raw_scenes, list) or not raw_scenes:
         raise ValueError("请明确选择至少一个口播分镜")
@@ -485,8 +490,6 @@ def _prepare_talking_material(raw, prepared, username):
                                     str(avatar.get("sha256") or ""))
                 or not isinstance(avatar.get("data"), bytes)):
             raise LookupError("人物图片不存在或已失效")
-    pixelle_talking_assets.bind_plan_avatars(username, plan_id, unique_asset_ids)
-
     frozen_lines = []
     for item in plan_scenes:
         scene_id = str(item.get("scene_id") or "")
@@ -506,7 +509,7 @@ def _prepare_talking_material(raw, prepared, username):
         "enabled": True,
         "plan_id": plan_id,
         "source_hash": source_hash,
-        "ratio": ratio,
+        "ratio": frozen_ratio,
         "default_avatar_asset_id": default_avatar,
         "scenes": selected,
     }
@@ -551,7 +554,8 @@ def _talking_ratio(payload):
             or ratio < MIN_TALKING_RATIO
             or ratio > MAX_TALKING_RATIO):
         raise ValueError("口播比例必须在 10%-50% 之间")
-    return ratio
+    return float(Decimal(str(ratio)).quantize(
+        Decimal("0.000001"), rounding=ROUND_HALF_UP))
 
 
 def _recommended_scene_ids(scenes, ratio):

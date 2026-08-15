@@ -266,8 +266,76 @@ class PixelleVideoTests(unittest.TestCase):
         self.assertNotIn("username", json.dumps(prepared, ensure_ascii=False))
         self.assertNotIn("file_path", json.dumps(prepared, ensure_ascii=False))
         self.assertEqual(read_avatar.call_count, 2)
-        bind_avatars.assert_called_once_with(
-            "alice", plan["plan_id"], [default_id, override_id])
+        bind_avatars.assert_not_called()
+
+    def test_prepare_talking_requires_the_frozen_ratio_before_charge(self):
+        plan = self._talking_plan()
+        avatar_id = "local_avatar_" + "1" * 32
+        request = {
+            "text": "\u539f\u59cb\u4e3b\u9898",
+            "mode": "generate",
+            "voice": "public:zh-CN-YunjianNeural",
+            "talking_material": {
+                "enabled": True,
+                "plan_id": plan["plan_id"],
+                "source_hash": plan["source_hash"],
+                "ratio": 0.5,
+                "default_avatar_asset_id": avatar_id,
+                "scenes": [{"scene_id": "scene_01", "enabled": True}],
+            },
+        }
+        voices = [{"id": "public:zh-CN-YunjianNeural", "scope": "public"}]
+        avatar = {
+            "asset_id": avatar_id, "mime": "image/png",
+            "sha256": "c" * 64, "data": b"avatar",
+        }
+        with mock.patch.object(self.pixelle, "public_voices", return_value=voices), \
+             mock.patch.object(self.pixelle.pixelle_talking_assets, "get_plan",
+                               return_value=plan), \
+             mock.patch.object(self.pixelle.pixelle_talking_assets, "read_avatar",
+                               return_value=avatar) as read_avatar:
+            with self.assertRaises(ValueError):
+                self.pixelle.prepare_payload(request, "alice")
+        read_avatar.assert_not_called()
+
+        request["talking_material"]["ratio"] = 0.30000000000000004
+        with mock.patch.object(self.pixelle, "public_voices", return_value=voices), \
+             mock.patch.object(self.pixelle.pixelle_talking_assets, "get_plan",
+                               return_value=plan), \
+             mock.patch.object(self.pixelle.pixelle_talking_assets, "read_avatar",
+                               return_value=avatar):
+            prepared = self.pixelle.prepare_payload(request, "alice")
+        self.assertEqual(prepared["talking_material"]["ratio"], 0.3)
+
+    def test_prepare_talking_rejects_a_consumed_plan_without_mutating_assets(self):
+        plan = self._talking_plan()
+        plan.update({"status": "consumed", "job_id": 41})
+        avatar_id = "local_avatar_" + "1" * 32
+        request = {
+            "text": "\u539f\u59cb\u4e3b\u9898",
+            "mode": "generate",
+            "voice": "public:zh-CN-YunjianNeural",
+            "talking_material": {
+                "enabled": True,
+                "plan_id": plan["plan_id"],
+                "source_hash": plan["source_hash"],
+                "ratio": 0.3,
+                "default_avatar_asset_id": avatar_id,
+                "scenes": [{"scene_id": "scene_01", "enabled": True}],
+            },
+        }
+        voices = [{"id": "public:zh-CN-YunjianNeural", "scope": "public"}]
+        with mock.patch.object(self.pixelle, "public_voices", return_value=voices), \
+             mock.patch.object(self.pixelle.pixelle_talking_assets, "get_plan",
+                               return_value=plan), \
+             mock.patch.object(self.pixelle.pixelle_talking_assets,
+                               "read_avatar") as read_avatar, \
+             mock.patch.object(self.pixelle.pixelle_talking_assets,
+                               "bind_plan_avatars") as bind_avatars:
+            with self.assertRaises(ValueError):
+                self.pixelle.prepare_payload(request, "alice")
+        read_avatar.assert_not_called()
+        bind_avatars.assert_not_called()
 
     def test_prepare_talking_rejects_cross_owner_hash_scene_and_avatar_drift(self):
         plan = self._talking_plan()
