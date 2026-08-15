@@ -23,10 +23,20 @@ $ hq capabilities --json
 
 ## 安装
 
-需要 Python 3.10+：
+需要 Python 3.10+。
+
+Windows 10/11（PowerShell 5.1 或 7）：
+
+```powershell
+irm https://raw.githubusercontent.com/tang730125633/huangque-cli/v0.10.0/install.ps1 | iex
+```
+
+安装后重新打开 PowerShell，运行 `hq version --json`。程序安装到 `%LOCALAPPDATA%\Huangque\hq-cli`，安装器会幂等更新当前用户 PATH。卸载时下载同版本 `uninstall.ps1` 后运行；默认保留登录凭据，加 `-PurgeCredentials` 才会删除。
+
+macOS / Linux：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/tang730125633/huangque-cli/v0.9.0/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/tang730125633/huangque-cli/v0.10.0/install.sh | sh
 ```
 
 安装脚本会校验版本化 wheel 的 SHA-256，将程序放到 `~/.local/share/hq-cli/`，并创建 `~/.local/bin/hq`。
@@ -42,7 +52,7 @@ hq capabilities --json
 hq describe ip12-projects --json
 ```
 
-`hq login` 使用浏览器设备授权。CLI 不接触账号密码或网页 Cookie；访问令牌只保存在本机 `~/.config/hq-cli/credentials.json`，权限为 `0600`，并可通过 `hq logout` 撤销。
+`hq login` 使用浏览器设备授权。CLI 不接触账号密码或网页 Cookie；访问令牌在 macOS/Linux 保存到权限为 `0600` 的 `~/.config/hq-cli/credentials.json`，在 Windows 保存到 `%APPDATA%\Huangque\hq-cli\credentials.json` 并由当前 Windows 用户的 DPAPI 加密。可通过 `hq logout` 撤销。
 
 ## 页面入口不等于直接执行
 
@@ -93,6 +103,12 @@ hq run image-generate --input @image.json --confirm --quote-token '<quote_token>
 
 ```sh
 hq run video-upload --file /absolute/path/reference.mp4 --confirm --json
+```
+
+Windows PowerShell 使用完整驱动器路径，例如：
+
+```powershell
+hq run video-upload --file "C:\Users\Alice\Videos\reference.mp4" --confirm --json
 ```
 
 上传只取得短期私有 `upload_id`；真正生成仍需先获取报价，再以完全相同的输入携带 `--confirm --quote-token` 提交。

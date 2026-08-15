@@ -10,7 +10,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "site/downloads/hq/install.sh"
-VERSION = "0.9.0"
+WINDOWS_INSTALLER = ROOT / "site/downloads/hq/install.ps1"
+WINDOWS_UNINSTALLER = ROOT / "site/downloads/hq/uninstall.ps1"
+VERSION = "0.10.0"
 RELEASE = ROOT / ("site/downloads/hq/v" + VERSION)
 WHEEL = RELEASE / ("huangque_hq_cli-%s-py3-none-any.whl" % VERSION)
 SOURCE = ROOT / "tools/hq-cli/src/hq_cli"
@@ -28,6 +30,29 @@ class HQCLIDistributionTests(unittest.TestCase):
         self.assertNotIn("sudo", source)
         self.assertNotIn("eval", source)
         self.assertNotIn("HQ_INSTALL", source)
+
+        powershell = WINDOWS_INSTALLER.read_text(encoding="utf-8")
+        self.assertIn('$WheelSha256 = "%s"' % expected, powershell)
+        self.assertIn('https://huangquechuanmei.com/downloads/hq/v%s/$WheelName' % VERSION, powershell)
+        self.assertIn('PowerShell 5.1', (ROOT / "tools/hq-cli/README.md").read_text(encoding="utf-8"))
+
+    def test_windows_install_and_uninstall_are_managed(self):
+        install = WINDOWS_INSTALLER.read_text(encoding="utf-8")
+        uninstall = WINDOWS_UNINSTALLER.read_text(encoding="utf-8")
+        self.assertIn('"Huangque\\hq-cli"', install)
+        self.assertIn(':: Huangque HQ CLI managed launcher', install)
+        self.assertIn('[Environment]::SetEnvironmentVariable("Path", $NewPath, "User")', install)
+        self.assertIn('$PurgeCredentials', uninstall)
+        self.assertIn('refusing to delete', uninstall)
+
+    def test_homepage_offers_windows_and_mac_cli_downloads(self):
+        home = (ROOT / "site/index.html").read_text(encoding="utf-8")
+        self.assertIn('href="/downloads/hq/install.ps1">Windows CLI', home)
+        self.assertIn('href="/downloads/hq/install.sh">Mac CLI', home)
+        self.assertIn('>WINDOWS</strong><code data-command>irm ', home)
+        self.assertIn('>MAC</strong><code data-command>curl ', home)
+        self.assertEqual(2, home.count('<button type="button" data-copy>'))
+        self.assertIn("copyButton.closest('.install-line').querySelector('[data-command]')", home)
 
     def test_installer_refuses_regular_file_and_uses_versioned_target(self):
         source = INSTALLER.read_text(encoding="utf-8")

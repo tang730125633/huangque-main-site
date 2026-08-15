@@ -6,7 +6,7 @@
   <meta name="description" content="黄雀 AI：从 IP12、Agent 与无限画布，到图文音视频生产和 HQ CLI。">
   <title>黄雀 AI · 会持续生长的内容系统</title>
   <link rel="icon" href="/assets/logo_sparrow.png">
-  <link rel="stylesheet" href="/homepage.css?v=28d9d062">
+  <link rel="stylesheet" href="/homepage.css?v=b4dadc16">
   <script src="/assets/home/orbit-gallery.js?v=53db89b7" defer></script>
 </head>
 <body>
@@ -49,7 +49,7 @@
             <details class="mobile-nav-group"><summary>IP12</summary><div><a href="/workbench/ip12">进入 IP12</a><a href="/workbench/script?prefill=ip12">带入文案</a><a href="/workbench/video?prefill=ip12">带入视频</a></div></details>
             <details class="mobile-nav-group"><summary>Agent + Canvas</summary><div><a href="/workbench/canvas">无限画布</a><a href="/workbench/short-drama">短剧创作</a><a href="/workbench/collect">内容爬取</a></div></details>
             <details class="mobile-nav-group"><summary>视频生成</summary><div><a href="/workbench/video">视频生成中心</a><a href="/workbench/text-video">文案成片</a><a href="/workbench/one-click-video">一键成片</a><a href="/workbench/assets">视频资产</a></div></details>
-            <details class="mobile-nav-group"><summary>CLI</summary><div><a href="/downloads/hq/install.sh">安装 HQ CLI</a><a href="/workbench/device">设备授权</a></div></details>
+            <details class="mobile-nav-group"><summary>CLI</summary><div><a href="/downloads/hq/install.ps1">Windows 安装</a><a href="/downloads/hq/install.sh">macOS / Linux 安装</a><a href="/workbench/device">设备授权</a></div></details>
             <a class="mobile-login" href="/login">登录 / 注册</a>
           </div>
         </details>
@@ -98,7 +98,8 @@
         <section class="nav-drawer" id="nav-drawer-cli" data-nav-panel="cli" aria-hidden="true" inert>
           <div class="nav-drawer-intro"><span>HQ CLI</span><h2>把能力接入你的 Agent</h2><p>使用设备授权调用黄雀能力，不交出网页登录密码。</p></div>
           <div class="nav-drawer-grid">
-            <a href="/downloads/hq/install.sh"><b>安装 HQ CLI</b><span>下载官方安装脚本</span></a>
+            <a href="/downloads/hq/install.ps1"><b>Windows 安装</b><span>PowerShell 5.1 / 7</span></a>
+            <a href="/downloads/hq/install.sh"><b>macOS / Linux 安装</b><span>下载官方安装脚本</span></a>
             <a href="/workbench/device"><b>设备授权</b><span>查看并确认授权范围</span></a>
             <a href="/workbench/assets"><b>我的资产</b><span>查看 Agent 生产结果</span></a>
           </div>
@@ -248,7 +249,7 @@
               </section>
 
               <section class="story-panel panel-cli" data-panel="cli" aria-hidden="true">
-                <div class="terminal-head"><span>HQ CLI · v0.9</span><span><i></i> DEVICE AUTH</span></div>
+                <div class="terminal-head"><span>HQ CLI · v0.10</span><span><i></i> WINDOWS + MAC READY</span></div>
                 <pre><code><span class="term-prompt">$</span> hq login --json
 <span class="term-dim">{"next":"在浏览器中确认设备授权"}</span>
 
@@ -257,7 +258,10 @@
 
 <span class="term-prompt">$</span> hq describe canvas-agent-plan --json
 <span class="term-gold">→ 付费动作仍然先报价、再确认</span></code></pre>
-                <div class="install-line"><code data-command>curl -fsSL https://huangquechuanmei.com/downloads/hq/install.sh | sh</code><button type="button" data-copy>[ 复制 ]</button></div>
+                <div class="install-options">
+                  <div class="install-line"><strong>WINDOWS</strong><code data-command>irm https://huangquechuanmei.com/downloads/hq/install.ps1 | iex</code><button type="button" data-copy>[ 复制 ]</button></div>
+                  <div class="install-line"><strong>MAC</strong><code data-command>curl -fsSL https://huangquechuanmei.com/downloads/hq/install.sh | sh</code><button type="button" data-copy>[ 复制 ]</button></div>
+                </div>
               </section>
             </div>
 
@@ -291,7 +295,10 @@
             <span class="step-no">04 / HQ CLI</span>
             <h3>你自己的 Agent，<br>也能受控使用黄雀。</h3>
             <p>HQ CLI 使用浏览器设备授权和能力范围，不要求把主站密码交给外部 Agent；付费动作仍然遵守报价与确认边界。</p>
-            <a href="/downloads/hq/install.sh">获取 HQ CLI ↗</a>
+            <div class="cli-downloads">
+              <a href="/downloads/hq/install.ps1">Windows CLI ↗</a>
+              <a href="/downloads/hq/install.sh">Mac CLI ↗</a>
+            </div>
           </article>
         </div>
       </div>
@@ -716,20 +723,22 @@
       addEventListener('resize', () => moveNavSlider(openNav || selectedNav));
     }
 
-    const copyButton = document.querySelector('[data-copy]');
-    copyButton.addEventListener('click', async () => {
-      const original = copyButton.textContent;
-      copyButton.textContent = '[ 正在复制 ]';
-      const fallback = setTimeout(() => copyButton.textContent = '[ 请手动复制 ]', 800);
-      setTimeout(() => copyButton.textContent = original, 2400);
-      try {
-        await navigator.clipboard.writeText(document.querySelector('[data-command]').textContent.trim());
-        clearTimeout(fallback);
-        copyButton.textContent = '[ 已复制 ]';
-      } catch {
-        clearTimeout(fallback);
-        copyButton.textContent = '[ 请手动复制 ]';
-      }
+    document.querySelectorAll('[data-copy]').forEach(copyButton => {
+      copyButton.addEventListener('click', async () => {
+        const original = copyButton.textContent;
+        copyButton.textContent = '[ 正在复制 ]';
+        const fallback = setTimeout(() => copyButton.textContent = '[ 请手动复制 ]', 800);
+        setTimeout(() => copyButton.textContent = original, 2400);
+        try {
+          const command = copyButton.closest('.install-line').querySelector('[data-command]');
+          await navigator.clipboard.writeText(command.textContent.trim());
+          clearTimeout(fallback);
+          copyButton.textContent = '[ 已复制 ]';
+        } catch {
+          clearTimeout(fallback);
+          copyButton.textContent = '[ 请手动复制 ]';
+        }
+      });
     });
 
   })();
