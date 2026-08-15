@@ -977,6 +977,93 @@ class TextVideoPlanningApiTests(unittest.TestCase):
         self.assertEqual(rejected.exception.code, 400)
         self.assertIn("invalid image", rejected.exception.read().decode("utf-8"))
 
+    def test_avatar_upload_rate_limit_rejects_before_storage(self):
+        self.assets._AVATAR_UPLOAD_RATE_REQUESTS.clear()
+        try:
+            with mock.patch.object(self.pixelle, "require_available"), \
+                    mock.patch.object(self.core.miniprogram_security, "check_payload"), \
+                    mock.patch.object(
+                        self.assets, "store_avatar",
+                        return_value={"asset_id": "local_avatar_" + "d" * 32},
+                    ) as store:
+                for _ in range(self.assets.AVATAR_UPLOAD_RATE_MAX_REQUESTS):
+                    with self.request("POST", "/api/gen/text-video/avatar", {
+                        "image_data": "data:image/png;base64,aGVsbG8=",
+                    }):
+                        pass
+                with self.assertRaises(urllib.error.HTTPError) as limited:
+                    self.request("POST", "/api/gen/text-video/avatar", {
+                        "image_data": "data:image/png;base64,aGVsbG8=",
+                    })
+                with self.request("POST", "/api/gen/text-video/avatar", {
+                    "image_data": "data:image/png;base64,aGVsbG8=",
+                }, username="bob"):
+                    pass
+            self.assertEqual(limited.exception.code, 429)
+            payload = json.loads(limited.exception.read())
+            self.assertEqual(payload["hq_code"], "HQ-RATE-001")
+            self.assertEqual(store.call_count,
+                             self.assets.AVATAR_UPLOAD_RATE_MAX_REQUESTS + 1)
+        finally:
+            self.assets._AVATAR_UPLOAD_RATE_REQUESTS.clear()
+
+    def test_avatar_quota_error_uses_existing_rate_limit_contract(self):
+        with mock.patch.object(self.pixelle, "require_available"), \
+             mock.patch.object(self.core.miniprogram_security, "check_payload"), \
+             mock.patch.object(
+                 self.assets, "check_avatar_upload_rate_limit"), \
+             mock.patch.object(
+                 self.assets, "store_avatar",
+                 side_effect=self.assets.AvatarQuotaExceeded("avatar quota exceeded")):
+            with self.assertRaises(urllib.error.HTTPError) as limited:
+                self.request("POST", "/api/gen/text-video/avatar", {
+                    "image_data": "data:image/png;base64,aGVsbG8=",
+                })
+        self.assertEqual(limited.exception.code, 429)
+        payload = json.loads(limited.exception.read())
+        self.assertEqual(payload["hq_code"], "HQ-RATE-001")
+
+    def test_oversized_plan_and_avatar_requests_use_asset_413_contract(self):
+        with mock.patch.object(self.pixelle, "require_available"), \
+                mock.patch.object(self.assets, "check_avatar_upload_rate_limit"):
+            with self.assertRaises(urllib.error.HTTPError) as rejected:
+                self.request("POST", "/api/gen/text-video/plan", {
+                    "text": "x" * (70 * 1024),
+                })
+            self.assertEqual(rejected.exception.code, 413)
+            payload = json.loads(rejected.exception.read())
+            self.assertEqual(payload["hq_code"], "HQ-ASSET-001")
+
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", self.server.server_address[1], timeout=5)
+            connection.putrequest("POST", "/api/gen/text-video/avatar")
+            connection.putheader("Authorization", "Bearer alice")
+            connection.putheader("Content-Type", "application/json")
+            connection.putheader("Content-Length", str(17 * 1024 * 1024 + 1))
+            connection.endheaders()
+            response = connection.getresponse()
+            self.assertEqual(response.status, 413)
+            self.assertEqual(json.loads(response.read())["hq_code"], "HQ-ASSET-001")
+            connection.close()
+
+    def test_decoded_avatar_over_limit_uses_asset_413_contract(self):
+        from content_domains import error_contract
+        with mock.patch.object(self.pixelle, "require_available"), \
+             mock.patch.object(self.core.miniprogram_security, "check_payload"), \
+             mock.patch.object(
+                 self.assets, "check_avatar_upload_rate_limit"), \
+             mock.patch.object(
+                 self.assets, "store_avatar",
+                 side_effect=error_contract.RequestBodyTooLarge(
+                     "avatar decoded bytes exceed 12 MiB")):
+            with self.assertRaises(urllib.error.HTTPError) as rejected:
+                self.request("POST", "/api/gen/text-video/avatar", {
+                    "image_data": "data:image/png;base64,aGVsbG8=",
+                })
+        self.assertEqual(rejected.exception.code, 413)
+        payload = json.loads(rejected.exception.read())
+        self.assertEqual(payload["hq_code"], "HQ-ASSET-001")
+
 
 if __name__ == "__main__":
     unittest.main()

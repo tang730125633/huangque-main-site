@@ -11,11 +11,14 @@ import pathlib
 import re
 import sqlite3
 import stat
+import threading
 import time
 import uuid
 from contextlib import closing, contextmanager
 
 from PIL import Image, UnidentifiedImageError
+
+from . import error_contract
 
 
 BASE = pathlib.Path(__file__).resolve().parents[1]
@@ -23,6 +26,26 @@ DB_PATH = str(BASE / "content_jobs.db")
 OUT_DIR = pathlib.Path(os.environ.get("CONTENT_OUT", str(BASE / "content_out")))
 TTL = 24 * 60 * 60
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
+
+
+def _bounded_env_int(name, default, minimum, maximum):
+    try:
+        value = int(os.environ.get(name, str(default)) or default)
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+MAX_ACTIVE_AVATARS_PER_USER = _bounded_env_int(
+    "PIXELLE_AVATAR_MAX_ACTIVE_PER_USER", 20, 1, 100)
+MAX_ACTIVE_AVATAR_BYTES_PER_USER = _bounded_env_int(
+    "PIXELLE_AVATAR_MAX_BYTES_PER_USER", 64 * 1024 * 1024,
+    MAX_IMAGE_BYTES, 1024 * 1024 * 1024)
+AVATAR_UPLOAD_RATE_MAX_REQUESTS = _bounded_env_int(
+    "PIXELLE_AVATAR_UPLOADS_PER_MINUTE", 6, 1, 60)
+AVATAR_UPLOAD_RATE_WINDOW_SECONDS = 60.0
+_AVATAR_UPLOAD_RATE_REQUESTS = {}
+_AVATAR_UPLOAD_RATE_LOCK = threading.Lock()
 TERMINAL_JOB_STATES = frozenset({"done", "error", "failed", "cancelled", "canceled"})
 ACTIVE_JOB_STATES = frozenset({"pending", "running"})
 PLAN_ID_RE = re.compile(r"^talking_plan_[0-9a-f]{32}$")
@@ -43,6 +66,31 @@ PIL_FORMATS = {
 }
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 VALID_PAID_JOB_STATES = frozenset({"pending", "running", "done"})
+
+
+class AvatarUploadLimited(Exception):
+    """Public-safe owner upload boundary."""
+
+
+class AvatarRateLimited(AvatarUploadLimited):
+    pass
+
+
+class AvatarQuotaExceeded(AvatarUploadLimited):
+    pass
+
+
+def check_avatar_upload_rate_limit(username, now=None):
+    owner = _require_username(username)
+    stamp = float(time.time() if now is None else now)
+    with _AVATAR_UPLOAD_RATE_LOCK:
+        recent = [item for item in _AVATAR_UPLOAD_RATE_REQUESTS.get(owner, [])
+                  if stamp - item < AVATAR_UPLOAD_RATE_WINDOW_SECONDS]
+        if len(recent) >= AVATAR_UPLOAD_RATE_MAX_REQUESTS:
+            _AVATAR_UPLOAD_RATE_REQUESTS[owner] = recent
+            raise AvatarRateLimited("avatar upload rate limited")
+        recent.append(stamp)
+        _AVATAR_UPLOAD_RATE_REQUESTS[owner] = recent
 
 
 def _connect(db_path=None):
@@ -239,13 +287,15 @@ def _decode_avatar(data_url):
         raise ValueError("人物图片格式无效，只支持 JPG、PNG 或 WebP")
     mime, encoded = match.groups()
     if len(encoded) > ((MAX_IMAGE_BYTES + 2) // 3) * 4 + 4:
-        raise ValueError("人物图片解码后不能超过 12 MiB")
+        raise error_contract.RequestBodyTooLarge(
+            "人物图片解码后不能超过 12 MiB")
     try:
         raw = base64.b64decode(encoded, validate=True)
     except (binascii.Error, ValueError) as exc:
         raise ValueError("人物图片编码无效") from exc
     if not raw or len(raw) > MAX_IMAGE_BYTES:
-        raise ValueError("人物图片解码后不能超过 12 MiB")
+        raise error_contract.RequestBodyTooLarge(
+            "人物图片解码后不能超过 12 MiB")
     if _detect_mime(raw) != mime:
         raise ValueError("人物图片内容与声明格式不一致")
     try:
@@ -377,36 +427,73 @@ def store_avatar(username: str, data_url: str) -> dict:
     root = _ensure_avatar_root(create=True)
     temp_path = root / ("." + opaque + ".tmp")
     final_path = root / file_name
-    descriptor = os.open(str(temp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    expired_files = []
+    quota_error = None
     try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(raw)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_path, final_path)
-        _ensure_avatar_root()
-        final_before = os.lstat(final_path)
-        _require_regular_file(final_path, final_before)
-        try:
-            os.chmod(final_path, 0o600, follow_symlinks=False)
-        except (OSError, NotImplementedError):
-            pass
-        final_after = os.lstat(final_path)
-        _require_regular_file(final_path, final_after)
-        if not _same_file_identity(final_before, final_after):
-            raise RuntimeError("avatar storage file changed")
-        digest = hashlib.sha256(raw).hexdigest()
         with closing(_connect()) as connection:
-            connection.execute("""INSERT INTO pixelle_avatar_assets(
-                id,username,file_path,mime,sha256,bytes,created_at,expires_at
-            ) VALUES(?,?,?,?,?,?,?,?)""", (
-                asset_id, username, file_name, mime, digest, len(raw), now, now + TTL,
-            ))
+            connection.execute("BEGIN IMMEDIATE")
+            expired = connection.execute("""SELECT a.id,a.file_path
+                FROM pixelle_avatar_assets AS a
+                WHERE a.expires_at<=?
+                  AND NOT EXISTS(
+                    SELECT 1 FROM pixelle_talking_plan_avatars AS r
+                    WHERE r.asset_id=a.id
+                  )""", (now,)).fetchall()
+            if expired:
+                connection.executemany(
+                    "DELETE FROM pixelle_avatar_assets WHERE id=?",
+                    [(row["id"],) for row in expired],
+                )
+                expired_files = [row["file_path"] for row in expired]
+            usage = connection.execute("""SELECT COUNT(*) AS item_count,
+                    COALESCE(SUM(bytes),0) AS total_bytes
+                FROM pixelle_avatar_assets
+                WHERE username=? AND expires_at>?""", (username, now)).fetchone()
+            if int(usage["item_count"]) >= MAX_ACTIVE_AVATARS_PER_USER:
+                quota_error = AvatarQuotaExceeded(
+                    "avatar asset count quota exceeded")
+            elif (int(usage["total_bytes"]) + len(raw)
+                    > MAX_ACTIVE_AVATAR_BYTES_PER_USER):
+                quota_error = AvatarQuotaExceeded(
+                    "avatar asset byte quota exceeded")
+            if quota_error is None:
+                descriptor = os.open(
+                    str(temp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write(raw)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temp_path, final_path)
+                _ensure_avatar_root()
+                final_before = os.lstat(final_path)
+                _require_regular_file(final_path, final_before)
+                try:
+                    os.chmod(final_path, 0o600, follow_symlinks=False)
+                except (OSError, NotImplementedError):
+                    pass
+                final_after = os.lstat(final_path)
+                _require_regular_file(final_path, final_after)
+                if not _same_file_identity(final_before, final_after):
+                    raise RuntimeError("avatar storage file changed")
+                digest = hashlib.sha256(raw).hexdigest()
+                connection.execute("""INSERT INTO pixelle_avatar_assets(
+                    id,username,file_path,mime,sha256,bytes,created_at,expires_at
+                ) VALUES(?,?,?,?,?,?,?,?)""", (
+                    asset_id, username, file_name, mime, digest, len(raw), now,
+                    now + TTL,
+                ))
             connection.commit()
     except Exception:
         temp_path.unlink(missing_ok=True)
         final_path.unlink(missing_ok=True)
         raise
+    for expired_file in expired_files:
+        try:
+            _avatar_candidate(expired_file).unlink(missing_ok=True)
+        except (LookupError, OSError):
+            pass
+    if quota_error is not None:
+        raise quota_error
     return {
         "asset_id": asset_id,
         "mime": mime,

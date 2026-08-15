@@ -1689,6 +1689,8 @@ class H(BaseHTTPRequestHandler):
                     pixelle_video.check_plan_rate_limit(user["username"])
                     return self._send(200, pixelle_video.plan_talking_scenes(
                         body, user["username"]))
+                pixelle_talking_assets.check_avatar_upload_rate_limit(
+                    user["username"])
                 body = self._json_body_strict(max_bytes=17 * 1024 * 1024)
                 if not isinstance(body, dict) or set(body) != {"image_data"}:
                     raise ValueError("人物图片上传请求字段无效")
@@ -1711,6 +1713,15 @@ class H(BaseHTTPRequestHandler):
                 return self._send(503, {
                     "detail": str(error), "code": "content_security_unavailable",
                     "retry_after_ms": 5000,
+                })
+            except error_contract.RequestBodyTooLarge as error:
+                return self._send(error.status, {
+                    "detail": str(error)[:220], "hq_code": "HQ-ASSET-001",
+                })
+            except pixelle_talking_assets.AvatarUploadLimited as error:
+                return self._send(429, {
+                    "detail": str(error)[:220], "code": "rate_limited",
+                    "retry_after_ms": 10000,
                 })
             except RuntimeError as error:
                 if str(error) == "planning_rate_limited":

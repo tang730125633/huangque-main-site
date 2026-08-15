@@ -215,8 +215,98 @@ class PixelleTalkingAssetsTests(unittest.TestCase):
             self.store.store_avatar("alice", corrupt)
         too_large = "data:image/png;base64," + base64.b64encode(
             b"\x89PNG\r\n\x1a\n" + b"x" * (12 * 1024 * 1024)).decode("ascii")
-        with self.assertRaisesRegex(ValueError, "12"):
+        from content_domains import error_contract
+        with self.assertRaisesRegex(error_contract.RequestBodyTooLarge, "12"):
             self.store.store_avatar("alice", too_large)
+
+    def test_avatar_quota_rejects_before_writing_file_or_row(self):
+        with mock.patch.object(self.store, "MAX_ACTIVE_AVATARS_PER_USER", 2), \
+                mock.patch.object(
+                    self.store, "MAX_ACTIVE_AVATAR_BYTES_PER_USER", 64 * 1024 * 1024):
+            self.store.store_avatar("alice", self.image_data_url())
+            self.store.store_avatar("alice", self.image_data_url("JPEG"))
+            root = self.out / "pixelle_avatar"
+            files_before = sorted(item.name for item in root.iterdir())
+            with self.assertRaises(self.store.AvatarQuotaExceeded):
+                self.store.store_avatar("alice", self.image_data_url("WEBP"))
+
+        with closing(sqlite3.connect(self.db)) as connection:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM pixelle_avatar_assets WHERE username='alice'"
+            ).fetchone()[0]
+        self.assertEqual(count, 2)
+        self.assertEqual(sorted(item.name for item in root.iterdir()), files_before)
+
+    def test_avatar_quota_environment_values_are_safely_bounded(self):
+        with mock.patch.dict(os.environ, {"PIXELLE_TEST_LIMIT": "0"}):
+            self.assertEqual(
+                self.store._bounded_env_int("PIXELLE_TEST_LIMIT", 20, 1, 100), 1)
+        with mock.patch.dict(os.environ, {"PIXELLE_TEST_LIMIT": "1000000"}):
+            self.assertEqual(
+                self.store._bounded_env_int("PIXELLE_TEST_LIMIT", 20, 1, 100), 100)
+        with mock.patch.dict(os.environ, {"PIXELLE_TEST_LIMIT": "invalid"}):
+            self.assertEqual(
+                self.store._bounded_env_int("PIXELLE_TEST_LIMIT", 20, 1, 100), 20)
+
+    def test_avatar_byte_quota_rejects_before_writing_file_or_row(self):
+        first = self.store.store_avatar("alice", self.image_data_url())
+        with mock.patch.object(self.store, "MAX_ACTIVE_AVATARS_PER_USER", 20), \
+                mock.patch.object(
+                    self.store, "MAX_ACTIVE_AVATAR_BYTES_PER_USER", first["bytes"]):
+            root = self.out / "pixelle_avatar"
+            files_before = sorted(item.name for item in root.iterdir())
+            with self.assertRaises(self.store.AvatarQuotaExceeded):
+                self.store.store_avatar("alice", self.image_data_url("JPEG"))
+
+        with closing(sqlite3.connect(self.db)) as connection:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM pixelle_avatar_assets WHERE username='alice'"
+            ).fetchone()[0]
+        self.assertEqual(count, 1)
+        self.assertEqual(sorted(item.name for item in root.iterdir()), files_before)
+
+    def test_avatar_quota_prunes_expired_unreferenced_assets_before_counting(self):
+        expired = self.store.store_avatar("alice", self.image_data_url())
+        with closing(sqlite3.connect(self.db)) as connection:
+            connection.execute(
+                "UPDATE pixelle_avatar_assets SET expires_at=1 WHERE id=?",
+                (expired["asset_id"],),
+            )
+            connection.commit()
+        with mock.patch.object(self.store, "MAX_ACTIVE_AVATARS_PER_USER", 1):
+            replacement = self.store.store_avatar(
+                "alice", self.image_data_url("JPEG"))
+
+        with closing(sqlite3.connect(self.db)) as connection:
+            rows = connection.execute(
+                "SELECT id FROM pixelle_avatar_assets WHERE username='alice'"
+            ).fetchall()
+        self.assertEqual(rows, [(replacement["asset_id"],)])
+        expired_name = (expired["asset_id"].split("local_avatar_", 1)[1]
+                        + expired["extension"])
+        self.assertFalse((self.out / "pixelle_avatar" / expired_name).exists())
+
+    def test_concurrent_avatar_uploads_cannot_exceed_owner_quota(self):
+        def upload(index):
+            try:
+                return self.store.store_avatar(
+                    "alice", self.image_data_url(("PNG", "JPEG", "WEBP")[index % 3]))
+            except self.store.AvatarQuotaExceeded:
+                return None
+
+        with mock.patch.object(self.store, "MAX_ACTIVE_AVATARS_PER_USER", 5), \
+                mock.patch.object(
+                    self.store, "MAX_ACTIVE_AVATAR_BYTES_PER_USER", 64 * 1024 * 1024):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+                results = list(pool.map(upload, range(20)))
+
+        self.assertEqual(sum(item is not None for item in results), 5)
+        with closing(sqlite3.connect(self.db)) as connection:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM pixelle_avatar_assets WHERE username='alice'"
+            ).fetchone()[0]
+        self.assertEqual(count, 5)
+        self.assertEqual(len(list((self.out / "pixelle_avatar").iterdir())), 5)
 
     def test_consume_requires_owner_and_expected_hash_and_is_idempotent(self):
         plan = self.store.create_plan("alice", {}, [{"text": "第一段"}])
