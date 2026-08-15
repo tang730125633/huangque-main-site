@@ -10,9 +10,10 @@ import os
 import pathlib
 import re
 import sqlite3
+import stat
 import time
 import uuid
-from contextlib import closing
+from contextlib import closing, contextmanager
 
 from PIL import Image, UnidentifiedImageError
 
@@ -40,6 +41,8 @@ PIL_FORMATS = {
     "image/jpeg": "JPEG",
     "image/webp": "WEBP",
 }
+FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+VALID_PAID_JOB_STATES = frozenset({"pending", "running", "done"})
 
 
 def _connect(db_path=None):
@@ -51,12 +54,12 @@ def _connect(db_path=None):
 
 
 def init_db(db_path=None, out_dir=None):
-    root = pathlib.Path(out_dir or OUT_DIR) / "pixelle_avatar"
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    root = _ensure_avatar_root(out_dir, create=True)
     try:
-        os.chmod(root, 0o700)
-    except OSError:
+        os.chmod(root, 0o700, follow_symlinks=False)
+    except (OSError, NotImplementedError):
         pass
+    _ensure_avatar_root(out_dir)
     with closing(_connect(db_path)) as connection:
         connection.executescript("""
             CREATE TABLE IF NOT EXISTS pixelle_talking_plans(
@@ -261,16 +264,105 @@ def _avatar_root(out_dir=None):
     return pathlib.Path(out_dir or OUT_DIR) / "pixelle_avatar"
 
 
-def _safe_avatar_path(file_name, out_dir=None):
-    if pathlib.PurePath(str(file_name or "")).name != str(file_name or ""):
-        raise LookupError("人物图片不存在或已失效")
-    root = _avatar_root(out_dir).resolve()
-    candidate = (root / str(file_name)).resolve()
+def _path_is_reparse(_path, metadata=None):
+    metadata = metadata if metadata is not None else os.lstat(_path)
+    return bool(
+        getattr(metadata, "st_file_attributes", 0)
+        & FILE_ATTRIBUTE_REPARSE_POINT
+    )
+
+
+def _same_file_identity(left, right):
+    return (int(left.st_dev), int(left.st_ino)) == (
+        int(right.st_dev), int(right.st_ino))
+
+
+def _ensure_avatar_root(out_dir=None, create=False):
+    root = _avatar_root(out_dir)
+    if create:
+        try:
+            root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        except OSError as exc:
+            raise RuntimeError("avatar storage root is unavailable") from exc
     try:
-        candidate.relative_to(root)
-    except ValueError as exc:
-        raise LookupError("人物图片不存在或已失效") from exc
-    return candidate
+        metadata = os.lstat(root)
+    except OSError as exc:
+        raise RuntimeError("avatar storage root is unavailable") from exc
+    if (stat.S_ISLNK(metadata.st_mode)
+            or _path_is_reparse(root, metadata)
+            or not stat.S_ISDIR(metadata.st_mode)):
+        raise RuntimeError("avatar storage root is unsafe")
+    return root
+
+
+def _avatar_candidate(file_name, out_dir=None):
+    file_name = str(file_name or "")
+    if (not file_name or pathlib.PurePath(file_name).name != file_name
+            or file_name in {".", ".."}):
+        raise LookupError("avatar is unavailable")
+    return _ensure_avatar_root(out_dir) / file_name
+
+
+def _require_regular_file(path, metadata):
+    if (stat.S_ISLNK(metadata.st_mode)
+            or _path_is_reparse(path, metadata)
+            or not stat.S_ISREG(metadata.st_mode)):
+        raise LookupError("avatar is unavailable")
+
+
+@contextmanager
+def _open_avatar_descriptor(file_name, out_dir=None):
+    root = _ensure_avatar_root(out_dir)
+    root_before = os.lstat(root)
+    path = _avatar_candidate(file_name, out_dir)
+    try:
+        path_before = os.lstat(path)
+        _require_regular_file(path, path_before)
+    except OSError as exc:
+        raise LookupError("avatar is unavailable") from exc
+    flags = (os.O_RDONLY | getattr(os, "O_BINARY", 0)
+             | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0))
+    descriptor = None
+    try:
+        descriptor = os.open(str(path), flags)
+        opened = os.fstat(descriptor)
+        _require_regular_file(path, opened)
+        path_after = os.lstat(path)
+        root_after = os.lstat(root)
+        _require_regular_file(path, path_after)
+        if (not _same_file_identity(path_before, opened)
+                or not _same_file_identity(opened, path_after)
+                or not _same_file_identity(root_before, root_after)
+                or _path_is_reparse(root, root_after)
+                or not stat.S_ISDIR(root_after.st_mode)):
+            raise LookupError("avatar is unavailable")
+        yield descriptor
+    except LookupError:
+        raise
+    except OSError as exc:
+        raise LookupError("avatar is unavailable") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _read_avatar_row(row, out_dir=None):
+    expected_bytes = int(row["bytes"])
+    with _open_avatar_descriptor(row["file_path"], out_dir) as descriptor:
+        chunks = []
+        remaining = min(MAX_IMAGE_BYTES, expected_bytes) + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    data = b"".join(chunks)
+    if (len(data) != expected_bytes
+            or len(data) > MAX_IMAGE_BYTES
+            or hashlib.sha256(data).hexdigest() != str(row["sha256"])):
+        raise LookupError("avatar is unavailable")
+    return data
 
 
 def store_avatar(username: str, data_url: str) -> dict:
@@ -282,8 +374,7 @@ def store_avatar(username: str, data_url: str) -> dict:
     asset_id = "local_avatar_" + opaque
     extension = MIME_EXTENSIONS[mime]
     file_name = opaque + extension
-    root = _avatar_root()
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    root = _ensure_avatar_root(create=True)
     temp_path = root / ("." + opaque + ".tmp")
     final_path = root / file_name
     descriptor = os.open(str(temp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -293,10 +384,17 @@ def store_avatar(username: str, data_url: str) -> dict:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_path, final_path)
+        _ensure_avatar_root()
+        final_before = os.lstat(final_path)
+        _require_regular_file(final_path, final_before)
         try:
-            os.chmod(final_path, 0o600)
-        except OSError:
+            os.chmod(final_path, 0o600, follow_symlinks=False)
+        except (OSError, NotImplementedError):
             pass
+        final_after = os.lstat(final_path)
+        _require_regular_file(final_path, final_after)
+        if not _same_file_identity(final_before, final_after):
+            raise RuntimeError("avatar storage file changed")
         digest = hashlib.sha256(raw).hexdigest()
         with closing(_connect()) as connection:
             connection.execute("""INSERT INTO pixelle_avatar_assets(
@@ -379,22 +477,19 @@ def get_avatar(username: str, asset_id: str) -> dict:
     init_db()
     with closing(_connect()) as connection:
         row = _owned_avatar(connection, username, asset_id, allow_retained=True)
-        path = _safe_avatar_path(row["file_path"])
-        if not path.is_file():
-            raise LookupError("人物图片不存在或已失效")
+        _read_avatar_row(row)
         return _row_to_avatar(row)
 
 
-def resolve_avatar_path(username: str, asset_id: str) -> pathlib.Path:
-    """Resolve an owned asset for internal upload; never return this from HTTP APIs."""
+def read_avatar(username: str, asset_id: str) -> dict:
+    """Read an owned avatar from one verified descriptor without exposing a path."""
     username = _require_username(username)
     init_db()
     with closing(_connect()) as connection:
         row = _owned_avatar(connection, username, asset_id, allow_retained=True)
-        path = _safe_avatar_path(row["file_path"])
-        if not path.is_file():
-            raise LookupError("人物图片不存在或已失效")
-        return path
+        result = _row_to_avatar(row)
+        result["data"] = _read_avatar_row(row)
+        return result
 
 
 def bind_plan_avatars(username: str, plan_id: str, asset_ids) -> dict:
@@ -436,11 +531,28 @@ def bind_plan_job(username: str, plan_id: str, job_id: int) -> dict:
         jobs_table = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='jobs'"
         ).fetchone()
+        valid_states = ",".join("?" for _ in VALID_PAID_JOB_STATES)
         job = connection.execute(
-            "SELECT username FROM jobs WHERE id=?", (job_id,)
+            "SELECT id,payload FROM jobs WHERE id=? AND username=? "
+            "AND kind='script_to_video' AND COALESCE(cost,0)>0 "
+            "AND status IN (%s) AND COALESCE(refunded,0)=0 "
+            "AND COALESCE(owner,'content')='content'" % valid_states,
+            (job_id, username) + tuple(sorted(VALID_PAID_JOB_STATES)),
         ).fetchone() if jobs_table else None
-        if not job or str(job["username"] or "") != username:
+        if not job:
             raise LookupError("付费任务不存在或不属于当前用户")
+        try:
+            paid_payload = json.loads(job["payload"] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            paid_payload = None
+        talking = (paid_payload.get("talking_material")
+                   if isinstance(paid_payload, dict) else None)
+        if (not isinstance(talking, dict)
+                or paid_payload.get("pipeline") != "pixelle"
+                or talking.get("enabled") is not True
+                or talking.get("plan_id") != plan_id
+                or talking.get("source_hash") != row["source_hash"]):
+            raise LookupError("付费任务与分镜方案不匹配")
         connection.execute("""UPDATE pixelle_talking_plans
             SET job_id=?,updated_at=? WHERE id=? AND username=?
               AND status='consumed' AND (job_id IS NULL OR job_id=?)""",
@@ -505,7 +617,7 @@ def cleanup_expired(db_path=None, out_dir=None, now=None):
         connection.commit()
     for file_name in files_to_delete:
         try:
-            _safe_avatar_path(file_name, out_dir).unlink(missing_ok=True)
+            _avatar_candidate(file_name, out_dir).unlink(missing_ok=True)
         except (LookupError, OSError):
             pass
     return {"plans": len(delete_plan_ids), "avatars": len(files_to_delete)}

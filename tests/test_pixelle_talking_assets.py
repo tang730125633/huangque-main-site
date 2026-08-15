@@ -1,5 +1,6 @@
 import base64
 import concurrent.futures
+import hashlib
 import importlib
 import io
 import json
@@ -35,6 +36,40 @@ class PixelleTalkingAssetsTests(unittest.TestCase):
         self.store.DB_PATH = self.old_db
         self.store.OUT_DIR = self.old_out
         self.temp.cleanup()
+
+    def create_jobs_table(self):
+        with closing(sqlite3.connect(self.db)) as connection:
+            connection.execute("""CREATE TABLE jobs(
+                id INTEGER PRIMARY KEY,
+                kind TEXT NOT NULL,
+                username TEXT NOT NULL,
+                cost INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                refunded INTEGER NOT NULL DEFAULT 0,
+                owner TEXT)""")
+            connection.commit()
+
+    def insert_job(self, job_id, username="alice", kind="script_to_video",
+                   cost=30, status="pending", refunded=0, owner="content",
+                   plan=None, payload=None):
+        if payload is None:
+            payload = ({
+                "pipeline": "pixelle",
+                "talking_material": {
+                    "enabled": True,
+                    "plan_id": plan["plan_id"],
+                    "source_hash": plan["source_hash"],
+                },
+            } if plan else {})
+        with closing(sqlite3.connect(self.db)) as connection:
+            connection.execute(
+                "INSERT INTO jobs(id,kind,username,cost,status,payload,refunded,owner) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (job_id, kind, username, cost, status,
+                 json.dumps(payload), refunded, owner),
+            )
+            connection.commit()
 
     @staticmethod
     def image_data_url(fmt="PNG", declared_mime=None):
@@ -90,6 +125,86 @@ class PixelleTalkingAssetsTests(unittest.TestCase):
                 with self.assertRaises(LookupError):
                     self.store.get_avatar("bob", item["asset_id"])
 
+                content = self.store.read_avatar("alice", item["asset_id"])
+                self.assertEqual(content["mime"], item["mime"])
+                self.assertEqual(
+                    hashlib.sha256(content["data"]).hexdigest(),
+                    item["sha256"],
+                )
+
+    def test_avatar_root_reparse_point_fails_closed(self):
+        root = self.out / "pixelle_avatar"
+        with mock.patch.object(self.store, "_path_is_reparse", return_value=True):
+            with self.assertRaisesRegex(RuntimeError, "storage"):
+                self.store.init_db()
+            with self.assertRaisesRegex(RuntimeError, "storage"):
+                self.store.store_avatar("alice", self.image_data_url())
+        self.assertTrue(root.is_dir())
+
+    def test_avatar_root_symlink_fails_closed_when_supported(self):
+        external = self.root / "external-root"
+        external.mkdir()
+        root = self.out / "pixelle_avatar"
+        root.rmdir()
+        try:
+            root.symlink_to(external, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest("directory symlinks unavailable: %s" % exc)
+        with self.assertRaisesRegex(RuntimeError, "storage"):
+            self.store.init_db()
+
+    def test_avatar_root_non_directory_fails_closed(self):
+        root = self.out / "pixelle_avatar"
+        root.rmdir()
+        root.write_bytes(b"not-a-directory")
+        with self.assertRaisesRegex(RuntimeError, "storage"):
+            self.store.init_db()
+
+    def test_avatar_read_rejects_open_boundary_file_swap_without_leaking(self):
+        avatar = self.store.store_avatar("alice", self.image_data_url())
+        file_name = avatar["asset_id"].split("local_avatar_", 1)[1] + avatar["extension"]
+        stored = self.out / "pixelle_avatar" / file_name
+        sentinel = b"outside-private-sentinel"
+        replacement = self.root / "replacement.bin"
+        replacement.write_bytes(sentinel)
+        original_open = self.store.os.open
+        swapped = False
+
+        def swap_then_open(path, flags, *args, **kwargs):
+            nonlocal swapped
+            if not swapped and Path(path) == stored:
+                swapped = True
+                os.replace(replacement, stored)
+            return original_open(path, flags, *args, **kwargs)
+
+        with mock.patch.object(self.store.os, "open", side_effect=swap_then_open):
+            with self.assertRaises(LookupError):
+                self.store.read_avatar("alice", avatar["asset_id"])
+        self.assertTrue(swapped)
+        self.assertNotEqual(getattr(self, "leaked", None), sentinel)
+
+    def test_avatar_read_rejects_symlink_and_non_regular_file(self):
+        avatar = self.store.store_avatar("alice", self.image_data_url())
+        file_name = avatar["asset_id"].split("local_avatar_", 1)[1] + avatar["extension"]
+        stored = self.out / "pixelle_avatar" / file_name
+        sentinel = self.root / "outside-sentinel.png"
+        sentinel.write_bytes(stored.read_bytes())
+        stored.unlink()
+        try:
+            stored.symlink_to(sentinel)
+        except (OSError, NotImplementedError):
+            pass
+        else:
+            with self.assertRaises(LookupError):
+                self.store.read_avatar("alice", avatar["asset_id"])
+            stored.unlink()
+        stored.mkdir()
+        with self.assertRaises(LookupError):
+            self.store.read_avatar("alice", avatar["asset_id"])
+
+    def test_avatar_store_never_exposes_a_raw_path_resolver(self):
+        self.assertFalse(hasattr(self.store, "resolve_avatar_path"))
+
     def test_avatar_rejects_mime_mismatch_corrupt_and_oversize_data(self):
         with self.assertRaisesRegex(ValueError, "格式"):
             self.store.store_avatar(
@@ -135,12 +250,8 @@ class PixelleTalkingAssetsTests(unittest.TestCase):
         self.store.bind_plan_avatars(
             "alice", plan["plan_id"], [avatar["asset_id"]])
         self.store.consume_plan("alice", plan["plan_id"], plan["source_hash"])
-        with closing(sqlite3.connect(self.db)) as connection:
-            connection.execute("""CREATE TABLE jobs(
-                id INTEGER PRIMARY KEY, username TEXT NOT NULL, status TEXT NOT NULL)""")
-            connection.execute(
-                "INSERT INTO jobs(id,username,status) VALUES(7,'alice','running')")
-            connection.commit()
+        self.create_jobs_table()
+        self.insert_job(7, status="running", plan=plan)
         self.store.bind_plan_job("alice", plan["plan_id"], 7)
         future = plan["expires_at"] + 1
 
@@ -164,11 +275,9 @@ class PixelleTalkingAssetsTests(unittest.TestCase):
         self.store.bind_plan_avatars(
             "alice", plan["plan_id"], [avatar["asset_id"]])
         self.store.consume_plan("alice", plan["plan_id"], plan["source_hash"])
+        self.create_jobs_table()
+        self.insert_job(8, status="running", plan=plan)
         with closing(sqlite3.connect(self.db)) as connection:
-            connection.execute("""CREATE TABLE jobs(
-                id INTEGER PRIMARY KEY, username TEXT NOT NULL, status TEXT NOT NULL)""")
-            connection.execute(
-                "INSERT INTO jobs(id,username,status) VALUES(8,'alice','running')")
             connection.execute(
                 "UPDATE pixelle_avatar_assets SET expires_at=1 WHERE id=?",
                 (avatar["asset_id"],))
@@ -177,22 +286,52 @@ class PixelleTalkingAssetsTests(unittest.TestCase):
 
         loaded = self.store.get_avatar("alice", avatar["asset_id"])
         self.assertEqual(loaded["asset_id"], avatar["asset_id"])
-        self.assertTrue(self.store.resolve_avatar_path(
-            "alice", avatar["asset_id"]).is_file())
+        self.assertTrue(self.store.read_avatar(
+            "alice", avatar["asset_id"])["data"])
 
     def test_bind_plan_job_requires_owned_paid_job(self):
         plan = self.store.create_plan("alice", {}, [{"text": "第一段"}])
         self.store.consume_plan("alice", plan["plan_id"], plan["source_hash"])
-        with closing(sqlite3.connect(self.db)) as connection:
-            connection.execute("""CREATE TABLE jobs(
-                id INTEGER PRIMARY KEY, username TEXT NOT NULL, status TEXT NOT NULL)""")
-            connection.execute(
-                "INSERT INTO jobs(id,username,status) VALUES(9,'bob','pending')")
-            connection.commit()
+        self.create_jobs_table()
+        self.insert_job(9, username="bob", plan=plan)
         with self.assertRaises(LookupError):
             self.store.bind_plan_job("alice", plan["plan_id"], 9)
         with self.assertRaises(LookupError):
             self.store.bind_plan_job("alice", plan["plan_id"], 10)
+
+    def test_bind_plan_job_rejects_wrong_type_zero_cost_refunded_and_wrong_owner(self):
+        plan = self.store.create_plan("alice", {}, [{"text": "第一段"}])
+        self.store.consume_plan("alice", plan["plan_id"], plan["source_hash"])
+        self.create_jobs_table()
+        self.insert_job(20, kind="copy", plan=plan)
+        self.insert_job(21, cost=0, plan=plan)
+        self.insert_job(22, refunded=1, plan=plan)
+        self.insert_job(23, owner="imggen", plan=plan)
+        self.insert_job(25, status="error", plan=plan)
+        self.insert_job(26, plan=plan, payload={"pipeline": "other"})
+        for job_id in (20, 21, 22, 23, 25, 26):
+            with self.subTest(job_id=job_id), self.assertRaises(LookupError):
+                self.store.bind_plan_job("alice", plan["plan_id"], job_id)
+
+    def test_bind_plan_job_accepts_valid_charged_script_to_video_job(self):
+        plan = self.store.create_plan("alice", {}, [{"text": "第一段"}])
+        self.store.consume_plan("alice", plan["plan_id"], plan["source_hash"])
+        self.create_jobs_table()
+        self.insert_job(24, status="pending", cost=30, plan=plan)
+
+        bound = self.store.bind_plan_job("alice", plan["plan_id"], 24)
+
+        self.assertEqual(bound["job_id"], 24)
+
+    def test_bind_plan_job_rejects_another_paid_pixelle_plan(self):
+        first = self.store.create_plan("alice", {}, [{"text": "第一段"}])
+        second = self.store.create_plan("alice", {}, [{"text": "第二段"}])
+        self.store.consume_plan("alice", first["plan_id"], first["source_hash"])
+        self.create_jobs_table()
+        self.insert_job(27, plan=second)
+
+        with self.assertRaises(LookupError):
+            self.store.bind_plan_job("alice", first["plan_id"], 27)
 
     def test_expired_avatar_retained_for_recovery_cannot_join_a_new_plan(self):
         avatar = self.store.store_avatar("alice", self.image_data_url())
@@ -200,11 +339,9 @@ class PixelleTalkingAssetsTests(unittest.TestCase):
         self.store.bind_plan_avatars(
             "alice", first["plan_id"], [avatar["asset_id"]])
         self.store.consume_plan("alice", first["plan_id"], first["source_hash"])
+        self.create_jobs_table()
+        self.insert_job(11, status="running", plan=first)
         with closing(sqlite3.connect(self.db)) as connection:
-            connection.execute("""CREATE TABLE jobs(
-                id INTEGER PRIMARY KEY, username TEXT NOT NULL, status TEXT NOT NULL)""")
-            connection.execute(
-                "INSERT INTO jobs(id,username,status) VALUES(11,'alice','running')")
             connection.execute(
                 "UPDATE pixelle_avatar_assets SET expires_at=1 WHERE id=?",
                 (avatar["asset_id"],))
