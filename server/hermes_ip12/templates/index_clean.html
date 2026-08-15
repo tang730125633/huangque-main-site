@@ -373,12 +373,21 @@ function stateActions(){
     {type:'confirm_checkpoint',target_id:pending.id,label:'确认这一步',primary:true},
     {type:'edit_checkpoint',target_id:pending.id,label:'需要修改',primary:false}
   ];
+  const foundation=coachState.foundation_report||{};if(foundation.status==='awaiting_confirmation')return[
+    {type:'open_foundation_report',label:'查看 PDF',primary:false},
+    {type:'confirm_foundation_report',label:'确认初稿，进入模块 5',primary:true}
+  ];
   return[];
+}
+function runStateAction(item){
+  if(item.type==='open_foundation_report')return openFoundationReport();
+  if(item.type==='confirm_foundation_report')return confirmFoundationReport();
+  return sendHarnessAction(item);
 }
 function attachHarnessActions(actions,bubble){
   document.querySelectorAll('#chatArea .harness-actions').forEach(row=>row.remove());if(!bubble)return;
   if(!actions?.length)return;const row=document.createElement('div');row.className='harness-actions';
-  actions.forEach(item=>{const button=document.createElement('button');button.type='button';button.className='harness-action'+(item.primary?' primary':'');button.textContent=item.label;button.onclick=()=>{row.querySelectorAll('button').forEach(node=>{node.disabled=true;});sendHarnessAction(item);};row.appendChild(button);});
+  actions.forEach(item=>{const button=document.createElement('button');button.type='button';button.className='harness-action'+(item.primary?' primary':'');button.textContent=item.label;button.onclick=()=>{if(!item.type.includes('foundation_report'))row.querySelectorAll('button').forEach(node=>{node.disabled=true;});runStateAction(item);};row.appendChild(button);});
   bubble.appendChild(row);
 }
 function renderChat(messages) {
@@ -475,17 +484,17 @@ async function sendTurn(turn,displayText,requestId){
   const area=document.getElementById('chatArea'),welcome=area.querySelector('.welcome');if(welcome)welcome.remove();
   const userMsg=document.createElement('div');userMsg.className='message user';userMsg.innerHTML=`<div class="avatar">👤</div><div class="bubble">${escHtml(displayText).replace(/\n/g,'<br>')}</div>`;area.appendChild(userMsg);
   const aiMsg=document.createElement('div');aiMsg.className='message assistant';aiMsg.innerHTML=`<div class="avatar">🧠</div><div class="bubble"><div class="typing"><span></span><span></span><span></span></div></div>`;area.appendChild(aiMsg);scrollBottom();
-  let fullText='',replayed=false,retryNeedsRefresh=false;const retryRequestId=requestId||newTurnRequestId(),bubble=aiMsg.querySelector('.bubble');
+  let fullText='',replayed=false,retryNeedsRefresh=false,failureMessage='回复暂时失败，消息已保留。';const retryRequestId=requestId||newTurnRequestId(),bubble=aiMsg.querySelector('.bubble');
   try{const body=Object.assign({conversation_id:currentConvoId,request_id:retryRequestId,expected_revision:coachState.revision},turn);const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(!res.ok){retryNeedsRefresh=res.status===409;throw new Error('发送失败');}
+    if(!res.ok){retryNeedsRefresh=res.status===409;try{const failed=await res.json();failureMessage=failed.error||failureMessage;}catch(ignore){}throw new Error('发送失败');}
     const reader=res.body.getReader();const decoder=new TextDecoder();let buf='';
     while(true){const{done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});const lines=buf.split('\n');buf=lines.pop()||'';for(const line of lines){if(!line.startsWith('data: '))continue;try{const data=JSON.parse(line.slice(6));
       if(data.error){bubble.innerHTML=`<span style="color:#ef4444">❌ ${escHtml(data.error)}</span>`;}
       else if(data.content){fullText+=data.content;bubble.innerHTML=renderMarkdown(fullText)+'<span class="cursor"></span>';scrollBottom();}
-      else if(data.done){bubble.innerHTML=renderMarkdown(fullText);replayed=!!data.replayed;if(data.state&&(!replayed||data.state.revision>=coachState.revision)){coachState=data.state;renderModules();}attachHarnessActions(data.actions||stateActions(),bubble);if(data.new_completed&&data.new_completed.length>0){data.new_completed.forEach(mid=>{toast(`✅ ${MODULES[mid-1]?.name}完成！`);});renderModules();}if(data.auto_deliverables){handleAutoDeliverables(data.auto_deliverables);}}
+      else if(data.done){bubble.innerHTML=renderMarkdown(fullText);replayed=!!data.replayed;if(data.state&&(!replayed||data.state.revision>=coachState.revision)){coachState=data.state;renderModules();}attachHarnessActions(data.actions?.length?data.actions:stateActions(),bubble);if(data.new_completed&&data.new_completed.length>0){data.new_completed.forEach(mid=>{toast(`✅ ${MODULES[mid-1]?.name}完成！`);});renderModules();}if(data.auto_deliverables){handleAutoDeliverables(data.auto_deliverables);}}
     }catch(e){}}}
     if(replayed)await selectConversation(currentConvoId);
-  }catch(e){bubble.innerHTML='<span style="color:#ef4444">回复暂时失败，消息已保留。</span><div class="harness-actions"><button type="button" class="harness-action primary">重试</button></div>';const retry=bubble.querySelector('button');retry.onclick=async()=>{retry.disabled=true;if(retryNeedsRefresh)await selectConversation(currentConvoId);userMsg.remove();aiMsg.remove();sendTurn(turn,displayText,retryRequestId);};}
+  }catch(e){bubble.innerHTML=`<span style="color:#ef4444">${escHtml(failureMessage)}</span>`;const actions=stateActions();if(actions.length){attachHarnessActions(actions,bubble);}else{bubble.innerHTML+='<div class="harness-actions"><button type="button" class="harness-action primary">重试</button></div>';const retry=bubble.querySelector('button');retry.onclick=async()=>{retry.disabled=true;if(retryNeedsRefresh)await selectConversation(currentConvoId);userMsg.remove();aiMsg.remove();sendTurn(turn,displayText,retryRequestId);};}}
   streaming=false;document.getElementById('sendBtn').disabled=false;document.getElementById('userInput').focus();
 }
 
