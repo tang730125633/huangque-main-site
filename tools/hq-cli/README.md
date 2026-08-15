@@ -119,9 +119,9 @@ CLI 可以直接执行采集页和获客页的核心动作，不必先打开网�
 
 | 想做什么 | CLI 能力 | 输入 | 完成后去哪里拿结果 |
 |---|---|---|---|
-| 把一条内容的文案和评论采下来 | `collect-content` | 抖音、小红书或视频号公开内容 `url` | `task.result` 的完整文案和评论；`assets` 只存摘要 |
-| 保存一条内容的原视频 | `collect-video` | 抖音、小红书或视频号公开内容 `url` | `assets` 的 `collect` 视频链接；`task.result` 也保留结果 |
-| 提取视频里的口播文字 | `collect-transcript` | 抖音、小红书或视频号公开内容 `url` | `task.result` 的完整口播文字；`assets` 只记录是否已有口播 |
+| 把一条内容的文案和评论采下来 | `collect-content` | 抖音或小红书公开内容 `url` | `task.result` 的完整文案和评论；`assets` 只存摘要 |
+| 保存一条内容的原视频 | `collect-video` | 抖音或小红书公开内容 `url` | `assets` 的 `collect` 视频链接；`task.result` 也保留结果 |
+| 提取视频里的口播文字 | `collect-transcript` | 抖音或小红书公开内容 `url` | `task.result` 的完整口播文字；`assets` 只记录是否已有口播 |
 | 按关键词搜索平台内容 | `collect-search` | `platform=douyin|xhs`、`keyword`，可选 `page` | `task.result` 的任务结果 |
 | 从多平台评论里筛选潜在客户 | `leads-generate` | 平台，以及对应的关键词 / 视频号目标；数量和页数可选 | `assets` 的 `leads` 资产 |
 

@@ -147,8 +147,6 @@ class HqCliTests(unittest.TestCase):
         self.assertTrue(re.match(collect_url["pattern"], "https://xiaohongshu.com:443/explore/123"))
         self.assertFalse(re.match(collect_url["pattern"], "https://douyin.com:8080/video"))
         self.assertTrue(re.match(collect_url["pattern"], "https://www.xiaohongshu.com/explore/123"))
-        self.assertTrue(re.match(collect_url["pattern"], "https://weixin.qq.com/sph/Abc123"))
-        self.assertFalse(re.match(collect_url["pattern"], "https://mp.weixin.qq.com/s/Abc123"))
         self.assertFalse(re.match(collect_url["pattern"], "https://example.com/video"))
         search = by_id["collect-search"]["input_schema"]
         self.assertEqual(["douyin", "xhs"], search["properties"]["platform"]["enum"])
@@ -369,7 +367,7 @@ class HqCliTests(unittest.TestCase):
             },
             "collect-content": {"url": "https://v.douyin.com/abc123/"},
             "collect-video": {"url": "https://www.xiaohongshu.com/explore/123"},
-            "collect-transcript": {"url": "https://weixin.qq.com/sph/Abc123"},
+            "collect-transcript": {"url": "https://xhslink.com/a1b2c3"},
             "collect-search": {"platform": "douyin", "keyword": "AI 创业"},
             "leads-generate": {
                 "keyword": "AI 获客", "platforms": ["douyin", "xhs"],
