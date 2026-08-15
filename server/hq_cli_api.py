@@ -874,10 +874,13 @@ def _collect_url(value):
     except ValueError:
         raise CLIAPIError(400, "url 格式不合法")
     allowed = ("douyin.com", "iesdouyin.com", "xiaohongshu.com", "xhslink.com", "xhslink.cn")
+    channels_share = (parsed.scheme == "https" and host == "weixin.qq.com" and port in (None, 443)
+                      and parsed.path.startswith("/sph/") and parsed.path[len("/sph/"):].isalnum())
     if (parsed.scheme not in {"http", "https"} or parsed.username or parsed.password
             or port not in (None, 80, 443)
-            or not any(host == suffix or host.endswith("." + suffix) for suffix in allowed)):
-        raise CLIAPIError(400, "url 仅支持抖音或小红书公开链接")
+            or not (channels_share or any(
+                host == suffix or host.endswith("." + suffix) for suffix in allowed))):
+        raise CLIAPIError(400, "url 仅支持抖音、小红书或视频号公开链接")
     return url
 
 
