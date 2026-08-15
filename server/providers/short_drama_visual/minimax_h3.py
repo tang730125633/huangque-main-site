@@ -245,7 +245,10 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
         from content_domains import video_minimax_h3
 
         try:
-            data = video_minimax_h3.query_task(task_id, candidate["secret"])
+            data = video_minimax_h3.query_task(
+                task_id, candidate["secret"],
+                api_base=video_minimax_h3.LEGACY_API_BASE,
+            )
         except Exception as error:
             raise VisualProviderError("provider_poll_failed", "查询 MiniMax 任务失败", submitted=True) from error
         task = (data or {}).get("task") or {}
