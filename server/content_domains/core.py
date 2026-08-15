@@ -1066,6 +1066,51 @@ def _user_video_submit_limit(kind, body, username, cost):
                     "retry_after_ms": 4000, "need": cost}
     return None
 
+
+def _short_drama_xiaole_submission_limit(
+        connection, username, pending_job_included=False):
+    """Apply the shared xiaole and total active-job caps in one DB snapshot.
+
+    The paid-job callback runs after inserting its pending row, so that path
+    allows exactly the configured limit and rejects only counts above it.
+    """
+    username = str(username or "").strip()
+    comparator = (
+        (lambda count, limit: count > limit)
+        if pending_job_included
+        else (lambda count, limit: count >= limit)
+    )
+    active_xiaole = int(connection.execute(
+        "SELECT COUNT(*) FROM jobs WHERE username=? AND kind='xiaole_video' "
+        "AND status IN ('pending','running') AND COALESCE(deleted,0)=0",
+        (username,),
+    ).fetchone()[0])
+    if comparator(active_xiaole, MAX_USER_ACTIVE_XIAOLE_VIDEO):
+        return {
+            "detail": (
+                "当前果肉/Seedance/Omni 视频最多同时排队或生成 %d 个任务，"
+                "请等待部分完成后再继续" % MAX_USER_ACTIVE_XIAOLE_VIDEO
+            ),
+            "code": "xiaole_active_cap",
+            "active_jobs": active_xiaole,
+            "max_active_jobs": MAX_USER_ACTIVE_XIAOLE_VIDEO,
+            "retry_after_ms": 4000,
+        }
+    active_total = int(connection.execute(
+        "SELECT COUNT(*) FROM jobs WHERE username=? "
+        "AND status IN ('pending','running') AND COALESCE(deleted,0)=0",
+        (username,),
+    ).fetchone()[0])
+    if comparator(active_total, MAX_USER_ACTIVE_JOBS):
+        return {
+            "detail": "您有 %d 个任务正在排队/生成，完成后再提交" % active_total,
+            "code": "active_job_cap",
+            "active_jobs": active_total,
+            "max_active_jobs": MAX_USER_ACTIVE_JOBS,
+            "retry_after_ms": 4000,
+        }
+    return None
+
 def _user_running_talking_count(username):
     """该用户「运行中」的口播条数(kind=video，即 text/audio 口播)。"""
     if not username:
@@ -2161,6 +2206,9 @@ class H(BaseHTTPRequestHandler):
                     audio_domain, "record_audio_asset", None
                 ),
                 enqueue_job=enqueue_job,
+                shared_video_submission_limit=(
+                    _short_drama_xiaole_submission_limit
+                ),
                 deduct_points=getattr(points_domain, "deduct_points", None),
                 refund_points=getattr(points_domain, "refund_points", None),
                 charge_lookup=getattr(

@@ -2025,9 +2025,29 @@ def _minimax_xiaole_payload(provider_request, quote, actor_username):
     return validated
 
 
+def _enforce_shared_video_submission_limit(
+    checker, connection, actor_username, pending_job_included=False,
+):
+    if not callable(checker):
+        return
+    limit = checker(
+        connection,
+        actor_username,
+        pending_job_included=pending_job_included,
+    )
+    if not limit:
+        return
+    raise AutodraftError(
+        str(limit.get("code") or "active_job_cap"),
+        str(limit.get("detail") or "当前任务过多，请等待部分完成后重试"),
+        429,
+    )
+
+
 def _start_minimax_xiaole_job(
     db_factory, owner_username, actor_username, quote, idempotency_key,
     deduct_points, refund_points, enqueue_job, project_usage,
+    shared_video_submission_limit,
 ):
     if not callable(deduct_points) or not callable(refund_points):
         raise AutodraftError(
@@ -2069,6 +2089,11 @@ def _start_minimax_xiaole_job(
             raise AutodraftError("provider_quote_consumed", "单镜头报价已被使用", 409)
         _project(conn, owner_username, quote["project_id"])
         _confirmed_plan(conn, quote["project_id"], quote["plan_id"])
+        _enforce_shared_video_submission_limit(
+            shared_video_submission_limit,
+            conn,
+            actor_username,
+        )
         if conn.execute(
             "SELECT 1 FROM short_drama_provider_shot_jobs "
             "WHERE project_id=? AND shot_key=? AND status IN "
@@ -2136,6 +2161,12 @@ def _start_minimax_xiaole_job(
             raise AutodraftError(
                 "provider_quote_expired", "单镜头报价已过期", 409
             )
+        _enforce_shared_video_submission_limit(
+            shared_video_submission_limit,
+            connection,
+            actor_username,
+            pending_job_included=True,
+        )
         refreshed = preview_provider_request(
             db_factory,
             owner_username,
@@ -2297,6 +2328,7 @@ def start_provider_job(
     db_factory, owner_username, actor_username, body, idempotency_key,
     avatar_lookup=None, deduct_points=None, refund_points=None,
     charge_lookup=None, project_usage=None, enqueue_job=None,
+    shared_video_submission_limit=None,
 ):
     token = str(body.get("quote_token") or "").strip()
     key = _key(idempotency_key)
@@ -2365,6 +2397,7 @@ def start_provider_job(
             refund_points,
             enqueue_job,
             project_usage,
+            shared_video_submission_limit,
         )
     if not inspect_existing:
         provider = load_by_name(prepared_provider_name)
@@ -3345,10 +3378,10 @@ def _reconcile_minimax_xiaole_job(db_factory, row):
 
     conn = _connection(db_factory)
     try:
-        return _provider_job(conn.execute(
+        return _attach_provider_attempt_state(conn, _provider_job(conn.execute(
             "SELECT * FROM short_drama_provider_shot_jobs WHERE id=?",
             (row["id"],),
-        ).fetchone())
+        ).fetchone()))
     finally:
         conn.close()
 

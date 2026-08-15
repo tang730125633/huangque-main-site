@@ -5928,6 +5928,7 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                   mutation_lock=None, canvas_access_resolver=None, voice_validator=None,
                   points_getter=None, audio_asset_lookup=None, audio_asset_list=None,
                   enqueue_job=None,
+                  shared_video_submission_limit=None,
                   deduct_points=None, refund_points=None, charge_lookup=None,
                   avatar_list=None, audio_asset_job_lookup=None,
                   audio_asset_recorder=None, lipsync_provider_ready=None,
@@ -6350,6 +6351,9 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                     "charge_lookup": charge_lookup,
                     "project_usage": _project_point_usage,
                     "enqueue_job": enqueue_job,
+                    "shared_video_submission_limit": (
+                        shared_video_submission_limit
+                    ),
                 }
                 if mutation_lock is not None:
                     with mutation_lock:

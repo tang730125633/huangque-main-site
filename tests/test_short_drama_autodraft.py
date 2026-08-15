@@ -2358,6 +2358,184 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertEqual([], refunded)
         self.assertEqual([(shared["id"], "xiaole_video", None)], enqueued)
 
+    def test_minimax_shared_job_respects_existing_xiaole_active_limit(self):
+        from content_domains import core
+
+        self._lock_project_character_references()
+        self._init_shared_jobs_table()
+        conn = self.db()
+        try:
+            conn.execute(
+                "INSERT INTO jobs(kind,username,cost,status,payload,created_at,updated_at,owner) "
+                "VALUES ('xiaole_video','alice',1,'pending','{}',1,1,'content')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        charged = []
+        refunded = []
+        enqueued = []
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            feature_flags, "is_enabled", return_value=True,
+        ), mock.patch.object(
+            core, "MAX_USER_ACTIVE_XIAOLE_VIDEO", 1,
+        ), mock.patch.object(
+            core, "MAX_USER_ACTIVE_JOBS", 10,
+        ):
+            quote = self._provider_quote()
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft.start_provider_job(
+                    self.db,
+                    "alice",
+                    "alice",
+                    {"quote_token": quote["quote_token"]},
+                    "minimax-active-cap-1",
+                    deduct_points=lambda *args: charged.append(args) or 99,
+                    refund_points=lambda *args: refunded.append(args) or 100,
+                    enqueue_job=lambda *args: enqueued.append(args) or True,
+                    project_usage=short_drama._project_point_usage,
+                    shared_video_submission_limit=(
+                        core._short_drama_xiaole_submission_limit
+                    ),
+                )
+
+        self.assertEqual("xiaole_active_cap", raised.exception.code)
+        self.assertEqual([], charged)
+        self.assertEqual([], refunded)
+        self.assertEqual([], enqueued)
+
+    def test_minimax_shared_job_rechecks_active_limit_after_charge(self):
+        from content_domains import core
+
+        self._lock_project_character_references()
+        self._init_shared_jobs_table()
+        charged = []
+        refunded = []
+        enqueued = []
+
+        def deduct(username, cost, reason, transaction_key=""):
+            charged.append((username, cost, reason, transaction_key))
+            conn = self.db()
+            try:
+                conn.execute(
+                    "INSERT INTO jobs(kind,username,cost,status,payload,created_at,updated_at,owner) "
+                    "VALUES ('xiaole_video',?,1,'pending','{}',1,1,'content')",
+                    (username,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            return 100 - cost
+
+        def refund(username, cost, reason, transaction_key=""):
+            refunded.append((username, cost, reason, transaction_key))
+            return 100
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            feature_flags, "is_enabled", return_value=True,
+        ), mock.patch.object(
+            core, "MAX_USER_ACTIVE_XIAOLE_VIDEO", 1,
+        ), mock.patch.object(
+            core, "MAX_USER_ACTIVE_JOBS", 10,
+        ):
+            quote = self._provider_quote()
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft.start_provider_job(
+                    self.db,
+                    "alice",
+                    "alice",
+                    {"quote_token": quote["quote_token"]},
+                    "minimax-active-cap-race-1",
+                    deduct_points=deduct,
+                    refund_points=refund,
+                    enqueue_job=lambda *args: enqueued.append(args) or True,
+                    project_usage=short_drama._project_point_usage,
+                    shared_video_submission_limit=(
+                        core._short_drama_xiaole_submission_limit
+                    ),
+                )
+
+        conn = self.db()
+        try:
+            active_count = conn.execute(
+                "SELECT COUNT(*) FROM jobs WHERE username='alice' "
+                "AND status IN ('pending','running')"
+            ).fetchone()[0]
+            projected_count = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_provider_shot_jobs"
+            ).fetchone()[0]
+            consumed = conn.execute(
+                "SELECT consumed_job_id FROM short_drama_provider_shot_quotes "
+                "WHERE token=?",
+                (quote["quote_token"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        self.assertEqual("xiaole_active_cap", raised.exception.code)
+        self.assertEqual(1, active_count)
+        self.assertEqual(0, projected_count)
+        self.assertIsNone(consumed)
+        self.assertEqual(1, len(charged))
+        self.assertEqual(1, len(refunded))
+        self.assertEqual([], enqueued)
+
+    def test_minimax_shared_job_respects_total_active_job_limit(self):
+        from content_domains import core
+
+        self._lock_project_character_references()
+        self._init_shared_jobs_table()
+        conn = self.db()
+        try:
+            conn.execute(
+                "INSERT INTO jobs(kind,username,cost,status,payload,created_at,updated_at,owner) "
+                "VALUES ('image','alice',1,'running','{}',1,1,'content')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        charged = []
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            feature_flags, "is_enabled", return_value=True,
+        ), mock.patch.object(
+            core, "MAX_USER_ACTIVE_XIAOLE_VIDEO", 10,
+        ), mock.patch.object(
+            core, "MAX_USER_ACTIVE_JOBS", 1,
+        ):
+            quote = self._provider_quote()
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft.start_provider_job(
+                    self.db,
+                    "alice",
+                    "alice",
+                    {"quote_token": quote["quote_token"]},
+                    "minimax-total-active-cap-1",
+                    deduct_points=lambda *args: charged.append(args) or 99,
+                    refund_points=lambda *_args: 100,
+                    enqueue_job=lambda *_args: True,
+                    project_usage=short_drama._project_point_usage,
+                    shared_video_submission_limit=(
+                        core._short_drama_xiaole_submission_limit
+                    ),
+                )
+
+        self.assertEqual("active_job_cap", raised.exception.code)
+        self.assertEqual([], charged)
+
     def test_minimax_shared_job_encodes_local_reference_with_authenticated_url(self):
         import io
         from PIL import Image
@@ -2548,6 +2726,8 @@ class ShortDramaAutodraftTests(unittest.TestCase):
 
         self.assertEqual("succeeded", completed["status"])
         self.assertEqual("succeeded", replay["status"])
+        self.assertEqual("done", completed["billing_recovery"]["state"])
+        self.assertEqual("done", replay["billing_recovery"]["state"])
         self.assertEqual("h3-upstream-task-1", completed["provider_job_id"])
         self.assertEqual(1, len(versions))
         self.assertEqual(shared_result["video_file"], versions[0]["file"])
@@ -2691,6 +2871,8 @@ class ShortDramaAutodraftTests(unittest.TestCase):
 
         self.assertEqual("failed", failed["status"])
         self.assertEqual("failed", settled["status"])
+        self.assertTrue(failed["billing_recovery"]["refund_pending"])
+        self.assertTrue(settled["billing_recovery"]["refunded"])
         self.assertEqual("refund_pending", pending_attempt["state"])
         self.assertEqual("refunded", settled_attempt["state"])
         self.assertEqual([], direct_refunds)
