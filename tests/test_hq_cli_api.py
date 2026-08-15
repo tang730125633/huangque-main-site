@@ -507,8 +507,9 @@ class HQCLIAPITests(unittest.TestCase):
                 "https://weixin.qq.com/sph/",
                 "https://weixin.qq.com/not-sph/Abc123",
                 "https://evil.weixin.qq.com/sph/Abc123",
+                "https://weixin.qq.com:80/sph/Abc123",
                 "https://weixin.qq.com:444/sph/Abc123",
-                "https://user@weixin.qq.com/sph/Abc123",
+                "https://%75:%70@weixin.qq.com/sph/Abc123",
                 "https://weixin.qq.com.evil.example/sph/Abc123"):
             with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
                 self.auth.hq_cli_api.action_plan("collect-video", {"url": invalid_channels})
