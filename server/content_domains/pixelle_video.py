@@ -6,6 +6,7 @@ import math
 import os
 import pathlib
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -16,6 +17,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from .core import OUT_DIR, public_url
 from . import audio as audio_domain
 from . import feature_flags
+from . import pixelle_talking_assets
 
 
 def _env_int(name, default, minimum, maximum):
@@ -50,6 +52,14 @@ _CAPTION_CLAUSE_BOUNDARIES = frozenset("，,、 ")
 
 DEFAULT_STYLE = "realistic_commercial"
 DEFAULT_PUBLIC_VOICE = "zh-CN-YunjianNeural"
+DEFAULT_TALKING_RATIO = 0.3
+MIN_TALKING_RATIO = 0.1
+MAX_TALKING_RATIO = 0.5
+_BASE_NARRATION_CHARS_PER_SECOND = 4.0
+_PLAN_RATE_WINDOW_SECONDS = 60.0
+_PLAN_RATE_MAX_REQUESTS = 6
+_PLAN_RATE_REQUESTS = {}
+_PLAN_RATE_LOCK = threading.Lock()
 _PUBLIC_VOICE_RE = re.compile(r"^zh-CN(?:-[a-z]+)?-[A-Za-z]+Neural$")
 _PUBLIC_VOICE_NAMES = {
     "zh-CN-XiaoxiaoNeural": "女声-温柔（晓晓）",
@@ -391,6 +401,126 @@ def prepare_payload(payload, username=""):
     }
     prepared.update(_freeze_voice(body, username))
     return prepared
+
+
+def check_plan_rate_limit(username, now=None):
+    """Apply a small owner-scoped guard to the unbilled narration planner."""
+    owner = str(username or "").strip()
+    if not owner:
+        raise ValueError("missing user")
+    stamp = float(time.monotonic() if now is None else now)
+    with _PLAN_RATE_LOCK:
+        recent = [item for item in _PLAN_RATE_REQUESTS.get(owner, [])
+                  if stamp - item < _PLAN_RATE_WINDOW_SECONDS]
+        if len(recent) >= _PLAN_RATE_MAX_REQUESTS:
+            raise RuntimeError("planning_rate_limited")
+        recent.append(stamp)
+        _PLAN_RATE_REQUESTS[owner] = recent
+
+
+def _talking_ratio(payload):
+    raw = (payload or {}).get("ratio", DEFAULT_TALKING_RATIO)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ValueError("口播比例必须在 10%-50% 之间")
+    ratio = float(raw)
+    if (not math.isfinite(ratio)
+            or ratio < MIN_TALKING_RATIO
+            or ratio > MAX_TALKING_RATIO):
+        raise ValueError("口播比例必须在 10%-50% 之间")
+    return ratio
+
+
+def _recommended_scene_ids(scenes, ratio):
+    """Mirror Pixelle's deterministic edge/center/non-adjacent selector."""
+    if not scenes:
+        return []
+    target = max(1, round(len(scenes) * float(ratio)))
+    target = min(target, len(scenes))
+    center = (len(scenes) - 1) / 2.0
+    selected = [0]
+    if len(scenes) > 1:
+        selected.append(len(scenes) - 1)
+
+    def adjacent_to_selected_interior(index):
+        return any(
+            abs(index - selected_index) == 1
+            for selected_index in selected
+            if 0 < selected_index < len(scenes) - 1
+        )
+
+    interior = sorted(
+        range(1, len(scenes) - 1),
+        key=lambda index: (abs(index - center), index),
+    )
+    for index in interior:
+        if len(selected) >= target:
+            break
+        if adjacent_to_selected_interior(index):
+            continue
+        selected.append(index)
+    if len(selected) < target:
+        for index in interior:
+            if len(selected) >= target:
+                break
+            if index not in selected:
+                selected.append(index)
+    return [scenes[index]["scene_id"] for index in selected[:target]]
+
+
+def _estimated_scene_duration(text, speech_rate):
+    units = len(re.findall(r"[\u3400-\u9fffA-Za-z0-9]", str(text or "")))
+    seconds = max(0.5, units / (_BASE_NARRATION_CHARS_PER_SECOND * speech_rate))
+    return float(Decimal(str(seconds)).quantize(
+        Decimal("0.1"), rounding=ROUND_HALF_UP))
+
+
+def plan_talking_scenes(payload, username):
+    """Freeze a non-billed narration plan for later explicit confirmation."""
+    ratio = _talking_ratio(payload)
+    prepared = prepare_payload(payload, username)
+    if prepared["mode"] == "fixed":
+        lines = _fixed_segments(prepared["text"])
+    else:
+        lines = _personal_narrations(prepared)
+    if not lines:
+        raise ValueError("分镜方案不能为空")
+
+    scenes = []
+    last_index = len(lines) - 1
+    for index, line in enumerate(lines):
+        role = "hook" if index == 0 else ("cta" if index == last_index else "body")
+        scenes.append({
+            "scene_id": "scene_%02d" % (index + 1),
+            "text": line,
+            "estimated_duration": _estimated_scene_duration(
+                line, prepared["speech_rate"]),
+            "role": role,
+            "talking_recommended": False,
+        })
+    recommended = set(_recommended_scene_ids(scenes, ratio))
+    for scene in scenes:
+        scene["talking_recommended"] = scene["scene_id"] in recommended
+
+    source = {
+        "text": prepared["text"],
+        "mode": prepared["mode"],
+        "ratio": ratio,
+        "template": prepared["template"],
+        "style": prepared["style"],
+        "speech_rate": prepared["speech_rate"],
+        "source_page": prepared["source_page"],
+        "voice_scope": prepared["voice_scope"],
+    }
+    if prepared["voice_scope"] == "public":
+        source["voice_id"] = prepared["voice_id"]
+    else:
+        source["voice_key"] = prepared["voice_key"]
+    plan = pixelle_talking_assets.create_plan(username, source, scenes)
+    return {
+        "plan_id": plan["plan_id"],
+        "source_hash": plan["source_hash"],
+        "scenes": plan["scenes"],
+    }
 
 
 def _json_request(method, path, payload=None, timeout=30):

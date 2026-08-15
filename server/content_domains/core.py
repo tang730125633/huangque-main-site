@@ -1585,6 +1585,16 @@ class H(BaseHTTPRequestHandler):
             self.send_header("X-HQ-Error-Code", hq_code)
             self.send_header("X-HQ-Request-ID", req_id)
         self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+
+    def _send_private_bytes(self, code, data, content_type):
+        body = bytes(data or b"")
+        self.send_response(code)
+        self.send_header("Content-Type", str(content_type or "application/octet-stream"))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "private, max-age=300")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
     def _method_not_allowed(self):
         b = json.dumps({"detail": "Method Not Allowed"}, ensure_ascii=False).encode()
         self.send_response(405); self.send_header("Allow", "POST")
@@ -1650,6 +1660,67 @@ class H(BaseHTTPRequestHandler):
                 self, p, verify, _must_change_password, is_shutting_down,
                 feature_flags, points_domain, audio_domain, video_domain,
                 AUTH_INTERNAL_TOKEN): return
+        if p in {"/api/gen/text-video/plan", "/api/gen/text-video/avatar"}:
+            user = verify(self._token())
+            if not user:
+                return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user):
+                return self._send(403, {"detail": "请先修改初始密码"})
+            from . import pixelle_video
+            try:
+                pixelle_video.require_available()
+                if p == "/api/gen/text-video/plan":
+                    body = self._json_body_strict(max_bytes=64 * 1024)
+                    allowed = {
+                        "text", "mode", "ratio", "template", "style",
+                        "voice", "speech_rate", "source_page",
+                    }
+                    if not isinstance(body, dict) or not set(body).issubset(allowed):
+                        raise ValueError("分镜规划请求字段无效")
+                    miniprogram_security.check_payload(body)
+                    active_jobs = _user_active_job_count(user["username"])
+                    if active_jobs >= MAX_USER_ACTIVE_JOBS:
+                        return self._send(429, {
+                            "detail": "当前任务较多，请等待部分完成后再规划",
+                            "code": "active_job_cap", "active_jobs": active_jobs,
+                            "max_active_jobs": MAX_USER_ACTIVE_JOBS,
+                            "retry_after_ms": 10000,
+                        })
+                    pixelle_video.check_plan_rate_limit(user["username"])
+                    return self._send(200, pixelle_video.plan_talking_scenes(
+                        body, user["username"]))
+                body = self._json_body_strict(max_bytes=17 * 1024 * 1024)
+                if not isinstance(body, dict) or set(body) != {"image_data"}:
+                    raise ValueError("人物图片上传请求字段无效")
+                miniprogram_security.check_payload(body)
+                item = pixelle_talking_assets.store_avatar(
+                    user["username"], body.get("image_data"))
+                return self._send(200, {
+                    "asset_id": item["asset_id"],
+                    "preview_url": "/api/gen/text-video/avatar/" + item["asset_id"],
+                })
+            except feature_flags.FeatureDisabled as error:
+                return self._send(503, {
+                    "detail": str(error), "operation_terminal": True,
+                })
+            except miniprogram_security.ContentRejected as error:
+                return self._send(400, {
+                    "detail": str(error), "code": "content_rejected",
+                })
+            except miniprogram_security.SecurityUnavailable as error:
+                return self._send(503, {
+                    "detail": str(error), "code": "content_security_unavailable",
+                    "retry_after_ms": 5000,
+                })
+            except RuntimeError as error:
+                if str(error) == "planning_rate_limited":
+                    return self._send(429, {
+                        "detail": "请求过于频繁，请稍后再试",
+                        "code": "rate_limited", "retry_after_ms": 10000,
+                    })
+                return self._send(503, {"detail": str(error)[:220]})
+            except (ValueError, LookupError) as error:
+                return self._send(400, {"detail": str(error)[:220]})
         if p == "/api/gen/short-drama/select-character-reference":
             user = verify(self._token())
             if not user:
@@ -3189,6 +3260,21 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
+        avatar_prefix = "/api/gen/text-video/avatar/"
+        if p.startswith(avatar_prefix):
+            user = verify(self._token())
+            if not user:
+                return self._send(401, {"detail": "未登录或登录已过期"})
+            asset_id = p[len(avatar_prefix):]
+            try:
+                item = pixelle_talking_assets.read_avatar(
+                    user["username"], asset_id)
+                return self._send_private_bytes(
+                    200, item["data"], item["mime"])
+            except (LookupError, ValueError):
+                return self._send(404, {"detail": "人物图片不存在或已失效"})
+            except RuntimeError:
+                return self._send(503, {"detail": "人物图片暂不可用"})
         if p == "/api/gen/pricing":
             return self._send(200, pricing.public_catalog())
         if p in {

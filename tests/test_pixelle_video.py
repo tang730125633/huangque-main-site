@@ -1,8 +1,13 @@
 import importlib
 import http.client
+import json
 import sys
 import tempfile
+import threading
 import unittest
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -173,6 +178,135 @@ class PixelleVideoTests(unittest.TestCase):
             "PIXELLE_VIDEO_WORKFLOW=runninghub/video_wan2.1_fusionx.json",
             dropin,
         )
+
+    def test_talking_plan_fixed_freezes_stable_scenes_and_recommendations(self):
+        payload = {
+            "text": "开场钩子\n\n核心观点一\n\n核心观点二\n\n行动引导",
+            "mode": "fixed", "ratio": 0.5,
+            "template": "1080x1920/image_default.html",
+            "style": "realistic_commercial",
+            "voice": "public:zh-CN-YunjianNeural", "speech_rate": 1.0,
+        }
+        stored = {"plan_id": "talking_plan_" + "a" * 32,
+                  "source_hash": "b" * 64, "scenes": []}
+
+        def create_plan(_username, _source, scenes):
+            stored["scenes"] = [dict(scene, scene_id="scene_%02d" % index)
+                                for index, scene in enumerate(scenes, 1)]
+            return stored
+
+        with mock.patch.object(self.pixelle, "public_voices", return_value=[{
+            "id": "public:zh-CN-YunjianNeural", "scope": "public",
+        }]), mock.patch(
+            "content_domains.pixelle_talking_assets.create_plan",
+            side_effect=create_plan,
+        ) as create, mock.patch.object(self.pixelle, "_json_request") as request:
+            result = self.pixelle.plan_talking_scenes(payload, "alice")
+
+        request.assert_not_called()
+        create.assert_called_once()
+        self.assertEqual([scene["scene_id"] for scene in result["scenes"]], [
+            "scene_01", "scene_02", "scene_03", "scene_04",
+        ])
+        self.assertEqual([scene["role"] for scene in result["scenes"]], [
+            "hook", "body", "body", "cta",
+        ])
+        self.assertEqual(
+            [scene["scene_id"] for scene in result["scenes"]
+             if scene["talking_recommended"]],
+            ["scene_01", "scene_04"],
+        )
+        self.assertTrue(all(
+            isinstance(scene["estimated_duration"], float)
+            and scene["estimated_duration"] > 0
+            for scene in result["scenes"]
+        ))
+
+    def test_talking_plan_generate_calls_narration_planner_once_and_never_render(self):
+        payload = {
+            "text": "AI培训如何提升团队效率", "mode": "generate", "ratio": 0.3,
+            "template": "1080x1920/image_default.html", "style": "future_tech",
+            "voice": "public:zh-CN-YunjianNeural", "speech_rate": 1.2,
+        }
+        planner_result = {"narrations": [
+            "先看一个真实问题", "把重复工作交给AI", "现在开始行动",
+        ]}
+
+        def create_plan(_username, _source, scenes):
+            return {
+                "plan_id": "talking_plan_" + "c" * 32,
+                "source_hash": "d" * 64,
+                "scenes": [dict(scene, scene_id="scene_%02d" % index)
+                           for index, scene in enumerate(scenes, 1)],
+            }
+
+        with mock.patch.object(self.pixelle, "public_voices", return_value=[{
+            "id": "public:zh-CN-YunjianNeural", "scope": "public",
+        }]), mock.patch.object(
+            self.pixelle, "_json_request", return_value=planner_result,
+        ) as request, mock.patch(
+            "content_domains.pixelle_talking_assets.create_plan",
+            side_effect=create_plan,
+        ), mock.patch.object(self.pixelle, "_submit") as submit:
+            result = self.pixelle.plan_talking_scenes(payload, "alice")
+
+        request.assert_called_once()
+        self.assertEqual(request.call_args.args[:2], ("POST", "/api/content/narration"))
+        submit.assert_not_called()
+        self.assertEqual(len(result["scenes"]), 3)
+
+    def test_talking_plan_duration_tracks_selected_speech_rate(self):
+        base = {
+            "text": "这是一段包含二十四个左右汉字用于测试语速时长估算的文案",
+            "mode": "fixed", "ratio": 0.3,
+            "voice": "public:zh-CN-YunjianNeural",
+        }
+        durations = []
+
+        def create_plan(_username, _source, scenes):
+            durations.append(scenes[0]["estimated_duration"])
+            return {"plan_id": "talking_plan_" + "e" * 32,
+                    "source_hash": "f" * 64,
+                    "scenes": [dict(scenes[0], scene_id="scene_01")]}
+
+        with mock.patch.object(self.pixelle, "public_voices", return_value=[{
+            "id": "public:zh-CN-YunjianNeural", "scope": "public",
+        }]), mock.patch(
+            "content_domains.pixelle_talking_assets.create_plan",
+            side_effect=create_plan,
+        ):
+            self.pixelle.plan_talking_scenes(dict(base, speech_rate=0.8), "alice")
+            self.pixelle.plan_talking_scenes(dict(base, speech_rate=1.6), "alice")
+        self.assertGreater(durations[0], durations[1])
+        self.assertEqual(durations, [round(value, 1) for value in durations])
+
+    def test_talking_plan_rejects_ratio_outside_contract(self):
+        with self.assertRaisesRegex(ValueError, "10%-50%"):
+            self.pixelle.plan_talking_scenes({
+                "text": "有效文案", "mode": "fixed", "ratio": 0.6,
+                "voice": "public:zh-CN-YunjianNeural",
+            }, "alice")
+
+    def test_talking_recommendations_match_generation_service_contract(self):
+        scenes = [{"scene_id": "scene_%02d" % index}
+                  for index in range(1, 8)]
+        self.assertEqual(
+            self.pixelle._recommended_scene_ids(scenes, 0.5),
+            ["scene_01", "scene_07", "scene_04", "scene_02"],
+        )
+
+    def test_talking_duration_targets_six_seconds_without_hard_clamp(self):
+        self.assertGreater(
+            self.pixelle._estimated_scene_duration("长" * 40, 1.0), 6.0)
+
+    def test_talking_plan_rate_guard_is_owner_scoped(self):
+        self.pixelle._PLAN_RATE_REQUESTS.clear()
+        for index in range(self.pixelle._PLAN_RATE_MAX_REQUESTS):
+            self.pixelle.check_plan_rate_limit("alice", now=float(index))
+        with self.assertRaisesRegex(RuntimeError, "planning_rate_limited"):
+            self.pixelle.check_plan_rate_limit("alice", now=10.0)
+        self.pixelle.check_plan_rate_limit("bob", now=10.0)
+        self.pixelle._PLAN_RATE_REQUESTS.clear()
 
     def test_prepare_topic_and_fixed_copy(self):
         topic = self.pixelle.prepare_payload({
@@ -711,6 +845,137 @@ class PixelleVideoTests(unittest.TestCase):
             )
         self.assertEqual(relative, "video/pixelle_7.mp4")
         self.assertEqual(size, len(source))
+
+
+class TextVideoPlanningApiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        server_dir = str(Path(__file__).resolve().parents[1] / "server")
+        if server_dir not in sys.path:
+            sys.path.insert(0, server_dir)
+        cls.core = importlib.import_module("content_domains.core")
+        cls.pixelle = importlib.import_module("content_domains.pixelle_video")
+        cls.assets = importlib.import_module("content_domains.pixelle_talking_assets")
+
+    def setUp(self):
+        self.originals = {
+            "verify": self.core.verify,
+            "domains": self.core._domains,
+        }
+        self.core.verify = lambda token: (
+            {"username": token, "must_change": False} if token else None
+        )
+        self.core._domains = lambda: (mock.Mock(), mock.Mock(), mock.Mock())
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), self.core.H)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        self.core.verify = self.originals["verify"]
+        self.core._domains = self.originals["domains"]
+
+    def request(self, method, path, body=None, username="alice"):
+        headers = {}
+        data = None
+        if username is not None:
+            headers["Authorization"] = "Bearer " + username
+        if body is not None:
+            data = json.dumps(body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        return urllib.request.urlopen(urllib.request.Request(
+            "http://127.0.0.1:%d%s" % (self.server.server_address[1], path),
+            data=data, headers=headers, method=method,
+        ), timeout=5)
+
+    def test_plan_route_is_authenticated_guarded_and_does_not_enqueue_paid_job(self):
+        expected = {
+            "plan_id": "talking_plan_" + "a" * 32,
+            "source_hash": "b" * 64,
+            "scenes": [{"scene_id": "scene_01", "text": "第一段"}],
+        }
+        body = {"text": "第一段", "mode": "fixed", "ratio": 0.3,
+                "template": "1080x1920/image_default.html",
+                "style": "realistic_commercial",
+                "voice": "public:zh-CN-YunjianNeural", "speech_rate": 1.0}
+        with mock.patch.object(self.pixelle, "require_available"), \
+             mock.patch.object(self.pixelle, "check_plan_rate_limit") as rate, \
+             mock.patch.object(self.pixelle, "plan_talking_scenes", return_value=expected) as plan, \
+             mock.patch.object(self.core.miniprogram_security, "check_payload") as guard, \
+             mock.patch.object(self.core, "_user_active_job_count", return_value=0) as active, \
+             mock.patch.object(self.core, "enqueue_job") as enqueue:
+            with self.request("POST", "/api/gen/text-video/plan", body) as response:
+                result = json.loads(response.read())
+
+        self.assertEqual(result, expected)
+        rate.assert_called_once_with("alice")
+        active.assert_called_once_with("alice")
+        guard.assert_called_once_with(body)
+        plan.assert_called_once_with(body, "alice")
+        enqueue.assert_not_called()
+
+        with self.assertRaises(urllib.error.HTTPError) as denied:
+            self.request("POST", "/api/gen/text-video/plan", body, username=None)
+        self.assertEqual(denied.exception.code, 401)
+
+    def test_plan_route_reuses_existing_active_job_guard(self):
+        with mock.patch.object(self.pixelle, "require_available"), \
+             mock.patch.object(
+                 self.core, "_user_active_job_count",
+                 return_value=self.core.MAX_USER_ACTIVE_JOBS,
+             ), mock.patch.object(self.pixelle, "plan_talking_scenes") as plan:
+            with self.assertRaises(urllib.error.HTTPError) as limited:
+                self.request("POST", "/api/gen/text-video/plan", {
+                    "text": "第一段", "mode": "fixed", "ratio": 0.3,
+                })
+        self.assertEqual(limited.exception.code, 429)
+        plan.assert_not_called()
+
+    def test_avatar_upload_and_owner_scoped_private_preview(self):
+        avatar = {"asset_id": "local_avatar_" + "c" * 32,
+                  "mime": "image/png", "data": b"\x89PNG\r\n\x1a\nbody"}
+        with mock.patch.object(self.pixelle, "require_available"), \
+             mock.patch.object(self.core.miniprogram_security, "check_payload"), \
+             mock.patch.object(self.assets, "store_avatar", return_value=avatar) as store:
+            with self.request("POST", "/api/gen/text-video/avatar", {
+                "image_data": "data:image/png;base64,aGVsbG8=",
+            }) as response:
+                result = json.loads(response.read())
+        self.assertEqual(result, {
+            "asset_id": avatar["asset_id"],
+            "preview_url": "/api/gen/text-video/avatar/" + avatar["asset_id"],
+        })
+        store.assert_called_once_with("alice", "data:image/png;base64,aGVsbG8=")
+
+        def read(owner, asset_id):
+            if owner != "alice" or asset_id != avatar["asset_id"]:
+                raise LookupError("not found")
+            return avatar
+
+        path = "/api/gen/text-video/avatar/" + avatar["asset_id"]
+        with mock.patch.object(self.assets, "read_avatar", side_effect=read):
+            with self.request("GET", path) as response:
+                self.assertEqual(response.read(), avatar["data"])
+                self.assertEqual(response.headers["Content-Type"], "image/png")
+                self.assertEqual(response.headers["Cache-Control"], "private, max-age=300")
+                self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
+            with self.assertRaises(urllib.error.HTTPError) as denied:
+                self.request("GET", path, username="bob")
+        self.assertEqual(denied.exception.code, 404)
+
+    def test_avatar_upload_rejects_invalid_image(self):
+        with mock.patch.object(self.pixelle, "require_available"), \
+             mock.patch.object(self.core.miniprogram_security, "check_payload"), \
+             mock.patch.object(
+                 self.assets, "store_avatar", side_effect=ValueError("invalid image")):
+            with self.assertRaises(urllib.error.HTTPError) as rejected:
+                self.request("POST", "/api/gen/text-video/avatar", {
+                    "image_data": "data:text/plain;base64,eA==",
+                })
+        self.assertEqual(rejected.exception.code, 400)
+        self.assertIn("invalid image", rejected.exception.read().decode("utf-8"))
 
 
 if __name__ == "__main__":

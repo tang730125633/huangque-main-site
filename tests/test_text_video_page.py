@@ -12,6 +12,11 @@ FLAGS = (ROOT / "server/content_domains/feature_flags.py").read_text(encoding="u
 
 
 class TextVideoPageTests(unittest.TestCase):
+    def test_talking_planning_and_avatar_routes_are_wired(self):
+        self.assertIn('/api/gen/text-video/plan', CORE)
+        self.assertIn('/api/gen/text-video/avatar', CORE)
+        self.assertIn('private, max-age=300', CORE)
+
     def test_page_uses_authenticated_paid_job_pipeline(self):
         self.assertIn("/api/gen/script_to_video", PAGE)
         self.assertIn("pipeline:'pixelle'", PAGE)
