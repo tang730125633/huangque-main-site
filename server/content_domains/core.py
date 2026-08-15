@@ -851,6 +851,16 @@ def _must_change_password(user):
     return bool(user and user.get("must_change"))
 
 _job_public_dict, _idempotency_key = jobs_store.public_dict, submission_idempotency.clean_key
+
+_PUBLIC_VIDEO_PHASE_KINDS = {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video"}
+
+
+def _video_job_phase_for_public(job_id, kind):
+    if kind not in _PUBLIC_VIDEO_PHASE_KINDS:
+        return None
+    return _domains()[2].get_video_job_phase(job_id)
+
+
 def _idempotency_begin(username, endpoint, key, body): return submission_idempotency.begin(jdb, username, endpoint, key, body)
 def _idempotency_complete(username, endpoint, key, response): submission_idempotency.complete(jdb, username, endpoint, key, response)
 def _idempotency_abort(username, endpoint, key): submission_idempotency.abort(jdb, username, endpoint, key)
@@ -3384,7 +3394,7 @@ class H(BaseHTTPRequestHandler):
             if not r: return self._send(404, {"detail": "任务不存在"})
             if r["username"] != user.get("username"):
                 return self._send(404, {"detail": "任务不存在"})
-            phase = video_domain.get_video_job_phase(jid) if r["kind"] in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"} else None
+            phase = _video_job_phase_for_public(jid, r["kind"])
             if phase is None and r["kind"] == "breakdown":
                 try:
                     phase = (json.loads(r["payload"] or "{}") or {}).get("phase")

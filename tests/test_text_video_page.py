@@ -12,6 +12,16 @@ FLAGS = (ROOT / "server/content_domains/feature_flags.py").read_text(encoding="u
 
 
 class TextVideoPageTests(unittest.TestCase):
+    def _run_page_runtime(self, scenario):
+        result = subprocess.run(
+            ["node", str(ROOT / "tests/text_video_page_runtime.js"), scenario],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        return json.loads(result.stdout)
+
     def _run_talking_state(self, statements):
         start_marker = "/* talking-state:start */"
         end_marker = "/* talking-state:end */"
@@ -135,6 +145,44 @@ process.stdout.write(JSON.stringify({afterSceneEdit:afterSceneEdit,afterPlanInpu
         self.assertIn("talking_warnings", PAGE)
         self.assertIn('id="talkingWarnings"', PAGE)
         self.assertIn("renderTalkingWarnings", PAGE)
+
+    def test_late_plan_response_cannot_restore_invalidated_plan(self):
+        result = self._run_page_runtime("latePlan")
+        self.assertEqual(result["button"], "生成分镜方案")
+        self.assertNotIn("旧方案", result["status"])
+        self.assertLessEqual(result["scenes"], 1)
+
+    def test_every_plan_input_invalidates_an_inflight_response(self):
+        result = self._run_page_runtime("planMutations")
+        self.assertEqual(
+            set(result),
+            {"text", "mode", "voice", "speechRate", "style", "ratio", "template", "kind", "orientation", "enabled", "defaultAvatar"},
+        )
+        self.assertTrue(all(result.values()), result)
+
+    def test_avatar_uploads_are_last_write_wins_and_block_paid_submit(self):
+        result = self._run_page_runtime("avatarRace")
+        self.assertTrue(result["blockedWhilePending"])
+        self.assertEqual(result["paidWhilePending"], 0)
+        self.assertEqual(result["payload"]["talking_material"]["default_avatar_asset_id"], "avatar-new")
+        self.assertGreaterEqual(len(result["revoked"]), 2)
+
+    def test_scene_avatar_uploads_are_last_write_wins(self):
+        result = self._run_page_runtime("sceneAvatarRace")
+        self.assertTrue(result["blockedWhilePending"])
+        scenes = result["payload"]["talking_material"]["scenes"]
+        self.assertEqual(scenes[0]["avatar_asset_id"], "scene-new")
+
+    def test_poll_prefers_real_phase_over_legacy_stage(self):
+        result = self._run_page_runtime("phase")
+        self.assertIn("正在生成口播素材", result["status"])
+        self.assertNotIn("普通素材阶段", result["status"])
+
+    def test_default_off_runtime_path_submits_exact_legacy_payload(self):
+        result = self._run_page_runtime("disabledPath")
+        self.assertEqual(result["planRequests"], 0)
+        self.assertNotIn("talking_material", result["payload"])
+        self.assertEqual(result["payload"]["pipeline"], "pixelle")
 
     def test_talking_planning_and_avatar_routes_are_wired(self):
         self.assertIn('/api/gen/text-video/plan', CORE)
