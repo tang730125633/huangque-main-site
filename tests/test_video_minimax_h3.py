@@ -189,6 +189,31 @@ class MiniMaxH3VideoTests(unittest.TestCase):
         self.assertEqual(resumed["request_id"], "h3-task-1")
         self.assertEqual([method for method, _path in calls], ["POST", "GET", "GET"])
 
+    def test_generate_uses_one_persisted_origin_for_create_and_first_poll(self):
+        calls = []
+
+        def request(_opener, method, path, body=None, timeout=90, api_key=None,
+                    api_base=None):
+            calls.append((method, path, api_base))
+            if method == "POST":
+                return {"task_id": "stable-origin-task"}
+            return {"task": {
+                "status": "succeeded",
+                "content": {"url": "https://cdn.example/stable.mp4"},
+            }}
+
+        with patch.object(video_minimax_h3, "_request_json", side_effect=request), \
+                patch.object(video_minimax_h3, "_opener", return_value=object()):
+            video_minimax_h3.generate(
+                "a ship leaves the port", duration=5, api_key="secret",
+                api_base=video_minimax_h3.API_BASE,
+                sleep=lambda _seconds: None,
+            )
+        self.assertEqual(
+            [video_minimax_h3.API_BASE, video_minimax_h3.API_BASE],
+            [item[2] for item in calls],
+        )
+
     def test_jpeg_reference_is_normalized_to_clean_png(self):
         body = video_minimax_h3.build_request(
             "人物走进电梯", [self._image("JPEG", (257, 455))], duration=5
@@ -241,8 +266,34 @@ class MiniMaxH3VideoTests(unittest.TestCase):
             })
         generate.assert_called_once()
         self.assertEqual("2k", generate.call_args.kwargs["resolution"])
+        self.assertEqual(
+            video_minimax_h3.LEGACY_API_BASE,
+            generate.call_args.kwargs["api_base"],
+        )
         self.assertEqual(result["provider_video_id"], "h3-task-1")
         self.assertEqual(result["provider"], "minimax_h3_cn")
+
+    def test_shared_new_job_submission_uses_persisted_metaso_origin(self):
+        rendered = {
+            "request_id": "h3-task-new", "source_video_url": "https://cdn.example/new.mp4",
+            "model": "MiniMax-H3", "duration": 5, "ratio": "16:9",
+            "resolution": "2k", "provider": "minimax_h3_cn",
+        }
+        with patch.object(video, "get_resumable_grok_request", return_value=None), \
+                patch.object(video.provider_keys, "claim_candidate", return_value={"id": "mm-key", "secret": "secret"}), \
+                patch.object(video.provider_keys, "set_health"), \
+                patch.object(video, "update_video_asset_phase"), \
+                patch.object(video_minimax_h3, "generate", return_value=rendered) as generate, \
+                patch.object(video, "_download_xiaole_video", return_value="video/new.mp4"), \
+                patch.object(video, "_extract_first_frame_cover", return_value=None), \
+                patch.object(video, "public_url", return_value="https://cos.example/new.mp4"):
+            video.gen_xiaole_video({
+                "_job_id": 9, "channel": "minimax", "prompt": "a ship leaves the port",
+                "model": "MiniMax-H3", "duration": 5, "ratio": "16:9",
+                "resolution": "2k", "reference_images": [],
+                "_minimax_api_base": video_minimax_h3.API_BASE,
+            })
+        self.assertEqual(video_minimax_h3.API_BASE, generate.call_args.kwargs["api_base"])
 
     def test_shared_resume_routes_legacy_and_new_tasks_to_their_origin(self):
         rendered = {

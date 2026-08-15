@@ -5587,6 +5587,8 @@ def gen_xiaole_video(payload):
                     resolution=payload.get("resolution") or "2K", job_id=job_id,
                     heartbeat=minimax_heartbeat, api_key=selected["secret"],
                     provider_key_id=selected["id"],
+                    api_base=(payload.get("_minimax_api_base")
+                              or video_minimax_h3.LEGACY_API_BASE),
                 ),
             )
         source_url = rendered["source_video_url"]

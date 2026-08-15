@@ -2910,6 +2910,8 @@ class H(BaseHTTPRequestHandler):
                 if is_still_route:
                     request_body, still_idem_body = _short_drama_domain().short_drama_production.normalize_still_request(body, require_quote=True); idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
                     if not idem_key: raise ValueError("关键帧提交必须提供 Idempotency-Key")
+                # Resolve private uploads exactly once, before validation,
+                # content checks, price binding, idempotency, and deduction.
                 elif kind in {"image", "xiaole_video", "sora_video"}:
                     body = cli_uploads.expand_image_payload(body, user["username"])
                 elif kind in {"tryon", "cinematic"}:

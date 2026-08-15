@@ -239,6 +239,91 @@ class HQCLIContentTests(unittest.TestCase):
         self.assertEqual(200, status, result)
         self.assertEqual((24, 100), (result["cost"], result["points"]))
 
+    def test_minimax_submit_expands_private_reference_before_charge_and_queue(self):
+        from PIL import Image
+
+        image = io.BytesIO()
+        Image.new("RGB", (256, 256), (40, 80, 120)).save(image, "PNG")
+        raw = image.getvalue()
+        captured = {}
+
+        def create_job(*args, **_kwargs):
+            captured.update(args[6])
+            return 42, 76
+
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(cli_uploads, "UPLOAD_ROOT", Path(folder)), \
+                mock.patch.object(cli_uploads, "expand_image_payload", wraps=cli_uploads.expand_image_payload) as expand, \
+                mock.patch.object(core, "HANDLERS", {"xiaole_video": lambda payload: payload}), \
+                mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(core.feature_flags, "is_enabled", return_value=True), \
+                mock.patch.object(video_minimax_h3, "available", return_value=True), \
+                mock.patch.object(core, "_idempotency_begin", return_value=("new", None)), \
+                mock.patch.object(core, "_idempotency_complete"), \
+                mock.patch.object(core, "_user_video_submit_limit", return_value=None), \
+                mock.patch.object(core, "_user_active_job_count", return_value=0), \
+                mock.patch.object(core.jobs_store, "create_paid_job", side_effect=create_job), \
+                mock.patch.object(video, "record_video_pending_asset"), \
+                mock.patch.object(core, "enqueue_job", return_value=True):
+            uploaded = cli_uploads.store_image(
+                io.BytesIO(raw), len(raw), "alice", "image/png",
+                hashlib.sha256(raw).hexdigest(),
+            )
+            status, result = self._post(
+                "/api/gen/xiaole_video", {
+                    "prompt": "let @image1 wave to camera", "channel": "minimax",
+                    "duration": 4, "ratio": "9:16", "resolution": "2k",
+                    "reference_upload_ids": [uploaded["upload_id"]],
+                }, expected=24, idempotency_key="minimax-ref-test-001",
+            )
+
+        self.assertEqual((200, 42), (status, result["job_id"]))
+        self.assertNotIn("reference_upload_ids", captured)
+        self.assertEqual(1, len(captured["reference_images"]))
+        self.assertTrue(captured["reference_images"][0].startswith("data:image/png;base64,"))
+        self.assertEqual(video_minimax_h3.API_BASE, captured["_minimax_api_base"])
+        expand.assert_called_once()
+
+    def test_minimax_submit_rejects_foreign_and_expired_references_before_charge(self):
+        from PIL import Image
+
+        image = io.BytesIO()
+        Image.new("RGB", (256, 256), (120, 80, 40)).save(image, "PNG")
+        raw = image.getvalue()
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(cli_uploads, "UPLOAD_ROOT", Path(folder)), \
+                mock.patch.object(core, "HANDLERS", {"xiaole_video": lambda payload: payload}), \
+                mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(core.feature_flags, "is_enabled", return_value=True), \
+                mock.patch.object(video_minimax_h3, "available", return_value=True):
+            foreign = cli_uploads.store_image(
+                io.BytesIO(raw), len(raw), "bob", "image/png",
+                hashlib.sha256(raw).hexdigest(), now=100,
+            )
+            own = cli_uploads.store_image(
+                io.BytesIO(raw), len(raw), "alice", "image/png",
+                hashlib.sha256(raw).hexdigest(), now=100,
+            )
+            base_payload = {
+                "prompt": "a person waves to camera", "channel": "minimax",
+                "duration": 4, "ratio": "9:16", "resolution": "2k",
+            }
+            with mock.patch.object(cli_uploads.time, "time", return_value=100):
+                foreign_status, _ = self._post(
+                    "/api/gen/xiaole_video",
+                    dict(base_payload, reference_upload_ids=[foreign["upload_id"]]),
+                    expected=24, idempotency_key="foreign-ref-test-001",
+                )
+            with mock.patch.object(cli_uploads.time, "time", return_value=100 + cli_uploads.TTL + 1):
+                expired_status, _ = self._post(
+                    "/api/gen/xiaole_video",
+                    dict(base_payload, reference_upload_ids=[own["upload_id"]]),
+                    expected=24, idempotency_key="expired-ref-test-001",
+                )
+
+        self.assertEqual((400, 400), (foreign_status, expired_status))
+        self.assertEqual([], self.points.deductions)
+
     def test_minimax_quote_rejects_foreign_private_reference(self):
         from PIL import Image
 

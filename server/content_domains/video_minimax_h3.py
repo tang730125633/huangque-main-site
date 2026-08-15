@@ -307,11 +307,11 @@ def _poll(opener, task_id, duration, ratio, resolution, job_id=None, heartbeat=N
 def generate(prompt, reference_images=None, ratio="9:16", duration=5,
              resolution=DEFAULT_RESOLUTION,
              job_id=None, heartbeat=None, now=None, sleep=None, api_key=None,
-             provider_key_id=None):
+             provider_key_id=None, api_base=None):
     body = build_request(prompt, reference_images, ratio, duration, resolution)
     opener = _opener()
     created = _request_json(opener, "POST", "/v2/video_generation", body,
-                            timeout=120, api_key=api_key)
+                            timeout=120, api_key=api_key, api_base=api_base)
     task_id = str(created.get("task_id") or "").strip()
     if not task_id:
         raise CreateOutcomeUnknown("麦克视频提交结果未知：未返回任务编号")
@@ -321,6 +321,7 @@ def generate(prompt, reference_images=None, ratio="9:16", duration=5,
     return _poll(
         opener, task_id, body["duration"], body["ratio"], body["resolution"],
         job_id, heartbeat, now, sleep, api_key, provider_key_id,
+        api_base,
     )
 
 
