@@ -45,6 +45,15 @@ class HQCLIDistributionTests(unittest.TestCase):
         self.assertIn('$PurgeCredentials', uninstall)
         self.assertIn('refusing to delete', uninstall)
 
+    def test_homepage_offers_windows_and_mac_cli_downloads(self):
+        home = (ROOT / "site/index.html").read_text(encoding="utf-8")
+        self.assertIn('href="/downloads/hq/install.ps1">Windows CLI', home)
+        self.assertIn('href="/downloads/hq/install.sh">Mac CLI', home)
+        self.assertIn('>WINDOWS</strong><code data-command>irm ', home)
+        self.assertIn('>MAC</strong><code data-command>curl ', home)
+        self.assertEqual(2, home.count('<button type="button" data-copy>'))
+        self.assertIn("copyButton.closest('.install-line').querySelector('[data-command]')", home)
+
     def test_installer_refuses_regular_file_and_uses_versioned_target(self):
         source = INSTALLER.read_text(encoding="utf-8")
         self.assertIn('target_dir="$data_root/$version"', source)
