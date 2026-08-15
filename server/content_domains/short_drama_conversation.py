@@ -2733,16 +2733,7 @@ def _replace_shot_dialogues(script, shot, current_lines, dialogues):
         )
         normalized.append(line)
 
-    spoken_seconds = 0.0
-    parallel_group_seconds = 0.0
-    for index, item in enumerate(normalized):
-        line_seconds = float(item.get("estimated_reading_seconds") or 0)
-        if index > 0 and item.get("timing_mode") == "simultaneous":
-            parallel_group_seconds = max(parallel_group_seconds, line_seconds)
-        else:
-            spoken_seconds += parallel_group_seconds
-            parallel_group_seconds = line_seconds
-    spoken_seconds += parallel_group_seconds
+    spoken_seconds = short_drama_storyboard._dialogue_timeline_seconds(normalized)
     duration_seconds = float(shot.get("duration_seconds") or 0)
     if spoken_seconds > duration_seconds:
         raise ConversationError(

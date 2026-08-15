@@ -449,6 +449,22 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
         publish.assert_called_once_with("roles/a.png")
         self.assertTrue(value.startswith("https://media.example/api/gen/file/"))
 
+    def test_grok_prefers_local_reference_over_legacy_remote_url(self):
+        provider = GrokXaiShotProvider()
+        with mock.patch(
+            "content_domains.core.local_provider_reference_url",
+            return_value="https://media.example/api/gen/file/roles/a.png?signed=1",
+        ) as publish:
+            value = provider._reference_url({
+                "reference_image_url": "https://cos.example/legacy.png",
+                "reference_image_file": "roles/a.png",
+            })
+
+        publish.assert_called_once_with("roles/a.png")
+        self.assertEqual(
+            "https://media.example/api/gen/file/roles/a.png?signed=1", value
+        )
+
     def test_grok_local_reference_configuration_failure_is_public_error(self):
         provider = GrokXaiShotProvider()
         with mock.patch(

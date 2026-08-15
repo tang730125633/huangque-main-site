@@ -279,6 +279,26 @@ def _reading_seconds(line):
     return round((0.45 + characters / 3.5) / speech_rate, 2)
 
 
+def _dialogue_timeline_seconds(lines):
+    """Measure ordered dialogue while treating consecutive simultaneous lines as one group."""
+    total = 0.0
+    parallel_group = 0.0
+    for index, line in enumerate(lines or []):
+        if not isinstance(line, dict):
+            continue
+        line_seconds = (
+            _reading_seconds(line)
+            if str(line.get("kind") or "dialogue") in {"dialogue", "voiceover"}
+            else 0.0
+        )
+        if index > 0 and str(line.get("timing_mode") or "") == "simultaneous":
+            parallel_group = max(parallel_group, line_seconds)
+        else:
+            total += parallel_group
+            parallel_group = line_seconds
+    return round(total + parallel_group, 2)
+
+
 def _fit_dialogue_to_duration(line, duration_seconds):
     """Keep generated dialogue inside the shot before the quality gate runs."""
     if line.get("kind") == "silence" or _reading_seconds(line) <= duration_seconds:
@@ -508,6 +528,7 @@ def analyze_quality(script):
         for item in script.get("characters") or []
     }
     for shot in shots:
+        shot_lines = []
         if not str(shot.get("provider_prompt") or "").strip():
             blockers.append({
                 "code": "provider_prompt_missing",
@@ -523,20 +544,21 @@ def analyze_quality(script):
                     "message": "镜头引用的台词不存在",
                 })
                 continue
+            shot_lines.append(line)
             if line.get("character_key") and line["character_key"] not in known_characters:
                 blockers.append({
                     "code": "speaker_unknown",
                     "shot_key": shot.get("shot_key"),
                     "message": "台词说话人不在角色表中",
                 })
-            reading = _reading_seconds(line)
-            if reading > float(shot.get("duration_seconds") or 0):
-                blockers.append({
-                    "code": "dialogue_too_long",
-                    "shot_key": shot.get("shot_key"),
-                    "message": "台词超过镜头可用时长",
-                    "reading_seconds": reading,
-                })
+        reading = _dialogue_timeline_seconds(shot_lines)
+        if reading > float(shot.get("duration_seconds") or 0):
+            blockers.append({
+                "code": "dialogue_too_long",
+                "shot_key": shot.get("shot_key"),
+                "message": "全部台词超过镜头可用时长",
+                "reading_seconds": reading,
+            })
         if len(str(shot.get("visual") or "")) > 180:
             warnings.append({
                 "code": "visual_too_dense",

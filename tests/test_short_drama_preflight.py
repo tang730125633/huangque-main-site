@@ -1,3 +1,4 @@
+import math
 import sqlite3
 import sys
 import tempfile
@@ -9,7 +10,10 @@ SERVER_DIR = str(Path(__file__).resolve().parents[1] / "server")
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
-from content_domains import short_drama, short_drama_conversation, short_drama_preflight
+from content_domains import (
+    short_drama, short_drama_conversation, short_drama_preflight,
+    short_drama_storyboard,
+)
 
 
 def project_payload(**changes):
@@ -212,6 +216,38 @@ class ShortDramaPreflightTests(unittest.TestCase):
             ["sequential", "simultaneous"],
             [item["timing_mode"] for item in plan[0]["dialogue"]],
         )
+
+    def test_duration_plan_counts_simultaneous_dialogue_as_one_parallel_group(self):
+        line = {
+            "kind": "dialogue", "text": "一二三四五六", "speech_rate": 1.0,
+        }
+        script = {
+            "dialogue_lines": [
+                dict(line, id="line_1", timing_mode="sequential"),
+                dict(line, id="line_2", timing_mode="simultaneous"),
+            ],
+            "shots": [{
+                "shot_key": "shot_01", "sort_order": 1,
+                "duration_seconds": 5,
+                "dialogue_line_ids": ["line_1", "line_2"],
+            }, {
+                "shot_key": "shot_02", "sort_order": 2,
+                "duration_seconds": 5, "dialogue_line_ids": [],
+            }, {
+                "shot_key": "shot_03", "sort_order": 3,
+                "duration_seconds": 5, "dialogue_line_ids": [],
+            }],
+        }
+
+        _plan, speech_total_ms = short_drama_preflight._duration_plan(
+            script, "15-30"
+        )
+
+        expected = int(math.ceil(
+            short_drama_storyboard._reading_seconds(script["dialogue_lines"][0])
+            * 1000
+        ))
+        self.assertEqual(expected, speech_total_ms)
 
 
     def test_confirmation_requires_explicit_warning_acceptance(self):

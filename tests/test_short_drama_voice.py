@@ -599,6 +599,115 @@ class ShortDramaVoiceSnapshotTests(unittest.TestCase):
             [item["code"] for item in saved["shots"][0]["lock_blockers"]],
         )
 
+    def test_non_audio_line_preserves_parallel_group_boundary_across_reload(self):
+        with closing(self.db()) as conn:
+            script = conn.execute(
+                "SELECT id,dialogue_lines_json FROM short_drama_scripts "
+                "WHERE project_id=? ORDER BY version DESC LIMIT 1",
+                (self.project["id"],),
+            ).fetchone()
+            lines = json.loads(script[1])
+            lines[0]["timing_mode"] = "sequential"
+            lines[1]["timing_mode"] = "simultaneous"
+            lines.insert(1, {
+                "id": "line-card", "kind": "on_screen_text",
+                "text": "三年后", "timing_mode": "sequential",
+            })
+            conn.execute(
+                "UPDATE short_drama_scripts SET dialogue_lines_json=? WHERE id=?",
+                (json.dumps(lines, ensure_ascii=False), script[0]),
+            )
+            shot = conn.execute(
+                "SELECT id FROM short_drama_shots WHERE project_id=? "
+                "ORDER BY sort_order,id LIMIT 1",
+                (self.project["id"],),
+            ).fetchone()
+            conn.execute(
+                "UPDATE short_drama_shots SET dialogue_line_ids_json=? WHERE id=?",
+                (json.dumps(["line-1", "line-card", "line-2"]), shot[0]),
+            )
+            conn.commit()
+
+        snapshot = self._complete_first_voice_shot()
+        shot = snapshot["shots"][0]
+        self.assertEqual(
+            [(0, 1000), (1150, 2350)],
+            [(line["suggested_start_ms"], line["suggested_end_ms"])
+             for line in shot["lines"]],
+        )
+        with self.assertRaises(
+                short_drama_voice.VoiceTimelineValidationError) as raised:
+            short_drama_voice.save_voice_timeline(
+                self.db, "alice", self._timeline_body(
+                    snapshot, starts=(0, 0), ends=(1000, 1200),
+                ),
+            )
+        self.assertEqual("audio_overlap", raised.exception.blocker["code"])
+
+        restored = short_drama_voice.get_voice_workspace(
+            self.db, "alice", self.project["id"]
+        )["shots"][0]
+        self.assertEqual(
+            [(0, 1000), (1150, 2350)],
+            [(line["suggested_start_ms"], line["suggested_end_ms"])
+             for line in restored["lines"]],
+        )
+
+    def test_simultaneous_non_audio_line_keeps_parallel_group_across_reload(self):
+        with closing(self.db()) as conn:
+            script = conn.execute(
+                "SELECT id,dialogue_lines_json FROM short_drama_scripts "
+                "WHERE project_id=? ORDER BY version DESC LIMIT 1",
+                (self.project["id"],),
+            ).fetchone()
+            lines = json.loads(script[1])
+            lines[0]["timing_mode"] = "sequential"
+            lines[1]["timing_mode"] = "simultaneous"
+            lines.insert(1, {
+                "id": "line-card", "kind": "on_screen_text",
+                "text": "三年后", "timing_mode": "simultaneous",
+            })
+            conn.execute(
+                "UPDATE short_drama_scripts SET dialogue_lines_json=? WHERE id=?",
+                (json.dumps(lines, ensure_ascii=False), script[0]),
+            )
+            shot = conn.execute(
+                "SELECT id FROM short_drama_shots WHERE project_id=? "
+                "ORDER BY sort_order,id LIMIT 1",
+                (self.project["id"],),
+            ).fetchone()
+            conn.execute(
+                "UPDATE short_drama_shots SET dialogue_line_ids_json=? WHERE id=?",
+                (json.dumps(["line-1", "line-card", "line-2"]), shot[0]),
+            )
+            conn.commit()
+
+        snapshot = self._complete_first_voice_shot()
+        shot = snapshot["shots"][0]
+        self.assertEqual(
+            [(0, 1000), (0, 1200)],
+            [(line["suggested_start_ms"], line["suggested_end_ms"])
+             for line in shot["lines"]],
+        )
+        saved = short_drama_voice.save_voice_timeline(
+            self.db, "alice", self._timeline_body(
+                snapshot, starts=(0, 0), ends=(1000, 1200),
+            ),
+        )
+        self.assertNotIn(
+            "audio_overlap",
+            [item["code"] for item in saved["shots"][0]["lock_blockers"]],
+        )
+
+        restored = short_drama_voice.get_voice_workspace(
+            self.db, "alice", self.project["id"]
+        )["shots"][0]
+        self.assertEqual(
+            [(0, 1000), (0, 1200)],
+            [(line["suggested_start_ms"], line["suggested_end_ms"])
+             for line in restored["lines"]],
+        )
+
     def test_save_voice_timeline_updates_both_revisions_atomically(self):
         snapshot = self._complete_first_voice_shot()
         saved = short_drama_voice.save_voice_timeline(

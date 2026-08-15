@@ -1,3 +1,4 @@
+import base64
 import json
 import sqlite3
 import sys
@@ -17,6 +18,10 @@ from content_domains import core, cos
 
 
 class PrivateAssetsTest(unittest.TestCase):
+    PNG_1X1 = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+
     def test_local_provider_reference_url_is_signed_and_expires(self):
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.object(core, "OUT_DIR", Path(tmp)), \
@@ -29,7 +34,7 @@ class PrivateAssetsTest(unittest.TestCase):
                 patch.object(core, "LOCAL_FILE_URL_TTL", 3600):
             reference = Path(tmp) / "short_drama_role_uploads" / "role one.png"
             reference.parent.mkdir(parents=True)
-            reference.write_bytes(b"png")
+            reference.write_bytes(self.PNG_1X1)
 
             url = core.local_provider_reference_url(
                 "short_drama_role_uploads/role one.png", now=1000
@@ -64,10 +69,118 @@ class PrivateAssetsTest(unittest.TestCase):
                     core, "LOCAL_FILE_PUBLIC_BASE_URL", "http://media.example"):
                 with self.assertRaises(RuntimeError):
                     core.local_provider_reference_url("reference.txt")
+            for invalid_origin in (
+                "https://user:password@media.example",
+                "https://media.example/prefix",
+                "https://localhost",
+                "https://127.0.0.1",
+            ):
+                with self.subTest(origin=invalid_origin), patch.object(
+                        core, "LOCAL_FILE_PUBLIC_BASE_URL", invalid_origin):
+                    with self.assertRaises(RuntimeError):
+                        core.local_provider_reference_url("reference.txt")
             with patch.object(
                     core, "LOCAL_FILE_PUBLIC_BASE_URL", "https://media.example"):
                 with self.assertRaises(ValueError):
                     core.local_provider_reference_url("reference.txt")
+
+    def test_local_provider_reference_url_rejects_fake_or_mismatched_images(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(core, "OUT_DIR", Path(tmp)), \
+                patch.object(core, "LOCAL_FILE_PUBLIC_BASE_URL", "https://media.example"), \
+                patch.object(core, "LOCAL_FILE_SIGNING_SECRET", "s" * 32):
+            fake = Path(tmp) / "short_drama_role_uploads" / "fake.png"
+            fake.parent.mkdir(parents=True)
+            fake.write_bytes(b"png")
+            with self.assertRaisesRegex(ValueError, "valid JPG, PNG, or WebP"):
+                core.local_provider_reference_url(fake.relative_to(tmp).as_posix())
+
+            mismatched = fake.with_name("mismatched.jpg")
+            mismatched.write_bytes(self.PNG_1X1)
+            with self.assertRaisesRegex(ValueError, "valid JPG, PNG, or WebP"):
+                core.local_provider_reference_url(mismatched.relative_to(tmp).as_posix())
+
+    def test_local_provider_configuration_uses_dedicated_secret_and_documented_ttl(self):
+        self.assertEqual(
+            "dedicated",
+            core._local_file_signing_secret({
+                "HQ_LOCAL_FILE_SIGNING_SECRET": "dedicated",
+                "HQ_INTERNAL_TOKEN": "must-not-be-reused",
+            }),
+        )
+        self.assertEqual(
+            "",
+            core._local_file_signing_secret({"HQ_INTERNAL_TOKEN": "must-not-be-reused"}),
+        )
+        self.assertEqual(
+            7200,
+            core._local_file_url_ttl({
+                "HQ_LOCAL_FILE_URL_TTL_SECONDS": "7200",
+                "HQ_LOCAL_FILE_URL_TTL": "120",
+            }),
+        )
+        self.assertEqual(120, core._local_file_url_ttl({"HQ_LOCAL_FILE_URL_TTL": "120"}))
+
+        root = Path(__file__).resolve().parents[1]
+        example = (root / "deploy/huangque-secrets.env.example").read_text(encoding="utf-8")
+        verify = (root / "deploy/test-server/verify-full-environment.sh").read_text(encoding="utf-8")
+        runbook = (root / "deploy/生产环境清单与还原手册.md").read_text(encoding="utf-8")
+        for document in (example, verify, runbook):
+            self.assertIn("HQ_LOCAL_FILE_URL_TTL_SECONDS", document)
+        self.assertNotIn("HQ_LOCAL_FILE_URL_TTL=", example)
+        self.assertIn("test.env mode is not 600", verify)
+        self.assertIn("test.env owner is not root:root", verify)
+        self.assertIn("must use HTTPS", verify)
+        self.assertIn("must not include a path, query, or fragment", verify)
+        self.assertIn("at least 32 characters", verify)
+        self.assertIn("不得复用 HQ_INTERNAL_TOKEN", runbook)
+
+    def test_signed_provider_file_route_is_public_only_for_valid_current_signature(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(core, "OUT_DIR", Path(tmp)), \
+                patch.object(core, "LOCAL_FILE_PUBLIC_BASE_URL", "https://media.example"), \
+                patch.object(core, "LOCAL_FILE_SIGNING_SECRET", "s" * 32), \
+                patch.object(core, "LOCAL_FILE_URL_TTL", 3600):
+            reference = Path(tmp) / "short_drama_role_uploads" / "role.png"
+            reference.parent.mkdir(parents=True)
+            reference.write_bytes(self.PNG_1X1)
+            signed = urllib.parse.urlparse(core.local_provider_reference_url(
+                "short_drama_role_uploads/role.png", now=1000
+            ))
+            server = core.ThreadingHTTPServer(("127.0.0.1", 0), core.H)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            base = "http://127.0.0.1:%d%s" % (server.server_port, signed.path)
+            try:
+                with patch.object(core.time, "time", return_value=1000):
+                    with opener.open(base + "?" + signed.query, timeout=2) as response:
+                        self.assertEqual(200, response.status)
+                        self.assertEqual(self.PNG_1X1, response.read())
+
+                query = urllib.parse.parse_qs(signed.query)
+                query["hq_sig"] = ["0" * 64]
+                with patch.object(core.time, "time", return_value=1000), \
+                        self.assertRaises(urllib.error.HTTPError) as tampered:
+                    opener.open(base + "?" + urllib.parse.urlencode(query, doseq=True), timeout=2)
+                self.assertEqual(404, tampered.exception.code)
+
+                with patch.object(core.time, "time", return_value=4601), \
+                        self.assertRaises(urllib.error.HTTPError) as expired:
+                    opener.open(base + "?" + signed.query, timeout=2)
+                self.assertEqual(404, expired.exception.code)
+
+                traversal = "http://127.0.0.1:%d/api/gen/file/%%2e%%2e/role.png?%s" % (
+                    server.server_port, signed.query,
+                )
+                with patch.object(core.time, "time", return_value=1000), \
+                        self.assertRaises(urllib.error.HTTPError) as escaped:
+                    opener.open(traversal, timeout=2)
+                self.assertEqual(404, escaped.exception.code)
+            finally:
+                server.shutdown()
+                thread.join(timeout=2)
+                server.server_close()
 
     def test_output_file_byte_ranges_support_media_streaming(self):
         self.assertIsNone(core._parse_byte_range(None, 100))

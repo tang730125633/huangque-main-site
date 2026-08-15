@@ -147,21 +147,20 @@ class GrokXaiShotProvider(ShotVisualProvider):
 
     @staticmethod
     def _reference_url(payload):
-        value = str(payload.get("reference_image_url") or "").strip()
-        if value.startswith(("http://", "https://")):
-            return value
         relative = str(payload.get("reference_image_file") or "").strip()
-        if not relative:
-            return ""
-        from content_domains.core import local_provider_reference_url
+        if relative:
+            from content_domains.core import local_provider_reference_url
 
-        try:
-            value = str(local_provider_reference_url(relative) or "").strip()
-        except (FileNotFoundError, RuntimeError, ValueError) as error:
-            raise VisualProviderError(
-                "visual_reference_publish_failed",
-                "角色参考图无法转换为果肉生成服务可访问的本地服务器地址",
-            ) from error
+            try:
+                value = str(local_provider_reference_url(relative) or "").strip()
+            except (FileNotFoundError, RuntimeError, ValueError) as error:
+                raise VisualProviderError(
+                    "visual_reference_publish_failed",
+                    "角色参考图无法转换为果肉生成服务可访问的本地服务器地址",
+                ) from error
+        else:
+            # Remote URLs are retained only for legacy assets with no local copy.
+            value = str(payload.get("reference_image_url") or "").strip()
         if not value.startswith(("http://", "https://")):
             raise VisualProviderError(
                 "visual_reference_publish_failed",

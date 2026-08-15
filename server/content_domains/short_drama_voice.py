@@ -1449,6 +1449,22 @@ def _recommended_voice_speed(current_speed, duration_ms, available_ms):
     return recommended if 0.5 <= recommended <= 2 else None
 
 
+def _continues_parallel_group(previous, line):
+    """Use groups resolved from the complete source sequence, including non-audio rows."""
+    if not previous:
+        return False
+    previous_group = previous.get("parallel_group_id")
+    current_group = line.get("parallel_group_id")
+    if previous_group is not None and current_group is not None:
+        return previous_group == current_group
+    if line.get("timing_mode") != "simultaneous":
+        return False
+    try:
+        return int(line["sort_order"]) == int(previous["sort_order"]) + 1
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def _timeline_suggestions(lines, duration_limit=None):
     ordered = sorted(lines, key=lambda item: (item["sort_order"], item["id"]))
     durations = []
@@ -1468,8 +1484,8 @@ def _timeline_suggestions(lines, duration_limit=None):
     group_duration = 0
     suggestions = {}
     for index, (line, duration) in enumerate(zip(ordered, durations)):
-        simultaneous = (
-            index > 0 and line.get("timing_mode") == "simultaneous"
+        simultaneous = _continues_parallel_group(
+            ordered[index - 1] if index else None, line
         )
         if not simultaneous:
             if index > 0:
@@ -1487,9 +1503,10 @@ def _timeline_suggestions(lines, duration_limit=None):
 def _parallel_group_ids(lines):
     groups = {}
     current_group = -1
-    for index, line in enumerate(sorted(
-            lines, key=lambda item: (item["sort_order"], item["id"]))):
-        if index == 0 or line.get("timing_mode") != "simultaneous":
+    ordered = sorted(lines, key=lambda item: (item["sort_order"], item["id"]))
+    for index, line in enumerate(ordered):
+        if not _continues_parallel_group(
+                ordered[index - 1] if index else None, line):
             current_group += 1
         groups[line["id"]] = current_group
     return groups
@@ -1641,17 +1658,33 @@ def build_voice_snapshot(conn, project):
         "WHERE project_id=? ORDER BY version DESC LIMIT 1",
         (project["id"],),
     ).fetchone()
+    dialogue_items = [
+        item for item in _json_value(
+            script["dialogue_lines_json"] if script else None, []
+        ) if isinstance(item, dict)
+    ]
+    dialogue_by_id = {
+        str(item.get("id") or ""): item for item in dialogue_items
+    }
     dialogue_timing_modes = {
-        str(item.get("id") or ""): (
+        line_id: (
             "simultaneous"
             if str(item.get("timing_mode") or "") == "simultaneous"
             else "sequential"
         )
-        for item in _json_value(
-            script["dialogue_lines_json"] if script else None, []
-        )
-        if isinstance(item, dict)
+        for line_id, item in dialogue_by_id.items()
     }
+    resolved_parallel_groups = {}
+    for source_shot in conn.execute(
+            "SELECT id,dialogue_line_ids_json FROM short_drama_shots "
+            "WHERE project_id=?", (project["id"],)):
+        current_group = -1
+        for index, line_id in enumerate(_json_value(
+                source_shot["dialogue_line_ids_json"], [])):
+            source = dialogue_by_id.get(str(line_id or ""), {})
+            if index == 0 or str(source.get("timing_mode") or "") != "simultaneous":
+                current_group += 1
+            resolved_parallel_groups[(source_shot["id"], str(line_id or ""))] = current_group
     voice_shots = {
         row["shot_id"]: row for row in conn.execute(
             "SELECT * FROM short_drama_voice_shots WHERE project_id=?",
@@ -1669,6 +1702,9 @@ def build_voice_snapshot(conn, project):
         )
         line["timing_mode"] = dialogue_timing_modes.get(
             str(row["dialogue_line_id"] or ""), "sequential"
+        )
+        line["parallel_group_id"] = resolved_parallel_groups.get(
+            (row["shot_id"], str(row["dialogue_line_id"] or ""))
         )
         lines.setdefault(row["shot_id"], []).append(line)
     line_map = {

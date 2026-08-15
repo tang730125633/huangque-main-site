@@ -28,18 +28,30 @@ except ImportError:  # Running core.py directly during local checks.
 PORT       = int(os.environ.get("CONTENT_API_PORT", "8096"))
 AUTH_BASE  = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
 AUTH_INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
+
+
+def _local_file_signing_secret(environment):
+    """Load the dedicated public-file signing key without crossing trust domains."""
+    return str(environment.get("HQ_LOCAL_FILE_SIGNING_SECRET", "") or "").strip()
+
+
+def _local_file_url_ttl(environment):
+    """Load the documented TTL, accepting the pre-release key as a compatibility alias."""
+    raw = environment.get(
+        "HQ_LOCAL_FILE_URL_TTL_SECONDS",
+        environment.get("HQ_LOCAL_FILE_URL_TTL", "3600"),
+    )
+    try:
+        return max(60, min(86400, int(raw or 3600)))
+    except (TypeError, ValueError):
+        return 3600
+
+
 LOCAL_FILE_PUBLIC_BASE_URL = os.environ.get(
     "HQ_CONTENT_PUBLIC_BASE_URL", ""
 ).strip().rstrip("/")
-LOCAL_FILE_SIGNING_SECRET = os.environ.get(
-    "HQ_LOCAL_FILE_SIGNING_SECRET", ""
-).strip() or AUTH_INTERNAL_TOKEN
-try:
-    LOCAL_FILE_URL_TTL = max(
-        60, min(86400, int(os.environ.get("HQ_LOCAL_FILE_URL_TTL", "3600") or 3600))
-    )
-except (TypeError, ValueError):
-    LOCAL_FILE_URL_TTL = 3600
+LOCAL_FILE_SIGNING_SECRET = _local_file_signing_secret(os.environ)
+LOCAL_FILE_URL_TTL = _local_file_url_ttl(os.environ)
 try:
     VERIFY_CACHE_TTL = max(0.0, float(os.environ.get("VERIFY_CACHE_TTL", "8") or 8)); VERIFY_CACHE_MAX = max(1, int(os.environ.get("VERIFY_CACHE_MAX", "2048") or 2048))
 except Exception:
@@ -80,6 +92,48 @@ def _file_url(rel):
 
 
 _PROVIDER_REFERENCE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+_PROVIDER_REFERENCE_FORMATS = {
+    ".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "WEBP",
+}
+
+
+def _valid_local_provider_image(fp):
+    """Fully decode a reference image and require its content to match its suffix."""
+    expected = _PROVIDER_REFERENCE_FORMATS.get(fp.suffix.lower())
+    if not expected:
+        return False
+    try:
+        from PIL import Image
+        with Image.open(fp) as image:
+            detected = str(image.format or "").upper()
+            image.verify()
+        with Image.open(fp) as image:
+            image.load()
+    except Exception:
+        return False
+    return detected == expected
+
+
+def _public_https_origin(value):
+    parsed = urllib.parse.urlparse(str(value or ""))
+    if (
+        parsed.scheme != "https" or not parsed.hostname
+        or parsed.username or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.params or parsed.query or parsed.fragment
+    ):
+        return None
+    host = parsed.hostname.rstrip(".").lower()
+    if host == "localhost":
+        return None
+    try:
+        import ipaddress
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is not None and not address.is_global:
+        return None
+    return str(value).strip().rstrip("/")
 
 
 def _local_provider_file_signature(rel, expires):
@@ -93,8 +147,8 @@ def _local_provider_file_signature(rel, expires):
 
 def local_provider_reference_url(rel, now=None):
     """Return a short-lived public HTTPS URL for one local reference image."""
-    parsed_base = urllib.parse.urlparse(LOCAL_FILE_PUBLIC_BASE_URL)
-    if parsed_base.scheme != "https" or not parsed_base.netloc:
+    public_origin = _public_https_origin(LOCAL_FILE_PUBLIC_BASE_URL)
+    if not public_origin:
         raise RuntimeError("HQ_CONTENT_PUBLIC_BASE_URL must be an HTTPS origin")
     if len(LOCAL_FILE_SIGNING_SECRET) < 32:
         raise RuntimeError("HQ_LOCAL_FILE_SIGNING_SECRET must contain at least 32 characters")
@@ -105,13 +159,13 @@ def local_provider_reference_url(rel, now=None):
         canonical_rel = fp.resolve().relative_to(OUT_DIR.resolve()).as_posix()
     except (OSError, ValueError):
         raise FileNotFoundError("local reference image is outside CONTENT_OUT")
-    if fp.suffix.lower() not in _PROVIDER_REFERENCE_EXTENSIONS:
-        raise ValueError("local provider reference must be JPG, PNG, or WebP")
+    if not _valid_local_provider_image(fp):
+        raise ValueError("local provider reference must be a valid JPG, PNG, or WebP image")
     expires = int(now if now is not None else time.time()) + LOCAL_FILE_URL_TTL
     signature = _local_provider_file_signature(canonical_rel, expires)
     encoded_rel = urllib.parse.quote(canonical_rel, safe="/")
     query = urllib.parse.urlencode({"hq_exp": expires, "hq_sig": signature})
-    return LOCAL_FILE_PUBLIC_BASE_URL + _file_url(encoded_rel) + "?" + query
+    return public_origin + _file_url(encoded_rel) + "?" + query
 
 
 def _valid_local_provider_file_signature(rel, query, now=None):
@@ -3802,6 +3856,8 @@ class H(BaseHTTPRequestHandler):
             signed_provider_access = _valid_local_provider_file_signature(
                 canonical_rel, query
             )
+            if signed_provider_access and not _valid_local_provider_image(fp):
+                return self._send(404, {"detail": "no file"})
             if ("hq_exp" in query or "hq_sig" in query) and not signed_provider_access:
                 return self._send(404, {"detail": "no file"})
             if sensitive and not signed_provider_access:

@@ -172,6 +172,38 @@ class ShortDramaDialogueTimingTests(unittest.TestCase):
             [item["timing_mode"] for item in regenerated_lines],
         )
 
+    def test_duration_only_patch_cannot_bypass_aggregate_dialogue_timing(self):
+        characters = [{
+            "character_key": "lead", "name": "林夏", "role_type": "main",
+            "identity": "主角", "personality": "坚定",
+        }, {
+            "character_key": "friend", "name": "周野", "role_type": "support",
+            "identity": "旧友", "personality": "克制",
+        }]
+        script = short_drama_storyboard.compile_storyboard(
+            payload(shot_count=3, target_duration=15),
+            ["相遇", "冲突", "和解"], characters,
+        )
+        shot = script["shots"][0]
+        short_drama_conversation._apply_shot_patch(
+            script, shot["shot_key"], {"duration_seconds": 6}
+        )
+        short_drama_conversation._apply_shot_patch(script, shot["shot_key"], {
+            "dialogues": [{
+                "kind": "dialogue", "character_key": "lead",
+                "text": "一二三四五六七", "speech_rate": 1.0,
+            }, {
+                "kind": "dialogue", "character_key": "friend",
+                "text": "一二三四五六七", "speech_rate": 1.0,
+            }],
+        })
+
+        with self.assertRaises(short_drama_conversation.ConversationError) as raised:
+            short_drama_conversation._apply_shot_patch(
+                script, shot["shot_key"], {"duration_seconds": 4}
+            )
+        self.assertEqual("dialogue_too_long", raised.exception.code)
+
     def test_multi_speaker_lines_are_validated_and_copied_in_order(self):
         characters = [{
             "character_key": "lead", "name": "林夏", "role_type": "main",

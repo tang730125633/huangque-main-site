@@ -213,10 +213,7 @@ def _duration_plan(script, target_band):
             dialogue.get(str(line_id), {})
             for line_id in shot.get("dialogue_line_ids", [])
         ]
-        speech_seconds = sum(
-            short_drama_storyboard._reading_seconds(line)
-            for line in lines if isinstance(line, dict)
-        )
+        speech_seconds = short_drama_storyboard._dialogue_timeline_seconds(lines)
         speech_ms = int(math.ceil(speech_seconds * 1000)) if speech_seconds else 0
         speech_total_ms += speech_ms
         visual_ms = max(1800, int(float(shot.get("duration_seconds") or 3) * 1000))

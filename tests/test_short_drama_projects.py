@@ -143,6 +143,50 @@ def valid_editable_plan():
 
 
 class ShortDramaProjectTests(unittest.TestCase):
+    def test_genre_schema_upgrade_preserves_legacy_projects_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "legacy-content.db")
+            legacy_db = lambda: sqlite3.connect(path)
+            with closing(legacy_db()) as conn:
+                conn.execute("""CREATE TABLE short_drama_projects (
+                    id TEXT PRIMARY KEY, username TEXT NOT NULL, board_id TEXT,
+                    title TEXT NOT NULL, synopsis TEXT NOT NULL,
+                    ratio TEXT NOT NULL, target_duration INTEGER NOT NULL,
+                    shot_count INTEGER NOT NULL,
+                    visual_style TEXT NOT NULL DEFAULT '电影写实',
+                    target_platform TEXT NOT NULL DEFAULT '抖音',
+                    point_budget INTEGER NOT NULL DEFAULT 0,
+                    spent_points INTEGER NOT NULL DEFAULT 0,
+                    creation_status TEXT NOT NULL DEFAULT 'formal',
+                    stage TEXT NOT NULL DEFAULT 'draft',
+                    revision INTEGER NOT NULL DEFAULT 1,
+                    deleted INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+                )""")
+                conn.execute(
+                    "INSERT INTO short_drama_projects VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        "legacy", "alice", None, "旧项目", "旧库中的故事", "9:16",
+                        30, 6, "电影写实", "抖音", 1400, 17, "formal", "draft",
+                        3, 0, 1000, 1001,
+                    ),
+                )
+                conn.commit()
+
+            short_drama.init_db(legacy_db)
+            short_drama.init_db(legacy_db)
+            with closing(legacy_db()) as conn:
+                columns = [row[1] for row in conn.execute(
+                    "PRAGMA table_info(short_drama_projects)"
+                )]
+                row = conn.execute(
+                    "SELECT genre,spent_points,revision FROM short_drama_projects WHERE id='legacy'"
+                ).fetchone()
+                count = conn.execute("SELECT COUNT(*) FROM short_drama_projects").fetchone()[0]
+            self.assertEqual(1, columns.count("genre"))
+            self.assertEqual(("", 17, 3), row)
+            self.assertEqual(1, count)
+
     def test_role_type_controls_character_reference_requirement(self):
         contract = [{
             "character_key": "lead", "name": "男孩", "role_type": "main",

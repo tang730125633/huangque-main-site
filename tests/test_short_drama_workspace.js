@@ -2465,6 +2465,15 @@ test('重复台词可保存且同时说话按并行组最长时长计算', () =>
   assert.match(workspaceSource, /timing_mode:text\(field\('timing_mode'\)/);
 });
 
+test('重新打开镜头编辑器会保留服务端保存的同时说话顺序', () => {
+  const restored = workspace.editableShotDialogues([
+    {id:'line-1', kind:'dialogue', character_key:'character_1', text:'一起走。', speech_rate:1, timing_mode:'sequential'},
+    {id:'line-2', kind:'dialogue', character_key:'character_2', text:'一起走。', speech_rate:1, timing_mode:'simultaneous'},
+  ]);
+  assert.deepEqual(restored.map(item => item.timing_mode), ['sequential', 'simultaneous']);
+  assert.equal(workspace.shotTimingStatus({duration_seconds:4, dialogues:restored}).dialogue_count, 2);
+});
+
 test('镜头保存错误在当前编辑器内提示而不是外层通知', () => {
   assert.match(workspaceSource, /function presentShotIssue\(form,shotKey,issue\)/);
   assert.match(workspaceSource, /issue&&issue\.partial\?'镜头内容已保存，场景绑定需要重试'/);
