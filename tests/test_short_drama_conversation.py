@@ -227,6 +227,49 @@ class ShortDramaStoryboardQualityTests(unittest.TestCase):
         visuals = [shot["visual"] for shot in script["shots"]]
         self.assertEqual(15, len(set(visuals)))
 
+    def test_four_plus_phase_occurrences_use_visible_state_transitions(self):
+        progressions = [
+            short_drama_storyboard._phase_progression("change", occurrence, 5)
+            for occurrence in range(1, 6)
+        ]
+
+        self.assertEqual([
+            "先展示变化前的状态",
+            "人物伸手触碰关键物件，变化动作刚刚启动",
+            "关键物件被移动或打开，人物位置随之改变",
+            "人物完成推动动作，表情与双方距离形成新的可见状态",
+            "最后呈现变化后的表情与关系",
+        ], progressions)
+
+        script = self._compile_single_fact(17)
+        transition_visuals = [
+            shot["visual"] for shot in script["shots"]
+            if "人物伸手触碰关键物件" in shot["visual"]
+            or "人物完成推动动作" in shot["visual"]
+        ]
+        self.assertFalse(script["quality_gate"]["blockers"])
+        self.assertEqual(2, len(transition_visuals))
+        self.assertTrue(any(
+            "人物伸手触碰关键物件" in visual
+            for visual in transition_visuals
+        ))
+        self.assertTrue(any(
+            "人物完成推动动作" in visual
+            for visual in transition_visuals
+        ))
+        provider_prompts = [
+            shot["provider_prompt"] for shot in script["shots"]
+            if shot["visual"] in transition_visuals
+        ]
+        self.assertTrue(any(
+            "人物伸手触碰关键物件" in prompt
+            for prompt in provider_prompts
+        ))
+        self.assertTrue(any(
+            "人物完成推动动作" in prompt
+            for prompt in provider_prompts
+        ))
+
     def test_quality_gate_still_rejects_genuinely_identical_visuals(self):
         script = self._compile_single_fact(6)
         script["shots"][1]["visual"] = script["shots"][0]["visual"]
