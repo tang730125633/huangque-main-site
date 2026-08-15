@@ -539,19 +539,33 @@ def _hard_split_caption(text, max_units):
     return parts
 
 
+def _pack_caption_fragments(fragments, max_units):
+    packed = []
+    current = ""
+    for fragment in fragments:
+        if current and _display_units(current + fragment) > max_units:
+            packed.append(current)
+            current = ""
+        current += fragment
+    if current:
+        packed.append(current)
+    return packed
+
+
 def _split_caption_clause(text, max_units):
     if _display_units(text) <= max_units:
         return [text]
     clauses = _split_after_boundaries(text, _CAPTION_CLAUSE_BOUNDARIES)
     if len(clauses) == 1:
         return _hard_split_caption(text, max_units)
-    result = []
+    bounded = []
     for clause in clauses:
         if _display_units(clause) <= max_units:
-            result.append(clause)
+            bounded.append(clause)
         else:
-            result.extend(_hard_split_caption(clause, max_units))
-    return result
+            bounded.extend(_hard_split_caption(clause, max_units))
+
+    return _pack_caption_fragments(bounded, max_units)
 
 
 def _split_caption_text(text, max_units=_MAX_CAPTION_UNITS):
@@ -565,6 +579,7 @@ def _split_caption_text(text, max_units=_MAX_CAPTION_UNITS):
     result = []
     for sentence in _split_after_boundaries(text, _CAPTION_SENTENCE_BOUNDARIES):
         result.extend(_split_caption_clause(sentence, max_units))
+    result = _pack_caption_fragments(result, max_units)
     if "".join(result) != text:
         raise ValueError("字幕拆分改变了原文")
     if any(_display_units(part) > max_units for part in result):

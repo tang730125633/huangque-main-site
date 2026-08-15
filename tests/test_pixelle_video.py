@@ -454,6 +454,26 @@ class PixelleVideoTests(unittest.TestCase):
         ))
         self.assertEqual(synth.call_count, len(cue_texts))
 
+    def test_caption_splitter_packs_short_fragments_before_cue_limit(self):
+        for text in (
+            "a " * 21,
+            "一，" * 21,
+            "一。" * 21,
+            " ".join(["word"] * 50),
+        ):
+            with self.subTest(text=text):
+                cues = self.pixelle._split_caption_text(text)
+                self.assertEqual("".join(cues), text)
+                self.assertLessEqual(len(cues), 20)
+                self.assertTrue(all(
+                    self.pixelle._display_units(cue) <= 28 for cue in cues
+                ))
+
+    def test_caption_splitter_enforces_twenty_cue_boundary_after_packing(self):
+        self.assertEqual(len(self.pixelle._split_caption_text("一，" * 140)), 20)
+        with self.assertRaisesRegex(ValueError, "字幕片段过多"):
+            self.pixelle._split_caption_text("一，" * 141)
+
     def test_submit_video_template_uses_video_workflow(self):
         payload = self.pixelle.prepare_payload({
             "text": "AI 培训",
