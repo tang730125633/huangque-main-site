@@ -17,7 +17,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security, inspiration_likes, history, notifications, cli_gateway, cli_uploads, error_contract  # 领域存储模块均无反向依赖
+import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security, inspiration_likes, history, notifications, cli_gateway, cli_uploads, error_contract, pixelle_talking_assets  # 领域存储模块均无反向依赖
 try:
     from . import asset_batch, feature_flags, pricing
 except ImportError:  # Running core.py directly during local checks.
@@ -429,6 +429,7 @@ def init_db():
         c.commit()
     feature_flags.init_db()
     pricing.init_db()
+    pixelle_talking_assets.init_db(JOB_DB, OUT_DIR)
     init_audio_db(); _short_drama_domain().init_db(jdb); jobs_store.ensure_video_notification_outbox(jdb)
 
 def init_audio_db():
@@ -1505,6 +1506,10 @@ def run_job(job_id):
 # ============ 超时清道夫：running 超 6 分钟的僵尸任务自动判失败 + 退点 ============
 def reaper():
     while True:
+        try:
+            pixelle_talking_assets.cleanup_expired(JOB_DB, OUT_DIR)
+        except Exception:
+            pass
         try:
             retry_breakdown = getattr(_domains()[1], "retry_breakdown_refunds", None)
             if retry_breakdown:
