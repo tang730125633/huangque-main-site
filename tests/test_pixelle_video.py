@@ -704,6 +704,100 @@ class PixelleVideoTests(unittest.TestCase):
         self.assertEqual(body["n_scenes"], 2)
         self.assertEqual(body["talking_material"], remote)
 
+    def test_nine_scene_public_adapter_uploads_two_avatars_without_extra_tts(self):
+        avatar_a = "local_avatar_" + "a" * 32
+        avatar_b = "local_avatar_" + "b" * 32
+        remote_a = "avatar_" + "1" * 32
+        remote_b = "avatar_" + "2" * 32
+        scene_texts = [
+            "第01段确认文案", "第02段确认文案", "第03段确认文案",
+            "第04段确认文案", "第05段确认文案", "第06段确认文案",
+            "第07段确认文案", "第08段确认文案", "第09段确认文案",
+        ]
+        plan = {
+            "plan_id": "talking_plan_" + "c" * 32,
+            "source_hash": "d" * 64,
+            "status": "active",
+            "job_id": None,
+            "source": {
+                "text": "九分镜口播方案", "mode": "generate", "ratio": 1 / 3,
+                "template": "1080x1920/image_default.html",
+                "style": "realistic_commercial", "speech_rate": 1.0,
+                "source_page": "text-video", "voice_scope": "public",
+                "voice_id": "zh-CN-YunjianNeural",
+            },
+            "scenes": [
+                {"scene_id": "scene_%02d" % index, "text": text}
+                for index, text in enumerate(scene_texts, 1)
+            ],
+        }
+        request = {
+            "text": "九分镜口播方案", "mode": "generate",
+            "template": "1080x1920/image_default.html",
+            "style": "realistic_commercial", "speech_rate": 1.0,
+            "voice": "public:zh-CN-YunjianNeural",
+            "talking_material": {
+                "enabled": True, "plan_id": plan["plan_id"],
+                "source_hash": plan["source_hash"], "ratio": 1 / 3,
+                "default_avatar_asset_id": avatar_a,
+                "scenes": [
+                    {
+                        "scene_id": "scene_%02d" % index,
+                        "enabled": index in {1, 5, 9},
+                        **({"avatar_asset_id": avatar_b} if index == 5 else {}),
+                    }
+                    for index in range(1, 10)
+                ],
+            },
+        }
+        avatars = {
+            avatar_a: {"asset_id": avatar_a, "mime": "image/png",
+                       "sha256": "a" * 64, "data": b"avatar-a"},
+            avatar_b: {"asset_id": avatar_b, "mime": "image/jpeg",
+                       "sha256": "b" * 64, "data": b"avatar-b"},
+        }
+        voices = [{"id": "public:zh-CN-YunjianNeural", "scope": "public"}]
+        with mock.patch.object(
+            self.pixelle, "public_voices", return_value=voices,
+        ), mock.patch.object(
+            self.pixelle.pixelle_talking_assets, "get_plan", return_value=plan,
+        ), mock.patch.object(
+            self.pixelle.pixelle_talking_assets, "read_avatar",
+            side_effect=lambda _owner, asset_id: avatars[asset_id],
+        ), mock.patch.object(
+            self.pixelle, "_load_remote_avatar_map", return_value={},
+        ), mock.patch.object(
+            self.pixelle, "_persist_remote_avatar_map",
+        ), mock.patch.object(
+            self.pixelle, "_upload_avatar_asset", side_effect=[remote_a, remote_b],
+        ) as upload, mock.patch.object(
+            self.pixelle.audio_domain, "synthesize_owned_voice_segment",
+        ) as synth, mock.patch.object(
+            self.pixelle, "_json_request", return_value={"task_id": "task-public-9"},
+        ) as submit:
+            prepared = self.pixelle.prepare_payload(request, "alice")
+            prepared["_job_id"] = 79
+            self.assertEqual(self.pixelle._submit(prepared), "task-public-9")
+
+        video_body = submit.call_args.args[2]
+        self.assertEqual(upload.call_count, 2)
+        self.assertEqual(synth.call_count, 0)
+        self.assertEqual(video_body["text"], "\n\n".join(scene_texts))
+        self.assertEqual(video_body["mode"], "fixed")
+        self.assertEqual(video_body["n_scenes"], 9)
+        self.assertEqual(video_body["talking_material"], {
+            "enabled": True, "ratio": 0.333333,
+            "default_avatar_asset_id": remote_a,
+            "scenes": [
+                {"scene_id": "scene_01", "enabled": True,
+                 "avatar_asset_id": ""},
+                {"scene_id": "scene_05", "enabled": True,
+                 "avatar_asset_id": remote_b},
+                {"scene_id": "scene_09", "enabled": True,
+                 "avatar_asset_id": ""},
+            ],
+        })
+
     def test_feature_catalog_is_fail_closed_by_default(self):
         meta = self.pixelle.feature_flags.CATALOG_MAP[self.pixelle.FEATURE_KEY]
         self.assertIs(meta["default_enabled"], False)
@@ -841,8 +935,10 @@ class PixelleVideoTests(unittest.TestCase):
         )
 
     def test_talking_duration_targets_six_seconds_without_hard_clamp(self):
-        self.assertGreater(
-            self.pixelle._estimated_scene_duration("长" * 40, 1.0), 6.0)
+        self.assertEqual(
+            self.pixelle._estimated_scene_duration("中" * 24, 1.0), 6.0)
+        self.assertEqual(
+            self.pixelle._estimated_scene_duration("长" * 40, 1.0), 10.0)
 
     def test_talking_plan_rate_guard_is_owner_scoped(self):
         self.pixelle._PLAN_RATE_REQUESTS.clear()

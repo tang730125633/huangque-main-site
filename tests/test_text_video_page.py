@@ -90,6 +90,34 @@ process.stdout.write(JSON.stringify({before:before,payload:payload}));
             ],
         })
 
+    def test_nine_scene_plan_serializes_only_requested_talking_selections(self):
+        state = self._run_talking_state("""
+const state=createTalkingState();
+state.setEnabled(true);
+state.setDefaultAvatar({asset_id:'local_avatar_A',preview_url:'/avatar-a'});
+state.setPlan({plan_id:'plan_9',source_hash:'hash_9',ratio:1/3,scenes:[
+  {scene_id:'scene_01',text:'scene 1',estimated_duration:6,talking_recommended:true},
+  {scene_id:'scene_02',text:'scene 2',estimated_duration:6,talking_recommended:false},
+  {scene_id:'scene_03',text:'scene 3',estimated_duration:6,talking_recommended:false},
+  {scene_id:'scene_04',text:'scene 4',estimated_duration:6,talking_recommended:false},
+  {scene_id:'scene_05',text:'scene 5',estimated_duration:6,talking_recommended:true},
+  {scene_id:'scene_06',text:'scene 6',estimated_duration:6,talking_recommended:false},
+  {scene_id:'scene_07',text:'scene 7',estimated_duration:6,talking_recommended:false},
+  {scene_id:'scene_08',text:'scene 8',estimated_duration:6,talking_recommended:false},
+  {scene_id:'scene_09',text:'scene 9',estimated_duration:6,talking_recommended:true}
+]});
+state.setSceneAvatar('scene_05',{asset_id:'local_avatar_B',preview_url:'/avatar-b'});
+process.stdout.write(JSON.stringify(state.buildTalkingMaterial(33.333333)));
+""")
+        self.assertEqual(state["default_avatar_asset_id"], "local_avatar_A")
+        self.assertEqual(
+            [item["scene_id"] for item in state["scenes"] if item["enabled"]],
+            ["scene_01", "scene_05", "scene_09"],
+        )
+        self.assertNotIn("avatar_asset_id", state["scenes"][0])
+        self.assertEqual(state["scenes"][4]["avatar_asset_id"], "local_avatar_B")
+        self.assertNotIn("avatar_asset_id", state["scenes"][8])
+
     def test_plan_input_changes_invalidate_but_scene_changes_do_not(self):
         state = self._run_talking_state("""
 const state=createTalkingState();
