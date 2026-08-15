@@ -37,8 +37,22 @@ class IP12HarnessActionsUITests(unittest.TestCase):
                 self.assertIn("requestId||newTurnRequestId()", send_turn)
                 self.assertIn("retryNeedsRefresh", send_turn)
                 self.assertIn("status===409", send_turn)
+                self.assertIn("failureMessage", send_turn)
                 self.assertIn("data.replayed", send_turn)
+                self.assertIn("data.actions", send_turn)
                 self.assertRegex(send_turn, r"data\.state\.revision>=\w+\.revision")
+
+    def test_foundation_report_gate_keeps_chat_actionable(self):
+        for filename in ("index.html", "index_clean.html"):
+            with self.subTest(filename=filename):
+                source = (TEMPLATES / filename).read_text(encoding="utf-8")
+                state_actions = source[source.index("function stateActions"):source.index("function renderChat")]
+                self.assertIn("foundation.status==='awaiting_confirmation'", state_actions)
+                self.assertIn("open_foundation_report", state_actions)
+                self.assertIn("confirm_foundation_report", state_actions)
+                self.assertIn("查看 PDF", state_actions)
+                self.assertIn("确认初稿，进入模块 5", state_actions)
+                self.assertIn("runStateAction(item)", state_actions)
 
 
 if __name__ == "__main__":
