@@ -107,7 +107,7 @@ def _load_json(source):
     if len(raw) > MAX_INPUT_BYTES:
         raise CliError(EXIT_INPUT, "input_error", "input exceeds 65536 bytes")
     try:
-        payload = json.loads(raw.decode("utf-8"), parse_constant=_reject_non_finite)
+        payload = json.loads(raw.decode("utf-8-sig"), parse_constant=_reject_non_finite)
     except (UnicodeDecodeError, ValueError, RecursionError, json.JSONDecodeError) as exc:
         raise CliError(EXIT_INPUT, "input_error", "input must be finite UTF-8 JSON: %s" % exc)
     _validate_unicode(payload)

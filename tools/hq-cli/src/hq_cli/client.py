@@ -1,5 +1,6 @@
 """Fixed-origin HTTPS client and local credential storage for HQ CLI."""
 
+import base64
 import hashlib
 import http.client
 import json
@@ -88,6 +89,8 @@ def _video_mime(header):
 def _open_media(path, max_bytes, mime_detector, size_error, type_error):
     if not isinstance(path, str) or not os.path.isabs(path):
         raise ValueError("--file must be an absolute path")
+    if os.name == "nt":
+        return _open_media_windows(path, max_bytes, mime_detector, size_error, type_error)
     parts = Path(path).parts
     # macOS 的 /tmp 与 /var 是 root 管理的系统别名；先固定到真实路径，再逐级拒绝用户 symlink。
     if len(parts) > 1 and parts[1] in {"tmp", "var"}:
@@ -118,6 +121,31 @@ def _open_media(path, max_bytes, mime_detector, size_error, type_error):
     finally:
         if directory >= 0:
             os.close(directory)
+    return _inspect_media_descriptor(descriptor, max_bytes, mime_detector, size_error, type_error)
+
+
+def _open_media_windows(path, max_bytes, mime_detector, size_error, type_error):
+    candidate = Path(os.path.normpath(path))
+    if not candidate.drive or any(part in {"", ".", ".."} for part in candidate.parts[1:]):
+        raise ValueError("upload path is invalid")
+    reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    try:
+        for entry in (candidate, *candidate.parents[:-1]):
+            entry_stat = os.lstat(entry)
+            if stat.S_ISLNK(entry_stat.st_mode) or getattr(entry_stat, "st_file_attributes", 0) & reparse_point:
+                raise ValueError("upload path cannot contain a symlink or junction")
+        descriptor = os.open(
+            str(candidate),
+            os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOINHERIT", 0),
+        )
+    except ValueError:
+        raise
+    except OSError:
+        raise ValueError("cannot open upload file")
+    return _inspect_media_descriptor(descriptor, max_bytes, mime_detector, size_error, type_error)
+
+
+def _inspect_media_descriptor(descriptor, max_bytes, mime_detector, size_error, type_error):
     try:
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
@@ -230,8 +258,37 @@ def upload_video(path, token, timeout=120):
 
 def credentials_path():
     configured = os.environ.get("HQ_CLI_CONFIG_DIR")
-    base = Path(configured).expanduser() if configured else Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser() / "hq-cli"
+    if configured:
+        base = Path(configured).expanduser()
+    elif os.name == "nt":
+        base = Path(os.environ.get("APPDATA", "~/AppData/Roaming")).expanduser() / "Huangque" / "hq-cli"
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser() / "hq-cli"
     return base / "credentials.json"
+
+
+def _windows_dpapi(data, protect):
+    import ctypes
+    from ctypes import wintypes
+
+    class DataBlob(ctypes.Structure):
+        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
+
+    source = ctypes.create_string_buffer(data)
+    source_blob = DataBlob(len(data), ctypes.cast(source, ctypes.POINTER(ctypes.c_byte)))
+    result_blob = DataBlob()
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    function = crypt32.CryptProtectData if protect else crypt32.CryptUnprotectData
+    arguments = [ctypes.byref(source_blob), None, None, None, None, 0x1, ctypes.byref(result_blob)]
+    if not function(*arguments):
+        raise OSError(ctypes.get_last_error(), "Windows DPAPI failed")
+    try:
+        return ctypes.string_at(result_blob.pbData, result_blob.cbData)
+    finally:
+        local_free = ctypes.windll.kernel32.LocalFree
+        local_free.argtypes = [ctypes.c_void_p]
+        local_free.restype = ctypes.c_void_p
+        local_free(ctypes.cast(result_blob.pbData, ctypes.c_void_p))
 
 
 def save_credentials(token, expires_at, scopes):
@@ -243,6 +300,11 @@ def save_credentials(token, expires_at, scopes):
     temp = path.with_name(".%s.%s.tmp" % (path.name, secrets.token_hex(6)))
     payload = json.dumps({"access_token": token, "expires_at": int(expires_at), "scopes": list(scopes)},
                          sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if os.name == "nt":
+        payload = json.dumps({
+            "protected_data": base64.b64encode(_windows_dpapi(payload, True)).decode("ascii"),
+            "protection": "windows-dpapi-current-user",
+        }, sort_keys=True, separators=(",", ":")).encode("ascii")
     descriptor = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(descriptor, "wb") as handle:
@@ -260,13 +322,20 @@ def save_credentials(token, expires_at, scopes):
 
 def load_credentials():
     path = credentials_path()
+    protected_with_dpapi = False
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        if isinstance(payload, dict) and payload.get("protection") == "windows-dpapi-current-user":
+            protected_with_dpapi = True
+            protected = base64.b64decode(payload["protected_data"], validate=True)
+            payload = json.loads(_windows_dpapi(protected, False).decode("utf-8"))
+    except (OSError, ValueError, KeyError):
         return None
     token = payload.get("access_token") if isinstance(payload, dict) else None
     if not isinstance(token, str) or not 20 <= len(token) <= 200:
         return None
+    if os.name == "nt" and not protected_with_dpapi:
+        save_credentials(token, payload.get("expires_at", 0), payload.get("scopes", []))
     return payload
 
 
