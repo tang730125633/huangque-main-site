@@ -1421,6 +1421,19 @@ def run_job(job_id):
                 )
             if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video"}:
                 video_domain.record_video_asset(job_id, username, result)
+            if kind == "xiaole_video" and payload.get(
+                "_short_drama_provider_binding"
+            ):
+                try:
+                    _short_drama_domain().short_drama_autodraft.reconcile_shared_xiaole_job(
+                        jdb, job_id
+                    )
+                except Exception as binding_error:
+                    print(
+                        "[short-drama-xiaole-binding] job#%s will retry on workspace read: %s"
+                        % (job_id, str(binding_error)[:160]),
+                        flush=True,
+                    )
             if kind == "short_drama_preview":
                 _short_drama_domain().short_drama_assembly.reconcile_preview_job(
                     jdb, job_id
@@ -1478,6 +1491,19 @@ def run_job(job_id):
                 "error_message": str(e)[:300],
             }, ensure_ascii=False), flush=True)
             _mark_video_asset_failed(job_id, kind, e)
+            if kind == "xiaole_video" and payload.get(
+                "_short_drama_provider_binding"
+            ):
+                try:
+                    _short_drama_domain().short_drama_autodraft.reconcile_shared_xiaole_job(
+                        jdb, job_id
+                    )
+                except Exception as binding_error:
+                    print(
+                        "[short-drama-xiaole-binding] failed job#%s will retry on workspace read: %s"
+                        % (job_id, str(binding_error)[:160]),
+                        flush=True,
+                    )
             if kind == "short_drama_sound_effect":
                 try:
                     _short_drama_domain().short_drama_sound_design.fail_job(

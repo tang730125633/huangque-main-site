@@ -6349,6 +6349,7 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                     "refund_points": refund_points,
                     "charge_lookup": charge_lookup,
                     "project_usage": _project_point_usage,
+                    "enqueue_job": enqueue_job,
                 }
                 if mutation_lock is not None:
                     with mutation_lock:

@@ -1,4 +1,9 @@
-"""Official MiniMax H3 adapter for billable short-drama shots."""
+"""MiniMax H3 preflight plus read-only recovery for legacy shot jobs.
+
+New billable short-drama jobs are owned by the existing HuangQue xiaole_video
+task chain.  This adapter keeps request normalization and lets already-running
+legacy jobs be queried or fetched, but it must never submit new upstream work.
+"""
 
 import base64
 import json
@@ -198,6 +203,7 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
                     "file": str(item.get("file") or "").strip(),
                     "character_key": str(item.get("character_key") or "").strip(),
                     "name": str(item.get("name") or "").strip(),
+                    "reference_version": int(item.get("reference_version") or 0),
                 })
             else:
                 raise VisualProviderError("visual_reference_invalid", "角色标准图格式不正确")
@@ -218,68 +224,16 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
         }
 
     def prepare_job(self, request):
-        candidate = self._claim_key()
-        if not candidate or not candidate.get("secret"):
-            raise VisualProviderError(
-                "provider_not_configured", "没有可用的 MiniMax 开放平台 API Key"
-            )
-        from content_domains import provider_keys, video_minimax_h3
-
-        try:
-            video_minimax_h3.check_credentials(candidate["secret"])
-        except video_minimax_h3.MiniMaxCredentialRejected as error:
-            provider_keys.set_health(candidate["id"], False, error=str(error))
-            raise VisualProviderError("provider_not_configured", str(error)) from error
-        prepared = dict(request or {})
-        prepared["_provider_key_id"] = str(candidate["id"])
-        prepared["_minimax_origin"] = video_minimax_h3.new_task_origin()
-        return prepared
+        raise VisualProviderError(
+            "shared_xiaole_required",
+            "新的麦克视频短剧任务必须通过黄雀共用视频任务校验",
+        )
 
     def create_job(self, request):
-        if not self.configured:
-            raise VisualProviderError(
-                "provider_not_configured", "尚未配置 MiniMax 开放平台 API Key"
-            )
-        key_id = str((request or {}).get("_provider_key_id") or "").strip()
-        payload = self.validate_request(request)
-        candidate = self._bound_key(key_id) if key_id else self._claim_key()
-        if not candidate or not candidate.get("secret"):
-            raise VisualProviderError("provider_not_configured", "没有可用的 MiniMax 开放平台 API Key")
-        from content_domains import video_minimax_h3
-
-        try:
-            task_origin = video_minimax_h3.origin_from_payload(request)
-            refs = [self._reference_value(item) for item in payload["reference_images"]]
-            body = video_minimax_h3.build_request(
-                payload["prompt"], refs, payload["ratio"],
-                payload["duration_seconds"], payload["resolution"],
-            )
-            created = video_minimax_h3._request_json(
-                video_minimax_h3._opener(), "POST", "/v2/video_generation",
-                body, timeout=120, api_key=candidate["secret"],
-                api_base=video_minimax_h3.api_base_for_origin(task_origin),
-            )
-        except video_minimax_h3.MiniMaxCredentialRejected as error:
-            raise VisualProviderError("provider_not_configured", str(error)) from error
-        except video_minimax_h3.MiniMaxRejected as error:
-            raise VisualProviderError("provider_submit_rejected", str(error)) from error
-        except video_minimax_h3.CreateOutcomeUnknown as error:
-            raise VisualProviderError("provider_submit_unknown", str(error), submitted=True) from error
-        task_id = str((created or {}).get("task_id") or "").strip()
-        if not task_id:
-            raise VisualProviderError(
-                "provider_job_id_missing", "MiniMax 已接受请求但未返回任务 ID", submitted=True
-            )
-        return {
-            "provider_job_id": self._encode_job_id(
-                candidate["id"], task_id, task_origin,
-            ),
-            "raw": {
-                "task_id": task_id,
-                "provider_key_id": candidate["id"],
-                "task_origin": task_origin,
-            },
-        }
+        raise VisualProviderError(
+            "shared_xiaole_required",
+            "新的麦克视频短剧任务必须通过黄雀共用视频任务提交",
+        )
 
     def bind_reconciled_job_id(self, provider_job_id, request):
         from content_domains import video_minimax_h3
