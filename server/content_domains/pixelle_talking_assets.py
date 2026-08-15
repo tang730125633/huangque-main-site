@@ -648,6 +648,49 @@ def bind_plan_job(username: str, plan_id: str, job_id: int) -> dict:
         return _row_to_plan(_owned_plan(connection, username, plan_id))
 
 
+def consume_and_bind_paid_plan(connection, username: str, plan_id: str,
+                               expected_hash: str, job_id: int) -> None:
+    """Atomically consume a confirmed plan inside the paid job transaction."""
+    username = _require_username(username)
+    expected_hash = str(expected_hash or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
+        raise ValueError("分镜方案摘要不匹配")
+    row = _owned_plan(connection, username, plan_id)
+    now = int(time.time())
+    if row["source_hash"] != expected_hash:
+        raise ValueError("分镜方案摘要不匹配")
+    if row["status"] == "active" and int(row["expires_at"]) <= now:
+        raise LookupError("分镜方案不存在或已失效")
+    if row["job_id"] not in (None, int(job_id)):
+        raise ValueError("分镜方案已绑定其他任务")
+    job = connection.execute(
+        "SELECT id,payload FROM jobs WHERE id=? AND username=? "
+        "AND kind='script_to_video' AND COALESCE(cost,0)>0 "
+        "AND status='pending' AND COALESCE(refunded,0)=0 "
+        "AND COALESCE(owner,'content')='content'",
+        (int(job_id), username),
+    ).fetchone()
+    if not job:
+        raise LookupError("付费任务不存在或不属于当前用户")
+    try:
+        paid_payload = json.loads(job["payload"] or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise LookupError("付费任务与分镜方案不匹配") from exc
+    talking = paid_payload.get("talking_material")
+    if (paid_payload.get("pipeline") != "pixelle"
+            or not isinstance(talking, dict)
+            or talking.get("enabled") is not True
+            or talking.get("plan_id") != plan_id
+            or talking.get("source_hash") != expected_hash):
+        raise LookupError("付费任务与分镜方案不匹配")
+    connection.execute(
+        """UPDATE pixelle_talking_plans
+           SET status='consumed',job_id=?,consumed_at=COALESCE(consumed_at,?),updated_at=?
+           WHERE id=? AND username=? AND (job_id IS NULL OR job_id=?)""",
+        (int(job_id), now, now, plan_id, username, int(job_id)),
+    )
+
+
 def cleanup_expired(db_path=None, out_dir=None, now=None):
     """Release expired previews while retaining consumed plans for paid recovery."""
     db_path = str(db_path or DB_PATH)

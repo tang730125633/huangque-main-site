@@ -1,12 +1,15 @@
 import importlib
+import io
 import http.client
 import json
+import sqlite3
 import sys
 import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.request
+from contextlib import closing
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
@@ -158,6 +161,480 @@ class PixelleVideoTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "个人音色不存在"):
                 self.pixelle.prepare_payload({"text": "AI 培训", "voice": "personal:vip_bob"}, "alice")
+
+    def _talking_plan(self):
+        return {
+            "plan_id": "talking_plan_" + "a" * 32,
+            "source_hash": "b" * 64,
+            "source": {
+                "text": "原始主题",
+                "mode": "generate",
+                "ratio": 0.3,
+                "template": "1080x1920/image_default.html",
+                "style": "realistic_commercial",
+                "speech_rate": 1.0,
+                "source_page": "text-video",
+                "voice_scope": "public",
+                "voice_id": "zh-CN-YunjianNeural",
+            },
+            "scenes": [
+                {"scene_id": "scene_01", "text": "确认后的第一段", "role": "hook"},
+                {"scene_id": "scene_02", "text": "确认后的第二段", "role": "body"},
+                {"scene_id": "scene_03", "text": "确认后的第三段", "role": "cta"},
+            ],
+            "status": "active",
+            "job_id": None,
+        }
+
+    def test_prepare_talking_disabled_is_exact_and_backward_compatible(self):
+        with mock.patch.object(self.pixelle, "public_voices", return_value=[{
+            "id": "public:zh-CN-YunjianNeural", "scope": "public",
+        }]), mock.patch.object(
+            self.pixelle.pixelle_talking_assets, "get_plan"
+        ) as get_plan:
+            missing = self.pixelle.prepare_payload({"text": "AI 培训"}, "alice")
+            disabled = self.pixelle.prepare_payload({
+                "text": "AI 培训",
+                "talking_material": {"enabled": False, "plan_id": "ignored"},
+            }, "alice")
+
+        self.assertEqual(missing["talking_material"], {"enabled": False})
+        self.assertEqual(disabled["talking_material"], {"enabled": False})
+        get_plan.assert_not_called()
+
+    def test_prepare_talking_freezes_confirmed_plan_and_only_opaque_local_ids(self):
+        plan = self._talking_plan()
+        default_id = "local_avatar_" + "1" * 32
+        override_id = "local_avatar_" + "2" * 32
+        request = {
+            "text": "原始主题",
+            "mode": "generate",
+            "source_page": "text-video",
+            "voice": "public:zh-CN-YunjianNeural",
+            "talking_material": {
+                "enabled": True,
+                "plan_id": plan["plan_id"],
+                "source_hash": plan["source_hash"],
+                "ratio": 0.3,
+                "default_avatar_asset_id": default_id,
+                "scenes": [
+                    {"scene_id": "scene_03", "enabled": True},
+                    {"scene_id": "scene_01", "enabled": True,
+                     "avatar_asset_id": override_id},
+                    {"scene_id": "scene_02", "enabled": False},
+                ],
+            },
+        }
+        avatars = {
+            default_id: {"asset_id": default_id, "mime": "image/png",
+                         "sha256": "c" * 64, "data": b"default"},
+            override_id: {"asset_id": override_id, "mime": "image/jpeg",
+                          "sha256": "d" * 64, "data": b"override"},
+        }
+        with mock.patch.object(self.pixelle, "public_voices", return_value=[{
+            "id": "public:zh-CN-YunjianNeural", "scope": "public",
+        }]), mock.patch.object(
+            self.pixelle.pixelle_talking_assets, "get_plan", return_value=plan,
+        ), mock.patch.object(
+            self.pixelle.pixelle_talking_assets, "read_avatar",
+            side_effect=lambda owner, asset_id: avatars[asset_id] if owner == "alice" else None,
+        ) as read_avatar, mock.patch.object(
+            self.pixelle.pixelle_talking_assets, "bind_plan_avatars",
+        ) as bind_avatars:
+            prepared = self.pixelle.prepare_payload(request, "alice")
+
+        self.assertEqual(prepared["mode"], "fixed")
+        self.assertEqual(prepared["text"],
+                         "确认后的第一段\n\n确认后的第二段\n\n确认后的第三段")
+        self.assertEqual(prepared["scenes"], [
+            {"line": "确认后的第一段", "scene_id": "scene_01"},
+            {"line": "确认后的第二段", "scene_id": "scene_02"},
+            {"line": "确认后的第三段", "scene_id": "scene_03"},
+        ])
+        self.assertEqual(prepared["talking_material"], {
+            "enabled": True,
+            "plan_id": plan["plan_id"],
+            "source_hash": plan["source_hash"],
+            "ratio": 0.3,
+            "default_avatar_asset_id": default_id,
+            "scenes": [
+                {"scene_id": "scene_01", "enabled": True,
+                 "avatar_asset_id": override_id},
+                {"scene_id": "scene_03", "enabled": True},
+            ],
+        })
+        self.assertNotIn("username", json.dumps(prepared, ensure_ascii=False))
+        self.assertNotIn("file_path", json.dumps(prepared, ensure_ascii=False))
+        self.assertEqual(read_avatar.call_count, 2)
+        bind_avatars.assert_called_once_with(
+            "alice", plan["plan_id"], [default_id, override_id])
+
+    def test_prepare_talking_rejects_cross_owner_hash_scene_and_avatar_drift(self):
+        plan = self._talking_plan()
+        base = {
+            "text": "原始主题", "mode": "generate",
+            "voice": "public:zh-CN-YunjianNeural",
+            "talking_material": {
+                "enabled": True, "plan_id": plan["plan_id"],
+                "source_hash": plan["source_hash"], "ratio": 0.3,
+                "default_avatar_asset_id": "local_avatar_" + "1" * 32,
+                "scenes": [{"scene_id": "scene_01", "enabled": True}],
+            },
+        }
+        voices = [{"id": "public:zh-CN-YunjianNeural", "scope": "public"}]
+        with mock.patch.object(self.pixelle, "public_voices", return_value=voices), \
+             mock.patch.object(self.pixelle.pixelle_talking_assets, "get_plan",
+                               side_effect=LookupError("not owned")):
+            with self.assertRaises(LookupError):
+                self.pixelle.prepare_payload(base, "bob")
+
+        wrong_hash = json.loads(json.dumps(base))
+        wrong_hash["talking_material"]["source_hash"] = "f" * 64
+        unknown_scene = json.loads(json.dumps(base))
+        unknown_scene["talking_material"]["scenes"][0]["scene_id"] = "scene_99"
+        no_explicit_scene = json.loads(json.dumps(base))
+        no_explicit_scene["talking_material"]["scenes"] = []
+        with mock.patch.object(self.pixelle, "public_voices", return_value=voices), \
+             mock.patch.object(self.pixelle.pixelle_talking_assets, "get_plan",
+                               return_value=plan), \
+             mock.patch.object(self.pixelle.pixelle_talking_assets, "read_avatar",
+                               return_value={"mime": "image/png", "sha256": "c" * 64,
+                                             "data": b"avatar"}):
+            for invalid in (wrong_hash, unknown_scene, no_explicit_scene):
+                with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                    self.pixelle.prepare_payload(invalid, "alice")
+
+        with mock.patch.object(self.pixelle, "public_voices", return_value=voices), \
+             mock.patch.object(self.pixelle.pixelle_talking_assets, "get_plan",
+                               return_value=plan), \
+             mock.patch.object(self.pixelle.pixelle_talking_assets, "read_avatar",
+                               side_effect=LookupError("cross owner")):
+            with self.assertRaises(LookupError):
+                self.pixelle.prepare_payload(base, "alice")
+
+        changed_text = json.loads(json.dumps(base))
+        changed_text["text"] = "客户端改写后的主题"
+        with mock.patch.object(self.pixelle, "public_voices", return_value=voices), \
+             mock.patch.object(self.pixelle.pixelle_talking_assets, "get_plan",
+                               return_value=plan):
+            with self.assertRaisesRegex(ValueError, "已确认"):
+                self.pixelle.prepare_payload(changed_text, "alice")
+
+    def test_remote_talking_material_deduplicates_by_sha_and_reuses_persisted_mapping(self):
+        first_id = "local_avatar_" + "1" * 32
+        second_id = "local_avatar_" + "2" * 32
+        payload = {
+            "_username": "alice", "_job_id": 71,
+            "talking_material": {
+                "enabled": True, "ratio": 0.3,
+                "default_avatar_asset_id": first_id,
+                "scenes": [
+                    {"scene_id": "scene_01", "enabled": True,
+                     "avatar_asset_id": second_id},
+                ],
+            },
+        }
+        same = {"mime": "image/png", "sha256": "e" * 64, "data": b"same"}
+        with mock.patch.object(
+            self.pixelle.pixelle_talking_assets, "read_avatar", return_value=same,
+        ) as read_avatar, mock.patch.object(
+            self.pixelle, "_load_remote_avatar_map", return_value={},
+        ), mock.patch.object(
+            self.pixelle, "_persist_remote_avatar_map",
+        ) as persist, mock.patch.object(
+            self.pixelle, "_upload_avatar_asset", return_value="avatar_" + "f" * 32,
+        ) as upload:
+            remote = self.pixelle._remote_talking_material(payload)
+
+        self.assertEqual(read_avatar.call_count, 2)
+        upload.assert_called_once()
+        persist.assert_called_once_with(71, {"e" * 64: "avatar_" + "f" * 32})
+        self.assertEqual(remote, {
+            "enabled": True, "ratio": 0.3,
+            "default_avatar_asset_id": "avatar_" + "f" * 32,
+            "scenes": [{"scene_id": "scene_01", "enabled": True,
+                        "avatar_asset_id": "avatar_" + "f" * 32}],
+        })
+
+        with mock.patch.object(
+            self.pixelle.pixelle_talking_assets, "read_avatar", return_value=same,
+        ), mock.patch.object(
+            self.pixelle, "_load_remote_avatar_map",
+            return_value={"e" * 64: "avatar_" + "f" * 32},
+        ), mock.patch.object(self.pixelle, "_upload_avatar_asset") as retry_upload:
+            replay = self.pixelle._remote_talking_material(payload)
+        retry_upload.assert_not_called()
+        self.assertEqual(replay, remote)
+
+    def test_upload_avatar_retries_only_transient_errors(self):
+        avatar = {"mime": "image/png", "sha256": "a" * 64, "data": b"png"}
+        with mock.patch.object(
+            self.pixelle, "_asset_request",
+            side_effect=[self.pixelle.PixelleTransientError("temporary"),
+                         {"asset_id": "avatar_" + "a" * 32}],
+        ) as request, mock.patch.object(self.pixelle.time, "sleep"):
+            result = self.pixelle._upload_avatar_asset(avatar, "text-video-avatar-71-a")
+        self.assertEqual(result, "avatar_" + "a" * 32)
+        self.assertEqual(request.call_count, 2)
+
+        with mock.patch.object(
+            self.pixelle, "_asset_request", side_effect=ValueError("rejected"),
+        ) as request:
+            with self.assertRaisesRegex(ValueError, "rejected"):
+                self.pixelle._upload_avatar_asset(avatar, "text-video-avatar-71-b")
+        request.assert_called_once()
+
+    def test_avatar_request_classifies_4xx_and_5xx_without_leaking_response(self):
+        def http_error(code, detail):
+            return urllib.error.HTTPError(
+                "http://pixelle/api/avatar-assets", code, "failed", {},
+                io.BytesIO(json.dumps({"detail": detail}).encode("utf-8")),
+            )
+
+        for code in (500, 503, 429):
+            with self.subTest(code=code), mock.patch.object(
+                self.pixelle._NO_PROXY, "open",
+                side_effect=http_error(code, "secret upstream detail"),
+            ), self.assertRaises(self.pixelle.PixelleTransientError) as raised:
+                self.pixelle._asset_request(
+                    "/api/avatar-assets", b"image", "image/png", "req-1")
+            self.assertNotIn("secret", str(raised.exception))
+
+        with mock.patch.object(
+            self.pixelle._NO_PROXY, "open",
+            side_effect=http_error(413, "too large secret"),
+        ), self.assertRaisesRegex(ValueError, "超过"):
+            self.pixelle._asset_request(
+                "/api/avatar-assets", b"image", "image/png", "req-2")
+        with mock.patch.object(
+            self.pixelle._NO_PROXY, "open",
+            side_effect=http_error(400, "invalid image secret"),
+        ), self.assertRaisesRegex(ValueError, "HTTP 400"):
+            self.pixelle._asset_request(
+                "/api/avatar-assets", b"image", "image/png", "req-3")
+
+    def test_remote_mapping_persists_each_success_before_later_upload_failure(self):
+        first_id = "local_avatar_" + "1" * 32
+        second_id = "local_avatar_" + "2" * 32
+        payload = {
+            "_username": "alice", "_job_id": 74,
+            "talking_material": {
+                "enabled": True, "ratio": 0.5,
+                "default_avatar_asset_id": first_id,
+                "scenes": [{"scene_id": "scene_01", "enabled": True,
+                            "avatar_asset_id": second_id}],
+            },
+        }
+        avatars = {
+            first_id: {"mime": "image/png", "sha256": "1" * 64,
+                       "data": b"first"},
+            second_id: {"mime": "image/jpeg", "sha256": "2" * 64,
+                        "data": b"second"},
+        }
+        persisted = {}
+
+        def persist(_job_id, mapping):
+            persisted.update(mapping)
+
+        with mock.patch.object(
+            self.pixelle.pixelle_talking_assets, "read_avatar",
+            side_effect=lambda _owner, asset_id: avatars[asset_id],
+        ), mock.patch.object(
+            self.pixelle, "_load_remote_avatar_map", side_effect=lambda _job: dict(persisted),
+        ), mock.patch.object(
+            self.pixelle, "_persist_remote_avatar_map", side_effect=persist,
+        ), mock.patch.object(
+            self.pixelle, "_upload_avatar_asset",
+            side_effect=["avatar_" + "a" * 32,
+                         self.pixelle.PixelleTransientError("second failed")],
+        ) as upload:
+            with self.assertRaises(self.pixelle.PixelleTransientError):
+                self.pixelle._remote_talking_material(payload)
+
+        self.assertEqual(persisted, {"1" * 64: "avatar_" + "a" * 32})
+        self.assertEqual(upload.call_count, 2)
+
+        with mock.patch.object(
+            self.pixelle.pixelle_talking_assets, "read_avatar",
+            side_effect=lambda _owner, asset_id: avatars[asset_id],
+        ), mock.patch.object(
+            self.pixelle, "_load_remote_avatar_map", return_value=dict(persisted),
+        ), mock.patch.object(
+            self.pixelle, "_persist_remote_avatar_map", side_effect=persist,
+        ), mock.patch.object(
+            self.pixelle, "_upload_avatar_asset", return_value="avatar_" + "b" * 32,
+        ) as retry_upload:
+            remote = self.pixelle._remote_talking_material(payload)
+        retry_upload.assert_called_once()
+        self.assertEqual(remote["default_avatar_asset_id"], "avatar_" + "a" * 32)
+        self.assertEqual(remote["scenes"][0]["avatar_asset_id"],
+                         "avatar_" + "b" * 32)
+
+    def test_remote_avatar_mapping_storage_closes_sqlite_connections(self):
+        class FakeConnection:
+            def __init__(self, row):
+                self.row = row
+                self.closed = False
+
+            def execute(self, *_args):
+                return self
+
+            def fetchone(self):
+                return self.row
+
+            def commit(self):
+                return None
+
+            def rollback(self):
+                return None
+
+            def close(self):
+                self.closed = True
+
+        remote_id = "avatar_" + "a" * 32
+        digest = "b" * 64
+        reader = FakeConnection((json.dumps({
+            "_pixelle_remote_avatar_assets": {digest: remote_id},
+        }),))
+        writer = FakeConnection((json.dumps({}),))
+        with mock.patch.object(self.pixelle.sqlite3, "connect",
+                               side_effect=[reader, writer]):
+            self.assertEqual(
+                self.pixelle._load_remote_avatar_map(17), {digest: remote_id})
+            self.pixelle._persist_remote_avatar_map(17, {digest: remote_id})
+        self.assertTrue(reader.closed)
+        self.assertTrue(writer.closed)
+
+    def test_paid_talking_plan_association_is_deferred_to_job_transaction(self):
+        payload = {"talking_material": {
+            "enabled": True,
+            "plan_id": "talking_plan_" + "a" * 32,
+            "source_hash": "b" * 64,
+        }}
+        callback = self.pixelle.paid_plan_association(payload, "alice")
+        connection = object()
+        with mock.patch.object(
+            self.pixelle.pixelle_talking_assets, "consume_and_bind_paid_plan",
+        ) as associate:
+            callback(connection, 72)
+        associate.assert_called_once_with(
+            connection, "alice", payload["talking_material"]["plan_id"],
+            payload["talking_material"]["source_hash"], 72)
+
+        self.assertIsNone(self.pixelle.paid_plan_association(
+            {"talking_material": {"enabled": False}}, "alice"))
+
+    def test_paid_plan_association_commits_atomically_and_rolls_back_on_mismatch(self):
+        from content_domains import jobs_store
+
+        with tempfile.TemporaryDirectory() as temp:
+            db_path = str(Path(temp) / "jobs.db")
+            out_dir = Path(temp) / "out"
+
+            def database():
+                connection = sqlite3.connect(db_path, timeout=30)
+                connection.row_factory = sqlite3.Row
+                return connection
+
+            with mock.patch.object(self.pixelle.pixelle_talking_assets,
+                                   "DB_PATH", db_path), mock.patch.object(
+                self.pixelle.pixelle_talking_assets, "OUT_DIR", out_dir,
+            ):
+                self.pixelle.pixelle_talking_assets.init_db(db_path, out_dir)
+                with closing(database()) as connection:
+                    connection.execute("""CREATE TABLE jobs(
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        kind TEXT NOT NULL, username TEXT NOT NULL,
+                        cost INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+                        payload TEXT, created_at INTEGER, updated_at INTEGER,
+                        owner TEXT, refunded INTEGER NOT NULL DEFAULT 0
+                    )""")
+                plan = self.pixelle.pixelle_talking_assets.create_plan(
+                    "alice", {"text": "主题"},
+                    [{"scene_id": "ignored", "text": "确认段落"}],
+                )
+                payload = {
+                    "pipeline": "pixelle",
+                    "talking_material": {
+                        "enabled": True, "plan_id": plan["plan_id"],
+                        "source_hash": plan["source_hash"],
+                    },
+                }
+                refunds = []
+                job_id, _points = jobs_store.create_paid_job(
+                    database, lambda *_args: 99,
+                    lambda *args, **_kwargs: refunds.append(args) or True,
+                    "script_to_video", "alice", 10, payload, "content",
+                    before_commit=self.pixelle.paid_plan_association(payload, "alice"),
+                )
+                stored = self.pixelle.pixelle_talking_assets.get_plan(
+                    "alice", plan["plan_id"])
+                self.assertEqual(stored["status"], "consumed")
+                self.assertEqual(stored["job_id"], job_id)
+                self.assertEqual(refunds, [])
+
+                second = self.pixelle.pixelle_talking_assets.create_plan(
+                    "alice", {"text": "主题二"},
+                    [{"scene_id": "ignored", "text": "第二段"}],
+                )
+                bad_payload = {
+                    "pipeline": "pixelle",
+                    "talking_material": {
+                        "enabled": True, "plan_id": second["plan_id"],
+                        "source_hash": "f" * 64,
+                    },
+                }
+                try:
+                    jobs_store.create_paid_job(
+                        database, lambda *_args: 88,
+                        lambda *args, **_kwargs: refunds.append(args) or True,
+                        "script_to_video", "alice", 10, bad_payload, "content",
+                        before_commit=self.pixelle.paid_plan_association(
+                            bad_payload, "alice"),
+                    )
+                except jobs_store.PaidJobInsertError:
+                    pass
+                else:
+                    self.fail("mismatched plan hash must abort the paid job")
+                unchanged = self.pixelle.pixelle_talking_assets.get_plan(
+                    "alice", second["plan_id"])
+                self.assertEqual(unchanged["status"], "active")
+                self.assertIsNone(unchanged["job_id"])
+                self.assertEqual(len(refunds), 1)
+
+    def test_submit_public_talking_uses_exact_confirmed_fixed_narration(self):
+        payload = {
+            "text": "确认第一段\n\n确认第二段", "mode": "fixed",
+            "template": "1080x1920/image_default.html",
+            "style": "realistic_commercial", "n_scenes": 2,
+            "scenes": [
+                {"line": "确认第一段", "scene_id": "scene_01"},
+                {"line": "确认第二段", "scene_id": "scene_02"},
+            ],
+            "speech_rate": 1.0, "voice_scope": "public",
+            "voice_id": "zh-CN-YunjianNeural",
+            "talking_material": {"enabled": True},
+        }
+        remote = {
+            "enabled": True, "ratio": 0.5,
+            "default_avatar_asset_id": "avatar_" + "a" * 32,
+            "scenes": [{"scene_id": "scene_01", "enabled": True,
+                        "avatar_asset_id": ""}],
+        }
+        with mock.patch.object(
+            self.pixelle, "_remote_talking_material", return_value=remote,
+        ), mock.patch.object(
+            self.pixelle, "_json_request", return_value={"task_id": "task-public-fixed"},
+        ) as request, mock.patch.object(
+            self.pixelle, "_personal_narrations",
+            side_effect=AssertionError("public fixed narration must not re-plan"),
+        ):
+            self.assertEqual(self.pixelle._submit(payload), "task-public-fixed")
+        body = request.call_args.args[2]
+        self.assertEqual(body["text"], "确认第一段\n\n确认第二段")
+        self.assertEqual(body["mode"], "fixed")
+        self.assertEqual(body["n_scenes"], 2)
+        self.assertEqual(body["talking_material"], remote)
 
     def test_feature_catalog_is_fail_closed_by_default(self):
         meta = self.pixelle.feature_flags.CATALOG_MAP[self.pixelle.FEATURE_KEY]

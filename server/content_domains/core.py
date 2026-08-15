@@ -3137,6 +3137,12 @@ class H(BaseHTTPRequestHandler):
                         })
                 try:
                     still_association = _short_drama_domain().short_drama_production.submitted_job_callback(jdb, username=user["username"], project_id=prepared["project"]["id"], shot_id=prepared["shot"]["id"], idempotency_key=idem_key, quoted_cost=cost, quote_token=prepared["quote_token"], request_hash=prepared["request_hash"], access=still_access) if is_still_route and prepared else None
+                    paid_association = still_association
+                    if (kind == "script_to_video" and isinstance(body, dict)
+                            and body.get("pipeline") == "pixelle"):
+                        from . import pixelle_video as pixelle_video_domain
+                        paid_association = pixelle_video_domain.paid_plan_association(
+                            body, user["username"])
                     if is_still_route:
                         if is_shutting_down(): return self._send(503, {"detail": "服务正在更新，请稍等几秒后重试", "code": "shutting_down", "retry_after_ms": 5000})
                         if still_attempt["state"] == "accepted":
@@ -3166,7 +3172,7 @@ class H(BaseHTTPRequestHandler):
                         jid, points_left = jobs_store.create_paid_job(
                             jdb, points_domain.deduct_points, points_domain.refund_points,
                             kind, user["username"], cost, body, SERVICE_OWNER,
-                            before_commit=(lambda connection, job_id: video_domain.link_staged_seedance_references(connection, staged_ref_keys, job_id, user["username"], p, idem_key)) if staged_ref_keys else still_association,
+                            before_commit=(lambda connection, job_id: video_domain.link_staged_seedance_references(connection, staged_ref_keys, job_id, user["username"], p, idem_key)) if staged_ref_keys else paid_association,
                             charge_transaction_key=("job-charge:%s:%s:%s" % (user["username"], p, idem_key)) if idem_key else "",
                             before_charge=(lambda: video_domain.mark_seedance_reference_charging(user["username"], p, idem_key, kind, cost, body, SERVICE_OWNER, "job-charge:%s:%s:%s" % (user["username"], p, idem_key))) if staged_ref_keys else None)
                 except (video_domain.SeedanceReferenceUnavailable if isinstance(video_domain.SeedanceReferenceUnavailable, type) and issubclass(video_domain.SeedanceReferenceUnavailable, BaseException) else ()) as e: video_domain.abort_xiaole_reference_submission(staged_ref_keys, user["username"], p, idem_key, lambda: _idempotency_abort(user["username"], p, idem_key)); return self._send(e.status, {"detail": str(e)[:220], "code": e.code, "retry_after_ms": 60000})

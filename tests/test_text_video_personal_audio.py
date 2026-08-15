@@ -10,6 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 
 from content_domains import audio, core
+from content_domains import pixelle_video
 
 
 class TextVideoPersonalAudioTests(unittest.TestCase):
@@ -146,6 +147,59 @@ class TextVideoPersonalAudioTests(unittest.TestCase):
              patch.object(audio.cosyvoice, "synth", return_value=b""):
             with self.assertRaisesRegex(RuntimeError, "返回为空"):
                 audio.synthesize_owned_voice_segment("alice", "vip_alice", "测试")
+
+    def test_talking_personal_voice_uses_confirmed_text_without_extra_tts(self):
+        payload = {
+            "text": "确认第一段\n\n确认第二段",
+            "mode": "fixed",
+            "template": "1080x1920/image_default.html",
+            "style": "realistic_commercial",
+            "n_scenes": 2,
+            "scenes": [
+                {"line": "确认第一段", "scene_id": "scene_01"},
+                {"line": "确认第二段", "scene_id": "scene_02"},
+            ],
+            "speech_rate": 1.0,
+            "voice_scope": "personal",
+            "voice_key": "vip_alice",
+            "_username": "alice",
+            "_job_id": 73,
+            "talking_material": {
+                "enabled": True, "ratio": 0.5,
+                "default_avatar_asset_id": "local_avatar_" + "a" * 32,
+                "scenes": [{"scene_id": "scene_01", "enabled": True}],
+            },
+        }
+        audio_ids = ["audio_" + "1" * 32, "audio_" + "2" * 32]
+        with patch.object(
+            audio, "synthesize_owned_voice_segment",
+            return_value={"content": b"mp3", "content_type": "audio/mpeg"},
+        ) as synth, patch.object(
+            pixelle_video, "_binary_request",
+            side_effect=[{"asset_id": item} for item in audio_ids],
+        ), patch.object(
+            pixelle_video, "_remote_talking_material",
+            return_value={
+                "enabled": True, "ratio": 0.5,
+                "default_avatar_asset_id": "avatar_" + "a" * 32,
+                "scenes": [{"scene_id": "scene_01", "enabled": True,
+                            "avatar_asset_id": ""}],
+            },
+        ), patch.object(
+            pixelle_video, "_json_request",
+            return_value={"task_id": "task-confirmed-personal"},
+        ) as request:
+            self.assertEqual(pixelle_video._submit(payload), "task-confirmed-personal")
+
+        self.assertEqual(synth.call_count, 2)
+        self.assertEqual([call.args[2] for call in synth.call_args_list],
+                         ["确认第一段", "确认第二段"])
+        video_body = request.call_args.args[2]
+        self.assertEqual(video_body["text"], "确认第一段\n\n确认第二段")
+        self.assertEqual([item["text"] for item in video_body["narration_segments"]],
+                         ["确认第一段", "确认第二段"])
+        self.assertEqual(video_body["talking_material"]["scenes"][0]["scene_id"],
+                         "scene_01")
 
 
 if __name__ == "__main__":
