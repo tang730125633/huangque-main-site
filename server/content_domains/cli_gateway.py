@@ -56,10 +56,12 @@ def _collect_payload(payload):
     except ValueError:
         raise ValueError("url 格式不合法")
     allowed = ("douyin.com", "iesdouyin.com", "xiaohongshu.com", "xhslink.com", "xhslink.cn")
+    channels_share = host == "weixin.qq.com" and parsed.path.startswith("/sph/")
     if (parsed.scheme not in {"http", "https"} or parsed.username or parsed.password
             or port not in (None, 80, 443)
-            or not any(host == suffix or host.endswith("." + suffix) for suffix in allowed)):
-        raise ValueError("url 仅支持抖音或小红书公开链接")
+            or not (channels_share or any(
+                host == suffix or host.endswith("." + suffix) for suffix in allowed))):
+        raise ValueError("url 仅支持抖音、小红书或视频号公开链接")
     want = payload["want"]
     if not isinstance(want, list) or len(want) != 1 or want[0] not in {"comments", "video", "transcript"}:
         raise ValueError("want 仅支持 comments、video 或 transcript 中的一项")

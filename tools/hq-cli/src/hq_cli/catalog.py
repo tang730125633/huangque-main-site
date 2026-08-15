@@ -427,8 +427,8 @@ AUDIO_FIELDS = {
 }
 COLLECT_URL = {
     "type": "string", "minLength": 8, "maxLength": 2048,
-    "pattern": "^https?://(?:[^/?#@]+\\.)?(?:douyin\\.com|iesdouyin\\.com|xiaohongshu\\.com|xhslink\\.com|xhslink\\.cn)(?::(?:80|443))?(?:[/?#].*)?$",
-    "description": "抖音或小红书的公开内容链接；不接受口令、账号密码、本机路径或其他站点 URL",
+    "pattern": "^https?://(?:(?:[^/?#@]+\\.)?(?:douyin\\.com|iesdouyin\\.com|xiaohongshu\\.com|xhslink\\.com|xhslink\\.cn)(?::(?:80|443))?(?:[/?#].*)?|weixin\\.qq\\.com(?::(?:80|443))?/sph/(?:[^?#]*)(?:[?#].*)?)$",
+    "description": "抖音、小红书或视频号的公开内容链接；视频号须使用 weixin.qq.com/sph/ 分享链接",
 }
 LEADS_FIELDS = {
     "keyword": {"type": "string", "minLength": 1, "maxLength": 120},
