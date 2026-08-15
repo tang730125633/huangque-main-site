@@ -388,17 +388,71 @@ class PixelleVideoTests(unittest.TestCase):
             ],
         )
         self.assertEqual(upload.call_count, 2)
-        self.assertEqual(upload.call_args_list[0].args[3], "text-video-52-0")
+        self.assertEqual(upload.call_args_list[0].args[3], "text-video-52-0-0")
         video_body = request.call_args_list[-1].args[2]
         self.assertEqual(video_body["mode"], "fixed")
         self.assertEqual(video_body["text"], "第一句\n\n第二句")
         self.assertEqual(video_body["narration_segments"], [
-            {"text": "第一句", "audio_asset_id": "audio_" + "a" * 32},
-            {"text": "第二句", "audio_asset_id": "audio_" + "b" * 32},
+            {
+                "text": "第一句",
+                "cues": [{"text": "第一句", "audio_asset_id": "audio_" + "a" * 32}],
+            },
+            {
+                "text": "第二句",
+                "cues": [{"text": "第二句", "audio_asset_id": "audio_" + "b" * 32}],
+            },
         ])
         self.assertNotIn("voice_id", video_body)
         self.assertNotIn("tts_speed", video_body)
         self.assertNotIn("tts_workflow", video_body)
+
+    def test_personal_voice_splits_long_scene_without_adding_scenes(self):
+        scene_text = "这是第一段需要按语音拆分轮播显示的字幕内容，而且素材只能生成一次。"
+        payload = {
+            "text": scene_text,
+            "mode": "fixed",
+            "template": "1080x1920/image_default.html",
+            "style": "realistic_commercial",
+            "n_scenes": 1,
+            "scenes": [{"line": scene_text}],
+            "speech_rate": 1.0,
+            "voice_scope": "personal",
+            "voice_key": "vip_ready",
+            "_username": "alice",
+            "_job_id": 53,
+        }
+        cue_texts = self.pixelle._split_caption_text(scene_text)
+        asset_ids = ["audio_" + format(index + 1, "032x") for index in range(len(cue_texts))]
+
+        with mock.patch.object(
+            self.pixelle.audio_domain,
+            "synthesize_owned_voice_segment",
+            return_value={"content": b"ID3", "content_type": "audio/mpeg"},
+        ) as synth, mock.patch.object(
+            self.pixelle,
+            "_binary_request",
+            side_effect=[{"asset_id": asset_id} for asset_id in asset_ids],
+        ), mock.patch.object(
+            self.pixelle,
+            "_json_request",
+            return_value={"task_id": "task-personal-long"},
+        ) as request:
+            self.assertEqual(self.pixelle._submit(payload), "task-personal-long")
+
+        body = request.call_args.args[2]
+        self.assertEqual(body["n_scenes"], 1)
+        self.assertEqual(body["text"], scene_text)
+        self.assertEqual(len(body["narration_segments"]), 1)
+        self.assertEqual(
+            "".join(cue["text"] for cue in body["narration_segments"][0]["cues"]),
+            scene_text,
+        )
+        self.assertGreater(len(body["narration_segments"][0]["cues"]), 1)
+        self.assertTrue(all(
+            self.pixelle._display_units(cue["text"]) <= 28
+            for cue in body["narration_segments"][0]["cues"]
+        ))
+        self.assertEqual(synth.call_count, len(cue_texts))
 
     def test_submit_video_template_uses_video_workflow(self):
         payload = self.pixelle.prepare_payload({

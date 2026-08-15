@@ -43,6 +43,10 @@ PIXELLE_MAX_VIDEO_BYTES = _env_int(
 )
 _NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 _CAPACITY_BLOCKED_UNTIL = 0.0
+_MAX_CAPTION_UNITS = 28
+_MAX_CAPTION_CUES = 20
+_CAPTION_SENTENCE_BOUNDARIES = frozenset("。！？!?；;：:\n")
+_CAPTION_CLAUSE_BOUNDARIES = frozenset("，,、 ")
 
 DEFAULT_STYLE = "realistic_commercial"
 DEFAULT_PUBLIC_VOICE = "zh-CN-YunjianNeural"
@@ -500,27 +504,104 @@ def _personal_narrations(payload):
     return cleaned
 
 
+def _display_units(text):
+    return sum(1 if ord(char) < 128 else 2 for char in text)
+
+
+def _split_after_boundaries(text, boundaries):
+    parts = []
+    start = 0
+    for index, char in enumerate(text):
+        if char in boundaries:
+            parts.append(text[start:index + 1])
+            start = index + 1
+    if start < len(text):
+        parts.append(text[start:])
+    return [part for part in parts if part]
+
+
+def _hard_split_caption(text, max_units):
+    parts = []
+    current = []
+    current_units = 0
+    for char in text:
+        char_units = _display_units(char)
+        if current and current_units + char_units > max_units:
+            parts.append("".join(current))
+            current = []
+            current_units = 0
+        if char_units > max_units:
+            raise ValueError("字幕宽度限制过小")
+        current.append(char)
+        current_units += char_units
+    if current:
+        parts.append("".join(current))
+    return parts
+
+
+def _split_caption_clause(text, max_units):
+    if _display_units(text) <= max_units:
+        return [text]
+    clauses = _split_after_boundaries(text, _CAPTION_CLAUSE_BOUNDARIES)
+    if len(clauses) == 1:
+        return _hard_split_caption(text, max_units)
+    result = []
+    for clause in clauses:
+        if _display_units(clause) <= max_units:
+            result.append(clause)
+        else:
+            result.extend(_hard_split_caption(clause, max_units))
+    return result
+
+
+def _split_caption_text(text, max_units=_MAX_CAPTION_UNITS):
+    if not isinstance(text, str) or not text:
+        raise ValueError("字幕文本不能为空")
+    if not isinstance(max_units, int) or max_units < 2:
+        raise ValueError("字幕宽度限制无效")
+    if _display_units(text) <= max_units:
+        return [text]
+
+    result = []
+    for sentence in _split_after_boundaries(text, _CAPTION_SENTENCE_BOUNDARIES):
+        result.extend(_split_caption_clause(sentence, max_units))
+    if "".join(result) != text:
+        raise ValueError("字幕拆分改变了原文")
+    if any(_display_units(part) > max_units for part in result):
+        raise ValueError("字幕拆分后仍然过长")
+    if len(result) > _MAX_CAPTION_CUES:
+        raise ValueError("单个分镜字幕片段过多")
+    return result
+
+
 def _personal_narration_segments(payload):
     username = str(payload.get("_username") or "").strip()
     voice_key = str(payload.get("voice_key") or "").strip()
     if not username or not voice_key:
         raise ValueError("个人音色任务缺少用户或音色信息")
     segments = []
-    for index, text in enumerate(_personal_narrations(payload)):
-        audio = audio_domain.synthesize_owned_voice_segment(
-            username,
-            voice_key,
-            text,
-            speed=payload.get("speech_rate", 1.0),
-        )
-        request_id = "text-video-%s-%d" % (payload.get("_job_id") or "pending", index)
-        uploaded = _binary_request(
-            "POST", "/api/audio-assets", audio["content"], request_id
-        )
-        asset_id = str(uploaded.get("asset_id") or "").strip()
-        if not re.fullmatch(r"audio_[0-9a-f]{32}", asset_id):
-            raise RuntimeError("个人配音上传未返回有效资源 ID")
-        segments.append({"text": text, "audio_asset_id": asset_id})
+    for scene_index, text in enumerate(_personal_narrations(payload)):
+        cues = []
+        for cue_index, cue_text in enumerate(_split_caption_text(text)):
+            audio = audio_domain.synthesize_owned_voice_segment(
+                username,
+                voice_key,
+                cue_text,
+                speed=payload.get("speech_rate", 1.0),
+            )
+            request_id = "text-video-%s-%d-%d" % (
+                payload.get("_job_id") or "pending",
+                scene_index,
+                cue_index,
+            )
+            uploaded = _binary_request(
+                "POST", "/api/audio-assets", audio["content"], request_id
+            )
+            asset_id = str(uploaded.get("asset_id") or "").strip()
+            if not re.fullmatch(r"audio_[0-9a-f]{32}", asset_id):
+                raise RuntimeError("个人配音上传未返回有效资源 ID")
+            cues.append({"text": cue_text, "audio_asset_id": asset_id})
+        segments.append({"text": text, "cues": cues})
     return segments
 
 
