@@ -16,7 +16,10 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
 
-from content_domains import audio, cli_gateway, cli_uploads, core, upstream_guard, video, video_openai
+from content_domains import (
+    audio, cli_gateway, cli_uploads, core, upstream_guard, video,
+    video_minimax_h3, video_openai,
+)
 
 
 class _Points:
@@ -183,6 +186,114 @@ class HQCLIContentTests(unittest.TestCase):
         self.assertNotIn("reference_upload_ids", captured)
         self.assertEqual(1, len(captured["reference_images"]))
         self.assertTrue(captured["reference_images"][0].startswith("data:image/png;base64,"))
+
+    def test_minimax_quote_expands_private_reference_as_typed_data_uri(self):
+        from PIL import Image
+
+        image = io.BytesIO()
+        Image.new("RGB", (256, 256), (40, 80, 120)).save(image, "PNG")
+        raw = image.getvalue()
+        captured = {}
+        original_validate = video.validate_xiaole_video_payload
+
+        def validate(payload, username=None):
+            cleaned = original_validate(payload, username)
+            captured.update(cleaned)
+            return cleaned
+
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(cli_uploads, "UPLOAD_ROOT", Path(folder)), \
+                mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(core.feature_flags, "is_enabled", return_value=True), \
+                mock.patch.object(video_minimax_h3, "available", return_value=True), \
+                mock.patch.object(video, "validate_xiaole_video_payload", side_effect=validate):
+            uploaded = cli_uploads.store_image(
+                io.BytesIO(raw), len(raw), "alice", "image/png",
+                hashlib.sha256(raw).hexdigest(),
+            )
+            status, result = self._post("/api/gen/cli/quote", {
+                "kind": "xiaole_video", "payload": {
+                    "prompt": "让 @图片1 向镜头挥手", "channel": "minimax",
+                    "duration": 4, "ratio": "9:16", "resolution": "768p",
+                    "reference_upload_ids": [uploaded["upload_id"]],
+                },
+            })
+
+        self.assertEqual(200, status, result)
+        self.assertEqual((24, 100), (result["cost"], result["points"]))
+        self.assertNotIn("reference_upload_ids", captured)
+        self.assertEqual(1, len(captured["reference_images"]))
+        self.assertTrue(captured["reference_images"][0].startswith("data:image/png;base64,"))
+
+    def test_minimax_quote_accepts_verified_text_only_2k_contract(self):
+        with mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(core.feature_flags, "is_enabled", return_value=True), \
+                mock.patch.object(video_minimax_h3, "available", return_value=True):
+            status, result = self._post("/api/gen/cli/quote", {
+                "kind": "xiaole_video", "payload": {
+                    "prompt": "史诗级太空歌剧院线预告", "channel": "minimax",
+                    "duration": 5, "ratio": "16:9", "resolution": "2k",
+                },
+            })
+
+        self.assertEqual(200, status, result)
+        self.assertEqual((24, 100), (result["cost"], result["points"]))
+
+    def test_minimax_quote_rejects_foreign_private_reference(self):
+        from PIL import Image
+
+        image = io.BytesIO()
+        Image.new("RGB", (256, 256), (120, 80, 40)).save(image, "PNG")
+        raw = image.getvalue()
+
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(cli_uploads, "UPLOAD_ROOT", Path(folder)), \
+                mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(core.feature_flags, "is_enabled", return_value=True), \
+                mock.patch.object(video_minimax_h3, "available", return_value=True):
+            uploaded = cli_uploads.store_image(
+                io.BytesIO(raw), len(raw), "bob", "image/png",
+                hashlib.sha256(raw).hexdigest(),
+            )
+            status, result = self._post("/api/gen/cli/quote", {
+                "kind": "xiaole_video", "payload": {
+                    "prompt": "人物向镜头挥手", "channel": "minimax",
+                    "duration": 4, "ratio": "9:16", "resolution": "768p",
+                    "reference_upload_ids": [uploaded["upload_id"]],
+                },
+            })
+
+        self.assertEqual(400, status, result)
+        self.assertIn("不存在或已失效", result["detail"])
+
+    def test_minimax_quote_rejects_expired_private_reference(self):
+        from PIL import Image
+
+        image = io.BytesIO()
+        Image.new("RGB", (256, 256), (80, 120, 40)).save(image, "PNG")
+        raw = image.getvalue()
+        expired_at = 100 + cli_uploads.TTL + 1
+
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(cli_uploads, "UPLOAD_ROOT", Path(folder)), \
+                mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(cli_uploads.time, "time", return_value=expired_at), \
+                mock.patch.object(core.feature_flags, "is_enabled", return_value=True), \
+                mock.patch.object(video_minimax_h3, "available", return_value=True):
+            uploaded = cli_uploads.store_image(
+                io.BytesIO(raw), len(raw), "alice", "image/png",
+                hashlib.sha256(raw).hexdigest(), now=100,
+            )
+            status, result = self._post("/api/gen/cli/quote", {
+                "kind": "xiaole_video", "payload": {
+                    "prompt": "人物向镜头挥手", "channel": "minimax",
+                    "duration": 4, "ratio": "9:16", "resolution": "768p",
+                    "reference_upload_ids": [uploaded["upload_id"]],
+                },
+            })
+
+        self.assertEqual(400, status, result)
+        self.assertIn("已过期", result["detail"])
 
     def test_banana_quote_checks_the_banana_flag_not_the_image_flag(self):
         checked = []

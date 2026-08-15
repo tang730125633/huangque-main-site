@@ -719,9 +719,9 @@
         <div class="row">
           <div>
             <div class="label">麦克视频 <span class="pill-fixed" style="margin-left:7px;">真人剧情</span></div>
-            <div class="muted" style="font-size:12px;margin-top:6px;">上传人物参考图，生成身份稳定的真人剧情短片</div>
+            <div class="muted" style="font-size:12px;margin-top:6px;">输入文本，可选人物参考图，生成 2K 剧情短片</div>
           </div>
-          <span class="faint" style="font-size:11.5px;">768P · 失败自动退点</span>
+          <span class="faint" style="font-size:11.5px;">2K · 失败自动退点</span>
         </div>
         <div class="cine-notice">
           <b>适合人物剧情，不是动作模仿</b>
@@ -2397,7 +2397,7 @@
       $('modeSummary').textContent='Gemini Omni Flash 官方视频：720p 有声，支持 3–10 秒与参考图';
       if($('modeName')) $('modeName').textContent='Omni 视频';
     }else if(videoFunction==='minimax'){
-      $('modeSummary').textContent='麦克视频：上传人物参考图，生成 4–15 秒 768P 真人剧情短片';
+      $('modeSummary').textContent='麦克视频：使用文本或人物参考图，生成 4–15 秒 2K 剧情短片';
       if($('modeName')) $('modeName').textContent='麦克视频';
     }else{
       updateMode(mode);
@@ -3039,7 +3039,7 @@
   }
   var sourceInspirationId=0;
   try{sourceInspirationId=Number(new URLSearchParams(location.search).get('inspiration')||0);if(sourceInspirationId<1000000)sourceInspirationId=0}catch(e){}
-  // 共用现有 xiaole_video 任务外壳；micro / omni / minimax 在后端只走官方 API。
+  // 共用现有 xiaole_video 任务外壳；各渠道在后端调用对应 Provider API。
   function submitXiaole(channel){
     if(!token){ location.href='../login.html?redirect=workbench/video'; return; }
     if(channel==='omni'&&!omniAvailable){toast(officialVideoHealthKnown?'Omni 测试通道暂未开放':'正在检查 Omni 官方通道');return;}
@@ -3054,7 +3054,6 @@
     if(editing && !grokEditVideoData){toast('请先上传不超过 8.7 秒的 MP4 参考视频');return;}
     var ratio=channel==='grok'?(editing?null:selectedGrokRatio):(channel==='omni'?selectedOmniRatio:(channel==='minimax'?selectedMiniMaxRatio:selectedSeedanceRatio));
     var _refArr=channel==='grok'?grokRefData:(channel==='micro'?microRefData:(channel==='omni'?omniRefData:(channel==='minimax'?minimaxRefData:null)));
-    if(channel==='minimax'&&(!_refArr||!_refArr.length)){toast('请至少上传 1 张人物参考图');return;}
     if(channel==='grok' && !editing && selectedGrokModel==='grok-imagine-video-1.5' && (!_refArr||!_refArr.length)){
       toast('Grok Video 1.5 至少上传1张参考图（最多7张）'); return;
     }
@@ -3073,7 +3072,7 @@
       xlPayload.duration=selectedOmniDuration;xlPayload.resolution='720p';
     }else if(channel==='minimax'){
       xlPayload.model='MiniMax-H3';xlPayload.ratio=selectedMiniMaxRatio;
-      xlPayload.duration=selectedMiniMaxDuration;xlPayload.resolution='768p';
+      xlPayload.duration=selectedMiniMaxDuration;xlPayload.resolution='2k';
     }else{
       xlPayload.model=selectedSeedanceModel;xlPayload.ratio=selectedSeedanceRatio;
       xlPayload.duration=selectedSeedanceDuration;xlPayload.resolution=selectedSeedanceResolution;
@@ -3101,7 +3100,7 @@
     if(statusEl) statusEl.textContent='正在提交'+label+'任务，请勿重复点击...';
     var fixedDuration=channel==='grok'?(editing?grokEditDuration:selectedGrokDuration):(channel==='omni'?selectedOmniDuration:(channel==='minimax'?selectedMiniMaxDuration:selectedSeedanceDuration));
     var sourceResolution=channel==='micro'?selectedSeedanceResolution:null;
-    var resolution=channel==='grok'?selectedGrokResolution:(channel==='omni'?'720p':(channel==='minimax'?'768p':(selectedSeedanceUpscale?'1080p':selectedSeedanceResolution)));
+    var resolution=channel==='grok'?selectedGrokResolution:(channel==='omni'?'720p':(channel==='minimax'?'2k':(selectedSeedanceUpscale?'1080p':selectedSeedanceResolution)));
     var currentModel=channel==='grok'?selectedGrokModel:(channel==='omni'?'gemini-omni-flash-preview':(channel==='minimax'?'MiniMax-H3':selectedSeedanceModel));
     currentVideoDraft={mode:channel,text:prompt,ratio:ratio,motion:label,duration:fixedDuration,
       resolution:resolution,model:currentModel,generate_audio:channel==='micro'?selectedSeedanceAudio:null,

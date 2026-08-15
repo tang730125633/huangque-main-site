@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import base64
 import io
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -29,15 +30,58 @@ class MiniMaxH3VideoTests(unittest.TestCase):
     def test_reference_request_and_20_percent_markup(self):
         image = self._image()
         body = video_minimax_h3.build_request(
-            "第1张参考图仅作为人物身份参考", [image], "9:16", 15, "768p"
+            "第1张参考图仅作为人物身份参考", [image], "9:16", 15, "2k"
         )
         self.assertEqual(body["model"], "MiniMax-H3")
-        self.assertEqual(body["resolution"], "768P")
+        self.assertEqual(body["resolution"], "2K")
         self.assertEqual(body["content"][1]["role"], "reference_image")
         with patch("content_domains.points.pricing.get_price", return_value=6):
             self.assertEqual(points.cost_of("xiaole_video", {
-                "channel": "minimax", "duration": 15, "resolution": "768p",
+                "channel": "minimax", "duration": 15, "resolution": "2k",
             }), 90)
+
+    def test_verified_metaso_text_only_2k_request_contract(self):
+        self.assertEqual(
+            "https://metaso.cn/api/minimax", video_minimax_h3.API_BASE
+        )
+        body = video_minimax_h3.build_request(
+            "史诗级太空歌剧院线预告", [], "16:9", 5, "2K"
+        )
+        self.assertEqual({
+            "model": "MiniMax-H3",
+            "content": [{"type": "text", "text": "史诗级太空歌剧院线预告"}],
+            "resolution": "2K",
+            "duration": 5,
+            "ratio": "16:9",
+        }, body)
+
+        captured = {}
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"task_id":"verified-task"}'
+
+        class Opener:
+            def open(self, request, timeout):
+                captured.update(request=request, timeout=timeout)
+                return Response()
+
+        created = video_minimax_h3._request_json(
+            Opener(), "POST", "/v2/video_generation", body,
+            timeout=120, api_key="test-only-secret",
+        )
+        self.assertEqual({"task_id": "verified-task"}, created)
+        self.assertEqual(
+            "https://metaso.cn/api/minimax/v2/video_generation",
+            captured["request"].full_url,
+        )
+        self.assertEqual(body, json.loads(captured["request"].data.decode("utf-8")))
 
     def test_credential_probe_reuses_the_accepted_task_list_endpoint(self):
         with patch.object(video_minimax_h3, "_request_json", return_value={}) as request:
@@ -85,15 +129,30 @@ class MiniMaxH3VideoTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "无法识别"):
             video_minimax_h3.build_request("人物走进电梯", [corrupt], duration=5)
         self.assertEqual(
-            "麦克视频参考图无法识别，请重新上传 JPG 或 PNG 图片",
+            "麦克视频请求参数或参考图无法识别，请检查参数及 JPG/PNG 图片",
             video_minimax_h3._human_error(400, "media metadata is invalid (2013)"),
         )
+
+    def test_legacy_768p_task_resume_preserves_its_resolution(self):
+        succeeded = {
+            "task": {
+                "status": "succeeded",
+                "content": {"url": "https://cdn.example/legacy.mp4"},
+            }
+        }
+        with patch.object(video_minimax_h3, "_request_json", return_value=succeeded), \
+                patch.object(video_minimax_h3, "_opener", return_value=object()):
+            result = video_minimax_h3.resume(
+                "legacy-h3-task", api_key="secret", resolution="768p",
+                sleep=lambda _seconds: None,
+            )
+        self.assertEqual("768p", result["resolution"])
 
     def test_shared_video_job_uses_minimax_adapter(self):
         rendered = {
             "request_id": "h3-task-1", "source_video_url": "https://cdn.example/h3.mp4",
             "model": "MiniMax-H3", "duration": 15, "ratio": "9:16",
-            "resolution": "768p", "provider": "minimax_h3_cn",
+            "resolution": "2k", "provider": "minimax_h3_cn",
         }
         with patch.object(video, "get_resumable_grok_request", return_value=None), \
                 patch.object(video.provider_keys, "claim_candidate", return_value={"id": "mm-key", "secret": "secret"}), \
@@ -106,9 +165,10 @@ class MiniMaxH3VideoTests(unittest.TestCase):
             result = video.gen_xiaole_video({
                 "_job_id": 8, "channel": "minimax", "prompt": "人物走进电梯",
                 "model": "MiniMax-H3", "duration": 15, "ratio": "9:16",
-                "resolution": "768p", "reference_images": ["data:image/png;base64,cG5n"],
+                "resolution": "2k", "reference_images": ["data:image/png;base64,cG5n"],
             })
         generate.assert_called_once()
+        self.assertEqual("2k", generate.call_args.kwargs["resolution"])
         self.assertEqual(result["provider_video_id"], "h3-task-1")
         self.assertEqual(result["provider"], "minimax_h3_cn")
 
@@ -120,6 +180,8 @@ class MiniMaxH3VideoTests(unittest.TestCase):
         self.assertIn("不是动作模仿", html)
         self.assertIn("setupXiaoleRefPanel('minimax', minimaxRefData, 5)", html)
         self.assertIn("p['video.minimax_h3.768p']||6", html)
+        self.assertIn("xlPayload.resolution='2k'", html)
+        self.assertNotIn("请至少上传 1 张人物参考图", html)
         self.assertIn("xlPayload.model='MiniMax-H3'", html)
         self.assertNotIn("xlPayload.model='MiniMax-Hailuo-2.3'", html)
 

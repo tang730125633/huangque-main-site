@@ -1315,11 +1315,14 @@ def validate_xiaole_video_payload(payload, username=None):
                 raise ValueError("麦克视频模型不支持：%s" % model)
             ratio = str(cleaned.get("ratio") or "9:16").strip()
             duration = cleaned.get("duration", 5)
-            resolution = str(cleaned.get("resolution") or "768p").strip()
-            video_minimax_h3.build_request(prompt, refs, ratio, duration, resolution)
+            resolution = str(cleaned.get("resolution") or "2k").strip()
+            provider_request = video_minimax_h3.build_request(
+                prompt, refs, ratio, duration, resolution
+            )
             cleaned.update({
                 "operation": "generate", "model": model, "ratio": ratio,
-                "duration": int(duration), "resolution": "768p",
+                "duration": int(duration),
+                "resolution": provider_request["resolution"].lower(),
                 "reference_images": refs,
             })
             return cleaned
@@ -5568,6 +5571,7 @@ def gen_xiaole_video(payload):
                 existing["request_id"], duration, ratio,
                 job_id=job_id, heartbeat=minimax_heartbeat,
                 api_key=candidate["secret"], provider_key_id=candidate["id"],
+                resolution=payload.get("resolution") or "2K",
             )
         else:
             rendered, candidate = _create_with_provider_key(
@@ -5575,7 +5579,7 @@ def gen_xiaole_video(payload):
                 video_minimax_h3.MiniMaxCredentialRejected,
                 lambda selected: video_minimax_h3.generate(
                     prompt, ref_images, ratio=ratio, duration=duration,
-                    resolution="768P", job_id=job_id,
+                    resolution=payload.get("resolution") or "2K", job_id=job_id,
                     heartbeat=minimax_heartbeat, api_key=selected["secret"],
                     provider_key_id=selected["id"],
                 ),

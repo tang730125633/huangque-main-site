@@ -797,7 +797,7 @@ class HQCLIAPITests(unittest.TestCase):
             "collect-content", "collect-video", "collect-transcript", "collect-search", "leads-generate",
         }.issubset(channels["tikhub"]["capabilities"]))
         self.assertEqual(
-            {"channel": "minimax", "resolution": "768p"},
+            {"channel": "minimax", "resolution": "2k"},
             {k: self.auth.hq_cli_api.action_plan("video-generate", {
                 "prompt": "人物故事", "channel": "minimax",
             })["payload"][k] for k in ("channel", "resolution")},

@@ -1567,7 +1567,7 @@ def preview_provider_request(
         "prompt": prompt,
         "ratio": str(project.get("ratio") or "16:9"),
         "resolution": (
-            "768p" if provider.name == "minimax_h3" else str(
+            "2k" if provider.name == "minimax_h3" else str(
                 (plan["plan"].get("estimate") or {}).get("resolution") or "720p"
             ).lower()
         ),
@@ -1696,7 +1696,7 @@ def _provider_shot_cost(provider_request):
         return points_domain.cost_of("xiaole_video", {
             "channel": "minimax",
             "model": "MiniMax-H3",
-            "resolution": "768p",
+            "resolution": "2k",
             "duration": duration,
         })
     if provider_name != "grok":

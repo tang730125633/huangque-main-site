@@ -212,10 +212,10 @@ KEY_GROUPS = [
      "env_base_env": ["ARK_BASE"], "env_base_default": "https://ark.cn-beijing.volces.com/api/v3",
      "pool_base_env": ["ARK_BASE"], "pool_base_default": "https://ark.cn-beijing.volces.com/api/v3",
      "env": ["ARK_API_KEY"], "pool_provider": "seedance"},
-    {"key": "minimax", "name": "MiniMax 中国区 API", "category": "视频生成",
+    {"key": "minimax", "name": "MetaSo MiniMax API", "category": "视频生成",
      "features": ["视频模块 → 麦克视频"], "env_features": [],
      "pool_features": ["视频模块 → 麦克视频"],
-     "pool_base_env": ["MINIMAX_API_BASE"], "pool_base_default": "https://api.minimaxi.com",
+     "pool_base_env": ["MINIMAX_API_BASE"], "pool_base_default": "https://metaso.cn/api/minimax",
      "env": ["MINIMAX_API_KEY"], "pool_provider": "minimax"},
     {"key": "zelong", "name": "小乐 AI API", "category": "图片生成",
      "features": ["图片生成 → 黄雀引擎 2 备用线路"], "env": ["ZELONG_KEY"]},
@@ -979,7 +979,7 @@ def _e2e_payload(operation_id, runner, ready_avatar_ids=None, ready_audio_voice_
     elif operation_id.startswith("video.minimax."):
         payload.update({
             "channel": "minimax", "operation": "generate", "prompt": prompt,
-            "duration": 5, "resolution": "768p", "ratio": "9:16",
+            "duration": 5, "resolution": "2k", "ratio": "9:16",
             "reference_images": [resolve(item) for item in prefill.get("reference_images") or []],
         })
     elif operation_id.startswith("video.omni."):
@@ -2498,7 +2498,7 @@ def probe_provider_secret(provider, secret):
     if provider == "minimax":
         base = (
             _env_value(["MINIMAX_API_BASE"])
-            or "https://api.minimaxi.com"
+            or "https://metaso.cn/api/minimax"
         ).rstrip("/")
         return _ping_upstream(
             "GET", base + "/v2/query/video_generation?page_num=1&page_size=1",

@@ -175,7 +175,7 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
             "provider": self.name,
             "prompt": prompt,
             "ratio": ratio,
-            "resolution": "768p",
+            "resolution": "2k",
             "duration_seconds": duration,
             "requested_duration_seconds": duration,
             "model": self.default_model,

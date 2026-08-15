@@ -407,6 +407,25 @@ class KeyPingTests(unittest.TestCase):
             proxy_url=proxy,
         )
 
+    def test_minimax_provider_probe_uses_verified_metaso_route(self):
+        import unittest.mock as mock
+
+        with mock.patch.object(admin_api, "_env_value", return_value=""), \
+                mock.patch.object(
+                    admin_api, "_ping_upstream", return_value={"ok": True}
+                ) as ping:
+            self.assertTrue(
+                admin_api.probe_provider_secret(
+                    "minimax", "test-only-minimax-secret"
+                )["ok"]
+            )
+        ping.assert_called_once_with(
+            "GET",
+            "https://metaso.cn/api/minimax/v2/query/video_generation?page_num=1&page_size=1",
+            headers={"Authorization": "Bearer test-only-minimax-secret"},
+            proxied=False,
+        )
+
     def test_provider_probe_only_quarantines_definite_401(self):
         self.assertTrue(admin_api._probe_is_credential_rejection({"http_status": 401}))
         self.assertFalse(admin_api._probe_is_credential_rejection({"http_status": 403}))

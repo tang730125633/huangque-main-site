@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""MiniMax 中国区 H3 官方异步视频适配器。"""
+"""MetaSo MiniMax-H3 asynchronous video adapter."""
 
 import base64
 import io
@@ -15,7 +15,9 @@ from . import provider_keys
 
 
 MODEL = "MiniMax-H3"
-API_BASE = os.environ.get("MINIMAX_API_BASE", "https://api.minimaxi.com").rstrip("/")
+API_BASE = os.environ.get(
+    "MINIMAX_API_BASE", "https://metaso.cn/api/minimax"
+).rstrip("/")
 API_KEY = os.environ.get("MINIMAX_API_KEY", "").strip()
 TIMEOUT = max(120, int(os.environ.get("MINIMAX_H3_TIMEOUT", "1800") or 1800))
 POLL_INTERVAL = max(5, int(os.environ.get("MINIMAX_H3_POLL_INTERVAL", "10") or 10))
@@ -23,6 +25,8 @@ TRANSIENT_CODES = {408, 429} | set(range(500, 600))
 RATIOS = {"21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"}
 MAX_REFERENCE_IMAGES = 5
 MAX_IMAGE_BYTES = 30 * 1024 * 1024
+DEFAULT_RESOLUTION = "2K"
+RESOLUTIONS = {"768P", DEFAULT_RESOLUTION}
 
 
 class CreateOutcomeUnknown(RuntimeError):
@@ -73,22 +77,22 @@ def _base_error(payload):
 def _human_error(code, detail):
     low = str(detail or "").lower()
     if code in {401, 403, 1004} or "login fail" in low or "invalid api key" in low:
-        return "MiniMax 开放平台密钥无效，请在接口密钥页面重新创建并配置 API Key"
+        return "MetaSo MiniMax 密钥无效，请重新创建并配置 API Key"
     if code == 402 or any(x in low for x in ("balance", "insufficient", "余额", "欠费")):
-        return "MiniMax 开放平台余额不足，请充值后重试"
+        return "MetaSo MiniMax 余额不足，请充值后重试"
     if any(x in low for x in ("moderation", "sensitive", "risk", "审核", "敏感")):
         return "视频内容未通过安全审核，请调整提示词或首帧图片"
     if "media metadata is invalid" in low or "2013" in low:
-        return "麦克视频参考图无法识别，请重新上传 JPG 或 PNG 图片"
+        return "麦克视频请求参数或参考图无法识别，请检查参数及 JPG/PNG 图片"
     if code == 429:
         return "MiniMax 当前并发繁忙，请稍后重试"
-    return "MiniMax 开放平台接口失败：%s" % (detail or code)
+    return "MetaSo MiniMax 接口失败：%s" % (detail or code)
 
 
 def _request_json(opener, method, path, body=None, timeout=90, api_key=None):
     api_key = API_KEY if api_key is None else str(api_key).strip()
     if not api_key:
-        raise MiniMaxCredentialRejected("尚未配置 MiniMax 开放平台 API Key")
+        raise MiniMaxCredentialRejected("尚未配置 MetaSo MiniMax API Key")
     headers = {
         "Authorization": "Bearer " + api_key,
         "Accept": "application/json",
@@ -202,7 +206,10 @@ def _image_item(value):
     }
 
 
-def build_request(prompt, reference_images, ratio="9:16", duration=5, resolution="768P"):
+def build_request(
+    prompt, reference_images=None, ratio="9:16", duration=5,
+    resolution=DEFAULT_RESOLUTION,
+):
     prompt = str(prompt or "").strip()
     if not prompt or len(prompt) > 7000:
         raise ValueError("麦克视频提示词必须为 1～7000 个字符")
@@ -220,13 +227,14 @@ def build_request(prompt, reference_images, ratio="9:16", duration=5, resolution
     ratio = str(ratio or "").strip()
     if ratio not in RATIOS:
         raise ValueError("麦克视频不支持该画面比例")
-    if str(resolution or "").strip().upper() != "768P":
-        raise ValueError("麦克视频当前固定使用 768P")
+    resolution = str(resolution or DEFAULT_RESOLUTION).strip().upper()
+    if resolution not in RESOLUTIONS:
+        raise ValueError("麦克视频分辨率仅支持 2K；旧任务可继续使用 768P")
     return {
         "model": MODEL,
         "content": [{"type": "text", "text": prompt}] + [_image_item(x) for x in refs],
         "duration": duration,
-        "resolution": "768P",
+        "resolution": resolution,
         "ratio": ratio,
     }
 
@@ -239,7 +247,7 @@ def query_task(task_id, api_key, opener=None):
     )
 
 
-def _poll(opener, task_id, duration, ratio, job_id=None, heartbeat=None,
+def _poll(opener, task_id, duration, ratio, resolution, job_id=None, heartbeat=None,
           now=None, sleep=None, api_key=None, provider_key_id=None):
     now, sleep = now or time.time, sleep or time.sleep
     deadline = now() + TIMEOUT
@@ -268,9 +276,10 @@ def _poll(opener, task_id, duration, ratio, job_id=None, heartbeat=None,
             url = str(content.get("url") or "").strip() if isinstance(content, dict) else ""
             if not url:
                 raise MiniMaxProviderFailed("麦克视频已完成但没有返回成片地址")
+            resolved = str(task.get("resolution") or resolution).strip().lower()
             return {"request_id": task_id, "source_video_url": url, "model": MODEL,
                     "duration": task.get("duration") or duration,
-                    "ratio": task.get("ratio") or ratio, "resolution": "768p",
+                    "ratio": task.get("ratio") or ratio, "resolution": resolved,
                     "provider": "minimax_h3_cn"}
         if status in {"failed", "cancelled", "canceled"}:
             raise MiniMaxProviderFailed(
@@ -284,7 +293,8 @@ def _poll(opener, task_id, duration, ratio, job_id=None, heartbeat=None,
     raise TimeoutError("麦克视频生成超时")
 
 
-def generate(prompt, reference_images, ratio="9:16", duration=5, resolution="768P",
+def generate(prompt, reference_images=None, ratio="9:16", duration=5,
+             resolution=DEFAULT_RESOLUTION,
              job_id=None, heartbeat=None, now=None, sleep=None, api_key=None,
              provider_key_id=None):
     body = build_request(prompt, reference_images, ratio, duration, resolution)
@@ -297,14 +307,19 @@ def generate(prompt, reference_images, ratio="9:16", duration=5, resolution="768
     if heartbeat:
         heartbeat(job_id, "minimax_queued", provider_video_id=task_id,
                   provider_key_id=provider_key_id, model=MODEL, error="")
-    return _poll(opener, task_id, body["duration"], body["ratio"], job_id, heartbeat,
-                 now, sleep, api_key, provider_key_id)
+    return _poll(
+        opener, task_id, body["duration"], body["ratio"], body["resolution"],
+        job_id, heartbeat, now, sleep, api_key, provider_key_id,
+    )
 
 
 def resume(task_id, duration=5, ratio="9:16", job_id=None, heartbeat=None,
-           now=None, sleep=None, api_key=None, provider_key_id=None):
+           now=None, sleep=None, api_key=None, provider_key_id=None,
+           resolution=DEFAULT_RESOLUTION):
     task_id = str(task_id or "").strip()
     if not task_id:
         raise ValueError("恢复麦克视频缺少任务编号")
-    return _poll(_opener(), task_id, int(duration), ratio, job_id, heartbeat,
-                 now, sleep, api_key, provider_key_id)
+    return _poll(
+        _opener(), task_id, int(duration), ratio, resolution, job_id, heartbeat,
+        now, sleep, api_key, provider_key_id,
+    )

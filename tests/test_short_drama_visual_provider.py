@@ -120,7 +120,7 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
             result = provider.validate_request({
                 "prompt": "两个孩子在长椅上分享糖果",
                 "ratio": "16:9",
-                "resolution": "768p",
+                "resolution": "2k",
                 "duration_seconds": 5,
                 "reference_images": [
                     {"character_key": "boy", "file": "image/boy.png"},
@@ -130,7 +130,7 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
         self.assertEqual("minimax_h3", result["provider"])
         self.assertEqual("MiniMax-H3", result["model"])
         self.assertEqual(5, result["duration_seconds"])
-        self.assertEqual("768p", result["resolution"])
+        self.assertEqual("2k", result["resolution"])
         self.assertEqual(2, len(result["reference_images"]))
 
     def test_minimax_h3_encodes_local_png_without_public_storage(self):

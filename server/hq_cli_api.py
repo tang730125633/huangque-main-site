@@ -71,7 +71,7 @@ CHANNEL_CATALOG = (
                    {"capability": "video-generate", "input": {"channel": "omni"}}]},
     {"id": "seedance", "provider": "火山方舟 API", "category": "图片 / 视频", "features": ["Seedream", "Seedance 视频"],
      "access": "direct", "capabilities": ["image-generate", "video-generate"], "selector": {"provider": "seedream", "channel": "micro"}},
-    {"id": "minimax", "provider": "MiniMax 中国区 API", "category": "视频生成", "features": ["麦克视频"],
+    {"id": "minimax", "provider": "MetaSo MiniMax API", "category": "视频生成", "features": ["麦克视频"],
      "access": "direct", "capabilities": ["video-generate"], "selector": {"channel": "minimax"}},
     {"id": "zelong", "provider": "小乐 AI API", "category": "图片生成", "features": ["黄雀引擎 2 备用线路"],
      "access": "routed", "capabilities": ["image-generate"], "selector": {"provider": "xiaole"}},
@@ -1451,8 +1451,8 @@ def _generation_payload(action, value):
             "ratio": _enum(value.get("ratio", "16:9" if channel in {"grok", "omni"} else "9:16"),
                            "ratio", ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3")),
             "duration": _integer(value.get("duration", 10 if channel == "grok" else 5), "duration", 1, 15),
-            "resolution": _enum(value.get("resolution", "768p" if channel == "minimax" else "720p"),
-                                "resolution", ("480p", "720p", "768p", "1080p")),
+            "resolution": _enum(value.get("resolution", "2k" if channel == "minimax" else "720p"),
+                                "resolution", ("480p", "720p", "768p", "1080p", "2k")),
             "source_page": "video",
         }
         if "model" in value:
