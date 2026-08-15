@@ -398,6 +398,7 @@
     planRequestVersion+=1;
     if(planRequestController){planRequestController.abort();planRequestController=null;}
     isPlanning=false;
+    cancelSceneAvatarRequests();
     if(hadPlan||wasPlanning){talkingState.invalidatePlan();renderTalkingScenes();setFieldError('talkingPlanError','');setFieldError('talkingFinalError','');if(notify!==false)setStatus('设置已变化，请重新生成分镜方案');}
     if(wasPlanning)setBusy(false);
     syncGenerateButton();
@@ -412,6 +413,10 @@
     delete avatarRequests[slot];pendingAvatarUploads=Math.max(0,pendingAvatarUploads-1);
     if(request.reader&&request.reader.readyState===1)request.reader.abort();
     if(request.controller)request.controller.abort();
+  }
+  function cancelSceneAvatarRequests(){
+    Object.keys(avatarRequests).forEach(function(slot){if(slot.indexOf('scene:')!==0)return;cancelAvatarRequest(slot);revokeAvatarPreview(slot);});
+    pendingSceneAvatarId='';el('talkingSceneAvatarInput').value='';
   }
   function beginAvatarRequest(slot,file,sceneId){
     cancelAvatarRequest(slot);revokeAvatarPreview(slot);

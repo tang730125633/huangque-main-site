@@ -173,6 +173,36 @@ process.stdout.write(JSON.stringify({afterSceneEdit:afterSceneEdit,afterPlanInpu
         scenes = result["payload"]["talking_material"]["scenes"]
         self.assertEqual(scenes[0]["avatar_asset_id"], "scene-new")
 
+    def test_plan_invalidation_cleans_all_pending_scene_avatar_uploads(self):
+        result = self._run_page_runtime("sceneAvatarInvalidation")
+        self.assertTrue(result["blockedWhilePending"])
+        self.assertEqual(
+            result["afterInvalidation"],
+            {
+                "disabled": False,
+                "button": "生成分镜方案",
+                "aborted": [True, True],
+                "revoked": ["blob:avatar-1", "blob:avatar-2", "blob:avatar-3"],
+            },
+        )
+        self.assertEqual(
+            result["afterStaleCallbacks"],
+            {
+                "disabled": True,
+                "button": "生成分镜方案",
+                "error": "",
+                "status": "正在上传人物图片",
+                "revoked": ["blob:avatar-1", "blob:avatar-2", "blob:avatar-3"],
+            },
+        )
+        self.assertTrue(result["defaultBlockedWhilePending"])
+        material = result["payload"]["talking_material"]
+        self.assertEqual(material["default_avatar_asset_id"], "avatar-replacement")
+        self.assertNotIn("stale-scene", json.dumps(material))
+        self.assertEqual(result["revoked"], [
+            "blob:avatar-1", "blob:avatar-2", "blob:avatar-3", "blob:avatar-4",
+        ])
+
     def test_poll_prefers_real_phase_over_legacy_stage(self):
         result = self._run_page_runtime("phase")
         self.assertIn("正在生成口播素材", result["status"])

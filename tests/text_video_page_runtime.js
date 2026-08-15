@@ -311,9 +311,60 @@ async function scenarioSceneAvatarRace() {
   return {blockedWhilePending, payload: JSON.parse(runtime.requests.paid[0].options.body)};
 }
 
+async function scenarioSceneAvatarInvalidation() {
+  const runtime = createRuntime();
+  await readyTalking(runtime);
+  await createPlan(runtime, 0, 2);
+  await upload(runtime, {type: 'image/png', size: 100, data: 'data:image/png;base64,EEEE'}, 'scene_1');
+  await upload(runtime, {type: 'image/png', size: 100, data: 'data:image/png;base64,FFFF'}, 'scene_2');
+  const sceneRequests = runtime.requests.avatars.slice(1, 3);
+  const blockedWhilePending = runtime.get('generateBtn').disabled;
+
+  runtime.get('videoText').value = '规划输入变化后的文案';
+  runtime.get('videoText').dispatch('input');
+  await flush();
+  const afterInvalidation = {
+    disabled: runtime.get('generateBtn').disabled,
+    button: runtime.get('generateBtn').textContent,
+    aborted: sceneRequests.map((request) => request.options.signal.aborted),
+    revoked: [...runtime.revoked],
+  };
+
+  await upload(runtime, {type: 'image/png', size: 100, data: 'data:image/png;base64,GGGG'});
+  const defaultBlockedWhilePending = runtime.get('generateBtn').disabled;
+  sceneRequests[0].resolve(response(200, {asset_id: 'stale-scene', preview_url: '/stale-scene'}));
+  sceneRequests[1].reject(new Error('陈旧上传错误'));
+  await flush();
+  const afterStaleCallbacks = {
+    disabled: runtime.get('generateBtn').disabled,
+    button: runtime.get('generateBtn').textContent,
+    error: runtime.get('talkingUploadError').textContent,
+    status: runtime.get('statusText').textContent,
+    revoked: [...runtime.revoked],
+  };
+
+  runtime.requests.avatars[3].resolve(response(200, {asset_id: 'avatar-replacement', preview_url: '/avatar-replacement'}));
+  await flush();
+  let payload = null;
+  if (!runtime.get('generateBtn').disabled) {
+    await createPlan(runtime, 1, 2);
+    runtime.get('generateBtn').click();
+    await flush();
+    payload = JSON.parse(runtime.requests.paid[0].options.body);
+  }
+  return {
+    blockedWhilePending,
+    afterInvalidation,
+    afterStaleCallbacks,
+    defaultBlockedWhilePending,
+    payload,
+    revoked: runtime.revoked,
+  };
+}
+
 async function main() {
   const scenario = process.argv[2];
-  const handlers = {latePlan: scenarioLatePlan, avatarRace: scenarioAvatarRace, phase: scenarioPhase, disabledPath: scenarioDisabledPath, planMutations: scenarioPlanMutations, sceneAvatarRace: scenarioSceneAvatarRace};
+  const handlers = {latePlan: scenarioLatePlan, avatarRace: scenarioAvatarRace, phase: scenarioPhase, disabledPath: scenarioDisabledPath, planMutations: scenarioPlanMutations, sceneAvatarRace: scenarioSceneAvatarRace, sceneAvatarInvalidation: scenarioSceneAvatarInvalidation};
   if (!handlers[scenario]) throw new Error('Unknown scenario: ' + scenario);
   process.stdout.write(JSON.stringify(await handlers[scenario]()));
 }
