@@ -35,6 +35,9 @@ class AdminBrowserE2ETests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_private_contract_and_exact_payload_guard(self):
+        self.assertEqual(
+            browser_qa.PROMPT_EDITOR_SELECTOR, "#bPrompt + .hq-image-editor"
+        )
         payload = {
             "source_page": "banana", "model": "nb2", "quality": "std",
             "count": 1, "prompt": "qa",
