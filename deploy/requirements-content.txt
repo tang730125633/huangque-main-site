@@ -1,6 +1,8 @@
-# Python dependencies required by huangque-content.service (/usr/bin/python3).
-# Install with the same interpreter used by the systemd unit:
+# Python dependencies shared by Huangque content and admin services (/usr/bin/python3).
+# Install with the same interpreter used by the systemd units:
 #   /usr/bin/python3 -m pip install -r deploy/requirements-content.txt
+# Admin customer-page QA also needs: /usr/bin/python3 -m playwright install chromium
 cos-python-sdk-v5==1.9.44
 # Seedance reference images are fully decoded before private staging.
 Pillow==12.2.0
+playwright==1.45.0
