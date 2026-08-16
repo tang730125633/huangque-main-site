@@ -1179,12 +1179,13 @@ def _talking_warnings(result):
             message = candidate
         message = re.sub(r"[\x00-\x1f\x7f]+", " ", str(message or ""))
         message = " ".join(message.split())[:220]
-        if not message or message in seen:
-            continue
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", scene_id):
             scene_id = "scene"
+        warning_key = (scene_id, message)
+        if not message or warning_key in seen:
+            continue
         warnings.append({"scene_id": scene_id, "message": message})
-        seen.add(message)
+        seen.add(warning_key)
         if len(warnings) >= 20:
             break
     return warnings

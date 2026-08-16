@@ -1448,6 +1448,7 @@ class PixelleVideoTests(unittest.TestCase):
             "talking_warnings": [
                 {"scene_id": "scene_01", "message": "provider_unavailable after 1 attempt(s)"},
                 {"scene_id": "scene_02", "message": "provider_unavailable after 1 attempt(s)"},
+                {"scene_id": "scene_02", "message": "provider_unavailable after 1 attempt(s)"},
                 {"scene_id": "../secret", "message": "line one\nline two\x00"},
             ],
         }
@@ -1461,6 +1462,7 @@ class PixelleVideoTests(unittest.TestCase):
 
         self.assertEqual(result["talking_warnings"], [
             {"scene_id": "scene_01", "message": "provider_unavailable after 1 attempt(s)"},
+            {"scene_id": "scene_02", "message": "provider_unavailable after 1 attempt(s)"},
             {"scene_id": "scene", "message": "line one line two"},
         ])
 
