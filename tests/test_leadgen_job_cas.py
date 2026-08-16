@@ -10,9 +10,11 @@
 本测试与 tests/test_job_refund_cas.py 同构，断言同一条不变量：
 无论 reaper / worker 如何交错，点数最多退一次，且 error 终态不被后到的 done 覆盖。
 """
-import importlib, os, sys, tempfile, time, unittest
+import importlib, json, os, sys, tempfile, threading, time, unittest, urllib.request
 from contextlib import closing
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 
 class LeadgenJobCasTests(unittest.TestCase):
@@ -74,6 +76,134 @@ class LeadgenJobCasTests(unittest.TestCase):
         with closing(self.lg.jdb()) as c:
             row = c.execute("SELECT status,cost,owner FROM jobs WHERE id=?", (jid,)).fetchone()
         self.assertEqual(("pending", 6, "leadgen"), tuple(row))
+
+    def test_admin_submission_is_idempotent_and_uses_auditable_charge_key(self):
+        deductions = []
+        self.lg.deduct_points = lambda username, amount, reason="", transaction_key="": (
+            deductions.append((username, amount, reason, transaction_key)), (200, {"points": 97})
+        )[1]
+        old_internal = self.lg.INTERNAL_TOKEN
+        self.lg.INTERNAL_TOKEN = "internal-test-token"
+        server = ThreadingHTTPServer(("127.0.0.1", 0), self.lg.H)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            body = json.dumps({"url": "https://example.com/video", "want": ["comments"]}).encode()
+            def submit():
+                request = urllib.request.Request(
+                    "http://127.0.0.1:%d/api/gen/collect" % server.server_address[1],
+                    data=body, method="POST", headers={
+                        "Authorization": "Bearer qa-token",
+                        "Content-Type": "application/json",
+                        "Idempotency-Key": "e2e:collect:test",
+                        "X-HQ-Internal-Token": self.lg.INTERNAL_TOKEN,
+                        "X-HQ-Expected-Cost": "3",
+                    },
+                )
+                with urllib.request.urlopen(request, timeout=3) as response:
+                    return json.loads(response.read())
+            with mock.patch.object(self.lg, "verify", return_value={"username": "qa"}), \
+                 mock.patch.object(self.lg.feature_flags, "require_enabled") as enabled, \
+                 mock.patch.object(self.lg, "run_job"):
+                first, replay = submit(), submit()
+            self.assertEqual(first, replay)
+            self.assertEqual(len(deductions), 1)
+            self.assertEqual(deductions[0][3], "job-charge:qa:/api/gen/collect:e2e:collect:test")
+            enabled.assert_called_with("collect")
+            with closing(self.lg.jdb()) as connection:
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 1)
+        finally:
+            server.shutdown()
+            server.server_close()
+            self.lg.INTERNAL_TOKEN = old_internal
+
+    def test_cli_collect_search_reuses_paid_job_guards(self):
+        with mock.patch.object(self.lg.tikhub, "search", return_value={
+            "items": [{"id": "v1", "title": "案例", "like": 9, "comment": 2}],
+            "has_more": True,
+        }) as search:
+            result = self.lg.gen_collect_search(
+                {"platform": "douyin", "keyword": "AI 剪辑", "page": 2})
+        search.assert_called_once_with("douyin", "AI 剪辑", page=2, video_only=False)
+        self.assertEqual(result["items"][0]["stats"], {"like": 9, "comment": 2})
+        self.assertTrue(result["has_more"])
+
+        deductions = []
+        self.lg.deduct_points = lambda username, amount, reason="", transaction_key="": (
+            deductions.append((username, amount, transaction_key)), (200, {"points": 96})
+        )[1]
+        old_internal = self.lg.INTERNAL_TOKEN
+        self.lg.INTERNAL_TOKEN = "internal-test-token"
+        server = ThreadingHTTPServer(("127.0.0.1", 0), self.lg.H)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            body = json.dumps({"platform": "douyin", "keyword": "AI 剪辑", "page": 1}).encode()
+            cost = self.lg.pricing.get_price("collect.search")
+
+            def submit():
+                request = urllib.request.Request(
+                    "http://127.0.0.1:%d/api/gen/collect_search" % server.server_address[1],
+                    data=body, method="POST", headers={
+                        "Authorization": "Bearer qa-token",
+                        "Content-Type": "application/json",
+                        "Idempotency-Key": "e2e:collect:search",
+                        "X-HQ-Internal-Token": self.lg.INTERNAL_TOKEN,
+                        "X-HQ-Expected-Cost": str(cost),
+                    },
+                )
+                with urllib.request.urlopen(request, timeout=3) as response:
+                    return json.loads(response.read())
+
+            with mock.patch.object(self.lg, "verify", return_value={"username": "qa"}), \
+                 mock.patch.object(self.lg.feature_flags, "require_enabled") as enabled, \
+                 mock.patch.object(self.lg, "run_job"):
+                first, replay = submit(), submit()
+            self.assertEqual(first, replay)
+            self.assertEqual(len(deductions), 1)
+            self.assertEqual(deductions[0][1], cost)
+            self.assertEqual(deductions[0][2],
+                             "job-charge:qa:/api/gen/collect_search:e2e:collect:search")
+            enabled.assert_called_with("collect")
+        finally:
+            server.shutdown()
+            server.server_close()
+            self.lg.INTERNAL_TOKEN = old_internal
+
+    def test_leads_have_stable_crm_ids_and_restore_saved_follow_state(self):
+        old_crm = self.lg.leads_domain.LEADS_CRM_DB
+        self.lg.leads_domain.LEADS_CRM_DB = os.path.join(self.tmp.name, "leads-crm.db")
+        search = {"items": [{"id": "video-1", "title": "门店拓客", "url": "https://example.com/v"}],
+                  "has_more": False}
+        comments = {"items": [{"text": "怎么预约？多少钱一次", "user_id": "u1",
+                                "user": "客户甲", "likes": 2, "time": 9}], "has_more": False}
+        payload = {"_username": "qa", "keyword": "美容院如何拓客",
+                   "platforms": ["douyin"], "count": 1, "pages": 1}
+        try:
+            with mock.patch.object(self.lg.tikhub, "search", return_value=search), \
+                 mock.patch.object(self.lg.tikhub, "comments", return_value=comments):
+                first = self.lg.gen_leads(payload)
+                lead = first["leads"][0]
+                self.lg.leads_domain.upsert_crm("qa", {
+                    "lead_id": lead["lead_id"], "follow_status": "跟进中", "follow_note": "已私信",
+                })
+                second = self.lg.gen_leads(payload)
+            self.assertEqual(len(lead["lead_id"]), 16)
+            self.assertEqual(second["leads"][0]["lead_id"], lead["lead_id"])
+            self.assertEqual(second["leads"][0]["follow_status"], "跟进中")
+            self.assertEqual(second["leads"][0]["follow_note"], "已私信")
+        finally:
+            self.lg.leads_domain.LEADS_CRM_DB = old_crm
+
+    def test_requested_transcript_failure_is_not_a_completed_result(self):
+        detail = {"id": "v1", "platform": "douyin", "title": "测试", "play_url": None}
+        payload = {"id": "v1", "platform": "douyin", "want": ["transcript"]}
+        for result in (None, {"text": ""}, self.lg.tikhub.TikHubError("ASR 失败")):
+            kwargs = {"side_effect": result} if isinstance(result, Exception) else {"return_value": result}
+            with self.subTest(result=result), \
+                 mock.patch.object(self.lg.tikhub, "detail", return_value=detail), \
+                 mock.patch.object(self.lg.tikhub, "transcript", **kwargs):
+                with self.assertRaises(self.lg.tikhub.TikHubError):
+                    self.lg.gen_collect(payload)
 
     # --- 核心回归：reaper 判超时退点在先，worker 随后成功 → 不得覆写 done、不得二次退点 ---
     def test_reaper_wins_then_worker_success_cannot_overwrite(self):

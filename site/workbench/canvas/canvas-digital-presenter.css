@@ -1,0 +1,19 @@
+.nc-node-digital-presenter { min-width: 270px; }
+.nc-digital-presenter-summary { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:10px; }
+.nc-digital-presenter-summary div { padding:8px; border:1px solid rgba(231,178,76,.2); border-radius:9px; }
+.nc-digital-presenter-summary span,.nc-digital-presenter-summary strong { display:block; }
+.nc-digital-presenter-summary span { color:#718096; font-size:11px; }
+.nc-digital-presenter-summary strong { margin-top:4px; font-size:12px; }
+.nc-digital-presenter-host { position:fixed; inset:0; z-index:10020; display:grid; place-items:center; padding:24px; background:rgba(4,8,16,.72); }
+.nc-digital-presenter-workspace { width:min(760px,96vw); max-height:90vh; overflow:auto; padding:22px; border:1px solid rgba(231,178,76,.26); border-radius:18px; background:#111827; color:#eaf1fa; box-shadow:0 24px 80px rgba(0,0,0,.48); }
+.nc-digital-presenter-workspace header { display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:18px; }
+.nc-digital-presenter-workspace header h2 { margin:4px 0 0; }
+.nc-digital-presenter-workspace header button { border:0; background:transparent; color:#94a4bb; font-size:24px; cursor:pointer; }
+.nc-digital-presenter-settings { display:grid; grid-template-columns:2fr 1fr 1fr; gap:12px; }
+.nc-digital-presenter-settings label { display:grid; gap:6px; color:#94a4bb; font-size:12px; }
+.nc-digital-presenter-settings .wide { grid-column:1/-1; }
+.nc-digital-presenter-settings input,.nc-digital-presenter-settings select,.nc-digital-presenter-settings textarea { box-sizing:border-box; width:100%; border:1px solid rgba(148,164,187,.2); border-radius:9px; padding:9px 10px; background:#0b1220; color:#eaf1fa; }
+.nc-digital-presenter-settings textarea { min-height:120px; resize:vertical; }
+.nc-digital-presenter-settings button { grid-column:1/-1; justify-self:start; border:0; border-radius:9px; padding:9px 15px; background:#e7b24c; color:#111827; font-weight:700; cursor:pointer; }
+.nc-digital-presenter-coming { margin-top:18px; padding:18px; border:1px dashed rgba(148,164,187,.24); border-radius:12px; color:#94a4bb; }
+.nc-digital-presenter-coming strong { color:#eaf1fa; }

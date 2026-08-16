@@ -182,6 +182,15 @@ class FailoverTests(unittest.TestCase):
         self.assertIsNone(out)
         self.assertEqual(len(calls), 1)
 
+    def test_http_429_fails_over_after_explicit_rejection(self):
+        """429 明确表示未接单，不会重复生成或计费，可以安全切出口。"""
+        import io
+        rejected = urllib.error.HTTPError("u", 429, "rate limited", {}, io.BytesIO(b"{}"))
+        out, calls, err = self._run([rejected, b'{"ok":2}'])
+        self.assertEqual(out, {"ok": 2})
+        self.assertIsNone(err)
+        self.assertEqual([call[0] for call in calls], ["http://p1", "http://p2"])
+
     def test_dns_failure_fails_over(self):
         out, calls, err = self._run([urllib.error.URLError(socket.gaierror("no dns")), b'{"ok":2}'])
         self.assertEqual(out, {"ok": 2})
@@ -198,6 +207,49 @@ class FailoverTests(unittest.TestCase):
         out, calls, err = self._run([b'{"data":[]}'])
         self.assertEqual(out, {"data": []})
         self.assertEqual(len(calls), 1)
+
+    def test_idempotent_analysis_retries_timeout_on_next_channel(self):
+        calls = []
+
+        class _Opener:
+            def __init__(self, tag):
+                self.tag = tag
+            def open(self, req, timeout=None):
+                calls.append(self.tag)
+                if len(calls) == 1:
+                    raise TimeoutError("read timed out")
+                return _FakeResp(b'{"ok":2}')
+
+        with patch.object(self.eg, "_channel_usable", return_value=True), \
+             patch.object(
+                 self.eg, "_opener",
+                 side_effect=lambda proxy: _Opener("direct" if not proxy else proxy),
+             ):
+            result = self.eg.post_json_idempotent(
+                "https://official", "https://heygen", "/chat", b"{}", {},
+                max_attempts=2,
+            )
+        self.assertEqual(result, {"ok": 2})
+        self.assertEqual(calls, ["http://p1", "http://p2"])
+
+    def test_idempotent_analysis_retries_only_route_once(self):
+        eg = _reload_egress(primary="", fallback="")
+        calls = []
+
+        class _Opener:
+            def open(self, req, timeout=None):
+                calls.append(req.full_url)
+                if len(calls) == 1:
+                    raise TimeoutError("read timed out")
+                return _FakeResp(b'{"ok":3}')
+
+        with patch.object(eg, "_opener", return_value=_Opener()):
+            result = eg.post_json_idempotent(
+                "https://official", "https://heygen", "/chat", b"{}", {},
+                max_attempts=2,
+            )
+        self.assertEqual(result, {"ok": 3})
+        self.assertEqual(len(calls), 2)
 
 
 class ChannelPreflightTests(unittest.TestCase):

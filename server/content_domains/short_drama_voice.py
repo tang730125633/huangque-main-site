@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 import sqlite3
 import time
 import uuid
@@ -27,6 +28,14 @@ class VoiceChargeInProgress(RuntimeError):
     pass
 
 
+class VoiceTimelineValidationError(ValueError):
+    def __init__(self, blocker):
+        self.blocker = dict(blocker or {})
+        super().__init__(
+            self.blocker.get("message") or "字幕时间轴校验失败"
+        )
+
+
 _BLOCKER_MESSAGES = {
     "missing_current_version": "存在尚未生成成功配音的台词",
     "stale_current_version": "当前配音版本与台词或音色参数不一致",
@@ -47,8 +56,6 @@ CREATE TABLE IF NOT EXISTS short_drama_voice_shots (
   shot_id TEXT PRIMARY KEY REFERENCES short_drama_shots(id) ON DELETE CASCADE,
   project_id TEXT NOT NULL REFERENCES short_drama_projects(id) ON DELETE CASCADE,
   locked INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0,1)),
-  audio_mode TEXT NOT NULL DEFAULT 'voiceover'
-    CHECK (audio_mode IN ('voiceover','native')),
   timeline_revision INTEGER NOT NULL DEFAULT 1 CHECK (timeline_revision >= 1),
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
@@ -424,17 +431,6 @@ def init_db(db_factory):
     try:
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript(_SCHEMA)
-        columns = {
-            row[1] for row in conn.execute(
-                "PRAGMA table_info(short_drama_voice_shots)"
-            )
-        }
-        if "audio_mode" not in columns:
-            conn.execute(
-                "ALTER TABLE short_drama_voice_shots ADD COLUMN audio_mode "
-                "TEXT NOT NULL DEFAULT 'voiceover' "
-                "CHECK (audio_mode IN ('voiceover','native'))"
-            )
         _replace_voice_triggers(conn)
         conn.commit()
     finally:
@@ -739,15 +735,6 @@ def prepare_voice_submission(db_factory, actor_username, owner_username, payload
                 raise VoiceQuoteConsumed("同一个 Idempotency-Key 不能用于不同请求")
             conn.commit()
             return _attempt_dict(existing), True
-        if conn.execute(
-            "SELECT 1 FROM short_drama_voice_charge_attempts AS attempt "
-            "LEFT JOIN short_drama_voice_jobs AS job ON job.job_id=attempt.job_id "
-            "WHERE attempt.project_id=? AND attempt.voice_line_id=? "
-            "AND (attempt.state IN ('accepted','charged','linked','refund_pending') "
-            "OR job.status IN ('pending','running','metadata_pending')) LIMIT 1",
-            (project["id"], line["id"]),
-        ).fetchone():
-            raise VoiceChargeInProgress("该台词已有配音任务正在处理")
         quote = conn.execute(
             "SELECT * FROM short_drama_voice_quotes "
             "WHERE token=? AND username=? AND project_id=? AND voice_line_id=?",
@@ -1409,12 +1396,15 @@ def _line_snapshot(row, character_name):
     }
 
 
-def _blocker(code, shot_id=None, line_id=None):
+def _blocker(code, shot_id=None, line_id=None, **details):
     item = {"code": code, "message": _BLOCKER_MESSAGES[code]}
     if shot_id is not None:
         item["shot_id"] = shot_id
     if line_id is not None:
         item["line_id"] = line_id
+    item.update({
+        key: value for key, value in details.items() if value is not None
+    })
     return item
 
 
@@ -1427,20 +1417,36 @@ def _current_version(line):
     )
 
 
-def _append_unique_blocker(blockers, code, shot_id=None, line_id=None):
+def _append_unique_blocker(
+        blockers, code, shot_id=None, line_id=None, **details):
     identity = (code, shot_id, line_id)
     if any(
         (item["code"], item.get("shot_id"), item.get("line_id")) == identity
         for item in blockers
     ):
         return
-    blockers.append(_blocker(code, shot_id, line_id))
+    blockers.append(_blocker(code, shot_id, line_id, **details))
 
 
-def _timeline_suggestions(lines):
-    cursor = 0
-    suggestions = {}
-    for line in sorted(lines, key=lambda item: (item["sort_order"], item["id"])):
+def _recommended_voice_speed(current_speed, duration_ms, available_ms):
+    if (
+        type(current_speed) not in (int, float)
+        or not isinstance(duration_ms, int)
+        or not isinstance(available_ms, int)
+        or not math.isfinite(current_speed)
+        or current_speed < 0.5 or current_speed > 2
+        or duration_ms <= 0 or available_ms <= 0
+    ):
+        return None
+    required = float(current_speed) * duration_ms / available_ms * 1.03
+    recommended = math.ceil(required * 20) / 20
+    return recommended if 0.5 <= recommended <= 2 else None
+
+
+def _timeline_suggestions(lines, duration_limit=None):
+    ordered = sorted(lines, key=lambda item: (item["sort_order"], item["id"]))
+    durations = []
+    for line in ordered:
         version = _current_version(line)
         duration = version.get("duration_ms") if version else None
         if (
@@ -1448,6 +1454,13 @@ def _timeline_suggestions(lines):
             or version.get("input_hash") != line.get("input_hash")
             or type(duration) is not int or duration <= 0
         ):
+            durations.append(None)
+        else:
+            durations.append(duration)
+    cursor = 0
+    suggestions = {}
+    for line, duration in zip(ordered, durations):
+        if duration is None:
             suggestions[line["id"]] = (None, None)
             continue
         suggestions[line["id"]] = (cursor, cursor + duration)
@@ -1502,9 +1515,27 @@ def _timeline_blockers(shot):
                 blockers, "timeline_invalid", shot_id, line_id
             )
             continue
-        if end_ms > duration_limit or start_ms + duration > duration_limit:
+        audio_end_ms = start_ms + duration
+        if end_ms > duration_limit or audio_end_ms > duration_limit:
+            audio_overflow_ms = max(0, audio_end_ms - duration_limit)
+            subtitle_overflow_ms = max(0, end_ms - duration_limit)
+            overflow_ms = max(audio_overflow_ms, subtitle_overflow_ms)
             _append_unique_blocker(
-                blockers, "duration_overflow", shot_id, line_id
+                blockers, "duration_overflow", shot_id, line_id,
+                shot_duration_ms=duration_limit,
+                audio_duration_ms=duration,
+                audio_start_ms=start_ms,
+                audio_end_ms=audio_end_ms,
+                subtitle_end_ms=end_ms,
+                audio_overflow_ms=audio_overflow_ms,
+                subtitle_overflow_ms=subtitle_overflow_ms,
+                overflow_ms=overflow_ms,
+                recommended_speed=(
+                    _recommended_voice_speed(
+                        line.get("speed"), duration, duration_limit - start_ms
+                    )
+                    if audio_overflow_ms > 0 else None
+                ),
             )
         audio_intervals.append((start_ms, start_ms + duration, line_id))
         if line.get("subtitle_visible"):
@@ -1560,6 +1591,8 @@ def _operational_blockers(conn, shot):
 
 def build_voice_snapshot(conn, project):
     conn.row_factory = sqlite3.Row
+    from .short_drama import _project_point_usage
+    usage = _project_point_usage(conn, project["id"])
     characters = {
         row["character_key"]: row["name"] for row in conn.execute(
             "SELECT character_key,name FROM short_drama_characters WHERE project_id=?",
@@ -1606,7 +1639,8 @@ def build_voice_snapshot(conn, project):
             line["job"] = dict(row)
     shots = []
     for shot in conn.execute(
-        "SELECT id,shot_key,sort_order,duration FROM short_drama_shots "
+        "SELECT id,shot_key,sort_order,duration,character_keys_json "
+        "FROM short_drama_shots "
         "WHERE project_id=? ORDER BY sort_order,id",
         (project["id"],),
     ):
@@ -1634,22 +1668,26 @@ def build_voice_snapshot(conn, project):
             "shot_key": shot["shot_key"],
             "sort_order": shot["sort_order"],
             "duration": shot["duration"],
+            "character_keys": _json_value(
+                shot["character_keys_json"], []
+            ),
             "locked": bool(state["locked"]),
-            "audio_mode": state["audio_mode"],
             "timeline_revision": state["timeline_revision"],
-            "status": "native" if state["audio_mode"] == "native" else shot_status,
+            "status": shot_status,
             "lines": shot_lines,
         })
         current_shot = shots[-1]
-        suggestions = _timeline_suggestions(shot_lines)
+        suggestions = _timeline_suggestions(
+            shot_lines, int(current_shot["duration"]) * 1000
+        )
         for line in shot_lines:
             suggested = suggestions[line["id"]]
             line["suggested_start_ms"] = suggested[0]
             line["suggested_end_ms"] = suggested[1]
-        blockers = []
-        if current_shot["audio_mode"] != "native":
-            blockers = [] if not shot_lines else _timeline_blockers(current_shot)
-            blockers.extend(_operational_blockers(conn, current_shot))
+        blockers = (
+            [] if not shot_lines else _timeline_blockers(current_shot)
+        )
+        blockers.extend(_operational_blockers(conn, current_shot))
         if current_shot["locked"] and blockers:
             conn.execute(
                 "UPDATE short_drama_voice_shots SET locked=0,updated_at=? "
@@ -1659,7 +1697,7 @@ def build_voice_snapshot(conn, project):
             current_shot["locked"] = False
         current_shot["lock_blockers"] = blockers
         current_shot["lockable"] = not blockers
-        if current_shot["locked"] and current_shot["audio_mode"] != "native":
+        if current_shot["locked"]:
             current_shot["status"] = "done"
     handoff_blockers = []
     for shot in shots:
@@ -1674,8 +1712,6 @@ def build_voice_snapshot(conn, project):
             )
     for shot in shots:
         shot.pop("project_id", None)
-    from .short_drama import _project_point_usage
-    usage = _project_point_usage(conn, project["id"])
     return {
         "project_id": project["id"],
         "revision": project["revision"],
@@ -1803,7 +1839,7 @@ def save_voice_timeline(db_factory, owner_username, payload):
             line.update(updates[line["id"]])
         blockers = _timeline_blockers(shot)
         if blockers:
-            raise ValueError(blockers[0]["message"])
+            raise VoiceTimelineValidationError(blockers[0])
         now = int(time.time())
         for item in request["items"]:
             conn.execute(
@@ -1947,6 +1983,16 @@ def confirm_voice_stage(db_factory, owner_username, payload):
         snapshot = build_voice_snapshot(conn, project)
         if snapshot["handoff_blocked"]:
             raise ValueError(snapshot["handoff_blockers"][0]["message"])
+        # The alignment gate and stage CAS must share this write transaction.
+        # A provider job commits its recovery identity before it materializes a
+        # version, so checking only before this transaction leaves a race.
+        from . import short_drama_alignment, short_drama_timeline
+        short_drama_alignment.require_locked_if_started_in_transaction(
+            conn, project
+        )
+        short_drama_timeline.require_ready_if_started_in_transaction(
+            conn, project
+        )
         now = int(time.time())
         updated = conn.execute(
             "UPDATE short_drama_projects "
@@ -1990,58 +2036,6 @@ def get_voice_workspace(db_factory, username, project_id):
         snapshot = build_voice_snapshot(conn, project)
         conn.commit()
         return snapshot
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
-def confirm_native_audio(db_factory, username, project_id, revision):
-    """Use each generated clip's own soundtrack for the first production slice."""
-    if not isinstance(project_id, str) or not project_id.strip():
-        raise ValueError("短剧项目不能为空")
-    if type(revision) is not int or revision < 1:
-        raise ValueError("短剧项目版本无效")
-    conn = db_factory()
-    try:
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("BEGIN IMMEDIATE")
-        project = conn.execute(
-            "SELECT * FROM short_drama_projects "
-            "WHERE id=? AND username=? AND deleted=0",
-            (project_id.strip(), username),
-        ).fetchone()
-        if not project:
-            raise LookupError("短剧项目不存在")
-        if int(project["revision"]) != revision:
-            from .short_drama import RevisionConflict
-            raise RevisionConflict("项目已更新，请刷新后重试")
-        if project["stage"] != "voice_review":
-            raise ValueError("短剧项目尚未进入配音阶段")
-        ensure_voice_workspace(conn, project["id"], allowed_stages={"voice_review"})
-        now = int(time.time())
-        conn.execute(
-            "UPDATE short_drama_voice_shots "
-            "SET locked=1,audio_mode='native',updated_at=? WHERE project_id=?",
-            (now, project["id"]),
-        )
-        updated = conn.execute(
-            "UPDATE short_drama_projects "
-            "SET stage='video_review',revision=revision+1,updated_at=? "
-            "WHERE id=? AND revision=? AND stage='voice_review'",
-            (now, project["id"], revision),
-        )
-        if updated.rowcount != 1:
-            from .short_drama import RevisionConflict
-            raise RevisionConflict("项目已更新，请刷新后重试")
-        project = conn.execute(
-            "SELECT * FROM short_drama_projects WHERE id=?", (project["id"],)
-        ).fetchone()
-        result = build_voice_snapshot(conn, project)
-        conn.commit()
-        return result
     except Exception:
         conn.rollback()
         raise

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import pathlib
+import base64
 import sqlite3
 import sys
 import tempfile
@@ -16,6 +17,9 @@ from content_domains import core, feature_flags, points, startup_recovery, video
 
 
 class SoraPayloadTests(unittest.TestCase):
+    REF = "data:image/png;base64," + base64.b64encode(
+        b"\x89PNG\r\n\x1a\n" + b"0" * 24
+    ).decode()
     def validate(self, **overrides):
         body = {
             "prompt": "A ceramic perfume bottle rotating under soft studio light",
@@ -52,6 +56,13 @@ class SoraPayloadTests(unittest.TestCase):
             self.assertTrue(video.sora_video_is_open("2026-09-23"))
             self.assertFalse(video.sora_video_is_open("2026-09-24"))
             self.assertFalse(video.sora_video_is_open("2026-09-25"))
+
+    def test_health_requires_a_managed_provider_key(self):
+        with patch.object(video, "sora_video_is_open", return_value=True), \
+                patch.object(video_openai, "available", side_effect=(False, True)), \
+                patch.object(feature_flags, "is_enabled", return_value=True):
+            self.assertFalse(video.sora_video_health_enabled(feature_flags))
+            self.assertTrue(video.sora_video_health_enabled(feature_flags))
 
     def test_sora_2_only_accepts_720p_portrait_or_landscape(self):
         self.assertEqual(self.validate()["size"], "720x1280")
@@ -90,6 +101,15 @@ class SoraPayloadTests(unittest.TestCase):
             self.validate(model="sora-3")
         with self.assertRaisesRegex(ValueError, "提示词"):
             self.validate(prompt="  ")
+
+    def test_accepts_one_reference_and_resolves_its_prompt_mention(self):
+        result = self.validate(prompt="让 @图片1 缓慢旋转", reference_images=[self.REF])
+        self.assertEqual(result["reference_images"], [self.REF])
+        self.assertIn("第1张参考图", result["provider_prompt"])
+        with self.assertRaisesRegex(ValueError, "最多支持1张"):
+            self.validate(reference_images=[self.REF, self.REF])
+        with self.assertRaisesRegex(ValueError, "当前只有 0 张"):
+            self.validate(prompt="使用 @图片1", reference_images=[])
 
 
 class SoraPointsTests(unittest.TestCase):

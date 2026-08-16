@@ -67,6 +67,13 @@ class CosBudgetTests(unittest.TestCase):
         self.assertEqual(n, 1000)
         self.assertEqual(os.path.getsize(self._dest()), 1000)
 
+    def test_douyin_download_sends_required_referer(self):
+        self.assertEqual(
+            self.tikhub.cdn_headers("https://v26-webf.douyinvod.com/video.mp4")["Referer"],
+            "https://www.douyin.com/",
+        )
+        self.assertNotIn("Referer", self.tikhub.cdn_headers("https://sns-video-hw.xhscdn.com/video.mp4"))
+
     def test_rejects_oversize_by_content_length(self):
         """Content-Length 预检：下载前就否掉，省掉整段无用等待。"""
         self._stub_opener(_FakeResponse(b"", {"Content-Length": "999999999"}))
@@ -210,6 +217,73 @@ class DownloadOnceTests(unittest.TestCase):
 
     def test_public_url_from_remote_keeps_old_signature(self):
         self.assertEqual(self.lg.public_url_from_remote("http://cdn/v.mp4", "k", "video/mp4"), "https://cos/k")
+
+    def test_bilibili_full_video_is_muxed_then_stored(self):
+        original_mux = self.lg.tikhub.bili_download_to_file
+        def fake_mux(det, deadline, path, **kw):
+            with open(path, "wb") as output:
+                return output.write(b"MUXED")
+        try:
+            self.lg.tikhub.bili_download_to_file = fake_mux
+            url, path = self.lg._collect_bilibili_play_url(
+                {"id": "BV1EbdbBHEPa", "url": "https://www.bilibili.com/video/BV1EbdbBHEPa"},
+                keep_file=True)
+            try:
+                self.assertEqual(url, "https://cos/collect/bilibili/BV1EbdbBHEPa.mp4")
+                with open(path, "rb") as stored:
+                    self.assertEqual(stored.read(), b"MUXED")
+            finally:
+                os.unlink(path)
+
+            self.lg.store_video_file = lambda *_args, **_kwargs: None
+            url, path = self.lg._collect_bilibili_play_url(
+                {"id": "BV1EbdbBHEPa", "url": "https://www.bilibili.com/video/BV1EbdbBHEPa"},
+                keep_file=True)
+            self.assertIsNone(url)
+            self.assertIsNone(path)
+        finally:
+            self.lg.tikhub.bili_download_to_file = original_mux
+
+    def test_bilibili_content_collection_also_stores_playable_video(self):
+        originals = (
+            self.lg.tikhub.parse_link,
+            self.lg.tikhub.detail,
+            self.lg.tikhub.comments,
+            self.lg._collect_bilibili_play_url,
+        )
+        stored = []
+        try:
+            self.lg.tikhub.parse_link = lambda _url: {
+                "platform": "bilibili", "id": "BV1EbdbBHEPa", "note_type": "video"}
+            self.lg.tikhub.detail = lambda *_args, **_kwargs: {
+                "platform": "bilibili", "id": "BV1EbdbBHEPa",
+                "url": "https://www.bilibili.com/video/BV1EbdbBHEPa",
+                "title": "认真做 Agent", "desc": "一条简介", "images": [],
+                "author": {}, "cover": "https://img/cover.jpg"}
+            self.lg.tikhub.comments = lambda *_args, **_kwargs: {
+                "items": [], "has_more": False}
+            self.lg._collect_bilibili_play_url = lambda det, keep_file=False: (
+                stored.append(det["id"]) or "https://cos/collect/bilibili/BV1EbdbBHEPa.mp4",
+                None,
+            )
+
+            result = self.lg.gen_collect({
+                "url": "https://www.bilibili.com/video/BV1EbdbBHEPa",
+                "want": ["comments"],
+            })
+
+            self.assertEqual(stored, ["BV1EbdbBHEPa"])
+            self.assertEqual(
+                result["video"]["play_url"],
+                "https://cos/collect/bilibili/BV1EbdbBHEPa.mp4",
+            )
+        finally:
+            (
+                self.lg.tikhub.parse_link,
+                self.lg.tikhub.detail,
+                self.lg.tikhub.comments,
+                self.lg._collect_bilibili_play_url,
+            ) = originals
 
 
 class TranscriptReuseTests(unittest.TestCase):

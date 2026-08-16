@@ -48,8 +48,11 @@ GIT_REF = os.environ.get('HQ_DRIFT_REF', 'origin/main')
 
 BACKEND_RUNTIME = {
     'server/auth_server.py': '/home/ubuntu/auth-service/auth_server.py',
+    'server/hq_cli_api.py': '/home/ubuntu/auth-service/hq_cli_api.py',
     'server/wechat_subscribe.py': '/home/ubuntu/auth-service/wechat_subscribe.py',
     'server/invites.py': '/home/ubuntu/auth-service/invites.py',
+    'server/invite_network.py': '/home/ubuntu/auth-service/invite_network.py',
+    'server/business_cards.py': '/home/ubuntu/auth-service/business_cards.py',
     'server/wxpay.py': '/home/ubuntu/auth-service/wxpay.py',
     'server/wechat_virtual_pay.py': '/home/ubuntu/auth-service/wechat_virtual_pay.py',
     'server/sync_virtual_pay_goods.py': '/home/ubuntu/auth-service/sync_virtual_pay_goods.py',
@@ -62,10 +65,20 @@ BACKEND_RUNTIME = {
     'server/dl_service.py': '/home/ubuntu/dl-service/dl_service.py',
     'server/admin_api.py': '/home/ubuntu/content-api/admin_api.py',
     'scripts/hq_bitable_sync_server.py': '/home/ubuntu/hq_bitable_sync_server.py',
+    'scripts/process_invite_reward_claims.py': '/home/ubuntu/auth-service/process_invite_reward_claims.py',
     'scripts/drift_sentinel.py': '/home/ubuntu/hq-drift/drift_sentinel.py',
 }
 
 CONTENT_DOMAINS_RUNTIME = os.environ.get('HQ_CONTENT_DOMAINS_RUNTIME', '/home/ubuntu/content-api/content_domains')
+PROVIDERS_RUNTIME = os.environ.get('HQ_PROVIDERS_RUNTIME', '/home/ubuntu/content-api/providers')
+QA_FIXTURES_RUNTIME = os.environ.get('HQ_QA_FIXTURES_RUNTIME', '/home/ubuntu/content-api/qa_fixtures')
+AUTH_SHARED_RUNTIME = {
+    'server/content_domains/__init__.py': '/home/ubuntu/auth-service/content_domains/__init__.py',
+    'server/content_domains/cos.py': '/home/ubuntu/auth-service/content_domains/cos.py',
+    'server/content_domains/miniprogram_security.py': '/home/ubuntu/auth-service/content_domains/miniprogram_security.py',
+    'server/content_domains/pricing.py': '/home/ubuntu/auth-service/content_domains/pricing.py',
+    'server/content_domains/error_contract.py': '/home/ubuntu/auth-service/content_domains/error_contract.py',
+}
 SYSTEMD_DIR = os.environ.get('HQ_SYSTEMD_DIR', '/etc/systemd/system')
 
 
@@ -134,6 +147,10 @@ def git_path_to_runtime(git_path):
         return BACKEND_RUNTIME[git_path]
     if git_path.startswith('server/content_domains/') and git_path.endswith('.py'):
         return os.path.join(CONTENT_DOMAINS_RUNTIME, os.path.basename(git_path))
+    if git_path.startswith('server/providers/') and git_path.endswith('.py'):
+        return os.path.join(PROVIDERS_RUNTIME, git_path[len('server/providers/'):])
+    if git_path.startswith('server/qa_fixtures/'):
+        return os.path.join(QA_FIXTURES_RUNTIME, os.path.basename(git_path))
     if git_path.startswith('deploy/systemd/'):
         # ship 现在会部署 systemd 单元与 drop-in。没有这段映射，--verify-deploy 会把它们静默跳过，
         # 然后报「N 个文件校验通过」—— 一个虚假的确认，比不校验更糟。
@@ -142,6 +159,16 @@ def git_path_to_runtime(git_path):
             return None          # 示例模板不落地，真值只在服务器受保护的 env 文件中
         return os.path.join(SYSTEMD_DIR, rel)
     return None
+
+
+def git_path_to_runtimes(git_path):
+    """返回同一 Git 文件的全部运行副本；共享模块漏任一份都算漂移。"""
+    primary = git_path_to_runtime(git_path)
+    paths = [primary] if primary else []
+    shared = AUTH_SHARED_RUNTIME.get(git_path.replace('\\', '/'))
+    if shared and shared not in paths:
+        paths.append(shared)
+    return paths
 
 
 def runtime_to_git_path(path):
@@ -155,9 +182,18 @@ def runtime_to_git_path(path):
     for git_path, runtime in BACKEND_RUNTIME.items():
         if path == os.path.normpath(runtime):
             return git_path
+    for git_path, runtime in AUTH_SHARED_RUNTIME.items():
+        if path == os.path.normpath(runtime):
+            return git_path
     domain_dir = os.path.normpath(CONTENT_DOMAINS_RUNTIME)
     if path.startswith(domain_dir + os.sep) and path.endswith('.py') and '__pycache__' not in path:
         return 'server/content_domains/' + os.path.basename(path)
+    providers_dir = os.path.normpath(PROVIDERS_RUNTIME)
+    if path.startswith(providers_dir + os.sep) and path.endswith('.py') and '__pycache__' not in path:
+        return 'server/providers/' + os.path.relpath(path, providers_dir).replace(os.sep, '/')
+    fixtures_dir = os.path.normpath(QA_FIXTURES_RUNTIME)
+    if path.startswith(fixtures_dir + os.sep):
+        return 'server/qa_fixtures/' + os.path.basename(path)
     systemd_dir = os.path.normpath(SYSTEMD_DIR)
     if path.startswith(systemd_dir + os.sep):
         return 'deploy/systemd/' + os.path.relpath(path, systemd_dir).replace(os.sep, '/')
@@ -176,6 +212,10 @@ def expected_git_paths():
     for p in git_ls_tree('server/content_domains'):
         if p.endswith('.py') and '__pycache__' not in p:
             paths.append(p)
+    for p in git_ls_tree('server/providers'):
+        if p.endswith('.py') and '__pycache__' not in p:
+            paths.append(p)
+    paths.extend(git_ls_tree('server/qa_fixtures'))
     return sorted(set(paths))
 
 
@@ -187,7 +227,16 @@ def runtime_files():
     for p in BACKEND_RUNTIME.values():
         if os.path.isfile(p):
             files.append(p)
+    for p in AUTH_SHARED_RUNTIME.values():
+        if os.path.isfile(p):
+            files.append(p)
     for p in glob.glob(os.path.join(CONTENT_DOMAINS_RUNTIME, '*.py')):
+        if os.path.isfile(p) and runtime_to_git_path(p):
+            files.append(p)
+    for p in glob.glob(os.path.join(PROVIDERS_RUNTIME, '**', '*.py'), recursive=True):
+        if os.path.isfile(p) and runtime_to_git_path(p):
+            files.append(p)
+    for p in glob.glob(os.path.join(QA_FIXTURES_RUNTIME, '*')):
         if os.path.isfile(p) and runtime_to_git_path(p):
             files.append(p)
     return sorted(set(files))
@@ -199,13 +248,13 @@ def diff_paths(git_paths=None):
     changed, missing, added = [], [], []
     expected_runtime = {}
     for gp in wanted:
-        rp = git_path_to_runtime(gp)
-        if rp:
-            expected_runtime[gp] = rp
-            if not os.path.exists(rp):
+        runtimes = git_path_to_runtimes(gp)
+        if runtimes:
+            expected_runtime[gp] = runtimes
+            if any(not os.path.exists(rp) for rp in runtimes):
                 missing.append(gp)
                 continue
-            if md5_file(rp) != git_md5(gp):
+            if any(md5_file(rp) != git_md5(gp) for rp in runtimes):
                 changed.append(gp)
 
     if git_paths is None:

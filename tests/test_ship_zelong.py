@@ -59,6 +59,35 @@ def unchanged_paths_match(repo: Path, source: str, requested: str, paths: list[s
     return result.returncode == 0
 
 
+def manifest_rows(path: str) -> list[list[str]]:
+    env = os.environ.copy()
+    env["SHIP_ZELONG_LIB_ONLY"] = "1"
+    with tempfile.TemporaryDirectory() as tmp:
+        stage = Path(tmp) / "stage"
+        stage.mkdir()
+        manifest = Path(tmp) / "manifest.tsv"
+        file_list = Path(tmp) / "files.txt"
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'source "$1"; make_manifest "$(git rev-parse HEAD)" "$2" "$3" "$4" "$5"',
+                "_",
+                str(SHIP),
+                str(stage),
+                str(manifest),
+                str(file_list),
+                path,
+            ],
+            cwd=ROOT,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        return [row.split("\t") for row in manifest.read_text(encoding="utf-8").splitlines()]
+
+
 class ZelongDeploymentSafetyTests(unittest.TestCase):
     def test_shell_syntax(self):
         result = subprocess.run(["bash", "-n", str(SHIP)], text=True, capture_output=True)
@@ -143,9 +172,15 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
 
     def test_maps_dependencies_before_entrypoints_and_html(self):
         cases = {
+            "server/hq_cli_api.py": (10, "/home/ubuntu/auth-service/hq_cli_api.py", "auth", 0),
             "server/invites.py": (10, "/home/ubuntu/auth-service/invites.py", "auth", 0),
+            "server/invite_network.py": (10, "/home/ubuntu/auth-service/invite_network.py", "auth", 0),
+            "server/business_cards.py": (10, "/home/ubuntu/auth-service/business_cards.py", "auth", 0),
+            "server/wechat_subscribe.py": (10, "/home/ubuntu/auth-service/wechat_subscribe.py", "auth", 0),
             "server/tikhub.py": (10, "/home/ubuntu/content-api/tikhub.py", "content", 0),
             "server/content_domains/core.py": (20, "/home/ubuntu/content-api/content_domains/core.py", "content", 0),
+            "server/providers/lipsync/runtime.py": (20, "/home/ubuntu/content-api/providers/lipsync/runtime.py", "content", 0),
+            "server/providers/short_drama_visual/heygen_cinematic.py": (20, "/home/ubuntu/content-api/providers/short_drama_visual/heygen_cinematic.py", "content", 0),
             "server/content_api.py": (30, "/home/ubuntu/content-api/content_api.py", "content", 0),
             "server/imggen_api.py": (30, "/home/ubuntu/content-api/imggen_api.py", "imggen", 0),
             "server/leadgen_api.py": (30, "/home/ubuntu/content-api/leadgen_api.py", "leadgen", 0),
@@ -165,6 +200,18 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
         self.assertEqual("1", result.stdout.strip().split("|")[-1])
         self.assertIn("systemctl daemon-reload", SRC)
 
+    def test_shared_auth_modules_are_deployed_to_both_services(self):
+        rows = manifest_rows("server/content_domains/pricing.py")
+        self.assertEqual(2, len(rows))
+        self.assertEqual(
+            {
+                "/home/ubuntu/auth-service/content_domains/pricing.py",
+                "/home/ubuntu/content-api/content_domains/pricing.py",
+            },
+            {row[2] for row in rows},
+        )
+        self.assertEqual({"auth", "content"}, {row[4] for row in rows})
+
     def test_dry_run_plan_is_required_for_apply(self):
         self.assertIn('test -n "$supplied" || die', SRC)
         self.assertIn('cmp -s "$payload" "$dir/$id.plan"', SRC)
@@ -172,7 +219,19 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
 
     def test_fixed_commit_and_exact_sha_checks_are_present(self):
         self.assertIn("git cat-file -e", SRC)
-        self.assertIn("git ls-remote --exit-code origin refs/heads/main", SRC)
+        self.assertIn('git ls-remote --exit-code origin "refs/heads/$source_ref"', SRC)
+        for source_ref, expected in (("main", 0), ("dev/zelong", 0), ("feature/nope", 1)):
+            with self.subTest(source_ref=source_ref):
+                result = subprocess.run(
+                    ["bash", "-c", 'source "$1"; validate_source_ref "$2"', "_", str(SHIP), source_ref],
+                    cwd=ROOT,
+                    env={**os.environ, "SHIP_ZELONG_LIB_ONLY": "1"},
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(expected, result.returncode)
+        self.assertIn("--adspower-baseline 只允许 origin/main", SRC)
+        self.assertIn('test "$source_set" = 0 || die "--rollback 禁止与 --source 混用"', SRC)
         self.assertIn("拒绝 stale ref 或未 push", SRC)
         self.assertIn("git show", SRC)
         self.assertGreaterEqual(SRC.count("sha256sum"), 5)

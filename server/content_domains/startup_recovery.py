@@ -42,6 +42,26 @@ def reclaim_orphaned_running(
 
     handled = requeued = failed = 0
     for row in rows:
+        if row["kind"] in {
+            "short_drama_preview", "short_drama_final", "short_drama_remux"
+        }:
+            try:
+                won_requeue = requeue_job(row["id"])
+            except Exception as exc:
+                logger(
+                    "[startup] 短剧合成任务恢复异常 kind=%s job=%s: %s"
+                    % (row["kind"], row["id"], exc), flush=True,
+                )
+                continue
+            if won_requeue:
+                logger(
+                    "[startup] 短剧合成任务恢复排队 kind=%s job=%s"
+                    % (row["kind"], row["id"]),
+                    flush=True,
+                )
+                requeued += 1
+                handled += 1
+            continue
         request_id = None
         provider = None
         if row["kind"] == "xiaole_video":

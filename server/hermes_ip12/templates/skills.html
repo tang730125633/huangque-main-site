@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>工具箱 — IP孵化教练</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0d0d0d;color:#e5e5e5;font-family:PingFang SC,Microsoft YaHei,sans-serif;padding:20px;max-width:900px;margin:0 auto}
+h1{font-size:22px;margin:16px 0;text-align:center}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin:16px 0}
+.card{background:#171717;border:1px solid #262626;border-radius:10px;padding:14px;cursor:pointer;transition:all .15s}
+.card:hover{border-color:#a78bfa;background:#1a1a1a}
+.card.coming{opacity:.45;cursor:not-allowed}.card.coming:hover{border-color:#262626;background:#171717}
+.card .icon{font-size:24px;margin-bottom:6px}
+.card h3{font-size:14px;color:#c4b5fd;margin-bottom:4px}
+.card p{font-size:11px;color:#737373}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:100;display:none;align-items:center;justify-content:center}
+.modal.open{display:flex}
+.modal-box{background:#171717;border:1px solid #262626;border-radius:10px;width:600px;max-height:80vh;overflow-y:auto;padding:20px}
+.modal-box h2{font-size:16px;color:#c4b5fd;margin-bottom:10px}
+.modal-box input,.modal-box textarea{width:100%;padding:8px;background:#1a1a1a;border:1px solid #262626;color:#e5e5e5;border-radius:6px;font-size:13px;margin:6px 0;font-family:inherit}
+.modal-box textarea{min-height:80px;resize:vertical}
+.modal-box button.run{background:#a78bfa;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:13px;margin:8px 0}
+.modal-box button.run:hover{opacity:0.8}
+.modal-box button.close{float:right;background:none;border:none;color:#737373;cursor:pointer;font-size:18px}
+.result{background:#0a0a0a;border-radius:8px;padding:14px;margin-top:10px;font-size:13px;line-height:1.7;max-height:50vh;overflow-y:auto;display:none}
+.result.show{display:block}
+.result h1,.result h2,.result h3{color:#c4b5fd;margin:10px 0 6px;font-size:15px}
+.result p{margin:0 0 8px}
+.result ul,.result ol{padding-left:18px;margin:4px 0}
+.result pre{background:#111;padding:8px;border-radius:4px;overflow-x:auto;font-size:11px}
+.spinner{width:30px;height:30px;border:3px solid #262626;border-top-color:#a78bfa;border-radius:50%;animation:spin 1s linear infinite;margin:20px auto}
+@keyframes spin{to{transform:rotate(360deg)}}
+a{color:#a78bfa}
+</style>
+</head>
+<body>
+<h1>🧰 工具箱</h1>
+<div class="grid" id="grid"></div>
+<div class="modal" id="modal" onclick="if(event.target===this)closeModal()">
+  <div class="modal-box" id="modalBox"></div>
+</div>
+
+<script>
+const skills = [
+  // Module skills
+  {m:1,icon:"🎯",title:"竞品定位分析",desc:"分析赛道竞品IP的定位策略，找到你的差异化切入",endpoint:"/api/m1-competitor",fields:[{id:"niche",label:"赛道",placeholder:"美业",type:"input"},{id:"keywords",label:"关键词",placeholder:"美容院,皮肤管理",type:"input"}]},
+  {m:2,icon:"🎭",title:"人设卡片生成",desc:"基于你的背景，生成完整人设卡片",endpoint:"/api/m2-persona",fields:[{id:"profile",label:"你的基本情况",placeholder:"我是做美业15年的老板娘...",type:"textarea"}]},
+  {m:3,icon:"💎",title:"价值金字塔",desc:"构建你的价值主张金字塔",endpoint:"/api/m3-value",fields:[{id:"niche",label:"赛道",placeholder:"美业",type:"input"},{id:"advantage",label:"核心优势",placeholder:"15年经验,专注敏感肌修复",type:"textarea"}]},
+  {m:4,icon:"📖",title:"故事框架提取",desc:"把你的经历变成可复用的故事资产",endpoint:"/api/m4-story",fields:[{id:"experience",label:"你的经历",placeholder:"我入行是因为...最难的时刻是...",type:"textarea"}]},
+  {m:5,icon:"🪝",title:"Hook钩子生成",desc:"为一个选题生成10个爆款钩子",endpoint:"/api/m5-hooks",fields:[{id:"topic",label:"选题",placeholder:"美容院拓客的3个误区",type:"input"}]},
+  {m:9,icon:"🔽",title:"私域漏斗设计",desc:"设计完整私域转化漏斗+欢迎语SOP",endpoint:"/api/m9-funnel",fields:[{id:"business",label:"行业",placeholder:"美业",type:"input"},{id:"product",label:"产品/服务",placeholder:"敏感肌修复疗程,2980元",type:"textarea"}]},
+  {m:11,icon:"💰",title:"成交话术包",desc:"破冰→挖掘→逼单→跟进，全套话术",endpoint:"/api/m11-sales",fields:[{id:"product",label:"产品",placeholder:"敏感肌修复疗程",type:"input"},{id:"price",label:"价格",placeholder:"2980",type:"input"}]},
+  {m:12,icon:"📅",title:"公众号日历",desc:"30天内容日历+SEO标题优化",endpoint:"/api/m12-calendar",fields:[{id:"niche",label:"赛道",placeholder:"美业",type:"input"},{id:"keywords",label:"关键词",placeholder:"美容,护肤,抗衰",type:"input"}]},
+  // Cross-module
+  {m:0,icon:"👥",title:"受众画像构建",desc:"生成3类典型客户的详细画像",endpoint:"/api/audience",fields:[{id:"niche",label:"赛道",placeholder:"美业",type:"input"}]},
+  {m:0,icon:"🔄",title:"内容一鱼多吃",desc:"一篇变5种格式",endpoint:"/api/repurpose",fields:[{id:"content",label:"原始内容",placeholder:"粘贴你的文案/脚本/文章...",type:"textarea"}]},
+  {m:0,icon:"🔍",title:"竞品IP拆解",desc:"扒一个竞品IP的6个维度",endpoint:"/api/competitor-ip",fields:[{id:"name",label:"竞品IP名称",placeholder:"如:XX美业创始人",type:"input"}]},
+];
+
+let grid = document.getElementById('grid');
+function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+grid.innerHTML = skills.map(s => `
+  <div class="card${s.m>6?' coming':''}" onclick="${s.m>6?'':`openSkill(${skills.indexOf(s)})`}">
+    <div class="icon">${s.icon}</div>
+    <h3>${s.title} ${s.m?'<span style="font-size:10px;color:#737373">M'+s.m+'</span>':''}</h3>
+    <p>${s.m>6?'尚未开发，敬请期待':s.desc}</p>
+  </div>
+`).join('');
+
+function openSkill(idx) {
+  let s = skills[idx];
+  if (s.m > 6) return;
+  let mb = document.getElementById('modalBox');
+  let fields = s.fields.map(f =>
+    f.type === 'textarea'
+    ? `<label style="font-size:11px;color:#737373">${f.label}</label><textarea id="f_${f.id}" placeholder="${f.placeholder}"></textarea>`
+    : `<label style="font-size:11px;color:#737373">${f.label}</label><input id="f_${f.id}" placeholder="${f.placeholder}">`
+  ).join('');
+
+  mb.innerHTML = `
+    <button class="close" onclick="closeModal()">✕</button>
+    <h2>${s.icon} ${s.title}</h2>
+    ${fields}
+    <button class="run" onclick="runSkill('${s.endpoint}',${JSON.stringify(s.fields.map(f=>f.id))})">生成</button>
+    <div class="result" id="result"></div>
+  `;
+  document.getElementById('modal').classList.add('open');
+}
+
+function closeModal() { document.getElementById('modal').classList.remove('open'); }
+
+async function runSkill(endpoint, fieldIds) {
+  if (skills.some(s => s.m > 6 && s.endpoint === endpoint)) return;
+  let body = {};
+  for (let id of fieldIds) {
+    let el = document.getElementById('f_'+id);
+    if (el && el.value.trim()) body[id] = el.value.trim();
+  }
+  if (Object.keys(body).length === 0) return;
+
+  let result = document.getElementById('result');
+  result.className = 'result show';
+  result.innerHTML = '<div class="spinner"></div>';
+
+  try {
+    let r = await fetch(endpoint, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    let d = await r.json();
+    if (d.ok) {
+      result.innerHTML = '<pre>'+esc(d.report)+'</pre>';
+    } else {
+      result.innerHTML = '<p style="color:#ef4444">'+esc(d.error)+'</p>';
+    }
+  } catch(e) {
+    result.innerHTML = '<p style="color:#ef4444">'+esc(e.message)+'</p>';
+  }
+}
+</script>
+</body>
+</html>

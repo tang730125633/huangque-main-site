@@ -146,11 +146,12 @@ class FixedPromptTests(_Base):
 
     def test_the_guard_is_no_longer_appended_by_gen_cinematic(self):
         """反过来了：现在固定提示词【自带】约束，gen_cinematic 什么都不拼。
-        payload 里的 prompt == HeyGen 收到的 prompt。"""
+        没有 @图片N 时 payload 里的 prompt == HeyGen 收到的 prompt。"""
         gen = VIDEO_SRC.split("def gen_cinematic")[1].split(chr(10) + "def ")[0]
         code = chr(10).join(ln for ln in gen.splitlines() if not ln.lstrip().startswith("#"))
         self.assertNotIn("CINEMATIC_IDENTITY_GUARD", code)
-        self.assertIn('prompt=payload["prompt"]', code)
+        self.assertIn('prompt=provider_prompt', code)
+        self.assertIn('provider_prompt = resolve_image_mentions', code)
 
     def test_the_single_person_prompt_is_the_one_kongli_gave(self):
         """kongli 2026-07-14 换的这段（详见 test_open_mode_no_guard）。
@@ -293,16 +294,16 @@ class UiTests(unittest.TestCase):
 
     def test_all_params_are_locked_for_the_fixed_prompt_modes(self):
         """动作模仿【整个参数区】都藏起来：分辨率/时长/比例一样都不给选，
-        只留一行说明。锁死的形状照抄 #2173 —— 唯一已知能过 HeyGen 审核的配置。"""
+        只留一行说明；分辨率统一 720p，时长和比例跟随参考视频。"""
         self.assertIn("$('cineParamGrid').classList.toggle('hidden', cfg.fixed)", HTML)
         self.assertIn("$('cineFixedParams').classList.toggle('hidden', !cfg.fixed)", HTML)
-        self.assertIn("selectedCineResolution='1080p'", HTML)   # 和后端 CINEMATIC_MOTION_RESOLUTION 对齐
+        self.assertIn("selectedCineResolution='720p'", HTML)   # 和后端 CINEMATIC_OUTPUT_RESOLUTION 对齐
         self.assertIn("selectedCineDuration='auto'", HTML)
         # 比例仍然由参考视频的宽高算出来（#2173 的参考是 576x1024 竖版 → 9:16）
         self.assertIn("selectedCineRatio = r>1.15 ? '16:9' : (r<0.87 ? '9:16' : '1:1')", HTML)
 
     def test_the_locked_resolution_matches_the_backend(self):
-        self.assertEqual(video.CINEMATIC_MOTION_RESOLUTION, "1080p")
+        self.assertEqual(video.CINEMATIC_MOTION_RESOLUTION, "720p")
 
     def test_switching_modes_trims_an_oversized_selection(self):
         """双人选了 2 个形象 → 切回单人，不裁掉就会带着 2 个提交，后端直接拒。"""

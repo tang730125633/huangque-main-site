@@ -27,8 +27,10 @@
   aspect_ratio: 16:9 / 9:16 / 1:1
   references（参考视频）是【可选】的：只给提示词也能生成。
 """
+import base64
 import importlib
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -57,10 +59,10 @@ class PipelineWiringTests(unittest.TestCase):
     def test_costs_are_registered(self):
         """⚠️ cost_of() 回落到 COST.get(kind, 0) —— 新 kind 忘了登记就是【免费】。"""
         self.assertEqual(points.cost_of("avatar", {}), 2)
-        # 获客固定 30 点/次（采集量前端固定 20 视频），与 leads.html 成本徽章一致；
-        # count/pages 传什么都是 30，防"消耗点数对不上"。
-        self.assertEqual(points.cost_of("leads", {}), 30)
-        self.assertEqual(points.cost_of("leads", {"count": 100, "pages": 3}), 30)
+        # 获客按 6 + floor(数量×页数÷4) 计费；前端固定 20 条、1 页时是 11 点。
+        self.assertEqual(points.cost_of("leads", {}), 9)
+        self.assertEqual(points.cost_of("leads", {"count": 20, "pages": 1}), 11)
+        self.assertEqual(points.cost_of("leads", {"count": 100, "pages": 3}), 28)
         # cinematic 改成按成片秒数计费了（见 test_cinematic_billing），这里只守住底线：
         # 无论 payload 多空、玩法认不认得出来，都不能算出 0 点 —— 那是白送一条 $7 的视频。
         for kind in ("avatar", "cinematic"):
@@ -147,8 +149,10 @@ class PipelineWiringTests(unittest.TestCase):
 
     def test_cinematic_results_reach_the_video_asset_library(self):
         # 剧情视频是视频，必须进视频资产库，否则用户在资产库里看不到它
-        src = Path(core.__file__).read_text(encoding="utf-8")
-        self.assertIn('{"video", "tryon", "xiaole_video", "sora_video", "cinematic"}', src)
+        for kind in ("video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video"):
+            with self.subTest(kind=kind):
+                self.assertIn(kind, core._PUBLIC_VIDEO_PHASE_KINDS)
+        self.assertNotIn("avatar", core._PUBLIC_VIDEO_PHASE_KINDS)
 
     def test_both_features_are_toggleable_from_admin(self):
         self.assertIn("avatar", feature_flags.CATALOG_MAP)
@@ -168,6 +172,208 @@ class AvatarValidationTests(unittest.TestCase):
         body = video.validate_avatar_payload({
             "image_data": "data:image/png;base64,iVBORw0KGgo=", "name": "x" * 99})
         self.assertEqual(len(body["name"]), 40)
+
+    def test_short_drama_binding_is_strict_and_preserved(self):
+        image = "data:image/png;base64,iVBORw0KGgo="
+        binding = {
+            "project_id": "project-1",
+            "project_revision": 4,
+            "character_key": "lead",
+        }
+        body = video.validate_avatar_payload({
+            "image_data": image,
+            "name": "林雨",
+            "short_drama_binding": binding,
+        })
+        self.assertEqual(binding, body["short_drama_binding"])
+        with self.assertRaisesRegex(ValueError, "自动绑定参数"):
+            video.validate_avatar_payload({
+                "image_data": image,
+                "short_drama_binding": dict(binding, project_revision="4"),
+            })
+
+    def test_saved_image_extension_uses_real_bytes_not_declared_mime(self):
+        jpeg = b"\xff\xd8\xff\xe0" + b"jpeg-payload"
+        data_url = "data:image/png;base64," + base64.b64encode(jpeg).decode()
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(video, "_out_path",
+                          side_effect=lambda rel: Path(tmp) / rel):
+            saved = video._save_data_file(
+                data_url, "avatar_src", [".jpg", ".png", ".webp"])
+            self.assertTrue(saved.endswith(".jpg"), saved)
+            self.assertEqual((Path(tmp) / saved).read_bytes(), jpeg)
+
+    def test_heygen_upload_uses_real_image_mime_not_suffix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "mislabeled.png"
+            image.write_bytes(b"\xff\xd8\xff\xe0" + b"jpeg-payload")
+            with patch.object(
+                    video, "_heygen_direct_req",
+                    return_value={"data": {"asset_id": "asset-1"}}) as request:
+                self.assertEqual(
+                    video._heygen_upload_asset(image, direct=True), "asset-1")
+            self.assertEqual(request.call_args.args[3], "image/jpeg")
+
+    def test_png_is_canonicalized_to_jpeg_before_heygen_upload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "source.png"
+            image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"png-payload")
+
+            def convert(command, **_kwargs):
+                Path(command[-1]).write_bytes(
+                    b"\xff\xd8\xff\xe0" + b"jpeg-payload")
+
+            with patch.object(video.subprocess, "run", side_effect=convert):
+                canonical = video._ensure_heygen_image_jpg(image)
+            self.assertEqual(canonical.suffix, ".jpg")
+            self.assertEqual(video._detect_image_mime(
+                canonical.read_bytes()), "image/jpeg")
+
+    def test_avatar_persists_the_canonical_jpeg(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            source = out / "avatar_src.png"
+            canonical = out / "canonical.jpg"
+            source.write_bytes(b"\x89PNG\r\n\x1a\n" + b"png-payload")
+            canonical.write_bytes(b"\xff\xd8\xff\xe0" + b"jpeg-payload")
+            recorded = {}
+
+            def record(_username, image_file, *_args):
+                recorded["image_file"] = image_file
+                return {"id": 7, "name": "人物"}
+
+            with patch.object(video, "OUT_DIR", out), \
+                 patch.object(video, "_save_data_file",
+                              return_value=source.name), \
+                 patch.object(video, "_resolve_out_file",
+                              return_value=source), \
+                 patch.object(video, "_ensure_heygen_image_jpg",
+                              return_value=canonical), \
+                 patch.object(video, "_heygen_upload_asset",
+                              return_value="asset-1"), \
+                 patch.object(video, "_heygen_create_photo_avatar",
+                              return_value=("look-1", "group-1")), \
+                 patch.object(video, "_heygen_wait_photo_avatar"), \
+                 patch.object(video, "record_video_avatar",
+                              side_effect=record), \
+                 patch.object(video, "public_url",
+                              return_value="/api/gen/file/canonical.jpg"):
+                result = video.gen_avatar({
+                    "_username": "owner", "image_data": "unused"})
+
+            self.assertEqual(recorded["image_file"], "canonical.jpg")
+            self.assertEqual(result["image_file"], "canonical.jpg")
+            self.assertFalse(source.exists())
+            self.assertTrue(canonical.exists())
+
+    def test_avatar_failure_removes_source_and_canonical_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            source = out / "avatar_src.png"
+            canonical = out / "canonical.jpg"
+            source.write_bytes(b"\x89PNG\r\n\x1a\n" + b"png-payload")
+            canonical.write_bytes(b"\xff\xd8\xff\xe0" + b"jpeg-payload")
+
+            with patch.object(video, "OUT_DIR", out), \
+                 patch.object(video, "_save_data_file",
+                              return_value=source.name), \
+                 patch.object(video, "_resolve_out_file",
+                              return_value=source), \
+                 patch.object(video, "_ensure_heygen_image_jpg",
+                              return_value=canonical), \
+                 patch.object(video, "_heygen_upload_asset",
+                              side_effect=RuntimeError("upload failed")):
+                with self.assertRaises(RuntimeError):
+                    video.gen_avatar({
+                        "_username": "owner", "image_data": "unused"})
+
+            self.assertFalse(source.exists())
+            self.assertFalse(canonical.exists())
+
+    def test_avatar_conversion_failure_removes_the_source_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            source = out / "avatar_src.png"
+            source.write_bytes(b"\x89PNG\r\n\x1a\n" + b"png-payload")
+
+            with patch.object(video, "OUT_DIR", out), \
+                 patch.object(video, "_save_data_file",
+                              return_value=source.name), \
+                 patch.object(video, "_resolve_out_file",
+                              return_value=source), \
+                 patch.object(video, "_ensure_heygen_image_jpg",
+                              side_effect=ValueError("convert failed")):
+                with self.assertRaises(ValueError):
+                    video.gen_avatar({
+                        "_username": "owner", "image_data": "unused"})
+
+            self.assertFalse(source.exists())
+
+    def test_avatar_success_keeps_the_single_persisted_jpeg(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            source = out / "avatar_src.jpg"
+            source.write_bytes(b"\xff\xd8\xff\xe0" + b"jpeg-payload")
+
+            with patch.object(video, "OUT_DIR", out), \
+                 patch.object(video, "_save_data_file",
+                              return_value=source.name), \
+                 patch.object(video, "_resolve_out_file",
+                              return_value=source), \
+                 patch.object(video, "_ensure_heygen_image_jpg",
+                              return_value=source), \
+                 patch.object(video, "_heygen_upload_asset",
+                              return_value="asset-1"), \
+                 patch.object(video, "_heygen_create_photo_avatar",
+                              return_value=("look-1", "group-1")), \
+                 patch.object(video, "_heygen_wait_photo_avatar"), \
+                 patch.object(video, "record_video_avatar",
+                              return_value={"id": 7, "name": "人物"}), \
+                 patch.object(video, "public_url",
+                              return_value="/api/gen/file/avatar_src.jpg"):
+                result = video.gen_avatar({
+                    "_username": "owner", "image_data": "unused"})
+
+            self.assertEqual(result["image_file"], source.name)
+            self.assertTrue(source.exists())
+
+    def test_avatar_record_failure_removes_unlinked_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            source = out / "avatar_src.png"
+            canonical = out / "canonical.jpg"
+            source.write_bytes(b"\x89PNG\r\n\x1a\n" + b"png-payload")
+            canonical.write_bytes(b"\xff\xd8\xff\xe0" + b"jpeg-payload")
+
+            with patch.object(video, "OUT_DIR", out), \
+                 patch.object(video, "_save_data_file",
+                              return_value=source.name), \
+                 patch.object(video, "_resolve_out_file",
+                              return_value=source), \
+                 patch.object(video, "_ensure_heygen_image_jpg",
+                              return_value=canonical), \
+                 patch.object(video, "_heygen_upload_asset",
+                              return_value="asset-1"), \
+                 patch.object(video, "_heygen_create_photo_avatar",
+                              return_value=("look-1", "group-1")), \
+                 patch.object(video, "_heygen_wait_photo_avatar"), \
+                 patch.object(video, "record_video_avatar",
+                              side_effect=RuntimeError("database unavailable")):
+                with self.assertRaises(RuntimeError):
+                    video.gen_avatar({
+                        "_username": "owner", "image_data": "unused"})
+
+            self.assertFalse(source.exists())
+            self.assertFalse(canonical.exists())
+
+    def test_avatar_cleanup_refuses_files_outside_output_directory(self):
+        with tempfile.TemporaryDirectory() as output_tmp, \
+             tempfile.TemporaryDirectory() as outside_tmp:
+            outside = Path(outside_tmp) / "do-not-delete.jpg"
+            outside.write_bytes(b"\xff\xd8\xff\xe0")
+            with patch.object(video, "OUT_DIR", Path(output_tmp)):
+                self.assertFalse(video._unlink_owned_output(outside))
+            self.assertTrue(outside.exists())
 
     def test_no_face_detected_becomes_a_human_message(self):
         """HeyGen 返回的是英文报文，原样丢给用户毫无意义 —— 这是线上最常见的失败。"""
@@ -219,9 +425,9 @@ class CinematicValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             video.validate_cinematic_payload(self._body(prompt="   "))
 
-    def test_both_resolutions_are_allowed(self):
+    def test_legacy_resolutions_are_accepted_but_forced_to_720p(self):
         for r in ("720p", "1080p"):
-            self.assertEqual(video.validate_cinematic_payload(self._body(resolution=r))["resolution"], r)
+            self.assertEqual(video.validate_cinematic_payload(self._body(resolution=r))["resolution"], "720p")
 
     def test_rejects_unsupported_resolution(self):
         with self.assertRaises(ValueError):
@@ -262,7 +468,7 @@ class CinematicRequestBodyTests(unittest.TestCase):
         body = self._capture(avatar_item_id=["look1", "look2", "look3"], reference_asset_id="ref1",
                              ratio="9:16", resolution="1080p", duration=10, prompt="海边跳舞")
         self.assertEqual(body["avatar_id"], ["look1", "look2", "look3"])
-        self.assertEqual(body["resolution"], "1080p")
+        self.assertEqual(body["resolution"], "720p")
 
     def test_single_avatar_still_works(self):
         # 动作模仿那条老路径传的是单个 id（不是列表），不能因为改成数组就坏掉

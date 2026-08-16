@@ -44,10 +44,30 @@ class AssetRegistryTests(unittest.TestCase):
         self.assertIn("theme.css", names)
         self.assertIn("theme-init.js", names)
 
+    def test_home_assets_use_their_content_hash_stamps(self):
+        assets = {a.name: a for a in stamp_assets.SITE_ASSETS}
+        html = (ROOT / "site" / "index.html").read_bytes()
+        for name in (
+            "homepage.css",
+            "homepage-particles.js",
+            "assets/home/orbit-gallery.js",
+            "assets/home/orbit-gallery/gallery.json",
+        ):
+            self.assertIn(name, assets)
+            asset = assets[name]
+            match = asset.pattern.search(html)
+            self.assertIsNotNone(match, name)
+            self.assertEqual(asset.stamp().encode("ascii"), match.group(2), name)
+            normalized = asset.path.read_bytes().replace(b"\r\n", b"\n")
+            changed_stamp = stamp_assets.hashlib.md5(normalized + b"\n// changed").hexdigest()[:8]
+            self.assertNotEqual(asset.stamp(), changed_stamp, name)
+
     def test_only_shell_is_required(self):
-        """cloud-shell.js 每页都有；theme 是页面级的，没引用不算错。"""
+        """普通工作台页必须有 shell；独立设备授权页显式排除。"""
         required = {a.name for a in stamp_assets.ASSETS if a.required}
         self.assertEqual({"cloud-shell.js"}, required)
+        self.assertEqual({"device.html"}, stamp_assets.STANDALONE_PAGES)
+        self.assertNotIn("device.html", {path.name for path in stamp_assets.html_files()})
 
     def test_canvas_assets_are_registered_as_optional(self):
         assets = {a.name: a for a in stamp_assets.ASSETS}
@@ -56,20 +76,26 @@ class AssetRegistryTests(unittest.TestCase):
         self.assertIn("canvas/canvas-state.js", assets)
         self.assertIn("canvas/canvas-storage.js", assets)
         self.assertIn("canvas/canvas-api.js", assets)
+        self.assertIn("canvas/canvas-agent.js", assets)
         self.assertIn("canvas/canvas-export.js", assets)
         self.assertIn("canvas/canvas-app.js", assets)
+        self.assertIn("canvas/canvas-short-drama-video.js", assets)
+        self.assertIn("canvas/canvas-short-drama-video.css", assets)
         self.assertFalse(assets["canvas/canvas.css"].required)
         self.assertFalse(assets["canvas/canvas-graph.js"].required)
         self.assertFalse(assets["canvas/canvas-state.js"].required)
         self.assertFalse(assets["canvas/canvas-storage.js"].required)
         self.assertFalse(assets["canvas/canvas-api.js"].required)
+        self.assertFalse(assets["canvas/canvas-agent.js"].required)
         self.assertFalse(assets["canvas/canvas-export.js"].required)
         self.assertFalse(assets["canvas/canvas-app.js"].required)
+        self.assertFalse(assets["canvas/canvas-short-drama-video.js"].required)
+        self.assertFalse(assets["canvas/canvas-short-drama-video.css"].required)
 
     def test_canvas_html_uses_current_canvas_asset_stamps(self):
         html = (ROOT / "site" / "workbench" / "canvas.html").read_bytes()
         assets = {a.name: a for a in stamp_assets.ASSETS}
-        for name in ("canvas/canvas.css", "canvas/canvas-graph.js", "canvas/canvas-state.js", "canvas/canvas-storage.js", "canvas/canvas-api.js", "canvas/canvas-export.js", "canvas/canvas-app.js"):
+        for name in ("canvas/canvas.css", "canvas/canvas-graph.js", "canvas/canvas-state.js", "canvas/canvas-storage.js", "canvas/canvas-api.js", "canvas/canvas-agent.js", "canvas/canvas-export.js", "canvas/canvas-app.js"):
             asset = assets[name]
             match = asset.pattern.search(html)
             self.assertIsNotNone(match, name)

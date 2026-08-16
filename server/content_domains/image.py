@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
 import http.client
+import io
 import os
 import random
 import threading
 import time
 import urllib.error
+
+from PIL import Image, UnidentifiedImageError
 
 from .core import (
     OPENAI_BASE, OPENAI_KEY, OUT_DIR, SIZES, ZELONG2_BASE, ZELONG2_IMAGE_MODEL, ZELONG2_KEY,
@@ -12,6 +15,7 @@ from .core import (
     base64, json, public_url, urllib, uuid,
 )
 from .video import XIAOLEVIDEO_API_KEY, _image_bytes_look_valid, _xiaole_request
+from .image_mentions import resolve_image_mentions, validate_image_mentions
 
 # gpt 引擎出境优先级：VPS 隧道 → mihomo → heygen（见 egress.py）。官方 OpenAI 直连地址：
 OPENAI_OFFICIAL_BASE = os.environ.get("OPENAI_OFFICIAL_BASE", "https://api.openai.com").rstrip("/")
@@ -21,6 +25,14 @@ IMAGE_PROMPT_MAX_CHARS = max(1, int(os.environ.get("IMAGE_PROMPT_MAX_CHARS", "80
 # count 上限取各引擎里最大的 MAX_N（gpt 4；seedream 2 由引擎自己再 cap）。
 IMAGE_MAX_COUNT = max(1, int(os.environ.get("IMAGE_MAX_COUNT", "4") or 4))
 XIAOLE_IMAGE_MAX_REF = max(1, int(os.environ.get("XIAOLE_IMAGE_MAX_REF", "4") or 4))
+IMAGE_REFERENCE_LIMITS = {
+    "openai": 16,
+    "seedream": 10,
+    "xiaole": XIAOLE_IMAGE_MAX_REF,
+    "zelong": 1,
+}
+IMAGE_REF_TOTAL_MAX_BYTES = max(IMAGE_REF_MAX_BYTES, int(os.environ.get(
+    "IMAGE_REF_TOTAL_MAX_BYTES", str(48 * 1024 * 1024)) or (48 * 1024 * 1024)))
 XIAOLE_IMAGE_REF_TOTAL_MAX_BYTES = max(IMAGE_REF_MAX_BYTES, int(os.environ.get(
     "XIAOLE_IMAGE_REF_TOTAL_MAX_BYTES", str(28 * 1024 * 1024)) or (28 * 1024 * 1024)))
 
@@ -47,11 +59,12 @@ SEEDREAM_MAX_REF_BYTES = 10 * 1024 * 1024   # 参考图上限，与 imggen_api �
 _ZELONG2_POOL_LOCK = threading.Lock()
 _ZELONG2_POOL_NEXT = 0
 
-# 出图死线。必须留在 reaper KIND_GRACE["image"]=900s 之内（否则任务被判超时退点），
-# 前端 banana 轮询也容忍 900s（#331）。600s 给两档慢引擎足够余量、又不越界。
+# 果肉异步出图在渠道拥堵时已出现 600s 仍在 processing 的真实任务。任务一旦被上游
+# 接单就可能已经计费，过早判死会同时造成「客户收到退款、上游稍后仍出图」的双重损失。
+# 默认等 1200s；reaper image 宽限与前端轮询必须比它更长，见 core.py / banana.html。
 #   xiaole : 轮询循环的总死线，天然受控
 #   zelong2: 号池的**总**死线（不是单次 timeout），见 _post_zelong2
-XIAOLE_IMG_DEADLINE = int(os.environ.get("XIAOLE_IMG_DEADLINE", "600") or 600)
+XIAOLE_IMG_DEADLINE = int(os.environ.get("XIAOLE_IMG_DEADLINE", "1200") or 1200)
 ZELONG2_DEADLINE = int(os.environ.get("ZELONG2_DEADLINE", "600") or 600)
 _MIN_ATTEMPT_SECONDS = 5        # 剩余预算不足这么多秒就别再发请求了
 
@@ -62,8 +75,8 @@ _MIN_ATTEMPT_SECONDS = 5        # 剩余预算不足这么多秒就别再发请�
 # 排队等（worker 池本来就只有 10），总比创建被 429 当场判死退点强。
 XIAOLE_IMG_MAX_CONCURRENCY = max(1, int(os.environ.get("XIAOLE_IMG_MAX_CONCURRENCY", "5") or 5))
 # 创建调用限流重试总预算：与 seedream 429 同一逻辑——只有限流能确定任务未创建未计费，
-# 重试绝对安全；其余错误照旧立刻失败退点。300s 退避 + 600s 轮询贴 reaper image 900s 红线，
-# 极端排队会被 reaper 判超时退点（不丢钱只是白等），可接受。
+# 重试绝对安全；其余错误照旧立刻失败退点。创建预算与轮询预算叠加后仍由
+# reaper image 1500s 兜底；上游已接单时宁可继续等，不提前退款丢弃稍后作品。
 XIAOLE_IMG_CREATE_MAX_WAIT = max(0, int(os.environ.get("XIAOLE_IMG_CREATE_MAX_WAIT", "300") or 300))
 _XIAOLE_IMG_SEM = threading.BoundedSemaphore(XIAOLE_IMG_MAX_CONCURRENCY)
 
@@ -182,44 +195,52 @@ def validate_image_payload(payload):
         raise ValueError("\u8bf7\u6c42\u4f53\u5fc5\u987b\u662f JSON \u5bf9\u8c61")
     body = dict(payload)
     provider = str(body.get("provider") or "openai").strip().lower()
+    body["provider"] = provider
+    if provider == "banana":
+        from . import banana_provider
+        banana_body = banana_provider.validate_payload(body)
+        # Preserve server-trusted short-drama metadata; the shared adapter only
+        # normalizes fields that are sent to Gemini.
+        if "short_drama_references" in body:
+            banana_body["short_drama_references"] = body["short_drama_references"]
+        if "short_drama_raw_prompt" in body:
+            banana_body["short_drama_raw_prompt"] = body["short_drama_raw_prompt"]
+        if "short_drama_scene_binding" in body:
+            banana_body["short_drama_scene_binding"] = body["short_drama_scene_binding"]
+        return banana_body
+    if provider == "zelong2":
+        if ZELONG2_IMAGE_MODEL != "zelong-cpa-gpt-image-2":
+            raise ValueError("泽龙专用生图渠道未配置")
+        if body.get("image") or body.get("reference_images") or body.get("mask"):
+            raise ValueError("泽龙专用生图首期仅支持文生图")
+        if (body.get("ratio") or "1:1") != "1:1":
+            raise ValueError("泽龙专用生图首期仅支持 1:1 方图")
+        if (body.get("quality") or "std") != "std":
+            raise ValueError("泽龙专用生图首期仅支持标准质量")
+        if int(body.get("count") or 1) != 1:
+            raise ValueError("泽龙专用生图首期仅支持单张生成")
     prompt = (body.get("prompt") or "").strip()
     if not prompt:
         raise ValueError("\u63d0\u793a\u8bcd\u4e0d\u80fd\u4e3a\u7a7a")
     if len(prompt) > IMAGE_PROMPT_MAX_CHARS:
         raise ValueError("\u63d0\u793a\u8bcd\u4e0d\u80fd\u8d85\u8fc7 %d \u5b57" % IMAGE_PROMPT_MAX_CHARS)
     body["prompt"] = prompt
-    try:
-        count = int(body.get("count") or 1)
-    except Exception:
-        raise ValueError("count \u5fc5\u987b\u662f\u6b63\u6574\u6570")
-    body["count"] = max(1, min(IMAGE_MAX_COUNT, count))
-    if provider == "zelong2":
-        if ZELONG2_IMAGE_MODEL != "zelong-cpa-gpt-image-2":
-            raise ValueError("泽龙专用生图渠道未配置")
-        if body.get("image") or body.get("mask"):
-            raise ValueError("泽龙专用生图首期仅支持文生图")
-        if (body.get("ratio") or "1:1") != "1:1":
-            raise ValueError("泽龙专用生图首期仅支持 1:1 方图")
-        if (body.get("quality") or "std") != "std":
-            raise ValueError("泽龙专用生图首期仅支持标准质量")
-        if body["count"] != 1:
-            raise ValueError("泽龙专用生图首期仅支持单张生成")
-        body["ratio"], body["quality"] = "1:1", "std"
     # 魔数校验放在扣点前：base64 能解码但不是图片时，Ark 回的是 HTTP 500
     # 「service encountered an unexpected internal error」，用户会以为是我们的故障，
     # 而且那时点已经扣了（要等失败退点）。在这里拦住，所有引擎都受益且不扣点。
+    if body.get("image") and body.get("reference_images") is not None:
+        raise ValueError("image 与 reference_images 不能同时传；多图请统一使用 reference_images")
     if body.get("image"):
         body["image"], raw = _decode_image_b64(body.get("image"), "image")
         if raw and not _image_bytes_look_valid(raw):
             raise ValueError("参考图格式不支持，请使用 PNG / JPG / WebP")
     references = body.get("reference_images")
     if references is not None:
-        if provider != "xiaole":
-            raise ValueError("多图参考目前仅支持果肉生图")
         if not isinstance(references, list) or not references:
             raise ValueError("reference_images 必须是非空图片数组")
-        if len(references) > XIAOLE_IMAGE_MAX_REF:
-            raise ValueError("果肉生图最多支持 %d 张参考图" % XIAOLE_IMAGE_MAX_REF)
+        limit = IMAGE_REFERENCE_LIMITS.get(provider, 1)
+        if len(references) > limit:
+            raise ValueError("%s 最多支持 %d 张参考图" % (provider, limit))
         clean_references, total_bytes = [], 0
         for index, value in enumerate(references, 1):
             clean, raw = _decode_image_b64(value, "第%d张参考图" % index)
@@ -227,13 +248,25 @@ def validate_image_payload(payload):
                 raise ValueError("第%d张参考图格式不支持，请使用 PNG / JPG / WebP" % index)
             total_bytes += len(raw)
             clean_references.append(clean)
-        if total_bytes > XIAOLE_IMAGE_REF_TOTAL_MAX_BYTES:
-            raise ValueError("果肉生图的参考图合计不能超过 %dMB" % (XIAOLE_IMAGE_REF_TOTAL_MAX_BYTES // 1024 // 1024))
+        total_limit = XIAOLE_IMAGE_REF_TOTAL_MAX_BYTES if provider == "xiaole" else IMAGE_REF_TOTAL_MAX_BYTES
+        if total_bytes > total_limit:
+            raise ValueError("参考图合计不能超过 %dMB" % (total_limit // 1024 // 1024))
         body["reference_images"] = clean_references
+    reference_count = len(body.get("reference_images") or ([] if not body.get("image") else [body["image"]]))
+    validate_image_mentions(prompt, reference_count)
     if body.get("mask"):
+        if reference_count > 1:
+            raise ValueError("局部修改仅支持 1 张参考图")
         body["mask"], raw = _decode_image_b64(body.get("mask"), "mask")
         if raw and not _image_bytes_look_valid(raw):
             raise ValueError("蒙版格式不支持，请使用 PNG")
+    # count \u5fc5\u987b\u5939\u4f4f\u4e0a\u9650\uff1acost_of \u6309 count \u6263\u70b9\uff0ccount=100 \u5c31\u4f1a\u6263\u7206\u70b9\u3002
+    # \u5404\u5f15\u64ce\u81ea\u5df1\u8fd8\u6709 MAX_N\uff08seedream 2 / gpt 4\uff09\uff0c\u8fd9\u91cc\u53ea\u6321\u79bb\u8c31\u503c\u3002
+    try:
+        count = int(body.get("count") or 1)
+    except Exception:
+        raise ValueError("count \u5fc5\u987b\u662f\u6b63\u6574\u6570")
+    body["count"] = max(1, min(IMAGE_MAX_COUNT, count))
     return body
 
 def _gen_image_xiaole(prompt, ratio, quality, count, img, references=None):
@@ -287,14 +320,15 @@ def _gen_image_xiaole_locked(prompt, ratio, quality, count, img, references=None
             delay, elapsed, XIAOLE_IMG_CREATE_MAX_WAIT), flush=True)
         time.sleep(delay)
     data = create.get("data") or {}
-    rid = data.get("request_id") or data.get("task_id")
-    status_url = data.get("status_url") or (("/api/v1/generations/" + str(rid)) if rid else "")
-    if not status_url:
+    rid = str(data.get("request_id") or data.get("task_id") or "").strip()
+    if not rid:
         raise ValueError("渠道未返回任务ID")
-    # 300s 太紧：hd 图生图(2k+参考图)实测稳定 ~300s，全站近7天成功任务中位193s、最大446s，
-    # 失败任务中位315s —— 死线正好卡在实际耗时上。放宽到 600s（仍 < reaper 900s / 前端 900s）。
+    status_url = data.get("status_url") or ("/api/v1/generations/" + rid)
+    # 300s 太紧：hd 图生图(2k+参考图)实测稳定 ~300s；生产自动质检又捕获到
+    # 两条 600s 后仍持续更新的 processing 任务。给渠道 1200s 完成，避免已接单任务
+    # 被本地提前判死；reaper 保持 1500s，客户页还要覆盖最多 300s 的创建退避，等 1800s。
     deadline = time.time() + XIAOLE_IMG_DEADLINE
-    images, poll_errors = None, 0
+    images, poll_errors, last_status = None, 0, ""
     while time.time() < deadline:
         try:
             st = _xiaole_request("GET", status_url, timeout=30)
@@ -309,7 +343,8 @@ def _gen_image_xiaole_locked(prompt, ratio, quality, count, img, references=None
             continue
         sdata = st.get("data") or {}
         status = str(sdata.get("status") or "").lower()
-        if status == "succeeded":
+        last_status = status or last_status
+        if status in ("succeeded", "completed", "success", "done"):
             images = (sdata.get("output") or {}).get("images") or []
             break
         if status in ("failed", "error", "cancelled", "canceled"):
@@ -317,23 +352,30 @@ def _gen_image_xiaole_locked(prompt, ratio, quality, count, img, references=None
             raise ValueError("出图失败: %s" % ((err.get("message") if isinstance(err, dict) else None) or str(err) or status))
         time.sleep(3)
     else:
-        raise ValueError("出图超时")
+        raise ValueError("出图超时（渠道状态：%s）" % (last_status or "未知"))
     files_out, urls = [], []
     for item in (images or []):
         b64 = item.get("b64_json") if isinstance(item, dict) else None
         url = item.get("url") if isinstance(item, dict) else None
         fn = "img_%s.png" % uuid.uuid4().hex  # 不可猜键(#185)
         if b64:
-            (OUT_DIR / fn).write_bytes(base64.b64decode(b64))
+            raw = base64.b64decode(b64)
         elif url:
             with urllib.request.urlopen(url, timeout=120) as rr:
-                (OUT_DIR / fn).write_bytes(rr.read())
+                raw = rr.read()
         else:
             continue
+        try:
+            with Image.open(io.BytesIO(raw)) as decoded:
+                decoded.verify()
+        except (UnidentifiedImageError, OSError, SyntaxError, ValueError):
+            raise ValueError("出图返回的图片无法解码")
+        (OUT_DIR / fn).write_bytes(raw)
         files_out.append(fn); urls.append(public_url(fn, "image/png"))
     if not files_out:
         raise ValueError("出图返回为空")
     return {"type": "image", "mode": ("img2img" if refs else "text2img"), "provider": "xiaole",
+            "provider_task_id": rid,
             "count": len(files_out), "file": files_out[0], "url": urls[0],
             "files": files_out, "urls": urls, "ratio": ratio, "prompt": prompt}
 
@@ -381,7 +423,7 @@ def _seedream_size(ratio, quality, variant="std"):
             break
     return "%dx%d" % (w, h)
 
-def _seedream_check_ref(img):
+def _seedream_check_ref(images):
     """本地先验参考图，把坏图挡在上游调用之前。
 
     实测：base64 能解码但不是图片时，Ark 返回的是 HTTP 500「The service encountered an
@@ -389,16 +431,17 @@ def _seedream_check_ref(img):
     先在本地判魔数(PNG/JPEG/WebP)，给出人话错误，也省一次网络往返。
     Ark 本身对参考图很宽容：实测 5.4MB base64、3000x200 极端比例、JPEG 字节贴 png 标签都能过，
     所以这里只拦「确实是坏数据」和「大到离谱」。"""
-    if not img:
-        return
-    try:
-        raw = base64.b64decode(img)
-    except Exception:
-        raise ValueError("参考图不是合法的 base64")
-    if len(raw) > SEEDREAM_MAX_REF_BYTES:
-        raise ValueError("参考图太大，请压缩到 10MB 以内后重试")
-    if not _image_bytes_look_valid(raw):
-        raise ValueError("参考图格式不支持，请使用 PNG / JPG / WebP")
+    if isinstance(images, str):
+        images = [images] if images else []
+    for img in images or []:
+        try:
+            raw = base64.b64decode(img)
+        except Exception:
+            raise ValueError("参考图不是合法的 base64")
+        if len(raw) > SEEDREAM_MAX_REF_BYTES:
+            raise ValueError("参考图太大，请压缩到 10MB 以内后重试")
+        if not _image_bytes_look_valid(raw):
+            raise ValueError("参考图格式不支持，请使用 PNG / JPG / WebP")
 
 def _seedream_error(e):
     """Ark 的 HTTPError → 人话。内容审核类是业务失败（会走失败退点），不是系统故障。"""
@@ -466,7 +509,7 @@ def _seedream_post(fn, tries=None, max_wait=None):
             print("[seedream] 429 并发限流，退避重试(%d/%d) 等%.1fs" % (i + 1, tries, delay), flush=True)
             time.sleep(delay)
 
-def _seedream_one(model, prompt, size, img):
+def _seedream_one(model, prompt, size, images):
     """出一张图，返回 PNG 字节。
 
     response_format 用 url 而非 b64_json：PNG 的 b64 响应体有 4~5MB，实测会 IncompleteRead，
@@ -475,9 +518,12 @@ def _seedream_one(model, prompt, size, img):
     会和 .png 文件名 / image/png 的 Content-Type 对不上。"""
     body = {"model": model, "prompt": prompt, "size": size,
             "output_format": "png", "response_format": "url", "watermark": False}
-    if img:
+    if isinstance(images, str):
+        images = [images] if images else []
+    if images:
         # 实测：image 必须是 data URI；裸 base64 会被判成 URL 并报 400 invalid url specified。
-        body["image"] = "data:image/png;base64," + img
+        refs = ["data:image/png;base64," + img for img in images]
+        body["image"] = refs[0] if len(refs) == 1 else refs
     data = json.dumps(body, ensure_ascii=False).encode()
     try:
         d = _seedream_post(lambda: _post("/images/generations", data, "application/json",
@@ -490,25 +536,25 @@ def _seedream_one(model, prompt, size, img):
         raise ValueError("黄雀引擎 1 返回为空")
     return _seedream_fetch(url)
 
-def _gen_image_seedream(prompt, ratio, quality, count, img, variant):
+def _gen_image_seedream(prompt, ratio, quality, count, images, variant):
     """Seedream 5.0 / 5.0 Pro：文生图 + 图生图（同一端点，带 image 即图生图）。
     实测耗时(PNG 输出)：标准约 30~40s，Pro 约 85s —— Pro 慢一倍多，前端提示要分开写。
     单图 2~7MB。SEEDREAM_MAX_N=2 时 Pro 最坏约 170s，在 reaper image 900s 宽限内。"""
     if not ARK_API_KEY:
         raise ValueError("黄雀引擎 1 暂未配置，请联系管理员")
-    _seedream_check_ref(img)     # 坏参考图会让 Ark 回 500，先在本地拦掉并说人话
+    _seedream_check_ref(images)     # 坏参考图会让 Ark 回 500，先在本地拦掉并说人话
     model = SEEDREAM_MODELS.get(variant) or SEEDREAM_MODELS["std"]
     size = _seedream_size(ratio, quality, variant)   # Pro 的像素上限低得多，必须按型号夹逼
     files_out, urls = [], []
     for _ in range(count):
-        raw = _seedream_one(model, prompt, size, img)
+        raw = _seedream_one(model, prompt, size, images)
         fn = "img_%s.png" % uuid.uuid4().hex   # 不可猜键(#185)
         (OUT_DIR / fn).write_bytes(raw)
         files_out.append(fn)
         urls.append(public_url(fn, "image/png"))
     if not files_out:
         raise ValueError("出图返回为空")
-    return {"type": "image", "mode": ("img2img" if img else "text2img"), "provider": "seedream",
+    return {"type": "image", "mode": ("img2img" if images else "text2img"), "provider": "seedream",
             "variant": variant, "model": model, "size": size, "count": len(files_out),
             "file": files_out[0], "url": urls[0], "files": files_out, "urls": urls,
             "ratio": ratio, "prompt": prompt}
@@ -561,10 +607,19 @@ def _trusted_short_drama_continuity(url="", local_file=""):
 
 def gen_image(payload):
     payload = validate_image_payload(payload)
-    prompt = (payload.get("prompt") or "").strip()
+    user_prompt = (payload.get("prompt") or "").strip()
+    prompt = user_prompt
     if not prompt:
         raise ValueError("提示词不能为空")
     references = payload.get("short_drama_references")
+    reference_images = []
+    def banana_reference(raw):
+        mime = "image/png"
+        if raw.startswith(b"\xff\xd8\xff"):
+            mime = "image/jpeg"
+        elif raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+            mime = "image/webp"
+        return {"data": base64.b64encode(raw).decode("ascii"), "mime_type": mime}
     if isinstance(references, list):
         context = []
         continuity = None
@@ -574,7 +629,17 @@ def gen_image(payload):
             ref_type = str(reference.get("type") or "")
             name = str(reference.get("name") or "").strip()
             if ref_type == "character" and name:
-                context.append("character appearance: " + name)
+                character_context = [name]
+                for field in ("identity_text", "personality", "appearance_prompt", "wardrobe_prompt"):
+                    value = str(reference.get(field) or "").strip()
+                    if value:
+                        character_context.append(value)
+                context.append("character: " + " | ".join(character_context))
+                local_character = _trusted_short_drama_continuity(
+                    reference.get("url"), reference.get("file")
+                )
+                if local_character:
+                    reference_images.append(banana_reference(local_character))
             elif ref_type == "continuity":
                 if name:
                     context.append("visual continuity: " + name)
@@ -582,28 +647,50 @@ def gen_image(payload):
                     continuity = reference
         if context:
             prompt += "\nTrusted short-drama continuity context:\n" + "\n".join(context)
-        if continuity is not None and not payload.get("image"):
+        if continuity is not None and not payload.get("image") and not payload.get("reference_images"):
             local_continuity = _trusted_short_drama_continuity(
                 continuity.get("url"), continuity.get("file")
             )
             if local_continuity:
-                payload["image"] = base64.b64encode(local_continuity).decode("ascii")
+                if (payload.get("provider") or "").strip().lower() == "banana":
+                    reference_images.append(banana_reference(local_continuity))
+                else:
+                    payload["image"] = base64.b64encode(local_continuity).decode("ascii")
     payload["prompt"] = prompt
     ratio = payload.get("ratio") or "1:1"
-    img   = _clean_b64(payload.get("image"))  # 参考图 → 图生图 / 局部修改；清洗防 padding 错(#6)
+    img   = _clean_b64(payload.get("image"))  # 老单图字段兼容
+    refs  = list(payload.get("reference_images") or ([] if not img else [img]))
+    prompt = resolve_image_mentions(prompt, len(refs))
     mask  = _clean_b64(payload.get("mask"))   # 蒙版(透明处=要重绘的区域) → 局部修改
     quality = "high" if (payload.get("quality") or "hd") == "hd" else "medium"  # 标准=medium/高清=high
     provider = (payload.get("provider") or "openai").strip().lower()
+    if provider == "banana":
+        if mask:
+            raise ValueError("Nano Banana short-drama generation does not support masks")
+        from . import banana_provider
+        banana_payload = dict(payload)
+        banana_images = list(payload.get("images") or []) + reference_images
+        if len(banana_images) > banana_provider.MAX_REFERENCE_IMAGES:
+            raise ValueError("Nano Banana supports at most 5 reference images in total")
+        banana_payload["images"] = banana_images
+        result = banana_provider.generate(banana_payload, OUT_DIR, public_url)
+        result["raw_prompt"] = payload.get("short_drama_raw_prompt") or prompt
+        return result
     if provider == "xiaole":
         count = 1 if mask else max(1, min(2, int(payload.get("count") or 1)))
-        return _gen_image_xiaole(prompt, ratio, quality, count, img, payload.get("reference_images"))
+        result = _gen_image_xiaole(prompt, ratio, quality, count, None, refs)
+        result["prompt"] = user_prompt
+        return result
     if provider == "seedream":
         if mask:
             raise ValueError("黄雀引擎 1 暂不支持局部修改（蒙版），请改用黄雀引擎 2")
         variant = "pro" if str(payload.get("variant") or "").strip().lower() == "pro" else "std"
         q = "hd" if (payload.get("quality") or "hd") == "hd" else "std"   # Seedream 按像素分档，不用 high/medium
         count = max(1, min(SEEDREAM_MAX_N, int(payload.get("count") or 1)))
-        return _gen_image_seedream(prompt, ratio, q, count, img, variant)
+        seedream_refs = refs if len(refs) > 1 else (refs[0] if refs else None)
+        result = _gen_image_seedream(prompt, ratio, q, count, seedream_refs, variant)
+        result["prompt"] = user_prompt
+        return result
     size  = SIZES.get(ratio, "1024x1024")
     if provider in {"zelong", "zelong2"}:
         if provider == "zelong2":
@@ -627,8 +714,10 @@ def gen_image(payload):
         d = _dispatch_gpt(provider, "/v1/images/generations", body, "application/json",
                           base, key, proxy, streaming=True)
         mode = "text2img"
-    elif img:
-        files = [("image", "in.png", base64.b64decode(img))]
+    elif refs:
+        field = "image" if len(refs) == 1 else "image[]"
+        files = [(field, "in%d.png" % (index + 1), base64.b64decode(ref))
+                 for index, ref in enumerate(refs)]
         if mask:
             files.append(("mask", "mask.png", base64.b64decode(mask)))
         body, ct = _multipart({"model": "gpt-image-2", "prompt": prompt, "size": size, "quality": quality, "n": str(count)}, files)
@@ -653,6 +742,6 @@ def gen_image(payload):
     if not files_out:
         raise ValueError("出图返回为空")
     return {"type": "image", "mode": mode, "provider": provider, "count": len(files_out),
-            "file": files_out[0], "url": urls[0], "files": files_out, "urls": urls, "ratio": ratio, "prompt": prompt}
+            "file": files_out[0], "url": urls[0], "files": files_out, "urls": urls, "ratio": ratio, "prompt": user_prompt}
 
 HANDLERS = {"image": gen_image}

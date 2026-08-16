@@ -90,20 +90,68 @@ class ShortDramaPlanningTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 short_drama.normalize_plan(raw, {"target_duration": 30, "ratio": "9:16", "shot_count": 6})
 
-    def test_validate_planning_payload_rejects_impossible_duration_shot_count_pairs(self):
-        for duration, shot_count in ((30, 7), (30, 8), (30, 9), (30, 10), (45, 10)):
-            with self.subTest(duration=duration, shot_count=shot_count), self.assertRaises(ValueError):
-                short_drama.validate_planning_payload({
-                    "prompt": "雨夜来客", "dur": "%ss" % duration, "ratio": "9:16", "shot_count": shot_count,
-                })
+    def test_planning_pairs_match_reachable_five_or_ten_second_shots(self):
+        for duration in (30, 45, 60):
+            lower, upper = short_drama.short_drama_duration.bounds(duration)
+            for shot_count in range(6, 11):
+                totals = {
+                    shot_count * 5 + ten_second_shots * 5
+                    for ten_second_shots in range(shot_count + 1)
+                    if lower <= shot_count * 5 + ten_second_shots * 5 <= upper
+                }
+                with self.subTest(duration=duration, shot_count=shot_count):
+                    payload = {
+                        "prompt": "雨夜来客", "dur": "%ss" % duration,
+                        "ratio": "9:16", "shot_count": shot_count,
+                    }
+                    if totals:
+                        settings = short_drama.validate_planning_payload(payload)
+                        self.assertEqual(
+                            (duration, shot_count),
+                            (settings["target_duration"], settings["shot_count"]),
+                        )
+                    else:
+                        with self.assertRaisesRegex(ValueError, "时长与分镜数量不匹配"):
+                            short_drama.validate_planning_payload(payload)
 
-    def test_validate_planning_payload_accepts_feasible_duration_shot_count_pairs(self):
-        for duration, shot_count in ((30, 6), (45, 6), (45, 9), (60, 6), (60, 10)):
-            with self.subTest(duration=duration, shot_count=shot_count):
-                settings = short_drama.validate_planning_payload({
-                    "prompt": "雨夜来客", "dur": "%ss" % duration, "ratio": "9:16", "shot_count": shot_count,
-                })
-                self.assertEqual((settings["target_duration"], settings["shot_count"]), (duration, shot_count))
+    def test_duration_choice_is_reachable_for_every_allowed_pair(self):
+        for duration in (30, 45, 60):
+            for shot_count in range(6, 11):
+                totals = short_drama.short_drama_duration.reachable_totals(
+                    duration, shot_count
+                )
+                with self.subTest(duration=duration, shot_count=shot_count):
+                    if totals:
+                        for authored, speech in ((0, 0), (36, 0), (0, 42), (83, 57)):
+                            selected = short_drama.short_drama_duration.choose(
+                                duration, shot_count, authored, speech
+                            )
+                            self.assertIn(selected, totals)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "5/10 秒分镜"):
+                            short_drama.short_drama_duration.choose(
+                                duration, shot_count
+                            )
+
+        self.assertNotEqual(36, short_drama.short_drama_duration.choose(45, 6))
+        self.assertNotEqual(42, short_drama.short_drama_duration.choose(45, 7))
+
+    def test_duration_allocation_uses_only_five_or_ten_second_shots(self):
+        duration = short_drama.short_drama_duration
+        for band in (30, 45, 60):
+            for shot_count in range(6, 11):
+                totals = duration.reachable_totals(band, shot_count)
+                with self.subTest(band=band, shot_count=shot_count):
+                    if not totals:
+                        with self.assertRaises(ValueError):
+                            duration.allocate(band, shot_count)
+                        continue
+                    allocation = duration.allocate(
+                        band, shot_count, authored_seconds=42,
+                    )
+                    self.assertEqual(shot_count, len(allocation))
+                    self.assertTrue(all(value in (5, 10) for value in allocation))
+                    self.assertIn(sum(allocation), totals)
 
     def test_normalize_plan_rejects_non_string_textual_fields_and_keys(self):
         mutations = (
@@ -180,6 +228,82 @@ class ShortDramaPlanningTests(unittest.TestCase):
                 "target_duration": 30, "ratio": "9:16", "shot_count": 6,
             })
 
+    def test_parse_and_normalize_plan_repairs_missing_dialogue_id_and_keeps_shot_reference(self):
+        raw = valid_raw_plan()
+        raw["script"]["dialogue_lines"][0].pop("id")
+        raw["shots"][0]["dialogue_line_ids"] = ["line_001"]
+
+        plan = short_drama.parse_and_normalize_plan(
+            json.dumps(raw, ensure_ascii=False),
+            {"target_duration": 30, "ratio": "9:16", "shot_count": 6},
+        )
+
+        self.assertEqual(plan["script"]["dialogue_lines"][0]["id"], "line_001")
+        self.assertEqual(plan["shots"][0]["dialogue_line_ids"], ["line_001"])
+
+    def test_parse_and_normalize_plan_normalizes_numeric_dialogue_id_and_references(self):
+        raw = valid_raw_plan()
+        raw["script"]["dialogue_lines"][0]["id"] = 1
+        raw["shots"][0]["dialogue_line_ids"] = ["1"]
+
+        plan = short_drama.parse_and_normalize_plan(
+            json.dumps(raw, ensure_ascii=False),
+            {"target_duration": 30, "ratio": "9:16", "shot_count": 6},
+        )
+
+        self.assertEqual(plan["script"]["dialogue_lines"][0]["id"], "line_001")
+        self.assertEqual(plan["shots"][0]["dialogue_line_ids"], ["line_001"])
+
+    def test_parse_and_normalize_plan_preserves_valid_dialogue_ids(self):
+        raw = valid_raw_plan()
+
+        plan = short_drama.parse_and_normalize_plan(
+            json.dumps(raw, ensure_ascii=False),
+            {"target_duration": 30, "ratio": "9:16", "shot_count": 6},
+        )
+
+        self.assertEqual(plan["script"]["dialogue_lines"][0]["id"], "line-1")
+        self.assertEqual(plan["shots"][0]["dialogue_line_ids"], ["line-1"])
+
+    def test_dialogue_id_repair_does_not_steal_later_valid_id(self):
+        raw = valid_raw_plan()
+        raw["script"]["dialogue_lines"] = [
+            {"character_key": "detective", "text": "第一句"},
+            {"id": "line_001", "character_key": "detective", "text": "第二句"},
+        ]
+        raw["shots"][0]["dialogue_line_ids"] = ["line_001"]
+
+        plan = short_drama.parse_and_normalize_plan(
+            json.dumps(raw, ensure_ascii=False),
+            {"target_duration": 30, "ratio": "9:16", "shot_count": 6},
+        )
+
+        self.assertEqual(
+            [line["id"] for line in plan["script"]["dialogue_lines"]],
+            ["line_002", "line_001"],
+        )
+        self.assertEqual(plan["shots"][0]["dialogue_line_ids"], ["line_001"])
+
+    def test_dialogue_id_repair_rejects_ambiguous_duplicate_source_ids(self):
+        for first, second in (
+                ("line_001", "line_001"),
+                (" line_001 ", "line_001"),
+                (1, "1"),
+        ):
+            raw = valid_raw_plan()
+            raw["script"]["dialogue_lines"] = [
+                {"id": first, "character_key": "detective", "text": "第一句"},
+                {"id": second, "character_key": "detective", "text": "第二句"},
+            ]
+            raw["shots"][0]["dialogue_line_ids"] = [str(first).strip()]
+            original = json.loads(json.dumps(raw, ensure_ascii=False))
+
+            with self.subTest(first=first, second=second), self.assertRaisesRegex(
+                    ValueError, "台词标识不能重复"):
+                short_drama.repair_plan_dialogue_ids(raw)
+
+            self.assertEqual(raw, original)
+
     def test_build_plan_prompt_requires_json_keys(self):
         prompt = short_drama.build_plan_prompt({
             "prompt": "悬疑反转", "target_duration": 30, "ratio": "9:16", "shot_count": 6,
@@ -189,6 +313,8 @@ class ShortDramaPlanningTests(unittest.TestCase):
         self.assertIn("JSON", prompt)
         for key in ("title", "logline", "characters", "script", "shots", "dialogue_line_ids"):
             self.assertIn(key, prompt)
+        self.assertIn("line_001", prompt)
+        self.assertIn("唯一", prompt)
 
     def test_validate_planning_payload_normalizes_request_values(self):
         settings = short_drama.validate_planning_payload({
@@ -213,6 +339,55 @@ class ShortDramaPlanningTests(unittest.TestCase):
         self.assertEqual(result["mode"], "short_drama")
         self.assertEqual(result["dur"], "30s")
         self.assertEqual(result["plan"]["characters"][0]["source_type"], "ai_character")
+
+    def test_gen_copy_short_drama_retries_validation_once_inside_same_submission(self):
+        raw = valid_raw_plan()
+        with patch.object(
+                text, "_chat",
+                side_effect=["{}", json.dumps(raw, ensure_ascii=False)],
+        ) as chat:
+            result = text.gen_copy({
+                "format": "short_drama", "prompt": "雨夜来客", "dur": "30s", "ratio": "9:16",
+                "shot_count": 6, "style": "电影写实", "platform": "抖音",
+            })
+
+        self.assertEqual(chat.call_count, 2)
+        self.assertEqual(result["plan"]["title"], "雨夜来客")
+
+    def test_gen_copy_short_drama_retries_ambiguous_duplicate_dialogue_ids(self):
+        duplicate = valid_raw_plan()
+        duplicate["script"]["dialogue_lines"] = [
+            {"id": "line_001", "character_key": "detective", "text": "第一句"},
+            {"id": "line_001", "character_key": "detective", "text": "第二句"},
+        ]
+        duplicate["shots"][0]["dialogue_line_ids"] = ["line_001"]
+        valid = valid_raw_plan()
+
+        with patch.object(
+                text, "_chat",
+                side_effect=[
+                    json.dumps(duplicate, ensure_ascii=False),
+                    json.dumps(valid, ensure_ascii=False),
+                ],
+        ) as chat:
+            result = text.gen_copy({
+                "format": "short_drama", "prompt": "雨夜来客", "dur": "30s", "ratio": "9:16",
+                "shot_count": 6, "style": "电影写实", "platform": "抖音",
+            })
+
+        self.assertEqual(chat.call_count, 2)
+        self.assertIn("台词标识不能重复", chat.call_args_list[1].args[1])
+        self.assertEqual(result["plan"]["script"]["dialogue_lines"][0]["id"], "line-1")
+
+    def test_gen_copy_short_drama_reports_friendly_error_after_one_retry(self):
+        with patch.object(text, "_chat", return_value="{}") as chat:
+            with self.assertRaisesRegex(ValueError, "系统自动修复失败.*自动退款"):
+                text.gen_copy({
+                    "format": "short_drama", "prompt": "雨夜来客", "dur": "30s", "ratio": "9:16",
+                    "shot_count": 6, "style": "电影写实", "platform": "抖音",
+                })
+
+        self.assertEqual(chat.call_count, 2)
 
 
 if __name__ == "__main__":

@@ -84,7 +84,11 @@ class SubmitRetryTests(unittest.TestCase):
 
     def test_both_the_upload_and_the_submit_are_wrapped(self):
         block = VIDEO_SRC.split("def gen_avatar")[1].split("def ")[0]
-        self.assertIn('_heygen_retry_net(lambda: _heygen_upload_asset(fp, direct=True), "建形象传图")', block)
+        self.assertRegex(
+            block,
+            r'_heygen_retry_net\(\s*lambda:\s*'
+            r'_heygen_upload_asset\(canonical_fp,\s*direct=True\)',
+        )
         self.assertIn('_heygen_retry_net(', block)
         self.assertIn("_heygen_create_photo_avatar", block)
 

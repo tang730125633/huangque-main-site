@@ -4,6 +4,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 
@@ -43,11 +44,13 @@ class VirtualPaymentTests(unittest.TestCase):
         import server.auth_server as auth_server
 
         self.auth = importlib.reload(auth_server)
+        self.auth.wechat_vpay._TOKEN_CACHE.update(value="", expires_at=0)
         self.auth.DB = os.path.join(self.tmp.name, "users.db")
         self.auth.init_db()
         self.auth.create_user("buyer", "secret123", 5)
 
     def tearDown(self):
+        self.auth.wechat_vpay._TOKEN_CACHE.update(value="", expires_at=0)
         for key, value in self.old_env.items():
             if value is None:
                 os.environ.pop(key, None)
@@ -77,11 +80,15 @@ class VirtualPaymentTests(unittest.TestCase):
 
     def test_membership_virtual_good_is_always_available_at_499_yuan(self):
         product = self.auth.wechat_vpay.product_by_id("membership_experience")
+        renewal = self.auth.wechat_vpay.product_by_id("membership_experience_renewal")
 
         self.assertEqual(product["product_id"], "hq_member_exp_1y")
         self.assertEqual(product["price_fen"], 49900)
         self.assertEqual(product["points"], 1000)
         self.assertEqual(product["order_type"], "membership_experience")
+        self.assertEqual(renewal["price_fen"], 49900)
+        self.assertEqual(renewal["points"], 0)
+        self.assertEqual(renewal["order_type"], "membership_experience_renewal")
         self.assertNotIn(
             "membership_experience",
             [item["id"] for item in self.auth.public_virtual_pay_packages("experience")],
@@ -153,6 +160,34 @@ class VirtualPaymentTests(unittest.TestCase):
         self.assertIn("pay_sig=", url)
         self.assertEqual(json.loads(body), {"order_id": "HQ1", "env": 0})
 
+    def test_access_token_uses_shared_stable_endpoint_and_cache(self):
+        client = self.auth.wechat_vpay
+        response = {"access_token": "stable-token", "expires_in": 7200}
+
+        with patch.object(client, "_json_request", return_value=response) as request:
+            self.assertEqual(client.access_token(), "stable-token")
+            self.assertEqual(client.access_token(), "stable-token")
+
+        request.assert_called_once()
+        url, raw = request.call_args.args
+        self.assertEqual(url, client.API_BASE + "/cgi-bin/stable_token")
+        self.assertEqual(json.loads(raw), {
+            "grant_type": "client_credential",
+            "appid": "wx-test",
+            "secret": "test-secret",
+            "force_refresh": False,
+        })
+
+    def test_production_python_has_no_legacy_token_endpoint(self):
+        server_dir = Path(__file__).resolve().parents[1] / "server"
+        legacy = "/cgi-bin/" + "token"
+        offenders = [
+            str(path.relative_to(server_dir))
+            for path in server_dir.rglob("*.py")
+            if legacy in path.read_text(encoding="utf-8")
+        ]
+        self.assertEqual(offenders, [])
+
     def test_create_order_returns_only_client_payment_fields_without_binding_openid(self):
         with patch.object(
             self.auth.wechat_vpay,
@@ -217,8 +252,51 @@ class VirtualPaymentTests(unittest.TestCase):
             )
 
         self.assertIsNone(result)
-        self.assertEqual(err, "membership_already_active")
+        self.assertEqual(err, "membership_already_owned")
         code_to_session.assert_not_called()
+
+    def test_active_experience_member_can_credit_repeated_renewal_orders_without_points(self):
+        now = 1800000000
+        c = sqlite3.connect(self.auth.DB)
+        try:
+            c.execute(
+                "UPDATE users SET membership_tier='experience',membership_started_at=?,membership_expires_at=? WHERE username='buyer'",
+                (now - 10, now + 100),
+            )
+            c.commit()
+        finally:
+            c.close()
+        expiry = now + 100
+        for index in (1, 2):
+            with patch("server.auth_server.time.time", return_value=now + index), patch.object(
+                self.auth.wechat_vpay, "code_to_session",
+                return_value={"openid": "openid-buyer", "session_key": "session-key"},
+            ):
+                result, err = self.auth.create_virtual_pay_order(
+                    "buyer", "membership_experience_renewal", "wx-code",
+                )
+            self.assertIsNone(err)
+            self.assertEqual(result["order"]["points"], 0)
+            order_id = result["order"]["order_id"]
+            with patch.object(self.auth.wechat_vpay, "notify_provide_goods", return_value={}), patch(
+                "server.auth_server.time.time", return_value=now + index,
+            ):
+                order, err = self.auth.confirm_virtual_pay_order("buyer", order_id, verified_wx_order={
+                    "order_id": order_id, "status": 2, "order_fee": 49900,
+                    "paid_time": now + index, "wx_order_id": "wx-renew-%s" % index,
+                    "wxpay_order_id": "wxpay-renew-%s" % index,
+                })
+            self.assertIsNone(err)
+            self.assertEqual(order["status"], "credited")
+            expiry += self.auth.MEMBERSHIP_YEAR_SECONDS
+            c = sqlite3.connect(self.auth.DB)
+            try:
+                self.assertEqual(c.execute(
+                    "SELECT membership_expires_at FROM users WHERE username='buyer'"
+                ).fetchone()[0], expiry)
+            finally:
+                c.close()
+        self.assertEqual(self.auth.get_points_row("buyer")["points"], 5)
 
     def test_user_cannot_create_a_second_open_membership_order(self):
         with patch.object(
@@ -446,7 +524,7 @@ class VirtualPaymentTests(unittest.TestCase):
             )
 
         self.assertIsNone(result)
-        self.assertEqual(err, "membership_order_exists")
+        self.assertEqual(err, "membership_already_owned")
         code_to_session.assert_not_called()
 
     def test_create_order_allows_wechat_payer_used_by_another_account(self):
@@ -646,7 +724,7 @@ class VirtualPaymentTests(unittest.TestCase):
             "errors": 0,
         })
 
-    def test_membership_refund_is_held_for_manual_review(self):
+    def test_membership_refund_reverses_first_purchase_points_and_membership(self):
         now = 1800000000
         with patch.object(
             self.auth.wechat_vpay,
@@ -678,8 +756,8 @@ class VirtualPaymentTests(unittest.TestCase):
         })
 
         self.assertEqual(response["errcode"], 0)
-        self.assertEqual(response["order"]["status"], "refund_review")
-        self.assertEqual(self.auth.get_points_row("buyer")["points"], 1005)
+        self.assertEqual(response["order"]["status"], "refunded")
+        self.assertEqual(self.auth.get_points_row("buyer")["points"], 5)
 
         with patch.object(self.auth.wechat_vpay, "query_order") as query_order:
             confirmed, confirm_err = self.auth.confirm_virtual_pay_order("buyer", order_id)
@@ -689,16 +767,16 @@ class VirtualPaymentTests(unittest.TestCase):
             })
 
         self.assertIsNone(confirm_err)
-        self.assertEqual(confirmed["status"], "refund_review")
+        self.assertEqual(confirmed["status"], "refunded")
         self.assertEqual(delivery_response["errcode"], 0)
         query_order.assert_not_called()
-        self.assertEqual(self.auth.get_points_row("buyer")["points"], 1005)
+        self.assertEqual(self.auth.get_points_row("buyer")["points"], 5)
         c = sqlite3.connect(self.auth.DB)
         try:
             tier = c.execute(
                 "SELECT membership_tier FROM users WHERE username='buyer'"
             ).fetchone()[0]
-            self.assertEqual(tier, "experience")
+            self.assertEqual(tier, "")
         finally:
             c.close()
 

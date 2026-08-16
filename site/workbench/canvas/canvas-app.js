@@ -4,27 +4,39 @@
   var stateApi=window.HQCanvas&&window.HQCanvas.state;
   var storageApi=window.HQCanvas&&window.HQCanvas.storage;
   var apiModule=window.HQCanvas&&window.HQCanvas.api;
+  var agentModule=window.HQCanvas&&window.HQCanvas.agent;
   var shortDramaModule=window.HQCanvas&&window.HQCanvas.shortDrama;
+  var digitalPresenterModule=window.HQCanvas&&window.HQCanvas.digitalPresenter;
   var canvasExporter=window.HQCanvas&&window.HQCanvas.exporter;
   var canvasStorage=storageApi.createStorage({storage:function(){return window.localStorage;}});
   var apiClient=apiModule.createClient({fetchImpl:window.fetch.bind(window),tokenProvider:tok,AbortControllerImpl:window.AbortController,setTimeoutImpl:setTimeout,clearTimeoutImpl:clearTimeout});
-  var wrap=document.querySelector('.nc-wrap'), inner=document.getElementById('ncInner'), svg=document.getElementById('ncEdges'), canvas=document.getElementById('ncCanvas'), empty=document.getElementById('ncEmpty'), selectionBox=document.getElementById('ncSelectionBox'), selectedRegion=document.getElementById('ncSelectedRegion');
+  var wrap=document.querySelector('.nc-wrap'), canvasShell=document.querySelector('.nc-canvas-shell'), inner=document.getElementById('ncInner'), svg=document.getElementById('ncEdges'), canvas=document.getElementById('ncCanvas'), empty=document.getElementById('ncEmpty'), storyboard=document.getElementById('ncStoryboard'), storyGrid=document.getElementById('ncStoryGrid'), storyMeta=document.getElementById('ncStoryMeta'), selectionBox=document.getElementById('ncSelectionBox'), selectedRegion=document.getElementById('ncSelectedRegion'), guideX=document.getElementById('ncGuideX'), guideY=document.getElementById('ncGuideY');
   var boardHome=document.getElementById('ncBoardHome'), editorView=document.getElementById('ncEditorView'), boardGrid=document.getElementById('ncBoardGrid'), boardSearch=document.getElementById('ncBoardSearch'), boardSort=document.getElementById('ncBoardSort'), backHomeBtn=document.getElementById('ncBackHome');
   var nodeCountEl=document.getElementById('ncNodeCount'), edgeCountEl=document.getElementById('ncEdgeCount'), runStateEl=document.getElementById('ncRunState');
   var undoBtn=document.getElementById('ncUndo'), redoBtn=document.getElementById('ncRedo'), fullscreenBtn=document.getElementById('ncFullscreen'), zoomLabel=document.getElementById('ncZoomLabel'), map=document.getElementById('ncMap'), mapSvg=document.getElementById('ncMapSvg');
   var runAllBtn=document.getElementById('ncRunAll');
-  var fsAdd=document.getElementById('ncFsAdd'), fsUndo=document.getElementById('ncFsUndo'), fsRedo=document.getElementById('ncFsRedo'), fsZoomOut=document.getElementById('ncFsZoomOut'), fsZoomIn=document.getElementById('ncFsZoomIn'), fsZoomLabel=document.getElementById('ncFsZoomLabel'), fsFit=document.getElementById('ncFsFit'), fsMore=document.getElementById('ncFsMore'), fsRun=document.getElementById('ncFsRun'), fsExit=document.getElementById('ncFsExit'), saveStateEl=document.getElementById('ncSaveState'), onlineStateEl=document.getElementById('ncOnlineState');
+  var fsAgent=document.getElementById('ncFsAgent'), fsAdd=document.getElementById('ncFsAdd'), fsUndo=document.getElementById('ncFsUndo'), fsRedo=document.getElementById('ncFsRedo'), fsZoomOut=document.getElementById('ncFsZoomOut'), fsZoomIn=document.getElementById('ncFsZoomIn'), fsZoomLabel=document.getElementById('ncFsZoomLabel'), fsFit=document.getElementById('ncFsFit'), fsMore=document.getElementById('ncFsMore'), fsRun=document.getElementById('ncFsRun'), fsExit=document.getElementById('ncFsExit'), saveStateEl=document.getElementById('ncSaveState'), onlineStateEl=document.getElementById('ncOnlineState');
   var fsTplMenu=document.getElementById('ncFsTplMenu');
   var tplSelect=document.getElementById('ncTemplateSelect'), tplName=document.getElementById('ncTemplateName'), tplImportFile=document.getElementById('ncTplImportFile'), menu=document.getElementById('ncMenu'), cleanupStorageBtn=document.getElementById('ncCleanupStorage');
   var sidePanel=document.getElementById('ncSidePanel'), sideTitle=document.getElementById('ncSideTitle'), sideBody=document.getElementById('ncSideBody'), sideClose=document.getElementById('ncSideClose');
   var sideTplMenu=document.getElementById('ncSideTplMenu'), sideMore=document.getElementById('ncSideMore');
+  if(empty&&empty.parentNode!==inner) inner.appendChild(empty);
   var nodes={}, edges=[], nid=0, pendingPort=null, runLabel='就绪', history=stateApi.createHistory({limit:60}), restoring=false, loading=false, dragPort=null, suppressPortClick=false, suppressCanvasClick=false, mapDirty=false, saveTimer=null;
-  var localFullscreen=false;
-  var selectedNode=null, selectedNodes={}, selectedEdge=-1, clipNode=null, zoom=1;
+  var localFullscreen=false, canvasView='workflow';
+  var selectedNode=null, selectedNodes={}, selectedEdge=-1, clipNode=null, zoom=1, imageToolbar=null;
   var RUN_ALL_REMOTE_LIMIT=2, RUN_ALL_RETRY_MS=4000, runAllBatch=null, runAllRetryTimer=null;
-  var activeSidePanel='', accountAssetsLoaded=false, accountAssets=[], accountAssetsPromise=null;
+  var activeSidePanel='', accountAssetsLoaded=false, accountAssets=[], accountAssetsPromise=null, dragAsset=null;
+  var agentSessions={};
+  var agentIP12Context=null, agentIP12Loaded=false, agentIP12Loading=false, agentIP12Error='';
+  var VIDEO_POINTS_PER_SECOND=30;
+  var videoAvatars=[], videoAvatarsLoaded=false, videoAvatarsPromise=null, videoAvatarsError='';
+  var digitalPresenterEntryEnabled=false;
+  var digitalPresenterWorkspaceLifecycle=digitalPresenterModule.createWorkspaceLifecycle();
   var currentBoardId=null, boardMode='mine', boardLastSeenUpdatedAt=0, boardConflict=false;
   var currentBoardScope='local', currentCollabVersion=0, currentCollabRole='', currentCollabName='', currentCollabMembers=[];
+  var nodeCreationPolicy=digitalPresenterModule.createNodeCreationPolicy({context:function(){
+    return {canEdit:canEditCanvas(),scope:currentBoardScope,entryEnabled:digitalPresenterEntryEnabled};
+  }});
   var collabBoards=[], collabLoaded=false, collabLoading=false, collabError='', collabErrorHint='', collabCreating=false, collabSaving=false, collabQueuedSnap=null;
   var collabSync=window.HQCanvasCollabSync||null, collabController=null, collabBaseSnap=null, collabPollTimer=null, collabPresenceTimer=null, collabRetryCount=0;
   var collabSyncGeneration=0, collabPendingBatch=null;
@@ -40,7 +52,7 @@
     return shortDramaModule.normalizeNodeParams(input);
   }
   function shortDramaNodeOutputs(node){
-    return node&&node.type==='shortDrama'?{}:stateApi.cloneSnapshot(node&&node.outputs||{});
+    return node&&node.type==='shortDrama'?{}:node&&node.type==='digitalPresenter'?{}:stateApi.cloneSnapshot(node&&node.outputs||{});
   }
   function destroyShortDramaWorkspace(node){
     if(!node||!node.shortDramaWorkspace) return;
@@ -55,6 +67,10 @@
     var previousRole=currentCollabRole;
     currentCollabRole=role||currentCollabRole;
     if(shortDramaModule.isRoleDowngrade(previousRole,currentCollabRole)) destroyAllShortDramaWorkspaces();
+    if(digitalPresenterModule.isRoleDowngrade(previousRole,currentCollabRole)){
+      digitalPresenterWorkspaceLifecycle.roleChanged(previousRole,currentCollabRole);
+      clearDigitalPresenterWorkspaceRefs();
+    }
     return currentCollabRole;
   }
   function refreshShortDramaNode(node){
@@ -158,6 +174,97 @@
       throw error;
     }).finally(function(){ applyShortDramaOpenPolicy(scopeKey,nodeId); });
   }
+  function normalizeDigitalPresenterNodeParams(input){ return digitalPresenterModule.normalizeNodeParams(input); }
+  function destroyDigitalPresenterWorkspace(node){
+    if(!node||!node.digitalPresenterWorkspace) return;
+    var workspace=node.digitalPresenterWorkspace;
+    node.digitalPresenterWorkspace=null;
+    if(!digitalPresenterWorkspaceLifecycle.removeWorkspace(workspace)&&workspace.destroy) workspace.destroy();
+  }
+  function clearDigitalPresenterWorkspaceRefs(){
+    Object.keys(nodes).forEach(function(id){ if(nodes[id]) nodes[id].digitalPresenterWorkspace=null; });
+  }
+  function destroyAllDigitalPresenterWorkspaces(){
+    digitalPresenterWorkspaceLifecycle.destroyAll();clearDigitalPresenterWorkspaceRefs();
+  }
+  function digitalPresenterNodeForScope(scopeKey,nodeId){
+    if(!wrap||!wrap.classList.contains('editing')) return null;
+    if(scopeKey!==currentShortDramaScopeKey()) return null;
+    var node=nodes[nodeId];
+    return node&&node.type==='digitalPresenter'?node:null;
+  }
+  function refreshDigitalPresenterNode(node){
+    if(!node||node.type!=='digitalPresenter'||!node.el) return;
+    if(node.digitalPresenterWorkspace&&node.digitalPresenterWorkspace.projectId!==node.params.project_id) destroyDigitalPresenterWorkspace(node);
+    refreshNodeMeta(node);
+    var ratio=node.el.querySelector('[data-f="digitalPresenterRatio"]');
+    var stage=node.el.querySelector('[data-f="digitalPresenterStage"]');
+    var progress=node.el.querySelector('[data-f="digitalPresenterProgress"]');
+    var points=node.el.querySelector('[data-f="digitalPresenterPoints"]');
+    if(ratio) ratio.textContent=node.params.ratio+' · '+node.params.target_duration+'秒';
+    if(stage) stage.textContent=node.params.stage;
+    if(progress) progress.textContent=node.params.progress+'%';
+    if(points) points.textContent=node.params.spent_points+' / '+node.params.estimated_points+' 点';
+  }
+  function applyDigitalPresenterSummary(node,summary){
+    if(!node||!summary||typeof summary!=='object') return;
+    node.params=normalizeDigitalPresenterNodeParams(Object.assign({},node.params,summary));
+    node.outputs={};refreshDigitalPresenterNode(node);scheduleSave();
+  }
+  var digitalPresenterProjectCoordinator=digitalPresenterModule.createProjectCoordinator({
+    getNode:function(scopeKey,nodeId){ return digitalPresenterNodeForScope(scopeKey,nodeId); },
+    create:function(payload,idempotencyKey){
+      var headers=currentBoardId?{'X-Canvas-Board-Id':String(currentBoardId)}:{};
+      headers['Idempotency-Key']=idempotencyKey;
+      return apiClient.json('/api/gen/digital-presenter/projects',{method:'POST',body:payload,headers:headers});
+    },
+    apply:function(node,project){ applyDigitalPresenterSummary(node,project); }
+  });
+  function applyDigitalPresenterOpenPolicy(scopeKey,nodeId){
+    var node=digitalPresenterNodeForScope(scopeKey,nodeId);
+    var button=node&&node.el&&node.el.querySelector('[data-f="openDigitalPresenter"]');
+    if(button) button.disabled=!digitalPresenterModule.canOpenNode(node.params,canEditCanvas()&&currentBoardScope==='collab');
+  }
+  function ensureDigitalPresenterProject(node,scopeKey){
+    var canCreate=canEditCanvas()&&currentBoardScope==='collab'&&!!currentBoardId;
+    if(!node.params.project_id&&canCreate) setNodeState(node,'running','正在创建数字人口播项目…','#2dd4bf');
+    return digitalPresenterProjectCoordinator.ensure(scopeKey,node.id,digitalPresenterModule.creationPayload(node.params),canCreate,node.params.project_id||null);
+  }
+  function openDigitalPresenterWorkspace(node){
+    var scopeKey=currentShortDramaScopeKey(),nodeId=node.id;
+    if(!digitalPresenterModule||typeof digitalPresenterModule.createWorkspace!=='function') return Promise.reject(new Error('数字人口播工作区未加载'));
+    return ensureDigitalPresenterProject(node,scopeKey).then(function(projectId){
+      node=digitalPresenterNodeForScope(scopeKey,nodeId);if(!node) return null;
+      destroyDigitalPresenterWorkspace(node);
+      var workspace=digitalPresenterModule.createWorkspace({
+        projectId:projectId,apiClient:apiClient,boardId:currentBoardId,
+        canEdit:canEditCanvas(),onChange:function(summary){
+          var current=digitalPresenterNodeForScope(scopeKey,nodeId);
+          if(current&&current.params.project_id===projectId) applyDigitalPresenterSummary(current,summary);
+        }
+      });
+      node.digitalPresenterWorkspace=workspace;
+      digitalPresenterWorkspaceLifecycle.attach(scopeKey,nodeId,workspace);
+      return digitalPresenterModule.observeWorkspaceReady(workspace,{
+        isActive:function(){
+          var current=digitalPresenterNodeForScope(scopeKey,nodeId);
+          return !!current&&current.digitalPresenterWorkspace===workspace;
+        },
+        onReady:function(){
+          var current=digitalPresenterNodeForScope(scopeKey,nodeId);
+          if(current) setNodeState(current,'done','数字人口播工作区已打开','#2bd576');
+        },
+        onError:function(error){
+          var current=digitalPresenterNodeForScope(scopeKey,nodeId);
+          if(current) setNodeState(current,'error',error&&error.message||'打开数字人口播工作区失败','#f4708a');
+        }
+      });
+    }).catch(function(error){
+      var current=digitalPresenterNodeForScope(scopeKey,nodeId);
+      if(current) setNodeState(current,'error',error&&error.message||'打开数字人口播工作区失败','#f4708a');
+      return null;
+    }).finally(function(){ applyDigitalPresenterOpenPolicy(scopeKey,nodeId); });
+  }
   function tok(){ return '__cookie__'; }
   function authJson(path, opts){
     return apiClient.json(path,opts).catch(function(error){
@@ -184,7 +291,7 @@
       box.innerHTML='<a class="nc-mini" href="'+escapeHtml(url)+'" target="_blank" rel="noopener">打开视频</a>';
     });
   }
-  var CANVAS_BASE_W=8000, CANVAS_BASE_H=5000, CANVAS_GROW_PAD=1200;
+  var CANVAS_BASE_W=8000, CANVAS_BASE_H=5000, CANVAS_GROW_PAD=1200, CANVAS_VIEW_PAD=1200;
   var IMAGE_SAVE_MAX=1280, IMAGE_SAVE_QUALITY=.82;
   var TYPE={
     text:  {name:'文本 · 提示词', color:'#e7b24c', outs:['prompt']},
@@ -192,8 +299,15 @@
     reverse:{name:'提示词反推',   color:'#8a5cf6', ins:['image'], outs:['prompt']},
     gen:   {name:'作图',          color:'#2bd576', ins:['prompt','image'], outs:['image']},
     video: {name:'生视频',        color:'#f472b6', ins:['prompt','image'], outs:['video']},
-    shortDrama:{name:'短剧项目', color:'#f59e0b'}
+    videoAsset:{name:'视频 · 素材',color:'#f472b6', outs:['video']},
+    shortDrama:{name:'短剧项目', color:'#f59e0b'},
+    digitalPresenter:{name:'数字人口播', color:'#e7b24c'}
   };
+  function syncRunAllDisabled(){
+    var disabled=!canEditCanvas()||runAllExecutableNodes().length===0||!!runAllBatch;
+    if(runAllBtn) runAllBtn.disabled=disabled;
+    if(fsRun) fsRun.disabled=disabled;
+  }
   function updateState(label){
     if(label) runLabel=label;
     var count=Object.keys(nodes).length;
@@ -205,8 +319,11 @@
     if(redoBtn) redoBtn.disabled=!canEditCanvas()||!history.canRedo();
     if(fsUndo) fsUndo.disabled=!canEditCanvas()||!history.canUndo();
     if(fsRedo) fsRedo.disabled=!canEditCanvas()||!history.canRedo();
+    syncRunAllDisabled();
     syncZoomInputs();
-    if(activeSidePanel) renderSidePanel();
+    updateImageToolbar();
+    if(canvasView==='story') renderStoryboard();
+    if(activeSidePanel&&activeSidePanel!=='agent') renderSidePanel();
     scheduleSave();
   }
   function setNodeState(node,state,msg,color){
@@ -223,7 +340,7 @@
       edges:stateApi.cloneSnapshot(edges),
       nodes:Object.keys(nodes).map(function(k){
         var n=nodes[k];
-        return {id:n.id,type:n.type,x:n.x,y:n.y,collapsed:n.el?n.el.classList.contains('collapsed'):!!n.collapsed,params:stateApi.cloneSnapshot(n.type==='shortDrama'?normalizeShortDramaNodeParams(n.params):n.params||{}),outputs:shortDramaNodeOutputs(n),image:n.image||null,state:n.el?n.el.getAttribute('data-state')||'':n.state||'',note:n.el?(n.el.querySelector('[data-f="note"]')||{}).textContent||'':n.note||''};
+        return {id:n.id,type:n.type,x:n.x,y:n.y,width:n.width||null,height:n.height||null,collapsed:n.el?n.el.classList.contains('collapsed'):!!n.collapsed,params:stateApi.cloneSnapshot(n.type==='shortDrama'?normalizeShortDramaNodeParams(n.params):n.type==='digitalPresenter'?normalizeDigitalPresenterNodeParams(n.params):n.params||{}),outputs:shortDramaNodeOutputs(n),image:n.image||null,state:n.el?n.el.getAttribute('data-state')||'':n.state||'',note:n.el?(n.el.querySelector('[data-f="note"]')||{}).textContent||'':n.note||''};
       })
     };
   }
@@ -637,7 +754,7 @@
     var focusState=captureCollabFocus();
     flushActiveCollabTitle();
     loading=true;
-    try{ restoreSnapshot(next); }
+    try{ restoreSnapshot(next,{source:'trusted-collab'}); }
     finally{ loading=false; }
     setEditorReadonly(!canEditCanvas());
     restoreCollabFocus(focusState);
@@ -774,9 +891,14 @@
       if(el) el.disabled=!!readonly;
     });
     document.querySelectorAll('.nc-node input,.nc-node textarea,.nc-node select,.nc-node button').forEach(function(el){ el.disabled=!!readonly; });
+    syncRunAllDisabled();
     document.querySelectorAll('.nc-node [data-f="openShortDrama"]').forEach(function(openShortDrama){
       var host=openShortDrama.closest('.nc-node'), node=host&&nodes[host.getAttribute('data-node-id')];
       openShortDrama.disabled=!!readonly&&!(node&&node.params.project_id);
+    });
+    document.querySelectorAll('.nc-node [data-f="openDigitalPresenter"]').forEach(function(button){
+      var host=button.closest('.nc-node'), node=host&&nodes[host.getAttribute('data-node-id')];
+      button.disabled=!!readonly&&!(node&&node.params.project_id);
     });
     document.querySelectorAll('.nc-node [data-f="headTitle"]').forEach(function(el){
       if(readonly){ el.setAttribute('contenteditable','false'); el.removeAttribute('spellcheck'); }
@@ -1149,13 +1271,17 @@
     }
   }
   function showEditor(){
+    setCanvasView('workflow');
     if(wrap) wrap.classList.add('editing');
     if(editorView) editorView.style.display='';
     if(boardHome) boardHome.style.display='';
+    if(!window.matchMedia||window.matchMedia('(min-width:901px)').matches) openSidePanel('agent',true);
     setTimeout(function(){ fitView(); scheduleMap(); },40);
   }
   function showBoardHome(){
     destroyAllShortDramaWorkspaces();
+    digitalPresenterWorkspaceLifecycle.switchScope(currentShortDramaScopeKey());
+    clearDigitalPresenterWorkspaceRefs();
     saveCurrentBoard();
     var wasCollab=currentBoardScope==='collab';
     stopCollabSync();
@@ -1173,6 +1299,7 @@
     if(localFullscreen) setLocalFullscreen(false);
     if(document.fullscreenElement&&document.exitFullscreen){ document.exitFullscreen().catch(function(){}); }
     if(wrap) wrap.classList.remove('editing');
+    updateImageToolbar();
     setEditorReadonly(false);
     if(wasCollab){
       boardMode='collab';
@@ -1195,6 +1322,9 @@
     return board.id;
   }
   function createBoardFromTemplate(item){
+    if(item&&item.data&&(item.data.nodes||[]).some(function(n){return !nodeCreationPolicy.canMaterialize(n.type,'local-template');})){
+      updateState('数字人口播模板仅可载入有编辑权限的协作画布');return false;
+    }
     if(!item||!item.data){ updateState('没有可载入的模板'); return false; }
     saveCurrentBoard();
     var snap=sanitizeTemplateSnap(item.data);
@@ -1274,7 +1404,7 @@
       currentCollabMembers=board.members||[];
       collabBaseSnap=collabSync?collabSync.clone(board.data||emptySnapshot()):stateApi.cloneSnapshot(board.data||emptySnapshot());
       rememberCollabBoard(board);
-      restoreSnapshot(board.data||emptySnapshot());
+      restoreSnapshot(board.data||emptySnapshot(),{source:'trusted-collab'});
       history.clear();
       setSaveState(collabCanEdit()?'saved':'readonly');
       showEditor();
@@ -1333,6 +1463,7 @@
     if(!board) return;
     var copy=stateApi.cloneSnapshot(board);
     copy.data=sanitizeShortDramaSnapshot(copy.data);
+    copy.data.nodes=(copy.data.nodes||[]).map(function(node){ return node&&node.type==='digitalPresenter'?digitalPresenterModule.copyNodeData(node):node; });
     copy.id=makeBoardId();
     copy.name=cleanBoardName((board.name||'未命名画布')+' 副本')||'未命名画布 副本';
     copy.updatedAt=Date.now();
@@ -1352,6 +1483,7 @@
       latest.splice(idx,1);
       if(!setBoards(latest)) return;
       shortDramaProjectCoordinator.cleanupScope(shortDramaScopeKey('local',id));
+      digitalPresenterProjectCoordinator.cleanupScope(shortDramaScopeKey('local',id));
       if(currentBoardId===id) showBoardHome();
       else renderBoardHome();
       updateState('画布已删除');
@@ -1364,7 +1496,7 @@
   function sanitizeShortDramaSnapshot(snap){
     snap=stateApi.cloneSnapshot(snap||{});
     snap.nodes=(snap.nodes||[]).map(function(node){
-      return node&&node.type==='shortDrama'?shortDramaModule.sanitizeNodeData(node):node;
+      return node&&node.type==='shortDrama'?shortDramaModule.sanitizeNodeData(node):node&&node.type==='digitalPresenter'?stateApi.sanitizeNodeData(node,{digitalPresenter:digitalPresenterModule.sanitizeNodeData}):node;
     });
     return snap;
   }
@@ -1376,6 +1508,11 @@
       n.params=Object.assign({engine:'nb2',channel:'grok',ratio:'9:16',duration:'5',quality:'hd',title:'',remark:''},n.params||{});
       if(n.type==='shortDrama'){
         n.params=normalizeShortDramaNodeParams(n.params);
+        n.outputs={};
+      }
+      if(n.type==='digitalPresenter'){
+        var presenterCopy=digitalPresenterModule.copyNodeData(n);
+        n.params=normalizeDigitalPresenterNodeParams(presenterCopy.params);
         n.outputs={};
       }
       n.outputs=n.outputs||{};
@@ -1425,7 +1562,7 @@
     return String(s).replace(/[&<>"']/g,function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; });
   }
   function nodeTypeLabel(type){
-    return ({text:'文本',image:'图片',reverse:'反推',gen:'作图',video:'视频',shortDrama:'短剧'})[type]||type||'节点';
+    return ({text:'文本',image:'图片',reverse:'反推',gen:'作图',video:'视频',videoAsset:'视频素材',shortDrama:'短剧',digitalPresenter:'数字人口播'})[type]||type||'节点';
   }
   function nodeStatusLabel(node){
     var s=node&&node.el&&node.el.getAttribute('data-state');
@@ -1435,22 +1572,85 @@
     if(!node) return '未命名节点';
     return (node.params&&node.params.title)||((TYPE[node.type]&&TYPE[node.type].name)||nodeTypeLabel(node.type));
   }
-  function openSidePanel(kind){
+  function renderStoryboard(){
+    if(!storyGrid||canvasView!=='story') return;
+    var ordered=graphApi.topologicalOrder(Object.keys(nodes).map(function(id){ return {id:id}; }),edges);
+    if(storyMeta) storyMeta.textContent=ordered.length+' 个场景';
+    if(!ordered.length){
+      storyGrid.innerHTML='<div class="nc-story-empty"><strong>故事板还没有内容</strong><span>先在工作流中添加文本、图片或视频节点。</span><button type="button">返回工作流</button></div>';
+      storyGrid.querySelector('button').onclick=function(){ setCanvasView('workflow'); };
+      return;
+    }
+    var ready=0;
+    storyGrid.innerHTML=ordered.map(function(id,index){
+      var node=nodes[id], params=node.params||{}, output=node.outputs||{}, text='', image='', video=output.video||output.video_url||'', body='';
+      if(node.type==='text'||node.type==='gen'||node.type==='video') text=String(params.text||'').trim();
+      if(node.type==='reverse') text=String(output.prompt||'').trim();
+      if(node.type==='image') image=node.image||output.image||'';
+      if(node.type==='gen') image=output.image||'';
+      var progress=node.type==='shortDrama'?Math.max(0,Math.min(100,Number(params.progress)||0)):0;
+      var hasContent=!!(text||image||video||progress);
+      if(hasContent) ready++;
+      if(video) body='<div class="nc-story-media nc-story-video" data-story-video="'+index+'"><span>正在准备视频预览…</span></div>';
+      else if(image) body='<div class="nc-story-media"><img src="'+escapeHtml(image)+'" alt="'+escapeHtml(nodeDisplayName(node))+'"></div>';
+      else if(node.type==='shortDrama') body='<div class="nc-story-progress"><div><b>'+escapeHtml(params.stage||'未开始')+'</b><span>'+progress+'%</span></div><i><span style="width:'+progress+'%"></span></i><small>'+escapeHtml(params.ratio||'16:9')+' · '+escapeHtml(params.target_duration||60)+' 秒</small></div>';
+      else if(node.type==='image'||node.type==='gen'||node.type==='video'||node.type==='videoAsset') body='<div class="nc-story-media empty"><span>'+({image:'等待图片素材',gen:'等待生成图片',video:'等待生成视频',videoAsset:'等待视频素材'}[node.type])+'</span></div>';
+      if(text) body+='<p class="nc-story-copy">'+escapeHtml(text)+'</p>';
+      if(!body) body='<p class="nc-story-copy muted">等待补充内容…</p>';
+      var status=nodeStatusLabel(node); if(status==='等待'&&hasContent) status='已就绪';
+      return '<article class="nc-story-card '+escapeHtml(node.type)+'"><div class="nc-story-card-head"><span class="nc-story-index">'+String(index+1).padStart(2,'0')+'</span><div><small>'+escapeHtml(nodeTypeLabel(node.type))+'</small><strong>'+escapeHtml(nodeDisplayName(node))+'</strong></div><em>'+escapeHtml(status)+'</em></div>'+body+'</article>';
+    }).join('');
+    if(storyMeta) storyMeta.textContent=ordered.length+' 个场景 · '+ready+' 个已就绪';
+    storyGrid.querySelectorAll('[data-story-video]').forEach(function(box){
+      var node=nodes[ordered[Number(box.getAttribute('data-story-video'))]], url=node&&node.outputs&&(node.outputs.video||node.outputs.video_url);
+      playableAssetUrl(url).then(function(src){ if(box.isConnected&&canvasView==='story') box.innerHTML='<video controls playsinline preload="metadata" src="'+escapeHtml(src)+'"></video>'; })
+        .catch(function(){ if(box.isConnected) box.innerHTML='<span>视频预览加载失败</span>'; });
+    });
+  }
+  function setCanvasView(view){
+    canvasView=view==='story'?'story':'workflow';
+    if(canvasShell) canvasShell.classList.toggle('story-view',canvasView==='story');
+    if(storyboard) storyboard.hidden=canvasView!=='story';
+    document.querySelectorAll('[data-canvas-view]').forEach(function(button){ button.setAttribute('aria-pressed',String(button.getAttribute('data-canvas-view')===canvasView)); });
+    if(canvasView==='story') renderStoryboard();
+    else requestAnimationFrame(function(){ syncCanvasGrid(); scheduleMap(); updateImageToolbar(); });
+    updateImageToolbar();
+  }
+  function openSidePanel(kind,keepOpen){
     if(!sidePanel||!sideBody) return;
-    activeSidePanel=activeSidePanel===kind?'':kind;
+    var beforeWidth=canvas&&canvas.clientWidth||0;
+    activeSidePanel=!keepOpen&&activeSidePanel===kind?'':kind;
     document.querySelectorAll('.nc-side-tool').forEach(function(b){ b.classList.toggle('on', b.getAttribute('data-side')===activeSidePanel); });
     sidePanel.classList.toggle('on', !!activeSidePanel);
+    sidePanel.classList.toggle('agent', activeSidePanel==='agent');
+    if(canvasShell) canvasShell.classList.toggle('agent-open',activeSidePanel==='agent');
+    if(fsAgent) fsAgent.classList.toggle('on',activeSidePanel==='agent');
     sidePanel.setAttribute('aria-hidden', activeSidePanel?'false':'true');
     if(activeSidePanel) renderSidePanel();
+    if(canvas&&beforeWidth) requestAnimationFrame(function(){
+      var afterWidth=canvas.clientWidth;
+      canvas.scrollLeft=Math.max(0,canvas.scrollLeft+(beforeWidth-afterWidth)/2);
+      syncCanvasGrid(); scheduleMap(); updateImageToolbar();
+    });
   }
   function closeSidePanel(){
+    var beforeWidth=canvas&&canvas.clientWidth||0;
     activeSidePanel='';
     if(sidePanel) sidePanel.classList.remove('on');
+    if(sidePanel) sidePanel.classList.remove('agent');
     if(sidePanel) sidePanel.setAttribute('aria-hidden','true');
+    if(canvasShell) canvasShell.classList.remove('agent-open');
+    if(fsAgent) fsAgent.classList.remove('on');
     document.querySelectorAll('.nc-side-tool').forEach(function(b){ b.classList.remove('on'); });
+    if(canvas&&beforeWidth) requestAnimationFrame(function(){
+      var afterWidth=canvas.clientWidth;
+      canvas.scrollLeft=Math.max(0,canvas.scrollLeft+(beforeWidth-afterWidth)/2);
+      syncCanvasGrid(); scheduleMap(); updateImageToolbar();
+    });
   }
   function renderSidePanel(){
     if(!activeSidePanel||!sideBody) return;
+    if(activeSidePanel==='agent') renderAgentPanel();
     if(activeSidePanel==='nodes') renderNodeManager();
     if(activeSidePanel==='assets') renderAssetManager();
     if(activeSidePanel==='export') renderExportPanel();
@@ -1512,11 +1712,19 @@
       sideBody.innerHTML='<div class="nc-side-empty">'+(accountAssetsLoaded?'暂无可展示资产':'正在读取账户资产...')+'</div>';
       return;
     }
-    sideBody.innerHTML='<div class="nc-asset-grid">'+assets.map(function(a,i){
+    sideBody.innerHTML='<div class="nc-asset-hint">拖到画布创建图片或视频节点 · 单击预览</div><div class="nc-asset-grid">'+assets.map(function(a,i){
       var thumb=a.type==='image'?' style="background-image:url(\''+escapeHtml(a.url)+'\')"':'';
-      return '<button class="nc-asset-card '+escapeHtml(a.type)+'" type="button" data-asset-idx="'+i+'"><div class="nc-asset-thumb"'+thumb+'>'+(a.type==='video'?'视频':'')+'</div><div class="nc-asset-info"><b>'+escapeHtml(a.title)+'</b><span>'+escapeHtml(a.source)+'</span></div></button>';
+      return '<button class="nc-asset-card '+escapeHtml(a.type)+'" type="button" draggable="'+(canEditCanvas()?'true':'false')+'" data-asset-idx="'+i+'"><div class="nc-asset-thumb"'+thumb+'>'+(a.type==='video'?'视频':'')+'</div><div class="nc-asset-info"><b>'+escapeHtml(a.title)+'</b><span>'+escapeHtml(a.source)+'</span></div></button>';
     }).join('')+'</div>';
     sideBody.querySelectorAll('[data-asset-idx]').forEach(function(btn){
+      btn.ondragstart=function(e){
+        var a=assets[parseInt(btn.getAttribute('data-asset-idx'),10)];
+        if(!canEditCanvas()||!a||!a.url){ e.preventDefault(); return; }
+        dragAsset=a;
+        if(e.dataTransfer){ e.dataTransfer.effectAllowed='copy'; e.dataTransfer.setData('text/plain',a.title||'黄雀资产'); }
+        canvas.classList.add('asset-drop-ready');
+      };
+      btn.ondragend=clearAssetDragState;
       btn.onclick=function(){
         var a=assets[parseInt(btn.getAttribute('data-asset-idx'),10)];
         if(!a||!a.url) return;
@@ -1524,6 +1732,20 @@
         else window.open(a.url,'_blank');
       };
     });
+  }
+  function clearAssetDragState(){
+    dragAsset=null;
+    canvas.classList.remove('asset-drop-ready','asset-drop-target');
+  }
+  function addAssetAt(asset,pt){
+    if(!canEditCanvas()||!asset||!asset.url) return;
+    pushUndo();
+    var type=asset.type==='video'?'videoAsset':'image', outputs={}, data={params:{title:String(asset.title||'').slice(0,80)},outputs:outputs};
+    if(type==='videoAsset') outputs.video=asset.url;
+    else{ data.image=asset.url; outputs.image=asset.url; }
+    var node=addNode(type,Math.max(0,pt.x-125),Math.max(0,pt.y-70),data);
+    selectNode(node);
+    updateState(type==='videoAsset'?'已添加视频资产':'已添加图片资产');
   }
   function canvasContentBounds(){
     return graphApi.contentBounds(Object.keys(nodes).map(function(id){
@@ -1537,6 +1759,265 @@
     sideBody.innerHTML='<div class="nc-export-box"><div class="nc-export-preview">'+(b?('预计导出 '+Math.round(b.w)+' × '+Math.round(b.h)+' JPG'):'当前画布为空，暂无可导出内容')+'</div><button id="ncExportJpg" class="nc-export-btn" type="button" '+(b?'':'disabled')+'>导出 JPG</button><div class="nc-side-empty" style="padding:0 4px;text-align:left;">导出内容包含节点、连线和图片预览，不包含工具栏。</div></div>';
     var btn=document.getElementById('ncExportJpg');
     if(btn) btn.onclick=function(){ exportCanvasJpg(); };
+  }
+  function agentSessionKey(){ return currentBoardScope+':'+String(currentBoardId||'draft'); }
+  function agentErrorText(error,fallback){
+    var message=String(error&&error.message||'').trim();
+    if(!message||message.length>180||/<(?:!doctype|html|body|head)\b/i.test(message)) return fallback;
+    if(error&&error.status===401) return '请先登录后使用画布 Agent';
+    return message;
+  }
+  function currentAgentSession(){
+    var key=agentSessionKey();
+    if(!agentSessions[key]) agentSessions[key]={key:key,messages:[],draft:'',quote:null,points:null,quoteLoading:false,quoteError:'',pending:false,status:'',plan:null,applied:false};
+    return agentSessions[key];
+  }
+  function loadAgentIP12Context(){
+    if(agentIP12Loaded||agentIP12Loading) return;
+    agentIP12Loading=true; agentIP12Error='';
+    apiClient.json('/api/gen/digital-ip/projects',{cache:'no-store'}).then(function(data){
+      var projects=Array.isArray(data&&data.items)?data.items:[];
+      agentIP12Context=agentModule.buildIP12Context(projects[0]);
+      agentIP12Loaded=true;
+    }).catch(function(error){
+      agentIP12Context=null; agentIP12Loaded=true;
+      agentIP12Error=agentErrorText(error,'IP12 资料读取失败');
+    }).finally(function(){
+      agentIP12Loading=false;
+      if(activeSidePanel==='agent') renderAgentPanel();
+    });
+  }
+  function agentPageContext(){
+    return {page:'canvas',path:location.pathname,title:document.title,can_edit:canEditCanvas(),selected_count:Math.min(30,selectedNodeIds().length)};
+  }
+  function agentIP12Label(){
+    if(agentIP12Loading||!agentIP12Loaded) return '正在读取 IP12';
+    if(agentIP12Context) return '已结合 IP12 · '+agentIP12Context.title;
+    return agentIP12Error||'暂无 IP12 资料';
+  }
+  function startAgentPrompt(prompt){
+    var session=currentAgentSession();
+    session.draft=String(prompt||'').trim();
+    openSidePanel('agent',true);
+    var input=sideBody&&sideBody.querySelector('[data-agent-input]');
+    if(input){ input.focus(); input.setSelectionRange(input.value.length,input.value.length); }
+  }
+  function agentNodeContent(node){
+    if(!node) return '';
+    if(node.type==='text'||node.type==='gen'||node.type==='video') return (node.params&&node.params.text)||'';
+    if(node.type==='reverse') return (node.outputs&&node.outputs.prompt)||'';
+    if(node.type==='image') return '图片素材（首版不读取图像内容）';
+    if(node.type==='shortDrama') return '短剧项目阶段：'+String(node.params&&node.params.stage||'未开始');
+    return '';
+  }
+  function buildAgentSnapshot(){
+    var selected=selectedNodeIds();
+    return agentModule.createSnapshot({
+      projectId:agentSessionKey(),scope:currentBoardScope,
+      selectedNodeIds:selected,
+      nodes:Object.keys(nodes).map(function(id){
+        var node=nodes[id];
+        return {id:id,type:node.type,title:nodeDisplayName(node),content:agentNodeContent(node)};
+      }),
+      edges:edges.map(function(edge){return {from_node_id:edge.from.node,to_node_id:edge.to.node};})
+    });
+  }
+  function renderAgentPanel(){
+    if(sideTitle) sideTitle.textContent='Agent 工作台';
+    if(!agentModule){ sideBody.innerHTML='<div class="nc-side-empty">Agent 模块未加载</div>'; return; }
+    if(!agentIP12Loaded&&!agentIP12Loading) loadAgentIP12Context();
+    var session=currentAgentSession();
+    var selectionCount=selectedNodeIds().length;
+    var messages=session.messages.map(function(message){
+      return '<div class="nc-agent-message '+escapeHtml(message.role)+'">'+escapeHtml(message.content)+'</div>';
+    }).join('');
+    var plan='', actions=session.plan&&session.plan.actions||[], guides=session.plan&&session.plan.guides||[];
+    if(session.plan&&(actions.length||guides.length||(session.plan.warnings||[]).length)){
+      plan='<div class="nc-agent-plan">'+actions.map(function(action){
+        return '<label><input type="checkbox" data-agent-action="'+escapeHtml(action.id)+'" checked '+(session.applied?'disabled':'')+'><span>'+escapeHtml(agentModule.actionLabel(action))+'</span></label>';
+      }).join('')+(guides.length?'<div class="nc-agent-guides"><strong>推荐下一步</strong>'+guides.map(function(guide,index){
+        return '<button class="nc-agent-guide" type="button" data-agent-guide="'+index+'"><b>'+escapeHtml(guide.label)+'</b><span>'+escapeHtml(guide.reason)+'</span></button>';
+      }).join('')+'</div>':'')+(session.plan.warnings||[]).map(function(warning){return '<div class="nc-agent-warning">'+escapeHtml(warning)+'</div>';}).join('')
+        +(actions.length?'<button class="nc-agent-apply" type="button" '+(session.applied||!canEditCanvas()?'disabled':'')+'>'+(session.applied?'已应用，可撤销':'确认应用所选操作')+'</button>':'')+'</div>';
+    }
+    var quoteText=session.quoteLoading?'正在读取报价…':session.quoteError?session.quoteError:session.quote==null?'报价不可用':('本次 '+session.quote+' 点');
+    var balance=session.points==null?'':('余额 '+session.points+' 点');
+    var insufficient=session.quote!=null&&session.points!=null&&session.points<session.quote;
+    var starters=!session.messages.length?'<div class="nc-agent-starters">'
+      +'<button class="nc-agent-starter" type="button" data-agent-prompt="结合我的 IP12 和当前画布，规划第一条最适合我的短视频内容，并告诉我接下来去哪个页面继续。"><b>结合 IP12 规划</b>从客户资料到第一条内容</button>'
+      +'<button class="nc-agent-starter" type="button" data-agent-prompt="帮我搭建一个短视频脚本工作流：先创建脚本，再创建画面和视频生成草稿。"><b>搭建短视频流程</b>脚本、画面到视频草稿</button>'
+      +'<button class="nc-agent-starter" type="button" data-agent-prompt="分析我选中的节点，优化其中的文本内容并保留原意。"><b>优化选中内容</b>只处理当前选区</button>'
+      +'<button class="nc-agent-starter" type="button" data-agent-prompt="帮我搭建一个产品图文方案，创建卖点文案和图片生成草稿。"><b>创建图文方案</b>卖点文案与作图草稿</button>'
+      +'</div>':'';
+    sideBody.innerHTML='<div class="nc-agent"><div class="nc-agent-hero"><span class="nc-agent-orb">✦</span><strong>从 IP12 到创作下一步</strong><p>Agent 结合当前页面和客户资料给出方案；图片与视频只建草稿，确认后才会修改画布。</p><div class="nc-agent-context"><span><i></i>'+(selectionCount?('已读取 '+selectionCount+' 个选中节点'):'已读取当前画布')+'</span><span>'+escapeHtml(agentIP12Label())+'</span></div></div>'+starters
+      +'<div class="nc-agent-messages">'+(messages||'<div class="nc-agent-message">你可以直接描述目标，也可以从上面的常用场景开始。</div>')+(session.status?'<div class="nc-agent-message">'+escapeHtml(session.status)+'</div>':'')+plan+'</div>'
+      +'<div class="nc-agent-compose"><textarea data-agent-input maxlength="2000" placeholder="描述你想完成的内容，或 @ 选中的节点…" '+(session.pending||session.quote==null?'disabled':'')+'>'+escapeHtml(session.draft||'')+'</textarea>'
+      +'<div class="nc-agent-quote"><span>'+escapeHtml(quoteText)+'</span><span>'+escapeHtml(balance)+'</span></div>'
+      +(session.quoteError?'<button class="nc-agent-apply" type="button" data-agent-retry>重新读取报价</button>':'')
+      +'<button class="nc-agent-submit" type="button" '+(session.pending||session.quote==null||insufficient?'disabled':'')+'>'+(session.pending?'Agent 思考中…':insufficient?'点数不足':session.quote==null?'等待报价':('发送 · '+session.quote+' 点'))+'</button></div></div>';
+    var input=sideBody.querySelector('[data-agent-input]');
+    var submit=sideBody.querySelector('.nc-agent-submit');
+    if(submit) submit.onclick=function(){ submitAgentTurn(input&&input.value); };
+    if(input){
+      input.oninput=function(){ session.draft=input.value; };
+      input.onkeydown=function(e){ if((e.metaKey||e.ctrlKey)&&e.key==='Enter'){ e.preventDefault(); submitAgentTurn(input.value); } };
+    }
+    sideBody.querySelectorAll('[data-agent-prompt]').forEach(function(btn){ btn.onclick=function(){ startAgentPrompt(btn.getAttribute('data-agent-prompt')); }; });
+    sideBody.querySelectorAll('[data-agent-guide]').forEach(function(btn){ btn.onclick=function(){ followAgentGuide(guides[Number(btn.getAttribute('data-agent-guide'))]); }; });
+    var apply=sideBody.querySelector('.nc-agent-apply:not([data-agent-retry])');
+    if(apply) apply.onclick=function(){
+      var ids=Array.prototype.map.call(sideBody.querySelectorAll('[data-agent-action]:checked'),function(box){return box.getAttribute('data-agent-action');});
+      applyAgentPlan(session,ids);
+    };
+    var retry=sideBody.querySelector('[data-agent-retry]');
+    if(retry) retry.onclick=function(){ session.quoteError=''; session.quote=null; loadAgentQuote(session); renderAgentPanel(); };
+    if(session.quote==null&&!session.quoteLoading&&!session.quoteError) loadAgentQuote(session);
+  }
+  function followAgentGuide(guide){
+    if(!guide) return;
+    if(guide.target==='ip12'){
+      location.href='/workbench/ip12.html'+(agentIP12Context?'?project='+encodeURIComponent(agentIP12Context.project_id):'');
+      return;
+    }
+    var targets={
+      script:{url:'/workbench/script.html?prefill=ip12',handoff:'script_studio'},
+      image:{url:'/workbench/banana.html?prefill=ip12',handoff:'image_studio'},
+      video:{url:'/workbench/video.html?prefill=ip12',handoff:'video_studio'}
+    };
+    var target=targets[guide.target];
+    if(!target) return;
+    try{
+      sessionStorage.setItem('hq_ip12_product_handoff_v1',JSON.stringify({
+        version:1,target:target.handoff,prompt:String(guide.prompt||'').slice(0,1000),created_at:Date.now()
+      }));
+    }catch(error){ updateState('浏览器无法暂存 Agent 草稿'); return; }
+    location.href=target.url;
+  }
+  function loadAgentQuote(session){
+    session.quoteLoading=true;
+    apiClient.json('/api/gen/canvas-agent/quote',{method:'POST',body:{}}).then(function(data){
+      session.quote=Number(data.cost);
+      session.points=Number(data.points);
+      session.quoteError='';
+    }).catch(function(error){
+      session.quote=null;
+      session.quoteError=agentErrorText(error,'报价读取失败，请确认 Agent 服务已启用');
+    }).finally(function(){
+      session.quoteLoading=false;
+      if(activeSidePanel==='agent'&&currentAgentSession()===session) renderAgentPanel();
+    });
+  }
+  function agentHeaders(idempotencyKey){
+    var headers={'Idempotency-Key':idempotencyKey};
+    if(currentBoardScope==='collab'&&currentBoardId) headers['X-Canvas-Board-Id']=String(currentBoardId);
+    return headers;
+  }
+  function retryAgentSubmission(body,headers,attempt){
+    return apiClient.json('/api/gen/canvas_agent',{method:'POST',body:body,headers:headers,timeout:12000}).catch(function(error){
+      var retryable=error&&(error.code==='timeout'||error.code==='idempotency_in_progress');
+      if(!retryable||attempt>=4) throw error;
+      return new Promise(function(resolve){setTimeout(resolve,800*(attempt+1));}).then(function(){return retryAgentSubmission(body,headers,attempt+1);});
+    });
+  }
+  function submitAgentTurn(prompt){
+    prompt=String(prompt||'').trim();
+    var session=currentAgentSession();
+    if(!prompt||session.pending||session.quote==null) return;
+    var snapshot;
+    try{ snapshot=buildAgentSnapshot(); }
+    catch(error){ session.messages.push({role:'error',content:error.message}); renderAgentPanel(); return; }
+    var history=session.messages.filter(function(message){return message.role==='user'||message.role==='assistant';}).slice(-8);
+    var body=Object.assign({},snapshot,{prompt:prompt,history:history,quoted_cost:session.quote,page_context:agentPageContext(),source_page:'canvas'});
+    if(agentIP12Context) body.ip12_context=agentIP12Context;
+    var requestKey='canvas-agent-'+(window.crypto&&crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2));
+    var headers=agentHeaders(requestKey);
+    session.draft='';
+    session.messages.push({role:'user',content:prompt});
+    session.pending=true; session.status='正在读取画布并规划操作…'; session.plan=null; session.applied=false;
+    renderAgentPanel();
+    retryAgentSubmission(body,headers,0).then(function(data){
+      if(!data.job_id) throw new Error(data.detail||'Agent 任务提交失败');
+      session.points=data.points_left==null?session.points:Number(data.points_left);
+      if(window.HQ&&HQ.refreshPoints) HQ.refreshPoints();
+      return apiModule.poll({
+        request:function(){return apiClient.json('/api/gen/job/'+data.job_id);},intervalMs:1400,maxMs:300000,
+        inspect:function(job){
+          if(job.status==='done') return {done:true,value:typeof job.result==='string'?JSON.parse(job.result):job.result};
+          if(job.status==='error'||job.status==='failed') return {error:new Error(job.error||'Agent 思考失败，点数已自动退回')};
+          return {pending:true};
+        },
+        onProgress:function(job,seconds){session.status='Agent 思考中，已用 '+seconds+' 秒…'; if(activeSidePanel==='agent'&&currentAgentSession()===session) renderAgentPanel();},
+        timeoutError:function(){return new Error('Agent 响应超时，请稍后查看任务记录');}
+      });
+    }).then(function(result){
+      var content=String(result&&result.content||'Agent 已完成分析。');
+      session.messages.push({role:'assistant',content:content});
+      session.plan=result&&result.plan||null;
+      session.status=session.plan&&(session.plan.actions||[]).length?'请勾选并确认要应用的操作。':session.plan&&(session.plan.guides||[]).length?'请选择一个推荐的下一步。':'';
+    }).catch(function(error){
+      session.messages.push({role:'error',content:agentErrorText(error,'Agent 请求失败，请稍后重试')});
+      session.status='';
+    }).finally(function(){
+      session.pending=false;
+      session.quote=null; session.points=null; session.quoteError='';
+      if(window.HQ&&HQ.refreshPoints) HQ.refreshPoints();
+      if(activeSidePanel==='agent'&&currentAgentSession()===session) renderAgentPanel();
+    });
+  }
+  function addAgentConnection(sourceId,targetId){
+    var source=nodes[sourceId],target=nodes[targetId];
+    if(!source||!target) return false;
+    var ports=agentModule.connectionPorts(source.type,target.type);
+    if(!ports) return false;
+    var multiImage=ports.to==='image'&&(target.type==='gen'||target.type==='video');
+    edges=edges.filter(function(edge){
+      var duplicate=edge.from.node===sourceId&&edge.from.port===ports.from&&edge.to.node===targetId&&edge.to.port===ports.to;
+      var sameInput=edge.to.node===targetId&&edge.to.port===ports.to;
+      return multiImage?!duplicate:!sameInput;
+    });
+    edges.push({from:{node:sourceId,port:ports.from},to:{node:targetId,port:ports.to}});
+    return true;
+  }
+  function applyAgentPlan(session,actionIds){
+    if(!canEditCanvas()||!session.plan||session.applied) return;
+    try{
+      var current=buildAgentSnapshot();
+      agentModule.validatePlan(current,session.plan);
+      var wanted={}; (actionIds||[]).forEach(function(id){wanted[id]=true;});
+      var actions=session.plan.actions.filter(function(action){return !!wanted[action.id];});
+      if(!actions.length) throw new Error('请至少选择一个 Agent 操作');
+      pushUndo();
+      var base=viewportNodePoint(),created=[],nextSelection=null;
+      actions.forEach(function(action,index){
+        var node;
+        if(action.type==='create_text_node'){
+          node=addNode('text',base.x+index*34,base.y+index*34,{params:{title:action.title,text:action.content}});
+          created.push(node.id);
+        }else if(action.type==='update_text_node'){
+          node=nodes[action.node_id];
+          node.params.text=action.content;
+          if(action.title) node.params.title=action.title;
+          applyNodeUI(node);
+        }else if(action.type==='create_generation_draft'){
+          var type=action.mode==='image'?'gen':action.mode==='video'?'video':'text';
+          node=addNode(type,base.x+index*34,base.y+index*34,{params:{title:action.title,text:action.prompt}});
+          created.push(node.id);
+          (action.connect_from||[]).forEach(function(sourceId){addAgentConnection(sourceId,node.id);});
+        }else if(action.type==='connect_nodes'){
+          addAgentConnection(action.from_node_id,action.to_node_id);
+        }else if(action.type==='select_nodes'){
+          nextSelection=action.node_ids;
+        }
+      });
+      redraw(); refreshAllGenRefs();
+      selectNodesByIds(created.length?created:(nextSelection||selectedNodeIds()));
+      session.applied=true; session.status='操作已应用，可用底部撤销恢复。';
+      updateState('Agent 操作已应用');
+      if(activeSidePanel==='agent') renderAgentPanel();
+    }catch(error){
+      session.messages.push({role:'error',content:(error&&error.message)||'Agent 操作应用失败'});
+      if(activeSidePanel==='agent') renderAgentPanel();
+    }
   }
   function exportCanvasJpg(){
     var bounds=canvasContentBounds();
@@ -1569,14 +2050,26 @@
   }
   function restoreSnapshot(snap){
     if(!snap) return;
+    var options=arguments[1]||{};
+    var materializeSource=options.source||'restore';
     snap=sanitizeShortDramaSnapshot(snap);
     destroyAllShortDramaWorkspaces();
+    digitalPresenterWorkspaceLifecycle.restoreScope(currentShortDramaScopeKey());
+    clearDigitalPresenterWorkspaceRefs();
     restoring=true;
+    var restoredNodes=(snap.nodes||[]).filter(function(n){
+      return n&&nodeCreationPolicy.canMaterialize(n.type,materializeSource);
+    });
+    var restoredIds={};restoredNodes.forEach(function(n){restoredIds[n.id]=true;});
     Object.keys(nodes).forEach(function(id){ if(nodes[id]&&nodes[id].el) nodes[id].el.remove(); });
     nodes={}; edges=stateApi.cloneSnapshot(snap.edges||[]); nid=snap.nid||0; pendingPort=null; dragPort=null; selectedNode=null; selectedNodes={}; selectedEdge=-1; runLabel=snap.runLabel||'就绪';
-    (snap.nodes||[]).forEach(function(n){ addNode(n.type,n.x,n.y,n); });
+    edges=edges.filter(function(e){
+      return e&&e.from&&e.to&&restoredIds[e.from.node]&&restoredIds[e.to.node];
+    });
+    restoredNodes.forEach(function(n){ addNode(n.type,n.x,n.y,n,materializeSource); });
     if(snap.zoom){ zoom=Math.max(.5,Math.min(1.6,snap.zoom)); inner.style.transform='scale('+zoom+')'; }
     if(snap.scroll){ canvas.scrollLeft=snap.scroll.left||0; canvas.scrollTop=snap.scroll.top||0; }
+    syncCanvasGrid();
     redraw(); refreshAllGenRefs(); updateSelectedRegion();
     updateState('已撤销');
     restoring=false;
@@ -1585,6 +2078,9 @@
     if(!canEditCanvas()) return;
     if(!item||!item.data){ updateState('没有可载入的模板'); return; }
     var snap=sanitizeTemplateSnap(item.data), list=snap.nodes||[];
+    if(list.some(function(n){return !nodeCreationPolicy.canMaterialize(n.type,'create');})){
+      updateState('当前画布无权载入模板中的数字人口播节点');return;
+    }
     if(!list.length){ updateState('模板为空'); return; }
     pushUndo();
     var minX=Infinity, minY=Infinity, maxX=0, maxY=0;
@@ -1598,7 +2094,7 @@
     });
     if(!isFinite(minX)) minX=0;
     if(!isFinite(minY)) minY=0;
-    var target=Object.keys(nodes).length?{x:maxX+140,y:Math.max(80,canvas.scrollTop/zoom+80)}:viewportCenterPoint();
+    var target=Object.keys(nodes).length?{x:maxX+140,y:Math.max(80,viewportTopLeftPoint().y+80)}:viewportCenterPoint();
     var idMap={}, created=[];
     list.forEach(function(n){
       var data=stateApi.cloneSnapshot(n);
@@ -1675,26 +2171,31 @@
       var n=nodes[id], nw=Math.max(3,(n.el.offsetWidth||250)*sx), nh=Math.max(3,(n.el.offsetHeight||150)*sy);
       s+='<rect class="nc-map-node'+(n.type==='image'?' img':'')+'" x="'+(n.x*sx).toFixed(1)+'" y="'+(n.y*sy).toFixed(1)+'" width="'+nw.toFixed(1)+'" height="'+nh.toFixed(1)+'" rx="1.6"/>';
     });
-    var vx=canvas.scrollLeft/zoom*sx, vy=canvas.scrollTop/zoom*sy, vw=canvas.clientWidth/zoom*sx, vh=canvas.clientHeight/zoom*sy;
+    var vx=(canvas.scrollLeft-CANVAS_VIEW_PAD)/zoom*sx, vy=(canvas.scrollTop-CANVAS_VIEW_PAD)/zoom*sy, vw=canvas.clientWidth/zoom*sx, vh=canvas.clientHeight/zoom*sy;
     s+='<rect class="nc-map-view" x="'+Math.max(0,vx).toFixed(1)+'" y="'+Math.max(0,vy).toFixed(1)+'" width="'+Math.min(w,vw).toFixed(1)+'" height="'+Math.min(h,vh).toFixed(1)+'" rx="2"/>';
     mapSvg.innerHTML=s;
   }
   function moveViewFromMap(e){
     if(!map) return;
     var r=map.getBoundingClientRect(), x=(e.clientX-r.left)/r.width, y=(e.clientY-r.top)/r.height;
-    canvas.scrollLeft=Math.max(0,x*innerWidth()*zoom-canvas.clientWidth/2);
-    canvas.scrollTop=Math.max(0,y*innerHeight()*zoom-canvas.clientHeight/2);
+    canvas.scrollLeft=Math.max(0,CANVAS_VIEW_PAD+x*innerWidth()*zoom-canvas.clientWidth/2);
+    canvas.scrollTop=Math.max(0,CANVAS_VIEW_PAD+y*innerHeight()*zoom-canvas.clientHeight/2);
     scheduleMap();
   }
 
   // ---------- 建节点 ----------
-  function addNode(type, x, y, data){
+  function addNode(type, x, y, data,materializeSource){
+    materializeSource=materializeSource||'create';
+    if(!nodeCreationPolicy.canMaterialize(type,materializeSource)) return null;
     if(type==='shortDrama'&&data) data=shortDramaModule.sanitizeNodeData(data);
+    if(type==='digitalPresenter'&&data) data=stateApi.sanitizeNodeData(data,{digitalPresenter:digitalPresenterModule.sanitizeNodeData});
     var t=TYPE[type], nextNid=++nid, id=currentBoardScope==='collab'&&collabSync?collabSync.makeNodeId(collabNodeSeed,nextNid):'n'+nextNid;
     if(data&&data.id){ id=data.id; var m=String(id).match(/^n(\d+)$/); if(m) nid=Math.max(nid,parseInt(m[1],10)); }
-    var node={ id:id, type:type, x:(x==null?60+((nid*30)%400):x), y:(y==null?50+((nid*40)%300):y), collapsed:!!(data&&data.collapsed), params:Object.assign({engine:'nb2',channel:'grok',ratio:'16:9',duration:'5',quality:'hd',title:'',remark:''},(data&&data.params)||{}), outputs:stateApi.cloneSnapshot((data&&data.outputs)||{}), image:(data&&data.image)||null };
+    var fallback=x==null||y==null?viewportNodePoint():null;
+    var node={ id:id, type:type, x:(x==null?fallback.x:x), y:(y==null?fallback.y:y), width:Number(data&&data.width)||0, height:Number(data&&data.height)||0, collapsed:!!(data&&data.collapsed), params:Object.assign({engine:'nb2',channel:'grok',ratio:'16:9',duration:'5',quality:'hd',title:'',remark:''},(data&&data.params)||{}), outputs:stateApi.cloneSnapshot((data&&data.outputs)||{}), image:(data&&data.image)||null };
     if(type==='shortDrama') node.params=normalizeShortDramaNodeParams(node.params);
-    var el=document.createElement('div'); el.className='nc-node'+(type==='shortDrama'?' nc-node-short-drama':''); el.style.left=node.x+'px'; el.style.top=node.y+'px';
+    if(type==='digitalPresenter') node.params=normalizeDigitalPresenterNodeParams(node.params);
+    var el=document.createElement('div'); el.className='nc-node'+(type==='shortDrama'?' nc-node-short-drama':type==='digitalPresenter'?' nc-node-digital-presenter':''); el.style.left=node.x+'px'; el.style.top=node.y+'px';
     var body='';
     if(type==='text') body='<textarea class="nc-in" data-f="text" rows="3" placeholder="输入提示词，作为下游作图的词…"></textarea>';
     if(type==='image') body='<label class="nc-drop" data-f="drop"><input type="file" accept="image/*" data-f="file" style="display:none">点击上传<br>或按 Ctrl+V 粘贴</label>';
@@ -1711,10 +2212,15 @@
       +'<div class="nc-refbar" data-f="refs"><span>参考图 0 张</span><div class="nc-refthumbs"></div></div>'
       +'<textarea class="nc-in" data-f="text" rows="2" placeholder="视频提示词（也可由上游文本/反推节点连入）"></textarea>'
       +'<button class="nc-go" data-f="run">生成视频</button><div class="nc-video-result" data-f="videoResult"></div>';
+    if(type==='videoAsset') body='<div class="nc-video-result" data-f="videoResult"></div>';
     if(type==='shortDrama') body='<div class="nc-short-drama-summary"><div><span>画幅与时长</span><strong data-f="shortDramaRatio"></strong></div><div><span>当前阶段</span><strong data-f="shortDramaStage"></strong></div><div><span>完成进度</span><strong data-f="shortDramaProgress"></strong></div><div><span>点数</span><strong data-f="shortDramaPoints"></strong></div></div>'
       +'<button class="nc-go nc-short-drama-open" type="button" data-f="openShortDrama">打开短剧工作区</button>';
+    if(type==='digitalPresenter') body='<div class="nc-digital-presenter-summary"><div><span>画幅与时长</span><strong data-f="digitalPresenterRatio"></strong></div><div><span>当前阶段</span><strong data-f="digitalPresenterStage"></strong></div><div><span>完成进度</span><strong data-f="digitalPresenterProgress"></strong></div><div><span>点数</span><strong data-f="digitalPresenterPoints"></strong></div></div>'
+      +'<button class="nc-go" type="button" data-f="openDigitalPresenter">打开数字人口播工作区</button>';
     el.innerHTML='<div class="nc-head" data-f="head"><span style="display:flex;align-items:center;gap:7px;min-width:0;"><span class="dot" style="background:'+t.color+'"></span><span class="nc-node-title" data-f="headTitle">'+escapeHtml(node.params.title||t.name)+'</span><span class="nc-remark-mark" data-f="remarkMark" title="有备注">注</span></span><span class="nc-actions"><span class="nc-fold" data-f="fold" title="折叠/展开">−</span><span class="nc-x" data-f="del">×</span></span></div>'
       +'<div class="nc-body">'+body+'<div class="nc-note" data-f="note"></div></div>';
+    ['n','ne','e','se','s','sw','w','nw'].forEach(function(direction){ var handle=document.createElement('button'); handle.type='button'; handle.className='nc-resize-handle nc-resize-'+direction; handle.setAttribute('data-resize',direction); handle.setAttribute('aria-label','调整节点大小'); el.appendChild(handle); });
+    if(node.width&&node.height){ el.style.width=node.width+'px'; el.style.height=node.height+'px'; el.classList.add('resized'); }
     inner.appendChild(el); node.el=el;
     // ports
     (t.ins||[]).forEach(function(p,i){ var d=document.createElement('div'); d.className='nc-port pin'+(p==='image'?' img':''); d.setAttribute('data-kind','in'); d.setAttribute('data-port',p); d.title='输入:'+p; d.style.top=(46+i*22)+'px'; el.appendChild(d); });
@@ -1761,6 +2267,7 @@
     refreshGenRefs(node);
     refreshVideoNodeHint(node);
     refreshShortDramaNode(node);
+    refreshDigitalPresenterNode(node);
   }
   function inputVals(nodeId, port){
     return edges.filter(function(e){ return e.to.node===nodeId && e.to.port===port; }).map(function(e){
@@ -1811,6 +2318,12 @@
   function noteOf(node,msg,color){ var n=node.el.querySelector('[data-f="note"]'); if(n){ n.textContent=msg||''; n.style.color=color||'#5c6b82'; } }
   function innerWidth(){ return inner.offsetWidth||CANVAS_BASE_W; }
   function innerHeight(){ return inner.offsetHeight||CANVAS_BASE_H; }
+  function syncCanvasGrid(){
+    canvas.style.setProperty('--grid-minor',(24*zoom)+'px');
+    canvas.style.setProperty('--grid-major',(120*zoom)+'px');
+    canvas.style.setProperty('--grid-x',(CANVAS_VIEW_PAD-canvas.scrollLeft)+'px');
+    canvas.style.setProperty('--grid-y',(CANVAS_VIEW_PAD-canvas.scrollTop)+'px');
+  }
   function ensureCanvasBounds(x,y){
     var nextW=Math.max(innerWidth(),Math.ceil(x+CANVAS_GROW_PAD));
     var nextH=Math.max(innerHeight(),Math.ceil(y+CANVAS_GROW_PAD));
@@ -1877,11 +2390,12 @@
     var old=zoom;
     cx=cx==null?canvas.clientWidth/2:cx;
     cy=cy==null?canvas.clientHeight/2:cy;
-    var wx=(canvas.scrollLeft+cx)/old, wy=(canvas.scrollTop+cy)/old;
+    var wx=(canvas.scrollLeft+cx-CANVAS_VIEW_PAD)/old, wy=(canvas.scrollTop+cy-CANVAS_VIEW_PAD)/old;
     zoom=next;
     inner.style.transform='scale('+zoom+')';
-    canvas.scrollLeft=wx*zoom-cx;
-    canvas.scrollTop=wy*zoom-cy;
+    canvas.scrollLeft=CANVAS_VIEW_PAD+wx*zoom-cx;
+    canvas.scrollTop=CANVAS_VIEW_PAD+wy*zoom-cy;
+    syncCanvasGrid();
     scheduleMap();
     updateState();
   }
@@ -1955,6 +2469,7 @@
     pushUndo();
     ids.forEach(function(id){
       destroyShortDramaWorkspace(nodes[id]);
+      destroyDigitalPresenterWorkspace(nodes[id]);
       if(nodes[id]&&nodes[id].el) nodes[id].el.remove();
       delete nodes[id];
     });
@@ -1992,7 +2507,7 @@
         multi:true,
         nodes:ids.map(function(id){
           var n=nodes[id];
-          return {id:n.id,type:n.type,x:n.x,y:n.y,collapsed:n.collapsed,params:stateApi.cloneSnapshot(n.type==='shortDrama'?normalizeShortDramaNodeParams(n.params):n.params||{}),outputs:shortDramaNodeOutputs(n),image:n.image||null,note:(n.el.querySelector('[data-f="note"]')||{}).textContent||''};
+          return {id:n.id,type:n.type,x:n.x,y:n.y,collapsed:n.collapsed,params:stateApi.cloneSnapshot(n.type==='shortDrama'?normalizeShortDramaNodeParams(n.params):n.type==='digitalPresenter'?digitalPresenterModule.copyNodeData(n).params:n.params||{}),outputs:shortDramaNodeOutputs(n),image:n.image||null,note:(n.el.querySelector('[data-f="note"]')||{}).textContent||''};
         }),
         edges:edges.filter(function(e){ return set[e.from.node]&&set[e.to.node]; }).map(function(e){ return stateApi.cloneSnapshot(e); })
       };
@@ -2000,19 +2515,24 @@
       return;
     }
     var n=nodes[ids[0]];
-    clipNode={type:n.type,params:stateApi.cloneSnapshot(n.type==='shortDrama'?normalizeShortDramaNodeParams(n.params):n.params||{}),outputs:shortDramaNodeOutputs(n),image:n.image||null,note:(n.el.querySelector('[data-f="note"]')||{}).textContent||''};
+    clipNode={type:n.type,params:stateApi.cloneSnapshot(n.type==='shortDrama'?normalizeShortDramaNodeParams(n.params):n.type==='digitalPresenter'?digitalPresenterModule.copyNodeData(n).params:n.params||{}),outputs:shortDramaNodeOutputs(n),image:n.image||null,note:(n.el.querySelector('[data-f="note"]')||{}).textContent||''};
     updateState('已复制节点');
   }
   function pasteNode(){
     if(!canEditCanvas()) return;
     if(!clipNode) return;
+    var pastedNodes=clipNode.multi?(clipNode.nodes||[]):[clipNode];
+    if(pastedNodes.some(function(n){return !nodeCreationPolicy.canMaterialize(n.type,'create');})){
+      updateState('数字人口播节点仅可粘贴到有编辑权限的协作画布');return;
+    }
     pushUndo();
     if(clipNode.multi){
       var copied=stateApi.cloneSnapshot(clipNode), minX=Infinity, minY=Infinity, idMap={}, made=[];
       copied.nodes.forEach(function(n){ minX=Math.min(minX,n.x||0); minY=Math.min(minY,n.y||0); });
       if(!isFinite(minX)) minX=0;
       if(!isFinite(minY)) minY=0;
-      var base=selectedNode&&nodes[selectedNode]?{x:nodes[selectedNode].x+40,y:nodes[selectedNode].y+40}:{x:canvas.scrollLeft/zoom+90,y:canvas.scrollTop/zoom+90};
+      var viewStart=viewportTopLeftPoint();
+      var base=selectedNode&&nodes[selectedNode]?{x:nodes[selectedNode].x+40,y:nodes[selectedNode].y+40}:{x:viewStart.x+90,y:viewStart.y+90};
       copied.nodes.forEach(function(n){
         var data=stateApi.cloneSnapshot(n), oldId=data.id;
         data.id=currentBoardScope==='collab'&&collabSync?collabSync.makeNodeId(collabNodeSeed,nid+1):'n'+(nid+1);
@@ -2032,7 +2552,8 @@
     }
     var base=selectedNode&&nodes[selectedNode]?nodes[selectedNode]:null;
     var data=stateApi.cloneSnapshot(clipNode);
-    var x=base?base.x+34:canvas.scrollLeft/zoom+90, y=base?base.y+34:canvas.scrollTop/zoom+90;
+    var viewStart=viewportTopLeftPoint();
+    var x=base?base.x+34:viewStart.x+90, y=base?base.y+34:viewStart.y+90;
     var node=addNode(data.type,Math.max(0,x),Math.max(0,y),data);
     selectNode(node);
     updateState('已粘贴节点');
@@ -2062,7 +2583,7 @@
   }
   function fitView(){
     var ids=Object.keys(nodes);
-    if(!ids.length){ setZoom(1); canvas.scrollLeft=0; canvas.scrollTop=0; return; }
+    if(!ids.length){ setZoom(1); centerEmptyView(); syncCanvasGrid(); return; }
     var minX=Infinity,minY=Infinity,maxX=0,maxY=0;
     ids.forEach(function(id){
       var n=nodes[id], w=n.el.offsetWidth||250, h=n.el.offsetHeight||160;
@@ -2071,8 +2592,9 @@
     var pad=80, bw=Math.max(1,maxX-minX+pad*2), bh=Math.max(1,maxY-minY+pad*2);
     var next=Math.min(1.2,Math.max(.5,Math.min(canvas.clientWidth/bw,canvas.clientHeight/bh)));
     setZoom(next);
-    canvas.scrollLeft=Math.max(0,(minX-pad)*zoom);
-    canvas.scrollTop=Math.max(0,(minY-pad)*zoom);
+    canvas.scrollLeft=Math.max(0,CANVAS_VIEW_PAD+((minX+maxX)/2)*zoom-canvas.clientWidth/2);
+    canvas.scrollTop=Math.max(0,CANVAS_VIEW_PAD+((minY+maxY)/2)*zoom-canvas.clientHeight/2);
+    syncCanvasGrid();
     updateState('已适应视图');
   }
   function fullscreenElement(){
@@ -2107,46 +2629,259 @@
   }
   function focusNode(node){
     if(!node) return;
-    canvas.scrollLeft=Math.max(0,(node.x-80)*zoom);
-    canvas.scrollTop=Math.max(0,(node.y-80)*zoom);
+    setCanvasView('workflow');
+    canvas.scrollLeft=Math.max(0,CANVAS_VIEW_PAD+(node.x+(node.el.offsetWidth||250)/2)*zoom-canvas.clientWidth/2);
+    canvas.scrollTop=Math.max(0,CANVAS_VIEW_PAD+(node.y+(node.el.offsetHeight||160)/2)*zoom-canvas.clientHeight/2);
+    syncCanvasGrid();
     scheduleMap();
   }
-  function hideMenu(){ if(menu) menu.classList.remove('on'); }
-  function showMenu(items,x,y){
+  function hideMenu(){ if(menu){ menu.classList.remove('on'); menu.innerHTML=''; } }
+  function commandShortcut(key,shift){
+    var mac=/Mac|iPhone|iPad/.test((navigator&&navigator.platform)||'');
+    return mac?(shift?'⇧⌘'+key:'⌘'+key):(shift?'Ctrl+Shift+'+key:'Ctrl+'+key);
+  }
+  var MENU_ICONS={
+    text:'<path pathLength="1" class="nc-icon-base" d="M4 6h16"/><path pathLength="1" class="nc-icon-detail" d="M4 12h12M4 18h9"/>',
+    image:'<rect pathLength="1" class="nc-icon-base" x="3" y="4" width="18" height="16" rx="2"/><circle pathLength="1" class="nc-icon-detail" cx="8.5" cy="9" r="1.8"/><path pathLength="1" class="nc-icon-detail" d="m5 18 5-5 3 3 2-2 4 4"/>',
+    reverse:'<rect pathLength="1" class="nc-icon-base" x="3" y="4" width="14" height="13" rx="2"/><path pathLength="1" class="nc-icon-detail" d="m5 15 4-4 3 3 2-2 2 2M18 9.5a4.5 4.5 0 1 1-.7 6.5M18 9.5v4h-4"/>',
+    generate:'<rect pathLength="1" class="nc-icon-base" x="3" y="5" width="15" height="15" rx="2"/><path pathLength="1" class="nc-icon-detail" d="m5 18 4-4 3 3 2-2 2 2"/><path pathLength="1" class="nc-icon-spark" d="m19 2 .7 1.8 1.8.7-1.8.7L19 8l-.7-1.8-1.8-.7 1.8-.7Z"/>',
+    video:'<rect pathLength="1" class="nc-icon-base" x="3" y="5" width="17" height="14" rx="2"/><path pathLength="1" class="nc-icon-detail" d="m9.5 9 5 3-5 3Z"/><path pathLength="1" class="nc-icon-spark" d="m19 2 .6 1.5 1.5.6-1.5.6-.6 1.5-.6-1.5-1.5-.6 1.5-.6Z"/>',
+    drama:'<rect pathLength="1" class="nc-icon-base" x="3" y="5" width="18" height="14" rx="2"/><path pathLength="1" class="nc-icon-detail" d="M8 5v14M16 5v14M3 9h5M16 9h5M3 15h5M16 15h5m-5-5 3 2-3 2Z"/>',
+    upload:'<path pathLength="1" class="nc-icon-base" d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/><path pathLength="1" class="nc-icon-detail" d="M12 16V4m-4 4 4-4 4 4"/>',
+    assets:'<path pathLength="1" class="nc-icon-base" d="m12 3 8 4-8 4-8-4Z"/><path pathLength="1" class="nc-icon-detail" d="m4 12 8 4 8-4M4 17l8 4 8-4"/>',
+    add:'<circle pathLength="1" class="nc-icon-base" cx="8" cy="8" r="3"/><circle pathLength="1" class="nc-icon-detail" cx="17.5" cy="15.5" r="2.5"/><path pathLength="1" class="nc-icon-detail" d="m10.5 10 5 4M7 17v5m-2.5-2.5h5"/>',
+    undo:'<path pathLength="1" class="nc-icon-base" d="M9 7 4 12l5 5"/><path pathLength="1" class="nc-icon-detail" d="M5 12h8a6 6 0 0 1 6 6v1"/>',
+    redo:'<path pathLength="1" class="nc-icon-base" d="m15 7 5 5-5 5"/><path pathLength="1" class="nc-icon-detail" d="M19 12h-8a6 6 0 0 0-6 6v1"/>',
+    paste:'<rect pathLength="1" class="nc-icon-base" x="5" y="4" width="14" height="17" rx="2"/><path pathLength="1" class="nc-icon-detail" d="M9 4.5V3h6v1.5M9 9h6M9 13h6M9 17h4"/>',
+    note:'<path pathLength="1" class="nc-icon-base" d="M5 3h9l5 5v13H5Z M14 3v5h5"/><path pathLength="1" class="nc-icon-detail" d="m8 17 1-4 6-6 2 2-6 6Z"/>',
+    preview:'<path pathLength="1" class="nc-icon-base" d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle pathLength="1" class="nc-icon-detail" cx="12" cy="12" r="2.5"/>',
+    copy:'<rect pathLength="1" class="nc-icon-base" x="8" y="8" width="12" height="12" rx="2"/><path pathLength="1" class="nc-icon-detail" d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
+    remove:'<path pathLength="1" class="nc-icon-base" d="M5 7h14m-9-3h4l1 3H9Zm-3 3 1 14h8l1-14"/><path pathLength="1" class="nc-icon-detail" d="M10 11v6M14 11v6"/>',
+    portrait:'<path pathLength="1" class="nc-icon-base" d="M7 20v-2.2a5 5 0 0 1 10 0V20M8 8a4 4 0 1 0 8 0 4 4 0 0 0-8 0Z"/><path pathLength="1" class="nc-icon-detail" d="M10.5 8.5h.01M13.5 8.5h.01M10.5 11.5c.8.7 2.2.7 3 0"/><path pathLength="1" class="nc-icon-spark" d="m19 3 .6 1.5 1.5.6-1.5.6-.6 1.5-.6-1.5-1.5-.6 1.5-.6Z"/>',
+    light:'<circle pathLength="1" class="nc-icon-base" cx="12" cy="12" r="3.5"/><path pathLength="1" class="nc-icon-detail" d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8m10.6 10.6 1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/>',
+    angle:'<path pathLength="1" class="nc-icon-base" d="M4 7.5 9 5l5 2.5L9 10Zm6 5 5-2.5 5 2.5-5 2.5Z"/><path pathLength="1" class="nc-icon-detail" d="M4 7.5V13l5 2.5V10m6 5v4.5l5-2.5v-4.5"/><path pathLength="1" class="nc-icon-spark" d="m4 18 .6 1.4 1.4.6-1.4.6L4 22l-.6-1.4L2 20l1.4-.6Z"/>',
+    grid:'<path pathLength="1" class="nc-icon-base" d="M4 4h16v16H4Z"/><path pathLength="1" class="nc-icon-detail" d="M9.3 4v16m5.4-16v16M4 9.3h16M4 14.7h16"/><path pathLength="1" class="nc-icon-spark" d="m20 2 .5 1.2 1.2.5-1.2.5-.5 1.2-.5-1.2-1.2-.5 1.2-.5Z"/>',
+    more:'<circle pathLength="1" class="nc-icon-base" cx="5" cy="12" r="1"/><circle pathLength="1" class="nc-icon-detail" cx="12" cy="12" r="1"/><circle pathLength="1" class="nc-icon-detail" cx="19" cy="12" r="1"/>',
+    download:'<path pathLength="1" class="nc-icon-base" d="M5 20h14"/><path pathLength="1" class="nc-icon-detail" d="M12 3v12m-4-4 4 4 4-4"/>'
+  };
+  function menuIcon(name){
+    var shapes=MENU_ICONS[name];
+    return shapes?'<span class="nc-menu-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round">'+shapes+'</svg></span>':'';
+  }
+  function imageNodeSource(node){
+    return node&&(node.image||(node.outputs&&node.outputs.image))||'';
+  }
+  function createImageActionDraft(source,type,options){
+    if(!source||!canEditCanvas()||!imageNodeSource(source)) return;
+    options=options||{};
+    pushUndo();
+    var branches=edges.filter(function(edge){ return edge.from.node===source.id&&edge.from.port==='image'; }).length;
+    var params=Object.assign({title:options.title||TYPE[type].name},options.params||{});
+    var node=addNode(type,source.x+(source.el.offsetWidth||250)+120,Math.max(0,source.y+Math.min(branches,4)*48),{params:params});
+    connectEdge({node:source.id,port:'image'},{node:node.id,port:'image'});
+    selectNode(node);
+    focusNode(node);
+    updateState(options.status||'已创建并连线，确认参数后再生成');
+  }
+  function createImageGenDraft(source,title,prompt,ratio){
+    createImageActionDraft(source,'gen',{
+      title:title,
+      params:{text:prompt,ratio:ratio||(source.params&&source.params.ratio)||'16:9',quality:'hd'},
+      status:'已创建「'+title+'」草稿，确认参数后再生成'
+    });
+  }
+  function showImageActionMenu(button,label,items){
+    var rect=button.getBoundingClientRect();
+    showMenu(items,rect.left,rect.bottom+8,{focus:true,label:label});
+  }
+  function portraitActionItems(source){
+    return [
+      {icon:'portrait',label:'自然肤质',run:function(){ createImageGenDraft(source,'人像优化 · 自然肤质','保持参考图人物身份、五官、发型和服装一致；采用自然肤质与真实皮肤纹理，轻微优化瑕疵，避免磨皮、塑料感和面部变形。'); }},
+      {icon:'portrait',label:'清透修饰',run:function(){ createImageGenDraft(source,'人像优化 · 清透修饰','保持参考图人物身份和五官完全一致；清透修饰皮肤并均匀肤色，保留真实毛孔和自然细节，避免过度磨皮与假面感。'); }},
+      {icon:'portrait',label:'真实肌理',run:function(){ createImageGenDraft(source,'人像优化 · 真实肌理','保持参考图人物身份和五官完全一致；强化真实肌理、自然毛孔和面部细节，肤色真实，避免磨皮和蜡像感。'); }}
+    ];
+  }
+  function lightingActionItems(source){
+    return [
+      {icon:'light',label:'柔和补光',run:function(){ createImageGenDraft(source,'打光优化 · 柔和补光','保持参考图主体、构图和场景一致；增加柔和自然的面部与环境补光，压住过曝和死黑区域，保留真实光影层次。'); }},
+      {icon:'light',label:'自然匹配',run:function(){ createImageGenDraft(source,'打光优化 · 自然匹配','保持参考图主体和构图一致；让人物与环境光向、色温和明暗关系自然匹配，融合真实，避免抠图感。'); }},
+      {icon:'light',label:'氛围强化',run:function(){ createImageGenDraft(source,'打光优化 · 氛围强化','保持参考图主体和构图一致；强化有层次的电影氛围光、轮廓光与环境光，主体清晰，避免过度炫光。'); }}
+    ];
+  }
+  function triggerImageDownload(source){
+    var src=imageNodeSource(source);
+    if(!src) return;
+    function download(href,revoke){
+      var link=document.createElement('a');
+      link.href=href;
+      link.download=canvasExporter.safeFilename(nodeDisplayName(source)||'huangque-image')+'.png';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      if(revoke) setTimeout(function(){ URL.revokeObjectURL(href); },1000);
+      updateState('图片已下载');
+    }
+    if(src.indexOf('data:image/')===0){ download(src,false); return; }
+    apiClient.asset(src).then(function(blob){ download(URL.createObjectURL(blob),true); })
+      .catch(function(){ window.open(src,'_blank','noopener'); updateState('已打开图片，请在新页面保存'); });
+  }
+  function showImageMoreMenu(button,source){
+    var items=[];
+    if(source.type==='image'){
+      items.push({icon:'upload',label:'本地替换图片',run:function(){ chooseNodeImage(source,'图片已更换'); }});
+      items.push({icon:'assets',label:'从资产列表选择',run:function(){ openNodeAssetPicker(source); }});
+    }
+    items.push({icon:'preview',label:'查看大图',run:function(){ window.open(imageNodeSource(source),'_blank','noopener'); }});
+    items.push({icon:'download',label:'下载图片',run:function(){ triggerImageDownload(source); }});
+    items.push({icon:'note',label:(source.params.remark||'').trim()?'编辑备注':'添加备注',run:function(){ editNodeRemark(source); }});
+    items.push({kind:'separator'});
+    items.push({icon:'remove',label:'删除图片节点',run:function(){ openConfirmDialog('删除图片节点','节点和相关连线会一起删除，仍可通过撤销恢复。',function(){ delNode(source.id); }); }});
+    showImageActionMenu(button,'图片更多操作',items);
+  }
+  function selectedImageActionNode(){
+    var node=selectedNode&&nodes[selectedNode];
+    if(!node||!wrap.classList.contains('editing')||!canEditCanvas()||canvasView!=='workflow') return null;
+    if((node.type!=='image'&&node.type!=='gen')||!imageNodeSource(node)) return null;
+    return node;
+  }
+  function ensureImageToolbar(){
+    if(imageToolbar) return imageToolbar;
+    imageToolbar=document.createElement('div');
+    imageToolbar.className='nc-image-toolbar';
+    imageToolbar.setAttribute('role','toolbar');
+    imageToolbar.setAttribute('aria-label','图片下一步操作');
+    imageToolbar.innerHTML=''
+      +'<button type="button" data-image-action="reverse" title="根据图片反推提示词">'+menuIcon('reverse')+'<span>反推</span></button>'
+      +'<button type="button" data-image-action="continue" title="以当前图片作为参考继续作图">'+menuIcon('generate')+'<span>继续作图</span></button>'
+      +'<button type="button" data-image-action="portrait" title="调整人像肤质与细节">'+menuIcon('portrait')+'<span>人像优化</span><b>NEW</b></button>'
+      +'<button type="button" data-image-action="lighting" title="调整人物与环境光影">'+menuIcon('light')+'<span>打光</span></button>'
+      +'<button type="button" data-image-action="angle" title="生成身份一致的多角度设定图">'+menuIcon('angle')+'<span>多角度</span></button>'
+      +'<button type="button" data-image-action="grid" title="生成同一主体的九宫格画面">'+menuIcon('grid')+'<span>九宫格</span></button>'
+      +'<button type="button" data-image-action="video" title="以当前图片创建视频草稿">'+menuIcon('video')+'<span>转视频</span></button>'
+      +'<button type="button" class="more" data-image-action="more" title="更多图片操作">'+menuIcon('more')+'<span>更多</span></button>';
+    imageToolbar.addEventListener('pointerdown',function(event){ event.stopPropagation(); });
+    imageToolbar.addEventListener('click',function(event){
+      var button=event.target&&event.target.closest&&event.target.closest('[data-image-action]');
+      var source=selectedImageActionNode();
+      if(!button||!source) return;
+      event.preventDefault();
+      event.stopPropagation();
+      var action=button.getAttribute('data-image-action');
+      if(action==='reverse') createImageActionDraft(source,'reverse',{title:'反推提示词',status:'已创建反推节点，点击反推时才扣点'});
+      if(action==='continue') createImageGenDraft(source,'继续作图','基于参考图继续创作，保持主体身份、服装、核心构图和画面风格一致，提升细节、光影与整体完成度。');
+      if(action==='portrait') showImageActionMenu(button,'人像优化',portraitActionItems(source));
+      if(action==='lighting') showImageActionMenu(button,'打光优化',lightingActionItems(source));
+      if(action==='angle') createImageGenDraft(source,'多角度设定','保持参考图人物或主体的身份、造型、服装、比例和风格一致，生成正面、侧面、背面三视图，使用纯净统一背景，细节一致，适合角色设定。');
+      if(action==='grid') createImageGenDraft(source,'九宫格分镜','保持参考图人物或主体的身份、服装和风格一致，生成 3×3 九宫格：九个连续但不同的镜头角度、景别和表情，构图清晰，每格边界整齐，不添加文字。','1:1');
+      if(action==='video') createImageActionDraft(source,'video',{title:'图片转视频',params:{text:'保持主体身份、外观与场景一致，添加自然、稳定的轻微动作和镜头运动，避免形变、闪烁和画面跳变。',channel:'grok',ratio:'16:9',duration:'5'},status:'已创建视频草稿，确认参数后再生成'});
+      if(action==='more') showImageMoreMenu(button,source);
+    });
+    document.body.appendChild(imageToolbar);
+    return imageToolbar;
+  }
+  function updateImageToolbar(){
+    var node=selectedImageActionNode();
+    if(!node){ if(imageToolbar) imageToolbar.classList.remove('on'); return; }
+    var bar=ensureImageToolbar(), nodeRect=node.el.getBoundingClientRect(), canvasRect=canvas.getBoundingClientRect();
+    if(nodeRect.right<canvasRect.left||nodeRect.left>canvasRect.right||nodeRect.bottom<canvasRect.top||nodeRect.top>canvasRect.bottom){ bar.classList.remove('on'); return; }
+    bar.classList.add('on');
+    bar.setAttribute('data-node-id',node.id);
+    var minLeft=Math.max(8,canvasRect.left+8), maxRight=Math.min(window.innerWidth-8,canvasRect.right-8);
+    bar.style.maxWidth=Math.max(220,maxRight-minLeft)+'px';
+    var width=bar.offsetWidth, height=bar.offsetHeight;
+    bar.style.left=Math.max(minLeft,Math.min(nodeRect.left+(nodeRect.width-width)/2,maxRight-width))+'px';
+    var top=nodeRect.top-height-10;
+    if(top<Math.max(8,canvasRect.top+8)) top=Math.min(canvasRect.bottom-height-8,nodeRect.bottom+10);
+    bar.style.top=Math.max(8,top)+'px';
+  }
+  function showMenu(items,x,y,options){
     if(!menu) return;
+    options=options||{};
     menu.innerHTML='';
+    menu.className='nc-menu'+(options.variant?' '+options.variant:'');
+    menu.setAttribute('aria-label',options.label||'操作菜单');
     items.forEach(function(it){
+      if(it.kind==='title'||it.kind==='section'){
+        var heading=document.createElement('div');
+        heading.className=it.kind==='title'?'nc-menu-title':'nc-menu-section';
+        heading.textContent=it.label||'';
+        heading.setAttribute('role','presentation');
+        menu.appendChild(heading);
+        return;
+      }
+      if(it.kind==='separator'){
+        var separator=document.createElement('div');
+        separator.className='nc-menu-separator';
+        separator.setAttribute('role','separator');
+        menu.appendChild(separator);
+        return;
+      }
       var b=document.createElement('button');
       b.type='button';
+      b.setAttribute('role','menuitem');
       if(it.title) b.title=it.title;
-      if(it.key){
-        b.innerHTML='<span class="nc-menu-k">'+escapeHtml(it.key)+'</span><span class="nc-menu-t">'+escapeHtml(it.label)+'</span>';
-      }else{
-        b.textContent=it.label;
-      }
+      if(it.disabled){ b.disabled=true; b.setAttribute('aria-disabled','true'); }
+      b.innerHTML=(it.icon?menuIcon(it.icon):(it.key?'<span class="nc-menu-k">'+escapeHtml(it.key)+'</span>':''))+'<span class="nc-menu-t">'+escapeHtml(it.label)+'</span>'+(it.shortcut?'<span class="nc-menu-shortcut">'+escapeHtml(it.shortcut)+'</span>':'');
       b.onmousedown=function(e){ e.preventDefault(); };
-      b.onclick=function(){ hideMenu(); it.run(); };
+      b.onclick=function(e){ e.stopPropagation(); if(it.disabled) return; hideMenu(); it.run(); };
       menu.appendChild(b);
     });
-    menu.style.left=Math.max(8,Math.min(x,window.innerWidth-160))+'px';
-    menu.style.top=Math.max(8,Math.min(y,window.innerHeight-items.length*38-16))+'px';
     menu.classList.add('on');
+    var width=menu.offsetWidth, height=menu.offsetHeight;
+    var left=Math.max(8,Math.min(x,window.innerWidth-width-8));
+    var top=options.anchor==='above'?y-height:y;
+    menu.style.left=left+'px';
+    menu.style.top=Math.max(8,Math.min(top,window.innerHeight-height-8))+'px';
+    menu.onkeydown=function(e){
+      if(e.key!=='ArrowDown'&&e.key!=='ArrowUp') return;
+      e.preventDefault();
+      var buttons=Array.prototype.slice.call(menu.querySelectorAll('button:not(:disabled)'));
+      if(!buttons.length) return;
+      var current=buttons.indexOf(document.activeElement), step=e.key==='ArrowDown'?1:-1;
+      if(current<0) buttons[step>0?0:buttons.length-1].focus();
+      else buttons[(current+step+buttons.length)%buttons.length].focus();
+    };
+    if(options.focus){
+      var first=menu.querySelector('button:not(:disabled)');
+      if(first) first.focus();
+    }
   }
   function showMenuFromButton(btn,items){
     if(!btn) return;
     var r=btn.getBoundingClientRect();
-    var menuH=(items&&items.length?items.length:1)*34+12;
-    showMenu(items,r.left,r.top-menuH-10);
+    showMenu(items,r.left,r.top-10,{anchor:'above',focus:true});
   }
   function addNodeMenuItems(pt){
-    return [
-      {key:'文',label:'文本',title:'添加文本提示词节点',run:function(){ addAt('text',pt); }},
-      {key:'图',label:'图片',title:'上传或粘贴素材图',run:function(){ addAt('image',pt); }},
-      {key:'反',label:'反推',title:'根据图片生成提示词',run:function(){ addAt('reverse',pt); }},
-      {key:'生',label:'作图',title:'根据提示词和参考图生成图片',run:function(){ addAt('gen',pt); }},
-      {key:'视',label:'视频',title:'根据提示词和参考图生成视频',run:function(){ addAt('video',pt); }},
-      {key:'短',label:'短剧',title:'创建短剧项目',run:function(){ addAt('shortDrama',pt); }}
+    var items=[
+      {icon:'text',label:'文本',title:'添加文本提示词节点',run:function(){ addAt('text',pt); }},
+      {icon:'image',label:'图片',title:'上传或粘贴素材图',run:function(){ addAt('image',pt); }},
+      {icon:'reverse',label:'图片反推',title:'根据图片生成提示词',run:function(){ addAt('reverse',pt); }},
+      {icon:'generate',label:'图片生成',title:'根据提示词和参考图生成图片',run:function(){ addAt('gen',pt); }},
+      {icon:'video',label:'视频生成',title:'根据提示词和参考图生成视频',run:function(){ addAt('video',pt); }},
+      {icon:'drama',label:'短剧生产',title:'创建短剧项目',run:function(){ addAt('shortDrama',pt); }}
     ];
+    if(nodeCreationPolicy.canCreate('digitalPresenter')) items.push({key:'播',label:'数字人口播',title:'创建数字人口播项目',run:function(){ addAt('digitalPresenter',pt); }});
+    return items;
+  }
+  function showAddNodeMenu(pt,x,y,anchor){
+    var items=[{kind:'title',label:'添加节点'}].concat(addNodeMenuItems(pt),[
+      {kind:'section',label:'添加资源'},
+      {icon:'upload',label:'上传图片',run:function(){ uploadImageAt(pt); }},
+      {icon:'assets',label:'打开我的资产',run:function(){ openSidePanel('assets',true); }}
+    ]);
+    showMenu(items,x,y,{variant:'add',anchor:anchor,focus:true,label:'添加节点'});
+  }
+  function connectedNodeMenuItems(from,pt){
+    var compatible=from&&from.port==='prompt'?[['gen','作图'],['video','视频']]:from&&from.port==='image'?[['reverse','反推'],['gen','作图'],['video','视频']]:[];
+    return compatible.map(function(item){
+      return {icon:item[0]==='gen'?'generate':item[0],label:'创建'+item[1]+'节点并连线',run:function(){
+        pushUndo();
+        var node=addNode(item[0],Math.max(0,pt.x+28),Math.max(0,pt.y-48));
+        connectEdge(from,{node:node.id,port:from.port});
+        selectNode(node);
+        updateState('已创建并连线');
+      }};
+    });
   }
   function stopUiEvent(e){
     if(!e) return;
@@ -2171,8 +2906,19 @@
       fn(e);
     });
   }
+  function viewportTopLeftPoint(){
+    return {x:Math.max(0,(canvas.scrollLeft-CANVAS_VIEW_PAD)/zoom),y:Math.max(0,(canvas.scrollTop-CANVAS_VIEW_PAD)/zoom)};
+  }
   function viewportCenterPoint(){
-    return {x:Math.max(0,(canvas.scrollLeft+canvas.clientWidth/2)/zoom),y:Math.max(0,(canvas.scrollTop+canvas.clientHeight/2)/zoom)};
+    return {x:Math.max(0,(canvas.scrollLeft+canvas.clientWidth/2-CANVAS_VIEW_PAD)/zoom),y:Math.max(0,(canvas.scrollTop+canvas.clientHeight/2-CANVAS_VIEW_PAD)/zoom)};
+  }
+  function viewportNodePoint(){
+    var center=viewportCenterPoint(), offset=(Object.keys(nodes).length%5)*36;
+    return {x:Math.max(0,center.x-125+offset),y:Math.max(0,center.y-80+offset)};
+  }
+  function centerEmptyView(){
+    canvas.scrollLeft=Math.max(0,CANVAS_VIEW_PAD+(innerWidth()*zoom-canvas.clientWidth)/2);
+    canvas.scrollTop=Math.max(0,CANVAS_VIEW_PAD+(innerHeight()*zoom-canvas.clientHeight)/2);
   }
   function closeDialog(){
     var old=document.querySelector('.nc-dialog-mask');
@@ -2230,14 +2976,38 @@
   }
   function canvasPointFromClient(e){
     var r=inner.getBoundingClientRect();
+    if(!Object.keys(nodes).length&&(e.clientX<r.left||e.clientY<r.top)){
+      centerEmptyView();
+      r=inner.getBoundingClientRect();
+    }
     return {x:Math.max(0,(e.clientX-r.left)/zoom),y:Math.max(0,(e.clientY-r.top)/zoom)};
   }
+  canvas.addEventListener('dragover',function(e){
+    if(!dragAsset||!canEditCanvas()) return;
+    e.preventDefault();
+    if(e.dataTransfer) e.dataTransfer.dropEffect='copy';
+    canvas.classList.add('asset-drop-target');
+  });
+  canvas.addEventListener('drop',function(e){
+    if(!dragAsset||!canEditCanvas()) return;
+    e.preventDefault();
+    var asset=dragAsset, pt=canvasPointFromClient(e);
+    clearAssetDragState();
+    addAssetAt(asset,pt);
+  });
   function addAt(type,pt){
-    if(!canEditCanvas()) return;
-    pushUndo();
-    var node=addNode(type,pt.x,pt.y);
-    selectNode(node);
-    updateState('已添加');
+    var node=null;
+    nodeCreationPolicy.run(type,function(){
+      pushUndo();
+      node=addNode(type,pt.x,pt.y);
+      selectNode(node);
+      updateState('已添加');
+    });
+    return node;
+  }
+  function uploadImageAt(pt){
+    var node=addAt('image',pt);
+    if(node) chooseNodeImage(node,'图片已上传');
   }
   function beginInlineRename(node,preserveSelection){
     if(!canEditCanvas()) return;
@@ -2381,48 +3151,54 @@
     e.preventDefault();
     if(!canEditCanvas()){
       selectNode(node);
-      if((node.params.remark||'').trim()) showMenu([{label:'查看备注',run:function(){ viewNodeRemark(node); }}],e.clientX,e.clientY);
+      if((node.params.remark||'').trim()) showMenu([{icon:'preview',label:'查看备注',run:function(){ viewNodeRemark(node); }}],e.clientX,e.clientY);
       return;
     }
     var groupIds=selectedNodes[node.id]?selectedNodeIds():[];
     if(groupIds.length>1){
       showMenu([
-        {label:'批量复制 '+groupIds.length+' 个节点',run:function(){ copyNode(); }},
+        {icon:'copy',label:'批量复制 '+groupIds.length+' 个节点',run:function(){ copyNode(); }},
         {label:'批量折叠',run:function(){ setSelectedCollapsed(true); }},
         {label:'批量展开',run:function(){ setSelectedCollapsed(false); }},
-        {label:'批量删除',run:function(){ deleteSelectedNodes(); }}
+        {icon:'remove',label:'批量删除',run:function(){ deleteSelectedNodes(); }}
       ],e.clientX,e.clientY);
       return;
     }
     selectNode(node);
     var items=[
-      {label:(node.params.remark||'').trim()?'编辑备注':'添加备注',run:function(){ editNodeRemark(node); }}
+      {icon:'note',label:(node.params.remark||'').trim()?'编辑备注':'添加备注',run:function(){ editNodeRemark(node); }}
     ];
     if(node.type==='image'){
-      items.push({label:'本地上传图片',run:function(){ chooseNodeImage(node,'图片已更换'); }});
-      items.push({label:'从资产列表选择',run:function(){ openNodeAssetPicker(node); }});
+      items.push({icon:'upload',label:'本地上传图片',run:function(){ chooseNodeImage(node,'图片已更换'); }});
+      items.push({icon:'assets',label:'从资产列表选择',run:function(){ openNodeAssetPicker(node); }});
     }
     if((node.params.remark||'').trim()){
-      items.push({label:'查看备注',run:function(){ viewNodeRemark(node); }});
-      items.push({label:'删除备注',run:function(){ deleteNodeRemark(node); }});
+      items.push({icon:'preview',label:'查看备注',run:function(){ viewNodeRemark(node); }});
+      items.push({icon:'remove',label:'删除备注',run:function(){ deleteNodeRemark(node); }});
     }
     showMenu(items,e.clientX,e.clientY);
   }
   function menuForCanvas(e){
     e.preventDefault();
-    if(!canEditCanvas()){ showMenu([{label:'适应视图',run:function(){ fitView(); }}],e.clientX,e.clientY); return; }
+    if(!canEditCanvas()){ showMenu([{icon:'preview',label:'适应视图',run:function(){ fitView(); }}],e.clientX,e.clientY); return; }
     var pt=canvasPointFromClient(e);
-    showMenu(addNodeMenuItems(pt).concat([
-      {label:'粘贴节点',run:function(){ pasteNode(); }},
-      {label:'适应视图',run:function(){ fitView(); }}
-    ]),e.clientX,e.clientY);
+    var x=e.clientX, y=e.clientY;
+    showMenu([
+      {icon:'upload',label:'上传图片',run:function(){ uploadImageAt(pt); }},
+      {icon:'assets',label:'保存到我的资产',disabled:true,title:'当前仅支持打开资产管理'},
+      {icon:'add',label:'添加节点',run:function(){ showAddNodeMenu(pt,x,y); }},
+      {kind:'separator'},
+      {icon:'undo',label:'撤销',shortcut:commandShortcut('Z'),disabled:!history.canUndo(),run:function(){ undo(); }},
+      {icon:'redo',label:'重做',shortcut:commandShortcut('Z',true),disabled:!history.canRedo(),run:function(){ redo(); }},
+      {icon:'paste',label:'粘贴',shortcut:commandShortcut('V'),disabled:!clipNode,run:function(){ pasteNode(); }}
+    ],x,y,{variant:'context',focus:true,label:'画布操作'});
   }
   function menuForEdge(e,i){
     e.preventDefault();
     selectedEdge=i; redraw();
     if(!canEditCanvas()) return;
     showMenu([
-      {label:'删除连线',run:function(){ delSelectedEdge(); }}
+      {icon:'remove',label:'删除连线',run:function(){ delSelectedEdge(); }}
     ],e.clientX,e.clientY);
   }
   function defaultTemplateName(){
@@ -2545,6 +3321,17 @@
   }
 
   // ---------- 节点交互 ----------
+  function clearAlignmentGuides(){
+    if(guideX) guideX.style.display='none';
+    if(guideY) guideY.style.display='none';
+  }
+  function paintAlignmentGuides(movingIds){
+    if(!graphApi||!graphApi.alignmentGuides) return;
+    var list=Object.keys(nodes).map(function(id){ var node=nodes[id],rect=nodeRect(node); return {id:id,x:node.x,y:node.y,width:rect.w,height:rect.h}; });
+    var guides=graphApi.alignmentGuides(list,movingIds,6/Math.max(zoom,.15));
+    if(guideX){ guideX.style.display=guides.x==null?'none':'block'; if(guides.x!=null) guideX.style.left=guides.x+'px'; }
+    if(guideY){ guideY.style.display=guides.y==null?'none':'block'; if(guides.y!=null) guideY.style.top=guides.y+'px'; }
+  }
   function wireNode(node){
     var el=node.el, head=el.querySelector('[data-f="head"]');
     el.setAttribute('data-node-id',node.id);
@@ -2571,9 +3358,31 @@
         });
         redraw();
         updateSelectedRegion();
+        paintAlignmentGuides(groupIds);
       }
-      function up(){ if(moved) pushUndo(before); window.removeEventListener('pointermove',mv); window.removeEventListener('pointerup',up); }
+      function up(){ clearAlignmentGuides(); if(moved) pushUndo(before); window.removeEventListener('pointermove',mv); window.removeEventListener('pointerup',up); }
       window.addEventListener('pointermove',mv); window.addEventListener('pointerup',up);
+    });
+    el.querySelectorAll('[data-resize]').forEach(function(handle){
+      handle.addEventListener('pointerdown',function(e){
+        if(!canEditCanvas()||!graphApi||!graphApi.resizeNodeRect) return;
+        e.preventDefault(); e.stopPropagation();
+        selectNode(node);
+        var direction=handle.getAttribute('data-resize'),sx=e.clientX,sy=e.clientY,moved=false,before=snapshot();
+        var start={x:node.x,y:node.y,width:el.offsetWidth||250,height:el.offsetHeight||160};
+        function mv(ev){
+          var rect=graphApi.resizeNodeRect(start,direction,(ev.clientX-sx)/zoom,(ev.clientY-sy)/zoom,{minWidth:220,maxWidth:520,minHeight:80,maxHeight:720});
+          if(Math.abs(ev.clientX-sx)+Math.abs(ev.clientY-sy)>2) moved=true;
+          node.x=Math.max(0,rect.x); node.y=Math.max(0,rect.y); node.width=rect.width; node.height=rect.height;
+          el.style.left=node.x+'px'; el.style.top=node.y+'px'; el.style.width=node.width+'px'; el.style.height=node.height+'px'; el.classList.add('resized');
+          ensureNodeVisibleBounds(node); redraw(); updateSelectedRegion();
+        }
+        function up(){
+          window.removeEventListener('pointermove',mv); window.removeEventListener('pointerup',up);
+          if(moved){ pushUndo(before); updateState('已调整节点大小'); }
+        }
+        window.addEventListener('pointermove',mv); window.addEventListener('pointerup',up);
+      });
     });
     el.querySelector('[data-f="del"]').onclick=function(){ if(!canEditCanvas()) return; delNode(node.id); };
     el.querySelector('[data-f="fold"]').onclick=function(e){ e.stopPropagation(); toggleCollapsed(node); };
@@ -2627,7 +3436,11 @@
           if(wasActive){
             var target=inputPortAt(upEv,port);
             if(target){ pushUndo(); connectEdge(dragPort.from,target); }
-            else updateState('连线已取消');
+            else{
+              var from=dragPort.from,pt=innerPoint(upEv),items=connectedNodeMenuItems(from,pt);
+              if(items.length){ showMenu(items,upEv.clientX,upEv.clientY); updateState('选择要创建的下游节点'); }
+              else updateState('当前输出暂无可连接的节点');
+            }
           }
           dragPort=null; redraw(); clearConnectHints();
           setTimeout(function(){ suppressPortClick=false; },0);
@@ -2660,6 +3473,8 @@
       seg.querySelectorAll('.nc-chip').forEach(function(c){ c.onclick=function(){ if(!canEditCanvas()) return; if(node.params[f]!==c.getAttribute('data-v')) pushUndo(); seg.querySelectorAll('.nc-chip').forEach(function(x){x.classList.remove('on');}); c.classList.add('on'); node.params[f]=c.getAttribute('data-v'); refreshVideoNodeHint(node); scheduleSave(); }; }); });
     var openShortDrama=el.querySelector('[data-f="openShortDrama"]');
     if(openShortDrama) openShortDrama.onclick=function(e){ e.stopPropagation(); openShortDramaWorkspace(node).catch(function(){}); };
+    var openDigitalPresenter=el.querySelector('[data-f="openDigitalPresenter"]');
+    if(openDigitalPresenter) openDigitalPresenter.onclick=function(e){ e.stopPropagation(); openDigitalPresenterWorkspace(node).catch(function(){}); };
     // 图片节点上传/粘贴
     var file=el.querySelector('[data-f="file"]'), drop=el.querySelector('[data-f="drop"]');
     if(file){ file.onchange=function(){ if(!canEditCanvas()) return; var label=node._imageActionLabel||'图片已上传'; node._imageActionLabel=''; imgToNode(node, file.files&&file.files[0], label); }; }
@@ -2712,6 +3527,7 @@
     selectedEdge=-1;
     if(node) node.el.classList.add('sel');
     updateSelectedRegion();
+    updateImageToolbar();
   }
   function selectNodesByIds(ids){
     selectedNodes={};
@@ -2727,6 +3543,7 @@
     var keys=Object.keys(selectedNodes);
     if(keys.length===1) selectedNode=keys[0];
     updateSelectedRegion();
+    updateImageToolbar();
     updateState(keys.length?('已选中 '+keys.length+' 个节点'):'就绪');
   }
   function updateSelectedRegion(){
@@ -2734,6 +3551,7 @@
     var ids=Object.keys(selectedNodes||{}).filter(function(id){ return !!nodes[id]; });
     if(ids.length<2){
       selectedRegion.style.display='none';
+      updateImageToolbar();
       return;
     }
     var minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
@@ -2748,6 +3566,7 @@
     selectedRegion.style.top=(minY-pad)+'px';
     selectedRegion.style.width=(maxX-minX+pad*2)+'px';
     selectedRegion.style.height=(maxY-minY+pad*2)+'px';
+    updateImageToolbar();
   }
   function rectsIntersect(a,b){
     return a.x<=b.x+b.w && a.x+a.w>=b.x && a.y<=b.y+b.h && a.y+a.h>=b.y;
@@ -2776,6 +3595,7 @@
     if(nodes[id]){
       pushUndo();
       destroyShortDramaWorkspace(nodes[id]);
+      destroyDigitalPresenterWorkspace(nodes[id]);
       nodes[id].el.remove();delete nodes[id];
       if(selectedNode===id) selectedNode=null;
       delete selectedNodes[id];
@@ -2786,6 +3606,7 @@
   function clearCanvas(){
     if(!canEditCanvas()) return;
     destroyAllShortDramaWorkspaces();
+    destroyAllDigitalPresenterWorkspaces();
     Object.keys(nodes).forEach(function(id){ if(nodes[id]&&nodes[id].el) nodes[id].el.remove(); });
     nodes={}; edges=[]; pendingPort=null; selectedNode=null; selectedNodes={}; selectedEdge=-1; redraw(); updateSelectedRegion(); updateState('空画布');
   }
@@ -2797,7 +3618,7 @@
     edges.push({from:{node:t.id,port:'prompt'}, to:{node:g.id,port:'prompt'}});
     edges.push({from:{node:img.id,port:'image'}, to:{node:r.id,port:'image'}});
     redraw(); refreshAllGenRefs(); updateState('示例已重置');
-    canvas.scrollLeft=0; canvas.scrollTop=0;
+    fitView();
   }
   svg.addEventListener('click', function(e){
     var hit=e.target&&e.target.closest?e.target.closest('.nc-edge-hit'):null;
@@ -2813,6 +3634,14 @@
   canvas.addEventListener('click', function(e){
     if(suppressCanvasClick){ e.preventDefault(); suppressCanvasClick=false; return; }
     if(e.target===canvas||e.target===inner){ pendingPort=null; selectedEdge=-1; selectNode(null); redraw(); }
+  });
+  canvas.addEventListener('dblclick', function(e){
+    var t=e.target;
+    if(t&&t.closest&&t.closest('.nc-node,.nc-port,.nc-edge-hit,button,a,input,textarea,.nc-empty-card,.nc-menu')) return;
+    if(!canEditCanvas()) return;
+    e.preventDefault();
+    e.stopPropagation();
+    showAddNodeMenu(canvasPointFromClient(e),e.clientX,e.clientY);
   });
   if(selectedRegion){
     selectedRegion.addEventListener('pointerdown', function(e){
@@ -2839,9 +3668,11 @@
         });
         redraw();
         updateSelectedRegion();
+        paintAlignmentGuides(ids);
       }
       function up(){
         if(moved) pushUndo(before);
+        clearAlignmentGuides();
         selectedRegion.classList.remove('dragging');
         window.removeEventListener('pointermove',mv);
         window.removeEventListener('pointerup',up);
@@ -2855,10 +3686,10 @@
       e.preventDefault();
       e.stopPropagation();
       showMenu([
-        {label:'批量复制 '+ids.length+' 个节点',run:function(){ copyNode(); }},
+        {icon:'copy',label:'批量复制 '+ids.length+' 个节点',run:function(){ copyNode(); }},
         {label:'批量折叠',run:function(){ setSelectedCollapsed(true); }},
         {label:'批量展开',run:function(){ setSelectedCollapsed(false); }},
-        {label:'批量删除',run:function(){ deleteSelectedNodes(); }}
+        {icon:'remove',label:'批量删除',run:function(){ deleteSelectedNodes(); }}
       ],e.clientX,e.clientY);
     });
   }
@@ -2929,8 +3760,8 @@
     if(canvas.classList.contains('connecting')||canvas.classList.contains('selecting')||dragPort||(t&&t.closest&&t.closest('.nc-port,.nc-go,.nc-chip,.nc-head,.nc-lab,.nc-node-title,.nc-menu'))){ e.preventDefault(); }
   });
   canvas.addEventListener('dragstart',function(e){ if(canvas.classList.contains('connecting')||dragPort){ e.preventDefault(); } });
-  canvas.addEventListener('scroll',function(){ scheduleMap(); },{passive:true});
-  window.addEventListener('resize',function(){ scheduleMap(); });
+  canvas.addEventListener('scroll',function(){ syncCanvasGrid(); scheduleMap(); updateImageToolbar(); },{passive:true});
+  window.addEventListener('resize',function(){ scheduleMap(); updateImageToolbar(); });
   document.addEventListener('click',function(e){ if(!menu||!menu.classList.contains('on')) return; if(e.target&&e.target.closest&&e.target.closest('.nc-menu')) return; hideMenu(); });
   document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ hideMenu(); if(localFullscreen) showBoardHome(); } });
   if(map){
@@ -3011,26 +3842,22 @@
       var prompt=inputVal(id,'prompt')||node.params.text||'';
       if(!prompt.trim()){ setNodeState(node,'error','需要提示词（自己填或从上游连入）','#f4708a'); updateState('缺少提示词'); return Promise.reject('无词'); }
       var refImgs=refImagesForNode(node); var refImg=refImgs[0]||''; var eng=node.params.engine||'nb2';
-      var bp={prompt:prompt.trim(), ratio:node.params.ratio||'9:16', quality:node.params.quality||'hd', count:1};
-      if(refImg) bp.image=refImg.indexOf(',')>=0?refImg.split(',')[1]:refImg;
-      if(refImgs.length>1) bp.images=refImgs.map(function(img){ return img.indexOf(',')>=0?img.split(',')[1]:img; });
-      var endpoint, gbtn=node.el.querySelector('[data-f="run"]');
-      if(eng==='gpt'||eng==='zelong'){
-        endpoint='/api/gen/image';
-        if(eng==='zelong') bp.provider='zelong';
-      } else {
-        endpoint='/api/gen/banana'; bp.model=eng;
-      }
+      var imageRequest=agentModule.imageRequest({engine:eng,prompt:prompt,ratio:node.params.ratio,quality:node.params.quality,references:refImgs});
+      var gbtn=node.el.querySelector('[data-f="run"]');
       gbtn.disabled=true; setNodeState(node,'running','提交中…','#2dd4bf'); updateState('运行中');
-      return apiClient.json(endpoint,{method:'POST',body:bp})
+      var imageSubmissionKey=node._imageSubmissionKey||(node._imageSubmissionKey='canvas-image-'+node.id+'-'+Date.now().toString(36));
+      return agentModule.submitRequest(apiClient,imageRequest,imageSubmissionKey)
         .catch(function(error){
           var data=error&&error.data||{};
-          if(error&&error.status===402) throw makeRunNodeError('点数不足',{code:'insufficient_points'});
-          if(error&&error.status===429) throw makeRunNodeError(data.detail||'任务排队中，请稍后再试',{
-            code:data.code||(data.active_jobs!=null?'active_job_cap':'queue_full'),
+          if(error&&error.status===402){ node._imageSubmissionKey=''; throw makeRunNodeError('点数不足',{code:'insufficient_points'}); }
+          var retry=agentModule.submissionRetryPolicy(error);
+          if(retry.retryable){
+            if(!retry.keepKey) node._imageSubmissionKey='';
+            throw makeRunNodeError(data.detail||'任务排队中，请稍后再试',{
+            code:retry.code,
             retryable:true,
-            retryAfterMs:data.retry_after_ms||RUN_ALL_RETRY_MS
-          });
+            retryAfterMs:retry.retryAfterMs||RUN_ALL_RETRY_MS
+          }); }
           throw error;
         })
         .then(function(data){
@@ -3048,7 +3875,7 @@
             timeoutError:function(){ return makeRunNodeError('超时',{code:'timeout'}); }
           });
         })
-        .then(function(result){ gbtn.disabled=false;
+        .then(function(result){ gbtn.disabled=false; node._imageSubmissionKey='';
           var url=(result&&(result.url||(result.urls&&result.urls[0])))||'';
           node.outputs.image=url;
           var box=node.el.querySelector('[data-f="result"]'); if(box){ box.style.display='block'; box.style.backgroundImage='url("'+url+'?t='+Date.now()+'")'; box.innerHTML=''; }
@@ -3060,6 +3887,8 @@
             updateState('等待队列空位');
             throw e;
           }
+          if(e&&e.status>=400&&e.status<500) node._imageSubmissionKey='';
+          if(e&&e.code==='job_failed') node._imageSubmissionKey='';
           setNodeState(node,'error','失败：'+(e.message||e),'#f4708a'); updateState('有错误'); throw e;
         });
     }
@@ -3068,20 +3897,22 @@
       if(!videoPrompt.trim()){ setNodeState(node,'error','需要视频提示词（自己填或从上游连入）','#f4708a'); updateState('缺少提示词'); return Promise.reject('无词'); }
       var videoRefs=refImagesForNode(node).slice(0,4);
       var videoChannel=node.params.channel||'grok';
-      var payload={channel:videoChannel,prompt:videoPrompt.trim()};
-      if(videoChannel==='grok') payload.ratio=node.params.ratio||'16:9';
-      if(videoRefs.length) payload.reference_images=videoRefs.map(function(img){ return img.indexOf(',')>=0?img.split(',')[1]:img; });
+      var videoRequest=agentModule.videoRequest({channel:videoChannel,prompt:videoPrompt,duration:node.params.duration,ratio:node.params.ratio,references:videoRefs});
       var vbtn=node.el.querySelector('[data-f="run"]');
       vbtn.disabled=true; setNodeState(node,'running','提交中...','#2dd4bf'); updateState('运行中');
-      return apiClient.json('/api/gen/xiaole_video',{method:'POST',body:payload})
+      var videoSubmissionKey=node._videoSubmissionKey||(node._videoSubmissionKey='canvas-video-'+node.id+'-'+Date.now().toString(36));
+      return agentModule.submitRequest(apiClient,videoRequest,videoSubmissionKey)
         .catch(function(error){
           var data=error&&error.data||{};
-          if(error&&error.status===402) throw makeRunNodeError('点数不足',{code:'insufficient_points'});
-          if(error&&error.status===429) throw makeRunNodeError(data.detail||'任务排队中，请稍后再试',{
-            code:data.code||(data.active_jobs!=null?'active_job_cap':'queue_full'),
+          if(error&&error.status===402){ node._videoSubmissionKey=''; throw makeRunNodeError('点数不足',{code:'insufficient_points'}); }
+          var retry=agentModule.submissionRetryPolicy(error);
+          if(retry.retryable){
+            if(!retry.keepKey) node._videoSubmissionKey='';
+            throw makeRunNodeError(data.detail||'任务排队中，请稍后再试',{
+            code:retry.code,
             retryable:true,
-            retryAfterMs:data.retry_after_ms||RUN_ALL_RETRY_MS
-          });
+            retryAfterMs:retry.retryAfterMs||RUN_ALL_RETRY_MS
+          }); }
           throw error;
         })
         .then(function(data){
@@ -3099,7 +3930,7 @@
             timeoutError:function(){ return makeRunNodeError('超时',{code:'timeout'}); }
           });
         })
-        .then(function(result){ vbtn.disabled=false;
+        .then(function(result){ vbtn.disabled=false; node._videoSubmissionKey='';
           var url=(result&&(result.video_url||result.source_video_url||result.url||(result.urls&&result.urls[0])))||'';
           if(!url) throw makeRunNodeError('未返回视频地址',{code:'missing_video_url'});
           node.outputs.video=url;
@@ -3113,6 +3944,8 @@
             updateState('等待队列空位');
             throw e;
           }
+          if(e&&e.status>=400&&e.status<500) node._videoSubmissionKey='';
+          if(e&&e.code==='job_failed') node._videoSubmissionKey='';
           setNodeState(node,'error','失败：'+normalizeVideoNodeError(node,e),'#f4708a'); updateState('有错误'); throw e;
         });
     }
@@ -3230,7 +4063,31 @@
   if(runAllBtn) runAllBtn.onclick=startRunAllBatch;
 
   // ---------- 顶部添加 ----------
-  document.querySelectorAll('.nc-add').forEach(function(b){ b.onclick=function(){ if(!canEditCanvas()) return; pushUndo(); addNode(b.getAttribute('data-add')); updateState('已添加'); }; });
+  function bindCanvasAddButton(button){
+    if(!button) return;
+    button.onclick=function(){
+      var type=button.getAttribute('data-add');
+      var created=nodeCreationPolicy.run(type,function(){
+        pushUndo();addNode(type);updateState('已添加');
+      });
+      if(!created&&type==='digitalPresenter'&&currentBoardScope!=='collab'){
+        updateState('数字人口播项目请在协作画布中创建');
+      }
+    };
+  }
+  function addDigitalPresenterEntry(){
+    digitalPresenterEntryEnabled=true;
+    [document.querySelector('.nc-group[aria-label="添加节点"]'),document.querySelector('.nc-empty-card')].forEach(function(host){
+      if(!host) return;
+      var button=document.createElement('button');button.type='button';button.className='nc-add';
+      button.setAttribute('data-add','digitalPresenter');button.title='创建数字人口播项目';button.textContent='+ 数字人口播';
+      bindCanvasAddButton(button);host.appendChild(button);
+    });
+  }
+  var digitalPresenterEntryRegistrar=digitalPresenterModule.createEntryRegistrar(addDigitalPresenterEntry);
+  function registerDigitalPresenterEntry(capability){ return digitalPresenterEntryRegistrar.register(capability); }
+  document.querySelectorAll('.nc-add').forEach(bindCanvasAddButton);
+  apiClient.json('/api/gen/digital-presenter/capability').then(registerDigitalPresenterEntry).catch(function(){});
   document.getElementById('ncClear').onclick=function(){ if(!canEditCanvas()) return; if(Object.keys(nodes).length){ pushUndo(); clearCanvas(); } };
   if(cleanupStorageBtn) cleanupStorageBtn.onclick=function(){ cleanupLocalSpace(); };
   document.getElementById('ncResetDemo').onclick=function(){ if(!canEditCanvas()) return; pushUndo(); resetDemo(); };
@@ -3254,8 +4111,10 @@
     };
   });
   bindButton(fsAdd,function(){
-    showMenuFromButton(fsAdd,addNodeMenuItems(viewportCenterPoint()));
+    var r=fsAdd.getBoundingClientRect();
+    showAddNodeMenu(viewportNodePoint(),r.left,r.top-10,'above');
   });
+  bindButton(fsAgent,function(){ openSidePanel('agent'); });
   bindButton(fsUndo,function(){ undo(); });
   bindButton(fsRedo,function(){ redo(); });
   bindButton(fsZoomOut,function(){ setZoom(zoom-.1); });
@@ -3294,6 +4153,12 @@
   });
   document.querySelectorAll('.nc-side-tool[data-side]').forEach(function(btn){
     btn.onclick=function(e){ e.stopPropagation(); openSidePanel(btn.getAttribute('data-side')); };
+  });
+  document.querySelectorAll('[data-agent-start]').forEach(function(btn){
+    btn.onclick=function(e){ e.stopPropagation(); startAgentPrompt(btn.getAttribute('data-agent-start')); };
+  });
+  document.querySelectorAll('[data-canvas-view]').forEach(function(btn){
+    btn.onclick=function(){ setCanvasView(btn.getAttribute('data-canvas-view')); };
   });
   if(sideClose) sideClose.onclick=function(e){ e.stopPropagation(); closeSidePanel(); };
   if(sidePanel){
@@ -3339,7 +4204,7 @@
     scheduleCollabPoll(0);
     if(!document.hidden) sendCollabPresence();
   });
-  window.addEventListener('beforeunload',function(){ destroyAllShortDramaWorkspaces();stopCollabSync(); });
+  window.addEventListener('beforeunload',function(){ destroyAllShortDramaWorkspaces();destroyAllDigitalPresenterWorkspaces();stopCollabSync(); });
   document.addEventListener('keydown',function(e){
     var tag=(e.target&&e.target.tagName||'').toLowerCase();
     var editing=tag==='input'||tag==='textarea'||tag==='select'||!!(e.target&&(e.target.isContentEditable||(e.target.closest&&e.target.closest('[contenteditable="true"]'))));

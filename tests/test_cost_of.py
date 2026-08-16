@@ -21,6 +21,48 @@ class CostOfTests(unittest.TestCase):
         self.assertEqual(
             self.points.cost_of("script_to_video", {"scenes": scenes, "style": "口播"}), 30)
 
+    def test_pixelle_script_to_video_prices_all_generated_assets(self):
+        prices = {
+            "image.openai.std": 20,
+            "audio.tts": 10,
+            "text.copy": 3,
+        }
+        body = {"pipeline": "pixelle", "mode": "generate", "n_scenes": 5}
+        with mock.patch.object(
+            self.points.pricing, "get_price", side_effect=lambda key: prices[key]
+        ):
+            self.assertEqual(self.points.cost_of("script_to_video", body), 113)
+        self.assertEqual(body["cost_breakdown"], {
+            "visual_scenes": 100,
+            "scene_count": 5,
+            "narration": 10,
+            "copywriting": 3,
+            "total": 113,
+        })
+
+    def test_pixelle_fixed_copy_does_not_charge_copywriting(self):
+        prices = {"image.openai.std": 20, "audio.tts": 10}
+        body = {"pipeline": "pixelle", "mode": "fixed", "n_scenes": 2}
+        with mock.patch.object(
+            self.points.pricing, "get_price", side_effect=lambda key: prices[key]
+        ):
+            self.assertEqual(self.points.cost_of("script_to_video", body), 50)
+        self.assertEqual(body["cost_breakdown"]["copywriting"], 0)
+
+    def test_pixelle_fixed_price_uses_exact_upstream_paragraph_count(self):
+        pixelle = importlib.import_module("content_domains.pixelle_video")
+        body = pixelle.prepare_payload({
+            "pipeline": "pixelle", "mode": "fixed",
+            "text": "第一段。\n\n第二段很长。" + "补充内容。" * 30 + "\n\n第三段。",
+        })
+        prices = {"image.openai.std": 20, "audio.tts": 10}
+        with mock.patch.object(
+            self.points.pricing, "get_price", side_effect=lambda key: prices[key]
+        ):
+            self.assertEqual(self.points.cost_of("script_to_video", body), 70)
+        self.assertEqual(body["n_scenes"], 3)
+        self.assertEqual(body["cost_breakdown"]["scene_count"], 3)
+
     def test_script_to_video_talking_has_minimum_hold(self):
         """口播预扣保底一档 30 点。"""
         self.assertEqual(

@@ -7,7 +7,8 @@
   3. parse_link 对含链接 / 口令式无链接 / 小红书 / 视频号 的路由。
 运行：python3 -m pytest tests/test_tikhub_parse.py   或   python3 tests/test_tikhub_parse.py
 """
-import os, sys, re
+import os, sys, re, tempfile
+from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "server"))
 import tikhub
 
@@ -30,6 +31,12 @@ def test_extract_url_none_for_kouling():
     # 口令式分享：没有 http 链接
     txt = "2.05 :8pm PxF:/ 07/24 e@o.DH  小婷婷在抖音记录美好生活20260607 - 抖音 复制此链接，打开Dou音搜索"
     assert tikhub._extract_url(txt) is None
+
+
+def test_urls_returns_unique_cdn_candidates():
+    assert tikhub._urls({
+        "url_list": ["https://cdn/one", "https://cdn/two", "https://cdn/one"]
+    }) == ["https://cdn/one", "https://cdn/two"]
 
 
 def test_dy_resolve_from_video_url_offline():
@@ -62,10 +69,97 @@ def test_parse_link_channels_routes_without_network():
     assert info["platform"] == "channels"
 
 
+def test_parse_link_bilibili_video_url_offline():
+    info = tikhub.parse_link("认真做 Agent https://www.bilibili.com/video/BV1EbdbBHEPa")
+    assert info == {"platform": "bilibili", "id": "BV1EbdbBHEPa", "note_type": "video"}
+
+
+def test_parse_link_b23_follows_only_to_bilibili():
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def geturl(self): return "https://www.bilibili.com/video/BV1EbdbBHEPa"
+
+    with mock.patch.object(tikhub._BILI_OPENER, "open", return_value=Response()):
+        info = tikhub.parse_link("https://b23.tv/keSUqLz")
+    assert info == {"platform": "bilibili", "id": "BV1EbdbBHEPa", "note_type": "video"}
+
+
+def test_bili_detail_normalizes_nested_response():
+    response = {"code": 0, "data": {"bvid": "BV1EbdbBHEPa", "title": "认真做 Agent",
+        "desc": "一条简介", "pic": "https://img/cover.jpg", "duration": 427, "pubdate": 1,
+        "owner": {"mid": 7, "name": "雷哥AI"},
+        "stat": {"view": 10, "like": 3, "reply": 2, "favorite": 1, "share": 1, "coin": 1}}}
+    with mock.patch.object(tikhub, "_g", return_value=response):
+        detail = tikhub.bili_detail("BV1EbdbBHEPa")
+    assert detail["platform"] == "bilibili"
+    assert detail["author"]["name"] == "雷哥AI"
+    assert detail["stats"]["view"] == 10
+
+
+def test_bili_streams_prefers_h264_and_best_audio():
+    response = {"data": {"dash": {
+        "video": [
+            {"baseUrl": "https://cdn/hevc", "codecs": "hev1", "height": 1080, "bandwidth": 99},
+            {"base_url": "https://cdn/avc480", "codecs": "avc1.64001f", "height": 480, "bandwidth": 20},
+            {"base_url": "https://cdn/avc720", "codecs": "avc1.64001f", "height": 720, "bandwidth": 30}],
+        "audio": [{"base_url": "https://cdn/a1", "bandwidth": 10},
+                  {"base_url": "https://cdn/a2", "bandwidth": 20}]}}}
+    with mock.patch.object(tikhub, "_g", return_value=response):
+        assert tikhub.bili_streams("https://www.bilibili.com/video/BV1EbdbBHEPa") == (
+            "https://cdn/avc720", "https://cdn/a2")
+
+
+def test_bili_download_muxes_and_cleans_stream_files():
+    fd, dest = tempfile.mkstemp(suffix=".mp4"); os.close(fd)
+    streams = []
+    def fake_download(url, deadline, path, **_):
+        streams.append(path)
+        with open(path, "wb") as output: output.write(url.encode())
+        return os.path.getsize(path)
+    def fake_ffmpeg(command, **_):
+        with open(command[-1], "wb") as output: output.write(b"MUXED")
+    try:
+        with mock.patch.object(tikhub, "bili_streams", return_value=("video", "audio")), \
+             mock.patch.object(tikhub, "download_to_file", side_effect=fake_download), \
+             mock.patch.object(tikhub.subprocess, "run", side_effect=fake_ffmpeg):
+            assert tikhub.bili_download_to_file(
+                {"url": "https://www.bilibili.com/video/BV1EbdbBHEPa"},
+                tikhub.time.time() + 30, dest) == 5
+        assert open(dest, "rb").read() == b"MUXED"
+        assert all(not os.path.exists(path) for path in streams)
+    finally:
+        try: os.unlink(dest)
+        except OSError: pass
+
+
 def test_parse_link_douyin_video_url_offline():
     info = tikhub.parse_link("快看 https://www.douyin.com/video/7654380745624879025 这条")
     assert info["platform"] == "douyin"
     assert info["id"] == "7654380745624879025"
+
+
+def test_parse_link_xhs_shortlink_follows_to_note_without_legacy_api():
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def geturl(self): return "https://www.xiaohongshu.com/discovery/item/694e676f000000001e03ab64"
+
+    with mock.patch.object(tikhub._XHS_OPENER, "open", return_value=Response()) as open_url, \
+         mock.patch.object(tikhub, "_g", side_effect=AssertionError("legacy App V1 must not be called")):
+        info = tikhub.parse_link("看看 http://xhslink.cn/a1b2c3 这篇")
+    assert info == {"platform": "xhs", "id": "694e676f000000001e03ab64", "note_type": None}
+    open_url.assert_called_once()
+
+
+def test_xhs_redirect_rejects_non_xhs_host():
+    handler = tikhub._XhsRedirectHandler()
+    req = tikhub.urllib.request.Request("https://xhslink.cn/a1b2c3")
+    try:
+        handler.redirect_request(req, None, 302, "Found", {}, "http://127.0.0.1/private")
+    except tikhub.urllib.error.HTTPError:
+        return
+    raise AssertionError("non-Xiaohongshu redirect was accepted")
 
 
 if __name__ == "__main__":

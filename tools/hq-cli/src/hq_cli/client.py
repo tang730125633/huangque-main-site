@@ -1,0 +1,346 @@
+"""Fixed-origin HTTPS client and local credential storage for HQ CLI."""
+
+import base64
+import hashlib
+import http.client
+import json
+import os
+from pathlib import Path
+import secrets
+import stat
+import urllib.error
+import urllib.parse
+import urllib.request
+
+from . import __version__
+
+
+API_BASE = "https://huangquechuanmei.com"
+ALLOWED_PATHS = {
+    "/api/auth/cli/device/start",
+    "/api/auth/cli/device/poll",
+    "/api/auth/cli/status",
+    "/api/auth/cli/logout",
+    "/api/auth/cli/action",
+}
+MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_VIDEO_UPLOAD_BYTES = 32 * 1024 * 1024
+IMAGE_UPLOAD_PATH = "/api/auth/cli/image-upload"
+VIDEO_UPLOAD_PATH = "/api/auth/cli/video-upload"
+
+
+class NetworkError(Exception):
+    pass
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def request_json(path, method="GET", body=None, token="", timeout=30):
+    if path not in ALLOWED_PATHS or method not in {"GET", "POST"}:
+        raise ValueError("HQ CLI only calls fixed main-site endpoints")
+    headers = {"Accept": "application/json", "User-Agent": "hq-cli/%s" % __version__}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    data = None
+    if body is not None:
+        data = json.dumps(body, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(API_BASE + path, data=data, headers=headers, method=method)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            raw, status = response.read(MAX_RESPONSE_BYTES + 1), response.getcode()
+    except urllib.error.HTTPError as exc:
+        raw, status = exc.read(MAX_RESPONSE_BYTES + 1), exc.code
+    except (urllib.error.URLError, OSError) as exc:
+        raise NetworkError(str(exc))
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise NetworkError("server response exceeds 2 MiB")
+    try:
+        payload = json.loads(raw or b"{}")
+    except (UnicodeDecodeError, ValueError):
+        payload = {"detail": "server returned invalid JSON"}
+        status = 502
+    return int(status), payload
+
+
+def _image_mime(header):
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if header.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
+def _video_mime(header):
+    if header.startswith(b"\x1aE\xdf\xa3"):
+        return "video/webm"
+    if len(header) >= 12 and header[4:8] == b"ftyp":
+        return "video/quicktime" if header[8:12] == b"qt  " else "video/mp4"
+    return ""
+
+
+def _open_media(path, max_bytes, mime_detector, size_error, type_error):
+    if not isinstance(path, str) or not os.path.isabs(path):
+        raise ValueError("--file must be an absolute path")
+    if os.name == "nt":
+        return _open_media_windows(path, max_bytes, mime_detector, size_error, type_error)
+    parts = Path(path).parts
+    # macOS 的 /tmp 与 /var 是 root 管理的系统别名；先固定到真实路径，再逐级拒绝用户 symlink。
+    if len(parts) > 1 and parts[1] in {"tmp", "var"}:
+        system_alias = os.path.sep + parts[1]
+        try:
+            alias_stat = os.lstat(system_alias)
+            if alias_stat.st_uid == 0 and stat.S_ISLNK(alias_stat.st_mode):
+                alias_target = Path(os.readlink(system_alias))
+                if not alias_target.is_absolute():
+                    alias_target = Path(os.path.sep) / alias_target
+                parts = alias_target.parts + parts[2:]
+        except OSError:
+            pass
+    if len(parts) < 2 or parts[0] != os.path.sep or any(part in {"", ".", ".."} for part in parts[1:]):
+        raise ValueError("upload path is invalid")
+    directory_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_DIRECTORY", 0)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    directory = -1
+    try:
+        directory = os.open(os.path.sep, directory_flags)
+        for part in parts[1:-1]:
+            child = os.open(part, directory_flags | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory)
+            os.close(directory)
+            directory = child
+        descriptor = os.open(parts[-1], flags, dir_fd=directory)
+    except OSError:
+        raise ValueError("cannot open upload file")
+    finally:
+        if directory >= 0:
+            os.close(directory)
+    return _inspect_media_descriptor(descriptor, max_bytes, mime_detector, size_error, type_error)
+
+
+def _open_media_windows(path, max_bytes, mime_detector, size_error, type_error):
+    candidate = Path(os.path.normpath(path))
+    if not candidate.drive or any(part in {"", ".", ".."} for part in candidate.parts[1:]):
+        raise ValueError("upload path is invalid")
+    reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    try:
+        for entry in (candidate, *candidate.parents[:-1]):
+            entry_stat = os.lstat(entry)
+            if stat.S_ISLNK(entry_stat.st_mode) or getattr(entry_stat, "st_file_attributes", 0) & reparse_point:
+                raise ValueError("upload path cannot contain a symlink or junction")
+        descriptor = os.open(
+            str(candidate),
+            os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOINHERIT", 0),
+        )
+    except ValueError:
+        raise
+    except OSError:
+        raise ValueError("cannot open upload file")
+    return _inspect_media_descriptor(descriptor, max_bytes, mime_detector, size_error, type_error)
+
+
+def _inspect_media_descriptor(descriptor, max_bytes, mime_detector, size_error, type_error):
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("upload file must be a regular file")
+        if not 0 < before.st_size <= max_bytes:
+            raise ValueError(size_error)
+        header = os.read(descriptor, 32)
+        mime = mime_detector(header)
+        if not mime:
+            raise ValueError(type_error)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        digest = hashlib.sha256()
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(64 * 1024, remaining))
+            if not chunk:
+                raise ValueError("upload file changed while reading")
+            digest.update(chunk)
+            remaining -= len(chunk)
+        after = os.fstat(descriptor)
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+            raise ValueError("upload file changed while reading")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        return descriptor, before, mime, digest.hexdigest()
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _open_image(path):
+    return _open_media(
+        path, MAX_IMAGE_UPLOAD_BYTES, _image_mime,
+        "upload image must be between 1 byte and 10 MiB",
+        "upload file must be PNG, JPG, or WebP",
+    )
+
+
+def _open_video(path):
+    return _open_media(
+        path, MAX_VIDEO_UPLOAD_BYTES, _video_mime,
+        "upload video must be between 1 byte and 32 MiB",
+        "upload file must be MP4, MOV, or WebM",
+    )
+
+
+def _upload_media(path, token, upload_path, digest_header, opener, timeout):
+    if not isinstance(token, str) or not token:
+        raise ValueError("missing access token")
+    if upload_path not in {IMAGE_UPLOAD_PATH, VIDEO_UPLOAD_PATH}:
+        raise ValueError("HQ CLI only uploads to fixed main-site endpoints")
+    descriptor, file_stat, mime, digest = opener(path)
+    target = urllib.parse.urlsplit(API_BASE)
+    if target.scheme != "https" or target.hostname != "huangquechuanmei.com" or target.path not in {"", "/"}:
+        os.close(descriptor)
+        raise ValueError("HQ CLI only uploads to the fixed main-site origin")
+    connection = http.client.HTTPSConnection(target.hostname, target.port or 443, timeout=timeout)
+    try:
+        connection.putrequest("POST", upload_path, skip_accept_encoding=True)
+        connection.putheader("Authorization", "Bearer " + token)
+        connection.putheader("Content-Type", mime)
+        connection.putheader("Content-Length", str(file_stat.st_size))
+        connection.putheader(digest_header, digest)
+        connection.putheader("X-HQ-Confirm", "true")
+        connection.putheader("Accept", "application/json")
+        connection.putheader("User-Agent", "hq-cli/%s" % __version__)
+        connection.endheaders()
+        remaining = file_stat.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(64 * 1024, remaining))
+            if not chunk:
+                raise ValueError("upload file changed while sending")
+            connection.send(chunk)
+            remaining -= len(chunk)
+        after = os.fstat(descriptor)
+        if (file_stat.st_dev, file_stat.st_ino, file_stat.st_size, file_stat.st_mtime_ns) != (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+            raise ValueError("upload file changed while sending")
+        response = connection.getresponse()
+        raw, status = response.read(MAX_RESPONSE_BYTES + 1), response.status
+    except (OSError, http.client.HTTPException) as exc:
+        raise NetworkError(str(exc))
+    finally:
+        connection.close()
+        os.close(descriptor)
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise NetworkError("server response exceeds 2 MiB")
+    try:
+        payload = json.loads(raw or b"{}")
+    except (UnicodeDecodeError, ValueError):
+        payload, status = {"detail": "server returned invalid JSON"}, 502
+    if not isinstance(payload, dict):
+        payload, status = {"detail": "server returned invalid JSON"}, 502
+    if 200 <= int(status) < 300 and payload.get("sha256") != digest:
+        raise NetworkError("server upload digest mismatch")
+    return int(status), payload
+
+
+def upload_image(path, token, timeout=120):
+    return _upload_media(
+        path, token, IMAGE_UPLOAD_PATH, "X-HQ-Image-SHA256", _open_image, timeout,
+    )
+
+
+def upload_video(path, token, timeout=120):
+    return _upload_media(
+        path, token, VIDEO_UPLOAD_PATH, "X-HQ-Video-SHA256", _open_video, timeout,
+    )
+
+
+def credentials_path():
+    configured = os.environ.get("HQ_CLI_CONFIG_DIR")
+    if configured:
+        base = Path(configured).expanduser()
+    elif os.name == "nt":
+        base = Path(os.environ.get("APPDATA", "~/AppData/Roaming")).expanduser() / "Huangque" / "hq-cli"
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser() / "hq-cli"
+    return base / "credentials.json"
+
+
+def _windows_dpapi(data, protect):
+    import ctypes
+    from ctypes import wintypes
+
+    class DataBlob(ctypes.Structure):
+        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
+
+    source = ctypes.create_string_buffer(data)
+    source_blob = DataBlob(len(data), ctypes.cast(source, ctypes.POINTER(ctypes.c_byte)))
+    result_blob = DataBlob()
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    function = crypt32.CryptProtectData if protect else crypt32.CryptUnprotectData
+    arguments = [ctypes.byref(source_blob), None, None, None, None, 0x1, ctypes.byref(result_blob)]
+    if not function(*arguments):
+        raise OSError(ctypes.get_last_error(), "Windows DPAPI failed")
+    try:
+        return ctypes.string_at(result_blob.pbData, result_blob.cbData)
+    finally:
+        local_free = ctypes.windll.kernel32.LocalFree
+        local_free.argtypes = [ctypes.c_void_p]
+        local_free.restype = ctypes.c_void_p
+        local_free(ctypes.cast(result_blob.pbData, ctypes.c_void_p))
+
+
+def save_credentials(token, expires_at, scopes):
+    if not isinstance(token, str) or len(token) < 20:
+        raise ValueError("invalid access token")
+    path = credentials_path()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    temp = path.with_name(".%s.%s.tmp" % (path.name, secrets.token_hex(6)))
+    payload = json.dumps({"access_token": token, "expires_at": int(expires_at), "scopes": list(scopes)},
+                         sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if os.name == "nt":
+        payload = json.dumps({
+            "protected_data": base64.b64encode(_windows_dpapi(payload, True)).decode("ascii"),
+            "protection": "windows-dpapi-current-user",
+        }, sort_keys=True, separators=(",", ":")).encode("ascii")
+    descriptor = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+        os.chmod(path, 0o600)
+    finally:
+        try:
+            temp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def load_credentials():
+    path = credentials_path()
+    protected_with_dpapi = False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict) and payload.get("protection") == "windows-dpapi-current-user":
+            protected_with_dpapi = True
+            protected = base64.b64decode(payload["protected_data"], validate=True)
+            payload = json.loads(_windows_dpapi(protected, False).decode("utf-8"))
+    except (OSError, ValueError, KeyError):
+        return None
+    token = payload.get("access_token") if isinstance(payload, dict) else None
+    if not isinstance(token, str) or not 20 <= len(token) <= 200:
+        return None
+    if os.name == "nt" and not protected_with_dpapi:
+        save_credentials(token, payload.get("expires_at", 0), payload.get("scopes", []))
+    return payload
+
+
+def delete_credentials():
+    try:
+        credentials_path().unlink()
+    except FileNotFoundError:
+        pass

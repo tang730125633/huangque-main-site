@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import hashlib
+import sqlite3
 
 from .core import (
     TTS_MODEL,
@@ -10,11 +11,16 @@ from .core import (
 from .points import _auth_points_request
 from . import cosyvoice, cos
 from . import points as points_domain
+from . import pricing
 
 VOICE_SLOT_COST = 50
 VOICE_SLOT_MAX_PER_USER = 5
 VALID_VOICE_SLOT_STATUSES = ("active", "training", "ready", "failed")
 _voice_slot_purchase_lock = threading.Lock()
+
+
+def voice_slot_cost():
+    return pricing.get_price("audio.voice_slot")
 
 
 class VoiceSlotError(Exception):
@@ -105,7 +111,8 @@ def purchase_audio_voice_slot(username):
             raise VoiceSlotLimitError("最多 %d 个音色槽位" % VOICE_SLOT_MAX_PER_USER)
 
         user_id = get_user_id(username)
-        points_left = points_domain.deduct_points(username, VOICE_SLOT_COST, "voice_slot")
+        cost = voice_slot_cost()
+        points_left = points_domain.deduct_points(username, cost, "voice_slot")
         slot_id = "slot_" + uuid.uuid4().hex
         now = int(time.time())
         try:
@@ -125,16 +132,16 @@ def purchase_audio_voice_slot(username):
                     raise
         except Exception as exc:
             points_domain.safe_refund_points(
-                username, VOICE_SLOT_COST, "voice_slot:insert_failed")
+                username, cost, "voice_slot:insert_failed")
             if isinstance(exc, VoiceSlotLimitError):
                 raise
             raise VoiceSlotPurchaseError(
-                "购买音色槽位失败，%d 点已退回" % VOICE_SLOT_COST) from exc
+                "购买音色槽位失败，%d 点已退回" % cost) from exc
 
         return {
             "slot_id": slot_id,
             "status": "active",
-            "cost": VOICE_SLOT_COST,
+            "cost": cost,
             "points_left": points_left,
         }
 
@@ -657,16 +664,37 @@ def record_audio_asset(job_id, username, result):
     if not result or result.get("type") != "audio":
         return
     now = int(time.time())
-    raw_voice_key = (result.get("voice") or "S_d21F8OR62").strip()
-    voice_key = raw_voice_key.lower() if raw_voice_key.lower() in set() else raw_voice_key
-    voice_id = ensure_audio_voice(username, voice_key)  # #604: 遗留/占位 key 现在返 None，voice_id 存 NULL、不再凭空建占位行
+    asset_kind = str(result.get("asset_kind") or "voice")
+    if asset_kind == "sound_effect":
+        voice_key, voice_id = "", None
+    else:
+        raw_voice_key = (result.get("voice") or "S_d21F8OR62").strip()
+        voice_key = raw_voice_key.lower() if raw_voice_key.lower() in set() else raw_voice_key
+        voice_id = ensure_audio_voice(username, voice_key)
     with closing(adb()) as c:
+        _ensure_column(c, "audio_assets", "asset_kind", "TEXT NOT NULL DEFAULT 'voice'")
+        _ensure_column(c, "audio_assets", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
         c.execute("""INSERT OR REPLACE INTO audio_assets
             (job_id, username, voice_id, voice_key, file, url, text, speed, pitch, volume, created_at)
             VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
             (job_id, username, voice_id, voice_key, result.get("file"), result.get("url"),
              result.get("text") or result.get("prompt"), result.get("speed"), result.get("pitch"),
              result.get("volume"), now))
+        c.execute(
+            "UPDATE audio_assets SET asset_kind=?,metadata_json=? WHERE job_id=?",
+            (
+                asset_kind,
+                json.dumps({
+                    "provider": result.get("provider"),
+                    "provider_model": result.get("provider_model"),
+                    "provider_request_id": result.get("provider_request_id"),
+                    "quality": result.get("quality") or {},
+                    "sound_design": result.get("sound_design") or {},
+                    "duration_ms": result.get("duration_ms"),
+                }, ensure_ascii=False, sort_keys=True),
+                job_id,
+            ),
+        )
         c.commit()
 
 def _cleanup_alloy_placeholder_voices():
@@ -821,17 +849,55 @@ def rename_audio_voice(username, slot_id, display_name):
         c.commit()
     return {"slot_id": slot_id, "display_name": name, "updated_at": now}
 
-def list_audio_assets(username, limit=120):
+def list_audio_assets(username, limit=120, offset=0):
     limit = max(1, min(120, int(limit or 120)))
+    offset = max(0, min(100000, int(offset or 0)))
     with closing(adb()) as c:
         _ensure_column(c, "audio_assets", "deleted", "INTEGER DEFAULT 0")
+        _ensure_column(c, "audio_assets", "asset_kind", "TEXT NOT NULL DEFAULT 'voice'")
+        _ensure_column(c, "audio_assets", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
         rows = c.execute("""SELECT a.id, a.job_id, a.username, a.voice_id, a.voice_key, a.file, a.url, a.text,
                    a.speed, a.pitch, a.volume, a.created_at, v.display_name AS voice_name, v.preview_url
+                   ,a.asset_kind,a.metadata_json
             FROM audio_assets a
             LEFT JOIN audio_voices v ON v.id = a.voice_id
             WHERE a.username=? AND COALESCE(a.deleted,0)=0
-            ORDER BY a.id DESC LIMIT ?""", (username, limit)).fetchall()
+            ORDER BY a.id DESC LIMIT ? OFFSET ?""", (username, limit, offset)).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_audio_asset_by_job(username, job_id):
+    try:
+        job_id = int(job_id)
+    except (TypeError, ValueError):
+        return None
+    with closing(adb()) as conn:
+        _ensure_column(conn, "audio_assets", "deleted", "INTEGER DEFAULT 0")
+        _ensure_column(conn, "audio_assets", "asset_kind", "TEXT NOT NULL DEFAULT 'voice'")
+        _ensure_column(conn, "audio_assets", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+        row = conn.execute(
+            "SELECT id,job_id,username,file,url,text,created_at,asset_kind,"
+            "metadata_json FROM audio_assets WHERE job_id=? AND username=? "
+            "AND COALESCE(deleted,0)=0", (job_id, username),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_audio_asset(username, asset_id):
+    """Return one owned, non-deleted audio asset for internal composition use."""
+    try:
+        asset_id = int(asset_id)
+    except (TypeError, ValueError):
+        return None
+    with closing(adb()) as conn:
+        conn.row_factory = sqlite3.Row
+        _ensure_column(conn, "audio_assets", "deleted", "INTEGER DEFAULT 0")
+        row = conn.execute(
+            "SELECT id,username,file,url,created_at FROM audio_assets "
+            "WHERE id=? AND username=? AND COALESCE(deleted,0)=0",
+            (asset_id, username),
+        ).fetchone()
+    return dict(row) if row else None
 
 # ============ 配音能力：OpenAI TTS（同事的 audio 能力，合并保留） ============
 VOICE_MAP = {
@@ -885,28 +951,137 @@ def _cosy_voice_for(provider_voice):
         raise ValueError("该音色尚未迁移到新引擎，请重新复刻一次")
     return v      # 兜底：当作预置名直接用
 
-def gen_audio(payload):
-    text = (payload.get("text") or payload.get("prompt") or "").strip()
+
+def _resolve_owned_ready_personal_voice(username, voice_key):
+    username = str(username or "").strip()
+    voice_key = str(voice_key or "").strip()
+    if not username or len(username) > 128 or not voice_key or len(voice_key) > 128:
+        raise ValueError("个人音色不存在或不可用")
+
+    with closing(adb()) as c:
+        row = c.execute(
+            """
+            SELECT v.provider_voice
+            FROM audio_voices AS v
+            INNER JOIN audio_voice_slots AS s
+                ON s.voice_id = v.id
+               AND s.username = v.username
+               AND s.slot_id = v.slot_id
+            WHERE v.scope = 'personal'
+              AND v.username = ?
+              AND v.voice_key = ?
+              AND s.status = 'ready'
+            LIMIT 1
+            """,
+            (username, voice_key),
+        ).fetchone()
+
+    if not row:
+        raise ValueError("个人音色不存在或不可用")
+
+    provider_voice = _cosy_voice_for(row["provider_voice"])
+    if not str(provider_voice).startswith(cosyvoice.CLONE_MODEL):
+        raise ValueError("个人音色不存在或不可用")
+    return provider_voice
+
+
+def require_owned_ready_personal_voice(username, voice_key):
+    """Validate ownership/readiness without exposing the provider voice ID."""
+    _resolve_owned_ready_personal_voice(username, voice_key)
+
+def validate_audio_payload(payload, username=""):
+    if not isinstance(payload, dict):
+        raise ValueError("请求体必须是 JSON 对象")
+    body = dict(payload)
+    text = str(body.get("text") or body.get("prompt") or "").strip()
     if not text:
         raise ValueError("配音文案不能为空")
     if len(text) > 1000:
         raise ValueError("配音文案过长，请控制在 1000 字以内")
-    username = (payload.get("_username") or "").strip()
-    raw_voice_key = (payload.get("voice") or "S_d21F8OR62").strip()
-    voice_key = raw_voice_key.lower() if raw_voice_key.lower() in set() else raw_voice_key
-    voice = resolve_audio_provider_voice(username, voice_key)
-    raw_speed = payload.get("speed")
+    raw_voice_key = body.get("voice") or "S_d21F8OR62"
+    if not isinstance(raw_voice_key, str) or not raw_voice_key.strip() or len(raw_voice_key.strip()) > 128:
+        raise ValueError("音色参数无效")
+    voice_key = raw_voice_key.strip()
+    if username:
+        resolve_audio_provider_voice(username, voice_key)
+        # The customer audio page exposes exactly the four preset voices and
+        # owned cloned voices. Persist that server-derived scope so operations
+        # evidence never has to infer a customer mode from a mutable label.
+        body["voice_scope"] = (
+            "public" if voice_key in cosyvoice.PUBLIC_VOICE_PRESETS else "personal"
+        )
+        body["provider"] = "cosyvoice"
+    raw_speed = body.get("speed")
     if isinstance(raw_speed, (int, float)):
-        speed = max(0.5, min(2.0, round(float(raw_speed), 1)))
+        if isinstance(raw_speed, bool) or raw_speed != raw_speed or not 0.5 <= float(raw_speed) <= 2.0:
+            raise ValueError("语速必须是 0.5-2.0")
+        speed = round(float(raw_speed), 1)
     else:
+        if raw_speed not in (None, "", *SPEED_MAP):
+            raise ValueError("语速参数无效")
         speed = SPEED_MAP.get(raw_speed or "normal", 1.0)
-    def knob(name, minv, maxv, default):
+    for name, minimum, maximum in (("pitch", -12, 12), ("volume", -50, 100)):
+        raw = body.get(name, 0)
+        if isinstance(raw, bool):
+            raise ValueError("%s 必须是整数" % name)
         try:
-            return max(minv, min(maxv, int(float(payload.get(name, default)))))
-        except Exception:
-            return default
-    pitch = knob("pitch", -12, 12, 0)
-    volume = knob("volume", -50, 100, 0)
+            clean = int(raw)
+        except (TypeError, ValueError):
+            raise ValueError("%s 必须是整数" % name)
+        if str(raw).strip() != str(clean) or not minimum <= clean <= maximum:
+            raise ValueError("%s 超出范围" % name)
+        body[name] = clean
+    body.update({"text": text, "voice": voice_key, "speed": speed})
+    return body
+
+
+def synthesize_owned_voice_segment(
+    username,
+    voice_key,
+    text,
+    speed=1.0,
+    pitch=0,
+    volume=0,
+):
+    payload = validate_audio_payload(
+        {
+            "text": text,
+            "voice": voice_key,
+            "speed": speed,
+            "pitch": pitch,
+            "volume": volume,
+        }
+    )
+    provider_voice = _resolve_owned_ready_personal_voice(username, voice_key)
+    if not cosyvoice.enabled():
+        raise ValueError("声音服务暂时不可用，请稍后重试")
+
+    content = cosyvoice.synth(
+        provider_voice,
+        payload["text"],
+        rate=payload["speed"],
+        pitch=max(0.5, min(2.0, 1.0 + payload["pitch"] / 24.0)),
+        volume=max(0, min(100, 50 + payload["volume"] // 2)),
+    )
+    if not content:
+        raise RuntimeError("CosyVoice 合成返回为空")
+
+    return {
+        "content": content,
+        "content_type": "audio/mpeg",
+        "voice_key": str(voice_key).strip(),
+        "voice_scope": "personal",
+        "provider": "cosyvoice",
+    }
+
+
+def gen_audio(payload):
+    username = str((payload or {}).get("_username") or "").strip()
+    payload = validate_audio_payload(payload, username)
+    text = payload["text"]
+    voice_key = payload["voice"]
+    voice = resolve_audio_provider_voice(username, voice_key)
+    speed, pitch, volume = payload["speed"], payload["pitch"], payload["volume"]
 
     # Current public and personal voices use CosyVoice. Never fall back to
     # the retired provider when the CosyVoice channel is unavailable.

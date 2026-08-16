@@ -53,6 +53,19 @@ class AuthCanvasCollabTests(unittest.TestCase):
         with (client or self.client).open(req, timeout=3) as response:
             return json.loads(response.read())
 
+    def _internal_post(self, path, payload, token="test-internal-token"):
+        req = urllib.request.Request(
+            self.base + path,
+            data=json.dumps(payload).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "X-HQ-Internal-Token": token,
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=3) as response:
+            return json.loads(response.read())
+
     def _get(self, path, client=None):
         with (client or self.client).open(self.base + path, timeout=3) as response:
             return json.loads(response.read())
@@ -204,6 +217,47 @@ class AuthCanvasCollabTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.code, 403)
 
+    def test_internal_canvas_access_reports_only_trusted_membership(self):
+        board = self._create_board()
+        self._invite(board, "editor", "editor")
+        self._invite(board, "viewer", "viewer")
+        self.auth.INTERNAL_TOKEN = "test-internal-token"
+
+        expected = {
+            "owner": "owner",
+            "editor": "editor",
+            "viewer": "viewer",
+        }
+        for username, role in expected.items():
+            with self.subTest(username=username):
+                resolved = self._internal_post(
+                    "/api/auth/internal/canvas/access",
+                    {"username": username, "board_id": board["id"]},
+                )
+                self.assertEqual(
+                    {
+                        "board_id": board["id"],
+                        "board_owner_username": "owner",
+                        "role": role,
+                    },
+                    resolved,
+                )
+
+        with self.assertRaises(urllib.error.HTTPError) as missing:
+            self._internal_post(
+                "/api/auth/internal/canvas/access",
+                {"username": "stranger", "board_id": board["id"]},
+            )
+        self.assertEqual(404, missing.exception.code)
+
+        with self.assertRaises(urllib.error.HTTPError) as forbidden:
+            self._internal_post(
+                "/api/auth/internal/canvas/access",
+                {"username": "owner", "board_id": board["id"]},
+                token="wrong-token",
+            )
+        self.assertEqual(403, forbidden.exception.code)
+
     def test_ops_merge_fields_and_keep_edge_without_snapshot_id(self):
         board = self._create_board()
         self._invite(board, "editor", "editor")
@@ -336,8 +390,16 @@ class AuthCanvasCollabTests(unittest.TestCase):
         duplicate = self._ops(
             board["id"],
             "same-batch",
-            [{"type": "node.patch", "id": "n1", "fields": {"title": "twice"}}],
+            [{"type": "node.patch", "id": "n1", "fields": {"title": "once"}}],
         )
+        with self.assertRaises(urllib.error.HTTPError) as reused:
+            self._ops(
+                board["id"],
+                "same-batch",
+                [{"type": "node.patch", "id": "n1", "fields": {"title": "twice"}}],
+            )
+        self.assertEqual(409, reused.exception.code)
+        self.assertEqual("idempotency_conflict", json.loads(reused.exception.read())["code"])
         second = self._ops(
             board["id"],
             "next-batch",

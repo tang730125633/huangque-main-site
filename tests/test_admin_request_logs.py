@@ -1,6 +1,8 @@
+import json
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 
 import server.admin_api as admin_api
 
@@ -9,7 +11,7 @@ SAMPLE = "\n".join(
     [
         '127.0.0.1 - - [09/Jul/2026:08:41:19 +0800] "GET /api/claim?token=worker-secret HTTP/1.1" 200 12 "-" "Python-urllib/3.11"',
         '127.0.0.1 - - [09/Jul/2026:08:41:30 +0800] "GET /api/admin/overview?days=7 HTTP/1.1" 200 900 "-" "Mozilla/5.0"',
-        '1.2.3.4 - - [09/Jul/2026:08:42:00 +0800] "POST /api/gen/image HTTP/1.1" 500 88 "-" "Mozilla/5.0"',
+        '1.2.3.4 - - [09/Jul/2026:08:42:00 +0800] "POST /api/gen/image HTTP/1.1" 502 88 "-" "Mozilla/5.0" rt=1.234 rid=req_image_1234 hq=HQ-UPSTREAM-001',
         '5.6.7.8 - - [09/Jul/2026:08:42:30 +0800] "GET /api/gen/job/42?api_key=abc&ratio=1:1 HTTP/1.1" 200 55 "-" "Mozilla/5.0"',
         # 畸形分号分隔 + 嵌套 URL 编码密钥 + basic auth 用户名带空格
         '2.2.2.2 - - [09/Jul/2026:08:42:40 +0800] "GET /api/gen/x?a=1;token=evil HTTP/1.1" 200 10 "-" "curl/8"',
@@ -73,7 +75,7 @@ class RequestLogTests(unittest.TestCase):
 
     def test_status_filter(self):
         items = admin_api.request_logs(status="5")["items"]
-        self.assertEqual([x["status"] for x in items], [500])
+        self.assertEqual([x["status"] for x in items], [502])
         items = admin_api.request_logs(status="200")["items"]
         self.assertTrue(items and all(x["status"] == 200 for x in items))
 
@@ -82,6 +84,19 @@ class RequestLogTests(unittest.TestCase):
         times = [x["time"] for x in items]
         self.assertEqual(times, sorted(times, reverse=True))
         self.assertIn("/api/keywords", [x["path"] for x in items])  # 来自第二个文件
+
+    def test_observability_suffix_is_parsed_without_breaking_legacy_lines(self):
+        items = {x["path"]: x for x in admin_api.request_logs(include_noise=True)["items"]}
+        self.assertEqual(items["/api/gen/image"]["duration_sec"], 1.234)
+        self.assertEqual(items["/api/gen/image"]["request_id"], "req_image_1234")
+        self.assertEqual(items["/api/gen/image"]["hq_code"], "HQ-UPSTREAM-001")
+        self.assertIsNone(items["/api/gen/health"]["duration_sec"])
+        self.assertEqual(items["/api/gen/health"]["request_id"], "")
+        self.assertEqual(items["/api/gen/health"]["hq_code"], "")
+
+    def test_hq_error_code_is_searchable(self):
+        items = admin_api.request_logs(q="HQ-UPSTREAM-001")["items"]
+        self.assertEqual([x["path"] for x in items], ["/api/gen/image"])
 
     def test_missing_log_file(self):
         admin_api.NGINX_ACCESS_LOGS = [pathlib.Path(str(self.files[0]) + ".nope")]
@@ -114,13 +129,22 @@ class RequestLogUserTests(unittest.TestCase):
         dbf = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         dbf.close()
         self.db_path = pathlib.Path(dbf.name)
+        audit = tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False)
+        import json
+        import time as _time
+        audit.write(json.dumps({
+            "time": int(_time.time()), "event": "metered_request", "status": 200,
+            "username": "member-a", "role": "member", "method": "POST",
+            "path": "/api/foundation-report/generate", "ip": "10.0.0.8",
+            "detail": "", "duration_ms": 432.1, "request_id": "hermes_req_1234",
+        }) + "\n")
+        audit.close()
+        self.audit_path = pathlib.Path(audit.name)
         c = sqlite3.connect(str(self.db_path))
         c.execute(
             "CREATE TABLE jobs(id INTEGER PRIMARY KEY, username TEXT, kind TEXT,"
             " cost INTEGER, status TEXT, payload TEXT, created_at INTEGER, updated_at INTEGER)"
         )
-        import time as _time
-
         now = int(_time.time())
         c.execute(
             "INSERT INTO jobs VALUES(1226,'tang','xiaole_video',13,'done','{}',?,?)",
@@ -131,22 +155,26 @@ class RequestLogUserTests(unittest.TestCase):
 
         self.old_logs = admin_api.NGINX_ACCESS_LOGS
         self.old_db = admin_api.JOB_DB
+        self.old_hermes_logs = admin_api.HERMES_AUDIT_LOGS
         admin_api.NGINX_ACCESS_LOGS = [self.log_path]
         admin_api.JOB_DB = self.db_path
+        admin_api.HERMES_AUDIT_LOGS = [self.audit_path]
 
     def tearDown(self):
         admin_api.NGINX_ACCESS_LOGS = self.old_logs
         admin_api.JOB_DB = self.old_db
+        admin_api.HERMES_AUDIT_LOGS = self.old_hermes_logs
         self.log_path.unlink(missing_ok=True)
         self.db_path.unlink(missing_ok=True)
+        self.audit_path.unlink(missing_ok=True)
 
     def test_enrichment(self):
         items = {x["path"]: x for x in admin_api.request_logs()["items"]}
         poll = items["/api/gen/job/1226"]
         self.assertEqual(poll["user"], "tang")
         # 「视频 · 小乐」是旧名字 —— 它把果肉/豆姐/欧米三个渠道混成了一个。
-        # 现在按 payload.channel 分开；这条 fixture 的 payload 里没有 channel，回落到总称。
-        self.assertEqual(poll["func"], "果肉/Seedance/Omni 视频 · 轮询")
+        # 现在按 payload.channel 分开；没有 channel 的老任务不冒充任何客户功能。
+        self.assertEqual(poll["func"], "历史未归档视频任务 · 轮询")
         # 任务库里没有的任务号
         self.assertEqual(items["/api/gen/job/9999"]["user"], "-")
         self.assertEqual(items["/api/gen/job/9999"]["func"], "任务轮询")
@@ -161,7 +189,7 @@ class RequestLogUserTests(unittest.TestCase):
         data = admin_api.activity_logs()
         items = data["items"]
         sources = {x["source"] for x in items}
-        self.assertEqual(sources, {"job", "http"})
+        self.assertEqual(sources, {"job", "http", "ip12"})
         # 任务行：带用户/功能/点数；时间线按时间倒序
         job_rows = [x for x in items if x["source"] == "job"]
         self.assertEqual(job_rows[0]["user"], "tang")
@@ -169,6 +197,12 @@ class RequestLogUserTests(unittest.TestCase):
         self.assertEqual(job_rows[0]["cat"], "ok")
         times = [x["time"] for x in items]
         self.assertEqual(times, sorted(times, reverse=True))
+        ip12 = next(x for x in items if x["source"] == "ip12")
+        self.assertEqual(ip12["user"], "member-a")
+        self.assertEqual(ip12["func"], "IP12 · 生成初稿 PDF")
+        self.assertAlmostEqual(ip12["duration_sec"], 0.4321)
+        self.assertEqual(ip12["request_id"], "hermes_req_1234")
+        self.assertIn("error_catalog", data)
 
     def test_activity_filters(self):
         # source 过滤
@@ -176,12 +210,16 @@ class RequestLogUserTests(unittest.TestCase):
         self.assertTrue(only_jobs and all(x["source"] == "job" for x in only_jobs))
         only_http = admin_api.activity_logs(source="http")["items"]
         self.assertTrue(only_http and all(x["source"] == "http" for x in only_http))
+        only_ip12 = admin_api.activity_logs(source="ip12")["items"]
+        self.assertTrue(only_ip12 and all(x["source"] == "ip12" for x in only_ip12))
         # 统一状态：fail = HTTP >=400（本样本 404）
         fails = admin_api.activity_logs(category="fail")["items"]
         self.assertTrue(fails and all(x["cat"] == "fail" for x in fails))
         # 关键词搜用户名 → 命中任务行
         hit = admin_api.activity_logs(q="tang")["items"]
         self.assertTrue(hit and all("tang" in (x["user"] or "") or "tang" in x["path"] for x in hit))
+        request_hit = admin_api.activity_logs(q="hermes_req_1234")["items"]
+        self.assertEqual([x["source"] for x in request_hit], ["ip12"])
 
     def test_activity_fail_filter_not_crowded_out(self):
         # 404 行不在最新 2 条里；fail 条件下推到采集层后依然能查到
@@ -233,6 +271,108 @@ class CatalogAndBalanceTests(unittest.TestCase):
 
 
 class KeyPingTests(unittest.TestCase):
+    def setUp(self):
+        admin_api._KEY_PING_CACHE.clear()
+        admin_api._KEY_PING_LOCKS.clear()
+
+    def tearDown(self):
+        admin_api._KEY_PING_CACHE.clear()
+        admin_api._KEY_PING_LOCKS.clear()
+
+    def test_key_probe_is_cached_forceable_and_never_exposes_upstream_fields(self):
+        probe = mock.Mock(return_value={
+            "ok": True, "mode": "auth", "latency_ms": 12,
+            "balance": 8, "secret": "must-not-leak",
+            "error": "Authorization=Bearer must-not-leak",
+        })
+        with mock.patch.dict(admin_api.KEY_PINGS, {"wavespeed": probe}, clear=False):
+            first = admin_api.probe_key("wavespeed")
+            second = admin_api.probe_key("wavespeed")
+            forced = admin_api.probe_key("wavespeed", force=True)
+        self.assertEqual(probe.call_count, 2)
+        self.assertFalse(first["cached"])
+        self.assertTrue(second["cached"])
+        self.assertFalse(forced["cached"])
+        self.assertIn("checked_at", first)
+        self.assertEqual(admin_api.key_probe_status()["wavespeed"]["balance"], 8)
+        self.assertNotIn("secret", first)
+        self.assertNotIn("error", first)
+        self.assertNotIn("must-not-leak", json.dumps(admin_api.key_probe_status()))
+
+    def test_key_rotation_invalidates_cached_success(self):
+        probe = mock.Mock(return_value={"ok": True, "mode": "auth"})
+        with mock.patch.dict(admin_api.KEY_PINGS, {"openai": probe}, clear=False), \
+                mock.patch.object(admin_api, "_credential_version", return_value="v1"):
+            admin_api.probe_key("openai")
+        with mock.patch.dict(admin_api.KEY_PINGS, {"openai": probe}, clear=False), \
+                mock.patch.object(admin_api, "_credential_version", return_value="v2"):
+            fresh = admin_api.probe_key("openai")
+        self.assertEqual(probe.call_count, 2)
+        self.assertEqual(fresh["credential_version"], "v2")
+
+    def test_credential_version_covers_every_cos_secret(self):
+        item = admin_api.KEY_GROUP_MAP["cos"]
+        first = [{"name": "test", "values": {
+            "COS_SECRET_ID": "id-same", "COS_SECRET_KEY": "secret-a",
+            "COS_REGION": "ap-test", "COS_BUCKET": "bucket",
+        }}]
+        second = [{"name": "test", "values": dict(first[0]["values"], COS_SECRET_KEY="secret-b")}]
+        self.assertNotEqual(
+            admin_api._key_group_version(item, first),
+            admin_api._key_group_version(item, second),
+        )
+
+    def test_probe_status_distinguishes_auth_quota_and_transient_failures(self):
+        self.assertEqual(admin_api._probe_status("openai", {"ok": False, "http_status": 401})[0], "credential_rejected")
+        self.assertEqual(admin_api._probe_status("openai", {"ok": False, "http_status": 402})[0], "quota_or_plan")
+        self.assertEqual(admin_api._probe_status("openai", {"ok": False, "http_status": 429})[0], "throttled")
+        self.assertEqual(admin_api._probe_status("openai", {"ok": False, "http_status": 503})[0], "upstream_unavailable")
+
+    def test_heygen_uses_plan_credit_not_top_level_wallet(self):
+        detail = {"data": {"remaining_quota": 69, "details": {"api": 69, "plan_credit": 0}}}
+        self.assertEqual(admin_api._heygen_balances(detail), (0.0, 69.0))
+        status, message = admin_api._probe_status(
+            "heygen", {"ok": True, "plan_credit": 0, "api_wallet": 69},
+        )
+        self.assertEqual(status, "quota_or_plan")
+        self.assertIn("已阻断高价 API 钱包兜底", message)
+
+    def test_ping_upstream_rejects_json_rpc_business_error(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.read.return_value = json.dumps({
+            "jsonrpc": "2.0",
+            "id": "probe",
+            "result": {"isError": True, "content": []},
+        }).encode("utf-8")
+        with mock.patch.object(admin_api.DIRECT_OPENER, "open", return_value=response):
+            result = admin_api._ping_upstream(
+                "POST", "https://example.invalid/mcp", body={}, proxy_url="",
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "上游业务错误")
+
+    def test_background_cycle_only_probes_configured_safe_keys(self):
+        with mock.patch.object(admin_api, "key_status", return_value=[
+            {"key": "openai", "configured": True},
+            {"key": "heygen", "configured": False},
+            {"key": "seedance", "configured": True},
+        ]), mock.patch.object(admin_api, "probe_key") as probe:
+            admin_api.probe_configured_keys()
+        probe.assert_called_once_with("openai")
+
+    def test_optional_domain_failure_does_not_disable_core_domains(self):
+        with mock.patch.object(
+            admin_api, "import_module", side_effect=ImportError("optional")
+        ):
+            self.assertIsNone(
+                admin_api._optional_content_domain("optional_failure")
+            )
+        self.assertIsNotNone(admin_api.egress)
+        self.assertIsNotNone(admin_api.feature_flags)
+        self.assertIsNotNone(admin_api.provider_keys)
+
     def test_every_key_group_is_pingable(self):
         for item in admin_api.key_status():
             self.assertTrue(item["pingable"], item["key"])
@@ -240,8 +380,8 @@ class KeyPingTests(unittest.TestCase):
         self.assertEqual(
             set(admin_api.KEY_PINGS),
             {
-                "openai", "xai", "gemini", "seedance", "zelong", "zelong2", "heygen", "heygen_relay",
-                "xiaolevideo", "runninghub", "wavespeed", "cosyvoice", "tikhub", "cos",
+                "openai", "xai", "gemini", "seedance", "minimax", "zelong", "zelong2", "heygen", "heygen_relay",
+                "xiaolevideo", "runninghub", "wavespeed", "cosyvoice", "tikhub", "zhipu", "cos",
             },
         )
 
@@ -304,7 +444,10 @@ class KeyPingTests(unittest.TestCase):
         import unittest.mock as mock
 
         proxy = "http://heygen-only:10809"
-        with mock.patch.object(admin_api, "_env_value", return_value="test-key"), \
+        def env(names):
+            return "test-key" if "HEYGEN_API_KEY" in names else ""
+
+        with mock.patch.object(admin_api, "_env_value", side_effect=env), \
                 mock.patch.object(admin_api.egress, "heygen_proxy", return_value=proxy) as preferred, \
                 mock.patch.object(admin_api, "_ping_upstream", return_value={"ok": True}) as ping:
             self.assertTrue(admin_api._key_ping_heygen()["ok"])
@@ -315,6 +458,56 @@ class KeyPingTests(unittest.TestCase):
             headers={"X-Api-Key": "test-key"},
             proxy_url=proxy,
         )
+
+    def test_heygen_ping_requires_mcp_when_runtime_uses_it(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        credentials = pathlib.Path(directory.name) / "heygen-mcp.json"
+        credentials.write_text(json.dumps({
+            "access_token": "mcp-token", "refresh_token": "refresh-token",
+            "expires_at": 4102444800,
+        }), encoding="utf-8")
+        credentials.chmod(0o600)
+
+        def env(names):
+            if "HEYGEN_API_KEY" in names:
+                return "api-key"
+            if "HEYGEN_MCP_CREDENTIALS" in names:
+                return str(credentials)
+            return ""
+
+        with mock.patch.object(admin_api, "_env_value", side_effect=env), \
+                mock.patch.object(admin_api, "_heygen_proxy_url", return_value=""), \
+                mock.patch.object(admin_api, "_ping_upstream", side_effect=[
+                    {"ok": True, "latency_ms": 4, "plan_credit": 12, "api_wallet": 3},
+                    {"ok": True, "latency_ms": 6},
+                ]) as ping:
+            result = admin_api._key_ping_heygen()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["components"], "API Key + MCP OAuth")
+        self.assertEqual(result["plan_credit"], 12)
+        self.assertEqual(result["latency_ms"], 10)
+        self.assertEqual(ping.call_count, 2)
+
+    def test_expired_mcp_is_not_reported_as_heygen_ready(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        credentials = pathlib.Path(directory.name) / "heygen-mcp.json"
+        credentials.write_text(json.dumps({
+            "access_token": "expired", "refresh_token": "refresh-token", "expires_at": 1,
+        }), encoding="utf-8")
+        credentials.chmod(0o600)
+
+        def env(names):
+            return "api-key" if "HEYGEN_API_KEY" in names else str(credentials)
+
+        with mock.patch.object(admin_api, "_env_value", side_effect=env), \
+                mock.patch.object(admin_api, "_ping_upstream", return_value={
+                    "ok": True, "latency_ms": 4, "plan_credit": 12, "api_wallet": 3,
+                }):
+            result = admin_api._key_ping_heygen()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "credential_refresh_pending")
 
     def test_ping_without_key_configured_fails_fast(self):
         # 不联网：未配置密钥/地址时应直接返回错误而不发请求

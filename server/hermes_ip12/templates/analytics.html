@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>测试数据分析 — IP孵化教练</title>
+<style>
+:root {
+  --bg: #0d0d0d; --card: #171717; --border: #262626;
+  --text: #e5e5e5; --dim: #737373; --accent: #a78bfa; --success: #4ade80;
+  --warn: #fbbf24; --radius: 10px;
+  --font: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:var(--font); background:var(--bg); color:var(--text); padding:20px; max-width:1100px; margin:0 auto; }
+h1 { font-size:22px; margin-bottom:4px; }
+h2 { font-size:16px; margin:24px 0 12px; color:var(--accent); }
+.subtitle { color:var(--dim); font-size:13px; margin-bottom:20px; }
+
+.stats { display:flex; gap:12px; margin-bottom:20px; flex-wrap:wrap; }
+.stat-card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:16px 20px; flex:1; min-width:140px; }
+.stat-card .num { font-size:28px; font-weight:700; color:var(--accent); }
+.stat-card .label { font-size:12px; color:var(--dim); margin-top:4px; }
+
+.module-bars { display:flex; gap:4px; margin-bottom:20px; flex-wrap:wrap; }
+.module-bar-item {
+  background:var(--card); border:1px solid var(--border); border-radius:6px;
+  padding:8px 10px; text-align:center; min-width:60px;
+}
+.module-bar-item .bar { font-size:18px; font-weight:700; color:var(--accent); }
+.module-bar-item .bar.zero { color:var(--dim); }
+.module-bar-item .name { font-size:10px; color:var(--dim); margin-top:2px; }
+
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th { text-align:left; padding:10px 12px; border-bottom:1px solid var(--border); color:var(--dim); font-weight:500; font-size:11px; text-transform:uppercase; }
+td { padding:10px 12px; border-bottom:1px solid var(--border); }
+tr:hover td { background:rgba(255,255,255,0.02); }
+.tag { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; margin:2px; }
+.tag.done { background:rgba(74,222,128,0.1); color:var(--success); }
+.tag.current { background:rgba(167,139,250,0.12); color:var(--accent); }
+.progress { color:var(--success); font-weight:600; }
+.note { color:var(--dim); font-size:12px; margin-top:8px; }
+</style>
+</head>
+<body>
+<h1>📊 测试数据分析</h1>
+<p class="subtitle">IP孵化教练 · 诊断数据总览</p>
+
+<div class="stats">
+  <div class="stat-card">
+    <div class="num">{{ total }}</div>
+    <div class="label">参与测试人数</div>
+  </div>
+  <div class="stat-card">
+    <div class="num">{{ messages }}</div>
+    <div class="label">总消息数</div>
+  </div>
+  <div class="stat-card">
+    <div class="num">{{ reports }}</div>
+    <div class="label">已生成报告</div>
+  </div>
+</div>
+
+<h2>📈 各模块完成次数</h2>
+<div class="module-bars">
+  {% for mid, count in module_stats %}
+  <div class="module-bar-item">
+    <div class="bar{% if count == 0 %} zero{% endif %}">{{ count }}</div>
+    <div class="name">模块{{ mid }}</div>
+  </div>
+  {% endfor %}
+</div>
+
+<h2>👤 每人详细信息</h2>
+<table>
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>标题</th>
+      <th>进度</th>
+      <th>消息</th>
+      <th>报告</th>
+      <th>当前模块</th>
+      <th>已完成模块</th>
+      <th>最近活跃</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for p in persons %}
+    <tr>
+      <td style="font-family:monospace;color:var(--accent)">{{ p.id }}</td>
+      <td>{{ p.title }}</td>
+      <td class="progress">{{ p.progress }}</td>
+      <td>{{ p.messages }}</td>
+      <td>{{ p.reports }}</td>
+      <td><span class="tag current">{{ p.current }}</span></td>
+      <td>
+        {% for m in p.completed %}
+        <span class="tag done">{{ m }}</span>
+        {% endfor %}
+        {% if not p.completed %}<span class="note">暂无</span>{% endif %}
+      </td>
+      <td style="color:var(--dim);font-size:11px">{{ p.updated }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<p class="note">💡 点击每条记录可进入对应对话查看完整内容。关闭此页面或在新标签打开首页即可继续使用。</p>
+</body>
+</html>

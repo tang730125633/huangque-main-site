@@ -34,10 +34,11 @@ class CinematicPanelTests(unittest.TestCase):
         self.assertIn("cap=cineCfg().avatars", HTML)
         self.assertIn("toast(cineCfg().label+'最多选 '+cap+' 个形象')", HTML)
 
-    def test_open_resolution_is_fixed_at_1080p(self):
-        # 开放式生成不再给选分辨率（kongli 2026-07-15），固定 1080p：选择器移除、缺省常量 1080p。
+    def test_cinematic_resolution_is_fixed_at_720p(self):
+        # 所有电影化身统一 720p：选择器移除，页面默认值与后端一致。
         self.assertNotIn('data-cine-resolution', HTML)
-        self.assertIn("selectedCineResolution='1080p'", HTML)
+        self.assertIn("selectedCineResolution='720p'", HTML)
+        self.assertIn("分辨率 720p", HTML)
 
     def test_duration_options_are_within_heygen_range(self):
         # HeyGen cinematic: 4~15 秒
@@ -73,7 +74,7 @@ class CinematicPanelTests(unittest.TestCase):
 class CreateAvatarTests(unittest.TestCase):
     def test_create_avatar_entry_shows_the_price(self):
         panel = HTML.split('id="cinematicPanel"')[1].split('id="tryonPanel"')[0]
-        self.assertIn("创建新形象（5 点）", panel, "要让用户知道这一步花多少点")
+        self.assertIn("创建新形象（2 点）", panel, "要让用户知道这一步花多少点")
 
     def test_create_avatar_hits_its_own_endpoint(self):
         self.assertIn("fetch('/api/gen/avatar'", HTML)

@@ -8,12 +8,13 @@
 视频号(wxapp.tc.qq.com)特殊：直链是加密流，需调 :3001 Isaac64 解密服务(传 decode_key)解成可播放 mp4。
 前端对视频号下载会带 &dk=<decode_key>，代理识别后走解密路径。
 """
-import os, re, json, tempfile, urllib.request, urllib.parse, subprocess
+import os, re, json, tempfile, urllib.request, urllib.parse, subprocess, hmac
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = 8097
 AUTH_BASE = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
+INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
 AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # 直连，绕过环境代理
@@ -21,6 +22,7 @@ ALLOW = (
     ".zjcdn.com", ".douyinvod.com", ".douyinstatic.com", ".douyinpic.com", ".amemv.com",
     ".bytecdn.cn", ".ixigua.com", ".pstatp.com", ".snssdk.com", ".byteimg.com",
     ".xhscdn.com", ".rednotecdn.com", ".xiaohongshu.com",
+    ".hdslb.com",
     ".bytedance.net", ".lf-douyin.com", ".365yg.com",
     ".cos.ap-guangzhou.myqcloud.com",  # 采集视频转存 COS 后的直链下载(COS-COLLECT #113)
     "video.huangquechuanmei.com",  # 采集视频转存 COS 后走 CDN 域名(COS_DOMAIN)的直链下载
@@ -38,6 +40,17 @@ MIME_EXT = {
 }
 
 
+def download_headers(host):
+    headers = {"User-Agent": UA}
+    if host.endswith((
+        "zjcdn.com", "douyinvod.com", "douyinstatic.com", "douyinpic.com", "amemv.com",
+        "bytecdn.cn", "ixigua.com", "pstatp.com", "snssdk.com", "byteimg.com",
+        "bytedance.net", "lf-douyin.com", "365yg.com",
+    )):
+        headers["Referer"] = "https://www.douyin.com/"
+    return headers
+
+
 def content_type_ext(headers):
     ctype = (headers.get("Content-Type") or "application/octet-stream").split(";", 1)[0].strip().lower()
     return ctype or "application/octet-stream", MIME_EXT.get(ctype, ".mp4")
@@ -53,6 +66,11 @@ def verify_token(token):
             return bool(json.loads(r.read()).get("user"))
     except Exception:
         return False
+
+
+def verify_internal(headers):
+    supplied = (headers.get("X-HQ-Internal-Token") or "").strip()
+    return bool(INTERNAL_TOKEN and supplied and hmac.compare_digest(supplied, INTERNAL_TOKEN))
 
 def request_token(headers):
     auth = headers.get("Authorization") or ""
@@ -136,7 +154,7 @@ class H(BaseHTTPRequestHandler):
         if pr.path != "/api/gen/dl":
             return self._err(404, "not found")
         token = request_token(self.headers)
-        if not verify_token(token):
+        if not verify_token(token) and not verify_internal(self.headers):
             return self._err(401, "未登录")
         q = urllib.parse.parse_qs(pr.query)
         url = (q.get("url", [""])[0]).strip()
@@ -153,7 +171,7 @@ class H(BaseHTTPRequestHandler):
                 return self._err(400, "视频号下载缺少解密密钥(请重新爬取获取新链接)")
             return self._stream_decrypt(url, dk, ascii_name, raw)
         try:
-            up = OPENER.open(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=120)
+            up = OPENER.open(urllib.request.Request(url, headers=download_headers(host)), timeout=120)
         except Exception:
             return self._err(502, "下载失败(地址可能已过期，请重新爬取)")
         ctype, ext = content_type_ext(up.headers)

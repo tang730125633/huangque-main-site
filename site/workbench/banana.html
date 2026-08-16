@@ -32,6 +32,10 @@
   .result-preview{position:relative;display:flex;align-items:center;justify-content:center;min-height:320px;max-height:calc(100vh - 300px);overflow:hidden;border:1px solid rgba(231,178,76,.18);border-radius:8px;background:var(--hq-surface-soft)}
   #bResult{display:block!important;width:100%!important;height:100%!important;max-height:calc(100vh - 300px);aspect-ratio:auto!important;object-fit:contain!important}
   .recent-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}
+  .recent-failed{min-height:160px;padding:14px;border:1px solid rgba(244,112,138,.24);border-radius:8px;background:rgba(244,112,138,.06);display:flex;flex-direction:column;gap:8px;color:#94a4bb}
+  .recent-failed strong{color:#f4708a;font-size:13px}.recent-failed p{margin:0;flex:1;font-size:11.5px;line-height:1.55;overflow-wrap:anywhere}
+  .recent-delete{min-height:34px;border:1px solid rgba(244,112,138,.3);border-radius:8px;background:rgba(244,112,138,.08);color:#f4708a;font:inherit;font-size:12px;font-weight:700;cursor:pointer}
+  .recent-delete:hover{border-color:rgba(244,112,138,.55);color:#ff9bae}
   html[data-theme="light"] .hq-content[data-active="banana"] .banana-results-pane{
     border-color:transparent!important;
     background:transparent!important;
@@ -135,10 +139,10 @@
         <div data-engine="banana" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s; line-height:1.5;"><div style="font-weight:600;">纳米香蕉</div><div style="font-size:11px; margin-top:3px; color:#e7b24c;">快·中文好 · <span data-engine-cost="banana">25点</span> ✦推荐</div></div>
         <div data-engine="gpt" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">黄雀引擎 2</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">写实·局部修改 · <span data-engine-cost="gpt">30点</span></div></div>
         <div data-engine="seedream" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">黄雀引擎 1</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">中文字·商用设计 · <span data-engine-cost="seedream">12点</span></div></div>
-        <div data-engine="xiaole" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">果肉生图</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">写实·稳定 · <span data-engine-cost="xiaole">8点</span></div></div>
-        <div data-engine="zelong2" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">泽龙专用生图</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">低成本·1K方图 · <span data-engine-cost="zelong2">8点</span></div></div>
+        <div data-engine="xiaole" aria-hidden="true" style="display:none; padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">果肉生图</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">写实·稳定 · <span data-engine-cost="xiaole">8点</span></div></div>
+        <div data-engine="zelong2" aria-hidden="true" style="display:none; padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">泽龙2生图</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">专用低成本·纯文生图 · <span data-engine-cost="zelong2">8点</span></div></div>
       </div>
-      <div id="zelongScopeNote" style="display:none;margin-top:10px;padding:9px 11px;border:1px solid rgba(45,212,191,.24);border-radius:10px;background:rgba(45,212,191,.07);color:#8bded2;font-size:11.5px;line-height:1.5;">专用低成本通道 · 当前支持纯文生图、1K 方图、标准清晰度、单张生成</div>
+      <div id="zelongScopeNote" style="display:none;margin-top:10px;padding:9px 11px;border:1px solid rgba(45,212,191,.24);border-radius:10px;background:rgba(45,212,191,.07);color:#8bded2;font-size:11.5px;line-height:1.5;">泽龙测试服专用通道 · 当前支持纯文生图、1K 方图、标准清晰度、单张生成</div>
       <!-- Nano Banana 型号子选择：只在选中 Nano Banana 时出现。两档点数不同，切换会重算 -->
       <div id="bananaVariantRow" style="display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-top:10px;">
         <div data-variant="nb2" style="padding:9px 10px; text-align:center; font-size:12.5px; border-radius:10px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s; line-height:1.45;"><div style="font-weight:600;">纳米香蕉 2</div><div style="font-size:11px; margin-top:2px;">快 · 约 30-90 秒 · 标15/高25</div></div>
@@ -193,9 +197,9 @@
       </div>
 
       <div id="refSection">
-      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">参考图 <span id="upHint" style="font-size:12px; color:#5c6b82; font-weight:400;">(可选 · 果肉生图最多可上传 4 张；其它引擎为单图)</span></div>
+      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">参考图 <span id="upHint" style="font-size:12px; color:#5c6b82; font-weight:400;">(可选 · 图片编号可点入提示词)</span></div>
       <div style="display:flex; gap:10px;">
-        <label id="upBox" class="hv-gold" style="position:relative; width:66px; height:66px; flex:none; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; border:1px dashed rgba(148,164,187,.26); background:rgba(148,164,187,.04); border-radius:11px; color:#94a4bb; cursor:pointer; transition:.16s; overflow:hidden; background-size:cover; background-position:center;"><input id="upFile" type="file" accept="image/*" style="display:none"><span id="upIcon" style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg></span><span id="upText" style="font-size:10px;">上传</span></label>
+        <label id="upBox" class="hv-gold" style="position:relative; width:66px; height:66px; flex:none; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; border:1px dashed rgba(148,164,187,.26); background:rgba(148,164,187,.04); border-radius:11px; color:#94a4bb; cursor:pointer; transition:.16s; overflow:hidden; background-size:cover; background-position:center;"><input id="upFile" type="file" accept="image/*" multiple style="display:none"><span id="upIcon" style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg></span><span id="upText" style="font-size:10px;">上传</span></label>
       </div>
       </div>
 
@@ -231,7 +235,8 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=e836823b"></script>
+<script src="cloud-shell.js?v=5c2643d5"></script>
+<script src="image-mentions.js?v=20260802f"></script>
 <script>
 /* 作图页接后端能力中心 /api/gen/image + /api/gen/banana，点数后端统一扣。 */
 (function(){
@@ -240,7 +245,7 @@
       resultRatio=document.getElementById('resultRatio');
   var collectHandoff=null;
   if(!gen) return;
-  var ratio='9:16', engine='banana', quality='hd', count=1, bananaVariant='nb2', seedreamVariant='std', xiaoleRefs=[];
+  var ratio='9:16', engine='banana', quality='hd', count=1, bananaVariant='nb2', seedreamVariant='std', refImages=[];
   function splitPercent(clientX,left,width){
     return Math.max(35,Math.min(65,Math.round(((clientX-left)/width)*100)));
   }
@@ -309,8 +314,40 @@
   //    seedream_std/seedream_pro 对 points.SEEDREAM_VARIANT_COST。否则前端显示和实际扣点对不上。
   // gpt 按官方 $30/M image output token 实测折算(1点=0.1元)：标准≈¥0.30~0.37，高清=4倍≈¥1.20~1.50。
   var COSTBASE={nb2:{std:18,hd:35}, pro:{std:35,hd:44}, gpt:{std:20,hd:35}, seedream_std:{std:8,hd:12}, seedream_pro:{std:15,hd:20}, xiaole:{std:12,hd:16}, zelong2:{std:8,hd:12}};
+  var reverseCost=2;
+  if(window.HQ&&HQ.onPricing) HQ.onPricing(function(p){
+    COSTBASE={
+      nb2:{std:p['image.banana.nb2.std']||18,hd:p['image.banana.nb2.hd']||35},
+      pro:{std:p['image.banana.pro.std']||35,hd:p['image.banana.pro.hd']||44},
+      gpt:{std:p['image.openai.std']||20,hd:p['image.openai.hd']||35},
+      seedream_std:{std:p['image.seedream.std.std']||8,hd:p['image.seedream.std.hd']||12},
+      seedream_pro:{std:p['image.seedream.pro.std']||15,hd:p['image.seedream.pro.hd']||20},
+      xiaole:{std:p['image.xiaole.std']||12,hd:p['image.xiaole.hd']||16},
+      zelong2:{std:p['image.zelong2.std']||8,hd:p['image.zelong2.hd']||12}
+    };
+    reverseCost=p['image.reverse']||2;
+    var button=document.getElementById('revBtn');if(button&&!button.disabled)button.textContent='反推提示词（'+reverseCost+' 点）';
+    updateCost();
+  });
   // 数量上限(中转/循环慢→低)。必须与后端 points.cost_of 的 cap 一致，否则按 N 扣点却只出 cap 张。
   var ENGINE_MAXN={banana:4, gpt:4, seedream:2, xiaole:2, zelong2:1};
+  var xiaoleCard=document.querySelector('#engineRow [data-engine="xiaole"]');
+  function setXiaoleAvailable(enabled){
+    if(!xiaoleCard) return;
+    xiaoleCard.style.display=enabled?'':'none';
+    xiaoleCard.setAttribute('aria-hidden',enabled?'false':'true');
+    if(!enabled&&engine==='xiaole') selectEngine('banana');
+    if(enabled&&new URLSearchParams(location.search).get('engine')==='xiaole') selectEngine('xiaole');
+  }
+  fetch('/api/gen/health',{cache:'no-store'}).then(function(response){
+    if(!response.ok) throw new Error('health unavailable');
+    return response.json();
+  }).then(function(data){setXiaoleAvailable(data.image_xiaole_enabled===true);})
+    .catch(function(){setXiaoleAvailable(false);});
+  var zelongCard=document.querySelector('#engineRow [data-engine="zelong2"]');
+  if(zelongCard && location.hostname==='zelong.huangquechuanmei.com'){
+    zelongCard.style.display=''; zelongCard.setAttribute('aria-hidden','false');
+  }
   var COUNT_OPTIONS=[1,2,4];
   // 引擎卡 → 计价用的 key。Nano Banana 一张卡两个型号，价格跟型号走。
   function costKey(eng){ return eng==='banana' ? bananaVariant : (eng==='seedream' ? 'seedream_'+seedreamVariant : eng); }
@@ -406,9 +443,8 @@
     if(bv) bv.style.display = (e==='banana') ? 'grid' : 'none';
     var sv=document.getElementById('seedreamVariantRow');
     if(sv) sv.style.display = (e==='seedream') ? 'grid' : 'none';
-    if(e==='xiaole' && !xiaoleRefs.length && refImg) xiaoleRefs.push(refImg);
-    if(refImg) showInp(engine==='gpt');  // 局部修改按钮仅 gpt-image
-    renderXiaoleRefs();
+    if(refImg) showInp(engine==='gpt');
+    renderRefs();
     updateCost();   // Nano Banana 两个型号点数不同，切引擎/切型号都要重算
   }
   document.querySelectorAll('#engineRow > div').forEach(function(c){ c.onclick=function(){ selectEngine(c.getAttribute('data-engine')); }; });
@@ -446,7 +482,8 @@
       updateCost();
       return;
     }
-    if(document.querySelector('#engineRow [data-engine="'+key+'"]')) selectEngine(key);
+    var target=document.querySelector('#engineRow [data-engine="'+key+'"]');
+    if(target&&target.getAttribute('aria-hidden')!=='true') selectEngine(key);
   }
 
   // 清晰度 / 数量 选择(仿 ratioRow 高亮)
@@ -507,8 +544,20 @@
     if(/竖版|竖构图|竖幅/.test(src)) return '9:16';
     return '';
   }
+  var sourceInspirationId=0;
   // 灵感页「做同款」：从 ?prompt= / ?engine= 预填提示词 + 切引擎，并尽量从提示词里还原比例
   try{ var ip=new URLSearchParams(location.search);
+    sourceInspirationId=Number(ip.get('inspiration')||0);if(sourceInspirationId<1000000)sourceInspirationId=0;
+    if(ip.get('prefill')==='ip12'){
+      try{
+        var rawHandoff=sessionStorage.getItem('hq_ip12_product_handoff_v1');
+        sessionStorage.removeItem('hq_ip12_product_handoff_v1');
+        var handoff=JSON.parse(rawHandoff||'null'), handoffAge=handoff?Date.now()-Number(handoff.created_at):Infinity;
+        if(handoff&&handoff.version===1&&handoff.target==='image_studio'&&Number.isFinite(handoffAge)&&handoffAge>=0&&handoffAge<=600000&&handoff.prompt){
+          pr.value=String(handoff.prompt).slice(0,2000);pr.dispatchEvent(new Event('input'));pr.focus();setNote('✅ 已带入 IP12 待编辑方案，请检查后再生成','#2bd576');
+        }
+      }catch(e){}
+    }
     var pp=ip.get('prompt');
     if(pp){
       pr.value=pp;
@@ -570,6 +619,7 @@
     renderTemplates();
   }
   function selectRatio(next,syncTemplate){
+    if(engine==='zelong2' && next!=='1:1') return;
     var matched=false;
     document.querySelectorAll('#ratioRow > div').forEach(function(x){ x.style.color='#94a4bb'; x.style.background='rgba(148,164,187,.05)'; x.style.borderColor='rgba(148,164,187,.14)'; });
     document.querySelectorAll('#ratioRow > div').forEach(function(x){
@@ -579,7 +629,6 @@
     if(matched && syncTemplate!==false) syncTemplateForRatio(next);
   }
   document.querySelectorAll('#ratioRow > div').forEach(function(c){ c.onclick=function(){
-    if(engine==='zelong2') return;
     var m=c.textContent.match(/\d+:\d+/); if(m) selectRatio(m[0]);
   };});
 
@@ -682,7 +731,7 @@
         box.querySelectorAll('img').forEach(function(x){x.style.borderColor='transparent';}); im.style.borderColor='#e7b24c'; };
       box.appendChild(im); });
   }
-  var JOB_POLL_TIMEOUT_SEC=900;
+  var JOB_POLL_TIMEOUT_SEC=1800;
   var JOB_POLL_SOFT_RETRY_LIMIT=3;
   var JOB_POLL_HARD_RETRY_LIMIT=15;
   var MAX_SHUTDOWN_RETRIES=3;
@@ -699,7 +748,7 @@
           if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
           loadHistory();
         }
-        else if(d.status==='error'||d.status==='failed'){ endJob(id); flash(errMsg(d.error||d.detail||d.status||''),'#f4708a'); }
+        else if(d.status==='error'||d.status==='failed'){ endJob(id); flash(errMsg(d.error||d.detail||d.status||''),'#f4708a'); loadHistory(); }
         else if(sec>JOB_POLL_TIMEOUT_SEC){ endJob(id); flash('生成仍在处理中，请稍后到资产库查看（'+sec+'s）','#2dd4bf'); loadHistory(); }
         else tickNote();
       }).catch(function(){
@@ -726,6 +775,8 @@
     if(!payload.prompt){ flash('请先输入提示词','#f4708a'); return; }
     if(submitting) return;
     if(activeCount()){ flash('已有任务生成中，请等待完成','#f4708a'); return; }
+    payload=Object.assign({},payload,{source_page:'banana'});
+    if(sourceInspirationId)payload=Object.assign({source_inspiration_id:sourceInspirationId},payload);
     lastPayload=payload; submitting=true; syncGen();
     var hint = endpoint==='/api/gen/banana'
                  ? (bananaVariant==='pro' ? '纳米香蕉 Pro 约 1-2 分钟' : '纳米香蕉 2 约 30-90 秒')
@@ -795,7 +846,8 @@
   }
 
   // ===== 参考图上传 → 图生图 / 局部修改（inpaint，gpt-image 专属）=====
-  var refImg=null, refW=0, refH=0, inpBtn=null, XIAOLE_REF_MAX=4;
+  var refImg=null, refW=0, refH=0, inpBtn=null;
+  var REF_LIMITS={banana:14,gpt:16,seedream:10,xiaole:4,zelong2:0};
   var upBox=document.getElementById('upBox'), upFile=document.getElementById('upFile'),
       upIcon=document.getElementById('upIcon'), upText=document.getElementById('upText'), upHint=document.getElementById('upHint');
   function showInp(on){ if(inpBtn) inpBtn.style.display=on?'inline-flex':'none'; }
@@ -828,8 +880,12 @@
     cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
     return shrinkToBudget(cv, maxBytes);
   }
-  // 把一张图片文件/Blob（上传或粘贴）压缩后设为参考图（上传与粘贴共用）
-  function refFromFile(f){
+  function refLimit(){ return REF_LIMITS[engine]||1; }
+  function insertImageMention(index){
+    HQImageMentions.insert(pr,index);
+  }
+  // 把一张图片文件/Blob（上传或粘贴）压缩后加入参考图（上传与粘贴共用）
+  function refFromFile(f,done){
     if(!f) return;
     var url=URL.createObjectURL(f), im=new Image();
     im.onload=function(){
@@ -837,27 +893,40 @@
       if(dataUrlBytes(ref.dataUrl)>(fruit?XIAOLE_REF_MAX_BYTES:REF_MAX_BYTES)){
         setNote('图片仍超过 '+(fruit?'7':'9')+'MB，请压缩或更换图片后重试','#f4708a');
         try{ URL.revokeObjectURL(url); }catch(e){}
+        if(done) done();
         return;
       }
-      if(fruit) addXiaoleRef(ref.dataUrl); else setRef(ref.dataUrl, ref.width, ref.height);
+      var index=addRef(ref.dataUrl, ref.width, ref.height);
+      if(done) done(index);
       try{ URL.revokeObjectURL(url); }catch(e){}
     };
-    im.onerror=function(){ setNote('这张图读取失败，换一张试试','#f4708a'); };
+    im.onerror=function(){ setNote('这张图读取失败，换一张试试','#f4708a'); if(done)done(0); };
     im.src=url;
   }
-  if(upFile){ upFile.onchange=function(){ refFromFile(upFile.files&&upFile.files[0]); }; }
+  function addRefFiles(files,index){ index=index||0; if(index>=files.length)return; refFromFile(files[index],function(){addRefFiles(files,index+1);}); }
+  if(upFile){ upFile.onchange=function(){ var files=Array.from(upFile.files||[]); upFile.value=''; addRefFiles(files); }; }
   // 直接在提示词框 Ctrl/⌘+V 粘贴剪贴板图片 → 设为参考图（图生图），不把图当乱码塞进文本
   if(pr){ pr.addEventListener('paste', function(e){
     var items=(e.clipboardData&&e.clipboardData.items)||[];
     for(var i=0;i<items.length;i++){
       if(items[i].kind==='file' && items[i].type && items[i].type.indexOf('image/')===0){
-        if(engine==='zelong2'){ e.preventDefault(); setNote('泽龙专用生图当前只支持纯文生图，请切换其他引擎使用参考图','#f4cd72'); return; }
         var f=items[i].getAsFile();
-        if(f){ e.preventDefault(); refFromFile(f);
-          setNote(engine==='xiaole'?'✅ 已添加果肉生图参考图':'✅ 已把剪贴板图片设为参考图 · 改下提示词，点生成即走「图生图」','#2bd576'); return; }
+        if(f){ var range={start:pr.selectionStart,end:pr.selectionEnd}; e.preventDefault(); refFromFile(f,function(index){
+          if(index){HQImageMentions.insert(pr,index,range);setNote('✅ 已添加参考图并插入 @图片'+index,'#2bd576');} }); return; }
       }
     }
   }); }
+  if(pr){
+    HQImageMentions.bind(pr,function(){return refImages.map(function(item){return item.url;});});
+    pr.addEventListener('dragover',function(e){if(Array.from((e.dataTransfer&&e.dataTransfer.items)||[]).some(function(x){return x.kind==='file'&&x.type.indexOf('image/')===0;})){e.preventDefault();}});
+    pr.addEventListener('drop',function(e){
+      var files=Array.from((e.dataTransfer&&e.dataTransfer.files)||[]).filter(function(f){return f.type.indexOf('image/')===0;});
+      if(!files.length)return; e.preventDefault();
+      var range={start:pr.selectionStart,end:pr.selectionEnd}, pos=0;
+      function next(){if(pos>=files.length)return;refFromFile(files[pos++],function(index){if(index){HQImageMentions.insert(pr,index,range);range={start:pr.selectionStart,end:pr.selectionEnd};}next();});}
+      next();
+    });
+  }
 
   // ===== 提示词反推：上传/粘贴图 → Gemini 反推提示词 → 填入提示词框 / 连图做图生图 =====
   var revImgData=null, revImgUrl=null, revW=0, revH=0;
@@ -890,25 +959,20 @@
     fetch('/api/gen/reverse',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify({image:revImgData})})
       .then(function(r){ return r.json().then(function(d){ return {s:r.status,d:d}; }); })
       .then(function(x){
-        revBtn.disabled=false; revBtn.textContent='反推提示词（2 点）';
+        revBtn.disabled=false; revBtn.textContent='反推提示词（'+reverseCost+' 点）';
         if(x.s===401){ HQ.login(); return; }
         if(x.s===402){ revMsg('点数不足 · 去充值','#f4708a'); return; }
         if(!x.d.prompt){ revMsg('反推失败：'+brandedErrorText((x.d&&x.d.detail)||'未知'),'#f4708a'); return; }
         revPrompt.value=x.d.prompt; revResult.style.display='block';
         revMsg('✅ 反推完成，可编辑后填入','#2bd576');
         if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
-      }).catch(function(){ revBtn.disabled=false; revBtn.textContent='反推提示词（2 点）'; revMsg('网络错误，请重试','#f4708a'); });
+      }).catch(function(){ revBtn.disabled=false; revBtn.textContent='反推提示词（'+reverseCost+' 点）'; revMsg('网络错误，请重试','#f4708a'); });
   };
   if(revFill) revFill.onclick=function(){ pr.value=revPrompt.value||''; if(typeof updCount==='function') updCount(); try{pr.focus();}catch(e){} setNote('✅ 反推提示词已填入','#2bd576'); };
   if(revFillImg) revFillImg.onclick=function(){ pr.value=revPrompt.value||''; if(typeof updCount==='function') updCount();
     if(revImgUrl && typeof setRef==='function') setRef(revImgUrl, revW, revH);
     setNote('✅ 提示词+参考图都已带上，点生成即走「图生图」','#2bd576'); };
 
-  if(upText){ upText.addEventListener('click',function(e){ if(refImg&&engine!=='xiaole'){ e.preventDefault(); e.stopPropagation();
-    refImg=null; refW=refH=0; upFile.value=''; upBox.style.backgroundImage='none'; upBox.style.borderStyle='dashed'; upBox.style.borderColor='rgba(148,164,187,.26)';
-    if(upIcon) upIcon.style.display='flex'; upText.textContent='上传'; upText.style.background='none'; upText.style.padding='0';
-    if(upHint) upHint.textContent='(可选 · 果肉生图最多可上传 4 张；其它引擎为单图)'; showInp(false);
-  } }); }
   if(upBox){
     inpBtn=document.createElement('button');
     inpBtn.id='inpBtn'; inpBtn.textContent='✏️ 局部修改'; inpBtn.style.cssText='display:none; align-items:center; gap:5px; margin-top:10px; padding:7px 13px; font-size:12.5px; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); border-radius:9px; cursor:pointer; font-family:inherit;';
@@ -957,40 +1021,53 @@
       var mask=mc.toDataURL('image/png').split(',')[1];
       var ip=(inpModal.querySelector('#inpPrompt').value||'').trim();
       inpModal.style.display='none';
-      submit({prompt:ip, ratio:nearestRatio(), image:refImg, mask:mask, quality:quality}, '局部修改中（涂抹处重绘）', '/api/gen/image');
+      var payload={prompt:ip, ratio:nearestRatio(), image:refImg, mask:mask, quality:quality};
+      submit(payload, '局部修改中（涂抹处重绘）', '/api/gen/image');
     };
     inpModal.style.display='flex';
   }
   // setRef：把一张 PNG dataURL 设为参考图（上传 + 继续改共用）
   function setRef(dataUrl, w, h){
-    refImg=dataUrl.split(',')[1]; refW=w; refH=h;
-    upBox.style.backgroundImage='url('+dataUrl+')'; upBox.style.borderStyle='solid'; upBox.style.borderColor='rgba(231,178,76,.5)';
-    if(upIcon) upIcon.style.display='none';
-    if(upText){ upText.textContent='✕ 清除'; upText.style.background='rgba(7,11,19,.65)'; upText.style.padding='1px 5px'; upText.style.borderRadius='4px'; }
-    if(upHint) upHint.textContent='(已就绪 ·「图生图」改全图'+(engine==='gpt'?'，或「局部修改」只改涂抹处':'')+')';
-    showInp(engine==='gpt');  // 局部修改(像素蒙版)仅 gpt-image-2
+    refImages=[{data:dataUrl.split(',')[1]||dataUrl,url:dataUrl,width:w,height:h}];
+    syncFirstRef(); renderRefs();
   }
-  function addXiaoleRef(dataUrl){
-    if(xiaoleRefs.length>=XIAOLE_REF_MAX){ setNote('果肉生图最多可上传 '+XIAOLE_REF_MAX+' 张参考图','#f4708a'); return; }
-    xiaoleRefs.push(dataUrl.split(',')[1]||dataUrl); renderXiaoleRefs();
-    setNote('✅ 已添加果肉生图参考图（'+xiaoleRefs.length+'/'+XIAOLE_REF_MAX+'）','#2bd576');
+  function syncFirstRef(){
+    var first=refImages[0]; refImg=first?first.data:null; refW=first?first.width:0; refH=first?first.height:0;
+    showInp(engine==='gpt'&&refImages.length===1);
   }
-  function renderXiaoleRefs(){
+  function addRef(dataUrl,w,h){
+    var limit=refLimit();
+    if(refImages.length>=limit){ setNote('当前引擎最多支持 '+limit+' 张参考图','#f4708a'); return 0; }
+    refImages.push({data:dataUrl.split(',')[1]||dataUrl,url:dataUrl,width:w,height:h});
+    syncFirstRef(); renderRefs();
+    setNote('✅ 已添加参考图（'+refImages.length+'/'+limit+'），点“图片'+refImages.length+'”可插入提示词','#2bd576');
+    return refImages.length;
+  }
+  function promptUsesShiftedIndex(index){
+    var found=false; (pr.value||'').replace(/@(?:图片|图)([1-9]\d*)/g,function(_,n){if(Number(n)>=index)found=true;return _;}); return found;
+  }
+  function renderRefs(){
     if(!upBox) return;
-    var row=upBox.parentElement;
-    row.querySelectorAll('.xiaole-ref-thumb').forEach(function(el){el.remove();});
-    if(engine!=='xiaole'){
-      upBox.style.display='flex';
-      if(!refImg){ upBox.style.backgroundImage='none'; upBox.style.borderStyle='dashed'; upBox.style.borderColor='rgba(148,164,187,.26)'; if(upIcon)upIcon.style.display='flex'; if(upText)upText.textContent='上传'; }
-      return;
-    }
+    var row=upBox.parentElement, limit=refLimit();
+    row.querySelectorAll('.image-ref-thumb').forEach(function(el){el.remove();});
     upBox.style.backgroundImage='none'; upBox.style.borderStyle='dashed'; upBox.style.borderColor='rgba(148,164,187,.26)';
     if(upIcon)upIcon.style.display='flex'; if(upText)upText.textContent='添加';
-    if(upHint)upHint.textContent='(可选 · 已选 '+xiaoleRefs.length+'/'+XIAOLE_REF_MAX+' 张，上传或在提示词框 Ctrl/⌘V 粘贴)';
-    xiaoleRefs.forEach(function(data,i){ var box=document.createElement('div'); box.className='xiaole-ref-thumb'; box.style.cssText='position:relative;width:66px;height:66px;border:1px solid rgba(231,178,76,.5);border-radius:11px;overflow:hidden;background:#070b13;'; box.innerHTML='<img src="data:image/png;base64,'+data+'" style="width:100%;height:100%;object-fit:cover"><button type="button" style="position:absolute;right:3px;top:3px;width:20px;height:20px;border:0;border-radius:50%;background:rgba(7,11,19,.8);color:#fff;cursor:pointer;">×</button>'; box.querySelector('button').onclick=function(){xiaoleRefs.splice(i,1);renderXiaoleRefs();}; row.insertBefore(box,upBox); });
-    upBox.style.display=xiaoleRefs.length>=XIAOLE_REF_MAX?'none':'flex';
+    if(upHint)upHint.textContent='(已选 '+refImages.length+'/'+limit+' 张 · 点图片编号插入 @图片N)';
+    refImages.forEach(function(item,i){
+      var box=document.createElement('div'); box.className='image-ref-thumb';
+      box.style.cssText='position:relative;width:66px;height:66px;border:1px solid rgba(231,178,76,.5);border-radius:11px;overflow:hidden;background:#070b13;';
+      box.innerHTML='<img src="'+item.url+'" style="width:100%;height:100%;object-fit:cover"><button type="button" data-mention style="position:absolute;left:3px;bottom:3px;border:0;border-radius:5px;background:rgba(7,11,19,.82);color:#e7b24c;font:10px inherit;cursor:pointer;">图片'+(i+1)+'</button><button type="button" data-remove aria-label="删除图片'+(i+1)+'" style="position:absolute;right:3px;top:3px;width:20px;height:20px;border:0;border-radius:50%;background:rgba(7,11,19,.8);color:#fff;cursor:pointer;">×</button>';
+      box.querySelector('[data-mention]').onclick=function(){insertImageMention(i+1);};
+      box.querySelector('[data-remove]').onclick=function(){
+        if(promptUsesShiftedIndex(i+1)){setNote('提示词已引用图片'+(i+1)+'或后续图片，请先删除对应 @图片N','#f4708a');return;}
+        refImages.splice(i,1); syncFirstRef(); renderRefs();
+      };
+      row.insertBefore(box,upBox);
+    });
+    upBox.style.display=refImages.length>=limit?'none':'flex';
+    if(refImages.length>limit) setNote('当前引擎最多支持 '+limit+' 张参考图，请删减后再生成','#f4708a');
   }
-  renderXiaoleRefs();
+  renderRefs();
 
   // 灵感页详情弹窗「跟创」带来的粘贴参考图（经 sessionStorage 传递）→ 载入即设为参考图（图生图）
   try{ var _fcref=sessionStorage.getItem('hq_followcreate_ref');
@@ -1006,18 +1083,20 @@
   try{ var _cb=localStorage.getItem('hq_collect_to_banana');
     if(_cb){ localStorage.removeItem('hq_collect_to_banana');  // 一次性消费，防下次误带
       var _cbd=JSON.parse(_cb);
-      if(_cbd && _cbd.cover){
+      if(_cbd){
         collectHandoff=_cbd;
-        var _cim=new Image(); _cim.crossOrigin='anonymous';
-        _cim.onload=function(){
-          var ref=imageToRefDataUrl(_cim);
-          try{ setRef(ref.dataUrl, ref.width, ref.height);
-            if(_cbd.title && pr && !(pr.value||'').trim()) pr.value=_cbd.title;
-            setNote('✅ 已带入采集封面作参考图 · 改下提示词，点生成即走「图生图」','#2bd576');
-          }catch(err){ setNote('采集图跨域无法载入，请改用上传','#f4708a'); }
-        };
-        _cim.onerror=function(){ setNote('采集封面读取失败，请手动上传参考图','#f4708a'); };
-        _cim.src=_cbd.cover+(_cbd.cover.indexOf('?')>=0?'&':'?')+'t='+Date.now();
+        if(_cbd.title && pr && !(pr.value||'').trim()){
+          pr.value=_cbd.title;pr.dispatchEvent(new Event('input'));
+        }
+      }
+      if(_cbd && _cbd.cover){
+        var _coverUrl=String(_cbd.cover).replace(/^http:\/\//i,'https://');
+        fetch(referenceFetchUrl(_coverUrl),{cache:'no-store',credentials:'same-origin',headers:{'Authorization':'Bearer '+tok()}})
+          .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.blob(); })
+          .then(function(blob){ refFromFile(blob,function(index){
+            setNote(index?'✅ 已带入采集封面作参考图 · 改下提示词，点生成即走「图生图」':'✅ 已带入标题；封面读取失败，请手动上传参考图',index?'#2bd576':'#f4b740');
+          }); })
+          .catch(function(){ setNote('✅ 已带入标题；封面读取失败，请手动上传参考图','#f4b740'); });
       }
     }
   }catch(e){}
@@ -1045,37 +1124,43 @@
   // 文生图 / 图生图（有参考图）/ nano banana
   gen.onclick=function(){
     var bp={prompt:(pr.value||'').trim(), ratio:ratio, quality:quality, count:count};
-    var usesRef=(engine==='xiaole'&&xiaoleRefs.length)|| (!!refImg&&engine!=='zelong2');
-    if(engine==='xiaole'&&xiaoleRefs.length) bp.reference_images=xiaoleRefs.slice();
-    else if(usesRef) bp.image=refImg;  // 泽龙专用通道首期只支持纯文生图
+    var usesRef=refImages.length>0&&engine!=='zelong2';
+    if(refImages.length>refLimit()){ setNote('当前引擎最多支持 '+refLimit()+' 张参考图，请删减后再生成','#f4708a'); return; }
+    if(usesRef) bp.reference_images=refImages.map(function(x){return x.data;});
     if(engine==='gpt' || engine==='xiaole' || engine==='zelong2' || engine==='seedream'){
       if(engine!=='gpt') bp.provider=engine;              // 果肉/泽龙2/Seedream 各自 provider
       if(engine==='seedream') bp.variant=seedreamVariant; // 5.0 标准 / 5.0 Pro
       var lbl = engine==='xiaole' ? '果肉生图 '
-              : engine==='zelong2' ? '泽龙专用生图 '
+              : engine==='zelong2' ? '泽龙2生图 '
               : engine==='seedream' ? ('黄雀引擎 1 '+(seedreamVariant==='pro'?'Pro ':'标准 ')) : '';
-      submit(bp, lbl+((engine==='xiaole'&&xiaoleRefs.length)?'多图参考生图中':(usesRef?'图生图中（在参考图上改）':(engine==='gpt'?'文生图中':'生成中'))), '/api/gen/image');
+      submit(bp, lbl+(usesRef?'多图参考生图中':(engine==='gpt'?'文生图中':'生成中')), '/api/gen/image');
     } else {
       bp.model=bananaVariant;   // 一张卡两个型号：nb2 / pro，后端 /api/gen/banana 按 model 分流
-      submit(bp, (bananaVariant==='pro'?'纳米香蕉 Pro ':'纳米香蕉 2 ')+(refImg?'图生图中（在参考图上改）':'生成中'), '/api/gen/banana');
+      submit(bp, (bananaVariant==='pro'?'纳米香蕉 Pro ':'纳米香蕉 2 ')+(usesRef?'多图参考生图中':'生成中'), '/api/gen/banana');
     }
   };
   // 最近作品：读真实历史（生成即自动入库）
+  function referenceFetchUrl(url){
+    try{
+      var parsed=new URL(url,location.href);
+      if(parsed.origin===location.origin) return parsed.pathname+parsed.search;
+      return '/api/gen/dl?url='+encodeURIComponent(parsed.href)+'&name=banana-edit';
+    }catch(e){ return url; }
+  }
   function loadReferenceFromUrl(url){
-    selectEngine('gpt'); // 继续改是 gpt-image 专属，自动切换引擎并显示参考图区
+    selectEngine('gpt');
     setNote('正在把所选图片载入为参考…','#2dd4bf');
-    var im=new Image();
-    im.onload=function(){
-      try{
-        var ref=imageToRefDataUrl(im);
-        setRef(ref.dataUrl,ref.width,ref.height);
-        pr.scrollIntoView({block:'center'});
-        setNote('已把所选图片设为参考，改下提示词再点生成（图生图）','#2bd576');
-      }catch(err){ setNote('继续改失败（图片跨域，换上传方式）：'+err,'#f4708a'); }
-    };
-    im.crossOrigin='anonymous';
-    im.onerror=function(){ setNote('继续改：图片读取失败','#f4708a'); };
-    im.src=url+(url.indexOf('?')>=0?'&':'?')+'t='+Date.now();
+    fetch(referenceFetchUrl(url),{cache:'no-store',credentials:'same-origin',headers:{'Authorization':'Bearer '+tok()}})
+      .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.blob(); })
+      .then(function(blob){
+        if(!/^image\//.test(blob.type||'')) throw new Error('返回内容不是图片');
+        refFromFile(blob,function(){
+          pr.scrollIntoView({block:'center'});
+          setNote('已载入图片，请涂抹要修改的区域','#2bd576');
+          openInp();
+        });
+      })
+      .catch(function(err){ setNote('继续改：图片读取失败（'+err.message+'）','#f4708a'); });
   }
   function openRecentLightbox(urls,idx){
     if(!urls||!urls.length) return;
@@ -1120,12 +1205,22 @@
   }
   function loadHistory(){
     var grid=document.getElementById('recentGrid'); if(!grid||!tok()) return;
-    fetch('/api/gen/history?limit=9',{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
-      if(!d.items||!d.items.length) return;
+    fetch('/api/gen/history?limit=9&include_failed=1',{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
+      if(!d.items||!d.items.length){grid.innerHTML='<div style="grid-column:1/-1;padding:18px 0;text-align:center;font-size:12.5px;color:#5c6b82;">还没有作品，生成第一张吧</div>';return;}
       var items=d.items.slice(0,9);
-      var urls=items.map(function(it){ return it.url; });
-      grid.innerHTML=items.map(function(it){ return '<img src="'+it.url+'" class="hv-lift" data-url="'+it.url+'" style="display:block; width:100%; aspect-ratio:3/4; border-radius:8px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">'; }).join('');
+      var urls=items.filter(function(it){return it.url;}).map(function(it){ return it.url; });
+      grid.innerHTML=items.map(function(it){
+        if(it.status==='error') return '<div class="recent-failed"><strong>生成失败</strong><p>'+brandedErrorText(it.error||'生成失败').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];})+'</p><button class="recent-delete" type="button" data-job="'+it.job_id+'">删除记录</button></div>';
+        return '<img src="'+it.url+'" class="hv-lift" data-url="'+it.url+'" style="display:block; width:100%; aspect-ratio:3/4; border-radius:8px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">';
+      }).join('');
       grid.querySelectorAll('img').forEach(function(im,i){ im.onclick=function(){ openRecentLightbox(urls,i); }; });
+      grid.querySelectorAll('.recent-delete').forEach(function(button){button.onclick=function(){
+        if(!confirm('确定删除这条失败记录吗？')) return;
+        button.disabled=true;
+        fetch('/api/gen/job/delete',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify({job_id:button.getAttribute('data-job')})})
+          .then(function(r){return r.json().catch(function(){return {};}).then(function(data){if(!r.ok) throw new Error(data.detail||'删除失败');});})
+          .then(loadHistory).catch(function(error){button.disabled=false;flash(error.message||'删除失败','#f4708a');});
+      };});
     }).catch(function(){});
   }
   loadHistory();

@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>视频工厂 — 独立测试</title>
+<style>
+:root{--bg:#0d0d0d;--card:#171717;--bd:#262626;--tx:#e5e5e5;--dim:#737373;--ac:#a78bfa;--acb:#c4b5fd;--gr:#4ade80;--wa:#fbbf24;--r:10px;--f:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:var(--f);background:var(--bg);color:var(--tx);min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:40px 20px}
+h1{font-size:22px;color:var(--acb);margin-bottom:4px}
+.sub{font-size:12px;color:var(--dim);margin-bottom:24px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:var(--r);padding:24px;width:100%;max-width:600px}
+label{font-size:12px;color:var(--dim);display:block;margin-bottom:6px}
+input,select,textarea{width:100%;padding:10px;background:#0a0a0a;border:1px solid var(--bd);color:var(--tx);border-radius:6px;font-size:13px;font-family:var(--f);margin-bottom:12px}
+input:focus,select:focus{border-color:var(--ac);outline:none}
+.btn{width:100%;padding:12px;border:none;border-radius:8px;background:var(--ac);color:#fff;font-size:14px;font-weight:600;cursor:pointer;transition:opacity .15s}
+.btn:hover{opacity:0.85}
+.btn:disabled{opacity:0.4;cursor:not-allowed}
+#result{margin-top:16px;display:none}
+#result video{width:100%;max-width:480px;border-radius:8px;margin:12px auto;display:block}
+#log{background:#0a0a0a;border:1px solid var(--bd);border-radius:6px;padding:12px;margin-top:16px;font-size:11px;color:var(--dim);max-height:200px;overflow-y:auto;font-family:monospace;white-space:pre-wrap;display:none}
+#log .ok{color:var(--gr)}
+#log .err{color:#ef4444}
+#log .info{color:var(--acb)}
+.spinner{width:24px;height:24px;border:2px solid var(--bd);border-top-color:var(--ac);border-radius:50%;animation:spin .8s linear infinite;margin:16px auto}
+@keyframes spin{to{transform:rotate(360deg)}}
+.back{color:var(--dim);font-size:11px;margin-top:20px}
+.back a{color:var(--acb);text-decoration:none}
+</style>
+</head>
+<body>
+
+<h1>🎥 视频工厂</h1>
+<div class="sub">通义万相出图 · edge-tts配音 · FFmpeg合成</div>
+
+<div class="card">
+  <label>视频主题 *</label>
+  <input id="topic" placeholder="例：美业老板如何用抖音获客" value="美业老板如何用抖音获客">
+
+  <label>赛道</label>
+  <input id="niche" placeholder="美业" value="美业">
+
+  <label>风格</label>
+  <select id="style">
+    <option value="story">故事叙事</option>
+    <option value="tutorial">教学演示</option>
+    <option value="vlog">Vlog</option>
+    <option value="marketing">营销推广</option>
+  </select>
+
+  <button class="btn" id="goBtn" onclick="generate()">🚀 生成视频</button>
+
+  <div id="result"></div>
+  <div id="log"></div>
+</div>
+
+<div class="back"><a href="/">← 返回孵化教练</a></div>
+
+<script>
+var BASE = '';
+
+function log(msg, cls){
+  var l = document.getElementById('log');
+  l.style.display = 'block';
+  var span = document.createElement('span');
+  span.className = ['info','ok','err'].includes(cls) ? cls : '';
+  span.textContent = msg;
+  l.append(span, document.createTextNode('\n'));
+  l.scrollTop = l.scrollHeight;
+}
+
+async function generate(){
+  var topic = document.getElementById('topic').value.trim();
+  var niche = document.getElementById('niche').value.trim() || '美业';
+  var style = document.getElementById('style').value;
+
+  if(!topic){ alert('请输入视频主题'); return; }
+
+  var btn = document.getElementById('goBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ 生成中...（约60-90秒）';
+
+  var result = document.getElementById('result');
+  result.style.display = 'block';
+  result.innerHTML = '<div class="spinner"></div><p style="text-align:center;font-size:12px;color:var(--dim)">AI写脚本 → 通义万相出图 → edge-tts配音 → FFmpeg合成</p>';
+
+  var logEl = document.getElementById('log');
+  logEl.style.display = 'block';
+  logEl.innerHTML = '';
+
+  log('▶ 开始生成: ' + topic, 'info');
+  log('  赛道: ' + niche + ' | 风格: ' + style);
+
+  try{
+    var startTime = Date.now();
+    log('⏳ 提交请求...');
+
+    var r = await fetch(BASE + '/api/generate-video', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({topic: topic, niche: niche, style: style})
+    });
+
+    var d = await r.json();
+    var elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+    if(d.ok){
+      log('✅ 完成！耗时: ' + elapsed + '秒', 'ok');
+      log('  标题: ' + (d.title || 'N/A'));
+      log('  场景数: ' + (d.scenes ? d.scenes.length : 'N/A'));
+
+      result.innerHTML = '<p style="color:var(--gr);text-align:center;margin-bottom:12px">✅ 生成成功！(' + elapsed + '秒)</p>';
+
+      if(d.video_url){
+        result.innerHTML += '<video src="' + esc(safeUrl(d.video_url)) + '" controls autoplay muted></video>';
+        log('  视频URL: ' + d.video_url, 'ok');
+      }
+
+      if(d.script){
+        result.innerHTML += '<details style="margin-top:12px"><summary style="cursor:pointer;color:var(--acb);font-size:12px">📝 查看脚本</summary><pre style="background:#0a0a0a;padding:10px;border-radius:6px;font-size:11px;max-height:300px;overflow-y:auto;white-space:pre-wrap;margin-top:8px">' + esc(d.script.narration_full || JSON.stringify(d.script, null, 2)) + '</pre></details>';
+      }
+    } else {
+      log('❌ 失败: ' + (d.error || '未知错误'), 'err');
+      result.innerHTML = '<p style="color:#ef4444;text-align:center">❌ 生成失败</p><p style="color:var(--dim);font-size:12px;text-align:center">' + esc(d.error || '未知错误') + '</p>';
+    }
+  } catch(e){
+    log('❌ 网络错误: ' + e.message, 'err');
+    result.innerHTML = '<p style="color:#ef4444;text-align:center">❌ 请求失败</p><p style="color:var(--dim);font-size:12px;text-align:center">' + esc(e.message) + '</p>';
+  }
+
+  btn.disabled = false;
+  btn.textContent = '🚀 重新生成';
+}
+
+function esc(s){
+  var d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+function safeUrl(s){s=String(s||'').trim();return s.startsWith('/')||/^https?:\/\//i.test(s)?s:''}
+</script>
+</body>
+</html>

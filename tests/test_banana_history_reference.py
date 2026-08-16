@@ -16,11 +16,15 @@ class HistoryReferenceTests(unittest.TestCase):
         )
         self.assertIsNotNone(match)
         body = match.group("body")
-        self.assertIn("selectEngine('gpt')", body)
-        self.assertIn("new Image()", body)
-        self.assertIn("imageToRefDataUrl(im)", body)
-        self.assertIn("setRef(ref.dataUrl,ref.width,ref.height)", body)
-        self.assertIn("im.crossOrigin='anonymous'", body)
+        self.assertIn("referenceFetchUrl(url)", body)
+        self.assertIn("r.blob()", body)
+        self.assertIn("refFromFile(blob", body)
+        self.assertIn("openInp()", body)
+
+    def test_remote_results_use_authenticated_same_origin_proxy(self):
+        self.assertIn("'/api/gen/dl?url='+encodeURIComponent(parsed.href)", BANANA)
+        self.assertIn("credentials:'same-origin'", BANANA)
+        self.assertNotIn("im.crossOrigin='anonymous';\n    im.onerror=function(){ setNote('继续改", BANANA)
 
     def test_history_action_closes_modal_then_loads_selected_reference(self):
         self.assertRegex(

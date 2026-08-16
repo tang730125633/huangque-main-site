@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from unittest.mock import Mock, patch
 
 
@@ -28,6 +29,7 @@ class ProviderKeyPoolTests(unittest.TestCase):
         self.db_path = pathlib.Path(self.tmp.name) / "admin.db"
         provider_keys.DB_PATH = self.db_path
         admin_api.ADMIN_DB = self.db_path
+        admin_api._PROVIDER_KEY_PING_ATTEMPTS.clear()
         self.env = patch.dict(
             os.environ,
             {
@@ -38,6 +40,7 @@ class ProviderKeyPoolTests(unittest.TestCase):
                 "ARK_API_KEY": "",
                 "GEMINI_API_KEY": "",
                 "XAI_API_KEY": "",
+                "MINIMAX_API_KEY": "",
             },
             clear=False,
         )
@@ -49,6 +52,7 @@ class ProviderKeyPoolTests(unittest.TestCase):
         self.env.stop()
         provider_keys._LEGACY_IMPORT_PATHS.discard(str(self.db_path))
         provider_keys._RUNTIME_UNHEALTHY_UNTIL.clear()
+        admin_api._PROVIDER_KEY_PING_ATTEMPTS.clear()
         provider_keys.DB_PATH = self.old_provider_db
         admin_api.ADMIN_DB = self.old_admin_db
         self.tmp.cleanup()
@@ -174,6 +178,25 @@ class ProviderKeyPoolTests(unittest.TestCase):
         self.assertEqual(result["item"]["last4"], "7788")
         self.assertNotIn("secret", str(result))
 
+    def test_background_probe_refreshes_stale_managed_key_without_generating(self):
+        item = self.add("omni", "gemini-provider-secret-7788")
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                "UPDATE provider_api_keys SET last_checked_at=1 WHERE id=?",
+                (item["id"],),
+            )
+            conn.commit()
+        with patch.object(
+            admin_api, "probe_provider_secret",
+            return_value={"ok": True, "http_status": 200, "latency_ms": 12},
+        ) as probe:
+            checked = admin_api.probe_provider_keys(now=1000)
+            skipped = admin_api.probe_provider_keys(now=1010)
+        self.assertEqual(checked, [{"id": item["id"], "provider": "omni", "ok": True}])
+        self.assertEqual(skipped, [])
+        probe.assert_called_once_with("omni", "gemini-provider-secret-7788")
+        self.assertEqual(provider_keys.public_key(item["id"])["health_status"], "healthy")
+
     def test_xai_keys_rotate_by_least_use_and_can_be_revealed_with_audit(self):
         first = self.add("xai", "xai-provider-secret-1111")
         second = provider_keys.add_key(
@@ -188,7 +211,7 @@ class ProviderKeyPoolTests(unittest.TestCase):
         self.assertEqual(revealed["expires_in"], 5)
         public = admin_api.provider_key_list()
         self.assertNotIn("secret", str(public))
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             action = conn.execute(
                 "SELECT action FROM admin_audit ORDER BY id DESC LIMIT 1"
             ).fetchone()[0]
@@ -220,7 +243,7 @@ class ProviderKeyPoolTests(unittest.TestCase):
             result["secrets"],
             [{"env": "HEYGEN_API_KEY", "secret": "heygen-secret-7788"}],
         )
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             action, detail = conn.execute(
                 "SELECT action,detail FROM admin_audit ORDER BY id DESC LIMIT 1"
             ).fetchone()
@@ -361,16 +384,17 @@ class ProviderKeyPoolTests(unittest.TestCase):
             item = video.get_resumable_sora_request(9)
         self.assertEqual(item["provider_key_id"], "key-9")
 
-    def test_admin_console_exposes_real_pool_controls_and_auto_refresh(self):
-        html = (ROOT / "site" / "admin" / "index.html").read_text()
+    def test_admin_console_exposes_real_pool_controls_and_non_disruptive_refresh(self):
+        html = (ROOT / "site" / "admin" / "index.html").read_text(encoding="utf-8")
         for text in (
-            "每 30 秒刷新", "xAI API · 果肉视频", "查看 5 秒",
+            "state.module==='dashboard'", "xAI API · 果肉视频", "查看 5 秒",
             "data-provider-key-replace", "data-server-key-reveal",
             "data-provider-key-delete",
             "前端功能对应关系", "navigator.clipboard",
         ):
             self.assertIn(text, html)
         self.assertNotIn("data-provider-key-rename", html)
+        self.assertIn("(state.module==='dashboard'||state.module==='operations')&&!state.poolActions", html)
         self.assertNotIn("/api/admin/provider-keys/rename", html)
         self.assertNotIn("其他上游", html)
         self.assertIn("Date.now()+ttl", html)

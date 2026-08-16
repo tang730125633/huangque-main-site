@@ -24,14 +24,53 @@ def _idx(needle):
 
 
 class SmokeImportTests(unittest.TestCase):
-    def test_invite_module_is_deployed_with_auth(self):
-        self.assertIn("server/auth_server.py|server/invites.py|server/wxpay.py", SRC)
+    def test_provider_dependency_tree_is_deployed_and_monitored(self):
+        drift = (ROOT / "scripts/drift_sentinel.py").read_text(encoding="utf-8")
+        setup = (ROOT / "deploy/setup-dev-server.sh").read_text(encoding="utf-8")
+        self.assertIn("push_dir server/providers/ /home/ubuntu/content-api/providers/", SRC)
+        self.assertIn("git_ls_tree('server/providers')", drift)
+        self.assertIn("HQ_PROVIDERS_RUNTIME", drift)
+        self.assertIn('rsync -a --delete "$R"/server/providers/', setup)
+
+    def test_auth_dependencies_are_deployed_and_monitored(self):
+        drift = (ROOT / "scripts/drift_sentinel.py").read_text(encoding="utf-8")
+        self.assertIn("server/auth_server.py|server/hq_cli_api.py|server/invites.py|server/invite_network.py|server/business_cards.py|server/wxpay.py", SRC)
         self.assertIn(
             "'server/invites.py': '/home/ubuntu/auth-service/invites.py'",
-            (ROOT / "scripts/drift_sentinel.py").read_text(encoding="utf-8"),
+            drift,
         )
         self.assertIn(
+            "'server/hq_cli_api.py': '/home/ubuntu/auth-service/hq_cli_api.py'",
+            drift,
+        )
+        self.assertIn(
+            "'server/business_cards.py': '/home/ubuntu/auth-service/business_cards.py'",
+            drift,
+        )
+        self.assertIn(
+            "'server/invite_network.py': '/home/ubuntu/auth-service/invite_network.py'",
+            drift,
+        )
+        for name in ("__init__.py", "cos.py", "miniprogram_security.py"):
+            self.assertIn(
+                "'server/content_domains/%s': '/home/ubuntu/auth-service/content_domains/%s'" % (name, name),
+                drift,
+            )
+        self.assertIn("runtimes = git_path_to_runtimes(gp)", drift)
+        self.assertIn(
             '"$R"/server/invites.py',
+            (ROOT / "deploy/setup-dev-server.sh").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            '"$R"/server/hq_cli_api.py',
+            (ROOT / "deploy/setup-dev-server.sh").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            '"$R"/server/business_cards.py',
+            (ROOT / "deploy/setup-dev-server.sh").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            '"$R"/server/invite_network.py',
             (ROOT / "deploy/setup-dev-server.sh").read_text(encoding="utf-8"),
         )
 
@@ -48,6 +87,12 @@ class SmokeImportTests(unittest.TestCase):
         """入口从 ExecStart/WorkingDirectory 反查，不写死模块名。"""
         self.assertIn("systemctl show -p ExecStart", SRC)
         self.assertIn("systemctl show -p WorkingDirectory", SRC)
+
+    def test_content_smoke_checks_the_copy_cross_module_contract(self):
+        self.assertIn('if [ "$svc" = "huangque-content" ]', SRC)
+        self.assertIn("text.validate_copy_payload", SRC)
+        self.assertIn("文案跨模块契约失败", SRC)
+        self.assertLess(_idx("text.validate_copy_payload"), _idx("sudo systemctl restart $RESTART"))
 
 
 class RestartEffectiveTests(unittest.TestCase):

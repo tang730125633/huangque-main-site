@@ -10,15 +10,17 @@ class AdminPointsLedgerTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
     def test_has_dedicated_points_module_and_filters(self):
-        self.assertIn('data-module-tab="points"', self.html)
+        self.assertIn('data-module-switch="points"', self.html)
+        self.assertIn("sidebarModule = {points:'recharge',pricing:'features'}", self.html)
         self.assertIn('data-module="points"', self.html)
         self.assertIn('id="pointsUser"', self.html)
         self.assertIn('id="pointsActor"', self.html)
         self.assertIn('id="pointsDirection"', self.html)
         self.assertNotIn('id="auditActor"', self.html)
 
-    def test_user_action_opens_filtered_points_module(self):
-        self.assertIn("if(act==='audit') return openPoints(username);", self.html)
+    def test_user_detail_opens_filtered_points_module(self):
+        self.assertIn("el('detailPoints').onclick=function(){openPoints(u.username)};", self.html)
+        self.assertIn("openUserDetail('',btn.getAttribute('data-user-id'));", self.html)
         self.assertIn("el('pointsUser').value=username||'';", self.html)
         self.assertIn("switchModule('points');", self.html)
 

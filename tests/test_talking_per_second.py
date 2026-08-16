@@ -6,6 +6,7 @@
 - text 模式：TTS 在 job 里才跑，扣点时按文本长度【偏保守】估算预扣，跑完由 run_job 按成片
   真实时长（HeyGen 返回的 duration）结算 —— **多退少不补**，绝不二次扣点。
 """
+import ast
 import sys
 import unittest
 from pathlib import Path
@@ -46,7 +47,12 @@ class TalkingSettleTests(unittest.TestCase):
 
     def test_settle_is_wired_after_done_and_only_refunds_overcharge(self):
         core_src = (Path(video.__file__).with_name("core.py")).read_text(encoding="utf-8")
-        block = core_src.split('if not _set_terminal(job_id, "done", result=result):')[1][:900]
+        tree = ast.parse(core_src)
+        run_job = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "run_job"
+        )
+        block = ast.get_source_segment(core_src, run_job)
         self.assertIn('kind == "video"', block)
         self.assertIn("talking_actual_cost", block)
         self.assertIn("safe_refund_points", block)

@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IP孵化教练 v6</title>
+<script src="https://unpkg.com/marked@15.0.12/lib/marked.umd.js"></script>
+<style>
+:root {
+  --bg:#070b13;--sb:#0a101b;--card:#101722;--bd:rgba(148,164,187,.12);--tx:#eaf1fa;--dim:#718197;
+  --ac:#e7b24c;--acb:#f1c768;--ag:rgba(231,178,76,.12);--gr:#2dd4bf;
+  --gb:rgba(45,212,191,.1);--wa:#f4cd72;--ub:#182336;--ab:rgba(14,20,31,.96);--ib:rgba(9,14,23,.88);
+  --r:14px;--rs:9px;--f:"Noto Sans SC",-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{background:var(--bg)}
+body{position:relative;font-family:var(--f);background:radial-gradient(circle at 72% 2%,rgba(231,178,76,.09),transparent 27%),radial-gradient(circle at 62% 100%,rgba(45,212,191,.045),transparent 34%),var(--bg);color:var(--tx);height:100vh;display:flex;overflow:hidden}
+body:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.34;background-image:radial-gradient(circle at 1px 1px,rgba(148,164,187,.13) 1px,transparent 0);background-size:24px 24px;mask-image:linear-gradient(90deg,transparent 250px,#000 40%,transparent 92%)}
+button,input,textarea{font:inherit}
+button:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px solid rgba(231,178,76,.7);outline-offset:2px}
+
+/* ── LEFT SIDEBAR ── */
+.lsb{position:relative;isolation:isolate;width:280px;min-width:280px;background:linear-gradient(180deg,rgba(12,18,29,.98),rgba(7,12,21,.98));border-right:1px solid rgba(148,164,187,.1);box-shadow:16px 0 44px -34px rgba(0,0,0,.9),inset -1px 0 rgba(231,178,76,.055);display:flex;flex-direction:column;height:100vh;z-index:10;overflow:hidden;backdrop-filter:blur(18px)}
+.lsb:before{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;background:radial-gradient(230px circle at 12% 4%,rgba(231,178,76,.12),transparent 70%),radial-gradient(210px circle at 90% 92%,rgba(45,212,191,.045),transparent 72%)}
+.lsb-hd{min-height:76px;display:flex;align-items:center;gap:11px;padding:15px 14px;border-bottom:1px solid rgba(148,164,187,.09)}
+.brand-emblem{position:relative;width:38px;height:38px;display:grid;place-items:center;flex:none;border:1px solid rgba(231,178,76,.34);border-radius:12px;background:linear-gradient(145deg,rgba(231,178,76,.18),rgba(231,178,76,.06));color:#f4cd72;box-shadow:0 12px 28px -20px rgba(231,178,76,.85),inset 0 1px rgba(255,255,255,.08)}
+.brand-emblem:after{content:"";position:absolute;right:5px;top:5px;width:4px;height:4px;border-radius:50%;background:#2dd4bf;box-shadow:0 0 8px rgba(45,212,191,.85)}
+.brand-emblem svg{width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+.brand-copy{min-width:0}
+.brand-kicker{margin-bottom:3px;color:#8f9db0;font-size:8px;font-weight:800;letter-spacing:.16em}
+.lsb-hd h1{font-size:13px;font-weight:800;color:#f4f7fb;letter-spacing:.01em}
+.lsb-hd .sub{margin-top:3px;font-size:9px;color:#68788f}
+.sidebar-close{display:none;margin-left:auto;width:30px;height:30px;border:0;border-radius:8px;background:rgba(148,164,187,.05);color:#8c9aaf;cursor:pointer;font-size:16px}
+.prog-wrap{padding:12px 14px 13px;border-bottom:1px solid rgba(148,164,187,.08);background:rgba(148,164,187,.018)}
+.prog-lbl{font-size:10px;color:#718197;display:flex;justify-content:space-between}
+.prog-lbl span:last-child{color:var(--acb);font-weight:750}
+.prog-bar{height:4px;background:rgba(148,164,187,.1);border-radius:999px;overflow:hidden;margin-top:8px;box-shadow:inset 0 1px rgba(0,0,0,.3)}
+.prog-fill{height:100%;background:linear-gradient(90deg,var(--gr),var(--ac));border-radius:inherit;box-shadow:0 0 12px rgba(45,212,191,.24);transition:width .5s}
+.sec-lbl{display:flex;align-items:center;gap:8px;font-size:9px;text-transform:uppercase;letter-spacing:1.25px;color:#637189;padding:10px 14px 4px;cursor:pointer;user-select:none}
+.sec-lbl:after{content:"";height:1px;flex:1;background:linear-gradient(90deg,rgba(148,164,187,.1),transparent)}
+.sec-lbl:hover{color:#aeb9c8}
+
+/* Module list */
+.mod-scroll{overflow-y:auto;flex:1;padding:4px 8px 8px;scrollbar-width:none}
+.mod-scroll::-webkit-scrollbar{display:none}
+.mod-item{position:relative;display:flex;align-items:center;gap:8px;min-height:43px;padding:6px 8px;border:1px solid transparent;border-radius:11px;cursor:pointer;font-size:12px;transition:color .18s,background .18s,border-color .18s,box-shadow .18s;user-select:none;flex-wrap:wrap;overflow:hidden}
+.mod-item:before{content:"";position:absolute;inset:2px;border-radius:9px;background:linear-gradient(105deg,transparent 18%,rgba(231,178,76,.09) 48%,transparent 78%);opacity:0;transform:translateX(-110%);pointer-events:none}
+.mod-item:hover{color:#fff;background:rgba(231,178,76,.055);border-color:rgba(231,178,76,.12)}
+.mod-item:hover:before{animation:hq-scan .72s cubic-bezier(.22,1,.36,1)}
+.mod-item.cur{background:linear-gradient(105deg,rgba(231,178,76,.16),rgba(231,178,76,.065));border-color:rgba(231,178,76,.28);box-shadow:0 12px 28px -22px rgba(231,178,76,.72),inset 0 1px rgba(255,255,255,.06)}
+.mod-item.cur:after{content:"";position:absolute;left:-1px;top:10px;bottom:10px;width:2px;border-radius:3px;background:#f1c768;box-shadow:0 0 10px rgba(231,178,76,.7)}
+.mod-item.done{color:#bcd8d4}
+.mod-item.locked{opacity:.4;cursor:not-allowed}
+.mod-item.locked:hover{background:transparent;border-color:transparent;color:inherit}
+.mod-item .mod-row{display:flex;align-items:center;gap:8px;width:100%}
+.mod-num{width:24px;height:24px;border:1px solid rgba(148,164,187,.13);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex-shrink:0;background:rgba(148,164,187,.045);color:#6f8096}
+.mod-item.cur .mod-num{border-color:rgba(231,178,76,.34);background:rgba(231,178,76,.14);color:#f4cd72}
+.mod-item.done .mod-num{border-color:rgba(45,212,191,.28);background:rgba(45,212,191,.1);color:#7ce8d8}
+.mod-info{flex:1;min-width:0}
+.mod-name{display:flex;align-items:center;gap:8px;font-weight:650;color:#bcc8d7}
+.mod-item:hover .mod-name,.mod-item.cur .mod-name{color:#f3f6fa}
+.module-icon{position:relative;width:18px;height:18px;display:grid;place-items:center;flex:none;color:#8090a5}
+.module-icon svg{width:18px;height:18px;display:block;overflow:visible;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+.module-icon .icon-accent{color:#e7b24c;stroke:currentColor}
+.mod-item:hover .module-icon,.mod-item.cur .module-icon,.tool-row button:hover .module-icon,.top-action:hover .module-icon,.lsb-ft button:hover .module-icon{color:#f3f6fa;filter:drop-shadow(0 0 7px rgba(231,178,76,.38))}
+.mod-item:hover .module-icon svg>*,.tool-row button:hover .module-icon svg>*,.top-action:hover .module-icon svg>*,.lsb-ft button:hover .module-icon svg>*{animation:hq-icon-draw .72s cubic-bezier(.22,1,.36,1)}
+.mod-item:hover .module-icon:before,.tool-row button:hover .module-icon:before{content:"";position:absolute;right:-2px;top:-2px;width:3px;height:3px;border-radius:50%;background:#f4cd72;box-shadow:0 0 7px rgba(244,205,114,.8);animation:hq-seed .68s ease-out}
+.mod-badge{font-size:8px;padding:2px 5px;border:1px solid rgba(231,178,76,.14);border-radius:999px;background:rgba(231,178,76,.07);color:#cfae67;white-space:nowrap}
+.mod-item.done .mod-badge{background:var(--gb);color:var(--gr)}
+.mod-expand{font-size:8px;color:#5f6e82;transition:transform .2s;flex-shrink:0}
+.mod-item.expanded .mod-expand{transform:rotate(90deg)}
+
+/* Sub-skills */
+.mod-sub{display:none;align-items:center;gap:7px;padding:7px 8px 7px 33px;cursor:pointer;font-size:10px;color:#718197;transition:all .15s;border-radius:8px;margin:1px 2px;width:100%}
+.mod-item.expanded .mod-sub{display:block}
+.mod-sub:hover{color:#eaf1fa;background:rgba(148,164,187,.055)}
+.mod-sub .module-icon{display:inline-grid;width:15px;height:15px;margin-right:6px;vertical-align:middle}
+.mod-sub .module-icon svg{width:15px;height:15px}
+
+/* Tools */
+.tools-wrap{border-top:1px solid rgba(148,164,187,.08);background:rgba(5,9,16,.22)}
+.tools-wrap .tool-row{display:flex;flex-wrap:wrap;gap:5px;padding:6px 8px 10px}
+.tools-wrap .tool-row button{display:flex;align-items:center;gap:6px;flex:0 0 calc(50% - 3px);min-width:0;min-height:31px;padding:6px 7px;border:1px solid rgba(148,164,187,.1);border-radius:8px;background:rgba(148,164,187,.025);color:#718197;cursor:pointer;font-size:9.5px;text-align:left;transition:color .16s,background .16s,border-color .16s,box-shadow .16s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tools-wrap .tool-row button:hover{background:rgba(231,178,76,.08);border-color:rgba(231,178,76,.2);color:#f1eadb;box-shadow:0 10px 24px -20px rgba(231,178,76,.8)}
+.tool-row .module-icon{width:15px;height:15px}
+.tool-row .module-icon svg{width:15px;height:15px}
+.tools-wrap.collapsed .tool-row{display:none}
+.artifact-empty{padding:6px 12px 9px;color:var(--dim);font-size:10px}
+.lsb-ft{padding:10px 12px 12px;border-top:1px solid rgba(148,164,187,.09);display:flex;gap:7px;background:rgba(4,8,14,.42)}
+.lsb-ft button{display:flex;align-items:center;justify-content:center;gap:6px;flex:1;min-height:34px;padding:7px;border:1px solid rgba(148,164,187,.12);border-radius:9px;background:rgba(148,164,187,.035);color:#b7c3d2;cursor:pointer;font-size:10px;transition:.16s}
+.lsb-ft button:first-child{border-color:rgba(231,178,76,.25);background:rgba(231,178,76,.1);color:#f1c768}
+.lsb-ft button:hover{transform:translateY(-1px);border-color:rgba(231,178,76,.28);background:rgba(231,178,76,.1);color:#fff}
+
+/* ── CENTER CHAT ── */
+.main{position:relative;flex:1;display:flex;flex-direction:column;height:100vh;min-width:0;background:linear-gradient(180deg,rgba(7,11,19,.24),rgba(7,11,19,.74))}
+.top-bar{position:relative;z-index:2;min-height:55px;padding:10px 22px;border-bottom:1px solid rgba(148,164,187,.09);background:rgba(7,11,19,.66);backdrop-filter:blur(16px);display:flex;align-items:center;justify-content:space-between;font-size:11px}
+.top-bar .cur-mod{display:flex;align-items:center;gap:6px}
+.top-bar .dot{width:6px;height:6px;border-radius:50%;background:var(--gr);box-shadow:0 0 8px rgba(45,212,191,.75)}
+.top-bar strong{color:#f1c768}
+.top-action{display:flex;align-items:center;gap:6px;padding:6px 9px;border:1px solid rgba(148,164,187,.11);border-radius:8px;background:rgba(148,164,187,.035);color:#7f8fa5;cursor:pointer;font-size:10px;transition:.16s}
+.top-action:hover{border-color:rgba(231,178,76,.24);background:rgba(231,178,76,.08);color:#f3f6fa}
+.top-action .module-icon{width:14px;height:14px}.top-action .module-icon svg{width:14px;height:14px}
+.mobile-menu{display:none}
+.chat-area{position:relative;z-index:1;flex:1;overflow-y:auto;padding:26px 32px;display:flex;flex-direction:column;gap:14px;scrollbar-width:thin;scrollbar-color:rgba(148,164,187,.16) transparent}
+.welcome{position:relative;isolation:isolate;flex:1;width:min(620px,100%);min-height:390px;margin:auto;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:13px;padding:42px 38px;overflow:hidden;border:1px solid rgba(148,164,187,.13);border-radius:24px;background:radial-gradient(circle at 50% 18%,rgba(231,178,76,.13),transparent 30%),linear-gradient(145deg,rgba(17,24,36,.88),rgba(8,13,22,.92));box-shadow:0 35px 90px -54px rgba(0,0,0,.95),inset 0 1px rgba(255,255,255,.055);color:#7f8fa5;text-align:center}
+.welcome:before{content:"";position:absolute;inset:0;z-index:-1;opacity:.28;background-image:linear-gradient(rgba(148,164,187,.09) 1px,transparent 1px),linear-gradient(90deg,rgba(148,164,187,.09) 1px,transparent 1px);background-size:34px 34px;mask-image:radial-gradient(circle at center,#000,transparent 74%)}
+.welcome:after{content:"";position:absolute;left:14%;right:14%;bottom:0;height:1px;background:linear-gradient(90deg,transparent,#2dd4bf,#e7b24c,transparent);opacity:.52}
+.welcome .big-icon{position:relative;width:72px;height:72px;display:grid;place-items:center;margin-bottom:4px;border:1px solid rgba(231,178,76,.28);border-radius:22px;background:linear-gradient(145deg,rgba(231,178,76,.18),rgba(231,178,76,.055));box-shadow:0 20px 48px -28px rgba(231,178,76,.9),inset 0 1px rgba(255,255,255,.08);color:#f4cd72}
+.welcome .big-icon svg{width:34px;height:34px;fill:none;stroke:currentColor;stroke-width:1.55;stroke-linecap:round;stroke-linejoin:round}
+.welcome .big-icon .spark{transform-origin:center;animation:welcome-spark 2.8s ease-in-out infinite}
+.welcome .big-icon:after{content:"";position:absolute;right:11px;top:11px;width:6px;height:6px;border-radius:50%;background:#2dd4bf;box-shadow:0 0 12px rgba(45,212,191,.9)}
+.welcome-kicker{color:#d1a94d;font-size:9px;font-weight:850;letter-spacing:.18em}
+.welcome h2{font-size:26px;color:#f5f8fc;font-weight:800;letter-spacing:-.02em}
+.welcome p{font-size:12px;max-width:430px;line-height:1.8;color:#8290a4}
+.welcome-meta{display:flex;align-items:center;justify-content:center;gap:7px;flex-wrap:wrap;margin:2px 0 5px}
+.welcome-meta span{padding:5px 8px;border:1px solid rgba(148,164,187,.11);border-radius:999px;background:rgba(148,164,187,.035);color:#8b9ab0;font-size:9px}
+.welcome-meta span:first-child{border-color:rgba(45,212,191,.2);background:rgba(45,212,191,.07);color:#79d8ca}
+.start-btn{position:relative;min-width:132px;padding:11px 22px;border:1px solid rgba(244,205,114,.55);border-radius:11px;background:linear-gradient(135deg,#f4cd72,#e7b24c);box-shadow:0 16px 34px -20px rgba(231,178,76,.9),inset 0 1px rgba(255,255,255,.38);color:#211707;cursor:pointer;font-size:12px;font-weight:850;transition:transform .16s,box-shadow .16s,filter .16s}
+.start-btn:hover{transform:translateY(-2px);filter:brightness(1.06);box-shadow:0 20px 42px -20px rgba(231,178,76,.96)}
+.msg{display:flex;gap:10px;max-width:750px;width:100%;margin:0 auto}
+.msg.user{flex-direction:row-reverse}
+.av{width:32px;height:32px;border:1px solid rgba(148,164,187,.12);border-radius:10px;display:grid;place-items:center;flex-shrink:0;background:rgba(148,164,187,.045);color:#94a4bb}
+.av .module-icon,.av .module-icon svg{width:17px;height:17px}
+.msg.user .av{border-color:rgba(231,178,76,.22);background:rgba(231,178,76,.1);color:#f1c768}
+.msg.assistant .av{border-color:rgba(45,212,191,.18);background:rgba(45,212,191,.07);color:#76d9ca}
+.bubble{padding:13px 16px;border-radius:13px;max-width:85%;font-size:13px;line-height:1.72;word-break:break-word;box-shadow:0 16px 34px -30px rgba(0,0,0,.9)}
+.msg.user .bubble{border:1px solid rgba(231,178,76,.13);background:linear-gradient(145deg,rgba(36,43,55,.94),rgba(24,35,54,.94))}
+.msg.assistant .bubble{background:var(--ab);border:1px solid var(--bd)}
+.harness-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid rgba(148,164,187,.12)}
+.harness-action{padding:7px 12px;border:1px solid rgba(148,164,187,.2);border-radius:8px;background:rgba(148,164,187,.06);color:var(--tx);font:inherit;font-size:11px;cursor:pointer}
+.harness-action.primary{border-color:rgba(231,178,76,.42);background:rgba(231,178,76,.13);color:#f4d993}
+.harness-action:disabled{opacity:.45;cursor:not-allowed}
+.input-area{position:relative;z-index:2;padding:12px 24px 17px;border-top:1px solid rgba(148,164,187,.08);background:linear-gradient(180deg,rgba(7,11,19,.18),rgba(7,11,19,.92));backdrop-filter:blur(18px)}
+.input-wrap{max-width:750px;margin:0 auto;display:flex;gap:7px;background:var(--ib);border:1px solid rgba(148,164,187,.13);border-radius:14px;padding:5px;align-items:flex-end;box-shadow:0 22px 48px -34px rgba(0,0,0,.92),inset 0 1px rgba(255,255,255,.035);transition:border-color .18s,background .18s,box-shadow .18s}
+.input-wrap:focus-within{border-color:rgba(231,178,76,.42);background:rgba(11,17,27,.96);box-shadow:0 22px 48px -34px rgba(0,0,0,.92),0 0 24px -18px rgba(231,178,76,.75),inset 0 1px rgba(255,255,255,.05)}
+.input-wrap textarea{flex:1;background:transparent;border:none;outline:none;color:var(--tx);font-family:var(--f);font-size:12px;resize:none;padding:7px 8px;min-height:27px;max-height:120px}
+.input-wrap textarea::placeholder{color:#56657a}
+.send-btn{width:36px;height:36px;border-radius:10px;border:1px solid rgba(244,205,114,.45);background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#211707;cursor:pointer;font-size:14px;font-weight:900;flex-shrink:0;box-shadow:0 12px 24px -18px rgba(231,178,76,.9)}
+.send-btn:disabled{opacity:.42;filter:saturate(.4);cursor:not-allowed;box-shadow:none}
+
+/* ── RIGHT PANEL ── */
+.rpn{width:0;min-width:0;background:linear-gradient(180deg,rgba(15,22,34,.99),rgba(8,13,22,.99));border-left:1px solid rgba(148,164,187,.11);height:100vh;overflow:hidden;transition:width .3s ease,min-width .3s ease;z-index:5;box-shadow:-24px 0 55px -40px rgba(0,0,0,.9)}
+.rpn.open{width:420px;min-width:420px}
+.rpn-inner{padding:16px;width:420px}
+.rpn-hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid rgba(148,164,187,.09)}
+.rpn-hd h2{font-size:14px;color:#f1c768}
+.rpn-close{width:30px;height:30px;border:0;border-radius:8px;background:rgba(148,164,187,.035);color:var(--dim);cursor:pointer;font-size:16px}
+.rpn-close:hover{color:var(--tx)}
+.rpn-body{overflow-y:auto;max-height:calc(100vh - 80px);font-size:13px;line-height:1.7}
+.rpn-body img{max-width:100%;border-radius:8px;margin:6px 0}
+.rpn-body pre{background:rgba(4,8,14,.72);border:1px solid rgba(148,164,187,.08);border-radius:var(--rs);padding:10px;overflow-x:auto;font-size:11px;margin:8px 0}
+.rpn-body h3{color:var(--acb);margin:12px 0 6px;font-size:14px}
+
+/* Cards in right panel */
+.rpn-card{background:linear-gradient(145deg,rgba(18,26,39,.95),rgba(10,16,26,.96));border:1px solid var(--bd);border-radius:var(--r);padding:14px;margin:10px 0;box-shadow:0 20px 46px -38px rgba(0,0,0,.9),inset 0 1px rgba(255,255,255,.035)}
+.rpn-card-header{font-size:14px;font-weight:600;color:var(--acb);margin-bottom:8px}
+.rpn-card .copy-btn{background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#211707;border:1px solid rgba(244,205,114,.45);padding:6px 10px;border-radius:8px;cursor:pointer;font-size:10px;font-weight:800;margin-top:8px}
+.rpn-card .copy-btn:hover{opacity:0.8}
+
+/* PDF review */
+.pdf-review{position:fixed;inset:0;z-index:120;display:none;background:rgba(2,6,12,.82);backdrop-filter:blur(8px)}
+.pdf-review.open{display:flex}
+.pdf-review-shell{width:min(1440px,96vw);height:min(900px,94vh);margin:auto;display:grid;grid-template-columns:minmax(0,1fr) 360px;overflow:hidden;border:1px solid rgba(148,164,187,.18);border-radius:18px;background:#0b111c;box-shadow:0 35px 100px rgba(0,0,0,.58)}
+.pdf-review-document{min-width:0;display:flex;flex-direction:column;background:#202631}
+.pdf-review-bar{min-height:52px;padding:9px 14px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(148,164,187,.14);background:#0d1420}
+.pdf-review-bar strong{font-size:13px;flex:1}.pdf-review-bar span{font-size:10px;color:#8290a4}
+.pdf-review-bar button,.pdf-review-side button{border:1px solid rgba(148,164,187,.2);border-radius:8px;background:rgba(148,164,187,.06);color:#dbe5f1;padding:7px 10px;cursor:pointer;font-size:11px}
+.pdf-review-bar button:hover,.pdf-review-side button:hover{border-color:rgba(231,178,76,.4);color:#f4cd72}
+.pdf-review-frame{width:100%;height:100%;border:0;background:#2b303b}
+.pdf-review-side{display:flex;flex-direction:column;min-height:0;padding:16px;border-left:1px solid rgba(148,164,187,.12);background:linear-gradient(180deg,#101824,#0a101a)}
+.pdf-review-side h2{font-size:15px;color:#f4cd72}.pdf-review-help{margin:6px 0 13px;color:#7f8fa5;font-size:11px;line-height:1.6}
+.pdf-review-grid{display:grid;grid-template-columns:90px 1fr;gap:8px}
+.pdf-review-field{display:flex;flex-direction:column;gap:5px;margin-bottom:9px}.pdf-review-field label{color:#93a2b6;font-size:10px}
+.pdf-review-field input,.pdf-review-field select,.pdf-review-field textarea{width:100%;border:1px solid rgba(148,164,187,.16);border-radius:8px;background:rgba(7,12,20,.82);color:#eaf1fa;padding:8px;font:inherit;font-size:11px;outline:none}
+.pdf-review-field textarea{min-height:64px;resize:vertical}.pdf-review-field input:focus,.pdf-review-field select:focus,.pdf-review-field textarea:focus{border-color:rgba(231,178,76,.55)}
+.pdf-review-add{width:100%;margin-bottom:12px}.pdf-review-list{flex:1;min-height:90px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding-right:2px}
+.pdf-review-empty{padding:18px 8px;text-align:center;color:#65758b;font-size:11px;border:1px dashed rgba(148,164,187,.15);border-radius:10px}
+.pdf-note{position:relative;padding:10px 34px 10px 10px;border:1px solid rgba(148,164,187,.13);border-radius:10px;background:rgba(148,164,187,.045);font-size:10px;line-height:1.55;color:#bfcbda}
+.pdf-note strong{color:#f1c768}.pdf-note-quote{color:#8290a4}.pdf-note-remove{position:absolute;right:7px;top:7px!important;padding:2px 6px!important;border:0!important;background:transparent!important;color:#718197!important}
+.pdf-review-submit{width:100%;margin-top:12px!important;padding:10px!important;border-color:rgba(231,178,76,.5)!important;background:rgba(231,178,76,.14)!important;color:#f4d993!important;font-weight:800}.pdf-review-submit:disabled{opacity:.4;cursor:not-allowed}
+
+.spinner{width:24px;height:24px;border:2px solid var(--bd);border-top-color:var(--ac);border-radius:50%;animation:spin .8s linear infinite;margin:20px auto}
+@keyframes spin{to{transform:rotate(360deg)}}
+.toast{position:fixed;bottom:20px;right:20px;z-index:200;background:rgba(11,31,30,.96);border:1px solid rgba(45,212,191,.34);color:#8ce7da;padding:10px 16px;border-radius:10px;box-shadow:0 16px 40px -24px rgba(0,0,0,.9);font-size:11px;animation:slideIn .3s ease,fadeOut .5s ease 3s forwards;pointer-events:none}
+@keyframes slideIn{from{transform:translateY(15px);opacity:0}to{transform:translateY(0);opacity:1}}
+@keyframes fadeOut{to{opacity:0}}
+@keyframes hq-scan{0%{opacity:0;transform:translateX(-110%)}35%{opacity:1}100%{opacity:0;transform:translateX(110%)}}
+@keyframes hq-icon-draw{0%{stroke-dasharray:2 32;stroke-dashoffset:18;opacity:.35}100%{stroke-dasharray:48 0;stroke-dashoffset:0;opacity:1}}
+@keyframes hq-seed{0%{opacity:0;transform:translate(-3px,3px) scale(.4)}30%{opacity:1}100%{opacity:0;transform:translate(7px,-9px) scale(1.2)}}
+@keyframes welcome-spark{0%,100%{opacity:.35;transform:scale(.72) rotate(-8deg)}50%{opacity:1;transform:scale(1.08) rotate(4deg)}}
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-thumb{background:rgba(148,164,187,.14);border-radius:2px}
+@media(max-width:720px){
+  body:before{mask-image:none;opacity:.18}
+  .lsb{position:fixed;left:0;top:0;z-index:60;width:min(300px,88vw);min-width:0;transform:translateX(-102%);transition:transform .25s;box-shadow:30px 0 70px rgba(0,0,0,.52)}
+  .lsb.open{transform:translateX(0)}
+  .sidebar-close{display:grid;place-items:center}
+  .mobile-menu{display:grid;place-items:center;width:30px;height:30px;padding:0}
+  .top-bar{min-height:52px;padding:9px 12px}
+  .top-bar .cur-mod{flex:1}
+  .rpn.open{position:fixed;inset:0;z-index:70;width:100%;min-width:100%}
+  .rpn-inner{width:100%;height:100%;padding:14px}
+  .chat-area{padding:12px}
+  .welcome{min-height:390px;padding:30px 18px;border-radius:18px}
+  .welcome h2{font-size:22px}
+  .welcome .big-icon{width:62px;height:62px;border-radius:18px}
+  .input-area{padding:10px 10px 13px}
+  .msg{max-width:100%}
+  .pdf-review-shell{width:100%;height:100%;border-radius:0;grid-template-columns:1fr;grid-template-rows:54vh minmax(0,1fr)}
+  .pdf-review-side{border-left:0;border-top:1px solid rgba(148,164,187,.12);padding:12px}
+  .pdf-review-bar span{display:none}
+}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
+</style>
+</head>
+<body>
+
+<!-- ── LEFT SIDEBAR ── -->
+<aside class="lsb" id="lsb">
+  <div class="lsb-hd">
+    <span class="brand-emblem" aria-hidden="true"><svg viewBox="0 0 24 24"><path pathLength="1" d="M5 18V8l7-4 7 4v10l-7 3z"/><path pathLength="1" d="m8 9 4 2 4-2M12 11v6"/><path pathLength="1" d="m18.5 3 .5 1.4 1.5.6-1.5.5-.5 1.5-.6-1.5-1.4-.5 1.4-.6z"/></svg></span>
+    <div class="brand-copy"><div class="brand-kicker">HUANGQUE DIGITAL IP</div><h1>黄雀 IP 孵化教练</h1><div class="sub">v6 · 6 个模块开放</div></div>
+    <button class="sidebar-close" type="button" aria-label="关闭模块导航" onclick="document.getElementById('lsb').classList.remove('open')">✕</button>
+  </div>
+  <div class="prog-wrap"><div class="prog-lbl"><span>诊断进度</span><span id="progText">0/6</span></div><div class="prog-bar"><div class="prog-fill" id="progBar" style="width:0%"></div></div></div>
+  <div class="sec-lbl">诊断模块</div>
+  <div class="mod-scroll" id="modScroll"></div>
+  <div class="tools-wrap" id="artifactsWrap">
+    <div class="sec-lbl" onclick="this.parentElement.classList.toggle('collapsed')">报告与交付物 ▾</div>
+    <div class="tool-row" id="artifactRows"></div>
+  </div>
+  <div class="tools-wrap" id="toolsWrap">
+    <div class="sec-lbl" onclick="this.parentElement.classList.toggle('collapsed')">独立工具 ▾</div>
+    <div class="tool-row">
+      <button data-icon="users" onclick="loadSkill('audience')">受众画像</button>
+      <button data-icon="search" onclick="loadSkill('competitor-ip')">竞品IP拆解</button>
+      <button data-icon="layers" onclick="loadSkill('repurpose')">一鱼多吃</button>
+      <button data-icon="target" onclick="loadPanel('geo')">GEO分析</button>
+      <button data-icon="trend" onclick="loadPanel('radar')">选题雷达</button>
+      <button data-icon="image" onclick="toast('尚未开发，敬请期待')">形象预览</button>
+      <button data-icon="video" onclick="loadSkill('video-factory')">视频工厂</button>
+      <button data-icon="chart" onclick="loadSkill('video-analyzer')">对标分析</button>
+      <button data-icon="document" onclick="openPath('/classic')">原版报告</button>
+      <button data-icon="dashboard" onclick="openPath('/analytics')">数据看板</button>
+    </div>
+  </div>
+  <div class="lsb-ft">
+    <button data-icon="plus" onclick="newDiagnosis()">新诊断</button>
+    <button data-icon="clock" onclick="toggleConvos()">历史</button>
+  </div>
+</aside>
+
+<!-- ── CENTER CHAT ── -->
+<main class="main">
+  <div class="top-bar">
+    <div class="cur-mod"><button class="top-action mobile-menu" data-icon="menu" type="button" aria-label="打开模块导航" onclick="document.getElementById('lsb').classList.add('open')"></button><span class="dot"></span>当前：<strong id="curModName">定位诊断</strong><span style="color:var(--dim);font-size:10px" id="stepBadge"></span></div>
+    <button class="top-action" data-icon="clock" onclick="toggleConvos()">历史</button>
+  </div>
+  <div class="chat-area" id="chatArea">
+    <div class="welcome" id="welcome"><div class="big-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path pathLength="1" d="M5 18V8l7-4 7 4v10l-7 3z"/><path pathLength="1" d="m8 9 4 2 4-2M12 11v6"/><path pathLength="1" class="spark" d="m19 2 .7 1.8 1.8.7-1.8.7L19 8l-.7-1.8-1.8-.7 1.8-.7Z"/></svg></div><div class="welcome-kicker">HUANGQUE DIGITAL IP</div><h2>让你的 IP，从定位开始生长</h2><p>完成 6 个开放模块，沉淀一份可复用的 IP 底座与内容资产。<br>模块 7–12 会随后续能力逐步开放。</p><div class="welcome-meta"><span>6 个开放模块</span><span>分阶段诊断</span><span>生成 IP 交付物</span></div><button class="start-btn" onclick="newDiagnosis()">开始诊断 →</button></div>
+  </div>
+  <div class="input-area"><div class="input-wrap"><textarea id="userInput" rows="1" placeholder="输入消息..." onkeydown="handleKey(event)" disabled></textarea><button class="send-btn" id="sendBtn" onclick="sendMessage()" disabled>➤</button></div></div>
+</main>
+
+<!-- ── RIGHT PANEL ── -->
+<aside class="rpn" id="rpn">
+  <div class="rpn-inner">
+    <div class="rpn-hd"><h2 id="rpnTitle">面板</h2><button class="rpn-close" onclick="closePanel()">✕</button></div>
+    <div class="rpn-body" id="rpnBody"></div>
+  </div>
+</aside>
+
+<div class="pdf-review" id="foundationReviewer" role="dialog" aria-modal="true" aria-labelledby="foundationReviewerTitle">
+  <div class="pdf-review-shell">
+    <section class="pdf-review-document">
+      <div class="pdf-review-bar"><strong id="foundationReviewerTitle">模块 1–4 PDF 审阅</strong><span>在 PDF 中查看原文，右侧按页添加修改意见</span><button type="button" onclick="downloadFoundationReport()">下载</button><button type="button" onclick="closeFoundationReviewer()">关闭</button></div>
+      <iframe class="pdf-review-frame" id="foundationPdfFrame" title="模块 1–4 PDF 预览"></iframe>
+    </section>
+    <aside class="pdf-review-side">
+      <h2>PDF 批注</h2>
+      <p class="pdf-review-help">复制 PDF 里需要调整的原文，填写页码和要求。Agent 会按这些定位修改，不再靠猜。</p>
+      <div class="pdf-review-grid">
+        <div class="pdf-review-field"><label for="pdfNotePage">页码</label><input id="pdfNotePage" type="number" min="1" max="999" value="1" inputmode="numeric"></div>
+        <div class="pdf-review-field"><label for="pdfNoteType">类型</label><select id="pdfNoteType"><option>修改</option><option>删除</option><option>补充</option></select></div>
+      </div>
+      <div class="pdf-review-field"><label for="pdfNoteQuote">定位原文（可选）</label><textarea id="pdfNoteQuote" maxlength="500" placeholder="从 PDF 复制一小段原文"></textarea></div>
+      <div class="pdf-review-field"><label for="pdfNoteText">修改要求</label><textarea id="pdfNoteText" maxlength="1000" placeholder="例：这段删掉；或改成……"></textarea></div>
+      <button class="pdf-review-add" type="button" onclick="addFoundationAnnotation()">＋ 添加这条批注</button>
+      <div class="pdf-review-list" id="foundationAnnotationList"></div>
+      <button class="pdf-review-submit" id="foundationAnnotationSubmit" type="button" onclick="submitFoundationAnnotations()">把批注交给 Agent</button>
+    </aside>
+  </div>
+</div>
+
+<div id="convoOverlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:100;display:none;align-items:center;justify-content:center" onclick="if(event.target===this)toggleConvos()">
+  <div id="convoPanel" style="background:var(--sb);border:1px solid var(--bd);border-radius:var(--r);width:400px;max-height:70vh;overflow-y:auto;padding:16px"></div>
+</div>
+
+<script>
+// Safe marked setup — don't crash if CDN fails
+if(typeof marked!=='undefined'){marked.setOptions({breaks:true,gfm:true})}
+
+// 复用黄雀主站的线性图标语言：银白基础线 + 黄雀金细节。
+var ICONS={
+  target:'<circle pathLength="1" cx="12" cy="12" r="8"/><circle pathLength="1" cx="12" cy="12" r="4"/><circle pathLength="1" class="icon-accent" cx="12" cy="12" r="1"/>',
+  user:'<circle pathLength="1" cx="12" cy="8" r="4"/><path pathLength="1" class="icon-accent" d="M4 20a8 8 0 0 1 16 0"/>',
+  sparkles:'<path pathLength="1" d="m11.5 3.4 1.9 5.1 5.1 1.9-5.1 1.9-1.9 5.1-1.9-5.1-5.1-1.9 5.1-1.9Z"/><path pathLength="1" class="icon-accent" d="m18.8 15.4.6 1.7 1.7.6-1.7.6-.6 1.7-.6-1.7-1.7-.6 1.7-.6Z"/>',
+  book:'<path pathLength="1" d="M4 5.5A3.5 3.5 0 0 1 7.5 2H12v18H7.5A3.5 3.5 0 0 0 4 23Z"/><path pathLength="1" class="icon-accent" d="M20 5.5A3.5 3.5 0 0 0 16.5 2H12v18h4.5A3.5 3.5 0 0 1 20 23Z"/>',
+  layers:'<path pathLength="1" class="icon-accent" d="m12 3 8 4-8 4-8-4Z"/><path pathLength="1" d="m4 12 8 4 8-4M4 17l8 4 8-4"/>',
+  edit:'<path pathLength="1" d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/><path pathLength="1" class="icon-accent" d="M12 20h9"/>',
+  image:'<rect pathLength="1" x="3" y="3" width="18" height="18" rx="2"/><circle pathLength="1" class="icon-accent" cx="8.5" cy="8.5" r="1.6"/><path pathLength="1" d="m21 15-5-5L5 21"/>',
+  video:'<rect pathLength="1" x="2" y="6" width="14" height="12" rx="2"/><path pathLength="1" class="icon-accent" d="m22 8-6 4 6 4Z"/>',
+  link:'<path pathLength="1" class="icon-accent" d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.8 1.7"/><path pathLength="1" d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
+  message:'<path pathLength="1" d="M21 11.5a8.4 8.4 0 0 1-9 8 9 9 0 0 1-4-1l-5 1 1-4a8.4 8.4 0 0 1-1-4 8.4 8.4 0 0 1 9-8 8.4 8.4 0 0 1 9 8Z"/><path pathLength="1" class="icon-accent" d="M8.5 11.5h.1m3.4 0h.1m3.4 0h.1"/>',
+  trend:'<path pathLength="1" d="m3 17 6-6 4 4 7-7"/><path pathLength="1" class="icon-accent" d="M15 8h6v6"/>',
+  calendar:'<rect pathLength="1" x="3" y="4" width="18" height="17" rx="2"/><path pathLength="1" class="icon-accent" d="M8 2v4m8-4v4M3 10h18"/>',
+  users:'<circle pathLength="1" cx="9" cy="7" r="4"/><path pathLength="1" d="M1 21v-2a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v2"/><path pathLength="1" class="icon-accent" d="M16 3a4 4 0 0 1 0 8m7 10v-2a4 4 0 0 0-3-3.8"/>',
+  search:'<circle pathLength="1" cx="11" cy="11" r="7"/><path pathLength="1" class="icon-accent" d="m21 21-4-4"/>',
+  chart:'<path pathLength="1" d="M4 20V10m6 10V4m6 16v-7m5 7H2"/><path pathLength="1" class="icon-accent" d="m4 7 6-4 6 7 5-5"/>',
+  document:'<path pathLength="1" d="M5 3h9l5 5v13H5Z M14 3v5h5"/><path pathLength="1" class="icon-accent" d="M8 13h8m-8 4h6"/>',
+  dashboard:'<rect pathLength="1" x="3" y="3" width="7" height="7" rx="1"/><rect pathLength="1" class="icon-accent" x="14" y="3" width="7" height="7" rx="1"/><rect pathLength="1" x="3" y="14" width="7" height="7" rx="1"/><rect pathLength="1" x="14" y="14" width="7" height="7" rx="1"/>',
+  plus:'<path pathLength="1" d="M12 5v14M5 12h14"/>',
+  clock:'<circle pathLength="1" cx="12" cy="12" r="9"/><path pathLength="1" class="icon-accent" d="M12 7v5l3 2"/>',
+  menu:'<path pathLength="1" d="M4 7h16M4 12h16M4 17h16"/>'
+};
+function moduleIcon(name){return '<span class="module-icon" aria-hidden="true"><svg viewBox="0 0 24 24">'+(ICONS[name]||ICONS.sparkles)+'</svg></span>'}
+document.querySelectorAll('[data-icon]').forEach(function(el){el.insertAdjacentHTML('afterbegin',moduleIcon(el.dataset.icon))});
+
+// Module list
+var M=[{id:1,name:"定位诊断",icon:"target"},{id:2,name:"人设塑造",icon:"user"},{id:3,name:"价值主张",icon:"sparkles"},{id:4,name:"故事资产",icon:"book"},{id:5,name:"选题策划",icon:"layers"},{id:6,name:"文案口播",icon:"edit"},{id:7,name:"形象设计",icon:"image"},{id:8,name:"脚本分镜",icon:"video"},{id:9,name:"私域矩阵",icon:"link"},{id:10,name:"朋友圈运营",icon:"message"},{id:11,name:"销售策略",icon:"trend"},{id:12,name:"公众号变现",icon:"calendar"}];
+var AVAILABLE_MODULE_COUNT=6;
+
+// Module → sub-skills map
+var SKILL_MAP={};
+SKILL_MAP[1]=[{id:'competitor',icon:'search',name:'竞品定位对比',api:'/api/m1-competitor',help:'分析赛道竞品的定位，找到你的差异化切入点'}];
+SKILL_MAP[2]=[{id:'persona',icon:'user',name:'人设卡片',api:'/api/m2-persona',help:'生成你的人设标签、口头禅、镜头状态建议'}];
+SKILL_MAP[3]=[{id:'value',icon:'sparkles',name:'价值金字塔',api:'/api/m3-value',help:'构建价值金字塔：主张→信任状→卖点→痛点'}];
+SKILL_MAP[4]=[{id:'story',icon:'book',name:'故事资产库',api:'/api/m4-story',help:'收集你的经历故事，打造个人品牌资产库'}];
+SKILL_MAP[5]=[{id:'hooks',icon:'layers',name:'Hook钩子生成',api:'/api/m5-hooks',help:'为一个选题生成10个钩子'}];
+SKILL_MAP[6]=[{id:'deliverable-6',icon:'edit',name:'专属文案包',api:'/api/generate-deliverable',help:'生成朋友圈、口播和私信文案'}];
+SKILL_MAP[7]=[{id:'images',icon:'image',name:'形象预览',api:'/api/module7-images',help:'生成头像、封面和朋友圈配图参考'}];
+SKILL_MAP[8]=[{id:'videos',icon:'video',name:'视频脚本',api:'/api/module8-video',help:'生成脚本和画面参考'}];
+SKILL_MAP[9]=[{id:'funnel',icon:'link',name:'私域漏斗',api:'/api/m9-funnel',help:'设计私域转化漏斗'}];
+SKILL_MAP[10]=[{id:'deliverable-10',icon:'message',name:'朋友圈排期',api:'/api/generate-deliverable',help:'生成7天朋友圈排期'}];
+SKILL_MAP[11]=[{id:'sales',icon:'trend',name:'成交话术',api:'/api/m11-sales',help:'生成私域成交SOP话术'}];
+SKILL_MAP[12]=[{id:'calendar',icon:'calendar',name:'公众号日历',api:'/api/m12-calendar',help:'生成公众号30天内容日历'}];
+
+var cid=null,state={current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}},reports={},deliverables={},streaming=false,convos=[],foundationEditing=false,foundationAnnotations=[],foundationReviewCid='';
+var expandedMod=0;
+var WELCOME_HTML=document.getElementById('welcome').outerHTML;
+
+function toggleExpand(mid){
+  if(expandedMod===mid){expandedMod=0}else{expandedMod=mid}
+  renderMods()
+}
+
+function loadSkill(sid){
+  if(sid==='images'){loadPanel('images');return}
+  if(sid==='videos'){loadPanel('videos');return}
+  if(sid.indexOf('deliverable-')===0){viewDeliverable(Number(sid.split('-')[1]));return}
+  if(sid==='video-factory'){
+    openPanel('视频工厂')
+    document.getElementById('rpnBody').innerHTML='<div class="rpn-card"><div class="rpn-card-header">🎥 视频工厂</div><p style="font-size:12px;color:var(--dim)">通义万相出图 + edge-tts配音 + FFmpeg合成</p><input id="vfTopic" placeholder="输入视频主题..." style="width:100%;padding:8px;background:var(--ib);border:1px solid var(--bd);color:var(--tx);border-radius:6px;margin:6px 0;font-size:12px"><button class="copy-btn" onclick="runVideoFactory()" style="margin-top:8px">生成视频</button><div id="vfResult"></div></div>'
+  }else if(sid==='video-analyzer'){
+    openPanel('对标分析')
+    document.getElementById('rpnBody').innerHTML='<div class="rpn-card"><div class="rpn-card-header">📊 对标分析</div><p style="font-size:12px;color:var(--dim)">下载对标视频 → 语音转文字 → AI拆解结构</p><input id="vaUrl" placeholder="粘贴对标视频URL..." style="width:100%;padding:8px;background:var(--ib);border:1px solid var(--bd);color:var(--tx);border-radius:6px;margin:6px 0;font-size:12px"><button class="copy-btn" onclick="runVideoAnalyzer()" style="margin-top:8px">分析</button><div id="vaResult"></div></div>'
+  }else{
+    openPath('/skills')
+  }
+}
+
+function openPath(path){window.location.href=path}
+
+async function runVideoFactory(){
+  var topic=document.getElementById('vfTopic').value||'美业IP推广';
+  document.getElementById('vfResult').innerHTML='<div class="spinner"></div><p style="font-size:11px;color:var(--dim)">生成中...（约60秒）</p>';
+  try{
+    var r=await fetch('/api/generate-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({topic:topic,conversation_id:cid||''})});
+    var d=await r.json();
+    if(d.ok){document.getElementById('vfResult').innerHTML='<p style="color:var(--gr);margin:8px 0">✅ 视频生成成功！</p><video src="'+eHtml(isSafeMarkdownUrl(d.video_url,location.href)?d.video_url:'')+'" controls style="width:100%;max-width:360px;border-radius:8px;margin:8px 0"></video><pre style="font-size:10px;max-height:200px">'+eHtml(d.script||'')+'</pre>'}
+    else{document.getElementById('vfResult').innerHTML='<p style="color:#ef4444">❌ '+eHtml(d.error||'生成失败')+'</p>'}
+  }catch(e){document.getElementById('vfResult').innerHTML='<p style="color:#ef4444">❌ '+eHtml(e.message)+'</p>'}
+}
+
+async function runVideoAnalyzer(){
+  var url=document.getElementById('vaUrl').value;
+  if(!url){document.getElementById('vaResult').innerHTML='<p style="color:#ef4444">请输入视频URL</p>';return}
+  document.getElementById('vaResult').innerHTML='<div class="spinner"></div><p style="font-size:11px;color:var(--dim)">下载+分析中...</p>';
+  try{
+    var r=await fetch('/api/analyze-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,conversation_id:cid||''})});
+    var d=await r.json();
+    if(d.ok){document.getElementById('vaResult').innerHTML=md(d.analysis||d.transcript||'分析完成')}
+    else{document.getElementById('vaResult').innerHTML='<p style="color:#ef4444">❌ '+eHtml(d.error||'分析失败')+'</p>'}
+  }catch(e){document.getElementById('vaResult').innerHTML='<p style="color:#ef4444">❌ '+eHtml(e.message)+'</p>'}
+}
+
+function renderMods(){
+  var done=(state.completed_modules||[]).filter(function(mid){return mid<=AVAILABLE_MODULE_COUNT}),cur=Math.min(state.current_module||1,AVAILABLE_MODULE_COUNT);
+  var foundation=state.foundation_report||{};
+  var intakePending=state.intake&&state.intake.status!=='complete';
+  var intakeLabel=!intakePending?'':(state.intake.status==='awaiting_confirmation'?'待确认':(state.intake.status==='editing'?'修改中':'交谈中'));
+  var html='';
+  for(var i=0;i<M.length;i++){
+    var m=M[i];
+    var cls='mod-item',badge='',check='',expand='<span class="mod-expand">▶</span>';
+    var comingSoon=m.id>AVAILABLE_MODULE_COUNT;
+    var locked=comingSoon||intakePending||(m.id>=5&&foundation.status!=='confirmed');
+    if(locked){cls+=' locked';badge=comingSoon?'<span class="mod-badge">尚未开发，敬请期待</span>':(intakePending&&m.id===1?'<span class="mod-badge">基础信息 '+intakeLabel+'</span>':(intakePending?'':'<span class="mod-badge">待确认 PDF</span>'))}
+    if(done.indexOf(m.id)>=0){cls+=' done';check='<span style="color:var(--gr);font-size:12px">✓</span>'}
+    if(!intakePending&&m.id===cur&&done.indexOf(m.id)<0){cls+=' cur';badge='<span class="mod-badge">进行中</span>'}
+    if(intakePending&&m.id===1)cls+=' cur';
+    if(m.id===expandedMod)cls+=' expanded';
+    var hasSub=!comingSoon&&!!SKILL_MAP[m.id];
+    var subs='';
+    if(hasSub){
+      var skills=SKILL_MAP[m.id];
+      for(var j=0;j<skills.length;j++){
+        var s=skills[j];
+        subs+='<div class="mod-sub" onclick="event.stopPropagation();loadSkill(\''+s.id+'\')">'+moduleIcon(s.icon)+eHtml(s.name)+'</div>';
+      }
+    }
+    var click=comingSoon?"toast('尚未开发，敬请期待')":(locked?(intakePending?"toast('请先补充并确认基础资料')":"toast('请先确认模块 1-4 的 IP 定位初稿 PDF')"):(hasSub?'toggleExpand('+m.id+')':'jumpModule('+m.id+')'));
+    html+='<div class="'+cls+'" onclick="'+click+'"><div class="mod-num">'+(done.indexOf(m.id)>=0?'✓':m.id)+'</div><div class="mod-info"><div class="mod-name">'+moduleIcon(m.icon)+m.name+'</div></div>'+badge+check+(hasSub?expand:'')+subs+'</div>';
+  }
+  document.getElementById('modScroll').innerHTML=html;
+  var dc=done.length;
+  document.getElementById('progBar').style.width=Math.round(dc/AVAILABLE_MODULE_COUNT*100)+'%';
+  document.getElementById('progText').textContent=dc===AVAILABLE_MODULE_COUNT?'🎉 六步完成':dc+'/'+AVAILABLE_MODULE_COUNT;
+  var mod=M.filter(function(m){return m.id===cur})[0];
+  document.getElementById('curModName').textContent=intakePending?'基础信息 · '+intakeLabel:(mod?mod.name:'—');
+  renderArtifacts();
+}
+
+renderMods();
+loadConvos().then(function(){var requested=new URLSearchParams(location.search).get('conversation_id');var target=convos.find(function(c){return c.id===requested});if(target)selectConvo(target.id);else if(convos.length>0)selectConvo(convos[0].id)});
+
+async function loadConvos(){var r=await fetch('/api/conversations');convos=await r.json()}
+async function newDiagnosis(){var r=await fetch('/api/conversations',{method:'POST'});var d=await r.json();convos.unshift({id:d.id,title:'新诊断',current_module:1,completed_modules:[],message_count:1});selectConvo(d.id)}
+async function selectConvo(id){cid=id;var r=await fetch('/api/conversations/'+id);var c=await r.json();state=c.coach_state||{current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}};reports=c.reports||{};deliverables=c.deliverables||{};expandedMod=0;foundationEditing=false;renderMods();renderChat(c.messages||[]);var input=document.getElementById('userInput');input.disabled=false;input.placeholder=(state.foundation_report||{}).status==='awaiting_confirmation'?'可以询问 PDF，或点击“需要修改/补充”…':'输入消息...';document.getElementById('sendBtn').disabled=false;input.focus()}
+async function jumpModule(mid){if(mid>AVAILABLE_MODULE_COUNT){toast('尚未开发，敬请期待');return}if(!cid||streaming)return;var r=await fetch('/api/jump-module',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,module:mid})});var d=await r.json();if(!r.ok||!d.ok){toast('❌ '+(d.error||'无法切换模块'));return}state=d.state||state;renderMods();sendJumpMsg(mid)}
+
+function stateActions(){
+  if(state.intake&&state.intake.status==='awaiting_confirmation'){var revising=state.intake.mode==='revision';return[
+    {type:'confirm_intake',target_id:'intake-'+state.revision,label:revising?'确认补充':'确认资料',primary:true},
+    {type:'edit_intake',target_id:'intake-'+state.revision,label:revising?'继续修改':'我要修改',primary:false}
+  ];
+  }
+  var p=state.pending;if(p&&p.status==='awaiting_confirmation')return[
+    {type:'confirm_checkpoint',target_id:p.id,label:'确认这一步',primary:true},
+    {type:'edit_checkpoint',target_id:p.id,label:'需要修改',primary:false}
+  ];
+  var foundation=state.foundation_report||{};if(foundation.status==='awaiting_confirmation'){
+    if(foundation.review_status==='dirty')return[
+      {type:'open_foundation_report',label:'查看旧版 PDF 并批注',primary:false},
+      {type:'edit_foundation_report',label:'继续补充',primary:false},
+      {type:'regenerate_foundation_report',label:'重新生成 PDF',primary:true}
+    ];
+    return[
+      {type:'open_foundation_report',label:'查看 PDF 并批注',primary:false},
+      {type:'edit_foundation_report',label:'需要修改/补充',primary:false},
+      {type:'confirm_foundation_report',label:'确认初稿，进入模块 5',primary:true}
+    ];
+  }
+  return[]
+}
+function runStateAction(item){
+  if(item.type==='open_foundation_report')return openFoundationReport();
+  if(item.type==='edit_foundation_report')return beginFoundationRevision();
+  if(item.type==='regenerate_foundation_report')return generateFoundationReport();
+  if(item.type==='confirm_foundation_report')return confirmFoundationReport();
+  return sendHarnessAction(item)
+}
+function attachHarnessActions(actions,bubble){
+  document.querySelectorAll('#chatArea .harness-actions').forEach(function(row){row.remove()});if(!bubble)return;
+  if(!actions||!actions.length)return;var row=document.createElement('div');row.className='harness-actions';
+  actions.forEach(function(item){var button=document.createElement('button');button.type='button';button.className='harness-action'+(item.primary?' primary':'');button.textContent=item.label;button.onclick=function(){if(item.type.indexOf('foundation_report')<0)row.querySelectorAll('button').forEach(function(node){node.disabled=true});runStateAction(item)};row.appendChild(button)});
+  bubble.appendChild(row)
+}
+function renderChat(msgs){var a=document.getElementById('chatArea');if(!msgs||msgs.length===0){a.innerHTML=WELCOME_HTML;return}a.innerHTML=msgs.map(function(m){return '<div class="msg '+(m.role==='user'?'user':'assistant')+'"><div class="av">'+moduleIcon(m.role==='user'?'user':'sparkles')+'</div><div class="bubble">'+md(m.content)+'</div></div>'}).join('');var last=a.querySelector('.msg.assistant:last-of-type .bubble');attachHarnessActions(stateActions(),last)}
+function isSafeMarkdownUrl(value,base='https://huangque.invalid/'){try{var u=new URL(String(value??'').trim(),base);return u.protocol==='http:'||u.protocol==='https:'}catch(e){return false}}
+function sanitizeMarked(html){var t=document.createElement('template');t.innerHTML=html;t.content.querySelectorAll('a[href],img[src]').forEach(function(el){var attr=el.tagName==='A'?'href':'src';if(!isSafeMarkdownUrl(el.getAttribute(attr),location.href)){if(el.tagName==='A')el.replaceWith(document.createTextNode(el.textContent));else el.remove()}else if(el.tagName==='A'){el.rel='noopener noreferrer'}});return t.innerHTML}
+function md(t){if(!t)return'';try{if(typeof marked!=='undefined')return sanitizeMarked(marked.parse(eHtml(t)))}catch(e){return eHtml(t).replace(/\n/g,'<br>')}return eHtml(t).replace(/\n/g,'<br>')}
+function eHtml(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
+function scroll(){var a=document.getElementById('chatArea');requestAnimationFrame(function(){a.scrollTop=a.scrollHeight})}
+function toast(m){var t=document.createElement('div');t.className='toast';t.textContent=m;document.body.appendChild(t);setTimeout(function(){t.remove()},3500)}
+
+function renderArtifacts(){
+  var rows=[],done=(state.completed_modules||[]).filter(function(mid){return mid<=AVAILABLE_MODULE_COUNT});
+  Object.keys(reports).forEach(function(mid){mid=Number(mid);if(mid>=1&&mid<=AVAILABLE_MODULE_COUNT&&done.indexOf(mid)<0)done.push(mid)});
+  done.forEach(function(mid){rows.push('<button onclick="viewReport('+mid+')">📄 '+eHtml(M[mid-1].name)+'报告</button>')});
+  Object.keys(deliverables).filter(function(mid){return !/^\d+$/.test(mid)||Number(mid)<=AVAILABLE_MODULE_COUNT}).forEach(function(mid){var d=deliverables[mid]||{},mod=M[Number(mid)-1],arg=/^\d+$/.test(mid)?mid:"'topic_radar'";rows.push('<button onclick="viewDeliverable('+arg+')">📦 '+eHtml(d.title||(mod?mod.name+'交付物':'交付物'))+'</button>')});
+  var foundation=state.foundation_report||{};
+  if(foundation.status==='awaiting_confirmation'||foundation.status==='confirmed'){
+    rows.push('<button onclick="openFoundationReport()">📑 模块 1-4 IP 定位初稿 PDF</button>');
+    if(foundation.status==='awaiting_confirmation'&&foundation.review_status==='dirty')rows.push('<button onclick="generateFoundationReport()">↻ 应用补充并重新生成 PDF</button>');
+    else if(foundation.status==='awaiting_confirmation')rows.push('<button onclick="confirmFoundationReport()">✅ 确认初稿，开始模块 5</button>');
+  }else if(done.indexOf(4)>=0){
+    rows.push('<button onclick="generateFoundationReport()">'+(foundation.status==='failed'?'↻ 重新生成':'⏳ 检查/重试')+'模块 1-4 PDF</button>');
+  }
+  var wrap=document.getElementById('artifactsWrap'),box=document.getElementById('artifactRows');
+  wrap.style.display=(cid&&rows.length)?'block':'none';
+  box.innerHTML=rows.join('');
+}
+
+async function generateFoundationReport(){
+  if(!cid||streaming)return;streaming=true;toast('正在生成模块 1-4 PDF…');
+  try{var r=await fetch('/api/foundation-report/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid})});var d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'PDF 生成失败');state=d.state;renderMods();toast('✅ PDF 已生成，请下载查看并确认')}
+  catch(e){toast('❌ '+e.message)}finally{streaming=false}
+}
+
+async function openFoundationReport(){
+  if(!cid)return;var url='/api/foundation-report/'+cid+'.pdf';var r=await fetch(url,{method:'HEAD',cache:'no-store'});
+  if(!r.ok){state.foundation_report={status:'failed'};renderMods();toast('❌ PDF 文件不可用，请重新生成');return}
+  if(foundationReviewCid!==cid){foundationAnnotations=[];foundationReviewCid=cid}
+  document.getElementById('foundationPdfFrame').src=url+'?preview=1#page=1&zoom=page-width';renderFoundationAnnotations();document.getElementById('foundationReviewer').classList.add('open');document.getElementById('pdfNoteText').focus()
+}
+
+function closeFoundationReviewer(){document.getElementById('foundationReviewer').classList.remove('open')}
+function downloadFoundationReport(){if(cid)window.open('/api/foundation-report/'+cid+'.pdf','_blank','noopener')}
+function addFoundationAnnotation(){
+  var page=Number(document.getElementById('pdfNotePage').value),type=document.getElementById('pdfNoteType').value,quote=document.getElementById('pdfNoteQuote').value.trim(),note=document.getElementById('pdfNoteText').value.trim();
+  if(!Number.isInteger(page)||page<1||page>999){toast('请填写正确页码');return}if(!note){toast('请填写修改要求');return}
+  foundationAnnotations.push({page:page,type:type,quote:quote,note:note});document.getElementById('pdfNoteQuote').value='';document.getElementById('pdfNoteText').value='';renderFoundationAnnotations();document.getElementById('pdfNoteText').focus()
+}
+function removeFoundationAnnotation(index){foundationAnnotations.splice(index,1);renderFoundationAnnotations()}
+function renderFoundationAnnotations(){
+  var list=document.getElementById('foundationAnnotationList'),submit=document.getElementById('foundationAnnotationSubmit');submit.textContent='把 '+foundationAnnotations.length+' 条批注交给 Agent';submit.disabled=!foundationAnnotations.length;
+  if(!foundationAnnotations.length){list.innerHTML='<div class="pdf-review-empty">还没有批注</div>';return}
+  list.innerHTML=foundationAnnotations.map(function(item,index){return '<div class="pdf-note"><strong>第 '+item.page+' 页 · '+eHtml(item.type)+'</strong>'+(item.quote?'<div class="pdf-note-quote">原文：'+eHtml(item.quote)+'</div>':'')+'<div>'+eHtml(item.note)+'</div><button class="pdf-note-remove" type="button" aria-label="删除批注" onclick="removeFoundationAnnotation('+index+')">✕</button></div>'}).join('')
+}
+function submitFoundationAnnotations(){
+  if(!foundationAnnotations.length)return;var lines=['请按以下 PDF 批注修改模块 1–4 报告：'];foundationAnnotations.forEach(function(item,index){lines.push((index+1)+'. 第 '+item.page+' 页｜'+item.type+(item.quote?'\n定位原文：'+item.quote:'')+'\n修改要求：'+item.note)});
+  var input=document.getElementById('userInput');input.value=lines.join('\n');foundationEditing=true;closeFoundationReviewer();sendMessage()
+}
+
+function beginFoundationRevision(){
+  foundationEditing=true;var input=document.getElementById('userInput');input.placeholder='可以提问，也可以说明要修改、补充或删除的内容…';input.focus();toast('Agent 会先判断这是问题、修改要求，还是需要继续问清楚')
+}
+
+async function confirmFoundationReport(){
+  if(!cid||streaming)return;
+  try{var foundation=state.foundation_report||{};var r=await fetch('/api/foundation-report/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,expected_revision:state.revision,report_id:foundation.report_id||''})});var d=await r.json();if(!d.ok)throw new Error(d.error||'确认失败');state=d.state;renderMods();toast('✅ IP 定位初稿已确认，继续模块 '+state.current_module);if((state.completed_modules||[]).indexOf(state.current_module)<0)sendJumpMsg(state.current_module)}catch(e){toast('❌ '+e.message)}
+}
+
+async function viewReport(mid){
+  if(!cid)return;
+  openPanel('📄 '+M[mid-1].name+'报告');
+  var body=document.getElementById('rpnBody'),saved=reports[String(mid)]||reports[mid];
+  if(saved){body.innerHTML='<div class="rpn-card">'+md(saved.content||saved)+'</div>';return}
+  body.innerHTML='<div class="spinner"></div><p style="color:var(--dim)">正在生成报告...</p>';
+  try{var r=await fetch('/api/generate-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,module:mid})});var d=await r.json();if(!d.ok)throw new Error(d.error||'报告生成失败');reports[String(mid)]={title:M[mid-1].name+'报告',content:d.report,generated_at:new Date().toISOString()};body.innerHTML='<div class="rpn-card">'+md(d.report)+'</div>';renderArtifacts()}catch(e){body.innerHTML='<p style="color:#ef4444">❌ '+eHtml(e.message)+'</p>'}
+}
+
+async function viewDeliverable(mid){
+  if(!cid)return;
+  var saved=deliverables[String(mid)]||deliverables[mid],mod=M[Number(mid)-1];
+  openPanel('📦 '+(mod?mod.name+'交付物':(saved&&saved.title)||'交付物'));
+  var body=document.getElementById('rpnBody');
+  if(saved){renderDeliverable(saved,body);return}
+  body.innerHTML='<div class="spinner"></div><p style="color:var(--dim)">正在生成交付物...</p>';
+  try{var r=await fetch('/api/generate-deliverable',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,module:mid})});var d=await r.json();if(!d.ok)throw new Error(d.error||'交付物生成失败');deliverables[String(mid)]=d.deliverable;renderDeliverable(d.deliverable,body);renderArtifacts()}catch(e){body.innerHTML='<p style="color:#ef4444">❌ '+eHtml(e.message)+'</p>'}
+}
+
+function renderDeliverable(item,body){var html='<div class="rpn-card"><div class="rpn-card-header">'+eHtml(item.title||'交付物')+'</div>';Object.keys(item.items||{}).forEach(function(name){html+='<h3>'+eHtml(name)+'</h3>'+md(item.items[name])});body.innerHTML=html+'</div>'}
+
+async function deleteConvo(id){if(!confirm('删除这个诊断记录？'))return;await fetch('/api/conversations/'+id,{method:'DELETE'});convos=convos.filter(function(c){return c.id!==id});if(cid===id){cid=null;state={current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}};reports={};deliverables={};renderMods();renderChat([]);document.getElementById('userInput').disabled=true;document.getElementById('sendBtn').disabled=true}toggleConvos();toggleConvos()}
+
+// ── RIGHT PANEL ──
+function openPanel(title){document.getElementById('rpnTitle').textContent=title;document.getElementById('rpn').classList.add('open')}
+function closePanel(){document.getElementById('rpn').classList.remove('open')}
+
+async function loadPanel(type){
+  var labels={'images':'🎨 形象预览','videos':'🎬 视频脚本','geo':'🔎 GEO分析','radar':'📡 选题雷达'};
+  openPanel(labels[type]||type);
+  var body=document.getElementById('rpnBody');
+  body.innerHTML='<div class="spinner"></div>';
+  if(type==='images'){
+    try{
+      var r=await fetch('/api/module7-images',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+      var d=await r.json();
+      if(d.ok&&d.images){
+        var imgLabels={avatar:'头像风格',cover:'封面风格',lifestyle:'朋友圈配图'};
+        body.innerHTML=Object.keys(d.images).map(function(k){var u=isSafeMarkdownUrl(d.images[k],location.href)?d.images[k]:'';return '<div class="rpn-card"><div class="rpn-card-header">'+eHtml(imgLabels[k]||k)+'</div><img src="'+eHtml(u)+'" style="width:100%;max-width:300px;border-radius:8px;background:var(--card)"><div style="font-size:11px;color:var(--dim);margin-top:6px">AI生成 · 风格参考</div></div>'}).join('');
+      }else{body.innerHTML='<p style="color:#ef4444">生成失败</p>'}
+    }catch(e){body.innerHTML='<p style="color:#ef4444">'+eHtml(e.message)+'</p>'}
+  }else if(type==='videos'){
+    try{
+      var r2=await fetch('/api/module8-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({topic:'美业拓客'})});
+      var d2=await r2.json();
+      if(d2.ok&&d2.videos){
+        body.innerHTML=d2.videos.map(function(v){var u=isSafeMarkdownUrl(v.preview,location.href)?v.preview:'';return '<div class="rpn-card"><div class="rpn-card-header">'+eHtml(v.name)+'</div><img src="'+eHtml(u)+'" style="width:100%;max-width:250px;border-radius:8px;background:var(--card)"><pre>'+eHtml(v.script)+'</pre><div style="font-size:11px;color:var(--gr)">推荐：'+(v.tools||[]).map(eHtml).join(' / ')+'</div><button class="copy-btn" onclick="navigator.clipboard.writeText(this.previousElementSibling.previousElementSibling.textContent);toast(\'已复制\')">📋 复制提示词</button></div>'}).join('');
+      }else{body.innerHTML='<p style="color:#ef4444">生成失败</p>'}
+    }catch(e){body.innerHTML='<p style="color:#ef4444">'+eHtml(e.message)+'</p>'}
+  }else if(type==='geo'){
+    body.innerHTML='<div class="rpn-card"><div class="rpn-card-header">GEO 分析</div><input id="geoBiz" placeholder="品牌名称" style="width:100%;padding:8px;background:var(--ib);border:1px solid var(--bd);color:var(--tx);border-radius:6px;margin:6px 0;font-size:12px"><input id="geoKW" placeholder="关键词" style="width:100%;padding:8px;background:var(--ib);border:1px solid var(--bd);color:var(--tx);border-radius:6px;margin:6px 0;font-size:12px"><button class="copy-btn" onclick="runGEO()" style="margin-top:8px">分析</button><div id="geoResult"></div></div>'
+  }else if(type==='radar'){
+    body.innerHTML='<div class="rpn-card"><div class="rpn-card-header">选题雷达</div><input id="radarKW" placeholder="关键词（用逗号分隔）" style="width:100%;padding:8px;background:var(--ib);border:1px solid var(--bd);color:var(--tx);border-radius:6px;margin:6px 0;font-size:12px"><button class="copy-btn" onclick="runRadar()" style="margin-top:8px">扫描</button><div id="radarResult"></div></div>'
+  }
+}
+
+async function runGEO(){
+  var biz=document.getElementById('geoBiz').value,kw=document.getElementById('geoKW').value;
+  if(!biz||!kw)return;
+  document.getElementById('geoResult').innerHTML='<div class="spinner"></div>';
+  try{
+    var r=await fetch('/api/geo-analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({business_name:biz,business_type:'美业',keywords:kw})});
+    var d=await r.json();
+    document.getElementById('geoResult').innerHTML=d.ok?md(d.report):'<p style="color:#ef4444">'+eHtml(d.error)+'</p>';
+  }catch(e){document.getElementById('geoResult').innerHTML='<p style="color:#ef4444">'+eHtml(e.message)+'</p>'}
+}
+
+async function runRadar(){
+  var kw=document.getElementById('radarKW').value;if(!kw)return;
+  document.getElementById('radarResult').innerHTML='<div class="spinner"></div>';
+  try{
+    var r=await fetch('/api/topic-radar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keywords:kw,niche:'美业',conversation_id:cid||''})});
+    var d=await r.json();
+    document.getElementById('radarResult').innerHTML=d.ok?md(d.report):'<p style="color:#ef4444">'+eHtml(d.error)+'</p>';
+  }catch(e){document.getElementById('radarResult').innerHTML='<p style="color:#ef4444">'+eHtml(e.message)+'</p>'}
+}
+
+// ── CHAT ──
+function handleKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}}
+function newTurnRequestId(){return window.crypto&&crypto.randomUUID?crypto.randomUUID():'turn_'+Date.now()+'_'+Math.random().toString(36).slice(2)}
+function sendHarnessAction(item){return sendTurn({action:{type:item.type,target_id:item.target_id}},item.label)}
+function sendMessage(){
+  if(streaming||!cid)return;
+  var input=document.getElementById('userInput'),text=input.value.trim();if(!text)return;
+  var turn={message:text};if(foundationEditing){turn.foundation_review='revision';foundationEditing=false;input.placeholder='可以继续询问 PDF，或再次点击“需要修改/补充”…'}
+  input.value='';return sendTurn(turn,text)
+}
+async function sendTurn(turn,displayText,requestId){
+  if(streaming||!cid)return;document.getElementById('sendBtn').disabled=true;streaming=true;
+  var area=document.getElementById('chatArea'),welcome=area.querySelector('.welcome');if(welcome)welcome.remove();
+  var um=document.createElement('div');um.className='msg user';um.innerHTML='<div class="av">'+moduleIcon('user')+'</div><div class="bubble">'+eHtml(displayText).replace(/\n/g,'<br>')+'</div>';area.appendChild(um);
+  var am=document.createElement('div');am.className='msg assistant';am.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble"><div class="typing" style="display:flex;gap:4px"><span style="width:5px;height:5px;border-radius:50%;background:var(--dim);animation:bounce 1.4s infinite"></span><span style="width:5px;height:5px;border-radius:50%;background:var(--dim);animation:bounce 1.4s infinite .2s"></span><span style="width:5px;height:5px;border-radius:50%;background:var(--dim);animation:bounce 1.4s infinite .4s"></span></div></div>';area.appendChild(am);scroll();
+  var full='',replayed=false,retryNeedsRefresh=false,failureMessage='回复暂时失败，消息已保留。',retryRequestId=requestId||newTurnRequestId();var bubble=am.querySelector('.bubble');
+  try{
+    var body=Object.assign({conversation_id:cid,request_id:retryRequestId,expected_revision:state.revision},turn);
+    var r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok){retryNeedsRefresh=r.status===409;try{var failed=await r.json();failureMessage=failed.error||failureMessage}catch(ignore){}throw new Error('发送失败')}
+    var reader=r.body.getReader(),decoder=new TextDecoder(),buf='';
+    while(true){var part=await reader.read();if(part.done)break;buf+=decoder.decode(part.value,{stream:true});var lines=buf.split('\n');buf=lines.pop()||'';for(var i=0;i<lines.length;i++){var line=lines[i];if(!line.startsWith('data: '))continue;try{var data=JSON.parse(line.slice(6));if(data.error){bubble.innerHTML='<span style="color:#ef4444">❌ '+eHtml(data.error)+'</span>'}else if(data.content){full+=data.content;bubble.innerHTML=md(full)+'<span class="cursor" style="color:var(--ac)">▍</span>';scroll()}else if(data.done){bubble.innerHTML=md(full);replayed=!!data.replayed;if(data.state&&(!replayed||data.state.revision>=state.revision)){state=data.state;renderMods()}attachHarnessActions(data.actions&&data.actions.length?data.actions:stateActions(),bubble);if(data.auto_deliverables){Object.keys(data.auto_deliverables).forEach(function(mid){deliverables[mid]=data.auto_deliverables[mid]});renderArtifacts()}if(data.new_completed&&data.new_completed.length>0){data.new_completed.forEach(function(mid){toast('✅ '+M[mid-1].name+'完成！')});renderMods()}}}catch(e){}}}
+    if(replayed)await selectConvo(cid)
+  }catch(e){bubble.innerHTML='<span style="color:#ef4444">'+eHtml(failureMessage)+'</span>';var actions=stateActions();if(actions.length){attachHarnessActions(actions,bubble)}else{bubble.innerHTML+='<div class="harness-actions"><button type="button" class="harness-action primary">重试</button></div>';var retry=bubble.querySelector('button');retry.onclick=async function(){retry.disabled=true;if(retryNeedsRefresh)await selectConvo(cid);um.remove();am.remove();sendTurn(turn,displayText,retryRequestId)}}}
+  streaming=false;document.getElementById('sendBtn').disabled=false;document.getElementById('userInput').focus()
+}
+
+async function sendJumpMsg(mid){
+  return sendTurn({message:'请从当前模块继续'},'继续模块 '+mid+'：'+(M[mid-1]?M[mid-1].name:''))
+}
+
+function toggleConvos(){
+  var o=document.getElementById('convoOverlay');if(o.style.display==='flex'){o.style.display='none';return}
+  loadConvos().then(function(){var p=document.getElementById('convoPanel');p.innerHTML='<button style="float:right;background:none;border:none;color:var(--dim);cursor:pointer;font-size:16px" onclick="toggleConvos()">✕</button><h3 style="margin-bottom:10px;font-size:14px">历史诊断</h3>'+(convos.length===0?'<p style="color:var(--dim);font-size:12px">暂无</p>':convos.map(function(c){return '<div data-id="'+eHtml(c.id)+'" style="display:flex;justify-content:space-between;padding:8px;cursor:pointer;font-size:12px;border-radius:6px" onclick="selectConvo(this.dataset.id);toggleConvos()"><span>'+eHtml(c.title)+'<span style="color:var(--acb);font-family:monospace;font-size:9px;margin-left:6px">'+eHtml(c.id)+'</span></span><span style="color:var(--dim);font-size:10px">模块'+eHtml(c.current_module)+' · '+eHtml(c.message_count)+'条 <button data-id="'+eHtml(c.id)+'" style="background:none;border:none;color:#ef4444;cursor:pointer" onclick="event.stopPropagation();deleteConvo(this.dataset.id)">🗑</button></span></div>'}).join(''));o.style.display='flex'})
+}
+
+document.getElementById('userInput').addEventListener('input',function(){this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px'});
+</script>
+<style>@keyframes bounce{0%,60%,100%{transform:translateY(0);opacity:.3}30%{transform:translateY(-5px);opacity:1}}</style>
+</body>
+</html>

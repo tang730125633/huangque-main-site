@@ -93,7 +93,7 @@ class SinglePersonParamsAreUntouchedTests(unittest.TestCase):
     """
 
     def test_the_locked_params_are_unchanged(self):
-        self.assertEqual(video.CINEMATIC_MOTION_RESOLUTION, "1080p")
+        self.assertEqual(video.CINEMATIC_MOTION_RESOLUTION, "720p")
         self.assertEqual(video.cinematic_rate("motion"), 10)
 
     def test_the_prompt_is_still_fixed_and_not_user_supplied(self):

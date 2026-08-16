@@ -10,19 +10,56 @@
 <script src="theme-init.js?v=11eb385e"></script>
 <style>
   body{ overflow:hidden; }
-  .capRow{ grid-template-columns:repeat(5,1fr); }
+  .capRow{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:22px}
+  .cap-card{display:block;position:relative;overflow:hidden;padding:16px;border:1px solid var(--hq-border,rgba(148,164,187,.14));border-radius:15px;background:linear-gradient(145deg,var(--hq-surface,rgba(16,24,39,.72)),var(--hq-surface-soft,rgba(7,11,19,.4)));box-shadow:inset 0 1px rgba(255,255,255,.025);transition:border-color .18s,box-shadow .18s,transform .18s}
+  .cap-card:hover{border-color:rgba(231,178,76,.28);box-shadow:0 14px 30px rgba(0,0,0,.18)}
+  .cap-head{display:flex;align-items:center;gap:10px}
+  .cap-icon{display:flex;width:42px;height:42px;align-items:center;justify-content:center;flex:none;border:1px solid rgba(231,178,76,.16);border-radius:11px;background:rgba(231,178,76,.07)}
+  .cap-icon img{width:34px;height:34px;object-fit:contain}
+  .cap-name{font-size:15px;font-weight:700;color:var(--hq-text,#eaf1fa)}
+  .cap-desc{margin-top:8px;color:var(--hq-muted,#94a4bb);font-size:12px}
+  .ip12-hero{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:28px;align-items:center;overflow:hidden;margin-bottom:14px;padding:25px 30px;border:1px solid rgba(231,178,76,.24);border-radius:20px;background:radial-gradient(circle at 88% 4%,rgba(231,178,76,.18),transparent 30%),radial-gradient(circle at 65% 115%,rgba(45,212,191,.09),transparent 40%),linear-gradient(125deg,#171711,#101827 62%,#11151d);color:#eaf1fa;box-shadow:0 18px 46px rgba(0,0,0,.23)}
+  .ip12-hero:before{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(105deg,transparent 28%,rgba(255,255,255,.055) 50%,transparent 72%);transform:translateX(-54%)}
+  .ip12-hero:hover{transform:translateY(-2px);box-shadow:0 22px 50px rgba(0,0,0,.3)}
+  .ip12-kicker{display:inline-flex;padding:5px 10px;border:1px solid rgba(244,205,114,.3);border-radius:999px;background:rgba(231,178,76,.09);color:#f4cd72;font-size:11px;font-weight:700;letter-spacing:.08em}
+  .ip12-title{margin-top:11px;font-size:27px;font-weight:800;letter-spacing:.02em}
+  .ip12-copy{max-width:700px;margin-top:8px;color:#c2c8d6;font-size:14px;line-height:1.65}
+  .ip12-metrics{display:flex;flex-wrap:wrap;gap:12px 20px;margin-top:16px;color:#d7dceb;font-size:12px}.ip12-metrics b{color:#fff;font-size:18px}.ip12-cta{position:relative;z-index:1;display:flex;align-items:center;justify-content:center;min-width:138px;padding:13px 18px;border-radius:11px;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#211707;box-shadow:0 9px 24px rgba(231,178,76,.22);font-size:14px;font-weight:750}
+  .section-head{display:flex;align-items:center;gap:18px;margin-bottom:16px}
+  .section-title{margin:0;color:var(--hq-text,#eaf1fa);font-size:20px;font-weight:760;letter-spacing:.01em}
+  .section-title span{display:block;margin-top:3px;color:var(--hq-faint,#5c6b82);font-size:11px;font-weight:500;letter-spacing:.08em;text-transform:uppercase}
+  .search-box{display:flex;height:42px;max-width:420px;min-width:220px;flex:1;align-items:center;gap:10px;padding:0 14px;border:1px solid var(--hq-border,rgba(148,164,187,.16));border-radius:11px;background:var(--hq-field,rgba(7,11,19,.52));transition:border-color .18s,box-shadow .18s}
+  .search-box:focus-within{border-color:rgba(231,178,76,.42);box-shadow:0 0 0 3px rgba(231,178,76,.08)}
+  .category-row{display:flex;align-items:center;gap:16px;margin-bottom:18px}
+  .chip-row{display:flex;flex-wrap:wrap;gap:16px;font-size:13.5px}
+  .catalog-note{display:flex;align-items:center;gap:12px;margin-bottom:16px;padding:12px 15px;border:1px solid rgba(231,178,76,.14);border-radius:12px;background:rgba(231,178,76,.035)}
+  .catalog-copy{min-width:200px;flex:1;color:var(--hq-muted,#94a4bb);font-size:13px}
   .masonry{ column-count:3; column-gap:16px; }
   .masonry > *{ break-inside:avoid; margin-bottom:16px; border-radius:14px; overflow:hidden; transition:transform .15s, box-shadow .15s; }
   .masonry > *:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.3); }
   .masonry img { transition: transform .3s; }
   .masonry > *:hover img { transform: scale(1.03); }
   .tutGrid{ grid-template-columns:repeat(3,1fr); }
-  @media (max-width:1200px){ .capRow{ grid-template-columns:repeat(3,1fr);} .masonry{ column-count:2;} .tutGrid{ grid-template-columns:repeat(2,1fr);} }
-  @media (max-width:760px){ .capRow{ grid-template-columns:1fr 1fr;} .masonry{ column-count:1;} .tutGrid{ grid-template-columns:1fr;} }
+  @media (max-width:1200px){ .capRow{ grid-template-columns:repeat(2,1fr);} .masonry{ column-count:2;} .tutGrid{ grid-template-columns:repeat(2,1fr);} }
+  @media (max-width:760px){
+    .ip12-hero{grid-template-columns:1fr;gap:13px;margin-bottom:12px;padding:18px}
+    .ip12-title{margin-top:9px;font-size:21px;line-height:1.38}
+    .ip12-copy{display:-webkit-box;overflow:hidden;margin-top:6px;font-size:13px;line-height:1.55;-webkit-box-orient:vertical;-webkit-line-clamp:2}
+    .ip12-metrics{gap:10px 16px;margin-top:11px}.ip12-metrics span:last-child{display:none}.ip12-metrics b{font-size:17px}
+    .ip12-cta{min-width:0;justify-self:start;padding:10px 13px;font-size:13px}
+    .capRow{grid-template-columns:1fr 1fr;gap:9px;margin-bottom:18px}
+    .cap-card{min-height:94px;padding:12px}
+    .cap-icon{width:38px;height:38px}.cap-icon img{width:31px;height:31px}
+    .cap-name{font-size:14px}.cap-desc{overflow:hidden;margin-top:7px;font-size:11.5px;line-height:1.45;text-overflow:ellipsis;white-space:nowrap}
+    .section-head{align-items:flex-end;gap:12px;margin-bottom:13px}.section-title{font-size:19px}.section-title span{display:none}
+    .search-box{min-width:0;max-width:none}
+    .category-row{overflow-x:auto;gap:12px;margin:0 -2px 14px;padding:0 2px 4px;white-space:nowrap;scrollbar-width:none}.category-row::-webkit-scrollbar{display:none}
+    .chip-row{flex:none;flex-wrap:nowrap;gap:14px}
+    .catalog-note{gap:9px;padding:11px 12px}.catalog-copy{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .masonry{column-count:1}.tutGrid{grid-template-columns:1fr}
+  }
   .chip{ cursor:pointer; transition:.15s; padding:1px 2px; }
   .chip:hover{ color:#e7b24c !important; }
-  .inspiration-tab{color:#94a4bb;transition:.15s}
-  .inspiration-tab.on{color:#eaf1fa;background:linear-gradient(180deg,#16223a,#111a2b);box-shadow:inset 0 0 0 1px rgba(231,178,76,.25)}
   .ph{ position:relative; border:1px dashed rgba(231,178,76,.22); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.5), rgba(12,18,32,.4)); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; color:#5c6b82; overflow:hidden; }
   .ph::after{ content:""; position:absolute; inset:0; background:linear-gradient(100deg, transparent 30%, rgba(231,178,76,.05) 50%, transparent 70%); background-size:200% 100%; animation:hq-shimmer 3.4s ease-in-out infinite; }
   .phtag{ position:absolute; top:11px; left:11px; padding:3px 9px; font-size:10.5px; font-weight:600; border-radius:6px; background:rgba(7,11,19,.6); z-index:1; }
@@ -34,53 +71,57 @@
 
 <div class="hq-app"><div class="hq-content" data-active="inspiration">
 
+  <a href="ip12.html" class="ip12-hero hv-lift" aria-label="进入数字化 IP 定制方案">
+    <div style="position:relative;z-index:1;min-width:0;">
+      <span class="ip12-kicker">DIGITAL IP · 定制方案</span>
+      <div class="ip12-title">把行业痛点，变成可持续的数字化 IP</div>
+      <div class="ip12-copy">从门店经营底图与行业痛点出发，完成定位诊断、价值主张与内容资产，再沉淀为可执行的图片、视频行动计划。</div>
+      <div class="ip12-metrics"><span><b>12</b> 个成长模块</span><span><b>54</b> 个经营步骤</span><span>先确认方案，再带入创作</span></div>
+    </div>
+    <span class="ip12-cta">开始制作 · 定制方案&nbsp; →</span>
+  </a>
+
   <!-- 顶部能力卡 -->
-  <div class="capRow" style="display:grid; gap:14px; margin-bottom:24px;">
-    <a href="banana.html" class="hv-lift" style="position:relative; overflow:hidden; padding:18px; border:1px solid rgba(231,178,76,.18); border-radius:16px; background:linear-gradient(150deg, rgba(231,178,76,.12), rgba(20,17,10,.5)); display:block;">
-      <div style="display:flex; align-items:center; gap:10px;"><div style="width:46px; height:46px; display:flex; align-items:center; justify-content:center; border-radius:12px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08);"><img src="../assets/icons/ic_banana.png" alt="" style="width:38px; height:38px; object-fit:contain;"></div><div style="font-size:15px; font-weight:700;">AI 作图</div></div>
-      <div style="font-size:12px; color:#94a4bb; margin-top:10px;">黄雀引擎 2 · 专业级图片生成</div>
+  <div class="capRow">
+    <a href="banana.html" class="cap-card hv-lift">
+      <div class="cap-head"><div class="cap-icon"><img src="../assets/icons/ic_banana.png" alt=""></div><div class="cap-name">AI 作图</div></div>
+      <div class="cap-desc">黄雀引擎 2 · 专业级图片生成</div>
     </a>
-    <a href="video.html" class="hv-lift" style="position:relative; overflow:hidden; padding:18px; border:1px solid rgba(244,112,138,.18); border-radius:16px; background:linear-gradient(150deg, rgba(244,112,138,.1), rgba(20,12,15,.5)); display:block;">
-      <div style="display:flex; align-items:center; gap:10px;"><div style="width:46px; height:46px; display:flex; align-items:center; justify-content:center; border-radius:12px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08);"><img src="../assets/icons/ic_video.png" alt="" style="width:38px; height:38px; object-fit:contain;"></div><div style="font-size:15px; font-weight:700;">数字化 IP</div></div>
-      <div style="font-size:12px; color:#94a4bb; margin-top:10px;">Seedance · 单张照片驱动</div>
+    <a href="audio.html" class="cap-card hv-lift">
+      <div class="cap-head"><div class="cap-icon"><img src="../assets/icons/ic_audio.png" alt=""></div><div class="cap-name">AI 配音</div></div>
+      <div class="cap-desc">多音色 · 真人级配音</div>
     </a>
-    <a href="audio.html" class="hv-lift" style="position:relative; overflow:hidden; padding:18px; border:1px solid rgba(45,212,191,.18); border-radius:16px; background:linear-gradient(150deg, rgba(45,212,191,.1), rgba(10,18,17,.5)); display:block;">
-      <div style="display:flex; align-items:center; gap:10px;"><div style="width:46px; height:46px; display:flex; align-items:center; justify-content:center; border-radius:12px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08);"><img src="../assets/icons/ic_audio.png" alt="" style="width:38px; height:38px; object-fit:contain;"></div><div style="font-size:15px; font-weight:700;">AI 配音</div></div>
-      <div style="font-size:12px; color:#94a4bb; margin-top:10px;">多音色 · 真人级配音</div>
+    <a href="script.html" class="cap-card hv-lift">
+      <div class="cap-head"><div class="cap-icon"><img src="../assets/icons/ic_script.png" alt=""></div><div class="cap-name">文案编导</div></div>
+      <div class="cap-desc">选题到分镜 · 一键出脚本</div>
     </a>
-    <a href="script.html" class="hv-lift" style="position:relative; overflow:hidden; padding:18px; border:1px solid rgba(70,180,255,.18); border-radius:16px; background:linear-gradient(150deg, rgba(70,180,255,.1), rgba(10,14,22,.5)); display:block;">
-      <div style="display:flex; align-items:center; gap:10px;"><div style="width:46px; height:46px; display:flex; align-items:center; justify-content:center; border-radius:12px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08);"><img src="../assets/icons/ic_script.png" alt="" style="width:38px; height:38px; object-fit:contain;"></div><div style="font-size:15px; font-weight:700;">文案编导</div></div>
-      <div style="font-size:12px; color:#94a4bb; margin-top:10px;">选题到分镜 · 一键出脚本</div>
-    </a>
-    <a href="canvas.html" class="hv-lift" style="position:relative; overflow:hidden; padding:18px; border:1px solid rgba(138,92,246,.18); border-radius:16px; background:linear-gradient(150deg, rgba(138,92,246,.1), rgba(14,11,22,.5)); display:block;">
-      <div style="display:flex; align-items:center; gap:10px;"><div style="width:46px; height:46px; display:flex; align-items:center; justify-content:center; border-radius:12px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08);"><img src="../assets/icons/ic_canvas.png" alt="" style="width:38px; height:38px; object-fit:contain;"></div><div style="font-size:15px; font-weight:700;">海报画布</div></div>
-      <div style="font-size:12px; color:#94a4bb; margin-top:10px;">自由编辑 · 合成主视觉</div>
+    <a href="canvas.html" class="cap-card hv-lift">
+      <div class="cap-head"><div class="cap-icon"><img src="../assets/icons/ic_canvas.png" alt=""></div><div class="cap-name">海报画布</div></div>
+      <div class="cap-desc">自由编辑 · 合成主视觉</div>
     </a>
   </div>
 
-  <!-- tabs + 搜索 -->
-  <div style="display:flex; align-items:center; gap:18px; margin-bottom:18px; flex-wrap:wrap;">
-    <div style="display:flex; gap:8px; background:rgba(7,11,19,.5); border:1px solid rgba(148,164,187,.1); border-radius:12px; padding:5px;">
-      <div class="inspiration-tab on" style="padding:8px 18px; border-radius:9px; font-size:14px; font-weight:600;">灵感案例</div>
-    </div>
-    <div style="flex:1; min-width:200px; max-width:420px; display:flex; align-items:center; gap:10px; padding:0 14px; height:42px; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:11px;">
+  <!-- 标题 + 搜索 -->
+  <div class="section-head">
+    <h1 class="section-title">灵感案例<span>Inspiration gallery</span></h1>
+    <div class="search-box">
       <span style="display:flex; width:16px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></span>
       <input id="caseSearch" type="search" name="hq_inspiration_search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="搜索灵感案例" placeholder="搜索灵感关键字，如 美业海报 / 数字化 IP…" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; font-family:inherit;">
     </div>
   </div>
 
   <!-- 分类筛选 (动态生成) -->
-  <div style="display:flex; align-items:center; gap:18px; margin-bottom:20px; flex-wrap:wrap;">
+  <div class="category-row">
     <div style="font-size:13px; font-weight:600; color:#94a4bb; white-space:nowrap;">全部分类</div>
     <div style="width:1px; height:14px; background:rgba(148,164,187,.18);"></div>
-    <div id="chips" style="display:flex; gap:18px; flex-wrap:wrap; font-size:13.5px;"></div>
+    <div id="chips" class="chip-row"></div>
   </div>
 
   <!-- 灵感案例 -->
   <div id="paneCase">
-    <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px; padding:13px 16px; border:1px solid rgba(231,178,76,.18); background:linear-gradient(165deg, rgba(231,178,76,.06), rgba(7,11,19,.4)); border-radius:13px; flex-wrap:wrap;">
+    <div class="catalog-note">
       <span style="display:flex; width:17px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg></span>
-      <div style="flex:1; min-width:200px; font-size:13px; color:#94a4bb;">已收录 <strong id="caseTotal" style="color:#e7b24c;">0</strong> 张原创样片（黄雀作图生成）· 美业垂类 / 人像 / 风景 · 点任意图看创作详情、一键跟创。</div>
+      <div class="catalog-copy">已收录 <strong id="caseTotal" style="color:#e7b24c;">0</strong> 张黄雀原创样片 · 点击查看详情，一键做同款。</div>
       <a href="banana.html" class="btn-gold" style="padding:8px 16px; font-size:12.5px; font-weight:600; border-radius:9px; white-space:nowrap;">去创作</a>
     </div>
     <div class="masonry" id="caseGrid"></div>
@@ -89,12 +130,12 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=e836823b"></script>
+<script src="cloud-shell.js?v=5c2643d5"></script>
 <script>
 (function(){
   // ===== 灵感案例：数据驱动(inspirations.json) + 分类筛选 + 做同款 =====
   var grid=document.getElementById('caseGrid');
-  var MODEL_BADGE={nb2:'纳米香蕉 2', pro:'纳米香蕉 Pro', gpt:'黄雀引擎 2', seedream:'黄雀引擎 1 标准', seedream_pro:'黄雀引擎 1 Pro', seedance:'视频引擎', heygen:'数字化 IP', veo:'视频引擎', grok:'果肉视频'};
+  var MODEL_BADGE={nb2:'纳米香蕉 2', pro:'纳米香蕉 Pro', gpt:'黄雀引擎 2', seedream:'黄雀引擎 1 标准', seedream_pro:'黄雀引擎 1 Pro', seedance:'Seedance', micro:'Seedance', omni:'Omni', heygen:'数字化 IP', veo:'视频引擎', grok:'果肉视频'};
   function modelBadge(value,type){
     var raw=String(value||'').trim(), key=raw.toLowerCase();
     if(MODEL_BADGE[key]) return MODEL_BADGE[key];
@@ -110,7 +151,18 @@
   function cleanPrompt(value){
     return String(value||'').replace(/无文字无水印/g,'无文字').replace(/无水印/g,'').replace(/，{2,}/g,'，').replace(/,\s*,/g,',').trim();
   }
-  var DATA=[], curCat='all', LIKE_COUNTS={}, LIKED={};
+  var DATA=[], curCat='all', LIKE_COUNTS={}, LIKED={}, SEEN={};
+  function trackManaged(event,ids){
+    ids=(ids||[]).filter(function(id){return Number(id)>=1000000});if(!ids.length)return;
+    var body=JSON.stringify({event:event,ids:ids}),url='/api/admin/public/inspiration-events';
+    try{if(navigator.sendBeacon&&navigator.sendBeacon(url,new Blob([body],{type:'application/json'})))return}catch(e){}
+    fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:body,keepalive:true}).catch(function(){});
+  }
+  function bindImpressions(){
+    if(!('IntersectionObserver' in window))return;
+    var observer=new IntersectionObserver(function(entries){entries.forEach(function(entry){if(!entry.isIntersecting)return;var id=Number(entry.target.getAttribute('data-managed-id')||0);observer.unobserve(entry.target);if(!id||SEEN[id])return;SEEN[id]=true;trackManaged('impression',[id])})},{threshold:.45});
+    document.querySelectorAll('[data-managed-id]').forEach(function(node){var id=Number(node.getAttribute('data-managed-id')||0);if(!SEEN[id])observer.observe(node)});
+  }
   function likeTotal(x){ return Math.max(0, Number(x.count)||0) + (LIKE_COUNTS[String(x.id)]||0); }
   function likeButton(x){
     var id=String(x.id), liked=!!LIKED[id];
@@ -152,6 +204,7 @@
   }
   function card(x){
     var a=document.createElement('div'); a.className='hv-lift';
+    if(x.managed)a.setAttribute('data-managed-id',String(x.id));
     a.style.cssText='position:relative; border:1px solid rgba(148,164,187,.12); border-radius:14px; overflow:hidden; background:rgba(16,24,39,.4); cursor:pointer;';
     var badge=modelBadge(x.model,x.type), isVid=(x.type==='video');
     var play=isVid?'<div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; opacity:0.9;"><div style="width:46px; height:46px; border-radius:50%; background:rgba(7,11,19,.65); backdrop-filter:blur(4px); border:1px solid rgba(231,178,76,.5); display:flex; align-items:center; justify-content:center; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px;"><path d="M7 4v16l13-8z"/></svg></div></div>':'';
@@ -228,7 +281,7 @@
       var e=document.createElement('div'); e.style.cssText='padding:30px; text-align:center; font-size:13px; color:#5c6b82;';
       e.textContent='暂无匹配案例，去作图生成一张吧'; grid.appendChild(e); return;
     }
-    list.forEach(function(x){ grid.appendChild(card(x)); });
+    list.forEach(function(x){ grid.appendChild(card(x)); }); bindImpressions();
   }
   if(searchInput){
     searchInput.addEventListener('input', function(){ renderCards(); });
@@ -245,9 +298,10 @@
       document.body.appendChild(dlgEl);
     }
     var jumpLabel=isVid?'🎬 一键跟创（去视频页）':'🎨 一键跟创（去作图）';
+    var visual=(isVid&&x.video)?'<video src="'+x.video+'" poster="'+x.image+'" controls playsinline style="display:block; width:100%; max-height:88vh; object-fit:contain;"></video>':'<img src="'+x.image+'" style="display:block; max-width:100%; max-height:88vh; object-fit:contain;">';
     dlgEl.innerHTML=''
       +'<div style="display:flex; max-width:880px; width:100%; max-height:88vh; background:#0d1119; border:1px solid rgba(231,178,76,.2); border-radius:18px; overflow:hidden;">'
-      +  '<div style="position:relative; flex:1.1; min-width:0; background:#05080d; display:flex; align-items:center; justify-content:center;"><img src="'+x.image+'" style="display:block; max-width:100%; max-height:88vh; object-fit:contain;">'+watermarkHtml()+'</div>'
+      +  '<div style="position:relative; flex:1.1; min-width:0; background:#05080d; display:flex; align-items:center; justify-content:center;">'+visual+watermarkHtml()+'</div>'
       +  '<div style="flex:1; min-width:280px; display:flex; flex-direction:column; padding:22px; overflow:auto;">'
       +    '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;"><div style="font-size:18px; font-weight:700;">'+(x.title||'创作详情')+'</div><span id="dlgClose" style="cursor:pointer; color:#94a4bb; font-size:24px; line-height:1; padding:0 4px;">&times;</span></div>'
       +    '<div style="display:flex; align-items:center; gap:5px; font-size:12px; color:#94a4bb; margin-bottom:16px;">'+(x.category||'')+(badge?(' · '+badge):'')+' · '+likeButton(x)+'</div>'
@@ -294,19 +348,23 @@
       if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(ta.value||'').then(done,function(){ ta.select(); try{document.execCommand('copy');}catch(e){} done(); }); }
       else { ta.select(); try{document.execCommand('copy');}catch(e){} done(); }
     };
-    dlgEl.querySelector('#dlgDl').onclick=function(){ var a=document.createElement('a'); a.href=x.image; a.download=(x.title||'huangque')+'.webp'; document.body.appendChild(a); a.click(); a.remove(); };
+    dlgEl.querySelector('#dlgDl').onclick=function(){ var a=document.createElement('a'); a.href=(isVid&&x.video)?x.video:x.image; a.download=(x.title||'huangque')+(isVid?'.mp4':'.webp'); document.body.appendChild(a); a.click(); a.remove(); };
     dlgEl.querySelector('#dlgGo').onclick=function(){
       var dest=isVid?'video.html':'banana.html';
-      location.href=dest+'?prompt='+encodeURIComponent(ta.value||'')+((!isVid&&x.model)?('&engine='+encodeURIComponent(x.model)):'');
+      if(x.managed)trackManaged('click',[Number(x.id)]);
+      location.href=dest+'?prompt='+encodeURIComponent(ta.value||'')+(isVid?('&channel='+encodeURIComponent(x.target||x.model||'grok')):((x.model)?('&engine='+encodeURIComponent(x.model)):''))+(x.managed?('&inspiration='+encodeURIComponent(x.id)):'');
     };
     dlgEl.style.display='flex';
   }
   document.addEventListener('keydown', function(e){ if(e.key==='Escape' && dlgEl && dlgEl.style.display==='flex') closeDlg(); });
 
   function shuffle(a){ for(var i=a.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=a[i]; a[i]=a[j]; a[j]=t; } return a; }
-  fetch('inspirations.json',{cache:'no-cache'}).then(function(r){return r.json();}).then(function(d){
+  Promise.all([
+    fetch('inspirations.json',{cache:'no-cache'}).then(function(r){if(!r.ok)throw new Error('static');return r.json()}),
+    fetch('/api/admin/public/inspirations',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('managed');return r.json()}).catch(function(){return {items:[]}})
+  ]).then(function(all){
     // 「全部」及各分类载入时随机洗牌一次，每次进页顺序都新鲜；点卡片弹详情
-    DATA=shuffle(d||[]);
+    DATA=(all[1].items||[]).concat(shuffle(all[0]||[]));
     var totalEl=document.getElementById('caseTotal');
     if(totalEl) totalEl.textContent=String(DATA.length);
     syncChips(); renderCards(); loadLikes();

@@ -194,8 +194,9 @@ class InviteRegistrationTests(unittest.TestCase):
             {"X-Real-IP": "203.0.113.11"},
         )
         self.assertEqual(status, 200)
-        self.assertEqual(set(body), {"token", "user", "invite_bound"})
+        self.assertEqual(set(body), {"token", "user", "invite_bound", "inviter"})
         self.assertTrue(body["invite_bound"])
+        self.assertEqual(body["inviter"]["name"], "inviter")
         self.assertEqual(body["user"]["points"], 16)
         self.assertNotIn("invite", body["user"])
         conn = self._connect()
@@ -208,7 +209,7 @@ class InviteRegistrationTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_membership_invite_gate_is_controlled_by_default_off_switch(self):
+    def test_free_users_can_keep_using_invite_codes_when_membership_gate_is_enabled(self):
         code = self._invite_code()
         conn = self._connect()
         try:
@@ -222,8 +223,13 @@ class InviteRegistrationTests(unittest.TestCase):
         finally:
             conn.close()
 
-        status, _, _ = self._request("/api/auth/invite/validate?code=" + code)
+        status, validated, _ = self._request("/api/auth/invite/validate?code=" + code)
         self.assertEqual(status, 200)
+        self.assertEqual(validated["server_time"], validated["invite_validated_at"])
+        self.assertEqual(
+            validated["invite_expires_at"] - validated["invite_validated_at"],
+            7 * 24 * 3600,
+        )
         status, body, _ = self._request(
             "/api/auth/register",
             {"username": "switch_off_user", "password": "secret123", "invite_code": code},
@@ -233,8 +239,7 @@ class InviteRegistrationTests(unittest.TestCase):
 
         os.environ["HQ_MEMBERSHIP_ENFORCEMENT_ENABLED"] = "1"
         status, body, _ = self._request("/api/auth/invite/validate?code=" + code)
-        self.assertEqual(status, 409)
-        self.assertEqual(body["code"], "inviter_ineligible")
+        self.assertEqual(status, 200)
 
     def test_invalid_code_rolls_back_user_relation_and_token(self):
         result, err = self.auth.register_account(
@@ -451,6 +456,96 @@ class InviteRegistrationTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_member_clients_hide_partner_and_initiator_reward_ledger(self):
+        conn = self._connect()
+        try:
+            now = int(time.time())
+            conn.execute(
+                """UPDATE users
+                      SET membership_tier='partner',
+                          membership_started_at=?,
+                          membership_expires_at=?
+                    WHERE username='inviter'""",
+                (now, now + self.auth.MEMBERSHIP_YEAR_SECONDS),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result, err = self.auth.register_account(
+            "reward-invitee", "secret123", invite_code=self._invite_code(),
+        )
+        self.assertIsNone(err)
+        upgraded, err = self.auth.set_membership_admin(
+            "admin", "reward-invitee", "experience", "测试邀请奖励",
+        )
+        self.assertIsNone(err)
+        self.assertEqual(upgraded["membership_tier"], "experience")
+        conn = self._connect()
+        try:
+            ledger = self.auth.invites.reward_points(
+                conn, self._user_id("inviter"),
+            )
+            self.assertEqual(ledger["total_reward_points"], 240)
+            self.assertEqual(ledger["total"], 1)
+        finally:
+            conn.close()
+
+        token = self.auth.issue_token("inviter")
+        headers = {"Authorization": "Bearer " + token}
+        for tier in ("partner", "initiator"):
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "UPDATE users SET membership_tier=? WHERE username='inviter'",
+                    (tier,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            with self.subTest(tier=tier):
+                status, body, _ = self._request(
+                    "/api/auth/invite/reward-points?limit=20&offset=0",
+                    headers=headers,
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(body["total_reward_points"], 0)
+                self.assertEqual(body["total"], 0)
+                self.assertEqual(body["records"], [])
+
+                website_status, website_body, _ = self._request(
+                    "/api/invite/reward-points?limit=20&offset=0",
+                    headers=headers,
+                )
+                self.assertEqual(website_status, 200)
+                self.assertEqual(website_body["total_reward_points"], 0)
+                self.assertEqual(website_body["total"], 0)
+                self.assertEqual(website_body["records"], [])
+
+        conn = self._connect()
+        try:
+            conn.execute(
+                "UPDATE users SET membership_tier='experience' WHERE username='inviter'",
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        status, body, _ = self._request(
+            "/api/auth/invite/reward-points?limit=20&offset=0",
+            headers=headers,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body["total_reward_points"], 240)
+        self.assertEqual(body["total"], 1)
+        website_status, website_body, _ = self._request(
+            "/api/invite/reward-points?limit=20&offset=0",
+            headers=headers,
+        )
+        self.assertEqual(website_status, 200)
+        self.assertEqual(website_body["total_reward_points"], 240)
+        self.assertEqual(website_body["total"], 1)
+
     def test_empty_hash_secret_stores_no_ip_or_device_identifier(self):
         self.auth.INVITE_HASH_SECRET = ""
         result, err = self.auth.register_account(
@@ -467,6 +562,45 @@ class InviteRegistrationTests(unittest.TestCase):
             ).fetchone()
             self.assertIsNone(relation["ip_hash"])
             self.assertIsNone(relation["device_hash"])
+        finally:
+            conn.close()
+
+    def test_risk_hashes_expire_and_unknown_sources_are_rejected(self):
+        code = self._invite_code()
+        result, err = self.auth.register_account(
+            "old_hash", "secret123", invite_code=code,
+            client_ip="203.0.113.40", device_id="old-device",
+        )
+        self.assertIsNone(err)
+        conn = self._connect()
+        try:
+            conn.execute(
+                "UPDATE user_invites SET bound_at=? WHERE invitee_user_id=?",
+                (int(time.time()) - self.auth.invites.RISK_HASH_RETENTION - 1, self._user_id("old_hash")),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        result, err = self.auth.register_account(
+            "new_hash", "secret123", invite_code=code,
+            client_ip="203.0.113.41", device_id="new-device",
+        )
+        self.assertIsNone(err)
+        self.auth.create_user("bad_source", "secret123")
+        conn = self._connect()
+        try:
+            old = conn.execute(
+                "SELECT ip_hash,device_hash FROM user_invites WHERE invitee_user_id=?",
+                (self._user_id("old_hash"),),
+            ).fetchone()
+            self.assertIsNone(old["ip_hash"])
+            self.assertIsNone(old["device_hash"])
+            with self.assertRaises(self.auth.invites.InviteError) as raised:
+                self.auth.invites.bind_registration(
+                    conn, self._user_id("bad_source"), code, "unknown",
+                    hash_secret=self.auth.INVITE_HASH_SECRET,
+                )
+            self.assertEqual(raised.exception.code, "invalid_source")
         finally:
             conn.close()
 

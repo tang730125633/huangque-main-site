@@ -4,6 +4,7 @@ import os
 import time
 
 from .core import AUTH_BASE, AUTH_INTERNAL_TOKEN, COST, closing, jdb, json, urllib, _ensure_column
+from . import pricing
 
 # 各引擎的质量基价（点）。**1 点 = 0.1 元**，按上游官网价折算（汇率 7.1）。
 # gpt-image-2 按官方 $30/M image output token 实测（2026-07-10，读 API 返回的 usage）：
@@ -43,24 +44,34 @@ _IMAGE_CAP_2 = {"zelong", "zelong2", "xiaole", "seedream"}
 def cost_of(kind, body):
     """动态点数：TikHub 按次计费，采集/获客调用数随参数变。约 5x buff 折算成点。"""
     if kind == "collect":
-        # 提取文案（want 含 transcript）保留 6 点；其余即「内容爬取」，固定 30 点
-        # （kongli 2026-07-15，原为 3 点）。前端两个动作共用这一个 collect 接口，靠 want 区分：
-        #   主爬取   want=['comments'] 或 ['video']  → 30
-        #   提取文案 want=['transcript']              → 6
-        if "transcript" in (body.get("want") or []):
-            return 6
-        return 30
+        base = pricing.get_price("collect.base")
+        return base + (
+            pricing.get_price("collect.transcript_extra")
+            if "transcript" in (body.get("want") or []) else 0
+        )
     if kind == "leads":
-        return 30   # 获客固定 30 点/次（采集量前端固定 20 视频）；与 leads.html 成本徽章一致，防"消耗点数对不上"
+        n = max(1, min(30, int(body.get("count") or 12)))
+        pages = max(1, min(3, int(body.get("pages") or 1)))
+        return pricing.get_price("leads.base") + (
+            (n * pages) // 4
+        ) * pricing.get_price("leads.per_four")
     if kind == "image":
         # 质量基价按引擎分档（IMAGE_BASE_COST）。gen_image 里 provider 缺省是 openai，这里保持一致。
         provider = (body.get("provider") or "openai").strip().lower()
         tier = "hd" if (body.get("quality") or "hd") == "hd" else "std"
-        if provider == "seedream":
+        if provider == "banana":
+            model = str(body.get("model") or "nb2").strip().lower()
+            if model not in {"nb2", "pro"}:
+                raise ValueError("Nano Banana model pricing is not configured")
+            base = pricing.get_price("image.banana.%s.%s" % (model, tier))
+        elif provider == "seedream":
             variant = (body.get("variant") or "std").strip().lower()   # 5.0 标准 / 5.0 pro
-            base = (SEEDREAM_VARIANT_COST.get(variant) or SEEDREAM_VARIANT_COST["std"])[tier]
+            variant = variant if variant in {"std", "pro"} else "std"
+            base = pricing.get_price("image.seedream.%s.%s" % (variant, tier))
+        elif provider not in {"openai", "xiaole", "zelong", "zelong2"}:
+            base = _IMAGE_DEFAULT_COST[tier]
         else:
-            base = (IMAGE_BASE_COST.get(provider) or _IMAGE_DEFAULT_COST)[tier]
+            base = pricing.get_price("image.%s.%s" % (provider, tier))
         # cap 必须与 image.gen_image 里的数量上限逐字一致，否则按 N 扣点却只出 cap 张 = 超收。
         cap = 2 if provider in _IMAGE_CAP_2 else 4
         cnt = 1 if body.get("mask") else max(1, min(cap, int(body.get("count") or 1)))
@@ -79,32 +90,46 @@ def cost_of(kind, body):
     if kind == "tryon":
         has_clothes = bool(body.get("clothes_data"))
         has_bg = bool(body.get("background_data"))
-        return 40 if (has_clothes and has_bg) else 25  # 两段(换装+换背景)40/单段25
-        # TODO: 上线前与 kongli 确认点数
+        key = "video.tryon.double" if (has_clothes and has_bg) else "video.tryon.single"
+        return pricing.get_price(key)
     if kind == "xiaole_video":
         # 果肉生成按模型与分辨率分别定价；参考图不额外收取用户点数。
         if body.get("operation") == "edit":
             raise ValueError("果肉视频编辑维护中")
         duration = min(15, max(1, int(body.get("duration") or 10)))
-        if str(body.get("channel") or "grok").lower() != "grok":
-            # 泽龙测试期官方 Omni / Seedance 统一 30 点/秒；生产功能旗默认关闭。
-            return duration * 30
+        channel = str(body.get("channel") or "grok").lower()
+        if channel != "grok":
+            key = {
+                "omni": "video.omni",
+                "minimax": "video.minimax_h3.768p",
+            }.get(channel, "video.seedance")
+            return duration * pricing.get_price(key)
         model = str(body.get("model") or "grok-imagine-video")
         resolution = str(body.get("resolution") or "720p").lower()
-        rates = {
-            "grok-imagine-video": {"480p": 10, "720p": 12},
-            "grok-imagine-video-1.5": {"480p": 15, "720p": 25, "1080p": 44},
+        keys = {
+            "grok-imagine-video": {
+                "480p": "video.grok.v1.480p", "720p": "video.grok.v1.720p"},
+            "grok-imagine-video-1.5": {
+                "480p": "video.grok.v1_5.480p", "720p": "video.grok.v1_5.720p",
+                "1080p": "video.grok.v1_5.1080p"},
         }
-        rate = (rates.get(model) or rates["grok-imagine-video"]).get(resolution)
-        if rate is None:
+        key = (keys.get(model) or keys["grok-imagine-video"]).get(resolution)
+        if key is None:
             raise ValueError("%s 不支持分辨率 %s" % (model, resolution))
-        return duration * rate
+        return duration * pricing.get_price(key)
     if kind == "sora_video":
         model = str(body.get("model") or "sora-2").strip().lower()
         resolution = str(body.get("resolution") or "720p").strip().lower()
         # 未知组合用最高档兜底；正常请求会在 validate_sora_video_payload 先被拒绝，
         # 这里的目标是即使未来接线漏校验，也绝不能回落成 0 点免费送高价 Pro。
-        rate = SORA_VIDEO_RATE.get((model, resolution), max(SORA_VIDEO_RATE.values()))
+        keys = {
+            ("sora-2", "720p"): "video.sora.standard.720p",
+            ("sora-2-pro", "720p"): "video.sora.pro.720p",
+            ("sora-2-pro", "1024p"): "video.sora.pro.1024p",
+            ("sora-2-pro", "1080p"): "video.sora.pro.1080p",
+        }
+        key = keys.get((model, resolution)) or "video.sora.pro.1080p"
+        rate = pricing.get_price(key)
         try:
             seconds = int(body.get("seconds") or 4)
         except (TypeError, ValueError):
@@ -112,6 +137,22 @@ def cost_of(kind, body):
         seconds = max(4, min(12, seconds))
         return rate * seconds
     if kind == "script_to_video":
+        if body.get("pipeline") == "pixelle":
+            try:
+                scenes = max(1, min(20, int(body.get("n_scenes") or 1)))
+            except (TypeError, ValueError):
+                scenes = 1
+            visuals = scenes * pricing.get_price("image.openai.std")
+            narration = pricing.get_price("audio.tts")
+            copywriting = pricing.get_price("text.copy") if body.get("mode") == "generate" else 0
+            body["cost_breakdown"] = {
+                "visual_scenes": visuals,
+                "scene_count": scenes,
+                "narration": narration,
+                "copywriting": copywriting,
+                "total": visuals + narration + copywriting,
+            }
+            return visuals + narration + copywriting
         style = (body.get("style") or "口播").strip()
         if style == "剧情":
             try:
@@ -126,7 +167,9 @@ def cost_of(kind, body):
             })
         from . import video as video_domain
         lines = [(s.get("line") or "").strip() for s in (body.get("scenes") or []) if isinstance(s, dict)]
-        talking = video_domain.video_cost({"text": "\n\n".join(line for line in lines if line)})
+        talking_body = {"text": "\n\n".join(line for line in lines if line)}
+        talking = video_domain.video_cost(talking_body)
+        body["_talking_block_points"] = talking_body["_talking_block_points"]
         generated = max(0, min(8, int(body.get("material_generate_count") or 0)))
         images = generated * cost_of("image", {
             "provider": "openai", "quality": "standard", "count": 1,
@@ -143,8 +186,16 @@ def cost_of(kind, body):
         urls = body.get("urls")
         if isinstance(urls, list):
             count = max(1, min(5, len([url for url in urls if isinstance(url, str) and url.strip()])))
-            return 20 * count
-        return 20
+            return pricing.get_price("breakdown.item") * count
+        return pricing.get_price("breakdown.item")
+    fixed = {
+        "copy": "text.copy",
+        "audio": "audio.tts",
+        "avatar": "avatar.create",
+        "canvas_agent": "canvas.agent",
+    }
+    if kind in fixed:
+        return pricing.get_price(fixed[kind])
     return COST.get(kind, 0)
 
 
@@ -156,7 +207,7 @@ def breakdown_batch_refund(cost, total, failed):
     if cost <= 0 or total <= 0 or failed <= 0:
         return 0
     failed = min(failed, total)
-    return cost if failed >= total else min(cost, 20 * failed)
+    return cost if failed >= total else min(cost, (cost * failed) // total)
 
 
 def settle_breakdown_batch(username, cost, result, job_id):
@@ -334,6 +385,17 @@ def get_points(username):
         return int(res.get("points") or 0)
     except Exception:
         return 0
+
+def get_points_transaction(transaction_key):
+    """Read one Auth ledger row without creating or replaying a charge."""
+    key = str(transaction_key or "").strip()
+    if not key or len(key) > 160:
+        raise ValueError("invalid transaction_key")
+    query = urllib.parse.urlencode({"transaction_key": key})
+    res = _auth_points_request(
+        "/api/auth/points/transaction?" + query, method="GET")
+    row = res.get("transaction")
+    return row if isinstance(row, dict) else None
 
 def deduct_points(username, amount, reason="", transaction_key=""):
     """预扣点。reason 落 points_audit，供对账。

@@ -39,6 +39,10 @@ if [ "$1" = "ls-files" ] && [ "$2" = "server/content_domains" ]; then
   printf '%s\n' "${FAKE_DOMAIN_FILES:-server/content_domains/core.py}"
   exit 0
 fi
+if [ "$1" = "ls-files" ] && [ "$2" = "server/providers" ]; then
+  printf '%s\n' "${FAKE_PROVIDER_FILES:-server/providers/lipsync/base.py}"
+  exit 0
+fi
 exit 0
 """,
         )
@@ -51,14 +55,22 @@ if [ -n "$FAKE_SSH_LOG" ]; then printf '%s\n' "$*" >> "$FAKE_SSH_LOG"; fi
 #   smoke_import         → bash -s -- <svc> <python 路径>
 #   check_restart_effective → bash -s -- <svc> <时间戳>
 case "$*" in
-  *"test -f"*)
+  *"test -f '/home/ubuntu/content-api/content_domains/"*)
     if [ "$FAKE_REMOTE_FILE_MISSING" = "1" ]; then exit 1; fi
     ;;
   *"bash -s"*)
-    cat >/dev/null 2>&1   # 吞掉 stdin 里的远端脚本
+    remote_script=$(cat)
     case "$*" in
       *python3*)
+        if [ "$FAKE_EXACT_DOMAIN_IMPORT_FAIL" = "1" ] && printf '%s' "$*" | grep -q digital_ip; then
+          echo "    ❌ content domain import 失败"
+          exit 1
+        fi
         if [ "$FAKE_IMPORT_FAIL" = "1" ]; then echo "    ❌ import 失败 —— 中止，不重启"; exit 1; fi
+        if [ "$FAKE_SEEDANCE_CONTRACT_FAIL" = "1" ] && printf '%s' "$remote_script" | grep -q before_charge; then
+          echo "    ❌ Seedance 参考图跨模块契约失败 —— 中止，不重启"
+          exit 1
+        fi
         echo "    ✓ import 通过"
         exit 0
         ;;
@@ -198,12 +210,18 @@ exit 0
             cwd=ROOT,
             text=True,
         ).splitlines()
+        provider_files = subprocess.check_output(
+            ["git", "ls-files", "server/providers"],
+            cwd=ROOT,
+            text=True,
+        ).splitlines()
         rsync_log = Path(self.tmp.name) / "rsync.log"
         ssh_log = Path(self.tmp.name) / "ssh.log"
         result = self._run_ship(
             target="server/content_domains/audio.py",
             FAKE_CURL_CODE="200",
             FAKE_DOMAIN_FILES="\n".join(domain_files),
+            FAKE_PROVIDER_FILES="\n".join(provider_files),
             FAKE_RSYNC_LOG=str(rsync_log),
             FAKE_SSH_LOG=str(ssh_log),
         )
@@ -211,10 +229,13 @@ exit 0
         self.assertIn("整目录同步", result.stdout)
         self.assertIn("import 通过", result.stdout)
         self.assertIn("server/content_domains/", rsync_log.read_text(encoding="utf-8"))
+        self.assertIn("server/providers/", rsync_log.read_text(encoding="utf-8"))
         ssh_lines = ssh_log.read_text(encoding="utf-8").splitlines()
         for marker in ("--verify-deploy", "--bless-deploy"):
             command = next(line for line in ssh_lines if marker in line)
             for path in domain_files:
+                self.assertIn(path, command)
+            for path in provider_files:
                 self.assertIn(path, command)
 
     def test_exact_content_domains_only_pushes_requested_existing_files(self):
@@ -246,15 +267,120 @@ exit 0
             self.assertIn(path, verify)
         self.assertNotIn("server/content_domains/video.py", verify)
 
-    def test_exact_content_domains_refuses_new_remote_module(self):
+    def test_exact_content_domains_allows_tracked_new_remote_module(self):
+        rsync_log = Path(self.tmp.name) / "rsync.log"
+        ssh_log = Path(self.tmp.name) / "ssh.log"
         result = self._run_ship(
             target="server/content_domains/digital_ip.py",
             exact_content_domains=True,
             FAKE_REMOTE_FILE_MISSING="1",
             FAKE_CURL_CODE="200",
+            FAKE_RSYNC_LOG=str(rsync_log),
+            FAKE_SSH_LOG=str(ssh_log),
+        )
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertIn("file-only 模式", result.stdout)
+        self.assertIn(
+            "server/content_domains/digital_ip.py",
+            rsync_log.read_text(encoding="utf-8"),
+        )
+        self.assertIn("bash -s -- digital_ip", ssh_log.read_text(encoding="utf-8"))
+        self.assertIn("上线完成", result.stdout)
+
+    def test_function_registry_restarts_only_admin(self):
+        ssh_log = Path(self.tmp.name) / "ssh.log"
+        result = self._run_ship(
+            target="server/content_domains/function_registry.py",
+            exact_content_domains=True,
+            FAKE_REMOTE_FILE_MISSING="1",
+            FAKE_CURL_CODE="200",
+            FAKE_SSH_LOG=str(ssh_log),
+        )
+        self.assertEqual(0, result.returncode, result.stdout)
+        restart = next(
+            line for line in ssh_log.read_text(encoding="utf-8").splitlines()
+            if "sudo systemctl restart" in line
+        )
+        self.assertIn("huangque-admin", restart)
+        self.assertNotIn("huangque-content", restart)
+
+    def test_browser_qa_restarts_only_admin(self):
+        ssh_log = Path(self.tmp.name) / "ssh.log"
+        result = self._run_ship(
+            target="server/content_domains/browser_qa.py",
+            exact_content_domains=True,
+            FAKE_REMOTE_FILE_MISSING="1",
+            FAKE_CURL_CODE="200",
+            FAKE_SSH_LOG=str(ssh_log),
+        )
+        self.assertEqual(0, result.returncode, result.stdout)
+        restart = next(
+            line for line in ssh_log.read_text(encoding="utf-8").splitlines()
+            if "sudo systemctl restart" in line
+        )
+        self.assertIn("huangque-admin", restart)
+        self.assertNotIn("huangque-content", restart)
+
+    def test_non_exact_function_registry_restarts_content_and_admin(self):
+        ssh_log = Path(self.tmp.name) / "ssh.log"
+        result = self._run_ship(
+            target="server/content_domains/function_registry.py",
+            FAKE_CURL_CODE="200",
+            FAKE_SSH_LOG=str(ssh_log),
+        )
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertIn("整目录同步", result.stdout)
+        restart = next(
+            line for line in ssh_log.read_text(encoding="utf-8").splitlines()
+            if "sudo systemctl restart" in line
+        )
+        self.assertIn("huangque-content", restart)
+        self.assertIn("huangque-admin", restart)
+
+    def test_feature_flags_restarts_all_importers(self):
+        ssh_log = Path(self.tmp.name) / "ssh.log"
+        result = self._run_ship(
+            target="server/content_domains/feature_flags.py",
+            exact_content_domains=True,
+            FAKE_CURL_CODE="200",
+            FAKE_SSH_LOG=str(ssh_log),
+        )
+        self.assertEqual(0, result.returncode, result.stdout)
+        restart = next(
+            line for line in ssh_log.read_text(encoding="utf-8").splitlines()
+            if "sudo systemctl restart" in line
+        )
+        self.assertIn("huangque-content", restart)
+        self.assertIn("huangque-admin", restart)
+        self.assertIn("huangque-imggen-api", restart)
+        self.assertIn("huangque-leadgen-api", restart)
+
+    def test_egress_restarts_all_importers(self):
+        ssh_log = Path(self.tmp.name) / "ssh.log"
+        result = self._run_ship(
+            target="server/content_domains/egress.py",
+            exact_content_domains=True,
+            FAKE_CURL_CODE="200",
+            FAKE_SSH_LOG=str(ssh_log),
+        )
+        self.assertEqual(0, result.returncode, result.stdout)
+        restart = next(
+            line for line in ssh_log.read_text(encoding="utf-8").splitlines()
+            if "sudo systemctl restart" in line
+        )
+        self.assertIn("huangque-content", restart)
+        self.assertIn("huangque-admin", restart)
+        self.assertIn("huangque-imggen-api", restart)
+
+    def test_exact_content_domains_blocks_new_module_import_failure(self):
+        result = self._run_ship(
+            target="server/content_domains/digital_ip.py",
+            exact_content_domains=True,
+            FAKE_EXACT_DOMAIN_IMPORT_FAIL="1",
+            FAKE_CURL_CODE="200",
         )
         self.assertNotEqual(0, result.returncode, result.stdout)
-        self.assertIn("只允许覆盖已存在", result.stdout)
+        self.assertIn("content domain import 失败", result.stdout)
         self.assertNotIn("上线完成", result.stdout)
 
     def test_exact_content_domains_refuses_content_api(self):
@@ -301,6 +427,17 @@ exit 0
         )
         self.assertNotEqual(0, result.returncode, result.stdout)
         self.assertIn("import 失败", result.stdout)
+        self.assertNotIn("上线完成", result.stdout)
+
+    def test_seedance_contract_failure_stops_before_restart(self):
+        result = self._run_ship(
+            target="server/content_domains/jobs_store.py",
+            exact_content_domains=True,
+            FAKE_SEEDANCE_CONTRACT_FAIL="1",
+            FAKE_CURL_CODE="200",
+        )
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("Seedance 参考图跨模块契约失败", result.stdout)
         self.assertNotIn("上线完成", result.stdout)
 
     def test_silent_restart_blocks_deployment_success(self):

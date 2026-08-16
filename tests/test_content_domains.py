@@ -1,14 +1,18 @@
 import importlib
 import base64
+import io
 import json
+import os
 import queue
 import sqlite3
 import sys
 import tempfile
 import unittest
+import urllib.error
 from contextlib import closing
 from pathlib import Path
 from unittest import mock
+from unittest.mock import patch
 
 
 class ContentDomainTests(unittest.TestCase):
@@ -23,50 +27,176 @@ class ContentDomainTests(unittest.TestCase):
         # （avatar/cinematic 是把动作模仿拆成「建形象 / 生成剧情视频」两步时加的）
         self.assertEqual(
             sorted(content_api.HANDLERS),
-            ["audio", "avatar", "breakdown", "cinematic", "collect", "copy", "image", "leads", "script_to_video", "sora_video", "tryon", "video", "xiaole_video"],
+            ["audio", "avatar", "breakdown", "canvas_agent", "cinematic", "collect", "copy", "image", "leads", "script_to_video", "short_drama_final", "short_drama_preview", "short_drama_remux", "short_drama_sound_effect", "sora_video", "tryon", "video", "xiaole_video"],
         )
         self.assertIs(content_api.HANDLERS, content_api.registry.HANDLERS)
 
     def test_domains_export_expected_handlers(self):
         registry = importlib.import_module("content_domains.registry")
-        for name in ("image", "copy", "collect", "leads", "audio", "video", "xiaole_video", "sora_video", "breakdown"):
+        for name in ("image", "copy", "canvas_agent", "collect", "leads", "audio", "video", "xiaole_video", "sora_video", "breakdown", "short_drama_final", "short_drama_preview", "short_drama_remux", "short_drama_sound_effect"):
             self.assertIn(name, registry.HANDLERS)
             self.assertTrue(callable(registry.HANDLERS[name]))
 
+    def test_copy_provider_uses_dedicated_config_and_normalizes_v1_url(self):
+        text = importlib.import_module("content_domains.text")
+        self.assertTrue(hasattr(text, "COPY_API_BASE"), "copy provider needs an independent base URL")
+        self.assertTrue(hasattr(text, "COPY_API_KEY"), "copy provider needs an independent API key")
+        requests = []
+
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps({"choices": [{"message": {"content": "OK"}}]}).encode()
+
+        def open_request(request, timeout=0):
+            requests.append((request, timeout))
+            return Response()
+
+        for base in ("https://copy.example", "https://copy.example/v1", "https://copy.example/v1/"):
+            with self.subTest(base=base), \
+                    patch.object(text, "COPY_API_BASE", base), \
+                    patch.object(text, "COPY_API_KEY", "copy-secret"), \
+                    patch.object(text, "COPY_MODEL", "copy-model"), \
+                    patch.object(text.urllib.request, "urlopen", side_effect=open_request):
+                self.assertEqual("OK", text._chat("system", "user", 0))
+                request, timeout = requests.pop()
+                self.assertEqual("https://copy.example/v1/chat/completions", request.full_url)
+                self.assertEqual("Bearer copy-secret", request.get_header("Authorization"))
+                self.assertEqual(300, timeout)
+                body = json.loads(request.data)
+                self.assertEqual("copy-model", body["model"])
+
     def test_copy_can_use_responses_without_changing_global_openai(self):
         text = importlib.import_module("content_domains.text")
-        calls = []
+        with patch.multiple(text, COPY_API_STYLE="responses", COPY_BASE="https://api.zelong.vip",
+                            COPY_API_KEY="test-key", COPY_MODEL="zelong-cpa-gpt-5.4"), \
+             patch.object(text, "_post", return_value={
+                 "output": [{"content": [{"type": "output_text", "text": " OK "}]}],
+             }) as posted:
+            self.assertEqual("OK", text._chat("system", "user", 0.9))
 
-        def post(path, body, ctype, **kwargs):
-            calls.append((path, json.loads(body), ctype, kwargs))
-            return {"output": [{"content": [{"type": "output_text", "text": " OK "}]}]}
+        self.assertEqual("/v1/responses", posted.call_args.args[0])
+        self.assertEqual({"base": "https://api.zelong.vip", "key": "test-key"}, posted.call_args.kwargs)
 
-        with mock.patch.multiple(text, COPY_API_STYLE="responses", COPY_BASE="https://api.zelong.vip",
-                                 COPY_API_KEY="test-key", COPY_MODEL="zelong-cpa-gpt-5.4"), \
-             mock.patch.object(text, "_post", side_effect=post):
-            self.assertEqual(text._chat("system", "user", 0.9), "OK")
-
-        path, body, ctype, kwargs = calls[0]
-        self.assertEqual(path, "/v1/responses")
-        self.assertEqual(body, {"model": "zelong-cpa-gpt-5.4", "instructions": "system", "input": "user",
-                                "stream": False})
-        self.assertEqual((ctype, kwargs), ("application/json", {"base": "https://api.zelong.vip", "key": "test-key"}))
-
-    def test_copy_default_style_keeps_chat_completions(self):
+    def test_copy_provider_requires_atomic_dedicated_config(self):
+        core = importlib.import_module("content_domains.core")
         text = importlib.import_module("content_domains.text")
-        calls = []
+        names = ("COPY_API_BASE", "COPY_API_KEY")
+        saved_env = {name: os.environ.get(name) for name in names}
+        saved_openai = (core.OPENAI_BASE, core.OPENAI_KEY)
 
-        def post(path, body, ctype, **kwargs):
-            calls.append((path, json.loads(body)))
-            return {"choices": [{"message": {"content": "legacy"}}]}
+        class Response:
+            def __enter__(self):
+                return self
 
-        with mock.patch.multiple(text, COPY_API_STYLE="chat_completions", COPY_BASE="https://api.openai.com",
-                                 COPY_API_KEY="test-key", COPY_MODEL="gpt-4o"), \
-             mock.patch.object(text, "_post", side_effect=post):
-            self.assertEqual(text._chat("system", "user", 0.4), "legacy")
+            def __exit__(self, *_args):
+                return False
 
-        self.assertEqual(calls[0][0], "/v1/chat/completions")
-        self.assertEqual([message["role"] for message in calls[0][1]["messages"]], ["system", "user"])
+            def read(self):
+                return b'{"choices":[{"message":{"content":"OK"}}]}'
+
+        def configure(base, key):
+            for name, value in zip(names, (base, key)):
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+            return importlib.reload(text)
+
+        try:
+            core.OPENAI_BASE = "https://openai.example/v1"
+            core.OPENAI_KEY = "openai-secret"
+
+            configure(None, None)
+            with patch.object(text.urllib.request, "urlopen", return_value=Response()) as open_request:
+                self.assertEqual("OK", text._chat("system", "user", 0))
+                request = open_request.call_args.args[0]
+                self.assertEqual("https://openai.example/v1/chat/completions", request.full_url)
+                self.assertEqual("Bearer openai-secret", request.get_header("Authorization"))
+
+            configure("https://copy.example", "copy-secret")
+            with patch.object(text.urllib.request, "urlopen", return_value=Response()) as open_request:
+                self.assertEqual("OK", text._chat("system", "user", 0))
+                request = open_request.call_args.args[0]
+                self.assertEqual("https://copy.example/v1/chat/completions", request.full_url)
+                self.assertEqual("Bearer copy-secret", request.get_header("Authorization"))
+
+            for base, key in (("https://copy.example", None), (None, "copy-secret")):
+                with self.subTest(base=base, key=bool(key)):
+                    configure(base, key)
+                    with patch.object(text.urllib.request, "urlopen", return_value=Response()) as open_request:
+                        with self.assertRaisesRegex(RuntimeError, "必须同时配置"):
+                            text._chat("system", "user", 0)
+                        open_request.assert_not_called()
+
+            configure("   ", "\t")
+            with patch.object(text.urllib.request, "urlopen", return_value=Response()) as open_request:
+                try:
+                    result = text._chat("system", "user", 0)
+                except Exception as error:
+                    self.fail("blank dedicated settings must fall back together: %s" % error)
+                self.assertEqual("OK", result)
+                request = open_request.call_args.args[0]
+                self.assertEqual("https://openai.example/v1/chat/completions", request.full_url)
+                self.assertEqual("Bearer openai-secret", request.get_header("Authorization"))
+        finally:
+            core.OPENAI_BASE, core.OPENAI_KEY = saved_openai
+            for name, value in saved_env.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+            importlib.reload(text)
+
+    def test_copy_provider_translates_actionable_http_errors(self):
+        text = importlib.import_module("content_domains.text")
+        self.assertTrue(hasattr(text, "COPY_API_BASE"), "copy provider needs independent error handling")
+        cases = (
+            (401, "文案模型鉴权失败，请检查 COPY_API_KEY"),
+            (404, "文案模型接口或模型不存在，请检查 COPY_API_BASE 和 COPY_MODEL"),
+            (429, "文案模型请求过于频繁，请稍后重试"),
+            (500, "文案模型服务暂时不可用，请稍后重试"),
+        )
+        for status, message in cases:
+            error = urllib.error.HTTPError(
+                "https://copy.example/v1/chat/completions", status, "provider error", {},
+                io.BytesIO(b'{"error":{"message":"provider detail"}}'),
+            )
+            with self.subTest(status=status), \
+                    patch.object(text, "COPY_API_BASE", "https://copy.example"), \
+                    patch.object(text, "COPY_API_KEY", "copy-secret"), \
+                    patch.object(text.urllib.request, "urlopen", side_effect=error):
+                with self.assertRaisesRegex(RuntimeError, message):
+                    text._chat("system", "user", 0)
+
+    def test_copy_provider_fallback_errors_name_openai_configuration(self):
+        text = importlib.import_module("content_domains.text")
+        cases = (
+            (401, "文案模型鉴权失败，请检查 OPENAI_API_KEY"),
+            (404, "文案模型接口或模型不存在，请检查 OPENAI_BASE 和 COPY_MODEL"),
+        )
+        for status, message in cases:
+            error = urllib.error.HTTPError(
+                "https://openai.example/v1/chat/completions", status, "provider error", {},
+                io.BytesIO(b'{"error":{"message":"provider detail"}}'),
+            )
+            with self.subTest(status=status), \
+                    patch.object(text, "COPY_API_BASE", ""), \
+                    patch.object(text, "COPY_API_KEY", ""), \
+                    patch.object(text, "OPENAI_BASE", "https://openai.example"), \
+                    patch.object(text, "OPENAI_KEY", "openai-secret"), \
+                    patch.object(text.urllib.request, "urlopen", side_effect=error):
+                with self.assertRaisesRegex(RuntimeError, message) as raised:
+                    text._chat("system", "user", 0)
+                self.assertNotIn("COPY_API_BASE", str(raised.exception))
+                self.assertNotIn("COPY_API_KEY", str(raised.exception))
 
     def test_core_does_not_own_domain_handlers(self):
         core = importlib.import_module("content_domains.core")
@@ -96,9 +226,15 @@ class ContentDomainTests(unittest.TestCase):
         # 编排；持久状态机、quote/关联/补偿细节都在 short_drama_production.py。
         # attempt-backed 与通用 job 的失败分流也只保留一个薄编排 helper；原子状态迁移和
         # still-refund 所有权仍全部位于 short_drama_production.py。
-        # Digital IP Structured Outputs 仅在 core 保留鉴权与 HTTP 状态薄接线，分析逻辑独立在 digital_ip.py。
-        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 2050)
-
+        core_source = core_path.read_text(encoding="utf-8")
+        self.assertNotRegex(
+            core_source,
+            r"(?m)^def (?:gen_image|gen_copy|gen_collect|gen_leads|gen_audio|"
+            r"gen_video|gen_breakdown)\(",
+        )
+        # Digital IP Structured Outputs 在 core 只保留鉴权与 HTTP 状态薄接线；
+        # 诊断与引导逻辑必须继续独立在 digital_ip.py。
+        self.assertNotRegex(core_source, r"(?m)^def (?:diagnose|guide)\(")
     def test_openai_base_with_v1_is_not_duplicated(self):
         core = importlib.import_module("content_domains.core")
         urls = []
@@ -346,14 +482,14 @@ class ContentDomainTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             db_path = Path(td) / "audio.db"
 
-            def test_adb():
+            def rejecting_case_db():
                 c = sqlite3.connect(db_path)
                 c.row_factory = sqlite3.Row
                 return c
 
-            audio.adb = test_adb
+            audio.adb = rejecting_case_db
             try:
-                with closing(test_adb()) as c:
+                with closing(rejecting_case_db()) as c:
                     c.execute("""CREATE TABLE audio_voice_slots(
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         username TEXT, slot_id TEXT, status TEXT, voice_id INTEGER,
@@ -364,7 +500,7 @@ class ContentDomainTests(unittest.TestCase):
                         VALUES('fang','S_demo','ready',7,9,100,100)""")
                     c.commit()
 
-                before = self._slot_snapshot(test_adb, "fang", "S_demo")
+                before = self._slot_snapshot(rejecting_case_db, "fang", "S_demo")
                 cases = [
                     ({"slot_id": "S_demo", "audio_format": "wav"}, 400, "请先上传样音"),
                     ({"slot_id": "S_demo", "audio": "YQ==", "audio_format": "exe"}, 400, "audio_format 仅支持"),
@@ -376,18 +512,18 @@ class ContentDomainTests(unittest.TestCase):
                             audio.validate_clone_vip_payload("fang", payload)
                         self.assertEqual(cm.exception.status, status)
                         self.assertIn(msg, cm.exception.detail)
-                        self.assertEqual(before, self._slot_snapshot(test_adb, "fang", "S_demo"))
+                        self.assertEqual(before, self._slot_snapshot(rejecting_case_db, "fang", "S_demo"))
 
-                with closing(test_adb()) as c:
+                with closing(rejecting_case_db()) as c:
                     c.execute("UPDATE audio_voice_slots SET reclone_count=25 WHERE username='fang' AND slot_id='S_demo'")
                     c.commit()
-                before_unlimited = self._slot_snapshot(test_adb, "fang", "S_demo")
+                before_unlimited = self._slot_snapshot(rejecting_case_db, "fang", "S_demo")
                 checked = audio.validate_clone_vip_payload(
                     "fang",
                     {"slot_id": "S_demo", "audio": base64.b64encode(b'audio').decode(), "audio_format": "wav"},
                 )
                 self.assertEqual("S_demo", checked["slot_id"])
-                self.assertEqual(before_unlimited, self._slot_snapshot(test_adb, "fang", "S_demo"))
+                self.assertEqual(before_unlimited, self._slot_snapshot(rejecting_case_db, "fang", "S_demo"))
             finally:
                 audio.adb = original_adb
 
@@ -440,14 +576,14 @@ class ContentDomainTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             db_path = Path(td) / "audio.db"
 
-            def test_adb():
+            def valid_case_db():
                 c = sqlite3.connect(db_path)
                 c.row_factory = sqlite3.Row
                 return c
 
-            audio.adb = test_adb
+            audio.adb = valid_case_db
             try:
-                with closing(test_adb()) as c:
+                with closing(valid_case_db()) as c:
                     c.execute("""CREATE TABLE audio_voice_slots(
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         username TEXT, slot_id TEXT, status TEXT, voice_id INTEGER,

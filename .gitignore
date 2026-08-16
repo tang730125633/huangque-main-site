@@ -31,6 +31,8 @@ __pycache__/
 jobs.db
 server/jobs.db
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 models/
 transcribe_out/
@@ -38,6 +40,11 @@ transcribe_out/
 # 之前 22 个 cine_ref_*.png / motion_ref_*.mp4 就是这么被 git add -A 扫进 PR 的。
 server/content_out/
 .gstack/
+
+# 口型 Provider PoC 的真实媒体、报告和供应商响应（只保留目录占位）
+/tools/lipsync_poc/reports/*
+!/tools/lipsync_poc/reports/.gitkeep
+/.local-content-out/lipsync-poc/
 
 # ===== 临时/派生：截图预览、原始大图、本地工具缓存（不进 git，可重生成）=====
 .playwright-cli/
@@ -72,3 +79,15 @@ pinterest美女图片/
 secret.local.env
 *.local.env
 server/content.env
+
+# Hermes 运行数据、登录态与第三方凭据
+server/hermes_ip12/data/
+server/hermes_ip12/media_library/
+server/hermes_ip12/knowledge/
+server/hermes_ip12/.agnes_key
+server/hermes_ip12/agnes_key.txt
+server/hermes_ip12/*cookies*.txt
+server/hermes_ip12/backups/
+server/hermes_ip12/*.bak*
+server/hermes_ip12/*_backup.py
+server/hermes_ip12/nohup.out

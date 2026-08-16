@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
 CODE_LENGTH = 6
-VALID_SOURCES = {"web_link", "web_manual", "miniprogram", "admin"}
+VALID_SOURCES = {"web_link", "web_manual", "miniprogram", "miniprogram_card", "admin"}
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 DEFAULT_DAILY_LIMIT = int(os.environ.get("HQ_INVITE_DAILY_LIMIT", "50"))
 IP_REVIEW_THRESHOLD = int(os.environ.get("HQ_INVITE_IP_REVIEW_THRESHOLD", "3"))
@@ -35,6 +35,8 @@ INVITE_REWARD_TOTALS = {
     "initiator": {"experience": 280, "partner": 2500, "initiator": 15000},
 }
 MEMBERSHIP_LEVEL_ORDER = {"": 0, "experience": 1, "partner": 2, "initiator": 3}
+REWARD_CLAIM_TTL_SECONDS = 7 * 24 * 3600
+RISK_HASH_RETENTION = 30 * 24 * 3600
 
 
 class InviteError(Exception):
@@ -85,10 +87,18 @@ def init_schema(conn, now=None):
         invalid_reason TEXT,
         updated_at INTEGER NOT NULL
     )""")
+    invite_cols = {row["name"] for row in conn.execute("PRAGMA table_info(user_invites)").fetchall()}
+    if "invalid_reason" not in invite_cols:
+        conn.execute("ALTER TABLE user_invites ADD COLUMN invalid_reason TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_invites_inviter_time ON user_invites(inviter_user_id, bound_at DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_invites_campaign_status ON user_invites(campaign_id, status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_invites_ip_time ON user_invites(ip_hash, bound_at DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_invites_device_time ON user_invites(device_hash, bound_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_invites_bound_at ON user_invites(bound_at)")
+    conn.execute(
+        "UPDATE user_invites SET ip_hash=NULL,device_hash=NULL WHERE bound_at<? AND (ip_hash IS NOT NULL OR device_hash IS NOT NULL)",
+        (now - RISK_HASH_RETENTION,),
+    )
     conn.execute("""CREATE TABLE IF NOT EXISTS invite_admin_audit(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         operator_user_id INTEGER NOT NULL,
@@ -113,6 +123,9 @@ def init_schema(conn, now=None):
         void_reason TEXT
     )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_membership_upgrades_user ON membership_upgrade_records(user_id,id DESC)")
+    upgrade_cols = {row["name"] for row in conn.execute("PRAGMA table_info(membership_upgrade_records)").fetchall()}
+    if "event_type" not in upgrade_cols:
+        conn.execute("ALTER TABLE membership_upgrade_records ADD COLUMN event_type TEXT NOT NULL DEFAULT 'upgrade'")
     conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_membership_upgrades_source
                     ON membership_upgrade_records(source,source_order_id)
                     WHERE source_order_id IS NOT NULL AND source_order_id<>''""")
@@ -124,6 +137,7 @@ def init_schema(conn, now=None):
         invitee_user_id INTEGER NOT NULL,
         inviter_level_snapshot TEXT NOT NULL,
         invitee_level TEXT NOT NULL,
+        event_type TEXT NOT NULL DEFAULT 'upgrade',
         reward_points INTEGER NOT NULL,
         reward_total_after INTEGER NOT NULL,
         status TEXT NOT NULL DEFAULT 'recorded',
@@ -132,11 +146,59 @@ def init_schema(conn, now=None):
         void_reason TEXT
     )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_invite_rewards_inviter ON invite_reward_point_records(inviter_user_id,id DESC)")
-    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_invite_rewards_relation_level
-                    ON invite_reward_point_records(invite_relation_id,invitee_level)""")
     reward_cols = {row["name"] for row in conn.execute("PRAGMA table_info(invite_reward_point_records)").fetchall()}
+    if "event_type" not in reward_cols:
+        conn.execute("ALTER TABLE invite_reward_point_records ADD COLUMN event_type TEXT NOT NULL DEFAULT 'upgrade'")
+    conn.execute("DROP INDEX IF EXISTS idx_invite_rewards_relation_level")
+    conn.execute("DROP INDEX IF EXISTS idx_invite_rewards_upgrade_relation_level")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_invite_rewards_upgrade_relation_level
+                    ON invite_reward_point_records(invite_relation_id,invitee_level)
+                    WHERE event_type='upgrade' AND status IN ('recorded','pending_review')""")
     if "voided_by" not in reward_cols:
         conn.execute("ALTER TABLE invite_reward_point_records ADD COLUMN voided_by TEXT")
+    if "claim_id" not in reward_cols:
+        conn.execute("ALTER TABLE invite_reward_point_records ADD COLUMN claim_id INTEGER")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_invite_rewards_claim
+                    ON invite_reward_point_records(claim_id) WHERE claim_id IS NOT NULL""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS invite_reward_claims(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        upgrade_record_id INTEGER NOT NULL UNIQUE,
+        source_order_id TEXT,
+        invite_relation_id INTEGER NOT NULL,
+        direct_inviter_user_id INTEGER NOT NULL,
+        invitee_user_id INTEGER NOT NULL,
+        target_level TEXT NOT NULL,
+        event_type TEXT NOT NULL DEFAULT 'upgrade',
+        status TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        recipient_user_id INTEGER,
+        recipient_level_snapshot TEXT,
+        reward_points INTEGER NOT NULL DEFAULT 0,
+        transfer_depth INTEGER NOT NULL DEFAULT 0,
+        settled_at INTEGER,
+        voided_at INTEGER,
+        reason TEXT,
+        updated_at INTEGER NOT NULL
+    )""")
+    conn.execute("""CREATE INDEX IF NOT EXISTS idx_invite_claims_owner_status
+                    ON invite_reward_claims(direct_inviter_user_id,status,expires_at)""")
+    conn.execute("""CREATE INDEX IF NOT EXISTS idx_invite_claims_expiry
+                    ON invite_reward_claims(status,expires_at)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS invite_reward_notifications(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        claim_id INTEGER,
+        notice_type TEXT NOT NULL,
+        operation_key TEXT NOT NULL UNIQUE,
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        last_shown_day TEXT,
+        read_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    )""")
+    conn.execute("""CREATE INDEX IF NOT EXISTS idx_invite_reward_notices_user
+                    ON invite_reward_notifications(user_id,notice_type,read_at,id)""")
     if not conn.execute("SELECT 1 FROM invite_campaigns LIMIT 1").fetchone():
         conn.execute("""INSERT INTO invite_campaigns(
             name,status,start_at,end_at,code_required,daily_invite_limit,created_at,updated_at
@@ -237,7 +299,7 @@ def require_inviter_eligibility(conn, user_id, now=None, public=False, enforce_m
 
 
 def invited_membership_limit(conn, user_id, target_tier):
-    """校验被邀请用户不能升级到高于一级邀请人的会员等级。"""
+    """保留旧调用合同；邀请关系不再限制被邀请人的会员等级。"""
     target_tier = str(target_tier or "")
     relation = conn.execute(
         """SELECT ui.id,ui.inviter_user_id,inviter.username,inviter.display_name,
@@ -249,15 +311,54 @@ def invited_membership_limit(conn, user_id, target_tier):
     ).fetchone()
     if not relation or not target_tier:
         return {"allowed": True, "relation": dict(relation) if relation else None}
-    inviter_tier = str(relation["membership_tier"] or "")
-    if MEMBERSHIP_LEVEL_ORDER.get(target_tier, 0) > MEMBERSHIP_LEVEL_ORDER.get(inviter_tier, 0):
-        inviter_name = MEMBERSHIP_NAMES.get(inviter_tier, "非会员")
-        raise InviteError(
-            "invite_membership_limit",
-            "该用户的一级邀请人为%s，最高只能升级到%s" % (inviter_name, inviter_name),
-            409,
-        )
-    return {"allowed": True, "relation": dict(relation), "inviter_tier": inviter_tier}
+    return {
+        "allowed": True,
+        "relation": dict(relation),
+        "inviter_tier": str(relation["membership_tier"] or ""),
+    }
+
+
+def minimum_reward_points(target_level):
+    target_level = str(target_level or "")
+    return int(INVITE_REWARD_TOTALS.get(target_level, {}).get(target_level, 0))
+
+
+def _create_pending_reward_claim(conn, relation, upgrade_id, to_level, event_type,
+                                 source_order_id, now):
+    existing = conn.execute(
+        "SELECT * FROM invite_reward_claims WHERE upgrade_record_id=?", (int(upgrade_id),),
+    ).fetchone()
+    if existing:
+        return dict(existing)
+    points = minimum_reward_points(to_level)
+    if points <= 0:
+        return None
+    cur = conn.execute(
+        """INSERT INTO invite_reward_claims(
+               upgrade_record_id,source_order_id,invite_relation_id,direct_inviter_user_id,
+               invitee_user_id,target_level,event_type,status,created_at,expires_at,
+               reward_points,updated_at
+           ) VALUES(?,?,?,?,?,?,?,'pending_upgrade',?,?,?,?)""",
+        (int(upgrade_id), str(source_order_id or "") or None, int(relation["id"]),
+         int(relation["inviter_user_id"]), int(relation["invitee_user_id"]),
+         str(to_level), str(event_type), int(now), int(now) + REWARD_CLAIM_TTL_SECONDS,
+         points, int(now)),
+    )
+    claim = dict(conn.execute(
+        "SELECT * FROM invite_reward_claims WHERE id=?", (cur.lastrowid,),
+    ).fetchone())
+    conn.execute(
+        """INSERT OR IGNORE INTO invite_reward_notifications(
+               user_id,claim_id,notice_type,operation_key,payload_json,created_at,updated_at
+           ) VALUES(?,?,'pending_upgrade',?,?,?,?)""",
+        (claim["direct_inviter_user_id"], claim["id"], "pending:%d" % claim["id"],
+         json.dumps({
+             "required_tier": claim["target_level"],
+             "expires_at": claim["expires_at"],
+             "reward_points": claim["reward_points"],
+         }, ensure_ascii=False, separators=(",", ":")), int(now), int(now)),
+    )
+    return claim
 
 
 def reward_upgrade_preview(conn, user_id, target_tier, now=None):
@@ -283,12 +384,14 @@ def reward_upgrade_preview(conn, user_id, target_tier, now=None):
     target_total = INVITE_REWARD_TOTALS.get(inviter_tier, {}).get(str(target_tier or ""), 0) if inviter_active else 0
     current_total = conn.execute(
         """SELECT COALESCE(SUM(reward_points),0) FROM invite_reward_point_records
-            WHERE invite_relation_id=? AND status='recorded'""",
+            WHERE invite_relation_id=? AND status IN ('recorded','pending_review')
+              AND event_type='upgrade'""",
         (relation["id"],),
     ).fetchone()[0]
     duplicate = conn.execute(
         """SELECT 1 FROM invite_reward_point_records
-            WHERE invite_relation_id=? AND invitee_level=? AND status='recorded'""",
+            WHERE invite_relation_id=? AND invitee_level=?
+              AND status IN ('recorded','pending_review') AND event_type='upgrade'""",
         (relation["id"], str(target_tier or "")),
     ).fetchone()
     delta = 0 if duplicate else max(0, int(target_total or 0) - int(current_total or 0))
@@ -304,15 +407,15 @@ def reward_upgrade_preview(conn, user_id, target_tier, now=None):
 
 
 def record_membership_upgrade(conn, user_id, from_level, to_level, source,
-                              source_order_id=None, operator="", now=None):
+                              source_order_id=None, operator="", now=None, event_type="upgrade"):
     """记录会员升级，并为一级邀请人生成不叠加的奖励积分差额。"""
     now = int(now or time.time())
     user_id = int(user_id)
     from_level = str(from_level or "")
     to_level = str(to_level or "")
-    if to_level not in MEMBERSHIP_LEVEL_ORDER or not to_level:
+    if event_type not in ("upgrade", "renewal") or to_level not in MEMBERSHIP_LEVEL_ORDER or not to_level:
         return {"upgrade_record_id": None, "reward": None}
-    if MEMBERSHIP_LEVEL_ORDER.get(to_level, 0) <= MEMBERSHIP_LEVEL_ORDER.get(from_level, 0):
+    if event_type == "upgrade" and MEMBERSHIP_LEVEL_ORDER.get(to_level, 0) <= MEMBERSHIP_LEVEL_ORDER.get(from_level, 0):
         return {"upgrade_record_id": None, "reward": None}
     if source_order_id:
         existing = conn.execute(
@@ -324,17 +427,25 @@ def record_membership_upgrade(conn, user_id, from_level, to_level, source,
                 "SELECT * FROM invite_reward_point_records WHERE upgrade_record_id=?",
                 (existing["id"],),
             ).fetchone()
-            return {"upgrade_record_id": existing["id"], "reward": dict(reward) if reward else None}
+            claim = conn.execute(
+                "SELECT * FROM invite_reward_claims WHERE upgrade_record_id=?",
+                (existing["id"],),
+            ).fetchone()
+            return {
+                "upgrade_record_id": existing["id"],
+                "reward": dict(reward) if reward else None,
+                "claim": dict(claim) if claim else None,
+            }
     cur = conn.execute(
         """INSERT INTO membership_upgrade_records(
-               user_id,from_level,to_level,source,source_order_id,operator,status,created_at
-           ) VALUES(?,?,?,?,?,?, 'effective',?)""",
+               user_id,from_level,to_level,source,source_order_id,operator,status,created_at,event_type
+           ) VALUES(?,?,?,?,?,?, 'effective',?,?)""",
         (user_id, from_level, to_level, str(source or "admin"),
-         str(source_order_id or "") or None, str(operator or ""), now),
+         str(source_order_id or "") or None, str(operator or ""), now, event_type),
     )
     upgrade_id = int(cur.lastrowid)
     relation = conn.execute(
-        """SELECT ui.id,ui.inviter_user_id,ui.invitee_user_id,
+        """SELECT ui.id,ui.inviter_user_id,ui.invitee_user_id,ui.risk_status,
                   inviter.membership_tier,inviter.membership_expires_at,inviter.account_status
              FROM user_invites ui
              JOIN users inviter ON inviter.id=ui.inviter_user_id
@@ -350,41 +461,332 @@ def record_membership_upgrade(conn, user_id, from_level, to_level, source,
         and int(relation["membership_expires_at"] or 0) > now
     )
     target_total = INVITE_REWARD_TOTALS.get(inviter_tier, {}).get(to_level, 0) if inviter_active else 0
+    if event_type == "renewal":
+        target_total = {"experience": 200, "partner": 240, "initiator": 280}.get(inviter_tier, 0) if inviter_active else 0
     if target_total <= 0:
-        return {"upgrade_record_id": upgrade_id, "reward": None}
+        claim = _create_pending_reward_claim(
+            conn, relation, upgrade_id, to_level, event_type, source_order_id, now,
+        )
+        return {"upgrade_record_id": upgrade_id, "reward": None, "claim": claim}
     duplicate = conn.execute(
         """SELECT * FROM invite_reward_point_records
-            WHERE invite_relation_id=? AND invitee_level=?""",
+            WHERE invite_relation_id=? AND invitee_level=? AND event_type='upgrade'
+              AND status IN ('recorded','pending_review')""",
         (relation["id"], to_level),
     ).fetchone()
-    if duplicate:
+    if event_type == "upgrade" and duplicate:
         return {"upgrade_record_id": upgrade_id, "reward": dict(duplicate)}
-    current_total = conn.execute(
+    upgrade_total = conn.execute(
         """SELECT COALESCE(SUM(reward_points),0) FROM invite_reward_point_records
-            WHERE invite_relation_id=? AND status='recorded'""",
+            WHERE invite_relation_id=? AND status IN ('recorded','pending_review')
+              AND event_type='upgrade'""",
         (relation["id"],),
     ).fetchone()[0]
-    delta = max(0, int(target_total) - int(current_total or 0))
+    all_total = conn.execute(
+        """SELECT COALESCE(SUM(reward_points),0) FROM invite_reward_point_records
+            WHERE invite_relation_id=? AND status IN ('recorded','pending_review')""",
+        (relation["id"],),
+    ).fetchone()[0]
+    delta = int(target_total) if event_type == "renewal" else max(0, int(target_total) - int(upgrade_total or 0))
     if delta <= 0:
         return {"upgrade_record_id": upgrade_id, "reward": None}
+    reward_status = "pending_review" if relation["risk_status"] == "review" else "recorded"
     reward_cur = conn.execute(
         """INSERT INTO invite_reward_point_records(
                invite_relation_id,upgrade_record_id,inviter_user_id,invitee_user_id,
-               inviter_level_snapshot,invitee_level,reward_points,reward_total_after,status,created_at
-           ) VALUES(?,?,?,?,?,?,?,?, 'recorded',?)""",
+               inviter_level_snapshot,invitee_level,reward_points,reward_total_after,status,created_at,event_type
+           ) VALUES(?,?,?,?,?,?,?,?, ?,?,?)""",
         (relation["id"], upgrade_id, relation["inviter_user_id"], relation["invitee_user_id"],
-         inviter_tier, to_level, delta, int(current_total or 0) + delta, now),
+         inviter_tier, to_level, delta, int(all_total or 0) + delta, reward_status, now, event_type),
     )
     reward = conn.execute(
         "SELECT * FROM invite_reward_point_records WHERE id=?", (reward_cur.lastrowid,),
     ).fetchone()
-    return {"upgrade_record_id": upgrade_id, "reward": dict(reward)}
+    claim_cur = conn.execute(
+        """INSERT INTO invite_reward_claims(
+               upgrade_record_id,source_order_id,invite_relation_id,direct_inviter_user_id,
+               invitee_user_id,target_level,event_type,status,created_at,expires_at,
+               recipient_user_id,recipient_level_snapshot,reward_points,transfer_depth,
+               settled_at,reason,updated_at
+           ) VALUES(?,?,?,?,?,?,?,'credited',?,?,?,?,?,0,?,'membership_qualified',?)""",
+        (upgrade_id, str(source_order_id or "") or None, relation["id"],
+         relation["inviter_user_id"], relation["invitee_user_id"], to_level, event_type,
+         now, now + REWARD_CLAIM_TTL_SECONDS, relation["inviter_user_id"], inviter_tier,
+         delta, now, now),
+    )
+    claim = conn.execute(
+        "SELECT * FROM invite_reward_claims WHERE id=?", (claim_cur.lastrowid,),
+    ).fetchone()
+    conn.execute(
+        "UPDATE invite_reward_point_records SET claim_id=? WHERE id=?",
+        (claim["id"], reward["id"]),
+    )
+    reward = conn.execute(
+        "SELECT * FROM invite_reward_point_records WHERE id=?", (reward["id"],),
+    ).fetchone()
+    return {"upgrade_record_id": upgrade_id, "reward": dict(reward), "claim": dict(claim)}
 
 
-def reward_points(conn, inviter_user_id, limit=20, offset=0):
+def _active_membership_row(conn, user_id, required_level, now):
+    row = conn.execute(
+        """SELECT id,membership_tier,membership_expires_at,account_status
+             FROM users WHERE id=?""",
+        (int(user_id),),
+    ).fetchone()
+    if not row or str(row["account_status"] or "active") != "active":
+        return None
+    tier = str(row["membership_tier"] or "")
+    if int(row["membership_expires_at"] or 0) <= int(now):
+        return None
+    if MEMBERSHIP_LEVEL_ORDER.get(tier, 0) < MEMBERSHIP_LEVEL_ORDER.get(str(required_level or ""), 0):
+        return None
+    return row
+
+
+def settle_claim(conn, claim_id, recipient_user_id, now=None, transferred=False, depth=0):
+    now = int(now or time.time())
+    claim = conn.execute(
+        "SELECT * FROM invite_reward_claims WHERE id=?", (int(claim_id),),
+    ).fetchone()
+    if not claim or claim["status"] != "pending_upgrade":
+        return dict(claim) if claim else None
+    recipient = _active_membership_row(
+        conn, recipient_user_id, claim["target_level"], now,
+    )
+    if not recipient:
+        return None
+    recipient_tier = str(recipient["membership_tier"] or "")
+    target_total = int(
+        INVITE_REWARD_TOTALS.get(recipient_tier, {}).get(claim["target_level"], 0)
+    )
+    if target_total <= 0:
+        return None
+    existing_ledger = conn.execute(
+        "SELECT * FROM invite_reward_point_records WHERE claim_id=?", (claim["id"],),
+    ).fetchone()
+    if existing_ledger:
+        return dict(claim)
+    upgrade_total = conn.execute(
+        """SELECT COALESCE(SUM(reward_points),0) FROM invite_reward_point_records
+            WHERE invite_relation_id=? AND status IN ('recorded','pending_review')
+              AND event_type='upgrade'""",
+        (claim["invite_relation_id"],),
+    ).fetchone()[0]
+    all_total = conn.execute(
+        """SELECT COALESCE(SUM(reward_points),0) FROM invite_reward_point_records
+            WHERE invite_relation_id=? AND status IN ('recorded','pending_review')""",
+        (claim["invite_relation_id"],),
+    ).fetchone()[0]
+    points = target_total if claim["event_type"] == "renewal" else max(
+        0, target_total - int(upgrade_total or 0)
+    )
+    final_status = "transferred" if transferred else "credited"
+    if points > 0:
+        relation = conn.execute(
+            "SELECT risk_status FROM user_invites WHERE id=?",
+            (claim["invite_relation_id"],),
+        ).fetchone()
+        ledger_status = "pending_review" if relation and relation["risk_status"] == "review" else "recorded"
+        conn.execute(
+            """INSERT INTO invite_reward_point_records(
+                   invite_relation_id,upgrade_record_id,inviter_user_id,invitee_user_id,
+                   inviter_level_snapshot,invitee_level,reward_points,reward_total_after,
+                   status,created_at,event_type,claim_id
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (claim["invite_relation_id"], claim["upgrade_record_id"], int(recipient_user_id),
+             claim["invitee_user_id"], recipient_tier, claim["target_level"], points,
+             int(all_total or 0) + points, ledger_status, now, claim["event_type"], claim["id"]),
+        )
+    conn.execute(
+        """UPDATE invite_reward_claims
+              SET status=?,recipient_user_id=?,recipient_level_snapshot=?,reward_points=?,
+                  transfer_depth=?,settled_at=?,reason=?,updated_at=?
+            WHERE id=? AND status='pending_upgrade'""",
+        (final_status, int(recipient_user_id), recipient_tier, points, int(depth or 0),
+         now, "upward_transfer" if transferred else "membership_qualified", now, claim["id"]),
+    )
+    return dict(conn.execute(
+        "SELECT * FROM invite_reward_claims WHERE id=?", (claim["id"],),
+    ).fetchone())
+
+
+def settle_pending_for_user(conn, user_id, now=None):
+    now = int(now or time.time())
+    rows = conn.execute(
+        """SELECT id FROM invite_reward_claims
+            WHERE direct_inviter_user_id=? AND status='pending_upgrade' AND expires_at>=?
+            ORDER BY id""",
+        (int(user_id), now),
+    ).fetchall()
+    settled = []
+    for row in rows:
+        result = settle_claim(conn, row["id"], user_id, now=now)
+        if result and result["status"] == "credited":
+            settled.append(result)
+    summary = {
+        "count": len(settled),
+        "total_points": sum(int(row["reward_points"] or 0) for row in settled),
+        "claim_ids": [int(row["id"]) for row in settled],
+    }
+    if settled:
+        operation_key = "unlock:%d:%s" % (
+            int(user_id), ",".join(str(row["id"]) for row in settled),
+        )
+        conn.execute(
+            """INSERT OR IGNORE INTO invite_reward_notifications(
+                   user_id,notice_type,operation_key,payload_json,created_at,updated_at
+               ) VALUES(?,'reward_unlocked',?,?,?,?)""",
+            (int(user_id), operation_key, json.dumps({
+                "claim_count": summary["count"],
+                "total_points": summary["total_points"],
+                "claim_ids": summary["claim_ids"],
+            }, ensure_ascii=False, separators=(",", ":")),
+             now, now),
+        )
+    return summary
+
+
+def _eligible_ancestor(conn, claim, now, max_depth=100):
+    current = int(claim["direct_inviter_user_id"])
+    seen = {current, int(claim["invitee_user_id"])}
+    for depth in range(1, max(1, min(int(max_depth or 100), 100)) + 1):
+        relation = conn.execute(
+            """SELECT inviter_user_id FROM user_invites
+                WHERE invitee_user_id=? AND status='bound' AND risk_status='normal'""",
+            (current,),
+        ).fetchone()
+        if not relation:
+            return None, 0
+        candidate = int(relation["inviter_user_id"])
+        if candidate in seen:
+            return None, 0
+        seen.add(candidate)
+        if _active_membership_row(conn, candidate, claim["target_level"], now):
+            return candidate, depth
+        current = candidate
+    return None, 0
+
+
+def expire_pending_claims(conn, now=None, limit=100):
+    now = int(now or time.time())
+    limit = max(1, min(int(limit or 100), 500))
+    rows = conn.execute(
+        """SELECT * FROM invite_reward_claims
+            WHERE status='pending_upgrade' AND expires_at<? ORDER BY id LIMIT ?""",
+        (now, limit),
+    ).fetchall()
+    summary = {"processed": 0, "transferred": 0, "no_recipient": 0}
+    for claim in rows:
+        recipient_id, depth = _eligible_ancestor(conn, claim, now)
+        if recipient_id:
+            result = settle_claim(
+                conn, claim["id"], recipient_id, now=now, transferred=True, depth=depth,
+            )
+            if result and result["status"] == "transferred":
+                summary["processed"] += 1
+                summary["transferred"] += 1
+                continue
+        changed = conn.execute(
+            """UPDATE invite_reward_claims
+                  SET status='no_recipient',reason='no_eligible_ancestor',updated_at=?
+                WHERE id=? AND status='pending_upgrade'""",
+            (now, claim["id"]),
+        ).rowcount
+        if changed:
+            summary["processed"] += 1
+            summary["no_recipient"] += 1
+    return summary
+
+
+def void_claims_for_upgrade(conn, upgrade_record_id, reason, now=None):
+    now = int(now or time.time())
+    return conn.execute(
+        """UPDATE invite_reward_claims
+              SET status='voided',voided_at=?,reason=?,updated_at=?
+            WHERE upgrade_record_id=? AND status='pending_upgrade'""",
+        (now, str(reason or "membership_voided"), now, int(upgrade_record_id)),
+    ).rowcount
+
+
+def void_pending_claims_for_invitee(conn, invitee_user_id, reason, now=None):
+    now = int(now or time.time())
+    return conn.execute(
+        """UPDATE invite_reward_claims
+              SET status='voided',voided_at=?,reason=?,updated_at=?
+            WHERE invitee_user_id=? AND status='pending_upgrade'""",
+        (now, str(reason or "membership_revoked"), now, int(invitee_user_id)),
+    ).rowcount
+
+
+def _notice_payload(row):
+    try:
+        payload = json.loads(row["payload_json"] or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        payload = {}
+    return {
+        "id": int(row["id"]),
+        "notice_type": row["notice_type"],
+        **payload,
+    }
+
+
+def next_reward_notice(conn, user_id, now=None):
+    now = int(now or time.time())
+    unlocked = conn.execute(
+        """SELECT * FROM invite_reward_notifications
+            WHERE user_id=? AND notice_type='reward_unlocked' AND read_at IS NULL
+            ORDER BY id LIMIT 1""",
+        (int(user_id),),
+    ).fetchone()
+    if unlocked:
+        return _notice_payload(unlocked)
+    today = datetime.datetime.fromtimestamp(now, SHANGHAI).strftime("%Y-%m-%d")
+    pending = conn.execute(
+        """SELECT n.* FROM invite_reward_notifications n
+            JOIN invite_reward_claims c ON c.id=n.claim_id
+            WHERE n.user_id=? AND n.notice_type='pending_upgrade'
+              AND c.status='pending_upgrade' AND c.expires_at>=?
+              AND COALESCE(n.last_shown_day,'')<>?
+            ORDER BY n.id LIMIT 1""",
+        (int(user_id), now, today),
+    ).fetchone()
+    return _notice_payload(pending) if pending else None
+
+
+def ack_reward_notice(conn, user_id, notice_id, now=None):
+    now = int(now or time.time())
+    row = conn.execute(
+        "SELECT * FROM invite_reward_notifications WHERE id=? AND user_id=?",
+        (int(notice_id), int(user_id)),
+    ).fetchone()
+    if not row:
+        return False
+    if row["notice_type"] == "pending_upgrade":
+        today = datetime.datetime.fromtimestamp(now, SHANGHAI).strftime("%Y-%m-%d")
+        conn.execute(
+            "UPDATE invite_reward_notifications SET last_shown_day=?,updated_at=? WHERE id=?",
+            (today, now, row["id"]),
+        )
+    else:
+        conn.execute(
+            "UPDATE invite_reward_notifications SET read_at=?,updated_at=? WHERE id=? AND read_at IS NULL",
+            (now, now, row["id"]),
+        )
+    return True
+
+
+def reward_points(conn, inviter_user_id, limit=20, offset=0, hidden=False):
     """返回独立邀请奖励积分汇总；绝不读取或修改 users.points。"""
     limit = max(1, min(int(limit or 20), 100))
     offset = max(0, int(offset or 0))
+    if hidden:
+        return {
+            "total_reward_points": 0,
+            "records": [],
+            "total": 0,
+            "limit": limit,
+            "offset": offset,
+        }
     inviter_user_id = int(inviter_user_id)
     total = conn.execute(
         """SELECT COALESCE(SUM(reward_points),0) FROM invite_reward_point_records
@@ -431,6 +833,9 @@ def admin_reward_points(conn, filters=None, limit=100, offset=0):
     limit = max(1, min(int(limit or 100), 300))
     offset = max(0, int(offset or 0))
     where, args = ["1=1"], []
+    if filters.get("inviter_user_id") is not None:
+        where.append("rr.inviter_user_id=?")
+        args.append(int(filters["inviter_user_id"]))
     if filters.get("inviter"):
         where.append("(ir.username LIKE ? OR ir.display_name LIKE ?)")
         value = "%" + str(filters["inviter"]).strip() + "%"
@@ -439,7 +844,7 @@ def admin_reward_points(conn, filters=None, limit=100, offset=0):
         where.append("(ie.username LIKE ? OR ie.display_name LIKE ?)")
         value = "%" + str(filters["invitee"]).strip() + "%"
         args.extend([value, value])
-    if filters.get("status") in ("recorded", "voided"):
+    if filters.get("status") in ("recorded", "pending_review", "voided"):
         where.append("rr.status=?")
         args.append(filters["status"])
     clause = " AND ".join(where)
@@ -468,6 +873,107 @@ def admin_reward_points(conn, filters=None, limit=100, offset=0):
     }
 
 
+def admin_reward_claims(conn, filters=None, limit=100, offset=0):
+    filters = filters or {}
+    limit = max(1, min(int(limit or 100), 300))
+    offset = max(0, int(offset or 0))
+    where, args = ["1=1"], []
+    if filters.get("status") in (
+        "pending_upgrade", "credited", "transferred", "voided", "no_recipient",
+    ):
+        where.append("c.status=?")
+        args.append(filters["status"])
+    if filters.get("inviter"):
+        where.append("di.username LIKE ?")
+        args.append("%" + str(filters["inviter"]).strip() + "%")
+    if filters.get("invitee"):
+        where.append("ie.username LIKE ?")
+        args.append("%" + str(filters["invitee"]).strip() + "%")
+    clause = " AND ".join(where)
+    base = """ FROM invite_reward_claims c
+        JOIN users di ON di.id=c.direct_inviter_user_id
+        JOIN users ie ON ie.id=c.invitee_user_id
+        LEFT JOIN users recipient ON recipient.id=c.recipient_user_id
+        WHERE %s""" % clause
+    total = conn.execute("SELECT COUNT(*)" + base, args).fetchone()[0]
+    rows = conn.execute(
+        """SELECT c.*,di.username AS direct_inviter_username,
+                  ie.username AS invitee_username,recipient.username AS recipient_username""" +
+        base + " ORDER BY c.id DESC LIMIT ? OFFSET ?", args + [limit, offset],
+    ).fetchall()
+    items = [dict(row) for row in rows]
+    for item in items:
+        for key in ("direct_inviter_username", "invitee_username", "recipient_username"):
+            item[key] = masked_admin_account(item.get(key))
+    return {
+        "items": items,
+        "total": int(total),
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+def admin_user_relations(conn, user_id, limit=20, now=None):
+    user_id = int(user_id)
+    limit = max(1, min(int(limit or 20), 100))
+    now = int(now or time.time())
+    referrer_row = conn.execute(
+        """SELECT ui.id AS relation_id,ui.status,ui.risk_status,ui.bound_at,ui.source,
+                  u.id AS user_id,u.username,u.display_name,
+                  u.membership_tier,u.membership_expires_at
+             FROM user_invites ui
+             JOIN users u ON u.id=ui.inviter_user_id
+            WHERE ui.invitee_user_id=?""",
+        (user_id,),
+    ).fetchone()
+    total = conn.execute(
+        "SELECT COUNT(*) FROM user_invites WHERE inviter_user_id=?",
+        (user_id,),
+    ).fetchone()[0]
+    invitee_rows = conn.execute(
+        """SELECT ui.id AS relation_id,ui.status,ui.risk_status,ui.bound_at,ui.source,
+                  u.id AS user_id,u.username,u.display_name,
+                  u.membership_tier,u.membership_expires_at
+             FROM user_invites ui
+             JOIN users u ON u.id=ui.invitee_user_id
+            WHERE ui.inviter_user_id=?
+            ORDER BY ui.id DESC LIMIT ?""",
+        (user_id, limit),
+    ).fetchall()
+
+    def relation_user(row):
+        if not row:
+            return None
+        tier = str(row["membership_tier"] or "")
+        expires_at = int(row["membership_expires_at"] or 0)
+        known_tier = tier in MEMBERSHIP_NAMES
+        active = known_tier and expires_at > now
+        return {
+            "relation_id": int(row["relation_id"]),
+            "user_id": int(row["user_id"]),
+            "username": row["username"],
+            "display_name": row["display_name"] or row["username"],
+            "membership_tier": tier if known_tier else "",
+            "membership_name": MEMBERSHIP_NAMES.get(tier, "非会员"),
+            "membership_active": active,
+            "membership_status": "active" if active else ("expired" if known_tier else "none"),
+            "membership_expires_at": expires_at if known_tier else 0,
+            "status": row["status"],
+            "risk_status": row["risk_status"],
+            "bound_at": int(row["bound_at"] or 0),
+            "source": row["source"] or "",
+        }
+
+    return {
+        "referrer": relation_user(referrer_row),
+        "invitees": {
+            "items": [relation_user(row) for row in invitee_rows],
+            "total": int(total),
+            "limit": limit,
+        },
+    }
+
+
 def admin_reward_action(conn, reward_id, action, reason, operator, now=None):
     reward_id = int(reward_id)
     action = str(action or "").strip()
@@ -488,6 +994,26 @@ def admin_reward_action(conn, reward_id, action, reason, operator, now=None):
                         SET status='voided',voided_at=?,void_reason=?,voided_by=? WHERE id=?""",
                      (now, reason, operator, reward_id))
     else:
+        if row["void_reason"] == "membership_refund":
+            raise InviteError("refunded_reward_not_restorable", "退款订单的奖励不能恢复", 409)
+        if row["event_type"] == "upgrade":
+            records = conn.execute(
+                """SELECT inviter_level_snapshot,invitee_level,reward_points,status
+                     FROM invite_reward_point_records
+                    WHERE invite_relation_id=? AND event_type='upgrade'""",
+                (row["invite_relation_id"],),
+            ).fetchall()
+            cap = max([
+                INVITE_REWARD_TOTALS.get(item["inviter_level_snapshot"], {}).get(item["invitee_level"], 0)
+                for item in records
+            ] or [0])
+            current = sum(
+                int(item["reward_points"] or 0)
+                for item in records
+                if item["status"] in ("recorded", "pending_review")
+            )
+            if current + int(row["reward_points"] or 0) > cap:
+                raise InviteError("reward_cap_exceeded", "恢复后将超过该关系的升级奖励上限", 409)
         conn.execute("""UPDATE invite_reward_point_records
                         SET status='recorded',voided_at=NULL,void_reason=NULL,voided_by=? WHERE id=?""",
                      (operator, reward_id))
@@ -599,7 +1125,12 @@ def bind_registration(conn, invitee_user_id, invite_code, source, client_ip="", 
     limit = int(config.get("daily_invite_limit") or 0)
     if limit > 0 and int(used_today) >= limit:
         raise InviteError("daily_limit", "该邀请码今日邀请人数已达上限", 409)
-    source = source if source in VALID_SOURCES else "web_manual"
+    if source not in VALID_SOURCES:
+        raise InviteError("invalid_source", "邀请来源无效", 400)
+    conn.execute(
+        "UPDATE user_invites SET ip_hash=NULL,device_hash=NULL WHERE bound_at<? AND (ip_hash IS NOT NULL OR device_hash IS NOT NULL)",
+        (now - RISK_HASH_RETENTION,),
+    )
     ip_hash = _privacy_hash(client_ip, hash_secret)
     device_hash = _privacy_hash(device_id, hash_secret)
     risk_status = "normal"
@@ -811,6 +1342,134 @@ def admin_stats(conn, days=30, now=None):
     }
 
 
+def admin_referral_journeys(conn, filters=None, days=30, limit=100, offset=0, now=None):
+    filters = filters or {}
+    now = int(now or time.time())
+    try:
+        days = max(1, min(int(days or 30), 365))
+        limit = max(1, min(int(limit or 100), 300))
+        offset = max(0, int(offset or 0))
+    except (TypeError, ValueError):
+        raise InviteError("invalid_pagination", "轨迹查询参数不正确")
+    where = ["j.visited_at>=?"]
+    args = [day_start(now) - (days - 1) * 86400]
+    user = str(filters.get("user") or "").strip()
+    if user:
+        value = "%" + user + "%"
+        where.append("(inviter.username LIKE ? OR inviter.display_name LIKE ? OR inviter.account_id LIKE ? "
+                     "OR invitee.username LIKE ? OR invitee.display_name LIKE ? OR invitee.account_id LIKE ?)")
+        args.extend([value] * 6)
+    status = str(filters.get("status") or "").strip()
+    if status == "visited":
+        where.append("j.card_started_at IS NULL")
+    elif status == "started":
+        where.append("j.card_started_at IS NOT NULL AND j.registered_user_id IS NULL")
+    elif status == "registered":
+        where.append("j.registered_user_id IS NOT NULL")
+    elif status == "rewarded":
+        where.append("pa.id IS NOT NULL")
+    elif status == "member":
+        where.append("EXISTS(SELECT 1 FROM membership_upgrade_records mu WHERE mu.user_id=j.registered_user_id AND mu.status='effective')")
+    elif status:
+        raise InviteError("invalid_status", "轨迹状态筛选不正确")
+    joins = """ FROM card_referral_journeys j
+        JOIN users inviter ON inviter.id=j.inviter_user_id
+        LEFT JOIN users invitee ON invitee.id=j.registered_user_id
+        LEFT JOIN user_invites ui ON ui.id=j.invite_relation_id
+        LEFT JOIN points_audit pa ON pa.transaction_key=('card-referral:' || j.journey_id) """
+    clause = " WHERE " + " AND ".join(where)
+    summary = conn.execute(
+        """SELECT COUNT(*) AS total,
+                  COALESCE(SUM(CASE WHEN j.card_started_at IS NOT NULL THEN 1 ELSE 0 END),0) AS started,
+                  COALESCE(SUM(CASE WHEN j.registered_user_id IS NOT NULL THEN 1 ELSE 0 END),0) AS registered,
+                  COALESCE(SUM(CASE WHEN j.invite_relation_id IS NOT NULL THEN 1 ELSE 0 END),0) AS bound,
+                  COALESCE(SUM(CASE WHEN pa.id IS NOT NULL THEN 1 ELSE 0 END),0) AS trial_rewarded,
+                  COALESCE(SUM(CASE WHEN j.published_at IS NOT NULL THEN 1 ELSE 0 END),0) AS published,
+                  COALESCE(SUM(CASE WHEN EXISTS(SELECT 1 FROM membership_upgrade_records mu
+                    WHERE mu.user_id=j.registered_user_id AND mu.status='effective') THEN 1 ELSE 0 END),0) AS members
+           """ + joins + clause,
+        args,
+    ).fetchone()
+    rows = conn.execute(
+        """SELECT j.*,inviter.username AS inviter_username,inviter.display_name AS inviter_name,
+                  inviter.account_id AS inviter_account_id,
+                  invitee.username AS invitee_username,invitee.display_name AS invitee_name,
+                  invitee.account_id AS invitee_account_id,
+                  ui.status AS relation_status,ui.risk_status,ui.bound_at,
+                  j.published_at,pa.created_at AS benefit_granted_at,
+                  (SELECT MAX(mu.created_at) FROM membership_upgrade_records mu
+                    WHERE mu.user_id=j.registered_user_id AND mu.status='effective') AS membership_at,
+                  (SELECT COALESCE(SUM(rr.reward_points),0) FROM invite_reward_point_records rr
+                    WHERE rr.invite_relation_id=j.invite_relation_id AND rr.status='recorded') AS membership_reward_points
+           """ + joins + clause + " ORDER BY j.visited_at DESC LIMIT ? OFFSET ?",
+        args + [limit, offset],
+    ).fetchall()
+    total = int(summary["total"] or 0)
+    registered = int(summary["registered"] or 0)
+    items = []
+    for row in rows:
+        item = dict(row)
+        for prefix in ("inviter", "invitee"):
+            username = item.pop(prefix + "_username", "") or ""
+            item[prefix + "_account"] = masked_admin_account(username)
+            item[prefix + "_name"] = masked_admin_account(item.get(prefix + "_name") or "")
+        items.append(item)
+    return {
+        "items": items,
+        "total": total,
+        "days": days,
+        "limit": limit,
+        "offset": offset,
+        "summary": {
+            "visited": total,
+            "started": int(summary["started"] or 0),
+            "registered": registered,
+            "bound": int(summary["bound"] or 0),
+            "trial_rewarded": int(summary["trial_rewarded"] or 0),
+            "published": int(summary["published"] or 0),
+            "members": int(summary["members"] or 0),
+            "registration_rate": round(registered / total, 4) if total else 0,
+        },
+    }
+
+
+def masked_admin_account(value):
+    value = str(value or "")
+    if len(value) == 11 and value.startswith("1") and value.isdigit():
+        return value[:3] + "****" + value[-4:]
+    return value
+
+
+def admin_relation_view(item):
+    view = dict(item)
+    for prefix in ("inviter", "invitee"):
+        username = view.pop(prefix + "_username", "") or ""
+        view[prefix + "_account"] = masked_admin_account(username)
+        view[prefix + "_name"] = masked_admin_account(view.get(prefix + "_name") or "")
+    code = str(view.get("invite_code") or "")
+    view["invite_code"] = code[:2] + "••••" if code else ""
+    return view
+
+
+def admin_reward_view(item):
+    view = dict(item)
+    for prefix in ("inviter", "invitee"):
+        username = view.pop(prefix + "_username", "") or ""
+        view[prefix + "_account"] = masked_admin_account(username)
+        view[prefix + "_name"] = masked_admin_account(view.get(prefix + "_name") or "")
+    return view
+
+
+def admin_user_relation_view(item):
+    if not item:
+        return None
+    view = dict(item)
+    username = view.pop("username", "") or ""
+    view["account"] = masked_admin_account(username)
+    view["display_name"] = masked_admin_account(view.get("display_name") or "")
+    return view
+
+
 def _admin_relation_where(filters):
     clauses, params = [], []
     joins = """ FROM user_invites ui
@@ -853,7 +1512,8 @@ def admin_relations(conn, filters=None, limit=50, offset=0):
         raise InviteError("invalid_pagination", "分页参数不正确")
     joins, params = _admin_relation_where(filters)
     total = conn.execute("SELECT COUNT(*)" + joins, params).fetchone()[0]
-    rows = conn.execute("""SELECT ui.*,c.name AS campaign_name,
+    rows = conn.execute("""SELECT ui.id,ui.campaign_id,ui.inviter_user_id,ui.invitee_user_id,
+        ui.invite_code,ui.source,ui.status,ui.risk_status,ui.bound_at,ui.invalid_reason,ui.updated_at,c.name AS campaign_name,
         inviter.username AS inviter_username,inviter.display_name AS inviter_name,inviter.account_id AS inviter_account_id,
         invitee.username AS invitee_username,invitee.display_name AS invitee_name,invitee.account_id AS invitee_account_id,
         COALESCE(invitee.account_status,'active') AS invitee_account_status
@@ -872,28 +1532,41 @@ def admin_relation_action(conn, relation_id, action, reason, operator_user_id, n
     row = conn.execute("SELECT * FROM user_invites WHERE id=?", (int(relation_id),)).fetchone()
     if not row:
         raise InviteError("relation_not_found", "邀请关系不存在", 404)
-    before = dict(row)
+    audit_fields = ("id", "status", "risk_status", "invalid_reason", "updated_at")
+    before = {key: row[key] for key in audit_fields}
     if action == "invalidate":
         conn.execute("UPDATE user_invites SET status='invalid',invalid_reason=?,updated_at=? WHERE id=?", (reason, now, row["id"]))
+        conn.execute("""UPDATE invite_reward_point_records
+                        SET status='voided',voided_at=?,void_reason='relation_invalid',voided_by='system'
+                        WHERE invite_relation_id=? AND status<>'voided'""", (now, row["id"]))
     elif action == "unbind":
         conn.execute("UPDATE user_invites SET status='unbound',invalid_reason=?,updated_at=? WHERE id=?", (reason, now, row["id"]))
+        conn.execute("""UPDATE invite_reward_point_records
+                        SET status='voided',voided_at=?,void_reason='relation_unbound',voided_by='system'
+                        WHERE invite_relation_id=? AND status<>'voided'""", (now, row["id"]))
     elif action == "restore":
         conn.execute("UPDATE user_invites SET status='bound',risk_status='normal',invalid_reason=NULL,updated_at=? WHERE id=?", (now, row["id"]))
+        conn.execute("UPDATE invite_reward_point_records SET status='recorded' WHERE invite_relation_id=? AND status='pending_review'", (row["id"],))
     elif action == "ban":
         conn.execute("UPDATE user_invites SET risk_status='blocked',invalid_reason=?,updated_at=? WHERE id=?", (reason, now, row["id"]))
+        conn.execute("""UPDATE invite_reward_point_records
+                        SET status='voided',voided_at=?,void_reason='relation_blocked',voided_by='system'
+                        WHERE invite_relation_id=? AND status<>'voided'""", (now, row["id"]))
         conn.execute("UPDATE users SET account_status='banned' WHERE id=?", (row["invitee_user_id"],))
         conn.execute("DELETE FROM tokens WHERE username=(SELECT username FROM users WHERE id=?)", (row["invitee_user_id"],))
     elif action == "unban":
         conn.execute("UPDATE user_invites SET risk_status='normal',invalid_reason=NULL,updated_at=? WHERE id=?", (now, row["id"]))
         conn.execute("UPDATE users SET account_status='active' WHERE id=?", (row["invitee_user_id"],))
-    after = dict(conn.execute("SELECT * FROM user_invites WHERE id=?", (row["id"],)).fetchone())
+        conn.execute("UPDATE invite_reward_point_records SET status='recorded' WHERE invite_relation_id=? AND status='pending_review'", (row["id"],))
+    fresh = conn.execute("SELECT * FROM user_invites WHERE id=?", (row["id"],)).fetchone()
+    after = {key: fresh[key] for key in audit_fields}
     conn.execute("""INSERT INTO invite_admin_audit(
         operator_user_id,invite_relation_id,action,reason,before_json,after_json,created_at
     ) VALUES(?,?,?,?,?,?,?)""", (
         int(operator_user_id), row["id"], action, reason,
         json.dumps(before, ensure_ascii=False), json.dumps(after, ensure_ascii=False), now,
     ))
-    return after
+    return dict(fresh)
 
 
 def admin_audit(conn, limit=100):
@@ -905,7 +1578,13 @@ def admin_audit(conn, limit=100):
         u.username AS operator_username,u.display_name AS operator_name
         FROM invite_admin_audit a LEFT JOIN users u ON u.id=a.operator_user_id
         ORDER BY a.id DESC LIMIT ?""", (limit,)).fetchall()
-    return [dict(row) for row in rows]
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["operator_account"] = masked_admin_account(item.pop("operator_username", ""))
+        item["operator_name"] = masked_admin_account(item.get("operator_name") or "")
+        items.append(item)
+    return items
 
 
 def _xlsx_col(index):
@@ -929,14 +1608,16 @@ def export_relations_xlsx(conn, filters=None):
             COALESCE(invitee.account_status,'active') AS invitee_account_status
             """ + joins + " ORDER BY ui.id DESC", params).fetchall()
         items = [dict(row) for row in rows]
-    headers = ["关系ID", "邀请人账号", "邀请人昵称", "邀请人账号ID", "被邀请人账号", "被邀请人昵称",
-               "被邀请人账号ID", "邀请码", "来源", "关系状态", "风控状态", "账号状态", "绑定时间", "处理原因"]
+    headers = ["关系ID", "邀请人昵称", "邀请人账号ID", "被邀请人昵称", "被邀请人账号ID",
+               "来源", "关系状态", "风控状态", "账号状态", "绑定时间", "处理原因"]
     rows = [headers]
     for item in items:
         bound = datetime.datetime.fromtimestamp(int(item["bound_at"]), SHANGHAI).strftime("%Y-%m-%d %H:%M:%S")
-        rows.append([item["id"], item["inviter_username"], item["inviter_name"] or "", item["inviter_account_id"] or "",
-                     item["invitee_username"], item["invitee_name"] or "", item["invitee_account_id"] or "",
-                     item["invite_code"], item["source"], item["status"], item["risk_status"],
+        inviter_name = "" if item["inviter_name"] == item["inviter_username"] else item["inviter_name"] or ""
+        invitee_name = "" if item["invitee_name"] == item["invitee_username"] else item["invitee_name"] or ""
+        rows.append([item["id"], inviter_name, item["inviter_account_id"] or "",
+                     invitee_name, item["invitee_account_id"] or "",
+                     item["source"], item["status"], item["risk_status"],
                      item["invitee_account_status"], bound, item["invalid_reason"] or ""])
     sheet_rows = []
     for r_idx, values in enumerate(rows, 1):
@@ -950,14 +1631,14 @@ def export_relations_xlsx(conn, filters=None):
                 cells.append(f'<c r="{ref}"{style} t="inlineStr"><is><t>{escape(str(value))}</t></is></c>')
         row_style = ' ht="28" customHeight="1"' if r_idx == 1 else ' ht="22" customHeight="1"'
         sheet_rows.append(f'<row r="{r_idx}"{row_style}>' + "".join(cells) + "</row>")
-    widths = [10, 18, 18, 16, 18, 18, 16, 12, 14, 12, 12, 12, 22, 28]
+    widths = [10, 18, 16, 18, 16, 16, 12, 12, 12, 22, 28]
     cols = "".join(f'<col min="{i}" max="{i}" width="{width}" customWidth="1"/>' for i, width in enumerate(widths, 1))
     last_row = max(1, len(rows))
     sheet = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' \
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' \
         '<sheetViews><sheetView showGridLines="0" workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' \
         '<cols>' + cols + '</cols><sheetData>' + "".join(sheet_rows) + \
-        f'</sheetData><autoFilter ref="A1:N{last_row}"/></worksheet>'
+        f'</sheetData><autoFilter ref="A1:K{last_row}"/></worksheet>'
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8"?>' \

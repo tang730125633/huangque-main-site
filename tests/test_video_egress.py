@@ -144,6 +144,21 @@ class WavespeedProxyTests(unittest.TestCase):
         self.assertIn("_opener().open", body)
         self.assertNotIn("urllib.request.urlopen", body)
 
+    def test_tryon_submission_keeps_provider_task_id(self):
+        ws = self._ws()
+        responses = [
+            {"code": 200, "data": {"id": "prediction-1", "urls": {"get": "https://status.example/1"}}},
+            {"data": {"status": "completed", "outputs": ["https://cdn.example/out.mp4"]}},
+        ]
+        with patch.object(ws, "_ws_req", side_effect=responses), \
+             patch.object(ws.time, "sleep"), patch.object(ws, "_phase") as phase:
+            result = ws._run_and_wait("/model", {}, job_id=7)
+        self.assertEqual(result, {
+            "output_url": "https://cdn.example/out.mp4",
+            "provider_video_id": "prediction-1",
+        })
+        phase.assert_any_call(7, "ws_running", provider_video_id="prediction-1")
+
 
 class NoCrossChannelRetryTests(unittest.TestCase):
     """红线守卫：源码里不得出现『同一次提交在两条通道上各发一次』的重试。"""

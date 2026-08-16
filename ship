@@ -96,10 +96,14 @@ printf "  ✓ main@%.7s | %s\n" "$HEAD_SHA" "$MSG"
 # 3. 部署每个文件到对应位置 + 记下要重启的服务
 echo "==> 3/5 部署到服务器"
 RESTART=""
+TIMERS=""
 DEPLOYED=""
+EXACT_DOMAIN_MODULES=""
 NEED_RELOAD=0   # 部署过 systemd 单元/drop-in 时置 1，重启前必须 daemon-reload，否则改动不生效
 CONTENT_DOMAINS_SYNCED=0
+PROVIDERS_SYNCED=0
 add_svc(){ for s in $1; do case " $RESTART " in *" $s "*) ;; *) RESTART="$RESTART $s";; esac; done; }
+add_timer(){ for t in $1; do case " $TIMERS " in *" $t "*) ;; *) TIMERS="$TIMERS $t";; esac; done; }
 add_deployed(){ case " $DEPLOYED " in *" $1 "*) ;; *) DEPLOYED="$DEPLOYED $1";; esac; }
 
 show_service_diagnostics(){
@@ -142,6 +146,22 @@ else
   printf '%s\n' "$out" | tail -8 | sed 's/^/       /'
   exit 1
 fi
+if [ "$svc" = "huangque-content" ]; then
+  if out=$(cd "$wd" && PYTHONDONTWRITEBYTECODE=1 "$py_bin" -c "from content_domains import text; assert text.validate_copy_payload({'prompt':'ship-contract'})['prompt'] == 'ship-contract'" 2>&1); then
+    echo "    ✓ $svc: 文案跨模块契约通过"
+  else
+    echo "    ❌ $svc: 文案跨模块契约失败 —— 中止，不重启"
+    printf '%s\n' "$out" | tail -8 | sed 's/^/       /'
+    exit 1
+  fi
+  if out=$(cd "$wd" && PYTHONDONTWRITEBYTECODE=1 "$py_bin" -c "import inspect; from content_domains import jobs_store, video; assert 'before_charge' in inspect.signature(jobs_store.create_paid_job).parameters; assert 'username' in inspect.signature(video.validate_xiaole_video_payload).parameters; assert callable(video.prepare_xiaole_reference_submission)" 2>&1); then
+    echo "    ✓ $svc: Seedance 参考图跨模块契约通过"
+  else
+    echo "    ❌ $svc: Seedance 参考图跨模块契约失败 —— 中止，不重启"
+    printf '%s\n' "$out" | tail -8 | sed 's/^/       /'
+    exit 1
+  fi
+fi
 RS
 }
 
@@ -175,19 +195,41 @@ echo "    ✓ $svc 重启生效、配置已加载"
 RS
 }
 for f in "$@"; do
+  timer=""
   case "$f" in
-    server/auth_server.py|server/invites.py|server/wxpay.py|server/wechat_subscribe.py) dest=/home/ubuntu/auth-service/; svc=huangque-auth ;;
+    server/auth_server.py|server/hq_cli_api.py|server/invites.py|server/invite_network.py|server/business_cards.py|server/wxpay.py|server/wechat_subscribe.py) dest=/home/ubuntu/auth-service/; svc=huangque-auth ;;
+    server/content_domains/__init__.py|server/content_domains/cos.py|server/content_domains/miniprogram_security.py|server/content_domains/pricing.py)
+             dest=/home/ubuntu/auth-service/content_domains/; svc=huangque-auth ;;
+    server/content_domains/error_contract.py)
+             dest=/home/ubuntu/auth-service/content_domains/; svc=huangque-auth ;;
     server/wechat_virtual_pay.py|server/sync_virtual_pay_goods.py)
              dest=/home/ubuntu/auth-service/; svc=huangque-auth ;;
     server/content_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-content ;;
     server/func_names.py)  dest=/home/ubuntu/content-api/;  svc="huangque-content huangque-admin" ;;
+    server/content_domains/function_registry.py)
+             dest=/home/ubuntu/content-api/content_domains/
+             if [ "$EXACT_CONTENT_DOMAINS" = "1" ]; then
+               svc=huangque-admin
+             else
+               svc="huangque-content huangque-admin"
+             fi
+             ;;
+    server/content_domains/feature_flags.py) dest=/home/ubuntu/content-api/content_domains/; svc="huangque-content huangque-admin huangque-imggen-api huangque-leadgen-api" ;;
+    server/content_domains/egress.py) dest=/home/ubuntu/content-api/content_domains/; svc="huangque-content huangque-admin huangque-imggen-api" ;;
+    server/content_domains/browser_qa.py) dest=/home/ubuntu/content-api/content_domains/; svc=huangque-admin ;;
     server/content_domains/*) dest=/home/ubuntu/content-api/content_domains/;  svc=huangque-content ;;
+    server/providers/*)
+             rel="${f#server/providers/}"
+             case "$rel" in */*) dest="/home/ubuntu/content-api/providers/${rel%/*}/" ;; *) dest=/home/ubuntu/content-api/providers/ ;; esac
+             svc=huangque-content ;;
     server/admin_api.py)   dest=/home/ubuntu/content-api/;  svc=huangque-admin ;;
+    server/qa_fixtures/*)  dest=/home/ubuntu/content-api/qa_fixtures/; svc=huangque-admin ;;
     server/leadgen_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-leadgen-api ;;
     server/imggen_api.py)  dest=/home/ubuntu/content-api/;  svc=huangque-imggen-api ;;
     server/dl_service.py)  dest=/home/ubuntu/dl-service/;   svc=huangque-dl ;;
     server/tikhub.py)      dest=/home/ubuntu/content-api/;  svc="huangque-leadgen-api huangque-content huangque-imggen-api" ;;
     scripts/hq_bitable_sync_server.py) dest=/home/ubuntu/; svc="" ;;
+    scripts/process_invite_reward_claims.py) dest=/home/ubuntu/auth-service/; svc="" ;;
     scripts/drift_sentinel.py) dest=/home/ubuntu/hq-drift/; svc="" ;;
     # systemd 单元与 drop-in。原来不在映射表里，只能手工 scp + daemon-reload —— 漏一步就出事：
     # leadgen 曾因单元没加载 auth.env 而拿不到 HQ_INTERNAL_TOKEN，退点全部静默回退直写。
@@ -198,7 +240,15 @@ for f in "$@"; do
     deploy/systemd/*.service)
              unit="$(basename "$f")"
              dest=/etc/systemd/system/
-             svc="${unit%.service}"; NEED_RELOAD=1 ;;
+             case "$unit" in
+               huangque-invite-reward-claims.service) svc="" ;;
+               *) svc="${unit%.service}" ;;
+             esac
+             NEED_RELOAD=1 ;;
+    deploy/systemd/*.timer)
+             unit="$(basename "$f")"
+             dest=/etc/systemd/system/
+             svc=""; timer="$unit"; NEED_RELOAD=1 ;;
     deploy/systemd/*.example) echo "  ⏭ $f 只是示例，不部署"; continue ;;
     site/*)  rel="${f#site/}"
              case "$rel" in */*) dest="$WWW/${rel%/*}/" ;; *) dest="$WWW/" ;; esac
@@ -207,25 +257,46 @@ for f in "$@"; do
   esac
   case "$dest" in /etc/systemd/system/*)
     $SSHC "$REMOTE" "sudo mkdir -p $dest" || { echo "  ❌ $dest 创建失败"; exit 1; } ;;
+    /home/ubuntu/content-api/providers/*|/home/ubuntu/content-api/qa_fixtures/*)
+    $SSHC "$REMOTE" "sudo mkdir -p $dest" || { echo "  ❌ $dest 创建失败"; exit 1; } ;;
   esac
   if [ "$f" = "scripts/drift_sentinel.py" ]; then
     $SSHC "$REMOTE" "mkdir -p /home/ubuntu/hq-drift" || { echo "  ❌ hq-drift 目录创建失败"; exit 1; }
   fi
   if [ "$EXACT_CONTENT_DOMAINS" = "1" ]; then
     case "$f" in
-      server/content_domains/*)
-        remote_file="${dest%/}/$(basename "$f")"
-        $SSHC "$REMOTE" "test -f '$remote_file'" \
-          || { echo "  ❌ file-only 模式只允许覆盖已存在的 content domain：$f"; exit 1; }
+      server/content_domains/*.py)
+        domain_module="${f#server/content_domains/}"
+        domain_module="${domain_module%.py}"
+        case "$domain_module" in
+          ''|*[!A-Za-z0-9_]*) echo "  ❌ content domain 模块名非法：$f"; exit 1 ;;
+        esac
+        EXACT_DOMAIN_MODULES="$EXACT_DOMAIN_MODULES $domain_module"
         ;;
     esac
   fi
   push_file "$f" "$dest" \
     && echo "  ✓ $f → $dest" || { echo "  ❌ $f 部署失败"; exit 1; }
+  case "$f" in
+    server/qa_fixtures/*)
+      old_public="$WWW/workbench/assets/qa/$(basename "$f")"
+      $SSHC "$REMOTE" "sudo rm -f '$old_public'" \
+        && echo "  ✓ 已移除旧公开测试素材：$old_public" \
+        || { echo "  ❌ 旧公开测试素材移除失败"; exit 1; }
+      ;;
+  esac
+  if [ "$f" = "server/content_domains/pricing.py" ] || [ "$f" = "server/content_domains/error_contract.py" ]; then
+    push_file "$f" /home/ubuntu/content-api/content_domains/ \
+      && echo "  ✓ $f → /home/ubuntu/content-api/content_domains/" \
+      || { echo "  ❌ $f 部署到 content 失败"; exit 1; }
+    add_svc "huangque-content huangque-admin"
+  fi
   add_deployed "$f"
   case "$f" in
     server/content_api.py|server/content_domains/*)
-      if [ "$EXACT_CONTENT_DOMAINS" = "1" ] && [ "$f" != "server/content_api.py" ]; then
+      if [ "$f" = "server/content_domains/pricing.py" ] || [ "$f" = "server/content_domains/error_contract.py" ]; then
+        echo "  ✓ 共享模块已分别部署到 auth 与 content"
+      elif [ "$EXACT_CONTENT_DOMAINS" = "1" ] && [ "$f" != "server/content_api.py" ]; then
         echo "  ✓ file-only 模式：$f 不触发 content_domains 整目录同步"
       elif [ "$CONTENT_DOMAINS_SYNCED" = "0" ] && [ -d server/content_domains ]; then
         CONTENT_DOMAIN_FILES="$(git ls-files server/content_domains)" \
@@ -241,8 +312,40 @@ for f in "$@"; do
       fi
       ;;
   esac
+  case "$f" in
+    server/providers/*|server/content_api.py|server/content_domains/*)
+      if [ "$PROVIDERS_SYNCED" = "0" ] && { [ "$EXACT_CONTENT_DOMAINS" = "0" ] || [ "${f#server/providers/}" != "$f" ]; }; then
+        PROVIDER_FILES="$(git ls-files server/providers)" \
+          || { echo "❌ 无法读取 providers Git 文件清单"; exit 1; }
+        [ -n "$PROVIDER_FILES" ] \
+          || { echo "❌ providers Git 文件清单为空"; exit 1; }
+        $SSHC "$REMOTE" "sudo mkdir -p /home/ubuntu/content-api/providers" || { echo "  ❌ providers 目录创建失败"; exit 1; }
+        push_dir server/providers/ /home/ubuntu/content-api/providers/ \
+          && echo "  ✓ server/providers/ → /home/ubuntu/content-api/providers/（依赖闭包同步）" \
+          || { echo "  ❌ providers 依赖闭包部署失败"; exit 1; }
+        for tracked in $PROVIDER_FILES; do add_deployed "$tracked"; done
+        PROVIDERS_SYNCED=1
+      fi
+      ;;
+  esac
   add_svc "$svc"
+  add_timer "$timer"
 done
+
+# exact 模式不会同步依赖目录，因此逐个导入明确点名的模块，避免首次客户请求才暴露缺依赖。
+if [ -n "$EXACT_DOMAIN_MODULES" ]; then
+  echo "==> 3.4/5 file-only 内容模块 import 冒烟"
+  for domain_module in $EXACT_DOMAIN_MODULES; do
+    $SSHC "$REMOTE" bash -s -- "$domain_module" "$CONTENT_PYTHON" <<'RS' || exit 1
+set -u
+module="$1"; py_bin="$2"
+case "$module" in ''|*[!A-Za-z0-9_]*) exit 2;; esac
+cd /home/ubuntu/content-api
+PYTHONDONTWRITEBYTECODE=1 "$py_bin" -c "from content_domains import $module"
+RS
+    echo "  ✓ content_domains.$domain_module import 通过"
+  done
+fi
 
 # 代码已同步但旧进程仍在运行。先对每个待重启服务做纯 import 冒烟，
 # 把缺模块/坏引用挡在 restart 前，避免把可用服务重启成崩溃循环。
@@ -266,7 +369,17 @@ if [ -n "$RESTART" ]; then
   echo "  校验重启真的生效、配置已加载"
   for s in $RESTART; do check_restart_effective "$s" "$T0" || exit 1; done
 else
-  echo "==> 4/5 纯前端，无需重启"
+  [ -n "$TIMERS" ] || echo "==> 4/5 纯前端，无需重启"
+fi
+if [ -n "$TIMERS" ]; then
+  echo "==> 4/5 启用并刷新定时器:$TIMERS"
+  $SSHC "$REMOTE" "sudo systemctl enable --now $TIMERS && sudo systemctl restart $TIMERS" \
+    || { echo "  ❌ 定时器启用失败"; show_service_diagnostics "$TIMERS"; exit 1; }
+  for t in $TIMERS; do
+    $SSHC "$REMOTE" "systemctl is-enabled --quiet '$t' && systemctl is-active --quiet '$t'" \
+      || { echo "  ❌ $t 未进入 enabled/active"; show_service_diagnostics "$t"; exit 1; }
+    echo "  ✓ $t enabled/active"
+  done
 fi
 
 # 部署后校验：只校验本次 ship 实际推送的文件线上 == git origin/main。

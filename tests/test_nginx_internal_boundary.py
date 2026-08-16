@@ -5,8 +5,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
 CONFIG_PROXIES = {
-    "deploy/nginx-huangquechuanmei.conf": ("/api/auth/", "/api/admin/"),
-    "server/nginx-huangquechuanmei.conf": ("/api/auth/",),
+    "deploy/nginx-huangquechuanmei.conf": ("/api/auth/", "/api/admin/", "/api/gen/"),
+    "server/nginx-huangquechuanmei.conf": ("/api/auth/", "/api/gen/"),
 }
 INTERNAL_AUTH_PATHS = (
     "/api/auth/points",
@@ -16,15 +16,17 @@ INTERNAL_AUTH_PATHS = (
     "/api/auth/admin/points/adjust",
     "/api/auth/admin/points/audit",
     "/api/auth/admin/users",
+    "/api/auth/admin/e2e/session",
+    "/api/auth/admin/password/reset",
     "/api/auth/admin/recharge/review",
     "/api/auth/admin/recharge/orders",
 )
 
 
-def location_block(config, path):
+def location_block(config, path, modifier="^~"):
     matches = list(
         re.finditer(
-            rf"(?m)^[ \t]*location[ \t]+\^~[ \t]+{re.escape(path)}[ \t]*\{{",
+            rf"(?m)^[ \t]*location[ \t]+{re.escape(modifier)}[ \t]+{re.escape(path)}[ \t]*\{{",
             config,
         )
     )
@@ -59,7 +61,7 @@ class NginxInternalBoundaryTests(unittest.TestCase):
                     self.assertEqual(len(matches), 1)
                     self.assertLess(matches[0].start(), public_auth_start)
 
-    def test_public_auth_proxies_drop_client_internal_token(self):
+    def test_public_proxies_drop_client_internal_token(self):
         header = re.compile(
             r'(?m)^[ \t]*proxy_set_header[ \t]+'
             r'X-HQ-Internal-Token[ \t]+""[ \t]*;[ \t]*$'
@@ -70,6 +72,8 @@ class NginxInternalBoundaryTests(unittest.TestCase):
                 with self.subTest(config=relative_path, path=path):
                     _, block = location_block(config, path)
                     self.assertEqual(len(header.findall(block)), 1)
+            _, download = location_block(config, "/api/gen/dl", "=")
+            self.assertEqual(len(header.findall(download)), 1)
 
 
 if __name__ == "__main__":

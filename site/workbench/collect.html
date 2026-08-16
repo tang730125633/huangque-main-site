@@ -50,7 +50,7 @@
     <div style="border:1px solid rgba(148,164,187,.1); border-radius:14px; background:linear-gradient(165deg, rgba(16,24,39,.58), rgba(12,18,32,.46)); padding:20px;">
       <div>
         <h1 style="margin:0; font-size:20px; font-weight:700; display:flex; align-items:center; gap:10px;"><img src="../assets/icons/ic_collect.png" alt="" style="width:30px;height:30px;object-fit:contain;flex:none;">内容爬取</h1>
-        <p style="margin:8px 0 0; font-size:13px; color:#94a4bb;">支持爬取抖音、小红书的图文及视频</p>
+        <p style="margin:8px 0 0; font-size:13px; color:#94a4bb;">支持爬取抖音、小红书、视频号和 B 站内容</p>
       </div>
 
       <!-- Mode toggle -->
@@ -63,9 +63,9 @@
       <!-- Link mode — hero -->
       <div id="linkMode">
         <div style="position:relative; border:1px solid rgba(231,178,76,.22); background:rgba(7,11,19,.5); border-radius:12px; padding:16px;">
-          <textarea id="urlInput" rows="4" placeholder="粘贴抖音 / 小红书 分享链接，支持 App 复制的带文字短链…" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; line-height:1.75; font-family:inherit;"></textarea>
+          <textarea id="urlInput" rows="4" placeholder="粘贴抖音 / 小红书 / 视频号 / B 站分享链接…" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; line-height:1.75; font-family:inherit;"></textarea>
           <div style="display:flex; align-items:center; justify-content:space-between; margin-top:4px;">
-            <span style="font-size:12px; color:#3d4f62;">支持抖音、小红书完整链接或短链</span>
+            <span style="font-size:12px; color:#3d4f62;">支持四个平台的公开链接或短链</span>
             <span id="urlClear" class="hv-gold" style="font-size:12px; color:#5c6b82; cursor:pointer; transition:.16s;">清空</span>
           </div>
         </div>
@@ -100,7 +100,7 @@
       </div>
 
       <button id="colBtn" class="hv-lift" style="width:100%; height:54px; margin-top:20px; font-size:16px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(231,178,76,.7); transition:.2s; font-family:inherit;">爬取</button>
-      <div id="colNote" style="text-align:center; font-size:12px; color:#5c6b82; margin-top:12px;">文案 + 评论默认提取 · 约 30 点 · 失败自动退点</div>
+      <div id="colNote" style="text-align:center; font-size:12px; color:#5c6b82; margin-top:12px;">文案 + 评论默认提取 · 约 3 点 · 失败自动退点</div>
     </div>
 
     <!-- ===== RIGHT: Results + History ===== -->
@@ -236,7 +236,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=e836823b"></script>
+<script src="cloud-shell.js?v=5c2643d5"></script>
 <script>
 (function () {
   'use strict';
@@ -255,6 +255,13 @@
   var copyFields = {};     // field key → text, used by copy buttons
   var pollIv = null;
   var transcriptBusy = false;
+  var collectBasePoints=3, collectTranscriptExtra=3, collectSearchPoints=1;
+  function transcriptPoints(){return collectBasePoints+collectTranscriptExtra;}
+  if(window.HQ&&HQ.onPricing) HQ.onPricing(function(p){
+    collectBasePoints=p['collect.base']||3;collectTranscriptExtra=p['collect.transcript_extra']||3;collectSearchPoints=p['collect.search']||1;
+    setMode(mode);
+    var btn=document.getElementById('transcriptExtractBtn');if(btn&&!btn.disabled)btn.innerHTML='提取文案 <span style="font-size:12px;font-weight:400;opacity:.75;">约 '+transcriptPoints()+' 点</span>';
+  });
 
   function tok() { return '__cookie__'; }
 
@@ -279,6 +286,7 @@
         var a = document.createElement('a');
         a.href = URL.createObjectURL(blob); a.download = (q.get('name') || 'download') + ext;
         document.body.appendChild(a); a.click(); a.remove();
+        setNote('✅ 下载已开始', '#2bd576');
         setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
       });
   }
@@ -340,8 +348,11 @@
     kwModeEl.style.display   = m === 'keyword' ? '' : 'none';
     if (colBtn) colBtn.textContent = m === 'download' ? '⬇ 解析并下载视频' : '爬取';
     var cn = document.getElementById('colNote');
-    if (cn) cn.textContent = m === 'download' ? '仅解析并下载视频本身 · 不提取评论/文案 · 约 30 点' : '文案 + 评论默认提取 · 约 30 点 · 失败自动退点';
+    if (cn) cn.textContent = m === 'download' ? '仅解析并下载视频本身 · 不提取评论/文案 · 约 '+collectBasePoints+' 点' : '文案 + 评论默认提取 · 约 '+collectBasePoints+' 点 · 失败自动退点';
     selectedUrl = '';
+    if (kwSelected) kwSelected.style.display = 'none';
+    if (kwSelectedTitle) kwSelectedTitle.textContent = '';
+    if (srGrid) srGrid.querySelectorAll('.sr-card.selected').forEach(function (x) { x.classList.remove('selected'); });
   }
   tabLink.onclick = function () { setMode('link'); };
   tabKw.onclick   = function () { setMode('keyword'); };
@@ -393,6 +404,9 @@
 
   function renderSearchResults(items) {
     if (!srGrid) return;
+    selectedUrl = '';
+    if (kwSelected) kwSelected.style.display = 'none';
+    if (kwSelectedTitle) kwSelectedTitle.textContent = '';
     srResults.style.display = '';
     if (!items.length) {
       srCount.textContent = '无结果';
@@ -402,7 +416,7 @@
     srCount.textContent = items.length + ' 条';
     srGrid.innerHTML = items.map(function (it, i) {
       var likes = it.stats && it.stats.like != null ? fmtNum(it.stats.like) : '';
-      return '<div class="sr-card" data-idx="' + i + '">' +
+      return '<div class="sr-card" data-idx="' + i + '" data-url="' + escAttr(it.url || '') + '">' +
         '<div style="position:relative; aspect-ratio:9/16; overflow:hidden; background:rgba(7,11,19,.5);">' +
           '<img src="' + escAttr(safeUrl(it.cover || '')) + '" alt="" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display=\'none\'">' +
           (likes ? '<div style="position:absolute; bottom:5px; left:5px; padding:2px 7px; background:rgba(7,11,19,.65); border-radius:5px; font-size:10.5px; color:#eaf1fa; font-family:\'JetBrains Mono\',monospace;">♥ ' + likes + '</div>' : '') +
@@ -420,7 +434,7 @@
       card.onclick = function () {
         srGrid.querySelectorAll('.sr-card').forEach(function (x) { x.classList.remove('selected'); });
         card.classList.add('selected');
-        selectedUrl = it.url || '';
+        selectedUrl = card.getAttribute('data-url') || it.url || '';
         if (kwSelected) kwSelected.style.display = '';
         if (kwSelectedTitle) kwSelectedTitle.textContent = it.title || selectedUrl;
       };
@@ -513,7 +527,8 @@
       var m = url.match(/https?:\/\/\S+/);
       if (m) url = m[0];
     } else {
-      url = selectedUrl;
+      var selectedCard = srGrid && srGrid.querySelector('.sr-card.selected');
+      url = (selectedCard && selectedCard.getAttribute('data-url')) || selectedUrl;
     }
     submitCollect(url, mode === 'download');
   };
@@ -710,7 +725,7 @@
       extractBtn.style.opacity       = hasImages ? '.4' : '1';
       extractBtn.style.cursor        = hasImages ? 'not-allowed' : 'pointer';
       extractBtn.style.pointerEvents = hasImages ? 'none' : 'auto';
-      extractBtn.innerHTML = '提取文案 <span style="font-size:12px;font-weight:400;opacity:.75;">约 6 点</span>';
+      extractBtn.innerHTML = '提取文案 <span style="font-size:12px;font-weight:400;opacity:.75;">约 '+transcriptPoints()+' 点</span>';
       if (!hasImages) extractBtn.onclick = submitTranscript;
     }
     if (extractNote) extractNote.textContent = hasImages ? '图文内容无口播文案' : '口播提取约 20 秒到数分钟 · 按需点击';
@@ -774,7 +789,7 @@
     var note = document.getElementById('transcriptExtractNote');
     if (btn) {
       btn.disabled = false; btn.style.opacity = '1'; btn.style.pointerEvents = 'auto';
-      btn.innerHTML = '提取文案 <span style="font-size:12px;font-weight:400;opacity:.75;">约 6 点</span>';
+      btn.innerHTML = '提取文案 <span style="font-size:12px;font-weight:400;opacity:.75;">约 '+transcriptPoints()+' 点</span>';
       btn.onclick = submitTranscript;
     }
     if (note) {

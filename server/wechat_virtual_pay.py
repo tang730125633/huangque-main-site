@@ -21,10 +21,16 @@ import time
 import urllib.parse
 import urllib.request
 
+try:
+    from .content_domains import pricing
+except ImportError:  # 生产环境以脚本方式从 /home/ubuntu/auth-service 启动
+    from content_domains import pricing
+
 
 API_BASE = "https://api.weixin.qq.com"
 _TOKEN_LOCK = threading.Lock()
 _TOKEN_CACHE = {"value": "", "expires_at": 0}
+TOKEN_INVALID_CODES = {40001, 40014, 42001}
 
 DEFAULT_PRODUCTS = (
     {
@@ -66,10 +72,15 @@ MEMBERSHIP_PRODUCT = {
     "id": "membership_experience",
     "product_id": "hq_member_exp_1y",
     "title": "一年体验官",
-    "price_fen": 49900,
-    "points": 1000,
     "recommended": False,
     "order_type": "membership_experience",
+}
+MEMBERSHIP_RENEWAL_PRODUCT = {
+    "id": "membership_experience_renewal",
+    "product_id": "hq_exp_renew_1y",
+    "title": "体验官续费一年",
+    "recommended": False,
+    "order_type": "membership_experience_renewal",
 }
 
 CUSTOM_MIN_AMOUNT_YUAN = 1
@@ -275,8 +286,11 @@ def offer_id():
 def products():
     raw = (os.environ.get("WX_VIRTUAL_PAY_PRODUCTS_JSON") or "").strip()
     values = json.loads(raw) if raw else list(DEFAULT_PRODUCTS)
-    values = [item for item in values if str(item.get("id") or "").strip() != MEMBERSHIP_PRODUCT["id"]]
-    values.append(MEMBERSHIP_PRODUCT)
+    values = [item for item in values if str(item.get("id") or "").strip() not in (MEMBERSHIP_PRODUCT["id"], MEMBERSHIP_RENEWAL_PRODUCT["id"])]
+    membership_price_fen = pricing.get_price("membership.experience.price_yuan") * 100
+    membership_points = pricing.get_price("membership.experience.bonus_points")
+    values.append(dict(MEMBERSHIP_PRODUCT, price_fen=membership_price_fen, points=membership_points))
+    values.append(dict(MEMBERSHIP_RENEWAL_PRODUCT, price_fen=membership_price_fen, points=0))
     result = []
     seen = set()
     for item in values:
@@ -294,7 +308,7 @@ def products():
             raise VirtualPayError("虚拟支付商品 id 缺失或重复", "bad_config")
         if not product["product_id"] or len(product["product_id"]) > 20:
             raise VirtualPayError("虚拟支付 product_id 无效", "bad_config")
-        if product["price_fen"] <= 0 or product["points"] <= 0 or not product["title"]:
+        if product["price_fen"] <= 0 or product["points"] < 0 or not product["title"]:
             raise VirtualPayError("虚拟支付商品价格、点数或名称无效", "bad_config")
         if product["custom_amount"] and product["price_fen"] != 100:
             raise VirtualPayError("虚拟支付自定义金额商品单价必须为1元", "bad_config")
@@ -416,17 +430,28 @@ def access_token():
         secret = (os.environ.get("WX_MP_APPSECRET") or "").strip()
         if not appid or not secret:
             raise VirtualPayError("小程序 AppID/AppSecret 未配置", "not_configured")
-        query = urllib.parse.urlencode({
+        payload = compact_json({
             "grant_type": "client_credential",
             "appid": appid,
             "secret": secret,
+            "force_refresh": False,
         })
-        result = _json_request(API_BASE + "/cgi-bin/token?" + query)
+        result = _json_request(API_BASE + "/cgi-bin/stable_token", payload)
         if result.get("errcode") or not result.get("access_token"):
             raise VirtualPayError(result.get("errmsg") or "微信 access_token 获取失败", "access_token_failed", result)
         _TOKEN_CACHE["value"] = result["access_token"]
         _TOKEN_CACHE["expires_at"] = now + int(result.get("expires_in") or 7200)
         return _TOKEN_CACHE["value"]
+
+
+def invalidate_access_token(token=""):
+    """Clear only the rejected cached token, preserving a newer concurrent value."""
+    with _TOKEN_LOCK:
+        if token and _TOKEN_CACHE["value"] != token:
+            return False
+        _TOKEN_CACHE["value"] = ""
+        _TOKEN_CACHE["expires_at"] = 0
+        return True
 
 
 def payment_params(product, order_id, session_key, purchase=None):
@@ -458,10 +483,18 @@ def payment_params(product, order_id, session_key, purchase=None):
 
 def _xpay(uri, payload, signed=True):
     post_body = compact_json(payload)
-    query = {"access_token": access_token()}
-    if signed:
-        query["pay_sig"] = calc_pay_sig(uri, post_body, app_key(int(payload.get("env", pay_env()))))
-    result = _json_request(API_BASE + uri + "?" + urllib.parse.urlencode(query), post_body)
+
+    def request_with_token(token):
+        query = {"access_token": token}
+        if signed:
+            query["pay_sig"] = calc_pay_sig(uri, post_body, app_key(int(payload.get("env", pay_env()))))
+        return _json_request(API_BASE + uri + "?" + urllib.parse.urlencode(query), post_body)
+
+    token = access_token()
+    result = request_with_token(token)
+    if int(result.get("errcode") or 0) in TOKEN_INVALID_CODES:
+        invalidate_access_token(token)
+        result = request_with_token(access_token())
     if result.get("errcode"):
         raise VirtualPayError(result.get("errmsg") or "微信虚拟支付接口失败", "xpay_failed", result)
     return result

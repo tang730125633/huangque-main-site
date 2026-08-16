@@ -2,11 +2,12 @@
 
 import json
 import hashlib
+import os
 import sqlite3
 import time
 import uuid
 
-from . import short_drama_voice
+from . import short_drama_asset_graph, short_drama_voice
 
 
 ASSET_TYPES = {"still"}
@@ -19,6 +20,20 @@ STILL_REQUEST_FIELDS = {
 }
 STILL_SUBMISSION_FIELDS = STILL_REQUEST_FIELDS | {"quote_token"}
 QUOTE_TTL_SECONDS = 300
+
+
+def _still_model():
+    model = os.environ.get("SHORT_DRAMA_STILL_MODEL", "nb2").strip().lower() or "nb2"
+    if model != "nb2":
+        raise ValueError("短剧关键帧模型仅支持 Nano Banana 2（nb2）")
+    return model
+
+
+def _still_quality():
+    quality = os.environ.get("SHORT_DRAMA_STILL_QUALITY", "hd").strip().lower() or "hd"
+    if quality not in {"std", "hd"}:
+        raise ValueError("短剧关键帧清晰度仅支持 std/hd")
+    return quality
 
 
 _SCHEMA = """
@@ -43,6 +58,16 @@ CREATE TABLE IF NOT EXISTS short_drama_asset_versions (
   prompt TEXT NOT NULL,
   ratio TEXT NOT NULL CHECK (ratio IN ('9:16','16:9')),
   cost INTEGER NOT NULL DEFAULT 0 CHECK (cost >= 0),
+  unit_cost INTEGER NOT NULL DEFAULT 0 CHECK (unit_cost >= 0),
+  batch_cost INTEGER NOT NULL DEFAULT 0 CHECK (batch_cost >= 0),
+  raw_prompt TEXT NOT NULL DEFAULT '',
+  compiled_prompt TEXT NOT NULL DEFAULT '',
+  provider TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  quality TEXT NOT NULL DEFAULT '',
+  prompt_hash TEXT NOT NULL DEFAULT '',
+  reference_set_hash TEXT NOT NULL DEFAULT '',
+  generation_batch_id TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL CHECK (status IN ('done','failed')),
   created_at INTEGER NOT NULL,
   UNIQUE(asset_id, version),
@@ -70,6 +95,9 @@ CREATE TABLE IF NOT EXISTS short_drama_still_quotes (
   project_id TEXT NOT NULL REFERENCES short_drama_projects(id) ON DELETE CASCADE,
   shot_id TEXT NOT NULL REFERENCES short_drama_shots(id) ON DELETE CASCADE,
   request_hash TEXT NOT NULL,
+  snapshot_id TEXT,
+  package_hash TEXT,
+  graph_revision INTEGER,
   cost INTEGER NOT NULL CHECK (cost >= 0),
   expires_at INTEGER NOT NULL,
   consumed_idempotency_key TEXT,
@@ -85,6 +113,9 @@ CREATE TABLE IF NOT EXISTS short_drama_charge_attempts (
   endpoint TEXT NOT NULL,
   idempotency_key TEXT NOT NULL,
   request_hash TEXT NOT NULL,
+  snapshot_id TEXT,
+  package_hash TEXT,
+  graph_revision INTEGER,
   project_id TEXT NOT NULL REFERENCES short_drama_projects(id) ON DELETE CASCADE,
   shot_id TEXT NOT NULL REFERENCES short_drama_shots(id) ON DELETE CASCADE,
   quote_token TEXT NOT NULL REFERENCES short_drama_still_quotes(token),
@@ -167,6 +198,38 @@ def init_db(db_factory):
                 "ALTER TABLE short_drama_asset_versions "
                 "ADD COLUMN file TEXT NOT NULL DEFAULT ''"
             )
+        additive_version_columns = {
+            "unit_cost": "INTEGER NOT NULL DEFAULT 0",
+            "batch_cost": "INTEGER NOT NULL DEFAULT 0",
+            "raw_prompt": "TEXT NOT NULL DEFAULT ''",
+            "compiled_prompt": "TEXT NOT NULL DEFAULT ''",
+            "provider": "TEXT NOT NULL DEFAULT ''",
+            "model": "TEXT NOT NULL DEFAULT ''",
+            "quality": "TEXT NOT NULL DEFAULT ''",
+            "prompt_hash": "TEXT NOT NULL DEFAULT ''",
+            "reference_set_hash": "TEXT NOT NULL DEFAULT ''",
+            "generation_batch_id": "TEXT NOT NULL DEFAULT ''",
+        }
+        for name, declaration in additive_version_columns.items():
+            if name not in version_columns:
+                conn.execute(
+                    "ALTER TABLE short_drama_asset_versions ADD COLUMN %s %s"
+                    % (name, declaration)
+                )
+        for table in ("short_drama_still_quotes", "short_drama_charge_attempts"):
+            columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(%s)" % table)
+            }
+            for name, declaration in (
+                ("snapshot_id", "TEXT"),
+                ("package_hash", "TEXT"),
+                ("graph_revision", "INTEGER"),
+            ):
+                if name not in columns:
+                    conn.execute(
+                        "ALTER TABLE %s ADD COLUMN %s %s"
+                        % (table, name, declaration)
+                    )
         conn.commit()
     finally:
         conn.close()
@@ -200,9 +263,9 @@ def normalize_still_request(body, require_quote=False):
         "prompt": request["prompt"],
         "mode": request["mode"],
         "count": request["count"],
-        "provider": "seedream",
-        "variant": "std",
-        "quality": "hd",
+        "provider": "banana",
+        "model": _still_model(),
+        "quality": _still_quality(),
     }
     if require_quote:
         if (not isinstance(body["quote_token"], str)
@@ -222,6 +285,17 @@ def _quote_request_hash(descriptor):
     return _descriptor_hash({
         key: value for key, value in descriptor.items() if key != "quote_token"
     })
+
+
+def _bind_asset_contract(descriptor, contract):
+    bound = dict(descriptor)
+    if contract:
+        bound.update({
+            "snapshot_id": contract["snapshot_id"],
+            "package_hash": contract["package_hash"],
+            "graph_revision": int(contract["graph_revision"]),
+        })
+    return bound
 
 
 def charge_transaction_keys(username, endpoint, idempotency_key):
@@ -292,6 +366,17 @@ def accept_charge_attempt(db_factory, *, username, endpoint, idempotency_key, pr
         ).fetchone()
         if not project or project["stage"] != "stills_review":
             raise ValueError("当前短剧阶段不能接受关键帧扣点")
+        quote_contract = conn.execute(
+            "SELECT snapshot_id,package_hash,graph_revision FROM short_drama_still_quotes "
+            "WHERE token=? AND username=? AND project_id=? AND shot_id=?",
+            (quote_token, username, project_id, shot_id),
+        ).fetchone()
+        if not quote_contract:
+            raise ValueError("关键帧 quote 无效、已过期或与请求不匹配")
+        short_drama_asset_graph.quoted_generation_contract(
+            conn, project_id, shot_id, quote_contract["snapshot_id"],
+            quote_contract["package_hash"], quote_contract["graph_revision"],
+        )
         unresolved = conn.execute(
             "SELECT idempotency_key FROM short_drama_charge_attempts "
             "WHERE username=? AND project_id=? AND shot_id=? AND request_hash=? "
@@ -315,10 +400,12 @@ def accept_charge_attempt(db_factory, *, username, endpoint, idempotency_key, pr
         conn.execute(
             "INSERT INTO short_drama_charge_attempts "
             "(charge_key,refund_key,username,endpoint,idempotency_key,request_hash,"
-            "project_id,shot_id,quote_token,cost,image_payload_json,state,created_at,updated_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,'accepted',?,?)",
+            "snapshot_id,package_hash,graph_revision,project_id,shot_id,quote_token,cost,"
+            "image_payload_json,state,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'accepted',?,?)",
             (charge_key, refund_key, username, endpoint, idempotency_key, request_hash,
-             project_id, shot_id, quote_token, cost,
+             quote_contract["snapshot_id"], quote_contract["package_hash"],
+             quote_contract["graph_revision"], project_id, shot_id, quote_token, cost,
              json.dumps(prepared["image_payload"], ensure_ascii=False), now, now),
         )
         conn.commit()
@@ -639,16 +726,67 @@ def _project_references(conn, project, shot, *, include_internal=False):
     if keys:
         placeholders = ",".join("?" for _ in keys)
         rows = conn.execute(
-            "SELECT id, character_key, name, source_type, avatar_id "
+            "SELECT id, character_key, name, identity_text, personality, source_type, "
+            "avatar_id, appearance_prompt, wardrobe_prompt, reference_file, reference_url, "
+            "reference_version, reference_locked "
             "FROM short_drama_characters WHERE project_id=? AND character_key IN (%s) "
             "ORDER BY sort_order, id" % placeholders,
             (project["id"], *keys),
         ).fetchall()
+        optional_keys = set()
+        contract_row = conn.execute(
+            "SELECT source_text,character_contract_json "
+            "FROM short_drama_script_imports WHERE project_id=? "
+            "AND content_type='live_action' AND status='completed' LIMIT 1",
+            (project["id"],),
+        ).fetchone()
+        if contract_row:
+            try:
+                contract = json.loads(contract_row[1] or "[]")
+            except (TypeError, ValueError):
+                contract = []
+            if isinstance(contract, list):
+                from . import short_drama
+                all_contract_keys = {
+                    str(item.get("character_key") or "")
+                    for item in contract if isinstance(item, dict)
+                }
+                required_keys = short_drama._character_reference_required_keys(
+                    contract_row[0], contract
+                )
+                optional_keys = all_contract_keys - required_keys
         for row in rows:
-            references.append({
+            if (
+                row["character_key"] in optional_keys
+                and not (row["reference_locked"] and row["reference_file"])
+            ):
+                # Optional supporting roles and crowd are generated from the
+                # shot description instead of blocking on a dedicated identity
+                # reference. A user may still bind one explicitly.
+                continue
+            reference = {
                 "type": "character", "id": row["id"], "name": row["name"],
                 "source_type": row["source_type"], "source_id": row["avatar_id"] or "",
-            })
+                "identity_text": row["identity_text"],
+                "personality": row["personality"],
+                "appearance_prompt": row["appearance_prompt"],
+                "wardrobe_prompt": row["wardrobe_prompt"],
+                "reference_version": int(row["reference_version"] or 0),
+                "reference_locked": bool(row["reference_locked"]),
+            }
+            if include_internal and row["reference_locked"] and row["reference_file"]:
+                reference["file"] = row["reference_file"]
+                reference["url"] = row["reference_url"] or ""
+            elif include_internal and row["source_type"] == "cinematic_avatar" and row["avatar_id"]:
+                try:
+                    from . import video
+                    avatar = video.get_video_avatar(project["username"], row["avatar_id"])
+                    if avatar.get("image_file"):
+                        reference["file"] = avatar["image_file"]
+                        reference["url"] = avatar.get("image_url") or ""
+                except (LookupError, ValueError):
+                    pass
+            references.append(reference)
     previous = conn.execute(
         "SELECT v.id, v.url, v.file, v.ratio, s.shot_key FROM short_drama_shots current "
         "JOIN short_drama_shots s ON s.project_id=current.project_id "
@@ -672,6 +810,55 @@ def _project_references(conn, project, shot, *, include_internal=False):
             continuity["file"] = previous["file"]
         references.append(continuity)
     return references
+
+
+def _compile_still_prompt(project, shot, user_direction, references):
+    character_lines = []
+    character_index = 0
+    for reference in references:
+        if reference.get("type") != "character":
+            continue
+        character_index += 1
+        details = [
+            reference.get("name"), reference.get("identity_text"),
+            reference.get("personality"), reference.get("appearance_prompt"),
+            reference.get("wardrobe_prompt"),
+        ]
+        character_lines.append(
+            " - Reference image #%d = %s" % (
+                character_index,
+                " | ".join(str(item).strip() for item in details if item),
+            )
+        )
+    sections = [
+        "Create one cinematic short-drama keyframe.",
+        "Aspect ratio: %s. Visual style: %s. Target platform: %s."
+        % (project["ratio"], project["visual_style"], project["target_platform"]),
+        "Scene: " + str(shot.get("scene_description") or "").strip(),
+        "Camera: " + str(shot.get("camera_description") or "").strip(),
+        "Shot prompt: " + str(shot.get("image_prompt") or "").strip(),
+    ]
+    if str(user_direction or "").strip():
+        sections.append(
+            "User direction: " + str(user_direction).strip()
+        )
+    if character_lines:
+        sections.append(
+            "Characters must preserve facial identity, age, hair, body shape, wardrobe, and "
+            "screen direction from the supplied character reference images:\n"
+            + "\n".join(character_lines)
+        )
+    if any(reference.get("type") == "continuity" for reference in references):
+        sections.append(
+            "Reference image #%d is the previous locked shot for lighting, wardrobe, "
+            "and spatial continuity only; use a new action and camera composition."
+            % (character_index + 1)
+        )
+    sections.append(
+        "Preserve continuity with the previous locked shot when supplied. "
+        "No captions, watermarks, logos, duplicated people, distorted hands, or identity drift."
+    )
+    return "\n".join(section for section in sections if section.split(":", 1)[-1].strip())
 
 
 def prepare_still_submission(db_factory, username, body, *, require_quote=False,
@@ -704,10 +891,25 @@ def prepare_still_submission(db_factory, username, body, *, require_quote=False,
             raise ValueError("批量生成已跳过锁定的关键帧")
         shot.pop("still_locked", None)
         references = _project_references(conn, project, shot, include_internal=True)
+        character_references = [
+            reference for reference in references if reference.get("type") == "character"
+        ]
+        if len(character_references) > 4:
+            raise ValueError("单个镜头最多支持 4 个角色标准图")
+        missing_references = [
+            reference.get("name") or reference.get("id")
+            for reference in character_references if not reference.get("file")
+        ]
+        if missing_references:
+            raise ValueError(
+                "请先切换到“角色确认”，生成并锁定角色标准图："
+                + "、".join(missing_references)
+            )
         quoted_cost = None
         if require_quote:
             quote = conn.execute(
-                "SELECT username, project_id, shot_id, request_hash, cost, expires_at, "
+                "SELECT username,project_id,shot_id,request_hash,cost,expires_at,"
+                "snapshot_id,package_hash,graph_revision,"
                 "consumed_idempotency_key FROM short_drama_still_quotes WHERE token=?",
                 (body["quote_token"],),
             ).fetchone()
@@ -715,21 +917,44 @@ def prepare_still_submission(db_factory, username, body, *, require_quote=False,
             if (not quote or quote["username"] != username
                     or quote["project_id"] != project["id"]
                     or quote["shot_id"] != shot["id"]
-                    or quote["request_hash"] != _quote_request_hash(descriptor)
                     or int(quote["expires_at"]) < current_time
                     or (quote["consumed_idempotency_key"] is not None
                         and quote["consumed_idempotency_key"] != idempotency_key)):
                 raise ValueError("关键帧 quote 无效、已过期或与请求不匹配")
+            asset_contract = short_drama_asset_graph.quoted_generation_contract(
+                conn, project["id"], shot["id"], quote["snapshot_id"],
+                quote["package_hash"], quote["graph_revision"],
+            )
+            if quote["request_hash"] != _quote_request_hash(
+                    _bind_asset_contract(descriptor, asset_contract)):
+                raise ValueError("关键帧 quote 无效、已过期或与请求不匹配")
             quoted_cost = int(quote["cost"])
+        else:
+            asset_contract = short_drama_asset_graph.generation_contract(
+                conn, project["id"], shot["id"],
+            )
+        asset_package = asset_contract["package"] if asset_contract else None
     finally:
         conn.close()
 
+    base_prompt = str(shot.get("image_prompt") or "").strip()
+    user_direction = str(body["prompt"] or "").strip()
+    # Compatibility for older clients that copied image_prompt into prompt:
+    # treat the duplicate as an empty supplement so the provider sees the
+    # storyboard prompt exactly once.
+    if user_direction == base_prompt:
+        user_direction = ""
+    compiled_prompt = _compile_still_prompt(
+        project, shot, user_direction, references
+    )
+    compiled_prompt += short_drama_asset_graph.prompt_context(asset_package)
     from . import image as image_domain
     image_payload = image_domain.validate_image_payload({
-        "provider": "seedream",
-        "variant": "std",
-        "quality": "hd",
-        "prompt": body["prompt"],
+        "provider": "banana",
+        "model": _still_model(),
+        "quality": _still_quality(),
+        "prompt": compiled_prompt,
+        "short_drama_raw_prompt": user_direction,
         "ratio": project["ratio"],
         "count": 2,
         "short_drama_references": references,
@@ -737,8 +962,18 @@ def prepare_still_submission(db_factory, username, body, *, require_quote=False,
     shot["references"] = references
     return {
         "project": project, "shot": shot, "image_payload": image_payload,
+        "asset_package": asset_package,
+        "asset_contract": asset_contract,
         "quote_token": body.get("quote_token"), "quoted_cost": quoted_cost,
-        "request_hash": _quote_request_hash(descriptor),
+        "request_hash": _quote_request_hash(
+            _bind_asset_contract(descriptor, asset_contract)
+        ),
+        "base_prompt": base_prompt,
+        "user_direction": user_direction,
+        "compiled_prompt": compiled_prompt,
+        "source_prompt_hash": hashlib.sha256(
+            base_prompt.encode("utf-8")
+        ).hexdigest(),
     }
 
 
@@ -749,33 +984,16 @@ def check_production_budget(db_factory, username, project_id, quoted_cost, acces
     try:
         conn.row_factory = sqlite3.Row
         project = _authorized_project(conn, username, project_id, access, write=True)
-        point_budget, spent_points, stage = (
-            project["point_budget"], project["spent_points"], project["stage"]
-        )
+        point_budget, stage = project["point_budget"], project["stage"]
         if stage != "stills_review":
             raise ValueError("当前短剧阶段不能生成关键帧")
         point_budget = int(point_budget)
         if point_budget == 0:
             return
-        reserved = conn.execute(
-            "SELECT COALESCE(SUM(p.quoted_cost), 0) "
-            "FROM short_drama_production_jobs p "
-            "JOIN jobs j ON j.id=p.job_id AND j.username=p.username AND j.kind='image' "
-            "WHERE p.project_id=? "
-            "AND p.status IN ('pending','running') "
-            "AND j.status IN ('pending','running','done')",
-            (project_id,),
-        ).fetchone()[0]
-        attempt_reserved = conn.execute(
-            "SELECT COALESCE(SUM(a.cost),0) FROM short_drama_charge_attempts a "
-            "WHERE a.project_id=? AND a.state IN ('accepted','charged','refund_pending') "
-            "AND (a.job_id IS NULL OR (a.state='refund_pending' AND NOT EXISTS ("
-            "SELECT 1 FROM short_drama_production_jobs p WHERE p.job_id=a.job_id "
-            "AND p.status IN ('pending','running'))))",
-            (project_id,),
-        ).fetchone()[0]
-        reserved = int(reserved or 0) + int(attempt_reserved or 0)
-        spent_points = int(spent_points)
+        from .short_drama import _project_point_usage
+        usage = _project_point_usage(conn, project_id)
+        spent_points = usage["spent_points"]
+        reserved = usage["reserved_points"]
         if spent_points + reserved + quoted_cost > point_budget:
             from .short_drama import PointBudgetExceeded
             raise PointBudgetExceeded(
@@ -795,21 +1013,34 @@ def prepare_still_quote(db_factory, username, body, cost_of, access=None):
     token = uuid.uuid4().hex
     now = int(time.time())
     expires_at = now + QUOTE_TTL_SECONDS
-    _request, descriptor = normalize_still_request(body)
+    contract = prepared.get("asset_contract") or {}
     conn = db_factory()
     try:
         conn.execute(
             "INSERT INTO short_drama_still_quotes "
-            "(token, username, project_id, shot_id, request_hash, cost, expires_at, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "(token,username,project_id,shot_id,request_hash,snapshot_id,package_hash,"
+            "graph_revision,cost,expires_at,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (token, username, prepared["project"]["id"], prepared["shot"]["id"],
-             _descriptor_hash(descriptor), cost, expires_at, now),
+             prepared["request_hash"], contract.get("snapshot_id"),
+             contract.get("package_hash"), contract.get("graph_revision"),
+             cost, expires_at, now),
         )
         conn.commit()
     finally:
         conn.close()
-    return {"cost": cost, "count": 2, "kind": "still",
-            "quote_token": token, "expires_at": expires_at}
+    return {
+        "cost": cost, "count": 2, "kind": "still",
+        "quote_token": token, "expires_at": expires_at,
+        "shot_id": prepared["shot"]["id"],
+        "base_prompt": prepared["base_prompt"],
+        "user_direction": prepared["user_direction"],
+        "compiled_prompt": prepared["compiled_prompt"],
+        "source_prompt_hash": prepared["source_prompt_hash"],
+        "snapshot_id": contract.get("snapshot_id"),
+        "package_hash": contract.get("package_hash"),
+        "graph_revision": contract.get("graph_revision"),
+    }
 
 
 def record_submitted_job(db_factory, *, username, project_id, shot_id, job_id,
@@ -1012,6 +1243,22 @@ def reconcile_jobs(conn, username, project_id):
             prompt = payload.get("prompt") or ""
             if not isinstance(prompt, str):
                 raise ValueError("关键帧任务参数无效")
+            raw_prompt = payload.get("short_drama_raw_prompt")
+            if not isinstance(raw_prompt, str):
+                raw_prompt = prompt
+            provider = str(result.get("provider") or payload.get("provider") or "")
+            model = str(
+                result.get("model") or result.get("model_key")
+                or payload.get("model") or payload.get("variant") or ""
+            )
+            quality = str(result.get("quality") or payload.get("quality") or "")
+            prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+            reference_set = payload.get("short_drama_references") or []
+            reference_set_hash = hashlib.sha256(json.dumps(
+                reference_set, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")).hexdigest()
+            batch_cost = int(cost or quoted_cost or 0)
+            unit_cost = batch_cost // len(urls)
             asset_id = conn.execute(
                 "SELECT id FROM short_drama_assets WHERE project_id=? AND shot_id=? AND type='still'",
                 (project_id, shot_id),
@@ -1030,11 +1277,15 @@ def reconcile_jobs(conn, username, project_id):
                 for offset, url in enumerate(urls):
                     conn.execute(
                         "INSERT OR IGNORE INTO short_drama_asset_versions "
-                        "(id, asset_id, version, job_id, url, file, prompt, ratio, cost, status, created_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', ?)",
+                        "(id, asset_id, version, job_id, url, file, prompt, ratio, cost, "
+                        "unit_cost, batch_cost, raw_prompt, compiled_prompt, provider, model, "
+                        "quality, prompt_hash, reference_set_hash, generation_batch_id, status, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', ?)",
                         (str(uuid.uuid4()), asset_id, next_version + offset, job_id, url,
                          local_files[offset],
-                         prompt, project_ratio, int(cost or 0), now),
+                         raw_prompt, project_ratio, unit_cost, unit_cost, batch_cost,
+                         raw_prompt, prompt, provider, model, quality, prompt_hash,
+                         reference_set_hash, str(job_id), now),
                     )
             for url, local_file in zip(urls, local_files):
                 if local_file:
@@ -1049,11 +1300,6 @@ def reconcile_jobs(conn, username, project_id):
             ).fetchone()
             if int(archived[0]) != 2:
                 raise ValueError("关键帧任务必须完整归档 2 张候选图")
-            if link_status in {"pending", "running"}:
-                conn.execute(
-                    "UPDATE short_drama_projects SET spent_points=spent_points+? WHERE id=?",
-                    (int(quoted_cost or 0), project_id),
-                )
             conn.execute(
                 "UPDATE short_drama_assets SET current_version=COALESCE(current_version, ?), updated_at=? WHERE id=?",
                 (int(archived[1]), now, asset_id),
@@ -1181,7 +1427,9 @@ def build_production_snapshot(conn, project, username):
     for version in _query_dicts(
         conn,
         "SELECT v.id, v.asset_id, v.version, v.job_id, v.url, v.prompt, v.ratio, "
-        "v.cost, v.status, v.created_at "
+        "v.cost, v.unit_cost, v.batch_cost, v.raw_prompt, v.compiled_prompt, "
+        "v.provider, v.model, v.quality, v.prompt_hash, v.reference_set_hash, "
+        "v.generation_batch_id, v.status, v.created_at "
         "FROM short_drama_asset_versions v "
         "JOIN short_drama_assets a ON a.id=v.asset_id "
         "JOIN short_drama_shots s ON s.id=a.shot_id "
@@ -1192,7 +1440,6 @@ def build_production_snapshot(conn, project, username):
         versions_by_asset.setdefault(version.pop("asset_id"), []).append(version)
     latest_jobs = {}
     latest_job_shots = set()
-    reserved_points = 0
     for job in _query_dicts(
         conn,
         "SELECT p.id, p.shot_id, p.job_id, p.kind, p.status, p.quoted_cost, "
@@ -1203,8 +1450,6 @@ def build_production_snapshot(conn, project, username):
         "ORDER BY p.job_id DESC",
         (project_id,),
     ):
-        if job["status"] in {"pending", "running"}:
-            reserved_points += int(job["quoted_cost"])
         refund_value = int(job.get("refunded") or 0)
         job["refunded"] = bool(refund_value == 1)
         job["refund_pending"] = bool(refund_value == 2)
@@ -1213,15 +1458,6 @@ def build_production_snapshot(conn, project, username):
             latest_job_shots.add(shot_id)
             if job["status"] != "done":
                 latest_jobs[shot_id] = job
-
-    reserved_points += int(conn.execute(
-        "SELECT COALESCE(SUM(a.cost),0) FROM short_drama_charge_attempts a "
-        "WHERE a.project_id=? AND a.state IN ('accepted','charged','refund_pending') "
-        "AND (a.job_id IS NULL OR (a.state='refund_pending' AND NOT EXISTS ("
-        "SELECT 1 FROM short_drama_production_jobs p WHERE p.job_id=a.job_id "
-        "AND p.status IN ('pending','running'))))",
-        (project_id,),
-    ).fetchone()[0] or 0)
 
     shot_items = []
     for shot in shots:
@@ -1234,6 +1470,9 @@ def build_production_snapshot(conn, project, username):
             "sort_order": int(shot["sort_order"]),
             "duration": int(shot["duration"]),
             "image_prompt": shot["image_prompt"],
+            "image_prompt_hash": hashlib.sha256(
+                str(shot["image_prompt"] or "").strip().encode("utf-8")
+            ).hexdigest(),
             "references": references,
             "still": {
                 "asset_id": asset["id"],
@@ -1246,14 +1485,16 @@ def build_production_snapshot(conn, project, username):
             },
         })
     handoff = build_phase_two_handoff(conn, project_id, project["ratio"])
+    from .short_drama import _project_point_usage
+    usage = _project_point_usage(conn, project_id)
     return {
         "project_id": project_id,
         "revision": int(project["revision"]),
         "stage": project["stage"],
         "ratio": project["ratio"],
         "point_budget": int(project["point_budget"]),
-        "spent_points": int(project["spent_points"]),
-        "reserved_points": reserved_points,
+        "spent_points": usage["spent_points"],
+        "reserved_points": usage["reserved_points"],
         "handoff_blocked": handoff["blocked"],
         "handoff_blockers": handoff["blockers"],
         "shots": shot_items,

@@ -35,6 +35,9 @@ class MembershipSystemTests(unittest.TestCase):
         self.auth.init_db()
         self.auth.create_user("buyer", "secret123", 20, "member")
         self.auth.create_user("admin", "secret123", 20, "admin")
+        c = self.auth.db()
+        c.execute("UPDATE users SET must_change=0 WHERE username IN ('buyer','admin')")
+        c.commit(); c.close()
 
     def tearDown(self):
         if self.old_db is None:
@@ -81,6 +84,109 @@ class MembershipSystemTests(unittest.TestCase):
                 ).fetchall()[0]["username"],
                 "buyer",
             )
+        finally:
+            c.close()
+
+    def test_experience_renewal_is_499_zero_points_and_can_repeat_after_each_approval(self):
+        now = int(time.time())
+        c = self.auth.db()
+        try:
+            c.execute(
+                "UPDATE users SET membership_tier='experience',membership_started_at=?,membership_expires_at=? WHERE username='buyer'",
+                (now - 10, now + 100),
+            )
+            c.commit()
+        finally:
+            c.close()
+        self.assertEqual(
+            self.auth.purchase_quote(499, "membership_experience_renewal"),
+            (499, 0, "membership_experience_renewal"),
+        )
+        first, err = self.auth.create_recharge_order(
+            "buyer", 499, 0, "续费", "membership_experience_renewal",
+        )
+        self.assertIsNone(err)
+        approved, err = self.auth.review_recharge_order("admin", first["order_id"], "approve", "到账")
+        self.assertIsNone(err)
+        first_expiry = self._row("buyer")["membership_expires_at"]
+        self.assertEqual(self._row("buyer")["points"], 20)
+        second, err = self.auth.create_recharge_order(
+            "buyer", 499, 0, "再次续费", "membership_experience_renewal",
+        )
+        self.assertIsNone(err)
+        _, err = self.auth.review_recharge_order("admin", second["order_id"], "approve", "到账")
+        self.assertIsNone(err)
+        self.assertEqual(self._row("buyer")["membership_expires_at"], first_expiry + self.auth.MEMBERSHIP_YEAR_SECONDS)
+        self.assertEqual(self._row("buyer")["points"], 20)
+        c = self.auth.db()
+        try:
+            c.execute("UPDATE users SET membership_expires_at=? WHERE username='buyer'", (now - 1,))
+            c.commit()
+        finally:
+            c.close()
+        blocked, err = self.auth.create_recharge_order(
+            "buyer", 499, 0, "过期后续费", "membership_experience_renewal",
+        )
+        self.assertIsNone(blocked)
+        self.assertEqual(err, "membership_renewal_not_eligible")
+
+    def test_full_membership_refund_reverses_points_and_entitlement_idempotently(self):
+        order, err = self.auth.create_recharge_order(
+            "buyer", 499, 1000, "体验官", "membership_experience",
+        )
+        self.assertIsNone(err)
+        _, err = self.auth.review_recharge_order(
+            "admin", order["order_id"], "approve", "到账", transaction_id="wx-membership-refund",
+        )
+        self.assertIsNone(err)
+        refund = {
+            "refund_status": "SUCCESS", "transaction_id": "wx-membership-refund",
+            "amount": {"total": 49900, "refund": 49900},
+        }
+        first, err = self.auth.refund_recharge_order(order["order_id"], refund)
+        self.assertIsNone(err)
+        second, err = self.auth.refund_recharge_order(order["order_id"], refund)
+        self.assertIsNone(err)
+        self.assertEqual(first["status"], "refunded")
+        self.assertEqual(second["status"], "refunded")
+        self.assertEqual(self._row("buyer")["points"], 20)
+        self.assertEqual(self._row("buyer")["membership_tier"], "")
+        c = self.auth.db()
+        try:
+            self.assertEqual(c.execute(
+                "SELECT COUNT(*) FROM membership_voice_slot_entitlements WHERE username='buyer'"
+            ).fetchone()[0], 0)
+        finally:
+            c.close()
+
+    def test_first_purchase_refund_goes_to_review_when_points_were_spent(self):
+        order, err = self.auth.create_recharge_order(
+            "buyer", 499, 1000, "体验官", "membership_experience",
+        )
+        self.assertIsNone(err)
+        _, err = self.auth.review_recharge_order(
+            "admin", order["order_id"], "approve", "到账", transaction_id="wx-spent-points",
+        )
+        self.assertIsNone(err)
+        c = self.auth.db()
+        try:
+            c.execute("UPDATE users SET points=0 WHERE username='buyer'")
+            c.commit()
+        finally:
+            c.close()
+        refunded, err = self.auth.refund_recharge_order(order["order_id"], {
+            "refund_status": "SUCCESS", "transaction_id": "wx-spent-points",
+            "amount": {"total": 49900, "refund": 49900},
+        })
+        self.assertIsNone(err)
+        self.assertEqual(refunded["status"], "refund_review")
+        self.assertEqual(self._row("buyer")["membership_tier"], "experience")
+        self.assertEqual(self._row("buyer")["points"], 0)
+        c = self.auth.db()
+        try:
+            self.assertEqual(c.execute(
+                "SELECT COUNT(*) FROM membership_voice_slot_entitlements WHERE username='buyer'"
+            ).fetchone()[0], 1)
         finally:
             c.close()
 
@@ -353,9 +459,14 @@ class MembershipSystemTests(unittest.TestCase):
         self.assertEqual(first["total"], 3)
         self.assertEqual(first["limit"], 2)
         self.assertEqual(first["offset"], 0)
-        self.assertEqual([item["username"] for item in first["items"]], ["page_alpha", "page_beta"])
-        self.assertEqual([item["username"] for item in second["items"]], ["page_gamma"])
+        self.assertEqual([item["account"] for item in first["items"]], ["page_alpha", "page_beta"])
+        self.assertEqual([item["account"] for item in second["items"]], ["page_gamma"])
         self.assertTrue(all(item["id"] > 0 for item in first["items"] + second["items"]))
+
+        self.auth.create_user("13800000031", "secret123", 0, "member")
+        masked = self.auth.list_admin_users(query="13800000031", limit=10)
+        self.assertEqual(masked["items"][0]["account"], "138****0031")
+        self.assertNotIn("username", masked["items"][0])
 
     def test_http_blocks_nonmember_deduct_and_point_recharge_but_allows_membership_order(self):
         os.environ["HQ_MEMBERSHIP_ENFORCEMENT_ENABLED"] = "1"
@@ -480,7 +591,13 @@ class MembershipSystemTests(unittest.TestCase):
     def test_pages_expose_membership_controls_and_hide_point_area_by_default(self):
         recharge = (ROOT / "site" / "workbench" / "recharge.html").read_text(encoding="utf-8")
         admin = (ROOT / "site" / "admin" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("¥499 开通体验官 · 赠 1000 点", recharge)
+        admin_api = (ROOT / "server" / "admin_api.py").read_text(encoding="utf-8")
+        self.assertIn("membership.experience.price_yuan", recharge)
+        self.assertIn("membership.experience.bonus_points", recharge)
+        self.assertIn("membership_experience_renewal", recharge)
+        self.assertNotIn("¥499 续费一年", recharge)
+        self.assertIn("$('membershipOfferPoints').textContent='0 点'", recharge)
+        self.assertIn("order_type:productType", recharge)
         self.assertIn('id="pointsRechargeArea" hidden', recharge)
         self.assertIn("membership_experience", recharge)
         self.assertIn("体验官 / 合伙人 / 发起人 / 取消会员", admin)
@@ -490,6 +607,14 @@ class MembershipSystemTests(unittest.TestCase):
         self.assertIn("membership_recharge_duplicate", admin)
         self.assertIn("充值会员", admin)
         self.assertIn("同等级续费从原到期日顺延一年", admin)
+        self.assertIn("/api/admin/invite/network", admin)
+        self.assertIn('"/api/admin/invite/network"', admin_api)
+        self.assertIn("parent_id=", admin)
+        self.assertIn("before_id=", admin)
+        self.assertIn("node.public_id", admin)
+        self.assertIn("名片 ID：", admin)
+        self.assertIn("下级加载失败：", admin)
+        self.assertIn("关系树读取失败", admin)
         self.assertIn("function membershipDisplayName(user)", recharge)
         self.assertIn("experience:'体验官',partner:'合伙人',initiator:'发起人'", recharge)
         self.assertNotIn("user.membership_name||'会员'", recharge)

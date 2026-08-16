@@ -18,6 +18,7 @@ HeyGen 生成好」的任务判死、白烧一次提交费（cinematic 每条约
    HeyGenBilledError。本测试锁死这条不回归。
 2. **轮询/下载 GET**：幂等、不计费 —— 瞬时网络错误退避重试，一次 SSL 抖动不该烧 $7。
 """
+import ast
 import importlib
 import socket
 import ssl
@@ -35,6 +36,41 @@ if SERVER not in sys.path:
 video = importlib.import_module("content_domains.video")
 
 
+def _call_name(node):
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return ""
+
+
+def _unwrapped_upload_lines(source):
+    tree = ast.parse(source)
+    parents = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+    failures = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if _call_name(node.func) != "_heygen_upload_asset":
+            continue
+        current = parents.get(node)
+        wrapped = False
+        while current is not None:
+            if (isinstance(current, ast.Call)
+                    and _call_name(current.func) == "_heygen_retry_net"):
+                wrapped = True
+                break
+            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                break
+            current = parents.get(current)
+        if not wrapped:
+            failures.append(node.lineno)
+    return failures
+
+
 def _http_error(code, body=b"{}"):
     return urllib.error.HTTPError("https://api.heygen.com/v3/videos", code, "err", {}, BytesIO(body))
 
@@ -44,6 +80,7 @@ class NetworkErrorClassificationTests(unittest.TestCase):
 
     def _request(self, err):
         with patch.object(video, "HEYGEN_API_KEY", "k"), \
+             patch.object(video, "HEYGEN_API_BASE", "https://relay.test/v3"), \
              patch.object(video.urllib.request, "urlopen", side_effect=err):
             return video._heygen_request_json("GET", "/videos/x")
 
@@ -79,10 +116,64 @@ class NetworkErrorClassificationTests(unittest.TestCase):
 
     def test_429_still_wins_over_network(self):
         with patch.object(video, "HEYGEN_API_KEY", "k"), \
+             patch.object(video, "HEYGEN_API_BASE", "https://relay.test/v3"), \
              patch.object(video.urllib.request, "urlopen",
                           side_effect=_http_error(429, b'{"error":{"code":"rate_limit_exceeded"}}')):
             with self.assertRaises(video.HeyGenRateLimited):
                 video._heygen_request_json("POST", "/videos")
+
+
+class OfficialHeyGenProxyIsolationTests(unittest.TestCase):
+    """官方 HeyGen 走专用代理；认证和自定义中转不再依赖或污染全局代理。"""
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"data":{"ok":true}}'
+
+    class _Opener:
+        def __init__(self):
+            self.calls = []
+
+        def open(self, req, timeout=0):
+            self.calls.append((req.full_url, timeout))
+            return OfficialHeyGenProxyIsolationTests._Response()
+
+    def test_official_base_uses_dedicated_proxy_opener(self):
+        opener = self._Opener()
+        with patch.object(video, "HEYGEN_API_KEY", "k"), \
+             patch.object(video, "HEYGEN_API_BASE", "https://api.heygen.com/v3"), \
+             patch.object(video, "_heygen_direct_opener", return_value=opener), \
+             patch.object(video.urllib.request, "urlopen",
+                          side_effect=AssertionError("官方 HeyGen 不应裸直连")):
+            result = video._heygen_request_json("GET", "/avatars", timeout=12)
+        self.assertTrue(result["data"]["ok"])
+        self.assertEqual(opener.calls, [("https://api.heygen.com/v3/avatars", 12)])
+
+    def test_custom_relay_keeps_original_transport(self):
+        response = self._Response()
+        with patch.object(video, "HEYGEN_API_KEY", "k"), \
+             patch.object(video, "HEYGEN_API_BASE", "https://relay.internal/v3"), \
+             patch.object(video, "_heygen_direct_opener",
+                          side_effect=AssertionError("自定义中转不应走 HeyGen 专用代理")), \
+             patch.object(video.urllib.request, "urlopen", return_value=response) as urlopen:
+            result = video._heygen_request_json("GET", "/avatars", timeout=12)
+        self.assertTrue(result["data"]["ok"])
+        self.assertEqual(urlopen.call_count, 1)
+
+    def test_lookalike_domains_are_not_treated_as_official(self):
+        for base in (
+            "https://api.heygen.com.attacker.test/v3",
+            "https://heygen.com.attacker.test/v3",
+            "https://notheygen.com/v3",
+        ):
+            with self.subTest(base=base):
+                self.assertFalse(video._heygen_official_base(base))
 
 
 class SubmitStillNeverRetriesNetworkTests(unittest.TestCase):
@@ -135,14 +226,18 @@ class PollRetriesTransientNetworkTests(unittest.TestCase):
 
         def req(*a, **k):
             calls.append(1)
-            return {"data": {"status": "failed", "error": "content policy"}}
+            return {"data": {
+                "status": "failed", "video_url": None, "provider_video_id": "secret-id",
+                "failure_message": "Your content was flagged by our moderation system. Please try different images or prompts.",
+            }}
 
         with patch.object(video, "_heygen_request_json", side_effect=req), \
              patch.object(video.time, "time", lambda: clock[0]), \
              patch.object(video.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s)):
-            with self.assertRaises(RuntimeError):
+            with self.assertRaisesRegex(RuntimeError, "内容审核未通过，请更换人物图片、参考视频或提示词") as ctx:
                 video._heygen_poll_video("vid1", direct=True, deadline_s=600)
         self.assertEqual(len(calls), 1, "真失败被反复重试了")
+        self.assertNotIn("secret-id", str(ctx.exception), "用户错误不应暴露整段上游响应")
 
     def test_poll_gives_up_after_deadline_if_network_never_recovers(self):
         """网络一直不恢复：deadline 是总上限，不会无限转，最终超时抛出。"""
@@ -232,14 +327,15 @@ class AvatarWaitAndUploadResilienceTests(unittest.TestCase):
     def test_all_uploads_are_retry_wrapped(self):
         """所有 _heygen_upload_asset 调用点都要包 _heygen_retry_net(上传不计费、重试安全)。
         漏一个，隧道抖动打在那次上传上就白失败一条。"""
-        import pathlib
-        src = pathlib.Path(video.__file__).read_text(encoding="utf-8")
-        # 去掉函数定义那行后，每个 _heygen_upload_asset( 调用都应处于 _heygen_retry_net 的 lambda 里
-        import re
-        for m in re.finditer(r"_heygen_upload_asset\(", src):
-            line_start = src.rfind("\n", 0, m.start()) + 1
-            line = src[line_start:src.find("\n", m.start())]
-            if line.strip().startswith("def "):
-                continue
-            self.assertIn("_heygen_retry_net", line,
-                          "未包重试的上传调用: %s" % line.strip()[:80])
+        src = Path(video.__file__).read_text(encoding="utf-8")
+        self.assertEqual(
+            _unwrapped_upload_lines(src), [],
+            "存在未包 _heygen_retry_net 的上传调用",
+        )
+
+    def test_upload_retry_guard_rejects_a_real_unwrapped_call(self):
+        source = (
+            "def upload(path):\n"
+            "    return _heygen_upload_asset(path)\n"
+        )
+        self.assertEqual(_unwrapped_upload_lines(source), [2])

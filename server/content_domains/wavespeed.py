@@ -100,13 +100,13 @@ def _public_http_url_state(url):
     return "ok"
 
 
-def _phase(job_id, phase):
+def _phase(job_id, phase, **evidence):
     """心跳刷 updated_at 防 reaper。update_video_asset_phase 在 video.py，延迟 import 避免循环依赖。"""
     if not job_id:
         return
     try:
         from .video import update_video_asset_phase
-        update_video_asset_phase(job_id, phase)
+        update_video_asset_phase(job_id, phase, **evidence)
     except Exception:
         pass
 
@@ -193,6 +193,7 @@ def _run_and_wait(model_path, body, job_id=None):
     pid = data.get("id")
     if not pid:
         raise RuntimeError("WaveSpeed未返回任务id: %s" % json.dumps(r, ensure_ascii=False)[:200])
+    _phase(job_id, "ws_running", provider_video_id=pid)
     poll_url = (data.get("urls") or {}).get("get") or (WS_API + "/predictions/%s/result" % pid)
     deadline = time.time() + WS_DEADLINE
     while time.time() < deadline:
@@ -204,7 +205,7 @@ def _run_and_wait(model_path, body, job_id=None):
             outs = res.get("outputs") or []
             if not outs:
                 raise RuntimeError("WaveSpeed完成但无产出")
-            return outs[0]
+            return {"output_url": outs[0], "provider_video_id": pid}
         if status in ("failed", "error"):
             raise RuntimeError("WaveSpeed生成失败: %s" % str(res.get("error") or "")[:200])
     raise TimeoutError("WaveSpeed生成超时")
@@ -341,11 +342,13 @@ def generate_tryon(person_image_file, clothes_file, duration, job_id=None):
     clothes_url = _material_url(clothes_file)
     dur = max(5, min(15, int(duration or 5)))
     _phase(job_id, "ws_running")
-    out_url = _run_and_wait(
+    generated = _run_and_wait(
         WS_TRYON,
         {"image": person_url, "clothes_images": [clothes_url], "duration": dur},
         job_id=job_id,
     )
+    out_url = generated["output_url"]
     _phase(job_id, "downloading")
     vf = _download_to_lib(out_url, "ws_tryon")
-    return {"video_file": vf, "video_url": public_url(vf, "video/mp4", private=True), "provider": "wavespeed"}
+    return {"video_file": vf, "video_url": public_url(vf, "video/mp4", private=True),
+            "provider": "wavespeed", "provider_video_id": generated["provider_video_id"]}

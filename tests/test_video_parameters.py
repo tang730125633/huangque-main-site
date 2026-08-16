@@ -28,10 +28,10 @@ class VideoResolutionValidationTests(unittest.TestCase):
             video.validate_video_payload({"mode": "text", "image_data": PNG, "text": "hi",
                                           "voice": "v", "resolution": "4k"})
 
-    def test_cinematic_is_where_1080p_lives_now(self):
+    def test_cinematic_overrides_legacy_1080p_to_720p(self):
         out = video.validate_cinematic_payload({
             "avatar_ids": [1], "prompt": "海边跳舞", "resolution": "1080p", "ratio": "9:16"})
-        self.assertEqual("1080p", out["resolution"])
+        self.assertEqual("720p", out["resolution"])
 
 
 class TryonParameterValidationTests(unittest.TestCase):
@@ -80,7 +80,8 @@ class TryonParameterValidationTests(unittest.TestCase):
                 patch.object(video, "update_video_asset_phase"), \
                 patch.object(wavespeed, "available", return_value=True), \
                 patch.object(wavespeed, "generate_tryon",
-                             return_value={"video_file": "video/out.mp4", "video_url": "/out.mp4"}) as generate:
+                             return_value={"video_file": "video/out.mp4", "video_url": "/out.mp4",
+                                           "provider_video_id": "provider-1"}) as generate:
             result = video.gen_tryon({
                 "line": "2", "person_image_data": "person", "clothes_data": "cloth",
                 "seconds": 10,
@@ -88,6 +89,7 @@ class TryonParameterValidationTests(unittest.TestCase):
         self.assertEqual(10, generate.call_args.args[2])
         self.assertEqual(10, result["duration"])
         self.assertEqual(10, result["seconds"])
+        self.assertEqual("provider-1", result["provider_video_id"])
 
     def test_tryon_is_validated_before_points_are_deducted(self):
         self.assertIn('elif kind == "tryon":', CORE_SRC)
@@ -125,9 +127,11 @@ class VideoParameterUiTests(unittest.TestCase):
         # 四个成本提示元素都在
         for eid in ("grokCostNote", "microCostNote", "omniCostNote", "tryonCostNote"):
             self.assertIn('id="%s"' % eid, VIDEO_HTML, eid)
-        # 试衣两档与后端一致：换背景需衣服图+背景图都有 → 40，否则 25
-        self.assertIn("换装+换背景 40 点", VIDEO_HTML)
-        self.assertIn("换装 25 点", VIDEO_HTML)
+        # 试衣两档由统一价目动态注入；默认值仍与后端一致。
+        self.assertIn("TRYON_SINGLE_POINTS=p['video.tryon.single']||25", VIDEO_HTML)
+        self.assertIn("TRYON_DOUBLE_POINTS=p['video.tryon.double']||40", VIDEO_HTML)
+        self.assertIn("'换装+换背景 '+TRYON_DOUBLE_POINTS+' 点", VIDEO_HTML)
+        self.assertIn("'换装 '+TRYON_SINGLE_POINTS+' 点", VIDEO_HTML)
         self.assertEqual(points.cost_of("tryon", {"clothes_data": "x", "background_data": "y"}), 40)
         self.assertEqual(points.cost_of("tryon", {"clothes_data": "x"}), 25)
 
@@ -135,10 +139,11 @@ class VideoParameterUiTests(unittest.TestCase):
         self.assertNotIn('id="grok15Btn"', VIDEO_HTML)
         self.assertNotIn("通用版带参考图最长支持10秒", VIDEO_HTML)
         self.assertIn(
-            "function grokRefLimit(){return selectedGrokModel==='grok-imagine-video-1.5'?1:GROK_REF_MAX;}",
+            "function grokRefLimit(){return GROK_REF_MAX;}",
             VIDEO_HTML,
         )
-        self.assertIn("Grok Video 1.5 必须上传且只能上传1张首帧图", VIDEO_HTML)
+        self.assertIn("Grok Video 1.5 至少上传1张参考图（最多7张）", VIDEO_HTML)
+        self.assertIn("Grok 参考图生视频最高支持 720p", VIDEO_HTML)
 
     def test_hidden_output_shadow_ui_is_removed(self):
         for stale_id in ("outputThumb", "outputMotion", "outputRatio", "outputDuration", "outputPreview"):

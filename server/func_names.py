@@ -42,8 +42,11 @@
 纯 stdlib、零副作用（不碰 DB/env/网络）—— 谁都能安全 import。
 """
 
-# 视频页的三个第三方渠道。名字取自 data-function 的标签。
-XIAOLE_CHANNELS = {"grok": "果肉视频生成", "micro": "Seedance 视频", "omni": "Omni 视频"}
+# 视频页的四个第三方渠道。名字取自 data-function 的标签。
+XIAOLE_CHANNELS = {
+    "grok": "果肉视频生成", "minimax": "麦克视频",
+    "micro": "Seedance 视频", "omni": "Omni 视频",
+}
 
 # 电影化身的三个玩法（#601）。老任务的 payload 里没有 cine_mode，回落到「电影化身」。
 CINEMATIC_MODES = {"motion": "动作模仿", "duo": "双人动作模仿", "open": "开放式生成"}
@@ -126,7 +129,7 @@ def func_name(kind, payload=None):
 
     if kind == "xiaole_video":
         return XIAOLE_CHANNELS.get(str(payload.get("channel") or "").strip().lower(),
-                                   "果肉/Seedance/Omni 视频")
+                                   "历史未归档视频任务")
 
     if kind == "tryon":
         # 换装【仍然】有线路之分（线路一 RunningHub / 线路二 WaveSpeed），前端也还给用户选。

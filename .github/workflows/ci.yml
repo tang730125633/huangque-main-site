@@ -17,7 +17,7 @@ jobs:
   quality:
     name: 代码与安全门禁
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
 
     steps:
       - name: 检出代码
@@ -35,8 +35,18 @@ jobs:
           cache: npm
           cache-dependency-path: design-system/package-lock.json
 
+      - name: 安装媒体契约测试依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version
+          ffprobe -version
+
       - name: 安装微信消息推送加密依赖
         run: python -m pip install "cryptography>=41,<50"
+
+      - name: 安装 content 服务 Python 依赖
+        run: python -m pip install -r deploy/requirements-content.txt
 
       - name: 检查敏感文件与静态资源
         run: python scripts/ci_validate.py
@@ -46,6 +56,24 @@ jobs:
 
       - name: 测试 CI 检查器
         run: python -m unittest discover -s tests -v
+
+      - name: 测试并构建 HQ CLI
+        working-directory: tools/hq-cli
+        env:
+          SOURCE_DATE_EPOCH: "1735689600"
+        run: |
+          PYTHONPATH=src python -m unittest discover -s tests -v
+          cli_tmp="$(mktemp -d)"
+          trap 'rm -rf "$cli_tmp"' EXIT
+          python -m pip wheel --no-deps --wheel-dir "$cli_tmp/wheels-a" .
+          python -m pip wheel --no-deps --wheel-dir "$cli_tmp/wheels-b" .
+          cmp "$cli_tmp"/wheels-a/*.whl "$cli_tmp"/wheels-b/*.whl
+          sh -n ../../site/downloads/hq/install.sh
+          python -m venv "$cli_tmp/venv"
+          "$cli_tmp/venv/bin/pip" install --no-index --no-deps "$cli_tmp"/wheels-a/*.whl
+          "$cli_tmp/venv/bin/hq" version --json
+          "$cli_tmp/venv/bin/hq" capabilities --json
+          "$cli_tmp/venv/bin/python" -m hq_cli version --json
 
       - name: 检查 Python 语法
         shell: bash
@@ -63,12 +91,21 @@ jobs:
       - name: 测试工作台侧栏
         run: node tests/test_cloud_shell_sidebar.js
 
+      - name: 测试编导页字段保留与上传上限
+        run: node tests/test_script_director_fields.js
+
       - name: 测试画布 API 与短剧工作区
         run: |
+          node tests/test_short_drama_center.js
+          node tests/test_short_drama_workspace.js
           node tests/test_canvas_api.js
           node tests/test_canvas_short_drama.js
           node tests/test_canvas_short_drama_production.js
           node tests/test_canvas_short_drama_voice.js
+          node tests/test_canvas_short_drama_workspace.js
+          node tests/test_canvas_short_drama_completion.js
+          python -m unittest tests.test_short_drama_completion_integrity -v
+          node tests/test_canvas_digital_presenter.js
 
       - name: 安装设计系统依赖
         working-directory: design-system
@@ -77,3 +114,44 @@ jobs:
       - name: 构建设计系统
         working-directory: design-system
         run: npm run build
+
+  hq-cli-windows:
+    name: HQ CLI · Windows
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+      - name: 配置 Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: 测试 Windows 运行时
+        working-directory: tools/hq-cli
+        shell: powershell
+        run: python -m unittest discover -s tests -v
+        env:
+          PYTHONPATH: src
+      - name: PowerShell 5.1 安装
+        shell: powershell
+        run: |
+          $unicode = ([string][char]0x9EC4) + ([string][char]0x96C0)
+          $root = Join-Path $env:RUNNER_TEMP ($unicode + " CLI Test")
+          .\site\downloads\hq\install.ps1 `
+            -WheelPath .\site\downloads\hq\v0.10.0\huangque_hq_cli-0.10.0-py3-none-any.whl `
+            -InstallRoot $root -NoPathUpdate
+          $hq = Join-Path $root "bin\hq.cmd"
+          $result = & $hq version --json | ConvertFrom-Json
+          if ($result.cli_version -ne "0.10.0") { throw "unexpected CLI version" }
+          [IO.File]::AppendAllText($env:GITHUB_ENV, "HQ_TEST_ROOT=$root`n", [Text.UTF8Encoding]::new($false))
+      - name: cmd.exe 启动
+        shell: cmd
+        run: '"%HQ_TEST_ROOT%\bin\hq.cmd" capabilities --json'
+      - name: PowerShell 7 启动并卸载
+        shell: pwsh
+        run: |
+          $hq = Join-Path $env:HQ_TEST_ROOT "bin\hq.cmd"
+          $result = & $hq capabilities --json | ConvertFrom-Json
+          if ($result.schema -ne "hq.capabilities/v1") { throw "invalid capabilities output" }
+          .\site\downloads\hq\uninstall.ps1 -InstallRoot $env:HQ_TEST_ROOT
+          if (Test-Path $env:HQ_TEST_ROOT) { throw "uninstall left files behind" }

@@ -78,8 +78,10 @@ class NewKindsAreNamedTests(unittest.TestCase):
     def test_the_three_xiaole_channels_are_told_apart(self):
         """394 条任务混成一个「视频 · 小乐」，运营根本看不出谁在跑哪个渠道。"""
         self.assertEqual(F.func_name("xiaole_video", {"channel": "grok"}), "果肉视频生成")
+        self.assertEqual(F.func_name("xiaole_video", {"channel": "minimax"}), "麦克视频")
         self.assertEqual(F.func_name("xiaole_video", {"channel": "micro"}), "Seedance 视频")
         self.assertEqual(F.func_name("xiaole_video", {"channel": "omni"}), "Omni 视频")
+        self.assertEqual(F.func_name("xiaole_video", {}), "历史未归档视频任务")
 
     def test_image_engines_are_told_apart(self):
         self.assertEqual(F.func_name("image", {"provider": "seedream"}), "作图 · 黄雀引擎 1 标准")

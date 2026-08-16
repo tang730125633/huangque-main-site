@@ -238,6 +238,43 @@ class JobsStoreTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM jobs WHERE status='pending'"
             ).fetchone()[0])
 
+    def test_insert_compensation_and_restart_recovery_share_refund_key(self):
+        import hashlib
+
+        with closing(self._conn()) as c:
+            c.execute("""CREATE TRIGGER fail_pending BEFORE INSERT ON jobs
+                         WHEN NEW.status='pending' BEGIN SELECT RAISE(FAIL, 'insert failed'); END""")
+            c.commit()
+        refund_keys = []
+
+        def refund(username, amount, reason="", transaction_key=""):
+            refund_keys.append(transaction_key)
+            if len(refund_keys) == 1:
+                raise ConnectionError("refund response lost")
+            return True
+
+        charge_key = "job-charge:u:/api/gen/xiaole_video:stable-key"
+        expected = "job-charge-refund:" + hashlib.sha256(
+            charge_key.encode("utf-8")).hexdigest()
+        with self.assertRaises(jobs_store.PaidJobInsertError) as ctx:
+            jobs_store.create_paid_job(
+                self._jdb, lambda *_args: 90, refund,
+                "xiaole_video", "u", 10, {"channel": "micro"}, "content",
+                charge_transaction_key=charge_key,
+            )
+        self.assertEqual("queued", ctx.exception.compensation)
+
+        def retry_job(job_id, username, cost, transaction_key=""):
+            return jobs_store.refund_once(
+                self._jdb, job_id, username, cost,
+                lambda u, c: refund(
+                    u, c, "retry", transaction_key=transaction_key),
+            )
+
+        self.assertEqual(1, jobs_store.retry_failed_refunds(
+            self._jdb, retry_job))
+        self.assertEqual([expected, expected], refund_keys)
+
     # --- 端到端：reaper 与 worker 交错，钱只退一次，结果不覆写 ---
     def test_reaper_wins_race_money_is_correct(self):
         jid = self._insert(10)

@@ -320,11 +320,14 @@ function testCanvasIntegration() {
   const root = path.join(__dirname, '..');
   const html = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas.html'), 'utf8');
   const app = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-app.js'), 'utf8');
+  const agent = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-agent.js'), 'utf8');
+  const requestSources = app + '\n' + agent;
   const order = [
     'canvas/canvas-graph.js?v=',
     'canvas/canvas-state.js?v=',
     'canvas/canvas-storage.js?v=',
     'canvas/canvas-api.js?v=',
+    'canvas/canvas-agent.js?v=',
     'canvas/canvas-export.js?v=',
     'canvas-collab-sync.js?v=',
     'canvas/canvas-app.js?v=',
@@ -334,7 +337,7 @@ function testCanvasIntegration() {
   assert.deepEqual(order, [...order].sort((left, right) => left - right), 'modules, collaboration sync, and app must load in dependency order');
   assert.match(app, /var apiModule=window\.HQCanvas&&window\.HQCanvas\.api;/);
   assert.match(app, /apiModule\.createClient\(/);
-  assert.equal((app.match(/apiModule\.poll\(/g) || []).length, 2, 'image and video jobs share bounded polling');
+  assert.equal((app.match(/apiModule\.poll\(/g) || []).length, 3, 'image, video, and Agent jobs share bounded polling');
   assert.equal((app.match(/maxMs:420000/g) || []).length, 1, 'image jobs retain their 420 second limit');
   assert.equal((app.match(/maxMs:900000/g) || []).length, 1, 'video jobs retain their 900 second limit');
   assert.match(app, /error&&error\.code==='timeout'/);
@@ -349,7 +352,7 @@ function testCanvasIntegration() {
     '/api/gen/banana',
     '/api/gen/xiaole_video',
     '/api/gen/job/',
-  ]) assert.ok(app.includes(endpoint), endpoint);
+  ]) assert.ok(requestSources.includes(endpoint), endpoint);
   assert.equal((app.match(/intervalMs:3000/g) || []).length, 2, 'image and video jobs retain 3000 ms polling');
   for (const state of ['提交中…', '生成中… 已用 ', '提交中...', '生成中，已用 ', '点数不足', '等待队列空位']) {
     assert.ok(app.includes(state), state);

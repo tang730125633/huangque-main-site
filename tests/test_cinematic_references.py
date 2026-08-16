@@ -22,6 +22,7 @@
 import importlib
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -36,6 +37,25 @@ HTML = (ROOT / "site/workbench/video.html").read_text(encoding="utf-8")
 
 PNG = "data:image/png;base64,iVBORw0KGgo="
 MP4 = "data:video/mp4;base64,AAAAGGZ0eXA="
+
+
+class SaveDataFileTests(unittest.TestCase):
+    def test_partial_write_failure_removes_the_created_file_before_reraising(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "partial.png"
+
+            class PartialWriter:
+                def write_bytes(self, data):
+                    target.write_bytes(data[:4])
+                    raise OSError("disk full")
+
+                def unlink(self):
+                    target.unlink()
+
+            with patch.object(video, "_out_path", return_value=PartialWriter()):
+                with self.assertRaisesRegex(OSError, "disk full"):
+                    video._save_data_file(PNG, "cine_ref", [".png"])
+            self.assertFalse(target.exists())
 
 
 class MediaBudgetTests(unittest.TestCase):
@@ -167,7 +187,7 @@ class UiTests(unittest.TestCase):
     def test_both_reference_kinds_can_be_uploaded_multiple(self):
         self.assertIn('id="cineVideoFile"', HTML)
         self.assertIn('id="cineImageFile"', HTML)
-        self.assertEqual(HTML.count('multiple hidden'), 3, "批量形象 + 参考视频 + 参考图片")
+        self.assertEqual(HTML.count('multiple hidden'), 4, "批量形象 + 参考视频 + 参考图片 + H3 成片导入")
 
     def test_the_shared_budget_is_shown(self):
         """预算随形象数变化，必须显示 —— 否则用户会以为「怎么只能传 6 张，文档说 9 张」。"""

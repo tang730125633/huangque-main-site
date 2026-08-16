@@ -1,19 +1,16 @@
 # -*- coding: utf-8 -*-
-"""内容爬取计费：主爬取 30 点，提取文案 6 点（kongli 2026-07-15）。
+"""内容爬取计费：主爬取 3 点，提取文案 6 点。
 
 ## 前端两个动作共用一个 collect 接口，靠 want 区分
 
-    主爬取（内容爬取）  POST /api/gen/collect  want=['comments'] 或 ['video']  → 30 点
+    主爬取（内容爬取）  POST /api/gen/collect  want=['comments'] 或 ['video']  →  3 点
     提取文案            POST /api/gen/collect  want=['transcript']              →  6 点
 
-原来主爬取是 3 点。改成 30（kongli 2026-07-15）。提取文案保留 6 点不变 ——
-它前端标着「约 6 点」，别顺手一起涨了。
+生产 Nginx 实际路由命中 LeadGen 服务，基础价是 3 点；提取文案加收 3 点。
 
 ## 前后端必须一致
 
-主爬取以前不显示成本（3 点、藏着），现在 30 点是 10 倍，藏着 = 用户被静默扣 30 点，
-正是 leads 那条注释警告的「消耗点数对不上」。collect.html 的 colNote 已补「约 30 点」，
-静态那处和 setMode 里 JS 动态设的那处都要有。
+前端从统一定价接口读取，不再单独维护一份价格。
 """
 import importlib
 import sys
@@ -29,17 +26,17 @@ points = importlib.import_module("content_domains.points")
 HTML = (ROOT / "site/workbench/collect.html").read_text(encoding="utf-8")
 
 
-class MainCrawlIs30Tests(unittest.TestCase):
-    def test_comments_crawl_is_30(self):
-        self.assertEqual(points.cost_of("collect", {"want": ["comments"]}), 30)
+class MainCrawlIs3Tests(unittest.TestCase):
+    def test_comments_crawl_is_3(self):
+        self.assertEqual(points.cost_of("collect", {"want": ["comments"]}), 3)
 
-    def test_video_download_crawl_is_30(self):
-        """仅下载视频（want=['video']）也是主爬取，30 点。"""
-        self.assertEqual(points.cost_of("collect", {"want": ["video"]}), 30)
+    def test_video_download_crawl_is_3(self):
+        """仅下载视频（want=['video']）也是主爬取，3 点。"""
+        self.assertEqual(points.cost_of("collect", {"want": ["video"]}), 3)
 
     def test_empty_want_defaults_to_main_crawl(self):
         """没给 want 时按主爬取算 —— 绝不能因为字段缺失就白送（回落到 0）。"""
-        self.assertEqual(points.cost_of("collect", {}), 30)
+        self.assertEqual(points.cost_of("collect", {}), 3)
 
 
 class TranscriptStays6Tests(unittest.TestCase):
@@ -55,15 +52,13 @@ class TranscriptStays6Tests(unittest.TestCase):
 class FrontendMatchesBackendTests(unittest.TestCase):
     """价钱是用户下单前唯一看得到的数，写错就是明码标错价。"""
 
-    def test_the_crawl_note_shows_30(self):
-        self.assertIn("约 30 点", HTML)
+    def test_the_crawl_note_shows_default(self):
+        self.assertIn("约 3 点", HTML)
 
     def test_both_note_states_show_it(self):
-        """colNote 有两态：普通爬取 / 仅下载。两态都是主爬取，都该显示 30。"""
-        # 静态 HTML 那处
-        self.assertIn("文案 + 评论默认提取 · 约 30 点", HTML)
-        # setMode 里 JS 动态设的那处（download 分支）
-        self.assertIn("仅解析并下载视频本身 · 不提取评论/文案 · 约 30 点", HTML)
+        """colNote 有两态，都从统一基础价变量显示。"""
+        self.assertIn("collectBasePoints=p['collect.base']", HTML)
+        self.assertEqual(HTML.count("'+collectBasePoints+' 点"), 2)
 
     def test_transcript_button_still_says_6(self):
         """提取文案按钮的「约 6 点」不能被误改。"""

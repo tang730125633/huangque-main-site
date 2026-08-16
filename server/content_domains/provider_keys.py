@@ -13,12 +13,13 @@ from pathlib import Path
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
-PROVIDERS = {"xai", "sora", "seedance", "omni"}
+PROVIDERS = {"xai", "sora", "seedance", "omni", "minimax"}
 ENV_KEYS = {
     "xai": "XAI_API_KEY",
     "sora": "OPENAI_API_KEY",
     "seedance": "ARK_API_KEY",
     "omni": "GEMINI_API_KEY",
+    "minimax": "MINIMAX_API_KEY",
 }
 DB_PATH = Path(
     os.environ.get(

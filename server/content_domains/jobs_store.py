@@ -17,6 +17,7 @@ content_jobs.db 的 jobs 表被三个进程共写：
 本模块只依赖标准库，不 import core —— 三个服务都能安全 import（leadgen/imggen 本来
 就在 `from content_domains import cos / assets_store`）。
 """
+import hashlib
 import json
 import time
 import uuid
@@ -209,30 +210,54 @@ def retry_failed_refunds(jdb, refund_job, limit=100):
     with closing(jdb()) as c:
         import sqlite3
         c.row_factory = sqlite3.Row
-        has_attempts = bool(c.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='short_drama_charge_attempts'"
-        ).fetchone())
-        attempt_exclusion = (
-            "AND NOT EXISTS (SELECT 1 FROM short_drama_charge_attempts a WHERE a.job_id=jobs.id)"
-            if has_attempts else ""
+        c.execute("""CREATE TABLE IF NOT EXISTS job_refund_transactions(
+            job_id INTEGER PRIMARY KEY, transaction_key TEXT NOT NULL UNIQUE)""")
+        c.commit()
+        owned_attempt_tables = {
+            row[0] for row in c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ("
+                "'short_drama_charge_attempts',"
+                "'short_drama_character_reference_attempts',"
+                "'short_drama_voice_charge_attempts')"
+            ).fetchall()
+        }
+        attempt_exclusion = " ".join(
+            "AND NOT EXISTS (SELECT 1 FROM %s a WHERE a.job_id=jobs.id)" % table
+            for table in (
+                "short_drama_charge_attempts",
+                "short_drama_character_reference_attempts",
+                "short_drama_voice_charge_attempts",
+            )
+            if table in owned_attempt_tables
         )
         rows = c.execute(
-            """SELECT id,username,cost FROM jobs
+            """SELECT jobs.id,jobs.username,jobs.cost,
+                      refund_tx.transaction_key AS recovery_refund_key FROM jobs
+               LEFT JOIN job_refund_transactions AS refund_tx
+                 ON refund_tx.job_id=jobs.id
                WHERE status='error' AND refunded=2 AND COALESCE(cost,0)>0
                %s ORDER BY updated_at ASC,id ASC LIMIT ?""" % attempt_exclusion,
             (max(1, int(limit or 100)),),
         ).fetchall()
     recovered = 0
     for row in rows:
-        if refund_job(row["id"], row["username"], row["cost"]):
+        transaction_key = str(row["recovery_refund_key"] or "")
+        confirmed = (refund_job(
+            row["id"], row["username"], row["cost"],
+            transaction_key=transaction_key) if transaction_key else
+            refund_job(row["id"], row["username"], row["cost"]))
+        if confirmed:
             recovered += 1
     return recovered
 
 
-def _compensate_failed_insert(jdb, refund, username, cost, kind, submission_ref, error, owner):
+def _compensate_failed_insert(jdb, refund, username, cost, kind, submission_ref,
+                              error, owner, charge_transaction_key=""):
     if int(cost or 0) <= 0:
         return "refunded"
-    fallback_key = "job-insert-refund:%s" % submission_ref
+    fallback_key = ("job-charge-refund:" + hashlib.sha256(
+        str(charge_transaction_key).encode("utf-8")).hexdigest()
+        if charge_transaction_key else "job-insert-refund:%s" % submission_ref)
     reason = "job:%s:insert_failed submit:%s" % (kind, submission_ref)
     now = int(time.time())
     payload = json.dumps({"_submission_ref": submission_ref}, ensure_ascii=False)
@@ -244,8 +269,15 @@ def _compensate_failed_insert(jdb, refund, username, cost, kind, submission_ref,
                 (kind, username, int(cost), payload,
                  "任务创建失败，退款待确认: %s" % str(error or "")[:180], now, now, owner),
             )
-            c.commit()
             retry_job_id = cur.lastrowid
+            if charge_transaction_key:
+                c.execute("""CREATE TABLE IF NOT EXISTS job_refund_transactions(
+                    job_id INTEGER PRIMARY KEY, transaction_key TEXT NOT NULL UNIQUE)""")
+                c.execute(
+                    "INSERT INTO job_refund_transactions(job_id,transaction_key) VALUES(?,?)",
+                    (retry_job_id, fallback_key),
+                )
+            c.commit()
     except Exception as record_error:
         try:
             if refund(username, cost, reason, transaction_key=fallback_key) is False:
@@ -257,7 +289,8 @@ def _compensate_failed_insert(jdb, refund, username, cost, kind, submission_ref,
                       submission_ref, username, cost, str(error)[:120],
                       str(refund_error)[:120], str(record_error)[:120]), flush=True)
             return "untracked"
-    transaction_key = refund_transaction_key(retry_job_id, username)
+    transaction_key = (fallback_key if charge_transaction_key else
+                       refund_transaction_key(retry_job_id, username))
     confirmed = refund_once(
         jdb, retry_job_id, username, cost,
         lambda u, c: refund(u, c, reason, transaction_key=transaction_key))
@@ -265,12 +298,14 @@ def _compensate_failed_insert(jdb, refund, username, cost, kind, submission_ref,
 
 
 def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_kind="",
-                     before_commit=None, charge_transaction_key=""):
+                     before_commit=None, charge_transaction_key="", before_charge=None):
     """一次预扣并原子写入一个或多个任务；失败补偿只维护这一处。"""
     items = [(int(cost or 0), payload) for cost, payload in items]
     total = sum(cost for cost, _ in items)
     submission_ref = uuid.uuid4().hex
     reason = "job:%s submit:%s" % (reason_kind or kind, submission_ref)
+    if before_charge is not None:
+        before_charge()
     points_left = (deduct(username, total, reason, charge_transaction_key)
                    if charge_transaction_key else deduct(username, total, reason))
     now = int(time.time())
@@ -293,18 +328,20 @@ def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_k
                 raise
     except Exception as error:
         state = _compensate_failed_insert(
-            jdb, refund, username, total, kind, submission_ref, error, owner)
+            jdb, refund, username, total, kind, submission_ref, error, owner,
+            charge_transaction_key=charge_transaction_key)
         raise PaidJobInsertError(state, submission_ref) from error
 
 
 def create_paid_job(jdb, deduct, refund, kind, username, cost, payload, owner,
-                    before_commit=None, charge_transaction_key=""):
+                    before_commit=None, charge_transaction_key="", before_charge=None):
     batch_callback = None
     if before_commit is not None:
         batch_callback = lambda connection, job_ids: before_commit(connection, job_ids[0])
     job_ids, points_left = create_paid_jobs(
         jdb, deduct, refund, kind, username, [(cost, payload)], owner,
-        before_commit=batch_callback, charge_transaction_key=charge_transaction_key)
+        before_commit=batch_callback, charge_transaction_key=charge_transaction_key,
+        before_charge=before_charge)
     return job_ids[0], points_left
 
 

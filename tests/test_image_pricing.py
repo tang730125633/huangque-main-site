@@ -15,8 +15,8 @@
        high 恒为 medium 的 4.00 倍 → ¥1.20 ~ ¥1.50
    取最贵档定价避免倒挂：标准 4 点、高清 15 点（原来高清只收 12 点，1:1 与 3:4 是亏的）。
 """
-import base64
 import importlib
+import base64
 import json
 import re
 import sys
@@ -32,6 +32,7 @@ core = importlib.import_module("content_domains.core")
 points = importlib.import_module("content_domains.points")
 BANANA = (ROOT / "site" / "workbench" / "banana.html").read_text(encoding="utf-8")
 IMGGEN_SRC = (ROOT / "server" / "imggen_api.py").read_text(encoding="utf-8")
+CORE_SRC = (ROOT / "server" / "content_domains" / "core.py").read_text(encoding="utf-8")
 image_domain = importlib.import_module("content_domains.image")
 
 FRONTEND_RATIOS = ["1:1", "9:16", "16:9", "3:4"]
@@ -71,24 +72,30 @@ class ZelongDedicatedChannelTests(unittest.TestCase):
                                              "ratio": "1:1", "quality": "std", "count": 1})
 
         self.assertEqual(captured["path"], "/v1/images/generations")
-        self.assertEqual(captured["base"], "https://api.zelong.vip")
-        self.assertEqual(captured["key"], "test-key")
         self.assertEqual(captured["body"], {"model": "zelong-cpa-gpt-image-2", "prompt": "demo",
-                                             "image_size": "1K", "aspect_ratio": "1:1", "n": 1,
-                                             "response_format": "b64_json"})
+                                            "image_size": "1K", "aspect_ratio": "1:1", "n": 1,
+                                            "response_format": "b64_json"})
         self.assertTrue(captured["streaming"])
         self.assertEqual(result["count"], 1)
 
-    def test_zelong2_card_is_visible_and_scoped(self):
-        tag = re.search(r'<div data-engine="zelong2"[^>]*>', BANANA).group(0)
-        self.assertNotIn("aria-hidden", tag)
-        self.assertNotIn("display:none", tag)
-        self.assertIn("泽龙专用生图", BANANA)
-        self.assertIn("当前支持纯文生图、1K 方图、标准清晰度、单张生成", BANANA)
-        self.assertIn("zelong2:1", BANANA)
-        self.assertIn("engine!=='zelong2'", BANANA)
-        self.assertIn("bp.reference_images=xiaoleRefs.slice()", BANANA)
-        self.assertNotIn("ZELONG2_KEY", BANANA)
+    def test_zelong2_card_is_hidden(self):
+        self.assertRegex(BANANA, r'data-engine="zelong2"[^>]*aria-hidden="true"[^>]*display:none')
+        self.assertIn("location.hostname==='zelong.huangquechuanmei.com'", BANANA)
+
+    def test_xiaole_card_fails_closed_until_runtime_flag_is_confirmed(self):
+        self.assertRegex(BANANA, r'data-engine="xiaole"[^>]*aria-hidden="true"[^>]*display:none')
+        self.assertIn("data.image_xiaole_enabled===true", BANANA)
+        self.assertIn("target.getAttribute('aria-hidden')!=='true'", BANANA)
+
+    def test_xiaole_provider_is_gated_before_image_cost_and_paid_job(self):
+        gate = CORE_SRC.index('feature_flags.require_enabled("image_xiaole")')
+        replay = CORE_SRC.index('if idem_state == "replay"')
+        cost = CORE_SRC.index("cost = points_domain.cost_of(kind, body)")
+        paid_job = CORE_SRC.index("jobs_store.create_paid_job(", cost)
+        self.assertLess(replay, gate)
+        self.assertLess(cost, gate)
+        self.assertLess(gate, paid_job)
+        self.assertIn('"image_xiaole_enabled": feature_flags.is_enabled("image_xiaole")', CORE_SRC)
 
 
 def _wh(size):

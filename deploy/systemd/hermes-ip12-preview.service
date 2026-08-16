@@ -1,0 +1,19 @@
+[Unit]
+Description=Huangque Hermes IP12 Flask
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/hermes-web
+EnvironmentFile=/home/ubuntu/.secrets/hermes-openai.env
+Environment=HERMES_ENABLE_INTERNAL_TOOLS=1
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 -c "import server; server.app.run(host='127.0.0.1', port=3102, debug=False)"
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

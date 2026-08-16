@@ -75,7 +75,7 @@ def object_url(rel_key, private=False):
     return _url(_object_key(rel_key), private=private)
 
 
-def upload(local_path, rel_key, content_type=None, private=False):
+def upload(local_path, rel_key, content_type=None, private=False, metadata=None):
     """把本地文件上传到 COS，返回可访问 URL。未启用或失败会抛异常，由调用方回退本地。"""
     if not enabled():
         raise RuntimeError("COS 未配置")
@@ -86,8 +86,25 @@ def upload(local_path, rel_key, content_type=None, private=False):
             kwargs["ContentType"] = content_type
         if private:
             kwargs["ACL"] = "private"
+        if metadata:
+            normalized_metadata = {}
+            for key, value in metadata.items():
+                name = str(key).strip().lower()
+                if not name.startswith("x-cos-meta-"):
+                    raise ValueError(
+                        "COS 自定义元数据必须以 x-cos-meta- 开头"
+                    )
+                normalized_metadata[name] = str(value)
+            kwargs["Metadata"] = normalized_metadata
         _client().put_object(**kwargs)
     return _url(full_key, private=private)
+
+
+def head(rel_key):
+    """读取对象元数据，用于正式成片上传后的长度与哈希校验。"""
+    if not enabled():
+        raise RuntimeError("COS 未配置")
+    return _client().head_object(Bucket=_BUCKET, Key=_object_key(rel_key))
 
 
 def put_bytes(data, rel_key, content_type=None, private=False):

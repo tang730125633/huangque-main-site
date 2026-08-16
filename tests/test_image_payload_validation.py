@@ -167,9 +167,24 @@ class XiaoleMultiReferenceTests(unittest.TestCase):
         self.assertEqual(2, len(out["reference_images"]))
         self.assertEqual(PNG, base64.b64decode(out["reference_images"][1], validate=True))
 
-    def test_other_engines_do_not_silently_receive_multi_reference(self):
-        with self.assertRaisesRegex(ValueError, "仅支持果肉生图"):
-            image.validate_image_payload({"prompt": "p", "reference_images": [_b64(PNG)]})
+    def test_openai_accepts_multiple_references_up_to_official_limit(self):
+        out = image.validate_image_payload({
+            "prompt": "让 @图片1 穿上 @图片2 的衣服",
+            "reference_images": [_b64(PNG), _b64(PNG)],
+        })
+        self.assertEqual(2, len(out["reference_images"]))
+
+    def test_missing_prompt_reference_is_rejected_before_charge(self):
+        with self.assertRaisesRegex(ValueError, "@图片2"):
+            image.validate_image_payload({
+                "prompt": "参考 @图片2", "reference_images": [_b64(PNG)]
+            })
+
+    def test_openai_rejects_over_official_limit(self):
+        with self.assertRaisesRegex(ValueError, "16 张"):
+            image.validate_image_payload({
+                "prompt": "p", "reference_images": [_b64(PNG)] * 17
+            })
 
 
 if __name__ == "__main__":

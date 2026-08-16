@@ -19,6 +19,9 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from content_domains.image_mentions import resolve_image_mentions, validate_image_mentions
+from content_domains import cli_gateway, pricing, submission_idempotency
+
 try:
     from content_domains import feature_flags
 except ImportError:
@@ -127,6 +130,8 @@ BASE_COST   = {"nb2": {"std": 18, "hd": 35}, "pro": {"std": 35, "hd": 44}}
 IMAGE_SIZES = {"nb2": {"std": "1K", "hd": "2K"}, "pro": {"std": "2K", "hd": "4K"}}
 RATIOS = {"1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"}
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_REFERENCE_IMAGES = 14
+MAX_REFERENCE_TOTAL_BYTES = 48 * 1024 * 1024
 
 def _clean_b64(value):
     raw = (value or "").strip()
@@ -169,7 +174,27 @@ def validate_banana_payload(body):
         raise ValueError("count 必须是 1、2 或 4")
     if count not in {1, 2, 4}:
         raise ValueError("count 必须是 1、2 或 4")
+    if body.get("image") and body.get("reference_images") is not None:
+        raise ValueError("image 与 reference_images 不能同时传；多图请统一使用 reference_images")
     _validate_b64_image(body, "image")
+    refs = body.get("reference_images")
+    if refs is not None:
+        if not isinstance(refs, list) or not refs:
+            raise ValueError("reference_images 必须是非空图片数组")
+        if len(refs) > MAX_REFERENCE_IMAGES:
+            raise ValueError("Nano Banana 最多支持 14 张参考图")
+        cleaned, total = [], 0
+        for index, value in enumerate(refs, 1):
+            one = {"image": value}
+            _validate_b64_image(one, "image")
+            if not one.get("image"):
+                raise ValueError("第%d张参考图不能为空" % index)
+            total += len(base64.b64decode(one["image"]))
+            cleaned.append(one["image"])
+        if total > MAX_REFERENCE_TOTAL_BYTES:
+            raise ValueError("参考图合计不能超过 48MB")
+        body["reference_images"] = cleaned
+    validate_image_mentions(prompt, len(body.get("reference_images") or ([] if not body.get("image") else [body["image"]])))
     body["prompt"] = prompt
     body["model"] = mkey
     body["ratio"] = ratio
@@ -243,8 +268,8 @@ def _auth_points(path, username, amount, reason="", transaction_key=""):
     except Exception:
         return 500, {"detail": "points update failed"}
 
-def deduct_points(username, amount, reason=""):
-    return _auth_points("/api/auth/points/deduct", username, amount, reason)
+def deduct_points(username, amount, reason="", transaction_key=""):
+    return _auth_points("/api/auth/points/deduct", username, amount, reason, transaction_key)
 
 def refund_points(username, amount, reason="", transaction_key=""):
     if transaction_key:
@@ -252,9 +277,9 @@ def refund_points(username, amount, reason="", transaction_key=""):
     return _auth_points("/api/auth/points/refund", username, amount, reason)
 
 
-def _deduct_paid_job(username, amount, reason):
+def _deduct_paid_job(username, amount, reason, transaction_key=""):
     from content_domains import jobs_store
-    status, data = deduct_points(username, amount, reason)
+    status, data = deduct_points(username, amount, reason, transaction_key)
     if status != 200:
         raise jobs_store.PaidJobDeductError(status, (data or {}).get("detail") or "点数扣除失败")
     return int((data or {}).get("points") or 0)
@@ -270,10 +295,10 @@ def verify(token):
 
 
 # ============ Nano Banana / Gemini image generation ============
-def _build_banana_body(prompt, ratio, image=None, image_size=None):
+def _build_banana_body(prompt, ratio, images=None, image_size=None):
     """Build Gemini generateContent request body."""
     parts = []
-    if image:
+    for image in images or []:
         # Frontend sends uploaded/reference/result images as PNG base64.
         parts.append({"inlineData": {"mimeType": "image/png", "data": image}})
     parts.append({"text": prompt})
@@ -308,24 +333,26 @@ def _banana_one(model, body, idx, ratio=None):
 # ============ worker锛堝け璐ラ€€鐐癸紱娓呴亾澶敱 content_api 缁熶竴璺戯級 ============
 def gen_banana(payload):
     payload = validate_banana_payload(payload)
-    prompt = payload["prompt"]
+    user_prompt = payload["prompt"]
     mkey = payload["model"]
     model = MODELS[mkey]
     ratio = payload["ratio"]
     image = payload.get("image")
+    images = list(payload.get("reference_images") or ([] if not image else [image]))
+    prompt = resolve_image_mentions(user_prompt, len(images))
     q = payload["quality"]
     image_size = IMAGE_SIZES[mkey][q]
     count = payload["count"]
     if not GEMINI_KEY:
         raise ValueError("GEMINI_API_KEY 未配置")
-    body = json.dumps(_build_banana_body(prompt, ratio, image, image_size)).encode()
+    body = json.dumps(_build_banana_body(prompt, ratio, images, image_size)).encode()
     items = [_banana_one(model, body, i, ratio) for i in range(count)]
     files = [fn for fn, _ in items]
     dimensions = [dim for _, dim in items if dim]
     urls = [_public_url(f, "image/png") for f in files]
-    result = {"type": "image", "mode": ("nanobanana_img2img_" if image else "nanobanana_") + mkey, "model": model,
+    result = {"type": "image", "mode": ("nanobanana_img2img_" if images else "nanobanana_") + mkey, "model": model,
             "image_size": image_size, "quality": q, "count": count, "file": files[0], "url": urls[0],
-            "files": files, "urls": urls, "ratio": ratio, "prompt": prompt}
+            "files": files, "urls": urls, "ratio": ratio, "prompt": user_prompt}
     if dimensions:
         result["width"] = dimensions[0]["width"]
         result["height"] = dimensions[0]["height"]
@@ -587,13 +614,35 @@ class H(BaseHTTPRequestHandler):
                 body = validate_banana_payload(body)
             except ValueError as e:
                 return self._send(400, {"detail": str(e)})
+            # The same endpoint is also used by Canvas.  Keep source_page only
+            # when the customer image page supplied it; forcing it here would
+            # mix Canvas work into the image-page operations report.
+            body["provider"] = "banana"
             mk = body["model"]
             cq = body["quality"]
             cn = body["count"]
-            cost = BASE_COST[mk][cq] * cn  # 璐ㄩ噺鍩轰环 脳 鏁伴噺
+            cost = pricing.get_price("image.banana.%s.%s" % (mk, cq)) * cn
+            if cli_gateway.reject_changed_cost(self, cost, INTERNAL_TOKEN):
+                return
+            try:
+                idem_key = submission_idempotency.clean_key(self.headers.get("Idempotency-Key"))
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
+            idem_state, idem_response = submission_idempotency.begin(
+                jdb, user["username"], p, idem_key, body)
+            if idem_state == "replay":
+                replay = dict(idem_response or {})
+                return self._send(int(replay.pop("_http_status", 200)), replay)
+            if idem_state == "conflict":
+                return self._send(409, {"detail": "同一个 Idempotency-Key 不能用于不同请求",
+                                        "code": "idempotency_conflict"})
+            if idem_state == "processing":
+                return self._send(409, {"detail": "相同请求正在受理，请稍后查询",
+                                        "code": "idempotency_in_progress", "retry_after_ms": 1000})
             with _submission_lock:
                 active_jobs = _user_active_job_count(user["username"])
                 if active_jobs >= MAX_USER_ACTIVE_JOBS:
+                    submission_idempotency.abort(jdb, user["username"], p, idem_key)
                     return self._send(429, {"detail": "您有 %d 个生图任务正在排队/生成，完成后再提交" % active_jobs,
                                             "code": "active_job_cap", "active_jobs": active_jobs,
                                             "max_active_jobs": MAX_USER_ACTIVE_JOBS,
@@ -602,20 +651,32 @@ class H(BaseHTTPRequestHandler):
                     from content_domains import jobs_store
                     jid, points_left = jobs_store.create_paid_job(
                         jdb, _deduct_paid_job, _refund_via_auth, "image", user["username"],
-                        cost, body, SERVICE_OWNER)
+                        cost, body, SERVICE_OWNER,
+                        charge_transaction_key=("job-charge:%s:%s:%s" % (
+                            user["username"], p, idem_key)) if idem_key else "")
                 except jobs_store.PaidJobDeductError as e:
+                    submission_idempotency.abort(jdb, user["username"], p, idem_key)
                     return self._send(e.status if e.status in (402, 403) else 500,
                                       {"detail": e.detail, "need": cost})
                 except jobs_store.PaidJobInsertError as e:
-                    return self._send(500, {"detail": {"refunded": "任务创建失败，点数已退回",
+                    failed = {"detail": {"refunded": "任务创建失败，点数已退回",
                         "queued": "任务创建失败，退款正在自动确认"}.get(e.compensation,
-                        "任务创建失败，退款需人工核对"), "submission_ref": e.submission_ref})
+                        "任务创建失败，退款需人工核对"), "submission_ref": e.submission_ref}
+                    submission_idempotency.complete(
+                        jdb, user["username"], p, idem_key, dict(failed, _http_status=500))
+                    return self._send(500, failed)
                 # 入队，不再裸起线程：有界 worker 池 + 单用户运行闸(见 run_job)。
                 # 队列满就当场判死退点——静默丢任务等于白扣用户的点。
                 if not enqueue_job(jid):
                     _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
-                    return self._send(429, {"detail": "任务队列已满，请稍后再试", "retry_after_ms": 5000})
-            return self._send(200, {"job_id": jid, "cost": cost, "points_left": points_left})
+                    rejected = {"detail": "任务队列已满，请稍后再试", "code": "queue_full",
+                                "retry_after_ms": 5000}
+                    submission_idempotency.complete(
+                        jdb, user["username"], p, idem_key, dict(rejected, _http_status=429))
+                    return self._send(429, rejected)
+            response = {"job_id": jid, "cost": cost, "points_left": points_left}
+            submission_idempotency.complete(jdb, user["username"], p, idem_key, response)
+            return self._send(200, response)
         if p == "/api/gen/reverse":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
@@ -643,7 +704,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": "请先上传或粘贴一张图片"})
             if len(image) > 8 * 1024 * 1024:     # base64 ~8MB ≈ 原图 6MB
                 return self._send(400, {"detail": "图片太大，请压缩后再试"})
-            cost = REVERSE_COST
+            cost = pricing.get_price("image.reverse")
             deduct_status, deduct_data = deduct_points(user["username"], cost, "reverse")
             if deduct_status in (402, 403):
                 return self._send(deduct_status, {"detail": (deduct_data or {}).get("detail") or "点数不足", "need": cost})
@@ -695,6 +756,7 @@ if __name__ == "__main__":
         _selftest(); raise SystemExit(0)
     if feature_flags is not None:
         feature_flags.init_db()
+    pricing.init_db()
     from content_domains import jobs_store
     jobs_store.ensure_owner_column(jdb)   # 必须在 start_job_workers 之前：重排扫描按 owner 过滤
     start_job_workers()

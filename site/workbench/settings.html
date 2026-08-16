@@ -17,12 +17,17 @@
   .settings-sub{margin:8px 0 0;color:#94a4bb;font-size:13.5px;line-height:1.7}
   .settings-grid{display:grid;grid-template-columns:minmax(0,1.04fr) minmax(320px,.76fr);gap:18px;align-items:start}
   .settings-card{border:1px solid rgba(148,164,187,.12);border-radius:12px;background:linear-gradient(165deg,rgba(16,24,39,.66),rgba(12,18,32,.48));box-shadow:0 16px 42px rgba(0,0,0,.13);overflow:hidden}
+  .settings-card[hidden]{display:none}
   .settings-card-body{padding:20px}
   .settings-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:16px}
   .settings-card-title{font-size:16px;font-weight:800;color:#eaf1fa}
   .settings-card-note{font-size:12px;color:#6f7f96;line-height:1.6}
   .profile-top{display:flex;align-items:center;gap:16px;margin-bottom:18px}
-  .profile-avatar{width:54px;height:54px;border-radius:12px;background:linear-gradient(150deg,#9a6a3a,#5a3d22);display:flex;align-items:center;justify-content:center;color:#fff;font-size:22px;font-weight:800;flex:none}
+  .profile-avatar{position:relative;width:54px;height:54px;padding:0;overflow:hidden;border:1px solid rgba(231,178,76,.35);border-radius:12px;background:linear-gradient(150deg,#9a6a3a,#5a3d22);display:flex;align-items:center;justify-content:center;color:#fff;font-family:inherit;font-size:22px;font-weight:800;cursor:pointer;flex:none}
+  .profile-avatar:hover,.profile-avatar:focus-visible{border-color:#e7b24c;outline:none;box-shadow:0 0 0 3px rgba(231,178,76,.12)}
+  .profile-avatar img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+  .profile-avatar-action{position:absolute;left:0;right:0;bottom:0;padding:3px 0;background:rgba(2,6,14,.72);color:#fff;font-size:9px;line-height:1;letter-spacing:.04em}
+  .profile-avatar.busy{cursor:wait;opacity:.75}
   .profile-main{min-width:0;flex:1}
   .profile-name{font-size:20px;font-weight:800;color:#eaf1fa;line-height:1.25}
   .profile-user{margin-top:5px;color:#94a4bb;font-size:13px}
@@ -44,6 +49,34 @@
   .field span{font-size:12.5px;font-weight:700;color:#eaf1fa}
   .field input{height:42px;border:1px solid rgba(148,164,187,.16);border-radius:9px;background:rgba(7,11,19,.5);color:#eaf1fa;padding:0 12px;font:13px inherit;outline:none}
   .field input:focus{border-color:rgba(231,178,76,.42);box-shadow:0 0 0 3px rgba(231,178,76,.08)}
+  .gift-form-grid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(120px,.75fr);gap:10px}
+  .gift-account-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}
+  .gift-account-row input{font-family:'JetBrains Mono',monospace;font-weight:800;text-transform:uppercase}
+  .gift-account-row .btn{height:42px}
+  .gift-recipient{display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid rgba(148,164,187,.1);border-bottom:1px solid rgba(148,164,187,.1)}
+  .gift-recipient[hidden]{display:none}
+  .gift-recipient-avatar{width:38px;height:38px;border-radius:9px;background:rgba(231,178,76,.12);color:#e7b24c;display:grid;place-items:center;font-size:15px;font-weight:900;overflow:hidden;flex:none}
+  .gift-recipient-avatar img{width:100%;height:100%;object-fit:cover}
+  .gift-recipient-main{min-width:0;flex:1}
+  .gift-recipient-name{font-size:13.5px;font-weight:800;color:#eaf1fa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .gift-recipient-id{margin-top:3px;color:#6f7f96;font:12px 'JetBrains Mono',monospace}
+  .gift-balance-line{display:flex;align-items:center;justify-content:space-between;gap:12px;color:#6f7f96;font-size:11.5px;line-height:1.6}
+  .gift-balance-line strong{color:#e7b24c;font-variant-numeric:tabular-nums}
+  .gift-history-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:20px;padding-top:16px;border-top:1px solid rgba(148,164,187,.1)}
+  .gift-history-title{font-size:13.5px;font-weight:800;color:#eaf1fa}
+  .gift-history{display:flex;flex-direction:column;margin-top:8px}
+  .gift-history-row{display:flex;align-items:center;gap:11px;padding:11px 0;border-top:1px solid rgba(148,164,187,.08)}
+  .gift-history-row:first-child{border-top:0}
+  .gift-history-main{min-width:0;flex:1}
+  .gift-history-name{font-size:12.5px;font-weight:800;color:#eaf1fa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .gift-history-meta{margin-top:3px;color:#6f7f96;font-size:11px;line-height:1.5}
+  .gift-history-amount{font:800 13px 'JetBrains Mono',monospace;white-space:nowrap}
+  .gift-history-amount.sent{color:#f4708a}
+  .gift-history-amount.received{color:#2dd4bf}
+  .gift-history-more{width:100%;height:34px;margin-top:8px}
+  .gift-confirm-summary{display:grid;grid-template-columns:1fr auto;gap:8px 14px;padding:12px 0;margin-bottom:14px;border-top:1px solid rgba(148,164,187,.1);border-bottom:1px solid rgba(148,164,187,.1);font-size:12.5px;color:#94a4bb}
+  .gift-confirm-summary strong{color:#eaf1fa;text-align:right;word-break:break-word}
+  .gift-warning{margin:12px 0 0;color:#e7b24c;font-size:11.5px;line-height:1.6}
   .action-row{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:4px;flex-wrap:wrap}
   .btn{height:40px;padding:0 16px;border-radius:9px;border:1px solid rgba(148,164,187,.15);background:rgba(148,164,187,.06);color:#94a4bb;font:800 13px inherit;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap}
   .btn:hover{border-color:rgba(231,178,76,.3);color:#e7b24c}
@@ -154,7 +187,7 @@
     .billing-card{align-items:flex-start;flex-direction:column}
   }
   @media (max-width:620px){.theme-options{grid-template-columns:1fr}}
-  @media (max-width:520px){.profile-top{align-items:flex-start;flex-wrap:wrap}.profile-edit-btn{margin-left:70px}.profile-editor{grid-template-columns:1fr}.profile-editor-actions{justify-content:flex-end}.friend-form{grid-template-columns:1fr}.friend-detail-grid{grid-template-columns:1fr}#friendsPanelCard{top:64px;left:12px;right:12px;width:auto;max-height:calc(100vh - 82px)}}
+  @media (max-width:520px){.profile-top{align-items:flex-start;flex-wrap:wrap}.profile-edit-btn{margin-left:70px}.profile-editor{grid-template-columns:1fr}.profile-editor-actions{justify-content:flex-end}.friend-form{grid-template-columns:1fr}.friend-detail-grid{grid-template-columns:1fr}.gift-form-grid{grid-template-columns:1fr}#friendsPanelCard{top:64px;left:12px;right:12px;width:auto;max-height:calc(100vh - 82px)}}
 </style>
 <link rel="stylesheet" href="theme.css?v=5873a2f4">
 </head>
@@ -178,7 +211,8 @@
             <span id="accountStatus" class="badge">读取中</span>
           </div>
           <div class="profile-top">
-            <div id="profileAvatar" class="profile-avatar">--</div>
+            <button id="profileAvatar" class="profile-avatar" type="button" aria-label="更换头像" title="更换头像"><span id="profileAvatarFallback">--</span><img id="profileAvatarImage" alt="" hidden><span id="profileAvatarAction" class="profile-avatar-action" aria-hidden="true">更换</span></button>
+            <input id="profileAvatarInput" type="file" accept="image/jpeg,image/png,image/webp" hidden>
             <div class="profile-main">
               <div id="displayName" class="profile-name">正在读取账号</div>
               <div id="username" class="profile-user">--</div>
@@ -361,6 +395,38 @@
         </div>
       </section>
 
+      <section id="pointsGiftCard" class="settings-card" hidden>
+        <div class="settings-card-body">
+          <div class="settings-card-head">
+            <div>
+              <div class="settings-card-title">赠送点数</div>
+              <div class="settings-card-note">通过唯一账号 ID 赠送可消费点数，每日最多 100,000 点。邀请奖励独立记录，不计入可赠送余额。</div>
+            </div>
+            <span id="giftDailyBadge" class="badge muted">读取中</span>
+          </div>
+          <form id="pointsGiftForm" class="settings-form">
+            <div class="gift-form-grid">
+              <label class="field">
+                <span>收款账号 ID</span>
+                <span class="gift-account-row"><input id="giftAccountId" type="text" maxlength="8" autocomplete="off" placeholder="例如 HQABC234"><button id="lookupGiftRecipientBtn" class="btn" type="button">查找</button></span>
+              </label>
+              <label class="field"><span>赠送点数</span><input id="giftAmount" type="number" min="1" max="100000" step="1" inputmode="numeric" placeholder="1–100000"></label>
+            </div>
+            <div id="giftRecipient" class="gift-recipient" hidden>
+              <div id="giftRecipientAvatar" class="gift-recipient-avatar">--</div>
+              <div class="gift-recipient-main"><div id="giftRecipientName" class="gift-recipient-name">--</div><div id="giftRecipientId" class="gift-recipient-id">--</div></div>
+              <span class="badge">已确认</span>
+            </div>
+            <label class="field"><span>备注（选填）</span><input id="giftNote" type="text" maxlength="80" autocomplete="off" placeholder="对方会在赠送记录中看到"></label>
+            <div class="gift-balance-line"><span>当前可赠送 <strong id="giftAvailablePoints">--</strong> 点</span><span>今日剩余 <strong id="giftDailyRemaining">--</strong> 点</span></div>
+            <div class="action-row"><button id="openGiftConfirmBtn" class="btn primary" type="submit">确认赠送</button></div>
+          </form>
+          <div class="gift-history-head"><div class="gift-history-title">赠送记录</div><span id="giftHistoryCount" class="settings-card-note">0 条</span></div>
+          <div id="giftHistory" class="gift-history" aria-live="polite"><div class="member-empty">正在读取赠送记录。</div></div>
+          <button id="loadMoreGiftHistoryBtn" class="btn gift-history-more" type="button" hidden>加载更多</button>
+        </div>
+      </section>
+
       <section id="inviteShareCard" class="settings-card">
         <div class="settings-card-body">
           <div class="settings-card-head">
@@ -403,6 +469,30 @@
     </div>
   </section>
 </div>
+<div id="giftConfirmModal" class="modal-mask" aria-hidden="true">
+  <section class="settings-modal" role="dialog" aria-modal="true" aria-labelledby="giftConfirmTitle">
+    <div class="settings-modal-head">
+      <div>
+        <div id="giftConfirmTitle" class="settings-card-title">确认赠送点数</div>
+        <div class="settings-card-note">核对收款账号并验证当前登录密码。</div>
+      </div>
+      <button id="closeGiftConfirmModal" class="icon-btn" type="button" aria-label="关闭赠送确认弹窗">×</button>
+    </div>
+    <div class="settings-modal-body">
+      <div class="gift-confirm-summary">
+        <span>收款用户</span><strong id="giftConfirmRecipient">--</strong>
+        <span>账号 ID</span><strong id="giftConfirmAccountId">--</strong>
+        <span>赠送点数</span><strong id="giftConfirmAmount">--</strong>
+        <span>备注</span><strong id="giftConfirmNote">无</strong>
+      </div>
+      <form id="giftConfirmForm" class="settings-form">
+        <label class="field"><span>当前登录密码</span><input id="giftPassword" type="password" autocomplete="current-password" maxlength="128" placeholder="输入当前登录密码"></label>
+        <p class="gift-warning">赠送成功后即时到账，不能自行撤回。</p>
+        <div class="action-row"><button id="cancelGiftConfirmBtn" class="btn" type="button">取消</button><button id="submitGiftBtn" class="btn primary" type="submit">确认赠送</button></div>
+      </form>
+    </div>
+  </section>
+</div>
 <div id="friendDeleteConfirm" class="modal-mask friend-delete-modal" aria-hidden="true">
   <section class="settings-modal" role="alertdialog" aria-modal="true" aria-labelledby="friendDeleteTitle" aria-describedby="friendDeleteDescription">
     <div class="settings-modal-head">
@@ -422,12 +512,20 @@
   </section>
 </div>
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=e836823b"></script>
+<script src="cloud-shell.js?v=5c2643d5"></script>
 <script>
 (function(){
   var $ = function(id){return document.getElementById(id);};
   var activeUser = null;
   var activeFriendKey = '';
+  var giftRecipient = null;
+  var giftHistoryItems = [];
+  var giftHistoryTotal = 0;
+  var giftHistoryOffset = 0;
+  var giftHistoryLoading = false;
+  var giftLimitsLoaded = false;
+  var giftDailyRemaining = 0;
+  var giftRequestId = '';
   var DEFAULT_PREFERENCES = {
     notifications:{taskSuccess:true,taskFailure:true,taskProgress:false,pointsChanges:true,systemNotices:true}
   };
@@ -553,14 +651,19 @@
     });
   }
 
+  function canGiftPoints(user){
+    return !!(user&&user.membership_active&&(user.membership_tier==='partner'||user.membership_tier==='initiator'));
+  }
+
   function renderUser(user){
     user = user || {};
     activeUser = user;
+    $('pointsGiftCard').hidden=!canGiftPoints(user);
     var localProfile=readJson(accountKey('hq_profile_v1'));
     var name = localProfile.nickname || user.name || user.display_name || user.username || '未命名账号';
     $('displayName').textContent = name;
     $('username').textContent = '@' + (user.username || '--');
-    $('profileAvatar').textContent = initial(name);
+    renderProfileAvatar(user.avatar,name);
     $('role').textContent = roleText(user.role);
     $('points').textContent = Number(user.points || 0).toLocaleString();
     var accountId=accountIdForUser(user);
@@ -574,6 +677,48 @@
     try{localStorage.setItem('hq_user', JSON.stringify(user));}catch(e){}
     loadPreferences();
   }
+
+  function renderProfileAvatar(url,name){
+    var img=$('profileAvatarImage'), fallback=$('profileAvatarFallback');
+    fallback.textContent=initial(name);
+    url=typeof url==='string'?url.trim():'';
+    if(url){ img.src=url; img.hidden=false; fallback.hidden=true; }
+    else{ img.removeAttribute('src'); img.hidden=true; fallback.hidden=false; }
+  }
+
+  function setAvatarBusy(on){
+    var btn=$('profileAvatar');
+    btn.disabled=!!on;
+    btn.classList.toggle('busy',!!on);
+    $('profileAvatarAction').textContent=on?'上传中':'更换';
+  }
+
+  function uploadAvatar(file){
+    if(!file) return;
+    if(['image/jpeg','image/png','image/webp'].indexOf(file.type)<0){ toast('请选择 JPG、PNG 或 WebP 图片'); return; }
+    if(file.size<1||file.size>4*1024*1024){ toast('头像需小于 4MB'); return; }
+    var reader=new FileReader();
+    reader.onerror=function(){ toast('头像读取失败'); };
+    reader.onload=function(){
+      setAvatarBusy(true);
+      apiFetch('/api/auth/card/media',{
+        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({field:'avatar',data:reader.result})
+      }).then(function(res){
+        var url=res&&res.data&&(res.data.url||(res.data.card&&res.data.card.avatar));
+        if(!res||!res.ok||!url) throw new Error(res&&res.data&&res.data.detail||'头像上传失败');
+        activeUser=Object.assign({},activeUser||{},{avatar:url});
+        renderUser(activeUser);
+        if(window.HQ&&typeof window.HQ.refreshPoints==='function') window.HQ.refreshPoints();
+        toast('头像已同步到网页和小程序');
+      }).catch(function(err){ toast(err.message||'头像上传失败'); })
+        .finally(function(){ setAvatarBusy(false); });
+    };
+    reader.readAsDataURL(file);
+  }
+
+  $('profileAvatar').addEventListener('click',function(){ $('profileAvatarInput').click(); });
+  $('profileAvatarInput').addEventListener('change',function(){ var file=this.files&&this.files[0]; this.value=''; uploadAvatar(file); });
+  $('profileAvatarImage').addEventListener('error',function(){ this.hidden=true; $('profileAvatarFallback').hidden=false; });
 
   function loadReferrer(){
     apiFetch('/api/invite/referrer').then(function(res){
@@ -640,11 +785,6 @@
       method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({display_name:name})
     }).then(function(res){
       if(!res) return;
-      if(res.status===404){
-        applyNickname(activeUser,name,true);
-        toast('昵称已保存在当前浏览器');
-        return;
-      }
       if(!res.ok||!res.data.user) throw new Error(res.data.detail||'保存昵称失败');
       applyNickname(res.data.user,name,false);
       toast('昵称已保存');
@@ -695,6 +835,222 @@
     if(!id || id==='--'){ toast('账号 ID 暂未生成'); return; }
     copyText(id).then(function(){ toast('账号 ID 已复制'); })
       .catch(function(){ toast('复制失败，请手动选择账号 ID'); });
+  });
+
+  function newGiftRequestId(){
+    if(window.crypto && typeof window.crypto.randomUUID === 'function') return 'gift-' + window.crypto.randomUUID();
+    return 'gift-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,14);
+  }
+
+  function resetGiftRequest(){ giftRequestId=''; }
+
+  function renderGiftLimits(data){
+    data=data||{};
+    if(Number.isFinite(Number(data.points)) && activeUser){
+      activeUser.points=Number(data.points);
+      $('points').textContent=Number(activeUser.points||0).toLocaleString();
+    }
+    giftDailyRemaining=Math.max(0,Number(data.daily_remaining||0));
+    giftLimitsLoaded=true;
+    $('giftAvailablePoints').textContent=Number(activeUser&&activeUser.points||0).toLocaleString();
+    $('giftDailyRemaining').textContent=giftDailyRemaining.toLocaleString();
+    $('giftDailyBadge').textContent='今日剩余 '+giftDailyRemaining.toLocaleString();
+    $('giftDailyBadge').classList.toggle('muted',giftDailyRemaining<=0);
+  }
+
+  function clearGiftRecipient(){
+    giftRecipient=null;
+    $('giftRecipient').hidden=true;
+    $('giftRecipientAvatar').textContent='--';
+    $('giftRecipientName').textContent='--';
+    $('giftRecipientId').textContent='--';
+    resetGiftRequest();
+  }
+
+  function renderGiftRecipient(recipient){
+    giftRecipient=recipient;
+    var avatar=$('giftRecipientAvatar');
+    avatar.innerHTML='';
+    if(recipient.avatar){
+      var image=document.createElement('img');
+      image.alt='';
+      image.src=recipient.avatar;
+      image.addEventListener('error',function(){ avatar.textContent=initial(recipient.name); });
+      avatar.appendChild(image);
+    }else avatar.textContent=initial(recipient.name);
+    $('giftRecipientName').textContent=recipient.name||'黄雀用户';
+    $('giftRecipientId').textContent=recipient.account_id||'--';
+    $('giftRecipient').hidden=false;
+    resetGiftRequest();
+  }
+
+  function lookupGiftRecipient(openAfter){
+    var accountId=($('giftAccountId').value||'').trim().toUpperCase();
+    var btn=$('lookupGiftRecipientBtn');
+    if(!/^HQ[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}$/.test(accountId)){
+      toast('请输入正确的 8 位账号 ID');
+      $('giftAccountId').focus();
+      return Promise.resolve(false);
+    }
+    if(activeUser && accountId===activeUser.account_id){ toast('不能向自己赠送点数'); return Promise.resolve(false); }
+    setBusy(btn,true,'查找中');
+    return apiFetch('/api/auth/points/transfer/recipient?account_id='+encodeURIComponent(accountId)).then(function(res){
+      if(!res||!res.ok||!res.data.recipient) throw new Error(res&&res.data&&res.data.detail||'未找到该收款账号');
+      renderGiftRecipient(res.data.recipient);
+      if(openAfter) openGiftConfirm();
+      else toast('已确认收款用户');
+      return true;
+    }).catch(function(err){
+      clearGiftRecipient();
+      toast(err.message||'收款账号查找失败');
+      return false;
+    }).finally(function(){ setBusy(btn,false,'查找'); });
+  }
+
+  function giftDraft(){
+    var raw=($('giftAmount').value||'').trim();
+    var amount=/^\d+$/.test(raw)?Number(raw):0;
+    return {
+      recipient_account_id:($('giftAccountId').value||'').trim().toUpperCase(),
+      amount:amount,
+      note:($('giftNote').value||'').trim()
+    };
+  }
+
+  function validateGiftDraft(){
+    var draft=giftDraft();
+    if(!giftLimitsLoaded){ toast('赠送额度正在读取，请稍后'); return null; }
+    if(!giftRecipient||giftRecipient.account_id!==draft.recipient_account_id){ toast('请先确认收款用户'); return null; }
+    if(!Number.isInteger(draft.amount)||draft.amount<1||draft.amount>100000){ toast('赠送点数必须是 1–100000 的整数'); return null; }
+    if(draft.amount>Number(activeUser&&activeUser.points||0)){ toast('可赠送点数不足'); return null; }
+    if(draft.amount>giftDailyRemaining){ toast('今日赠送额度不足'); return null; }
+    if(draft.note.length>80){ toast('备注不能超过 80 个字'); return null; }
+    return draft;
+  }
+
+  function setGiftConfirmOpen(open){
+    var modal=$('giftConfirmModal');
+    modal.classList.toggle('show',!!open);
+    modal.setAttribute('aria-hidden',open?'false':'true');
+    if(open) setTimeout(function(){ $('giftPassword').focus(); },0);
+    else $('giftPassword').value='';
+  }
+
+  function openGiftConfirm(){
+    var draft=validateGiftDraft();
+    if(!draft) return;
+    $('giftConfirmRecipient').textContent=giftRecipient.name||'黄雀用户';
+    $('giftConfirmAccountId').textContent=giftRecipient.account_id;
+    $('giftConfirmAmount').textContent=draft.amount.toLocaleString()+' 点';
+    $('giftConfirmNote').textContent=draft.note||'无';
+    if(!giftRequestId) giftRequestId=newGiftRequestId();
+    setGiftConfirmOpen(true);
+  }
+
+  function formatGiftTime(value){
+    var date=new Date(Number(value||0)*1000);
+    if(!Number(value)||Number.isNaN(date.getTime())) return '--';
+    return date.toLocaleString('zh-CN',{hour12:false});
+  }
+
+  function renderGiftHistory(){
+    $('giftHistoryCount').textContent=giftHistoryTotal+' 条';
+    if(!giftHistoryItems.length){
+      $('giftHistory').innerHTML='<div class="member-empty">暂无赠送记录。</div>';
+      return;
+    }
+    $('giftHistory').innerHTML=giftHistoryItems.map(function(item){
+      var party=item.counterpart||{};
+      var sent=item.direction==='sent';
+      var action=sent?'赠给':'收到';
+      var note=item.note?' · '+item.note:'';
+      return '<div class="gift-history-row">'+
+        '<div class="member-avatar">'+esc(initial(party.name))+'</div>'+
+        '<div class="gift-history-main"><div class="gift-history-name">'+esc(action+' '+(party.name||'黄雀用户'))+'</div>'+
+        '<div class="gift-history-meta">'+esc((party.account_id||'--')+' · '+formatGiftTime(item.created_at)+note)+'</div></div>'+
+        '<div class="gift-history-amount '+(sent?'sent':'received')+'">'+(sent?'-':'+')+Number(item.amount||0).toLocaleString()+'</div>'+
+      '</div>';
+    }).join('');
+  }
+
+  function loadGiftHistory(reset){
+    if(giftHistoryLoading) return Promise.resolve();
+    if(reset){ giftHistoryOffset=0; giftHistoryItems=[]; giftHistoryTotal=0; }
+    giftHistoryLoading=true;
+    var btn=$('loadMoreGiftHistoryBtn');
+    if(!giftHistoryItems.length) $('giftHistory').innerHTML='<div class="member-empty">正在读取赠送记录。</div>';
+    setBusy(btn,true,'读取中');
+    return apiFetch('/api/auth/points/transfers?limit=20&offset='+giftHistoryOffset).then(function(res){
+      if(!res||!res.ok) throw new Error(res&&res.data&&res.data.detail||'赠送记录读取失败');
+      var items=Array.isArray(res.data.items)?res.data.items:[];
+      giftHistoryTotal=Number(res.data.total||0);
+      giftHistoryItems=giftHistoryItems.concat(items);
+      giftHistoryOffset=giftHistoryItems.length;
+      renderGiftLimits(res.data);
+      renderGiftHistory();
+      btn.hidden=giftHistoryOffset>=giftHistoryTotal;
+    }).catch(function(err){
+      if(!giftHistoryItems.length) $('giftHistory').innerHTML='<div class="member-empty">'+esc(err.message||'赠送记录读取失败')+'</div>';
+      $('giftDailyBadge').textContent='读取失败';
+    }).finally(function(){
+      giftHistoryLoading=false;
+      setBusy(btn,false,'加载更多');
+    });
+  }
+
+  $('giftAccountId').addEventListener('input',function(){
+    var value=this.value.toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,8);
+    if(value!==this.value) this.value=value;
+    if(!giftRecipient||giftRecipient.account_id!==value) clearGiftRecipient();
+  });
+  $('giftAmount').addEventListener('input',resetGiftRequest);
+  $('giftNote').addEventListener('input',resetGiftRequest);
+  $('lookupGiftRecipientBtn').addEventListener('click',function(){ lookupGiftRecipient(false); });
+  $('pointsGiftForm').addEventListener('submit',function(e){
+    e.preventDefault();
+    var accountId=($('giftAccountId').value||'').trim().toUpperCase();
+    if(!giftRecipient||giftRecipient.account_id!==accountId) lookupGiftRecipient(true);
+    else openGiftConfirm();
+  });
+  $('closeGiftConfirmModal').addEventListener('click',function(){ setGiftConfirmOpen(false); });
+  $('cancelGiftConfirmBtn').addEventListener('click',function(){ setGiftConfirmOpen(false); });
+  $('giftConfirmModal').addEventListener('click',function(e){ if(e.target===this) setGiftConfirmOpen(false); });
+  document.addEventListener('keydown',function(e){
+    if(e.key==='Escape'&&$('giftConfirmModal').classList.contains('show')) setGiftConfirmOpen(false);
+  });
+  $('loadMoreGiftHistoryBtn').addEventListener('click',function(){ loadGiftHistory(false); });
+  $('giftConfirmForm').addEventListener('submit',function(e){
+    e.preventDefault();
+    var draft=validateGiftDraft(), password=$('giftPassword').value, btn=$('submitGiftBtn');
+    if(!draft) return;
+    if(!password){ toast('请输入当前登录密码'); $('giftPassword').focus(); return; }
+    if(!giftRequestId) giftRequestId=newGiftRequestId();
+    setBusy(btn,true,'赠送中');
+    apiFetch('/api/auth/points/transfer',{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+        recipient_account_id:draft.recipient_account_id,
+        amount:draft.amount,
+        password:password,
+        request_id:giftRequestId,
+        note:draft.note
+      })
+    }).then(function(res){
+      if(!res||!res.ok||!res.data.transfer) throw new Error(res&&res.data&&res.data.detail||'点数赠送失败');
+      renderGiftLimits(res.data.transfer);
+      setGiftConfirmOpen(false);
+      $('giftAccountId').value='';
+      $('giftAmount').value='';
+      $('giftNote').value='';
+      clearGiftRecipient();
+      giftRequestId='';
+      toast('赠送成功，对方已到账 '+draft.amount.toLocaleString()+' 点');
+      loadGiftHistory(true);
+      if(window.HQ&&typeof window.HQ.refreshPoints==='function') window.HQ.refreshPoints();
+    }).catch(function(err){
+      $('giftPassword').value='';
+      toast(err.message||'点数赠送失败');
+      setTimeout(function(){ $('giftPassword').focus(); },0);
+    }).finally(function(){ setBusy(btn,false,'确认赠送'); });
   });
 
   function loadInviteShare(){
@@ -1165,24 +1521,8 @@
         }
         return;
       }
-      if(res && res.status === 404 && res.data && res.data.detail === 'not found'){
-        if(addLocalOutgoingRequest(accountId)){
-          setFriendStatus('好友申请已发送','ok');
-          toast('好友申请已发送到本地预览');
-        }else{
-          setFriendStatus('请勿重复申请','warn');
-          toast('请勿重复申请');
-        }
-        return;
-      }
       if(res && !res.ok) throw new Error(res.data.detail || '发送好友申请失败');
-      if(addLocalOutgoingRequest(accountId)){
-        setFriendStatus('好友申请已发送','ok');
-        toast('好友申请已发送到本地预览');
-      }else{
-        setFriendStatus('请勿重复申请','warn');
-        toast('请勿重复申请');
-      }
+      throw new Error('好友服务没有返回有效结果');
     }).catch(function(err){
       setFriendStatus(err.message || '发送好友申请失败','warn');
       toast(err.message || '发送好友申请失败');
@@ -1227,6 +1567,7 @@
       renderUser(res.data.user);
       loadReferrer();
       loadFriendState();
+      if(canGiftPoints(res.data.user)) loadGiftHistory(true);
       if(window.HQ && typeof window.HQ.refreshPoints === 'function') window.HQ.refreshPoints();
     }).catch(function(e){
       $('accountStatus').textContent = '读取失败';

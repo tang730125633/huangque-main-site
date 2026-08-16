@@ -188,7 +188,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=e836823b"></script>
+<script src="cloud-shell.js?v=5c2643d5"></script>
 <script>
 /* 资产库读真实生成历史（生成即自动入库）+ 按模式分类筛选 */
 (function(){
@@ -211,6 +211,10 @@
   else if(cat==='text2img'||cat==='img2img'||cat==='inpaint'){ imgSub=cat; cat='image'; }
   var AUDIO_TAB=params.get('audioTab')||(cat==='audio'?'audio':'public');
   var currentLoadKind='';
+  var focusAssetId=String(params.get('asset_id')||'').trim();
+  var focusProjectId=String(params.get('project_id')||'').trim();
+  var focusBoardId=String(params.get('board_id')||'').trim();
+  if(focusAssetId) cat='video';
   // 通知中心「生成任务已完成」点进来时带 ?task=<job_id>：定位并高亮那条产物。
   // 只用一次，滚动过去后清掉，避免用户之后切分类还被反复拉回去。
   var focusTask=String(params.get('task')||'');
@@ -284,14 +288,29 @@
       return !q || searchableText(x,kind).indexOf(q)>=0;
     });
   }
+  function isBulkEligible(x,kind){
+    return !(kind==='video' && x && x.source_type==='short_drama_final');
+  }
+  function bulkAssetMeta(x,kind){
+    if(!isBulkEligible(x,kind)) return null;
+    var id=assetId(x,kind);
+    if(!id) return null;
+    return {
+      key:assetKey(x,kind),
+      kind:kind,
+      id:id,
+      url:assetUrl(x),
+      source_type:x.source_type||''
+    };
+  }
   function setVisible(list,kind){
-    visibleItems=list.map(function(x){ return {key:assetKey(x,kind), kind:kind, id:assetId(x,kind), url:assetUrl(x)}; }).filter(function(x){ return !!x.id; });
+    visibleItems=list.map(function(x){ return bulkAssetMeta(x,kind); }).filter(Boolean);
     updateBulk();
     return list;
   }
-  function selectedCount(){ return Object.keys(selected).filter(function(k){ return selected[k]; }).length; }
+  function selectedCount(){ return selectedAssets().length; }
   function selectedAssets(){
-    return Object.keys(selected).map(function(k){ return selected[k]; }).filter(function(x){ return x && x.kind && x.id; })
+    return Object.keys(selected).map(function(k){ return selected[k]; }).filter(function(x){ return x && x.kind && x.id && isBulkEligible(x,x.kind); })
       .map(function(x){ return {kind:x.kind,id:x.id}; });
   }
   function currentAssetKind(){
@@ -372,7 +391,9 @@
     return cardEl;
   }
   function addSelectBox(cardEl,x,kind){
-    var key=assetKey(x,kind), meta={key:key,kind:kind,id:assetId(x,kind),url:assetUrl(x)}, box=document.createElement('label'), ck=document.createElement('input');
+    var meta=bulkAssetMeta(x,kind);
+    if(!meta) return cardEl;
+    var key=meta.key, box=document.createElement('label'), ck=document.createElement('input');
     box.className='asset-select'; ck.type='checkbox'; ck.checked=!!selected[key];
     ck.disabled=!meta.id;
     ck.onchange=function(){ if(ck.checked) selected[key]=meta; else delete selected[key]; updateBulk(); };
@@ -830,12 +851,13 @@
     return '待生成';
   }
   function videoCard(x){
+    var isShortDramaFinal=x.source_type==='short_drama_final';
     var status=videoStatusLabel(x.status);
     var videoUrl=x.video_url||x.url||'';
     var imageUrl=x.image_url||(x.image_file?('/api/gen/file/'+x.image_file):'');
     var created=x.created_at?new Date(Number(x.created_at)*1000):null;
     var dateText=created&&!isNaN(created.getTime())?(String(created.getMonth()+1).padStart(2,'0')+'-'+String(created.getDate()).padStart(2,'0')+' '+String(created.getHours()).padStart(2,'0')+':'+String(created.getMinutes()).padStart(2,'0')):'最近创建';
-    var title=x.prompt||x.text||'视频资产';
+    var title=x.title||x.prompt||x.text||'视频资产';
     var w=document.createElement('div'); w.className='asset-library-card';
     w.style.cssText='position:relative; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.56), rgba(9,14,24,.44)); overflow:hidden; display:flex; flex-direction:column; min-height:260px;';
     var media=document.createElement('div');
@@ -889,18 +911,28 @@
     hint.style.cssText='font-size:11.5px;color:#5c6b82;';
     var buttons=document.createElement('div');
     buttons.style.cssText='display:flex;align-items:center;gap:6px;flex:0 0 auto;';
-    var regen=actionBtn('重生成',function(){ regenerate(x,'video',regen); });
-    var del=actionBtn('删除',function(){ deleteAsset(x,'video',del); }); del.className+=' danger';
+    var compose=actionBtn('一键成片',function(){ location.href='one-click-video.html?source_asset_id='+encodeURIComponent(x.id); });
+    if(!videoUrl) compose.disabled=true;
     var dl=document.createElement('button');
     dl.type='button';
     dl.textContent=videoUrl?'下载':'去生成';
     dl.onclick=function(){ if(videoUrl) downloadAsset(videoUrl,'huangque-video.mp4',dl); else location.href='video.html'; };
     dl.className='asset-action gold';
     dl.style.height='30px';
-    buttons.appendChild(regen); buttons.appendChild(del); buttons.appendChild(dl);
+    if(!isShortDramaFinal){
+      var regen=actionBtn('重生成',function(){ regenerate(x,'video',regen); });
+      var del=actionBtn('删除',function(){ deleteAsset(x,'video',del); }); del.className+=' danger';
+      buttons.appendChild(compose); buttons.appendChild(regen); buttons.appendChild(del);
+    }
+    buttons.appendChild(dl);
     foot.appendChild(hint); foot.appendChild(buttons);
     body.appendChild(head); body.appendChild(meta); body.appendChild(foot);
-    w.appendChild(media); w.appendChild(body); addMarkTools(w,x,'video');
+    w.appendChild(media); w.appendChild(body);
+    if(isShortDramaFinal){
+      w.classList.add('short-drama-final-asset');
+      return w;
+    }
+    addMarkTools(w,x,'video');
     return addSelectBox(w,x,'video');
   }
   function escapeHtml(s){
@@ -1519,13 +1551,6 @@
           if(AUDIO_TAB!=='public') return;
           if(loading.parentNode) loading.remove();
           var items=(d.items||[]).filter(function(v){ return v.scope==='public'; });
-          if(!items.length){
-            items=[
-              {display_name:'大鹏 IVC',sub:'克隆 · 亲切'},
-              {display_name:'泽龙 IVC',sub:'克隆 · 磁性'},
-              {display_name:'Paul 男声',sub:'官方 · 沉稳'}
-            ];
-          }
           items=filterAssets(items,'voice');
           if(!items.length){ var pe=document.createElement('div'); pe.style.cssText='grid-column:1/-1; padding:24px; text-align:center; font-size:13px; color:#5c6b82;'; pe.textContent='没有匹配的公共音色'; grid.appendChild(pe); return; }
           items.forEach(function(v){
@@ -1535,20 +1560,8 @@
         .catch(function(){
           if(AUDIO_TAB!=='public') return;
           if(loading.parentNode) loading.remove();
-          [
-            ['大鹏 IVC','克隆 · 亲切','公共音色'],
-            ['泽龙 IVC','克隆 · 磁性','公共音色'],
-            ['Paul 男声','官方 · 沉稳','公共音色']
-          ].forEach(function(v){ grid.appendChild(voiceAssetCard(v[0],v[1],v[2],false)); });
+          var pe=document.createElement('div');pe.style.cssText='grid-column:1/-1;padding:24px;text-align:center;font-size:13px;color:#f4708a;';pe.textContent='公共音色加载失败，请稍后重试';grid.appendChild(pe);
         });
-      return;
-    }
-    if(false && tab==='public'){
-      [
-        ['大鹏 IVC','克隆 · 亲切','公共音色'],
-        ['泽龙 IVC','克隆 · 磁性','公共音色'],
-        ['Paul 男声','官方 · 沉稳','公共音色']
-      ].forEach(function(v){ grid.appendChild(voiceAssetCard(v[0],v[1],v[2],false)); });
       return;
     }
     if(tab==='personal'){
@@ -1574,19 +1587,39 @@
     if(jid!=null&&jid!=='') el.setAttribute('data-job',String(jid));
     return el;
   }
+  function withAssetId(el,x){
+    if(!el||!x) return el;
+    var id=x.asset_id!=null?x.asset_id:x.id;
+    if(id!=null&&id!=='') el.setAttribute('data-asset-id',String(id));
+    return el;
+  }
+  function focusCard(el){
+    if(!el) return false;
+    try{ el.scrollIntoView({behavior:'smooth',block:'center'}); }catch(e){ el.scrollIntoView(); }
+    el.classList.add('asset-focus');
+    setTimeout(function(){ el.classList.remove('asset-focus'); },2600);
+    return true;
+  }
   function focusJobCard(){
     if(!focusTask) return;
     var el=grid&&grid.querySelector('[data-job="'+(window.CSS&&CSS.escape?CSS.escape(focusTask):focusTask)+'"]');
     if(!el) return;                       // 不在当前分类/已被筛掉，就别打扰用户
     focusTask='';                         // 一次性：滚过去就消费掉
-    try{ el.scrollIntoView({behavior:'smooth',block:'center'}); }catch(e){ el.scrollIntoView(); }
-    el.classList.add('asset-focus');
-    setTimeout(function(){ el.classList.remove('asset-focus'); },2600);
+    focusCard(el);
+  }
+  function focusFinalAssetCard(){
+    if(!focusAssetId) return;
+    var escaped=window.CSS&&CSS.escape?CSS.escape(focusAssetId):
+      focusAssetId.replace(/\\/g,'\\\\').replace(/"/g,'\\"');
+    var el=grid&&grid.querySelector('[data-asset-id="'+escaped+'"]');
+    if(!focusCard(el)) return;
+    focusAssetId='';
   }
   // render 有多个 early-return 分支，包一层统一在渲染完成后做 ?task= 定位。
   function render(){
     _renderBody();
     focusJobCard();
+    focusFinalAssetCard();
   }
   function _renderBody(){
     visibleItems=[];
@@ -1611,7 +1644,9 @@
       grid.style.display='grid';
       var videos=setVisible(filterAssets(ALL,'video'),'video');
       if(!videos.length){ var ve=document.createElement('div'); ve.style.cssText='grid-column:1/-1; padding:30px; text-align:center; font-size:13px; color:#5c6b82;'; ve.textContent=searchTerm?'没有匹配的视频资产':'暂无视频资产'; grid.appendChild(ve); return; }
-      videos.forEach(function(x){ grid.appendChild(withJob(videoCard(x),x)); });
+      videos.forEach(function(x){
+        grid.appendChild(withJob(withAssetId(videoCard(x),x),x));
+      });
       return;
     }
     renderImageAssets();
@@ -1904,6 +1939,38 @@
       .then(function(d){ MARKS=(d&&d.items)||{}; refreshMarkFilters(); })
       .catch(function(){ MARKS={}; refreshMarkFilters(); });
   }
+  function loadFocusedFinalAsset(){
+    if(!focusAssetId) return Promise.resolve(null);
+    var headers={
+      'Authorization':'Bearer '+tok,
+      'Cache-Control':'no-cache'
+    };
+    if(focusBoardId) headers['X-Canvas-Board-Id']=focusBoardId;
+    return fetch(
+      '/api/gen/short-drama/final-assets/'+encodeURIComponent(focusAssetId),
+      {cache:'no-store',headers:headers}
+    ).then(function(r){
+      if(r.status===401){ HQ.login(); return null; }
+      return r.json().catch(function(){ return {}; }).then(function(d){
+        if(!r.ok) throw new Error(
+          d.detail||(r.status===403?'无权访问该短剧成片':'短剧成片不存在或已删除')
+        );
+        return d;
+      });
+    }).then(function(item){
+      if(!item) return null;
+      item.source_type='short_drama_final';
+      item.project_id=item.project_id||focusProjectId;
+      return item;
+    });
+  }
+  function mergeFocusedFinalAsset(item){
+    if(!item) return;
+    ALL=ALL.filter(function(existing){
+      return String(existing.asset_id||existing.id||'')!==String(item.asset_id);
+    });
+    ALL.unshift(item);
+  }
   function load(kind){
     currentLoadKind=kind;
     var url=kind==='audio'?'/api/gen/audio/assets?limit=120':(kind==='video'?'/api/gen/video/assets?limit=120':(kind==='avatar'?'/api/gen/video/avatars?limit=120':
@@ -1919,8 +1986,36 @@
           .then(function(r){return r.json();})
           .then(function(h){ ALL=h.items||[]; if(cnt) cnt.textContent=ALL.length; return loadMarks(kind).then(render); });
       }
+      if(kind==='video'&&focusAssetId){
+        return loadFocusedFinalAsset().then(function(item){
+          mergeFocusedFinalAsset(item);
+          if(cnt) cnt.textContent=ALL.length;
+          return loadMarks(kind).then(render);
+        }).catch(function(error){
+          toast(error&&error.message||'无法打开短剧成片资产',false);
+          if(cnt) cnt.textContent=ALL.length;
+          return loadMarks(kind).then(render);
+        });
+      }
       if(cnt) cnt.textContent=ALL.length; return loadMarks(kind).then(render);
-    }).catch(function(){});
+    }).catch(function(error){
+      if(kind==='video'&&focusAssetId){
+        return loadFocusedFinalAsset().then(function(item){
+          ALL=[];
+          mergeFocusedFinalAsset(item);
+          if(cnt) cnt.textContent=ALL.length;
+          return loadMarks(kind).then(render);
+        }).catch(function(focusError){
+          toast(
+            focusError&&focusError.message||
+            error&&error.message||
+            '资产库加载失败',
+            false
+          );
+        });
+      }
+      if(focusAssetId) toast(error&&error.message||'资产库加载失败',false);
+    });
   }
   document.querySelectorAll('#catRow .chip').forEach(function(ch){ ch.onclick=function(){
     setCat(ch.getAttribute('data-cat'));
