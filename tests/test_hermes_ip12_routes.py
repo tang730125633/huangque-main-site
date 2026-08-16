@@ -155,6 +155,18 @@ class HermesIP12SourceTests(unittest.TestCase):
         self.assertIn("内容资产使用表", source)
         self.assertIn("优化建议汇总", source)
 
+    def test_foundation_pdf_review_is_embedded_with_structured_annotations(self):
+        for filename in ("index.html", "index_clean.html"):
+            source = (HERMES / "templates" / filename).read_text(encoding="utf-8")
+            self.assertIn('id="foundationReviewer"', source)
+            self.assertIn('id="foundationPdfFrame"', source)
+            self.assertIn("?preview=1#page=1&zoom=page-width", source)
+            self.assertIn("function addFoundationAnnotation()", source)
+            self.assertIn("function submitFoundationAnnotations()", source)
+            self.assertIn("定位原文（可选）", source)
+            self.assertIn("把批注交给 Agent", source)
+            self.assertIn("@media", source)
+
     def test_service_security_boundary_is_registered(self):
         server = (HERMES / "server.py").read_text(encoding="utf-8")
         security = (HERMES / "security.py").read_text(encoding="utf-8")
@@ -649,7 +661,12 @@ with patch.object(server, "call_ai") as report_model:
     report_model.assert_not_called()
 download = client.get(f"/api/foundation-report/{foundation_cid}.pdf")
 assert download.status_code == 200
+assert download.headers["Content-Disposition"].startswith("attachment;")
 assert download.headers["Cache-Control"] == "private, no-store"
+preview = client.get(f"/api/foundation-report/{foundation_cid}.pdf?preview=1")
+assert preview.status_code == 200
+assert preview.headers["Content-Disposition"].startswith("inline;")
+assert preview.headers["Cache-Control"] == "private, no-store"
 confirmed = client.post("/api/foundation-report/confirm", json={"conversation_id": foundation_cid})
 assert confirmed.status_code == 200, confirmed.get_data(as_text=True)
 assert confirmed.get_json()["state"]["current_module"] == 6

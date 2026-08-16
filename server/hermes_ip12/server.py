@@ -1301,7 +1301,12 @@ def api_foundation_pdf(cid):
     except (OSError, RuntimeError):
         _mark_foundation_report_failed(cid)
         return jsonify({"ok": False, "error": "PDF 文件不可用，请重新生成"}), 409
-    response = send_file(path, mimetype="application/pdf", as_attachment=True, download_name="IP人设定位_模块1-4初稿.pdf")
+    response = send_file(
+        path,
+        mimetype="application/pdf",
+        as_attachment=request.args.get("preview") != "1",
+        download_name="IP人设定位_模块1-4初稿.pdf",
+    )
     response.headers["Cache-Control"] = "private, no-store"
     return response
 
