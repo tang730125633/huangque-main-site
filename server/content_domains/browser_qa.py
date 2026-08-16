@@ -29,6 +29,7 @@ CHECK_NAMES = {
     "download": "作品下载与解码",
     "correlation": "同一 job_id 关联生产证据",
 }
+PROMPT_EDITOR_SELECTOR = "#bPrompt + .hq-image-editor"
 
 
 def validate_nb2_reference_payload(payload, prompt):
@@ -141,7 +142,7 @@ def run_nb2_reference_journey(*, origin, account_token, cookie_name, fixture_pat
             page.locator("#countInput").press("Enter")
             page.locator("#upFile").set_input_files(str(fixture))
             page.wait_for_selector(".image-ref-thumb", state="visible", timeout=20000)
-            page.locator("#bPrompt").fill(prompt)
+            page.locator(PROMPT_EDITOR_SELECTOR).fill(prompt)
             steps.append(_capture_step(page, "fixture", "1 张私有参考图和预设提示词已加载"))
 
             page.locator("#bGen").click()
