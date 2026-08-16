@@ -31,6 +31,7 @@ class NginxCspTest(unittest.TestCase):
                 for directive in (
                     "base-uri 'self'",
                     "object-src 'none'",
+                    "frame-src 'self' blob:",
                     "script-src 'self' 'unsafe-inline' https://unpkg.com",
                     "style-src 'self' 'unsafe-inline' https://unpkg.com",
                 ):

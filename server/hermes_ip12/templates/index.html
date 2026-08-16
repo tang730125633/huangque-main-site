@@ -158,15 +158,21 @@ button:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px soli
 .rpn-card .copy-btn:hover{opacity:0.8}
 
 /* PDF review */
-.pdf-review{position:fixed;inset:0;z-index:120;display:none;background:rgba(2,6,12,.82);backdrop-filter:blur(8px)}
-.pdf-review.open{display:flex}
-.pdf-review-shell{width:min(1440px,96vw);height:min(900px,94vh);margin:auto;display:grid;grid-template-columns:minmax(0,1fr) 360px;overflow:hidden;border:1px solid rgba(148,164,187,.18);border-radius:18px;background:#0b111c;box-shadow:0 35px 100px rgba(0,0,0,.58)}
-.pdf-review-document{min-width:0;display:flex;flex-direction:column;background:#202631}
+.pdf-review{--pdf-review-width:clamp(660px,55vw,1040px);position:relative;z-index:20;flex:0 0 auto;width:0;min-width:0;height:100vh;overflow:hidden;border-left:0 solid rgba(148,164,187,.18);background:#0b111c;transition:width .25s ease,min-width .25s ease,border-width .25s ease}
+.pdf-review.open{width:var(--pdf-review-width);min-width:var(--pdf-review-width);border-left-width:1px}
+.pdf-review-shell{width:var(--pdf-review-width);height:100%;display:grid;grid-template-columns:minmax(0,1fr) 300px;overflow:hidden;background:#0b111c;box-shadow:-28px 0 60px -42px rgba(0,0,0,.9)}
+.pdf-review-resizer{position:absolute;z-index:4;left:0;top:0;bottom:0;width:10px;cursor:col-resize;touch-action:none;outline:0}
+.pdf-review-resizer:after{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:transparent;transition:background .15s}
+.pdf-review-resizer:hover:after,.pdf-review-resizer:focus-visible:after,body.pdf-review-resizing .pdf-review-resizer:after{background:#e7b24c}
+body.pdf-review-resizing{cursor:col-resize;user-select:none}body.pdf-review-resizing iframe{pointer-events:none}body.pdf-review-resizing .pdf-review{transition:none}
+.pdf-review-document{position:relative;min-width:0;display:flex;flex-direction:column;background:#202631}
 .pdf-review-bar{min-height:52px;padding:9px 14px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(148,164,187,.14);background:#0d1420}
 .pdf-review-bar strong{font-size:13px;flex:1}.pdf-review-bar span{font-size:10px;color:#8290a4}
 .pdf-review-bar button,.pdf-review-side button{border:1px solid rgba(148,164,187,.2);border-radius:8px;background:rgba(148,164,187,.06);color:#dbe5f1;padding:7px 10px;cursor:pointer;font-size:11px}
 .pdf-review-bar button:hover,.pdf-review-side button:hover{border-color:rgba(231,178,76,.4);color:#f4cd72}
 .pdf-review-frame{width:100%;height:100%;border:0;background:#2b303b}
+.pdf-review-loading{position:absolute;inset:52px 0 0;z-index:1;display:grid;place-items:center;background:#202631;color:#93a2b6;font-size:12px}
+.pdf-review-loading[hidden]{display:none}
 .pdf-review-side{display:flex;flex-direction:column;min-height:0;padding:16px;border-left:1px solid rgba(148,164,187,.12);background:linear-gradient(180deg,#101824,#0a101a)}
 .pdf-review-side h2{font-size:15px;color:#f4cd72}.pdf-review-help{margin:6px 0 13px;color:#7f8fa5;font-size:11px;line-height:1.6}
 .pdf-review-grid{display:grid;grid-template-columns:90px 1fr;gap:8px}
@@ -190,6 +196,12 @@ button:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px soli
 @keyframes welcome-spark{0%,100%{opacity:.35;transform:scale(.72) rotate(-8deg)}50%{opacity:1;transform:scale(1.08) rotate(4deg)}}
 ::-webkit-scrollbar{width:4px}
 ::-webkit-scrollbar-thumb{background:rgba(148,164,187,.14);border-radius:2px}
+@media(max-width:1100px){
+  .pdf-review{position:fixed;right:0;top:0;bottom:0;z-index:120;height:100vh}
+  .pdf-review.open{width:100%;min-width:100%}
+  .pdf-review-shell{width:100vw}
+  .pdf-review-resizer{display:none}
+}
 @media(max-width:720px){
   body:before{mask-image:none;opacity:.18}
   .lsb{position:fixed;left:0;top:0;z-index:60;width:min(300px,88vw);min-width:0;transform:translateX(-102%);transition:transform .25s;box-shadow:30px 0 70px rgba(0,0,0,.52)}
@@ -270,10 +282,12 @@ button:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px soli
   </div>
 </aside>
 
-<div class="pdf-review" id="foundationReviewer" role="dialog" aria-modal="true" aria-labelledby="foundationReviewerTitle">
+<aside class="pdf-review" id="foundationReviewer" aria-labelledby="foundationReviewerTitle">
+  <div class="pdf-review-resizer" id="foundationPdfResizer" role="separator" tabindex="0" aria-label="拖动调整 PDF 审阅区宽度" aria-orientation="vertical" aria-valuemin="480" aria-valuemax="1400" onpointerdown="beginFoundationResize(event)" onkeydown="resizeFoundationByKey(event)"></div>
   <div class="pdf-review-shell">
     <section class="pdf-review-document">
       <div class="pdf-review-bar"><strong id="foundationReviewerTitle">模块 1–4 PDF 审阅</strong><span>在 PDF 中查看原文，右侧按页添加修改意见</span><button type="button" onclick="downloadFoundationReport()">下载</button><button type="button" onclick="closeFoundationReviewer()">关闭</button></div>
+      <div class="pdf-review-loading" id="foundationPdfStatus">PDF 加载中…</div>
       <iframe class="pdf-review-frame" id="foundationPdfFrame" title="模块 1–4 PDF 预览"></iframe>
     </section>
     <aside class="pdf-review-side">
@@ -290,7 +304,7 @@ button:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px soli
       <button class="pdf-review-submit" id="foundationAnnotationSubmit" type="button" onclick="submitFoundationAnnotations()">把批注交给 Agent</button>
     </aside>
   </div>
-</div>
+</aside>
 
 <div id="convoOverlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:100;display:none;align-items:center;justify-content:center" onclick="if(event.target===this)toggleConvos()">
   <div id="convoPanel" style="background:var(--sb);border:1px solid var(--bd);border-radius:var(--r);width:400px;max-height:70vh;overflow-y:auto;padding:16px"></div>
@@ -345,7 +359,7 @@ SKILL_MAP[10]=[{id:'deliverable-10',icon:'message',name:'朋友圈排期',api:'/
 SKILL_MAP[11]=[{id:'sales',icon:'trend',name:'成交话术',api:'/api/m11-sales',help:'生成私域成交SOP话术'}];
 SKILL_MAP[12]=[{id:'calendar',icon:'calendar',name:'公众号日历',api:'/api/m12-calendar',help:'生成公众号30天内容日历'}];
 
-var cid=null,state={current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}},reports={},deliverables={},streaming=false,convos=[],foundationEditing=false,foundationAnnotations=[],foundationReviewCid='';
+var cid=null,state={current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}},reports={},deliverables={},streaming=false,convos=[],foundationEditing=false,foundationAnnotations=[],foundationReviewCid='',foundationPdfObjectUrl='',foundationPdfLoadId=0;
 var expandedMod=0;
 var WELCOME_HTML=document.getElementById('welcome').outerHTML;
 
@@ -436,7 +450,7 @@ loadConvos().then(function(){var requested=new URLSearchParams(location.search).
 
 async function loadConvos(){var r=await fetch('/api/conversations');convos=await r.json()}
 async function newDiagnosis(){var r=await fetch('/api/conversations',{method:'POST'});var d=await r.json();convos.unshift({id:d.id,title:'新诊断',current_module:1,completed_modules:[],message_count:1});selectConvo(d.id)}
-async function selectConvo(id){cid=id;var r=await fetch('/api/conversations/'+id);var c=await r.json();state=c.coach_state||{current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}};reports=c.reports||{};deliverables=c.deliverables||{};expandedMod=0;foundationEditing=false;renderMods();renderChat(c.messages||[]);var input=document.getElementById('userInput');input.disabled=false;input.placeholder=(state.foundation_report||{}).status==='awaiting_confirmation'?'可以询问 PDF，或点击“需要修改/补充”…':'输入消息...';document.getElementById('sendBtn').disabled=false;input.focus()}
+async function selectConvo(id){closeFoundationReviewer();cid=id;var r=await fetch('/api/conversations/'+id);var c=await r.json();state=c.coach_state||{current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}};reports=c.reports||{};deliverables=c.deliverables||{};expandedMod=0;foundationEditing=false;renderMods();renderChat(c.messages||[]);var input=document.getElementById('userInput');input.disabled=false;input.placeholder=(state.foundation_report||{}).status==='awaiting_confirmation'?'可以询问 PDF，或点击“需要修改/补充”…':'输入消息...';document.getElementById('sendBtn').disabled=false;input.focus()}
 async function jumpModule(mid){if(mid>AVAILABLE_MODULE_COUNT){toast('尚未开发，敬请期待');return}if(!cid||streaming)return;var r=await fetch('/api/jump-module',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,module:mid})});var d=await r.json();if(!r.ok||!d.ok){toast('❌ '+(d.error||'无法切换模块'));return}state=d.state||state;renderMods();sendJumpMsg(mid)}
 
 function stateActions(){
@@ -509,13 +523,24 @@ async function generateFoundationReport(){
 }
 
 async function openFoundationReport(){
-  if(!cid)return;var url='/api/foundation-report/'+cid+'.pdf';var r=await fetch(url,{method:'HEAD',cache:'no-store'});
-  if(!r.ok){state.foundation_report={status:'failed'};renderMods();toast('❌ PDF 文件不可用，请重新生成');return}
-  if(foundationReviewCid!==cid){foundationAnnotations=[];foundationReviewCid=cid}
-  document.getElementById('foundationPdfFrame').src=url+'?preview=1#page=1&zoom=page-width';renderFoundationAnnotations();document.getElementById('foundationReviewer').classList.add('open');document.getElementById('pdfNoteText').focus()
+  if(!cid)return;var url='/api/foundation-report/'+cid+'.pdf',reviewer=document.getElementById('foundationReviewer'),status=document.getElementById('foundationPdfStatus'),loadId=++foundationPdfLoadId;
+  if(typeof closePanel==='function')closePanel();if(foundationReviewCid!==cid){foundationAnnotations=[];foundationReviewCid=cid}
+  restoreFoundationPanelWidth();reviewer.classList.add('open');renderFoundationAnnotations();status.hidden=false;status.textContent='PDF 加载中…';
+  try{var r=await fetch(url+'?preview=1',{cache:'no-store'});if(!r.ok)throw new Error('PDF 文件不可用，请重新生成');var blob=await r.blob();if(loadId!==foundationPdfLoadId)return;if(!blob.size)throw new Error('PDF 文件为空，请重新生成');if(foundationPdfObjectUrl)URL.revokeObjectURL(foundationPdfObjectUrl);foundationPdfObjectUrl=URL.createObjectURL(blob);document.getElementById('foundationPdfFrame').src=foundationPdfObjectUrl+'#page=1&zoom=page-width';status.hidden=true;document.getElementById('pdfNoteText').focus()}
+  catch(e){if(loadId!==foundationPdfLoadId)return;status.textContent=e.message;toast('❌ '+e.message)}
 }
 
-function closeFoundationReviewer(){document.getElementById('foundationReviewer').classList.remove('open')}
+function foundationPanelBounds(){var max=Math.min(1400,window.innerWidth-560);return{min:Math.min(620,Math.max(480,max)),max:Math.max(480,max)}}
+function setFoundationPanelWidth(width,save){if(window.innerWidth<=1100)return;var b=foundationPanelBounds(),next=Math.round(Math.min(b.max,Math.max(b.min,width))),reviewer=document.getElementById('foundationReviewer'),resizer=document.getElementById('foundationPdfResizer');reviewer.style.setProperty('--pdf-review-width',next+'px');resizer.setAttribute('aria-valuemin',b.min);resizer.setAttribute('aria-valuemax',b.max);resizer.setAttribute('aria-valuenow',next);if(save)try{localStorage.setItem('ip12-foundation-panel-width',next)}catch(e){}}
+function restoreFoundationPanelWidth(){var saved=0;try{saved=Number(localStorage.getItem('ip12-foundation-panel-width'))}catch(e){}setFoundationPanelWidth(saved||window.innerWidth*.55,false)}
+function beginFoundationResize(event){if(window.innerWidth<=1100)return;event.preventDefault();foundationResizePointer=event.pointerId;event.currentTarget.setPointerCapture(event.pointerId);document.body.classList.add('pdf-review-resizing')}
+function resizeFoundationByKey(event){if(window.innerWidth<=1100||!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();var b=foundationPanelBounds(),width=document.getElementById('foundationReviewer').getBoundingClientRect().width;if(event.key==='Home')width=b.min;else if(event.key==='End')width=b.max;else width+=event.key==='ArrowLeft'?24:-24;setFoundationPanelWidth(width,true)}
+var foundationResizePointer=null;
+window.addEventListener('pointermove',function(event){if(event.pointerId===foundationResizePointer)setFoundationPanelWidth(window.innerWidth-event.clientX,false)});
+function endFoundationResize(event){if(event.pointerId!==foundationResizePointer)return;foundationResizePointer=null;document.body.classList.remove('pdf-review-resizing');setFoundationPanelWidth(document.getElementById('foundationReviewer').getBoundingClientRect().width,true)}
+window.addEventListener('pointerup',endFoundationResize);window.addEventListener('pointercancel',endFoundationResize);
+window.addEventListener('resize',function(){if(document.getElementById('foundationReviewer').classList.contains('open'))restoreFoundationPanelWidth()});
+function closeFoundationReviewer(){foundationPdfLoadId++;document.getElementById('foundationReviewer').classList.remove('open');document.getElementById('foundationPdfFrame').src='about:blank';if(foundationPdfObjectUrl){URL.revokeObjectURL(foundationPdfObjectUrl);foundationPdfObjectUrl=''}}
 function downloadFoundationReport(){if(cid)window.open('/api/foundation-report/'+cid+'.pdf','_blank','noopener')}
 function addFoundationAnnotation(){
   var page=Number(document.getElementById('pdfNotePage').value),type=document.getElementById('pdfNoteType').value,quote=document.getElementById('pdfNoteQuote').value.trim(),note=document.getElementById('pdfNoteText').value.trim();
