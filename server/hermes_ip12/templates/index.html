@@ -421,7 +421,7 @@ function renderMods(){
     var cls='mod-item',badge='',check='',expand='<span class="mod-expand">▶</span>';
     var comingSoon=m.id>AVAILABLE_MODULE_COUNT;
     var locked=comingSoon||intakePending||(m.id>=5&&foundation.status!=='confirmed');
-    if(locked){cls+=' locked';badge=comingSoon?'<span class="mod-badge">尚未开发，敬请期待</span>':(intakePending&&m.id===1?'<span class="mod-badge">基础信息 '+intakeLabel+'</span>':(intakePending?'':'<span class="mod-badge">待确认 PDF</span>'))}
+    if(locked){cls+=' locked';badge=comingSoon?'<span class="mod-badge">尚未开发，敬请期待</span>':(intakePending&&m.id===1?'<span class="mod-badge">基础信息 '+intakeLabel+'</span>':(intakePending?'':'<span class="mod-badge">'+(foundation.status==='awaiting_confirmation'?'待确认 PDF':(done.indexOf(4)>=0?'PDF 生成中':'等待模块 1-4'))+'</span>'))}
     if(done.indexOf(m.id)>=0){cls+=' done';check='<span style="color:var(--gr);font-size:12px">✓</span>'}
     if(!intakePending&&m.id===cur&&done.indexOf(m.id)<0){cls+=' cur';badge='<span class="mod-badge">进行中</span>'}
     if(intakePending&&m.id===1)cls+=' cur';
@@ -435,7 +435,7 @@ function renderMods(){
         subs+='<div class="mod-sub" onclick="event.stopPropagation();loadSkill(\''+s.id+'\')">'+moduleIcon(s.icon)+eHtml(s.name)+'</div>';
       }
     }
-    var click=comingSoon?"toast('尚未开发，敬请期待')":(locked?(intakePending?"toast('请先补充并确认基础资料')":"toast('请先确认模块 1-4 的 IP 定位初稿 PDF')"):(hasSub?'toggleExpand('+m.id+')':'jumpModule('+m.id+')'));
+    var click=comingSoon?"toast('尚未开发，敬请期待')":(locked?(intakePending?"toast('请先补充并确认基础资料')":(foundation.status==='awaiting_confirmation'?"toast('请先确认模块 1-4 的 IP 定位初稿 PDF')":"toast('请先完成模块 1-4')")):(hasSub?'toggleExpand('+m.id+')':'jumpModule('+m.id+')'));
     html+='<div class="'+cls+'" onclick="'+click+'"><div class="mod-num">'+(done.indexOf(m.id)>=0?'✓':m.id)+'</div><div class="mod-info"><div class="mod-name">'+moduleIcon(m.icon)+m.name+'</div></div>'+badge+check+(hasSub?expand:'')+subs+'</div>';
   }
   document.getElementById('modScroll').innerHTML=html;

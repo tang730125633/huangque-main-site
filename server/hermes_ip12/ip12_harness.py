@@ -78,6 +78,8 @@ MODULE_WORKFLOWS = {
 CONFIRM_TEXTS = frozenset({"确认", "确认无误", "没有问题", "没问题", "内容正确", "就按这个", "可以确认"})
 EDIT_TEXTS = frozenset({"需要修改", "我要修改", "修改", "有问题", "不对", "重新填写", "改一下"})
 FIELD_RE = re.compile(r"[a-z][a-z0-9_]{1,63}\Z")
+DURATION_RE = re.compile(r"(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十半]+)\s*(?:年|个?月)")
+DURATION_FIELDS = ("year", "duration", "experience", "tenure")
 
 DECISION_SCHEMA = {
     "type": "object",
@@ -291,6 +293,27 @@ def _apply_profile_updates(profile, updates):
         }
 
 
+def duration_conflict_decision(value, message):
+    state = normalize_state(value)
+    current = {item.replace(" ", "") for item in DURATION_RE.findall(str(message or ""))}
+    if not current:
+        return None
+    for field, item in state["ip_profile"]["facts"].items():
+        if not isinstance(item, dict):
+            continue
+        if not any(token in field for token in DURATION_FIELDS):
+            continue
+        confirmed = {part.replace(" ", "") for part in DURATION_RE.findall(str(item.get("value") or ""))}
+        if confirmed and current.isdisjoint(confirmed):
+            old, new = sorted(confirmed)[0], sorted(current)[0]
+            return {
+                "decision": "ask_follow_up", "checkpoint": 0,
+                "reply": "你前面确认的从业时间是“%s”，这次又提到“%s”。这两个时间分别指什么？比如“%s是整体从业时间，%s是 AI/Agent 实践时间”，或者告诉我需要更正哪一个。" % (old, new, old, new),
+                "draft": "", "self_review": "", "profile_updates": [], "confidence": 1.0,
+            }
+    return None
+
+
 def apply_action(value, action, expected_revision):
     state = normalize_state(value)
     _require_revision(state, expected_revision)
@@ -437,6 +460,8 @@ def validate_model_decision(
         if not FIELD_RE.fullmatch(field) or not value_text or kind not in {"user_fact", "user_preference", "ai_option"}:
             raise HarnessError("模型返回了无效档案字段")
         if kind != "ai_option" and (not quote or quote not in evidence):
+            if allow_partial_profile_updates and decision == "ask_follow_up":
+                continue
             raise HarnessError("模型档案更新缺少可回查的用户原话")
         clean_updates.append({"field": field, "value": value_text, "kind": kind, "evidence_quote": quote})
     if (
