@@ -254,6 +254,7 @@ const AVAILABLE_MODULE_COUNT = 6;
 const DELIVERABLE_MODULES = [5,6];
 
 let currentConvoId = null;
+let foundationEditing = false;
 let coachState = { current_module:1, completed_modules:[], module_step:0, ip_profile:{}, intake:{status:'complete'} };
 let reports = {};
 let deliverables = {};
@@ -303,7 +304,8 @@ function renderReportMinis() {
   let foundationRows='';
   if(foundation.status==='awaiting_confirmation'||foundation.status==='confirmed'){
     foundationRows='<div class="report-mini" onclick="closeDrawer();openFoundationReport()"><span class="r-icon">📑</span><span>模块 1-4 IP 定位初稿 PDF</span></div>';
-    if(foundation.status==='awaiting_confirmation')foundationRows+='<div class="report-mini" onclick="closeDrawer();confirmFoundationReport()"><span class="r-icon">✅</span><span>确认初稿，继续模块 5</span></div>';
+    if(foundation.status==='awaiting_confirmation'&&foundation.review_status==='dirty')foundationRows+='<div class="report-mini" onclick="closeDrawer();generateFoundationReport()"><span class="r-icon">↻</span><span>应用补充并重新生成 PDF</span></div>';
+    else if(foundation.status==='awaiting_confirmation')foundationRows+='<div class="report-mini" onclick="closeDrawer();confirmFoundationReport()"><span class="r-icon">✅</span><span>确认初稿，继续模块 5</span></div>';
   }else if(done.includes(4))foundationRows='<div class="report-mini" onclick="closeDrawer();generateFoundationReport()"><span class="r-icon">↻</span><span>检查/重试模块 1-4 PDF</span></div>';
   if(keys.length===0&&!foundationRows){section.style.display='none';return;}
   section.style.display='block';
@@ -340,8 +342,8 @@ async function selectConversation(id) {
   closeDrawer(); currentConvoId=id;
   const res=await fetch(`/api/conversations/${id}`);const convo=await res.json();
   coachState=convo.coach_state||{current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}};
-  reports=convo.reports||{}; deliverables=convo.deliverables||{};
-  renderModules(); renderChat(convo.messages||[]); document.getElementById('userInput').disabled=false; document.getElementById('userInput').focus();
+  reports=convo.reports||{}; deliverables=convo.deliverables||{}; foundationEditing=false;
+  renderModules(); renderChat(convo.messages||[]); const input=document.getElementById('userInput');input.disabled=false;input.placeholder=(coachState.foundation_report||{}).status==='awaiting_confirmation'?'可以询问 PDF，或点击“需要修改/补充”…':'输入消息...';input.focus();
   loadReports(); loadDeliverables();
 }
 
@@ -373,14 +375,24 @@ function stateActions(){
     {type:'confirm_checkpoint',target_id:pending.id,label:'确认这一步',primary:true},
     {type:'edit_checkpoint',target_id:pending.id,label:'需要修改',primary:false}
   ];
-  const foundation=coachState.foundation_report||{};if(foundation.status==='awaiting_confirmation')return[
-    {type:'open_foundation_report',label:'查看 PDF',primary:false},
-    {type:'confirm_foundation_report',label:'确认初稿，进入模块 5',primary:true}
-  ];
+  const foundation=coachState.foundation_report||{};if(foundation.status==='awaiting_confirmation'){
+    if(foundation.review_status==='dirty')return[
+      {type:'open_foundation_report',label:'查看旧版 PDF',primary:false},
+      {type:'edit_foundation_report',label:'继续补充',primary:false},
+      {type:'regenerate_foundation_report',label:'重新生成 PDF',primary:true}
+    ];
+    return[
+      {type:'open_foundation_report',label:'查看 PDF',primary:false},
+      {type:'edit_foundation_report',label:'需要修改/补充',primary:false},
+      {type:'confirm_foundation_report',label:'确认初稿，进入模块 5',primary:true}
+    ];
+  }
   return[];
 }
 function runStateAction(item){
   if(item.type==='open_foundation_report')return openFoundationReport();
+  if(item.type==='edit_foundation_report')return beginFoundationRevision();
+  if(item.type==='regenerate_foundation_report')return generateFoundationReport();
   if(item.type==='confirm_foundation_report')return confirmFoundationReport();
   return sendHarnessAction(item);
 }
@@ -413,6 +425,10 @@ async function generateFoundationReport(){
 async function openFoundationReport(){
   if(!currentConvoId)return;const url=`/api/foundation-report/${currentConvoId}.pdf`;const res=await fetch(url,{method:'HEAD',cache:'no-store'});
   if(!res.ok){coachState.foundation_report={status:'failed'};renderModules();toast('❌ PDF 文件不可用，请重新生成');return;}window.open(url,'_blank','noopener');
+}
+
+function beginFoundationRevision(){
+  foundationEditing=true;const input=document.getElementById('userInput');input.placeholder='请写明要补充或修改的事实，发送后需要重新生成 PDF…';input.focus();toast('下一条消息将作为本人补充写入新版 PDF');
 }
 
 async function confirmFoundationReport(){
@@ -477,7 +493,8 @@ function sendHarnessAction(item){return sendTurn({action:{type:item.type,target_
 function sendMessage(){
   if(streaming||!currentConvoId)return;
   const input=document.getElementById('userInput'),text=input.value.trim();if(!text)return;
-  input.value='';input.style.height='auto';return sendTurn({message:text},text);
+  const turn={message:text};if(foundationEditing){turn.foundation_review='revision';foundationEditing=false;input.placeholder='可以继续询问 PDF，或再次点击“需要修改/补充”…';}
+  input.value='';input.style.height='auto';return sendTurn(turn,text);
 }
 async function sendTurn(turn,displayText,requestId){
   if(streaming||!currentConvoId)return;document.getElementById('sendBtn').disabled=true;streaming=true;
