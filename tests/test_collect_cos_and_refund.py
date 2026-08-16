@@ -234,8 +234,56 @@ class DownloadOnceTests(unittest.TestCase):
                     self.assertEqual(stored.read(), b"MUXED")
             finally:
                 os.unlink(path)
+
+            self.lg.store_video_file = lambda *_args, **_kwargs: None
+            url, path = self.lg._collect_bilibili_play_url(
+                {"id": "BV1EbdbBHEPa", "url": "https://www.bilibili.com/video/BV1EbdbBHEPa"},
+                keep_file=True)
+            self.assertIsNone(url)
+            self.assertIsNone(path)
         finally:
             self.lg.tikhub.bili_download_to_file = original_mux
+
+    def test_bilibili_content_collection_also_stores_playable_video(self):
+        originals = (
+            self.lg.tikhub.parse_link,
+            self.lg.tikhub.detail,
+            self.lg.tikhub.comments,
+            self.lg._collect_bilibili_play_url,
+        )
+        stored = []
+        try:
+            self.lg.tikhub.parse_link = lambda _url: {
+                "platform": "bilibili", "id": "BV1EbdbBHEPa", "note_type": "video"}
+            self.lg.tikhub.detail = lambda *_args, **_kwargs: {
+                "platform": "bilibili", "id": "BV1EbdbBHEPa",
+                "url": "https://www.bilibili.com/video/BV1EbdbBHEPa",
+                "title": "认真做 Agent", "desc": "一条简介", "images": [],
+                "author": {}, "cover": "https://img/cover.jpg"}
+            self.lg.tikhub.comments = lambda *_args, **_kwargs: {
+                "items": [], "has_more": False}
+            self.lg._collect_bilibili_play_url = lambda det, keep_file=False: (
+                stored.append(det["id"]) or "https://cos/collect/bilibili/BV1EbdbBHEPa.mp4",
+                None,
+            )
+
+            result = self.lg.gen_collect({
+                "url": "https://www.bilibili.com/video/BV1EbdbBHEPa",
+                "want": ["comments"],
+            })
+
+            self.assertEqual(stored, ["BV1EbdbBHEPa"])
+            self.assertEqual(
+                result["video"]["play_url"],
+                "https://cos/collect/bilibili/BV1EbdbBHEPa.mp4",
+            )
+        finally:
+            (
+                self.lg.tikhub.parse_link,
+                self.lg.tikhub.detail,
+                self.lg.tikhub.comments,
+                self.lg._collect_bilibili_play_url,
+            ) = originals
 
 
 class TranscriptReuseTests(unittest.TestCase):
