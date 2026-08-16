@@ -218,6 +218,25 @@ class DownloadOnceTests(unittest.TestCase):
     def test_public_url_from_remote_keeps_old_signature(self):
         self.assertEqual(self.lg.public_url_from_remote("http://cdn/v.mp4", "k", "video/mp4"), "https://cos/k")
 
+    def test_bilibili_full_video_is_muxed_then_stored(self):
+        original_mux = self.lg.tikhub.bili_download_to_file
+        def fake_mux(det, deadline, path, **kw):
+            with open(path, "wb") as output:
+                return output.write(b"MUXED")
+        try:
+            self.lg.tikhub.bili_download_to_file = fake_mux
+            url, path = self.lg._collect_bilibili_play_url(
+                {"id": "BV1EbdbBHEPa", "url": "https://www.bilibili.com/video/BV1EbdbBHEPa"},
+                keep_file=True)
+            try:
+                self.assertEqual(url, "https://cos/collect/bilibili/BV1EbdbBHEPa.mp4")
+                with open(path, "rb") as stored:
+                    self.assertEqual(stored.read(), b"MUXED")
+            finally:
+                os.unlink(path)
+        finally:
+            self.lg.tikhub.bili_download_to_file = original_mux
+
 
 class TranscriptReuseTests(unittest.TestCase):
     def setUp(self):
