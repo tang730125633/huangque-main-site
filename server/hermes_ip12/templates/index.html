@@ -157,6 +157,28 @@ button:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px soli
 .rpn-card .copy-btn{background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#211707;border:1px solid rgba(244,205,114,.45);padding:6px 10px;border-radius:8px;cursor:pointer;font-size:10px;font-weight:800;margin-top:8px}
 .rpn-card .copy-btn:hover{opacity:0.8}
 
+/* PDF review */
+.pdf-review{position:fixed;inset:0;z-index:120;display:none;background:rgba(2,6,12,.82);backdrop-filter:blur(8px)}
+.pdf-review.open{display:flex}
+.pdf-review-shell{width:min(1440px,96vw);height:min(900px,94vh);margin:auto;display:grid;grid-template-columns:minmax(0,1fr) 360px;overflow:hidden;border:1px solid rgba(148,164,187,.18);border-radius:18px;background:#0b111c;box-shadow:0 35px 100px rgba(0,0,0,.58)}
+.pdf-review-document{min-width:0;display:flex;flex-direction:column;background:#202631}
+.pdf-review-bar{min-height:52px;padding:9px 14px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(148,164,187,.14);background:#0d1420}
+.pdf-review-bar strong{font-size:13px;flex:1}.pdf-review-bar span{font-size:10px;color:#8290a4}
+.pdf-review-bar button,.pdf-review-side button{border:1px solid rgba(148,164,187,.2);border-radius:8px;background:rgba(148,164,187,.06);color:#dbe5f1;padding:7px 10px;cursor:pointer;font-size:11px}
+.pdf-review-bar button:hover,.pdf-review-side button:hover{border-color:rgba(231,178,76,.4);color:#f4cd72}
+.pdf-review-frame{width:100%;height:100%;border:0;background:#2b303b}
+.pdf-review-side{display:flex;flex-direction:column;min-height:0;padding:16px;border-left:1px solid rgba(148,164,187,.12);background:linear-gradient(180deg,#101824,#0a101a)}
+.pdf-review-side h2{font-size:15px;color:#f4cd72}.pdf-review-help{margin:6px 0 13px;color:#7f8fa5;font-size:11px;line-height:1.6}
+.pdf-review-grid{display:grid;grid-template-columns:90px 1fr;gap:8px}
+.pdf-review-field{display:flex;flex-direction:column;gap:5px;margin-bottom:9px}.pdf-review-field label{color:#93a2b6;font-size:10px}
+.pdf-review-field input,.pdf-review-field select,.pdf-review-field textarea{width:100%;border:1px solid rgba(148,164,187,.16);border-radius:8px;background:rgba(7,12,20,.82);color:#eaf1fa;padding:8px;font:inherit;font-size:11px;outline:none}
+.pdf-review-field textarea{min-height:64px;resize:vertical}.pdf-review-field input:focus,.pdf-review-field select:focus,.pdf-review-field textarea:focus{border-color:rgba(231,178,76,.55)}
+.pdf-review-add{width:100%;margin-bottom:12px}.pdf-review-list{flex:1;min-height:90px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding-right:2px}
+.pdf-review-empty{padding:18px 8px;text-align:center;color:#65758b;font-size:11px;border:1px dashed rgba(148,164,187,.15);border-radius:10px}
+.pdf-note{position:relative;padding:10px 34px 10px 10px;border:1px solid rgba(148,164,187,.13);border-radius:10px;background:rgba(148,164,187,.045);font-size:10px;line-height:1.55;color:#bfcbda}
+.pdf-note strong{color:#f1c768}.pdf-note-quote{color:#8290a4}.pdf-note-remove{position:absolute;right:7px;top:7px!important;padding:2px 6px!important;border:0!important;background:transparent!important;color:#718197!important}
+.pdf-review-submit{width:100%;margin-top:12px!important;padding:10px!important;border-color:rgba(231,178,76,.5)!important;background:rgba(231,178,76,.14)!important;color:#f4d993!important;font-weight:800}.pdf-review-submit:disabled{opacity:.4;cursor:not-allowed}
+
 .spinner{width:24px;height:24px;border:2px solid var(--bd);border-top-color:var(--ac);border-radius:50%;animation:spin .8s linear infinite;margin:20px auto}
 @keyframes spin{to{transform:rotate(360deg)}}
 .toast{position:fixed;bottom:20px;right:20px;z-index:200;background:rgba(11,31,30,.96);border:1px solid rgba(45,212,191,.34);color:#8ce7da;padding:10px 16px;border-radius:10px;box-shadow:0 16px 40px -24px rgba(0,0,0,.9);font-size:11px;animation:slideIn .3s ease,fadeOut .5s ease 3s forwards;pointer-events:none}
@@ -184,6 +206,9 @@ button:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px soli
   .welcome .big-icon{width:62px;height:62px;border-radius:18px}
   .input-area{padding:10px 10px 13px}
   .msg{max-width:100%}
+  .pdf-review-shell{width:100%;height:100%;border-radius:0;grid-template-columns:1fr;grid-template-rows:54vh minmax(0,1fr)}
+  .pdf-review-side{border-left:0;border-top:1px solid rgba(148,164,187,.12);padding:12px}
+  .pdf-review-bar span{display:none}
 }
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 </style>
@@ -245,6 +270,28 @@ button:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px soli
   </div>
 </aside>
 
+<div class="pdf-review" id="foundationReviewer" role="dialog" aria-modal="true" aria-labelledby="foundationReviewerTitle">
+  <div class="pdf-review-shell">
+    <section class="pdf-review-document">
+      <div class="pdf-review-bar"><strong id="foundationReviewerTitle">模块 1–4 PDF 审阅</strong><span>在 PDF 中查看原文，右侧按页添加修改意见</span><button type="button" onclick="downloadFoundationReport()">下载</button><button type="button" onclick="closeFoundationReviewer()">关闭</button></div>
+      <iframe class="pdf-review-frame" id="foundationPdfFrame" title="模块 1–4 PDF 预览"></iframe>
+    </section>
+    <aside class="pdf-review-side">
+      <h2>PDF 批注</h2>
+      <p class="pdf-review-help">复制 PDF 里需要调整的原文，填写页码和要求。Agent 会按这些定位修改，不再靠猜。</p>
+      <div class="pdf-review-grid">
+        <div class="pdf-review-field"><label for="pdfNotePage">页码</label><input id="pdfNotePage" type="number" min="1" max="999" value="1" inputmode="numeric"></div>
+        <div class="pdf-review-field"><label for="pdfNoteType">类型</label><select id="pdfNoteType"><option>修改</option><option>删除</option><option>补充</option></select></div>
+      </div>
+      <div class="pdf-review-field"><label for="pdfNoteQuote">定位原文（可选）</label><textarea id="pdfNoteQuote" maxlength="500" placeholder="从 PDF 复制一小段原文"></textarea></div>
+      <div class="pdf-review-field"><label for="pdfNoteText">修改要求</label><textarea id="pdfNoteText" maxlength="1000" placeholder="例：这段删掉；或改成……"></textarea></div>
+      <button class="pdf-review-add" type="button" onclick="addFoundationAnnotation()">＋ 添加这条批注</button>
+      <div class="pdf-review-list" id="foundationAnnotationList"></div>
+      <button class="pdf-review-submit" id="foundationAnnotationSubmit" type="button" onclick="submitFoundationAnnotations()">把批注交给 Agent</button>
+    </aside>
+  </div>
+</div>
+
 <div id="convoOverlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:100;display:none;align-items:center;justify-content:center" onclick="if(event.target===this)toggleConvos()">
   <div id="convoPanel" style="background:var(--sb);border:1px solid var(--bd);border-radius:var(--r);width:400px;max-height:70vh;overflow-y:auto;padding:16px"></div>
 </div>
@@ -298,7 +345,7 @@ SKILL_MAP[10]=[{id:'deliverable-10',icon:'message',name:'朋友圈排期',api:'/
 SKILL_MAP[11]=[{id:'sales',icon:'trend',name:'成交话术',api:'/api/m11-sales',help:'生成私域成交SOP话术'}];
 SKILL_MAP[12]=[{id:'calendar',icon:'calendar',name:'公众号日历',api:'/api/m12-calendar',help:'生成公众号30天内容日历'}];
 
-var cid=null,state={current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}},reports={},deliverables={},streaming=false,convos=[],foundationEditing=false;
+var cid=null,state={current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}},reports={},deliverables={},streaming=false,convos=[],foundationEditing=false,foundationAnnotations=[],foundationReviewCid='';
 var expandedMod=0;
 var WELCOME_HTML=document.getElementById('welcome').outerHTML;
 
@@ -404,12 +451,12 @@ function stateActions(){
   ];
   var foundation=state.foundation_report||{};if(foundation.status==='awaiting_confirmation'){
     if(foundation.review_status==='dirty')return[
-      {type:'open_foundation_report',label:'查看旧版 PDF',primary:false},
+      {type:'open_foundation_report',label:'查看旧版 PDF 并批注',primary:false},
       {type:'edit_foundation_report',label:'继续补充',primary:false},
       {type:'regenerate_foundation_report',label:'重新生成 PDF',primary:true}
     ];
     return[
-      {type:'open_foundation_report',label:'查看 PDF',primary:false},
+      {type:'open_foundation_report',label:'查看 PDF 并批注',primary:false},
       {type:'edit_foundation_report',label:'需要修改/补充',primary:false},
       {type:'confirm_foundation_report',label:'确认初稿，进入模块 5',primary:true}
     ];
@@ -463,7 +510,27 @@ async function generateFoundationReport(){
 
 async function openFoundationReport(){
   if(!cid)return;var url='/api/foundation-report/'+cid+'.pdf';var r=await fetch(url,{method:'HEAD',cache:'no-store'});
-  if(!r.ok){state.foundation_report={status:'failed'};renderMods();toast('❌ PDF 文件不可用，请重新生成');return}window.open(url,'_blank','noopener')
+  if(!r.ok){state.foundation_report={status:'failed'};renderMods();toast('❌ PDF 文件不可用，请重新生成');return}
+  if(foundationReviewCid!==cid){foundationAnnotations=[];foundationReviewCid=cid}
+  document.getElementById('foundationPdfFrame').src=url+'?preview=1#page=1&zoom=page-width';renderFoundationAnnotations();document.getElementById('foundationReviewer').classList.add('open');document.getElementById('pdfNoteText').focus()
+}
+
+function closeFoundationReviewer(){document.getElementById('foundationReviewer').classList.remove('open')}
+function downloadFoundationReport(){if(cid)window.open('/api/foundation-report/'+cid+'.pdf','_blank','noopener')}
+function addFoundationAnnotation(){
+  var page=Number(document.getElementById('pdfNotePage').value),type=document.getElementById('pdfNoteType').value,quote=document.getElementById('pdfNoteQuote').value.trim(),note=document.getElementById('pdfNoteText').value.trim();
+  if(!Number.isInteger(page)||page<1||page>999){toast('请填写正确页码');return}if(!note){toast('请填写修改要求');return}
+  foundationAnnotations.push({page:page,type:type,quote:quote,note:note});document.getElementById('pdfNoteQuote').value='';document.getElementById('pdfNoteText').value='';renderFoundationAnnotations();document.getElementById('pdfNoteText').focus()
+}
+function removeFoundationAnnotation(index){foundationAnnotations.splice(index,1);renderFoundationAnnotations()}
+function renderFoundationAnnotations(){
+  var list=document.getElementById('foundationAnnotationList'),submit=document.getElementById('foundationAnnotationSubmit');submit.textContent='把 '+foundationAnnotations.length+' 条批注交给 Agent';submit.disabled=!foundationAnnotations.length;
+  if(!foundationAnnotations.length){list.innerHTML='<div class="pdf-review-empty">还没有批注</div>';return}
+  list.innerHTML=foundationAnnotations.map(function(item,index){return '<div class="pdf-note"><strong>第 '+item.page+' 页 · '+eHtml(item.type)+'</strong>'+(item.quote?'<div class="pdf-note-quote">原文：'+eHtml(item.quote)+'</div>':'')+'<div>'+eHtml(item.note)+'</div><button class="pdf-note-remove" type="button" aria-label="删除批注" onclick="removeFoundationAnnotation('+index+')">✕</button></div>'}).join('')
+}
+function submitFoundationAnnotations(){
+  if(!foundationAnnotations.length)return;var lines=['请按以下 PDF 批注修改模块 1–4 报告：'];foundationAnnotations.forEach(function(item,index){lines.push((index+1)+'. 第 '+item.page+' 页｜'+item.type+(item.quote?'\n定位原文：'+item.quote:'')+'\n修改要求：'+item.note)});
+  var input=document.getElementById('userInput');input.value=lines.join('\n');foundationEditing=true;closeFoundationReviewer();sendMessage()
 }
 
 function beginFoundationRevision(){
