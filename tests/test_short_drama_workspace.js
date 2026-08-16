@@ -42,14 +42,21 @@ test('project workspace uses immersive shell and a collapsible summary panel', (
   assert.match(workspaceStyle, /html\.short-drama-immersive \.hq-main-scroll/);
   assert.match(workspaceStyle, /\.short-drama-center\.workspace-mode\{[^}]*height:100dvh/);
   assert.match(workspaceStyle, /\.sd-workspace-grid\.project-ready\.inspector-collapsed/);
+  assert.match(workspaceSource, /项目概况/);
+  assert.match(workspaceSource, /当前步骤/);
+  assert.match(workspaceSource, /故事摘要/);
+  assert.match(workspaceSource, /id="sdStorySummary"/);
+  assert.match(workspaceSource, /展开故事详情/);
+  assert.match(workspaceStyle, /-webkit-line-clamp:4/);
+  assert.match(workspaceStyle, /minmax\(280px,310px\)/);
 });
 
 test('direction-confirmed workspace hides chat and offers first-script generation', () => {
   assert.match(workspaceSource, /messageForm\.hidden=projectReady/);
   assert.match(workspaceSource, /生成第一版完整剧本/);
-  assert.match(workspaceSource, /项目摘要/);
+  assert.match(workspaceSource, /生成前，请检查这三项内容/);
   assert.match(workspaceSource, /querySelectorAll\('\[data-action="generate"\]'\)/);
-  assert.match(workspaceStyle, /\.sd-script-empty-action/);
+  assert.match(workspaceStyle, /\.sd-project-review/);
 });
 
 test('workspace mode renderer keeps unconfirmed phases editable and only archives authoritative ready states', () => {
@@ -131,11 +138,13 @@ test('项目概要展示确认门禁、修改后重确认和结构化理解摘�
   const css = fs.readFileSync(
     path.join(ROOT, 'site/workbench/short-drama-workspace.css'), 'utf8'
   );
-  assert.match(source, /请先确认创作方向/);
-  assert.match(source, /修改后需要重新确认/);
+  assert.match(source, /确认项目内容/);
+  assert.match(source, /内容修改后需要重新确认/);
+  assert.doesNotMatch(source, /助手会先理解想法、给出建议并与你确认/);
   assert.match(source, /understanding\.direction_confirmed/);
-  assert.match(source, /创作概要/);
-  assert.match(source, /生成前检查/);
+  assert.match(source, /项目概况/);
+  assert.match(source, /当前步骤/);
+  assert.match(source, /故事摘要/);
   assert.match(source, /id="sdOverviewTitle"/);
   assert.match(source, /id="sdTechnicalContract"/);
   assert.match(source, /用户补充/);
@@ -231,8 +240,8 @@ test('导入原稿展示模式化理解快照与待确认优化边界', () => {
   const source = fs.readFileSync(
     path.join(ROOT, 'site/workbench/short-drama-workspace.js'), 'utf8'
   );
-  assert.match(source, /import_review:'原稿理解待确认'/);
-  assert.match(source, /补充必须保留 \/ 允许优化的内容/);
+  assert.match(source, /import_review:'原稿内容待确认'/);
+  assert.match(source, /请核对核心故事、角色和分镜要求/);
 });
 
 test('客户端使用 Cookie 会话、独立接口和幂等键', async () => {
@@ -268,6 +277,7 @@ test('客户端使用 Cookie 会话、独立接口和幂等键', async () => {
   await client.autodraft('project a');
   await client.providerPreflight({project_id:'a', plan_id:'p1', shot_key:'shot_01', avatar_id:'avatar-1'});
   await client.providerQuote({project_id:'a', plan_id:'p1', shot_key:'shot_01', avatar_id:'avatar-1'});
+  await client.selectProviderVersion({project_id:'a',shot_key:'shot_01',version_id:'v1'});
   await client.startProviderJob({quote_token:'quote-1'});
   await client.providerJob('project a','provider/1');
   await client.startDraft({project_id:'a', plan_id:'p1'});
@@ -282,10 +292,11 @@ test('客户端使用 Cookie 会话、独立接口和幂等键', async () => {
   assert.equal(calls[12].url, '/api/gen/short-drama/autodraft?project_id=project%20a');
   assert.equal(calls[13].url, '/api/gen/short-drama/autodraft/provider-preflight');
   assert.equal(calls[14].url, '/api/gen/short-drama/autodraft/provider-quote');
-  assert.equal(calls[15].url, '/api/gen/short-drama/autodraft/provider-jobs');
-  assert.equal(calls[16].url, '/api/gen/short-drama/autodraft/provider-jobs/provider%2F1?project_id=project%20a');
-  assert.equal(calls[18].url, '/api/gen/short-drama/autodraft/jobs/job%2F1?project_id=project%20a');
-  assert.equal(calls[19].url, '/api/gen/short-drama/projects');
+  assert.equal(calls[15].url, '/api/gen/short-drama/autodraft/provider-version/select');
+  assert.equal(calls[16].url, '/api/gen/short-drama/autodraft/provider-jobs');
+  assert.equal(calls[17].url, '/api/gen/short-drama/autodraft/provider-jobs/provider%2F1?project_id=project%20a');
+  assert.equal(calls[19].url, '/api/gen/short-drama/autodraft/jobs/job%2F1?project_id=project%20a');
+  assert.equal(calls[20].url, '/api/gen/short-drama/projects');
   for (const call of calls) {
     assert.equal(call.options.credentials, 'same-origin');
     assert.equal(call.options.headers.Authorization, 'Bearer __cookie__');
@@ -611,59 +622,139 @@ test('客户端公开单镜头编辑、重生成与锁定接口', async () => {
   }
 });
 
-test('角色工作室包含档案、形象生成、形象库绑定和角色感知预检交互', () => {
+test('角色卡直接展示已确认资料且仅在服务需要时处理电影化身', () => {
   const source = fs.readFileSync(
     path.join(ROOT, 'site/workbench/short-drama-workspace.js'), 'utf8'
   );
   const css = fs.readFileSync(
     path.join(ROOT, 'site/workbench/short-drama-workspace.css'), 'utf8'
   );
-  assert.match(source, /id="sdCharacterModal"/);
-  assert.match(source, /data-action="open-character"/);
-  assert.match(source, /data-action="generate-character-image"/);
-  assert.match(source, /data-action="bind-character-avatar"/);
+  assert.doesNotMatch(source, /id="sdCharacterModal"/);
+  assert.doesNotMatch(source, /data-action="open-character"/);
+  assert.match(source, /data-action="bind-card-avatar"/);
   assert.match(source, /data-action="create-character-avatar"/);
-  assert.match(source, /data-action="lock-script-for-character"/);
-  assert.match(source, /先锁定剧本，再选择人物形象/);
-  assert.match(source, /锁定后可选择/);
-  assert.match(source, /data-action="retry-character-studio"/);
-  assert.match(source, /data-action="edit-character-name"/);
-  assert.match(source, /data-action="save-character-name"/);
-  assert.match(source, /name:requestedName/);
-  assert.match(source, /characterNameError/);
-  assert.match(source, /compatibility_name_local_only/);
-  assert.match(source, /delete legacyRequest\.name/);
-  assert.match(source, /generationStage='保存角色视觉设定'/);
-  assert.match(source, /generationStage='提交角色形象生成任务'/);
-  assert.match(source, /characterImageOperation/);
-  assert.match(source, /id="sdCharacterImageStatus"/);
-  assert.match(source, /正在保存角色视觉设定/);
-  assert.match(source, /检查生成结果/);
-  assert.match(source, /不要重复提交/);
-  assert.match(source, /characterImageFailureMessage/);
-  assert.match(css, /\.sd-character-image-status/);
-  assert.match(css, /@keyframes sd-character-spin/);
+  assert.match(source, /providerRequiresMovieAvatar/);
+  assert.match(source, /当前视频服务需要电影化身/);
+  assert.match(source, /根据标准图创建并绑定/);
+  assert.doesNotMatch(source, /<form id="sdCharacterProfile"/);
+  assert.doesNotMatch(source, /<button[^>]+data-action="generate-character-image"/);
+  assert.doesNotMatch(source, /<button[^>]+data-action="edit-character-name"/);
+  assert.doesNotMatch(source, /form="sdCharacterProfile"/);
+  assert.match(css, /\.sd-character-readonly/);
   assert.match(source, /角色标识：/);
   assert.match(source, /avatar_id:providerShot\.primary_avatar_id/);
   assert.match(source, /character_key:providerShot\.primary_character_key/);
-  assert.match(css, /\.sd-character-modal/);
   assert.match(css, /\.sd-character-card/);
-  assert.match(css, /\.sd-character-prerequisite/);
-  assert.match(css, /\.sd-character-workspace/);
-  assert.match(css, /\.sd-character-actions\{position:sticky/);
-  assert.match(css, /width:min\(96vw,1680px\)/);
+  assert.match(css, /\.sd-character-card-image/);
+  assert.match(css, /\.sd-character-image-lightbox/);
+  assert.match(css, /\.sd-character-inline-actions/);
+  assert.match(workspaceSource, /data-action="preview-character-image"/);
+  assert.match(workspaceSource, /data-action="close-character-image-preview"/);
+  assert.match(workspaceSource, /sdCharacterImagePreview/);
+  assert.match(workspaceSource, /event\.key==='Escape'&&imageLightbox/);
+  assert.equal(workspace.movieAvatarRequired(''), false);
+  assert.equal(workspace.movieAvatarRequired('grok'), false);
+  assert.equal(workspace.movieAvatarRequired('minimax_h3'), false);
+  assert.equal(workspace.movieAvatarRequired('heygen_cinematic'), true);
+  assert.equal(workspace.providerLabel('minimax_h3'), '视频生成服务');
+  assert.equal(workspace.providerLabel('heygen_cinematic'), '视频生成服务');
+  assert.equal(workspace.userFacingVideoMessage('麦克视频生成失败：MiniMax API 拒绝请求'), '视频生成服务生成失败：视频生成服务 API 拒绝请求');
+  assert.match(workspace.providerFailureRecoveryHtml({
+    status:'failed',billing_recovery:{refunded:true}
+  }), /本次扣点已自动退回/);
+  assert.match(workspace.providerFailureRecoveryHtml({
+    status:'failed',billing_recovery:{refund_pending:true}
+  }), /退点正在自动处理中/);
+  assert.equal(workspace.providerFailureRecoveryHtml({status:'running'}), '');
 });
 
-test('锁定后对话区变为可折叠只读历史并支持复制为新项目', () => {
+test('敏感审核失败提供可操作的中文恢复流程', () => {
+  const job={
+    status:'failed',shot_key:'shot_07',
+    error:{provider_code:'1026',provider_message:'input new_sensitive, input text sensitive'},
+    request:{reference_images:[
+      {character_key:'character_1',name:'陈宇'},
+      {character_key:'__continuity_tail__',name:'上一镜头尾帧'}
+    ]}
+  };
+  const characters=[
+    {character_key:'character_1',name:'陈宇'},
+    {character_key:'character_2',name:'林默'}
+  ];
+  const shot={provider_prompt:'中国初中教室里，瘦弱男生林默独自收拾书包'};
+  const providerShot={character_keys:['character_1']};
+  const review=workspace.providerInputReview(shot,providerShot,characters,job,{});
+  const html=workspace.providerFailureRecoveryHtml(job,{shot,providerShot,providerCharacters:characters});
+  assert.equal(workspace.userFacingVideoMessage(job.error.provider_message), '输入内容未通过审核，请调整镜头文字或参考图后重新预检。');
+  assert.equal(review.sensitive,true);
+  assert.deepEqual(review.expected,['陈宇']);
+  assert.deepEqual(review.unexpected,['林默']);
+  assert.match(html,/输入内容未通过审核/);
+  assert.match(html,/角色名称不一致/);
+  assert.match(html,/上一镜头尾帧 · 可临时停用/);
+  assert.match(html,/data-action="edit-shot-execution"/);
+  assert.equal(workspace.saferProviderPrompt(shot.provider_prompt),'普通室内教室里，清瘦人物林默独自收拾书包');
+  assert.match(workspace.syncProviderCharacterNames(shot.provider_prompt,review),/陈宇/);
+});
+
+test('当前镜头覆盖绑定优先于旧剧本绑定并展示实际提交提示词', () => {
+  const job={
+    status:'failed',shot_key:'shot_07',
+    error:{provider_code:'1026',provider_message:'input text sensitive'},
+    request:{prompt:'普通室内教室，林默整理书包',reference_images:[{character_key:'character_2',name:'林默'}]}
+  };
+  const characters=[{character_key:'character_1',name:'陈宇'},{character_key:'character_2',name:'林默'}];
+  const shot={shot_key:'shot_07',provider_prompt:'旧提示词中的陈宇'};
+  const providerShot={character_keys:['character_1']};
+  const execution={character_keys:['character_2'],provider_prompt:'普通室内教室，林默整理书包'};
+  const review=workspace.providerInputReview(shot,providerShot,characters,job,execution);
+  const html=workspace.providerFailureRecoveryHtml(job,{shot,providerShot,providerCharacters:characters,execution});
+  assert.deepEqual(review.expected,['林默']);
+  assert.deepEqual(review.unexpected,[]);
+  assert.match(html,/角色绑定正常/);
+  assert.match(html,/优化文字并免费重新预检/);
+  assert.doesNotMatch(html,/角色名称不一致/);
+  assert.equal(workspace.currentShotExecutionPrompt(shot,{provider_job:job,provider_execution_overrides:{shot_07:execution}}),'普通室内教室，林默整理书包');
+});
+
+test('视频轮询只局部更新进度并保持工作区视口稳定', () => {
+  assert.match(workspaceSource,/function updateProviderProgressDom\(job\)/);
+  assert.match(workspaceSource,/data-provider-media-progress/);
+  assert.match(workspaceSource,/data-provider-job-progress/);
+  assert.match(workspaceSource,/function updateBackgroundProgressDom\(kind,job\)/);
+  assert.match(workspaceSource,/function renderPreservingViewport\(\)/);
+  assert.match(workspaceSource,/function workspaceViewportState\(\)/);
+  assert.match(workspaceStyle,/\.sd-workspace-top\{position:fixed/);
+  assert.match(workspaceStyle,/\.sd-workspace\{box-sizing:border-box;height:100dvh;padding-top:68px/);
+});
+
+test('镜头角色更换会同步提示词且不改动未替换角色', () => {
+  assert.equal(
+    workspace.syncShotBindingPrompt('林默走进教室，陈宇回头。',['林默'],['陈宇']),
+    '陈宇走进教室，陈宇回头。'
+  );
+  assert.equal(workspace.syncShotBindingPrompt('林默走进教室。',['林默'],[]),'林默走进教室。');
+});
+
+test('剧本审阅阶段继承项目中已锁定的角色标准图', () => {
+  assert.match(workspaceSource, /project:function\(id\).*short-drama\/project/);
+  assert.match(workspaceSource, /persistedCharacter/);
+  assert.match(workspaceSource, /标准图已锁定/);
+  assert.match(workspaceSource, /persisted\.reference_url/);
+});
+
+test('项目工作区移除创作助手并保留新版本项目参数复制能力', () => {
   const shell = workspace.shellHtml();
   const payload = workspace.cloneProjectPayload({
     title:'暴雨录音', synopsis:'未来录音', ratio:'9:16',
     target_duration:45, shot_count:9, visual_style:'悬疑写实',
     target_platform:'视频号', point_budget:300
   });
-  assert.match(shell, /data-action="toggle-history"/);
-  assert.match(shell, /data-action="clone-project"/);
-  assert.match(shell, /基于当前项目创建新版本/);
+  assert.doesNotMatch(shell, /sd-chat/);
+  assert.doesNotMatch(shell, /sdMessageForm/);
+  assert.doesNotMatch(shell, /和创作助手对话/);
+  assert.match(shell, /id="sdScript"/);
+  assert.match(shell, /id="sdUnderstanding"/);
   assert.equal(payload.title, '暴雨录音 · 新版本');
   assert.equal(payload.synopsis, '未来录音');
   assert.equal(payload.ratio, '9:16');
@@ -672,7 +763,53 @@ test('锁定后对话区变为可折叠只读历史并支持复制为新项目',
   assert.equal(payload.point_budget, 300);
 });
 
-test('结构化剧本渲染角色、三幕、镜头和台词', () => {
+test('未确认项目在主创作区直接提供内容确认入口', () => {
+  const output = workspace.scriptHtml(
+    null, true, {}, '', true,
+    {direction_confirmed:false,premise:'雨夜中的重逢',import_contract:{characters:['林夏','周野'],plot_points:[{position:'start',excerpt:'两人在雨中相遇'}]}},
+    '确认尊重原稿并生成', '', {}, {shot_count:6,target_duration:30}
+  );
+  assert.match(output, /sd-project-review/);
+  assert.match(output, /生成前，请检查这三项内容/);
+  assert.match(output, /雨夜中的重逢/);
+  assert.match(output, /林夏、周野/);
+  assert.match(output, /6 个镜头 · 预计 30 秒/);
+  assert.doesNotMatch(output, /data-action="confirm-and-generate"/);
+  assert.doesNotMatch(output, /data-action="generate"/);
+  assert.doesNotMatch(output, /创作助手/);
+});
+
+test('分镜概要从重复原稿中整理出简短的开场发展结尾', () => {
+  const repeated = '人物：小晚、阿泽。分镜、时长、画面依次安排：1、0-5秒：少女在街角与少年相撞。2、5-10秒：两人捡起书签。3、10-15秒：两人短暂交谈。4、15-20秒：两人发现共同爱好。5、20-25秒：两人在路口道别。6、25-30秒：街灯亮起，各自离开。';
+  const output = workspace.scriptHtml(null, true, {}, '', false, {
+    premise:'一次浪漫偶遇',
+    import_contract:{characters:['小晚','阿泽'],plot_points:[
+      {position:'start',excerpt:repeated},
+      {position:'middle',excerpt:repeated},
+      {position:'end',excerpt:repeated}
+    ]}
+  }, '', '', {}, {shot_count:6,target_duration:30});
+  assert.match(output, /少女在街角与少年相撞/);
+  assert.match(output, /两人发现共同爱好/);
+  assert.match(output, /街灯亮起，各自离开/);
+  assert.doesNotMatch(output, /人物：小晚、阿泽。分镜、时长/);
+  assert.match(output, /3 个关键节点/);
+});
+
+test('导入原稿可一次确认方向并生成第一版剧本', () => {
+  const output = workspace.scriptHtml(
+    null, true, {}, '', false,
+    {phase:'import_review',direction_confirmed:false},
+    ''
+  );
+  assert.match(output, /sd-project-review/);
+  assert.doesNotMatch(output, /data-action="confirm-and-generate"/);
+  assert.match(workspaceSource, /function confirmDirectionAndGenerate/);
+  assert.match(workspaceSource, /sendConversationMessage\(message\)\.then/);
+  assert.match(workspaceSource, /client\.generate\(payload\(\{instruction:text\(instruction\)\.trim\(\)\}\)\)/);
+});
+
+test('结构化剧本主区聚焦角色、镜头和台词，三幕结构移到右侧详情', () => {
   const output = workspace.scriptHtml({
     id:'v1', version:1, status:'draft',
     script:{
@@ -684,13 +821,48 @@ test('结构化剧本渲染角色、三幕、镜头和台词', () => {
     }
   });
   assert.match(output, /雨夜来信/);
-  assert.match(output, /三幕结构/);
+  assert.match(output, /结构化剧本/);
+  assert.match(output, /版本 v1/);
+  assert.match(output, />草稿</);
+  assert.doesNotMatch(output, /三幕结构/);
   assert.match(output, /雨中近景/);
   assert.match(output, /你终于来了/);
+  const acts = workspace.storyActsHtml([
+    {act:1,name:'钩子',summary:'来信出现'},
+    {act:2,name:'冲突',summary:'真相揭开'}
+  ]);
+  assert.match(acts, /三幕结构/);
+  assert.match(acts, /第1幕 · 钩子/);
+  assert.match(acts, /真相揭开/);
+  assert.match(workspaceSource, /storyActsHtml\(currentScriptBody\.acts\)/);
 });
 
-test('v4 故事板展示质量门禁、节拍、静默镜头和单镜头操作', () => {
-  const output = workspace.scriptHtml({
+test('角色列表严格采用创建阶段确认的角色合同', () => {
+  const result = workspace.authoritativeCharacterList(
+    [
+      {character_key:'boy',name:'男孩'},
+      {character_key:'girl',name:'女孩'},
+      {character_key:'friend_a',name:'朋友甲'},
+      {character_key:'friend_b',name:'朋友乙'}
+    ],
+    [
+      {character_key:'boy',name:'男孩',reference_url:'/boy.png'},
+      {character_key:'girl',name:'女孩',reference_url:'/girl.png'},
+      {character_key:'friend_a',name:'朋友甲'}
+    ],
+    [],
+    [
+      {character_key:'boy',name:'男孩',role_type:'main'},
+      {character_key:'girl',name:'女孩',role_type:'support'}
+    ]
+  );
+  assert.deepEqual(result.map(item => item.character_key), ['boy','girl']);
+  assert.equal(result[0].reference_url, '/boy.png');
+  assert.equal(result[1].role_type, 'support');
+});
+
+test('v4 故事板主区展示节拍和单镜头操作，质量门禁移到右侧', () => {
+  const version = {
     id:'v4',
     version:4,
     status:'draft',
@@ -713,6 +885,8 @@ test('v4 故事板展示质量门禁、节拍、静默镜头和单镜头操作',
         continuity:'保持蓝色睡衣和凌晨光线',
         provider_prompt:'电影感写实，凌晨卧室，固定中近景',
         negative_prompt:'水印，文字',
+        source_type:'user_storyboard',
+        source_text:'镜头 1（0-4s）固定中近景，女儿盯着成绩页面。',
         dialogue_line_ids:['line_01'],
         locked:false
       }],
@@ -725,14 +899,36 @@ test('v4 故事板展示质量门禁、节拍、静默镜头和单镜头操作',
         end_ms:4000
       }]
     }
-  }, true);
-  assert.match(output, /质量门禁/);
+  };
+  const output = workspace.scriptHtml(version, true);
+  assert.doesNotMatch(output, /质量门禁/);
+  assert.match(output, /sd-script-head ready/);
+  assert.match(output, />可锁定</);
+  const quality = workspace.storyboardQualityHtml(version.script);
+  assert.match(quality, /1\/1 镜检查通过，可以锁定/);
+  assert.match(quality, /查看检查详情/);
+  assert.match(quality, /镜头时长、对白、剧情推进和生成提示词检查通过/);
+  assert.deepEqual(workspace.scriptHeaderState({status:'locked'}), {key:'locked',label:'已锁定'});
   assert.match(output, /交代成绩落差/);
   assert.match(output, /静默表演/);
   assert.match(output, /data-action="edit-shot"/);
   assert.match(output, /data-action="regenerate-shot"/);
   assert.match(output, /data-action="toggle-shot-lock"/);
-  assert.match(output, /Provider 提示词/);
+  assert.match(output, /实际提交提示词/);
+  assert.match(output, /用户原稿/);
+  assert.match(output, /原稿依据/);
+  assert.match(output, /镜头 1（0-4s）/);
+});
+
+test('没有用户分镜要求的镜头标记为系统补充', () => {
+  const output = workspace.scriptHtml({
+    version:1,status:'draft',script:{
+      overview:{title:'自动分镜'},characters:[],acts:[],
+      shots:[{shot_key:'shot_01',sort_order:1,duration_seconds:5,visual:'系统生成画面',source_type:'system_generated'}],
+      dialogue_lines:[]
+    }
+  });
+  assert.match(output, /系统补充/);
 });
 
 test('旧通用模板版本显示重建提示', () => {
@@ -864,7 +1060,7 @@ test('真实 Provider 未接入时禁止生成并明确说明不会播放固定�
       provider:{selected:null,configured:false}
     }
   }, true);
-  assert.match(ready, /尚未选择真实画面 Provider/);
+  assert.match(ready, /尚未选择视频生成服务/);
   assert.match(ready, /视频生成总览/);
   assert.match(ready, /左侧“镜头与台词”/);
   assert.match(ready, /预检和报价不扣点/);
@@ -969,8 +1165,20 @@ test('PR-5 精修工作区展示问题镜头、单镜重做和确认门禁', () 
   assert.match(blocked, /data-action="confirm-refinement" disabled/);
 });
 
+test('镜头问题标记使用页面内弹窗并提供明确的问题类型', () => {
+  assert.match(workspaceSource, /id="sdRefinementIssueModal"/);
+  assert.match(workspaceSource, /id="sdRefinementIssueForm"/);
+  assert.match(workspaceSource, /background_continuity/);
+  assert.match(workspaceSource, /character_consistency/);
+  assert.match(workspaceSource, /action_continuity/);
+  assert.match(workspaceSource, /visual_artifact/);
+  assert.doesNotMatch(workspaceSource, /window\.prompt\('请简要说明该镜头的问题'/);
+  assert.match(workspaceStyle, /\.sd-refinement-issue-form/);
+});
+
 test('PR-5 正式交付展示 1080p 播放器和不可变快照证据', () => {
   const output = workspace.refinementHtml({
+    project:{title:'晚风偶遇'},
     current_delivery:{
       version:1,status:'ready',url:'/assets/meiye_video.mp4',
       input_hash:'abc123',
@@ -980,6 +1188,9 @@ test('PR-5 正式交付展示 1080p 播放器和不可变快照证据', () => {
   assert.match(output, /1080p 正式成片 v1/);
   assert.match(output, /不可变交付快照/);
   assert.match(output, /abc123/);
+  assert.doesNotMatch(output, /单独打开/);
+  assert.match(output, /下载 1080p 成片/);
+  assert.match(output, /download="晚风偶遇-v1-1080p\.mp4"/);
 });
 
 test('formal delivery stays disabled when the real executor is unavailable', () => {
@@ -1001,6 +1212,7 @@ test('formal delivery stays disabled when the real executor is unavailable', () 
 
 test('local deterministic delivery is labelled as a free non-deliverable demo', () => {
   const output = workspace.refinementHtml({
+    project:{title:'晚风偶遇'},
     current_delivery:{
       version:2,status:'ready',url:'/assets/demo.mp4',input_hash:'demo123',
       snapshot:{
@@ -1016,7 +1228,18 @@ test('local deterministic delivery is labelled as a free non-deliverable demo', 
   assert.match(output, /本地演示预览 v2/);
   assert.match(output, /不是 1080p 正式交付文件/);
   assert.match(output, /不可交付的演示快照/);
+  assert.match(output, /下载演示预览/);
+  assert.match(output, /download="晚风偶遇-v2-preview\.mp4"/);
   assert.doesNotMatch(output, /1080p 正式成片/);
+});
+
+test('delivery explains when the generated file address is missing', () => {
+  const output = workspace.refinementHtml({
+    project:{title:'晚风偶遇'},
+    current_delivery:{version:1,status:'ready',url:'',snapshot:{deliverable:true}},
+  });
+  assert.match(output, /成片文件地址缺失，请刷新后重试/);
+  assert.doesNotMatch(output, /下载 1080p 成片/);
 });
 
 test('Provider executor renders preflight, quote, paid confirmation and result state', () => {
@@ -1045,7 +1268,9 @@ test('Provider executor renders preflight, quote, paid confirmation and result s
         prompt:'电影感写实短剧镜头',
         ratio:'16:9',
         resolution:'720p',
-        duration_seconds:5
+        duration_seconds:4,
+        timeline_duration_seconds:3,
+        assembly_trim_required:true
       },
       next_action:'可进入单镜头付费确认'
     },
@@ -1074,6 +1299,8 @@ test('Provider executor renders preflight, quote, paid confirmation and result s
   assert.match(output, /1\/1 个角色已锁定/);
   assert.match(controls, /免费检查生成参数/);
   assert.match(controls, /电影感写实短剧镜头/);
+  assert.match(controls, /剧本镜头为 3 秒；生成服务最低返回 4 秒/);
+  assert.match(controls, /保留服务实际返回的完整镜头/);
   assert.match(controls, /确认扣 50 点并生成/);
   assert.match(controls, /视频任务 · running · 45%/);
   assert.match(output, /预检和报价不扣点/);
@@ -1107,37 +1334,154 @@ test('Provider executor describes a succeeded shot as completed', () => {
       ready:false,
       mode:'provider_poc',
       message:'Provider 已配置',
+      assembly:{required_count:6,ready_count:1},
       single_shot_executor_ready:true,
       provider:{selected:'heygen_cinematic',configured:true}
     }
   }, true);
-  assert.match(output, /镜头 shot_01 已由 heygen_cinematic 生成完成/);
-  assert.doesNotMatch(output, /镜头 shot_01 正在由 heygen_cinematic 处理/);
+  assert.match(output, /镜头 shot_01 已生成完成/);
+  assert.match(output, /整体进度 · 已完成 1\/6 个镜头/);
+  assert.match(output, /最近任务：shot_01 · succeeded · 100%/);
+  assert.doesNotMatch(output, /heygen_cinematic|MiniMax|麦克视频/);
   assert.match(output, /data-action="jump-to-shot"/);
   assert.doesNotMatch(output, /<video/);
 });
 
-test('generated Provider videos render under their matching script shots', () => {
+test('generated Provider video renders only when its matching shot is selected', () => {
   const version={
     version:2,status:'locked',script:{overview:{title:'测试剧本'},characters:[],acts:[],dialogue_lines:[],shots:[
       {shot_key:'shot_01',sort_order:1,duration_seconds:5,beat:'建立',visual:'第一镜'},
       {shot_key:'shot_02',sort_order:2,duration_seconds:5,beat:'冲突',visual:'第二镜'}
     ]}
   };
-  const output=workspace.scriptHtml(version,false,{
+  const autodraft={
     provider_versions:[
       {id:'v2',shot_key:'shot_02',version:2,provider:'heygen_cinematic',url:'/api/files/video/shot-02-v2.mp4',created_at:22},
       {id:'v1',shot_key:'shot_02',version:1,provider:'heygen_cinematic',url:'/api/files/video/shot-02-v1.mp4',created_at:11}
     ],
     provider_job:{id:'job-2',shot_key:'shot_02',status:'succeeded',progress:100,provider:'heygen_cinematic'}
-  });
-  const first=output.indexOf('data-shot-key="shot_01"');
-  const second=output.indexOf('data-shot-key="shot_02"');
-  const video=output.indexOf('/api/files/video/shot-02-v2.mp4');
-  assert.ok(first>=0&&second>first&&video>second);
-  assert.match(output, /尚未生成镜头视频/);
+  };
+  const output=workspace.scriptHtml(version,false,autodraft,'',true,{},'','',{}, {},'shot_02');
+  const workspaceStart=output.indexOf('sd-single-shot-workspace');
+  assert.match(output.slice(workspaceStart),/data-shot-key="shot_02"/);
+  assert.doesNotMatch(output.slice(workspaceStart),/data-shot-key="shot_01"/);
+  assert.match(output,/\/api\/files\/video\/shot-02-v2\.mp4/);
   assert.match(output, /镜头视频 · v2/);
-  assert.match(output, /历史视频版本（2）/);
+  assert.match(output, /视频版本（2）/);
+  assert.match(output, /采用此版本/);
+});
+
+test('shot generation overview shows completed active failed and pending shots', () => {
+  const shots=[
+    {shot_key:'shot_01',sort_order:1},
+    {shot_key:'shot_02',sort_order:2},
+    {shot_key:'shot_03',sort_order:3},
+    {shot_key:'shot_04',sort_order:4}
+  ];
+  const completed=workspace.shotGenerationOverviewHtml(shots,{
+    provider_versions:[{shot_key:'shot_01',version:1}],
+    provider_job:{shot_key:'shot_02',status:'running',progress:45}
+  });
+  assert.match(completed,/已生成 1 \/ 4 个镜头/);
+  assert.match(completed,/还有 3 个镜头未完成/);
+  assert.match(completed,/1 个生成中/);
+  assert.match(completed,/2 个未生成/);
+  assert.match(completed,/aria-valuenow="1"/);
+  assert.match(completed,/style="width:25%"/);
+  assert.equal((completed.match(/data-action="show-workspace-shot"/g)||[]).length,4);
+
+  const failed=workspace.shotGenerationOverviewHtml(shots,{
+    provider_job:{shot_key:'shot_03',status:'failed',progress:10}
+  });
+  assert.match(failed,/1 个失败/);
+  assert.match(failed,/3 个未生成/);
+});
+
+test('single shot workspace defaults to failed shot and renders only the selected shot', () => {
+  const version={version:3,status:'locked',script:{overview:{title:'测试短剧',logline:'一句话故事'},characters:[],dialogue_lines:[],shots:[
+    {shot_key:'shot_01',sort_order:1,duration_seconds:5,beat:'建立',visual:'第一个镜头',purpose:'开场'},
+    {shot_key:'shot_02',sort_order:2,duration_seconds:5,beat:'冲突',visual:'失败镜头',purpose:'冲突'},
+    {shot_key:'shot_03',sort_order:3,duration_seconds:5,beat:'收束',visual:'第三个镜头',purpose:'结局'}
+  ]}};
+  const autodraft={provider_job:{shot_key:'shot_02',status:'failed',progress:20},provider_poc:{shots:[],characters:[]}};
+  const failedDefault=workspace.scriptHtml(version,false,autodraft,'',true,{},'','',{},{});
+  assert.match(failedDefault,/当前镜头 2 \/ 3/);
+  assert.match(failedDefault,/失败镜头/);
+  assert.doesNotMatch(failedDefault,/第一个镜头/);
+  assert.doesNotMatch(failedDefault,/第三个镜头/);
+  assert.equal((failedDefault.match(/class="sd-shot /g)||[]).length,1);
+  assert.match(failedDefault,/data-action="show-workspace-shot"/);
+  assert.match(failedDefault,/aria-pressed="true"/);
+
+  const selected=workspace.scriptHtml(version,false,autodraft,'',true,{},'','',{}, {},'shot_03');
+  assert.match(selected,/当前镜头 3 \/ 3/);
+  assert.match(selected,/第三个镜头/);
+  assert.doesNotMatch(selected,/失败镜头/);
+  assert.match(selected,/data-action="step-workspace-shot" data-direction="1" disabled/);
+});
+
+test('Provider jobs remain indexed per shot across providers and terminal states', () => {
+  const state={
+    provider_job:{id:'legacy-latest',shot_key:'shot_03',status:'failed',provider:'minimax_h3'},
+    provider_jobs:[
+      {id:'job-running',shot_key:'shot_01',status:'running',progress:35,provider:'heygen_cinematic'},
+      {id:'job-terminal',shot_key:'shot_02',status:'failed',progress:10,provider:'grok'},
+      {id:'legacy-latest',shot_key:'shot_03',status:'failed',provider:'minimax_h3'}
+    ]
+  };
+
+  const index=workspace.shotMediaIndex(state);
+
+  assert.equal(index.shot_01.job.id,'job-running');
+  assert.equal(index.shot_02.job.id,'job-terminal');
+  assert.equal(index.shot_03.job.id,'legacy-latest');
+});
+
+test('Provider job collection counts and polls every active shot while keeping legacy compatibility', () => {
+  const jobs=workspace.activeProviderJobs({
+    provider_job:{id:'job-running',shot_key:'shot_01',status:'running'},
+    provider_jobs:[
+      {id:'job-running',shot_key:'shot_01',status:'running'},
+      {id:'job-billing',shot_key:'shot_02',status:'billing'},
+      {id:'job-done',shot_key:'shot_03',status:'succeeded'}
+    ]
+  });
+  const legacy=workspace.activeProviderJobs({
+    provider_job:{id:'legacy-only',shot_key:'shot_04',status:'queued'}
+  });
+
+  assert.deepEqual(jobs.map(item=>item.id),['job-running','job-billing']);
+  assert.deepEqual(legacy.map(item=>item.id),['legacy-only']);
+  assert.match(workspaceSource,/Promise\.all\(providerJobs\.map/);
+});
+
+test('Provider summary reports both active shot jobs after refresh', () => {
+  const output=workspace.autodraftActionsHtml({
+    confirmed_plan:{id:'plan-1'},
+    provider_poc:{shots:[{shot_key:'shot_01'},{shot_key:'shot_02'}],characters:[]},
+    provider_job:{id:'job-newer',shot_key:'shot_02',status:'queued',progress:5},
+    provider_jobs:[
+      {id:'job-older',shot_key:'shot_01',status:'running',progress:35,provider:'heygen_cinematic'},
+      {id:'job-newer',shot_key:'shot_02',status:'queued',progress:5,provider:'grok'}
+    ],
+    production:{ready:false,mode:'provider_poc',message:'ready',provider:{configured:true}}
+  },true);
+
+  assert.match(output,/<b>2<\/b>/);
+  assert.match(output,/shot_01/);
+  assert.match(output,/shot_02/);
+});
+
+test('starting another Provider shot keeps the existing task collection', () => {
+  const jobs=workspace.providerJobsWithResult({
+    provider_job:{id:'old-same-shot',shot_key:'shot_02',status:'failed'},
+    provider_jobs:[
+      {id:'job-other-shot',shot_key:'shot_01',status:'running'},
+      {id:'old-same-shot',shot_key:'shot_02',status:'failed'}
+    ]
+  },{id:'new-same-shot',shot_key:'shot_02',status:'queued'});
+
+  assert.deepEqual(jobs.map(item=>item.id),['new-same-shot','job-other-shot']);
 });
 
 test('Provider PoC directs missing character bindings to the left character cards', () => {
@@ -1173,6 +1517,53 @@ test('Provider PoC directs missing character bindings to the left character card
   assert.match(controls, /data-action="provider-preflight" data-shot-key="shot_01" type="button" disabled/);
 });
 
+test('locked scripts keep Provider video generation available while script editing stays disabled', () => {
+  const providerState = {
+    confirmed_plan:{id:'plan-1'},
+    provider_poc:{
+      provider:'grok',
+      shots:[{
+        shot_key:'shot_01',sort_order:1,duration_ms:5000,scene:'park',
+        character_keys:['boy'],primary_character_key:'boy',binding_ready:true
+      }],
+      characters:[{character_key:'boy',name:'Boy',binding_ready:true}]
+    },
+    production:{provider:{selected:'grok'}}
+  };
+  const version = {
+    version:1,status:'locked',script:{
+      overview:{title:'Locked story'},characters:[],dialogue_lines:[],
+      shots:[{shot_key:'shot_01',sort_order:1,duration_seconds:5,beat:'setup',visual:'Boy sits in a park.'}]
+    }
+  };
+  const output = workspace.scriptHtml(version, false, providerState, 'shot_01', true);
+  assert.match(output, /data-action="provider-preflight" data-shot-key="shot_01" type="button">/);
+  assert.doesNotMatch(output, /data-action="edit-shot"/);
+  assert.doesNotMatch(output, /sd-shot-provider-disabled-reason/);
+});
+
+test('Provider video generation explains why it is disabled before the script is locked', () => {
+  const providerState = {
+    confirmed_plan:{id:'plan-1'},
+    provider_poc:{
+      provider:'grok',
+      shots:[{
+        shot_key:'shot_01',sort_order:1,duration_ms:5000,scene:'park',
+        character_keys:['boy'],primary_character_key:'boy',binding_ready:true
+      }],
+      characters:[{character_key:'boy',name:'Boy',binding_ready:true}]
+    },
+    production:{provider:{selected:'grok'}}
+  };
+  const output = workspace.providerShotControlsHtml(
+    {shot_key:'shot_01'}, providerState, false, 'shot_01',
+    '请先确认并锁定当前剧本，再生成镜头视频。'
+  );
+  assert.match(output, /data-action="provider-preflight" data-shot-key="shot_01" type="button" disabled/);
+  assert.match(output, /sd-shot-provider-disabled-reason/);
+  assert.match(output, /请先确认并锁定当前剧本/);
+});
+
 test('all Provider shots expose the 720p assembly stage without charging again', () => {
   const output = workspace.autodraftActionsHtml({
     confirmed_plan:{id:'plan-1'},
@@ -1185,10 +1576,70 @@ test('all Provider shots expose the 720p assembly stage without charging again',
   }, true);
   assert.match(output, /PR-4 · 合成预览/);
   assert.match(output, /全部镜头已完成/);
-  assert.match(output, /6 个真实 Provider 镜头/);
+  assert.match(output, /6 个已生成镜头/);
   assert.match(output, /data-action="start-draft"/);
   assert.match(output, /合成 720p 预览/);
   assert.match(output, /本次合成不重复扣点/);
+});
+
+test('failed 720p assembly explains the failure and allows a safe retry', () => {
+  const output = workspace.autodraftActionsHtml({
+    confirmed_plan:{id:'plan-1'},
+    current_job:{
+      status:'failed',
+      error:{detail:'服务器未安装或无法调用 FFprobe'}
+    },
+    billing:{cost:0,mode:'provider_assets_already_charged'},
+    production:{
+      ready:true,
+      mode:'provider_poc',
+      assembly:{required_count:6,ready_count:6,missing_shot_keys:[],all_ready:true}
+    }
+  }, true);
+  assert.match(output, /上次合成失败/);
+  assert.match(output, /FFprobe/);
+  assert.match(output, /已经生成的镜头均已保留/);
+  assert.match(output, /重新合成 720p 预览/);
+  assert.match(output, /data-action="start-draft"/);
+});
+
+test('completed 720p assembly exposes playback, open and download actions', () => {
+  const output = workspace.draftHtml({
+    current_version:{
+      version:1,status:'ready',url:'/api/gen/file/preview.mp4',
+      manifest:{duration_ms:30000,issues:[],shots:[]}
+    }
+  });
+  assert.match(output, /<video controls/);
+  assert.match(output, /单独打开/);
+  assert.match(output, /下载预览/);
+  assert.match(output, /download/);
+});
+
+test('refinement view keeps the completed full-film player easy to download', () => {
+  const output = workspace.refinementHtml({
+    current_refinement:{
+      version:1,status:'draft',url:'/api/gen/file/preview.mp4',shots:[],issues:[]
+    },
+    refinement_versions:[{version:1}]
+  });
+  assert.match(output, /<video controls/);
+  assert.doesNotMatch(output, /单独打开/);
+  assert.match(output, /下载预览/);
+  assert.match(output, /download/);
+});
+
+test('refinement warns when old preview truncated physical shots and offers free reassembly', () => {
+  const output = workspace.refinementHtml({
+    current_refinement:{
+      id:'r-old',version:2,status:'draft',url:'/api/gen/file/old.mp4',shots:[],issues:[],
+      assembly_status:{reassembly_required:true,source_duration_ms:64450,preview_duration_ms:60000}
+    }
+  });
+  assert.match(output, /预览需要重新装配/);
+  assert.match(output, /约 64 秒/);
+  assert.match(output, /不会调用视频模型，也不会扣点/);
+  assert.match(output, /data-action="reassemble-refinement"/);
 });
 
 test('refinement requires explicit full-film acceptance before locking', () => {
@@ -1208,6 +1659,103 @@ test('refinement requires explicit full-film acceptance before locking', () => {
   assert.match(workspaceSource, /replacement_provider_version_id:preview\.replacement_provider_version_id/);
 });
 
+test('incomplete or unverifiable assembly disables full-film acceptance', () => {
+  for (const assembly_status of [
+    {available:false,reassembly_required:false},
+    {available:true,reassembly_required:true}
+  ]) {
+    const output = workspace.refinementActionsHtml({
+      current_refinement:{id:'r-blocked',status:'draft',issues:[],assembly_status},
+      acceptance_requirements:{media:{ready:true}}
+    }, true);
+    assert.match(output, /data-acceptance-check="story_continuity" disabled/);
+    assert.match(output, /data-action="confirm-refinement" disabled/);
+    assert.match(output, /完整镜头时长|重新装配/);
+  }
+});
+
+test('historically confirmed incomplete assembly cannot start delivery', () => {
+  const output = workspace.refinementActionsHtml({
+    current_refinement:{
+      id:'r-confirmed-old',status:'confirmed',issues:[],
+      assembly_status:{available:true,reassembly_required:true}
+    },
+    billing:{delivery_enabled:true,mode:'local_ffmpeg',formal_cost:0}
+  }, true);
+  assert.match(output, /正式交付不可用/);
+  assert.doesNotMatch(output, /data-action="start-delivery"/);
+});
+
+test('failed refinement assembly explains that the new shot is retained and retryable', () => {
+  const output = workspace.refinementActionsHtml({
+    current_refinement:{id:'r-failed',status:'draft',issues:[{shot_key:'shot_02'}]},
+    current_refinement_job:{
+      status:'failed',shot_key:'shot_02',
+      error:{detail:'上次重新合成没有完成'}
+    }
+  }, true);
+  assert.match(output, /shot_02 尚未替换到全片/);
+  assert.match(output, /新镜头不会丢失/);
+  assert.match(output, /不会再次扣镜头生成费用/);
+  assert.match(output, /data-action="jump-to-shot" data-shot-key="shot_02"/);
+  assert.match(output, /回到这个镜头重试/);
+});
+
+test('media preparation is separate from issue shots and offers a silent preview path', () => {
+  const refinement = {
+    current_refinement:{
+      id:'r-media',status:'draft',
+      issues:[{code:'locked_voice_timeline_missing',message:'missing media timeline'}]
+    },
+    acceptance_requirements:{
+      media:{ready:false,reason:'locked_voice_timeline_missing',mode:'voice_timeline'}
+    }
+  };
+  const groups = workspace.refinementIssueGroups(refinement.current_refinement);
+  assert.equal(groups.shots.length, 0);
+  assert.equal(groups.preparation.length, 1);
+  const actions = workspace.refinementActionsHtml(refinement, true);
+  assert.match(actions, /还有 1 项验收准备未完成/);
+  assert.match(actions, /请选择成片声音方式/);
+  assert.match(actions, /data-action="go-to-voice-settings"/);
+  assert.match(actions, /data-action="confirm-provider-audio"/);
+  assert.match(actions, /data-action="confirm-silent-media"/);
+  assert.doesNotMatch(actions, /还有 1 个问题镜头/);
+  const provider = workspace.refinementProviderHtml({provider_poc:{shots:[]}}, refinement, true);
+  assert.equal(provider, '');
+});
+
+test('provider audio mode keeps generated shot sound and does not require subtitles', () => {
+  const output = workspace.refinementActionsHtml({
+    current_refinement:{id:'r-source-audio',status:'draft',issues:[]},
+    acceptance_requirements:{media:{ready:true,mode:'provider_audio'}}
+  }, true);
+  assert.match(output, /镜头原声连续且音量正常/);
+  assert.match(output, /已确认本片无需字幕/);
+  assert.doesNotMatch(output, /静音模式符合预期/);
+});
+
+test('delivered projects can create a new audio assembly without changing the snapshot', () => {
+  const output = workspace.refinementActionsHtml({
+    current_delivery:{snapshot:{deliverable:true}},
+    media_preference:{mode:'silent'}
+  }, true);
+  assert.match(output, /当前交付快照保持不变/);
+  assert.match(output, /当前声音：完全静音/);
+  assert.match(output, /data-action="confirm-provider-audio"/);
+  assert.match(output, /不会重新生成镜头或重复扣点/);
+});
+
+test('silent media acceptance uses silent-specific checklist labels', () => {
+  const output = workspace.refinementActionsHtml({
+    current_refinement:{id:'r-silent',status:'draft',issues:[]},
+    acceptance_requirements:{media:{ready:true,mode:'silent'}}
+  }, true);
+  assert.match(output, /静音模式符合预期/);
+  assert.match(output, /已确认本片无需字幕/);
+  assert.doesNotMatch(output, /配音\/字幕时间线尚未确认/);
+});
+
 test('refinement exposes the paid real-provider regeneration flow for issue shots', () => {
   const output = workspace.refinementProviderHtml({
     provider_poc:{shots:[{shot_key:'shot_02',sort_order:2,scene:'park',binding_ready:true}]},
@@ -1216,7 +1764,7 @@ test('refinement exposes the paid real-provider regeneration flow for issue shot
   }, {
     current_refinement:{issues:[{shot_key:'shot_02'}]}
   }, true);
-  assert.match(output, /问题镜头真实重生成/);
+  assert.match(output, /问题镜头重新生成/);
   assert.match(output, /id="sdProviderShot"/);
   assert.match(output, /data-action="provider-preflight"/);
   assert.match(output, /data-action="provider-start"/);
@@ -1239,4 +1787,29 @@ test('confirmed refinement exposes real 1080p export when local renderer is enab
   assert.match(output, /data-action="start-delivery"/);
   assert.match(output, /生成 1080p 正式成片/);
   assert.match(output, /不重复扣点/);
+});
+
+test('scene locking offers upload, prompt generation, preview and explicit confirmation', () => {
+  const output = workspace.sceneLockingHtml({
+    graph_revision:3,
+    scenes:[{
+      scene_key:'scene-group-1',name:'小区长椅',description:'傍晚的小区长椅',locked:false,
+      shots:[{shot_key:'shot_01',sort_order:1},{shot_key:'shot_02',sort_order:2}],
+      preview:{url:'/api/gen/file/scene.png',prompt:'暖色夕阳下的小区长椅',status:'draft'}
+    }]
+  }, true);
+  assert.match(output, /场景锁定/);
+  assert.match(output, /已锁定 0 \/ 1/);
+  assert.match(output, /aria-label="场景锁定进度"/);
+  assert.match(output, /sd-scene-shot-tags/);
+  assert.match(output, />#1</);
+  assert.match(output, />#2</);
+  assert.match(output, /sd-scene-prompt-editor/);
+  assert.match(output, /编辑场景描述/);
+  assert.match(output, /data-scene-upload/);
+  assert.match(output, /data-action="generate-scene-image"/);
+  assert.match(output, /data-action="lock-scene-reference"/);
+  assert.match(output, /data-action="preview-character-image"/);
+  assert.match(workspaceSource, /asset-graph\/scenes\/reference/);
+  assert.match(workspaceSource, /reference_source:'ai_generation'/);
 });

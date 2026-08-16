@@ -92,7 +92,228 @@ def confirmed_contract():
     }
 
 
+class ShortDramaSourceAnchorTests(unittest.TestCase):
+    def test_source_anchors_group_explicit_shots_without_repeating_full_script(self):
+        source = (
+            "人物：小晚、阿泽。分镜、时长、画面依次安排："
+            "1、0-5秒：少女在街角与少年相撞。"
+            "2、5-10秒：两人俯身捡起书签。"
+            "3、10-15秒：少年递还书签，两人短暂交谈。"
+            "4、15-20秒：少女发现两人喜欢同一本书。"
+            "5、20-25秒：两人在路口温柔道别。"
+            "6、25-30秒：街灯亮起，两人各自离开。"
+        )
+        anchors = short_drama_conversation._source_anchors(source)
+        self.assertEqual(["start", "middle", "end"], [item["position"] for item in anchors])
+        self.assertIn("少女在街角", anchors[0]["excerpt"])
+        self.assertIn("喜欢同一本书", anchors[1]["excerpt"])
+        self.assertIn("街灯亮起", anchors[2]["excerpt"])
+        self.assertNotIn("人物：小晚", anchors[0]["excerpt"])
+        self.assertTrue(all(len(item["excerpt"]) <= 221 for item in anchors))
+
+
+class ShortDramaDialogueTimingTests(unittest.TestCase):
+    def test_overridden_dialogue_is_rebalanced_or_condensed_before_validation(self):
+        def sample(durations, text):
+            shots = []
+            lines = []
+            for index, duration in enumerate(durations):
+                line_id = "line_%d" % index
+                lines.append({
+                    "id": line_id,
+                    "kind": "dialogue" if index == 0 else "silence",
+                    "character_key": "lead" if index == 0 else "",
+                    "speaker": "Lead" if index == 0 else "",
+                    "text": text if index == 0 else "",
+                })
+                shots.append({
+                    "shot_key": "shot_%d" % index,
+                    "duration_seconds": duration,
+                    "purpose": "purpose_%d" % index,
+                    "visual": "visual_%d" % index,
+                    "provider_prompt": "prompt_%d" % index,
+                    "dialogue_line_ids": [line_id],
+                })
+            return {
+                "overview": {"duration_seconds": sum(durations)},
+                "characters": [{"character_key": "lead", "name": "Lead"}],
+                "dialogue_lines": lines,
+                "shots": shots,
+            }
+
+        rebalanced = sample([5, 5, 5], "abcdefghijklmnop")
+        adjustments = short_drama_conversation.short_drama_storyboard.normalize_dialogue_timing(
+            rebalanced
+        )
+        self.assertEqual(15, sum(item["duration_seconds"] for item in rebalanced["shots"]))
+        self.assertEqual([5, 5, 5], [item["duration_seconds"] for item in rebalanced["shots"]])
+        self.assertNotEqual("abcdefghijklmnop", rebalanced["dialogue_lines"][0]["text"])
+        self.assertTrue(any(item["kind"] == "dialogue_condensed" for item in adjustments))
+        self.assertFalse(any(
+            item["code"] == "dialogue_too_long"
+            for item in short_drama_conversation.short_drama_storyboard.analyze_quality(rebalanced)["blockers"]
+        ))
+
+        condensed = sample([4, 4], "abcdefghijklmnopqrstuvwxyz")
+        short_drama_conversation.short_drama_storyboard.normalize_dialogue_timing(condensed)
+        self.assertEqual(
+            "abcdefghijklmnopqrstuvwxyz",
+            condensed["dialogue_lines"][0]["original_text"],
+        )
+        self.assertTrue(condensed["dialogue_lines"][0]["auto_fitted_to_duration"])
+        self.assertFalse(any(
+            item["code"] == "dialogue_too_long"
+            for item in short_drama_conversation.short_drama_storyboard.analyze_quality(condensed)["blockers"]
+        ))
+
+        provider_ready = sample([6, 3, 3, 4, 6, 8], "")
+        short_drama_conversation.short_drama_storyboard.normalize_dialogue_timing(provider_ready)
+        provider_durations = [item["duration_seconds"] for item in provider_ready["shots"]]
+        self.assertEqual(30, sum(provider_durations))
+        self.assertTrue(all(4 <= value <= 15 for value in provider_durations))
+
+    def test_public_duration_edit_preserves_five_ten_second_contract(self):
+        script = {
+            "overview": {"duration_seconds": 35},
+            "shots": [
+                {"shot_key": "s1", "sort_order": 1, "duration_seconds": 5},
+                {"shot_key": "s2", "sort_order": 2, "duration_seconds": 5},
+                {"shot_key": "s3", "sort_order": 3, "duration_seconds": 5},
+                {"shot_key": "s4", "sort_order": 4, "duration_seconds": 5},
+                {"shot_key": "s5", "sort_order": 5, "duration_seconds": 5},
+                {"shot_key": "s6", "sort_order": 6, "duration_seconds": 10},
+            ],
+        }
+        short_drama_conversation._rebalance_duration(
+            script, script["shots"][0], 10,
+        )
+        durations = [item["duration_seconds"] for item in script["shots"]]
+        self.assertEqual(35, sum(durations))
+        self.assertEqual([10, 5, 5, 5, 5, 5], durations)
+
+        with self.assertRaises(short_drama_conversation.ConversationError) as raised:
+            short_drama_conversation._rebalance_duration(
+                script, script["shots"][0], 6,
+            )
+        self.assertEqual("shot_duration_invalid", raised.exception.code)
+
+
 class ShortDramaConversationTests(unittest.TestCase):
+    def test_live_action_script_keeps_confirmed_role_keys_and_ignores_incidental_friends(self):
+        role_contract = [{
+            "character_key": "boy_role", "name": "男孩",
+            "identity_text": "故事中的男孩", "personality": "内向",
+            "role_type": "main",
+        }, {
+            "character_key": "girl_role", "name": "女孩",
+            "identity_text": "故事中的女孩", "personality": "开朗",
+            "role_type": "support",
+        }]
+        source_import = {
+            "source_text": "男孩把糖果分给女孩，两个小朋友成为了朋友。",
+            "source_hash": "role-contract-source",
+            "import_mode": "faithful", "content_type": "live_action",
+            "character_contract": role_contract,
+        }
+        understanding = {
+            "import_contract": short_drama_conversation._import_contract(source_import),
+            "ending": "两个小朋友成为朋友",
+        }
+        script = short_drama_conversation._script(
+            payload(title="分享糖果", synopsis=source_import["source_text"]),
+            [], understanding=understanding, source_import=source_import,
+        )
+        self.assertEqual(
+            [("boy_role", "男孩"), ("girl_role", "女孩")],
+            [(item["character_key"], item["name"]) for item in script["characters"]],
+        )
+        self.assertTrue(all(
+            item["source_type"] == "system_generated"
+            for item in script["shots"]
+        ))
+        self.assertEqual(
+            ["main", "support"],
+            [item["role_type"] for item in script["characters"]],
+        )
+
+    def test_automatic_storyboard_does_not_promote_unmentioned_crowd(self):
+        characters = [{
+            "character_key": "crowd", "name": "路人", "role_type": "crowd",
+            "identity": "背景路人", "personality": "",
+        }, {
+            "character_key": "lead", "name": "林夏", "role_type": "main",
+            "identity": "主角", "personality": "坚定",
+        }, {
+            "character_key": "support", "name": "周野", "role_type": "support",
+            "identity": "朋友", "personality": "克制",
+        }]
+        script = short_drama_conversation.short_drama_storyboard.compile_storyboard(
+            payload(shot_count=2, target_duration=8), ["故事开始", "两人和解"],
+            characters,
+        )
+        self.assertEqual(["lead"], script["shots"][0]["character_keys"])
+        self.assertEqual(
+            ["lead", "support"], script["shots"][1]["character_keys"],
+        )
+        self.assertIn("林夏（主要角色）", script["shots"][0]["provider_prompt"])
+        self.assertNotIn("路人", script["shots"][0]["provider_prompt"])
+
+    def test_explicit_storyboard_in_source_overrides_generated_shots(self):
+        role_contract = [{
+            "character_key": "boy_role", "name": "男孩",
+            "identity_text": "故事中的男孩", "personality": "内向",
+        }, {
+            "character_key": "girl_role", "name": "女孩",
+            "identity_text": "故事中的女孩", "personality": "开朗",
+        }]
+        source = "\n".join([
+            "人物：男孩、女孩",
+            "镜头 1（0-4s）近景，男孩把糖果递给女孩。",
+            "镜头 2（4-10s）全景，女孩接过糖果。字幕：好东西一起分享。",
+        ])
+        source_import = {
+            "source_text": source, "source_hash": "explicit-shot-source",
+            "import_mode": "faithful", "content_type": "live_action",
+            "character_contract": role_contract,
+        }
+        script = short_drama_conversation._script(
+            payload(title="分享糖果", synopsis=source, target_duration=10, shot_count=2),
+            [],
+            understanding={
+                "import_contract": short_drama_conversation._import_contract(source_import),
+                "ending": "两个孩子分享糖果",
+            },
+            source_import=source_import,
+        )
+        self.assertEqual([4, 6], [item["duration_seconds"] for item in script["shots"]])
+        self.assertEqual(
+            ["user_storyboard", "user_storyboard"],
+            [item["source_type"] for item in script["shots"]],
+        )
+        self.assertEqual("近景", script["shots"][0]["camera"])
+        self.assertIn("男孩把糖果递给女孩", script["shots"][0]["visual"])
+        self.assertEqual("on_screen_text", script["dialogue_lines"][1]["kind"])
+        self.assertEqual("好东西一起分享", script["dialogue_lines"][1]["text"])
+        self.assertEqual(2, script["storyboard_source"]["explicit_shot_count"])
+        self.assertEqual(0, script["storyboard_source"]["generated_shot_count"])
+
+    def test_explicit_storyboard_rejects_duration_conflict(self):
+        source = "镜头 1（0-8s）近景，人物出现。\n镜头 2（8-16s）全景，人物离开。"
+        source_import = {
+            "source_text": source, "source_hash": "duration-conflict",
+            "import_mode": "faithful", "content_type": "live_action",
+        }
+        with self.assertRaises(short_drama_conversation.ConversationError) as raised:
+            short_drama_conversation._script(
+                payload(synopsis=source, target_duration=10, shot_count=2),
+                [],
+                understanding={
+                    "import_contract": short_drama_conversation._import_contract(source_import),
+                },
+                source_import=source_import,
+            )
+        self.assertEqual("explicit_storyboard_duration_mismatch", raised.exception.code)
+
     def test_long_import_builds_global_structure_from_start_to_end(self):
         source = "\n".join([
             "第一场 家中", "林夏：我必须找到父亲。", "林夏带着旧信离开。",
@@ -312,7 +533,7 @@ class ShortDramaConversationTests(unittest.TestCase):
             "hair_color": "", "height_body": "", "fixed_clothing": "coat",
             "fixed_colors": "", "accessories": "", "appearance_prompt": "",
             "wardrobe_prompt": "", "reference_views": [
-                "front_full", "side_full", "front_half",
+                "front_full", "side_full", "back_full",
             ],
         }]
         project = short_drama.import_script_project(
@@ -392,7 +613,7 @@ class ShortDramaConversationTests(unittest.TestCase):
             "height_body": "165cm", "fixed_clothing": "white shirt",
             "fixed_colors": "white", "accessories": "watch",
             "appearance_prompt": "cinematic portrait", "wardrobe_prompt": "white shirt",
-            "reference_views": ["front_full", "side_full", "front_half"],
+            "reference_views": ["front_full", "side_full", "back_full"],
         }]
         scenarios = (
             ("title", {"title": "Second confirmed title"}),
@@ -472,7 +693,7 @@ class ShortDramaConversationTests(unittest.TestCase):
             "accessories": "银色腕表",
             "appearance_prompt": "年轻女性，鹅蛋脸，黑色齐肩短发",
             "wardrobe_prompt": "固定穿米白衬衫和深色长裤",
-            "reference_views": ["front_full", "side_full", "front_half"],
+            "reference_views": ["front_full", "side_full", "back_full"],
         }]
         source = "人物：林夏\n林夏：雨停以后我们就出发。"
         verify = lambda _: {"username": "alice"}
@@ -1837,7 +2058,6 @@ class ShortDramaConversationTests(unittest.TestCase):
                 "changes": {
                     "purpose": "用成绩页面建立核心冲突",
                     "visual": "清晨卧室，角色盯着成绩页面，手指停在鼠标上",
-                    "duration_seconds": first_shot["duration_seconds"] + 1,
                     "dialogue": {
                         "kind": "dialogue",
                         "character_key": character["character_key"],

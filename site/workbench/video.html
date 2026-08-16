@@ -166,6 +166,9 @@
   .output-card{height:100%;width:100%;display:flex;flex-direction:column;gap:14px;align-items:flex-start;min-height:0}
   .output-scroll{width:100%;height:100%;min-height:0;display:flex;flex-direction:column;gap:14px}
   .history-title{font-size:13px;color:#94a4bb;font-weight:800;margin:2px 0 0}
+  .history-title-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:0}
+  .history-channel-filter{height:30px;max-width:112px;padding:0 26px 0 9px;border:1px solid rgba(148,164,187,.18);border-radius:8px;background:#10151e;color:#cbd5e1;font-family:inherit;font-size:11px;font-weight:700;cursor:pointer}
+  .history-channel-filter:hover,.history-channel-filter:focus{border-color:rgba(231,178,76,.4);color:#e7b24c;outline:none}
   .history-list{width:100%;min-height:0;overflow-y:auto;overflow-x:hidden;padding-right:4px;display:flex;flex-direction:column;gap:12px;flex:1}
   .history-list::-webkit-scrollbar{width:7px}
   .history-list::-webkit-scrollbar-thumb{background:rgba(148,164,187,.24);border-radius:99px}
@@ -192,6 +195,7 @@
   .history-play:hover{background:#f4cd72;transform:translate(-50%,-50%) scale(1.04)}
   .history-play svg{width:20px;height:20px;margin-left:2px}
   .history-created{font-size:12px;color:#5c6b82}
+  .history-error{padding:10px 11px;border:1px solid rgba(244,112,138,.24);border-radius:9px;background:rgba(244,112,138,.08);color:#ff9bae;font-size:11.5px;line-height:1.55;overflow-wrap:anywhere}
   .job-progress{display:flex;flex-direction:column;gap:8px;padding:10px 11px;border:1px solid rgba(148,164,187,.1);border-radius:11px;background:rgba(148,164,187,.04)}
   .job-progress-top{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:11.5px;font-weight:800;color:#eaf1fa}
   .job-progress-eta{color:#e7b24c;font-weight:700;white-space:nowrap}
@@ -817,9 +821,14 @@
       <div class="output-card"><div class="output-scroll">
         <div class="history-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
           <span>生成记录</span>
-          <label style="padding:6px 9px;border:1px solid rgba(231,178,76,.35);border-radius:8px;color:#e7b24c;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;">
-            导入 H3 成片<input id="h3ImportFile" type="file" accept="video/mp4" multiple hidden>
-          </label>
+          <div class="history-title-actions">
+            <select id="historyChannelFilter" class="history-channel-filter" aria-label="按视频渠道筛选">
+              <option value="all">全部渠道</option>
+            </select>
+            <label style="padding:6px 9px;border:1px solid rgba(231,178,76,.35);border-radius:8px;color:#e7b24c;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;">
+              导入 H3 成片<input id="h3ImportFile" type="file" accept="video/mp4" multiple hidden>
+            </label>
+          </div>
         </div>
         <div id="h3ImportStatus" class="faint" style="display:none;font-size:11px;margin:0 0 8px;"></div>
         <div id="outputHistory" class="history-list">
@@ -833,7 +842,7 @@
 <div id="toast" class="toast"></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=dbd5a9e4"></script>
+<script src="cloud-shell.js?v=5c2643d5"></script>
 <script src="image-mentions.js?v=20260802f"></script>
 <script>
 (function(){
@@ -1284,6 +1293,9 @@
   }
   function videoModeTag(x){
     var m=String((x&&x.mode)||(x&&x.channel)||'').toLowerCase();
+    if(!m||m==='text'||m==='audio') return '数字化 IP';
+    if(m==='cinematic') return '电影化身';
+    if(m==='video_compose') return '一键成片';
     if(m==='motion') return '影视级模仿';
     if(m==='tryon') return '换装换背景';
     if(m==='grok') return '果肉视频';
@@ -1320,6 +1332,8 @@
       files_saved:{label:'准备素材',step:1,percent:18,eta:'预计还需 2-4 分钟'},
       motion_parameters_ready:{label:'准备素材',step:1,percent:24,eta:'预计还需 2-4 分钟'},
       uploading_image_asset:{label:'上传素材',step:2,percent:34,eta:'预计还需 2-3 分钟'},
+      uploading_audio_asset:{label:'上传音频',step:2,percent:42,eta:'预计还需 2-3 分钟'},
+      submitting_video:{label:'提交视频任务',step:3,percent:56,eta:'正在等待上游受理'},
       uploading_reference_asset:{label:'上传素材',step:2,percent:42,eta:'预计还需 2-3 分钟'},
       creating_photo_avatar:{label:'创建数字人',step:3,percent:52,eta:'预计还需 1-3 分钟'},
       reusing_photo_avatar:{label:'复用已有形象',step:3,percent:58,eta:'预计还需 1-2 分钟'},
@@ -1395,6 +1409,30 @@
   // 草稿是本地的、还没落库的东西，它没资格覆盖服务端的历史。
   var videoHistoryItems=[];   // 服务端 /video/assets 拉回来的历史
   var videoDrafts=[];         // 本地在飞草稿（批量出片时有多条）
+  var historyChannelFilter='all';
+
+  function videoChannelInfo(x){
+    var mode=String((x&&x.mode)||(x&&x.channel)||'').toLowerCase();
+    if(!mode||mode==='text'||mode==='audio') return {key:'talking',label:'数字化 IP'};
+    if(mode==='cinematic'||mode==='motion') return {key:'cinematic',label:'电影化身'};
+    var labels={video_compose:'一键成片',tryon:'换装换背景',grok:'果肉视频',sora:'Sora 2',minimax:'麦克视频',omni:'Omni 视频',micro:'Seedance 视频'};
+    return {key:mode,label:labels[mode]||videoModeTag(x)};
+  }
+  function syncHistoryChannelFilter(items){
+    var select=$('historyChannelFilter'); if(!select) return;
+    var channels={};
+    (items||[]).forEach(function(x){var info=videoChannelInfo(x);channels[info.key]=info.label;});
+    var order=['talking','cinematic','video_compose','tryon','grok','sora','minimax','omni','micro'];
+    select.innerHTML='<option value="all">全部渠道</option>';
+    Object.keys(channels).sort(function(a,b){
+      var ai=order.indexOf(a),bi=order.indexOf(b);
+      return (ai<0?99:ai)-(bi<0?99:bi);
+    }).forEach(function(key){
+      var option=document.createElement('option'); option.value=key; option.textContent=channels[key]; select.appendChild(option);
+    });
+    if(channels[historyChannelFilter]) select.value=historyChannelFilter;
+    else historyChannelFilter=select.value='all';
+  }
 
   function renderVideoOutput(){
     // 草稿一拿到 job_id，服务端历史里也会出现同一条 —— 去重，以草稿为准（它带着实时进度）
@@ -1404,7 +1442,10 @@
       var jid=(x && x.job_id!=null) ? x.job_id : (x && x.id);
       return !(jid!=null && drafted[String(jid)]);
     });
-    renderVideoHistory(videoDrafts.concat(rest));
+    var items=videoDrafts.concat(rest);
+    syncHistoryChannelFilter(items);
+    if(historyChannelFilter!=='all') items=items.filter(function(x){return videoChannelInfo(x).key===historyChannelFilter;});
+    renderVideoHistory(items);
   }
   function renderVideoDrafts(list){
     videoDrafts=(list||[]).filter(Boolean);
@@ -1415,7 +1456,7 @@
     var box=$('outputHistory'); if(!box) return;
     box.innerHTML='';
     if(!items || !items.length){
-      box.innerHTML='<div style="padding:18px 10px;border:1px dashed rgba(148,164,187,.16);border-radius:8px;color:#5c6b82;font-size:12px;text-align:center;">暂无历史记录</div>';
+      box.innerHTML='<div style="padding:18px 10px;border:1px dashed rgba(148,164,187,.16);border-radius:8px;color:#5c6b82;font-size:12px;text-align:center;">'+(historyChannelFilter==='all'?'暂无历史记录':'该渠道暂无生成记录')+'</div>';
       return;
     }
     items.forEach(function(raw,idx){
@@ -1445,6 +1486,7 @@
         +(quality?'<span class="history-tag">'+esc(quality)+'</span>':'')
         +'<span class="history-tag">'+esc(x.ratio||'9:16')+'</span><span class="history-tag">'+esc(duration)+'</span></div>'
         +progress
+        +(failed&&x.error?'<div class="history-error">'+esc(x.error)+'</div>':'')
         +'<div class="history-stage"><div class="history-preview">'+preview+'</div></div>'
         +'<div class="history-created">创建于：'+esc(formatTime(x.created_at)||'最近创建')+'</div>'
         +'<div class="history-actions">'
@@ -3303,6 +3345,7 @@
     }
   })();
   // Seedance/Omni 参考图面板(图生视频)：一套逻辑复用，各存各的 refData；支持点击上传/粘贴
+  var xiaoleRefRenderers={};
   function setupXiaoleRefPanel(ch, refArr, maxN){
     var grid=$(ch+'RefGrid'), addTile=$(ch+'RefAdd'), inp=$(ch+'RefFile'), promptEl=$(ch+'Prompt');
     if(!grid||!addTile) return;
@@ -3335,6 +3378,7 @@
       promptEl.addEventListener('dragover',function(e){e.preventDefault();});
       promptEl.addEventListener('drop',function(e){var files=Array.from((e.dataTransfer&&e.dataTransfer.files)||[]).filter(function(f){return f.type.indexOf('image/')===0;});if(!files.length)return;e.preventDefault();var range={start:promptEl.selectionStart,end:promptEl.selectionEnd},i=0;function next(){if(i>=files.length)return;addFile(files[i++],function(index){if(index){HQImageMentions.insert(promptEl,index,range);range={start:promptEl.selectionStart,end:promptEl.selectionEnd};}next();});}next();});
     }
+    xiaoleRefRenderers[ch]=render;
     render();
   }
   setupXiaoleRefPanel('sora', soraRefData, 1);
@@ -3412,16 +3456,42 @@
       localStorage.removeItem('hq_video_prefill');
       if(!d) return;
       var m=prefillMode(d);
+      var qaOperation=String(d.qa_operation||'');
       if(d.ratio) clickDataButton('ratio',d.ratio);
       if(d.motion) clickDataButton('motion',d.motion);
       _prefillVoice=d.voice_key||d.voice||d.provider_voice||d.voice_name||'';
-      if(m==='grok'||m==='micro'||m==='omni'||m==='minimax'){
+      if(m==='cinematic'){
+        updateFunction('cinematic');
+        applyCineMode(d.cine_mode==='motion'?'motion':'open');
+        if(d.prompt&&$('cinePrompt')){$('cinePrompt').value=String(d.prompt);$('cinePrompt').dispatchEvent(new Event('input'));}
+        var cineJobs=[];
+        if(d.reference_video_url)cineJobs.push(prefillJob('参考视频',fetchFilePrefill(d.reference_video_url,'参考视频').then(function(v){cineRefVideos=[{data:v.dataUrl,name:'固定测试参考视频'}];renderCineRefs();syncCineRefProbe();})));
+        (d.reference_images||[]).slice(0,CINE_MAX_MEDIA_IMAGES).forEach(function(url,index){
+          cineJobs.push(prefillJob('参考图 '+(index+1),fetchImagePrefill(url).then(function(img){
+            cineRefImages.push({data:img.dataUrl,name:'固定测试参考图 '+(index+1)});
+            renderCineRefs();
+          })));
+        });
+        var pickTries=0,pickTimer=setInterval(function(){
+          pickTries++;
+          if(motionAvatars.length){clearInterval(pickTimer);cineSelectedAvatarIds=[String(motionAvatars[0].id)];syncCineSelection();setVideoStatus('后台验收模式：已选第一个测试形象，请核对点数后手动生成','cinematic');}
+          else if(pickTries>=40){clearInterval(pickTimer);setVideoStatus('后台验收模式：测试账号没有可用电影化身形象，请先创建','cinematic');}
+        },250);
+        Promise.allSettled(cineJobs).then(function(results){reportPrefillFailures(results,'已带入电影化身测试素材','电影化身素材带入失败')});
+        return;
+      }
+      if(m==='grok'||m==='sora'||m==='micro'||m==='omni'||m==='minimax'){
         updateFunction(m);
         if(m==='grok'){
           if(d.ratio) clickGrokRatio(d.ratio);
           var mb=d.model&&document.querySelector('[data-grok-model="'+String(d.model).replace(/"/g,'\\"')+'"]'); if(mb)mb.click();
           var db=d.duration&&document.querySelector('[data-grok-duration="'+String(Math.round(Number(d.duration)))+'"]'); if(db)db.click();
           var rb=d.resolution&&document.querySelector('[data-grok-resolution="'+String(d.resolution).replace(/"/g,'\\"')+'"]'); if(rb&&!rb.classList.contains('hidden'))rb.click();
+        }else if(m==='sora'){
+          var sorm=d.model&&document.querySelector('[data-sora-model="'+String(d.model).replace(/"/g,'\\"')+'"]');if(sorm)sorm.click();
+          var sorb=d.ratio&&document.querySelector('[data-sora-ratio="'+String(d.ratio).replace(/"/g,'\\"')+'"]');if(sorb)sorb.click();
+          var sosb=d.duration&&document.querySelector('[data-sora-seconds="'+String(Math.round(Number(d.duration)))+'"]');if(sosb)sosb.click();
+          var sor=d.resolution&&document.querySelector('[data-sora-resolution="'+String(d.resolution).replace(/"/g,'\\"')+'"]');if(sor&&!sor.disabled)sor.click();
         }else if(m==='omni'){
           var orb=d.ratio&&document.querySelector('[data-omni-ratio="'+String(d.ratio).replace(/"/g,'\\"')+'"]');if(orb)orb.click();
           var odb=d.duration&&document.querySelector('[data-omni-duration="'+String(Math.round(Number(d.duration)))+'"]');if(odb)odb.click();
@@ -3437,9 +3507,15 @@
           if(typeof d.generate_audio==='boolean') selectedSeedanceAudio=d.generate_audio;
           updateOfficialVideoControls();
         }
-        var ta=m==='grok'?$('grokPrompt'):(m==='omni'?$('omniPrompt'):(m==='minimax'?$('minimaxPrompt'):$('microPrompt')));
-        if(ta){ta.value=d.prompt||d.text||'';ta.focus();}
-        if(typeof toast==='function') toast('已切到原视频模式并带入提示词');
+        var ta=m==='grok'?$('grokPrompt'):(m==='sora'?$('soraPrompt'):(m==='omni'?$('omniPrompt'):(m==='minimax'?$('minimaxPrompt'):$('microPrompt'))));
+        if(ta){ta.value=d.prompt||d.text||'';ta.dispatchEvent(new Event('input'));ta.focus();}
+        var refs=m==='grok'?grokRefData:(m==='sora'?soraRefData:(m==='omni'?omniRefData:(m==='minimax'?minimaxRefData:microRefData))),refJobs=[];
+        (d.reference_images||[]).forEach(function(url,index){
+          refJobs.push(prefillJob('参考图 '+(index+1),fetchImagePrefill(url).then(function(img){refs.push(img.dataUrl)})));
+        });
+        Promise.allSettled(refJobs).then(function(results){if(m==='grok')refreshGrokRefs();else if(xiaoleRefRenderers[m])xiaoleRefRenderers[m]();reportPrefillFailures(results,'已带入固定测试素材','参考图带入失败')});
+        setVideoStatus(qaOperation?'后台验收模式：素材已预填，请核对实时点数后手动生成':'已切到原视频模式并带入提示词',m);
+        if(typeof toast==='function') toast(qaOperation?'已进入后台完整旅程验收':'已切到原视频模式并带入提示词');
         return;
       }
       if(m==='tryon'){
@@ -3452,9 +3528,11 @@
           setTryonPrefill('video',v.dataUrl,v.previewUrl);
         })));
         if(d.image_url) jobs.push(prefillJob('衣服图', fetchImagePrefill(d.image_url).then(function(img){setTryonPrefill('clothes',img.dataUrl,img.previewUrl);})));
-        if(d.background_url) jobs.push(prefillJob('背景图', fetchImagePrefill(d.background_url).then(function(img){setTryonPrefill('bg',img.dataUrl,img.previewUrl);})));
+        if(d.background_url) jobs.push(prefillJob(
+          '背景图', fetchImagePrefill(d.background_url).then(function(img){setTryonPrefill('bg',img.dataUrl,img.previewUrl);})
+        ));
         Promise.allSettled(jobs).then(function(results){
-          setVideoStatus('已按原换装模式预填，可检查素材后重新生成');
+          setVideoStatus(qaOperation?'后台验收模式：已带入主素材，请补齐衣服或背景并核对点数':'已按原换装模式预填，可检查素材后重新生成');
           reportPrefillFailures(results,'已切到换装换背景并带入可用素材','换装素材带入失败');
         });
         return;
@@ -3464,15 +3542,25 @@
       if(d.resolution) clickDataButton('resolution',String(d.resolution).toLowerCase()==='4k'?'1080p':d.resolution);
       if((d.prompt||d.text) && $('scriptText')){$('scriptText').value=d.prompt||d.text;$('scriptText').dispatchEvent(new Event('input'));}
       var talkJobs=[];
-      if(d.image_url){
+      if(d.batch){
+        setTalkingBatchMode(true);
+        (d.reference_images||[]).slice(0,videoBatchMax).forEach(function(url,index){
+          talkJobs.push(prefillJob('人物形象图 '+(index+1),fetchImagePrefill(url).then(function(img){
+            talkingBatchItems.push({key:'qa:'+(++talkingBatchSeq),label:'固定测试形象 '+(index+1),image_data:img.dataUrl,preview:img.previewUrl});
+          })));
+        });
+      }else if(d.image_url){
         setVideoStatus('正在带入人物形象图片...');
-        talkJobs.push(prefillJob('人物形象图', fetchImagePrefill(d.image_url).then(function(img){setImageFromPrefill(img.dataUrl,img.previewUrl);})));
+        talkJobs.push(prefillJob(
+          '人物形象图', fetchImagePrefill(d.image_url).then(function(img){setImageFromPrefill(img.dataUrl,img.previewUrl);})
+        ));
       }
       if(m==='audio' && d.audio_url){
         talkJobs.push(prefillJob('口播音频', fetchFilePrefill(d.audio_url,'口播音频').then(function(a){setAudioPrefill(a.dataUrl);})));
       }
       Promise.allSettled(talkJobs).then(function(results){
-        setVideoStatus(m==='audio'?'已按现成音频模式预填，可重新生成':'已按文案配音模式预填，可重新生成');
+        if(d.batch)renderTalkingBatchImages();
+        setVideoStatus(qaOperation?'后台验收模式：素材已预填，请核对实时点数后手动生成':(m==='audio'?'已按现成音频模式预填，可重新生成':'已按文案配音模式预填，可重新生成'));
         reportPrefillFailures(results,prefillType==='image'?'已带入作图结果':'已按原视频模式预填参数','口播素材带入失败');
       });
     }catch(e){}
@@ -3528,6 +3616,7 @@
   applyAssetPrefill();
   applyDirectVideoAction();
   applyIP12Handoff();
+  $('historyChannelFilter').onchange=function(){historyChannelFilter=this.value;renderVideoOutput();};
   videoHealthReady.then(applyInspirationPrefill);
   loadVoices();
   loadVideoHistory();

@@ -126,6 +126,10 @@ button:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px soli
 .bubble{padding:13px 16px;border-radius:13px;max-width:85%;font-size:13px;line-height:1.72;word-break:break-word;box-shadow:0 16px 34px -30px rgba(0,0,0,.9)}
 .msg.user .bubble{border:1px solid rgba(231,178,76,.13);background:linear-gradient(145deg,rgba(36,43,55,.94),rgba(24,35,54,.94))}
 .msg.assistant .bubble{background:var(--ab);border:1px solid var(--bd)}
+.harness-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid rgba(148,164,187,.12)}
+.harness-action{padding:7px 12px;border:1px solid rgba(148,164,187,.2);border-radius:8px;background:rgba(148,164,187,.06);color:var(--tx);font:inherit;font-size:11px;cursor:pointer}
+.harness-action.primary{border-color:rgba(231,178,76,.42);background:rgba(231,178,76,.13);color:#f4d993}
+.harness-action:disabled{opacity:.45;cursor:not-allowed}
 .input-area{position:relative;z-index:2;padding:12px 24px 17px;border-top:1px solid rgba(148,164,187,.08);background:linear-gradient(180deg,rgba(7,11,19,.18),rgba(7,11,19,.92));backdrop-filter:blur(18px)}
 .input-wrap{max-width:750px;margin:0 auto;display:flex;gap:7px;background:var(--ib);border:1px solid rgba(148,164,187,.13);border-radius:14px;padding:5px;align-items:flex-end;box-shadow:0 22px 48px -34px rgba(0,0,0,.92),inset 0 1px rgba(255,255,255,.035);transition:border-color .18s,background .18s,box-shadow .18s}
 .input-wrap:focus-within{border-color:rgba(231,178,76,.42);background:rgba(11,17,27,.96);box-shadow:0 22px 48px -34px rgba(0,0,0,.92),0 0 24px -18px rgba(231,178,76,.75),inset 0 1px rgba(255,255,255,.05)}
@@ -152,6 +156,28 @@ button:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px soli
 .rpn-card-header{font-size:14px;font-weight:600;color:var(--acb);margin-bottom:8px}
 .rpn-card .copy-btn{background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#211707;border:1px solid rgba(244,205,114,.45);padding:6px 10px;border-radius:8px;cursor:pointer;font-size:10px;font-weight:800;margin-top:8px}
 .rpn-card .copy-btn:hover{opacity:0.8}
+
+/* PDF review */
+.pdf-review{position:fixed;inset:0;z-index:120;display:none;background:rgba(2,6,12,.82);backdrop-filter:blur(8px)}
+.pdf-review.open{display:flex}
+.pdf-review-shell{width:min(1440px,96vw);height:min(900px,94vh);margin:auto;display:grid;grid-template-columns:minmax(0,1fr) 360px;overflow:hidden;border:1px solid rgba(148,164,187,.18);border-radius:18px;background:#0b111c;box-shadow:0 35px 100px rgba(0,0,0,.58)}
+.pdf-review-document{min-width:0;display:flex;flex-direction:column;background:#202631}
+.pdf-review-bar{min-height:52px;padding:9px 14px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(148,164,187,.14);background:#0d1420}
+.pdf-review-bar strong{font-size:13px;flex:1}.pdf-review-bar span{font-size:10px;color:#8290a4}
+.pdf-review-bar button,.pdf-review-side button{border:1px solid rgba(148,164,187,.2);border-radius:8px;background:rgba(148,164,187,.06);color:#dbe5f1;padding:7px 10px;cursor:pointer;font-size:11px}
+.pdf-review-bar button:hover,.pdf-review-side button:hover{border-color:rgba(231,178,76,.4);color:#f4cd72}
+.pdf-review-frame{width:100%;height:100%;border:0;background:#2b303b}
+.pdf-review-side{display:flex;flex-direction:column;min-height:0;padding:16px;border-left:1px solid rgba(148,164,187,.12);background:linear-gradient(180deg,#101824,#0a101a)}
+.pdf-review-side h2{font-size:15px;color:#f4cd72}.pdf-review-help{margin:6px 0 13px;color:#7f8fa5;font-size:11px;line-height:1.6}
+.pdf-review-grid{display:grid;grid-template-columns:90px 1fr;gap:8px}
+.pdf-review-field{display:flex;flex-direction:column;gap:5px;margin-bottom:9px}.pdf-review-field label{color:#93a2b6;font-size:10px}
+.pdf-review-field input,.pdf-review-field select,.pdf-review-field textarea{width:100%;border:1px solid rgba(148,164,187,.16);border-radius:8px;background:rgba(7,12,20,.82);color:#eaf1fa;padding:8px;font:inherit;font-size:11px;outline:none}
+.pdf-review-field textarea{min-height:64px;resize:vertical}.pdf-review-field input:focus,.pdf-review-field select:focus,.pdf-review-field textarea:focus{border-color:rgba(231,178,76,.55)}
+.pdf-review-add{width:100%;margin-bottom:12px}.pdf-review-list{flex:1;min-height:90px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding-right:2px}
+.pdf-review-empty{padding:18px 8px;text-align:center;color:#65758b;font-size:11px;border:1px dashed rgba(148,164,187,.15);border-radius:10px}
+.pdf-note{position:relative;padding:10px 34px 10px 10px;border:1px solid rgba(148,164,187,.13);border-radius:10px;background:rgba(148,164,187,.045);font-size:10px;line-height:1.55;color:#bfcbda}
+.pdf-note strong{color:#f1c768}.pdf-note-quote{color:#8290a4}.pdf-note-remove{position:absolute;right:7px;top:7px!important;padding:2px 6px!important;border:0!important;background:transparent!important;color:#718197!important}
+.pdf-review-submit{width:100%;margin-top:12px!important;padding:10px!important;border-color:rgba(231,178,76,.5)!important;background:rgba(231,178,76,.14)!important;color:#f4d993!important;font-weight:800}.pdf-review-submit:disabled{opacity:.4;cursor:not-allowed}
 
 .spinner{width:24px;height:24px;border:2px solid var(--bd);border-top-color:var(--ac);border-radius:50%;animation:spin .8s linear infinite;margin:20px auto}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -180,6 +206,9 @@ button:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px soli
   .welcome .big-icon{width:62px;height:62px;border-radius:18px}
   .input-area{padding:10px 10px 13px}
   .msg{max-width:100%}
+  .pdf-review-shell{width:100%;height:100%;border-radius:0;grid-template-columns:1fr;grid-template-rows:54vh minmax(0,1fr)}
+  .pdf-review-side{border-left:0;border-top:1px solid rgba(148,164,187,.12);padding:12px}
+  .pdf-review-bar span{display:none}
 }
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 </style>
@@ -241,6 +270,28 @@ button:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px soli
   </div>
 </aside>
 
+<div class="pdf-review" id="foundationReviewer" role="dialog" aria-modal="true" aria-labelledby="foundationReviewerTitle">
+  <div class="pdf-review-shell">
+    <section class="pdf-review-document">
+      <div class="pdf-review-bar"><strong id="foundationReviewerTitle">模块 1–4 PDF 审阅</strong><span>在 PDF 中查看原文，右侧按页添加修改意见</span><button type="button" onclick="downloadFoundationReport()">下载</button><button type="button" onclick="closeFoundationReviewer()">关闭</button></div>
+      <iframe class="pdf-review-frame" id="foundationPdfFrame" title="模块 1–4 PDF 预览"></iframe>
+    </section>
+    <aside class="pdf-review-side">
+      <h2>PDF 批注</h2>
+      <p class="pdf-review-help">复制 PDF 里需要调整的原文，填写页码和要求。Agent 会按这些定位修改，不再靠猜。</p>
+      <div class="pdf-review-grid">
+        <div class="pdf-review-field"><label for="pdfNotePage">页码</label><input id="pdfNotePage" type="number" min="1" max="999" value="1" inputmode="numeric"></div>
+        <div class="pdf-review-field"><label for="pdfNoteType">类型</label><select id="pdfNoteType"><option>修改</option><option>删除</option><option>补充</option></select></div>
+      </div>
+      <div class="pdf-review-field"><label for="pdfNoteQuote">定位原文（可选）</label><textarea id="pdfNoteQuote" maxlength="500" placeholder="从 PDF 复制一小段原文"></textarea></div>
+      <div class="pdf-review-field"><label for="pdfNoteText">修改要求</label><textarea id="pdfNoteText" maxlength="1000" placeholder="例：这段删掉；或改成……"></textarea></div>
+      <button class="pdf-review-add" type="button" onclick="addFoundationAnnotation()">＋ 添加这条批注</button>
+      <div class="pdf-review-list" id="foundationAnnotationList"></div>
+      <button class="pdf-review-submit" id="foundationAnnotationSubmit" type="button" onclick="submitFoundationAnnotations()">把批注交给 Agent</button>
+    </aside>
+  </div>
+</div>
+
 <div id="convoOverlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:100;display:none;align-items:center;justify-content:center" onclick="if(event.target===this)toggleConvos()">
   <div id="convoPanel" style="background:var(--sb);border:1px solid var(--bd);border-radius:var(--r);width:400px;max-height:70vh;overflow-y:auto;padding:16px"></div>
 </div>
@@ -294,7 +345,7 @@ SKILL_MAP[10]=[{id:'deliverable-10',icon:'message',name:'朋友圈排期',api:'/
 SKILL_MAP[11]=[{id:'sales',icon:'trend',name:'成交话术',api:'/api/m11-sales',help:'生成私域成交SOP话术'}];
 SKILL_MAP[12]=[{id:'calendar',icon:'calendar',name:'公众号日历',api:'/api/m12-calendar',help:'生成公众号30天内容日历'}];
 
-var cid=null,state={current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}},reports={},deliverables={},streaming=false,convos=[];
+var cid=null,state={current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}},reports={},deliverables={},streaming=false,convos=[],foundationEditing=false,foundationAnnotations=[],foundationReviewCid='';
 var expandedMod=0;
 var WELCOME_HTML=document.getElementById('welcome').outerHTML;
 
@@ -346,14 +397,15 @@ async function runVideoAnalyzer(){
 function renderMods(){
   var done=(state.completed_modules||[]).filter(function(mid){return mid<=AVAILABLE_MODULE_COUNT}),cur=Math.min(state.current_module||1,AVAILABLE_MODULE_COUNT);
   var foundation=state.foundation_report||{};
-  var intakePending=state.intake&&state.intake.status==='collecting',intakeRound=intakePending?(state.intake.round||1):0;
+  var intakePending=state.intake&&state.intake.status!=='complete';
+  var intakeLabel=!intakePending?'':(state.intake.status==='awaiting_confirmation'?'待确认':(state.intake.status==='editing'?'修改中':'交谈中'));
   var html='';
   for(var i=0;i<M.length;i++){
     var m=M[i];
     var cls='mod-item',badge='',check='',expand='<span class="mod-expand">▶</span>';
     var comingSoon=m.id>AVAILABLE_MODULE_COUNT;
     var locked=comingSoon||intakePending||(m.id>=5&&foundation.status!=='confirmed');
-    if(locked){cls+=' locked';badge=comingSoon?'<span class="mod-badge">尚未开发，敬请期待</span>':(intakePending&&m.id===1?'<span class="mod-badge">基础信息 '+intakeRound+'/3</span>':(intakePending?'':'<span class="mod-badge">待确认 PDF</span>'))}
+    if(locked){cls+=' locked';badge=comingSoon?'<span class="mod-badge">尚未开发，敬请期待</span>':(intakePending&&m.id===1?'<span class="mod-badge">基础信息 '+intakeLabel+'</span>':(intakePending?'':'<span class="mod-badge">待确认 PDF</span>'))}
     if(done.indexOf(m.id)>=0){cls+=' done';check='<span style="color:var(--gr);font-size:12px">✓</span>'}
     if(!intakePending&&m.id===cur&&done.indexOf(m.id)<0){cls+=' cur';badge='<span class="mod-badge">进行中</span>'}
     if(intakePending&&m.id===1)cls+=' cur';
@@ -367,7 +419,7 @@ function renderMods(){
         subs+='<div class="mod-sub" onclick="event.stopPropagation();loadSkill(\''+s.id+'\')">'+moduleIcon(s.icon)+eHtml(s.name)+'</div>';
       }
     }
-    var click=comingSoon?"toast('尚未开发，敬请期待')":(locked?(intakePending?"toast('请先完成 3 轮基础信息')":"toast('请先确认模块 1-4 的 IP 定位初稿 PDF')"):(hasSub?'toggleExpand('+m.id+')':'jumpModule('+m.id+')'));
+    var click=comingSoon?"toast('尚未开发，敬请期待')":(locked?(intakePending?"toast('请先补充并确认基础资料')":"toast('请先确认模块 1-4 的 IP 定位初稿 PDF')"):(hasSub?'toggleExpand('+m.id+')':'jumpModule('+m.id+')'));
     html+='<div class="'+cls+'" onclick="'+click+'"><div class="mod-num">'+(done.indexOf(m.id)>=0?'✓':m.id)+'</div><div class="mod-info"><div class="mod-name">'+moduleIcon(m.icon)+m.name+'</div></div>'+badge+check+(hasSub?expand:'')+subs+'</div>';
   }
   document.getElementById('modScroll').innerHTML=html;
@@ -375,7 +427,7 @@ function renderMods(){
   document.getElementById('progBar').style.width=Math.round(dc/AVAILABLE_MODULE_COUNT*100)+'%';
   document.getElementById('progText').textContent=dc===AVAILABLE_MODULE_COUNT?'🎉 六步完成':dc+'/'+AVAILABLE_MODULE_COUNT;
   var mod=M.filter(function(m){return m.id===cur})[0];
-  document.getElementById('curModName').textContent=intakePending?'基础信息 · '+intakeRound+'/3':(mod?mod.name:'—');
+  document.getElementById('curModName').textContent=intakePending?'基础信息 · '+intakeLabel:(mod?mod.name:'—');
   renderArtifacts();
 }
 
@@ -384,10 +436,47 @@ loadConvos().then(function(){var requested=new URLSearchParams(location.search).
 
 async function loadConvos(){var r=await fetch('/api/conversations');convos=await r.json()}
 async function newDiagnosis(){var r=await fetch('/api/conversations',{method:'POST'});var d=await r.json();convos.unshift({id:d.id,title:'新诊断',current_module:1,completed_modules:[],message_count:1});selectConvo(d.id)}
-async function selectConvo(id){cid=id;var r=await fetch('/api/conversations/'+id);var c=await r.json();state=c.coach_state||{current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}};reports=c.reports||{};deliverables=c.deliverables||{};expandedMod=0;renderMods();renderChat(c.messages||[]);document.getElementById('userInput').disabled=false;document.getElementById('sendBtn').disabled=false;document.getElementById('userInput').focus()}
-async function jumpModule(mid){if(mid>AVAILABLE_MODULE_COUNT){toast('尚未开发，敬请期待');return}if(!cid||streaming)return;var r=await fetch('/api/jump-module',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,module:mid})});var d=await r.json();if(!r.ok||!d.ok){toast('❌ '+(d.error||'无法切换模块'));return}state.current_module=d.current_module;state.module_step=0;renderMods();sendJumpMsg(mid)}
+async function selectConvo(id){cid=id;var r=await fetch('/api/conversations/'+id);var c=await r.json();state=c.coach_state||{current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}};reports=c.reports||{};deliverables=c.deliverables||{};expandedMod=0;foundationEditing=false;renderMods();renderChat(c.messages||[]);var input=document.getElementById('userInput');input.disabled=false;input.placeholder=(state.foundation_report||{}).status==='awaiting_confirmation'?'可以询问 PDF，或点击“需要修改/补充”…':'输入消息...';document.getElementById('sendBtn').disabled=false;input.focus()}
+async function jumpModule(mid){if(mid>AVAILABLE_MODULE_COUNT){toast('尚未开发，敬请期待');return}if(!cid||streaming)return;var r=await fetch('/api/jump-module',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,module:mid})});var d=await r.json();if(!r.ok||!d.ok){toast('❌ '+(d.error||'无法切换模块'));return}state=d.state||state;renderMods();sendJumpMsg(mid)}
 
-function renderChat(msgs){var a=document.getElementById('chatArea');if(!msgs||msgs.length===0){a.innerHTML=WELCOME_HTML;return}a.innerHTML=msgs.map(function(m){return '<div class="msg '+(m.role==='user'?'user':'assistant')+'"><div class="av">'+moduleIcon(m.role==='user'?'user':'sparkles')+'</div><div class="bubble">'+md(m.content)+'</div></div>'}).join('')}
+function stateActions(){
+  if(state.intake&&state.intake.status==='awaiting_confirmation'){var revising=state.intake.mode==='revision';return[
+    {type:'confirm_intake',target_id:'intake-'+state.revision,label:revising?'确认补充':'确认资料',primary:true},
+    {type:'edit_intake',target_id:'intake-'+state.revision,label:revising?'继续修改':'我要修改',primary:false}
+  ];
+  }
+  var p=state.pending;if(p&&p.status==='awaiting_confirmation')return[
+    {type:'confirm_checkpoint',target_id:p.id,label:'确认这一步',primary:true},
+    {type:'edit_checkpoint',target_id:p.id,label:'需要修改',primary:false}
+  ];
+  var foundation=state.foundation_report||{};if(foundation.status==='awaiting_confirmation'){
+    if(foundation.review_status==='dirty')return[
+      {type:'open_foundation_report',label:'查看旧版 PDF 并批注',primary:false},
+      {type:'edit_foundation_report',label:'继续补充',primary:false},
+      {type:'regenerate_foundation_report',label:'重新生成 PDF',primary:true}
+    ];
+    return[
+      {type:'open_foundation_report',label:'查看 PDF 并批注',primary:false},
+      {type:'edit_foundation_report',label:'需要修改/补充',primary:false},
+      {type:'confirm_foundation_report',label:'确认初稿，进入模块 5',primary:true}
+    ];
+  }
+  return[]
+}
+function runStateAction(item){
+  if(item.type==='open_foundation_report')return openFoundationReport();
+  if(item.type==='edit_foundation_report')return beginFoundationRevision();
+  if(item.type==='regenerate_foundation_report')return generateFoundationReport();
+  if(item.type==='confirm_foundation_report')return confirmFoundationReport();
+  return sendHarnessAction(item)
+}
+function attachHarnessActions(actions,bubble){
+  document.querySelectorAll('#chatArea .harness-actions').forEach(function(row){row.remove()});if(!bubble)return;
+  if(!actions||!actions.length)return;var row=document.createElement('div');row.className='harness-actions';
+  actions.forEach(function(item){var button=document.createElement('button');button.type='button';button.className='harness-action'+(item.primary?' primary':'');button.textContent=item.label;button.onclick=function(){if(item.type.indexOf('foundation_report')<0)row.querySelectorAll('button').forEach(function(node){node.disabled=true});runStateAction(item)};row.appendChild(button)});
+  bubble.appendChild(row)
+}
+function renderChat(msgs){var a=document.getElementById('chatArea');if(!msgs||msgs.length===0){a.innerHTML=WELCOME_HTML;return}a.innerHTML=msgs.map(function(m){return '<div class="msg '+(m.role==='user'?'user':'assistant')+'"><div class="av">'+moduleIcon(m.role==='user'?'user':'sparkles')+'</div><div class="bubble">'+md(m.content)+'</div></div>'}).join('');var last=a.querySelector('.msg.assistant:last-of-type .bubble');attachHarnessActions(stateActions(),last)}
 function isSafeMarkdownUrl(value,base='https://huangque.invalid/'){try{var u=new URL(String(value??'').trim(),base);return u.protocol==='http:'||u.protocol==='https:'}catch(e){return false}}
 function sanitizeMarked(html){var t=document.createElement('template');t.innerHTML=html;t.content.querySelectorAll('a[href],img[src]').forEach(function(el){var attr=el.tagName==='A'?'href':'src';if(!isSafeMarkdownUrl(el.getAttribute(attr),location.href)){if(el.tagName==='A')el.replaceWith(document.createTextNode(el.textContent));else el.remove()}else if(el.tagName==='A'){el.rel='noopener noreferrer'}});return t.innerHTML}
 function md(t){if(!t)return'';try{if(typeof marked!=='undefined')return sanitizeMarked(marked.parse(eHtml(t)))}catch(e){return eHtml(t).replace(/\n/g,'<br>')}return eHtml(t).replace(/\n/g,'<br>')}
@@ -403,7 +492,8 @@ function renderArtifacts(){
   var foundation=state.foundation_report||{};
   if(foundation.status==='awaiting_confirmation'||foundation.status==='confirmed'){
     rows.push('<button onclick="openFoundationReport()">📑 模块 1-4 IP 定位初稿 PDF</button>');
-    if(foundation.status==='awaiting_confirmation')rows.push('<button onclick="confirmFoundationReport()">✅ 确认初稿，开始模块 5</button>');
+    if(foundation.status==='awaiting_confirmation'&&foundation.review_status==='dirty')rows.push('<button onclick="generateFoundationReport()">↻ 应用补充并重新生成 PDF</button>');
+    else if(foundation.status==='awaiting_confirmation')rows.push('<button onclick="confirmFoundationReport()">✅ 确认初稿，开始模块 5</button>');
   }else if(done.indexOf(4)>=0){
     rows.push('<button onclick="generateFoundationReport()">'+(foundation.status==='failed'?'↻ 重新生成':'⏳ 检查/重试')+'模块 1-4 PDF</button>');
   }
@@ -420,12 +510,36 @@ async function generateFoundationReport(){
 
 async function openFoundationReport(){
   if(!cid)return;var url='/api/foundation-report/'+cid+'.pdf';var r=await fetch(url,{method:'HEAD',cache:'no-store'});
-  if(!r.ok){state.foundation_report={status:'failed'};renderMods();toast('❌ PDF 文件不可用，请重新生成');return}window.open(url,'_blank','noopener')
+  if(!r.ok){state.foundation_report={status:'failed'};renderMods();toast('❌ PDF 文件不可用，请重新生成');return}
+  if(foundationReviewCid!==cid){foundationAnnotations=[];foundationReviewCid=cid}
+  document.getElementById('foundationPdfFrame').src=url+'?preview=1#page=1&zoom=page-width';renderFoundationAnnotations();document.getElementById('foundationReviewer').classList.add('open');document.getElementById('pdfNoteText').focus()
+}
+
+function closeFoundationReviewer(){document.getElementById('foundationReviewer').classList.remove('open')}
+function downloadFoundationReport(){if(cid)window.open('/api/foundation-report/'+cid+'.pdf','_blank','noopener')}
+function addFoundationAnnotation(){
+  var page=Number(document.getElementById('pdfNotePage').value),type=document.getElementById('pdfNoteType').value,quote=document.getElementById('pdfNoteQuote').value.trim(),note=document.getElementById('pdfNoteText').value.trim();
+  if(!Number.isInteger(page)||page<1||page>999){toast('请填写正确页码');return}if(!note){toast('请填写修改要求');return}
+  foundationAnnotations.push({page:page,type:type,quote:quote,note:note});document.getElementById('pdfNoteQuote').value='';document.getElementById('pdfNoteText').value='';renderFoundationAnnotations();document.getElementById('pdfNoteText').focus()
+}
+function removeFoundationAnnotation(index){foundationAnnotations.splice(index,1);renderFoundationAnnotations()}
+function renderFoundationAnnotations(){
+  var list=document.getElementById('foundationAnnotationList'),submit=document.getElementById('foundationAnnotationSubmit');submit.textContent='把 '+foundationAnnotations.length+' 条批注交给 Agent';submit.disabled=!foundationAnnotations.length;
+  if(!foundationAnnotations.length){list.innerHTML='<div class="pdf-review-empty">还没有批注</div>';return}
+  list.innerHTML=foundationAnnotations.map(function(item,index){return '<div class="pdf-note"><strong>第 '+item.page+' 页 · '+eHtml(item.type)+'</strong>'+(item.quote?'<div class="pdf-note-quote">原文：'+eHtml(item.quote)+'</div>':'')+'<div>'+eHtml(item.note)+'</div><button class="pdf-note-remove" type="button" aria-label="删除批注" onclick="removeFoundationAnnotation('+index+')">✕</button></div>'}).join('')
+}
+function submitFoundationAnnotations(){
+  if(!foundationAnnotations.length)return;var lines=['请按以下 PDF 批注修改模块 1–4 报告：'];foundationAnnotations.forEach(function(item,index){lines.push((index+1)+'. 第 '+item.page+' 页｜'+item.type+(item.quote?'\n定位原文：'+item.quote:'')+'\n修改要求：'+item.note)});
+  var input=document.getElementById('userInput');input.value=lines.join('\n');foundationEditing=true;closeFoundationReviewer();sendMessage()
+}
+
+function beginFoundationRevision(){
+  foundationEditing=true;var input=document.getElementById('userInput');input.placeholder='可以提问，也可以说明要修改、补充或删除的内容…';input.focus();toast('Agent 会先判断这是问题、修改要求，还是需要继续问清楚')
 }
 
 async function confirmFoundationReport(){
   if(!cid||streaming)return;
-  try{var r=await fetch('/api/foundation-report/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid})});var d=await r.json();if(!d.ok)throw new Error(d.error||'确认失败');state=d.state;renderMods();toast('✅ IP 定位初稿已确认，继续模块 '+state.current_module);if((state.completed_modules||[]).indexOf(state.current_module)<0)sendJumpMsg(state.current_module)}catch(e){toast('❌ '+e.message)}
+  try{var foundation=state.foundation_report||{};var r=await fetch('/api/foundation-report/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,expected_revision:state.revision,report_id:foundation.report_id||''})});var d=await r.json();if(!d.ok)throw new Error(d.error||'确认失败');state=d.state;renderMods();toast('✅ IP 定位初稿已确认，继续模块 '+state.current_module);if((state.completed_modules||[]).indexOf(state.current_module)<0)sendJumpMsg(state.current_module)}catch(e){toast('❌ '+e.message)}
 }
 
 async function viewReport(mid){
@@ -507,35 +621,33 @@ async function runRadar(){
 
 // ── CHAT ──
 function handleKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}}
-async function sendMessage(){
+function newTurnRequestId(){return window.crypto&&crypto.randomUUID?crypto.randomUUID():'turn_'+Date.now()+'_'+Math.random().toString(36).slice(2)}
+function sendHarnessAction(item){return sendTurn({action:{type:item.type,target_id:item.target_id}},item.label)}
+function sendMessage(){
   if(streaming||!cid)return;
   var input=document.getElementById('userInput'),text=input.value.trim();if(!text)return;
-  input.value='';document.getElementById('sendBtn').disabled=true;streaming=true;
+  var turn={message:text};if(foundationEditing){turn.foundation_review='revision';foundationEditing=false;input.placeholder='可以继续询问 PDF，或再次点击“需要修改/补充”…'}
+  input.value='';return sendTurn(turn,text)
+}
+async function sendTurn(turn,displayText,requestId){
+  if(streaming||!cid)return;document.getElementById('sendBtn').disabled=true;streaming=true;
   var area=document.getElementById('chatArea'),welcome=area.querySelector('.welcome');if(welcome)welcome.remove();
-  var um=document.createElement('div');um.className='msg user';um.innerHTML='<div class="av">'+moduleIcon('user')+'</div><div class="bubble">'+eHtml(text).replace(/\n/g,'<br>')+'</div>';area.appendChild(um);
+  var um=document.createElement('div');um.className='msg user';um.innerHTML='<div class="av">'+moduleIcon('user')+'</div><div class="bubble">'+eHtml(displayText).replace(/\n/g,'<br>')+'</div>';area.appendChild(um);
   var am=document.createElement('div');am.className='msg assistant';am.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble"><div class="typing" style="display:flex;gap:4px"><span style="width:5px;height:5px;border-radius:50%;background:var(--dim);animation:bounce 1.4s infinite"></span><span style="width:5px;height:5px;border-radius:50%;background:var(--dim);animation:bounce 1.4s infinite .2s"></span><span style="width:5px;height:5px;border-radius:50%;background:var(--dim);animation:bounce 1.4s infinite .4s"></span></div></div>';area.appendChild(am);scroll();
-  var full='';var bubble=am.querySelector('.bubble');
+  var full='',replayed=false,retryNeedsRefresh=false,failureMessage='回复暂时失败，消息已保留。',retryRequestId=requestId||newTurnRequestId();var bubble=am.querySelector('.bubble');
   try{
-    var r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,message:text})});
-    if(!r.ok){var errorData=await r.json();throw new Error(errorData.error||'发送失败')}
+    var body=Object.assign({conversation_id:cid,request_id:retryRequestId,expected_revision:state.revision},turn);
+    var r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok){retryNeedsRefresh=r.status===409;try{var failed=await r.json();failureMessage=failed.error||failureMessage}catch(ignore){}throw new Error('发送失败')}
     var reader=r.body.getReader(),decoder=new TextDecoder(),buf='';
-    while(true){var part=await reader.read();if(part.done)break;buf+=decoder.decode(part.value,{stream:true});var lines=buf.split('\n');buf=lines.pop()||'';for(var i=0;i<lines.length;i++){var line=lines[i];if(!line.startsWith('data: '))continue;try{var data=JSON.parse(line.slice(6));if(data.error){bubble.innerHTML='<span style="color:#ef4444">❌ '+eHtml(data.error)+'</span>'}else if(data.content){full+=data.content;bubble.innerHTML=md(full)+'<span class="cursor" style="color:var(--ac)">▍</span>';scroll()}else if(data.done){bubble.innerHTML=md(full);if(data.state){state=data.state;renderMods()}if(data.auto_deliverables){Object.keys(data.auto_deliverables).forEach(function(mid){deliverables[mid]=data.auto_deliverables[mid]});renderArtifacts()}if(data.new_completed&&data.new_completed.length>0){data.new_completed.forEach(function(mid){toast('✅ '+M[mid-1].name+'完成！')});renderMods()}}}catch(e){}}}
-  }catch(e){bubble.innerHTML='<span style="color:#ef4444">❌ '+eHtml(e.message)+'</span>'}
+    while(true){var part=await reader.read();if(part.done)break;buf+=decoder.decode(part.value,{stream:true});var lines=buf.split('\n');buf=lines.pop()||'';for(var i=0;i<lines.length;i++){var line=lines[i];if(!line.startsWith('data: '))continue;try{var data=JSON.parse(line.slice(6));if(data.error){bubble.innerHTML='<span style="color:#ef4444">❌ '+eHtml(data.error)+'</span>'}else if(data.content){full+=data.content;bubble.innerHTML=md(full)+'<span class="cursor" style="color:var(--ac)">▍</span>';scroll()}else if(data.done){bubble.innerHTML=md(full);replayed=!!data.replayed;if(data.state&&(!replayed||data.state.revision>=state.revision)){state=data.state;renderMods()}attachHarnessActions(data.actions&&data.actions.length?data.actions:stateActions(),bubble);if(data.auto_deliverables){Object.keys(data.auto_deliverables).forEach(function(mid){deliverables[mid]=data.auto_deliverables[mid]});renderArtifacts()}if(data.new_completed&&data.new_completed.length>0){data.new_completed.forEach(function(mid){toast('✅ '+M[mid-1].name+'完成！')});renderMods()}}}catch(e){}}}
+    if(replayed)await selectConvo(cid)
+  }catch(e){bubble.innerHTML='<span style="color:#ef4444">'+eHtml(failureMessage)+'</span>';var actions=stateActions();if(actions.length){attachHarnessActions(actions,bubble)}else{bubble.innerHTML+='<div class="harness-actions"><button type="button" class="harness-action primary">重试</button></div>';var retry=bubble.querySelector('button');retry.onclick=async function(){retry.disabled=true;if(retryNeedsRefresh)await selectConvo(cid);um.remove();am.remove();sendTurn(turn,displayText,retryRequestId)}}}
   streaming=false;document.getElementById('sendBtn').disabled=false;document.getElementById('userInput').focus()
 }
 
 async function sendJumpMsg(mid){
-  streaming=true;var area=document.getElementById('chatArea');
-  var um=document.createElement('div');um.className='msg user';um.innerHTML='<div class="av">'+moduleIcon('user')+'</div><div class="bubble">跳到模块'+mid+'</div>';area.appendChild(um);
-  var am=document.createElement('div');am.className='msg assistant';am.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble"><div class="typing" style="display:flex;gap:4px"><span style="width:5px;height:5px;border-radius:50%;background:var(--dim);animation:bounce 1.4s infinite"></span><span style="width:5px;height:5px;border-radius:50%;background:var(--dim);animation:bounce 1.4s infinite .2s"></span><span style="width:5px;height:5px;border-radius:50%;background:var(--dim);animation:bounce 1.4s infinite .4s"></span></div></div>';area.appendChild(am);scroll();
-  var full='';var bubble=am.querySelector('.bubble');
-  try{
-    var r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,message:'跳到模块 '+mid})});
-    if(!r.ok){var errorData=await r.json();throw new Error(errorData.error||'发送失败')}
-    var reader=r.body.getReader(),decoder=new TextDecoder(),buf='';
-    while(true){var part=await reader.read();if(part.done)break;buf+=decoder.decode(part.value,{stream:true});var lines=buf.split('\n');buf=lines.pop()||'';for(var i=0;i<lines.length;i++){var line=lines[i];if(!line.startsWith('data: '))continue;try{var data=JSON.parse(line.slice(6));if(data.error){bubble.innerHTML='<span style="color:#ef4444">❌ '+eHtml(data.error)+'</span>'}else if(data.content){full+=data.content;bubble.innerHTML=md(full)+'<span class="cursor" style="color:var(--ac)">▍</span>';scroll()}else if(data.done){bubble.innerHTML=md(full);if(data.state){state=data.state;renderMods()}}}catch(e){}}}
-  }catch(e){bubble.innerHTML='<span style="color:#ef4444">❌ '+eHtml(e.message)+'</span>'}
-  streaming=false
+  return sendTurn({message:'请从当前模块继续'},'继续模块 '+mid+'：'+(M[mid-1]?M[mid-1].name:''))
 }
 
 function toggleConvos(){

@@ -123,7 +123,7 @@ class VideoBatchValidationTests(unittest.TestCase):
                 patch.object(video, "_file_url", side_effect=lambda value: "/api/gen/file/" + str(value or "")):
             result = video.gen_video(payload)
         self.assertEqual(["vid_img"], save_calls)
-        generate.assert_called_once_with("image/avatar.jpg", "audio/voice.mp3", "1080p", "9:16", "medium")
+        generate.assert_called_once_with("image/avatar.jpg", "audio/voice.mp3", "1080p", "9:16", "medium", job_id=8)
         self.assertEqual("audio/voice.mp3", result["audio_file"])
         self.assertEqual("/api/gen/file/audio/voice.mp3", result["audio_url"])
 
@@ -137,7 +137,7 @@ class VideoBatchValidationTests(unittest.TestCase):
                 patch.object(video, "public_url", return_value="https://cdn.example/out.mp4"), \
                 patch.object(video, "_file_url", side_effect=lambda value: "/api/gen/file/" + str(value or "")):
             result = video.gen_video(payload)
-        generate.assert_called_once_with("image/avatar.jpg", "audio/voice.mp3", "1080p", "9:16", "medium")
+        generate.assert_called_once_with("image/avatar.jpg", "audio/voice.mp3", "1080p", "9:16", "medium", job_id=8)
         self.assertEqual(9, result["avatar_id"])
 
 
@@ -152,6 +152,8 @@ class VideoBatchIntegrationGuardTests(unittest.TestCase):
         end = self.core.index('if p.startswith("/api/gen/")', start)
         route = self.core[start:end]
         self.assertLess(route.index("validate_video_batch_payload"), route.index("costs ="))
+        self.assertLess(route.index("miniprogram_security.check_payload"), route.index("costs ="))
+        self.assertLess(route.index("reject_changed_cost"), route.index("deduct_points"))
         self.assertLess(route.index("active_jobs + len(payloads)"), route.index("deduct_points"))
         self.assertIn('enqueue_jobs(job_ids, "video", "text")', route)
         self.assertIn('"available_slots"', route)

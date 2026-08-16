@@ -88,6 +88,10 @@ body { font-family:var(--font); background:var(--bg); color:var(--text); height:
 .bubble { padding:14px 18px; border-radius:var(--radius); max-width:85%; font-size:14px; line-height:1.75; word-break:break-word; }
 .message.user .bubble { background:var(--user-bubble); }
 .message.assistant .bubble { background:var(--ai-bubble); border:1px solid var(--border); }
+.harness-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid var(--border)}
+.harness-action{padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:rgba(255,255,255,.04);color:var(--text);font:inherit;font-size:12px;cursor:pointer}
+.harness-action.primary{border-color:var(--accent);background:var(--accent-glow);color:var(--accent-bright)}
+.harness-action:disabled{opacity:.45;cursor:not-allowed}
 
 /* ── Deliverable Card ── */
 .deliverable-card { max-width:800px; width:100%; margin:0 auto; border:1px solid var(--success); border-radius:var(--radius); background:rgba(74,222,128,0.05); overflow:hidden; }
@@ -141,6 +145,25 @@ body { font-family:var(--font); background:var(--bg); color:var(--text); height:
 .overlay-panel .convo-row:hover { background:rgba(255,255,255,0.04); }
 .overlay-panel .convo-row .cid { color:var(--accent-bright); font-family:monospace; font-size:10px; margin-left:8px; }
 .overlay-panel .close-btn { float:right; background:none; border:none; color:var(--text-dim); cursor:pointer; font-size:18px; }
+.pdf-review { position:fixed; inset:0; z-index:120; display:none; background:rgba(2,6,12,.82); backdrop-filter:blur(8px); }
+.pdf-review.open { display:flex; }
+.pdf-review-shell { width:min(1440px,96vw); height:min(900px,94vh); margin:auto; display:grid; grid-template-columns:minmax(0,1fr) 360px; overflow:hidden; border:1px solid rgba(255,255,255,.12); border-radius:18px; background:#0b111c; box-shadow:0 35px 100px rgba(0,0,0,.58); }
+.pdf-review-document { min-width:0; display:flex; flex-direction:column; background:#202631; }
+.pdf-review-bar { min-height:52px; padding:9px 14px; display:flex; align-items:center; gap:10px; border-bottom:1px solid rgba(255,255,255,.1); background:#0d1420; }
+.pdf-review-bar strong { font-size:13px; flex:1; }.pdf-review-bar span { font-size:10px; color:#94a3b8; }
+.pdf-review-bar button,.pdf-review-side button { border:1px solid rgba(255,255,255,.14); border-radius:8px; background:rgba(255,255,255,.05); color:#dbe5f1; padding:7px 10px; cursor:pointer; font-size:11px; }
+.pdf-review-bar button:hover,.pdf-review-side button:hover { border-color:var(--accent); color:var(--accent-bright); }
+.pdf-review-frame { width:100%; height:100%; border:0; background:#2b303b; }
+.pdf-review-side { display:flex; flex-direction:column; min-height:0; padding:16px; border-left:1px solid rgba(255,255,255,.1); background:linear-gradient(180deg,#101824,#0a101a); }
+.pdf-review-side h2 { font-size:15px; color:var(--accent-bright); }.pdf-review-help { margin:6px 0 13px; color:var(--text-dim); font-size:11px; line-height:1.6; }
+.pdf-review-grid { display:grid; grid-template-columns:90px 1fr; gap:8px; }.pdf-review-field { display:flex; flex-direction:column; gap:5px; margin-bottom:9px; }.pdf-review-field label { color:#94a3b8; font-size:10px; }
+.pdf-review-field input,.pdf-review-field select,.pdf-review-field textarea { width:100%; border:1px solid rgba(255,255,255,.12); border-radius:8px; background:rgba(7,12,20,.82); color:var(--text); padding:8px; font:inherit; font-size:11px; outline:none; }
+.pdf-review-field textarea { min-height:64px; resize:vertical; }.pdf-review-field input:focus,.pdf-review-field select:focus,.pdf-review-field textarea:focus { border-color:var(--accent); }
+.pdf-review-add { width:100%; margin-bottom:12px; }.pdf-review-list { flex:1; min-height:90px; overflow-y:auto; display:flex; flex-direction:column; gap:8px; padding-right:2px; }
+.pdf-review-empty { padding:18px 8px; text-align:center; color:var(--text-dim); font-size:11px; border:1px dashed rgba(255,255,255,.12); border-radius:10px; }
+.pdf-note { position:relative; padding:10px 34px 10px 10px; border:1px solid rgba(255,255,255,.1); border-radius:10px; background:rgba(255,255,255,.04); font-size:10px; line-height:1.55; color:#cbd5e1; }
+.pdf-note strong { color:var(--accent-bright); }.pdf-note-quote { color:#94a3b8; }.pdf-note-remove { position:absolute; right:7px; top:7px!important; padding:2px 6px!important; border:0!important; background:transparent!important; color:var(--text-dim)!important; }
+.pdf-review-submit { width:100%; margin-top:12px!important; padding:10px!important; border-color:var(--accent)!important; background:var(--accent-bg)!important; color:var(--accent-bright)!important; font-weight:700; }.pdf-review-submit:disabled { opacity:.4; cursor:not-allowed; }
 .toast { position:fixed; bottom:24px; right:24px; z-index:200; background:var(--success-bg); border:1px solid var(--success); color:var(--success); padding:12px 18px; border-radius:var(--radius-sm); font-size:13px; animation:slideIn .3s ease, fadeOut .5s ease 3s forwards; pointer-events:none; }
 @keyframes slideIn { from { transform:translateY(20px); opacity:0; } to { transform:translateY(0); opacity:1; } }
 @keyframes fadeOut { to { opacity:0; } }
@@ -173,6 +196,9 @@ body { font-family:var(--font); background:var(--bg); color:var(--text); height:
   .welcome h2 { font-size:18px; }
   .report-section,.deliverable-section { max-height:35vh; }
   .sidebar-close { display:block !important; }
+  .pdf-review-shell { width:100%; height:100%; border-radius:0; grid-template-columns:1fr; grid-template-rows:54vh minmax(0,1fr); }
+  .pdf-review-side { border-left:0; border-top:1px solid rgba(255,255,255,.1); padding:12px; }
+  .pdf-review-bar span { display:none; }
 }
 </style>
 </head>
@@ -227,6 +253,28 @@ body { font-family:var(--font); background:var(--bg); color:var(--text); height:
   </div>
 </main>
 
+<div class="pdf-review" id="foundationReviewer" role="dialog" aria-modal="true" aria-labelledby="foundationReviewerTitle">
+  <div class="pdf-review-shell">
+    <section class="pdf-review-document">
+      <div class="pdf-review-bar"><strong id="foundationReviewerTitle">模块 1–4 PDF 审阅</strong><span>在 PDF 中查看原文，右侧按页添加修改意见</span><button type="button" onclick="downloadFoundationReport()">下载</button><button type="button" onclick="closeFoundationReviewer()">关闭</button></div>
+      <iframe class="pdf-review-frame" id="foundationPdfFrame" title="模块 1–4 PDF 预览"></iframe>
+    </section>
+    <aside class="pdf-review-side">
+      <h2>PDF 批注</h2>
+      <p class="pdf-review-help">复制 PDF 里需要调整的原文，填写页码和要求。Agent 会按这些定位修改，不再靠猜。</p>
+      <div class="pdf-review-grid">
+        <div class="pdf-review-field"><label for="pdfNotePage">页码</label><input id="pdfNotePage" type="number" min="1" max="999" value="1" inputmode="numeric"></div>
+        <div class="pdf-review-field"><label for="pdfNoteType">类型</label><select id="pdfNoteType"><option>修改</option><option>删除</option><option>补充</option></select></div>
+      </div>
+      <div class="pdf-review-field"><label for="pdfNoteQuote">定位原文（可选）</label><textarea id="pdfNoteQuote" maxlength="500" placeholder="从 PDF 复制一小段原文"></textarea></div>
+      <div class="pdf-review-field"><label for="pdfNoteText">修改要求</label><textarea id="pdfNoteText" maxlength="1000" placeholder="例：这段删掉；或改成……"></textarea></div>
+      <button class="pdf-review-add" type="button" onclick="addFoundationAnnotation()">＋ 添加这条批注</button>
+      <div class="pdf-review-list" id="foundationAnnotationList"></div>
+      <button class="pdf-review-submit" id="foundationAnnotationSubmit" type="button" onclick="submitFoundationAnnotations()">把批注交给 Agent</button>
+    </aside>
+  </div>
+</div>
+
 <div class="overlay hidden" id="convoOverlay" onclick="if(event.target===this) toggleConvos()">
   <div class="overlay-panel" id="convoPanel"></div>
 </div>
@@ -250,6 +298,9 @@ const AVAILABLE_MODULE_COUNT = 6;
 const DELIVERABLE_MODULES = [5,6];
 
 let currentConvoId = null;
+let foundationEditing = false;
+let foundationAnnotations = [];
+let foundationReviewCid = '';
 let coachState = { current_module:1, completed_modules:[], module_step:0, ip_profile:{}, intake:{status:'complete'} };
 let reports = {};
 let deliverables = {};
@@ -264,13 +315,13 @@ function renderModules() {
   const list = document.getElementById('moduleList');
   const done = (coachState.completed_modules || []).filter(id=>id<=AVAILABLE_MODULE_COUNT);
   const cur = Math.min(coachState.current_module || 1, AVAILABLE_MODULE_COUNT);
-  const intakePending = coachState.intake?.status === 'collecting';
-  const intakeRound = intakePending ? (coachState.intake.round || 1) : 0;
+  const intakePending = coachState.intake?.status !== 'complete';
+  const intakeLabel = !intakePending ? '' : (coachState.intake.status === 'awaiting_confirmation' ? '待确认' : (coachState.intake.status === 'editing' ? '修改中' : '交谈中'));
   list.innerHTML = MODULES.map(m => {
     let cls = 'module-item', badge = '', check = '', reportBtn = '';
     const comingSoon = m.id > AVAILABLE_MODULE_COUNT;
     if (comingSoon) { cls += ' locked'; badge = '<span class="mod-badge">尚未开发，敬请期待</span>'; }
-    else if (intakePending) { cls += ' locked'; if (m.id===1) badge = `<span class="mod-badge">基础信息 ${intakeRound}/3</span>`; }
+    else if (intakePending) { cls += ' locked'; if (m.id===1) badge = `<span class="mod-badge">基础信息 ${intakeLabel}</span>`; }
     if (done.includes(m.id)) { cls += ' completed'; check = '<span class="mod-check">✓</span>';
       reportBtn = `<span class="mod-report-btn" onclick="event.stopPropagation();viewReport(${m.id})" title="查看报告">📄</span>`; }
     if (!intakePending && m.id === cur && !done.includes(m.id)) { cls += ' current'; badge = '<span class="mod-badge">进行中</span>'; }
@@ -282,12 +333,13 @@ function renderModules() {
 
 function updateProgress() {
   const done = (coachState.completed_modules || []).filter(id=>id<=AVAILABLE_MODULE_COUNT).length;
-  const intakePending = coachState.intake?.status === 'collecting';
+  const intakePending = coachState.intake?.status !== 'complete';
   document.getElementById('progressBar').style.width = Math.round(done/AVAILABLE_MODULE_COUNT*100)+'%';
   document.getElementById('progressText').textContent = done===AVAILABLE_MODULE_COUNT?'🎉 六步完成':done+'/'+AVAILABLE_MODULE_COUNT;
   const cur = Math.min(coachState.current_module || 1, AVAILABLE_MODULE_COUNT);
   const mod = MODULES.find(m=>m.id===cur);
-  document.getElementById('currentModuleName').textContent = intakePending?`基础信息 · ${coachState.intake.round||1}/3`:(mod?mod.name:'—');
+  const intakeLabel = !intakePending ? '' : (coachState.intake.status === 'awaiting_confirmation' ? '待确认' : (coachState.intake.status === 'editing' ? '修改中' : '交谈中'));
+  document.getElementById('currentModuleName').textContent = intakePending?`基础信息 · ${intakeLabel}`:(mod?mod.name:'—');
   document.getElementById('stepBadge').textContent = (coachState.module_step||0)>0?` · Step ${coachState.module_step}`:'';
 }
 
@@ -298,7 +350,8 @@ function renderReportMinis() {
   let foundationRows='';
   if(foundation.status==='awaiting_confirmation'||foundation.status==='confirmed'){
     foundationRows='<div class="report-mini" onclick="closeDrawer();openFoundationReport()"><span class="r-icon">📑</span><span>模块 1-4 IP 定位初稿 PDF</span></div>';
-    if(foundation.status==='awaiting_confirmation')foundationRows+='<div class="report-mini" onclick="closeDrawer();confirmFoundationReport()"><span class="r-icon">✅</span><span>确认初稿，继续模块 5</span></div>';
+    if(foundation.status==='awaiting_confirmation'&&foundation.review_status==='dirty')foundationRows+='<div class="report-mini" onclick="closeDrawer();generateFoundationReport()"><span class="r-icon">↻</span><span>应用补充并重新生成 PDF</span></div>';
+    else if(foundation.status==='awaiting_confirmation')foundationRows+='<div class="report-mini" onclick="closeDrawer();confirmFoundationReport()"><span class="r-icon">✅</span><span>确认初稿，继续模块 5</span></div>';
   }else if(done.includes(4))foundationRows='<div class="report-mini" onclick="closeDrawer();generateFoundationReport()"><span class="r-icon">↻</span><span>检查/重试模块 1-4 PDF</span></div>';
   if(keys.length===0&&!foundationRows){section.style.display='none';return;}
   section.style.display='block';
@@ -335,8 +388,8 @@ async function selectConversation(id) {
   closeDrawer(); currentConvoId=id;
   const res=await fetch(`/api/conversations/${id}`);const convo=await res.json();
   coachState=convo.coach_state||{current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}};
-  reports=convo.reports||{}; deliverables=convo.deliverables||{};
-  renderModules(); renderChat(convo.messages||[]); document.getElementById('userInput').disabled=false; document.getElementById('userInput').focus();
+  reports=convo.reports||{}; deliverables=convo.deliverables||{}; foundationEditing=false;
+  renderModules(); renderChat(convo.messages||[]); const input=document.getElementById('userInput');input.disabled=false;input.placeholder=(coachState.foundation_report||{}).status==='awaiting_confirmation'?'可以询问 PDF，或点击“需要修改/补充”…':'输入消息...';input.focus();
   loadReports(); loadDeliverables();
 }
 
@@ -349,31 +402,57 @@ async function deleteConversation(id) {
 async function jumpToModule(modId) {
   if(modId>AVAILABLE_MODULE_COUNT){toast('尚未开发，敬请期待');return;}
   if(!currentConvoId||streaming)return;
-  if(coachState.intake?.status==='collecting'){toast('请先完成 3 轮基础信息');return;}
+  if(coachState.intake?.status!=='complete'){toast('请先确认基础信息');return;}
   const res=await fetch('/api/jump-module',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId,module:modId})});
-  const data=await res.json();if(!res.ok||!data.ok){toast(`❌ ${data.error||'无法切换模块'}`);return}coachState.current_module=data.current_module;coachState.module_step=0;renderModules();await sendJumpMessage(modId);
+  const data=await res.json();if(!res.ok||!data.ok){toast(`❌ ${data.error||'无法切换模块'}`);return}coachState=data.state||coachState;renderModules();await sendJumpMessage(modId);
 }
 
 async function sendJumpMessage(modId) {
-  if(!currentConvoId||streaming)return; streaming=true;
-  const area=document.getElementById('chatArea');
-  const userMsg=document.createElement('div');userMsg.className='message user';userMsg.innerHTML=`<div class="avatar">👤</div><div class="bubble">📌 跳到模块 ${modId}：${MODULES.find(m=>m.id===modId)?.name}</div>`;area.appendChild(userMsg);
-  const aiMsg=document.createElement('div');aiMsg.className='message assistant';aiMsg.innerHTML=`<div class="avatar">🧠</div><div class="bubble"><div class="typing"><span></span><span></span><span></span></div></div>`;area.appendChild(aiMsg);
-  scrollBottom();
-  let fullText='';const bubble=aiMsg.querySelector('.bubble');
-  try{
-    const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId,message:`跳到模块 ${modId}`})});
-    if(!res.ok){const errorData=await res.json();throw new Error(errorData.error||'发送失败');}
-    const reader=res.body.getReader();const decoder=new TextDecoder();let buf='';
-    while(true){const{done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});const lines=buf.split('\n');buf=lines.pop()||'';for(const line of lines){if(!line.startsWith('data: '))continue;try{const data=JSON.parse(line.slice(6));if(data.error){bubble.innerHTML=`<span style="color:#ef4444">❌ ${escHtml(data.error)}</span>`;}else if(data.content){fullText+=data.content;bubble.innerHTML=renderMarkdown(fullText)+'<span class="cursor"></span>';scrollBottom();}else if(data.done){bubble.innerHTML=renderMarkdown(fullText);if(data.state){coachState=data.state;renderModules();}if(data.auto_deliverables){handleAutoDeliverables(data.auto_deliverables);}}}catch(e){}}}
-  }catch(e){bubble.innerHTML=`<span style="color:#ef4444">❌ ${escHtml(e.message)}</span>`;}
-  streaming=false;
+  return sendTurn({message:'请从当前模块继续'},`继续模块 ${modId}：${MODULES.find(m=>m.id===modId)?.name||''}`);
 }
 
+function stateActions(){
+  if(coachState.intake?.status==='awaiting_confirmation'){const revising=coachState.intake?.mode==='revision';return[
+    {type:'confirm_intake',target_id:`intake-${coachState.revision}`,label:revising?'确认补充':'确认资料',primary:true},
+    {type:'edit_intake',target_id:`intake-${coachState.revision}`,label:revising?'继续修改':'我要修改',primary:false}
+  ];
+  }
+  const pending=coachState.pending;if(pending?.status==='awaiting_confirmation')return[
+    {type:'confirm_checkpoint',target_id:pending.id,label:'确认这一步',primary:true},
+    {type:'edit_checkpoint',target_id:pending.id,label:'需要修改',primary:false}
+  ];
+  const foundation=coachState.foundation_report||{};if(foundation.status==='awaiting_confirmation'){
+    if(foundation.review_status==='dirty')return[
+      {type:'open_foundation_report',label:'查看旧版 PDF 并批注',primary:false},
+      {type:'edit_foundation_report',label:'继续补充',primary:false},
+      {type:'regenerate_foundation_report',label:'重新生成 PDF',primary:true}
+    ];
+    return[
+      {type:'open_foundation_report',label:'查看 PDF 并批注',primary:false},
+      {type:'edit_foundation_report',label:'需要修改/补充',primary:false},
+      {type:'confirm_foundation_report',label:'确认初稿，进入模块 5',primary:true}
+    ];
+  }
+  return[];
+}
+function runStateAction(item){
+  if(item.type==='open_foundation_report')return openFoundationReport();
+  if(item.type==='edit_foundation_report')return beginFoundationRevision();
+  if(item.type==='regenerate_foundation_report')return generateFoundationReport();
+  if(item.type==='confirm_foundation_report')return confirmFoundationReport();
+  return sendHarnessAction(item);
+}
+function attachHarnessActions(actions,bubble){
+  document.querySelectorAll('#chatArea .harness-actions').forEach(row=>row.remove());if(!bubble)return;
+  if(!actions?.length)return;const row=document.createElement('div');row.className='harness-actions';
+  actions.forEach(item=>{const button=document.createElement('button');button.type='button';button.className='harness-action'+(item.primary?' primary':'');button.textContent=item.label;button.onclick=()=>{if(!item.type.includes('foundation_report'))row.querySelectorAll('button').forEach(node=>{node.disabled=true;});runStateAction(item);};row.appendChild(button);});
+  bubble.appendChild(row);
+}
 function renderChat(messages) {
   const area=document.getElementById('chatArea');
   if(!messages||messages.length===0){area.innerHTML=document.getElementById('welcome').outerHTML;return;}
   area.innerHTML=messages.map(m=>`<div class="message ${m.role==='user'?'user':'assistant'}"><div class="avatar">${m.role==='user'?'👤':'🧠'}</div><div class="bubble">${renderMarkdown(m.content)}</div></div>`).join('');
+  attachHarnessActions(stateActions(),area.querySelector('.message.assistant:last-of-type .bubble'));
   scrollBottom();
 }
 
@@ -391,12 +470,36 @@ async function generateFoundationReport(){
 
 async function openFoundationReport(){
   if(!currentConvoId)return;const url=`/api/foundation-report/${currentConvoId}.pdf`;const res=await fetch(url,{method:'HEAD',cache:'no-store'});
-  if(!res.ok){coachState.foundation_report={status:'failed'};renderModules();toast('❌ PDF 文件不可用，请重新生成');return;}window.open(url,'_blank','noopener');
+  if(!res.ok){coachState.foundation_report={status:'failed'};renderModules();toast('❌ PDF 文件不可用，请重新生成');return;}
+  if(foundationReviewCid!==currentConvoId){foundationAnnotations=[];foundationReviewCid=currentConvoId;}
+  document.getElementById('foundationPdfFrame').src=`${url}?preview=1#page=1&zoom=page-width`;renderFoundationAnnotations();document.getElementById('foundationReviewer').classList.add('open');document.getElementById('pdfNoteText').focus();
+}
+
+function closeFoundationReviewer(){document.getElementById('foundationReviewer').classList.remove('open');}
+function downloadFoundationReport(){if(currentConvoId)window.open(`/api/foundation-report/${currentConvoId}.pdf`,'_blank','noopener');}
+function addFoundationAnnotation(){
+  const page=Number(document.getElementById('pdfNotePage').value),type=document.getElementById('pdfNoteType').value,quote=document.getElementById('pdfNoteQuote').value.trim(),note=document.getElementById('pdfNoteText').value.trim();
+  if(!Number.isInteger(page)||page<1||page>999){toast('请填写正确页码');return;}if(!note){toast('请填写修改要求');return;}
+  foundationAnnotations.push({page,type,quote,note});document.getElementById('pdfNoteQuote').value='';document.getElementById('pdfNoteText').value='';renderFoundationAnnotations();document.getElementById('pdfNoteText').focus();
+}
+function removeFoundationAnnotation(index){foundationAnnotations.splice(index,1);renderFoundationAnnotations();}
+function renderFoundationAnnotations(){
+  const list=document.getElementById('foundationAnnotationList'),submit=document.getElementById('foundationAnnotationSubmit');submit.textContent=`把 ${foundationAnnotations.length} 条批注交给 Agent`;submit.disabled=!foundationAnnotations.length;
+  if(!foundationAnnotations.length){list.innerHTML='<div class="pdf-review-empty">还没有批注</div>';return;}
+  list.innerHTML=foundationAnnotations.map((item,index)=>`<div class="pdf-note"><strong>第 ${item.page} 页 · ${escHtml(item.type)}</strong>${item.quote?`<div class="pdf-note-quote">原文：${escHtml(item.quote)}</div>`:''}<div>${escHtml(item.note)}</div><button class="pdf-note-remove" type="button" aria-label="删除批注" onclick="removeFoundationAnnotation(${index})">✕</button></div>`).join('');
+}
+function submitFoundationAnnotations(){
+  if(!foundationAnnotations.length)return;const lines=['请按以下 PDF 批注修改模块 1–4 报告：'];foundationAnnotations.forEach((item,index)=>{lines.push(`${index+1}. 第 ${item.page} 页｜${item.type}${item.quote?`\n定位原文：${item.quote}`:''}\n修改要求：${item.note}`);});
+  const input=document.getElementById('userInput');input.value=lines.join('\n');foundationEditing=true;closeFoundationReviewer();sendMessage();
+}
+
+function beginFoundationRevision(){
+  foundationEditing=true;const input=document.getElementById('userInput');input.placeholder='可以提问，也可以说明要修改、补充或删除的内容…';input.focus();toast('Agent 会先判断这是问题、修改要求，还是需要继续问清楚');
 }
 
 async function confirmFoundationReport(){
   if(!currentConvoId||streaming)return;
-  try{const res=await fetch('/api/foundation-report/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId})});const data=await res.json();if(!res.ok||!data.ok)throw new Error(data.error||'确认失败');coachState=data.state;renderModules();toast(`✅ IP 定位初稿已确认，继续模块 ${coachState.current_module}`);if(!(coachState.completed_modules||[]).includes(coachState.current_module))sendJumpMessage(coachState.current_module);}
+  try{const foundation=coachState.foundation_report||{};const res=await fetch('/api/foundation-report/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId,expected_revision:coachState.revision,report_id:foundation.report_id||''})});const data=await res.json();if(!res.ok||!data.ok)throw new Error(data.error||'确认失败');coachState=data.state;renderModules();toast(`✅ IP 定位初稿已确认，继续模块 ${coachState.current_module}`);if(!(coachState.completed_modules||[]).includes(coachState.current_module))sendJumpMessage(coachState.current_module);}
   catch(e){toast(`❌ ${e.message}`);}
 }
 
@@ -451,24 +554,30 @@ function toast(msg){const t=document.createElement('div');t.className='toast';t.
 
 // ── Send ──
 function handleKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();}}
-
-async function sendMessage(){
+function newTurnRequestId(){return window.crypto&&crypto.randomUUID?crypto.randomUUID():`turn_${Date.now()}_${Math.random().toString(36).slice(2)}`;}
+function sendHarnessAction(item){return sendTurn({action:{type:item.type,target_id:item.target_id}},item.label);}
+function sendMessage(){
   if(streaming||!currentConvoId)return;
   const input=document.getElementById('userInput'),text=input.value.trim();if(!text)return;
-  input.value='';input.style.height='auto';document.getElementById('sendBtn').disabled=true;streaming=true;
+  const turn={message:text};if(foundationEditing){turn.foundation_review='revision';foundationEditing=false;input.placeholder='可以继续询问 PDF，或再次点击“需要修改/补充”…';}
+  input.value='';input.style.height='auto';return sendTurn(turn,text);
+}
+async function sendTurn(turn,displayText,requestId){
+  if(streaming||!currentConvoId)return;document.getElementById('sendBtn').disabled=true;streaming=true;
   const area=document.getElementById('chatArea'),welcome=area.querySelector('.welcome');if(welcome)welcome.remove();
-  const userMsg=document.createElement('div');userMsg.className='message user';userMsg.innerHTML=`<div class="avatar">👤</div><div class="bubble">${escHtml(text).replace(/\n/g,'<br>')}</div>`;area.appendChild(userMsg);
+  const userMsg=document.createElement('div');userMsg.className='message user';userMsg.innerHTML=`<div class="avatar">👤</div><div class="bubble">${escHtml(displayText).replace(/\n/g,'<br>')}</div>`;area.appendChild(userMsg);
   const aiMsg=document.createElement('div');aiMsg.className='message assistant';aiMsg.innerHTML=`<div class="avatar">🧠</div><div class="bubble"><div class="typing"><span></span><span></span><span></span></div></div>`;area.appendChild(aiMsg);scrollBottom();
-  let fullText='';const bubble=aiMsg.querySelector('.bubble');
-  try{const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId,message:text})});
-    if(!res.ok){const errorData=await res.json();throw new Error(errorData.error||'发送失败');}
+  let fullText='',replayed=false,retryNeedsRefresh=false,failureMessage='回复暂时失败，消息已保留。';const retryRequestId=requestId||newTurnRequestId(),bubble=aiMsg.querySelector('.bubble');
+  try{const body=Object.assign({conversation_id:currentConvoId,request_id:retryRequestId,expected_revision:coachState.revision},turn);const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!res.ok){retryNeedsRefresh=res.status===409;try{const failed=await res.json();failureMessage=failed.error||failureMessage;}catch(ignore){}throw new Error('发送失败');}
     const reader=res.body.getReader();const decoder=new TextDecoder();let buf='';
     while(true){const{done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});const lines=buf.split('\n');buf=lines.pop()||'';for(const line of lines){if(!line.startsWith('data: '))continue;try{const data=JSON.parse(line.slice(6));
       if(data.error){bubble.innerHTML=`<span style="color:#ef4444">❌ ${escHtml(data.error)}</span>`;}
       else if(data.content){fullText+=data.content;bubble.innerHTML=renderMarkdown(fullText)+'<span class="cursor"></span>';scrollBottom();}
-      else if(data.done){bubble.innerHTML=renderMarkdown(fullText);if(data.state){coachState=data.state;renderModules();}if(data.new_completed&&data.new_completed.length>0){data.new_completed.forEach(mid=>{toast(`✅ ${MODULES[mid-1]?.name}完成！`);});renderModules();}if(data.auto_deliverables){handleAutoDeliverables(data.auto_deliverables);}}
+      else if(data.done){bubble.innerHTML=renderMarkdown(fullText);replayed=!!data.replayed;if(data.state&&(!replayed||data.state.revision>=coachState.revision)){coachState=data.state;renderModules();}attachHarnessActions(data.actions?.length?data.actions:stateActions(),bubble);if(data.new_completed&&data.new_completed.length>0){data.new_completed.forEach(mid=>{toast(`✅ ${MODULES[mid-1]?.name}完成！`);});renderModules();}if(data.auto_deliverables){handleAutoDeliverables(data.auto_deliverables);}}
     }catch(e){}}}
-  }catch(e){bubble.innerHTML=`<span style="color:#ef4444">❌ ${escHtml(e.message)}</span>`;}
+    if(replayed)await selectConversation(currentConvoId);
+  }catch(e){bubble.innerHTML=`<span style="color:#ef4444">${escHtml(failureMessage)}</span>`;const actions=stateActions();if(actions.length){attachHarnessActions(actions,bubble);}else{bubble.innerHTML+='<div class="harness-actions"><button type="button" class="harness-action primary">重试</button></div>';const retry=bubble.querySelector('button');retry.onclick=async()=>{retry.disabled=true;if(retryNeedsRefresh)await selectConversation(currentConvoId);userMsg.remove();aiMsg.remove();sendTurn(turn,displayText,retryRequestId);};}}
   streaming=false;document.getElementById('sendBtn').disabled=false;document.getElementById('userInput').focus();
 }
 

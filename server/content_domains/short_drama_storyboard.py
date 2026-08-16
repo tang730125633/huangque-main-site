@@ -8,6 +8,8 @@ provider is configured.
 import math
 import re
 
+from . import short_drama_duration
+
 
 SCHEMA_VERSION = "short-drama-conversation-script-v4"
 MODEL_VERSION = "conversation-storyboard-v4"
@@ -112,16 +114,34 @@ def _speaker(characters, clause, phase_key):
         if phase_key == "resolution" and len(mentioned) > 1:
             return mentioned[-1]
         return mentioned[0]
-    return characters[min(len(characters) - 1, 1 if phase_key == "resolution" else 0)]
+    narrative = _narrative_characters(characters)
+    return narrative[min(
+        len(narrative) - 1, 1 if phase_key == "resolution" else 0
+    )]
 
 
 def _visible_characters(characters, clause, phase_key):
     mentioned = [item for item in characters if item["name"] in clause]
     if mentioned:
         return mentioned
+    narrative = _narrative_characters(characters)
     if phase_key in {"conflict", "resolution"}:
-        return characters[:2]
-    return characters[:1]
+        return narrative[:2]
+    return narrative[:1]
+
+
+def _narrative_characters(characters):
+    """Prioritize protagonists, then supporting roles; never invent crowd focus."""
+    priority = {"main": 0, "support": 1, "crowd": 2}
+    ordered = sorted(
+        enumerate(characters),
+        key=lambda pair: (
+            priority.get(str(pair[1].get("role_type") or "support"), 1),
+            pair[0],
+        ),
+    )
+    narrative = [item for _, item in ordered if item.get("role_type") != "crowd"]
+    return narrative or [item for _, item in ordered]
 
 
 def _concrete_action(clause, phase_key):
@@ -222,6 +242,149 @@ def _fit_dialogue_to_duration(line, duration_seconds):
     return fitted
 
 
+def normalize_dialogue_timing(script):
+    """Fit imported or confirmed dialogue before the quality gate runs."""
+    shots = list(script.get("shots") or [])
+    lines = {
+        str(item.get("id")): item
+        for item in script.get("dialogue_lines") or []
+    }
+    if not shots or not lines:
+        return []
+
+    def required_seconds(shot):
+        readings = [
+            _reading_seconds(lines[str(line_id)])
+            for line_id in shot.get("dialogue_line_ids") or []
+            if str(line_id) in lines
+        ]
+        return max([1] + [int(math.ceil(value)) for value in readings])
+
+    original_durations = [int(shot.get("duration_seconds") or 0) for shot in shots]
+    total_duration = sum(original_durations)
+    if all(
+        value in short_drama_duration.SHOT_DURATION_SECONDS
+        for value in original_durations
+    ):
+        adjustments = []
+        for shot in shots:
+            for line_id in shot.get("dialogue_line_ids") or []:
+                line = lines.get(str(line_id))
+                if not line:
+                    continue
+                duration = int(shot.get("duration_seconds") or 0)
+                if _reading_seconds(line) > duration:
+                    original_text = str(line.get("text") or "")
+                    line.update(_fit_dialogue_to_duration(line, duration))
+                    if str(line.get("text") or "") != original_text:
+                        line["original_text"] = original_text
+                        line["auto_fitted_to_duration"] = True
+                        adjustments.append({
+                            "kind": "dialogue_condensed",
+                            "shot_key": shot.get("shot_key"),
+                            "line_id": line_id,
+                        })
+        script.setdefault("overview", {})["duration_seconds"] = total_duration
+        return adjustments
+    visual_floor = 4
+    visual_ceiling = 15
+
+    # The selected live-action video service only accepts 4-15 second shots.
+    # Clamp first, then move the difference across the remaining shots so the
+    # project duration never changes.
+    normalized_durations = [
+        max(visual_floor, min(visual_ceiling, value))
+        for value in original_durations
+    ]
+    remaining = total_duration - sum(normalized_durations)
+    if remaining > 0:
+        for index in range(len(normalized_durations) - 1, -1, -1):
+            available = visual_ceiling - normalized_durations[index]
+            transfer = min(remaining, available)
+            normalized_durations[index] += transfer
+            remaining -= transfer
+            if not remaining:
+                break
+    elif remaining < 0:
+        for index in range(len(normalized_durations) - 1, -1, -1):
+            available = normalized_durations[index] - visual_floor
+            transfer = min(-remaining, available)
+            normalized_durations[index] -= transfer
+            remaining += transfer
+            if not remaining:
+                break
+    for shot, duration in zip(shots, normalized_durations):
+        shot["duration_seconds"] = duration
+
+    minimums = [max(visual_floor, required_seconds(shot)) for shot in shots]
+    adjustments = []
+
+    # Preserve the full wording whenever another shot has spare time.  Whole
+    # seconds are moved without changing the project's total duration.
+    for receiver_index, minimum in enumerate(minimums):
+        current = int(shots[receiver_index].get("duration_seconds") or 0)
+        missing = min(
+            2,
+            max(0, minimum - current),
+            max(0, visual_ceiling - current),
+        )
+        if not missing:
+            continue
+        for donor_index in range(len(shots)):
+            if donor_index == receiver_index:
+                continue
+            donor_duration = int(shots[donor_index].get("duration_seconds") or 0)
+            available = max(0, donor_duration - minimums[donor_index])
+            transfer = min(missing, available)
+            if not transfer:
+                continue
+            shots[donor_index]["duration_seconds"] = donor_duration - transfer
+            shots[receiver_index]["duration_seconds"] = (
+                int(shots[receiver_index].get("duration_seconds") or 0) + transfer
+            )
+            missing -= transfer
+            if not missing:
+                break
+
+    for index, shot in enumerate(shots):
+        before_duration = original_durations[index]
+        after_duration = int(shot.get("duration_seconds") or 0)
+        if before_duration != after_duration:
+            adjustments.append({
+                "kind": "duration_rebalanced",
+                "shot_key": shot.get("shot_key"),
+                "from_seconds": before_duration,
+                "to_seconds": after_duration,
+            })
+        for line_id in shot.get("dialogue_line_ids") or []:
+            line = lines.get(str(line_id))
+            if not line:
+                continue
+            if _reading_seconds(line) > after_duration:
+                original_text = str(line.get("text") or "")
+                line.update(_fit_dialogue_to_duration(line, after_duration))
+                line["original_text"] = original_text
+                line["auto_fitted_to_duration"] = True
+                adjustments.append({
+                    "kind": "dialogue_condensed",
+                    "shot_key": shot.get("shot_key"),
+                    "line_id": line.get("id"),
+                    "original_text": original_text,
+                    "fitted_text": line.get("text") or "",
+                })
+            line["estimated_reading_seconds"] = _reading_seconds(line)
+
+    if adjustments:
+        script["dialogue_timing_adjustment"] = {
+            "status": "adjusted",
+            "count": len(adjustments),
+            "items": adjustments,
+        }
+    else:
+        script.pop("dialogue_timing_adjustment", None)
+    return adjustments
+
+
 def _emotional_shift(phase_key):
     return {
         "setup": "平静或未知 → 意识到问题",
@@ -234,7 +397,12 @@ def _emotional_shift(phase_key):
 
 
 def _provider_prompt(project, visible, scene, action, camera, phase_key):
-    names = "、".join(item["name"] for item in visible) or "无人物空镜"
+    labels = {"main": "主要角色", "support": "次要角色", "crowd": "群演"}
+    names = "、".join(
+        "%s（%s）" % (
+            item["name"], labels.get(item.get("role_type"), "次要角色")
+        ) for item in visible
+    ) or "无人物空镜"
     return (
         "%s短剧镜头。%s，角色：%s。具体动作：%s。"
         "镜头设计：%s。情绪变化：%s。画幅%s，保持已绑定角色的脸部、"
@@ -334,7 +502,15 @@ def analyze_quality(script):
 def compile_storyboard(project, clauses, characters, instruction="", ending="", understanding=None):
     understanding = understanding or {}
     shot_count = max(1, int(project.get("shot_count") or 1))
-    durations = allocate_durations(project.get("target_duration"), shot_count)
+    requested_total = int(understanding.get("duration_seconds") or 0)
+    if project.get("target_duration") in short_drama_duration.DURATION_BANDS:
+        durations = list(short_drama_duration.allocate(
+            project.get("target_duration"), shot_count, requested_total,
+        ))
+    else:
+        durations = allocate_durations(
+            project.get("target_duration"), shot_count,
+        )
     title = str(project.get("title") or "未命名短剧")
     logline = str(
         understanding.get("creative_brief")

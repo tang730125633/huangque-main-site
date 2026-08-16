@@ -108,5 +108,35 @@
       status:status,foundation_status:foundation,facts:facts
     };
   }
-  return {createSnapshot:createSnapshot,validatePlan:validatePlan,actionLabel:actionLabel,connectionPorts:connectionPorts,digest:digest,buildIP12Context:buildIP12Context};
+  function imageRequest(input){
+    input=input||{};
+    var engine=String(input.engine||'nb2').toLowerCase(), references=input.references||[];
+    var body={prompt:String(input.prompt||'').trim(),ratio:input.ratio||'9:16',quality:input.quality||'hd',count:1,source_page:'canvas'};
+    function dataPart(value){ value=String(value||''); return value.indexOf(',')>=0?value.split(',')[1]:value; }
+    if(references[0]) body.image=dataPart(references[0]);
+    if(references.length>1) body.images=references.map(dataPart);
+    if(engine==='gpt') body.provider='openai';
+    else if(engine==='zelong') body.provider='zelong';
+    else body.model=engine;
+    return {endpoint:engine==='gpt'||engine==='zelong'?'/api/gen/image':'/api/gen/banana',body:body};
+  }
+  function videoRequest(input){
+    input=input||{};
+    var references=(input.references||[]).slice(0,4);
+    function dataPart(value){ value=String(value||''); return value.indexOf(',')>=0?value.split(',')[1]:value; }
+    var body={channel:input.channel||'grok',prompt:String(input.prompt||'').trim(),duration:Number(input.duration||5),ratio:input.ratio||'16:9',source_page:'canvas'};
+    if(references.length) body.reference_images=references.map(dataPart);
+    return {endpoint:'/api/gen/xiaole_video',body:body};
+  }
+  function submitRequest(client,request,idempotencyKey){
+    if(!client||typeof client.json!=='function'||!request||!request.endpoint||!idempotencyKey) return Promise.reject(new Error('画布生成请求缺少必要参数'));
+    return client.json(request.endpoint,{method:'POST',body:request.body,headers:{'Idempotency-Key':idempotencyKey}});
+  }
+  function submissionRetryPolicy(error){
+    var data=error&&error.data||{}, code=data.code||error&&error.code||'';
+    if(error&&error.status===429) return {retryable:true,keepKey:code!=='queue_full',code:code||'queue_full',retryAfterMs:data.retry_after_ms||0};
+    if(error&&error.status===409&&code==='idempotency_in_progress') return {retryable:true,keepKey:true,code:code,retryAfterMs:data.retry_after_ms||0};
+    return {retryable:false,keepKey:code==='timeout',code:code,retryAfterMs:0};
+  }
+  return {createSnapshot:createSnapshot,validatePlan:validatePlan,actionLabel:actionLabel,connectionPorts:connectionPorts,digest:digest,buildIP12Context:buildIP12Context,imageRequest:imageRequest,videoRequest:videoRequest,submitRequest:submitRequest,submissionRetryPolicy:submissionRetryPolicy};
 });

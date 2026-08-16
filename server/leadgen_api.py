@@ -17,7 +17,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub
-from content_domains import pricing
+from content_domains import cli_gateway, feature_flags, leads as leads_domain, pricing, submission_idempotency
 
 PORT      = int(os.environ.get("LEADGEN_API_PORT", "8100"))
 AUTH_BASE = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
@@ -151,6 +151,22 @@ def _collect_cos_play_url(platform, vid_id, play_url, keep_file=False):
     key = "collect/%s/%s.mp4" % ((platform or "x"), ident)
     return fetch_and_store(play_url, key, "video/mp4", keep_file=keep_file)
 
+def _collect_bilibili_play_url(det, keep_file=False):
+    """B 站 DASH 音视频先合流一次，再用现有 COS/ASR 链路消费同一文件。"""
+    ident = re.sub(r"[^A-Za-z0-9_.-]", "", str(det.get("id") or "")) or "v"
+    fd, path = tempfile.mkstemp(suffix=".mp4", prefix="hqbili-"); os.close(fd)
+    keep = False
+    try:
+        tikhub.bili_download_to_file(
+            det, time.time() + COS_FETCH_DEADLINE, path, max_bytes=COS_FETCH_MAX_BYTES)
+        url = store_video_file(path, "collect/bilibili/%s.mp4" % ident, "video/mp4") if COS_COLLECT else None
+        keep = bool(keep_file and url)
+        return url, (path if keep else None)
+    finally:
+        if not keep:
+            try: os.unlink(path)
+            except OSError: pass
+
 
 DECRYPT_API = os.environ.get("WXCH_DECRYPT_API", "http://127.0.0.1:3001/api/decrypt")  # 视频号 Isaac64 解密服务(与 dl_service 同一个)
 
@@ -243,8 +259,8 @@ def _auth_points(path, username, amount, reason="", transaction_key=""):
     except Exception:
         return 500, {"detail": "points update failed"}
 
-def deduct_points(username, amount, reason=""):
-    return _auth_points("/api/auth/points/deduct", username, amount, reason)   # 带 BEGIN IMMEDIATE + points>=amount 原子校验
+def deduct_points(username, amount, reason="", transaction_key=""):
+    return _auth_points("/api/auth/points/deduct", username, amount, reason, transaction_key)   # 带 BEGIN IMMEDIATE + points>=amount 原子校验
 
 def refund_points(username, amount, reason="", transaction_key=""):
     if transaction_key:
@@ -252,9 +268,9 @@ def refund_points(username, amount, reason="", transaction_key=""):
     return _auth_points("/api/auth/points/refund", username, amount, reason)
 
 
-def _deduct_paid_job(username, amount, reason):
+def _deduct_paid_job(username, amount, reason, transaction_key=""):
     from content_domains import jobs_store
-    status, data = deduct_points(username, amount, reason)
+    status, data = deduct_points(username, amount, reason, transaction_key)
     if status != 200:
         raise jobs_store.PaidJobDeductError(status, (data or {}).get("detail") or "点数扣除失败")
     return int((data or {}).get("points") or 0)
@@ -325,6 +341,8 @@ def cost_of(kind, body):
             pricing.get_price("collect.transcript_extra")
             if "transcript" in (body.get("want") or []) else 0
         )
+    if kind == "collect_search":
+        return pricing.get_price("collect.search")
     if kind == "leads":
         n = max(1, min(30, int(body.get("count") or 12)))
         p = max(1, min(3, int(body.get("pages") or 1)))
@@ -362,6 +380,11 @@ def gen_collect(payload):
     video_path = None
     if platform == "channels":   # 视频号是加密流：先解密再存 COS，否则存下来是打不开的乱码
         play_url = _collect_channels_play_url(det.get("id") or ident, det.get("play_url"), det.get("decode_key"))
+    elif platform == "bilibili":
+        play_url, video_path = _collect_bilibili_play_url(
+            det, keep_file="transcript" in want)
+        if not play_url:
+            raise tikhub.TikHubError("B 站完整视频存储失败")
     else:
         # 只有真要跑 ASR 时才留文件：视频号不走 ASR，小红书有官方字幕(subtitle_url)就不用下视频。
         need_file = ("transcript" in want
@@ -392,16 +415,34 @@ def gen_collect(payload):
             cm = tikhub.comments(platform, det.get("id") or ident, count=int(payload.get("comment_count") or 20))
             out["comments"] = cm["items"]; out["comments_more"] = bool(cm.get("has_more"))
         if "transcript" in want:
-            try:
-                # video_path 是上面转存时下好的同一个 play_url；非 None 时 ASR 不再重复下载
-                out["transcript"] = tikhub.transcript(det, video_path=video_path)
-            except tikhub.TikHubError as e:
-                out["transcript"] = {"text": None, "error": str(e)[:120]}
+            # video_path 是上面转存时下好的同一个 play_url；非 None 时 ASR 不再重复下载。
+            # 请求了口播文案却没有文本就必须让任务失败并走统一退款，不能假完成后扣点。
+            transcript = tikhub.transcript(det, video_path=video_path)
+            if not transcript or not str(transcript.get("text") or "").strip():
+                raise tikhub.TikHubError("口播文案生成失败")
+            out["transcript"] = transcript
         return out
     finally:
         if video_path:   # 临时文件归本函数删，无论成败
             try: os.unlink(video_path)
             except OSError: pass
+
+
+def gen_collect_search(payload):
+    platform = str(payload.get("platform") or "").strip()
+    keyword = str(payload.get("keyword") or "").strip()
+    page = int(payload.get("page") or 1)
+    if platform not in ("douyin", "xhs") or not keyword or not 1 <= page <= 50:
+        raise ValueError("搜索参数不合法")
+    result = tikhub.search(platform, keyword, page=page, video_only=False)
+    items = [{"id": item.get("id"), "platform": item.get("platform"),
+              "title": item.get("title"), "cover": item.get("cover"),
+              "author": item.get("author"), "url": item.get("url"),
+              "note_type": item.get("note_type"),
+              "stats": {"like": item.get("like"), "comment": item.get("comment")}}
+             for item in (result.get("items") or [])]
+    return {"type": "collect_search", "platform": platform, "keyword": keyword,
+            "page": page, "items": items, "has_more": bool(result.get("has_more"))}
 
 
 # ============ 获客能力：关键词→搜视频→扒评论→意图过滤→客户名单 ============
@@ -420,6 +461,7 @@ def _is_spam(t): return any(k in t for k in _SPAM)
 def _is_high(t): return any(k in t for k in _HIGH)
 
 def gen_leads(payload):
+    username  = (payload.get("_username") or "").strip()
     keyword   = (payload.get("keyword") or "").strip()
     platforms = payload.get("platforms") or ["douyin"]
     nvid      = max(1, min(30, int(payload.get("count") or 12)))
@@ -484,7 +526,7 @@ def gen_leads(payload):
             except tikhub.TikHubError:
                 continue
 
-    leads, spam, chat, seen = [], 0, 0, set()
+    leads, spam, chat, deduped, seen = [], 0, 0, 0, set()
     for c in raw:
         t = (c.get("content") or "").strip()
         if not t:
@@ -494,24 +536,36 @@ def gen_leads(payload):
         if len(re.sub(r"\[[^\]]+\]", "", t).strip()) < 2:
             chat += 1; continue
         if _is_high(t):
-            k = (c.get("user_id"), t)
+            k = leads_domain._lead_identity(c)
             if k in seen:
+                deduped += 1
                 continue
             seen.add(k); leads.append(c)
         else:
             chat += 1
     # 时间优先(抓最近用户)→ 再按评论长度 → 再点赞。新评论不再被埋。
     leads.sort(key=lambda c: (c.get("time") or 0, len(c.get("content", "")), c.get("like_count", 0)), reverse=True)
-    out_leads = [{"nickname": c.get("nickname"), "user_unique_id": c.get("user_id"),
-                  "ip_location": c.get("ip_location"), "content": c.get("content"),
-                  "title": c.get("source"), "platform": c.get("platform"),
-                  "profile_url": c.get("profile_url"), "video_url": c.get("video_url"),
-                  "red_id": c.get("red_id")} for c in leads]
+    out_leads = []
+    for c in leads:
+        profile = leads_domain._intent_profile(c.get("content"))
+        out_leads.append({
+            "lead_id": leads_domain._lead_id(c),
+            "nickname": c.get("nickname"), "user_unique_id": c.get("user_id"),
+            "ip_location": c.get("ip_location"), "content": c.get("content"),
+            "title": c.get("source"), "platform": c.get("platform"),
+            "profile_url": c.get("profile_url"), "video_url": c.get("video_url"),
+            "red_id": c.get("red_id"), "intent": profile["intent"],
+            "intent_score": profile["intent_score"],
+            "intent_reason": profile["intent_reason"],
+            "follow_status": "待跟进", "follow_note": "",
+        })
+    out_leads = leads_domain._merge_saved_crm(username, out_leads)
     return {"type": "leads", "keyword": keyword, "platforms": platforms,
-            "leads_count": len(out_leads), "spam": spam, "chat": chat, "total": len(raw),
+            "leads_count": len(out_leads), "spam": spam, "chat": chat,
+            "deduped": deduped, "total": len(raw),
             "leads": out_leads, "url": None, "prompt": keyword}
 
-HANDLERS = {"collect": gen_collect, "leads": gen_leads}
+HANDLERS = {"collect": gen_collect, "collect_search": gen_collect_search, "leads": gen_leads}
 
 
 # ============ worker（失败退点；清道夫由 content_api 统一跑） ============
@@ -548,11 +602,12 @@ def run_job(job_id):
             print("[leadgen] job %s 完成时已非 running（reaper 判超时在先），丢弃结果" % job_id, flush=True)
             return
         # 拿到 done 终态后才入资产库；入库是次要副作用，失败不改状态、不退点
-        try:
-            from content_domains import assets_store
-            assets_store.record_asset(job_id, r["username"], kind, result)
-        except Exception as e:
-            print("[leadgen] 资产入库失败 job=%s: %s" % (job_id, e), flush=True)
+        if kind != "collect_search":
+            try:
+                from content_domains import assets_store
+                assets_store.record_asset(job_id, r["username"], kind, result)
+            except Exception as e:
+                print("[leadgen] 资产入库失败 job=%s: %s" % (job_id, e), flush=True)
     except Exception as e:
         # from_states 含 pending：认领那句 UPDATE 自己抛异常时任务还停在 pending，
         # 只认 running 会导致不退点且 reaper 永远扫不到它（预扣的点永久丢失）
@@ -583,23 +638,57 @@ class H(BaseHTTPRequestHandler):
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
             body = self._json_body()
+            try:
+                feature_flags.require_enabled("collect" if kind == "collect_search" else kind)
+            except feature_flags.FeatureDisabled as e:
+                return self._send(503, {"detail": str(e)})
+            body.update({
+                "_username": user["username"],
+                "source_page": kind,
+                "provider": "tikhub",
+            })
             cost = cost_of(kind, body)
+            if cli_gateway.reject_changed_cost(self, cost, INTERNAL_TOKEN):
+                return
+            try:
+                idem_key = submission_idempotency.clean_key(self.headers.get("Idempotency-Key"))
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
+            idem_state, idem_response = submission_idempotency.begin(
+                jdb, user["username"], p, idem_key, body)
+            if idem_state == "replay":
+                replay = dict(idem_response or {})
+                return self._send(int(replay.pop("_http_status", 200)), replay)
+            if idem_state == "conflict":
+                return self._send(409, {"detail": "同一个 Idempotency-Key 不能用于不同请求",
+                                        "code": "idempotency_conflict"})
+            if idem_state == "processing":
+                return self._send(409, {"detail": "相同请求正在受理，请稍后查询",
+                                        "code": "idempotency_in_progress", "retry_after_ms": 1000})
             try:
                 from content_domains import jobs_store
                 jid, points_left = jobs_store.create_paid_job(
                     jdb, _deduct_paid_job,
                     lambda u, c, reason="", transaction_key="": add_points(
                         u, c, reason, transaction_key),
-                    kind, user["username"], cost, body, SERVICE_OWNER)
+                    kind, user["username"], cost, body, SERVICE_OWNER,
+                    charge_transaction_key=("job-charge:%s:%s:%s" % (
+                        user["username"], p, idem_key)) if idem_key else "")
             except jobs_store.PaidJobDeductError as e:
+                submission_idempotency.abort(jdb, user["username"], p, idem_key)
                 return self._send(e.status if e.status in (402, 403) else 502,
                                   {"detail": e.detail, "need": cost})
             except jobs_store.PaidJobInsertError as e:
-                return self._send(500, {"detail": {"refunded": "任务创建失败，点数已退回",
+                failed = {"detail": {"refunded": "任务创建失败，点数已退回",
                     "queued": "任务创建失败，退款正在自动确认"}.get(e.compensation,
-                    "任务创建失败，退款需人工核对"), "submission_ref": e.submission_ref})
+                    "任务创建失败，退款需人工核对"), "submission_ref": e.submission_ref}
+                submission_idempotency.complete(
+                    jdb, user["username"], p, idem_key, dict(failed, _http_status=500))
+                return self._send(500, failed)
+            response = {"job_id": jid, "cost": cost, "points_left": points_left}
             threading.Thread(target=run_job, args=(jid,), daemon=True).start()
-            return self._send(200, {"job_id": jid, "cost": cost, "points_left": points_left})
+            submission_idempotency.complete(jdb, user["username"], p, idem_key, response)
+            return self._send(200, response)
         self._send(404, {"detail": "not found"})
 
     def do_GET(self):

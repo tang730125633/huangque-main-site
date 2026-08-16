@@ -18,8 +18,8 @@ BASE_COST = {"nb2": {"std": 18, "hd": 35}, "pro": {"std": 35, "hd": 44}}
 IMAGE_SIZES = {"nb2": {"std": "1K", "hd": "2K"}, "pro": {"std": "2K", "hd": "4K"}}
 RATIOS = {"1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"}
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
-MAX_REFERENCE_IMAGES = 5
-MAX_TOTAL_REFERENCE_BYTES = 30 * 1024 * 1024
+MAX_REFERENCE_IMAGES = 14
+MAX_TOTAL_REFERENCE_BYTES = 48 * 1024 * 1024
 
 
 def clean_b64(value):
@@ -81,7 +81,7 @@ def validate_payload(payload):
     if references is None:
         references = [body["image"]] if body.get("image") else []
     if not isinstance(references, list) or len(references) > MAX_REFERENCE_IMAGES:
-        raise ValueError("at most 5 reference images are supported")
+        raise ValueError("at most 14 reference images are supported")
     clean_references = [_validated_reference(value, index) for index, value in enumerate(references)]
     if sum(item["bytes"] for item in clean_references) > MAX_TOTAL_REFERENCE_BYTES:
         raise ValueError("reference images are too large in total")

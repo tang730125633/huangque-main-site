@@ -12,12 +12,17 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
 from urllib.parse import unquote
 
-from . import short_drama_assembly_plan as media_plan
+from . import (
+    short_drama_assembly_plan as media_plan,
+    short_drama_duration,
+    submission_idempotency,
+)
 
 
 ACTIVE = {"queued", "running"}
@@ -30,6 +35,10 @@ ACCEPTANCE_CHECKS = (
     "visual_integrity",
     "transition_quality",
 )
+_REASSEMBLY_ENDPOINT = "/api/gen/short-drama/refinement/reassemble"
+_REASSEMBLY_LEASE_SECONDS = 30
+_DELIVERY_REFUND_LEASE_SECONDS = 60
+_MEDIA_PREFERENCE_MIGRATION = "refinement_media_preferences_provider_audio_v1"
 
 
 class RefinementError(ValueError):
@@ -101,6 +110,8 @@ CREATE TABLE IF NOT EXISTS short_drama_delivery_attempts (
     ('accepted','charged','linked','refund_pending','refunded','failed')),
   job_id TEXT,
   error TEXT,
+  refund_token TEXT,
+  refund_lease_at INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   UNIQUE(actor_username, idempotency_key)
@@ -154,6 +165,29 @@ CREATE TABLE IF NOT EXISTS short_drama_refinement_acceptances (
 );
 CREATE INDEX IF NOT EXISTS idx_short_drama_refinement_acceptance_project
   ON short_drama_refinement_acceptances(project_id,accepted_at DESC);
+CREATE TABLE IF NOT EXISTS short_drama_refinement_media_preferences (
+  project_id TEXT PRIMARY KEY REFERENCES short_drama_projects(id) ON DELETE CASCADE,
+  mode TEXT NOT NULL CHECK(mode IN ('voice_timeline','provider_audio','silent')),
+  confirmed_by TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS short_drama_reassembly_operations (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES short_drama_projects(id) ON DELETE CASCADE,
+  source_version_id TEXT NOT NULL
+    REFERENCES short_drama_refinement_versions(id) ON DELETE CASCADE,
+  status TEXT NOT NULL CHECK(status IN ('processing','succeeded')),
+  lease_token TEXT,
+  lease_owner TEXT,
+  lease_expires_at INTEGER,
+  heartbeat_at INTEGER,
+  render_id TEXT NOT NULL DEFAULT '',
+  refinement_version_id TEXT
+    REFERENCES short_drama_refinement_versions(id) ON DELETE SET NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(project_id, source_version_id)
+);
 """
 
 
@@ -168,6 +202,24 @@ def init_db(db_factory):
     conn = _connection(db_factory)
     try:
         conn.executescript(_SCHEMA)
+        attempt_columns = {
+            row[1] for row in conn.execute(
+                "PRAGMA table_info(short_drama_delivery_attempts)"
+            ).fetchall()
+        }
+        if "refund_token" not in attempt_columns:
+            conn.execute(
+                "ALTER TABLE short_drama_delivery_attempts ADD COLUMN refund_token TEXT"
+            )
+        if "refund_lease_at" not in attempt_columns:
+            conn.execute(
+                "ALTER TABLE short_drama_delivery_attempts "
+                "ADD COLUMN refund_lease_at INTEGER NOT NULL DEFAULT 0"
+            )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS short_drama_schema_migrations ("
+            "name TEXT PRIMARY KEY,completed_at INTEGER NOT NULL)"
+        )
         columns = {
             str(row[1]) for row in conn.execute(
                 "PRAGMA table_info(short_drama_refinement_jobs)"
@@ -192,6 +244,46 @@ def init_db(db_factory):
             conn.execute(
                 "ALTER TABLE short_drama_refinement_versions ADD COLUMN "
                 "media_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        migration_done = conn.execute(
+            "SELECT 1 FROM short_drama_schema_migrations WHERE name=?",
+            (_MEDIA_PREFERENCE_MIGRATION,),
+        ).fetchone()
+        legacy_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND "
+            "name='short_drama_refinement_media_preferences_legacy'"
+        ).fetchone()
+        preference_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND "
+            "name='short_drama_refinement_media_preferences'"
+        ).fetchone()
+        preference_sql = str(preference_row[0] or "") if preference_row else ""
+        if not migration_done and not legacy_exists and "provider_audio" not in preference_sql:
+            conn.execute(
+                "ALTER TABLE short_drama_refinement_media_preferences "
+                "RENAME TO short_drama_refinement_media_preferences_legacy"
+            )
+            legacy_exists = True
+        if not migration_done and legacy_exists:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS short_drama_refinement_media_preferences ("
+                "project_id TEXT PRIMARY KEY REFERENCES short_drama_projects(id) "
+                "ON DELETE CASCADE, mode TEXT NOT NULL CHECK(mode IN "
+                "('voice_timeline','provider_audio','silent')), "
+                "confirmed_by TEXT NOT NULL, updated_at INTEGER NOT NULL)"
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO short_drama_refinement_media_preferences "
+                "SELECT project_id,mode,confirmed_by,updated_at FROM "
+                "short_drama_refinement_media_preferences_legacy"
+            )
+            conn.execute(
+                "DROP TABLE short_drama_refinement_media_preferences_legacy"
+            )
+        if not migration_done:
+            conn.execute(
+                "INSERT INTO short_drama_schema_migrations(name,completed_at) "
+                "VALUES(?,?)", (_MEDIA_PREFERENCE_MIGRATION, int(time.time())),
             )
         conn.commit()
     finally:
@@ -219,6 +311,178 @@ def _file_hash(path):
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _idempotency_db_factory(db_factory):
+    def connect():
+        conn = db_factory()
+        conn.row_factory = sqlite3.Row
+        return conn
+    return connect
+
+
+def _reassembly_for_source(conn, project_id, source_version_id):
+    rows = conn.execute(
+        "SELECT * FROM short_drama_refinement_versions WHERE project_id=? "
+        "ORDER BY version DESC", (project_id,),
+    ).fetchall()
+    for row in rows:
+        item = _refinement(row)
+        operation = (item.get("media") or {}).get("reassembly") or {}
+        if str(operation.get("source_version_id") or "") == source_version_id:
+            return item
+    return None
+
+
+def _cleanup_reassembly_output(short_drama_autodraft, project_id, render_id):
+    root = short_drama_autodraft._content_root()
+    target = root / "short_drama_autodraft" / project_id / render_id
+    temporary = target.with_name(".%s.tmp" % target.name)
+    for path in (temporary, target):
+        try:
+            if path.exists():
+                shutil.rmtree(path)
+        except OSError:
+            pass
+
+
+def _claim_reassembly_operation(
+        db_factory, project_id, source_version_id, worker, render_id, now=None):
+    now = int(time.time()) if now is None else int(now)
+    token = uuid.uuid4().hex
+    conn = _connection(db_factory)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM short_drama_reassembly_operations "
+            "WHERE project_id=? AND source_version_id=?",
+            (project_id, source_version_id),
+        ).fetchone()
+        if row and row["status"] == "succeeded":
+            conn.commit()
+            return "succeeded", dict(row)
+        if row and int(row["lease_expires_at"] or 0) > now:
+            conn.commit()
+            return "processing", dict(row)
+        previous_render_id = str(row["render_id"] or "") if row else ""
+        if row:
+            conn.execute(
+                "UPDATE short_drama_reassembly_operations SET status='processing',"
+                "lease_token=?,lease_owner=?,lease_expires_at=?,heartbeat_at=?,"
+                "render_id=?,refinement_version_id=NULL,updated_at=? WHERE id=?",
+                (
+                    token, worker, now + _REASSEMBLY_LEASE_SECONDS, now,
+                    render_id, now, row["id"],
+                ),
+            )
+            operation_id = row["id"]
+        else:
+            operation_id = uuid.uuid4().hex
+            conn.execute(
+                "INSERT INTO short_drama_reassembly_operations "
+                "(id,project_id,source_version_id,status,lease_token,lease_owner,"
+                "lease_expires_at,heartbeat_at,render_id,created_at,updated_at) "
+                "VALUES (?,?,?,'processing',?,?,?,?,?,?,?)",
+                (
+                    operation_id, project_id, source_version_id, token, worker,
+                    now + _REASSEMBLY_LEASE_SECONDS, now, render_id, now, now,
+                ),
+            )
+        conn.commit()
+        return "acquired", {
+            "id": operation_id, "lease_token": token,
+            "render_id": render_id, "previous_render_id": previous_render_id,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _heartbeat_reassembly_operation(db_factory, operation_id, token, now=None):
+    now = int(time.time()) if now is None else int(now)
+    conn = _connection(db_factory)
+    try:
+        changed = conn.execute(
+            "UPDATE short_drama_reassembly_operations SET heartbeat_at=?,"
+            "lease_expires_at=?,updated_at=? WHERE id=? AND lease_token=? "
+            "AND status='processing'",
+            (
+                now, now + _REASSEMBLY_LEASE_SECONDS, now,
+                operation_id, token,
+            ),
+        ).rowcount
+        conn.commit()
+        return bool(changed)
+    finally:
+        conn.close()
+
+
+def _abort_reassembly_operation(db_factory, operation_id, token):
+    conn = _connection(db_factory)
+    try:
+        changed = conn.execute(
+            "DELETE FROM short_drama_reassembly_operations "
+            "WHERE id=? AND lease_token=? AND status='processing'",
+            (operation_id, token),
+        ).rowcount
+        conn.commit()
+        return bool(changed)
+    finally:
+        conn.close()
+
+
+class _ReassemblyLeaseKeeper:
+    """Renew one claimed operation throughout preprocessing and rendering."""
+
+    def __init__(self, db_factory, operation_id, token):
+        self.db_factory = db_factory
+        self.operation_id = operation_id
+        self.token = token
+        self.stopped = threading.Event()
+        self.lost = threading.Event()
+        self.thread = threading.Thread(
+            target=self._keep_alive,
+            name="short-drama-reassembly-heartbeat",
+            daemon=True,
+        )
+
+    def _renew(self):
+        try:
+            active = _heartbeat_reassembly_operation(
+                self.db_factory, self.operation_id, self.token,
+            )
+        except Exception:
+            active = False
+        if not active:
+            self.lost.set()
+        return active
+
+    def _keep_alive(self):
+        while not self.stopped.wait(max(1, _REASSEMBLY_LEASE_SECONDS // 3)):
+            if not self._renew():
+                return
+
+    def start(self):
+        # Renew synchronously before any media I/O so a very short test lease
+        # cannot expire between the claim transaction and thread scheduling.
+        if not self._renew():
+            self.ensure_active()
+        self.thread.start()
+        return self
+
+    def ensure_active(self):
+        if self.lost.is_set():
+            raise RefinementError(
+                "refinement_reassembly_lease_lost",
+                "重新装配租约已失效，当前结果不会保存", 409,
+            )
+
+    def close(self):
+        self.stopped.set()
+        if self.thread.is_alive():
+            self.thread.join(timeout=1)
 
 
 def _provider_asset(conn, project_id, shot_key, version_id=None):
@@ -421,14 +685,19 @@ def _acceptance_evidence(conn, project, refinement):
             for key in ("audio_hash", "subtitle_hash", "timeline_hash")
         ):
             media_current = False
-    if media.get("evidence_source") == "locked_voice_tables":
+    if media.get("evidence_source") in {
+        "locked_voice_tables", "explicit_provider_audio_confirmation",
+        "explicit_silent_confirmation",
+    }:
         from . import short_drama_autodraft
         live_media = short_drama_autodraft._locked_media_contract(conn, project)
-        live_media["evidence_source"] = "locked_voice_tables"
         media_current = all(
             str(live_media.get(key) or "") == str(media.get(key) or "")
             for key in ("audio_hash", "subtitle_hash", "timeline_hash")
-        ) and live_media.get("delivery_eligible") is True
+        ) and (
+            live_media.get("delivery_eligible") is True
+            and live_media.get("evidence_source") == media.get("evidence_source")
+        )
     visual = [{
         "shot_key": str(item.get("shot_key") or ""),
         "version_id": str(item.get("provider_version_id") or ""),
@@ -495,7 +764,10 @@ def _acceptance_evidence(conn, project, refinement):
                 "input_hash": item["input_hash"],
             }, **({"file_hash": item["file_hash"]} if include_physical_hash else {}))
                 for item in selected])
-    if media.get("evidence_source") == "locked_voice_tables":
+    if media.get("evidence_source") in {
+        "locked_voice_tables", "explicit_provider_audio_confirmation",
+        "explicit_silent_confirmation",
+    }:
         media_current = (
             media_current
             and bool(material_hash)
@@ -523,7 +795,7 @@ def _acceptance_evidence(conn, project, refinement):
         "project_id": project["id"],
         "refinement_version_id": refinement["id"],
         "ratio": project["ratio"],
-        "duration_ms": int(project["target_duration"]) * 1000,
+        "duration_ms": _refinement_duration_ms(project, refinement),
         "source_hashes": source_hashes,
         "media_contract": media,
         "media_validation": refinement_media.get("media_validation") or {},
@@ -573,11 +845,92 @@ def _valid_acceptance(conn, project, refinement, *, require=False):
     return item
 
 
+def _refinement_duration_ms(project, refinement):
+    """Use the immutable preview evidence, never the public band sentinel."""
+    media = (refinement or {}).get("media") or {}
+    validation = media.get("media_validation") or {}
+    value = int(validation.get("duration_ms") or 0)
+    if value > 0:
+        return value
+    value = max(
+        [int(item.get("end_ms") or 0) for item in (refinement or {}).get("shots") or []]
+        or [0]
+    )
+    if value > 0:
+        return value
+    shot_count = int(project.get("shot_count") or 0)
+    if shot_count:
+        return short_drama_duration.choose(
+            project["target_duration"], shot_count,
+        ) * 1000
+    # Only legacy rows without preview evidence can reach this fallback.
+    return int(project["target_duration"]) * 1000
+
+
 def _latest_refinement(conn, project_id):
     return _refinement(conn.execute(
         "SELECT * FROM short_drama_refinement_versions WHERE project_id=? "
         "ORDER BY version DESC LIMIT 1", (project_id,),
     ).fetchone())
+
+
+def _refinement_assembly_status(conn, project, refinement):
+    """Compare the preview duration with all physical shot media."""
+    from . import short_drama_autodraft
+
+    source_duration_ms = 0
+    shot_durations = []
+    try:
+        for shot in refinement.get("shots") or []:
+            shot_key = str(shot.get("shot_key") or "")
+            version_id = str(shot.get("provider_version_id") or "")
+            asset = _provider_asset(conn, project["id"], shot_key, version_id or None)
+            path = short_drama_autodraft._controlled_provider_file(asset["file"])
+            probe = media_plan.probe_media(path)
+            duration_ms = int(probe.get("duration_ms") or 0)
+            if not probe.get("video") or duration_ms <= 0:
+                raise ValueError("invalid provider media")
+            source_duration_ms += duration_ms
+            shot_durations.append({"shot_key": shot_key, "duration_ms": duration_ms})
+    except (OSError, ValueError, RefinementError, media_plan.MediaPlanError,
+            short_drama_autodraft.AutodraftError):
+        return {"available": False, "reassembly_required": False,
+                "message": "暂时无法核对完整镜头时长"}
+
+    validation = (refinement.get("media") or {}).get("media_validation") or {}
+    preview_duration_ms = int(validation.get("duration_ms") or 0)
+    planned_duration_ms = max(
+        [int(item.get("end_ms") or 0) for item in refinement.get("shots") or []]
+        or [_refinement_duration_ms(project, refinement)]
+    )
+    if preview_duration_ms <= 0:
+        preview_duration_ms = planned_duration_ms
+    missing_ms = max(0, source_duration_ms - preview_duration_ms)
+    required = missing_ms > 500
+    return {
+        "available": True, "reassembly_required": required,
+        "source_duration_ms": source_duration_ms,
+        "preview_duration_ms": preview_duration_ms,
+        "missing_duration_ms": missing_ms,
+        "shot_durations": shot_durations,
+        "message": ("现有预览没有包含全部镜头时长，请免费重新装配完整预览"
+                    if required else "当前预览已包含全部镜头"),
+    }
+
+
+def _require_complete_assembly(conn, project, refinement):
+    status = _refinement_assembly_status(conn, project, refinement)
+    if not status.get("available"):
+        raise RefinementError(
+            "refinement_assembly_unavailable",
+            "暂时无法核对完整镜头时长，请稍后重试", 409,
+        )
+    if status.get("reassembly_required"):
+        raise RefinementError(
+            "refinement_reassembly_required",
+            "当前预览未包含全部镜头时长，请先免费重新装配", 409,
+        )
+    return status
 
 
 def _seed_refinement(conn, project_id, actor_username):
@@ -776,15 +1129,11 @@ def _render_refinement_preview(conn, job, source):
     draft = _current_draft(conn, job["project_id"])
     duration_ms = int(
         draft["manifest"].get("duration_ms")
-        or int(project["target_duration"]) * 1000
+        or _refinement_duration_ms(project, source)
     )
-    media = short_drama_autodraft._locked_media_contract(conn, project)
-    if media.get("delivery_eligible") is not True:
-        raise RefinementError(
-            str(media.get("reason") or "locked_media_required"),
-            "真实镜头重做前必须锁定完整音轨、字幕与时间线",
-            409,
-        )
+    media = _refinement_preview_media_contract(
+        conn, project, source, short_drama_autodraft
+    )
     assets = []
     shots = []
     for original in source["shots"]:
@@ -878,6 +1227,63 @@ def _render_refinement_preview(conn, job, source):
         "probe": rendered["probe"],
         "media_contract": media,
         "shots": shots,
+    }
+
+
+def _refinement_preview_media_contract(conn, project, source, autodraft=None):
+    """Keep a visual redo independent from the final voice/subtitle gate.
+
+    A replacement shot is already paid for and generated at this point.  The
+    720p refinement preview must therefore be able to adopt it even when the
+    user has not chosen the final voice workflow yet.  Prefer the current live
+    locked contract, then the contract used by the source preview, and finally
+    preserve Provider audio as a temporary preview-only fallback.
+    """
+    if autodraft is None:
+        from . import short_drama_autodraft as autodraft
+
+    live = dict(autodraft._locked_media_contract(conn, project) or {})
+    if live.get("delivery_eligible") is True:
+        return live
+
+    source_media = source.get("media") or {}
+    source_contract = dict(source_media.get("media_contract") or {})
+    if not source_contract:
+        row = conn.execute(
+            "SELECT manifest_json FROM short_drama_autodraft_versions "
+            "WHERE id=? AND project_id=?",
+            (source.get("source_draft_version_id"), project["id"]),
+        ).fetchone()
+        manifest = _json(row["manifest_json"], {}) if row else {}
+        source_contract = dict(manifest.get("media_contract") or {})
+    if source_contract.get("delivery_eligible") is True:
+        return source_contract
+
+    mode = str(source_contract.get("media_mode") or "provider_audio")
+    if mode not in {"provider_audio", "silent"}:
+        mode = "provider_audio"
+    duration_ms = _refinement_duration_ms(project, source)
+    return {
+        "contract_version": "short-drama-locked-media-v1",
+        "evidence_source": "refinement_preview_audio_fallback",
+        "delivery_eligible": True,
+        "reason": "",
+        "media_mode": mode,
+        "silent_confirmed": mode == "silent",
+        "audio_tracks": [],
+        "subtitles": [],
+        "audio_hash": _hash({
+            "mode": mode,
+            "source_refinement_id": str(source.get("id") or ""),
+        }),
+        "subtitle_hash": _hash([]),
+        "timeline_hash": _hash({
+            "mode": mode,
+            "duration_ms": duration_ms,
+            "source_refinement_id": str(source.get("id") or ""),
+        }),
+        "subtitle_required": False,
+        "preview_only": True,
     }
 
 
@@ -1220,7 +1626,7 @@ def _complete_delivery(conn, row):
                 str(result.stderr or "1080p 正式导出失败").strip()[-500:], 409,
             )
         validation = _validate_delivery_media(
-            rendered, project["ratio"], int(project["target_duration"]) * 1000,
+            rendered, project["ratio"], _refinement_duration_ms(project, source),
             subtitle_required=bool(media_contract.get("subtitle_required")),
         )
         if target.exists():
@@ -1361,9 +1767,30 @@ def workspace(db_factory, owner_username, actor_username, project_id, can_edit=T
         refinements = _refinement_versions(conn, project_id)
         deliveries = _delivery_versions(conn, project_id)
         current = refinements[0] if refinements else current
+        current["assembly_status"] = _refinement_assembly_status(
+            conn, project, current
+        )
+        if (
+            refinement_job
+            and str(refinement_job.get("source_version_id") or "")
+            != str(current.get("id") or "")
+        ):
+            # A newer 720p/refinement version already superseded this job's
+            # source.  Do not keep showing an old failure beside the new film.
+            refinement_job = None
+        active_delivery = (
+            deliveries[0] if deliveries
+            and deliveries[0]["refinement_version_id"] == current["id"] else None
+        )
         source_hashes, acceptance_snapshot = _acceptance_evidence(
             conn, project, current
         )
+        media_contract = acceptance_snapshot.get("media_contract") or {}
+        preference_row = conn.execute(
+            "SELECT mode,confirmed_by,updated_at FROM "
+            "short_drama_refinement_media_preferences WHERE project_id=?",
+            (project_id,),
+        ).fetchone()
         acceptance = _valid_acceptance(conn, project, current)
         capability = _delivery_capability()
         conn.commit()
@@ -1372,9 +1799,9 @@ def workspace(db_factory, owner_username, actor_username, project_id, can_edit=T
             "state": (
                 (
                     "delivered"
-                    if deliveries[0]["snapshot"].get("deliverable") is True
+                    if active_delivery["snapshot"].get("deliverable") is True
                     else "demo_ready"
-                ) if deliveries
+                ) if active_delivery
                 else "delivering" if delivery_job and delivery_job["status"] in ACTIVE
                 else "ready_for_delivery" if current["status"] == "confirmed"
                 else "refining"
@@ -1386,14 +1813,372 @@ def workspace(db_factory, owner_username, actor_username, project_id, can_edit=T
                 "checklist_keys": list(ACCEPTANCE_CHECKS),
                 "source_hashes": source_hashes,
                 "snapshot_hash": _hash(acceptance_snapshot),
+                "media": {
+                    "ready": (
+                        media_contract.get("delivery_eligible") is True
+                        and acceptance_snapshot.get("media_current") is True
+                    ),
+                    "reason": str(media_contract.get("reason") or ""),
+                    "mode": str(media_contract.get("media_mode") or "voice_timeline"),
+                    "evidence_source": str(
+                        media_contract.get("evidence_source") or ""
+                    ),
+                },
+            },
+            "media_preference": dict(preference_row) if preference_row else {
+                "mode": "voice_timeline", "confirmed_by": "", "updated_at": 0,
             },
             "refinement_versions": refinements,
             "current_refinement_job": refinement_job,
             "current_delivery_job": delivery_job,
-            "current_delivery": deliveries[0] if deliveries else None,
+            "current_delivery": active_delivery,
             "delivery_versions": deliveries,
             "billing": capability,
             "permissions": {"can_edit": bool(can_edit), "actor": actor_username},
+        }
+    finally:
+        conn.close()
+
+
+def reassemble_refinement(
+        db_factory, owner_username, actor_username, body, idempotency_key):
+    """Idempotently create one local reassembly per source version."""
+    key = submission_idempotency.clean_key(idempotency_key)
+    if not key:
+        raise RefinementError(
+            "refinement_reassembly_idempotency_required",
+            "重新装配必须提供 Idempotency-Key", 422,
+        )
+    request = {
+        "project_id": str(body.get("project_id") or "").strip(),
+        "version_id": str(body.get("version_id") or "").strip(),
+    }
+    idem_db = _idempotency_db_factory(db_factory)
+    state, response = submission_idempotency.begin(
+        idem_db, actor_username, _REASSEMBLY_ENDPOINT, key, request,
+    )
+    if state == "conflict":
+        raise RefinementError(
+            "refinement_reassembly_idempotency_conflict",
+            "同一 Idempotency-Key 不能用于不同重新装配请求", 409,
+        )
+    if state == "processing":
+        raise RefinementError(
+            "refinement_reassembly_in_progress",
+            "相同重新装配请求正在处理中", 409,
+        )
+    if state == "replay":
+        return response
+    try:
+        result = _perform_reassemble_refinement(
+            db_factory, owner_username, actor_username, request, key,
+        )
+        submission_idempotency.complete(
+            idem_db, actor_username, _REASSEMBLY_ENDPOINT, key, result,
+        )
+        return result
+    except Exception:
+        submission_idempotency.abort(
+            idem_db, actor_username, _REASSEMBLY_ENDPOINT, key,
+        )
+        raise
+
+
+def _perform_reassemble_refinement(
+        db_factory, owner_username, actor_username, body, idempotency_key):
+    """Create a complete preview from existing paid shot files only."""
+    from . import short_drama_autodraft
+
+    project_id = str(body.get("project_id") or "").strip()
+    source_version_id = str(body.get("version_id") or "").strip()
+    if not project_id or not source_version_id:
+        raise RefinementError(
+            "refinement_reassembly_invalid", "缺少要重新装配的精修版本", 422
+        )
+    conn = _connection(db_factory)
+    render_id = ""
+    output_persisted = False
+    operation_id = ""
+    lease_token = ""
+    lease_keeper = None
+    try:
+        project = _project(conn, owner_username, project_id)
+        completed = _reassembly_for_source(conn, project_id, source_version_id)
+        if completed:
+            completed["assembly_status"] = _refinement_assembly_status(
+                conn, project, completed
+            )
+            completed["points_charged"] = 0
+            completed["provider_called"] = False
+            completed["idempotent_replay"] = True
+            return completed
+        source = _latest_refinement(conn, project_id)
+        if not source or source["id"] != source_version_id:
+            raise RefinementError(
+                "refinement_version_stale", "预览版本已变化，请刷新后重试", 409
+            )
+        if conn.execute(
+            "SELECT 1 FROM short_drama_refinement_jobs WHERE project_id=? "
+            "AND status IN ('queued','running')", (project_id,),
+        ).fetchone():
+            raise RefinementError(
+                "active_refinement_job", "已有镜头精修任务处理中", 409
+            )
+
+        render_id = "reassembly-" + uuid.uuid4().hex
+        claim_state, operation = _claim_reassembly_operation(
+            db_factory, project_id, source_version_id,
+            "%s:%s" % (actor_username, idempotency_key), render_id,
+        )
+        if claim_state == "succeeded":
+            completed = _reassembly_for_source(
+                conn, project_id, source_version_id
+            )
+            if not completed:
+                raise RefinementError(
+                    "refinement_reassembly_result_missing",
+                    "重新装配记录缺少成功版本，请稍后重试", 409,
+                )
+            completed["assembly_status"] = _refinement_assembly_status(
+                conn, project, completed
+            )
+            completed["points_charged"] = 0
+            completed["provider_called"] = False
+            completed["idempotent_replay"] = True
+            return completed
+        if claim_state == "processing":
+            raise RefinementError(
+                "refinement_reassembly_in_progress",
+                "该精修版本正在重新装配，请稍后重试", 409,
+            )
+        operation_id = operation["id"]
+        lease_token = operation["lease_token"]
+        lease_keeper = _ReassemblyLeaseKeeper(
+            db_factory, operation_id, lease_token,
+        ).start()
+        previous_render_id = operation.get("previous_render_id") or ""
+        if previous_render_id and previous_render_id != render_id:
+            _cleanup_reassembly_output(
+                short_drama_autodraft, project_id, previous_render_id
+            )
+
+        media = _refinement_preview_media_contract(
+            conn, project, source, short_drama_autodraft
+        )
+        assets, shots = [], []
+        cursor_ms = 0
+        for original in source.get("shots") or []:
+            shot = dict(original)
+            shot_key = str(shot.get("shot_key") or "")
+            provider_version_id = str(shot.get("provider_version_id") or "")
+            asset = _provider_asset(
+                conn, project_id, shot_key, provider_version_id or None
+            )
+            try:
+                path = short_drama_autodraft._controlled_provider_file(asset["file"])
+                probe = media_plan.probe_media(path)
+            except short_drama_autodraft.AutodraftError as error:
+                raise RefinementError(error.code, str(error), error.status) from error
+            except media_plan.MediaPlanError as error:
+                raise RefinementError(error.code, str(error), 409) from error
+            duration_ms = int(probe.get("duration_ms") or 0)
+            if not probe.get("video") or duration_ms <= 0:
+                raise RefinementError(
+                    "refinement_provider_media_invalid",
+                    "已有镜头缺少有效视频流或时长", 409,
+                )
+            file_hash = _file_hash(path)
+            clean_asset = dict(asset)
+            clean_asset.pop("job_status", None)
+            clean_asset["file_hash"] = file_hash
+            assets.append(clean_asset)
+            shot.update({
+                "status": "ready", "start_ms": cursor_ms,
+                "end_ms": cursor_ms + duration_ms,
+                "provider": str(asset.get("provider") or ""),
+                "provider_version_id": str(asset["id"]),
+                "provider_version": int(asset["version"]),
+                "provider_job_id": str(asset.get("provider_job_id") or ""),
+                "file": str(asset["file"]), "url": str(asset["url"]),
+                "file_hash": file_hash, "input_hash": str(asset["input_hash"]),
+                "media_validation": {"duration_ms": duration_ms, "video": True,
+                                     "audio": bool(probe.get("audio"))},
+            })
+            shots.append(shot)
+            cursor_ms += duration_ms
+
+        media["material_hash"] = _hash([{
+            "id": item["id"], "shot_key": item["shot_key"],
+            "input_hash": item["input_hash"], "file_hash": item["file_hash"],
+        } for item in assets])
+        lease_keeper.ensure_active()
+        try:
+            rendered = short_drama_autodraft._render_provider_preview(
+                project_id, render_id, {
+                    "all_ready": True, "shots": assets,
+                    "ratio": project["ratio"],
+                    "duration_ms": cursor_ms, "media_contract": media,
+                    "_cancel_event": lease_keeper.lost,
+                },
+            )
+            output = short_drama_autodraft._controlled_provider_file(rendered["file"])
+        except short_drama_autodraft.AutodraftError as error:
+            lease_keeper.ensure_active()
+            raise RefinementError(error.code, str(error), error.status) from error
+
+        lease_keeper.ensure_active()
+        preview_hash = _file_hash(output)
+        lease_keeper.ensure_active()
+        conn.execute("BEGIN IMMEDIATE")
+        lease = conn.execute(
+            "SELECT lease_token,lease_expires_at,status FROM "
+            "short_drama_reassembly_operations WHERE id=?",
+            (operation_id,),
+        ).fetchone()
+        if (
+            not lease or lease["status"] != "processing"
+            or lease["lease_token"] != lease_token
+            or int(lease["lease_expires_at"] or 0) <= int(time.time())
+        ):
+            raise RefinementError(
+                "refinement_reassembly_lease_lost",
+                "重新装配租约已失效，结果未保存", 409,
+            )
+        lease_keeper.ensure_active()
+        completed = _reassembly_for_source(conn, project_id, source_version_id)
+        if completed:
+            now = int(time.time())
+            conn.execute(
+                "UPDATE short_drama_reassembly_operations SET "
+                "status='succeeded',refinement_version_id=?,lease_token=NULL,"
+                "lease_owner=NULL,lease_expires_at=NULL,heartbeat_at=?,updated_at=? "
+                "WHERE id=? AND lease_token=? AND status='processing'",
+                (completed["id"], now, now, operation_id, lease_token),
+            )
+            conn.commit()
+            _cleanup_reassembly_output(
+                short_drama_autodraft, project_id, render_id
+            )
+            render_id = ""
+            completed["assembly_status"] = _refinement_assembly_status(
+                conn, project, completed
+            )
+            completed["points_charged"] = 0
+            completed["provider_called"] = False
+            completed["idempotent_replay"] = True
+            return completed
+        latest = _latest_refinement(conn, project_id)
+        if not latest or latest["id"] != source_version_id:
+            raise RefinementError(
+                "refinement_version_stale", "预览版本已变化，请刷新后重试", 409
+            )
+        version = int(conn.execute(
+            "SELECT COALESCE(MAX(version),0)+1 FROM short_drama_refinement_versions "
+            "WHERE project_id=?", (project_id,),
+        ).fetchone()[0])
+        now = int(time.time())
+        new_id = uuid.uuid4().hex
+        actual_duration_ms = int(rendered.get("duration_ms") or cursor_ms)
+        input_hash = _hash({
+            "source": source["input_hash"], "operation": "full_reassembly",
+            "version": version, "preview_file_hash": preview_hash,
+            "duration_ms": actual_duration_ms,
+        })
+        conn.execute(
+            "UPDATE short_drama_refinement_acceptances SET invalidated_at=?,"
+            "invalidation_reason='preview_reassembled' WHERE project_id=? "
+            "AND invalidated_at IS NULL", (now, project_id),
+        )
+        conn.execute(
+            "UPDATE short_drama_refinement_versions SET status='superseded' "
+            "WHERE project_id=? AND status='confirmed'", (project_id,),
+        )
+        conn.execute(
+            "INSERT INTO short_drama_refinement_versions "
+            "(id,project_id,source_draft_version_id,version,status,url,shots_json,"
+            "issues_json,input_hash,preview_file_hash,media_json,change_summary,"
+            "created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                new_id, project_id, source["source_draft_version_id"], version,
+                "draft", rendered["url"], _json_text(shots),
+                _json_text(source.get("issues") or []), input_hash, preview_hash,
+                _json_text({"preview_file": rendered["file"],
+                            "preview_file_hash": preview_hash,
+                            "media_validation": rendered["probe"],
+                            "media_contract": media,
+                            "reassembly": {
+                                "source_version_id": source_version_id,
+                                "idempotency_key": idempotency_key,
+                            }}),
+                "按镜头实际时长重新装配完整预览", actor_username, now,
+            ),
+        )
+        changed = conn.execute(
+            "UPDATE short_drama_reassembly_operations SET status='succeeded',"
+            "refinement_version_id=?,lease_token=NULL,lease_owner=NULL,"
+            "lease_expires_at=NULL,heartbeat_at=?,updated_at=? "
+            "WHERE id=? AND lease_token=? AND status='processing'",
+            (new_id, now, now, operation_id, lease_token),
+        ).rowcount
+        if not changed:
+            raise RefinementError(
+                "refinement_reassembly_lease_lost",
+                "重新装配租约已失效，结果未保存", 409,
+            )
+        conn.commit()
+        output_persisted = True
+        result = _latest_refinement(conn, project_id)
+        result["assembly_status"] = _refinement_assembly_status(
+            conn, project, result
+        )
+        result["points_charged"] = 0
+        result["provider_called"] = False
+        return result
+    except Exception:
+        conn.rollback()
+        if operation_id and lease_token:
+            _abort_reassembly_operation(db_factory, operation_id, lease_token)
+        if render_id and not output_persisted:
+            _cleanup_reassembly_output(
+                short_drama_autodraft, project_id, render_id
+            )
+        raise
+    finally:
+        if lease_keeper is not None:
+            lease_keeper.close()
+        conn.close()
+
+
+def set_media_preference(
+        db_factory, owner_username, actor_username, body):
+    project_id = str(body.get("project_id") or "").strip()
+    mode = str(body.get("mode") or "").strip()
+    if mode not in {"voice_timeline", "provider_audio", "silent"}:
+        raise RefinementError(
+            "media_preference_invalid", "请选择配音字幕或无配音字幕模式"
+        )
+    conn = _connection(db_factory)
+    try:
+        _project(conn, owner_username, project_id)
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO short_drama_refinement_media_preferences "
+            "(project_id,mode,confirmed_by,updated_at) VALUES (?,?,?,?) "
+            "ON CONFLICT(project_id) DO UPDATE SET mode=excluded.mode,"
+            "confirmed_by=excluded.confirmed_by,updated_at=excluded.updated_at",
+            (project_id, mode, actor_username, now),
+        )
+        conn.execute(
+            "UPDATE short_drama_refinement_acceptances SET invalidated_at=?,"
+            "invalidation_reason='media_preference_changed' "
+            "WHERE project_id=? AND invalidated_at IS NULL",
+            (now, project_id),
+        )
+        conn.commit()
+        return {
+            "project_id": project_id, "mode": mode,
+            "confirmed_by": actor_username, "updated_at": now,
+            "requires_preview_regeneration": True,
         }
     finally:
         conn.close()
@@ -1691,6 +2476,7 @@ def confirm_refinement(db_factory, owner_username, actor_username, body):
             raise RefinementError(
                 "refinement_acceptance_stale", "验收输入已变化，请刷新后重新验收", 409
             )
+        _require_complete_assembly(conn, project, current)
         now = int(time.time())
         conn.execute(
             "UPDATE short_drama_refinement_versions SET status='superseded' "
@@ -1799,6 +2585,7 @@ def create_delivery_quote(db_factory, owner_username, body):
     capability = _require_delivery_available()
     conn = _connection(db_factory)
     try:
+        conn.execute("BEGIN IMMEDIATE")
         project = _project(conn, owner_username, project_id)
         source = _refinement(conn.execute(
             "SELECT * FROM short_drama_refinement_versions WHERE id=? "
@@ -1812,6 +2599,7 @@ def create_delivery_quote(db_factory, owner_username, body):
                 "refinement_version_stale", "只能导出当前已验收的精修版本", 409
             )
         acceptance = _valid_acceptance(conn, project, source, require=True)
+        _require_complete_assembly(conn, project, source)
         media = acceptance["snapshot"].get("media_contract") or {}
         if capability.get("deliverable") and media.get("delivery_eligible") is not True:
             raise RefinementError(
@@ -1850,9 +2638,9 @@ def create_delivery_quote(db_factory, owner_username, body):
             "mode": capability["mode"],
             "deliverable": capability["deliverable"],
         }
-    except RefinementError:
+    except Exception:
         if conn.in_transaction:
-            conn.commit()
+            conn.rollback()
         raise
     finally:
         conn.close()
@@ -1930,6 +2718,7 @@ def start_delivery_job(
                 "delivery_source_changed", "精修版本已变化，请重新询价", 409
             )
         acceptance = _valid_acceptance(conn, project, source, require=True)
+        _require_complete_assembly(conn, project, source)
         media = acceptance["snapshot"].get("media_contract") or {}
         if capability.get("deliverable") and media.get("delivery_eligible") is not True:
             raise RefinementError(
@@ -2061,16 +2850,7 @@ def start_delivery_job(
     except Exception as error:
         if job_conn is not None and job_conn.in_transaction:
             job_conn.rollback()
-        state = "failed"
-        if charged and callable(refund_points):
-            try:
-                refund_points(
-                    actor_username, cost, "短剧正式导出建单失败补偿",
-                    "short-drama-delivery-refund:" + attempt_id,
-                )
-                state = "refunded"
-            except Exception:
-                state = "refund_pending"
+        state = "refund_pending" if charged and cost else "failed"
         recovery = _connection(db_factory)
         try:
             recovery.execute(
@@ -2081,6 +2861,14 @@ def start_delivery_job(
             recovery.commit()
         finally:
             recovery.close()
+        if state == "refund_pending" and callable(refund_points):
+            try:
+                reconcile_delivery_refund(
+                    db_factory, refund_points, {"id": attempt_id, "state": state},
+                    direct_refund=True,
+                )
+            except Exception:
+                pass
         raise
     finally:
         if job_conn is not None:
@@ -2104,44 +2892,82 @@ def get_delivery_job(db_factory, owner_username, project_id, job_id):
         conn.close()
 
 
-def reconcile_delivery_refund(db_factory, points_domain, attempt):
-    """Retry one persisted delivery refund with an idempotent ledger key."""
+def reconcile_delivery_refund(
+    db_factory, points_domain, attempt, direct_refund=False,
+):
+    """Claim and retry one durable delivery refund intent."""
     if not attempt or attempt.get("state") not in {"refund_pending", "refunded"}:
         return attempt
-    if attempt["state"] == "refund_pending":
-        refund = getattr(points_domain, "refund_points", None)
-        if not callable(refund):
-            return attempt
-        try:
-            refund(
-                attempt["actor_username"],
-                int(attempt["cost"] or 0),
-                "short-drama formal delivery compensation",
-                transaction_key="short-drama-delivery-refund:" + attempt["id"],
-            )
-        except Exception:
-            return attempt
+    refund = (
+        points_domain if direct_refund
+        else getattr(points_domain, "refund_points", None)
+    )
+    uses_points_service = not direct_refund and callable(refund)
+    if not callable(refund):
+        return attempt
+    now = int(time.time())
+    token = uuid.uuid4().hex
+    conn = _connection(db_factory)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        claimed = conn.execute(
+            "UPDATE short_drama_delivery_attempts SET refund_token=?,"
+            "refund_lease_at=?,updated_at=? WHERE id=? AND state='refund_pending' "
+            "AND job_id IS NULL AND (refund_token IS NULL OR refund_lease_at<?)",
+            (token, now, now, attempt["id"], now - _DELIVERY_REFUND_LEASE_SECONDS),
+        ).rowcount
+        current = conn.execute(
+            "SELECT * FROM short_drama_delivery_attempts WHERE id=?", (attempt["id"],),
+        ).fetchone()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    if claimed != 1:
+        return dict(current) if current else attempt
+    try:
+        args = (
+            current["actor_username"], int(current["cost"] or 0),
+            "short-drama formal delivery compensation",
+        )
+        refund_key = "short-drama-delivery-refund:" + current["id"]
+        if uses_points_service:
+            refund(*args, transaction_key=refund_key)
+        else:
+            refund(*args, refund_key)
+    except Exception:
         conn = _connection(db_factory)
         try:
-            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
-                "UPDATE short_drama_delivery_attempts "
-                "SET state='refunded',updated_at=? "
-                "WHERE id=? AND state IN ('refund_pending','refunded') "
-                "AND job_id IS NULL",
-                (int(time.time()), attempt["id"]),
+                "UPDATE short_drama_delivery_attempts SET refund_token=NULL,"
+                "refund_lease_at=0,updated_at=? WHERE id=? AND state='refund_pending' "
+                "AND refund_token=?", (int(time.time()), current["id"], token),
             )
             conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
         finally:
             conn.close()
+        return dict(current)
+    conn = _connection(db_factory)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "UPDATE short_drama_delivery_attempts SET state='refunded',"
+            "refund_token=NULL,refund_lease_at=0,updated_at=? "
+            "WHERE id=? AND state='refund_pending' AND job_id IS NULL "
+            "AND refund_token=?", (int(time.time()), current["id"], token),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
     conn = _connection(db_factory)
     try:
         row = conn.execute(
-            "SELECT * FROM short_drama_delivery_attempts WHERE id=?",
-            (attempt["id"],),
+            "SELECT * FROM short_drama_delivery_attempts WHERE id=?", (attempt["id"],),
         ).fetchone()
         return dict(row) if row else attempt
     finally:
@@ -2163,8 +2989,11 @@ def retry_delivery_attempt_refunds(db_factory, points_domain, limit=100):
         ]
     finally:
         conn.close()
-    return sum(
-        reconcile_delivery_refund(db_factory, points_domain, attempt)["state"]
-        == "refunded"
-        for attempt in attempts
-    )
+    recovered = 0
+    for attempt in attempts:
+        try:
+            result = reconcile_delivery_refund(db_factory, points_domain, attempt)
+            recovered += result.get("state") == "refunded"
+        except Exception:
+            continue
+    return recovered

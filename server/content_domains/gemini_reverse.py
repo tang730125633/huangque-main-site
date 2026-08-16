@@ -18,6 +18,8 @@ import urllib.request
 from contextlib import closing
 from difflib import SequenceMatcher
 
+from . import egress
+
 
 MODEL = "gemini-3.1-pro-preview"
 API_BASE = "https://generativelanguage.googleapis.com"
@@ -288,7 +290,7 @@ def _open(request, deadline=None, heartbeat=None, retry_transient=True):
         if heartbeat:
             heartbeat()
         try:
-            return urllib.request.urlopen(request, timeout=_timeout(deadline))
+            return _open_url(request, _timeout(deadline))
         except urllib.error.HTTPError as error:
             last_error = error
             code = int(getattr(error, "code", 0) or 0)
@@ -303,6 +305,16 @@ def _open(request, deadline=None, heartbeat=None, retry_transient=True):
                 "Gemini request failed: %s" % type(error).__name__
             ) from error
     raise RuntimeError("Gemini request failed") from last_error
+
+
+def _open_url(request, timeout):
+    proxy = egress.preferred_proxy(os.environ.get("HTTPS_PROXY", ""))
+    if not proxy:
+        return urllib.request.urlopen(request, timeout=timeout)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({
+        "http": proxy, "https": proxy,
+    }))
+    return opener.open(request, timeout=timeout)
 
 
 def _read_json_response(response):

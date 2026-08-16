@@ -47,11 +47,12 @@ test('一级导航包含独立短剧入口和专用图标', () => {
 });
 
 test('项目中心提供列表筛选、创建和详情入口', () => {
-  for (const id of ['shortDramaGrid', 'shortDramaSearch', 'shortDramaStageFilter',
+  for (const id of ['shortDramaGrid', 'shortDramaSearch',
     'shortDramaCreate', 'shortDramaDialog', 'shortDramaDrawer', 'shortDramaDeleteProject']) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
   assert.match(html, /进入对话式工作区/);
+  assert.doesNotMatch(html, /id="shortDramaStageFilter"/);
   assert.match(html, />删除短剧<\/button>/);
   assert.doesNotMatch(html, /value="1:1"/);
 });
@@ -65,9 +66,11 @@ test('创建短剧提供真人、漫剧和数字人口播三种内容类型入�
   assert.match(html, /AI 数字人口播/);
   assert.match(html, /id="shortDramaLiveActionForm"/);
   assert.match(html, /id="shortDramaRoleConfirm"/);
+  assert.match(html, /id="shortDramaCoreStory"/);
+  assert.match(html, /id="shortDramaCoreStoryForm"/);
   assert.match(html, /id="shortDramaRoleTabs"/);
   assert.match(html, /id="shortDramaSaveRole"/);
-  assert.match(html, /下一步：角色确认/);
+  assert.match(html, /下一步：剧本设计/);
   assert.match(centerScript, /团队正在努力开发该功能/);
   assert.match(html, /id="shortDramaIdeaChat"/);
   assert.match(html, /id="shortDramaRecommendations"/);
@@ -78,6 +81,31 @@ test('创建短剧提供真人、漫剧和数字人口播三种内容类型入�
   }
   assert.match(html, /aria-label="删除已导入的剧本"/);
   assert.match(centerScript, /if\(mode==='inspiration'\)\{startPlanner\(\);return;\}/);
+});
+
+test('真人短剧先确认剧本再确认角色和角色形象', async () => {
+  assert.match(centerScript, /live_action_story/);
+  assert.doesNotMatch(centerScript, /showCreateStep\('live_action_visuals'\)/);
+  assert.match(centerScript, /确认剧本，下一步：角色确认/);
+  assert.match(centerScript, /核对并保存角色资料，然后在同一界面选择、上传或生成角色标准图/);
+  assert.match(centerScript, /确认角色并创建项目/);
+  const calls = [];
+  const client = center.createClient(async (url, options) => {
+    calls.push({url, options});
+    return {ok:true, status:200, text:async ()=>'{}'};
+  });
+  const coreStory = {
+    title:'分享糖果', logline:'两个孩子学会分享。', setup:'男孩独自吃糖。',
+    development:'女孩出现。', turning_point:'男孩决定打开糖袋。',
+    climax:'男孩把糖递给女孩。', ending:'两人一起分享。',
+    central_conflict:'独占还是分享。', theme:'分享带来友谊。',
+    preservation_notes:'保留原稿结局。'
+  };
+  await client.confirmLiveActionCoreStory({id:'project-1', revision:5}, coreStory);
+  assert.equal(calls[0].url, '/api/gen/short-drama/projects/live-action/core-story');
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    project_id:'project-1', revision:5, core_story:coreStory
+  });
 });
 
 test('导入分析识别人名、场景并映射到当前短剧规格', () => {
@@ -165,10 +193,10 @@ test('前置策划生成结构化剧本并在人工确认后准备正式对话',
   }, messages, direction);
   assert.equal(preview.title, '回家吃饭');
   assert.equal(preview.ratio, '9:16');
-  assert.equal(preview.duration_seconds, 45);
+  assert.equal(preview.duration_seconds, 48);
   assert.equal(preview.beats.length, 8);
   assert.equal(preview.shots.length, 8);
-  assert.equal(preview.shots.reduce((sum, shot) => sum + shot.duration, 0), 45);
+  assert.equal(preview.shots.reduce((sum, shot) => sum + shot.duration, 0), 48);
   assert.ok(preview.shots.every(shot => shot.scene && shot.action && shot.expression && shot.camera));
   assert.ok(preview.shots.every(shot => Array.isArray(shot.characters) && shot.characters.length));
   assert.equal(preview.quality.blocking, false);
@@ -290,10 +318,41 @@ test('前置策划页面提供聊天、结构化卡片和人工确认入口', ()
 test('长剧本导入建立覆盖开场到结局的全局理解', () => {
   const source = ['第一场 家中','林夏：我必须找到父亲。','林夏带着旧信离开。','第二场 车站','周野阻止林夏登车。','林夏发现信件背后的真相。','第三场 月台','林夏作出选择。','父女最终和解。'].join('\n');
   const analysis = center.analyzeImportedScript(source, '长剧本.md');
-  assert.equal(analysis.global_structure.schema_version, 'short-drama-import-global-v1');
+  assert.equal(analysis.global_structure.schema_version, 'short-drama-import-global-v2');
   assert.equal(analysis.global_structure.coverage.analyzed_from_start, true);
   assert.equal(analysis.global_structure.coverage.analyzed_from_end, true);
   assert.match(analysis.global_structure.ending, /和解|选择/);
+});
+
+test('核心故事按分镜语义整理并过滤标题规格与重复节点', () => {
+  const source = [
+    '放学路上女孩撑伞，相册被风吹落，热心少年帮忙捡拾。',
+    '角色',
+    '女孩：17岁，学生。',
+    '少年：18岁，学生。',
+    '分镜＋台词＋视频生成提示词（9:16 竖屏）',
+    '分镜1 | 0‑5s | 全景，女孩独自走在放学路上。',
+    '提示词：9:16 竖屏，二次元动漫，黄昏街道。',
+    '分镜2 | 5-11s | 中景，女孩踩到石子脚下打滑，相册直接飞出去。',
+    '分镜3 | 11-16s | 近景，少年弯腰捡起相册并发现失主。',
+    '少年（疑惑）：这是你的吗？',
+    '分镜4 | 16-21s | 双人镜头，女孩追上少年取回相册。',
+    '分镜5 | 21-26s | 近景，少年将相册递还给女孩。',
+    '分镜6 | 26-30s | 全景，两人道谢后分别离开。',
+  ].join('\n');
+  const story = center.analyzeImportedScript(source, '').global_structure;
+  assert.deepEqual(center.analyzeImportedScript(source, '').characters, ['女孩','少年']);
+  assert.match(story.premise, /放学路上女孩撑伞/);
+  assert.doesNotMatch(Object.values(story).join(' '), /分镜＋台词＋视频生成提示词|9:16 竖屏/);
+  assert.match(story.setup, /独自走在放学路上/);
+  assert.match(story.development, /脚下打滑/);
+  assert.match(story.turning_point, /捡起相册/);
+  assert.match(story.climax, /递还给女孩/);
+  assert.match(story.ending, /分别离开/);
+  assert.match(story.central_conflict, /人物需要应对/);
+  assert.notEqual(story.central_conflict, story.development);
+  assert.equal([story.premise,story.setup,story.development,story.turning_point,story.climax,story.ending,story.central_conflict].join(' ').includes('提示词'), false);
+  assert.equal(new Set([story.setup,story.development,story.turning_point,story.climax,story.ending]).size, 5);
 });
 
 test('创作理解按主题、人物、冲突、情绪、结局和观众计算完整度', () => {
@@ -368,9 +427,75 @@ test('仅展示个人独立项目并正确计算概览', () => {
     {id:'b', title:'雨夜', synopsis:'来信', stage:'voice_review', board_id:null},
     {id:'c', title:'交付', synopsis:'完成', stage:'completed', board_id:null},
     {id:'d', title:'共享', synopsis:'画布', stage:'setup', board_id:'board-1'},
+    {id:'e', title:'未完故事', synopsis:'本地草稿', stage:'setup', board_id:null, creation_status:'draft'},
   ];
   assert.deepEqual(center.filterProjects(projects, '雨', '').map(p => p.id), ['b']);
-  assert.deepEqual(center.metrics(projects), {all:3, active:1, blocked:1, done:1});
+  assert.deepEqual(center.filterProjects(projects, '', 'all_projects').map(p => p.id), ['a','b','c','e']);
+  assert.deepEqual(center.filterProjects(projects, '', 'active_projects').map(p => p.id), ['b']);
+  assert.deepEqual(center.filterProjects(projects, '', 'blocked_projects').map(p => p.id), ['a']);
+  assert.deepEqual(center.filterProjects(projects, '', 'completed').map(p => p.id), ['c']);
+  assert.deepEqual(center.filterProjects(projects, '', 'creation_draft').map(p => p.id), ['e']);
+  assert.deepEqual(center.metrics(projects), {all:4, active:1, blocked:1, done:1, draft:1});
+  assert.match(html, /data-project-view="all_projects"/);
+  assert.match(centerScript, /activeProjectView=view\|\|'all_projects'/);
+  assert.match(centerScript, /selectProjectView\(metric\.getAttribute\('data-project-view'\)\)/);
+  assert.match(centerScript, /aria-pressed/);
+});
+
+test('项目卡片提供快捷菜单、轻量切换和增强搜索', () => {
+  const card = center.cardHtml({
+    id:'project-1', title:'雨夜来信', synopsis:'旧友在雨夜重新相遇',
+    stage:'setup', ratio:'16:9', target_duration:30, shot_count:6,
+  }, '雨夜');
+  assert.match(card, /data-card-menu/);
+  assert.match(card, /data-card-action="rename"/);
+  assert.match(card, /data-card-action="duplicate"/);
+  assert.match(card, /data-card-action="delete"/);
+  assert.match(card, /short-drama-search-match/);
+  for (const id of ['shortDramaSearchClear', 'shortDramaSearchCount',
+    'shortDramaEmptyAction', 'shortDramaProjectActionDialog',
+    'shortDramaProjectRenameInput']) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  assert.match(centerScript, /复制基础设置、原稿和角色文字资料/);
+  assert.match(centerScript, /activeProjectView='creation_draft'/);
+  assert.match(centerScript, /projectActionDialog\.showModal\(\)/);
+  assert.match(centerStyle, /short-drama-card-enter/);
+  assert.match(centerStyle, /short-drama-count-pop/);
+  assert.match(centerStyle, /height:320px/);
+  assert.match(centerStyle, /-webkit-line-clamp:4/);
+  assert.match(card, /<p title="旧友在雨夜重新相遇">/);
+});
+
+test('项目卡片以最近更新时间替代内部修订号', () => {
+  const now = Date.UTC(2026, 7, 10, 8, 0, 0);
+  assert.equal(center.projectUpdatedAt(now - 30 * 1000, now).label, '刚刚更新');
+  assert.equal(center.projectUpdatedAt((now - 12 * 60 * 1000) / 1000, now).label, '12分钟前');
+  assert.equal(center.projectUpdatedAt(now - 3 * 60 * 60 * 1000, now).label, '3小时前');
+  assert.equal(center.projectUpdatedAt(now - 2 * 24 * 60 * 60 * 1000, now).label, '2天前');
+  const card = center.cardHtml({id:'p1', title:'项目', synopsis:'足够长度的项目简介', stage:'setup', updated_at:(Date.now() - 30 * 1000) / 1000});
+  assert.match(card, /刚刚更新/);
+  assert.doesNotMatch(card, />R\d+</);
+});
+
+test('项目卡片按真实制作里程碑展示进度与下一步', () => {
+  const card = center.cardHtml({
+    id:'p1', title:'项目', synopsis:'项目简介', stage:'draft',
+    progress_stage:'video_review', progress_percent:60,
+    progress_label:'镜头生成中 3/6', progress_detail:'还有 3 个镜头未完成',
+    ratio:'16:9', target_duration:30, shot_count:6,
+  });
+  assert.equal(center.progress({stage:'setup', progress_percent:60}), 60);
+  assert.match(card, /镜头生成中 3\/6/);
+  assert.match(card, /还有 3 个镜头未完成/);
+  assert.match(card, /aria-valuenow="60"/);
+  assert.match(card, /width:60%/);
+});
+
+test('角色资料锁定不应禁用标准图确认区域', () => {
+  assert.match(centerScript, /<\/section><\/fieldset>'\+\s*'<section class="short-drama-role-reference">/);
+  assert.match(centerScript, /data-confirm-role-reference/);
+  assert.doesNotMatch(centerScript, /<section class="short-drama-role-reference"[^]*?<\/fieldset>/);
 });
 
 test('创建请求不携带 board_id 或画布身份', () => {
@@ -706,6 +831,55 @@ test('deployed v3 planner draft remains readable with safe choice defaults', () 
   assert.equal(value, stored);
 });
 
+test('live action drafts are account scoped and preserve role progress', () => {
+  const values = new Map();
+  const storage = {
+    getItem:key => values.has(key) ? values.get(key) : null,
+    setItem:(key,value) => values.set(key, String(value)),
+    removeItem:key => values.delete(key)
+  };
+  const key = center.liveActionDraftStorageKey('alice');
+  const draft = {
+    version:1, username:'alice', saved_at:1700000000000, step:'live_action_roles',
+    form:{title:'分享糖果',source_text:'男孩把糖果分给女孩。',ratio:'16:9'},
+    roles:[{character_key:'character_1',name:'男孩',fixed_clothing:'蓝色短袖'}],
+    active_role:0, pending_project:{id:'draft-project',revision:3,characters:[]}
+  };
+  assert.equal(key, 'hq-short-drama-live-action-draft-v1:alice');
+  assert.equal(center.writeLiveActionDraftRecord(storage, key, draft, 'alice'), true);
+  const restored = center.readLiveActionDraftRecord(storage, key, 'alice', 1700000001000);
+  assert.equal(restored.step, 'live_action_roles');
+  assert.equal(restored.roles[0].fixed_clothing, '蓝色短袖');
+  assert.equal(restored.pending_project.id, 'draft-project');
+  assert.equal(center.readLiveActionDraftRecord(storage, key, 'bob', 1700000001000), null);
+  assert.equal(center.liveActionDraftSynopsis(draft), '尚未整理一句话故事');
+  draft.core_story = {logline:'男孩最终决定与女孩分享糖果。'};
+  assert.equal(center.liveActionDraftSynopsis(draft), '男孩最终决定与女孩分享糖果。');
+  assert.doesNotMatch(center.liveActionDraftSynopsis(draft), /蓝色短袖|角色资料/);
+  assert.match(centerScript, /已恢复上次保存的草稿。'.*autoHide:5000/);
+  assert.match(centerScript, /clearTimeout\(liveActionNoticeTimers\[timerKey\]\)/);
+  assert.match(centerStyle, /height:100%;max-height:none;box-sizing:border-box;padding:16px;overflow:auto/);
+  assert.match(centerStyle, /short-drama-role-card::after\{display:block;height:104px/);
+  assert.match(centerStyle, /-webkit-line-clamp:2/);
+});
+
+test('closing unfinished live action creation offers save discard and continue choices', () => {
+  assert.match(html, /id="shortDramaCloseDraftPrompt"/);
+  assert.match(html, /data-draft-close="save"/);
+  assert.match(html, /data-draft-close="discard"/);
+  assert.match(html, /data-draft-close="continue"/);
+  assert.match(html, /id="shortDramaLiveActionDraftResume"/);
+  assert.match(centerScript, /dialog\.addEventListener\('cancel'/);
+  assert.match(centerScript, /if\(event\.target===dialog\)requestCreateClose\(\)/);
+  assert.match(centerScript, /liveSteps=\['live_action_setup','live_action_story','live_action_roles'\]/);
+  assert.match(centerScript, /roles:JSON\.parse\(JSON\.stringify\(liveActionRoles\|\|\[\]\)\)/);
+  assert.match(centerScript, /clearLiveActionDraft\(\);dialog\.close\(\)/);
+  assert.match(html, /id="shortDramaMetricDraft"/);
+  assert.match(html, /data-project-view="creation_draft"/);
+  assert.match(centerScript, /creation_status==='draft'/);
+  assert.match(centerScript, /finalizeLiveActionProject/);
+});
+
 test('saved planner draft remains optional and clearing it returns to content type choice', async () => {
   const chrome = findChromeExecutable();
   assert.ok(chrome, '草稿入口测试需要 Chrome 或 Chromium');
@@ -781,17 +955,17 @@ test('浏览器运行时只使用模块内已定义的全局引用', () => {
   assert.doesNotMatch(centerScript, /\broot\.location\b/);
 });
 
-test('live action role confirmation starts with two manual role cards', () => {
+test('live action role confirmation is created from the confirmed script', () => {
   const analysis = center.analyzeImportedScript('人物：张三、李四\n张三：我们现在出发。\n李四：好。');
   assert.deepEqual(analysis.characters, ['张三', '李四']);
-  const contract = center.defaultManualCharacterContract(2);
+  const contract = center.characterContractFromAnalysis(analysis);
   assert.equal(contract.length, 2);
   assert.deepEqual(contract.map(item => item.character_key), ['character_1', 'character_2']);
-  assert.deepEqual(contract.map(item => item.name), ['角色1', '角色2']);
-  assert.notDeepEqual(contract.map(item => item.name), analysis.characters);
-  assert.deepEqual(contract[0].reference_views, ['front_full', 'side_full', 'front_half']);
-  assert.match(html, /系统不再从剧本自动识别人物/);
-  assert.doesNotMatch(centerScript, /liveActionRoles=characterContractFromAnalysis\(liveActionAnalysis\)/);
+  assert.deepEqual(contract.map(item => item.name), analysis.characters);
+  assert.deepEqual(contract.map(item => item.role_type), ['main', 'support']);
+  assert.deepEqual(contract[0].reference_views, ['front_full', 'side_full', 'back_full']);
+  assert.match(html, /角色已根据确认剧本建立/);
+  assert.match(centerScript, /liveActionRoles=characterContractFromAnalysis\(liveActionAnalysis\)/);
   assert.match(centerScript, /renderLiveActionRoleTabs/);
   assert.match(centerScript, /data-role-select/);
   assert.match(centerScript, /基础信息/);
@@ -870,11 +1044,11 @@ test('editing a persisted live action draft replaces it unless reference work ex
   );
   assert.deepEqual(retryKeys, ['stable-retry-key', 'stable-retry-key']);
   assert.match(centerScript, /if\(pendingLiveActionProject&&!pendingLiveActionDiscardKey\)pendingLiveActionDiscardKey=newLiveActionAbandonKey\(\)/);
-  assert.match(centerScript, /discardPendingLiveActionProject\(client,pendingLiveActionProject,liveActionReferenceBusy,pendingLiveActionDiscardKey\)/);
-  assert.match(centerScript, /pendingLiveActionProject=null;pendingLiveActionKey='';pendingLiveActionDiscardKey='';savedLiveActionRoleSignatures=\{\}/);
+  assert.match(centerScript, /discardPendingLiveActionProject\(client,pendingLiveActionProject,anyLiveActionReferenceBusy\(\),pendingLiveActionDiscardKey\)/);
+  assert.match(centerScript, /pendingLiveActionProject=null;pendingLiveActionDiscardKey='';savedLiveActionRoleSignatures=\{\}/);
 });
 
-test('paid or locked live action roles expose reference asset protection', () => {
+test('paid or locked live action roles remain editable but cannot be deleted', () => {
   const empty = {
     character_key:'character_1', reference_job_id:null, reference_file:'',
     reference_url:'', reference_version:0, reference_locked:false
@@ -889,22 +1063,40 @@ test('paid or locked live action roles expose reference asset protection', () =>
       center.liveActionRoleHasReferenceActivity({...empty, ...marker}), true
     );
   }
-  assert.match(centerScript, /该角色已有付费或锁定的角色标准图，不能直接修改或删除/);
+  assert.match(centerScript, /角色资料已变更，当前标准图仍会保留/);
   assert.match(centerScript, /liveActionRoleHasReferenceActivity\(removed\)/);
-  assert.match(centerScript, /class="short-drama-role-profile".*disabled/);
+  assert.match(centerScript, /roleProtected=roleGenerating/);
+  assert.doesNotMatch(centerScript, /if\(liveActionRoleHasReferenceActivity\(liveActionRoles\[activeLiveActionRole\]\)\)return showLiveActionError/);
 });
 
-test('live action roles only require name gender and fixed clothing before reference generation', () => {
-  assert.match(centerScript, /var fields=\['name','gender','fixed_clothing'\]/);
+test('live action roles only require fixed clothing when AI reference generation is selected', () => {
+  assert.match(centerScript, /var fields=\['name','gender'\]/);
   assert.match(centerScript, /function validateLiveActionRole\(index\)/);
   assert.match(centerScript, /persistLiveActionRoles\(\{partial:true,roleIndex:activeLiveActionRole\}\)/);
-  assert.match(centerScript, /生成角色标准图（35点）/);
+  assert.match(centerScript, /AI 生成/);
+  assert.match(centerScript, /35 点/);
   assert.match(centerScript, /reference_locked/);
   assert.match(centerScript, /confirm-character-reference/);
   assert.match(centerScript, /确认并锁定此标准图/);
-  assert.match(html, /角色名称、性别和固定服装为必填项/);
+  assert.match(html, /角色名称和性别为必填项/);
+  assert.match(centerScript, /固定服装提示词 <small>AI 生图时必填<\/small>/);
+  assert.match(centerScript, /使用 AI 生成标准图前，请先填写固定服装提示词/);
+  assert.doesNotMatch(centerScript, /\{field:'fixed_clothing',label:'固定服装'\}/);
   assert.doesNotMatch(centerScript, /if\(!item\.age\)missing\.push/);
   assert.doesNotMatch(centerScript, /if\(!item\.appearance_prompt\)missing\.push/);
+});
+
+test('live action role captions keep required and optional controls aligned', () => {
+  assert.match(centerScript, /short-drama-role-field-caption\">角色名称 <em class=\"short-drama-required\">\*<\/em><\/span><input data-role-field=\"name\"/);
+  assert.match(centerScript, /short-drama-role-field-caption\">角色类型<\/span><select data-role-field=\"role_type\"/);
+  assert.match(centerScript, /short-drama-role-field-caption\">性别 <em class=\"short-drama-required\">\*<\/em><\/span><select data-role-field=\"gender\"/);
+  assert.match(centerScript, /short-drama-role-field-caption\">年龄<\/span><input data-role-field=\"age\"/);
+  assert.match(centerStyle, /\.short-drama-role-field-caption\{display:inline-flex;min-height:12px;align-items:center;gap:3px\}/);
+});
+
+test('live action intro remains readable in the dark theme', () => {
+  assert.match(centerStyle, /\.short-drama-live-action-intro\{[^}]*background:#fffaf0;[^}]*color:#172033/);
+  assert.match(centerStyle, /\.short-drama-live-action-intro p\{color:#667085\}/);
 });
 
 test('live action role must be explicitly saved before reference generation', () => {
@@ -912,12 +1104,64 @@ test('live action role must be explicitly saved before reference generation', ()
   assert.match(centerScript, /function isLiveActionRoleSaved\(item\)/);
   assert.match(centerScript, /function focusLiveActionRoleError\(index\)/);
   assert.match(centerScript, /请先保存当前角色/);
-  assert.match(centerScript, /请先保存当前角色并生成角色标准图/);
-  const start = centerScript.indexOf("var button=event.target.closest('[data-generate-role-reference]')");
+  assert.match(centerScript, /请先保存角色资料/);
+  const start = centerScript.indexOf('function generateLiveActionReference(index)');
   const end = centerScript.indexOf("roleTabs.addEventListener", start);
   const handler = centerScript.slice(start, end);
   assert.match(handler, /isLiveActionRoleSaved/);
   assert.doesNotMatch(handler, /persistLiveActionRoles/);
+});
+
+test('role type controls reference requirements and creation gate', () => {
+  assert.match(centerScript, /function liveActionRoleReferenceRule\(item\)/);
+  assert.match(centerScript, /主要角色必须锁定标准图/);
+  assert.match(centerScript, /该次要角色有台词或多次出现，需要锁定标准图/);
+  assert.match(centerScript, /群演无需单独设置标准图/);
+  assert.match(centerScript, /liveActionRoleReferenceRule\(item\)\.required&&!\(item\.reference_url\|\|item\.reference_file\)/);
+  assert.match(centerScript, /liveActionRoleReferenceRule\(item\)\.required&&!item\.reference_locked/);
+});
+
+test('character reference picker supports assets uploads and AI generation', async () => {
+  assert.match(centerScript, /我的资产/);
+  assert.match(centerScript, /本地上传/);
+  assert.match(centerScript, /class="short-drama-reference-sources"/);
+  assert.match(centerScript, /data-reference-source="asset"/);
+  assert.match(centerScript, /data-reference-source="upload"/);
+  assert.match(centerScript, /data-reference-source="ai"/);
+  assert.doesNotMatch(centerScript, /aria-label="设置角色标准图"/);
+  assert.match(centerScript, /image\/jpeg','image\/png','image\/webp/);
+  assert.match(centerScript, /file\.size>10\*1024\*1024/);
+  assert.match(centerScript, /真人且至少半身，无需三视图，不扣点/);
+  assert.match(centerScript, /message==='请上传人物图'/);
+  assert.match(centerStyle, /\.short-drama-reference-picker\{/);
+  const calls = [];
+  const client = center.createClient(async (url, options) => {
+    calls.push({url, options});
+    return {ok:true, status:200, text:async ()=>'{}'};
+  });
+  await client.listImageAssets(0, 60);
+  await client.selectCharacterReference(
+    {id:'project-1', revision:4}, {character_key:'character_1'},
+    {source:'asset', asset_job_id:8, asset_url:'/api/gen/file/role.png', filename:'role.png'}
+  );
+  assert.equal(calls[0].url, '/api/gen/history?limit=60&offset=0&kind=image');
+  assert.equal(calls[1].url, '/api/gen/short-drama/select-character-reference');
+  assert.deepEqual(JSON.parse(calls[1].options.body), {
+    project_id:'project-1', revision:4, character_key:'character_1',
+    source:'asset', asset_job_id:8, asset_url:'/api/gen/file/role.png',
+    filename:'role.png', image_data:''
+  });
+  assert.match(centerScript, /className='short-drama-asset-library'/);
+  assert.match(centerScript, /role="dialog" aria-modal="true" aria-label="选择图片资产"/);
+  assert.match(centerScript, /加载更多图片/);
+  assert.match(centerScript, /data-preview-asset-index/);
+  assert.match(centerScript, /keepOpen:true/);
+  assert.doesNotMatch(centerScript, /data-reference-picker-content/);
+  assert.match(centerScript, /className='short-drama-upload-confirm'/);
+  assert.match(centerScript, /aria-label="确认本地上传图片"/);
+  assert.match(centerStyle, /\.short-drama-asset-library\{position:fixed;inset:0/);
+  assert.match(centerStyle, /\.short-drama-asset-library-box\{/);
+  assert.match(centerStyle, /\.short-drama-upload-confirm-box\{/);
 });
 
 test('generated character reference requires explicit confirmation before locking', async () => {
@@ -936,6 +1180,77 @@ test('generated character reference requires explicit confirmation before lockin
     project_id:'project-1', revision:7,
     character_key:'character_1', reference_version:3
   });
+});
+
+test('character reference generation remains recoverable after a long wait', () => {
+  assert.match(centerScript, /timeoutError\.recoverable=true/);
+  assert.match(centerScript, /角色标准图生成时间较长，任务仍保留，可刷新页面继续查看/);
+  assert.match(centerScript, /系统会自动恢复查询/);
+});
+
+test('character reference generation is tracked per role and can resume polling', async () => {
+  const calls = [];
+  const created = [];
+  const client = center.createClient(async (url, options) => {
+    calls.push({url, options});
+    const body = url.includes('generate-character-reference')
+      ? {job_id:91}
+      : {status:'done', result:{url:'/api/gen/file/role.png'}};
+    return {ok:true, status:200, text:async () => JSON.stringify(body)};
+  });
+  const project = {id:'project-1', revision:7};
+  const character = {character_key:'character_1'};
+  await client.generateCharacterReference(project, character, {
+    onCreated(jobId){ created.push(jobId); }
+  });
+  assert.deepEqual(created, [91]);
+  assert.equal(calls[0].url, '/api/gen/short-drama/generate-character-reference');
+  assert.equal(calls[1].url, '/api/gen/job/91');
+  calls.length = 0;
+  await client.generateCharacterReference(project, character, {job_id:91});
+  assert.deepEqual(calls.map(call => call.url), ['/api/gen/job/91']);
+  assert.match(centerScript, /liveActionReferenceTasks=\{\}/);
+  assert.match(centerScript, /reference_tasks:JSON\.parse/);
+  assert.match(centerScript, /角色标准图正在生成，请等待任务完成；你可以继续编辑其他角色/);
+  assert.match(centerScript, /当前角色资料暂时锁定。你可以切换到其他角色继续编辑和保存/);
+  assert.match(centerScript, /请等待全部角色标准图任务完成后再创建项目/);
+  assert.match(centerScript, /图片服务繁忙，正在自动重试/);
+  assert.match(centerScript, /无需重复提交/);
+  assert.match(centerScript, /HTTP\\s\*\(\?:Error\\s\*\)\?429/);
+  assert.match(centerScript, /if\(activeLiveActionRole===index\)renderLiveActionRoles\(\);else renderLiveActionRoleTabs\(\)/);
+  assert.match(centerStyle, /\.short-drama-role-tab\.generating/);
+});
+
+test('character reference view guidance is grouped with the standard image', () => {
+  assert.match(centerScript, /AI 标准图将包含/);
+  assert.match(centerScript, /<b>正面全身<\/b><b>侧面全身<\/b><b>背面全身<\/b>/);
+  assert.match(centerScript, /<span>图片要求<\/span><b>真人<\/b><b>至少半身<\/b><b>无需三视图<\/b>/);
+  assert.doesNotMatch(centerScript, /正面半身/);
+  assert.match(centerStyle, /\.short-drama-role-reference-content\{display:grid;gap:10px\}/);
+});
+
+test('legacy role drafts keep an explicit back-view migration warning', () => {
+  assert.match(centerScript, /character_contract_migration/);
+  assert.match(centerScript, /旧草稿缺少背面全身图，请生成并确认可信 AI 三视图标准图/);
+  assert.match(centerScript, /普通上传或旧版半身参考图不能作为迁移证据/);
+  assert.match(centerScript, /if\(migration\.required\)showLiveActionNotice/);
+});
+
+test('character reference validation keeps the selected image available for retry', () => {
+  assert.match(centerScript, /正在检测并自动重试/);
+  assert.match(centerScript, /重新检测此图片/);
+  assert.match(centerScript, /重新检测所选资产/);
+  assert.match(centerScript, /\^\(请上传\|人物检测\|人物图片检测\)/);
+});
+
+test('character reference image opens an accessible large preview', () => {
+  assert.match(centerScript, /data-preview-role-reference aria-label="放大预览/);
+  assert.match(centerScript, /createElement\('dialog'\)/);
+  assert.match(centerScript, /aria-label','角色标准图大图预览/);
+  assert.match(centerScript, /addEventListener\('cancel'.*closeLiveActionReferencePreview/);
+  assert.match(centerScript, /preview\.showModal\(\)/);
+  assert.match(centerStyle, /\.short-drama-image-preview\{position:fixed;inset:0;width:100vw;height:100vh/);
+  assert.match(centerStyle, /\.short-drama-image-preview\[open\]\{display:grid;place-items:center\}/);
 });
 
 test('live action entry exposes unavailable content types without project creation', () => {

@@ -4,6 +4,7 @@ After=network.target
 [Service]
 ExecStart=/usr/bin/python3 /home/ubuntu/dl-service/dl_service.py
 WorkingDirectory=/home/ubuntu/dl-service
+EnvironmentFile=-/home/ubuntu/auth-service/auth.env
 Restart=always
 User=ubuntu
 [Install]

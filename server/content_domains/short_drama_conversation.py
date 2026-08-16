@@ -13,7 +13,7 @@ import time
 import uuid
 from contextlib import closing
 
-from . import short_drama_storyboard
+from . import short_drama_storyboard, short_drama_duration
 
 
 STATES = {
@@ -421,7 +421,12 @@ def _understanding(project, messages):
         "ending": ending,
         "protagonist": protagonist,
         "platform": project["target_platform"],
-        "duration_seconds": int(project["target_duration"]),
+        "duration_seconds": short_drama_duration.choose(
+            project["target_duration"], project.get("shot_count") or 0
+        ),
+        "duration_range_seconds": list(
+            short_drama_duration.bounds(project["target_duration"])
+        ),
         "ratio": project["ratio"],
         "latest_request": latest[-1200:],
         "story_notes": notes,
@@ -572,6 +577,172 @@ def _character_names(seed, understanding):
     return unique[:3]
 
 
+_EXPLICIT_SHOT_RE = re.compile(
+    r"(?im)^\s*(?:镜头|分镜)\s*#?\s*(\d+)\s*"
+    r"(?:[（(]\s*(?:(\d+(?:\.\d+)?)\s*(?:秒|s)?\s*[-—~至]\s*"
+    r"(\d+(?:\.\d+)?)\s*(?:秒|s)?|(\d+(?:\.\d+)?)\s*(?:秒|s))\s*[）)])?"
+    r"\s*[:：、,，]?\s*(.*)$"
+)
+_CAMERA_TERMS = (
+    "大特写", "特写", "近景", "中近景", "中景", "中远景", "远景", "全景",
+    "半身镜头", "半身", "俯拍", "仰拍", "航拍", "跟拍", "手持", "固定镜头",
+)
+
+
+def _explicit_storyboard_requirements(source):
+    """Extract user-authored numbered shots without interpreting prose mentions."""
+    source = str(source or "")
+    matches = list(_EXPLICIT_SHOT_RE.finditer(source))
+    requirements = []
+    for position, match in enumerate(matches):
+        number = int(match.group(1))
+        block_end = matches[position + 1].start() if position + 1 < len(matches) else len(source)
+        tail = match.group(5).strip()
+        continuation = source[match.end():block_end].strip()
+        content = "\n".join(value for value in (tail, continuation) if value).strip()
+        start = float(match.group(2)) if match.group(2) else None
+        end = float(match.group(3)) if match.group(3) else None
+        duration = (
+            max(1, int(round(end - start))) if start is not None and end is not None
+            else max(1, int(round(float(match.group(4))))) if match.group(4) else None
+        )
+        camera = next((term for term in _CAMERA_TERMS if term in tail[:30]), "")
+        visual = content
+        if camera and visual.startswith(camera):
+            visual = visual[len(camera):].lstrip(" ，,、：:")
+        requirements.append({
+            "number": number, "duration_seconds": duration,
+            "camera": camera, "visual": visual or content,
+            "source_text": content, "source_offset": match.start(),
+        })
+    return requirements
+
+
+def _apply_explicit_storyboard(script, project, source):
+    requirements = _explicit_storyboard_requirements(source)
+    if not requirements:
+        for shot in script.get("shots") or []:
+            shot["source_type"] = "system_generated"
+        return script
+    shots = script.get("shots") or []
+    beats = script.get("story_beats") or []
+    lines = script.get("dialogue_lines") or []
+    characters = script.get("characters") or []
+    by_number = {
+        item["number"]: item for item in requirements
+        if 1 <= item["number"] <= len(shots)
+    }
+    fixed = {
+        number - 1: int(item["duration_seconds"])
+        for number, item in by_number.items() if item.get("duration_seconds")
+    }
+    public_band = project.get("target_duration") in short_drama_duration.DURATION_BANDS
+    if public_band and any(
+        duration not in short_drama_duration.SHOT_DURATION_SECONDS
+        for duration in fixed.values()
+    ):
+        raise ConversationError(
+            "explicit_storyboard_duration_invalid",
+            "用户填写的单镜时长必须为 5 或 10 秒", 422,
+        )
+    authored_total = sum(fixed.values())
+    target = short_drama_duration.choose(
+        project.get("target_duration"), len(shots), authored_total
+    )
+    flexible = [index for index in range(len(shots)) if index not in fixed]
+    remaining = target - sum(fixed.values())
+    if remaining < len(flexible) or (not flexible and remaining != 0):
+        raise ConversationError(
+            "explicit_storyboard_duration_mismatch",
+            "用户填写的分镜总时长与项目目标时长不一致，请调整分镜时间或项目时长后重试",
+            422,
+        )
+    if flexible and public_band:
+        long_count, remainder = divmod(remaining - len(flexible) * 5, 5)
+        if remainder or long_count < 0 or long_count > len(flexible):
+            raise ConversationError(
+                "explicit_storyboard_duration_mismatch",
+                "用户填写的分镜时长无法与其余 5/10 秒镜头组成所选时长", 422,
+            )
+        allocated = [5] * (len(flexible) - long_count) + [10] * long_count
+        for index, duration in zip(flexible, allocated):
+            shots[index]["duration_seconds"] = duration
+    elif flexible:
+        allocated = short_drama_storyboard.allocate_durations(
+            remaining, len(flexible),
+        )
+        for index, duration in zip(flexible, allocated):
+            shots[index]["duration_seconds"] = duration
+    for index, duration in fixed.items():
+        shots[index]["duration_seconds"] = duration
+    for index, shot in enumerate(shots):
+        requirement = by_number.get(index + 1)
+        if not requirement:
+            shot["source_type"] = "system_generated"
+            continue
+        visual = requirement["visual"] or shot.get("visual") or ""
+        scene = short_drama_storyboard._location(visual, shot.get("scene") or "故事主要场景")
+        visible = [item for item in characters if str(item.get("name") or "") in visual]
+        if not visible:
+            visible = [
+                item for item in characters
+                if item.get("character_key") in (shot.get("character_keys") or [])
+            ]
+        camera = requirement["camera"] or shot.get("camera") or ""
+        shot.update({
+            "scene": scene, "visual": visual, "camera": camera,
+            "character_keys": [item["character_key"] for item in visible],
+            "provider_prompt": short_drama_storyboard._provider_prompt(
+                project, visible, scene, visual, camera, str((beats[index] if index < len(beats) else {}).get("phase") or "development"),
+            ),
+            "source_type": "user_storyboard",
+            "source_text": requirement["source_text"],
+            "source_offset": requirement["source_offset"],
+        })
+        if index < len(beats):
+            beats[index]["source_fact"] = requirement["source_text"][:180]
+            beats[index]["source_type"] = "user_storyboard"
+        line = lines[index] if index < len(lines) else None
+        if line is not None:
+            subtitle = re.search(r"(?:^|[\n；。])\s*字幕\s*[:：]\s*([^\n；。]+)", requirement["source_text"])
+            speaker_match = next((
+                (item, re.search(
+                    r"(?:^|[\n；。])\s*" + re.escape(str(item.get("name") or "")) + r"\s*[:：]\s*([^\n；。]+)",
+                    requirement["source_text"],
+                )) for item in characters if item.get("name")
+            ), None)
+            speaker_match = speaker_match if speaker_match and speaker_match[1] else None
+            if subtitle:
+                line.update({"kind": "on_screen_text", "character_key": "", "speaker": "", "text": subtitle.group(1).strip()})
+            elif speaker_match:
+                line.update({
+                    "kind": "dialogue", "character_key": speaker_match[0]["character_key"],
+                    "speaker": speaker_match[0]["name"], "text": speaker_match[1].group(1).strip(),
+                })
+            elif re.search(r"无台词|静默", requirement["source_text"]):
+                line.update({"kind": "silence", "character_key": "", "speaker": "", "text": ""})
+            line["estimated_reading_seconds"] = short_drama_storyboard._reading_seconds(line)
+    scenes = script.get("scenes") or []
+    for index, shot in enumerate(shots):
+        if index < len(scenes):
+            scenes[index]["location"] = shot.get("scene") or scenes[index].get("location")
+            scenes[index]["summary"] = shot.get("visual") or scenes[index].get("summary")
+    acts = script.get("acts") or []
+    if shots and beats and acts:
+        act_indices = (0, max(0, len(shots) // 2), len(shots) - 1)
+        for act, index in zip(acts, act_indices):
+            if index < len(beats):
+                act["summary"] = beats[index].get("source_fact") or act.get("summary")
+    script["storyboard_source"] = {
+        "mode": "user_priority", "explicit_shot_count": len(by_number),
+        "generated_shot_count": len(shots) - len(by_number),
+        "unmapped_shot_numbers": [
+            item["number"] for item in requirements if item["number"] not in by_number
+        ],
+    }
+    return script
+
+
 def _scene_location(clause, fallback):
     locations = (
         "房间", "家中", "医院", "学校", "教室", "公园", "车站", "办公室",
@@ -583,7 +754,9 @@ def _scene_location(clause, fallback):
 def _script_v3(project, messages, instruction="", understanding=None):
     understanding = understanding or _understanding(project, messages)
     seed = str(understanding.get("creative_brief") or project["synopsis"]).strip()
-    duration = int(project["target_duration"])
+    duration = short_drama_duration.choose(
+        project["target_duration"], project.get("shot_count") or 0
+    )
     shot_count = int(project["shot_count"])
     names = _character_names(seed, understanding)
     if "独角" in seed or "一个人" in seed:
@@ -630,12 +803,13 @@ def _script_v3(project, messages, instruction="", understanding=None):
         "呈现人物必须作出的关键选择",
         "用前文细节完成结局和情绪落点",
     )
-    per_shot = duration // shot_count
-    remainder = duration - per_shot * shot_count
+    durations = short_drama_duration.allocate(
+        project["target_duration"], shot_count, duration,
+    )
     shots = []
     dialogue = []
     for index in range(shot_count):
-        seconds = per_shot + (1 if index < remainder else 0)
+        seconds = durations[index]
         clause = clauses[min(
             len(clauses) - 1,
             index * len(clauses) // max(1, shot_count),
@@ -696,12 +870,84 @@ def _source_anchors(source):
     source = str(source or "")
     if not source:
         return []
-    width = 320
-    positions = (0, max(0, len(source) // 2 - width // 2), max(0, len(source) - width))
+
+    marker_patterns = (
+        re.compile(r"镜头\s*(\d+)\s*[（(][^）)]{1,40}[）)]\s*[：:]?"),
+        re.compile(r"(?<!\d)(\d+)\s*[、.]\s*\d+\s*[-—~至]\s*\d+\s*秒\s*[：:]"),
+    )
+    matches = []
+    for pattern in marker_patterns:
+        matches.extend(pattern.finditer(source))
+    matches.sort(key=lambda item: item.start())
+    unique_matches = []
+    seen_numbers = set()
+    for matched in matches:
+        number = int(matched.group(1))
+        if number in seen_numbers:
+            continue
+        seen_numbers.add(number)
+        unique_matches.append(matched)
+
+    def compact(value, limit=220):
+        value = re.sub(r"\s+", " ", str(value or "")).strip(" ，,。；;：:")
+        return value if len(value) <= limit else value[:limit].rstrip() + "…"
+
+    if len(unique_matches) >= 3:
+        shots = []
+        for index, matched in enumerate(unique_matches):
+            end = unique_matches[index + 1].start() if index + 1 < len(unique_matches) else len(source)
+            excerpt = compact(source[matched.end():end], 150)
+            if excerpt:
+                shots.append({"offset": matched.start(), "excerpt": excerpt})
+        if len(shots) >= 3:
+            boundaries = (0, max(1, len(shots) // 3), max(2, (len(shots) * 2) // 3), len(shots))
+            labels = ("start", "middle", "end")
+            anchors = []
+            for index, label in enumerate(labels):
+                group = shots[boundaries[index]:boundaries[index + 1]]
+                if not group:
+                    continue
+                anchors.append({
+                    "position": label,
+                    "offset": group[0]["offset"],
+                    "excerpt": compact("；".join(item["excerpt"] for item in group)),
+                })
+            if len(anchors) == 3:
+                return anchors
+
+    # Very long imports commonly contain dense prose without sentence breaks.
+    # Sentence-first truncation can then keep only the beginning of each huge
+    # block and silently lose the actual middle/end of the source.  Preserve
+    # three bounded positional windows so faithful imports always retain the
+    # opening, midpoint and ending evidence.
+    if len(source) > 2000:
+        width = 320
+        positions = (
+            0,
+            max(0, len(source) // 2 - width // 2),
+            max(0, len(source) - width),
+        )
+        labels = ("start", "middle", "end")
+        return [
+            {
+                "position": label,
+                "offset": offset,
+                "excerpt": re.sub(r"\s+", " ", source[offset:offset + width]).strip(),
+            }
+            for label, offset in zip(labels, positions)
+        ]
+
+    sentences = [
+        compact(item) for item in re.split(r"(?<=[。！？!?])\s*|[\r\n]+", source)
+        if compact(item) and not re.match(r"^(人物|角色|场景|时长|分镜数量)\s*[：:]", compact(item))
+    ]
+    if not sentences:
+        return []
+    indexes = (0, len(sentences) // 2, len(sentences) - 1)
     labels = ("start", "middle", "end")
     return [
-        {"position": labels[index], "offset": offset, "excerpt": source[offset:offset + width]}
-        for index, offset in enumerate(positions)
+        {"position": label, "offset": source.find(sentences[index][:20]), "excerpt": sentences[index]}
+        for label, index in zip(labels, indexes)
     ]
 
 
@@ -871,6 +1117,20 @@ def _import_contract(source_import):
     character_contract_hash = _hash(
         stored_characters if isinstance(stored_characters, list) else []
     )
+    global_structure = _import_global_structure(source, characters)
+    confirmed_core_story = source_import.get("core_story")
+    if confirmed_core_story is None:
+        confirmed_core_story = _json(source_import.get("core_story_json") or "{}", {})
+    if isinstance(confirmed_core_story, dict) and confirmed_core_story:
+        for key in (
+                "setup", "development", "turning_point", "climax", "ending",
+                "central_conflict"):
+            if str(confirmed_core_story.get(key) or "").strip():
+                global_structure[key] = str(confirmed_core_story[key]).strip()
+        global_structure["premise"] = str(
+            confirmed_core_story.get("logline") or global_structure.get("premise") or ""
+        ).strip()
+        global_structure["confirmed_core_story"] = dict(confirmed_core_story)
     contract = {
         "source_hash": source_import["source_hash"],
         "import_mode": mode,
@@ -880,7 +1140,7 @@ def _import_contract(source_import):
         "character_contract": stored_characters if isinstance(stored_characters, list) else [],
         "character_contract_hash": character_contract_hash,
         "content_type": str(source_import.get("content_type") or "live_action"),
-        "global_structure": _import_global_structure(source, characters),
+        "global_structure": global_structure,
         "plot_points": _source_anchors(source),
         "key_dialogues": dialogues,
         "proposed_changes": changes,
@@ -1103,7 +1363,12 @@ def _import_understanding(project, source_import, messages):
         "ending": "",
         "protagonist": contract["characters"][0] if contract["characters"] else "",
         "platform": project["target_platform"],
-        "duration_seconds": int(project["target_duration"]),
+        "duration_seconds": short_drama_duration.choose(
+            project["target_duration"], project.get("shot_count") or 0
+        ),
+        "duration_range_seconds": list(
+            short_drama_duration.bounds(project["target_duration"])
+        ),
         "ratio": project["ratio"],
         "latest_request": user_messages[-1][-1200:] if user_messages else "",
         "story_notes": non_confirmation_messages[-8:],
@@ -1374,19 +1639,40 @@ def _script(project, messages, instruction="", understanding=None, source_import
             import_contract = candidate
         else:
             import_contract = _import_contract(source_import)
-    if import_contract:
-        names = list(dict.fromkeys(import_contract["characters"] + names))[:8]
+    if import_contract and import_contract.get("characters"):
+        names = list(dict.fromkeys(import_contract["characters"]))[:8]
     if "独角" in seed or "一个人" in seed:
         names = names[:1]
-    characters = [
-        {
-            "character_key": "character_%d" % (index + 1),
-            "name": name,
-            "identity": "故事中的%s" % name,
-            "personality": "身份、行动和情绪均以已确认故事为准",
-        }
-        for index, name in enumerate(names)
-    ]
+    role_contract = (
+        import_contract.get("character_contract") or []
+        if import_contract else []
+    )
+    if role_contract:
+        characters = [{
+            "character_key": str(
+                item.get("character_key") or "character_%d" % (index + 1)
+            ),
+            "name": str(item.get("name") or names[index]),
+            "identity": str(
+                item.get("identity_text") or "故事中的%s" % names[index]
+            ),
+            "personality": str(
+                item.get("personality")
+                or "身份、行动和情绪均以已确认故事为准"
+            ),
+            "role_type": str(item.get("role_type") or "support"),
+        } for index, item in enumerate(role_contract[:8])]
+    else:
+        characters = [
+            {
+                "character_key": "character_%d" % (index + 1),
+                "name": name,
+                "identity": "故事中的%s" % name,
+                "personality": "身份、行动和情绪均以已确认故事为准",
+                "role_type": "main" if index == 0 else "support",
+            }
+            for index, name in enumerate(names)
+        ]
     clauses = _story_clauses(project, understanding, source_import)
     script = short_drama_storyboard.compile_storyboard(
         project,
@@ -1424,11 +1710,30 @@ def _script(project, messages, instruction="", understanding=None, source_import
             "contract_revision": import_contract["revision"],
             "contract_hash": import_contract["contract_hash"],
         }
+        script = _apply_explicit_storyboard(
+            script,
+            project,
+            source_import.get("source_text") or "",
+        )
+    else:
+        script = _apply_explicit_storyboard(script, project, "")
+    short_drama_storyboard.normalize_dialogue_timing(script)
     return script
 
 
 def _validate_script(script):
     quality = short_drama_storyboard.validate_script(script)
+    storyboard_source = script.get("storyboard_source") or {}
+    unmapped = storyboard_source.get("unmapped_shot_numbers") or []
+    if unmapped:
+        quality.setdefault("warnings", []).append({
+            "code": "explicit_storyboard_shot_count_mismatch",
+            "message": "完整剧本中的分镜 %s 超出项目镜头数量，未写入当前版本" % "、".join(
+                str(value) for value in unmapped
+            ),
+        })
+        if quality.get("status") == "pass":
+            quality["status"] = "warning"
     script["quality_gate"] = quality
     if quality["status"] == "blocked":
         blocker = quality["blockers"][0]
@@ -1482,7 +1787,7 @@ def _import_snapshot(conn, project_id):
     conn.row_factory = sqlite3.Row
     row = conn.execute(
         "SELECT source_text,source_hash,filename,content_type,character_contract_json,"
-        "import_mode,status,created_at "
+        "core_story_json,core_story_confirmed_at,import_mode,status,created_at "
         "FROM short_drama_script_imports WHERE project_id=? AND status='completed'",
         (project_id,),
     ).fetchone()
@@ -1492,6 +1797,7 @@ def _import_snapshot(conn, project_id):
     result["character_contract"] = _json(
         result.pop("character_contract_json", "[]"), []
     )
+    result["core_story"] = _json(result.pop("core_story_json", "{}"), {})
     return result
 
 
@@ -1731,8 +2037,11 @@ def _normalize_confirmed_contract(project, value):
     duration_seconds = int(value.get("duration_seconds") or 0)
     if shot_count != int(project.get("shot_count") or 0):
         raise ConversationError("confirmed_contract_project_mismatch", "确认镜头数与项目不一致", 409)
-    if duration_seconds != int(project.get("target_duration") or 0):
-        raise ConversationError("confirmed_contract_project_mismatch", "确认时长与项目不一致", 409)
+    if not short_drama_duration.contains(
+            project.get("target_duration"), duration_seconds):
+        raise ConversationError(
+            "confirmed_contract_project_mismatch", "确认时长不在项目所选区间内", 409
+        )
     if str(value.get("ratio") or "") != str(project.get("ratio") or ""):
         raise ConversationError("confirmed_contract_project_mismatch", "确认画幅与项目不一致", 409)
     raw_shots = value.get("shots") or []
@@ -1970,6 +2279,7 @@ def _script_from_confirmed_contract(project, value, instruction):
         })
     script["confirmed_contract"] = contract
     script["confirmed_contract_hash"] = _hash(contract)
+    short_drama_storyboard.normalize_dialogue_timing(script)
     _validate_script(script)
     return script
 
@@ -2202,15 +2512,23 @@ def _shot_and_line(script, shot_key):
 def _rebalance_duration(script, edited_shot, requested_seconds):
     shots = script.get("shots") or []
     requested_seconds = int(requested_seconds)
-    if requested_seconds < 1:
-        raise ConversationError("shot_duration_invalid", "镜头时长至少为 1 秒", 422)
+    public_contract = all(
+        int(item.get("duration_seconds") or 0)
+        in short_drama_duration.SHOT_DURATION_SECONDS
+        for item in shots
+    )
+    if public_contract and requested_seconds not in short_drama_duration.SHOT_DURATION_SECONDS:
+        raise ConversationError("shot_duration_invalid", "镜头时长必须为 5 或 10 秒", 422)
+    if not public_contract and (requested_seconds < 4 or requested_seconds > 15):
+        raise ConversationError("shot_duration_invalid", "镜头时长必须为 4 至 15 秒", 422)
     target = int((script.get("overview") or {}).get("duration_seconds") or 0)
     others = [
         item
         for item in shots
         if item is not edited_shot and not bool(item.get("locked"))
     ]
-    minimum_others = len(others) + sum(
+    minimum_per_shot = 5 if public_contract else 4
+    minimum_others = minimum_per_shot * len(others) + sum(
         int(item.get("duration_seconds") or 0)
         for item in shots
         if item is not edited_shot and bool(item.get("locked"))
@@ -2218,7 +2536,7 @@ def _rebalance_duration(script, edited_shot, requested_seconds):
     if requested_seconds + minimum_others > target:
         raise ConversationError(
             "shot_duration_exceeds_timeline",
-            "该时长会挤占已锁定镜头或使其他镜头低于 1 秒",
+            "该时长会挤占已锁定镜头或破坏 5/10 秒镜头契约",
             422,
         )
     delta = requested_seconds - int(edited_shot.get("duration_seconds") or 0)
@@ -2237,9 +2555,25 @@ def _rebalance_duration(script, edited_shot, requested_seconds):
         key=lambda item: int(item.get("sort_order") or 0),
         reverse=(delta > 0),
     )
-    if delta > 0:
+    if public_contract and delta > 0:
         for item in ordered:
-            available = max(0, int(item.get("duration_seconds") or 0) - 1)
+            if int(item.get("duration_seconds") or 0) == 10 and remaining >= 5:
+                item["duration_seconds"] = 5
+                remaining -= 5
+                if not remaining:
+                    break
+    elif public_contract:
+        for item in ordered:
+            if int(item.get("duration_seconds") or 0) == 5 and remaining <= -5:
+                item["duration_seconds"] = 10
+                remaining += 5
+                if not remaining:
+                    break
+    elif delta > 0:
+        for item in ordered:
+            available = max(
+                0, int(item.get("duration_seconds") or 0) - minimum_per_shot
+            )
             take = min(available, remaining)
             item["duration_seconds"] -= take
             remaining -= take

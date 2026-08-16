@@ -8,6 +8,11 @@ import re
 import uuid
 
 
+class RequestBodyTooLarge(ValueError):
+    code = "request_body_too_large"
+    status = 413
+
+
 CATALOG = {
     "HQ-REQUEST-001": {"type": "invalid_request", "status": 400, "message": "请求参数不正确，请检查后重试", "retryable": False},
     "HQ-AUTH-001": {"type": "unauthorized", "status": 401, "message": "登录或授权已过期，请重新登录", "retryable": False},

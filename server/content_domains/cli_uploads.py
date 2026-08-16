@@ -1,4 +1,4 @@
-"""Private, short-lived image inputs uploaded through HQ CLI."""
+"""Private, short-lived media inputs uploaded through HQ CLI."""
 
 import base64
 import hashlib
@@ -8,6 +8,7 @@ import os
 import pathlib
 import re
 import shutil
+import subprocess
 import threading
 import time
 import uuid
@@ -24,6 +25,12 @@ UPLOAD_ROOT = pathlib.Path(os.environ.get(
 ))
 UPLOAD_ID_RE = re.compile(r"^img_[0-9a-f]{32}$")
 MIME_EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
+VIDEO_MAX_BYTES = 32 * 1024 * 1024
+VIDEO_MAX_USER_BYTES = 96 * 1024 * 1024
+VIDEO_MAX_USER_FILES = 6
+VIDEO_MAX_SECONDS = 15
+VIDEO_UPLOAD_ID_RE = re.compile(r"^vid_[0-9a-f]{32}$")
+VIDEO_MIME_EXTENSIONS = {"video/mp4": ".mp4", "video/quicktime": ".mov", "video/webm": ".webm"}
 _UPLOAD_LOCK = threading.Lock()
 
 
@@ -34,6 +41,14 @@ def detect_mime(header):
         return "image/jpeg"
     if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
         return "image/webp"
+    return ""
+
+
+def detect_video_mime(header):
+    if header.startswith(b"\x1aE\xdf\xa3"):
+        return "video/webm"
+    if len(header) >= 12 and header[4:8] == b"ftyp":
+        return "video/quicktime" if header[8:12] == b"qt  " else "video/mp4"
     return ""
 
 
@@ -50,10 +65,29 @@ def _paths(upload_id, extension):
     return data, meta
 
 
+def _video_paths(upload_id, extension):
+    root = UPLOAD_ROOT.resolve()
+    data = (root / (upload_id + extension)).resolve()
+    meta = (root / (upload_id + ".json")).resolve()
+    data.relative_to(root)
+    meta.relative_to(root)
+    return data, meta
+
+
 def _delete_upload(upload_id):
     if not UPLOAD_ID_RE.fullmatch(upload_id):
         return
     for suffix in tuple(MIME_EXTENSIONS.values()) + (".json",):
+        try:
+            (UPLOAD_ROOT / (upload_id + suffix)).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _delete_video_upload(upload_id):
+    if not VIDEO_UPLOAD_ID_RE.fullmatch(upload_id):
+        return
+    for suffix in tuple(VIDEO_MIME_EXTENSIONS.values()) + (".json",):
         try:
             (UPLOAD_ROOT / (upload_id + suffix)).unlink(missing_ok=True)
         except OSError:
@@ -82,11 +116,38 @@ def _cleanup(now):
             expires_at = 0
         if expires_at <= now:
             _delete_upload(meta_path.stem)
+    for meta_path in UPLOAD_ROOT.glob("vid_*.json"):
+        try:
+            raw_meta = meta_path.read_bytes()
+            if len(raw_meta) > 4096:
+                raise ValueError("metadata too large")
+            expires_at = int(json.loads(raw_meta).get("expires_at") or 0)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            expires_at = 0
+        if expires_at <= now:
+            _delete_video_upload(meta_path.stem)
 
 
 def _active_usage(owner_hash, now):
     count = total = 0
     for meta_path in UPLOAD_ROOT.glob("img_*.json"):
+        try:
+            raw_meta = meta_path.read_bytes()
+            if len(raw_meta) > 4096:
+                continue
+            meta = json.loads(raw_meta)
+            if int(meta.get("expires_at") or 0) > now and hmac.compare_digest(
+                    str(meta.get("owner_hash") or ""), owner_hash):
+                count += 1
+                total += int(meta.get("bytes") or 0)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            continue
+    return count, total
+
+
+def _active_video_usage(owner_hash, now):
+    count = total = 0
+    for meta_path in UPLOAD_ROOT.glob("vid_*.json"):
         try:
             raw_meta = meta_path.read_bytes()
             if len(raw_meta) > 4096:
@@ -182,6 +243,108 @@ def _store_image(stream, length, username, content_type, expected_sha256, now):
     }
 
 
+def _probe_video_duration(path):
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=index,codec_type:format=duration",
+             "-of", "json", str(path)],
+            check=True, timeout=20, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        probe = json.loads(result.stdout)
+        streams = probe.get("streams") or []
+        if not any(stream.get("codec_type") == "video" for stream in streams):
+            raise ValueError("missing video stream")
+        duration = float((probe.get("format") or {}).get("duration"))
+    except (FileNotFoundError, subprocess.SubprocessError, TypeError, ValueError,
+            json.JSONDecodeError, AttributeError) as exc:
+        raise ValueError("无法读取视频时长，请换用完整的 MP4 / MOV / WebM") from exc
+    if not 0 < duration <= VIDEO_MAX_SECONDS:
+        raise ValueError("视频时长必须在 0-%d 秒之间" % VIDEO_MAX_SECONDS)
+    return round(duration, 3)
+
+
+def store_video(stream, length, username, content_type, expected_sha256, now=None):
+    now = int(time.time() if now is None else now)
+    if not username:
+        raise ValueError("缺少上传账号")
+    if content_type not in VIDEO_MIME_EXTENSIONS:
+        raise ValueError("只支持 MP4 / MOV / WebM")
+    if not isinstance(length, int) or length <= 0 or length > VIDEO_MAX_BYTES:
+        raise ValueError("视频大小必须在 1B 到 32MB 之间")
+    expected_sha256 = str(expected_sha256 or "").lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise ValueError("缺少有效的视频摘要")
+
+    with _UPLOAD_LOCK:
+        UPLOAD_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(UPLOAD_ROOT, 0o700)
+        _cleanup(now)
+        count, total = _active_video_usage(_owner_hash(username), now)
+        if count >= VIDEO_MAX_USER_FILES or total + length > VIDEO_MAX_USER_BYTES:
+            raise ValueError("当前账号的临时视频已达上限，请等待过期后重试")
+        if shutil.disk_usage(UPLOAD_ROOT).free - length < MIN_FREE_BYTES:
+            raise OSError("视频临时空间不足")
+
+        upload_id = "vid_" + uuid.uuid4().hex
+        extension = VIDEO_MIME_EXTENSIONS[content_type]
+        data_path, meta_path = _video_paths(upload_id, extension)
+        temp_data = UPLOAD_ROOT / ("." + upload_id + ".tmp")
+        temp_meta = UPLOAD_ROOT / ("." + upload_id + ".json.tmp")
+        digest = hashlib.sha256()
+        header = b""
+        remaining = length
+        descriptor = os.open(str(temp_data), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                while remaining:
+                    chunk = stream.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        raise ValueError("视频上传不完整")
+                    if len(header) < 32:
+                        header += chunk[:32 - len(header)]
+                    handle.write(chunk)
+                    digest.update(chunk)
+                    remaining -= len(chunk)
+                handle.flush()
+                os.fsync(handle.fileno())
+            actual_sha256 = digest.hexdigest()
+            if not hmac.compare_digest(actual_sha256, expected_sha256):
+                raise ValueError("视频上传过程中发生变化，请重新上传")
+            if detect_video_mime(header) != content_type:
+                raise ValueError("视频内容与声明格式不一致")
+            duration = _probe_video_duration(temp_data)
+            meta = {
+                "version": 1,
+                "owner_hash": _owner_hash(username),
+                "mime": content_type,
+                "extension": extension,
+                "bytes": length,
+                "sha256": actual_sha256,
+                "duration": duration,
+                "expires_at": now + TTL,
+            }
+            temp_meta.write_text(json.dumps(meta, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+            os.chmod(temp_meta, 0o600)
+            os.replace(temp_data, data_path)
+            os.replace(temp_meta, meta_path)
+        except Exception:
+            temp_data.unlink(missing_ok=True)
+            temp_meta.unlink(missing_ok=True)
+            data_path.unlink(missing_ok=True)
+            meta_path.unlink(missing_ok=True)
+            raise
+    return {
+        "upload_id": upload_id,
+        "mime": content_type,
+        "bytes": length,
+        "sha256": expected_sha256,
+        "duration": duration,
+        "expires_at": now + TTL,
+        "expires_in": TTL,
+    }
+
+
 def _load_image(upload_id, username, now):
     upload_id = str(upload_id or "").strip().lower()
     if not UPLOAD_ID_RE.fullmatch(upload_id):
@@ -215,6 +378,38 @@ def _load_image(upload_id, username, now):
     return base64.b64encode(data).decode("ascii"), meta
 
 
+def _load_video(upload_id, username, now):
+    upload_id = str(upload_id or "").strip().lower()
+    if not VIDEO_UPLOAD_ID_RE.fullmatch(upload_id):
+        raise ValueError("视频 upload_id 格式不合法")
+    _, meta_path = _video_paths(upload_id, ".mp4")
+    try:
+        raw_meta = meta_path.read_bytes()
+        if len(raw_meta) > 4096:
+            raise ValueError("视频 upload_id 元数据异常")
+        meta = json.loads(raw_meta)
+        extension = str(meta.get("extension") or "")
+        data_path, _ = _video_paths(upload_id, extension)
+        data = data_path.read_bytes()
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        raise ValueError("视频 upload_id 不存在或已失效")
+    if meta.get("version") != 1 or extension not in VIDEO_MIME_EXTENSIONS.values():
+        raise ValueError("视频 upload_id 元数据异常")
+    if not hmac.compare_digest(str(meta.get("owner_hash") or ""), _owner_hash(username)):
+        raise ValueError("视频 upload_id 不存在或已失效")
+    if int(meta.get("expires_at") or 0) <= now:
+        data_path.unlink(missing_ok=True)
+        meta_path.unlink(missing_ok=True)
+        raise ValueError("视频 upload_id 已过期，请重新上传")
+    if not 0 < len(data) <= VIDEO_MAX_BYTES or len(data) != int(meta.get("bytes") or -1):
+        raise ValueError("视频 upload_id 文件异常")
+    if detect_video_mime(data[:32]) != meta.get("mime"):
+        raise ValueError("视频 upload_id 文件格式异常")
+    if not hmac.compare_digest(hashlib.sha256(data).hexdigest(), str(meta.get("sha256") or "")):
+        raise ValueError("视频 upload_id 文件校验失败")
+    return "data:%s;base64,%s" % (meta["mime"], base64.b64encode(data).decode("ascii")), meta
+
+
 def expand_image_payload(payload, username, now=None):
     if not isinstance(payload, dict):
         raise ValueError("请求体必须是 JSON 对象")
@@ -232,8 +427,8 @@ def expand_image_payload(payload, username, now=None):
         raise ValueError("蒙版必须同时提供原图 upload_id")
     provider = str(body.get("provider") or "openai").strip().lower()
     if reference_ids is not None:
-        limits = {"openai": 16, "seedream": 10, "xiaole": 4,
-                  "grok": 7, "micro": 9, "omni": 6}
+        limits = {"openai": 16, "seedream": 10, "xiaole": 4, "banana": 14,
+                  "grok": 7, "micro": 9, "omni": 6, "minimax": 5, "sora": 1}
         target = str(body.get("channel") or provider).strip().lower()
         limit = limits.get(target, 1)
         if not isinstance(reference_ids, list) or not 1 <= len(reference_ids) <= limit:
@@ -250,5 +445,80 @@ def expand_image_payload(payload, username, now=None):
             raise ValueError("蒙版必须是 PNG 图片")
         body["mask"] = mask
     if reference_ids is not None:
-        body["reference_images"] = [_load_image(item, username, now)[0] for item in reference_ids]
+        loaded = [_load_image(item, username, now) for item in reference_ids]
+        target = str(body.get("channel") or provider).strip().lower()
+        if target == "banana":
+            body["images"] = [
+                {"data": data, "mime_type": meta["mime"]}
+                for data, meta in loaded
+            ]
+        elif target == "sora":
+            body["reference_images"] = [
+                "data:%s;base64,%s" % (meta["mime"], data)
+                for data, meta in loaded
+            ]
+        else:
+            body["reference_images"] = [data for data, _meta in loaded]
+    return body
+
+
+def expand_role_media_payload(payload, username, now=None):
+    """Expand owner-bound upload IDs into the exact media roles existing generators accept."""
+    if not isinstance(payload, dict):
+        raise ValueError("请求体必须是 JSON 对象")
+    body = dict(payload)
+    now = int(time.time() if now is None else now)
+    image_roles = {
+        "person_image_upload_id": "person_image_data",
+        "clothes_upload_id": "clothes_data",
+        "background_upload_id": "background_data",
+    }
+    video_roles = {
+        "person_video_upload_id": "person_video_data",
+    }
+    for upload_key, data_key in image_roles.items():
+        upload_id = body.pop(upload_key, None)
+        if upload_id is None:
+            continue
+        if body.get(data_key):
+            raise ValueError("%s 不能与 %s 同时使用" % (upload_key, data_key))
+        data, meta = _load_image(upload_id, username, now)
+        body[data_key] = "data:%s;base64,%s" % (meta["mime"], data)
+    for upload_key, data_key in video_roles.items():
+        upload_id = body.pop(upload_key, None)
+        if upload_id is None:
+            continue
+        if body.get(data_key):
+            raise ValueError("%s 不能与 %s 同时使用" % (upload_key, data_key))
+        data, meta = _load_video(upload_id, username, now)
+        if float(meta.get("duration") or 0) > 6:
+            raise ValueError("经典换装视频不能超过 6 秒")
+        body[data_key] = data
+
+    image_ids = body.pop("reference_image_upload_ids", None)
+    if image_ids is not None:
+        if body.get("reference_images"):
+            raise ValueError("reference_image_upload_ids 不能与 reference_images 同时使用")
+        raw_avatar_ids = body.get("avatar_ids")
+        if isinstance(raw_avatar_ids, (list, tuple)) and raw_avatar_ids:
+            avatar_count = len(raw_avatar_ids)
+        elif raw_avatar_ids is None and body.get("avatar_id") is not None:
+            avatar_count = 1
+        else:
+            avatar_count = 3
+        image_limit = max(0, 9 - avatar_count)
+        if not isinstance(image_ids, list) or not 1 <= len(image_ids) <= image_limit:
+            raise ValueError("reference_image_upload_ids 超出额度（与形象共用 9 张，当前最多 %d 项）" % image_limit)
+        body["reference_images"] = []
+        for upload_id in image_ids:
+            data, meta = _load_image(upload_id, username, now)
+            body["reference_images"].append("data:%s;base64,%s" % (meta["mime"], data))
+
+    video_ids = body.pop("reference_video_upload_ids", None)
+    if video_ids is not None:
+        if body.get("reference_videos") or body.get("reference_video_data"):
+            raise ValueError("reference_video_upload_ids 不能与视频 base64 字段同时使用")
+        if not isinstance(video_ids, list) or not 1 <= len(video_ids) <= 3:
+            raise ValueError("reference_video_upload_ids 必须包含 1-3 项")
+        body["reference_videos"] = [_load_video(item, username, now)[0] for item in video_ids]
     return body

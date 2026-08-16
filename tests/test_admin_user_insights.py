@@ -339,7 +339,7 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             'class="ops-workspace"', 'class="ops-catalog"', 'class="ops-selected"', 'class="ops-inspector"',
             'data-operation-select=', "sidebarModule = {points:'recharge',pricing:'features'}",
             'id="operationsPage"', 'data-operations-page=', "该客户页尚未盘点",
-            "开发待归档", "当前不会自动发起付费任务", "未接入统一证据",
+            "开发待归档", "后台生产链测试", "尚无真实接单证据",
             "任务记录了点数，账务台账待核对", "operationsPage:'video'",
             'id="globalUserSearch"', 'id="customerLayer"',
             "/api/admin/activity?limit=8", "/api/admin/recharge/orders?status=pending",
@@ -372,8 +372,34 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             "state.module==='dashboard'||state.module==='operations'", "credential_version",
             "var routeUnverified=", "&force=1",
             "var evidence=registryRouteEvidence({key:meta.key}",
+            "后台生产链控制台", "后台生产链可交付，客户页面仍需浏览器验收",
+            "data-operation-validation-enable=", "openOperationValidation",
+            "运行一次生产链验收", "/api/admin/e2e/run", "startE2EPoll",
+            'id="operationsBatch"', "一键完整旅程验收", "runE2EBatch",
+            "Number((preflight||{}).ready_count||0)",
+            "/api/admin/e2e/batch/preflight", "/api/admin/e2e/batch/run", "RUN_BATCH",
+            "/api/admin/e2e/audio-fixture/prepare", "准备个人测试音色",
+            "prepareAudioE2EFixture", "audio_fixture_required",
+            "后台自动加载预设素材、分批提交并汇总八段证据",
+            "同步或内部步骤没有上游任务 ID 时标记“不适用”",
+            "同一次旅程全部通过才显示 8/8",
+            "仅表示当前允许接单",
+            "return state.overviewPromise", "loadE2EPreflight(operationKey,true)",
+            "本次预设测试包", "素材只在服务器私有目录使用", "查看 '+stages.length+' 段证据",
+            "/api/admin/e2e/preflight", "测试包已准备 · 待执行",
+            "产物已登记 · 私有测试素材不展示",
+            "已暂停 · 最近失败", "已暂停 '+pausedCount+'", "customerVisibleCount",
+            ".ops-e2e-stages{display:grid",
+            ".ops-e2e-stage span{min-width:0;overflow-wrap:anywhere",
+            '.ops-catalog{position:static;max-height:none}',
         ):
             self.assertIn(marker, html)
+        self.assertNotIn("window.open(target", html)
+        self.assertNotIn('id="operationsValidationLayer"', html)
+        self.assertNotIn('id="operationsValidationFrame"', html)
+        self.assertNotIn("hq_video_prefill", html)
+        self.assertNotIn("产物：<code>'+esc(x.result_url", html)
+        self.assertNotIn("<img src=", html[html.index("function registryValidationPanel"):html.index("function renderOperationsDeveloper")])
         self.assertNotIn('data-module-tab="ops"', html)
         self.assertNotIn('data-module-tab="points"', html)
         self.assertNotIn('data-module-tab="pricing"', html)
@@ -385,6 +411,8 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
         self.assertNotIn("function renderServices", html)
         self.assertNotIn("服务在线", html)
         self.assertNotIn("健康接口可达", html)
+        self.assertNotIn("尚未证明全链路", html)
+        self.assertNotIn("当前尚未统一采集", html)
         self.assertNotIn('id="operationsSearch"', html)
         self.assertNotIn("function operationTerms", html)
         self.assertNotIn("已发现服务器凭据 · 尚未鉴权", html)
@@ -398,6 +426,8 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
         script = html.split("<script>", 1)[1].split("</script>", 1)[0]
         route_start = script.index("function registryRouteEvidence")
         route_end = script.index("function updateServerProbeNodes", route_start)
+        acceptance_start = script.index("function registryAcceptanceLabel")
+        acceptance_end = script.index("function registryVerdict", acceptance_start)
         verdict_start = script.index("function registryVerdict")
         verdict_end = script.index("function registryModeCard", verdict_start)
         probe = "\n".join([
@@ -412,10 +442,46 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             "function registrySelections(){return {};}",
             "function registryDependencyApplies(){return true;}",
             "function registryFailureBreakpoint(){return 'break';}",
+            "function registryE2ERun(){return null;}",
+            "function registryE2EPassed(){return false;}",
+            "function registryE2EFresh(){return false;}",
+            script[acceptance_start:acceptance_end],
+            "var acceptance=registryAcceptanceLabel({validation:{supported:true}}, {}, {status:'disabled'}, ['fail']);",
+            "if(acceptance[0]!=='fail'||acceptance[1]!=='已暂停 · 最近失败')throw new Error('paused failed mode looked runnable');",
+            "acceptance=registryAcceptanceLabel({validation:{supported:true}}, {}, {status:'disabled'}, ['warn']);",
+            "if(acceptance[0]!=='warn'||acceptance[1]!=='已暂停接单')throw new Error('paused mode looked runnable');",
             "registryRouteEvidence=function(dep){return {state:dep.testState};};",
             script[verdict_start:verdict_end],
             "var verdict=registryVerdict({acceptance_health:true,dependencies:[{requirement:'required',testState:'warn'}]}, {evidence_contract:{},dependencies:[]}, null, {status:'enabled'}, {online:true}, {});",
             "if(verdict[0]==='ok')throw new Error('unverified required route became green');",
+            "verdict=registryVerdict({acceptance_health:true,dependencies:[]}, {evidence_contract:{},dependencies:[]}, {latest:{status:'failed',error:'timeout'}}, {status:'disabled'}, {online:true}, {});",
+            "if(verdict[0]!=='fail'||verdict[1]!=='最近一次失败')throw new Error('disabled flag hid latest failure');",
+            "verdict=registryVerdict({acceptance_health:true,dependencies:[]}, {evidence_contract:{},dependencies:[]}, null, {status:'disabled'}, {online:true}, {});",
+            "if(verdict[0]!=='warn'||verdict[1]!=='暂停接单')throw new Error('disabled flag without failure was not yellow');",
+        ])
+        result = subprocess.run([shutil.which("node"), "-e", probe], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(shutil.which("node"), "node is required for paused validation behavior test")
+    def test_paused_mode_never_renders_cached_run_control(self):
+        html = (Path(__file__).resolve().parents[1] / "site/admin/index.html").read_text(encoding="utf-8")
+        script = html.split("<script>", 1)[1].split("</script>", 1)[0]
+        panel_start = script.index("function registryValidationPanel")
+        panel_end = script.index("function loadE2EPreflight", panel_start)
+        probe = "\n".join([
+            "var state={e2ePreflights:{'image.xiaole.text':{ready:true,cost:20,points:100,parameters:[]}},e2ePreflightPending:{}};",
+            "function registryFlagState(){return {status:'disabled'};}",
+            "function registryE2ERun(){return null;}",
+            "function e2eActive(){return false;}",
+            "function registryE2EPassed(){return false;}",
+            "function registryE2EFresh(){return false;}",
+            "function esc(value){return String(value==null?'':value);}",
+            "function fmtTime(){return '12:00';}",
+            script[panel_start:panel_end],
+            "var output=registryValidationPanel({}, {key:'image.xiaole.text',validation:{supported:true,fixture_summary:[]}}, {e2e_test:{configured:true}}, ['fail','最近一次失败']);",
+            "if(!output.includes('已暂停 · 最近失败'))throw new Error('paused failure status missing');",
+            "if(!output.includes('自动质检不会提交付费任务'))throw new Error('paused blocker missing');",
+            "if(output.includes('data-operation-validation-open')||output.includes('运行一次生产链验收'))throw new Error('cached preflight leaked run control');",
         ])
         result = subprocess.run([shutil.which("node"), "-e", probe], capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)

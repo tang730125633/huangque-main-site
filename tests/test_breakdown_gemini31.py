@@ -646,7 +646,7 @@ class GeminiReverseHttpTests(unittest.TestCase):
             },
         })
         with mock.patch.object(
-            urllib.request, "urlopen", side_effect=error
+            gemini_reverse, "_open_url", side_effect=error
         ) as opened:
             with self.assertRaisesRegex(RuntimeError, "INVALID_ARGUMENT") as raised:
                 gemini_reverse._open(request)
@@ -658,13 +658,29 @@ class GeminiReverseHttpTests(unittest.TestCase):
         request = urllib.request.Request("https://example.invalid")
         response = mock.MagicMock()
         with mock.patch.object(
-            urllib.request,
-            "urlopen",
+            gemini_reverse,
+            "_open_url",
             side_effect=[self._http_error(429), response],
         ) as opened:
             got = gemini_reverse._open(request)
         self.assertIs(got, response)
         self.assertEqual(opened.call_count, 2)
+
+    def test_transport_uses_the_selected_egress_proxy(self):
+        request = urllib.request.Request("https://generativelanguage.googleapis.com/test")
+        response = mock.MagicMock()
+        opener = mock.MagicMock()
+        opener.open.return_value = response
+        with mock.patch.object(gemini_reverse.egress, "preferred_proxy", return_value="http://127.0.0.1:7999"), \
+             mock.patch.object(urllib.request, "ProxyHandler") as proxy_handler, \
+             mock.patch.object(urllib.request, "build_opener", return_value=opener):
+            got = gemini_reverse._open_url(request, 20)
+        self.assertIs(got, response)
+        proxy_handler.assert_called_once_with({
+            "http": "http://127.0.0.1:7999",
+            "https": "http://127.0.0.1:7999",
+        })
+        opener.open.assert_called_once_with(request, timeout=20)
 
     def test_processing_longer_than_thirty_seconds_can_become_active(self):
         clock = [0.0]

@@ -56,6 +56,26 @@ class CLIImageUploadTests(unittest.TestCase):
                 "mask_upload_id": jpg["upload_id"],
             }, "alice", now=101)
 
+    def test_minimax_accepts_five_and_banana_accepts_fourteen_reference_uploads(self):
+        upload_ids = [self.upload(now=100)["upload_id"] for _ in range(14)]
+        minimax = cli_uploads.expand_image_payload({
+            "channel": "minimax", "reference_upload_ids": upload_ids[:5],
+        }, "alice", now=101)
+        banana = cli_uploads.expand_image_payload({
+            "provider": "banana", "reference_upload_ids": upload_ids,
+        }, "alice", now=101)
+        self.assertEqual(5, len(minimax["reference_images"]))
+        self.assertEqual(14, len(banana["images"]))
+        self.assertEqual("image/png", banana["images"][0]["mime_type"])
+
+    def test_sora_reference_is_expanded_as_one_data_url(self):
+        uploaded = self.upload(now=100)
+        body = cli_uploads.expand_image_payload({
+            "channel": "sora", "reference_upload_ids": [uploaded["upload_id"]],
+        }, "alice", now=101)
+        self.assertEqual(1, len(body["reference_images"]))
+        self.assertTrue(body["reference_images"][0].startswith("data:image/png;base64,"))
+
     def test_digest_mime_expiry_and_combinations_fail_closed(self):
         with self.assertRaisesRegex(ValueError, "发生变化"):
             cli_uploads.store_image(io.BytesIO(PNG), len(PNG), "alice", "image/png", "0" * 64, now=100)

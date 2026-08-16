@@ -206,12 +206,24 @@ for f in "$@"; do
              dest=/home/ubuntu/auth-service/; svc=huangque-auth ;;
     server/content_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-content ;;
     server/func_names.py)  dest=/home/ubuntu/content-api/;  svc="huangque-content huangque-admin" ;;
+    server/content_domains/function_registry.py)
+             dest=/home/ubuntu/content-api/content_domains/
+             if [ "$EXACT_CONTENT_DOMAINS" = "1" ]; then
+               svc=huangque-admin
+             else
+               svc="huangque-content huangque-admin"
+             fi
+             ;;
+    server/content_domains/feature_flags.py) dest=/home/ubuntu/content-api/content_domains/; svc="huangque-content huangque-admin huangque-imggen-api huangque-leadgen-api" ;;
+    server/content_domains/egress.py) dest=/home/ubuntu/content-api/content_domains/; svc="huangque-content huangque-admin huangque-imggen-api" ;;
+    server/content_domains/browser_qa.py) dest=/home/ubuntu/content-api/content_domains/; svc=huangque-admin ;;
     server/content_domains/*) dest=/home/ubuntu/content-api/content_domains/;  svc=huangque-content ;;
     server/providers/*)
              rel="${f#server/providers/}"
              case "$rel" in */*) dest="/home/ubuntu/content-api/providers/${rel%/*}/" ;; *) dest=/home/ubuntu/content-api/providers/ ;; esac
              svc=huangque-content ;;
     server/admin_api.py)   dest=/home/ubuntu/content-api/;  svc=huangque-admin ;;
+    server/qa_fixtures/*)  dest=/home/ubuntu/content-api/qa_fixtures/; svc=huangque-admin ;;
     server/leadgen_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-leadgen-api ;;
     server/imggen_api.py)  dest=/home/ubuntu/content-api/;  svc=huangque-imggen-api ;;
     server/dl_service.py)  dest=/home/ubuntu/dl-service/;   svc=huangque-dl ;;
@@ -245,7 +257,7 @@ for f in "$@"; do
   esac
   case "$dest" in /etc/systemd/system/*)
     $SSHC "$REMOTE" "sudo mkdir -p $dest" || { echo "  ❌ $dest 创建失败"; exit 1; } ;;
-    /home/ubuntu/content-api/providers/*)
+    /home/ubuntu/content-api/providers/*|/home/ubuntu/content-api/qa_fixtures/*)
     $SSHC "$REMOTE" "sudo mkdir -p $dest" || { echo "  ❌ $dest 创建失败"; exit 1; } ;;
   esac
   if [ "$f" = "scripts/drift_sentinel.py" ]; then
@@ -265,6 +277,14 @@ for f in "$@"; do
   fi
   push_file "$f" "$dest" \
     && echo "  ✓ $f → $dest" || { echo "  ❌ $f 部署失败"; exit 1; }
+  case "$f" in
+    server/qa_fixtures/*)
+      old_public="$WWW/workbench/assets/qa/$(basename "$f")"
+      $SSHC "$REMOTE" "sudo rm -f '$old_public'" \
+        && echo "  ✓ 已移除旧公开测试素材：$old_public" \
+        || { echo "  ❌ 旧公开测试素材移除失败"; exit 1; }
+      ;;
+  esac
   if [ "$f" = "server/content_domains/pricing.py" ] || [ "$f" = "server/content_domains/error_contract.py" ]; then
     push_file "$f" /home/ubuntu/content-api/content_domains/ \
       && echo "  ✓ $f → /home/ubuntu/content-api/content_domains/" \

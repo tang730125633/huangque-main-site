@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 
 image = importlib.import_module("content_domains.image")
 
-PNG_B64 = base64.b64encode(b"\x89PNG\r\n\x1a\n-fake").decode("ascii")
+PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
 CREATE_OK = {"code": 200, "data": {"request_id": "r1", "status_url": "/api/v1/generations/r1"}}
 POLL_OK = {"code": 200, "data": {"status": "succeeded", "output": {"images": [{"b64_json": PNG_B64}]}}}
 RATE_LIMIT_MSG = "当前 API Key 媒体任务过多，请稍后再试"
@@ -113,6 +113,19 @@ class XiaoleImageRetryTest(unittest.TestCase):
             self._run([{"code": 400, "message": "内容审核未通过"}])
         self.assertIn("出图创建失败", str(ctx.exception))
 
+    def test_status_url_without_task_id_fails_before_polling(self):
+        """仅有 status_url 不能代替可审计任务 ID，失败后由 worker 走退点。"""
+        calls = []
+        create_without_id = {
+            "code": 200,
+            "data": {"status_url": "/api/v1/generations/status-only"},
+        }
+        fake = _fake_request(calls, [create_without_id], [POLL_OK])
+        with patch.object(image, "_xiaole_request", fake):
+            with self.assertRaisesRegex(ValueError, "任务ID"):
+                image._gen_image_xiaole_locked("一只猫", "1:1", "high", 1, None)
+        self.assertEqual(calls, [("POST", "/api/v1/generations")])
+
     def test_rate_limit_budget_exhausted(self):
         """持续限流超过预算 → 放弃并给「限流」人话（走失败退点，不会死等）。"""
         with patch.object(image, "XIAOLE_IMG_CREATE_MAX_WAIT", 25):
@@ -129,6 +142,20 @@ class XiaoleImageRetryTest(unittest.TestCase):
         ])
         self.assertEqual(result["provider"], "xiaole")
         self.assertEqual(result["count"], 1)
+
+    def test_poll_accepts_completed_terminal_status(self):
+        """兼容渠道把成功终态从 succeeded 改为 completed，不能一直等到超时。"""
+        completed = {"code": 200, "data": {"status": "completed", "output": {"images": [{"b64_json": PNG_B64}]}}}
+        result, _ = self._run([CREATE_OK], [completed])
+        self.assertEqual(result["provider_task_id"], "r1")
+        self.assertEqual(result["count"], 1)
+
+    def test_completed_with_corrupt_image_cannot_succeed(self):
+        """渠道终态成功也不够；作品无法解码时必须失败，不能给客户假绿。"""
+        corrupt = base64.b64encode(b"not-an-image").decode("ascii")
+        completed = {"code": 200, "data": {"status": "completed", "output": {"images": [{"b64_json": corrupt}]}}}
+        with self.assertRaisesRegex(ValueError, "无法解码"):
+            self._run([CREATE_OK], [completed])
 
     def test_poll_gives_up_after_consecutive_errors(self):
         """轮询连续 5 次失败才放弃（避免单边网络故障无限占 worker）。"""

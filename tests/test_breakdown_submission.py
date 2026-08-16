@@ -47,6 +47,7 @@ class BreakdownBatchTests(unittest.TestCase):
             })
         self.assertEqual("https://v.douyin.com/AbCdEf/", body["url"])
         self.assertEqual("reverse_prompt", body["mode"])
+        self.assertEqual("tikhub+google", body["provider"])
         self.assertEqual("1234567890123456789", body["_resolved_link"]["id"])
 
     def test_submission_validation_requires_specific_work_id(self):
@@ -83,6 +84,7 @@ class BreakdownBatchTests(unittest.TestCase):
             ["douyin", "xhs"],
             [item["platform"] for item in body["_resolved_links"]],
         )
+        self.assertEqual("tikhub+zhipu", body["provider"])
 
     def test_submission_validation_rejects_unknown_host_and_oversized_batch(self):
         with self.assertRaisesRegex(ValueError, "仅支持"):
@@ -355,7 +357,9 @@ class CopyZhipuProviderTests(unittest.TestCase):
         self.assertEqual("image_url", content[1]["type"])
 
     def test_generic_copy_and_short_drama_keep_legacy_openai_channel(self):
-        with mock.patch.object(text, "ZHIPU_API_KEY", ""), \
+        with mock.patch.multiple(text, ZHIPU_API_KEY="", COPY_API_BASE="", COPY_API_KEY="",
+                                 OPENAI_BASE="https://api.openai.com",
+                                 OPENAI_KEY=""), \
              mock.patch.object(text, "_post", return_value={
                  "choices": [{"message": {"content": "legacy ok"}}],
              }) as post:
@@ -532,12 +536,18 @@ class BreakdownLocalUploadHttpTests(unittest.TestCase):
                     "http://127.0.0.1:%d/api/gen/breakdown/local-upload?media_type=image"
                     % server.server_address[1]
                 )
-                request = urllib.request.Request(
-                    url, data=b"\x89PNG\r\n\x1a\nmock-image", method="POST",
-                    headers={"Authorization": "Bearer test", "Content-Type": "image/png"},
-                )
+                upload_data = b"\x89PNG\r\n\x1a\nmock-image"
+                headers = {
+                    "Authorization": "Bearer test", "Content-Type": "image/png",
+                    "Idempotency-Key": "local-upload-test-1",
+                }
+                request = urllib.request.Request(url, data=upload_data, method="POST", headers=headers)
                 with urllib.request.urlopen(request, timeout=5) as response:
                     accepted = json.loads(response.read())
+                replay = urllib.request.Request(url, data=upload_data, method="POST", headers=headers)
+                with urllib.request.urlopen(replay, timeout=5) as response:
+                    replayed = json.loads(response.read())
+                self.assertEqual(replayed, accepted)
                 self.assertEqual(20, accepted["cost"])
                 self.assertEqual(980, accepted["points_left"])
                 self.assertEqual([("fang", 20)], fake.deductions)
@@ -558,6 +568,8 @@ class BreakdownLocalUploadHttpTests(unittest.TestCase):
                     core.OUT_DIR / "_breakdown_uploads" / (upload["token"] + upload["suffix"]))
                 self.assertEqual(("breakdown", "fang", 20), tuple(row[:3]))
                 self.assertEqual("image", payload["media_type"])
+                self.assertEqual((payload["source_page"], payload["source_type"]), ("script", "image"))
+                self.assertEqual("local+zhipu", payload["provider"])
                 self.assertTrue(os.path.isfile(uploaded_path))
                 self.assertEqual(1, core._job_queue.qsize())
 

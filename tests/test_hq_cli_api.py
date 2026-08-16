@@ -59,7 +59,8 @@ class HQCLIAPITests(unittest.TestCase):
     def _raw_request(self, path, raw, token="", content_type="image/png", confirm=True):
         headers = {
             "Content-Type": content_type,
-            "X-HQ-Image-SHA256": hashlib.sha256(raw).hexdigest(),
+            ("X-HQ-Video-SHA256" if content_type.startswith("video/")
+             else "X-HQ-Image-SHA256"): hashlib.sha256(raw).hexdigest(),
         }
         if token:
             headers["Authorization"] = "Bearer " + token
@@ -267,6 +268,30 @@ class HQCLIAPITests(unittest.TestCase):
                 "SELECT COUNT(*) FROM tokens WHERE token=?", (captured["web_token"],)
             ).fetchone()[0])
 
+    def test_video_upload_requires_confirmation_and_streams_raw_bytes(self):
+        raw = b"\x00\x00\x00\x18ftypisom" + b"private-video"
+        token = self._token(["assets:upload"])
+        status, payload = self._raw_request(
+            "/api/auth/cli/video-upload", raw, token=token,
+            content_type="video/mp4", confirm=False,
+        )
+        self.assertEqual((409, "confirmation_required"), (status, payload["code"]))
+
+        captured = {}
+
+        def fake_upload(stream, length, web_token, internal_token, content_type, digest):
+            captured.update(raw=stream.read(length), content_type=content_type, digest=digest)
+            return 200, {"upload_id": "vid_" + "a" * 32, "sha256": digest, "duration": 5.5}
+
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_video_upload", side_effect=fake_upload):
+            status, payload = self._raw_request(
+                "/api/auth/cli/video-upload", raw, token=token, content_type="video/mp4",
+            )
+        self.assertEqual(200, status, payload)
+        self.assertEqual(raw, captured["raw"])
+        self.assertEqual("video/mp4", captured["content_type"])
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), captured["digest"])
+
     def test_canvas_create_builds_one_safe_text_node(self):
         token = self._token(["canvas:write"])
         status, payload = self._request("/api/auth/cli/action", {
@@ -439,6 +464,101 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual("24", submitted[0]["headers"]["X-HQ-Expected-Cost"])
         self.assertTrue(all(plan["internal"] for plan in submitted))
 
+    def test_collect_and_leads_actions_are_strict_quoted_and_submit_to_leadgen(self):
+        douyin = "https://v.douyin.com/abc123/"
+        xhs = "https://www.xiaohongshu.com/explore/note-1"
+        channels = "https://weixin.qq.com/sph/Abc123"
+        channels_443 = "https://weixin.qq.com:443/sph/Abc123"
+        bilibili = "https://b23.tv/keSUqLz"
+        expected = {
+            "collect-content": ("collect", "/api/gen/collect", {"url": xhs, "want": ["comments"]}),
+            "collect-video": ("collect", "/api/gen/collect", {"url": douyin, "want": ["video"]}),
+            "collect-transcript": ("collect", "/api/gen/collect", {"url": channels, "want": ["transcript"]}),
+            "collect-search": ("collect_search", "/api/gen/collect_search",
+                               {"platform": "xhs", "keyword": "轻食创业", "page": 2}),
+            "leads-generate": ("leads", "/api/gen/leads", {
+                "keyword": "美容院拓客", "platforms": ["douyin", "channels"],
+                "count": 20, "pages": 1, "channels_targets": ["sph123"],
+            }),
+        }
+        inputs = {
+            "collect-content": {"url": xhs},
+            "collect-video": {"url": douyin},
+            "collect-transcript": {"url": channels},
+            "collect-search": {"platform": "xhs", "keyword": "轻食创业", "page": 2},
+            "leads-generate": {
+                "keyword": "美容院拓客", "platforms": ["douyin", "channels"],
+                "channels_targets": ["sph123"],
+            },
+        }
+        for action, fields in expected.items():
+            plan = self.auth.hq_cli_api.action_plan(action, inputs[action])
+            self.assertEqual(
+                ("generation:quote", fields[0], fields[1], self.auth.hq_cli_api.LEADGEN_BASE, fields[2]),
+                (plan["scope"], plan["generation_kind"], plan["endpoint"],
+                 plan["submit_base"], plan["payload"]),
+            )
+        self.assertEqual(
+            channels_443,
+            self.auth.hq_cli_api.action_plan("collect-video", {"url": channels_443})["payload"]["url"],
+        )
+        self.assertEqual(
+            bilibili,
+            self.auth.hq_cli_api.action_plan("collect-video", {"url": bilibili})["payload"]["url"],
+        )
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan(
+                "collect-video", {"url": "https://douyin.com.evil.example/video/1"})
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan(
+                "collect-video", {"url": "https://mp.weixin.qq.com/s/Abc123"})
+        for invalid_channels in (
+                "http://weixin.qq.com/sph/Abc123",
+                "https://weixin.qq.com/sph/",
+                "https://weixin.qq.com/sph//Abc123",
+                "https://weixin.qq.com/sph/../Abc123",
+                "https://weixin.qq.com/sphx/Abc123",
+                "https://weixin.qq.com/not-sph/Abc123",
+                "https://evil.weixin.qq.com/sph/Abc123",
+                "https://weixin.qq.com:80/sph/Abc123",
+                "https://weixin.qq.com:444/sph/Abc123",
+                "https://%75:%70@weixin.qq.com/sph/Abc123",
+                "https://weixin.qq.com.evil.example/sph/Abc123"):
+            with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+                self.auth.hq_cli_api.action_plan("collect-video", {"url": invalid_channels})
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan(
+                "collect-search", {"platform": "douyin", "keyword": "越界页码", "page": 51})
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan(
+                "leads-generate", {"platforms": ["channels"], "channels_targets": []})
+        history = self.auth.hq_cli_api.action_plan("tasks", {"kind": "collect_search"})
+        self.assertIn("kind=collect_search", history["path"])
+
+        token = self._token(["generation:quote", "generation:submit"])
+        submitted = []
+
+        def fake_proxy(plan, _web_token, _internal_token):
+            if plan["path"] == "/api/gen/cli/quote":
+                return 200, {"kind": "collect", "cost": 3, "points": 100}
+            submitted.append(plan)
+            return 200, {"job_id": 88, "cost": 3, "points_left": 97}
+
+        request = {"action": "collect-video", "input": {"url": douyin}, "confirm": False}
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            status, quote = self._request("/api/auth/cli/action", request, token=token)
+            self.assertEqual(200, status, quote)
+            status, result = self._request(
+                "/api/auth/cli/action",
+                dict(request, confirm=True, quote_token=quote["quote_token"]), token=token,
+            )
+        self.assertEqual((200, 88), (status, result["job_id"]))
+        self.assertEqual(
+            (self.auth.hq_cli_api.LEADGEN_BASE, "/api/gen/collect", {"url": douyin, "want": ["video"]}),
+            (submitted[0]["base"], submitted[0]["path"], submitted[0]["body"]),
+        )
+        self.assertEqual("3", submitted[0]["headers"]["X-HQ-Expected-Cost"])
+
     def test_image_generation_accepts_only_valid_upload_id_combinations(self):
         upload_id = "img_" + "a" * 32
         plan = self.auth.hq_cli_api.action_plan("image-generate", {
@@ -453,11 +573,209 @@ class HQCLIAPITests(unittest.TestCase):
             "prompt": "use @图片1", "channel": "grok", "reference_upload_ids": [upload_id],
         })
         self.assertEqual([upload_id], video["payload"]["reference_upload_ids"])
+        self.assertEqual("banana", plan["payload"]["source_page"])
+        self.assertEqual("video", video["payload"]["source_page"])
+        audio = self.auth.hq_cli_api.action_plan("audio-generate", {"text": "你好"})
+        self.assertEqual("audio", audio["payload"]["source_page"])
+        banana = self.auth.hq_cli_api.action_plan("image-generate", {
+            "prompt": "海报", "provider": "banana", "model": "pro", "ratio": "21:9",
+        })
+        self.assertEqual(("banana", "pro"), (
+            banana["payload"]["provider"], banana["payload"]["model"]))
+        sora = self.auth.hq_cli_api.action_plan("video-generate", {
+            "prompt": "海边日出", "channel": "sora", "model": "sora-2",
+            "seconds": 8, "ratio": "16:9", "reference_upload_ids": [upload_id],
+        })
+        self.assertEqual(("sora_video", "/api/gen/sora_video", 8), (
+            sora["generation_kind"], sora["endpoint"], sora["payload"]["seconds"]))
         with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
             self.auth.hq_cli_api.action_plan("image-generate", {
                 "prompt": "bad", "provider": "seedream", "image_upload_id": upload_id,
                 "mask_upload_id": "img_" + "b" * 32,
             })
+
+    def test_digital_ip_and_cinematic_generation_plans_are_narrow_and_fixed(self):
+        text = self.auth.hq_cli_api.action_plan("digital-ip-text-generate", {
+            "avatar_id": 7, "text": "欢迎来到黄雀", "voice": "S_d21F8OR62",
+            "ratio": "16:9", "motion": "high", "subtitle": True,
+            "subtitle_style": "bar", "subtitle_position": "lower",
+        })
+        self.assertEqual(("generation:quote", "video", "/api/gen/video"), (
+            text["scope"], text["generation_kind"], text["endpoint"]))
+        self.assertEqual(("text", 7, "1080p", True), (
+            text["payload"]["mode"], text["payload"]["avatar_id"],
+            text["payload"]["resolution"], text["payload"]["subtitle"]))
+
+        asset_audio = self.auth.hq_cli_api.action_plan("digital-ip-audio-generate", {
+            "avatar_id": 8, "audio_file": "audio/voice-owned.mp3",
+        })
+        self.assertEqual(("audio", "audio/voice-owned.mp3"), (
+            asset_audio["payload"]["mode"], asset_audio["payload"]["audio_file"]))
+        self.assertNotIn("audio_data", asset_audio["payload"])
+
+        cinematic = self.auth.hq_cli_api.action_plan("cinematic-open-generate", {
+            "avatar_ids": [7, 8], "prompt": "两人在工作室自然交谈",
+            "ratio": "1:1", "duration": 12, "enhance_prompt": True,
+        })
+        self.assertEqual(("cinematic", "/api/gen/cinematic"), (
+            cinematic["generation_kind"], cinematic["endpoint"]))
+        self.assertEqual(("open", [7, 8], "720p", 12), (
+            cinematic["payload"]["cine_mode"], cinematic["payload"]["avatar_ids"],
+            cinematic["payload"]["resolution"], cinematic["payload"]["duration"]))
+        self.assertNotIn("reference_videos", cinematic["payload"])
+
+        for avatar_ids, allowed in (([7], 8), ([7, 8], 7), ([7, 8, 9], 6)):
+            accepted = self.auth.hq_cli_api.action_plan("cinematic-open-generate", {
+                "avatar_ids": avatar_ids, "prompt": "共享参考图额度",
+                "reference_image_upload_ids": ["img_" + str(index) * 32 for index in range(allowed)],
+            })
+            self.assertEqual(allowed, len(accepted["payload"]["reference_image_upload_ids"]))
+            with self.assertRaisesRegex(self.auth.hq_cli_api.CLIAPIError, "共用 9 张额度"):
+                self.auth.hq_cli_api.action_plan("cinematic-open-generate", {
+                    "avatar_ids": avatar_ids, "prompt": "超出共享参考图额度",
+                    "reference_image_upload_ids": [
+                        "img_" + str(index) * 32 for index in range(allowed + 1)
+                    ],
+                })
+
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan("digital-ip-text-generate", {
+                "avatar_id": 7, "text": "越权输入", "voice": "S_d21F8OR62",
+                "image_data": "data:image/png;base64,AAAA",
+            })
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan("cinematic-open-generate", {
+                "avatar_ids": [7, 7], "prompt": "重复形象",
+            })
+
+    def test_new_video_actions_reuse_signed_quote_confirm_contract(self):
+        cases = (
+            ("digital-ip-text-generate", {
+                "avatar_id": 11, "text": "你好", "voice": "S_d21F8OR62",
+            }, "video", "/api/gen/video", 30),
+            ("digital-ip-audio-generate", {
+                "avatar_id": 11, "audio_file": "audio/owned.wav",
+            }, "video", "/api/gen/video", 30),
+            ("cinematic-open-generate", {
+                "avatar_ids": [11], "prompt": "在工作室自然交流", "duration": 8,
+            }, "cinematic", "/api/gen/cinematic", 16),
+        )
+        for action, input_body, kind, endpoint, cost in cases:
+            with self.subTest(action=action):
+                token = self._token(["generation:quote", "generation:submit"])
+                submitted = []
+
+                def fake_proxy(plan, web_token, internal_token):
+                    if plan["path"] == "/api/gen/cli/quote":
+                        self.assertEqual(kind, plan["body"]["kind"])
+                        return 200, {"kind": kind, "cost": cost, "points": 100}
+                    submitted.append(plan)
+                    return 200, {"job_id": 91, "cost": cost, "points_left": 100 - cost}
+
+                request = {"action": action, "input": input_body, "confirm": False}
+                with mock.patch.object(
+                        self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+                    status, quote = self._request(
+                        "/api/auth/cli/action", request, token=token)
+                    self.assertEqual(200, status, quote)
+                    status, result = self._request(
+                        "/api/auth/cli/action", dict(
+                            request, confirm=True, quote_token=quote["quote_token"]),
+                        token=token,
+                    )
+                self.assertEqual((200, 91), (status, result["job_id"]))
+                self.assertEqual(endpoint, submitted[0]["path"])
+                self.assertEqual(
+                    str(cost), submitted[0]["headers"]["X-HQ-Expected-Cost"])
+                self.assertTrue(
+                    submitted[0]["headers"]["Idempotency-Key"].startswith("hqcli-"))
+
+    def test_batch_motion_and_tryon_plans_bind_private_upload_ids(self):
+        image_id = "img_" + "a" * 32
+        video_id = "vid_" + "b" * 32
+        batch = self.auth.hq_cli_api.action_plan("digital-ip-batch-generate", {
+            "avatars": [{"avatar_id": 1, "label": "主理人"}, {"avatar_id": 2}],
+            "text": "欢迎到店", "voice": "owned-voice",
+        })
+        self.assertEqual(("video_batch", "/api/gen/video/batch"), (
+            batch["generation_kind"], batch["endpoint"]))
+        self.assertEqual([1, 2], [item["avatar_id"] for item in batch["payload"]["avatars"]])
+
+        motion = self.auth.hq_cli_api.action_plan("cinematic-motion-generate", {
+            "avatar_id": 3, "reference_video_upload_ids": [video_id], "ratio": "9:16",
+        })
+        self.assertEqual("motion", motion["payload"]["cine_mode"])
+        self.assertEqual([video_id], motion["payload"]["reference_video_upload_ids"])
+
+        fast = self.auth.hq_cli_api.action_plan("tryon-fast-generate", {
+            "person_image_upload_id": image_id, "clothes_upload_id": image_id,
+        })
+        classic = self.auth.hq_cli_api.action_plan("tryon-classic-generate", {
+            "person_video_upload_id": video_id, "background_upload_id": image_id,
+        })
+        self.assertEqual(("2", "tryon"), (fast["payload"]["line"], fast["generation_kind"]))
+        self.assertEqual(("1", video_id), (
+            classic["payload"]["line"], classic["payload"]["person_video_upload_id"]))
+
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan("tryon-classic-generate", {
+                "person_video_upload_id": video_id,
+            })
+
+    def test_customer_read_actions_use_fixed_owner_scoped_routes(self):
+        cases = {
+            "pricing": ("profile:read", "/api/gen/pricing"),
+            "text-video-capability": ("assets:read", "/api/gen/text-video/capability"),
+            "text-video-templates": ("assets:read", "/api/gen/text-video/templates"),
+            "text-video-styles": ("assets:read", "/api/gen/text-video/styles"),
+            "text-video-voices": ("assets:read", "/api/gen/text-video/voices"),
+            "digital-ip-projects": ("ip12:read", "/api/gen/digital-ip/projects"),
+        }
+        for action, expected in cases.items():
+            plan = self.auth.hq_cli_api.action_plan(action, {})
+            self.assertEqual(expected, (plan["scope"], plan["path"]))
+            self.assertEqual(self.auth.hq_cli_api.CONTENT_BASE, plan["base"])
+        project = self.auth.hq_cli_api.action_plan(
+            "digital-ip-project", {"project_id": "project_1"})
+        report = self.auth.hq_cli_api.action_plan(
+            "digital-ip-report", {"project_id": "project_1"})
+        self.assertEqual("/api/gen/digital-ip/projects/project_1", project["path"])
+        self.assertEqual("/api/gen/digital-ip/projects/project_1/report", report["path"])
+
+    def test_safe_customer_actions_use_fixed_routes_and_strict_inputs(self):
+        cases = {
+            "inspiration-catalog": ("inspiration:read", self.auth.hq_cli_api.ADMIN_BASE,
+                                    "/api/admin/public/inspirations"),
+            "inspiration-likes": ("inspiration:read", self.auth.hq_cli_api.CONTENT_BASE,
+                                  "/api/gen/inspiration/likes"),
+            "video-avatars": ("assets:read", self.auth.hq_cli_api.CONTENT_BASE,
+                              "/api/gen/video/avatars?limit=120"),
+            "audio-slots": ("assets:read", self.auth.hq_cli_api.CONTENT_BASE,
+                            "/api/gen/audio/slots?include_points=0"),
+        }
+        for action, expected in cases.items():
+            plan = self.auth.hq_cli_api.action_plan(action, {})
+            self.assertEqual(expected, (plan["scope"], plan["base"], plan["path"]))
+        lead_id = "a" * 16
+        crm = self.auth.hq_cli_api.action_plan("leads-crm", {"lead_ids": [lead_id, lead_id]})
+        self.assertEqual("/api/gen/leads/crm?ids=" + lead_id, crm["path"])
+        update = self.auth.hq_cli_api.action_plan("leads-crm-upsert", {
+            "lead_id": lead_id, "intent": "咨询", "follow_status": "跟进中", "follow_note": "明天回访",
+        })
+        self.assertEqual(("leads:write", "POST", lead_id),
+                         (update["scope"], update["method"], update["body"]["lead_id"]))
+        like = self.auth.hq_cli_api.action_plan("inspiration-like", {"id": 7, "favorite": True})
+        self.assertEqual({"id": 7, "favorite": True}, like["body"])
+        projects = self.auth.hq_cli_api.action_plan("short-drama-projects", {"page": 2, "page_size": 50})
+        self.assertEqual("/api/gen/short-drama/projects?page=2&page_size=50", projects["path"])
+        for action, suffix in (("short-drama-project", "project?id="),
+                               ("short-drama-conversation", "conversation?project_id="),
+                               ("short-drama-preflight", "preflight?project_id=")):
+            plan = self.auth.hq_cli_api.action_plan(action, {"project_id": "project_1"})
+            self.assertEqual("short-drama:read", plan["scope"])
+            self.assertEqual("/api/gen/short-drama/" + suffix + "project_1", plan["path"])
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan("leads-crm", {"lead_ids": ["not-a-lead"]})
 
     def test_channels_use_customer_account_authorization_and_include_minimax(self):
         token = self._token(["profile:read"])
@@ -465,8 +783,19 @@ class HQCLIAPITests(unittest.TestCase):
             "action": "channels", "input": {}, "confirm": False,
         }, token=token)
         self.assertEqual(200, status)
-        self.assertEqual(15, payload["total"])
+        self.assertEqual(16, payload["total"])
         self.assertEqual("alice", payload["account"])
+        channels = {item["id"]: item for item in payload["channels"]}
+        self.assertEqual({"channel": "sora"}, channels["openai"]["selectors"][1]["input"])
+        self.assertEqual({"provider": "banana"}, channels["gemini"]["selectors"][0]["input"])
+        self.assertTrue({
+            "digital-ip-text-generate", "digital-ip-audio-generate",
+            "cinematic-open-generate",
+        }.issubset(channels["heygen"]["capabilities"]))
+        self.assertEqual("mixed", channels["tikhub"]["access"])
+        self.assertTrue({
+            "collect-content", "collect-video", "collect-transcript", "collect-search", "leads-generate",
+        }.issubset(channels["tikhub"]["capabilities"]))
         self.assertEqual(
             {"channel": "minimax", "resolution": "768p"},
             {k: self.auth.hq_cli_api.action_plan("video-generate", {
@@ -476,7 +805,7 @@ class HQCLIAPITests(unittest.TestCase):
 
     def test_server_requires_confirmation_for_external_ai_and_writes(self):
         token = self._token(["prompt:optimize", "ip12:write", "ip12:chat", "canvas:write", "assets:write",
-                             "video-compose:write", "digital-presenter:write"])
+                             "video-compose:write", "digital-presenter:write", "inspiration:write", "leads:write"])
         cases = [
             ("prompt-optimize", {"prompt": "portrait", "kind": "image"}),
             ("ip12-create", {"title": "my project"}),
@@ -485,6 +814,8 @@ class HQCLIAPITests(unittest.TestCase):
             ("asset-tags", {"kind": "image", "key": "asset-1", "tags": ["客户案例"]}),
             ("video-compose-create", {"source_asset_id": 7}),
             ("digital-presenter-create", {"board_id": "cb_1", "request_id": "hqcli-dp-001"}),
+            ("inspiration-like", {"id": 7, "favorite": True}),
+            ("leads-crm-upsert", {"lead_id": "a" * 16, "follow_status": "跟进中"}),
         ]
         with mock.patch.object(self.auth.hq_cli_api, "proxy_json") as proxy:
             for action, input_body in cases:

@@ -132,7 +132,7 @@
 </div></div>
 <div id="toast" class="toast"></div>
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=dbd5a9e4"></script>
+<script src="cloud-shell.js?v=5c2643d5"></script>
 <script>
 (function(){
   var tok='__cookie__';
@@ -241,7 +241,7 @@
   function generate(){
     var text=el('ttsText').value.trim(); if(!text){toast('请先输入配音文案');return;}
     setBusy(true); el('statusText').textContent='正在提交配音任务...';
-    fetch('/api/gen/audio',{method:'POST',headers:{Authorization:'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({text:text,voice:selectedVoice,speed:params.speed,pitch:params.pitch,volume:params.volume})})
+    fetch('/api/gen/audio',{method:'POST',headers:{Authorization:'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({text:text,voice:selectedVoice,speed:params.speed,pitch:params.pitch,volume:params.volume,source_page:'audio'})})
       .then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
       .then(function(res){if(res.status===401){location.href='../login.html?redirect=workbench/audio';return;}if(!res.data.job_id)throw new Error(res.data.detail||'提交失败');pollJob(res.data.job_id,0);})
       .catch(function(e){setBusy(false);var message=audioNetworkMessage(e,'submit');el('statusText').textContent=message;toast(message);});

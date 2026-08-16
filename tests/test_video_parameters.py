@@ -80,7 +80,8 @@ class TryonParameterValidationTests(unittest.TestCase):
                 patch.object(video, "update_video_asset_phase"), \
                 patch.object(wavespeed, "available", return_value=True), \
                 patch.object(wavespeed, "generate_tryon",
-                             return_value={"video_file": "video/out.mp4", "video_url": "/out.mp4"}) as generate:
+                             return_value={"video_file": "video/out.mp4", "video_url": "/out.mp4",
+                                           "provider_video_id": "provider-1"}) as generate:
             result = video.gen_tryon({
                 "line": "2", "person_image_data": "person", "clothes_data": "cloth",
                 "seconds": 10,
@@ -88,6 +89,7 @@ class TryonParameterValidationTests(unittest.TestCase):
         self.assertEqual(10, generate.call_args.args[2])
         self.assertEqual(10, result["duration"])
         self.assertEqual(10, result["seconds"])
+        self.assertEqual("provider-1", result["provider_video_id"])
 
     def test_tryon_is_validated_before_points_are_deducted(self):
         self.assertIn('elif kind == "tryon":', CORE_SRC)

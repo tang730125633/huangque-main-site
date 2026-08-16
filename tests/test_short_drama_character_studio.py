@@ -134,6 +134,51 @@ class ShortDramaCharacterStudioTests(unittest.TestCase):
             [item["character_key"] for item in characters],
         )
 
+    def test_confirmed_creation_roles_exclude_script_only_characters(self):
+        conn = self.db()
+        row = conn.execute(
+            "SELECT snapshot.script_json FROM short_drama_conversations conversation "
+            "JOIN short_drama_script_snapshots snapshot "
+            "ON snapshot.id=conversation.locked_version_id "
+            "WHERE conversation.project_id=?",
+            (self.project["id"],),
+        ).fetchone()
+        script = json.loads(row[0])
+        confirmed = [dict(item) for item in script["characters"][:2]]
+        contract = [{
+            "character_key": item["character_key"],
+            "name": item["name"],
+        } for item in confirmed]
+        conn.execute(
+            "INSERT INTO short_drama_script_imports "
+            "(id,username,project_id,idempotency_key,request_hash,source_text,"
+            "source_hash,filename,content_type,character_contract_json,roles_saved_at,"
+            "import_mode,status,created_at,updated_at) "
+            "VALUES ('confirmed-import','alice',?,'confirmed-roles','request','source',"
+            "'source-hash','source.txt','live_action',?,1,'faithful','completed',1,1)",
+            (self.project["id"], json.dumps(contract, ensure_ascii=False)),
+        )
+        conn.execute(
+            "INSERT INTO short_drama_characters "
+            "(id,project_id,character_key,name,identity_text,personality,source_type,sort_order) "
+            "VALUES ('script-extra',?,'friend_a','朋友甲','剧本临时人物','','ai_character',99)",
+            (self.project["id"],),
+        )
+        conn.commit()
+        conn.close()
+
+        workspace = short_drama_character_studio.workspace(
+            self.db, "alice", "alice", self.project["id"],
+            avatar_list=self.avatars,
+        )
+        self.assertEqual(
+            [item["character_key"] for item in contract],
+            [item["character_key"] for item in workspace["characters"]],
+        )
+        self.assertNotIn(
+            "friend_a", [item["character_key"] for item in workspace["characters"]]
+        )
+
     def test_profile_and_avatar_binding_are_revision_safe_and_visible(self):
         initial = short_drama_character_studio.workspace(
             self.db, "alice", "alice", self.project["id"],

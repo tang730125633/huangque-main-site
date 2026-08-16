@@ -17,6 +17,7 @@ class DigitalPresenterFeatureFlagTests(unittest.TestCase):
     def test_missing_digital_presenter_flag_is_disabled(self):
         with patch.object(feature_flags, "_cached_rows", return_value={}):
             self.assertFalse(feature_flags.is_enabled("digital_presenter"))
+            self.assertFalse(feature_flags.is_enabled("image_xiaole"))
             self.assertTrue(feature_flags.is_enabled("video"))
 
     def test_flag_read_failure_keeps_digital_presenter_disabled(self):
@@ -33,6 +34,7 @@ class DigitalPresenterFeatureFlagTests(unittest.TestCase):
             listed = {item["key"]: item for item in feature_flags.list_features()}
         self.assertFalse(presenter["enabled"])
         self.assertFalse(listed["digital_presenter"]["enabled"])
+        self.assertFalse(listed["image_xiaole"]["enabled"])
         self.assertTrue(listed["video"]["enabled"])
 
 
