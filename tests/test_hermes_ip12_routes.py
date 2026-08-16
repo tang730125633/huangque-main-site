@@ -148,7 +148,10 @@ class HermesIP12SourceTests(unittest.TestCase):
             source.index('shutil.which("chromium")'),
         )
         self.assertIn("价值主张诊断表", source)
-        self.assertIn("故事库（至少5个）", source)
+        self.assertIn("故事库：只写有事实依据的故事", source)
+        self.assertIn("不强制凑数量", source)
+        self.assertNotIn("故事库（至少5个）", source)
+        self.assertNotIn("列出5项客户要确认的项目", source)
         self.assertIn("内容资产使用表", source)
         self.assertIn("优化建议汇总", source)
 
@@ -700,7 +703,13 @@ model_messages = qa_model.call_args.args[0]
 assert any("候选故事线｜待本人补充" in item.get("content", "") for item in model_messages)
 
 revision_state = qa_reply.get_json()["state"]
-with patch.object(server, "call_ai") as revision_model:
+revision_decision = Mock()
+revision_decision.json.return_value = {"choices": [{"message": {"content": json.dumps({
+    "decision": "apply_revision",
+    "reply": "已理解：把真实转折补入故事资产。请重新生成 PDF 后查看新版。",
+    "revision_note": "在故事资产中补充：第一次创业失败后重新开始。",
+}, ensure_ascii=False)}}]}
+with patch.object(server, "call_ai", return_value=revision_decision) as revision_model:
     revised = client.post("/api/chat-complete", json={
         "conversation_id": review_cid,
         "message": "我的真实转折是第一次创业失败后重新开始。",
@@ -709,10 +718,112 @@ with patch.object(server, "call_ai") as revision_model:
         "request_id": "foundation-review-revision",
     })
 assert revised.status_code == 200, revised.get_data(as_text=True)
-revision_model.assert_not_called()
+revision_model.assert_called_once()
 dirty_state = revised.get_json()["state"]
 assert dirty_state["foundation_report"]["review_status"] == "dirty"
-assert dirty_state["foundation_report"]["review_notes"][-1]["content"] == "我的真实转折是第一次创业失败后重新开始。"
+assert dirty_state["foundation_report"]["review_notes"][-1]["content"] == "在故事资产中补充：第一次创业失败后重新开始。"
+
+question_cid = client.post("/api/conversations").get_json()["id"]
+question_convo = server.load_conversation(question_cid)
+question_convo["coach_state"] = review_convo["coach_state"]
+server.save_conversation(question_cid, question_convo)
+question_state = client.get(f"/api/conversations/{question_cid}").get_json()["coach_state"]
+question_decision = Mock()
+question_decision.json.return_value = {"choices": [{"message": {"content": json.dumps({
+    "decision": "answer_only",
+    "reply": "这是因为原对话里没有足够的真实故事事实；如果你不需要这一项，可以要求删除。",
+    "revision_note": "",
+}, ensure_ascii=False)}}]}
+with patch.object(server, "call_ai", return_value=question_decision):
+    questioned = client.post("/api/chat-complete", json={
+        "conversation_id": question_cid,
+        "message": "为什么后面总有待本人补充？",
+        "foundation_review": "revision",
+        "expected_revision": question_state["revision"],
+    })
+assert questioned.status_code == 200, questioned.get_data(as_text=True)
+questioned_state = questioned.get_json()["state"]
+assert questioned_state["foundation_report"]["review_status"] == "clean"
+assert questioned_state["foundation_report"]["review_notes"] == []
+
+vague_decision = Mock()
+vague_decision.json.return_value = {"choices": [{"message": {"content": json.dumps({
+    "decision": "ask_follow_up",
+    "reply": "具体是哪一段不对？请说出要删除、补充或改成的内容。",
+    "revision_note": "",
+}, ensure_ascii=False)}}]}
+with patch.object(server, "call_ai", return_value=vague_decision):
+    vague = client.post("/api/chat-complete", json={
+        "conversation_id": question_cid,
+        "message": "这里不对。",
+        "foundation_review": "revision",
+        "expected_revision": questioned_state["revision"],
+    })
+assert vague.status_code == 200, vague.get_data(as_text=True)
+assert vague.get_json()["state"]["foundation_report"]["review_status"] == "clean"
+
+invalid_decision = Mock()
+invalid_decision.json.return_value = {"choices": [{"message": {"content": "{}"}}]}
+with patch.object(server, "call_ai", return_value=invalid_decision):
+    invalid_review = client.post("/api/chat-complete", json={
+        "conversation_id": question_cid,
+        "message": "请判断这一段。",
+        "foundation_review": "revision",
+        "expected_revision": vague.get_json()["state"]["revision"],
+    })
+assert invalid_review.status_code == 502
+assert server.load_conversation(question_cid)["coach_state"]["foundation_report"]["review_status"] == "clean"
+
+empty_note_decision = Mock()
+empty_note_decision.json.return_value = {"choices": [{"message": {"content": json.dumps({
+    "decision": "apply_revision",
+    "reply": "我会修改这一段。",
+    "revision_note": "",
+}, ensure_ascii=False)}}]}
+with patch.object(server, "call_ai", return_value=empty_note_decision):
+    empty_note_review = client.post("/api/chat-complete", json={
+        "conversation_id": question_cid,
+        "message": "请删除这个待填写项。",
+        "foundation_review": "revision",
+        "expected_revision": vague.get_json()["state"]["revision"],
+    })
+assert empty_note_review.status_code == 502
+assert server.load_conversation(question_cid)["coach_state"]["foundation_report"]["review_status"] == "clean"
+
+conflict_state = vague.get_json()["state"]
+def bump_review_revision(*_args, **_kwargs):
+    changed = server.load_conversation(question_cid)
+    changed["coach_state"]["revision"] += 1
+    server.save_conversation(question_cid, changed)
+    return question_decision
+
+with patch.object(server, "call_ai", side_effect=bump_review_revision):
+    conflict_review = client.post("/api/chat-complete", json={
+        "conversation_id": question_cid,
+        "message": "为什么这里待填写？",
+        "foundation_review": "revision",
+        "expected_revision": conflict_state["revision"],
+    })
+assert conflict_review.status_code == 409
+assert "另一端更新" in conflict_review.get_json()["error"]
+
+deleted_cid = client.post("/api/conversations").get_json()["id"]
+deleted_convo = server.load_conversation(deleted_cid)
+deleted_convo["coach_state"] = review_convo["coach_state"]
+server.save_conversation(deleted_cid, deleted_convo)
+deleted_state = client.get(f"/api/conversations/{deleted_cid}").get_json()["coach_state"]
+def delete_during_review(*_args, **_kwargs):
+    server.conversation_path(deleted_cid).unlink()
+    return question_decision
+
+with patch.object(server, "call_ai", side_effect=delete_during_review):
+    deleted_review = client.post("/api/chat-complete", json={
+        "conversation_id": deleted_cid,
+        "message": "为什么这里待填写？",
+        "foundation_review": "revision",
+        "expected_revision": deleted_state["revision"],
+    })
+assert deleted_review.status_code == 404
 blocked_confirm = client.post("/api/foundation-report/confirm", json={
     "conversation_id": review_cid,
     "expected_revision": dirty_state["revision"],
@@ -733,6 +844,8 @@ assert new_state["foundation_report"]["review_status"] == "clean"
 assert new_state["foundation_report"]["review_notes"] == []
 report_messages = regenerate_model.call_args.args[0]
 assert any("第一次创业失败后重新开始" in item.get("content", "") for item in report_messages)
+assert "不创建‘待补充’故事凑数" in report_messages[0]["content"]
+assert "不强制凑数量" in report_messages[0]["content"]
 
 stale_confirm = client.post("/api/foundation-report/confirm", json={
     "conversation_id": review_cid,

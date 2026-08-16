@@ -467,7 +467,7 @@ async function openFoundationReport(){
 }
 
 function beginFoundationRevision(){
-  foundationEditing=true;var input=document.getElementById('userInput');input.placeholder='请写明要补充或修改的事实，发送后需要重新生成 PDF…';input.focus();toast('下一条消息将作为本人补充写入新版 PDF')
+  foundationEditing=true;var input=document.getElementById('userInput');input.placeholder='可以提问，也可以说明要修改、补充或删除的内容…';input.focus();toast('Agent 会先判断这是问题、修改要求，还是需要继续问清楚')
 }
 
 async function confirmFoundationReport(){
