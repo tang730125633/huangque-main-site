@@ -12,6 +12,241 @@ FLAGS = (ROOT / "server/content_domains/feature_flags.py").read_text(encoding="u
 
 
 class TextVideoPageTests(unittest.TestCase):
+    def _run_page_runtime(self, scenario):
+        result = subprocess.run(
+            ["node", str(ROOT / "tests/text_video_page_runtime.js"), scenario],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        return json.loads(result.stdout)
+
+    def _run_talking_state(self, statements):
+        start_marker = "/* talking-state:start */"
+        end_marker = "/* talking-state:end */"
+        self.assertIn(start_marker, PAGE)
+        self.assertIn(end_marker, PAGE)
+        source = PAGE.split(start_marker, 1)[1].split(end_marker, 1)[0]
+        script = source + "\n" + statements
+        result = subprocess.run(
+            ["node", "-e", script],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        return json.loads(result.stdout)
+
+    def test_talking_switch_is_default_off_and_panel_is_hidden(self):
+        self.assertIn('id="talkingMaterialEnabled"', PAGE)
+        self.assertIn('type="checkbox"', PAGE)
+        self.assertNotIn('id="talkingMaterialEnabled" checked', PAGE)
+        self.assertIn('id="talkingMaterialPanel" hidden', PAGE)
+        self.assertIn('启用口播视频素材', PAGE)
+
+    def test_talking_controls_are_accessible_and_have_stable_defaults(self):
+        self.assertIn('id="talkingDefaultAvatar"', PAGE)
+        self.assertIn('accept="image/jpeg,image/png,image/webp"', PAGE)
+        self.assertIn('id="talkingAvatarPreview"', PAGE)
+        self.assertIn('id="replaceTalkingAvatar"', PAGE)
+        self.assertIn('id="removeTalkingAvatar"', PAGE)
+        self.assertIn('id="talkingRatio"', PAGE)
+        self.assertIn('min="10"', PAGE)
+        self.assertIn('max="50"', PAGE)
+        self.assertIn('value="30"', PAGE)
+        self.assertIn('id="talkingScenes"', PAGE)
+        self.assertIn('aria-live="polite"', PAGE)
+
+    def test_talking_state_preserves_scene_edits_without_replanning(self):
+        state = self._run_talking_state("""
+const state=createTalkingState();
+state.setEnabled(true);
+state.setDefaultAvatar({asset_id:'avatar_default',preview_url:'/default'});
+state.setPlan({plan_id:'plan_1',source_hash:'hash_1',ratio:0.3,scenes:[
+  {scene_id:'scene_01',text:'第一幕',estimated_duration:5.8,talking_recommended:true},
+  {scene_id:'scene_02',text:'第二幕',estimated_duration:6.4,talking_recommended:false}
+]});
+state.setSceneEnabled('scene_01',false);
+state.setSceneEnabled('scene_02',true);
+state.setSceneAvatar('scene_02',{asset_id:'avatar_other',preview_url:'/other'});
+const before=state.snapshot();
+const payload=state.buildTalkingMaterial(30);
+process.stdout.write(JSON.stringify({before:before,payload:payload}));
+""")
+        self.assertEqual(state["before"]["plan"]["plan_id"], "plan_1")
+        self.assertFalse(state["before"]["sceneSelections"]["scene_01"])
+        self.assertTrue(state["before"]["sceneSelections"]["scene_02"])
+        self.assertEqual(state["before"]["sceneAvatarOverrides"]["scene_02"]["asset_id"], "avatar_other")
+        self.assertEqual(state["payload"], {
+            "enabled": True,
+            "plan_id": "plan_1",
+            "source_hash": "hash_1",
+            "ratio": 0.3,
+            "default_avatar_asset_id": "avatar_default",
+            "scenes": [
+                {"scene_id": "scene_01", "enabled": False},
+                {"scene_id": "scene_02", "enabled": True, "avatar_asset_id": "avatar_other"},
+            ],
+        })
+
+    def test_nine_scene_plan_serializes_only_requested_talking_selections(self):
+        state = self._run_talking_state("""
+const state=createTalkingState();
+state.setEnabled(true);
+state.setDefaultAvatar({asset_id:'local_avatar_A',preview_url:'/avatar-a'});
+state.setPlan({plan_id:'plan_9',source_hash:'hash_9',ratio:1/3,scenes:[
+  {scene_id:'scene_01',text:'scene 1',estimated_duration:6,talking_recommended:true},
+  {scene_id:'scene_02',text:'scene 2',estimated_duration:6,talking_recommended:false},
+  {scene_id:'scene_03',text:'scene 3',estimated_duration:6,talking_recommended:false},
+  {scene_id:'scene_04',text:'scene 4',estimated_duration:6,talking_recommended:false},
+  {scene_id:'scene_05',text:'scene 5',estimated_duration:6,talking_recommended:true},
+  {scene_id:'scene_06',text:'scene 6',estimated_duration:6,talking_recommended:false},
+  {scene_id:'scene_07',text:'scene 7',estimated_duration:6,talking_recommended:false},
+  {scene_id:'scene_08',text:'scene 8',estimated_duration:6,talking_recommended:false},
+  {scene_id:'scene_09',text:'scene 9',estimated_duration:6,talking_recommended:true}
+]});
+state.setSceneAvatar('scene_05',{asset_id:'local_avatar_B',preview_url:'/avatar-b'});
+process.stdout.write(JSON.stringify(state.buildTalkingMaterial(33.333333)));
+""")
+        self.assertEqual(state["default_avatar_asset_id"], "local_avatar_A")
+        self.assertEqual(
+            [item["scene_id"] for item in state["scenes"] if item["enabled"]],
+            ["scene_01", "scene_05", "scene_09"],
+        )
+        self.assertNotIn("avatar_asset_id", state["scenes"][0])
+        self.assertEqual(state["scenes"][4]["avatar_asset_id"], "local_avatar_B")
+        self.assertNotIn("avatar_asset_id", state["scenes"][8])
+
+    def test_plan_input_changes_invalidate_but_scene_changes_do_not(self):
+        state = self._run_talking_state("""
+const state=createTalkingState();
+state.setEnabled(true);
+state.setDefaultAvatar({asset_id:'avatar_default',preview_url:'/default'});
+state.setPlan({plan_id:'plan_1',source_hash:'hash_1',ratio:0.3,scenes:[
+  {scene_id:'scene_01',text:'第一幕',estimated_duration:6,talking_recommended:true}
+]});
+state.setSceneEnabled('scene_01',false);
+const afterSceneEdit=state.snapshot();
+state.invalidatePlan();
+const afterPlanInput=state.snapshot();
+process.stdout.write(JSON.stringify({afterSceneEdit:afterSceneEdit,afterPlanInput:afterPlanInput}));
+""")
+        self.assertEqual(state["afterSceneEdit"]["plan"]["plan_id"], "plan_1")
+        self.assertIsNone(state["afterPlanInput"]["plan"])
+        self.assertEqual(state["afterPlanInput"]["sceneSelections"], {})
+        self.assertEqual(state["afterPlanInput"]["sceneAvatarOverrides"], {})
+
+    def test_page_implements_two_stage_plan_then_paid_confirmation(self):
+        self.assertIn("fetch('/api/gen/text-video/plan'", PAGE)
+        self.assertIn("生成分镜方案", PAGE)
+        self.assertIn("确认并生成视频", PAGE)
+        self.assertIn("talking_material:talkingState.buildTalkingMaterial", PAGE)
+        self.assertIn("default_avatar_asset_id", PAGE)
+        self.assertIn("source_hash", PAGE)
+        self.assertIn("plan_id", PAGE)
+
+    def test_plan_invalidation_is_bound_to_all_plan_inputs(self):
+        self.assertIn("bindPlanInvalidation(el('videoText'),'input')", PAGE)
+        self.assertIn("bindPlanInvalidation(el('materialStyle'),'change')", PAGE)
+        self.assertIn("bindPlanInvalidation(el('videoVoice'),'change')", PAGE)
+        self.assertIn("bindPlanInvalidation(el('speechRate'),'input')", PAGE)
+        self.assertIn("bindPlanInvalidation(el('talkingRatio'),'input')", PAGE)
+        self.assertIn("invalidateTalkingPlan();selectMode(button)", PAGE)
+        self.assertIn("invalidateTalkingPlan();selectTemplate(button,template)", PAGE)
+        self.assertIn("function selectKind(button){\n    invalidateTalkingPlan();", PAGE)
+        self.assertIn("function selectOrientation(button){\n    invalidateTalkingPlan();", PAGE)
+        self.assertNotIn("setSceneEnabled(sceneId,enabled);invalidateTalkingPlan", PAGE)
+        self.assertNotIn("setSceneAvatar(sceneId,avatar);invalidateTalkingPlan", PAGE)
+
+    def test_upload_planning_and_final_errors_are_separate(self):
+        for field in ("talkingUploadError", "talkingPlanError", "talkingFinalError"):
+            self.assertIn('id="%s"' % field, PAGE)
+        self.assertIn("validateAvatarDataUrl", PAGE)
+        self.assertIn("HQ-ASSET-001", PAGE)
+        self.assertIn("上传人物图片失败", PAGE)
+        self.assertIn("生成分镜方案失败", PAGE)
+        self.assertIn("视频任务提交失败", PAGE)
+
+    def test_talking_progress_and_non_blocking_warnings_are_rendered(self):
+        self.assertIn("正在生成口播素材", PAGE)
+        self.assertIn("talking_warnings", PAGE)
+        self.assertIn('id="talkingWarnings"', PAGE)
+        self.assertIn("renderTalkingWarnings", PAGE)
+
+    def test_late_plan_response_cannot_restore_invalidated_plan(self):
+        result = self._run_page_runtime("latePlan")
+        self.assertEqual(result["button"], "生成分镜方案")
+        self.assertNotIn("旧方案", result["status"])
+        self.assertLessEqual(result["scenes"], 1)
+
+    def test_every_plan_input_invalidates_an_inflight_response(self):
+        result = self._run_page_runtime("planMutations")
+        self.assertEqual(
+            set(result),
+            {"text", "mode", "voice", "speechRate", "style", "ratio", "template", "kind", "orientation", "enabled", "defaultAvatar"},
+        )
+        self.assertTrue(all(result.values()), result)
+
+    def test_avatar_uploads_are_last_write_wins_and_block_paid_submit(self):
+        result = self._run_page_runtime("avatarRace")
+        self.assertTrue(result["blockedWhilePending"])
+        self.assertEqual(result["paidWhilePending"], 0)
+        self.assertEqual(result["payload"]["talking_material"]["default_avatar_asset_id"], "avatar-new")
+        self.assertGreaterEqual(len(result["revoked"]), 2)
+
+    def test_scene_avatar_uploads_are_last_write_wins(self):
+        result = self._run_page_runtime("sceneAvatarRace")
+        self.assertTrue(result["blockedWhilePending"])
+        scenes = result["payload"]["talking_material"]["scenes"]
+        self.assertEqual(scenes[0]["avatar_asset_id"], "scene-new")
+
+    def test_plan_invalidation_cleans_all_pending_scene_avatar_uploads(self):
+        result = self._run_page_runtime("sceneAvatarInvalidation")
+        self.assertTrue(result["blockedWhilePending"])
+        self.assertEqual(
+            result["afterInvalidation"],
+            {
+                "disabled": False,
+                "button": "生成分镜方案",
+                "aborted": [True, True],
+                "revoked": ["blob:avatar-1", "blob:avatar-2", "blob:avatar-3"],
+            },
+        )
+        self.assertEqual(
+            result["afterStaleCallbacks"],
+            {
+                "disabled": True,
+                "button": "生成分镜方案",
+                "error": "",
+                "status": "正在上传人物图片",
+                "revoked": ["blob:avatar-1", "blob:avatar-2", "blob:avatar-3"],
+            },
+        )
+        self.assertTrue(result["defaultBlockedWhilePending"])
+        material = result["payload"]["talking_material"]
+        self.assertEqual(material["default_avatar_asset_id"], "avatar-replacement")
+        self.assertNotIn("stale-scene", json.dumps(material))
+        self.assertEqual(result["revoked"], [
+            "blob:avatar-1", "blob:avatar-2", "blob:avatar-3", "blob:avatar-4",
+        ])
+
+    def test_poll_prefers_real_phase_over_legacy_stage(self):
+        result = self._run_page_runtime("phase")
+        self.assertIn("正在生成口播素材", result["status"])
+        self.assertNotIn("普通素材阶段", result["status"])
+
+    def test_default_off_runtime_path_submits_exact_legacy_payload(self):
+        result = self._run_page_runtime("disabledPath")
+        self.assertEqual(result["planRequests"], 0)
+        self.assertNotIn("talking_material", result["payload"])
+        self.assertEqual(result["payload"]["pipeline"], "pixelle")
+
+    def test_talking_planning_and_avatar_routes_are_wired(self):
+        self.assertIn('/api/gen/text-video/plan', CORE)
+        self.assertIn('/api/gen/text-video/avatar', CORE)
+        self.assertIn('private, max-age=300', CORE)
+
     def test_page_uses_authenticated_paid_job_pipeline(self):
         self.assertIn("/api/gen/script_to_video", PAGE)
         self.assertIn("pipeline:'pixelle'", PAGE)
@@ -162,10 +397,12 @@ process.stdout.write(JSON.stringify({first: first.key, retry: retry.key}));
         self.assertIn("{k:'text-video',l:'文案成片',i:'clapper',feature:'pixelle_text_video'}", SHELL)
         self.assertIn("active==='text-video'", SHELL)
 
-    def test_page_does_not_expose_provider_branding_or_manual_upload(self):
+    def test_page_does_not_expose_provider_branding_and_only_uploads_talking_avatars(self):
         self.assertNotIn("Pixelle", PAGE)
         self.assertNotIn("RunningHub", PAGE)
-        self.assertNotIn('type="file"', PAGE)
+        self.assertEqual(PAGE.count('type="file"'), 2)
+        self.assertIn('id="talkingDefaultAvatar"', PAGE)
+        self.assertIn('class="tv-scene-avatar-input"', PAGE)
 
 
 if __name__ == "__main__":

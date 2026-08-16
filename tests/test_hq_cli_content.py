@@ -474,6 +474,62 @@ class HQCLIContentTests(unittest.TestCase):
                     path for path in output_root.rglob("*") if path.is_file()
                 })
 
+    def test_script_to_video_replays_before_mutable_plan_validation(self):
+        from content_domains import pixelle_video, script_to_video
+
+        claims = {}
+        created = []
+
+        def begin(_username, _endpoint, key, body):
+            digest = json.dumps(body, sort_keys=True, separators=(",", ":"))
+            if key not in claims:
+                claims[key] = {"digest": digest, "response": None}
+                return "new", None
+            self.assertEqual(claims[key]["digest"], digest)
+            return "replay", claims[key]["response"]
+
+        def complete(_username, _endpoint, key, response):
+            claims[key]["response"] = response
+
+        prepared = {
+            "pipeline": "pixelle", "text": "AI 培训", "mode": "generate",
+            "template": "1080x1920/image_default.html", "n_scenes": 1,
+            "scenes": [{"line": "AI 培训"}],
+        }
+
+        def create_job(*args, **_kwargs):
+            created.append(args[6])
+            return 51, 76
+
+        with mock.patch.object(core, "HANDLERS", {"script_to_video": lambda payload: payload}), \
+                mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(core, "_idempotency_begin", side_effect=begin), \
+                mock.patch.object(core, "_idempotency_complete", side_effect=complete), \
+                mock.patch.object(core, "_user_video_submit_limit", return_value=None), \
+                mock.patch.object(core, "_user_active_job_count", return_value=0), \
+                mock.patch.object(core.jobs_store, "create_paid_job", side_effect=create_job), \
+                mock.patch.object(video, "record_video_pending_asset"), \
+                mock.patch.object(core, "enqueue_job", return_value=True), \
+                mock.patch.object(pixelle_video, "paid_plan_association", return_value=None), \
+                mock.patch.object(
+                    script_to_video, "prepare_script_to_video_payload",
+                    side_effect=[prepared, AssertionError("replay reached mutable plan validation")],
+                ) as prepare:
+            request = {"pipeline": "pixelle", "text": "AI 培训"}
+            status, first = self._post(
+                "/api/gen/script_to_video", request, expected=24,
+                idempotency_key="script-video-lost-response-001",
+            )
+            status_replay, replay = self._post(
+                "/api/gen/script_to_video", request, expected=24,
+                idempotency_key="script-video-lost-response-001",
+            )
+
+        self.assertEqual((200, 51), (status, first["job_id"]))
+        self.assertEqual((200, first), (status_replay, replay))
+        self.assertEqual(1, prepare.call_count)
+        self.assertEqual(1, len(created))
+
     def test_batch_and_tryon_quotes_use_server_validation_and_total_cost(self):
         batch = {
             "mode": "text", "text": "欢迎到店", "voice": "owned-voice",

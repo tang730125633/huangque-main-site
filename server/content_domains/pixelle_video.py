@@ -6,16 +6,20 @@ import math
 import os
 import pathlib
 import re
+import sqlite3
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from contextlib import closing
 from decimal import Decimal, ROUND_HALF_UP
 
 from .core import OUT_DIR, public_url
 from . import audio as audio_domain
 from . import feature_flags
+from . import pixelle_talking_assets
 
 
 def _env_int(name, default, minimum, maximum):
@@ -50,6 +54,14 @@ _CAPTION_CLAUSE_BOUNDARIES = frozenset("，,、 ")
 
 DEFAULT_STYLE = "realistic_commercial"
 DEFAULT_PUBLIC_VOICE = "zh-CN-YunjianNeural"
+DEFAULT_TALKING_RATIO = 0.3
+MIN_TALKING_RATIO = 0.1
+MAX_TALKING_RATIO = 0.5
+_BASE_NARRATION_CHARS_PER_SECOND = 4.0
+_PLAN_RATE_WINDOW_SECONDS = 60.0
+_PLAN_RATE_MAX_REQUESTS = 6
+_PLAN_RATE_REQUESTS = {}
+_PLAN_RATE_LOCK = threading.Lock()
 _PUBLIC_VOICE_RE = re.compile(r"^zh-CN(?:-[a-z]+)?-[A-Za-z]+Neural$")
 _PUBLIC_VOICE_NAMES = {
     "zh-CN-XiaoxiaoNeural": "女声-温柔（晓晓）",
@@ -390,7 +402,253 @@ def prepare_payload(payload, username=""):
         "scenes": [{"line": line} for line in segments],
     }
     prepared.update(_freeze_voice(body, username))
+    prepared["talking_material"] = _prepare_talking_material(
+        body.get("talking_material"), prepared, username)
     return prepared
+
+
+def _prepare_talking_material(raw, prepared, username):
+    if not isinstance(raw, dict) or raw.get("enabled") is not True:
+        return {"enabled": False}
+    if not username:
+        raise ValueError("口播视频素材缺少有效用户")
+
+    plan_id = str(raw.get("plan_id") or "").strip()
+    source_hash = str(raw.get("source_hash") or "").strip().lower()
+    plan = pixelle_talking_assets.get_plan(username, plan_id)
+    if source_hash != str(plan.get("source_hash") or ""):
+        raise ValueError("分镜方案摘要不匹配")
+    if plan.get("status") != "active" or plan.get("job_id") is not None:
+        raise ValueError("分镜方案已经用于其他任务")
+    source = dict(plan.get("source") or {})
+    frozen_voice = (
+        ("public", str(source.get("voice_id") or ""))
+        if source.get("voice_scope") == "public"
+        else ("personal", str(source.get("voice_key") or ""))
+    )
+    current_voice = (
+        ("public", str(prepared.get("voice_id") or ""))
+        if prepared.get("voice_scope") == "public"
+        else ("personal", str(prepared.get("voice_key") or ""))
+    )
+    comparable = (
+        ("text", prepared.get("text"), source.get("text")),
+        ("mode", prepared.get("mode"), source.get("mode")),
+        ("template", prepared.get("template"), source.get("template")),
+        ("style", prepared.get("style"), source.get("style")),
+        ("speech_rate", prepared.get("speech_rate"), source.get("speech_rate")),
+        ("voice", current_voice, frozen_voice),
+    )
+    if any(current != frozen for _name, current, frozen in comparable):
+        raise ValueError("提交内容与已确认的分镜方案不一致")
+
+    ratio = _talking_ratio(raw)
+    frozen_ratio = _talking_ratio({"ratio": source.get("ratio")})
+    if ratio != frozen_ratio:
+        raise ValueError("提交内容与已确认的分镜方案不一致")
+    raw_scenes = raw.get("scenes")
+    if not isinstance(raw_scenes, list) or not raw_scenes:
+        raise ValueError("请明确选择至少一个口播分镜")
+    plan_scenes = list(plan.get("scenes") or [])
+    by_id = {str(item.get("scene_id") or ""): item for item in plan_scenes}
+    selections = {}
+    for item in raw_scenes:
+        if not isinstance(item, dict) or not isinstance(item.get("enabled"), bool):
+            raise ValueError("口播分镜选择无效")
+        scene_id = str(item.get("scene_id") or "").strip()
+        if scene_id not in by_id or scene_id in selections:
+            raise ValueError("口播分镜不属于当前方案")
+        if not item["enabled"]:
+            selections[scene_id] = None
+            continue
+        selection = {"scene_id": scene_id, "enabled": True}
+        override = str(item.get("avatar_asset_id") or "").strip()
+        if override:
+            selection["avatar_asset_id"] = override
+        selections[scene_id] = selection
+    selected = [selections[scene_id] for scene_id in by_id
+                if selections.get(scene_id) is not None]
+    if not selected:
+        raise ValueError("请明确选择至少一个口播分镜")
+
+    default_avatar = str(raw.get("default_avatar_asset_id") or "").strip()
+    asset_ids = [default_avatar]
+    asset_ids.extend(
+        item["avatar_asset_id"] for item in selected
+        if item.get("avatar_asset_id")
+    )
+    unique_asset_ids = list(dict.fromkeys(asset_ids))
+    if not default_avatar:
+        raise ValueError("请上传默认人物形象图片")
+    for asset_id in unique_asset_ids:
+        avatar = pixelle_talking_assets.read_avatar(username, asset_id)
+        if (not isinstance(avatar, dict)
+                or avatar.get("asset_id", asset_id) != asset_id
+                or not re.fullmatch(r"image/(?:png|jpeg|webp)",
+                                    str(avatar.get("mime") or ""))
+                or not re.fullmatch(r"[0-9a-f]{64}",
+                                    str(avatar.get("sha256") or ""))
+                or not isinstance(avatar.get("data"), bytes)):
+            raise LookupError("人物图片不存在或已失效")
+    frozen_lines = []
+    for item in plan_scenes:
+        scene_id = str(item.get("scene_id") or "")
+        text = str(item.get("text") or "").strip()
+        if not scene_id or not text:
+            raise ValueError("分镜方案内容无效")
+        frozen_lines.append({"line": text, "scene_id": scene_id})
+    prepared.update({
+        "text": "\n\n".join(item["line"] for item in frozen_lines),
+        "mode": "fixed",
+        "n_scenes": len(frozen_lines),
+        "scenes": frozen_lines,
+        "source_page": ("text-video" if source.get("source_page") == "text-video"
+                        else "script"),
+    })
+    normalized = {
+        "enabled": True,
+        "plan_id": plan_id,
+        "source_hash": source_hash,
+        "ratio": frozen_ratio,
+        "default_avatar_asset_id": default_avatar,
+        "scenes": selected,
+    }
+    return normalized
+
+
+def paid_plan_association(payload, username):
+    talking = (payload or {}).get("talking_material")
+    if not isinstance(talking, dict) or talking.get("enabled") is not True:
+        return None
+    plan_id = talking["plan_id"]
+    source_hash = talking["source_hash"]
+
+    def associate(connection, job_id):
+        pixelle_talking_assets.consume_and_bind_paid_plan(
+            connection, username, plan_id, source_hash, job_id)
+
+    return associate
+
+
+def check_plan_rate_limit(username, now=None):
+    """Apply a small owner-scoped guard to the unbilled narration planner."""
+    owner = str(username or "").strip()
+    if not owner:
+        raise ValueError("missing user")
+    stamp = float(time.monotonic() if now is None else now)
+    with _PLAN_RATE_LOCK:
+        recent = [item for item in _PLAN_RATE_REQUESTS.get(owner, [])
+                  if stamp - item < _PLAN_RATE_WINDOW_SECONDS]
+        if len(recent) >= _PLAN_RATE_MAX_REQUESTS:
+            raise RuntimeError("planning_rate_limited")
+        recent.append(stamp)
+        _PLAN_RATE_REQUESTS[owner] = recent
+
+
+def _talking_ratio(payload):
+    raw = (payload or {}).get("ratio", DEFAULT_TALKING_RATIO)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ValueError("口播比例必须在 10%-50% 之间")
+    ratio = float(raw)
+    if (not math.isfinite(ratio)
+            or ratio < MIN_TALKING_RATIO
+            or ratio > MAX_TALKING_RATIO):
+        raise ValueError("口播比例必须在 10%-50% 之间")
+    return float(Decimal(str(ratio)).quantize(
+        Decimal("0.000001"), rounding=ROUND_HALF_UP))
+
+
+def _recommended_scene_ids(scenes, ratio):
+    """Mirror Pixelle's deterministic edge/center/non-adjacent selector."""
+    if not scenes:
+        return []
+    target = max(1, round(len(scenes) * float(ratio)))
+    target = min(target, len(scenes))
+    center = (len(scenes) - 1) / 2.0
+    selected = [0]
+    if len(scenes) > 1:
+        selected.append(len(scenes) - 1)
+
+    def adjacent_to_selected_interior(index):
+        return any(
+            abs(index - selected_index) == 1
+            for selected_index in selected
+            if 0 < selected_index < len(scenes) - 1
+        )
+
+    interior = sorted(
+        range(1, len(scenes) - 1),
+        key=lambda index: (abs(index - center), index),
+    )
+    for index in interior:
+        if len(selected) >= target:
+            break
+        if adjacent_to_selected_interior(index):
+            continue
+        selected.append(index)
+    if len(selected) < target:
+        for index in interior:
+            if len(selected) >= target:
+                break
+            if index not in selected:
+                selected.append(index)
+    return [scenes[index]["scene_id"] for index in selected[:target]]
+
+
+def _estimated_scene_duration(text, speech_rate):
+    units = len(re.findall(r"[\u3400-\u9fffA-Za-z0-9]", str(text or "")))
+    seconds = max(0.5, units / (_BASE_NARRATION_CHARS_PER_SECOND * speech_rate))
+    return float(Decimal(str(seconds)).quantize(
+        Decimal("0.1"), rounding=ROUND_HALF_UP))
+
+
+def plan_talking_scenes(payload, username):
+    """Freeze a non-billed narration plan for later explicit confirmation."""
+    ratio = _talking_ratio(payload)
+    prepared = prepare_payload(payload, username)
+    if prepared["mode"] == "fixed":
+        lines = _fixed_segments(prepared["text"])
+    else:
+        lines = _personal_narrations(prepared)
+    if not lines:
+        raise ValueError("分镜方案不能为空")
+
+    scenes = []
+    last_index = len(lines) - 1
+    for index, line in enumerate(lines):
+        role = "hook" if index == 0 else ("cta" if index == last_index else "body")
+        scenes.append({
+            "scene_id": "scene_%02d" % (index + 1),
+            "text": line,
+            "estimated_duration": _estimated_scene_duration(
+                line, prepared["speech_rate"]),
+            "role": role,
+            "talking_recommended": False,
+        })
+    recommended = set(_recommended_scene_ids(scenes, ratio))
+    for scene in scenes:
+        scene["talking_recommended"] = scene["scene_id"] in recommended
+
+    source = {
+        "text": prepared["text"],
+        "mode": prepared["mode"],
+        "ratio": ratio,
+        "template": prepared["template"],
+        "style": prepared["style"],
+        "speech_rate": prepared["speech_rate"],
+        "source_page": prepared["source_page"],
+        "voice_scope": prepared["voice_scope"],
+    }
+    if prepared["voice_scope"] == "public":
+        source["voice_id"] = prepared["voice_id"]
+    else:
+        source["voice_key"] = prepared["voice_key"]
+    plan = pixelle_talking_assets.create_plan(username, source, scenes)
+    return {
+        "plan_id": plan["plan_id"],
+        "source_hash": plan["source_hash"],
+        "scenes": plan["scenes"],
+    }
 
 
 def _json_request(method, path, payload=None, timeout=30):
@@ -447,6 +705,157 @@ def _binary_request(method, path, content, request_id, timeout=60):
     except (urllib.error.URLError, TimeoutError) as exc:
         reason = getattr(exc, "reason", exc)
         raise PixelleTransientError("个人配音上传失败：%s" % str(reason)[:160])
+
+
+def _asset_request(path, content, content_type, request_id, timeout=60):
+    request = urllib.request.Request(
+        PIXELLE_API_URL + path,
+        data=content,
+        headers={"Content-Type": content_type, "X-Request-Id": request_id},
+        method="POST",
+    )
+    try:
+        with _NO_PROXY.open(request, timeout=timeout) as response:
+            return json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            error = json.loads(exc.read() or b"{}")
+            detail = str(error.get("detail") or error.get("message") or "")[:160]
+        except Exception:
+            detail = ""
+        if exc.code == 429 or exc.code >= 500:
+            raise PixelleTransientError(
+                "人物图片上传暂时失败（HTTP %s）" % exc.code) from exc
+        if exc.code == 413:
+            raise ValueError("人物图片超过视频生成服务限制") from exc
+        raise ValueError(
+            "人物图片被视频生成服务拒绝（HTTP %s）：%s" %
+            (exc.code, detail or "参数无效")) from exc
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+        raise PixelleTransientError("人物图片上传暂时失败") from exc
+
+
+def _upload_avatar_asset(avatar, request_id):
+    for attempt in range(3):
+        try:
+            response = _asset_request(
+                "/api/avatar-assets", avatar["data"], avatar["mime"], request_id)
+            asset_id = str(response.get("asset_id") or "").strip()
+            if not re.fullmatch(r"avatar_[0-9a-f]{32}", asset_id):
+                raise RuntimeError("人物图片上传未返回有效资源 ID")
+            return asset_id
+        except PixelleTransientError:
+            if attempt >= 2:
+                raise
+            time.sleep(0.25 * (attempt + 1))
+    raise RuntimeError("人物图片上传失败")
+
+
+def _load_remote_avatar_map(job_id):
+    try:
+        job_id = int(job_id)
+    except (TypeError, ValueError):
+        return {}
+    if job_id <= 0:
+        return {}
+    try:
+        with closing(sqlite3.connect(
+                pixelle_talking_assets.DB_PATH, timeout=30)) as connection:
+            row = connection.execute(
+                "SELECT payload FROM jobs WHERE id=?", (job_id,)).fetchone()
+    except sqlite3.Error:
+        return {}
+    if not row:
+        return {}
+    try:
+        stored = json.loads(row[0] or "{}").get("_pixelle_remote_avatar_assets") or {}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(stored, dict):
+        return {}
+    return {
+        digest: remote for digest, remote in stored.items()
+        if re.fullmatch(r"[0-9a-f]{64}", str(digest or ""))
+        and re.fullmatch(r"avatar_[0-9a-f]{32}", str(remote or ""))
+    }
+
+
+def _persist_remote_avatar_map(job_id, mapping):
+    try:
+        job_id = int(job_id)
+    except (TypeError, ValueError):
+        return
+    valid = {
+        str(digest): str(remote) for digest, remote in (mapping or {}).items()
+        if re.fullmatch(r"[0-9a-f]{64}", str(digest or ""))
+        and re.fullmatch(r"avatar_[0-9a-f]{32}", str(remote or ""))
+    }
+    if job_id <= 0 or not valid:
+        return
+    with closing(sqlite3.connect(
+            pixelle_talking_assets.DB_PATH, timeout=30)) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT payload FROM jobs WHERE id=? AND status IN ('pending','running')",
+            (job_id,),
+        ).fetchone()
+        if not row:
+            connection.rollback()
+            return
+        payload = json.loads(row[0] or "{}")
+        existing = payload.get("_pixelle_remote_avatar_assets")
+        if not isinstance(existing, dict):
+            existing = {}
+        existing.update(valid)
+        payload["_pixelle_remote_avatar_assets"] = existing
+        connection.execute(
+            "UPDATE jobs SET payload=?,updated_at=? WHERE id=?",
+            (json.dumps(payload, ensure_ascii=False), int(time.time()), job_id),
+        )
+        connection.commit()
+
+
+def _remote_talking_material(payload):
+    talking = (payload or {}).get("talking_material")
+    if not isinstance(talking, dict) or talking.get("enabled") is not True:
+        return {"enabled": False}
+    username = str(payload.get("_username") or "").strip()
+    job_id = payload.get("_job_id")
+    local_ids = [str(talking.get("default_avatar_asset_id") or "")]
+    local_ids.extend(
+        str(item.get("avatar_asset_id") or "")
+        for item in talking.get("scenes") or []
+        if isinstance(item, dict) and item.get("avatar_asset_id")
+    )
+    avatars = {
+        asset_id: pixelle_talking_assets.read_avatar(username, asset_id)
+        for asset_id in dict.fromkeys(local_ids)
+    }
+    remote_by_sha = _load_remote_avatar_map(job_id)
+    local_to_remote = {}
+    for asset_id, avatar in avatars.items():
+        digest = str(avatar.get("sha256") or "")
+        remote_id = remote_by_sha.get(digest)
+        if not remote_id:
+            request_id = "text-video-avatar-%s-%s" % (
+                str(job_id or "pending")[:32], digest[:24])
+            remote_id = _upload_avatar_asset(avatar, request_id)
+            remote_by_sha[digest] = remote_id
+            _persist_remote_avatar_map(job_id, {digest: remote_id})
+        local_to_remote[asset_id] = remote_id
+
+    scenes = []
+    for item in talking.get("scenes") or []:
+        result = {"scene_id": item["scene_id"], "enabled": True}
+        override = str(item.get("avatar_asset_id") or "")
+        result["avatar_asset_id"] = local_to_remote.get(override, "")
+        scenes.append(result)
+    return {
+        "enabled": True,
+        "ratio": float(talking["ratio"]),
+        "default_avatar_asset_id": local_to_remote[local_ids[0]],
+        "scenes": scenes,
+    }
 
 
 def availability(force=False):
@@ -643,6 +1052,9 @@ def _submit(payload):
         "video_fps": 30,
         "bgm_volume": 0.18,
     }
+    remote_talking = _remote_talking_material(payload)
+    if remote_talking.get("enabled"):
+        body["talking_material"] = remote_talking
     if payload.get("voice_scope") == "personal":
         narration_segments = _personal_narration_segments(payload)
         body.update({
@@ -742,13 +1154,50 @@ def _download_video(url, job_id):
     return relative.as_posix(), total
 
 
+def _talking_warnings(result):
+    candidates = []
+    direct = result.get("talking_warnings")
+    if isinstance(direct, list):
+        candidates.extend(direct)
+    frames = result.get("frames")
+    if isinstance(frames, list):
+        candidates.extend(
+            {"scene_id": frame.get("scene_id"), "message": frame.get("talking_warning")}
+            for frame in frames
+            if isinstance(frame, dict) and frame.get("talking_warning")
+        )
+
+    warnings = []
+    seen = set()
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            scene_id = str(candidate.get("scene_id") or "scene").strip()
+            message = candidate.get("message") or candidate.get("detail") \
+                or candidate.get("reason") or candidate.get("warning")
+        else:
+            scene_id = "scene"
+            message = candidate
+        message = re.sub(r"[\x00-\x1f\x7f]+", " ", str(message or ""))
+        message = " ".join(message.split())[:220]
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", scene_id):
+            scene_id = "scene"
+        warning_key = (scene_id, message)
+        if not message or warning_key in seen:
+            continue
+        warnings.append({"scene_id": scene_id, "message": message})
+        seen.add(warning_key)
+        if len(warnings) >= 20:
+            break
+    return warnings
+
+
 def generate(payload):
     style = _style_key(payload)
     task_id = _submit(payload)
     result = _wait(task_id)
     source_url = _safe_upstream_video_url(result.get("video_url"))
     video_file, file_size = _download_video(source_url, payload.get("_job_id"))
-    return {
+    response = {
         "type": "script_to_video",
         "pipeline": "pixelle",
         "provider_task_id": task_id,
@@ -764,3 +1213,7 @@ def generate(payload):
         "input_mode": payload["mode"],
         "file_size": int(result.get("file_size") or file_size),
     }
+    warnings = _talking_warnings(result)
+    if warnings:
+        response["talking_warnings"] = warnings
+    return response
