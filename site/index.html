@@ -3,165 +3,747 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="黄雀 AI：让你的故事，被听见、被看见，并持续生长。">
-  <title>黄雀 AI · 让你的故事飞起来</title>
+  <meta name="description" content="黄雀 AI：从 IP12、Agent 与无限画布，到图文音视频生产和 HQ CLI。">
+  <title>黄雀 AI · 会持续生长的内容系统</title>
   <link rel="icon" href="/assets/logo_sparrow.png">
-  <link rel="stylesheet" href="/homepage.css?v=20260806-flight1">
+  <link rel="stylesheet" href="/homepage.css?v=b4dadc16">
+  <script src="/assets/home/orbit-gallery.js?v=53db89b7" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
-  <canvas class="world-canvas" data-webgl-stage aria-hidden="true"></canvas>
-  <div class="world-grain" aria-hidden="true"></div>
+  <div class="starfield" aria-hidden="true"></div>
+  <canvas class="page-particle-stage" data-hero-particles aria-hidden="true"></canvas>
 
   <header class="site-header">
-    <a class="brand" href="#top" aria-label="黄雀 AI 首页">
-      <img src="/assets/logo_sparrow.png" alt="">
-      <span><strong>黄雀</strong><small>HUANGQUE AI</small></span>
-    </a>
-    <nav aria-label="主导航">
-      <a href="#story">故事</a>
-      <a href="#system">方法</a>
-      <a href="#channels">能力</a>
-    </nav>
-    <a class="nav-entry" href="/workbench/inspiration">进入黄雀 <span>↗</span></a>
+    <div class="nav-cluster" data-nav-cluster>
+      <nav class="nav-shell" data-liquid-glass aria-label="主导航">
+        <canvas class="nav-liquid-glass" data-nav-liquid-glass aria-hidden="true"></canvas>
+        <a class="brand" href="/" aria-label="黄雀首页">
+          <span class="brand-mark"><img src="/assets/logo_sparrow.png" alt=""></span>
+        </a>
+
+        <div class="nav-links" aria-label="产品功能">
+          <span class="nav-link-slider" data-nav-slider aria-hidden="true"><i class="nav-slider-trail"></i><i class="nav-slider-blob"></i></span>
+          <button type="button" data-nav-trigger="creation" data-nav-zh="产品链路" data-nav-en="PRODUCT" aria-controls="nav-drawer-creation" aria-expanded="false">产品链路</button>
+          <button type="button" data-nav-trigger="ip12" aria-controls="nav-drawer-ip12" aria-expanded="false">IP12</button>
+          <button type="button" data-nav-trigger="agent" aria-controls="nav-drawer-agent" aria-expanded="false">Agent + Canvas</button>
+          <button type="button" data-nav-trigger="video" data-nav-zh="视频生成" data-nav-en="VIDEO" aria-controls="nav-drawer-video" aria-expanded="false">视频生成</button>
+          <button type="button" data-nav-trigger="cli" aria-controls="nav-drawer-cli" aria-expanded="false">CLI</button>
+        </div>
+
+        <div class="nav-actions">
+          <details class="language-switcher">
+            <summary aria-label="切换语言" title="切换语言">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"></circle><path d="M3.8 12h16.4M12 3.5c2.3 2.4 3.4 5.2 3.4 8.5S14.3 18.1 12 20.5M12 3.5C9.7 5.9 8.6 8.7 8.6 12s1.1 6.1 3.4 8.5"></path></svg>
+            </summary>
+            <div role="group" aria-label="界面语言"><button type="button" data-language="zh-CN">中文</button><button type="button" data-language="en">English</button></div>
+          </details>
+          <a href="/login" data-nav-zh="登录" data-nav-en="LOGIN">登录</a>
+          <a class="nav-primary" data-liquid-glass href="/workbench/inspiration">ENTER ↗</a>
+        </div>
+
+        <details class="mobile-menu">
+          <summary aria-label="打开导航菜单"><span></span><span></span></summary>
+          <div>
+            <details class="mobile-nav-group"><summary>产品链路</summary><div><a href="/workbench/inspiration">灵感设计</a><a href="/workbench/script">文案编导</a><a href="/workbench/banana">图片生成</a><a href="/workbench/audio">AI 配音</a></div></details>
+            <details class="mobile-nav-group"><summary>IP12</summary><div><a href="/workbench/ip12">进入 IP12</a><a href="/workbench/script?prefill=ip12">带入文案</a><a href="/workbench/video?prefill=ip12">带入视频</a></div></details>
+            <details class="mobile-nav-group"><summary>Agent + Canvas</summary><div><a href="/workbench/canvas">无限画布</a><a href="/workbench/short-drama">短剧创作</a><a href="/workbench/collect">内容爬取</a></div></details>
+            <details class="mobile-nav-group"><summary>视频生成</summary><div><a href="/workbench/video">视频生成中心</a><a href="/workbench/text-video">文案成片</a><a href="/workbench/one-click-video">一键成片</a><a href="/workbench/assets">视频资产</a></div></details>
+            <details class="mobile-nav-group"><summary>CLI</summary><div><a href="/downloads/hq/install.ps1">Windows 安装</a><a href="/downloads/hq/install.sh">macOS / Linux 安装</a><a href="/workbench/device">设备授权</a></div></details>
+            <a class="mobile-login" href="/login">登录 / 注册</a>
+          </div>
+        </details>
+      </nav>
+
+      <div class="nav-drawer-layer">
+        <section class="nav-drawer" id="nav-drawer-creation" data-nav-panel="creation" aria-hidden="true" inert>
+          <div class="nav-drawer-intro"><span>CREATE</span><h2>从灵感到成品</h2><p>选择内容生产环节，直接进入对应工作台。</p></div>
+          <div class="nav-drawer-grid">
+            <a href="/workbench/inspiration"><b>灵感设计</b><span>找案例，开始一次创作</span></a>
+            <a href="/workbench/script"><b>文案编导</b><span>脚本、标题与内容结构</span></a>
+            <a href="/workbench/banana"><b>图片生成</b><span>参考图与视觉创作</span></a>
+            <a href="/workbench/audio"><b>AI 配音</b><span>音色、语速与声音资产</span></a>
+          </div>
+        </section>
+
+        <section class="nav-drawer" id="nav-drawer-ip12" data-nav-panel="ip12" aria-hidden="true" inert>
+          <div class="nav-drawer-intro"><span>IP12</span><h2>建立长期内容底座</h2><p>定位、人设、价值与故事，会继续流入后续创作。</p></div>
+          <div class="nav-drawer-grid">
+            <a href="/workbench/ip12"><b>进入 IP12</b><span>继续你的 12 模块成长档案</span></a>
+            <a href="/workbench/script?prefill=ip12"><b>带入文案</b><span>用已确认底座开始编导</span></a>
+            <a href="/workbench/video?prefill=ip12"><b>带入视频</b><span>把定位与人设交给视频工作台</span></a>
+          </div>
+        </section>
+
+        <section class="nav-drawer" id="nav-drawer-agent" data-nav-panel="agent" aria-hidden="true" inert>
+          <div class="nav-drawer-intro"><span>AGENT</span><h2>让创作成为工作流</h2><p>在画布中组织素材、节点与可执行任务。</p></div>
+          <div class="nav-drawer-grid">
+            <a href="/workbench/canvas"><b>无限画布</b><span>Agent 与节点协同生产</span></a>
+            <a href="/workbench/short-drama"><b>短剧创作</b><span>从故事、角色到分镜视频</span></a>
+            <a href="/workbench/collect"><b>内容爬取</b><span>把真实素材带入工作流</span></a>
+            <a href="/workbench/leads"><b>平台获客</b><span>从内容线索进入行动</span></a>
+          </div>
+        </section>
+
+        <section class="nav-drawer" id="nav-drawer-video" data-nav-panel="video" aria-hidden="true" inert>
+          <div class="nav-drawer-intro"><span>VIDEO</span><h2>选择视频生产方式</h2><p>黄雀引擎、果肉视频、数字化 IP 与成片工具集中在这里。</p></div>
+          <div class="nav-drawer-grid">
+            <a href="/workbench/video"><b>视频生成中心</b><span>黄雀引擎 1 / 黄雀引擎 2 / 果肉视频</span></a>
+            <a href="/workbench/video"><b>数字化 IP</b><span>口播、电影化身与换装视频</span></a>
+            <a href="/workbench/text-video"><b>文案成片</b><span>从文字直接生成完整视频</span></a>
+            <a href="/workbench/one-click-video"><b>一键成片</b><span>已有素材快速剪成作品</span></a>
+          </div>
+        </section>
+
+        <section class="nav-drawer" id="nav-drawer-cli" data-nav-panel="cli" aria-hidden="true" inert>
+          <div class="nav-drawer-intro"><span>HQ CLI</span><h2>把能力接入你的 Agent</h2><p>使用设备授权调用黄雀能力，不交出网页登录密码。</p></div>
+          <div class="nav-drawer-grid">
+            <a href="/downloads/hq/install.ps1"><b>Windows 安装</b><span>PowerShell 5.1 / 7</span></a>
+            <a href="/downloads/hq/install.sh"><b>macOS / Linux 安装</b><span>下载官方安装脚本</span></a>
+            <a href="/workbench/device"><b>设备授权</b><span>查看并确认授权范围</span></a>
+            <a href="/workbench/assets"><b>我的资产</b><span>查看 Agent 生产结果</span></a>
+          </div>
+        </section>
+      </div>
+    </div>
   </header>
 
   <main id="main">
-    <section class="hero scene" id="top" data-scene="flight">
-      <p class="scene-index">00 — A LIVING CONTENT SYSTEM</p>
-      <div class="hero-copy">
-        <p class="eyebrow">你的经验，本来就值得被世界看见。</p>
-        <h1>让你的故事，<br><em>飞起来。</em></h1>
-        <p class="hero-lead">黄雀先听懂你，再把同一个故事变成文字、图像、声音和视频。不是制造更多噪音，而是让真正属于你的东西抵达更远。</p>
+    <section class="hero" id="top">
+      <div class="hero-media" aria-hidden="true">
+        <video class="hero-video-eye is-active" autoplay muted playsinline preload="metadata">
+          <source src="/assets/home/hero-banner-monochrome-eye.mp4" type="video/mp4">
+        </video>
+        <video class="hero-video-courtyard" muted playsinline preload="metadata">
+          <source src="/assets/home/hero-banner-ancient-courtyard.mp4" type="video/mp4">
+        </video>
+        <canvas class="hero-liquid-glass" data-hero-liquid-glass></canvas>
+      </div>
+      <div class="hero-inner" data-reveal>
+        <h1><span class="line">Huang Que AI Hub</span></h1>
         <div class="hero-actions">
-          <a class="button button-light" href="#story">进入故事</a>
-          <a class="text-link" href="/workbench/ip12/">从 IP12 开始 <span>↗</span></a>
+          <a class="button button-primary" data-liquid-glass href="/workbench/inspiration">ENTER HUANGQUE <span aria-hidden="true">↗</span></a>
         </div>
-      </div>
-      <p class="hero-aside" aria-hidden="true">LISTEN<br>SHAPE<br>CREATE<br>GROW</p>
-      <a class="scroll-cue" href="#story"><span></span>SCROLL TO FLY</a>
-    </section>
-
-    <section class="manifesto scene" id="story" data-scene="listen">
-      <div class="manifesto-number" aria-hidden="true">01</div>
-      <div class="manifesto-copy">
-        <p class="scene-index">THE FIRST THING WE DO</p>
-        <h2>先别急着生成。<br>我们先听见<br><em>真正的你。</em></h2>
-        <p>你的判断、经历、产品和那些说不清的直觉，会先成为一套清晰的数字底稿。技术从这里退后，理解从这里开始。</p>
-        <a class="line-link" href="/workbench/ip12/">建立我的 IP 底稿 <span>↗</span></a>
       </div>
     </section>
 
-    <section class="chapters" aria-label="黄雀内容生长路径">
-      <article class="chapter scene" data-scene="shape">
-        <p class="chapter-no">02 / SHAPE</p>
-        <div>
-          <p class="chapter-kicker">ONE STORY, MANY FORMS</p>
-          <h2>同一个你，<br>长成不同的表达。</h2>
-          <p>Agent 先给方向，Canvas 把文字、图像、声音与视频连成一条可审核的创作路径。每一步都能看见，每一步都由你决定。</p>
+    <section class="particle-story" data-particle-story aria-label="由滚动和鼠标驱动的粒子黄雀">
+      <article class="particle-story-beat">
+        <div class="page-shell particle-story-copy">
+          <span>01 / SCATTER → FEATHER</span>
+          <h2>每个故事，<br>最初都只是一点微光。</h2>
+          <p>继续向下滚动。移动鼠标，看看那些尚未成形的念头。</p>
         </div>
       </article>
-
-      <article class="chapter scene chapter-right" data-scene="create">
-        <p class="chapter-no">03 / CREATE</p>
-        <div>
-          <p class="chapter-kicker">CONTROL THE MOMENT</p>
-          <h2>AI 负责展开可能，<br>你负责按下确认。</h2>
-          <p>方案先出现，费用先说明，生成再发生。强大的能力不需要夺走控制权，它应该让你的判断更有力量。</p>
-          <a class="line-link" href="/workbench/canvas">打开创作画布 <span>↗</span></a>
+      <article class="particle-story-beat">
+        <div class="page-shell particle-story-copy">
+          <span>02 / BECOME</span>
+          <h2>被听见以后，<br>它开始拥有形状。</h2>
         </div>
       </article>
-
-      <article class="chapter scene" data-scene="grow">
-        <p class="chapter-no">04 / GROW</p>
-        <div>
-          <p class="chapter-kicker">NOT AN ENDING</p>
-          <h2>作品飞出去，<br>经验留下来。</h2>
-          <p>每一次文案、图片、声音与成片都会回到你的资产库，成为下一次创作的起点。你的数字世界，从此不再每次归零。</p>
-          <a class="line-link" href="/workbench/assets">查看内容资产 <span>↗</span></a>
+      <article class="particle-story-beat">
+        <div class="page-shell particle-story-copy">
+          <span>03 / CREATE</span>
+          <h2>同一个故事，<br>开始长出不同的形态。</h2>
+        </div>
+      </article>
+      <article class="particle-story-beat">
+        <div class="page-shell particle-story-copy">
+          <span>04 / GROW</span>
+          <h2>一次表达，<br>可以生长成更多方向。</h2>
         </div>
       </article>
     </section>
 
-    <section class="system" id="system">
-      <div class="system-head">
-        <p class="scene-index">HOW HUANGQUE WORKS</p>
-        <h2>从一个念头，<br>到一个会生长的世界。</h2>
-      </div>
-      <div class="system-flow" aria-label="黄雀创作方法">
-        <article><span>01</span><strong>听见</strong><p>IP12 梳理你是谁、相信什么、要去哪里。</p></article>
-        <article><span>02</span><strong>成形</strong><p>Agent 把目标变成可审阅、可修改的计划。</p></article>
-        <article><span>03</span><strong>创作</strong><p>Canvas 串起跨媒体内容，而不是堆功能按钮。</p></article>
-        <article><span>04</span><strong>生长</strong><p>作品回到资产与记忆，推动下一次表达。</p></article>
-      </div>
-      <div class="system-actions">
-        <a class="button button-light" href="/workbench/inspiration">开始一次创作</a>
-        <a class="text-link" href="/workbench/canvas">看看 Canvas <span>↗</span></a>
-      </div>
-    </section>
-
-    <section class="channels" id="channels">
-      <div class="channels-head">
-        <div>
-          <p class="scene-index">CREATIVE CAPABILITIES</p>
-          <h2>故事只有一个，<br>抵达世界的方式有很多。</h2>
+    <section class="metrics" aria-label="黄雀平台数据">
+      <div class="page-shell metrics-grid" data-reveal>
+        <div class="metric">
+          <div class="metric-num"><strong data-count="46">0</strong><span>+</span></div>
+          <p>已登记的平台能力</p>
+          <small>每项能力都带明确参数、权限与费用边界</small>
         </div>
-        <p>这里展示客户在黄雀工作台可以直接选择的创作方式。底层线路与供应商信息只在受保护的运营后台管理。</p>
-      </div>
-      <div class="channel-list" aria-label="黄雀前台创作渠道">
-        <article class="channel-card" data-product-channel><span>01 · IMAGE</span><strong>黄雀引擎 1</strong><p>人像、商品与场景视觉</p></article>
-        <article class="channel-card" data-product-channel><span>02 · IMAGE</span><strong>黄雀引擎 2</strong><p>文生图、图生图与修改</p></article>
-        <article class="channel-card" data-product-channel><span>03 · IMAGE</span><strong>纳米香蕉</strong><p>多图理解与创意生成</p></article>
-        <article class="channel-card" data-product-channel><span>04 · IMAGE</span><strong>果肉生图</strong><p>参考图与风格延展</p></article>
-        <article class="channel-card" data-product-channel><span>05 · VIDEO</span><strong>Seedance</strong><p>参考图驱动的视频</p></article>
-        <article class="channel-card" data-product-channel><span>06 · VIDEO</span><strong>果肉视频</strong><p>文字与图片生成视频</p></article>
-        <article class="channel-card" data-product-channel><span>07 · VIDEO</span><strong>Sora 2</strong><p>叙事与参考图视频</p></article>
-        <article class="channel-card" data-product-channel><span>08 · VIDEO</span><strong>Omni 视频</strong><p>多模态内容转视频</p></article>
-        <article class="channel-card" data-product-channel><span>09 · VIDEO</span><strong>麦克视频</strong><p>图片与文字动态表达</p></article>
-        <article class="channel-card" data-product-channel><span>10 · AVATAR</span><strong>电影化身</strong><p>人物素材转电影感成片</p></article>
-        <article class="channel-card" data-product-channel><span>11 · AVATAR</span><strong>数字人口播</strong><p>形象、文案与配音一体</p></article>
-        <article class="channel-card" data-product-channel><span>12 · AUDIO</span><strong>AI 配音</strong><p>公共音色与个人声音</p></article>
-        <article class="channel-card" data-product-channel><span>13 · FINISH</span><strong>换装与超清</strong><p>换装、换景与画质增强</p></article>
+        <div class="metric">
+          <div class="metric-num"><strong data-count="33">0</strong><span>+</span></div>
+          <p>可直接执行的能力</p>
+          <small>网页 Agent、外部 Agent 与命令行共用同一合同</small>
+        </div>
+        <div class="metric">
+          <div class="metric-num"><strong data-count="13">0</strong><span>个</span></div>
+          <p>前台创作渠道</p>
+          <small>图文、音视频、数字人，一站连通</small>
+        </div>
       </div>
     </section>
 
-    <section class="final scene" data-scene="release">
-      <p class="scene-index">THIS IS YOUR SIGNAL</p>
-      <h2>世界不缺内容。<br><em>世界在等你的表达。</em></h2>
-      <p>把散落的经验交给黄雀，让它成为一条有方向、能持续、会被记住的内容生命线。</p>
-      <a class="button button-light" href="/workbench/ip12/">让故事起飞 <span>↗</span></a>
+    <section class="story" id="flow">
+      <div class="page-shell story-intro" data-reveal>
+        <p class="kicker">THE HUANGQUE FLOW</p>
+        <h2>SCROLL THROUGH THE SYSTEM.<br><em>WATCH ONE IDEA BECOME A WORKFLOW.</em></h2>
+        <p>不是功能卡片的堆叠。每一步的结果，都会成为下一步的输入。</p>
+      </div>
+
+      <div class="page-shell story-layout">
+        <div class="story-visual">
+          <div class="story-stage">
+            <div class="stage-head"><span>黄雀任务台 · 新品内容启动</span><span data-stage-label aria-live="polite">01 / IP12</span></div>
+            <div class="stage-track" aria-hidden="true">
+              <span class="is-active" data-indicator="ip12"><b>01</b> IP12</span>
+              <span data-indicator="agent"><b>02</b> AGENT</span>
+              <span data-indicator="video"><b>03</b> VIDEO</span>
+              <span data-indicator="cli"><b>04</b> CLI</span>
+            </div>
+
+            <div class="stage-panels">
+              <section class="story-panel panel-ip12 is-active" data-panel="ip12" aria-hidden="false">
+                <div class="ip-summary">
+                  <span>IP FOUNDATION</span>
+                  <strong>12</strong>
+                  <p>一条长期成长路线。当前先完成 1–6 模块，再继续进入内容生产。</p>
+                  <small><i></i> 6 / 12 已开放</small>
+                </div>
+                <ol class="module-grid" aria-label="IP12 模块状态">
+                  <li class="ready"><b>01</b><span>定位诊断</span></li>
+                  <li class="ready"><b>02</b><span>人设塑造</span></li>
+                  <li class="ready"><b>03</b><span>价值主张</span></li>
+                  <li class="ready"><b>04</b><span>故事资产</span></li>
+                  <li class="ready"><b>05</b><span>内容选题</span></li>
+                  <li class="ready"><b>06</b><span>文案口播</span></li>
+                  <li><b>07</b><span>路线中</span></li>
+                  <li><b>08</b><span>路线中</span></li>
+                  <li><b>09</b><span>路线中</span></li>
+                  <li><b>10</b><span>路线中</span></li>
+                  <li><b>11</b><span>路线中</span></li>
+                  <li><b>12</b><span>路线中</span></li>
+                </ol>
+              </section>
+
+              <section class="story-panel panel-agent" data-panel="agent" aria-hidden="true">
+                <div class="agent-note">
+                  <span class="agent-icon"><img src="/assets/logo_sparrow.png" alt=""></span>
+                  <p><small>CANVAS AGENT</small>已依据 IP12 摘要拆出 4 个动作。请先审核，再写入画布。</p>
+                </div>
+                <div class="canvas-map" aria-label="Agent 与画布协作示意">
+                  <svg viewBox="0 0 800 360" preserveAspectRatio="none" aria-hidden="true"><path d="M166 183 C250 183 248 92 340 92"/><path d="M166 183 C250 183 248 270 340 270"/><path d="M504 92 C585 92 570 183 650 183"/><path d="M504 270 C585 270 570 183 650 183"/></svg>
+                  <article class="canvas-node source"><small>IP 底座</small><strong>专业，但不端着</strong><span>已确认</span></article>
+                  <article class="canvas-node script"><small>脚本节点</small><strong>首条口播提纲</strong><span>待编辑</span></article>
+                  <article class="canvas-node visual"><small>视觉节点</small><strong>3:4 产品主图</strong><span>待生成</span></article>
+                  <article class="canvas-node output"><small>视频节点</small><strong>9:16 竖屏成片</strong><span>待生成</span></article>
+                </div>
+                <div class="confirm-bar"><span><i></i> 4 个动作 · 尚未执行</span><b>确认方案后写入画布</b></div>
+              </section>
+
+              <section class="story-panel panel-video" data-panel="video" aria-hidden="true">
+                <figure class="video-cover">
+                  <img src="/assets/tutorials/huangque-ai-video.webp" alt="黄雀视频工作台教学封面">
+                  <span class="play">▶</span>
+                  <figcaption><small>VIDEO PIPELINE</small><strong>从脚本与镜头，到生成与资产回收</strong></figcaption>
+                </figure>
+                <div class="video-flow">
+                  <div class="flow-head"><span>9:16 · 新品短片</span><span>方案阶段</span></div>
+                  <div class="flow-row done"><b>01</b><i></i><span>脚本</span></div>
+                  <div class="flow-row active"><b>02</b><i></i><span>镜头规划</span></div>
+                  <div class="flow-row"><b>03</b><i></i><span>视频生成</span></div>
+                  <div class="flow-row"><b>04</b><i></i><span>资产回收</span></div>
+                  <div class="quote"><span>提交生成前</span><strong>先返回价格与预计扣点</strong></div>
+                </div>
+              </section>
+
+              <section class="story-panel panel-cli" data-panel="cli" aria-hidden="true">
+                <div class="terminal-head"><span>HQ CLI · v0.10</span><span><i></i> WINDOWS + MAC READY</span></div>
+                <pre><code><span class="term-prompt">$</span> hq login --json
+<span class="term-dim">{"next":"在浏览器中确认设备授权"}</span>
+
+<span class="term-prompt">$</span> hq capabilities --json
+<span class="term-good">✓</span> IP12 · Canvas · Assets · Generation
+
+<span class="term-prompt">$</span> hq describe canvas-agent-plan --json
+<span class="term-gold">→ 付费动作仍然先报价、再确认</span></code></pre>
+                <div class="install-options">
+                  <div class="install-line"><strong>WINDOWS</strong><code data-command>irm https://huangquechuanmei.com/downloads/hq/install.ps1 | iex</code><button type="button" data-copy>[ 复制 ]</button></div>
+                  <div class="install-line"><strong>MAC</strong><code data-command>curl -fsSL https://huangquechuanmei.com/downloads/hq/install.sh | sh</code><button type="button" data-copy>[ 复制 ]</button></div>
+                </div>
+              </section>
+            </div>
+
+            <div class="stage-foot"><span><i></i> 计划 → 审核 → 报价 → 确认 → 回收</span><span>CONTROL STAYS WITH YOU</span></div>
+          </div>
+        </div>
+
+        <div class="story-chapters">
+          <article class="story-step is-active" id="ip12" data-story="ip12" data-label="01 / IP12">
+            <span class="step-no">01 / DIGITAL IP FOUNDATION</span>
+            <h3>先把“你是谁”，<br>变成可继续使用的底座。</h3>
+            <p>IP12 不是一张做完就丢的问卷，而是一条从定位、人设、价值与故事出发的长期路线。当前开放前 6 个核心模块。</p>
+            <a href="/workbench/ip12/">开始建立 IP 底座 ↗</a>
+          </article>
+
+          <article class="story-step" id="agent" data-story="agent" data-label="02 / AGENT + CANVAS">
+            <span class="step-no">02 / AGENT + CANVAS</span>
+            <h3>Agent 给计划，<br>你在画布上决定。</h3>
+            <p>Canvas Agent 读取必要上下文，先生成可审核的节点方案。只有你确认后，它才把非破坏性操作写进画布。</p>
+            <a href="/workbench/canvas">打开无限画布 ↗</a>
+          </article>
+
+          <article class="story-step" id="video" data-story="video" data-label="03 / VIDEO PIPELINE">
+            <span class="step-no">03 / VIDEO PIPELINE</span>
+            <h3>视频不是一个按钮，<br>而是一条可检查的机制。</h3>
+            <p>从脚本、参考素材和镜头规划，到生成任务、状态追踪与资产回收。真正提交前，系统先报价并等待确认。</p>
+            <a href="/workbench/video">进入视频工作台 ↗</a>
+          </article>
+
+          <article class="story-step" id="cli" data-story="cli" data-label="04 / HQ CLI">
+            <span class="step-no">04 / HQ CLI</span>
+            <h3>你自己的 Agent，<br>也能受控使用黄雀。</h3>
+            <p>HQ CLI 使用浏览器设备授权和能力范围，不要求把主站密码交给外部 Agent；付费动作仍然遵守报价与确认边界。</p>
+            <div class="cli-downloads">
+              <a href="/downloads/hq/install.ps1">Windows CLI ↗</a>
+              <a href="/downloads/hq/install.sh">Mac CLI ↗</a>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="capabilities" id="capabilities" aria-labelledby="capability-title">
+      <div class="page-shell capability-head" data-reveal>
+        <div>
+          <p class="kicker">ONE CONTRACT · EVERY CAPABILITY</p>
+          <h2 id="capability-title">ONE ENTRY POINT.<br><em>THE WHOLE HUANGQUE SYSTEM.</em></h2>
+        </div>
+        <p>网页 Agent、外部 Agent 和人工命令行，共用同一份能力合同。每项操作都带着明确参数、账号权限、费用边界和下一步去向。</p>
+      </div>
+
+      <div class="page-shell capability-tree" data-reveal>
+        <div class="capability-root">
+          <span class="capability-root-icon"><img src="/assets/icons-duotone/hq_bot.svg" alt=""></span>
+          <div>
+            <small>HUANGQUE CAPABILITY LAYER</small>
+            <h3>HQ CLI · 统一能力中枢</h3>
+            <p>Agent 不必猜页面和 API，只需发现、理解，再按规则调用。</p>
+          </div>
+          <div class="capability-consumers" aria-label="能力调用入口">
+            <span>网页 Agent</span><span>外部 Agent</span><span>人工命令行</span>
+          </div>
+          <dl class="capability-metrics">
+            <div><dt>46</dt><dd>已登记能力</dd></div>
+            <div><dt>33</dt><dd>可直接执行</dd></div>
+            <div><dt>13</dt><dd>页面导航</dd></div>
+          </dl>
+        </div>
+
+        <div class="capability-trunk" aria-hidden="true"></div>
+        <div class="capability-branches">
+          <a class="capability-branch" href="/workbench/settings">
+            <span class="capability-branch-top"><span class="capability-icon"><img src="/assets/icons-duotone/hq_account.svg" alt=""></span><small>已接入</small></span>
+            <b>01</b><h3>身份与控制</h3>
+            <ul><li>设备授权</li><li>账号与点数</li><li>报价与确认</li></ul>
+            <span class="capability-open">查看账号能力 ↗</span>
+          </a>
+          <a class="capability-branch" href="/workbench/ip12/">
+            <span class="capability-branch-top"><span class="capability-icon"><img src="/assets/icons-duotone/hq_human.svg" alt=""></span><small>持续扩展</small></span>
+            <b>02</b><h3>IP12 与引导</h3>
+            <ul><li>项目与报告</li><li>AI 教练对话</li><li>提示词优化</li></ul>
+            <span class="capability-open">建立 IP 底座 ↗</span>
+          </a>
+          <a class="capability-branch" href="/workbench/canvas">
+            <span class="capability-branch-top"><span class="capability-icon"><img src="/assets/icons-duotone/hq_canvas.svg" alt=""></span><small>已接入</small></span>
+            <b>03</b><h3>Canvas Agent</h3>
+            <ul><li>画布读写</li><li>Agent 规划</li><li>安全节点操作</li></ul>
+            <span class="capability-open">打开创作画布 ↗</span>
+          </a>
+          <a class="capability-branch" href="/workbench/video">
+            <span class="capability-branch-top"><span class="capability-icon"><img src="/assets/icons-duotone/hq_video.svg" alt=""></span><small>持续扩展</small></span>
+            <b>04</b><h3>AI 内容创作</h3>
+            <ul><li>图像 · 音频 · 视频</li><li>一键成片</li><li>数字人口播 · 短剧</li></ul>
+            <span class="capability-open">进入视频工作台 ↗</span>
+          </a>
+          <a class="capability-branch" href="/workbench/assets">
+            <span class="capability-branch-top"><span class="capability-icon"><img src="/assets/icons-duotone/hq_assets.svg" alt=""></span><small>已接入</small></span>
+            <b>05</b><h3>任务与资产</h3>
+            <ul><li>任务状态</li><li>素材上传</li><li>收藏与标签</li></ul>
+            <span class="capability-open">查看我的资产 ↗</span>
+          </a>
+          <a class="capability-branch" href="/workbench/inspiration">
+            <span class="capability-branch-top"><span class="capability-icon"><img src="/assets/icons-duotone/hq_viral.svg" alt=""></span><small>导航已接入</small></span>
+            <b>06</b><h3>增长与发现</h3>
+            <ul><li>灵感与采集</li><li>获客工作台</li><li>教程与设置</li></ul>
+            <span class="capability-open">发现创作方向 ↗</span>
+          </a>
+        </div>
+
+        <div class="channel-showcase" aria-labelledby="channel-title">
+          <div class="channel-showcase-head">
+            <div><small>HUANGQUE CREATIVE CHANNELS</small><h3 id="channel-title">前台看到什么，Agent 就理解什么。</h3></div>
+            <p>这里只展示客户在工作台可选择的黄雀产品渠道。底层供应商、线路和密钥只在受保护的运营后台管理。</p>
+          </div>
+          <div class="channel-grid" aria-label="黄雀前台创作渠道">
+            <article class="channel-card" data-product-channel><header><b>黄雀引擎 1</b><span>图片</span></header><p>人像、商品与场景视觉生成</p></article>
+            <article class="channel-card" data-product-channel><header><b>黄雀引擎 2</b><span>图片</span></header><p>文生图、图生图与局部修改</p></article>
+            <article class="channel-card" data-product-channel><header><b>纳米香蕉</b><span>图片</span></header><p>多图理解与创意视觉生成</p></article>
+            <article class="channel-card" data-product-channel><header><b>果肉生图</b><span>图片</span></header><p>多参考图与风格延展</p></article>
+            <article class="channel-card" data-product-channel><header><b>Seedance</b><span>视频</span></header><p>图生视频与参考图视频</p></article>
+            <article class="channel-card" data-product-channel><header><b>果肉视频</b><span>视频</span></header><p>文生视频与图生视频</p></article>
+            <article class="channel-card" data-product-channel><header><b>Sora 2</b><span>视频</span></header><p>文本与参考图驱动的视频生成</p></article>
+            <article class="channel-card" data-product-channel><header><b>Omni 视频</b><span>视频</span></header><p>多模态内容转视频</p></article>
+            <article class="channel-card" data-product-channel><header><b>麦克视频</b><span>视频</span></header><p>文本与图片驱动的视频生成</p></article>
+            <article class="channel-card" data-product-channel><header><b>电影化身</b><span>数字人</span></header><p>人物素材转电影感成片</p></article>
+            <article class="channel-card" data-product-channel><header><b>数字人口播</b><span>数字人</span></header><p>形象、文案与配音一体创作</p></article>
+            <article class="channel-card" data-product-channel><header><b>AI 配音</b><span>音频</span></header><p>公共音色与个人声音克隆</p></article>
+            <article class="channel-card" data-product-channel><header><b>换装与超清</b><span>处理</span></header><p>换装换背景与画质增强</p></article>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="samples" id="samples">
+      <div class="page-shell samples-head" data-reveal>
+        <div><p class="kicker">CREATIVE OUTPUT</p><h2>NOT JUST A PROCESS.<br><em>RESULTS YOU CAN SEE.</em></h2></div>
+        <p>以下为黄雀创作样片，用于展示可实现的视觉方向，不作为客户案例或经营效果证明。</p>
+      </div>
+      <div class="samples-gallery-shell" data-reveal>
+        <div
+          class="orbit-gallery"
+          data-orbit-gallery
+          data-gallery-manifest="/assets/home/orbit-gallery/gallery.json?v=3775f8d9"
+          data-gallery-state="fallback"
+        >
+          <div class="orbit-gallery-ambient" aria-hidden="true"></div>
+          <div class="orbit-gallery-viewport">
+            <div class="orbit-gallery-track" data-gallery-track></div>
+            <div class="orbit-gallery-focus" aria-hidden="true"></div>
+          </div>
+          <div class="orbit-gallery-fallback" data-gallery-fallback>
+            <figure><img src="/assets/home/orbit-gallery/desktop-image-01.webp" alt="黄雀创作图片样片 01" loading="lazy" decoding="async"></figure>
+            <figure><img src="/assets/home/orbit-gallery/desktop-video-02.webp" alt="黄雀创作视频样片 02 的静态封面" loading="lazy" decoding="async"></figure>
+            <figure><img src="/assets/home/orbit-gallery/desktop-image-04.webp" alt="黄雀创作图片样片 04" loading="lazy" decoding="async"></figure>
+          </div>
+          <div class="orbit-gallery-meta">
+            <span data-gallery-instruction hidden>DRAG TO EXPLORE</span>
+            <p data-gallery-status>黄雀图片与视频创作样片</p>
+            <span data-gallery-instruction hidden>← / → · ENTER</span>
+          </div>
+          <button class="orbit-gallery-autoplay" type="button" data-gallery-autoplay-toggle aria-pressed="false" hidden>暂停轮播</button>
+        </div>
+      </div>
+    </section>
+
+    <dialog class="orbit-preview" data-gallery-preview aria-labelledby="gallery-preview-title">
+      <button class="orbit-preview-close" type="button" data-gallery-preview-close aria-label="关闭预览">×</button>
+      <div class="orbit-preview-stage" data-gallery-preview-stage></div>
+      <p id="gallery-preview-title" data-gallery-preview-title></p>
+    </dialog>
+
+    <section class="control" id="control">
+      <div class="page-shell control-head" data-reveal>
+        <p class="kicker">DESIGNED FOR CONTROL</p>
+        <h2>POWERFUL AI.<br><em>HUMAN CONTROL.</em></h2>
+      </div>
+      <div class="page-shell control-grid">
+        <article data-reveal><b>01</b><h3>方案可审核</h3><p>Agent 的建议先成为草稿，不把建议伪装成已经执行。</p></article>
+        <article data-reveal><b>02</b><h3>付费先报价</h3><p>涉及生成与扣点的动作，先返回价格，再等待明确确认。</p></article>
+        <article data-reveal><b>03</b><h3>授权有范围</h3><p>HQ CLI 使用设备授权，不要求外部 Agent 持有网站密码。</p></article>
+        <article data-reveal><b>04</b><h3>结果可回收</h3><p>文案、图片、音频与视频回到工作台，继续成为下一轮输入。</p></article>
+      </div>
+    </section>
+
+    <section class="final-cta">
+      <div class="page-shell cta-inner" data-reveal>
+        <div class="hero-logo"><img src="/assets/logo_sparrow.png" alt=""></div>
+        <p class="kicker">YOUR DIGITAL IP STARTS HERE</p>
+        <h2>TURN YOUR STORY INTO<br><em>A SYSTEM THAT KEEPS GROWING.</em></h2>
+        <div><a class="button button-primary" data-liquid-glass href="/workbench/ip12/">START IP12</a><a class="button button-secondary" data-liquid-glass href="/workbench/inspiration">ENTER WORKSPACE</a></div>
+      </div>
     </section>
   </main>
 
   <footer>
-    <a class="brand" href="#top"><img src="/assets/logo_sparrow.png" alt=""><span><strong>黄雀</strong><small>HUANGQUE AI</small></span></a>
-    <p>让你的故事，被听见、被看见，并持续生长。</p>
-    <div><a href="/login">登录</a><a href="/workbench/inspiration">工作台</a></div>
+    <div class="page-shell footer-inner">
+      <a class="brand" href="#top"><span class="brand-mark"><img src="/assets/logo_sparrow.png" alt=""></span><span><strong>黄雀 AI</strong><small>HUANGQUE</small></span></a>
+      <p>让生意拥有会持续生长的内容系统。</p>
+      <div><a href="#flow">产品链路</a><a href="#capabilities">能力地图</a><a href="/login">登录</a><a href="/workbench/inspiration">工作台</a></div>
+    </div>
   </footer>
 
-  <script src="/homepage-webgl.js?v=20260806-flight1" defer></script>
   <script>
   (() => {
-    const scenes = [...document.querySelectorAll('[data-scene]')];
-    const channels = [...document.querySelectorAll('[data-product-channel]')];
-    window.__homepageCheck = () => scenes.length === 7 && channels.length === 13 && Boolean(document.querySelector('[data-webgl-stage]'));
-    console.assert(window.__homepageCheck(), 'Homepage experience contract is incomplete');
+    const steps = [...document.querySelectorAll('[data-story]')];
+    const panels = [...document.querySelectorAll('[data-panel]')];
+    const indicators = [...document.querySelectorAll('[data-indicator]')];
+    const stageLabel = document.querySelector('[data-stage-label]');
+    const capabilityBranches = [...document.querySelectorAll('.capability-branch')];
+    const productChannels = [...document.querySelectorAll('[data-product-channel]')];
 
-    const observer = new IntersectionObserver(entries => {
-      const current = entries.find(entry => entry.isIntersecting);
-      if (current) document.documentElement.dataset.scene = current.target.dataset.scene;
-    }, { rootMargin: '-42% 0px -42% 0px' });
-    scenes.forEach(scene => observer.observe(scene));
+    const languageSwitcher = document.querySelector('.language-switcher');
+    const setLanguage = language => {
+      const next = language === 'en' ? 'en' : 'zh-CN';
+      document.documentElement.lang = next;
+      document.querySelectorAll('[data-nav-zh]').forEach(element => {
+        element.textContent = next === 'en' ? element.dataset.navEn : element.dataset.navZh;
+      });
+      languageSwitcher?.querySelectorAll('[data-language]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.language === next)));
+      languageSwitcher?.removeAttribute('open');
+      try { localStorage.setItem('huangque-language', next); } catch {}
+    };
+    languageSwitcher?.querySelectorAll('[data-language]').forEach(button => button.addEventListener('click', () => setLanguage(button.dataset.language)));
+    let savedLanguage = 'zh-CN';
+    try { savedLanguage = localStorage.getItem('huangque-language') || 'zh-CN'; } catch {}
+    setLanguage(savedLanguage);
 
-    let frame = 0;
-    function updateScroll() {
-      frame = 0;
-      const range = Math.max(1, document.documentElement.scrollHeight - innerHeight);
-      document.documentElement.style.setProperty('--page-progress', (scrollY / range).toFixed(4));
+    window.__homepageCheck = () => steps.length === 4
+      && steps.every(step => panels.some(panel => panel.dataset.panel === step.dataset.story))
+      && capabilityBranches.length === 6
+      && productChannels.length === 13
+      && Boolean(document.querySelector('.story-stage') && document.querySelector('.story-chapters'))
+      && Boolean(document.querySelector('[data-hero-liquid-glass]'));
+    console.assert(window.__homepageCheck(), 'Homepage story mapping is incomplete');
+
+    function activateStory(id) {
+      steps.forEach(step => {
+        const active = step.dataset.story === id;
+        step.classList.toggle('is-active', active);
+        step.toggleAttribute('aria-current', active);
+      });
+      panels.forEach(panel => {
+        const active = panel.dataset.panel === id;
+        panel.classList.toggle('is-active', active);
+        panel.setAttribute('aria-hidden', String(!active));
+      });
+      indicators.forEach(item => item.classList.toggle('is-active', item.dataset.indicator === id));
+      stageLabel.textContent = steps.find(step => step.dataset.story === id)?.dataset.label || '';
     }
-    addEventListener('scroll', () => { if (!frame) frame = requestAnimationFrame(updateScroll); }, { passive: true });
-    updateScroll();
+
+    const storyObserver = new IntersectionObserver(entries => {
+      const current = entries.find(entry => entry.isIntersecting);
+      if (current) activateStory(current.target.dataset.story);
+    }, { rootMargin: '-36% 0px -52% 0px' });
+
+    steps.forEach(step => {
+      storyObserver.observe(step);
+      step.addEventListener('focusin', () => activateStory(step.dataset.story));
+      step.addEventListener('pointerenter', () => activateStory(step.dataset.story));
+    });
+
+    const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+
+    const heroVideos = [...document.querySelectorAll('.hero-media video')];
+    let activeHeroVideo = 0;
+    const showNextHeroVideo = () => {
+      if (reducedMotion.matches || heroVideos.length < 2) return;
+      const current = heroVideos[activeHeroVideo];
+      const nextIndex = (activeHeroVideo + 1) % heroVideos.length;
+      const next = heroVideos[nextIndex];
+      next.currentTime = 0;
+      next.play().then(() => {
+        next.classList.add('is-active');
+        current.classList.remove('is-active');
+        setTimeout(() => { current.pause(); current.currentTime = 0; }, 1000);
+        activeHeroVideo = nextIndex;
+      }).catch(() => {});
+    };
+    heroVideos.forEach(video => video.addEventListener('ended', showNextHeroVideo));
+    const syncHeroVideoMotion = () => {
+      if (!heroVideos.length) return;
+      heroVideos.forEach(video => video.pause());
+      if (reducedMotion.matches) {
+        heroVideos.forEach((video, index) => {
+          video.currentTime = 0;
+          video.classList.toggle('is-active', index === 0);
+        });
+        activeHeroVideo = 0;
+        return;
+      }
+      heroVideos[activeHeroVideo].play().catch(() => {});
+    };
+    syncHeroVideoMotion();
+    reducedMotion.addEventListener?.('change', syncHeroVideoMotion);
+
+    const counters = [...document.querySelectorAll('[data-count]')];
+    const counterObserver = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (!entry.isIntersecting) return;
+        counterObserver.unobserve(entry.target);
+        const el = entry.target;
+        const target = Number(el.dataset.count);
+        if (reducedMotion.matches) { el.textContent = target; return; }
+        const t0 = performance.now();
+        const tick = now => {
+          const p = Math.min(1, (now - t0) / 1400);
+          el.textContent = Math.round(target * (1 - Math.pow(1 - p, 3)));
+          if (p < 1) requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      });
+    }, { threshold: .4 });
+    counters.forEach(el => counterObserver.observe(el));
+
+    const storyLayout = document.querySelector('.story-layout');
+    const storyStage = storyLayout?.querySelector('.story-stage');
+    const storyChapters = storyLayout?.querySelector('.story-chapters');
+    const desktopStory = matchMedia('(min-width: 961px)');
+    let storyFrame;
+
+    function renderStoryIntro() {
+      storyFrame = 0;
+      if (reducedMotion.matches || !desktopStory.matches) {
+        storyLayout.classList.remove('story-motion-ready', 'is-story-copy-visible');
+        storyLayout.style.cssText = '';
+        return;
+      }
+
+      const layoutRect = storyLayout.getBoundingClientRect();
+      const start = scrollY + layoutRect.top - innerHeight * .84;
+      const progress = Math.max(0, Math.min(1, (scrollY - start) / Math.min(420, innerHeight * .58)));
+      const eased = progress * progress * (3 - 2 * progress);
+      const stageRect = storyStage.getBoundingClientRect();
+      const currentShift = parseFloat(storyLayout.style.getPropertyValue('--story-stage-x')) || 0;
+      const shift = layoutRect.left + layoutRect.width / 2 - (stageRect.left + stageRect.width / 2 - currentShift);
+      const copyProgress = Math.max(0, Math.min(1, (progress - .68) / .32));
+      storyLayout.classList.add('story-motion-ready');
+      storyLayout.classList.toggle('is-story-copy-visible', copyProgress > .15);
+      storyLayout.style.setProperty('--story-stage-x', `${shift * (1 - eased)}px`);
+      storyLayout.style.setProperty('--story-stage-y', `${24 * (1 - eased)}px`);
+      storyLayout.style.setProperty('--story-stage-scale', 1 + .12 * (1 - eased));
+      storyLayout.style.setProperty('--story-copy-opacity', copyProgress);
+      storyLayout.style.setProperty('--story-copy-y', `${26 * (1 - copyProgress)}px`);
+    }
+
+    function scheduleStoryIntro() {
+      if (!storyFrame) storyFrame = requestAnimationFrame(renderStoryIntro);
+    }
+
+    renderStoryIntro();
+    addEventListener('scroll', scheduleStoryIntro, { passive: true });
+    addEventListener('resize', scheduleStoryIntro);
+    reducedMotion.addEventListener('change', scheduleStoryIntro);
+    desktopStory.addEventListener('change', scheduleStoryIntro);
+
+    document.querySelectorAll('[data-liquid-glass]').forEach(element => {
+      element.addEventListener('pointermove', event => {
+        const rect = element.getBoundingClientRect();
+        element.style.setProperty('--glass-x', `${((event.clientX - rect.left) / rect.width) * 100}%`);
+        element.style.setProperty('--glass-y', `${((event.clientY - rect.top) / rect.height) * 100}%`);
+      });
+      element.addEventListener('pointerleave', () => {
+        element.style.removeProperty('--glass-x');
+        element.style.removeProperty('--glass-y');
+      });
+    });
+
+    const navCluster = document.querySelector('[data-nav-cluster]');
+    if (navCluster) {
+      const navTriggers = [...navCluster.querySelectorAll('[data-nav-trigger]')];
+      const navPanels = [...navCluster.querySelectorAll('[data-nav-panel]')];
+      const navSlider = navCluster.querySelector('[data-nav-slider]');
+      const navSliderBlob = navSlider.querySelector('.nav-slider-blob');
+      const navSliderTrail = navSlider.querySelector('.nav-slider-trail');
+      let openNav = '';
+      let selectedNav = '';
+      let sliderWidth = 0;
+      let navCloseTimer;
+
+      const moveNavSlider = name => {
+        const trigger = navCluster.querySelector(`[data-nav-trigger="${name}"]`);
+        navSlider.classList.toggle('is-visible', Boolean(trigger));
+        if (!trigger) return;
+        const nextX = trigger.offsetLeft;
+        const nextWidth = trigger.offsetWidth;
+        const firstMove = !sliderWidth;
+        const sliderRect = navSlider.getBoundingClientRect();
+        const blobRect = navSliderBlob.getBoundingClientRect();
+        const fromX = firstMove ? nextX : blobRect.left - sliderRect.left;
+        const fromWidth = firstMove ? nextWidth : blobRect.width;
+        navSliderBlob.getAnimations().forEach(animation => animation.cancel());
+        navSliderTrail.getAnimations().forEach(animation => animation.cancel());
+        navSliderBlob.style.width = `${nextWidth}px`;
+        navSliderBlob.style.transform = `translateX(${nextX}px)`;
+
+        if (!firstMove && !reducedMotion.matches && navSliderBlob.animate) {
+          const distance = nextX - fromX;
+          const direction = Math.sign(distance) || 1;
+          const overshoot = direction * Math.min(12, Math.abs(distance) * .08);
+          const left = Math.min(fromX, nextX);
+          const right = Math.max(fromX + fromWidth, nextX + nextWidth);
+          const fromClip = direction > 0 ? 'inset(20% 100% 20% 0 round 999px)' : 'inset(20% 0 20% 100% round 999px)';
+          const toClip = direction > 0 ? 'inset(20% 0 20% 100% round 999px)' : 'inset(20% 100% 20% 0 round 999px)';
+          navSliderTrail.style.left = `${left}px`;
+          navSliderTrail.style.width = `${right - left}px`;
+          navSliderTrail.animate([
+            { clipPath: fromClip, opacity: 0 },
+            { clipPath: 'inset(20% 0 20% 0 round 999px)', opacity: .72, offset: .46 },
+            { clipPath: toClip, opacity: 0 }
+          ], { duration: 520, easing: 'cubic-bezier(.2,.75,.2,1)' });
+          navSliderBlob.animate([
+            { transform: `translateX(${fromX}px) scale(1)`, width: `${fromWidth}px` },
+            { transform: `translateX(${fromX + distance * .42}px) scaleX(1.34) scaleY(.84)`, width: `${fromWidth + (nextWidth - fromWidth) * .45}px`, offset: .36 },
+            { transform: `translateX(${nextX + overshoot}px) scaleX(.9) scaleY(1.09)`, width: `${nextWidth}px`, offset: .78 },
+            { transform: `translateX(${nextX}px) scale(1)`, width: `${nextWidth}px` }
+          ], { duration: 560, easing: 'cubic-bezier(.16,.8,.24,1)' });
+        }
+        sliderWidth = nextWidth;
+      };
+
+      const setOpenNav = name => {
+        openNav = name || '';
+        moveNavSlider(openNav || selectedNav);
+        navTriggers.forEach(trigger => trigger.setAttribute('aria-expanded', String(trigger.dataset.navTrigger === openNav)));
+        navPanels.forEach(panel => {
+          const active = panel.dataset.navPanel === openNav;
+          panel.classList.toggle('is-open', active);
+          panel.setAttribute('aria-hidden', String(!active));
+          panel.inert = !active;
+        });
+      };
+
+      navTriggers.forEach(trigger => {
+        trigger.addEventListener('pointerenter', () => setOpenNav(trigger.dataset.navTrigger));
+        trigger.addEventListener('focus', () => setOpenNav(trigger.dataset.navTrigger));
+        trigger.addEventListener('click', () => {
+          selectedNav = trigger.dataset.navTrigger;
+          setOpenNav(trigger.dataset.navTrigger);
+        });
+      });
+      navCluster.addEventListener('pointerenter', () => clearTimeout(navCloseTimer));
+      navCluster.addEventListener('pointerleave', () => {
+        clearTimeout(navCloseTimer);
+        navCloseTimer = setTimeout(() => setOpenNav(''), 320);
+      });
+      navCluster.addEventListener('focusout', event => {
+        if (!navCluster.contains(event.relatedTarget)) setOpenNav('');
+      });
+      document.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && openNav) {
+          const trigger = navCluster.querySelector(`[data-nav-trigger="${openNav}"]`);
+          setOpenNav('');
+          trigger?.focus();
+        }
+      });
+      document.addEventListener('pointerdown', event => {
+        if (!navCluster.contains(event.target)) setOpenNav('');
+      });
+      addEventListener('resize', () => moveNavSlider(openNav || selectedNav));
+    }
+
+    document.querySelectorAll('[data-copy]').forEach(copyButton => {
+      copyButton.addEventListener('click', async () => {
+        const original = copyButton.textContent;
+        copyButton.textContent = '[ 正在复制 ]';
+        const fallback = setTimeout(() => copyButton.textContent = '[ 请手动复制 ]', 800);
+        setTimeout(() => copyButton.textContent = original, 2400);
+        try {
+          const command = copyButton.closest('.install-line').querySelector('[data-command]');
+          await navigator.clipboard.writeText(command.textContent.trim());
+          clearTimeout(fallback);
+          copyButton.textContent = '[ 已复制 ]';
+        } catch {
+          clearTimeout(fallback);
+          copyButton.textContent = '[ 请手动复制 ]';
+        }
+      });
+    });
+
   })();
   </script>
+  <script src="/homepage-liquid-glass.js?v=20260810-edge1" defer></script>
+  <script type="module" src="/homepage-particles.js?v=61695574"></script>
 </body>
 </html>

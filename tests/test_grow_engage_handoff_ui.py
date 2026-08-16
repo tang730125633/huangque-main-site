@@ -9,6 +9,9 @@ def test_collect_handoff_keeps_source_context():
     assert "sourceUrl: currentUrl" in html
     assert "hq_banana_to_collect" in html
     assert "urlInput.value = bananaReturn.sourceUrl" in html
+    assert 'data-url="' in html
+    assert "querySelector('.sr-card.selected')" in html
+    assert html.count("if (kwSelected) kwSelected.style.display = 'none';") >= 2
 
 
 def test_banana_offers_contextual_return_to_collect():
@@ -17,3 +20,6 @@ def test_banana_offers_contextual_return_to_collect():
     assert "hq_banana_to_collect" in html
     assert "location.href='collect.html?handoff=banana'" in html
     assert "imageUrl:lastResultUrl||''" in html
+    assert html.index("pr.value=_cbd.title") < html.index("fetch(referenceFetchUrl(_coverUrl)")
+    assert "replace(/^http:\\/\\//i,'https://')" in html
+    assert "refFromFile(blob" in html

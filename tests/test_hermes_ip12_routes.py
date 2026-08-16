@@ -148,9 +148,24 @@ class HermesIP12SourceTests(unittest.TestCase):
             source.index('shutil.which("chromium")'),
         )
         self.assertIn("价值主张诊断表", source)
-        self.assertIn("故事库（至少5个）", source)
+        self.assertIn("故事库：只写有事实依据的故事", source)
+        self.assertIn("不强制凑数量", source)
+        self.assertNotIn("故事库（至少5个）", source)
+        self.assertNotIn("列出5项客户要确认的项目", source)
         self.assertIn("内容资产使用表", source)
         self.assertIn("优化建议汇总", source)
+
+    def test_foundation_pdf_review_is_embedded_with_structured_annotations(self):
+        for filename in ("index.html", "index_clean.html"):
+            source = (HERMES / "templates" / filename).read_text(encoding="utf-8")
+            self.assertIn('id="foundationReviewer"', source)
+            self.assertIn('id="foundationPdfFrame"', source)
+            self.assertIn("?preview=1#page=1&zoom=page-width", source)
+            self.assertIn("function addFoundationAnnotation()", source)
+            self.assertIn("function submitFoundationAnnotations()", source)
+            self.assertIn("定位原文（可选）", source)
+            self.assertIn("把批注交给 Agent", source)
+            self.assertIn("@media", source)
 
     def test_service_security_boundary_is_registered(self):
         server = (HERMES / "server.py").read_text(encoding="utf-8")
@@ -358,7 +373,7 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import server
 from server import _foundation_generation_active, _foundation_html, _foundation_source_messages, _render_foundation_pdf, _validate_foundation_pdf, app, parse_coach_state_updates
@@ -392,20 +407,21 @@ transitioned = parse_coach_state_updates(
     "好，我们进入模块2：人设塑造。",
     {"current_module": 1, "completed_modules": [], "module_step": 0},
 )
-assert transitioned["current_module"] == 2, transitioned
-assert transitioned["completed_modules"] == [1], transitioned
+assert transitioned["current_module"] == 1, transitioned
+assert transitioned["completed_modules"] == [], transitioned
 foundation = parse_coach_state_updates(
     "✅ 模块 4 完成",
     {"current_module": 4, "completed_modules": [1, 2, 3], "module_step": 0},
 )
 assert foundation["current_module"] == 4, foundation
-assert foundation["foundation_report"]["status"] == "generating", foundation
+assert foundation["completed_modules"] == [1, 2, 3], foundation
+assert "foundation_report" not in foundation, foundation
 blocked_transition = parse_coach_state_updates(
     "✅ 模块 4 完成。接下来进入模块 5。",
     {"current_module": 4, "completed_modules": [1, 2, 3], "module_step": 0},
 )
 assert blocked_transition["current_module"] == 4, blocked_transition
-assert blocked_transition["completed_modules"] == [1, 2, 3, 4], blocked_transition
+assert blocked_transition["completed_modules"] == [1, 2, 3], blocked_transition
 revisited = parse_coach_state_updates(
     "✅ 模块 4 完成。接下来进入模块 5。",
     {"current_module": 4, "completed_modules": [1, 2, 3, 4], "module_step": 0,
@@ -419,7 +435,7 @@ finished = parse_coach_state_updates(
      "foundation_report": {"status": "confirmed"}},
 )
 assert finished["current_module"] == 6, finished
-assert finished["completed_modules"] == [1, 2, 3, 4, 5, 6], finished
+assert finished["completed_modules"] == [1, 2, 3, 4, 5], finished
 legacy = parse_coach_state_updates(
     "继续复盘",
     {"current_module": 8, "completed_modules": list(range(1, 8)), "module_step": 2,
@@ -570,6 +586,25 @@ assert client.get("/api/conversations").get_json() == []
 server.current_account_id = lambda: "acct_a"
 assert client.delete(f"/api/conversations/{cid}").get_json()["ok"] is True
 
+older_cid = "ffffffffffff"
+newer_cid = "000000000000"
+for ordered_cid, title in ((older_cid, "较早诊断"), (newer_cid, "最近诊断")):
+    server.save_conversation(ordered_cid, {
+        "id": ordered_cid,
+        "title": title,
+        "messages": [],
+        "coach_state": server.initial_coach_state(),
+        "reports": {},
+        "deliverables": {},
+        "owner_account_id": "acct_a",
+    })
+os.utime(server.conversation_path(older_cid), (100, 100))
+os.utime(server.conversation_path(newer_cid), (200, 200))
+ordered_convos = client.get("/api/conversations").get_json()
+assert [item["id"] for item in ordered_convos[:2]] == [newer_cid, older_cid], ordered_convos
+assert client.delete(f"/api/conversations/{older_cid}").status_code == 200
+assert client.delete(f"/api/conversations/{newer_cid}").status_code == 200
+
 foundation_cid = client.post("/api/conversations").get_json()["id"]
 assert client.post("/api/foundation-report/confirm", json={"conversation_id": foundation_cid}).status_code == 409
 assert client.post("/api/jump-module", json={"conversation_id": foundation_cid, "module": 5}).status_code == 409
@@ -626,7 +661,12 @@ with patch.object(server, "call_ai") as report_model:
     report_model.assert_not_called()
 download = client.get(f"/api/foundation-report/{foundation_cid}.pdf")
 assert download.status_code == 200
+assert download.headers["Content-Disposition"].startswith("attachment;")
 assert download.headers["Cache-Control"] == "private, no-store"
+preview = client.get(f"/api/foundation-report/{foundation_cid}.pdf?preview=1")
+assert preview.status_code == 200
+assert preview.headers["Content-Disposition"].startswith("inline;")
+assert preview.headers["Cache-Control"] == "private, no-store"
 confirmed = client.post("/api/foundation-report/confirm", json={"conversation_id": foundation_cid})
 assert confirmed.status_code == 200, confirmed.get_data(as_text=True)
 assert confirmed.get_json()["state"]["current_module"] == 6
@@ -641,6 +681,203 @@ server.save_conversation(normal_confirm_cid, normal_confirm)
 confirmed = client.post("/api/foundation-report/confirm", json={"conversation_id": normal_confirm_cid})
 assert confirmed.get_json()["state"]["current_module"] == 5
 assert confirmed.get_json()["state"]["module_step"] == 0
+
+review_cid = client.post("/api/conversations").get_json()["id"]
+review_convo = server.load_conversation(review_cid)
+review_convo["coach_state"] = {
+    "current_module": 4,
+    "completed_modules": [1, 2, 3, 4],
+    "module_step": 5,
+    "foundation_report": {
+        "status": "awaiting_confirmation",
+        "report_id": "report-old",
+        "content": "## 模块四｜故事资产挖掘\n候选故事线｜待本人补充",
+        "review_status": "clean",
+        "review_notes": [],
+    },
+}
+server.save_conversation(review_cid, review_convo)
+(server.FOUNDATION_REPORTS_DIR / f"{review_cid}.pdf").write_bytes(valid_pdf.read_bytes())
+review_state = client.get(f"/api/conversations/{review_cid}").get_json()["coach_state"]
+qa_decision = {
+    "decision": "answer_only", "checkpoint": 0,
+    "reply": "这里标记待本人补充，是因为原对话没有足够的真实故事事实。",
+    "draft": "", "self_review": "", "profile_updates": [], "confidence": 0.9,
+}
+qa_response = Mock()
+qa_response.json.return_value = {"choices": [{"message": {"content": json.dumps(qa_decision, ensure_ascii=False)}}]}
+with patch.object(server, "call_ai", return_value=qa_response) as qa_model:
+    qa_reply = client.post("/api/chat-complete", json={
+        "conversation_id": review_cid,
+        "message": "为什么这里写待本人补充？",
+        "expected_revision": review_state["revision"],
+        "request_id": "foundation-review-question",
+    })
+assert qa_reply.status_code == 200, qa_reply.get_data(as_text=True)
+assert qa_reply.get_json()["assistant"].startswith("这里标记待本人补充")
+assert qa_reply.get_json()["state"]["current_module"] == 4
+model_messages = qa_model.call_args.args[0]
+assert any("候选故事线｜待本人补充" in item.get("content", "") for item in model_messages)
+
+revision_state = qa_reply.get_json()["state"]
+revision_decision = Mock()
+revision_decision.json.return_value = {"choices": [{"message": {"content": json.dumps({
+    "decision": "apply_revision",
+    "reply": "已理解：把真实转折补入故事资产。请重新生成 PDF 后查看新版。",
+    "revision_note": "在故事资产中补充：第一次创业失败后重新开始。",
+}, ensure_ascii=False)}}]}
+with patch.object(server, "call_ai", return_value=revision_decision) as revision_model:
+    revised = client.post("/api/chat-complete", json={
+        "conversation_id": review_cid,
+        "message": "我的真实转折是第一次创业失败后重新开始。",
+        "foundation_review": "revision",
+        "expected_revision": revision_state["revision"],
+        "request_id": "foundation-review-revision",
+    })
+assert revised.status_code == 200, revised.get_data(as_text=True)
+revision_model.assert_called_once()
+dirty_state = revised.get_json()["state"]
+assert dirty_state["foundation_report"]["review_status"] == "dirty"
+assert dirty_state["foundation_report"]["review_notes"][-1]["content"] == "在故事资产中补充：第一次创业失败后重新开始。"
+
+question_cid = client.post("/api/conversations").get_json()["id"]
+question_convo = server.load_conversation(question_cid)
+question_convo["coach_state"] = review_convo["coach_state"]
+server.save_conversation(question_cid, question_convo)
+question_state = client.get(f"/api/conversations/{question_cid}").get_json()["coach_state"]
+question_decision = Mock()
+question_decision.json.return_value = {"choices": [{"message": {"content": json.dumps({
+    "decision": "answer_only",
+    "reply": "这是因为原对话里没有足够的真实故事事实；如果你不需要这一项，可以要求删除。",
+    "revision_note": "",
+}, ensure_ascii=False)}}]}
+with patch.object(server, "call_ai", return_value=question_decision):
+    questioned = client.post("/api/chat-complete", json={
+        "conversation_id": question_cid,
+        "message": "为什么后面总有待本人补充？",
+        "foundation_review": "revision",
+        "expected_revision": question_state["revision"],
+    })
+assert questioned.status_code == 200, questioned.get_data(as_text=True)
+questioned_state = questioned.get_json()["state"]
+assert questioned_state["foundation_report"]["review_status"] == "clean"
+assert questioned_state["foundation_report"]["review_notes"] == []
+
+vague_decision = Mock()
+vague_decision.json.return_value = {"choices": [{"message": {"content": json.dumps({
+    "decision": "ask_follow_up",
+    "reply": "具体是哪一段不对？请说出要删除、补充或改成的内容。",
+    "revision_note": "",
+}, ensure_ascii=False)}}]}
+with patch.object(server, "call_ai", return_value=vague_decision):
+    vague = client.post("/api/chat-complete", json={
+        "conversation_id": question_cid,
+        "message": "这里不对。",
+        "foundation_review": "revision",
+        "expected_revision": questioned_state["revision"],
+    })
+assert vague.status_code == 200, vague.get_data(as_text=True)
+assert vague.get_json()["state"]["foundation_report"]["review_status"] == "clean"
+
+invalid_decision = Mock()
+invalid_decision.json.return_value = {"choices": [{"message": {"content": "{}"}}]}
+with patch.object(server, "call_ai", return_value=invalid_decision):
+    invalid_review = client.post("/api/chat-complete", json={
+        "conversation_id": question_cid,
+        "message": "请判断这一段。",
+        "foundation_review": "revision",
+        "expected_revision": vague.get_json()["state"]["revision"],
+    })
+assert invalid_review.status_code == 502
+assert server.load_conversation(question_cid)["coach_state"]["foundation_report"]["review_status"] == "clean"
+
+empty_note_decision = Mock()
+empty_note_decision.json.return_value = {"choices": [{"message": {"content": json.dumps({
+    "decision": "apply_revision",
+    "reply": "我会修改这一段。",
+    "revision_note": "",
+}, ensure_ascii=False)}}]}
+with patch.object(server, "call_ai", return_value=empty_note_decision):
+    empty_note_review = client.post("/api/chat-complete", json={
+        "conversation_id": question_cid,
+        "message": "请删除这个待填写项。",
+        "foundation_review": "revision",
+        "expected_revision": vague.get_json()["state"]["revision"],
+    })
+assert empty_note_review.status_code == 502
+assert server.load_conversation(question_cid)["coach_state"]["foundation_report"]["review_status"] == "clean"
+
+conflict_state = vague.get_json()["state"]
+def bump_review_revision(*_args, **_kwargs):
+    changed = server.load_conversation(question_cid)
+    changed["coach_state"]["revision"] += 1
+    server.save_conversation(question_cid, changed)
+    return question_decision
+
+with patch.object(server, "call_ai", side_effect=bump_review_revision):
+    conflict_review = client.post("/api/chat-complete", json={
+        "conversation_id": question_cid,
+        "message": "为什么这里待填写？",
+        "foundation_review": "revision",
+        "expected_revision": conflict_state["revision"],
+    })
+assert conflict_review.status_code == 409
+assert "另一端更新" in conflict_review.get_json()["error"]
+
+deleted_cid = client.post("/api/conversations").get_json()["id"]
+deleted_convo = server.load_conversation(deleted_cid)
+deleted_convo["coach_state"] = review_convo["coach_state"]
+server.save_conversation(deleted_cid, deleted_convo)
+deleted_state = client.get(f"/api/conversations/{deleted_cid}").get_json()["coach_state"]
+def delete_during_review(*_args, **_kwargs):
+    server.conversation_path(deleted_cid).unlink()
+    return question_decision
+
+with patch.object(server, "call_ai", side_effect=delete_during_review):
+    deleted_review = client.post("/api/chat-complete", json={
+        "conversation_id": deleted_cid,
+        "message": "为什么这里待填写？",
+        "foundation_review": "revision",
+        "expected_revision": deleted_state["revision"],
+    })
+assert deleted_review.status_code == 404
+blocked_confirm = client.post("/api/foundation-report/confirm", json={
+    "conversation_id": review_cid,
+    "expected_revision": dirty_state["revision"],
+    "report_id": "report-old",
+})
+assert blocked_confirm.status_code == 409
+assert "重新生成" in blocked_confirm.get_json()["error"]
+
+report_response = Mock()
+report_response.json.return_value = {"choices": [{"message": {"content": "## 模块一｜定位诊断\n新版报告"}}]}
+with patch.object(server, "call_ai", return_value=report_response) as regenerate_model, \
+        patch.object(server, "_render_foundation_pdf", return_value=valid_pdf):
+    regenerated = client.post("/api/foundation-report/generate", json={"conversation_id": review_cid})
+assert regenerated.status_code == 200, regenerated.get_data(as_text=True)
+new_state = regenerated.get_json()["state"]
+assert new_state["foundation_report"]["report_id"] != "report-old"
+assert new_state["foundation_report"]["review_status"] == "clean"
+assert new_state["foundation_report"]["review_notes"] == []
+report_messages = regenerate_model.call_args.args[0]
+assert any("第一次创业失败后重新开始" in item.get("content", "") for item in report_messages)
+assert "不创建‘待补充’故事凑数" in report_messages[0]["content"]
+assert "不强制凑数量" in report_messages[0]["content"]
+
+stale_confirm = client.post("/api/foundation-report/confirm", json={
+    "conversation_id": review_cid,
+    "expected_revision": new_state["revision"],
+    "report_id": "report-old",
+})
+assert stale_confirm.status_code == 409
+latest_report_id = new_state["foundation_report"]["report_id"]
+latest_confirm = client.post("/api/foundation-report/confirm", json={
+    "conversation_id": review_cid,
+    "expected_revision": new_state["revision"],
+    "report_id": latest_report_id,
+})
+assert latest_confirm.status_code == 200, latest_confirm.get_data(as_text=True)
+assert latest_confirm.get_json()["state"]["current_module"] == 5
 
 owned_video = artifact_store.video_path("admin", "0123456789.mp4")
 owned_video.parent.mkdir(parents=True, exist_ok=True)
@@ -808,34 +1045,201 @@ assert client.post(
     json={"conversation_id": "../../knowledge/visual_formulas", "message": "test"},
 ).status_code == 400
 
+drift_cid = client.post("/api/conversations").get_json()["id"]
+drift_message = "叫我泽龙就好"
+with patch.object(server, "_coach_model_decision", return_value=({
+    "decision": "ask_follow_up",
+    "checkpoint": 1,
+    "reply": "好的，泽龙。你现在主要从事什么工作？",
+    "draft": "称呼：泽龙",
+    "self_review": "仍需本人确认。",
+    "profile_updates": [{
+        "field": "preferred_name",
+        "value": "泽龙",
+        "kind": "user_fact",
+        "evidence_quote": drift_message,
+    }],
+    "confidence": 0.9,
+}, drift_message)):
+    drift_response = client.post("/api/chat-complete", json={
+        "conversation_id": drift_cid,
+        "message": drift_message,
+    })
+assert drift_response.status_code == 200, drift_response.get_data(as_text=True)
+drift_body = drift_response.get_json()
+assert drift_body["state"]["intake"]["status"] == "collecting"
+assert drift_body["state"]["intake"]["profile_updates"][0]["value"] == "泽龙"
+assert "preferred_name" not in drift_body["state"]["ip_profile"]["facts"]
+stored_drift = server.load_conversation(drift_cid)
+assert stored_drift["title"] == "泽龙 · IP 诊断"
+assert any(item["role"] == "user" and item["content"] == drift_message for item in stored_drift["messages"])
+
+repair_cid = client.post("/api/conversations").get_json()["id"]
+repair_message = "我在广州做 FDE"
+invalid_repair_decision = {
+    "decision": "propose_checkpoint",
+    "checkpoint": 2,
+    "reply": "我先整理一下。",
+    "draft": "城市：广州；职业：FDE。",
+    "self_review": "仍需本人确认。",
+    "profile_updates": [],
+    "confidence": 0.9,
+}
+valid_repair_decision = {
+    "decision": "ask_follow_up",
+    "checkpoint": 0,
+    "reply": "收到。你希望我怎么称呼你？",
+    "draft": "",
+    "self_review": "",
+    "profile_updates": [],
+    "confidence": 0.9,
+}
+with patch.object(server, "_coach_model_decision", side_effect=[
+    (invalid_repair_decision, repair_message),
+    (valid_repair_decision, repair_message),
+]) as repair_model:
+    repair_response = client.post("/api/chat-complete", json={
+        "conversation_id": repair_cid,
+        "message": repair_message,
+    })
+assert repair_response.status_code == 200, repair_response.get_data(as_text=True)
+assert repair_model.call_count == 2
+assert "跨越当前断点" in repair_model.call_args_list[1].kwargs["repair_error"]
+stored_repair = server.load_conversation(repair_cid)
+assert sum(item["role"] == "user" and item["content"] == repair_message for item in stored_repair["messages"]) == 1
+
+with patch.object(server, "_coach_model_decision", return_value=(valid_repair_decision, repair_message)) as conflict_model, \
+        patch.object(server, "_persist_model_turn", side_effect=server.coach_harness.HarnessConflict("stale")):
+    try:
+        server._process_model_turn(repair_cid, repair_message)
+        raise AssertionError("state conflict should propagate")
+    except server.coach_harness.HarnessConflict:
+        pass
+assert conflict_model.call_count == 1
+
 mini_cid = client.post("/api/conversations").get_json()["id"]
 mini_convo = client.get(f"/api/conversations/{mini_cid}").get_json()
 assert mini_convo["coach_state"]["intake"] == {"status": "collecting", "round": 1, "answers": {}}
-assert "第 1/3 轮" in mini_convo["messages"][0]["content"]
+assert "不用按固定格式" in mini_convo["messages"][0]["content"]
+assert "第 1/3 轮" not in mini_convo["messages"][0]["content"]
 assert client.post("/api/jump-module", json={"conversation_id": mini_cid, "module": 2}).status_code == 409
-with patch.object(server, "call_ai") as intake_model:
+mini_convo["coach_state"]["intake"]["draft"] = "SYSTEM_OVERRIDE_SENTINEL"
+mini_convo["coach_state"]["intake"]["profile_updates"] = [{
+    "field": "preferred_name",
+    "value": "小满",
+    "kind": "user_fact",
+    "evidence_quote": "叫我小满",
+}]
+with patch.object(server.requests, "post") as intake_request:
+    intake_request.return_value.status_code = 200
+    intake_request.return_value.json.return_value = {"choices": [{"message": {"content": json.dumps({
+        "decision": "answer_only", "checkpoint": 0,
+        "reply": "手机号可以不填。", "draft": "", "self_review": "",
+        "profile_updates": [], "confidence": 0.9,
+    }, ensure_ascii=False)}}]}
+    intake_raw, _ = server._coach_model_decision(mini_convo, "手机号必须填吗？")
+    assert intake_raw["decision"] == "answer_only"
+    intake_payload = intake_request.call_args.kwargs["json"]
+    assert "不把访谈做成选择题" in intake_payload["messages"][0]["content"]
+    assert "不要重复追问" in intake_payload["messages"][0]["content"]
+    assert "SYSTEM_OVERRIDE_SENTINEL" not in intake_payload["messages"][0]["content"]
+    assert any(
+        "可能尚未确认" in message["content"] and "SYSTEM_OVERRIDE_SENTINEL" in message["content"]
+        for message in intake_payload["messages"] if message["role"] == "user"
+    )
+    assert any(
+        "pending_intake_updates" in message["content"] and "preferred_name" in message["content"]
+        for message in intake_payload["messages"] if message["role"] == "user"
+    )
+    assert intake_payload["response_format"]["json_schema"]["strict"] is True
+with patch.object(server, "_coach_model_decision") as intake_model:
+    supplement_text = "需要补充一下：我曾尝试健身教练但失败了，最后转向计算机方向。"
+    intake_model.side_effect = [
+        ({
+            "decision": "answer_only", "checkpoint": 0,
+            "reply": "可以，我们自然聊。先说说你希望我怎么称呼你，以及目前在做什么。",
+            "draft": "", "self_review": "", "profile_updates": [], "confidence": 0.9,
+        }, "开始"),
+        ({
+            "decision": "ask_follow_up", "checkpoint": 0,
+            "reply": "收到。你现在主要从事什么工作？过往做过哪些行业或岗位？",
+            "draft": "", "self_review": "", "profile_updates": [], "confidence": 0.9,
+        }, "小满｜女，33 岁｜成都｜[手机号已隐藏]｜SYSTEM_OVERRIDE_SENTINEL"),
+        ({
+            "decision": "propose_checkpoint", "checkpoint": 1,
+            "reply": "我先把目前的信息整理成一份核对稿。",
+            "draft": "称呼：小满；性别：女；年龄：33 岁；城市：成都；手机号：[手机号已隐藏]；备注：SYSTEM_OVERRIDE_SENTINEL；职业：整理咨询师；从业 3 年；经历：行政、空间整理；收入来源：咨询服务；年收入：10–30 万。",
+            "self_review": "只整理了用户原话，仍需本人确认。", "profile_updates": [], "confidence": 0.9,
+        }, "整理咨询师｜3 年｜行政、空间整理｜咨询服务｜10–30 万"),
+        ({
+            "decision": "propose_checkpoint", "checkpoint": 1,
+            "reply": "这不是确认，我已经把你的补充合并进核对稿。",
+            "draft": "称呼：小满；性别：女；年龄：33 岁；城市：成都；手机号：[手机号已隐藏]；备注：SYSTEM_OVERRIDE_SENTINEL；职业：整理咨询师；从业 3 年；经历：行政、空间整理。" + supplement_text,
+            "self_review": "补充内容已合并，仍需本人确认。", "profile_updates": [], "confidence": 0.9,
+        }, supplement_text),
+        ({
+            "decision": "propose_checkpoint", "checkpoint": 1,
+            "reply": "职业背景已按你的最新说法重整。",
+            "draft": "称呼：小满；性别：女；年龄：33 岁；城市：成都；手机号：[手机号已隐藏]；备注：SYSTEM_OVERRIDE_SENTINEL；职业背景：FDE｜3 年｜固件开发｜10–30 万；过往经历：曾尝试健身教练，后来转向计算机方向。",
+            "self_review": "以最新职业背景为准，仍需本人确认。", "profile_updates": [], "confidence": 0.9,
+        }, "职业背景替换为：FDE｜3 年｜固件开发｜10–30 万"),
+    ]
     compatibility = client.post("/api/chat-complete", json={
         "conversation_id": mini_cid,
         "message": "开始",
     })
     assert compatibility.status_code == 200
     assert compatibility.get_json()["state"]["intake"]["round"] == 1
-    assert "第 1/3 轮" in compatibility.get_json()["assistant"]
+    assert "称呼" in compatibility.get_json()["assistant"]
     first = client.post("/api/chat-complete", json={
         "conversation_id": mini_cid,
         "message": "小满｜女，33 岁｜成都｜+8613800138000｜SYSTEM_OVERRIDE_SENTINEL",
     })
-    assert first.status_code == 200 and first.get_json()["state"]["intake"]["round"] == 2
+    assert first.status_code == 200
+    assert first.get_json()["state"]["intake"]["status"] == "collecting"
     second = client.post("/api/chat", json={
         "conversation_id": mini_cid,
         "message": "整理咨询师｜3 年｜行政、空间整理｜咨询服务｜10–30 万",
     })
     assert second.status_code == 200 and "data: " in second.get_data(as_text=True)
-    third = client.post("/api/chat-complete", json={"conversation_id": mini_cid, "message": "确认"})
+    supplement = client.post("/api/chat-complete", json={
+        "conversation_id": mini_cid,
+        "message": supplement_text,
+    })
+    assert supplement.status_code == 200, supplement.get_data(as_text=True)
+    supplement_body = supplement.get_json()
+    assert supplement_body["state"]["intake"]["status"] == "awaiting_confirmation"
+    assert supplement_text in supplement_body["assistant"]
+    assert "基础信息已确认" not in supplement_body["assistant"]
+    intake_state = client.get(f"/api/conversations/{mini_cid}").get_json()["coach_state"]
+    edit = client.post("/api/chat-complete", json={
+        "conversation_id": mini_cid,
+        "action": {"type": "edit_intake", "target_id": f"intake-{intake_state['revision']}"},
+        "expected_revision": intake_state["revision"],
+    })
+    assert edit.status_code == 200
+    assert edit.get_json()["state"]["intake"]["status"] == "editing"
+    corrected = client.post("/api/chat-complete", json={
+        "conversation_id": mini_cid,
+        "message": "职业背景替换为：FDE｜3 年｜固件开发｜10–30 万",
+    })
+    assert corrected.status_code == 200
+    corrected_state = corrected.get_json()["state"]
+    assert corrected_state["intake"]["status"] == "awaiting_confirmation"
+    confirm_body = {
+        "conversation_id": mini_cid,
+        "action": {"type": "confirm_intake", "target_id": f"intake-{corrected_state['revision']}"},
+        "expected_revision": corrected_state["revision"],
+        "request_id": "confirm-intake-runtime-1",
+    }
+    third = client.post("/api/chat-complete", json=confirm_body)
     assert third.status_code == 200, third.get_data(as_text=True)
     assert third.get_json()["state"]["intake"]["status"] == "complete"
     assert "正式进入模块 1" in third.get_json()["assistant"]
-    intake_model.assert_not_called()
+    replay = client.post("/api/chat-complete", json=confirm_body)
+    assert replay.status_code == 200 and replay.get_json()["replayed"] is True
+    assert replay.get_json()["state"]["revision"] == third.get_json()["state"]["revision"]
+    assert intake_model.call_count == 5
 stored_intake = server.load_conversation(mini_cid)
 stored_text = json.dumps(stored_intake, ensure_ascii=False)
 assert "13800138000" not in stored_text and "[手机号已隐藏]" in stored_text
@@ -844,23 +1248,102 @@ assert "13800138000" not in server.build_system_prompt(mini_cid)
 assert server._redact_mobile_numbers("+8613800138000 / 008613800138000") == "[手机号已隐藏] / [手机号已隐藏]"
 assert "SYSTEM_OVERRIDE_SENTINEL" not in server.build_system_prompt(mini_cid)
 assert not server._intake_pending({"current_module": 1})
+post_confirm_supplement = "需要补充一下：我以前还做过健身教练，但是失败了，后来才转向计算机方向。"
+with patch.object(server, "_coach_model_decision", return_value=({
+    "decision": "revise_intake",
+    "checkpoint": 0,
+    "reply": "我把这段经历补进基础资料，先请你重新核对。",
+    "draft": "称呼：小满；职业：FDE；过往经历：曾做健身教练，后来转向计算机方向。",
+    "self_review": "保留原资料并加入本轮补充，仍需本人确认。",
+    "profile_updates": [{
+        "field": "previous_career",
+        "value": "曾做健身教练，后来转向计算机方向",
+        "kind": "user_fact",
+        "evidence_quote": "我以前还做过健身教练",
+    }],
+    "confidence": 0.95,
+}, post_confirm_supplement)):
+    reopened = client.post("/api/chat-complete", json={
+        "conversation_id": mini_cid,
+        "message": post_confirm_supplement,
+    })
+assert reopened.status_code == 200, reopened.get_data(as_text=True)
+reopened_state = reopened.get_json()["state"]
+assert reopened_state["intake"]["status"] == "awaiting_confirmation"
+assert reopened_state["intake"]["mode"] == "revision"
+assert reopened_state["current_module"] == 1 and reopened_state["module_step"] == 0
+assert "基础信息已确认" not in reopened.get_json()["assistant"]
+assert "当前模块不会自动推进" in reopened.get_json()["assistant"]
+reconfirmed = client.post("/api/chat-complete", json={
+    "conversation_id": mini_cid,
+    "action": {"type": "confirm_intake", "target_id": f"intake-{reopened_state['revision']}"},
+    "expected_revision": reopened_state["revision"],
+    "request_id": "confirm-intake-revision-runtime-1",
+})
+assert reconfirmed.status_code == 200, reconfirmed.get_data(as_text=True)
+assert reconfirmed.get_json()["state"]["intake"]["status"] == "complete"
+assert reconfirmed.get_json()["state"]["current_module"] == 1
+assert reconfirmed.get_json()["state"]["module_step"] == 0
+assert "基础信息补充已确认" in reconfirmed.get_json()["assistant"]
+assert reconfirmed.get_json()["state"]["ip_profile"]["facts"]["previous_career"]["value"].startswith("曾做健身教练")
+module_turn_message = """其实最大的转折点在于，我之前也做过类似的底层工作，都是用汗水换金钱。我做过很多散工，比如当服务员、修车，也经常打螺丝，职业方向一直比较零散。
+
+直到转入 AI 行业之后，我开始做出新的尝试，帮助他们去搭建 Agent，把 AI 用到真实的业务当中去。虽然只有三个月，但这一次转向，可能让我找到了一个更愿意长期投入的方向。"""
+with patch.object(server, "_coach_model_decision", return_value=({
+    "decision": "ask_follow_up",
+    "checkpoint": 0,
+    "reply": "这次转向之后，哪一次真实结果最让你确认自己愿意长期投入？",
+    "draft": "",
+    "self_review": "",
+    "profile_updates": [{
+        "field": "turning_point",
+        "value": "从底层散工转向 AI 行业并开始帮助企业搭建 Agent",
+        "kind": "user_fact",
+        "evidence_quote": "直到转入 AI 行业之后",
+    }],
+    "confidence": 0.9,
+}, module_turn_message)):
+    module_turn = client.post("/api/chat-complete", json={
+        "conversation_id": mini_cid,
+        "message": module_turn_message,
+    })
+assert module_turn.status_code == 200, module_turn.get_data(as_text=True)
+assert module_turn.get_json()["state"]["pending"]["status"] == "collecting"
+assert module_turn.get_json()["actions"] == []
+stored_module_turn = server.load_conversation(mini_cid)
+assert sum(item["role"] == "user" and item["content"] == module_turn_message for item in stored_module_turn["messages"]) == 1
+stored_intake = server.load_conversation(mini_cid)
 stored_intake["messages"].extend(
     {"role": "assistant", "content": f"历史消息 {index}"} for index in range(45)
 )
 server.save_conversation(mini_cid, stored_intake)
-with patch.object(server, "call_ai") as chat_model:
-    chat_model.return_value.json.return_value = {
-        "choices": [{"message": {"content": "请讲一段对你影响最大的关键经历。"}}]
-    }
+with patch.object(server.requests, "post") as chat_model:
+    chat_model.return_value.status_code = 200
+    chat_model.return_value.json.return_value = {"choices": [{"message": {"content": json.dumps({
+        "decision": "ask_follow_up",
+        "checkpoint": 0,
+        "reply": "请讲一段对你影响最大的关键经历。",
+        "draft": "",
+        "self_review": "",
+        "profile_updates": [],
+        "confidence": 0.8,
+    }, ensure_ascii=False)}}]}
     module_reply = client.post(
         "/api/chat-complete", json={"conversation_id": mini_cid, "message": "我曾经重新选择职业方向。"}
     )
     assert module_reply.status_code == 200, module_reply.get_data(as_text=True)
     chat_model.assert_called_once()
-    model_messages = chat_model.call_args.args[0]
+    model_payload = chat_model.call_args.kwargs["json"]
+    assert model_payload["stream"] is False
+    assert model_payload["response_format"]["json_schema"]["strict"] is True
+    assert "revise_intake" in model_payload["response_format"]["json_schema"]["schema"]["properties"]["decision"]["enum"]
+    model_messages = model_payload["messages"]
+    assert "decision=revise_intake" in model_messages[0]["content"]
     assert "SYSTEM_OVERRIDE_SENTINEL" not in model_messages[0]["content"]
     intake_contexts = [message for message in model_messages if message["role"] == "user" and "此前确认的基础资料" in message["content"]]
     assert len(intake_contexts) == 1 and "SYSTEM_OVERRIDE_SENTINEL" in intake_contexts[0]["content"]
+    assert "pending_module_updates" in intake_contexts[0]["content"]
+    assert "turning_point" in intake_contexts[0]["content"]
     assert "13800138000" not in json.dumps(model_messages, ensure_ascii=False)
 server.current_account_id = lambda: "acct_b"
 assert client.post(
@@ -1178,7 +1661,8 @@ def replace_analysis_cross_device(source, destination):
         raise OSError(errno.EXDEV, "cross-device link")
     return real_replace(source, destination)
 
-with patch.object(video_analyzer, "is_public_video_url", return_value=True), \
+with patch.object(security, "_audit"), \
+     patch.object(video_analyzer, "is_public_video_url", return_value=True), \
      patch.object(video_analyzer, "download_video", side_effect=fake_analysis_download), \
      patch.object(video_analyzer, "transcribe_video", return_value="transcript"), \
      patch.object(video_analyzer, "analyze_transcript", return_value="analysis"), \
@@ -1196,7 +1680,9 @@ assert first.status_code == 200, first.get_data(as_text=True)
 assert len(analysis_exdev) == 1
 after_analyses = {path.name for path in analyses_root.iterdir()}
 assert len(after_analyses - before_analyses) == 1
-assert artifact_store.directory_size() <= artifact_store.DATA_QUOTA_BYTES
+assert artifact_store.directory_size() <= artifact_store.DATA_QUOTA_BYTES, (
+    artifact_store.directory_size(), artifact_store.DATA_QUOTA_BYTES
+)
 assert json.loads(artifact_store.RESERVATIONS_FILE.read_text()) == {}
 video_analyzer.ANALYSIS_MAX_DOWNLOAD_BYTES = original_analysis_limit
 artifact_store.DATA_QUOTA_BYTES = original_quota

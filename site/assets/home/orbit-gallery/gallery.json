@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "items": [
+    {"id":"hq-video-01","type":"video","src":"/assets/home/orbit-gallery/desktop-video-01.mp4","poster":"/assets/home/orbit-gallery/desktop-video-01.webp","alt":"黄雀动态创作样片 01"},
+    {"id":"hq-image-01","type":"image","src":"/assets/home/orbit-gallery/desktop-image-01.webp","alt":"黄雀视觉创作样片 01"},
+    {"id":"hq-video-02","type":"video","src":"/assets/home/orbit-gallery/desktop-video-02.mp4","poster":"/assets/home/orbit-gallery/desktop-video-02.webp","alt":"黄雀动态创作样片 02"},
+    {"id":"hq-image-02","type":"image","src":"/assets/home/orbit-gallery/desktop-image-02.webp","alt":"黄雀视觉创作样片 02"},
+    {"id":"hq-video-03","type":"video","src":"/assets/home/orbit-gallery/desktop-video-03.mp4","poster":"/assets/home/orbit-gallery/desktop-video-03.webp","alt":"黄雀动态创作样片 03"},
+    {"id":"hq-image-03","type":"image","src":"/assets/home/orbit-gallery/desktop-image-03.webp","alt":"黄雀视觉创作样片 03"},
+    {"id":"hq-video-04","type":"video","src":"/assets/home/orbit-gallery/desktop-video-04.mp4","poster":"/assets/home/orbit-gallery/desktop-video-04.webp","alt":"黄雀动态创作样片 04"},
+    {"id":"hq-image-04","type":"image","src":"/assets/home/orbit-gallery/desktop-image-04.webp","alt":"黄雀视觉创作样片 04"},
+    {"id":"hq-video-05","type":"video","src":"/assets/home/orbit-gallery/desktop-video-05.mp4","poster":"/assets/home/orbit-gallery/desktop-video-05.webp","alt":"黄雀动态创作样片 05"},
+    {"id":"hq-image-05","type":"image","src":"/assets/home/orbit-gallery/desktop-image-05.webp","alt":"黄雀视觉创作样片 05"},
+    {"id":"hq-video-06","type":"video","src":"/assets/home/orbit-gallery/desktop-video-06.mp4","poster":"/assets/home/orbit-gallery/desktop-video-06.webp","alt":"黄雀动态创作样片 06"},
+    {"id":"hq-image-06","type":"image","src":"/assets/home/orbit-gallery/desktop-image-06.webp","alt":"黄雀视觉创作样片 06"},
+    {"id":"hq-video-07","type":"video","src":"/assets/home/orbit-gallery/desktop-video-07.mp4","poster":"/assets/home/orbit-gallery/desktop-video-07.webp","alt":"黄雀动态创作样片 07"},
+    {"id":"hq-image-07","type":"image","src":"/assets/home/orbit-gallery/desktop-image-07.webp","alt":"黄雀视觉创作样片 07"},
+    {"id":"hq-video-08","type":"video","src":"/assets/home/orbit-gallery/desktop-video-08.mp4","poster":"/assets/home/orbit-gallery/desktop-video-08.webp","alt":"黄雀动态创作样片 08"},
+    {"id":"hq-image-08","type":"image","src":"/assets/home/orbit-gallery/desktop-image-08.webp","alt":"黄雀视觉创作样片 08"},
+    {"id":"hq-video-09","type":"video","src":"/assets/home/orbit-gallery/desktop-video-09.mp4","poster":"/assets/home/orbit-gallery/desktop-video-09.webp","alt":"黄雀动态创作样片 09"},
+    {"id":"hq-video-10","type":"video","src":"/assets/home/orbit-gallery/desktop-video-10.mp4","poster":"/assets/home/orbit-gallery/desktop-video-10.webp","alt":"黄雀动态创作样片 10"},
+    {"id":"hq-video-11","type":"video","src":"/assets/home/orbit-gallery/desktop-video-11.mp4","poster":"/assets/home/orbit-gallery/desktop-video-11.webp","alt":"黄雀动态创作样片 11"},
+    {"id":"hq-video-12","type":"video","src":"/assets/home/orbit-gallery/desktop-video-12.mp4","poster":"/assets/home/orbit-gallery/desktop-video-12.webp","alt":"黄雀动态创作样片 12"},
+    {"id":"hq-video-13","type":"video","src":"/assets/home/orbit-gallery/desktop-video-13.mp4","poster":"/assets/home/orbit-gallery/desktop-video-13.webp","alt":"黄雀动态创作样片 13"}
+  ]
+}

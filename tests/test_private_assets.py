@@ -27,6 +27,7 @@ class PrivateAssetsTest(unittest.TestCase):
             core._parse_byte_range("bytes=0-1,4-5", 100)
 
     def test_download_proxy_sends_douyin_referer(self):
+        self.assertIn(".hdslb.com", dl_service.ALLOW)
         self.assertEqual(
             dl_service.download_headers("v26-webf.douyinvod.com")["Referer"],
             "https://www.douyin.com/",
@@ -222,6 +223,19 @@ class PrivateAssetsTest(unittest.TestCase):
             self.assertTrue(dl_service.verify_token("valid"))
         with patch.object(dl_service.urllib.request, "urlopen", side_effect=OSError("down")):
             self.assertFalse(dl_service.verify_token("valid"))
+
+    def test_download_proxy_accepts_only_matching_internal_token(self):
+        original = dl_service.INTERNAL_TOKEN
+        try:
+            dl_service.INTERNAL_TOKEN = "internal-test-token"
+            self.assertTrue(dl_service.verify_internal({
+                "X-HQ-Internal-Token": "internal-test-token",
+            }))
+            self.assertFalse(dl_service.verify_internal({
+                "X-HQ-Internal-Token": "wrong",
+            }))
+        finally:
+            dl_service.INTERNAL_TOKEN = original
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ import time
 import uuid
 from contextlib import closing
 
-from . import short_drama_assembly_lipsync
+from . import short_drama_assembly_lipsync, short_drama_duration
 
 CONFIRM_ENDPOINT = "/api/gen/short-drama/completion/confirm"
 ACTIVE_JOB_STATES = {
@@ -425,9 +425,9 @@ def _readiness_from_conn(
             and bool(str(asset["object_key"] or ""))
             and bool(str(asset["cover_key"] or ""))
             and int(asset["duration_ms"] or 0) > 0
-            and abs(
-                int(asset["duration_ms"]) - int(project["target_duration"]) * 1000
-            ) <= 1000
+            and short_drama_duration.contains_milliseconds(
+                project["target_duration"], asset["duration_ms"], 1000
+            )
         )
         version_sha = str(version["sha256"] or "") if "sha256" in version.keys() else ""
         version_size = int(version["size"] or 0) if "size" in version.keys() else 0
@@ -886,10 +886,9 @@ def _legacy_completion_evidence(conn, project):
         and bool(str(asset["object_key"] or ""))
         and bool(str(asset["cover_key"] or ""))
         and int(asset["duration_ms"] or 0) > 0
-        and abs(
-            int(asset["duration_ms"])
-            - int(project["target_duration"]) * 1000
-        ) <= 1000
+        and short_drama_duration.contains_milliseconds(
+            project["target_duration"], asset["duration_ms"], 1000
+        )
     )
     if "sha256" in version.keys() and str(version["sha256"] or ""):
         media_valid = (

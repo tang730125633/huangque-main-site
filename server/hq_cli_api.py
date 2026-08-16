@@ -26,8 +26,10 @@ ACTION_REQUEST_TTL = 30 * 24 * 60 * 60
 ACTION_INFLIGHT_TTL = 10 * 60
 CLI_CHAT_REQUESTS_PER_MINUTE = 6
 CONTENT_BASE = "http://127.0.0.1:8096"
+LEADGEN_BASE = "http://127.0.0.1:8100"
 IMGGEN_BASE = "http://127.0.0.1:8101"
 HERMES_BASE = "http://127.0.0.1:3102"
+ADMIN_BASE = "http://127.0.0.1:8098"
 
 SCOPES = {
     "profile:read": "读取账号公开资料与点数",
@@ -43,8 +45,13 @@ SCOPES = {
     "tasks:read": "读取本人任务状态与点数流水",
     "assets:read": "读取本人资产与音色",
     "assets:write": "收藏资产并管理本人资产标签",
-    "generation:quote": "查询图片、视频、音频所需点数",
-    "generation:submit": "经二次确认后提交生成并扣点",
+    "inspiration:read": "读取灵感案例与本人收藏状态",
+    "inspiration:write": "经确认后收藏或取消收藏灵感案例",
+    "leads:read": "读取本人线索跟进记录",
+    "leads:write": "经确认后更新本人线索跟进记录",
+    "short-drama:read": "读取本人短剧项目与生产准备状态",
+    "generation:quote": "查询生成、采集或获客任务所需点数",
+    "generation:submit": "经二次确认后提交付费任务并扣点",
     "video-compose:read": "读取本人一键成片项目",
     "video-compose:write": "经确认后创建、分析、审核或渲染本人一键成片项目",
     "digital-presenter:read": "读取本人画布中的数字人口播项目",
@@ -55,9 +62,13 @@ CHANNEL_CATALOG = (
     {"id": "xai", "provider": "xAI API", "category": "视频生成", "features": ["果肉视频生成"],
      "access": "direct", "capabilities": ["video-generate"], "selector": {"channel": "grok"}},
     {"id": "openai", "provider": "OpenAI API", "category": "图片 / 视频", "features": ["黄雀引擎 2", "Sora 2"],
-     "access": "mixed", "capabilities": ["image-generate"], "selector": {"provider": "openai"}},
+     "access": "mixed", "capabilities": ["image-generate", "video-generate"], "selector": {},
+     "selectors": [{"capability": "image-generate", "input": {"provider": "openai"}},
+                   {"capability": "video-generate", "input": {"channel": "sora"}}]},
     {"id": "gemini", "provider": "Google Gemini API", "category": "图片 / 视频", "features": ["纳米香蕉", "Omni 视频"],
-     "access": "mixed", "capabilities": ["video-generate"], "selector": {"channel": "omni"}},
+     "access": "mixed", "capabilities": ["image-generate", "video-generate"], "selector": {},
+     "selectors": [{"capability": "image-generate", "input": {"provider": "banana"}},
+                   {"capability": "video-generate", "input": {"channel": "omni"}}]},
     {"id": "seedance", "provider": "火山方舟 API", "category": "图片 / 视频", "features": ["Seedream", "Seedance 视频"],
      "access": "direct", "capabilities": ["image-generate", "video-generate"], "selector": {"provider": "seedream", "channel": "micro"}},
     {"id": "minimax", "provider": "MiniMax 中国区 API", "category": "视频生成", "features": ["麦克视频"],
@@ -67,19 +78,28 @@ CHANNEL_CATALOG = (
     {"id": "zelong2", "provider": "泽龙 API", "category": "图片生成", "features": ["泽龙 2 备用线路（维护中）"],
      "access": "registered", "capabilities": [], "selector": {}},
     {"id": "heygen", "provider": "HeyGen API", "category": "数字化 IP / 视频", "features": ["电影化身", "数字人口播", "数字人形象"],
-     "access": "managed", "capabilities": ["digital-presenter-capability", "digital-presenter-create"], "selector": {}},
+     "access": "managed", "capabilities": [
+         "digital-presenter-capability", "digital-presenter-create",
+         "digital-ip-text-generate", "digital-ip-batch-generate", "digital-ip-audio-generate",
+         "cinematic-open-generate", "cinematic-motion-generate",
+     ], "selector": {}},
     {"id": "heygen_relay", "provider": "HeyGen 中转 API", "category": "数字化 IP / 视频", "features": ["中转与下载兜底"],
      "access": "routed", "capabilities": ["tasks", "assets"], "selector": {}},
     {"id": "xiaolevideo", "provider": "小乐视频 API", "category": "图片 / 视频", "features": ["果肉生图", "历史兼容线路"],
      "access": "routed", "capabilities": ["image-generate", "video-generate"], "selector": {}},
     {"id": "runninghub", "provider": "RunningHub API", "category": "视频处理", "features": ["换装换背景 · 线路一"],
-     "access": "registered", "capabilities": [], "selector": {}},
+     "access": "managed", "capabilities": ["tryon-classic-generate"], "selector": {}},
     {"id": "wavespeed", "provider": "WaveSpeed API", "category": "视频处理", "features": ["换装换背景 · 线路二", "Seedance AI 超清"],
-     "access": "registered", "capabilities": [], "selector": {}},
+     "access": "managed", "capabilities": ["tryon-fast-generate"], "selector": {}},
     {"id": "cosyvoice", "provider": "阿里百炼 API", "category": "音频生成", "features": ["公共音色", "声音克隆"],
      "access": "direct", "capabilities": ["voices", "audio-generate"], "selector": {}},
     {"id": "tikhub", "provider": "TikHub API", "category": "内容采集 / 获客", "features": ["抖音 / 小红书 / 视频号", "评论与线索"],
-     "access": "navigation", "capabilities": ["collect", "leads"], "selector": {}},
+     "access": "mixed", "capabilities": [
+         "collect", "collect-content", "collect-video", "collect-transcript", "collect-search",
+         "leads", "leads-generate",
+     ], "selector": {}},
+    {"id": "zhipu", "provider": "智谱视觉 API", "category": "内容分析", "features": ["链接分镜拆解"],
+     "access": "managed", "capabilities": [], "selector": {}},
     {"id": "cos", "provider": "腾讯云 COS", "category": "基础设施", "features": ["生成结果存储", "参考素材与成片存储"],
      "access": "managed", "capabilities": ["image-upload", "assets"], "selector": {}},
 )
@@ -88,12 +108,14 @@ CONFIRMATION_ACTIONS = frozenset({
     "asset-favorite", "asset-tags", "video-compose-create", "video-compose-analyze",
     "video-compose-review", "video-compose-render", "digital-presenter-create",
     "digital-presenter-update",
+    "inspiration-like", "leads-crm-upsert",
 })
 
 _START_HITS = {}
 _START_HITS_LOCK = threading.Lock()
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,160}$")
 _UPLOAD_ID_RE = re.compile(r"^img_[0-9a-f]{32}$")
+_VIDEO_UPLOAD_ID_RE = re.compile(r"^vid_[0-9a-f]{32}$")
 _CANVAS_NODE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _CANVAS_OP_NODE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _CANVAS_PROJECT_RE = re.compile(r"^(local|collab):[A-Za-z0-9_-]{1,120}$")
@@ -101,12 +123,15 @@ _CANVAS_OP_ID_RE = re.compile(r"^hqcli-[A-Za-z0-9_-]{11,122}$")
 _VIDEO_COMPOSE_PROJECT_RE = re.compile(r"^compose_[0-9a-f]{32}$")
 _VIDEO_COMPOSE_CANDIDATE_RE = re.compile(r"^candidate_[0-9a-f]{16}$")
 _DIGITAL_PRESENTER_PROJECT_RE = re.compile(r"^dp_[0-9a-f]{32}$")
+_LEAD_ID_RE = re.compile(r"^[0-9a-f]{16,40}$")
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 _CANVAS_BASE64_RE = re.compile(r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{512,}={0,2}(?![A-Za-z0-9+/_=-])")
 IMAGE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
 IMAGE_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
+VIDEO_UPLOAD_MAX_BYTES = 32 * 1024 * 1024
+VIDEO_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
 _TASK_KINDS = {
-    "", "image", "audio", "video", "xiaole_video", "copy", "collect", "leads",
+    "", "image", "audio", "video", "xiaole_video", "copy", "collect", "collect_search", "leads",
     "tryon", "cinematic", "avatar", "breakdown", "script_to_video", "sora_video",
 }
 
@@ -268,6 +293,13 @@ def _identifier(value, field):
 def _upload_id(value, field):
     value = _string(value, field, 1, 64).lower()
     if not _UPLOAD_ID_RE.fullmatch(value):
+        raise CLIAPIError(400, field + " 格式不合法")
+    return value
+
+
+def _video_upload_id(value, field):
+    value = _string(value, field, 1, 64).lower()
+    if not _VIDEO_UPLOAD_ID_RE.fullmatch(value):
         raise CLIAPIError(400, field + " 格式不合法")
     return value
 
@@ -736,18 +768,20 @@ def proxy_json(plan, web_token, internal_token=""):
     return int(status), payload
 
 
-def proxy_image_upload(stream, length, web_token, internal_token, content_type, digest):
+def _proxy_media_upload(stream, length, web_token, internal_token, content_type, digest,
+                        path, digest_header, label):
+    display = {"image": "图片", "video": "视频"}[label]
     if not internal_token:
         raise CLIAPIError(503, "CLI 内部授权未配置", "not_configured")
     target = urllib.parse.urlsplit(CONTENT_BASE)
     if target.scheme != "http" or target.hostname not in {"127.0.0.1", "localhost"} or target.path not in {"", "/"}:
-        raise CLIAPIError(503, "CLI 图片上传目标配置不安全", "not_configured")
+        raise CLIAPIError(503, "CLI %s上传目标配置不安全" % display, "not_configured")
     connection = http.client.HTTPConnection(target.hostname, target.port or 80, timeout=60)
     try:
-        connection.putrequest("POST", "/api/gen/cli/image-upload", skip_accept_encoding=True)
+        connection.putrequest("POST", path, skip_accept_encoding=True)
         connection.putheader("Authorization", "Bearer " + web_token)
         connection.putheader("X-HQ-Internal-Token", internal_token)
-        connection.putheader("X-HQ-Image-SHA256", digest)
+        connection.putheader(digest_header, digest)
         connection.putheader("Content-Type", content_type)
         connection.putheader("Content-Length", str(length))
         connection.putheader("Accept", "application/json")
@@ -757,7 +791,7 @@ def proxy_image_upload(stream, length, web_token, internal_token, content_type, 
         while remaining:
             chunk = stream.read(min(64 * 1024, remaining))
             if not chunk:
-                raise CLIAPIError(400, "图片上传不完整", "invalid_image_upload")
+                raise CLIAPIError(400, "%s上传不完整" % display, "invalid_%s_upload" % label)
             connection.send(chunk)
             remaining -= len(chunk)
         response = connection.getresponse()
@@ -765,18 +799,32 @@ def proxy_image_upload(stream, length, web_token, internal_token, content_type, 
     except CLIAPIError:
         raise
     except (OSError, http.client.HTTPException) as exc:
-        raise CLIAPIError(502, "图片上传服务暂时不可用：" + str(exc)[:120], "upstream_unavailable")
+        raise CLIAPIError(502, "%s上传服务暂时不可用：" % display + str(exc)[:120], "upstream_unavailable")
     finally:
         connection.close()
     if len(raw) > 2 * 1024 * 1024:
-        raise CLIAPIError(502, "图片上传服务响应过大", "upstream_response_too_large")
+        raise CLIAPIError(502, "%s上传服务响应过大" % display, "upstream_response_too_large")
     try:
         payload = json.loads(raw or b"{}")
     except Exception:
-        raise CLIAPIError(502, "图片上传服务返回了无效响应", "invalid_upstream_response")
+        raise CLIAPIError(502, "%s上传服务返回了无效响应" % display, "invalid_upstream_response")
     if not isinstance(payload, dict):
-        raise CLIAPIError(502, "图片上传服务返回了无效响应", "invalid_upstream_response")
+        raise CLIAPIError(502, "%s上传服务返回了无效响应" % display, "invalid_upstream_response")
     return int(status), payload
+
+
+def proxy_image_upload(stream, length, web_token, internal_token, content_type, digest):
+    return _proxy_media_upload(
+        stream, length, web_token, internal_token, content_type, digest,
+        "/api/gen/cli/image-upload", "X-HQ-Image-SHA256", "image",
+    )
+
+
+def proxy_video_upload(stream, length, web_token, internal_token, content_type, digest):
+    return _proxy_media_upload(
+        stream, length, web_token, internal_token, content_type, digest,
+        "/api/gen/cli/video-upload", "X-HQ-Video-SHA256", "video",
+    )
 
 
 def _plan(scope, kind, **values):
@@ -817,6 +865,54 @@ def _digital_presenter_fields(value):
     return fields
 
 
+def _collect_url(value):
+    url = _string(value, "url", 1, 2048)
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        host = (parsed.hostname or "").lower()
+        port = parsed.port
+    except ValueError:
+        raise CLIAPIError(400, "url 格式不合法")
+    allowed = ("douyin.com", "iesdouyin.com", "xiaohongshu.com", "xhslink.com", "xhslink.cn",
+               "bilibili.com", "b23.tv")
+    channels_share = (parsed.scheme == "https" and host == "weixin.qq.com" and port in (None, 443)
+                      and parsed.path.startswith("/sph/") and parsed.path[len("/sph/"):].isalnum())
+    if (parsed.scheme not in {"http", "https"} or parsed.username or parsed.password
+            or port not in (None, 80, 443)
+            or not (channels_share or any(
+                host == suffix or host.endswith("." + suffix) for suffix in allowed))):
+        raise CLIAPIError(400, "url 仅支持抖音、小红书、视频号或 B 站公开链接")
+    return url
+
+
+def _leads_payload(value):
+    _strict_object(value, {"keyword", "platforms", "count", "pages", "channels_targets"},
+                   ("platforms",))
+    raw_platforms = value["platforms"]
+    if not isinstance(raw_platforms, list) or not 1 <= len(raw_platforms) <= 3:
+        raise CLIAPIError(400, "platforms 必须是包含 1-3 项的平台数组")
+    platforms = [_enum(item, "platforms", ("douyin", "xhs", "channels")) for item in raw_platforms]
+    if len(platforms) != len(set(platforms)):
+        raise CLIAPIError(400, "platforms 不能重复")
+    keyword = _string(value.get("keyword", ""), "keyword", 0, 120)
+    raw_targets = value.get("channels_targets", [])
+    if not isinstance(raw_targets, list) or len(raw_targets) > 20:
+        raise CLIAPIError(400, "channels_targets 必须是最多 20 项的数组")
+    targets = [_string(item, "channels_targets", 1, 120) for item in raw_targets]
+    if len(targets) != len(set(targets)):
+        raise CLIAPIError(400, "channels_targets 不能重复")
+    if any(platform != "channels" for platform in platforms) and not keyword:
+        raise CLIAPIError(400, "抖音或小红书获客必须提供 keyword")
+    if "channels" in platforms and not targets:
+        raise CLIAPIError(400, "视频号获客必须提供 channels_targets")
+    return {
+        "keyword": keyword, "platforms": platforms,
+        "count": _integer(value.get("count", 20), "count", 1, 30),
+        "pages": _integer(value.get("pages", 1), "pages", 1, 3),
+        "channels_targets": targets,
+    }
+
+
 def action_plan(action, value):
     if not isinstance(value, dict):
         raise CLIAPIError(400, "input 必须是 JSON 对象")
@@ -826,6 +922,120 @@ def action_plan(action, value):
     if action == "channels":
         _strict_object(value, set())
         return _plan("profile:read", "channels")
+    if action == "pricing":
+        _strict_object(value, set())
+        return _plan("profile:read", "proxy", base=CONTENT_BASE, path="/api/gen/pricing")
+    if action in {
+            "text-video-capability", "text-video-templates",
+            "text-video-styles", "text-video-voices"}:
+        _strict_object(value, set())
+        suffix = action.removeprefix("text-video-")
+        return _plan("assets:read", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/text-video/" + suffix)
+    if action == "inspiration-catalog":
+        _strict_object(value, set())
+        return _plan("inspiration:read", "proxy", base=ADMIN_BASE,
+                     path="/api/admin/public/inspirations")
+    if action == "inspiration-likes":
+        _strict_object(value, set())
+        return _plan("inspiration:read", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/inspiration/likes")
+    if action == "inspiration-like":
+        _strict_object(value, {"id", "favorite"}, ("id", "favorite"))
+        if not isinstance(value["favorite"], bool):
+            raise CLIAPIError(400, "favorite 必须是布尔值")
+        return _plan("inspiration:write", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/inspiration/like", method="POST",
+                     body={"id": _integer(value["id"], "id", 1, 2**63 - 1),
+                           "favorite": value["favorite"]})
+    if action == "leads-crm":
+        _strict_object(value, {"lead_ids"})
+        lead_ids = value.get("lead_ids", [])
+        if not isinstance(lead_ids, list) or len(lead_ids) > 100:
+            raise CLIAPIError(400, "lead_ids 必须是最多 100 项的数组")
+        lead_ids = [_matched_string(item, "lead_id", _LEAD_ID_RE, 40) for item in lead_ids]
+        path = "/api/gen/leads/crm"
+        if lead_ids:
+            path += "?" + urllib.parse.urlencode({"ids": ",".join(dict.fromkeys(lead_ids))})
+        return _plan("leads:read", "proxy", base=CONTENT_BASE, path=path)
+    if action == "leads-crm-upsert":
+        _strict_object(value, {"lead_id", "intent", "follow_status", "follow_note"}, ("lead_id",))
+        body = {"lead_id": _matched_string(value["lead_id"], "lead_id", _LEAD_ID_RE, 40)}
+        if "intent" in value:
+            body["intent"] = _enum(value["intent"], "intent", ("高意向", "咨询", "价格敏感", "围观"))
+        if "follow_status" in value:
+            body["follow_status"] = _enum(
+                value["follow_status"], "follow_status", ("待跟进", "跟进中", "已加微", "已成交", "无效"))
+        if "follow_note" in value:
+            body["follow_note"] = _string(value["follow_note"], "follow_note", 0, 300)
+        return _plan("leads:write", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/leads/crm", method="POST", body=body)
+    if action in {"collect-content", "collect-video", "collect-transcript"}:
+        _strict_object(value, {"url"}, ("url",))
+        want = {
+            "collect-content": "comments",
+            "collect-video": "video",
+            "collect-transcript": "transcript",
+        }[action]
+        return _plan(
+            "generation:quote", "generation", generation_kind="collect",
+            endpoint="/api/gen/collect", submit_base=LEADGEN_BASE,
+            payload={"url": _collect_url(value["url"]), "want": [want]},
+        )
+    if action == "collect-search":
+        _strict_object(value, {"platform", "keyword", "page"}, ("platform", "keyword"))
+        return _plan(
+            "generation:quote", "generation", generation_kind="collect_search",
+            endpoint="/api/gen/collect_search", submit_base=LEADGEN_BASE,
+            payload={
+                "platform": _enum(value["platform"], "platform", ("douyin", "xhs")),
+                "keyword": _string(value["keyword"], "keyword", 1, 120),
+                "page": _integer(value.get("page", 1), "page", 1, 50),
+            },
+        )
+    if action == "leads-generate":
+        return _plan(
+            "generation:quote", "generation", generation_kind="leads",
+            endpoint="/api/gen/leads", submit_base=LEADGEN_BASE,
+            payload=_leads_payload(value),
+        )
+    if action == "video-avatars":
+        _strict_object(value, {"limit"})
+        limit = _integer(value.get("limit", 120), "limit", 1, 120)
+        return _plan("assets:read", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/video/avatars?" + urllib.parse.urlencode({"limit": limit}))
+    if action == "audio-slots":
+        _strict_object(value, set())
+        return _plan("assets:read", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/audio/slots?include_points=0")
+    if action == "short-drama-projects":
+        _strict_object(value, {"page", "page_size"})
+        query = urllib.parse.urlencode({
+            "page": _integer(value.get("page", 1), "page", 1, 100000),
+            "page_size": _integer(value.get("page_size", 20), "page_size", 1, 50),
+        })
+        return _plan("short-drama:read", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/short-drama/projects?" + query)
+    if action in {"short-drama-project", "short-drama-conversation", "short-drama-preflight"}:
+        _strict_object(value, {"project_id"}, ("project_id",))
+        project_id = urllib.parse.quote(_identifier(value["project_id"], "project_id"), safe="")
+        suffix = action.removeprefix("short-drama-")
+        if suffix == "project":
+            path = "/api/gen/short-drama/project?id=" + project_id
+        else:
+            path = "/api/gen/short-drama/%s?project_id=%s" % (suffix, project_id)
+        return _plan("short-drama:read", "proxy", base=CONTENT_BASE, path=path)
+    if action == "digital-ip-projects":
+        _strict_object(value, set())
+        return _plan("ip12:read", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/digital-ip/projects")
+    if action in {"digital-ip-project", "digital-ip-report"}:
+        _strict_object(value, {"project_id"}, ("project_id",))
+        project_id = _identifier(value["project_id"], "project_id")
+        suffix = "/report" if action == "digital-ip-report" else ""
+        return _plan("ip12:read", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/digital-ip/projects/"
+                     + urllib.parse.quote(project_id, safe="") + suffix)
     if action == "ip12-projects":
         _strict_object(value, set())
         return _plan("ip12:read", "proxy", base=HERMES_BASE, path="/api/conversations")
@@ -997,7 +1207,11 @@ def action_plan(action, value):
             path, method = "/api/gen/digital-presenter/project", "PUT"
         return _plan("digital-presenter:write", "proxy", base=CONTENT_BASE,
                      path=path, method=method, body=body, headers=headers)
-    if action in {"image-generate", "video-generate", "audio-generate"}:
+    if action in {
+            "image-generate", "video-generate", "audio-generate",
+            "digital-ip-text-generate", "digital-ip-batch-generate", "digital-ip-audio-generate",
+            "cinematic-open-generate", "cinematic-motion-generate",
+            "tryon-fast-generate", "tryon-classic-generate"}:
         payload, generation_kind, endpoint = _generation_payload(action, value)
         return _plan("generation:quote", "generation", generation_kind=generation_kind,
                      endpoint=endpoint, payload=payload)
@@ -1005,18 +1219,177 @@ def action_plan(action, value):
 
 
 def _generation_payload(action, value):
+    if action in {"digital-ip-text-generate", "digital-ip-audio-generate"}:
+        mode = "text" if action == "digital-ip-text-generate" else "audio"
+        required = ("avatar_id", "text", "voice") if mode == "text" else ("avatar_id", "audio_file")
+        _strict_object(value, {
+            "avatar_id", "text", "voice", "audio_file", "ratio", "motion",
+            "subtitle", "subtitle_style", "subtitle_position",
+        }, required)
+        subtitle = value.get("subtitle", False)
+        if not isinstance(subtitle, bool):
+            raise CLIAPIError(400, "subtitle 必须是布尔值")
+        body = {
+            "mode": mode,
+            "avatar_id": _integer(value["avatar_id"], "avatar_id", 1, 2**63 - 1),
+            "resolution": "1080p",
+            "ratio": _enum(value.get("ratio", "9:16"), "ratio", ("9:16", "16:9", "1:1", "4:5", "5:4")),
+            "motion": _enum(value.get("motion", "medium"), "motion", ("low", "medium", "high")),
+            "subtitle": subtitle,
+            "subtitle_style": _enum(value.get("subtitle_style", "white"), "subtitle_style", ("white", "variety", "bar")),
+            "subtitle_position": _enum(value.get("subtitle_position", "bottom"), "subtitle_position", ("top", "upper", "center", "lower", "bottom")),
+        }
+        if mode == "text":
+            body["text"] = _string(value["text"], "text", 1, 1000)
+            body["voice"] = _string(value["voice"], "voice", 1, 128)
+        else:
+            body["audio_file"] = _string(value["audio_file"], "audio_file", 1, 500)
+        return body, "video", "/api/gen/video"
+    if action == "digital-ip-batch-generate":
+        _strict_object(value, {
+            "avatars", "text", "voice", "ratio", "motion", "subtitle",
+            "subtitle_style", "subtitle_position",
+        }, ("avatars", "text", "voice"))
+        items = value["avatars"]
+        if not isinstance(items, list) or not 2 <= len(items) <= 5:
+            raise CLIAPIError(400, "avatars 必须包含 2-5 项")
+        avatars, seen = [], set()
+        for index, item in enumerate(items, 1):
+            _strict_object(item, {"avatar_id", "label"}, ("avatar_id",))
+            avatar_id = _integer(item["avatar_id"], "avatar_id", 1, 2**63 - 1)
+            if avatar_id in seen:
+                raise CLIAPIError(400, "avatars 不能包含重复形象")
+            seen.add(avatar_id)
+            avatars.append({
+                "avatar_id": avatar_id,
+                "label": _string(item.get("label", "形象 %d" % index), "label", 1, 60),
+            })
+        single_input = {key: value[key] for key in (
+            "text", "voice", "ratio", "motion", "subtitle", "subtitle_style",
+            "subtitle_position",
+        ) if key in value}
+        single_input["avatar_id"] = avatars[0]["avatar_id"]
+        body = _generation_payload("digital-ip-text-generate", single_input)[0]
+        body.pop("avatar_id")
+        body["avatars"] = avatars
+        return body, "video_batch", "/api/gen/video/batch"
+    if action == "cinematic-open-generate":
+        _strict_object(value, {
+            "avatar_id", "avatar_ids", "prompt", "ratio", "duration", "enhance_prompt",
+            "reference_image_upload_ids", "reference_video_upload_ids",
+        }, ("prompt",))
+        if value.get("avatar_id") is not None and value.get("avatar_ids") is not None:
+            raise CLIAPIError(400, "avatar_id 与 avatar_ids 只能选一个")
+        raw_ids = value.get("avatar_ids")
+        if raw_ids is None and value.get("avatar_id") is not None:
+            raw_ids = [value["avatar_id"]]
+        if not isinstance(raw_ids, list) or not 1 <= len(raw_ids) <= 3:
+            raise CLIAPIError(400, "avatar_id 或 avatar_ids 必须提供 1-3 个形象")
+        avatar_ids = []
+        for item in raw_ids:
+            clean = _integer(item, "avatar_ids", 1, 2**63 - 1)
+            if clean in avatar_ids:
+                raise CLIAPIError(400, "avatar_ids 不能重复")
+            avatar_ids.append(clean)
+        enhance_prompt = value.get("enhance_prompt", False)
+        if not isinstance(enhance_prompt, bool):
+            raise CLIAPIError(400, "enhance_prompt 必须是布尔值")
+        body = {
+            "cine_mode": "open",
+            "avatar_ids": avatar_ids,
+            "prompt": _string(value["prompt"], "prompt", 1, 2000),
+            "resolution": "720p",
+            "ratio": _enum(value.get("ratio", "9:16"), "ratio", ("9:16", "16:9", "1:1")),
+            "duration": _integer(value.get("duration", 10), "duration", 4, 15),
+            "enhance_prompt": enhance_prompt,
+        }
+        image_ids = value.get("reference_image_upload_ids")
+        if image_ids is not None:
+            image_limit = 9 - len(avatar_ids)
+            if not isinstance(image_ids, list) or not 1 <= len(image_ids) <= image_limit:
+                raise CLIAPIError(
+                    400,
+                    "reference_image_upload_ids 必须包含 1-%d 项（与形象共用 9 张额度）" % image_limit,
+                )
+            body["reference_image_upload_ids"] = [
+                _upload_id(item, "reference_image_upload_ids") for item in image_ids
+            ]
+        video_ids = value.get("reference_video_upload_ids")
+        if video_ids is not None:
+            if not isinstance(video_ids, list) or not 1 <= len(video_ids) <= 3:
+                raise CLIAPIError(400, "reference_video_upload_ids 必须包含 1-3 项")
+            body["reference_video_upload_ids"] = [
+                _video_upload_id(item, "reference_video_upload_ids") for item in video_ids
+            ]
+        return body, "cinematic", "/api/gen/cinematic"
+    if action == "cinematic-motion-generate":
+        _strict_object(value, {"avatar_id", "reference_video_upload_ids", "ratio"},
+                       ("avatar_id", "reference_video_upload_ids"))
+        references = value["reference_video_upload_ids"]
+        if not isinstance(references, list) or len(references) != 1:
+            raise CLIAPIError(400, "动作模仿需要且只接受 1 个参考视频")
+        return {
+            "cine_mode": "motion",
+            "avatar_ids": [_integer(value["avatar_id"], "avatar_id", 1, 2**63 - 1)],
+            "reference_video_upload_ids": [
+                _video_upload_id(references[0], "reference_video_upload_ids")],
+            "resolution": "720p",
+            "ratio": _enum(value.get("ratio", "9:16"), "ratio", ("9:16", "16:9", "1:1")),
+        }, "cinematic", "/api/gen/cinematic"
+    if action == "tryon-fast-generate":
+        _strict_object(value, {"person_image_upload_id", "clothes_upload_id", "seconds"},
+                       ("person_image_upload_id", "clothes_upload_id"))
+        return {
+            "line": "2",
+            "person_image_upload_id": _upload_id(value["person_image_upload_id"], "person_image_upload_id"),
+            "clothes_upload_id": _upload_id(value["clothes_upload_id"], "clothes_upload_id"),
+            "seconds": _integer(value.get("seconds", 6), "seconds", 5, 15),
+        }, "tryon", "/api/gen/tryon"
+    if action == "tryon-classic-generate":
+        _strict_object(value, {
+            "person_video_upload_id", "clothes_upload_id", "background_upload_id", "seconds",
+        }, ("person_video_upload_id",))
+        if not value.get("clothes_upload_id") and not value.get("background_upload_id"):
+            raise CLIAPIError(400, "经典换装至少需要衣服图或背景图")
+        body = {
+            "line": "1",
+            "person_video_upload_id": _video_upload_id(value["person_video_upload_id"], "person_video_upload_id"),
+            "seconds": _integer(value.get("seconds", 6), "seconds", 1, 6),
+        }
+        for field in ("clothes_upload_id", "background_upload_id"):
+            if value.get(field):
+                body[field] = _upload_id(value[field], field)
+        return body, "tryon", "/api/gen/tryon"
     if action == "image-generate":
         _strict_object(value, {
             "prompt", "provider", "ratio", "quality", "count", "variant",
-            "image_upload_id", "mask_upload_id", "reference_upload_ids",
+            "model", "image_upload_id", "mask_upload_id", "reference_upload_ids",
         }, ("prompt",))
+        provider = _enum(
+            value.get("provider", "openai"), "provider",
+            ("openai", "xiaole", "seedream", "banana"),
+        )
+        ratio = _string(value.get("ratio", "1:1"), "ratio", 1, 8)
+        ratios = (
+            ("1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9")
+            if provider == "banana" else ("1:1", "9:16", "16:9", "3:4")
+        )
+        if ratio not in ratios:
+            raise CLIAPIError(400, "ratio 不支持该图片引擎")
         body = {
             "prompt": _string(value["prompt"], "prompt", 1, 2000),
-            "provider": _enum(value.get("provider", "openai"), "provider", ("openai", "xiaole", "seedream")),
-            "ratio": _enum(value.get("ratio", "1:1"), "ratio", ("1:1", "9:16", "16:9", "3:4")),
+            "provider": provider,
+            "ratio": ratio,
             "quality": _enum(value.get("quality", "hd"), "quality", ("std", "hd")),
             "count": _integer(value.get("count", 1), "count", 1, 4),
+            "source_page": "banana",
         }
+        if provider == "banana":
+            body["model"] = _enum(value.get("model", "nb2"), "model", ("nb2", "pro"))
+            if body["count"] not in {1, 2, 4}:
+                raise CLIAPIError(400, "Nano Banana count 仅支持 1、2、4")
+        elif "model" in value:
+            raise CLIAPIError(400, "model 仅用于 Nano Banana")
         if "variant" in value:
             if body["provider"] != "seedream":
                 raise CLIAPIError(400, "variant 仅用于 seedream")
@@ -1027,7 +1400,7 @@ def _generation_payload(action, value):
             body["mask_upload_id"] = _upload_id(value["mask_upload_id"], "mask_upload_id")
         if "reference_upload_ids" in value:
             references = value["reference_upload_ids"]
-            limit = {"openai": 16, "seedream": 10, "xiaole": 4}[body["provider"]]
+            limit = {"openai": 16, "seedream": 10, "xiaole": 4, "banana": 14}[body["provider"]]
             if not isinstance(references, list) or not 1 <= len(references) <= limit:
                 raise CLIAPIError(400, "reference_upload_ids 必须包含 1-%d 项" % limit)
             body["reference_upload_ids"] = []
@@ -1045,8 +1418,33 @@ def _generation_payload(action, value):
             raise CLIAPIError(400, "蒙版局部修改 count 必须为 1")
         return body, "image", "/api/gen/image"
     if action == "video-generate":
-        _strict_object(value, {"prompt", "channel", "ratio", "duration", "resolution", "model", "generate_audio", "reference_upload_ids"}, ("prompt",))
-        channel = _enum(value.get("channel", "grok"), "channel", ("grok", "micro", "omni", "minimax"))
+        _strict_object(value, {
+            "prompt", "channel", "ratio", "duration", "seconds", "resolution",
+            "model", "generate_audio", "reference_upload_ids",
+        }, ("prompt",))
+        channel = _enum(value.get("channel", "grok"), "channel", ("grok", "micro", "omni", "minimax", "sora"))
+        if channel == "sora":
+            if "duration" in value or "generate_audio" in value:
+                raise CLIAPIError(400, "Sora 使用 seconds，且不支持 generate_audio")
+            body = {
+                "prompt": _string(value["prompt"], "prompt", 1, 2000),
+                "channel": "sora",
+                "model": _enum(value.get("model", "sora-2"), "model", ("sora-2", "sora-2-pro")),
+                "seconds": _integer(value.get("seconds", 4), "seconds", 4, 12),
+                "ratio": _enum(value.get("ratio", "9:16"), "ratio", ("9:16", "16:9")),
+                "resolution": _enum(value.get("resolution", "720p"), "resolution", ("720p", "1024p", "1080p")),
+                "source_page": "video",
+            }
+            if body["seconds"] not in {4, 8, 12}:
+                raise CLIAPIError(400, "Sora seconds 仅支持 4、8、12")
+            if "reference_upload_ids" in value:
+                references = value["reference_upload_ids"]
+                if not isinstance(references, list) or len(references) != 1:
+                    raise CLIAPIError(400, "Sora reference_upload_ids 必须包含 1 项")
+                body["reference_upload_ids"] = [_upload_id(references[0], "reference_upload_ids")]
+            return body, "sora_video", "/api/gen/sora_video"
+        if "seconds" in value:
+            raise CLIAPIError(400, "seconds 仅用于 Sora")
         body = {
             "prompt": _string(value["prompt"], "prompt", 1, 2000),
             "channel": channel,
@@ -1055,6 +1453,7 @@ def _generation_payload(action, value):
             "duration": _integer(value.get("duration", 10 if channel == "grok" else 5), "duration", 1, 15),
             "resolution": _enum(value.get("resolution", "768p" if channel == "minimax" else "720p"),
                                 "resolution", ("480p", "720p", "768p", "1080p")),
+            "source_page": "video",
         }
         if "model" in value:
             body["model"] = _enum(value["model"], "model", ("grok-imagine-video", "grok-imagine-video-1.5"))
@@ -1076,7 +1475,7 @@ def _generation_payload(action, value):
                     body["reference_upload_ids"].append(clean)
         return body, "xiaole_video", "/api/gen/xiaole_video"
     _strict_object(value, {"text", "voice", "speed", "pitch", "volume"}, ("text",))
-    body = {"text": _string(value["text"], "text", 1, 1000)}
+    body = {"text": _string(value["text"], "text", 1, 1000), "source_page": "audio"}
     if "voice" in value:
         body["voice"] = _string(value["voice"], "voice", 1, 128)
     for field, default, minimum, maximum in (("pitch", 0, -12, 12), ("volume", 0, -50, 100)):

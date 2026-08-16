@@ -92,6 +92,7 @@ MEMBERSHIP_DISCOUNT_BPS = {
 ANNOUNCEMENT_REQUEST_ID_MAX_LENGTH = 128
 SHANGHAI_TZ = datetime.timezone(datetime.timedelta(hours=8))
 MEMBERSHIP_ENFORCEMENT_ENV = "HQ_MEMBERSHIP_ENFORCEMENT_ENABLED"
+E2E_TEST_USERNAME = os.environ.get("HQ_E2E_TEST_USERNAME", "").strip()
 VIRTUAL_PAY_RECONCILE_INTERVAL_SECONDS = 60
 VIRTUAL_PAY_RECONCILE_BATCH = 100
 VIRTUAL_PAY_RECONCILE_MIN_AGE_SECONDS = 10
@@ -4686,7 +4687,16 @@ class H(BaseHTTPRequestHandler):
             c.execute("DELETE FROM tokens WHERE token=?", (token,))
             c.commit(); c.close()
 
-    def _cli_image_upload(self):
+    def _cli_media_upload(self, kind):
+        video = kind == "video"
+        label = "视频" if video else "图片"
+        max_bytes = hq_cli_api.VIDEO_UPLOAD_MAX_BYTES if video else hq_cli_api.IMAGE_UPLOAD_MAX_BYTES
+        content_types = ({"video/mp4", "video/quicktime", "video/webm"} if video
+                         else {"image/jpeg", "image/png", "image/webp"})
+        digest_header = "X-HQ-Video-SHA256" if video else "X-HQ-Image-SHA256"
+        slots = hq_cli_api.VIDEO_UPLOAD_SLOTS if video else hq_cli_api.IMAGE_UPLOAD_SLOTS
+        proxy = hq_cli_api.proxy_video_upload if video else hq_cli_api.proxy_image_upload
+        invalid_code = "invalid_%s_upload" % kind
         auth = self._cli_user()
         if not auth:
             return self._cli_send(401, {"detail": "CLI 未登录或授权已过期", "code": "cli_unauthorized"})
@@ -4694,27 +4704,29 @@ class H(BaseHTTPRequestHandler):
         if "assets:upload" not in scopes:
             return self._cli_send(403, {"detail": "当前 CLI 授权缺少权限：assets:upload", "code": "insufficient_scope"})
         if (self.headers.get("X-HQ-Confirm") or "").strip().lower() != "true":
-            return self._cli_send(409, {"detail": "上传本地图片需要显式确认", "code": "confirmation_required"})
+            return self._cli_send(409, {"detail": "上传本地%s需要显式确认" % label, "code": "confirmation_required"})
         if self.headers.get("Transfer-Encoding"):
-            return self._cli_send(400, {"detail": "图片上传必须提供 Content-Length", "code": "invalid_image_upload"})
+            return self._cli_send(400, {"detail": "%s上传必须提供 Content-Length" % label, "code": invalid_code})
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except (TypeError, ValueError):
             length = 0
-        if length <= 0 or length > hq_cli_api.IMAGE_UPLOAD_MAX_BYTES:
-            return self._cli_send(413, {"detail": "图片大小必须在 1B 到 10MB 之间", "code": "invalid_image_upload"})
+        if length <= 0 or length > max_bytes:
+            return self._cli_send(413, {"detail": "%s大小必须在 1B 到 %dMB 之间" %
+                (label, max_bytes // 1024 // 1024), "code": invalid_code})
         content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-        if content_type not in {"image/jpeg", "image/png", "image/webp"}:
-            return self._cli_send(400, {"detail": "只支持 PNG / JPG / WebP", "code": "invalid_image_upload"})
-        digest = (self.headers.get("X-HQ-Image-SHA256") or "").strip().lower()
+        if content_type not in content_types:
+            supported = "MP4 / MOV / WebM" if video else "PNG / JPG / WebP"
+            return self._cli_send(400, {"detail": "只支持 " + supported, "code": invalid_code})
+        digest = (self.headers.get(digest_header) or "").strip().lower()
         if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
-            return self._cli_send(400, {"detail": "缺少有效的图片摘要", "code": "invalid_image_upload"})
-        if not hq_cli_api.IMAGE_UPLOAD_SLOTS.acquire(blocking=False):
-            return self._cli_send(429, {"detail": "图片上传繁忙，请稍后重试", "code": "upload_busy"})
+            return self._cli_send(400, {"detail": "缺少有效的%s摘要" % label, "code": invalid_code})
+        if not slots.acquire(blocking=False):
+            return self._cli_send(429, {"detail": "%s上传繁忙，请稍后重试" % label, "code": "upload_busy"})
         token = ""
         try:
             token = issue_token(row["username"], ttl=hq_cli_api.BRIDGE_TOKEN_TTL)
-            status, result = hq_cli_api.proxy_image_upload(
+            status, result = proxy(
                 self.rfile, length, token, INTERNAL_TOKEN, content_type, digest,
             )
         except hq_cli_api.CLIAPIError as exc:
@@ -4726,8 +4738,14 @@ class H(BaseHTTPRequestHandler):
                     connection.execute("DELETE FROM tokens WHERE token=?", (token,))
                     connection.commit(); connection.close()
             finally:
-                hq_cli_api.IMAGE_UPLOAD_SLOTS.release()
+                slots.release()
         return self._cli_send(status, result)
+
+    def _cli_image_upload(self):
+        return self._cli_media_upload("image")
+
+    def _cli_video_upload(self):
+        return self._cli_media_upload("video")
 
     def _cli_action(self, body):
         auth = self._cli_user()
@@ -4818,7 +4836,8 @@ class H(BaseHTTPRequestHandler):
                     }
                     submit_headers.update(plan.get("submit_headers") or {})
                     submit_plan = {
-                        "base": hq_cli_api.CONTENT_BASE, "path": plan["endpoint"], "method": "POST",
+                        "base": plan.get("submit_base", hq_cli_api.CONTENT_BASE),
+                        "path": plan["endpoint"], "method": "POST",
                         "body": submit_body, "timeout": 30, "internal": True,
                         "headers": submit_headers,
                     }
@@ -4933,6 +4952,40 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
+        if p == "/api/auth/admin/e2e/session":
+            if not self._require_internal():
+                return
+            if not self._require_admin_user():
+                return
+            if not E2E_TEST_USERNAME:
+                return self._send(503, {"detail": "尚未配置专用 E2E 测试账号"})
+            c = db()
+            try:
+                row = c.execute(
+                    "SELECT * FROM users WHERE username=? AND COALESCE(account_status,'active')='active'",
+                    (E2E_TEST_USERNAME,),
+                ).fetchone()
+                if not row or row["role"] != "member":
+                    return self._send(503, {"detail": "专用 E2E 测试账号不可用"})
+                if initial_password_change_required(row):
+                    return self._send(503, {"detail": "专用 E2E 测试账号仍需修改初始密码"})
+                membership = membership_for_row(row)
+                if membership_enforcement_enabled() and not membership["membership_active"]:
+                    return self._send(503, {"detail": "专用 E2E 测试账号会员已失效"})
+                token = issue_token(row["username"], c=c, ttl=120, scope="account")
+                c.commit()
+                return self._send(200, {
+                    "ok": True,
+                    "token": token,
+                    "account": {
+                        "username": row["username"],
+                        "points": int(row["points"] or 0),
+                        "membership_active": membership["membership_active"],
+                    },
+                    "expires_in": 120,
+                })
+            finally:
+                c.close()
         if p == "/api/auth/points/transfer":
             row = self._user()
             if not row:
@@ -5047,6 +5100,8 @@ class H(BaseHTTPRequestHandler):
             return self._cli_send(200, {"ok": True})
         if p == "/api/auth/cli/image-upload":
             return self._cli_image_upload()
+        if p == "/api/auth/cli/video-upload":
+            return self._cli_video_upload()
         if p == "/api/auth/cli/action":
             if self._content_length_exceeds(128 * 1024):
                 return self._cli_send(413, {"detail": "CLI 输入不能超过 128 KiB"})

@@ -1,11 +1,29 @@
 # -*- coding: utf-8 -*-
-import fcntl
+try:
+    import fcntl
+except ImportError:  # Windows does not provide POSIX fcntl.
+    import msvcrt
+
+    class _WindowsFcntlCompat:
+        LOCK_EX = 2
+
+        @staticmethod
+        def flock(file_descriptor, _operation):
+            current = os.lseek(file_descriptor, 0, os.SEEK_CUR)
+            try:
+                os.lseek(file_descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(file_descriptor, msvcrt.LK_LOCK, 1)
+            finally:
+                os.lseek(file_descriptor, current, os.SEEK_SET)
+
+    fcntl = _WindowsFcntlCompat()
 import hashlib
 import importlib.util
 import io
 import ipaddress
 import math
 import sqlite3
+import socket
 import tempfile
 
 from .core import (
@@ -2531,6 +2549,20 @@ def get_video_job_phase(job_id):
     except Exception:
         return None
 
+def get_video_job_diagnostics(job_id):
+    """Return the existing safe correlation fields for one video job."""
+    try:
+        with closing(adb()) as c:
+            row = c.execute(
+                """SELECT phase,image_asset_id,audio_asset_id,reference_asset_id,
+                          provider_video_id,provider_avatar_id,source_video_url
+                   FROM video_assets WHERE job_id=?""",
+                (job_id,),
+            ).fetchone()
+        return dict(row) if row else {}
+    except Exception:
+        return {}
+
 def _avatar_display_name(username):
     with closing(adb()) as c:
         row = c.execute("SELECT COUNT(*) AS n FROM avatars WHERE username=?", (username,)).fetchone()
@@ -3357,11 +3389,12 @@ def _heygen_mcp_access_token(force_refresh=False):
     with _heygen_mcp_auth_lock:
         if not path.is_file():
             raise HeyGenMCPAuthError("HeyGen MCP OAuth 未配置")
-        if path.stat().st_mode & 0o077:
+        if os.name != "nt" and path.stat().st_mode & 0o077:
             raise HeyGenMCPAuthError("HeyGen MCP OAuth 凭据权限必须为 600")
         lock_fd = os.open(str(path) + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            os.fchmod(lock_fd, 0o600)
+            if hasattr(os, "fchmod"):
+                os.fchmod(lock_fd, 0o600)
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             credentials = json.loads(path.read_text(encoding="utf-8"))
             if not force_refresh and credentials.get("access_token") and float(credentials.get("expires_at") or 0) > time.time() + 60:
@@ -3572,7 +3605,28 @@ def _heygen_retry_net(fn, what=""):
     raise last
 
 
-def _heygen_read_retry(open_fn, what):
+def _read_download_limited(response, max_bytes):
+    declared = response.headers.get("Content-Length")
+    if declared:
+        try:
+            declared_size = int(declared)
+        except (TypeError, ValueError) as error:
+            raise ValueError("下载响应的 Content-Length 无效") from error
+        if declared_size > max_bytes:
+            raise ValueError("下载文件超过大小限制")
+    chunks, total = [], 0
+    while True:
+        chunk = response.read(min(1024 * 1024, max_bytes + 1 - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError("下载文件超过大小限制")
+    return b"".join(chunks)
+
+
+def _heygen_read_retry(open_fn, what, max_bytes=None):
     """打开并读取一个【幂等 GET】(下载成片)，对传输层瞬时网络错误退避重试，返回字节。
 
     open_fn: 无参、每次调用返回一个新的 response 上下文管理器（每次重试都重新 open，
@@ -3584,7 +3638,10 @@ def _heygen_read_retry(open_fn, what):
     for i in range(HEYGEN_NET_RETRIES):
         try:
             with open_fn() as r:
-                data = r.read()
+                data = (
+                    _read_download_limited(r, max_bytes)
+                    if max_bytes is not None else r.read()
+                )
             if data:
                 return data
             last = RuntimeError("下载内容为空")
@@ -3595,6 +3652,83 @@ def _heygen_read_retry(open_fn, what):
         if i < HEYGEN_NET_RETRIES - 1:
             time.sleep(2.0 * (i + 1))
     raise HeyGenNetworkError("%s 多次网络失败: %s" % (what, str(getattr(last, "reason", last))[:150]))
+
+
+def _stream_download_retry(open_fn, destination, what, max_bytes):
+    """Stream an idempotent GET into one temporary file with bounded memory."""
+    last = None
+    for attempt in range(HEYGEN_NET_RETRIES):
+        completed = False
+        try:
+            total = 0
+            with open_fn() as response:
+                declared = response.headers.get("Content-Length")
+                if declared:
+                    try:
+                        declared_size = int(declared)
+                    except (TypeError, ValueError) as error:
+                        raise ValueError("下载响应的 Content-Length 无效") from error
+                    if declared_size > max_bytes:
+                        raise ValueError("下载文件超过大小限制")
+                with destination.open("wb") as output:
+                    while True:
+                        chunk = response.read(min(1024 * 1024, max_bytes + 1 - total))
+                        if not chunk:
+                            break
+                        output.write(chunk)
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise ValueError("下载文件超过大小限制")
+                    output.flush()
+                    os.fsync(output.fileno())
+            if total:
+                completed = True
+                return total
+            last = RuntimeError("下载内容为空")
+        except OSError as error:
+            last = error
+            print("[heygen] %s 网络抖动，重试(%d/%d): %s" % (
+                what, attempt + 1, HEYGEN_NET_RETRIES,
+                str(getattr(error, "reason", error))[:120],
+            ), flush=True)
+        finally:
+            if not completed:
+                try:
+                    destination.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        if attempt < HEYGEN_NET_RETRIES - 1:
+            time.sleep(2.0 * (attempt + 1))
+    raise HeyGenNetworkError("%s 多次网络失败: %s" % (
+        what, str(getattr(last, "reason", last))[:150]
+    ))
+
+
+def _validate_downloaded_video_file(path):
+    try:
+        result = subprocess.run(
+            [os.environ.get("FFPROBE_BIN", "ffprobe"), "-v", "error",
+             "-select_streams", "v:0", "-show_entries",
+             "stream=codec_type,width,height", "-of", "json", str(path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=60, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ValueError("下载媒体无法完成视频流校验") from error
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except (TypeError, ValueError) as error:
+        raise ValueError("下载媒体的视频流信息无效") from error
+    streams = payload.get("streams") if isinstance(payload, dict) else []
+    valid = result.returncode == 0 and any(
+        isinstance(stream, dict)
+        and stream.get("codec_type") == "video"
+        and int(stream.get("width") or 0) > 0
+        and int(stream.get("height") or 0) > 0
+        for stream in (streams or [])
+    )
+    if not valid:
+        raise ValueError("下载媒体不包含可解析的视频流")
 
 
 # 429 退避重试。不重试的话，一次突发就把用户的任务判死退点、白等几分钟——
@@ -3788,17 +3922,95 @@ def _heygen_direct_req(method, url, body=None, ctype="application/json", timeout
         detail = e.read().decode("utf-8", "replace").replace("\n", " ")[:400]
         raise RuntimeError("HeyGen直连失败: HTTP %s %s" % (e.code, detail)) from e
 
-def _download_video_file_direct(url, prefix="vid"):
+def _validate_restricted_download_url(url, allowed_hosts):
+    try:
+        parsed = urllib.parse.urlsplit(str(url or ""))
+        host = (parsed.hostname or "").lower().rstrip(".")
+        port = parsed.port
+    except (TypeError, ValueError) as error:
+        raise ValueError("下载地址无效") from error
+    if (
+        parsed.scheme != "https" or not host or parsed.username or parsed.password
+        or port not in (None, 443) or host not in allowed_hosts
+    ):
+        raise ValueError("下载地址不在允许的 HTTPS CDN 范围内")
+    try:
+        addresses = {
+            info[4][0] for info in socket.getaddrinfo(
+                host, 443, type=socket.SOCK_STREAM
+            )
+        }
+    except OSError as error:
+        raise ValueError("下载地址无法解析") from error
+    if not addresses:
+        raise ValueError("下载地址无法解析")
+    for address in addresses:
+        try:
+            public = ipaddress.ip_address(address).is_global
+        except ValueError as error:
+            raise ValueError("下载地址解析结果无效") from error
+        if not public:
+            raise ValueError("下载地址解析到非公网目标")
+    return str(url)
+
+
+class _RestrictedDownloadRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def __init__(self, allowed_hosts):
+        super().__init__()
+        self.allowed_hosts = frozenset(allowed_hosts)
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _validate_restricted_download_url(newurl, self.allowed_hosts)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _restricted_download_opener(allowed_hosts):
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        _RestrictedDownloadRedirectHandler(allowed_hosts),
+    )
+
+
+def _download_video_file_direct(url, prefix="vid", *, allowed_hosts=None, max_bytes=None):
     if not url:
         raise RuntimeError("直连未返回视频地址")
-    req = urllib.request.Request(url, headers={"User-Agent": "huangque-content/1.0"})
-    # 幂等 GET 下载成片：瞬时网络错误退避重试（不计费、可安全重试，#605）
-    data = _heygen_read_retry(lambda: _heygen_direct_opener().open(req, timeout=360), "成片直连下载")
+    if allowed_hosts is not None:
+        hosts = frozenset(str(host).lower().rstrip(".") for host in allowed_hosts)
+        _validate_restricted_download_url(url, hosts)
+        opener = _restricted_download_opener(hosts)
+        if not max_bytes or max_bytes <= 0:
+            raise ValueError("受限下载必须设置有效的大小上限")
+    else:
+        opener = _heygen_direct_opener()
     fn = "video/%s_%s.mp4" % (prefix, uuid.uuid4().hex)  # 不可猜键(#185)
-    _out_path(fn).write_bytes(data)
+    target = _out_path(fn)
+    req = urllib.request.Request(url, headers={"User-Agent": "huangque-content/1.0"})
+    if allowed_hosts is not None:
+        temporary = target.with_name(target.name + ".part-" + uuid.uuid4().hex)
+        try:
+            _stream_download_retry(
+                lambda: opener.open(req, timeout=360), temporary,
+                "成片直连下载", max_bytes,
+            )
+            with temporary.open("rb") as downloaded:
+                if downloaded.read(8)[4:8] != b"ftyp":
+                    raise ValueError("下载结果不是有效的 MP4 容器")
+            _validate_downloaded_video_file(temporary)
+            temporary.replace(target)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+    else:
+        # Legacy HeyGen callers retain their existing unbounded contract.
+        data = _heygen_read_retry(
+            lambda: opener.open(req, timeout=360), "成片直连下载"
+        )
+        target.write_bytes(data)
     return _faststart_video_file(fn)
 
-def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, motion):
+def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, motion, job_id=None):
     """数字人口播直连 HeyGen v3(type=image + expressiveness)：与泽龙中转同一套 API/参数(honor resolution+expressiveness)，
     只是 direct=True 走 api.heygen.com 出境。原 v2 talking_photo 直连丢了 expressiveness 且忽略 resolution
     →出片效果不同+被硬编码720p(用户反馈"效果不一样")；改回 v3 image 后实测 1080×1920 104s。"""
@@ -3811,16 +4023,22 @@ def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, moti
     # 让整条口播失败(fang 的 cinematic/口播上传 240s 超时同源)。见 _heygen_retry_net。
     image_asset_id = _upload_heygen_image_asset(
         image_fp, "口播传图", direct=True)
+    update_video_asset_phase(job_id, "uploading_audio_asset", image_asset_id=image_asset_id)
     audio_asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(audio_fp, direct=True), "口播传音")
+    update_video_asset_phase(job_id, "submitting_video", image_asset_id=image_asset_id,
+                             audio_asset_id=audio_asset_id)
     with heygen_slot("口播直连"):   # 账号级并发上限 10，三个池共用；超了在本地排队，不让 HeyGen 甩 429
         # 429 退避重试：请求被瞬间拒绝、未计费，是唯一可以安全重发的失败。
         # 不重试的话，一次突发就把用户的任务判死退点、白等几分钟。
         video_id = _heygen_retry_429(
             lambda: _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion, direct=True),
             "口播直连")
+        update_video_asset_phase(job_id, "polling_video", provider_video_id=video_id)
         # ↓ 此刻已计费。之后任何失败都不能回退中转重发（同一账号，会再付一次），见 HeyGenBilledError
         try:
             info = _heygen_poll_video(video_id, direct=True, deadline_s=VIDEO_GEN_DEADLINE)
+            update_video_asset_phase(job_id, "downloading_video", provider_video_id=video_id,
+                                     source_video_url=info.get("video_url"))
             video_file = _download_video_file_direct(info["video_url"], "heygen")
             cover = _extract_first_frame_cover(video_file)
         except Exception as e:
@@ -3837,10 +4055,10 @@ def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, moti
         ret["image_url"] = public_url(cover, "image/jpeg")
     return ret
 
-def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
+def generate_heygen_video(image_file, audio_file, resolution, ratio, motion, job_id=None):
     if _HEYGEN_DIRECT and HEYGEN_API_KEY:
         try:
-            return generate_heygen_video_direct(image_file, audio_file, resolution, ratio, motion)
+            return generate_heygen_video_direct(image_file, audio_file, resolution, ratio, motion, job_id=job_id)
         except HeyGenBilledError:
             raise   # 已提交=已计费，重发就是再付一次钱（泽龙转发同一账号）
         except HeyGenMCPAuthError:
@@ -3855,14 +4073,20 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
     # 素材上传对瞬时网络错误重试(不计费、安全，同直连)
     image_asset_id = _upload_heygen_image_asset(
         image_fp, "口播中转传图")
+    update_video_asset_phase(job_id, "uploading_audio_asset", image_asset_id=image_asset_id)
     audio_asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(audio_fp), "口播中转传音")
+    update_video_asset_phase(job_id, "submitting_video", image_asset_id=image_asset_id,
+                             audio_asset_id=audio_asset_id)
     # 中转(泽龙)转发的是同一个 HeyGen 账号，一样占账号的并发额度 —— 不占槽就等于绕过了闸
     with heygen_slot("口播中转"):
         video_id = _heygen_retry_429(
             lambda: _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion), "口播中转")
+        update_video_asset_phase(job_id, "polling_video", provider_video_id=video_id)
         # 中转也用同一个死线。原来它回落到 HEYGEN_TIMEOUT(1200s)，比 reaper 对口播的宽限
         # (540s)还长 —— reaper 先把任务判死并退点，worker 却还在轮询，上游照样出片照样收钱。
         info = _heygen_poll_video(video_id, deadline_s=VIDEO_GEN_DEADLINE)
+        update_video_asset_phase(job_id, "downloading_video", provider_video_id=video_id,
+                                 source_video_url=info.get("video_url"))
         video_file = _download_video_file(info["video_url"], "heygen")
         cover = _extract_first_frame_cover(video_file)
     ret = {
@@ -4207,7 +4431,9 @@ def gen_video(payload):
     if motion not in {"low", "medium", "high"}:
         motion = "medium"
     created_avatar = None
-    video_result = generate_heygen_video(image_file, audio_file, resolution, ratio, motion)
+    update_video_asset_phase(job_id, "files_saved", image_file=image_file, audio_file=audio_file,
+                             resolution=resolution, ratio=ratio, motion=motion)
+    video_result = generate_heygen_video(image_file, audio_file, resolution, ratio, motion, job_id=job_id)
     bgm_error = None
     if bgm_file and video_result.get("video_file"):
         try:
@@ -4308,9 +4534,31 @@ def _rh_wait_success(client, task_id, job_id, phase, fail_msg):
         if s.endswith("SUCCESS"):
             return
         if s.endswith("FAILED"):
-            raise RuntimeError(fail_msg)
+            detail = ""
+            try:
+                result = client.query_v2(task_id)
+                reason = getattr(result, "failed_reason", None)
+                detail = str(
+                    getattr(reason, "exception_message", "")
+                    or getattr(result, "error_message", "")
+                    or getattr(result, "error_code", "")
+                    or ""
+                ).strip()
+            except Exception:
+                pass
+            error = fail_msg + (("：" + detail[:160]) if detail else "")
+            update_video_asset_phase(
+                job_id, phase.replace("_running", "_failed"),
+                provider_video_id=task_id, status="error", error=error,
+            )
+            raise RuntimeError(error)
         if time.time() > deadline:
-            raise TimeoutError(fail_msg + "(超时)")
+            error = fail_msg + "(超时)"
+            update_video_asset_phase(
+                job_id, phase.replace("_running", "_failed"),
+                provider_video_id=task_id, status="error", error=error,
+            )
+            raise TimeoutError(error)
         update_video_asset_phase(job_id, phase)  # 心跳
         time.sleep(20)
 
@@ -4346,6 +4594,32 @@ def _cap_tryon_input(person_fp):
     return (capped if capped.is_file() and capped.stat().st_size > 0 else person_fp), dur
 
 
+def _ensure_tryon_audio(person_fp):
+    """RunningHub 工作流会强制提取音频；静音视频提交前补一条静音 AAC。"""
+    try:
+        probe = subprocess.run([
+            "ffprobe", "-v", "error", "-select_streams", "a",
+            "-show_entries", "stream=index", "-of", "csv=p=0", str(person_fp),
+        ], capture_output=True, text=True, check=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("换装视频音轨检测失败") from exc
+    if (probe.stdout or "").strip():
+        return person_fp
+    with_audio = pathlib.Path(str(person_fp).rsplit(".", 1)[0] + "_audio.mp4")
+    try:
+        subprocess.run([
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(person_fp),
+            "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+            "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac",
+            "-shortest", str(with_audio),
+        ], check=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("换装视频缺少音轨且自动补音失败") from exc
+    if not with_audio.is_file() or with_audio.stat().st_size <= 0:
+        raise RuntimeError("换装视频缺少音轨且自动补音失败")
+    return with_audio
+
+
 def generate_tryon_video(person_video_file, clothes_file, background_file, seconds, job_id=None, username=None):
     """RunningHub 两段式换装/换背景驱动。返回 {video_file, video_url, ...}。"""
     try:
@@ -4361,6 +4635,7 @@ def generate_tryon_video(person_video_file, clothes_file, background_file, secon
     if not person_fp:
         raise ValueError("换装视频文件不存在")
     person_fp, _orig_dur = _cap_tryon_input(person_fp)  # 超 10s 截取,保证 5 分钟内出片
+    person_fp = _ensure_tryon_audio(person_fp)
     if _orig_dur and _orig_dur > TRYON_MAX_INPUT_SEC + 0.5:
         print("[tryon] 输入视频 %.1fs 超上限,截取前 %ds 保证时效" % (_orig_dur, TRYON_MAX_INPUT_SEC), flush=True)
     clothes_fp = _resolve_out_file(clothes_file) if clothes_file else None
@@ -4389,6 +4664,7 @@ def generate_tryon_video(person_video_file, clothes_file, background_file, secon
         ]
         resp = client.run_ai_app(TRYON_WEBAPP_ID, node_info_list=nodes)
         task_id = _rh_task_id(resp)
+        update_video_asset_phase(job_id, "tryon_running", provider_video_id=task_id)
         _rh_wait_success(client, task_id, job_id, "tryon_running", "换装失败")
         outputs = client.get_outputs(task_id)
         paths = client.download_outputs(outputs, work_dir, overwrite=True)
@@ -4410,6 +4686,7 @@ def generate_tryon_video(person_video_file, clothes_file, background_file, secon
         ]
         resp = client.run_ai_app(BG_WEBAPP_ID, node_info_list=nodes)
         task_id = _rh_task_id(resp)
+        update_video_asset_phase(job_id, "bg_running", provider_video_id=task_id)
         _rh_wait_success(client, task_id, job_id, "bg_running", "换背景失败")
         outputs = client.get_outputs(task_id)
         paths = client.download_outputs(outputs, work_dir, overwrite=True)
@@ -4478,7 +4755,8 @@ def gen_tryon(payload):
             "person_image_file": person_image_file, "clothes_file": clothes2,
             "image_file": person_image_file, "image_url": _file_url(person_image_file),
             "video_file": wres.get("video_file"), "video_url": wres.get("video_url"),
-            "provider": "wavespeed", "text": "换装", "duration": seconds, "seconds": seconds,
+            "provider": "wavespeed", "provider_video_id": wres.get("provider_video_id"),
+            "text": "换装", "duration": seconds, "seconds": seconds,
             "message": "换装完成",
         }
     person_video_file = _save_data_file(payload.get("person_video_data"), "tryon_person", [".mp4", ".mov", ".webm"])

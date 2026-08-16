@@ -1,3 +1,5 @@
+import ast
+import subprocess
 from pathlib import Path, PurePosixPath
 from unittest import TestCase
 
@@ -45,6 +47,31 @@ class HtmlReferenceTests(TestCase):
         self.assertTrue(is_dynamic_or_external("#pricing"))
         self.assertFalse(is_dynamic_or_external("../assets/cloud.css?v=8"))
 class StrictJsonTests(TestCase):
+    def test_api_docs_safe_filter_keeps_only_active_reads(self) -> None:
+        subprocess.run([
+            "node", "-e", r"""
+const fs = require('fs'), vm = require('vm');
+const html = fs.readFileSync('site/api-docs/index.html', 'utf8');
+const source = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)].at(-1)[1];
+const context = {
+  window: {}, setInterval: () => {},
+  document: {getElementById: () => null, querySelectorAll: () => []}
+};
+vm.createContext(context);
+vm.runInContext(source, context);
+const result = context.activeSafeSpec({
+  info: {title: 'test', description: 'test'},
+  paths: {
+    '/safe': {get: {'x-hq-test-safety': 'safe-read', 'x-hq-runtime-status': 'active'}},
+    '/pending': {get: {'x-hq-test-safety': 'safe-read', 'x-hq-runtime-status': 'pending-deployment'}},
+    '/write': {post: {'x-hq-test-safety': 'state-write', 'x-hq-runtime-status': 'active'}}
+  }
+});
+if (JSON.stringify(Object.keys(result.paths)) !== '["/safe"]') process.exit(1);
+if (!result.info.description.includes('共 1 个操作')) process.exit(1);
+"""
+        ], check=True)
+
     def test_rejects_duplicate_object_keys(self) -> None:
         with self.assertRaisesRegex(ValueError, "duplicate JSON key: schema"):
             parse_json_strict('{"schema": 1, "schema": 2}')
@@ -63,6 +90,70 @@ class StrictJsonTests(TestCase):
              "description": "可选的角色显示名称；同一项目内不可重复"},
             profile["properties"]["name"],
         )
+        operations = [
+            operation
+            for item in docs_spec["paths"].values()
+            for method, operation in item.items()
+            if method in {"get", "post", "put", "patch", "delete"}
+        ]
+        audit = docs_spec["x-hq-document-audit"]
+        self.assertEqual(len(docs_spec["paths"]), audit["total_paths"])
+        self.assertEqual(len(operations), audit["total_operations"])
+        for status, field in {
+            "active": "active_operations",
+            "pending-deployment": "production_pending_operations",
+            "routing-unavailable": "production_routing_unavailable_operations",
+            "deprecated": "deprecated_operations",
+        }.items():
+            self.assertEqual(
+                sum(operation.get("x-hq-runtime-status") == status
+                    for operation in operations),
+                audit[field],
+            )
+        self.assertTrue(all(operation.get("x-hq-test-safety") for operation in operations))
+        self.assertTrue(all(operation.get("x-hq-runtime-status") for operation in operations))
+
+    def test_openapi_covers_registered_http_endpoints(self) -> None:
+        from server.content_domains import function_registry
+
+        spec = load_json_strict(Path("docs/api/openapi.json"))
+        verbs = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"}
+
+        def endpoints(value):
+            if isinstance(value, dict):
+                method, path = value.get("method"), value.get("path")
+                if method in verbs and isinstance(path, str) and path.startswith("/api/"):
+                    yield method.lower(), path.split("?", 1)[0]
+                for child in value.values():
+                    yield from endpoints(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from endpoints(child)
+
+        registered = set(endpoints(function_registry.list_pages()))
+        documented = {
+            (method, path)
+            for path, item in spec["paths"].items()
+            for method in item
+            if method.upper() in verbs
+        }
+        self.assertEqual(77, len(registered))
+        self.assertEqual(set(), registered - documented)
+        tree = ast.parse(Path("server/content_domains/short_drama.py").read_text())
+        route_table = ast.literal_eval(next(
+            node.value
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "_HTTP_ROUTES"
+                    for target in node.targets)
+        ))
+        short_drama_registered = {
+            (method.lower(), path)
+            for method, route_paths in route_table.items()
+            for path in route_paths
+        }
+        self.assertEqual(126, len(short_drama_registered))
+        self.assertEqual(set(), short_drama_registered - documented)
 
     def test_openapi_validates_live_action_import_and_role_saves(self) -> None:
         spec = load_json_strict(Path("docs/api/openapi.json"))
@@ -76,7 +167,7 @@ class StrictJsonTests(TestCase):
             "fixed_colors": "white", "accessories": "watch",
             "appearance_prompt": "cinematic portrait",
             "wardrobe_prompt": "white shirt",
-            "reference_views": ["front_full", "side_full", "front_half"],
+            "reference_views": ["front_full", "side_full", "back_full"],
         }]
         import_path = spec["paths"]["/api/gen/short-drama/projects/import"]["post"]
         self.assertIn("Idempotency-Key", [
@@ -94,6 +185,18 @@ class StrictJsonTests(TestCase):
             "visual_style": "cinematic", "source_text": "Lin Xia: hello",
             "filename": "story.txt", "import_mode": "faithful",
             "content_type": "live_action", "character_contract": contract,
+        })
+        legacy_contract = [{
+            **contract[0],
+            "reference_views": ["front_full", "side_full", "front_half"],
+        }]
+        self._assert_openapi_sample(spec, import_schema, {
+            "title": "Legacy live action",
+            "synopsis": "A legacy client contract awaiting back-view confirmation",
+            "ratio": "16:9", "target_duration": 30, "shot_count": 6,
+            "visual_style": "cinematic", "source_text": "Lin Xia: hello",
+            "filename": "legacy-story.txt", "import_mode": "faithful",
+            "content_type": "live_action", "character_contract": legacy_contract,
         })
         role_variants = spec["paths"]["/api/gen/short-drama/project"]["put"][
             "requestBody"
@@ -154,6 +257,26 @@ class StrictJsonTests(TestCase):
             "detail": "该角色已有付费或锁定的角色标准图，不能直接修改资料",
             "code": "character_reference_protected",
         })
+
+    def test_openapi_covers_new_live_action_runtime_routes(self) -> None:
+        spec = load_json_strict(Path("docs/api/openapi.json"))
+        routes = {
+            "/api/gen/short-drama/asset-graph/scenes": "get",
+            "/api/gen/short-drama/asset-graph/scenes/reference": "post",
+            "/api/gen/short-drama/asset-graph/scenes/lock": "post",
+            "/api/gen/short-drama/projects/live-action/core-story": "post",
+            "/api/gen/short-drama/projects/live-action/finalize": "post",
+            "/api/gen/short-drama/autodraft/provider-version/select": "post",
+            "/api/gen/short-drama/select-character-reference": "post",
+        }
+
+        for path, method in routes.items():
+            with self.subTest(path=path):
+                operation = spec["paths"][path][method]
+                self.assertIn("200", operation["responses"])
+                self.assertIn("401", operation["responses"])
+                if method == "post":
+                    self.assertIn("requestBody", operation)
 
     def _assert_openapi_sample(self, spec, schema, value) -> None:
         if "$ref" in schema:

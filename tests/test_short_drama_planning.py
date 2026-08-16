@@ -90,20 +90,68 @@ class ShortDramaPlanningTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 short_drama.normalize_plan(raw, {"target_duration": 30, "ratio": "9:16", "shot_count": 6})
 
-    def test_validate_planning_payload_rejects_impossible_duration_shot_count_pairs(self):
-        for duration, shot_count in ((30, 7), (30, 8), (30, 9), (30, 10), (45, 10)):
-            with self.subTest(duration=duration, shot_count=shot_count), self.assertRaises(ValueError):
-                short_drama.validate_planning_payload({
-                    "prompt": "雨夜来客", "dur": "%ss" % duration, "ratio": "9:16", "shot_count": shot_count,
-                })
+    def test_planning_pairs_match_reachable_five_or_ten_second_shots(self):
+        for duration in (30, 45, 60):
+            lower, upper = short_drama.short_drama_duration.bounds(duration)
+            for shot_count in range(6, 11):
+                totals = {
+                    shot_count * 5 + ten_second_shots * 5
+                    for ten_second_shots in range(shot_count + 1)
+                    if lower <= shot_count * 5 + ten_second_shots * 5 <= upper
+                }
+                with self.subTest(duration=duration, shot_count=shot_count):
+                    payload = {
+                        "prompt": "雨夜来客", "dur": "%ss" % duration,
+                        "ratio": "9:16", "shot_count": shot_count,
+                    }
+                    if totals:
+                        settings = short_drama.validate_planning_payload(payload)
+                        self.assertEqual(
+                            (duration, shot_count),
+                            (settings["target_duration"], settings["shot_count"]),
+                        )
+                    else:
+                        with self.assertRaisesRegex(ValueError, "时长与分镜数量不匹配"):
+                            short_drama.validate_planning_payload(payload)
 
-    def test_validate_planning_payload_accepts_feasible_duration_shot_count_pairs(self):
-        for duration, shot_count in ((30, 6), (45, 6), (45, 9), (60, 6), (60, 10)):
-            with self.subTest(duration=duration, shot_count=shot_count):
-                settings = short_drama.validate_planning_payload({
-                    "prompt": "雨夜来客", "dur": "%ss" % duration, "ratio": "9:16", "shot_count": shot_count,
-                })
-                self.assertEqual((settings["target_duration"], settings["shot_count"]), (duration, shot_count))
+    def test_duration_choice_is_reachable_for_every_allowed_pair(self):
+        for duration in (30, 45, 60):
+            for shot_count in range(6, 11):
+                totals = short_drama.short_drama_duration.reachable_totals(
+                    duration, shot_count
+                )
+                with self.subTest(duration=duration, shot_count=shot_count):
+                    if totals:
+                        for authored, speech in ((0, 0), (36, 0), (0, 42), (83, 57)):
+                            selected = short_drama.short_drama_duration.choose(
+                                duration, shot_count, authored, speech
+                            )
+                            self.assertIn(selected, totals)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "5/10 秒分镜"):
+                            short_drama.short_drama_duration.choose(
+                                duration, shot_count
+                            )
+
+        self.assertNotEqual(36, short_drama.short_drama_duration.choose(45, 6))
+        self.assertNotEqual(42, short_drama.short_drama_duration.choose(45, 7))
+
+    def test_duration_allocation_uses_only_five_or_ten_second_shots(self):
+        duration = short_drama.short_drama_duration
+        for band in (30, 45, 60):
+            for shot_count in range(6, 11):
+                totals = duration.reachable_totals(band, shot_count)
+                with self.subTest(band=band, shot_count=shot_count):
+                    if not totals:
+                        with self.assertRaises(ValueError):
+                            duration.allocate(band, shot_count)
+                        continue
+                    allocation = duration.allocate(
+                        band, shot_count, authored_seconds=42,
+                    )
+                    self.assertEqual(shot_count, len(allocation))
+                    self.assertTrue(all(value in (5, 10) for value in allocation))
+                    self.assertIn(sum(allocation), totals)
 
     def test_normalize_plan_rejects_non_string_textual_fields_and_keys(self):
         mutations = (

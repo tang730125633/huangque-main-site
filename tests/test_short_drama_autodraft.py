@@ -5,6 +5,8 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -163,6 +165,56 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             "provider_avatar_id": "heygen-avatar-1",
             "image_url": "https://cdn.example/reference.png",
         }
+
+    def _lock_project_character_references(self):
+        conn = self.db()
+        try:
+            plan_row = conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()
+            plan = json.loads(plan_row[0])
+            required_keys = []
+            for shot in plan.get("material_plan") or []:
+                for dialogue in shot.get("dialogue") or []:
+                    key = str(dialogue.get("character_key") or "")
+                    if key and key not in required_keys:
+                        required_keys.append(key)
+                for value in shot.get("character_keys") or []:
+                    key = str(value or "")
+                    if key and key not in required_keys:
+                        required_keys.append(key)
+            for index, key in enumerate(required_keys, 1):
+                conn.execute(
+                    "INSERT OR IGNORE INTO short_drama_characters "
+                    "(id,project_id,character_key,name,source_type,sort_order) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (
+                        "character-minimax-%d" % index,
+                        self.project["id"], key, "角色 %d" % index,
+                        "ai_character", index,
+                    ),
+                )
+            rows = conn.execute(
+                "SELECT character_key FROM short_drama_characters "
+                "WHERE project_id=? ORDER BY sort_order",
+                (self.project["id"],),
+            ).fetchall()
+            self.assertTrue(rows)
+            for index, row in enumerate(rows, 1):
+                conn.execute(
+                    "UPDATE short_drama_characters SET reference_file=?,"
+                    "reference_url=?,reference_version=1,reference_locked=1 "
+                    "WHERE project_id=? AND character_key=?",
+                    (
+                        "short_drama_refs/character-%d.png" % index,
+                        "https://cdn.example/short-drama/character-%d.png" % index,
+                        self.project["id"], row[0],
+                    ),
+                )
+            conn.commit()
+        finally:
+            conn.close()
 
     def _provider_quote(self):
         workspace = short_drama_autodraft.workspace(
@@ -739,12 +791,92 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                 avatar_lookup=lambda _username, _avatar_id: avatar,
             )
 
-        self.assertEqual(
+        self.assertTrue(result["request"]["prompt"].startswith(
             "唯一真实提示词：雨夜车站，女儿回头看向母亲 "
-            "禁止项：字幕，水印，额外人物。",
-            result["request"]["prompt"],
-        )
+            "禁止项：字幕，水印，额外人物。"
+        ))
+        self.assertIn("全片统一视觉基线", result["request"]["prompt"])
         self.assertNotIn("旧画面描述", result["request"]["prompt"])
+
+    def test_provider_preflight_persists_generation_only_execution_override(self):
+        conn = self.db()
+        try:
+            plan = json.loads(conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()[0])
+            shot = plan["material_plan"][0]
+        finally:
+            conn.close()
+        avatar = self._provider_avatar()
+        execution = {
+            "visual": "男孩把糖果递给女孩",
+            "camera": "中近景，缓慢推近",
+            "performance": "先犹豫，再露出真诚微笑",
+            "scene": "傍晚的小区长椅",
+            "lighting": "暖色夕阳",
+            "composition_style": "电影感写实",
+            "continuity": "服装和糖果袋与上一镜一致",
+            "negative_prompt": "字幕，水印，人物变脸",
+            "provider_prompt": "傍晚长椅，中近景缓慢推近，男孩真诚分享糖果",
+        }
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "heygen_cinematic",
+            "HEYGEN_API_KEY": "configured-for-preflight-only",
+        }):
+            result = short_drama_autodraft.preview_provider_request(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"], "plan_id": self.plan_id,
+                    "shot_key": shot["shot_key"], "avatar_id": avatar["id"],
+                    "execution": execution,
+                }, avatar_lookup=lambda _username, _avatar_id: avatar,
+            )
+            repeated = short_drama_autodraft.preview_provider_request(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"], "plan_id": self.plan_id,
+                    "shot_key": shot["shot_key"], "avatar_id": avatar["id"],
+                }, avatar_lookup=lambda _username, _avatar_id: avatar,
+            )
+        self.assertIn(execution["provider_prompt"], result["request"]["prompt"])
+        self.assertEqual(result["request"]["prompt"], repeated["request"]["prompt"])
+        workspace = short_drama_autodraft.workspace(
+            self.db, "alice", "alice", self.project["id"],
+        )
+        self.assertEqual(
+            execution["provider_prompt"],
+            workspace["provider_execution_overrides"][shot["shot_key"]]["provider_prompt"],
+        )
+
+    def test_sensitive_failure_is_localized_and_optional_references_are_persisted(self):
+        execution = short_drama_autodraft._clean_execution({
+            "provider_prompt": "校园教室里，学生收拾书包",
+            "include_continuity_reference": False,
+            "include_scene_reference": True,
+        })
+        self.assertFalse(execution["include_continuity_reference"])
+        self.assertTrue(execution["include_scene_reference"])
+        error = short_drama_autodraft._provider_failure_error({
+            "failure": {
+                "code": "1026",
+                "message": "input new_sensitive, input text sensitive",
+            }
+        })
+        self.assertEqual("1026", error.provider_code)
+        self.assertIn("输入内容未通过审核", str(error))
+        self.assertNotIn("input text sensitive", str(error))
+
+    def test_execution_override_accepts_deduplicated_character_binding(self):
+        execution = short_drama_autodraft._clean_execution({
+            "provider_prompt": "陈宇走进教室",
+            "character_keys": ["character_2", "character_2", "character_1"],
+        })
+        self.assertEqual(
+            ["character_2", "character_1"], execution["character_keys"]
+        )
+        with self.assertRaises(short_drama_autodraft.AutodraftError):
+            short_drama_autodraft._clean_execution({
+                "provider_prompt": "空镜头", "character_keys": [],
+            })
 
     def test_legacy_plan_recovers_prompt_from_its_locked_script_snapshot(self):
         conversation = short_drama_conversation.workspace(
@@ -807,28 +939,32 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             self.db, "alice", "alice", self.project["id"]
         )
         shot = workspace["provider_poc"]["shots"][0]
-        with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
-            short_drama_autodraft.preview_provider_request(
-                self.db,
-                "alice",
-                "alice",
-                {
-                    "project_id": self.project["id"],
-                    "plan_id": self.plan_id,
-                    "shot_key": shot["shot_key"],
-                    "avatar_id": "avatar-bob",
-                },
-                avatar_lookup=lambda _username, _avatar_id: {
-                    "id": "avatar-bob",
-                    "username": "bob",
-                    "status": "ready",
-                    "provider_avatar_id": "provider-bob",
-                },
-            )
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "heygen_cinematic",
+        }):
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft.preview_provider_request(
+                    self.db,
+                    "alice",
+                    "alice",
+                    {
+                        "project_id": self.project["id"],
+                        "plan_id": self.plan_id,
+                        "shot_key": shot["shot_key"],
+                        "avatar_id": "avatar-bob",
+                    },
+                    avatar_lookup=lambda _username, _avatar_id: {
+                        "id": "avatar-bob",
+                        "username": "bob",
+                        "status": "ready",
+                        "provider_avatar_id": "provider-bob",
+                    },
+                )
         self.assertEqual("provider_avatar_forbidden", raised.exception.code)
         self.assertEqual(403, raised.exception.status)
 
     def test_provider_preflight_http_route_is_non_billable(self):
+        self._lock_project_character_references()
         workspace = short_drama_autodraft.workspace(
             self.db, "alice", "alice", self.project["id"]
         )
@@ -838,29 +974,32 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                 "project_id": self.project["id"],
                 "plan_id": self.plan_id,
                 "shot_key": workspace["provider_poc"]["shots"][0]["shot_key"],
-                "avatar_id": "avatar-local-1",
+                "avatar_id": "foreign-avatar-must-be-ignored",
             },
         )
         verify = lambda token: {
             "username": token,
             "must_change": False,
         } if token else None
-        avatar = {
-            "id": "avatar-local-1",
-            "username": "alice",
-            "name": "记者林夏",
-            "status": "ready",
-            "provider_avatar_id": "heygen-avatar-1",
-        }
-        self.assertTrue(short_drama.dispatch_http(
-            handler,
-            "POST",
-            self.db,
-            verify,
-            avatar_lookup=lambda _username, _avatar_id: avatar,
+        avatar_lookup = mock.Mock(side_effect=AssertionError(
+            "MiniMax preflight must not resolve a client supplied avatar_id"
         ))
-        self.assertEqual(200, handler.response[0])
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+            "MINIMAX_API_KEY": "configured-for-preflight-only",
+        }):
+            self.assertTrue(short_drama.dispatch_http(
+                handler,
+                "POST",
+                self.db,
+                verify,
+                avatar_lookup=avatar_lookup,
+            ))
+        self.assertEqual(200, handler.response[0], handler.response[1])
+        self.assertEqual("minimax_h3", handler.response[1]["provider"])
+        self.assertFalse(handler.response[1]["billable"])
         self.assertFalse(handler.response[1]["external_submission"])
+        avatar_lookup.assert_not_called()
 
     def test_start_is_idempotent_and_rejects_changed_request(self):
         first = self._start("same-key")
@@ -932,6 +1071,20 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             self.assertEqual(
                 "version-%s-2" % shot_keys[0], partial["shots"][0]["id"]
             )
+            conn.commit()
+            short_drama_autodraft.select_provider_version(
+                self.db, "alice", {
+                    "project_id": self.project["id"],
+                    "shot_key": shot_keys[0],
+                    "version_id": "version-%s-1" % shot_keys[0],
+                },
+            )
+            selected = short_drama_autodraft._provider_assembly_snapshot(
+                conn, self.project["id"], plan,
+            )
+            self.assertEqual(
+                "version-%s-1" % shot_keys[0], selected["shots"][0]["id"]
+            )
         finally:
             conn.close()
 
@@ -957,7 +1110,8 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         }
         with mock.patch.dict(os.environ, {"CONTENT_OUT": str(root)}), \
                 mock.patch.object(
-                    short_drama_autodraft.subprocess, "run", side_effect=render,
+                    short_drama_autodraft, "_run_preview_process",
+                    side_effect=render,
                 ), mock.patch.object(
                     short_drama_autodraft.media_plan, "probe_media", return_value=probe,
                 ):
@@ -976,6 +1130,36 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertEqual(
             "/api/gen/file/short_drama_autodraft/project/job/preview-720p.mp4",
             result["url"],
+        )
+
+    def test_preview_process_is_terminated_and_reaped_when_cancelled(self):
+        process = mock.Mock()
+        process.communicate.return_value = ("", "cancelled")
+        cancel = mock.Mock()
+        cancel.is_set.return_value = True
+        with mock.patch.object(
+            short_drama_autodraft.subprocess, "Popen", return_value=process,
+        ):
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft._run_preview_process(
+                    ["ffmpeg", "-version"], cancel_event=cancel,
+                )
+        self.assertEqual("preview_render_cancelled", raised.exception.code)
+        process.terminate.assert_called_once_with()
+        process.communicate.assert_called_once_with(timeout=5)
+        process.kill.assert_not_called()
+
+    def test_preview_process_kills_and_reaps_when_terminate_does_not_exit(self):
+        process = mock.Mock()
+        process.communicate.side_effect = [
+            subprocess.TimeoutExpired("ffmpeg", 5), ("", "killed"),
+        ]
+        short_drama_autodraft._stop_preview_process(process)
+        process.terminate.assert_called_once_with()
+        process.kill.assert_called_once_with()
+        self.assertEqual(
+            [mock.call(timeout=5), mock.call()],
+            process.communicate.call_args_list,
         )
 
     def test_real_ffmpeg_preview_preserves_ratio_audio_duration_and_subtitles(self):
@@ -1316,10 +1500,12 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertFalse(result["error"]["retryable"])
         self.assertTrue(result["error"]["requires_reconciliation"])
 
-    def test_single_shot_pending_deadline_fails_and_refunds_once(self):
+    def test_non_cancelable_shot_deadline_stays_reconcilable_without_refund(self):
         class PendingProvider:
             def __init__(self):
                 self.polls = 0
+
+            capability = type("Capability", (), {"supports_cancel": False})()
 
             def get_job(self, _provider_job_id):
                 self.polls += 1
@@ -1360,21 +1546,12 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                     refund_points=refund,
                 )
         self.assertEqual("running", running["status"])
-        self.assertEqual("failed", failed["status"])
-        self.assertEqual("provider_generation_timeout", failed["error"]["code"])
+        self.assertEqual("running", failed["status"])
+        self.assertEqual("provider_reconciliation_pending", failed["error"]["code"])
         self.assertEqual("deadline", failed["error"]["timeout_reason"])
-        self.assertEqual("failed", replay["status"])
-        self.assertEqual(1, provider.polls)
-        self.assertEqual(1, len(refunds))
-        self.assertEqual(quote["cost"], refunds[0][1])
-        late_provider = mock.Mock()
-        short_drama_autodraft._finish_provider_job(
-            self.db,
-            {"id": job["id"], "provider_job_id": "provider-timeout-job"},
-            late_provider,
-            {"status": "completed", "result_url": "https://late.example/video"},
-        )
-        late_provider.fetch_result.assert_not_called()
+        self.assertEqual("running", replay["status"])
+        self.assertGreaterEqual(provider.polls, 2)
+        self.assertEqual([], refunds)
         conn = self.db()
         try:
             state = conn.execute(
@@ -1383,12 +1560,14 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             ).fetchone()[0]
         finally:
             conn.close()
-        self.assertEqual("refunded", state)
+        self.assertEqual("linked", state)
 
-    def test_single_shot_poll_failures_hit_limit_and_refund(self):
+    def test_non_cancelable_shot_poll_failures_do_not_refund(self):
         class FailingProvider:
             def __init__(self):
                 self.polls = 0
+
+            capability = type("Capability", (), {"supports_cancel": False})()
 
             def get_job(self, _provider_job_id):
                 self.polls += 1
@@ -1421,13 +1600,13 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                 ),
             )
         self.assertEqual("running", running["status"])
-        self.assertEqual("failed", failed["status"])
+        self.assertEqual("running", failed["status"])
         self.assertEqual("poll_limit", failed["error"]["timeout_reason"])
         self.assertEqual(2, failed["error"]["poll_count"])
         self.assertEqual(2, provider.polls)
-        self.assertEqual([(quote["cost"],)], [(item[1],) for item in refunds])
+        self.assertEqual([], refunds)
 
-    def test_single_shot_timeout_refund_recovers_idempotently(self):
+    def test_non_cancelable_timeout_never_calls_refund_recovery(self):
         job, quote = self._running_provider_job("timeout-refund-recovery")
         calls = []
 
@@ -1454,11 +1633,169 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                 self.db, "alice", self.project["id"], job["id"],
                 refund_points=flaky_refund,
             )
+        self.assertEqual("running", failed["status"])
+        self.assertEqual("running", recovered["status"])
+        self.assertEqual([], calls)
+
+    def test_background_sweeper_retries_refund_without_workspace_access(self):
+        job, _quote = self._running_provider_job("background-refund-recovery")
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs SET status='failed' "
+                "WHERE id=?", (job["id"],),
+            )
+            conn.execute(
+                "UPDATE short_drama_provider_shot_attempts SET "
+                "state='refund_pending',refund_retry_count=1,refund_retry_at=120 "
+                "WHERE job_id=?", (job["id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        refunds = mock.Mock()
+        recovered = short_drama_autodraft.retry_provider_refunds(
+            self.db, mock.Mock(refund_points=refunds), now=120,
+        )
+        replay = short_drama_autodraft.retry_provider_refunds(
+            self.db, mock.Mock(refund_points=refunds), now=500,
+        )
+        conn = self.db()
+        try:
+            state = conn.execute(
+                "SELECT state FROM short_drama_provider_shot_attempts "
+                "WHERE job_id=?", (job["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(1, recovered)
+        self.assertEqual(0, replay)
+        self.assertEqual("refunded", state)
+        refunds.assert_called_once()
+
+    def test_workspace_keeps_active_paid_job_after_provider_switch(self):
+        job, _quote = self._running_provider_job("provider-switch-recovery")
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_DEMO_FALLBACK": "0",
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "grok",
+            "XAI_API_KEY": "configured-for-test",
+        }), mock.patch.object(provider_keys, "has_candidate", return_value=True):
+            result = short_drama_autodraft.workspace(
+                self.db, "alice", "alice", self.project["id"]
+            )
+        self.assertEqual(job["id"], result["provider_job"]["id"])
+        self.assertEqual("heygen_cinematic", result["provider_job"]["provider"])
+        self.assertEqual("grok", result["production"]["provider"]["selected"])
+
+    def test_workspace_returns_every_active_provider_shot_job(self):
+        first, _quote = self._running_provider_job("parallel-shot-one")
+        conn = self.db()
+        try:
+            now = int(time.time()) + 1
+            conn.execute(
+                "INSERT INTO short_drama_provider_shot_jobs "
+                "(id,project_id,owner_username,actor_username,plan_id,shot_key,"
+                "character_key,avatar_id,provider,status,progress,poll_count,"
+                "input_hash,request_json,cost,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,'queued',5,0,?,?,0,?,?)",
+                (
+                    "parallel-shot-two", self.project["id"], "alice", "alice",
+                    self.plan_id, "shot_02", "character_1", "avatar-1",
+                    "heygen_cinematic", "parallel-hash-two", "{}", now, now,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = short_drama_autodraft.workspace(
+            self.db, "alice", "alice", self.project["id"],
+        )
+
+        self.assertEqual(
+            {first["id"], "parallel-shot-two"},
+            {item["id"] for item in result["provider_jobs"]},
+        )
+
+    def test_workspace_restores_latest_terminal_job_for_each_shot(self):
+        first, _quote = self._running_provider_job("terminal-shot-one")
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs "
+                "SET status='failed',created_at=100,updated_at=100 WHERE id=?",
+                (first["id"],),
+            )
+            conn.execute(
+                "INSERT INTO short_drama_provider_shot_jobs "
+                "(id,project_id,owner_username,actor_username,plan_id,shot_key,"
+                "character_key,avatar_id,provider,status,progress,poll_count,"
+                "input_hash,request_json,error_json,cost,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,'failed',0,0,?,?,?,0,101,101)",
+                (
+                    "terminal-shot-two", self.project["id"], "alice", "alice",
+                    self.plan_id, "shot_02", "character_1", "avatar-1",
+                    "heygen_cinematic", "terminal-hash-two", "{}",
+                    json.dumps({"code": "provider_failed"}),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = short_drama_autodraft.workspace(
+            self.db, "alice", "alice", self.project["id"],
+        )
+
+        self.assertEqual(
+            {first["id"], "terminal-shot-two"},
+            {item["id"] for item in result["provider_jobs"]},
+        )
+
+    def test_provider_failure_reason_and_refund_recover_on_workspace_refresh(self):
+        class RejectedProvider:
+            def get_job(self, _provider_job_id):
+                return {
+                    "status": "failed",
+                    "failure": {
+                        "code": "content_risk",
+                        "message": "reference image did not pass review",
+                    },
+                }
+
+        job, quote = self._running_provider_job("provider-rejection-recovery")
+        calls = []
+
+        def recovering_refund(user, cost, reason, key):
+            calls.append((user, cost, reason, key))
+            if len(calls) < 3:
+                raise RuntimeError("points service temporarily unavailable")
+
+        with mock.patch(
+            "content_domains.short_drama_autodraft.load_by_name",
+            return_value=RejectedProvider(),
+        ), mock.patch(
+            "content_domains.short_drama_autodraft.time.time",
+            return_value=105,
+        ):
+            failed = short_drama_autodraft.reconcile_provider_job(
+                self.db, "alice", self.project["id"], job["id"],
+                refund_points=recovering_refund,
+            )
         self.assertEqual("failed", failed["status"])
-        self.assertEqual("failed", recovered["status"])
-        self.assertEqual(2, len(calls))
-        self.assertEqual(quote["cost"], calls[-1][1])
-        self.assertEqual(calls[0][3], calls[1][3])
+        self.assertIn("provider_code", failed["error"], failed)
+        self.assertEqual("content_risk", failed["error"]["provider_code"])
+        self.assertIn(
+            "reference image did not pass review", failed["error"]["detail"]
+        )
+        self.assertTrue(failed["error"]["retryable"])
+        self.assertTrue(failed["billing_recovery"]["refund_pending"])
+
+        short_drama_autodraft.workspace(
+            self.db, "alice", "alice", self.project["id"],
+            avatar_list=lambda *_args: [], refund_points=recovering_refund,
+        )
         conn = self.db()
         try:
             state = conn.execute(
@@ -1468,6 +1805,8 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         finally:
             conn.close()
         self.assertEqual("refunded", state)
+        self.assertEqual(quote["cost"], calls[-1][1])
+        self.assertEqual(calls[0][3], calls[-1][3])
 
     def test_grok_vault_failure_blocks_before_charge_and_submission(self):
         with mock.patch.dict(
@@ -1657,6 +1996,146 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         finally:
             conn.close()
         self.assertEqual("refunded", state)
+
+    def test_provider_finalization_lease_prevents_duplicate_download(self):
+        job, _quote = self._running_provider_job("finalization-lease")
+        started = threading.Event()
+        release = threading.Event()
+
+        class CompletedProvider:
+            def __init__(self):
+                self.fetches = 0
+
+            def fetch_result(self, _job_id, _result_url):
+                self.fetches += 1
+                started.set()
+                release.wait(5)
+                return {"file": "provider/final.mp4", "url": "/api/gen/file/provider/final.mp4"}
+
+        provider = CompletedProvider()
+        conn = self.db()
+        try:
+            conn.row_factory = sqlite3.Row
+            row = dict(conn.execute(
+                "SELECT * FROM short_drama_provider_shot_jobs WHERE id=?", (job["id"],)
+            ).fetchone())
+        finally:
+            conn.close()
+        with mock.patch.object(short_drama_autodraft, "_extract_tail_reference", return_value=None):
+            first = threading.Thread(target=short_drama_autodraft._finish_provider_job,
+                args=(self.db, row, provider, {"result_url": "https://example.test/final"}))
+            first.start()
+            self.assertTrue(started.wait(5))
+            short_drama_autodraft._finish_provider_job(
+                self.db, row, provider, {"result_url": "https://example.test/final"}
+            )
+            release.set()
+            first.join(5)
+        self.assertEqual(1, provider.fetches)
+
+    def test_admin_can_bind_submit_unknown_and_editor_cannot(self):
+        job, _quote = self._running_provider_job("submit-unknown-reconcile")
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs SET status='submit_unknown',"
+                "provider_job_id=NULL WHERE id=?", (job["id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        body = {
+            "project_id": self.project["id"], "action": "bind_provider_job",
+            "provider_job_id": "upstream-job-1",
+        }
+        with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+            short_drama_autodraft.reconcile_unknown_provider_submission(
+                self.db, "alice", "editor", "editor", job["id"], body,
+            )
+        self.assertEqual("provider_reconciliation_forbidden", raised.exception.code)
+        result = short_drama_autodraft.reconcile_unknown_provider_submission(
+            self.db, "alice", "admin", "admin", job["id"], body,
+        )
+        self.assertEqual("running", result["status"])
+        self.assertEqual("upstream-job-1", result["provider_job_id"])
+
+    def test_reconcile_route_dispatches_to_admin_recovery(self):
+        job, _quote = self._running_provider_job("submit-unknown-http")
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs SET status='submit_unknown',"
+                "provider_job_id=NULL WHERE id=?", (job["id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        handler = Handler(
+            "/api/gen/short-drama/autodraft/provider-jobs/%s/reconcile" % job["id"],
+            body={
+                "project_id": self.project["id"], "action": "bind_provider_job",
+                "provider_job_id": "upstream-http-1",
+            },
+        )
+        verify = lambda _token: {
+            "username": "alice", "role": "admin", "must_change": False,
+        }
+        self.assertTrue(short_drama.dispatch_http(handler, "POST", self.db, verify))
+        self.assertEqual(200, handler.response[0])
+        self.assertEqual("running", handler.response[1]["status"])
+
+
+class ShortDramaContinuityChainTests(unittest.TestCase):
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript("""
+        CREATE TABLE short_drama_provider_shot_jobs (
+          id TEXT PRIMARY KEY, result_json TEXT
+        );
+        CREATE TABLE short_drama_provider_shot_versions (
+          id TEXT PRIMARY KEY, project_id TEXT, job_id TEXT, shot_key TEXT,
+          version INTEGER, status TEXT, file TEXT, url TEXT
+        );
+        CREATE TABLE short_drama_provider_shot_selections (
+          project_id TEXT, shot_key TEXT, version_id TEXT
+        );
+        """)
+        self.shots = [
+            {"shot_key": "shot_01", "sort_order": 1},
+            {"shot_key": "shot_02", "sort_order": 2},
+        ]
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_later_shot_waits_for_previous_completed_version(self):
+        with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+            short_drama_autodraft._previous_shot_reference(
+                self.conn, "project-1", self.shots, "shot_02"
+            )
+        self.assertEqual("provider_previous_shot_required", raised.exception.code)
+
+    def test_later_shot_uses_previous_tail_reference(self):
+        self.conn.execute(
+            "INSERT INTO short_drama_provider_shot_jobs(id,result_json) VALUES (?,?)",
+            ("job-1", json.dumps({
+                "continuity_tail_file": "video/shot_01_tail.jpg",
+                "continuity_tail_url": "/api/gen/file/video/shot_01_tail.jpg",
+            })),
+        )
+        self.conn.execute(
+            "INSERT INTO short_drama_provider_shot_versions "
+            "(id,project_id,job_id,shot_key,version,status,file,url) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            ("version-1", "project-1", "job-1", "shot_01", 1, "ready",
+             "video/shot_01.mp4", "/api/gen/file/video/shot_01.mp4"),
+        )
+        result = short_drama_autodraft._previous_shot_reference(
+            self.conn, "project-1", self.shots, "shot_02"
+        )
+        self.assertEqual("shot_01", result["shot_key"])
+        self.assertEqual("video/shot_01_tail.jpg", result["file"])
 
 
 if __name__ == "__main__":

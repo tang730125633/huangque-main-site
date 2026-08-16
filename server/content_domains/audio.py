@@ -951,6 +951,44 @@ def _cosy_voice_for(provider_voice):
         raise ValueError("该音色尚未迁移到新引擎，请重新复刻一次")
     return v      # 兜底：当作预置名直接用
 
+
+def _resolve_owned_ready_personal_voice(username, voice_key):
+    username = str(username or "").strip()
+    voice_key = str(voice_key or "").strip()
+    if not username or len(username) > 128 or not voice_key or len(voice_key) > 128:
+        raise ValueError("个人音色不存在或不可用")
+
+    with closing(adb()) as c:
+        row = c.execute(
+            """
+            SELECT v.provider_voice
+            FROM audio_voices AS v
+            INNER JOIN audio_voice_slots AS s
+                ON s.voice_id = v.id
+               AND s.username = v.username
+               AND s.slot_id = v.slot_id
+            WHERE v.scope = 'personal'
+              AND v.username = ?
+              AND v.voice_key = ?
+              AND s.status = 'ready'
+            LIMIT 1
+            """,
+            (username, voice_key),
+        ).fetchone()
+
+    if not row:
+        raise ValueError("个人音色不存在或不可用")
+
+    provider_voice = _cosy_voice_for(row["provider_voice"])
+    if not str(provider_voice).startswith(cosyvoice.CLONE_MODEL):
+        raise ValueError("个人音色不存在或不可用")
+    return provider_voice
+
+
+def require_owned_ready_personal_voice(username, voice_key):
+    """Validate ownership/readiness without exposing the provider voice ID."""
+    _resolve_owned_ready_personal_voice(username, voice_key)
+
 def validate_audio_payload(payload, username=""):
     if not isinstance(payload, dict):
         raise ValueError("请求体必须是 JSON 对象")
@@ -966,6 +1004,13 @@ def validate_audio_payload(payload, username=""):
     voice_key = raw_voice_key.strip()
     if username:
         resolve_audio_provider_voice(username, voice_key)
+        # The customer audio page exposes exactly the four preset voices and
+        # owned cloned voices. Persist that server-derived scope so operations
+        # evidence never has to infer a customer mode from a mutable label.
+        body["voice_scope"] = (
+            "public" if voice_key in cosyvoice.PUBLIC_VOICE_PRESETS else "personal"
+        )
+        body["provider"] = "cosyvoice"
     raw_speed = body.get("speed")
     if isinstance(raw_speed, (int, float)):
         if isinstance(raw_speed, bool) or raw_speed != raw_speed or not 0.5 <= float(raw_speed) <= 2.0:
@@ -988,6 +1033,46 @@ def validate_audio_payload(payload, username=""):
         body[name] = clean
     body.update({"text": text, "voice": voice_key, "speed": speed})
     return body
+
+
+def synthesize_owned_voice_segment(
+    username,
+    voice_key,
+    text,
+    speed=1.0,
+    pitch=0,
+    volume=0,
+):
+    payload = validate_audio_payload(
+        {
+            "text": text,
+            "voice": voice_key,
+            "speed": speed,
+            "pitch": pitch,
+            "volume": volume,
+        }
+    )
+    provider_voice = _resolve_owned_ready_personal_voice(username, voice_key)
+    if not cosyvoice.enabled():
+        raise ValueError("声音服务暂时不可用，请稍后重试")
+
+    content = cosyvoice.synth(
+        provider_voice,
+        payload["text"],
+        rate=payload["speed"],
+        pitch=max(0.5, min(2.0, 1.0 + payload["pitch"] / 24.0)),
+        volume=max(0, min(100, 50 + payload["volume"] // 2)),
+    )
+    if not content:
+        raise RuntimeError("CosyVoice 合成返回为空")
+
+    return {
+        "content": content,
+        "content_type": "audio/mpeg",
+        "voice_key": str(voice_key).strip(),
+        "voice_scope": "personal",
+        "provider": "cosyvoice",
+    }
 
 
 def gen_audio(payload):

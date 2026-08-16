@@ -29,7 +29,7 @@ TRANSCRIBE_MODEL = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transc
 _TRANSCRIBE_SEM = threading.BoundedSemaphore(max(1, int(os.environ.get("TRANSCRIBE_MAX_CONCURRENCY", "1") or "1")))
 TRANSCRIBE_TIMEOUT = max(20, int(os.environ.get("OPENAI_TRANSCRIBE_TIMEOUT", "75") or "75"))
 
-PLATFORMS = ("douyin", "xhs", "channels")
+PLATFORMS = ("douyin", "xhs", "channels", "bilibili")
 
 # 直连 opener：服务器 content.env 设了 HTTPS_PROXY(给 OpenAI 用)，但该代理转 TikHub 的 Cloudflare
 # 会 SSL EOF；TikHub API + CDN 下载都强制绕过代理直连（已实测 .io/.dev 直连均 200）。
@@ -353,6 +353,119 @@ def xhs_comments(note_id, cursor=None, count=20):
 
 
 # ====================================================================
+# 哔哩哔哩 Bilibili（详情/评论走 Web API；完整视频需 DASH 音视频合流）
+# ====================================================================
+BILI = "/api/v1/bilibili/web"
+
+def bili_bvid(value):
+    m = re.search(r"(?i)(BV[0-9A-Za-z]{10})", str(value or ""))
+    return m.group(1) if m else None
+
+def _bili_data(value, markers):
+    """剥掉 TikHub 信封和 B 站自身的 data 信封。"""
+    value = value or {}
+    for _ in range(3):
+        if not isinstance(value, dict) or any(key in value for key in markers):
+            break
+        nested = value.get("data")
+        if not isinstance(nested, dict):
+            break
+        value = nested
+    return value if isinstance(value, dict) else {}
+
+def bili_detail(id_or_url):
+    bvid = bili_resolve(id_or_url)
+    if not bvid:
+        raise TikHubError("未解析出 B 站 BV 号")
+    v = _bili_data(_g(BILI + "/fetch_one_video", bv_id=bvid), ("bvid", "title", "owner"))
+    owner = v.get("owner") or {}
+    stat = v.get("stat") or {}
+    desc = v.get("desc") or ""
+    return {
+        "platform": "bilibili", "id": v.get("bvid") or bvid,
+        "url": "https://www.bilibili.com/video/%s" % (v.get("bvid") or bvid),
+        "title": v.get("title"), "desc": desc, "tags": _tags_from_text(desc),
+        "author": {"name": owner.get("name"), "id": owner.get("mid"),
+                   "fans": None, "ip": None, "signature": None,
+                   "profile_url": ("https://space.bilibili.com/%s" % owner.get("mid") if owner.get("mid") else None)},
+        "stats": {"like": stat.get("like"), "comment": stat.get("reply"),
+                  "share": stat.get("share"), "collect": stat.get("favorite"),
+                  "view": stat.get("view"), "coin": stat.get("coin")},
+        "cover": v.get("pic"), "images": [], "play_url": None,
+        "subtitle_url": None, "decode_key": None,
+        "duration": v.get("duration"), "publish_time": v.get("pubdate"),
+        "note_type": "video",
+    }
+
+def bili_comments(id_or_url, cursor=None, count=20):
+    bvid = bili_resolve(id_or_url)
+    if not bvid:
+        raise TikHubError("未解析出 B 站 BV 号")
+    pn = max(1, int(cursor or 1))
+    d = _bili_data(_g(BILI + "/fetch_video_comments", bv_id=bvid, pn=pn), ("replies", "page", "cursor"))
+    items = []
+    for c in (d.get("replies") or [])[:max(1, int(count))]:
+        member = c.get("member") or {}
+        content = c.get("content") or {}
+        control = c.get("reply_control") or {}
+        mid = member.get("mid")
+        items.append({"text": content.get("message"), "ip": control.get("location"),
+                      "likes": c.get("like"), "time": c.get("ctime"),
+                      "user": member.get("uname"), "user_id": mid,
+                      "avatar": member.get("avatar"),
+                      "profile_url": ("https://space.bilibili.com/%s" % mid if mid else None),
+                      "cid": c.get("rpid"), "replies": c.get("rcount")})
+    page = d.get("page") or {}
+    cursor_info = d.get("cursor") or {}
+    total = page.get("count") if isinstance(page, dict) else None
+    has_more = not bool(cursor_info.get("is_end")) if isinstance(cursor_info, dict) and "is_end" in cursor_info else len(items) >= count
+    return {"items": items, "cursor": pn + 1, "has_more": has_more, "total": total}
+
+def _bili_stream_url(stream):
+    return _first(stream or {}, "base_url", "baseUrl")
+
+def bili_streams(video_url):
+    d = _bili_data(_g(BILI + "/fetch_video_play_info", url=video_url), ("dash", "durl"))
+    dash = d.get("dash") or {}
+    videos = [item for item in (dash.get("video") or []) if _bili_stream_url(item)]
+    audios = [item for item in (dash.get("audio") or []) if _bili_stream_url(item)]
+    if not videos or not audios:
+        raise TikHubError("B 站播放信息缺少 DASH 音视频流")
+    h264 = [item for item in videos if str(item.get("codecs") or "").lower().startswith("avc")]
+    if not h264:
+        raise TikHubError("B 站播放信息缺少浏览器可播的 H.264 视频流")
+    video = max(h264, key=lambda item: (int(item.get("height") or 0), int(item.get("bandwidth") or 0)))
+    audio = max(audios, key=lambda item: int(item.get("bandwidth") or 0))
+    return _bili_stream_url(video), _bili_stream_url(audio)
+
+def bili_download_to_file(det, deadline_ts, dest_path, max_bytes=100_000_000):
+    """下载 B 站 DASH 视频流和音频流，用现有 ffmpeg 无损封装成完整 MP4。"""
+    video_url, audio_url = bili_streams(det.get("url"))
+    vf, video_path = tempfile.mkstemp(suffix=".m4v", prefix="hqbili-"); os.close(vf)
+    af, audio_path = tempfile.mkstemp(suffix=".m4a", prefix="hqbili-"); os.close(af)
+    try:
+        video_bytes = download_to_file(video_url, deadline_ts, video_path, max_bytes=max_bytes)
+        audio_bytes = download_to_file(audio_url, deadline_ts, audio_path, max_bytes=max_bytes)
+        if video_bytes + audio_bytes > max_bytes:
+            raise ValueError("B 站完整视频超过上限 %.0fMB" % (max_bytes / 1048576.0))
+        remain = max(1, int(deadline_ts - time.time()))
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                        "-i", video_path, "-i", audio_path,
+                        "-map", "0:v:0", "-map", "1:a:0", "-c", "copy",
+                        "-movflags", "+faststart", dest_path],
+                       check=True, timeout=remain)
+        if not os.path.getsize(dest_path):
+            raise ValueError("B 站音视频合流结果为空")
+        return os.path.getsize(dest_path)
+    except Exception as e:
+        raise TikHubError("B 站完整视频下载失败：" + str(e)[:140])
+    finally:
+        for path in (video_path, audio_path):
+            try: os.unlink(path)
+            except OSError: pass
+
+
+# ====================================================================
 # 视频号 WeChat Channels（盯号型：无全网搜，全 POST + raw=false）
 # ====================================================================
 CH = "/api/v1/wechat_channels/v2"
@@ -484,6 +597,7 @@ _URL_RE = re.compile(r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+")
 _DY_HOST_SUFFIXES = ("douyin.com", "iesdouyin.com")
 _DY_HOSTS = {"v.douyin.com", "douyinvod.com"}
 _XHS_HOST_SUFFIXES = ("xiaohongshu.com", "xhslink.com", "xhslink.cn")
+_BILI_HOST_SUFFIXES = ("bilibili.com", "b23.tv")
 
 def _is_xhs_url(url):
     parsed = urllib.parse.urlparse(url or "")
@@ -497,6 +611,36 @@ class _XhsRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 _XHS_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _XhsRedirectHandler())
+
+def _is_bili_url(url):
+    parsed = urllib.parse.urlparse(url or "")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    return parsed.scheme in ("http", "https") and any(
+        host == suffix or host.endswith("." + suffix) for suffix in _BILI_HOST_SUFFIXES)
+
+class _BiliRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _is_bili_url(newurl):
+            raise urllib.error.HTTPError(newurl, code, "unsafe Bilibili redirect", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+_BILI_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _BiliRedirectHandler())
+
+def bili_resolve(value):
+    bvid = bili_bvid(value)
+    if bvid:
+        return bvid
+    if not _is_bili_url(value):
+        return None
+    try:
+        req = urllib.request.Request(value, headers={"User-Agent": UA})
+        with _BILI_OPENER.open(req, timeout=10) as response:
+            return bili_bvid(response.geturl())
+    except urllib.error.HTTPError as e:
+        # B 站服务器有时在跳转完成后给 412；最终 URL 里仍有可信 BV 号。
+        return bili_bvid(e.geturl()) if _is_bili_url(e.geturl()) else None
+    except (OSError, urllib.error.URLError):
+        return None
 
 def _extract_url(text):
     """从分享文案里提取第一个干净 URL；没有则返回 None（口令式分享无 URL）。"""
@@ -559,6 +703,8 @@ def parse_link(text):
     url = _extract_url(text)         # 干净 URL（截断粘连的中文）；口令式分享无 URL → None
     probe = (url or text).strip()
     low = probe.lower()
+    if _is_bili_url(probe):
+        return {"platform": "bilibili", "id": bili_resolve(probe), "note_type": "video"}
     if _is_xhs_url(probe):
         return {"platform": "xhs", "id": _xhs_note_id(probe), "note_type": None}
     if "weixin.qq.com" in low or "/sph" in low or "channels" in low or "finder" in low:
@@ -584,12 +730,14 @@ def _detail(platform, id_or_url, note_type="video"):
     if platform == "douyin":   return dy_detail(id_or_url)
     if platform == "xhs":      return xhs_detail(id_or_url, note_type=note_type)
     if platform == "channels": return ch_detail(id_or_url)
+    if platform == "bilibili": return bili_detail(id_or_url)
     raise TikHubError("未知平台 " + str(platform))
 
 def _comments(platform, id_or_url, cursor=None, count=20):
     if platform == "douyin":   return dy_comments(id_or_url, cursor=cursor or 0, count=count)
     if platform == "xhs":      return xhs_comments(id_or_url)
     if platform == "channels": return ch_comments(id_or_url, last_buffer=cursor or "")
+    if platform == "bilibili": return bili_comments(id_or_url, cursor=cursor, count=count)
     raise TikHubError("未知平台 " + str(platform))
 
 # 带缓存的对外入口：内容(详情)发布即固定→存 1h；评论会增→存 1h；搜索会变→存 30min。
@@ -643,11 +791,15 @@ DOUYIN_CDN_SUFFIXES = (
     "bytecdn.cn", "ixigua.com", "pstatp.com", "snssdk.com", "byteimg.com",
     "bytedance.net", "lf-douyin.com", "365yg.com",
 )
+BILIBILI_CDN_SUFFIXES = ("bilivideo.com", "hdslb.com")
 
 def cdn_headers(url):
     headers = {"User-Agent": UA}
-    if (urllib.parse.urlparse(url).hostname or "").lower().endswith(DOUYIN_CDN_SUFFIXES):
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    if host.endswith(DOUYIN_CDN_SUFFIXES):
         headers["Referer"] = "https://www.douyin.com/"
+    elif host.endswith(BILIBILI_CDN_SUFFIXES):
+        headers["Referer"] = "https://www.bilibili.com/"
     return headers
 
 def download_to_file(url, deadline_ts, dest_path, max_bytes=26_000_000, read_timeout=30):
@@ -712,6 +864,13 @@ def _log_asr_step(step, start, **extra):
     suffix = (" " + " ".join(fields)) if fields else ""
     print("[asr] %s %.2fs%s" % (step, time.time() - start, suffix), flush=True)
 
+
+def _openai_url(path):
+    base = str(OPENAI_BASE or "https://api.openai.com").strip().rstrip("/")
+    if not base.endswith("/v1"):
+        base += "/v1"
+    return base + "/" + str(path or "").lstrip("/")
+
 def _srt_to_text(srt):
     out = []
     for line in srt.splitlines():
@@ -755,7 +914,7 @@ def _whisper(mp4_path, filename="v.mp4"):
                  ("--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\nContent-Type: %s\r\n\r\n" % (b, aname, ctype)).encode(),
                  audio, b"\r\n", ("--%s--\r\n" % b).encode()]
         body = b"".join(parts)
-        req = urllib.request.Request(OPENAI_BASE + "/v1/audio/transcriptions", data=body,
+        req = urllib.request.Request(_openai_url("audio/transcriptions"), data=body,
                                      headers={"Authorization": "Bearer " + OPENAI_KEY,
                                               "Content-Type": "multipart/form-data; boundary=" + b}, method="POST")
         try:

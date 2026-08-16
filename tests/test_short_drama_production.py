@@ -2459,6 +2459,41 @@ class ShortDramaProductionTests(unittest.TestCase):
                 self.db, "alice", self._still_request(shot_id=target_id)
             )
 
+    def test_unlocked_crowd_role_does_not_block_still_generation(self):
+        crowd_contract = [{
+            "character_key": "crowd-1", "name": "路人", "role_type": "crowd",
+        }]
+        with closing(self.db()) as conn:
+            conn.execute(
+                "INSERT INTO short_drama_script_imports "
+                "(id,username,project_id,idempotency_key,request_hash,source_text,"
+                "source_hash,filename,content_type,character_contract_json,"
+                "roles_saved_at,import_mode,status,created_at,updated_at) "
+                "VALUES('crowd-import','alice',?,'crowd-key','request','路人经过。',"
+                "'source','story.txt','live_action',?,1,'faithful','completed',1,1)",
+                (self.project["id"], json.dumps(crowd_contract, ensure_ascii=False)),
+            )
+            conn.execute(
+                "INSERT INTO short_drama_characters "
+                "(id,project_id,character_key,name,source_type,sort_order) "
+                "VALUES('crowd-character',?,'crowd-1','路人','ai_character',0)",
+                (self.project["id"],),
+            )
+            target_id = self._shot_id(0)
+            conn.execute(
+                "UPDATE short_drama_shots SET character_keys_json='[\"crowd-1\"]' "
+                "WHERE id=?", (target_id,),
+            )
+            conn.commit()
+
+        prepared = short_drama_production.prepare_still_submission(
+            self.db, "alice", self._still_request(shot_id=target_id)
+        )
+        self.assertEqual([], [
+            item for item in prepared["shot"]["references"]
+            if item["type"] == "character"
+        ])
+
     def test_first_reconciled_snapshot_has_fresh_financial_totals(self):
         self._link_job(cost=60, quoted_cost=60)
 
@@ -3477,6 +3512,101 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         self.assertIs(first.get("operation_terminal"), True)
         self.assertNotIn("_http_status", replay)
         self.assertEqual(1, create_paid_job.call_count)
+
+    def test_disabled_xiaole_image_rejects_new_work_before_charge_and_job(self):
+        original = core.feature_flags.require_enabled
+        def require_enabled(key):
+            if key == "image_xiaole":
+                raise core.feature_flags.FeatureDisabled("维护中")
+        core.feature_flags.require_enabled = require_enabled
+        try:
+            status, response = self.request(
+                "/api/gen/image",
+                body={"provider": "xiaole", "prompt": "rainy doorway", "ratio": "1:1"},
+                idempotency_key="disabled-xiaole-new-001",
+            )
+        finally:
+            core.feature_flags.require_enabled = original
+        self.assertEqual(503, status)
+        self.assertEqual("feature_disabled", response["code"])
+        self.assertIs(response.get("operation_terminal"), True)
+        self.assertEqual([], self.points.deduct_calls)
+        self.assertEqual([], self._jobs())
+        self.assertEqual(0, core._image_job_queue.qsize())
+
+    def test_disabled_banana_rejects_normalized_provider_before_charge_and_job(self):
+        checked = []
+        original = core.feature_flags.require_enabled
+
+        def require_enabled(key):
+            checked.append(key)
+            if key == "banana":
+                raise core.feature_flags.FeatureDisabled("维护中")
+
+        core.feature_flags.require_enabled = require_enabled
+        try:
+            status, response = self.request(
+                "/api/gen/image",
+                body={
+                    "provider": " Banana ", "model": "nb2",
+                    "prompt": "rainy doorway", "ratio": "1:1", "count": 1,
+                },
+                idempotency_key="disabled-banana-normalized-001",
+            )
+        finally:
+            core.feature_flags.require_enabled = original
+        self.assertEqual(503, status)
+        self.assertEqual("feature_disabled", response["code"])
+        self.assertEqual(["banana"], checked)
+        self.assertEqual([], self.points.deduct_calls)
+        self.assertEqual([], self._jobs())
+        self.assertEqual(0, core._image_job_queue.qsize())
+
+    def test_disabled_banana_rejects_short_drama_still_before_charge_and_job(self):
+        body = self._quoted_body()
+        original = core.feature_flags.require_enabled
+
+        def require_enabled(key):
+            if key == "banana":
+                raise core.feature_flags.FeatureDisabled("维护中")
+
+        core.feature_flags.require_enabled = require_enabled
+        try:
+            status, response = self.request(
+                "/api/gen/short-drama/generate-stills",
+                body=body, with_quote=False,
+                idempotency_key="disabled-banana-still-001",
+            )
+        finally:
+            core.feature_flags.require_enabled = original
+        self.assertEqual(503, status)
+        self.assertEqual("feature_disabled", response["code"])
+        self.assertEqual([], self.points.deduct_calls)
+        self.assertEqual([], self._jobs())
+        self.assertEqual(0, core._image_job_queue.qsize())
+
+    def test_disabling_xiaole_preserves_idempotent_replay_of_accepted_job(self):
+        body = {"provider": "xiaole", "prompt": "rainy doorway", "ratio": "1:1"}
+        status, accepted = self.request(
+            "/api/gen/image", body=body, idempotency_key="xiaole-replay-after-off-001"
+        )
+        original = core.feature_flags.require_enabled
+        def require_enabled(key):
+            if key == "image_xiaole":
+                raise core.feature_flags.FeatureDisabled("维护中")
+        core.feature_flags.require_enabled = require_enabled
+        try:
+            replay_status, replayed = self.request(
+                "/api/gen/image", body=body,
+                idempotency_key="xiaole-replay-after-off-001",
+            )
+        finally:
+            core.feature_flags.require_enabled = original
+        self.assertEqual((200, 200), (status, replay_status))
+        self.assertEqual(accepted, replayed)
+        self.assertEqual(1, len(self.points.deduct_calls))
+        self.assertEqual(1, len(self._jobs()))
+        self.assertEqual(1, core._image_job_queue.qsize())
 
     def test_generic_insert_failure_with_pending_refund_is_not_terminal(self):
         path = "/api/gen/image"

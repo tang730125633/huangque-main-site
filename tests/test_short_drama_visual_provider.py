@@ -1,5 +1,8 @@
 import os
+import io
+import socket
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -15,17 +18,271 @@ from providers.short_drama_visual.heygen_cinematic import (
     HeyGenCinematicShotProvider,
 )
 from providers.short_drama_visual.grok_xai import GrokXaiShotProvider
-from content_domains import provider_keys
+from providers.short_drama_visual import minimax_h3
+from providers.short_drama_visual.minimax_h3 import MiniMaxH3ShotProvider
+from content_domains import provider_keys, video, video_minimax_h3
+from PIL import Image
 
 
 class ShortDramaVisualProviderTests(unittest.TestCase):
-    def test_no_provider_is_explicitly_unavailable(self):
+    def test_minimax_h3_is_the_default_short_drama_provider(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             snapshot = capability_snapshot()
             provider = load_from_environment()
-        self.assertEqual("provider_not_selected", snapshot["code"])
+        self.assertEqual("provider_not_configured", snapshot["code"])
         self.assertFalse(snapshot["configured"])
-        self.assertIsNone(provider)
+        self.assertEqual("minimax_h3", snapshot["selected"])
+        self.assertIsInstance(provider, MiniMaxH3ShotProvider)
+
+    def test_restricted_video_download_rejects_private_destination(self):
+        with mock.patch.object(video, "_heygen_direct_opener") as opener:
+            with self.assertRaises(ValueError):
+                video._download_video_file_direct(
+                    "https://127.0.0.1/result.mp4",
+                    allowed_hosts={"127.0.0.1"}, max_bytes=1024,
+                )
+        opener.assert_not_called()
+
+    def test_restricted_video_download_revalidates_redirect_destination(self):
+        handler = video._RestrictedDownloadRedirectHandler(
+            {"filecdn.minimax.chat"}
+        )
+        request = mock.Mock(full_url="https://filecdn.minimax.chat/result.mp4")
+        with self.assertRaises(ValueError):
+            handler.redirect_request(
+                request, None, 302, "Found", {},
+                "https://169.254.169.254/latest/meta-data",
+            )
+
+    def test_restricted_video_download_rejects_oversized_or_non_mp4_body(self):
+        class Response:
+            def __init__(self, data, content_length=None):
+                self.data = data
+                self.headers = {} if content_length is None else {
+                    "Content-Length": str(content_length)
+                }
+            def __enter__(self):
+                return self
+            def __exit__(self, *_args):
+                return False
+            def read(self, _size=-1):
+                data, self.data = self.data, b""
+                return data
+
+        public_dns = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443))]
+        for response in (Response(b"x", 2049), Response(b"not-an-mp4")):
+            with self.subTest(headers=response.headers), \
+                 mock.patch("socket.getaddrinfo", return_value=public_dns), \
+                 mock.patch.object(video, "_restricted_download_opener") as opener:
+                opener.return_value.open.return_value = response
+                with self.assertRaises(ValueError):
+                    video._download_video_file_direct(
+                        "https://filecdn.minimax.chat/result.mp4",
+                        allowed_hosts={"filecdn.minimax.chat"}, max_bytes=2048,
+                    )
+
+    def test_restricted_video_download_cleans_failed_probe_before_publish(self):
+        forged = b"\x00\x00\x00\x18ftypisom" + b"garbage" * 8
+        class Response:
+            headers = {"Content-Length": str(len(forged))}
+            def __init__(self):
+                self.data = forged
+            def __enter__(self):
+                return self
+            def __exit__(self, *_args):
+                return False
+            def read(self, _size=-1):
+                data, self.data = self.data, b""
+                return data
+
+        public_dns = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443))]
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "result.mp4"
+            failed_probe = mock.Mock(returncode=1, stdout="", stderr="invalid")
+            with mock.patch("socket.getaddrinfo", return_value=public_dns), \
+                 mock.patch.object(video, "_restricted_download_opener") as opener, \
+                 mock.patch.object(video, "_out_path", return_value=output), \
+                 mock.patch.object(video.subprocess, "run", return_value=failed_probe):
+                opener.return_value.open.return_value = Response()
+                with self.assertRaisesRegex(ValueError, "视频流|媒体"):
+                    video._download_video_file_direct(
+                        "https://filecdn.minimax.chat/result.mp4",
+                        allowed_hosts={"filecdn.minimax.chat"}, max_bytes=2048,
+                    )
+            self.assertFalse(output.exists())
+            self.assertEqual([], list(Path(directory).glob("*.part-*")))
+
+    def test_minimax_h3_normalizes_up_to_five_character_references(self):
+        provider = MiniMaxH3ShotProvider()
+        with mock.patch.object(
+            provider, "_reference_value", return_value="data:image/png;base64,AA=="
+        ):
+            result = provider.validate_request({
+                "prompt": "两个孩子在长椅上分享糖果",
+                "ratio": "16:9",
+                "resolution": "768p",
+                "duration_seconds": 5,
+                "reference_images": [
+                    {"character_key": "boy", "file": "image/boy.png"},
+                    {"character_key": "girl", "url": "https://cdn.example/girl.png"},
+                ],
+            })
+        self.assertEqual("minimax_h3", result["provider"])
+        self.assertEqual("MiniMax-H3", result["model"])
+        self.assertEqual(5, result["duration_seconds"])
+        self.assertEqual("768p", result["resolution"])
+        self.assertEqual(2, len(result["reference_images"]))
+
+    def test_minimax_h3_encodes_local_png_without_public_storage(self):
+        provider = MiniMaxH3ShotProvider()
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "role.png"
+            Image.new("RGB", (256, 256), (30, 80, 120)).save(image_path, "PNG")
+            with mock.patch("content_domains.core._out_path", return_value=image_path):
+                value = provider._reference_value({"file": "image/role.png"})
+        self.assertTrue(value.startswith("data:image/png;base64,"))
+
+    def test_minimax_h3_preflight_rejects_corrupt_local_reference(self):
+        provider = MiniMaxH3ShotProvider()
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "corrupt.png"
+            image_path.write_bytes(b"\x89PNG\r\n\x1a\nnot-an-image")
+            with mock.patch("content_domains.core._out_path", return_value=image_path):
+                with self.assertRaises(VisualProviderError) as raised:
+                    provider.validate_request({
+                        "prompt": "two characters share candy", "ratio": "16:9",
+                        "duration_seconds": 5,
+                        "reference_images": [{"file": "image/corrupt.png"}],
+                    })
+        self.assertEqual("visual_reference_invalid", raised.exception.code)
+
+    def test_minimax_h3_preflight_rejects_reference_below_minimum_dimensions(self):
+        provider = MiniMaxH3ShotProvider()
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "tiny.png"
+            Image.new("RGB", (1, 1), (0, 0, 0)).save(image_path, "PNG")
+            with mock.patch("content_domains.core._out_path", return_value=image_path):
+                with self.assertRaises(VisualProviderError) as raised:
+                    provider.validate_request({
+                        "prompt": "two characters share candy", "ratio": "16:9",
+                        "duration_seconds": 5,
+                        "reference_images": [{"file": "image/tiny.png"}],
+                    })
+        self.assertEqual("visual_reference_invalid", raised.exception.code)
+
+    def test_minimax_h3_preflight_rejects_truncated_jpeg_and_webp(self):
+        provider = MiniMaxH3ShotProvider()
+        samples = {
+            "truncated.jpg": b"\xff\xd8\xff\xe0truncated",
+            "truncated.webp": b"RIFF\x10\x00\x00\x00WEBPtruncated",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for name, raw in samples.items():
+                with self.subTest(name=name):
+                    image_path = Path(directory) / name
+                    image_path.write_bytes(raw)
+                    with mock.patch(
+                        "content_domains.core._out_path", return_value=image_path,
+                    ), self.assertRaises(VisualProviderError) as raised:
+                        provider.validate_request({
+                            "prompt": "two characters share candy", "ratio": "16:9",
+                            "duration_seconds": 5,
+                            "reference_images": [{"file": "image/" + name}],
+                        })
+                    self.assertEqual("visual_reference_invalid", raised.exception.code)
+
+    def test_minimax_h3_preflight_rejects_missing_local_reference(self):
+        provider = MiniMaxH3ShotProvider()
+        image_path = mock.Mock()
+        image_path.is_file.return_value = False
+        with mock.patch("content_domains.core._out_path", return_value=image_path):
+            with self.assertRaises(VisualProviderError) as raised:
+                provider.validate_request({
+                    "prompt": "two characters share candy",
+                    "ratio": "16:9",
+                    "duration_seconds": 5,
+                    "reference_images": [{"file": "image/missing.png"}],
+                })
+        self.assertEqual("visual_reference_unavailable", raised.exception.code)
+
+    def test_minimax_h3_create_poll_and_fetch_preserve_key_affinity(self):
+        provider = MiniMaxH3ShotProvider()
+        request = {
+            "prompt": "两个孩子在长椅上分享糖果",
+            "ratio": "16:9",
+            "duration_seconds": 5,
+            "reference_images": [
+                {"url": "https://cdn.example/boy.png"},
+                {"url": "https://cdn.example/girl.png"},
+            ],
+        }
+        candidate = {"id": "minimax-key-2", "secret": "test-only-secret"}
+        with mock.patch.object(provider_keys, "has_candidate", return_value=True), \
+             mock.patch.object(provider, "_claim_key", return_value=candidate), \
+             mock.patch.object(provider, "_bound_key", return_value=candidate), \
+             mock.patch("content_domains.video_minimax_h3._request_json", side_effect=[
+                 {"task_id": "task-8"},
+                 {"task": {"status": "succeeded", "content": {"url": "https://cdn.example/result.mp4"}}},
+             ]) as request_json, \
+             mock.patch("content_domains.video._download_video_file_direct", return_value="video/minimax-result.mp4") as download:
+            created = provider.create_job(request)
+            state = provider.get_job(created["provider_job_id"])
+            result = provider.fetch_result(created["provider_job_id"], state["result_url"])
+        self.assertEqual("succeeded", state["status"])
+        self.assertEqual("video/minimax-result.mp4", result["file"])
+        submitted = request_json.call_args_list[0].args[3]
+        self.assertEqual("MiniMax-H3", submitted["model"])
+        self.assertTrue(submitted["content"][1]["image_url"]["url"].startswith("https://"))
+        self.assertEqual("/v2/video_generation", request_json.call_args_list[0].args[2])
+        self.assertEqual("/v2/query/video_generation/task-8", request_json.call_args_list[1].args[2])
+        self.assertEqual("test-only-secret", request_json.call_args_list[0].kwargs["api_key"])
+        self.assertEqual("test-only-secret", request_json.call_args_list[1].kwargs["api_key"])
+        self.assertEqual(
+            set(minimax_h3.MINIMAX_RESULT_HOSTS),
+            set(download.call_args.kwargs["allowed_hosts"]),
+        )
+        self.assertEqual(
+            minimax_h3.MINIMAX_RESULT_MAX_BYTES,
+            download.call_args.kwargs["max_bytes"],
+        )
+
+    def test_minimax_h3_failed_job_exposes_safe_provider_reason(self):
+        provider = MiniMaxH3ShotProvider()
+        candidate = {"id": "minimax-key-2", "secret": "test-only-secret"}
+        provider_job_id = provider._encode_job_id(candidate["id"], "task-failed")
+        with mock.patch.object(provider, "_bound_key", return_value=candidate), \
+             mock.patch("content_domains.video_minimax_h3.query_task", return_value={
+                 "task": {
+                     "status": "failed",
+                     "error": {
+                         "code": "content_risk",
+                         "message": "reference image did not pass review",
+                     },
+                 },
+             }):
+            state = provider.get_job(provider_job_id)
+        self.assertEqual("failed", state["status"])
+        self.assertEqual("content_risk", state["failure"]["code"])
+        self.assertEqual(
+            "reference image did not pass review", state["failure"]["message"]
+        )
+
+    def test_minimax_invalid_key_is_blocked_before_charge(self):
+        provider = MiniMaxH3ShotProvider()
+        candidate = {"id": "bad-minimax-key", "secret": "bad-secret"}
+        with mock.patch.object(provider, "_claim_key", return_value=candidate), \
+             mock.patch(
+                 "content_domains.video_minimax_h3.check_credentials",
+                 side_effect=video_minimax_h3.MiniMaxCredentialRejected(
+                     "MiniMax 开放平台密钥无效"
+                 ),
+             ), mock.patch.object(provider_keys, "set_health") as set_health:
+            with self.assertRaises(VisualProviderError) as raised:
+                provider.prepare_job({"provider": "minimax_h3"})
+        self.assertEqual("provider_not_configured", raised.exception.code)
+        set_health.assert_called_once_with(
+            "bad-minimax-key", False, error="MiniMax 开放平台密钥无效"
+        )
 
     def test_selected_provider_without_key_is_not_ready(self):
         with mock.patch.dict(

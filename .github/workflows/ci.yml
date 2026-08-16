@@ -70,7 +70,7 @@ jobs:
           cmp "$cli_tmp"/wheels-a/*.whl "$cli_tmp"/wheels-b/*.whl
           sh -n ../../site/downloads/hq/install.sh
           python -m venv "$cli_tmp/venv"
-          "$cli_tmp/venv/bin/pip" install --no-index --no-deps ../../site/downloads/hq/v0.6.0/huangque_hq_cli-0.6.0-py3-none-any.whl
+          "$cli_tmp/venv/bin/pip" install --no-index --no-deps "$cli_tmp"/wheels-a/*.whl
           "$cli_tmp/venv/bin/hq" version --json
           "$cli_tmp/venv/bin/hq" capabilities --json
           "$cli_tmp/venv/bin/python" -m hq_cli version --json
@@ -90,6 +90,9 @@ jobs:
 
       - name: 测试工作台侧栏
         run: node tests/test_cloud_shell_sidebar.js
+
+      - name: 测试编导页字段保留与上传上限
+        run: node tests/test_script_director_fields.js
 
       - name: 测试画布 API 与短剧工作区
         run: |
@@ -111,3 +114,44 @@ jobs:
       - name: 构建设计系统
         working-directory: design-system
         run: npm run build
+
+  hq-cli-windows:
+    name: HQ CLI · Windows
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+      - name: 配置 Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: 测试 Windows 运行时
+        working-directory: tools/hq-cli
+        shell: powershell
+        run: python -m unittest discover -s tests -v
+        env:
+          PYTHONPATH: src
+      - name: PowerShell 5.1 安装
+        shell: powershell
+        run: |
+          $unicode = ([string][char]0x9EC4) + ([string][char]0x96C0)
+          $root = Join-Path $env:RUNNER_TEMP ($unicode + " CLI Test")
+          .\site\downloads\hq\install.ps1 `
+            -WheelPath .\site\downloads\hq\v0.10.0\huangque_hq_cli-0.10.0-py3-none-any.whl `
+            -InstallRoot $root -NoPathUpdate
+          $hq = Join-Path $root "bin\hq.cmd"
+          $result = & $hq version --json | ConvertFrom-Json
+          if ($result.cli_version -ne "0.10.0") { throw "unexpected CLI version" }
+          [IO.File]::AppendAllText($env:GITHUB_ENV, "HQ_TEST_ROOT=$root`n", [Text.UTF8Encoding]::new($false))
+      - name: cmd.exe 启动
+        shell: cmd
+        run: '"%HQ_TEST_ROOT%\bin\hq.cmd" capabilities --json'
+      - name: PowerShell 7 启动并卸载
+        shell: pwsh
+        run: |
+          $hq = Join-Path $env:HQ_TEST_ROOT "bin\hq.cmd"
+          $result = & $hq capabilities --json | ConvertFrom-Json
+          if ($result.schema -ne "hq.capabilities/v1") { throw "invalid capabilities output" }
+          .\site\downloads\hq\uninstall.ps1 -InstallRoot $env:HQ_TEST_ROOT
+          if (Test-Path $env:HQ_TEST_ROOT) { throw "uninstall left files behind" }

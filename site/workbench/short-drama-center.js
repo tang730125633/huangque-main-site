@@ -11,35 +11,53 @@
   var LABELS={setup:'项目设置',character_review:'角色确认',script_review:'剧本输入',storyboard_review:'分镜确认',visual_review:'画面确认',voice_review:'配音字幕',video_review:'视频确认',assembly_review:'成片确认',completed:'已交付'};
   var PLANNER_DRAFT_VERSION=4;
   var PLANNER_DRAFT_MAX_AGE=30*24*60*60*1000;
+  var LIVE_ACTION_DRAFT_VERSION=1;
+  var LIVE_ACTION_CORE_STORY_SCHEMA_VERSION=2;
+  var LIVE_ACTION_DRAFT_MAX_AGE=30*24*60*60*1000;
   var PLANNER_FIELDS=['topic','protagonist','conflict','emotion','ending','audience','style'];
   var PLANNER_FIELD_LABELS={topic:'故事主题',protagonist:'主角',conflict:'核心冲突',emotion:'目标情绪',ending:'结局',audience:'目标观众',style:'视觉风格'};
   function text(value){ return String(value==null?'':value); }
+  function durationBandLabel(value){value=Number(value)||30;return value===60?'60–90 秒':value===45?'30–60 秒':'15–30 秒';}
+  function plannedDuration(value,count){value=Number(value)||30;count=Math.max(1,Number(count)||1);var bounds=value===60?[60,90]:value===45?[30,60]:[15,30];return Math.max(bounds[0],Math.min(bounds[1],count*6));}
   function escapeHtml(value){ return text(value).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
   function normalizeProject(raw){
     raw=raw||{};
     return {
       id:text(raw.id),title:text(raw.title)||'未命名短剧',synopsis:text(raw.synopsis),
-      stage:STAGES.indexOf(raw.stage)>=0?raw.stage:'setup',board_id:raw.board_id==null?null:text(raw.board_id),
+      stage:STAGES.indexOf(raw.progress_stage)>=0?raw.progress_stage:(STAGES.indexOf(raw.stage)>=0?raw.stage:'setup'),board_id:raw.board_id==null?null:text(raw.board_id),
       ratio:text(raw.ratio)||'16:9',target_duration:Number(raw.target_duration)||0,
       shot_count:Number(raw.shot_count)||0,revision:Number(raw.revision)||0,
       spent_points:Number(raw.spent_points)||0,updated_at:text(raw.updated_at),
+      progress_percent:Math.max(0,Math.min(100,Number(raw.progress_percent)||0)),
+      progress_stage:STAGES.indexOf(raw.progress_stage)>=0?raw.progress_stage:'',
+      progress_label:text(raw.progress_label),progress_detail:text(raw.progress_detail),
+      completed_shots:Math.max(0,Number(raw.completed_shots)||0),total_shots:Math.max(0,Number(raw.total_shots)||0),
+      creation_status:raw.creation_status==='draft'?'draft':'formal',local_draft:!!raw.local_draft,
+      script_import:raw.script_import&&typeof raw.script_import==='object'?raw.script_import:null,
       characters:Array.isArray(raw.characters)?raw.characters.map(function(item){return Object.assign({},item);}):[]
     };
   }
-  function progress(project){ var index=STAGES.indexOf(normalizeProject(project).stage); return Math.round(((index<0?0:index)+1)/STAGES.length*100); }
+  function progress(project){ project=normalizeProject(project);if(project.progress_percent>0)return Math.round(project.progress_percent);var index=STAGES.indexOf(project.stage);return Math.round(((index<0?0:index)+1)/STAGES.length*100); }
   function filterProjects(projects,query,stage){
     query=text(query).trim().toLowerCase(); stage=text(stage);
     return (projects||[]).map(normalizeProject).filter(function(project){
-      return project.board_id===null&&(!stage||project.stage===stage)&&(!query||(project.title+' '+project.synopsis).toLowerCase().indexOf(query)>=0);
+      var draft=project.creation_status==='draft';
+      var matchesStage=stage==='all_projects'?true:
+        stage==='creation_draft'?draft:
+        stage==='active_projects'?!draft&&project.stage!=='setup'&&project.stage!=='completed':
+        stage==='blocked_projects'?!draft&&project.stage==='setup':
+        !draft&&(!stage||project.stage===stage);
+      return project.board_id===null&&matchesStage&&(!query||(project.title+' '+project.synopsis).toLowerCase().indexOf(query)>=0);
     });
   }
   function metrics(projects){
-    var items=filterProjects(projects,'','');
+    var normalized=(projects||[]).map(normalizeProject).filter(function(project){return project.board_id===null;}),items=normalized.filter(function(project){return project.creation_status!=='draft';});
     return {
-      all:items.length,
+      all:normalized.length,
       active:items.filter(function(p){return p.stage!=='setup'&&p.stage!=='completed';}).length,
       blocked:items.filter(function(p){return p.stage==='setup';}).length,
-      done:items.filter(function(p){return p.stage==='completed';}).length
+      done:items.filter(function(p){return p.stage==='completed';}).length,
+      draft:normalized.filter(function(p){return p.creation_status==='draft';}).length
     };
   }
   function deleteErrorMessage(error){
@@ -56,7 +74,7 @@
     };
   }
   function liveActionRoleHasReferenceActivity(character){
-    return !!(character&&(character.reference_job_id||character.reference_file||character.reference_url||Number(character.reference_version)>0||character.reference_locked));
+    return !!(character&&(character.reference_job_id||character.reference_file||character.reference_url||Number(character.reference_version)>0||character.reference_locked||character.pending_reference_job_id||character.pending_reference_file||character.pending_reference_url));
   }
   function liveActionProjectHasReferenceActivity(project){
     project=normalizeProject(project);
@@ -505,7 +523,8 @@
     payload=payload||{};selected=selected||{};
     var title=text(payload.title||selected.title||'未命名短剧').trim();
     var synopsis=text(selected.premise||payload.synopsis||'').trim();
-    var duration=Number(payload.target_duration)||30,shotCount=Number(payload.shot_count)||6;
+    var durationBand=Number(payload.target_duration)||30,shotCount=Number(payload.shot_count)||6;
+    var duration=plannedDuration(durationBand,shotCount);
     var notes=(messages||[]).map(compactIdea).filter(Boolean);
     understanding=understanding||plannerUnderstanding(notes,payload,{});
     var roles=plannerRoles(notes.concat([understanding.protagonist]),selected),protagonist=understanding.protagonist||roles[0];
@@ -614,14 +633,58 @@
   }
   function importedGlobalUnderstanding(source,lines,characters){
     source=text(source);lines=lines||[];characters=characters||[];
-    var narrative=lines.filter(function(line){return !/^([^\s：:，,。！？!?（）()]{1,12})\s*[：:]/.test(line)&&!(/^(场景\s*[一二三四五六七八九十\d]*|内景|外景|第.{0,8}[场幕集]|INT\.|EXT\.)/i.test(line));});
-    if(!narrative.length)narrative=lines;
-    function node(ratio){var item=narrative[Math.min(narrative.length-1,Math.floor(narrative.length*ratio))]||'';return compactIdea(item).slice(0,180);}
-    var conflict=narrative.find(function(item){return /冲突|但是|却|不能|必须|被迫|秘密|真相|误会|选择|失去|阻止/.test(item);})||node(.3);
+    function metadata(line){
+      line=compactIdea(line);
+      return !line||/^(人物|角色|演员|场景|地点|时间|画面比例|目标时长|镜头数量|视频风格|提示词|视频生成提示词)\s*[：:]?/i.test(line)||
+        /^(分镜|镜头)\s*[+＋、与和]?\s*(台词|画面|视频生成提示词|提示词)(\s*[+＋、与和]\s*(台词|画面|视频生成提示词|提示词))*\s*(?:[（(].*?[）)])?$/i.test(line)||
+        /^\d+[、.]\s*(?:女主|男主|主角|配角|角色|人物)/.test(line)||
+        /^(内景|外景|第.{0,8}[场幕集]|INT\.|EXT\.)/i.test(line);
+    }
+    function shotLine(line){
+      var match=compactIdea(line).match(/^(?:分镜|镜头)\s*#?(\d+)\s*[|｜:：、,，.．-]*\s*(?:[（(]?\s*(\d+)\s*[-‑−–—~至]\s*(\d+)\s*(?:s|秒)?\s*[）)]?)?\s*[|｜:：、,，.．-]*\s*(.*)$/i);
+      if(match)return {number:Number(match[1]),start:Number(match[2]||0),end:Number(match[3]||0),text:match[4]};
+      match=compactIdea(line).match(/^(\d+)[、.]\s*(\d+)\s*[-‑−–—~至]\s*(\d+)\s*(?:s|秒)\s*[：:]?\s*(.*)$/i);
+      return match?{number:Number(match[1]),start:Number(match[2]),end:Number(match[3]),text:match[4]}:null;
+    }
+    function storyText(value){
+      return compactIdea(value).split(/[；;]\s*(?:视频生成)?提示词\s*[：:]/i)[0]
+        .replace(/^\d+\s*[-‑−–—~至]\s*\d+\s*(?:s|秒)\s*[|｜:：、,，.．-]*\s*/i,'')
+        .replace(/^(?:近景|中景|远景|全景|特写|半身镜头|俯拍|仰拍|跟拍|推镜|拉镜|固定镜头)\s*[，,:：]?\s*/,'')
+        .replace(/\s*[（(](?:9:16|16:9|竖屏|横屏).*?[）)]\s*$/,'').slice(0,240);
+    }
+    var shots=[],current=null,prose=[];
+    lines.forEach(function(raw){
+      var parsed=shotLine(raw),clean=storyText(raw);
+      if(parsed){current={number:parsed.number,start:parsed.start,end:parsed.end,text:storyText(parsed.text)};shots.push(current);return;}
+      if(metadata(raw))return;
+      if(current&&/^([^\s：:，,。！？!?（）()]{1,16}(?:[（(].*?[）)])?)\s*[：:]/.test(raw)){current.text=storyText(current.text+'；'+clean);return;}
+      if(!/^([^\s：:，,。！？!?（）()]{1,16})\s*[：:]/.test(raw))prose.push(clean);
+    });
+    shots=shots.filter(function(item){return item.text;}).sort(function(a,b){return a.number-b.number;});
+    var narrative=shots.length?shots.map(function(item){return item.text;}):prose;
+    if(!narrative.length)narrative=lines.filter(function(line){return !metadata(line);}).map(storyText).filter(Boolean);
+    var missing=function(label){return '原稿未提供独立的'+label+'节点，请补充。';};
+    function at(index,label){return narrative[index]?storyText(narrative[index]):missing(label);}
+    var count=narrative.length,setup=at(0,'开端'),development=count>=3?at(1,'发展'):missing('发展');
+    var turnIndex=count>=5?Math.max(2,Math.floor((count-1)*.5)):-1;
+    var climaxIndex=count>=4?count-2:-1,endingIndex=count>=2?count-1:-1;
+    var turning=turnIndex>=0?at(turnIndex,'转折'):missing('转折');
+    var climax=climaxIndex>=0&&climaxIndex!==turnIndex?at(climaxIndex,'高潮'):missing('高潮');
+    var ending=endingIndex>=0&&endingIndex!==climaxIndex?at(endingIndex,'结局'):missing('结局');
+    var conflictSource=narrative.find(function(item){return /冲突|但是|却|不能|必须|被迫|秘密|真相|误会|选择|失去|阻止|相撞|打滑|跌倒|飞出|掉落|争抢|拒绝|困住|危险/.test(item);});
+    var conflict=conflictSource?'人物需要应对：'+storyText(conflictSource):'原稿未呈现明确的核心冲突，请补充人物目标和阻碍。';
+    var premise=prose.find(function(item){return item.length>=8&&!metadata(item);});
+    if(!premise){
+      var cast=characters.slice(0,2).join('与')||'人物';
+      premise=cast+'经历“'+setup+'”，最终“'+ending+'”';
+    }
+    var theme=/帮助|帮忙|递给|捡起|分享|扶起|道谢/.test(source)?'善意的行动让人物关系产生温暖连接。':
+      /误会|真相|秘密/.test(source)?'人物在理解真相后重新认识彼此。':'人物通过行动与选择完成情绪变化。';
     var relationship=[];
     characters.slice(0,8).forEach(function(name,index){characters.slice(index+1,8).forEach(function(other){var shared=lines.filter(function(line){return line.indexOf(name)>=0&&line.indexOf(other)>=0;}).length;if(shared)relationship.push({characters:[name,other],evidence_count:shared});});});
     return {
-      schema_version:'short-drama-import-global-v1',premise:node(0),setup:node(.08),development:node(.3),turning_point:node(.55),climax:node(.78),ending:node(.96),central_conflict:compactIdea(conflict).slice(0,220),
+      schema_version:'short-drama-import-global-v2',premise:storyText(premise),setup:setup,development:development,turning_point:turning,climax:climax,ending:ending,central_conflict:storyText(conflict),theme:theme,
+      story_nodes:narrative.map(function(item,index){return {order:index+1,text:storyText(item)};}),
       character_arcs:characters.slice(0,8).map(function(name){var related=lines.filter(function(line){return line.indexOf(name)>=0;});return {character:name,opening:compactIdea(related[0]||'待确认').slice(0,100),ending:compactIdea(related[related.length-1]||'待确认').slice(0,100),evidence_count:related.length};}),
       relationships:relationship.slice(0,12),coverage:{source_length:source.length,line_count:lines.length,analyzed_from_start:true,analyzed_from_end:true}
     };
@@ -640,7 +703,7 @@
         return;
       }
       var matched=line.match(/^([^\s：:，,。！？!?（）()]{1,12})\s*[：:]/);
-      if(matched&&!/^(时间|地点|场景|镜头|旁白|画外音|字幕|动作)$/i.test(matched[1])){names[matched[1]]=true;dialogueCount+=1;}
+      if(matched&&!/^(时间|地点|场景|镜头|旁白|画外音|字幕|动作|提示词|视频生成提示词)$/i.test(matched[1])){names[matched[1]]=true;dialogueCount+=1;}
     });
     var compact=source.replace(/\s+/g,'');
     var duration=compact.length<=500?30:compact.length<=1000?45:60;
@@ -651,7 +714,7 @@
     if(!characters.length)warnings.push('没有识别到“人物：对白”格式，人物关系需要进入工作区后确认。');
     if(source.length>6500)warnings.push('原稿较长，将作为完整快照导入，不会按聊天记录截断。');
     var globalStructure=importedGlobalUnderstanding(source,lines,characters);
-    var summary=lines.slice(0,8).join(' ').replace(/\s+/g,' ').slice(0,260);
+    var summary=text(globalStructure.premise).trim()||lines.slice(0,8).join(' ').replace(/\s+/g,' ').slice(0,260);
     if(summary.length<8)summary=source.slice(0,260);
     return {
       title:importedTitle(source,filename),source:source,filename:text(filename),
@@ -681,15 +744,22 @@
       identity_text:'',relationships:'',personality:'',age:'',face_shape:'',hairstyle:'',hair_color:'',
       height_body:'',fixed_clothing:'',fixed_colors:'',accessories:'',appearance_prompt:'',wardrobe_prompt:'',
       reference_job_id:null,reference_file:'',reference_url:'',reference_version:0,reference_locked:false,
-      reference_views:['front_full','side_full','front_half']
+      reference_views:['front_full','side_full','back_full']
     };
   }
   function defaultManualCharacterContract(count){
     count=Math.max(1,Math.min(20,Number(count)||2));
     return Array.from({length:count},function(_,index){return blankManualCharacter(index+1);});
   }
-  function characterContractFromAnalysis(){
-    return defaultManualCharacterContract(2);
+  function characterContractFromAnalysis(analysis){
+    var names=Array.isArray(analysis&&analysis.characters)?analysis.characters.map(function(name){return text(name).trim();}).filter(Boolean).slice(0,20):[];
+    if(!names.length)return defaultManualCharacterContract(1);
+    return normalizeCharacterContract(names.map(function(name,index){
+      var role=blankManualCharacter(index+1);role.name=name;role.role_type=index===0?'main':'support';
+      if(/男孩|男童|父亲|爸爸|爷爷|哥哥|弟弟|丈夫|男主|先生/.test(name))role.gender='男';
+      else if(/女孩|女童|母亲|妈妈|奶奶|姐姐|妹妹|妻子|女主|女士/.test(name))role.gender='女';
+      role.identity_text='剧本中的'+name;return role;
+    }));
   }
   function normalizeCharacterContract(items){
     var seen={};
@@ -701,7 +771,7 @@
         while(seen[key]){suffix+=1;key='character_'+suffix;}
       }
       seen[key]=true;
-      var normalized={character_key:key,reference_views:['front_full','side_full','front_half']};
+      var normalized={character_key:key,reference_views:['front_full','side_full','back_full']};
       fields.forEach(function(field){normalized[field]=text(item[field]).trim();});
       return normalized;
     });
@@ -737,6 +807,23 @@
   }
   function writePlannerDraftRecord(storage,key,draft,username){
     try{if(!storage||!key)return false;storage.setItem(key,JSON.stringify(draft));var saved=JSON.parse(storage.getItem(key)||'null');return plannerDraftMatchesUser(saved,username)&&saved.pending_create_key===draft.pending_create_key;}catch(error){return false;}
+  }
+  function liveActionDraftStorageKey(username){
+    username=text(username).trim();
+    return username?'hq-short-drama-live-action-draft-v1:'+username:'';
+  }
+  function liveActionDraftMatchesUser(draft,username){
+    return !!(draft&&draft.version===LIVE_ACTION_DRAFT_VERSION&&text(draft.username).trim()&&text(draft.username).trim()===text(username).trim());
+  }
+  function readLiveActionDraftRecord(storage,key,username,now){
+    try{if(!storage||!key)return null;var raw=storage.getItem(key),draft=raw?JSON.parse(raw):null;if(!liveActionDraftMatchesUser(draft,username)){if(raw)storage.removeItem(key);return null;}now=Number(now)||Date.now();if(!draft.saved_at||now-draft.saved_at>LIVE_ACTION_DRAFT_MAX_AGE){storage.removeItem(key);return null;}return draft;}catch(error){return null;}
+  }
+  function writeLiveActionDraftRecord(storage,key,draft,username){
+    try{if(!storage||!key)return false;storage.setItem(key,JSON.stringify(draft));var saved=JSON.parse(storage.getItem(key)||'null');return liveActionDraftMatchesUser(saved,username)&&Number(saved.saved_at)===Number(draft.saved_at);}catch(error){return false;}
+  }
+  function liveActionDraftSynopsis(draft){
+    var story=draft&&draft.core_story&&typeof draft.core_story==='object'?draft.core_story:{};
+    return text(story.logline).trim().slice(0,280)||'尚未整理一句话故事';
   }
   function decodePdfString(raw,hex){
     var bytes=[];
@@ -883,22 +970,28 @@
       generate:function(payload,key){return request('/api/gen/short-drama/conversation/script/generate',{method:'POST',headers:{'Idempotency-Key':key},body:payload});},
       lock:function(payload,key){return request('/api/gen/short-drama/conversation/script/lock',{method:'POST',headers:{'Idempotency-Key':key},body:payload});},
       importProject:function(payload,idempotencyKey){return request('/api/gen/short-drama/projects/import',{method:'POST',headers:{'Idempotency-Key':idempotencyKey},body:payload});},
+      confirmLiveActionCoreStory:function(project,coreStory){return request('/api/gen/short-drama/projects/live-action/core-story',{method:'POST',body:{project_id:project.id,revision:project.revision,core_story:coreStory}});},
+      finalizeLiveActionProject:function(project){return request('/api/gen/short-drama/projects/live-action/finalize',{method:'POST',body:{project_id:project.id,revision:project.revision}});},
       project:function(id){return request('/api/gen/short-drama/project?id='+encodeURIComponent(id));},
       updateProject:function(id,revision,patch){return request('/api/gen/short-drama/project?id='+encodeURIComponent(id),{method:'PUT',body:Object.assign({},patch||{},{revision:revision})});},
-      generateCharacterReference:function(project,character){
+      generateCharacterReference:function(project,character,options){
+        options=options||{};
         var key='short-drama-character-'+Date.now()+'-'+Math.random().toString(16).slice(2);
         function poll(jobId,startedAt){
           return request('/api/gen/job/'+encodeURIComponent(jobId)).then(function(job){
             if(job&&job.status==='done')return {job_id:jobId,result:job.result,cost:35};
             if(job&&(job.status==='error'||job.status==='failed'))throw new Error(job.error||job.detail||'角色标准图生成失败');
-            if(Date.now()-startedAt>420000)throw new Error('角色标准图生成超时，请稍后刷新查看任务状态');
+            if(typeof options.onProgress==='function')options.onProgress(job||{},jobId);
+            if(Date.now()-startedAt>1200000){var timeoutError=new Error('角色标准图生成时间较长，任务仍保留，可刷新页面继续查看');timeoutError.job_id=jobId;timeoutError.recoverable=true;throw timeoutError;}
             return new Promise(function(resolve){setTimeout(resolve,3000);}).then(function(){return poll(jobId,startedAt);});
           });
         }
+        if(options.job_id){if(typeof options.onCreated==='function')options.onCreated(Number(options.job_id));return poll(Number(options.job_id),Number(options.started_at)||Date.now());}
         return request('/api/gen/short-drama/generate-character-reference',{
           method:'POST',headers:{'Idempotency-Key':key},body:{project_id:project.id,revision:project.revision,character_key:character.character_key}
         }).then(function(created){
           if(!created||!created.job_id)throw new Error(created&&created.detail||'角色标准图任务创建失败');
+          if(typeof options.onCreated==='function')options.onCreated(Number(created.job_id));
           return poll(created.job_id,Date.now());
         });
       },
@@ -907,7 +1000,23 @@
           method:'POST',body:{
             project_id:project.id,revision:project.revision,
             character_key:character.character_key,
-            reference_version:Number(character.reference_version)||0
+            reference_version:Number(character.pending_reference_version||character.reference_version)||0
+          }
+        });
+      },
+      listImageAssets:function(offset,limit){
+        offset=Math.max(0,Number(offset)||0);limit=Math.max(1,Math.min(120,Number(limit)||60));
+        return request('/api/gen/history?limit='+limit+'&offset='+offset+'&kind=image');
+      },
+      selectCharacterReference:function(project,character,selection){
+        selection=selection||{};
+        return request('/api/gen/short-drama/select-character-reference',{
+          method:'POST',body:{
+            project_id:project.id,revision:project.revision,
+            character_key:character.character_key,source:text(selection.source),
+            asset_job_id:selection.asset_job_id==null?null:Number(selection.asset_job_id),
+            asset_url:text(selection.asset_url),filename:text(selection.filename),
+            image_data:text(selection.image_data)
           }
         });
       },
@@ -927,61 +1036,123 @@
     };
   }
   function projectUrl(id){ return 'short-drama.html?project='+encodeURIComponent(text(id)); }
-  function cardHtml(project){
+  function projectUpdatedAt(value,now){
+    var raw=text(value).trim(),stamp=/^\d+(?:\.\d+)?$/.test(raw)?Number(raw):Date.parse(raw);if(Number.isFinite(stamp)&&stamp>0&&stamp<100000000000)stamp*=1000;
+    if(!Number.isFinite(stamp)||stamp<=0)return {label:'最近更新',title:'更新时间暂不可用'};
+    now=Number(now)||Date.now();var diff=Math.max(0,now-stamp),minute=60000,hour=60*minute,day=24*hour,date=new Date(stamp),pad=function(number){return String(number).padStart(2,'0');};
+    var title=date.getFullYear()+'年'+(date.getMonth()+1)+'月'+date.getDate()+'日 '+pad(date.getHours())+':'+pad(date.getMinutes());
+    if(diff<minute)return {label:'刚刚更新',title:title};
+    if(diff<hour)return {label:Math.floor(diff/minute)+'分钟前',title:title};
+    if(diff<day)return {label:Math.floor(diff/hour)+'小时前',title:title};
+    if(diff<7*day)return {label:Math.floor(diff/day)+'天前',title:title};
+    return {label:(date.getFullYear()===new Date(now).getFullYear()?'':date.getFullYear()+'年')+(date.getMonth()+1)+'月'+date.getDate()+'日',title:title};
+  }
+  function highlightText(value,query){
+    value=text(value);query=text(query).trim();if(!query)return escapeHtml(value);
+    var escaped=query.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),pattern;
+    try{pattern=new RegExp('('+escaped+')','ig');}catch(error){return escapeHtml(value);}
+    return value.split(pattern).map(function(part,index){return index%2?'<mark class="short-drama-search-match">'+escapeHtml(part)+'</mark>':escapeHtml(part);}).join('');
+  }
+  function cardHtml(project,query){
     project=normalizeProject(project);
-    return '<article class="short-drama-card" tabindex="0" data-project-id="'+escapeHtml(project.id)+'">'+
-      '<div class="short-drama-card-top"><span class="short-drama-stage">'+escapeHtml(LABELS[project.stage])+'</span><span>R'+project.revision+'</span></div>'+
-      '<h2>'+escapeHtml(project.title)+'</h2><p>'+escapeHtml(project.synopsis||'暂无故事简介')+'</p>'+
-      '<div class="short-drama-progress"><span style="width:'+progress(project)+'%"></span></div>'+
-      '<div class="short-drama-card-foot"><span>'+escapeHtml(project.ratio)+' · '+project.target_duration+' 秒 · '+project.shot_count+' 镜</span><span>'+project.spent_points+' 点</span></div></article>';
+    var draft=project.creation_status==='draft',local=project.local_draft,locked=project.stage==='completed',updated=projectUpdatedAt(project.updated_at),percent=progress(project),progressLabel=project.progress_label||(draft?'草稿待继续':LABELS[project.stage]),progressDetail=project.progress_detail||'';
+    return '<article class="short-drama-card'+(draft?' draft':'')+'" tabindex="0" data-project-id="'+escapeHtml(project.id)+'">'+
+      '<div class="short-drama-card-top"><span class="short-drama-stage">'+escapeHtml(draft?'未完成草稿':LABELS[project.stage])+'</span><div class="short-drama-card-top-actions"><span class="short-drama-card-updated" title="'+escapeHtml(local?'尚未同步到服务器':updated.title)+'">'+escapeHtml(local?'本机草稿':updated.label)+'</span><button class="short-drama-card-menu-toggle" type="button" data-card-menu aria-label="更多项目操作" aria-expanded="false">•••</button></div></div>'+
+      '<div class="short-drama-card-menu" role="menu" hidden><button type="button" role="menuitem" data-card-action="rename"'+((local||locked)?' disabled':'')+'>重命名</button><button type="button" role="menuitem" data-card-action="duplicate"'+(local?' disabled':'')+'>复制为草稿</button><button class="danger" type="button" role="menuitem" data-card-action="delete">删除项目</button></div>'+
+      '<h2 title="'+escapeHtml(project.title)+'">'+highlightText(project.title,query)+'</h2><p title="'+escapeHtml(project.synopsis||'暂无故事简介')+'">'+highlightText(project.synopsis||'暂无故事简介',query)+'</p>'+
+      '<div class="short-drama-progress-head"><span>'+escapeHtml(progressLabel)+'</span><strong>'+percent+'%</strong></div>'+
+      '<div class="short-drama-progress" role="progressbar" aria-label="'+escapeHtml(progressLabel)+'" aria-valuemin="0" aria-valuemax="100" aria-valuenow="'+percent+'"><span style="width:'+percent+'%"></span></div>'+
+      (progressDetail?'<div class="short-drama-progress-detail">'+escapeHtml(progressDetail)+'</div>':'')+
+      '<div class="short-drama-card-foot"><span>'+escapeHtml(project.ratio)+' · '+durationBandLabel(project.target_duration)+' · '+project.shot_count+' 镜</span><span>'+project.spent_points+' 点</span></div></article>';
   }
 
   function mount(doc,options){
-    options=options||{};var client=options.client||createClient(options.fetchImpl);var projects=[];
+    options=options||{};var client=options.client||createClient(options.fetchImpl);var projects=[],activeProjectView='all_projects',renderAnimationTimer=null,previousMetricValues={};
     var grid=doc.getElementById('shortDramaGrid'),empty=doc.getElementById('shortDramaEmpty'),notice=doc.getElementById('shortDramaNotice');
     var dialog=doc.getElementById('shortDramaDialog'),form=doc.getElementById('shortDramaForm'),drawer=doc.getElementById('shortDramaDrawer');
+    var projectActionDialog=doc.getElementById('shortDramaProjectActionDialog'),projectActionForm=doc.getElementById('shortDramaProjectActionForm'),pendingProjectAction=null,projectActionBusy=false;
     var startOptions=doc.getElementById('shortDramaStartOptions'),inspiration=doc.getElementById('shortDramaInspiration');
     var liveAction=doc.getElementById('shortDramaLiveAction'),liveActionForm=doc.getElementById('shortDramaLiveActionForm');
     var roleConfirm=doc.getElementById('shortDramaRoleConfirm'),roleList=doc.getElementById('shortDramaRoleList'),roleTabs=doc.getElementById('shortDramaRoleTabs');
+    var coreStorySection=doc.getElementById('shortDramaCoreStory'),coreStoryForm=doc.getElementById('shortDramaCoreStoryForm'),coreStoryReview=doc.getElementById('shortDramaCoreStoryReview');
     var importSection=doc.getElementById('shortDramaImport'),importEditor=doc.getElementById('shortDramaImportEditor'),importForm=doc.getElementById('shortDramaImportForm');
     var importText=doc.getElementById('shortDramaImportText'),importFile=doc.getElementById('shortDramaImportFile'),importDrop=doc.getElementById('shortDramaImportDrop');
     var ideaForm=doc.getElementById('shortDramaIdeaForm'),ideaInput=doc.getElementById('shortDramaIdeaInput');
     var chat=doc.getElementById('shortDramaIdeaChat'),quickReplies=doc.getElementById('shortDramaIdeaQuickReplies');
     var advisorSubmit=ideaForm.querySelector('button[type="submit"]'),advisorSubmitLabel=advisorSubmit?advisorSubmit.textContent:'发送',advisorThinkingNode=null,advisorThinkingTimer=null;
     var recommendations=doc.getElementById('shortDramaRecommendations'),ideaMessages=[],selectedProjectId='',importFilename='',importAnalysis=null,pendingImportKey='';
-    var liveActionAnalysis=null,liveActionRoles=[],activeLiveActionRole=0,pendingLiveActionKey='',pendingLiveActionDiscardKey='',pendingLiveActionProject=null,liveActionReferenceBusy=false,savedLiveActionRoleSignatures={};
+    var liveActionAnalysis=null,liveActionRoles=[],liveActionCoreStory={},activeLiveActionRole=0,pendingLiveActionKey='',pendingLiveActionDiscardKey='',pendingLiveActionProject=null,liveActionReferenceBusy=false,liveActionReferenceTasks={},savedLiveActionRoleSignatures={},resumeLiveActionDraft=null,liveActionDraftTimer=null,liveActionNoticeTimers={setup:null,role:null,story:null},currentCreateStep='choice',liveActionReferencePreview=null,liveActionReferencePreviewTrigger=null;
     var createMode='idea',plannerPayload=null,selectedDirection=null,plannerPreview=null,pendingCreateKey='',plannerAnswers={},plannerMeta={},plannerDirtyFields=[],plannerHistory=[],plannerTranscript=[],plannerFeedback=[],plannerCorrectionCount=0,plannerPersistenceReady=false,activePlannerField='',activePlannerChoices={field:'',items:[]},advisorBusy=false,advisorDegraded=false,plannerPanel='auto',currentUsername='',resumePlannerDraft=null;
     var LEGACY_PLANNER_DRAFT_KEY='hq-short-drama-planner-draft-v3';
     var deleteButton=doc.getElementById('shortDramaDeleteProject');
     var confirmDelete=options.confirmImpl||function(message){return typeof runtimeRoot.confirm==='function'&&runtimeRoot.confirm(message);};
     function setNotice(message,isError){notice.textContent=message||'';notice.classList.toggle('error',!!isError);notice.hidden=!message;}
     function render(){
-      var shown=filterProjects(projects,doc.getElementById('shortDramaSearch').value,doc.getElementById('shortDramaStageFilter').value);
-      grid.innerHTML=shown.map(cardHtml).join('');empty.hidden=shown.length>0||projects.length>0;
-      var totals=metrics(projects);['All','Active','Blocked','Done'].forEach(function(k){doc.getElementById('shortDramaMetric'+k).textContent=totals[k.toLowerCase()];});
+      var searchValue=doc.getElementById('shortDramaSearch').value,stageValue=activeProjectView,shown=filterProjects(projects,searchValue,stageValue);
+      grid.innerHTML=shown.map(function(project){return cardHtml(project,searchValue);}).join('');empty.hidden=shown.length>0;
+      var clearSearch=doc.getElementById('shortDramaSearchClear'),searchCount=doc.getElementById('shortDramaSearchCount');clearSearch.hidden=!text(searchValue).trim();searchCount.textContent=(text(searchValue).trim()?'找到 ':'显示 ')+shown.length+' 个项目';
+      var totals=metrics(projects);['All','Active','Blocked','Done','Draft'].forEach(function(k){var node=doc.getElementById('shortDramaMetric'+k),value=totals[k.toLowerCase()],metric=node.closest('[data-project-view]');node.textContent=value;if(previousMetricValues[k]!==undefined&&previousMetricValues[k]!==value){metric.classList.remove('metric-count-pop');void metric.offsetWidth;metric.classList.add('metric-count-pop');}previousMetricValues[k]=value;});
+      var activeView=stageValue==='creation_draft'?'creation_draft':stageValue==='completed'?'completed':(stageValue==='blocked_projects'||stageValue==='setup')?'blocked_projects':(stageValue==='active_projects'||(STAGES.indexOf(stageValue)>=0&&stageValue!=='setup'&&stageValue!=='completed'))?'active_projects':'all_projects';
+      doc.querySelectorAll('[data-project-view]').forEach(function(metric){var selected=metric.getAttribute('data-project-view')===activeView;metric.classList.toggle('active',selected);metric.setAttribute('aria-pressed',selected?'true':'false');});
+      if(!shown.length){var emptyCopy={all_projects:['还没有短剧项目','正式项目和未完成草稿都会显示在这里。'],active_projects:['暂无制作中的短剧','创建并继续推进的短剧会显示在这里。'],blocked_projects:['暂无待处理短剧','等待继续设置或确认的短剧会显示在这里。'],completed:['暂无已交付短剧','完成全部制作并交付的短剧会显示在这里。'],creation_draft:['草稿箱是空的','未完成的创作会保存在这里。']}[activeView],hasSearch=!!text(searchValue).trim();empty.querySelector('h2').textContent=hasSearch?'没有找到匹配的项目':emptyCopy[0];empty.querySelector('p').textContent=hasSearch?'可以清空搜索，继续查看当前状态下的项目。':emptyCopy[1];doc.getElementById('shortDramaEmptyAction').textContent=hasSearch?'清空搜索':'创建短剧';}
+      grid.classList.remove('is-refreshing');void grid.offsetWidth;grid.classList.add('is-refreshing');clearTimeout(renderAnimationTimer);renderAnimationTimer=setTimeout(function(){grid.classList.remove('is-refreshing');},240);
     }
     function showProject(id){
       var project=projects.map(normalizeProject).find(function(item){return item.id===id;});if(!project)return;
-      selectedProjectId=project.id;
+      selectedProjectId=project.id;var draft=project.creation_status==='draft';
       doc.getElementById('shortDramaDrawerTitle').textContent=project.title;
-      doc.getElementById('shortDramaDrawerMeta').innerHTML='<dt>当前阶段</dt><dd>'+escapeHtml(LABELS[project.stage])+'</dd><dt>项目规格</dt><dd>'+escapeHtml(project.ratio)+' · '+project.target_duration+' 秒 · '+project.shot_count+' 镜</dd><dt>当前版本</dt><dd>R'+project.revision+'</dd><dt>累计使用</dt><dd>'+project.spent_points+' 点</dd>';
-      doc.getElementById('shortDramaOpenProject').href=projectUrl(project.id);drawer.hidden=false;
+      doc.getElementById('shortDramaDrawerMeta').innerHTML='<dt>当前状态</dt><dd>'+escapeHtml(draft?'未完成草稿':LABELS[project.stage])+'</dd><dt>项目规格</dt><dd>'+escapeHtml(project.ratio)+' · '+durationBandLabel(project.target_duration)+' · '+project.shot_count+' 镜</dd><dt>当前版本</dt><dd>'+(project.local_draft?'本机保存':'R'+project.revision)+'</dd><dt>累计使用</dt><dd>'+project.spent_points+' 点</dd>';
+      doc.querySelector('.short-drama-drawer-note').textContent=draft?'继续填写剧本和角色资料，正式确认创建前不会进入项目列表。':'进入对话式工作区，继续完善创作方向、生成剧本并管理版本。';
+      var open=doc.getElementById('shortDramaOpenProject'),resume=doc.getElementById('shortDramaResumeProjectDraft');open.hidden=draft;resume.hidden=!draft;open.href=projectUrl(project.id);deleteButton.textContent=draft?'删除草稿':'删除短剧';drawer.hidden=false;
+    }
+    function closeCardMenus(){doc.querySelectorAll('.short-drama-card-menu').forEach(function(menu){menu.hidden=true;var toggle=menu.parentNode&&menu.parentNode.querySelector('[data-card-menu]');if(toggle)toggle.setAttribute('aria-expanded','false');});}
+    function replaceProject(updated){var normalized=normalizeProject(updated);projects=projects.map(function(item){return text(item&&item.id)===normalized.id?normalized:item;});return normalized;}
+    function setProjectActionError(message){var node=doc.getElementById('shortDramaProjectActionError');node.textContent=message||'';node.hidden=!message;}
+    function closeProjectAction(){if(projectActionBusy)return;pendingProjectAction=null;setProjectActionError('');if(projectActionDialog.open)projectActionDialog.close();}
+    function openProjectAction(kind,project){
+      project=normalizeProject(project);if(!project.id)return;
+      pendingProjectAction={kind:kind,project:project};setProjectActionError('');
+      var rename=kind==='rename',title=doc.getElementById('shortDramaProjectActionTitle'),message=doc.getElementById('shortDramaProjectActionMessage'),field=doc.getElementById('shortDramaProjectRenameField'),input=doc.getElementById('shortDramaProjectRenameInput'),confirm=doc.getElementById('shortDramaProjectActionConfirm');
+      field.hidden=!rename;title.textContent=rename?'重命名项目':'复制为新草稿';input.value=project.title;
+      message.textContent=rename?'修改后的名称会立即同步到项目列表。':'将复制基础设置、原稿和角色文字资料，不复制角色生成图、视频任务或点数记录。';
+      confirm.textContent=rename?'保存名称':'确认复制';projectActionDialog.showModal();if(rename)setTimeout(function(){input.focus();input.select();},0);
+    }
+    function duplicateCharacterContract(detail){
+      var imported=detail&&detail.script_import||{},contract=Array.isArray(imported.character_contract)?imported.character_contract:null;
+      if(contract)return contract.map(function(item){return Object.assign({},item);});
+      return (Array.isArray(detail&&detail.characters)?detail.characters:[]).map(function(character,index){return {character_key:text(character.character_key)||('character_'+(index+1)),name:text(character.name)||('角色'+(index+1)),role_type:index===0?'main':'support',gender:'',identity_text:text(character.identity_text),relationships:'',personality:text(character.personality),age:'',face_shape:'',hairstyle:'',hair_color:'',height_body:'',fixed_clothing:text(character.wardrobe_prompt),fixed_colors:'',accessories:'',appearance_prompt:text(character.appearance_prompt),wardrobe_prompt:text(character.wardrobe_prompt),reference_views:['front_full','side_full','back_full']};});
+    }
+    function duplicateProject(project){
+      return client.project(project.id).then(function(detail){
+        var imported=detail.script_import||{},source=text(imported.source_text).trim()||text(detail.synopsis).trim();if(source.length<8)source='复制自《'+text(detail.title)+'》的短剧原稿';
+        var copyTitle=(text(detail.title).slice(0,72)||'未命名短剧')+' 副本',synopsis=text(detail.synopsis).trim();if(synopsis.length<8)synopsis=source.slice(0,280);
+        return client.importProject({title:copyTitle,synopsis:synopsis,ratio:text(detail.ratio)||'16:9',target_duration:Number(detail.target_duration)||30,shot_count:Number(detail.shot_count)||6,visual_style:text(detail.visual_style)||'电影感写实',source_text:source.slice(0,50000),filename:copyTitle+'.txt',import_mode:'faithful',content_type:'live_action',character_contract:duplicateCharacterContract(detail)},'short-drama-copy-'+Date.now()+'-'+Math.random().toString(16).slice(2));
+      }).then(function(created){projects.unshift(normalizeProject(created));activeProjectView='creation_draft';render();setNotice('项目已复制到草稿箱，可继续修改后再创建。',false);return created;});
+    }
+    function submitProjectAction(){
+      if(projectActionBusy||!pendingProjectAction)return Promise.resolve(false);
+      var action=pendingProjectAction,confirm=doc.getElementById('shortDramaProjectActionConfirm'),input=doc.getElementById('shortDramaProjectRenameInput'),operation;
+      setProjectActionError('');if(action.kind==='rename'){var nextTitle=text(input.value).trim();if(!nextTitle){setProjectActionError('请输入项目名称。');input.focus();return Promise.resolve(false);}operation=client.updateProject(action.project.id,action.project.revision,{title:nextTitle}).then(function(updated){replaceProject(updated);render();setNotice('项目名称已更新。',false);});}else{operation=duplicateProject(action.project);}
+      projectActionBusy=true;confirm.disabled=true;confirm.textContent=action.kind==='rename'?'正在保存…':'正在复制…';
+      return operation.then(function(){projectActionBusy=false;confirm.disabled=false;pendingProjectAction=null;projectActionDialog.close();return true;}).catch(function(error){projectActionBusy=false;confirm.disabled=false;confirm.textContent=action.kind==='rename'?'保存名称':'确认复制';setProjectActionError(error&&error.message||'项目操作失败，请稍后重试。');return false;});
     }
     function deleteSelectedProject(){
       var project=projects.map(normalizeProject).find(function(item){return item.id===selectedProjectId;});
       if(!project)return Promise.resolve(false);
-      if(!confirmDelete('删除后《'+project.title+'》将从短剧创作列表中移除，已消耗点数不会退回。确认删除？'))return Promise.resolve(false);
+      var draft=project.creation_status==='draft';
+      if(!confirmDelete(draft?'删除草稿后无法恢复，已经消耗的点数不会退回。确认删除《'+project.title+'》？':'删除后《'+project.title+'》将从短剧创作列表中移除，已消耗点数不会退回。确认删除？'))return Promise.resolve(false);
+      if(project.local_draft){clearLiveActionDraft();projects=projects.filter(function(item){return text(item&&item.id)!==project.id;});selectedProjectId='';drawer.hidden=true;render();setNotice('草稿已删除。',false);return Promise.resolve(true);}
       deleteButton.disabled=true;setNotice('',false);
       return client.deleteProject(project).then(function(){
         projects=projects.filter(function(item){return text(item&&item.id)!==project.id;});
-        selectedProjectId='';drawer.hidden=true;render();setNotice('短剧已删除。',false);return true;
+        var local=readLiveActionDraft();if(local&&text(local.pending_project&&local.pending_project.id)===project.id)clearLiveActionDraft();selectedProjectId='';drawer.hidden=true;render();setNotice(draft?'草稿已删除。':'短剧已删除。',false);return true;
       }).catch(function(error){setNotice(deleteErrorMessage(error),true);return false;})
         .finally(function(){deleteButton.disabled=false;});
     }
     function load(){
       setNotice('正在加载项目…',false);
       var identity=typeof client.me==='function'?client.me():Promise.resolve({user:{username:options.username||''}});
-      return identity.then(function(auth){currentUsername=text(auth&&auth.user&&auth.user.username).trim();if(!currentUsername){var error=new Error('无法确认当前登录账号');error.status=401;throw error;}return client.list();}).then(function(result){projects=(result&&result.items)||[];setNotice('',false);render();
+      return identity.then(function(auth){currentUsername=text(auth&&auth.user&&auth.user.username).trim();if(!currentUsername){var error=new Error('无法确认当前登录账号');error.status=401;throw error;}return client.list();}).then(function(result){projects=(result&&result.items)||[];syncLocalDraftProject();setNotice('',false);render();
         var selected=new URLSearchParams((runtimeRoot.location&&runtimeRoot.location.search)||'').get('project');
         if(selected&&runtimeRoot.HQShortDramaWorkspace){
           doc.documentElement.classList.add('short-drama-immersive');
@@ -1075,7 +1246,7 @@
       doc.getElementById('shortDramaPlannerStatus').textContent=flowState.label;
       doc.getElementById('shortDramaPlannerProgress').style.width=progressState.score+'%';
       doc.getElementById('shortDramaPlannerScore').textContent='信息完整度 '+completeness.score+'%';
-      doc.getElementById('shortDramaPlannerBrief').innerHTML='<dt>项目</dt><dd>'+escapeHtml(payload.title||'待填写')+'</dd>'+PLANNER_FIELDS.map(function(key){return plannerBriefInput(key,understanding[key],plannerMeta[key]);}).join('')+'<dt>规格</dt><dd>'+escapeHtml(payload.ratio||'16:9')+' · '+Number(payload.target_duration||30)+' 秒 · '+Number(payload.shot_count||6)+' 镜</dd><dt>方向</dt><dd>'+escapeHtml(selectedDirection&&selectedDirection.title||'待选择')+'</dd>';
+      doc.getElementById('shortDramaPlannerBrief').innerHTML='<dt>项目</dt><dd>'+escapeHtml(payload.title||'待填写')+'</dd>'+PLANNER_FIELDS.map(function(key){return plannerBriefInput(key,understanding[key],plannerMeta[key]);}).join('')+'<dt>规格</dt><dd>'+escapeHtml(payload.ratio||'16:9')+' · '+durationBandLabel(payload.target_duration)+' · '+Number(payload.shot_count||6)+' 镜</dd><dt>方向</dt><dd>'+escapeHtml(selectedDirection&&selectedDirection.title||'待选择')+'</dd>';
       var conflictFields=PLANNER_FIELDS.filter(function(key){return plannerMeta[key]&&plannerMeta[key].status==='conflicted';});
       var dirtyLayers=plannerAffectedLayers(plannerDirtyFields);
       doc.getElementById('shortDramaPlannerMissing').innerHTML=(conflictFields.map(function(key){return '<span class="conflict">待确认 '+PLANNER_FIELD_LABELS[key]+'</span>';}).concat(completeness.missing.map(function(key){return '<span>待补 '+PLANNER_FIELD_LABELS[key]+'</span>';})).concat(dirtyLayers.map(function(layer){return '<span class="dirty">需更新 '+({story:'故事结构',scenes:'场景设计',shots:'镜头执行'}[layer])+'</span>';})).join(''))||'<span class="complete">关键信息已完整</span>';
@@ -1139,6 +1310,82 @@
       return writePlannerDraftRecord(plannerStorage(),plannerDraftKey(),{version:PLANNER_DRAFT_VERSION,username:currentUsername,saved_at:Date.now(),create_mode:createMode,payload:plannerPayload,answers:plannerAnswers,meta:plannerMeta,dirty_fields:plannerDirtyFields,history:plannerHistory,transcript:plannerTranscript,feedback:plannerFeedback,correction_count:plannerCorrectionCount,selected_direction:selectedDirection,preview:plannerPreview,active_field:activePlannerField,active_choices:activePlannerChoices,advisor_degraded:advisorDegraded,panel:plannerPanel,pending_create_key:pendingCreateKey},currentUsername);
     }
     function clearPlannerDraft(){try{var storage=plannerStorage(),key=plannerDraftKey();if(storage&&key)storage.removeItem(key);}catch(error){}}
+    function liveActionDraftKey(){return liveActionDraftStorageKey(currentUsername);}
+    function readLiveActionDraft(){return readLiveActionDraftRecord(plannerStorage(),liveActionDraftKey(),currentUsername,Date.now());}
+    function clearLiveActionDraft(){try{var storage=plannerStorage(),key=liveActionDraftKey();if(storage&&key)storage.removeItem(key);}catch(error){}}
+    function syncLocalDraftProject(){
+      projects=projects.filter(function(item){return !item.local_draft;});
+      var draft=readLiveActionDraft();if(!draft)return;
+      var pending=draft.pending_project?normalizeProject(draft.pending_project):null,pendingId=text(pending&&pending.id);
+      if(pendingId&&projects.some(function(item){return text(item&&item.id)===pendingId;}))return;
+      var values=draft.form||{};
+      projects.unshift({id:pendingId||'local-live-action-draft',title:text(values.title).trim()||'未命名真人短剧草稿',synopsis:liveActionDraftSynopsis(draft),ratio:text(values.ratio)||'16:9',target_duration:Number(values.target_duration)||30,shot_count:Number(values.shot_count)||6,revision:Number(pending&&pending.revision)||0,spent_points:Number(pending&&pending.spent_points)||0,updated_at:String(draft.saved_at||Date.now()),creation_status:'draft',local_draft:!pendingId,characters:(pending&&pending.characters)||[]});
+    }
+    function renderLiveActionDraftResume(draft){
+      resumeLiveActionDraft=draft||null;var node=doc.getElementById('shortDramaLiveActionDraftResume');node.hidden=!resumeLiveActionDraft;
+      if(resumeLiveActionDraft){var saved=new Date(Number(resumeLiveActionDraft.saved_at)||Date.now());doc.getElementById('shortDramaLiveActionDraftTime').textContent='保存于 '+saved.toLocaleString('zh-CN')+'，包含剧本、角色资料和当前编辑位置。';}
+    }
+    function liveActionSourceText(){return text(coreStoryForm.elements.script_source.value||liveActionForm.elements.source_text.value).trim();}
+    function syncLiveActionSource(value){value=text(value);liveActionForm.elements.source_text.value=value;coreStoryForm.elements.script_source.value=value;doc.getElementById('shortDramaLiveActionCount').textContent=value.length.toLocaleString();return value;}
+    function liveActionDraftHasContent(){
+      collectLiveActionRoles();
+      var title=text(liveActionForm.elements.title.value).trim(),source=liveActionSourceText();
+      var roleContent=liveActionRoles.some(function(item){return ['name','gender','age','identity_text','relationships','personality','fixed_clothing','fixed_colors','accessories','reference_url','reference_file'].some(function(field){return !!text(item&&item[field]).trim();});});
+      var storyContent=Object.keys(liveActionCoreStory||{}).some(function(field){return !!text(liveActionCoreStory[field]).trim();});
+      return !!(title||source||roleContent||storyContent||pendingLiveActionProject);
+    }
+    function liveActionDraftSnapshot(){
+      collectLiveActionRoles();if(!coreStoryReview.hidden)collectLiveActionCoreStory();syncLiveActionSource(coreStoryForm.elements.script_source.value);
+      var liveSteps=['live_action_setup','live_action_story','live_action_roles'];
+      return {version:LIVE_ACTION_DRAFT_VERSION,core_story_schema_version:LIVE_ACTION_CORE_STORY_SCHEMA_VERSION,username:currentUsername,saved_at:Date.now(),step:liveSteps.indexOf(currentCreateStep)>=0?currentCreateStep:'live_action_setup',form:{title:text(liveActionForm.elements.title.value),source_text:text(liveActionForm.elements.source_text.value),ratio:text(liveActionForm.elements.ratio.value),target_duration:text(liveActionForm.elements.target_duration.value),shot_count:text(liveActionForm.elements.shot_count.value),visual_style:text(liveActionForm.elements.visual_style.value)},analysis:liveActionAnalysis,core_story:Object.assign({},liveActionCoreStory||{}),roles:JSON.parse(JSON.stringify(liveActionRoles||[])),active_role:activeLiveActionRole,pending_key:pendingLiveActionKey,pending_discard_key:pendingLiveActionDiscardKey,pending_project:pendingLiveActionProject,reference_tasks:JSON.parse(JSON.stringify(liveActionReferenceTasks||{})),saved_role_signatures:Object.assign({},savedLiveActionRoleSignatures)};
+    }
+    function saveLiveActionDraft(required){
+      if(!liveActionDraftHasContent())return !required;
+      return writeLiveActionDraftRecord(plannerStorage(),liveActionDraftKey(),liveActionDraftSnapshot(),currentUsername);
+    }
+    function scheduleLiveActionDraft(){
+      if(['live_action_setup','live_action_story','live_action_roles'].indexOf(currentCreateStep)<0)return;
+      if(liveActionDraftTimer!==null)runtimeRoot.clearTimeout(liveActionDraftTimer);
+      liveActionDraftTimer=runtimeRoot.setTimeout(function(){liveActionDraftTimer=null;saveLiveActionDraft(false);},450);
+    }
+    function restoreLiveActionDraft(draft){
+      draft=draft||{};var values=draft.form||{};
+      ['title','source_text','ratio','target_duration','shot_count','visual_style'].forEach(function(field){if(values[field]!=null&&liveActionForm.elements[field])liveActionForm.elements[field].value=text(values[field]);});
+      liveActionAnalysis=draft.analysis||null;liveActionCoreStory=Object.assign({},draft.core_story||{});liveActionRoles=Array.isArray(draft.roles)?draft.roles:[];activeLiveActionRole=Math.max(0,Math.min(Number(draft.active_role)||0,Math.max(0,liveActionRoles.length-1)));pendingLiveActionKey=text(draft.pending_key);pendingLiveActionDiscardKey=text(draft.pending_discard_key);pendingLiveActionProject=draft.pending_project?normalizeProject(draft.pending_project):null;liveActionReferenceTasks=Object.assign({},draft.reference_tasks||{});Object.keys(liveActionReferenceTasks).forEach(function(key){var task=liveActionReferenceTasks[key]||{};if(task.job_id){task.polling=false;task.state='recovering';}});savedLiveActionRoleSignatures=Object.assign({},draft.saved_role_signatures||{});
+      syncLiveActionSource(values.source_text);renderLiveActionDraftResume(null);
+      var storyConfirmed=!!(pendingLiveActionProject&&pendingLiveActionProject.script_import&&pendingLiveActionProject.script_import.core_story_confirmed_at),repairedStory=false;
+      if(!storyConfirmed&&liveActionCoreStoryNeedsRepair(draft)){
+        liveActionAnalysis=analyzeImportedScript(liveActionSourceText(),'');
+        liveActionAnalysis.title=text(liveActionForm.elements.title.value).trim()||liveActionAnalysis.title;
+        liveActionCoreStory=buildLiveActionCoreStory();repairedStory=true;
+      }
+      var restoredStep=draft.step==='live_action_visuals'?'live_action_roles':draft.step;
+      restoredStep=['live_action_roles','live_action_story'].indexOf(restoredStep)>=0?restoredStep:'live_action_setup';
+      if(restoredStep==='live_action_roles'&&!storyConfirmed)restoredStep='live_action_story';
+      if(restoredStep==='live_action_roles'&&!liveActionRoles.length)restoredStep='live_action_story';
+      showCreateStep(restoredStep);if(restoredStep!=='live_action_setup'){if(restoredStep==='live_action_story')renderLiveActionCoreStory();else renderLiveActionRoles();}
+      var migration=draft.character_contract_migration||{};
+      if(restoredStep==='live_action_roles')resumeLiveActionReferenceTasks();
+      if(migration.required)showLiveActionNotice(text(migration.message)||'旧草稿缺少背面全身图，请生成并确认可信 AI 三视图标准图；普通上传或旧版半身参考图不能作为迁移证据。',restoredStep,{autoHide:0});
+      else showLiveActionNotice(repairedStory?'已按新的整理规则修复核心故事，请重新核对。':'已恢复上次保存的草稿。',restoredStep,{autoHide:5000});
+    }
+    function liveActionDraftFromProject(project){
+      project=project||{};var imported=project.script_import||{},roles=Array.isArray(imported.character_contract)?imported.character_contract:[];
+      if(!roles.length&&Array.isArray(project.characters))roles=project.characters.map(function(character,index){return Object.assign(blankManualCharacter(index+1),character);});
+      var signatures={},referenceTasks={};roles.forEach(function(role,index){var key=text(role&&role.character_key);if(key&&imported.roles_saved_at)signatures[key]=liveActionRoleSignature(role);if(role&&role.reference_job_id&&!role.reference_url&&!role.reference_file)referenceTasks[liveActionReferenceTaskKey(role,index)]={job_id:Number(role.reference_job_id),state:'recovering',started_at:Date.now()};});
+      var coreStory=imported.core_story&&typeof imported.core_story==='object'?imported.core_story:{};
+      var step=imported.core_story_confirmed_at?'live_action_roles':'live_action_story';
+      return {version:LIVE_ACTION_DRAFT_VERSION,core_story_schema_version:LIVE_ACTION_CORE_STORY_SCHEMA_VERSION,username:currentUsername,saved_at:Date.now(),step:step,form:{title:text(project.title),source_text:text(imported.source_text||project.synopsis),ratio:text(project.ratio)||'16:9',target_duration:String(Number(project.target_duration)||30),shot_count:String(Number(project.shot_count)||6),visual_style:text(project.visual_style)||'电影感写实'},analysis:null,core_story:coreStory,roles:roles,active_role:0,pending_key:'',pending_discard_key:'',pending_project:project,reference_tasks:referenceTasks,saved_role_signatures:signatures,character_contract_migration:imported.character_contract_migration||{}};
+    }
+    function resumeProjectDraft(){
+      var summary=projects.map(normalizeProject).find(function(item){return item.id===selectedProjectId;});if(!summary)return;
+      var local=readLiveActionDraft();drawer.hidden=true;resetCreate();dialog.showModal();
+      if(local&&(!text(local.pending_project&&local.pending_project.id)||text(local.pending_project&&local.pending_project.id)===summary.id)){restoreLiveActionDraft(local);return;}
+      if(summary.local_draft){showCreateStep('live_action_setup');showLiveActionError('本机草稿内容已不存在，请删除这条草稿后重新创建。',false);return;}
+      showLiveActionError('正在读取草稿…',false);
+      client.project(summary.id).then(function(project){var draft=liveActionDraftFromProject(project);saveLiveActionDraftRecordOnly(draft);restoreLiveActionDraft(draft);}).catch(function(error){showCreateStep('live_action_setup');showLiveActionError(error.message||'草稿读取失败，请稍后重试。',false);});
+    }
+    function saveLiveActionDraftRecordOnly(draft){return writeLiveActionDraftRecord(plannerStorage(),liveActionDraftKey(),draft,currentUsername);}
     function plannerHistoryEntry(answers,meta,dirtyFields,messages,label,changedFields){return {answers:answers,meta:meta,dirtyFields:(dirtyFields||[]).slice(),messages:(messages||[]).slice(),label:label||'创作设定修改',changedFields:(changedFields||[]).slice(),at:Date.now()};}
     function renderPlannerHistory(){
       var list=doc.getElementById('shortDramaPlannerHistoryList'),details=doc.getElementById('shortDramaPlannerHistory');doc.getElementById('shortDramaPlannerHistoryCount').textContent=plannerHistory.length+' 条';details.hidden=!plannerHistory.length;
@@ -1166,9 +1413,70 @@
       recommendations.innerHTML='';recommendations.hidden=true;if(!plannerPreview){var flow=plannerFlowState(ideaMessages,plannerPayload,plannerAnswers,plannerMeta,selectedDirection,null,plannerDirtyFields);if(flow.phase!=='collect')renderRecommendations(buildRecommendations(ideaMessages,flow.understanding));}
       renderScriptPreview(plannerPreview);showCreateStep('inspiration');plannerPersistenceReady=true;renderPlanner();plannerNotice('已恢复上次未完成的剧本草稿。你可以继续对话、修改或确认。',false);
     }
-    function showLiveActionError(message,roleStep){
-      var node=doc.getElementById(roleStep?'shortDramaRoleError':'shortDramaLiveActionError');
+    function showLiveActionError(message,roleStep,options){
+      options=options||{};var timerKey=roleStep?'role':'setup',node=doc.getElementById(roleStep?'shortDramaRoleError':'shortDramaLiveActionError');
+      if(liveActionNoticeTimers[timerKey]!==null){runtimeRoot.clearTimeout(liveActionNoticeTimers[timerKey]);liveActionNoticeTimers[timerKey]=null;}
       node.textContent=message||'';node.hidden=!message;
+      if(message&&Number(options.autoHide)>0)liveActionNoticeTimers[timerKey]=runtimeRoot.setTimeout(function(){liveActionNoticeTimers[timerKey]=null;if(node.textContent===message){node.textContent='';node.hidden=true;}},Number(options.autoHide));
+    }
+    function showLiveActionNotice(message,step,options){
+      if(step==='live_action_story'){
+        options=options||{};var node=doc.getElementById('shortDramaCoreStoryError');
+        if(liveActionNoticeTimers.story!==null){runtimeRoot.clearTimeout(liveActionNoticeTimers.story);liveActionNoticeTimers.story=null;}
+        node.textContent=message||'';node.hidden=!message;
+        if(message&&Number(options.autoHide)>0)liveActionNoticeTimers.story=runtimeRoot.setTimeout(function(){liveActionNoticeTimers.story=null;if(node.textContent===message){node.textContent='';node.hidden=true;}},Number(options.autoHide));
+        return;
+      }
+      showLiveActionError(message,step==='live_action_roles',options);
+    }
+    var LIVE_ACTION_CORE_STORY_FIELDS=['title','logline','setup','development','turning_point','climax','ending','central_conflict','theme','preservation_notes'];
+    function liveActionCoreStoryNeedsRepair(draft){
+      draft=draft||{};var story=draft.core_story||{},analysis=draft.analysis||{},structure=analysis.global_structure||{};
+      if(Number(draft.core_story_schema_version)>=LIVE_ACTION_CORE_STORY_SCHEMA_VERSION||structure.schema_version==='short-drama-import-global-v2')return false;
+      var nodes=['setup','development','turning_point','climax','ending','central_conflict'].map(function(field){return text(story[field]).trim();}).filter(Boolean);
+      var metadata=/^(?:角色|人物|场景|分镜\s*[＋+].*(?:台词|提示词)|视频生成提示词|画面比例|目标时长)/;
+      var duplicated=nodes.some(function(value,index){return nodes.indexOf(value)!==index;});
+      return duplicated||nodes.some(function(value){return metadata.test(value);});
+    }
+    function buildLiveActionCoreStory(){
+      var source=liveActionSourceText();
+      if(!liveActionAnalysis)liveActionAnalysis=analyzeImportedScript(source,'');
+      var structure=liveActionAnalysis.global_structure||{},summary=text(liveActionAnalysis.synopsis||source.slice(0,260)).trim();
+      function value(field,fallback){return text(structure[field]||fallback||summary).trim().slice(0,1200);}
+      return {
+        title:text(liveActionForm.elements.title.value||liveActionAnalysis.title||'未命名真人短剧').trim().slice(0,120),
+        logline:value('premise',summary),setup:value('setup',summary),development:value('development',summary),
+        turning_point:value('turning_point',summary),climax:value('climax',summary),ending:value('ending',summary),
+        central_conflict:value('central_conflict','原稿未呈现明确的核心冲突，请补充人物目标和阻碍。'),theme:value('theme','人物通过行动与选择完成情绪变化。'),
+        preservation_notes:'保留用户原稿中的人物、关键情节、明确台词、分镜要求和结局要求。'
+      };
+    }
+    function collectLiveActionCoreStory(){
+      if(!coreStoryForm)return liveActionCoreStory;
+      LIVE_ACTION_CORE_STORY_FIELDS.forEach(function(field){if(coreStoryForm.elements[field])liveActionCoreStory[field]=text(coreStoryForm.elements[field].value).trim();});
+      return liveActionCoreStory;
+    }
+    function renderLiveActionCoreStory(){
+      syncLiveActionSource(liveActionForm.elements.source_text.value||coreStoryForm.elements.script_source.value);
+      LIVE_ACTION_CORE_STORY_FIELDS.forEach(function(field){if(coreStoryForm.elements[field])coreStoryForm.elements[field].value=text(liveActionCoreStory[field]);});
+      var ready=!!text(liveActionCoreStory.logline).trim();coreStoryReview.hidden=!ready;coreStoryForm.querySelector('button[type="submit"]').hidden=!ready;
+      doc.getElementById('shortDramaAnalyzeStory').textContent=ready?'重新整理核心故事':'整理核心故事';
+    }
+    function analyzeLiveActionStory(){
+      var source=liveActionSourceText(),previousSource=text(liveActionAnalysis&&liveActionAnalysis.source);
+      liveActionAnalysis=analyzeImportedScript(source,'');liveActionAnalysis.title=text(liveActionForm.elements.title.value).trim()||liveActionAnalysis.title;
+      syncLiveActionSource(source);
+      if(source!==previousSource||!liveActionRoles.length||currentCreateStep==='live_action_story'){
+        liveActionRoles=characterContractFromAnalysis(liveActionAnalysis);savedLiveActionRoleSignatures={};activeLiveActionRole=0;
+      }
+      liveActionCoreStory=buildLiveActionCoreStory();renderLiveActionCoreStory();showLiveActionNotice('已根据原稿整理核心故事，并识别出 '+liveActionRoles.length+' 个角色。请核对后确认。','live_action_story',{autoHide:5000});scheduleLiveActionDraft();
+    }
+    function validateLiveActionCoreStory(){
+      if(liveActionSourceText().length<8)return '请先填写至少 8 个字的剧本原稿或故事设计。';
+      collectLiveActionCoreStory();var missing=LIVE_ACTION_CORE_STORY_FIELDS.filter(function(field){return field!=='preservation_notes'&&!text(liveActionCoreStory[field]).trim();});
+      if(missing.length)return '请补全核心故事后再确认。';
+      var unresolved=LIVE_ACTION_CORE_STORY_FIELDS.some(function(field){return field!=='preservation_notes'&&/^原稿未.+请补充/.test(text(liveActionCoreStory[field]).trim());});
+      return unresolved?'系统未能可靠判断部分故事节点，请补充标记内容后再确认。':'';
     }
     function collectLiveActionRoles(){
       if(!roleList)return liveActionRoles;
@@ -1179,6 +1487,17 @@
       return liveActionRoles;
     }
     function liveActionRoleTypeLabel(value){return value==='main'?'主要角色':value==='crowd'?'群演':'次要角色';}
+    function liveActionRoleReferenceRule(item){
+      item=item||{};var roleType=text(item.role_type)||'support';
+      if(roleType==='main')return {required:true,label:'主要角色必须锁定标准图'};
+      if(roleType==='crowd')return {required:false,label:'群演无需单独设置标准图'};
+      var source=text(pendingLiveActionProject&&pendingLiveActionProject.script_import&&pendingLiveActionProject.script_import.source_text),name=text(item.name).trim();
+      var count=name?source.split(name).length-1:0;
+      var hasDialogue=!!(name&&(source.indexOf(name+'：')>=0||source.indexOf(name+':')>=0));
+      return count>=2||hasDialogue
+        ?{required:true,label:'该次要角色有台词或多次出现，需要锁定标准图'}
+        :{required:false,label:'该次要角色仅短暂出现，标准图可选'};
+    }
     function liveActionRoleSignature(item){
       var fields=['name','role_type','gender','age','identity_text','relationships','personality','face_shape','hairstyle','hair_color','height_body','fixed_clothing','fixed_colors','accessories','appearance_prompt','wardrobe_prompt'];
       return JSON.stringify(fields.map(function(field){return text(item&&item[field]).trim();}));
@@ -1191,7 +1510,7 @@
     }
     function liveActionRoleMissingFields(index){
       var item=liveActionRoles[index]||{};
-      return [{field:'name',label:'角色名称'},{field:'gender',label:'性别'},{field:'fixed_clothing',label:'固定服装'}]
+      return [{field:'name',label:'角色名称'},{field:'gender',label:'性别'}]
         .filter(function(entry){return !text(item[entry.field]).trim();});
     }
     function focusLiveActionRoleError(index){
@@ -1200,9 +1519,11 @@
       if(field){var label=field.closest('label');if(label)label.classList.add('invalid');field.setAttribute('aria-invalid','true');field.focus();field.scrollIntoView({block:'center',behavior:'smooth'});}
     }
     function liveActionRoleCompletion(item){
-      var fields=['name','gender','fixed_clothing'];
-      var done=fields.filter(function(field){return !!text(item&&item[field]).trim();}).length;
-      return {done:done,total:fields.length,percent:Math.round(done/fields.length*100)};
+      var fields=['name','gender'],referenceRequired=liveActionRoleReferenceRule(item).required;
+      var profileDone=fields.filter(function(field){return !!text(item&&item[field]).trim();}).length;
+      var done=profileDone+(referenceRequired&&item&&item.reference_locked?1:0);
+      var total=fields.length+(referenceRequired?1:0);
+      return {done:done,total:total,percent:Math.round(done/total*100),profile_done:profileDone,reference_required:referenceRequired,reference_locked:!!(item&&item.reference_locked)};
     }
     function backendCharacterFromRole(item,index){
       item=item||{};
@@ -1214,6 +1535,9 @@
         wardrobe_prompt:[item.wardrobe_prompt,item.fixed_clothing,item.fixed_colors,item.accessories].map(text).filter(Boolean).join('；'),
         reference_job_id:item.reference_job_id||null,reference_file:text(item.reference_file),reference_url:text(item.reference_url),
         reference_version:Number(item.reference_version)||0,reference_locked:!!item.reference_locked,
+        reference_source:text(item.reference_source),reference_asset_id:text(item.reference_asset_id),reference_name:text(item.reference_name),
+        reference_profile_stale:!!item.reference_profile_stale,
+        pending_reference_job_id:item.pending_reference_job_id||null,pending_reference_file:text(item.pending_reference_file),pending_reference_url:text(item.pending_reference_url),pending_reference_version:Number(item.pending_reference_version)||0,pending_reference_source:text(item.pending_reference_source),pending_reference_asset_id:text(item.pending_reference_asset_id),pending_reference_name:text(item.pending_reference_name),
         voice_key:text(item.voice_key),voice_settings:item.voice_settings||{},sort_order:index
       };
     }
@@ -1222,16 +1546,16 @@
       project.characters.forEach(function(character){byKey[text(character.character_key)]=character;});
       liveActionRoles.forEach(function(role){
         var saved=byKey[text(role.character_key)];if(!saved)return;
-        ['reference_job_id','reference_file','reference_url','reference_version','reference_locked'].forEach(function(field){role[field]=saved[field]||((field==='reference_version')?0:(field==='reference_locked'?false:''));});
+        ['reference_job_id','reference_file','reference_url','reference_version','reference_locked','reference_source','reference_asset_id','reference_name','reference_profile_stale','pending_reference_job_id','pending_reference_file','pending_reference_url','pending_reference_version','pending_reference_source','pending_reference_asset_id','pending_reference_name'].forEach(function(field){role[field]=saved[field]||((field==='reference_version'||field==='pending_reference_version')?0:((field==='reference_locked'||field==='reference_profile_stale')?false:''));});
       });
       pendingLiveActionProject=project;return project;
     }
     function persistLiveActionRoles(options){
       options=options||{};
       var error=options.partial?'':validateLiveActionRoles();if(error)return Promise.reject(new Error(error));
-      var source=options.partial?liveActionRoles.filter(function(item){return !!(text(item.name).trim()&&text(item.gender).trim()&&text(item.fixed_clothing).trim());}):liveActionRoles;
+      var source=options.partial?liveActionRoles.filter(function(item){return !!(text(item.name).trim()&&text(item.gender).trim());}):liveActionRoles;
       var savedSource=(Number.isInteger(options.roleIndex)&&liveActionRoles[options.roleIndex])?[liveActionRoles[options.roleIndex]]:source;
-      if(!source.length)return Promise.reject(new Error('请先填写当前角色的名称、性别和固定服装。'));
+      if(!source.length)return Promise.reject(new Error('请先填写当前角色的名称和性别。'));
       var contract=normalizeCharacterContract(source);
       if(!pendingLiveActionProject){
         if(!pendingLiveActionKey)pendingLiveActionKey=newImportKey();
@@ -1245,32 +1569,169 @@
       return client.updateProject(pendingLiveActionProject.id,pendingLiveActionProject.revision,{characters:contract.map(backendCharacterFromRole),character_contract:contract})
         .then(function(project){markLiveActionRolesSaved(savedSource);return syncLiveActionReferences(project);});
     }
+    function liveActionReferenceTaskKey(item,index){return text(item&&item.character_key)||('role-'+Number(index||0));}
+    function liveActionReferenceTask(item,index){return liveActionReferenceTasks[liveActionReferenceTaskKey(item,index)]||null;}
+    function liveActionRoleReferenceBusy(item,index){var task=liveActionReferenceTask(item,index);return !!(task&&['submitting','pending','queued','processing','in_progress','running','recovering','rate_limited'].indexOf(task.state)>=0);}
+    function liveActionReferenceProgress(job){
+      var value=job&&job.error;if(!value)return {};
+      if(typeof value==='object')return value;
+      try{return JSON.parse(value);}catch(ignore){return {};}
+    }
+    function liveActionReferenceTaskCopy(task){
+      task=task||{};
+      if(task.state==='queued')return {badge:'排队中',title:'标准图正在排队',detail:'当前图片任务较多，系统会自动开始生成。'};
+      if(task.state==='rate_limited'){
+        var seconds=Math.max(0,Math.ceil((Number(task.retry_at||0)-Date.now())/1000));
+        return {badge:'重试中',title:'图片服务繁忙，正在自动重试',detail:seconds?('预计 '+seconds+' 秒后重试，无需重复提交。'):'正在准备下一次重试，无需重复提交。'};
+      }
+      if(task.state==='recovering')return {badge:'恢复中',title:'正在恢复任务查询',detail:'任务仍保留在后台，恢复后会继续显示进度。'};
+      return {badge:'生成中',title:'标准图正在生成',detail:'任务已提交，完成后会自动显示结果。等待期间可以继续处理其他角色。'};
+    }
+    function liveActionReferenceTaskCount(){return liveActionRoles.filter(function(item,index){return liveActionRoleReferenceBusy(item,index);}).length;}
+    function anyLiveActionReferenceBusy(){return liveActionReferenceBusy||liveActionReferenceTaskCount()>0;}
+    function updateLiveActionReferenceGates(){
+      var busyCount=liveActionReferenceTaskCount(),busy=liveActionReferenceBusy||busyCount>0,current=liveActionRoles[activeLiveActionRole],currentBusy=liveActionRoleReferenceBusy(current,activeLiveActionRole);
+      doc.querySelectorAll('[data-action="close-create"]').forEach(function(button){button.disabled=busy;button.setAttribute('aria-disabled',busy?'true':'false');button.title=busy?'角色标准图正在生成，请等待任务完成':'';});
+      var editButton=doc.getElementById('shortDramaEditLiveAction'),confirmButton=doc.getElementById('shortDramaConfirmRoles'),saveButton=doc.getElementById('shortDramaSaveRole');
+      if(editButton){editButton.disabled=busy;editButton.title=busy?'角色标准图生成完成后才能返回剧本设计':'';}
+      if(confirmButton){confirmButton.disabled=busy;confirmButton.title=busy?'请等待全部角色标准图任务完成':'';}
+      if(saveButton){saveButton.disabled=currentBusy;saveButton.title=currentBusy?'当前角色正在生成标准图，可先编辑其他角色':'';}
+    }
+    function setLiveActionReferenceTask(index,patch){
+      var role=liveActionRoles[index];if(!role)return null;
+      var key=liveActionReferenceTaskKey(role,index),current=liveActionReferenceTasks[key]||{};
+      liveActionReferenceTasks[key]=Object.assign({},current,patch||{});
+      var jobId=Number(liveActionReferenceTasks[key].job_id)||0;
+      if(jobId){role.reference_job_id=jobId;if(pendingLiveActionProject&&Array.isArray(pendingLiveActionProject.characters)){var saved=pendingLiveActionProject.characters.find(function(item){return text(item.character_key)===text(role.character_key);});if(saved)saved.reference_job_id=jobId;}}
+      scheduleLiveActionDraft();return liveActionReferenceTasks[key];
+    }
+    function clearLiveActionReferenceTask(index,keepJob){
+      var role=liveActionRoles[index];if(!role)return;
+      delete liveActionReferenceTasks[liveActionReferenceTaskKey(role,index)];
+      if(!keepJob&&!role.reference_url&&!role.reference_file){role.reference_job_id=null;if(pendingLiveActionProject&&Array.isArray(pendingLiveActionProject.characters)){var saved=pendingLiveActionProject.characters.find(function(item){return text(item.character_key)===text(role.character_key);});if(saved)saved.reference_job_id=null;}}
+      scheduleLiveActionDraft();
+    }
     function renderLiveActionRoleTabs(){
       if(!roleTabs)return;
       roleTabs.innerHTML=liveActionRoles.map(function(item,index){
-        var progress=liveActionRoleCompletion(item),initial=text(item.name||('角色 '+(index+1))).trim().slice(0,1)||String(index+1),protectedRole=liveActionRoleHasReferenceActivity(item);
-        return '<article class="short-drama-role-tab'+(index===activeLiveActionRole?' active':'')+'">'+
+        var progress=liveActionRoleCompletion(item),initial=text(item.name||('角色 '+(index+1))).trim().slice(0,1)||String(index+1),task=liveActionReferenceTask(item,index),taskCopy=liveActionReferenceTaskCopy(task),generating=liveActionRoleReferenceBusy(item,index),protectedRole=generating||liveActionRoleHasReferenceActivity(item);
+        return '<article class="short-drama-role-tab'+(index===activeLiveActionRole?' active':'')+(generating?' generating':'')+'">'+
           '<button type="button" data-role-select="'+index+'"><b>'+escapeHtml(initial)+'</b><span><strong>'+escapeHtml(item.name||('角色 '+(index+1)))+'</strong><small>'+escapeHtml(liveActionRoleTypeLabel(item.role_type))+' · '+progress.done+'/'+progress.total+' 项</small><i><em style="width:'+progress.percent+'%"></em></i></span></button>'+
+          (generating?'<span class="short-drama-role-task-state">'+escapeHtml(taskCopy.badge)+'</span>':'')+
           '<button type="button" class="short-drama-role-tab-remove" data-role-remove="'+index+'" aria-label="'+(protectedRole?'该角色已有付费或锁定的角色标准图，不能删除':'删除角色')+'" title="'+(protectedRole?'该角色已有付费或锁定的角色标准图，不能删除':'删除角色')+'"'+(protectedRole?' disabled aria-disabled="true"':'')+'>×</button></article>';
       }).join('');
-      var count=doc.getElementById('shortDramaRoleCount');if(count)count.textContent='共 '+liveActionRoles.length+' 个角色';
+      var busyCount=liveActionReferenceTaskCount(),count=doc.getElementById('shortDramaRoleCount');if(count)count.textContent='共 '+liveActionRoles.length+' 个角色'+(busyCount?' · '+busyCount+' 个生成中':'');
       var current=liveActionRoles[activeLiveActionRole],status=doc.getElementById('shortDramaRoleStatus');
-      if(status&&current){var progress=liveActionRoleCompletion(current);status.textContent=(current.name||('角色 '+(activeLiveActionRole+1)))+' · 已完成 '+progress.done+'/'+progress.total+' 项';}
+      if(status&&current){var progress=liveActionRoleCompletion(current),referenceState=liveActionRoleReferenceBusy(current,activeLiveActionRole)?'标准图生成中，可编辑其他角色':(progress.reference_required?(progress.reference_locked?'标准图已锁定':'标准图待锁定'):'标准图可选');status.textContent=(current.name||('角色 '+(activeLiveActionRole+1)))+' · 资料 '+progress.profile_done+'/2 · '+referenceState;}
+      updateLiveActionReferenceGates();
+    }
+    function liveActionReferenceSourceLabel(item){
+      var source=text(item&&item.reference_source);
+      return source==='asset'?'我的资产':source==='upload'?'本地上传':source==='ai_generation'?'AI 生成':'';
+    }
+    function closeLiveActionReferencePicker(){
+      var picker=doc.getElementById('shortDramaReferencePicker');
+      if(picker&&picker.parentNode)picker.parentNode.removeChild(picker);
+    }
+    function applyLiveActionReferenceSelection(index,selection,options){
+      options=options||{};
+      collectLiveActionRoles();activeLiveActionRole=index;
+      var item=liveActionRoles[index],saved=pendingLiveActionProject&&pendingLiveActionProject.characters.find(function(character){return text(character.character_key)===text(item&&item.character_key);});
+      if(!item||!pendingLiveActionProject||!saved)return showLiveActionError('请先保存当前角色资料。',true);
+      liveActionReferenceBusy=true;if(!options.keepOpen)closeLiveActionReferencePicker();renderLiveActionRoles();if(options.onStart)options.onStart();else showLiveActionError('正在设置角色标准图预览…',true);
+      return client.selectCharacterReference(pendingLiveActionProject,saved,selection).then(function(project){
+        closeLiveActionReferencePicker();
+        syncLiveActionReferences(project);renderLiveActionRoles();showLiveActionError('',true);scheduleLiveActionDraft();
+        var status=doc.getElementById('shortDramaRoleStatus'),current=liveActionRoles[index];
+        if(status&&current)status.textContent=current.name+' · 标准图已选择，请确认锁定';
+      }).catch(function(error){var message=error.message||'请稍后重试。';if(options.onError)options.onError(message);else showLiveActionError(message==='请上传人物图'?message:'标准图设置失败：'+message,true);})
+        .finally(function(){liveActionReferenceBusy=false;renderLiveActionRoles();if(options.onFinish)options.onFinish();});
+    }
+    function liveActionReferenceSelectionError(message){
+      message=text(message)||'请稍后重新检测。';
+      return /^(请上传|人物检测|人物图片检测)/.test(message)?message:('标准图设置失败：'+message);
+    }
+    function readLiveActionReferenceFile(file){
+      return new Promise(function(resolve,reject){
+        if(!file)return reject(new Error('请选择图片。'));
+        if(['image/jpeg','image/png','image/webp'].indexOf(file.type)<0)return reject(new Error('只支持 JPG、PNG 或 WebP 图片。'));
+        if(file.size<=0||file.size>10*1024*1024)return reject(new Error('图片大小必须在 10MB 以内。'));
+        var reader=new FileReader();reader.onload=function(){resolve({source:'upload',asset_job_id:null,asset_url:'',filename:file.name,image_data:text(reader.result)});};reader.onerror=function(){reject(new Error('图片读取失败，请重新选择。'));};reader.readAsDataURL(file);
+      });
+    }
+    function openLiveActionReferencePicker(index,source){
+      collectLiveActionRoles();activeLiveActionRole=index;var item=liveActionRoles[index];
+      if(!item||!isLiveActionRoleSaved(item)||!pendingLiveActionProject)return showLiveActionError('请先保存当前角色，再设置标准图。',true);
+      closeLiveActionReferencePicker();
+      var picker=doc.createElement('div');picker.id='shortDramaReferencePicker';picker.className='short-drama-reference-host';
+      picker.innerHTML='<input type="file" accept="image/jpeg,image/png,image/webp" data-reference-upload-input hidden>';
+      roleConfirm.appendChild(picker);
+      var uploadInput=picker.querySelector('[data-reference-upload-input]');
+      function openAssetLibrary(){
+        var pageSize=60,assets=[],selectedAsset=null,loading=false,hasMore=true,query='';
+        var library=doc.createElement('div');library.className='short-drama-asset-library';library.innerHTML='<section class="short-drama-asset-library-box" role="dialog" aria-modal="true" aria-label="选择图片资产"><header><div><small>MY ASSETS</small><h3>选择图片资产</h3><p>选择一张真人且至少半身的图片作为 '+escapeHtml(item.name||'角色')+' 的标准图。</p></div><button type="button" data-close-asset-library aria-label="关闭资产库">×</button></header><div class="short-drama-asset-library-tools"><input type="search" data-asset-library-search placeholder="搜索提示词或资产编号"><span data-asset-library-count>正在加载…</span></div><div class="short-drama-asset-library-body"><div class="short-drama-reference-asset-grid" data-asset-library-grid></div><button type="button" class="short-drama-asset-load-more" data-asset-load-more hidden>加载更多图片</button></div><div class="short-drama-asset-library-error" data-asset-library-error hidden></div><footer><span data-asset-library-selected>尚未选择图片</span><button type="button" class="confirm" data-confirm-reference-asset disabled>确认使用所选资产</button></footer></section>';
+        picker.appendChild(library);
+        var grid=library.querySelector('[data-asset-library-grid]'),count=library.querySelector('[data-asset-library-count]'),loadMore=library.querySelector('[data-asset-load-more]'),confirm=library.querySelector('[data-confirm-reference-asset]'),selectedLabel=library.querySelector('[data-asset-library-selected]'),errorNode=library.querySelector('[data-asset-library-error]'),search=library.querySelector('[data-asset-library-search]');
+        function assetKey(asset){return String(asset.job_id)+'|'+text(asset.url);}
+        function visibleAssets(){var needle=query.toLowerCase();return assets.filter(function(asset){return !needle||text(asset.prompt).toLowerCase().indexOf(needle)>=0||String(asset.job_id).indexOf(needle)>=0;});}
+        function renderAssetLibrary(){
+          var visible=visibleAssets(),selectedKey=selectedAsset?assetKey(selectedAsset):'';count.textContent=query?(visible.length+' 个匹配结果'):(assets.length+(hasMore?' 张已加载':' 张图片'));
+          grid.innerHTML=visible.length?visible.map(function(asset,assetIndex){var label=text(asset.prompt).trim().slice(0,42)||('图片资产 #'+asset.job_id);return '<article class="short-drama-reference-asset-item'+(assetKey(asset)===selectedKey?' selected':'')+'"><button type="button" data-reference-asset-index="'+assetIndex+'" aria-pressed="'+(assetKey(asset)===selectedKey?'true':'false')+'"><img src="'+escapeHtml(asset.url)+'" alt="'+escapeHtml(label)+'"><span>'+escapeHtml(label)+'</span><small>#'+escapeHtml(String(asset.job_id))+'</small></button><button type="button" class="preview" data-preview-asset-index="'+assetIndex+'">放大预览</button></article>';}).join(''):'<p class="short-drama-asset-empty">'+(loading?'正在读取图片资产…':(query?'没有找到匹配的图片资产。':'资产库中暂无图片。'))+'</p>';
+          loadMore.hidden=!hasMore||!!query;loadMore.disabled=loading;loadMore.textContent=loading?'正在加载…':'加载更多图片';confirm.disabled=!selectedAsset||loading;selectedLabel.textContent=selectedAsset?('已选择：'+(text(selectedAsset.prompt).trim().slice(0,36)||('图片资产 #'+selectedAsset.job_id))):'尚未选择图片';
+          grid.querySelectorAll('[data-reference-asset-index]').forEach(function(button){button.addEventListener('click',function(){selectedAsset=visible[Number(button.getAttribute('data-reference-asset-index'))];errorNode.hidden=true;renderAssetLibrary();});});
+          grid.querySelectorAll('[data-preview-asset-index]').forEach(function(button){button.addEventListener('click',function(){var asset=visible[Number(button.getAttribute('data-preview-asset-index'))];if(asset)openLiveActionReferencePreview(asset.url,text(asset.prompt).trim()||('图片资产 #'+asset.job_id),button);});});
+        }
+        function loadAssetPage(){
+          if(loading||!hasMore)return;loading=true;errorNode.hidden=true;renderAssetLibrary();
+          client.listImageAssets(assets.length,pageSize).then(function(result){var incoming=(result&&result.items)||[];incoming.forEach(function(asset){if(asset&&asset.url&&!assets.some(function(current){return assetKey(current)===assetKey(asset);}))assets.push(asset);});hasMore=incoming.length===pageSize;}).catch(function(error){errorNode.textContent='资产加载失败：'+(error.message||'请稍后重试');errorNode.hidden=false;}).finally(function(){loading=false;renderAssetLibrary();});
+        }
+        library.addEventListener('click',function(event){event.stopPropagation();if(event.target===library||event.target.closest('[data-close-asset-library]')){closeLiveActionReferencePicker();var trigger=roleList.querySelector('[data-reference-source="asset"]');if(trigger)trigger.focus();}});
+        search.addEventListener('input',function(event){query=text(event.target.value).trim();renderAssetLibrary();});
+        loadMore.addEventListener('click',loadAssetPage);
+        confirm.addEventListener('click',function(){if(!selectedAsset||loading)return;var validationFailed=false,selection={source:'asset',asset_job_id:selectedAsset.job_id,asset_url:selectedAsset.url,filename:text(selectedAsset.prompt).trim().slice(0,120)||('图片资产 #'+selectedAsset.job_id),image_data:''};applyLiveActionReferenceSelection(index,selection,{keepOpen:true,onStart:function(){validationFailed=false;confirm.disabled=true;confirm.textContent='正在检测并自动重试…';errorNode.hidden=true;},onError:function(message){validationFailed=true;errorNode.textContent=liveActionReferenceSelectionError(message);errorNode.hidden=false;},onFinish:function(){if(library.isConnected){confirm.textContent=validationFailed?'重新检测所选资产':'确认使用所选资产';confirm.disabled=!selectedAsset;}}});});
+        renderAssetLibrary();loadAssetPage();search.focus();
+      }
+      function openUploadConfirmation(selection){
+        var uploadConfirm=doc.createElement('div');uploadConfirm.className='short-drama-upload-confirm';uploadConfirm.innerHTML='<section class="short-drama-upload-confirm-box" role="dialog" aria-modal="true" aria-label="确认本地上传图片"><header><div><small>LOCAL UPLOAD</small><h3>确认本地图片</h3><p>确认后将检测图片中是否包含至少半身真人。</p></div><button type="button" data-close-upload-confirm aria-label="关闭上传预览">×</button></header><div class="short-drama-upload-confirm-preview"><button type="button" data-preview-upload-reference aria-label="放大预览本地图片"><img src="'+escapeHtml(selection.image_data)+'" alt="本地上传图片预览"><span>放大预览</span></button><strong>'+escapeHtml(selection.filename)+'</strong></div><div class="short-drama-asset-library-error" data-upload-confirm-error hidden></div><footer><button type="button" data-choose-upload-again>重新选择</button><button type="button" class="confirm" data-confirm-reference-upload>确认使用此图片</button></footer></section>';
+        picker.appendChild(uploadConfirm);
+        var confirm=uploadConfirm.querySelector('[data-confirm-reference-upload]'),errorNode=uploadConfirm.querySelector('[data-upload-confirm-error]');
+        uploadConfirm.addEventListener('click',function(event){event.stopPropagation();if(event.target===uploadConfirm||event.target.closest('[data-close-upload-confirm]')){closeLiveActionReferencePicker();var trigger=roleList.querySelector('[data-reference-source="upload"]');if(trigger)trigger.focus();return;}if(event.target.closest('[data-choose-upload-again]')){uploadConfirm.remove();uploadInput.value='';uploadInput.click();return;}if(event.target.closest('[data-preview-upload-reference]'))openLiveActionReferencePreview(selection.image_data,selection.filename,event.target.closest('[data-preview-upload-reference]'));});
+        confirm.addEventListener('click',function(){var validationFailed=false;applyLiveActionReferenceSelection(index,selection,{keepOpen:true,onStart:function(){validationFailed=false;confirm.disabled=true;confirm.textContent='正在检测并自动重试…';errorNode.hidden=true;},onError:function(message){validationFailed=true;errorNode.textContent=liveActionReferenceSelectionError(message);errorNode.hidden=false;},onFinish:function(){if(uploadConfirm.isConnected){confirm.textContent=validationFailed?'重新检测此图片':'确认使用此图片';confirm.disabled=false;}}});});
+        uploadConfirm.querySelector('[data-close-upload-confirm]').focus();
+      }
+      uploadInput.addEventListener('change',function(){var file=uploadInput.files&&uploadInput.files[0];if(!file)return;readLiveActionReferenceFile(file).then(openUploadConfirmation).catch(function(error){showLiveActionError(error.message||'图片读取失败，请重新选择。',true);});});
+      if(source==='asset')return openAssetLibrary();
+      if(source==='upload'){uploadInput.value='';uploadInput.click();return;}
+      collectLiveActionRoles();
+      if(!text(liveActionRoles[index]&&liveActionRoles[index].fixed_clothing).trim()){
+        closeLiveActionReferencePicker();showLiveActionError('使用 AI 生成标准图前，请先填写固定服装提示词并重新保存当前角色。',true);activeLiveActionRole=index;renderLiveActionRoles();var clothing=roleList.querySelector('[data-role-index="'+index+'"] [data-role-field="fixed_clothing"]');if(clothing){clothing.setAttribute('aria-invalid','true');var clothingLabel=clothing.closest('label');if(clothingLabel)clothingLabel.classList.add('invalid');clothing.focus();clothing.scrollIntoView({block:'center',behavior:'smooth'});}return;
+      }
+      closeLiveActionReferencePicker();generateLiveActionReference(index);
     }
     function renderLiveActionRoles(){
       if(!liveActionRoles.length){roleList.innerHTML='';if(roleTabs)roleTabs.innerHTML='';return;}
       activeLiveActionRole=Math.max(0,Math.min(activeLiveActionRole,liveActionRoles.length-1));
-      var index=activeLiveActionRole,item=liveActionRoles[index],roleType=text(item.role_type)||'support',roleProtected=liveActionRoleHasReferenceActivity(item);
+      var index=activeLiveActionRole,item=liveActionRoles[index],roleType=text(item.role_type)||'support',referenceTask=liveActionReferenceTask(item,index),referenceTaskCopy=liveActionReferenceTaskCopy(referenceTask),roleGenerating=liveActionRoleReferenceBusy(item,index),roleProtected=roleGenerating,referenceRule=liveActionRoleReferenceRule(item);
+      var candidateUrl=text(item.pending_reference_url||item.pending_reference_file),candidateVersion=Number(item.pending_reference_version)||0,candidateSource=text(item.pending_reference_source),candidateName=text(item.pending_reference_name),displayUrl=candidateUrl||text(item.reference_url||item.reference_file),displaySource=candidateUrl?candidateSource:text(item.reference_source),displayName=candidateUrl?candidateName:text(item.reference_name);
+      var referenceGuide=displaySource==='asset'||displaySource==='upload'
+        ?'<div class="short-drama-role-views"><span>图片要求</span><b>真人</b><b>至少半身</b><b>无需三视图</b></div>'
+        :displaySource==='ai_generation'
+          ?'<div class="short-drama-role-views"><span>AI 标准图将包含</span><b>正面全身</b><b>侧面全身</b><b>背面全身</b></div>'
+          :'<div class="short-drama-role-views"><span>标准图要求</span><b>'+(referenceRule.required?'必须设置':'可选')+'</b><b>'+escapeHtml(referenceRule.label)+'</b></div>';
+      var emptyReferenceTitle=referenceRule.required?'尚未设置':'无需设置';
+      var emptyReferenceDescription=referenceRule.required?'可从我的资产选择、从本地上传，或使用 AI 生成。':referenceRule.label+'；如需固定形象仍可主动设置。';
+      var referenceTitle=roleGenerating?referenceTaskCopy.title:(candidateUrl?'新标准图待确认':(item.reference_locked?'标准图已锁定':(displayUrl?'标准图待确认':emptyReferenceTitle)));
+      var referenceDetail=roleGenerating?referenceTaskCopy.detail:(candidateUrl?'当前已锁定图片仍保留；确认后才会替换为这张新图。来源：'+(liveActionReferenceSourceLabel({reference_source:displaySource})||'标准图')+(displayName?' · '+displayName:'')+'。':(item.reference_locked?'版本 v'+(Number(item.reference_version)||1)+' 已绑定'+(liveActionReferenceSourceLabel(item)?'，来源：'+liveActionReferenceSourceLabel(item):'')+'。后续视频将优先使用此形象。':(displayUrl?'来源：'+(liveActionReferenceSourceLabel(item)||'标准图')+(item.reference_name?' · '+item.reference_name:'')+'。请预览后再确认锁定。':emptyReferenceDescription)));
       roleList.innerHTML='<article class="short-drama-role-card" data-role-index="'+index+'">'+
           '<header><div><span>角色 '+(index+1)+' · '+escapeHtml(liveActionRoleTypeLabel(roleType))+'</span><strong>'+escapeHtml(item.name||'待命名角色')+'</strong><small>内部标识 '+escapeHtml(item.character_key)+'，角色改名不会改变内部关联</small></div><div class="short-drama-role-completion">'+liveActionRoleCompletion(item).percent+'%</div></header>'+
-          (roleProtected?'<p class="short-drama-role-protected">该角色已有付费或锁定的角色标准图，不能直接修改或删除。角色标准图仍可在下方重新生成或确认。</p>':'')+
+          (roleGenerating?'<p class="short-drama-role-protected generating">该角色标准图正在后台生成，当前角色资料暂时锁定。你可以切换到其他角色继续编辑和保存。</p>':(item.reference_profile_stale?'<p class="short-drama-role-protected">角色资料已变更，当前标准图仍会保留；建议修改提示词后重新生成，确认新图后再用于后续镜头。</p>':(liveActionRoleHasReferenceActivity(item)?'<p class="short-drama-role-protected">当前标准图已保留。角色资料仍可修改；修改并保存后可以重新生成新的标准图。</p>':'')))+
           '<fieldset class="short-drama-role-profile"'+(roleProtected?' disabled':'')+'>'+
           '<section class="short-drama-role-section"><div class="short-drama-role-section-title"><b>01</b><span><strong>基础信息</strong><small>角色是谁，以及在故事中的作用</small></span></div><div class="short-drama-role-fields">'+
-          '<label>角色名称 <em class="short-drama-required">*</em><input data-role-field="name" maxlength="80" value="'+escapeHtml(item.name)+'"></label>'+
-          '<label>角色类型<select data-role-field="role_type"><option value="main"'+(roleType==='main'?' selected':'')+'>主要角色</option><option value="support"'+(roleType==='support'?' selected':'')+'>次要角色</option><option value="crowd"'+(roleType==='crowd'?' selected':'')+'>群演</option></select></label>'+
-          '<label>性别 <em class="short-drama-required">*</em><select data-role-field="gender"><option value=""'+(!item.gender?' selected':'')+'>请选择</option><option value="女"'+(item.gender==='女'?' selected':'')+'>女</option><option value="男"'+(item.gender==='男'?' selected':'')+'>男</option><option value="其他"'+(item.gender==='其他'?' selected':'')+'>其他</option></select></label>'+
-          '<label>年龄<input data-role-field="age" maxlength="80" placeholder="例如：28 岁" value="'+escapeHtml(item.age)+'"></label>'+
-          '<label class="wide">身份与关系<input data-role-field="identity_text" maxlength="500" placeholder="身份、职业、与其他人物的关系" value="'+escapeHtml(item.identity_text)+'"></label></div></section>'+
+          '<label><span class="short-drama-role-field-caption">角色名称 <em class="short-drama-required">*</em></span><input data-role-field="name" maxlength="80" value="'+escapeHtml(item.name)+'"></label>'+
+          '<label><span class="short-drama-role-field-caption">角色类型</span><select data-role-field="role_type"><option value="main"'+(roleType==='main'?' selected':'')+'>主要角色</option><option value="support"'+(roleType==='support'?' selected':'')+'>次要角色</option><option value="crowd"'+(roleType==='crowd'?' selected':'')+'>群演</option></select></label>'+
+          '<label><span class="short-drama-role-field-caption">性别 <em class="short-drama-required">*</em></span><select data-role-field="gender"><option value=""'+(!item.gender?' selected':'')+'>请选择</option><option value="女"'+(item.gender==='女'?' selected':'')+'>女</option><option value="男"'+(item.gender==='男'?' selected':'')+'>男</option><option value="其他"'+(item.gender==='其他'?' selected':'')+'>其他</option></select></label>'+
+          '<label><span class="short-drama-role-field-caption">年龄</span><input data-role-field="age" maxlength="80" placeholder="例如：28 岁" value="'+escapeHtml(item.age)+'"></label>'+
+          '<label class="wide"><span class="short-drama-role-field-caption">身份与关系</span><input data-role-field="identity_text" maxlength="500" placeholder="身份、职业、与其他人物的关系" value="'+escapeHtml(item.identity_text)+'"></label></div></section>'+
           '<section class="short-drama-role-section"><div class="short-drama-role-section-title"><b>02</b><span><strong>人物特征</strong><small>用于保持角色行为与外观连续</small></span></div><div class="short-drama-role-fields">'+
           '<label class="wide">人物性格<textarea data-role-field="personality" maxlength="500" placeholder="行为方式、情绪基调">'+escapeHtml(item.personality)+'</textarea></label>'+
           '<label class="wide">人物关系<textarea data-role-field="relationships" maxlength="500" placeholder="与其他角色的关系">'+escapeHtml(item.relationships)+'</textarea></label>'+
@@ -1279,18 +1740,35 @@
           '<label>发色<input data-role-field="hair_color" maxlength="80" placeholder="例如：自然黑" value="'+escapeHtml(item.hair_color)+'"></label>'+
           '<label>身高与体型<input data-role-field="height_body" maxlength="160" placeholder="例如：165cm，匀称" value="'+escapeHtml(item.height_body)+'"></label></div></section>'+
           '<section class="short-drama-role-section"><div class="short-drama-role-section-title"><b>03</b><span><strong>固定造型</strong><small>后续镜头必须延续的服装、颜色与配饰</small></span></div><div class="short-drama-role-fields">'+
-          '<label class="wide">固定服装 <em class="short-drama-required">*</em><textarea data-role-field="fixed_clothing" maxlength="500" placeholder="款式、材质和不可变化的细节">'+escapeHtml(item.fixed_clothing)+'</textarea></label>'+
+          '<label class="wide"><span class="short-drama-role-field-caption">固定服装提示词 <small>AI 生图时必填</small></span><textarea data-role-field="fixed_clothing" maxlength="500" placeholder="例如：蓝色棉质短袖、卡其色短裤、白色运动鞋">'+escapeHtml(item.fixed_clothing)+'</textarea></label>'+
           '<label>固定颜色<input data-role-field="fixed_colors" maxlength="160" placeholder="例如：米白上衣、深蓝长裤" value="'+escapeHtml(item.fixed_colors)+'"></label>'+
           '<label>固定配饰<input data-role-field="accessories" maxlength="160" placeholder="眼镜、手表、包等" value="'+escapeHtml(item.accessories)+'"></label>'+
           '<label class="wide">外貌补充<textarea data-role-field="appearance_prompt" maxlength="500" placeholder="其他需要保持一致的视觉特征">'+escapeHtml(item.appearance_prompt)+'</textarea></label>'+
-          '</div><div class="short-drama-role-views"><span>角色参考图将包含</span><b>正面全身</b><b>侧面全身</b><b>正面半身</b></div></section></fieldset>'+
-          '<section class="short-drama-role-reference"><div class="short-drama-role-section-title"><b>04</b><span><strong>角色标准图</strong><small>确认后与角色绑定，后续视频镜头统一引用</small></span></div><div class="short-drama-role-reference-card">'+
-          (item.reference_url||item.reference_file?'<img src="'+escapeHtml(item.reference_url||item.reference_file)+'" alt="'+escapeHtml(item.name||'角色')+'标准图">':'<div class="short-drama-role-reference-empty">尚未生成角色标准图</div>')+
-          '<div><strong>'+(item.reference_locked?'标准图已锁定':(item.reference_url||item.reference_file?'标准图待确认':'等待生成'))+'</strong><small>'+(item.reference_locked?'版本 v'+(Number(item.reference_version)||1)+' 已绑定，后续视频将优先使用此形象。':(item.reference_url||item.reference_file?'请预览三视图，确认人物、服装与体型无误后再锁定。':'先保存当前角色资料，再生成标准图；生成完成不会自动锁定。'))+'</small>'+
-          ((item.reference_url||item.reference_file)&&!item.reference_locked?'<button type="button" class="confirm" data-confirm-role-reference="'+index+'"'+(liveActionReferenceBusy?' disabled':'')+'>确认并锁定此标准图</button>':'')+
-           '<button type="button" data-generate-role-reference="'+index+'"'+((liveActionReferenceBusy||!isLiveActionRoleSaved(item))?' disabled':'')+'>'+(liveActionReferenceBusy?'正在处理…':(!isLiveActionRoleSaved(item)?'请先保存当前角色':((item.reference_url||item.reference_file)?'重新生成角色标准图（35点）':'生成角色标准图（35点）')))+'</button></div></div></section>'+
+          '</div></section></fieldset>'+
+          '<section class="short-drama-role-reference"><div class="short-drama-role-section-title"><b>04</b><span><strong>角色标准图</strong><small>保存角色资料后即可选择、上传或生成</small></span></div><div class="short-drama-role-reference-content">'+referenceGuide+'<div class="short-drama-role-reference-card">'+
+          (displayUrl?'<button type="button" class="short-drama-role-reference-preview" data-preview-role-reference aria-label="放大预览'+escapeHtml(item.name||'角色')+'标准图"><img src="'+escapeHtml(displayUrl)+'" alt="'+escapeHtml(item.name||'角色')+'标准图"><span>点击放大</span></button>':(roleGenerating?'<div class="short-drama-role-reference-empty generating"><span></span>生成中</div>':'<div class="short-drama-role-reference-empty">'+escapeHtml(emptyReferenceTitle)+'</div>'))+
+          '<div><strong>'+escapeHtml(referenceTitle)+'</strong><small>'+escapeHtml(referenceDetail)+'</small>'+
+          ((candidateUrl||displayUrl&&!item.reference_locked)?'<button type="button" class="confirm" data-confirm-role-reference="'+index+'"'+((liveActionReferenceBusy||roleGenerating)?' disabled':'')+'>确认并锁定此标准图</button>':'')+'</div></div>'+
+          '<div class="short-drama-reference-sources" aria-label="选择角色标准图来源"><button type="button" data-reference-source="asset" data-reference-index="'+index+'"'+((liveActionReferenceBusy||roleGenerating||!isLiveActionRoleSaved(item))?' disabled':'')+'><b>我的资产</b><span>真人且至少半身，无需三视图，不扣点</span></button><button type="button" data-reference-source="upload" data-reference-index="'+index+'"'+((liveActionReferenceBusy||roleGenerating||!isLiveActionRoleSaved(item))?' disabled':'')+'><b>本地上传</b><span>真人且至少半身；JPG、PNG 或 WebP</span></button><button type="button" data-reference-source="ai" data-reference-index="'+index+'"'+((liveActionReferenceBusy||roleGenerating||!isLiveActionRoleSaved(item))?' disabled':'')+'><b>AI 生成</b><span>'+(roleGenerating?'当前任务生成中':'根据角色资料生成三视图，35 点')+'</span></button></div>'+
+          (!isLiveActionRoleSaved(item)?'<small class="short-drama-reference-source-hint">请先保存当前角色，再选择标准图来源。</small>':'')+'</div></section>'+
           '</article>';
       renderLiveActionRoleTabs();
+    }
+    function ensureLiveActionReferencePreview(){
+      if(liveActionReferencePreview)return liveActionReferencePreview;
+      liveActionReferencePreview=doc.createElement('dialog');liveActionReferencePreview.className='short-drama-image-preview';
+      liveActionReferencePreview.setAttribute('aria-label','角色标准图大图预览');
+      liveActionReferencePreview.innerHTML='<button type="button" class="short-drama-image-preview-close" aria-label="关闭大图预览">×</button><img alt="角色标准图大图预览">';
+      liveActionReferencePreview.addEventListener('click',function(event){if(event.target===liveActionReferencePreview||event.target.closest('.short-drama-image-preview-close'))closeLiveActionReferencePreview();});
+      liveActionReferencePreview.addEventListener('cancel',function(event){event.preventDefault();closeLiveActionReferencePreview();});
+      liveActionReferencePreview.addEventListener('close',function(){liveActionReferencePreview.querySelector('img').removeAttribute('src');if(liveActionReferencePreviewTrigger&&doc.contains(liveActionReferencePreviewTrigger))liveActionReferencePreviewTrigger.focus();liveActionReferencePreviewTrigger=null;});
+      doc.body.appendChild(liveActionReferencePreview);return liveActionReferencePreview;
+    }
+    function openLiveActionReferencePreview(source,name,trigger){
+      var preview=ensureLiveActionReferencePreview(),image=preview.querySelector('img');image.src=source;image.alt=(name||'角色')+'标准图大图预览';liveActionReferencePreviewTrigger=trigger||null;if(!preview.open)preview.showModal();preview.querySelector('.short-drama-image-preview-close').focus();
+    }
+    function closeLiveActionReferencePreview(){
+      if(liveActionReferencePreview&&liveActionReferencePreview.open)liveActionReferencePreview.close();
     }
     function nextLiveActionRole(){
       var used={};liveActionRoles.forEach(function(item){used[item.character_key]=true;});var index=liveActionRoles.length+1,key='character_'+index;
@@ -1304,7 +1782,6 @@
         var label=item.name||('角色 '+(index+1));
         if(!item.name)missing.push('角色 '+(index+1)+' 的名称');
         if(!item.gender)missing.push(label+'的性别');
-        if(!item.fixed_clothing)missing.push(label+'的固定服装');
         if(item.name&&names[item.name.toLowerCase()])missing.push('重复名称“'+item.name+'”');
         if(item.name)names[item.name.toLowerCase()]=true;
       });
@@ -1316,19 +1793,27 @@
       return missing.length?'请填写必填项：'+missing.join('、')+'。':'';
     }
     function showCreateStep(step){
-      startOptions.hidden=step!=='choice';inspiration.hidden=step!=='inspiration';form.hidden=step!=='idea';importSection.hidden=step!=='import';liveAction.hidden=['live_action_setup','live_action_roles'].indexOf(step)<0;
-      liveActionForm.hidden=step!=='live_action_setup';roleConfirm.hidden=step!=='live_action_roles';
-      if(step==='live_action_setup')setCreateHeading('AI LIVE-ACTION DRAMA','创建 AI 真人短剧','先录入项目名称、完整剧本和制作规格，下一步由你手动建立角色。');
-      if(step==='live_action_roles')setCreateHeading('ROLE CONFIRMATION','填写真人短剧角色','默认提供两个角色，可自行新增或删除；填写名称、性别和固定服装后即可保存，并逐个生成锁定标准图。');
+      currentCreateStep=step;
+      startOptions.hidden=step!=='choice';inspiration.hidden=step!=='inspiration';form.hidden=step!=='idea';importSection.hidden=step!=='import';liveAction.hidden=['live_action_setup','live_action_story','live_action_roles'].indexOf(step)<0;
+      liveActionForm.hidden=step!=='live_action_setup';roleConfirm.hidden=step!=='live_action_roles';coreStorySection.hidden=step!=='live_action_story';
+      var editButton=doc.getElementById('shortDramaEditLiveAction'),saveButton=doc.getElementById('shortDramaSaveRole'),confirmButton=doc.getElementById('shortDramaConfirmRoles'),addButton=doc.getElementById('shortDramaAddRole');
+      if(step==='live_action_roles'){editButton.textContent='← 返回剧本设计';saveButton.hidden=false;addButton.hidden=false;confirmButton.textContent='确认角色并创建项目';}
+      if(step==='live_action_setup')setCreateHeading('AI LIVE-ACTION DRAMA','创建 AI 真人短剧','先填写短剧名称和制作规格，下一步进入具体的剧本设计。');
+      if(step==='live_action_story')setCreateHeading('SCRIPT DESIGN','设计并确认剧本','填写故事想法或完整原稿，确认核心故事和剧情结构后，再根据剧本建立角色。');
+      if(step==='live_action_roles')setCreateHeading('ROLE CONFIRMATION','确认真人短剧角色','核对并保存角色资料，然后在同一界面选择、上传或生成角色标准图。');
       if(step==='choice') setCreateHeading('NEW PROJECT','你想怎样开始？','选择最符合当前状态的方式，后面的制作流程完全一致。');
       if(step==='idea') setCreateHeading(createMode==='inspiration'?'START WITH GUIDANCE':'CREATE WITH AN IDEA',createMode==='inspiration'?'先填写基本创作边界':'创建短剧设置',createMode==='inspiration'?'只需填写题材线索和制作规格，下一步由助手与你一起完成剧本。':'先填写已有想法和制作规格，下一步仍会经过助手讨论与剧本确认。');
       if(step==='inspiration') setCreateHeading('SCRIPT CO-CREATION','剧本共创室','先和创作助手聊清想法，再选择方向、查看完整剧本并完成审稿确认。');
       if(step==='import') setCreateHeading('IMPORT A SCRIPT','导入已有剧本','上传文件或粘贴原稿，助手会先识别内容，再与你确认如何成片。');
+      updateLiveActionReferenceGates();
     }
     function resetCreate(){
       renderPlannerDraftResume(null);
-      liveActionForm.reset();liveActionAnalysis=null;liveActionRoles=[];activeLiveActionRole=0;pendingLiveActionKey='';pendingLiveActionDiscardKey='';pendingLiveActionProject=null;liveActionReferenceBusy=false;savedLiveActionRoleSignatures={};roleList.innerHTML='';if(roleTabs)roleTabs.innerHTML='';
-      doc.getElementById('shortDramaLiveActionCount').textContent='0';showLiveActionError('',false);showLiveActionError('',true);
+      renderLiveActionDraftResume(null);doc.getElementById('shortDramaCloseDraftPrompt').hidden=true;doc.getElementById('shortDramaCloseDraftError').hidden=true;
+      if(liveActionDraftTimer!==null){runtimeRoot.clearTimeout(liveActionDraftTimer);liveActionDraftTimer=null;}
+      Object.keys(liveActionNoticeTimers).forEach(function(key){if(liveActionNoticeTimers[key]!==null)runtimeRoot.clearTimeout(liveActionNoticeTimers[key]);liveActionNoticeTimers[key]=null;});
+      liveActionForm.reset();coreStoryForm.reset();coreStoryReview.hidden=true;coreStoryForm.querySelector('button[type="submit"]').hidden=true;liveActionAnalysis=null;liveActionRoles=[];liveActionCoreStory={};activeLiveActionRole=0;pendingLiveActionKey='';pendingLiveActionDiscardKey='';pendingLiveActionProject=null;liveActionReferenceBusy=false;liveActionReferenceTasks={};savedLiveActionRoleSignatures={};roleList.innerHTML='';if(roleTabs)roleTabs.innerHTML='';
+      doc.getElementById('shortDramaLiveActionCount').textContent='0';showLiveActionError('',false);showLiveActionError('',true);showLiveActionNotice('','live_action_story');
       plannerPersistenceReady=false;form.reset();ideaMessages=[];chat.innerHTML='';recommendations.innerHTML='';recommendations.hidden=true;createMode='idea';plannerPayload=null;selectedDirection=null;plannerPreview=null;pendingCreateKey='';plannerAnswers={};plannerMeta={};plannerDirtyFields=[];plannerHistory=[];plannerTranscript=[];plannerFeedback=[];plannerCorrectionCount=0;activePlannerField='';activePlannerChoices={field:'',items:[]};advisorDegraded=false;plannerPanel='auto';
       importText.value='';importFile.value='';importFilename='';importAnalysis=null;pendingImportKey='';importEditor.hidden=false;importForm.hidden=true;importForm.reset();
       doc.getElementById('shortDramaImportCount').textContent='0';doc.getElementById('shortDramaImportFileName').hidden=true;doc.getElementById('shortDramaImportError').hidden=true;
@@ -1337,7 +1822,26 @@
       var opening=advisorStep([],{},plannerAnswers,plannerMeta);activePlannerField=opening.field||'';chatBubble('assistant',opening.message);renderQuickReplies(opening.quick);renderScriptPreview(null);plannerNotice('',false);doc.getElementById('shortDramaPlannerAckInput').checked=false;renderPlanner();
       showCreateStep('choice');
     }
-    function openCreate(){if(!currentUsername){setNotice('正在确认登录账号，请稍后重试。',true);return;}var draft=readPlannerDraft();resetCreate();renderPlannerDraftResume(draft);dialog.showModal();}
+    function openCreate(){if(!currentUsername){setNotice('正在确认登录账号，请稍后重试。',true);return;}var plannerDraft=readPlannerDraft(),liveDraft=readLiveActionDraft();resetCreate();renderPlannerDraftResume(plannerDraft);renderLiveActionDraftResume(liveDraft);dialog.showModal();}
+    function closeCreateNow(){closeLiveActionReferencePicker();doc.getElementById('shortDramaCloseDraftPrompt').hidden=true;if(dialog.open)dialog.close();}
+    function requestCreateClose(){
+      if(anyLiveActionReferenceBusy()){showLiveActionNotice('角色标准图正在生成，请等待任务完成；你可以继续编辑其他角色。',currentCreateStep);return;}
+      if(['live_action_setup','live_action_story','live_action_roles'].indexOf(currentCreateStep)<0||!liveActionDraftHasContent()){closeCreateNow();return;}
+      var prompt=doc.getElementById('shortDramaCloseDraftPrompt'),error=doc.getElementById('shortDramaCloseDraftError');error.hidden=true;error.textContent='';prompt.hidden=false;var first=prompt.querySelector('[data-draft-close="save"]');if(first)first.focus();
+    }
+    function setDraftCloseBusy(busy){doc.querySelectorAll('[data-draft-close]').forEach(function(button){button.disabled=!!busy;});}
+    function handleDraftClose(action){
+      var prompt=doc.getElementById('shortDramaCloseDraftPrompt'),error=doc.getElementById('shortDramaCloseDraftError');
+      if(action==='continue'){prompt.hidden=true;return;}
+      if(action==='save'){
+        if(saveLiveActionDraft(true)){syncLocalDraftProject();render();prompt.hidden=true;closeCreateNow();return;}
+        error.textContent='草稿保存失败，请检查浏览器存储空间后重试。为避免丢失，窗口会继续保留。';error.hidden=false;return;
+      }
+      if(action!=='discard')return;
+      if(pendingLiveActionProject&&liveActionProjectHasReferenceActivity(pendingLiveActionProject)){error.textContent='当前临时项目已经生成或绑定标准图，不能直接丢弃。请选择“保存草稿并关闭”。';error.hidden=false;return;}
+      setDraftCloseBusy(true);if(pendingLiveActionProject&&!pendingLiveActionDiscardKey)pendingLiveActionDiscardKey=newLiveActionAbandonKey();
+      discardPendingLiveActionProject(client,pendingLiveActionProject,false,pendingLiveActionDiscardKey).then(function(){pendingLiveActionProject=null;clearLiveActionDraft();closeCreateNow();}).catch(function(discardError){error.textContent=discardError.message||'当前进度无法安全丢弃，请保存草稿后关闭。';error.hidden=false;}).finally(function(){setDraftCloseBusy(false);});
+    }
     function submitIdea(value){
       value=compactIdea(value);if(!value||advisorBusy)return Promise.resolve(false);
       var choiceContext={field:activePlannerChoices.field||activePlannerField||'',items:(activePlannerChoices.items||[]).slice(0,3)};
@@ -1528,10 +2032,27 @@
     }
     doc.getElementById('shortDramaCreate').addEventListener('click',openCreate);
     doc.querySelectorAll('[data-action="open-create"]').forEach(function(node){node.addEventListener('click',openCreate);});
-    doc.querySelectorAll('[data-action="close-create"]').forEach(function(node){node.addEventListener('click',function(){dialog.close();});});
+    doc.querySelectorAll('[data-action="close-create"]').forEach(function(node){node.addEventListener('click',requestCreateClose);});
+    dialog.addEventListener('cancel',function(event){event.preventDefault();requestCreateClose();});
+    dialog.addEventListener('click',function(event){if(event.target===dialog)requestCreateClose();});
+    doc.getElementById('shortDramaCloseDraftPrompt').addEventListener('click',function(event){var button=event.target.closest('[data-draft-close]');if(button)handleDraftClose(button.getAttribute('data-draft-close'));});
     doc.querySelectorAll('[data-action="back-create-choice"]').forEach(function(node){node.addEventListener('click',function(){showCreateStep('choice');});});
     doc.getElementById('shortDramaResumePlanner').addEventListener('click',function(){var draft=resumePlannerDraft;if(!draft)return;renderPlannerDraftResume(null);restorePlannerDraft(draft);});
     doc.getElementById('shortDramaDiscardPlannerDraft').addEventListener('click',function(){clearPlannerDraft();resetCreate();});
+    doc.getElementById('shortDramaResumeLiveAction').addEventListener('click',function(){var draft=resumeLiveActionDraft;if(draft)restoreLiveActionDraft(draft);});
+    doc.getElementById('shortDramaDiscardLiveActionDraft').addEventListener('click',function(){
+      var draft=resumeLiveActionDraft,project=draft&&draft.pending_project?normalizeProject(draft.pending_project):null;
+      if(project&&liveActionProjectHasReferenceActivity(project)){doc.getElementById('shortDramaTypeNotice').textContent='这份草稿包含已经生成或绑定的标准图，请先继续填写，避免误删已产生的内容。';doc.getElementById('shortDramaTypeNotice').hidden=false;return;}
+      clearLiveActionDraft();renderLiveActionDraftResume(null);
+    });
+    doc.getElementById('shortDramaResumeProjectDraft').addEventListener('click',resumeProjectDraft);
+    projectActionForm.addEventListener('submit',function(event){event.preventDefault();submitProjectAction();});
+    doc.getElementById('shortDramaProjectActionCancel').addEventListener('click',closeProjectAction);
+    doc.getElementById('shortDramaProjectActionClose').addEventListener('click',closeProjectAction);
+    projectActionDialog.addEventListener('cancel',function(event){event.preventDefault();closeProjectAction();});
+    function selectProjectView(view){activeProjectView=view||'all_projects';drawer.hidden=true;closeCardMenus();render();grid.scrollIntoView({block:'start',behavior:'smooth'});}
+    doc.querySelector('.short-drama-metrics').addEventListener('click',function(event){var metric=event.target.closest('[data-project-view]');if(metric)selectProjectView(metric.getAttribute('data-project-view'));});
+    doc.querySelector('.short-drama-metrics').addEventListener('keydown',function(event){var metric=event.target.closest('[data-project-view]');if(metric&&(event.key==='Enter'||event.key===' ')){event.preventDefault();selectProjectView(metric.getAttribute('data-project-view'));}});
     doc.querySelectorAll('[data-content-type]').forEach(function(node){node.addEventListener('click',function(){
       var type=node.getAttribute('data-content-type'),typeNotice=doc.getElementById('shortDramaTypeNotice');
       if(type!=='live_action'){
@@ -1539,69 +2060,81 @@
       }
       typeNotice.hidden=true;showCreateStep('live_action_setup');
     });});
-    liveActionForm.elements.source_text.addEventListener('input',function(){doc.getElementById('shortDramaLiveActionCount').textContent=liveActionForm.elements.source_text.value.length.toLocaleString();pendingLiveActionKey='';});
+    liveActionForm.addEventListener('input',scheduleLiveActionDraft);
+    liveActionForm.addEventListener('change',scheduleLiveActionDraft);
     liveActionForm.addEventListener('submit',function(event){
       event.preventDefault();showLiveActionError('',false);
-      try{
-        liveActionAnalysis=analyzeImportedScript(liveActionForm.elements.source_text.value,'');
-        liveActionAnalysis.title=text(liveActionForm.elements.title.value).trim()||liveActionAnalysis.title;
-        if(!liveActionRoles.length)liveActionRoles=defaultManualCharacterContract(2);
-        activeLiveActionRole=0;
-        renderLiveActionRoles();showCreateStep('live_action_roles');
-      }catch(error){showLiveActionError(error.message||'剧本读取失败，请检查内容。',false);}
+      showCreateStep('live_action_story');renderLiveActionCoreStory();showLiveActionNotice('请填写故事想法或完整原稿，再整理并确认剧本。','live_action_story',{autoHide:5000});scheduleLiveActionDraft();
     });
-    doc.getElementById('shortDramaAddRole').addEventListener('click',function(){collectLiveActionRoles();if(liveActionRoles.length>=20)return showLiveActionError('一个项目最多可设置 20 个角色。',true);liveActionRoles.push(nextLiveActionRole());activeLiveActionRole=liveActionRoles.length-1;renderLiveActionRoles();showLiveActionError('',true);});
+    doc.getElementById('shortDramaAnalyzeStory').addEventListener('click',function(){try{analyzeLiveActionStory();}catch(error){showLiveActionNotice(error.message||'剧本读取失败，请检查内容。','live_action_story');}});
+    doc.getElementById('shortDramaAddRole').addEventListener('click',function(){collectLiveActionRoles();if(liveActionRoles.length>=20)return showLiveActionError('一个项目最多可设置 20 个角色。',true);liveActionRoles.push(nextLiveActionRole());activeLiveActionRole=liveActionRoles.length-1;renderLiveActionRoles();showLiveActionError('',true);scheduleLiveActionDraft();});
     doc.getElementById('shortDramaEditLiveAction').addEventListener('click',function(){
       var editButton=doc.getElementById('shortDramaEditLiveAction');if(editButton.disabled)return;
-      collectLiveActionRoles();editButton.disabled=true;showLiveActionError('',true);
-      if(pendingLiveActionProject&&!pendingLiveActionDiscardKey)pendingLiveActionDiscardKey=newLiveActionAbandonKey();
-      discardPendingLiveActionProject(client,pendingLiveActionProject,liveActionReferenceBusy,pendingLiveActionDiscardKey).then(function(){
-        pendingLiveActionProject=null;pendingLiveActionKey='';pendingLiveActionDiscardKey='';savedLiveActionRoleSignatures={};
-        liveActionRoles.forEach(function(role){role.reference_job_id=null;role.reference_file='';role.reference_url='';role.reference_version=0;role.reference_locked=false;});
-        showCreateStep('live_action_setup');showLiveActionError('旧临时项目已安全移除；再次保存角色时会按当前故事设定创建新项目。',false);
-      }).catch(function(error){showLiveActionError(error.message||'无法安全修改故事设定，请稍后重试。',true);})
-        .finally(function(){editButton.disabled=false;});
+      collectLiveActionRoles();showCreateStep('live_action_story');renderLiveActionCoreStory();showLiveActionNotice('修改剧本原稿后，请重新整理并确认。','live_action_story',{autoHide:5000});scheduleLiveActionDraft();
     });
     function refreshLiveActionGenerateGate(){
-      var item=liveActionRoles[activeLiveActionRole],button=roleList.querySelector('[data-generate-role-reference="'+activeLiveActionRole+'"]');if(!button||!item)return;
-      var saved=isLiveActionRoleSaved(item);button.disabled=liveActionReferenceBusy||!saved;button.textContent=liveActionReferenceBusy?'正在处理…':(!saved?'请先保存当前角色':((item.reference_url||item.reference_file)?'重新生成角色标准图（35点）':'生成角色标准图（35点）'));
+      var item=liveActionRoles[activeLiveActionRole],buttons=roleList.querySelectorAll('[data-reference-source][data-reference-index="'+activeLiveActionRole+'"]');if(!buttons.length||!item)return;
+      var saved=isLiveActionRoleSaved(item),roleBusy=liveActionRoleReferenceBusy(item,activeLiveActionRole);buttons.forEach(function(button){button.disabled=liveActionReferenceBusy||roleBusy||!saved;});updateLiveActionReferenceGates();
     }
-    function handleLiveActionRoleEdit(event){collectLiveActionRoles();var label=event.target.closest('label');if(label)label.classList.remove('invalid');event.target.removeAttribute('aria-invalid');renderLiveActionRoleTabs();refreshLiveActionGenerateGate();showLiveActionError('',true);}
+    function runLiveActionReferenceTask(index,options){
+      options=options||{};var role=liveActionRoles[index],project=pendingLiveActionProject;if(!role||!project)return Promise.resolve(false);
+      var existing=liveActionReferenceTask(role,index)||{},jobId=Number(options.job_id||existing.job_id)||0;
+      if(existing.polling)return Promise.resolve(false);
+      setLiveActionReferenceTask(index,{job_id:jobId||null,state:jobId?'recovering':'submitting',started_at:Number(options.started_at||existing.started_at)||Date.now(),polling:true,error:''});
+      renderLiveActionRoles();showLiveActionError((role.name||('角色 '+(index+1)))+' 的标准图正在后台生成，你可以继续编辑其他角色。',true,{autoHide:5000});
+      var character=project.characters.find(function(item){return text(item.character_key)===text(role.character_key);});
+      if(!character){clearLiveActionReferenceTask(index,false);renderLiveActionRoles();showLiveActionError('没有找到当前角色的服务端记录，请重新保存角色。',true);return Promise.resolve(false);}
+      return client.generateCharacterReference(project,character,{
+        job_id:jobId||null,started_at:Number(options.started_at||existing.started_at)||Date.now(),
+        onCreated:function(createdJobId){setLiveActionReferenceTask(index,{job_id:Number(createdJobId),state:'pending',polling:true});renderLiveActionRoleTabs();},
+        onProgress:function(job){var progress=liveActionReferenceProgress(job),state=text(progress.state)||text(job&&job.status)||'running';setLiveActionReferenceTask(index,{state:state,polling:true,message:text(progress.message),retry_after_ms:Number(progress.retry_after_ms)||0,retry_at:Number(progress.retry_at)||0,attempt:Number(progress.attempt)||0});if(activeLiveActionRole===index)renderLiveActionRoles();else renderLiveActionRoleTabs();}
+      }).then(function(){return client.project(project.id);}).then(function(updatedProject){
+        clearLiveActionReferenceTask(index,true);syncLiveActionReferences(updatedProject);showLiveActionError((role.name||('角色 '+(index+1)))+' 的标准图已生成，请预览后确认锁定。',true,{autoHide:5000});renderLiveActionRoles();scheduleLiveActionDraft();return true;
+      }).catch(function(requestError){
+        var task=liveActionReferenceTask(role,index)||{},message=requestError&&requestError.message||'请稍后重试。';
+        var recoverable=!!(task.job_id&&((requestError&&requestError.recoverable)||/WinError\s*10060|timed?\s*out|timeout|网络|连接.*(?:超时|失败)|主机.*没有反应/i.test(message)));
+        if(recoverable){setLiveActionReferenceTask(index,{state:'recovering',polling:false,error:message});showLiveActionError((role.name||('角色 '+(index+1)))+' 的任务仍在后台处理，系统会自动恢复查询。',true,{autoHide:5000});runtimeRoot.setTimeout(resumeLiveActionReferenceTasks,15000);renderLiveActionRoles();return false;}
+        clearLiveActionReferenceTask(index,false);if(/HTTP\s*(?:Error\s*)?429|Too Many Requests/i.test(message))message='图片生成服务持续繁忙，本次任务已停止并自动退还点数，请稍后重新生成';showLiveActionError('标准图生成失败：'+message,true);renderLiveActionRoles();return false;
+      });
+    }
+    function resumeLiveActionReferenceTasks(){
+      liveActionRoles.forEach(function(role,index){var task=liveActionReferenceTask(role,index);if(task&&task.job_id&&!task.polling&&liveActionRoleReferenceBusy(role,index))runLiveActionReferenceTask(index,{job_id:task.job_id,started_at:task.started_at});});
+      updateLiveActionReferenceGates();
+    }
+    function generateLiveActionReference(index){
+      collectLiveActionRoles();activeLiveActionRole=index;
+      if(liveActionRoleReferenceBusy(liveActionRoles[index],index))return showLiveActionError('该角色的标准图已经在生成，请先处理其他角色。',true,{autoHide:5000});
+      var error=validateLiveActionRole(index);if(error){showLiveActionError(error,true);focusLiveActionRoleError(index);return;}
+      if(!isLiveActionRoleSaved(liveActionRoles[index])||!pendingLiveActionProject)return showLiveActionError('请先保存当前角色，再生成角色标准图。',true);
+      if(!text(liveActionRoles[index].fixed_clothing).trim())return showLiveActionError('使用 AI 生成标准图前，请先填写固定服装提示词并重新保存当前角色。',true);
+      runLiveActionReferenceTask(index);
+    }
+    function handleLiveActionRoleEdit(event){collectLiveActionRoles();var label=event.target.closest('label');if(label)label.classList.remove('invalid');event.target.removeAttribute('aria-invalid');if(event.type==='change'&&event.target.getAttribute('data-role-field')==='role_type')renderLiveActionRoles();else renderLiveActionRoleTabs();refreshLiveActionGenerateGate();showLiveActionError('',true);scheduleLiveActionDraft();}
     roleList.addEventListener('input',handleLiveActionRoleEdit);
     roleList.addEventListener('change',handleLiveActionRoleEdit);
     roleList.addEventListener('click',function(event){
+      var previewButton=event.target.closest('[data-preview-role-reference]');
+      if(previewButton){var previewImage=previewButton.querySelector('img');if(previewImage)openLiveActionReferencePreview(previewImage.currentSrc||previewImage.src,previewImage.alt.replace(/标准图$/,''),previewButton);return;}
       var confirmButton=event.target.closest('[data-confirm-role-reference]');
       if(confirmButton&&!liveActionReferenceBusy){
         var confirmIndex=Number(confirmButton.getAttribute('data-confirm-role-reference'));collectLiveActionRoles();activeLiveActionRole=confirmIndex;
         var confirmRole=liveActionRoles[confirmIndex];
-        if(!confirmRole||!confirmRole.reference_version)return showLiveActionError('请先生成角色标准图。',true);
+        if(liveActionRoleReferenceBusy(confirmRole,confirmIndex))return showLiveActionError('该角色的标准图仍在生成，请稍后确认。',true,{autoHide:5000});
+        if(!confirmRole||!(confirmRole.pending_reference_version||confirmRole.reference_version))return showLiveActionError('请先生成角色标准图。',true);
         if(!pendingLiveActionProject)return showLiveActionError('请先保存角色资料。',true);
         liveActionReferenceBusy=true;renderLiveActionRoles();showLiveActionError('正在确认并锁定角色标准图。',true);
         var savedCharacter=pendingLiveActionProject.characters.find(function(item){return text(item.character_key)===text(confirmRole.character_key);});
         client.confirmCharacterReference(pendingLiveActionProject,savedCharacter||confirmRole).then(function(project){
-          syncLiveActionReferences(project);showLiveActionError('',true);renderLiveActionRoles();
+          syncLiveActionReferences(project);showLiveActionError('',true);renderLiveActionRoles();scheduleLiveActionDraft();
           var confirmStatus=doc.getElementById('shortDramaRoleStatus'),current=liveActionRoles[confirmIndex];
           if(confirmStatus&&current)confirmStatus.textContent=current.name+' · 标准图已确认并锁定';
         }).catch(function(requestError){showLiveActionError('标准图确认失败：'+(requestError.message||'请稍后重试。'),true);})
           .finally(function(){liveActionReferenceBusy=false;renderLiveActionRoles();});
         return;
       }
-      var button=event.target.closest('[data-generate-role-reference]');if(!button||liveActionReferenceBusy)return;
-      var index=Number(button.getAttribute('data-generate-role-reference'));collectLiveActionRoles();activeLiveActionRole=index;
-      var error=validateLiveActionRole(index);if(error){showLiveActionError(error,true);focusLiveActionRoleError(index);return;}
-      if(!isLiveActionRoleSaved(liveActionRoles[index]))return showLiveActionError('请先保存当前角色，再生成角色标准图。',true);
-      if(!pendingLiveActionProject)return showLiveActionError('请先保存当前角色，再生成角色标准图。',true);
-      liveActionReferenceBusy=true;renderLiveActionRoles();showLiveActionError('正在生成角色标准图，请不要关闭窗口。',true);
-      Promise.resolve(pendingLiveActionProject).then(function(project){
-        var character=project.characters.find(function(item){return text(item.character_key)===text(liveActionRoles[index]&&liveActionRoles[index].character_key);});
-        if(!character)throw new Error('没有找到当前角色的服务端记录，请重新保存角色。');
-        return client.generateCharacterReference(project,character).then(function(){return client.project(project.id);});
-      }).then(function(project){
-        syncLiveActionReferences(project);showLiveActionError('',true);renderLiveActionRoles();
-        var status=doc.getElementById('shortDramaRoleStatus'),current=liveActionRoles[index];
-        if(status&&current)status.textContent=current.name+' · 标准图已生成，请预览后确认锁定';
-      }).catch(function(requestError){showLiveActionError('标准图生成失败：'+(requestError.message||'请稍后重试。'),true);})
-        .finally(function(){liveActionReferenceBusy=false;renderLiveActionRoles();});
+      var sourceButton=event.target.closest('[data-reference-source]');if(!sourceButton||liveActionReferenceBusy)return;
+      var sourceIndex=Number(sourceButton.getAttribute('data-reference-index'));if(liveActionRoleReferenceBusy(liveActionRoles[sourceIndex],sourceIndex))return;
+      openLiveActionReferencePicker(sourceIndex,sourceButton.getAttribute('data-reference-source'));
     });
     roleTabs.addEventListener('click',function(event){
       var select=event.target.closest('[data-role-select]'),remove=event.target.closest('[data-role-remove]');collectLiveActionRoles();
@@ -1612,33 +2145,62 @@
         if(runtimeRoot.confirm&& !runtimeRoot.confirm('确定删除这个角色吗？已填写的资料将一并移除。'))return;
         if(removed)delete savedLiveActionRoleSignatures[text(removed.character_key)];liveActionRoles.splice(removeIndex,1);
         if(activeLiveActionRole>removeIndex)activeLiveActionRole-=1;else if(activeLiveActionRole>=liveActionRoles.length)activeLiveActionRole=liveActionRoles.length-1;
-        renderLiveActionRoles();showLiveActionError('',true);return;
+        renderLiveActionRoles();showLiveActionError('',true);scheduleLiveActionDraft();return;
       }
-      if(select){activeLiveActionRole=Number(select.getAttribute('data-role-select'));renderLiveActionRoles();showLiveActionError('',true);}
+      if(select){activeLiveActionRole=Number(select.getAttribute('data-role-select'));renderLiveActionRoles();showLiveActionError('',true);scheduleLiveActionDraft();}
     });
     doc.getElementById('shortDramaSaveRole').addEventListener('click',function(){
       var button=doc.getElementById('shortDramaSaveRole');if(button.disabled)return;
-      if(liveActionRoleHasReferenceActivity(liveActionRoles[activeLiveActionRole]))return showLiveActionError('该角色已有付费或锁定的角色标准图，不能直接修改或删除。',true);
       collectLiveActionRoles();var error=validateLiveActionRole(activeLiveActionRole);if(error){showLiveActionError(error,true);focusLiveActionRoleError(activeLiveActionRole);return;}
       button.disabled=true;button.textContent='正在保存…';showLiveActionError('',true);
       persistLiveActionRoles({partial:true,roleIndex:activeLiveActionRole}).then(function(){
-        renderLiveActionRoles();var current=liveActionRoles[activeLiveActionRole],status=doc.getElementById('shortDramaRoleStatus');
-        if(status&&current)status.textContent=(current.name||('角色 '+(activeLiveActionRole+1)))+' · 当前资料已保存，可生成标准图';
+        renderLiveActionRoles();scheduleLiveActionDraft();var current=liveActionRoles[activeLiveActionRole],status=doc.getElementById('shortDramaRoleStatus');
+        if(status&&current)status.textContent=(current.name||('角色 '+(activeLiveActionRole+1)))+(current.reference_profile_stale?' · 资料已更新，可修改提示词并重新生成标准图':' · 当前资料已保存，可生成标准图');
       }).catch(function(requestError){showLiveActionError('角色保存失败：'+(requestError.message||'请稍后重试。'),true);})
         .finally(function(){button.disabled=false;button.textContent='保存当前角色';});
     });
     doc.getElementById('shortDramaConfirmRoles').addEventListener('click',function(){
+      if(anyLiveActionReferenceBusy())return showLiveActionError('请等待全部角色标准图任务完成后再创建项目；当前仍可编辑其他角色。',true,{autoHide:5000});
       var error=validateLiveActionRoles();if(error){var invalidIndex=liveActionRoles.findIndex(function(item,index){return !!validateLiveActionRole(index);});showLiveActionError(error,true);if(invalidIndex>=0)focusLiveActionRoleError(invalidIndex);return;}
       var unsaved=liveActionRoles.filter(function(item){return !isLiveActionRoleSaved(item);});
-      if(unsaved.length)return showLiveActionError('请先保存当前角色并生成角色标准图：'+unsaved.map(function(item){return item.name;}).join('、')+'。',true);
-      var missingReference=liveActionRoles.filter(function(item){return !(item.reference_url||item.reference_file);});
-      if(missingReference.length)return showLiveActionError('请先保存当前角色并生成角色标准图：'+missingReference.map(function(item){return item.name;}).join('、')+'。',true);
-      var unlocked=liveActionRoles.filter(function(item){return !item.reference_locked;});
-      if(unlocked.length)return showLiveActionError('请先确认并锁定角色标准图：'+unlocked.map(function(item){return item.name;}).join('、')+'。',true);
+      if(unsaved.length){var unsavedIndex=liveActionRoles.indexOf(unsaved[0]);activeLiveActionRole=Math.max(0,unsavedIndex);renderLiveActionRoles();roleList.scrollIntoView({block:'start',behavior:'smooth'});return showLiveActionError('请先保存角色资料：'+unsaved.map(function(item){return item.name;}).join('、')+'。',true);}
+      var missingReference=liveActionRoles.filter(function(item){return liveActionRoleReferenceRule(item).required&&!(item.reference_url||item.reference_file);});
+      if(missingReference.length){activeLiveActionRole=liveActionRoles.indexOf(missingReference[0]);renderLiveActionRoles();var missingReferenceSection=roleList.querySelector('.short-drama-role-reference');if(missingReferenceSection)missingReferenceSection.scrollIntoView({block:'center',behavior:'smooth'});return showLiveActionError('请先为需要保持形象一致的角色设置标准图：'+missingReference.map(function(item){return item.name;}).join('、')+'。',true);}
+      var unlocked=liveActionRoles.filter(function(item){return liveActionRoleReferenceRule(item).required&&!item.reference_locked;});
+      if(unlocked.length){activeLiveActionRole=liveActionRoles.indexOf(unlocked[0]);renderLiveActionRoles();var unlockedReferenceSection=roleList.querySelector('.short-drama-role-reference');if(unlockedReferenceSection)unlockedReferenceSection.scrollIntoView({block:'center',behavior:'smooth'});return showLiveActionError('请先确认并锁定角色标准图：'+unlocked.map(function(item){return item.name;}).join('、')+'。',true);}
       showLiveActionError('',true);var submit=doc.getElementById('shortDramaConfirmRoles');submit.disabled=true;submit.textContent='正在创建项目…';
-      var created=normalizeProject(pendingLiveActionProject);dialog.close();projects=projects.filter(function(item){return text(item&&item.id)!==created.id;});projects.unshift(created);render();
-      if(runtimeRoot.location)runtimeRoot.location.href=projectUrl(created.id);else showProject(created.id);
-      submit.disabled=false;submit.textContent='确认角色并创建项目';
+      client.finalizeLiveActionProject(pendingLiveActionProject).then(function(project){
+        var created=normalizeProject(project);clearLiveActionDraft();dialog.close();projects=projects.filter(function(item){return text(item&&item.id)!==created.id&&!item.local_draft;});projects.unshift(created);render();
+        if(runtimeRoot.location)runtimeRoot.location.href=projectUrl(created.id);else showProject(created.id);
+      }).catch(function(error){showLiveActionError('项目创建失败：'+(error.message||'请稍后重试。'),true);}).finally(function(){submit.disabled=false;submit.textContent='确认角色并创建项目';});
+    });
+    doc.getElementById('shortDramaBackToRoles').addEventListener('click',function(){collectLiveActionCoreStory();syncLiveActionSource(coreStoryForm.elements.script_source.value);showCreateStep('live_action_setup');showLiveActionError('',false);scheduleLiveActionDraft();});
+    coreStoryForm.addEventListener('input',function(event){
+      if(event.target===coreStoryForm.elements.script_source){syncLiveActionSource(event.target.value);pendingLiveActionKey='';if(!liveActionAnalysis||text(liveActionAnalysis.source)!==liveActionSourceText()){liveActionCoreStory={};coreStoryReview.hidden=true;coreStoryForm.querySelector('button[type="submit"]').hidden=true;}}
+      else collectLiveActionCoreStory();
+      showLiveActionNotice('','live_action_story');scheduleLiveActionDraft();
+    });
+    function ensureLiveActionStoryProject(){
+      var source=liveActionSourceText(),contract=normalizeCharacterContract(liveActionRoles),storedSource=text(pendingLiveActionProject&&pendingLiveActionProject.script_import&&pendingLiveActionProject.script_import.source_text).trim();
+      function createDraft(){
+        if(!pendingLiveActionKey)pendingLiveActionKey=newImportKey();
+        syncLiveActionSource(source);
+        return client.importProject(importProjectPayload(liveActionForm,liveActionAnalysis,'faithful',{content_type:'live_action',character_contract:contract}),pendingLiveActionKey)
+          .then(function(project){pendingLiveActionKey='';return client.project(project.id);})
+          .then(function(project){return syncLiveActionReferences(project);});
+      }
+      if(!pendingLiveActionProject)return createDraft();
+      if(storedSource===source)return Promise.resolve(pendingLiveActionProject);
+      if(!pendingLiveActionDiscardKey)pendingLiveActionDiscardKey=newLiveActionAbandonKey();
+      return discardPendingLiveActionProject(client,pendingLiveActionProject,anyLiveActionReferenceBusy(),pendingLiveActionDiscardKey).then(function(){pendingLiveActionProject=null;pendingLiveActionDiscardKey='';savedLiveActionRoleSignatures={};return createDraft();});
+    }
+    coreStoryForm.addEventListener('submit',function(event){
+      event.preventDefault();var storyError=validateLiveActionCoreStory();if(storyError)return showLiveActionNotice(storyError,'live_action_story');
+      var submit=coreStoryForm.querySelector('button[type="submit"]');submit.disabled=true;submit.textContent='正在确认剧本…';showLiveActionNotice('','live_action_story');
+      ensureLiveActionStoryProject().then(function(project){return client.confirmLiveActionCoreStory(project,Object.assign({},liveActionCoreStory));}).then(function(project){
+        syncLiveActionReferences(project);liveActionCoreStory=Object.assign({},pendingLiveActionProject.script_import&&pendingLiveActionProject.script_import.core_story||liveActionCoreStory);showCreateStep('live_action_roles');renderLiveActionRoles();showLiveActionError('剧本已确认，请核对并保存剧本中识别出的角色。',true,{autoHide:5000});scheduleLiveActionDraft();
+      }).catch(function(error){showLiveActionNotice('核心故事确认失败：'+(error.message||'请稍后重试。'),'live_action_story');})
+        .finally(function(){submit.disabled=false;submit.textContent='确认剧本，下一步：角色确认';});
     });
     doc.querySelectorAll('[data-create-mode]').forEach(function(node){node.addEventListener('click',function(){
       var mode=node.getAttribute('data-create-mode');createMode=mode;
@@ -1694,9 +2256,16 @@
     doc.getElementById('shortDramaConfirmScript').addEventListener('click',promotePlannerProject);
     doc.querySelector('[data-action="close-drawer"]').addEventListener('click',function(){selectedProjectId='';drawer.hidden=true;});
     deleteButton.addEventListener('click',deleteSelectedProject);
-    doc.getElementById('shortDramaSearch').addEventListener('input',render);doc.getElementById('shortDramaStageFilter').addEventListener('change',render);
-    grid.addEventListener('click',function(event){var card=event.target.closest('[data-project-id]');if(card)showProject(card.getAttribute('data-project-id'));});
-    grid.addEventListener('keydown',function(event){var card=event.target.closest('[data-project-id]');if(card&&(event.key==='Enter'||event.key===' ')){event.preventDefault();showProject(card.getAttribute('data-project-id'));}});
+    doc.getElementById('shortDramaSearch').addEventListener('input',render);
+    doc.getElementById('shortDramaSearchClear').addEventListener('click',function(){var search=doc.getElementById('shortDramaSearch');search.value='';render();search.focus();});
+    doc.getElementById('shortDramaEmptyAction').addEventListener('click',function(){var search=doc.getElementById('shortDramaSearch');if(text(search.value).trim()){search.value='';render();search.focus();}else openCreate();});
+    grid.addEventListener('click',function(event){
+      var toggle=event.target.closest('[data-card-menu]');if(toggle){event.preventDefault();event.stopPropagation();var menu=toggle.closest('[data-project-id]').querySelector('.short-drama-card-menu'),willOpen=menu.hidden;closeCardMenus();menu.hidden=!willOpen;toggle.setAttribute('aria-expanded',willOpen?'true':'false');return;}
+      var actionButton=event.target.closest('[data-card-action]');if(actionButton){event.preventDefault();event.stopPropagation();if(actionButton.disabled)return;var actionCard=actionButton.closest('[data-project-id]'),project=projects.map(normalizeProject).find(function(item){return item.id===actionCard.getAttribute('data-project-id');});closeCardMenus();if(!project)return;var kind=actionButton.getAttribute('data-card-action');if(kind==='delete'){selectedProjectId=project.id;deleteSelectedProject();}else openProjectAction(kind,project);return;}
+      var card=event.target.closest('[data-project-id]');if(card)showProject(card.getAttribute('data-project-id'));
+    });
+    grid.addEventListener('keydown',function(event){if(event.key==='Escape'){closeCardMenus();return;}if(event.target.closest('button'))return;var card=event.target.closest('[data-project-id]');if(card&&(event.key==='Enter'||event.key===' ')){event.preventDefault();showProject(card.getAttribute('data-project-id'));}});
+    doc.addEventListener('click',function(){closeCardMenus();});
     form.addEventListener('submit',function(event){
       event.preventDefault();startPlanner();
     });
@@ -1714,8 +2283,9 @@
         showImportError('导入失败：'+(error.message||'请稍后重试。'));
       }).finally(function(){submit.disabled=false;submit.textContent='确认导入并进入工作区';});
     });
+    if(runtimeRoot&&typeof runtimeRoot.addEventListener==='function')runtimeRoot.addEventListener('pagehide',function(){if(dialog.open&&['live_action_setup','live_action_story','live_action_roles'].indexOf(currentCreateStep)>=0)saveLiveActionDraft(false);});
     load().catch(function(){});
     return {reload:load,render:render};
   }
-  return {STAGES:STAGES,LABELS:LABELS,normalizeProject:normalizeProject,progress:progress,filterProjects:filterProjects,metrics:metrics,deleteErrorMessage:deleteErrorMessage,createPayload:createPayload,liveActionRoleHasReferenceActivity:liveActionRoleHasReferenceActivity,liveActionProjectHasReferenceActivity:liveActionProjectHasReferenceActivity,discardPendingLiveActionProject:discardPendingLiveActionProject,compactIdea:compactIdea,plannerChoiceIndex:plannerChoiceIndex,plannerResolveChoice:plannerResolveChoice,plannerUnderstanding:plannerUnderstanding,plannerCompleteness:plannerCompleteness,plannerFlowState:plannerFlowState,buildRecommendations:buildRecommendations,advisorStep:advisorStep,plannerLocalIntent:plannerLocalIntent,plannerLocalFieldUpdates:plannerLocalFieldUpdates,plannerLocalAdvice:plannerLocalAdvice,applyAdvisorResult:applyAdvisorResult,plannerMetaSnapshot:plannerMetaSnapshot,applyAdvisorMetadata:applyAdvisorMetadata,plannerConversationAudit:plannerConversationAudit,plannerAnswerSnapshot:plannerAnswerSnapshot,plannerChangedFields:plannerChangedFields,plannerRecap:plannerRecap,plannerProgress:plannerProgress,plannerAffectedLayers:plannerAffectedLayers,rebuildPlannerPreview:rebuildPlannerPreview,plannerDurations:plannerDurations,plannerRoles:plannerRoles,plannerReadingSeconds:plannerReadingSeconds,plannerStoryPlan:plannerStoryPlan,plannerScenePlan:plannerScenePlan,plannerDialogueSet:plannerDialogueSet,plannerQuality:plannerQuality,plannerReview:plannerReview,repairPlannerPreview:repairPlannerPreview,buildPlannerPreview:buildPlannerPreview,plannerPromotionMessages:plannerPromotionMessages,plannerConfirmedContract:plannerConfirmedContract,plannerWordDocumentHtml:plannerWordDocumentHtml,plannerWordFilename:plannerWordFilename,confirmedContractMatches:confirmedContractMatches,continuePlannerContract:continuePlannerContract,importedTitle:importedTitle,importedGlobalUnderstanding:importedGlobalUnderstanding,analyzeImportedScript:analyzeImportedScript,importProjectPayload:importProjectPayload,characterContractFromAnalysis:characterContractFromAnalysis,defaultManualCharacterContract:defaultManualCharacterContract,normalizeCharacterContract:normalizeCharacterContract,newImportKey:newImportKey,newProjectKey:newProjectKey,plannerDraftStorageKey:plannerDraftStorageKey,plannerDraftMatchesUser:plannerDraftMatchesUser,plannerDraftActiveChoices:plannerDraftActiveChoices,readPlannerDraftRecord:readPlannerDraftRecord,writePlannerDraftRecord:writePlannerDraftRecord,readLimitedStream:readLimitedStream,extractPdfText:extractPdfText,extractDocxText:extractDocxText,readScriptFile:readScriptFile,createClient:createClient,projectUrl:projectUrl,cardHtml:cardHtml,mount:mount};
+  return {STAGES:STAGES,LABELS:LABELS,normalizeProject:normalizeProject,progress:progress,filterProjects:filterProjects,metrics:metrics,deleteErrorMessage:deleteErrorMessage,createPayload:createPayload,liveActionRoleHasReferenceActivity:liveActionRoleHasReferenceActivity,liveActionProjectHasReferenceActivity:liveActionProjectHasReferenceActivity,discardPendingLiveActionProject:discardPendingLiveActionProject,compactIdea:compactIdea,plannerChoiceIndex:plannerChoiceIndex,plannerResolveChoice:plannerResolveChoice,plannerUnderstanding:plannerUnderstanding,plannerCompleteness:plannerCompleteness,plannerFlowState:plannerFlowState,buildRecommendations:buildRecommendations,advisorStep:advisorStep,plannerLocalIntent:plannerLocalIntent,plannerLocalFieldUpdates:plannerLocalFieldUpdates,plannerLocalAdvice:plannerLocalAdvice,applyAdvisorResult:applyAdvisorResult,plannerMetaSnapshot:plannerMetaSnapshot,applyAdvisorMetadata:applyAdvisorMetadata,plannerConversationAudit:plannerConversationAudit,plannerAnswerSnapshot:plannerAnswerSnapshot,plannerChangedFields:plannerChangedFields,plannerRecap:plannerRecap,plannerProgress:plannerProgress,plannerAffectedLayers:plannerAffectedLayers,rebuildPlannerPreview:rebuildPlannerPreview,plannerDurations:plannerDurations,plannerRoles:plannerRoles,plannerReadingSeconds:plannerReadingSeconds,plannerStoryPlan:plannerStoryPlan,plannerScenePlan:plannerScenePlan,plannerDialogueSet:plannerDialogueSet,plannerQuality:plannerQuality,plannerReview:plannerReview,repairPlannerPreview:repairPlannerPreview,buildPlannerPreview:buildPlannerPreview,plannerPromotionMessages:plannerPromotionMessages,plannerConfirmedContract:plannerConfirmedContract,plannerWordDocumentHtml:plannerWordDocumentHtml,plannerWordFilename:plannerWordFilename,confirmedContractMatches:confirmedContractMatches,continuePlannerContract:continuePlannerContract,importedTitle:importedTitle,importedGlobalUnderstanding:importedGlobalUnderstanding,analyzeImportedScript:analyzeImportedScript,importProjectPayload:importProjectPayload,characterContractFromAnalysis:characterContractFromAnalysis,defaultManualCharacterContract:defaultManualCharacterContract,normalizeCharacterContract:normalizeCharacterContract,newImportKey:newImportKey,newProjectKey:newProjectKey,plannerDraftStorageKey:plannerDraftStorageKey,plannerDraftMatchesUser:plannerDraftMatchesUser,plannerDraftActiveChoices:plannerDraftActiveChoices,readPlannerDraftRecord:readPlannerDraftRecord,writePlannerDraftRecord:writePlannerDraftRecord,liveActionDraftStorageKey:liveActionDraftStorageKey,liveActionDraftMatchesUser:liveActionDraftMatchesUser,readLiveActionDraftRecord:readLiveActionDraftRecord,writeLiveActionDraftRecord:writeLiveActionDraftRecord,liveActionDraftSynopsis:liveActionDraftSynopsis,readLimitedStream:readLimitedStream,extractPdfText:extractPdfText,extractDocxText:extractDocxText,readScriptFile:readScriptFile,createClient:createClient,projectUrl:projectUrl,projectUpdatedAt:projectUpdatedAt,cardHtml:cardHtml,mount:mount};
 });

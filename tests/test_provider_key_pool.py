@@ -29,6 +29,7 @@ class ProviderKeyPoolTests(unittest.TestCase):
         self.db_path = pathlib.Path(self.tmp.name) / "admin.db"
         provider_keys.DB_PATH = self.db_path
         admin_api.ADMIN_DB = self.db_path
+        admin_api._PROVIDER_KEY_PING_ATTEMPTS.clear()
         self.env = patch.dict(
             os.environ,
             {
@@ -51,6 +52,7 @@ class ProviderKeyPoolTests(unittest.TestCase):
         self.env.stop()
         provider_keys._LEGACY_IMPORT_PATHS.discard(str(self.db_path))
         provider_keys._RUNTIME_UNHEALTHY_UNTIL.clear()
+        admin_api._PROVIDER_KEY_PING_ATTEMPTS.clear()
         provider_keys.DB_PATH = self.old_provider_db
         admin_api.ADMIN_DB = self.old_admin_db
         self.tmp.cleanup()
@@ -175,6 +177,25 @@ class ProviderKeyPoolTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["item"]["last4"], "7788")
         self.assertNotIn("secret", str(result))
+
+    def test_background_probe_refreshes_stale_managed_key_without_generating(self):
+        item = self.add("omni", "gemini-provider-secret-7788")
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                "UPDATE provider_api_keys SET last_checked_at=1 WHERE id=?",
+                (item["id"],),
+            )
+            conn.commit()
+        with patch.object(
+            admin_api, "probe_provider_secret",
+            return_value={"ok": True, "http_status": 200, "latency_ms": 12},
+        ) as probe:
+            checked = admin_api.probe_provider_keys(now=1000)
+            skipped = admin_api.probe_provider_keys(now=1010)
+        self.assertEqual(checked, [{"id": item["id"], "provider": "omni", "ok": True}])
+        self.assertEqual(skipped, [])
+        probe.assert_called_once_with("omni", "gemini-provider-secret-7788")
+        self.assertEqual(provider_keys.public_key(item["id"])["health_status"], "healthy")
 
     def test_xai_keys_rotate_by_least_use_and_can_be_revealed_with_audit(self):
         first = self.add("xai", "xai-provider-secret-1111")

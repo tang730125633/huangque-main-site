@@ -22,20 +22,23 @@ class NginxCspTest(unittest.TestCase):
                 )
 
                 self.assertEqual(len(policies), 4)
-                self.assertTrue(all(policy == policies[0] for policy in policies))
+                self.assertEqual(
+                    sum("frame-ancestors 'none'" in policy for policy in policies), 4,
+                )
+                self.assertEqual(
+                    sum("frame-ancestors 'self'" in policy for policy in policies), 0,
+                )
                 for directive in (
                     "base-uri 'self'",
                     "object-src 'none'",
-                    "frame-ancestors 'none'",
                     "script-src 'self' 'unsafe-inline' https://unpkg.com",
                     "style-src 'self' 'unsafe-inline' https://unpkg.com",
                 ):
-                    self.assertIn(directive, policies[0])
+                    self.assertTrue(all(directive in policy for policy in policies))
 
     def test_security_headers_cover_server_and_header_overrides(self):
-        expected = (
+        inherited = (
             'add_header Strict-Transport-Security "max-age=31536000" always;',
-            'add_header X-Frame-Options "DENY" always;',
             'add_header X-Content-Type-Options "nosniff" always;',
             'add_header Referrer-Policy "strict-origin-when-cross-origin" always;',
         )
@@ -43,8 +46,21 @@ class NginxCspTest(unittest.TestCase):
             config = self._config(relative_path)
             with self.subTest(config=relative_path):
                 self.assertEqual(config.count("server_tokens off;"), 2)
-                for header in expected:
+                for header in inherited:
                     self.assertEqual(config.count(header), 4, header)
+                self.assertEqual(
+                    config.count('add_header X-Frame-Options "DENY" always;'), 4,
+                )
+                self.assertEqual(
+                    config.count('add_header X-Frame-Options "SAMEORIGIN" always;'), 0,
+                )
+
+    def test_customer_pages_cannot_be_embedded_by_admin(self):
+        for relative_path in self.CONFIGS:
+            config = self._config(relative_path)
+            with self.subTest(config=relative_path):
+                self.assertNotIn("location ~ ^/workbench/(video|one-click-video)$", config)
+                self.assertNotIn("frame-ancestors 'self'", config)
 
     def test_root_serves_the_marketing_homepage(self):
         for relative_path in self.CONFIGS:
@@ -137,6 +153,14 @@ class NginxCspTest(unittest.TestCase):
                     config,
                 )
                 self.assertIn('proxy_set_header X-HQ-Internal-Token "";', block)
+
+                video_start = config.index("location = /api/auth/cli/video-upload {")
+                video_end = config.index("\n    }", video_start)
+                video_block = config[video_start:video_end]
+                self.assertIn("proxy_request_buffering off;", video_block)
+                self.assertIn("client_max_body_size 32m;", video_block)
+                self.assertIn("client_body_timeout 45s;", video_block)
+                self.assertIn('proxy_set_header X-HQ-Internal-Token "";', video_block)
 
     def test_card_media_upload_has_a_bounded_streaming_route(self):
         config = self._config("deploy/nginx-huangquechuanmei.conf")

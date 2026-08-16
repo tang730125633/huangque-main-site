@@ -188,7 +188,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=dbd5a9e4"></script>
+<script src="cloud-shell.js?v=5c2643d5"></script>
 <script>
 /* 资产库读真实生成历史（生成即自动入库）+ 按模式分类筛选 */
 (function(){
@@ -1551,13 +1551,6 @@
           if(AUDIO_TAB!=='public') return;
           if(loading.parentNode) loading.remove();
           var items=(d.items||[]).filter(function(v){ return v.scope==='public'; });
-          if(!items.length){
-            items=[
-              {display_name:'大鹏 IVC',sub:'克隆 · 亲切'},
-              {display_name:'泽龙 IVC',sub:'克隆 · 磁性'},
-              {display_name:'Paul 男声',sub:'官方 · 沉稳'}
-            ];
-          }
           items=filterAssets(items,'voice');
           if(!items.length){ var pe=document.createElement('div'); pe.style.cssText='grid-column:1/-1; padding:24px; text-align:center; font-size:13px; color:#5c6b82;'; pe.textContent='没有匹配的公共音色'; grid.appendChild(pe); return; }
           items.forEach(function(v){
@@ -1567,20 +1560,8 @@
         .catch(function(){
           if(AUDIO_TAB!=='public') return;
           if(loading.parentNode) loading.remove();
-          [
-            ['大鹏 IVC','克隆 · 亲切','公共音色'],
-            ['泽龙 IVC','克隆 · 磁性','公共音色'],
-            ['Paul 男声','官方 · 沉稳','公共音色']
-          ].forEach(function(v){ grid.appendChild(voiceAssetCard(v[0],v[1],v[2],false)); });
+          var pe=document.createElement('div');pe.style.cssText='grid-column:1/-1;padding:24px;text-align:center;font-size:13px;color:#f4708a;';pe.textContent='公共音色加载失败，请稍后重试';grid.appendChild(pe);
         });
-      return;
-    }
-    if(false && tab==='public'){
-      [
-        ['大鹏 IVC','克隆 · 亲切','公共音色'],
-        ['泽龙 IVC','克隆 · 磁性','公共音色'],
-        ['Paul 男声','官方 · 沉稳','公共音色']
-      ].forEach(function(v){ grid.appendChild(voiceAssetCard(v[0],v[1],v[2],false)); });
       return;
     }
     if(tab==='personal'){

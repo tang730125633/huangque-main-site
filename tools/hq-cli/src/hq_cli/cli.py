@@ -31,6 +31,7 @@ LOGIN_SCOPES = [
     "canvas:write", "canvas:agent", "canvas:edit", "tasks:read", "assets:read", "assets:write", "assets:upload",
     "generation:quote", "generation:submit",
     "video-compose:read", "video-compose:write", "digital-presenter:read", "digital-presenter:write",
+    "inspiration:read", "inspiration:write", "leads:read", "leads:write", "short-drama:read",
 ]
 
 
@@ -106,7 +107,7 @@ def _load_json(source):
     if len(raw) > MAX_INPUT_BYTES:
         raise CliError(EXIT_INPUT, "input_error", "input exceeds 65536 bytes")
     try:
-        payload = json.loads(raw.decode("utf-8"), parse_constant=_reject_non_finite)
+        payload = json.loads(raw.decode("utf-8-sig"), parse_constant=_reject_non_finite)
     except (UnicodeDecodeError, ValueError, RecursionError, json.JSONDecodeError) as exc:
         raise CliError(EXIT_INPUT, "input_error", "input must be finite UTF-8 JSON: %s" % exc)
     _validate_unicode(payload)
@@ -124,6 +125,15 @@ def _validate(capability, payload):
     for key in schema["required"]:
         if key not in payload:
             raise CliError(EXIT_INPUT, "input_error", "missing required input field: %s" % key)
+    for keyword, expected in (("anyOf", "at least one"), ("oneOf", "exactly one")):
+        options = schema.get(keyword) or []
+        if options:
+            matches = sum(all(key in payload for key in option.get("required", [])) for option in options)
+            if (keyword == "anyOf" and matches < 1) or (keyword == "oneOf" and matches != 1):
+                raise CliError(
+                    EXIT_INPUT, "input_error",
+                    "input must match %s of the documented field groups" % expected,
+                )
     for key, definition in properties.items():
         if key not in payload:
             continue
@@ -147,15 +157,26 @@ def _validate(capability, payload):
         if value_type == "array":
             if not isinstance(value, list):
                 raise CliError(EXIT_INPUT, "input_error", "input field %s must be an array" % key)
+            if len(value) < definition.get("minItems", 0):
+                raise CliError(EXIT_INPUT, "input_error", "input field %s has too few items" % key)
             if len(value) > definition.get("maxItems", len(value)):
                 raise CliError(EXIT_INPUT, "input_error", "input field %s has too many items" % key)
+            if definition.get("uniqueItems") and len(value) != len(set(value)):
+                raise CliError(EXIT_INPUT, "input_error", "input field %s contains duplicate items" % key)
             item = definition.get("items") or {}
             if item.get("type") == "string" and any(
                     not isinstance(entry, str) or len(entry) < item.get("minLength", 0)
                     or len(entry) > item.get("maxLength", len(entry)) for entry in value):
                 raise CliError(EXIT_INPUT, "input_error", "input field %s contains an invalid item" % key)
+            if item.get("type") == "integer" and any(
+                    isinstance(entry, bool) or not isinstance(entry, int)
+                    or entry < item.get("minimum", entry) or entry > item.get("maximum", entry)
+                    for entry in value):
+                raise CliError(EXIT_INPUT, "input_error", "input field %s contains an invalid item" % key)
+            if item.get("enum") and any(entry not in item["enum"] for entry in value):
+                raise CliError(EXIT_INPUT, "input_error", "input field %s contains an invalid item" % key)
         if "enum" in definition and value not in definition["enum"]:
-            raise CliError(EXIT_INPUT, "input_error", "input field %s must be one of: %s" % (key, ", ".join(definition["enum"])))
+            raise CliError(EXIT_INPUT, "input_error", "input field %s must be one of: %s" % (key, ", ".join(map(str, definition["enum"]))))
         if "minLength" in definition and len(value) < definition["minLength"]:
             raise CliError(EXIT_INPUT, "input_error", "input field %s is too short" % key)
         if "maxLength" in definition and len(value) > definition["maxLength"]:
@@ -164,6 +185,12 @@ def _validate(capability, payload):
             raise CliError(EXIT_INPUT, "input_error", "input field %s is below minimum" % key)
         if "maximum" in definition and value > definition["maximum"]:
             raise CliError(EXIT_INPUT, "input_error", "input field %s is above maximum" % key)
+    if capability.get("id") == "leads-generate":
+        platforms = payload.get("platforms") or []
+        if any(platform in {"douyin", "xhs"} for platform in platforms) and not payload.get("keyword"):
+            raise CliError(EXIT_INPUT, "input_error", "douyin or xhs leads require keyword")
+        if "channels" in platforms and not payload.get("channels_targets"):
+            raise CliError(EXIT_INPUT, "input_error", "channels leads require channels_targets")
 
 
 def _doctor(environment):
@@ -364,18 +391,20 @@ def main(argv=None):
                 _validate(capability, payload)
             if is_upload:
                 if args.open_browser or args.quote_token:
-                    raise CliError(EXIT_USAGE, "usage_error", "image-upload does not accept browser or quote options")
+                    raise CliError(EXIT_USAGE, "usage_error", "upload capabilities do not accept browser or quote options")
                 if not args.confirm:
                     raise CliError(EXIT_CONFIRMATION, "confirmation_required", "re-run this upload with --confirm")
                 if not args.file:
-                    raise CliError(EXIT_USAGE, "usage_error", "image-upload requires --file /absolute/path")
+                    raise CliError(EXIT_USAGE, "usage_error", "%s requires --file /absolute/path" % args.id)
                 credentials = _credentials()
+                upload_kind = "video" if args.id == "video-upload" else "image"
+                uploader = client.upload_video if upload_kind == "video" else client.upload_image
                 try:
-                    status, upload = client.upload_image(args.file, credentials["access_token"])
+                    status, upload = uploader(args.file, credentials["access_token"])
                 except ValueError as exc:
-                    raise CliError(EXIT_INPUT, "invalid_upload_file", "image upload failed: %s" % exc)
+                    raise CliError(EXIT_INPUT, "invalid_upload_file", "%s upload failed: %s" % (upload_kind, exc))
                 except client.NetworkError as exc:
-                    raise CliError(EXIT_NETWORK, "upload_error", "image upload failed: %s" % exc)
+                    raise CliError(EXIT_NETWORK, "upload_error", "%s upload failed: %s" % (upload_kind, exc))
                 result = _checked_response(status, upload)
             elif capability["kind"] == "navigation":
                 if args.confirm or args.quote_token:

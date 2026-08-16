@@ -8,9 +8,11 @@ content_api 里跑，而 imggen 的 worker 原本无条件 `UPDATE jobs SET stat
 
 断言与 tests/test_job_refund_cas.py、tests/test_leadgen_job_cas.py 一致。
 """
-import importlib, os, sys, tempfile, time, unittest
+import importlib, json, os, sys, tempfile, threading, time, unittest, urllib.error, urllib.request
 from contextlib import closing
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 # imggen_api.py 在【模块导入时】就 OUT_DIR.mkdir()，而它的默认值硬编码成
 # /home/ubuntu/content-api/content_out。CI runner 上建不了 → PermissionError: '/home/ubuntu'。
@@ -74,6 +76,63 @@ class ImggenJobCasTests(unittest.TestCase):
         with closing(self.m.jdb()) as c:
             row = c.execute("SELECT status,cost,owner FROM jobs WHERE id=?", (jid,)).fetchone()
         self.assertEqual(("pending", 14, "imggen"), tuple(row))
+
+    def test_banana_submit_binds_quote_charge_and_idempotency(self):
+        charges = []
+
+        def deduct(username, amount, reason="", transaction_key=""):
+            charges.append((username, amount, transaction_key))
+            return 200, {"points": 82}
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), self.m.H)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        old_internal = self.m.INTERNAL_TOKEN
+        self.m.INTERNAL_TOKEN = "internal-test"
+        body = json.dumps({
+            "prompt": "qa image", "model": "nb2", "ratio": "1:1",
+            "quality": "std", "count": 1, "source_page": "banana",
+        }).encode()
+        url = "http://127.0.0.1:%d/api/gen/banana" % server.server_address[1]
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+        def post(prompt="qa image", expected="18"):
+            payload = json.loads(body)
+            payload["prompt"] = prompt
+            request = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST", headers={
+                "Authorization": "Bearer account-token", "Content-Type": "application/json",
+                "Idempotency-Key": "idem-image-1", "X-HQ-Internal-Token": "internal-test",
+                "X-HQ-Expected-Cost": expected,
+            })
+            try:
+                with opener.open(request, timeout=3) as response:
+                    return response.status, json.loads(response.read())
+            except urllib.error.HTTPError as error:
+                return error.code, json.loads(error.read())
+
+        try:
+            with patch.object(self.m, "verify", return_value={"username": "u", "must_change": False}), \
+                 patch.object(self.m.feature_flags, "require_enabled"), \
+                 patch.object(self.m, "deduct_points", side_effect=deduct), \
+                 patch.object(self.m, "enqueue_job", return_value=True):
+                first = post()
+                replay = post()
+                conflict = post(prompt="different")
+                changed = post(expected="19")
+        finally:
+            server.shutdown()
+            server.server_close()
+            self.m.INTERNAL_TOKEN = old_internal
+
+        self.assertEqual((first[0], replay[0]), (200, 200))
+        self.assertEqual(first[1]["job_id"], replay[1]["job_id"])
+        self.assertEqual(conflict[0], 409)
+        self.assertEqual(conflict[1]["code"], "idempotency_conflict")
+        self.assertEqual(changed[0], 409)
+        self.assertEqual(changed[1]["code"], "quote_cost_changed")
+        self.assertEqual(charges, [("u", 18, "job-charge:u:/api/gen/banana:idem-image-1")])
+        with closing(self.m.jdb()) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 1)
 
     def test_reaper_wins_then_worker_success_cannot_overwrite(self):
         jid = self._insert(14)

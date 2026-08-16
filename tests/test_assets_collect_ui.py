@@ -33,6 +33,11 @@ class AssetsCollectUiTests(unittest.TestCase):
         self.assertIn(".asset-page-scroll::-webkit-scrollbar-thumb", self.html)
         self.assertIn("scrollbar-color:rgba(231,178,76,.62)", self.html)
 
+    def test_public_voice_failure_is_not_replaced_with_fake_assets(self):
+        self.assertIn("公共音色加载失败，请稍后重试", self.html)
+        self.assertNotIn("大鹏 IVC", self.html)
+        self.assertNotIn("泽龙 IVC", self.html)
+
 
 if __name__ == "__main__":
     unittest.main()
