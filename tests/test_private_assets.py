@@ -27,6 +27,7 @@ class PrivateAssetsTest(unittest.TestCase):
             core._parse_byte_range("bytes=0-1,4-5", 100)
 
     def test_download_proxy_sends_douyin_referer(self):
+        self.assertIn(".hdslb.com", dl_service.ALLOW)
         self.assertEqual(
             dl_service.download_headers("v26-webf.douyinvod.com")["Referer"],
             "https://www.douyin.com/",

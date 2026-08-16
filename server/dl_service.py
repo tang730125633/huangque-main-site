@@ -22,6 +22,7 @@ ALLOW = (
     ".zjcdn.com", ".douyinvod.com", ".douyinstatic.com", ".douyinpic.com", ".amemv.com",
     ".bytecdn.cn", ".ixigua.com", ".pstatp.com", ".snssdk.com", ".byteimg.com",
     ".xhscdn.com", ".rednotecdn.com", ".xiaohongshu.com",
+    ".hdslb.com",
     ".bytedance.net", ".lf-douyin.com", ".365yg.com",
     ".cos.ap-guangzhou.myqcloud.com",  # 采集视频转存 COS 后的直链下载(COS-COLLECT #113)
     "video.huangquechuanmei.com",  # 采集视频转存 COS 后走 CDN 域名(COS_DOMAIN)的直链下载
