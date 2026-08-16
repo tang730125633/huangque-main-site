@@ -304,6 +304,23 @@ exit 0
         self.assertIn("huangque-admin", restart)
         self.assertNotIn("huangque-content", restart)
 
+    def test_browser_qa_restarts_only_admin(self):
+        ssh_log = Path(self.tmp.name) / "ssh.log"
+        result = self._run_ship(
+            target="server/content_domains/browser_qa.py",
+            exact_content_domains=True,
+            FAKE_REMOTE_FILE_MISSING="1",
+            FAKE_CURL_CODE="200",
+            FAKE_SSH_LOG=str(ssh_log),
+        )
+        self.assertEqual(0, result.returncode, result.stdout)
+        restart = next(
+            line for line in ssh_log.read_text(encoding="utf-8").splitlines()
+            if "sudo systemctl restart" in line
+        )
+        self.assertIn("huangque-admin", restart)
+        self.assertNotIn("huangque-content", restart)
+
     def test_non_exact_function_registry_restarts_content_and_admin(self):
         ssh_log = Path(self.tmp.name) / "ssh.log"
         result = self._run_ship(

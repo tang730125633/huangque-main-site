@@ -216,6 +216,7 @@ for f in "$@"; do
              ;;
     server/content_domains/feature_flags.py) dest=/home/ubuntu/content-api/content_domains/; svc="huangque-content huangque-admin huangque-imggen-api huangque-leadgen-api" ;;
     server/content_domains/egress.py) dest=/home/ubuntu/content-api/content_domains/; svc="huangque-content huangque-admin huangque-imggen-api" ;;
+    server/content_domains/browser_qa.py) dest=/home/ubuntu/content-api/content_domains/; svc=huangque-admin ;;
     server/content_domains/*) dest=/home/ubuntu/content-api/content_domains/;  svc=huangque-content ;;
     server/providers/*)
              rel="${f#server/providers/}"
