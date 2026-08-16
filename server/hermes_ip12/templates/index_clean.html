@@ -145,15 +145,21 @@ body { font-family:var(--font); background:var(--bg); color:var(--text); height:
 .overlay-panel .convo-row:hover { background:rgba(255,255,255,0.04); }
 .overlay-panel .convo-row .cid { color:var(--accent-bright); font-family:monospace; font-size:10px; margin-left:8px; }
 .overlay-panel .close-btn { float:right; background:none; border:none; color:var(--text-dim); cursor:pointer; font-size:18px; }
-.pdf-review { position:fixed; inset:0; z-index:120; display:none; background:rgba(2,6,12,.82); backdrop-filter:blur(8px); }
-.pdf-review.open { display:flex; }
-.pdf-review-shell { width:min(1440px,96vw); height:min(900px,94vh); margin:auto; display:grid; grid-template-columns:minmax(0,1fr) 360px; overflow:hidden; border:1px solid rgba(255,255,255,.12); border-radius:18px; background:#0b111c; box-shadow:0 35px 100px rgba(0,0,0,.58); }
-.pdf-review-document { min-width:0; display:flex; flex-direction:column; background:#202631; }
+.pdf-review { --pdf-review-width:clamp(660px,55vw,1040px); position:relative; z-index:20; flex:0 0 auto; width:0; min-width:0; height:100vh; overflow:hidden; border-left:0 solid rgba(255,255,255,.12); background:#0b111c; transition:width .25s ease,min-width .25s ease,border-width .25s ease; }
+.pdf-review.open { width:var(--pdf-review-width); min-width:var(--pdf-review-width); border-left-width:1px; }
+.pdf-review-shell { width:var(--pdf-review-width); height:100%; display:grid; grid-template-columns:minmax(0,1fr) 300px; overflow:hidden; background:#0b111c; box-shadow:-28px 0 60px -42px rgba(0,0,0,.9); }
+.pdf-review-resizer { position:absolute; z-index:4; left:0; top:0; bottom:0; width:10px; cursor:col-resize; touch-action:none; outline:0; }
+.pdf-review-resizer:after { content:""; position:absolute; left:0; top:0; bottom:0; width:2px; background:transparent; transition:background .15s; }
+.pdf-review-resizer:hover:after,.pdf-review-resizer:focus-visible:after,body.pdf-review-resizing .pdf-review-resizer:after { background:var(--accent); }
+body.pdf-review-resizing { cursor:col-resize; user-select:none; }body.pdf-review-resizing iframe { pointer-events:none; }body.pdf-review-resizing .pdf-review { transition:none; }
+.pdf-review-document { position:relative; min-width:0; display:flex; flex-direction:column; background:#202631; }
 .pdf-review-bar { min-height:52px; padding:9px 14px; display:flex; align-items:center; gap:10px; border-bottom:1px solid rgba(255,255,255,.1); background:#0d1420; }
 .pdf-review-bar strong { font-size:13px; flex:1; }.pdf-review-bar span { font-size:10px; color:#94a3b8; }
 .pdf-review-bar button,.pdf-review-side button { border:1px solid rgba(255,255,255,.14); border-radius:8px; background:rgba(255,255,255,.05); color:#dbe5f1; padding:7px 10px; cursor:pointer; font-size:11px; }
 .pdf-review-bar button:hover,.pdf-review-side button:hover { border-color:var(--accent); color:var(--accent-bright); }
 .pdf-review-frame { width:100%; height:100%; border:0; background:#2b303b; }
+.pdf-review-loading { position:absolute; inset:52px 0 0; z-index:1; display:grid; place-items:center; background:#202631; color:#94a3b8; font-size:12px; }
+.pdf-review-loading[hidden] { display:none; }
 .pdf-review-side { display:flex; flex-direction:column; min-height:0; padding:16px; border-left:1px solid rgba(255,255,255,.1); background:linear-gradient(180deg,#101824,#0a101a); }
 .pdf-review-side h2 { font-size:15px; color:var(--accent-bright); }.pdf-review-help { margin:6px 0 13px; color:var(--text-dim); font-size:11px; line-height:1.6; }
 .pdf-review-grid { display:grid; grid-template-columns:90px 1fr; gap:8px; }.pdf-review-field { display:flex; flex-direction:column; gap:5px; margin-bottom:9px; }.pdf-review-field label { color:#94a3b8; font-size:10px; }
@@ -177,6 +183,12 @@ body { font-family:var(--font); background:var(--bg); color:var(--text); height:
 .hamburger.open span:nth-child(3) { transform:rotate(-45deg) translate(5px,-5px); }
 .drawer-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:50; }
 .drawer-overlay.open { display:block; }
+@media (max-width:1100px) {
+  .pdf-review { position:fixed; right:0; top:0; bottom:0; z-index:120; height:100vh; }
+  .pdf-review.open { width:100%; min-width:100%; }
+  .pdf-review-shell { width:100vw; }
+  .pdf-review-resizer { display:none; }
+}
 @media (max-width:720px) {
   .sidebar { position:fixed; left:0; top:0; z-index:60; width:280px; min-width:280px; transform:translateX(-100%); transition:transform .25s ease; }
   .sidebar.open { transform:translateX(0); }
@@ -253,10 +265,12 @@ body { font-family:var(--font); background:var(--bg); color:var(--text); height:
   </div>
 </main>
 
-<div class="pdf-review" id="foundationReviewer" role="dialog" aria-modal="true" aria-labelledby="foundationReviewerTitle">
+<aside class="pdf-review" id="foundationReviewer" aria-labelledby="foundationReviewerTitle">
+  <div class="pdf-review-resizer" id="foundationPdfResizer" role="separator" tabindex="0" aria-label="拖动调整 PDF 审阅区宽度" aria-orientation="vertical" aria-valuemin="480" aria-valuemax="1400" onpointerdown="beginFoundationResize(event)" onkeydown="resizeFoundationByKey(event)"></div>
   <div class="pdf-review-shell">
     <section class="pdf-review-document">
       <div class="pdf-review-bar"><strong id="foundationReviewerTitle">模块 1–4 PDF 审阅</strong><span>在 PDF 中查看原文，右侧按页添加修改意见</span><button type="button" onclick="downloadFoundationReport()">下载</button><button type="button" onclick="closeFoundationReviewer()">关闭</button></div>
+      <div class="pdf-review-loading" id="foundationPdfStatus">PDF 加载中…</div>
       <iframe class="pdf-review-frame" id="foundationPdfFrame" title="模块 1–4 PDF 预览"></iframe>
     </section>
     <aside class="pdf-review-side">
@@ -273,7 +287,7 @@ body { font-family:var(--font); background:var(--bg); color:var(--text); height:
       <button class="pdf-review-submit" id="foundationAnnotationSubmit" type="button" onclick="submitFoundationAnnotations()">把批注交给 Agent</button>
     </aside>
   </div>
-</div>
+</aside>
 
 <div class="overlay hidden" id="convoOverlay" onclick="if(event.target===this) toggleConvos()">
   <div class="overlay-panel" id="convoPanel"></div>
@@ -301,6 +315,8 @@ let currentConvoId = null;
 let foundationEditing = false;
 let foundationAnnotations = [];
 let foundationReviewCid = '';
+let foundationPdfObjectUrl = '';
+let foundationPdfLoadId = 0;
 let coachState = { current_module:1, completed_modules:[], module_step:0, ip_profile:{}, intake:{status:'complete'} };
 let reports = {};
 let deliverables = {};
@@ -385,7 +401,7 @@ async function newDiagnosis() {
 }
 
 async function selectConversation(id) {
-  closeDrawer(); currentConvoId=id;
+  closeDrawer(); closeFoundationReviewer(); currentConvoId=id;
   const res=await fetch(`/api/conversations/${id}`);const convo=await res.json();
   coachState=convo.coach_state||{current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}};
   reports=convo.reports||{}; deliverables=convo.deliverables||{}; foundationEditing=false;
@@ -469,13 +485,24 @@ async function generateFoundationReport(){
 }
 
 async function openFoundationReport(){
-  if(!currentConvoId)return;const url=`/api/foundation-report/${currentConvoId}.pdf`;const res=await fetch(url,{method:'HEAD',cache:'no-store'});
-  if(!res.ok){coachState.foundation_report={status:'failed'};renderModules();toast('❌ PDF 文件不可用，请重新生成');return;}
+  if(!currentConvoId)return;const url=`/api/foundation-report/${currentConvoId}.pdf`,reviewer=document.getElementById('foundationReviewer'),status=document.getElementById('foundationPdfStatus'),loadId=++foundationPdfLoadId;
   if(foundationReviewCid!==currentConvoId){foundationAnnotations=[];foundationReviewCid=currentConvoId;}
-  document.getElementById('foundationPdfFrame').src=`${url}?preview=1#page=1&zoom=page-width`;renderFoundationAnnotations();document.getElementById('foundationReviewer').classList.add('open');document.getElementById('pdfNoteText').focus();
+  restoreFoundationPanelWidth();reviewer.classList.add('open');renderFoundationAnnotations();status.hidden=false;status.textContent='PDF 加载中…';
+  try{const res=await fetch(`${url}?preview=1`,{cache:'no-store'});if(!res.ok)throw new Error('PDF 文件不可用，请重新生成');const blob=await res.blob();if(loadId!==foundationPdfLoadId)return;if(!blob.size)throw new Error('PDF 文件为空，请重新生成');if(foundationPdfObjectUrl)URL.revokeObjectURL(foundationPdfObjectUrl);foundationPdfObjectUrl=URL.createObjectURL(blob);document.getElementById('foundationPdfFrame').src=`${foundationPdfObjectUrl}#page=1&zoom=page-width`;status.hidden=true;document.getElementById('pdfNoteText').focus();}
+  catch(e){if(loadId!==foundationPdfLoadId)return;status.textContent=e.message;toast(`❌ ${e.message}`);}
 }
 
-function closeFoundationReviewer(){document.getElementById('foundationReviewer').classList.remove('open');}
+function foundationPanelBounds(){const max=Math.min(1400,window.innerWidth-560);return{min:Math.min(620,Math.max(480,max)),max:Math.max(480,max)};}
+function setFoundationPanelWidth(width,save){if(window.innerWidth<=1100)return;const b=foundationPanelBounds(),next=Math.round(Math.min(b.max,Math.max(b.min,width))),reviewer=document.getElementById('foundationReviewer'),resizer=document.getElementById('foundationPdfResizer');reviewer.style.setProperty('--pdf-review-width',`${next}px`);resizer.setAttribute('aria-valuemin',b.min);resizer.setAttribute('aria-valuemax',b.max);resizer.setAttribute('aria-valuenow',next);if(save)try{localStorage.setItem('ip12-foundation-panel-width',next);}catch(e){}}
+function restoreFoundationPanelWidth(){let saved=0;try{saved=Number(localStorage.getItem('ip12-foundation-panel-width'));}catch(e){}setFoundationPanelWidth(saved||window.innerWidth*.55,false);}
+function beginFoundationResize(event){if(window.innerWidth<=1100)return;event.preventDefault();foundationResizePointer=event.pointerId;event.currentTarget.setPointerCapture(event.pointerId);document.body.classList.add('pdf-review-resizing');}
+function resizeFoundationByKey(event){if(window.innerWidth<=1100||!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const b=foundationPanelBounds();let width=document.getElementById('foundationReviewer').getBoundingClientRect().width;if(event.key==='Home')width=b.min;else if(event.key==='End')width=b.max;else width+=event.key==='ArrowLeft'?24:-24;setFoundationPanelWidth(width,true);}
+let foundationResizePointer=null;
+window.addEventListener('pointermove',event=>{if(event.pointerId===foundationResizePointer)setFoundationPanelWidth(window.innerWidth-event.clientX,false);});
+function endFoundationResize(event){if(event.pointerId!==foundationResizePointer)return;foundationResizePointer=null;document.body.classList.remove('pdf-review-resizing');setFoundationPanelWidth(document.getElementById('foundationReviewer').getBoundingClientRect().width,true);}
+window.addEventListener('pointerup',endFoundationResize);window.addEventListener('pointercancel',endFoundationResize);
+window.addEventListener('resize',()=>{if(document.getElementById('foundationReviewer').classList.contains('open'))restoreFoundationPanelWidth();});
+function closeFoundationReviewer(){foundationPdfLoadId++;document.getElementById('foundationReviewer').classList.remove('open');document.getElementById('foundationPdfFrame').src='about:blank';if(foundationPdfObjectUrl){URL.revokeObjectURL(foundationPdfObjectUrl);foundationPdfObjectUrl='';}}
 function downloadFoundationReport(){if(currentConvoId)window.open(`/api/foundation-report/${currentConvoId}.pdf`,'_blank','noopener');}
 function addFoundationAnnotation(){
   const page=Number(document.getElementById('pdfNotePage').value),type=document.getElementById('pdfNoteType').value,quote=document.getElementById('pdfNoteQuote').value.trim(),note=document.getElementById('pdfNoteText').value.trim();
