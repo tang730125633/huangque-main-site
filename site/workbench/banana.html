@@ -1090,16 +1090,13 @@
         }
       }
       if(_cbd && _cbd.cover){
-        var _cim=new Image(); _cim.crossOrigin='anonymous';
-        _cim.onload=function(){
-          var ref=imageToRefDataUrl(_cim);
-          try{ setRef(ref.dataUrl, ref.width, ref.height);
-            setNote('✅ 已带入采集封面作参考图 · 改下提示词，点生成即走「图生图」','#2bd576');
-          }catch(err){ setNote('采集图跨域无法载入，请改用上传','#f4708a'); }
-        };
-        _cim.onerror=function(){ setNote('✅ 已带入标题；封面读取失败，请手动上传参考图','#f4b740'); };
         var _coverUrl=String(_cbd.cover).replace(/^http:\/\//i,'https://');
-        _cim.src=_coverUrl+(_coverUrl.indexOf('?')>=0?'&':'?')+'t='+Date.now();
+        fetch(referenceFetchUrl(_coverUrl),{cache:'no-store',credentials:'same-origin',headers:{'Authorization':'Bearer '+tok()}})
+          .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.blob(); })
+          .then(function(blob){ refFromFile(blob,function(index){
+            setNote(index?'✅ 已带入采集封面作参考图 · 改下提示词，点生成即走「图生图」':'✅ 已带入标题；封面读取失败，请手动上传参考图',index?'#2bd576':'#f4b740');
+          }); })
+          .catch(function(){ setNote('✅ 已带入标题；封面读取失败，请手动上传参考图','#f4b740'); });
       }
     }
   }catch(e){}

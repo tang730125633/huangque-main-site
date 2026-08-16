@@ -20,5 +20,6 @@ def test_banana_offers_contextual_return_to_collect():
     assert "hq_banana_to_collect" in html
     assert "location.href='collect.html?handoff=banana'" in html
     assert "imageUrl:lastResultUrl||''" in html
-    assert html.index("pr.value=_cbd.title") < html.index("var _cim=new Image()")
+    assert html.index("pr.value=_cbd.title") < html.index("fetch(referenceFetchUrl(_coverUrl)")
     assert "replace(/^http:\\/\\//i,'https://')" in html
+    assert "refFromFile(blob" in html
