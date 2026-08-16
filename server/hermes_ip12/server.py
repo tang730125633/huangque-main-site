@@ -1072,7 +1072,11 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
         snapshot_revision = state["revision"]
         snapshot = json.loads(json.dumps(convo, ensure_ascii=False))
     try:
-        raw, evidence = _coach_model_decision(snapshot, user_message)
+        raw = coach_harness.duration_conflict_decision(state, user_message)
+        if raw:
+            evidence = user_message
+        else:
+            raw, evidence = _coach_model_decision(snapshot, user_message)
         try:
             assistant, next_state = _persist_model_turn(
                 cid,

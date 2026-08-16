@@ -523,6 +523,36 @@ class IP12HarnessTests(unittest.TestCase):
         with self.assertRaises(harness.HarnessError):
             harness.apply_model_decision(state, raw, "用户只说了别的内容")
 
+    def test_follow_up_drops_unsupported_update_without_dropping_reply(self):
+        state = self.complete_intake()
+        raw = decision(state, kind="ask_follow_up", reply="请再说说你的核心技能。")
+        raw["profile_updates"] = [{
+            "field": "core_skill", "value": "AI Agent 搭建", "kind": "user_fact",
+            "evidence_quote": "模型自己改写的句子",
+        }]
+        state, result, reply = harness.apply_model_decision(state, raw, "用户只说了另一句话")
+        self.assertEqual(reply, "请再说说你的核心技能。")
+        self.assertEqual(result["profile_updates"], [])
+        self.assertIsNone(state["pending"])
+
+    def test_conflicting_duration_requires_one_clarification(self):
+        state = self.complete_intake()
+        state["ip_profile"]["facts"]["years_in_current_industry"] = {
+            "value": "2年", "evidence_quote": "我做了2年",
+        }
+        result = harness.duration_conflict_decision(state, "我进入 AI 和 Agent 领域只有三个月")
+        self.assertEqual(result["decision"], "ask_follow_up")
+        self.assertIn("2年", result["reply"])
+        self.assertIn("三个月", result["reply"])
+        self.assertIsNone(harness.duration_conflict_decision(state, "整体从业2年，其中 AI 实践三个月"))
+
+    def test_modules_five_and_six_only_show_pdf_badge_when_pdf_is_ready(self):
+        templates = Path(__file__).parents[1] / "server" / "hermes_ip12" / "templates"
+        for filename in ("index.html", "index_clean.html"):
+            source = (templates / filename).read_text(encoding="utf-8")
+            self.assertIn("foundation.status==='awaiting_confirmation'?'待确认 PDF'", source)
+            self.assertIn("等待模块 1-4", source)
+
     def test_module_four_completion_waits_for_report_confirmation(self):
         state = self.complete_intake()
         state.update(current_module=4, module_step=4, completed_modules=[1, 2, 3])
