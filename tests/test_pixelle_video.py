@@ -1437,6 +1437,33 @@ class PixelleVideoTests(unittest.TestCase):
         self.assertNotIn("voice_key", result)
         self.assertNotIn("narration_segments", result)
 
+    def test_generate_returns_sanitized_unique_talking_warnings(self):
+        payload = self.pixelle.prepare_payload({
+            "text": "AI 培训", "mode": "generate", "source_page": "text-video",
+        })
+        payload["_job_id"] = 44
+        upstream = {
+            "video_url": "/api/files/result.mp4",
+            "duration": 12,
+            "talking_warnings": [
+                {"scene_id": "scene_01", "message": "provider_unavailable after 1 attempt(s)"},
+                {"scene_id": "scene_02", "message": "provider_unavailable after 1 attempt(s)"},
+                {"scene_id": "../secret", "message": "line one\nline two\x00"},
+            ],
+        }
+        with mock.patch.object(self.pixelle, "_submit", return_value="task-44"), \
+             mock.patch.object(self.pixelle, "_wait", return_value=upstream), \
+             mock.patch.object(self.pixelle, "_download_video", return_value=(
+                 "video/pixelle_44.mp4", 4096,
+             )), \
+             mock.patch.object(self.pixelle, "public_url", return_value="/api/gen/file/token"):
+            result = self.pixelle.generate(payload)
+
+        self.assertEqual(result["talking_warnings"], [
+            {"scene_id": "scene_01", "message": "provider_unavailable after 1 attempt(s)"},
+            {"scene_id": "scene", "message": "line one line two"},
+        ])
+
     def test_generate_legacy_payload_records_default_style(self):
         legacy_payload = {
             "text": "AI training",

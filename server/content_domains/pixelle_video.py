@@ -1154,13 +1154,49 @@ def _download_video(url, job_id):
     return relative.as_posix(), total
 
 
+def _talking_warnings(result):
+    candidates = []
+    direct = result.get("talking_warnings")
+    if isinstance(direct, list):
+        candidates.extend(direct)
+    frames = result.get("frames")
+    if isinstance(frames, list):
+        candidates.extend(
+            {"scene_id": frame.get("scene_id"), "message": frame.get("talking_warning")}
+            for frame in frames
+            if isinstance(frame, dict) and frame.get("talking_warning")
+        )
+
+    warnings = []
+    seen = set()
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            scene_id = str(candidate.get("scene_id") or "scene").strip()
+            message = candidate.get("message") or candidate.get("detail") \
+                or candidate.get("reason") or candidate.get("warning")
+        else:
+            scene_id = "scene"
+            message = candidate
+        message = re.sub(r"[\x00-\x1f\x7f]+", " ", str(message or ""))
+        message = " ".join(message.split())[:220]
+        if not message or message in seen:
+            continue
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", scene_id):
+            scene_id = "scene"
+        warnings.append({"scene_id": scene_id, "message": message})
+        seen.add(message)
+        if len(warnings) >= 20:
+            break
+    return warnings
+
+
 def generate(payload):
     style = _style_key(payload)
     task_id = _submit(payload)
     result = _wait(task_id)
     source_url = _safe_upstream_video_url(result.get("video_url"))
     video_file, file_size = _download_video(source_url, payload.get("_job_id"))
-    return {
+    response = {
         "type": "script_to_video",
         "pipeline": "pixelle",
         "provider_task_id": task_id,
@@ -1176,3 +1212,7 @@ def generate(payload):
         "input_mode": payload["mode"],
         "file_size": int(result.get("file_size") or file_size),
     }
+    warnings = _talking_warnings(result)
+    if warnings:
+        response["talking_warnings"] = warnings
+    return response
