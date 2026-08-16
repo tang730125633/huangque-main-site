@@ -1083,18 +1083,23 @@
   try{ var _cb=localStorage.getItem('hq_collect_to_banana');
     if(_cb){ localStorage.removeItem('hq_collect_to_banana');  // 一次性消费，防下次误带
       var _cbd=JSON.parse(_cb);
-      if(_cbd && _cbd.cover){
+      if(_cbd){
         collectHandoff=_cbd;
+        if(_cbd.title && pr && !(pr.value||'').trim()){
+          pr.value=_cbd.title;pr.dispatchEvent(new Event('input'));
+        }
+      }
+      if(_cbd && _cbd.cover){
         var _cim=new Image(); _cim.crossOrigin='anonymous';
         _cim.onload=function(){
           var ref=imageToRefDataUrl(_cim);
           try{ setRef(ref.dataUrl, ref.width, ref.height);
-            if(_cbd.title && pr && !(pr.value||'').trim()) pr.value=_cbd.title;
             setNote('✅ 已带入采集封面作参考图 · 改下提示词，点生成即走「图生图」','#2bd576');
           }catch(err){ setNote('采集图跨域无法载入，请改用上传','#f4708a'); }
         };
-        _cim.onerror=function(){ setNote('采集封面读取失败，请手动上传参考图','#f4708a'); };
-        _cim.src=_cbd.cover+(_cbd.cover.indexOf('?')>=0?'&':'?')+'t='+Date.now();
+        _cim.onerror=function(){ setNote('✅ 已带入标题；封面读取失败，请手动上传参考图','#f4b740'); };
+        var _coverUrl=String(_cbd.cover).replace(/^http:\/\//i,'https://');
+        _cim.src=_coverUrl+(_coverUrl.indexOf('?')>=0?'&':'?')+'t='+Date.now();
       }
     }
   }catch(e){}
