@@ -81,7 +81,7 @@ class MentionContractTests(unittest.TestCase):
         self.assertIn("点图片编号插入 @图片N", banana)
         self.assertIn("function insertImageMention(textarea,index)", video)
         self.assertIn("function grokRefLimit(){return GROK_REF_MAX;}", video)
-        self.assertIn("setupXiaoleRefPanel('micro', microRefData, 9)", video)
+        self.assertIn("setupXiaoleRefPanel('micro', microRefData, 1)", video)
         self.assertIn("setupXiaoleRefPanel('omni', omniRefData, 6)", video)
 
 
