@@ -160,8 +160,8 @@ def _collect_bilibili_play_url(det, keep_file=False):
         tikhub.bili_download_to_file(
             det, time.time() + COS_FETCH_DEADLINE, path, max_bytes=COS_FETCH_MAX_BYTES)
         url = store_video_file(path, "collect/bilibili/%s.mp4" % ident, "video/mp4") if COS_COLLECT else None
-        keep = bool(keep_file)
-        return url, (path if keep_file else None)
+        keep = bool(keep_file and url)
+        return url, (path if keep else None)
     finally:
         if not keep:
             try: os.unlink(path)
@@ -381,12 +381,10 @@ def gen_collect(payload):
     if platform == "channels":   # 视频号是加密流：先解密再存 COS，否则存下来是打不开的乱码
         play_url = _collect_channels_play_url(det.get("id") or ident, det.get("play_url"), det.get("decode_key"))
     elif platform == "bilibili":
-        play_url = None
-        if "video" in want or "transcript" in want:
-            video_path_needed = "transcript" in want
-            play_url, video_path = _collect_bilibili_play_url(det, keep_file=video_path_needed)
-            if "video" in want and not play_url:
-                raise tikhub.TikHubError("B 站完整视频存储失败")
+        play_url, video_path = _collect_bilibili_play_url(
+            det, keep_file="transcript" in want)
+        if not play_url:
+            raise tikhub.TikHubError("B 站完整视频存储失败")
     else:
         # 只有真要跑 ASR 时才留文件：视频号不走 ASR，小红书有官方字幕(subtitle_url)就不用下视频。
         need_file = ("transcript" in want
