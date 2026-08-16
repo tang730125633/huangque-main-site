@@ -469,6 +469,7 @@ class HQCLIAPITests(unittest.TestCase):
         xhs = "https://www.xiaohongshu.com/explore/note-1"
         channels = "https://weixin.qq.com/sph/Abc123"
         channels_443 = "https://weixin.qq.com:443/sph/Abc123"
+        bilibili = "https://b23.tv/keSUqLz"
         expected = {
             "collect-content": ("collect", "/api/gen/collect", {"url": xhs, "want": ["comments"]}),
             "collect-video": ("collect", "/api/gen/collect", {"url": douyin, "want": ["video"]}),
@@ -500,6 +501,10 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual(
             channels_443,
             self.auth.hq_cli_api.action_plan("collect-video", {"url": channels_443})["payload"]["url"],
+        )
+        self.assertEqual(
+            bilibili,
+            self.auth.hq_cli_api.action_plan("collect-video", {"url": bilibili})["payload"]["url"],
         )
         with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
             self.auth.hq_cli_api.action_plan(
