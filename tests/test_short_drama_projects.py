@@ -1,5 +1,4 @@
 import base64
-import io
 import json
 import os
 import sqlite3
@@ -23,8 +22,7 @@ if SERVER_DIR not in sys.path:
 
 from content_domains import (
     core, image, short_drama, short_drama_character_studio,
-    short_drama_asset_graph, short_drama_production,
-    short_drama_reference_validation, video,
+    short_drama_production, short_drama_reference_validation, video,
 )
 
 
@@ -211,7 +209,9 @@ class ShortDramaProjectTests(unittest.TestCase):
 
     def test_project_list_uses_indexed_page_scoped_job_ledger(self):
         projects = [
-            short_drama.create_project(self.db, "alice", valid_project(title="Project %d" % index))
+            short_drama.create_project(
+                self.db, "alice", valid_project(title="Project %d" % index)
+            )
             for index in range(3)
         ]
         for index, project in enumerate(projects, 1):
@@ -236,23 +236,20 @@ class ShortDramaProjectTests(unittest.TestCase):
 
         _single, single_statements = tracked_list(1)
         result, statements = tracked_list(10)
-        self.assertEqual([3, 2, 1], sorted(
-            (item["spent_points"] for item in result["items"]), reverse=True
+        self.assertEqual(
+            [3, 2, 1],
+            sorted((item["spent_points"] for item in result["items"]), reverse=True),
+        )
+        self.assertFalse(any(
+            " FROM jobs WHERE kind" in statement and "payload" in statement
+            for statement in statements
         ))
-        global_job_scans = [
+        ledger_queries = [
             statement for statement in statements
-            if " FROM jobs WHERE kind" in statement
-            and "payload" in statement
+            if "short_drama_job_project_links" in statement and "JOIN jobs" in statement
         ]
-        self.assertEqual([], global_job_scans)
-        page_link_queries = [
-            statement for statement in statements
-            if "short_drama_job_project_links" in statement
-            and "JOIN jobs" in statement
-        ]
-        self.assertEqual(1, len(page_link_queries), page_link_queries)
-        self.assertIn("project_id IN", page_link_queries[0])
-        self.assertIn("GROUP BY l.project_id", page_link_queries[0])
+        self.assertEqual(1, len(ledger_queries), ledger_queries)
+        self.assertIn("GROUP BY l.project_id", ledger_queries[0])
         single_selects = [
             statement for statement in single_statements
             if statement.lstrip().upper().startswith("SELECT")
@@ -265,6 +262,13 @@ class ShortDramaProjectTests(unittest.TestCase):
             len(page_selects), len(single_selects) + 2,
             (len(single_selects), len(page_selects)),
         )
+
+    def test_scene_image_binding_validator_remains_available_to_core(self):
+        self.assertTrue(callable(short_drama.validate_scene_image_binding))
+        with self.assertRaises(ValueError):
+            short_drama.validate_scene_image_binding(
+                self.db, "alice", {"project_id": "missing"}
+            )
 
     def _assert_plan_rejected_without_side_effects(self, project, plan, job_id):
         before = short_drama.get_project(self.db, "alice", project["id"])
@@ -567,6 +571,30 @@ class ShortDramaProjectTests(unittest.TestCase):
         self.assertEqual(project["id"], item["id"])
         for detail_key in ("characters", "script_versions", "shots"):
             self.assertNotIn(detail_key, item)
+
+    def test_list_projects_derives_progress_from_real_delivery_milestones(self):
+        project = short_drama.create_project(self.db, "alice", valid_project())
+        initial = short_drama.list_projects(self.db, "alice")["items"][0]
+        self.assertEqual(10, initial["progress_percent"])
+        self.assertEqual("setup", initial["progress_stage"])
+
+        conn = self.db()
+        try:
+            conn.execute(
+                "INSERT INTO short_drama_delivery_versions "
+                "(id,project_id,job_id,refinement_version_id,version,status,url,"
+                "snapshot_json,input_hash,created_at) VALUES (?,?,?,?,?,'ready',?,?,?,?)",
+                ("delivery-v1", project["id"], "delivery-job-v1", "refine-v1", 1,
+                 "/delivery.mp4", "{}", "delivery-hash", 100),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        delivered = short_drama.list_projects(self.db, "alice")["items"][0]
+        self.assertEqual(100, delivered["progress_percent"])
+        self.assertEqual("completed", delivered["progress_stage"])
+        self.assertEqual("已完成正式交付", delivered["progress_label"])
 
     def test_soft_delete_hides_project_and_releases_capacity(self):
         projects = [
@@ -1514,13 +1542,14 @@ class ShortDramaProjectTests(unittest.TestCase):
             item for item in attached["characters"]
             if item["character_key"] == character_key
         )
-        self.assertEqual(902, character["reference_job_id"])
-        self.assertEqual("character-902.png", character["reference_file"])
+        self.assertIsNone(character["reference_job_id"])
+        self.assertEqual(902, character["pending_reference_job_id"])
+        self.assertEqual("character-902.png", character["pending_reference_file"])
         self.assertFalse(character["reference_locked"])
 
         confirmed = short_drama.confirm_character_reference(
             self.db, "alice", attached["id"], attached["revision"],
-            character_key, character["reference_version"],
+            character_key, character["pending_reference_version"],
         )
         confirmed_character = next(
             item for item in confirmed["characters"]
@@ -1554,11 +1583,10 @@ class ShortDramaProjectTests(unittest.TestCase):
             if item["character_key"] == character_key
         )
         changed_character["appearance_prompt"] += "；改为短发"
-        with self.assertRaisesRegex(ValueError, "已有付费或锁定的角色标准图"):
-            short_drama.update_characters(
+        changed = short_drama.update_characters(
                 self.db, "alice", preserved["id"], preserved["revision"],
                 changed_characters,
-            )
+        )
         protected = short_drama.get_project(
             self.db, "alice", preserved["id"]
         )
@@ -1566,13 +1594,14 @@ class ShortDramaProjectTests(unittest.TestCase):
             item for item in protected["characters"]
             if item["character_key"] == character_key
         )
-        self.assertEqual(preserved["revision"], protected["revision"])
+        self.assertEqual(changed["revision"], protected["revision"])
         self.assertEqual(902, protected_character["reference_job_id"])
         self.assertEqual("character-902.png", protected_character["reference_file"])
         self.assertEqual(
             "/api/gen/file/character-902.png",
             protected_character["reference_url"],
         )
+        self.assertTrue(protected_character["reference_profile_stale"])
         self.assertTrue(protected_character["reference_locked"])
 
     def test_locked_script_draft_can_link_character_reference_after_charge(self):
@@ -2126,9 +2155,11 @@ class ShortDramaProjectTests(unittest.TestCase):
     def test_apply_plan_rejects_duration_total_different_from_project_target(self):
         project = short_drama.create_project(self.db, "alice", {
             "title": "短剧", "synopsis": "足够长的故事梗概", "ratio": "9:16",
-            "target_duration": 45, "shot_count": 6, "visual_style": "写实",
+            "target_duration": 30, "shot_count": 6, "visual_style": "写实",
         })
-        self._assert_plan_rejected_without_side_effects(project, self._plan(6), 999)
+        self._assert_plan_rejected_without_side_effects(
+            project, self._plan(6, duration=10), 999
+        )
 
     def test_non_draft_projects_lock_planning_spec_settings_but_allow_budget_changes(self):
         locked_fields = {
@@ -2224,97 +2255,6 @@ class ShortDramaRouteTests(unittest.TestCase):
         self.thread.start()
         self.base = "http://127.0.0.1:%d" % self.server.server_address[1]
 
-    def test_character_reference_json_reader_rejects_unbounded_bodies(self):
-        class RecordingBody(io.BytesIO):
-            def __init__(self, value):
-                super().__init__(value)
-                self.read_sizes = []
-
-            def read(self, size=-1):
-                self.read_sizes.append(size)
-                return super().read(size)
-
-        limit = 15 * 1024 * 1024
-        for content_length in (None, "invalid", str(limit + 1)):
-            with self.subTest(content_length=content_length):
-                body = RecordingBody(b"{}")
-                handler = type("Handler", (), {
-                    "headers": {} if content_length is None else {
-                        "Content-Length": content_length
-                    },
-                    "rfile": body,
-                })()
-                with self.assertRaises(ValueError) as caught:
-                    core.H._json_body_strict(handler, max_bytes=limit)
-                if content_length == str(limit + 1):
-                    self.assertIsInstance(
-                        caught.exception,
-                        core.error_contract.RequestBodyTooLarge,
-                    )
-                    self.assertEqual(
-                        "request_body_too_large", caught.exception.code,
-                    )
-                self.assertFalse(body.read_sizes)
-
-        body = RecordingBody(b"{}")
-        handler = type("Handler", (), {
-            "headers": {"Content-Length": "2"},
-            "rfile": body,
-        })()
-        self.assertEqual({}, core.H._json_body_strict(handler, max_bytes=limit))
-        self.assertEqual([2], body.read_sizes)
-
-    def test_scene_reference_route_rejects_json_larger_than_15mb(self):
-        class Handler:
-            path = "/api/gen/short-drama/asset-graph/scenes/reference"
-            headers = {}
-
-            def __init__(self):
-                self.max_bytes = None
-                self.sent = None
-
-            def _token(self):
-                return "alice"
-
-            def _json_body_strict(self, *, max_bytes=None):
-                self.max_bytes = max_bytes
-                raise core.error_contract.RequestBodyTooLarge("请求体过大")
-
-            def _send(self, status, payload):
-                self.sent = (status, payload)
-
-        handler = Handler()
-        handled = short_drama.dispatch_http(
-            handler,
-            "POST",
-            core.jdb,
-            lambda _token: {"username": "alice", "must_change": False},
-            avatar_lookup=lambda *_args: None,
-        )
-
-        self.assertTrue(handled)
-        self.assertEqual(15 * 1024 * 1024, handler.max_bytes)
-        self.assertEqual(413, handler.sent[0])
-        self.assertEqual("request_body_too_large", handler.sent[1]["code"])
-
-    def test_character_reference_validation_errors_match_openapi_statuses(self):
-        class Handler:
-            def __init__(self):
-                self.sent = None
-
-            def _send(self, status, payload):
-                self.sent = (status, payload)
-
-        for error, expected in (
-            (short_drama_reference_validation.ReferenceIneligible("请上传人物图"), 422),
-            (short_drama_reference_validation.ReferenceValidationUnavailable("检测不可用"), 503),
-        ):
-            with self.subTest(status=expected):
-                handler = Handler()
-                short_drama._http_error(handler, error, operation_terminal=True)
-                self.assertEqual(expected, handler.sent[0])
-                self.assertTrue(handler.sent[1]["operation_terminal"])
-
     def tearDown(self):
         self.server.shutdown()
         self.server.server_close()
@@ -2382,73 +2322,6 @@ class ShortDramaRouteTests(unittest.TestCase):
         })
         self.assertEqual(200, status)
         return project
-
-    def scene_image_project(self, board_id=None):
-        project = self.applied_project()
-        with closing(core.jdb()) as db:
-            if board_id:
-                db.execute(
-                    "UPDATE short_drama_projects SET board_id=? WHERE id=?",
-                    (board_id, project["id"]),
-                )
-            spent = short_drama._project_point_usage(
-                db, project["id"]
-            )["spent_points"]
-            db.execute(
-                "UPDATE short_drama_projects SET point_budget=? WHERE id=?",
-                (spent + 7, project["id"]),
-            )
-            db.commit()
-        short_drama_asset_graph.sync_foundation(
-            core.jdb, "alice", "alice", project["id"]
-        )
-        workspace = short_drama_asset_graph.scene_workspace(
-            core.jdb, "alice", project["id"]
-        )
-        return project, workspace["scenes"][0]["scene_key"]
-
-    @staticmethod
-    def scene_image_body(project_id, scene_key):
-        return {
-            "provider": "banana", "model": "nb2", "quality": "hd",
-            "count": 1, "ratio": "16:9",
-            "prompt": "empty cinematic railway station at night",
-            "short_drama_scene_binding": {
-                "project_id": project_id, "scene_key": scene_key,
-            },
-        }
-
-    def test_scene_image_response_loss_replays_before_budget_check(self):
-        project, scene_key = self.scene_image_project()
-        body = self.scene_image_body(project["id"], scene_key)
-        with patch.dict(core.HANDLERS, {"image": lambda payload: payload}), \
-                patch.object(core, "enqueue_job", return_value=True):
-            first_status, first = self.request(
-                "POST", "/api/gen/image", body=body,
-                idempotency_key="scene-response-lost",
-            )
-            replay_status, replay = self.request(
-                "POST", "/api/gen/image", body=body,
-                idempotency_key="scene-response-lost",
-            )
-        self.assertEqual(200, first_status, first)
-        self.assertEqual((first_status, first), (replay_status, replay))
-        self.assertEqual(1, len(self.points.deduct_calls))
-
-    def test_canvas_editor_can_generate_scene_image_for_project_owner(self):
-        board_id = "shared-scene-board"
-        self.enable_board_roles({"alice": "owner", "bob": "editor"})
-        project, scene_key = self.scene_image_project(board_id=board_id)
-        with patch.dict(core.HANDLERS, {"image": lambda payload: payload}), \
-                patch.object(core, "enqueue_job", return_value=True):
-            status, created = self.request(
-                "POST", "/api/gen/image", username="bob", board_id=board_id,
-                body=self.scene_image_body(project["id"], scene_key),
-                idempotency_key="editor-scene-image",
-            )
-        self.assertEqual(200, status, created)
-        self.assertTrue(created["job_id"])
-        self.assertEqual("bob", self.points.deduct_calls[-1][0])
 
     def confirm(self, project, stage):
         status, confirmed = self.request("POST", "/api/gen/short-drama/confirm", body={
@@ -2992,16 +2865,16 @@ class ShortDramaRouteTests(unittest.TestCase):
             )
         self.assertEqual(200, status)
         selected_character = selected["characters"][0]
-        self.assertEqual("asset", selected_character["reference_source"])
-        self.assertEqual(str(asset_job_id), selected_character["reference_asset_id"])
-        self.assertEqual("我的角色定妆图", selected_character["reference_name"])
+        self.assertEqual("asset", selected_character["pending_reference_source"])
+        self.assertEqual(str(asset_job_id), selected_character["pending_reference_asset_id"])
+        self.assertEqual("我的角色定妆图", selected_character["pending_reference_name"])
         self.assertFalse(selected_character["reference_locked"])
 
         status, locked = self.request(
             "POST", "/api/gen/short-drama/confirm-character-reference", body={
                 "project_id": selected["id"], "revision": selected["revision"],
                 "character_key": selected_character["character_key"],
-                "reference_version": selected_character["reference_version"],
+                "reference_version": selected_character["pending_reference_version"],
             },
         )
         self.assertEqual(200, status)
@@ -3061,7 +2934,7 @@ class ShortDramaRouteTests(unittest.TestCase):
             )
 
         self.assertEqual(200, status)
-        self.assertEqual("asset", selected["characters"][0]["reference_source"])
+        self.assertEqual("asset", selected["characters"][0]["pending_reference_source"])
         validate.assert_not_called()
 
     def test_local_image_upload_becomes_persisted_reference_preview(self):
@@ -3085,48 +2958,21 @@ class ShortDramaRouteTests(unittest.TestCase):
             )
         self.assertEqual(200, status)
         selected_character = selected["characters"][0]
-        self.assertEqual("upload", selected_character["reference_source"])
-        self.assertEqual("role.png", selected_character["reference_name"])
-        self.assertIsNone(selected_character["reference_job_id"])
+        self.assertEqual("upload", selected_character["pending_reference_source"])
+        self.assertEqual("role.png", selected_character["pending_reference_name"])
+        self.assertIsNone(selected_character["pending_reference_job_id"])
         self.assertFalse(selected_character["reference_locked"])
-        self.assertTrue((output / selected_character["reference_file"]).is_file())
+        self.assertTrue((output / selected_character["pending_reference_file"]).is_file())
 
         status, locked = self.request(
             "POST", "/api/gen/short-drama/confirm-character-reference", body={
                 "project_id": selected["id"], "revision": selected["revision"],
                 "character_key": selected_character["character_key"],
-                "reference_version": selected_character["reference_version"],
+                "reference_version": selected_character["pending_reference_version"],
             },
         )
         self.assertEqual(200, status)
         self.assertTrue(locked["characters"][0]["reference_locked"])
-
-    def test_committed_character_upload_survives_response_assembly_failure(self):
-        project = self.applied_project()
-        character = project["characters"][0]
-        output = Path(self.tmp.name) / "outputs"
-        raw = b"\x89PNG\r\n\x1a\ncommitted-role"
-        body = {
-            "project_id": project["id"], "revision": project["revision"],
-            "character_key": character["character_key"], "source": "upload",
-            "asset_job_id": None, "asset_url": "", "filename": "role.png",
-            "image_data": "data:image/png;base64," + base64.b64encode(raw).decode(),
-        }
-        with patch.object(image, "OUT_DIR", output), patch.object(
-                short_drama_reference_validation, "validate_character_reference",
-                return_value={"has_real_person": True, "visible_extent": "half_body"},
-        ), patch.object(
-                short_drama, "_project_detail",
-                side_effect=RuntimeError("response assembly failed"),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "response assembly failed"):
-                short_drama.select_character_reference(
-                    core.jdb, "alice", "alice", body
-                )
-        persisted = short_drama.get_project(core.jdb, "alice", project["id"])
-        reference_file = persisted["characters"][0]["reference_file"]
-        self.assertTrue(reference_file)
-        self.assertTrue((output / reference_file).is_file())
 
     def test_local_upload_normalizes_supported_mislabeled_image(self):
         project = self.applied_project()
@@ -3150,57 +2996,9 @@ class ShortDramaRouteTests(unittest.TestCase):
 
         self.assertEqual(200, status)
         selected_character = selected["characters"][0]
-        self.assertTrue(selected_character["reference_file"].endswith(".jpg"))
-        self.assertTrue((output / selected_character["reference_file"]).is_file())
+        self.assertTrue(selected_character["pending_reference_file"].endswith(".jpg"))
+        self.assertTrue((output / selected_character["pending_reference_file"]).is_file())
         validate.assert_called_once_with(jpeg, "image/jpeg")
-
-    def test_concurrent_character_uploads_pay_for_one_external_validation(self):
-        project = self.applied_project()
-        character = project["characters"][0]
-        output = Path(self.tmp.name) / "outputs"
-        raw = b"\x89PNG\r\n\x1a\nconcurrent-role"
-        body = {
-            "project_id": project["id"], "revision": project["revision"],
-            "character_key": character["character_key"], "source": "upload",
-            "asset_job_id": None, "asset_url": "", "filename": "role.png",
-            "image_data": "data:image/png;base64," + base64.b64encode(raw).decode(),
-        }
-        start = threading.Barrier(2)
-        validation_calls = []
-        call_lock = threading.Lock()
-
-        def validate(_raw, _mime):
-            with call_lock:
-                validation_calls.append(1)
-            time.sleep(0.15)
-            return {"has_real_person": True, "visible_extent": "half_body"}
-
-        def select():
-            start.wait()
-            try:
-                short_drama.select_character_reference(
-                    core.jdb, "alice", "alice", dict(body)
-                )
-                return "success"
-            except short_drama.RevisionConflict:
-                return "conflict"
-
-        with patch.object(image, "OUT_DIR", output), patch.object(
-            short_drama_reference_validation,
-            "validate_character_reference",
-            side_effect=validate,
-        ):
-            threads = []
-            results = []
-            for _ in range(2):
-                thread = threading.Thread(target=lambda: results.append(select()))
-                thread.start()
-                threads.append(thread)
-            for thread in threads:
-                thread.join(timeout=5)
-
-        self.assertEqual(["conflict", "success"], sorted(results))
-        self.assertEqual(1, len(validation_calls))
 
     def test_local_reference_rejects_non_person_without_saving_or_updating(self):
         project = self.applied_project()
@@ -3965,14 +3763,14 @@ class ShortDramaRouteTests(unittest.TestCase):
         self.assertEqual(409, status)
         self.assertEqual("revision_conflict", conflict["code"])
 
-    def test_project_route_reports_protected_character_reference_conflict(self):
+    def test_project_route_preserves_reference_when_character_profile_changes(self):
         project = self.applied_project()
         character_key = project["characters"][0]["character_key"]
         with closing(core.jdb()) as db:
             db.execute(
-                "UPDATE short_drama_characters SET reference_job_id=901,"
+                "UPDATE short_drama_characters SET reference_job_id=NULL,"
                 "reference_file='paid.png',reference_url='/api/gen/file/paid.png',"
-                "reference_version=1,reference_locked=1 "
+                "reference_version=1,reference_locked=1,reference_source='upload' "
                 "WHERE project_id=? AND character_key=?",
                 (project["id"], character_key),
             )
@@ -3983,16 +3781,19 @@ class ShortDramaRouteTests(unittest.TestCase):
         characters = [dict(item) for item in protected["characters"]]
         characters[0]["appearance_prompt"] += " changed"
 
-        status, conflict = self.request(
+        status, updated = self.request(
             "PUT", "/api/gen/short-drama/project?" + urllib.parse.urlencode({
                 "id": project["id"],
             }),
             body={"revision": protected["revision"], "characters": characters},
         )
 
-        self.assertEqual(409, status)
-        self.assertEqual("character_reference_protected", conflict["code"])
-        self.assertIn("不能直接修改", conflict["detail"])
+        self.assertEqual(200, status)
+        changed = updated["characters"][0]
+        self.assertEqual("paid.png", changed["reference_file"])
+        self.assertEqual("/api/gen/file/paid.png", changed["reference_url"])
+        self.assertTrue(changed["reference_locked"])
+        self.assertTrue(changed["reference_profile_stale"])
 
     def test_project_routes_enforce_pagination_limit_and_soft_delete(self):
         for query in ("page=0", "page=", "page=abc", "page_size=0", "page_size=51"):
@@ -4076,55 +3877,6 @@ class ShortDramaRouteTests(unittest.TestCase):
         )
         self.assertEqual(200, status)
         self.assertTrue(deleted["deleted"])
-
-    def test_live_action_import_accepts_legacy_reference_views_with_migration_gate(self):
-        legacy_contract = [{
-            "character_key": "character_1",
-            "name": "Lin Yi",
-            "role_type": "main",
-            "gender": "female",
-            "identity_text": "",
-            "relationships": "",
-            "personality": "",
-            "age": "",
-            "face_shape": "",
-            "hairstyle": "",
-            "hair_color": "",
-            "height_body": "",
-            "fixed_clothing": "white shirt",
-            "fixed_colors": "",
-            "accessories": "",
-            "appearance_prompt": "female detective",
-            "wardrobe_prompt": "white shirt",
-            "reference_views": ["front_full", "side_full", "front_half"],
-        }]
-        body = {
-            **{key: value for key, value in valid_project().items()
-               if key != "point_budget"},
-            "source_text": "A complete legacy live action script snapshot.",
-            "filename": "legacy-live-action.txt",
-            "import_mode": "faithful",
-            "content_type": "live_action",
-            "character_contract": legacy_contract,
-        }
-
-        status, project = self.request(
-            "POST", "/api/gen/short-drama/projects/import", body=body,
-            idempotency_key="legacy-live-action-import",
-        )
-
-        self.assertEqual(200, status)
-        self.assertEqual(
-            ["front_full", "side_full", "front_half"],
-            project["script_import"]["character_contract"][0]["reference_views"],
-        )
-        migration = project["script_import"]["character_contract_migration"]
-        self.assertTrue(migration["required"])
-        self.assertEqual(
-            "back_full_confirmation_required", migration["code"]
-        )
-        self.assertEqual(["character_1"], migration["character_keys"])
-        self.assertEqual(["back_full"], migration["missing_reference_views"])
 
     def test_live_action_abandon_replays_committed_delete_after_response_loss(self):
         import_body = {

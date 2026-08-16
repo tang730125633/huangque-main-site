@@ -11,6 +11,7 @@ from . import short_drama_assembly_artifacts as assembly_artifacts
 from . import short_drama_assembly_lipsync as lipsync_assembly
 from . import short_drama_master_audio as master_audio
 from . import short_drama_alignment as subtitle_alignment
+from . import short_drama_duration
 
 
 ASSEMBLY_STAGES = {"assembly_review", "completed"}
@@ -915,10 +916,10 @@ def build_assembly_snapshot(
             "ready": shot_ready,
             "blockers": shot_blockers,
         })
-    expected_duration_ms = int(project["target_duration"]) * 1000
     actual_duration_ms = sum(int(item["duration"]) * 1000 for item in sources)
-    if abs(actual_duration_ms - expected_duration_ms) > (
-        media_plan.DURATION_TOLERANCE_MS
+    if not short_drama_duration.contains_milliseconds(
+        project["target_duration"], actual_duration_ms,
+        media_plan.DURATION_TOLERANCE_MS,
     ):
         blockers.append(_blocker("project_duration_mismatch"))
     current_sources = _collect_sources(conn, project["id"])
@@ -943,7 +944,7 @@ def build_assembly_snapshot(
     input_hash = None
     if not planning_blockers and len(plan_inputs) == len(sources):
         normalization = media_plan.build_normalization_plan(
-            project["ratio"], project["target_duration"], plan_inputs
+            project["ratio"], actual_duration_ms // 1000, plan_inputs
         )
         hash_payload = {
             "planner_version": media_plan.PLANNER_VERSION,

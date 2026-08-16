@@ -155,8 +155,9 @@ class ShortDramaPr94SchemaMigrationTests(unittest.TestCase):
             item for item in attached["characters"]
             if item["character_key"] == character_key
         )
-        self.assertEqual(reference_version, character["reference_version"])
-        self.assertEqual(job_id, character["reference_job_id"])
+        self.assertLess(character["reference_version"], reference_version)
+        self.assertEqual(reference_version, character["pending_reference_version"])
+        self.assertEqual(job_id, character["pending_reference_job_id"])
         return attached
 
     def _seed_trusted_ai_evidence(self, job_id=701):
@@ -332,8 +333,10 @@ class ShortDramaPr94SchemaMigrationTests(unittest.TestCase):
                 },
             )
         replacement = selected["characters"][0]
-        self.assertEqual(2, replacement["reference_version"])
-        self.assertFalse(replacement["reference_locked"])
+        self.assertEqual(1, replacement["reference_version"])
+        self.assertEqual(2, replacement["pending_reference_version"])
+        self.assertEqual("upload", replacement["pending_reference_source"])
+        self.assertTrue(replacement["reference_locked"])
 
         confirmed = short_drama.confirm_character_reference(
             self.db, "alice", "legacy-project", selected["revision"],

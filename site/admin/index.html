@@ -41,7 +41,7 @@
     @keyframes admin-nav-seed-a{0%{opacity:0;transform:translate(-50%,-50%) scale(.4)}30%{opacity:1}100%{opacity:0;transform:translate(10px,-12px) scale(1.2)}}
     @keyframes admin-nav-seed-b{0%{opacity:0;transform:translate(-50%,-50%) scale(.4)}30%{opacity:.9}100%{opacity:0;transform:translate(-13px,8px) scale(.8)}}
     @media(prefers-reduced-motion:reduce){.side-nav-icon{transition:none}.side-nav-item:hover .side-nav-icon,.side-nav-item:focus-visible .side-nav-icon,.side-nav-item:hover .side-nav-icon svg>*,.side-nav-item:focus-visible .side-nav-icon svg>*,.side-nav-item:hover .side-nav-icon:before,.side-nav-item:focus-visible .side-nav-icon:before,.side-nav-item:hover .side-nav-icon:after,.side-nav-item:focus-visible .side-nav-icon:after{animation:none!important}}
-    .sidebar-foot{padding:13px 14px 18px;border-top:1px solid rgba(148,164,187,.08)}
+    .sidebar-foot{display:grid;gap:8px;padding:13px 14px 18px;border-top:1px solid rgba(148,164,187,.08)}
     .sidebar-foot a{display:flex;align-items:center;justify-content:center;height:36px;border:1px solid var(--line);border-radius:7px;color:var(--muted);text-decoration:none;font-size:12px;font-weight:700}.sidebar-foot a:hover{color:var(--text)}
     .sidebar-resizer{position:absolute;top:0;right:-4px;z-index:3;width:8px;height:100%;cursor:col-resize;touch-action:none;outline:0}
     .sidebar-resizer:after{content:"";position:absolute;top:0;bottom:0;left:3px;width:2px;background:transparent;transition:background .14s,box-shadow .14s}
@@ -261,7 +261,7 @@
         <button class="side-nav-item" data-module-tab="features">接单与定价</button>
       </div>
     </nav>
-    <div class="sidebar-foot"><a href="/workbench/inspiration.html">返回用户工作台</a></div>
+    <div class="sidebar-foot"><a href="/api-docs/" target="_blank" rel="noopener">团队接口文档 · 测速</a><a href="/workbench/inspiration.html">返回用户工作台</a></div>
     <div class="sidebar-resizer" id="sidebarResizer" role="separator" aria-orientation="vertical" aria-label="拖动调整侧栏宽度" aria-valuemin="180" aria-valuemax="420" aria-valuenow="236" tabindex="0" title="拖动调整侧栏宽度"></div>
   </aside>
   <button class="sidebar-backdrop" id="sidebarBackdrop" aria-label="关闭菜单"></button>

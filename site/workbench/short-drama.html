@@ -6,8 +6,8 @@
   <title>短剧 · 黄雀 AI 工作台</title>
   <script src="theme-init.js?v=11eb385e"></script>
   <link rel="stylesheet" href="theme.css?v=5873a2f4">
-  <link rel="stylesheet" href="short-drama-center.css?v=5a0544f8">
-  <link rel="stylesheet" href="short-drama-workspace.css?v=fcc31992">
+  <link rel="stylesheet" href="short-drama-center.css?v=9e03422d">
+  <link rel="stylesheet" href="short-drama-workspace.css?v=67a0a1b9">
 </head>
 <body>
   <div class="hq-app">
@@ -22,31 +22,20 @@
       </section>
 
       <section class="short-drama-metrics" aria-label="项目概览">
-        <article><span>全部项目</span><strong id="shortDramaMetricAll">0</strong></article>
-        <article><span>制作中</span><strong id="shortDramaMetricActive">0</strong></article>
-        <article><span>待处理</span><strong id="shortDramaMetricBlocked">0</strong></article>
-        <article><span>已交付</span><strong id="shortDramaMetricDone">0</strong></article>
-        <article class="short-drama-draft-metric" data-project-view="draft" role="button" tabindex="0" aria-label="打开草稿箱"><span>草稿箱</span><strong id="shortDramaMetricDraft">0</strong><small>未完成的创作</small></article>
+        <article class="short-drama-project-metric active" data-project-view="all_projects" role="button" tabindex="0" aria-pressed="true"><span>全部项目</span><strong id="shortDramaMetricAll">0</strong><small>包含正式项目和草稿</small></article>
+        <article class="short-drama-project-metric" data-project-view="active_projects" role="button" tabindex="0" aria-pressed="false"><span>制作中</span><strong id="shortDramaMetricActive">0</strong><small>正在制作的短剧</small></article>
+        <article class="short-drama-project-metric" data-project-view="blocked_projects" role="button" tabindex="0" aria-pressed="false"><span>待处理</span><strong id="shortDramaMetricBlocked">0</strong><small>等待继续设置</small></article>
+        <article class="short-drama-project-metric" data-project-view="completed" role="button" tabindex="0" aria-pressed="false"><span>已交付</span><strong id="shortDramaMetricDone">0</strong><small>已经完成交付</small></article>
+        <article class="short-drama-project-metric short-drama-draft-metric" data-project-view="creation_draft" role="button" tabindex="0" aria-pressed="false"><span>草稿箱</span><strong id="shortDramaMetricDraft">0</strong><small>未完成的创作</small></article>
       </section>
 
       <section class="short-drama-toolbar" aria-label="项目筛选">
         <label class="short-drama-search">
           <span aria-hidden="true">⌕</span>
           <input id="shortDramaSearch" type="search" placeholder="搜索项目名称或简介" autocomplete="off">
+          <button id="shortDramaSearchClear" type="button" aria-label="清空搜索" hidden>×</button>
         </label>
-        <select id="shortDramaStageFilter" aria-label="按阶段筛选">
-          <option value="">全部阶段</option>
-          <option value="creation_draft">草稿箱</option>
-          <option value="setup">项目设置</option>
-          <option value="script_review">剧本输入</option>
-          <option value="character_review">角色确认</option>
-          <option value="storyboard_review">分镜确认</option>
-          <option value="visual_review">画面确认</option>
-          <option value="voice_review">配音字幕</option>
-          <option value="video_review">视频确认</option>
-          <option value="assembly_review">成片确认</option>
-          <option value="completed">已交付</option>
-        </select>
+        <span class="short-drama-search-count" id="shortDramaSearchCount" aria-live="polite"></span>
       </section>
 
       <div class="short-drama-notice" id="shortDramaNotice" role="status" hidden></div>
@@ -55,7 +44,7 @@
         <div class="short-drama-empty-mark">🎬</div>
         <h2>还没有独立短剧项目</h2>
         <p>创建第一个项目，画布里的现有短剧仍可照常使用。</p>
-        <button class="short-drama-primary" type="button" data-action="open-create">创建短剧</button>
+        <button class="short-drama-primary" id="shortDramaEmptyAction" type="button">创建短剧</button>
       </section>
 
       <aside class="short-drama-drawer" id="shortDramaDrawer" aria-label="项目详情" hidden>
@@ -74,7 +63,20 @@
     </main>
   </div>
 
-  <dialog class="short-drama-dialog short-drama-create-dialog" id="shortDramaDialog" aria-labelledby="shortDramaCreateTitle" aria-describedby="shortDramaCreateLead">
+  <dialog class="short-drama-action-dialog" id="shortDramaProjectActionDialog">
+    <form id="shortDramaProjectActionForm">
+      <header>
+        <div><p class="short-drama-eyebrow">PROJECT ACTION</p><h2 id="shortDramaProjectActionTitle">项目操作</h2></div>
+        <button class="short-drama-close" id="shortDramaProjectActionClose" type="button" aria-label="关闭">×</button>
+      </header>
+      <p id="shortDramaProjectActionMessage"></p>
+      <label id="shortDramaProjectRenameField">项目名称<input id="shortDramaProjectRenameInput" maxlength="80" autocomplete="off"></label>
+      <div class="short-drama-import-error" id="shortDramaProjectActionError" hidden></div>
+      <footer><button class="short-drama-secondary" id="shortDramaProjectActionCancel" type="button">取消</button><button class="short-drama-primary" id="shortDramaProjectActionConfirm" type="submit">确认</button></footer>
+    </form>
+  </dialog>
+
+  <dialog class="short-drama-dialog short-drama-create-dialog" id="shortDramaDialog">
     <div class="short-drama-create-shell">
       <header class="short-drama-create-header">
         <div>
@@ -134,7 +136,7 @@
           <input name="source_text" type="hidden">
           <div class="short-drama-form-row">
             <label>画面比例<select name="ratio"><option value="16:9">16:9 横屏</option><option value="9:16">9:16 竖屏</option></select></label>
-            <label>目标时长<select name="target_duration"><option value="30">30 秒</option><option value="45">45 秒</option><option value="60">60 秒</option></select></label>
+            <label>成片时长<select name="target_duration"><option value="30">15–30 秒</option><option value="45">30–60 秒</option><option value="60">60–90 秒</option></select></label>
             <label>镜头数量<select name="shot_count"><option value="6">6 镜</option><option value="8">8 镜</option><option value="10">10 镜</option></select></label>
           </div>
           <label>视觉风格<input name="visual_style" maxlength="120" value="电影感写实"></label>
@@ -276,7 +278,7 @@
           <label>项目名称<input name="title" required maxlength="80"></label>
           <div class="short-drama-form-row">
             <label>画面比例<select name="ratio"><option value="16:9">16:9 横屏</option><option value="9:16">9:16 竖屏</option></select></label>
-            <label>目标时长<select name="target_duration"><option value="30">30 秒</option><option value="45">45 秒</option><option value="60">60 秒</option></select></label>
+            <label>成片时长<select name="target_duration"><option value="30">15–30 秒</option><option value="45">30–60 秒</option><option value="60">60–90 秒</option></select></label>
             <label>镜头数量<select name="shot_count"><option value="6">6 镜</option><option value="8">8 镜</option><option value="10">10 镜</option></select></label>
           </div>
           <label>视觉风格<input name="visual_style" maxlength="120" value="电影感写实"></label>
@@ -294,7 +296,7 @@
         <label>一句话故事<textarea name="synopsis" required minlength="8" maxlength="1000" placeholder="说清主要人物、核心冲突和想要的结局"></textarea></label>
         <div class="short-drama-form-row">
           <label>画面比例<select name="ratio"><option value="16:9">16:9 横屏</option><option value="9:16">9:16 竖屏</option></select></label>
-          <label>目标时长<select name="target_duration"><option value="30">30 秒</option><option value="45">45 秒</option><option value="60">60 秒</option></select></label>
+          <label>成片时长<select name="target_duration"><option value="30">15–30 秒</option><option value="45">30–60 秒</option><option value="60">60–90 秒</option></select></label>
           <label>镜头数量<select name="shot_count"><option value="6">6 镜</option><option value="8">8 镜</option><option value="10">10 镜</option></select></label>
         </div>
         <label>视觉风格<input name="visual_style" maxlength="120" value="电影感写实" placeholder="例如：电影感写实"></label>
@@ -321,7 +323,7 @@
   </dialog>
 
   <script src="cloud-shell.js?v=5c2643d5"></script>
-  <script src="short-drama-workspace.js?v=0a999ad0"></script>
-  <script src="short-drama-center.js?v=5de2b7a8"></script>
+  <script src="short-drama-workspace.js?v=14e60fbb"></script>
+  <script src="short-drama-center.js?v=fef7a7bd"></script>
 </body>
 </html>

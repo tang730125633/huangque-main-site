@@ -4,6 +4,7 @@
 import base64
 import json
 import os
+import urllib.error
 
 
 MODEL = os.environ.get("SHORT_DRAMA_REFERENCE_VISION_MODEL", "gemini-2.5-flash").strip()
@@ -34,23 +35,6 @@ INSTRUCTION = (
 )
 
 
-class ReferenceValidationError(ValueError):
-    def __init__(self, code, message, status):
-        super().__init__(message)
-        self.code = code
-        self.status = int(status)
-
-
-class ReferenceValidationUnavailable(ReferenceValidationError):
-    def __init__(self, message):
-        super().__init__("character_reference_validation_unavailable", message, 503)
-
-
-class ReferenceIneligible(ReferenceValidationError):
-    def __init__(self, message):
-        super().__init__("character_reference_ineligible", message, 422)
-
-
 def _candidate_payload(response):
     candidates = response.get("candidates") if isinstance(response, dict) else None
     parts = (
@@ -77,11 +61,11 @@ def validate_character_reference(raw, mime_type):
     """Raise the exact user-facing error when the supplied image is ineligible."""
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not api_key or not MODEL:
-        raise ReferenceValidationUnavailable("人物图片检测暂时不可用，请稍后重试")
+        raise ValueError("人物图片检测暂时不可用，请稍后重试")
     if not isinstance(raw, (bytes, bytearray)) or not raw:
-        raise ReferenceIneligible("请上传人物图")
+        raise ValueError("请上传人物图")
     if mime_type not in {"image/jpeg", "image/png", "image/webp"}:
-        raise ReferenceIneligible("请上传人物图")
+        raise ValueError("请上传人物图")
 
     body = {
         "contents": [{"parts": [
@@ -115,19 +99,30 @@ def validate_character_reference(raw, mime_type):
             "/v1beta/models/%s:generateContent" % MODEL,
             json.dumps(body, ensure_ascii=False).encode("utf-8"),
             {"Content-Type": "application/json", "x-goog-api-key": api_key},
-            max_attempts=2,
+            max_attempts=4,
         )
         result = _candidate_payload(response)
+    except urllib.error.HTTPError as error:
+        code = int(getattr(error, "code", 0) or 0)
+        print(
+            "[short-drama] character reference validation HTTP %s" % code,
+            flush=True,
+        )
+        if code == 429:
+            raise ValueError("人物检测服务繁忙，请稍后重新检测")
+        if code in {401, 403}:
+            raise ValueError("人物检测服务配置异常，请联系管理员")
+        raise ValueError("人物图片检测暂时不可用，请稍后重新检测")
     except Exception as error:
         print(
             "[short-drama] character reference validation failed: %s"
             % type(error).__name__,
             flush=True,
         )
-        raise ReferenceValidationUnavailable("人物图片检测暂时不可用，请稍后重试")
+        raise ValueError("人物图片检测暂时不可用，请稍后重新检测")
 
     if not result["has_real_person"]:
-        raise ReferenceIneligible("请上传人物图")
+        raise ValueError("请上传人物图")
     if result["visible_extent"] not in ACCEPTED_EXTENTS:
-        raise ReferenceIneligible("请上传至少包含半身的人物图")
+        raise ValueError("请上传至少包含半身的人物图")
     return result

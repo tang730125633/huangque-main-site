@@ -220,7 +220,7 @@ def normalize_state(value):
                 pending_module == state["current_module"]
                 and pending_step == state["module_step"] + 1
                 and pending_step <= len(MODULE_WORKFLOWS[pending_module]["checkpoints"])
-                and pending.get("status") in {"awaiting_confirmation", "editing"}
+                and pending.get("status") in {"collecting", "awaiting_confirmation", "editing"}
                 and isinstance(pending.get("id"), str)
             )
             if not valid:
@@ -386,7 +386,9 @@ def apply_action(value, action, expected_revision):
     return state, event
 
 
-def validate_model_decision(raw, value, evidence_text, expected_checkpoint=None):
+def validate_model_decision(
+    raw, value, evidence_text, expected_checkpoint=None, allow_partial_profile_updates=False
+):
     state = normalize_state(value)
     if not isinstance(raw, dict):
         raise HarnessError("模型没有返回结构化对象")
@@ -435,7 +437,11 @@ def validate_model_decision(raw, value, evidence_text, expected_checkpoint=None)
         if kind != "ai_option" and (not quote or quote not in evidence):
             raise HarnessError("模型档案更新缺少可回查的用户原话")
         clean_updates.append({"field": field, "value": value_text, "kind": kind, "evidence_quote": quote})
-    if decision not in {"propose_checkpoint", "revise_intake"} and clean_updates:
+    if (
+        decision not in {"propose_checkpoint", "revise_intake"}
+        and clean_updates
+        and not (allow_partial_profile_updates and decision == "ask_follow_up")
+    ):
         raise HarnessError("只有待确认断点或基础资料修订可以携带档案更新")
     try:
         confidence = min(1.0, max(0.0, float(raw.get("confidence", 0))))
@@ -472,16 +478,26 @@ def apply_intake_decision(value, raw, evidence_text):
     intake = state["intake"]
     if intake["status"] == "complete":
         raise HarnessError("基础资料已经确认")
+    candidate = deepcopy(raw) if isinstance(raw, dict) else raw
+    if isinstance(candidate, dict):
+        candidate_kind = str(candidate.get("decision") or "")
+        if candidate_kind in {"ask_follow_up", "answer_only"}:
+            candidate.update(checkpoint=0, draft="", self_review="")
+            if candidate_kind == "answer_only":
+                candidate["profile_updates"] = []
+        elif candidate_kind == "revise_intake":
+            candidate.update(decision="propose_checkpoint", checkpoint=1)
     prior_quotes = "\n".join(
         str(item.get("evidence_quote") or "")
         for item in intake.get("profile_updates") or []
         if isinstance(item, dict)
     )
     decision = validate_model_decision(
-        raw,
+        candidate,
         state,
         str(evidence_text or "") + "\n" + prior_quotes,
         expected_checkpoint=1,
+        allow_partial_profile_updates=True,
     )
     if decision["decision"] == "propose_checkpoint":
         intake.update(
@@ -490,8 +506,17 @@ def apply_intake_decision(value, raw, evidence_text):
             draft=decision["draft"],
             profile_updates=decision["profile_updates"],
         )
-    elif decision["decision"] == "ask_follow_up" and intake["status"] == "awaiting_confirmation":
-        intake["status"] = "editing"
+    elif decision["decision"] == "ask_follow_up":
+        merged_updates = {}
+        for item in (intake.get("profile_updates") or []) + decision["profile_updates"]:
+            merged_updates.pop(item["field"], None)
+            merged_updates[item["field"]] = item
+        if len(merged_updates) > 12:
+            raise HarnessError("待确认的基础资料字段超过 12 项，请先整理完整核对稿")
+        if merged_updates:
+            intake["profile_updates"] = list(merged_updates.values())
+        if intake["status"] == "awaiting_confirmation":
+            intake["status"] = "editing"
     _bump(state)
     reply = decision["reply"]
     if decision["decision"] == "propose_checkpoint":
@@ -504,7 +529,26 @@ def apply_intake_decision(value, raw, evidence_text):
 
 def apply_model_decision(value, raw, evidence_text, pending_id=None):
     state = normalize_state(value)
-    decision = validate_model_decision(raw, state, evidence_text)
+    candidate = deepcopy(raw) if isinstance(raw, dict) else raw
+    if isinstance(candidate, dict):
+        candidate_kind = str(candidate.get("decision") or "")
+        if candidate_kind in {"ask_follow_up", "answer_only"}:
+            candidate.update(checkpoint=0, draft="", self_review="")
+            if candidate_kind == "answer_only":
+                candidate["profile_updates"] = []
+    pending = state.get("pending") if isinstance(state.get("pending"), dict) else None
+    prior_updates = pending.get("profile_updates") or [] if pending else []
+    prior_quotes = "\n".join(
+        str(item.get("evidence_quote") or "")
+        for item in prior_updates
+        if isinstance(item, dict)
+    )
+    decision = validate_model_decision(
+        candidate,
+        state,
+        str(evidence_text or "") + "\n" + prior_quotes,
+        allow_partial_profile_updates=True,
+    )
     if decision["decision"] == "revise_intake":
         state["intake"].update(
             status="awaiting_confirmation",
@@ -527,10 +571,28 @@ def apply_model_decision(value, raw, evidence_text, pending_id=None):
             "profile_updates": decision["profile_updates"],
             "confidence": decision["confidence"],
         }
-    elif decision["decision"] == "ask_follow_up" and not (
-        isinstance(state.get("pending"), dict) and state["pending"].get("status") == "editing"
-    ):
-        state["pending"] = None
+    elif decision["decision"] == "ask_follow_up":
+        merged_updates = {}
+        for item in prior_updates + decision["profile_updates"]:
+            merged_updates.pop(item["field"], None)
+            merged_updates[item["field"]] = item
+        if len(merged_updates) > 12:
+            raise HarnessError("当前断点的待确认资料超过 12 项，请先整理完整核对稿")
+        if pending or merged_updates:
+            prior_status = pending.get("status") if pending else ""
+            state["pending"] = {
+                "id": (pending or {}).get("id") or pending_id or uuid.uuid4().hex,
+                "kind": "checkpoint",
+                "status": "editing" if prior_status in {"awaiting_confirmation", "editing"} else "collecting",
+                "module": state["current_module"],
+                "step": state["module_step"] + 1,
+                "draft": (pending or {}).get("draft") or "",
+                "self_review": (pending or {}).get("self_review") or "",
+                "profile_updates": list(merged_updates.values()),
+                "confidence": decision["confidence"],
+            }
+        else:
+            state["pending"] = None
     _bump(state)
     return state, decision, render_model_reply(decision)
 
@@ -544,7 +606,9 @@ def intake_system_prompt(value):
 - 接受任意顺序和自然表达；用户可一次说一项或多项，不要求固定格式，不把访谈做成选择题。
 - 先查看完整对话历史和当前待核对资料；已经回答、明确不知道或拒绝回答的内容不要重复追问。
 - 信息不足或含糊时 decision=ask_follow_up，只问一个最有价值且尚未回答的问题。
+- decision=ask_follow_up 时 checkpoint=0、draft 和 self_review 为空；可以把本轮已明确说出的用户事实或偏好放入 profile_updates，等待最终核对，绝不能宣布确认。
 - 用户只是在提问、讨论或暂时跑题时 decision=answer_only；先自然回应，需要时再轻轻带回访谈，不改变已有资料。
+- decision=answer_only 时 checkpoint=0，draft、self_review 和 profile_updates 都为空。
 - 信息足够整理，或用户要求查看当前记录时，decision=propose_checkpoint、checkpoint=1；draft 必须是合并全部已知内容后的完整核对稿。
 - 用户补充、纠正或反悔时，以最新原话为准，重新生成完整核对稿；“确认/可以”等字样与补充或纠正同时出现时，内容变更优先，绝不能宣布已确认。
 - profile_updates 必须覆盖 draft 中全部结构化用户事实与偏好，使用英文 snake_case 字段，并逐字引用对话中的 evidence_quote；不得把 AI 推断写成用户事实。
@@ -585,7 +649,9 @@ def system_prompt(value):
 - 接受用户任意顺序、一次一项或多项的自然表达，不要求固定格式，不把访谈做成选择题。
 - 先查看完整对话历史和已确认资料；已经回答、明确不知道或拒绝回答的内容不要重复追问。
 - 信息不足时 decision=ask_follow_up，只问一个最有价值、容易回答且尚未回答的问题。
-- 信息足够时 decision=propose_checkpoint，draft 只包含当前断点的完整可确认内容。
+- decision=ask_follow_up 时 checkpoint=0、draft 和 self_review 为空；把本轮已明确说出的用户事实或偏好放入 profile_updates，等待最终核对。
+- 用户只是在提问或跑题时 decision=answer_only，checkpoint=0，draft、self_review 和 profile_updates 都为空。
+- 信息足够时 decision=propose_checkpoint，draft 只包含当前断点的完整可确认内容，profile_updates 必须是当前断点的完整最新快照。
 - 用户只是询问、讨论现有草稿或暂时跑题时 decision=answer_only，不改变断点；用户补充、纠正或反悔时，重做当前断点的完整草稿。
 - 仅当模块 1 尚无任何已确认断点，用户明确补充或纠正已经确认的基础资料时，decision=revise_intake、checkpoint=0；draft 必须合并原基础资料与本轮补充形成完整核对稿。这不是模块回答，不得推进模块。模块已有确认结果时不要使用 revise_intake，应说明需要新建诊断以免污染既有产出。
 - “确认/可以”等字样与补充或纠正同时出现时，内容变更优先，绝不能宣布确认或推进。

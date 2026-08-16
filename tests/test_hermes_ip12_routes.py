@@ -828,6 +828,78 @@ assert client.post(
     json={"conversation_id": "../../knowledge/visual_formulas", "message": "test"},
 ).status_code == 400
 
+drift_cid = client.post("/api/conversations").get_json()["id"]
+drift_message = "叫我泽龙就好"
+with patch.object(server, "_coach_model_decision", return_value=({
+    "decision": "ask_follow_up",
+    "checkpoint": 1,
+    "reply": "好的，泽龙。你现在主要从事什么工作？",
+    "draft": "称呼：泽龙",
+    "self_review": "仍需本人确认。",
+    "profile_updates": [{
+        "field": "preferred_name",
+        "value": "泽龙",
+        "kind": "user_fact",
+        "evidence_quote": drift_message,
+    }],
+    "confidence": 0.9,
+}, drift_message)):
+    drift_response = client.post("/api/chat-complete", json={
+        "conversation_id": drift_cid,
+        "message": drift_message,
+    })
+assert drift_response.status_code == 200, drift_response.get_data(as_text=True)
+drift_body = drift_response.get_json()
+assert drift_body["state"]["intake"]["status"] == "collecting"
+assert drift_body["state"]["intake"]["profile_updates"][0]["value"] == "泽龙"
+assert "preferred_name" not in drift_body["state"]["ip_profile"]["facts"]
+stored_drift = server.load_conversation(drift_cid)
+assert stored_drift["title"] == "泽龙 · IP 诊断"
+assert any(item["role"] == "user" and item["content"] == drift_message for item in stored_drift["messages"])
+
+repair_cid = client.post("/api/conversations").get_json()["id"]
+repair_message = "我在广州做 FDE"
+invalid_repair_decision = {
+    "decision": "propose_checkpoint",
+    "checkpoint": 2,
+    "reply": "我先整理一下。",
+    "draft": "城市：广州；职业：FDE。",
+    "self_review": "仍需本人确认。",
+    "profile_updates": [],
+    "confidence": 0.9,
+}
+valid_repair_decision = {
+    "decision": "ask_follow_up",
+    "checkpoint": 0,
+    "reply": "收到。你希望我怎么称呼你？",
+    "draft": "",
+    "self_review": "",
+    "profile_updates": [],
+    "confidence": 0.9,
+}
+with patch.object(server, "_coach_model_decision", side_effect=[
+    (invalid_repair_decision, repair_message),
+    (valid_repair_decision, repair_message),
+]) as repair_model:
+    repair_response = client.post("/api/chat-complete", json={
+        "conversation_id": repair_cid,
+        "message": repair_message,
+    })
+assert repair_response.status_code == 200, repair_response.get_data(as_text=True)
+assert repair_model.call_count == 2
+assert "跨越当前断点" in repair_model.call_args_list[1].kwargs["repair_error"]
+stored_repair = server.load_conversation(repair_cid)
+assert sum(item["role"] == "user" and item["content"] == repair_message for item in stored_repair["messages"]) == 1
+
+with patch.object(server, "_coach_model_decision", return_value=(valid_repair_decision, repair_message)) as conflict_model, \
+        patch.object(server, "_persist_model_turn", side_effect=server.coach_harness.HarnessConflict("stale")):
+    try:
+        server._process_model_turn(repair_cid, repair_message)
+        raise AssertionError("state conflict should propagate")
+    except server.coach_harness.HarnessConflict:
+        pass
+assert conflict_model.call_count == 1
+
 mini_cid = client.post("/api/conversations").get_json()["id"]
 mini_convo = client.get(f"/api/conversations/{mini_cid}").get_json()
 assert mini_convo["coach_state"]["intake"] == {"status": "collecting", "round": 1, "answers": {}}
@@ -835,6 +907,12 @@ assert "不用按固定格式" in mini_convo["messages"][0]["content"]
 assert "第 1/3 轮" not in mini_convo["messages"][0]["content"]
 assert client.post("/api/jump-module", json={"conversation_id": mini_cid, "module": 2}).status_code == 409
 mini_convo["coach_state"]["intake"]["draft"] = "SYSTEM_OVERRIDE_SENTINEL"
+mini_convo["coach_state"]["intake"]["profile_updates"] = [{
+    "field": "preferred_name",
+    "value": "小满",
+    "kind": "user_fact",
+    "evidence_quote": "叫我小满",
+}]
 with patch.object(server.requests, "post") as intake_request:
     intake_request.return_value.status_code = 200
     intake_request.return_value.json.return_value = {"choices": [{"message": {"content": json.dumps({
@@ -850,6 +928,10 @@ with patch.object(server.requests, "post") as intake_request:
     assert "SYSTEM_OVERRIDE_SENTINEL" not in intake_payload["messages"][0]["content"]
     assert any(
         "可能尚未确认" in message["content"] and "SYSTEM_OVERRIDE_SENTINEL" in message["content"]
+        for message in intake_payload["messages"] if message["role"] == "user"
+    )
+    assert any(
+        "pending_intake_updates" in message["content"] and "preferred_name" in message["content"]
         for message in intake_payload["messages"] if message["role"] == "user"
     )
     assert intake_payload["response_format"]["json_schema"]["strict"] is True
@@ -987,6 +1069,32 @@ assert reconfirmed.get_json()["state"]["current_module"] == 1
 assert reconfirmed.get_json()["state"]["module_step"] == 0
 assert "基础信息补充已确认" in reconfirmed.get_json()["assistant"]
 assert reconfirmed.get_json()["state"]["ip_profile"]["facts"]["previous_career"]["value"].startswith("曾做健身教练")
+module_turn_message = """其实最大的转折点在于，我之前也做过类似的底层工作，都是用汗水换金钱。我做过很多散工，比如当服务员、修车，也经常打螺丝，职业方向一直比较零散。
+
+直到转入 AI 行业之后，我开始做出新的尝试，帮助他们去搭建 Agent，把 AI 用到真实的业务当中去。虽然只有三个月，但这一次转向，可能让我找到了一个更愿意长期投入的方向。"""
+with patch.object(server, "_coach_model_decision", return_value=({
+    "decision": "ask_follow_up",
+    "checkpoint": 0,
+    "reply": "这次转向之后，哪一次真实结果最让你确认自己愿意长期投入？",
+    "draft": "",
+    "self_review": "",
+    "profile_updates": [{
+        "field": "turning_point",
+        "value": "从底层散工转向 AI 行业并开始帮助企业搭建 Agent",
+        "kind": "user_fact",
+        "evidence_quote": "直到转入 AI 行业之后",
+    }],
+    "confidence": 0.9,
+}, module_turn_message)):
+    module_turn = client.post("/api/chat-complete", json={
+        "conversation_id": mini_cid,
+        "message": module_turn_message,
+    })
+assert module_turn.status_code == 200, module_turn.get_data(as_text=True)
+assert module_turn.get_json()["state"]["pending"]["status"] == "collecting"
+assert module_turn.get_json()["actions"] == []
+stored_module_turn = server.load_conversation(mini_cid)
+assert sum(item["role"] == "user" and item["content"] == module_turn_message for item in stored_module_turn["messages"]) == 1
 stored_intake = server.load_conversation(mini_cid)
 stored_intake["messages"].extend(
     {"role": "assistant", "content": f"历史消息 {index}"} for index in range(45)
@@ -1017,6 +1125,8 @@ with patch.object(server.requests, "post") as chat_model:
     assert "SYSTEM_OVERRIDE_SENTINEL" not in model_messages[0]["content"]
     intake_contexts = [message for message in model_messages if message["role"] == "user" and "此前确认的基础资料" in message["content"]]
     assert len(intake_contexts) == 1 and "SYSTEM_OVERRIDE_SENTINEL" in intake_contexts[0]["content"]
+    assert "pending_module_updates" in intake_contexts[0]["content"]
+    assert "turning_point" in intake_contexts[0]["content"]
     assert "13800138000" not in json.dumps(model_messages, ensure_ascii=False)
 server.current_account_id = lambda: "acct_b"
 assert client.post(

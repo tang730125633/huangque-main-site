@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,6 +16,28 @@ video = importlib.import_module("content_domains.video")
 
 
 class HeyGenMcpOAuthTests(unittest.TestCase):
+    def test_plain_video_persists_provider_correlation_before_polling(self):
+        with patch.object(video, "_resolve_out_file", side_effect=[Path("i.jpg"), Path("a.mp3")]), \
+             patch.object(video, "_ensure_heygen_audio_mp3", return_value=Path("a.mp3")), \
+             patch.object(video, "_upload_heygen_image_asset", return_value="image-1"), \
+             patch.object(video, "_heygen_upload_asset", return_value="audio-1"), \
+             patch.object(video, "_heygen_retry_net", side_effect=lambda fn, _what: fn()), \
+             patch.object(video, "_heygen_retry_429", side_effect=lambda fn, _what: fn()), \
+             patch.object(video, "_heygen_create_video", return_value="video-1"), \
+             patch.object(video, "_heygen_poll_video", return_value={"video_url": "https://example/video.mp4"}), \
+             patch.object(video, "_download_video_file_direct", return_value="video/out.mp4"), \
+             patch.object(video, "_extract_first_frame_cover", return_value=None), \
+             patch.object(video, "heygen_slot", side_effect=lambda _label: nullcontext()), \
+             patch.object(video, "update_video_asset_phase") as phase:
+            result = video.generate_heygen_video_direct(
+                "i.jpg", "a.mp3", "1080p", "9:16", "medium", job_id=6695)
+
+        self.assertEqual(result["video_id"], "video-1")
+        self.assertEqual([call.args[1] for call in phase.call_args_list], [
+            "uploading_audio_asset", "submitting_video", "polling_video", "downloading_video",
+        ])
+        self.assertEqual(phase.call_args_list[2].kwargs["provider_video_id"], "video-1")
+
     def test_expired_oauth_refreshes_and_stays_private(self):
         requests = []
 

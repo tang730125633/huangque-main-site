@@ -42,9 +42,34 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.9.0", self.payload(output)["cli_version"])
+        self.assertEqual("0.10.0", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
+
+    def test_powershell_utf8_bom_input_is_accepted(self):
+        self.authorize()
+        with patch("hq_cli.client.request_json", return_value=(200, {"items": []})):
+            code, output, error = self.invoke(
+                ["run", "tasks", "--input", "@-"], b"\xef\xbb\xbf{}",
+            )
+        self.assertEqual(0, code, error)
+        self.assertEqual([], self.payload(output)["result"]["items"])
+
+    @unittest.skipUnless(os.name == "nt", "Windows credential behavior")
+    def test_windows_credentials_use_appdata_and_dpapi(self):
+        self.env.stop()
+        try:
+            appdata = Path(self.temp.name) / "Roaming profile"
+            with patch.dict(os.environ, {"APPDATA": str(appdata)}, clear=False):
+                os.environ.pop("HQ_CLI_CONFIG_DIR", None)
+                client.save_credentials("s" * 43, 2000000000, ["profile:read"])
+                path = appdata / "Huangque" / "hq-cli" / "credentials.json"
+                raw = path.read_text(encoding="utf-8")
+                self.assertNotIn("s" * 43, raw)
+                self.assertEqual("windows-dpapi-current-user", json.loads(raw)["protection"])
+                self.assertEqual("s" * 43, client.load_credentials()["access_token"])
+        finally:
+            self.env.start()
 
     def test_all_requested_authenticated_capabilities_are_available(self):
         _, output, _ = self.invoke(["capabilities"])
@@ -222,8 +247,11 @@ class HqCliTests(unittest.TestCase):
 
     def test_credentials_are_private_and_logout_revokes_then_deletes(self):
         self.authorize()
-        mode = stat.S_IMODE(os.stat(client.credentials_path()).st_mode)
-        self.assertEqual(0o600, mode)
+        if os.name != "nt":
+            mode = stat.S_IMODE(os.stat(client.credentials_path()).st_mode)
+            self.assertEqual(0o600, mode)
+        else:
+            self.assertNotIn("t" * 43, client.credentials_path().read_text(encoding="utf-8"))
         with patch("hq_cli.client.request_json", return_value=(200, {"ok": True})) as request:
             code, output, error = self.invoke(["logout"])
         self.assertEqual(0, code, error)
@@ -627,17 +655,25 @@ class HqCliTests(unittest.TestCase):
         self.assertNotIn(str(image_path), serialized)
 
         link = Path(self.temp.name) / "linked.png"
-        link.symlink_to(image_path)
-        with self.assertRaises(ValueError):
-            client.upload_image(str(link), "t" * 43)
+        try:
+            link.symlink_to(image_path)
+        except OSError:
+            pass
+        else:
+            with self.assertRaises(ValueError):
+                client.upload_image(str(link), "t" * 43)
 
         real_dir = Path(self.temp.name) / "real"
         real_dir.mkdir()
         (real_dir / "inside.png").write_bytes(raw)
         linked_dir = Path(self.temp.name) / "linked-dir"
-        linked_dir.symlink_to(real_dir, target_is_directory=True)
-        with self.assertRaises(ValueError):
-            client.upload_image(str(linked_dir / "inside.png"), "t" * 43)
+        try:
+            linked_dir.symlink_to(real_dir, target_is_directory=True)
+        except OSError:
+            pass
+        else:
+            with self.assertRaises(ValueError):
+                client.upload_image(str(linked_dir / "inside.png"), "t" * 43)
 
     def test_streaming_video_client_enforces_magic_size_and_private_transport(self):
         raw = b"\x00\x00\x00\x18ftypisom" + b"private-video"
@@ -685,9 +721,13 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual("video/webm", client._video_mime(b"\x1aE\xdf\xa3"))
 
         link = Path(self.temp.name) / "linked.mp4"
-        link.symlink_to(video_path)
-        with self.assertRaises(ValueError):
-            client.upload_video(str(link), "t" * 43)
+        try:
+            link.symlink_to(video_path)
+        except OSError:
+            pass
+        else:
+            with self.assertRaises(ValueError):
+                client.upload_video(str(link), "t" * 43)
         with self.assertRaises(ValueError):
             client.upload_video("relative.mp4", "t" * 43)
         oversized = Path(self.temp.name) / "oversized.mp4"

@@ -932,6 +932,8 @@ def _refund_once(job_id, username, cost, transaction_key=""):
     transaction_key = transaction_key or jobs_store.refund_transaction_key(job_id, username)
     return jobs_store.refund_once(jdb, job_id, username, cost, lambda u, c: (
         _domains()[1].refund_points(u, c, "job#%d" % job_id, transaction_key=transaction_key), True)[1])
+
+
 def _fail_job_and_schedule_refund(job_id, error, *, from_states=("running",),
                                   username=None, cost=None, kind=None):
     """Fail one job while preserving the single durable owner of its refund retry."""
@@ -1145,28 +1147,41 @@ def _retry_short_drama_provider_refunds(limit=None):
         )
     )
 
+
+def _run_short_drama_recovery(limit=None):
+    limit = int(limit or JOB_QUEUE_MAX)
+    domain = _short_drama_domain()
+    points = _domains()[1]
+    recoveries = (
+        lambda: domain.short_drama_production.retry_attempt_refunds(
+            jdb, points, limit),
+        lambda: domain.retry_character_reference_refunds(jdb, points, limit),
+        lambda: domain.short_drama_voice.retry_voice_attempt_refunds(
+            jdb, points, limit),
+        lambda: domain.short_drama_video.retry_video_attempt_refunds(
+            jdb, points, limit),
+        lambda: _retry_short_drama_provider_refunds(limit),
+        lambda: domain.short_drama_refinement.retry_delivery_attempt_refunds(
+            jdb, points, limit),
+        lambda: jobs_store.retry_failed_refunds(jdb, _refund_once, limit),
+        lambda: domain.short_drama_assembly.reconcile_final_refunds(jdb, limit),
+        lambda: domain.short_drama_assembly.retry_final_charge_attempts(
+            jdb, points, limit),
+        lambda: domain.short_drama_completion.reconcile_attempts(jdb, limit),
+    )
+    for recover in recoveries:
+        try:
+            recover()
+        except Exception:
+            pass
+
 def _pending_job_scanner():
     while True:
         try:
             _recover_pending_jobs(_PENDING_RECOVERY_LIMIT)
-            _short_drama_domain().short_drama_production.retry_attempt_refunds(
-                jdb, _domains()[1], JOB_QUEUE_MAX)
-            _short_drama_domain().retry_character_reference_refunds(
-                jdb, _domains()[1], JOB_QUEUE_MAX)
-            _short_drama_domain().short_drama_voice.retry_voice_attempt_refunds(
-                jdb, _domains()[1], JOB_QUEUE_MAX)
-            _short_drama_domain().short_drama_video.retry_video_attempt_refunds(
-                jdb, _domains()[1], JOB_QUEUE_MAX)
-            _retry_short_drama_provider_refunds(JOB_QUEUE_MAX)
-            jobs_store.retry_failed_refunds(jdb, _refund_once, JOB_QUEUE_MAX)
-            _short_drama_domain().short_drama_assembly.reconcile_final_refunds(
-                jdb, JOB_QUEUE_MAX)
-            _short_drama_domain().short_drama_assembly.retry_final_charge_attempts(
-                jdb, _domains()[1], JOB_QUEUE_MAX)
-            _short_drama_domain().short_drama_completion.reconcile_attempts(
-                jdb, JOB_QUEUE_MAX)
         except Exception:
             pass
+        _run_short_drama_recovery(JOB_QUEUE_MAX)
         time.sleep(30)
 
 _ALL_JOB_QUEUES = (_job_queue, _fast_job_queue, _talking_job_queue,
@@ -1202,24 +1217,7 @@ def start_job_workers():
             retry_breakdown(JOB_QUEUE_MAX)
     except Exception:
         pass
-    try:
-        _short_drama_domain().short_drama_production.retry_attempt_refunds(
-            jdb, _domains()[1], JOB_QUEUE_MAX)
-        _short_drama_domain().retry_character_reference_refunds(
-            jdb, _domains()[1], JOB_QUEUE_MAX)
-        _short_drama_domain().short_drama_voice.retry_voice_attempt_refunds(
-            jdb, _domains()[1], JOB_QUEUE_MAX)
-        _short_drama_domain().short_drama_video.retry_video_attempt_refunds(
-            jdb, _domains()[1], JOB_QUEUE_MAX)
-        _retry_short_drama_provider_refunds(JOB_QUEUE_MAX)
-        _short_drama_domain().short_drama_refinement.retry_delivery_attempt_refunds(
-            jdb, _domains()[1], JOB_QUEUE_MAX)
-        _short_drama_domain().short_drama_assembly.retry_final_charge_attempts(
-            jdb, _domains()[1], JOB_QUEUE_MAX)
-        _short_drama_domain().short_drama_completion.reconcile_attempts(
-            jdb, JOB_QUEUE_MAX)
-    except Exception:
-        pass
+    _run_short_drama_recovery(JOB_QUEUE_MAX)
 def drain_and_exit(signum=None, frame=None):
     """SIGTERM → 停止收新任务 → 等在飞的跑完 → 退出。
 
@@ -1445,11 +1443,27 @@ def run_job(job_id):
                 return
         # 生成失败：CAS 抢 error 终态；抢到才记失败资产。退点走幂等(reaper 若已退则跳过)
         # from_states 含 pending：抢 running 那句自己抛异常时任务还停在 pending，只认 running 会不退点
+        diagnostics = {}
+        if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video"}:
+            diagnostics_fn = getattr(_domains()[2], "get_video_job_diagnostics", None)
+            if diagnostics_fn:
+                diagnostics = diagnostics_fn(job_id)
         claimed = _fail_job_and_schedule_refund(
             job_id, str(e), from_states=("pending", "running"),
             username=username, cost=cost, kind=kind,
         )
         if claimed:
+            print("[generation-failed] " + json.dumps({
+                "event": "generation_failed",
+                "job_id": job_id,
+                "kind": kind,
+                "phase": diagnostics.get("phase"),
+                "provider_task_id": diagnostics.get("provider_video_id"),
+                "image_asset_id": diagnostics.get("image_asset_id"),
+                "audio_asset_id": diagnostics.get("audio_asset_id"),
+                "error_code": type(e).__name__,
+                "error_message": str(e)[:300],
+            }, ensure_ascii=False), flush=True)
             _mark_video_asset_failed(job_id, kind, e)
             if kind == "short_drama_sound_effect":
                 try:
