@@ -317,7 +317,8 @@ class IP12HarnessTests(unittest.TestCase):
         next_state, _, reply = harness.apply_model_decision(state, decision(state), "用户原话", pending_id="p1")
         self.assertEqual(next_state["module_step"], 0)
         self.assertEqual(next_state["pending"]["step"], 1)
-        self.assertIn("请确认这一步", reply)
+        self.assertIn("不需要你重复说明", reply)
+        self.assertNotIn("自评", reply)
 
     def test_model_words_never_complete_a_module(self):
         state = self.complete_intake()
@@ -542,6 +543,13 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual(state["current_module"], 6)
         self.assertEqual(state["completed_modules"], [1, 2, 3, 4, 5, 6])
         self.assertIn("decision=answer_only", harness.system_prompt(state))
+
+    def test_content_modules_encode_three_by_ten_contract(self):
+        module_five = harness.MODULE_WORKFLOWS[5]["checkpoints"]
+        module_six = harness.MODULE_WORKFLOWS[6]["checkpoints"]
+        self.assertTrue(any("3 个" in item for item in module_five))
+        self.assertTrue(any("每个种类" in item and "10 个" in item for item in module_five))
+        self.assertTrue(any("30 篇" in item for item in module_six))
 
     def test_incomplete_legacy_state_cannot_skip_the_last_checkpoint(self):
         state = harness.normalize_state({
