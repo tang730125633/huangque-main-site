@@ -50,9 +50,18 @@ class IP12HarnessActionsUITests(unittest.TestCase):
                 self.assertIn("foundation.status==='awaiting_confirmation'", state_actions)
                 self.assertIn("open_foundation_report", state_actions)
                 self.assertIn("confirm_foundation_report", state_actions)
+                self.assertIn("edit_foundation_report", state_actions)
+                self.assertIn("regenerate_foundation_report", state_actions)
+                self.assertIn("review_status==='dirty'", state_actions)
                 self.assertIn("查看 PDF", state_actions)
+                self.assertIn("需要修改/补充", state_actions)
+                self.assertIn("重新生成 PDF", state_actions)
                 self.assertIn("确认初稿，进入模块 5", state_actions)
                 self.assertIn("runStateAction(item)", state_actions)
+
+                send_message = source[source.index("function sendMessage"):source.index("async function sendTurn")]
+                self.assertIn("foundation_review", send_message)
+                self.assertIn("foundationEditing", send_message)
 
 
 if __name__ == "__main__":

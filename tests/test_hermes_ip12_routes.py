@@ -358,7 +358,7 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import server
 from server import _foundation_generation_active, _foundation_html, _foundation_source_messages, _render_foundation_pdf, _validate_foundation_pdf, app, parse_coach_state_updates
@@ -661,6 +661,93 @@ server.save_conversation(normal_confirm_cid, normal_confirm)
 confirmed = client.post("/api/foundation-report/confirm", json={"conversation_id": normal_confirm_cid})
 assert confirmed.get_json()["state"]["current_module"] == 5
 assert confirmed.get_json()["state"]["module_step"] == 0
+
+review_cid = client.post("/api/conversations").get_json()["id"]
+review_convo = server.load_conversation(review_cid)
+review_convo["coach_state"] = {
+    "current_module": 4,
+    "completed_modules": [1, 2, 3, 4],
+    "module_step": 5,
+    "foundation_report": {
+        "status": "awaiting_confirmation",
+        "report_id": "report-old",
+        "content": "## 模块四｜故事资产挖掘\n候选故事线｜待本人补充",
+        "review_status": "clean",
+        "review_notes": [],
+    },
+}
+server.save_conversation(review_cid, review_convo)
+(server.FOUNDATION_REPORTS_DIR / f"{review_cid}.pdf").write_bytes(valid_pdf.read_bytes())
+review_state = client.get(f"/api/conversations/{review_cid}").get_json()["coach_state"]
+qa_decision = {
+    "decision": "answer_only", "checkpoint": 0,
+    "reply": "这里标记待本人补充，是因为原对话没有足够的真实故事事实。",
+    "draft": "", "self_review": "", "profile_updates": [], "confidence": 0.9,
+}
+qa_response = Mock()
+qa_response.json.return_value = {"choices": [{"message": {"content": json.dumps(qa_decision, ensure_ascii=False)}}]}
+with patch.object(server, "call_ai", return_value=qa_response) as qa_model:
+    qa_reply = client.post("/api/chat-complete", json={
+        "conversation_id": review_cid,
+        "message": "为什么这里写待本人补充？",
+        "expected_revision": review_state["revision"],
+        "request_id": "foundation-review-question",
+    })
+assert qa_reply.status_code == 200, qa_reply.get_data(as_text=True)
+assert qa_reply.get_json()["assistant"].startswith("这里标记待本人补充")
+assert qa_reply.get_json()["state"]["current_module"] == 4
+model_messages = qa_model.call_args.args[0]
+assert any("候选故事线｜待本人补充" in item.get("content", "") for item in model_messages)
+
+revision_state = qa_reply.get_json()["state"]
+with patch.object(server, "call_ai") as revision_model:
+    revised = client.post("/api/chat-complete", json={
+        "conversation_id": review_cid,
+        "message": "我的真实转折是第一次创业失败后重新开始。",
+        "foundation_review": "revision",
+        "expected_revision": revision_state["revision"],
+        "request_id": "foundation-review-revision",
+    })
+assert revised.status_code == 200, revised.get_data(as_text=True)
+revision_model.assert_not_called()
+dirty_state = revised.get_json()["state"]
+assert dirty_state["foundation_report"]["review_status"] == "dirty"
+assert dirty_state["foundation_report"]["review_notes"][-1]["content"] == "我的真实转折是第一次创业失败后重新开始。"
+blocked_confirm = client.post("/api/foundation-report/confirm", json={
+    "conversation_id": review_cid,
+    "expected_revision": dirty_state["revision"],
+    "report_id": "report-old",
+})
+assert blocked_confirm.status_code == 409
+assert "重新生成" in blocked_confirm.get_json()["error"]
+
+report_response = Mock()
+report_response.json.return_value = {"choices": [{"message": {"content": "## 模块一｜定位诊断\n新版报告"}}]}
+with patch.object(server, "call_ai", return_value=report_response) as regenerate_model, \
+        patch.object(server, "_render_foundation_pdf", return_value=valid_pdf):
+    regenerated = client.post("/api/foundation-report/generate", json={"conversation_id": review_cid})
+assert regenerated.status_code == 200, regenerated.get_data(as_text=True)
+new_state = regenerated.get_json()["state"]
+assert new_state["foundation_report"]["report_id"] != "report-old"
+assert new_state["foundation_report"]["review_status"] == "clean"
+assert new_state["foundation_report"]["review_notes"] == []
+report_messages = regenerate_model.call_args.args[0]
+assert any("第一次创业失败后重新开始" in item.get("content", "") for item in report_messages)
+
+stale_confirm = client.post("/api/foundation-report/confirm", json={
+    "conversation_id": review_cid,
+    "expected_revision": new_state["revision"],
+    "report_id": "report-old",
+})
+assert stale_confirm.status_code == 409
+latest_report_id = new_state["foundation_report"]["report_id"]
+latest_confirm = client.post("/api/foundation-report/confirm", json={
+    "conversation_id": review_cid,
+    "expected_revision": new_state["revision"],
+    "report_id": latest_report_id,
+})
+assert latest_confirm.status_code == 200, latest_confirm.get_data(as_text=True)
+assert latest_confirm.get_json()["state"]["current_module"] == 5
 
 owned_video = artifact_store.video_path("admin", "0123456789.mp4")
 owned_video.parent.mkdir(parents=True, exist_ok=True)
