@@ -104,6 +104,12 @@ map_path() {
       printf '20|/home/ubuntu/content-api/%s|content|0\n' "$rest" ;;
     server/content_api.py)
       printf '30|/home/ubuntu/content-api/content_api.py|content|0\n' ;;
+    server/hermes_ip12/*.py)
+      rest="${path#server/hermes_ip12/}"
+      printf '20|/home/ubuntu/hermes-web/%s|hermes|0\n' "$rest" ;;
+    server/hermes_ip12/templates/*.html)
+      rest="${path#server/hermes_ip12/}"
+      printf '20|/home/ubuntu/hermes-web/%s|hermes|0\n' "$rest" ;;
     deploy/systemd/huangque-auth.service)
       printf '35|/etc/systemd/system/huangque-auth.service|auth|1\n' ;;
     deploy/systemd/huangque-content.service)
@@ -245,10 +251,10 @@ sudo install -d -o root -g root -m 700 "$backup/files" "$backup/sqlite"
 sudo cp "$manifest" "$backup/manifest.tsv"
 sudo chmod 0644 "$backup/manifest.tsv"
 sudo sh -c "printf 'commit=%s\nplan=%s\nrun=%s\ndomain=%s\n' '$commit' '$plan' '$run' '$domain' >'$backup/metadata'"
-need_auth=0; need_content=0; need_imggen=0; need_leadgen=0; need_admin=0; need_reload=0
+need_auth=0; need_content=0; need_imggen=0; need_leadgen=0; need_admin=0; need_hermes=0; need_reload=0
 while IFS="$(printf '\t')" read -r rank path target expected service reload; do
   case "$target" in
-    /home/ubuntu/auth-service/*|/home/ubuntu/content-api/*|/etc/systemd/system/huangque-auth.service|/etc/systemd/system/huangque-auth.service.d/*|/etc/systemd/system/huangque-content.service|/etc/systemd/system/huangque-content.service.d/*|/var/www/huangquechuanmei/*) ;;
+    /home/ubuntu/auth-service/*|/home/ubuntu/content-api/*|/home/ubuntu/hermes-web/*|/etc/systemd/system/huangque-auth.service|/etc/systemd/system/huangque-auth.service.d/*|/etc/systemd/system/huangque-content.service|/etc/systemd/system/huangque-content.service.d/*|/var/www/huangquechuanmei/*) ;;
     *) echo "unsafe target: $target" >&2; exit 2;;
   esac
   test "$(sha256sum "$upload/$path" | awk '{print $1}')" = "$expected"
@@ -264,6 +270,7 @@ while IFS="$(printf '\t')" read -r rank path target expected service reload; do
   test "$service" = imggen && need_imggen=1
   test "$service" = leadgen && need_leadgen=1
   test "$service" = admin && need_admin=1
+  test "$service" = hermes && need_hermes=1
   test "$reload" = 1 && need_reload=1
 done <"$manifest"
 
@@ -305,12 +312,16 @@ fi
 if test "$need_admin" = 1; then
   sudo -u ubuntu bash -c 'cd /home/ubuntu/content-api && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c "import admin_api"'
 fi
+if test "$need_hermes" = 1; then
+  sudo -u ubuntu bash -c 'set -a; . /home/ubuntu/.secrets/hermes-openai.env; set +a; cd /home/ubuntu/hermes-web && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c "import server"'
+fi
 test "$need_reload" = 0 || sudo systemctl daemon-reload
 if test "$need_auth" = 1; then sudo systemctl restart huangque-auth; systemctl is-active --quiet huangque-auth; fi
 if test "$need_imggen" = 1; then sudo systemctl restart huangque-imggen-api; systemctl is-active --quiet huangque-imggen-api; fi
 if test "$need_leadgen" = 1; then sudo systemctl restart huangque-leadgen-api; systemctl is-active --quiet huangque-leadgen-api; fi
 if test "$need_admin" = 1; then sudo systemctl restart huangque-admin; systemctl is-active --quiet huangque-admin; fi
 if test "$need_content" = 1; then sudo systemctl restart huangque-content; systemctl is-active --quiet huangque-content; fi
+if test "$need_hermes" = 1; then sudo systemctl restart hermes-ip12-preview; systemctl is-active --quiet hermes-ip12-preview; fi
 
 while IFS="$(printf '\t')" read -r rank path target expected service reload; do
   test "$(sudo sha256sum "$target" | awk '{print $1}')" = "$expected"
@@ -322,6 +333,7 @@ test "$need_leadgen" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-tim
 if test "$need_admin" = 1; then
   test "$(curl -sS -o /dev/null -w '%{http_code}' --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 http://127.0.0.1:8098/api/admin/health)" = 401
 fi
+test "$need_hermes" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/workbench/ip12/healthz" >/dev/null
 sudo install -d -o root -g root -m 755 "$state_root"
 manifest_sha="$(sha256sum "$manifest" | awk '{print $1}')"
 sudo sh -c "printf 'commit=%s\nplan=%s\nrun=%s\nmanifest_sha256=%s\n' '$commit' '$plan' '$run' '$manifest_sha' >'$state_root/current'"
@@ -334,6 +346,7 @@ REMOTE
   fi
   curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "$BASE_URL/api/auth/health" >/dev/null
   curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "$BASE_URL/api/gen/health" >/dev/null
+  test "$(awk -F '\t' '$5 == "hermes" { found=1 } END { print found+0 }' "$manifest")" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "$BASE_URL/workbench/ip12/healthz" >/dev/null
 }
 
 rollback_payload() {
@@ -355,18 +368,19 @@ test "$pending_refunds" = 0 || {
   echo "refuse rollback: $pending_refunds refunds are still pending confirmation" >&2
   exit 1
 }
-need_auth=0; need_content=0; need_imggen=0; need_leadgen=0; need_admin=0; need_reload=0
+need_auth=0; need_content=0; need_imggen=0; need_leadgen=0; need_admin=0; need_hermes=0; need_reload=0
 while IFS="$(printf '\t')" read -r rank path target expected service reload; do
   test "$service" = auth && need_auth=1
   test "$service" = content && need_content=1
   test "$service" = imggen && need_imggen=1
   test "$service" = leadgen && need_leadgen=1
   test "$service" = admin && need_admin=1
+  test "$service" = hermes && need_hermes=1
   test "$reload" = 1 && need_reload=1
 done <"$backup/manifest.tsv"
 while IFS="$(printf '\t')" read -r status target expected; do
   case "$target" in
-    /home/ubuntu/auth-service/*|/home/ubuntu/content-api/*|/etc/systemd/system/huangque-auth.service|/etc/systemd/system/huangque-auth.service.d/*|/etc/systemd/system/huangque-content.service|/etc/systemd/system/huangque-content.service.d/*|/var/www/huangquechuanmei/*) ;;
+    /home/ubuntu/auth-service/*|/home/ubuntu/content-api/*|/home/ubuntu/hermes-web/*|/etc/systemd/system/huangque-auth.service|/etc/systemd/system/huangque-auth.service.d/*|/etc/systemd/system/huangque-content.service|/etc/systemd/system/huangque-content.service.d/*|/var/www/huangquechuanmei/*) ;;
     *) exit 2;;
   esac
   if test "$status" = PRESENT; then
@@ -384,12 +398,14 @@ if test "$need_content" = 1; then sudo -u ubuntu bash -c 'cd /home/ubuntu/conten
 if test "$need_imggen" = 1; then sudo -u ubuntu bash -c 'cd /home/ubuntu/content-api && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c "import imggen_api"'; fi
 if test "$need_leadgen" = 1; then sudo -u ubuntu bash -c 'cd /home/ubuntu/content-api && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c "import leadgen_api"'; fi
 if test "$need_admin" = 1; then sudo -u ubuntu bash -c 'cd /home/ubuntu/content-api && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c "import admin_api"'; fi
+if test "$need_hermes" = 1; then sudo -u ubuntu bash -c 'set -a; . /home/ubuntu/.secrets/hermes-openai.env; set +a; cd /home/ubuntu/hermes-web && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c "import server"'; fi
 test "$need_reload" = 0 || sudo systemctl daemon-reload
 if test "$need_auth" = 1; then sudo systemctl restart huangque-auth; systemctl is-active --quiet huangque-auth; fi
 if test "$need_imggen" = 1; then sudo systemctl restart huangque-imggen-api; systemctl is-active --quiet huangque-imggen-api; fi
 if test "$need_leadgen" = 1; then sudo systemctl restart huangque-leadgen-api; systemctl is-active --quiet huangque-leadgen-api; fi
 if test "$need_admin" = 1; then sudo systemctl restart huangque-admin; systemctl is-active --quiet huangque-admin; fi
 if test "$need_content" = 1; then sudo systemctl restart huangque-content; systemctl is-active --quiet huangque-content; fi
+if test "$need_hermes" = 1; then sudo systemctl restart hermes-ip12-preview; systemctl is-active --quiet hermes-ip12-preview; fi
 curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/auth/health" >/dev/null
 curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/health" >/dev/null
 test "$need_imggen" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/banana/health" >/dev/null
@@ -397,6 +413,7 @@ test "$need_leadgen" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-tim
 if test "$need_admin" = 1; then
   test "$(curl -sS -o /dev/null -w '%{http_code}' --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 http://127.0.0.1:8098/api/admin/health)" = 401
 fi
+test "$need_hermes" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/workbench/ip12/healthz" >/dev/null
 printf '✅ 已回滚部署文件 | RUN_ID=%s\n' "$run"
 printf 'ℹ SQLite online backup 保留在 %s/sqlite，未自动覆盖数据库。\n' "$backup"
 REMOTE

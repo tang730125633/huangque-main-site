@@ -157,7 +157,8 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
         restarts = re.findall(r"systemctl restart ([A-Za-z0-9_-]+)", SRC)
         self.assertTrue(restarts)
         self.assertEqual({"huangque-auth", "huangque-content", "huangque-imggen-api",
-                          "huangque-leadgen-api", "huangque-admin"}, set(restarts))
+                          "huangque-leadgen-api", "huangque-admin",
+                          "hermes-ip12-preview"}, set(restarts))
 
     def test_rejects_non_whitelisted_backend_and_sensitive_paths(self):
         for path in (
@@ -184,6 +185,8 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
             "server/imggen_api.py": (30, "/home/ubuntu/content-api/imggen_api.py", "imggen", 0),
             "server/leadgen_api.py": (30, "/home/ubuntu/content-api/leadgen_api.py", "leadgen", 0),
             "server/admin_api.py": (30, "/home/ubuntu/content-api/admin_api.py", "admin", 0),
+            "server/hermes_ip12/server.py": (20, "/home/ubuntu/hermes-web/server.py", "hermes", 0),
+            "server/hermes_ip12/templates/index_clean.html": (20, "/home/ubuntu/hermes-web/templates/index_clean.html", "hermes", 0),
             "server/inspiration_cases.py": (10, "/home/ubuntu/content-api/inspiration_cases.py", "admin", 0),
             "server/content_domains/function_registry.py": (20, "/home/ubuntu/content-api/content_domains/function_registry.py", "admin", 0),
             "site/workbench/cloud-shell.js": (40, "/var/www/huangquechuanmei/workbench/cloud-shell.js", "-", 0),
@@ -246,8 +249,9 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
             "--retry-connrefused --max-time 5"
         )
         # deploy has remote + caller-side checks, and rollback has remote checks;
-        # all five managed services tolerate the brief nginx 502 startup window.
-        self.assertEqual(12, SRC.count(retry_options))
+        # all managed services tolerate the brief nginx 502 startup window.
+        self.assertEqual(15, SRC.count(retry_options))
+        self.assertEqual(3, SRC.count("/workbench/ip12/healthz"))
         self.assertNotIn("curl -fsS --max-time 15", SRC)
         self.assertEqual(
             2,
