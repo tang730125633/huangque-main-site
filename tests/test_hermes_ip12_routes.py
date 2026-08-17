@@ -383,6 +383,7 @@ if (!rendered.includes("&lt;img") || !rendered.includes("<br>")) process.exit(5)
         state = {"revision": 0, "completed_modules": [], "foundation_report": {}}
         model_calls = []
         persist_calls = []
+        validation_error = ""
 
         def coach_model(_snapshot, _message, repair_error=None):
             model_calls.append(repair_error)
@@ -391,7 +392,7 @@ if (!rendered.includes("&lt;img") || !rendered.includes("<br>")) process.exit(5)
         def persist_turn(_cid, user_message, _revision, raw, evidence, prefix=""):
             persist_calls.append((user_message, raw, evidence, prefix))
             if len(persist_calls) < 3:
-                raise HarnessError("模型档案更新缺少可回查的用户原话")
+                raise HarnessError(validation_error)
             return raw["reply"], {"revision": 1}
 
         namespace = {
@@ -415,18 +416,27 @@ if (!rendered.includes("&lt;img") || !rendered.includes("<br>")) process.exit(5)
             "json": json,
         }
         exec(compile(module, str(HERMES / "server.py"), "exec"), namespace)
-        result, status = namespace["_process_model_turn"]("cid", message)
+        cases = (
+            ("模型档案更新缺少可回查的用户原话", "改写成了你没有说过的事实"),
+            ("确认稿包含未经证实的身份、经历或结果用语“专家”", "尚未证实的身份"),
+            ("选题中的“医疗”没有出现在它绑定的用户原话里", "选题没有直接的用户原话依据"),
+        )
+        for validation_error, expected_reply in cases:
+            with self.subTest(validation_error=validation_error):
+                model_calls.clear()
+                persist_calls.clear()
+                result, status = namespace["_process_model_turn"]("cid", message)
 
-        self.assertEqual(status, 200)
-        self.assertEqual(model_calls, [None, "模型档案更新缺少可回查的用户原话"])
-        self.assertEqual(len(persist_calls), 3)
-        user_message, fallback, evidence, _prefix = persist_calls[-1]
-        self.assertEqual(user_message, message)
-        self.assertEqual(evidence, message)
-        self.assertEqual(fallback["decision"], "ask_follow_up")
-        self.assertEqual(fallback["profile_updates"], [])
-        self.assertIn("改写成了你没有说过的事实", result["assistant"])
-        self.assertIn("不需要你重述或补充", result["assistant"])
+                self.assertEqual(status, 200)
+                self.assertEqual(model_calls, [None, validation_error])
+                self.assertEqual(len(persist_calls), 3)
+                user_message, fallback, evidence, _prefix = persist_calls[-1]
+                self.assertEqual(user_message, message)
+                self.assertEqual(evidence, message)
+                self.assertEqual(fallback["decision"], "ask_follow_up")
+                self.assertEqual(fallback["profile_updates"], [])
+                self.assertIn(expected_reply, result["assistant"])
+                self.assertIn("不需要你重述", result["assistant"])
 
 
 @unittest.skipUnless(

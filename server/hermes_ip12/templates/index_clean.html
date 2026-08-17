@@ -439,8 +439,8 @@ function stateActions(){
   ];
   }
   const pending=coachState.pending;if(pending?.status==='awaiting_confirmation')return[
-    {type:'confirm_checkpoint',target_id:pending.id,label:'确认这一步',primary:true},
-    {type:'edit_checkpoint',target_id:pending.id,label:'需要修改',primary:false}
+    {type:'confirm_checkpoint',target_id:pending.id,label:'保留并继续',primary:true},
+    {type:'edit_checkpoint',target_id:pending.id,label:'修改当前内容',primary:false}
   ];
   const foundation=coachState.foundation_report||{};if(foundation.status==='awaiting_confirmation'){
     if(foundation.review_status==='dirty')return[

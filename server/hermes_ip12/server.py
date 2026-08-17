@@ -1100,7 +1100,28 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
                     prefix=prefix,
                 )
             except coach_harness.HarnessError as retry_exc:
-                if not persist_user or str(retry_exc) != "模型档案更新缺少可回查的用户原话":
+                retry_error = str(retry_exc)
+                if not persist_user:
+                    raise
+                if retry_error == "模型档案更新缺少可回查的用户原话":
+                    recovery_reply = (
+                        "我刚才把你的一处表达改写成了你没有说过的事实，所以没有形成确认稿。"
+                        "你的原话已经保留，我也已经撤销那处改写。请直接回复“继续整理”，"
+                        "我会只依据你的原话重新生成，不需要你重述或补充。"
+                    )
+                elif retry_error.startswith("确认稿包含未经证实"):
+                    recovery_reply = (
+                        "我刚才把尚未证实的身份、经历或结果写成了当前事实，所以没有把这版交给你确认。"
+                        "我已撤回夸大的内容，你的原话和已确认资料都保留。请回复“按真实资料重整”，"
+                        "我会改成有依据的当前事实、未来目标或候选方向，不需要你重述。"
+                    )
+                elif retry_error.startswith(("模块 5 ", "选题中的")):
+                    recovery_reply = (
+                        "我刚才有些选题没有直接的用户原话依据，所以没有把它们包装成真实经历或案例。"
+                        "这版已撤回，已确认的 3 个种类和你的原话都保留。请回复“按已有证据重整 3×10”，"
+                        "我会只在每个种类下面生成 10 个有依据的选题，不需要你重述。"
+                    )
+                else:
                     raise
                 app.logger.warning("IP12 recovered invalid evidence after model retry: %s", retry_exc)
                 assistant, next_state = _persist_model_turn(
@@ -1110,11 +1131,7 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
                     {
                         "decision": "ask_follow_up",
                         "checkpoint": 0,
-                        "reply": (
-                            "我刚才把你的一处表达改写成了你没有说过的事实，所以没有形成确认稿。"
-                            "你的原话已经保留，我也已经撤销那处改写。请直接回复“继续整理”，"
-                            "我会只依据你的原话重新生成，不需要你重述或补充。"
-                        ),
+                        "reply": recovery_reply,
                         "draft": "",
                         "self_review": "",
                         "profile_updates": [],
@@ -1316,8 +1333,8 @@ def _action_label(action_type):
     return {
         "confirm_intake": "确认资料",
         "edit_intake": "我要修改",
-        "confirm_checkpoint": "确认这一步",
-        "edit_checkpoint": "需要修改",
+        "confirm_checkpoint": "保留并继续",
+        "edit_checkpoint": "修改当前内容",
     }.get(action_type, "确认操作")
 
 
@@ -1349,7 +1366,7 @@ def _process_action_turn(cid, action, expected_revision):
             assistant = continued["assistant"]
             next_state = continued["state"]
         else:
-            assistant += "\n\n确认结果已经保存。你可以发送“继续”进入下一步。"
+            assistant = (assistant + "\n\n" if assistant else "") + "内容已经保存。你可以发送“继续”进入下一步。"
             with CONVERSATION_STATE_LOCK:
                 latest = owned_conversation(cid)
                 if latest is not None:
