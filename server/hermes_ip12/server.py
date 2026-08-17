@@ -838,7 +838,14 @@ def _coach_model_decision(convo, user_message, repair_error=""):
             "不要向用户提及校验、重试或内部规则。" % str(repair_error)[:300]
         )
     messages = [{"role": "system", "content": prompt}]
+    confirmed_outputs = ((state.get("ip_profile") or {}).get("confirmed_outputs") or {})
+    current_prefix = "%s-" % state["current_module"]
+    current_confirmed = {
+        key: item for key, item in confirmed_outputs.items()
+        if str(key).startswith(current_prefix) and isinstance(item, dict)
+    }
     profile_data = {
+        "current_module_confirmed_outputs": current_confirmed,
         "confirmed_profile": state.get("ip_profile") or {},
         "completed_modules": state.get("completed_modules") or [],
     }
@@ -891,6 +898,8 @@ def _coach_model_decision(convo, user_message, repair_error=""):
     for item in convo.get("messages", [])[-16:]:
         if item.get("role") not in {"user", "assistant"}:
             continue
+        if repair_error and item.get("role") == "assistant":
+            continue
         content = _redact_mobile_numbers(item.get("content", ""))[:4000]
         if content:
             history.append({"role": item["role"], "content": content})
@@ -927,6 +936,11 @@ def _coach_model_decision(convo, user_message, repair_error=""):
         evidence += "\n" + "\n".join(
             str(item.get("evidence_quote") or "")
             for item in bucket.values() if isinstance(item, dict)
+        )
+    if state["current_module"] == 5:
+        evidence += "\n" + "\n".join(
+            str(item.get("content") or "")
+            for item in current_confirmed.values()
         )
     return decision, evidence
 

@@ -460,13 +460,20 @@ def _validate_module_five_topics(updates, draft, evidence):
         raise HarnessError("模块 5 必须按 3 个种类、每类 10 个选题提供 topic_1_01 到 topic_3_10 的原话依据")
     if len({item["value"] for item in topics}) != 30:
         raise HarnessError("模块 5 的 30 个具体选题不能重复")
+    unsupported_terms = set()
     for item in topics:
         quote = item["evidence_quote"]
         if item["kind"] != "ai_option" or not quote or quote not in evidence or item["value"] not in draft:
-            raise HarnessError("模块 5 的每个具体选题都必须绑定一段可回查的用户原话")
-        unsupported = next((term for term in TOPIC_EVIDENCE_TERMS if term in item["value"] and term not in quote), "")
-        if unsupported:
-            raise HarnessError("选题中的“%s”没有出现在它绑定的用户原话里；请删除或换成有直接依据的题目" % unsupported)
+            raise HarnessError("模块 5 的每个具体选题都必须绑定用户原话或已确认的种类边界")
+        unsupported_terms.update(
+            term for term in TOPIC_EVIDENCE_TERMS
+            if term in item["value"] and term not in quote
+        )
+    if unsupported_terms:
+        raise HarnessError(
+            "选题中的“%s”没有出现在对应的用户原话或已确认种类边界里；请一次性删除或改写这些词"
+            % "、".join(sorted(unsupported_terms))
+        )
 
 
 def validate_model_decision(
