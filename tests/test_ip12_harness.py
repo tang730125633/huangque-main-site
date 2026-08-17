@@ -377,6 +377,66 @@ class IP12HarnessTests(unittest.TestCase):
         )
         self.assertEqual(len(next_state["pending"]["profile_updates"]), 30)
 
+    def test_module_five_reports_all_unsupported_terms_in_one_retry(self):
+        state = self.complete_intake()
+        state.update(current_module=5, module_step=1, completed_modules=[1, 2, 3, 4])
+        state["foundation_report"] = {"status": "confirmed"}
+        raw = decision(state)
+        replacements = ("医疗行业案例观察", "客户增长：哪些尝试成功，哪些失败")
+        for index, title in enumerate(replacements):
+            old_title = raw["profile_updates"][index]["value"]
+            raw["profile_updates"][index].update(value=title, evidence_quote="用户原话")
+            raw["draft"] = raw["draft"].replace(old_title, title)
+
+        with self.assertRaises(harness.HarnessError) as caught:
+            harness.apply_model_decision(state, raw, "用户原话")
+
+        error = str(caught.exception)
+        for term in ("医疗", "成功", "客户", "增长", "案例"):
+            self.assertIn(term, error)
+
+    def test_module_five_compiler_builds_protocol_fields_and_markdown(self):
+        state = self.complete_intake()
+        state.update(current_module=5, module_step=1, completed_modules=[1, 2, 3, 4])
+        state["foundation_report"] = {"status": "confirmed"}
+        names = ("转行经验分享", "智能体应用实践", "垂直行业真实验证")
+        source = "\n".join("%d. **%s**" % (index, name) for index, name in enumerate(names, 1))
+        state["ip_profile"]["confirmed_outputs"]["5-1"] = {"content": source}
+        quote = "我只讲真实过程和待验证计划"
+        raw = {
+            "decision": "propose_checkpoint",
+            "reply": "这是按三个已确认种类整理的选题。",
+            "categories": [
+                {
+                    "name": name,
+                    "topics": [
+                        {"title": "%s：真实过程 %02d" % (name, index), "evidence_id": "E1"}
+                        for index in range(1, 11)
+                    ],
+                }
+                for name in names
+            ],
+            "self_review": "只使用了给定证据。",
+            "confidence": 0.9,
+        }
+        raw["categories"][0]["topics"][0]["title"] = "医疗客户成功案例的效率提升"
+
+        compiled = harness.compile_module_five_topics(
+            raw, state, source + "\n" + quote, {"E1": quote}
+        )
+
+        self.assertEqual(compiled["checkpoint"], 2)
+        self.assertEqual(len(compiled["profile_updates"]), 30)
+        self.assertEqual(compiled["profile_updates"][0]["field"], "topic_1_01")
+        self.assertEqual(compiled["profile_updates"][0]["value"], "垂直行业具体对象实践过程记录的待验证结果")
+        self.assertEqual(compiled["profile_updates"][-1]["field"], "topic_3_10")
+        self.assertIn("### 转行经验分享", compiled["draft"])
+        raw["categories"][0]["name"] = "未经确认的新种类"
+        with self.assertRaisesRegex(harness.HarnessError, "种类名称"):
+            harness.compile_module_five_topics(
+                raw, state, source + "\n" + quote, {"E1": quote}
+            )
+
     def test_semantically_duplicate_reply_does_not_repeat_the_draft(self):
         draft = "### 核心关键词\n- AI Agent 搭建\n- 问题拆解\n- 持续学习"
         reply = harness.render_model_reply({
@@ -485,6 +545,44 @@ class IP12HarnessTests(unittest.TestCase):
 
         self.assertIsNone(state["pending"])
         self.assertEqual((state["current_module"], state["module_step"]), (1, 0))
+
+    def test_recovery_can_discard_only_the_unconfirmed_module_draft(self):
+        state = self.complete_intake()
+        state.update(
+            current_module=5,
+            module_step=1,
+            completed_modules=[1, 2, 3, 4],
+            foundation_report={"status": "confirmed"},
+            pending={
+                "id": "invalid-draft",
+                "kind": "checkpoint",
+                "status": "editing",
+                "module": 5,
+                "step": 2,
+                "draft": "不合格的 3×10 旧稿",
+                "self_review": "",
+                "profile_updates": [],
+                "confidence": 0,
+            },
+        )
+        state["ip_profile"]["ai_selections"]["long_term_content_categories"] = {
+            "value": "转行经验、智能体实践、垂直行业验证",
+            "evidence_quote": "",
+        }
+
+        state, _, _ = harness.apply_model_decision(
+            state,
+            decision(state, kind="answer_only", reply="未确认草稿已经清除。"),
+            "继续",
+            discard_pending=True,
+        )
+
+        self.assertIsNone(state["pending"])
+        self.assertEqual((state["current_module"], state["module_step"]), (5, 1))
+        self.assertEqual(
+            state["ip_profile"]["ai_selections"]["long_term_content_categories"]["value"],
+            "转行经验、智能体实践、垂直行业验证",
+        )
 
     def test_intake_revision_is_rejected_after_a_module_checkpoint_is_confirmed(self):
         state, _ = self.confirm_checkpoint(self.complete_intake())

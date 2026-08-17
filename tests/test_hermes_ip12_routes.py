@@ -360,7 +360,7 @@ if (!rendered.includes("&lt;img") || !rendered.includes("<br>")) process.exit(5)
         result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_invalid_evidence_retry_persists_a_safe_follow_up(self):
+    def test_invalid_evidence_retry_discards_the_bad_draft_and_recovers_in_the_same_turn(self):
         import json
         import threading
         from types import SimpleNamespace
@@ -380,20 +380,31 @@ if (!rendered.includes("&lt;img") || !rendered.includes("<br>")) process.exit(5)
             pass
 
         message = "我想先在一个垂直行业做出结果，再复制到其他行业"
-        state = {"revision": 0, "completed_modules": [], "foundation_report": {}}
+        state = {
+            "revision": 0,
+            "completed_modules": [],
+            "foundation_report": {},
+            "pending": {"status": "editing", "draft": "不合格旧稿"},
+        }
         model_calls = []
         persist_calls = []
         validation_error = ""
+        persist_failures = 2
 
-        def coach_model(_snapshot, _message, repair_error=None):
-            model_calls.append(repair_error)
-            return {"decision": "propose_checkpoint"}, message
+        def coach_model(snapshot, _message, repair_error=None):
+            model_calls.append((repair_error, bool(snapshot["coach_state"].get("pending"))))
+            return {
+                "decision": "propose_checkpoint",
+                "reply": "这是按已确认资料重新整理的结果。",
+            }, message
 
-        def persist_turn(_cid, user_message, _revision, raw, evidence, prefix=""):
-            persist_calls.append((user_message, raw, evidence, prefix))
-            if len(persist_calls) < 3:
+        def persist_turn(
+            _cid, user_message, _revision, raw, evidence, prefix="", discard_pending=False
+        ):
+            persist_calls.append((user_message, raw, evidence, prefix, discard_pending))
+            if len(persist_calls) <= persist_failures:
                 raise HarnessError(validation_error)
-            return raw["reply"], {"revision": 1}
+            return (prefix + "\n\n" if prefix else "") + raw["reply"], {"revision": 1}
 
         namespace = {
             "CONVERSATION_STATE_LOCK": threading.RLock(),
@@ -417,26 +428,80 @@ if (!rendered.includes("&lt;img") || !rendered.includes("<br>")) process.exit(5)
         }
         exec(compile(module, str(HERMES / "server.py"), "exec"), namespace)
         cases = (
-            ("模型档案更新缺少可回查的用户原话", "改写成了你没有说过的事实"),
-            ("确认稿包含未经证实的身份、经历或结果用语“专家”", "尚未证实的身份"),
-            ("选题中的“医疗”没有出现在它绑定的用户原话里", "选题没有直接的用户原话依据"),
+            "模型档案更新缺少可回查的用户原话",
+            "确认稿包含未经证实的身份、经历或结果用语“专家”",
+            "选题中的“医疗”没有出现在它绑定的用户原话里",
         )
-        for validation_error, expected_reply in cases:
+        for validation_error in cases:
             with self.subTest(validation_error=validation_error):
                 model_calls.clear()
                 persist_calls.clear()
                 result, status = namespace["_process_model_turn"]("cid", message)
 
                 self.assertEqual(status, 200)
-                self.assertEqual(model_calls, [None, validation_error])
+                self.assertEqual([item[1] for item in model_calls], [True, True, False])
+                self.assertIsNone(model_calls[0][0])
+                self.assertEqual(model_calls[1][0], validation_error)
+                self.assertIn(validation_error, model_calls[2][0])
                 self.assertEqual(len(persist_calls), 3)
-                user_message, fallback, evidence, _prefix = persist_calls[-1]
+                user_message, recovered, evidence, recovery_prefix, discard_pending = persist_calls[-1]
                 self.assertEqual(user_message, message)
                 self.assertEqual(evidence, message)
-                self.assertEqual(fallback["decision"], "ask_follow_up")
-                self.assertEqual(fallback["profile_updates"], [])
-                self.assertIn(expected_reply, result["assistant"])
-                self.assertIn("不需要你重述", result["assistant"])
+                self.assertEqual(recovered["decision"], "propose_checkpoint")
+                self.assertTrue(discard_pending)
+                self.assertIn("错在", recovery_prefix)
+                self.assertIn("重新整理的结果", result["assistant"])
+                self.assertNotIn("请回复“", result["assistant"])
+
+        validation_error = "选题中的“成功”没有出现在它绑定的用户原话里"
+        persist_failures = 3
+        model_calls.clear()
+        persist_calls.clear()
+        result, status = namespace["_process_model_turn"]("cid", message)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(len(model_calls), 3)
+        self.assertEqual(len(persist_calls), 4)
+        self.assertEqual(persist_calls[-1][1]["decision"], "answer_only")
+        self.assertTrue(persist_calls[-1][-1])
+        self.assertIn("未确认草稿已清除", result["assistant"])
+        self.assertNotIn("请回复“", result["assistant"])
+
+    def test_module_five_step_two_uses_the_specialized_topic_compiler(self):
+        source = (HERMES / "server.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        coach_turn = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_coach_model_decision"
+        )
+        module = ast.fix_missing_locations(ast.Module(body=[coach_turn], type_ignores=[]))
+        state = {
+            "current_module": 5,
+            "module_step": 1,
+            "completed_modules": [1, 2, 3, 4],
+            "ip_profile": {},
+        }
+        calls = []
+
+        def module_five(convo, message, repair_error=""):
+            calls.append((convo, message, repair_error))
+            return {"decision": "propose_checkpoint"}, "evidence"
+
+        namespace = {
+            "normalize_coach_state": lambda value: value,
+            "_intake_pending": lambda _state: False,
+            "_coach_module_five_topics": module_five,
+        }
+        exec(compile(module, str(HERMES / "server.py"), "exec"), namespace)
+        convo = {"coach_state": state}
+        result = namespace["_coach_model_decision"](
+            convo,
+            "继续",
+            repair_error="选题中的‘成功’没有依据",
+        )
+
+        self.assertEqual(result, ({"decision": "propose_checkpoint"}, "evidence"))
+        self.assertEqual(calls, [(convo, "继续", "选题中的‘成功’没有依据")])
 
 
 @unittest.skipUnless(
@@ -487,6 +552,16 @@ assert all(
     for method in rule.methods
     if method in {"POST", "PUT", "PATCH", "DELETE"}
 )
+with patch.object(server, "MODEL", "deepseek-v4-flash"), patch.object(server.requests, "post") as request_model:
+    invalid_json = Mock(status_code=200)
+    invalid_json.json.return_value = {"choices": [{"message": {"content": '{"decision":'}}]}
+    valid_json = Mock(status_code=200)
+    valid_json.json.return_value = {"choices": [{"message": {"content": '{"decision":"answer_only"}'}}]}
+    request_model.side_effect = [invalid_json, valid_json]
+    response = server.call_ai([], response_format={"type": "json_schema", "json_schema": {"schema": {}}})
+    assert response is valid_json
+    assert request_model.call_count == 2
+    assert request_model.call_args.kwargs["json"]["response_format"] == {"type": "json_object"}
 
 transitioned = parse_coach_state_updates(
     "好，我们进入模块2：人设塑造。",
