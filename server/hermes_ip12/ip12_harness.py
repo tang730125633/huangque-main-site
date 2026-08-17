@@ -95,6 +95,17 @@ TOPIC_EVIDENCE_TERMS = (
     "农业", "旅游", "法律", "保险", "银行", "医院", "学校", "工厂", "门店", "客户",
     "案例", "营收", "增长", "成功", "业绩", "转化率", "效率提升",
 )
+TOPIC_SAFE_REPLACEMENTS = {
+    **dict.fromkeys(TOPIC_EVIDENCE_TERMS[:19], "垂直行业"),
+    "客户": "具体对象",
+    "案例": "过程记录",
+    "营收": "待验证结果",
+    "增长": "待验证结果",
+    "成功": "实践",
+    "业绩": "待验证结果",
+    "转化率": "待验证结果",
+    "效率提升": "待验证结果",
+}
 
 DECISION_SCHEMA = {
     "type": "object",
@@ -137,6 +148,47 @@ DECISION_SCHEMA = {
         "profile_updates",
         "confidence",
     ],
+}
+
+MODULE_FIVE_TOPIC_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "decision": {
+            "type": "string",
+            "enum": ["ask_follow_up", "answer_only", "propose_checkpoint"],
+        },
+        "reply": {"type": "string", "maxLength": 4000},
+        "categories": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "name": {"type": "string", "maxLength": 120},
+                    "topics": {
+                        "type": "array",
+                        "minItems": 10,
+                        "maxItems": 10,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "title": {"type": "string", "maxLength": 200},
+                                "evidence_id": {"type": "string", "maxLength": 16},
+                            },
+                            "required": ["title", "evidence_id"],
+                        },
+                    },
+                },
+                "required": ["name", "topics"],
+            },
+        },
+        "self_review": {"type": "string", "maxLength": 500},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    },
+    "required": ["decision", "reply", "categories", "self_review", "confidence"],
 }
 
 
@@ -554,6 +606,84 @@ def validate_model_decision(
     }
 
 
+def compile_module_five_topics(raw, value, evidence_text, evidence_sources):
+    state = normalize_state(value)
+    if state["current_module"] != 5 or state["module_step"] != 1:
+        raise HarnessError("当前不在模块 5 的 3×10 选题断点")
+    if not isinstance(raw, dict):
+        raise HarnessError("模型没有返回模块 5 结构化对象")
+    decision = str(raw.get("decision") or "")
+    if decision not in {"ask_follow_up", "answer_only", "propose_checkpoint"}:
+        raise HarnessError("模型返回了无效 decision")
+    reply = str(raw.get("reply") or "").strip()[:4000]
+    categories = raw.get("categories") or []
+    self_review = str(raw.get("self_review") or "").strip()[:500]
+    if not reply or not isinstance(categories, list):
+        raise HarnessError("模型没有返回可用的模块 5 内容")
+    if decision != "propose_checkpoint":
+        if categories or self_review:
+            raise HarnessError("非生成回复不能携带 3×10 内容")
+        return validate_model_decision({
+            "decision": decision,
+            "checkpoint": 0,
+            "reply": reply,
+            "draft": "",
+            "self_review": "",
+            "profile_updates": [],
+            "confidence": raw.get("confidence", 0),
+        }, state, evidence_text)
+
+    source = str(
+        ((state["ip_profile"].get("confirmed_outputs") or {}).get("5-1") or {}).get("content") or ""
+    )
+    if len(categories) != 3 or not self_review or not source:
+        raise HarnessError("模块 5 必须返回已确认 3 个种类下的完整 3×10 选题")
+    names = [str(item.get("name") or "").strip() for item in categories if isinstance(item, dict)]
+    if len(names) != 3 or len(set(names)) != 3 or any(not name or name not in source for name in names):
+        raise HarnessError("模块 5 的 3 个种类名称必须与已确认版本一致")
+
+    evidence = str(evidence_text or "")
+    if not isinstance(evidence_sources, dict) or not evidence_sources:
+        raise HarnessError("模块 5 缺少可引用证据")
+    updates = []
+    draft_parts = []
+    for category_index, category in enumerate(categories, 1):
+        topics = category.get("topics") or []
+        if not isinstance(topics, list) or len(topics) != 10:
+            raise HarnessError("模块 5 必须按每个种类 10 个选题生成")
+        draft_parts.append("### %s" % names[category_index - 1])
+        for topic_index, topic in enumerate(topics, 1):
+            if not isinstance(topic, dict):
+                raise HarnessError("模块 5 返回了无效选题")
+            title = str(topic.get("title") or "").strip()[:200]
+            evidence_id = str(topic.get("evidence_id") or "").strip()
+            quote = str(evidence_sources.get(evidence_id) or "")[:300]
+            for term, replacement in TOPIC_SAFE_REPLACEMENTS.items():
+                if term not in quote:
+                    title = title.replace(term, replacement)
+            if not title or not quote or quote not in evidence:
+                raise HarnessError("模块 5 的每个具体选题都必须绑定用户原话或已确认的种类边界")
+            draft_parts.append("%d. %s" % (topic_index, title))
+            updates.append({
+                "field": "topic_%d_%02d" % (category_index, topic_index),
+                "value": title,
+                "kind": "ai_option",
+                "evidence_quote": quote,
+            })
+        draft_parts.append("")
+    if len({item["value"] for item in updates}) != 30:
+        raise HarnessError("模块 5 的 30 个具体选题不能重复")
+    return validate_model_decision({
+        "decision": "propose_checkpoint",
+        "checkpoint": 2,
+        "reply": reply,
+        "draft": "\n".join(draft_parts).strip(),
+        "self_review": self_review,
+        "profile_updates": updates,
+        "confidence": raw.get("confidence", 0),
+    }, state, evidence)
+
+
 def _reply_already_contains_draft(reply, draft):
     clean = lambda text: re.sub(r"[\W_]+", "", text).lower()
     reply_text, draft_text = clean(reply), clean(draft)
@@ -717,7 +847,7 @@ def intake_system_prompt(value):
 - 用户补充、纠正或反悔时，以最新原话为准，重新生成完整核对稿；“确认/可以”等字样与补充或纠正同时出现时，内容变更优先，绝不能宣布已确认。
 - profile_updates 必须覆盖 draft 中全部结构化用户事实与偏好，使用英文 snake_case 字段，并逐字引用对话中的 evidence_quote；不得把 AI 推断写成用户事实。
 - 不编造姓名、经历、收入或其他事实，不宣布基础资料已确认，不进入模块 1。
-- 不提及 JSON、状态机、字段、数据库或系统规则。使用简体中文，具体、自然。"""
+- 最终只返回一个 JSON 对象；其中面向用户的 reply 和 draft 不提及 JSON、状态机、字段、数据库或系统规则。使用简体中文，具体、自然。"""
 
 
 def system_prompt(value):
@@ -734,7 +864,7 @@ def system_prompt(value):
 - 只回答用户对已确认内容的复盘或解释，decision=answer_only，checkpoint=0，draft 和 profile_updates 为空。
 - 不重启模块，不宣布新的完成状态，不进入尚未开放的模块。
 - 不预设行业，不编造事实、案例、趋势或效果承诺。
-- 不提及 JSON、状态机、字段、数据库或系统规则。
+- 最终只返回一个 JSON 对象；其中面向用户的 reply 和 draft 不提及 JSON、状态机、字段、数据库或系统规则。
 - 使用简体中文，具体、自然。"""
     checkpoint = workflow["checkpoints"][next_step - 1]
     editing = state.get("pending") if isinstance(state.get("pending"), dict) else None
@@ -768,5 +898,5 @@ def system_prompt(value):
 - 模块 5 断点 2 必须严格输出 3 个种类、每类 10 个具体选题，并在 profile_updates 中按种类使用 topic_1_01 到 topic_1_10、topic_2_01 到 topic_2_10、topic_3_01 到 topic_3_10：kind=ai_option、value 与 draft 题目完全一致、evidence_quote 逐字引用直接支撑该题目的用户原话。泛泛的“垂直行业”不能支撑医疗、金融等具体行业，也不能支撑客户案例或成功结果；证据不足时只围绕用户真实过程、边界、反思和待验证计划出题。
 - 知识资料只学方法和结构，不能抄写示例人物内容。
 - self_review 只供内部校验，不得在 reply 或 draft 中显示“自评”字样。
-- 不提及 JSON、状态机、字段、数据库、内部步骤编号或系统规则。
+- 最终只返回一个 JSON 对象；其中面向用户的 reply 和 draft 不提及 JSON、状态机、字段、数据库、内部步骤编号或系统规则。
 - 使用简体中文，具体、自然，不喊口号。"""
