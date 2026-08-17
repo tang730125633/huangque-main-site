@@ -486,6 +486,44 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertIsNone(state["pending"])
         self.assertEqual((state["current_module"], state["module_step"]), (1, 0))
 
+    def test_recovery_can_discard_only_the_unconfirmed_module_draft(self):
+        state = self.complete_intake()
+        state.update(
+            current_module=5,
+            module_step=1,
+            completed_modules=[1, 2, 3, 4],
+            foundation_report={"status": "confirmed"},
+            pending={
+                "id": "invalid-draft",
+                "kind": "checkpoint",
+                "status": "editing",
+                "module": 5,
+                "step": 2,
+                "draft": "不合格的 3×10 旧稿",
+                "self_review": "",
+                "profile_updates": [],
+                "confidence": 0,
+            },
+        )
+        state["ip_profile"]["ai_selections"]["long_term_content_categories"] = {
+            "value": "转行经验、智能体实践、垂直行业验证",
+            "evidence_quote": "",
+        }
+
+        state, _, _ = harness.apply_model_decision(
+            state,
+            decision(state, kind="answer_only", reply="未确认草稿已经清除。"),
+            "继续",
+            discard_pending=True,
+        )
+
+        self.assertIsNone(state["pending"])
+        self.assertEqual((state["current_module"], state["module_step"]), (5, 1))
+        self.assertEqual(
+            state["ip_profile"]["ai_selections"]["long_term_content_categories"]["value"],
+            "转行经验、智能体实践、垂直行业验证",
+        )
+
     def test_intake_revision_is_rejected_after_a_module_checkpoint_is_confirmed(self):
         state, _ = self.confirm_checkpoint(self.complete_intake())
         raw = intake_decision(kind="revise_intake", draft="修改后的基础资料")
