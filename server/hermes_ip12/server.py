@@ -530,16 +530,25 @@ def generate_foundation_report(convo_id):
     return record
 
 def call_ai(messages, stream=False, temperature=0.7, max_tokens=None, response_format=None):
-    payload = {"model": MODEL, "messages": messages, "stream": stream, "temperature": temperature}
+    payload_messages = [dict(item) for item in messages]
+    payload = {"model": MODEL, "messages": payload_messages, "stream": stream, "temperature": temperature}
     if max_tokens:
         payload["max_tokens"] = max_tokens
-    if response_format:
-        payload["response_format"] = (
-            {"type": "json_object"}
-            if MODEL.lower().startswith("deepseek") and response_format.get("type") == "json_schema"
-            else response_format
-        )
-    validate_json = MODEL.lower().startswith("deepseek") and bool(response_format) and not stream
+    deepseek_json = MODEL.lower().startswith("deepseek") and bool(response_format) and not stream
+    if deepseek_json:
+        payload["response_format"] = {"type": "json_object"}
+        payload["thinking"] = {"type": "disabled"}
+        schema = ((response_format.get("json_schema") or {}).get("schema") or {})
+        if schema and payload_messages:
+            payload_messages[0]["content"] = (
+                str(payload_messages[0].get("content") or "")
+                + "\n\n只输出一个完整 JSON 对象，不要 Markdown。所有 required 字段必须出现，"
+                  "并严格匹配这个 JSON Schema：\n"
+                + json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+            )
+    elif response_format:
+        payload["response_format"] = response_format
+    validate_json = deepseek_json
     for attempt in range(2 if validate_json else 1):
         resp = requests.post(f"{API_BASE}/chat/completions",
             headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
@@ -678,17 +687,30 @@ def _normalize_content_pack(raw):
     return pack
 
 
+def _content_pack_ready(pack):
+    categories = (pack or {}).get("categories") if isinstance(pack, dict) else None
+    return (
+        (pack or {}).get("kind") == "content_pack_v1"
+        and isinstance(categories, list)
+        and len(categories) == 3
+        and all(len((item or {}).get("topics") or []) == 10 for item in categories)
+    )
+
+
 def _generate_content_pack(convo):
     state = coach_harness.normalize_state(convo.get("coach_state"))
+    plan = coach_harness.confirmed_module_five_topics(state)
     source = {
         "confirmed_profile": state.get("ip_profile") or {},
         "confirmed_outputs": ((state.get("ip_profile") or {}).get("confirmed_outputs") or {}),
+        "confirmed_module_five_plan": plan,
     }
     # ponytail: one structured call is the simplest reliable batch; split by category if the provider's output ceiling proves too small.
     response = call_ai([
         {"role": "system", "content": (
             "你是黄雀 IP12 内容策划与口播编导。严格依据本人已确认资料生成首批内容库。"
-            "先确定 3 个彼此边界清楚的长期选题种类；每个种类必须有 10 个不同的具体选题，"
+            "模块 5 已经确认了 3 个种类和每类 10 个具体选题。必须逐字复用这些种类名称、"
+            "选题标题和原有顺序，只为每个选题撰写口播，不得重新命名、替换或新增选题。"
             "每个具体选题必须直接附带 1 篇可直接朗读的中文口播文案。总数必须是 3 个种类、"
             "30 个选题、30 篇文案。不得把 10 个选题写成 10 个种类，不得只写一篇示例。"
             "每篇文案使用用户真实经历和已确认观点，不编造结果、客户案例、收入或身份；"
@@ -699,7 +721,12 @@ def _generate_content_pack(convo):
         "type": "json_schema",
         "json_schema": {"name": "ip12_content_pack", "strict": True, "schema": CONTENT_PACK_SCHEMA},
     })
-    return _normalize_content_pack(_parse_ai_json(response))
+    pack = _normalize_content_pack(_parse_ai_json(response))
+    expected = [(item["name"], item["topics"]) for item in plan]
+    actual = [(item["name"], [topic["title"] for topic in item["topics"]]) for item in pack["categories"]]
+    if actual != expected:
+        raise ValueError("口播内容库必须逐字复用已确认的 3×10 选题")
+    return pack
 
 def generate_deliverable(convo_id, module_id):
     """为指定模块生成可交付物（文案/视觉/选题日历等）"""
@@ -709,6 +736,9 @@ def generate_deliverable(convo_id, module_id):
 
     convo = load_conversation(convo_id)
     if config.get("kind") == "content_pack_v1":
+        existing = (convo.get("deliverables") or {}).get(str(module_id)) or {}
+        if _content_pack_ready(existing):
+            return existing
         pack = _generate_content_pack(convo)
         convo2 = load_conversation(convo_id)
         convo2.setdefault("deliverables", {})[str(module_id)] = pack
@@ -950,6 +980,33 @@ def _coach_model_decision(convo, user_message, repair_error=""):
             ((state.get("ip_profile") or {}).get("confirmed_outputs") or {}).get("5-2") or {}
         ).get("content") or ""
         return coach_harness.compile_module_five_confirmation(state), str(source)
+    if (
+        not intake_pending
+        and state["current_module"] == 6
+        and state["module_step"] in {1, 2}
+        and coach_harness.is_continue_message(user_message)
+    ):
+        pack = (convo.get("deliverables") or {}).get("6") or {}
+        return coach_harness.compile_module_six_checkpoint(state, pack), json.dumps(pack, ensure_ascii=False)
+    if (
+        not intake_pending
+        and state["current_module"] == 6
+        and state["module_step"] == 0
+        and not re.search(r"[?？]", str(user_message or ""))
+    ):
+        profile = state.get("ip_profile") or {}
+        preferences = profile.get("preferences") or {}
+        style_evidence = "\n".join([
+            str((profile.get("intake") or {}).get("summary") or ""),
+            *(
+                str(item.get("evidence_quote") or item.get("value") or "")
+                for item in preferences.values() if isinstance(item, dict)
+            ),
+            str(user_message or ""),
+        ])
+        style_decision = coach_harness.compile_module_six_style(state, style_evidence)
+        if style_decision:
+            return style_decision, style_evidence
     prompt = coach_harness.intake_system_prompt(state) if intake_pending else coach_harness.system_prompt(state)
     if repair_error:
         prompt += (
@@ -968,11 +1025,17 @@ def _coach_model_decision(convo, user_message, repair_error=""):
         key: item for key, item in confirmed_outputs.items()
         if str(key).startswith(current_prefix) and isinstance(item, dict)
     }
-    profile_data = {
+    profile_data = {}
+    if state["current_module"] == 6:
+        profile_data["confirmed_module_five_plan"] = {
+            key: item for key, item in confirmed_outputs.items()
+            if str(key).startswith("5-") and isinstance(item, dict)
+        }
+    profile_data.update({
         "current_module_confirmed_outputs": current_confirmed,
         "confirmed_profile": focused_profile,
         "completed_modules": state.get("completed_modules") or [],
-    }
+    })
     content_pack = (convo.get("deliverables") or {}).get("6") or {}
     if content_pack.get("kind") == "content_pack_v1":
         profile_data["content_pack"] = [{
@@ -1215,6 +1278,26 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
             return {"ok": False, "error": "请先生成并确认模块 1-4 的 IP 定位初稿 PDF"}, 409
         snapshot_revision = state["revision"]
         snapshot = json.loads(json.dumps(convo, ensure_ascii=False))
+        prepare_module_six = (
+            state.get("current_module") == 6
+            and state.get("module_step") == 1
+            and coach_harness.is_continue_message(user_message)
+            and not _content_pack_ready((convo.get("deliverables") or {}).get("6") or {})
+        )
+    if prepare_module_six:
+        try:
+            generate_deliverable(cid, 6)
+        except Exception as exc:
+            app.logger.warning("IP12 module 6 content pack failed: %s", exc)
+            return {"ok": False, "error": "30 篇口播暂时没能完整生成；已确认内容不会丢失，请重试"}, 502
+        with CONVERSATION_STATE_LOCK:
+            convo = owned_conversation(cid)
+            if convo is None:
+                return None, 404
+            state = normalize_coach_state(convo.get("coach_state"))
+            if state["revision"] != snapshot_revision:
+                raise coach_harness.HarnessConflict("对话已在另一端更新，请刷新后重试")
+            snapshot = json.loads(json.dumps(convo, ensure_ascii=False))
     try:
         raw = coach_harness.duration_conflict_decision(state, user_message)
         if raw:
@@ -1312,7 +1395,20 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
     except (coach_harness.HarnessError, RuntimeError, requests.RequestException) as exc:
         app.logger.warning("IP12 model turn failed after validation/retry: %s", exc)
         return {"ok": False, "error": "这条消息暂时没能安全整理，请重试；已确认内容不会丢失。"}, 502
-    return _chat_result(assistant, next_state), 200
+    auto_deliverables = {}
+    if (
+        next_state.get("current_module") == 6
+        and isinstance(raw, dict)
+        and raw.get("decision") == "propose_checkpoint"
+        and raw.get("checkpoint") in {2, 3}
+    ):
+        pack = (load_conversation(cid).get("deliverables") or {}).get("6") or {}
+        if _content_pack_ready(pack):
+            auto_deliverables["6"] = pack
+    result = _chat_result(assistant, next_state)
+    if auto_deliverables:
+        result["auto_deliverables"] = auto_deliverables
+    return result, 200
 
 
 def _process_foundation_revision_turn(cid, user_message, expected_revision=None):
@@ -1518,11 +1614,15 @@ def _process_action_turn(cid, action, expected_revision):
 
     new_completed = event["new_completed"]
     assistant = event["assistant_prefix"]
+    continued_deliverables = {}
     if event["continue_model"]:
         try:
             continuation_message = (
                 "下一步"
-                if next_state["current_module"] == 5 and next_state["module_step"] == 2
+                if (
+                    (next_state["current_module"] == 5 and next_state["module_step"] == 2)
+                    or (next_state["current_module"] == 6 and next_state["module_step"] in {1, 2})
+                )
                 else "用户已确认上一断点。请直接处理当前唯一允许的断点。"
             )
             continued, status = _process_model_turn(
@@ -1537,6 +1637,7 @@ def _process_action_turn(cid, action, expected_revision):
         if status == 200:
             assistant = continued["assistant"]
             next_state = continued["state"]
+            continued_deliverables = continued.get("auto_deliverables") or {}
         else:
             assistant = (assistant + "\n\n" if assistant else "") + "内容已经保存。你可以发送“继续”进入下一步。"
             with CONVERSATION_STATE_LOCK:
@@ -1554,6 +1655,7 @@ def _process_action_turn(cid, action, expected_revision):
                 save_conversation(cid, latest)
 
     auto_deliverables, foundation_report = _run_completion_effects(cid, new_completed)
+    auto_deliverables = {**continued_deliverables, **auto_deliverables}
     latest_state = normalize_coach_state(load_conversation(cid).get("coach_state"))
     return _chat_result(
         assistant,
