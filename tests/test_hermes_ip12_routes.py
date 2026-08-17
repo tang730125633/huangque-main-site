@@ -612,6 +612,70 @@ assert [item["id"] for item in ordered_convos[:2]] == [newer_cid, older_cid], or
 assert client.delete(f"/api/conversations/{older_cid}").status_code == 200
 assert client.delete(f"/api/conversations/{newer_cid}").status_code == 200
 
+raw_pack = {"categories": [{
+    "name": f"种类{category}",
+    "description": f"种类{category}说明",
+    "topics": [{
+        "title": f"种类{category}选题{topic}",
+        "hook": f"钩子{topic}",
+        "objective": "建立信任",
+        "script": f"这是种类{category}的第{topic}篇口播文案。",
+    } for topic in range(1, 11)],
+} for category in range(1, 4)]}
+content_pack = server._normalize_content_pack(raw_pack)
+assert content_pack["kind"] == "content_pack_v1"
+assert len(content_pack["categories"]) == 3
+assert all(len(category["topics"]) == 10 for category in content_pack["categories"])
+assert sum(len(category["topics"]) for category in content_pack["categories"]) == 30
+try:
+    server._normalize_content_pack({"categories": raw_pack["categories"][:2]})
+    raise AssertionError("two-category pack was accepted")
+except ValueError:
+    pass
+
+generated_cid = client.post("/api/conversations").get_json()["id"]
+pack_response = Mock()
+pack_response.json.return_value = {"choices": [{"message": {"content": json.dumps(raw_pack, ensure_ascii=False)}}]}
+with patch.object(server, "call_ai", return_value=pack_response) as pack_model:
+    generated_pack = server.generate_deliverable(generated_cid, 6)
+assert len(generated_pack["categories"]) == 3
+assert server.load_conversation(generated_cid)["deliverables"]["6"]["kind"] == "content_pack_v1"
+assert pack_model.call_args.kwargs["response_format"]["type"] == "json_schema"
+
+content_cid = client.post("/api/conversations").get_json()["id"]
+content_convo = server.load_conversation(content_cid)
+content_convo["deliverables"] = {"6": content_pack}
+server.save_conversation(content_cid, content_convo)
+content_state = client.get(f"/api/conversations/{content_cid}").get_json()["coach_state"]
+revision_response = Mock()
+revision_response.json.return_value = {"choices": [{"message": {"content": json.dumps({
+    "decision": "apply_revision",
+    "reply": "刚才开头太绕，我已经改成直接说结论。",
+    "change_summary": "缩短开头",
+    "revised_script": "先说结论：这是修改后的口播文案。",
+}, ensure_ascii=False)}}]}
+target = {"category_id": "category-1", "topic_id": "topic-1-01"}
+with patch.object(server, "call_ai", return_value=revision_response):
+    content_revision = client.post("/api/chat-complete", json={
+        "conversation_id": content_cid,
+        "message": "开头太绕了，直接一点。",
+        "content_target": target,
+        "expected_revision": content_state["revision"],
+    })
+assert content_revision.status_code == 200, content_revision.get_data(as_text=True)
+updated_pack = server.load_conversation(content_cid)["deliverables"]["6"]
+updated_topic = updated_pack["categories"][0]["topics"][0]
+assert [item["version"] for item in updated_topic["versions"]] == [1, 2]
+assert updated_topic["versions"][-1]["content"].startswith("先说结论")
+assert len(updated_pack["categories"][0]["topics"][1]["versions"]) == 1
+assert content_revision.get_json()["auto_deliverables"]["6"]["categories"][0]["topics"][0]["status"] == "revised"
+assert client.post("/api/chat-complete", json={
+    "conversation_id": content_cid,
+    "message": "修改",
+    "content_target": {"category_id": "category-9", "topic_id": "topic-9-99"},
+    "expected_revision": content_revision.get_json()["state"]["revision"],
+}).status_code == 400
+
 foundation_cid = client.post("/api/conversations").get_json()["id"]
 assert client.post("/api/foundation-report/confirm", json={"conversation_id": foundation_cid}).status_code == 409
 assert client.post("/api/jump-module", json={"conversation_id": foundation_cid, "module": 5}).status_code == 409

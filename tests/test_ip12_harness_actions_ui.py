@@ -63,6 +63,16 @@ class IP12HarnessActionsUITests(unittest.TestCase):
                 self.assertIn("foundation_review", send_message)
                 self.assertIn("foundationEditing", send_message)
 
+    def test_content_pack_targets_one_script_from_both_views(self):
+        for filename in ("index.html", "index_clean.html"):
+            with self.subTest(filename=filename):
+                source = (TEMPLATES / filename).read_text(encoding="utf-8")
+                self.assertIn("content_pack_v1", source)
+                self.assertIn("content_target", source)
+                self.assertIn("category_id", source)
+                self.assertIn("topic_id", source)
+                self.assertIn("versions", source)
+
 
 if __name__ == "__main__":
     unittest.main()

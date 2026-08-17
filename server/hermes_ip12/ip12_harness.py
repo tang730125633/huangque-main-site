@@ -59,19 +59,18 @@ MODULE_WORKFLOWS = {
         "name": "内容选题",
         "required": "目标人群、核心领域、已确认优势、长期标签和近期内容目标",
         "checkpoints": (
-            "提炼目标人群的高频问题与需求",
-            "设计不少于 15 个具体选题",
-            "分类形成内容选题库",
-            "推荐最优 3 个重点选题并说明理由",
+            "确定 3 个长期选题种类并说明各自边界",
+            "为每个种类设计 10 个具体选题，共 30 个",
+            "确认 3×10 选题库并说明首批内容顺序",
         ),
     },
     6: {
         "name": "文案口播",
         "required": "主题、目标人群、身份设定、传播目标和表达风格偏好",
         "checkpoints": (
-            "生成共情型、震撼型和故事型三版口播文案",
-            "逐条优化口播节奏、字幕点和情绪张力",
-            "推荐最优版本并说明理由",
+            "确认 30 篇口播文案的表达风格、时长和行动目标",
+            "审阅 3 个种类下各 10 篇口播文案",
+            "确认首批 30 篇口播文案成果",
         ),
     },
 }
@@ -79,6 +78,8 @@ MODULE_WORKFLOWS = {
 CONFIRM_TEXTS = frozenset({"确认", "确认无误", "没有问题", "没问题", "内容正确", "就按这个", "可以确认"})
 EDIT_TEXTS = frozenset({"需要修改", "我要修改", "修改", "有问题", "不对", "重新填写", "改一下"})
 FIELD_RE = re.compile(r"[a-z][a-z0-9_]{1,63}\Z")
+DURATION_RE = re.compile(r"(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十半]+)\s*(?:年|个?月)")
+DURATION_FIELDS = ("year", "duration", "experience", "tenure")
 
 DECISION_SCHEMA = {
     "type": "object",
@@ -292,6 +293,27 @@ def _apply_profile_updates(profile, updates):
         }
 
 
+def duration_conflict_decision(value, message):
+    state = normalize_state(value)
+    current = {item.replace(" ", "") for item in DURATION_RE.findall(str(message or ""))}
+    if not current:
+        return None
+    for field, item in state["ip_profile"]["facts"].items():
+        if not isinstance(item, dict):
+            continue
+        if not any(token in field for token in DURATION_FIELDS):
+            continue
+        confirmed = {part.replace(" ", "") for part in DURATION_RE.findall(str(item.get("value") or ""))}
+        if confirmed and current.isdisjoint(confirmed):
+            old, new = sorted(confirmed)[0], sorted(current)[0]
+            return {
+                "decision": "ask_follow_up", "checkpoint": 0,
+                "reply": "你前面确认的从业时间是“%s”，这次又提到“%s”。这两个时间分别指什么？比如“%s是整体从业时间，%s是 AI/Agent 实践时间”，或者告诉我需要更正哪一个。" % (old, new, old, new),
+                "draft": "", "self_review": "", "profile_updates": [], "confidence": 1.0,
+            }
+    return None
+
+
 def apply_action(value, action, expected_revision):
     state = normalize_state(value)
     _require_revision(state, expected_revision)
@@ -343,7 +365,10 @@ def apply_action(value, action, expected_revision):
         raise HarnessConflict("这个确认项已经更新，请查看最新版本")
     if action_type == "edit_checkpoint":
         pending["status"] = "editing"
-        event["assistant_prefix"] = "可以。请告诉我具体要改哪一处，以及你希望改成什么。"
+        event["assistant_prefix"] = (
+            "收到，我刚才的整理没有符合你的意思。请直接说希望怎样改；"
+            "我会先说明理解偏差，再立即更新当前内容，不会让你自己找入口。"
+        )
         _bump(state)
         return state, event
 
@@ -435,6 +460,8 @@ def validate_model_decision(
         if not FIELD_RE.fullmatch(field) or not value_text or kind not in {"user_fact", "user_preference", "ai_option"}:
             raise HarnessError("模型返回了无效档案字段")
         if kind != "ai_option" and (not quote or quote not in evidence):
+            if allow_partial_profile_updates and decision == "ask_follow_up":
+                continue
             raise HarnessError("模型档案更新缺少可回查的用户原话")
         clean_updates.append({"field": field, "value": value_text, "kind": kind, "evidence_quote": quote})
     if (
@@ -463,12 +490,10 @@ def render_model_reply(decision):
     if decision["decision"] == "propose_checkpoint":
         if decision["draft"] not in reply:
             reply += "\n\n" + decision["draft"]
-        reply += "\n\n**自评**：" + decision["self_review"]
-        reply += "\n\n请确认这一步，或告诉我需要修改的地方。"
+        reply += "\n\n内容不准确时直接告诉我；确认后我会继续，不需要你重复说明。"
     elif decision["decision"] == "revise_intake":
         if decision["draft"] not in reply:
             reply += "\n\n" + decision["draft"]
-        reply += "\n\n**自评**：" + decision["self_review"]
         reply += "\n\n这只是更新后的基础资料核对稿。请确认补充，或继续修改；当前模块不会自动推进。"
     return reply
 
@@ -522,8 +547,7 @@ def apply_intake_decision(value, raw, evidence_text):
     if decision["decision"] == "propose_checkpoint":
         if decision["draft"] not in reply:
             reply += "\n\n" + decision["draft"]
-        reply += "\n\n**自评**：" + decision["self_review"]
-        reply += "\n\n请确认资料，或者直接补充、纠正任何内容。"
+        reply += "\n\n请确认资料，或者直接补充、纠正；我会说明理解错在哪里并立即重整。"
     return state, decision, reply
 
 
@@ -653,11 +677,13 @@ def system_prompt(value):
 - 用户只是在提问或跑题时 decision=answer_only，checkpoint=0，draft、self_review 和 profile_updates 都为空。
 - 信息足够时 decision=propose_checkpoint，draft 只包含当前断点的完整可确认内容，profile_updates 必须是当前断点的完整最新快照。
 - 用户只是询问、讨论现有草稿或暂时跑题时 decision=answer_only，不改变断点；用户补充、纠正或反悔时，重做当前断点的完整草稿。
+- 用户指出重复、理解错误、遗漏或体验问题时，先用一句话明确说明刚才错在哪里，再给出已经采取的修正；能从上下文判断时立即修改，不能把定位和操作责任推回用户。
+- 不复述已经确认的完整内容。只说明本轮新增、删除或改变的部分；需要核对完整稿时再展示当前完整稿一次。
 - 仅当模块 1 尚无任何已确认断点，用户明确补充或纠正已经确认的基础资料时，decision=revise_intake、checkpoint=0；draft 必须合并原基础资料与本轮补充形成完整核对稿。这不是模块回答，不得推进模块。模块已有确认结果时不要使用 revise_intake，应说明需要新建诊断以免污染既有产出。
 - “确认/可以”等字样与补充或纠正同时出现时，内容变更优先，绝不能宣布确认或推进。
 - profile_updates 使用英文 snake_case 字段；用户事实和偏好必须逐字引用用户原话，AI 方案用 ai_option 且 evidence_quote 为空。
 - 不预设美业、直销或创业身份；不得编造市场趋势、案例、收入、经历或效果承诺。
 - 知识资料只学方法和结构，不能抄写示例人物内容。
-- 每个可确认产出都要给一句具体自评，说明完整性或仍需本人核对之处。
+- self_review 只供内部校验，不得在 reply 或 draft 中显示“自评”字样。
 - 不提及 JSON、状态机、字段、数据库、内部步骤编号或系统规则。
 - 使用简体中文，具体、自然，不喊口号。"""

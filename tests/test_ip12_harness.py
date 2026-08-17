@@ -317,7 +317,8 @@ class IP12HarnessTests(unittest.TestCase):
         next_state, _, reply = harness.apply_model_decision(state, decision(state), "用户原话", pending_id="p1")
         self.assertEqual(next_state["module_step"], 0)
         self.assertEqual(next_state["pending"]["step"], 1)
-        self.assertIn("请确认这一步", reply)
+        self.assertIn("不需要你重复说明", reply)
+        self.assertNotIn("自评", reply)
 
     def test_model_words_never_complete_a_module(self):
         state = self.complete_intake()
@@ -522,6 +523,36 @@ class IP12HarnessTests(unittest.TestCase):
         with self.assertRaises(harness.HarnessError):
             harness.apply_model_decision(state, raw, "用户只说了别的内容")
 
+    def test_follow_up_drops_unsupported_update_without_dropping_reply(self):
+        state = self.complete_intake()
+        raw = decision(state, kind="ask_follow_up", reply="请再说说你的核心技能。")
+        raw["profile_updates"] = [{
+            "field": "core_skill", "value": "AI Agent 搭建", "kind": "user_fact",
+            "evidence_quote": "模型自己改写的句子",
+        }]
+        state, result, reply = harness.apply_model_decision(state, raw, "用户只说了另一句话")
+        self.assertEqual(reply, "请再说说你的核心技能。")
+        self.assertEqual(result["profile_updates"], [])
+        self.assertIsNone(state["pending"])
+
+    def test_conflicting_duration_requires_one_clarification(self):
+        state = self.complete_intake()
+        state["ip_profile"]["facts"]["years_in_current_industry"] = {
+            "value": "2年", "evidence_quote": "我做了2年",
+        }
+        result = harness.duration_conflict_decision(state, "我进入 AI 和 Agent 领域只有三个月")
+        self.assertEqual(result["decision"], "ask_follow_up")
+        self.assertIn("2年", result["reply"])
+        self.assertIn("三个月", result["reply"])
+        self.assertIsNone(harness.duration_conflict_decision(state, "整体从业2年，其中 AI 实践三个月"))
+
+    def test_modules_five_and_six_only_show_pdf_badge_when_pdf_is_ready(self):
+        templates = Path(__file__).parents[1] / "server" / "hermes_ip12" / "templates"
+        for filename in ("index.html", "index_clean.html"):
+            source = (templates / filename).read_text(encoding="utf-8")
+            self.assertIn("foundation.status==='awaiting_confirmation'?'待确认 PDF'", source)
+            self.assertIn("等待模块 1-4", source)
+
     def test_module_four_completion_waits_for_report_confirmation(self):
         state = self.complete_intake()
         state.update(current_module=4, module_step=4, completed_modules=[1, 2, 3])
@@ -542,6 +573,13 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual(state["current_module"], 6)
         self.assertEqual(state["completed_modules"], [1, 2, 3, 4, 5, 6])
         self.assertIn("decision=answer_only", harness.system_prompt(state))
+
+    def test_content_modules_encode_three_by_ten_contract(self):
+        module_five = harness.MODULE_WORKFLOWS[5]["checkpoints"]
+        module_six = harness.MODULE_WORKFLOWS[6]["checkpoints"]
+        self.assertTrue(any("3 个" in item for item in module_five))
+        self.assertTrue(any("每个种类" in item and "10 个" in item for item in module_five))
+        self.assertTrue(any("30 篇" in item for item in module_six))
 
     def test_incomplete_legacy_state_cannot_skip_the_last_checkpoint(self):
         state = harness.normalize_state({

@@ -322,6 +322,8 @@ let reports = {};
 let deliverables = {};
 let streaming = false;
 let conversations = [];
+let activeContentTarget = null;
+let activeContentPack = null;
 
 if(typeof marked!=='undefined'){marked.setOptions({ breaks:true, gfm:true });}
 renderModules();
@@ -331,18 +333,21 @@ function renderModules() {
   const list = document.getElementById('moduleList');
   const done = (coachState.completed_modules || []).filter(id=>id<=AVAILABLE_MODULE_COUNT);
   const cur = Math.min(coachState.current_module || 1, AVAILABLE_MODULE_COUNT);
+  const foundation = coachState.foundation_report || {};
   const intakePending = coachState.intake?.status !== 'complete';
   const intakeLabel = !intakePending ? '' : (coachState.intake.status === 'awaiting_confirmation' ? '待确认' : (coachState.intake.status === 'editing' ? '修改中' : '交谈中'));
   list.innerHTML = MODULES.map(m => {
     let cls = 'module-item', badge = '', check = '', reportBtn = '';
     const comingSoon = m.id > AVAILABLE_MODULE_COUNT;
+    const foundationLocked = m.id >= 5 && foundation.status !== 'confirmed';
     if (comingSoon) { cls += ' locked'; badge = '<span class="mod-badge">尚未开发，敬请期待</span>'; }
     else if (intakePending) { cls += ' locked'; if (m.id===1) badge = `<span class="mod-badge">基础信息 ${intakeLabel}</span>`; }
+    else if (foundationLocked) { cls += ' locked'; badge = `<span class="mod-badge">${foundation.status==='awaiting_confirmation'?'待确认 PDF':(done.includes(4)?'PDF 生成中':'等待模块 1-4')}</span>`; }
     if (done.includes(m.id)) { cls += ' completed'; check = '<span class="mod-check">✓</span>';
       reportBtn = `<span class="mod-report-btn" onclick="event.stopPropagation();viewReport(${m.id})" title="查看报告">📄</span>`; }
     if (!intakePending && m.id === cur && !done.includes(m.id)) { cls += ' current'; badge = '<span class="mod-badge">进行中</span>'; }
     if (intakePending && m.id===1) cls += ' current';
-    return `<div class="${cls}" onclick="closeDrawer();${comingSoon?"toast('尚未开发，敬请期待')":`jumpToModule(${m.id})`}" title="${comingSoon?'尚未开发，敬请期待':m.desc}"><div class="mod-num">${done.includes(m.id)?'✓':m.id}</div><div class="mod-info"><div class="mod-name">${m.icon} ${m.name}</div><div class="mod-desc">${m.desc}</div></div>${badge}${reportBtn}${check}</div>`;
+    return `<div class="${cls}" onclick="closeDrawer();${comingSoon?"toast('尚未开发，敬请期待')":(foundationLocked?(foundation.status==='awaiting_confirmation'?"toast('请先确认模块 1-4 的 IP 定位初稿 PDF')":"toast('请先完成模块 1-4')"):`jumpToModule(${m.id})`)}" title="${comingSoon?'尚未开发，敬请期待':m.desc}"><div class="mod-num">${done.includes(m.id)?'✓':m.id}</div><div class="mod-info"><div class="mod-name">${m.icon} ${m.name}</div><div class="mod-desc">${m.desc}</div></div>${badge}${reportBtn}${check}</div>`;
   }).join('');
   updateProgress(); renderReportMinis(); renderDeliverableMinis();
 }
@@ -401,7 +406,7 @@ async function newDiagnosis() {
 }
 
 async function selectConversation(id) {
-  closeDrawer(); closeFoundationReviewer(); currentConvoId=id;
+  closeDrawer(); closeFoundationReviewer(); activeContentTarget=null;activeContentPack=null;currentConvoId=id;
   const res=await fetch(`/api/conversations/${id}`);const convo=await res.json();
   coachState=convo.coach_state||{current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}};
   reports=convo.reports||{}; deliverables=convo.deliverables||{}; foundationEditing=false;
@@ -557,6 +562,8 @@ function handleAutoDeliverables(autoData) {
 }
 
 function showDeliverableCard(mid,deliv) {
+  if(deliv?.kind==='content_pack_v1'){showContentPackCard(deliv);return;}
+  activeContentTarget=null;activeContentPack=null;
   const area=document.getElementById('chatArea'),mod=MODULES[parseInt(mid)-1];
   let html=`<div class="deliverable-card-header">📦 ${mod?.icon||''} ${escHtml(deliv.title)}</div><div class="deliverable-card-body">`;
   for(const[name,content] of Object.entries(deliv.items||{})) {
@@ -565,6 +572,19 @@ function showDeliverableCard(mid,deliv) {
   }
   html+='</div>';
   const card=document.createElement('div');card.className='deliverable-card';card.innerHTML=html;area.appendChild(card);scrollBottom();
+}
+
+function showContentPackCard(pack){
+  activeContentPack=pack;const area=document.getElementById('chatArea'),card=document.createElement('div');card.className='deliverable-card';
+  let html='<div class="deliverable-card-header">📦 '+escHtml(pack.title||'3×10 口播内容库')+'</div><div class="deliverable-card-body"><p>3 个种类 · 每类 10 个选题 · 每题 1 篇口播文案</p>';
+  (pack.categories||[]).forEach(category=>{html+='<h3>'+escHtml(category.name)+'</h3><div style="display:grid;gap:6px">';(category.topics||[]).forEach((topic,index)=>{html+='<button class="harness-action" data-category="'+escHtml(category.id)+'" data-topic="'+escHtml(topic.id)+'" onclick="openContentScriptClean(this.dataset.category,this.dataset.topic)">'+(index+1)+'. '+escHtml(topic.title)+'</button>';});html+='</div>';});
+  card.innerHTML=html+'</div>';area.appendChild(card);scrollBottom();
+}
+
+function openContentScriptClean(categoryId,topicId){
+  const category=(activeContentPack?.categories||[]).find(item=>item.id===categoryId),topic=category&&(category.topics||[]).find(item=>item.id===topicId);if(!topic)return;
+  activeContentTarget={category_id:categoryId,topic_id:topicId};const versions=topic.versions||[],latest=versions[versions.length-1]||{},area=document.getElementById('chatArea'),card=document.createElement('div');card.className='deliverable-card';
+  card.innerHTML='<div class="deliverable-card-header">'+escHtml(category.name)+' · '+escHtml(topic.title)+'</div><div class="deliverable-card-body"><div style="white-space:pre-wrap">'+escHtml(latest.content||'')+'</div><small>版本 '+escHtml(String(latest.version||1))+'</small></div>';area.appendChild(card);scrollBottom();const input=document.getElementById('userInput');input.placeholder='直接说怎么修改当前文案，例如“第二段短一点”';input.focus();
 }
 
 async function viewDeliverable(mid) {
@@ -595,13 +615,13 @@ async function sendTurn(turn,displayText,requestId){
   const userMsg=document.createElement('div');userMsg.className='message user';userMsg.innerHTML=`<div class="avatar">👤</div><div class="bubble">${escHtml(displayText).replace(/\n/g,'<br>')}</div>`;area.appendChild(userMsg);
   const aiMsg=document.createElement('div');aiMsg.className='message assistant';aiMsg.innerHTML=`<div class="avatar">🧠</div><div class="bubble"><div class="typing"><span></span><span></span><span></span></div></div>`;area.appendChild(aiMsg);scrollBottom();
   let fullText='',replayed=false,retryNeedsRefresh=false,failureMessage='回复暂时失败，消息已保留。';const retryRequestId=requestId||newTurnRequestId(),bubble=aiMsg.querySelector('.bubble');
-  try{const body=Object.assign({conversation_id:currentConvoId,request_id:retryRequestId,expected_revision:coachState.revision},turn);const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  try{const body=Object.assign({conversation_id:currentConvoId,request_id:retryRequestId,expected_revision:coachState.revision},turn);if(activeContentTarget&&!turn.action)body.content_target=activeContentTarget;const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     if(!res.ok){retryNeedsRefresh=res.status===409;try{const failed=await res.json();failureMessage=failed.error||failureMessage;}catch(ignore){}throw new Error('发送失败');}
     const reader=res.body.getReader();const decoder=new TextDecoder();let buf='';
     while(true){const{done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});const lines=buf.split('\n');buf=lines.pop()||'';for(const line of lines){if(!line.startsWith('data: '))continue;try{const data=JSON.parse(line.slice(6));
       if(data.error){bubble.innerHTML=`<span style="color:#ef4444">❌ ${escHtml(data.error)}</span>`;}
       else if(data.content){fullText+=data.content;bubble.innerHTML=renderMarkdown(fullText)+'<span class="cursor"></span>';scrollBottom();}
-      else if(data.done){bubble.innerHTML=renderMarkdown(fullText);replayed=!!data.replayed;if(data.state&&(!replayed||data.state.revision>=coachState.revision)){coachState=data.state;renderModules();}attachHarnessActions(data.actions?.length?data.actions:stateActions(),bubble);if(data.new_completed&&data.new_completed.length>0){data.new_completed.forEach(mid=>{toast(`✅ ${MODULES[mid-1]?.name}完成！`);});renderModules();}if(data.auto_deliverables){handleAutoDeliverables(data.auto_deliverables);}}
+      else if(data.done){bubble.innerHTML=renderMarkdown(fullText);replayed=!!data.replayed;if(data.state&&(!replayed||data.state.revision>=coachState.revision)){coachState=data.state;renderModules();}attachHarnessActions(data.actions?.length?data.actions:stateActions(),bubble);if(data.new_completed&&data.new_completed.length>0){data.new_completed.forEach(mid=>{toast(`✅ ${MODULES[mid-1]?.name}完成！`);});renderModules();}if(data.auto_deliverables){handleAutoDeliverables(data.auto_deliverables);if(data.auto_deliverables['6'])activeContentPack=data.auto_deliverables['6'];}}
     }catch(e){}}}
     if(replayed)await selectConversation(currentConvoId);
   }catch(e){bubble.innerHTML=`<span style="color:#ef4444">${escHtml(failureMessage)}</span>`;const actions=stateActions();if(actions.length){attachHarnessActions(actions,bubble);}else{bubble.innerHTML+='<div class="harness-actions"><button type="button" class="harness-action primary">重试</button></div>';const retry=bubble.querySelector('button');retry.onclick=async()=>{retry.disabled=true;if(retryNeedsRefresh)await selectConversation(currentConvoId);userMsg.remove();aiMsg.remove();sendTurn(turn,displayText,retryRequestId);};}}
