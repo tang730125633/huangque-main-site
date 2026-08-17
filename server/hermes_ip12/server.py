@@ -940,6 +940,16 @@ def _coach_model_decision(convo, user_message, repair_error=""):
     intake_pending = _intake_pending(state)
     if not intake_pending and state["current_module"] == 5 and state["module_step"] == 1:
         return _coach_module_five_topics(convo, user_message, repair_error)
+    if (
+        not intake_pending
+        and state["current_module"] == 5
+        and state["module_step"] == 2
+        and coach_harness.is_continue_message(user_message)
+    ):
+        source = (
+            ((state.get("ip_profile") or {}).get("confirmed_outputs") or {}).get("5-2") or {}
+        ).get("content") or ""
+        return coach_harness.compile_module_five_confirmation(state), str(source)
     prompt = coach_harness.intake_system_prompt(state) if intake_pending else coach_harness.system_prompt(state)
     if repair_error:
         prompt += (
@@ -1510,9 +1520,14 @@ def _process_action_turn(cid, action, expected_revision):
     assistant = event["assistant_prefix"]
     if event["continue_model"]:
         try:
+            continuation_message = (
+                "下一步"
+                if next_state["current_module"] == 5 and next_state["module_step"] == 2
+                else "用户已确认上一断点。请直接处理当前唯一允许的断点。"
+            )
             continued, status = _process_model_turn(
                 cid,
-                "用户已确认上一断点。请直接处理当前唯一允许的断点。",
+                continuation_message,
                 expected_revision=next_state["revision"],
                 prefix=assistant,
                 persist_user=False,
