@@ -10,13 +10,23 @@ import ip12_harness as harness
 
 
 def decision(state, *, kind="propose_checkpoint", reply="这是当前结果", draft="可确认草稿"):
+    updates = []
+    if kind == "propose_checkpoint" and state["current_module"] == 5 and state["module_step"] == 1:
+        titles = ["第 %02d 个真实选题" % index for index in range(1, 31)]
+        draft = "\n".join("%d. %s" % (index, title) for index, title in enumerate(titles, 1))
+        updates = [{
+            "field": "topic_%d_%02d" % (((index - 1) // 10) + 1, ((index - 1) % 10) + 1),
+            "value": title,
+            "kind": "ai_option",
+            "evidence_quote": "用户原话",
+        } for index, title in enumerate(titles, 1)]
     return {
         "decision": kind,
         "checkpoint": state["module_step"] + 1 if kind == "propose_checkpoint" else 0,
         "reply": reply,
         "draft": draft if kind == "propose_checkpoint" else "",
         "self_review": "资料来源清楚，仍需本人确认。" if kind == "propose_checkpoint" else "",
-        "profile_updates": [],
+        "profile_updates": updates,
         "confidence": 0.9,
     }
 
@@ -320,6 +330,62 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertIn("不需要你重复说明", reply)
         self.assertNotIn("自评", reply)
 
+    def test_confirmable_draft_rejects_future_goal_as_current_expertise(self):
+        state = self.complete_intake()
+        raw = decision(state, draft="当前定位：AI 技术专家")
+        for evidence in ("我未来希望成为 AI 技术专家", "我以前做过 AI 技术专家"):
+            with self.subTest(evidence=evidence), self.assertRaisesRegex(harness.HarnessError, "未经证实"):
+                harness.apply_model_decision(state, raw, evidence)
+
+        for draft, evidence in (
+            ("未来目标：成为 AI 技术专家", "我未来希望成为 AI 技术专家"),
+            ("过去经历：做过 AI 技术顾问", "我以前做过 AI 技术顾问"),
+        ):
+            with self.subTest(draft=draft):
+                next_state, _, _ = harness.apply_model_decision(
+                    state, decision(state, draft=draft), evidence, pending_id="grounded-timeline"
+                )
+                self.assertEqual(next_state["pending"]["draft"], draft)
+
+        next_state, _, _ = harness.apply_model_decision(
+            state, raw, "我目前的职业身份就是 AI 技术专家", pending_id="grounded-expert"
+        )
+        self.assertEqual(next_state["pending"]["draft"], raw["draft"])
+
+    def test_module_five_topics_require_direct_user_evidence(self):
+        state = self.complete_intake()
+        state.update(current_module=5, module_step=1, completed_modules=[1, 2, 3, 4])
+        state["foundation_report"] = {"status": "confirmed"}
+        raw = decision(state)
+        old_title = raw["profile_updates"][0]["value"]
+        raw["profile_updates"][0].update(value="医疗行业真实案例", evidence_quote="用户原话")
+        raw["draft"] = raw["draft"].replace(old_title, "医疗行业真实案例")
+        with self.assertRaisesRegex(harness.HarnessError, "医疗"):
+            harness.apply_model_decision(state, raw, "用户原话")
+
+        raw["profile_updates"][0]["evidence_quote"] = "我亲自做过医疗行业真实案例"
+        next_state, _, _ = harness.apply_model_decision(
+            state, raw, "用户原话\n我亲自做过医疗行业真实案例", pending_id="grounded-topics"
+        )
+        self.assertEqual(len(next_state["pending"]["profile_updates"]), 30)
+        edit = next(action for action in harness.available_actions(next_state) if action["type"] == "edit_checkpoint")
+        next_state, _ = harness.apply_action(next_state, edit, next_state["revision"])
+        next_state, _, _ = harness.apply_model_decision(
+            next_state,
+            decision(next_state, kind="ask_follow_up", reply="你希望先发布哪一个种类？"),
+            "先从第一个种类开始",
+        )
+        self.assertEqual(len(next_state["pending"]["profile_updates"]), 30)
+
+    def test_semantically_duplicate_reply_does_not_repeat_the_draft(self):
+        draft = "### 核心关键词\n- AI Agent 搭建\n- 问题拆解\n- 持续学习"
+        reply = harness.render_model_reply({
+            "decision": "propose_checkpoint",
+            "reply": "核心关键词：AI Agent 搭建、问题拆解、持续学习。",
+            "draft": draft,
+        })
+        self.assertEqual(reply.count("AI Agent 搭建"), 1)
+
     def test_model_words_never_complete_a_module(self):
         state = self.complete_intake()
         raw = decision(state, reply="✅ 模块 1 完成。接下来进入模块 2。")
@@ -502,6 +568,7 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual(next_state["module_step"], 1)
         self.assertEqual(next_state["current_module"], 1)
         self.assertTrue(event["continue_model"])
+        self.assertEqual(event["assistant_prefix"], "")
         self.assertIn("1-1", next_state["ip_profile"]["confirmed_outputs"])
 
     def test_stale_confirmation_is_rejected(self):

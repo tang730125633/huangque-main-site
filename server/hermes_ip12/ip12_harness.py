@@ -6,6 +6,7 @@ without a model call or Flask runtime.
 """
 
 from copy import deepcopy
+from difflib import SequenceMatcher
 import re
 import uuid
 
@@ -80,6 +81,20 @@ EDIT_TEXTS = frozenset({"需要修改", "我要修改", "修改", "有问题", "
 FIELD_RE = re.compile(r"[a-z][a-z0-9_]{1,63}\Z")
 DURATION_RE = re.compile(r"(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十半]+)\s*(?:年|个?月)")
 DURATION_FIELDS = ("year", "duration", "experience", "tenure")
+RISKY_CLAIM_RE = re.compile(
+    r"专家|顾问|战略家|领军(?:人物)?|导师|资深|"
+    r"深厚.{0,4}经验|丰富.{0,4}经验|多年.{0,4}经验|跨行业经验|"
+    r"成功案例|推动.{0,12}成功|知识渊博|全球受众|跨国社区"
+)
+NEGATED_CLAIM_RE = re.compile(r"(?:不|并非|不是|没有|尚未|避免|不能|不把).{0,8}$")
+FUTURE_CLAIM_RE = re.compile(r"(?:未来|希望|想要?|目标|计划|愿景|以后|准备|打算|争取|成为).{0,12}$")
+PAST_CLAIM_RE = re.compile(r"(?:以前|过去|曾经|原来|做过|曾任|前任).{0,12}$")
+TOPIC_FIELD_RE = re.compile(r"topic_[123]_(?:0[1-9]|10)\Z")
+TOPIC_EVIDENCE_TERMS = (
+    "零售", "制造", "医疗", "教育", "物流", "金融", "餐饮", "地产", "美业", "电商",
+    "农业", "旅游", "法律", "保险", "银行", "医院", "学校", "工厂", "门店", "客户",
+    "案例", "营收", "增长", "成功", "业绩", "转化率", "效率提升",
+)
 
 DECISION_SCHEMA = {
     "type": "object",
@@ -95,7 +110,7 @@ DECISION_SCHEMA = {
         "self_review": {"type": "string", "maxLength": 500},
         "profile_updates": {
             "type": "array",
-            "maxItems": 12,
+            "maxItems": 40,
             "items": {
                 "type": "object",
                 "additionalProperties": False,
@@ -246,9 +261,10 @@ def available_actions(value):
         ]
     pending = state.get("pending")
     if isinstance(pending, dict) and pending.get("status") == "awaiting_confirmation":
+        final_step = int(pending.get("step") or 0) == len(MODULE_WORKFLOWS[state["current_module"]]["checkpoints"])
         return [
-            {"type": "confirm_checkpoint", "target_id": pending["id"], "label": "确认这一步", "primary": True},
-            {"type": "edit_checkpoint", "target_id": pending["id"], "label": "需要修改", "primary": False},
+            {"type": "confirm_checkpoint", "target_id": pending["id"], "label": "确认本模块" if final_step else "保留并继续", "primary": True},
+            {"type": "edit_checkpoint", "target_id": pending["id"], "label": "修改当前内容", "primary": False},
         ]
     return []
 
@@ -287,6 +303,8 @@ def _apply_profile_updates(profile, updates):
         "ai_option": profile["ai_selections"],
     }
     for item in updates:
+        if TOPIC_FIELD_RE.fullmatch(item["field"]):
+            continue  # Validation metadata; the confirmed 3×10 draft is the durable source.
         buckets[item["kind"]][item["field"]] = {
             "value": item["value"],
             "evidence_quote": item["evidence_quote"],
@@ -385,7 +403,7 @@ def apply_action(value, action, expected_revision):
     _apply_profile_updates(state["ip_profile"], pending.get("profile_updates") or [])
     state["pending"] = None
     state["module_step"] = step
-    event["assistant_prefix"] = "✅ 这一步已确认。"
+    event["assistant_prefix"] = ""
     event["continue_model"] = True
 
     if step == len(MODULE_WORKFLOWS[module]["checkpoints"]):
@@ -409,6 +427,46 @@ def apply_action(value, action, expected_revision):
             )
     _bump(state)
     return state, event
+
+
+def _claim_has_current_evidence(claim, evidence):
+    for match in re.finditer(re.escape(claim), evidence):
+        prefix = evidence[max(0, match.start() - 20):match.start()]
+        if not any(pattern.search(prefix) for pattern in (NEGATED_CLAIM_RE, FUTURE_CLAIM_RE, PAST_CLAIM_RE)):
+            return True
+    return False
+
+
+def _validate_confirmable_claims(draft, evidence):
+    for match in RISKY_CLAIM_RE.finditer(draft):
+        prefix = draft[max(0, match.start() - 12):match.start()]
+        if any(pattern.search(prefix) for pattern in (NEGATED_CLAIM_RE, FUTURE_CLAIM_RE, PAST_CLAIM_RE)):
+            continue
+        claim = match.group(0)
+        if not _claim_has_current_evidence(claim, evidence):
+            raise HarnessError(
+                "确认稿包含未经证实的身份、经历或结果用语“%s”；请删除，或改成不夸大的探索方向" % claim
+            )
+
+
+def _validate_module_five_topics(updates, draft, evidence):
+    topics = [item for item in updates if TOPIC_FIELD_RE.fullmatch(item["field"])]
+    expected_fields = {
+        "topic_%d_%02d" % (category, index)
+        for category in range(1, 4)
+        for index in range(1, 11)
+    }
+    if len(updates) != 30 or {item["field"] for item in topics} != expected_fields:
+        raise HarnessError("模块 5 必须按 3 个种类、每类 10 个选题提供 topic_1_01 到 topic_3_10 的原话依据")
+    if len({item["value"] for item in topics}) != 30:
+        raise HarnessError("模块 5 的 30 个具体选题不能重复")
+    for item in topics:
+        quote = item["evidence_quote"]
+        if item["kind"] != "ai_option" or not quote or quote not in evidence or item["value"] not in draft:
+            raise HarnessError("模块 5 的每个具体选题都必须绑定一段可回查的用户原话")
+        unsupported = next((term for term in TOPIC_EVIDENCE_TERMS if term in item["value"] and term not in quote), "")
+        if unsupported:
+            raise HarnessError("选题中的“%s”没有出现在它绑定的用户原话里；请删除或换成有直接依据的题目" % unsupported)
 
 
 def validate_model_decision(
@@ -446,7 +504,7 @@ def validate_model_decision(
         raise HarnessError("非断点回复不能携带推进内容")
 
     updates = raw.get("profile_updates") or []
-    if not isinstance(updates, list) or len(updates) > 12:
+    if not isinstance(updates, list) or len(updates) > 40:
         raise HarnessError("模型返回了无效 profile_updates")
     clean_updates = []
     evidence = str(evidence_text or "")
@@ -464,6 +522,10 @@ def validate_model_decision(
                 continue
             raise HarnessError("模型档案更新缺少可回查的用户原话")
         clean_updates.append({"field": field, "value": value_text, "kind": kind, "evidence_quote": quote})
+    if decision in {"propose_checkpoint", "revise_intake"}:
+        _validate_confirmable_claims(draft, evidence)
+    if decision == "propose_checkpoint" and state["current_module"] == 5 and checkpoint == 2:
+        _validate_module_five_topics(clean_updates, draft, evidence)
     if (
         decision not in {"propose_checkpoint", "revise_intake"}
         and clean_updates
@@ -485,12 +547,20 @@ def validate_model_decision(
     }
 
 
+def _reply_already_contains_draft(reply, draft):
+    clean = lambda text: re.sub(r"[\W_]+", "", text).lower()
+    reply_text, draft_text = clean(reply), clean(draft)
+    return bool(draft_text) and (
+        draft_text in reply_text or SequenceMatcher(None, reply_text, draft_text).ratio() >= 0.82
+    )
+
+
 def render_model_reply(decision):
     reply = decision["reply"]
     if decision["decision"] == "propose_checkpoint":
-        if decision["draft"] not in reply:
+        if not _reply_already_contains_draft(reply, decision["draft"]):
             reply += "\n\n" + decision["draft"]
-        reply += "\n\n内容不准确时直接告诉我；确认后我会继续，不需要你重复说明。"
+        reply += "\n\n内容不准确时直接告诉我；保留后我会继续，不需要你重复说明。"
     elif decision["decision"] == "revise_intake":
         if decision["draft"] not in reply:
             reply += "\n\n" + decision["draft"]
@@ -545,7 +615,7 @@ def apply_intake_decision(value, raw, evidence_text):
     _bump(state)
     reply = decision["reply"]
     if decision["decision"] == "propose_checkpoint":
-        if decision["draft"] not in reply:
+        if not _reply_already_contains_draft(reply, decision["draft"]):
             reply += "\n\n" + decision["draft"]
         reply += "\n\n请确认资料，或者直接补充、纠正；我会说明理解错在哪里并立即重整。"
     return state, decision, reply
@@ -600,8 +670,9 @@ def apply_model_decision(value, raw, evidence_text, pending_id=None):
         for item in prior_updates + decision["profile_updates"]:
             merged_updates.pop(item["field"], None)
             merged_updates[item["field"]] = item
-        if len(merged_updates) > 12:
-            raise HarnessError("当前断点的待确认资料超过 12 项，请先整理完整核对稿")
+        update_limit = 40 if state["current_module"] == 5 and state["module_step"] + 1 == 2 else 12
+        if len(merged_updates) > update_limit:
+            raise HarnessError("当前断点的待确认资料过多，请先整理完整核对稿")
         if pending or merged_updates:
             prior_status = pending.get("status") if pending else ""
             state["pending"] = {
@@ -681,8 +752,11 @@ def system_prompt(value):
 - 不复述已经确认的完整内容。只说明本轮新增、删除或改变的部分；需要核对完整稿时再展示当前完整稿一次。
 - 仅当模块 1 尚无任何已确认断点，用户明确补充或纠正已经确认的基础资料时，decision=revise_intake、checkpoint=0；draft 必须合并原基础资料与本轮补充形成完整核对稿。这不是模块回答，不得推进模块。模块已有确认结果时不要使用 revise_intake，应说明需要新建诊断以免污染既有产出。
 - “确认/可以”等字样与补充或纠正同时出现时，内容变更优先，绝不能宣布确认或推进。
-- profile_updates 使用英文 snake_case 字段；用户事实和偏好必须逐字引用用户原话，AI 方案用 ai_option 且 evidence_quote 为空。
+- profile_updates 使用英文 snake_case 字段；用户事实和偏好必须逐字引用用户原话，AI 方案用 ai_option 且 evidence_quote 为空（模块 5 断点 2 的选题来源除外）。
+- draft 中的当前身份、经历、能力和结果必须能在用户原话中直接找到依据；未来目标只能写成未来目标，AI 候选只能写成候选，不得包装成既有成绩。
+- 不得把用户称为专家、顾问、战略家、导师、资深人士或领军人物，除非用户明确说这是自己当前真实身份；不得把“希望成为”改写成“现在就是”。
 - 不预设美业、直销或创业身份；不得编造市场趋势、案例、收入、经历或效果承诺。
+- 模块 5 断点 2 必须严格输出 3 个种类、每类 10 个具体选题，并在 profile_updates 中按种类使用 topic_1_01 到 topic_1_10、topic_2_01 到 topic_2_10、topic_3_01 到 topic_3_10：kind=ai_option、value 与 draft 题目完全一致、evidence_quote 逐字引用直接支撑该题目的用户原话。泛泛的“垂直行业”不能支撑医疗、金融等具体行业，也不能支撑客户案例或成功结果；证据不足时只围绕用户真实过程、边界、反思和待验证计划出题。
 - 知识资料只学方法和结构，不能抄写示例人物内容。
 - self_review 只供内部校验，不得在 reply 或 draft 中显示“自评”字样。
 - 不提及 JSON、状态机、字段、数据库、内部步骤编号或系统规则。
