@@ -467,10 +467,7 @@ if (!rendered.includes("&lt;img") || !rendered.includes("<br>")) process.exit(5)
         self.assertIn("未确认草稿已清除", result["assistant"])
         self.assertNotIn("请回复“", result["assistant"])
 
-    def test_repair_context_drops_rejected_assistant_draft_and_prioritizes_confirmed_checkpoint(self):
-        import json
-        from types import SimpleNamespace
-
+    def test_module_five_step_two_uses_the_specialized_topic_compiler(self):
         source = (HERMES / "server.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         coach_turn = next(
@@ -482,66 +479,29 @@ if (!rendered.includes("&lt;img") || !rendered.includes("<br>")) process.exit(5)
             "current_module": 5,
             "module_step": 1,
             "completed_modules": [1, 2, 3, 4],
-            "ip_profile": {
-                "facts": {},
-                "preferences": {},
-                "ai_selections": {},
-                "confirmed_outputs": {
-                    "5-1": {
-                        "content": "AI 赋能垂直行业的真实观察与验证：只讲可展示证据的尝试"
-                    }
-                },
-            },
+            "ip_profile": {},
         }
-        convo = {
-            "coach_state": state,
-            "messages": [
-                {"role": "assistant", "content": "普通人也能成功"},
-                {"role": "user", "content": "不要包装成功，只讲真实过程"},
-            ],
-            "deliverables": {},
-        }
-        captured = {}
+        calls = []
 
-        def call_ai(messages, **_kwargs):
-            captured["messages"] = messages
-            payload = {
-                "decision": "answer_only",
-                "checkpoint": 0,
-                "reply": "继续整理",
-                "draft": "",
-                "self_review": "",
-                "profile_updates": [],
-                "confidence": 1,
-            }
-            return SimpleNamespace(json=lambda: {
-                "choices": [{"message": {"content": json.dumps(payload, ensure_ascii=False)}}]
-            })
+        def module_five(convo, message, repair_error=""):
+            calls.append((convo, message, repair_error))
+            return {"decision": "propose_checkpoint"}, "evidence"
 
         namespace = {
             "normalize_coach_state": lambda value: value,
             "_intake_pending": lambda _state: False,
-            "coach_harness": SimpleNamespace(
-                system_prompt=lambda _state: "system",
-                intake_system_prompt=lambda _state: "intake",
-                DECISION_SCHEMA={},
-            ),
-            "_redact_mobile_numbers": lambda value: str(value or ""),
-            "call_ai": call_ai,
-            "json": json,
+            "_coach_module_five_topics": module_five,
         }
         exec(compile(module, str(HERMES / "server.py"), "exec"), namespace)
-        _raw, evidence = namespace["_coach_model_decision"](
+        convo = {"coach_state": state}
+        result = namespace["_coach_model_decision"](
             convo,
             "继续",
             repair_error="选题中的‘成功’没有依据",
         )
 
-        sent = "\n".join(item["content"] for item in captured["messages"])
-        self.assertNotIn("普通人也能成功", sent)
-        self.assertIn("不要包装成功，只讲真实过程", sent)
-        self.assertIn("AI 赋能垂直行业的真实观察与验证", captured["messages"][1]["content"])
-        self.assertIn("AI 赋能垂直行业的真实观察与验证", evidence)
+        self.assertEqual(result, ({"decision": "propose_checkpoint"}, "evidence"))
+        self.assertEqual(calls, [(convo, "继续", "选题中的‘成功’没有依据")])
 
 
 @unittest.skipUnless(
@@ -592,6 +552,10 @@ assert all(
     for method in rule.methods
     if method in {"POST", "PUT", "PATCH", "DELETE"}
 )
+with patch.object(server, "MODEL", "deepseek-v4-flash"), patch.object(server.requests, "post") as request_model:
+    request_model.return_value.status_code = 200
+    server.call_ai([], response_format={"type": "json_schema", "json_schema": {"schema": {}}})
+    assert request_model.call_args.kwargs["json"]["response_format"] == {"type": "json_object"}
 
 transitioned = parse_coach_state_updates(
     "好，我们进入模块2：人设塑造。",

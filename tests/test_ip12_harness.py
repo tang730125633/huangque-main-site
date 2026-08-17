@@ -395,6 +395,48 @@ class IP12HarnessTests(unittest.TestCase):
         for term in ("医疗", "成功", "客户", "增长", "案例"):
             self.assertIn(term, error)
 
+    def test_module_five_compiler_builds_protocol_fields_and_markdown(self):
+        state = self.complete_intake()
+        state.update(current_module=5, module_step=1, completed_modules=[1, 2, 3, 4])
+        state["foundation_report"] = {"status": "confirmed"}
+        names = ("转行经验分享", "智能体应用实践", "垂直行业真实验证")
+        source = "\n".join("%d. **%s**" % (index, name) for index, name in enumerate(names, 1))
+        state["ip_profile"]["confirmed_outputs"]["5-1"] = {"content": source}
+        quote = "我只讲真实过程和待验证计划"
+        raw = {
+            "decision": "propose_checkpoint",
+            "reply": "这是按三个已确认种类整理的选题。",
+            "categories": [
+                {
+                    "name": name,
+                    "topics": [
+                        {"title": "%s：真实过程 %02d" % (name, index), "evidence_id": "E1"}
+                        for index in range(1, 11)
+                    ],
+                }
+                for name in names
+            ],
+            "self_review": "只使用了给定证据。",
+            "confidence": 0.9,
+        }
+        raw["categories"][0]["topics"][0]["title"] = "医疗客户成功案例的效率提升"
+
+        compiled = harness.compile_module_five_topics(
+            raw, state, source + "\n" + quote, {"E1": quote}
+        )
+
+        self.assertEqual(compiled["checkpoint"], 2)
+        self.assertEqual(len(compiled["profile_updates"]), 30)
+        self.assertEqual(compiled["profile_updates"][0]["field"], "topic_1_01")
+        self.assertEqual(compiled["profile_updates"][0]["value"], "垂直行业具体对象实践过程记录的待验证结果")
+        self.assertEqual(compiled["profile_updates"][-1]["field"], "topic_3_10")
+        self.assertIn("### 转行经验分享", compiled["draft"])
+        raw["categories"][0]["name"] = "未经确认的新种类"
+        with self.assertRaisesRegex(harness.HarnessError, "种类名称"):
+            harness.compile_module_five_topics(
+                raw, state, source + "\n" + quote, {"E1": quote}
+            )
+
     def test_semantically_duplicate_reply_does_not_repeat_the_draft(self):
         draft = "### 核心关键词\n- AI Agent 搭建\n- 问题拆解\n- 持续学习"
         reply = harness.render_model_reply({
