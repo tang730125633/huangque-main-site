@@ -337,6 +337,16 @@ class IP12HarnessTests(unittest.TestCase):
             with self.subTest(evidence=evidence), self.assertRaisesRegex(harness.HarnessError, "未经证实"):
                 harness.apply_model_decision(state, raw, evidence)
 
+        for draft, evidence in (
+            ("未来目标：成为 AI 技术专家", "我未来希望成为 AI 技术专家"),
+            ("过去经历：做过 AI 技术顾问", "我以前做过 AI 技术顾问"),
+        ):
+            with self.subTest(draft=draft):
+                next_state, _, _ = harness.apply_model_decision(
+                    state, decision(state, draft=draft), evidence, pending_id="grounded-timeline"
+                )
+                self.assertEqual(next_state["pending"]["draft"], draft)
+
         next_state, _, _ = harness.apply_model_decision(
             state, raw, "我目前的职业身份就是 AI 技术专家", pending_id="grounded-expert"
         )

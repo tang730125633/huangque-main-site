@@ -440,7 +440,7 @@ def _claim_has_current_evidence(claim, evidence):
 def _validate_confirmable_claims(draft, evidence):
     for match in RISKY_CLAIM_RE.finditer(draft):
         prefix = draft[max(0, match.start() - 12):match.start()]
-        if NEGATED_CLAIM_RE.search(prefix):
+        if any(pattern.search(prefix) for pattern in (NEGATED_CLAIM_RE, FUTURE_CLAIM_RE, PAST_CLAIM_RE)):
             continue
         claim = match.group(0)
         if not _claim_has_current_evidence(claim, evidence):
