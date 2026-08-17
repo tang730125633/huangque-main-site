@@ -360,6 +360,74 @@ if (!rendered.includes("&lt;img") || !rendered.includes("<br>")) process.exit(5)
         result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_invalid_evidence_retry_persists_a_safe_follow_up(self):
+        import json
+        import threading
+        from types import SimpleNamespace
+
+        source = (HERMES / "server.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        process_turn = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_process_model_turn"
+        )
+        module = ast.fix_missing_locations(ast.Module(body=[process_turn], type_ignores=[]))
+
+        class HarnessError(Exception):
+            pass
+
+        class HarnessConflict(Exception):
+            pass
+
+        message = "我想先在一个垂直行业做出结果，再复制到其他行业"
+        state = {"revision": 0, "completed_modules": [], "foundation_report": {}}
+        model_calls = []
+        persist_calls = []
+
+        def coach_model(_snapshot, _message, repair_error=None):
+            model_calls.append(repair_error)
+            return {"decision": "propose_checkpoint"}, message
+
+        def persist_turn(_cid, user_message, _revision, raw, evidence, prefix=""):
+            persist_calls.append((user_message, raw, evidence, prefix))
+            if len(persist_calls) < 3:
+                raise HarnessError("模型档案更新缺少可回查的用户原话")
+            return raw["reply"], {"revision": 1}
+
+        namespace = {
+            "CONVERSATION_STATE_LOCK": threading.RLock(),
+            "owned_conversation": lambda _cid: {"coach_state": state},
+            "normalize_coach_state": lambda value: value,
+            "_assert_expected_revision": lambda _state, _revision: None,
+            "coach_harness": SimpleNamespace(
+                HarnessError=HarnessError,
+                HarnessConflict=HarnessConflict,
+                duration_conflict_decision=lambda _state, _message: None,
+            ),
+            "_coach_model_decision": coach_model,
+            "_persist_model_turn": persist_turn,
+            "_chat_result": lambda assistant, next_state: {
+                "assistant": assistant,
+                "state": next_state,
+            },
+            "app": SimpleNamespace(logger=SimpleNamespace(warning=lambda *_args: None)),
+            "requests": SimpleNamespace(RequestException=RuntimeError),
+            "json": json,
+        }
+        exec(compile(module, str(HERMES / "server.py"), "exec"), namespace)
+        result, status = namespace["_process_model_turn"]("cid", message)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(model_calls, [None, "模型档案更新缺少可回查的用户原话"])
+        self.assertEqual(len(persist_calls), 3)
+        user_message, fallback, evidence, _prefix = persist_calls[-1]
+        self.assertEqual(user_message, message)
+        self.assertEqual(evidence, message)
+        self.assertEqual(fallback["decision"], "ask_follow_up")
+        self.assertEqual(fallback["profile_updates"], [])
+        self.assertIn("改写成了你没有说过的事实", result["assistant"])
+        self.assertIn("不需要你重述或补充", result["assistant"])
+
 
 @unittest.skipUnless(
     importlib.util.find_spec("flask") and importlib.util.find_spec("requests") and importlib.util.find_spec("pypdf"),
@@ -1846,7 +1914,5 @@ print("HERMES_RUNTIME_OK")
             )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("HERMES_RUNTIME_OK", result.stdout)
-
-
 if __name__ == "__main__":
     unittest.main()
