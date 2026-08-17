@@ -1848,5 +1848,60 @@ print("HERMES_RUNTIME_OK")
         self.assertIn("HERMES_RUNTIME_OK", result.stdout)
 
 
+class HermesIP12RecoveryTests(unittest.TestCase):
+    def test_invalid_evidence_retry_persists_a_safe_follow_up(self):
+        script = r'''
+import json
+from unittest.mock import patch
+
+import server
+
+server.current_account_id = lambda: "acct_a"
+cid = "evidence-recovery"
+message = "我想先在一个垂直行业做出结果，再复制到其他行业"
+convo = server.load_conversation(cid)
+convo["owner_account_id"] = "acct_a"
+server.save_conversation(cid, convo)
+invalid = {
+    "decision": "propose_checkpoint",
+    "checkpoint": 1,
+    "reply": "我先整理你的长期方向。",
+    "draft": "先验证一个行业，再复制到更多行业。",
+    "self_review": "仍需本人确认。",
+    "profile_updates": [{
+        "field": "long_term_goal",
+        "value": "成为跨行业 AI 专家",
+        "kind": "user_fact",
+        "evidence_quote": "成为跨行业 AI 专家",
+    }],
+    "confidence": 0.9,
+}
+with patch.object(server, "_coach_model_decision", side_effect=[
+    (invalid, message),
+    (invalid, message),
+]) as model:
+    result, status = server._process_model_turn(cid, message)
+assert status == 200, result
+assert model.call_count == 2
+assert "改写成了你没有说过的事实" in result["assistant"]
+assert "不需要你重述或补充" in result["assistant"]
+assert result["state"]["intake"]["status"] == "collecting"
+assert "成为跨行业 AI 专家" not in json.dumps(result["state"], ensure_ascii=False)
+stored = server.load_conversation(cid)
+assert sum(item["role"] == "user" and item["content"] == message for item in stored["messages"]) == 1
+'''
+        with tempfile.TemporaryDirectory() as data_dir:
+            env = os.environ.copy()
+            env.update(OPENAI_API_KEY="dummy", HERMES_HOME=data_dir, HERMES_DATA_DIR=data_dir)
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=HERMES,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

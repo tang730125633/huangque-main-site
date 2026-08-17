@@ -1090,14 +1090,39 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
             raise
         except coach_harness.HarnessError as exc:
             raw, evidence = _coach_model_decision(snapshot, user_message, repair_error=str(exc))
-            assistant, next_state = _persist_model_turn(
-                cid,
-                user_message if persist_user else "",
-                snapshot_revision,
-                raw,
-                evidence,
-                prefix=prefix,
-            )
+            try:
+                assistant, next_state = _persist_model_turn(
+                    cid,
+                    user_message if persist_user else "",
+                    snapshot_revision,
+                    raw,
+                    evidence,
+                    prefix=prefix,
+                )
+            except coach_harness.HarnessError as retry_exc:
+                if not persist_user or str(retry_exc) != "模型档案更新缺少可回查的用户原话":
+                    raise
+                app.logger.warning("IP12 recovered invalid evidence after model retry: %s", retry_exc)
+                assistant, next_state = _persist_model_turn(
+                    cid,
+                    user_message if persist_user else "",
+                    snapshot_revision,
+                    {
+                        "decision": "ask_follow_up",
+                        "checkpoint": 0,
+                        "reply": (
+                            "我刚才把你的一处表达改写成了你没有说过的事实，所以没有形成确认稿。"
+                            "你的原话已经保留，我也已经撤销那处改写。请直接回复“继续整理”，"
+                            "我会只依据你的原话重新生成，不需要你重述或补充。"
+                        ),
+                        "draft": "",
+                        "self_review": "",
+                        "profile_updates": [],
+                        "confidence": 0,
+                    },
+                    user_message,
+                    prefix=prefix,
+                )
     except coach_harness.HarnessConflict:
         raise
     except (coach_harness.HarnessError, RuntimeError, requests.RequestException) as exc:
