@@ -693,10 +693,8 @@ def compile_module_five_topics(raw, value, evidence_text, evidence_sources):
     }, state, evidence)
 
 
-def compile_module_five_confirmation(value):
+def confirmed_module_five_topics(value):
     state = normalize_state(value)
-    if state["current_module"] != 5 or state["module_step"] != 2:
-        raise HarnessError("当前不在模块 5 的选题库确认断点")
     source = str(
         ((state["ip_profile"].get("confirmed_outputs") or {}).get("5-2") or {}).get("content") or ""
     )
@@ -713,6 +711,17 @@ def compile_module_five_confirmation(value):
             current["topics"].append(topic.group(1))
     if len(categories) != 3 or any(len(item["topics"]) != 10 for item in categories):
         raise HarnessError("已确认的模块 5 选题库不是完整的 3×10 结构")
+    return categories
+
+
+def compile_module_five_confirmation(value):
+    state = normalize_state(value)
+    if state["current_module"] != 5 or state["module_step"] != 2:
+        raise HarnessError("当前不在模块 5 的选题库确认断点")
+    source = str(
+        ((state["ip_profile"].get("confirmed_outputs") or {}).get("5-2") or {}).get("content") or ""
+    )
+    categories = confirmed_module_five_topics(state)
 
     first_batch = []
     for topic_index in range(2):
@@ -735,6 +744,96 @@ def compile_module_five_confirmation(value):
         "profile_updates": [],
         "confidence": 1.0,
     }, state, source)
+
+
+def compile_module_six_checkpoint(value, pack):
+    state = normalize_state(value)
+    if state["current_module"] != 6 or state["module_step"] not in {1, 2}:
+        raise HarnessError("当前不在模块 6 的内容库确认断点")
+    categories = (pack or {}).get("categories") if isinstance(pack, dict) else None
+    if (
+        (pack or {}).get("kind") != "content_pack_v1"
+        or not isinstance(categories, list)
+        or len(categories) != 3
+        or any(len((item or {}).get("topics") or []) != 10 for item in categories)
+    ):
+        raise HarnessError("模块 6 尚未形成完整的 3×10 口播内容库")
+    evidence = "\n".join(
+        text
+        for category in categories
+        for text in (
+            [str(category.get("name") or "")]
+            + [str(topic.get("title") or "") for topic in category.get("topics") or []]
+        )
+    )
+    if state["module_step"] == 1:
+        draft = "\n\n".join(
+            "### %s\n%s" % (
+                category.get("name"),
+                "\n".join(
+                    "%d. %s" % (index, topic.get("title"))
+                    for index, topic in enumerate(category.get("topics") or [], 1)
+                ),
+            )
+            for category in categories
+        )
+        reply = "30 篇口播已经按模块 5 的原 3×10 选题生成，可在右侧逐篇打开审阅。"
+        checkpoint = 2
+    else:
+        draft = "### 已完成的 3×10 口播成果\n" + "\n".join(
+            "- %s：10 篇" % category.get("name") for category in categories
+        )
+        reply = "3 个种类、30 个原选题和对应 30 篇口播均已保留，下面只确认整套成果。"
+        checkpoint = 3
+    return validate_model_decision({
+        "decision": "propose_checkpoint",
+        "checkpoint": checkpoint,
+        "reply": reply,
+        "draft": draft,
+        "self_review": "只读取已生成内容库，不重新生成或改写种类与选题。",
+        "profile_updates": [],
+        "confidence": 1.0,
+    }, state, evidence)
+
+
+def compile_module_six_style(value, evidence_text):
+    state = normalize_state(value)
+    if state["current_module"] != 6 or state["module_step"] != 0:
+        return None
+    evidence = str(evidence_text or "")
+    sentences = [
+        item.strip()
+        for item in re.split(r"(?<=[。！？!?；;])|\n+", evidence)
+        if item.strip()
+    ]
+    relevant = [
+        item for item in sentences
+        if re.search(r"大白话|口语|分享|教学|讲解|语气|风格|口播|秒|分钟|收藏|留言|关注|私信|咨询", item)
+    ]
+    requirements = "；".join(dict.fromkeys(relevant))[:800]
+    if not (
+        re.search(r"大白话|口语|分享|教学|讲解|语气|风格", requirements)
+        and re.search(r"\d+\s*(?:到|至|-)?\s*\d*\s*(?:秒|分钟)", requirements)
+        and re.search(r"收藏|留言|关注|私信|咨询", requirements)
+    ):
+        return None
+    quote = next((item for item in relevant if item in evidence and len(item) <= 300), "")
+    if not quote:
+        return None
+    return validate_model_decision({
+        "decision": "propose_checkpoint",
+        "checkpoint": 1,
+        "reply": "我已按你说过的表达方式、时长和行动引导整理统一口播标准，不再重复追问。",
+        "draft": "### 30 篇口播统一标准\n- %s" % requirements,
+        "self_review": "只引用用户已提供的口播偏好，不补写新的要求。",
+        "profile_updates": [{
+            "field": "module_6_delivery_preferences",
+            "value": requirements,
+            "kind": "user_preference",
+            "evidence_quote": quote,
+        }],
+        "confidence": 1.0,
+    }, state, evidence)
 
 
 def _reply_already_contains_draft(reply, draft):

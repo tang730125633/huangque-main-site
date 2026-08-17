@@ -462,6 +462,39 @@ class IP12HarnessTests(unittest.TestCase):
                 self.assertTrue(harness.is_continue_message(message))
         self.assertFalse(harness.is_continue_message("下一步会生成口播吗？"))
 
+    def test_module_six_checkpoints_reuse_one_generated_content_pack(self):
+        state = self.complete_intake()
+        state.update(current_module=6, module_step=1, completed_modules=[1, 2, 3, 4, 5])
+        pack = {
+            "kind": "content_pack_v1",
+            "categories": [{
+                "name": "种类%d" % category,
+                "topics": [{"title": "种类%d选题%02d" % (category, topic)}
+                           for topic in range(1, 11)],
+            } for category in range(1, 4)],
+        }
+
+        review = harness.compile_module_six_checkpoint(state, pack)
+        self.assertEqual(review["checkpoint"], 2)
+        self.assertIn("种类1选题01", review["draft"])
+
+        state["module_step"] = 2
+        confirmation = harness.compile_module_six_checkpoint(state, pack)
+        self.assertEqual(confirmation["checkpoint"], 3)
+        self.assertIn("种类3：10 篇", confirmation["draft"])
+
+    def test_module_six_style_reuses_confirmed_preferences(self):
+        state = self.complete_intake()
+        state.update(current_module=6, module_step=0, completed_modules=[1, 2, 3, 4, 5])
+        evidence = "口播偏好是大白话、60 到 90 秒，结尾引导收藏或留言。"
+
+        decision = harness.compile_module_six_style(state, evidence)
+
+        self.assertEqual(decision["checkpoint"], 1)
+        self.assertIn("60 到 90 秒", decision["draft"])
+        self.assertEqual(decision["profile_updates"][0]["evidence_quote"], evidence)
+        self.assertIsNone(harness.compile_module_six_style(state, "我还没有想好风格"))
+
     def test_semantically_duplicate_reply_does_not_repeat_the_draft(self):
         draft = "### 核心关键词\n- AI Agent 搭建\n- 问题拆解\n- 持续学习"
         reply = harness.render_model_reply({

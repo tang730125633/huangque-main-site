@@ -558,10 +558,19 @@ with patch.object(server, "MODEL", "deepseek-v4-flash"), patch.object(server.req
     valid_json = Mock(status_code=200)
     valid_json.json.return_value = {"choices": [{"message": {"content": '{"decision":"answer_only"}'}}]}
     request_model.side_effect = [invalid_json, valid_json]
-    response = server.call_ai([], response_format={"type": "json_schema", "json_schema": {"schema": {}}})
+    response = server.call_ai(
+        [{"role": "system", "content": "只输出 JSON"}],
+        response_format={
+            "type": "json_schema",
+            "json_schema": {"schema": {"type": "object", "required": ["decision"]}},
+        },
+    )
     assert response is valid_json
     assert request_model.call_count == 2
-    assert request_model.call_args.kwargs["json"]["response_format"] == {"type": "json_object"}
+    deepseek_payload = request_model.call_args.kwargs["json"]
+    assert deepseek_payload["response_format"] == {"type": "json_object"}
+    assert deepseek_payload["thinking"] == {"type": "disabled"}
+    assert '"required":["decision"]' in deepseek_payload["messages"][0]["content"]
 
 transitioned = parse_coach_state_updates(
     "好，我们进入模块2：人设塑造。",
@@ -843,6 +852,25 @@ with patch.object(server, "call_ai") as retry_model:
     retry_model.assert_not_called()
 assert advance_retry.get_json()["state"]["pending"]["step"] == 3
 
+module_six_convo = server.load_conversation(advance_retry_cid)
+module_six_state = module_six_convo["coach_state"]
+module_six_state.update(current_module=6, module_step=0, completed_modules=[1, 2, 3, 4, 5])
+module_six_convo["coach_state"] = module_six_state
+captured_module_six = {}
+def capture_module_six(messages, **kwargs):
+    captured_module_six["messages"] = messages
+    response = Mock()
+    response.json.return_value = {"choices": [{"message": {"content": json.dumps({
+        "decision": "ask_follow_up", "checkpoint": 0, "reply": "请补充风格。",
+        "draft": "", "self_review": "", "profile_updates": [], "confidence": 0.8,
+    }, ensure_ascii=False)}}]}
+    return response
+with patch.object(server, "call_ai", side_effect=capture_module_six):
+    server._coach_model_decision(module_six_convo, "继续")
+module_six_context = "\n".join(item["content"] for item in captured_module_six["messages"])
+assert "confirmed_module_five_plan" in module_six_context
+assert "转行经验分享选题01" in module_six_context
+
 content_pack = server._normalize_content_pack(raw_pack)
 assert content_pack["kind"] == "content_pack_v1"
 assert len(content_pack["categories"]) == 3
@@ -854,7 +882,43 @@ try:
 except ValueError:
     pass
 
+module_six_convo["deliverables"] = {"6": content_pack}
+module_six_state["module_step"] = 1
+module_six_convo["coach_state"] = module_six_state
+with patch.object(server, "call_ai") as module_six_model:
+    module_six_review, _ = server._coach_model_decision(module_six_convo, "下一步")
+    module_six_model.assert_not_called()
+assert module_six_review["checkpoint"] == 2
+module_six_state["module_step"] = 2
+with patch.object(server, "call_ai") as module_six_model:
+    module_six_confirm, _ = server._coach_model_decision(module_six_convo, "下一步")
+    module_six_model.assert_not_called()
+assert module_six_confirm["checkpoint"] == 3
+
 generated_cid = client.post("/api/conversations").get_json()["id"]
+generated_convo = server.load_conversation(generated_cid)
+generated_state = server.coach_harness.initial_state()
+generated_state.update(
+    current_module=6,
+    module_step=0,
+    completed_modules=[1, 2, 3, 4, 5],
+    foundation_report={"status": "confirmed"},
+)
+generated_state["intake"]["status"] = "complete"
+generated_state["ip_profile"]["confirmed_outputs"]["5-2"] = {
+    "content": "\n\n".join(
+        "### %s\n%s" % (
+            category["name"],
+            "\n".join(
+                "%d. %s" % (index, topic["title"])
+                for index, topic in enumerate(category["topics"], 1)
+            ),
+        )
+        for category in raw_pack["categories"]
+    )
+}
+generated_convo["coach_state"] = generated_state
+server.save_conversation(generated_cid, generated_convo)
 pack_response = Mock()
 pack_response.json.return_value = {"choices": [{"message": {"content": json.dumps(raw_pack, ensure_ascii=False)}}]}
 with patch.object(server, "call_ai", return_value=pack_response) as pack_model:
