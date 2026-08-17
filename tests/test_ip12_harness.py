@@ -377,6 +377,24 @@ class IP12HarnessTests(unittest.TestCase):
         )
         self.assertEqual(len(next_state["pending"]["profile_updates"]), 30)
 
+    def test_module_five_reports_all_unsupported_terms_in_one_retry(self):
+        state = self.complete_intake()
+        state.update(current_module=5, module_step=1, completed_modules=[1, 2, 3, 4])
+        state["foundation_report"] = {"status": "confirmed"}
+        raw = decision(state)
+        replacements = ("医疗行业案例观察", "客户增长：哪些尝试成功，哪些失败")
+        for index, title in enumerate(replacements):
+            old_title = raw["profile_updates"][index]["value"]
+            raw["profile_updates"][index].update(value=title, evidence_quote="用户原话")
+            raw["draft"] = raw["draft"].replace(old_title, title)
+
+        with self.assertRaises(harness.HarnessError) as caught:
+            harness.apply_model_decision(state, raw, "用户原话")
+
+        error = str(caught.exception)
+        for term in ("医疗", "成功", "客户", "增长", "案例"):
+            self.assertIn(term, error)
+
     def test_semantically_duplicate_reply_does_not_repeat_the_draft(self):
         draft = "### 核心关键词\n- AI Agent 搭建\n- 问题拆解\n- 持续学习"
         reply = harness.render_model_reply({
