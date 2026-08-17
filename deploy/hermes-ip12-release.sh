@@ -22,12 +22,34 @@ PYTHON="${HERMES_PYTHON:-python3}"
 SUDO="${HERMES_SUDO-sudo}"
 LOCAL_HEALTH_URL="${HERMES_LOCAL_HEALTH_URL:-http://127.0.0.1:3102/healthz}"
 PUBLIC_HEALTH_URLS="${HERMES_PUBLIC_HEALTH_URLS:-https://huangquechuanmei.com/workbench/ip12/healthz http://129.204.166.13:3101/healthz}"
+HEALTH_ATTEMPTS="${HERMES_HEALTH_ATTEMPTS:-30}"
+HEALTH_RETRY_DELAY_SECONDS="${HERMES_HEALTH_RETRY_DELAY_SECONDS:-1}"
 MIGRATION_SCRIPT="$HERMES_RELEASE_DIR/scripts/migrate_hermes_artifacts.py"
 MIGRATION_MANIFEST="$DATA_DIR/.migrations/hermes-owner-artifacts-v1.json"
 backup="$BACKUP_ROOT/hermes-${HERMES_SHA}-$(date +%Y%m%d%H%M%S)"
 release_committed=0
 rollback_running=0
 ROLLBACK_FAILURE_EXIT=125
+
+case "$HEALTH_ATTEMPTS" in
+  ''|*[!0-9]*|0) echo "HERMES_HEALTH_ATTEMPTS must be a positive integer" >&2; exit 2 ;;
+esac
+case "$HEALTH_RETRY_DELAY_SECONDS" in
+  ''|*[!0-9]*) echo "HERMES_HEALTH_RETRY_DELAY_SECONDS must be a non-negative integer" >&2; exit 2 ;;
+esac
+
+health_probe() {
+  local url="$1"
+  local attempt=1
+  while test "$attempt" -le "$HEALTH_ATTEMPTS"; do
+    if curl -fsS "$url" >/dev/null 2>&1; then
+      return 0
+    fi
+    test "$attempt" -lt "$HEALTH_ATTEMPTS" || return 1
+    sleep "$HEALTH_RETRY_DELAY_SECONDS"
+    attempt=$((attempt + 1))
+  done
+}
 
 privileged() {
   if test -n "$SUDO"; then
@@ -150,7 +172,7 @@ rollback_release() {
     rollback_step "verify restored service state" \
       privileged systemctl is-active --quiet "$SERVICE"
     rollback_step "verify restored service health" \
-      curl -fsS "$LOCAL_HEALTH_URL" >/dev/null
+      health_probe "$LOCAL_HEALTH_URL"
   else
     rollback_step "restore inactive service state" privileged systemctl stop "$SERVICE"
   fi
@@ -251,7 +273,7 @@ privileged systemctl daemon-reload
 privileged systemd-analyze verify "$SYSTEMD_TARGET"
 test "$(
   cd "$APP_DIR"
-  "$PYTHON" -c \
+  HERMES_ENABLE_INTERNAL_TOOLS=1 "$PYTHON" -c \
     'from server import app; print(len({r.rule for r in app.url_map.iter_rules() if r.endpoint != "static"}))' \
     | tail -1
 )" = 76
@@ -259,10 +281,10 @@ privileged nginx -t
 privileged systemctl enable "$SERVICE"
 privileged systemctl restart "$SERVICE"
 privileged systemctl is-active --quiet "$SERVICE"
-curl -fsS "$LOCAL_HEALTH_URL" >/dev/null
+health_probe "$LOCAL_HEALTH_URL"
 privileged systemctl reload nginx
 for url in $PUBLIC_HEALTH_URLS; do
-  curl -fsS "$url" >/dev/null
+  health_probe "$url"
 done
 fail_if_requested health
 

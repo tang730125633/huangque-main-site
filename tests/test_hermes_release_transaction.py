@@ -166,6 +166,12 @@ esac
             "curl",
             """#!/usr/bin/env bash
 echo "curl $*" >> "$FAKE_COMMAND_LOG"
+if test "${FAKE_TRANSIENT_HEALTH:-}" = 1 \
+    && test "$*" = "-fsS http://public.test/healthz" \
+    && test ! -f "$FAKE_STATE/transient-health-seen"; then
+  touch "$FAKE_STATE/transient-health-seen"
+  exit 89
+fi
 if test "${HERMES_ROLLBACK_ACTIVE:-}" = 1 \
     && test "${HERMES_ROLLBACK_FAULT:-}" = curl \
     && test "$*" = "-fsS http://local.test/healthz"; then
@@ -203,7 +209,7 @@ exit 0
         path.write_text(content, encoding="utf-8", newline="\n")
         path.chmod(0o755)
 
-    def _run(self, fault, rollback_fault=""):
+    def _run(self, fault, rollback_fault="", extra_environment=None):
         environment = os.environ.copy()
         fake_path = str(self.bin) + os.pathsep + environment.get("PATH", "")
         environment.update(
@@ -224,12 +230,15 @@ exit 0
             HERMES_COMMAND_PATH=fake_path,
             HERMES_LOCAL_HEALTH_URL="http://local.test/healthz",
             HERMES_PUBLIC_HEALTH_URLS="http://public.test/healthz",
+            HERMES_HEALTH_ATTEMPTS="3",
+            HERMES_HEALTH_RETRY_DELAY_SECONDS="0",
             HERMES_FAULT_AFTER=fault,
             HERMES_ROLLBACK_FAULT=rollback_fault,
             FAKE_COMMAND_LOG=str(self.log),
             FAKE_STATE=str(self.state),
             PATH=fake_path,
         )
+        environment.update(extra_environment or {})
         return subprocess.run(
             ["bash", str(SCRIPT)],
             cwd=ROOT,
@@ -294,6 +303,18 @@ exit 0
 
     def test_rolls_back_when_health_gate_fails(self):
         self._assert_rolled_back("health")
+
+    def test_retries_a_transient_health_failure(self):
+        result = self._run("", extra_environment={"FAKE_TRANSIENT_HEALTH": "1"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        commands = self.log.read_text(encoding="utf-8")
+        self.assertEqual(commands.count("curl -fsS http://public.test/healthz"), 2)
+
+    def test_route_check_matches_the_systemd_internal_tools_environment(self):
+        self.assertIn(
+            'HERMES_ENABLE_INTERNAL_TOOLS=1 "$PYTHON" -c',
+            SCRIPT.read_text(encoding="utf-8"),
+        )
 
     def test_reports_manual_recovery_when_rollback_rsync_fails(self):
         commands = self._assert_rollback_failure(
