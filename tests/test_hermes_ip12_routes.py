@@ -553,8 +553,14 @@ assert all(
     if method in {"POST", "PUT", "PATCH", "DELETE"}
 )
 with patch.object(server, "MODEL", "deepseek-v4-flash"), patch.object(server.requests, "post") as request_model:
-    request_model.return_value.status_code = 200
-    server.call_ai([], response_format={"type": "json_schema", "json_schema": {"schema": {}}})
+    invalid_json = Mock(status_code=200)
+    invalid_json.json.return_value = {"choices": [{"message": {"content": '{"decision":'}}]}
+    valid_json = Mock(status_code=200)
+    valid_json.json.return_value = {"choices": [{"message": {"content": '{"decision":"answer_only"}'}}]}
+    request_model.side_effect = [invalid_json, valid_json]
+    response = server.call_ai([], response_format={"type": "json_schema", "json_schema": {"schema": {}}})
+    assert response is valid_json
+    assert request_model.call_count == 2
     assert request_model.call_args.kwargs["json"]["response_format"] == {"type": "json_object"}
 
 transitioned = parse_coach_state_updates(
