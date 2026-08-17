@@ -1022,7 +1022,9 @@ def _assert_expected_revision(state, expected_revision):
         raise coach_harness.HarnessConflict("页面状态已经变化，请刷新后重试")
 
 
-def _persist_model_turn(cid, user_message, snapshot_revision, raw_decision, evidence, prefix=""):
+def _persist_model_turn(
+    cid, user_message, snapshot_revision, raw_decision, evidence, prefix="", discard_pending=False
+):
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
         if convo is None:
@@ -1037,7 +1039,11 @@ def _persist_model_turn(cid, user_message, snapshot_revision, raw_decision, evid
             )
         else:
             next_state, decision, assistant = coach_harness.apply_model_decision(
-                state, raw_decision, evidence, pending_id=uuid.uuid4().hex
+                state,
+                raw_decision,
+                evidence,
+                pending_id=uuid.uuid4().hex,
+                discard_pending=discard_pending,
             )
         if prefix:
             assistant = prefix + "\n\n" + assistant
@@ -1104,42 +1110,65 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
                 if not persist_user:
                     raise
                 if retry_error == "模型档案更新缺少可回查的用户原话":
-                    recovery_reply = (
-                        "我刚才把你的一处表达改写成了你没有说过的事实，所以没有形成确认稿。"
-                        "你的原话已经保留，我也已经撤销那处改写。请直接回复“继续整理”，"
-                        "我会只依据你的原话重新生成，不需要你重述或补充。"
+                    recovery_prefix = (
+                        "我刚才错在反复使用了没有逐字依据的草稿；这份未确认稿已清除，"
+                        "我已按你的原话重新整理。"
                     )
+                    recovery_reply = "这次仍没能安全整理成稿。未确认草稿已清除，已确认资料和原话都保留；你可以自然继续，不需要固定口令。"
                 elif retry_error.startswith("确认稿包含未经证实"):
-                    recovery_reply = (
-                        "我刚才把尚未证实的身份、经历或结果写成了当前事实，所以没有把这版交给你确认。"
-                        "我已撤回夸大的内容，你的原话和已确认资料都保留。请回复“按真实资料重整”，"
-                        "我会改成有依据的当前事实、未来目标或候选方向，不需要你重述。"
+                    recovery_prefix = (
+                        "我刚才错在反复把尚未证实的身份、经历或结果写成当前事实；"
+                        "这份未确认稿已清除，我已按真实资料重新整理。"
                     )
+                    recovery_reply = "这次仍没能安全整理成稿。夸大的未确认草稿已清除，真实资料都保留；你可以自然继续，不需要固定口令。"
                 elif retry_error.startswith(("模块 5 ", "选题中的")):
-                    recovery_reply = (
-                        "我刚才有些选题没有直接的用户原话依据，所以没有把它们包装成真实经历或案例。"
-                        "这版已撤回，已确认的 3 个种类和你的原话都保留。请回复“按已有证据重整 3×10”，"
-                        "我会只在每个种类下面生成 10 个有依据的选题，不需要你重述。"
+                    recovery_prefix = (
+                        "我刚才错在反复使用了没有原话依据的选题草稿；这份未确认稿已清除，"
+                        "我已按确认的 3 个种类重新整理。"
                     )
+                    recovery_reply = "这次仍没能生成合格的 3×10 选题。未确认草稿已清除，已确认的 3 个种类和原话都保留；你可以自然继续，不需要固定口令。"
                 else:
                     raise
-                app.logger.warning("IP12 recovered invalid evidence after model retry: %s", retry_exc)
-                assistant, next_state = _persist_model_turn(
-                    cid,
-                    user_message if persist_user else "",
-                    snapshot_revision,
-                    {
-                        "decision": "ask_follow_up",
-                        "checkpoint": 0,
-                        "reply": recovery_reply,
-                        "draft": "",
-                        "self_review": "",
-                        "profile_updates": [],
-                        "confidence": 0,
-                    },
-                    user_message,
-                    prefix=prefix,
-                )
+                clean_snapshot = json.loads(json.dumps(snapshot, ensure_ascii=False))
+                clean_state = normalize_coach_state(clean_snapshot.get("coach_state"))
+                clean_state["pending"] = None
+                clean_snapshot["coach_state"] = clean_state
+                try:
+                    raw, evidence = _coach_model_decision(
+                        clean_snapshot,
+                        user_message,
+                        repair_error=retry_error + "；旧的未确认草稿已移出当前状态，请直接完成当前断点，不要要求固定回复口令",
+                    )
+                    assistant, next_state = _persist_model_turn(
+                        cid,
+                        user_message,
+                        snapshot_revision,
+                        raw,
+                        evidence,
+                        prefix="\n\n".join(item for item in (prefix, recovery_prefix) if item),
+                        discard_pending=True,
+                    )
+                except coach_harness.HarnessConflict:
+                    raise
+                except (coach_harness.HarnessError, RuntimeError, requests.RequestException) as final_exc:
+                    app.logger.warning("IP12 discarded invalid draft after final repair failed: %s", final_exc)
+                    assistant, next_state = _persist_model_turn(
+                        cid,
+                        user_message,
+                        snapshot_revision,
+                        {
+                            "decision": "answer_only",
+                            "checkpoint": 0,
+                            "reply": recovery_reply,
+                            "draft": "",
+                            "self_review": "",
+                            "profile_updates": [],
+                            "confidence": 0,
+                        },
+                        user_message,
+                        prefix=prefix,
+                        discard_pending=True,
+                    )
     except coach_harness.HarnessConflict:
         raise
     except (coach_harness.HarnessError, RuntimeError, requests.RequestException) as exc:

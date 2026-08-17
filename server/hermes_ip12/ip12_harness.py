@@ -621,8 +621,10 @@ def apply_intake_decision(value, raw, evidence_text):
     return state, decision, reply
 
 
-def apply_model_decision(value, raw, evidence_text, pending_id=None):
+def apply_model_decision(value, raw, evidence_text, pending_id=None, discard_pending=False):
     state = normalize_state(value)
+    if discard_pending:
+        state["pending"] = None
     candidate = deepcopy(raw) if isinstance(raw, dict) else raw
     if isinstance(candidate, dict):
         candidate_kind = str(candidate.get("decision") or "")
