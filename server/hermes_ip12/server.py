@@ -539,13 +539,23 @@ def call_ai(messages, stream=False, temperature=0.7, max_tokens=None, response_f
             if MODEL.lower().startswith("deepseek") and response_format.get("type") == "json_schema"
             else response_format
         )
-    resp = requests.post(f"{API_BASE}/chat/completions",
-        headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-        json=payload,
-        timeout=180, stream=stream)
-    if resp.status_code != 200:
-        raise Exception(f"API {resp.status_code}: {resp.text[:300]}")
-    return resp
+    validate_json = MODEL.lower().startswith("deepseek") and bool(response_format) and not stream
+    for attempt in range(2 if validate_json else 1):
+        resp = requests.post(f"{API_BASE}/chat/completions",
+            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=180, stream=stream)
+        if resp.status_code != 200:
+            raise Exception(f"API {resp.status_code}: {resp.text[:300]}")
+        if validate_json:
+            try:
+                content = (((resp.json().get("choices") or [{}])[0].get("message") or {}).get("content"))
+                json.loads(str(content or ""))
+            except Exception:
+                if attempt == 0:
+                    continue
+                raise Exception("API 200 但没有返回完整 JSON")
+        return resp
 
 def generate_module_report(convo_id, module_id):
     convo = load_conversation(convo_id)
