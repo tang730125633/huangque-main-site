@@ -79,7 +79,7 @@ class SeedanceUpscaleTests(unittest.TestCase):
              patch.object(video, "_download_xiaole_video", side_effect=exhausted):
             with self.assertRaises(video.CompletedVideoDownloadError) as caught:
                 video.gen_xiaole_video(self._body(
-                    _job_id=613, _username="tester", upscale=False,
+                    _job_id=9000999, _username="tester", upscale=False,
                 ))
         self.assertIs(caught.exception, exhausted)
 

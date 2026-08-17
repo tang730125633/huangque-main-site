@@ -84,16 +84,20 @@ class XiaoleVideoTests(unittest.TestCase):
             if len(requests) == 1:
                 self.assertIsNone(range_header)
                 return Response(
-                    payload, 200, {"Content-Length": str(len(payload)), "Content-Type": "video/mp4"},
+                    payload, 200, {
+                        "Content-Length": str(len(payload)),
+                        "Content-Type": "video/mp4", "ETag": '"version-1"',
+                    },
                     fail_after=split,
                 )
             self.assertEqual(range_header, "bytes=%d-" % split)
+            self.assertEqual(request.get_header("If-range"), '"version-1"')
             return Response(
                 payload[split:], 206,
                 {
                     "Content-Length": str(len(payload) - split),
                     "Content-Range": "bytes %d-%d/%d" % (split, len(payload) - 1, len(payload)),
-                    "Content-Type": "video/mp4",
+                    "Content-Type": "video/mp4", "ETag": '"version-1"',
                 },
             )
 
@@ -114,6 +118,57 @@ class XiaoleVideoTests(unittest.TestCase):
             self.assertEqual((output_root / result).read_bytes(), payload)
             self.assertEqual(len(requests), 2)
 
+    def test_completed_video_download_without_validator_restarts_from_zero(self):
+        first = b"\x00\x00\x00\x18ftypisom-object-a"
+        second = b"\x00\x00\x00\x18ftypisom-object-b"
+        split = 12
+        requests = []
+
+        class Response:
+            def __init__(self, body, fail_after=None):
+                self.body = body
+                self.fail_after = fail_after
+                self.offset = 0
+                self.status = 200
+                self.headers = {
+                    "Content-Length": str(len(body)), "Content-Type": "video/mp4",
+                }
+
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+
+            def read(self, size=-1):
+                if self.fail_after is not None and self.offset >= self.fail_after:
+                    raise ssl.SSLError("early eof")
+                end = len(self.body) if size < 0 else min(len(self.body), self.offset + size)
+                if self.fail_after is not None:
+                    end = min(end, self.fail_after)
+                chunk = self.body[self.offset:end]
+                self.offset = end
+                return chunk
+
+        def open_response(request, timeout=None):
+            self.assertEqual(timeout, 300)
+            requests.append(request)
+            self.assertIsNone(request.get_header("Range"))
+            return Response(first, split) if len(requests) == 1 else Response(second)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir)
+            (output_root / "video").mkdir()
+            with patch.object(self.video, "_xiaole_download_candidates", return_value=[
+                    ("https://cdn.example/video.mp4", {}, None)]), \
+                 patch.object(self.video.urllib.request, "urlopen", side_effect=open_response), \
+                 patch.object(self.video, "_out_path", side_effect=lambda rel: output_root / rel), \
+                 patch.object(self.video, "_validate_downloaded_video_file"), \
+                 patch.object(self.video, "_faststart_video_file", side_effect=lambda rel: rel), \
+                 patch.object(self.video.time, "sleep"):
+                result = self.video._download_xiaole_video(
+                    "https://cdn.example/video.mp4", "minimax_h3",
+                )
+            self.assertEqual((output_root / result).read_bytes(), second)
+            self.assertEqual(len(requests), 2)
+
     def test_completed_video_download_restarts_when_range_is_ignored(self):
         payload = b"\x00\x00\x00\x18ftypisomcomplete-video"
         split = 10
@@ -127,6 +182,7 @@ class XiaoleVideoTests(unittest.TestCase):
                 self.status = 200
                 self.headers = {
                     "Content-Length": str(len(body)), "Content-Type": "video/mp4",
+                    "ETag": '"version-1"',
                 }
 
             def __enter__(self): return self
@@ -188,8 +244,9 @@ class XiaoleVideoTests(unittest.TestCase):
                     )
             self.assertEqual(list((output_root / "video").iterdir()), [])
 
-    def test_completed_video_download_rejects_resource_change_during_resume(self):
-        payload = b"\x00\x00\x00\x18ftypisomvideo-payload"
+    def test_completed_video_download_restarts_after_resource_change(self):
+        first = b"\x00\x00\x00\x18ftypisom-object-a"
+        second = b"\x00\x00\x00\x18ftypisom-object-b"
 
         class Response:
             def __init__(self, body, status, headers, fail=False):
@@ -217,16 +274,22 @@ class XiaoleVideoTests(unittest.TestCase):
             self.assertEqual(timeout, 300)
             calls.append(request)
             if len(calls) == 1:
-                return Response(payload, 200, {
-                    "Content-Length": str(len(payload)), "Content-Type": "video/mp4",
+                return Response(first, 200, {
+                    "Content-Length": str(len(first)), "Content-Type": "video/mp4",
                     "ETag": '"version-1"',
                 }, fail=True)
-            self.assertEqual(request.get_header("Range"), "bytes=8-")
-            self.assertEqual(request.get_header("If-range"), '"version-1"')
-            return Response(payload[8:], 206, {
-                "Content-Length": str(len(payload) - 8),
-                "Content-Range": "bytes 8-%d/%d" % (len(payload) - 1, len(payload)),
-                "Content-Type": "video/mp4", "ETag": '"version-2"',
+            if len(calls) == 2:
+                self.assertEqual(request.get_header("Range"), "bytes=8-")
+                self.assertEqual(request.get_header("If-range"), '"version-1"')
+                return Response(second[8:], 206, {
+                    "Content-Length": str(len(second) - 8),
+                    "Content-Range": "bytes 8-%d/%d" % (len(second) - 1, len(second)),
+                    "Content-Type": "video/mp4", "ETag": '"version-2"',
+                })
+            self.assertIsNone(request.get_header("Range"))
+            return Response(second, 200, {
+                "Content-Length": str(len(second)), "Content-Type": "video/mp4",
+                "ETag": '"version-2"',
             })
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -236,18 +299,130 @@ class XiaoleVideoTests(unittest.TestCase):
                     ("https://cdn.example/video.mp4", {}, None)]), \
                  patch.object(self.video.urllib.request, "urlopen", side_effect=open_response), \
                  patch.object(self.video, "_out_path", side_effect=lambda rel: output_root / rel), \
+                 patch.object(self.video, "_validate_downloaded_video_file"), \
+                 patch.object(self.video, "_faststart_video_file", side_effect=lambda rel: rel), \
                  patch.object(self.video.time, "sleep"):
-                with self.assertRaisesRegex(
-                        self.video.CompletedVideoDownloadError, "版本发生变化"):
-                    self.video._download_xiaole_video(
-                        "https://cdn.example/video.mp4", "minimax_h3",
-                    )
-            self.assertEqual(list((output_root / "video").iterdir()), [])
+                result = self.video._download_xiaole_video(
+                    "https://cdn.example/video.mp4", "minimax_h3",
+                )
+            self.assertEqual((output_root / result).read_bytes(), second)
+            self.assertEqual(len(calls), 3)
+
+    def test_completed_video_download_restarts_after_unknown_range_total(self):
+        payload = b"\x00\x00\x00\x18ftypisomcomplete-video"
+        calls = []
+
+        class Response:
+            def __init__(self, body, status, headers):
+                self.body = body
+                self.status = status
+                self.headers = headers
+                self.offset = 0
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def read(self, size=-1):
+                end = len(self.body) if size < 0 else min(len(self.body), self.offset + size)
+                chunk = self.body[self.offset:end]
+                self.offset = end
+                return chunk
+
+        def open_response(request, timeout=None):
+            self.assertEqual(timeout, 300)
+            calls.append(request)
+            self.assertIsNone(request.get_header("Range"))
+            if len(calls) == 1:
+                return Response(payload[:12], 206, {
+                    "Content-Length": "12", "Content-Range": "bytes 0-11/*",
+                    "Content-Type": "video/mp4", "ETag": '"version-1"',
+                })
+            return Response(payload, 200, {
+                "Content-Length": str(len(payload)), "Content-Type": "video/mp4",
+                "ETag": '"version-1"',
+            })
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir)
+            (output_root / "video").mkdir()
+            with patch.object(self.video, "_xiaole_download_candidates", return_value=[
+                    ("https://cdn.example/video.mp4", {}, None)]), \
+                 patch.object(self.video.urllib.request, "urlopen", side_effect=open_response), \
+                 patch.object(self.video, "_out_path", side_effect=lambda rel: output_root / rel), \
+                 patch.object(self.video, "_validate_downloaded_video_file"), \
+                 patch.object(self.video, "_faststart_video_file", side_effect=lambda rel: rel), \
+                 patch.object(self.video.time, "sleep"):
+                result = self.video._download_xiaole_video(
+                    "https://cdn.example/video.mp4", "minimax_h3",
+                )
+            self.assertEqual((output_root / result).read_bytes(), payload)
+            self.assertEqual(len(calls), 2)
+
+    def test_completed_video_download_restarts_after_wrong_content_range(self):
+        payload = b"\x00\x00\x00\x18ftypisomcomplete-video"
+        split = 12
+        calls = []
+
+        class Response:
+            def __init__(self, body, status, headers, fail_after=None):
+                self.body = body
+                self.status = status
+                self.headers = headers
+                self.fail_after = fail_after
+                self.offset = 0
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def read(self, size=-1):
+                if self.fail_after is not None and self.offset >= self.fail_after:
+                    raise ssl.SSLError("early eof")
+                end = len(self.body) if size < 0 else min(len(self.body), self.offset + size)
+                if self.fail_after is not None:
+                    end = min(end, self.fail_after)
+                chunk = self.body[self.offset:end]
+                self.offset = end
+                return chunk
+
+        def open_response(request, timeout=None):
+            self.assertEqual(timeout, 300)
+            calls.append(request)
+            if len(calls) == 1:
+                return Response(payload, 200, {
+                    "Content-Length": str(len(payload)), "Content-Type": "video/mp4",
+                    "ETag": '"version-1"',
+                }, fail_after=split)
+            if len(calls) == 2:
+                self.assertEqual(request.get_header("Range"), "bytes=%d-" % split)
+                return Response(payload[split:], 206, {
+                    "Content-Length": str(len(payload) - split),
+                    "Content-Range": "bytes %d-%d/%d" % (
+                        split + 1, len(payload) - 1, len(payload)
+                    ),
+                    "Content-Type": "video/mp4", "ETag": '"version-1"',
+                })
+            self.assertIsNone(request.get_header("Range"))
+            return Response(payload, 200, {
+                "Content-Length": str(len(payload)), "Content-Type": "video/mp4",
+                "ETag": '"version-1"',
+            })
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir)
+            (output_root / "video").mkdir()
+            with patch.object(self.video, "_xiaole_download_candidates", return_value=[
+                    ("https://cdn.example/video.mp4", {}, None)]), \
+                 patch.object(self.video.urllib.request, "urlopen", side_effect=open_response), \
+                 patch.object(self.video, "_out_path", side_effect=lambda rel: output_root / rel), \
+                 patch.object(self.video, "_validate_downloaded_video_file"), \
+                 patch.object(self.video, "_faststart_video_file", side_effect=lambda rel: rel), \
+                 patch.object(self.video.time, "sleep"):
+                result = self.video._download_xiaole_video(
+                    "https://cdn.example/video.mp4", "minimax_h3",
+                )
+            self.assertEqual((output_root / result).read_bytes(), payload)
+            self.assertEqual(len(calls), 3)
 
     def test_exhausted_completed_video_download_is_terminal_not_requeued(self):
         with patch.object(self.video, "recover_official_video_paid_job") as recover:
             held = self.video.recover_paid_video_error(
-                613, "xiaole_video", {"channel": "minimax"},
+                9000999, "xiaole_video", {"channel": "minimax"},
                 self.video.CompletedVideoDownloadError("download exhausted"),
                 requeue=Mock(),
             )
@@ -917,6 +1092,46 @@ class XiaoleVideoTests(unittest.TestCase):
             recover.assert_called_once()
             terminal.assert_not_called()
             refund.assert_not_called()
+
+    def test_core_completed_download_exhaustion_fails_and_refunds_once(self):
+        from content_domains import core
+
+        class Connection:
+            def execute(self, *_args):
+                return self
+            def fetchone(self):
+                return {
+                    "id": 9000999, "kind": "xiaole_video", "username": "u",
+                    "cost": 30,
+                    "payload": json.dumps({"channel": "minimax"}),
+                    "status": "pending",
+                }
+            def close(self):
+                pass
+
+        handler = Mock(side_effect=self.video.CompletedVideoDownloadError(
+            "bounded download exhausted"
+        ))
+        claim_running = Mock(side_effect=[True, False])
+        set_terminal = Mock(return_value=True)
+        refund = Mock(return_value=True)
+        failed_asset = Mock()
+        with patch.object(core, "jdb", return_value=Connection()), \
+             patch.object(core.jobs_store, "claim_running", claim_running), \
+             patch.object(core, "_start_job_heartbeat", return_value=Mock()), \
+             patch.object(core, "HANDLERS", {"xiaole_video": handler}), \
+             patch.object(core, "_domains", return_value=(None, None, self.video)), \
+             patch.object(core, "_set_terminal", set_terminal), \
+             patch.object(core, "_refund_once", refund), \
+             patch.object(core, "_mark_video_asset_failed", failed_asset):
+            core.run_job(9000999)
+            core.run_job(9000999)
+
+        handler.assert_called_once()
+        set_terminal.assert_called_once()
+        refund.assert_called_once_with(9000999, "u", 30)
+        failed_asset.assert_called_once()
+        self.assertEqual(claim_running.call_count, 2)
 
     def test_definite_xai_create_rejection_is_not_held(self):
         from content_domains import video_xai

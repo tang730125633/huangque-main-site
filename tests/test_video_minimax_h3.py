@@ -127,7 +127,7 @@ class MiniMaxH3VideoTests(unittest.TestCase):
                 patch.object(video, "_download_xiaole_video", side_effect=exhausted):
             with self.assertRaises(video.CompletedVideoDownloadError) as caught:
                 video.gen_xiaole_video({
-                    "_job_id": 613, "channel": "minimax", "prompt": "actor opens door",
+                    "_job_id": 9000999, "channel": "minimax", "prompt": "actor opens door",
                     "model": "MiniMax-H3", "duration": 5, "ratio": "9:16",
                     "resolution": "2k", "reference_images": [],
                 })

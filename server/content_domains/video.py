@@ -4906,6 +4906,10 @@ class CompletedVideoDownloadError(RuntimeError):
     """Provider completed, but the bounded local output transfer did not."""
 
 
+class _RestartCompletedVideoDownload(RuntimeError):
+    """The partial file cannot be trusted and must be downloaded from byte zero."""
+
+
 _CONTENT_RANGE_RE = re.compile(r"bytes\s+(\d+)-(\d+)/(\d+|\*)\Z", re.I)
 
 
@@ -4953,13 +4957,28 @@ def _xiaole_response_plan(response, offset, max_bytes):
     if status == 206:
         match = _CONTENT_RANGE_RE.fullmatch(str(headers.get("Content-Range") or "").strip())
         if not match or int(match.group(1)) != offset:
-            raise ValueError("视频断点续传响应的 Content-Range 不匹配")
+            raise _RestartCompletedVideoDownload(
+                "视频断点续传响应的 Content-Range 不匹配"
+            )
         start, end = int(match.group(1)), int(match.group(2))
         if end < start:
-            raise ValueError("视频断点续传响应的 Content-Range 无效")
+            raise _RestartCompletedVideoDownload(
+                "视频断点续传响应的 Content-Range 无效"
+            )
         if declared is not None and declared != end - start + 1:
-            raise ValueError("视频断点续传响应长度不一致")
-        expected_total = None if match.group(3) == "*" else int(match.group(3))
+            raise _RestartCompletedVideoDownload(
+                "视频断点续传响应长度不一致"
+            )
+        if match.group(3) == "*":
+            raise _RestartCompletedVideoDownload(
+                "视频断点续传响应缺少远端总长度"
+            )
+        expected_total = int(match.group(3))
+        if end >= expected_total:
+            if end != expected_total - 1:
+                raise _RestartCompletedVideoDownload(
+                    "视频断点续传响应的远端总长度无效"
+                )
         append = bool(offset)
     elif offset:
         if status == 200:
@@ -4984,6 +5003,18 @@ def _stream_xiaole_download(opener_open, fetch_url, headers, temporary, max_byte
     validator = ""
     for attempt in range(max(1, _xiaole_dl_retries)):
         offset = temporary.stat().st_size if temporary.is_file() else 0
+        if offset and not validator:
+            # A byte range alone cannot prove that two responses are the same
+            # object. Without a strong ETag or Last-Modified, discard the
+            # partial and retry a full GET instead of stitching versions.
+            try:
+                temporary.unlink()
+            except OSError as error:
+                raise CompletedVideoDownloadError(
+                    "视频下载临时文件无法安全重置"
+                ) from error
+            offset = 0
+            known_total = None
         request_headers = dict(headers or {})
         if offset:
             request_headers["Range"] = "bytes=%d-" % offset
@@ -4997,9 +5028,13 @@ def _stream_xiaole_download(opener_open, fetch_url, headers, temporary, max_byte
                     response, offset, max_bytes
                 )
                 if append and known_total is not None and expected_total not in {None, known_total}:
-                    raise ValueError("视频断点续传期间远端文件大小发生变化")
+                    raise _RestartCompletedVideoDownload(
+                        "视频断点续传期间远端文件大小发生变化"
+                    )
                 if append and validator and response_validator and response_validator != validator:
-                    raise ValueError("视频断点续传期间远端文件版本发生变化")
+                    raise _RestartCompletedVideoDownload(
+                        "视频断点续传期间远端文件版本发生变化"
+                    )
                 if not append:
                     known_total = expected_total
                     validator = response_validator
@@ -5029,6 +5064,21 @@ def _stream_xiaole_download(opener_open, fetch_url, headers, temporary, max_byte
                 if total <= 0:
                     raise RuntimeError("视频下载为空")
                 return total
+        except _RestartCompletedVideoDownload as error:
+            last_error = error
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                raise CompletedVideoDownloadError(
+                    "视频下载临时文件无法安全重置"
+                ) from cleanup_error
+            known_total = None
+            validator = ""
+            print("[video] 下载对象变化，已丢弃临时文件并从零重试(%d/%d): %s" % (
+                attempt + 1, max(1, _xiaole_dl_retries), str(error)[:100]
+            ), flush=True)
+            if attempt + 1 < max(1, _xiaole_dl_retries):
+                time.sleep(3 * (attempt + 1))
         except ValueError:
             raise
         except Exception as error:
