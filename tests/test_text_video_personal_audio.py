@@ -201,6 +201,41 @@ class TextVideoPersonalAudioTests(unittest.TestCase):
         self.assertEqual(video_body["talking_material"]["scenes"][0]["scene_id"],
                          "scene_01")
 
+    def test_long_personal_scene_synthesizes_once_but_keeps_caption_cues(self):
+        long_text = "所以轩和堂做这件事，并不是为了追风口，是为了让门店效果可验证。"
+        payload = {
+            "text": long_text,
+            "mode": "fixed",
+            "template": "1080x1920/image_default.html",
+            "style": "realistic_commercial",
+            "n_scenes": 1,
+            "scenes": [{"line": long_text, "scene_id": "scene_01"}],
+            "speech_rate": 1.0,
+            "voice_scope": "personal",
+            "voice_key": "vip_alice",
+            "_username": "alice",
+            "_job_id": 74,
+        }
+        asset_id = "audio_" + "3" * 32
+        with patch.object(
+            audio, "synthesize_owned_voice_segment",
+            return_value={"content": b"mp3", "content_type": "audio/mpeg"},
+        ) as synth, patch.object(
+            pixelle_video, "_binary_request",
+            return_value={"asset_id": asset_id},
+        ) as upload:
+            segments = pixelle_video._personal_narration_segments(payload)
+
+        synth.assert_called_once()
+        self.assertEqual(long_text, synth.call_args.args[2])
+        upload.assert_called_once()
+        self.assertEqual(asset_id, segments[0]["audio_asset_id"])
+        self.assertGreater(len(segments[0]["caption_cues"]), 1)
+        self.assertEqual(
+            long_text,
+            "".join(cue["text"] for cue in segments[0]["caption_cues"]),
+        )
+
     def test_nine_scene_personal_adapter_uploads_two_avatars_without_extra_tts(self):
         avatar_a = "local_avatar_" + "a" * 32
         avatar_b = "local_avatar_" + "b" * 32

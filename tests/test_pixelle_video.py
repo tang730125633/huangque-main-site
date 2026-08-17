@@ -1163,18 +1163,20 @@ class PixelleVideoTests(unittest.TestCase):
             ],
         )
         self.assertEqual(upload.call_count, 2)
-        self.assertEqual(upload.call_args_list[0].args[3], "text-video-52-0-0")
+        self.assertEqual(upload.call_args_list[0].args[3], "text-video-52-0")
         video_body = request.call_args_list[-1].args[2]
         self.assertEqual(video_body["mode"], "fixed")
         self.assertEqual(video_body["text"], "第一句\n\n第二句")
         self.assertEqual(video_body["narration_segments"], [
             {
                 "text": "第一句",
-                "cues": [{"text": "第一句", "audio_asset_id": "audio_" + "a" * 32}],
+                "audio_asset_id": "audio_" + "a" * 32,
+                "caption_cues": [{"text": "第一句"}],
             },
             {
                 "text": "第二句",
-                "cues": [{"text": "第二句", "audio_asset_id": "audio_" + "b" * 32}],
+                "audio_asset_id": "audio_" + "b" * 32,
+                "caption_cues": [{"text": "第二句"}],
             },
         ])
         self.assertNotIn("voice_id", video_body)
@@ -1196,8 +1198,7 @@ class PixelleVideoTests(unittest.TestCase):
             "_username": "alice",
             "_job_id": 53,
         }
-        cue_texts = self.pixelle._split_caption_text(scene_text)
-        asset_ids = ["audio_" + format(index + 1, "032x") for index in range(len(cue_texts))]
+        asset_id = "audio_" + "1" * 32
 
         with mock.patch.object(
             self.pixelle.audio_domain,
@@ -1206,7 +1207,7 @@ class PixelleVideoTests(unittest.TestCase):
         ) as synth, mock.patch.object(
             self.pixelle,
             "_binary_request",
-            side_effect=[{"asset_id": asset_id} for asset_id in asset_ids],
+            return_value={"asset_id": asset_id},
         ), mock.patch.object(
             self.pixelle,
             "_json_request",
@@ -1219,15 +1220,23 @@ class PixelleVideoTests(unittest.TestCase):
         self.assertEqual(body["text"], scene_text)
         self.assertEqual(len(body["narration_segments"]), 1)
         self.assertEqual(
-            "".join(cue["text"] for cue in body["narration_segments"][0]["cues"]),
+            "".join(
+                cue["text"]
+                for cue in body["narration_segments"][0]["caption_cues"]
+            ),
             scene_text,
         )
-        self.assertGreater(len(body["narration_segments"][0]["cues"]), 1)
+        self.assertEqual(
+            body["narration_segments"][0]["audio_asset_id"], asset_id
+        )
+        self.assertGreater(len(body["narration_segments"][0]["caption_cues"]), 1)
         self.assertTrue(all(
             self.pixelle._display_units(cue["text"]) <= 28
-            for cue in body["narration_segments"][0]["cues"]
+            for cue in body["narration_segments"][0]["caption_cues"]
         ))
-        self.assertEqual(synth.call_count, len(cue_texts))
+        synth.assert_called_once_with(
+            "alice", "vip_ready", scene_text, speed=1.0
+        )
 
     def test_caption_splitter_packs_short_fragments_before_cue_limit(self):
         for text in (

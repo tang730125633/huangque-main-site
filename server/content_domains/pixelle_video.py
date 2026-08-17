@@ -1005,27 +1005,29 @@ def _personal_narration_segments(payload):
         raise ValueError("个人音色任务缺少用户或音色信息")
     segments = []
     for scene_index, text in enumerate(_personal_narrations(payload)):
-        cues = []
-        for cue_index, cue_text in enumerate(_split_caption_text(text)):
-            audio = audio_domain.synthesize_owned_voice_segment(
-                username,
-                voice_key,
-                cue_text,
-                speed=payload.get("speech_rate", 1.0),
-            )
-            request_id = "text-video-%s-%d-%d" % (
-                payload.get("_job_id") or "pending",
-                scene_index,
-                cue_index,
-            )
-            uploaded = _binary_request(
-                "POST", "/api/audio-assets", audio["content"], request_id
-            )
-            asset_id = str(uploaded.get("asset_id") or "").strip()
-            if not re.fullmatch(r"audio_[0-9a-f]{32}", asset_id):
-                raise RuntimeError("个人配音上传未返回有效资源 ID")
-            cues.append({"text": cue_text, "audio_asset_id": asset_id})
-        segments.append({"text": text, "cues": cues})
+        audio = audio_domain.synthesize_owned_voice_segment(
+            username,
+            voice_key,
+            text,
+            speed=payload.get("speech_rate", 1.0),
+        )
+        request_id = "text-video-%s-%d" % (
+            payload.get("_job_id") or "pending",
+            scene_index,
+        )
+        uploaded = _binary_request(
+            "POST", "/api/audio-assets", audio["content"], request_id
+        )
+        asset_id = str(uploaded.get("asset_id") or "").strip()
+        if not re.fullmatch(r"audio_[0-9a-f]{32}", asset_id):
+            raise RuntimeError("个人配音上传未返回有效资源 ID")
+        segments.append({
+            "text": text,
+            "audio_asset_id": asset_id,
+            "caption_cues": [
+                {"text": cue_text} for cue_text in _split_caption_text(text)
+            ],
+        })
     return segments
 
 
