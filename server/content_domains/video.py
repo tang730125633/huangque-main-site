@@ -71,6 +71,10 @@ XIAOLE_MAX_WAIT = int(os.environ.get("XIAOLEVIDEO_TIMEOUT", "600"))
 XIAOLE_POLL_INTERVAL = int(os.environ.get("XIAOLEVIDEO_POLL_INTERVAL", "5"))
 _xiaole_429_retries = int(os.environ.get("XIAOLEVIDEO_429_RETRIES", "5"))   # 并发限流(429)退避重试次数
 _xiaole_dl_retries = int(os.environ.get("XIAOLEVIDEO_DL_RETRIES", "3"))     # 下载中断重试次数
+XIAOLE_VIDEO_DOWNLOAD_MAX_BYTES = _env_positive_int(
+    "XIAOLEVIDEO_DOWNLOAD_MAX_BYTES", VIDEO_IMPORT_MAX_BYTES
+)
+XIAOLE_VIDEO_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
 # 页面渠道 → 模型 id（前端传 channel，后端定 model，避免任意模型注入）
 XIAOLE_CHANNEL_MODELS = {
     "grok": "Grok Image Video",   # 果肉视频（Grok Video 1.0：文生/图生视频）
@@ -2299,6 +2303,7 @@ def recover_paid_video_error(job_id, kind, payload, error, requeue=None,
         return False
     from . import video_gemini_omni, video_minimax_h3, video_seedance, video_xai, wavespeed
     if isinstance(error, (
+            CompletedVideoDownloadError,
             video_xai.XaiCreateUnavailableError,
             video_xai.XaiCreateRejected,
             video_xai.XaiProviderFailed,
@@ -4897,6 +4902,153 @@ class _PublicVideoRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+class CompletedVideoDownloadError(RuntimeError):
+    """Provider completed, but the bounded local output transfer did not."""
+
+
+_CONTENT_RANGE_RE = re.compile(r"bytes\s+(\d+)-(\d+)/(\d+|\*)\Z", re.I)
+
+
+def _response_status(response):
+    try:
+        return int(response.getcode())
+    except (AttributeError, TypeError, ValueError):
+        try:
+            return int(response.status)
+        except (AttributeError, TypeError, ValueError):
+            return 200
+
+
+def _header_int(headers, name):
+    value = headers.get(name) if headers else None
+    if value in (None, ""):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError("视频下载响应的 %s 无效" % name) from error
+    if parsed < 0:
+        raise ValueError("视频下载响应的 %s 无效" % name)
+    return parsed
+
+
+def _download_validator(headers):
+    etag = str(headers.get("ETag") or "").strip() if headers else ""
+    if etag and not etag.lower().startswith("w/"):
+        return etag
+    return str(headers.get("Last-Modified") or "").strip() if headers else ""
+
+
+def _xiaole_response_plan(response, offset, max_bytes):
+    headers = getattr(response, "headers", {}) or {}
+    status = _response_status(response)
+    content_type = str(headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+    if content_type.startswith("text/") or content_type in {
+            "application/json", "application/xml", "application/xhtml+xml"}:
+        raise ValueError("视频下载返回了非视频内容: %s" % content_type)
+
+    declared = _header_int(headers, "Content-Length")
+    append = False
+    expected_total = declared
+    if status == 206:
+        match = _CONTENT_RANGE_RE.fullmatch(str(headers.get("Content-Range") or "").strip())
+        if not match or int(match.group(1)) != offset:
+            raise ValueError("视频断点续传响应的 Content-Range 不匹配")
+        start, end = int(match.group(1)), int(match.group(2))
+        if end < start:
+            raise ValueError("视频断点续传响应的 Content-Range 无效")
+        if declared is not None and declared != end - start + 1:
+            raise ValueError("视频断点续传响应长度不一致")
+        expected_total = None if match.group(3) == "*" else int(match.group(3))
+        append = bool(offset)
+    elif offset:
+        if status == 200:
+            # The CDN ignored Range. Restart safely instead of appending a full
+            # response to the partial file.
+            offset = 0
+        else:
+            raise ValueError("视频断点续传返回了 HTTP %d" % status)
+    elif status not in {200, 206}:
+        raise ValueError("视频下载返回了 HTTP %d" % status)
+
+    if expected_total is not None and expected_total > max_bytes:
+        raise ValueError("视频下载文件超过大小限制")
+    if declared is not None and offset + declared > max_bytes:
+        raise ValueError("视频下载文件超过大小限制")
+    return append, offset, declared, expected_total, _download_validator(headers)
+
+
+def _stream_xiaole_download(opener_open, fetch_url, headers, temporary, max_bytes):
+    last_error = None
+    known_total = None
+    validator = ""
+    for attempt in range(max(1, _xiaole_dl_retries)):
+        offset = temporary.stat().st_size if temporary.is_file() else 0
+        request_headers = dict(headers or {})
+        if offset:
+            request_headers["Range"] = "bytes=%d-" % offset
+            if validator:
+                request_headers["If-Range"] = validator
+        expected_total = None
+        try:
+            request = urllib.request.Request(fetch_url, headers=request_headers)
+            with opener_open(request, timeout=300) as response:
+                append, offset, declared, expected_total, response_validator = _xiaole_response_plan(
+                    response, offset, max_bytes
+                )
+                if append and known_total is not None and expected_total not in {None, known_total}:
+                    raise ValueError("视频断点续传期间远端文件大小发生变化")
+                if append and validator and response_validator and response_validator != validator:
+                    raise ValueError("视频断点续传期间远端文件版本发生变化")
+                if not append:
+                    known_total = expected_total
+                    validator = response_validator
+                else:
+                    known_total = known_total if known_total is not None else expected_total
+                    validator = validator or response_validator
+                received = 0
+                with temporary.open("ab" if append else "wb") as output:
+                    while True:
+                        remaining = max_bytes - (offset + received)
+                        chunk = response.read(min(
+                            XIAOLE_VIDEO_DOWNLOAD_CHUNK_BYTES, remaining + 1
+                        ))
+                        if not chunk:
+                            break
+                        output.write(chunk)
+                        received += len(chunk)
+                        if offset + received > max_bytes:
+                            raise ValueError("视频下载文件超过大小限制")
+                    output.flush()
+                    os.fsync(output.fileno())
+                if declared is not None and received != declared:
+                    raise OSError("视频下载提前结束: %d/%d 字节" % (received, declared))
+                total = temporary.stat().st_size
+                if expected_total is not None and total != expected_total:
+                    raise OSError("视频下载不完整: %d/%d 字节" % (total, expected_total))
+                if total <= 0:
+                    raise RuntimeError("视频下载为空")
+                return total
+        except ValueError:
+            raise
+        except Exception as error:
+            # Some TLS stacks raise after delivering the final bytes. When the
+            # authenticated HTTP length is already complete, keep the file.
+            if (expected_total is not None and temporary.is_file()
+                    and temporary.stat().st_size == expected_total):
+                return expected_total
+            last_error = error
+            print("[video] 下载失败重试(%d/%d): %s" % (
+                attempt + 1, max(1, _xiaole_dl_retries), str(error)[:100]
+            ), flush=True)
+            if attempt + 1 < max(1, _xiaole_dl_retries):
+                time.sleep(3 * (attempt + 1))
+    raise CompletedVideoDownloadError(
+        "视频下载在有限重试后仍失败: %s"
+        % (str(last_error)[:160] if last_error else "未知")
+    )
+
+
 def _download_xiaole_video(
         url, prefix="xiaole", origin_headers=None, public_only=False):
     # 视频 CDN 多在海外(如 vidgen.x.ai)，国内直连不通。成片下载是 GET(幂等)，故可多档尝试：
@@ -4909,43 +5061,54 @@ def _download_xiaole_video(
         url, egress.preferred_proxy(), origin_headers=origin_headers,
         direct_first=public_only,
     )
-    # 下载中断(IncompleteRead/网络抖动)自动重试；前一档耗尽后换下一档
-    data = None
+    # Stream to an unguessable same-directory temporary file. A partial TLS
+    # response is resumed with a validated Range request and never published.
+    filename = "video/%s_%s.mp4" % (prefix, uuid.uuid4().hex)
+    target = _out_path(filename)
+    temporary = target.with_name(target.name + ".part-" + uuid.uuid4().hex)
+    completed = False
     last_err = None
-    for fetch_url, headers, proxy in candidates:
-        if data is not None:
-            break
-        if public_only:
-            proxy_handler = urllib.request.ProxyHandler(
-                {"http": proxy, "https": proxy} if proxy else None
-            )
-            opener_open = urllib.request.build_opener(
-                proxy_handler, _PublicVideoRedirect()
-            ).open
-        else:
-            opener_open = (
-                egress._opener(proxy).open if proxy else urllib.request.urlopen
-            )
-        for attempt in range(_xiaole_dl_retries):
+    try:
+        for fetch_url, headers, proxy in candidates:
             try:
-                req = urllib.request.Request(fetch_url, headers=headers)
-                with opener_open(req, timeout=300) as r:
-                    buf = r.read()
-                if buf:
-                    data = buf
-                    break
-                last_err = RuntimeError("下载为空")
-            except Exception as e:
-                last_err = e
-                print("[video] 下载失败重试(%d/%d): %s" % (attempt + 1, _xiaole_dl_retries, str(e)[:100]), flush=True)
-                time.sleep(3 * (attempt + 1))
-    if data is None:
-        raise RuntimeError("视频下载失败: %s" % (str(last_err)[:120] if last_err else "未知"))
-    if not data:
-        raise RuntimeError("视频下载失败")
-    fn = "video/%s_%s.mp4" % (prefix, uuid.uuid4().hex)  # 不可猜键：防枚举
-    _out_path(fn).write_bytes(data)
-    return _faststart_video_file(fn)
+                if public_only:
+                    proxy_handler = urllib.request.ProxyHandler(
+                        {"http": proxy, "https": proxy} if proxy else None
+                    )
+                    opener_open = urllib.request.build_opener(
+                        proxy_handler, _PublicVideoRedirect()
+                    ).open
+                else:
+                    opener_open = (
+                        egress._opener(proxy).open if proxy else urllib.request.urlopen
+                    )
+                _stream_xiaole_download(
+                    opener_open, fetch_url, headers, temporary,
+                    XIAOLE_VIDEO_DOWNLOAD_MAX_BYTES,
+                )
+                _validate_downloaded_video_file(temporary)
+                temporary.replace(target)
+                completed = True
+                return _faststart_video_file(filename)
+            except ValueError as error:
+                # Invalid HTTP metadata/content is deterministic and must not be
+                # retried through another route as if it were a network flap.
+                raise CompletedVideoDownloadError(str(error)) from error
+            except CompletedVideoDownloadError as error:
+                last_err = error
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        raise CompletedVideoDownloadError(
+            "视频下载失败: %s" % (str(last_err)[:160] if last_err else "未知")
+        )
+    finally:
+        if not completed:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 def _xiaole_size_for_ratio(ratio):
     return XIAOLE_RATIO_SIZES.get(str(ratio or "").strip(), XIAOLE_RATIO_SIZES["9:16"])
@@ -5355,6 +5518,8 @@ def gen_xiaole_video(payload):
             )
         try:
             video_file = _download_xiaole_video(source_url, "seedance")
+        except CompletedVideoDownloadError:
+            raise
         except RuntimeError as exc:
             if str(exc).startswith("视频下载失败"):
                 raise video_seedance.TransientSeedanceError(str(exc)) from exc
@@ -5416,6 +5581,8 @@ def gen_xiaole_video(payload):
                 video_file = _download_xiaole_video(
                     upscale_source_url, "seedance_upscale", public_only=True
                 )
+            except CompletedVideoDownloadError:
+                raise
             except RuntimeError as exc:
                 if str(exc).startswith("视频下载失败"):
                     raise wavespeed.WaveSpeedTransientRead(str(exc)) from exc
@@ -5589,6 +5756,10 @@ def gen_xiaole_video(payload):
             )
         try:
             video_file = _download_xiaole_video(source_url, "minimax_h3")
+        except CompletedVideoDownloadError:
+            # Provider generation is already complete and all bounded GET/resume
+            # routes were exhausted. End/refund instead of requeueing forever.
+            raise
         except RuntimeError as exc:
             if str(exc).startswith("视频下载失败"):
                 raise video_minimax_h3.TransientMiniMaxError(str(exc)) from exc

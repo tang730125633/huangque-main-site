@@ -112,6 +112,81 @@ class MiniMaxH3VideoTests(unittest.TestCase):
         self.assertEqual(result["provider_video_id"], "h3-task-1")
         self.assertEqual(result["provider"], "minimax_h3_cn")
 
+    def test_shared_video_download_exhaustion_is_not_wrapped_as_transient(self):
+        rendered = {
+            "request_id": "h3-task-1", "source_video_url": "https://cdn.example/h3.mp4",
+            "model": "MiniMax-H3", "duration": 5, "ratio": "9:16",
+            "resolution": "2k", "provider": "minimax_h3_cn",
+        }
+        exhausted = video.CompletedVideoDownloadError("bounded download exhausted")
+        with patch.object(video, "get_resumable_grok_request", return_value=None), \
+                patch.object(video.provider_keys, "claim_candidate", return_value={"id": "mm-key", "secret": "secret"}), \
+                patch.object(video.provider_keys, "set_health"), \
+                patch.object(video, "update_video_asset_phase"), \
+                patch.object(video_minimax_h3, "generate", return_value=rendered), \
+                patch.object(video, "_download_xiaole_video", side_effect=exhausted):
+            with self.assertRaises(video.CompletedVideoDownloadError) as caught:
+                video.gen_xiaole_video({
+                    "_job_id": 613, "channel": "minimax", "prompt": "actor opens door",
+                    "model": "MiniMax-H3", "duration": 5, "ratio": "9:16",
+                    "resolution": "2k", "reference_images": [],
+                })
+        self.assertIs(caught.exception, exhausted)
+
+    def test_shared_new_job_submission_uses_persisted_metaso_origin(self):
+        rendered = {
+            "request_id": "h3-task-new", "source_video_url": "https://cdn.example/new.mp4",
+            "model": "MiniMax-H3", "duration": 5, "ratio": "16:9",
+            "resolution": "2k", "provider": "minimax_h3_cn",
+        }
+        with patch.object(video, "get_resumable_grok_request", return_value=None), \
+                patch.object(video.provider_keys, "claim_candidate", return_value={"id": "mm-key", "secret": "secret"}), \
+                patch.object(video.provider_keys, "set_health"), \
+                patch.object(video, "update_video_asset_phase"), \
+                patch.object(video_minimax_h3, "generate", return_value=rendered) as generate, \
+                patch.object(video, "_download_xiaole_video", return_value="video/new.mp4"), \
+                patch.object(video, "_extract_first_frame_cover", return_value=None), \
+                patch.object(video, "public_url", return_value="https://cos.example/new.mp4"):
+            video.gen_xiaole_video({
+                "_job_id": 9, "channel": "minimax", "prompt": "a ship leaves the port",
+                "model": "MiniMax-H3", "duration": 5, "ratio": "16:9",
+                "resolution": "2k", "reference_images": [],
+                "_minimax_api_base": video_minimax_h3.API_BASE,
+            })
+        self.assertEqual(video_minimax_h3.API_BASE, generate.call_args.kwargs["api_base"])
+
+    def test_shared_resume_routes_legacy_and_new_tasks_to_their_origin(self):
+        rendered = {
+            "request_id": "h3-task-1", "source_video_url": "https://cdn.example/h3.mp4",
+            "model": "MiniMax-H3", "duration": 5, "ratio": "16:9",
+            "resolution": "2k", "provider": "minimax_h3_cn",
+        }
+        existing = {
+            "request_id": "h3-task-1", "provider_key_id": "mm-key",
+            "provider": "minimax", "resolution": "768p", "ratio": "16:9",
+        }
+        for marker, expected in (
+            (None, video_minimax_h3.LEGACY_API_BASE),
+            (video_minimax_h3.API_BASE, video_minimax_h3.API_BASE),
+        ):
+            payload = {
+                "_job_id": 8, "channel": "minimax", "prompt": "舰队跃迁离去",
+                "model": "MiniMax-H3", "duration": 5, "ratio": "16:9",
+                "resolution": "2k", "reference_images": [],
+            }
+            if marker:
+                payload["_minimax_api_base"] = marker
+            with self.subTest(marker=marker), \
+                    patch.object(video, "get_resumable_grok_request", return_value=existing), \
+                    patch.object(video, "_bound_provider_key", return_value={"id": "mm-key", "secret": "secret"}), \
+                    patch.object(video, "update_video_asset_phase"), \
+                    patch.object(video_minimax_h3, "resume", return_value=rendered) as resume, \
+                    patch.object(video, "_download_xiaole_video", return_value="video/h3.mp4"), \
+                    patch.object(video, "_extract_first_frame_cover", return_value=None), \
+                    patch.object(video, "public_url", return_value="https://cos.example/h3.mp4"):
+                video.gen_xiaole_video(payload)
+            self.assertEqual(expected, resume.call_args.kwargs["api_base"])
+
     def test_ui_has_separate_people_story_entry(self):
         html = (ROOT / "site" / "workbench" / "video.html").read_text(encoding="utf-8")
         self.assertIn('data-function="minimax"', html)

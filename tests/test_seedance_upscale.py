@@ -61,6 +61,28 @@ class SeedanceUpscaleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "暂未配置"):
                 video.validate_xiaole_video_payload(self._body())
 
+    def test_seedance_download_exhaustion_is_not_wrapped_as_transient(self):
+        rendered = {
+            "request_id": "seed-1", "model": video_seedance.SEEDANCE_MODEL,
+            "source_video_url": "https://seed.example/source.mp4",
+            "duration": 4, "resolution": "480p", "ratio": "16:9",
+            "generate_audio": True,
+        }
+        exhausted = video.CompletedVideoDownloadError("bounded download exhausted")
+        with patch.object(video, "get_resumable_grok_request", return_value=None), \
+             patch.object(video.provider_keys, "claim_candidate", return_value={
+                 "id": "seedance-key", "secret": "test-key"
+             }), \
+             patch.object(video.provider_keys, "set_health"), \
+             patch.object(video, "update_video_asset_phase"), \
+             patch.object(video_seedance, "generate", return_value=rendered), \
+             patch.object(video, "_download_xiaole_video", side_effect=exhausted):
+            with self.assertRaises(video.CompletedVideoDownloadError) as caught:
+                video.gen_xiaole_video(self._body(
+                    _job_id=613, _username="tester", upscale=False,
+                ))
+        self.assertIs(caught.exception, exhausted)
+
     def test_standard_1080p_crops_to_fill_without_black_bars(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "upscaled.mp4"
