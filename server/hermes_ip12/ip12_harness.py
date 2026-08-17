@@ -78,6 +78,10 @@ MODULE_WORKFLOWS = {
 
 CONFIRM_TEXTS = frozenset({"确认", "确认无误", "没有问题", "没问题", "内容正确", "就按这个", "可以确认"})
 EDIT_TEXTS = frozenset({"需要修改", "我要修改", "修改", "有问题", "不对", "重新填写", "改一下"})
+CONTINUE_TEXTS = frozenset({
+    "继续", "下一步", "进入下一步", "继续下一步", "请继续", "开始下一步",
+    "好的继续", "嗯好继续", "好的下一步", "嗯好下一步",
+})
 FIELD_RE = re.compile(r"[a-z][a-z0-9_]{1,63}\Z")
 DURATION_RE = re.compile(r"(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十半]+)\s*(?:年|个?月)")
 DURATION_FIELDS = ("year", "duration", "experience", "tenure")
@@ -335,6 +339,11 @@ def shortcut_action(value, message):
         key = "edit_intake" if "edit_intake" in by_type else "edit_checkpoint"
         return {"type": key, "target_id": by_type[key]["target_id"]}
     return None
+
+
+def is_continue_message(message):
+    normalized = re.sub(r"[\s，,。.!！?？]+", "", str(message or "")).lower()
+    return normalized in CONTINUE_TEXTS
 
 
 def _require_revision(state, expected_revision):
@@ -682,6 +691,50 @@ def compile_module_five_topics(raw, value, evidence_text, evidence_sources):
         "profile_updates": updates,
         "confidence": raw.get("confidence", 0),
     }, state, evidence)
+
+
+def compile_module_five_confirmation(value):
+    state = normalize_state(value)
+    if state["current_module"] != 5 or state["module_step"] != 2:
+        raise HarnessError("当前不在模块 5 的选题库确认断点")
+    source = str(
+        ((state["ip_profile"].get("confirmed_outputs") or {}).get("5-2") or {}).get("content") or ""
+    )
+    categories = []
+    current = None
+    for line in source.splitlines():
+        heading = re.fullmatch(r"###\s+(.+?)\s*", line)
+        if heading:
+            current = {"name": heading.group(1), "topics": []}
+            categories.append(current)
+            continue
+        topic = re.fullmatch(r"\d+\.\s+(.+?)\s*", line)
+        if current is not None and topic:
+            current["topics"].append(topic.group(1))
+    if len(categories) != 3 or any(len(item["topics"]) != 10 for item in categories):
+        raise HarnessError("已确认的模块 5 选题库不是完整的 3×10 结构")
+
+    first_batch = []
+    for topic_index in range(2):
+        for category in categories:
+            first_batch.append((category["name"], category["topics"][topic_index]))
+    draft = "\n".join([
+        "### 已确认的 3×10 选题库",
+        *("- %s：10 个选题" % category["name"] for category in categories),
+        "",
+        "### 首批 6 条发布顺序",
+        *("%d. 【%s】%s" % (index, category, title)
+          for index, (category, title) in enumerate(first_batch, 1)),
+    ])
+    return validate_model_decision({
+        "decision": "propose_checkpoint",
+        "checkpoint": 3,
+        "reply": "30 个选题已经保存。下面只确认首批发布顺序，不会重新生成选题。",
+        "draft": draft,
+        "self_review": "只复用已确认的 3×10 选题，并按三个种类交错排序。",
+        "profile_updates": [],
+        "confidence": 1.0,
+    }, state, source)
 
 
 def _reply_already_contains_draft(reply, draft):

@@ -775,6 +775,74 @@ raw_pack = {"categories": [{
         "script": f"这是种类{category}的第{topic}篇口播文案。",
     } for topic in range(1, 11)],
 } for category in range(1, 4)]}
+
+advance_source = "\n\n".join(
+    "### %s\n%s" % (
+        name,
+        "\n".join("%d. %s选题%02d" % (index, name, index) for index in range(1, 11)),
+    )
+    for name in ("转行经验分享", "智能体应用实践", "垂直行业真实验证")
+)
+
+advance_action_cid = client.post("/api/conversations").get_json()["id"]
+advance_action_convo = server.load_conversation(advance_action_cid)
+advance_action_state = server.coach_harness.initial_state()
+advance_action_state.update(
+    current_module=5,
+    module_step=1,
+    completed_modules=[1, 2, 3, 4],
+    foundation_report={"status": "confirmed"},
+    pending={
+        "id": "topics-ready",
+        "kind": "checkpoint",
+        "status": "awaiting_confirmation",
+        "module": 5,
+        "step": 2,
+        "draft": advance_source,
+        "self_review": "完整 3×10。",
+        "profile_updates": [],
+        "confidence": 1,
+    },
+)
+advance_action_state["intake"]["status"] = "complete"
+advance_action_convo["coach_state"] = advance_action_state
+server.save_conversation(advance_action_cid, advance_action_convo)
+with patch.object(server, "call_ai") as advance_model:
+    advance_action = client.post("/api/chat-complete", json={
+        "conversation_id": advance_action_cid,
+        "action": {"type": "confirm_checkpoint", "target_id": "topics-ready"},
+        "expected_revision": advance_action_state["revision"],
+    })
+    assert advance_action.status_code == 200, advance_action.get_data(as_text=True)
+    advance_model.assert_not_called()
+advance_action_json = advance_action.get_json()
+assert advance_action_json["state"]["module_step"] == 2
+assert advance_action_json["state"]["pending"]["step"] == 3
+assert "首批 6 条发布顺序" in advance_action_json["assistant"]
+
+advance_retry_cid = client.post("/api/conversations").get_json()["id"]
+advance_retry_convo = server.load_conversation(advance_retry_cid)
+advance_retry_state = server.coach_harness.initial_state()
+advance_retry_state.update(
+    current_module=5,
+    module_step=2,
+    completed_modules=[1, 2, 3, 4],
+    foundation_report={"status": "confirmed"},
+)
+advance_retry_state["intake"]["status"] = "complete"
+advance_retry_state["ip_profile"]["confirmed_outputs"]["5-2"] = {"content": advance_source}
+advance_retry_convo["coach_state"] = advance_retry_state
+server.save_conversation(advance_retry_cid, advance_retry_convo)
+with patch.object(server, "call_ai") as retry_model:
+    advance_retry = client.post("/api/chat-complete", json={
+        "conversation_id": advance_retry_cid,
+        "message": "下一步",
+        "expected_revision": advance_retry_state["revision"],
+    })
+    assert advance_retry.status_code == 200, advance_retry.get_data(as_text=True)
+    retry_model.assert_not_called()
+assert advance_retry.get_json()["state"]["pending"]["step"] == 3
+
 content_pack = server._normalize_content_pack(raw_pack)
 assert content_pack["kind"] == "content_pack_v1"
 assert len(content_pack["categories"]) == 3
