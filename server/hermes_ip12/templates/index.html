@@ -156,6 +156,8 @@ button:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px soli
 .rpn-card-header{font-size:14px;font-weight:600;color:var(--acb);margin-bottom:8px}
 .rpn-card .copy-btn{background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#211707;border:1px solid rgba(244,205,114,.45);padding:6px 10px;border-radius:8px;cursor:pointer;font-size:10px;font-weight:800;margin-top:8px}
 .rpn-card .copy-btn:hover{opacity:0.8}
+.content-tabs{display:flex;gap:6px;overflow-x:auto;padding:2px 0 10px}.content-tab{flex:0 0 auto;border:1px solid var(--bd);background:var(--ib);color:var(--dim);padding:7px 10px;border-radius:8px;cursor:pointer;font-size:11px}.content-tab.active{border-color:rgba(231,178,76,.6);color:var(--acb);background:rgba(231,178,76,.1)}
+.content-topic{width:100%;display:block;text-align:left;border:1px solid var(--bd);background:rgba(8,14,23,.72);color:var(--tx);padding:10px;margin:6px 0;border-radius:9px;cursor:pointer}.content-topic:hover,.content-topic:focus{border-color:rgba(231,178,76,.45)}.content-topic small{display:block;color:var(--dim);margin-top:4px}.content-script{white-space:pre-wrap;line-height:1.75;color:#dbe5f2;font-size:12px}.content-back{border:0;background:transparent;color:var(--acb);cursor:pointer;padding:0 0 10px}
 
 /* PDF review */
 .pdf-review{--pdf-review-width:clamp(660px,55vw,1040px);position:relative;z-index:20;flex:0 0 auto;width:0;min-width:0;height:100vh;overflow:hidden;border-left:0 solid rgba(148,164,187,.18);background:#0b111c;transition:width .25s ease,min-width .25s ease,border-width .25s ease}
@@ -351,7 +353,7 @@ SKILL_MAP[2]=[{id:'persona',icon:'user',name:'人设卡片',api:'/api/m2-persona
 SKILL_MAP[3]=[{id:'value',icon:'sparkles',name:'价值金字塔',api:'/api/m3-value',help:'构建价值金字塔：主张→信任状→卖点→痛点'}];
 SKILL_MAP[4]=[{id:'story',icon:'book',name:'故事资产库',api:'/api/m4-story',help:'收集你的经历故事，打造个人品牌资产库'}];
 SKILL_MAP[5]=[{id:'hooks',icon:'layers',name:'Hook钩子生成',api:'/api/m5-hooks',help:'为一个选题生成10个钩子'}];
-SKILL_MAP[6]=[{id:'deliverable-6',icon:'edit',name:'专属文案包',api:'/api/generate-deliverable',help:'生成朋友圈、口播和私信文案'}];
+SKILL_MAP[6]=[{id:'deliverable-6',icon:'edit',name:'3×10口播内容库',api:'/api/generate-deliverable',help:'生成3个种类、每类10个选题和30篇口播文案'}];
 SKILL_MAP[7]=[{id:'images',icon:'image',name:'形象预览',api:'/api/module7-images',help:'生成头像、封面和朋友圈配图参考'}];
 SKILL_MAP[8]=[{id:'videos',icon:'video',name:'视频脚本',api:'/api/module8-video',help:'生成脚本和画面参考'}];
 SKILL_MAP[9]=[{id:'funnel',icon:'link',name:'私域漏斗',api:'/api/m9-funnel',help:'设计私域转化漏斗'}];
@@ -359,7 +361,7 @@ SKILL_MAP[10]=[{id:'deliverable-10',icon:'message',name:'朋友圈排期',api:'/
 SKILL_MAP[11]=[{id:'sales',icon:'trend',name:'成交话术',api:'/api/m11-sales',help:'生成私域成交SOP话术'}];
 SKILL_MAP[12]=[{id:'calendar',icon:'calendar',name:'公众号日历',api:'/api/m12-calendar',help:'生成公众号30天内容日历'}];
 
-var cid=null,state={current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}},reports={},deliverables={},streaming=false,convos=[],foundationEditing=false,foundationAnnotations=[],foundationReviewCid='',foundationPdfObjectUrl='',foundationPdfLoadId=0;
+var cid=null,state={current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}},reports={},deliverables={},streaming=false,convos=[],foundationEditing=false,foundationAnnotations=[],foundationReviewCid='',foundationPdfObjectUrl='',foundationPdfLoadId=0,activeContentTarget=null,activeContentPack=null,activeContentCategory=0;
 var expandedMod=0;
 var WELCOME_HTML=document.getElementById('welcome').outerHTML;
 
@@ -419,7 +421,7 @@ function renderMods(){
     var cls='mod-item',badge='',check='',expand='<span class="mod-expand">▶</span>';
     var comingSoon=m.id>AVAILABLE_MODULE_COUNT;
     var locked=comingSoon||intakePending||(m.id>=5&&foundation.status!=='confirmed');
-    if(locked){cls+=' locked';badge=comingSoon?'<span class="mod-badge">尚未开发，敬请期待</span>':(intakePending&&m.id===1?'<span class="mod-badge">基础信息 '+intakeLabel+'</span>':(intakePending?'':'<span class="mod-badge">待确认 PDF</span>'))}
+    if(locked){cls+=' locked';badge=comingSoon?'<span class="mod-badge">尚未开发，敬请期待</span>':(intakePending&&m.id===1?'<span class="mod-badge">基础信息 '+intakeLabel+'</span>':(intakePending?'':'<span class="mod-badge">'+(foundation.status==='awaiting_confirmation'?'待确认 PDF':(done.indexOf(4)>=0?'PDF 生成中':'等待模块 1-4'))+'</span>'))}
     if(done.indexOf(m.id)>=0){cls+=' done';check='<span style="color:var(--gr);font-size:12px">✓</span>'}
     if(!intakePending&&m.id===cur&&done.indexOf(m.id)<0){cls+=' cur';badge='<span class="mod-badge">进行中</span>'}
     if(intakePending&&m.id===1)cls+=' cur';
@@ -433,7 +435,7 @@ function renderMods(){
         subs+='<div class="mod-sub" onclick="event.stopPropagation();loadSkill(\''+s.id+'\')">'+moduleIcon(s.icon)+eHtml(s.name)+'</div>';
       }
     }
-    var click=comingSoon?"toast('尚未开发，敬请期待')":(locked?(intakePending?"toast('请先补充并确认基础资料')":"toast('请先确认模块 1-4 的 IP 定位初稿 PDF')"):(hasSub?'toggleExpand('+m.id+')':'jumpModule('+m.id+')'));
+    var click=comingSoon?"toast('尚未开发，敬请期待')":(locked?(intakePending?"toast('请先补充并确认基础资料')":(foundation.status==='awaiting_confirmation'?"toast('请先确认模块 1-4 的 IP 定位初稿 PDF')":"toast('请先完成模块 1-4')")):(hasSub?'toggleExpand('+m.id+')':'jumpModule('+m.id+')'));
     html+='<div class="'+cls+'" onclick="'+click+'"><div class="mod-num">'+(done.indexOf(m.id)>=0?'✓':m.id)+'</div><div class="mod-info"><div class="mod-name">'+moduleIcon(m.icon)+m.name+'</div></div>'+badge+check+(hasSub?expand:'')+subs+'</div>';
   }
   document.getElementById('modScroll').innerHTML=html;
@@ -450,7 +452,7 @@ loadConvos().then(function(){var requested=new URLSearchParams(location.search).
 
 async function loadConvos(){var r=await fetch('/api/conversations');convos=await r.json()}
 async function newDiagnosis(){var r=await fetch('/api/conversations',{method:'POST'});var d=await r.json();convos.unshift({id:d.id,title:'新诊断',current_module:1,completed_modules:[],message_count:1});selectConvo(d.id)}
-async function selectConvo(id){closeFoundationReviewer();cid=id;var r=await fetch('/api/conversations/'+id);var c=await r.json();state=c.coach_state||{current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}};reports=c.reports||{};deliverables=c.deliverables||{};expandedMod=0;foundationEditing=false;renderMods();renderChat(c.messages||[]);var input=document.getElementById('userInput');input.disabled=false;input.placeholder=(state.foundation_report||{}).status==='awaiting_confirmation'?'可以询问 PDF，或点击“需要修改/补充”…':'输入消息...';document.getElementById('sendBtn').disabled=false;input.focus()}
+async function selectConvo(id){closeFoundationReviewer();activeContentTarget=null;activeContentPack=null;cid=id;var r=await fetch('/api/conversations/'+id);var c=await r.json();state=c.coach_state||{current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}};reports=c.reports||{};deliverables=c.deliverables||{};expandedMod=0;foundationEditing=false;renderMods();renderChat(c.messages||[]);var input=document.getElementById('userInput');input.disabled=false;input.placeholder=(state.foundation_report||{}).status==='awaiting_confirmation'?'可以询问 PDF，或点击“需要修改/补充”…':'输入消息...';document.getElementById('sendBtn').disabled=false;input.focus()}
 async function jumpModule(mid){if(mid>AVAILABLE_MODULE_COUNT){toast('尚未开发，敬请期待');return}if(!cid||streaming)return;var r=await fetch('/api/jump-module',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,module:mid})});var d=await r.json();if(!r.ok||!d.ok){toast('❌ '+(d.error||'无法切换模块'));return}state=d.state||state;renderMods();sendJumpMsg(mid)}
 
 function stateActions(){
@@ -586,13 +588,17 @@ async function viewDeliverable(mid){
   try{var r=await fetch('/api/generate-deliverable',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,module:mid})});var d=await r.json();if(!d.ok)throw new Error(d.error||'交付物生成失败');deliverables[String(mid)]=d.deliverable;renderDeliverable(d.deliverable,body);renderArtifacts()}catch(e){body.innerHTML='<p style="color:#ef4444">❌ '+eHtml(e.message)+'</p>'}
 }
 
-function renderDeliverable(item,body){var html='<div class="rpn-card"><div class="rpn-card-header">'+eHtml(item.title||'交付物')+'</div>';Object.keys(item.items||{}).forEach(function(name){html+='<h3>'+eHtml(name)+'</h3>'+md(item.items[name])});body.innerHTML=html+'</div>'}
+function renderDeliverable(item,body){if(item&&item.kind==='content_pack_v1'){activeContentPack=item;renderContentPack(body);return}activeContentTarget=null;activeContentPack=null;var html='<div class="rpn-card"><div class="rpn-card-header">'+eHtml(item.title||'交付物')+'</div>';Object.keys(item.items||{}).forEach(function(name){html+='<h3>'+eHtml(name)+'</h3>'+md(item.items[name])});body.innerHTML=html+'</div>'}
+function renderContentPack(body){var categories=(activeContentPack&&activeContentPack.categories)||[];if(!categories.length){body.innerHTML='<p style="color:var(--dim)">内容库暂时为空。</p>';return}activeContentCategory=Math.max(0,Math.min(activeContentCategory,categories.length-1));var category=categories[activeContentCategory],html='<div class="rpn-card"><div class="rpn-card-header">'+eHtml(activeContentPack.title||'3×10 口播内容库')+'</div><p style="color:var(--dim);font-size:11px">3 个种类 · 每类 10 个选题 · 每题 1 篇口播文案</p><div class="content-tabs">';categories.forEach(function(item,index){html+='<button class="content-tab '+(index===activeContentCategory?'active':'')+'" onclick="showContentCategory('+index+')">'+eHtml(item.name)+'</button>'});html+='</div><p style="color:var(--dim);font-size:11px">'+eHtml(category.description||'')+'</p>';(category.topics||[]).forEach(function(topic,index){html+='<button class="content-topic" onclick="openContentScript('+activeContentCategory+','+index+')"><b>'+(index+1)+'. '+eHtml(topic.title)+'</b><small>'+eHtml(topic.hook||'')+' · '+eHtml(topic.status==='revised'?'已修改':'可审阅')+'</small></button>'});body.innerHTML=html+'</div>'}
+function showContentCategory(index){activeContentCategory=index;activeContentTarget=null;renderContentPack(document.getElementById('rpnBody'))}
+function openContentScript(categoryIndex,topicIndex){var category=activeContentPack.categories[categoryIndex],topic=category&&category.topics[topicIndex];if(!topic)return;activeContentCategory=categoryIndex;activeContentTarget={category_id:category.id,topic_id:topic.id};renderActiveContentScript();var input=document.getElementById('userInput');input.placeholder='直接说怎么修改当前文案，例如“第二段短一点”';input.focus()}
+function renderActiveContentScript(){if(!activeContentTarget||!activeContentPack)return;var category=(activeContentPack.categories||[]).find(function(item){return item.id===activeContentTarget.category_id}),topic=category&&(category.topics||[]).find(function(item){return item.id===activeContentTarget.topic_id});if(!topic)return;var versions=topic.versions||[],latest=versions[versions.length-1]||{},body=document.getElementById('rpnBody');body.innerHTML='<button class="content-back" onclick="activeContentTarget=null;renderContentPack(document.getElementById(\'rpnBody\'))">← 返回这个种类的 10 篇文案</button><div class="rpn-card"><div class="rpn-card-header">'+eHtml(category.name)+' · '+eHtml(topic.title)+'</div><div style="font-size:10px;color:var(--dim);margin-bottom:10px">版本 '+eHtml(String(latest.version||1))+' · '+eHtml(topic.objective||'')+'</div><div class="content-script">'+eHtml(latest.content||'')+'</div><button class="copy-btn" onclick="navigator.clipboard.writeText(this.previousElementSibling.textContent);toast(\'已复制文案\')">复制文案</button></div>'}
 
 async function deleteConvo(id){if(!confirm('删除这个诊断记录？'))return;await fetch('/api/conversations/'+id,{method:'DELETE'});convos=convos.filter(function(c){return c.id!==id});if(cid===id){cid=null;state={current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}};reports={};deliverables={};renderMods();renderChat([]);document.getElementById('userInput').disabled=true;document.getElementById('sendBtn').disabled=true}toggleConvos();toggleConvos()}
 
 // ── RIGHT PANEL ──
 function openPanel(title){document.getElementById('rpnTitle').textContent=title;document.getElementById('rpn').classList.add('open')}
-function closePanel(){document.getElementById('rpn').classList.remove('open')}
+function closePanel(){activeContentTarget=null;activeContentPack=null;document.getElementById('rpn').classList.remove('open');var input=document.getElementById('userInput');if(input)input.placeholder=(state.foundation_report||{}).status==='awaiting_confirmation'?'可以询问 PDF，或点击“需要修改/补充”…':'输入消息...'}
 
 async function loadPanel(type){
   var labels={'images':'🎨 形象预览','videos':'🎬 视频脚本','geo':'🔎 GEO分析','radar':'📡 选题雷达'};
@@ -661,11 +667,11 @@ async function sendTurn(turn,displayText,requestId){
   var am=document.createElement('div');am.className='msg assistant';am.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble"><div class="typing" style="display:flex;gap:4px"><span style="width:5px;height:5px;border-radius:50%;background:var(--dim);animation:bounce 1.4s infinite"></span><span style="width:5px;height:5px;border-radius:50%;background:var(--dim);animation:bounce 1.4s infinite .2s"></span><span style="width:5px;height:5px;border-radius:50%;background:var(--dim);animation:bounce 1.4s infinite .4s"></span></div></div>';area.appendChild(am);scroll();
   var full='',replayed=false,retryNeedsRefresh=false,failureMessage='回复暂时失败，消息已保留。',retryRequestId=requestId||newTurnRequestId();var bubble=am.querySelector('.bubble');
   try{
-    var body=Object.assign({conversation_id:cid,request_id:retryRequestId,expected_revision:state.revision},turn);
+    var body=Object.assign({conversation_id:cid,request_id:retryRequestId,expected_revision:state.revision},turn);if(activeContentTarget&&!turn.action)body.content_target=activeContentTarget;
     var r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     if(!r.ok){retryNeedsRefresh=r.status===409;try{var failed=await r.json();failureMessage=failed.error||failureMessage}catch(ignore){}throw new Error('发送失败')}
     var reader=r.body.getReader(),decoder=new TextDecoder(),buf='';
-    while(true){var part=await reader.read();if(part.done)break;buf+=decoder.decode(part.value,{stream:true});var lines=buf.split('\n');buf=lines.pop()||'';for(var i=0;i<lines.length;i++){var line=lines[i];if(!line.startsWith('data: '))continue;try{var data=JSON.parse(line.slice(6));if(data.error){bubble.innerHTML='<span style="color:#ef4444">❌ '+eHtml(data.error)+'</span>'}else if(data.content){full+=data.content;bubble.innerHTML=md(full)+'<span class="cursor" style="color:var(--ac)">▍</span>';scroll()}else if(data.done){bubble.innerHTML=md(full);replayed=!!data.replayed;if(data.state&&(!replayed||data.state.revision>=state.revision)){state=data.state;renderMods()}attachHarnessActions(data.actions&&data.actions.length?data.actions:stateActions(),bubble);if(data.auto_deliverables){Object.keys(data.auto_deliverables).forEach(function(mid){deliverables[mid]=data.auto_deliverables[mid]});renderArtifacts()}if(data.new_completed&&data.new_completed.length>0){data.new_completed.forEach(function(mid){toast('✅ '+M[mid-1].name+'完成！')});renderMods()}}}catch(e){}}}
+    while(true){var part=await reader.read();if(part.done)break;buf+=decoder.decode(part.value,{stream:true});var lines=buf.split('\n');buf=lines.pop()||'';for(var i=0;i<lines.length;i++){var line=lines[i];if(!line.startsWith('data: '))continue;try{var data=JSON.parse(line.slice(6));if(data.error){bubble.innerHTML='<span style="color:#ef4444">❌ '+eHtml(data.error)+'</span>'}else if(data.content){full+=data.content;bubble.innerHTML=md(full)+'<span class="cursor" style="color:var(--ac)">▍</span>';scroll()}else if(data.done){bubble.innerHTML=md(full);replayed=!!data.replayed;if(data.state&&(!replayed||data.state.revision>=state.revision)){state=data.state;renderMods()}attachHarnessActions(data.actions&&data.actions.length?data.actions:stateActions(),bubble);if(data.auto_deliverables){Object.keys(data.auto_deliverables).forEach(function(mid){deliverables[mid]=data.auto_deliverables[mid]});renderArtifacts();if(data.auto_deliverables['6']&&activeContentTarget){activeContentPack=data.auto_deliverables['6'];renderActiveContentScript()}}if(data.new_completed&&data.new_completed.length>0){data.new_completed.forEach(function(mid){toast('✅ '+M[mid-1].name+'完成！')});renderMods()}}}catch(e){}}}
     if(replayed)await selectConvo(cid)
   }catch(e){bubble.innerHTML='<span style="color:#ef4444">'+eHtml(failureMessage)+'</span>';var actions=stateActions();if(actions.length){attachHarnessActions(actions,bubble)}else{bubble.innerHTML+='<div class="harness-actions"><button type="button" class="harness-action primary">重试</button></div>';var retry=bubble.querySelector('button');retry.onclick=async function(){retry.disabled=true;if(retryNeedsRefresh)await selectConvo(cid);um.remove();am.remove();sendTurn(turn,displayText,retryRequestId)}}}
   streaming=false;document.getElementById('sendBtn').disabled=false;document.getElementById('userInput').focus()
