@@ -108,8 +108,14 @@ MODULE_WORKFLOWS = {
     },
 }
 
-CONFIRM_TEXTS = frozenset({"确认", "确认无误", "没有问题", "没问题", "内容正确", "就按这个", "可以确认"})
-EDIT_TEXTS = frozenset({"需要修改", "我要修改", "修改", "有问题", "不对", "重新填写", "改一下"})
+CONFIRM_TEXTS = frozenset({
+    "确认", "确认无误", "确认资料", "确认补充", "确认这一步", "确认本模块",
+    "没有问题", "没问题", "内容正确", "就按这个", "可以确认", "保留并继续",
+})
+EDIT_TEXTS = frozenset({
+    "需要修改", "我要修改", "修改", "有问题", "不对", "重新填写", "改一下",
+    "继续修改", "修改当前内容",
+})
 CONTINUE_TEXTS = frozenset({
     "继续", "下一步", "进入下一步", "继续下一步", "请继续", "开始下一步",
     "好的继续", "嗯好继续", "好的下一步", "嗯好下一步",
@@ -364,7 +370,7 @@ def shortcut_action(value, message):
     if not actions:
         return None
     by_type = {item["type"]: item for item in actions}
-    if normalized in CONFIRM_TEXTS:
+    if normalized in CONFIRM_TEXTS or normalized in CONTINUE_TEXTS:
         key = "confirm_intake" if "confirm_intake" in by_type else "confirm_checkpoint"
         return {"type": key, "target_id": by_type[key]["target_id"]}
     if normalized in EDIT_TEXTS:

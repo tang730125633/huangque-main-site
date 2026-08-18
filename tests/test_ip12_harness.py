@@ -305,10 +305,17 @@ class IP12HarnessTests(unittest.TestCase):
             intake_decision(),
             "我叫泽龙，在广州做 FDE。",
         )
-        for message in ("确认", "确认无误", "没有问题", "就按这个"):
+        for message in (
+            "确认", "确认无误", "确认资料", "确认这一步", "保留并继续",
+            "下一步", "好的，继续", "没有问题", "就按这个",
+        ):
             with self.subTest(message=message):
                 action = harness.shortcut_action(state, message)
                 self.assertEqual(action["type"], "confirm_intake")
+        for message in ("我要修改", "继续修改", "修改当前内容"):
+            with self.subTest(message=message):
+                action = harness.shortcut_action(state, message)
+                self.assertEqual(action["type"], "edit_intake")
         for message in (
             "嗯",
             "差不多",

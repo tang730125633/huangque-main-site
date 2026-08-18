@@ -1029,7 +1029,8 @@ class HQCLIAPITests(unittest.TestCase):
             })
 
     def test_ip12_message_has_separate_scope_and_fixed_non_streaming_proxy(self):
-        input_body = {"project_id": "ip_1", "message": "我的客户是餐饮老板", "request_id": "turn-001"}
+        message = "我的客户是餐饮老板\n我想分两段说明"
+        input_body = {"project_id": "ip_1", "message": message, "request_id": "turn-001"}
         with mock.patch.object(self.auth.hq_cli_api, "proxy_json") as proxy:
             token = self._token(["ip12:write"])
             status, payload = self._request("/api/auth/cli/action", {
@@ -1049,8 +1050,11 @@ class HQCLIAPITests(unittest.TestCase):
         plan = proxy.call_args.args[0]
         self.assertEqual((self.auth.hq_cli_api.HERMES_BASE, "/api/chat-complete", "POST", 290),
                          (plan["base"], plan["path"], plan["method"], plan["timeout"]))
-        self.assertEqual({"conversation_id": "ip_1", "message": "我的客户是餐饮老板"}, plan["body"])
+        self.assertEqual({"conversation_id": "ip_1", "message": message}, plan["body"])
         self.assertEqual("turn-001", plan["headers"]["Idempotency-Key"])
+
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan("ip12-message", dict(input_body, message="正常文字\x00非法控制符"))
 
         status, replay = self._request("/api/auth/cli/action", {
             "action": "ip12-message", "input": input_body, "confirm": True,
