@@ -591,6 +591,26 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual(reply.count(draft), 1)
         self.assertNotIn("我先把目前了解到的情况", reply)
 
+        keyword_draft = """核心关键词：
+1. AI
+2. 智能体编程与编排
+3. 人与 AI 的沟通连接
+4. AI 学习与应用普及
+5. AI 时代推动者
+依据：以上关键词均来自用户已确认资料。"""
+        keyword_reply = """我提炼出 5 个核心关键词，请核对：
+1. AI
+2. 智能体编程与编排
+3. 人与 AI 的沟通连接
+4. AI 学习与应用普及
+5. AI 时代推动者
+这些关键词包含当前实践和长期目标，请确认或调整。"""
+        rendered = harness.render_model_reply({
+            "decision": "propose_checkpoint", "reply": keyword_reply, "draft": keyword_draft,
+        })
+        self.assertEqual(rendered.count("1. AI"), 1)
+        self.assertNotIn("我提炼出 5 个核心关键词", rendered)
+
     def test_model_words_never_complete_a_module(self):
         state = self.complete_intake()
         raw = decision(state, reply="✅ 模块 1 完成。接下来进入模块 2。")
