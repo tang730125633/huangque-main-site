@@ -48,7 +48,7 @@ PIXELLE_MAX_VIDEO_BYTES = _env_int(
 _NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 _CAPACITY_BLOCKED_UNTIL = 0.0
 _MAX_CAPTION_UNITS = 28
-_MAX_CAPTION_CUES = 20
+_MAX_CAPTION_CUES = 100
 _CAPTION_SENTENCE_BOUNDARIES = frozenset("。！？!?；;：:\n")
 _CAPTION_CLAUSE_BOUNDARIES = frozenset("，,、 ")
 

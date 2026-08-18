@@ -1253,10 +1253,11 @@ class PixelleVideoTests(unittest.TestCase):
                     self.pixelle._display_units(cue) <= 28 for cue in cues
                 ))
 
-    def test_caption_splitter_enforces_twenty_cue_boundary_after_packing(self):
-        self.assertEqual(len(self.pixelle._split_caption_text("一，" * 140)), 20)
+    def test_caption_splitter_supports_long_scenes_up_to_one_hundred_cues(self):
+        self.assertEqual(len(self.pixelle._split_caption_text("一，" * 141)), 21)
+        self.assertEqual(len(self.pixelle._split_caption_text("一，" * 700)), 100)
         with self.assertRaisesRegex(ValueError, "字幕片段过多"):
-            self.pixelle._split_caption_text("一，" * 141)
+            self.pixelle._split_caption_text("一，" * 701)
 
     def test_submit_video_template_uses_video_workflow(self):
         payload = self.pixelle.prepare_payload({
