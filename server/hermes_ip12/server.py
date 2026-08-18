@@ -702,10 +702,14 @@ def _foundation_html(markdown, zoom=1.0):
 
 def _foundation_zoom_candidates(page_count):
     if page_count < 8:
-        return (1.05, 1.1, 1.15, 1.2, 1.25, 1.3)
-    if page_count > 10:
-        return (0.95, 0.9, 0.85, 0.8, 0.75, 0.7)
-    return ()
+        nearby = (1.05, 1.1, 1.15, 1.2, 1.25, 1.3)
+    elif page_count > 10:
+        nearby = (0.95, 0.9, 0.85, 0.8, 0.75, 0.7)
+    else:
+        return ()
+    fitted = max(0.25, min(3.0, round((9 / max(page_count, 1)) * 20) / 20))
+    dynamic = tuple(max(0.25, min(3.0, zoom)) for zoom in (fitted, fitted - 0.05, fitted + 0.05))
+    return tuple(dict.fromkeys((*nearby, *dynamic)))
 
 
 def _render_foundation_pdf(content, browsers, root):
@@ -1959,7 +1963,9 @@ def _persist_model_turn(
     return assistant, next_state
 
 
-def _persist_unprocessed_turn(cid, user_message, snapshot_revision, prefix="", message_id=""):
+def _persist_unprocessed_turn(
+    cid, user_message, snapshot_revision, prefix="", message_id="", assistant_override=""
+):
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
         if convo is None:
@@ -1967,7 +1973,7 @@ def _persist_unprocessed_turn(cid, user_message, snapshot_revision, prefix="", m
         state = normalize_coach_state(convo.get("coach_state"))
         if state["revision"] != snapshot_revision:
             raise coach_harness.HarnessConflict("对话已在另一端更新，请刷新后重试")
-        assistant = (
+        assistant = assistant_override or (
             "我已经记下你刚才的原话，已确认内容和当前步骤都没有改变。"
             "这次还没整理成可确认结果；你不用重述，可以继续补充，"
             "或发送“继续”让我基于刚才内容重新整理。"
@@ -2045,7 +2051,20 @@ def _process_model_turn(
         _assert_expected_revision(state, expected_revision)
         foundation_status = (state.get("foundation_report") or {}).get("status")
         if 4 in state.get("completed_modules", []) and foundation_status not in {"awaiting_confirmation", "confirmed"}:
-            return {"ok": False, "error": "请先生成并确认模块 1-4 的 IP 定位初稿 PDF"}, 409
+            if not persist_user:
+                return {"ok": False, "error": "请先生成并确认模块 1-4 的 IP 定位初稿 PDF"}, 409
+            snapshot_revision = state["revision"]
+            message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
+            assistant = (
+                "模块 1–4 PDF 正在生成。你刚才的话已经保存，不需要重发；生成完成后可以继续审阅。"
+                if foundation_status == "generating"
+                else "模块 1–4 PDF 本次生成失败，但你刚才的话和已确认内容都已保存，不需要重述。请点击“重新生成 PDF”后继续。"
+            )
+            assistant, next_state = _persist_unprocessed_turn(
+                cid, user_message, snapshot_revision, prefix=prefix,
+                message_id=message_id, assistant_override=assistant,
+            )
+            return _chat_result(assistant, next_state), 200
         snapshot_revision = state["revision"]
         message_id = ""
         if persist_user and user_message:

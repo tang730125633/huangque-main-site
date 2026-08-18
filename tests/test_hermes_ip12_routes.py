@@ -1092,6 +1092,8 @@ with patch.object(server.subprocess, "run", side_effect=fake_render):
     fitted_pdf = _render_foundation_pdf("## 模块一", ["/fake/chromium"], render_root)
 assert _validate_foundation_pdf(fitted_pdf) == 8
 assert render_calls == ["/fake/chromium", "/fake/chromium"]
+assert 0.45 in _foundation_zoom_candidates(20)
+assert 2.25 in _foundation_zoom_candidates(4)
 
 fallback_root = Path(os.environ["HERMES_DATA_DIR"]) / "foundation-fallback"
 fallback_root.mkdir()
@@ -1589,8 +1591,11 @@ gated["coach_state"] = {"current_module": 4, "completed_modules": [1, 2, 3, 4],
 server.save_conversation(foundation_cid, gated)
 with patch.object(server, "call_ai") as gated_model:
     gated_reply = client.post("/api/chat-complete", json={"conversation_id": foundation_cid, "message": "继续"})
-    assert gated_reply.status_code == 409, gated_reply.get_data(as_text=True)
+    assert gated_reply.status_code == 200, gated_reply.get_data(as_text=True)
+    assert "已经保存" in gated_reply.get_json()["assistant"]
     gated_model.assert_not_called()
+gated = server.load_conversation(foundation_cid)
+assert sum(item["role"] == "user" and item["content"] == "继续" for item in gated["messages"]) == 1
 assert client.post("/api/generate-report", json={"conversation_id": foundation_cid, "module": 5}).status_code == 409
 assert client.post("/api/generate-deliverable", json={"conversation_id": foundation_cid, "module": 5}).status_code == 409
 assert client.post("/api/jump-module", json={"conversation_id": foundation_cid, "module": 7}).status_code == 409
