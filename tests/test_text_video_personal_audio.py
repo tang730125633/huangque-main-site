@@ -202,7 +202,7 @@ class TextVideoPersonalAudioTests(unittest.TestCase):
                          "scene_01")
 
     def test_long_personal_scene_synthesizes_once_but_keeps_caption_cues(self):
-        long_text = "所以轩和堂做这件事，并不是为了追风口，是为了让门店效果可验证。"
+        long_text = "一，" * 141
         payload = {
             "text": long_text,
             "mode": "fixed",
@@ -230,7 +230,7 @@ class TextVideoPersonalAudioTests(unittest.TestCase):
         self.assertEqual(long_text, synth.call_args.args[2])
         upload.assert_called_once()
         self.assertEqual(asset_id, segments[0]["audio_asset_id"])
-        self.assertGreater(len(segments[0]["caption_cues"]), 1)
+        self.assertEqual(len(segments[0]["caption_cues"]), 21)
         self.assertEqual(
             long_text,
             "".join(cue["text"] for cue in segments[0]["caption_cues"]),
