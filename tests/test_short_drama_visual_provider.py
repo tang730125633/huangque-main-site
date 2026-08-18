@@ -1,3 +1,5 @@
+import base64
+import json
 import os
 import io
 import socket
@@ -232,11 +234,20 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
         self.assertEqual("video/minimax-result.mp4", result["file"])
         submitted = request_json.call_args_list[0].args[3]
         self.assertEqual("MiniMax-H3", submitted["model"])
+        self.assertEqual("2K", submitted["resolution"])
         self.assertTrue(submitted["content"][1]["image_url"]["url"].startswith("https://"))
         self.assertEqual("/v2/video_generation", request_json.call_args_list[0].args[2])
         self.assertEqual("/v2/query/video_generation/task-8", request_json.call_args_list[1].args[2])
         self.assertEqual("test-only-secret", request_json.call_args_list[0].kwargs["api_key"])
         self.assertEqual("test-only-secret", request_json.call_args_list[1].kwargs["api_key"])
+        self.assertEqual(
+            video_minimax_h3.API_BASE,
+            request_json.call_args_list[0].kwargs["api_base"],
+        )
+        self.assertEqual(
+            video_minimax_h3.API_BASE,
+            request_json.call_args_list[1].kwargs["api_base"],
+        )
         self.assertEqual(
             set(minimax_h3.MINIMAX_RESULT_HOSTS),
             set(download.call_args.kwargs["allowed_hosts"]),
@@ -245,6 +256,36 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
             minimax_h3.MINIMAX_RESULT_MAX_BYTES,
             download.call_args.kwargs["max_bytes"],
         )
+
+    def test_minimax_h3_old_encoded_and_raw_job_ids_poll_legacy_origin(self):
+        provider = MiniMaxH3ShotProvider()
+        candidate = {"id": "minimax-key-2", "secret": "test-only-secret"}
+        old_payload = json.dumps(
+            {"key_id": candidate["id"], "task_id": "old-task"},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        old_job_id = base64.urlsafe_b64encode(old_payload).decode("ascii").rstrip("=")
+        with mock.patch.object(provider, "_bound_key", return_value=candidate), \
+             mock.patch("content_domains.video_minimax_h3.query_task", return_value={
+                 "task": {"status": "running"},
+             }) as query_task:
+            provider.get_job(old_job_id)
+            provider.get_job("raw-legacy-task")
+        self.assertEqual(
+            [video_minimax_h3.LEGACY_API_BASE, video_minimax_h3.LEGACY_API_BASE],
+            [call.kwargs["api_base"] for call in query_task.call_args_list],
+        )
+
+    def test_minimax_h3_rejects_tampered_task_origin(self):
+        provider = MiniMaxH3ShotProvider()
+        payload = json.dumps(
+            {"key_id": "minimax-key-2", "task_id": "task-8", "origin": "other"},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        provider_job_id = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+        with self.assertRaises(VisualProviderError) as raised:
+            provider.get_job(provider_job_id)
+        self.assertEqual("provider_job_origin_invalid", raised.exception.code)
 
     def test_minimax_h3_failed_job_exposes_safe_provider_reason(self):
         provider = MiniMaxH3ShotProvider()

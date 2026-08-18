@@ -14,6 +14,9 @@ MINIMAX_RESULT_HOSTS = {
     "filecdn.minimax.chat",
 }
 MINIMAX_RESULT_MAX_BYTES = 250 * 1024 * 1024
+MINIMAX_ORIGIN_METASO = "metaso"
+MINIMAX_ORIGIN_LEGACY = "legacy"
+MINIMAX_ORIGINS = {MINIMAX_ORIGIN_METASO, MINIMAX_ORIGIN_LEGACY}
 
 
 class MiniMaxH3ShotProvider(ShotVisualProvider):
@@ -41,9 +44,16 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
             return False
 
     @staticmethod
-    def _encode_job_id(key_id, task_id):
+    def _encode_job_id(key_id, task_id, origin=MINIMAX_ORIGIN_METASO):
+        origin = str(origin or "").strip().lower()
+        if origin not in MINIMAX_ORIGINS:
+            raise ValueError("unsupported MiniMax task origin")
         raw = json.dumps(
-            {"key_id": str(key_id or "env"), "task_id": str(task_id)},
+            {
+                "key_id": str(key_id or "env"),
+                "task_id": str(task_id),
+                "origin": origin,
+            },
             separators=(",", ":"),
         ).encode("utf-8")
         return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
@@ -56,10 +66,21 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
             payload = json.loads(raw.decode("utf-8"))
             task_id = str(payload.get("task_id") or "").strip()
             if task_id:
-                return str(payload.get("key_id") or "env"), task_id
+                origin = str(
+                    payload.get("origin") or MINIMAX_ORIGIN_LEGACY
+                ).strip().lower()
+                if origin not in MINIMAX_ORIGINS:
+                    raise VisualProviderError(
+                        "provider_job_origin_invalid",
+                        "MiniMax 任务来源无效，已停止自动恢复",
+                        submitted=True,
+                    )
+                return str(payload.get("key_id") or "env"), task_id, origin
+        except VisualProviderError:
+            raise
         except Exception:
             pass
-        return "env", value
+        return "env", value, MINIMAX_ORIGIN_LEGACY
 
     @staticmethod
     def _claim_key():
@@ -215,11 +236,12 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
             refs = [self._reference_value(item) for item in payload["reference_images"]]
             body = video_minimax_h3.build_request(
                 payload["prompt"], refs, payload["ratio"],
-                payload["duration_seconds"], "768P",
+                payload["duration_seconds"], payload["resolution"],
             )
             created = video_minimax_h3._request_json(
                 video_minimax_h3._opener(), "POST", "/v2/video_generation",
                 body, timeout=120, api_key=candidate["secret"],
+                api_base=video_minimax_h3.API_BASE,
             )
         except video_minimax_h3.MiniMaxCredentialRejected as error:
             raise VisualProviderError("provider_not_configured", str(error)) from error
@@ -233,12 +255,18 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
                 "provider_job_id_missing", "MiniMax 已接受请求但未返回任务 ID", submitted=True
             )
         return {
-            "provider_job_id": self._encode_job_id(candidate["id"], task_id),
-            "raw": {"task_id": task_id, "provider_key_id": candidate["id"]},
+            "provider_job_id": self._encode_job_id(
+                candidate["id"], task_id, MINIMAX_ORIGIN_METASO,
+            ),
+            "raw": {
+                "task_id": task_id,
+                "provider_key_id": candidate["id"],
+                "task_origin": MINIMAX_ORIGIN_METASO,
+            },
         }
 
     def get_job(self, provider_job_id):
-        key_id, task_id = self._decode_job_id(provider_job_id)
+        key_id, task_id, origin = self._decode_job_id(provider_job_id)
         candidate = self._bound_key(key_id)
         if not candidate or not candidate.get("secret"):
             raise VisualProviderError("provider_key_unavailable", "MiniMax 任务绑定的 API Key 不可用", submitted=True)
@@ -247,7 +275,11 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
         try:
             data = video_minimax_h3.query_task(
                 task_id, candidate["secret"],
-                api_base=video_minimax_h3.LEGACY_API_BASE,
+                api_base=(
+                    video_minimax_h3.API_BASE
+                    if origin == MINIMAX_ORIGIN_METASO
+                    else video_minimax_h3.LEGACY_API_BASE
+                ),
             )
         except Exception as error:
             raise VisualProviderError("provider_poll_failed", "查询 MiniMax 任务失败", submitted=True) from error
