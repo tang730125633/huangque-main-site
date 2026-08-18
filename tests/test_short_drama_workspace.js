@@ -1343,6 +1343,63 @@ test('refinement player exposes shot locator, seeking and current-shot marking',
   assert.match(workspaceStyle, /\.sd-refinement-locator-shot\{flex:0 0 var\(--shot-share\)\}/);
 });
 
+test('staged candidate pauses locator until the old full preview is reassembled', () => {
+  const output = workspace.refinementHtml({
+    current_refinement:{
+      version:5,status:'draft',url:'/api/gen/file/old-refinement.mp4',
+      assembly_status:{
+        available:true,reassembly_required:true,staged_count:1,
+        preview_duration_ms:9000,source_duration_ms:10000,
+        shot_durations:[
+          {shot_key:'shot_01',duration_ms:5000},
+          {shot_key:'shot_02',duration_ms:5000},
+        ],
+      },
+      shots:[
+        {shot_key:'shot_01',sort_order:1,status:'ready'},
+        {shot_key:'shot_02',sort_order:2,status:'ready'},
+      ],
+      issues:[],
+    },
+  });
+  assert.match(output, /data-refinement-player/);
+  assert.match(output, /data-refinement-shot-locator-paused/);
+  assert.match(output, /当前完整预览与逐镜素材暂不一致/);
+  assert.doesNotMatch(output, /data-action="seek-refinement-shot"/);
+  assert.doesNotMatch(output, /data-action="mark-current-refinement-shot"/);
+});
+
+test('mounted read-only workspace keeps shot seeking enabled but disables writes', () => {
+  function control(action, insideSection) {
+    return {
+      disabled:false,
+      getAttribute(name){return name==='data-action'?action:null;},
+      closest(){return insideSection?{}:null;},
+    };
+  }
+  const seek = control('seek-refinement-shot', true);
+  const history = control('toggle-history', true);
+  const mark = control('mark-current-refinement-shot', true);
+  const input = control('', true);
+  const controls = [seek, history, mark, input];
+  const root = {
+    classList:{toggle(){}},
+    querySelectorAll(){return controls;},
+  };
+
+  workspace.setWorkspaceBusyState(root, false, false);
+  assert.equal(seek.disabled, false);
+  assert.equal(history.disabled, false);
+  assert.equal(mark.disabled, true);
+  assert.equal(input.disabled, true);
+
+  workspace.setWorkspaceBusyState(root, true, false);
+  assert.equal(seek.disabled, true);
+  assert.equal(history.disabled, true);
+  assert.equal(mark.disabled, true);
+  assert.equal(input.disabled, true);
+});
+
 test('镜头问题标记使用页面内弹窗并提供明确的问题类型', () => {
   assert.match(workspaceSource, /id="sdRefinementIssueModal"/);
   assert.match(workspaceSource, /id="sdRefinementIssueForm"/);

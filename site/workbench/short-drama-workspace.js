@@ -711,6 +711,11 @@
   function refinementShotLocatorHtml(shots,assembly,issues){
     var timeline=refinementShotTimeline(shots,assembly),entries=timeline.entries;
     if(!entries.length)return '';
+    if(assembly.available===false||assembly.reassembly_required===true){
+      return '<section class="sd-refinement-locator paused" data-refinement-shot-locator-paused aria-label="镜头定位暂不可用">'+
+        '<header><div><span>镜头定位</span><b>定位已暂停</b></div></header>'+
+        '<p>当前完整预览与逐镜素材暂不一致。重新合成完整预览后，镜头跳转和当前镜头标记会自动恢复。</p></section>';
+    }
     var issueKeys={};
     (Array.isArray(issues)?issues:[]).forEach(function(item){var value=text(item&&item.shot_key).trim();if(value)issueKeys[value]=true;});
     var first=entries[0],firstLabel='#'+first.sort_order+' · '+refinementTimelineTime(first.start_ms)+'–'+refinementTimelineTime(first.end_ms);
@@ -960,6 +965,14 @@
   function providerLabel(){
     return '视频生成服务';
   }
+  function setWorkspaceBusyState(root,flag,canEdit){
+    root.classList.toggle('busy',!!flag);
+    root.querySelectorAll('button,textarea,input,select').forEach(function(node){
+      var action=node.getAttribute('data-action');
+      var readOnlyAction=action==='toggle-history'||action==='seek-refinement-shot';
+      node.disabled=!!flag||(!readOnlyAction&&!canEdit&&!!node.closest('form,section'));
+    });
+  }
   function mount(doc,options){
     options=options||{};
     var projectId=text(options.projectId).trim(),client=options.client||createClient(options.fetchImpl),accountUsername='',state=normalize({}),projectDetail={characters:[]},preflight={state:'script_required',current_plan:null,versions:[]},autodraft={state:'plan_required',versions:[]},refinement=null,characterStudio=null,sceneWorkspace={graph_revision:1,scenes:[]},selectedCharacterKey='',selectedShotKey='',shotEditorMode='script',selectedProviderShotKey='',activeWorkspaceShotKey='',pollTimer=null,historyExpanded=false,inspectorExpanded=!(doc.defaultView&&doc.defaultView.innerWidth<=1050),characterNameEditing=false,characterProfileDirty=false,characterImageOperation={character_key:'',phase:'idle',message:'',error:false,active:false};
@@ -970,7 +983,7 @@
     root.insertAdjacentHTML('beforeend','<div class="sd-character-modal sd-refinement-issue-modal" id="sdRefinementIssueModal" hidden><div class="sd-character-modal-backdrop" data-action="close-refinement-issue"></div><section role="dialog" aria-modal="true" aria-labelledby="sdRefinementIssueTitle"><header><div><span>SHOT REVIEW</span><h2 id="sdRefinementIssueTitle">标记问题镜头</h2></div><button type="button" data-action="close-refinement-issue" aria-label="关闭">×</button></header><div id="sdRefinementIssueBody"></div></section></div>');
     var notice=doc.getElementById('sdWorkspaceNotice');
     var characterImagePreviewTrigger=null;
-    function busy(flag){root.classList.toggle('busy',!!flag);root.querySelectorAll('button,textarea,input,select').forEach(function(node){var readOnlyAction=node.getAttribute('data-action')==='toggle-history';node.disabled=!!flag||(!readOnlyAction&&!state.permissions.can_edit&&node.closest('form,section'));});}
+    function busy(flag){setWorkspaceBusyState(root,flag,state.permissions.can_edit);}
     function show(message,error){message=userFacingVideoMessage(message,'');notice.textContent=message;notice.classList.toggle('error',!!error);notice.hidden=!message;}
     function closeRefinementIssueModal(){
       var modal=doc.getElementById('sdRefinementIssueModal');
@@ -2386,5 +2399,5 @@
     }).then(function(){render();schedulePoll();}).catch(function(error){show(error.message||'工作区加载失败',true);}).finally(function(){busy(false);render();});
     return {render:render,getState:function(){return state;},getPreflight:function(){return preflight;},getAutodraft:function(){return autodraft;},getRefinement:function(){return refinement;}};
   }
-  return {createClient:createClient,characterImageOperationState:characterImageOperationState,characterImageAction:characterImageAction,avatarCreateUrl:avatarCreateUrl,cloneProjectPayload:cloneProjectPayload,normalize:normalize,conversationWorkspaceMode:conversationWorkspaceMode,applyConversationMode:applyConversationMode,quickReplyPresentation:quickReplyPresentation,messageHtml:messageHtml,importContractHtml:importContractHtml,importContractTechnicalHtml:importContractTechnicalHtml,storyActsHtml:storyActsHtml,storyboardQualityHtml:storyboardQualityHtml,scriptHeaderState:scriptHeaderState,shotMediaIndex:shotMediaIndex,activeProviderJobs:activeProviderJobs,providerJobsWithResult:providerJobsWithResult,currentShotExecutionPrompt:currentShotExecutionPrompt,defaultWorkspaceShotKey:defaultWorkspaceShotKey,shotGenerationOverviewHtml:shotGenerationOverviewHtml,sceneLockingHtml:sceneLockingHtml,shotMediaHtml:shotMediaHtml,providerShotControlsHtml:providerShotControlsHtml,scriptHtml:scriptHtml,versionHtml:versionHtml,preflightHtml:preflightHtml,autodraftActionsHtml:autodraftActionsHtml,draftHtml:draftHtml,refinementIssueGroups:refinementIssueGroups,refinementTimelineTime:refinementTimelineTime,refinementShotTimeline:refinementShotTimeline,refinementShotLocatorHtml:refinementShotLocatorHtml,refinementShotCandidateHtml:refinementShotCandidateHtml,refinementRedoGenerationHtml:refinementRedoGenerationHtml,refinementRedoSummaryHtml:refinementRedoSummaryHtml,refinementRedoHtml:refinementRedoHtml,refinementHtml:refinementHtml,refinementActionsHtml:refinementActionsHtml,refinementProviderHtml:refinementProviderHtml,shellHtml:shellHtml,authoritativeCharacterList:authoritativeCharacterList,movieAvatarRequired:movieAvatarRequired,userFacingVideoMessage:userFacingVideoMessage,sensitiveProviderFailure:sensitiveProviderFailure,saferProviderPrompt:saferProviderPrompt,providerInputReview:providerInputReview,syncProviderCharacterNames:syncProviderCharacterNames,syncShotBindingPrompt:syncShotBindingPrompt,providerFailureRecoveryHtml:providerFailureRecoveryHtml,providerLabel:providerLabel,mount:mount};
+  return {createClient:createClient,characterImageOperationState:characterImageOperationState,characterImageAction:characterImageAction,avatarCreateUrl:avatarCreateUrl,cloneProjectPayload:cloneProjectPayload,normalize:normalize,conversationWorkspaceMode:conversationWorkspaceMode,applyConversationMode:applyConversationMode,quickReplyPresentation:quickReplyPresentation,messageHtml:messageHtml,importContractHtml:importContractHtml,importContractTechnicalHtml:importContractTechnicalHtml,storyActsHtml:storyActsHtml,storyboardQualityHtml:storyboardQualityHtml,scriptHeaderState:scriptHeaderState,shotMediaIndex:shotMediaIndex,activeProviderJobs:activeProviderJobs,providerJobsWithResult:providerJobsWithResult,currentShotExecutionPrompt:currentShotExecutionPrompt,defaultWorkspaceShotKey:defaultWorkspaceShotKey,shotGenerationOverviewHtml:shotGenerationOverviewHtml,sceneLockingHtml:sceneLockingHtml,shotMediaHtml:shotMediaHtml,providerShotControlsHtml:providerShotControlsHtml,scriptHtml:scriptHtml,versionHtml:versionHtml,preflightHtml:preflightHtml,autodraftActionsHtml:autodraftActionsHtml,draftHtml:draftHtml,refinementIssueGroups:refinementIssueGroups,refinementTimelineTime:refinementTimelineTime,refinementShotTimeline:refinementShotTimeline,refinementShotLocatorHtml:refinementShotLocatorHtml,refinementShotCandidateHtml:refinementShotCandidateHtml,refinementRedoGenerationHtml:refinementRedoGenerationHtml,refinementRedoSummaryHtml:refinementRedoSummaryHtml,refinementRedoHtml:refinementRedoHtml,refinementHtml:refinementHtml,refinementActionsHtml:refinementActionsHtml,refinementProviderHtml:refinementProviderHtml,shellHtml:shellHtml,authoritativeCharacterList:authoritativeCharacterList,movieAvatarRequired:movieAvatarRequired,userFacingVideoMessage:userFacingVideoMessage,sensitiveProviderFailure:sensitiveProviderFailure,saferProviderPrompt:saferProviderPrompt,providerInputReview:providerInputReview,syncProviderCharacterNames:syncProviderCharacterNames,syncShotBindingPrompt:syncShotBindingPrompt,providerFailureRecoveryHtml:providerFailureRecoveryHtml,providerLabel:providerLabel,setWorkspaceBusyState:setWorkspaceBusyState,mount:mount};
 });
