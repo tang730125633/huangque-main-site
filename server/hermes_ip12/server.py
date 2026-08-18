@@ -1911,7 +1911,8 @@ def _assert_expected_revision(state, expected_revision):
 
 
 def _persist_model_turn(
-    cid, user_message, snapshot_revision, raw_decision, evidence, prefix="", discard_pending=False
+    cid, user_message, snapshot_revision, raw_decision, evidence, prefix="", discard_pending=False,
+    message_id="",
 ):
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
@@ -1936,7 +1937,7 @@ def _persist_model_turn(
         if prefix:
             assistant = prefix + "\n\n" + assistant
         if user_message:
-            convo.setdefault("messages", []).append({"role": "user", "content": _redact_mobile_numbers(user_message)})
+            _append_or_reuse_user_message(convo, user_message, message_id)
         convo.setdefault("messages", []).append({"role": "assistant", "content": assistant})
         convo["coach_state"] = next_state
         if was_intake and convo.get("title") == "新诊断":
@@ -1953,7 +1954,7 @@ def _persist_model_turn(
     return assistant, next_state
 
 
-def _persist_unprocessed_turn(cid, user_message, snapshot_revision, prefix=""):
+def _persist_unprocessed_turn(cid, user_message, snapshot_revision, prefix="", message_id=""):
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
         if convo is None:
@@ -1969,7 +1970,7 @@ def _persist_unprocessed_turn(cid, user_message, snapshot_revision, prefix=""):
         if prefix:
             assistant = prefix + "\n\n" + assistant
         clean_message = _redact_mobile_numbers(user_message)
-        convo.setdefault("messages", []).append({"role": "user", "content": clean_message})
+        _append_or_reuse_user_message(convo, clean_message, message_id)
         convo.setdefault("messages", []).append({"role": "assistant", "content": assistant})
         state["revision"] += 1
         convo["coach_state"] = state
@@ -1980,7 +1981,57 @@ def _persist_unprocessed_turn(cid, user_message, snapshot_revision, prefix=""):
     return assistant, state
 
 
-def _process_model_turn(cid, user_message, expected_revision=None, prefix="", persist_user=True):
+def _turn_message_id(cid, user_message, snapshot_revision, request_id=""):
+    clean_message = _redact_mobile_numbers(str(user_message or ""))
+    stable_input = request_id or "%s\n%s\n%s" % (cid, snapshot_revision, clean_message)
+    digest = hashlib.sha256(stable_input.encode("utf-8")).hexdigest()
+    return "ip12-user-" + digest
+
+
+def _append_or_reuse_user_message(convo, user_message, message_id=""):
+    clean_message = _redact_mobile_numbers(str(user_message or ""))
+    messages = convo.setdefault("messages", [])
+    if message_id:
+        for item in messages:
+            if item.get("role") == "user" and item.get("message_id") == message_id:
+                if item.get("content") != clean_message:
+                    raise coach_harness.HarnessConflict("请求已用于其他消息，请刷新后重试")
+                return False
+    messages.append({
+        "role": "user",
+        "content": clean_message,
+        **({"message_id": message_id} if message_id else {}),
+    })
+    return True
+
+
+def _persist_user_message(cid, user_message, snapshot_revision, request_id=""):
+    message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            raise KeyError("诊断不存在")
+        state = normalize_coach_state(convo.get("coach_state"))
+        if state["revision"] != snapshot_revision:
+            raise coach_harness.HarnessConflict("对话已在另一端更新，请刷新后重试")
+        if _append_or_reuse_user_message(convo, user_message, message_id):
+            save_conversation(cid, convo)
+    return message_id
+
+
+def _model_snapshot_without_user(convo, message_id):
+    snapshot = json.loads(json.dumps(convo, ensure_ascii=False))
+    if message_id:
+        snapshot["messages"] = [
+            item for item in snapshot.get("messages", [])
+            if item.get("message_id") != message_id
+        ]
+    return snapshot
+
+
+def _process_model_turn(
+    cid, user_message, expected_revision=None, prefix="", persist_user=True, request_id=""
+):
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
         if convo is None:
@@ -1991,7 +2042,11 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
         if 4 in state.get("completed_modules", []) and foundation_status not in {"awaiting_confirmation", "confirmed"}:
             return {"ok": False, "error": "请先生成并确认模块 1-4 的 IP 定位初稿 PDF"}, 409
         snapshot_revision = state["revision"]
-        snapshot = json.loads(json.dumps(convo, ensure_ascii=False))
+        message_id = ""
+        if persist_user and user_message:
+            message_id = _persist_user_message(cid, user_message, snapshot_revision, request_id)
+            convo = owned_conversation(cid)
+        snapshot = _model_snapshot_without_user(convo, message_id)
         prepare_module_six = (
             state.get("current_module") == 6
             and state.get("module_step") == 1
@@ -2014,7 +2069,7 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
             state = normalize_coach_state(convo.get("coach_state"))
             if state["revision"] != snapshot_revision:
                 raise coach_harness.HarnessConflict("对话已在另一端更新，请刷新后重试")
-            snapshot = json.loads(json.dumps(convo, ensure_ascii=False))
+            snapshot = _model_snapshot_without_user(convo, message_id)
     try:
         raw = coach_harness.duration_conflict_decision(state, user_message)
         if raw:
@@ -2029,6 +2084,7 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
                 raw,
                 evidence,
                 prefix=prefix,
+                message_id=message_id,
             )
         except coach_harness.HarnessConflict:
             raise
@@ -2042,6 +2098,7 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
                     raw,
                     evidence,
                     prefix=prefix,
+                    message_id=message_id,
                 )
             except coach_harness.HarnessError as retry_exc:
                 retry_error = str(retry_exc)
@@ -2085,6 +2142,7 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
                         evidence,
                         prefix="\n\n".join(item for item in (prefix, recovery_prefix) if item),
                         discard_pending=True,
+                        message_id=message_id,
                     )
                 except coach_harness.HarnessConflict:
                     raise
@@ -2106,6 +2164,7 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
                         user_message,
                         prefix=prefix,
                         discard_pending=True,
+                        message_id=message_id,
                     )
     except coach_harness.HarnessConflict:
         raise
@@ -2113,7 +2172,7 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
         app.logger.warning("IP12 model turn failed after validation/retry: %s", exc)
         if persist_user:
             assistant, next_state = _persist_unprocessed_turn(
-                cid, user_message, snapshot_revision, prefix=prefix
+                cid, user_message, snapshot_revision, prefix=prefix, message_id=message_id
             )
             return _chat_result(assistant, next_state), 200
         return {"ok": False, "error": "这条消息暂时没能安全整理，请重试；已确认内容不会丢失。"}, 502
@@ -2133,7 +2192,7 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
     return result, 200
 
 
-def _process_foundation_revision_turn(cid, user_message, expected_revision=None):
+def _process_foundation_revision_turn(cid, user_message, expected_revision=None, request_id=""):
     clean_message = _redact_mobile_numbers(str(user_message or "").strip())[:4000]
     if not clean_message:
         return {"ok": False, "error": "修改内容不能为空"}, 400
@@ -2148,6 +2207,7 @@ def _process_foundation_revision_turn(cid, user_message, expected_revision=None)
             return {"ok": False, "error": "当前没有待修改的模块 1-4 PDF"}, 409
         snapshot_revision = state["revision"]
         report_content = _redact_mobile_numbers(str(report.get("content") or ""))[:16000]
+        message_id = _persist_user_message(cid, clean_message, snapshot_revision, request_id)
 
     review_schema = {
         "type": "object",
@@ -2210,7 +2270,7 @@ def _process_foundation_revision_turn(cid, user_message, expected_revision=None)
             report.update(review_status="dirty", review_notes=notes)
         state["foundation_report"] = report
         state["revision"] += 1
-        convo.setdefault("messages", []).append({"role": "user", "content": clean_message})
+        _append_or_reuse_user_message(convo, clean_message, message_id)
         convo.setdefault("messages", []).append({"role": "assistant", "content": assistant})
         convo["coach_state"] = state
         save_conversation(cid, convo)
@@ -2231,7 +2291,7 @@ def _content_topic(pack, target):
     raise coach_harness.HarnessError("这篇文案已经更新或不存在，请重新选择")
 
 
-def _process_content_revision_turn(cid, user_message, target, expected_revision=None):
+def _process_content_revision_turn(cid, user_message, target, expected_revision=None, request_id=""):
     clean_message = _redact_mobile_numbers(str(user_message or "").strip())[:4000]
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
@@ -2246,6 +2306,7 @@ def _process_content_revision_turn(cid, user_message, target, expected_revision=
         versions = topic.get("versions") or []
         current_script = str((versions[-1] if versions else {}).get("content") or "")
         snapshot_revision = state["revision"]
+        message_id = _persist_user_message(cid, clean_message, snapshot_revision, request_id)
 
     schema = {
         "type": "object", "additionalProperties": False,
@@ -2307,7 +2368,7 @@ def _process_content_revision_turn(cid, user_message, target, expected_revision=
             topic["versions"] = versions[-20:]
             topic["status"] = "revised"
         state["revision"] += 1
-        convo.setdefault("messages", []).append({"role": "user", "content": clean_message})
+        _append_or_reuse_user_message(convo, clean_message, message_id)
         convo.setdefault("messages", []).append({"role": "assistant", "content": assistant})
         convo["coach_state"] = state
         save_conversation(cid, convo)
@@ -2323,14 +2384,18 @@ def _action_label(action_type):
     }.get(action_type, "确认操作")
 
 
-def _process_action_turn(cid, action, expected_revision):
+def _process_action_turn(cid, action, expected_revision, user_message="", request_id=""):
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
         if convo is None:
             return None, 404
         state = normalize_coach_state(convo.get("coach_state"))
+        if user_message:
+            _persist_user_message(cid, user_message, state["revision"], request_id)
+            convo = owned_conversation(cid)
         next_state, event = coach_harness.apply_action(state, action, expected_revision)
-        convo.setdefault("messages", []).append({"role": "user", "content": _action_label(action.get("type"))})
+        if not user_message:
+            convo.setdefault("messages", []).append({"role": "user", "content": _action_label(action.get("type"))})
         convo["coach_state"] = next_state
         save_conversation(cid, convo)
 
@@ -2434,17 +2499,21 @@ def process_chat_request(body):
                 action_revision = body.get("expected_revision")
 
         if action is not None:
-            result, status = _process_action_turn(cid, action, action_revision)
+            result, status = _process_action_turn(
+                cid, action, action_revision, user_message=user_message, request_id=request_id
+            )
         elif content_target is not None and not coach_harness.is_content_review_message(user_message):
             result, status = _process_content_revision_turn(
-                cid, user_message, content_target, body.get("expected_revision")
+                cid, user_message, content_target, body.get("expected_revision"), request_id
             )
         elif foundation_review == "revision":
             result, status = _process_foundation_revision_turn(
-                cid, user_message, body.get("expected_revision")
+                cid, user_message, body.get("expected_revision"), request_id
             )
         else:
-            result, status = _process_model_turn(cid, user_message, body.get("expected_revision"))
+            result, status = _process_model_turn(
+                cid, user_message, body.get("expected_revision"), request_id=request_id
+            )
     except coach_harness.HarnessConflict as exc:
         return {"ok": False, "error": str(exc)}, 409
     except coach_harness.HarnessError as exc:

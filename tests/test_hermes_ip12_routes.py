@@ -426,7 +426,8 @@ if (!rendered.includes("&lt;img") || !rendered.includes("<br>")) process.exit(5)
             }, message
 
         def persist_turn(
-            _cid, user_message, _revision, raw, evidence, prefix="", discard_pending=False
+            _cid, user_message, _revision, raw, evidence, prefix="", discard_pending=False,
+            message_id="",
         ):
             persist_calls.append((user_message, raw, evidence, prefix, discard_pending))
             if len(persist_calls) <= persist_failures:
@@ -438,6 +439,8 @@ if (!rendered.includes("&lt;img") || !rendered.includes("<br>")) process.exit(5)
             "owned_conversation": lambda _cid: {"coach_state": state},
             "normalize_coach_state": lambda value: value,
             "_assert_expected_revision": lambda _state, _revision: None,
+            "_persist_user_message": lambda _cid, _message, _revision, _request_id="": "test-message-id",
+            "_model_snapshot_without_user": lambda convo, _message_id: convo,
             "coach_harness": SimpleNamespace(
                 HarnessError=HarnessError,
                 HarnessConflict=HarnessConflict,
@@ -1376,7 +1379,16 @@ fallback_state["intake"]["status"] = "complete"
 fallback_convo["coach_state"] = fallback_state
 server.save_conversation(fallback_cid, fallback_convo)
 fallback_words = "这是模型暂时无法整理、但必须先保存的用户原话"
-with patch.object(server, "call_ai", side_effect=RuntimeError("temporary model failure")):
+seen_before_model = []
+def fail_before_model(snapshot, user_message, repair_error=""):
+    saved = server.load_conversation(fallback_cid).get("messages", [])
+    seen_before_model.append(any(
+        item.get("role") == "user" and item.get("content") == fallback_words
+        for item in saved
+    ))
+    raise RuntimeError("temporary model failure")
+
+with patch.object(server, "_coach_model_decision", side_effect=fail_before_model):
     fallback_response = client.post("/api/chat-complete", json={
         "conversation_id": fallback_cid,
         "message": fallback_words,
@@ -1384,10 +1396,19 @@ with patch.object(server, "call_ai", side_effect=RuntimeError("temporary model f
         "request_id": "fallback-persists-once",
     })
 assert fallback_response.status_code == 200, fallback_response.get_data(as_text=True)
+assert seen_before_model == [True], seen_before_model
 fallback_json = fallback_response.get_json()
 assert fallback_json["ok"] is True
 assert "已经记下你刚才的原话" in fallback_json["assistant"]
 saved_fallback = server.load_conversation(fallback_cid)
+assert sum(
+    item.get("role") == "user" and item.get("content") == fallback_words
+    for item in saved_fallback["messages"]
+) == 1
+assert sum(
+    item.get("role") == "user" and item.get("message_id")
+    for item in saved_fallback["messages"]
+) == 1
 assert saved_fallback["messages"][-2]["content"] == fallback_words
 assert saved_fallback["messages"][-1]["content"] == fallback_json["assistant"]
 assert saved_fallback["coach_state"]["revision"] == fallback_state["revision"] + 1
