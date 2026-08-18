@@ -455,33 +455,45 @@ class IP12HarnessTests(unittest.TestCase):
 
         self.assertEqual(compiled["checkpoint"], 3)
         self.assertEqual(compiled["profile_updates"], [])
-        self.assertIn("首批 6 条发布顺序", compiled["draft"])
+        self.assertIn("精选 3 个重点选题", compiled["draft"])
         self.assertIn("【转行经验分享】转行经验分享选题01", compiled["draft"])
         for message in ("继续", "下一步", "进入下一步", "好的，下一步！"):
             with self.subTest(message=message):
                 self.assertTrue(harness.is_continue_message(message))
         self.assertFalse(harness.is_continue_message("下一步会生成口播吗？"))
+        self.assertTrue(harness.is_content_review_message("口播文案我先看看"))
+        self.assertTrue(harness.is_content_review_message("把三篇完整文章给我看一下"))
+        self.assertFalse(harness.is_content_review_message("下一步会生成口播吗？"))
+        self.assertFalse(harness.is_content_review_message("这篇文案给我的感觉太正式，改口语一点"))
 
     def test_module_six_checkpoints_reuse_one_generated_content_pack(self):
         state = self.complete_intake()
         state.update(current_module=6, module_step=1, completed_modules=[1, 2, 3, 4, 5])
         pack = {
             "kind": "content_pack_v1",
+            "format": "featured_3_v1",
             "categories": [{
                 "name": "种类%d" % category,
-                "topics": [{"title": "种类%d选题%02d" % (category, topic)}
-                           for topic in range(1, 11)],
+                "description": "这是种类%d中最值得优先发布的选题。" % category,
+                "topics": [{
+                    "title": "种类%d选题01" % category,
+                    "objective": "建立信任",
+                    "versions": [{"version": 1, "content": ("这是种类%d的完整口播正文，包含钩子、观点、解释和行动引导。" % category) * 8}],
+                }],
             } for category in range(1, 4)],
         }
 
         review = harness.compile_module_six_checkpoint(state, pack)
         self.assertEqual(review["checkpoint"], 2)
         self.assertIn("种类1选题01", review["draft"])
+        self.assertIn("这是种类1的完整口播正文", review["draft"])
+        self.assertIn("这是种类3的完整口播正文", review["draft"])
+        self.assertNotIn("你想先看哪一篇", review["reply"])
 
         state["module_step"] = 2
         confirmation = harness.compile_module_six_checkpoint(state, pack)
         self.assertEqual(confirmation["checkpoint"], 3)
-        self.assertIn("种类3：10 篇", confirmation["draft"])
+        self.assertIn("3 篇完整文案", confirmation["draft"])
 
     def test_module_six_style_reuses_confirmed_preferences(self):
         state = self.complete_intake()
@@ -806,12 +818,13 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual(state["completed_modules"], [1, 2, 3, 4, 5, 6])
         self.assertIn("decision=answer_only", harness.system_prompt(state))
 
-    def test_content_modules_encode_three_by_ten_contract(self):
+    def test_content_modules_keep_three_by_ten_pool_and_deliver_three_full_scripts(self):
         module_five = harness.MODULE_WORKFLOWS[5]["checkpoints"]
         module_six = harness.MODULE_WORKFLOWS[6]["checkpoints"]
         self.assertTrue(any("3 个" in item for item in module_five))
         self.assertTrue(any("每个种类" in item and "10 个" in item for item in module_five))
-        self.assertTrue(any("30 篇" in item for item in module_six))
+        self.assertTrue(any("3 篇精选" in item for item in module_six))
+        self.assertTrue(any("完整口播文案" in item for item in module_six))
 
     def test_incomplete_legacy_state_cannot_skip_the_last_checkpoint(self):
         state = harness.normalize_state({
