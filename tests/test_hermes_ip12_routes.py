@@ -57,7 +57,7 @@ class HermesIP12SourceTests(unittest.TestCase):
         for path in HERMES.glob("*.py"):
             routes.update(pattern.findall(path.read_text(encoding="utf-8")))
 
-        self.assertEqual(len(routes), 76)
+        self.assertEqual(len(routes), 80)
         self.assertTrue(
             {
                 "/api/chat",
@@ -71,6 +71,10 @@ class HermesIP12SourceTests(unittest.TestCase):
                 "/api/replica",
                 "/api/agnes/video",
                 "/api/team-workbench/submit",
+                "/api/ip12/productions/prepare",
+                "/api/ip12/productions/quote",
+                "/api/ip12/productions/confirm",
+                "/api/ip12/productions/<production_id>",
                 "/classic",
                 "/skills",
                 "/analytics",
@@ -78,6 +82,19 @@ class HermesIP12SourceTests(unittest.TestCase):
                 "/team-workbench",
             }.issubset(routes)
         )
+
+    def test_production_routes_keep_quote_tokens_server_side(self):
+        source = (HERMES / "server.py").read_text(encoding="utf-8")
+        for path in (
+            "/api/ip12/productions/prepare",
+            "/api/ip12/productions/quote",
+            "/api/ip12/productions/confirm",
+            "/api/ip12/productions/<production_id>",
+        ):
+            self.assertIn(path, source)
+        self.assertIn('quote.pop("token", None)', source)
+        self.assertIn('"idempotency_key": "ip12-" + production_id', source)
+        self.assertIn('record.update(status="submitting"', source)
 
     def test_main_view_exposes_three_featured_full_scripts(self):
         page = (HERMES / "templates/index.html").read_text(encoding="utf-8")
@@ -763,6 +780,105 @@ assert client.post("/api/foundation-report/confirm", json={"conversation_id": ci
 assert client.get("/api/conversations").get_json() == []
 server.current_account_id = lambda: "acct_a"
 assert client.delete(f"/api/conversations/{cid}").get_json()["ok"] is True
+
+# Production records stay in the existing conversation JSON.  The bridge is
+# mocked here: this route layer must preserve its quote token, source version,
+# and one idempotency key without recreating Auth/CLI billing behavior.
+production_cid = "production001"
+production_state = server.initial_coach_state()
+server.save_conversation(production_cid, {
+    "id": production_cid, "title": "生产项目", "messages": [],
+    "coach_state": production_state, "reports": {}, "owner_account_id": "acct_a",
+    "deliverables": {"6": {"kind": "content_pack_v1", "categories": [{
+        "id": "category_1", "name": "内容种类", "topics": [{
+            "id": "topic_1", "title": "精选选题", "status": "ready",
+            "versions": [{"version": 1, "content": "这是可制作的完整口播正文。"}],
+        }],
+    }]}},
+})
+revision = production_state["revision"]
+prepared = client.post("/api/ip12/productions/prepare", json={
+    "conversation_id": production_cid,
+    "content_target": {"category_id": "category_1", "topic_id": "topic_1"},
+    "expected_revision": revision, "requested_result": "video",
+})
+assert prepared.status_code == 200, prepared.get_data(as_text=True)
+prepared_body = prepared.get_json()
+production_id = prepared_body["production_id"]
+assert prepared_body["status"] == "blocked_prerequisite"
+bridge_calls = []
+def fake_production_bridge(account_id, action, input_body, **kwargs):
+    bridge_calls.append((account_id, action, input_body, kwargs))
+    if kwargs.get("confirm"):
+        return {"job_id": "456", "status": "queued"}
+    if action == "task":
+        return {"job_id": "456", "status": "done", "asset_refs": [{"id": "asset-1", "kind": "video"}]}
+    return {"quote_token": "private-quote-token", "cost": 12, "points": 12, "expires_in": 300}
+with patch.object(server, "_bridge_action", side_effect=fake_production_bridge):
+    quoted = client.post("/api/ip12/productions/quote", json={
+        "conversation_id": production_cid, "production_id": production_id,
+        "expected_revision": revision, "options": {"avatar_id": 1, "voice": "voice-demo"},
+    })
+    assert quoted.status_code == 200, quoted.get_data(as_text=True)
+    assert quoted.get_json()["cost"] == 12
+    confirmed = client.post("/api/ip12/productions/confirm", json={
+        "conversation_id": production_cid, "production_id": production_id,
+        "expected_revision": revision, "confirmation_id": "confirm-production-001",
+    })
+    assert confirmed.status_code == 200, confirmed.get_data(as_text=True)
+    assert confirmed.get_json()["production"]["job_id"] == "456"
+    restored = client.get(f"/api/ip12/productions/{production_id}?conversation_id={production_cid}")
+    assert restored.status_code == 200, restored.get_data(as_text=True)
+    assert restored.get_json()["production"]["status"] == "done"
+    assert restored.get_json()["production"]["asset_refs"][0]["id"] == "asset-1"
+assert len([call for call in bridge_calls if call[3].get("confirm")]) == 1
+stored_production = server.load_conversation(production_cid)["productions"][production_id]
+assert stored_production["quote"]["token"] == "private-quote-token"
+public_project = client.get(f"/api/conversations/{production_cid}").get_json()
+assert "private-quote-token" not in json.dumps(public_project, ensure_ascii=False)
+assert public_project["productions"][0]["job_id"] == "456"
+
+# A lost confirm response leaves the project in submitting.  Status recovery
+# must reuse the same quote and idempotency key, not open another production.
+recovery_prepare = client.post("/api/ip12/productions/prepare", json={
+    "conversation_id": production_cid,
+    "content_target": {"category_id": "category_1", "topic_id": "topic_1"},
+    "expected_revision": revision, "requested_result": "video",
+}).get_json()
+recovery_id = recovery_prepare["production_id"]
+recovery_confirm_calls = []
+def recovery_bridge(account_id, action, input_body, **kwargs):
+    if not kwargs.get("confirm"):
+        return {"quote_token": "recovery-quote", "cost": 12, "points": 12, "expires_in": 300}
+    recovery_confirm_calls.append(kwargs["idempotency_key"])
+    if len(recovery_confirm_calls) == 1:
+        raise RuntimeError("response lost")
+    return {"job_id": "789", "status": "queued"}
+with patch.object(server, "_bridge_action", side_effect=recovery_bridge):
+    assert client.post("/api/ip12/productions/quote", json={
+        "conversation_id": production_cid, "production_id": recovery_id,
+        "expected_revision": revision, "options": {"avatar_id": 2, "voice": "voice-demo"},
+    }).status_code == 200
+    pending = client.post("/api/ip12/productions/confirm", json={
+        "conversation_id": production_cid, "production_id": recovery_id,
+        "expected_revision": revision, "confirmation_id": "confirm-production-002",
+    })
+    assert pending.status_code == 202
+    recovered = client.get(f"/api/ip12/productions/{recovery_id}?conversation_id={production_cid}")
+    assert recovered.status_code == 200
+    assert recovered.get_json()["production"]["job_id"] == "789"
+assert len(recovery_confirm_calls) == 2 and len(set(recovery_confirm_calls)) == 1
+server.current_account_id = lambda: "acct_b"
+assert client.get(f"/api/ip12/productions/{production_id}?conversation_id={production_cid}").status_code == 404
+server.current_account_id = lambda: "acct_a"
+stale_project = server.load_conversation(production_cid)
+stale_project["deliverables"]["6"]["categories"][0]["topics"][0]["versions"].append(
+    {"version": 2, "content": "这是一版新的完整口播正文。"}
+)
+server.save_conversation(production_cid, stale_project)
+stale = client.get(f"/api/ip12/productions/{production_id}?conversation_id={production_cid}")
+assert stale.status_code == 200
+assert stale.get_json()["production"]["status"] == "stale"
 
 older_cid = "ffffffffffff"
 newer_cid = "000000000000"

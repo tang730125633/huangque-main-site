@@ -11,6 +11,38 @@ import re
 import uuid
 
 
+# Production remains a suggestion until the server has checked the selected
+# action against the first-party capability bridge.  Keeping this small map in
+# the pure harness lets the conversation layer make a deterministic, testable
+# recommendation without turning a natural-language reply into an execution.
+PRODUCTION_FAMILIES = {
+    "image": ("image-generate",),
+    "audio": ("audio-generate",),
+    "video": ("digital-ip-text-generate", "video-generate"),
+    "canvas": ("canvas-agent-plan", "canvas-create"),
+}
+
+
+def production_recommendation(requested_result, preferred_action=None):
+    """Return the bounded production candidates for an IP12 project.
+
+    This deliberately does not validate provider parameters or submit work;
+    those are account-scoped responsibilities of the production bridge.
+    """
+    family = str(requested_result or "").strip().lower()
+    candidates = PRODUCTION_FAMILIES.get(family)
+    if not candidates:
+        raise HarnessError("暂不支持该制作类型")
+    preferred = str(preferred_action or "").strip()
+    if preferred and preferred not in candidates:
+        raise HarnessError("所选能力与制作类型不匹配")
+    return {
+        "capability_family": family,
+        "recommended_action": preferred or candidates[0],
+        "candidate_actions": list(candidates),
+    }
+
+
 AVAILABLE_MODULE_COUNT = 6
 SCHEMA_VERSION = 1
 

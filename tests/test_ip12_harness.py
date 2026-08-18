@@ -45,6 +45,24 @@ def intake_decision(*, kind="propose_checkpoint", reply="这是我整理的基�
 
 
 class IP12HarnessTests(unittest.TestCase):
+    def test_production_recommendations_stay_bounded_by_capability_family(self):
+        expected = {
+            "image": "image-generate",
+            "audio": "audio-generate",
+            "video": "digital-ip-text-generate",
+            "canvas": "canvas-agent-plan",
+        }
+        for family, action in expected.items():
+            with self.subTest(family=family):
+                recommendation = harness.production_recommendation(family)
+                self.assertEqual(recommendation["capability_family"], family)
+                self.assertEqual(recommendation["recommended_action"], action)
+                self.assertIn(action, recommendation["candidate_actions"])
+        with self.assertRaises(harness.HarnessError):
+            harness.production_recommendation("video", "image-generate")
+        with self.assertRaises(harness.HarnessError):
+            harness.production_recommendation("unknown")
+
     def complete_intake(self):
         state = harness.initial_state()
         evidence = "我叫泽龙，22岁，在广州做 FDE，主要提供技术服务。"
