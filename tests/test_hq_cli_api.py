@@ -174,6 +174,17 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual(["/api/gen/audio/voices", "/api/gen/audio/voices"], [item[0] for item in seen])
         self.assertTrue(all(item[2] == self.auth.INTERNAL_TOKEN for item in seen))
 
+    def test_ip12_agent_account_read_does_not_require_cli_expiry(self):
+        self._enable_ip12_bridge()
+        status, payload = self._request(
+            "/api/auth/internal/ip12/agent/action",
+            {"account_id": self._agent_account_id(), "action": "account", "input": {}},
+            extra_headers=self._agent_headers(),
+        )
+        self.assertEqual(200, status, payload)
+        self.assertEqual("alice", payload["user"]["username"])
+        self.assertNotIn("expires_at", payload)
+
     def test_ip12_agent_bridge_rejects_arbitrary_shell_urls_cross_account_input_and_secrets(self):
         self._enable_ip12_bridge()
         account_id = self._agent_account_id()
