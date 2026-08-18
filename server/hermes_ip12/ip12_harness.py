@@ -634,6 +634,9 @@ def validate_model_decision(
             str(item.get("field") or "")
             for item in pending.get("profile_updates") or [] if isinstance(item, dict)
         }
+        confirmed_modules = {
+            str(key).split("-", 1)[0] for key in profile["confirmed_outputs"]
+        }
         if state["current_module"] == 1 and all(
             any(token in field for field in known_fields) for token in (
                 "skill", "interest", "audience", "experience",
@@ -642,19 +645,23 @@ def validate_model_decision(
             token in field for field in known_fields for token in ("goal", "benefit", "value")
         ):
             raise HarnessError("模块 1 已有经历、能力、兴趣、目标人群和帮助目标，必须直接提炼候选关键词")
-        if state["current_module"] == 2 and any(
-            key.startswith("1-") for key in profile["confirmed_outputs"]
-        ):
+        if state["current_module"] == 2 and "1" in confirmed_modules:
             raise HarnessError("模块 1 已确认，必须从已有经历、行为和价值观直接提炼人格候选")
         if state["current_module"] == 3 and (
-            any(key.startswith("core_value_") for key in selections)
-            and any(key in facts for key in ("target_audience", "target_audience_basis"))
-            and any(key in facts for key in ("current_occupation", "current_identity_basis", "work_focus"))
+            {"1", "2"}.issubset(confirmed_modules)
+            or (
+                any(key.startswith("core_value_") for key in selections)
+                and any(key in facts for key in ("target_audience", "target_audience_basis"))
+                and any(key in facts for key in ("current_occupation", "current_identity_basis", "work_focus"))
+            )
         ):
             raise HarnessError("模块 3 已有确认的价值观、目标人群和领域，必须直接提炼候选关键词")
         if state["current_module"] == 4 and (
-            any(key in facts for key in ("turning_point_reflection", "career_transition", "career_transition_basis"))
-            and any(key in facts for key in ("previous_jobs", "career_background", "past_workplace_feelings"))
+            {"1", "2", "3"}.issubset(confirmed_modules)
+            or (
+                any(key in facts for key in ("turning_point_reflection", "career_transition", "career_transition_basis"))
+                and any(key in facts for key in ("previous_jobs", "career_background", "past_workplace_feelings"))
+            )
         ):
             raise HarnessError("模块 4 已有确认的真实经历和职业转折，必须直接提炼候选故事节点")
     expected_checkpoint = expected_checkpoint or state["module_step"] + 1
