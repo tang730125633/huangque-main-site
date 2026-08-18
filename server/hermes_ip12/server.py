@@ -782,7 +782,10 @@ def generate_foundation_report(convo_id):
         })
     messages.append({"role": "user", "content": "生成《IP 人设定位｜模块 1-4 初稿》，直接输出报告。"})
     messages.append({"role": "user", "content": "交付质检：请完整输出所有标题和表格，不得用‘略’、‘同上’或压缩成摘要。目标约8-10页、6000字左右。每个字段独占一行；策略推导必须建立在已知事实上，未知处清楚标注‘待本人确认’。"})
-    content = call_ai(messages, stream=False, temperature=0.4, max_tokens=8500).json()["choices"][0]["message"]["content"]
+    content = call_ai(messages, stream=False, temperature=0.4, max_tokens=16000).json()["choices"][0]["message"]["content"]
+    if not isinstance(content, str) or not content.strip():
+        raise RuntimeError("AI report is empty")
+    content = content.strip()
     FOUNDATION_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     playwright_browser = ""
     try:
