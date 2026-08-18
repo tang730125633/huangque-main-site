@@ -1007,6 +1007,19 @@ def _coach_model_decision(convo, user_message, repair_error=""):
         style_decision = coach_harness.compile_module_six_style(state, style_evidence)
         if style_decision:
             return style_decision, style_evidence
+        if coach_harness.is_continue_message(user_message):
+            return {
+                "decision": "ask_follow_up",
+                "checkpoint": 0,
+                "reply": (
+                    "30 个选题已经保留。请一次告诉我这 30 篇口播的统一要求："
+                    "希望用什么表达风格、每篇大约多长，以及结尾引导收藏、留言、关注或私信中的哪一种。"
+                ),
+                "draft": "",
+                "self_review": "",
+                "profile_updates": [],
+                "confidence": 1.0,
+            }, str(user_message or "")
     prompt = coach_harness.intake_system_prompt(state) if intake_pending else coach_harness.system_prompt(state)
     if repair_error:
         prompt += (
