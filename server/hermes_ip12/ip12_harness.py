@@ -961,20 +961,28 @@ def _reply_already_contains_draft(reply, draft):
     clean = lambda text: re.sub(r"[\W_]+", "", text).lower()
     reply_text, draft_text = clean(reply), clean(draft)
     return bool(draft_text) and (
-        draft_text in reply_text or SequenceMatcher(None, reply_text, draft_text).ratio() >= 0.82
+        draft_text in reply_text or SequenceMatcher(None, reply_text, draft_text).ratio() >= 0.75
     )
+
+
+def _render_confirmable_reply(reply, draft, suffix):
+    if _reply_already_contains_draft(reply, draft):
+        reply = "请核对这版内容。"
+    return reply + "\n\n" + draft + "\n\n" + suffix
 
 
 def render_model_reply(decision):
     reply = decision["reply"]
     if decision["decision"] == "propose_checkpoint":
-        if not _reply_already_contains_draft(reply, decision["draft"]):
-            reply += "\n\n" + decision["draft"]
-        reply += "\n\n内容不准确时直接告诉我；保留后我会继续，不需要你重复说明。"
+        reply = _render_confirmable_reply(
+            reply, decision["draft"],
+            "内容不准确时直接告诉我；保留后我会继续，不需要你重复说明。",
+        )
     elif decision["decision"] == "revise_intake":
-        if decision["draft"] not in reply:
-            reply += "\n\n" + decision["draft"]
-        reply += "\n\n这只是更新后的基础资料核对稿。请确认补充，或继续修改；当前模块不会自动推进。"
+        reply = _render_confirmable_reply(
+            reply, decision["draft"],
+            "这只是更新后的基础资料核对稿。请确认补充，或继续修改；当前模块不会自动推进。",
+        )
     return reply
 
 
@@ -1033,9 +1041,10 @@ def apply_intake_decision(value, raw, evidence_text):
     _bump(state)
     reply = decision["reply"]
     if decision["decision"] == "propose_checkpoint":
-        if not _reply_already_contains_draft(reply, decision["draft"]):
-            reply += "\n\n" + decision["draft"]
-        reply += "\n\n请确认资料，或者直接补充、纠正；我会说明理解错在哪里并立即重整。"
+        reply = _render_confirmable_reply(
+            reply, decision["draft"],
+            "请确认资料，或者直接补充、纠正；我会说明理解错在哪里并立即重整。",
+        )
     return state, decision, reply
 
 
