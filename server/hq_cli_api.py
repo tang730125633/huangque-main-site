@@ -1185,7 +1185,11 @@ def action_plan(action, value):
     if action == "ip12-message":
         _strict_object(value, {"project_id", "message", "request_id"}, ("project_id", "message", "request_id"))
         project_id = _identifier(value["project_id"], "project_id")
-        message = _string(value["message"], "message", 1, 4000)
+        message = value["message"]
+        if (not isinstance(message, str) or not 1 <= len(message.strip()) <= 4000
+                or any(ord(ch) < 32 and ch not in "\r\n\t" for ch in message)):
+            raise CLIAPIError(400, "message 长度或内容不合法")
+        message = message.strip()
         request_id = _identifier(value["request_id"], "request_id")
         request_hash = _hash(json.dumps(
             {"project_id": project_id, "message": message}, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
