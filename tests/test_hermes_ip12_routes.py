@@ -1838,9 +1838,24 @@ assert new_state["foundation_report"]["report_id"] != "report-old"
 assert new_state["foundation_report"]["review_status"] == "clean"
 assert new_state["foundation_report"]["review_notes"] == []
 report_messages = regenerate_model.call_args.args[0]
+assert regenerate_model.call_args.kwargs["max_tokens"] == 16000
 assert any("第一次创业失败后重新开始" in item.get("content", "") for item in report_messages)
 assert "不创建‘待补充’故事凑数" in report_messages[0]["content"]
 assert "不强制凑数量" in report_messages[0]["content"]
+
+empty_report_cid = client.post("/api/conversations").get_json()["id"]
+empty_report = server.load_conversation(empty_report_cid)
+empty_report["coach_state"] = {"current_module": 4, "completed_modules": [1, 2, 3, 4],
+                               "module_step": 4, "foundation_report": {"status": "failed"}}
+server.save_conversation(empty_report_cid, empty_report)
+empty_response = Mock()
+empty_response.json.return_value = {"choices": [{"message": {"content": ""}}]}
+with patch.object(server, "call_ai", return_value=empty_response), \
+        patch.object(server, "_render_foundation_pdf") as empty_renderer:
+    empty_generation = client.post("/api/foundation-report/generate", json={"conversation_id": empty_report_cid})
+assert empty_generation.status_code == 502
+empty_renderer.assert_not_called()
+assert server.load_conversation(empty_report_cid)["coach_state"]["foundation_report"]["error"] == "AI report is empty"
 
 stale_confirm = client.post("/api/foundation-report/confirm", json={
     "conversation_id": review_cid,
