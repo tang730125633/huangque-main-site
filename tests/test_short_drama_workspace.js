@@ -1240,6 +1240,35 @@ test('problem shots expose isolated candidate selection before one final reassem
   assert.match(workspaceStyle, /\.sd-workspace-grid\.refinement-redo-active>\.sd-inspector\{display:none!important\}/);
 });
 
+test('adopting a non-latest candidate binds preview and adoption to that exact version', () => {
+  const output = workspace.refinementShotCandidateHtml({
+    shot_key:'shot_02',provider_version:1,
+    issue:{provider_version_floor:1},
+  }, {
+    provider_versions:[
+      {id:'shot-02-v2',shot_key:'shot_02',version:2,url:'/v2.mp4',selected:true},
+      {id:'shot-02-v3',shot_key:'shot_02',version:3,url:'/v3.mp4'},
+    ],
+  });
+  assert.match(output, /候选 v2 已选中/);
+  assert.match(output, /data-action="refine-shot" data-shot-key="shot_02" data-version-id="shot-02-v2"/);
+
+  const first = workspace.refinementCandidateRequest('project-1','shot_02','shot-02-v2');
+  assert.deepEqual(first.preview, {
+    project_id:'project-1',shot_key:'shot_02',replacement_provider_version_id:'shot-02-v2',
+  });
+  const bound = workspace.refinementCandidateRequest('project-1','shot_02','shot-02-v2', {
+    source_version_id:'refinement-v4',replacement_provider_version_id:'shot-02-v2',
+  });
+  assert.equal(bound.adoption.replacement_provider_version_id, 'shot-02-v2');
+  assert.throws(
+    () => workspace.refinementCandidateRequest('project-1','shot_02','shot-02-v2', {
+      source_version_id:'refinement-v4',replacement_provider_version_id:'shot-02-v3',
+    }),
+    /候选版本已变化/,
+  );
+});
+
 test('refinement redo sidebar is a read-only progress summary', () => {
   const output = workspace.refinementRedoSummaryHtml({
     current_refinement:{
@@ -1371,9 +1400,13 @@ test('staged candidate pauses locator until the old full preview is reassembled'
 
 test('read-only permissions are reapplied to controls replaced by a render', () => {
   function control(action, insideSection) {
+    const attributes = {};
     return {
       disabled:false,
-      getAttribute(name){return name==='data-action'?action:null;},
+      getAttribute(name){return name==='data-action'?action:(attributes[name]??null);},
+      hasAttribute(name){return Object.hasOwn(attributes,name);},
+      setAttribute(name,value){attributes[name]=String(value);},
+      removeAttribute(name){delete attributes[name];},
       closest(){return insideSection?{}:null;},
     };
   }
@@ -1407,6 +1440,36 @@ test('read-only permissions are reapplied to controls replaced by a render', () 
     workspaceSource,
     /setWorkspaceBusyState\(root,workspaceBusy,state\.permissions\.can_edit\);\s*\n\s*}/,
   );
+});
+
+test('busy round trips preserve business-disabled controls for editable users', () => {
+  function control(action, disabled) {
+    const attributes = {};
+    return {
+      disabled:!!disabled,
+      getAttribute(name){return name==='data-action'?action:(attributes[name]??null);},
+      hasAttribute(name){return Object.hasOwn(attributes,name);},
+      setAttribute(name,value){attributes[name]=String(value);},
+      removeAttribute(name){delete attributes[name];},
+      closest(){return {};},
+    };
+  }
+  const gated = control('refine-shot', true);
+  const ready = control('toggle-history', false);
+  const root = {classList:{toggle(){}},querySelectorAll(){return [gated,ready];}};
+
+  workspace.setWorkspaceBusyState(root, false, true);
+  assert.equal(gated.disabled, true);
+  assert.equal(ready.disabled, false);
+  workspace.setWorkspaceBusyState(root, true, true);
+  assert.equal(gated.disabled, true);
+  assert.equal(ready.disabled, true);
+  workspace.setWorkspaceBusyState(root, false, true);
+  assert.equal(gated.disabled, true);
+  assert.equal(ready.disabled, false);
+  workspace.setWorkspaceBusyState(root, false, true);
+  assert.equal(gated.disabled, true);
+  assert.equal(ready.disabled, false);
 });
 
 test('镜头问题标记使用页面内弹窗并提供明确的问题类型', () => {
@@ -1900,7 +1963,7 @@ test('refinement requires explicit full-film acceptance before locking', () => {
   assert.match(workspaceSource, /source_hashes:requirements\.source_hashes/);
   assert.match(workspaceSource, /\/api\/gen\/short-drama\/refinement\/issues/);
   assert.match(workspaceSource, /preview\.replacement_ready!==true/);
-  assert.match(workspaceSource, /replacement_provider_version_id:preview\.replacement_provider_version_id/);
+  assert.match(workspaceSource, /replacement_provider_version_id:replacementVersionId/);
 });
 
 test('incomplete or unverifiable assembly disables full-film acceptance', () => {
