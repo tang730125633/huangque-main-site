@@ -1,3 +1,4 @@
+import importlib.util
 import os
 import subprocess
 import sys
@@ -29,6 +30,10 @@ class ProductionBridgeContractTests(unittest.TestCase):
         for field in ("confirm", "quote_token", "idempotency_key"):
             self.assertIn('"' + field + '"', bridge)
 
+    @unittest.skipUnless(
+        importlib.util.find_spec("flask") and importlib.util.find_spec("requests"),
+        "Hermes runtime dependencies are not installed",
+    )
     def test_user_message_is_persisted_before_the_model_is_called(self):
         script = r'''
 from unittest.mock import patch
