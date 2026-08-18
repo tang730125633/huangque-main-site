@@ -214,7 +214,7 @@ for f in "$@"; do
                svc="huangque-content huangque-admin"
              fi
              ;;
-    server/content_domains/feature_flags.py) dest=/home/ubuntu/content-api/content_domains/; svc="huangque-content huangque-admin huangque-imggen-api huangque-leadgen-api" ;;
+    server/content_domains/feature_flags.py) dest=/home/ubuntu/auth-service/content_domains/; svc="huangque-auth huangque-content huangque-admin huangque-imggen-api huangque-leadgen-api" ;;
     server/content_domains/egress.py) dest=/home/ubuntu/content-api/content_domains/; svc="huangque-content huangque-admin huangque-imggen-api" ;;
     server/content_domains/browser_qa.py) dest=/home/ubuntu/content-api/content_domains/; svc=huangque-admin ;;
     server/content_domains/*) dest=/home/ubuntu/content-api/content_domains/;  svc=huangque-content ;;
@@ -285,7 +285,7 @@ for f in "$@"; do
         || { echo "  ❌ 旧公开测试素材移除失败"; exit 1; }
       ;;
   esac
-  if [ "$f" = "server/content_domains/pricing.py" ] || [ "$f" = "server/content_domains/error_contract.py" ]; then
+  if [ "$f" = "server/content_domains/pricing.py" ] || [ "$f" = "server/content_domains/error_contract.py" ] || [ "$f" = "server/content_domains/feature_flags.py" ]; then
     push_file "$f" /home/ubuntu/content-api/content_domains/ \
       && echo "  ✓ $f → /home/ubuntu/content-api/content_domains/" \
       || { echo "  ❌ $f 部署到 content 失败"; exit 1; }
@@ -294,7 +294,7 @@ for f in "$@"; do
   add_deployed "$f"
   case "$f" in
     server/content_api.py|server/content_domains/*)
-      if [ "$f" = "server/content_domains/pricing.py" ] || [ "$f" = "server/content_domains/error_contract.py" ]; then
+      if [ "$f" = "server/content_domains/pricing.py" ] || [ "$f" = "server/content_domains/error_contract.py" ] || [ "$f" = "server/content_domains/feature_flags.py" ]; then
         echo "  ✓ 共享模块已分别部署到 auth 与 content"
       elif [ "$EXACT_CONTENT_DOMAINS" = "1" ] && [ "$f" != "server/content_api.py" ]; then
         echo "  ✓ file-only 模式：$f 不触发 content_domains 整目录同步"

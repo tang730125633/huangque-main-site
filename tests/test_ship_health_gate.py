@@ -339,17 +339,23 @@ exit 0
 
     def test_feature_flags_restarts_all_importers(self):
         ssh_log = Path(self.tmp.name) / "ssh.log"
+        rsync_log = Path(self.tmp.name) / "rsync.log"
         result = self._run_ship(
             target="server/content_domains/feature_flags.py",
             exact_content_domains=True,
             FAKE_CURL_CODE="200",
             FAKE_SSH_LOG=str(ssh_log),
+            FAKE_RSYNC_LOG=str(rsync_log),
         )
         self.assertEqual(0, result.returncode, result.stdout)
+        deployed = rsync_log.read_text(encoding="utf-8")
+        self.assertIn("/home/ubuntu/auth-service/content_domains/", deployed)
+        self.assertIn("/home/ubuntu/content-api/content_domains/", deployed)
         restart = next(
             line for line in ssh_log.read_text(encoding="utf-8").splitlines()
             if "sudo systemctl restart" in line
         )
+        self.assertIn("huangque-auth", restart)
         self.assertIn("huangque-content", restart)
         self.assertIn("huangque-admin", restart)
         self.assertIn("huangque-imggen-api", restart)
