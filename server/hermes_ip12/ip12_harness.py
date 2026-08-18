@@ -89,7 +89,7 @@ MODULE_WORKFLOWS = {
     },
     3: {
         "name": "价值主张",
-        "required": "核心优势、目标人群首要痛点、所在领域、第一印象和长期影响力",
+        "required": "复用已确认的定位、人设、核心优势、价值观、目标人群、所在领域和未来目标",
         "checkpoints": (
             "提炼 3–5 个价值关键词",
             "生成三条差异化价值主张",
@@ -626,6 +626,16 @@ def validate_model_decision(
     self_review = str(raw.get("self_review") or "").strip()[:500]
     if not reply:
         raise HarnessError("模型回复为空")
+    if decision == "ask_follow_up" and state["current_module"] == 3 and state["module_step"] == 0:
+        profile = state["ip_profile"]
+        facts = profile["facts"]
+        selections = profile["ai_selections"]
+        if (
+            any(key.startswith("core_value_") for key in selections)
+            and any(key in facts for key in ("target_audience", "target_audience_basis"))
+            and any(key in facts for key in ("current_occupation", "current_identity_basis", "work_focus"))
+        ):
+            raise HarnessError("模块 3 已有确认的价值观、目标人群和领域，必须直接提炼候选关键词")
     expected_checkpoint = expected_checkpoint or state["module_step"] + 1
     if decision == "propose_checkpoint":
         if checkpoint != expected_checkpoint or checkpoint > len(MODULE_WORKFLOWS[state["current_module"]]["checkpoints"]):
