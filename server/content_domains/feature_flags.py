@@ -21,6 +21,14 @@ _TTL = 5
 
 CATALOG = [
     {
+        "key": "ip12_agent_action_bridge_v1",
+        "name": "IP12 第一方执行桥",
+        "desc": "仅允许 IP12 后端经内部凭据发现、读取或询价黄雀能力；不允许代替用户确认付费或写入操作",
+        "page": "IP12",
+        "service": "auth",
+        "default_enabled": False,
+    },
+    {
         "key": "short_drama_lipsync_multi_v1",
         "name": "短剧多人对白口型",
         "desc": "项目内人物跟踪、人工确认与多人轮流对白口型",
