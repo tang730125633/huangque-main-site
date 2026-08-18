@@ -960,8 +960,15 @@ def compile_module_six_style(value, evidence_text):
 def _reply_already_contains_draft(reply, draft):
     clean = lambda text: re.sub(r"[\W_]+", "", text).lower()
     reply_text, draft_text = clean(reply), clean(draft)
+    draft_items = [
+        clean(item) for item in re.findall(
+            r"(?m)^\s*(?:\d+[.、)]|[-*])\s*(.+?)\s*$", draft
+        ) if clean(item)
+    ]
+    repeated_items = sum(item in reply_text for item in draft_items)
     return bool(draft_text) and (
         draft_text in reply_text or SequenceMatcher(None, reply_text, draft_text).ratio() >= 0.75
+        or (len(draft_items) >= 3 and repeated_items >= max(3, (len(draft_items) * 4 + 4) // 5))
     )
 
 
