@@ -2110,6 +2110,25 @@ with patch.object(server, "_coach_model_decision", return_value=(valid_repair_de
         pass
 assert conflict_model.call_count == 1
 
+continuation_cid = client.post("/api/conversations").get_json()["id"]
+continuation_convo = server.load_conversation(continuation_cid)
+continuation_state = server.normalize_coach_state(continuation_convo["coach_state"])
+continuation_state["intake"]["status"] = "complete"
+continuation_convo["coach_state"] = continuation_state
+server.save_conversation(continuation_cid, continuation_convo)
+continuation_raw = {"profile_updates": [{
+    "field": "invented_fact", "value": "不应写入", "kind": "user_fact", "evidence_quote": "没有用户原话",
+}]}
+with patch.object(server.coach_harness, "apply_model_decision", return_value=(
+    continuation_state, continuation_raw, "下一断点已生成。",
+)) as continuation_apply:
+    continuation_reply, _ = server._persist_model_turn(
+        continuation_cid, "", continuation_state["revision"], continuation_raw, ""
+    )
+assert continuation_reply == "下一断点已生成。"
+assert continuation_apply.call_args.args[1]["profile_updates"] == []
+assert not any(item["role"] == "user" for item in server.load_conversation(continuation_cid)["messages"])
+
 mini_cid = client.post("/api/conversations").get_json()["id"]
 mini_convo = client.get(f"/api/conversations/{mini_cid}").get_json()
 assert mini_convo["coach_state"]["intake"] == {"status": "collecting", "round": 1, "answers": {}}
