@@ -568,13 +568,28 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertIn("点赞、评论", exact["draft"])
 
     def test_semantically_duplicate_reply_does_not_repeat_the_draft(self):
-        draft = "### 核心关键词\n- AI Agent 搭建\n- 问题拆解\n- 持续学习"
+        draft = (
+            "泽龙目前在广州，从事 FDE（Front-end Development Engineering），实际工作内容是 "
+            "Agent 智能体开发，已在这个行业工作约三个月。期间，他与同事研究如何将 AI "
+            "赋能于垂直行业，并参与制作了许多产品和 demo。此前，泽龙做过修车、服务员和"
+            "工厂生产岗位，后来因为对电脑更感兴趣而转行。目前主要收入来源包括这份工作，"
+            "以及接一些项目。年龄或年龄段、具体收入区间目前没有记录。"
+        )
+        model_reply = (
+            "我先把目前了解到的情况整理如下，请你看看是否准确：\n\n泽龙目前在广州，从事 FDE，"
+            "实际工作内容是 Agent 智能体开发，已在这个行业工作约三个月。期间，他与同事研究"
+            "如何将 AI 赋能于垂直行业，并参与制作了许多产品和 demo。\n\n此前，泽龙做过修车、"
+            "服务员和工厂生产岗位，后来因为对电脑更感兴趣而转行。\n\n目前主要收入来源包括这份 "
+            "FDE/Agent 智能体开发工作，以及接一些项目。年龄或年龄段、具体收入区间目前没有记录。"
+            "\n\n以上内容准确吗？如果有需要补充或修改的地方，直接告诉我即可。"
+        )
         reply = harness.render_model_reply({
             "decision": "propose_checkpoint",
-            "reply": "核心关键词：AI Agent 搭建、问题拆解、持续学习。",
+            "reply": model_reply,
             "draft": draft,
         })
-        self.assertEqual(reply.count("AI Agent 搭建"), 1)
+        self.assertEqual(reply.count(draft), 1)
+        self.assertNotIn("我先把目前了解到的情况", reply)
 
     def test_model_words_never_complete_a_module(self):
         state = self.complete_intake()
