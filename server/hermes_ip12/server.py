@@ -1738,6 +1738,7 @@ def _coach_model_decision(convo, user_message, repair_error=""):
     if intake_pending:
         profile_data["pending_intake_draft"] = (state.get("intake") or {}).get("draft") or ""
         profile_data["pending_intake_updates"] = (state.get("intake") or {}).get("profile_updates") or []
+        profile_data["asked_intake_questions"] = (state.get("intake") or {}).get("asked_follow_ups") or []
     elif module_pending:
         profile_data["pending_module_draft"] = module_pending.get("draft") or ""
         profile_data["pending_module_updates"] = module_pending.get("profile_updates") or []

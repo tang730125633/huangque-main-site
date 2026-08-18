@@ -22,6 +22,26 @@ PRODUCTION_FAMILIES = {
     "canvas": ("canvas-ops",),
 }
 
+INTAKE_FOLLOW_UP_PATTERNS = (
+    ("preferred_name", r"(?:怎么称呼|如何称呼|称呼你|叫什么|名字)"),
+    ("age", r"(?:年龄段|年龄|多大|几岁)"),
+    ("city", r"(?:哪座城市|哪个城市|所在城市|目前在(?:哪|哪里)|生活在(?:哪|哪里))"),
+    ("experience_years", r"(?:从业|入行|做这行).{0,8}(?:多久|几年|多长时间)"),
+    ("prior_roles", r"(?:做过|从事过).{0,12}(?:行业|岗位|工作)"),
+    ("income", r"(?:收入来源|收入区间|收入范围|大致收入|主要收入)"),
+    ("current_role", r"(?:目前|现在|当前).{0,12}(?:从事什么|做什么|职业.{0,4}是什么|身份.{0,4}是什么|主要工作)"),
+)
+
+
+def intake_follow_up_topic(reply):
+    """Classify one of the bounded intake questions from the visible reply."""
+    segments = [item for item in re.split(r"[。！？!?\n]+", str(reply or "")) if item.strip()]
+    for segment in reversed(segments):
+        for topic, pattern in INTAKE_FOLLOW_UP_PATTERNS:
+            if re.search(pattern, segment):
+                return topic
+    return ""
+
 
 def production_recommendation(requested_result, preferred_action=None):
     """Return the bounded production candidates for an IP12 project.
@@ -251,7 +271,7 @@ def initial_state():
         "completed_modules": [],
         "module_step": 0,
         "pending": None,
-        "intake": {"status": "collecting", "round": 1, "answers": {}},
+        "intake": {"status": "collecting", "round": 1, "answers": {}, "asked_follow_ups": []},
     }
 
 
@@ -313,6 +333,10 @@ def normalize_state(value):
         status=status,
         round=round_number,
         answers=deepcopy(intake.get("answers")) if isinstance(intake.get("answers"), dict) else {},
+        asked_follow_ups=[
+            item for item in intake.get("asked_follow_ups", [])
+            if isinstance(item, str) and item in {topic for topic, _ in INTAKE_FOLLOW_UP_PATTERNS}
+        ],
     )
     state["intake"] = intake
 
@@ -950,6 +974,14 @@ def apply_intake_decision(value, raw, evidence_text):
             profile_updates=decision["profile_updates"],
         )
     elif decision["decision"] == "ask_follow_up":
+        follow_up_topic = intake_follow_up_topic(decision["reply"])
+        asked_follow_ups = intake.setdefault("asked_follow_ups", [])
+        if follow_up_topic in asked_follow_ups:
+            raise HarnessError(
+                "基础访谈重复追问了已经问过的可选信息；请改问其他未回答项，或直接整理现有资料"
+            )
+        if follow_up_topic:
+            asked_follow_ups.append(follow_up_topic)
         merged_updates = {}
         for item in (intake.get("profile_updates") or []) + decision["profile_updates"]:
             merged_updates.pop(item["field"], None)
@@ -1050,6 +1082,7 @@ def intake_system_prompt(value):
 对话规则：
 - 接受任意顺序和自然表达；用户可一次说一项或多项，不要求固定格式，不把访谈做成选择题。
 - 先查看完整对话历史和当前待核对资料；已经回答、明确不知道或拒绝回答的内容不要重复追问。
+- 每个基础问题最多主动问一次；用户没有回答而继续补充其他内容，视为暂时跳过，不得再次追问。
 - 信息不足或含糊时 decision=ask_follow_up，只问一个最有价值且尚未回答的问题。
 - decision=ask_follow_up 时 checkpoint=0、draft 和 self_review 为空；可以把本轮已明确说出的用户事实或偏好放入 profile_updates，等待最终核对，绝不能宣布确认。
 - 用户只是在提问、讨论或暂时跑题时 decision=answer_only；先自然回应，需要时再轻轻带回访谈，不改变已有资料。
