@@ -1168,6 +1168,181 @@ test('PR-5 精修工作区展示问题镜头、单镜重做和确认门禁', () 
   assert.match(blocked, /data-action="confirm-refinement" disabled/);
 });
 
+test('problem shots expose isolated candidate selection before one final reassembly', () => {
+  const refinement = {
+    current_refinement:{
+      id:'refinement-v3',version:3,status:'draft',url:'/api/gen/file/full-preview.mp4',
+      assembly_status:{reassembly_required:false},
+      shots:[
+        {shot_key:'shot_01',sort_order:1,status:'ready',provider_version:2},
+        {
+          shot_key:'shot_02',sort_order:2,status:'degraded',provider_version:2,
+          issue:{message:'人物形象跳变',provider_version_floor:2}
+        },
+        {shot_key:'shot_03',sort_order:3,status:'ready',provider_version:1},
+      ],
+      issues:[{shot_key:'shot_02'}],
+    },
+  };
+  const autodraft = {
+    provider_poc:{
+      characters:[{character_key:'character_1',name:'小男孩',binding_ready:true}],
+      shots:[{
+        shot_key:'shot_02',sort_order:2,scene:'长椅',binding_ready:true,
+        sequence_ready:true,previous_shot_key:'shot_01',character_keys:['character_1']
+      }]
+    },
+    provider_preview:{
+      ready:true,message:'参数检查通过',shot:{shot_key:'shot_02'},
+      request:{prompt:'重新生成的小男孩镜头'}
+    },
+    provider_quote:{cost:40,shot:{shot_key:'shot_02'}},
+    provider_versions:[
+      {id:'shot-02-v2',shot_key:'shot_02',version:2,url:'/api/gen/file/shot-02-v2.mp4'},
+      {id:'shot-02-v3',shot_key:'shot_02',version:3,url:'/api/gen/file/shot-02-v3.mp4',selected:true},
+    ],
+  };
+  const preview = workspace.refinementHtml(refinement,autodraft);
+  assert.match(preview, /进入镜头重做/);
+  assert.doesNotMatch(preview, /候选镜头版本/);
+
+  const output = workspace.refinementRedoHtml(refinement,autodraft,'shot_02',true);
+  assert.match(output, /data-refinement-redo-workspace/);
+  assert.match(output, /sd-refinement-redo-layout/);
+  assert.match(output, /sd-refinement-candidate-rail/);
+  assert.match(output, /sd-refinement-redo-sticky/);
+  assert.match(output, /class="selected"/);
+  assert.match(output, /当前采用版本 v2/);
+  assert.match(output, /只处理已标记的问题镜头/);
+  assert.match(output, /data-refinement-redo-generation/);
+  assert.match(output, /data-action="edit-shot-execution" data-shot-key="shot_02"/);
+  assert.match(output, /data-action="provider-preflight" data-shot-key="shot_02"/);
+  assert.match(output, /data-action="provider-quote" data-shot-key="shot_02"/);
+  assert.match(output, /data-action="provider-start" data-shot-key="shot_02"/);
+  assert.ok(output.indexOf('修改提示词') < output.indexOf('免费检查参数'));
+  assert.ok(output.indexOf('免费检查参数') < output.indexOf('获取报价'));
+  assert.ok(output.indexOf('获取报价') < output.indexOf('确认重新生成'));
+  assert.match(output, /40 点/);
+  assert.match(output, /src="\/api\/gen\/file\/shot-02-v2\.mp4"/);
+  assert.match(output, /src="\/api\/gen\/file\/shot-02-v3\.mp4"/);
+  assert.match(output, /候选 v3<\/b><span>当前选择/);
+  assert.match(output, /data-action="refine-shot" data-shot-key="shot_02"/);
+  assert.match(output, /整片需要最后统一重新合成/);
+  assert.match(workspaceSource, /暂无可采用的候选版本/);
+  assert.match(workspaceSource, /重新生成完成后，请先选择满意版本再采用/);
+  assert.doesNotMatch(output, /shot_03/);
+  assert.match(workspaceSource, /refinement\/candidates\/adopt/);
+  assert.match(workspaceSource, /client\.adoptRefinementCandidate/);
+  assert.match(workspaceSource, /refinement\/candidates\/reassemble/);
+  assert.match(workspaceSource, /client\.reassembleRefinementCandidates/);
+  assert.match(workspaceSource, /classList\.toggle\('refinement-redo-active',refinementRedoMode\)/);
+  assert.match(workspaceStyle, /\.sd-workspace-grid\.refinement-redo-active\{grid-template-columns:minmax\(0,1fr\)!important\}/);
+  assert.match(workspaceStyle, /\.sd-workspace-grid\.refinement-redo-active>\.sd-inspector\{display:none!important\}/);
+});
+
+test('refinement redo sidebar is a read-only progress summary', () => {
+  const output = workspace.refinementRedoSummaryHtml({
+    current_refinement:{
+      shots:[{shot_key:'shot_02',sort_order:2,status:'degraded',issue:{message:'人物形象跳变'}}],
+      issues:[{shot_key:'shot_02'}]
+    }
+  }, {
+    provider_versions:[{id:'shot-02-v3',shot_key:'shot_02',version:3}]
+  }, 'shot_02');
+  assert.match(output, /处理进度/);
+  assert.match(output, /当前镜头/);
+  assert.match(output, /#2 · shot_02/);
+  assert.match(output, /候选版本/);
+  assert.doesNotMatch(output, /id="sdProviderShot"/);
+  assert.doesNotMatch(output, /data-action="provider-preflight"/);
+  assert.doesNotMatch(output, /data-action="provider-quote"/);
+  assert.doesNotMatch(output, /data-action="provider-start"/);
+});
+
+test('full-film reassembly is offered only after every problem shot is accepted', () => {
+  const ready = workspace.refinementHtml({
+    current_refinement:{
+      id:'refinement-v4',version:4,status:'draft',url:'/api/gen/file/full-preview.mp4',
+      shots:[{shot_key:'shot_01',sort_order:1,status:'ready'}],issues:[],
+      assembly_status:{reassembly_required:true,staged_count:1},
+    },
+  });
+  assert.match(ready, /1 个候选镜头已采用/);
+  assert.match(ready, /data-action="reassemble-refinement"/);
+  assert.match(ready, /重新合成完整视频/);
+
+  const pending = workspace.refinementHtml({
+    current_refinement:{
+      id:'refinement-v4',version:4,status:'draft',url:'/api/gen/file/full-preview.mp4',
+      shots:[{shot_key:'shot_02',sort_order:2,status:'degraded',issue:{message:'仍需调整'}}],
+      issues:[{shot_key:'shot_02'}],
+      assembly_status:{reassembly_required:true,staged_count:1},
+    },
+  });
+  assert.match(pending, /请继续处理剩余 1 个问题镜头/);
+  assert.doesNotMatch(pending, /data-action="reassemble-refinement"/);
+});
+
+test('refinement shot timeline follows rendered order and actual durations', () => {
+  const timeline = workspace.refinementShotTimeline([
+    {shot_key:'shot_03',sort_order:3,media_validation:{duration_ms:7000}},
+    {
+      shot_key:'shot_01',sort_order:1,start_ms:1000,end_ms:5000,
+      media_validation:{duration_ms:9000}
+    },
+    {shot_key:'shot_02',sort_order:2},
+  ], {
+    source_duration_ms:17000,
+    shot_durations:[
+      {shot_key:'shot_01',duration_ms:9999},
+      {shot_key:'shot_02',duration_ms:6000},
+      {shot_key:'shot_03',duration_ms:9999},
+    ],
+  });
+  assert.equal(timeline.total_ms,25998);
+  assert.deepEqual(timeline.entries.map(item => [
+    item.shot_key,item.sort_order,item.start_ms,item.end_ms,item.duration_ms,
+  ]), [
+    ['shot_01',1,0,9999,9999],
+    ['shot_02',2,9999,15999,6000],
+    ['shot_03',3,15999,25998,9999],
+  ]);
+});
+
+test('refinement player exposes shot locator, seeking and current-shot marking', () => {
+  const output = workspace.refinementHtml({
+    current_refinement:{
+      version:4,status:'draft',url:'/api/gen/file/refinement.mp4',
+      assembly_status:{source_duration_ms:9000,shot_durations:[
+        {shot_key:'shot_01',duration_ms:4000},
+        {shot_key:'shot_02',duration_ms:5000},
+      ]},
+      shots:[
+        {shot_key:'shot_01',sort_order:1,status:'ready'},
+        {shot_key:'shot_02',sort_order:2,status:'degraded',issue:{message:'背景跳变'}},
+      ],
+      issues:[{shot_key:'shot_02'}],
+    },
+  });
+  assert.match(output, /data-refinement-player/);
+  assert.match(output, /data-refinement-shot-locator/);
+  assert.match(output, /data-total-ms="9000"/);
+  assert.match(output, /data-action="seek-refinement-shot"[^>]*data-shot-key="shot_01"[^>]*data-start-ms="0"[^>]*data-end-ms="4000"/);
+  assert.match(output, /data-shot-key="shot_02"[^>]*data-start-ms="4000"[^>]*data-end-ms="9000"/);
+  assert.match(output, /sd-refinement-locator-shot ready current/);
+  assert.match(output, /sd-refinement-locator-shot flagged/);
+  assert.match(output, /data-action="mark-current-refinement-shot" data-shot-key="shot_01"/);
+  assert.match(output, /有问题/);
+  assert.match(workspaceSource, /\['loadedmetadata','durationchange','timeupdate','seeking','seeked'\]\.forEach/);
+  assert.match(workspaceSource, /currentMs=currentMs\*timelineTotal\/videoDurationMs/);
+  assert.match(workspaceSource, /refinementTargetMs=refinementTargetMs\*refinementVideoDurationMs\/refinementTimelineTotal/);
+  assert.match(workspaceSource, /refinementVideo\.currentTime=refinementTargetMs\/1000/);
+  assert.doesNotMatch(workspaceSource, /refinementVideo\.focus\(\)/);
+  assert.match(workspaceStyle, /\.sd-refinement-locator-scroll\{overflow-x:auto/);
+  assert.match(workspaceStyle, /\.sd-refinement-locator-shot\.current/);
+  assert.match(workspaceStyle, /\.sd-refinement-locator-shot\{flex:0 0 var\(--shot-share\)\}/);
+});
+
 test('镜头问题标记使用页面内弹窗并提供明确的问题类型', () => {
   assert.match(workspaceSource, /id="sdRefinementIssueModal"/);
   assert.match(workspaceSource, /id="sdRefinementIssueForm"/);

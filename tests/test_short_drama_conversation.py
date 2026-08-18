@@ -12,7 +12,7 @@ SERVER_DIR = str(Path(__file__).resolve().parents[1] / "server")
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
-from content_domains import short_drama, short_drama_conversation
+from content_domains import short_drama, short_drama_conversation, short_drama_storyboard
 
 
 class Handler:

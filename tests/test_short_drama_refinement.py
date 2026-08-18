@@ -142,14 +142,13 @@ class ShortDramaRefinementTests(unittest.TestCase):
             side_effect=self._fake_refinement_preview,
         )
         self.refinement_renderer_mock = self.refinement_renderer.start()
+        self.real_refinement_assembly_status = (
+            short_drama_refinement._refinement_assembly_status
+        )
         self.complete_assembly = mock.patch.object(
             short_drama_refinement,
             "_refinement_assembly_status",
-            return_value={
-                "available": True,
-                "reassembly_required": False,
-                "message": "complete preview fixture",
-            },
+            side_effect=self._refinement_assembly_status_fixture,
         )
         self.complete_assembly.start()
 
@@ -158,6 +157,20 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.refinement_renderer.stop()
         self.free.stop()
         self.tmp.cleanup()
+
+    def _refinement_assembly_status_fixture(self, conn, project, refinement):
+        staged = list(
+            (refinement.get("media") or {}).get("staged_replacements") or []
+        )
+        if staged:
+            return self.real_refinement_assembly_status(conn, project, refinement)
+        return {
+            "available": True,
+            "reassembly_required": False,
+            "staged_replacements": [],
+            "staged_count": 0,
+            "message": "complete preview fixture",
+        }
 
     def _fake_refinement_preview(self, conn, job, source):
         shots, assets = [], []
