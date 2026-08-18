@@ -69,7 +69,7 @@ SCHEMA_VERSION = 1
 MODULE_WORKFLOWS = {
     1: {
         "name": "定位诊断",
-        "required": "关键经历、至少两项核心技能、长期兴趣、至少两项价值观、目标人群",
+        "required": "关键经历、至少两项核心技能、长期兴趣、目标人群，以及明确表达的价值观或帮助目标",
         "checkpoints": (
             "提炼 3–5 个核心关键词",
             "生成三套差异化定位方案",
@@ -629,6 +629,19 @@ def validate_model_decision(
         profile = state["ip_profile"]
         facts = profile["facts"]
         selections = profile["ai_selections"]
+        pending = state.get("pending") if isinstance(state.get("pending"), dict) else {}
+        known_fields = set(facts) | {
+            str(item.get("field") or "")
+            for item in pending.get("profile_updates") or [] if isinstance(item, dict)
+        }
+        if state["current_module"] == 1 and all(
+            any(token in field for field in known_fields) for token in (
+                "skill", "interest", "audience", "experience",
+            )
+        ) and any(
+            token in field for field in known_fields for token in ("goal", "benefit", "value")
+        ):
+            raise HarnessError("模块 1 已有经历、能力、兴趣、目标人群和帮助目标，必须直接提炼候选关键词")
         if state["current_module"] == 2 and any(
             key.startswith("1-") for key in profile["confirmed_outputs"]
         ):
