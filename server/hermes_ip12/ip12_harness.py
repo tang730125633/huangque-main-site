@@ -19,7 +19,7 @@ PRODUCTION_FAMILIES = {
     "image": ("image-generate",),
     "audio": ("audio-generate",),
     "video": ("digital-ip-text-generate", "video-generate"),
-    "canvas": ("canvas-agent-plan", "canvas-create"),
+    "canvas": ("canvas-ops",),
 }
 
 

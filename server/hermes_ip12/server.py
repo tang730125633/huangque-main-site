@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Hermes IP 孵化教练 — 前 6 个模块开放，后续能力开发中。"""
-import hashlib, html, json, os, pathlib, re, shutil, subprocess, sys, tempfile, threading, time, uuid
+import hashlib, html, json, os, pathlib, re, shutil, subprocess, tempfile, threading, time, uuid
 from datetime import datetime, timedelta
 from flask import (
     Flask,
@@ -30,9 +30,11 @@ FOUNDATION_REPORTS_DIR = DATA_DIR / "foundation_reports"
 CONVERSATION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
 AUTH_BASE = os.environ.get("HERMES_AUTH_BASE", "http://127.0.0.1:8095").rstrip("/")
 INTERNAL_ACTION_PATH = os.environ.get(
-    "HERMES_INTERNAL_ACTION_PATH", "/api/auth/internal/agent/action"
+    "HERMES_INTERNAL_ACTION_PATH", "/api/auth/internal/ip12/agent/action"
 )
-INTERNAL_ACTION_TOKEN = os.environ.get("HERMES_INTERNAL_ACTION_TOKEN", "")
+INTERNAL_ACTION_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN") or os.environ.get(
+    "HERMES_INTERNAL_ACTION_TOKEN", ""
+)
 # ponytail: one process-wide lock is enough for this single-process Flask service.
 CONVERSATION_STATE_LOCK = threading.RLock()
 PROCESS_RUN_ID = uuid.uuid4().hex
@@ -172,6 +174,15 @@ class ReportGenerationInProgress(RuntimeError):
     pass
 
 
+class ProductionBridgeError(RuntimeError):
+    def __init__(self, status, code, detail, payload=None):
+        super().__init__(detail)
+        self.status = int(status)
+        self.code = str(code)
+        self.detail = str(detail)
+        self.payload = payload if isinstance(payload, dict) else {}
+
+
 def conversation_path(convo_id):
     if not isinstance(convo_id, str) or not CONVERSATION_ID_RE.fullmatch(convo_id):
         raise InvalidConversationId("invalid conversation id")
@@ -271,6 +282,14 @@ def _production_digest(value):
     return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _production_input_digest(record, options):
+    return _production_digest({
+        "action": record["action"],
+        "script_digest": record["script_digest"],
+        "options": options,
+    })
+
+
 def _production_error(code, message, status=409):
     return {"ok": False, "error": message, "code": code}, status
 
@@ -311,6 +330,58 @@ def _productions_summary(convo):
     return [_production_public(record) for record in (convo.get("productions") or {}).values()]
 
 
+PRODUCTION_REQUIRED_FIELDS = {
+    "image-generate": ("prompt",),
+    "audio-generate": ("text",),
+    "digital-ip-text-generate": ("avatar_id", "text", "voice"),
+    "video-generate": ("prompt",),
+    "canvas-ops": ("board_id", "base_version", "prompt"),
+}
+PRODUCTION_FALLBACK_FIELDS = {
+    "image-generate": {
+        "prompt": "string", "provider": "string", "ratio": "string", "quality": "string",
+        "count": "integer", "variant": "string", "model": "string",
+        "image_upload_id": "string", "mask_upload_id": "string", "reference_upload_ids": "array",
+    },
+    "audio-generate": {
+        "text": "string", "voice": "string", "speed": "number", "pitch": "integer", "volume": "integer",
+    },
+    "digital-ip-text-generate": {
+        "avatar_id": "integer", "text": "string", "voice": "string", "ratio": "string",
+        "motion": "string", "subtitle": "boolean", "subtitle_style": "string",
+        "subtitle_position": "string",
+    },
+    "video-generate": {
+        "prompt": "string", "channel": "string", "ratio": "string", "duration": "integer",
+        "seconds": "integer", "resolution": "string", "model": "string",
+        "generate_audio": "boolean", "reference_upload_ids": "array",
+    },
+    # IP12 exposes a small prompt-shaped adapter.  It becomes one validated
+    # canvas-ops node.create request; action_plan remains the real validator.
+    "canvas-ops": {
+        "board_id": "string", "base_version": "integer", "prompt": "string",
+        "title": "string", "x": "number", "y": "number",
+    },
+}
+
+
+def _production_action_schema(action):
+    fields = PRODUCTION_FALLBACK_FIELDS.get(action) or {}
+    return {
+        "type": "object", "additionalProperties": False,
+        "properties": {name: {"type": kind} for name, kind in fields.items()},
+        "required": list(PRODUCTION_REQUIRED_FIELDS.get(action, ())),
+    }
+
+
+def _production_missing_fields(record, options):
+    effective = dict(options)
+    if record["action"] in {"digital-ip-text-generate", "digital-ip-batch-generate"}:
+        effective.setdefault("text", record["source_text"])
+    return [name for name in PRODUCTION_REQUIRED_FIELDS.get(record["action"], ())
+            if effective.get(name) in (None, "", [])]
+
+
 def _production_input(record, options):
     if not isinstance(options, dict):
         raise coach_harness.HarnessError("制作参数必须是对象")
@@ -319,10 +390,26 @@ def _production_input(record, options):
     # into the production panel again, and the original script is not returned.
     if record["action"] in {"digital-ip-text-generate", "digital-ip-batch-generate"}:
         payload.setdefault("text", record["source_text"])
+    if record["action"] == "canvas-ops":
+        allowed = set(PRODUCTION_FALLBACK_FIELDS["canvas-ops"])
+        unknown = sorted(set(payload) - allowed)
+        if unknown:
+            raise coach_harness.HarnessError("不支持的参数：" + unknown[0])
+        prompt = payload["prompt"]
+        return {
+            "board_id": payload["board_id"],
+            "base_version": payload["base_version"],
+            "op_id": "hqcli-" + record["id"].removeprefix("prod_"),
+            "ops": [{"type": "node.create", "node": {
+                "id": "ip12_" + record["id"][-16:], "type": "text",
+                "x": payload.get("x", 80), "y": payload.get("y", 80),
+                "params": {"title": payload.get("title", "IP12 制作内容"), "text": prompt},
+            }}],
+        }
     return payload
 
 
-def _bridge_action(account_id, action, input_body, *, confirm=False, quote_token="", idempotency_key=""):
+def _bridge_action(account_id, action, input_body, *, idempotency_key, confirm=False, quote_token=""):
     """Use the first-party bridge; Hermes never recreates quote/billing logic."""
     if not INTERNAL_ACTION_TOKEN:
         raise RuntimeError("production_bridge_unavailable")
@@ -344,12 +431,14 @@ def _bridge_action(account_id, action, input_body, *, confirm=False, quote_token
         result = response.json()
     except ValueError:
         result = {}
+    if not isinstance(result, dict):
+        if 200 <= response.status_code < 300:
+            raise RuntimeError("production_bridge_invalid_response")
+        result = {}
     if not 200 <= response.status_code < 300:
         code = str(result.get("code") or "production_bridge_error")
         detail = str(result.get("detail") or result.get("error") or "生产服务暂时不可用")
-        raise coach_harness.HarnessError(code + ":" + detail)
-    if not isinstance(result, dict):
-        raise RuntimeError("production_bridge_invalid_response")
+        raise ProductionBridgeError(response.status_code, code, detail, result)
     return result
 
 
@@ -367,9 +456,23 @@ def _set_production_result(record, result):
         record["canvas_ref"] = result["canvas_ref"]
     if result.get("action_result") is not None:
         record["action_result"] = result["action_result"]
+    if record.get("action") == "canvas-ops" and result.get("version") is not None:
+        board = result.get("board") if isinstance(result.get("board"), dict) else {}
+        record["canvas_ref"] = {
+            "board_id": str(board.get("id") or (record.get("options") or {}).get("board_id") or ""),
+            "version": result["version"],
+        }
+        record["action_result"] = {
+            "version": result["version"],
+            "batch": result.get("batch") if isinstance(result.get("batch"), dict) else None,
+        }
     if result.get("refund_status") in {"none", "pending", "refunded", "not_required"}:
         record["refund_status"] = result["refund_status"]
     bridge_status = str(result.get("status") or "").lower()
+    if bridge_status == "refund_pending":
+        record["refund_status"] = "pending"
+    elif bridge_status == "refunded":
+        record["refund_status"] = "refunded"
     if bridge_status in {"queued", "running", "done", "failed", "refund_pending", "refunded"}:
         record["status"] = bridge_status
     elif record.get("job_id"):
@@ -378,26 +481,59 @@ def _set_production_result(record, result):
         record["status"] = "done"
     else:
         raise RuntimeError("production_result_unlinked")
+    if (
+        record["status"] == "done"
+        and record.get("action") != "canvas-ops"
+        and not record.get("asset_refs")
+    ):
+        raise RuntimeError("production_result_unlinked")
     if record["status"] == "failed":
         record["last_error_code"] = str(result.get("code") or "production_failed")
     record["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
-def _production_action_plan(action, options):
-    """Reuse the CLI's typed action validation without copying its schemas."""
-    server_root = str(PROJECT_DIR.parent)
-    if server_root not in sys.path:
-        sys.path.insert(0, server_root)
-    import hq_cli_api
-    return hq_cli_api.action_plan(action, options)
-
-
 def _production_plan_or_error(record, options):
+    missing = _production_missing_fields(record, options)
+    if missing:
+        return False, "缺少参数：" + "、".join(missing), missing
     try:
-        return _production_action_plan(record["action"], _production_input(record, options)), ""
+        schema = _production_action_schema(record["action"])
+        unknown = sorted(set(options) - set(schema.get("properties") or {}))
+        if unknown:
+            raise coach_harness.HarnessError("不支持的参数：" + unknown[0])
+        for name, value in options.items():
+            expected = ((schema.get("properties") or {}).get(name) or {}).get("type")
+            valid = {
+                "string": isinstance(value, str),
+                "integer": isinstance(value, int) and not isinstance(value, bool),
+                "number": isinstance(value, (int, float)) and not isinstance(value, bool),
+                "boolean": isinstance(value, bool),
+                "array": isinstance(value, list),
+                "object": isinstance(value, dict),
+            }.get(expected, True)
+            if not valid:
+                raise coach_harness.HarnessError(name + " 类型不合法")
+        input_body = _production_input(record, options)
+        if record["action"] == "canvas-ops":
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", str(input_body["board_id"])):
+                raise coach_harness.HarnessError("board_id 格式不合法")
+            if input_body["base_version"] < 1:
+                raise coach_harness.HarnessError("base_version 必须是正整数")
+            if not 1 <= len(str(options["prompt"]).strip()) <= 5000:
+                raise coach_harness.HarnessError("prompt 长度不合法")
+        return True, "", []
     except Exception as exc:
         detail = str(getattr(exc, "detail", "") or str(exc) or "制作参数不完整")
-        return None, detail[:240]
+        return False, detail[:240], []
+
+
+def _production_set_options(record, options):
+    if not isinstance(options, dict):
+        raise coach_harness.HarnessError("制作参数必须是对象")
+    old_digest = str(record.get("input_digest") or "")
+    record["options"] = json.loads(json.dumps(options, ensure_ascii=False))
+    record["input_digest"] = _production_input_digest(record, record["options"])
+    return bool(old_digest and old_digest != record["input_digest"])
 
 
 def _production_is_current(convo, record):
@@ -1086,7 +1222,7 @@ def _production_conversation(cid):
 def api_prepare_production():
     try:
         body = _production_request_body()
-        if set(body) - {"conversation_id", "content_target", "expected_revision", "requested_result", "preferred_action"}:
+        if set(body) - {"conversation_id", "content_target", "expected_revision", "requested_result", "preferred_action", "options"}:
             return _production_error("invalid_request", "包含不支持的参数", 400)
         cid = str(body.get("conversation_id") or "")
         with CONVERSATION_STATE_LOCK:
@@ -1115,8 +1251,9 @@ def api_prepare_production():
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             }
-            _, missing = _production_plan_or_error(record, {})
-            if missing:
+            _production_set_options(record, body.get("options", {}))
+            _, validation_error, missing = _production_plan_or_error(record, record["options"])
+            if validation_error:
                 record["status"] = "blocked_prerequisite"
                 record["last_error_code"] = "missing_prerequisite"
             convo["productions"][production_id] = record
@@ -1128,8 +1265,12 @@ def api_prepare_production():
             "reusable_assets": [asset for item in convo["productions"].values()
                                 if item.get("capability_family") == record["capability_family"]
                                 for asset in item.get("asset_refs", [])],
-            "parameter_schema": {"type": "object", "additionalProperties": True},
-            "missing_prerequisites": [missing] if missing else [],
+            "options": record["options"],
+            "schema": _production_action_schema(record["action"]),
+            "parameter_schema": _production_action_schema(record["action"]),
+            "missing": missing,
+            "missing_prerequisites": missing or ([validation_error] if validation_error else []),
+            "validation_error": validation_error,
         })
     except coach_harness.HarnessConflict as exc:
         return _production_error("revision_conflict", str(exc))
@@ -1157,25 +1298,68 @@ def api_quote_production():
             if not _production_is_current(convo, record):
                 _mark_production_stale(record); save_conversation(cid, convo)
                 return _production_error("source_changed", "正文已更新，需要重新准备并报价")
-            plan, missing = _production_plan_or_error(record, body.get("options"))
-            if plan is None:
+            if record.get("status") in {"submitting", "queued", "running", "done"}:
+                return _production_error("production_already_submitted", "该生产已经提交，请读取现有状态")
+            options = body["options"] if "options" in body else record.get("options") or {}
+            changed = _production_set_options(record, options)
+            if changed and record.get("quote"):
+                record.update(status="stale", last_error_code="input_changed")
+            valid, validation_error, missing = _production_plan_or_error(record, record["options"])
+            if not valid:
                 record.update(status="blocked_prerequisite", last_error_code="invalid_input")
                 save_conversation(cid, convo)
-                return _production_error("missing_prerequisite", missing)
-            record["options"] = dict(body.get("options") or {})
-            record["input_digest"] = _production_digest({
-                "action": record["action"], "script_digest": record["script_digest"], "options": record["options"],
-            })
+                return {
+                    "ok": False, "error": validation_error, "code": "missing_prerequisite",
+                    "production_id": production_id, "status": record["status"],
+                    "options": record["options"], "schema": _production_action_schema(record["action"]),
+                    "parameter_schema": _production_action_schema(record["action"]),
+                    "missing": missing,
+                }, 409
             input_body = _production_input(record, record["options"])
-        try:
-            quote = _bridge_action(current_account_id(), record["action"], input_body)
-        except RuntimeError:
-            return _production_error("production_bridge_unavailable", "生产执行桥暂不可用，请稍后重试", 503)
-        except coach_harness.HarnessError:
-            return _production_error("quote_unavailable", "暂时没取得价格，请稍后再试", 502)
-        token = str(quote.get("quote_token") or "")
-        if not token:
-            return _production_error("quote_invalid", "暂时没取得价格，请稍后再试", 502)
+            request_digest = record["input_digest"]
+            record.update(status="draft", last_error_code="")
+            save_conversation(cid, convo)
+        if record["action"] != "canvas-ops":
+            try:
+                quote = _bridge_action(
+                    current_account_id(), record["action"], input_body,
+                    idempotency_key=record["idempotency_key"],
+                )
+            except ProductionBridgeError as exc:
+                with CONVERSATION_STATE_LOCK:
+                    latest_convo = _production_conversation(cid)
+                    latest = (latest_convo or {}).get("productions", {}).get(production_id)
+                    if isinstance(latest, dict) and latest.get("input_digest") == request_digest:
+                        latest.update(
+                            status="blocked_prerequisite" if exc.status < 500 else "draft",
+                            last_error_code=exc.code,
+                        )
+                        save_conversation(cid, latest_convo)
+                        record = latest
+                return {
+                    "ok": False, "error": exc.detail, "code": exc.code,
+                    "production_id": production_id, "status": record["status"],
+                    "options": record["options"],
+                    "schema": _production_action_schema(record["action"]), "missing": [],
+                    "parameter_schema": _production_action_schema(record["action"]),
+                    "validation_error": exc.detail,
+                }, exc.status
+            except RuntimeError:
+                return {
+                    "ok": False, "error": "生产执行桥暂不可用，请稍后重试",
+                    "code": "production_bridge_unavailable", "production_id": production_id,
+                    "status": "draft", "options": record["options"],
+                    "schema": _production_action_schema(record["action"]), "missing": [],
+                    "parameter_schema": _production_action_schema(record["action"]),
+                }, 503
+            token = str(quote.get("quote_token") or "")
+            if not token:
+                return _production_error("quote_invalid", "暂时没取得价格，请稍后再试", 502)
+            expires_in = int(quote.get("expires_in") or 0)
+            billing = "paid"
+        else:
+            quote = {"cost": 0, "points": 0}
+            token, expires_in, billing = "", 300, "free"
         with CONVERSATION_STATE_LOCK:
             convo = _production_conversation(cid)
             record = (convo or {}).get("productions", {}).get(production_id)
@@ -1184,16 +1368,20 @@ def api_quote_production():
             if not _production_is_current(convo, record):
                 _mark_production_stale(record); save_conversation(cid, convo)
                 return _production_error("source_changed", "正文已更新，需要重新准备并报价")
-            expires_in = int(quote.get("expires_in") or 0)
+            if record.get("input_digest") != request_digest:
+                record.update(status="stale", last_error_code="input_changed"); save_conversation(cid, convo)
+                return _production_error("input_changed", "制作参数已更新，需要重新报价")
             record["quote"] = {"token": token, "cost": quote.get("cost"), "points": quote.get("points"),
                                "expires_at": _utc_timestamp() + max(0, expires_in),
-                               "source_revision": record["script_version"]}
+                               "source_revision": record["script_version"],
+                               "input_digest": request_digest, "billing": billing}
             record.update(status="quoted", last_error_code="", updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"))
             save_conversation(cid, convo)
         return jsonify({"ok": True, "production_id": production_id, "status": "quoted",
                         "cost": quote.get("cost"), "points": quote.get("points"),
                         "expires_in": expires_in, "confirmation_required": True,
-                        "script_version": record["script_version"]})
+                        "script_version": record["script_version"],
+                        "input_digest": request_digest, "billing": billing})
     except coach_harness.HarnessConflict as exc:
         return _production_error("revision_conflict", str(exc))
     except coach_harness.HarnessError as exc:
@@ -1204,7 +1392,7 @@ def api_quote_production():
 def api_confirm_production():
     try:
         body = _production_request_body()
-        if set(body) - {"conversation_id", "production_id", "expected_revision", "confirmation_id"}:
+        if set(body) - {"conversation_id", "production_id", "expected_revision", "confirmation_id", "options"}:
             return _production_error("invalid_request", "包含不支持的参数", 400)
         cid, production_id = str(body.get("conversation_id") or ""), str(body.get("production_id") or "")
         confirmation_id = str(body.get("confirmation_id") or "").strip()
@@ -1222,22 +1410,32 @@ def api_confirm_production():
             if not _production_is_current(convo, record):
                 _mark_production_stale(record); save_conversation(cid, convo)
                 return _production_error("source_changed", "正文已更新，需要重新报价")
+            already_submitted = record.get("status") in {"submitting", "queued", "running", "done"}
+            if "options" in body and already_submitted:
+                if not isinstance(body["options"], dict):
+                    raise coach_harness.HarnessError("制作参数必须是对象")
+                if _production_input_digest(record, body["options"]) != record.get("input_digest"):
+                    return _production_error(
+                        "production_already_submitted", "该生产已经提交，请读取现有状态"
+                    )
             if record.get("status") == "done":
                 return jsonify({"ok": True, "replayed": True, "production": _production_public(record)})
             if record.get("status") in {"queued", "running"} and record.get("job_id"):
                 return jsonify({"ok": True, "replayed": True, "production": _production_public(record)})
+            if "options" in body and _production_set_options(record, body["options"]):
+                record.update(status="stale", last_error_code="input_changed")
+                save_conversation(cid, convo)
+                return _production_error("input_changed", "制作参数已更新，需要重新报价")
             if record.get("status") not in {"quoted", "submitting", "queued", "running"}:
                 return _production_error("quote_required", "请先取得有效报价")
             quote = record.get("quote") or {}
-            if not quote.get("token") or int(quote.get("expires_at") or 0) <= _utc_timestamp():
+            if (quote.get("billing") != "free" and not quote.get("token")) or int(quote.get("expires_at") or 0) <= _utc_timestamp():
                 record.update(status="stale", last_error_code="quote_expired"); save_conversation(cid, convo)
                 return _production_error("quote_expired", "报价已过期，请重新报价")
-            _, invalid_input = _production_plan_or_error(record, record.get("options") or {})
-            expected_digest = _production_digest({
-                "action": record["action"], "script_digest": record["script_digest"],
-                "options": record.get("options") or {},
-            })
-            if invalid_input or record.get("input_digest") != expected_digest:
+            _, invalid_input, _ = _production_plan_or_error(record, record.get("options") or {})
+            expected_digest = _production_input_digest(record, record.get("options") or {})
+            if (invalid_input or record.get("input_digest") != expected_digest
+                    or quote.get("input_digest") != expected_digest):
                 record.update(status="stale", last_error_code="input_changed"); save_conversation(cid, convo)
                 return _production_error("input_changed", "制作参数已更新，需要重新报价")
             prior_confirmation = record.get("confirmation_id")
@@ -1249,11 +1447,30 @@ def api_confirm_production():
             input_body = _production_input(record, record.get("options") or {})
         try:
             result = _bridge_action(current_account_id(), record["action"], input_body, confirm=True,
-                                    quote_token=quote["token"], idempotency_key=record["idempotency_key"])
+                                    quote_token=quote.get("token", ""), idempotency_key=record["idempotency_key"])
+        except ProductionBridgeError as exc:
+            with CONVERSATION_STATE_LOCK:
+                convo = _production_conversation(cid)
+                record = (convo or {}).get("productions", {}).get(production_id)
+                if convo is not None and isinstance(record, dict):
+                    terminal = str(exc.payload.get("status") or "").lower() in {
+                        "failed", "refund_pending", "refunded",
+                    }
+                    if terminal:
+                        _set_production_result(record, exc.payload)
+                    elif exc.status < 500 and exc.status != 429:
+                        record.update(status="stale", last_error_code=exc.code)
+                    else:
+                        record["last_error_code"] = exc.code
+                    save_conversation(cid, convo)
+            return {
+                "ok": False, "error": exc.detail, "code": exc.code,
+                "production": _production_public(record),
+                "schema": _production_action_schema(record["action"]), "missing": [],
+                "parameter_schema": _production_action_schema(record["action"]),
+            }, exc.status
         except RuntimeError:
             return _production_error("submission_pending", "正在确认原任务状态，请勿重复提交", 202)
-        except coach_harness.HarnessError:
-            return _production_error("submission_failed", "生产提交暂时不可用，请稍后读取状态", 502)
         with CONVERSATION_STATE_LOCK:
             convo = _production_conversation(cid)
             record = (convo or {}).get("productions", {}).get(production_id)
@@ -1286,17 +1503,21 @@ def api_get_production(production_id):
         restore = None
         if record.get("status") == "submitting" and not record.get("job_id"):
             quote = record.get("quote") or {}
-            if quote.get("token"):
+            if quote.get("billing") == "free" or quote.get("token"):
                 restore = (record["action"], _production_input(record, record.get("options") or {}),
-                           quote["token"], record["idempotency_key"])
+                           quote.get("token", ""), record["idempotency_key"])
         job_id = record.get("job_id") if record.get("status") in {"queued", "running", "submitting"} else None
+        status_idempotency_key = record.get("idempotency_key") if job_id else ""
     result = None
     try:
         if restore:
             result = _bridge_action(current_account_id(), restore[0], restore[1], confirm=True,
                                     quote_token=restore[2], idempotency_key=restore[3])
         elif job_id:
-            result = _bridge_action(current_account_id(), "task", {"job_id": int(job_id)})
+            result = _bridge_action(
+                current_account_id(), "task", {"job_id": int(job_id)},
+                idempotency_key=status_idempotency_key,
+            )
     except (RuntimeError, coach_harness.HarnessError, ValueError):
         result = None
     if result is not None:

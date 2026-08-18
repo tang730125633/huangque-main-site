@@ -50,7 +50,7 @@ class IP12HarnessTests(unittest.TestCase):
             "image": "image-generate",
             "audio": "audio-generate",
             "video": "digital-ip-text-generate",
-            "canvas": "canvas-agent-plan",
+            "canvas": "canvas-ops",
         }
         for family, action in expected.items():
             with self.subTest(family=family):
