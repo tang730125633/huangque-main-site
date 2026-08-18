@@ -73,6 +73,26 @@ class IP12HarnessActionsUITests(unittest.TestCase):
                 self.assertIn("topic_id", source)
                 self.assertIn("versions", source)
 
+    def test_main_view_opens_the_first_full_script_when_module_six_is_ready(self):
+        source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
+        helper = source[
+            source.index("function openFirstContentScript"):
+            source.index("function renderActiveContentScript")
+        ]
+        select_convo = source[
+            source.index("async function selectConvo"):
+            source.index("async function jumpModule")
+        ]
+        send_turn = source[
+            source.index("async function sendTurn"):
+            source.index("async function sendJumpMsg")
+        ]
+
+        self.assertIn("openPanel('📦 文案口播交付物')", helper)
+        self.assertIn("openContentScript(0,0)", helper)
+        self.assertIn("openFirstContentScript(pack)", select_convo)
+        self.assertIn("openFirstContentScript(data.auto_deliverables['6'])", send_turn)
+
 
 if __name__ == "__main__":
     unittest.main()
