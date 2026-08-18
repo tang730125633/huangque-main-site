@@ -21,8 +21,8 @@ _TTL = 5
 
 CATALOG = [
     {
-        "key": "ip12_agent_action_bridge_v1",
-        "name": "IP12 第一方执行桥",
+        "key": "ip12_agent_production_v1",
+        "name": "IP12 Agent 生产闭环",
         "desc": "仅允许 IP12 后端经内部凭据发现、读取或询价黄雀能力；不允许代替用户确认付费或写入操作",
         "page": "IP12",
         "service": "auth",

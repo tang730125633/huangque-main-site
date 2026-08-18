@@ -54,6 +54,11 @@ TOKEN_TTL = int(os.environ.get("HQ_AUTH_TOKEN_TTL", str(30 * 24 * 3600)))
 AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
 AUTH_COOKIE_SECURE = os.environ.get("HQ_AUTH_COOKIE_SECURE", "1").strip().lower() not in ("0", "false", "no")
 INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
+IP12_AGENT_ALLOWED_ACCOUNT_IDS = frozenset(
+    item.strip()
+    for item in os.environ.get("IP12_AGENT_ALLOWED_ACCOUNT_IDS", "").split(",")
+    if item.strip()
+)
 INVITE_HASH_SECRET = os.environ.get("HQ_INVITE_HASH_SECRET", "")
 INVITE_PUBLIC_BASE_URL = os.environ.get(
     "HQ_INVITE_PUBLIC_BASE_URL", "https://huangquechuanmei.com"
@@ -4949,6 +4954,8 @@ class H(BaseHTTPRequestHandler):
     def _ip12_agent_row(self, account_id):
         if not isinstance(account_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", account_id):
             raise hq_cli_api.CLIAPIError(400, "account_id 不合法", "invalid_account_id")
+        if "*" not in IP12_AGENT_ALLOWED_ACCOUNT_IDS and account_id not in IP12_AGENT_ALLOWED_ACCOUNT_IDS:
+            return None
         c = db()
         try:
             return c.execute(
@@ -4959,7 +4966,7 @@ class H(BaseHTTPRequestHandler):
             c.close()
 
     def _ip12_agent_bridge_enabled(self):
-        return feature_flags.is_enabled("ip12_agent_action_bridge_v1")
+        return feature_flags.is_enabled("ip12_agent_production_v1")
 
     def _internal_ip12_agent_catalog(self, body):
         if not self._ip12_agent_bridge_enabled():

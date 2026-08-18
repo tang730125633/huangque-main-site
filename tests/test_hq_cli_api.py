@@ -105,8 +105,9 @@ class HQCLIAPITests(unittest.TestCase):
         return payload["access_token"]
 
     def _enable_ip12_bridge(self):
+        self.auth.IP12_AGENT_ALLOWED_ACCOUNT_IDS = frozenset({"*"})
         self.auth.feature_flags.init_db()
-        return self.auth.feature_flags.set_enabled("ip12_agent_action_bridge_v1", True, "test")
+        return self.auth.feature_flags.set_enabled("ip12_agent_production_v1", True, "test")
 
     def _agent_account_id(self):
         return self.auth.ensure_account_id("alice")
@@ -134,6 +135,19 @@ class HQCLIAPITests(unittest.TestCase):
                 self.assertIn("result_type", item)
                 self.assertIn("ui_route", item)
                 self.assertNotIn("http", json.dumps(item, ensure_ascii=False).lower())
+
+    def test_ip12_agent_bridge_requires_rollout_account_allowlist(self):
+        self._enable_ip12_bridge()
+        self.auth.IP12_AGENT_ALLOWED_ACCOUNT_IDS = frozenset()
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json") as proxy:
+            status, payload = self._request(
+                "/api/auth/internal/ip12/agent/action",
+                {"account_id": self._agent_account_id(), "action": "voices", "input": {}},
+                extra_headers=self._agent_headers(),
+            )
+        self.assertEqual(404, status)
+        self.assertEqual("account_not_found", payload["code"])
+        proxy.assert_not_called()
 
     def test_ip12_agent_controlled_http_and_shell_share_read_semantics(self):
         self._enable_ip12_bridge()
