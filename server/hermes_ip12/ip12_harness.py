@@ -79,7 +79,7 @@ MODULE_WORKFLOWS = {
     },
     2: {
         "name": "人设塑造",
-        "required": "复用已确认经历和目标人群，补充人格特质、价值观与未来目标",
+        "required": "从模块 1 已确认的经历、行为、价值观和目标中提炼人格候选，允许用户修正",
         "checkpoints": (
             "提炼人格关键词与核心价值观",
             "生成三套差异化人设画像",
@@ -629,6 +629,10 @@ def validate_model_decision(
         profile = state["ip_profile"]
         facts = profile["facts"]
         selections = profile["ai_selections"]
+        if state["current_module"] == 2 and any(
+            key.startswith("1-") for key in profile["confirmed_outputs"]
+        ):
+            raise HarnessError("模块 1 已确认，必须从已有经历、行为和价值观直接提炼人格候选")
         if state["current_module"] == 3 and (
             any(key.startswith("core_value_") for key in selections)
             and any(key in facts for key in ("target_audience", "target_audience_basis"))
