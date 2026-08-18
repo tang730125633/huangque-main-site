@@ -961,6 +961,7 @@ with patch.object(server, "MODEL", "gpt-5.6-luna"), patch.object(server.requests
     luna_payload = request_model.call_args.kwargs["json"]
     assert luna_payload["max_completion_tokens"] == 1200
     assert "max_tokens" not in luna_payload
+    assert "temperature" not in luna_payload
 
 transitioned = parse_coach_state_updates(
     "好，我们进入模块2：人设塑造。",

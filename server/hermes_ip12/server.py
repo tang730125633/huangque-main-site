@@ -830,9 +830,12 @@ def generate_foundation_report(convo_id):
 
 def call_ai(messages, stream=False, temperature=0.7, max_tokens=None, response_format=None):
     payload_messages = [dict(item) for item in messages]
-    payload = {"model": MODEL, "messages": payload_messages, "stream": stream, "temperature": temperature}
+    modern_model = MODEL.lower().startswith(("gpt-5", "o1", "o3", "o4"))
+    payload = {"model": MODEL, "messages": payload_messages, "stream": stream}
+    if not modern_model:
+        payload["temperature"] = temperature
     if max_tokens:
-        token_field = "max_completion_tokens" if MODEL.lower().startswith(("gpt-5", "o1", "o3", "o4")) else "max_tokens"
+        token_field = "max_completion_tokens" if modern_model else "max_tokens"
         payload[token_field] = max_tokens
     deepseek_json = MODEL.lower().startswith("deepseek") and bool(response_format) and not stream
     if deepseek_json:
