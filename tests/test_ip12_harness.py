@@ -149,6 +149,27 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual(state["intake"]["draft"], revised_draft)
         self.assertEqual(state["current_module"], 1)
 
+    def test_intake_drops_acronym_expansions_missing_from_user_evidence(self):
+        evidence = "我在广州做 FDE，主要负责 Agent 智能体开发。"
+        state, normalized, reply = harness.apply_intake_decision(
+            harness.initial_state(),
+            intake_decision(
+                reply="你现在做 FDE（Front-end Development Engineering）。",
+                draft="当前职业：FDE（Front-end Development Engineering）。",
+                updates=[{
+                    "field": "current_role",
+                    "value": "FDE（Front-end Development Engineering）",
+                    "kind": "user_fact",
+                    "evidence_quote": "FDE",
+                }],
+            ),
+            evidence,
+        )
+
+        self.assertNotIn("Front-end Development Engineering", reply)
+        self.assertEqual(normalized["profile_updates"][0]["value"], "FDE")
+        self.assertEqual(state["intake"]["draft"], "当前职业：FDE。")
+
     def test_intake_rejects_repeated_optional_follow_up(self):
         state = harness.initial_state()
         state, _, _ = harness.apply_intake_decision(
