@@ -883,7 +883,7 @@ class IP12HarnessTests(unittest.TestCase):
 
     def test_module_four_completion_waits_for_report_confirmation(self):
         state = self.complete_intake()
-        state.update(current_module=4, module_step=4, completed_modules=[1, 2, 3])
+        state.update(current_module=4, module_step=3, completed_modules=[1, 2, 3])
         state, _, _ = harness.apply_model_decision(state, decision(state), "用户原话", pending_id="p4")
         action = harness.available_actions(state)[0]
         state, event = harness.apply_action(state, action, state["revision"])
@@ -891,6 +891,12 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertIn(4, state["completed_modules"])
         self.assertEqual(state["foundation_report"]["status"], "generating")
         self.assertFalse(event["continue_model"])
+
+    def test_module_four_combines_story_summary_and_recommendation(self):
+        checkpoints = harness.MODULE_WORKFLOWS[4]["checkpoints"]
+        self.assertEqual(len(checkpoints), 4)
+        self.assertIn("故事资产清单", checkpoints[-1])
+        self.assertIn("推荐长期核心故事", checkpoints[-1])
 
     def test_module_six_is_the_open_flow_terminal(self):
         state = self.complete_intake()
