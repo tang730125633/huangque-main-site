@@ -559,9 +559,19 @@ def call_ai(messages, stream=False, temperature=0.7, max_tokens=None, response_f
         if validate_json:
             try:
                 content = (((resp.json().get("choices") or [{}])[0].get("message") or {}).get("content"))
+                if isinstance(content, list):
+                    content = "".join(
+                        str(item.get("text") or "") for item in content if isinstance(item, dict)
+                    )
                 json.loads(str(content or ""))
             except Exception:
                 if attempt == 0:
+                    if content:
+                        payload_messages.append({"role": "assistant", "content": str(content)[:4000]})
+                    payload_messages.append({
+                        "role": "user",
+                        "content": "上一次输出不是完整 JSON。只重发一个完整 JSON 对象，不要解释或使用 Markdown。",
+                    })
                     continue
                 raise Exception("API 200 但没有返回完整 JSON")
         return resp
@@ -1002,6 +1012,11 @@ def _coach_model_decision(convo, user_message, repair_error=""):
                 str(item.get("evidence_quote") or item.get("value") or "")
                 for item in preferences.values() if isinstance(item, dict)
             ),
+            *(
+                str(item.get("content") or "")
+                for item in (convo.get("messages") or [])[-12:]
+                if item.get("role") == "user"
+            ),
             str(user_message or ""),
         ])
         style_decision = coach_harness.compile_module_six_style(state, style_evidence)
@@ -1279,6 +1294,33 @@ def _persist_model_turn(
     return assistant, next_state
 
 
+def _persist_unprocessed_turn(cid, user_message, snapshot_revision, prefix=""):
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            raise KeyError("诊断不存在")
+        state = normalize_coach_state(convo.get("coach_state"))
+        if state["revision"] != snapshot_revision:
+            raise coach_harness.HarnessConflict("对话已在另一端更新，请刷新后重试")
+        assistant = (
+            "我已经记下你刚才的原话，已确认内容和当前步骤都没有改变。"
+            "这次还没整理成可确认结果；你不用重述，可以继续补充，"
+            "或发送“继续”让我基于刚才内容重新整理。"
+        )
+        if prefix:
+            assistant = prefix + "\n\n" + assistant
+        clean_message = _redact_mobile_numbers(user_message)
+        convo.setdefault("messages", []).append({"role": "user", "content": clean_message})
+        convo.setdefault("messages", []).append({"role": "assistant", "content": assistant})
+        state["revision"] += 1
+        convo["coach_state"] = state
+        if convo.get("title") == "新诊断":
+            title = clean_message.replace("\n", " ")[:30]
+            convo["title"] = title if len(title) < 30 else title[:27] + "..."
+        save_conversation(cid, convo)
+    return assistant, state
+
+
 def _process_model_turn(cid, user_message, expected_revision=None, prefix="", persist_user=True):
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
@@ -1407,6 +1449,11 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
         raise
     except (coach_harness.HarnessError, RuntimeError, requests.RequestException) as exc:
         app.logger.warning("IP12 model turn failed after validation/retry: %s", exc)
+        if persist_user:
+            assistant, next_state = _persist_unprocessed_turn(
+                cid, user_message, snapshot_revision, prefix=prefix
+            )
+            return _chat_result(assistant, next_state), 200
         return {"ok": False, "error": "这条消息暂时没能安全整理，请重试；已确认内容不会丢失。"}, 502
     auto_deliverables = {}
     if (

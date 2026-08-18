@@ -495,6 +495,15 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual(decision["profile_updates"][0]["evidence_quote"], evidence)
         self.assertIsNone(harness.compile_module_six_style(state, "我还没有想好风格"))
 
+        exact_words = (
+            "1min。"
+            "我希望口播是偏口语化的，就像和好友在聊天，"
+            "我希望观众可以点赞、评论我。"
+        )
+        exact = harness.compile_module_six_style(state, exact_words)
+        self.assertEqual(exact["checkpoint"], 1)
+        self.assertIn("点赞、评论", exact["draft"])
+
     def test_semantically_duplicate_reply_does_not_repeat_the_draft(self):
         draft = "### 核心关键词\n- AI Agent 搭建\n- 问题拆解\n- 持续学习"
         reply = harness.render_model_reply({
