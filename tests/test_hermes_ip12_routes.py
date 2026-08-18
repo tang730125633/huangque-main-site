@@ -57,7 +57,7 @@ class HermesIP12SourceTests(unittest.TestCase):
         for path in HERMES.glob("*.py"):
             routes.update(pattern.findall(path.read_text(encoding="utf-8")))
 
-        self.assertEqual(len(routes), 76)
+        self.assertEqual(len(routes), 80)
         self.assertTrue(
             {
                 "/api/chat",
@@ -71,6 +71,10 @@ class HermesIP12SourceTests(unittest.TestCase):
                 "/api/replica",
                 "/api/agnes/video",
                 "/api/team-workbench/submit",
+                "/api/ip12/productions/prepare",
+                "/api/ip12/productions/quote",
+                "/api/ip12/productions/confirm",
+                "/api/ip12/productions/<production_id>",
                 "/classic",
                 "/skills",
                 "/analytics",
@@ -78,6 +82,22 @@ class HermesIP12SourceTests(unittest.TestCase):
                 "/team-workbench",
             }.issubset(routes)
         )
+
+    def test_production_routes_keep_quote_tokens_server_side(self):
+        source = (HERMES / "server.py").read_text(encoding="utf-8")
+        for path in (
+            "/api/ip12/productions/prepare",
+            "/api/ip12/productions/quote",
+            "/api/ip12/productions/confirm",
+            "/api/ip12/productions/<production_id>",
+        ):
+            self.assertIn(path, source)
+        self.assertIn('quote.pop("token", None)', source)
+        self.assertIn('"idempotency_key": "ip12-" + production_id', source)
+        self.assertIn('record.update(status="submitting"', source)
+        self.assertIn('"/api/auth/internal/ip12/agent/action"', source)
+        for field in ("account_id", "action", "input", "confirm", "quote_token", "idempotency_key"):
+            self.assertIn(f'"{field}"', source)
 
     def test_main_view_exposes_three_featured_full_scripts(self):
         page = (HERMES / "templates/index.html").read_text(encoding="utf-8")
@@ -406,7 +426,8 @@ if (!rendered.includes("&lt;img") || !rendered.includes("<br>")) process.exit(5)
             }, message
 
         def persist_turn(
-            _cid, user_message, _revision, raw, evidence, prefix="", discard_pending=False
+            _cid, user_message, _revision, raw, evidence, prefix="", discard_pending=False,
+            message_id="",
         ):
             persist_calls.append((user_message, raw, evidence, prefix, discard_pending))
             if len(persist_calls) <= persist_failures:
@@ -418,6 +439,8 @@ if (!rendered.includes("&lt;img") || !rendered.includes("<br>")) process.exit(5)
             "owned_conversation": lambda _cid: {"coach_state": state},
             "normalize_coach_state": lambda value: value,
             "_assert_expected_revision": lambda _state, _revision: None,
+            "_persist_user_message": lambda _cid, _message, _revision, _request_id="": "test-message-id",
+            "_model_snapshot_without_user": lambda convo, _message_id: convo,
             "coach_harness": SimpleNamespace(
                 HarnessError=HarnessError,
                 HarnessConflict=HarnessConflict,
@@ -512,6 +535,355 @@ if (!rendered.includes("&lt;img") || !rendered.includes("<br>")) process.exit(5)
 
 
 @unittest.skipUnless(
+    importlib.util.find_spec("flask") and importlib.util.find_spec("requests"),
+    "Hermes route dependencies are not installed",
+)
+class HermesIP12ProductionRuntimeTests(unittest.TestCase):
+    def test_typed_production_state_quote_confirm_and_canvas_recovery(self):
+        script = r'''
+import json
+import sys
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+import server
+import security
+
+sys.path.insert(0, str(Path(server.__file__).resolve().parents[1]))
+import hq_cli_api
+
+server.current_account_id = lambda: "acct_a"
+security._validate_token = lambda token: {
+    "admin-token": {"account_id": "acct_a", "username": "admin", "role": "admin"},
+}.get(token)
+security.RATE_REQUESTS = 1000
+client = server.app.test_client()
+client.environ_base["HTTP_AUTHORIZATION"] = "Bearer admin-token"
+
+cid = "typedproduction01"
+state = server.initial_coach_state()
+server.save_conversation(cid, {
+    "id": cid,
+    "title": "typed production",
+    "messages": [{"role": "user", "content": "请把这篇正文做成多媒体成品，保留我的原话。"}],
+    "coach_state": state,
+    "reports": {},
+    "owner_account_id": "acct_a",
+    "deliverables": {"6": {"kind": "content_pack_v1", "categories": [{
+        "id": "category_1",
+        "name": "内容种类",
+        "topics": [{
+            "id": "topic_1",
+            "title": "精选选题",
+            "status": "ready",
+            "versions": [{"version": 1, "content": "这是用户确认过、可直接进入生产的完整口播正文。"}],
+        }],
+    }]}},
+})
+revision = state["revision"]
+target = {"category_id": "category_1", "topic_id": "topic_1"}
+original_messages = json.loads(json.dumps(server.load_conversation(cid)["messages"], ensure_ascii=False))
+
+def prepare(family, options_marker=None, preferred_action=None):
+    body = {
+        "conversation_id": cid,
+        "content_target": target,
+        "expected_revision": revision,
+        "requested_result": family,
+    }
+    if options_marker is not None:
+        body["options"] = options_marker
+    if preferred_action is not None:
+        body["preferred_action"] = preferred_action
+    response = client.post("/api/ip12/productions/prepare", json=body)
+    assert response.status_code == 200, response.get_data(as_text=True)
+    return response.get_json()
+
+# Missing and typed fields are returned before any execution call.  Filling the
+# same production later is allowed and changes its input digest.
+missing_image = prepare("image")
+assert missing_image["status"] == "blocked_prerequisite", missing_image
+assert missing_image["missing"] == ["prompt"], missing_image
+assert missing_image["schema"]["properties"]["prompt"]["type"] == "string"
+image_id = missing_image["production_id"]
+empty_digest = server.load_conversation(cid)["productions"][image_id]["input_digest"]
+
+bad_image = prepare("image", {"prompt": 7})
+assert bad_image["status"] == "blocked_prerequisite", bad_image
+assert bad_image["missing"] == [], bad_image
+assert "类型" in bad_image["validation_error"], bad_image
+
+audio = prepare("audio", {"text": "请用自然语气读出这段旁白。"})
+video = prepare("video", {"avatar_id": 7, "voice": "voice-demo"})
+canvas = prepare("canvas", {"board_id": "board_canvas_1", "base_version": 1, "prompt": "把这篇口播放进画布。"})
+generic_video = prepare("video", {"prompt": "把正文改编成海边日出短片。"}, "video-generate")
+for prepared, required in (
+    (audio, "text"), (video, "avatar_id"), (canvas, "prompt"),
+):
+    assert prepared["status"] == "draft", prepared
+    assert required in prepared["schema"]["required"], prepared
+assert canvas["recommended_action"] == "canvas-ops", canvas
+assert generic_video["recommended_action"] == "video-generate", generic_video
+assert generic_video["status"] == "draft" and "prompt" in generic_video["schema"]["required"]
+
+# The HTTP helper uses the unified internal action contract and never places
+# account_id inside the action input.
+bridge_response = Mock(status_code=200)
+bridge_response.json.return_value = {"job_id": 1, "status": "queued"}
+with patch.object(server, "INTERNAL_ACTION_TOKEN", "internal-test-token"), \
+     patch.object(server.requests, "post", return_value=bridge_response) as bridge_post:
+    server._bridge_action(
+        "acct_a", "image-generate", {"prompt": "海边日出"}, confirm=True,
+        quote_token="signed-quote", idempotency_key="ip12-confirm-0001",
+    )
+sent = bridge_post.call_args
+assert sent.args[0] == server.AUTH_BASE + "/api/auth/internal/ip12/agent/action", sent
+assert sent.kwargs["headers"] == {"X-HQ-Internal-Token": "internal-test-token"}
+assert sent.kwargs["json"] == {
+    "account_id": "acct_a",
+    "action": "image-generate",
+    "input": {"prompt": "海边日出"},
+    "confirm": True,
+    "quote_token": "signed-quote",
+    "idempotency_key": "ip12-confirm-0001",
+}
+
+quote_calls = []
+def image_bridge(account_id, action, input_body, **kwargs):
+    quote_calls.append((account_id, action, input_body, kwargs))
+    if kwargs.get("confirm"):
+        return {"job_id": "101", "status": "queued"}
+    if action == "task":
+        return {"job_id": "101", "status": "done", "asset_refs": [{"id": "asset-image-1", "kind": "image"}]}
+    return {"quote_token": "private-image-quote", "cost": 4, "points": 4, "expires_in": 300}
+
+with patch.object(server, "_bridge_action", side_effect=image_bridge):
+    quoted = client.post("/api/ip12/productions/quote", json={
+        "conversation_id": cid,
+        "production_id": image_id,
+        "expected_revision": revision,
+        "options": {"prompt": "第一版海报"},
+    })
+assert quoted.status_code == 200, quoted.get_data(as_text=True)
+quoted_body = quoted.get_json()
+assert quoted_body["billing"] == "paid" and quoted_body["cost"] == 4, quoted_body
+filled = server.load_conversation(cid)["productions"][image_id]
+assert filled["options"] == {"prompt": "第一版海报"}
+assert filled["input_digest"] != empty_digest
+assert quote_calls[0][3]["idempotency_key"] == filled["idempotency_key"]
+
+# Options supplied at confirm are part of the quoted digest.  A changed option
+# invalidates the old quote without submitting anything.
+with patch.object(server, "_bridge_action", side_effect=image_bridge):
+    changed = client.post("/api/ip12/productions/confirm", json={
+        "conversation_id": cid,
+        "production_id": image_id,
+        "expected_revision": revision,
+        "confirmation_id": "confirm-image-001",
+        "options": {"prompt": "第二版海报"},
+    })
+assert changed.status_code == 409, changed.get_data(as_text=True)
+assert changed.get_json()["code"] == "input_changed"
+assert not [call for call in quote_calls if call[3].get("confirm")]
+
+# Requote the changed input, submit once, and make a double-click replay read
+# the existing job instead of opening another paid task.
+with patch.object(server, "_bridge_action", side_effect=image_bridge):
+    requoted = client.post("/api/ip12/productions/quote", json={
+        "conversation_id": cid,
+        "production_id": image_id,
+        "expected_revision": revision,
+    })
+    assert requoted.status_code == 200, requoted.get_data(as_text=True)
+    confirmed = client.post("/api/ip12/productions/confirm", json={
+        "conversation_id": cid,
+        "production_id": image_id,
+        "expected_revision": revision,
+        "confirmation_id": "confirm-image-001",
+    })
+    replayed = client.post("/api/ip12/productions/confirm", json={
+        "conversation_id": cid,
+        "production_id": image_id,
+        "expected_revision": revision,
+        "confirmation_id": "confirm-image-001",
+    })
+    restored = client.get(f"/api/ip12/productions/{image_id}?conversation_id={cid}")
+assert confirmed.status_code == 200 and confirmed.get_json()["production"]["job_id"] == "101"
+assert replayed.status_code == 200 and replayed.get_json()["replayed"] is True
+assert restored.get_json()["production"]["status"] == "done"
+assert restored.get_json()["production"]["asset_refs"][0]["id"] == "asset-image-1"
+assert len([call for call in quote_calls if call[3].get("confirm")]) == 1, quote_calls
+assert all(call[3]["idempotency_key"] == filled["idempotency_key"] for call in quote_calls), quote_calls
+finished_change = client.post("/api/ip12/productions/confirm", json={
+    "conversation_id": cid,
+    "production_id": image_id,
+    "expected_revision": revision,
+    "confirmation_id": "confirm-image-001",
+    "options": {"prompt": "不能覆盖已完成记录的第三版海报"},
+})
+assert finished_change.status_code == 409
+assert finished_change.get_json()["code"] == "production_already_submitted"
+assert server.load_conversation(cid)["productions"][image_id]["options"] == {"prompt": "第二版海报"}
+
+# Failed work and a completed refund remain visible after refresh.
+audio_id = audio["production_id"]
+def audio_bridge(account_id, action, input_body, **kwargs):
+    if action == "task":
+        return {"job_id": "202", "status": "failed", "code": "provider_failed", "refund_status": "refunded"}
+    if kwargs.get("confirm"):
+        return {"job_id": "202", "status": "queued"}
+    return {"quote_token": "private-audio-quote", "cost": 2, "points": 2, "expires_in": 300}
+with patch.object(server, "_bridge_action", side_effect=audio_bridge):
+    assert client.post("/api/ip12/productions/quote", json={
+        "conversation_id": cid, "production_id": audio_id, "expected_revision": revision,
+    }).status_code == 200
+    assert client.post("/api/ip12/productions/confirm", json={
+        "conversation_id": cid, "production_id": audio_id, "expected_revision": revision,
+        "confirmation_id": "confirm-audio-001",
+    }).status_code == 200
+    failed = client.get(f"/api/ip12/productions/{audio_id}?conversation_id={cid}")
+failed_record = failed.get_json()["production"]
+assert failed_record["status"] == "failed" and failed_record["refund_status"] == "refunded", failed_record
+assert failed_record["last_error_code"] == "provider_failed"
+
+# A successful submit response without a durable result reference stays in
+# submitting and is recovered with the same idempotency key.
+video_id = video["production_id"]
+video_calls = []
+def video_bridge(account_id, action, input_body, **kwargs):
+    if action == "task":
+        video_calls.append((action, input_body, kwargs["idempotency_key"]))
+        return {"job_id": "303", "status": "done", "asset_refs": [{"id": "asset-video-1", "kind": "video"}]}
+    if not kwargs.get("confirm"):
+        return {"quote_token": "private-video-quote", "cost": 8, "points": 8, "expires_in": 300}
+    video_calls.append((action, input_body, kwargs["idempotency_key"]))
+    return {"job_id": "303", "status": "done"}
+with patch.object(server, "_bridge_action", side_effect=video_bridge):
+    assert client.post("/api/ip12/productions/quote", json={
+        "conversation_id": cid, "production_id": video_id, "expected_revision": revision,
+    }).status_code == 200
+    unlinked = client.post("/api/ip12/productions/confirm", json={
+        "conversation_id": cid, "production_id": video_id, "expected_revision": revision,
+        "confirmation_id": "confirm-video-001",
+    })
+    recovered_video = client.get(f"/api/ip12/productions/{video_id}?conversation_id={cid}")
+assert unlinked.status_code == 200, unlinked.get_data(as_text=True)
+assert unlinked.get_json()["production"]["last_error_code"] == "result_link_pending"
+assert recovered_video.get_json()["production"]["job_id"] == "303"
+assert recovered_video.get_json()["production"]["status"] == "done"
+assert recovered_video.get_json()["production"]["asset_refs"][0]["id"] == "asset-video-1"
+assert [call[0] for call in video_calls] == ["digital-ip-text-generate", "task"], video_calls
+assert video_calls[0][2] == video_calls[1][2], video_calls
+
+# Canvas quote is free, while confirm uses the real canvas-ops input shape.
+canvas_id = canvas["production_id"]
+canvas_record = server.load_conversation(cid)["productions"][canvas_id]
+canvas_input = server._production_input(canvas_record, canvas_record["options"])
+canvas_plan = hq_cli_api.action_plan("canvas-ops", canvas_input)
+assert canvas_plan["kind"] == "canvas-ops"
+assert canvas_plan["board_id"] == "board_canvas_1"
+assert canvas_plan["payload"]["op_id"].startswith("hqcli-")
+canvas_calls = []
+def canvas_bridge(account_id, action, input_body, **kwargs):
+    canvas_calls.append((account_id, action, input_body, kwargs))
+    assert kwargs.get("confirm") is True
+    return {"version": 2, "batch": {"op_id": input_body["op_id"]}, "board": {"id": input_body["board_id"]}}
+with patch.object(server, "_bridge_action", side_effect=canvas_bridge):
+    canvas_quote = client.post("/api/ip12/productions/quote", json={
+        "conversation_id": cid, "production_id": canvas_id, "expected_revision": revision,
+    })
+    assert canvas_calls == [], canvas_calls
+    canvas_done = client.post("/api/ip12/productions/confirm", json={
+        "conversation_id": cid, "production_id": canvas_id, "expected_revision": revision,
+        "confirmation_id": "confirm-canvas-001",
+    })
+    canvas_replay = client.post("/api/ip12/productions/confirm", json={
+        "conversation_id": cid, "production_id": canvas_id, "expected_revision": revision,
+        "confirmation_id": "confirm-canvas-001",
+    })
+assert canvas_quote.get_json()["billing"] == "free" and canvas_quote.get_json()["cost"] == 0
+assert canvas_done.get_json()["production"]["status"] == "done"
+assert canvas_done.get_json()["production"]["canvas_ref"] == {"board_id": "board_canvas_1", "version": 2}
+assert canvas_replay.get_json()["replayed"] is True
+assert len(canvas_calls) == 1, canvas_calls
+assert canvas_calls[0][1] == "canvas-ops"
+assert canvas_calls[0][3]["quote_token"] == ""
+
+# A lost Canvas response is retried by GET with the exact same op_id and
+# production idempotency key, so auth_server can return its saved canvas batch.
+recovery = prepare("canvas", {"board_id": "board_canvas_2", "base_version": 1, "prompt": "写入恢复节点。"})
+recovery_id = recovery["production_id"]
+recovery_calls = []
+def recovery_bridge(account_id, action, input_body, **kwargs):
+    recovery_calls.append((json.loads(json.dumps(input_body)), kwargs["idempotency_key"]))
+    if len(recovery_calls) == 1:
+        raise RuntimeError("response lost")
+    return {"version": 2, "batch": {"op_id": input_body["op_id"]}, "board": {"id": input_body["board_id"]}}
+with patch.object(server, "_bridge_action", side_effect=recovery_bridge):
+    recovery_quote = client.post("/api/ip12/productions/quote", json={
+        "conversation_id": cid, "production_id": recovery_id, "expected_revision": revision,
+    })
+    pending = client.post("/api/ip12/productions/confirm", json={
+        "conversation_id": cid, "production_id": recovery_id, "expected_revision": revision,
+        "confirmation_id": "confirm-canvas-002",
+    })
+    recovered_canvas = client.get(f"/api/ip12/productions/{recovery_id}?conversation_id={cid}")
+assert recovery_quote.status_code == 200 and pending.status_code == 202
+assert recovered_canvas.get_json()["production"]["status"] == "done"
+assert len(recovery_calls) == 2 and recovery_calls[0] == recovery_calls[1], recovery_calls
+assert hq_cli_api.action_plan("canvas-ops", recovery_calls[0][0])["kind"] == "canvas-ops"
+
+# A quoted production is tied to the selected script version, even if the next
+# version happens to reuse similar wording.
+stale = prepare("video", {"avatar_id": 9, "voice": "voice-demo"})
+stale_id = stale["production_id"]
+with patch.object(server, "_bridge_action", return_value={
+    "quote_token": "private-stale-quote", "cost": 8, "points": 8, "expires_in": 300,
+}):
+    assert client.post("/api/ip12/productions/quote", json={
+        "conversation_id": cid, "production_id": stale_id, "expected_revision": revision,
+    }).status_code == 200
+project = server.load_conversation(cid)
+project["deliverables"]["6"]["categories"][0]["topics"][0]["versions"].append({
+    "version": 2, "content": "这是用户确认过、可直接进入生产的第二版完整口播正文。",
+})
+server.save_conversation(cid, project)
+stale_response = client.get(f"/api/ip12/productions/{stale_id}?conversation_id={cid}")
+assert stale_response.get_json()["production"]["status"] == "stale"
+assert stale_response.get_json()["production"]["last_error_code"] == "source_changed"
+
+# All four families survive a project refresh, private quote tokens stay on the
+# server, accounts remain isolated, and production never mutates chat messages.
+public_project = client.get(f"/api/conversations/{cid}").get_json()
+families = {item["capability_family"] for item in public_project["productions"]}
+assert {"image", "audio", "video", "canvas"}.issubset(families), families
+assert "private-" not in json.dumps(public_project, ensure_ascii=False)
+assert server.load_conversation(cid)["messages"] == original_messages
+server.current_account_id = lambda: "acct_b"
+assert client.get(f"/api/conversations/{cid}").status_code == 404
+assert client.get(f"/api/ip12/productions/{image_id}?conversation_id={cid}").status_code == 404
+print("IP12_PRODUCTION_RUNTIME_OK")
+'''
+        with tempfile.TemporaryDirectory() as data_dir:
+            env = os.environ.copy()
+            env.update(
+                OPENAI_API_KEY="dummy",
+                HERMES_HOME=data_dir,
+                HERMES_DATA_DIR=data_dir,
+                HQ_INTERNAL_TOKEN="internal-test-token",
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=HERMES,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("IP12_PRODUCTION_RUNTIME_OK", result.stdout)
+
+
+@unittest.skipUnless(
     importlib.util.find_spec("flask") and importlib.util.find_spec("requests") and importlib.util.find_spec("pypdf"),
     "Hermes runtime dependencies are not installed",
 )
@@ -552,7 +924,7 @@ security._validate_token = lambda token: {
 }.get(token)
 security.RATE_REQUESTS = 1000
 routes = {rule.rule for rule in app.url_map.iter_rules() if rule.endpoint != "static"}
-assert len(routes) == 76, len(routes)
+assert len(routes) == 80, len(routes)
 assert all(
     security._is_metered(method)
     for rule in app.url_map.iter_rules()
@@ -764,6 +1136,107 @@ assert client.get("/api/conversations").get_json() == []
 server.current_account_id = lambda: "acct_a"
 assert client.delete(f"/api/conversations/{cid}").get_json()["ok"] is True
 
+# Production records stay in the existing conversation JSON.  The bridge is
+# mocked here: this route layer must preserve its quote token, source version,
+# and one idempotency key without recreating Auth/CLI billing behavior.
+production_cid = "production001"
+production_state = server.initial_coach_state()
+server.save_conversation(production_cid, {
+    "id": production_cid, "title": "生产项目", "messages": [],
+    "coach_state": production_state, "reports": {}, "owner_account_id": "acct_a",
+    "deliverables": {"6": {"kind": "content_pack_v1", "categories": [{
+        "id": "category_1", "name": "内容种类", "topics": [{
+            "id": "topic_1", "title": "精选选题", "status": "ready",
+            "versions": [{"version": 1, "content": "这是可制作的完整口播正文。"}],
+        }],
+    }]}},
+})
+revision = production_state["revision"]
+prepared = client.post("/api/ip12/productions/prepare", json={
+    "conversation_id": production_cid,
+    "content_target": {"category_id": "category_1", "topic_id": "topic_1"},
+    "expected_revision": revision, "requested_result": "video",
+})
+assert prepared.status_code == 200, prepared.get_data(as_text=True)
+prepared_body = prepared.get_json()
+production_id = prepared_body["production_id"]
+assert prepared_body["status"] == "blocked_prerequisite"
+bridge_calls = []
+def fake_production_bridge(account_id, action, input_body, **kwargs):
+    bridge_calls.append((account_id, action, input_body, kwargs))
+    if kwargs.get("confirm"):
+        return {"job_id": "456", "status": "queued"}
+    if action == "task":
+        return {"job_id": "456", "status": "done", "asset_refs": [{"id": "asset-1", "kind": "video"}]}
+    return {"quote_token": "private-quote-token", "cost": 12, "points": 12, "expires_in": 300}
+with patch.object(server, "_bridge_action", side_effect=fake_production_bridge):
+    quoted = client.post("/api/ip12/productions/quote", json={
+        "conversation_id": production_cid, "production_id": production_id,
+        "expected_revision": revision, "options": {"avatar_id": 1, "voice": "voice-demo"},
+    })
+    assert quoted.status_code == 200, quoted.get_data(as_text=True)
+    assert quoted.get_json()["cost"] == 12
+    confirmed = client.post("/api/ip12/productions/confirm", json={
+        "conversation_id": production_cid, "production_id": production_id,
+        "expected_revision": revision, "confirmation_id": "confirm-production-001",
+    })
+    assert confirmed.status_code == 200, confirmed.get_data(as_text=True)
+    assert confirmed.get_json()["production"]["job_id"] == "456"
+    restored = client.get(f"/api/ip12/productions/{production_id}?conversation_id={production_cid}")
+    assert restored.status_code == 200, restored.get_data(as_text=True)
+    assert restored.get_json()["production"]["status"] == "done"
+    assert restored.get_json()["production"]["asset_refs"][0]["id"] == "asset-1"
+assert len([call for call in bridge_calls if call[3].get("confirm")]) == 1
+stored_production = server.load_conversation(production_cid)["productions"][production_id]
+assert stored_production["quote"]["token"] == "private-quote-token"
+public_project = client.get(f"/api/conversations/{production_cid}").get_json()
+assert "private-quote-token" not in json.dumps(public_project, ensure_ascii=False)
+assert public_project["productions"][0]["job_id"] == "456"
+
+# A lost confirm response leaves the project in submitting.  Status recovery
+# must reuse the same quote and idempotency key, not open another production.
+recovery_prepare = client.post("/api/ip12/productions/prepare", json={
+    "conversation_id": production_cid,
+    "content_target": {"category_id": "category_1", "topic_id": "topic_1"},
+    "expected_revision": revision, "requested_result": "video",
+}).get_json()
+recovery_id = recovery_prepare["production_id"]
+recovery_confirm_calls = []
+def recovery_bridge(account_id, action, input_body, **kwargs):
+    if not kwargs.get("confirm"):
+        return {"quote_token": "recovery-quote", "cost": 12, "points": 12, "expires_in": 300}
+    recovery_confirm_calls.append(kwargs["idempotency_key"])
+    if len(recovery_confirm_calls) == 1:
+        raise RuntimeError("response lost")
+    return {"job_id": "789", "status": "queued"}
+with patch.object(server, "_bridge_action", side_effect=recovery_bridge):
+    assert client.post("/api/ip12/productions/quote", json={
+        "conversation_id": production_cid, "production_id": recovery_id,
+        "expected_revision": revision, "options": {"avatar_id": 2, "voice": "voice-demo"},
+    }).status_code == 200
+    pending = client.post("/api/ip12/productions/confirm", json={
+        "conversation_id": production_cid, "production_id": recovery_id,
+        "expected_revision": revision, "confirmation_id": "confirm-production-002",
+    })
+    assert pending.status_code == 202
+    recovered = client.get(f"/api/ip12/productions/{recovery_id}?conversation_id={production_cid}")
+    assert recovered.status_code == 200
+    assert recovered.get_json()["production"]["job_id"] == "789"
+assert len(recovery_confirm_calls) == 2 and len(set(recovery_confirm_calls)) == 1
+server.current_account_id = lambda: "acct_b"
+assert client.get(f"/api/ip12/productions/{production_id}?conversation_id={production_cid}").status_code == 404
+server.current_account_id = lambda: "acct_a"
+stale_project = server.load_conversation(production_cid)
+stale_project["deliverables"]["6"]["categories"][0]["topics"][0]["versions"].append(
+    {"version": 2, "content": "这是一版新的完整口播正文。"}
+)
+server.save_conversation(production_cid, stale_project)
+stale = client.get(f"/api/ip12/productions/{production_id}?conversation_id={production_cid}")
+assert stale.status_code == 200
+# A completed result remains attached to the version it actually produced;
+# only an unconsumed quote is invalidated by a later script version.
+assert stale.get_json()["production"]["status"] == "done"
+
 older_cid = "ffffffffffff"
 newer_cid = "000000000000"
 for ordered_cid, title in ((older_cid, "较早诊断"), (newer_cid, "最近诊断")):
@@ -906,7 +1379,16 @@ fallback_state["intake"]["status"] = "complete"
 fallback_convo["coach_state"] = fallback_state
 server.save_conversation(fallback_cid, fallback_convo)
 fallback_words = "这是模型暂时无法整理、但必须先保存的用户原话"
-with patch.object(server, "call_ai", side_effect=RuntimeError("temporary model failure")):
+seen_before_model = []
+def fail_before_model(snapshot, user_message, repair_error=""):
+    saved = server.load_conversation(fallback_cid).get("messages", [])
+    seen_before_model.append(any(
+        item.get("role") == "user" and item.get("content") == fallback_words
+        for item in saved
+    ))
+    raise RuntimeError("temporary model failure")
+
+with patch.object(server, "_coach_model_decision", side_effect=fail_before_model):
     fallback_response = client.post("/api/chat-complete", json={
         "conversation_id": fallback_cid,
         "message": fallback_words,
@@ -914,10 +1396,19 @@ with patch.object(server, "call_ai", side_effect=RuntimeError("temporary model f
         "request_id": "fallback-persists-once",
     })
 assert fallback_response.status_code == 200, fallback_response.get_data(as_text=True)
+assert seen_before_model == [True], seen_before_model
 fallback_json = fallback_response.get_json()
 assert fallback_json["ok"] is True
 assert "已经记下你刚才的原话" in fallback_json["assistant"]
 saved_fallback = server.load_conversation(fallback_cid)
+assert sum(
+    item.get("role") == "user" and item.get("content") == fallback_words
+    for item in saved_fallback["messages"]
+) == 1
+assert sum(
+    item.get("role") == "user" and item.get("message_id")
+    for item in saved_fallback["messages"]
+) == 1
 assert saved_fallback["messages"][-2]["content"] == fallback_words
 assert saved_fallback["messages"][-1]["content"] == fallback_json["assistant"]
 assert saved_fallback["coach_state"]["revision"] == fallback_state["revision"] + 1

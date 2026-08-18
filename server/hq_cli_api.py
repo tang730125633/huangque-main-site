@@ -111,6 +111,131 @@ CONFIRMATION_ACTIONS = frozenset({
     "inspiration-like", "leads-crm-upsert",
 })
 
+# This is the public contract shared by the CLI, the first-party HTTP bridge,
+# and IP12.  `action_plan` remains the only validator and route builder; the
+# catalog deliberately describes inputs without exposing private upstream URLs
+# or provider credentials.
+_ACTION_INPUTS = {
+    "account": (), "channels": (), "pricing": (),
+    "text-video-capability": (), "text-video-templates": (),
+    "text-video-styles": (), "text-video-voices": (),
+    "inspiration-catalog": (), "inspiration-likes": (),
+    "inspiration-like": ("id", "favorite"),
+    "leads-crm": ("lead_ids",), "leads-crm-upsert": ("lead_id", "intent", "follow_status", "follow_note"),
+    "collect-content": ("url",), "collect-video": ("url",), "collect-transcript": ("url",),
+    "collect-search": ("platform", "keyword", "page"), "leads-generate": ("url", "platform", "pages", "channels_targets"),
+    "video-avatars": ("limit",), "audio-slots": (),
+    "short-drama-projects": ("page", "page_size"),
+    "short-drama-project": ("project_id",), "short-drama-conversation": ("project_id",),
+    "short-drama-preflight": ("project_id",),
+    "digital-ip-projects": (), "digital-ip-project": ("project_id",), "digital-ip-report": ("project_id",),
+    "ip12-projects": (), "ip12-project": ("project_id",), "ip12-report": ("project_id",),
+    "ip12-create": ("title",), "ip12-message": ("project_id", "message", "request_id"),
+    "prompt-optimize": ("prompt", "kind"),
+    "canvas-list": ("limit", "offset"), "canvas-get": ("board_id",),
+    "canvas-create": ("name", "prompt"), "canvas-agent-plan": ("prompt", "project_id", "snapshot_digest", "scope", "nodes", "edges", "selected_node_ids", "history"),
+    "canvas-ops": ("board_id", "expected_version", "op_id", "ops"),
+    "tasks": ("days", "kind", "page", "page_size"), "task": ("job_id",),
+    "assets": ("kind", "limit", "offset"), "voices": (),
+    "asset-favorite": ("kind", "key", "favorite"), "asset-tags": ("kind", "key", "tags"),
+    "video-compose-projects": (), "video-compose-project": ("project_id",),
+    "video-compose-create": ("source_asset_id",),
+    "video-compose-analyze": ("project_id", "expected_revision"),
+    "video-compose-review": ("project_id", "expected_revision", "decisions"),
+    "video-compose-render": ("project_id", "expected_revision"),
+    "digital-presenter-capability": (), "digital-presenter-project": ("board_id", "project_id"),
+    "digital-presenter-create": ("board_id", "request_id", "title", "script_text", "ratio", "resolution", "voice_key", "target_duration"),
+    "digital-presenter-update": ("board_id", "project_id", "revision", "title", "script_text", "ratio", "resolution", "voice_key", "target_duration"),
+    "image-generate": ("prompt", "provider", "ratio", "quality", "count", "variant", "model", "image_upload_id", "mask_upload_id", "reference_upload_ids"),
+    "video-generate": ("prompt", "channel", "ratio", "duration", "seconds", "resolution", "model", "generate_audio", "reference_upload_ids"),
+    "audio-generate": ("text", "voice", "speed", "pitch", "volume"),
+    "digital-ip-text-generate": ("avatar_id", "text", "voice", "ratio", "motion", "subtitle", "subtitle_style", "subtitle_position"),
+    "digital-ip-batch-generate": ("avatars", "text", "voice", "ratio", "motion", "subtitle", "subtitle_style", "subtitle_position"),
+    "digital-ip-audio-generate": ("avatar_id", "audio_file", "ratio", "motion", "subtitle", "subtitle_style", "subtitle_position"),
+    "cinematic-open-generate": ("avatar_id", "avatar_ids", "prompt", "ratio", "duration", "enhance_prompt", "reference_image_upload_ids", "reference_video_upload_ids"),
+    "cinematic-motion-generate": ("avatar_id", "reference_video_upload_ids", "ratio"),
+    "tryon-fast-generate": ("person_image_upload_id", "clothes_upload_id", "seconds"),
+    "tryon-classic-generate": ("person_video_upload_id", "clothes_upload_id", "background_upload_id", "seconds"),
+}
+
+_ACTION_PURPOSES = {
+    "account": "读取当前黄雀账号与点数", "channels": "读取可用渠道", "pricing": "读取实时价格",
+    "ip12-projects": "读取本人 IP12 项目", "ip12-project": "读取本人 IP12 项目详情",
+    "ip12-report": "读取本人 IP12 报告", "canvas-list": "读取本人画布", "canvas-get": "读取本人画布详情",
+    "tasks": "读取本人任务记录", "task": "读取本人任务详情", "assets": "读取本人资产", "voices": "读取可用音色",
+    "image-generate": "生成图片", "video-generate": "生成视频", "audio-generate": "生成音频",
+    "canvas-agent-plan": "为画布生成可确认的操作方案", "canvas-ops": "写入本人画布操作",
+}
+
+_GENERATION_ACTIONS = frozenset({
+    "collect-content", "collect-video", "collect-transcript", "collect-search", "leads-generate",
+    "canvas-agent-plan", "image-generate", "video-generate", "audio-generate",
+    "digital-ip-text-generate", "digital-ip-batch-generate", "digital-ip-audio-generate",
+    "cinematic-open-generate", "cinematic-motion-generate", "tryon-fast-generate", "tryon-classic-generate",
+})
+
+
+def _catalog_type(field):
+    if field in {"id", "avatar_id", "job_id", "limit", "offset", "page", "page_size", "days", "count", "duration", "seconds", "expected_version", "expected_revision", "revision", "source_asset_id", "target_duration", "pitch", "volume"}:
+        return "integer"
+    if field in {"favorite", "subtitle", "enhance_prompt", "generate_audio"}:
+        return "boolean"
+    if field.endswith("ids") or field in {"ops", "nodes", "edges", "history", "avatars", "lead_ids", "tags"}:
+        return "array"
+    if field in {"decisions", "channels_targets"}:
+        return "object"
+    if field == "speed":
+        return "number"
+    return "string"
+
+
+def _catalog_route(action):
+    if action.startswith("canvas-") or action.startswith("digital-presenter-"):
+        return "/workbench/canvas"
+    if action.startswith("image-"):
+        return "/workbench/image"
+    if action.startswith("audio-") or action == "voices":
+        return "/workbench/audio"
+    if action.startswith(("video-", "digital-ip-", "cinematic-", "tryon-")):
+        return "/workbench/video"
+    if action.startswith("ip12-"):
+        return "/workbench/ip12/"
+    if action.startswith("short-drama-"):
+        return "/workbench/short-drama"
+    return ""
+
+
+def _catalog_entry(action, fields):
+    generation = action in _GENERATION_ACTIONS
+    external_effect = generation or action in CONFIRMATION_ACTIONS
+    return {
+        "action": action,
+        "purpose": _ACTION_PURPOSES.get(action, "执行黄雀已登记能力：" + action),
+        "input_schema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {field: {"type": _catalog_type(field)} for field in fields},
+        },
+        "billing": "quote_then_confirm" if generation else "free",
+        "external_effect": external_effect,
+        "confirmation_required": generation or action in CONFIRMATION_ACTIONS,
+        "risk": "production" if generation else ("write" if external_effect else "read"),
+        "result_type": "quote" if generation else ("account" if action == "account" else "json"),
+        "ui_route": _catalog_route(action),
+    }
+
+
+ACTION_CATALOG = tuple(_catalog_entry(action, fields) for action, fields in _ACTION_INPUTS.items())
+ACTION_CATALOG_MAP = {item["action"]: item for item in ACTION_CATALOG}
+ACTION_CATALOG_VERSION = "hq-action-catalog-v1"
+
+
+def action_catalog():
+    """Return a copy-safe, provider-secret-free catalog for first-party callers."""
+    return {
+        "version": ACTION_CATALOG_VERSION,
+        "actions": json.loads(json.dumps(ACTION_CATALOG, ensure_ascii=False)),
+    }
+
 _START_HITS = {}
 _START_HITS_LOCK = threading.Lock()
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,160}$")
@@ -838,6 +963,11 @@ def _matched_string(value, field, pattern, maximum=160):
     return value
 
 
+def validate_idempotency_key(value):
+    """Validate a first-party idempotency key without exposing the regex."""
+    return _matched_string(value, "idempotency_key", _IDEMPOTENCY_KEY_RE, 128)
+
+
 def _video_compose_decisions(value):
     if not isinstance(value, dict) or not 1 <= len(value) <= 200:
         raise CLIAPIError(400, "decisions 必须是包含 1-200 项的对象")
@@ -916,6 +1046,8 @@ def _leads_payload(value):
 def action_plan(action, value):
     if not isinstance(value, dict):
         raise CLIAPIError(400, "input 必须是 JSON 对象")
+    if action not in ACTION_CATALOG_MAP:
+        raise CLIAPIError(404, "未知 CLI 能力", "unknown_action")
     if action == "account":
         _strict_object(value, set())
         return _plan("profile:read", "account")

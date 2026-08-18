@@ -1,0 +1,252 @@
+import json
+import shutil
+import subprocess
+import unittest
+from pathlib import Path
+
+
+PAGE = Path(__file__).resolve().parents[1] / "server" / "hermes_ip12" / "templates" / "index.html"
+
+
+class IP12AgentProductionUITests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.html = PAGE.read_text(encoding="utf-8")
+
+    def test_resizable_panel_has_desktop_bounds_and_accessible_controls(self):
+        self.assertIn("--production-panel-width:440px", self.html)
+        self.assertIn("min:360,max:Math.min(720,Math.floor(window.innerWidth*.5))", self.html)
+        self.assertIn('id="productionPanelResizer"', self.html)
+        self.assertIn('role="separator"', self.html)
+        self.assertIn("beginProductionResize(event)", self.html)
+        self.assertIn("resizeProductionByKey(event)", self.html)
+        self.assertIn("localStorage.setItem(productionStorageKey(),next)", self.html)
+        self.assertIn("localStorage.getItem(productionStorageKey())", self.html)
+        self.assertIn("@media(max-width:1100px){\n  .rpn.open{position:fixed", self.html)
+        self.assertIn("@media(max-width:720px)", self.html)
+
+    def test_one_contextual_panel_renders_all_four_result_shapes(self):
+        start = self.html.index("function renderProductionPanel")
+        panel = self.html[start:self.html.index("function restoreProductionPanel()", start)]
+        self.assertIn("来源版本", panel)
+        self.assertIn("为什么推荐", panel)
+        self.assertIn("素材与参数", panel)
+        self.assertIn("实时报价", panel)
+        self.assertIn("任务与结果", panel)
+        result = self.html[self.html.index("function productionResultHtml"):self.html.index("function productionOptionsHtml")]
+        self.assertIn("<img", result)
+        self.assertIn("<video controls", result)
+        self.assertIn("<audio controls", result)
+        self.assertIn("打开 Canvas", result)
+        self.assertIn("下载", result)
+
+    def test_only_the_quote_card_exposes_the_paid_confirmation(self):
+        confirm = self.html[self.html.index("async function confirmProduction"):self.html.index("async function refreshProduction")]
+        self.assertIn("/api/ip12/productions/confirm", confirm)
+        self.assertIn("productionHasValidQuote(record)", confirm)
+        quote_card = self.html[self.html.index("if(quoted){"):self.html.index("html+='<div class=\"rpn-card\"><div class=\"rpn-card-header\">任务与结果")]
+        self.assertIn('data-production-quote-card="true"', quote_card)
+        self.assertIn('data-production-confirm="true"', quote_card)
+        self.assertIn("确认并提交这次生产", quote_card)
+        self.assertEqual(self.html.count('onclick="confirmProduction()"'), 1)
+        quote_guard = self.html[self.html.index("function productionHasValidQuote"):self.html.index("function renderProductionPanel")]
+        self.assertIn("record.status!=='quoted'", quote_guard)
+        self.assertIn("productionUnfilledFields", quote_guard)
+        actions = self.html[self.html.index("function runStateAction"):self.html.index("function attachHarnessActions")]
+        self.assertIn("if(item.type==='confirm_paid_job'){", actions)
+        self.assertNotIn("confirmProduction()", actions)
+        message = self.html[self.html.index("function sendMessage"):self.html.index("async function sendTurn")]
+        self.assertIn("var turn={message:text}", message)
+        self.assertNotIn("confirmProduction", message)
+        continuation = self.html[self.html.index("async function sendJumpMsg"):self.html.index("function toggleConvos")]
+        self.assertNotIn("confirmProduction", continuation)
+
+    def test_missing_and_schema_render_typed_controls_and_gate_quote(self):
+        controls = self.html[self.html.index("function productionParameterSchema"):self.html.index("function productionQuote")]
+        self.assertIn("record.parameter_schema||record.schema||record.input_schema", controls)
+        self.assertIn("record.missing_prerequisites||record.missing", controls)
+        self.assertIn('data-production-option="true"', controls)
+        self.assertIn('type="number"', controls)
+        self.assertIn("rememberProductionOption(event)", controls)
+        panel_start = self.html.index("function renderProductionPanel")
+        panel = self.html[panel_start:self.html.index("function restoreProductionPanel()", panel_start)]
+        self.assertIn('data-production-quote="true"', panel)
+        self.assertIn("unfilled.length?' disabled'", panel)
+        self.assertNotIn("missing.map", panel)
+
+    def test_prepare_and_quote_submit_typed_options(self):
+        prepare = self.html[self.html.index("async function prepareProduction"):self.html.index("async function requestProductionQuote")]
+        self.assertIn("options=typedProductionOptions(item||{},item&&item.options||{})", prepare)
+        self.assertIn("preferred_action:item&&item.preferred_action,options:options", prepare)
+        quote = self.html[self.html.index("async function requestProductionQuote"):self.html.index("async function confirmProduction")]
+        self.assertIn("var collected=collectProductionOptions(record)", quote)
+        self.assertIn("if(collected.missing.length)", quote)
+        self.assertIn("options:collected.options", quote)
+        self.assertIn("detail.code==='missing_prerequisite'", quote)
+
+    def test_four_current_missing_fields_are_typed_without_action_specific_flows(self):
+        if not shutil.which("node"):
+            self.skipTest("node unavailable")
+        start = self.html.index("function productionParameterSchema")
+        end = self.html.index("function productionDraftKey", start)
+        functions = self.html[start:end]
+        script = functions + r"""
+const cases = [
+  {kind:'image', field:'prompt', type:'string', raw:'品牌封面插画'},
+  {kind:'audio', field:'text', type:'string', raw:'欢迎来到黄雀'},
+  {kind:'video', field:'avatar_id', type:'integer', raw:'42'},
+  {kind:'canvas', field:'prompt', type:'string', raw:'整理为内容画布'}
+];
+const result = cases.map(item => {
+  const record = {
+    missing_prerequisites:[item.field],
+    parameter_schema:{
+      type:'object',
+      properties:{[item.field]:{type:item.type}},
+      required:[item.field]
+    },
+    options:{}
+  };
+  const spec = productionFieldSpecs(record)[0];
+  const before = productionUnfilledFields(record, record.options);
+  const options = typedProductionOptions(record, {[item.field]:item.raw});
+  const after = productionUnfilledFields(record, options);
+  return {kind:item.kind, field:spec.name, type:spec.type, value:options[item.field], before, after};
+});
+console.log(JSON.stringify(result));
+"""
+        got = json.loads(subprocess.run(
+            ["node", "-e", script], capture_output=True, text=True, check=True,
+        ).stdout)
+        self.assertEqual([item["field"] for item in got], ["prompt", "text", "avatar_id", "prompt"])
+        self.assertEqual([item["type"] for item in got], ["string", "string", "integer", "string"])
+        self.assertEqual(got[2]["value"], 42)
+        self.assertTrue(all(item["before"] for item in got))
+        self.assertTrue(all(item["after"] == [] for item in got))
+
+    def test_prepare_and_quote_runtime_bodies_keep_typed_options_and_missing_gate(self):
+        if not shutil.which("node"):
+            self.skipTest("node unavailable")
+        helpers_start = self.html.index("function productionParameterSchema")
+        helpers_end = self.html.index("function productionDraftKey", helpers_start)
+        collect_start = self.html.index("function collectProductionOptions")
+        collect_end = self.html.index("function updateProductionQuoteGate", collect_start)
+        request_start = self.html.index("async function productionRequest")
+        request_end = self.html.index("async function confirmProduction", request_start)
+        functions = "\n".join((
+            self.html[helpers_start:helpers_end],
+            self.html[collect_start:collect_end],
+            self.html[request_start:request_end],
+        ))
+        script = functions + r"""
+let cid='conversation-1', state={revision:9}, activeContentTarget=null;
+let activeProductionId='production-1';
+let productions={
+  'production-1':{
+    id:'production-1', status:'blocked_prerequisite', options:{},
+    missing_prerequisites:['avatar_id'],
+    parameter_schema:{type:'object',properties:{avatar_id:{type:'integer'}},required:['avatar_id']}
+  }
+};
+let fieldNodes=[{dataset:{field:'avatar_id'},value:'42'}], calls=[];
+global.document={
+  querySelectorAll:()=>fieldNodes,
+  getElementById:()=>({innerHTML:''})
+};
+global.fetch=async (url,init)=>{
+  calls.push({url,body:init.body?JSON.parse(init.body):null});
+  const data=url.endsWith('/quote')
+    ? {ok:true,production_id:'production-1',status:'quoted',cost:1,points:1}
+    : {ok:true,production_id:'production-2',status:'blocked_prerequisite',options:{avatar_id:7}};
+  return {ok:true,status:200,json:async()=>data};
+};
+function rememberProduction(record){productions[record.id]=record;return record}
+function updateProductionQuoteGate(){}
+function updateProductionFromPayload(){}
+function openPanel(){}
+function toast(){}
+(async()=>{
+  await requestProductionQuote();
+  const quoteCall=calls[calls.length-1];
+  await prepareProduction({
+    content_target:{topic_id:'topic-1'}, requested_result:'video',
+    options:{avatar_id:'7'},
+    parameter_schema:{type:'object',properties:{avatar_id:{type:'integer'}},required:['avatar_id']}
+  });
+  const prepareCall=calls[calls.length-1];
+  const beforeBlocked=calls.length;
+  productions['production-1'].options={};
+  fieldNodes=[{dataset:{field:'avatar_id'},value:''}];
+  await requestProductionQuote();
+  console.log(JSON.stringify({
+    quote:quoteCall.body.options,
+    prepare:prepareCall.body.options,
+    missingPreventedFetch:calls.length===beforeBlocked
+  }));
+})().catch(error=>{console.error(error);process.exit(1)});
+"""
+        got = json.loads(subprocess.run(
+            ["node", "-e", script], capture_output=True, text=True, check=True,
+        ).stdout)
+        self.assertEqual(got["quote"], {"avatar_id": 42})
+        self.assertEqual(got["prepare"], {"avatar_id": 7})
+        self.assertTrue(got["missingPreventedFetch"])
+
+    def test_restore_and_direct_navigation_keep_conversation_context(self):
+        select = self.html[self.html.index("async function selectConvo"):self.html.index("async function jumpModule")]
+        self.assertIn("productions=productionMap(c.productions)", select)
+        self.assertIn("activeProductionId=restoreProductionId()", select)
+        self.assertIn("restoreProductionPanel()", select)
+        restore = self.html[self.html.index("function productionDraftKey"):self.html.index("function productionError")]
+        self.assertIn("ip12-production-draft:", restore)
+        self.assertIn("parameter_schema:productionParameterSchema(record)", restore)
+        self.assertIn("missing_prerequisites:productionMissing(record)", restore)
+        self.assertIn("if(Array.isArray(value))", restore)
+        navigation = self.html[self.html.index("function navigateToProductionRoute"):self.html.index("function openProductionCanvas")]
+        self.assertIn("sessionStorage.setItem('ip12-production-return'", navigation)
+        self.assertIn("url.searchParams.set('conversation_id',cid||'')", navigation)
+        self.assertIn("url.searchParams.set('project_id',cid||'')", navigation)
+        self.assertIn("url.searchParams.set('return_to',location.pathname+location.search)", navigation)
+
+    def test_unquoted_local_field_draft_restores_but_cannot_override_server_quote(self):
+        if not shutil.which("node"):
+            self.skipTest("node unavailable")
+        start = self.html.index("function productionParameterSchema")
+        end = self.html.index("function saveProductionDraft", start)
+        functions = self.html[start:end]
+        script = functions + r"""
+var cid='conversation-1';
+const saved=JSON.stringify({
+  options:{prompt:'本地未报价草稿'},
+  parameter_schema:{type:'object',properties:{prompt:{type:'string'}},required:['prompt']},
+  missing_prerequisites:['prompt']
+});
+global.localStorage={getItem:()=>saved};
+const blocked=restoreProductionDraft({id:'production-1',status:'blocked_prerequisite',options:{prompt:''}});
+const quoted=restoreProductionDraft({id:'production-1',status:'quoted',options:{prompt:'服务端已报价版本'}});
+console.log(JSON.stringify({
+  blockedValue:blocked.options.prompt,
+  blockedMissing:blocked.missing_prerequisites,
+  quotedValue:quoted.options.prompt,
+  quotedMissing:quoted.missing_prerequisites||[]
+}));
+"""
+        got = json.loads(subprocess.run(
+            ["node", "-e", script], capture_output=True, text=True, check=True,
+        ).stdout)
+        self.assertEqual(got["blockedValue"], "本地未报价草稿")
+        self.assertEqual(got["blockedMissing"], ["prompt"])
+        self.assertEqual(got["quotedValue"], "服务端已报价版本")
+        self.assertEqual(got["quotedMissing"], [])
+
+    def test_production_errors_are_safe_user_messages_not_server_details(self):
+        source = self.html[self.html.index("function productionError"):self.html.index("function productionRoute")]
+        self.assertIn("暂时无法读取生产状态，请稍后再试。", source)
+        self.assertNotIn("data.error", source)
+        self.assertNotIn("e.message", source)
+        self.assertNotIn("detail.error", source)
+        self.assertNotIn("安全整理", self.html)
+
+
+if __name__ == "__main__":
+    unittest.main()

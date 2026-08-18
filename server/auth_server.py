@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # 黄雀 AI · 独立认证服务（零依赖，标准库）
 # 端口 127.0.0.1:8095，nginx 把 /api/auth/ 路由过来。与 leadgen(8090) 完全隔离。
-import datetime, sqlite3, hashlib, secrets, json, os, re, sys, time, urllib.parse, threading
+import datetime, sqlite3, hashlib, secrets, json, os, re, sys, time, urllib.parse, threading, shlex
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -43,9 +43,9 @@ except ImportError:  # 生产环境以脚本方式从 /home/ubuntu/auth-service 
     import hq_cli_api
 
 try:
-    from .content_domains import pricing, error_contract
+    from .content_domains import pricing, error_contract, feature_flags
 except ImportError:  # 生产环境以脚本方式从 /home/ubuntu/auth-service 启动
-    from content_domains import pricing, error_contract
+    from content_domains import pricing, error_contract, feature_flags
 
 DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.db")
 PORT = 8095
@@ -54,6 +54,11 @@ TOKEN_TTL = int(os.environ.get("HQ_AUTH_TOKEN_TTL", str(30 * 24 * 3600)))
 AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
 AUTH_COOKIE_SECURE = os.environ.get("HQ_AUTH_COOKIE_SECURE", "1").strip().lower() not in ("0", "false", "no")
 INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
+IP12_AGENT_ALLOWED_ACCOUNT_IDS = frozenset(
+    item.strip()
+    for item in os.environ.get("IP12_AGENT_ALLOWED_ACCOUNT_IDS", "").split(",")
+    if item.strip()
+)
 INVITE_HASH_SECRET = os.environ.get("HQ_INVITE_HASH_SECRET", "")
 INVITE_PUBLIC_BASE_URL = os.environ.get(
     "HQ_INVITE_PUBLIC_BASE_URL", "https://huangquechuanmei.com"
@@ -4752,9 +4757,16 @@ class H(BaseHTTPRequestHandler):
         if not auth:
             return self._cli_send(401, {"detail": "CLI 未登录或授权已过期", "code": "cli_unauthorized"})
         row, scopes = auth
+        return self._execute_cli_action(row, scopes, body)
+
+    def _execute_cli_action(self, row, scopes, body, trusted_internal=False):
+        """Run the sole action executor for both CLI and trusted IP12 callers."""
         if not isinstance(body, dict):
             return self._cli_send(400, {"detail": "请求体必须是 JSON 对象"})
-        unknown = sorted(set(body) - {"action", "input", "confirm", "quote_token"})
+        allowed = {"action", "input", "confirm", "quote_token"}
+        if trusted_internal:
+            allowed.add("idempotency_key")
+        unknown = sorted(set(body) - allowed)
         if unknown:
             return self._cli_send(400, {"detail": "不支持的参数：" + unknown[0]})
         action = body.get("action")
@@ -4768,6 +4780,13 @@ class H(BaseHTTPRequestHandler):
         if not isinstance(quote_token, str) or len(quote_token) > 4096:
             return self._cli_send(400, {"detail": "quote_token 不合法"})
         try:
+            idempotency_key = ""
+            if trusted_internal and body.get("idempotency_key") is not None:
+                idempotency_key = hq_cli_api.validate_idempotency_key(body["idempotency_key"])
+            if trusted_internal and confirm and not idempotency_key:
+                raise hq_cli_api.CLIAPIError(
+                    400, "内部确认必须提供 idempotency_key", "idempotency_key_required",
+                )
             plan = hq_cli_api.action_plan(action, input_body)
             if plan["scope"] not in scopes:
                 raise hq_cli_api.CLIAPIError(403, "当前 CLI 授权缺少权限：" + plan["scope"], "insufficient_scope")
@@ -4830,11 +4849,9 @@ class H(BaseHTTPRequestHandler):
                     submit_body = dict(payload)
                     if plan.get("quoted_cost_field"):
                         submit_body[plan["quoted_cost_field"]] = claims["c"]
-                    submit_headers = {
-                        "Idempotency-Key": "hqcli-" + claims["n"],
-                        "X-HQ-Expected-Cost": str(claims["c"]),
-                    }
+                    submit_headers = {"X-HQ-Expected-Cost": str(claims["c"])}
                     submit_headers.update(plan.get("submit_headers") or {})
+                    submit_headers["Idempotency-Key"] = idempotency_key or "hqcli-" + claims["n"]
                     submit_plan = {
                         "base": plan.get("submit_base", hq_cli_api.CONTENT_BASE),
                         "path": plan["endpoint"], "method": "POST",
@@ -4862,6 +4879,16 @@ class H(BaseHTTPRequestHandler):
                     "points": result.get("points"), "expires_in": hq_cli_api.QUOTE_TTL,
                     "confirmation_required": True,
                 })
+            if trusted_internal and confirm and idempotency_key and plan["kind"] == "proxy":
+                plan = dict(plan)
+                headers = dict(plan.get("headers") or {})
+                existing_key = headers.get("Idempotency-Key")
+                if existing_key and existing_key != idempotency_key:
+                    raise hq_cli_api.CLIAPIError(
+                        409, "idempotency_key 与 action 输入不一致", "idempotency_conflict",
+                    )
+                headers["Idempotency-Key"] = idempotency_key
+                plan["headers"] = headers
             if action == "ip12-message":
                 claim, previous_status = hq_cli_api.begin_action_request(
                     db, row["username"], action, plan["request_id"], plan["project_id"], plan["request_hash"],
@@ -4906,6 +4933,102 @@ class H(BaseHTTPRequestHandler):
             return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
         except Exception:
             return self._cli_send(500, {"detail": "CLI 操作暂时不可用", "code": "cli_internal_error"})
+
+    @staticmethod
+    def _ip12_agent_shell_action(command):
+        """Parse the bridge's tiny command language without ever spawning a shell."""
+        if not isinstance(command, str) or not command.strip() or len(command) > 512:
+            raise hq_cli_api.CLIAPIError(400, "受控命令不合法", "controlled_shell_rejected")
+        try:
+            tokens = shlex.split(command, posix=True)
+        except ValueError:
+            raise hq_cli_api.CLIAPIError(400, "受控命令不合法", "controlled_shell_rejected")
+        if len(tokens) != 3 or tokens[0] != "hq" or tokens[2] != "--json":
+            raise hq_cli_api.CLIAPIError(
+                400, "只允许 hq <已登记能力> --json；参数必须通过 input JSON 提供", "controlled_shell_rejected",
+            )
+        if tokens[1] not in hq_cli_api.ACTION_CATALOG_MAP:
+            raise hq_cli_api.CLIAPIError(404, "未知 CLI 能力", "unknown_action")
+        return tokens[1]
+
+    def _ip12_agent_row(self, account_id):
+        if not isinstance(account_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", account_id):
+            raise hq_cli_api.CLIAPIError(400, "account_id 不合法", "invalid_account_id")
+        if "*" not in IP12_AGENT_ALLOWED_ACCOUNT_IDS and account_id not in IP12_AGENT_ALLOWED_ACCOUNT_IDS:
+            return None
+        c = db()
+        try:
+            return c.execute(
+                "SELECT * FROM users WHERE account_id=? AND COALESCE(account_status,'active')='active'",
+                (account_id,),
+            ).fetchone()
+        finally:
+            c.close()
+
+    def _ip12_agent_bridge_enabled(self):
+        return feature_flags.is_enabled("ip12_agent_production_v1")
+
+    def _internal_ip12_agent_catalog(self, body):
+        if not self._ip12_agent_bridge_enabled():
+            return self._cli_send(503, {"detail": "IP12 执行桥未启用", "code": "feature_disabled"})
+        if not isinstance(body, dict) or set(body) != {"account_id"}:
+            return self._cli_send(400, {"detail": "只接受 account_id", "code": "invalid_request"})
+        try:
+            row = self._ip12_agent_row(body["account_id"])
+        except hq_cli_api.CLIAPIError as exc:
+            return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
+        if not row:
+            return self._cli_send(404, {"detail": "账号不存在", "code": "account_not_found"})
+        return self._cli_send(200, {"account_id": row["account_id"], **hq_cli_api.action_catalog()})
+
+    def _internal_ip12_agent_action(self, body):
+        if not self._ip12_agent_bridge_enabled():
+            return self._cli_send(503, {"detail": "IP12 执行桥未启用", "code": "feature_disabled"})
+        if not isinstance(body, dict):
+            return self._cli_send(400, {"detail": "请求体必须是 JSON 对象", "code": "invalid_request"})
+        transport = body.get("transport", "http")
+        if transport not in {"http", "shell"}:
+            return self._cli_send(400, {"detail": "transport 只支持 http 或 shell", "code": "invalid_transport"})
+        allowed = {
+            "account_id", "input", "transport", "action",
+            "confirm", "quote_token", "idempotency_key",
+        }
+        if transport == "shell":
+            allowed.add("command")
+        unknown = sorted(set(body) - allowed)
+        if unknown or "account_id" not in body or "input" not in body:
+            return self._cli_send(400, {"detail": "内部动作字段不合法", "code": "invalid_request"})
+        try:
+            action = body.get("action")
+            if transport == "shell":
+                parsed = self._ip12_agent_shell_action(body.get("command"))
+                if action is not None and action != parsed:
+                    raise hq_cli_api.CLIAPIError(400, "command 与 action 不一致", "controlled_shell_rejected")
+                action = parsed
+            if not isinstance(action, str) or action not in hq_cli_api.ACTION_CATALOG_MAP:
+                raise hq_cli_api.CLIAPIError(404, "未知 CLI 能力", "unknown_action")
+            if not isinstance(body["input"], dict):
+                raise hq_cli_api.CLIAPIError(400, "input 必须是 JSON 对象")
+            row = self._ip12_agent_row(body["account_id"])
+            if not row:
+                raise hq_cli_api.CLIAPIError(404, "账号不存在", "account_not_found")
+            action_body = {
+                "action": action,
+                "input": body["input"],
+                "confirm": body.get("confirm", False),
+                "quote_token": body.get("quote_token", ""),
+            }
+            if "idempotency_key" in body:
+                action_body["idempotency_key"] = body["idempotency_key"]
+            # Only this internal-token-authenticated route can set the trusted flag.
+            # Quote verification still binds the request to this resolved account
+            # and the exact action payload before any paid submit can be proxied.
+            return self._execute_cli_action(
+                row, frozenset(hq_cli_api.DEFAULT_SCOPES), action_body, trusted_internal=True,
+            )
+        except hq_cli_api.CLIAPIError as exc:
+            return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
+
     def _internal_auth(self):
         if not INTERNAL_TOKEN:
             return False
@@ -5019,6 +5142,24 @@ class H(BaseHTTPRequestHandler):
                 )
             except Exception:
                 return self._send(500, {"detail": "点数赠送失败，请稍后重试"})
+        if p == "/api/auth/internal/ip12/agent/catalog":
+            if not self._require_internal():
+                return
+            if self._content_length_exceeds(16 * 1024):
+                return self._cli_send(413, {"detail": "请求过大", "code": "request_too_large"})
+            d = self._body()
+            if self._bad_json():
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON", "code": "invalid_request"})
+            return self._internal_ip12_agent_catalog(d)
+        if p == "/api/auth/internal/ip12/agent/action":
+            if not self._require_internal():
+                return
+            if self._content_length_exceeds(128 * 1024):
+                return self._cli_send(413, {"detail": "请求过大", "code": "request_too_large"})
+            d = self._body()
+            if self._bad_json():
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON", "code": "invalid_request"})
+            return self._internal_ip12_agent_action(d)
         if p == "/api/auth/internal/canvas/access":
             if not self._require_internal():
                 return
