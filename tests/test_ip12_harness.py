@@ -618,6 +618,26 @@ class IP12HarnessTests(unittest.TestCase):
         ):
             self.assertIn(rule, prompt)
 
+    def test_module_one_uses_stated_help_goal_as_value_basis(self):
+        state = self.complete_intake()
+        state["pending"] = {
+            "id": "m1-collecting", "kind": "checkpoint", "status": "collecting",
+            "module": 1, "step": 1, "profile_updates": [
+                {"field": field} for field in (
+                    "key_experience", "core_skills", "long_term_interest",
+                    "target_audience", "audience_benefit",
+                )
+            ],
+        }
+
+        self.assertIn("帮助目标", harness.system_prompt(state))
+        with self.assertRaisesRegex(harness.HarnessError, "必须直接提炼候选关键词"):
+            harness.validate_model_decision(
+                decision(state, kind="ask_follow_up", reply="你最看重哪两项价值观？"),
+                state,
+                "",
+            )
+
     def test_module_two_reuses_completed_positioning_instead_of_asking_again(self):
         state = self.complete_intake()
         state.update(current_module=2, module_step=0, completed_modules=[1])
