@@ -618,6 +618,23 @@ class IP12HarnessTests(unittest.TestCase):
         ):
             self.assertIn(rule, prompt)
 
+    def test_module_three_reuses_confirmed_values_instead_of_asking_again(self):
+        state = self.complete_intake()
+        state.update(current_module=3, module_step=0, completed_modules=[1, 2])
+        state["ip_profile"]["facts"].update({
+            "target_audience": {"value": "喜欢 AI 的人"},
+            "current_occupation": {"value": "Agent 智能体开发"},
+        })
+        state["ip_profile"]["ai_selections"]["core_value_1"] = {"value": "持续探索"}
+
+        self.assertIn("复用已确认", harness.system_prompt(state))
+        with self.assertRaisesRegex(harness.HarnessError, "必须直接提炼候选关键词"):
+            harness.validate_model_decision(
+                decision(state, kind="ask_follow_up", reply="你希望别人怎样感受你？"),
+                state,
+                "",
+            )
+
     def test_confirmed_intake_supplement_reopens_intake_without_advancing_module(self):
         state = self.complete_intake()
         supplement = "我以前还做过健身教练，但是失败了，后来才转向计算机方向。"
