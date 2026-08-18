@@ -1369,7 +1369,7 @@ test('staged candidate pauses locator until the old full preview is reassembled'
   assert.doesNotMatch(output, /data-action="mark-current-refinement-shot"/);
 });
 
-test('mounted read-only workspace keeps shot seeking enabled but disables writes', () => {
+test('read-only permissions are reapplied to controls replaced by a render', () => {
   function control(action, insideSection) {
     return {
       disabled:false,
@@ -1381,7 +1381,7 @@ test('mounted read-only workspace keeps shot seeking enabled but disables writes
   const history = control('toggle-history', true);
   const mark = control('mark-current-refinement-shot', true);
   const input = control('', true);
-  const controls = [seek, history, mark, input];
+  let controls = [seek, history, mark, input];
   const root = {
     classList:{toggle(){}},
     querySelectorAll(){return controls;},
@@ -1393,11 +1393,20 @@ test('mounted read-only workspace keeps shot seeking enabled but disables writes
   assert.equal(mark.disabled, true);
   assert.equal(input.disabled, true);
 
-  workspace.setWorkspaceBusyState(root, true, false);
-  assert.equal(seek.disabled, true);
-  assert.equal(history.disabled, true);
-  assert.equal(mark.disabled, true);
-  assert.equal(input.disabled, true);
+  const rerenderedSeek = control('seek-refinement-shot', true);
+  const rerenderedHistory = control('toggle-history', true);
+  const rerenderedMark = control('mark-current-refinement-shot', true);
+  const rerenderedInput = control('', true);
+  controls = [rerenderedSeek, rerenderedHistory, rerenderedMark, rerenderedInput];
+  workspace.setWorkspaceBusyState(root, false, false);
+  assert.equal(rerenderedSeek.disabled, false);
+  assert.equal(rerenderedHistory.disabled, false);
+  assert.equal(rerenderedMark.disabled, true);
+  assert.equal(rerenderedInput.disabled, true);
+  assert.match(
+    workspaceSource,
+    /setWorkspaceBusyState\(root,workspaceBusy,state\.permissions\.can_edit\);\s*\n\s*}/,
+  );
 });
 
 test('镜头问题标记使用页面内弹窗并提供明确的问题类型', () => {

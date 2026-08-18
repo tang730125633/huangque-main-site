@@ -983,7 +983,8 @@
     root.insertAdjacentHTML('beforeend','<div class="sd-character-modal sd-refinement-issue-modal" id="sdRefinementIssueModal" hidden><div class="sd-character-modal-backdrop" data-action="close-refinement-issue"></div><section role="dialog" aria-modal="true" aria-labelledby="sdRefinementIssueTitle"><header><div><span>SHOT REVIEW</span><h2 id="sdRefinementIssueTitle">标记问题镜头</h2></div><button type="button" data-action="close-refinement-issue" aria-label="关闭">×</button></header><div id="sdRefinementIssueBody"></div></section></div>');
     var notice=doc.getElementById('sdWorkspaceNotice');
     var characterImagePreviewTrigger=null;
-    function busy(flag){setWorkspaceBusyState(root,flag,state.permissions.can_edit);}
+    var workspaceBusy=false;
+    function busy(flag){workspaceBusy=!!flag;setWorkspaceBusyState(root,workspaceBusy,state.permissions.can_edit);}
     function show(message,error){message=userFacingVideoMessage(message,'');notice.textContent=message;notice.classList.toggle('error',!!error);notice.hidden=!message;}
     function closeRefinementIssueModal(){
       var modal=doc.getElementById('sdRefinementIssueModal');
@@ -1369,6 +1370,7 @@
         generate.disabled=locked||!state.permissions.can_edit||(!state.conversation.current_version_id&&!understanding.direction_confirmed);
       });
       if(lock)lock.disabled=locked||!state.current_script||!state.permissions.can_edit||!!(state.current_script&&state.current_script.script&&state.current_script.script.quality_gate&&state.current_script.script.quality_gate.status==='blocked');
+      setWorkspaceBusyState(root,workspaceBusy,state.permissions.can_edit);
     }
     function payload(extra){return Object.assign({project_id:projectId,conversation_revision:Number(state.conversation.revision)},extra||{});}
     function apply(promise,success){

@@ -1387,7 +1387,10 @@ def _refinement_preview_media_contract(conn, project, source, autodraft=None):
         from . import short_drama_autodraft as autodraft
 
     live = dict(autodraft._locked_media_contract(conn, project) or {})
-    if live.get("delivery_eligible") is True:
+    if (
+        live.get("delivery_eligible") is True
+        and live.get("preview_only") is not True
+    ):
         return live
 
     source_media = source.get("media") or {}
@@ -1400,7 +1403,10 @@ def _refinement_preview_media_contract(conn, project, source, autodraft=None):
         ).fetchone()
         manifest = _json(row["manifest_json"], {}) if row else {}
         source_contract = dict(manifest.get("media_contract") or {})
-    if source_contract.get("delivery_eligible") is True:
+    if (
+        source_contract.get("delivery_eligible") is True
+        and source_contract.get("preview_only") is not True
+    ):
         return source_contract
 
     mode = str(source_contract.get("media_mode") or "provider_audio")
@@ -1410,8 +1416,8 @@ def _refinement_preview_media_contract(conn, project, source, autodraft=None):
     return {
         "contract_version": "short-drama-locked-media-v1",
         "evidence_source": "refinement_preview_audio_fallback",
-        "delivery_eligible": True,
-        "reason": "",
+        "delivery_eligible": False,
+        "reason": "refinement_preview_audio_fallback",
         "media_mode": mode,
         "silent_confirmed": mode == "silent",
         "audio_tracks": [],
@@ -1429,6 +1435,23 @@ def _refinement_preview_media_contract(conn, project, source, autodraft=None):
         "subtitle_required": False,
         "preview_only": True,
     }
+
+
+def _require_deliverable_media_contract(snapshot):
+    media = (snapshot or {}).get("media_contract") or {}
+    if media.get("preview_only") is True:
+        raise RefinementError(
+            "refinement_preview_only_media",
+            "当前音频仅供精修预览，请先锁定正式音轨或明确确认无声模式",
+            409,
+        )
+    if media.get("delivery_eligible") is not True:
+        raise RefinementError(
+            "delivery_media_incomplete",
+            "正式交付缺少已锁定音轨或字幕时间线",
+            409,
+        )
+    return media
 
 
 def _complete_refinement(conn, row, rendered=None):
@@ -2562,7 +2585,9 @@ def start_refinement_job(
     project_id = str(body.get("project_id") or "").strip()
     shot_key = str(body.get("shot_key") or "").strip()
     requested_source_id = str(body.get("source_version_id") or "").strip()
-    defer_reassembly = body.get("defer_reassembly") is True
+    # Deferred full-preview assembly belongs exclusively to candidate adoption.
+    # The legacy refinement route must not let a client opt into that workflow.
+    defer_reassembly = bool(candidate_adoption)
     key = _key(idempotency_key)
     conn = _connection(db_factory)
     try:
@@ -2689,10 +2714,8 @@ def adopt_refinement_candidate(
             "候选镜头采用缺少必填字段：" + "、".join(missing),
             422,
         )
-    payload = dict(body)
-    payload["defer_reassembly"] = True
     return start_refinement_job(
-        db_factory, owner_username, actor_username, payload, idempotency_key,
+        db_factory, owner_username, actor_username, body, idempotency_key,
         candidate_adoption=True,
     )
 
@@ -2753,6 +2776,7 @@ def confirm_refinement(db_factory, owner_username, actor_username, body):
                 "refinement_acceptance_incomplete", "必须完整通过六项全片验收", 409
             )
         source_hashes, snapshot = _acceptance_evidence(conn, project, current)
+        _require_deliverable_media_contract(snapshot)
         if snapshot.get("media_current") is not True:
             raise RefinementError(
                 "refinement_source_stale",
@@ -2887,11 +2911,7 @@ def create_delivery_quote(db_factory, owner_username, body):
             )
         acceptance = _valid_acceptance(conn, project, source, require=True)
         _require_complete_assembly(conn, project, source)
-        media = acceptance["snapshot"].get("media_contract") or {}
-        if capability.get("deliverable") and media.get("delivery_eligible") is not True:
-            raise RefinementError(
-                "delivery_media_incomplete", "正式交付缺少已锁定音轨或字幕时间线", 409
-            )
+        _require_deliverable_media_contract(acceptance["snapshot"])
         now = int(time.time())
         token = uuid.uuid4().hex
         cost = _formal_cost(capability)
@@ -3006,11 +3026,7 @@ def start_delivery_job(
             )
         acceptance = _valid_acceptance(conn, project, source, require=True)
         _require_complete_assembly(conn, project, source)
-        media = acceptance["snapshot"].get("media_contract") or {}
-        if capability.get("deliverable") and media.get("delivery_eligible") is not True:
-            raise RefinementError(
-                "delivery_media_incomplete", "正式交付缺少已锁定音轨或字幕时间线", 409
-            )
+        _require_deliverable_media_contract(acceptance["snapshot"])
         expected = _hash({
             "project_id": project_id, "version_id": quote["refinement_version_id"],
             "source_hash": source["input_hash"] if source else "",

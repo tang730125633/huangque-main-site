@@ -483,13 +483,12 @@ class ShortDramaRefinementTests(unittest.TestCase):
             self.db, "alice", "alice", self.project["id"]
         )["current_refinement"]
         replacement_id = self.add_provider_replacement("shot_02")
-        job = short_drama_refinement.start_refinement_job(
+        job = short_drama_refinement.adopt_refinement_candidate(
             self.db, "alice", "alice", {
                 "project_id": self.project["id"],
                 "shot_key": "shot_02",
                 "source_version_id": before["id"],
                 "replacement_provider_version_id": replacement_id,
-                "defer_reassembly": True,
             }, "adopt-shot-02-without-reassembly",
         )
         with mock.patch.object(
@@ -651,6 +650,30 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.assertEqual(200, handler.response[0])
         self.assertTrue(handler.response[1]["defer_reassembly"])
 
+    def test_legacy_refinement_http_route_ignores_true_defer_flag(self):
+        before = short_drama_refinement.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )["current_refinement"]
+        replacement_id = self.add_provider_replacement("shot_02")
+        handler = Handler(
+            "/api/gen/short-drama/refinement/jobs",
+            body={
+                "project_id": self.project["id"],
+                "shot_key": "shot_02",
+                "source_version_id": before["id"],
+                "replacement_provider_version_id": replacement_id,
+                "defer_reassembly": True,
+            },
+            key="legacy-refinement-cannot-defer",
+        )
+        verify = lambda token: (
+            {"username": token, "must_change": False} if token else None
+        )
+
+        self.assertTrue(short_drama.dispatch_http(handler, "POST", self.db, verify))
+        self.assertEqual(200, handler.response[0])
+        self.assertFalse(handler.response[1]["defer_reassembly"])
+
     def test_candidate_adoption_requires_fixed_problem_shot_and_candidate(self):
         source = short_drama_refinement.workspace(
             self.db, "alice", "alice", self.project["id"]
@@ -712,13 +735,12 @@ class ShortDramaRefinementTests(unittest.TestCase):
             self.db, "alice", "alice", self.project["id"]
         )["current_refinement"]
         replacement_id = self.add_provider_replacement("shot_02")
-        job = short_drama_refinement.start_refinement_job(
+        job = short_drama_refinement.adopt_refinement_candidate(
             self.db, "alice", "alice", {
                 "project_id": self.project["id"],
                 "shot_key": "shot_02",
                 "source_version_id": before["id"],
                 "replacement_provider_version_id": replacement_id,
-                "defer_reassembly": True,
             }, "adopt-before-probe-failure",
         )
         with mock.patch.object(
@@ -783,13 +805,12 @@ class ShortDramaRefinementTests(unittest.TestCase):
             conn.close()
 
         replacement_id = self.add_provider_replacement("shot_02")
-        job = short_drama_refinement.start_refinement_job(
+        job = short_drama_refinement.adopt_refinement_candidate(
             self.db, "alice", "alice", {
                 "project_id": self.project["id"],
                 "shot_key": "shot_02",
                 "source_version_id": source["id"],
                 "replacement_provider_version_id": replacement_id,
-                "defer_reassembly": True,
             }, "stage-one-of-two-problem-shots",
         )
         with mock.patch.object(
@@ -1197,11 +1218,142 @@ class ShortDramaRefinementTests(unittest.TestCase):
         version = short_drama_refinement.workspace(
             self.db, "alice", "alice", self.project["id"]
         )["current_refinement"]
+        contract = version["media"]["media_contract"]
+        self.assertTrue(contract["preview_only"])
+        self.assertFalse(contract["delivery_eligible"])
         self.assertEqual("/api/gen/file/" + output_relative, version["url"])
         self.assertEqual(
             short_drama_refinement._file_hash(output),
             version["preview_file_hash"],
         )
+
+        with self.assertRaises(short_drama_refinement.RefinementError) as blocked:
+            short_drama_refinement.confirm_refinement(
+                self.db, "alice", "alice", self.acceptance_body(version)
+            )
+        self.assertEqual("refinement_preview_only_media", blocked.exception.code)
+
+    def test_legacy_draft_without_media_contract_cannot_be_confirmed(self):
+        current = short_drama_refinement.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )["current_refinement"]
+        conn = self.db()
+        try:
+            row = conn.execute(
+                "SELECT manifest_json FROM short_drama_autodraft_versions "
+                "WHERE id='draft-v1'"
+            ).fetchone()
+            manifest = json.loads(row[0])
+            manifest.pop("media_contract", None)
+            conn.execute(
+                "UPDATE short_drama_autodraft_versions SET manifest_json=? "
+                "WHERE id='draft-v1'",
+                (json.dumps(manifest),),
+            )
+            media = dict(current.get("media") or {})
+            media.pop("media_contract", None)
+            shots = []
+            for shot in current.get("shots") or []:
+                item = dict(shot)
+                item.pop("issue", None)
+                item["status"] = "ready"
+                shots.append(item)
+            conn.execute(
+                "UPDATE short_drama_refinement_versions SET media_json=?,"
+                "shots_json=?,issues_json='[]' WHERE id=?",
+                (json.dumps(media), json.dumps(shots), current["id"]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        current = short_drama_refinement.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )["current_refinement"]
+        with self.assertRaises(short_drama_refinement.RefinementError) as blocked:
+            short_drama_refinement.confirm_refinement(
+                self.db, "alice", "alice", self.acceptance_body(current)
+            )
+        self.assertEqual("delivery_media_incomplete", blocked.exception.code)
+
+    def test_preview_only_acceptance_cannot_be_quoted_or_started(self):
+        version = self.repaired_version("preview-only-delivery-gates")
+        self.confirm_version(version)
+        quote = short_drama_refinement.create_delivery_quote(
+            self.db, "alice", {
+                "project_id": self.project["id"], "version_id": version["id"],
+            },
+        )
+
+        conn = self.db()
+        conn.row_factory = sqlite3.Row
+        try:
+            manifest = json.loads(conn.execute(
+                "SELECT manifest_json FROM short_drama_autodraft_versions "
+                "WHERE id='draft-v1'"
+            ).fetchone()[0])
+            contract = dict(manifest["media_contract"])
+            contract.update({
+                "delivery_eligible": False,
+                "preview_only": True,
+                "reason": "refinement_preview_audio_fallback",
+            })
+            manifest["media_contract"] = contract
+            source = short_drama_refinement._refinement(conn.execute(
+                "SELECT * FROM short_drama_refinement_versions WHERE id=?",
+                (version["id"],),
+            ).fetchone())
+            media = dict(source["media"])
+            media["media_contract"] = contract
+            conn.execute(
+                "UPDATE short_drama_autodraft_versions SET manifest_json=? "
+                "WHERE id='draft-v1'",
+                (json.dumps(manifest),),
+            )
+            conn.execute(
+                "UPDATE short_drama_refinement_versions SET media_json=? WHERE id=?",
+                (json.dumps(media), version["id"]),
+            )
+            project = dict(conn.execute(
+                "SELECT * FROM short_drama_projects WHERE id=?",
+                (self.project["id"],),
+            ).fetchone())
+            source = short_drama_refinement._refinement(conn.execute(
+                "SELECT * FROM short_drama_refinement_versions WHERE id=?",
+                (version["id"],),
+            ).fetchone())
+            source_hashes, snapshot = short_drama_refinement._acceptance_evidence(
+                conn, project, source
+            )
+            conn.execute(
+                "UPDATE short_drama_refinement_acceptances SET "
+                "source_hashes_json=?,snapshot_json=?,snapshot_hash=? "
+                "WHERE refinement_version_id=?",
+                (
+                    json.dumps(source_hashes), json.dumps(snapshot),
+                    short_drama_refinement._hash(snapshot), version["id"],
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with self.assertRaises(short_drama_refinement.RefinementError) as blocked:
+            short_drama_refinement.create_delivery_quote(
+                self.db, "alice", {
+                    "project_id": self.project["id"], "version_id": version["id"],
+                },
+            )
+        self.assertEqual("refinement_preview_only_media", blocked.exception.code)
+
+        with self.assertRaises(short_drama_refinement.RefinementError) as blocked:
+            short_drama_refinement.start_delivery_job(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "quote_token": quote["quote_token"],
+                }, "preview-only-start-blocked",
+            )
+        self.assertEqual("refinement_preview_only_media", blocked.exception.code)
 
     def _reassembly_source(self):
         return short_drama_refinement.workspace(
