@@ -953,6 +953,15 @@ with patch.object(server, "MODEL", "deepseek-v4-flash"), patch.object(server.req
     assert deepseek_payload["messages"][-2] == {"role": "assistant", "content": '{"decision":'}
     assert "上一次输出不是完整 JSON" in deepseek_payload["messages"][-1]["content"]
 
+with patch.object(server, "MODEL", "gpt-5.6-luna"), patch.object(server.requests, "post") as request_model:
+    completed = Mock(status_code=200)
+    request_model.return_value = completed
+    response = server.call_ai([{"role": "user", "content": "你好"}], max_tokens=1200)
+    assert response is completed
+    luna_payload = request_model.call_args.kwargs["json"]
+    assert luna_payload["max_completion_tokens"] == 1200
+    assert "max_tokens" not in luna_payload
+
 transitioned = parse_coach_state_updates(
     "好，我们进入模块2：人设塑造。",
     {"current_module": 1, "completed_modules": [], "module_step": 0},
