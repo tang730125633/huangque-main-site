@@ -149,6 +149,28 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual(state["intake"]["draft"], revised_draft)
         self.assertEqual(state["current_module"], 1)
 
+    def test_intake_rejects_repeated_optional_follow_up(self):
+        state = harness.initial_state()
+        state, _, _ = harness.apply_intake_decision(
+            state,
+            intake_decision(kind="ask_follow_up", reply="方便的话，请告诉我你的年龄段？不想回答也可以跳过。"),
+            "我目前在广州做 Agent 开发。",
+        )
+
+        with self.assertRaisesRegex(harness.HarnessError, "重复追问"):
+            harness.apply_intake_decision(
+                state,
+                intake_decision(kind="ask_follow_up", reply="为了补齐资料，你大概属于哪个年龄段？"),
+                "我以前修过车，后来转行了。",
+            )
+
+        state, _, _ = harness.apply_intake_decision(
+            state,
+            intake_decision(kind="ask_follow_up", reply="你目前主要的收入来源是什么？不方便也可以跳过。"),
+            "我以前修过车，后来转行了。",
+        )
+        self.assertEqual(state["intake"]["asked_follow_ups"], ["age", "income"])
+
     def test_intake_recovers_model_drift_and_keeps_latest_unconfirmed_facts(self):
         state = harness.initial_state()
         first = intake_decision(
