@@ -4793,8 +4793,10 @@ class H(BaseHTTPRequestHandler):
             if action in hq_cli_api.CONFIRMATION_ACTIONS and not confirm:
                 raise hq_cli_api.CLIAPIError(409, "该操作需要显式确认", "confirmation_required")
             if plan["kind"] == "account":
-                return self._cli_send(200, {"user": self._cli_public_user(row), "scopes": list(scopes),
-                                            "expires_at": int(row["cli_expires_at"])})
+                result = {"user": self._cli_public_user(row), "scopes": list(scopes)}
+                if "cli_expires_at" in row.keys():
+                    result["expires_at"] = int(row["cli_expires_at"])
+                return self._cli_send(200, result)
             if plan["kind"] == "channels":
                 return self._cli_send(200, {"channels": list(hq_cli_api.CHANNEL_CATALOG),
                                             "total": len(hq_cli_api.CHANNEL_CATALOG),
