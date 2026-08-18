@@ -568,6 +568,15 @@ def _claim_has_current_evidence(claim, evidence):
     return False
 
 
+def _strip_unsupported_acronym_expansions(text, evidence):
+    """Keep user acronyms verbatim unless the user supplied the expansion."""
+    return re.sub(
+        r"\b([A-Z][A-Z0-9]{1,7})\s*[（(]([^()（）\n]{2,80})[）)]",
+        lambda match: match.group(0) if match.group(2).strip() in evidence else match.group(1),
+        str(text or ""),
+    )
+
+
 def _validate_confirmable_claims(draft, evidence):
     for match in RISKY_CLAIM_RE.finditer(draft):
         prefix = draft[max(0, match.start() - 12):match.start()]
@@ -620,8 +629,9 @@ def validate_model_decision(
         checkpoint = int(raw.get("checkpoint", 0))
     except (TypeError, ValueError) as exc:
         raise HarnessError("模型返回了无效 checkpoint") from exc
-    reply = str(raw.get("reply") or "").strip()[:4000]
-    draft = str(raw.get("draft") or "").strip()[:12000]
+    evidence = str(evidence_text or "")
+    reply = _strip_unsupported_acronym_expansions(raw.get("reply"), evidence).strip()[:4000]
+    draft = _strip_unsupported_acronym_expansions(raw.get("draft"), evidence).strip()[:12000]
     self_review = str(raw.get("self_review") or "").strip()[:500]
     if not reply:
         raise HarnessError("模型回复为空")
@@ -684,12 +694,11 @@ def validate_model_decision(
     if not isinstance(updates, list) or len(updates) > 40:
         raise HarnessError("模型返回了无效 profile_updates")
     clean_updates = []
-    evidence = str(evidence_text or "")
     for item in updates:
         if not isinstance(item, dict):
             raise HarnessError("模型返回了无效档案更新")
         field = str(item.get("field") or "").strip()
-        value_text = str(item.get("value") or "").strip()[:1200]
+        value_text = _strip_unsupported_acronym_expansions(item.get("value"), evidence).strip()[:1200]
         kind = str(item.get("kind") or "")
         quote = str(item.get("evidence_quote") or "").strip()[:300]
         if not FIELD_RE.fullmatch(field) or not value_text or kind not in {"user_fact", "user_preference", "ai_option"}:
