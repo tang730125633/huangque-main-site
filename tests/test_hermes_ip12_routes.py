@@ -856,6 +856,20 @@ module_six_convo = server.load_conversation(advance_retry_cid)
 module_six_state = module_six_convo["coach_state"]
 module_six_state.update(current_module=6, module_step=0, completed_modules=[1, 2, 3, 4, 5])
 module_six_convo["coach_state"] = module_six_state
+server.save_conversation(advance_retry_cid, module_six_convo)
+with patch.object(server, "call_ai") as module_six_entry_model:
+    module_six_entry_response = client.post("/api/chat-complete", json={
+        "conversation_id": advance_retry_cid,
+        "message": "下一步",
+        "expected_revision": module_six_state["revision"],
+    })
+    module_six_entry_model.assert_not_called()
+assert module_six_entry_response.status_code == 200, module_six_entry_response.get_data(as_text=True)
+module_six_entry = module_six_entry_response.get_json()
+assert module_six_entry["state"]["current_module"] == 6
+assert module_six_entry["state"]["module_step"] == 0
+assert "表达风格" in module_six_entry["assistant"]
+assert "每篇大约多长" in module_six_entry["assistant"]
 captured_module_six = {}
 def capture_module_six(messages, **kwargs):
     captured_module_six["messages"] = messages
