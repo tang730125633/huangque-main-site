@@ -62,16 +62,16 @@ MODULE_WORKFLOWS = {
         "checkpoints": (
             "确定 3 个长期选题种类并说明各自边界",
             "为每个种类设计 10 个具体选题，共 30 个",
-            "确认 3×10 选题库并说明首批内容顺序",
+            "确认 3×10 选题库并精选每类 1 个重点选题",
         ),
     },
     6: {
         "name": "文案口播",
         "required": "主题、目标人群、身份设定、传播目标和表达风格偏好",
         "checkpoints": (
-            "确认 30 篇口播文案的表达风格、时长和行动目标",
-            "审阅 3 个种类下各 10 篇口播文案",
-            "确认首批 30 篇口播文案成果",
+            "确认 3 篇精选口播文案的表达风格、时长和行动目标",
+            "审阅 3 个精选选题及对应完整口播文案",
+            "确认首批 3 篇完整口播文案成果",
         ),
     },
 }
@@ -344,6 +344,15 @@ def shortcut_action(value, message):
 def is_continue_message(message):
     normalized = re.sub(r"[\s，,。.!！?？]+", "", str(message or "")).lower()
     return normalized in CONTINUE_TEXTS
+
+
+def is_content_review_message(message):
+    text = re.sub(r"\s+", "", str(message or "")).lower()
+    return bool(re.search(
+        r"(?:想看|要看|先看|看看|看一下|看一看|查看|展示|发我|给我看|给我).{0,8}(?:文案|口播|正文|文章)|"
+        r"(?:文案|口播|正文|文章).{0,8}(?:我)?(?:想看|要看|先看|看看|看一下|看一看|查看|展示|发来|给我看)",
+        text,
+    ))
 
 
 def _require_revision(state, expected_revision):
@@ -723,24 +732,21 @@ def compile_module_five_confirmation(value):
     )
     categories = confirmed_module_five_topics(state)
 
-    first_batch = []
-    for topic_index in range(2):
-        for category in categories:
-            first_batch.append((category["name"], category["topics"][topic_index]))
+    featured = [(category["name"], category["topics"][0]) for category in categories]
     draft = "\n".join([
         "### 已确认的 3×10 选题库",
         *("- %s：10 个选题" % category["name"] for category in categories),
         "",
-        "### 首批 6 条发布顺序",
+        "### 精选 3 个重点选题",
         *("%d. 【%s】%s" % (index, category, title)
-          for index, (category, title) in enumerate(first_batch, 1)),
+          for index, (category, title) in enumerate(featured, 1)),
     ])
     return validate_model_decision({
         "decision": "propose_checkpoint",
         "checkpoint": 3,
-        "reply": "30 个选题已经保存。下面只确认首批发布顺序，不会重新生成选题。",
+        "reply": "30 个备选题已经保存，并从每个种类精选了 1 个重点选题；确认后会直接写成 3 篇完整口播文案。",
         "draft": draft,
-        "self_review": "只复用已确认的 3×10 选题，并按三个种类交错排序。",
+        "self_review": "保留已确认的 3×10 题库，每个种类只精选排序第一的重点选题。",
         "profile_updates": [],
         "confidence": 1.0,
     }, state, source)
@@ -753,44 +759,51 @@ def compile_module_six_checkpoint(value, pack):
     categories = (pack or {}).get("categories") if isinstance(pack, dict) else None
     if (
         (pack or {}).get("kind") != "content_pack_v1"
+        or (pack or {}).get("format") != "featured_3_v1"
         or not isinstance(categories, list)
         or len(categories) != 3
-        or any(len((item or {}).get("topics") or []) != 10 for item in categories)
+        or any(len((item or {}).get("topics") or []) != 1 for item in categories)
     ):
-        raise HarnessError("模块 6 尚未形成完整的 3×10 口播内容库")
+        raise HarnessError("模块 6 尚未形成 3 个精选选题及对应完整文案")
+    featured = []
+    for category in categories:
+        topic = category["topics"][0]
+        versions = topic.get("versions") or []
+        script = str((versions[-1] if versions else {}).get("content") or "").strip()
+        if not script:
+            raise HarnessError("模块 6 的精选选题缺少完整文案")
+        featured.append((category, topic, script))
     evidence = "\n".join(
         text
-        for category in categories
-        for text in (
-            [str(category.get("name") or "")]
-            + [str(topic.get("title") or "") for topic in category.get("topics") or []]
-        )
+        for category, topic, script in featured
+        for text in (str(category.get("name") or ""), str(topic.get("title") or ""), script)
     )
     if state["module_step"] == 1:
         draft = "\n\n".join(
-            "### %s\n%s" % (
+            "### %d. %s｜%s\n**精选理由：** %s\n\n%s" % (
+                index,
                 category.get("name"),
-                "\n".join(
-                    "%d. %s" % (index, topic.get("title"))
-                    for index, topic in enumerate(category.get("topics") or [], 1)
-                ),
+                topic.get("title"),
+                category.get("description") or "最符合当前定位与内容方向",
+                script,
             )
-            for category in categories
+            for index, (category, topic, script) in enumerate(featured, 1)
         )
-        reply = "30 篇口播已经按模块 5 的原 3×10 选题生成，可在右侧逐篇打开审阅。"
+        reply = "我已从 3×10 备选题库中按每个种类精选 1 个选题，并把 3 篇完整口播文案直接列在下面；右侧也会同时打开全文。"
         checkpoint = 2
     else:
-        draft = "### 已完成的 3×10 口播成果\n" + "\n".join(
-            "- %s：10 篇" % category.get("name") for category in categories
+        draft = "### 已完成的 3 篇完整文案\n" + "\n".join(
+            "- 【%s】%s" % (category.get("name"), topic.get("title"))
+            for category, topic, _script in featured
         )
-        reply = "3 个种类、30 个原选题和对应 30 篇口播均已保留，下面只确认整套成果。"
+        reply = "30 个备选题仍完整保留；本轮交付的是每个种类 1 篇、共 3 篇完整口播文案，下面只确认这 3 篇成品。"
         checkpoint = 3
     return validate_model_decision({
         "decision": "propose_checkpoint",
         "checkpoint": checkpoint,
         "reply": reply,
         "draft": draft,
-        "self_review": "只读取已生成内容库，不重新生成或改写种类与选题。",
+        "self_review": "只读取 3 个精选选题及其完整正文，30 个其余选题仅作为备选题库。",
         "profile_updates": [],
         "confidence": 1.0,
     }, state, evidence)
@@ -832,7 +845,7 @@ def compile_module_six_style(value, evidence_text):
         "decision": "propose_checkpoint",
         "checkpoint": 1,
         "reply": "我已按你说过的表达方式、时长和行动引导整理统一口播标准，不再重复追问。",
-        "draft": "### 30 篇口播统一标准\n- %s" % requirements,
+        "draft": "### 3 篇精选口播统一标准\n- %s" % requirements,
         "self_review": "只引用用户已提供的口播偏好，不补写新的要求。",
         "profile_updates": [{
             "field": "module_6_delivery_preferences",

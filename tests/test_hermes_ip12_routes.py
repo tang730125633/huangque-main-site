@@ -79,6 +79,13 @@ class HermesIP12SourceTests(unittest.TestCase):
             }.issubset(routes)
         )
 
+    def test_main_view_exposes_three_featured_full_scripts(self):
+        page = (HERMES / "templates/index.html").read_text(encoding="utf-8")
+        self.assertIn("featured_3_v1", page)
+        self.assertIn("3 篇精选口播文案", page)
+        self.assertIn("latest.content", extract_js_function(page, "renderContentPack"))
+        self.assertIn("isContentReviewMessage(turn.message)", extract_js_function(page, "sendTurn"))
+
     @unittest.skipUnless(shutil.which("node"), "node is required")
     def test_inline_javascript_parses(self):
         failures = []
@@ -778,13 +785,13 @@ assert client.delete(f"/api/conversations/{newer_cid}").status_code == 200
 
 raw_pack = {"categories": [{
     "name": f"种类{category}",
-    "description": f"种类{category}说明",
+    "description": f"这是种类{category}中最值得优先发布的选题。",
     "topics": [{
-        "title": f"种类{category}选题{topic}",
-        "hook": f"钩子{topic}",
+        "title": f"种类{category}选题01",
+        "hook": "开头钩子",
         "objective": "建立信任",
-        "script": f"这是种类{category}的第{topic}篇口播文案。",
-    } for topic in range(1, 11)],
+        "script": (f"这是种类{category}精选选题的完整口播文案，包含自然开头、清晰观点、具体解释和克制的行动引导。") * 6,
+    }],
 } for category in range(1, 4)]}
 
 advance_source = "\n\n".join(
@@ -939,12 +946,20 @@ assert "转行经验分享选题01" in module_six_context
 
 content_pack = server._normalize_content_pack(raw_pack)
 assert content_pack["kind"] == "content_pack_v1"
+assert content_pack["format"] == "featured_3_v1"
 assert len(content_pack["categories"]) == 3
-assert all(len(category["topics"]) == 10 for category in content_pack["categories"])
-assert sum(len(category["topics"]) for category in content_pack["categories"]) == 30
+assert all(len(category["topics"]) == 1 for category in content_pack["categories"])
+assert sum(len(category["topics"]) for category in content_pack["categories"]) == 3
 try:
     server._normalize_content_pack({"categories": raw_pack["categories"][:2]})
     raise AssertionError("two-category pack was accepted")
+except ValueError:
+    pass
+short_pack = json.loads(json.dumps(raw_pack, ensure_ascii=False))
+short_pack["categories"][0]["topics"][0]["script"] = "只有标题，没有完整正文。"
+try:
+    server._normalize_content_pack(short_pack)
+    raise AssertionError("title-only content was accepted as a complete script")
 except ValueError:
     pass
 
@@ -976,8 +991,8 @@ generated_state["ip_profile"]["confirmed_outputs"]["5-2"] = {
         "### %s\n%s" % (
             category["name"],
             "\n".join(
-                "%d. %s" % (index, topic["title"])
-                for index, topic in enumerate(category["topics"], 1)
+                "%d. %s选题%02d" % (index, category["name"], index)
+                for index in range(1, 11)
             ),
         )
         for category in raw_pack["categories"]
@@ -990,8 +1005,43 @@ pack_response.json.return_value = {"choices": [{"message": {"content": json.dump
 with patch.object(server, "call_ai", return_value=pack_response) as pack_model:
     generated_pack = server.generate_deliverable(generated_cid, 6)
 assert len(generated_pack["categories"]) == 3
+assert sum(len(category["topics"]) for category in generated_pack["categories"]) == 3
 assert server.load_conversation(generated_cid)["deliverables"]["6"]["kind"] == "content_pack_v1"
 assert pack_model.call_args.kwargs["response_format"]["type"] == "json_schema"
+
+legacy_cid = client.post("/api/conversations").get_json()["id"]
+legacy_convo = server.load_conversation(legacy_cid)
+legacy_state = json.loads(json.dumps(generated_state, ensure_ascii=False))
+legacy_state["module_step"] = 1
+legacy_state["pending"] = None
+legacy_convo["coach_state"] = legacy_state
+legacy_convo["deliverables"] = {"6": {
+    "kind": "content_pack_v1",
+    "title": "📝 3×10 口播内容库",
+    "categories": [{
+        "id": f"category-{category}",
+        "name": f"种类{category}",
+        "topics": [{
+            "id": f"topic-{category}-{topic:02d}",
+            "title": f"种类{category}选题{topic:02d}",
+            "versions": [{"version": 1, "content": "旧版正文"}],
+        } for topic in range(1, 11)],
+    } for category in range(1, 4)],
+}}
+server.save_conversation(legacy_cid, legacy_convo)
+with patch.object(server, "call_ai", return_value=pack_response) as legacy_pack_model:
+    legacy_review = client.post("/api/chat-complete", json={
+        "conversation_id": legacy_cid,
+        "message": "口播文案我先看看",
+        "content_target": {"category_id": "category-1", "topic_id": "topic-1-01"},
+        "expected_revision": legacy_state["revision"],
+    })
+assert legacy_review.status_code == 200, legacy_review.get_data(as_text=True)
+legacy_review_json = legacy_review.get_json()
+assert "3 篇完整口播文案" in legacy_review_json["assistant"]
+assert "这是种类1精选选题的完整口播文案" in legacy_review_json["assistant"]
+assert legacy_pack_model.call_count == 1
+assert server.load_conversation(legacy_cid)["deliverables"]["6"]["format"] == "featured_3_v1"
 
 content_cid = client.post("/api/conversations").get_json()["id"]
 content_convo = server.load_conversation(content_cid)
@@ -1018,7 +1068,7 @@ updated_pack = server.load_conversation(content_cid)["deliverables"]["6"]
 updated_topic = updated_pack["categories"][0]["topics"][0]
 assert [item["version"] for item in updated_topic["versions"]] == [1, 2]
 assert updated_topic["versions"][-1]["content"].startswith("先说结论")
-assert len(updated_pack["categories"][0]["topics"][1]["versions"]) == 1
+assert len(updated_pack["categories"][1]["topics"][0]["versions"]) == 1
 assert content_revision.get_json()["auto_deliverables"]["6"]["categories"][0]["topics"][0]["status"] == "revised"
 assert client.post("/api/chat-complete", json={
     "conversation_id": content_cid,
