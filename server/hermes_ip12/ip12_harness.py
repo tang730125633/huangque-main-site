@@ -704,7 +704,10 @@ def validate_model_decision(
         if not FIELD_RE.fullmatch(field) or not value_text or kind not in {"user_fact", "user_preference", "ai_option"}:
             raise HarnessError("模型返回了无效档案字段")
         if kind != "ai_option" and (not quote or quote not in evidence):
-            if allow_partial_profile_updates and decision == "ask_follow_up":
+            if allow_partial_profile_updates and (
+                decision == "ask_follow_up"
+                or (decision == "propose_checkpoint" and state.get("pending"))
+            ):
                 continue
             raise HarnessError("模型档案更新缺少可回查的用户原话")
         clean_updates.append({"field": field, "value": value_text, "kind": kind, "evidence_quote": quote})
