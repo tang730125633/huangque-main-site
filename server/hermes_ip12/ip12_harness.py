@@ -808,7 +808,7 @@ def compile_module_six_checkpoint(value, pack):
         topic = category["topics"][0]
         versions = topic.get("versions") or []
         script = str((versions[-1] if versions else {}).get("content") or "").strip()
-        if not script:
+        if len(re.sub(r"\s+", "", script)) < 120:
             raise HarnessError("模块 6 的精选选题缺少完整文案")
         featured.append((category, topic, script))
     evidence = "\n".join(

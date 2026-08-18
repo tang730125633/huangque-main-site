@@ -520,6 +520,10 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual(confirmation["checkpoint"], 3)
         self.assertIn("3 篇完整文案", confirmation["draft"])
 
+        pack["categories"][1]["topics"][0]["versions"][0]["content"] = "只有标题，不是完整正文。"
+        with self.assertRaisesRegex(harness.HarnessError, "缺少完整文案"):
+            harness.compile_module_six_checkpoint(state, pack)
+
     def test_module_six_style_reuses_confirmed_preferences(self):
         state = self.complete_intake()
         state.update(current_module=6, module_step=0, completed_modules=[1, 2, 3, 4, 5])
