@@ -808,17 +808,25 @@ def compile_module_six_style(value, evidence_text):
     ]
     relevant = [
         item for item in sentences
-        if re.search(r"大白话|口语|分享|教学|讲解|语气|风格|口播|秒|分钟|收藏|留言|关注|私信|咨询", item)
+        if re.search(r"大白话|口语|分享|教学|讲解|语气|风格|口播|秒|分钟|minute|mins?|点赞|评论|收藏|留言|关注|私信|咨询", item, re.I)
     ]
     requirements = "；".join(dict.fromkeys(relevant))[:800]
     if not (
         re.search(r"大白话|口语|分享|教学|讲解|语气|风格", requirements)
-        and re.search(r"\d+\s*(?:到|至|-)?\s*\d*\s*(?:秒|分钟)", requirements)
-        and re.search(r"收藏|留言|关注|私信|咨询", requirements)
+        and re.search(
+            r"(?:\d+\s*(?:到|至|-)?\s*\d*|[一二两三四五六七八九十半]+)\s*"
+            r"(?:秒|分钟|minute(?:s)?|mins?|m)(?![A-Za-z])",
+            requirements,
+            re.I,
+        )
+        and re.search(r"点赞|评论|收藏|留言|关注|私信|咨询", requirements)
     ):
         return None
-    quote = next((item for item in relevant if item in evidence and len(item) <= 300), "")
-    if not quote:
+    starts = [evidence.find(item) for item in relevant]
+    quote_start = min((item for item in starts if item >= 0), default=-1)
+    quote_end = max((evidence.find(item) + len(item) for item in relevant if item in evidence), default=-1)
+    quote = evidence[quote_start:quote_end] if 0 <= quote_start < quote_end else ""
+    if not quote or len(quote) > 300:
         return None
     return validate_model_decision({
         "decision": "propose_checkpoint",

@@ -571,6 +571,8 @@ with patch.object(server, "MODEL", "deepseek-v4-flash"), patch.object(server.req
     assert deepseek_payload["response_format"] == {"type": "json_object"}
     assert deepseek_payload["thinking"] == {"type": "disabled"}
     assert '"required":["decision"]' in deepseek_payload["messages"][0]["content"]
+    assert deepseek_payload["messages"][-2] == {"role": "assistant", "content": '{"decision":'}
+    assert "上一次输出不是完整 JSON" in deepseek_payload["messages"][-1]["content"]
 
 transitioned = parse_coach_state_updates(
     "好，我们进入模块2：人设塑造。",
@@ -870,6 +872,56 @@ assert module_six_entry["state"]["current_module"] == 6
 assert module_six_entry["state"]["module_step"] == 0
 assert "表达风格" in module_six_entry["assistant"]
 assert "每篇大约多长" in module_six_entry["assistant"]
+module_six_exact_convo = server.load_conversation(advance_retry_cid)
+module_six_exact_state = module_six_exact_convo["coach_state"]
+module_six_exact_convo.setdefault("messages", []).extend([
+    {"role": "user", "content": "1min"},
+    {"role": "assistant", "content": "你希望口播偏口语化还是正式？最后希望观众关注、评论、私信，还是去试 AI 工具？"},
+])
+server.save_conversation(advance_retry_cid, module_six_exact_convo)
+exact_preference = "我希望口播是偏口语化的，就像和好友在聊天，我希望观众可以点赞、评论我"
+with patch.object(server, "call_ai") as exact_preference_model:
+    exact_preference_response = client.post("/api/chat-complete", json={
+        "conversation_id": advance_retry_cid,
+        "message": exact_preference,
+        "expected_revision": module_six_exact_state["revision"],
+    })
+    exact_preference_model.assert_not_called()
+assert exact_preference_response.status_code == 200, exact_preference_response.get_data(as_text=True)
+exact_preference_json = exact_preference_response.get_json()
+assert exact_preference_json["state"]["pending"]["step"] == 1
+assert "点赞、评论" in exact_preference_json["state"]["pending"]["draft"]
+
+fallback_cid = client.post("/api/conversations").get_json()["id"]
+fallback_convo = server.load_conversation(fallback_cid)
+fallback_state = server.coach_harness.initial_state()
+fallback_state["intake"]["status"] = "complete"
+fallback_convo["coach_state"] = fallback_state
+server.save_conversation(fallback_cid, fallback_convo)
+fallback_words = "这是模型暂时无法整理、但必须先保存的用户原话"
+with patch.object(server, "call_ai", side_effect=RuntimeError("temporary model failure")):
+    fallback_response = client.post("/api/chat-complete", json={
+        "conversation_id": fallback_cid,
+        "message": fallback_words,
+        "expected_revision": fallback_state["revision"],
+        "request_id": "fallback-persists-once",
+    })
+assert fallback_response.status_code == 200, fallback_response.get_data(as_text=True)
+fallback_json = fallback_response.get_json()
+assert fallback_json["ok"] is True
+assert "已经记下你刚才的原话" in fallback_json["assistant"]
+saved_fallback = server.load_conversation(fallback_cid)
+assert saved_fallback["messages"][-2]["content"] == fallback_words
+assert saved_fallback["messages"][-1]["content"] == fallback_json["assistant"]
+assert saved_fallback["coach_state"]["revision"] == fallback_state["revision"] + 1
+replayed_fallback = client.post("/api/chat-complete", json={
+    "conversation_id": fallback_cid,
+    "message": fallback_words,
+    "expected_revision": fallback_state["revision"],
+    "request_id": "fallback-persists-once",
+})
+assert replayed_fallback.status_code == 200
+assert len(server.load_conversation(fallback_cid)["messages"]) == len(saved_fallback["messages"])
 captured_module_six = {}
 def capture_module_six(messages, **kwargs):
     captured_module_six["messages"] = messages
@@ -880,7 +932,7 @@ def capture_module_six(messages, **kwargs):
     }, ensure_ascii=False)}}]}
     return response
 with patch.object(server, "call_ai", side_effect=capture_module_six):
-    server._coach_model_decision(module_six_convo, "继续")
+    server._coach_model_decision(module_six_convo, "模块 6 会怎么使用模块 5 的选题？")
 module_six_context = "\n".join(item["content"] for item in captured_module_six["messages"])
 assert "confirmed_module_five_plan" in module_six_context
 assert "转行经验分享选题01" in module_six_context
