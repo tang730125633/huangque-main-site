@@ -618,6 +618,19 @@ class IP12HarnessTests(unittest.TestCase):
         ):
             self.assertIn(rule, prompt)
 
+    def test_module_two_reuses_completed_positioning_instead_of_asking_again(self):
+        state = self.complete_intake()
+        state.update(current_module=2, module_step=0, completed_modules=[1])
+        state["ip_profile"]["confirmed_outputs"]["1-1"] = {"draft": "已确认定位关键词"}
+
+        self.assertIn("模块 1 已确认", harness.system_prompt(state))
+        with self.assertRaisesRegex(harness.HarnessError, "必须从已有经历、行为和价值观"):
+            harness.validate_model_decision(
+                decision(state, kind="ask_follow_up", reply="别人通常会怎么形容你？"),
+                state,
+                "",
+            )
+
     def test_module_three_reuses_confirmed_values_instead_of_asking_again(self):
         state = self.complete_intake()
         state.update(current_module=3, module_step=0, completed_modules=[1, 2])
