@@ -1933,6 +1933,8 @@ def _persist_model_turn(
         state = normalize_coach_state(convo.get("coach_state"))
         if state["revision"] != snapshot_revision:
             raise coach_harness.HarnessConflict("对话已在另一端更新，请刷新后重试")
+        if not user_message:
+            raw_decision = {**raw_decision, "profile_updates": []}
         was_intake = _intake_pending(state)
         if was_intake:
             next_state, decision, assistant = coach_harness.apply_intake_decision(
