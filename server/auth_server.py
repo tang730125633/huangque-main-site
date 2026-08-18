@@ -4754,11 +4754,14 @@ class H(BaseHTTPRequestHandler):
         row, scopes = auth
         return self._execute_cli_action(row, scopes, body)
 
-    def _execute_cli_action(self, row, scopes, body):
+    def _execute_cli_action(self, row, scopes, body, trusted_internal=False):
         """Run the sole action executor for both CLI and trusted IP12 callers."""
         if not isinstance(body, dict):
             return self._cli_send(400, {"detail": "请求体必须是 JSON 对象"})
-        unknown = sorted(set(body) - {"action", "input", "confirm", "quote_token"})
+        allowed = {"action", "input", "confirm", "quote_token"}
+        if trusted_internal:
+            allowed.add("idempotency_key")
+        unknown = sorted(set(body) - allowed)
         if unknown:
             return self._cli_send(400, {"detail": "不支持的参数：" + unknown[0]})
         action = body.get("action")
@@ -4772,6 +4775,13 @@ class H(BaseHTTPRequestHandler):
         if not isinstance(quote_token, str) or len(quote_token) > 4096:
             return self._cli_send(400, {"detail": "quote_token 不合法"})
         try:
+            idempotency_key = ""
+            if trusted_internal and body.get("idempotency_key") is not None:
+                idempotency_key = hq_cli_api.validate_idempotency_key(body["idempotency_key"])
+            if trusted_internal and confirm and not idempotency_key:
+                raise hq_cli_api.CLIAPIError(
+                    400, "内部确认必须提供 idempotency_key", "idempotency_key_required",
+                )
             plan = hq_cli_api.action_plan(action, input_body)
             if plan["scope"] not in scopes:
                 raise hq_cli_api.CLIAPIError(403, "当前 CLI 授权缺少权限：" + plan["scope"], "insufficient_scope")
@@ -4834,11 +4844,9 @@ class H(BaseHTTPRequestHandler):
                     submit_body = dict(payload)
                     if plan.get("quoted_cost_field"):
                         submit_body[plan["quoted_cost_field"]] = claims["c"]
-                    submit_headers = {
-                        "Idempotency-Key": "hqcli-" + claims["n"],
-                        "X-HQ-Expected-Cost": str(claims["c"]),
-                    }
+                    submit_headers = {"X-HQ-Expected-Cost": str(claims["c"])}
                     submit_headers.update(plan.get("submit_headers") or {})
+                    submit_headers["Idempotency-Key"] = idempotency_key or "hqcli-" + claims["n"]
                     submit_plan = {
                         "base": plan.get("submit_base", hq_cli_api.CONTENT_BASE),
                         "path": plan["endpoint"], "method": "POST",
@@ -4866,6 +4874,16 @@ class H(BaseHTTPRequestHandler):
                     "points": result.get("points"), "expires_in": hq_cli_api.QUOTE_TTL,
                     "confirmation_required": True,
                 })
+            if trusted_internal and confirm and idempotency_key and plan["kind"] == "proxy":
+                plan = dict(plan)
+                headers = dict(plan.get("headers") or {})
+                existing_key = headers.get("Idempotency-Key")
+                if existing_key and existing_key != idempotency_key:
+                    raise hq_cli_api.CLIAPIError(
+                        409, "idempotency_key 与 action 输入不一致", "idempotency_conflict",
+                    )
+                headers["Idempotency-Key"] = idempotency_key
+                plan["headers"] = headers
             if action == "ip12-message":
                 claim, previous_status = hq_cli_api.begin_action_request(
                     db, row["username"], action, plan["request_id"], plan["project_id"], plan["request_hash"],
@@ -4964,7 +4982,10 @@ class H(BaseHTTPRequestHandler):
         transport = body.get("transport", "http")
         if transport not in {"http", "shell"}:
             return self._cli_send(400, {"detail": "transport 只支持 http 或 shell", "code": "invalid_transport"})
-        allowed = {"account_id", "input", "transport", "action"}
+        allowed = {
+            "account_id", "input", "transport", "action",
+            "confirm", "quote_token", "idempotency_key",
+        }
         if transport == "shell":
             allowed.add("command")
         unknown = sorted(set(body) - allowed)
@@ -4984,12 +5005,20 @@ class H(BaseHTTPRequestHandler):
             row = self._ip12_agent_row(body["account_id"])
             if not row:
                 raise hq_cli_api.CLIAPIError(404, "账号不存在", "account_not_found")
-            # The bridge never receives a quote token or confirm=true.  Reads run
-            # normally; generation returns the existing quote, while writes stop at
-            # the existing confirmation gate for a user-visible confirmation.
-            return self._execute_cli_action(row, frozenset(hq_cli_api.DEFAULT_SCOPES), {
-                "action": action, "input": body["input"], "confirm": False,
-            })
+            action_body = {
+                "action": action,
+                "input": body["input"],
+                "confirm": body.get("confirm", False),
+                "quote_token": body.get("quote_token", ""),
+            }
+            if "idempotency_key" in body:
+                action_body["idempotency_key"] = body["idempotency_key"]
+            # Only this internal-token-authenticated route can set the trusted flag.
+            # Quote verification still binds the request to this resolved account
+            # and the exact action payload before any paid submit can be proxied.
+            return self._execute_cli_action(
+                row, frozenset(hq_cli_api.DEFAULT_SCOPES), action_body, trusted_internal=True,
+            )
         except hq_cli_api.CLIAPIError as exc:
             return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
 

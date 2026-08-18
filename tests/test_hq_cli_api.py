@@ -188,14 +188,16 @@ class HQCLIAPITests(unittest.TestCase):
                     })
         proxy.assert_not_called()
 
-    def test_ip12_agent_bridge_quotes_paid_action_but_cannot_confirm_or_submit(self):
+    def test_ip12_agent_bridge_forwards_only_trusted_confirm_with_stable_idempotency(self):
         self._enable_ip12_bridge()
         account_id = self._agent_account_id()
         submitted = []
 
         def fake_proxy(plan, web_token, internal_token):
+            if plan["path"] == "/api/gen/cli/quote":
+                return 200, {"cost": 4, "points": 100}
             submitted.append(plan)
-            return 200, {"cost": 4, "points": 100}
+            return 200, {"job_id": 42, "cost": 4, "points_left": 96}
 
         with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
             status, quote = self._request(
@@ -203,17 +205,60 @@ class HQCLIAPITests(unittest.TestCase):
                 {"account_id": account_id, "transport": "http", "action": "image-generate", "input": {"prompt": "海边日出"}},
                 extra_headers=self._agent_headers(),
             )
+            confirmed = {
+                "account_id": account_id,
+                "transport": "http",
+                "action": "image-generate",
+                "input": {"prompt": "海边日出"},
+                "confirm": True,
+                "quote_token": quote["quote_token"],
+                "idempotency_key": "ip12-confirm-0001",
+            }
+            missing_key_status, missing_key = self._request(
+                "/api/auth/internal/ip12/agent/action",
+                {key: value for key, value in confirmed.items() if key != "idempotency_key"},
+                extra_headers=self._agent_headers(),
+            )
             confirm_status, confirm = self._request(
                 "/api/auth/internal/ip12/agent/action",
-                {"account_id": account_id, "transport": "http", "action": "image-generate", "input": {"prompt": "海边日出"}, "confirm": True},
+                confirmed,
+                extra_headers=self._agent_headers(),
+            )
+            replay_status, replay = self._request(
+                "/api/auth/internal/ip12/agent/action", confirmed,
+                extra_headers=self._agent_headers(),
+            )
+            self.auth.create_user("bob", "secret456", 100, "member")
+            wrong_account_status, wrong_account = self._request(
+                "/api/auth/internal/ip12/agent/action",
+                {**confirmed, "account_id": self.auth.ensure_account_id("bob")},
                 extra_headers=self._agent_headers(),
             )
         self.assertEqual(200, status, quote)
         self.assertTrue(quote["confirmation_required"])
         self.assertIn("quote_token", quote)
-        self.assertEqual(400, confirm_status)
-        self.assertEqual("invalid_request", confirm["code"])
-        self.assertEqual(["/api/gen/cli/quote"], [plan["path"] for plan in submitted])
+        self.assertEqual(400, missing_key_status)
+        self.assertEqual("idempotency_key_required", missing_key["code"])
+        self.assertEqual((200, 42), (confirm_status, confirm["job_id"]))
+        self.assertEqual((200, 42), (replay_status, replay["job_id"]))
+        self.assertEqual(409, wrong_account_status)
+        self.assertEqual("quote_mismatch", wrong_account["code"])
+        self.assertEqual(2, len(submitted))
+        self.assertTrue(all(
+            plan["headers"]["Idempotency-Key"] == "ip12-confirm-0001"
+            for plan in submitted
+        ))
+
+    def test_public_cli_route_rejects_internal_idempotency_injection(self):
+        token = self._token(["assets:read"])
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json") as proxy:
+            status, result = self._request("/api/auth/cli/action", {
+                "action": "voices", "input": {}, "confirm": False,
+                "idempotency_key": "ip12-confirm-0001",
+            }, token=token)
+        self.assertEqual(400, status)
+        self.assertIn("idempotency_key", result["detail"])
+        proxy.assert_not_called()
 
     @staticmethod
     def _canvas_snapshot(board_id):

@@ -963,6 +963,11 @@ def _matched_string(value, field, pattern, maximum=160):
     return value
 
 
+def validate_idempotency_key(value):
+    """Validate a first-party idempotency key without exposing the regex."""
+    return _matched_string(value, "idempotency_key", _IDEMPOTENCY_KEY_RE, 128)
+
+
 def _video_compose_decisions(value):
     if not isinstance(value, dict) or not 1 <= len(value) <= 200:
         raise CLIAPIError(400, "decisions 必须是包含 1-200 项的对象")
