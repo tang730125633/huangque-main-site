@@ -654,11 +654,10 @@ class IP12HarnessTests(unittest.TestCase):
     def test_module_three_reuses_confirmed_values_instead_of_asking_again(self):
         state = self.complete_intake()
         state.update(current_module=3, module_step=0, completed_modules=[1, 2])
-        state["ip_profile"]["facts"].update({
-            "target_audience": {"value": "喜欢 AI 的人"},
-            "current_occupation": {"value": "Agent 智能体开发"},
+        state["ip_profile"]["confirmed_outputs"].update({
+            "1-1": {"draft": "已确认定位"},
+            "2-1": {"draft": "已确认人设"},
         })
-        state["ip_profile"]["ai_selections"]["core_value_1"] = {"value": "持续探索"}
 
         self.assertIn("复用已确认", harness.system_prompt(state))
         with self.assertRaisesRegex(harness.HarnessError, "必须直接提炼候选关键词"):
@@ -671,9 +670,10 @@ class IP12HarnessTests(unittest.TestCase):
     def test_module_four_reuses_confirmed_story_instead_of_asking_again(self):
         state = self.complete_intake()
         state.update(current_module=4, module_step=0, completed_modules=[1, 2, 3])
-        state["ip_profile"]["facts"].update({
-            "turning_point_reflection": {"value": "从迷茫到决定转向 AI"},
-            "previous_jobs": {"value": "修车、洗车、服务员和工厂"},
+        state["ip_profile"]["confirmed_outputs"].update({
+            "1-1": {"draft": "已确认定位"},
+            "2-1": {"draft": "已确认人设"},
+            "3-1": {"draft": "已确认价值主张"},
         })
 
         self.assertIn("复用已确认", harness.system_prompt(state))
