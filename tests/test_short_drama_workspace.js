@@ -1472,6 +1472,28 @@ test('busy round trips preserve business-disabled controls for editable users', 
   assert.equal(ready.disabled, false);
 });
 
+test('restoring edit permission keeps the current rendered control state', () => {
+  const attributes = {};
+  const input = {
+    disabled:true,
+    getAttribute(name){return name==='data-action'?'':(attributes[name]??null);},
+    hasAttribute(name){return Object.hasOwn(attributes,name);},
+    setAttribute(name,value){attributes[name]=String(value);},
+    removeAttribute(name){delete attributes[name];},
+    closest(){return {};},
+  };
+  const root = {classList:{toggle(){}},querySelectorAll(){return [input];}};
+
+  workspace.setWorkspaceBusyState(root, false, false);
+  assert.equal(input.disabled, true);
+  assert.equal(input.getAttribute('data-workspace-disabled-before-readonly'), 'true');
+
+  input.disabled = false;
+  workspace.setWorkspaceBusyState(root, false, true);
+  assert.equal(input.disabled, false);
+  assert.equal(input.hasAttribute('data-workspace-disabled-before-readonly'), false);
+});
+
 test('镜头问题标记使用页面内弹窗并提供明确的问题类型', () => {
   assert.match(workspaceSource, /id="sdRefinementIssueModal"/);
   assert.match(workspaceSource, /id="sdRefinementIssueForm"/);

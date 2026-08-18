@@ -987,13 +987,18 @@
         node.disabled=true;
         return;
       }
+      if(canEdit&&node.hasAttribute(permissionState)){
+        node.removeAttribute(permissionState);
+        node.removeAttribute(busyState);
+        return;
+      }
       if(node.hasAttribute(busyState)){
         node.disabled=node.getAttribute(busyState)==='true';
         node.removeAttribute(busyState);
       }
       if(node.hasAttribute(permissionState)){
-        node.disabled=node.getAttribute(permissionState)==='true';
-        node.removeAttribute(permissionState);
+        node.disabled=true;
+        return;
       }
       if(!readOnlyAction&&!canEdit&&!!node.closest('form,section')){
         node.setAttribute(permissionState,node.disabled?'true':'false');
