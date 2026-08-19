@@ -547,7 +547,7 @@ def _production_input(record, options):
         unknown = sorted(set(payload) - allowed)
         if unknown:
             raise coach_harness.HarnessError("不支持的参数：" + unknown[0])
-        prompt = payload["prompt"]
+        prompt = re.sub(r"[\r\n\t\f\v]+", " ", str(payload["prompt"])).strip()
         return {
             "board_id": payload["board_id"],
             "base_version": payload["base_version"],
@@ -1626,7 +1626,7 @@ def api_quote_production():
             expires_in = int(quote.get("expires_in") or 0)
             billing = "paid"
         else:
-            quote = {"cost": 0, "points": 0}
+            quote = {"cost": 0, "points": None}
             token, expires_in, billing = "", 300, "free"
         with CONVERSATION_STATE_LOCK:
             convo = _production_conversation(cid)
