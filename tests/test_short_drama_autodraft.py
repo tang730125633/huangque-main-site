@@ -22,6 +22,7 @@ from content_domains import (
     short_drama,
     short_drama_autodraft,
     short_drama_conversation,
+    short_drama_native_audio,
     short_drama_preflight,
 )
 from providers.short_drama_visual.heygen_cinematic import HeyGenCinematicShotProvider
@@ -1314,6 +1315,135 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             self.assertEqual([shot_keys[0]], snapshot["low_resolution_shot_keys"])
         finally:
             conn.close()
+
+    def test_provider_preview_rejects_changed_selected_native_file_before_ffmpeg(self):
+        root = Path(self.tmp.name) / "native-changed"
+        source_relative = "video/selected-shot.mp4"
+        source = root / source_relative
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"changed-native-file")
+        assembly = {
+            "ratio": "16:9",
+            "duration_ms": 5000,
+            "media_contract": {"media_mode": "provider_audio"},
+            "shots": [{
+                "id": "version-shot-02",
+                "shot_key": "shot_02",
+                "provider": "minimax_h3",
+                "file": source_relative,
+                "native_media": self._native_media_evidence(
+                    raw_file="video/selected-shot-raw.mp4",
+                    derived_file=source_relative,
+                ),
+            }],
+        }
+        source_probe = {
+            "duration_ms": 5000,
+            "video": {"width": 2560, "height": 1440},
+            "audio": {"codec": "aac", "sample_rate": 48000, "channels": 2},
+        }
+        output_probe = {
+            **source_probe,
+            "video": {"width": 1920, "height": 1080},
+        }
+        current = {
+            "sha256": "c" * 64,
+            "size_bytes": len(b"changed-native-file"),
+            "resolution": {"width": 2560, "height": 1440},
+            "audio": {"audible": True, "codec": "aac"},
+            "inspected_at": 1700000001,
+        }
+
+        def render(command, **_kwargs):
+            Path(command[-1]).write_bytes(b"preview")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch.dict(os.environ, {"CONTENT_OUT": str(root)}), \
+                mock.patch.object(
+                    short_drama_autodraft.media_plan,
+                    "probe_media",
+                    side_effect=lambda path: (
+                        output_probe if Path(path).name == "preview-1080p.mp4"
+                        else source_probe
+                    ),
+                ), mock.patch.object(
+                    short_drama_native_audio,
+                    "inspect_native_media",
+                    return_value=current,
+                ), mock.patch.object(
+                    short_drama_autodraft,
+                    "_run_preview_process",
+                    side_effect=render,
+                ) as runner:
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft._render_provider_preview(
+                    self.project["id"], "changed-native", assembly
+                )
+        self.assertEqual("provider_native_media_changed", raised.exception.code)
+        self.assertIn("shot_02", str(raised.exception))
+        runner.assert_not_called()
+
+    def test_provider_preview_rejects_silent_selected_native_file_before_ffmpeg(self):
+        root = Path(self.tmp.name) / "native-silent"
+        source_relative = "video/selected-shot.mp4"
+        source = root / source_relative
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"silent-native-file")
+        assembly = {
+            "ratio": "16:9",
+            "duration_ms": 5000,
+            "media_contract": {"media_mode": "provider_audio"},
+            "shots": [{
+                "id": "version-shot-03",
+                "shot_key": "shot_03",
+                "provider": "minimax_h3",
+                "file": source_relative,
+                "native_media": self._native_media_evidence(
+                    raw_file="video/selected-shot-raw.mp4",
+                    derived_file=source_relative,
+                ),
+            }],
+        }
+        source_probe = {
+            "duration_ms": 5000,
+            "video": {"width": 2560, "height": 1440},
+            "audio": {"codec": "aac"},
+        }
+        output_probe = {
+            **source_probe,
+            "video": {"width": 1920, "height": 1080},
+        }
+
+        def render(command, **_kwargs):
+            Path(command[-1]).write_bytes(b"preview")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch.dict(os.environ, {"CONTENT_OUT": str(root)}), \
+                mock.patch.object(
+                    short_drama_autodraft.media_plan,
+                    "probe_media",
+                    side_effect=lambda path: (
+                        output_probe if Path(path).name == "preview-1080p.mp4"
+                        else source_probe
+                    ),
+                ), mock.patch.object(
+                    short_drama_native_audio,
+                    "inspect_native_media",
+                    side_effect=short_drama_native_audio.NativeAudioError(
+                        "provider_audio_silent", "声音不可听"
+                    ),
+                ), mock.patch.object(
+                    short_drama_autodraft,
+                    "_run_preview_process",
+                    side_effect=render,
+                ) as runner:
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft._render_provider_preview(
+                    self.project["id"], "silent-native", assembly
+                )
+        self.assertEqual("provider_native_audio_invalid", raised.exception.code)
+        self.assertIn("shot_03", str(raised.exception))
+        runner.assert_not_called()
 
     def test_vertical_provider_preview_keeps_audio_and_builds_1080p(self):
         root = Path(self.tmp.name) / "content-out"
