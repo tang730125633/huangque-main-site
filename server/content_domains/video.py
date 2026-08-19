@@ -1814,8 +1814,10 @@ def reap_short_drama_native_orphans(now=None, grace_seconds=6 * 3600):
                     referenced.update(_native_media_result_paths(
                         json.loads(row[0] or "{}")
                     ))
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    continue
+                except (TypeError, ValueError, json.JSONDecodeError) as error:
+                    raise sqlite3.DatabaseError(
+                        "jobs.result contains unreadable reference JSON"
+                    ) from error
             tables = {
                 str(row[0]) for row in connection.execute(
                     "SELECT name FROM sqlite_master WHERE type='table'"
@@ -1837,8 +1839,10 @@ def reap_short_drama_native_orphans(now=None, grace_seconds=6 * 3600):
                         referenced.update(_native_media_result_paths(
                             json.loads(row[0] or "{}")
                         ))
-                    except (TypeError, ValueError, json.JSONDecodeError):
-                        continue
+                    except (TypeError, ValueError, json.JSONDecodeError) as error:
+                        raise sqlite3.DatabaseError(
+                            "provider result_json contains unreadable reference JSON"
+                        ) from error
     except sqlite3.Error as error:
         errors.append({
             "scope": "jobs_database", "error": str(error)[:160],
