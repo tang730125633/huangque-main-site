@@ -97,6 +97,7 @@ cases = {
     "把这个人物快速换装": "tryon-fast-generate",
     "查看文案成片模板": "text-video-templates",
     "列出我的 Canvas 画布": "canvas-list",
+    "请用 Canvas Agent 规划当前画布；只打开 Canvas 页面": "canvas-agent-plan",
     "生成数字主持人": "digital-presenter-create",
     "上传参考视频素材": "video-upload",
 }

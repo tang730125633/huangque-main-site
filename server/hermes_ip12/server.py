@@ -531,6 +531,7 @@ _SPECIAL_PRODUCTION_INTENTS = (
     ("audio", "voices", r"(?:有哪些|查看|列出|可用).{0,12}(?:音色|声音)|(?:音色|声音).{0,12}(?:有哪些|查看|列出|可用)"),
     ("video", "video-avatars", r"(?:有哪些|查看|列出|可用).{0,12}(?:数字人形象|数字人)|(?:数字人形象|数字人).{0,12}(?:有哪些|查看|列出|可用)"),
     ("canvas", "canvas-list", r"(?:有哪些|查看|列出).{0,12}(?:canvas|画布)|(?:canvas|画布).{0,12}(?:有哪些|查看|列出)"),
+    ("canvas", "canvas-agent-plan", r"(?:规划|编排).{0,12}(?:canvas|画布)|(?:canvas|画布).{0,12}(?:规划|编排)"),
     ("canvas", "canvas-get", r"(?:读取|打开).{0,12}(?:canvas|画布)|(?:canvas|画布).{0,12}(?:详情|内容)"),
     ("canvas", "digital-presenter-capability", r"(?:数字主持人|数字演示者|数字讲解员).{0,12}(?:是否可用|能力|状态)"),
     ("canvas", "digital-presenter-project", r"(?:查看|读取|打开).{0,12}(?:数字主持人|数字演示者|数字讲解员).{0,8}(?:项目|工程)"),
@@ -547,7 +548,6 @@ _SPECIAL_PRODUCTION_INTENTS = (
     ("canvas", "digital-presenter-update", r"(?:更新|修改).{0,12}(?:数字主持人|数字演示者|数字讲解员)"),
     ("canvas", "digital-presenter-create", r"(?:生成|创建|制作).{0,12}(?:数字主持人|数字演示者|数字讲解员)|(?:数字主持人|数字演示者|数字讲解员).{0,12}(?:生成|创建|制作)"),
     ("canvas", "canvas-create", r"(?:新建|创建).{0,12}(?:canvas|画布)"),
-    ("canvas", "canvas-agent-plan", r"(?:规划|编排).{0,12}(?:canvas|画布)|(?:canvas|画布).{0,12}(?:规划|编排)"),
     ("image", "image-upload", r"上传.{0,12}(?:参考图|图片素材|参考图片)"),
     ("video", "video-upload", r"上传.{0,12}(?:参考视频|视频素材)"),
 )
