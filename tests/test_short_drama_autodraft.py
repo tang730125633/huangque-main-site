@@ -47,7 +47,11 @@ class Handler:
 
 class ShortDramaAutodraftTests(unittest.TestCase):
     @staticmethod
-    def _native_media_evidence(raw_hash="a" * 64, derived_hash="b" * 64):
+    def _native_media_evidence(
+            raw_hash="a" * 64, derived_hash="b" * 64,
+            raw_file="video/minimax_h3_raw_result.mp4",
+            derived_file="video/minimax_h3_result.mp4",
+            width=2560, height=1440):
         audio = {
             "audible": True, "codec": "aac", "sample_rate": 48000,
             "channels": 2, "mean_volume_dbfs": -24.3,
@@ -55,17 +59,17 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         }
         return {
             "raw": {
-                "file": "video/minimax_h3_raw_result.mp4",
+                "file": raw_file,
                 "sha256": raw_hash,
                 "size_bytes": 12345,
             },
             "derived": {
-                "file": "video/minimax_h3_result.mp4",
+                "file": derived_file,
                 "sha256": derived_hash,
                 "size_bytes": 12000,
                 "derived_from_sha256": raw_hash,
             },
-            "resolution": {"width": 2560, "height": 1440},
+            "resolution": {"width": width, "height": height},
             "audio": audio,
             "inspected_at": 1700000000,
         }
@@ -1279,7 +1283,14 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                         shot_key, "character_1", "avatar_1", "minimax_h3",
                         "provider-" + job_id, "succeeded", "hash-" + shot_key,
                         json.dumps({"resolution": resolution, "duration_seconds": 5}),
-                        "{}", None, now + index, now + index,
+                        json.dumps({
+                            "native_media": self._native_media_evidence(
+                                raw_file="video/%s-raw.mp4" % shot_key,
+                                derived_file="video/%s.mp4" % shot_key,
+                                width=1920 if index == 0 else 2560,
+                                height=1080 if index == 0 else 1440,
+                            ),
+                        }), None, now + index, now + index,
                     ),
                 )
                 conn.execute(

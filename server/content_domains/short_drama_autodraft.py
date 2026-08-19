@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -417,9 +418,7 @@ def _provider_assembly_snapshot(conn, project_id, plan, provider_name=""):
         low_resolution_shot_keys = [
             str(item["shot_key"])
             for item in shots
-            if str(
-                (item.get("request_snapshot") or {}).get("resolution") or ""
-            ).strip().lower() != "2k"
+            if not item.get("native_media")
         ]
     quality_ready = not low_resolution_shot_keys
     continuity_ready = []
@@ -490,6 +489,58 @@ def _sanitized_native_audio(value):
     return result
 
 
+def _sanitized_native_media(value):
+    if not isinstance(value, dict):
+        return {}
+
+    def controlled_file(raw):
+        text = str(raw or "").strip().replace("\\", "/")
+        parts = Path(text).parts
+        return text if len(parts) == 2 and parts[0] == "video" else ""
+
+    def sha256(raw):
+        text = str(raw or "").strip()
+        return text if re.fullmatch(r"[0-9a-f]{64}", text) else ""
+
+    raw = value.get("raw") if isinstance(value.get("raw"), dict) else {}
+    derived = (
+        value.get("derived") if isinstance(value.get("derived"), dict) else {}
+    )
+    raw_file = controlled_file(raw.get("file"))
+    derived_file = controlled_file(derived.get("file"))
+    raw_hash = sha256(raw.get("sha256"))
+    derived_hash = sha256(derived.get("sha256"))
+    lineage_hash = sha256(derived.get("derived_from_sha256"))
+    try:
+        raw_size = int(raw.get("size_bytes") or 0)
+        derived_size = int(derived.get("size_bytes") or 0)
+        inspected_at = int(value.get("inspected_at") or 0)
+        width = int((value.get("resolution") or {}).get("width") or 0)
+        height = int((value.get("resolution") or {}).get("height") or 0)
+    except (TypeError, ValueError, AttributeError):
+        return {}
+    audio = _sanitized_native_audio(value.get("audio"))
+    if (
+        not raw_file or not derived_file or not raw_hash or not derived_hash
+        or lineage_hash != raw_hash or raw_size <= 0 or derived_size <= 0
+        or inspected_at <= 0 or max(width, height) < 2500
+        or min(width, height) < 1400 or audio.get("audible") is not True
+    ):
+        return {}
+    return {
+        "raw": {
+            "file": raw_file, "sha256": raw_hash, "size_bytes": raw_size,
+        },
+        "derived": {
+            "file": derived_file, "sha256": derived_hash,
+            "size_bytes": derived_size, "derived_from_sha256": lineage_hash,
+        },
+        "resolution": {"width": width, "height": height},
+        "audio": audio,
+        "inspected_at": inspected_at,
+    }
+
+
 def _automatic_native_audio_contract(conn, project, project_shot_count):
     if project_shot_count <= 0:
         return None
@@ -533,6 +584,7 @@ def _automatic_native_audio_contract(conn, project, project_shot_count):
     invalid_shot_keys = [
         str(item["shot_key"]) for item in versions
         if (item.get("native_audio") or {}).get("audible") is not True
+        or not item.get("native_media")
     ]
     if invalid_shot_keys:
         return {
@@ -550,6 +602,8 @@ def _automatic_native_audio_contract(conn, project, project_shot_count):
             "id": item["id"], "shot_key": item["shot_key"],
             "input_hash": item["input_hash"],
             "native_audio": item["native_audio"],
+            "raw_sha256": item["native_media"]["raw"]["sha256"],
+            "derived_sha256": item["native_media"]["derived"]["sha256"],
         }
         for item in sorted(versions, key=lambda current: str(current["shot_key"]))
     ]
@@ -2043,8 +2097,12 @@ def _provider_version(row):
         }
     if "result_json" in item:
         result = _json(item.pop("result_json"), {})
+        item["native_media"] = _sanitized_native_media(
+            result.get("native_media")
+        )
         item["native_audio"] = _sanitized_native_audio(
             result.get("native_audio")
+            or (item["native_media"].get("audio") if item["native_media"] else None)
         )
     item["selected"] = bool(item.pop("selected", 0))
     return item
@@ -3545,9 +3603,17 @@ def _reconcile_minimax_xiaole_job(db_factory, row):
         native_audio = _sanitized_native_audio(
             shared_result.get("native_audio")
         )
+        native_media = _sanitized_native_media(
+            shared_result.get("native_media")
+        )
         if (
             not video_file or not video_url or not provider_job_id
             or native_audio.get("audible") is not True
+            or not native_media
+            or native_media["derived"]["file"] != video_file
+            or str(shared_result.get("raw_video_file") or "").strip()
+            != native_media["raw"]["file"]
+            or native_media["audio"] != native_audio
         ):
             raise AutodraftError(
                 "shared_video_result_incomplete",
