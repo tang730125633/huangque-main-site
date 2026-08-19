@@ -43,6 +43,29 @@ def intake_follow_up_topic(reply):
     return ""
 
 
+def _intake_has_core_profile(value, updates, evidence_text):
+    state = normalize_state(value)
+    fields = {
+        str(item.get("field") or "").lower()
+        for item in list(state["intake"].get("profile_updates") or []) + list(updates or [])
+        if isinstance(item, dict)
+    }
+    required_groups = (
+        ("identity", "role", "current"),
+        ("experience", "career", "work"),
+        ("interest",),
+        ("audience",),
+    )
+    has_help_goal = any(
+        token in field for field in fields for token in ("goal", "benefit", "value", "help")
+    ) or re.search(r"(?:希望|想要|目标).{0,30}(?:帮助|让|解决|服务)", str(evidence_text or ""))
+    return (
+        all(any(token in field for field in fields for token in group) for group in required_groups)
+        and sum("skill" in field for field in fields) >= 2
+        and bool(has_help_goal)
+    )
+
+
 def production_recommendation(requested_result, preferred_action=None):
     """Return the bounded production candidates for an IP12 project.
 
@@ -1062,6 +1085,15 @@ def apply_intake_decision(value, raw, evidence_text):
         expected_checkpoint=1,
         allow_partial_profile_updates=True,
     )
+    if (
+        intake["status"] in {"collecting", "editing"}
+        and decision["decision"] in {"ask_follow_up", "answer_only"}
+        and _intake_has_core_profile(state, decision["profile_updates"], evidence_text)
+    ):
+        raise HarnessError(
+            "基础资料已有关键经历、至少两项技能、长期兴趣、目标人群和帮助目标；"
+            "不要追问可选人口信息或只作解释，直接生成完整核对稿"
+        )
     if decision["decision"] == "propose_checkpoint":
         intake.update(
             status="awaiting_confirmation",
@@ -1174,15 +1206,16 @@ def apply_model_decision(value, raw, evidence_text, pending_id=None, discard_pen
 def intake_system_prompt(value):
     return """你是黄雀 IP12 的中立访谈教练，正在自然地了解用户基础情况。
 
-需要了解的信息包括：希望的称呼、年龄或年龄段、所在城市、当前职业或身份、从业年限、做过的行业或岗位、主要收入来源和大致收入区间。性别、手机号、收入等敏感信息都可拒答或跳过，不得强迫。
+整理定位所需的核心信息是：希望的称呼或当前身份、真实经历、至少两项核心技能、长期兴趣、目标人群，以及希望帮助对方解决什么问题。年龄、城市、收入、性别和手机号都只是可选背景；没有直接用途时不要主动追问，不得强迫，拒答或跳过也绝不能阻塞核对稿。
 
 对话规则：
 - 接受任意顺序和自然表达；用户可一次说一项或多项，不要求固定格式，不把访谈做成选择题。
 - 先查看完整对话历史和当前待核对资料；已经回答、明确不知道或拒绝回答的内容不要重复追问。
 - 每个基础问题最多主动问一次；用户没有回答而继续补充其他内容，视为暂时跳过，不得再次追问。
-- 信息不足或含糊时 decision=ask_follow_up，只问一个最有价值且尚未回答的问题。
+- 核心信息不足或含糊时 decision=ask_follow_up，只问一个最有价值且尚未回答的核心问题。
 - decision=ask_follow_up 时 checkpoint=0、draft 和 self_review 为空；可以把本轮已明确说出的用户事实或偏好放入 profile_updates，等待最终核对，绝不能宣布确认。
-- 用户只是在提问、讨论或暂时跑题时 decision=answer_only；先自然回应，需要时再轻轻带回访谈，不改变已有资料。
+- 用户在采集阶段提问时先直接回答；若核心信息已经足够，同一条回复必须 decision=propose_checkpoint 并附完整核对稿；若仍缺核心信息，则 decision=ask_follow_up，并在回答后只问一个缺失问题。
+- decision=answer_only 仅用于解释已经展示的待确认稿，或确实没有合适下一步的情况；不能让仍在采集或编辑中的访谈停在解释上。
 - decision=answer_only 时 checkpoint=0，draft、self_review 和 profile_updates 都为空。
 - 信息足够整理，或用户要求查看当前记录时，decision=propose_checkpoint、checkpoint=1；draft 必须是合并全部已知内容后的完整核对稿。
 - 用户补充、纠正或反悔时，以最新原话为准，重新生成完整核对稿；“确认/可以”等字样与补充或纠正同时出现时，内容变更优先，绝不能宣布已确认。
