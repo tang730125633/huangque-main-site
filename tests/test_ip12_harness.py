@@ -952,6 +952,27 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual(result["profile_updates"], [])
         self.assertIsNone(state["pending"])
 
+    def test_pending_draft_revision_drops_unsupported_update_without_losing_draft(self):
+        state = self.complete_intake()
+        state, _, _ = harness.apply_model_decision(
+            state, decision(state, draft="第一版人设画像"), "用户原话", pending_id="draft-1"
+        )
+        revised = decision(state, draft="加入长期职业理想后的完整人设画像")
+        revised["profile_updates"] = [{
+            "field": "career_goal",
+            "value": "跨行业复制并放大影响力",
+            "kind": "user_fact",
+            "evidence_quote": "模型改写后并不存在于用户原话里的句子",
+        }]
+
+        state, result, reply = harness.apply_model_decision(
+            state, revised, "我希望先深耕一个行业，再总结规律", pending_id="draft-2"
+        )
+
+        self.assertEqual(result["profile_updates"], [])
+        self.assertEqual(state["pending"]["draft"], "加入长期职业理想后的完整人设画像")
+        self.assertIn("加入长期职业理想后的完整人设画像", reply)
+
     def test_conflicting_duration_requires_one_clarification(self):
         state = self.complete_intake()
         state["ip_profile"]["facts"]["years_in_current_industry"] = {
