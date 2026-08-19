@@ -1811,9 +1811,10 @@ def reap_short_drama_native_orphans(now=None, grace_seconds=6 * 3600):
             for row in connection.execute(
                     "SELECT result FROM jobs WHERE result IS NOT NULL"):
                 try:
-                    referenced.update(_native_media_result_paths(
-                        json.loads(row[0] or "{}")
-                    ))
+                    payload = json.loads(row[0] or "{}")
+                    if not isinstance(payload, dict):
+                        raise ValueError("reference result must be an object")
+                    referenced.update(_native_media_result_paths(payload))
                 except (TypeError, ValueError, json.JSONDecodeError) as error:
                     raise sqlite3.DatabaseError(
                         "jobs.result contains unreadable reference JSON"
@@ -1836,9 +1837,10 @@ def reap_short_drama_native_orphans(now=None, grace_seconds=6 * 3600):
                     "WHERE result_json IS NOT NULL"
                 ):
                     try:
-                        referenced.update(_native_media_result_paths(
-                            json.loads(row[0] or "{}")
-                        ))
+                        payload = json.loads(row[0] or "{}")
+                        if not isinstance(payload, dict):
+                            raise ValueError("provider result must be an object")
+                        referenced.update(_native_media_result_paths(payload))
                     except (TypeError, ValueError, json.JSONDecodeError) as error:
                         raise sqlite3.DatabaseError(
                             "provider result_json contains unreadable reference JSON"

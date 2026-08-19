@@ -351,54 +351,61 @@ class MiniMaxH3VideoTests(unittest.TestCase):
 
     def test_native_orphan_reaper_fails_closed_on_malformed_reference_json(self):
         for malformed_source in ("shared_job", "provider_job"):
-            with self.subTest(malformed_source=malformed_source), \
+            for malformed_payload in ("{malformed", "[]"):
+                with self.subTest(
+                    malformed_source=malformed_source,
+                    malformed_payload=malformed_payload,
+                ), \
                     tempfile.TemporaryDirectory() as folder:
-                root = Path(folder)
-                video_root = root / "video"
-                video_root.mkdir()
-                native = video_root / "minimax_h3_raw_unknown_reference.mp4"
-                native.write_bytes(b"native")
-                old = time.time() - 8 * 3600
-                os.utime(native, (old, old))
-                job_db = root / "jobs.db"
-                asset_db = root / "assets.db"
-                with closing(sqlite3.connect(job_db)) as connection:
-                    connection.execute(
-                        "CREATE TABLE jobs (id INTEGER, status TEXT, result TEXT)"
-                    )
-                    connection.execute(
-                        "CREATE TABLE short_drama_provider_shot_jobs "
-                        "(result_json TEXT)"
-                    )
-                    connection.execute(
-                        "INSERT INTO jobs VALUES (1,'done',?)",
-                        ("{malformed" if malformed_source == "shared_job" else None,),
-                    )
-                    if malformed_source == "provider_job":
+                    root = Path(folder)
+                    video_root = root / "video"
+                    video_root.mkdir()
+                    native = video_root / "minimax_h3_raw_unknown_reference.mp4"
+                    native.write_bytes(b"native")
+                    old = time.time() - 8 * 3600
+                    os.utime(native, (old, old))
+                    job_db = root / "jobs.db"
+                    asset_db = root / "assets.db"
+                    with closing(sqlite3.connect(job_db)) as connection:
                         connection.execute(
-                            "INSERT INTO short_drama_provider_shot_jobs VALUES (?)",
-                            ("{malformed",),
+                            "CREATE TABLE jobs (id INTEGER, status TEXT, result TEXT)"
                         )
-                    connection.commit()
-                with closing(sqlite3.connect(asset_db)) as connection:
-                    connection.execute(
-                        "CREATE TABLE video_assets "
-                        "(video_file TEXT, image_file TEXT)"
-                    )
-                    connection.commit()
-                with patch.object(
-                    video, "_out_path", side_effect=lambda rel: root / rel,
-                ), patch.object(
-                    video, "jdb", side_effect=lambda: sqlite3.connect(job_db),
-                ), patch.object(
-                    video, "adb", side_effect=lambda: sqlite3.connect(asset_db),
-                ):
-                    result = video.reap_short_drama_native_orphans(
-                        now=int(time.time()), grace_seconds=6 * 3600
-                    )
-                self.assertTrue(native.is_file())
-                self.assertEqual([], result["deleted"])
-                self.assertTrue(result["errors"])
+                        connection.execute(
+                            "CREATE TABLE short_drama_provider_shot_jobs "
+                            "(result_json TEXT)"
+                        )
+                        connection.execute(
+                            "INSERT INTO jobs VALUES (1,'done',?)",
+                            (
+                                malformed_payload
+                                if malformed_source == "shared_job" else None,
+                            ),
+                        )
+                        if malformed_source == "provider_job":
+                            connection.execute(
+                                "INSERT INTO short_drama_provider_shot_jobs VALUES (?)",
+                                (malformed_payload,),
+                            )
+                        connection.commit()
+                    with closing(sqlite3.connect(asset_db)) as connection:
+                        connection.execute(
+                            "CREATE TABLE video_assets "
+                            "(video_file TEXT, image_file TEXT)"
+                        )
+                        connection.commit()
+                    with patch.object(
+                        video, "_out_path", side_effect=lambda rel: root / rel,
+                    ), patch.object(
+                        video, "jdb", side_effect=lambda: sqlite3.connect(job_db),
+                    ), patch.object(
+                        video, "adb", side_effect=lambda: sqlite3.connect(asset_db),
+                    ):
+                        result = video.reap_short_drama_native_orphans(
+                            now=int(time.time()), grace_seconds=6 * 3600
+                        )
+                    self.assertTrue(native.is_file())
+                    self.assertEqual([], result["deleted"])
+                    self.assertTrue(result["errors"])
 
     def test_reference_request_and_20_percent_markup(self):
         image = self._image()
