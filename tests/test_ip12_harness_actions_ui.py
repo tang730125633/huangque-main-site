@@ -65,6 +65,17 @@ class IP12HarnessActionsUITests(unittest.TestCase):
                 self.assertIn("topic_id", source)
                 self.assertIn("versions", source)
 
+    def test_main_view_opens_new_module_six_delivery_in_the_right_panel(self):
+        source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
+        send_turn = source[
+            source.index("async function sendTurn"):
+            source.index("async function sendJumpMsg")
+        ]
+
+        self.assertIn("if(data.auto_deliverables['6'])", send_turn)
+        self.assertIn("openPanel('📦 文案口播交付物')", send_turn)
+        self.assertIn("renderContentPack(document.getElementById('rpnBody'))", send_turn)
+
     def test_main_view_keeps_artifacts_in_module_dropdowns_without_auto_opening(self):
         source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
         select_convo = source[
