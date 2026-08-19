@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Hermes IP 孵化教练 — 前 6 个模块开放，后续能力开发中。"""
-import html, json, os, pathlib, re, shutil, subprocess, tempfile, threading, uuid
+import hashlib, html, json, os, pathlib, re, shutil, subprocess, tempfile, threading, time, uuid
 from datetime import datetime, timedelta
 from flask import (
     Flask,
@@ -29,6 +29,12 @@ DELIVERABLES_DIR = DATA_DIR / "deliverables"
 FOUNDATION_REPORTS_DIR = DATA_DIR / "foundation_reports"
 CONVERSATION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
 AUTH_BASE = os.environ.get("HERMES_AUTH_BASE", "http://127.0.0.1:8095").rstrip("/")
+INTERNAL_ACTION_PATH = os.environ.get(
+    "HERMES_INTERNAL_ACTION_PATH", "/api/auth/internal/ip12/agent/action"
+)
+INTERNAL_ACTION_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN") or os.environ.get(
+    "HERMES_INTERNAL_ACTION_TOKEN", ""
+)
 # ponytail: one process-wide lock is enough for this single-process Flask service.
 CONVERSATION_STATE_LOCK = threading.RLock()
 PROCESS_RUN_ID = uuid.uuid4().hex
@@ -99,7 +105,7 @@ MODULE_DELIVERABLES = {
             {"name": "视觉统一规范", "prompt": "为学员制定一套视觉IP规范：推荐字体(1款标题+1款正文)、滤镜风格、LOGO设计建议、朋友圈配图风格。简洁实用，直接输出。"},
         ]
     },
-    6: {"title": "📝 3×10 口播内容库", "kind": "content_pack_v1"},
+    6: {"title": "📝 3 篇精选口播文案", "kind": "content_pack_v1"},
     10: {  # 朋友圈运营 → 朋友圈排期
         "title": "💬 你的朋友圈7天排期",
         "types": [
@@ -166,6 +172,15 @@ class InvalidConversationId(ValueError):
 
 class ReportGenerationInProgress(RuntimeError):
     pass
+
+
+class ProductionBridgeError(RuntimeError):
+    def __init__(self, status, code, detail, payload=None):
+        super().__init__(detail)
+        self.status = int(status)
+        self.code = str(code)
+        self.detail = str(detail)
+        self.payload = payload if isinstance(payload, dict) else {}
 
 
 def conversation_path(convo_id):
@@ -257,6 +272,316 @@ def save_conversation(convo_id, data):
         finally:
             pathlib.Path(temp_path).unlink(missing_ok=True)
 
+
+def _utc_timestamp():
+    return int(time.time())
+
+
+def _production_digest(value):
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _production_input_digest(record, options):
+    return _production_digest({
+        "action": record["action"],
+        "script_digest": record["script_digest"],
+        "options": options,
+    })
+
+
+def _production_error(code, message, status=409):
+    return {"ok": False, "error": message, "code": code}, status
+
+
+def _production_source(convo, target):
+    """Read one current module-6 script without changing its version history."""
+    pack = (convo.get("deliverables") or {}).get("6") or {}
+    if pack.get("kind") != "content_pack_v1":
+        raise coach_harness.HarnessError("当前还没有可制作的精选口播文案")
+    category, topic = _content_topic(pack, target)
+    versions = topic.get("versions") or []
+    current = versions[-1] if versions else {}
+    script = str(current.get("content") or "").strip()
+    version = int(current.get("version") or 0)
+    if not script or version < 1:
+        raise coach_harness.HarnessError("当前文案尚未准备完成")
+    return {
+        "category_id": str(category.get("id") or ""),
+        "topic_id": str(topic.get("id") or ""),
+        "script_version": version,
+        "script_digest": _production_digest(script),
+        "script": script,
+    }
+
+
+def _production_public(record):
+    """Never return a bridge quote token through a project read endpoint."""
+    result = json.loads(json.dumps(record, ensure_ascii=False))
+    for key in ("source_text", "idempotency_key", "confirmation_id"):
+        result.pop(key, None)
+    quote = result.get("quote")
+    if isinstance(quote, dict):
+        quote.pop("token", None)
+    return result
+
+
+def _productions_summary(convo):
+    return [_production_public(record) for record in (convo.get("productions") or {}).values()]
+
+
+PRODUCTION_REQUIRED_FIELDS = {
+    "image-generate": ("prompt",),
+    "audio-generate": ("text",),
+    "digital-ip-text-generate": ("avatar_id", "text", "voice"),
+    "video-generate": ("prompt",),
+    "canvas-ops": ("board_id", "base_version", "prompt"),
+}
+PRODUCTION_FALLBACK_FIELDS = {
+    "image-generate": {
+        "prompt": "string", "provider": "string", "ratio": "string", "quality": "string",
+        "count": "integer", "variant": "string", "model": "string",
+        "image_upload_id": "string", "mask_upload_id": "string", "reference_upload_ids": "array",
+    },
+    "audio-generate": {
+        "text": "string", "voice": "string", "speed": "number", "pitch": "integer", "volume": "integer",
+    },
+    "digital-ip-text-generate": {
+        "avatar_id": "integer", "text": "string", "voice": "string", "ratio": "string",
+        "motion": "string", "subtitle": "boolean", "subtitle_style": "string",
+        "subtitle_position": "string",
+    },
+    "video-generate": {
+        "prompt": "string", "channel": "string", "ratio": "string", "duration": "integer",
+        "seconds": "integer", "resolution": "string", "model": "string",
+        "generate_audio": "boolean", "reference_upload_ids": "array",
+    },
+    # IP12 exposes a small prompt-shaped adapter.  It becomes one validated
+    # canvas-ops node.create request; action_plan remains the real validator.
+    "canvas-ops": {
+        "board_id": "string", "base_version": "integer", "prompt": "string",
+        "title": "string", "x": "number", "y": "number",
+    },
+}
+
+
+def _production_action_schema(action):
+    fields = PRODUCTION_FALLBACK_FIELDS.get(action) or {}
+    return {
+        "type": "object", "additionalProperties": False,
+        "properties": {name: {"type": kind} for name, kind in fields.items()},
+        "required": list(PRODUCTION_REQUIRED_FIELDS.get(action, ())),
+    }
+
+
+def _production_missing_fields(record, options):
+    effective = dict(options)
+    if record["action"] in {"digital-ip-text-generate", "digital-ip-batch-generate"}:
+        effective.setdefault("text", record["source_text"])
+    return [name for name in PRODUCTION_REQUIRED_FIELDS.get(record["action"], ())
+            if effective.get(name) in (None, "", [])]
+
+
+def _production_input(record, options):
+    if not isinstance(options, dict):
+        raise coach_harness.HarnessError("制作参数必须是对象")
+    payload = dict(options)
+    # A selected IP12 script is an explicit source.  The user need not paste it
+    # into the production panel again, and the original script is not returned.
+    if record["action"] in {"digital-ip-text-generate", "digital-ip-batch-generate"}:
+        payload.setdefault("text", record["source_text"])
+    if record["action"] == "canvas-ops":
+        allowed = set(PRODUCTION_FALLBACK_FIELDS["canvas-ops"])
+        unknown = sorted(set(payload) - allowed)
+        if unknown:
+            raise coach_harness.HarnessError("不支持的参数：" + unknown[0])
+        prompt = payload["prompt"]
+        return {
+            "board_id": payload["board_id"],
+            "base_version": payload["base_version"],
+            "op_id": "hqcli-" + record["id"].removeprefix("prod_"),
+            "ops": [{"type": "node.create", "node": {
+                "id": "ip12_" + record["id"][-16:], "type": "text",
+                "x": payload.get("x", 80), "y": payload.get("y", 80),
+                "params": {"title": payload.get("title", "IP12 制作内容"), "text": prompt},
+            }}],
+        }
+    return payload
+
+
+def _bridge_action(account_id, action, input_body, *, idempotency_key, confirm=False, quote_token=""):
+    """Use the first-party bridge; Hermes never recreates quote/billing logic."""
+    if not INTERNAL_ACTION_TOKEN:
+        raise RuntimeError("production_bridge_unavailable")
+    body = {
+        "account_id": account_id, "action": action, "input": input_body,
+        "confirm": bool(confirm), "quote_token": quote_token,
+        "idempotency_key": idempotency_key,
+    }
+    try:
+        response = requests.post(
+            AUTH_BASE + INTERNAL_ACTION_PATH,
+            json=body,
+            headers={"X-HQ-Internal-Token": INTERNAL_ACTION_TOKEN},
+            timeout=35,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError("production_bridge_unavailable") from exc
+    try:
+        result = response.json()
+    except ValueError:
+        result = {}
+    if not isinstance(result, dict):
+        if 200 <= response.status_code < 300:
+            raise RuntimeError("production_bridge_invalid_response")
+        result = {}
+    if not 200 <= response.status_code < 300:
+        code = str(result.get("code") or "production_bridge_error")
+        detail = str(result.get("detail") or result.get("error") or "生产服务暂时不可用")
+        raise ProductionBridgeError(response.status_code, code, detail, result)
+    return result
+
+
+def _set_production_result(record, result):
+    """Attach only result references supplied by the bridge to the project."""
+    if not isinstance(result, dict):
+        raise RuntimeError("production_bridge_invalid_response")
+    job_id = result.get("job_id")
+    if job_id not in (None, ""):
+        record["job_id"] = str(job_id)
+    assets = result.get("asset_refs")
+    nested = result.get("result")
+    if not isinstance(assets, list) and isinstance(nested, dict):
+        assets = nested.get("asset_refs") or nested.get("assets")
+        if not isinstance(assets, list):
+            kind = str(result.get("kind") or nested.get("type") or record.get("capability_family") or "")
+            urls = nested.get("urls")
+            if not isinstance(urls, list):
+                url = next((nested.get(key) for key in (
+                    "url", kind + "_url", "image_url", "audio_url", "video_url",
+                ) if isinstance(nested.get(key), str) and nested.get(key).strip()), "")
+                urls = [url] if url else []
+            files = nested.get("files")
+            if not isinstance(files, list):
+                file_name = next((nested.get(key) for key in (
+                    "file", kind + "_file", "image_file", "audio_file", "video_file",
+                ) if isinstance(nested.get(key), str) and nested.get(key).strip()), "")
+                files = [file_name] if file_name else []
+            assets = []
+            for index, url in enumerate(urls):
+                if not isinstance(url, str) or not url.strip().startswith(("https://", "http://", "/")):
+                    continue
+                asset = {"kind": kind, "url": url.strip()}
+                if index < len(files) and isinstance(files[index], str) and files[index].strip():
+                    asset.update(name=files[index].strip(), file=files[index].strip())
+                assets.append(asset)
+    if isinstance(assets, list):
+        record["asset_refs"] = assets
+    if result.get("canvas_ref") is not None:
+        record["canvas_ref"] = result["canvas_ref"]
+    if result.get("action_result") is not None:
+        record["action_result"] = result["action_result"]
+    if record.get("action") == "canvas-ops" and result.get("version") is not None:
+        board = result.get("board") if isinstance(result.get("board"), dict) else {}
+        record["canvas_ref"] = {
+            "board_id": str(board.get("id") or (record.get("options") or {}).get("board_id") or ""),
+            "version": result["version"],
+        }
+        record["action_result"] = {
+            "version": result["version"],
+            "batch": result.get("batch") if isinstance(result.get("batch"), dict) else None,
+        }
+    if result.get("refund_status") in {"none", "pending", "refunded", "not_required"}:
+        record["refund_status"] = result["refund_status"]
+    bridge_status = str(result.get("status") or "").lower()
+    if bridge_status == "refund_pending":
+        record["refund_status"] = "pending"
+    elif bridge_status == "refunded":
+        record["refund_status"] = "refunded"
+    if bridge_status in {"queued", "running", "done", "failed", "refund_pending", "refunded"}:
+        record["status"] = bridge_status
+    elif record.get("job_id"):
+        record["status"] = "queued"
+    elif record.get("canvas_ref") is not None or result.get("action_result") is not None:
+        record["status"] = "done"
+    else:
+        raise RuntimeError("production_result_unlinked")
+    if (
+        record["status"] == "done"
+        and record.get("action") != "canvas-ops"
+        and not record.get("asset_refs")
+    ):
+        raise RuntimeError("production_result_unlinked")
+    if record["status"] == "failed":
+        record["last_error_code"] = str(result.get("code") or "production_failed")
+    elif record["status"] in {"queued", "running", "done"}:
+        record["last_error_code"] = ""
+    record["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
+def _production_plan_or_error(record, options):
+    missing = _production_missing_fields(record, options)
+    if missing:
+        return False, "缺少参数：" + "、".join(missing), missing
+    try:
+        schema = _production_action_schema(record["action"])
+        unknown = sorted(set(options) - set(schema.get("properties") or {}))
+        if unknown:
+            raise coach_harness.HarnessError("不支持的参数：" + unknown[0])
+        for name, value in options.items():
+            expected = ((schema.get("properties") or {}).get(name) or {}).get("type")
+            valid = {
+                "string": isinstance(value, str),
+                "integer": isinstance(value, int) and not isinstance(value, bool),
+                "number": isinstance(value, (int, float)) and not isinstance(value, bool),
+                "boolean": isinstance(value, bool),
+                "array": isinstance(value, list),
+                "object": isinstance(value, dict),
+            }.get(expected, True)
+            if not valid:
+                raise coach_harness.HarnessError(name + " 类型不合法")
+        input_body = _production_input(record, options)
+        if record["action"] == "canvas-ops":
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", str(input_body["board_id"])):
+                raise coach_harness.HarnessError("board_id 格式不合法")
+            if input_body["base_version"] < 1:
+                raise coach_harness.HarnessError("base_version 必须是正整数")
+            if not 1 <= len(str(options["prompt"]).strip()) <= 5000:
+                raise coach_harness.HarnessError("prompt 长度不合法")
+        return True, "", []
+    except Exception as exc:
+        detail = str(getattr(exc, "detail", "") or str(exc) or "制作参数不完整")
+        return False, detail[:240], []
+
+
+def _production_set_options(record, options):
+    if not isinstance(options, dict):
+        raise coach_harness.HarnessError("制作参数必须是对象")
+    old_digest = str(record.get("input_digest") or "")
+    record["options"] = json.loads(json.dumps(options, ensure_ascii=False))
+    record["input_digest"] = _production_input_digest(record, record["options"])
+    return bool(old_digest and old_digest != record["input_digest"])
+
+
+def _production_is_current(convo, record):
+    try:
+        source = _production_source(convo, {
+            "category_id": record.get("category_id"), "topic_id": record.get("topic_id"),
+        })
+    except coach_harness.HarnessError:
+        return False
+    return (
+        source["script_version"] == record.get("script_version")
+        and source["script_digest"] == record.get("script_digest")
+    )
+
+
+def _mark_production_stale(record):
+    if record.get("status") == "quoted":
+        record["status"] = "stale"
+        record["last_error_code"] = "source_changed"
+        record["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+
 def list_convos(owner_account_id=None):
     convos = []
     if CONVOS_DIR.exists():
@@ -272,7 +597,8 @@ def list_convos(owner_account_id=None):
                     "current_module": cs["current_module"],
                     "completed_modules": cs["completed_modules"],
                     "report_count": len(d.get("reports", {})),
-                    "deliverable_count": len(d.get("deliverables", {}))}))
+                    "deliverable_count": len(d.get("deliverables", {})),
+                    "production_count": len(d.get("productions", {}))}))
             except: pass
     convos.sort(key=lambda item: item[0], reverse=True)
     return [convo for _, convo in convos]
@@ -403,10 +729,14 @@ def _foundation_html(markdown, zoom=1.0):
 
 def _foundation_zoom_candidates(page_count):
     if page_count < 8:
-        return (1.05, 1.1, 1.15, 1.2, 1.25, 1.3)
-    if page_count > 10:
-        return (0.95, 0.9, 0.85, 0.8, 0.75, 0.7)
-    return ()
+        nearby = (1.05, 1.1, 1.15, 1.2, 1.25, 1.3)
+    elif page_count > 10:
+        nearby = (0.95, 0.9, 0.85, 0.8, 0.75, 0.7)
+    else:
+        return ()
+    fitted = max(0.25, min(3.0, round((9 / max(page_count, 1)) * 20) / 20))
+    dynamic = tuple(max(0.25, min(3.0, zoom)) for zoom in (fitted, fitted - 0.05, fitted + 0.05))
+    return tuple(dict.fromkeys((*nearby, *dynamic)))
 
 
 def _render_foundation_pdf(content, browsers, root):
@@ -479,7 +809,10 @@ def generate_foundation_report(convo_id):
         })
     messages.append({"role": "user", "content": "生成《IP 人设定位｜模块 1-4 初稿》，直接输出报告。"})
     messages.append({"role": "user", "content": "交付质检：请完整输出所有标题和表格，不得用‘略’、‘同上’或压缩成摘要。目标约8-10页、6000字左右。每个字段独占一行；策略推导必须建立在已知事实上，未知处清楚标注‘待本人确认’。"})
-    content = call_ai(messages, stream=False, temperature=0.4, max_tokens=8500).json()["choices"][0]["message"]["content"]
+    content = call_ai(messages, stream=False, temperature=0.4, max_tokens=16000).json()["choices"][0]["message"]["content"]
+    if not isinstance(content, str) or not content.strip():
+        raise RuntimeError("AI report is empty")
+    content = content.strip()
     FOUNDATION_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     playwright_browser = ""
     try:
@@ -531,9 +864,13 @@ def generate_foundation_report(convo_id):
 
 def call_ai(messages, stream=False, temperature=0.7, max_tokens=None, response_format=None):
     payload_messages = [dict(item) for item in messages]
-    payload = {"model": MODEL, "messages": payload_messages, "stream": stream, "temperature": temperature}
+    modern_model = MODEL.lower().startswith(("gpt-5", "o1", "o3", "o4"))
+    payload = {"model": MODEL, "messages": payload_messages, "stream": stream}
+    if not modern_model:
+        payload["temperature"] = temperature
     if max_tokens:
-        payload["max_tokens"] = max_tokens
+        token_field = "max_completion_tokens" if modern_model else "max_tokens"
+        payload[token_field] = max_tokens
     deepseek_json = MODEL.lower().startswith("deepseek") and bool(response_format) and not stream
     if deepseek_json:
         payload["response_format"] = {"type": "json_object"}
@@ -559,9 +896,19 @@ def call_ai(messages, stream=False, temperature=0.7, max_tokens=None, response_f
         if validate_json:
             try:
                 content = (((resp.json().get("choices") or [{}])[0].get("message") or {}).get("content"))
+                if isinstance(content, list):
+                    content = "".join(
+                        str(item.get("text") or "") for item in content if isinstance(item, dict)
+                    )
                 json.loads(str(content or ""))
             except Exception:
                 if attempt == 0:
+                    if content:
+                        payload_messages.append({"role": "assistant", "content": str(content)[:4000]})
+                    payload_messages.append({
+                        "role": "user",
+                        "content": "上一次输出不是完整 JSON。只重发一个完整 JSON 对象，不要解释或使用 Markdown。",
+                    })
                     continue
                 raise Exception("API 200 但没有返回完整 JSON")
         return resp
@@ -622,14 +969,14 @@ CONTENT_PACK_SCHEMA = {
                     "name": {"type": "string", "maxLength": 80},
                     "description": {"type": "string", "maxLength": 300},
                     "topics": {
-                        "type": "array", "minItems": 10, "maxItems": 10,
+                        "type": "array", "minItems": 1, "maxItems": 1,
                         "items": {
                             "type": "object", "additionalProperties": False,
                             "properties": {
                                 "title": {"type": "string", "maxLength": 120},
                                 "hook": {"type": "string", "maxLength": 200},
                                 "objective": {"type": "string", "maxLength": 80},
-                                "script": {"type": "string", "maxLength": 1600},
+                                "script": {"type": "string", "minLength": 120, "maxLength": 1600},
                             },
                             "required": ["title", "hook", "objective", "script"],
                         },
@@ -654,20 +1001,25 @@ def _normalize_content_pack(raw):
     categories = raw.get("categories") if isinstance(raw, dict) else None
     if not isinstance(categories, list) or len(categories) != 3:
         raise ValueError("内容库必须包含 3 个选题种类")
-    pack = {"kind": "content_pack_v1", "title": "📝 3×10 口播内容库", "categories": []}
+    pack = {
+        "kind": "content_pack_v1",
+        "format": "featured_3_v1",
+        "title": "📝 3 篇精选口播文案",
+        "categories": [],
+    }
     seen_categories, seen_topics = set(), set()
     for category_index, category in enumerate(categories, 1):
         name = str((category or {}).get("name") or "").strip()
         topics = (category or {}).get("topics")
-        if not name or name in seen_categories or not isinstance(topics, list) or len(topics) != 10:
-            raise ValueError("每个选题种类必须唯一并包含 10 个具体选题")
+        if not name or name in seen_categories or not isinstance(topics, list) or len(topics) != 1:
+            raise ValueError("每个选题种类必须唯一并精选 1 个具体选题")
         seen_categories.add(name)
         normalized_topics = []
         for topic_index, topic in enumerate(topics, 1):
             title = str((topic or {}).get("title") or "").strip()
             script = str((topic or {}).get("script") or "").strip()
-            if not title or not script or title in seen_topics:
-                raise ValueError("30 个具体选题必须唯一且各自包含一篇口播文案")
+            if not title or len(re.sub(r"\s+", "", script)) < 120 or title in seen_topics:
+                raise ValueError("3 个精选选题必须唯一且各自包含一篇完整口播文案")
             seen_topics.add(title)
             normalized_topics.append({
                 "id": "topic-%d-%02d" % (category_index, topic_index),
@@ -689,12 +1041,23 @@ def _normalize_content_pack(raw):
 
 def _content_pack_ready(pack):
     categories = (pack or {}).get("categories") if isinstance(pack, dict) else None
-    return (
-        (pack or {}).get("kind") == "content_pack_v1"
-        and isinstance(categories, list)
-        and len(categories) == 3
-        and all(len((item or {}).get("topics") or []) == 10 for item in categories)
-    )
+    if (
+        (pack or {}).get("kind") != "content_pack_v1"
+        or (pack or {}).get("format") != "featured_3_v1"
+        or not isinstance(categories, list)
+        or len(categories) != 3
+    ):
+        return False
+    for category in categories:
+        topics = (category or {}).get("topics") or []
+        if len(topics) != 1 or not isinstance(topics[0], dict):
+            return False
+        versions = topics[0].get("versions") or []
+        if not versions or not isinstance(versions[-1], dict):
+            return False
+        if len(re.sub(r"\s+", "", str(versions[-1].get("content") or ""))) < 120:
+            return False
+    return True
 
 
 def _generate_content_pack(convo):
@@ -705,27 +1068,40 @@ def _generate_content_pack(convo):
         "confirmed_outputs": ((state.get("ip_profile") or {}).get("confirmed_outputs") or {}),
         "confirmed_module_five_plan": plan,
     }
-    # ponytail: one structured call is the simplest reliable batch; split by category if the provider's output ceiling proves too small.
+    # ponytail: one structured call keeps the three selected scripts consistent; split only if provider limits prove too small.
     response = call_ai([
         {"role": "system", "content": (
-            "你是黄雀 IP12 内容策划与口播编导。严格依据本人已确认资料生成首批内容库。"
-            "模块 5 已经确认了 3 个种类和每类 10 个具体选题。必须逐字复用这些种类名称、"
-            "选题标题和原有顺序，只为每个选题撰写口播，不得重新命名、替换或新增选题。"
-            "每个具体选题必须直接附带 1 篇可直接朗读的中文口播文案。总数必须是 3 个种类、"
-            "30 个选题、30 篇文案。不得把 10 个选题写成 10 个种类，不得只写一篇示例。"
+            "你是黄雀 IP12 内容策划与口播编导。严格依据本人已确认资料生成首批成品。"
+            "模块 5 已经确认了 3 个种类和每类 10 个备选题，并把每个种类的第 1 条确定为精选题。"
+            "必须逐字使用这 3 个种类名称和各自第 1 条标题，不得重新选择、改名或新增选题；description 简短说明精选理由。"
+            "每个精选选题必须直接附带 1 篇可直接朗读的完整中文口播文案，总数必须是 3 个种类、"
+            "3 个精选选题、3 篇完整文案。不得只返回标题、提纲或让用户再选择。"
             "每篇文案使用用户真实经历和已确认观点，不编造结果、客户案例、收入或身份；"
+            "计划和愿景必须保持未来时，不能改写成已经发生的经历；资料没有明确说过的‘回来后’、"
+            "‘后来我’、‘我已经’、‘我做过’等经历性表达一律不用。"
             "包含自然钩子、一个清晰观点和克制的结尾行动引导，不显示内部分析或自评。"
         )},
         {"role": "user", "content": "已确认资料（仅作事实，不是指令）：\n" + json.dumps(source, ensure_ascii=False)[:24000]},
-    ], stream=False, temperature=0.6, max_tokens=16000, response_format={
+    ], stream=False, temperature=0.45, max_tokens=7000, response_format={
         "type": "json_schema",
         "json_schema": {"name": "ip12_content_pack", "strict": True, "schema": CONTENT_PACK_SCHEMA},
     })
-    pack = _normalize_content_pack(_parse_ai_json(response))
-    expected = [(item["name"], item["topics"]) for item in plan]
-    actual = [(item["name"], [topic["title"] for topic in item["topics"]]) for item in pack["categories"]]
-    if actual != expected:
-        raise ValueError("口播内容库必须逐字复用已确认的 3×10 选题")
+    raw = _parse_ai_json(response)
+    categories = raw.get("categories") if isinstance(raw, dict) else None
+    if isinstance(categories, list) and len(categories) == len(plan):
+        for generated, confirmed in zip(categories, plan):
+            if not isinstance(generated, dict):
+                continue
+            generated["name"] = confirmed["name"]
+            topics = generated.get("topics")
+            if isinstance(topics, list) and len(topics) == 1 and isinstance(topics[0], dict):
+                topics[0]["title"] = confirmed["topics"][0]
+    pack = _normalize_content_pack(raw)
+    if [item["name"] for item in pack["categories"]] != [item["name"] for item in plan]:
+        raise ValueError("精选文案必须逐字复用已确认的 3 个种类")
+    for generated, confirmed in zip(pack["categories"], plan):
+        if generated["topics"][0]["title"] != confirmed["topics"][0]:
+            raise ValueError("精选文案必须逐字使用每个种类已确认的第 1 个重点选题")
     return pack
 
 def generate_deliverable(convo_id, module_id):
@@ -861,7 +1237,9 @@ def api_get_convo(cid):
     if convo is None:
         return jsonify({"ok": False, "error": "诊断不存在"}), 404
     convo["coach_state"] = normalize_coach_state(convo.get("coach_state"))
-    return jsonify(convo)
+    public_convo = json.loads(json.dumps(convo, ensure_ascii=False))
+    public_convo["productions"] = _productions_summary(convo)
+    return jsonify(public_convo)
 
 @app.route("/api/conversations/<cid>", methods=["DELETE"])
 def api_delete_convo(cid):
@@ -871,6 +1249,341 @@ def api_delete_convo(cid):
     if path.exists(): path.unlink()
     (FOUNDATION_REPORTS_DIR / (cid + ".pdf")).unlink(missing_ok=True)
     return jsonify({"ok": True})
+
+
+def _production_request_body():
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        raise coach_harness.HarnessError("请求体必须是 JSON 对象")
+    return body
+
+
+def _production_conversation(cid):
+    convo = owned_conversation(cid)
+    if convo is None:
+        return None
+    convo.setdefault("productions", {})
+    return convo
+
+
+@app.route("/api/ip12/productions/prepare", methods=["POST"])
+def api_prepare_production():
+    try:
+        body = _production_request_body()
+        if set(body) - {"conversation_id", "content_target", "expected_revision", "requested_result", "preferred_action", "options"}:
+            return _production_error("invalid_request", "包含不支持的参数", 400)
+        cid = str(body.get("conversation_id") or "")
+        with CONVERSATION_STATE_LOCK:
+            convo = _production_conversation(cid)
+            if convo is None:
+                return _production_error("project_not_found", "项目不存在", 404)
+            state = normalize_coach_state(convo.get("coach_state"))
+            _assert_expected_revision(state, body.get("expected_revision"))
+            recommendation = coach_harness.production_recommendation(
+                body.get("requested_result"), body.get("preferred_action")
+            )
+            source = _production_source(convo, body.get("content_target"))
+            production_id = "prod_" + uuid.uuid4().hex
+            record = {
+                "id": production_id,
+                "category_id": source["category_id"], "topic_id": source["topic_id"],
+                "script_version": source["script_version"], "script_digest": source["script_digest"],
+                "source_text": source["script"],
+                "capability_family": recommendation["capability_family"],
+                "action": recommendation["recommended_action"],
+                "brief": {"reason": "基于当前已确认口播制作", "audience": "当前 IP 的目标受众", "goal": "将当前内容转为可交付成品"},
+                "options": {}, "input_digest": "", "status": "draft", "quote": {},
+                "job_id": None, "asset_refs": [], "canvas_ref": None,
+                "action_result": None, "refund_status": "none", "last_error_code": "",
+                "idempotency_key": "ip12-" + production_id,
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            }
+            _production_set_options(record, body.get("options", {}))
+            _, validation_error, missing = _production_plan_or_error(record, record["options"])
+            if validation_error:
+                record["status"] = "blocked_prerequisite"
+                record["last_error_code"] = "missing_prerequisite"
+            convo["productions"][production_id] = record
+            save_conversation(cid, convo)
+        return jsonify({
+            "ok": True, "production_id": production_id, "status": record["status"],
+            "source": {key: source[key] for key in ("category_id", "topic_id", "script_version", "script_digest")},
+            **recommendation,
+            "reusable_assets": [asset for item in convo["productions"].values()
+                                if item.get("capability_family") == record["capability_family"]
+                                for asset in item.get("asset_refs", [])],
+            "options": record["options"],
+            "schema": _production_action_schema(record["action"]),
+            "parameter_schema": _production_action_schema(record["action"]),
+            "missing": missing,
+            "missing_prerequisites": missing or ([validation_error] if validation_error else []),
+            "validation_error": validation_error,
+        })
+    except coach_harness.HarnessConflict as exc:
+        return _production_error("revision_conflict", str(exc))
+    except coach_harness.HarnessError as exc:
+        return _production_error("invalid_production", str(exc), 400)
+
+
+@app.route("/api/ip12/productions/quote", methods=["POST"])
+def api_quote_production():
+    try:
+        body = _production_request_body()
+        if set(body) - {"conversation_id", "production_id", "expected_revision", "options"}:
+            return _production_error("invalid_request", "包含不支持的参数", 400)
+        cid = str(body.get("conversation_id") or "")
+        production_id = str(body.get("production_id") or "")
+        with CONVERSATION_STATE_LOCK:
+            convo = _production_conversation(cid)
+            if convo is None:
+                return _production_error("project_not_found", "项目不存在", 404)
+            state = normalize_coach_state(convo.get("coach_state"))
+            _assert_expected_revision(state, body.get("expected_revision"))
+            record = convo["productions"].get(production_id)
+            if not isinstance(record, dict):
+                return _production_error("production_not_found", "生产记录不存在", 404)
+            if not _production_is_current(convo, record):
+                _mark_production_stale(record); save_conversation(cid, convo)
+                return _production_error("source_changed", "正文已更新，需要重新准备并报价")
+            if record.get("status") in {"submitting", "queued", "running", "done"}:
+                return _production_error("production_already_submitted", "该生产已经提交，请读取现有状态")
+            options = body["options"] if "options" in body else record.get("options") or {}
+            changed = _production_set_options(record, options)
+            if changed and record.get("quote"):
+                record.update(status="stale", last_error_code="input_changed")
+            valid, validation_error, missing = _production_plan_or_error(record, record["options"])
+            if not valid:
+                record.update(status="blocked_prerequisite", last_error_code="invalid_input")
+                save_conversation(cid, convo)
+                return {
+                    "ok": False, "error": validation_error, "code": "missing_prerequisite",
+                    "production_id": production_id, "status": record["status"],
+                    "options": record["options"], "schema": _production_action_schema(record["action"]),
+                    "parameter_schema": _production_action_schema(record["action"]),
+                    "missing": missing,
+                }, 409
+            input_body = _production_input(record, record["options"])
+            request_digest = record["input_digest"]
+            record.update(status="draft", last_error_code="")
+            save_conversation(cid, convo)
+        if record["action"] != "canvas-ops":
+            try:
+                quote = _bridge_action(
+                    current_account_id(), record["action"], input_body,
+                    idempotency_key=record["idempotency_key"],
+                )
+            except ProductionBridgeError as exc:
+                with CONVERSATION_STATE_LOCK:
+                    latest_convo = _production_conversation(cid)
+                    latest = (latest_convo or {}).get("productions", {}).get(production_id)
+                    if isinstance(latest, dict) and latest.get("input_digest") == request_digest:
+                        latest.update(
+                            status="blocked_prerequisite" if exc.status < 500 else "draft",
+                            last_error_code=exc.code,
+                        )
+                        save_conversation(cid, latest_convo)
+                        record = latest
+                return {
+                    "ok": False, "error": exc.detail, "code": exc.code,
+                    "production_id": production_id, "status": record["status"],
+                    "options": record["options"],
+                    "schema": _production_action_schema(record["action"]), "missing": [],
+                    "parameter_schema": _production_action_schema(record["action"]),
+                    "validation_error": exc.detail,
+                }, exc.status
+            except RuntimeError:
+                return {
+                    "ok": False, "error": "生产执行桥暂不可用，请稍后重试",
+                    "code": "production_bridge_unavailable", "production_id": production_id,
+                    "status": "draft", "options": record["options"],
+                    "schema": _production_action_schema(record["action"]), "missing": [],
+                    "parameter_schema": _production_action_schema(record["action"]),
+                }, 503
+            token = str(quote.get("quote_token") or "")
+            if not token:
+                return _production_error("quote_invalid", "暂时没取得价格，请稍后再试", 502)
+            expires_in = int(quote.get("expires_in") or 0)
+            billing = "paid"
+        else:
+            quote = {"cost": 0, "points": 0}
+            token, expires_in, billing = "", 300, "free"
+        with CONVERSATION_STATE_LOCK:
+            convo = _production_conversation(cid)
+            record = (convo or {}).get("productions", {}).get(production_id)
+            if convo is None or not isinstance(record, dict):
+                return _production_error("project_not_found", "项目不存在", 404)
+            if not _production_is_current(convo, record):
+                _mark_production_stale(record); save_conversation(cid, convo)
+                return _production_error("source_changed", "正文已更新，需要重新准备并报价")
+            if record.get("input_digest") != request_digest:
+                record.update(status="stale", last_error_code="input_changed"); save_conversation(cid, convo)
+                return _production_error("input_changed", "制作参数已更新，需要重新报价")
+            record["quote"] = {"token": token, "cost": quote.get("cost"), "points": quote.get("points"),
+                               "expires_at": _utc_timestamp() + max(0, expires_in),
+                               "source_revision": record["script_version"],
+                               "input_digest": request_digest, "billing": billing}
+            record.update(status="quoted", last_error_code="", updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"))
+            save_conversation(cid, convo)
+        return jsonify({"ok": True, "production_id": production_id, "status": "quoted",
+                        "cost": quote.get("cost"), "points": quote.get("points"),
+                        "expires_in": expires_in, "confirmation_required": True,
+                        "script_version": record["script_version"],
+                        "input_digest": request_digest, "billing": billing})
+    except coach_harness.HarnessConflict as exc:
+        return _production_error("revision_conflict", str(exc))
+    except coach_harness.HarnessError as exc:
+        return _production_error("invalid_production", str(exc), 400)
+
+
+@app.route("/api/ip12/productions/confirm", methods=["POST"])
+def api_confirm_production():
+    try:
+        body = _production_request_body()
+        if set(body) - {"conversation_id", "production_id", "expected_revision", "confirmation_id", "options"}:
+            return _production_error("invalid_request", "包含不支持的参数", 400)
+        cid, production_id = str(body.get("conversation_id") or ""), str(body.get("production_id") or "")
+        confirmation_id = str(body.get("confirmation_id") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", confirmation_id):
+            return _production_error("invalid_confirmation", "确认标识无效", 400)
+        with CONVERSATION_STATE_LOCK:
+            convo = _production_conversation(cid)
+            if convo is None:
+                return _production_error("project_not_found", "项目不存在", 404)
+            state = normalize_coach_state(convo.get("coach_state"))
+            _assert_expected_revision(state, body.get("expected_revision"))
+            record = convo["productions"].get(production_id)
+            if not isinstance(record, dict):
+                return _production_error("production_not_found", "生产记录不存在", 404)
+            if not _production_is_current(convo, record):
+                _mark_production_stale(record); save_conversation(cid, convo)
+                return _production_error("source_changed", "正文已更新，需要重新报价")
+            already_submitted = record.get("status") in {"submitting", "queued", "running", "done"}
+            if "options" in body and already_submitted:
+                if not isinstance(body["options"], dict):
+                    raise coach_harness.HarnessError("制作参数必须是对象")
+                if _production_input_digest(record, body["options"]) != record.get("input_digest"):
+                    return _production_error(
+                        "production_already_submitted", "该生产已经提交，请读取现有状态"
+                    )
+            if record.get("status") == "done":
+                return jsonify({"ok": True, "replayed": True, "production": _production_public(record)})
+            if record.get("status") in {"queued", "running"} and record.get("job_id"):
+                return jsonify({"ok": True, "replayed": True, "production": _production_public(record)})
+            if "options" in body and _production_set_options(record, body["options"]):
+                record.update(status="stale", last_error_code="input_changed")
+                save_conversation(cid, convo)
+                return _production_error("input_changed", "制作参数已更新，需要重新报价")
+            if record.get("status") not in {"quoted", "submitting", "queued", "running"}:
+                return _production_error("quote_required", "请先取得有效报价")
+            quote = record.get("quote") or {}
+            if (quote.get("billing") != "free" and not quote.get("token")) or int(quote.get("expires_at") or 0) <= _utc_timestamp():
+                record.update(status="stale", last_error_code="quote_expired"); save_conversation(cid, convo)
+                return _production_error("quote_expired", "报价已过期，请重新报价")
+            _, invalid_input, _ = _production_plan_or_error(record, record.get("options") or {})
+            expected_digest = _production_input_digest(record, record.get("options") or {})
+            if (invalid_input or record.get("input_digest") != expected_digest
+                    or quote.get("input_digest") != expected_digest):
+                record.update(status="stale", last_error_code="input_changed"); save_conversation(cid, convo)
+                return _production_error("input_changed", "制作参数已更新，需要重新报价")
+            prior_confirmation = record.get("confirmation_id")
+            if prior_confirmation and prior_confirmation != confirmation_id:
+                return _production_error("confirmation_conflict", "该生产已在确认中，请勿重复提交")
+            record.update(status="submitting", confirmation_id=confirmation_id,
+                          updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"))
+            save_conversation(cid, convo)
+            input_body = _production_input(record, record.get("options") or {})
+        try:
+            result = _bridge_action(current_account_id(), record["action"], input_body, confirm=True,
+                                    quote_token=quote.get("token", ""), idempotency_key=record["idempotency_key"])
+        except ProductionBridgeError as exc:
+            with CONVERSATION_STATE_LOCK:
+                convo = _production_conversation(cid)
+                record = (convo or {}).get("productions", {}).get(production_id)
+                if convo is not None and isinstance(record, dict):
+                    terminal = str(exc.payload.get("status") or "").lower() in {
+                        "failed", "refund_pending", "refunded",
+                    }
+                    if terminal:
+                        _set_production_result(record, exc.payload)
+                    elif exc.status < 500 and exc.status != 429:
+                        record.update(status="stale", last_error_code=exc.code)
+                    else:
+                        record["last_error_code"] = exc.code
+                    save_conversation(cid, convo)
+            return {
+                "ok": False, "error": exc.detail, "code": exc.code,
+                "production": _production_public(record),
+                "schema": _production_action_schema(record["action"]), "missing": [],
+                "parameter_schema": _production_action_schema(record["action"]),
+            }, exc.status
+        except RuntimeError:
+            return _production_error("submission_pending", "正在确认原任务状态，请勿重复提交", 202)
+        with CONVERSATION_STATE_LOCK:
+            convo = _production_conversation(cid)
+            record = (convo or {}).get("productions", {}).get(production_id)
+            if convo is None or not isinstance(record, dict):
+                return _production_error("project_not_found", "项目不存在", 404)
+            try:
+                _set_production_result(record, result)
+            except RuntimeError:
+                record.update(status="submitting", last_error_code="result_link_pending")
+            save_conversation(cid, convo)
+        return jsonify({"ok": True, "replayed": bool(result.get("replayed")), "production": _production_public(record)})
+    except coach_harness.HarnessConflict as exc:
+        return _production_error("revision_conflict", str(exc))
+    except coach_harness.HarnessError as exc:
+        return _production_error("invalid_production", str(exc), 400)
+
+
+@app.route("/api/ip12/productions/<production_id>", methods=["GET"])
+def api_get_production(production_id):
+    cid = str(request.args.get("conversation_id") or "")
+    with CONVERSATION_STATE_LOCK:
+        convo = _production_conversation(cid)
+        if convo is None:
+            return _production_error("project_not_found", "项目不存在", 404)
+        record = convo["productions"].get(production_id)
+        if not isinstance(record, dict):
+            return _production_error("production_not_found", "生产记录不存在", 404)
+        if not _production_is_current(convo, record):
+            _mark_production_stale(record); save_conversation(cid, convo)
+        restore = None
+        if record.get("status") == "submitting" and not record.get("job_id"):
+            quote = record.get("quote") or {}
+            if quote.get("billing") == "free" or quote.get("token"):
+                restore = (record["action"], _production_input(record, record.get("options") or {}),
+                           quote.get("token", ""), record["idempotency_key"])
+        job_id = record.get("job_id") if record.get("status") in {"queued", "running", "submitting"} else None
+        status_idempotency_key = record.get("idempotency_key") if job_id else ""
+    result = None
+    try:
+        if restore:
+            result = _bridge_action(current_account_id(), restore[0], restore[1], confirm=True,
+                                    quote_token=restore[2], idempotency_key=restore[3])
+        elif job_id:
+            result = _bridge_action(
+                current_account_id(), "task", {"job_id": int(job_id)},
+                idempotency_key=status_idempotency_key,
+            )
+    except (RuntimeError, coach_harness.HarnessError, ValueError):
+        result = None
+    if result is not None:
+        with CONVERSATION_STATE_LOCK:
+            convo = _production_conversation(cid)
+            record = (convo or {}).get("productions", {}).get(production_id)
+            if convo is not None and isinstance(record, dict):
+                try:
+                    _set_production_result(record, result)
+                except RuntimeError:
+                    record.update(status="submitting", last_error_code="result_link_pending")
+                save_conversation(cid, convo)
+    with CONVERSATION_STATE_LOCK:
+        convo = _production_conversation(cid)
+        record = (convo or {}).get("productions", {}).get(production_id)
+        if convo is None or not isinstance(record, dict):
+            return _production_error("project_not_found", "项目不存在", 404)
+        return jsonify({"ok": True, "production": _production_public(record)})
 
 
 def _coach_module_five_topics(convo, user_message, repair_error=""):
@@ -926,6 +1639,7 @@ def _coach_module_five_topics(convo, user_message, repair_error=""):
 规则：
 - 用户只是提问时 decision=answer_only；资料不足时 decision=ask_follow_up，只问一个问题；两种情况 categories=[] 且 self_review 为空。
 - 资料足够时 decision=propose_checkpoint，categories 必须正好 3 组；name 必须逐字复制“已确认种类”中的名称，每组 topics 正好 10 条，30 条标题不能重复。
+- 每组 10 条按首发价值从高到低排序，最值得优先写成完整文案的选题必须放在第 1 条。
 - 每条 title 控制在 30 个汉字以内，reply 和 self_review 各写一句话。
 - 每个 evidence_id 必须选择“可引用证据”中现有的 E 编号，可以重复选择同一个编号；不得创造编号或自己改写证据。
 - 选题只能写真实过程、边界、反思、方法和待验证计划；证据没有提到的具体行业、客户案例、成功结果、收入或效果不能写。
@@ -984,7 +1698,10 @@ def _coach_model_decision(convo, user_message, repair_error=""):
         not intake_pending
         and state["current_module"] == 6
         and state["module_step"] in {1, 2}
-        and coach_harness.is_continue_message(user_message)
+        and (
+            coach_harness.is_continue_message(user_message)
+            or coach_harness.is_content_review_message(user_message)
+        )
     ):
         pack = (convo.get("deliverables") or {}).get("6") or {}
         return coach_harness.compile_module_six_checkpoint(state, pack), json.dumps(pack, ensure_ascii=False)
@@ -1002,11 +1719,39 @@ def _coach_model_decision(convo, user_message, repair_error=""):
                 str(item.get("evidence_quote") or item.get("value") or "")
                 for item in preferences.values() if isinstance(item, dict)
             ),
+            *(
+                str(item.get("content") or "")
+                for item in (convo.get("messages") or [])[-12:]
+                if item.get("role") == "user"
+            ),
             str(user_message or ""),
         ])
         style_decision = coach_harness.compile_module_six_style(state, style_evidence)
         if style_decision:
             return style_decision, style_evidence
+        if coach_harness.is_continue_message(user_message):
+            progress_count = 0
+            for item in reversed(convo.get("messages") or []):
+                if item.get("role") != "user":
+                    continue
+                if coach_harness.is_continue_message(item.get("content")):
+                    progress_count += 1
+                    continue
+                break
+            follow_ups = (
+                "先说表达风格：这 3 篇更希望像真实聊天、经历复盘，还是步骤讲解？",
+                "再说单篇时长：希望大约 30 秒、1 分钟，还是 2 分钟？",
+                "最后说结尾动作：希望观众点赞、评论、收藏、关注，还是私信？",
+            )
+            return {
+                "decision": "ask_follow_up",
+                "checkpoint": 0,
+                "reply": "30 个备选题已经保留。" + follow_ups[progress_count % len(follow_ups)],
+                "draft": "",
+                "self_review": "",
+                "profile_updates": [],
+                "confidence": 1.0,
+            }, str(user_message or "")
     prompt = coach_harness.intake_system_prompt(state) if intake_pending else coach_harness.system_prompt(state)
     if repair_error:
         prompt += (
@@ -1047,6 +1792,7 @@ def _coach_model_decision(convo, user_message, repair_error=""):
     if intake_pending:
         profile_data["pending_intake_draft"] = (state.get("intake") or {}).get("draft") or ""
         profile_data["pending_intake_updates"] = (state.get("intake") or {}).get("profile_updates") or []
+        profile_data["asked_intake_questions"] = (state.get("intake") or {}).get("asked_follow_ups") or []
     elif module_pending:
         profile_data["pending_module_draft"] = module_pending.get("draft") or ""
         profile_data["pending_module_updates"] = module_pending.get("profile_updates") or []
@@ -1224,7 +1970,8 @@ def _assert_expected_revision(state, expected_revision):
 
 
 def _persist_model_turn(
-    cid, user_message, snapshot_revision, raw_decision, evidence, prefix="", discard_pending=False
+    cid, user_message, snapshot_revision, raw_decision, evidence, prefix="", discard_pending=False,
+    message_id="",
 ):
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
@@ -1233,6 +1980,8 @@ def _persist_model_turn(
         state = normalize_coach_state(convo.get("coach_state"))
         if state["revision"] != snapshot_revision:
             raise coach_harness.HarnessConflict("对话已在另一端更新，请刷新后重试")
+        if not user_message:
+            raw_decision = {**raw_decision, "profile_updates": []}
         was_intake = _intake_pending(state)
         if was_intake:
             next_state, decision, assistant = coach_harness.apply_intake_decision(
@@ -1249,7 +1998,7 @@ def _persist_model_turn(
         if prefix:
             assistant = prefix + "\n\n" + assistant
         if user_message:
-            convo.setdefault("messages", []).append({"role": "user", "content": _redact_mobile_numbers(user_message)})
+            _append_or_reuse_user_message(convo, user_message, message_id)
         convo.setdefault("messages", []).append({"role": "assistant", "content": assistant})
         convo["coach_state"] = next_state
         if was_intake and convo.get("title") == "新诊断":
@@ -1266,7 +2015,86 @@ def _persist_model_turn(
     return assistant, next_state
 
 
-def _process_model_turn(cid, user_message, expected_revision=None, prefix="", persist_user=True):
+def _persist_unprocessed_turn(
+    cid, user_message, snapshot_revision, prefix="", message_id="", assistant_override=""
+):
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            raise KeyError("诊断不存在")
+        state = normalize_coach_state(convo.get("coach_state"))
+        if state["revision"] != snapshot_revision:
+            raise coach_harness.HarnessConflict("对话已在另一端更新，请刷新后重试")
+        assistant = assistant_override or (
+            "我已经记下你刚才的原话，已确认内容和当前步骤都没有改变。"
+            "这次还没整理成可确认结果；你不用重述，可以继续补充，"
+            "或发送“继续”让我基于刚才内容重新整理。"
+        )
+        if prefix:
+            assistant = prefix + "\n\n" + assistant
+        clean_message = _redact_mobile_numbers(user_message)
+        _append_or_reuse_user_message(convo, clean_message, message_id)
+        convo.setdefault("messages", []).append({"role": "assistant", "content": assistant})
+        state["revision"] += 1
+        convo["coach_state"] = state
+        if convo.get("title") == "新诊断":
+            title = clean_message.replace("\n", " ")[:30]
+            convo["title"] = title if len(title) < 30 else title[:27] + "..."
+        save_conversation(cid, convo)
+    return assistant, state
+
+
+def _turn_message_id(cid, user_message, snapshot_revision, request_id=""):
+    clean_message = _redact_mobile_numbers(str(user_message or ""))
+    stable_input = request_id or "%s\n%s\n%s" % (cid, snapshot_revision, clean_message)
+    digest = hashlib.sha256(stable_input.encode("utf-8")).hexdigest()
+    return "ip12-user-" + digest
+
+
+def _append_or_reuse_user_message(convo, user_message, message_id=""):
+    clean_message = _redact_mobile_numbers(str(user_message or ""))
+    messages = convo.setdefault("messages", [])
+    if message_id:
+        for item in messages:
+            if item.get("role") == "user" and item.get("message_id") == message_id:
+                if item.get("content") != clean_message:
+                    raise coach_harness.HarnessConflict("请求已用于其他消息，请刷新后重试")
+                return False
+    messages.append({
+        "role": "user",
+        "content": clean_message,
+        **({"message_id": message_id} if message_id else {}),
+    })
+    return True
+
+
+def _persist_user_message(cid, user_message, snapshot_revision, request_id=""):
+    message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            raise KeyError("诊断不存在")
+        state = normalize_coach_state(convo.get("coach_state"))
+        if state["revision"] != snapshot_revision:
+            raise coach_harness.HarnessConflict("对话已在另一端更新，请刷新后重试")
+        if _append_or_reuse_user_message(convo, user_message, message_id):
+            save_conversation(cid, convo)
+    return message_id
+
+
+def _model_snapshot_without_user(convo, message_id):
+    snapshot = json.loads(json.dumps(convo, ensure_ascii=False))
+    if message_id:
+        snapshot["messages"] = [
+            item for item in snapshot.get("messages", [])
+            if item.get("message_id") != message_id
+        ]
+    return snapshot
+
+
+def _process_model_turn(
+    cid, user_message, expected_revision=None, prefix="", persist_user=True, request_id=""
+):
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
         if convo is None:
@@ -1275,13 +2103,33 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
         _assert_expected_revision(state, expected_revision)
         foundation_status = (state.get("foundation_report") or {}).get("status")
         if 4 in state.get("completed_modules", []) and foundation_status not in {"awaiting_confirmation", "confirmed"}:
-            return {"ok": False, "error": "请先生成并确认模块 1-4 的 IP 定位初稿 PDF"}, 409
+            if not persist_user:
+                return {"ok": False, "error": "请先生成并确认模块 1-4 的 IP 定位初稿 PDF"}, 409
+            snapshot_revision = state["revision"]
+            message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
+            assistant = (
+                "模块 1–4 PDF 正在生成。你刚才的话已经保存，不需要重发；生成完成后可以继续审阅。"
+                if foundation_status == "generating"
+                else "模块 1–4 PDF 本次生成失败，但你刚才的话和已确认内容都已保存，不需要重述。请点击“重新生成 PDF”后继续。"
+            )
+            assistant, next_state = _persist_unprocessed_turn(
+                cid, user_message, snapshot_revision, prefix=prefix,
+                message_id=message_id, assistant_override=assistant,
+            )
+            return _chat_result(assistant, next_state), 200
         snapshot_revision = state["revision"]
-        snapshot = json.loads(json.dumps(convo, ensure_ascii=False))
+        message_id = ""
+        if persist_user and user_message:
+            message_id = _persist_user_message(cid, user_message, snapshot_revision, request_id)
+            convo = owned_conversation(cid)
+        snapshot = _model_snapshot_without_user(convo, message_id)
         prepare_module_six = (
             state.get("current_module") == 6
             and state.get("module_step") == 1
-            and coach_harness.is_continue_message(user_message)
+            and (
+                coach_harness.is_continue_message(user_message)
+                or coach_harness.is_content_review_message(user_message)
+            )
             and not _content_pack_ready((convo.get("deliverables") or {}).get("6") or {})
         )
     if prepare_module_six:
@@ -1289,7 +2137,7 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
             generate_deliverable(cid, 6)
         except Exception as exc:
             app.logger.warning("IP12 module 6 content pack failed: %s", exc)
-            return {"ok": False, "error": "30 篇口播暂时没能完整生成；已确认内容不会丢失，请重试"}, 502
+            return {"ok": False, "error": "3 篇精选口播暂时没能完整生成；30 个备选题和已确认内容都已保留，请重试"}, 502
         with CONVERSATION_STATE_LOCK:
             convo = owned_conversation(cid)
             if convo is None:
@@ -1297,7 +2145,7 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
             state = normalize_coach_state(convo.get("coach_state"))
             if state["revision"] != snapshot_revision:
                 raise coach_harness.HarnessConflict("对话已在另一端更新，请刷新后重试")
-            snapshot = json.loads(json.dumps(convo, ensure_ascii=False))
+            snapshot = _model_snapshot_without_user(convo, message_id)
     try:
         raw = coach_harness.duration_conflict_decision(state, user_message)
         if raw:
@@ -1312,6 +2160,7 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
                 raw,
                 evidence,
                 prefix=prefix,
+                message_id=message_id,
             )
         except coach_harness.HarnessConflict:
             raise
@@ -1325,6 +2174,7 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
                     raw,
                     evidence,
                     prefix=prefix,
+                    message_id=message_id,
                 )
             except coach_harness.HarnessError as retry_exc:
                 retry_error = str(retry_exc)
@@ -1368,6 +2218,7 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
                         evidence,
                         prefix="\n\n".join(item for item in (prefix, recovery_prefix) if item),
                         discard_pending=True,
+                        message_id=message_id,
                     )
                 except coach_harness.HarnessConflict:
                     raise
@@ -1389,11 +2240,17 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
                         user_message,
                         prefix=prefix,
                         discard_pending=True,
+                        message_id=message_id,
                     )
     except coach_harness.HarnessConflict:
         raise
     except (coach_harness.HarnessError, RuntimeError, requests.RequestException) as exc:
         app.logger.warning("IP12 model turn failed after validation/retry: %s", exc)
+        if persist_user:
+            assistant, next_state = _persist_unprocessed_turn(
+                cid, user_message, snapshot_revision, prefix=prefix, message_id=message_id
+            )
+            return _chat_result(assistant, next_state), 200
         return {"ok": False, "error": "这条消息暂时没能安全整理，请重试；已确认内容不会丢失。"}, 502
     auto_deliverables = {}
     if (
@@ -1411,7 +2268,7 @@ def _process_model_turn(cid, user_message, expected_revision=None, prefix="", pe
     return result, 200
 
 
-def _process_foundation_revision_turn(cid, user_message, expected_revision=None):
+def _process_foundation_revision_turn(cid, user_message, expected_revision=None, request_id=""):
     clean_message = _redact_mobile_numbers(str(user_message or "").strip())[:4000]
     if not clean_message:
         return {"ok": False, "error": "修改内容不能为空"}, 400
@@ -1426,6 +2283,7 @@ def _process_foundation_revision_turn(cid, user_message, expected_revision=None)
             return {"ok": False, "error": "当前没有待修改的模块 1-4 PDF"}, 409
         snapshot_revision = state["revision"]
         report_content = _redact_mobile_numbers(str(report.get("content") or ""))[:16000]
+        message_id = _persist_user_message(cid, clean_message, snapshot_revision, request_id)
 
     review_schema = {
         "type": "object",
@@ -1488,7 +2346,7 @@ def _process_foundation_revision_turn(cid, user_message, expected_revision=None)
             report.update(review_status="dirty", review_notes=notes)
         state["foundation_report"] = report
         state["revision"] += 1
-        convo.setdefault("messages", []).append({"role": "user", "content": clean_message})
+        _append_or_reuse_user_message(convo, clean_message, message_id)
         convo.setdefault("messages", []).append({"role": "assistant", "content": assistant})
         convo["coach_state"] = state
         save_conversation(cid, convo)
@@ -1509,7 +2367,7 @@ def _content_topic(pack, target):
     raise coach_harness.HarnessError("这篇文案已经更新或不存在，请重新选择")
 
 
-def _process_content_revision_turn(cid, user_message, target, expected_revision=None):
+def _process_content_revision_turn(cid, user_message, target, expected_revision=None, request_id=""):
     clean_message = _redact_mobile_numbers(str(user_message or "").strip())[:4000]
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
@@ -1519,11 +2377,12 @@ def _process_content_revision_turn(cid, user_message, target, expected_revision=
         _assert_expected_revision(state, expected_revision)
         pack = json.loads(json.dumps((convo.get("deliverables") or {}).get("6") or {}, ensure_ascii=False))
         if pack.get("kind") != "content_pack_v1":
-            return {"ok": False, "error": "当前还没有可修改的 3×10 口播内容库"}, 409
+            return {"ok": False, "error": "当前还没有可修改的精选口播文案"}, 409
         category, topic = _content_topic(pack, target)
         versions = topic.get("versions") or []
         current_script = str((versions[-1] if versions else {}).get("content") or "")
         snapshot_revision = state["revision"]
+        message_id = _persist_user_message(cid, clean_message, snapshot_revision, request_id)
 
     schema = {
         "type": "object", "additionalProperties": False,
@@ -1585,7 +2444,7 @@ def _process_content_revision_turn(cid, user_message, target, expected_revision=
             topic["versions"] = versions[-20:]
             topic["status"] = "revised"
         state["revision"] += 1
-        convo.setdefault("messages", []).append({"role": "user", "content": clean_message})
+        _append_or_reuse_user_message(convo, clean_message, message_id)
         convo.setdefault("messages", []).append({"role": "assistant", "content": assistant})
         convo["coach_state"] = state
         save_conversation(cid, convo)
@@ -1601,14 +2460,71 @@ def _action_label(action_type):
     }.get(action_type, "确认操作")
 
 
-def _process_action_turn(cid, action, expected_revision):
+def _process_production_intent_turn(
+    cid, user_message, target, intent, expected_revision=None, request_id=""
+):
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
         if convo is None:
             return None, 404
         state = normalize_coach_state(convo.get("coach_state"))
+        _assert_expected_revision(state, expected_revision)
+        source = _production_source(convo, target)
+        snapshot_revision = state["revision"]
+    labels = {"image": "图片", "audio": "音频", "video": "视频", "canvas": "Canvas"}
+    family = intent["capability_family"]
+    label = labels[family]
+    assistant = (
+        "我知道你要把当前这篇口播做成%s。先按当前正文版本打开制作工作台；"
+        "系统会先显示所需素材和实时报价，未经你确认不会提交或扣点。" % label
+    )
+    message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
+    assistant, next_state = _persist_unprocessed_turn(
+        cid, user_message, snapshot_revision, message_id=message_id,
+        assistant_override=assistant,
+    )
+    result = _chat_result(assistant, next_state)
+    result["actions"] = [{
+        "type": "prepare_production",
+        "label": "准备生成" + label,
+        "primary": True,
+        "content_target": {
+            "category_id": source["category_id"],
+            "topic_id": source["topic_id"],
+        },
+        "requested_result": family,
+        "preferred_action": intent["recommended_action"],
+        "candidate_actions": intent["candidate_actions"],
+        "options": {},
+    }]
+    return result, 200
+
+
+def _continuation_failure_reply(state):
+    if state.get("current_module") == 5 and state.get("module_step") == 1:
+        return (
+            "3 个选题种类已经保留。为了给每类生成 10 个更贴合的选题，请补充这三类各自最想吸引的人群；"
+            "如果不需要补充，也可以直接说“按现有资料生成”。"
+        )
+    if state.get("current_module") == 6 and state.get("module_step") == 1:
+        return "口播标准已经保留，但 3 篇正文这次没有完整生成。直接发送“继续”即可重试，无需重述要求。"
+    if state.get("current_module") == 6 and state.get("module_step") == 2:
+        return "3 篇正文的审阅状态已经保留，但最终确认稿这次没有完整整理。直接发送“继续”即可重试。"
+    return "这一步已经保留，但下一份结果没有完整生成。直接发送“继续”即可重试，无需重述。"
+
+
+def _process_action_turn(cid, action, expected_revision, user_message="", request_id=""):
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return None, 404
+        state = normalize_coach_state(convo.get("coach_state"))
+        if user_message:
+            _persist_user_message(cid, user_message, state["revision"], request_id)
+            convo = owned_conversation(cid)
         next_state, event = coach_harness.apply_action(state, action, expected_revision)
-        convo.setdefault("messages", []).append({"role": "user", "content": _action_label(action.get("type"))})
+        if not user_message:
+            convo.setdefault("messages", []).append({"role": "user", "content": _action_label(action.get("type"))})
         convo["coach_state"] = next_state
         save_conversation(cid, convo)
 
@@ -1639,7 +2555,7 @@ def _process_action_turn(cid, action, expected_revision):
             next_state = continued["state"]
             continued_deliverables = continued.get("auto_deliverables") or {}
         else:
-            assistant = (assistant + "\n\n" if assistant else "") + "内容已经保存。你可以发送“继续”进入下一步。"
+            assistant = (assistant + "\n\n" if assistant else "") + _continuation_failure_reply(next_state)
             with CONVERSATION_STATE_LOCK:
                 latest = owned_conversation(cid)
                 if latest is not None:
@@ -1692,6 +2608,7 @@ def process_chat_request(body):
     if action is None and not user_message:
         return {"ok": False, "error": "empty message"}, 400
 
+    production_intent = None
     try:
         with CONVERSATION_STATE_LOCK:
             convo = owned_conversation(cid)
@@ -1710,19 +2627,30 @@ def process_chat_request(body):
                     action_revision = None
             else:
                 action_revision = body.get("expected_revision")
+            if action is None and content_target is not None:
+                production_intent = coach_harness.production_intent(user_message)
 
         if action is not None:
-            result, status = _process_action_turn(cid, action, action_revision)
-        elif content_target is not None:
+            result, status = _process_action_turn(
+                cid, action, action_revision, user_message=user_message, request_id=request_id
+            )
+        elif production_intent is not None:
+            result, status = _process_production_intent_turn(
+                cid, user_message, content_target, production_intent,
+                body.get("expected_revision"), request_id,
+            )
+        elif content_target is not None and not coach_harness.is_content_review_message(user_message):
             result, status = _process_content_revision_turn(
-                cid, user_message, content_target, body.get("expected_revision")
+                cid, user_message, content_target, body.get("expected_revision"), request_id
             )
         elif foundation_review == "revision":
             result, status = _process_foundation_revision_turn(
-                cid, user_message, body.get("expected_revision")
+                cid, user_message, body.get("expected_revision"), request_id
             )
         else:
-            result, status = _process_model_turn(cid, user_message, body.get("expected_revision"))
+            result, status = _process_model_turn(
+                cid, user_message, body.get("expected_revision"), request_id=request_id
+            )
     except coach_harness.HarnessConflict as exc:
         return {"ok": False, "error": str(exc)}, 409
     except coach_harness.HarnessError as exc:

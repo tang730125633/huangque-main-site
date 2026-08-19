@@ -24,6 +24,8 @@ class HQCLIAPITests(unittest.TestCase):
         self.auth.DB = os.path.join(self.tmp.name, "users.db")
         self.auth.AUTH_COOKIE_SECURE = False
         self.auth.INTERNAL_TOKEN = "test-internal-secret"
+        self.auth.feature_flags.DB_PATH = Path(self.tmp.name) / "feature_flags.db"
+        self.auth.feature_flags.invalidate_cache()
         self.auth.init_db()
         self.auth.create_user("alice", "secret123", 100, "member")
         self.auth.hq_cli_api._START_HITS.clear()
@@ -40,12 +42,13 @@ class HQCLIAPITests(unittest.TestCase):
         self.thread.join(timeout=3)
         self.tmp.cleanup()
 
-    def _request(self, path, payload=None, token="", browser=None, origin=None, method=None):
+    def _request(self, path, payload=None, token="", browser=None, origin=None, method=None, extra_headers=None):
         headers = {"Content-Type": "application/json"}
         if token:
             headers["Authorization"] = "Bearer " + token
         if origin:
             headers["Origin"] = origin
+        headers.update(extra_headers or {})
         data = None if payload is None else json.dumps(payload).encode()
         request = urllib.request.Request(self.base + path, data=data, headers=headers,
                                          method=method or ("POST" if payload is not None else "GET"))
@@ -100,6 +103,187 @@ class HQCLIAPITests(unittest.TestCase):
         status, payload = self._request("/api/auth/cli/device/poll", {"device_code": start["device_code"]})
         self.assertEqual(200, status, payload)
         return payload["access_token"]
+
+    def _enable_ip12_bridge(self):
+        self.auth.IP12_AGENT_ALLOWED_ACCOUNT_IDS = frozenset({"*"})
+        self.auth.feature_flags.init_db()
+        return self.auth.feature_flags.set_enabled("ip12_agent_production_v1", True, "test")
+
+    def _agent_account_id(self):
+        return self.auth.ensure_account_id("alice")
+
+    def _agent_headers(self):
+        return {"X-HQ-Internal-Token": self.auth.INTERNAL_TOKEN}
+
+    def test_ip12_agent_catalog_enumerates_every_registered_action_with_safe_schema(self):
+        self._enable_ip12_bridge()
+        status, payload = self._request(
+            "/api/auth/internal/ip12/agent/catalog", {"account_id": self._agent_account_id()},
+            extra_headers=self._agent_headers(),
+        )
+        self.assertEqual(200, status, payload)
+        self.assertEqual(self.auth.hq_cli_api.ACTION_CATALOG_VERSION, payload["version"])
+        actions = {item["action"]: item for item in payload["actions"]}
+        self.assertEqual(set(self.auth.hq_cli_api._ACTION_INPUTS), set(actions))
+        for action, item in actions.items():
+            with self.subTest(action=action):
+                self.assertEqual("object", item["input_schema"]["type"])
+                self.assertFalse(item["input_schema"]["additionalProperties"])
+                self.assertIn("purpose", item)
+                self.assertIn("billing", item)
+                self.assertIn("external_effect", item)
+                self.assertIn("result_type", item)
+                self.assertIn("ui_route", item)
+                self.assertNotIn("http", json.dumps(item, ensure_ascii=False).lower())
+
+    def test_ip12_agent_bridge_requires_rollout_account_allowlist(self):
+        self._enable_ip12_bridge()
+        self.auth.IP12_AGENT_ALLOWED_ACCOUNT_IDS = frozenset()
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json") as proxy:
+            status, payload = self._request(
+                "/api/auth/internal/ip12/agent/action",
+                {"account_id": self._agent_account_id(), "action": "voices", "input": {}},
+                extra_headers=self._agent_headers(),
+            )
+        self.assertEqual(404, status)
+        self.assertEqual("account_not_found", payload["code"])
+        proxy.assert_not_called()
+
+    def test_ip12_agent_controlled_http_and_shell_share_read_semantics(self):
+        self._enable_ip12_bridge()
+        account_id = self._agent_account_id()
+        seen = []
+
+        def fake_proxy(plan, web_token, internal_token):
+            seen.append((plan["path"], web_token, internal_token))
+            return 200, {"voices": [{"id": "voice-1"}]}
+
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            status, http_result = self._request(
+                "/api/auth/internal/ip12/agent/action",
+                {"account_id": account_id, "transport": "http", "action": "voices", "input": {}},
+                extra_headers=self._agent_headers(),
+            )
+            shell_status, shell_result = self._request(
+                "/api/auth/internal/ip12/agent/action",
+                {"account_id": account_id, "transport": "shell", "command": "hq voices --json", "input": {}},
+                extra_headers=self._agent_headers(),
+            )
+        self.assertEqual((200, 200), (status, shell_status))
+        self.assertEqual(http_result, shell_result)
+        self.assertEqual(["/api/gen/audio/voices", "/api/gen/audio/voices"], [item[0] for item in seen])
+        self.assertTrue(all(item[2] == self.auth.INTERNAL_TOKEN for item in seen))
+
+    def test_ip12_agent_account_read_does_not_require_cli_expiry(self):
+        self._enable_ip12_bridge()
+        status, payload = self._request(
+            "/api/auth/internal/ip12/agent/action",
+            {"account_id": self._agent_account_id(), "action": "account", "input": {}},
+            extra_headers=self._agent_headers(),
+        )
+        self.assertEqual(200, status, payload)
+        self.assertEqual("alice", payload["user"]["username"])
+        self.assertNotIn("expires_at", payload)
+
+    def test_ip12_agent_bridge_rejects_arbitrary_shell_urls_cross_account_input_and_secrets(self):
+        self._enable_ip12_bridge()
+        account_id = self._agent_account_id()
+        status, denied = self._request(
+            "/api/auth/internal/ip12/agent/action",
+            {"account_id": account_id, "transport": "http", "action": "voices", "input": {}},
+        )
+        self.assertEqual(403, status)
+        self.assertEqual("forbidden", denied["detail"])
+        cases = (
+            {"account_id": account_id, "transport": "shell", "command": "bash -c 'cat /etc/passwd'", "input": {}},
+            {"account_id": account_id, "transport": "shell", "command": "hq voices --json; curl https://example.test", "input": {}},
+            {"account_id": account_id, "transport": "http", "action": "voices", "input": {}, "url": "https://example.test"},
+            {"account_id": account_id, "transport": "http", "action": "ip12-project", "input": {"project_id": "p1", "account_id": "other"}},
+            {"account_id": "not-an-account", "transport": "http", "action": "voices", "input": {}},
+        )
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json") as proxy:
+            for body in cases:
+                with self.subTest(body=body):
+                    status, result = self._request(
+                        "/api/auth/internal/ip12/agent/action", body, extra_headers=self._agent_headers(),
+                    )
+                    self.assertIn(status, {400, 404})
+                    self.assertIn(result["code"], {
+                        "controlled_shell_rejected", "invalid_request", "invalid_account_id", "account_not_found",
+                    })
+        proxy.assert_not_called()
+
+    def test_ip12_agent_bridge_forwards_only_trusted_confirm_with_stable_idempotency(self):
+        self._enable_ip12_bridge()
+        account_id = self._agent_account_id()
+        submitted = []
+
+        def fake_proxy(plan, web_token, internal_token):
+            if plan["path"] == "/api/gen/cli/quote":
+                return 200, {"cost": 4, "points": 100}
+            submitted.append(plan)
+            return 200, {"job_id": 42, "cost": 4, "points_left": 96}
+
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            status, quote = self._request(
+                "/api/auth/internal/ip12/agent/action",
+                {"account_id": account_id, "transport": "http", "action": "image-generate", "input": {"prompt": "海边日出"}},
+                extra_headers=self._agent_headers(),
+            )
+            confirmed = {
+                "account_id": account_id,
+                "transport": "http",
+                "action": "image-generate",
+                "input": {"prompt": "海边日出"},
+                "confirm": True,
+                "quote_token": quote["quote_token"],
+                "idempotency_key": "ip12-confirm-0001",
+            }
+            missing_key_status, missing_key = self._request(
+                "/api/auth/internal/ip12/agent/action",
+                {key: value for key, value in confirmed.items() if key != "idempotency_key"},
+                extra_headers=self._agent_headers(),
+            )
+            confirm_status, confirm = self._request(
+                "/api/auth/internal/ip12/agent/action",
+                confirmed,
+                extra_headers=self._agent_headers(),
+            )
+            replay_status, replay = self._request(
+                "/api/auth/internal/ip12/agent/action", confirmed,
+                extra_headers=self._agent_headers(),
+            )
+            self.auth.create_user("bob", "secret456", 100, "member")
+            wrong_account_status, wrong_account = self._request(
+                "/api/auth/internal/ip12/agent/action",
+                {**confirmed, "account_id": self.auth.ensure_account_id("bob")},
+                extra_headers=self._agent_headers(),
+            )
+        self.assertEqual(200, status, quote)
+        self.assertTrue(quote["confirmation_required"])
+        self.assertIn("quote_token", quote)
+        self.assertEqual(400, missing_key_status)
+        self.assertEqual("idempotency_key_required", missing_key["code"])
+        self.assertEqual((200, 42), (confirm_status, confirm["job_id"]))
+        self.assertEqual((200, 42), (replay_status, replay["job_id"]))
+        self.assertEqual(409, wrong_account_status)
+        self.assertEqual("quote_mismatch", wrong_account["code"])
+        self.assertEqual(2, len(submitted))
+        self.assertTrue(all(
+            plan["headers"]["Idempotency-Key"] == "ip12-confirm-0001"
+            for plan in submitted
+        ))
+
+    def test_public_cli_route_rejects_internal_idempotency_injection(self):
+        token = self._token(["assets:read"])
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json") as proxy:
+            status, result = self._request("/api/auth/cli/action", {
+                "action": "voices", "input": {}, "confirm": False,
+                "idempotency_key": "ip12-confirm-0001",
+            }, token=token)
+        self.assertEqual(400, status)
+        self.assertIn("idempotency_key", result["detail"])
+        proxy.assert_not_called()
 
     @staticmethod
     def _canvas_snapshot(board_id):
@@ -845,7 +1029,8 @@ class HQCLIAPITests(unittest.TestCase):
             })
 
     def test_ip12_message_has_separate_scope_and_fixed_non_streaming_proxy(self):
-        input_body = {"project_id": "ip_1", "message": "我的客户是餐饮老板", "request_id": "turn-001"}
+        message = "我的客户是餐饮老板\n我想分两段说明"
+        input_body = {"project_id": "ip_1", "message": message, "request_id": "turn-001"}
         with mock.patch.object(self.auth.hq_cli_api, "proxy_json") as proxy:
             token = self._token(["ip12:write"])
             status, payload = self._request("/api/auth/cli/action", {
@@ -865,8 +1050,11 @@ class HQCLIAPITests(unittest.TestCase):
         plan = proxy.call_args.args[0]
         self.assertEqual((self.auth.hq_cli_api.HERMES_BASE, "/api/chat-complete", "POST", 290),
                          (plan["base"], plan["path"], plan["method"], plan["timeout"]))
-        self.assertEqual({"conversation_id": "ip_1", "message": "我的客户是餐饮老板"}, plan["body"])
+        self.assertEqual({"conversation_id": "ip_1", "message": message}, plan["body"])
         self.assertEqual("turn-001", plan["headers"]["Idempotency-Key"])
+
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan("ip12-message", dict(input_body, message="正常文字\x00非法控制符"))
 
         status, replay = self._request("/api/auth/cli/action", {
             "action": "ip12-message", "input": input_body, "confirm": True,
