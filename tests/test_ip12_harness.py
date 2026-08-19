@@ -581,8 +581,10 @@ class IP12HarnessTests(unittest.TestCase):
         cases = {
             "把这篇做成一张封面图片": ("image", "image-generate"),
             "给这篇口播配一张竖屏封面图": ("image", "image-generate"),
+            "请根据当前口播生成一张 9:16 的社交媒体配图": ("image", "image-generate"),
             "请把当前口播生成音频": ("audio", "audio-generate"),
             "用 Grok 把这篇做成视频": ("video", "video-generate"),
+            "把当前口播生成一条 9:16 竖屏数字人口播视频": ("video", "digital-ip-text-generate"),
             "把这篇放到 Canvas 画布": ("canvas", "canvas-ops"),
         }
         for message, expected in cases.items():
