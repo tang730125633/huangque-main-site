@@ -1494,6 +1494,39 @@ test('restoring edit permission keeps the current rendered control state', () =>
   assert.equal(input.hasAttribute('data-workspace-disabled-before-readonly'), false);
 });
 
+test('restoring edit permission revives persistent controls unless render recomputed their gate', () => {
+  function control(disabled) {
+    const attributes = {};
+    return {
+      disabled:!!disabled,
+      getAttribute(name){return name==='data-action'?'':(attributes[name]??null);},
+      hasAttribute(name){return Object.hasOwn(attributes,name);},
+      setAttribute(name,value){attributes[name]=String(value);},
+      removeAttribute(name){delete attributes[name];},
+      closest(){return {};},
+    };
+  }
+  const persistent = control(false);
+  const recomputed = control(false);
+  const recomputedReady = control(false);
+  const root = {classList:{toggle(){}},querySelectorAll(){return [persistent,recomputed,recomputedReady];}};
+
+  workspace.setWorkspaceBusyState(root, false, false);
+  assert.equal(persistent.disabled, true);
+  assert.equal(recomputed.disabled, true);
+  assert.equal(recomputedReady.disabled, true);
+
+  workspace.setWorkspaceControlDisabled(recomputed, true);
+  workspace.setWorkspaceControlDisabled(recomputedReady, false);
+  workspace.setWorkspaceBusyState(root, true, true);
+  workspace.setWorkspaceBusyState(root, false, true);
+  assert.equal(persistent.disabled, false);
+  assert.equal(recomputed.disabled, true);
+  assert.equal(recomputedReady.disabled, false);
+  assert.equal(persistent.hasAttribute('data-workspace-disabled-before-readonly'), false);
+  assert.equal(recomputed.hasAttribute('data-workspace-disabled-recomputed'), false);
+});
+
 test('镜头问题标记使用页面内弹窗并提供明确的问题类型', () => {
   assert.match(workspaceSource, /id="sdRefinementIssueModal"/);
   assert.match(workspaceSource, /id="sdRefinementIssueForm"/);

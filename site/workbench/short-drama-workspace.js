@@ -307,6 +307,10 @@
       canMessage:canEdit&&!projectReady
     };
   }
+  function setWorkspaceControlDisabled(node,disabled){
+    node.disabled=!!disabled;
+    node.setAttribute('data-workspace-disabled-recomputed','true');
+  }
   function applyConversationMode(doc,root,mode,historyExpanded){
     mode=mode||{};var projectReady=!!mode.readOnly;
     var grid=doc.getElementById('sdWorkspaceGrid'),chatToggle=doc.getElementById('sdChatToggle'),historyButton=doc.getElementById('sdHistoryButton'),messageForm=doc.getElementById('sdMessageForm');
@@ -322,8 +326,8 @@
     historyButton.textContent=historyExpanded?'关闭创作记录':'创作记录';
     historyButton.setAttribute('aria-expanded',historyExpanded?'true':'false');
     messageForm.hidden=projectReady;
-    root.querySelector('#sdMessageForm textarea').disabled=!mode.canMessage;
-    root.querySelector('#sdMessageForm button').disabled=!mode.canMessage;
+    setWorkspaceControlDisabled(root.querySelector('#sdMessageForm textarea'),!mode.canMessage);
+    setWorkspaceControlDisabled(root.querySelector('#sdMessageForm button'),!mode.canMessage);
   }
   function quickReplyPresentation(value,index){
     value=text(value).trim();
@@ -981,15 +985,18 @@
     root.querySelectorAll('button,textarea,input,select').forEach(function(node){
       var action=node.getAttribute('data-action');
       var readOnlyAction=action==='toggle-history'||action==='seek-refinement-shot';
-      var busyState='data-workspace-disabled-before-busy',permissionState='data-workspace-disabled-before-readonly';
+      var busyState='data-workspace-disabled-before-busy',permissionState='data-workspace-disabled-before-readonly',recomputedState='data-workspace-disabled-recomputed';
       if(flag){
         if(!node.hasAttribute(busyState))node.setAttribute(busyState,node.disabled?'true':'false');
         node.disabled=true;
         return;
       }
       if(canEdit&&node.hasAttribute(permissionState)){
+        if(node.hasAttribute(recomputedState)&&node.hasAttribute(busyState))node.disabled=node.getAttribute(busyState)==='true';
+        else if(node.disabled&&node.getAttribute(permissionState)==='false'&&!node.hasAttribute(recomputedState))node.disabled=false;
         node.removeAttribute(permissionState);
         node.removeAttribute(busyState);
+        node.removeAttribute(recomputedState);
         return;
       }
       if(node.hasAttribute(busyState)){
@@ -998,12 +1005,14 @@
       }
       if(node.hasAttribute(permissionState)){
         node.disabled=true;
+        node.removeAttribute(recomputedState);
         return;
       }
       if(!readOnlyAction&&!canEdit&&!!node.closest('form,section')){
         node.setAttribute(permissionState,node.disabled?'true':'false');
         node.disabled=true;
       }
+      node.removeAttribute(recomputedState);
     });
   }
   function mount(doc,options){
@@ -2437,5 +2446,5 @@
     }).then(function(){render();schedulePoll();}).catch(function(error){show(error.message||'工作区加载失败',true);}).finally(function(){busy(false);render();});
     return {render:render,getState:function(){return state;},getPreflight:function(){return preflight;},getAutodraft:function(){return autodraft;},getRefinement:function(){return refinement;}};
   }
-  return {createClient:createClient,characterImageOperationState:characterImageOperationState,characterImageAction:characterImageAction,avatarCreateUrl:avatarCreateUrl,cloneProjectPayload:cloneProjectPayload,normalize:normalize,conversationWorkspaceMode:conversationWorkspaceMode,applyConversationMode:applyConversationMode,quickReplyPresentation:quickReplyPresentation,messageHtml:messageHtml,importContractHtml:importContractHtml,importContractTechnicalHtml:importContractTechnicalHtml,storyActsHtml:storyActsHtml,storyboardQualityHtml:storyboardQualityHtml,scriptHeaderState:scriptHeaderState,shotMediaIndex:shotMediaIndex,activeProviderJobs:activeProviderJobs,providerJobsWithResult:providerJobsWithResult,currentShotExecutionPrompt:currentShotExecutionPrompt,defaultWorkspaceShotKey:defaultWorkspaceShotKey,shotGenerationOverviewHtml:shotGenerationOverviewHtml,sceneLockingHtml:sceneLockingHtml,shotMediaHtml:shotMediaHtml,providerShotControlsHtml:providerShotControlsHtml,scriptHtml:scriptHtml,versionHtml:versionHtml,preflightHtml:preflightHtml,autodraftActionsHtml:autodraftActionsHtml,draftHtml:draftHtml,refinementIssueGroups:refinementIssueGroups,refinementTimelineTime:refinementTimelineTime,refinementShotTimeline:refinementShotTimeline,refinementShotLocatorHtml:refinementShotLocatorHtml,refinementShotCandidateHtml:refinementShotCandidateHtml,refinementCandidateRequest:refinementCandidateRequest,refinementRedoGenerationHtml:refinementRedoGenerationHtml,refinementRedoSummaryHtml:refinementRedoSummaryHtml,refinementRedoHtml:refinementRedoHtml,refinementHtml:refinementHtml,refinementActionsHtml:refinementActionsHtml,refinementProviderHtml:refinementProviderHtml,shellHtml:shellHtml,authoritativeCharacterList:authoritativeCharacterList,movieAvatarRequired:movieAvatarRequired,userFacingVideoMessage:userFacingVideoMessage,sensitiveProviderFailure:sensitiveProviderFailure,saferProviderPrompt:saferProviderPrompt,providerInputReview:providerInputReview,syncProviderCharacterNames:syncProviderCharacterNames,syncShotBindingPrompt:syncShotBindingPrompt,providerFailureRecoveryHtml:providerFailureRecoveryHtml,providerLabel:providerLabel,setWorkspaceBusyState:setWorkspaceBusyState,mount:mount};
+  return {createClient:createClient,characterImageOperationState:characterImageOperationState,characterImageAction:characterImageAction,avatarCreateUrl:avatarCreateUrl,cloneProjectPayload:cloneProjectPayload,normalize:normalize,conversationWorkspaceMode:conversationWorkspaceMode,setWorkspaceControlDisabled:setWorkspaceControlDisabled,applyConversationMode:applyConversationMode,quickReplyPresentation:quickReplyPresentation,messageHtml:messageHtml,importContractHtml:importContractHtml,importContractTechnicalHtml:importContractTechnicalHtml,storyActsHtml:storyActsHtml,storyboardQualityHtml:storyboardQualityHtml,scriptHeaderState:scriptHeaderState,shotMediaIndex:shotMediaIndex,activeProviderJobs:activeProviderJobs,providerJobsWithResult:providerJobsWithResult,currentShotExecutionPrompt:currentShotExecutionPrompt,defaultWorkspaceShotKey:defaultWorkspaceShotKey,shotGenerationOverviewHtml:shotGenerationOverviewHtml,sceneLockingHtml:sceneLockingHtml,shotMediaHtml:shotMediaHtml,providerShotControlsHtml:providerShotControlsHtml,scriptHtml:scriptHtml,versionHtml:versionHtml,preflightHtml:preflightHtml,autodraftActionsHtml:autodraftActionsHtml,draftHtml:draftHtml,refinementIssueGroups:refinementIssueGroups,refinementTimelineTime:refinementTimelineTime,refinementShotTimeline:refinementShotTimeline,refinementShotLocatorHtml:refinementShotLocatorHtml,refinementShotCandidateHtml:refinementShotCandidateHtml,refinementCandidateRequest:refinementCandidateRequest,refinementRedoGenerationHtml:refinementRedoGenerationHtml,refinementRedoSummaryHtml:refinementRedoSummaryHtml,refinementRedoHtml:refinementRedoHtml,refinementHtml:refinementHtml,refinementActionsHtml:refinementActionsHtml,refinementProviderHtml:refinementProviderHtml,shellHtml:shellHtml,authoritativeCharacterList:authoritativeCharacterList,movieAvatarRequired:movieAvatarRequired,userFacingVideoMessage:userFacingVideoMessage,sensitiveProviderFailure:sensitiveProviderFailure,saferProviderPrompt:saferProviderPrompt,providerInputReview:providerInputReview,syncProviderCharacterNames:syncProviderCharacterNames,syncShotBindingPrompt:syncShotBindingPrompt,providerFailureRecoveryHtml:providerFailureRecoveryHtml,providerLabel:providerLabel,setWorkspaceBusyState:setWorkspaceBusyState,mount:mount};
 });
