@@ -1059,7 +1059,17 @@ def _generate_content_pack(convo):
         "type": "json_schema",
         "json_schema": {"name": "ip12_content_pack", "strict": True, "schema": CONTENT_PACK_SCHEMA},
     })
-    pack = _normalize_content_pack(_parse_ai_json(response))
+    raw = _parse_ai_json(response)
+    categories = raw.get("categories") if isinstance(raw, dict) else None
+    if isinstance(categories, list) and len(categories) == len(plan):
+        for generated, confirmed in zip(categories, plan):
+            if not isinstance(generated, dict):
+                continue
+            generated["name"] = confirmed["name"]
+            topics = generated.get("topics")
+            if isinstance(topics, list) and len(topics) == 1 and isinstance(topics[0], dict):
+                topics[0]["title"] = confirmed["topics"][0]
+    pack = _normalize_content_pack(raw)
     if [item["name"] for item in pack["categories"]] != [item["name"] for item in plan]:
         raise ValueError("精选文案必须逐字复用已确认的 3 个种类")
     for generated, confirmed in zip(pack["categories"], plan):
@@ -1693,13 +1703,23 @@ def _coach_model_decision(convo, user_message, repair_error=""):
         if style_decision:
             return style_decision, style_evidence
         if coach_harness.is_continue_message(user_message):
+            progress_count = 0
+            for item in reversed(convo.get("messages") or []):
+                if item.get("role") != "user":
+                    continue
+                if coach_harness.is_continue_message(item.get("content")):
+                    progress_count += 1
+                    continue
+                break
+            follow_ups = (
+                "先说表达风格：这 3 篇更希望像真实聊天、经历复盘，还是步骤讲解？",
+                "再说单篇时长：希望大约 30 秒、1 分钟，还是 2 分钟？",
+                "最后说结尾动作：希望观众点赞、评论、收藏、关注，还是私信？",
+            )
             return {
                 "decision": "ask_follow_up",
                 "checkpoint": 0,
-                "reply": (
-                    "30 个备选题已经保留。请一次告诉我这 3 篇精选口播的统一要求："
-                    "希望用什么表达风格、每篇大约多长，以及结尾引导收藏、留言、关注或私信中的哪一种。"
-                ),
+                "reply": "30 个备选题已经保留。" + follow_ups[progress_count % len(follow_ups)],
                 "draft": "",
                 "self_review": "",
                 "profile_updates": [],
@@ -2413,6 +2433,59 @@ def _action_label(action_type):
     }.get(action_type, "确认操作")
 
 
+def _process_production_intent_turn(
+    cid, user_message, target, intent, expected_revision=None, request_id=""
+):
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return None, 404
+        state = normalize_coach_state(convo.get("coach_state"))
+        _assert_expected_revision(state, expected_revision)
+        source = _production_source(convo, target)
+        snapshot_revision = state["revision"]
+    labels = {"image": "图片", "audio": "音频", "video": "视频", "canvas": "Canvas"}
+    family = intent["capability_family"]
+    label = labels[family]
+    assistant = (
+        "我知道你要把当前这篇口播做成%s。先按当前正文版本打开制作工作台；"
+        "系统会先显示所需素材和实时报价，未经你确认不会提交或扣点。" % label
+    )
+    message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
+    assistant, next_state = _persist_unprocessed_turn(
+        cid, user_message, snapshot_revision, message_id=message_id,
+        assistant_override=assistant,
+    )
+    result = _chat_result(assistant, next_state)
+    result["actions"] = [{
+        "type": "prepare_production",
+        "label": "准备生成" + label,
+        "primary": True,
+        "content_target": {
+            "category_id": source["category_id"],
+            "topic_id": source["topic_id"],
+        },
+        "requested_result": family,
+        "preferred_action": intent["recommended_action"],
+        "candidate_actions": intent["candidate_actions"],
+        "options": {},
+    }]
+    return result, 200
+
+
+def _continuation_failure_reply(state):
+    if state.get("current_module") == 5 and state.get("module_step") == 1:
+        return (
+            "3 个选题种类已经保留。为了给每类生成 10 个更贴合的选题，请补充这三类各自最想吸引的人群；"
+            "如果不需要补充，也可以直接说“按现有资料生成”。"
+        )
+    if state.get("current_module") == 6 and state.get("module_step") == 1:
+        return "口播标准已经保留，但 3 篇正文这次没有完整生成。直接发送“继续”即可重试，无需重述要求。"
+    if state.get("current_module") == 6 and state.get("module_step") == 2:
+        return "3 篇正文的审阅状态已经保留，但最终确认稿这次没有完整整理。直接发送“继续”即可重试。"
+    return "这一步已经保留，但下一份结果没有完整生成。直接发送“继续”即可重试，无需重述。"
+
+
 def _process_action_turn(cid, action, expected_revision, user_message="", request_id=""):
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
@@ -2455,7 +2528,7 @@ def _process_action_turn(cid, action, expected_revision, user_message="", reques
             next_state = continued["state"]
             continued_deliverables = continued.get("auto_deliverables") or {}
         else:
-            assistant = (assistant + "\n\n" if assistant else "") + "内容已经保存。你可以发送“继续”进入下一步。"
+            assistant = (assistant + "\n\n" if assistant else "") + _continuation_failure_reply(next_state)
             with CONVERSATION_STATE_LOCK:
                 latest = owned_conversation(cid)
                 if latest is not None:
@@ -2508,6 +2581,7 @@ def process_chat_request(body):
     if action is None and not user_message:
         return {"ok": False, "error": "empty message"}, 400
 
+    production_intent = None
     try:
         with CONVERSATION_STATE_LOCK:
             convo = owned_conversation(cid)
@@ -2526,10 +2600,17 @@ def process_chat_request(body):
                     action_revision = None
             else:
                 action_revision = body.get("expected_revision")
+            if action is None and content_target is not None:
+                production_intent = coach_harness.production_intent(user_message)
 
         if action is not None:
             result, status = _process_action_turn(
                 cid, action, action_revision, user_message=user_message, request_id=request_id
+            )
+        elif production_intent is not None:
+            result, status = _process_production_intent_turn(
+                cid, user_message, content_target, production_intent,
+                body.get("expected_revision"), request_id,
             )
         elif content_target is not None and not coach_harness.is_content_review_message(user_message):
             result, status = _process_content_revision_turn(
