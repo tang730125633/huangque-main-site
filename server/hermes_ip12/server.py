@@ -1619,7 +1619,8 @@ def api_quote_production():
                         "cost": quote.get("cost"), "points": quote.get("points"),
                         "expires_in": expires_in, "confirmation_required": True,
                         "script_version": record["script_version"],
-                        "input_digest": request_digest, "billing": billing})
+                        "input_digest": request_digest, "billing": billing,
+                        "production": _production_public(record)})
     except coach_harness.HarnessConflict as exc:
         return _production_error("revision_conflict", str(exc))
     except coach_harness.HarnessError as exc:
