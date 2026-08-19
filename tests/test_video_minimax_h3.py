@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import base64
+import hashlib
 import io
 import json
 import os
@@ -19,7 +20,11 @@ if str(SERVER) not in sys.path:
     sys.path.insert(0, str(SERVER))
 
 from content_domains import (  # noqa: E402
-    points, submission_idempotency, video, video_minimax_h3,
+    points,
+    short_drama_native_audio,
+    submission_idempotency,
+    video,
+    video_minimax_h3,
 )
 
 
@@ -55,6 +60,142 @@ class MiniMaxH3VideoTests(unittest.TestCase):
         return "data:image/%s;base64,%s" % (
             mime, base64.b64encode(output.getvalue()).decode("ascii")
         )
+
+    @staticmethod
+    def _minimax_result():
+        return {
+            "request_id": "h3-native-task",
+            "source_video_url": "https://cdn.example/native.mp4",
+            "model": "MiniMax-H3",
+            "duration": 5,
+            "ratio": "16:9",
+            "resolution": "2k",
+            "provider": "minimax_h3_cn",
+        }
+
+    def test_faststart_derivative_preserves_supplier_raw_bytes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            raw_relative = "video/minimax_h3_raw_test.mp4"
+            raw_path = root / raw_relative
+            raw_path.parent.mkdir(parents=True)
+            raw_bytes = b"immutable-provider-video"
+            raw_path.write_bytes(raw_bytes)
+
+            def run(command, **_kwargs):
+                Path(command[-1]).write_bytes(b"faststart-derived-video")
+                return None
+
+            with patch.object(video, "_out_path", side_effect=lambda rel: root / rel), \
+                    patch.object(video.subprocess, "run", side_effect=run):
+                derived_relative = video._faststart_video_derivative(raw_relative)
+
+            self.assertNotEqual(raw_relative, derived_relative)
+            self.assertEqual(raw_bytes, raw_path.read_bytes())
+            self.assertEqual(
+                b"faststart-derived-video", (root / derived_relative).read_bytes()
+            )
+
+    def test_bound_short_drama_returns_raw_and_derived_lineage(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            raw_relative = "video/minimax_h3_raw_test.mp4"
+            derived_relative = "video/minimax_h3_derived_test.mp4"
+            raw_bytes = b"immutable-provider-video"
+            derived_bytes = b"faststart-derived-video"
+
+            def download(*_args, **_kwargs):
+                path = root / raw_relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(raw_bytes)
+                return raw_relative
+
+            def derive(_relative):
+                (root / derived_relative).write_bytes(derived_bytes)
+                return derived_relative
+
+            evidence = {
+                "sha256": hashlib.sha256(raw_bytes).hexdigest(),
+                "size_bytes": len(raw_bytes),
+                "resolution": {"width": 2560, "height": 1440},
+                "audio": {"audible": True, "codec": "aac"},
+                "inspected_at": 1,
+            }
+            with patch.object(video, "get_resumable_grok_request", return_value=None), \
+                    patch.object(video.provider_keys, "claim_candidate", return_value={"id": "mm", "secret": "secret"}), \
+                    patch.object(video.provider_keys, "set_health"), \
+                    patch.object(video, "update_video_asset_phase"), \
+                    patch.object(video_minimax_h3, "generate", return_value=self._minimax_result()) as generate, \
+                    patch.object(video, "_download_xiaole_video", side_effect=download), \
+                    patch.object(video, "_faststart_video_derivative", create=True, side_effect=derive), \
+                    patch.object(video, "_resolve_out_file", side_effect=lambda rel: root / rel), \
+                    patch.object(video, "_extract_first_frame_cover", return_value=None), \
+                    patch.object(video, "public_url", return_value="https://cos.example/native.mp4"), \
+                    patch.object(short_drama_native_audio, "inspect_native_media", create=True, return_value=evidence), \
+                    patch.object(short_drama_native_audio, "inspect_native_resolution", return_value=evidence["resolution"]), \
+                    patch.object(short_drama_native_audio, "inspect_native_audio", return_value=evidence["audio"]):
+                result = video.gen_xiaole_video({
+                    "_job_id": 91,
+                    "channel": "minimax",
+                    "prompt": "人物走进旧城区",
+                    "model": "MiniMax-H3",
+                    "duration": 5,
+                    "ratio": "16:9",
+                    "resolution": "2k",
+                    "reference_images": [],
+                    "_short_drama_native_audio_required": True,
+                })
+
+            generate.assert_called_once()
+            self.assertEqual(raw_relative, result["raw_video_file"])
+            self.assertEqual(derived_relative, result["video_file"])
+            self.assertEqual(
+                evidence["sha256"], result["native_media"]["raw"]["sha256"]
+            )
+            self.assertEqual(
+                evidence["sha256"],
+                result["native_media"]["derived"]["derived_from_sha256"],
+            )
+            self.assertEqual(raw_bytes, (root / raw_relative).read_bytes())
+
+    def test_native_validation_failure_removes_owned_raw_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            raw_relative = "video/minimax_h3_raw_failed.mp4"
+
+            def download(*_args, **_kwargs):
+                path = root / raw_relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"silent-provider-video")
+                return raw_relative
+
+            error = short_drama_native_audio.NativeAudioError(
+                "provider_audio_silent", "声音不可听"
+            )
+            with patch.object(video, "get_resumable_grok_request", return_value=None), \
+                    patch.object(video.provider_keys, "claim_candidate", return_value={"id": "mm", "secret": "secret"}), \
+                    patch.object(video.provider_keys, "set_health"), \
+                    patch.object(video, "update_video_asset_phase"), \
+                    patch.object(video_minimax_h3, "generate", return_value=self._minimax_result()) as generate, \
+                    patch.object(video, "_download_xiaole_video", side_effect=download), \
+                    patch.object(video, "_resolve_out_file", side_effect=lambda rel: root / rel), \
+                    patch.object(short_drama_native_audio, "inspect_native_media", create=True, side_effect=error), \
+                    patch.object(short_drama_native_audio, "inspect_native_resolution", side_effect=error):
+                with self.assertRaises(video_minimax_h3.MiniMaxProviderFailed):
+                    video.gen_xiaole_video({
+                        "_job_id": 92,
+                        "channel": "minimax",
+                        "prompt": "人物走进旧城区",
+                        "model": "MiniMax-H3",
+                        "duration": 5,
+                        "ratio": "16:9",
+                        "resolution": "2k",
+                        "reference_images": [],
+                        "_short_drama_native_audio_required": True,
+                    })
+
+            generate.assert_called_once()
+            self.assertFalse((root / raw_relative).exists())
 
     def test_reference_request_and_20_percent_markup(self):
         image = self._image()
@@ -458,7 +599,7 @@ class MiniMaxH3VideoTests(unittest.TestCase):
                 "_minimax_origin": video_minimax_h3.ORIGIN_METASO,
             })
         generate.assert_called_once()
-        self.assertEqual("2k", generate.call_args.kwargs["resolution"])
+        self.assertEqual("2K", generate.call_args.kwargs["resolution"])
         self.assertEqual(
             video_minimax_h3.METASO_API_BASE,
             generate.call_args.kwargs["api_base"],
