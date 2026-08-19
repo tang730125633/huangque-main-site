@@ -1336,6 +1336,8 @@ def _run_short_drama_recovery(limit=None):
         lambda: domain.short_drama_video.retry_video_attempt_refunds(
             jdb, points, limit),
         lambda: _retry_short_drama_provider_refunds(limit),
+        lambda: domain.short_drama_refinement.retry_delivery_attempt_recovery(
+            jdb, points, getattr(points, "get_points_transaction", None), limit),
         lambda: domain.short_drama_refinement.retry_delivery_attempt_refunds(
             jdb, points, limit),
         lambda: jobs_store.retry_failed_refunds(jdb, _refund_once, limit),

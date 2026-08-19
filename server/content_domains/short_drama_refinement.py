@@ -3204,6 +3204,9 @@ def start_delivery_job(
 
     charged = False
     job_conn = None
+    owns_attempt = False
+    delegated_to_recovery = False
+    claimed_at = 0
     try:
         charge_key = "short-drama-delivery-charge:" + attempt_id
         if cost:
@@ -3218,56 +3221,50 @@ def start_delivery_job(
             charged = True
         job_conn = _connection(db_factory)
         job_conn.execute("BEGIN IMMEDIATE")
-        quote = job_conn.execute(
-            "SELECT * FROM short_drama_delivery_quotes WHERE token=?",
-            (quote_token,),
-        ).fetchone()
-        if not quote or quote["consumed_job_id"]:
-            raise RefinementError("delivery_quote_consumed", "正式导出报价已使用", 409)
-        job_id = uuid.uuid4().hex
-        job_conn.execute(
+        claimed_at = int(time.time())
+        claimed = job_conn.execute(
             "UPDATE short_drama_delivery_attempts SET state='charged',updated_at=? "
-            "WHERE id=? AND state='accepted'", (int(time.time()), attempt_id),
+            "WHERE id=? AND state='accepted' AND job_id IS NULL",
+            (claimed_at, attempt_id),
         )
-        job_conn.execute(
-            "INSERT INTO short_drama_delivery_jobs "
-            "(id,project_id,refinement_version_id,actor_username,status,phase,"
-            "progress,poll_count,input_hash,cost,created_at,updated_at) "
-            "VALUES (?,?,?,?,'queued','queued',5,0,?,?,?,?)",
-            (
-                job_id, project_id, quote["refinement_version_id"],
-                actor_username, quote["input_hash"], int(quote["cost"]), now, now,
-            ),
-        )
-        job_conn.execute(
-            "UPDATE short_drama_delivery_quotes SET consumed_job_id=? "
-            "WHERE token=? AND consumed_job_id IS NULL", (job_id, quote_token),
-        )
-        job_conn.execute(
-            "UPDATE short_drama_delivery_attempts SET state='linked',job_id=?,"
-            "updated_at=? WHERE id=? AND state='charged' AND job_id IS NULL",
-            (job_id, int(time.time()), attempt_id),
-        )
+        if claimed.rowcount != 1:
+            delegated_to_recovery = True
+            raise RefinementError(
+                "delivery_recovery_pending", "扣点状态正在恢复", 409,
+            )
         job_conn.commit()
-        result = _job(job_conn.execute(
-            "SELECT * FROM short_drama_delivery_jobs WHERE id=?", (job_id,)
-        ).fetchone())
+        job_conn.close()
+        job_conn = None
+        owns_attempt = True
+        job_id = _link_claimed_delivery_attempt(
+            db_factory, attempt_id, claimed_at
+        )
+        result_conn = _connection(db_factory)
+        try:
+            result = _job(result_conn.execute(
+                "SELECT * FROM short_drama_delivery_jobs WHERE id=?", (job_id,)
+            ).fetchone())
+        finally:
+            result_conn.close()
         result["replayed"] = False
         return result
     except Exception as error:
         if job_conn is not None and job_conn.in_transaction:
             job_conn.rollback()
+        if delegated_to_recovery:
+            raise
         state = "refund_pending" if charged and cost else "failed"
-        recovery = _connection(db_factory)
-        try:
-            recovery.execute(
-                "UPDATE short_drama_delivery_attempts SET state=?,error=?,"
-                "updated_at=? WHERE id=? AND job_id IS NULL",
-                (state, str(error)[:300], int(time.time()), attempt_id),
-            )
-            recovery.commit()
-        finally:
-            recovery.close()
+        if owns_attempt or not charged:
+            recovery = _connection(db_factory)
+            try:
+                recovery.execute(
+                    "UPDATE short_drama_delivery_attempts SET state=?,error=?,"
+                    "updated_at=? WHERE id=? AND job_id IS NULL",
+                    (state, str(error)[:300], int(time.time()), attempt_id),
+                )
+                recovery.commit()
+            finally:
+                recovery.close()
         if state == "refund_pending" and callable(refund_points):
             try:
                 reconcile_delivery_refund(
@@ -3419,3 +3416,246 @@ def retry_delivery_attempt_refunds(db_factory, points_domain, limit=100):
         except Exception:
             continue
     return recovered
+
+
+def _claim_stale_delivery_attempts(db_factory, limit, stale_after):
+    now = int(time.time())
+    cutoff = now - max(1, int(stale_after or 300))
+    conn = _connection(db_factory)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        candidates = conn.execute(
+            "SELECT id,state,updated_at FROM short_drama_delivery_attempts "
+            "WHERE state IN ('accepted','charged') AND job_id IS NULL "
+            "AND updated_at<=? ORDER BY updated_at,id LIMIT ?",
+            (cutoff, max(1, min(1000, int(limit or 100)))),
+        ).fetchall()
+        claimed = []
+        for candidate in candidates:
+            updated = conn.execute(
+                "UPDATE short_drama_delivery_attempts SET state='charged',updated_at=? "
+                "WHERE id=? AND state=? AND job_id IS NULL AND updated_at=?",
+                (
+                    now, candidate["id"], candidate["state"],
+                    int(candidate["updated_at"]),
+                ),
+            )
+            if updated.rowcount == 1:
+                row = conn.execute(
+                    "SELECT * FROM short_drama_delivery_attempts "
+                    "WHERE id=? AND state='charged' AND updated_at=?",
+                    (candidate["id"], now),
+                ).fetchone()
+                if row:
+                    item = dict(row)
+                    item["recovery_previous_state"] = candidate["state"]
+                    claimed.append(item)
+        conn.commit()
+        return claimed
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _release_delivery_recovery_claim(db_factory, attempt, claimed_at):
+    previous = str(attempt.get("recovery_previous_state") or "charged")
+    state = "accepted" if previous == "accepted" else "charged"
+    conn = _connection(db_factory)
+    try:
+        conn.execute(
+            "UPDATE short_drama_delivery_attempts SET state=?,updated_at=? "
+            "WHERE id=? AND state='charged' AND job_id IS NULL AND updated_at=?",
+            (state, int(time.time()), attempt["id"], int(claimed_at)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _mark_delivery_recovery_terminal(
+    db_factory, attempt_id, claimed_at, state, error,
+):
+    conn = _connection(db_factory)
+    try:
+        updated = conn.execute(
+            "UPDATE short_drama_delivery_attempts SET state=?,error=?,updated_at=? "
+            "WHERE id=? AND state='charged' AND job_id IS NULL AND updated_at=?",
+            (
+                state, str(error)[:300], int(time.time()), attempt_id,
+                int(claimed_at),
+            ),
+        )
+        conn.commit()
+        return updated.rowcount == 1
+    finally:
+        conn.close()
+
+
+def _link_claimed_delivery_attempt(db_factory, attempt_id, claimed_at):
+    capability = _require_delivery_available()
+    conn = _connection(db_factory)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        attempt_row = conn.execute(
+            "SELECT * FROM short_drama_delivery_attempts WHERE id=? "
+            "AND state='charged' AND job_id IS NULL AND updated_at=?",
+            (attempt_id, int(claimed_at)),
+        ).fetchone()
+        if not attempt_row:
+            raise RefinementError(
+                "delivery_recovery_claim_lost", "正式导出恢复权已失效", 409,
+            )
+        attempt = dict(attempt_row)
+        quote = conn.execute(
+            "SELECT * FROM short_drama_delivery_quotes WHERE token=? "
+            "AND project_id=?",
+            (attempt["quote_token"], attempt["project_id"]),
+        ).fetchone()
+        if not quote or quote["consumed_job_id"]:
+            raise RefinementError(
+                "delivery_quote_consumed", "正式导出报价已使用", 409,
+            )
+        project_row = conn.execute(
+            "SELECT id,title,ratio,target_duration,shot_count,point_budget,spent_points "
+            "FROM short_drama_projects WHERE id=? AND deleted=0",
+            (attempt["project_id"],),
+        ).fetchone()
+        if not project_row:
+            raise RefinementError(
+                "delivery_project_missing", "短剧项目不存在", 404,
+            )
+        project = dict(project_row)
+        source = _refinement(conn.execute(
+            "SELECT * FROM short_drama_refinement_versions WHERE id=? "
+            "AND project_id=? AND status='confirmed'",
+            (quote["refinement_version_id"], attempt["project_id"]),
+        ).fetchone())
+        latest = _latest_refinement(conn, attempt["project_id"])
+        if not source or not latest or latest["id"] != source["id"]:
+            raise RefinementError(
+                "delivery_source_changed", "精修版本已变化，不能继续已扣点导出", 409,
+            )
+        acceptance = _valid_acceptance(conn, project, source, require=True)
+        media = acceptance["snapshot"].get("media_contract") or {}
+        if capability.get("deliverable") and media.get("delivery_eligible") is not True:
+            raise RefinementError(
+                "delivery_media_incomplete", "正式交付缺少已锁定音轨或字幕时间线", 409,
+            )
+        expected = _hash({
+            "project_id": attempt["project_id"],
+            "version_id": quote["refinement_version_id"],
+            "source_hash": source["input_hash"],
+            "resolution": (
+                "source" if capability["mode"] == "development_free" else "2k"
+            ),
+            "mode": capability["mode"], "adapter": capability["adapter"],
+        })
+        expected_request = _hash({
+            "project_id": attempt["project_id"],
+            "quote_token": attempt["quote_token"],
+            "input_hash": quote["input_hash"],
+        })
+        if expected != quote["input_hash"] or expected_request != attempt["request_hash"]:
+            raise RefinementError(
+                "delivery_source_changed", "正式导出来源已变化", 409,
+            )
+        if int(attempt["cost"] or 0) != int(quote["cost"] or 0):
+            raise RefinementError(
+                "delivery_cost_invalid", "正式导出扣点与报价不一致", 409,
+            )
+        if conn.execute(
+            "SELECT 1 FROM short_drama_delivery_jobs WHERE project_id=? "
+            "AND status IN ('queued','running')", (attempt["project_id"],),
+        ).fetchone():
+            raise RefinementError(
+                "active_delivery_job", "已有正式导出任务处理中", 409,
+            )
+        now = int(time.time())
+        job_id = uuid.uuid4().hex
+        conn.execute(
+            "INSERT INTO short_drama_delivery_jobs "
+            "(id,project_id,refinement_version_id,actor_username,status,phase,"
+            "progress,poll_count,input_hash,cost,created_at,updated_at) "
+            "VALUES (?,?,?,?,'queued','queued',5,0,?,?,?,?)",
+            (
+                job_id, attempt["project_id"], quote["refinement_version_id"],
+                attempt["actor_username"], quote["input_hash"],
+                int(quote["cost"]), now, now,
+            ),
+        )
+        consumed = conn.execute(
+            "UPDATE short_drama_delivery_quotes SET consumed_job_id=? "
+            "WHERE token=? AND consumed_job_id IS NULL",
+            (job_id, attempt["quote_token"]),
+        )
+        linked = conn.execute(
+            "UPDATE short_drama_delivery_attempts SET state='linked',job_id=?,"
+            "error=NULL,updated_at=? WHERE id=? AND state='charged' "
+            "AND job_id IS NULL AND updated_at=?",
+            (job_id, now, attempt_id, int(claimed_at)),
+        )
+        if consumed.rowcount != 1 or linked.rowcount != 1:
+            raise RefinementError(
+                "delivery_recovery_claim_lost", "正式导出恢复权已失效", 409,
+            )
+        conn.commit()
+        return job_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def retry_delivery_attempt_recovery(
+    db_factory, points_domain, charge_lookup=None, limit=100, stale_after=300,
+):
+    """Recover attempts interrupted after an idempotent ledger debit."""
+    lookup = charge_lookup or getattr(
+        points_domain, "get_points_transaction", None
+    )
+    result = {"claimed": 0, "linked": 0, "failed": 0, "refund_pending": 0}
+    for attempt in _claim_stale_delivery_attempts(
+        db_factory, limit, stale_after
+    ):
+        result["claimed"] += 1
+        claimed_at = int(attempt["updated_at"])
+        cost = int(attempt.get("cost") or 0)
+        ledger = None
+        if cost:
+            if not callable(lookup):
+                _release_delivery_recovery_claim(db_factory, attempt, claimed_at)
+                continue
+            try:
+                ledger = lookup("short-drama-delivery-charge:" + attempt["id"])
+            except Exception:
+                _release_delivery_recovery_claim(db_factory, attempt, claimed_at)
+                continue
+            if not _ledger_matches(attempt["actor_username"], cost, ledger):
+                result["failed"] += int(_mark_delivery_recovery_terminal(
+                    db_factory, attempt["id"], claimed_at, "failed",
+                    "未找到与正式导出匹配的扣点流水",
+                ))
+                continue
+        try:
+            _link_claimed_delivery_attempt(
+                db_factory, attempt["id"], claimed_at
+            )
+            result["linked"] += 1
+        except RefinementError as error:
+            if cost and _ledger_matches(
+                attempt["actor_username"], cost, ledger
+            ):
+                result["refund_pending"] += int(
+                    _mark_delivery_recovery_terminal(
+                        db_factory, attempt["id"], claimed_at,
+                        "refund_pending", str(error),
+                    )
+                )
+            else:
+                result["failed"] += int(_mark_delivery_recovery_terminal(
+                    db_factory, attempt["id"], claimed_at, "failed", str(error),
+                ))
+    return result

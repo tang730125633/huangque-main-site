@@ -356,6 +356,50 @@ class ShortDramaRefinementTests(unittest.TestCase):
             conn.close()
         return raw_paths
 
+    def create_stale_delivery_attempt(self, key, *, cost=80, state="accepted"):
+        version = self.confirmed_version("repair-for-" + key)
+        production = {
+            "delivery_enabled": True, "deliverable": True,
+            "mode": "production", "adapter": "real_executor_test_double",
+            "formal_cost": cost, "reason": "",
+        }
+        with mock.patch.object(
+            short_drama_refinement, "_delivery_capability", return_value=production,
+        ):
+            quote = short_drama_refinement.create_delivery_quote(
+                self.db, "alice", {
+                    "project_id": self.project["id"], "version_id": version["id"],
+                },
+            )
+        attempt_id = "attempt-" + key
+        conn = self.db()
+        try:
+            conn.row_factory = sqlite3.Row
+            quote_row = conn.execute(
+                "SELECT * FROM short_drama_delivery_quotes WHERE token=?",
+                (quote["quote_token"],),
+            ).fetchone()
+            request_hash = short_drama_refinement._hash({
+                "project_id": self.project["id"],
+                "quote_token": quote["quote_token"],
+                "input_hash": quote_row["input_hash"],
+            })
+            stale = int(time.time()) - 600
+            conn.execute(
+                "INSERT INTO short_drama_delivery_attempts "
+                "(id,actor_username,project_id,idempotency_key,request_hash,"
+                "quote_token,cost,state,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    attempt_id, "alice", self.project["id"], key, request_hash,
+                    quote["quote_token"], cost, state, stale, stale,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return production, attempt_id, quote
+
     def acceptance_body(self, version):
         workspace = short_drama_refinement.workspace(
             self.db, "alice", "alice", self.project["id"]
@@ -3468,6 +3512,190 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.assertTrue(short_drama.dispatch_http(issue, "POST", self.db, verify))
         self.assertEqual(200, issue.response[0])
         self.assertEqual("shot_01", issue.response[1]["issues"][-1]["shot_key"])
+
+
+    def test_local_ffmpeg_process_output_is_utf8_tolerant_on_windows(self):
+        process = mock.Mock(
+            returncode=0, stdout=" V..... libx264 A..... aac ", stderr=""
+        )
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_FORMAL_DELIVERY_MODE": "local_ffmpeg",
+            "CONTENT_OUT": self.tmp.name,
+        }), mock.patch.object(
+            short_drama_refinement.subprocess, "run", return_value=process,
+        ) as run:
+            capability = short_drama_refinement._delivery_capability()
+        self.assertTrue(capability["delivery_enabled"])
+        self.assertTrue(run.call_args_list)
+        for call in run.call_args_list:
+            self.assertEqual("utf-8", call.kwargs.get("encoding"))
+            self.assertEqual("replace", call.kwargs.get("errors"))
+
+    def test_delivery_duration_follows_confirmed_refinement_media(self):
+        project = {"target_duration": 60}
+        refinement = {
+            "media": {"media_validation": {"duration_ms": 64480}},
+            "shots": [{"end_ms": 60000}],
+        }
+        self.assertEqual(
+            64480,
+            short_drama_refinement._confirmed_refinement_duration_ms(
+                project, refinement
+            ),
+        )
+
+    def test_delivery_recovers_charge_after_process_exit(self):
+        production, attempt_id, _quote = self.create_stale_delivery_attempt(
+            "delivery-crash-recovery"
+        )
+        points = mock.Mock()
+        lookup = mock.Mock(return_value={"username": "alice", "delta": -80})
+        with mock.patch.object(
+            short_drama_refinement, "_delivery_capability", return_value=production,
+        ):
+            first = short_drama_refinement.retry_delivery_attempt_recovery(
+                self.db, points, lookup, stale_after=300,
+            )
+            second = short_drama_refinement.retry_delivery_attempt_recovery(
+                self.db, points, lookup, stale_after=300,
+            )
+        self.assertEqual(1, first["linked"])
+        self.assertEqual(0, second["linked"])
+        conn = self.db()
+        try:
+            conn.row_factory = sqlite3.Row
+            attempt = conn.execute(
+                "SELECT state,job_id FROM short_drama_delivery_attempts WHERE id=?",
+                (attempt_id,),
+            ).fetchone()
+            jobs = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_delivery_jobs WHERE project_id=?",
+                (self.project["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual("linked", attempt["state"])
+        self.assertTrue(attempt["job_id"])
+        self.assertEqual(1, jobs)
+        points.refund_points.assert_not_called()
+
+    def test_delivery_recovery_fails_without_matching_charge(self):
+        production, attempt_id, _quote = self.create_stale_delivery_attempt(
+            "delivery-no-charge"
+        )
+        points = mock.Mock()
+        with mock.patch.object(
+            short_drama_refinement, "_delivery_capability", return_value=production,
+        ):
+            result = short_drama_refinement.retry_delivery_attempt_recovery(
+                self.db, points, mock.Mock(return_value=None), stale_after=300,
+            )
+        self.assertEqual(1, result["failed"])
+        conn = self.db()
+        try:
+            row = conn.execute(
+                "SELECT state,job_id FROM short_drama_delivery_attempts WHERE id=?",
+                (attempt_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(("failed", None), row)
+        points.refund_points.assert_not_called()
+
+    def test_delivery_recovery_refunds_stale_source_once(self):
+        production, attempt_id, quote = self.create_stale_delivery_attempt(
+            "delivery-stale-source"
+        )
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_refinement_versions SET status='superseded' "
+                "WHERE id=?", (quote["version_id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        points = mock.Mock()
+        ledger = mock.Mock(return_value={"username": "alice", "delta": -80})
+        with mock.patch.object(
+            short_drama_refinement, "_delivery_capability", return_value=production,
+        ):
+            recovered = short_drama_refinement.retry_delivery_attempt_recovery(
+                self.db, points, ledger, stale_after=300,
+            )
+        self.assertEqual(1, recovered["refund_pending"])
+        self.assertEqual(
+            1, short_drama_refinement.retry_delivery_attempt_refunds(self.db, points)
+        )
+        self.assertEqual(
+            0, short_drama_refinement.retry_delivery_attempt_refunds(self.db, points)
+        )
+        points.refund_points.assert_called_once()
+        self.assertEqual(
+            "short-drama-delivery-refund:" + attempt_id,
+            points.refund_points.call_args.kwargs["transaction_key"],
+        )
+
+    def test_delivery_recovery_has_single_owner_against_online_link(self):
+        version = self.confirmed_version("repair-for-recovery-owner-race")
+        production = {
+            "delivery_enabled": True, "deliverable": True,
+            "mode": "production", "adapter": "real_executor_test_double",
+            "formal_cost": 80, "reason": "",
+        }
+        refund = mock.Mock()
+        lookup = mock.Mock(return_value={"username": "alice", "delta": -80})
+        with mock.patch.object(
+            short_drama_refinement, "_delivery_capability", return_value=production,
+        ):
+            quote = short_drama_refinement.create_delivery_quote(
+                self.db, "alice", {
+                    "project_id": self.project["id"], "version_id": version["id"],
+                },
+            )
+
+            def deduct_then_recover(*_args):
+                conn = self.db()
+                try:
+                    conn.execute(
+                        "UPDATE short_drama_delivery_attempts SET updated_at=? "
+                        "WHERE idempotency_key='delivery-owner-race'",
+                        (int(time.time()) - 600,),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+                recovered = short_drama_refinement.retry_delivery_attempt_recovery(
+                    self.db, mock.Mock(), lookup, stale_after=300,
+                )
+                self.assertEqual(1, recovered["linked"])
+
+            with self.assertRaises(short_drama_refinement.RefinementError) as raised:
+                short_drama_refinement.start_delivery_job(
+                    self.db, "alice", "alice", {
+                        "project_id": self.project["id"],
+                        "quote_token": quote["quote_token"],
+                    }, "delivery-owner-race", deduct_points=deduct_then_recover,
+                    refund_points=refund,
+                    project_usage=short_drama._project_point_usage,
+                )
+        self.assertEqual("delivery_recovery_pending", raised.exception.code)
+        refund.assert_not_called()
+        conn = self.db()
+        try:
+            state, job_id = conn.execute(
+                "SELECT state,job_id FROM short_drama_delivery_attempts "
+                "WHERE idempotency_key='delivery-owner-race'"
+            ).fetchone()
+            jobs = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_delivery_jobs WHERE project_id=?",
+                (self.project["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual("linked", state)
+        self.assertTrue(job_id)
+        self.assertEqual(1, jobs)
 
 
 class ShortDramaRefinementSchemaMigrationTests(unittest.TestCase):
