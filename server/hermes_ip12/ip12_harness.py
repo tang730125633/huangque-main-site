@@ -653,6 +653,11 @@ def validate_model_decision(
     reply = _strip_unsupported_acronym_expansions(raw.get("reply"), evidence).strip()[:4000]
     draft = _strip_unsupported_acronym_expansions(raw.get("draft"), evidence).strip()[:12000]
     self_review = str(raw.get("self_review") or "").strip()[:500]
+    if decision == "propose_checkpoint":
+        if not draft and len(re.sub(r"\s+", "", reply)) >= 120:
+            draft = reply
+        if draft and not self_review:
+            self_review = "已按当前断点和现有证据整理，仍需用户本人确认。"
     if not reply:
         raise HarnessError("模型回复为空")
     if decision == "ask_follow_up" and state["module_step"] == 0:

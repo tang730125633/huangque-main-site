@@ -672,6 +672,30 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual(rendered.count("1. AI"), 1)
         self.assertNotIn("我提炼出 5 个核心关键词", rendered)
 
+    def test_substantive_confirmable_reply_repairs_empty_internal_fields(self):
+        state = self.complete_intake()
+        reply = "\n\n".join((
+            "### 转行实践记录\n边界：只分享本人已经发生的转行过程、选择依据、阶段性反思和仍未解决的问题，不包装为成功案例。",
+            "### 智能体工作方法\n边界：只展示本人实际使用智能体完成工作的输入、执行过程、结果和复盘，不声称适用于所有人。",
+            "### 行业需求验证\n边界：只记录参与项目时亲自观察到的问题、尝试过的方法和仍待验证的判断，不虚构客户成绩。",
+        ))
+        raw = decision(state, reply=reply, draft="")
+        raw["self_review"] = ""
+
+        next_state, normalized, rendered = harness.apply_model_decision(
+            state, raw, "用户希望分享真实过程，不包装成专家。"
+        )
+
+        self.assertEqual(normalized["draft"], reply)
+        self.assertTrue(normalized["self_review"])
+        self.assertEqual(next_state["pending"]["draft"], reply)
+        self.assertEqual(rendered.count("### 转行实践记录"), 1)
+
+        short = decision(state, reply="请核对。", draft="")
+        short["self_review"] = ""
+        with self.assertRaisesRegex(harness.HarnessError, "没有返回可确认内容"):
+            harness.apply_model_decision(state, short, "用户原话")
+
     def test_model_words_never_complete_a_module(self):
         state = self.complete_intake()
         raw = decision(state, reply="✅ 模块 1 完成。接下来进入模块 2。")
