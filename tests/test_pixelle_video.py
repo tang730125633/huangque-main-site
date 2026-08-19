@@ -2,6 +2,7 @@ import importlib
 import io
 import http.client
 import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -1289,6 +1290,97 @@ class PixelleVideoTests(unittest.TestCase):
             [cue["end_time"] for cue in cues[:-1]],
             [cue["start_time"] for cue in cues[1:]],
         )
+
+    def test_caption_alignment_rejects_low_coverage_recognition(self):
+        text = "人工智能正在改变我们生活的方方面面"
+        cue_texts = self.pixelle._split_caption_text(text)
+        with self.assertRaisesRegex(ValueError, "识别内容与原文不匹配"):
+            self.pixelle._caption_cues_from_word_timestamps(
+                text,
+                cue_texts,
+                [{"text": "天气", "start": 0.1, "end": 0.35}],
+                8.0,
+            )
+
+    def test_caption_alignment_rejects_unrelated_recognition_of_similar_length(self):
+        text = "人工智能正在改变我们生活的方方面面"
+        cue_texts = self.pixelle._split_caption_text(text)
+        with self.assertRaisesRegex(ValueError, "识别内容与原文不匹配"):
+            self.pixelle._caption_cues_from_word_timestamps(
+                text,
+                cue_texts,
+                [{
+                    "text": "春夏秋冬东西南北日月星辰山川河流",
+                    "start": 0.1,
+                    "end": 7.5,
+                }],
+                8.0,
+            )
+
+    def test_caption_alignment_mismatch_falls_back_to_display_only_cues(self):
+        class Word:
+            word = "春夏秋冬东西南北日月星辰山川河流"
+            start = 0.1
+            end = 7.5
+
+        class Segment:
+            words = [Word()]
+
+        class Model:
+            @staticmethod
+            def transcribe(*_args, **_kwargs):
+                return [Segment()], None
+
+        video_domain = importlib.import_module("content_domains.video")
+        text = "人工智能正在改变我们生活的方方面面"
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.pixelle,
+            "_CAPTION_ALIGN_TMP_ROOT",
+            Path(directory) / "caption-private",
+        ), mock.patch.object(
+            self.pixelle.subprocess,
+            "run",
+            return_value=mock.Mock(stdout="8.0\n"),
+        ), mock.patch.object(
+            video_domain,
+            "_get_whisper_model",
+            return_value=Model(),
+        ):
+            cues = self.pixelle._aligned_caption_cues(text, b"ID3-test")
+
+        self.assertEqual(text, "".join(cue["text"] for cue in cues))
+        self.assertTrue(all(set(cue) == {"text"} for cue in cues))
+
+    def test_caption_alignment_audio_uses_private_atomic_temp_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "caption-private"
+            with mock.patch.object(self.pixelle, "_CAPTION_ALIGN_TMP_ROOT", root):
+                path = self.pixelle._write_private_caption_alignment_audio(b"ID3-test")
+            try:
+                self.assertEqual(path.parent, root)
+                self.assertEqual(path.read_bytes(), b"ID3-test")
+                self.assertFalse(path.resolve().is_relative_to(self.pixelle.OUT_DIR.resolve()))
+                if os.name != "nt":
+                    self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            finally:
+                path.unlink(missing_ok=True)
+
+    def test_caption_alignment_temp_cleanup_only_removes_stale_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "caption-private"
+            root.mkdir()
+            stale = root / "caption-align-stale.mp3"
+            fresh = root / "caption-align-fresh.mp3"
+            unrelated = root / "keep.txt"
+            for path in (stale, fresh, unrelated):
+                path.write_bytes(b"test")
+            os.utime(stale, (100.0, 100.0))
+            os.utime(fresh, (3900.0, 3900.0))
+            with mock.patch.object(self.pixelle, "_CAPTION_ALIGN_TMP_ROOT", root):
+                self.pixelle._cleanup_stale_caption_alignment_files(now=4000.0)
+            self.assertFalse(stale.exists())
+            self.assertTrue(fresh.exists())
+            self.assertTrue(unrelated.exists())
 
     def test_caption_alignment_failure_keeps_legacy_display_cues(self):
         text = "这是第一段需要按语音拆分轮播显示的字幕内容。"
