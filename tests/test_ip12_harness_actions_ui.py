@@ -16,31 +16,23 @@ class IP12HarnessActionsUITests(unittest.TestCase):
                 attach = source[source.index("function attachHarnessActions"):source.index("function renderChat")]
                 self.assertIn("document.querySelectorAll('#chatArea .harness-actions')", attach)
 
-    def test_failed_turn_stays_visible_and_retries_without_duplicate_bubbles(self):
-        cases = {
-            "index.html": ("async function sendJumpMsg", "um", "am"),
-            "index_clean.html": ("// ── Drawer", "userMsg", "aiMsg"),
-        }
-        for filename, (end_marker, user_node, assistant_node) in cases.items():
-            with self.subTest(filename=filename):
-                source = (TEMPLATES / filename).read_text(encoding="utf-8")
-                start = source.index("async function sendTurn")
-                send_turn = source[start:source.index(end_marker, start)]
+    def test_main_view_recovers_an_interrupted_reply_from_the_existing_receipt(self):
+        source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
+        recovery = source[source.index("async function recoverTurn"):source.index("async function sendTurn")]
+        send_turn = source[source.index("async function sendTurn"):source.index("async function sendJumpMsg")]
 
-                self.assertIn("回复暂时失败，消息已保留。", send_turn)
-                self.assertIn('class="harness-action primary"', send_turn)
-                self.assertNotIn("e.message", send_turn)
-                self.assertIn(
-                    f"{user_node}.remove();{assistant_node}.remove();sendTurn(turn,displayText,retryRequestId)",
-                    send_turn,
-                )
-                self.assertIn("requestId||newTurnRequestId()", send_turn)
-                self.assertIn("retryNeedsRefresh", send_turn)
-                self.assertIn("status===409", send_turn)
-                self.assertIn("failureMessage", send_turn)
-                self.assertIn("data.replayed", send_turn)
-                self.assertIn("data.actions", send_turn)
-                self.assertRegex(send_turn, r"data\.state\.revision>=\w+\.revision")
+        self.assertIn("?receipt=", recovery)
+        self.assertIn("连接中断，正在自动找回这条回复", recovery)
+        self.assertIn("r.status===202", recovery)
+        self.assertIn("80", recovery)
+        self.assertIn("await recoverTurn(turnCid,retryRequestId,bubble)", send_turn)
+        self.assertIn("await selectConvo(turnCid)", send_turn)
+        self.assertIn("重新载入 Project", send_turn)
+        self.assertNotIn("回复暂时失败，消息已保留。", send_turn)
+        self.assertNotIn("sendTurn(turn,displayText,retryRequestId)", send_turn)
+        self.assertIn("data.replayed", send_turn)
+        self.assertIn("data.actions", send_turn)
+        self.assertRegex(send_turn, r"data\.state\.revision>=\w+\.revision")
 
     def test_foundation_report_gate_keeps_chat_actionable(self):
         for filename in ("index.html", "index_clean.html"):
@@ -73,12 +65,8 @@ class IP12HarnessActionsUITests(unittest.TestCase):
                 self.assertIn("topic_id", source)
                 self.assertIn("versions", source)
 
-    def test_main_view_opens_the_first_full_script_when_module_six_is_ready(self):
+    def test_main_view_keeps_artifacts_in_module_dropdowns_without_auto_opening(self):
         source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
-        helper = source[
-            source.index("function openFirstContentScript"):
-            source.index("function renderActiveContentScript")
-        ]
         select_convo = source[
             source.index("async function selectConvo"):
             source.index("async function jumpModule")
@@ -88,10 +76,25 @@ class IP12HarnessActionsUITests(unittest.TestCase):
             source.index("async function sendJumpMsg")
         ]
 
-        self.assertIn("openPanel('📦 文案口播交付物')", helper)
-        self.assertIn("openContentScript(0,0)", helper)
-        self.assertIn("openFirstContentScript(pack)", select_convo)
-        self.assertIn("openFirstContentScript(data.auto_deliverables['6'])", send_turn)
+        self.assertIn("function moduleArtifactRows", source)
+        self.assertIn('class="mod-sub artifact"', source)
+        self.assertIn("data-module-id", source)
+        self.assertNotIn('id="artifactsWrap"', source)
+        self.assertNotIn("openFirstContentScript", select_convo)
+        self.assertNotIn("openFirstContentScript", send_turn)
+        self.assertIn("showArtifactNotice(data)", send_turn)
+        self.assertIn("第一个交付物已放到对应诊断模块下方", source)
+
+    def test_main_view_exposes_a_two_project_manager(self):
+        source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
+        start = source.index("function renderProjectPanel")
+        manager = source[start:source.index("document.getElementById('userInput').addEventListener", start)]
+        self.assertIn("IP Project", manager)
+        self.assertIn("/2", manager)
+        self.assertIn("最多允许创建两个 Project", source)
+        self.assertIn("永久删除", source)
+        self.assertIn("o.style.display='flex'", manager)
+        self.assertLess(manager.index("o.style.display='flex'"), manager.index("await loadConvos()"))
 
 
 if __name__ == "__main__":

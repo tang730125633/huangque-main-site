@@ -58,7 +58,7 @@ class IP12AgentProductionUITests(unittest.TestCase):
         message = self.html[self.html.index("function sendMessage"):self.html.index("async function sendTurn")]
         self.assertIn("var turn={message:text}", message)
         self.assertNotIn("confirmProduction", message)
-        continuation = self.html[self.html.index("async function sendJumpMsg"):self.html.index("function toggleConvos")]
+        continuation = self.html[self.html.index("async function sendJumpMsg"):self.html.index("function renderProjectPanel")]
         self.assertNotIn("confirmProduction", continuation)
 
     def test_missing_and_schema_render_typed_controls_and_gate_quote(self):
