@@ -1038,6 +1038,21 @@ def _validate_caption_recognition(source_units, recognized_units):
         or matcher.ratio() < _CAPTION_ALIGN_MIN_SIMILARITY
     ):
         raise ValueError("字幕对齐识别内容与原文不匹配")
+    return [block for block in matcher.get_matching_blocks() if block.size]
+
+
+def _recognized_boundary_index(source_index, matching_blocks, recognized_count):
+    candidates = {
+        block.b + source_index - block.a
+        for block in matching_blocks
+        if block.a <= source_index <= block.a + block.size
+    }
+    if len(candidates) != 1:
+        raise ValueError("字幕边界无法映射到识别结果")
+    recognized_index = candidates.pop()
+    if not 0 < recognized_index < recognized_count:
+        raise ValueError("字幕边界无法映射到识别结果")
+    return recognized_index
 
 
 def _caption_cues_from_word_timestamps(text, cue_texts, words, duration):
@@ -1075,17 +1090,19 @@ def _caption_cues_from_word_timestamps(text, cue_texts, words, duration):
             })
 
     source_units = _spoken_caption_units(text)
-    known_count = len(source_units)
-    if known_count <= 0 or len(timed_units) < len(cue_texts):
+    if not source_units or len(timed_units) < len(cue_texts):
         raise ValueError("字幕对齐识别结果不足")
-    _validate_caption_recognition(source_units, recognized_units)
+    matching_blocks = _validate_caption_recognition(
+        source_units, recognized_units
+    )
 
     boundaries = [0.0]
     consumed = 0
     for cue_text in cue_texts[:-1]:
         consumed += len(_spoken_caption_units(cue_text))
-        token_index = round(consumed * len(timed_units) / known_count)
-        token_index = max(1, min(len(timed_units) - 1, token_index))
+        token_index = _recognized_boundary_index(
+            consumed, matching_blocks, len(timed_units)
+        )
         boundary = max(0.0, min(total_duration, timed_units[token_index]["start"]))
         if boundary <= boundaries[-1] + 0.04:
             raise ValueError("字幕对齐时间轴没有递增")

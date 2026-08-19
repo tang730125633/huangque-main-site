@@ -1317,6 +1317,36 @@ class PixelleVideoTests(unittest.TestCase):
                 8.0,
             )
 
+    def test_caption_alignment_maps_boundary_through_missing_suffix(self):
+        cues = self.pixelle._caption_cues_from_word_timestamps(
+            "abcdefghijklmnopqr",
+            ["abcdefghi", "jklmnopqr"],
+            [{"text": "abcdefghijkl", "start": 0.0, "end": 4.8}],
+            8.0,
+        )
+        self.assertEqual(3.6, cues[0]["end_time"])
+
+    def test_caption_alignment_maps_boundary_through_missing_prefix(self):
+        cues = self.pixelle._caption_cues_from_word_timestamps(
+            "abcdefghijklmnopqr",
+            ["abcdefghi", "jklmnopqr"],
+            [{"text": "ghijklmnopqr", "start": 0.0, "end": 4.8}],
+            8.0,
+        )
+        self.assertEqual(1.2, cues[0]["end_time"])
+
+    def test_caption_alignment_rejects_boundary_inside_unmatched_middle(self):
+        with self.assertRaisesRegex(ValueError, "字幕边界无法映射"):
+            self.pixelle._caption_cues_from_word_timestamps(
+                "abcdefghijklmnopqr",
+                ["abcdefghi", "jklmnopqr"],
+                [
+                    {"text": "abcdef", "start": 0.0, "end": 2.4},
+                    {"text": "mnopqr", "start": 2.4, "end": 4.8},
+                ],
+                8.0,
+            )
+
     def test_caption_alignment_mismatch_falls_back_to_display_only_cues(self):
         class Word:
             word = "春夏秋冬东西南北日月星辰山川河流"
