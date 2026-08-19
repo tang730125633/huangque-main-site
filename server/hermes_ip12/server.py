@@ -1692,7 +1692,7 @@ def _coach_module_five_topics(convo, user_message, repair_error=""):
     prompt = """你是黄雀 IP12 模块 5 的选题规划器。你只处理当前断点：在已经确认的 3 个种类下各生成 10 个具体选题。
 
 规则：
-- 用户只是提问时 decision=answer_only；资料不足时 decision=ask_follow_up，只问一个问题；两种情况 categories=[] 且 self_review 为空。
+- 已确认的 3 个种类和现有证据已经足以出题，不得再追问每类受众、补充资料或固定口令；用户只是在提问时 decision=answer_only、categories=[] 且 self_review 为空，其余情况直接生成。
 - 资料足够时 decision=propose_checkpoint，categories 必须正好 3 组；name 必须逐字复制“已确认种类”中的名称，每组 topics 正好 10 条，30 条标题不能重复。
 - 每组 10 条按首发价值从高到低排序，最值得优先写成完整文案的选题必须放在第 1 条。
 - 每条 title 控制在 30 个汉字以内，reply 和 self_review 各写一句话。
