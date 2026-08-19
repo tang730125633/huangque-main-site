@@ -346,7 +346,7 @@ def _production_source(convo, target):
 def _production_public(record):
     """Never return a bridge quote token through a project read endpoint."""
     result = json.loads(json.dumps(record, ensure_ascii=False))
-    for key in ("source_text", "idempotency_key", "confirmation_id"):
+    for key in ("source_text", "idempotency_key", "confirmation_id", "canvas_versions"):
         result.pop(key, None)
     quote = result.get("quote")
     if isinstance(quote, dict):
@@ -363,7 +363,7 @@ PRODUCTION_REQUIRED_FIELDS = {
     "audio-generate": ("text",),
     "digital-ip-text-generate": ("avatar_id", "text", "voice"),
     "video-generate": ("prompt",),
-    "canvas-ops": ("board_id", "base_version", "prompt"),
+    "canvas-ops": ("board_id",),
 }
 PRODUCTION_FALLBACK_FIELDS = {
     "image-generate": {
@@ -402,9 +402,94 @@ def _production_action_schema(action):
     }
 
 
+def _production_record_schema(record):
+    schema = record.get("parameter_schema")
+    return schema if isinstance(schema, dict) else _production_action_schema(record["action"])
+
+
+def _production_parameter_context(account_id, action):
+    """Expose account-owned choices while keeping derived source fields out of the UI."""
+    schema = _production_action_schema(action)
+    properties = schema["properties"]
+    context = {}
+    request_key = "ip12-read-" + uuid.uuid4().hex
+
+    def read(capability, input_body):
+        try:
+            return _bridge_action(
+                account_id, capability, input_body,
+                idempotency_key=request_key + "-" + capability,
+            )
+        except (ProductionBridgeError, RuntimeError):
+            return None
+
+    if action == "audio-generate":
+        schema["required"] = []
+    elif action == "digital-ip-text-generate":
+        schema["required"] = ["avatar_id", "voice"]
+        avatars = read("video-avatars", {"limit": 120})
+        voices = read("voices", {})
+        avatar_items = avatars.get("items", []) if isinstance(avatars, dict) else []
+        voice_items = voices.get("items", []) if isinstance(voices, dict) else []
+        properties["avatar_id"].update({
+            "title": "数字人形象",
+            "oneOf": [
+                {"const": item["id"], "title": str(item.get("name") or "未命名形象")}
+                for item in avatar_items
+                if isinstance(item, dict) and isinstance(item.get("id"), int)
+                and item.get("status") == "ready"
+            ],
+            "description": (
+                "从当前账号已经准备好的数字人形象中选择。"
+                if avatars is not None else "暂时无法读取当前账号的数字人形象，请稍后重新打开。"
+            ),
+        })
+        properties["voice"].update({
+            "title": "声音",
+            "oneOf": [
+                {"const": item["voice_key"], "title": str(item.get("display_name") or "未命名声音")}
+                for item in voice_items
+                if isinstance(item, dict) and str(item.get("voice_key") or "").strip()
+            ],
+            "description": (
+                "从当前账号可用的公共或个人声音中选择。"
+                if voices is not None else "暂时无法读取当前账号的声音，请稍后重新打开。"
+            ),
+        })
+    elif action == "canvas-ops":
+        schema["required"] = ["board_id"]
+        boards_result = read("canvas-list", {"limit": 100, "offset": 0})
+        boards = boards_result.get("boards", []) if isinstance(boards_result, dict) else []
+        choices = [
+            {"const": str(item["id"]), "title": str(item.get("name") or "未命名画布")}
+            for item in boards
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+            and isinstance(item.get("version"), int)
+            and item.get("role") in {"owner", "editor"}
+        ]
+        properties["board_id"].update({
+            "title": "画布",
+            "oneOf": choices,
+            "description": (
+                "选择当前账号可以编辑的画布；正文和画布版本会自动带入。"
+                if boards_result is not None else "暂时无法读取当前账号的画布，请稍后重新打开。"
+            ),
+        })
+        context["canvas_versions"] = {
+            str(item["id"]): item["version"]
+            for item in boards
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+            and isinstance(item.get("version"), int)
+            and item.get("role") in {"owner", "editor"}
+        }
+    return schema, context
+
+
 def _production_missing_fields(record, options):
     effective = dict(options)
-    if record["action"] in {"digital-ip-text-generate", "digital-ip-batch-generate"}:
+    if record["action"] in {
+        "audio-generate", "digital-ip-text-generate", "digital-ip-batch-generate",
+    }:
         effective.setdefault("text", record["source_text"])
     return [name for name in PRODUCTION_REQUIRED_FIELDS.get(record["action"], ())
             if effective.get(name) in (None, "", [])]
@@ -416,11 +501,16 @@ def _production_input(record, options):
     payload = dict(options)
     # A selected IP12 script is an explicit source.  The user need not paste it
     # into the production panel again, and the original script is not returned.
-    if record["action"] in {"digital-ip-text-generate", "digital-ip-batch-generate"}:
+    if record["action"] in {
+        "audio-generate", "digital-ip-text-generate", "digital-ip-batch-generate",
+    }:
         payload.setdefault("text", record["source_text"])
     if record["action"] == "audio-generate" and isinstance(payload.get("text"), str):
         payload["text"] = re.sub(r"[\r\n\t\f\v]+", " ", payload["text"]).strip()
     if record["action"] == "canvas-ops":
+        board_id = str(payload.get("board_id") or "")
+        payload.setdefault("base_version", (record.get("canvas_versions") or {}).get(board_id))
+        payload.setdefault("prompt", record["source_text"])
         allowed = set(PRODUCTION_FALLBACK_FIELDS["canvas-ops"])
         unknown = sorted(set(payload) - allowed)
         if unknown:
@@ -570,13 +660,18 @@ def _production_plan_or_error(record, options):
             }.get(expected, True)
             if not valid:
                 raise coach_harness.HarnessError(name + " 类型不合法")
+            choices = (((_production_record_schema(record).get("properties") or {}).get(name) or {}).get("oneOf"))
+            if isinstance(choices, list) and not any(
+                isinstance(choice, dict) and choice.get("const") == value for choice in choices
+            ):
+                raise coach_harness.HarnessError(name + " 不在当前账号的可选范围")
         input_body = _production_input(record, options)
         if record["action"] == "canvas-ops":
             if not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", str(input_body["board_id"])):
                 raise coach_harness.HarnessError("board_id 格式不合法")
             if input_body["base_version"] < 1:
                 raise coach_harness.HarnessError("base_version 必须是正整数")
-            if not 1 <= len(str(options["prompt"]).strip()) <= 5000:
+            if not 1 <= len(str(input_body["ops"][0]["node"]["params"]["text"]).strip()) <= 5000:
                 raise coach_harness.HarnessError("prompt 长度不合法")
         return True, "", []
     except Exception as exc:
@@ -1328,15 +1423,25 @@ def api_prepare_production():
         if set(body) - {"conversation_id", "content_target", "expected_revision", "requested_result", "preferred_action", "options"}:
             return _production_error("invalid_request", "包含不支持的参数", 400)
         cid = str(body.get("conversation_id") or "")
+        recommendation = coach_harness.production_recommendation(
+            body.get("requested_result"), body.get("preferred_action")
+        )
         with CONVERSATION_STATE_LOCK:
             convo = _production_conversation(cid)
             if convo is None:
                 return _production_error("project_not_found", "项目不存在", 404)
             state = normalize_coach_state(convo.get("coach_state"))
             _assert_expected_revision(state, body.get("expected_revision"))
-            recommendation = coach_harness.production_recommendation(
-                body.get("requested_result"), body.get("preferred_action")
-            )
+            source = _production_source(convo, body.get("content_target"))
+        parameter_schema, resource_context = _production_parameter_context(
+            current_account_id(), recommendation["recommended_action"]
+        )
+        with CONVERSATION_STATE_LOCK:
+            convo = _production_conversation(cid)
+            if convo is None:
+                return _production_error("project_not_found", "项目不存在", 404)
+            state = normalize_coach_state(convo.get("coach_state"))
+            _assert_expected_revision(state, body.get("expected_revision"))
             source = _production_source(convo, body.get("content_target"))
             production_id = "prod_" + uuid.uuid4().hex
             record = {
@@ -1351,9 +1456,11 @@ def api_prepare_production():
                 "job_id": None, "asset_refs": [], "canvas_ref": None,
                 "action_result": None, "refund_status": "none", "last_error_code": "",
                 "idempotency_key": "ip12-" + production_id,
+                "parameter_schema": parameter_schema,
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             }
+            record.update(resource_context)
             _production_set_options(record, body.get("options", {}))
             _, validation_error, missing = _production_plan_or_error(record, record["options"])
             if validation_error:
@@ -1369,8 +1476,8 @@ def api_prepare_production():
                                 if item.get("capability_family") == record["capability_family"]
                                 for asset in item.get("asset_refs", [])],
             "options": record["options"],
-            "schema": _production_action_schema(record["action"]),
-            "parameter_schema": _production_action_schema(record["action"]),
+            "schema": _production_record_schema(record),
+            "parameter_schema": _production_record_schema(record),
             "missing": missing,
             "missing_prerequisites": missing or ([validation_error] if validation_error else []),
             "validation_error": validation_error,
@@ -1414,8 +1521,8 @@ def api_quote_production():
                 return {
                     "ok": False, "error": validation_error, "code": "missing_prerequisite",
                     "production_id": production_id, "status": record["status"],
-                    "options": record["options"], "schema": _production_action_schema(record["action"]),
-                    "parameter_schema": _production_action_schema(record["action"]),
+                    "options": record["options"], "schema": _production_record_schema(record),
+                    "parameter_schema": _production_record_schema(record),
                     "missing": missing,
                 }, 409
             input_body = _production_input(record, record["options"])
@@ -1443,8 +1550,8 @@ def api_quote_production():
                     "ok": False, "error": exc.detail, "code": exc.code,
                     "production_id": production_id, "status": record["status"],
                     "options": record["options"],
-                    "schema": _production_action_schema(record["action"]), "missing": [],
-                    "parameter_schema": _production_action_schema(record["action"]),
+                    "schema": _production_record_schema(record), "missing": [],
+                    "parameter_schema": _production_record_schema(record),
                     "validation_error": exc.detail,
                 }, exc.status
             except RuntimeError:
@@ -1452,8 +1559,8 @@ def api_quote_production():
                     "ok": False, "error": "生产执行桥暂不可用，请稍后重试",
                     "code": "production_bridge_unavailable", "production_id": production_id,
                     "status": "draft", "options": record["options"],
-                    "schema": _production_action_schema(record["action"]), "missing": [],
-                    "parameter_schema": _production_action_schema(record["action"]),
+                    "schema": _production_record_schema(record), "missing": [],
+                    "parameter_schema": _production_record_schema(record),
                 }, 503
             token = str(quote.get("quote_token") or "")
             if not token:
@@ -1569,8 +1676,8 @@ def api_confirm_production():
             return {
                 "ok": False, "error": exc.detail, "code": exc.code,
                 "production": _production_public(record),
-                "schema": _production_action_schema(record["action"]), "missing": [],
-                "parameter_schema": _production_action_schema(record["action"]),
+                "schema": _production_record_schema(record), "missing": [],
+                "parameter_schema": _production_record_schema(record),
             }, exc.status
         except RuntimeError:
             return _production_error("submission_pending", "正在确认原任务状态，请勿重复提交", 202)

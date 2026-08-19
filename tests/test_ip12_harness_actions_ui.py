@@ -82,14 +82,28 @@ class IP12HarnessActionsUITests(unittest.TestCase):
             source.index("function productionFieldSpecs"):
             source.index("function coerceProductionOption")
         ]
+        field_spec = source[
+            source.index("function productionFieldSpec"):
+            source.index("function productionOptionFilled")
+        ]
         options_html = source[
             source.index("function productionOptionsHtml"):
             source.index("function productionQuote")
         ]
+        field_control = source[
+            source.index("function productionFieldControl"):
+            source.index("function productionOptionsHtml")
+        ]
 
         self.assertIn("if(!missing.length)required.forEach", field_specs)
+        self.assertIn("descriptor.oneOf", field_spec)
+        self.assertIn("choice.const", field_spec)
         self.assertIn("!fields.some", options_html)
+        self.assertIn("暂无可用选项", field_control)
+        self.assertIn("choice.value", field_control)
         self.assertIn("ratio:'画面比例'", source)
+        self.assertIn("avatar_id:'数字人形象'", source)
+        self.assertIn("board_id:'画布'", source)
 
     def test_main_view_keeps_artifacts_in_module_dropdowns_without_auto_opening(self):
         source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
