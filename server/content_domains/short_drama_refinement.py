@@ -2181,14 +2181,20 @@ def reap_delivery_orphans(
                 "SELECT project_id,job_id FROM short_drama_delivery_versions"
             ).fetchall()
         }
-        live = {
-            (str(row[0]), str(row[1]))
-            for row in conn.execute(
-                "SELECT project_id,id FROM short_drama_delivery_jobs "
-                "WHERE status IN ('queued','running') AND updated_at>?",
-                (current_time - _DELIVERY_RENDER_LEASE_SECONDS,),
-            ).fetchall()
-        }
+        live = set()
+        live_temps = set()
+        for row in conn.execute(
+            "SELECT project_id,id,phase FROM short_drama_delivery_jobs "
+            "WHERE status IN ('queued','running') AND updated_at>?",
+            (current_time - _DELIVERY_RENDER_LEASE_SECONDS,),
+        ).fetchall():
+            project_id, job_id, phase = map(str, row)
+            live.add((project_id, job_id))
+            if phase.startswith("rendering:"):
+                owner = _delivery_render_owner(phase)
+                live_temps.add((
+                    project_id, ".%s.%s.tmp" % (job_id, owner),
+                ))
     except Exception as error:
         result["errors"].append("delivery reference scan failed: %s" % error)
         return result
@@ -2210,12 +2216,19 @@ def reap_delivery_orphans(
             if not candidate.is_dir() or candidate.is_symlink():
                 continue
             name = candidate.name
-            job_id = name[1:-4] if name.startswith(".") and name.endswith(".tmp") else name
+            job_id = name
+            is_temp = name.startswith(".") and name.endswith(".tmp")
+            if is_temp:
+                job_id = name[1:-4].split(".", 1)[0]
             result["scanned"] += 1
             key = (project_id, job_id)
             try:
                 age = current_time - int(candidate.stat().st_mtime)
-                if key in referenced or key in live or age < int(grace_seconds):
+                protected = (
+                    (project_id, name) in live_temps
+                    if is_temp else key in referenced or key in live
+                )
+                if protected or age < int(grace_seconds):
                     result["retained"] += 1
                     continue
                 shutil.rmtree(candidate)
@@ -3262,6 +3275,22 @@ def _ledger_matches(actor_username, cost, ledger):
         return False
 
 
+def _mark_delivery_charge_unknown(db_factory, attempt_id, error):
+    conn = _connection(db_factory)
+    try:
+        conn.execute(
+            "UPDATE short_drama_delivery_attempts SET error=?,updated_at=? "
+            "WHERE id=? AND state='accepted' AND job_id IS NULL",
+            (
+                "charge_unknown:%s" % str(error)[:240],
+                int(time.time()), attempt_id,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def start_delivery_job(
     db_factory, owner_username, actor_username, body, idempotency_key,
     deduct_points=None, refund_points=None, charge_lookup=None,
@@ -3428,6 +3457,12 @@ def start_delivery_job(
                     charged = True
                 else:
                     delegated_to_recovery = True
+                    try:
+                        _mark_delivery_charge_unknown(
+                            db_factory, attempt_id, debit_error,
+                        )
+                    except Exception:
+                        pass
                     raise RefinementError(
                         "delivery_recovery_pending",
                         "扣点结果尚未确认，系统将自动对账恢复", 409,
@@ -3691,6 +3726,9 @@ def _claim_stale_delivery_attempts(
                 if row:
                     item = dict(row)
                     item["recovery_previous_state"] = candidate["state"]
+                    item["recovery_was_stale"] = (
+                        int(candidate["updated_at"]) <= cutoff
+                    )
                     claimed.append(item)
         conn.commit()
         return claimed
@@ -3701,15 +3739,20 @@ def _claim_stale_delivery_attempts(
         conn.close()
 
 
-def _release_delivery_recovery_claim(db_factory, attempt, claimed_at):
+def _release_delivery_recovery_claim(
+    db_factory, attempt, claimed_at, *, defer_unknown=False,
+):
     previous = str(attempt.get("recovery_previous_state") or "charged")
     state = "accepted" if previous == "accepted" else "charged"
     conn = _connection(db_factory)
     try:
+        error = str(attempt.get("error") or "")
+        if defer_unknown and error.startswith("charge_unknown:"):
+            error = "charge_unknown_checked:" + error.split(":", 1)[1]
         conn.execute(
-            "UPDATE short_drama_delivery_attempts SET state=?,updated_at=? "
+            "UPDATE short_drama_delivery_attempts SET state=?,error=?,updated_at=? "
             "WHERE id=? AND state='charged' AND job_id IS NULL AND updated_at=?",
-            (state, int(time.time()), attempt["id"], int(claimed_at)),
+            (state, error, int(time.time()), attempt["id"], int(claimed_at)),
         )
         conn.commit()
     finally:
@@ -3860,17 +3903,32 @@ def retry_delivery_attempt_recovery(
         result["claimed"] += 1
         claimed_at = int(attempt["updated_at"])
         cost = int(attempt.get("cost") or 0)
+        fresh_unknown = (
+            not attempt.get("recovery_was_stale")
+            and str(attempt.get("error") or "").startswith("charge_unknown:")
+        )
         ledger = None
         if cost:
             if not callable(lookup):
-                _release_delivery_recovery_claim(db_factory, attempt, claimed_at)
+                _release_delivery_recovery_claim(
+                    db_factory, attempt, claimed_at,
+                    defer_unknown=fresh_unknown,
+                )
                 continue
             try:
                 ledger = lookup("short-drama-delivery-charge:" + attempt["id"])
             except Exception:
-                _release_delivery_recovery_claim(db_factory, attempt, claimed_at)
+                _release_delivery_recovery_claim(
+                    db_factory, attempt, claimed_at,
+                    defer_unknown=fresh_unknown,
+                )
                 continue
             if not _ledger_matches(attempt["actor_username"], cost, ledger):
+                if fresh_unknown:
+                    _release_delivery_recovery_claim(
+                        db_factory, attempt, claimed_at, defer_unknown=True,
+                    )
+                    continue
                 result["failed"] += int(_mark_delivery_recovery_terminal(
                     db_factory, attempt["id"], claimed_at, "failed",
                     "未找到与正式导出匹配的扣点流水",

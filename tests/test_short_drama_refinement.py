@@ -875,17 +875,89 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.assertEqual(1, len(claimed_phases))
         self.assertNotEqual("rendering:crashed", claimed_phases[0])
 
+    def test_lost_render_owner_cannot_delete_successor_files(self):
+        root = Path(self.tmp.name)
+        job = {"id": "shared-job", "project_id": self.project["id"]}
+        old_phase = "rendering:old-owner"
+        new_phase = "rendering:new-owner"
+        old_temp, target = short_drama_refinement._delivery_render_paths(
+            root, job, old_phase,
+        )
+        new_temp, successor_target = short_drama_refinement._delivery_render_paths(
+            root, job, new_phase,
+        )
+        self.assertEqual(target, successor_target)
+        old_temp.mkdir(parents=True)
+        new_temp.mkdir(parents=True)
+        target.mkdir(parents=True)
+        (target / ".render-owner").write_text("new-owner", encoding="utf-8")
+        (target / "final-2k.mp4").write_bytes(b"successor")
+
+        short_drama_refinement._cleanup_delivery_render_files(
+            root, job, old_phase, include_target=True,
+        )
+
+        self.assertFalse(old_temp.exists())
+        self.assertTrue(new_temp.is_dir())
+        self.assertEqual(b"successor", (target / "final-2k.mp4").read_bytes())
+
+    def test_reaper_retains_owner_scoped_temp_for_live_render(self):
+        version = self.confirmed_version("live-owner-temp-reaper")
+        quote = short_drama_refinement.create_delivery_quote(
+            self.db, "alice", {
+                "project_id": self.project["id"], "version_id": version["id"],
+            },
+        )
+        job = short_drama_refinement.start_delivery_job(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "quote_token": quote["quote_token"],
+            }, "live-owner-temp-reaper",
+        )
+        phase = "rendering:live-owner"
+        now = int(time.time())
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_delivery_jobs SET status='running',phase=?,"
+                "poll_count=4,updated_at=? WHERE id=?", (phase, now, job["id"]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        temp, _target = short_drama_refinement._delivery_render_paths(
+            Path(self.tmp.name), job, phase,
+        )
+        old_temp, _target = short_drama_refinement._delivery_render_paths(
+            Path(self.tmp.name), job, "rendering:old-owner",
+        )
+        temp.mkdir(parents=True)
+        old_temp.mkdir(parents=True)
+        old = now - short_drama_refinement._DELIVERY_RENDER_LEASE_SECONDS - 60
+        os.utime(temp, (old, old))
+        os.utime(old_temp, (old, old))
+
+        result = short_drama_refinement.reap_delivery_orphans(
+            self.db, now=now, grace_seconds=60,
+        )
+
+        self.assertTrue(temp.is_dir())
+        self.assertFalse(old_temp.exists())
+        self.assertEqual(1, result["retained"])
+        self.assertEqual(1, result["removed"])
+
     def test_delivery_orphan_reaper_removes_crash_publish_but_keeps_version(self):
         root = Path(self.tmp.name) / "short_drama_delivery" / self.project["id"]
         referenced = root / "referenced-job"
+        referenced_old_temp = root / ".referenced-job.old-owner.tmp"
         orphan = root / "orphan-job"
         temp_orphan = root / ".temp-orphan.tmp"
-        for directory in (referenced, orphan, temp_orphan):
+        for directory in (referenced, referenced_old_temp, orphan, temp_orphan):
             directory.mkdir(parents=True)
             (directory / "final-2k.mp4").write_bytes(directory.name.encode())
         now = int(time.time())
         old = now - 3600
-        for directory in (referenced, orphan, temp_orphan):
+        for directory in (referenced, referenced_old_temp, orphan, temp_orphan):
             os.utime(directory, (old, old))
         version = self.confirmed_version("delivery-orphan-reference")
         conn = self.db()
@@ -909,9 +981,10 @@ class ShortDramaRefinementTests(unittest.TestCase):
             self.db, now=now, grace_seconds=60,
         )
         self.assertTrue(referenced.is_dir())
+        self.assertFalse(referenced_old_temp.exists())
         self.assertFalse(orphan.exists())
         self.assertFalse(temp_orphan.exists())
-        self.assertEqual(2, result["removed"])
+        self.assertEqual(3, result["removed"])
         self.assertEqual([], result["errors"])
 
     def test_delivery_orphan_reaper_fails_closed_on_database_error(self):
@@ -3579,6 +3652,85 @@ class ShortDramaRefinementTests(unittest.TestCase):
             conn.close()
         self.assertEqual("accepted", state)
         self.assertIsNone(job_id)
+
+    def test_unknown_charge_marker_failure_still_preserves_accepted_attempt(self):
+        version = self.confirmed_version("unknown-charge-marker-failure")
+        production = {
+            "delivery_enabled": True, "deliverable": True,
+            "mode": "production", "adapter": "real_executor_test_double",
+            "formal_cost": 80, "reason": "",
+        }
+        with mock.patch.object(
+            short_drama_refinement, "_delivery_capability", return_value=production,
+        ), mock.patch.object(
+            short_drama_refinement, "_mark_delivery_charge_unknown",
+            side_effect=sqlite3.OperationalError("marker commit failed"),
+        ), self.assertRaises(short_drama_refinement.RefinementError) as raised:
+            short_drama_refinement.start_delivery_job(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "quote_token": short_drama_refinement.create_delivery_quote(
+                        self.db, "alice", {
+                            "project_id": self.project["id"],
+                            "version_id": version["id"],
+                        },
+                    )["quote_token"],
+                }, "marker-write-failure",
+                deduct_points=mock.Mock(side_effect=TimeoutError("debit timeout")),
+                charge_lookup=mock.Mock(side_effect=TimeoutError("ledger timeout")),
+            )
+        self.assertEqual("delivery_recovery_pending", raised.exception.code)
+        conn = self.db()
+        try:
+            state = conn.execute(
+                "SELECT state FROM short_drama_delivery_attempts "
+                "WHERE idempotency_key='marker-write-failure'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual("accepted", state)
+
+    def test_fresh_unknown_replay_with_no_ledger_stays_pending(self):
+        version = self.confirmed_version("fresh-unknown-ledger-delay")
+        production = {
+            "delivery_enabled": True, "deliverable": True,
+            "mode": "production", "adapter": "real_executor_test_double",
+            "formal_cost": 80, "reason": "",
+        }
+        with mock.patch.object(
+            short_drama_refinement, "_delivery_capability", return_value=production,
+        ):
+            quote = short_drama_refinement.create_delivery_quote(
+                self.db, "alice", {
+                    "project_id": self.project["id"], "version_id": version["id"],
+                },
+            )
+            request = {
+                "project_id": self.project["id"],
+                "quote_token": quote["quote_token"],
+            }
+            with self.assertRaises(short_drama_refinement.RefinementError):
+                short_drama_refinement.start_delivery_job(
+                    self.db, "alice", "alice", request, "delayed-ledger",
+                    deduct_points=mock.Mock(side_effect=TimeoutError("debit timeout")),
+                    charge_lookup=mock.Mock(side_effect=TimeoutError("ledger timeout")),
+                )
+            with self.assertRaises(short_drama_refinement.RefinementError) as replay:
+                short_drama_refinement.start_delivery_job(
+                    self.db, "alice", "alice", request, "delayed-ledger",
+                    charge_lookup=mock.Mock(return_value=None),
+                )
+        self.assertEqual("delivery_recovery_pending", replay.exception.code)
+        conn = self.db()
+        try:
+            state, error = conn.execute(
+                "SELECT state,error FROM short_drama_delivery_attempts "
+                "WHERE idempotency_key='delayed-ledger'"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual("accepted", state)
+        self.assertTrue(error.startswith("charge_unknown_checked:"), error)
 
     def test_same_key_replay_immediately_recovers_unknown_charge(self):
         version = self.confirmed_version("replay-recovers-unknown-charge")
