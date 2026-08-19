@@ -197,6 +197,28 @@ assert not help_body.get("actions"), help_body
 assert "快速换装" in help_body["assistant"] and "人物图片" in help_body["assistant"] and "服装图片" in help_body["assistant"], help_body
 assert "没有创建任务" in help_body["assistant"], help_body
 assert len(server.load_conversation(cid).get("productions") or {}) == before
+
+revision = server.load_conversation(cid)["coach_state"]["revision"]
+with patch.object(server, "_bridge_catalog", return_value=catalog):
+    tryon_turn = client.post("/api/chat-complete", json={
+        "conversation_id": cid, "message": "帮我快速换装，先准备所需素材，不要确认付费生成。",
+        "expected_revision": revision, "request_id": "catalog-tryon-turn-01",
+    })
+    assert tryon_turn.status_code == 200, tryon_turn.get_data(as_text=True)
+    tryon_action = tryon_turn.get_json()["actions"][0]
+    assert tryon_action["preferred_action"] == "tryon-fast-generate", tryon_action
+    assert tryon_action["content_target"] == {"category_id": "", "topic_id": ""}, tryon_action
+    revision = tryon_turn.get_json()["state"]["revision"]
+    tryon_prepared = client.post("/api/ip12/productions/prepare", json={
+        "conversation_id": cid, "content_target": tryon_action["content_target"],
+        "expected_revision": revision, "requested_result": "video",
+        "preferred_action": "tryon-fast-generate", "options": {},
+    })
+assert tryon_prepared.status_code == 200, tryon_prepared.get_data(as_text=True)
+tryon_body = tryon_prepared.get_json()
+assert set(tryon_body["missing"]) == {"person_image_upload_id", "clothes_upload_id"}, tryon_body
+tryon_record = server.load_conversation(cid)["productions"][tryon_body["production_id"]]
+assert tryon_record["source_bound"] is False, tryon_record
 '''
         with tempfile.TemporaryDirectory(prefix="ip12-catalog-contract-test.") as data_dir:
             env = os.environ.copy()

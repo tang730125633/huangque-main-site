@@ -559,6 +559,12 @@ _DIRECT_READ_ACTIONS = {
     "digital-presenter-capability", "digital-presenter-project",
 }
 _NAVIGATION_ONLY_ACTIONS = {"image-upload", "video-upload", "canvas-agent-plan"}
+_SOURCE_FREE_ACTIONS = _DIRECT_READ_ACTIONS | _NAVIGATION_ONLY_ACTIONS | {
+    "digital-ip-audio-generate", "cinematic-open-generate", "cinematic-motion-generate",
+    "tryon-fast-generate", "tryon-classic-generate", "video-compose-create",
+    "video-compose-analyze", "video-compose-review", "video-compose-render",
+    "canvas-create", "digital-presenter-create", "digital-presenter-update",
+}
 
 _EXPLICIT_MEDIA_ACTIONS = {
     action: family for family, action, _ in _SPECIAL_PRODUCTION_INTENTS
@@ -1787,7 +1793,7 @@ def api_prepare_production():
             current_account_id(), body.get("requested_result"), body.get("preferred_action")
         )
         catalog_entry = recommendation.pop("catalog_entry")
-        source_unbound = (
+        source_unbound = recommendation["recommended_action"] in _SOURCE_FREE_ACTIONS or (
             str(catalog_entry.get("risk") or "") == "read"
             or (catalog_entry.get("transport") or {}).get("kind") == "dedicated_upload"
         )
@@ -3055,7 +3061,7 @@ def _process_production_intent_turn(
     family = intent["capability_family"]
     selected_action = intent["recommended_action"]
     help_only = bool(intent.get("help_only"))
-    source_unbound = help_only or selected_action in (_DIRECT_READ_ACTIONS | _NAVIGATION_ONLY_ACTIONS)
+    source_unbound = help_only or selected_action in _SOURCE_FREE_ACTIONS
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
         if convo is None:
@@ -3092,6 +3098,8 @@ def _process_production_intent_turn(
             f"用户要求：{instruction}。根据以下口播正文生成真实自然的短视频画面；"
             f"不要添加水印或编造人物经历。口播正文：{script}"
         )
+    elif selected_action == "cinematic-open-generate":
+        options["prompt"] = instruction
     assistant = (
         (
             "画布 Agent 规划需要读取当前画布节点和连线。我会直接带你进入 Canvas 并保留当前 Project；"
@@ -3285,9 +3293,7 @@ def process_chat_request(body):
                         _expanded_production_intent(user_message)
                         or coach_harness.production_intent(user_message)
                     )
-                    source_optional = production_intent and production_intent.get("recommended_action") in (
-                        _DIRECT_READ_ACTIONS | _NAVIGATION_ONLY_ACTIONS
-                    )
+                    source_optional = production_intent and production_intent.get("recommended_action") in _SOURCE_FREE_ACTIONS
                     source_optional = source_optional or bool(
                         production_intent and production_intent.get("help_only")
                     )
