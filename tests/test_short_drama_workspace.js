@@ -2343,6 +2343,8 @@ test('confirmed refinement exposes paid 2K export when local renderer is enabled
   assert.match(output, /精修版本已确认/);
   assert.match(output, /10 点/);
   assert.match(output, /2K · 不可变快照/);
+  assert.match(output, /原生 2K 镜头重新合成正式成片/);
+  assert.doesNotMatch(output, /1080p 草稿生成2K/);
   assert.match(output, /data-action="start-delivery"/);
   assert.match(output, /导出 2K 正式成片/);
   assert.match(output, /确认后扣点/);
