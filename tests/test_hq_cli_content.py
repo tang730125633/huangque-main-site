@@ -2,6 +2,7 @@ import base64
 import hashlib
 import io
 import json
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -17,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
 
 from content_domains import (
-    audio, cli_gateway, cli_uploads, core, upstream_guard, video,
+    audio, cli_gateway, cli_uploads, core, submission_idempotency, upstream_guard, video,
     video_minimax_h3, video_openai,
 )
 
@@ -282,28 +283,73 @@ class HQCLIContentTests(unittest.TestCase):
 
     def test_minimax_completed_replay_precedes_expired_reference_expansion(self):
         request = {
-            "prompt": "completed paid request", "channel": "minimax",
+            "prompt": "让 @图片1 挥手", "channel": "minimax",
             "duration": 5, "ratio": "9:16",
             "reference_upload_ids": ["img_" + "a" * 32],
         }
-        with mock.patch.object(
-            core, "_domains", return_value=(audio, self.points, video),
-        ), mock.patch.object(
-            core, "HANDLERS", {"xiaole_video": lambda payload: payload},
-        ), mock.patch.object(
-            core.submission_idempotency, "replay_existing",
-            return_value=("replay", {"job_id": 91, "cost": 24}),
-        ) as replay, mock.patch.object(
-            cli_uploads, "expand_image_payload",
-            side_effect=AssertionError("completed replay must precede upload TTL lookup"),
-        ) as expand:
-            status, result = self._post(
-                "/api/gen/xiaole_video", request,
-                expected=24, idempotency_key="minimax-expired-replay-001",
+        expanded = dict(request)
+        expanded.pop("reference_upload_ids")
+        expanded["reference_images"] = ["https://example.com/reference.png"]
+        old_body = video.minimax_idempotency_replay_bodies(expanded)[0]
+
+        with tempfile.TemporaryDirectory() as folder:
+            database = Path(folder) / "jobs.db"
+
+            def database_factory():
+                connection = sqlite3.connect(database)
+                connection.row_factory = sqlite3.Row
+                return connection
+
+            connection = database_factory()
+            connection.execute(
+                "CREATE TABLE jobs(id INTEGER PRIMARY KEY, kind TEXT, username TEXT, payload TEXT)"
             )
+            submission_idempotency.ensure_table(connection)
+            connection.execute(
+                "INSERT INTO jobs(id,kind,username,payload) VALUES(?,?,?,?)",
+                (91, "xiaole_video", "alice", json.dumps(old_body)),
+            )
+            connection.commit()
+            connection.close()
+            state, _ = submission_idempotency.begin(
+                database_factory, "alice", "/api/gen/xiaole_video",
+                "minimax-expired-replay-001", old_body,
+            )
+            self.assertEqual("new", state)
+            submission_idempotency.complete(
+                database_factory, "alice", "/api/gen/xiaole_video",
+                "minimax-expired-replay-001", {"job_id": 91, "cost": 24},
+            )
+            state, _ = submission_idempotency.replay_existing(
+                database_factory, "alice", "/api/gen/xiaole_video",
+                "minimax-expired-replay-001",
+                video.minimax_idempotency_replay_bodies(request),
+            )
+            self.assertEqual("conflict", state)
+
+            with mock.patch.object(
+                core, "_domains", return_value=(audio, self.points, video),
+            ), mock.patch.object(
+                core, "HANDLERS", {"xiaole_video": lambda payload: payload},
+            ), mock.patch.object(
+                core, "jdb", side_effect=database_factory,
+            ), mock.patch.object(
+                cli_uploads, "expand_image_payload",
+                side_effect=ValueError("upload expired"),
+            ) as expand:
+                status, result = self._post(
+                    "/api/gen/xiaole_video", request,
+                    expected=24, idempotency_key="minimax-expired-replay-001",
+                )
+                mismatched = dict(request, prompt="让 @图片1 跳舞")
+                mismatch_status, _ = self._post(
+                    "/api/gen/xiaole_video", mismatched,
+                    expected=24, idempotency_key="minimax-expired-replay-001",
+                )
+
         self.assertEqual((200, 91), (status, result["job_id"]))
-        replay.assert_called_once()
-        expand.assert_not_called()
+        self.assertEqual(400, mismatch_status)
+        self.assertEqual(1, expand.call_count)
         self.assertEqual([], self.points.deductions)
 
     def test_minimax_submit_expands_private_reference_before_charge_and_queue(self):

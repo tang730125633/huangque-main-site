@@ -864,6 +864,38 @@ def _video_job_phase_for_public(job_id, kind):
 def _idempotency_begin(username, endpoint, key, body): return submission_idempotency.begin(jdb, username, endpoint, key, body)
 def _idempotency_complete(username, endpoint, key, response): submission_idempotency.complete(jdb, username, endpoint, key, response)
 def _idempotency_abort(username, endpoint, key): submission_idempotency.abort(jdb, username, endpoint, key)
+
+
+def _minimax_historical_upload_replay(username, endpoint, key, body, video_domain):
+    response = submission_idempotency.completed_response(
+        jdb, username, endpoint, key,
+    )
+    if not isinstance(response, dict):
+        return None
+    job_id = response.get("job_id")
+    if isinstance(job_id, bool):
+        return None
+    try:
+        job_id = int(job_id)
+    except (TypeError, ValueError):
+        return None
+    if job_id <= 0:
+        return None
+    with closing(jdb()) as connection:
+        row = connection.execute(
+            "SELECT payload FROM jobs WHERE id=? AND username=? AND kind='xiaole_video'",
+            (job_id, username),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        job_payload = json.loads(row["payload"])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not video_domain.minimax_historical_upload_replay_matches(body, job_payload):
+        return None
+    return response
+
 # ============ 图片能力：gpt-image-2 ============
 # 三种模式同一入口：无图=文生图(generations)；有图无蒙版=图生图(edits)；有图有蒙版=局部修改(edits+mask)
 # 老表把 9:16 和 3:4 都映射成 1024x1536 —— 那是 2:3，两个按钮出的是同一张图，谁都没拿到自己选的比例。
@@ -2939,6 +2971,15 @@ class H(BaseHTTPRequestHandler):
                                 "code": "idempotency_in_progress",
                                 "retry_after_ms": 1000,
                             })
+                        if early_state == "conflict":
+                            historical = _minimax_historical_upload_replay(
+                                user["username"], p, early_key, body, video_domain,
+                            )
+                            if historical is not None:
+                                replay = dict(historical)
+                                return self._send(
+                                    int(replay.pop("_http_status", 200)), replay
+                                )
                 # content checks, price binding, idempotency, and deduction.
                 if not is_still_route and kind in {"image", "xiaole_video", "sora_video"}:
                     body = cli_uploads.expand_image_payload(body, user["username"])
