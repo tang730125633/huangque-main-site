@@ -16,7 +16,11 @@ SERVER_DIR = str(Path(__file__).resolve().parents[1] / "server")
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
-from content_domains import short_drama, short_drama_refinement
+from content_domains import (
+    short_drama,
+    short_drama_formal_renderer,
+    short_drama_refinement,
+)
 
 
 class Handler:
@@ -200,6 +204,7 @@ class ShortDramaRefinementTests(unittest.TestCase):
                 "provider_job_id": asset["provider_job_id"],
                 "file": asset["file"], "url": asset["url"],
                 "file_hash": file_hash, "input_hash": asset["input_hash"],
+                "native_media": asset.get("native_media") or {},
             })
             shots.append(shot)
             assets.append({
@@ -299,6 +304,57 @@ class ShortDramaRefinementTests(unittest.TestCase):
         version = self.repaired_version(key)
         self.confirm_version(version)
         return version
+
+    def install_mock_native_evidence(self):
+        conn = self.db()
+        raw_paths = []
+        try:
+            for shot_key in ("shot_01", "shot_02"):
+                raw_relative = "video/%s-raw.mp4" % shot_key
+                derived_relative = "video/%s-faststart.mp4" % shot_key
+                raw = Path(self.tmp.name) / raw_relative
+                derived = Path(self.tmp.name) / derived_relative
+                raw.parent.mkdir(parents=True, exist_ok=True)
+                raw.write_bytes(("native-raw-" + shot_key).encode())
+                derived.write_bytes(("native-derived-" + shot_key).encode())
+                raw_hash = short_drama_refinement._file_hash(raw)
+                derived_hash = short_drama_refinement._file_hash(derived)
+                evidence = {
+                    "raw": {
+                        "file": raw_relative, "sha256": raw_hash,
+                        "size_bytes": raw.stat().st_size,
+                    },
+                    "derived": {
+                        "file": derived_relative, "sha256": derived_hash,
+                        "size_bytes": derived.stat().st_size,
+                        "derived_from_sha256": raw_hash,
+                    },
+                    "resolution": {"width": 2560, "height": 1440},
+                    "audio": {
+                        "audible": True, "codec": "aac", "sample_rate": 48000,
+                        "channels": 2, "mean_volume_dbfs": -21.0,
+                        "max_volume_dbfs": -3.0,
+                    },
+                    "inspected_at": int(time.time()),
+                }
+                conn.execute(
+                    "UPDATE short_drama_provider_shot_jobs SET provider='minimax_h3',"
+                    "result_json=? WHERE shot_key=? AND project_id=?",
+                    (json.dumps({"native_media": evidence}), shot_key, self.project["id"]),
+                )
+                conn.execute(
+                    "UPDATE short_drama_provider_shot_versions SET provider='minimax_h3',"
+                    "file=?,url=? WHERE shot_key=? AND project_id=?",
+                    (
+                        derived_relative, "/api/gen/file/" + derived_relative,
+                        shot_key, self.project["id"],
+                    ),
+                )
+                raw_paths.append(raw)
+            conn.commit()
+        finally:
+            conn.close()
+        return raw_paths
 
     def acceptance_body(self, version):
         workspace = short_drama_refinement.workspace(
@@ -403,6 +459,157 @@ class ShortDramaRefinementTests(unittest.TestCase):
             short_drama_refinement._dimensions("9:16", "2k"),
         )
 
+    def test_formal_native_assembly_uses_ordered_raw_shots_not_preview(self):
+        def native_media(name, raw_hash):
+            return {
+                "raw": {
+                    "file": "video/%s-raw.mp4" % name,
+                    "sha256": raw_hash,
+                    "size_bytes": 123,
+                },
+                "derived": {
+                    "file": "video/%s-faststart.mp4" % name,
+                    "sha256": ("b" if raw_hash[0] == "a" else "d") * 64,
+                    "size_bytes": 120,
+                    "derived_from_sha256": raw_hash,
+                },
+                "resolution": {"width": 2560, "height": 1440},
+                "audio": {
+                    "audible": True, "codec": "aac", "sample_rate": 48000,
+                    "channels": 2, "mean_volume_dbfs": -21.0,
+                    "max_volume_dbfs": -3.0,
+                },
+                "inspected_at": 1,
+            }
+
+        source = {
+            "url": "/api/gen/file/drafts/preview-1080p.mp4",
+            "shots": [
+                {
+                    "shot_key": "shot_02", "provider": "minimax_h3",
+                    "native_media": native_media("shot-02", "c" * 64),
+                },
+                {
+                    "shot_key": "shot_01", "provider": "minimax_h3",
+                    "native_media": native_media("shot-01", "a" * 64),
+                },
+            ],
+        }
+        assembly = short_drama_refinement._formal_native_assembly(source)
+        self.assertEqual(
+            ["video/shot-02-raw.mp4", "video/shot-01-raw.mp4"],
+            [item["file"] for item in assembly["shots"]],
+        )
+        self.assertNotIn("preview-1080p.mp4", json.dumps(assembly))
+
+    def test_paid_delivery_never_reads_1080p_preview_as_video_input(self):
+        raw_paths = self.install_mock_native_evidence()
+        version = self.repaired_version("native-source-contract")
+        self.confirm_version(version)
+        preview = Path(self.tmp.name) / version["media"]["preview_file"]
+        capability = {
+            "delivery_enabled": True, "deliverable": True,
+            "mode": "local_ffmpeg", "adapter": "local_ffmpeg",
+            "formal_cost": 0, "reason": "local_2k_renderer",
+        }
+        captured = {}
+
+        def verify(assembly, snapshot_dir):
+            captured["assembly"] = assembly
+            self.assertEqual(
+                [path.relative_to(self.tmp.name).as_posix() for path in raw_paths],
+                [item["file"] for item in assembly["shots"]],
+            )
+            return raw_paths
+
+        def render(sources, ratio, duration_ms, media_contract, output, **kwargs):
+            captured["sources"] = list(sources)
+            output.write_bytes(b"formal-native-2k")
+            return {
+                "probe": {
+                    "video": {"width": 2560, "height": 1440},
+                    "audio": {"codec": "aac"}, "duration_ms": duration_ms,
+                },
+                "subtitle_streams": 0,
+                "native_audio": {"audible": True},
+                "sha256": short_drama_refinement._file_hash(output),
+            }
+
+        with mock.patch.object(
+            short_drama_refinement, "_delivery_capability", return_value=capability,
+        ), mock.patch.object(
+            short_drama_refinement, "_valid_acceptance",
+            return_value={"snapshot": {"media_contract": {
+                "delivery_eligible": True, "subtitle_required": False,
+            }}},
+        ), mock.patch(
+            "content_domains.short_drama_autodraft._verified_native_assembly_sources",
+            side_effect=verify,
+        ), mock.patch(
+            "content_domains.short_drama_formal_renderer.render_native_2k",
+            side_effect=render,
+        ):
+            quote = short_drama_refinement.create_delivery_quote(
+                self.db, "alice", {
+                    "project_id": self.project["id"], "version_id": version["id"],
+                },
+            )
+            job = short_drama_refinement.start_delivery_job(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "quote_token": quote["quote_token"],
+                }, "native-source-delivery", deduct_points=lambda *args: None,
+                refund_points=lambda *args: None,
+            )
+            preview.unlink()
+            for _ in range(4):
+                job = short_drama_refinement.get_delivery_job(
+                    self.db, "alice", self.project["id"], job["id"]
+                )
+        self.assertEqual("succeeded", job["status"], job.get("error"))
+        self.assertEqual(raw_paths, captured["sources"])
+        self.assertNotIn("preview-1080p", json.dumps(captured["assembly"]))
+
+    def test_formal_renderer_receives_each_native_source_in_locked_order(self):
+        source_a = Path(self.tmp.name) / "shot-a-raw.mp4"
+        source_b = Path(self.tmp.name) / "shot-b-raw.mp4"
+        source_a.write_bytes(b"a")
+        source_b.write_bytes(b"b")
+        output = Path(self.tmp.name) / "formal-2k.mp4"
+        captured = {}
+
+        def run(command, **kwargs):
+            captured["command"] = list(command)
+            output.write_bytes(b"native-formal-output")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        probe = {
+            "video": {"width": 2560, "height": 1440},
+            "audio": {"codec": "aac", "sample_rate": 48000, "channels": 2},
+            "duration_ms": 2000,
+        }
+        with mock.patch.object(
+            short_drama_formal_renderer.media_plan,
+            "probe_media", return_value=probe,
+        ), mock.patch.object(
+            short_drama_formal_renderer, "_run", side_effect=run,
+        ), mock.patch.object(
+            short_drama_formal_renderer.short_drama_native_audio,
+            "inspect_native_audio", return_value={"audible": True},
+        ), mock.patch.object(
+            short_drama_formal_renderer.subprocess, "run",
+            return_value=subprocess.CompletedProcess([], 0, "", ""),
+        ):
+            result = short_drama_formal_renderer.render_native_2k(
+                [source_a, source_b], "16:9", 2000,
+                {"subtitle_required": False}, output,
+            )
+        command = captured["command"]
+        inputs = [command[index + 1] for index, value in enumerate(command) if value == "-i"]
+        self.assertEqual([str(source_a), str(source_b)], inputs)
+        self.assertNotIn("preview-1080p", " ".join(command))
+        self.assertEqual(short_drama_refinement._file_hash(output), result["sha256"])
+
     def _assert_real_formal_delivery(self, ratio, preview_size, expected_size):
         ffmpeg = shutil.which(os.environ.get("FFMPEG_BIN", "ffmpeg"))
         ffprobe = shutil.which(os.environ.get("FFPROBE_BIN", "ffprobe"))
@@ -419,29 +626,84 @@ class ShortDramaRefinementTests(unittest.TestCase):
         source.parent.mkdir(parents=True)
         subtitle_file = root / "locked.srt"
         subtitle_file.write_text(
-            "1\n00:00:00,000 --> 00:00:29,900\nlocked subtitle\n",
+            "1\n00:00:00,000 --> 00:00:01,900\nlocked subtitle\n",
             encoding="utf-8",
         )
         generated = subprocess.run([
             ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
             "-f", "lavfi", "-i",
-            "color=c=blue:size=%s:rate=25:duration=30" % preview_size,
-            "-f", "lavfi", "-i", "sine=frequency=660:duration=30",
+            "color=c=blue:size=%s:rate=25:duration=2" % preview_size,
+            "-f", "lavfi", "-i", "sine=frequency=660:duration=2",
             "-f", "srt", "-i", str(subtitle_file),
             "-map", "0:v:0", "-map", "1:a:0", "-map", "2:0",
             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
-            "-c:s", "mov_text", "-t", "30", str(source),
+            "-c:s", "mov_text", "-t", "2", str(source),
         ], capture_output=True, text=True, timeout=60)
         self.assertEqual(0, generated.returncode, generated.stderr)
+        native_size = "2560x1440" if ratio == "16:9" else "1440x2560"
+        native_evidence = {}
+        for index, shot_key in enumerate(("shot_01", "shot_02"), 1):
+            raw_relative = "video/%s-%s-raw.mp4" % (
+                shot_key, ratio.replace(":", "-"),
+            )
+            derived_relative = "video/%s-%s-faststart.mp4" % (
+                shot_key, ratio.replace(":", "-"),
+            )
+            raw = root / raw_relative
+            raw.parent.mkdir(parents=True, exist_ok=True)
+            native = subprocess.run([
+                ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                "-f", "lavfi", "-i",
+                "color=c=%s:size=%s:rate=25:duration=1" % (
+                    "red" if index == 1 else "green", native_size,
+                ),
+                "-f", "lavfi", "-i",
+                "sine=frequency=%d:duration=1" % (440 + index * 110),
+                "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264",
+                "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-shortest", str(raw),
+            ], capture_output=True, text=True, timeout=60)
+            self.assertEqual(0, native.returncode, native.stderr)
+            derived = root / derived_relative
+            shutil.copyfile(raw, derived)
+            raw_hash = short_drama_refinement._file_hash(raw)
+            derived_hash = short_drama_refinement._file_hash(derived)
+            native_evidence[shot_key] = {
+                "raw": {
+                    "file": raw_relative, "sha256": raw_hash,
+                    "size_bytes": raw.stat().st_size,
+                },
+                "derived": {
+                    "file": derived_relative, "sha256": derived_hash,
+                    "size_bytes": derived.stat().st_size,
+                    "derived_from_sha256": raw_hash,
+                },
+                "resolution": {
+                    "width": expected_size[0], "height": expected_size[1],
+                },
+                "audio": {
+                    "audible": True, "codec": "aac", "sample_rate": 44100,
+                    "channels": 1, "mean_volume_dbfs": -21.0,
+                    "max_volume_dbfs": -3.0,
+                },
+                "inspected_at": int(time.time()),
+            }
         conn = self.db()
         try:
             manifest = json.loads(conn.execute(
                 "SELECT manifest_json FROM short_drama_autodraft_versions "
                 "WHERE id='draft-v1'"
             ).fetchone()[0])
-            manifest["duration_ms"] = 30000
-            manifest["shots"][0].update({"start_ms": 0, "end_ms": 15000})
-            manifest["shots"][1].update({"start_ms": 15000, "end_ms": 30000})
+            manifest["duration_ms"] = 2000
+            manifest["shots"][0].update({"start_ms": 0, "end_ms": 1000})
+            manifest["shots"][1].update({"start_ms": 1000, "end_ms": 2000})
+            manifest["media_contract"].update({
+                "subtitles": [{
+                    "line_id": "locked-line", "start_ms": 0,
+                    "end_ms": 1900, "text": "locked subtitle",
+                }],
+                "subtitle_required": True,
+            })
             conn.execute(
                 "UPDATE short_drama_projects SET ratio=? WHERE id=?",
                 (ratio, self.project["id"]),
@@ -454,6 +716,21 @@ class ShortDramaRefinementTests(unittest.TestCase):
                     json.dumps(manifest),
                 ),
             )
+            for shot_key, evidence in native_evidence.items():
+                conn.execute(
+                    "UPDATE short_drama_provider_shot_jobs SET provider='minimax_h3',"
+                    "result_json=? WHERE project_id=? AND shot_key=?",
+                    (json.dumps({"native_media": evidence}), self.project["id"], shot_key),
+                )
+                conn.execute(
+                    "UPDATE short_drama_provider_shot_versions SET provider='minimax_h3',"
+                    "file=?,url=? WHERE project_id=? AND shot_key=?",
+                    (
+                        evidence["derived"]["file"],
+                        "/api/gen/file/" + evidence["derived"]["file"],
+                        self.project["id"], shot_key,
+                    ),
+                )
             conn.commit()
         finally:
             conn.close()
@@ -488,7 +765,7 @@ class ShortDramaRefinementTests(unittest.TestCase):
             int(probe["video"]["width"]), int(probe["video"]["height"]),
         ))
         self.assertIsNotNone(probe["audio"])
-        self.assertLessEqual(abs(int(probe["duration_ms"]) - 30000), 300)
+        self.assertLessEqual(abs(int(probe["duration_ms"]) - 2000), 300)
         subtitle = subprocess.run([
             ffprobe, "-v", "error", "-select_streams", "s",
             "-show_entries", "stream=index", "-of", "csv=p=0", str(output),

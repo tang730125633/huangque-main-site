@@ -16,7 +16,6 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from urllib.parse import unquote
 
 from . import (
     short_drama_assembly_plan as media_plan,
@@ -502,7 +501,7 @@ def _provider_asset(conn, project_id, shot_key, version_id=None):
         values.append(version_id)
     row = conn.execute(
         "SELECT v.*,j.status AS job_status,j.id AS internal_provider_job_id,"
-        "j.created_at AS provider_job_created_at "
+        "j.created_at AS provider_job_created_at,j.result_json "
         "FROM short_drama_provider_shot_versions v "
         "JOIN short_drama_provider_shot_jobs j ON j.id=v.job_id WHERE " + where +
         " ORDER BY v.version DESC,v.created_at DESC LIMIT 1",
@@ -514,6 +513,13 @@ def _provider_asset(conn, project_id, shot_key, version_id=None):
             "refinement_provider_asset_required",
             "请先通过真实画面 Provider 为该镜头生成一个成功的新版本",
             409,
+        )
+    result = _json(item.pop("result_json", None), {})
+    if str(item.get("provider") or "") == "minimax_h3":
+        from . import short_drama_autodraft
+
+        item["native_media"] = short_drama_autodraft._sanitized_native_media(
+            result.get("native_media")
         )
     return item
 
@@ -711,13 +717,20 @@ def _acceptance_evidence(conn, project, refinement):
             live_media.get("delivery_eligible") is True
             and live_media.get("evidence_source") == media.get("evidence_source")
         )
-    visual = [{
-        "shot_key": str(item.get("shot_key") or ""),
-        "version_id": str(item.get("provider_version_id") or ""),
-        "provider_job_id": str(item.get("provider_job_id") or ""),
-        "input_hash": str(item.get("input_hash") or ""),
-        "file_hash": str(item.get("file_hash") or ""),
-    } for item in refinement.get("shots") or []]
+    visual = []
+    for item in refinement.get("shots") or []:
+        native = item.get("native_media") or {}
+        raw = native.get("raw") or {}
+        derived = native.get("derived") or {}
+        visual.append({
+            "shot_key": str(item.get("shot_key") or ""),
+            "version_id": str(item.get("provider_version_id") or ""),
+            "provider_job_id": str(item.get("provider_job_id") or ""),
+            "input_hash": str(item.get("input_hash") or ""),
+            "file_hash": str(item.get("file_hash") or ""),
+            "native_raw_sha256": str(raw.get("sha256") or ""),
+            "native_derived_sha256": str(derived.get("sha256") or ""),
+        })
     material_hash = str(media.get("material_hash") or "")
     preview_hash = str(refinement.get("preview_file_hash") or "")
     preview_file = str(refinement_media.get("preview_file") or "")
@@ -1259,6 +1272,7 @@ def _render_refinement_preview(conn, job, source):
             "url": str(asset["url"]),
             "file_hash": file_hash,
             "input_hash": str(asset["input_hash"]),
+            "native_media": asset.get("native_media") or {},
             "media_validation": {
                 "duration_ms": int(probe["duration_ms"]),
                 "video": bool(probe.get("video")),
@@ -1361,6 +1375,7 @@ def _stage_refinement_replacement(conn, job, source):
                 "url": str(replacement["url"]),
                 "file_hash": file_hash,
                 "input_hash": str(replacement["input_hash"]),
+                "native_media": replacement.get("native_media") or {},
                 "media_validation": {
                     "duration_ms": duration_ms,
                     "video": True,
@@ -1745,6 +1760,54 @@ def _validate_delivery_media(
     return {"probe": probe, "subtitle_streams": subtitle_count}
 
 
+def _confirmed_refinement_duration_ms(project, refinement):
+    validation = (refinement.get("media") or {}).get("media_validation") or {}
+    duration_ms = int(validation.get("duration_ms") or 0)
+    if duration_ms > 0:
+        return duration_ms
+    duration_ms = max(
+        [int(item.get("end_ms") or 0) for item in refinement.get("shots") or []]
+        or [0]
+    )
+    if duration_ms > 0:
+        return duration_ms
+    return int(project.get("target_duration") or 0) * 1000
+
+
+def _formal_native_assembly(source):
+    """Select immutable raw 2K files from the confirmed shot order."""
+    from . import short_drama_autodraft
+
+    shots = []
+    for index, value in enumerate(source.get("shots") or []):
+        item = dict(value) if isinstance(value, dict) else {}
+        shot_key = str(item.get("shot_key") or "shot_%02d" % (index + 1))
+        if str(item.get("provider") or "") != "minimax_h3":
+            raise RefinementError(
+                "delivery_native_provider_required",
+                "%s 不是可验证的 MiniMax 原生 2K 镜头" % shot_key,
+                409,
+            )
+        native_media = short_drama_autodraft._sanitized_native_media(
+            item.get("native_media")
+        )
+        if not native_media:
+            raise RefinementError(
+                "delivery_native_media_required",
+                "%s 缺少可信的原生 2K 媒体证据" % shot_key,
+                409,
+            )
+        item["file"] = native_media["raw"]["file"]
+        item["native_media"] = native_media
+        shots.append(item)
+    if not shots:
+        raise RefinementError(
+            "delivery_native_sources_missing",
+            "正式成片没有已确认的原生 2K 镜头", 409,
+        )
+    return {"shots": shots}
+
+
 def _complete_delivery(conn, row):
     job = _job(row)
     capability = _require_delivery_available()
@@ -1790,65 +1853,52 @@ def _complete_delivery(conn, row):
     output_url = source_url
     output_file = ""
     output_hash = ""
+    native_inputs = []
     if deliverable:
-        prefix = "/api/gen/file/"
-        if not source_url.startswith(prefix):
-            raise RefinementError(
-                "delivery_source_uncontrolled",
-                "2K 导出只允许使用已归档的项目预览文件", 409,
-            )
+        from . import short_drama_autodraft, short_drama_formal_renderer
+
         server_dir = Path(__file__).resolve().parents[1]
         root = Path(os.environ.get(
             "CONTENT_OUT", str(server_dir / "content_out")
         )).resolve()
-        source_file = (root / unquote(source_url[len(prefix):])).resolve()
-        try:
-            source_file.relative_to(root)
-        except ValueError as error:
-            raise RefinementError(
-                "delivery_source_uncontrolled", "正式导出来源路径不安全", 409
-            ) from error
-        if not source_file.is_file():
-            raise RefinementError(
-                "delivery_source_missing", "1080p 合成草稿文件不存在", 409
-            )
         target = root / "short_drama_delivery" / job["project_id"] / job["id"]
         temp = target.with_name(".%s.tmp" % target.name)
         if temp.exists():
             shutil.rmtree(temp)
         temp.mkdir(parents=True, exist_ok=True)
         rendered = temp / "final-2k.mp4"
-        width, height = _dimensions(project["ratio"], "2k")
-        command = [
-            os.environ.get("FFMPEG_BIN", "ffmpeg"), "-y", "-hide_banner",
-            "-loglevel", "error", "-i", str(source_file),
-            "-map", "0:v:0", "-map", "0:a:0", "-map", "0:s?",
-            "-vf", "scale=%d:%d:force_original_aspect_ratio=decrease,"
-            "pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black,fps=25,setsar=1"
-            % (width, height, width, height),
-            "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
-            "-c:s", "mov_text",
-            "-movflags", "+faststart", str(rendered),
-        ]
         try:
-            result = subprocess.run(
-                command, capture_output=True, text=True, timeout=1800,
+            assembly = _formal_native_assembly(source)
+            native_inputs = [
+                {
+                    "shot_key": item["shot_key"],
+                    "file": item["file"],
+                    "sha256": item["native_media"]["raw"]["sha256"],
+                    "size_bytes": item["native_media"]["raw"]["size_bytes"],
+                }
+                for item in assembly["shots"]
+            ]
+            sources = short_drama_autodraft._verified_native_assembly_sources(
+                assembly, temp / ".sources",
             )
-        except (OSError, subprocess.TimeoutExpired) as error:
-            raise RefinementError(
-                "formal_renderer_unavailable", "2K 导出执行器不可用", 503
-            ) from error
-        if result.returncode != 0 or not rendered.is_file():
-            raise RefinementError(
-                "formal_render_failed",
-                str(result.stderr or "2K 正式导出失败").strip()[-500:], 409,
+            validation = short_drama_formal_renderer.render_native_2k(
+                sources, project["ratio"],
+                _confirmed_refinement_duration_ms(project, source),
+                media_contract, rendered,
             )
-        validation = _validate_delivery_media(
-            rendered, project["ratio"], _refinement_duration_ms(project, source),
-            subtitle_required=bool(media_contract.get("subtitle_required")),
-            resolution="2k",
-        )
+        except short_drama_autodraft.AutodraftError as error:
+            shutil.rmtree(temp, ignore_errors=True)
+            raise RefinementError(error.code, str(error), error.status) from error
+        except short_drama_formal_renderer.FormalRenderError as error:
+            shutil.rmtree(temp, ignore_errors=True)
+            raise RefinementError(error.code, str(error), error.status) from error
+        except RefinementError:
+            shutil.rmtree(temp, ignore_errors=True)
+            raise
+        shutil.rmtree(temp / ".sources", ignore_errors=True)
+        subtitle_temp = temp / "locked-subtitles.srt"
+        if subtitle_temp.exists():
+            subtitle_temp.unlink()
         if target.exists():
             shutil.rmtree(target)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1858,11 +1908,7 @@ def _complete_delivery(conn, row):
             "final-2k.mp4"
         ).as_posix()
         output_url = "/api/gen/file/" + output_file
-        digest = hashlib.sha256()
-        with (root / output_file).open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-        output_hash = digest.hexdigest()
+        output_hash = validation["sha256"]
     version = int(conn.execute(
         "SELECT COALESCE(MAX(version),0)+1 FROM short_drama_delivery_versions "
         "WHERE project_id=?", (job["project_id"],),
@@ -1875,6 +1921,8 @@ def _complete_delivery(conn, row):
         "refinement_version_id": source["id"],
         "refinement_version": source["version"],
         "source_hash": source["input_hash"],
+        "preview_url": source_url,
+        "native_inputs": native_inputs,
         "shots": source["shots"],
         "issues": [],
         "playback_url": output_url,
