@@ -230,6 +230,9 @@ function toast(){}
         self.assertIn("url.searchParams.set('conversation_id',cid||'')", navigation)
         self.assertIn("url.searchParams.set('project_id',cid||'')", navigation)
         self.assertIn("url.searchParams.set('return_to',location.pathname+location.search)", navigation)
+        route = self.html[self.html.index("function productionRoute"):self.html.index("function continueProductionRevision")]
+        self.assertIn("if(!value)return null", route)
+        self.assertIn("'/workbench/canvas?collab='+encodeURIComponent(canvas.board_id)", route)
 
     def test_unquoted_local_field_draft_restores_but_cannot_override_server_quote(self):
         if not shutil.which("node"):
