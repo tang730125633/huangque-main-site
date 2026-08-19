@@ -343,6 +343,36 @@ def _production_source(convo, target):
     }
 
 
+def _production_target_from_message(convo, message):
+    """Resolve one module-6 script when the browser has no selected target."""
+    pack = (convo.get("deliverables") or {}).get("6") or {}
+    candidates = [
+        {
+            "category_id": str(category.get("id") or ""),
+            "topic_id": str(topic.get("id") or ""),
+            "title": str(topic.get("title") or "").strip(),
+        }
+        for category in pack.get("categories") or []
+        for topic in category.get("topics") or []
+    ]
+    compact = re.sub(r"\s+", "", str(message or "")).lower()
+    title_matches = [
+        item for item in candidates
+        if item["title"] and re.sub(r"\s+", "", item["title"]).lower() in compact
+    ]
+    if len(title_matches) == 1:
+        return {key: title_matches[0][key] for key in ("category_id", "topic_id")}
+    if pack.get("format") == "featured_3_v1":
+        ordinal = re.search(r"第([一二三123])篇", compact)
+        if ordinal:
+            index = {"一": 1, "二": 2, "三": 3}.get(ordinal.group(1), int(ordinal.group(1)) if ordinal.group(1).isdigit() else 0)
+            if 0 < index <= len(candidates):
+                return {key: candidates[index - 1][key] for key in ("category_id", "topic_id")}
+    if len(candidates) == 1:
+        return {key: candidates[0][key] for key in ("category_id", "topic_id")}
+    raise coach_harness.HarnessError("请先打开模块 6 中要制作的具体文案，或在消息里写明完整标题")
+
+
 def _production_public(record):
     """Never return a bridge quote token through a project read endpoint."""
     result = json.loads(json.dumps(record, ensure_ascii=False))
@@ -2855,8 +2885,10 @@ def process_chat_request(body):
                         action_revision = None
                 else:
                     action_revision = body.get("expected_revision")
-                if action is None and content_target is not None:
+                if action is None:
                     production_intent = coach_harness.production_intent(user_message)
+                    if production_intent is not None and content_target is None:
+                        content_target = _production_target_from_message(convo, user_message)
 
             if action is not None:
                 result, status = _process_action_turn(
