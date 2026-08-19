@@ -1301,10 +1301,23 @@ def minimax_idempotency_replay_bodies(payload):
         "reference_images": refs,
     })
     candidates = [dict(cleaned)]
+    legacy_cleaned = None
+    if not str(payload.get("resolution") or "").strip():
+        legacy_request = video_minimax_h3.build_request(
+            prompt, refs, ratio, duration, "768p", allow_legacy_resolution=True,
+        )
+        legacy_cleaned = dict(
+            cleaned, resolution=legacy_request["resolution"].lower(),
+        )
+        candidates.append(legacy_cleaned)
     for base in video_minimax_h3.ORIGIN_API_BASES.values():
         candidates.append(dict(cleaned, _minimax_api_base=base))
+        if legacy_cleaned is not None:
+            candidates.append(dict(legacy_cleaned, _minimax_api_base=base))
     for origin in video_minimax_h3.ORIGIN_API_BASES:
         candidates.append(dict(cleaned, _minimax_origin=origin))
+        if legacy_cleaned is not None:
+            candidates.append(dict(legacy_cleaned, _minimax_origin=origin))
     return candidates
 
 

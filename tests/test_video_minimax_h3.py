@@ -106,15 +106,19 @@ class MiniMaxH3VideoTests(unittest.TestCase):
                 "旧分辨率不应创建新任务", [], "9:16", 5, "768p"
             )
 
-    def test_legacy_hash_candidates_replay_old_768p_record(self):
-        request = {
+    def test_omitted_resolution_replays_old_768p_record(self):
+        legacy_request = {
             "channel": "minimax", "prompt": "legacy paid request",
             "model": "MiniMax-H3", "duration": 5,
             "ratio": "9:16", "resolution": "768p",
         }
-        candidates = video.minimax_idempotency_replay_bodies(request)
+        legacy_candidates = video.minimax_idempotency_replay_bodies(legacy_request)
+        omitted_request = dict(legacy_request)
+        omitted_request.pop("resolution")
+        candidates = video.minimax_idempotency_replay_bodies(omitted_request)
+        self.assertEqual({"2k", "768p"}, {item["resolution"] for item in candidates})
         old = next(
-            item for item in candidates
+            item for item in legacy_candidates
             if item.get("_minimax_api_base") == video_minimax_h3.METASO_API_BASE
         )
         with tempfile.TemporaryDirectory() as folder:
