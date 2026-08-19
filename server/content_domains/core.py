@@ -1365,12 +1365,33 @@ _ALL_JOB_QUEUES = (_job_queue, _fast_job_queue, _talking_job_queue,
                    _image_job_queue, _cinematic_job_queue, _avatar_job_queue)
 
 
+def _reap_short_drama_native_media():
+    """Best-effort cleanup before persisted jobs are recovered into queues."""
+    try:
+        from . import video
+        result = video.reap_short_drama_native_orphans()
+        for error in result.get("errors") or []:
+            print(
+                "[short-drama-native-media] orphan cleanup warning: %s"
+                % str(error)[:300],
+                flush=True,
+            )
+        return result
+    except Exception as error:
+        print(
+            "[short-drama-native-media] startup cleanup failed: %s" % error,
+            flush=True,
+        )
+        return None
+
+
 def start_job_workers():
     global _workers_started
     with _job_queue_lock:
         if _workers_started:
             return
         _workers_started = True
+    _reap_short_drama_native_media()
     for count, q, prefix in ((JOB_WORKERS, _job_queue, "content-job-worker"), (FAST_JOB_WORKERS, _fast_job_queue, "content-fast-worker"),
                              (TALKING_JOB_WORKERS, _talking_job_queue, "content-talking-worker"),
                              (IMAGE_JOB_WORKERS, _image_job_queue, "content-image-worker"),

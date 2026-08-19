@@ -1,4 +1,5 @@
 import json
+import inspect
 import os
 import shutil
 import sqlite3
@@ -17,9 +18,11 @@ if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
 from content_domains import (
+    core,
     short_drama,
     short_drama_formal_renderer,
     short_drama_refinement,
+    video,
 )
 
 
@@ -653,6 +656,29 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.assertEqual([str(source_a), str(source_b)], inputs)
         self.assertNotIn("preview-1080p", " ".join(command))
         self.assertEqual(short_drama_refinement._file_hash(output), result["sha256"])
+
+    def test_worker_startup_reaps_native_orphans_before_pending_recovery(self):
+        source = inspect.getsource(core.start_job_workers)
+        self.assertLess(
+            source.index("_reap_short_drama_native_media()"),
+            source.index("threading.Thread"),
+        )
+        self.assertLess(
+            source.index("_reap_short_drama_native_media()"),
+            source.index("_recover_pending_jobs(_PENDING_RECOVERY_LIMIT)"),
+        )
+
+    def test_native_orphan_startup_failure_is_logged_and_nonfatal(self):
+        with mock.patch.object(
+            video, "reap_short_drama_native_orphans",
+            side_effect=RuntimeError("reaper unavailable"),
+        ), mock.patch("builtins.print") as logged:
+            result = core._reap_short_drama_native_media()
+        self.assertIsNone(result)
+        self.assertIn(
+            "[short-drama-native-media]",
+            " ".join(str(value) for value in logged.call_args.args),
+        )
 
     def _assert_real_formal_delivery(self, ratio, preview_size, expected_size):
         ffmpeg = shutil.which(os.environ.get("FFMPEG_BIN", "ffmpeg"))
