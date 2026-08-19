@@ -124,17 +124,76 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual(200, status, payload)
         self.assertEqual(self.auth.hq_cli_api.ACTION_CATALOG_VERSION, payload["version"])
         actions = {item["action"]: item for item in payload["actions"]}
-        self.assertEqual(set(self.auth.hq_cli_api._ACTION_INPUTS), set(actions))
+        self.assertEqual(set(self.auth.hq_cli_api._ACTION_INPUTS) | {"image-upload", "video-upload"}, set(actions))
         for action, item in actions.items():
             with self.subTest(action=action):
                 self.assertEqual("object", item["input_schema"]["type"])
                 self.assertFalse(item["input_schema"]["additionalProperties"])
+                self.assertIn("required", item["input_schema"])
                 self.assertIn("purpose", item)
+                self.assertIn("constraints", item)
                 self.assertIn("billing", item)
                 self.assertIn("external_effect", item)
+                self.assertIn("confirmation_required", item)
+                self.assertIn("risk", item)
+                self.assertIn("result", item)
                 self.assertIn("result_type", item)
                 self.assertIn("ui_route", item)
+                self.assertIn("transport", item)
+                self.assertIn("availability", item)
                 self.assertNotIn("http", json.dumps(item, ensure_ascii=False).lower())
+
+    def test_ip12_agent_catalog_has_full_media_canvas_schemas_and_upload_transports(self):
+        self._enable_ip12_bridge()
+        status, payload = self._request(
+            "/api/auth/internal/ip12/agent/catalog", {"account_id": self._agent_account_id()},
+            extra_headers=self._agent_headers(),
+        )
+        self.assertEqual(200, status, payload)
+        actions = {item["action"]: item for item in payload["actions"]}
+        expected = {
+            "image-generate": ("image", ["prompt"]),
+            "audio-generate": ("audio", ["text"]),
+            "video-generate": ("video", ["prompt"]),
+            "canvas-agent-plan": ("canvas", ["prompt", "project_id", "snapshot_digest", "scope", "nodes", "edges", "selected_node_ids"]),
+            "canvas-ops": ("canvas", ["board_id", "base_version", "op_id", "ops"]),
+            "digital-ip-text-generate": ("video", ["avatar_id", "text", "voice"]),
+            "cinematic-motion-generate": ("video", ["avatar_id", "reference_video_upload_ids"]),
+        }
+        for action, (family, required) in expected.items():
+            with self.subTest(action=action):
+                item = actions[action]
+                self.assertEqual(family, item["family"])
+                self.assertEqual(required, item["input_schema"]["required"])
+                self.assertTrue(item["constraints"])
+                self.assertEqual("action", item["transport"]["kind"])
+        for action, family, maximum in (("image-upload", "image", 10 * 1024 * 1024),
+                                        ("video-upload", "video", 32 * 1024 * 1024)):
+            with self.subTest(action=action):
+                item = actions[action]
+                self.assertEqual(family, item["family"])
+                self.assertEqual(["file"], item["input_schema"]["required"])
+                self.assertEqual(maximum, item["input_schema"]["properties"]["file"]["maxBytes"])
+                self.assertEqual("dedicated_upload", item["transport"]["kind"])
+                self.assertNotIn(action, self.auth.hq_cli_api.ACTION_CATALOG_MAP)
+
+    def test_ip12_agent_catalog_hides_feature_disabled_families_and_providers(self):
+        self._enable_ip12_bridge()
+        self.auth.feature_flags.set_enabled("image", False, "test")
+        self.auth.feature_flags.set_enabled("grok_video", False, "test")
+        status, payload = self._request(
+            "/api/auth/internal/ip12/agent/catalog", {"account_id": self._agent_account_id()},
+            extra_headers=self._agent_headers(),
+        )
+        self.assertEqual(200, status, payload)
+        actions = {item["action"]: item for item in payload["actions"]}
+        image = actions["image-generate"]
+        self.assertEqual("disabled", image["availability"]["status"])
+        self.assertEqual([], image["availability"]["available_provider"])
+        self.assertIn("image", image["availability"]["disabled_provider"]["openai"])
+        video = actions["video-generate"]
+        self.assertNotIn("grok", video["input_schema"]["properties"]["channel"]["enum"])
+        self.assertIn("grok_video", video["availability"]["disabled_channel"]["grok"])
 
     def test_ip12_agent_bridge_requires_rollout_account_allowlist(self):
         self._enable_ip12_bridge()

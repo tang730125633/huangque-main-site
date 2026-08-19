@@ -167,6 +167,214 @@ _ACTION_PURPOSES = {
     "canvas-agent-plan": "为画布生成可确认的操作方案", "canvas-ops": "写入本人画布操作",
 }
 
+# Discovery is descriptive only.  `action_plan` below remains the sole input
+# validator and route builder.  Keep this subset explicit because agents need
+# usable media/Canvas schemas, not the old field-type-only placeholder.
+_ID_SCHEMA = {"type": "string", "minLength": 1, "maxLength": 160}
+_INT_ID_SCHEMA = {"type": "integer", "minimum": 1, "maximum": 2**63 - 1}
+_IMAGE_UPLOAD_SCHEMA = {"type": "string", "pattern": "^img_[0-9a-f]{32}$"}
+_VIDEO_UPLOAD_SCHEMA = {"type": "string", "pattern": "^vid_[0-9a-f]{32}$"}
+_MEDIA_SCHEMAS = {
+    "image-generate": {
+        "required": ["prompt"], "properties": {
+            "prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
+            "provider": {"type": "string", "enum": ["openai", "xiaole", "seedream", "banana"]},
+            "ratio": {"type": "string", "enum": ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]},
+            "quality": {"type": "string", "enum": ["std", "hd"]},
+            "count": {"type": "integer", "minimum": 1, "maximum": 4},
+            "variant": {"type": "string", "enum": ["std", "pro"]},
+            "model": {"type": "string", "enum": ["nb2", "pro"]},
+            "image_upload_id": _IMAGE_UPLOAD_SCHEMA, "mask_upload_id": _IMAGE_UPLOAD_SCHEMA,
+            "reference_upload_ids": {"type": "array", "minItems": 1, "maxItems": 16,
+                                     "items": _IMAGE_UPLOAD_SCHEMA},
+        },
+        "constraints": [
+            "provider-specific reference_upload_ids limit: openai=16, seedream=10, xiaole=4, banana=14",
+            "image_upload_id and reference_upload_ids are mutually exclusive",
+            "mask_upload_id requires image_upload_id, provider=openai, and count=1",
+            "model is only for banana; variant is only for seedream; banana count is 1, 2, or 4",
+        ],
+    },
+    "video-generate": {
+        "required": ["prompt"], "properties": {
+            "prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
+            "channel": {"type": "string", "enum": ["grok", "micro", "omni", "minimax", "sora"]},
+            "ratio": {"type": "string", "enum": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"]},
+            "duration": {"type": "integer", "minimum": 1, "maximum": 15},
+            "seconds": {"type": "integer", "enum": [4, 8, 12]},
+            "resolution": {"type": "string", "enum": ["480p", "720p", "768p", "1024p", "1080p"]},
+            "model": {"type": "string", "enum": ["grok-imagine-video", "grok-imagine-video-1.5", "sora-2", "sora-2-pro"]},
+            "generate_audio": {"type": "boolean"},
+            "reference_upload_ids": {"type": "array", "minItems": 1, "maxItems": 9,
+                                     "items": _IMAGE_UPLOAD_SCHEMA},
+        },
+        "constraints": [
+            "reference_upload_ids limit: grok=7, micro=9, omni=6, minimax=5",
+            "sora uses model=sora-2|sora-2-pro, seconds=4|8|12, ratio=9:16|16:9, resolution=720p|1024p|1080p, and exactly one reference when supplied",
+            "sora rejects duration and generate_audio; seconds is only for sora; model is otherwise only for grok",
+            "generate_audio is only a boolean for micro",
+        ],
+    },
+    "audio-generate": {
+        "required": ["text"], "properties": {
+            "text": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "voice": {"type": "string", "minLength": 1, "maxLength": 128},
+            "speed": {"type": "number", "minimum": 0.5, "maximum": 2},
+            "pitch": {"type": "integer", "minimum": -12, "maximum": 12},
+            "volume": {"type": "integer", "minimum": -50, "maximum": 100},
+        }, "constraints": ["speed is rounded to one decimal place"],
+    },
+    "canvas-create": {
+        "required": ["name"], "properties": {
+            "name": {"type": "string", "minLength": 1, "maxLength": 48},
+            "prompt": {"type": "string", "maxLength": 2000},
+        }, "constraints": ["a non-empty prompt becomes the first text node"],
+    },
+    "canvas-agent-plan": {
+        "required": ["prompt", "project_id", "snapshot_digest", "scope", "nodes", "edges", "selected_node_ids"],
+        "properties": {
+            "prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
+            "project_id": {"type": "string", "pattern": "^(local|collab):[A-Za-z0-9_-]{1,120}$"},
+            "snapshot_digest": {"type": "string", "pattern": "^[a-f0-9]{8,32}$"},
+            "scope": {"type": "string", "enum": ["local", "collab"]},
+            "nodes": {"type": "array", "maxItems": 60}, "edges": {"type": "array", "maxItems": 120},
+            "selected_node_ids": {"type": "array", "maxItems": 30}, "history": {"type": "array", "maxItems": 10},
+            "page_context": {"type": "object"}, "ip12_context": {"type": "object"},
+        },
+        "constraints": [
+            "project_id prefix must match scope; nodes and edges may not reference unknown or duplicate node IDs",
+            "node text is capped at 30,000 characters total; history is at most 10 user/assistant messages",
+            "page_context is only the Huangque Canvas page; media data, blob URLs, and base64 are rejected",
+        ],
+    },
+    "canvas-ops": {
+        "required": ["board_id", "base_version", "op_id", "ops"], "properties": {
+            "board_id": _ID_SCHEMA, "base_version": _INT_ID_SCHEMA,
+            "op_id": {"type": "string", "pattern": "^hqcli-[A-Za-z0-9_-]{11,122}$"},
+            "ops": {"type": "array", "minItems": 1, "maxItems": 12},
+        },
+        "constraints": [
+            "only node.create, node.patch, and edge.create are accepted",
+            "created node types are text, gen, or video; coordinates are 0-100000",
+            "deletion, board replacement, generated output, membership, and script operations are rejected",
+        ],
+    },
+}
+
+_TALKING_FIELDS = {
+    "ratio": {"type": "string", "enum": ["9:16", "16:9", "1:1", "4:5", "5:4"]},
+    "motion": {"type": "string", "enum": ["low", "medium", "high"]}, "subtitle": {"type": "boolean"},
+    "subtitle_style": {"type": "string", "enum": ["white", "variety", "bar"]},
+    "subtitle_position": {"type": "string", "enum": ["top", "upper", "center", "lower", "bottom"]},
+}
+_MEDIA_SCHEMAS.update({
+    "canvas-list": {"required": [], "properties": {
+        "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+        "offset": {"type": "integer", "minimum": 0, "maximum": 100000},
+    }, "constraints": []},
+    "canvas-get": {"required": ["board_id"], "properties": {"board_id": _ID_SCHEMA}, "constraints": []},
+    "digital-ip-text-generate": {"required": ["avatar_id", "text", "voice"], "properties": {
+        "avatar_id": _INT_ID_SCHEMA, "text": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "voice": {"type": "string", "minLength": 1, "maxLength": 128}, **_TALKING_FIELDS},
+        "constraints": ["avatar_id must be a ready avatar owned by this account; output is fixed at 1080p"]},
+    "digital-ip-audio-generate": {"required": ["avatar_id", "audio_file"], "properties": {
+        "avatar_id": _INT_ID_SCHEMA, "audio_file": {"type": "string", "minLength": 1, "maxLength": 500}, **_TALKING_FIELDS},
+        "constraints": ["audio_file comes from this account's assets, not a URL, local path, or upload; output is fixed at 1080p"]},
+    "digital-ip-batch-generate": {"required": ["avatars", "text", "voice"], "properties": {
+        "avatars": {"type": "array", "minItems": 2, "maxItems": 5, "uniqueItems": True, "items": {
+            "type": "object", "additionalProperties": False, "required": ["avatar_id"], "properties": {
+                "avatar_id": _INT_ID_SCHEMA, "label": {"type": "string", "minLength": 1, "maxLength": 60},
+            }}},
+        "text": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "voice": {"type": "string", "minLength": 1, "maxLength": 128}, **_TALKING_FIELDS},
+        "constraints": ["avatars contains 2-5 distinct ready account avatar IDs, each optionally labelled up to 60 characters; output is fixed at 1080p"]},
+    "cinematic-open-generate": {"required": ["prompt"], "properties": {
+        "avatar_id": _INT_ID_SCHEMA, "avatar_ids": {"type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": True, "items": _INT_ID_SCHEMA},
+        "prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "ratio": {"type": "string", "enum": ["9:16", "16:9", "1:1"]},
+        "duration": {"type": "integer", "minimum": 4, "maximum": 15}, "enhance_prompt": {"type": "boolean"},
+        "reference_image_upload_ids": {"type": "array", "minItems": 1, "maxItems": 8, "items": _IMAGE_UPLOAD_SCHEMA},
+        "reference_video_upload_ids": {"type": "array", "minItems": 1, "maxItems": 3, "items": _VIDEO_UPLOAD_SCHEMA},
+    }, "constraints": ["provide avatar_id or avatar_ids, never both; avatars and image references share 9 slots; output is fixed at 720p"]},
+    "cinematic-motion-generate": {"required": ["avatar_id", "reference_video_upload_ids"], "properties": {
+        "avatar_id": _INT_ID_SCHEMA, "reference_video_upload_ids": {"type": "array", "minItems": 1, "maxItems": 1, "items": _VIDEO_UPLOAD_SCHEMA},
+        "ratio": {"type": "string", "enum": ["9:16", "16:9", "1:1"]},
+    }, "constraints": ["avatar_id must be a ready cinematic avatar; output is fixed at 720p"]},
+    "tryon-fast-generate": {"required": ["person_image_upload_id", "clothes_upload_id"], "properties": {
+        "person_image_upload_id": _IMAGE_UPLOAD_SCHEMA, "clothes_upload_id": _IMAGE_UPLOAD_SCHEMA,
+        "seconds": {"type": "integer", "minimum": 5, "maximum": 15},
+    }, "constraints": ["both uploads are private images owned by this account; seconds defaults to 6"]},
+    "tryon-classic-generate": {"required": ["person_video_upload_id"], "properties": {
+        "person_video_upload_id": _VIDEO_UPLOAD_SCHEMA, "clothes_upload_id": _IMAGE_UPLOAD_SCHEMA,
+        "background_upload_id": _IMAGE_UPLOAD_SCHEMA, "seconds": {"type": "integer", "minimum": 1, "maximum": 6},
+    }, "constraints": ["provide clothes_upload_id, background_upload_id, or both; seconds defaults to 6"]},
+    "video-avatars": {"required": [], "properties": {
+        "limit": {"type": "integer", "minimum": 1, "maximum": 120},
+    }, "constraints": []},
+    "video-compose-projects": {"required": [], "properties": {}, "constraints": []},
+    "video-compose-project": {"required": ["project_id"], "properties": {
+        "project_id": {"type": "string", "pattern": "^compose_[0-9a-f]{32}$"},
+    }, "constraints": []},
+    "video-compose-create": {"required": ["source_asset_id"], "properties": {
+        "source_asset_id": _INT_ID_SCHEMA,
+    }, "constraints": ["source_asset_id must be a completed video asset owned by this account"]},
+    "video-compose-analyze": {"required": ["project_id", "expected_revision"], "properties": {
+        "project_id": {"type": "string", "pattern": "^compose_[0-9a-f]{32}$"}, "expected_revision": _INT_ID_SCHEMA,
+    }, "constraints": ["analysis is non-destructive and uses the expected current project revision"]},
+    "video-compose-review": {"required": ["project_id", "expected_revision", "decisions"], "properties": {
+        "project_id": {"type": "string", "pattern": "^compose_[0-9a-f]{32}$"}, "expected_revision": _INT_ID_SCHEMA,
+        "decisions": {"type": "object", "minProperties": 1, "maxProperties": 200,
+                      "additionalProperties": {"type": "string", "enum": ["keep", "remove"]}},
+    }, "constraints": []},
+    "video-compose-render": {"required": ["project_id", "expected_revision"], "properties": {
+        "project_id": {"type": "string", "pattern": "^compose_[0-9a-f]{32}$"}, "expected_revision": _INT_ID_SCHEMA,
+    }, "constraints": ["render uses the confirmed EDL for this project revision"]},
+    "digital-presenter-capability": {"required": [], "properties": {}, "constraints": []},
+    "digital-presenter-project": {"required": ["board_id", "project_id"], "properties": {
+        "board_id": _ID_SCHEMA, "project_id": {"type": "string", "pattern": "^dp_[0-9a-f]{32}$"},
+    }, "constraints": []},
+    "digital-presenter-create": {"required": ["board_id", "request_id"], "properties": {
+        "board_id": _ID_SCHEMA, "request_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{8,128}$"},
+        "title": {"type": "string", "minLength": 1, "maxLength": 80}, "script_text": {"type": "string", "maxLength": 20000},
+        "ratio": {"type": "string", "enum": ["9:16", "16:9"]}, "resolution": {"type": "string", "enum": ["1080p"]},
+        "voice_key": {"type": "string", "maxLength": 200}, "target_duration": {"type": "integer", "minimum": 30, "maximum": 180},
+    }, "constraints": ["request_id is the idempotency key"]},
+    "digital-presenter-update": {"required": ["board_id", "project_id", "revision"], "properties": {
+        "board_id": _ID_SCHEMA, "project_id": {"type": "string", "pattern": "^dp_[0-9a-f]{32}$"}, "revision": _INT_ID_SCHEMA,
+        "title": {"type": "string", "minLength": 1, "maxLength": 80}, "script_text": {"type": "string", "maxLength": 20000},
+        "ratio": {"type": "string", "enum": ["9:16", "16:9"]}, "resolution": {"type": "string", "enum": ["1080p"]},
+        "voice_key": {"type": "string", "maxLength": 200}, "target_duration": {"type": "integer", "minimum": 30, "maximum": 180},
+    }, "constraints": ["provide at least one editable field and the current revision"]},
+})
+
+_FAMILIES = {
+    "image-upload": "image", "image-generate": "image", "audio-slots": "audio", "voices": "audio", "audio-generate": "audio",
+    "video-upload": "video", "video-avatars": "video", "video-generate": "video", "digital-ip-text-generate": "video",
+    "digital-ip-batch-generate": "video", "digital-ip-audio-generate": "video", "cinematic-open-generate": "video",
+    "cinematic-motion-generate": "video", "tryon-fast-generate": "video", "tryon-classic-generate": "video",
+    "video-compose-projects": "video", "video-compose-project": "video", "video-compose-create": "video",
+    "video-compose-analyze": "video", "video-compose-review": "video", "video-compose-render": "video",
+    "text-video-capability": "video", "text-video-templates": "video", "text-video-styles": "video", "text-video-voices": "video",
+    "canvas-list": "canvas", "canvas-get": "canvas", "canvas-create": "canvas", "canvas-agent-plan": "canvas",
+    "canvas-ops": "canvas", "digital-presenter-capability": "canvas", "digital-presenter-project": "canvas",
+    "digital-presenter-create": "canvas", "digital-presenter-update": "canvas",
+}
+_ACTION_FEATURE_GATES = {
+    "audio-generate": ("audio",), "canvas-agent-plan": ("canvas_agent",),
+    "digital-ip-text-generate": ("video",), "digital-ip-batch-generate": ("video",),
+    "digital-ip-audio-generate": ("video",), "cinematic-open-generate": ("cinematic",),
+    "cinematic-motion-generate": ("cinematic",), "tryon-fast-generate": ("tryon",),
+    "tryon-classic-generate": ("tryon",), "digital-presenter-capability": ("digital_presenter",),
+    "digital-presenter-project": ("digital_presenter",), "digital-presenter-create": ("digital_presenter",),
+    "digital-presenter-update": ("digital_presenter",),
+}
+_OPTION_FEATURE_GATES = {
+    ("image-generate", "provider"): {"openai": ("image",), "seedream": ("image",), "xiaole": ("image", "image_xiaole"), "banana": ("image", "banana")},
+    ("video-generate", "channel"): {"grok": ("grok_video",), "micro": ("seedance_video",), "omni": ("omni_video",), "minimax": ("minimax_h3_video",), "sora": ("sora_video",)},
+}
+CATALOG_FEATURE_FLAGS = tuple(sorted({flag for flags in (*_ACTION_FEATURE_GATES.values(), *(
+    gates for options in _OPTION_FEATURE_GATES.values() for gates in options.values())) for flag in flags}))
+
 _GENERATION_ACTIONS = frozenset({
     "collect-content", "collect-video", "collect-transcript", "collect-search", "leads-generate",
     "canvas-agent-plan", "image-generate", "video-generate", "audio-generate",
@@ -208,32 +416,83 @@ def _catalog_route(action):
 def _catalog_entry(action, fields):
     generation = action in _GENERATION_ACTIONS
     external_effect = generation or action in CONFIRMATION_ACTIONS
+    details = _MEDIA_SCHEMAS.get(action, {})
+    schema = {
+        "type": "object", "additionalProperties": False,
+        "required": list(details.get("required", ())),
+        "properties": details.get("properties") or {field: {"type": _catalog_type(field)} for field in fields},
+    }
+    result_type = "quote" if generation else ("account" if action == "account" else "json")
     return {
         "action": action,
         "purpose": _ACTION_PURPOSES.get(action, "执行黄雀已登记能力：" + action),
-        "input_schema": {
-            "type": "object", "additionalProperties": False,
-            "properties": {field: {"type": _catalog_type(field)} for field in fields},
-        },
+        "input_schema": schema,
+        "constraints": list(details.get("constraints", ())),
         "billing": "quote_then_confirm" if generation else "free",
         "external_effect": external_effect,
         "confirmation_required": generation or action in CONFIRMATION_ACTIONS,
         "risk": "production" if generation else ("write" if external_effect else "read"),
-        "result_type": "quote" if generation else ("account" if action == "account" else "json"),
+        "result_type": result_type, "result": {"kind": result_type},
         "ui_route": _catalog_route(action),
+        "transport": {"kind": "action", "supports": ["internal_action", "controlled_shell"]},
+        "availability": {"status": "available", "feature_flags": [], "disabled_feature_flags": []},
     }
 
 
-ACTION_CATALOG = tuple(_catalog_entry(action, fields) for action, fields in _ACTION_INPUTS.items())
-ACTION_CATALOG_MAP = {item["action"]: item for item in ACTION_CATALOG}
-ACTION_CATALOG_VERSION = "hq-action-catalog-v1"
+def _upload_catalog_entry(action, family, max_bytes, mime_types, max_files):
+    return {
+        "action": action, "family": family, "purpose": "上传本人生成所需的临时参考" + ("图片" if family == "image" else "视频"),
+        "input_schema": {"type": "object", "additionalProperties": False, "required": ["file"], "properties": {
+            "file": {"type": "file", "path": "absolute", "maxBytes": max_bytes, "mimeTypes": mime_types},
+        }},
+        "constraints": ["requires explicit confirmation", "uploads are private to the current account"],
+        "billing": "free", "external_effect": True, "confirmation_required": True, "risk": "write",
+        "result_type": "upload", "result": {"kind": "upload_id"}, "ui_route": _catalog_route(action),
+        "transport": {"kind": "dedicated_upload", "supports": ["dedicated_upload"], "account_active_max_files": max_files},
+        "availability": {"status": "available", "feature_flags": [], "disabled_feature_flags": []},
+    }
 
 
-def action_catalog():
+ACTION_CATALOG = tuple(_catalog_entry(action, fields) for action, fields in _ACTION_INPUTS.items()) + (
+    _upload_catalog_entry("image-upload", "image", 10 * 1024 * 1024,
+                          ["image/jpeg", "image/png", "image/webp"], 20),
+    _upload_catalog_entry("video-upload", "video", 32 * 1024 * 1024,
+                          ["video/mp4", "video/quicktime", "video/webm"], 6),
+)
+for _catalog_item in ACTION_CATALOG:
+    if _catalog_item["action"] in _FAMILIES:
+        _catalog_item["family"] = _FAMILIES[_catalog_item["action"]]
+ACTION_CATALOG_MAP = {item["action"]: item for item in ACTION_CATALOG if item["transport"]["kind"] == "action"}
+ACTION_CATALOG_VERSION = "hq-action-catalog-v2"
+
+
+def action_catalog(feature_states=None):
     """Return a copy-safe, provider-secret-free catalog for first-party callers."""
+    feature_states = feature_states or {}
+    actions = json.loads(json.dumps(ACTION_CATALOG, ensure_ascii=False))
+    for item in actions:
+        action = item["action"]
+        required = _ACTION_FEATURE_GATES.get(action, ())
+        disabled = [flag for flag in required if not feature_states.get(flag, True)]
+        availability = item["availability"]
+        availability["feature_flags"] = list(required)
+        availability["disabled_feature_flags"] = disabled
+        if disabled:
+            availability["status"] = "disabled"
+        for (option_action, field), options in _OPTION_FEATURE_GATES.items():
+            if action != option_action:
+                continue
+            available = [option for option, flags in options.items() if all(feature_states.get(flag, True) for flag in flags)]
+            unavailable = {option: [flag for flag in flags if not feature_states.get(flag, True)]
+                           for option, flags in options.items() if option not in available}
+            item["input_schema"]["properties"][field]["enum"] = available
+            availability["available_%s" % field] = available
+            availability["disabled_%s" % field] = unavailable
+            if not available:
+                availability["status"] = "disabled"
     return {
         "version": ACTION_CATALOG_VERSION,
-        "actions": json.loads(json.dumps(ACTION_CATALOG, ensure_ascii=False)),
+        "actions": actions,
     }
 
 _START_HITS = {}
