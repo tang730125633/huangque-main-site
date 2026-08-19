@@ -138,11 +138,11 @@ jobs:
           $unicode = ([string][char]0x9EC4) + ([string][char]0x96C0)
           $root = Join-Path $env:RUNNER_TEMP ($unicode + " CLI Test")
           .\site\downloads\hq\install.ps1 `
-            -WheelPath .\site\downloads\hq\v0.10.0\huangque_hq_cli-0.10.0-py3-none-any.whl `
+            -WheelPath .\site\downloads\hq\v0.10.1\huangque_hq_cli-0.10.1-py3-none-any.whl `
             -InstallRoot $root -NoPathUpdate
           $hq = Join-Path $root "bin\hq.cmd"
           $result = & $hq version --json | ConvertFrom-Json
-          if ($result.cli_version -ne "0.10.0") { throw "unexpected CLI version" }
+          if ($result.cli_version -ne "0.10.1") { throw "unexpected CLI version" }
           [IO.File]::AppendAllText($env:GITHUB_ENV, "HQ_TEST_ROOT=$root`n", [Text.UTF8Encoding]::new($false))
       - name: cmd.exe 启动
         shell: cmd
