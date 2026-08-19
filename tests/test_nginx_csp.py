@@ -125,6 +125,18 @@ class NginxCspTest(unittest.TestCase):
         self.assertNotIn("sub_filter '`/' '`/workbench/ip12/';", block)
         self.assertNotIn("auth_basic", block)
 
+    def test_mingsu_monitor_route_survives_main_site_releases(self):
+        config = self._config("deploy/nginx-huangquechuanmei.conf")
+        self.assertIn(
+            "location = /mingsu-monitor { return 301 /mingsu-monitor/; }",
+            config,
+        )
+        start = config.index("location ^~ /mingsu-monitor/")
+        end = config.index("\n    }", start)
+        block = config[start:end]
+        self.assertIn("proxy_pass http://127.0.0.1:4174/;", block)
+        self.assertIn("limit_except GET HEAD { deny all; }", block)
+
     def test_direct_3101_gateway_uses_the_same_flask_service(self):
         config = self._config("deploy/nginx-hermes-ip12-direct.conf")
         self.assertIn("listen 3101;", config)
