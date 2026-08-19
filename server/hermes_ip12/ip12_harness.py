@@ -983,7 +983,7 @@ def compile_module_six_checkpoint(value, pack):
 
 def compile_module_six_style(value, evidence_text):
     state = normalize_state(value)
-    if state["current_module"] != 6 or state["module_step"] != 0:
+    if state["current_module"] != 6 or state["module_step"] != 0 or state.get("pending"):
         return None
     evidence = str(evidence_text or "")
     sentences = [
@@ -995,7 +995,9 @@ def compile_module_six_style(value, evidence_text):
         item for item in sentences
         if re.search(r"大白话|口语|分享|教学|讲解|语气|风格|口播|秒|分钟|minute|mins?|点赞|评论|收藏|留言|关注|私信|咨询", item, re.I)
     ]
-    requirements = "；".join(dict.fromkeys(relevant))[:800]
+    requirements = "；".join(
+        dict.fromkeys(item.rstrip("。！？!?；;").strip() for item in relevant)
+    )[:800]
     if not (
         re.search(r"大白话|口语|分享|教学|讲解|语气|风格", requirements)
         and re.search(

@@ -645,6 +645,24 @@ class IP12HarnessTests(unittest.TestCase):
         exact = harness.compile_module_six_style(state, exact_words)
         self.assertEqual(exact["checkpoint"], 1)
         self.assertIn("点赞、评论", exact["draft"])
+        self.assertNotIn("；；", exact["draft"])
+
+        state["pending"] = {
+            "id": "module-six-style",
+            "kind": "checkpoint",
+            "status": "awaiting_confirmation",
+            "module": 6,
+            "step": 1,
+            "draft": exact["draft"],
+            "self_review": exact["self_review"],
+            "profile_updates": exact["profile_updates"],
+            "confidence": 1.0,
+        }
+        self.assertIsNone(
+            harness.compile_module_six_style(
+                state, exact_words + "把重复的分号改成单个，其他不变。"
+            )
+        )
 
     def test_semantically_duplicate_reply_does_not_repeat_the_draft(self):
         draft = (
