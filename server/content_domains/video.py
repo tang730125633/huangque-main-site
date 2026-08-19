@@ -1803,6 +1803,9 @@ def reap_short_drama_native_orphans(now=None, grace_seconds=6 * 3600):
     current_time = int(time.time()) if now is None else int(now)
     grace = max(60, int(grace_seconds or 0))
     referenced = set()
+    deleted = []
+    retained = []
+    errors = []
     try:
         with closing(jdb()) as connection:
             for row in connection.execute(
@@ -1813,19 +1816,34 @@ def reap_short_drama_native_orphans(now=None, grace_seconds=6 * 3600):
                     ))
                 except (TypeError, ValueError, json.JSONDecodeError):
                     continue
-            table = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' "
-                "AND name='short_drama_provider_shot_versions'"
-            ).fetchone()
-            if table:
+            tables = {
+                str(row[0]) for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            if "short_drama_provider_shot_versions" in tables:
                 referenced.update(
                     row[0] for row in connection.execute(
                         "SELECT file FROM short_drama_provider_shot_versions "
                         "WHERE file IS NOT NULL"
                     ) if row[0]
                 )
-    except sqlite3.Error:
-        pass
+            if "short_drama_provider_shot_jobs" in tables:
+                for row in connection.execute(
+                    "SELECT result_json FROM short_drama_provider_shot_jobs "
+                    "WHERE result_json IS NOT NULL"
+                ):
+                    try:
+                        referenced.update(_native_media_result_paths(
+                            json.loads(row[0] or "{}")
+                        ))
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        continue
+    except sqlite3.Error as error:
+        errors.append({
+            "scope": "jobs_database", "error": str(error)[:160],
+        })
+        return {"deleted": deleted, "retained": retained, "errors": errors}
     try:
         with closing(adb()) as connection:
             referenced.update(
@@ -1833,17 +1851,17 @@ def reap_short_drama_native_orphans(now=None, grace_seconds=6 * 3600):
                     "SELECT video_file,image_file FROM video_assets"
                 ) for value in row if value
             )
-    except sqlite3.Error:
-        pass
+    except sqlite3.Error as error:
+        errors.append({
+            "scope": "assets_database", "error": str(error)[:160],
+        })
+        return {"deleted": deleted, "retained": retained, "errors": errors}
     referenced = {
         normalized for normalized in (
             _normalized_native_video_reference(item) for item in referenced
         ) if normalized
     }
     video_root = _out_path("video").resolve()
-    deleted = []
-    retained = []
-    errors = []
     if not video_root.is_dir():
         return {"deleted": deleted, "retained": retained, "errors": errors}
     for candidate in video_root.iterdir():

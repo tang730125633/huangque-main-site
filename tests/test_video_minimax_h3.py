@@ -207,12 +207,13 @@ class MiniMaxH3VideoTests(unittest.TestCase):
             job_db = root / "jobs.db"
             asset_db = root / "assets.db"
             referenced_job = "video/minimax_h3_raw_referenced.mp4"
+            referenced_provider_job = "video/minimax_h3_raw_provider_job.mp4"
             referenced_asset = "video/minimax_h3_derived_referenced.mp4"
             orphan_raw = "video/minimax_h3_raw_orphan.mp4"
             orphan_derived = "video/minimax_h3_derived_orphan.mp4"
             orphan_part = "video/minimax_h3_raw_crashed.mp4.part-deadbeef"
             for relative in (
-                referenced_job, referenced_asset, orphan_raw,
+                referenced_job, referenced_provider_job, referenced_asset, orphan_raw,
                 orphan_derived, orphan_part,
             ):
                 path = root / relative
@@ -228,6 +229,18 @@ class MiniMaxH3VideoTests(unittest.TestCase):
                     (json.dumps({
                         "raw_video_file": referenced_job,
                         "video_file": "video/minimax_h3_derived_job.mp4",
+                    }),),
+                )
+                connection.execute(
+                    "CREATE TABLE short_drama_provider_shot_jobs "
+                    "(result_json TEXT)"
+                )
+                connection.execute(
+                    "INSERT INTO short_drama_provider_shot_jobs VALUES (?)",
+                    (json.dumps({
+                        "native_media": {
+                            "raw": {"file": referenced_provider_job},
+                        },
                     }),),
                 )
                 connection.commit()
@@ -248,6 +261,7 @@ class MiniMaxH3VideoTests(unittest.TestCase):
                 )
 
             self.assertTrue((root / referenced_job).is_file())
+            self.assertTrue((root / referenced_provider_job).is_file())
             self.assertTrue((root / referenced_asset).is_file())
             self.assertFalse((root / orphan_raw).exists())
             self.assertFalse((root / orphan_derived).exists())
@@ -295,6 +309,45 @@ class MiniMaxH3VideoTests(unittest.TestCase):
             self.assertTrue((root / nested_reference).is_file())
             self.assertTrue((root / recent_orphan).is_file())
             self.assertEqual([], result["deleted"])
+
+    def test_native_orphan_reaper_fails_closed_when_reference_db_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            video_root = root / "video"
+            video_root.mkdir()
+            orphan = video_root / "minimax_h3_raw_must_be_retained.mp4"
+            orphan.write_bytes(b"native")
+            old = time.time() - 8 * 3600
+            os.utime(orphan, (old, old))
+
+            def unavailable():
+                raise sqlite3.OperationalError("reference database unavailable")
+
+            with patch.object(video, "_out_path", side_effect=lambda rel: root / rel), \
+                    patch.object(video, "jdb", side_effect=unavailable):
+                result = video.reap_short_drama_native_orphans(
+                    now=int(time.time()), grace_seconds=6 * 3600
+                )
+
+            self.assertTrue(orphan.is_file())
+            self.assertEqual([], result["deleted"])
+            self.assertTrue(result["errors"])
+
+            job_db = root / "jobs.db"
+            with closing(sqlite3.connect(job_db)) as connection:
+                connection.execute(
+                    "CREATE TABLE jobs (id INTEGER, status TEXT, result TEXT)"
+                )
+                connection.commit()
+            with patch.object(video, "_out_path", side_effect=lambda rel: root / rel), \
+                    patch.object(video, "jdb", side_effect=lambda: sqlite3.connect(job_db)), \
+                    patch.object(video, "adb", side_effect=unavailable):
+                asset_result = video.reap_short_drama_native_orphans(
+                    now=int(time.time()), grace_seconds=6 * 3600
+                )
+            self.assertTrue(orphan.is_file())
+            self.assertEqual([], asset_result["deleted"])
+            self.assertEqual("assets_database", asset_result["errors"][0]["scope"])
 
     def test_reference_request_and_20_percent_markup(self):
         image = self._image()
