@@ -676,6 +676,9 @@ canvas_record = server.load_conversation(cid)["productions"][canvas["production_
 canvas_input = server._production_input(canvas_record, {"board_id": "board_canvas_1"})
 assert canvas_input["base_version"] == 3, canvas_input
 assert canvas_input["ops"][0]["node"]["params"]["text"] == "这是用户确认过、可直接进入生产的完整口播正文。"
+video_record = dict(server.load_conversation(cid)["productions"][video["production_id"]])
+video_record["source_text"] = "第一段。\n\n第二段。\t继续。"
+assert server._production_input(video_record, {"avatar_id": 7, "voice": "voice-demo"})["text"] == "第一段。 第二段。 继续。"
 
 # The HTTP helper uses the unified internal action contract and never places
 # account_id inside the action input.
