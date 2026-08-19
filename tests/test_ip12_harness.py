@@ -530,6 +530,24 @@ class IP12HarnessTests(unittest.TestCase):
                 raw, state, source + "\n" + quote, {"E1": quote}
             )
 
+    def test_module_five_does_not_reask_audience_after_categories_are_confirmed(self):
+        state = self.complete_intake()
+        state.update(current_module=5, module_step=1, completed_modules=[1, 2, 3, 4])
+        state["foundation_report"] = {"status": "confirmed"}
+        state["ip_profile"]["confirmed_outputs"]["5-1"] = {
+            "content": "1. AI Agent 搭建\n2. AI 需求拆解\n3. 跨行业学习"
+        }
+        raw = {
+            "decision": "ask_follow_up",
+            "reply": "请补充三类各自最想吸引的人群。",
+            "categories": [],
+            "self_review": "",
+            "confidence": 0.8,
+        }
+
+        with self.assertRaisesRegex(harness.HarnessError, "必须直接生成完整 3×10"):
+            harness.compile_module_five_topics(raw, state, "已有充分资料", {"E1": "已有充分资料"})
+
     def test_module_five_final_checkpoint_reuses_the_confirmed_3x10_without_a_model(self):
         state = self.complete_intake()
         state.update(current_module=5, module_step=2, completed_modules=[1, 2, 3, 4])

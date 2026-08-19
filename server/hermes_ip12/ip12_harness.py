@@ -808,9 +808,14 @@ def compile_module_five_topics(raw, value, evidence_text, evidence_sources):
     self_review = str(raw.get("self_review") or "").strip()[:500]
     if not reply or not isinstance(categories, list):
         raise HarnessError("模型没有返回可用的模块 5 内容")
+    source = str(
+        ((state["ip_profile"].get("confirmed_outputs") or {}).get("5-1") or {}).get("content") or ""
+    )
     if decision != "propose_checkpoint":
         if categories or self_review:
             raise HarnessError("非生成回复不能携带 3×10 内容")
+        if decision == "ask_follow_up" and source and not state.get("pending"):
+            raise HarnessError("模块 5 的 3 个种类已经确认，必须直接生成完整 3×10 选题")
         return validate_model_decision({
             "decision": decision,
             "checkpoint": 0,
@@ -821,9 +826,6 @@ def compile_module_five_topics(raw, value, evidence_text, evidence_sources):
             "confidence": raw.get("confidence", 0),
         }, state, evidence_text)
 
-    source = str(
-        ((state["ip_profile"].get("confirmed_outputs") or {}).get("5-1") or {}).get("content") or ""
-    )
     if len(categories) != 3 or not self_review or not source:
         raise HarnessError("模块 5 必须返回已确认 3 个种类下的完整 3×10 选题")
     names = [str(item.get("name") or "").strip() for item in categories if isinstance(item, dict)]
