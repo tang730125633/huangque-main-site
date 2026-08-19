@@ -37,6 +37,9 @@ INTERNAL_ACTION_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN") or os.environ.get(
 )
 # ponytail: one process-wide lock is enough for this single-process Flask service.
 CONVERSATION_STATE_LOCK = threading.RLock()
+TURN_REQUESTS_IN_FLIGHT = set()
+# ponytail: process-local tombstones only outlive in-flight work; a restart has no surviving writers.
+DELETED_CONVERSATION_IDS = set()
 PROCESS_RUN_ID = uuid.uuid4().hex
 
 app = Flask(__name__)
@@ -85,6 +88,7 @@ MODULES = [
     {"id": 12, "name": "公众号变现", "icon": "📝", "desc": "长内容到持续变现的闭环"},
 ]
 AVAILABLE_MODULE_COUNT = 6
+MAX_PROJECTS_PER_ACCOUNT = 2
 COMING_SOON_MESSAGE = "尚未开发，敬请期待"
 COMING_SOON_API_PATHS = {"/api/module7-images", "/api/module8-video", "/api/m9-funnel", "/api/m11-sales", "/api/m12-calendar"}
 
@@ -152,7 +156,7 @@ def _intake_pending(state):
 
 
 def normalize_coach_state(state):
-    """Keep legacy sessions usable without deleting their messages or artifacts."""
+    """Normalize the current Project state before it enters the Harness."""
     return coach_harness.normalize_state(state)
 
 def build_system_prompt(convo_id):
@@ -264,6 +268,8 @@ def save_conversation(convo_id, data):
     data["updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
     path = conversation_path(convo_id)
     with CONVERSATION_STATE_LOCK:
+        if convo_id in DELETED_CONVERSATION_IDS:
+            return False
         fd, temp_path = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -271,6 +277,28 @@ def save_conversation(convo_id, data):
             os.replace(temp_path, path)
         finally:
             pathlib.Path(temp_path).unlink(missing_ok=True)
+    return True
+
+
+FIRST_ARTIFACT_NOTICE = (
+    "我已经把交付物放到了诊断模块下方的下拉菜单中。"
+    "你可以展开不同的诊断模块，查看该模块对应的报告、PDF、选题或文案。"
+)
+
+
+def _record_first_artifact_notice(convo_id, module_id):
+    with CONVERSATION_STATE_LOCK:
+        convo = load_conversation(convo_id)
+        if convo.get("artifact_notice_sent"):
+            return ""
+        convo["artifact_notice_sent"] = True
+        convo["artifact_notice_module"] = module_id
+        convo.setdefault("messages", []).append({
+            "role": "assistant",
+            "content": FIRST_ARTIFACT_NOTICE,
+        })
+        save_conversation(convo_id, convo)
+    return FIRST_ARTIFACT_NOTICE
 
 
 def _utc_timestamp():
@@ -840,7 +868,10 @@ def generate_foundation_report(convo_id):
         staged_target = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
         try:
             shutil.copyfile(pdf_path, staged_target)
-            os.replace(staged_target, target)
+            with CONVERSATION_STATE_LOCK:
+                if convo_id in DELETED_CONVERSATION_IDS:
+                    raise RuntimeError("Project 已删除")
+                os.replace(staged_target, target)
         finally:
             staged_target.unlink(missing_ok=True)
     record = {
@@ -1207,8 +1238,8 @@ def healthz():
 
 @app.route("/classic")
 def classic_index():
-    """Keep the original report/deliverable workbench available unchanged."""
-    return render_template("index_clean.html", modules=MODULES)
+    """Retired bookmark: always serve the current Project workbench."""
+    return render_template("index.html", modules=MODULES)
 
 @app.route("/api/conversations", methods=["GET"])
 def api_list_convos():
@@ -1224,13 +1255,22 @@ def api_create_convo():
     title = body.get("title", "新诊断")
     if not isinstance(title, str) or not title.strip() or len(title.strip()) > 120:
         return jsonify({"ok": False, "error": "title 必须是 1-120 字符"}), 400
-    cid = uuid.uuid4().hex[:12]
-    data = {"id": cid, "title": title.strip(),
-            "messages": [{"role": "assistant", "content": INTAKE_FIRST_QUESTION}],
-            "coach_state": initial_coach_state(),
-            "reports": {}, "deliverables": {}, "owner_account_id": current_account_id(),
-            "updated": datetime.now().strftime("%Y-%m-%d %H:%M")}
-    save_conversation(cid, data)
+    owner_account_id = current_account_id()
+    with CONVERSATION_STATE_LOCK:
+        if len(list_convos(owner_account_id)) >= MAX_PROJECTS_PER_ACCOUNT:
+            return jsonify({
+                "ok": False,
+                "code": "ip12_project_limit",
+                "error": "最多允许创建两个 Project",
+            }), 409
+        cid = uuid.uuid4().hex[:12]
+        DELETED_CONVERSATION_IDS.discard(cid)
+        data = {"id": cid, "title": title.strip(),
+                "messages": [{"role": "assistant", "content": INTAKE_FIRST_QUESTION}],
+                "coach_state": initial_coach_state(),
+                "reports": {}, "deliverables": {}, "owner_account_id": owner_account_id,
+                "updated": datetime.now().strftime("%Y-%m-%d %H:%M")}
+        save_conversation(cid, data)
     return jsonify({"id": cid, "title": data["title"]})
 
 @app.route("/api/conversations/<cid>", methods=["GET"])
@@ -1238,6 +1278,14 @@ def api_get_convo(cid):
     convo = owned_conversation(cid)
     if convo is None:
         return jsonify({"ok": False, "error": "诊断不存在"}), 404
+    receipt_id = str(request.args.get("receipt") or "").strip()
+    if receipt_id:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", receipt_id):
+            return jsonify({"ok": False, "error": "request_id 无效"}), 400
+        receipt = _receipt(convo, receipt_id)
+        if receipt is None:
+            return jsonify({"ok": True, "status": "processing"}), 202
+        return jsonify(receipt)
     convo["coach_state"] = normalize_coach_state(convo.get("coach_state"))
     public_convo = json.loads(json.dumps(convo, ensure_ascii=False))
     public_convo["productions"] = _productions_summary(convo)
@@ -1245,11 +1293,16 @@ def api_get_convo(cid):
 
 @app.route("/api/conversations/<cid>", methods=["DELETE"])
 def api_delete_convo(cid):
-    if owned_conversation(cid) is None:
-        return jsonify({"ok": False, "error": "诊断不存在"}), 404
-    path = conversation_path(cid)
-    if path.exists(): path.unlink()
-    (FOUNDATION_REPORTS_DIR / (cid + ".pdf")).unlink(missing_ok=True)
+    with CONVERSATION_STATE_LOCK:
+        if owned_conversation(cid) is None:
+            return jsonify({"ok": False, "error": "诊断不存在"}), 404
+        if any(project_id == cid for project_id, _ in TURN_REQUESTS_IN_FLIGHT):
+            return jsonify({"ok": False, "error": "请等待当前回复完成后再删除 Project"}), 409
+        DELETED_CONVERSATION_IDS.add(cid)
+        path = conversation_path(cid)
+        if path.exists():
+            path.unlink()
+        (FOUNDATION_REPORTS_DIR / (cid + ".pdf")).unlink(missing_ok=True)
     return jsonify({"ok": True})
 
 
@@ -2610,58 +2663,79 @@ def process_chat_request(body):
     if action is None and not user_message:
         return {"ok": False, "error": "empty message"}, 400
 
-    production_intent = None
+    claim_key = None
     try:
-        with CONVERSATION_STATE_LOCK:
-            convo = owned_conversation(cid)
-            if convo is None:
-                return {"ok": False, "error": "诊断不存在"}, 404
-            replay = _receipt(convo, request_id)
-            if replay:
-                return replay, 200
-            state = normalize_coach_state(convo.get("coach_state"))
-            _assert_expected_revision(state, body.get("expected_revision"))
-            if action is None and content_target is None:
-                action = coach_harness.shortcut_action(state, user_message)
-                if action:
-                    action_revision = state["revision"]
+        production_intent = None
+        try:
+            with CONVERSATION_STATE_LOCK:
+                convo = owned_conversation(cid)
+                if convo is None:
+                    return {"ok": False, "error": "诊断不存在"}, 404
+                replay = _receipt(convo, request_id)
+                if replay:
+                    return replay, 200
+                turn_key = (cid, request_id) if request_id else None
+                if turn_key in TURN_REQUESTS_IN_FLIGHT:
+                    return {"ok": True, "status": "processing", "request_id": request_id}, 202
+                if turn_key:
+                    TURN_REQUESTS_IN_FLIGHT.add(turn_key)
+                    claim_key = turn_key
+                state = normalize_coach_state(convo.get("coach_state"))
+                _assert_expected_revision(state, body.get("expected_revision"))
+                if action is None and content_target is None:
+                    action = coach_harness.shortcut_action(state, user_message)
+                    if action:
+                        action_revision = state["revision"]
+                    else:
+                        action_revision = None
                 else:
-                    action_revision = None
+                    action_revision = body.get("expected_revision")
+                if action is None and content_target is not None:
+                    production_intent = coach_harness.production_intent(user_message)
+
+            if action is not None:
+                result, status = _process_action_turn(
+                    cid, action, action_revision, user_message=user_message, request_id=request_id
+                )
+            elif production_intent is not None:
+                result, status = _process_production_intent_turn(
+                    cid, user_message, content_target, production_intent,
+                    body.get("expected_revision"), request_id,
+                )
+            elif content_target is not None and not coach_harness.is_content_review_message(user_message):
+                result, status = _process_content_revision_turn(
+                    cid, user_message, content_target, body.get("expected_revision"), request_id
+                )
+            elif foundation_review == "revision":
+                result, status = _process_foundation_revision_turn(
+                    cid, user_message, body.get("expected_revision"), request_id
+                )
             else:
-                action_revision = body.get("expected_revision")
-            if action is None and content_target is not None:
-                production_intent = coach_harness.production_intent(user_message)
+                result, status = _process_model_turn(
+                    cid, user_message, body.get("expected_revision"), request_id=request_id
+                )
+        except coach_harness.HarnessConflict as exc:
+            return {"ok": False, "error": str(exc)}, 409
+        except coach_harness.HarnessError as exc:
+            return {"ok": False, "error": str(exc)}, 400
 
-        if action is not None:
-            result, status = _process_action_turn(
-                cid, action, action_revision, user_message=user_message, request_id=request_id
-            )
-        elif production_intent is not None:
-            result, status = _process_production_intent_turn(
-                cid, user_message, content_target, production_intent,
-                body.get("expected_revision"), request_id,
-            )
-        elif content_target is not None and not coach_harness.is_content_review_message(user_message):
-            result, status = _process_content_revision_turn(
-                cid, user_message, content_target, body.get("expected_revision"), request_id
-            )
-        elif foundation_review == "revision":
-            result, status = _process_foundation_revision_turn(
-                cid, user_message, body.get("expected_revision"), request_id
-            )
-        else:
-            result, status = _process_model_turn(
-                cid, user_message, body.get("expected_revision"), request_id=request_id
-            )
-    except coach_harness.HarnessConflict as exc:
-        return {"ok": False, "error": str(exc)}, 409
-    except coach_harness.HarnessError as exc:
-        return {"ok": False, "error": str(exc)}, 400
-
-    if status == 200:
-        result["request_id"] = request_id
-        _save_receipt(cid, request_id, result)
-    return result, status
+        if status == 200:
+            result["request_id"] = request_id
+            artifact_module = 4 if result.get("foundation_report") else next((
+                int(module_id) for module_id in (result.get("auto_deliverables") or {})
+                if str(module_id).isdigit()
+            ), 0)
+            if artifact_module:
+                notice = _record_first_artifact_notice(cid, artifact_module)
+                if notice:
+                    result["artifact_notice"] = notice
+                    result["artifact_module"] = artifact_module
+            _save_receipt(cid, request_id, result)
+        return result, status
+    finally:
+        if claim_key:
+            with CONVERSATION_STATE_LOCK:
+                TURN_REQUESTS_IN_FLIGHT.discard(claim_key)
 
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
@@ -2703,7 +2777,9 @@ def api_generate_deliverable():
     try:
         result = generate_deliverable(cid, module_id)
         if result:
-            return jsonify({"ok": True, "module": module_id, "deliverable": result})
+            notice = _record_first_artifact_notice(cid, module_id)
+            return jsonify({"ok": True, "module": module_id, "deliverable": result,
+                            "artifact_notice": notice, "artifact_module": module_id})
         return jsonify({"ok": False, "error": f"模块{module_id}暂无自动交付物"}), 400
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -2724,7 +2800,9 @@ def api_generate_report():
         return jsonify({"ok": False, "error": "请先确认模块 1-4 的 IP 定位初稿 PDF"}), 409
     try:
         report = generate_module_report(cid, module_id)
-        return jsonify({"ok": True, "module": module_id, "report": report})
+        notice = _record_first_artifact_notice(cid, module_id)
+        return jsonify({"ok": True, "module": module_id, "report": report,
+                        "artifact_notice": notice, "artifact_module": module_id})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -2799,7 +2877,10 @@ def api_generate_foundation_report():
             convo["coach_state"] = state
             save_conversation(cid, convo)
         return jsonify({"ok": False, "error": "PDF 生成失败，请重试"}), 502
-    return jsonify({"ok": True, "report": record, "state": load_conversation(cid).get("coach_state", {})})
+    notice = _record_first_artifact_notice(cid, 4)
+    return jsonify({"ok": True, "report": record,
+                    "state": load_conversation(cid).get("coach_state", {}),
+                    "artifact_notice": notice, "artifact_module": 4})
 
 @app.route("/api/foundation-report/confirm", methods=["POST"])
 def api_confirm_foundation_report():

@@ -929,6 +929,115 @@ print("IP12_PRODUCTION_RUNTIME_OK")
 
 
 @unittest.skipUnless(
+    importlib.util.find_spec("flask") and importlib.util.find_spec("requests"),
+    "Hermes runtime dependencies are not installed",
+)
+class HermesIP12ProjectRuntimeTests(unittest.TestCase):
+    def test_project_limit_receipt_recovery_and_first_artifact_notice(self):
+        script = r'''
+import server
+import security
+import threading
+
+server.current_account_id = lambda: "acct_limit"
+server.MAX_PROJECTS_PER_ACCOUNT = 2
+security._validate_token = lambda token: {"account_id": "acct_limit", "username": "limit", "role": "member"}
+security.RATE_REQUESTS = 100
+client = server.app.test_client()
+client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
+
+one = client.post("/api/conversations", json={"title": "Project 1"})
+two = client.post("/api/conversations", json={"title": "Project 2"})
+assert one.status_code == 200 and two.status_code == 200
+three = client.post("/api/conversations", json={"title": "Project 3"})
+assert three.status_code == 409
+assert three.get_json() == {
+    "ok": False, "code": "ip12_project_limit", "error": "最多允许创建两个 Project",
+}
+assert client.delete(f"/api/conversations/{two.get_json()['id']}").status_code == 200
+replacement = client.post("/api/conversations", json={"title": "Replacement"})
+assert replacement.status_code == 200
+replacement_id = replacement.get_json()["id"]
+stale_replacement = server.load_conversation(replacement_id)
+assert client.delete(f"/api/conversations/{replacement_id}").status_code == 200
+assert server.save_conversation(replacement_id, stale_replacement) is False
+assert not server.conversation_path(replacement_id).exists()
+assert client.post("/api/conversations", json={"title": "Replacement 2"}).status_code == 200
+
+cid = one.get_json()["id"]
+convo = server.load_conversation(cid)
+convo["turn_receipts"] = [{
+    "request_id": "recover_turn_1",
+    "result": {"ok": True, "assistant": "已恢复", "state": convo["coach_state"]},
+}]
+server.save_conversation(cid, convo)
+pending = client.get(f"/api/conversations/{cid}?receipt=still_processing")
+assert pending.status_code == 202
+assert pending.get_json() == {"ok": True, "status": "processing"}
+recovered = client.get(f"/api/conversations/{cid}?receipt=recover_turn_1")
+assert recovered.status_code == 200
+assert recovered.get_json()["replayed"] is True
+assert recovered.get_json()["assistant"] == "已恢复"
+assert client.get(f"/api/conversations/{cid}?receipt=bad%20receipt").status_code == 400
+
+calls = []
+entered = threading.Event()
+release = threading.Event()
+original_model_turn = server._process_model_turn
+def slow_model_turn(*args, **kwargs):
+    calls.append(args[1])
+    entered.set()
+    assert release.wait(2)
+    state = server.load_conversation(cid)["coach_state"]
+    return server._chat_result("并发完成", state), 200
+server._process_model_turn = slow_model_turn
+body = {
+    "conversation_id": cid,
+    "message": "只处理一次",
+    "expected_revision": server.load_conversation(cid)["coach_state"]["revision"],
+    "request_id": "concurrent_turn_1",
+}
+first_result = []
+worker = threading.Thread(target=lambda: first_result.append(server.process_chat_request(body)))
+worker.start()
+assert entered.wait(2)
+duplicate = server.process_chat_request(body)
+assert duplicate[1] == 202 and duplicate[0]["status"] == "processing"
+blocked_delete = client.delete(f"/api/conversations/{cid}")
+assert blocked_delete.status_code == 409
+assert blocked_delete.get_json()["error"] == "请等待当前回复完成后再删除 Project"
+release.set()
+worker.join(2)
+assert not worker.is_alive()
+assert len(calls) == 1 and first_result[0][1] == 200
+assert server.process_chat_request(body)[0]["replayed"] is True
+server._process_model_turn = original_model_turn
+
+server.generate_module_report = lambda convo_id, module_id: "报告正文"
+first_report = client.post("/api/generate-report", json={"conversation_id": cid, "module": 1})
+second_report = client.post("/api/generate-report", json={"conversation_id": cid, "module": 1})
+assert first_report.status_code == 200 and second_report.status_code == 200
+assert first_report.get_json()["artifact_notice"] == server.FIRST_ARTIFACT_NOTICE
+assert second_report.get_json()["artifact_notice"] == ""
+saved = server.load_conversation(cid)
+assert saved["artifact_notice_sent"] is True
+assert saved["artifact_notice_module"] == 1
+assert [item["content"] for item in saved["messages"]].count(server.FIRST_ARTIFACT_NOTICE) == 1
+assert b"IP Project" in client.get("/classic").data
+print("IP12_PROJECT_RUNTIME_OK")
+'''
+        with tempfile.TemporaryDirectory() as data_dir:
+            env = os.environ.copy()
+            env.update(OPENAI_API_KEY="dummy", HERMES_HOME=data_dir, HERMES_DATA_DIR=data_dir)
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=HERMES, env=env,
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("IP12_PROJECT_RUNTIME_OK", result.stdout)
+
+
+@unittest.skipUnless(
     importlib.util.find_spec("flask") and importlib.util.find_spec("requests") and importlib.util.find_spec("pypdf"),
     "Hermes runtime dependencies are not installed",
 )
@@ -962,6 +1071,7 @@ import video_replica
 import video_vision
 
 server.current_account_id = lambda: "acct_a"
+server.MAX_PROJECTS_PER_ACCOUNT = 1000
 security._validate_token = lambda token: {
     "admin-token": {"account_id": "acct_a", "username": "admin", "role": "admin"},
     "member-a-token": {"account_id": "acct_a", "username": "member-a", "role": "member"},
