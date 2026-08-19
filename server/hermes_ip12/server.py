@@ -2529,6 +2529,12 @@ def _process_production_intent_turn(
     labels = {"image": "图片", "audio": "音频", "video": "视频", "canvas": "Canvas"}
     family = intent["capability_family"]
     label = labels[family]
+    ratio_match = re.search(
+        r"(?<!\d)(?:9\s*[:：]\s*16|16\s*[:：]\s*9|1\s*[:：]\s*1)(?!\d)",
+        user_message,
+    )
+    options = ({"ratio": re.sub(r"\s+", "", ratio_match.group()).replace("：", ":")}
+               if family in {"image", "video"} and ratio_match else {})
     assistant = (
         "我知道你要把当前这篇口播做成%s。先按当前正文版本打开制作工作台；"
         "系统会先显示所需素材和实时报价，未经你确认不会提交或扣点。" % label
@@ -2550,7 +2556,7 @@ def _process_production_intent_turn(
         "requested_result": family,
         "preferred_action": intent["recommended_action"],
         "candidate_actions": intent["candidate_actions"],
-        "options": {},
+        "options": options,
     }]
     return result, 200
 
