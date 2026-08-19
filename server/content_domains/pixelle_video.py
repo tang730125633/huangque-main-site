@@ -946,6 +946,19 @@ def _hard_split_caption(text, max_units):
         current_units += char_units
     if current:
         parts.append("".join(current))
+
+    for index in range(len(parts) - 1, 0, -1):
+        pair = parts[index - 1] + parts[index]
+        candidates = []
+        for offset in range(1, len(pair)):
+            left = pair[:offset]
+            right = pair[offset:]
+            left_units = _display_units(left)
+            right_units = _display_units(right)
+            if left_units <= max_units and right_units <= max_units:
+                candidates.append((abs(left_units - right_units), offset, left, right))
+        if candidates:
+            _, _, parts[index - 1], parts[index] = min(candidates)
     return parts
 
 

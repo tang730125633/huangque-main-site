@@ -1253,6 +1253,20 @@ class PixelleVideoTests(unittest.TestCase):
                     self.pixelle._display_units(cue) <= 28 for cue in cues
                 ))
 
+    def test_caption_splitter_balances_unpunctuated_chinese_without_orphans(self):
+        for text in (
+            "人工智能正在改变我们生活的方方面面",
+            "这也引发了关于隐私和伦理的讨论",
+        ):
+            with self.subTest(text=text):
+                cues = self.pixelle._split_caption_text(text)
+                self.assertEqual(text, "".join(cues))
+                self.assertGreater(len(cues), 1)
+                self.assertGreaterEqual(min(len(cue) for cue in cues), 6)
+                self.assertTrue(all(
+                    self.pixelle._display_units(cue) <= 28 for cue in cues
+                ))
+
     def test_caption_cues_follow_real_word_timestamps_instead_of_character_ratio(self):
         text = "人工智能可以改变我们的生活方式"
         cue_texts = ["人工智能可以", "改变我们的生活方", "式"]
