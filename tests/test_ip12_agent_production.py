@@ -152,7 +152,9 @@ with patch.object(server, "_bridge_catalog", return_value=catalog):
     assert action["preferred_action"] == "voices" and action["content_target"] == {"category_id": "", "topic_id": ""}, action
     revision = turn.get_json()["state"]["revision"]
     prepared = client.post("/api/ip12/productions/prepare", json={
-        "conversation_id": cid, "content_target": {}, "expected_revision": revision,
+        "conversation_id": cid,
+        "content_target": {"category_id": "", "topic_id": ""},
+        "expected_revision": revision,
         "requested_result": "audio", "preferred_action": "voices", "options": {},
     })
     assert prepared.status_code == 200 and prepared.get_json()["confirmation_required"] is False, prepared.get_data(as_text=True)
