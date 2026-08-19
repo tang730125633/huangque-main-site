@@ -67,6 +67,7 @@ class CLIImageUploadTests(unittest.TestCase):
             "provider": "banana", "reference_upload_ids": upload_ids,
         }, "alice", now=101)
         self.assertEqual(5, len(minimax["reference_images"]))
+        self.assertTrue(minimax["reference_images"][0].startswith("data:image/png;base64,"))
         self.assertEqual(14, len(banana["images"]))
         self.assertEqual("image/png", banana["images"][0]["mime_type"])
 
