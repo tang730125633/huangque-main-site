@@ -32,6 +32,9 @@ AUTH_BASE = os.environ.get("HERMES_AUTH_BASE", "http://127.0.0.1:8095").rstrip("
 INTERNAL_ACTION_PATH = os.environ.get(
     "HERMES_INTERNAL_ACTION_PATH", "/api/auth/internal/ip12/agent/action"
 )
+INTERNAL_CATALOG_PATH = os.environ.get(
+    "HERMES_INTERNAL_CATALOG_PATH", "/api/auth/internal/ip12/agent/catalog"
+)
 INTERNAL_ACTION_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN") or os.environ.get(
     "HERMES_INTERNAL_ACTION_TOKEN", ""
 )
@@ -343,6 +346,17 @@ def _production_source(convo, target):
     }
 
 
+def _production_source_or_unbound(convo, target, *, unbound=False):
+    if target:
+        return _production_source(convo, target)
+    if not unbound:
+        return _production_source(convo, target)
+    return {
+        "category_id": "", "topic_id": "", "script_version": 0,
+        "script_digest": _production_digest(""), "script": "", "source_bound": False,
+    }
+
+
 def _production_target_from_message(convo, message):
     """Resolve one module-6 script when the browser has no selected target."""
     pack = (convo.get("deliverables") or {}).get("6") or {}
@@ -423,7 +437,170 @@ PRODUCTION_FALLBACK_FIELDS = {
 }
 
 
-def _production_action_schema(action):
+def _catalog_action_family(entry):
+    family = str((entry or {}).get("family") or "").lower()
+    if family in {"image", "audio", "video", "canvas"}:
+        return family
+    action = str((entry or {}).get("action") or "")
+    route = str((entry or {}).get("ui_route") or "")
+    if action.startswith("image-") or "/image" in route or "/banana" in route:
+        return "image"
+    if action.startswith("audio-") or action in {"voices", "audio-slots"} or "/audio" in route:
+        return "audio"
+    if action.startswith("canvas-") or action.startswith("digital-presenter-") or "/canvas" in route:
+        return "canvas"
+    if action.startswith(("video-", "digital-ip-", "cinematic-", "tryon-", "text-video-")) or "/video" in route:
+        return "video"
+    return ""
+
+
+def _bridge_catalog(account_id):
+    """Read the first-party catalog; never let the model invent an action."""
+    if not INTERNAL_ACTION_TOKEN:
+        raise RuntimeError("production_bridge_unavailable")
+    try:
+        response = requests.post(
+            AUTH_BASE + INTERNAL_CATALOG_PATH,
+            json={"account_id": account_id},
+            headers={"X-HQ-Internal-Token": INTERNAL_ACTION_TOKEN},
+            timeout=8,
+        )
+        payload = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise RuntimeError("production_catalog_unavailable") from exc
+    if not 200 <= response.status_code < 300 or not isinstance(payload, dict):
+        raise RuntimeError("production_catalog_unavailable")
+    actions = payload.get("actions")
+    if not isinstance(actions, list):
+        raise RuntimeError("production_catalog_invalid")
+    return payload
+
+
+def _production_recommendation(account_id, requested_result, preferred_action=None):
+    family = str(requested_result or "").strip().lower()
+    if family not in {"image", "audio", "video", "canvas"}:
+        raise coach_harness.HarnessError("暂不支持该制作类型")
+    try:
+        catalog = _bridge_catalog(account_id)
+        entries = {
+            str(item.get("action") or ""): item
+            for item in catalog["actions"]
+            if isinstance(item, dict)
+            and _catalog_action_family(item) == family
+            and str((item.get("availability") or {}).get("status") or "available") == "available"
+        }
+        preferred = str(preferred_action or "").strip()
+        if preferred:
+            if preferred not in entries:
+                raise coach_harness.HarnessError("所选能力与制作类型不匹配或当前不可用")
+            action = preferred
+        else:
+            base = coach_harness.production_recommendation(family)
+            action = next((name for name in base["candidate_actions"] if name in entries), "")
+            if not action:
+                raise coach_harness.HarnessError("当前账号暂时没有可用的%s能力" % family)
+        return {
+            "capability_family": family,
+            "recommended_action": action,
+            "candidate_actions": list(entries),
+            "catalog_version": str(catalog.get("version") or ""),
+            "catalog_entry": entries[action],
+        }
+    except RuntimeError:
+        fallback = coach_harness.production_recommendation(family, preferred_action)
+        fallback["catalog_version"] = "fallback-v1"
+        fallback["catalog_entry"] = {
+            "action": fallback["recommended_action"],
+            "family": family,
+            "input_schema": _production_action_schema(fallback["recommended_action"]),
+            "billing": "free" if fallback["recommended_action"] == "canvas-ops" else "quote_then_confirm",
+            "confirmation_required": True,
+            "risk": "write" if fallback["recommended_action"] == "canvas-ops" else "production",
+            "result_type": "canvas" if family == "canvas" else "asset",
+            "ui_route": "",
+        }
+        return fallback
+
+
+_SPECIAL_PRODUCTION_INTENTS = (
+    ("audio", "audio-slots", r"(?:声音克隆|克隆声音).{0,12}(?:槽位|名额|状态)|(?:槽位|名额).{0,12}(?:声音克隆|克隆声音)"),
+    ("video", "text-video-templates", r"(?:文案成片).{0,12}(?:模板|模版).{0,8}(?:有哪些|查看|列出|可用)?"),
+    ("video", "text-video-styles", r"(?:文案成片).{0,12}(?:样式|风格).{0,8}(?:有哪些|查看|列出|可用)?"),
+    ("video", "text-video-voices", r"(?:文案成片).{0,12}(?:音色|声音).{0,8}(?:有哪些|查看|列出|可用)?"),
+    ("video", "text-video-capability", r"(?:查看|检查|确认).{0,12}(?:文案成片).{0,8}(?:状态|能力|是否可用)"),
+    ("video", "video-compose-projects", r"(?:有哪些|查看|列出).{0,12}(?:一键成片|文案成片).{0,8}项目"),
+    ("video", "video-compose-project", r"(?:查看|读取|打开).{0,12}(?:一键成片|文案成片).{0,8}(?:项目|工程)"),
+    ("audio", "voices", r"(?:有哪些|查看|列出|可用).{0,12}(?:音色|声音)|(?:音色|声音).{0,12}(?:有哪些|查看|列出|可用)"),
+    ("video", "video-avatars", r"(?:有哪些|查看|列出|可用).{0,12}(?:数字人形象|数字人)|(?:数字人形象|数字人).{0,12}(?:有哪些|查看|列出|可用)"),
+    ("canvas", "canvas-list", r"(?:有哪些|查看|列出).{0,12}(?:canvas|画布)|(?:canvas|画布).{0,12}(?:有哪些|查看|列出)"),
+    ("canvas", "canvas-get", r"(?:读取|打开).{0,12}(?:canvas|画布)|(?:canvas|画布).{0,12}(?:详情|内容)"),
+    ("canvas", "digital-presenter-capability", r"(?:数字主持人|数字演示者|数字讲解员).{0,12}(?:是否可用|能力|状态)"),
+    ("canvas", "digital-presenter-project", r"(?:查看|读取|打开).{0,12}(?:数字主持人|数字演示者|数字讲解员).{0,8}(?:项目|工程)"),
+    ("video", "digital-ip-batch-generate", r"(?:批量.{0,12}数字人|数字人.{0,12}批量)"),
+    ("video", "digital-ip-audio-generate", r"(?:音频驱动.{0,12}数字人|数字人.{0,12}音频驱动|用.{0,12}音频.{0,12}数字人)"),
+    ("video", "cinematic-motion-generate", r"(?:动作模仿|模仿动作|复刻动作)"),
+    ("video", "cinematic-open-generate", r"(?:电影化身|电影分身|电影感化身)"),
+    ("video", "tryon-classic-generate", r"(?:视频|动态).{0,16}(?:换装|换衣|换背景)|(?:换装|换衣|换背景).{0,16}(?:视频|动态)"),
+    ("video", "tryon-fast-generate", r"(?:换装|换衣|换背景)"),
+    ("video", "video-compose-render", r"(?:渲染|导出).{0,12}(?:一键成片|文案成片)|(?:一键成片|文案成片).{0,12}(?:渲染|导出)"),
+    ("video", "video-compose-review", r"(?:审阅|确认取舍).{0,12}(?:一键成片|文案成片)|(?:一键成片|文案成片).{0,12}(?:审阅|确认取舍)"),
+    ("video", "video-compose-analyze", r"(?:分析|拆解).{0,12}(?:一键成片|文案成片)|(?:一键成片|文案成片).{0,12}(?:分析|拆解)"),
+    ("video", "video-compose-create", r"(?:一键成片|文案成片)"),
+    ("canvas", "digital-presenter-update", r"(?:更新|修改).{0,12}(?:数字主持人|数字演示者|数字讲解员)"),
+    ("canvas", "digital-presenter-create", r"(?:生成|创建|制作).{0,12}(?:数字主持人|数字演示者|数字讲解员)|(?:数字主持人|数字演示者|数字讲解员).{0,12}(?:生成|创建|制作)"),
+    ("canvas", "canvas-create", r"(?:新建|创建).{0,12}(?:canvas|画布)"),
+    ("canvas", "canvas-agent-plan", r"(?:规划|编排).{0,12}(?:canvas|画布)|(?:canvas|画布).{0,12}(?:规划|编排)"),
+    ("image", "image-upload", r"上传.{0,12}(?:参考图|图片素材|参考图片)"),
+    ("video", "video-upload", r"上传.{0,12}(?:参考视频|视频素材)"),
+)
+
+_DIRECT_READ_ACTIONS = {
+    "audio-slots", "voices", "video-avatars", "text-video-capability",
+    "text-video-templates", "text-video-styles", "text-video-voices",
+    "video-compose-projects", "video-compose-project", "canvas-list", "canvas-get",
+    "digital-presenter-capability", "digital-presenter-project",
+}
+_NAVIGATION_ONLY_ACTIONS = {"image-upload", "video-upload", "canvas-agent-plan"}
+
+_EXPLICIT_MEDIA_ACTIONS = {
+    action: family for family, action, _ in _SPECIAL_PRODUCTION_INTENTS
+}
+_EXPLICIT_MEDIA_ACTIONS.update({
+    "image-generate": "image", "audio-generate": "audio", "video-generate": "video",
+    "digital-ip-text-generate": "video", "canvas-ops": "canvas",
+})
+
+
+def _expanded_production_intent(message):
+    """Recognize the feature-page actions that the old five-action map missed."""
+    text = re.sub(r"\s+", "", str(message or "")).lower()
+    explanatory_question = bool(re.search(
+        r"(?:是什么|怎么用|如何使用|有哪些功能|是否支持|多少钱|什么格式|有什么区别|为什么)", text
+    ))
+    for action, family in _EXPLICIT_MEDIA_ACTIONS.items():
+        if action in text:
+            if action not in _DIRECT_READ_ACTIONS and explanatory_question:
+                return None
+            return {
+                "capability_family": family, "recommended_action": action,
+                "candidate_actions": [action],
+            }
+    for family, action, pattern in _SPECIAL_PRODUCTION_INTENTS:
+        if re.search(pattern, text, re.I):
+            if action not in _DIRECT_READ_ACTIONS and explanatory_question:
+                return None
+            return {
+                "capability_family": family,
+                "recommended_action": action,
+                "candidate_actions": [action],
+            }
+    return None
+
+
+def _production_action_schema(action, catalog_entry=None):
+    catalog_schema = (catalog_entry or {}).get("input_schema")
+    if isinstance(catalog_schema, dict) and catalog_schema.get("type") == "object":
+        return json.loads(json.dumps(catalog_schema, ensure_ascii=False))
     fields = PRODUCTION_FALLBACK_FIELDS.get(action) or {}
     return {
         "type": "object", "additionalProperties": False,
@@ -437,10 +614,26 @@ def _production_record_schema(record):
     return schema if isinstance(schema, dict) else _production_action_schema(record["action"])
 
 
-def _production_parameter_context(account_id, action):
+def _production_source_fields(action, properties):
+    wanted = {
+        "audio-generate": ("text",),
+        "digital-ip-text-generate": ("text",),
+        "digital-ip-batch-generate": ("text",),
+        "cinematic-open-generate": ("prompt",),
+        "canvas-create": ("prompt",),
+        "canvas-agent-plan": ("prompt",),
+        "digital-presenter-create": ("script_text",),
+    }.get(action, ())
+    return tuple(name for name in wanted if name in properties)
+
+
+def _production_parameter_context(account_id, action, catalog_entry=None):
     """Expose account-owned choices while keeping derived source fields out of the UI."""
-    schema = _production_action_schema(action)
-    properties = schema["properties"]
+    # canvas-ops keeps the existing prompt-shaped adapter; the bridge still
+    # validates the expanded op batch against the canonical action contract.
+    schema = _production_action_schema(action, None if action == "canvas-ops" else catalog_entry)
+    properties = schema.setdefault("properties", {})
+    schema.setdefault("required", [])
     context = {}
     request_key = "ip12-read-" + uuid.uuid4().hex
 
@@ -453,14 +646,13 @@ def _production_parameter_context(account_id, action):
         except (ProductionBridgeError, RuntimeError):
             return None
 
-    if action == "audio-generate":
+    source_fields = set(_production_source_fields(action, properties))
+    schema["required"] = [name for name in schema["required"] if name not in source_fields | {"request_id"}]
+    if action == "canvas-create":
         schema["required"] = []
-    elif action == "digital-ip-text-generate":
-        schema["required"] = ["avatar_id", "voice"]
+    if "avatar_id" in properties:
         avatars = read("video-avatars", {"limit": 120})
-        voices = read("voices", {})
         avatar_items = avatars.get("items", []) if isinstance(avatars, dict) else []
-        voice_items = voices.get("items", []) if isinstance(voices, dict) else []
         properties["avatar_id"].update({
             "title": "数字人形象",
             "oneOf": [
@@ -474,7 +666,11 @@ def _production_parameter_context(account_id, action):
                 if avatars is not None else "暂时无法读取当前账号的数字人形象，请稍后重新打开。"
             ),
         })
-        properties["voice"].update({
+    voice_field = "voice" if "voice" in properties else ("voice_key" if "voice_key" in properties else "")
+    if voice_field:
+        voices = read("voices", {})
+        voice_items = voices.get("items", []) if isinstance(voices, dict) else []
+        properties[voice_field].update({
             "title": "声音",
             "oneOf": [
                 {"const": item["voice_key"], "title": str(item.get("display_name") or "未命名声音")}
@@ -486,8 +682,7 @@ def _production_parameter_context(account_id, action):
                 if voices is not None else "暂时无法读取当前账号的声音，请稍后重新打开。"
             ),
         })
-    elif action == "canvas-ops":
-        schema["required"] = ["board_id"]
+    if "board_id" in properties:
         boards_result = read("canvas-list", {"limit": 100, "offset": 0})
         boards = boards_result.get("boards", []) if isinstance(boards_result, dict) else []
         choices = [
@@ -517,11 +712,14 @@ def _production_parameter_context(account_id, action):
 
 def _production_missing_fields(record, options):
     effective = dict(options)
-    if record["action"] in {
-        "audio-generate", "digital-ip-text-generate", "digital-ip-batch-generate",
-    }:
-        effective.setdefault("text", record["source_text"])
-    return [name for name in PRODUCTION_REQUIRED_FIELDS.get(record["action"], ())
+    properties = (_production_record_schema(record).get("properties") or {})
+    for name in _production_source_fields(record["action"], properties):
+        effective.setdefault(name, record["source_text"])
+    if record["action"] == "canvas-create":
+        effective.setdefault("name", "IP12 内容画布")
+    if record["action"] == "digital-presenter-create":
+        effective.setdefault("request_id", record["id"])
+    return [name for name in (_production_record_schema(record).get("required") or [])
             if effective.get(name) in (None, "", [])]
 
 
@@ -531,14 +729,15 @@ def _production_input(record, options):
     payload = dict(options)
     # A selected IP12 script is an explicit source.  The user need not paste it
     # into the production panel again, and the original script is not returned.
-    if record["action"] in {
-        "audio-generate", "digital-ip-text-generate", "digital-ip-batch-generate",
-    }:
-        payload.setdefault("text", record["source_text"])
-    if record["action"] in {
-        "audio-generate", "digital-ip-text-generate", "digital-ip-batch-generate",
-    } and isinstance(payload.get("text"), str):
-        payload["text"] = re.sub(r"[\r\n\t\f\v]+", " ", payload["text"]).strip()
+    properties = (_production_record_schema(record).get("properties") or {})
+    for name in _production_source_fields(record["action"], properties):
+        payload.setdefault(name, record["source_text"])
+        if isinstance(payload.get(name), str):
+            payload[name] = re.sub(r"[\r\n\t\f\v]+", " ", payload[name]).strip()
+    if record["action"] == "canvas-create":
+        payload.setdefault("name", "IP12 内容画布")
+    if record["action"] == "digital-presenter-create":
+        payload.setdefault("request_id", record["id"])
     if record["action"] == "canvas-ops":
         board_id = str(payload.get("board_id") or "")
         payload.setdefault("base_version", (record.get("canvas_versions") or {}).get(board_id))
@@ -633,6 +832,14 @@ def _set_production_result(record, result):
         record["canvas_ref"] = result["canvas_ref"]
     if result.get("action_result") is not None:
         record["action_result"] = result["action_result"]
+    elif record.get("capability_family") == "canvas" and isinstance(nested, dict) and not assets:
+        record["action_result"] = nested
+    if record.get("capability_family") == "canvas" and isinstance(result.get("board"), dict):
+        board = result["board"]
+        record["canvas_ref"] = {
+            "board_id": str(board.get("id") or ""),
+            **({"version": board["version"]} if board.get("version") is not None else {}),
+        }
     if record.get("action") == "canvas-ops" and result.get("version") is not None:
         board = result.get("board") if isinstance(result.get("board"), dict) else {}
         record["canvas_ref"] = {
@@ -656,12 +863,19 @@ def _set_production_result(record, result):
         record["status"] = "queued"
     elif record.get("canvas_ref") is not None or result.get("action_result") is not None:
         record["status"] = "done"
+    elif str(record.get("risk") or "") != "production":
+        record["action_result"] = nested if isinstance(nested, dict) else {
+            key: value for key, value in result.items()
+            if key not in {"quote_token"}
+        }
+        record["status"] = "done"
     else:
         raise RuntimeError("production_result_unlinked")
     if (
         record["status"] == "done"
-        and record.get("action") != "canvas-ops"
+        and record.get("risk") == "production"
         and not record.get("asset_refs")
+        and record.get("action_result") is None
     ):
         raise RuntimeError("production_result_unlinked")
     if record["status"] == "failed":
@@ -683,12 +897,17 @@ def _ensure_production_delivery_message(convo, record):
     label = {
         "image": "图片", "audio": "音频", "video": "视频", "canvas": "Canvas",
     }.get(str(record.get("capability_family") or ""), "成品")
-    message = {
-        "role": "assistant",
-        "content": (
+    content = (
+        f"✅ 已读取当前账号的{label}结果并返回对话；这次没有扣点，也没有修改现有内容。"
+        if record.get("risk") == "read"
+        else (
             f"✅ {label}已经生成并返回当前对话。原成品和任务记录已保留；"
             f"你可以点击下方“继续修改”，再生成一个新版本。"
-        ),
+        )
+    )
+    message = {
+        "role": "assistant",
+        "content": content,
         "message_id": "prodmsg_" + uuid.uuid4().hex,
         "production_id": record["id"],
     }
@@ -702,12 +921,13 @@ def _production_plan_or_error(record, options):
     if missing:
         return False, "缺少参数：" + "、".join(missing), missing
     try:
-        schema = _production_action_schema(record["action"])
+        schema = _production_record_schema(record)
         unknown = sorted(set(options) - set(schema.get("properties") or {}))
         if unknown:
             raise coach_harness.HarnessError("不支持的参数：" + unknown[0])
         for name, value in options.items():
-            expected = ((schema.get("properties") or {}).get(name) or {}).get("type")
+            descriptor = ((schema.get("properties") or {}).get(name) or {})
+            expected = descriptor.get("type")
             valid = {
                 "string": isinstance(value, str),
                 "integer": isinstance(value, int) and not isinstance(value, bool),
@@ -718,12 +938,39 @@ def _production_plan_or_error(record, options):
             }.get(expected, True)
             if not valid:
                 raise coach_harness.HarnessError(name + " 类型不合法")
+            if isinstance(descriptor.get("enum"), list) and value not in descriptor["enum"]:
+                raise coach_harness.HarnessError(name + " 不在可选范围")
+            if isinstance(value, str):
+                if len(value) < int(descriptor.get("minLength") or 0):
+                    raise coach_harness.HarnessError(name + " 太短")
+                if descriptor.get("maxLength") is not None and len(value) > int(descriptor["maxLength"]):
+                    raise coach_harness.HarnessError(name + " 太长")
+                if descriptor.get("pattern") and not re.fullmatch(str(descriptor["pattern"]), value):
+                    raise coach_harness.HarnessError(name + " 格式不合法")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                if descriptor.get("minimum") is not None and value < descriptor["minimum"]:
+                    raise coach_harness.HarnessError(name + " 小于允许值")
+                if descriptor.get("maximum") is not None and value > descriptor["maximum"]:
+                    raise coach_harness.HarnessError(name + " 超过允许值")
+            if isinstance(value, list):
+                if descriptor.get("minItems") is not None and len(value) < descriptor["minItems"]:
+                    raise coach_harness.HarnessError(name + " 数量不足")
+                if descriptor.get("maxItems") is not None and len(value) > descriptor["maxItems"]:
+                    raise coach_harness.HarnessError(name + " 数量过多")
             choices = (((_production_record_schema(record).get("properties") or {}).get(name) or {}).get("oneOf"))
             if isinstance(choices, list) and not any(
                 isinstance(choice, dict) and choice.get("const") == value for choice in choices
             ):
                 raise coach_harness.HarnessError(name + " 不在当前账号的可选范围")
         input_body = _production_input(record, options)
+        for name in ("text", "script_text", "prompt"):
+            value = input_body.get(name)
+            descriptor = (schema.get("properties") or {}).get(name) or {}
+            if isinstance(value, str):
+                if len(value) < int(descriptor.get("minLength") or 0):
+                    raise coach_harness.HarnessError(name + " 太短")
+                if descriptor.get("maxLength") is not None and len(value) > int(descriptor["maxLength"]):
+                    raise coach_harness.HarnessError(name + " 太长")
         if record["action"] == "canvas-ops":
             if not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", str(input_body["board_id"])):
                 raise coach_harness.HarnessError("board_id 格式不合法")
@@ -747,6 +994,8 @@ def _production_set_options(record, options):
 
 
 def _production_is_current(convo, record):
+    if record.get("source_bound") is False:
+        return True
     try:
         source = _production_source(convo, {
             "category_id": record.get("category_id"), "topic_id": record.get("topic_id"),
@@ -1481,8 +1730,13 @@ def api_prepare_production():
         if set(body) - {"conversation_id", "content_target", "expected_revision", "requested_result", "preferred_action", "options"}:
             return _production_error("invalid_request", "包含不支持的参数", 400)
         cid = str(body.get("conversation_id") or "")
-        recommendation = coach_harness.production_recommendation(
-            body.get("requested_result"), body.get("preferred_action")
+        recommendation = _production_recommendation(
+            current_account_id(), body.get("requested_result"), body.get("preferred_action")
+        )
+        catalog_entry = recommendation.pop("catalog_entry")
+        source_unbound = (
+            str(catalog_entry.get("risk") or "") == "read"
+            or (catalog_entry.get("transport") or {}).get("kind") == "dedicated_upload"
         )
         with CONVERSATION_STATE_LOCK:
             convo = _production_conversation(cid)
@@ -1490,9 +1744,11 @@ def api_prepare_production():
                 return _production_error("project_not_found", "项目不存在", 404)
             state = normalize_coach_state(convo.get("coach_state"))
             _assert_expected_revision(state, body.get("expected_revision"))
-            source = _production_source(convo, body.get("content_target"))
+            source = _production_source_or_unbound(
+                convo, body.get("content_target"), unbound=source_unbound
+            )
         parameter_schema, resource_context = _production_parameter_context(
-            current_account_id(), recommendation["recommended_action"]
+            current_account_id(), recommendation["recommended_action"], catalog_entry
         )
         with CONVERSATION_STATE_LOCK:
             convo = _production_conversation(cid)
@@ -1500,15 +1756,26 @@ def api_prepare_production():
                 return _production_error("project_not_found", "项目不存在", 404)
             state = normalize_coach_state(convo.get("coach_state"))
             _assert_expected_revision(state, body.get("expected_revision"))
-            source = _production_source(convo, body.get("content_target"))
+            source = _production_source_or_unbound(
+                convo, body.get("content_target"), unbound=source_unbound
+            )
             production_id = "prod_" + uuid.uuid4().hex
             record = {
                 "id": production_id,
                 "category_id": source["category_id"], "topic_id": source["topic_id"],
                 "script_version": source["script_version"], "script_digest": source["script_digest"],
                 "source_text": source["script"],
+                "source_bound": source.get("source_bound", True),
                 "capability_family": recommendation["capability_family"],
                 "action": recommendation["recommended_action"],
+                "catalog_version": recommendation.get("catalog_version", ""),
+                "billing": str(catalog_entry.get("billing") or "free"),
+                "confirmation_required": bool(catalog_entry.get("confirmation_required")),
+                "risk": str(catalog_entry.get("risk") or "read"),
+                "result_type": str(catalog_entry.get("result_type") or "json"),
+                "ui_route": str(catalog_entry.get("ui_route") or ""),
+                "transport": catalog_entry.get("transport") or {"kind": "action"},
+                "constraints": list(catalog_entry.get("constraints") or []),
                 "brief": {"reason": "基于当前已确认口播制作", "audience": "当前 IP 的目标受众", "goal": "将当前内容转为可交付成品"},
                 "options": {}, "input_digest": "", "status": "draft", "quote": {},
                 "job_id": None, "asset_refs": [], "canvas_ref": None,
@@ -1536,6 +1803,11 @@ def api_prepare_production():
             "options": record["options"],
             "schema": _production_record_schema(record),
             "parameter_schema": _production_record_schema(record),
+            "billing": record["billing"],
+            "confirmation_required": record["confirmation_required"],
+            "risk": record["risk"], "result_type": record["result_type"],
+            "ui_route": record["ui_route"], "transport": record["transport"],
+            "constraints": record["constraints"],
             "missing": missing,
             "missing_prerequisites": missing or ([validation_error] if validation_error else []),
             "validation_error": validation_error,
@@ -1587,7 +1859,38 @@ def api_quote_production():
             request_digest = record["input_digest"]
             record.update(status="draft", last_error_code="")
             save_conversation(cid, convo)
-        if record["action"] != "canvas-ops":
+        if (record.get("transport") or {}).get("kind") != "action":
+            return {
+                "ok": False, "error": "这项素材上传需要在对应功能页完成",
+                "code": "page_required", "production_id": production_id,
+                "status": "blocked_prerequisite", "ui_route": record.get("ui_route", ""),
+                "production": _production_public(record),
+            }, 409
+        if record.get("billing") != "quote_then_confirm" and not record.get("confirmation_required"):
+            try:
+                direct_result = _bridge_action(
+                    current_account_id(), record["action"], input_body,
+                    idempotency_key=record["idempotency_key"],
+                )
+            except ProductionBridgeError as exc:
+                return _production_error(exc.code, exc.detail, exc.status)
+            except RuntimeError:
+                return _production_error("production_bridge_unavailable", "能力服务暂时不可用", 503)
+            with CONVERSATION_STATE_LOCK:
+                convo = _production_conversation(cid)
+                record = (convo or {}).get("productions", {}).get(production_id)
+                if convo is None or not isinstance(record, dict):
+                    return _production_error("project_not_found", "项目不存在", 404)
+                _set_production_result(record, direct_result)
+                delivery_message = _ensure_production_delivery_message(convo, record)
+                save_conversation(cid, convo)
+            return jsonify({
+                "ok": True, "production_id": production_id, "status": record["status"],
+                "cost": 0, "points": None, "billing": "free",
+                "confirmation_required": False, "production": _production_public(record),
+                "delivery_message": delivery_message,
+            })
+        if record.get("billing") == "quote_then_confirm":
             try:
                 quote = _bridge_action(
                     current_account_id(), record["action"], input_body,
@@ -1647,7 +1950,8 @@ def api_quote_production():
             save_conversation(cid, convo)
         return jsonify({"ok": True, "production_id": production_id, "status": "quoted",
                         "cost": quote.get("cost"), "points": quote.get("points"),
-                        "expires_in": expires_in, "confirmation_required": True,
+                        "expires_in": expires_in,
+                        "confirmation_required": bool(record.get("confirmation_required")),
                         "script_version": record["script_version"],
                         "input_digest": request_digest, "billing": billing,
                         "production": _production_public(record)})
@@ -2695,16 +2999,18 @@ def _action_label(action_type):
 def _process_production_intent_turn(
     cid, user_message, target, intent, expected_revision=None, request_id=""
 ):
+    family = intent["capability_family"]
+    selected_action = intent["recommended_action"]
+    source_unbound = selected_action in (_DIRECT_READ_ACTIONS | _NAVIGATION_ONLY_ACTIONS)
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
         if convo is None:
             return None, 404
         state = normalize_coach_state(convo.get("coach_state"))
         _assert_expected_revision(state, expected_revision)
-        source = _production_source(convo, target)
+        source = _production_source_or_unbound(convo, target, unbound=source_unbound)
         snapshot_revision = state["revision"]
     labels = {"image": "图片", "audio": "音频", "video": "视频", "canvas": "Canvas"}
-    family = intent["capability_family"]
     label = labels[family]
     ratio_match = re.search(
         r"(?<!\d)(?:9\s*[:：]\s*16|16\s*[:：]\s*9|1\s*[:：]\s*1)(?!\d)",
@@ -2714,19 +3020,35 @@ def _process_production_intent_turn(
                if family in {"image", "video"} and ratio_match else {})
     instruction = re.sub(r"\s+", " ", user_message).strip()[:320]
     script = re.sub(r"\s+", " ", source["script"]).strip()[:1500]
-    if intent["recommended_action"] == "image-generate":
+    if selected_action == "image-generate":
         options["prompt"] = (
             f"用户要求：{instruction}。根据以下口播正文生成适合社交媒体发布的配图；"
             f"不要添加无法验证的文字、数据或身份。口播正文：{script}"
         )
-    elif intent["recommended_action"] == "video-generate":
+    elif selected_action == "video-generate":
         options["prompt"] = (
             f"用户要求：{instruction}。根据以下口播正文生成真实自然的短视频画面；"
             f"不要添加水印或编造人物经历。口播正文：{script}"
         )
     assistant = (
-        "我知道你要把当前这篇口播做成%s。我现在会调用黄雀制作能力整理参数并取得实时报价；"
-        "拿到价格后仍要由你明确确认，未经确认不会提交或扣点。" % label
+        (
+            "画布 Agent 规划需要读取当前画布节点和连线。我会直接带你进入 Canvas 并保留当前 Project；"
+            "在那里确认规划后可以返回继续对话。"
+            if selected_action == "canvas-agent-plan"
+            else (
+                "这一步需要先把本人素材上传到黄雀。我已经准备好对应功能页入口；上传后返回当前 Project，"
+                "我会继续复用这篇口播，不需要你重新说明。"
+            )
+        )
+        if selected_action in _NAVIGATION_ONLY_ACTIONS
+        else (
+            "我会直接读取当前账号可用的黄雀%s能力和资源，不会扣点，也不会改变现有内容。" % label
+            if selected_action in _DIRECT_READ_ACTIONS
+        else (
+            "我知道你要把当前这篇口播做成%s。我现在会调用黄雀制作能力整理参数并取得实时报价；"
+            "拿到价格后仍要由你明确确认，未经确认不会提交或扣点。" % label
+        )
+        )
     )
     message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
     assistant, next_state = _persist_unprocessed_turn(
@@ -2734,16 +3056,27 @@ def _process_production_intent_turn(
         assistant_override=assistant,
     )
     result = _chat_result(assistant, next_state)
+    if selected_action in _NAVIGATION_ONLY_ACTIONS:
+        result["actions"] = [{
+            "type": "navigate_to",
+            "label": "打开%s工作台" % label,
+            "primary": True,
+            "ui_route": (
+                "/workbench/banana" if family == "image"
+                else ("/workbench/canvas" if family == "canvas" else "/workbench/video")
+            ),
+        }]
+        return result, 200
     result["actions"] = [{
         "type": "prepare_production",
-        "label": "准备生成" + label,
+        "label": ("立即读取" + label if selected_action in _DIRECT_READ_ACTIONS else "准备生成" + label),
         "primary": True,
         "content_target": {
             "category_id": source["category_id"],
             "topic_id": source["topic_id"],
         },
         "requested_result": family,
-        "preferred_action": intent["recommended_action"],
+        "preferred_action": selected_action,
         "candidate_actions": intent["candidate_actions"],
         "options": options,
     }]
@@ -2886,8 +3219,14 @@ def process_chat_request(body):
                 else:
                     action_revision = body.get("expected_revision")
                 if action is None:
-                    production_intent = coach_harness.production_intent(user_message)
-                    if production_intent is not None and content_target is None:
+                    production_intent = (
+                        _expanded_production_intent(user_message)
+                        or coach_harness.production_intent(user_message)
+                    )
+                    source_optional = production_intent and production_intent.get("recommended_action") in (
+                        _DIRECT_READ_ACTIONS | _NAVIGATION_ONLY_ACTIONS
+                    )
+                    if production_intent is not None and content_target is None and not source_optional:
                         content_target = _production_target_from_message(convo, user_message)
 
             if action is not None:

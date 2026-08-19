@@ -80,6 +80,102 @@ assert seen_before_model == [True], seen_before_model
             )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    @unittest.skipUnless(
+        importlib.util.find_spec("flask") and importlib.util.find_spec("requests"),
+        "Hermes runtime dependencies are not installed",
+    )
+    def test_full_catalog_actions_are_selected_and_kept_inside_the_contract(self):
+        script = r'''
+from unittest.mock import patch
+import server
+import security
+
+cases = {
+    "批量生成三位数字人口播": "digital-ip-batch-generate",
+    "用我的音频驱动数字人": "digital-ip-audio-generate",
+    "做电影化身动作模仿": "cinematic-motion-generate",
+    "把这个人物快速换装": "tryon-fast-generate",
+    "查看文案成片模板": "text-video-templates",
+    "列出我的 Canvas 画布": "canvas-list",
+    "生成数字主持人": "digital-presenter-create",
+    "上传参考视频素材": "video-upload",
+}
+for message, action in cases.items():
+    intent = server._expanded_production_intent(message)
+    assert intent and intent["recommended_action"] == action, (message, intent)
+for question in ("电影化身是什么？", "换装怎么用？", "一键成片多少钱？"):
+    assert server._expanded_production_intent(question) is None, question
+
+catalog = {"version": "test-v2", "actions": [{
+    "action": "voices", "family": "audio", "purpose": "读取音色",
+    "input_schema": {"type": "object", "additionalProperties": False, "required": [], "properties": {}},
+    "billing": "free", "confirmation_required": False, "risk": "read", "result_type": "json",
+    "ui_route": "/workbench/audio", "transport": {"kind": "action"},
+    "availability": {"status": "available"},
+}]}
+with patch.object(server, "_bridge_catalog", return_value=catalog):
+    selected = server._production_recommendation("acct_a", "audio", "voices")
+assert selected["recommended_action"] == "voices" and selected["catalog_version"] == "test-v2", selected
+
+record = {
+    "id": "prod_contract", "action": "audio-generate", "source_text": "字" * 1001,
+    "parameter_schema": {"type": "object", "additionalProperties": False, "required": [], "properties": {
+        "text": {"type": "string", "minLength": 1, "maxLength": 1000},
+    }},
+    "script_digest": "sha256:test", "options": {}, "risk": "production",
+}
+valid, error, _ = server._production_plan_or_error(record, {})
+assert not valid and "太长" in error, (valid, error)
+
+read_record = {"action": "voices", "capability_family": "audio", "risk": "read", "asset_refs": []}
+server._set_production_result(read_record, {"items": [{"voice_key": "demo"}]})
+assert read_record["status"] == "done" and read_record["action_result"]["items"][0]["voice_key"] == "demo"
+
+server.current_account_id = lambda: "acct_a"
+security._validate_token = lambda token: {"account_id": "acct_a", "username": "alice", "role": "member"}
+security.RATE_REQUESTS = 100
+client = server.app.test_client()
+client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
+cid = "catalogread01"
+state = server.initial_coach_state()
+server.save_conversation(cid, {
+    "id": cid, "title": "catalog read", "messages": [], "coach_state": state,
+    "reports": {}, "deliverables": {}, "owner_account_id": "acct_a",
+})
+with patch.object(server, "_bridge_catalog", return_value=catalog):
+    turn = client.post("/api/chat-complete", json={
+        "conversation_id": cid, "message": "有哪些可用音色？",
+        "expected_revision": state["revision"], "request_id": "catalog-read-turn-01",
+    })
+    assert turn.status_code == 200, turn.get_data(as_text=True)
+    action = turn.get_json()["actions"][0]
+    assert action["preferred_action"] == "voices" and action["content_target"] == {"category_id": "", "topic_id": ""}, action
+    revision = turn.get_json()["state"]["revision"]
+    prepared = client.post("/api/ip12/productions/prepare", json={
+        "conversation_id": cid, "content_target": {}, "expected_revision": revision,
+        "requested_result": "audio", "preferred_action": "voices", "options": {},
+    })
+    assert prepared.status_code == 200 and prepared.get_json()["confirmation_required"] is False, prepared.get_data(as_text=True)
+    production_id = prepared.get_json()["production_id"]
+    with patch.object(server, "_bridge_action", return_value={"items": [{"voice_key": "demo"}]}) as bridge:
+        completed = client.post("/api/ip12/productions/quote", json={
+            "conversation_id": cid, "production_id": production_id,
+            "expected_revision": revision, "options": {},
+        })
+    assert completed.status_code == 200, completed.get_data(as_text=True)
+    body = completed.get_json()
+    assert body["confirmation_required"] is False and body["production"]["status"] == "done", body
+    assert bridge.call_args.args[1] == "voices" and not bridge.call_args.kwargs.get("confirm"), bridge.call_args
+'''
+        with tempfile.TemporaryDirectory(prefix="ip12-catalog-contract-test.") as data_dir:
+            env = os.environ.copy()
+            env.update(OPENAI_API_KEY="dummy", HERMES_HOME=data_dir, HERMES_DATA_DIR=data_dir)
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=ROOT / "server" / "hermes_ip12",
+                env=env, capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

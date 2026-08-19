@@ -4981,7 +4981,8 @@ class H(BaseHTTPRequestHandler):
             return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
         if not row:
             return self._cli_send(404, {"detail": "账号不存在", "code": "account_not_found"})
-        return self._cli_send(200, {"account_id": row["account_id"], **hq_cli_api.action_catalog()})
+        states = {flag: feature_flags.is_enabled(flag) for flag in hq_cli_api.CATALOG_FEATURE_FLAGS}
+        return self._cli_send(200, {"account_id": row["account_id"], **hq_cli_api.action_catalog(states)})
 
     def _internal_ip12_agent_action(self, body):
         if not self._ip12_agent_bridge_enabled():
