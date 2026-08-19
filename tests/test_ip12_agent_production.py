@@ -103,8 +103,13 @@ cases = {
 for message, action in cases.items():
     intent = server._expanded_production_intent(message)
     assert intent and intent["recommended_action"] == action, (message, intent)
-for question in ("电影化身是什么？", "换装怎么用？", "一键成片多少钱？"):
-    assert server._expanded_production_intent(question) is None, question
+for question, expected in (
+    ("电影化身是什么？", "cinematic-open-generate"),
+    ("换装怎么用？", "tryon-fast-generate"),
+    ("一键成片多少钱？", "video-compose-create"),
+):
+    intent = server._expanded_production_intent(question)
+    assert intent and intent["help_only"] and intent["recommended_action"] == expected, (question, intent)
 
 catalog = {"version": "test-v2", "actions": [{
     "action": "voices", "family": "audio", "purpose": "读取音色",
@@ -112,6 +117,15 @@ catalog = {"version": "test-v2", "actions": [{
     "billing": "free", "confirmation_required": False, "risk": "read", "result_type": "json",
     "ui_route": "/workbench/audio", "transport": {"kind": "action"},
     "availability": {"status": "available"},
+}, {
+    "action": "tryon-fast-generate", "family": "video", "purpose": "生成快速换装视频",
+    "input_schema": {"type": "object", "additionalProperties": False,
+        "required": ["person_image_upload_id", "clothes_upload_id"], "properties": {
+            "person_image_upload_id": {"type": "string"}, "clothes_upload_id": {"type": "string"},
+        }},
+    "billing": "quote_then_confirm", "confirmation_required": True,
+    "risk": "production", "result_type": "asset", "ui_route": "/workbench/video",
+    "transport": {"kind": "action"}, "availability": {"status": "available"},
 }]}
 with patch.object(server, "_bridge_catalog", return_value=catalog):
     selected = server._production_recommendation("acct_a", "audio", "voices")
@@ -168,6 +182,20 @@ with patch.object(server, "_bridge_catalog", return_value=catalog):
     body = completed.get_json()
     assert body["confirmation_required"] is False and body["production"]["status"] == "done", body
     assert bridge.call_args.args[1] == "voices" and not bridge.call_args.kwargs.get("confirm"), bridge.call_args
+
+before = len(server.load_conversation(cid).get("productions") or {})
+revision = server.load_conversation(cid)["coach_state"]["revision"]
+with patch.object(server, "_bridge_catalog", return_value=catalog):
+    help_turn = client.post("/api/chat-complete", json={
+        "conversation_id": cid, "message": "换装怎么用？只解释，不要创建任务。",
+        "expected_revision": revision, "request_id": "catalog-help-turn-01",
+    })
+assert help_turn.status_code == 200, help_turn.get_data(as_text=True)
+help_body = help_turn.get_json()
+assert not help_body.get("actions"), help_body
+assert "快速换装" in help_body["assistant"] and "人物图片" in help_body["assistant"] and "服装图片" in help_body["assistant"], help_body
+assert "没有创建任务" in help_body["assistant"], help_body
+assert len(server.load_conversation(cid).get("productions") or {}) == before
 '''
         with tempfile.TemporaryDirectory(prefix="ip12-catalog-contract-test.") as data_dir:
             env = os.environ.copy()
