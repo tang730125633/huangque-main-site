@@ -726,6 +726,8 @@ with patch.object(server, "_bridge_action", side_effect=image_bridge):
 assert quoted.status_code == 200, quoted.get_data(as_text=True)
 quoted_body = quoted.get_json()
 assert quoted_body["billing"] == "paid" and quoted_body["cost"] == 4, quoted_body
+assert quoted_body["production"]["quote"]["expires_at"] > 0, quoted_body
+assert "token" not in quoted_body["production"]["quote"], quoted_body
 filled = server.load_conversation(cid)["productions"][image_id]
 assert filled["options"] == {"prompt": "第一版海报"}
 assert filled["input_digest"] != empty_digest
