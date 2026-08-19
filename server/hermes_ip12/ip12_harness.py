@@ -190,7 +190,11 @@ RISKY_CLAIM_RE = re.compile(
     r"深厚.{0,4}经验|丰富.{0,4}经验|多年.{0,4}经验|跨行业经验|"
     r"成功案例|推动.{0,12}成功|知识渊博|全球受众|跨国社区"
 )
-NEGATED_CLAIM_RE = re.compile(r"(?:不|并非|不是|没有|尚未|避免|不能|不把).{0,8}$")
+CLAIM_BOUNDARY_RE = re.compile(r"[，,。.;；！？!?\n：:]|但是|但|可是|而是|却是|却|然而|反而|不过|所以|因此")
+NEGATED_CLAIM_RE = re.compile(
+    r"(?:不(?:把|会|能|要|应|该|得|以|做|当|作为|属于|包装|声称|自称|冒充|夸大|具备|拥有)|"
+    r"并非|不是|没有|尚未|避免|不能|无需|拒绝)"
+)
 FUTURE_CLAIM_RE = re.compile(r"(?:未来|希望|想要?|目标|计划|愿景|以后|准备|打算|争取|成为).{0,12}$")
 PAST_CLAIM_RE = re.compile(r"(?:以前|过去|曾经|原来|做过|曾任|前任).{0,12}$")
 TOPIC_FIELD_RE = re.compile(r"topic_[123]_(?:0[1-9]|10)\Z")
@@ -605,7 +609,7 @@ def apply_action(value, action, expected_revision):
 
 def _claim_has_current_evidence(claim, evidence):
     for match in re.finditer(re.escape(claim), evidence):
-        prefix = evidence[max(0, match.start() - 20):match.start()]
+        prefix = CLAIM_BOUNDARY_RE.split(evidence[:match.start()])[-1]
         if not any(pattern.search(prefix) for pattern in (NEGATED_CLAIM_RE, FUTURE_CLAIM_RE, PAST_CLAIM_RE)):
             return True
     return False
@@ -622,7 +626,7 @@ def _strip_unsupported_acronym_expansions(text, evidence):
 
 def _validate_confirmable_claims(draft, evidence):
     for match in RISKY_CLAIM_RE.finditer(draft):
-        prefix = draft[max(0, match.start() - 12):match.start()]
+        prefix = CLAIM_BOUNDARY_RE.split(draft[:match.start()])[-1]
         if any(pattern.search(prefix) for pattern in (NEGATED_CLAIM_RE, FUTURE_CLAIM_RE, PAST_CLAIM_RE)):
             continue
         claim = match.group(0)
