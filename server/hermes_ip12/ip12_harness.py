@@ -89,6 +89,13 @@ def production_recommendation(requested_result, preferred_action=None):
 def production_intent(message):
     """Recognize an explicit request to turn the selected script into an asset."""
     text = re.sub(r"\s+", "", str(message or "")).lower()
+    text = re.sub(
+        r"(?:不要|无需|不需要|别)(?:再)?(?:生成|制作|做成|转成|转换成|配成)?(?:一张|一个|一条)?"
+        r"(?:图片|海报|封面|配图|音频|配音|语音|视频|短片|数字人)"
+        r"(?:(?:、|,|，|或|和|以及)(?:图片|海报|封面|配图|音频|配音|语音|视频|短片|数字人))*",
+        "",
+        text,
+    )
     patterns = (
         ("canvas", r"(?:放到|放进|整理到|添加到|转到).{0,32}(?:canvas|画布)|(?:canvas|画布).{0,32}(?:放入|整理|添加)"),
         ("audio", r"(?:生成|制作|做成|转成|转换成|配成).{0,32}(?:音频|配音|语音)|(?:音频|配音|语音).{0,32}(?:生成|制作)"),

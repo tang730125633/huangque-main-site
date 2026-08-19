@@ -583,7 +583,10 @@ class IP12HarnessTests(unittest.TestCase):
             "给这篇口播配一张竖屏封面图": ("image", "image-generate"),
             "请根据当前口播生成一张 9:16 的社交媒体配图": ("image", "image-generate"),
             "请把当前口播生成音频": ("audio", "audio-generate"),
+            "把第一篇做成音频，不要生成图片或视频": ("audio", "audio-generate"),
             "用 Grok 把这篇做成视频": ("video", "video-generate"),
+            "把第一篇做成 9:16 竖屏画面视频，不要生成图片或音频": ("video", "video-generate"),
+            "不要生成音频，只生成视频": ("video", "digital-ip-text-generate"),
             "把当前口播生成一条 9:16 竖屏数字人口播视频": ("video", "digital-ip-text-generate"),
             "把这篇放到 Canvas 画布": ("canvas", "canvas-ops"),
         }
@@ -594,6 +597,7 @@ class IP12HarnessTests(unittest.TestCase):
                     (intent["capability_family"], intent["recommended_action"]), expected
                 )
         self.assertIsNone(harness.production_intent("视频和图片分别是什么格式？"))
+        self.assertIsNone(harness.production_intent("不要生成图片、音频或视频"))
 
     def test_module_six_checkpoints_reuse_one_generated_content_pack(self):
         state = self.complete_intake()
