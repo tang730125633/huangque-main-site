@@ -390,6 +390,8 @@ def _production_input(record, options):
     # into the production panel again, and the original script is not returned.
     if record["action"] in {"digital-ip-text-generate", "digital-ip-batch-generate"}:
         payload.setdefault("text", record["source_text"])
+    if record["action"] == "audio-generate" and isinstance(payload.get("text"), str):
+        payload["text"] = re.sub(r"[\r\n\t\f\v]+", " ", payload["text"]).strip()
     if record["action"] == "canvas-ops":
         allowed = set(PRODUCTION_FALLBACK_FIELDS["canvas-ops"])
         unknown = sorted(set(payload) - allowed)
@@ -454,7 +456,7 @@ def _set_production_result(record, result):
     if not isinstance(assets, list) and isinstance(nested, dict):
         assets = nested.get("asset_refs") or nested.get("assets")
         if not isinstance(assets, list):
-            kind = str(result.get("kind") or nested.get("type") or record.get("capability_family") or "")
+            kind = str(record.get("capability_family") or nested.get("type") or result.get("kind") or "")
             urls = nested.get("urls")
             if not isinstance(urls, list):
                 url = next((nested.get(key) for key in (
