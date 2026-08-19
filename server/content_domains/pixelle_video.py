@@ -7,6 +7,7 @@ import os
 import pathlib
 import re
 import sqlite3
+import subprocess
 import threading
 import time
 import urllib.error
@@ -998,6 +999,124 @@ def _split_caption_text(text, max_units=_MAX_CAPTION_UNITS):
     return result
 
 
+def _spoken_caption_units(text):
+    return [char for char in str(text or "") if char.isalnum()]
+
+
+def _caption_cues_from_word_timestamps(text, cue_texts, words, duration):
+    """Map display-only cue boundaries onto real ASR word timing."""
+    total_duration = float(duration)
+    if total_duration <= 0 or not cue_texts:
+        raise ValueError("字幕对齐音频时长无效")
+    if "".join(cue_texts) != text:
+        raise ValueError("字幕对齐文本与原文不一致")
+
+    timed_units = []
+    for word in words or []:
+        value = str(word.get("text") or "").strip()
+        start = word.get("start")
+        end = word.get("end")
+        if (
+            not value
+            or not isinstance(start, (int, float))
+            or isinstance(start, bool)
+            or not isinstance(end, (int, float))
+            or isinstance(end, bool)
+            or end <= start
+        ):
+            continue
+        units = _spoken_caption_units(value)
+        if not units:
+            continue
+        span = float(end) - float(start)
+        for index, _unit in enumerate(units):
+            timed_units.append({
+                "start": float(start) + span * index / len(units),
+                "end": float(start) + span * (index + 1) / len(units),
+            })
+
+    known_count = len(_spoken_caption_units(text))
+    if known_count <= 0 or len(timed_units) < len(cue_texts):
+        raise ValueError("字幕对齐识别结果不足")
+
+    boundaries = [0.0]
+    consumed = 0
+    for cue_text in cue_texts[:-1]:
+        consumed += len(_spoken_caption_units(cue_text))
+        token_index = round(consumed * len(timed_units) / known_count)
+        token_index = max(1, min(len(timed_units) - 1, token_index))
+        boundary = max(0.0, min(total_duration, timed_units[token_index]["start"]))
+        if boundary <= boundaries[-1] + 0.04:
+            raise ValueError("字幕对齐时间轴没有递增")
+        boundaries.append(boundary)
+    boundaries.append(total_duration)
+
+    if any(end <= start for start, end in zip(boundaries, boundaries[1:])):
+        raise ValueError("字幕对齐时间轴无效")
+    return [
+        {
+            "text": cue_text,
+            "start_time": round(boundaries[index], 3),
+            "end_time": round(boundaries[index + 1], 3),
+        }
+        for index, cue_text in enumerate(cue_texts)
+    ]
+
+
+def _aligned_caption_cues(text, audio_content):
+    """Align one continuous TTS result; fall back to display-only cues on ASR failure."""
+    cue_texts = _split_caption_text(text)
+    if len(cue_texts) == 1:
+        return [{"text": cue_texts[0]}]
+
+    token = uuid.uuid4().hex
+    audio_path = OUT_DIR / ("caption-align-%s.mp3" % token)
+    try:
+        audio_path.write_bytes(audio_content)
+        os.chmod(audio_path, 0o600)
+        probe = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        duration = float(probe.stdout.strip())
+        if duration <= 0:
+            raise ValueError("字幕对齐音频时长无效")
+
+        from . import video as video_domain
+        with video_domain._whisper_sem:
+            model = video_domain._get_whisper_model()
+            segments, _ = model.transcribe(
+                str(audio_path),
+                language="zh",
+                vad_filter=True,
+                word_timestamps=True,
+            )
+            words = []
+            for segment in segments:
+                for word in getattr(segment, "words", None) or []:
+                    words.append({
+                        "text": str(getattr(word, "word", "") or ""),
+                        "start": getattr(word, "start", None),
+                        "end": getattr(word, "end", None),
+                    })
+        return _caption_cues_from_word_timestamps(
+            text, cue_texts, words, duration
+        )
+    except Exception:
+        return [{"text": cue_text} for cue_text in cue_texts]
+    finally:
+        try:
+            audio_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _personal_narration_segments(payload):
     username = str(payload.get("_username") or "").strip()
     voice_key = str(payload.get("voice_key") or "").strip()
@@ -1024,9 +1143,7 @@ def _personal_narration_segments(payload):
         segments.append({
             "text": text,
             "audio_asset_id": asset_id,
-            "caption_cues": [
-                {"text": cue_text} for cue_text in _split_caption_text(text)
-            ],
+            "caption_cues": _aligned_caption_cues(text, audio["content"]),
         })
     return segments
 

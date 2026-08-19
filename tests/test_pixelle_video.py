@@ -1253,6 +1253,41 @@ class PixelleVideoTests(unittest.TestCase):
                     self.pixelle._display_units(cue) <= 28 for cue in cues
                 ))
 
+    def test_caption_cues_follow_real_word_timestamps_instead_of_character_ratio(self):
+        text = "人工智能可以改变我们的生活方式"
+        cue_texts = ["人工智能可以", "改变我们的生活方", "式"]
+        words = [
+            {"text": "人工智能", "start": 0.2, "end": 0.8},
+            {"text": "可以", "start": 0.85, "end": 1.1},
+            {"text": "改变", "start": 1.8, "end": 2.1},
+            {"text": "我们的", "start": 2.1, "end": 2.6},
+            {"text": "生活方式", "start": 2.7, "end": 3.5},
+        ]
+
+        cues = self.pixelle._caption_cues_from_word_timestamps(
+            text, cue_texts, words, 3.8
+        )
+
+        self.assertEqual(0.0, cues[0]["start_time"])
+        self.assertEqual(3.8, cues[-1]["end_time"])
+        self.assertGreater(cues[0]["end_time"], 1.1)
+        self.assertEqual(
+            [cue["end_time"] for cue in cues[:-1]],
+            [cue["start_time"] for cue in cues[1:]],
+        )
+
+    def test_caption_alignment_failure_keeps_legacy_display_cues(self):
+        text = "这是第一段需要按语音拆分轮播显示的字幕内容。"
+        with mock.patch.object(
+            self.pixelle.subprocess,
+            "run",
+            side_effect=OSError("ffprobe unavailable"),
+        ):
+            cues = self.pixelle._aligned_caption_cues(text, b"ID3-test")
+
+        self.assertEqual(text, "".join(cue["text"] for cue in cues))
+        self.assertTrue(all(set(cue) == {"text"} for cue in cues))
+
     def test_caption_splitter_supports_long_scenes_up_to_one_hundred_cues(self):
         self.assertEqual(len(self.pixelle._split_caption_text("一，" * 141)), 21)
         self.assertEqual(len(self.pixelle._split_caption_text("一，" * 700)), 100)
