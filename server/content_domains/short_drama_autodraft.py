@@ -27,7 +27,7 @@ from providers.short_drama_visual.base import VisualProviderError
 
 from . import jobs_store, points as points_domain
 from . import short_drama_assembly_plan as media_plan
-from . import short_drama_asset_graph, short_drama_duration
+from . import short_drama_asset_graph, short_drama_duration, short_drama_native_audio
 
 
 ACTIVE = {"queued", "running"}
@@ -648,6 +648,71 @@ def _controlled_provider_file(relative):
     return target
 
 
+def _verified_native_assembly_sources(assembly, snapshot_dir):
+    snapshot_root = Path(snapshot_dir)
+    snapshot_root.mkdir(parents=True, exist_ok=True)
+    sources = []
+    for index, item in enumerate(assembly.get("shots") or []):
+        shot_key = str(item.get("shot_key") or "shot_%02d" % (index + 1))
+        source = _controlled_provider_file(item.get("file"))
+        snapshot = snapshot_root / ("source-%03d%s" % (index + 1, source.suffix))
+        try:
+            with source.open("rb") as reader, snapshot.open("xb") as writer:
+                shutil.copyfileobj(reader, writer, length=1024 * 1024)
+        except OSError as error:
+            raise AutodraftError(
+                "provider_native_media_unavailable",
+                "%s 的采用版本无法建立稳定媒体快照" % shot_key,
+                409,
+            ) from error
+        if str(item.get("provider") or "") == "minimax_h3":
+            locked = _sanitized_native_media(item.get("native_media"))
+            if not locked:
+                raise AutodraftError(
+                    "provider_native_media_invalid",
+                    "%s 缺少可信的原生媒体证据，请重新生成该镜头" % shot_key,
+                    409,
+                )
+            selected_file = str(item.get("file") or "").replace("\\", "/")
+            expected = next(
+                (
+                    locked[key] for key in ("raw", "derived")
+                    if locked[key]["file"] == selected_file
+                ),
+                None,
+            )
+            if not expected:
+                raise AutodraftError(
+                    "provider_native_media_changed",
+                    "%s 的采用文件与锁定媒体证据不一致" % shot_key,
+                    409,
+                )
+            try:
+                current = short_drama_native_audio.inspect_native_media(
+                    snapshot, expected_resolution="2K"
+                )
+            except short_drama_native_audio.NativeAudioError as error:
+                code = (
+                    "provider_native_audio_invalid"
+                    if "audio" in error.code
+                    else "provider_native_media_invalid"
+                )
+                raise AutodraftError(
+                    code, "%s：%s" % (shot_key, str(error)), 409,
+                ) from error
+            if (
+                current["sha256"] != expected["sha256"]
+                or int(current["size_bytes"]) != int(expected["size_bytes"])
+            ):
+                raise AutodraftError(
+                    "provider_native_media_changed",
+                    "%s 的采用文件已发生变化，请重新生成或重新采用版本" % shot_key,
+                    409,
+                )
+        sources.append(snapshot)
+    return sources
+
+
 def _table_exists(conn, name):
     return bool(conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,),
@@ -849,8 +914,21 @@ def _run_preview_process(command, cancel_event=None, timeout=900):
 def _render_provider_preview(project_id, job_id, assembly, cancel_event=None):
     """Normalize paid shots with their locked audio/subtitle timeline."""
     cancel_event = cancel_event or assembly.get("_cancel_event")
-    sources = [_controlled_provider_file(item["file"]) for item in assembly["shots"]]
+    root = _content_root()
+    target_dir = root / "short_drama_autodraft" / project_id / job_id
+    temp_dir = target_dir.with_name(".%s.tmp" % target_dir.name)
+    if temp_dir.exists():
+        shutil.rmtree(temp_dir)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        sources = _verified_native_assembly_sources(
+            assembly, temp_dir / "sources"
+        )
+    except Exception:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
     if not sources:
+        shutil.rmtree(temp_dir, ignore_errors=True)
         raise AutodraftError("provider_shots_required", "没有可合成的镜头", 409)
     source_probes = []
     for source in sources:
@@ -865,12 +943,6 @@ def _render_provider_preview(project_id, job_id, assembly, cancel_event=None):
         max(1, int(item.get("duration_ms") or 0)) for item in source_probes
     )
     duration_ms = source_duration_ms or int(assembly.get("duration_ms") or 0)
-    root = _content_root()
-    target_dir = root / "short_drama_autodraft" / project_id / job_id
-    temp_dir = target_dir.with_name(".%s.tmp" % target_dir.name)
-    if temp_dir.exists():
-        shutil.rmtree(temp_dir)
-    temp_dir.mkdir(parents=True, exist_ok=True)
     output = temp_dir / "preview-1080p.mp4"
     ffmpeg = os.environ.get("FFMPEG_BIN", "ffmpeg")
     command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error"]
