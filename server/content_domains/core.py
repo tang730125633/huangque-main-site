@@ -2916,6 +2916,34 @@ class H(BaseHTTPRequestHandler):
                     body = cli_uploads.expand_image_payload(body, user["username"])
                 elif kind in {"tryon", "cinematic"}:
                     body = cli_uploads.expand_role_media_payload(body, user["username"])
+                if (
+                    kind == "xiaole_video"
+                    and isinstance(body, dict)
+                    and str(body.get("channel") or "").strip().lower() == "minimax"
+                ):
+                    early_key = _idempotency_key(
+                        self.headers.get("Idempotency-Key")
+                    )
+                    early_state, early_response = submission_idempotency.replay_existing(
+                        jdb, user["username"], p, early_key,
+                        video_domain.minimax_idempotency_replay_bodies(body),
+                    )
+                    if early_state == "replay":
+                        replay = dict(early_response or {})
+                        return self._send(
+                            int(replay.pop("_http_status", 200)), replay
+                        )
+                    if early_state == "conflict":
+                        return self._send(409, {
+                            "detail": "同一个 Idempotency-Key 不能用于不同请求",
+                            "code": "idempotency_conflict",
+                        })
+                    if early_state == "processing":
+                        return self._send(409, {
+                            "detail": "相同请求正在受理，请稍后查询",
+                            "code": "idempotency_in_progress",
+                            "retry_after_ms": 1000,
+                        })
                 if kind == "avatar":
                     body = video_domain.validate_avatar_payload(body)
                     _short_drama_domain().validate_avatar_binding_submission(

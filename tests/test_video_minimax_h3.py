@@ -2,7 +2,10 @@
 import base64
 import io
 import json
+import os
+import sqlite3
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -13,7 +16,9 @@ SERVER = ROOT / "server"
 if str(SERVER) not in sys.path:
     sys.path.insert(0, str(SERVER))
 
-from content_domains import points, video, video_minimax_h3  # noqa: E402
+from content_domains import (  # noqa: E402
+    points, submission_idempotency, video, video_minimax_h3,
+)
 
 
 class MiniMaxH3VideoTests(unittest.TestCase):
@@ -100,6 +105,94 @@ class MiniMaxH3VideoTests(unittest.TestCase):
             video_minimax_h3.build_request(
                 "旧分辨率不应创建新任务", [], "9:16", 5, "768p"
             )
+
+    def test_legacy_hash_candidates_replay_old_768p_record(self):
+        request = {
+            "channel": "minimax", "prompt": "legacy paid request",
+            "model": "MiniMax-H3", "duration": 5,
+            "ratio": "9:16", "resolution": "768p",
+        }
+        candidates = video.minimax_idempotency_replay_bodies(request)
+        old = next(
+            item for item in candidates
+            if item.get("_minimax_api_base") == video_minimax_h3.METASO_API_BASE
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            database = str(Path(folder) / "idempotency.db")
+
+            def factory():
+                connection = sqlite3.connect(database)
+                connection.row_factory = sqlite3.Row
+                return connection
+
+            self.assertEqual(
+                ("new", None),
+                submission_idempotency.begin(
+                    factory, "alice", "/api/gen/xiaole_video", "legacy-key-001", old,
+                ),
+            )
+            submission_idempotency.complete(
+                factory, "alice", "/api/gen/xiaole_video", "legacy-key-001",
+                {"job_id": 88},
+            )
+            state, response = submission_idempotency.replay_existing(
+                factory, "alice", "/api/gen/xiaole_video", "legacy-key-001",
+                candidates,
+            )
+        self.assertEqual(("replay", 88), (state, response["job_id"]))
+
+    def test_unmarked_historical_origin_is_inferred_once_or_fails_closed(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                video_minimax_h3.ORIGIN_LEGACY,
+                video_minimax_h3.historical_origin_from_environment(),
+            )
+        with patch.dict(os.environ, {
+            "MINIMAX_API_BASE": video_minimax_h3.METASO_API_BASE,
+        }, clear=True):
+            self.assertEqual(
+                video_minimax_h3.ORIGIN_METASO,
+                video_minimax_h3.historical_origin_from_environment(),
+            )
+        with patch.dict(os.environ, {
+            "MINIMAX_API_BASE": "https://custom.example/minimax",
+        }, clear=True), self.assertRaises(video_minimax_h3.MiniMaxOriginUnknown):
+            video_minimax_h3.historical_origin_from_environment()
+        with self.assertRaises(video_minimax_h3.MiniMaxOriginUnknown):
+            video_minimax_h3.origin_from_payload({})
+
+    def test_historical_origin_backfill_is_persisted_in_running_job(self):
+        with tempfile.TemporaryDirectory() as folder:
+            database = str(Path(folder) / "jobs.db")
+
+            def factory():
+                connection = sqlite3.connect(database)
+                connection.row_factory = sqlite3.Row
+                return connection
+
+            connection = factory()
+            connection.execute(
+                "CREATE TABLE jobs(id INTEGER PRIMARY KEY,payload TEXT,status TEXT,updated_at INTEGER)"
+            )
+            connection.execute(
+                "INSERT INTO jobs(id,payload,status,updated_at) VALUES(8,?,'running',0)",
+                (json.dumps({"channel": "minimax", "resolution": "768p"}),),
+            )
+            connection.commit()
+            connection.close()
+            with patch.object(video, "jdb", factory):
+                video._persist_minimax_origin(
+                    8, video_minimax_h3.ORIGIN_METASO,
+                )
+            connection = factory()
+            stored = json.loads(connection.execute(
+                "SELECT payload FROM jobs WHERE id=8"
+            ).fetchone()[0])
+            connection.close()
+        self.assertEqual(
+            video_minimax_h3.ORIGIN_METASO, stored["_minimax_origin"]
+        )
+        self.assertNotIn("_minimax_api_base", stored)
 
     def test_task_query_uses_its_persisted_provider_origin(self):
         captured = []
@@ -307,6 +400,48 @@ class MiniMaxH3VideoTests(unittest.TestCase):
             })
         self.assertEqual(video_minimax_h3.API_BASE, generate.call_args.kwargs["api_base"])
 
+    def test_download_network_retry_reuses_provider_task_without_new_post(self):
+        rendered = {
+            "request_id": "h3-paid-task", "source_video_url": "https://cdn.example/h3.mp4",
+            "model": "MiniMax-H3", "duration": 5, "ratio": "9:16",
+            "resolution": "2k", "provider": "minimax_h3_cn",
+        }
+        existing = {
+            "request_id": "h3-paid-task", "provider_key_id": "mm-key",
+            "provider": "minimax", "resolution": "2k", "ratio": "9:16",
+            "phase": "minimax_downloading",
+        }
+        payload = {
+            "_job_id": 18, "channel": "minimax", "prompt": "paid result",
+            "model": "MiniMax-H3", "duration": 5, "ratio": "9:16",
+            "resolution": "2k", "reference_images": [],
+            "_minimax_origin": video_minimax_h3.ORIGIN_METASO,
+        }
+        requeue = []
+        with patch.object(video, "get_resumable_grok_request", return_value=existing), \
+                patch.object(video, "_bound_provider_key", return_value={"id": "mm-key", "secret": "secret"}), \
+                patch.object(video, "update_video_asset_phase"), \
+                patch.object(video_minimax_h3, "generate") as generate, \
+                patch.object(video_minimax_h3, "resume", return_value=rendered) as resume, \
+                patch.object(video, "_download_video_file_direct", side_effect=[
+                    video.HeyGenNetworkError("cdn timeout"), "video/h3-paid.mp4",
+                ]) as download, \
+                patch.object(video, "_extract_first_frame_cover", return_value=None), \
+                patch.object(video, "public_url", return_value="https://cos.example/h3-paid.mp4"):
+            with self.assertRaises(video_minimax_h3.TransientMiniMaxError) as raised:
+                video.gen_xiaole_video(dict(payload))
+            held = video.recover_paid_video_error(
+                18, "xiaole_video", payload, raised.exception,
+                requeue=lambda job_id: requeue.append(job_id) or True,
+            )
+            result = video.gen_xiaole_video(dict(payload))
+        self.assertTrue(held)
+        self.assertEqual([18], requeue)
+        self.assertEqual(2, resume.call_count)
+        generate.assert_not_called()
+        self.assertEqual(2, download.call_count)
+        self.assertEqual("h3-paid-task", result["provider_video_id"])
+
     def test_shared_resume_routes_legacy_and_new_tasks_to_their_origin(self):
         rendered = {
             "request_id": "h3-task-1", "source_video_url": "https://cdn.example/h3.mp4",
@@ -331,6 +466,7 @@ class MiniMaxH3VideoTests(unittest.TestCase):
             with self.subTest(marker=marker), \
                     patch.object(video, "get_resumable_grok_request", return_value=existing), \
                     patch.object(video, "_bound_provider_key", return_value={"id": "mm-key", "secret": "secret"}), \
+                    patch.object(video, "_persist_minimax_origin") as persist_origin, \
                     patch.object(video, "update_video_asset_phase"), \
                     patch.object(video_minimax_h3, "resume", return_value=rendered) as resume, \
                     patch.object(video, "_download_video_file_direct", return_value="video/h3.mp4"), \
@@ -338,6 +474,12 @@ class MiniMaxH3VideoTests(unittest.TestCase):
                     patch.object(video, "public_url", return_value="https://cos.example/h3.mp4"):
                 video.gen_xiaole_video(payload)
             self.assertEqual(expected, resume.call_args.kwargs["api_base"])
+            if marker is None:
+                persist_origin.assert_called_once_with(
+                    8, video_minimax_h3.ORIGIN_LEGACY,
+                )
+            else:
+                persist_origin.assert_not_called()
 
     def test_ui_has_separate_people_story_entry(self):
         html = (ROOT / "site" / "workbench" / "video.html").read_text(encoding="utf-8")
@@ -351,6 +493,8 @@ class MiniMaxH3VideoTests(unittest.TestCase):
         self.assertNotIn("请至少上传 1 张人物参考图", html)
         self.assertNotIn("必传 1–5 张", html)
         self.assertIn("可选，最多 5 张", html)
+        self.assertIn("if(retry.key&&retry.body){body=retry.body;}", html)
+        self.assertNotIn("retry.body!==body", html)
         self.assertIn("xlPayload.model='MiniMax-H3'", html)
         self.assertNotIn("xlPayload.model='MiniMax-Hailuo-2.3'", html)
 

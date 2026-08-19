@@ -3084,7 +3084,7 @@
     if(official){
       var retry=officialVideoRetryState(channel);
       if(retry.blocked&&!retry.body){toast('上一笔提交结果待核对，请先到任务列表确认，不能重复提交');return;}
-      if(retry.key&&retry.body!==body){toast('上一笔提交结果尚未确认，请保持原参数重试');return;}
+      if(retry.key&&retry.body){body=retry.body;}
       if(!retry.key){
         retry.key=newVideoIdempotencyKey(channel);retry.body=body;
         if(!saveOfficialVideoRetry(channel)){

@@ -239,6 +239,47 @@ class HQCLIContentTests(unittest.TestCase):
         self.assertEqual(200, status, result)
         self.assertEqual((24, 100), (result["cost"], result["points"]))
 
+    def test_minimax_legacy_768p_same_key_replays_before_new_task_validation(self):
+        legacy = {
+            "prompt": "legacy paid request", "channel": "minimax",
+            "model": "MiniMax-H3", "duration": 5,
+            "ratio": "9:16", "resolution": "768p",
+        }
+        with mock.patch.object(
+            core, "_domains", return_value=(audio, self.points, video),
+        ), mock.patch.object(
+            core, "HANDLERS", {"xiaole_video": lambda payload: payload},
+        ), mock.patch.object(
+            core.submission_idempotency, "replay_existing",
+            return_value=("replay", {"job_id": 73, "cost": 24}),
+        ), mock.patch.object(
+            video, "validate_xiaole_video_payload",
+            side_effect=AssertionError("replay must precede new-task validation"),
+        ):
+            status, result = self._post(
+                "/api/gen/xiaole_video", legacy,
+                expected=24, idempotency_key="minimax-legacy-replay-001",
+            )
+        self.assertEqual((200, 73), (status, result["job_id"]))
+
+        with mock.patch.object(
+            core, "_domains", return_value=(audio, self.points, video),
+        ), mock.patch.object(
+            core, "HANDLERS", {"xiaole_video": lambda payload: payload},
+        ), mock.patch.object(
+            core.submission_idempotency, "replay_existing",
+            return_value=("missing", None),
+        ), mock.patch.object(
+            video_minimax_h3, "available", return_value=True,
+        ), mock.patch("content_domains.feature_flags.is_enabled", return_value=True):
+            status, result = self._post(
+                "/api/gen/xiaole_video", legacy,
+                expected=24, idempotency_key="minimax-new-768-rejected-001",
+            )
+        self.assertEqual(400, status, result)
+        self.assertIn("仅支持 2K", result["detail"])
+        self.assertEqual([], self.points.deductions)
+
     def test_minimax_submit_expands_private_reference_before_charge_and_queue(self):
         from PIL import Image
 

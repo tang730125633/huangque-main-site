@@ -410,7 +410,10 @@ class KeyPingTests(unittest.TestCase):
     def test_minimax_provider_probe_uses_verified_metaso_route(self):
         import unittest.mock as mock
 
-        with mock.patch.object(admin_api, "_env_value", return_value=""), \
+        with mock.patch.object(
+                admin_api, "_env_value",
+                return_value="https://custom.example/minimax",
+        ) as env_value, \
                 mock.patch.object(
                     admin_api, "_ping_upstream", return_value={"ok": True}
                 ) as ping:
@@ -425,6 +428,7 @@ class KeyPingTests(unittest.TestCase):
             headers={"Authorization": "Bearer test-only-minimax-secret"},
             proxied=False,
         )
+        env_value.assert_not_called()
 
     def test_provider_probe_only_quarantines_definite_401(self):
         self.assertTrue(admin_api._probe_is_credential_rejection({"http_status": 401}))

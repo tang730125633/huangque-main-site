@@ -64,6 +64,10 @@ class TransientMiniMaxError(RuntimeError):
     pass
 
 
+class MiniMaxOriginUnknown(ValueError):
+    pass
+
+
 def available():
     return provider_keys.has_candidate("minimax")
 
@@ -119,6 +123,28 @@ def api_base_for_origin(origin):
         raise ValueError("麦克视频任务来源无效，已停止自动恢复") from exc
 
 
+def new_task_origin():
+    """Single source of truth for every new paid MiniMax submission."""
+    return ORIGIN_METASO
+
+
+def new_task_api_base():
+    return api_base_for_origin(new_task_origin())
+
+
+def historical_origin_from_environment():
+    """Infer a pre-marker task only from the endpoint used by the old release."""
+    base = str(os.environ.get("MINIMAX_API_BASE") or "").strip().rstrip("/")
+    if not base:
+        return ORIGIN_LEGACY
+    for origin, canonical_base in ORIGIN_API_BASES.items():
+        if base == canonical_base:
+            return origin
+    raise MiniMaxOriginUnknown(
+        "旧麦克视频任务来源无法安全判定，请人工确认原提交端点后恢复"
+    )
+
+
 def origin_from_payload(payload):
     payload = payload or {}
     origin = str(payload.get("_minimax_origin") or "").strip().lower()
@@ -131,7 +157,9 @@ def origin_from_payload(payload):
             if legacy_base == candidate_base:
                 return candidate_origin
         raise ValueError("麦克视频任务来源无效，已停止自动恢复")
-    return ORIGIN_LEGACY
+    raise MiniMaxOriginUnknown(
+        "旧麦克视频任务缺少来源标记，请先完成来源回填"
+    )
 
 
 def _request_json(
@@ -256,7 +284,7 @@ def _image_item(value):
 
 def build_request(
     prompt, reference_images=None, ratio="9:16", duration=5,
-    resolution=DEFAULT_RESOLUTION,
+    resolution=DEFAULT_RESOLUTION, allow_legacy_resolution=False,
 ):
     prompt = str(prompt or "").strip()
     if not prompt or len(prompt) > 7000:
@@ -276,7 +304,10 @@ def build_request(
     if ratio not in RATIOS:
         raise ValueError("麦克视频不支持该画面比例")
     resolution = str(resolution or DEFAULT_RESOLUTION).strip().upper()
-    if resolution not in RESOLUTIONS:
+    allowed_resolutions = (
+        RESOLUTIONS | {"768P"} if allow_legacy_resolution else RESOLUTIONS
+    )
+    if resolution not in allowed_resolutions:
         raise ValueError("麦克视频分辨率仅支持 2K；旧任务可继续使用 768P")
     return {
         "model": MODEL,
