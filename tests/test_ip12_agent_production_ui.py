@@ -162,7 +162,11 @@ global.fetch=async (url,init)=>{
 };
 function rememberProduction(record){productions[record.id]=record;return record}
 function updateProductionQuoteGate(){}
-function updateProductionFromPayload(){}
+function updateProductionFromPayload(data){
+  const id=data.id||data.production_id;
+  const record=Object.assign({},productions[id]||{},data,{id});
+  productions[record.id]=record;activeProductionId=record.id;return record;
+}
 function openPanel(){}
 function toast(){}
 (async()=>{
@@ -174,6 +178,7 @@ function toast(){}
     parameter_schema:{type:'object',properties:{avatar_id:{type:'integer'}},required:['avatar_id']}
   });
   const prepareCall=calls[calls.length-1];
+  activeProductionId='production-1';
   const beforeBlocked=calls.length;
   productions['production-1'].options={};
   fieldNodes=[{dataset:{field:'avatar_id'},value:''}];
@@ -191,6 +196,22 @@ function toast(){}
         self.assertEqual(got["quote"], {"avatar_id": 42})
         self.assertEqual(got["prepare"], {"avatar_id": 7})
         self.assertTrue(got["missingPreventedFetch"])
+
+    def test_agent_auto_runs_prepare_quotes_then_polls_one_job_and_delivers_in_chat(self):
+        prepare = self.html[self.html.index("async function prepareProduction"):self.html.index("async function requestProductionQuote")]
+        self.assertIn("await requestProductionQuote(record.id)", prepare)
+        send = self.html[self.html.index("async function sendTurn"):self.html.index("async function sendJumpMsg")]
+        self.assertIn("item.type==='prepare_production'", send)
+        self.assertIn("else if(autoAction)await runStateAction(autoAction)", send)
+        polling = self.html[self.html.index("function stopProductionPoll"):self.html.index("function productionRoute")]
+        self.assertIn("['submitting','queued','running']", polling)
+        self.assertIn("refreshProduction(true,record.id)", polling)
+        self.assertNotIn("confirmProduction(record.id)", polling)
+        chat = self.html[self.html.index("function productionMessageHtml"):self.html.index("function isSafeMarkdownUrl")]
+        self.assertIn("data-production-message", chat)
+        self.assertIn("productionResultHtml(record)", chat)
+        result = self.html[self.html.index("function productionResultHtml"):self.html.index("function productionFieldControl")]
+        self.assertIn("continueProductionRevision(this.dataset.productionId)", result)
 
     def test_restore_and_direct_navigation_keep_conversation_context(self):
         select = self.html[self.html.index("async function selectConvo"):self.html.index("async function jumpModule")]

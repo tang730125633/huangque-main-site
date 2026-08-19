@@ -599,7 +599,9 @@ intent_body = intent_response.get_json()
 assert intent_body["actions"][0]["type"] == "prepare_production", intent_body
 assert intent_body["actions"][0]["requested_result"] == "video", intent_body
 assert intent_body["actions"][0]["preferred_action"] == "video-generate", intent_body
-assert intent_body["actions"][0]["options"] == {"ratio": "9:16"}, intent_body
+assert intent_body["actions"][0]["options"]["ratio"] == "9:16", intent_body
+assert "Grok" in intent_body["actions"][0]["options"]["prompt"], intent_body
+assert "完整口播正文" in intent_body["actions"][0]["options"]["prompt"], intent_body
 assert not server.load_conversation(cid).get("productions"), intent_body
 revision = intent_body["state"]["revision"]
 original_messages = json.loads(json.dumps(server.load_conversation(cid)["messages"], ensure_ascii=False))
@@ -936,12 +938,18 @@ assert stale_response.get_json()["production"]["status"] == "stale"
 assert stale_response.get_json()["production"]["last_error_code"] == "source_changed"
 
 # All four families survive a project refresh, private quote tokens stay on the
-# server, accounts remain isolated, and production never mutates chat messages.
+# server, completed productions are delivered exactly once, and accounts stay isolated.
 public_project = client.get(f"/api/conversations/{cid}").get_json()
 families = {item["capability_family"] for item in public_project["productions"]}
 assert {"image", "audio", "video", "canvas"}.issubset(families), families
 assert "private-" not in json.dumps(public_project, ensure_ascii=False)
-assert server.load_conversation(cid)["messages"] == original_messages
+messages = server.load_conversation(cid)["messages"]
+assert messages[:len(original_messages)] == original_messages
+deliveries = [item for item in messages if item.get("production_id")]
+assert {item["production_id"] for item in deliveries} == {
+    image_id, video_id, canvas_id, recovery_id,
+}, deliveries
+assert len(deliveries) == 4, deliveries
 server.current_account_id = lambda: "acct_b"
 assert client.get(f"/api/conversations/{cid}").status_code == 404
 assert client.get(f"/api/ip12/productions/{image_id}?conversation_id={cid}").status_code == 404

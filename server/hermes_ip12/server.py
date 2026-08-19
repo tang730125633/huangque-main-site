@@ -641,6 +641,32 @@ def _set_production_result(record, result):
     record["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
+def _ensure_production_delivery_message(convo, record):
+    """Persist one chat delivery for a completed production."""
+    if record.get("status") != "done":
+        return None
+    message_id = str(record.get("delivery_message_id") or "")
+    if message_id:
+        for message in convo.get("messages") or []:
+            if message.get("message_id") == message_id:
+                return message
+    label = {
+        "image": "图片", "audio": "音频", "video": "视频", "canvas": "Canvas",
+    }.get(str(record.get("capability_family") or ""), "成品")
+    message = {
+        "role": "assistant",
+        "content": (
+            f"✅ {label}已经生成并返回当前对话。原成品和任务记录已保留；"
+            f"你可以点击下方“继续修改”，再生成一个新版本。"
+        ),
+        "message_id": "prodmsg_" + uuid.uuid4().hex,
+        "production_id": record["id"],
+    }
+    convo.setdefault("messages", []).append(message)
+    record["delivery_message_id"] = message["message_id"]
+    return message
+
+
 def _production_plan_or_error(record, options):
     missing = _production_missing_fields(record, options)
     if missing:
@@ -1631,7 +1657,11 @@ def api_confirm_production():
                         "production_already_submitted", "该生产已经提交，请读取现有状态"
                     )
             if record.get("status") == "done":
-                return jsonify({"ok": True, "replayed": True, "production": _production_public(record)})
+                delivery_message = _ensure_production_delivery_message(convo, record)
+                save_conversation(cid, convo)
+                return jsonify({"ok": True, "replayed": True,
+                                "production": _production_public(record),
+                                "delivery_message": delivery_message})
             if record.get("status") in {"queued", "running"} and record.get("job_id"):
                 return jsonify({"ok": True, "replayed": True, "production": _production_public(record)})
             if "options" in body and _production_set_options(record, body["options"]):
@@ -1692,8 +1722,11 @@ def api_confirm_production():
                 _set_production_result(record, result)
             except RuntimeError:
                 record.update(status="submitting", last_error_code="result_link_pending")
+            delivery_message = _ensure_production_delivery_message(convo, record)
             save_conversation(cid, convo)
-        return jsonify({"ok": True, "replayed": bool(result.get("replayed")), "production": _production_public(record)})
+        return jsonify({"ok": True, "replayed": bool(result.get("replayed")),
+                        "production": _production_public(record),
+                        "delivery_message": delivery_message})
     except coach_harness.HarnessConflict as exc:
         return _production_error("revision_conflict", str(exc))
     except coach_harness.HarnessError as exc:
@@ -1747,7 +1780,11 @@ def api_get_production(production_id):
         record = (convo or {}).get("productions", {}).get(production_id)
         if convo is None or not isinstance(record, dict):
             return _production_error("project_not_found", "项目不存在", 404)
-        return jsonify({"ok": True, "production": _production_public(record)})
+        delivery_message = _ensure_production_delivery_message(convo, record)
+        if delivery_message:
+            save_conversation(cid, convo)
+        return jsonify({"ok": True, "production": _production_public(record),
+                        "delivery_message": delivery_message})
 
 
 def _coach_module_five_topics(convo, user_message, repair_error=""):
@@ -2644,9 +2681,21 @@ def _process_production_intent_turn(
     )
     options = ({"ratio": re.sub(r"\s+", "", ratio_match.group()).replace("：", ":")}
                if family in {"image", "video"} and ratio_match else {})
+    instruction = re.sub(r"\s+", " ", user_message).strip()[:320]
+    script = re.sub(r"\s+", " ", source["script"]).strip()[:1500]
+    if intent["recommended_action"] == "image-generate":
+        options["prompt"] = (
+            f"用户要求：{instruction}。根据以下口播正文生成适合社交媒体发布的配图；"
+            f"不要添加无法验证的文字、数据或身份。口播正文：{script}"
+        )
+    elif intent["recommended_action"] == "video-generate":
+        options["prompt"] = (
+            f"用户要求：{instruction}。根据以下口播正文生成真实自然的短视频画面；"
+            f"不要添加水印或编造人物经历。口播正文：{script}"
+        )
     assistant = (
-        "我知道你要把当前这篇口播做成%s。先按当前正文版本打开制作工作台；"
-        "系统会先显示所需素材和实时报价，未经你确认不会提交或扣点。" % label
+        "我知道你要把当前这篇口播做成%s。我现在会调用黄雀制作能力整理参数并取得实时报价；"
+        "拿到价格后仍要由你明确确认，未经确认不会提交或扣点。" % label
     )
     message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
     assistant, next_state = _persist_unprocessed_turn(
