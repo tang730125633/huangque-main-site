@@ -706,7 +706,13 @@ def validate_model_decision(
         if kind != "ai_option" and (not quote or quote not in evidence):
             if allow_partial_profile_updates and (
                 decision == "ask_follow_up"
-                or (decision == "propose_checkpoint" and state.get("pending"))
+                or (
+                    decision == "propose_checkpoint"
+                    and (
+                        state.get("pending")
+                        or state["intake"]["status"] in {"awaiting_confirmation", "editing"}
+                    )
+                )
             ):
                 continue
             raise HarnessError("模型档案更新缺少可回查的用户原话")
