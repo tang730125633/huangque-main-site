@@ -100,6 +100,8 @@ class IP12HarnessActionsUITests(unittest.TestCase):
         self.assertIn("choice.const", field_spec)
         self.assertIn("!fields.some", options_html)
         self.assertIn("productionDisplayValue(record,key,options[key])", options_html)
+        self.assertIn("if(canvas){", source)
+        self.assertNotIn("if(canvas||kind==='canvas')", source)
         self.assertIn("暂无可用选项", field_control)
         self.assertIn("choice.value", field_control)
         self.assertIn("ratio:'画面比例'", source)

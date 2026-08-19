@@ -580,6 +580,7 @@ class IP12HarnessTests(unittest.TestCase):
     def test_explicit_asset_requests_map_to_bounded_production_actions(self):
         cases = {
             "把这篇做成一张封面图片": ("image", "image-generate"),
+            "给这篇口播配一张竖屏封面图": ("image", "image-generate"),
             "请把当前口播生成音频": ("audio", "audio-generate"),
             "用 Grok 把这篇做成视频": ("video", "video-generate"),
             "把这篇放到 Canvas 画布": ("canvas", "canvas-ops"),
