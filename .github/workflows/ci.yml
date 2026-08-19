@@ -22,6 +22,8 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: 配置 Python
         uses: actions/setup-python@v6
@@ -56,7 +58,28 @@ jobs:
       - name: Verify workbench shell cache stamps
         run: python scripts/stamp_assets.py --check
 
-      - name: 测试 CI 检查器
+      - name: 测试 PR 改动
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          ran_tests=false
+          while IFS= read -r test_file; do
+            python -m unittest discover -s tests -p "$(basename "$test_file")" -v
+            ran_tests=true
+          done < <(git diff --name-only --diff-filter=ACMR "$BASE_SHA" "$HEAD_SHA" -- 'tests/test_*.py')
+          while IFS= read -r test_file; do
+            node "$test_file"
+            ran_tests=true
+          done < <(git diff --name-only --diff-filter=ACMR "$BASE_SHA" "$HEAD_SHA" -- 'tests/test_*.js')
+          if [ "$ran_tests" = false ]; then
+            echo "No changed test files in this pull request."
+          fi
+
+      - name: 测试完整 Python 回归
+        if: github.event_name != 'pull_request'
         run: python -m unittest discover -s tests -v
 
       - name: 测试并构建 HQ CLI
