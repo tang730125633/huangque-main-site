@@ -3115,8 +3115,14 @@ def _process_production_intent_turn(
             "我会直接读取当前账号可用的黄雀%s能力和资源，不会扣点，也不会改变现有内容。" % label
             if selected_action in _DIRECT_READ_ACTIONS
         else (
-            "我知道你要把当前这篇口播做成%s。我现在会调用黄雀制作能力整理参数并取得实时报价；"
-            "拿到价格后仍要由你明确确认，未经确认不会提交或扣点。" % label
+            (
+                "我知道你要使用黄雀的%s能力。" % _CAPABILITY_LABELS.get(selected_action, label)
+                if source_unbound else "我知道你要把当前这篇口播做成%s。" % label
+            )
+            + (
+                "我现在会调用黄雀制作能力整理参数并取得实时报价；"
+                "拿到价格后仍要由你明确确认，未经确认不会提交或扣点。"
+            )
         )
         )
     )
