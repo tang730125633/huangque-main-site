@@ -678,6 +678,10 @@ canvas_record = server.load_conversation(cid)["productions"][canvas["production_
 canvas_input = server._production_input(canvas_record, {"board_id": "board_canvas_1"})
 assert canvas_input["base_version"] == 3, canvas_input
 assert canvas_input["ops"][0]["node"]["params"]["text"] == "这是用户确认过、可直接进入生产的完整口播正文。"
+canvas_record["source_text"] = "第一段。\n\n第二段。\t继续。"
+multiline_canvas_input = server._production_input(canvas_record, {"board_id": "board_canvas_1"})
+assert multiline_canvas_input["ops"][0]["node"]["params"]["text"] == "第一段。 第二段。 继续。"
+assert hq_cli_api.action_plan("canvas-ops", multiline_canvas_input)["kind"] == "canvas-ops"
 video_record = dict(server.load_conversation(cid)["productions"][video["production_id"]])
 video_record["source_text"] = "第一段。\n\n第二段。\t继续。"
 assert server._production_input(video_record, {"avatar_id": 7, "voice": "voice-demo"})["text"] == "第一段。 第二段。 继续。"
@@ -889,6 +893,7 @@ with patch.object(server, "_bridge_action", side_effect=canvas_bridge):
         "confirmation_id": "confirm-canvas-001",
     })
 assert canvas_quote.get_json()["billing"] == "free" and canvas_quote.get_json()["cost"] == 0
+assert canvas_quote.get_json()["points"] is None
 assert canvas_done.get_json()["production"]["status"] == "done"
 assert canvas_done.get_json()["production"]["canvas_ref"] == {"board_id": "board_canvas_1", "version": 2}
 assert canvas_replay.get_json()["replayed"] is True
