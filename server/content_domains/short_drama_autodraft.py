@@ -4215,6 +4215,12 @@ def _complete(conn, row):
         for index, asset in enumerate(assembly["shots"]):
             shot_key = str(asset.get("shot_key") or "")
             source = material.get(shot_key) or {}
+            native_media = _sanitized_native_media(asset.get("native_media"))
+            selected_file = str(asset.get("file") or "").replace("\\", "/")
+            selected_evidence = next((
+                native_media[key] for key in ("raw", "derived")
+                if native_media and native_media[key]["file"] == selected_file
+            ), {})
             cards.append({
                 "shot_key": shot_key,
                 "sort_order": int(source.get("sort_order") or index + 1),
@@ -4225,8 +4231,11 @@ def _complete(conn, row):
                 "provider": str(asset.get("provider") or ""),
                 "provider_version_id": str(asset.get("id") or ""),
                 "provider_version": int(asset.get("version") or 0),
+                "provider_job_id": str(asset.get("provider_job_id") or ""),
                 "file": str(asset.get("file") or ""),
                 "url": str(asset.get("url") or ""),
+                "file_hash": str(selected_evidence.get("sha256") or ""),
+                "native_media": native_media,
                 "input_hash": str(asset.get("input_hash") or ""),
                 "issue": None,
             })

@@ -121,31 +121,34 @@ def render_native_2k(
         command.extend(["-f", "srt", "-i", str(subtitle_input)])
 
     filters = []
-    video_labels = []
-    audio_labels = []
     for index, probe in enumerate(probes):
         if not probe.get("video") or not probe.get("audio"):
             raise FormalRenderError(
                 "delivery_native_streams_missing",
                 "原生 2K 镜头必须同时包含画面和声音",
             )
+        shot_duration = max(0.001, int(probe.get("duration_ms") or 0) / 1000.0)
         filters.append(
             "[%d:v:0]scale=%d:%d:force_original_aspect_ratio=increase:flags=lanczos,"
-            "crop=%d:%d,fps=25,setsar=1,setpts=PTS-STARTPTS[v%d]" % (
-                index, width, height, width, height, index,
+            "crop=%d:%d,fps=25,setsar=1,"
+            "tpad=stop_mode=clone:stop_duration=%.3f,trim=duration=%.3f,"
+            "setpts=PTS-STARTPTS[v%d]" % (
+                index, width, height, width, height,
+                shot_duration, shot_duration, index,
             )
         )
         filters.append(
             "[%d:a:0]aresample=48000,aformat=channel_layouts=stereo,"
-            "asetpts=PTS-STARTPTS[a%d]" % (index, index)
+            "apad=whole_dur=%.3f,atrim=duration=%.3f,"
+            "asetpts=PTS-STARTPTS[a%d]" % (
+                index, shot_duration, shot_duration, index,
+            )
         )
-        video_labels.append("[v%d]" % index)
-        audio_labels.append("[a%d]" % index)
-    filters.append(
-        "%sconcat=n=%d:v=1:a=0[outv]" % ("".join(video_labels), len(paths))
+    paired_labels = "".join(
+        "[v%d][a%d]" % (index, index) for index in range(len(paths))
     )
     filters.append(
-        "%sconcat=n=%d:v=0:a=1[outa]" % ("".join(audio_labels), len(paths))
+        "%sconcat=n=%d:v=1:a=1[outv][outa]" % (paired_labels, len(paths))
     )
     command.extend([
         "-filter_complex", ";".join(filters), "-map", "[outv]", "-map", "[outa]",

@@ -1522,6 +1522,26 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                     "file": "video/%s.mp4" % shot["shot_key"],
                     "url": "/api/gen/file/video/%s.mp4" % shot["shot_key"],
                     "input_hash": "hash-" + shot["shot_key"],
+                    "provider_job_id": "provider-job-" + shot["shot_key"],
+                    "native_media": {
+                        "raw": {
+                            "file": "video/%s-raw.mp4" % shot["shot_key"],
+                            "sha256": "a" * 64, "size_bytes": 101,
+                        },
+                        "derived": {
+                            "file": "video/%s.mp4" % shot["shot_key"],
+                            "sha256": "b" * 64, "size_bytes": 99,
+                            "derived_from_sha256": "a" * 64,
+                        },
+                        "resolution": {"width": 2560, "height": 1440},
+                        "audio": {
+                            "audible": True, "codec": "aac",
+                            "sample_rate": 48000, "channels": 2,
+                            "mean_volume_dbfs": -21.0,
+                            "max_volume_dbfs": -3.0,
+                        },
+                        "inspected_at": 1,
+                    },
                 }
                 for shot in plan["material_plan"]
             ]
@@ -1571,6 +1591,10 @@ class ShortDramaAutodraftTests(unittest.TestCase):
 
         self.assertEqual("1080p", manifest["resolution"])
         self.assertTrue(manifest["playback_file"].endswith("preview-1080p.mp4"))
+        self.assertTrue(all(item["native_media"] for item in manifest["shots"]))
+        self.assertEqual("a" * 64, manifest["shots"][0]["native_media"]["raw"]["sha256"])
+        self.assertEqual("b" * 64, manifest["shots"][0]["file_hash"])
+        self.assertTrue(manifest["shots"][0]["provider_job_id"])
 
     def test_preview_process_is_terminated_and_reaped_when_cancelled(self):
         process = mock.Mock()

@@ -41,6 +41,7 @@ _CANDIDATE_REASSEMBLY_ENDPOINT = (
 _REASSEMBLY_LEASE_SECONDS = 30
 _DELIVERY_REFUND_LEASE_SECONDS = 60
 _MEDIA_PREFERENCE_MIGRATION = "refinement_media_preferences_provider_audio_v1"
+_DELIVERY_RENDER_LEASE_SECONDS = 35 * 60
 
 
 class RefinementError(ValueError):
@@ -1808,6 +1809,42 @@ def _formal_native_assembly(source):
     return {"shots": shots}
 
 
+def _delivery_contract_binding(project_id, source, capability, acceptance):
+    """Bind a quote to the exact accepted media and immutable native inputs."""
+    media = acceptance["snapshot"].get("media_contract") or {}
+    native_inputs = []
+    if capability.get("mode") == "local_ffmpeg":
+        assembly = _formal_native_assembly(source)
+        native_inputs = [
+            {
+                "shot_key": item["shot_key"],
+                "file": item["native_media"]["raw"]["file"],
+                "sha256": item["native_media"]["raw"]["sha256"],
+                "size_bytes": item["native_media"]["raw"]["size_bytes"],
+            }
+            for item in assembly["shots"]
+        ]
+    return {
+        "contract_version": "short-drama-delivery-quote-v2",
+        "project_id": project_id,
+        "version_id": source["id"],
+        "source_hash": source["input_hash"],
+        "acceptance_snapshot_hash": str(acceptance.get("snapshot_hash") or ""),
+        "media_contract_hashes": {
+            key: str(media.get(key) or "")
+            for key in (
+                "audio_hash", "subtitle_hash", "timeline_hash", "material_hash",
+            )
+        },
+        "native_assembly_hash": _hash(native_inputs) if native_inputs else "",
+        "resolution": (
+            "source" if capability["mode"] == "development_free" else "2k"
+        ),
+        "mode": capability["mode"],
+        "adapter": capability["adapter"],
+    }
+
+
 def _complete_delivery(conn, row):
     job = _job(row)
     capability = _require_delivery_available()
@@ -1849,6 +1886,13 @@ def _complete_delivery(conn, row):
         )
     acceptance = _valid_acceptance(conn, project, source, require=True)
     media_contract = acceptance["snapshot"].get("media_contract") or {}
+    delivery_contract = _delivery_contract_binding(
+        job["project_id"], source, capability, acceptance,
+    )
+    if _hash(delivery_contract) != job["input_hash"]:
+        raise RefinementError(
+            "delivery_source_changed", "正式导出来源已变化", 409,
+        )
     deliverable = capability["mode"] == "local_ffmpeg"
     output_url = source_url
     output_file = ""
@@ -1921,6 +1965,8 @@ def _complete_delivery(conn, row):
         "refinement_version_id": source["id"],
         "refinement_version": source["version"],
         "source_hash": source["input_hash"],
+        "acceptance_snapshot_hash": str(acceptance.get("snapshot_hash") or ""),
+        "delivery_contract": delivery_contract,
         "preview_url": source_url,
         "native_inputs": native_inputs,
         "shots": source["shots"],
@@ -1951,12 +1997,16 @@ def _complete_delivery(conn, row):
         "output_kind": "formal_2k" if deliverable else "demo_preview",
         "deliverable": deliverable,
     }
-    conn.execute(
+    updated = conn.execute(
         "UPDATE short_drama_delivery_jobs SET status='succeeded',phase='completed',"
         "progress=100,result_json=?,updated_at=? WHERE id=? AND status IN "
-        "('queued','running')",
-        (_json_text(result), now, job["id"]),
+        "('queued','running') AND phase=?",
+        (_json_text(result), now, job["id"], job["phase"]),
     )
+    if updated.rowcount != 1:
+        raise RefinementError(
+            "delivery_render_lease_lost", "2K 正式导出执行权已失效", 409,
+        )
     return _job(conn.execute(
         "SELECT * FROM short_drama_delivery_jobs WHERE id=?", (job["id"],)
     ).fetchone())
@@ -1969,35 +2019,62 @@ def _advance_delivery(conn, row):
     poll = job["poll_count"] + 1
     phases = ((25, "planning"), (60, "compositing"), (90, "packaging"))
     if poll > len(phases):
+        now = int(time.time())
+        if (
+            str(job.get("phase") or "").startswith("rendering:")
+            and int(job.get("updated_at") or 0)
+            > now - _DELIVERY_RENDER_LEASE_SECONDS
+        ):
+            return job
+        render_phase = "rendering:" + uuid.uuid4().hex
+        claimed = conn.execute(
+            "UPDATE short_drama_delivery_jobs SET status='running',phase=?,"
+            "progress=95,poll_count=?,updated_at=? WHERE id=? "
+            "AND status IN ('queued','running') AND phase=? AND poll_count=? "
+            "AND updated_at=?",
+            (
+                render_phase, poll, now, job["id"], job["phase"],
+                job["poll_count"], job["updated_at"],
+            ),
+        )
+        if claimed.rowcount != 1:
+            return _job(conn.execute(
+                "SELECT * FROM short_drama_delivery_jobs WHERE id=?",
+                (job["id"],),
+            ).fetchone())
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM short_drama_delivery_jobs WHERE id=?", (job["id"],)
+        ).fetchone()
         try:
             return _complete_delivery(conn, row)
         except Exception as error:
+            conn.rollback()
             root = Path(os.environ.get(
                 "CONTENT_OUT",
                 str(Path(__file__).resolve().parents[1] / "content_out"),
             )).resolve()
-            temp = root / "short_drama_delivery" / job["project_id"] / (
-                ".%s.tmp" % job["id"]
-            )
-            if temp.exists():
-                shutil.rmtree(temp, ignore_errors=True)
+            parent = root / "short_drama_delivery" / job["project_id"]
+            for path in (parent / (".%s.tmp" % job["id"]), parent / job["id"]):
+                if path.exists():
+                    shutil.rmtree(path, ignore_errors=True)
             code = getattr(error, "code", "formal_render_failed")
             retryable = code in {
                 "formal_renderer_unavailable", "formal_delivery_unavailable",
                 "media_probe_failed", "ffprobe_unavailable",
             }
-            conn.execute(
+            failed = conn.execute(
                 "UPDATE short_drama_delivery_jobs SET status='failed',phase='failed',"
                 "progress=100,poll_count=?,error_json=?,updated_at=? "
-                "WHERE id=? AND status IN ('queued','running')",
+                "WHERE id=? AND status IN ('queued','running') AND phase=?",
                 (
                     poll, _json_text({
                         "code": code, "detail": str(error)[:500],
                         "retryable": retryable,
-                    }), int(time.time()), job["id"],
+                    }), int(time.time()), job["id"], render_phase,
                 ),
             )
-            if int(job.get("cost") or 0) > 0:
+            if failed.rowcount == 1 and int(job.get("cost") or 0) > 0:
                 conn.execute(
                     "UPDATE short_drama_delivery_attempts SET state='refund_pending',"
                     "error=?,updated_at=? WHERE job_id=? "
@@ -2017,6 +2094,68 @@ def _advance_delivery(conn, row):
     return _job(conn.execute(
         "SELECT * FROM short_drama_delivery_jobs WHERE id=?", (job["id"],)
     ).fetchone())
+
+
+def reap_delivery_orphans(
+    db_factory, *, now=None, grace_seconds=_DELIVERY_RENDER_LEASE_SECONDS,
+):
+    """Remove stale publish/temp directories only after a complete DB scan."""
+    result = {"scanned": 0, "removed": 0, "retained": 0, "errors": []}
+    current_time = int(time.time()) if now is None else int(now)
+    conn = None
+    try:
+        conn = _connection(db_factory)
+        referenced = {
+            (str(row[0]), str(row[1]))
+            for row in conn.execute(
+                "SELECT project_id,job_id FROM short_drama_delivery_versions"
+            ).fetchall()
+        }
+        live = {
+            (str(row[0]), str(row[1]))
+            for row in conn.execute(
+                "SELECT project_id,id FROM short_drama_delivery_jobs "
+                "WHERE status IN ('queued','running') AND updated_at>?",
+                (current_time - _DELIVERY_RENDER_LEASE_SECONDS,),
+            ).fetchall()
+        }
+    except Exception as error:
+        result["errors"].append("delivery reference scan failed: %s" % error)
+        return result
+    finally:
+        if conn is not None:
+            conn.close()
+
+    root = Path(os.environ.get(
+        "CONTENT_OUT",
+        str(Path(__file__).resolve().parents[1] / "content_out"),
+    )).resolve() / "short_drama_delivery"
+    if not root.is_dir():
+        return result
+    for project_dir in root.iterdir():
+        if not project_dir.is_dir() or project_dir.is_symlink():
+            continue
+        project_id = project_dir.name
+        for candidate in project_dir.iterdir():
+            if not candidate.is_dir() or candidate.is_symlink():
+                continue
+            name = candidate.name
+            job_id = name[1:-4] if name.startswith(".") and name.endswith(".tmp") else name
+            result["scanned"] += 1
+            key = (project_id, job_id)
+            try:
+                age = current_time - int(candidate.stat().st_mtime)
+                if key in referenced or key in live or age < int(grace_seconds):
+                    result["retained"] += 1
+                    continue
+                shutil.rmtree(candidate)
+                result["removed"] += 1
+            except OSError as error:
+                result["errors"].append(
+                    "delivery orphan cleanup failed for %s: %s"
+                    % (candidate, error)
+                )
+    return result
 
 
 def workspace(db_factory, owner_username, actor_username, project_id, can_edit=True):
@@ -3010,17 +3149,9 @@ def create_delivery_quote(db_factory, owner_username, body):
         now = int(time.time())
         token = uuid.uuid4().hex
         cost = _formal_cost(capability, project.get("target_duration"))
-        input_hash = _hash({
-            "project_id": project_id, "version_id": version_id,
-            "source_hash": source["input_hash"],
-            "resolution": (
-                "source"
-                if capability["mode"] == "development_free"
-                else "2k"
-            ),
-            "mode": capability["mode"],
-            "adapter": capability["adapter"],
-        })
+        input_hash = _hash(_delivery_contract_binding(
+            project_id, source, capability, acceptance,
+        ))
         conn.execute(
             "INSERT INTO short_drama_delivery_quotes "
             "(token,project_id,refinement_version_id,input_hash,cost,expires_at,"
@@ -3122,17 +3253,14 @@ def start_delivery_job(
         acceptance = _valid_acceptance(conn, project, source, require=True)
         _require_complete_assembly(conn, project, source)
         _require_deliverable_media_contract(acceptance["snapshot"])
-        expected = _hash({
-            "project_id": project_id, "version_id": quote["refinement_version_id"],
-            "source_hash": source["input_hash"] if source else "",
-            "resolution": (
-                "source"
-                if capability["mode"] == "development_free"
-                else "2k"
-            ),
-            "mode": capability["mode"],
-            "adapter": capability["adapter"],
-        })
+        media = acceptance["snapshot"].get("media_contract") or {}
+        if capability.get("deliverable") and media.get("delivery_eligible") is not True:
+            raise RefinementError(
+                "delivery_media_incomplete", "正式交付缺少已锁定音轨或字幕时间线", 409
+            )
+        expected = _hash(_delivery_contract_binding(
+            project_id, source, capability, acceptance,
+        ))
         if not source or expected != quote["input_hash"]:
             raise RefinementError("delivery_source_changed", "精修版本已变化，请重新询价", 409)
         cost = int(quote["cost"])
@@ -3214,11 +3342,24 @@ def start_delivery_job(
                 raise RefinementError("billing_unavailable", "正式导出扣点服务不可用", 503)
             try:
                 deduct_points(actor_username, cost, "短剧 2K 正式导出", charge_key)
-            except Exception:
-                ledger = charge_lookup(charge_key) if callable(charge_lookup) else None
-                if not _ledger_matches(actor_username, cost, ledger):
-                    raise
-            charged = True
+            except Exception as debit_error:
+                try:
+                    ledger = (
+                        charge_lookup(charge_key)
+                        if callable(charge_lookup) else None
+                    )
+                except Exception:
+                    ledger = None
+                if _ledger_matches(actor_username, cost, ledger):
+                    charged = True
+                else:
+                    delegated_to_recovery = True
+                    raise RefinementError(
+                        "delivery_recovery_pending",
+                        "扣点结果尚未确认，系统将自动对账恢复", 409,
+                    ) from debit_error
+            else:
+                charged = True
         job_conn = _connection(db_factory)
         job_conn.execute("BEGIN IMMEDIATE")
         claimed_at = int(time.time())
@@ -3253,26 +3394,40 @@ def start_delivery_job(
             job_conn.rollback()
         if delegated_to_recovery:
             raise
-        state = "refund_pending" if charged and cost else "failed"
-        if owns_attempt or not charged:
+        if owns_attempt and charged:
             recovery = _connection(db_factory)
             try:
-                recovery.execute(
-                    "UPDATE short_drama_delivery_attempts SET state=?,error=?,"
-                    "updated_at=? WHERE id=? AND job_id IS NULL",
-                    (state, str(error)[:300], int(time.time()), attempt_id),
+                recovery.execute("BEGIN IMMEDIATE")
+                updated = recovery.execute(
+                    "UPDATE short_drama_delivery_attempts "
+                    "SET state='refund_pending',error=?,"
+                    "updated_at=? WHERE id=? AND job_id IS NULL "
+                    "AND state='charged'",
+                    (str(error)[:300], int(time.time()), attempt_id),
                 )
                 recovery.commit()
             finally:
                 recovery.close()
-        if state == "refund_pending" and callable(refund_points):
-            try:
+            if updated.rowcount == 1 and callable(refund_points):
                 reconcile_delivery_refund(
-                    db_factory, refund_points, {"id": attempt_id, "state": state},
-                    direct_refund=True,
+                    db_factory, refund_points, {
+                        "id": attempt_id, "actor_username": actor_username,
+                        "cost": cost, "state": "refund_pending",
+                    },
+                    direct_callable=True,
                 )
-            except Exception:
-                pass
+        elif owns_attempt or not charged:
+            recovery = _connection(db_factory)
+            try:
+                recovery.execute(
+                    "UPDATE short_drama_delivery_attempts SET state='failed',"
+                    "error=?,updated_at=? WHERE id=? AND job_id IS NULL "
+                    "AND state IN ('accepted','charged')",
+                    (str(error)[:300], int(time.time()), attempt_id),
+                )
+                recovery.commit()
+            finally:
+                recovery.close()
         raise
     finally:
         if job_conn is not None:
@@ -3304,7 +3459,7 @@ def get_delivery_job(
         conn.close()
     if refund_attempt and callable(refund_points):
         refund_attempt = reconcile_delivery_refund(
-            db_factory, refund_points, refund_attempt
+            db_factory, refund_points, refund_attempt, direct_callable=True,
         )
     if refund_attempt:
         item["refund_state"] = refund_attempt.get("state")
@@ -3313,15 +3468,17 @@ def get_delivery_job(
 
 def reconcile_delivery_refund(
     db_factory, points_domain, attempt, direct_refund=False,
+    direct_callable=False,
 ):
     """Claim and retry one durable delivery refund intent."""
     if not attempt or attempt.get("state") not in {"refund_pending", "refunded"}:
         return attempt
+    direct = direct_refund or direct_callable
     refund = (
-        points_domain if direct_refund
+        points_domain if direct
         else getattr(points_domain, "refund_points", None)
     )
-    uses_points_service = not direct_refund and callable(refund)
+    uses_points_service = not direct and callable(refund)
     if not callable(refund):
         return attempt
     now = int(time.time())
@@ -3543,15 +3700,9 @@ def _link_claimed_delivery_attempt(db_factory, attempt_id, claimed_at):
             raise RefinementError(
                 "delivery_media_incomplete", "正式交付缺少已锁定音轨或字幕时间线", 409,
             )
-        expected = _hash({
-            "project_id": attempt["project_id"],
-            "version_id": quote["refinement_version_id"],
-            "source_hash": source["input_hash"],
-            "resolution": (
-                "source" if capability["mode"] == "development_free" else "2k"
-            ),
-            "mode": capability["mode"], "adapter": capability["adapter"],
-        })
+        expected = _hash(_delivery_contract_binding(
+            attempt["project_id"], source, capability, acceptance,
+        ))
         expected_request = _hash({
             "project_id": attempt["project_id"],
             "quote_token": attempt["quote_token"],

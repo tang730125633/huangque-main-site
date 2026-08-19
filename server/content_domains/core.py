@@ -1340,6 +1340,7 @@ def _run_short_drama_recovery(limit=None):
             jdb, points, getattr(points, "get_points_transaction", None), limit),
         lambda: domain.short_drama_refinement.retry_delivery_attempt_refunds(
             jdb, points, limit),
+        lambda: domain.short_drama_refinement.reap_delivery_orphans(jdb),
         lambda: jobs_store.retry_failed_refunds(jdb, _refund_once, limit),
         lambda: domain.short_drama_assembly.reconcile_final_refunds(jdb, limit),
         lambda: domain.short_drama_assembly.retry_final_charge_attempts(
@@ -1385,6 +1386,27 @@ def _reap_short_drama_native_media():
         return None
 
 
+def _reap_short_drama_delivery_media():
+    """Fail-closed cleanup for crashed formal-delivery publish operations."""
+    try:
+        result = _short_drama_domain().short_drama_refinement.reap_delivery_orphans(
+            jdb
+        )
+        for error in result.get("errors") or []:
+            print(
+                "[short-drama-delivery] orphan cleanup warning: %s"
+                % str(error)[:300],
+                flush=True,
+            )
+        return result
+    except Exception as error:
+        print(
+            "[short-drama-delivery] startup cleanup failed: %s" % error,
+            flush=True,
+        )
+        return None
+
+
 def start_job_workers():
     global _workers_started
     with _job_queue_lock:
@@ -1392,6 +1414,7 @@ def start_job_workers():
             return
         _workers_started = True
     _reap_short_drama_native_media()
+    _reap_short_drama_delivery_media()
     for count, q, prefix in ((JOB_WORKERS, _job_queue, "content-job-worker"), (FAST_JOB_WORKERS, _fast_job_queue, "content-fast-worker"),
                              (TALKING_JOB_WORKERS, _talking_job_queue, "content-talking-worker"),
                              (IMAGE_JOB_WORKERS, _image_job_queue, "content-image-worker"),
