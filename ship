@@ -80,6 +80,18 @@ REMOTE_MAIN="${REMOTE_MAIN%%[[:space:]]*}"
   || { echo "❌ 本地 main 不是实时 origin/main，拒绝发布"; exit 1; }
 git ls-files --error-unmatch -- "$@" >/dev/null 2>&1 \
   || { echo "❌ 仅允许发布当前 main 中 Git 跟踪的文件"; exit 1; }
+HOME_ASSET_FILES=""
+for target in "$@"; do
+  case "$target" in
+    site/index.html|site/homepage.css|site/homepage-particles.js|site/assets/home/*)
+      HOME_ASSET_FILES="$(git ls-files site/assets/home)" \
+        || { echo "❌ 无法读取首页静态资源清单"; exit 1; }
+      [ -n "$HOME_ASSET_FILES" ] \
+        || { echo "❌ 首页静态资源清单为空，拒绝发布残缺首页"; exit 1; }
+      break
+      ;;
+  esac
+done
 if [ "$EXACT_CONTENT_DOMAINS" = "1" ]; then
   for target in "$@"; do
     [ "$target" != "server/content_api.py" ] \
@@ -105,6 +117,15 @@ PROVIDERS_SYNCED=0
 add_svc(){ for s in $1; do case " $RESTART " in *" $s "*) ;; *) RESTART="$RESTART $s";; esac; done; }
 add_timer(){ for t in $1; do case " $TIMERS " in *" $t "*) ;; *) TIMERS="$TIMERS $t";; esac; done; }
 add_deployed(){ case " $DEPLOYED " in *" $1 "*) ;; *) DEPLOYED="$DEPLOYED $1";; esac; }
+
+if [ -n "$HOME_ASSET_FILES" ]; then
+  $SSHC "$REMOTE" "sudo mkdir -p '$WWW/assets/home'" \
+    || { echo "  ❌ 首页静态资源目录创建失败"; exit 1; }
+  push_dir site/assets/home/ "$WWW/assets/home/" \
+    && echo "  ✓ site/assets/home/ → $WWW/assets/home/（首页依赖闭包）" \
+    || { echo "  ❌ 首页静态资源部署失败"; exit 1; }
+  for tracked in $HOME_ASSET_FILES; do add_deployed "$tracked"; done
+fi
 
 show_service_diagnostics(){
   local services="${1:-${RESTART:-huangque-content}}" s
@@ -196,6 +217,14 @@ RS
 }
 for f in "$@"; do
   timer=""
+  case "$f" in
+    site/assets/home/*)
+      if [ -n "$HOME_ASSET_FILES" ]; then
+        echo "  ✓ $f 已包含在首页依赖闭包中"
+        continue
+      fi
+      ;;
+  esac
   case "$f" in
     server/auth_server.py|server/hq_cli_api.py|server/invites.py|server/invite_network.py|server/business_cards.py|server/wxpay.py|server/wechat_subscribe.py) dest=/home/ubuntu/auth-service/; svc=huangque-auth ;;
     server/content_domains/__init__.py|server/content_domains/cos.py|server/content_domains/miniprogram_security.py|server/content_domains/pricing.py)
