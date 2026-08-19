@@ -15,10 +15,17 @@ from . import provider_keys
 
 
 MODEL = "MiniMax-H3"
+ORIGIN_METASO = "metaso"
+ORIGIN_LEGACY = "legacy"
+METASO_API_BASE = "https://metaso.cn/api/minimax"
 LEGACY_API_BASE = "https://api.minimaxi.com"
-API_BASE = os.environ.get(
-    "MINIMAX_API_BASE", "https://metaso.cn/api/minimax"
-).rstrip("/")
+ORIGIN_API_BASES = {
+    ORIGIN_METASO: METASO_API_BASE,
+    ORIGIN_LEGACY: LEGACY_API_BASE,
+}
+# Compatibility alias for callers which submit new tasks. Recovery must use
+# api_base_for_origin() and never a mutable environment value.
+API_BASE = METASO_API_BASE
 API_KEY = os.environ.get("MINIMAX_API_KEY", "").strip()
 TIMEOUT = max(120, int(os.environ.get("MINIMAX_H3_TIMEOUT", "1800") or 1800))
 POLL_INTERVAL = max(5, int(os.environ.get("MINIMAX_H3_POLL_INTERVAL", "10") or 10))
@@ -27,7 +34,14 @@ RATIOS = {"21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"}
 MAX_REFERENCE_IMAGES = 5
 MAX_IMAGE_BYTES = 30 * 1024 * 1024
 DEFAULT_RESOLUTION = "2K"
-RESOLUTIONS = {"768P", DEFAULT_RESOLUTION}
+RESOLUTIONS = {DEFAULT_RESOLUTION}
+RESULT_HOSTS = {
+    "cdn.hailuoai.com",
+    "cdn.minimax.chat",
+    "file.cdn.minimax.io",
+    "filecdn.minimax.chat",
+}
+RESULT_MAX_BYTES = 250 * 1024 * 1024
 
 
 class CreateOutcomeUnknown(RuntimeError):
@@ -95,6 +109,29 @@ def _api_base(value=None):
     if base not in {API_BASE, LEGACY_API_BASE}:
         raise ValueError("麦克视频任务来源无效，已停止自动恢复")
     return base
+
+
+def api_base_for_origin(origin):
+    value = str(origin or ORIGIN_LEGACY).strip().lower()
+    try:
+        return ORIGIN_API_BASES[value]
+    except KeyError as exc:
+        raise ValueError("麦克视频任务来源无效，已停止自动恢复") from exc
+
+
+def origin_from_payload(payload):
+    payload = payload or {}
+    origin = str(payload.get("_minimax_origin") or "").strip().lower()
+    if origin:
+        api_base_for_origin(origin)
+        return origin
+    legacy_base = str(payload.get("_minimax_api_base") or "").strip().rstrip("/")
+    if legacy_base:
+        for candidate_origin, candidate_base in ORIGIN_API_BASES.items():
+            if legacy_base == candidate_base:
+                return candidate_origin
+        raise ValueError("麦克视频任务来源无效，已停止自动恢复")
+    return ORIGIN_LEGACY
 
 
 def _request_json(

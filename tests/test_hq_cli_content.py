@@ -214,7 +214,7 @@ class HQCLIContentTests(unittest.TestCase):
             status, result = self._post("/api/gen/cli/quote", {
                 "kind": "xiaole_video", "payload": {
                     "prompt": "让 @图片1 向镜头挥手", "channel": "minimax",
-                    "duration": 4, "ratio": "9:16", "resolution": "768p",
+                    "duration": 4, "ratio": "9:16", "resolution": "2k",
                     "reference_upload_ids": [uploaded["upload_id"]],
                 },
             })
@@ -246,6 +246,7 @@ class HQCLIContentTests(unittest.TestCase):
         Image.new("RGB", (256, 256), (40, 80, 120)).save(image, "PNG")
         raw = image.getvalue()
         captured = {}
+        idempotency_bodies = []
 
         def create_job(*args, **_kwargs):
             captured.update(args[6])
@@ -258,7 +259,12 @@ class HQCLIContentTests(unittest.TestCase):
                 mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
                 mock.patch.object(core.feature_flags, "is_enabled", return_value=True), \
                 mock.patch.object(video_minimax_h3, "available", return_value=True), \
-                mock.patch.object(core, "_idempotency_begin", return_value=("new", None)), \
+                mock.patch.object(
+                    core, "_idempotency_begin",
+                    side_effect=lambda _username, _endpoint, _key, body: (
+                        idempotency_bodies.append(dict(body)) or ("new", None)
+                    ),
+                ), \
                 mock.patch.object(core, "_idempotency_complete"), \
                 mock.patch.object(core, "_user_video_submit_limit", return_value=None), \
                 mock.patch.object(core, "_user_active_job_count", return_value=0), \
@@ -281,7 +287,13 @@ class HQCLIContentTests(unittest.TestCase):
         self.assertNotIn("reference_upload_ids", captured)
         self.assertEqual(1, len(captured["reference_images"]))
         self.assertTrue(captured["reference_images"][0].startswith("data:image/png;base64,"))
-        self.assertEqual(video_minimax_h3.API_BASE, captured["_minimax_api_base"])
+        self.assertEqual(
+            video_minimax_h3.ORIGIN_METASO, captured["_minimax_origin"]
+        )
+        self.assertNotIn("_minimax_api_base", captured)
+        self.assertEqual(1, len(idempotency_bodies))
+        self.assertNotIn("_minimax_origin", idempotency_bodies[0])
+        self.assertNotIn("_minimax_api_base", idempotency_bodies[0])
         expand.assert_called_once()
 
     def test_minimax_submit_rejects_foreign_and_expired_references_before_charge(self):
@@ -343,7 +355,7 @@ class HQCLIContentTests(unittest.TestCase):
             status, result = self._post("/api/gen/cli/quote", {
                 "kind": "xiaole_video", "payload": {
                     "prompt": "人物向镜头挥手", "channel": "minimax",
-                    "duration": 4, "ratio": "9:16", "resolution": "768p",
+                    "duration": 4, "ratio": "9:16", "resolution": "2k",
                     "reference_upload_ids": [uploaded["upload_id"]],
                 },
             })
@@ -372,7 +384,7 @@ class HQCLIContentTests(unittest.TestCase):
             status, result = self._post("/api/gen/cli/quote", {
                 "kind": "xiaole_video", "payload": {
                     "prompt": "人物向镜头挥手", "channel": "minimax",
-                    "duration": 4, "ratio": "9:16", "resolution": "768p",
+                    "duration": 4, "ratio": "9:16", "resolution": "2k",
                     "reference_upload_ids": [uploaded["upload_id"]],
                 },
             })

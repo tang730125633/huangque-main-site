@@ -27,6 +27,20 @@ from PIL import Image
 
 
 class ShortDramaVisualProviderTests(unittest.TestCase):
+    def test_minimax_reconciled_task_binds_key_and_metaso_origin(self):
+        provider = MiniMaxH3ShotProvider()
+        encoded = provider.bind_reconciled_job_id(
+            "task-from-submit-unknown", {"_provider_key_id": "minimax-key-7"}
+        )
+        self.assertEqual(
+            ("minimax-key-7", "task-from-submit-unknown", "metaso"),
+            provider._decode_job_id(encoded),
+        )
+
+        with self.assertRaises(VisualProviderError) as raised:
+            provider.bind_reconciled_job_id("task-without-key", {})
+        self.assertEqual("provider_key_binding_missing", raised.exception.code)
+
     def test_minimax_h3_is_the_default_short_drama_provider(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             snapshot = capability_snapshot()
@@ -249,11 +263,11 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
             request_json.call_args_list[1].kwargs["api_base"],
         )
         self.assertEqual(
-            set(minimax_h3.MINIMAX_RESULT_HOSTS),
+            set(video_minimax_h3.RESULT_HOSTS),
             set(download.call_args.kwargs["allowed_hosts"]),
         )
         self.assertEqual(
-            minimax_h3.MINIMAX_RESULT_MAX_BYTES,
+            video_minimax_h3.RESULT_MAX_BYTES,
             download.call_args.kwargs["max_bytes"],
         )
 

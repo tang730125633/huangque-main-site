@@ -7,13 +7,6 @@ import urllib.parse
 from .base import ShotVisualCapability, ShotVisualProvider, VisualProviderError
 
 
-MINIMAX_RESULT_HOSTS = {
-    "cdn.hailuoai.com",
-    "cdn.minimax.chat",
-    "file.cdn.minimax.io",
-    "filecdn.minimax.chat",
-}
-MINIMAX_RESULT_MAX_BYTES = 250 * 1024 * 1024
 MINIMAX_ORIGIN_METASO = "metaso"
 MINIMAX_ORIGIN_LEGACY = "legacy"
 MINIMAX_ORIGINS = {MINIMAX_ORIGIN_METASO, MINIMAX_ORIGIN_LEGACY}
@@ -265,6 +258,21 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
             },
         }
 
+    def bind_reconciled_job_id(self, provider_job_id, request):
+        task_id = str(provider_job_id or "").strip()
+        if not task_id:
+            raise VisualProviderError(
+                "provider_job_id_invalid", "MiniMax 上游任务 ID 无效", submitted=True,
+            )
+        key_id = str((request or {}).get("_provider_key_id") or "").strip()
+        if not key_id:
+            raise VisualProviderError(
+                "provider_key_binding_missing",
+                "MiniMax 提交记录缺少已绑定的 API Key，无法安全恢复",
+                submitted=True,
+            )
+        return self._encode_job_id(key_id, task_id, MINIMAX_ORIGIN_METASO)
+
     def get_job(self, provider_job_id):
         key_id, task_id, origin = self._decode_job_id(provider_job_id)
         candidate = self._bound_key(key_id)
@@ -276,7 +284,7 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
             data = video_minimax_h3.query_task(
                 task_id, candidate["secret"],
                 api_base=(
-                    video_minimax_h3.API_BASE
+                    video_minimax_h3.METASO_API_BASE
                     if origin == MINIMAX_ORIGIN_METASO
                     else video_minimax_h3.LEGACY_API_BASE
                 ),
@@ -330,14 +338,14 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
     def fetch_result(self, provider_job_id, result_url):
         if not str(result_url or "").strip():
             raise VisualProviderError("provider_result_missing", "MiniMax 尚未返回成片地址", submitted=True)
-        from content_domains import video
+        from content_domains import video, video_minimax_h3
 
         try:
             relative = video._download_video_file_direct(
                 result_url,
                 prefix="short_drama_minimax_h3",
-                allowed_hosts=MINIMAX_RESULT_HOSTS,
-                max_bytes=MINIMAX_RESULT_MAX_BYTES,
+                allowed_hosts=video_minimax_h3.RESULT_HOSTS,
+                max_bytes=video_minimax_h3.RESULT_MAX_BYTES,
             )
         except Exception as error:
             raise VisualProviderError(

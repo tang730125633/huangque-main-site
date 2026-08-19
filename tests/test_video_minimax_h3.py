@@ -90,7 +90,16 @@ class MiniMaxH3VideoTests(unittest.TestCase):
                 "channel": "minimax", "prompt": "舰队跃迁离去",
                 "duration": 5, "ratio": "16:9", "resolution": "2k",
             })
-        self.assertEqual(video_minimax_h3.API_BASE, payload["_minimax_api_base"])
+        self.assertEqual(
+            video_minimax_h3.ORIGIN_METASO, payload["_minimax_origin"]
+        )
+        self.assertNotIn("_minimax_api_base", payload)
+
+    def test_new_768p_request_is_rejected_but_legacy_resume_remains_supported(self):
+        with self.assertRaisesRegex(ValueError, "仅支持 2K"):
+            video_minimax_h3.build_request(
+                "旧分辨率不应创建新任务", [], "9:16", 5, "768p"
+            )
 
     def test_task_query_uses_its_persisted_provider_origin(self):
         captured = []
@@ -256,20 +265,23 @@ class MiniMaxH3VideoTests(unittest.TestCase):
                 patch.object(video.provider_keys, "set_health"), \
                 patch.object(video, "update_video_asset_phase"), \
                 patch.object(video_minimax_h3, "generate", return_value=rendered) as generate, \
-                patch.object(video, "_download_xiaole_video", return_value="video/h3.mp4"), \
+                patch.object(video, "_download_video_file_direct", return_value="video/h3.mp4") as download, \
                 patch.object(video, "_extract_first_frame_cover", return_value=None), \
                 patch.object(video, "public_url", return_value="https://cos.example/h3.mp4"):
             result = video.gen_xiaole_video({
                 "_job_id": 8, "channel": "minimax", "prompt": "人物走进电梯",
                 "model": "MiniMax-H3", "duration": 15, "ratio": "9:16",
                 "resolution": "2k", "reference_images": ["data:image/png;base64,cG5n"],
+                "_minimax_origin": video_minimax_h3.ORIGIN_METASO,
             })
         generate.assert_called_once()
         self.assertEqual("2k", generate.call_args.kwargs["resolution"])
         self.assertEqual(
-            video_minimax_h3.LEGACY_API_BASE,
+            video_minimax_h3.METASO_API_BASE,
             generate.call_args.kwargs["api_base"],
         )
+        self.assertEqual(video_minimax_h3.RESULT_HOSTS, download.call_args.kwargs["allowed_hosts"])
+        self.assertEqual(video_minimax_h3.RESULT_MAX_BYTES, download.call_args.kwargs["max_bytes"])
         self.assertEqual(result["provider_video_id"], "h3-task-1")
         self.assertEqual(result["provider"], "minimax_h3_cn")
 
@@ -284,14 +296,14 @@ class MiniMaxH3VideoTests(unittest.TestCase):
                 patch.object(video.provider_keys, "set_health"), \
                 patch.object(video, "update_video_asset_phase"), \
                 patch.object(video_minimax_h3, "generate", return_value=rendered) as generate, \
-                patch.object(video, "_download_xiaole_video", return_value="video/new.mp4"), \
+                patch.object(video, "_download_video_file_direct", return_value="video/new.mp4"), \
                 patch.object(video, "_extract_first_frame_cover", return_value=None), \
                 patch.object(video, "public_url", return_value="https://cos.example/new.mp4"):
             video.gen_xiaole_video({
                 "_job_id": 9, "channel": "minimax", "prompt": "a ship leaves the port",
                 "model": "MiniMax-H3", "duration": 5, "ratio": "16:9",
                 "resolution": "2k", "reference_images": [],
-                "_minimax_api_base": video_minimax_h3.API_BASE,
+                "_minimax_origin": video_minimax_h3.ORIGIN_METASO,
             })
         self.assertEqual(video_minimax_h3.API_BASE, generate.call_args.kwargs["api_base"])
 
@@ -307,7 +319,7 @@ class MiniMaxH3VideoTests(unittest.TestCase):
         }
         for marker, expected in (
             (None, video_minimax_h3.LEGACY_API_BASE),
-            (video_minimax_h3.API_BASE, video_minimax_h3.API_BASE),
+            (video_minimax_h3.ORIGIN_METASO, video_minimax_h3.METASO_API_BASE),
         ):
             payload = {
                 "_job_id": 8, "channel": "minimax", "prompt": "舰队跃迁离去",
@@ -315,13 +327,13 @@ class MiniMaxH3VideoTests(unittest.TestCase):
                 "resolution": "2k", "reference_images": [],
             }
             if marker:
-                payload["_minimax_api_base"] = marker
+                payload["_minimax_origin"] = marker
             with self.subTest(marker=marker), \
                     patch.object(video, "get_resumable_grok_request", return_value=existing), \
                     patch.object(video, "_bound_provider_key", return_value={"id": "mm-key", "secret": "secret"}), \
                     patch.object(video, "update_video_asset_phase"), \
                     patch.object(video_minimax_h3, "resume", return_value=rendered) as resume, \
-                    patch.object(video, "_download_xiaole_video", return_value="video/h3.mp4"), \
+                    patch.object(video, "_download_video_file_direct", return_value="video/h3.mp4"), \
                     patch.object(video, "_extract_first_frame_cover", return_value=None), \
                     patch.object(video, "public_url", return_value="https://cos.example/h3.mp4"):
                 video.gen_xiaole_video(payload)
@@ -337,6 +349,8 @@ class MiniMaxH3VideoTests(unittest.TestCase):
         self.assertIn("p['video.minimax_h3.768p']||6", html)
         self.assertIn("xlPayload.resolution='2k'", html)
         self.assertNotIn("请至少上传 1 张人物参考图", html)
+        self.assertNotIn("必传 1–5 张", html)
+        self.assertIn("可选，最多 5 张", html)
         self.assertIn("xlPayload.model='MiniMax-H3'", html)
         self.assertNotIn("xlPayload.model='MiniMax-Hailuo-2.3'", html)
 

@@ -2059,6 +2059,47 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertEqual("running", result["status"])
         self.assertEqual("upstream-job-1", result["provider_job_id"])
 
+    def test_submit_unknown_binding_is_normalized_before_the_next_poll(self):
+        job, _quote = self._running_provider_job("submit-unknown-normalized")
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs SET status='submit_unknown',"
+                "provider_job_id=NULL WHERE id=?", (job["id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        class Provider:
+            def __init__(self):
+                self.polled = None
+
+            def bind_reconciled_job_id(self, provider_job_id, request):
+                self.assert_request = request
+                return "bound:" + provider_job_id
+
+            def get_job(self, provider_job_id):
+                self.polled = provider_job_id
+                return {"status": "running"}
+
+        provider = Provider()
+        with mock.patch.object(
+            short_drama_autodraft, "load_by_name", return_value=provider,
+        ):
+            bound = short_drama_autodraft.reconcile_unknown_provider_submission(
+                self.db, "alice", "admin", "admin", job["id"], {
+                    "project_id": self.project["id"],
+                    "action": "bind_provider_job",
+                    "provider_job_id": "raw-upstream-task",
+                },
+            )
+            short_drama_autodraft.reconcile_provider_job(
+                self.db, "alice", self.project["id"], job["id"],
+            )
+        self.assertEqual("bound:raw-upstream-task", bound["provider_job_id"])
+        self.assertEqual("bound:raw-upstream-task", provider.polled)
+
     def test_reconcile_route_dispatches_to_admin_recovery(self):
         job, _quote = self._running_provider_job("submit-unknown-http")
         conn = self.db()

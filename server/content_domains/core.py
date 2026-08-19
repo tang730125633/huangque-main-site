@@ -2980,7 +2980,15 @@ class H(BaseHTTPRequestHandler):
                     body = audio_domain.validate_audio_payload(
                         body, user["username"]
                     )
-                if not is_still_route and kind not in {"cinematic", "script_to_video"}: request_body = dict(body) if isinstance(body, dict) else body
+                if not is_still_route and kind not in {"cinematic", "script_to_video"}:
+                    request_body = dict(body) if isinstance(body, dict) else body
+                    if (
+                        kind == "xiaole_video"
+                        and isinstance(request_body, dict)
+                        and str(request_body.get("channel") or "").lower() == "minimax"
+                    ):
+                        request_body.pop("_minimax_origin", None)
+                        request_body.pop("_minimax_api_base", None)
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
                 if not is_still_route: idem_key = idem_key if kind in {"cinematic", "script_to_video"} else (_idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "audio", "video", "tryon", "xiaole_video", "sora_video", "avatar", "canvas_agent", "script_to_video", "breakdown", "copy"} else "")
                 if kind == "canvas_agent" and not idem_key:

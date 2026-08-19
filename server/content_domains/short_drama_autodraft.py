@@ -2346,6 +2346,23 @@ def reconcile_unknown_provider_submission(
                 "provider_reconciliation_not_allowed",
                 "Provider 对账尝试不存在", 409,
             )
+        provider = load_by_name(row["provider"])
+        if provider is None:
+            raise AutodraftError(
+                "provider_reconciliation_not_allowed",
+                "任务的 Provider 不受支持，无法安全绑定上游任务",
+                409,
+            )
+        try:
+            provider_job_id = provider.bind_reconciled_job_id(
+                provider_job_id, _json(row["request_json"], {}),
+            )
+        except VisualProviderError as error:
+            raise AutodraftError(error.code, str(error), 422) from error
+        if not provider_job_id or len(provider_job_id) > 200:
+            raise AutodraftError(
+                "provider_job_id_invalid", "上游 Provider 任务 ID 无效", 422,
+            )
         existing_provider_job_id = str(row["provider_job_id"] or "").strip()
         if row["status"] == "running" and existing_provider_job_id == provider_job_id:
             conn.commit()

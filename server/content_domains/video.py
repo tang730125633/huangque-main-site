@@ -1326,7 +1326,7 @@ def validate_xiaole_video_payload(payload, username=None):
                 "reference_images": refs,
                 # Persist the server-selected origin before provider submission.
                 # Client-supplied internal fields were stripped above.
-                "_minimax_api_base": video_minimax_h3.API_BASE,
+                "_minimax_origin": video_minimax_h3.ORIGIN_METASO,
             })
             return cleaned
 
@@ -5566,6 +5566,9 @@ def gen_xiaole_video(payload):
             )
 
         duration = int(payload.get("duration") or 5)
+        api_base = video_minimax_h3.api_base_for_origin(
+            video_minimax_h3.origin_from_payload(payload)
+        )
         if existing:
             candidate = _bound_provider_key(
                 "minimax", existing.get("provider_key_id")
@@ -5575,8 +5578,7 @@ def gen_xiaole_video(payload):
                 job_id=job_id, heartbeat=minimax_heartbeat,
                 api_key=candidate["secret"], provider_key_id=candidate["id"],
                 resolution=payload.get("resolution") or "2K",
-                api_base=(payload.get("_minimax_api_base")
-                          or video_minimax_h3.LEGACY_API_BASE),
+                api_base=api_base,
             )
         else:
             rendered, candidate = _create_with_provider_key(
@@ -5587,8 +5589,7 @@ def gen_xiaole_video(payload):
                     resolution=payload.get("resolution") or "2K", job_id=job_id,
                     heartbeat=minimax_heartbeat, api_key=selected["secret"],
                     provider_key_id=selected["id"],
-                    api_base=(payload.get("_minimax_api_base")
-                              or video_minimax_h3.LEGACY_API_BASE),
+                    api_base=api_base,
                 ),
             )
         source_url = rendered["source_video_url"]
@@ -5599,7 +5600,12 @@ def gen_xiaole_video(payload):
                 provider_key_id=candidate["id"], model=video_minimax_h3.MODEL,
             )
         try:
-            video_file = _download_xiaole_video(source_url, "minimax_h3")
+            video_file = _download_video_file_direct(
+                source_url,
+                prefix="minimax_h3",
+                allowed_hosts=video_minimax_h3.RESULT_HOSTS,
+                max_bytes=video_minimax_h3.RESULT_MAX_BYTES,
+            )
         except RuntimeError as exc:
             if str(exc).startswith("视频下载失败"):
                 raise video_minimax_h3.TransientMiniMaxError(str(exc)) from exc
