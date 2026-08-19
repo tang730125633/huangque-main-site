@@ -604,6 +604,22 @@ assert not server.load_conversation(cid).get("productions"), intent_body
 revision = intent_body["state"]["revision"]
 original_messages = json.loads(json.dumps(server.load_conversation(cid)["messages"], ensure_ascii=False))
 
+def resource_bridge(account_id, action, input_body, **kwargs):
+    assert account_id == "acct_a", account_id
+    if action == "video-avatars":
+        return {"items": [
+            {"id": avatar_id, "name": "我的形象 %s" % avatar_id, "status": "ready"}
+            for avatar_id in (7, 8, 9)
+        ]}
+    if action == "voices":
+        return {"items": [{"voice_key": "voice-demo", "display_name": "我的声音"}]}
+    if action == "canvas-list":
+        return {"boards": [
+            {"id": "board_canvas_1", "name": "IP12 内容画布", "version": 3, "role": "owner"},
+            {"id": "board_canvas_2", "name": "IP12 恢复画布", "version": 1, "role": "editor"},
+        ]}
+    raise AssertionError(action)
+
 def prepare(family, options_marker=None, preferred_action=None):
     body = {
         "conversation_id": cid,
@@ -615,7 +631,8 @@ def prepare(family, options_marker=None, preferred_action=None):
         body["options"] = options_marker
     if preferred_action is not None:
         body["preferred_action"] = preferred_action
-    response = client.post("/api/ip12/productions/prepare", json=body)
+    with patch.object(server, "_bridge_action", side_effect=resource_bridge):
+        response = client.post("/api/ip12/productions/prepare", json=body)
     assert response.status_code == 200, response.get_data(as_text=True)
     return response.get_json()
 
@@ -633,20 +650,32 @@ assert bad_image["status"] == "blocked_prerequisite", bad_image
 assert bad_image["missing"] == [], bad_image
 assert "类型" in bad_image["validation_error"], bad_image
 
-audio = prepare("audio", {"text": "请用自然语气读出这段旁白。"})
+audio = prepare("audio")
 video = prepare("video", {"avatar_id": 7, "voice": "voice-demo"})
-canvas = prepare("canvas", {"board_id": "board_canvas_1", "base_version": 1, "prompt": "把这篇口播放进画布。"})
+missing_canvas = prepare("canvas")
+canvas = prepare("canvas", {"board_id": "board_canvas_1"})
 generic_video = prepare("video", {"prompt": "把正文改编成海边日出短片。"}, "video-generate")
-for prepared, required in (
-    (audio, "text"), (video, "avatar_id"), (canvas, "prompt"),
-):
+for prepared in (audio, video, canvas):
     assert prepared["status"] == "draft", prepared
-    assert required in prepared["schema"]["required"], prepared
+assert audio["schema"]["required"] == [], audio
+assert video["schema"]["required"] == ["avatar_id", "voice"], video
+assert video["schema"]["properties"]["avatar_id"]["oneOf"] == [
+    {"const": 7, "title": "我的形象 7"},
+    {"const": 8, "title": "我的形象 8"},
+    {"const": 9, "title": "我的形象 9"},
+], video
+assert missing_canvas["missing"] == ["board_id"], missing_canvas
+assert canvas["schema"]["required"] == ["board_id"], canvas
 assert canvas["recommended_action"] == "canvas-ops", canvas
 assert generic_video["recommended_action"] == "video-generate", generic_video
 assert generic_video["status"] == "draft" and "prompt" in generic_video["schema"]["required"]
 audio_record = server.load_conversation(cid)["productions"][audio["production_id"]]
 assert server._production_input(audio_record, {"text": "第一段。\n\n第二段。\t继续。"})["text"] == "第一段。 第二段。 继续。"
+assert server._production_input(audio_record, {})["text"] == "这是用户确认过、可直接进入生产的完整口播正文。"
+canvas_record = server.load_conversation(cid)["productions"][canvas["production_id"]]
+canvas_input = server._production_input(canvas_record, {"board_id": "board_canvas_1"})
+assert canvas_input["base_version"] == 3, canvas_input
+assert canvas_input["ops"][0]["node"]["params"]["text"] == "这是用户确认过、可直接进入生产的完整口播正文。"
 
 # The HTTP helper uses the unified internal action contract and never places
 # account_id inside the action input.
