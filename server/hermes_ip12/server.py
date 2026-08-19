@@ -505,7 +505,9 @@ def _production_input(record, options):
         "audio-generate", "digital-ip-text-generate", "digital-ip-batch-generate",
     }:
         payload.setdefault("text", record["source_text"])
-    if record["action"] == "audio-generate" and isinstance(payload.get("text"), str):
+    if record["action"] in {
+        "audio-generate", "digital-ip-text-generate", "digital-ip-batch-generate",
+    } and isinstance(payload.get("text"), str):
         payload["text"] = re.sub(r"[\r\n\t\f\v]+", " ", payload["text"]).strip()
     if record["action"] == "canvas-ops":
         board_id = str(payload.get("board_id") or "")
