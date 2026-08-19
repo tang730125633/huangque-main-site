@@ -456,7 +456,7 @@ def _set_production_result(record, result):
     if not isinstance(assets, list) and isinstance(nested, dict):
         assets = nested.get("asset_refs") or nested.get("assets")
         if not isinstance(assets, list):
-            kind = str(result.get("kind") or nested.get("type") or record.get("capability_family") or "")
+            kind = str(record.get("capability_family") or nested.get("type") or result.get("kind") or "")
             urls = nested.get("urls")
             if not isinstance(urls, list):
                 url = next((nested.get(key) for key in (

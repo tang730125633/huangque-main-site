@@ -748,6 +748,17 @@ for action, kind, url_field, file_field in (
         "kind": kind, "url": "https://cdn.example/output", "name": "output.bin", "file": "output.bin",
     }]
     assert nested_record["last_error_code"] == ""
+mixed_video = {"action": "video-generate", "capability_family": "video", "asset_refs": []}
+server._set_production_result(mixed_video, {
+    "status": "done", "kind": "xiaole_video", "result": {
+        "type": "video", "image_url": "https://cdn.example/cover.jpg", "image_file": "cover.jpg",
+        "video_url": "https://cdn.example/output.mp4", "video_file": "output.mp4",
+    },
+})
+assert mixed_video["asset_refs"] == [{
+    "kind": "video", "url": "https://cdn.example/output.mp4",
+    "name": "output.mp4", "file": "output.mp4",
+}]
 finished_change = client.post("/api/ip12/productions/confirm", json={
     "conversation_id": cid,
     "production_id": image_id,
