@@ -199,6 +199,11 @@ class HermesIP12SourceTests(unittest.TestCase):
             self.assertIn("function submitFoundationAnnotations()", source)
             self.assertIn("定位原文（可选）", source)
             self.assertIn("把批注交给 Agent", source)
+            self.assertIn(
+                "foundationEditing=false;closeFoundationReviewer();"
+                "document.getElementById('userInput').placeholder='输入消息...'",
+                source,
+            )
             self.assertIn("@media", source)
 
     def test_service_security_boundary_is_registered(self):
