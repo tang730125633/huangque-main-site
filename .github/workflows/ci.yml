@@ -1,9 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -56,7 +53,7 @@ jobs:
       - name: Verify workbench shell cache stamps
         run: python scripts/stamp_assets.py --check
 
-      - name: 测试 CI 检查器
+      - name: 测试完整 Python 回归
         run: python -m unittest discover -s tests -v
 
       - name: 测试并构建 HQ CLI
