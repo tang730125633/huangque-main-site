@@ -167,6 +167,10 @@ class HQCLIAPITests(unittest.TestCase):
                 self.assertEqual(required, item["input_schema"]["required"])
                 self.assertTrue(item["constraints"])
                 self.assertEqual("action", item["transport"]["kind"])
+        self.assertEqual("人物图片", actions["tryon-fast-generate"]["input_schema"]
+                         ["properties"]["person_image_upload_id"]["title"])
+        self.assertEqual("服装图片", actions["tryon-fast-generate"]["input_schema"]
+                         ["properties"]["clothes_upload_id"]["title"])
         for action, family, maximum in (("image-upload", "image", 10 * 1024 * 1024),
                                         ("video-upload", "video", 32 * 1024 * 1024)):
             with self.subTest(action=action):

@@ -301,12 +301,15 @@ _MEDIA_SCHEMAS.update({
         "ratio": {"type": "string", "enum": ["9:16", "16:9", "1:1"]},
     }, "constraints": ["avatar_id must be a ready cinematic avatar; output is fixed at 720p"]},
     "tryon-fast-generate": {"required": ["person_image_upload_id", "clothes_upload_id"], "properties": {
-        "person_image_upload_id": _IMAGE_UPLOAD_SCHEMA, "clothes_upload_id": _IMAGE_UPLOAD_SCHEMA,
+        "person_image_upload_id": {**_IMAGE_UPLOAD_SCHEMA, "title": "人物图片"},
+        "clothes_upload_id": {**_IMAGE_UPLOAD_SCHEMA, "title": "服装图片"},
         "seconds": {"type": "integer", "minimum": 5, "maximum": 15},
     }, "constraints": ["both uploads are private images owned by this account; seconds defaults to 6"]},
     "tryon-classic-generate": {"required": ["person_video_upload_id"], "properties": {
-        "person_video_upload_id": _VIDEO_UPLOAD_SCHEMA, "clothes_upload_id": _IMAGE_UPLOAD_SCHEMA,
-        "background_upload_id": _IMAGE_UPLOAD_SCHEMA, "seconds": {"type": "integer", "minimum": 1, "maximum": 6},
+        "person_video_upload_id": {**_VIDEO_UPLOAD_SCHEMA, "title": "人物视频"},
+        "clothes_upload_id": {**_IMAGE_UPLOAD_SCHEMA, "title": "服装图片"},
+        "background_upload_id": {**_IMAGE_UPLOAD_SCHEMA, "title": "背景图片"},
+        "seconds": {"type": "integer", "minimum": 1, "maximum": 6},
     }, "constraints": ["provide clothes_upload_id, background_upload_id, or both; seconds defaults to 6"]},
     "video-avatars": {"required": [], "properties": {
         "limit": {"type": "integer", "minimum": 1, "maximum": 120},

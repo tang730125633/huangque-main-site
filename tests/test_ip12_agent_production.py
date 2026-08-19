@@ -205,10 +205,13 @@ with patch.object(server, "_bridge_catalog", return_value=catalog):
         "expected_revision": revision, "request_id": "catalog-tryon-turn-01",
     })
     assert tryon_turn.status_code == 200, tryon_turn.get_data(as_text=True)
-    tryon_action = tryon_turn.get_json()["actions"][0]
+    tryon_turn_body = tryon_turn.get_json()
+    assert "快速换装" in tryon_turn_body["assistant"], tryon_turn_body
+    assert "当前这篇口播" not in tryon_turn_body["assistant"], tryon_turn_body
+    tryon_action = tryon_turn_body["actions"][0]
     assert tryon_action["preferred_action"] == "tryon-fast-generate", tryon_action
     assert tryon_action["content_target"] == {"category_id": "", "topic_id": ""}, tryon_action
-    revision = tryon_turn.get_json()["state"]["revision"]
+    revision = tryon_turn_body["state"]["revision"]
     tryon_prepared = client.post("/api/ip12/productions/prepare", json={
         "conversation_id": cid, "content_target": tryon_action["content_target"],
         "expected_revision": revision, "requested_result": "video",
