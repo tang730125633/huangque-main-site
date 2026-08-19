@@ -582,6 +582,20 @@ server.save_conversation(cid, {
 })
 revision = state["revision"]
 target = {"category_id": "category_1", "topic_id": "topic_1"}
+intent_response = client.post("/api/chat-complete", json={
+    "conversation_id": cid,
+    "message": "用 Grok 把这篇做成视频",
+    "content_target": target,
+    "expected_revision": revision,
+    "request_id": "prepare-video-from-chat",
+})
+assert intent_response.status_code == 200, intent_response.get_data(as_text=True)
+intent_body = intent_response.get_json()
+assert intent_body["actions"][0]["type"] == "prepare_production", intent_body
+assert intent_body["actions"][0]["requested_result"] == "video", intent_body
+assert intent_body["actions"][0]["preferred_action"] == "video-generate", intent_body
+assert not server.load_conversation(cid).get("productions"), intent_body
+revision = intent_body["state"]["revision"]
 original_messages = json.loads(json.dumps(server.load_conversation(cid)["messages"], ensure_ascii=False))
 
 def prepare(family, options_marker=None, preferred_action=None):
@@ -1164,6 +1178,20 @@ server.save_conversation(production_cid, {
     }]}},
 })
 revision = production_state["revision"]
+intent_response = client.post("/api/chat-complete", json={
+    "conversation_id": production_cid,
+    "message": "用 Grok 把这篇做成视频",
+    "content_target": {"category_id": "category_1", "topic_id": "topic_1"},
+    "expected_revision": revision,
+    "request_id": "prepare-video-from-chat",
+})
+assert intent_response.status_code == 200, intent_response.get_data(as_text=True)
+intent_body = intent_response.get_json()
+assert intent_body["actions"][0]["type"] == "prepare_production", intent_body
+assert intent_body["actions"][0]["requested_result"] == "video", intent_body
+assert intent_body["actions"][0]["preferred_action"] == "video-generate", intent_body
+assert not server.load_conversation(production_cid).get("productions"), intent_body
+revision = intent_body["state"]["revision"]
 prepared = client.post("/api/ip12/productions/prepare", json={
     "conversation_id": production_cid,
     "content_target": {"category_id": "category_1", "topic_id": "topic_1"},
@@ -1511,6 +1539,23 @@ assert len(generated_pack["categories"]) == 3
 assert sum(len(category["topics"]) for category in generated_pack["categories"]) == 3
 assert server.load_conversation(generated_cid)["deliverables"]["6"]["kind"] == "content_pack_v1"
 assert pack_model.call_args.kwargs["response_format"]["type"] == "json_schema"
+
+drifted_raw_pack = json.loads(json.dumps(raw_pack, ensure_ascii=False))
+for category in drifted_raw_pack["categories"]:
+    category["name"] += "方向"
+    category["topics"][0]["title"] += "完整版"
+drifted_response = Mock()
+drifted_response.json.return_value = {
+    "choices": [{"message": {"content": json.dumps(drifted_raw_pack, ensure_ascii=False)}}]
+}
+with patch.object(server, "call_ai", return_value=drifted_response):
+    repaired_pack = server._generate_content_pack(generated_convo)
+assert [item["name"] for item in repaired_pack["categories"]] == [
+    item["name"] for item in raw_pack["categories"]
+]
+assert [item["topics"][0]["title"] for item in repaired_pack["categories"]] == [
+    item["topics"][0]["title"] for item in raw_pack["categories"]
+]
 
 legacy_cid = client.post("/api/conversations").get_json()["id"]
 legacy_convo = server.load_conversation(legacy_cid)

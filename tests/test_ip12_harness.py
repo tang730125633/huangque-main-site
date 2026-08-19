@@ -375,7 +375,7 @@ class IP12HarnessTests(unittest.TestCase):
         )
         for message in (
             "确认", "确认无误", "确认资料", "确认这一步", "保留并继续",
-            "下一步", "好的，继续", "没有问题", "就按这个",
+            "下一步", "好的，继续", "没有问题", "就按这个", "嗯好，",
         ):
             with self.subTest(message=message):
                 action = harness.shortcut_action(state, message)
@@ -550,7 +550,7 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual(compiled["profile_updates"], [])
         self.assertIn("精选 3 个重点选题", compiled["draft"])
         self.assertIn("【转行经验分享】转行经验分享选题01", compiled["draft"])
-        for message in ("继续", "下一步", "进入下一步", "好的，下一步！"):
+        for message in ("继续", "下一步", "进入下一步", "好的，下一步！", "保留并继续"):
             with self.subTest(message=message):
                 self.assertTrue(harness.is_continue_message(message))
         self.assertFalse(harness.is_continue_message("下一步会生成口播吗？"))
@@ -558,6 +558,21 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertTrue(harness.is_content_review_message("把三篇完整文章给我看一下"))
         self.assertFalse(harness.is_content_review_message("下一步会生成口播吗？"))
         self.assertFalse(harness.is_content_review_message("这篇文案给我的感觉太正式，改口语一点"))
+
+    def test_explicit_asset_requests_map_to_bounded_production_actions(self):
+        cases = {
+            "把这篇做成一张封面图片": ("image", "image-generate"),
+            "请把当前口播生成音频": ("audio", "audio-generate"),
+            "用 Grok 把这篇做成视频": ("video", "video-generate"),
+            "把这篇放到 Canvas 画布": ("canvas", "canvas-ops"),
+        }
+        for message, expected in cases.items():
+            with self.subTest(message=message):
+                intent = harness.production_intent(message)
+                self.assertEqual(
+                    (intent["capability_family"], intent["recommended_action"]), expected
+                )
+        self.assertIsNone(harness.production_intent("视频和图片分别是什么格式？"))
 
     def test_module_six_checkpoints_reuse_one_generated_content_pack(self):
         state = self.complete_intake()

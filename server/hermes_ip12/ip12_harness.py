@@ -63,6 +63,26 @@ def production_recommendation(requested_result, preferred_action=None):
     }
 
 
+def production_intent(message):
+    """Recognize an explicit request to turn the selected script into an asset."""
+    text = re.sub(r"\s+", "", str(message or "")).lower()
+    patterns = (
+        ("canvas", r"(?:放到|放进|整理到|添加到|转到)(?:canvas|画布)|(?:canvas|画布).{0,8}(?:放入|整理|添加)"),
+        ("audio", r"(?:生成|制作|做成|转成|转换成|配成).{0,8}(?:音频|配音|语音)|(?:音频|配音|语音).{0,8}(?:生成|制作)"),
+        ("video", r"(?:生成|制作|做成|转成|转换成).{0,8}(?:视频|短片|数字人)|(?:视频|短片|数字人).{0,8}(?:生成|制作)"),
+        ("image", r"(?:生成|制作|做成|转成|转换成).{0,8}(?:图片|海报|封面|配图)|(?:图片|海报|封面|配图).{0,8}(?:生成|制作)"),
+    )
+    for family, pattern in patterns:
+        if re.search(pattern, text, re.I):
+            preferred = ""
+            if family == "video" and re.search(r"grok|文生视频|画面视频", text, re.I):
+                preferred = "video-generate"
+            elif family == "video" and re.search(r"数字人|口播视频", text):
+                preferred = "digital-ip-text-generate"
+            return production_recommendation(family, preferred)
+    return None
+
+
 AVAILABLE_MODULE_COUNT = 6
 SCHEMA_VERSION = 1
 
@@ -129,7 +149,7 @@ MODULE_WORKFLOWS = {
 
 CONFIRM_TEXTS = frozenset({
     "确认", "确认无误", "确认资料", "确认补充", "确认这一步", "确认本模块",
-    "没有问题", "没问题", "内容正确", "就按这个", "可以确认", "保留并继续",
+    "没有问题", "没问题", "内容正确", "就按这个", "可以确认", "嗯好", "保留并继续",
 })
 EDIT_TEXTS = frozenset({
     "需要修改", "我要修改", "修改", "有问题", "不对", "重新填写", "改一下",
@@ -137,7 +157,7 @@ EDIT_TEXTS = frozenset({
 })
 CONTINUE_TEXTS = frozenset({
     "继续", "下一步", "进入下一步", "继续下一步", "请继续", "开始下一步",
-    "好的继续", "嗯好继续", "好的下一步", "嗯好下一步",
+    "好的继续", "嗯好继续", "好的下一步", "嗯好下一步", "保留并继续",
 })
 FIELD_RE = re.compile(r"[a-z][a-z0-9_]{1,63}\Z")
 DURATION_RE = re.compile(r"(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十半]+)\s*(?:年|个?月)")
