@@ -1284,7 +1284,11 @@ def _minimax_idempotency_body(payload, resolution=None):
     if not isinstance(refs, list):
         raise ValueError("reference_images 必须是数组")
     refs = [str(item or "").strip() for item in refs if str(item or "").strip()]
-    validate_image_mentions(prompt, len(refs))
+    upload_refs = cleaned.get("reference_upload_ids") or []
+    if not isinstance(upload_refs, list):
+        raise ValueError("reference_upload_ids 必须是数组")
+    upload_ref_count = sum(bool(str(item or "").strip()) for item in upload_refs)
+    validate_image_mentions(prompt, len(refs) + upload_ref_count)
     model = str(cleaned.get("model") or video_minimax_h3.MODEL).strip()
     if model != video_minimax_h3.MODEL:
         raise ValueError("麦克视频模型不支持：%s" % model)

@@ -344,7 +344,7 @@ class HQCLIContentTests(unittest.TestCase):
             )
             status, result = self._post(
                 "/api/gen/xiaole_video", {
-                    "prompt": "let @image1 wave to camera", "channel": "minimax",
+                    "prompt": "让 @图片1 向镜头挥手", "channel": "minimax",
                     "duration": 4, "ratio": "9:16", "resolution": "2k",
                     "reference_upload_ids": [uploaded["upload_id"]],
                 }, expected=24, idempotency_key="minimax-ref-test-001",
