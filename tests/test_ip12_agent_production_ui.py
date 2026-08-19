@@ -32,6 +32,8 @@ class IP12AgentProductionUITests(unittest.TestCase):
         self.assertIn("为什么推荐", panel)
         self.assertIn("素材与参数", panel)
         self.assertIn("实时报价", panel)
+        self.assertIn("本次消耗", panel)
+        self.assertIn("当前余额", panel)
         self.assertIn("任务与结果", panel)
         result = self.html[self.html.index("function productionResultHtml"):self.html.index("function productionOptionsHtml")]
         self.assertIn("<img", result)
