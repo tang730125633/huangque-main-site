@@ -308,21 +308,42 @@ console.log(JSON.stringify({
         self.assertIn("JSON.parse", functions)
         self.assertNotIn("eval(", functions)
 
-    def test_generic_action_results_are_escaped_and_upload_prerequisites_reuse_navigation(self):
+    def test_generic_action_results_are_escaped_and_upload_prerequisites_use_chat_upload(self):
         result = self.html[self.html.index("function productionActionResultHtml"):self.html.index("function productionFieldControl")]
         self.assertIn("record&&record.action_result", result)
         self.assertIn("<pre>", result)
         self.assertIn("eHtml(text.slice(0,4000))", result)
         controls = self.html[self.html.index("function productionUiRoute"):self.html.index("function productionOptionsHtml")]
         self.assertIn("productionUploadPrerequisite", controls)
-        self.assertIn("/(?:^|_)upload_ids?$/i", controls)
-        self.assertIn("前往对应功能页准备素材", controls)
-        self.assertIn("productionRoute(productionUiRoute(record))", controls)
-        self.assertIn("navigateToProductionRoute(this.dataset.uiRoute)", controls)
+        self.assertIn("spec.uploadKind", controls)
+        self.assertIn("material-upload-btn", controls)
+        self.assertIn("openProductionUpload(this.dataset.productionId,this.dataset.uploadField)", controls)
+        self.assertNotIn("前往对应功能页准备素材", controls)
         navigation = self.html[self.html.index("function navigateToProductionRoute"):self.html.index("function openProductionCanvas")]
         self.assertIn("conversation_id", navigation)
         self.assertIn("project_id", navigation)
         self.assertIn("return_to", navigation)
+
+    def test_chat_material_upload_is_explicit_bound_and_never_confirms_a_paid_job(self):
+        self.assertIn('id="materialInput" type="file" hidden', self.html)
+        self.assertIn('id="attachBtn"', self.html)
+        upload = self.html[
+            self.html.index("function pendingProductionUpload"):
+            self.html.index("async function productionRequest")
+        ]
+        self.assertIn("new FormData()", upload)
+        self.assertIn("/api/ip12/productions/upload", upload)
+        self.assertIn("conversation_id", upload)
+        self.assertIn("production_id", upload)
+        self.assertIn("expected_revision", upload)
+        self.assertIn("field", upload)
+        self.assertIn("appendProductionMessage(data.material_message)", upload)
+        self.assertNotIn("confirmProduction", upload)
+        prepare = self.html[
+            self.html.index("async function prepareProduction"):
+            self.html.index("async function requestProductionQuote")
+        ]
+        self.assertIn("appendProductionMessage(data.material_request_message)", prepare)
 
 
 if __name__ == "__main__":

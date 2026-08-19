@@ -57,7 +57,7 @@ class HermesIP12SourceTests(unittest.TestCase):
         for path in HERMES.glob("*.py"):
             routes.update(pattern.findall(path.read_text(encoding="utf-8")))
 
-        self.assertEqual(len(routes), 80)
+        self.assertEqual(len(routes), 81)
         self.assertTrue(
             {
                 "/api/chat",

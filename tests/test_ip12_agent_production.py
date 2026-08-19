@@ -86,6 +86,7 @@ assert seen_before_model == [True], seen_before_model
     )
     def test_full_catalog_actions_are_selected_and_kept_inside_the_contract(self):
         script = r'''
+import io
 from unittest.mock import patch
 import server
 import security
@@ -122,7 +123,8 @@ catalog = {"version": "test-v2", "actions": [{
     "action": "tryon-fast-generate", "family": "video", "purpose": "生成快速换装视频",
     "input_schema": {"type": "object", "additionalProperties": False,
         "required": ["person_image_upload_id", "clothes_upload_id"], "properties": {
-            "person_image_upload_id": {"type": "string"}, "clothes_upload_id": {"type": "string"},
+            "person_image_upload_id": {"type": "string", "pattern": "^img_[0-9a-f]{32}$"},
+            "clothes_upload_id": {"type": "string", "pattern": "^img_[0-9a-f]{32}$"},
         }},
     "billing": "quote_then_confirm", "confirmation_required": True,
     "risk": "production", "result_type": "asset", "ui_route": "/workbench/video",
@@ -220,8 +222,37 @@ with patch.object(server, "_bridge_catalog", return_value=catalog):
 assert tryon_prepared.status_code == 200, tryon_prepared.get_data(as_text=True)
 tryon_body = tryon_prepared.get_json()
 assert set(tryon_body["missing"]) == {"person_image_upload_id", "clothes_upload_id"}, tryon_body
+assert "人物图片、服装图片" in tryon_body["material_request_message"]["content"], tryon_body
 tryon_record = server.load_conversation(cid)["productions"][tryon_body["production_id"]]
 assert tryon_record["source_bound"] is False, tryon_record
+assert tryon_record["material_request_message_id"], tryon_record
+
+with patch.object(server, "_bridge_upload", return_value={"upload_id": "img_" + "a" * 32}):
+    person_upload = client.post("/api/ip12/productions/upload", data={
+        "conversation_id": cid, "production_id": tryon_body["production_id"],
+        "expected_revision": revision, "field": "person_image_upload_id",
+        "file": (io.BytesIO(b"\x89PNG\r\n\x1a\nprivate"), "person.png"),
+    }, content_type="multipart/form-data")
+assert person_upload.status_code == 200, person_upload.get_data(as_text=True)
+person_body = person_upload.get_json()
+assert person_body["missing"] == ["clothes_upload_id"], person_body
+assert "还需要：服装图片" in person_body["material_message"]["content"], person_body
+
+with patch.object(server, "_bridge_upload", return_value={"upload_id": "img_" + "b" * 32}):
+    clothes_upload = client.post("/api/ip12/productions/upload", data={
+        "conversation_id": cid, "production_id": tryon_body["production_id"],
+        "expected_revision": revision, "field": "clothes_upload_id",
+        "file": (io.BytesIO(b"\x89PNG\r\n\x1a\nprivate-2"), "clothes.png"),
+    }, content_type="multipart/form-data")
+assert clothes_upload.status_code == 200, clothes_upload.get_data(as_text=True)
+clothes_body = clothes_upload.get_json()
+assert clothes_body["missing"] == [] and clothes_body["production"]["status"] == "draft", clothes_body
+assert "素材已经齐了" in clothes_body["material_message"]["content"], clothes_body
+saved_tryon = server.load_conversation(cid)["productions"][tryon_body["production_id"]]
+assert saved_tryon["options"] == {
+    "person_image_upload_id": "img_" + "a" * 32,
+    "clothes_upload_id": "img_" + "b" * 32,
+}, saved_tryon
 '''
         with tempfile.TemporaryDirectory(prefix="ip12-catalog-contract-test.") as data_dir:
             env = os.environ.copy()
