@@ -6368,7 +6368,7 @@ def gen_xiaole_video(payload):
             "image_url": public_url(cover, "image/jpeg") if cover else None,
         }
     elif channel == "minimax":
-        from . import video_minimax_h3
+        from . import short_drama_native_audio, video_minimax_h3
 
         provider_id_persisted = bool(existing and existing.get("request_id"))
 
@@ -6385,6 +6385,9 @@ def gen_xiaole_video(payload):
             )
 
         duration = int(payload.get("duration") or 5)
+        requested_resolution = str(
+            payload.get("resolution") or "2k"
+        ).strip().upper()
         if existing:
             try:
                 origin = video_minimax_h3.origin_from_payload(payload)
@@ -6405,7 +6408,7 @@ def gen_xiaole_video(payload):
                 existing["request_id"], duration, ratio,
                 job_id=job_id, heartbeat=minimax_heartbeat,
                 api_key=candidate["secret"], provider_key_id=candidate["id"],
-                resolution=payload.get("resolution") or "2K",
+                resolution=requested_resolution,
                 api_base=api_base,
             )
         else:
@@ -6414,7 +6417,7 @@ def gen_xiaole_video(payload):
                 video_minimax_h3.MiniMaxCredentialRejected,
                 lambda selected: video_minimax_h3.generate(
                     prompt, ref_images, ratio=ratio, duration=duration,
-                    resolution=payload.get("resolution") or "2K", job_id=job_id,
+                    resolution=requested_resolution, job_id=job_id,
                     heartbeat=minimax_heartbeat, api_key=selected["secret"],
                     provider_key_id=selected["id"],
                     api_base=api_base,
@@ -6444,11 +6447,31 @@ def gen_xiaole_video(payload):
             if str(exc).startswith("视频下载失败"):
                 raise video_minimax_h3.TransientMiniMaxError(str(exc)) from exc
             raise
+        native_audio = None
+        native_resolution = None
+        if payload.get("_short_drama_native_audio_required") is True:
+            try:
+                if requested_resolution == "2K":
+                    native_resolution = (
+                        short_drama_native_audio.inspect_native_resolution(
+                            _resolve_out_file(video_file), requested_resolution
+                        )
+                    )
+                native_audio = short_drama_native_audio.inspect_native_audio(
+                    _resolve_out_file(video_file)
+                )
+            except short_drama_native_audio.NativeAudioError as error:
+                raise video_minimax_h3.MiniMaxProviderFailed(str(error)) from error
         cover = _extract_first_frame_cover(video_file)
         result = dict(
             rendered, video_file=video_file, image_file=cover,
             image_url=public_url(cover, "image/jpeg") if cover else None,
         )
+        if native_audio:
+            result["native_audio"] = native_audio
+            if native_resolution:
+                result["native_resolution"] = native_resolution
+            result["generate_audio"] = True
     else:
         result = generate_xiaole_video(model, prompt, reference_images=ref_images, size=size, job_id=job_id, prefix=channel,
                                        duration=XIAOLE_CHANNEL_DURATION.get(channel))
@@ -6477,6 +6500,7 @@ def gen_xiaole_video(payload):
         "image_url": result.get("image_url") or (public_url(result.get("image_file"), "image/jpeg") if result.get("image_file") else None),
         "provider": result.get("provider"),
         "generate_audio": result.get("generate_audio"),
+        "native_audio": result.get("native_audio"),
         "completion_tokens": result.get("completion_tokens"),
         "reference_storyboard_count": payload.get("_reference_storyboard_count"),
         "reference_storyboard_source_hashes": payload.get("_reference_storyboard_source_hashes"),
