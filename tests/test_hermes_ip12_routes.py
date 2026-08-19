@@ -1367,6 +1367,20 @@ server.save_conversation(production_cid, {
     }]}},
 })
 revision = production_state["revision"]
+natural_intent_response = client.post("/api/chat-complete", json={
+    "conversation_id": production_cid,
+    "message": "把模块 6 第一篇《精选选题》的当前完整口播放进 Canvas。请直接调用黄雀 Canvas 能力，不要生成图片、音频或视频。",
+    "expected_revision": revision,
+    "request_id": "prepare-canvas-from-natural-target",
+})
+assert natural_intent_response.status_code == 200, natural_intent_response.get_data(as_text=True)
+natural_intent_body = natural_intent_response.get_json()
+assert natural_intent_body["actions"][0]["requested_result"] == "canvas", natural_intent_body
+assert natural_intent_body["actions"][0]["preferred_action"] == "canvas-ops", natural_intent_body
+assert natural_intent_body["actions"][0]["content_target"] == {
+    "category_id": "category_1", "topic_id": "topic_1",
+}, natural_intent_body
+revision = natural_intent_body["state"]["revision"]
 intent_response = client.post("/api/chat-complete", json={
     "conversation_id": production_cid,
     "message": "用 Grok 把这篇做成视频",
