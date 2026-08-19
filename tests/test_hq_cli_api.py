@@ -59,7 +59,8 @@ class HQCLIAPITests(unittest.TestCase):
         except urllib.error.HTTPError as exc:
             return exc.code, json.loads(exc.read())
 
-    def _raw_request(self, path, raw, token="", content_type="image/png", confirm=True):
+    def _raw_request(self, path, raw, token="", content_type="image/png", confirm=True,
+                     extra_headers=None):
         headers = {
             "Content-Type": content_type,
             ("X-HQ-Video-SHA256" if content_type.startswith("video/")
@@ -69,6 +70,7 @@ class HQCLIAPITests(unittest.TestCase):
             headers["Authorization"] = "Bearer " + token
         if confirm:
             headers["X-HQ-Confirm"] = "true"
+        headers.update(extra_headers or {})
         request = urllib.request.Request(self.base + path, data=raw, headers=headers, method="POST")
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
@@ -510,6 +512,39 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual("image/png", captured["content_type"])
         self.assertEqual(hashlib.sha256(raw).hexdigest(), captured["digest"])
         self.assertEqual(self.auth.INTERNAL_TOKEN, captured["internal_token"])
+        with sqlite3.connect(self.auth.DB) as connection:
+            self.assertEqual(0, connection.execute(
+                "SELECT COUNT(*) FROM tokens WHERE token=?", (captured["web_token"],)
+            ).fetchone()[0])
+
+    def test_ip12_internal_upload_reuses_account_bound_streaming_gateway(self):
+        self._enable_ip12_bridge()
+        raw = b"\x89PNG\r\n\x1a\n" + b"ip12-private-image"
+        headers = {
+            "X-HQ-Internal-Token": self.auth.INTERNAL_TOKEN,
+            "X-HQ-Account-Id": self._agent_account_id(),
+            "X-HQ-Upload-Kind": "image",
+        }
+        status, payload = self._raw_request(
+            "/api/auth/internal/ip12/agent/upload", raw,
+            confirm=False, extra_headers=headers,
+        )
+        self.assertEqual((409, "confirmation_required"), (status, payload["code"]))
+
+        captured = {}
+
+        def fake_upload(stream, length, web_token, internal_token, content_type, digest):
+            captured.update(raw=stream.read(length), web_token=web_token,
+                            content_type=content_type, digest=digest)
+            return 200, {"upload_id": "img_" + "b" * 32, "sha256": digest}
+
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_image_upload", side_effect=fake_upload):
+            status, payload = self._raw_request(
+                "/api/auth/internal/ip12/agent/upload", raw, extra_headers=headers,
+            )
+        self.assertEqual(200, status, payload)
+        self.assertEqual("img_" + "b" * 32, payload["upload_id"])
+        self.assertEqual(raw, captured["raw"])
         with sqlite3.connect(self.auth.DB) as connection:
             self.assertEqual(0, connection.execute(
                 "SELECT COUNT(*) FROM tokens WHERE token=?", (captured["web_token"],)

@@ -35,6 +35,9 @@ INTERNAL_ACTION_PATH = os.environ.get(
 INTERNAL_CATALOG_PATH = os.environ.get(
     "HERMES_INTERNAL_CATALOG_PATH", "/api/auth/internal/ip12/agent/catalog"
 )
+INTERNAL_UPLOAD_PATH = os.environ.get(
+    "HERMES_INTERNAL_UPLOAD_PATH", "/api/auth/internal/ip12/agent/upload"
+)
 INTERNAL_ACTION_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN") or os.environ.get(
     "HERMES_INTERNAL_ACTION_TOKEN", ""
 )
@@ -673,6 +676,54 @@ def _production_record_schema(record):
     return schema if isinstance(schema, dict) else _production_action_schema(record["action"])
 
 
+def _production_upload_kind(record, field):
+    descriptor = (_production_record_schema(record).get("properties") or {}).get(field) or {}
+    if descriptor.get("type") == "array":
+        descriptor = descriptor.get("items") or {}
+    pattern = str(descriptor.get("pattern") or "")
+    if pattern.startswith("^img_"):
+        return "image"
+    if pattern.startswith("^vid_"):
+        return "video"
+    return ""
+
+
+def _production_field_label(record, field):
+    descriptor = (_production_record_schema(record).get("properties") or {}).get(field) or {}
+    return str(descriptor.get("title") or _CAPABILITY_FIELD_LABELS.get(field, field))
+
+
+def _ensure_production_material_request_message(convo, record, missing):
+    fields = [name for name in missing if _production_upload_kind(record, name)]
+    needs_account_audio = "audio_file" in missing
+    if not fields and not needs_account_audio:
+        return None
+    message_id = str(record.get("material_request_message_id") or "")
+    if message_id:
+        return next((item for item in convo.get("messages") or []
+                     if item.get("message_id") == message_id), None)
+    parts = []
+    if fields:
+        labels = "、".join(_production_field_label(record, name) for name in fields)
+        parts.append(
+            f"为了继续制作，还需要你上传：{labels}。请点击输入框左侧的“＋素材”；"
+            "每次选择一项，系统会自动绑定到本次制作。上传本身不扣点，正式生成仍会先给你报价。"
+        )
+    if needs_account_audio:
+        parts.append(
+            "这项制作还需要音频素材。当前只能选择你黄雀账号里已有的音频资产；"
+            "本地音频暂时不能直接上传到这条生成链路。"
+        )
+    message = {
+        "role": "assistant", "content": "\n\n".join(parts),
+        "message_id": "matreq_" + uuid.uuid4().hex,
+        "production_id": record["id"],
+    }
+    convo.setdefault("messages", []).append(message)
+    record["material_request_message_id"] = message["message_id"]
+    return message
+
+
 def _production_source_fields(action, properties):
     wanted = {
         "audio-generate": ("text",),
@@ -849,6 +900,44 @@ def _bridge_action(account_id, action, input_body, *, idempotency_key, confirm=F
         code = str(result.get("code") or "production_bridge_error")
         detail = str(result.get("detail") or result.get("error") or "生产服务暂时不可用")
         raise ProductionBridgeError(response.status_code, code, detail, result)
+    return result
+
+
+def _bridge_upload(account_id, kind, stream, length, content_type, digest):
+    """Stream a confirmed browser upload through the account-bound first-party gateway."""
+    if not INTERNAL_ACTION_TOKEN:
+        raise RuntimeError("production_bridge_unavailable")
+    digest_header = "X-HQ-Video-SHA256" if kind == "video" else "X-HQ-Image-SHA256"
+    try:
+        response = requests.post(
+            AUTH_BASE + INTERNAL_UPLOAD_PATH,
+            data=stream,
+            headers={
+                "X-HQ-Internal-Token": INTERNAL_ACTION_TOKEN,
+                "X-HQ-Account-Id": account_id,
+                "X-HQ-Upload-Kind": kind,
+                "X-HQ-Confirm": "true",
+                digest_header: digest,
+                "Content-Type": content_type,
+                "Content-Length": str(length),
+            },
+            timeout=75,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError("production_bridge_unavailable") from exc
+    try:
+        result = response.json()
+    except ValueError:
+        result = {}
+    if not isinstance(result, dict):
+        result = {}
+    if not 200 <= response.status_code < 300:
+        raise ProductionBridgeError(
+            response.status_code,
+            str(result.get("code") or "material_upload_failed"),
+            str(result.get("detail") or "素材上传失败"),
+            result,
+        )
     return result
 
 
@@ -1851,6 +1940,9 @@ def api_prepare_production():
                 record["status"] = "blocked_prerequisite"
                 record["last_error_code"] = "missing_prerequisite"
             convo["productions"][production_id] = record
+            material_request_message = _ensure_production_material_request_message(
+                convo, record, missing
+            )
             save_conversation(cid, convo)
         return jsonify({
             "ok": True, "production_id": production_id, "status": record["status"],
@@ -1870,6 +1962,132 @@ def api_prepare_production():
             "missing": missing,
             "missing_prerequisites": missing or ([validation_error] if validation_error else []),
             "validation_error": validation_error,
+            "material_request_message": material_request_message,
+        })
+    except coach_harness.HarnessConflict as exc:
+        return _production_error("revision_conflict", str(exc))
+    except coach_harness.HarnessError as exc:
+        return _production_error("invalid_production", str(exc), 400)
+
+
+@app.route("/api/ip12/productions/upload", methods=["POST"])
+def api_upload_production_material():
+    try:
+        allowed = {"conversation_id", "production_id", "expected_revision", "field"}
+        if set(request.form) - allowed:
+            return _production_error("invalid_request", "包含不支持的参数", 400)
+        cid = str(request.form.get("conversation_id") or "")
+        production_id = str(request.form.get("production_id") or "")
+        field = str(request.form.get("field") or "")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", field):
+            return _production_error("invalid_field", "素材字段无效", 400)
+        with CONVERSATION_STATE_LOCK:
+            convo = _production_conversation(cid)
+            if convo is None:
+                return _production_error("project_not_found", "项目不存在", 404)
+            state = normalize_coach_state(convo.get("coach_state"))
+            _assert_expected_revision(state, request.form.get("expected_revision"))
+            record = convo["productions"].get(production_id)
+            if not isinstance(record, dict):
+                return _production_error("production_not_found", "生产记录不存在", 404)
+            if not _production_is_current(convo, record):
+                _mark_production_stale(record); save_conversation(cid, convo)
+                return _production_error("source_changed", "正文已更新，需要重新准备素材")
+            if record.get("status") in {"quoted", "submitting", "queued", "running", "done"}:
+                return _production_error("production_locked", "当前生产已经报价或提交，不能再替换素材")
+            kind = _production_upload_kind(record, field)
+            missing_before = _production_missing_fields(record, record.get("options") or {})
+            if not kind or field not in missing_before:
+                return _production_error("upload_not_requested", "当前制作没有等待这项素材", 409)
+        incoming = request.files.get("file")
+        if incoming is None:
+            return _production_error("file_required", "请选择要上传的素材", 400)
+        content_type = str(incoming.mimetype or "").lower()
+        allowed_types = (
+            {"video/mp4", "video/quicktime", "video/webm"}
+            if kind == "video" else {"image/jpeg", "image/png", "image/webp"}
+        )
+        maximum = 32 * 1024 * 1024 if kind == "video" else 10 * 1024 * 1024
+        if content_type not in allowed_types:
+            return _production_error(
+                "invalid_upload_type",
+                "只支持 MP4 / MOV / WebM" if kind == "video" else "只支持 PNG / JPG / WebP",
+                400,
+            )
+        stream = incoming.stream
+        digest = hashlib.sha256()
+        length = 0
+        while True:
+            chunk = stream.read(64 * 1024)
+            if not chunk:
+                break
+            length += len(chunk)
+            if length > maximum:
+                return _production_error(
+                    "upload_too_large", f"素材不能超过 {maximum // 1024 // 1024}MB", 413
+                )
+            digest.update(chunk)
+        if length <= 0:
+            return _production_error("empty_upload", "素材文件不能为空", 400)
+        stream.seek(0)
+        try:
+            uploaded = _bridge_upload(
+                current_account_id(), kind, stream, length, content_type, digest.hexdigest()
+            )
+        except ProductionBridgeError as exc:
+            return _production_error(exc.code, exc.detail, exc.status)
+        except RuntimeError:
+            return _production_error("production_bridge_unavailable", "素材服务暂时不可用", 503)
+        upload_id = str(uploaded.get("upload_id") or "")
+        expected_prefix = "vid_" if kind == "video" else "img_"
+        if not re.fullmatch(expected_prefix + r"[0-9a-f]{32}", upload_id):
+            return _production_error("invalid_upload_result", "素材服务没有返回有效结果", 502)
+        with CONVERSATION_STATE_LOCK:
+            convo = _production_conversation(cid)
+            record = (convo or {}).get("productions", {}).get(production_id)
+            if convo is None or not isinstance(record, dict):
+                return _production_error("project_not_found", "项目不存在", 404)
+            if not _production_is_current(convo, record):
+                return _production_error("source_changed", "正文已更新，需要重新准备素材")
+            if record.get("status") in {"quoted", "submitting", "queued", "running", "done"}:
+                return _production_error("production_locked", "当前生产已经报价或提交，不能再替换素材")
+            if field not in _production_missing_fields(record, record.get("options") or {}):
+                return _production_error("upload_not_requested", "当前制作已经收到了这项素材", 409)
+            options = dict(record.get("options") or {})
+            descriptor = (_production_record_schema(record).get("properties") or {}).get(field) or {}
+            if descriptor.get("type") == "array":
+                values = list(options.get(field) or [])
+                if len(values) >= int(descriptor.get("maxItems") or 1):
+                    return _production_error("upload_limit", "这项素材已达到数量上限", 409)
+                values.append(upload_id)
+                options[field] = values
+            else:
+                options[field] = upload_id
+            _production_set_options(record, options)
+            valid, validation_error, missing = _production_plan_or_error(record, record["options"])
+            record.update(
+                status="draft" if valid else "blocked_prerequisite",
+                last_error_code="" if valid else "missing_prerequisite",
+                updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+            )
+            label = _production_field_label(record, field)
+            remaining = "、".join(_production_field_label(record, name) for name in missing)
+            content = (
+                f"✅ 已收到{label}并绑定到这次制作。还需要：{remaining}。"
+                if remaining else
+                f"✅ 已收到{label}并绑定到这次制作。素材已经齐了，我现在为你获取实时报价；确认前不会扣点。"
+            )
+            material_message = {
+                "role": "assistant", "content": content,
+                "message_id": "matok_" + uuid.uuid4().hex,
+                "production_id": record["id"],
+            }
+            convo.setdefault("messages", []).append(material_message)
+            save_conversation(cid, convo)
+        return jsonify({
+            "ok": True, "production": _production_public(record),
+            "missing": missing, "missing_prerequisites": missing,
+            "material_message": material_message,
         })
     except coach_harness.HarnessConflict as exc:
         return _production_error("revision_conflict", str(exc))
