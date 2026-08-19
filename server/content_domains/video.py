@@ -1772,6 +1772,106 @@ def _cleanup_owned_video_files(relative_paths):
             pass
 
 
+def _native_media_result_paths(value):
+    if not isinstance(value, dict):
+        return set()
+    paths = set()
+    for key in ("video_file", "raw_video_file"):
+        if isinstance(value.get(key), str):
+            paths.add(value[key])
+    native_media = value.get("native_media")
+    if isinstance(native_media, dict):
+        for key in ("raw", "derived"):
+            item = native_media.get(key)
+            if isinstance(item, dict) and isinstance(item.get("file"), str):
+                paths.add(item["file"])
+    return paths
+
+
+def _normalized_native_video_reference(value):
+    raw = str(value or "").strip().replace("\\", "/")
+    parts = pathlib.PurePosixPath(raw).parts
+    if len(parts) != 2 or parts[0] != "video":
+        return ""
+    name = parts[1]
+    if name in {"", ".", ".."}:
+        return ""
+    return "video/" + name
+
+
+def reap_short_drama_native_orphans(now=None, grace_seconds=6 * 3600):
+    current_time = int(time.time()) if now is None else int(now)
+    grace = max(60, int(grace_seconds or 0))
+    referenced = set()
+    try:
+        with closing(jdb()) as connection:
+            for row in connection.execute(
+                    "SELECT result FROM jobs WHERE result IS NOT NULL"):
+                try:
+                    referenced.update(_native_media_result_paths(
+                        json.loads(row[0] or "{}")
+                    ))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+            table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='short_drama_provider_shot_versions'"
+            ).fetchone()
+            if table:
+                referenced.update(
+                    row[0] for row in connection.execute(
+                        "SELECT file FROM short_drama_provider_shot_versions "
+                        "WHERE file IS NOT NULL"
+                    ) if row[0]
+                )
+    except sqlite3.Error:
+        pass
+    try:
+        with closing(adb()) as connection:
+            referenced.update(
+                value for row in connection.execute(
+                    "SELECT video_file,image_file FROM video_assets"
+                ) for value in row if value
+            )
+    except sqlite3.Error:
+        pass
+    referenced = {
+        normalized for normalized in (
+            _normalized_native_video_reference(item) for item in referenced
+        ) if normalized
+    }
+    video_root = _out_path("video").resolve()
+    deleted = []
+    retained = []
+    errors = []
+    if not video_root.is_dir():
+        return {"deleted": deleted, "retained": retained, "errors": errors}
+    for candidate in video_root.iterdir():
+        name = candidate.name
+        recognized = (
+            name.startswith("minimax_h3_raw_")
+            or name.startswith("minimax_h3_derived_")
+        )
+        if not recognized or not candidate.is_file():
+            continue
+        relative = "video/" + name
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(video_root)
+            if relative in referenced or int(candidate.stat().st_mtime) > current_time - grace:
+                retained.append(relative)
+                continue
+            resolved.unlink()
+            deleted.append(relative)
+        except (OSError, ValueError) as error:
+            errors.append({"file": relative, "error": str(error)[:160]})
+    return {
+        "deleted": sorted(deleted),
+        "retained": sorted(retained),
+        "errors": errors,
+    }
+
+
 def _normalize_seedance_upscale_video(rel, ratio):
     """把 SeedVR2 成片收敛到标准 1080p 尺寸；音轨稍后从 Seedance 原片合回。"""
     src = _resolve_out_file(rel)
