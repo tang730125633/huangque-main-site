@@ -401,10 +401,16 @@ def _catalog_route(action):
     if action.startswith("canvas-") or action.startswith("digital-presenter-"):
         return "/workbench/canvas"
     if action.startswith("image-"):
-        return "/workbench/image"
+        return "/workbench/banana"
     if action.startswith("audio-") or action == "voices":
         return "/workbench/audio"
-    if action.startswith(("video-", "digital-ip-", "cinematic-", "tryon-")):
+    if action.startswith("text-video-"):
+        return "/workbench/text-video"
+    if action.startswith("video-compose-"):
+        return "/workbench/one-click-video"
+    if action.startswith("digital-ip-"):
+        return "/workbench/digital-ip"
+    if action.startswith(("video-", "cinematic-", "tryon-")):
         return "/workbench/video"
     if action.startswith("ip12-"):
         return "/workbench/ip12/"
