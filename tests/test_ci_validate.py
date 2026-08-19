@@ -152,7 +152,7 @@ if (!result.info.description.includes('共 1 个操作')) process.exit(1);
             for method, route_paths in route_table.items()
             for path in route_paths
         }
-        self.assertEqual(126, len(short_drama_registered))
+        self.assertEqual(128, len(short_drama_registered))
         self.assertEqual(set(), short_drama_registered - documented)
 
     def test_openapi_validates_live_action_import_and_role_saves(self) -> None:
@@ -277,6 +277,36 @@ if (!result.info.description.includes('共 1 个操作')) process.exit(1);
                 self.assertIn("401", operation["responses"])
                 if method == "post":
                     self.assertIn("requestBody", operation)
+
+    def test_openapi_candidate_adoption_is_server_owned(self) -> None:
+        spec = load_json_strict(Path("docs/api/openapi.json"))
+        operation = spec["paths"][
+            "/api/gen/short-drama/refinement/candidates/adopt"
+        ]["post"]
+        schema = operation["requestBody"]["content"]["application/json"]["schema"]
+
+        self.assertEqual(
+            [
+                "project_id", "shot_key", "source_version_id",
+                "replacement_provider_version_id",
+            ],
+            schema["required"],
+        )
+        self.assertNotIn("defer_reassembly", schema["properties"])
+        self.assertTrue(next(
+            item for item in operation["parameters"]
+            if item["name"] == "Idempotency-Key"
+        )["required"])
+
+        reassembly = spec["paths"][
+            "/api/gen/short-drama/refinement/candidates/reassemble"
+        ]["post"]
+        reassembly_schema = reassembly["requestBody"]["content"][
+            "application/json"
+        ]["schema"]
+        self.assertEqual(
+            ["project_id", "version_id"], reassembly_schema["required"]
+        )
 
     def _assert_openapi_sample(self, spec, schema, value) -> None:
         if "$ref" in schema:

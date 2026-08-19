@@ -142,14 +142,13 @@ class ShortDramaRefinementTests(unittest.TestCase):
             side_effect=self._fake_refinement_preview,
         )
         self.refinement_renderer_mock = self.refinement_renderer.start()
+        self.real_refinement_assembly_status = (
+            short_drama_refinement._refinement_assembly_status
+        )
         self.complete_assembly = mock.patch.object(
             short_drama_refinement,
             "_refinement_assembly_status",
-            return_value={
-                "available": True,
-                "reassembly_required": False,
-                "message": "complete preview fixture",
-            },
+            side_effect=self._refinement_assembly_status_fixture,
         )
         self.complete_assembly.start()
 
@@ -158,6 +157,20 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.refinement_renderer.stop()
         self.free.stop()
         self.tmp.cleanup()
+
+    def _refinement_assembly_status_fixture(self, conn, project, refinement):
+        staged = list(
+            (refinement.get("media") or {}).get("staged_replacements") or []
+        )
+        if staged:
+            return self.real_refinement_assembly_status(conn, project, refinement)
+        return {
+            "available": True,
+            "reassembly_required": False,
+            "staged_replacements": [],
+            "staged_count": 0,
+            "message": "complete preview fixture",
+        }
 
     def _fake_refinement_preview(self, conn, job, source):
         shots, assets = [], []
@@ -465,6 +478,584 @@ class ShortDramaRefinementTests(unittest.TestCase):
         )
         self.assertEqual([], workspace["current_refinement"]["issues"])
 
+    def test_candidate_adoption_defers_full_film_reassembly(self):
+        before = short_drama_refinement.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )["current_refinement"]
+        replacement_id = self.add_provider_replacement("shot_02")
+        job = short_drama_refinement.adopt_refinement_candidate(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "shot_key": "shot_02",
+                "source_version_id": before["id"],
+                "replacement_provider_version_id": replacement_id,
+            }, "adopt-shot-02-without-reassembly",
+        )
+        with mock.patch.object(
+            short_drama_refinement.media_plan,
+            "probe_media",
+            return_value={
+                "duration_ms": 5000,
+                "video": {"width": 1280, "height": 720},
+                "audio": {},
+            },
+        ):
+            for _ in range(4):
+                job = short_drama_refinement.get_refinement_job(
+                    self.db, "alice", self.project["id"], job["id"]
+                )
+
+            self.assertEqual("succeeded", job["status"])
+            self.assertTrue(job["result"]["candidate_adopted"])
+            self.assertTrue(job["result"]["reassembly_required"])
+            self.assertEqual(0, self.refinement_renderer_mock.call_count)
+
+            current = short_drama_refinement.workspace(
+                self.db, "alice", "alice", self.project["id"]
+            )["current_refinement"]
+            self.assertEqual(before["url"], current["url"])
+            self.assertEqual(before["preview_file_hash"], current["preview_file_hash"])
+            self.assertEqual([], current["issues"])
+            target = next(
+                shot for shot in current["shots"] if shot["shot_key"] == "shot_02"
+            )
+            self.assertEqual(replacement_id, target["provider_version_id"])
+            self.assertEqual("provider_regeneration", target["visual_source"])
+            self.assertEqual(
+                replacement_id,
+                current["media"]["staged_replacements"][0]["provider_version_id"],
+            )
+            self.assertTrue(current["assembly_status"]["reassembly_required"])
+            self.assertEqual(1, current["assembly_status"]["staged_count"])
+
+            with self.assertRaises(short_drama_refinement.RefinementError) as blocked:
+                short_drama_refinement.confirm_refinement(
+                    self.db, "alice", "alice", self.acceptance_body(current)
+                )
+            self.assertEqual(
+                "refinement_reassembly_required", blocked.exception.code
+            )
+
+            from content_domains import short_drama_autodraft
+            reassembly_calls = []
+            with mock.patch.object(
+                short_drama_autodraft,
+                "_render_provider_preview",
+                side_effect=self._reassembly_renderer(reassembly_calls),
+            ):
+                reassembled = short_drama_refinement.reassemble_refinement(
+                    self.db, "alice", "alice", {
+                        "project_id": self.project["id"],
+                        "version_id": current["id"],
+                    }, "reassemble-after-candidate-adoption",
+                )
+            self.assertEqual(1, len(reassembly_calls))
+            self.assertNotEqual(current["id"], reassembled["id"])
+            self.assertFalse(reassembled["assembly_status"]["reassembly_required"])
+            self.assertEqual(0, reassembled["assembly_status"]["staged_count"])
+            self.assertNotIn("staged_replacements", reassembled["media"])
+            reassembled_target = next(
+                shot for shot in reassembled["shots"]
+                if shot["shot_key"] == "shot_02"
+            )
+            self.assertEqual(
+                replacement_id, reassembled_target["provider_version_id"]
+            )
+
+    def test_candidate_adoption_endpoint_forces_deferred_reassembly(self):
+        before = short_drama_refinement.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )["current_refinement"]
+        replacement_id = self.add_provider_replacement("shot_02")
+        body = {
+            "project_id": self.project["id"],
+            "shot_key": "shot_02",
+            "source_version_id": before["id"],
+            "replacement_provider_version_id": replacement_id,
+            "defer_reassembly": False,
+        }
+        job = short_drama_refinement.adopt_refinement_candidate(
+            self.db, "alice", "alice", body, "candidate-adoption"
+        )
+        replay = short_drama_refinement.adopt_refinement_candidate(
+            self.db, "alice", "alice", body, "candidate-adoption"
+        )
+        self.assertEqual(job["id"], replay["id"])
+        self.assertTrue(job["defer_reassembly"])
+        self.assertTrue(replay["defer_reassembly"])
+
+        with mock.patch.object(
+            short_drama_refinement.media_plan,
+            "probe_media",
+            return_value={
+                "duration_ms": 5000,
+                "video": {"width": 1280, "height": 720},
+                "audio": {},
+            },
+        ):
+            for _ in range(4):
+                job = short_drama_refinement.get_refinement_job(
+                    self.db, "alice", self.project["id"], job["id"]
+                )
+
+        self.assertEqual("succeeded", job["status"])
+        self.assertTrue(job["result"]["candidate_adopted"])
+        self.assertEqual(0, self.refinement_renderer_mock.call_count)
+
+    def test_candidate_adoption_idempotency_binds_the_source_version(self):
+        source = short_drama_refinement.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )["current_refinement"]
+        replacement_id = self.add_provider_replacement("shot_02")
+        body = {
+            "project_id": self.project["id"],
+            "shot_key": "shot_02",
+            "source_version_id": source["id"],
+            "replacement_provider_version_id": replacement_id,
+        }
+        short_drama_refinement.adopt_refinement_candidate(
+            self.db, "alice", "alice", body, "candidate-source-bound-key"
+        )
+
+        changed_source = dict(body)
+        changed_source["source_version_id"] = "different-source-version"
+        with self.assertRaises(short_drama_refinement.RefinementError) as conflict:
+            short_drama_refinement.adopt_refinement_candidate(
+                self.db, "alice", "alice", changed_source,
+                "candidate-source-bound-key",
+            )
+        self.assertEqual("idempotency_conflict", conflict.exception.code)
+
+    def test_candidate_adoption_http_route_ignores_false_defer_flag(self):
+        before = short_drama_refinement.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )["current_refinement"]
+        replacement_id = self.add_provider_replacement("shot_02")
+        handler = Handler(
+            "/api/gen/short-drama/refinement/candidates/adopt",
+            body={
+                "project_id": self.project["id"],
+                "shot_key": "shot_02",
+                "source_version_id": before["id"],
+                "replacement_provider_version_id": replacement_id,
+                "defer_reassembly": False,
+            },
+            key="candidate-adoption-http",
+        )
+        verify = lambda token: (
+            {"username": token, "must_change": False} if token else None
+        )
+
+        self.assertTrue(short_drama.dispatch_http(handler, "POST", self.db, verify))
+        self.assertEqual(200, handler.response[0])
+        self.assertTrue(handler.response[1]["defer_reassembly"])
+
+    def test_legacy_refinement_http_route_ignores_true_defer_flag(self):
+        before = short_drama_refinement.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )["current_refinement"]
+        replacement_id = self.add_provider_replacement("shot_02")
+        handler = Handler(
+            "/api/gen/short-drama/refinement/jobs",
+            body={
+                "project_id": self.project["id"],
+                "shot_key": "shot_02",
+                "source_version_id": before["id"],
+                "replacement_provider_version_id": replacement_id,
+                "defer_reassembly": True,
+            },
+            key="legacy-refinement-cannot-defer",
+        )
+        verify = lambda token: (
+            {"username": token, "must_change": False} if token else None
+        )
+
+        self.assertTrue(short_drama.dispatch_http(handler, "POST", self.db, verify))
+        self.assertEqual(200, handler.response[0])
+        self.assertFalse(handler.response[1]["defer_reassembly"])
+
+    def test_candidate_adoption_requires_fixed_problem_shot_and_candidate(self):
+        source = short_drama_refinement.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )["current_refinement"]
+        issue_replacement = self.add_provider_replacement("shot_02")
+
+        for field in ("source_version_id", "replacement_provider_version_id"):
+            body = {
+                "project_id": self.project["id"],
+                "shot_key": "shot_02",
+                "source_version_id": source["id"],
+                "replacement_provider_version_id": issue_replacement,
+            }
+            body.pop(field)
+            with self.subTest(missing=field):
+                with self.assertRaises(
+                    short_drama_refinement.RefinementError
+                ) as invalid:
+                    short_drama_refinement.adopt_refinement_candidate(
+                        self.db, "alice", "alice", body,
+                        "candidate-missing-" + field,
+                    )
+                self.assertEqual("refinement_candidate_invalid", invalid.exception.code)
+
+        normal_replacement = self.add_provider_replacement("shot_01")
+        with self.assertRaises(short_drama_refinement.RefinementError) as normal:
+            short_drama_refinement.adopt_refinement_candidate(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "shot_key": "shot_01",
+                    "source_version_id": source["id"],
+                    "replacement_provider_version_id": normal_replacement,
+                }, "candidate-normal-shot",
+            )
+        self.assertEqual("refinement_candidate_not_required", normal.exception.code)
+
+        with self.assertRaises(short_drama_refinement.RefinementError) as stale:
+            short_drama_refinement.adopt_refinement_candidate(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "shot_key": "shot_02",
+                    "source_version_id": "stale-refinement-version",
+                    "replacement_provider_version_id": issue_replacement,
+                }, "candidate-stale-source",
+            )
+        self.assertEqual("refinement_source_stale", stale.exception.code)
+
+        conn = self.db()
+        try:
+            jobs = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_refinement_jobs"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(0, jobs)
+
+    def test_staged_candidate_probe_failure_still_requires_reassembly(self):
+        before = short_drama_refinement.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )["current_refinement"]
+        replacement_id = self.add_provider_replacement("shot_02")
+        job = short_drama_refinement.adopt_refinement_candidate(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "shot_key": "shot_02",
+                "source_version_id": before["id"],
+                "replacement_provider_version_id": replacement_id,
+            }, "adopt-before-probe-failure",
+        )
+        with mock.patch.object(
+            short_drama_refinement.media_plan,
+            "probe_media",
+            return_value={
+                "duration_ms": 5000,
+                "video": {"width": 1280, "height": 720},
+                "audio": {},
+            },
+        ):
+            for _ in range(4):
+                job = short_drama_refinement.get_refinement_job(
+                    self.db, "alice", self.project["id"], job["id"]
+                )
+        self.assertEqual("succeeded", job["status"])
+
+        with mock.patch.object(
+            short_drama_refinement.media_plan,
+            "probe_media",
+            side_effect=short_drama_refinement.media_plan.MediaPlanError(
+                "media_probe_failed", "candidate cannot be probed"
+            ),
+        ):
+            current = short_drama_refinement.workspace(
+                self.db, "alice", "alice", self.project["id"]
+            )["current_refinement"]
+            self.assertFalse(current["assembly_status"]["available"])
+            self.assertTrue(current["assembly_status"]["reassembly_required"])
+            self.assertEqual(1, current["assembly_status"]["staged_count"])
+            with self.assertRaises(short_drama_refinement.RefinementError) as blocked:
+                short_drama_refinement.confirm_refinement(
+                    self.db, "alice", "alice", self.acceptance_body(current)
+                )
+        self.assertEqual("refinement_reassembly_required", blocked.exception.code)
+
+    def test_reassembly_rejects_remaining_issues_before_render(self):
+        source = short_drama_refinement.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )["current_refinement"]
+        shots = [dict(item) for item in source["shots"]]
+        extra_issue = {
+            "code": "manual_review_required",
+            "shot_key": "shot_01",
+            "message": "first shot still needs review",
+        }
+        shots[0]["status"] = "degraded"
+        shots[0]["issue"] = dict(extra_issue)
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_refinement_versions SET shots_json=?,issues_json=? "
+                "WHERE id=?",
+                (
+                    json.dumps(shots),
+                    json.dumps([extra_issue] + list(source["issues"])),
+                    source["id"],
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        replacement_id = self.add_provider_replacement("shot_02")
+        job = short_drama_refinement.adopt_refinement_candidate(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "shot_key": "shot_02",
+                "source_version_id": source["id"],
+                "replacement_provider_version_id": replacement_id,
+            }, "stage-one-of-two-problem-shots",
+        )
+        with mock.patch.object(
+            short_drama_refinement.media_plan,
+            "probe_media",
+            return_value={
+                "duration_ms": 5000,
+                "video": {"width": 1280, "height": 720},
+                "audio": {},
+            },
+        ):
+            for _ in range(4):
+                job = short_drama_refinement.get_refinement_job(
+                    self.db, "alice", self.project["id"], job["id"]
+                )
+        self.assertEqual("succeeded", job["status"])
+        source = short_drama_refinement.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )["current_refinement"]
+        self.assertEqual(["shot_01"], [
+            item["shot_key"] for item in source["issues"]
+        ])
+        self.assertEqual(1, len(source["media"]["staged_replacements"]))
+        from content_domains import short_drama_autodraft
+
+        calls = []
+        with mock.patch.object(
+            short_drama_autodraft,
+            "_render_provider_preview",
+            side_effect=self._reassembly_renderer(calls),
+        ):
+            with self.assertRaises(short_drama_refinement.RefinementError) as blocked:
+                short_drama_refinement.reassemble_refinement_candidates(
+                    self.db, "alice", "alice", {
+                        "project_id": self.project["id"],
+                        "version_id": source["id"],
+                    }, "must-not-reassemble-with-open-issues",
+                )
+        self.assertEqual("refinement_issues_remaining", blocked.exception.code)
+        self.assertEqual([], calls)
+
+    def test_candidate_reassembly_rejects_issues_without_side_effects(self):
+        source = short_drama_refinement.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )["current_refinement"]
+        conn = self.db()
+        try:
+            versions_before = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_refinement_versions "
+                "WHERE project_id=?", (self.project["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        from content_domains import short_drama_autodraft
+
+        calls = []
+        with mock.patch.object(
+            short_drama_autodraft,
+            "_render_provider_preview",
+            side_effect=self._reassembly_renderer(calls),
+        ):
+            with self.assertRaises(short_drama_refinement.RefinementError) as blocked:
+                short_drama_refinement.reassemble_refinement_candidates(
+                    self.db, "alice", "alice", {
+                        "project_id": self.project["id"],
+                        "version_id": source["id"],
+                    }, "candidate-reassembly-with-issues",
+                )
+        self.assertEqual("refinement_issues_remaining", blocked.exception.code)
+        self.assertEqual([], calls)
+
+        conn = self.db()
+        try:
+            versions_after = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_refinement_versions "
+                "WHERE project_id=?", (self.project["id"],),
+            ).fetchone()[0]
+            operations = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_reassembly_operations "
+                "WHERE project_id=?", (self.project["id"],),
+            ).fetchone()[0]
+            idempotency = conn.execute(
+                "SELECT COUNT(*) FROM submission_idempotency WHERE idem_key=?",
+                ("candidate-reassembly-with-issues",),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(versions_before, versions_after)
+        self.assertEqual(0, operations)
+        self.assertEqual(0, idempotency)
+
+    def test_candidate_reassembly_rejects_legacy_result_with_open_issues(self):
+        source = short_drama_refinement.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )["current_refinement"]
+        from content_domains import short_drama_autodraft
+
+        calls = []
+        probe = {
+            "duration_ms": 5000,
+            "video": {"width": 1280, "height": 720},
+            "audio": None,
+        }
+        with mock.patch.object(
+            short_drama_refinement.media_plan, "probe_media", return_value=probe,
+        ), mock.patch.object(
+            short_drama_autodraft,
+            "_render_provider_preview",
+            side_effect=self._reassembly_renderer(calls),
+        ):
+            legacy = short_drama_refinement.reassemble_refinement(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "version_id": source["id"],
+                }, "legacy-reassembly-with-issues",
+            )
+            with self.assertRaises(short_drama_refinement.RefinementError) as blocked:
+                short_drama_refinement.reassemble_refinement_candidates(
+                    self.db, "alice", "alice", {
+                        "project_id": self.project["id"],
+                        "version_id": source["id"],
+                    }, "candidate-must-not-reuse-legacy-result",
+                )
+        self.assertNotEqual(source["id"], legacy["id"])
+        self.assertEqual("refinement_issues_remaining", blocked.exception.code)
+        self.assertEqual(1, len(calls))
+
+    def test_candidate_reassembly_rejects_stale_legacy_completed_result(self):
+        source = short_drama_refinement.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )["current_refinement"]
+        shots = [dict(item, status="ready", issue=None) for item in source["shots"]]
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_refinement_versions SET shots_json=?,issues_json='[]' "
+                "WHERE id=?", (json.dumps(shots), source["id"]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        from content_domains import short_drama_autodraft
+
+        calls = []
+        probe = {
+            "duration_ms": 5000,
+            "video": {"width": 1280, "height": 720},
+            "audio": None,
+        }
+        with mock.patch.object(
+            short_drama_refinement.media_plan, "probe_media", return_value=probe,
+        ), mock.patch.object(
+            short_drama_autodraft, "_render_provider_preview",
+            side_effect=self._reassembly_renderer(calls),
+        ):
+            completed = short_drama_refinement.reassemble_refinement(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "version_id": source["id"],
+                }, "legacy-before-new-issue",
+            )
+            short_drama_refinement.mark_issue(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "version_id": completed["id"],
+                    "shot_key": "shot_01",
+                    "issue_code": "continuity_error",
+                    "message": "new issue after the legacy render",
+                },
+            )
+            with self.assertRaises(short_drama_refinement.RefinementError) as stale:
+                short_drama_refinement.reassemble_refinement_candidates(
+                    self.db, "alice", "alice", {
+                        "project_id": self.project["id"],
+                        "version_id": source["id"],
+                    }, "candidate-must-recheck-latest-source",
+                )
+        self.assertEqual("refinement_issues_remaining", stale.exception.code)
+        self.assertEqual(1, len(calls))
+
+    def test_candidate_reassembly_replay_revalidates_latest_source(self):
+        source = short_drama_refinement.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )["current_refinement"]
+        shots = [dict(item, status="ready", issue=None) for item in source["shots"]]
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_refinement_versions SET shots_json=?,issues_json='[]' "
+                "WHERE id=?", (json.dumps(shots), source["id"]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        from content_domains import short_drama_autodraft
+
+        calls = []
+        probe = {
+            "duration_ms": 5000,
+            "video": {"width": 1280, "height": 720},
+            "audio": None,
+        }
+        key = "candidate-replay-must-recheck-latest"
+        with mock.patch.object(
+            short_drama_refinement.media_plan, "probe_media", return_value=probe,
+        ), mock.patch.object(
+            short_drama_autodraft, "_render_provider_preview",
+            side_effect=self._reassembly_renderer(calls),
+        ):
+            completed = short_drama_refinement.reassemble_refinement_candidates(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "version_id": source["id"],
+                }, key,
+            )
+            immediate_replay = (
+                short_drama_refinement.reassemble_refinement_candidates(
+                    self.db, "alice", "alice", {
+                        "project_id": self.project["id"],
+                        "version_id": source["id"],
+                    }, key,
+                )
+            )
+            self.assertEqual(completed["id"], immediate_replay["id"])
+            short_drama_refinement.mark_issue(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "version_id": completed["id"],
+                    "shot_key": "shot_01",
+                    "issue_code": "continuity_error",
+                    "message": "new issue after the strict render",
+                },
+            )
+            with self.assertRaises(short_drama_refinement.RefinementError) as stale:
+                short_drama_refinement.reassemble_refinement_candidates(
+                    self.db, "alice", "alice", {
+                        "project_id": self.project["id"],
+                        "version_id": source["id"],
+                    }, key,
+                )
+        self.assertEqual("refinement_version_stale", stale.exception.code)
+        self.assertEqual(1, len(calls))
+
     def test_redo_publishes_new_preview_url_and_physical_hash(self):
         before = short_drama_refinement.workspace(
             self.db, "alice", "alice", self.project["id"]
@@ -627,11 +1218,142 @@ class ShortDramaRefinementTests(unittest.TestCase):
         version = short_drama_refinement.workspace(
             self.db, "alice", "alice", self.project["id"]
         )["current_refinement"]
+        contract = version["media"]["media_contract"]
+        self.assertTrue(contract["preview_only"])
+        self.assertFalse(contract["delivery_eligible"])
         self.assertEqual("/api/gen/file/" + output_relative, version["url"])
         self.assertEqual(
             short_drama_refinement._file_hash(output),
             version["preview_file_hash"],
         )
+
+        with self.assertRaises(short_drama_refinement.RefinementError) as blocked:
+            short_drama_refinement.confirm_refinement(
+                self.db, "alice", "alice", self.acceptance_body(version)
+            )
+        self.assertEqual("refinement_preview_only_media", blocked.exception.code)
+
+    def test_legacy_draft_without_media_contract_cannot_be_confirmed(self):
+        current = short_drama_refinement.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )["current_refinement"]
+        conn = self.db()
+        try:
+            row = conn.execute(
+                "SELECT manifest_json FROM short_drama_autodraft_versions "
+                "WHERE id='draft-v1'"
+            ).fetchone()
+            manifest = json.loads(row[0])
+            manifest.pop("media_contract", None)
+            conn.execute(
+                "UPDATE short_drama_autodraft_versions SET manifest_json=? "
+                "WHERE id='draft-v1'",
+                (json.dumps(manifest),),
+            )
+            media = dict(current.get("media") or {})
+            media.pop("media_contract", None)
+            shots = []
+            for shot in current.get("shots") or []:
+                item = dict(shot)
+                item.pop("issue", None)
+                item["status"] = "ready"
+                shots.append(item)
+            conn.execute(
+                "UPDATE short_drama_refinement_versions SET media_json=?,"
+                "shots_json=?,issues_json='[]' WHERE id=?",
+                (json.dumps(media), json.dumps(shots), current["id"]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        current = short_drama_refinement.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )["current_refinement"]
+        with self.assertRaises(short_drama_refinement.RefinementError) as blocked:
+            short_drama_refinement.confirm_refinement(
+                self.db, "alice", "alice", self.acceptance_body(current)
+            )
+        self.assertEqual("delivery_media_incomplete", blocked.exception.code)
+
+    def test_preview_only_acceptance_cannot_be_quoted_or_started(self):
+        version = self.repaired_version("preview-only-delivery-gates")
+        self.confirm_version(version)
+        quote = short_drama_refinement.create_delivery_quote(
+            self.db, "alice", {
+                "project_id": self.project["id"], "version_id": version["id"],
+            },
+        )
+
+        conn = self.db()
+        conn.row_factory = sqlite3.Row
+        try:
+            manifest = json.loads(conn.execute(
+                "SELECT manifest_json FROM short_drama_autodraft_versions "
+                "WHERE id='draft-v1'"
+            ).fetchone()[0])
+            contract = dict(manifest["media_contract"])
+            contract.update({
+                "delivery_eligible": False,
+                "preview_only": True,
+                "reason": "refinement_preview_audio_fallback",
+            })
+            manifest["media_contract"] = contract
+            source = short_drama_refinement._refinement(conn.execute(
+                "SELECT * FROM short_drama_refinement_versions WHERE id=?",
+                (version["id"],),
+            ).fetchone())
+            media = dict(source["media"])
+            media["media_contract"] = contract
+            conn.execute(
+                "UPDATE short_drama_autodraft_versions SET manifest_json=? "
+                "WHERE id='draft-v1'",
+                (json.dumps(manifest),),
+            )
+            conn.execute(
+                "UPDATE short_drama_refinement_versions SET media_json=? WHERE id=?",
+                (json.dumps(media), version["id"]),
+            )
+            project = dict(conn.execute(
+                "SELECT * FROM short_drama_projects WHERE id=?",
+                (self.project["id"],),
+            ).fetchone())
+            source = short_drama_refinement._refinement(conn.execute(
+                "SELECT * FROM short_drama_refinement_versions WHERE id=?",
+                (version["id"],),
+            ).fetchone())
+            source_hashes, snapshot = short_drama_refinement._acceptance_evidence(
+                conn, project, source
+            )
+            conn.execute(
+                "UPDATE short_drama_refinement_acceptances SET "
+                "source_hashes_json=?,snapshot_json=?,snapshot_hash=? "
+                "WHERE refinement_version_id=?",
+                (
+                    json.dumps(source_hashes), json.dumps(snapshot),
+                    short_drama_refinement._hash(snapshot), version["id"],
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with self.assertRaises(short_drama_refinement.RefinementError) as blocked:
+            short_drama_refinement.create_delivery_quote(
+                self.db, "alice", {
+                    "project_id": self.project["id"], "version_id": version["id"],
+                },
+            )
+        self.assertEqual("refinement_preview_only_media", blocked.exception.code)
+
+        with self.assertRaises(short_drama_refinement.RefinementError) as blocked:
+            short_drama_refinement.start_delivery_job(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "quote_token": quote["quote_token"],
+                }, "preview-only-start-blocked",
+            )
+        self.assertEqual("refinement_preview_only_media", blocked.exception.code)
 
     def _reassembly_source(self):
         return short_drama_refinement.workspace(
@@ -2515,6 +3237,71 @@ class ShortDramaRefinementSchemaMigrationTests(unittest.TestCase):
         self.assertIn(("project_id", "source_version_id"), unique_columns)
         self.assertEqual(counts_before, counts_after)
         self.assertEqual(0, operation_count)
+        self.assertEqual("ok", integrity)
+        self.assertEqual([], violations)
+
+    def test_defer_reassembly_column_migrates_legacy_jobs_idempotently(self):
+        job_id = "legacy-refinement-job"
+        conn = self.db()
+        try:
+            conn.execute(
+                "INSERT INTO short_drama_refinement_jobs "
+                "(id,project_id,source_version_id,shot_key,actor_username,"
+                "idempotency_key,request_hash,replacement_provider_version_id,"
+                "defer_reassembly,status,progress,poll_count,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,0,'failed',100,1,?,?)",
+                (
+                    job_id, self.project["id"], "legacy-source-version",
+                    "shot_01", "alice", "legacy-schema-job", "legacy-hash",
+                    None, 100, 100,
+                ),
+            )
+            conn.execute(
+                "ALTER TABLE short_drama_refinement_jobs "
+                "DROP COLUMN defer_reassembly"
+            )
+            counts_before = {
+                table: conn.execute("SELECT COUNT(*) FROM " + table).fetchone()[0]
+                for table in (
+                    "short_drama_projects",
+                    "short_drama_refinement_jobs",
+                    "short_drama_refinement_versions",
+                    "short_drama_provider_shot_versions",
+                )
+            }
+            conn.commit()
+        finally:
+            conn.close()
+
+        short_drama_refinement.init_db(self.db)
+        short_drama_refinement.init_db(self.db)
+
+        conn = self.db()
+        try:
+            conn.row_factory = sqlite3.Row
+            columns = {
+                row[1]: row for row in conn.execute(
+                    "PRAGMA table_info(short_drama_refinement_jobs)"
+                )
+            }
+            migrated = short_drama_refinement._job(conn.execute(
+                "SELECT * FROM short_drama_refinement_jobs WHERE id=?",
+                (job_id,),
+            ).fetchone())
+            counts_after = {
+                table: conn.execute("SELECT COUNT(*) FROM " + table).fetchone()[0]
+                for table in counts_before
+            }
+            integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+            violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+        finally:
+            conn.close()
+
+        self.assertIn("defer_reassembly", columns)
+        self.assertEqual(1, columns["defer_reassembly"][3])
+        self.assertEqual("0", columns["defer_reassembly"][4])
+        self.assertFalse(migrated["defer_reassembly"])
+        self.assertEqual(counts_before, counts_after)
         self.assertEqual("ok", integrity)
         self.assertEqual([], violations)
 

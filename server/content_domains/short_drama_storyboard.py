@@ -12,7 +12,7 @@ from . import short_drama_duration
 
 
 SCHEMA_VERSION = "short-drama-conversation-script-v4"
-MODEL_VERSION = "conversation-storyboard-v4"
+MODEL_VERSION = "conversation-storyboard-v5"
 PHASES = (
     ("setup", "建立", "交代时间、地点和人物当前处境"),
     ("reaction", "反应", "人物用一个可见动作回应刚发生的事件"),
@@ -91,6 +91,65 @@ def _phase(index, shot_count):
         return PHASES[-1]
     phase_index = int(round(index * (len(PHASES) - 1) / float(shot_count - 1)))
     return PHASES[min(len(PHASES) - 1, phase_index)]
+
+
+def _phase_progression(phase_key, occurrence, total):
+    """Add real intra-phase progression when a long plan repeats a phase."""
+    if total <= 1:
+        return ""
+    progressions = {
+        "setup": (
+            "先建立环境与人物位置",
+            "人物转身看向关键物件，画面明确交代二者距离",
+            "人物走近关键物件并伸手触碰，物件仍保持原位",
+            "人物拿起或启动关键物件，空间关系发生可见变化",
+            "最后落到触发事件的可见细节",
+        ),
+        "reaction": (
+            "先捕捉即时表情与停顿",
+            "人物把视线转向事件来源，手部动作仍停在原处",
+            "人物收回手并调整站姿，身体朝向发生可见变化",
+            "人物迈步或退后并与他人拉开距离，反应开始影响行动",
+            "最后落到影响下一步的反应细节",
+        ),
+        "change": (
+            "先展示变化前的状态",
+            "人物伸手触碰关键物件，变化动作刚刚启动",
+            "关键物件被移动或打开，人物位置随之改变",
+            "人物完成推动动作，表情与双方距离形成新的可见状态",
+            "最后呈现变化后的表情与关系",
+        ),
+        "conflict": (
+            "先建立双方距离与对峙",
+            "一方上前挡住去路，双方距离明显缩短",
+            "另一方拨开阻挡或侧身反制，站位发生交换",
+            "双方停止动作并重新对峙，关键物件或通道已被一方控制",
+            "最后落到冲突造成的明确结果",
+        ),
+        "choice": (
+            "先呈现犹豫与备选动作",
+            "人物伸向第一个选项后停住，目光转向另一选项",
+            "人物收回原动作并拿起选定物件，未选项留在原位",
+            "人物带着选定物件离开原位置，以行动排除其他选择",
+            "最后展示选择完成后的结果",
+        ),
+        "resolution": (
+            "先回看前文留下的关键细节",
+            "人物捡起或归还前文关键物件，未立即离开",
+            "双方以握手、拥抱或点头作出可见回应，关系开始稳定",
+            "人物分开站定或并肩离开，环境恢复为新的稳定状态",
+            "最后以环境或人物动作完成收束",
+        ),
+    }[phase_key]
+    if occurrence == 1:
+        return progressions[0]
+    if occurrence == total:
+        return progressions[-1]
+    milestone_index = int(round(
+        (occurrence - 1) * (len(progressions) - 1) / float(total - 1)
+    ))
+    milestone_index = max(1, min(len(progressions) - 2, milestone_index))
+    return progressions[milestone_index]
 
 
 def _clause(index, shot_count, clauses):
@@ -522,8 +581,19 @@ def compile_storyboard(project, clauses, characters, instruction="", ending="", 
     dialogue_lines = []
     previous_scene = ""
     used_dialogue = set()
+    phase_plan = [_phase(index, shot_count) for index in range(shot_count)]
+    phase_totals = {}
+    phase_occurrences = {}
+    for phase_key, _phase_name, _purpose in phase_plan:
+        phase_totals[phase_key] = phase_totals.get(phase_key, 0) + 1
     for index in range(shot_count):
-        phase_key, phase_name, purpose = _phase(index, shot_count)
+        phase_key, phase_name, purpose = phase_plan[index]
+        phase_occurrences[phase_key] = phase_occurrences.get(phase_key, 0) + 1
+        progression = _phase_progression(
+            phase_key,
+            phase_occurrences[phase_key],
+            phase_totals[phase_key],
+        )
         source = _clause(index, shot_count, clauses)
         scene = _location(source, previous_scene or "故事主要场景")
         previous_scene = scene
@@ -561,10 +631,11 @@ def compile_storyboard(project, clauses, characters, instruction="", ending="", 
             "action": action,
             "emotional_shift": _emotional_shift(phase_key),
         })
-        visual = "%s；剧情事实：%s；本镜头重点：%s" % (
+        visual = "%s；剧情事实：%s；本镜头重点：%s%s" % (
             action,
-            source[:100],
+            source[:90] if progression else source[:100],
             purpose,
+            "；阶段内推进：%s" % progression if progression else "",
         )
         shots.append({
             "shot_key": "shot_%02d" % (index + 1),
