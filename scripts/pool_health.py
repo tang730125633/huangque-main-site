@@ -8,13 +8,13 @@
   pool_health.py --json --out F --alert  # 体检整池 + 有失效则飞书告警 Tang
 环境变量:
   HEALTH_PROXY  空=青果住宅(默认) / "direct"=直连 / "http://..."=指定代理
-  QG_KEY        青果 key (默认 55DC9F7E)
+  QG_KEY        青果 key（使用默认代理时必填）
   TANG_OPENID   告警接收人 open_id
   ALERT_ACCOUNT 飞书发送子账号(默认 default=小冬)"""
 import json, asyncio, re, sys, glob, hashlib, datetime, urllib.parse, urllib.request, os, subprocess
 from playwright.async_api import async_playwright
 
-QG_KEY = os.environ.get("QG_KEY", "55DC9F7E")
+QG_KEY = os.environ.get("QG_KEY", "").strip()
 HEALTH_PROXY = os.environ.get("HEALTH_PROXY", "")  # 空=青果
 TANG_OPENID = os.environ.get("TANG_OPENID", "ou_d45fa42f49c14bc85abf18cc37f70391")
 ALERT_ACCOUNT = os.environ.get("ALERT_ACCOUNT", "")
@@ -27,6 +27,8 @@ def get_proxy():
         return None
     if HEALTH_PROXY:
         return {"server": HEALTH_PROXY}
+    if not QG_KEY:
+        raise RuntimeError("使用默认青果代理时必须配置 QG_KEY")
     try:
         url = "https://share.proxy.qg.net/get?key=%s&num=1&format=json" % QG_KEY
         d = json.loads(urllib.request.urlopen(url, timeout=15).read())

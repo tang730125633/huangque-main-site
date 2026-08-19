@@ -4,15 +4,18 @@
 """
 import asyncio
 import json
+import os
 import re
 import urllib.request
 from playwright.async_api import async_playwright
 
-QG_KEY = "55DC9F7E"
+QG_KEY = os.environ.get("QG_KEY", "").strip()
 UD = "/home/ubuntu/MediaCrawler/browser_data/dy_user_data_dir"
 
 
 def extract_proxy():
+    if not QG_KEY:
+        raise RuntimeError("缺少必填环境变量 QG_KEY")
     url = f"https://share.proxy.qg.net/get?key={QG_KEY}&num=1&format=json"
     d = json.loads(urllib.request.urlopen(url, timeout=15).read())
     it = d["data"][0]

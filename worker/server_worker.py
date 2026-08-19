@@ -16,6 +16,14 @@ import subprocess
 import urllib.request
 import urllib.parse
 
+
+def required_env(name):
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise RuntimeError(f"缺少必填环境变量 {name}")
+    return value
+
+
 WORKER_ID = os.environ.get("WORKER_ID", "1")
 WORKER_MODES = os.environ.get("WORKER_MODES", "")   # 空=领所有 mode；非空=只领这些(快慢分道)
 MC = "/home/ubuntu/MediaCrawler"                     # 共享只读代码
@@ -27,9 +35,9 @@ JSONL_DIR = f"{DATA_DIR}/douyin/jsonl"               # build_result 从这读
 UD = f"{WORK_DIR}/browser_data/dy_user_data_dir"      # prep_login 注入到这
 NUMBER_POOL = "/home/ubuntu/number_pool"
 COOKIES_JSON = f"{NUMBER_POOL}/cookie_{WORKER_ID}.json"  # 号池：本 worker 绑定的号
-QG_KEY = os.environ.get("QG_KEY", "55DC9F7E")
+QG_KEY = required_env("QG_KEY")
 SERVER = os.environ.get("LEADGEN_SERVER", "http://127.0.0.1:8090")
-TOKEN = os.environ.get("LEADGEN_WORKER_TOKEN", "worker-secret-2026")
+TOKEN = required_env("LEADGEN_WORKER_TOKEN")
 STATIC_PROXY = os.environ.get("STATIC_PROXY", "")   # 长效静态代理 user:pass@host:port；设了则搜索优先用(长命→爬得深)
 CMT_LIMIT = os.environ.get("CMT_LIMIT", "100")       # 每视频评论上限
 POLL = 8
@@ -55,8 +63,9 @@ def log(m):
     print(time.strftime("%H:%M:%S"), f"[w{WORKER_ID}]", m, flush=True)
 
 
-def http_get(path):
-    with urllib.request.urlopen(SERVER + path, timeout=20) as r:
+def http_get(path, headers=None):
+    req = urllib.request.Request(SERVER + path, headers=headers or {})
+    with urllib.request.urlopen(req, timeout=20) as r:
         return json.loads(r.read())
 
 
@@ -618,11 +627,11 @@ def handle_account(job):
 
 
 def main():
-    modes_q = "&modes=" + urllib.parse.quote(WORKER_MODES) if WORKER_MODES else ""
+    modes_q = "?modes=" + urllib.parse.quote(WORKER_MODES) if WORKER_MODES else ""
     log(f"server_worker 启动 (WORKER_ID={WORKER_ID}, modes={WORKER_MODES or '全能'}, cwd={WORK_DIR})")
     while True:
         try:
-            r = http_get(f"/api/claim?token={TOKEN}{modes_q}")
+            r = http_get(f"/api/claim{modes_q}", {"X-Worker-Token": TOKEN})
             job = r.get("job")
             if not job:
                 time.sleep(POLL); continue
