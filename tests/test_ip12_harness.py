@@ -170,6 +170,31 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual(normalized["profile_updates"][0]["value"], "FDE")
         self.assertEqual(state["intake"]["draft"], "当前职业：FDE。")
 
+    def test_intake_revision_drops_unsupported_update_without_false_failure(self):
+        state, _, _ = harness.apply_intake_decision(
+            harness.initial_state(),
+            intake_decision(draft="过往经历：修车。"),
+            "我以前修过车",
+        )
+        edit = next(action for action in harness.available_actions(state) if action["type"] == "edit_intake")
+        state, _ = harness.apply_action(state, edit, state["revision"])
+        revised = intake_decision(
+            reply="已加入你补充的洗车经历。",
+            draft="过往经历：修车、洗车。",
+            updates=[{
+                "field": "prior_roles",
+                "value": "修车、洗车",
+                "kind": "user_fact",
+                "evidence_quote": "模型改写后并不存在于用户原话里的句子",
+            }],
+        )
+
+        state, result, reply = harness.apply_intake_decision(state, revised, "我还洗过车")
+
+        self.assertEqual(result["profile_updates"], [])
+        self.assertEqual(state["intake"]["draft"], "过往经历：修车、洗车。")
+        self.assertIn("已加入你补充的洗车经历", reply)
+
     def test_intake_rejects_repeated_optional_follow_up(self):
         state = harness.initial_state()
         state, _, _ = harness.apply_intake_decision(
