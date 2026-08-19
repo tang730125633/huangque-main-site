@@ -76,6 +76,21 @@ class IP12HarnessActionsUITests(unittest.TestCase):
         self.assertIn("openPanel('📦 文案口播交付物')", send_turn)
         self.assertIn("renderContentPack(document.getElementById('rpnBody'))", send_turn)
 
+    def test_production_panel_only_asks_for_missing_user_inputs(self):
+        source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
+        field_specs = source[
+            source.index("function productionFieldSpecs"):
+            source.index("function coerceProductionOption")
+        ]
+        options_html = source[
+            source.index("function productionOptionsHtml"):
+            source.index("function productionQuote")
+        ]
+
+        self.assertIn("if(!missing.length)required.forEach", field_specs)
+        self.assertIn("!fields.some", options_html)
+        self.assertIn("ratio:'画面比例'", source)
+
     def test_main_view_keeps_artifacts_in_module_dropdowns_without_auto_opening(self):
         source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
         select_convo = source[

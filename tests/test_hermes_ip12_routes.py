@@ -589,7 +589,7 @@ revision = state["revision"]
 target = {"category_id": "category_1", "topic_id": "topic_1"}
 intent_response = client.post("/api/chat-complete", json={
     "conversation_id": cid,
-    "message": "用 Grok 把这篇做成视频",
+    "message": "用 Grok 把这篇做成 9:16 竖屏视频",
     "content_target": target,
     "expected_revision": revision,
     "request_id": "prepare-video-from-chat",
@@ -599,6 +599,7 @@ intent_body = intent_response.get_json()
 assert intent_body["actions"][0]["type"] == "prepare_production", intent_body
 assert intent_body["actions"][0]["requested_result"] == "video", intent_body
 assert intent_body["actions"][0]["preferred_action"] == "video-generate", intent_body
+assert intent_body["actions"][0]["options"] == {"ratio": "9:16"}, intent_body
 assert not server.load_conversation(cid).get("productions"), intent_body
 revision = intent_body["state"]["revision"]
 original_messages = json.loads(json.dumps(server.load_conversation(cid)["messages"], ensure_ascii=False))
