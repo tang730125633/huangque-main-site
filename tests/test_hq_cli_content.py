@@ -280,6 +280,32 @@ class HQCLIContentTests(unittest.TestCase):
         self.assertIn("仅支持 2K", result["detail"])
         self.assertEqual([], self.points.deductions)
 
+    def test_minimax_completed_replay_precedes_expired_reference_expansion(self):
+        request = {
+            "prompt": "completed paid request", "channel": "minimax",
+            "duration": 5, "ratio": "9:16",
+            "reference_upload_ids": ["img_" + "a" * 32],
+        }
+        with mock.patch.object(
+            core, "_domains", return_value=(audio, self.points, video),
+        ), mock.patch.object(
+            core, "HANDLERS", {"xiaole_video": lambda payload: payload},
+        ), mock.patch.object(
+            core.submission_idempotency, "replay_existing",
+            return_value=("replay", {"job_id": 91, "cost": 24}),
+        ) as replay, mock.patch.object(
+            cli_uploads, "expand_image_payload",
+            side_effect=AssertionError("completed replay must precede upload TTL lookup"),
+        ) as expand:
+            status, result = self._post(
+                "/api/gen/xiaole_video", request,
+                expected=24, idempotency_key="minimax-expired-replay-001",
+            )
+        self.assertEqual((200, 91), (status, result["job_id"]))
+        replay.assert_called_once()
+        expand.assert_not_called()
+        self.assertEqual([], self.points.deductions)
+
     def test_minimax_submit_expands_private_reference_before_charge_and_queue(self):
         from PIL import Image
 
@@ -335,6 +361,8 @@ class HQCLIContentTests(unittest.TestCase):
         self.assertEqual(1, len(idempotency_bodies))
         self.assertNotIn("_minimax_origin", idempotency_bodies[0])
         self.assertNotIn("_minimax_api_base", idempotency_bodies[0])
+        self.assertEqual([uploaded["upload_id"]], idempotency_bodies[0]["reference_upload_ids"])
+        self.assertEqual([], idempotency_bodies[0]["reference_images"])
         expand.assert_called_once()
 
     def test_minimax_submit_rejects_foreign_and_expired_references_before_charge(self):

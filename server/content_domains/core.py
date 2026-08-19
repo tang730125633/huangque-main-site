@@ -2876,6 +2876,7 @@ class H(BaseHTTPRequestHandler):
             script_to_video_idem_reserved = False
             still_access = _short_drama_canvas_access(self) if is_still_route else None
             scene_access = None
+            minimax_idem_body = None
             try:
                 body = self._json_body_strict() if is_still_route or kind in {"video", "tryon", "sora_video", "cinematic", "avatar", "script_to_video", "copy", "canvas_agent"} else self._json_body()
                 if kind in {"cinematic", "script_to_video"}:
@@ -2911,8 +2912,35 @@ class H(BaseHTTPRequestHandler):
                     request_body, still_idem_body = _short_drama_domain().short_drama_production.normalize_still_request(body, require_quote=True); idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
                     if not idem_key: raise ValueError("关键帧提交必须提供 Idempotency-Key")
                 # Resolve private uploads exactly once, before validation,
+                if (
+                    kind == "xiaole_video"
+                    and isinstance(body, dict)
+                    and str(body.get("channel") or "").strip().lower() == "minimax"
+                ):
+                    early_key = _idempotency_key(
+                        self.headers.get("Idempotency-Key")
+                    )
+                    minimax_idem_body = video_domain.minimax_idempotency_claim_body(
+                        body
+                    )
+                    if early_key:
+                        early_state, early_response = submission_idempotency.replay_existing(
+                            jdb, user["username"], p, early_key,
+                            video_domain.minimax_idempotency_replay_bodies(body),
+                        )
+                        if early_state == "replay":
+                            replay = dict(early_response or {})
+                            return self._send(
+                                int(replay.pop("_http_status", 200)), replay
+                            )
+                        if early_state == "processing":
+                            return self._send(409, {
+                                "detail": "相同请求正在受理，请稍后查询",
+                                "code": "idempotency_in_progress",
+                                "retry_after_ms": 1000,
+                            })
                 # content checks, price binding, idempotency, and deduction.
-                elif kind in {"image", "xiaole_video", "sora_video"}:
+                if not is_still_route and kind in {"image", "xiaole_video", "sora_video"}:
                     body = cli_uploads.expand_image_payload(body, user["username"])
                 elif kind in {"tryon", "cinematic"}:
                     body = cli_uploads.expand_role_media_payload(body, user["username"])
@@ -2933,11 +2961,6 @@ class H(BaseHTTPRequestHandler):
                         return self._send(
                             int(replay.pop("_http_status", 200)), replay
                         )
-                    if early_state == "conflict":
-                        return self._send(409, {
-                            "detail": "同一个 Idempotency-Key 不能用于不同请求",
-                            "code": "idempotency_conflict",
-                        })
                     if early_state == "processing":
                         return self._send(409, {
                             "detail": "相同请求正在受理，请稍后查询",
@@ -3017,6 +3040,8 @@ class H(BaseHTTPRequestHandler):
                     ):
                         request_body.pop("_minimax_origin", None)
                         request_body.pop("_minimax_api_base", None)
+                        if minimax_idem_body is not None:
+                            request_body = minimax_idem_body
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
                 if not is_still_route: idem_key = idem_key if kind in {"cinematic", "script_to_video"} else (_idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "audio", "video", "tryon", "xiaole_video", "sora_video", "avatar", "canvas_agent", "script_to_video", "breakdown", "copy"} else "")
                 if kind == "canvas_agent" and not idem_key:

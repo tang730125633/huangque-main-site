@@ -106,19 +106,15 @@ class MiniMaxH3VideoTests(unittest.TestCase):
                 "旧分辨率不应创建新任务", [], "9:16", 5, "768p"
             )
 
-    def test_omitted_resolution_replays_old_768p_record(self):
-        legacy_request = {
+    def test_legacy_hash_candidates_replay_old_768p_record(self):
+        request = {
             "channel": "minimax", "prompt": "legacy paid request",
             "model": "MiniMax-H3", "duration": 5,
             "ratio": "9:16", "resolution": "768p",
         }
-        legacy_candidates = video.minimax_idempotency_replay_bodies(legacy_request)
-        omitted_request = dict(legacy_request)
-        omitted_request.pop("resolution")
-        candidates = video.minimax_idempotency_replay_bodies(omitted_request)
-        self.assertEqual({"2k", "768p"}, {item["resolution"] for item in candidates})
+        candidates = video.minimax_idempotency_replay_bodies(request)
         old = next(
-            item for item in legacy_candidates
+            item for item in candidates
             if item.get("_minimax_api_base") == video_minimax_h3.METASO_API_BASE
         )
         with tempfile.TemporaryDirectory() as folder:
@@ -144,6 +140,20 @@ class MiniMaxH3VideoTests(unittest.TestCase):
                 candidates,
             )
         self.assertEqual(("replay", 88), (state, response["job_id"]))
+
+    def test_omitted_resolution_replays_both_current_and_legacy_hashes(self):
+        request = {
+            "channel": "minimax", "prompt": "legacy omitted resolution",
+            "model": "MiniMax-H3", "duration": 5, "ratio": "9:16",
+        }
+        candidates = video.minimax_idempotency_replay_bodies(request)
+        self.assertEqual(
+            {"2k", "768p"},
+            {item["resolution"] for item in candidates},
+        )
+        self.assertEqual(
+            "2k", video.minimax_idempotency_claim_body(request)["resolution"],
+        )
 
     def test_unmarked_historical_origin_is_inferred_once_or_fails_closed(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -485,6 +495,69 @@ class MiniMaxH3VideoTests(unittest.TestCase):
             else:
                 persist_origin.assert_not_called()
 
+    def test_stream_download_retries_incomplete_read_without_new_submission(self):
+        class Response:
+            headers = {"Content-Length": "4"}
+
+            def __init__(self, data=None, error=None):
+                self.data = data
+                self.error = error
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _size=-1):
+                if self.error is not None:
+                    error, self.error = self.error, None
+                    raise error
+                data, self.data = self.data, b""
+                return data
+
+        responses = [
+            Response(error=video.http.client.IncompleteRead(b"ab", 2)),
+            Response(data=b"done"),
+        ]
+        with tempfile.TemporaryDirectory() as folder, patch.object(
+            video.time, "sleep"
+        ):
+            destination = Path(folder) / "result.mp4"
+            size = video._stream_download_retry(
+                lambda: responses.pop(0), destination, "provider result", 16,
+            )
+            self.assertEqual((4, b"done"), (size, destination.read_bytes()))
+        self.assertEqual([], responses)
+
+    def test_stream_download_retries_short_content_length_body(self):
+        class Response:
+            headers = {"Content-Length": "4"}
+
+            def __init__(self, data):
+                self.data = data
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _size=-1):
+                data, self.data = self.data, b""
+                return data
+
+        responses = [Response(b"bad"), Response(b"good")]
+        with tempfile.TemporaryDirectory() as folder, patch.object(
+            video.time, "sleep"
+        ):
+            destination = Path(folder) / "result.mp4"
+            size = video._stream_download_retry(
+                lambda: responses.pop(0), destination, "provider result", 16,
+            )
+            self.assertEqual((4, b"good"), (size, destination.read_bytes()))
+        self.assertEqual([], responses)
+
     def test_ui_has_separate_people_story_entry(self):
         html = (ROOT / "site" / "workbench" / "video.html").read_text(encoding="utf-8")
         self.assertIn('data-function="minimax"', html)
@@ -497,8 +570,10 @@ class MiniMaxH3VideoTests(unittest.TestCase):
         self.assertNotIn("请至少上传 1 张人物参考图", html)
         self.assertNotIn("必传 1–5 张", html)
         self.assertIn("可选，最多 5 张", html)
-        self.assertIn("if(retry.key&&retry.body){body=retry.body;}", html)
-        self.assertNotIn("retry.body!==body", html)
+        self.assertIn("if(retry.key&&retry.body!==body)", html)
+        self.assertIn("minimaxLegacyRetryCompatible(retry.body,body)", html)
+        self.assertIn("var sentPayload=xlPayload", html)
+        self.assertIn("prompt=String(sentPayload.prompt||prompt)", html)
         self.assertIn("xlPayload.model='MiniMax-H3'", html)
         self.assertNotIn("xlPayload.model='MiniMax-Hailuo-2.3'", html)
 

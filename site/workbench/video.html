@@ -2954,6 +2954,21 @@
       });
     }).catch(function(e){setSubmitLock('talking',false);setBusy(false);if(currentVideoDraft){currentVideoDraft.status='error';renderVideoDrafts([currentVideoDraft]);}toast(e.message||'配音资产读取失败');});
   };
+  function canonicalOfficialRetryValue(value){
+    if(Array.isArray(value))return value.map(canonicalOfficialRetryValue);
+    if(value&&typeof value==='object'){
+      var out={};Object.keys(value).sort().forEach(function(key){out[key]=canonicalOfficialRetryValue(value[key]);});return out;
+    }
+    return value;
+  }
+  function minimaxLegacyRetryCompatible(savedBody,currentBody){
+    try{
+      var saved=JSON.parse(savedBody),current=JSON.parse(currentBody);
+      if(String(saved.resolution||'').toLowerCase()!=='768p'||String(current.resolution||'').toLowerCase()!=='2k')return false;
+      delete saved.resolution;delete current.resolution;
+      return JSON.stringify(canonicalOfficialRetryValue(saved))===JSON.stringify(canonicalOfficialRetryValue(current));
+    }catch(e){return false;}
+  }
   function officialVideoRetryState(channel){
     var state=officialVideoRetry[channel];
     if(!state || state.key) return state;
@@ -3084,7 +3099,10 @@
     if(official){
       var retry=officialVideoRetryState(channel);
       if(retry.blocked&&!retry.body){toast('上一笔提交结果待核对，请先到任务列表确认，不能重复提交');return;}
-      if(retry.key&&retry.body){body=retry.body;}
+      if(retry.key&&retry.body!==body){
+        if(channel==='minimax'&&minimaxLegacyRetryCompatible(retry.body,body)){body=retry.body;}
+        else{toast('上一笔提交结果尚未确认，请保持原参数重试');return;}
+      }
       if(!retry.key){
         retry.key=newVideoIdempotencyKey(channel);retry.body=body;
         if(!saveOfficialVideoRetry(channel)){
@@ -3098,13 +3116,17 @@
     setSubmitLock('xiaole',true);
     setBusy(true);
     if(statusEl) statusEl.textContent='正在提交'+label+'任务，请勿重复点击...';
-    var fixedDuration=channel==='grok'?(editing?grokEditDuration:selectedGrokDuration):(channel==='omni'?selectedOmniDuration:(channel==='minimax'?selectedMiniMaxDuration:selectedSeedanceDuration));
-    var sourceResolution=channel==='micro'?selectedSeedanceResolution:null;
-    var resolution=channel==='grok'?selectedGrokResolution:(channel==='omni'?'720p':(channel==='minimax'?'2k':(selectedSeedanceUpscale?'1080p':selectedSeedanceResolution)));
-    var currentModel=channel==='grok'?selectedGrokModel:(channel==='omni'?'gemini-omni-flash-preview':(channel==='minimax'?'MiniMax-H3':selectedSeedanceModel));
+    var sentPayload=xlPayload;
+    try{sentPayload=JSON.parse(body);}catch(e){}
+    prompt=String(sentPayload.prompt||prompt);ratio=sentPayload.ratio==null?ratio:sentPayload.ratio;
+    var fixedDuration=channel==='grok'?(editing?grokEditDuration:Number(sentPayload.duration||selectedGrokDuration)):Number(sentPayload.duration||(channel==='omni'?selectedOmniDuration:(channel==='minimax'?selectedMiniMaxDuration:selectedSeedanceDuration)));
+    var sourceResolution=channel==='micro'?String(sentPayload.resolution||selectedSeedanceResolution):null;
+    var resolution=String(sentPayload.resolution||(channel==='grok'?selectedGrokResolution:(channel==='omni'?'720p':(channel==='minimax'?'2k':selectedSeedanceResolution))));
+    if(channel==='micro'&&sentPayload.upscale===true)resolution='1080p';
+    var currentModel=String(sentPayload.model||(channel==='grok'?selectedGrokModel:(channel==='omni'?'gemini-omni-flash-preview':(channel==='minimax'?'MiniMax-H3':selectedSeedanceModel))));
     currentVideoDraft={mode:channel,text:prompt,ratio:ratio,motion:label,duration:fixedDuration,
-      resolution:resolution,model:currentModel,generate_audio:channel==='micro'?selectedSeedanceAudio:null,
-      source_resolution:sourceResolution,upscale:channel==='micro'&&selectedSeedanceUpscale,
+      resolution:resolution,model:currentModel,generate_audio:channel==='micro'?sentPayload.generate_audio:null,
+      source_resolution:sourceResolution,upscale:channel==='micro'&&sentPayload.upscale===true,
       status:'processing',phase:channel==='omni'?'omni_submitting':(channel==='micro'?'seedance_submitting':(channel==='minimax'?'minimax_submitting':'queued')),created_at:Math.floor(Date.now()/1000)};
     renderVideoDrafts([currentVideoDraft]);
     var headers={Authorization:'Bearer '+token,'Content-Type':'application/json'};
@@ -3125,7 +3147,7 @@
         if(official)clearOfficialVideoRetry(channel);
         if(statusEl) statusEl.textContent=label+'任务已提交'+(res.data.cost!=null?' · '+res.data.cost+'点':'')+'，生成中...';
         setTimeout(loadVideoHistory,700);
-        trackVideoJob(res.data.job_id,{status:'queued',phase:channel==='omni'?'omni_queued':(channel==='micro'?'seedance_queued':(channel==='minimax'?'minimax_queued':'queued')),label:label,mode:channel,modeLabel:label,ratio:ratio,model:currentModel,resolution:resolution,source_resolution:sourceResolution,upscale:channel==='micro'&&selectedSeedanceUpscale,duration:fixedDuration,generate_audio:channel==='micro'?selectedSeedanceAudio:null});
+        trackVideoJob(res.data.job_id,{status:'queued',phase:channel==='omni'?'omni_queued':(channel==='micro'?'seedance_queued':(channel==='minimax'?'minimax_queued':'queued')),label:label,mode:channel,modeLabel:label,ratio:ratio,model:currentModel,resolution:resolution,source_resolution:sourceResolution,upscale:channel==='micro'&&sentPayload.upscale===true,duration:fixedDuration,generate_audio:channel==='micro'?sentPayload.generate_audio:null});
         setSubmitLock('xiaole',false);
         pollJob(res.data.job_id,0);
       })

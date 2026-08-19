@@ -1591,6 +1591,8 @@ def _generation_payload(action, value):
                                 "resolution", ("480p", "720p", "768p", "1080p", "2k")),
             "source_page": "video",
         }
+        if channel == "minimax" and body["resolution"] != "2k":
+            raise CLIAPIError(400, "MiniMax 新任务 resolution 仅支持 2k")
         if "model" in value:
             body["model"] = _enum(value["model"], "model", ("grok-imagine-video", "grok-imagine-video-1.5"))
             if channel != "grok":

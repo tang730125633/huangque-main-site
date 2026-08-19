@@ -987,6 +987,13 @@ class HQCLIAPITests(unittest.TestCase):
             })["payload"][k] for k in ("channel", "resolution")},
         )
 
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError) as raised:
+            self.auth.hq_cli_api.action_plan("video-generate", {
+                "prompt": "legacy resolution", "channel": "minimax",
+                "resolution": "768p",
+            })
+        self.assertEqual(400, raised.exception.status)
+
     def test_server_requires_confirmation_for_external_ai_and_writes(self):
         token = self._token(["prompt:optimize", "ip12:write", "ip12:chat", "canvas:write", "assets:write",
                              "video-compose:write", "digital-presenter:write", "inspiration:write", "leads:write"])

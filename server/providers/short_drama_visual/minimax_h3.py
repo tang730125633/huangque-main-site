@@ -52,6 +52,18 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
         return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
     @staticmethod
+    def _historical_origin():
+        from content_domains import video_minimax_h3
+
+        try:
+            return video_minimax_h3.historical_origin_from_environment()
+        except video_minimax_h3.MiniMaxOriginUnknown as error:
+            raise VisualProviderError(
+                "provider_job_origin_unknown",
+                str(error), submitted=True,
+            ) from error
+
+    @staticmethod
     def _decode_job_id(provider_job_id):
         value = str(provider_job_id or "").strip()
         try:
@@ -60,7 +72,7 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
             task_id = str(payload.get("task_id") or "").strip()
             if task_id:
                 origin = str(
-                    payload.get("origin") or MINIMAX_ORIGIN_LEGACY
+                    payload.get("origin") or MiniMaxH3ShotProvider._historical_origin()
                 ).strip().lower()
                 if origin not in MINIMAX_ORIGINS:
                     raise VisualProviderError(
@@ -73,7 +85,9 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
             raise
         except Exception:
             pass
-        return "env", value, MINIMAX_ORIGIN_LEGACY
+        return (
+            "env", value, MiniMaxH3ShotProvider._historical_origin()
+        )
 
     @staticmethod
     def _claim_key():
@@ -211,6 +225,7 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
             raise VisualProviderError("provider_not_configured", str(error)) from error
         prepared = dict(request or {})
         prepared["_provider_key_id"] = str(candidate["id"])
+        prepared["_minimax_origin"] = video_minimax_h3.new_task_origin()
         return prepared
 
     def create_job(self, request):
@@ -226,7 +241,7 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
         from content_domains import video_minimax_h3
 
         try:
-            task_origin = video_minimax_h3.new_task_origin()
+            task_origin = video_minimax_h3.origin_from_payload(request)
             refs = [self._reference_value(item) for item in payload["reference_images"]]
             body = video_minimax_h3.build_request(
                 payload["prompt"], refs, payload["ratio"],
@@ -235,7 +250,7 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
             created = video_minimax_h3._request_json(
                 video_minimax_h3._opener(), "POST", "/v2/video_generation",
                 body, timeout=120, api_key=candidate["secret"],
-                api_base=video_minimax_h3.new_task_api_base(),
+                api_base=video_minimax_h3.api_base_for_origin(task_origin),
             )
         except video_minimax_h3.MiniMaxCredentialRejected as error:
             raise VisualProviderError("provider_not_configured", str(error)) from error
@@ -274,8 +289,12 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
                 "MiniMax 提交记录缺少已绑定的 API Key，无法安全恢复",
                 submitted=True,
             )
+        try:
+            origin = video_minimax_h3.origin_from_payload(request)
+        except video_minimax_h3.MiniMaxOriginUnknown:
+            origin = self._historical_origin()
         return self._encode_job_id(
-            key_id, task_id, video_minimax_h3.new_task_origin(),
+            key_id, task_id, origin,
         )
 
     def get_job(self, provider_job_id):

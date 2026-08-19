@@ -42,7 +42,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.10.0", self.payload(output)["cli_version"])
+        self.assertEqual("0.10.1", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -106,6 +106,9 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual("canvas:edit", by_id["canvas-ops"]["required_scope"])
         self.assertEqual(12, by_id["canvas-ops"]["input_schema"]["properties"]["ops"]["maxItems"])
         self.assertIn("minimax", by_id["video-generate"]["input_schema"]["properties"]["channel"]["enum"])
+        self.assertIn("2k", by_id["video-generate"]["input_schema"]["properties"]["resolution"]["enum"])
+        minimax_rule = by_id["video-generate"]["input_schema"]["allOf"][0]
+        self.assertEqual("2k", minimax_rule["then"]["properties"]["resolution"]["const"])
         self.assertIn("banana", by_id["image-generate"]["input_schema"]["properties"]["provider"]["enum"])
         self.assertEqual(["nb2", "pro"], by_id["image-generate"]["input_schema"]["properties"]["model"]["enum"])
         self.assertIn("21:9", by_id["image-generate"]["input_schema"]["properties"]["ratio"]["enum"])
@@ -759,6 +762,7 @@ class HqCliTests(unittest.TestCase):
             (["run", "canvas", "--input", "@-"], b'{"collab":"no"}'),
             (["run", "audio-generate", "--input", "@-"], b'{"text":"x","speed":NaN}'),
             (["run", "video-generate", "--input", "@-"], b'{"prompt":"x","generate_audio":1}'),
+            (["run", "video-generate", "--input", "@-"], b'{"prompt":"x","channel":"minimax","resolution":"768p"}'),
             (["run", "video-generate", "--input", "@-"], b'{"prompt":"x","channel":"sora","seconds":5}'),
             (["run", "asset-tags", "--input", "@-"], b'{"kind":"image","key":"x","tags":"not-array"}'),
             (["run", "leads-generate", "--input", "@-"], b'{"keyword":"x","platforms":["twitter"]}'),

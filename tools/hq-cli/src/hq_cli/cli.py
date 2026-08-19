@@ -185,6 +185,12 @@ def _validate(capability, payload):
             raise CliError(EXIT_INPUT, "input_error", "input field %s is below minimum" % key)
         if "maximum" in definition and value > definition["maximum"]:
             raise CliError(EXIT_INPUT, "input_error", "input field %s is above maximum" % key)
+    if (capability.get("id") == "video-generate"
+            and payload.get("channel") == "minimax"
+            and payload.get("resolution", "2k") != "2k"):
+        raise CliError(
+            EXIT_INPUT, "input_error", "minimax video resolution must be 2k",
+        )
     if capability.get("id") == "leads-generate":
         platforms = payload.get("platforms") or []
         if any(platform in {"douyin", "xhs"} for platform in platforms) and not payload.get("keyword"):

@@ -18,6 +18,7 @@ except ImportError:  # Windows does not provide POSIX fcntl.
 
     fcntl = _WindowsFcntlCompat()
 import hashlib
+import http.client
 import importlib.util
 import io
 import ipaddress
@@ -1267,8 +1268,8 @@ def _xiaole_ref_to_url(data_url):
         print("[video] 参考图转存COS失败，回退原始数据: %s" % e, flush=True)
         return s
 
-def minimax_idempotency_replay_bodies(payload):
-    """Build only historical hash candidates; this never authorizes a new job."""
+def _minimax_idempotency_body(payload, resolution=None):
+    """Normalize a MiniMax body for stable claims and historical replay hashes."""
     if not isinstance(payload, dict):
         raise ValueError("请求体不是合法 JSON")
     cleaned = {
@@ -1291,7 +1292,7 @@ def minimax_idempotency_replay_bodies(payload):
     duration = cleaned.get("duration", 5)
     provider_request = video_minimax_h3.build_request(
         prompt, refs, ratio, duration,
-        str(cleaned.get("resolution") or "2k").strip(),
+        str(resolution or cleaned.get("resolution") or "2k").strip(),
         allow_legacy_resolution=True,
     )
     cleaned.update({
@@ -1300,24 +1301,35 @@ def minimax_idempotency_replay_bodies(payload):
         "resolution": provider_request["resolution"].lower(),
         "reference_images": refs,
     })
-    candidates = [dict(cleaned)]
-    legacy_cleaned = None
-    if not str(payload.get("resolution") or "").strip():
-        legacy_request = video_minimax_h3.build_request(
-            prompt, refs, ratio, duration, "768p", allow_legacy_resolution=True,
-        )
-        legacy_cleaned = dict(
-            cleaned, resolution=legacy_request["resolution"].lower(),
-        )
-        candidates.append(legacy_cleaned)
-    for base in video_minimax_h3.ORIGIN_API_BASES.values():
-        candidates.append(dict(cleaned, _minimax_api_base=base))
-        if legacy_cleaned is not None:
-            candidates.append(dict(legacy_cleaned, _minimax_api_base=base))
-    for origin in video_minimax_h3.ORIGIN_API_BASES:
-        candidates.append(dict(cleaned, _minimax_origin=origin))
-        if legacy_cleaned is not None:
-            candidates.append(dict(legacy_cleaned, _minimax_origin=origin))
+    return cleaned
+
+
+def minimax_idempotency_claim_body(payload):
+    """Return the stable current-contract body used for a new claim."""
+    if not isinstance(payload, dict):
+        raise ValueError("请求体不是合法 JSON")
+    if str(payload.get("channel") or "").strip().lower() != "minimax":
+        return dict(payload)
+    return _minimax_idempotency_body(payload, "2k")
+
+
+def minimax_idempotency_replay_bodies(payload):
+    """Build historical hash candidates without authorizing a new job."""
+    if not isinstance(payload, dict):
+        raise ValueError("请求体不是合法 JSON")
+    if str(payload.get("channel") or "").strip().lower() != "minimax":
+        return []
+    from . import video_minimax_h3
+    requested = str(payload.get("resolution") or "").strip()
+    resolutions = [requested] if requested else ["2k", "768p"]
+    candidates = []
+    for resolution in resolutions:
+        cleaned = _minimax_idempotency_body(payload, resolution)
+        candidates.append(dict(cleaned))
+        for base in video_minimax_h3.ORIGIN_API_BASES.values():
+            candidates.append(dict(cleaned, _minimax_api_base=base))
+        for origin in video_minimax_h3.ORIGIN_API_BASES:
+            candidates.append(dict(cleaned, _minimax_origin=origin))
     return candidates
 
 
@@ -3695,6 +3707,7 @@ def _heygen_retry_net(fn, what=""):
 
 
 def _read_download_limited(response, max_bytes):
+    declared_size = None
     declared = response.headers.get("Content-Length")
     if declared:
         try:
@@ -3712,6 +3725,8 @@ def _read_download_limited(response, max_bytes):
         total += len(chunk)
         if total > max_bytes:
             raise ValueError("下载文件超过大小限制")
+    if declared_size is not None and total != declared_size:
+        raise http.client.IncompleteRead(b"", declared_size - total)
     return b"".join(chunks)
 
 
@@ -3734,7 +3749,7 @@ def _heygen_read_retry(open_fn, what, max_bytes=None):
             if data:
                 return data
             last = RuntimeError("下载内容为空")
-        except OSError as e:
+        except (OSError, http.client.IncompleteRead) as e:
             last = e
             print("[heygen] %s 网络抖动，重试(%d/%d): %s"
                   % (what, i + 1, HEYGEN_NET_RETRIES, str(getattr(e, "reason", e))[:120]), flush=True)
@@ -3750,6 +3765,7 @@ def _stream_download_retry(open_fn, destination, what, max_bytes):
         completed = False
         try:
             total = 0
+            declared_size = None
             with open_fn() as response:
                 declared = response.headers.get("Content-Length")
                 if declared:
@@ -3770,11 +3786,13 @@ def _stream_download_retry(open_fn, destination, what, max_bytes):
                             raise ValueError("下载文件超过大小限制")
                     output.flush()
                     os.fsync(output.fileno())
+            if declared_size is not None and total != declared_size:
+                raise http.client.IncompleteRead(b"", declared_size - total)
             if total:
                 completed = True
                 return total
             last = RuntimeError("下载内容为空")
-        except OSError as error:
+        except (OSError, http.client.IncompleteRead) as error:
             last = error
             print("[heygen] %s 网络抖动，重试(%d/%d): %s" % (
                 what, attempt + 1, HEYGEN_NET_RETRIES,

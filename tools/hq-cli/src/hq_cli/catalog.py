@@ -412,7 +412,7 @@ VIDEO_FIELDS = {
     "ratio": {"type": "string", "enum": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"]},
     "duration": {"type": "integer", "minimum": 1, "maximum": 15},
     "seconds": {"type": "integer", "enum": [4, 8, 12]},
-    "resolution": {"type": "string", "enum": ["480p", "720p", "768p", "1024p", "1080p"]},
+    "resolution": {"type": "string", "enum": ["480p", "720p", "768p", "1024p", "1080p", "2k"]},
     "model": {"type": "string", "enum": ["grok-imagine-video", "grok-imagine-video-1.5", "sora-2", "sora-2-pro"]},
     "generate_audio": {"type": "boolean"},
     "reference_upload_ids": {"type": "array", "maxItems": 9,
@@ -590,8 +590,16 @@ CAPABILITIES["image-generate"]["constraints"] = [
     "model is only for provider=banana; variant is only for provider=seedream",
     "mask_upload_id requires image_upload_id, provider=openai, PNG mask, and count=1",
 ]
+CAPABILITIES["video-generate"]["input_schema"]["allOf"] = [
+    {
+        "if": {"properties": {"channel": {"const": "minimax"}}, "required": ["channel"]},
+        "then": {"properties": {"resolution": {"const": "2k"}}},
+    },
+]
+
 CAPABILITIES["video-generate"]["constraints"] = [
     "reference_upload_ids limits: grok=7, micro=9, omni=6, minimax=5",
+    "channel=minimax accepts only resolution=2k for new tasks",
     "channel=sora uses model=sora-2|sora-2-pro, seconds=4|8|12, ratio=9:16|16:9, resolution=720p|1024p|1080p, and at most one reference image",
     "channel=sora does not accept duration or generate_audio; seconds is only for sora",
     "@图片N references the Nth item in reference_upload_ids",
