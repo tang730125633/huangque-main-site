@@ -2,6 +2,7 @@ import importlib
 import io
 import http.client
 import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -1252,6 +1253,176 @@ class PixelleVideoTests(unittest.TestCase):
                 self.assertTrue(all(
                     self.pixelle._display_units(cue) <= 28 for cue in cues
                 ))
+
+    def test_caption_splitter_balances_unpunctuated_chinese_without_orphans(self):
+        for text in (
+            "人工智能正在改变我们生活的方方面面",
+            "这也引发了关于隐私和伦理的讨论",
+        ):
+            with self.subTest(text=text):
+                cues = self.pixelle._split_caption_text(text)
+                self.assertEqual(text, "".join(cues))
+                self.assertGreater(len(cues), 1)
+                self.assertGreaterEqual(min(len(cue) for cue in cues), 6)
+                self.assertTrue(all(
+                    self.pixelle._display_units(cue) <= 28 for cue in cues
+                ))
+
+    def test_caption_cues_follow_real_word_timestamps_instead_of_character_ratio(self):
+        text = "人工智能可以改变我们的生活方式"
+        cue_texts = ["人工智能可以", "改变我们的生活方", "式"]
+        words = [
+            {"text": "人工智能", "start": 0.2, "end": 0.8},
+            {"text": "可以", "start": 0.85, "end": 1.1},
+            {"text": "改变", "start": 1.8, "end": 2.1},
+            {"text": "我们的", "start": 2.1, "end": 2.6},
+            {"text": "生活方式", "start": 2.7, "end": 3.5},
+        ]
+
+        cues = self.pixelle._caption_cues_from_word_timestamps(
+            text, cue_texts, words, 3.8
+        )
+
+        self.assertEqual(0.0, cues[0]["start_time"])
+        self.assertEqual(3.8, cues[-1]["end_time"])
+        self.assertGreater(cues[0]["end_time"], 1.1)
+        self.assertEqual(
+            [cue["end_time"] for cue in cues[:-1]],
+            [cue["start_time"] for cue in cues[1:]],
+        )
+
+    def test_caption_alignment_rejects_low_coverage_recognition(self):
+        text = "人工智能正在改变我们生活的方方面面"
+        cue_texts = self.pixelle._split_caption_text(text)
+        with self.assertRaisesRegex(ValueError, "识别内容与原文不匹配"):
+            self.pixelle._caption_cues_from_word_timestamps(
+                text,
+                cue_texts,
+                [{"text": "天气", "start": 0.1, "end": 0.35}],
+                8.0,
+            )
+
+    def test_caption_alignment_rejects_unrelated_recognition_of_similar_length(self):
+        text = "人工智能正在改变我们生活的方方面面"
+        cue_texts = self.pixelle._split_caption_text(text)
+        with self.assertRaisesRegex(ValueError, "识别内容与原文不匹配"):
+            self.pixelle._caption_cues_from_word_timestamps(
+                text,
+                cue_texts,
+                [{
+                    "text": "春夏秋冬东西南北日月星辰山川河流",
+                    "start": 0.1,
+                    "end": 7.5,
+                }],
+                8.0,
+            )
+
+    def test_caption_alignment_maps_boundary_through_missing_suffix(self):
+        cues = self.pixelle._caption_cues_from_word_timestamps(
+            "abcdefghijklmnopqr",
+            ["abcdefghi", "jklmnopqr"],
+            [{"text": "abcdefghijkl", "start": 0.0, "end": 4.8}],
+            8.0,
+        )
+        self.assertEqual(3.6, cues[0]["end_time"])
+
+    def test_caption_alignment_maps_boundary_through_missing_prefix(self):
+        cues = self.pixelle._caption_cues_from_word_timestamps(
+            "abcdefghijklmnopqr",
+            ["abcdefghi", "jklmnopqr"],
+            [{"text": "ghijklmnopqr", "start": 0.0, "end": 4.8}],
+            8.0,
+        )
+        self.assertEqual(1.2, cues[0]["end_time"])
+
+    def test_caption_alignment_rejects_boundary_inside_unmatched_middle(self):
+        with self.assertRaisesRegex(ValueError, "字幕边界无法映射"):
+            self.pixelle._caption_cues_from_word_timestamps(
+                "abcdefghijklmnopqr",
+                ["abcdefghi", "jklmnopqr"],
+                [
+                    {"text": "abcdef", "start": 0.0, "end": 2.4},
+                    {"text": "mnopqr", "start": 2.4, "end": 4.8},
+                ],
+                8.0,
+            )
+
+    def test_caption_alignment_mismatch_falls_back_to_display_only_cues(self):
+        class Word:
+            word = "春夏秋冬东西南北日月星辰山川河流"
+            start = 0.1
+            end = 7.5
+
+        class Segment:
+            words = [Word()]
+
+        class Model:
+            @staticmethod
+            def transcribe(*_args, **_kwargs):
+                return [Segment()], None
+
+        video_domain = importlib.import_module("content_domains.video")
+        text = "人工智能正在改变我们生活的方方面面"
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.pixelle,
+            "_CAPTION_ALIGN_TMP_ROOT",
+            Path(directory) / "caption-private",
+        ), mock.patch.object(
+            self.pixelle.subprocess,
+            "run",
+            return_value=mock.Mock(stdout="8.0\n"),
+        ), mock.patch.object(
+            video_domain,
+            "_get_whisper_model",
+            return_value=Model(),
+        ):
+            cues = self.pixelle._aligned_caption_cues(text, b"ID3-test")
+
+        self.assertEqual(text, "".join(cue["text"] for cue in cues))
+        self.assertTrue(all(set(cue) == {"text"} for cue in cues))
+
+    def test_caption_alignment_audio_uses_private_atomic_temp_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "caption-private"
+            with mock.patch.object(self.pixelle, "_CAPTION_ALIGN_TMP_ROOT", root):
+                path = self.pixelle._write_private_caption_alignment_audio(b"ID3-test")
+            try:
+                self.assertEqual(path.parent, root)
+                self.assertEqual(path.read_bytes(), b"ID3-test")
+                self.assertFalse(path.resolve().is_relative_to(self.pixelle.OUT_DIR.resolve()))
+                if os.name != "nt":
+                    self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            finally:
+                path.unlink(missing_ok=True)
+
+    def test_caption_alignment_temp_cleanup_only_removes_stale_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "caption-private"
+            root.mkdir()
+            stale = root / "caption-align-stale.mp3"
+            fresh = root / "caption-align-fresh.mp3"
+            unrelated = root / "keep.txt"
+            for path in (stale, fresh, unrelated):
+                path.write_bytes(b"test")
+            os.utime(stale, (100.0, 100.0))
+            os.utime(fresh, (3900.0, 3900.0))
+            with mock.patch.object(self.pixelle, "_CAPTION_ALIGN_TMP_ROOT", root):
+                self.pixelle._cleanup_stale_caption_alignment_files(now=4000.0)
+            self.assertFalse(stale.exists())
+            self.assertTrue(fresh.exists())
+            self.assertTrue(unrelated.exists())
+
+    def test_caption_alignment_failure_keeps_legacy_display_cues(self):
+        text = "这是第一段需要按语音拆分轮播显示的字幕内容。"
+        with mock.patch.object(
+            self.pixelle.subprocess,
+            "run",
+            side_effect=OSError("ffprobe unavailable"),
+        ):
+            cues = self.pixelle._aligned_caption_cues(text, b"ID3-test")
+
+        self.assertEqual(text, "".join(cue["text"] for cue in cues))
+        self.assertTrue(all(set(cue) == {"text"} for cue in cues))
 
     def test_caption_splitter_supports_long_scenes_up_to_one_hundred_cues(self):
         self.assertEqual(len(self.pixelle._split_caption_text("一，" * 141)), 21)
