@@ -668,7 +668,10 @@ def image_bridge(account_id, action, input_body, **kwargs):
     if kwargs.get("confirm"):
         return {"job_id": "101", "status": "queued"}
     if action == "task":
-        return {"job_id": "101", "status": "done", "asset_refs": [{"id": "asset-image-1", "kind": "image"}]}
+        return {"id": 101, "kind": "image", "status": "done", "result": {
+            "type": "image", "file": "generated.png", "url": "https://cdn.example/generated.png",
+            "files": ["generated.png"], "urls": ["https://cdn.example/generated.png"],
+        }}
     return {"quote_token": "private-image-quote", "cost": 4, "points": 4, "expires_in": 300}
 
 with patch.object(server, "_bridge_action", side_effect=image_bridge):
@@ -725,9 +728,24 @@ with patch.object(server, "_bridge_action", side_effect=image_bridge):
 assert confirmed.status_code == 200 and confirmed.get_json()["production"]["job_id"] == "101"
 assert replayed.status_code == 200 and replayed.get_json()["replayed"] is True
 assert restored.get_json()["production"]["status"] == "done"
-assert restored.get_json()["production"]["asset_refs"][0]["id"] == "asset-image-1"
+assert restored.get_json()["production"]["asset_refs"][0]["url"] == "https://cdn.example/generated.png"
+assert restored.get_json()["production"]["last_error_code"] == ""
 assert len([call for call in quote_calls if call[3].get("confirm")]) == 1, quote_calls
 assert all(call[3]["idempotency_key"] == filled["idempotency_key"] for call in quote_calls), quote_calls
+
+for action, kind, url_field, file_field in (
+    ("audio-generate", "audio", "audio_url", "audio_file"),
+    ("video-generate", "video", "video_url", "video_file"),
+):
+    nested_record = {"action": action, "capability_family": kind, "asset_refs": [], "last_error_code": "result_link_pending"}
+    server._set_production_result(nested_record, {
+        "status": "done", "kind": kind,
+        "result": {url_field: "https://cdn.example/output", file_field: "output.bin"},
+    })
+    assert nested_record["asset_refs"] == [{
+        "kind": kind, "url": "https://cdn.example/output", "name": "output.bin", "file": "output.bin",
+    }]
+    assert nested_record["last_error_code"] == ""
 finished_change = client.post("/api/ip12/productions/confirm", json={
     "conversation_id": cid,
     "production_id": image_id,

@@ -450,6 +450,31 @@ def _set_production_result(record, result):
     if job_id not in (None, ""):
         record["job_id"] = str(job_id)
     assets = result.get("asset_refs")
+    nested = result.get("result")
+    if not isinstance(assets, list) and isinstance(nested, dict):
+        assets = nested.get("asset_refs") or nested.get("assets")
+        if not isinstance(assets, list):
+            kind = str(result.get("kind") or nested.get("type") or record.get("capability_family") or "")
+            urls = nested.get("urls")
+            if not isinstance(urls, list):
+                url = next((nested.get(key) for key in (
+                    "url", kind + "_url", "image_url", "audio_url", "video_url",
+                ) if isinstance(nested.get(key), str) and nested.get(key).strip()), "")
+                urls = [url] if url else []
+            files = nested.get("files")
+            if not isinstance(files, list):
+                file_name = next((nested.get(key) for key in (
+                    "file", kind + "_file", "image_file", "audio_file", "video_file",
+                ) if isinstance(nested.get(key), str) and nested.get(key).strip()), "")
+                files = [file_name] if file_name else []
+            assets = []
+            for index, url in enumerate(urls):
+                if not isinstance(url, str) or not url.strip().startswith(("https://", "http://", "/")):
+                    continue
+                asset = {"kind": kind, "url": url.strip()}
+                if index < len(files) and isinstance(files[index], str) and files[index].strip():
+                    asset.update(name=files[index].strip(), file=files[index].strip())
+                assets.append(asset)
     if isinstance(assets, list):
         record["asset_refs"] = assets
     if result.get("canvas_ref") is not None:
@@ -489,6 +514,8 @@ def _set_production_result(record, result):
         raise RuntimeError("production_result_unlinked")
     if record["status"] == "failed":
         record["last_error_code"] = str(result.get("code") or "production_failed")
+    elif record["status"] in {"queued", "running", "done"}:
+        record["last_error_code"] = ""
     record["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
