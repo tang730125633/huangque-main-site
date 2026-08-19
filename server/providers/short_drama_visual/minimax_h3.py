@@ -182,6 +182,7 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
         prompt = str(request.get("prompt") or "").strip()
         ratio = str(request.get("ratio") or "").strip()
         model = str(request.get("model") or self.default_model).strip()
+        resolution = str(request.get("resolution") or "2k").strip().lower()
         try:
             duration = int(request.get("duration_seconds") or 0)
         except (TypeError, ValueError) as error:
@@ -195,6 +196,10 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
             raise VisualProviderError("visual_duration_unsupported", "麦克视频镜头时长必须为 4 至 15 秒")
         if model != self.default_model:
             raise VisualProviderError("visual_model_unsupported", "短剧当前固定使用麦克视频")
+        if resolution not in {"768p", "2k"}:
+            raise VisualProviderError(
+                "visual_resolution_unsupported", "麦克视频仅支持 768P 或 2K"
+            )
         if not 1 <= len(refs) <= 5:
             raise VisualProviderError("visual_reference_count_invalid", "麦克视频每个镜头需要 1 至 5 张人物参考图")
         normalized_refs = []

@@ -2565,7 +2565,7 @@ def _project_progress_summary(conn, project, page_progress=None):
     if ready_shots >= target_shots:
         percent = max(percent, 70)
         progress_stage = "assembly_review"
-        label = "等待合成 720p 预览"
+        label = "等待合成 1080p 草稿"
         detail = "全部镜头已完成"
 
     preview_ready = count(
@@ -2575,7 +2575,7 @@ def _project_progress_summary(conn, project, page_progress=None):
         percent = max(percent, 85)
         progress_stage = "assembly_review"
         label = "等待全片验收"
-        detail = "720p 合成预览已生成"
+        detail = "1080p 全片草稿已生成"
 
     acceptance_ready = count(
         "short_drama_refinement_versions", "status='confirmed'", metric="acceptance_ready"
@@ -2583,7 +2583,7 @@ def _project_progress_summary(conn, project, page_progress=None):
     if acceptance_ready:
         percent = max(percent, 90)
         progress_stage = "assembly_review"
-        label = "等待生成 1080p 成片"
+        label = "等待导出 2K 成片"
         detail = "全片验收已通过"
 
     delivery_ready = count(
@@ -2594,7 +2594,7 @@ def _project_progress_summary(conn, project, page_progress=None):
         percent = 100
         progress_stage = "completed"
         label = "已完成正式交付"
-        detail = "1080p 正式成片已生成"
+        detail = "2K 正式成片已生成"
         active_reassembly = count(
             "short_drama_autodraft_jobs", "status IN ('queued','running')", metric="active_autodraft"
         ) + count(
@@ -6192,6 +6192,7 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             )
             handler._send(200, short_drama_refinement.get_delivery_job(
                 db_factory, owner, project_id, path.rsplit("/", 1)[-1],
+                refund_points=refund_points,
             ))
         elif method == "GET" and path.endswith("/conversation"):
             project_id = _planning_project_id_from_query(handler)

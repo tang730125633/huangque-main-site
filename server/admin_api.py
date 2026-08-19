@@ -6472,6 +6472,11 @@ def call_logs(days=7, limit=200):
                LIMIT ?""",
             (since, limit),
         ).fetchall()
+        short_drama_items = _short_drama_provider_call_logs(c, since, limit)
+    short_drama_by_shared_id = {
+        str(item["id"]): item for item in short_drama_items
+    }
+    matched_short_drama_ids = set()
     items = []
     for row in rows:
         created_at = int(row["created_at"] or 0)
@@ -6488,6 +6493,20 @@ def call_logs(days=7, limit=200):
             "mask_present": bool(row["mask_present"]),
         })
         operation = function_registry.classify_task(kind, payload)
+        short_drama_item = short_drama_by_shared_id.get(str(row["id"]))
+        if (
+            kind == "xiaole_video"
+            and short_drama_item
+            and str(short_drama_item["username"]) == str(row["username"] or "-")
+            and int(short_drama_item["cost"] or 0) == int(row["cost"] or 0)
+        ):
+            matched_short_drama_ids.add(str(short_drama_item["id"]))
+            func = short_drama_item["func"]
+            operation = short_drama_item["operation"]
+            path_label = short_drama_item["path_label"]
+        else:
+            func = call_func_name(kind, payload)
+            path_label = None
         duration = None
         if created_at and updated_at and updated_at >= created_at:
             duration = updated_at - created_at
@@ -6496,16 +6515,22 @@ def call_logs(days=7, limit=200):
                 "id": row["id"],
                 "username": row["username"] or "-",
                 "kind": kind,
-                "func": call_func_name(kind, payload),
+                "func": func,
                 "operation": operation,
                 "cost": int(row["cost"] or 0),
                 "status": row["status"] or "unknown",
                 "created_at": created_at,
                 "updated_at": updated_at,
                 "duration_sec": duration,
+                "path_label": path_label,
             }
         )
-    return {"days": days, "limit": limit, "items": items}
+    items.extend(
+        item for item in short_drama_items
+        if str(item["id"]) not in matched_short_drama_ids
+    )
+    items.sort(key=lambda item: (item["created_at"], str(item["id"])), reverse=True)
+    return {"days": days, "limit": limit, "items": items[:limit]}
 
 
 def user_job_insights(username):

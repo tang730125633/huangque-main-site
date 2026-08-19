@@ -204,6 +204,31 @@ class RequestLogUserTests(unittest.TestCase):
         self.assertEqual(ip12["request_id"], "hermes_req_1234")
         self.assertIn("error_catalog", data)
 
+    def test_shared_short_drama_job_is_enriched_without_duplicate_activity_row(self):
+        import sqlite3
+        import time as _time
+
+        now = int(_time.time())
+        connection = sqlite3.connect(str(self.db_path))
+        try:
+            connection.execute(
+                "INSERT INTO short_drama_provider_shot_jobs VALUES("
+                "'1226','tang','minimax_h3','succeeded',13,?,?, 'shot_01')",
+                (now - 100, now - 40),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        items = admin_api.call_logs(7, 20)["items"]
+        shared_rows = [item for item in items if str(item["id"]) == "1226"]
+
+        self.assertEqual(len(shared_rows), 1)
+        self.assertEqual(shared_rows[0]["func"], "短剧 · 麦克视频")
+        self.assertEqual(shared_rows[0]["operation"], "shot_01")
+        self.assertEqual(shared_rows[0]["path_label"], "短剧任务 #1226")
+        self.assertTrue(any(item["id"] == "shot-job-1" for item in items))
+
     def test_activity_filters(self):
         # source 过滤
         only_jobs = admin_api.activity_logs(source="job")["items"]

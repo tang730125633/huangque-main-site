@@ -63,6 +63,10 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             side_effect=lambda relative: Path(self.tmp.name) / relative,
         )
         self.content_out_path.start()
+        self.pending_video_asset = mock.patch(
+            "content_domains.video.record_video_pending_asset"
+        )
+        self.pending_video_asset.start()
         short_drama.init_db(self.db)
 
         self.project = short_drama.create_project(
@@ -153,6 +157,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
 
     def tearDown(self):
         self.content_out_path.stop()
+        self.pending_video_asset.stop()
         self.free.stop()
         self.tmp.cleanup()
 
@@ -832,6 +837,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             "lighting": "暖色夕阳",
             "composition_style": "电影感写实",
             "continuity": "服装和糖果袋与上一镜一致",
+            "sound_design": "长椅旁有晚风和远处孩童玩耍声",
             "negative_prompt": "字幕，水印，人物变脸",
             "provider_prompt": "傍晚长椅，中近景缓慢推近，男孩真诚分享糖果",
         }
@@ -860,6 +866,10 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertEqual(
             execution["provider_prompt"],
             workspace["provider_execution_overrides"][shot["shot_key"]]["provider_prompt"],
+        )
+        self.assertEqual(
+            execution["sound_design"],
+            workspace["provider_execution_overrides"][shot["shot_key"]]["sound_design"],
         )
 
     def test_sensitive_failure_is_localized_and_optional_references_are_persisted(self):
@@ -1221,7 +1231,56 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_vertical_provider_preview_keeps_audio_and_uses_vertical_dimensions(self):
+    def test_minimax_assembly_requires_native_2k_versions(self):
+        conn = self.db()
+        conn.row_factory = sqlite3.Row
+        try:
+            plan = json.loads(conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()[0])
+            shot_keys = [item["shot_key"] for item in plan["material_plan"]]
+            now = 1700000000
+            for index, shot_key in enumerate(shot_keys):
+                job_id = "minimax-job-" + shot_key
+                resolution = "768p" if index == 0 else "2k"
+                conn.execute(
+                    "INSERT INTO short_drama_provider_shot_jobs "
+                    "(id,project_id,owner_username,actor_username,plan_id,shot_key,"
+                    "character_key,avatar_id,provider,provider_job_id,status,progress,"
+                    "poll_count,input_hash,request_json,result_json,error_json,cost,"
+                    "created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,100,1,?,?,?,?,0,?,?)",
+                    (
+                        job_id, self.project["id"], "alice", "alice", self.plan_id,
+                        shot_key, "character_1", "avatar_1", "minimax_h3",
+                        "provider-" + job_id, "succeeded", "hash-" + shot_key,
+                        json.dumps({"resolution": resolution, "duration_seconds": 5}),
+                        "{}", None, now + index, now + index,
+                    ),
+                )
+                conn.execute(
+                    "INSERT INTO short_drama_provider_shot_versions "
+                    "(id,project_id,job_id,shot_key,version,provider,provider_job_id,"
+                    "status,file,url,input_hash,created_at) "
+                    "VALUES (?,?,?,?,1,'minimax_h3',?,'ready',?,?,?,?)",
+                    (
+                        "minimax-version-" + shot_key, self.project["id"], job_id,
+                        shot_key, "provider-" + job_id, "video/%s.mp4" % shot_key,
+                        "/api/gen/file/video/%s.mp4" % shot_key,
+                        "hash-" + shot_key, now + index,
+                    ),
+                )
+            snapshot = short_drama_autodraft._provider_assembly_snapshot(
+                conn, self.project["id"], plan, "minimax_h3",
+            )
+            self.assertTrue(snapshot["assets_ready"])
+            self.assertFalse(snapshot["quality_ready"])
+            self.assertFalse(snapshot["all_ready"])
+            self.assertEqual([shot_keys[0]], snapshot["low_resolution_shot_keys"])
+        finally:
+            conn.close()
+
+    def test_vertical_provider_preview_keeps_audio_and_builds_1080p(self):
         root = Path(self.tmp.name) / "content-out"
         source = root / "provider" / "shot.mp4"
         source.parent.mkdir(parents=True)
@@ -1233,7 +1292,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             Path(command[-1]).write_bytes(b"rendered-preview")
             return mock.Mock(returncode=0, stdout="", stderr="")
 
-        probe = {
+        source_probe = {
             "duration_ms": 5000,
             "video": {
                 "codec": "h264", "width": 720, "height": 1280,
@@ -1241,29 +1300,112 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             },
             "audio": {"codec": "aac", "sample_rate": 48000, "channels": 2},
         }
+        output_probe = {
+            **source_probe,
+            "video": {
+                **source_probe["video"], "width": 1080, "height": 1920,
+            },
+        }
         with mock.patch.dict(os.environ, {"CONTENT_OUT": str(root)}), \
                 mock.patch.object(
                     short_drama_autodraft, "_run_preview_process",
                     side_effect=render,
                 ), mock.patch.object(
-                    short_drama_autodraft.media_plan, "probe_media", return_value=probe,
+                    short_drama_autodraft.media_plan, "probe_media",
+                    side_effect=[source_probe, output_probe],
                 ):
             result = short_drama_autodraft._render_provider_preview(
                 "project", "job", {
                     "shots": [{"file": "provider/shot.mp4"}],
                     "ratio": "9:16", "duration_ms": 5000,
-                    "media_contract": {"audio_tracks": [], "subtitles": []},
+                    "media_contract": {
+                        "media_mode": "provider_audio",
+                        "audio_tracks": [], "subtitles": [],
+                    },
                 },
             )
         command = commands[0]
         filters = command[command.index("-filter_complex") + 1]
-        self.assertIn("scale=720:1280", filters)
+        self.assertIn("scale=1080:1920", filters)
+        self.assertIn("force_original_aspect_ratio=increase:flags=lanczos", filters)
+        self.assertIn("crop=1080:1920", filters)
+        self.assertEqual("medium", command[command.index("-preset") + 1])
+        self.assertEqual("18", command[command.index("-crf") + 1])
         self.assertNotIn("-an", command)
         self.assertIn("[outa]", command)
+        self.assertIn("[0:a:0]aresample=48000", filters)
+        self.assertNotIn("anullsrc", filters)
         self.assertEqual(
-            "/api/gen/file/short_drama_autodraft/project/job/preview-720p.mp4",
+            "/api/gen/file/short_drama_autodraft/project/job/preview-1080p.mp4",
             result["url"],
         )
+
+    def test_provider_assembly_manifest_records_1080p_preview(self):
+        conn = self.db()
+        conn.row_factory = sqlite3.Row
+        try:
+            plan = json.loads(conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()[0])
+            assets = [
+                {
+                    "id": "version-" + shot["shot_key"],
+                    "shot_key": shot["shot_key"],
+                    "version": 1,
+                    "provider": "minimax_h3",
+                    "file": "video/%s.mp4" % shot["shot_key"],
+                    "url": "/api/gen/file/video/%s.mp4" % shot["shot_key"],
+                    "input_hash": "hash-" + shot["shot_key"],
+                }
+                for shot in plan["material_plan"]
+            ]
+            now = int(time.time())
+            conn.execute(
+                "INSERT INTO short_drama_autodraft_jobs "
+                "(id,project_id,owner_username,actor_username,plan_id,status,phase,"
+                "progress,poll_count,input_hash,request_json,cost,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,'running','assembling',95,3,?,?,0,?,?)",
+                (
+                    "provider-assembly-1080p", self.project["id"], "alice",
+                    "alice", self.plan_id, "assembly-input-hash",
+                    json.dumps({
+                        "production_mode": "provider_assembly",
+                        "provider_assets": assets,
+                    }), now, now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM short_drama_autodraft_jobs WHERE id=?",
+                ("provider-assembly-1080p",),
+            ).fetchone()
+            rendered = {
+                "file": "short_drama_autodraft/project/job/preview-1080p.mp4",
+                "url": (
+                    "/api/gen/file/short_drama_autodraft/project/job/"
+                    "preview-1080p.mp4"
+                ),
+                "probe": {
+                    "duration_ms": 30000,
+                    "video": {"width": 1080, "height": 1920},
+                    "audio": {"codec": "aac"},
+                },
+                "duration_ms": 30000,
+            }
+            with mock.patch.object(
+                short_drama_autodraft, "_render_provider_preview",
+                return_value=rendered,
+            ):
+                short_drama_autodraft._complete(conn, row)
+            manifest = json.loads(conn.execute(
+                "SELECT manifest_json FROM short_drama_autodraft_versions "
+                "WHERE job_id=?", ("provider-assembly-1080p",),
+            ).fetchone()[0])
+        finally:
+            conn.close()
+
+        self.assertEqual("1080p", manifest["resolution"])
+        self.assertTrue(manifest["playback_file"].endswith("preview-1080p.mp4"))
 
     def test_preview_process_is_terminated_and_reaped_when_cancelled(self):
         process = mock.Mock()
@@ -1306,8 +1448,8 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         source_dir = root / "provider"
         source_dir.mkdir(parents=True)
         for ratio, source_size, expected in (
-            ("16:9", "320x180", (1280, 720)),
-            ("9:16", "180x320", (720, 1280)),
+            ("16:9", "320x180", (1920, 1080)),
+            ("9:16", "180x320", (1080, 1920)),
         ):
             source = source_dir / ("shot-" + ratio.replace(":", "-") + ".mp4")
             generated = subprocess.run([
@@ -2702,6 +2844,12 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             "provider_video_id": "h3-upstream-task-1",
             "video_file": "video/minimax_h3_result.mp4",
             "video_url": "/api/gen/file/video/minimax_h3_result.mp4",
+            "generate_audio": True,
+            "native_audio": {
+                "audible": True, "codec": "aac", "sample_rate": 48000,
+                "channels": 2, "mean_volume_dbfs": -24.3,
+                "max_volume_dbfs": -3.1,
+            },
             "phase": "done",
         }
         conn = self.db()
@@ -2754,6 +2902,15 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertEqual(1, len(versions))
         self.assertEqual(shared_result["video_file"], versions[0]["file"])
         self.assertEqual(shared_result["video_url"], versions[0]["url"])
+        projected_version = next(
+            item for item in short_drama_autodraft.workspace(
+                self.db, "alice", "alice", self.project["id"]
+            )["provider_versions"]
+            if item["id"] == versions[0]["id"]
+        )
+        self.assertEqual(
+            shared_result["native_audio"], projected_version["native_audio"]
+        )
         self.assertEqual("done", attempt["state"])
         self.assertEqual([], refunded)
         forbidden_provider.create_job.assert_not_called()
@@ -3166,6 +3323,438 @@ class ShortDramaAutodraftTests(unittest.TestCase):
 
         self.assertEqual("running", result["status"])
         provider.get_job.assert_called_once_with("provider-timeout-job")
+
+    def test_minimax_prompt_contains_native_dialogue_and_sound_design(self):
+        from PIL import Image
+
+        conn = self.db()
+        try:
+            plan = json.loads(conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()[0])
+            shot = plan["material_plan"][0]
+            shot["character_keys"] = ["lead", "friend"]
+            shot["dialogue"] = [
+                {
+                    "character_key": "lead", "text": "别回头",
+                    "speech_rate": 1.0, "timing_mode": "sequential",
+                },
+                {
+                    "character_key": "friend", "text": "快走",
+                    "speech_rate": 1.0,
+                    "timing_mode": "simultaneous_with_previous",
+                },
+            ]
+            shot["sound_design"] = "远处金属碰撞声"
+            shot["provider_prompt"] = "两人在废墟中快速撤离"
+            conn.execute(
+                "UPDATE short_drama_production_plans SET plan_json=? WHERE id=?",
+                (json.dumps(plan, ensure_ascii=False), self.plan_id),
+            )
+            for index, (key, name) in enumerate(
+                (("lead", "顾承川"), ("friend", "许安")), 1
+            ):
+                conn.execute(
+                    "INSERT INTO short_drama_characters "
+                    "(id,project_id,character_key,name,source_type,reference_file,"
+                    "reference_url,reference_version,reference_locked,sort_order) "
+                    "VALUES (?,?,?,?,?,?,?,?,1,?) "
+                    "ON CONFLICT(project_id,character_key) DO UPDATE SET "
+                    "name=excluded.name,reference_file=excluded.reference_file,"
+                    "reference_url=excluded.reference_url,reference_version=1,"
+                    "reference_locked=1",
+                    (
+                        "native-audio-character-%d" % index,
+                        self.project["id"], key, name, "ai_character",
+                        "short_drama_refs/native-audio-%d.png" % index,
+                        "https://cdn.example/native-audio-%d.png" % index,
+                        1, index,
+                    ),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        for index in (1, 2):
+            reference_path = (
+                Path(self.tmp.name) /
+                ("short_drama_refs/native-audio-%d.png" % index)
+            )
+            reference_path.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (256, 256), (30, 80, 120)).save(
+                reference_path, "PNG"
+            )
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+            "MINIMAX_API_KEY": "configured-for-preflight-only",
+        }):
+            result = short_drama_autodraft.preview_provider_request(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "plan_id": self.plan_id,
+                    "shot_key": shot["shot_key"],
+                },
+            )
+
+        prompt = result["request"]["prompt"]
+        self.assertIn("顾承川：别回头", prompt)
+        self.assertIn("许安（与上一条同时说）：快走", prompt)
+        self.assertIn("远处金属碰撞声", prompt)
+        self.assertIn("原生双声道", prompt)
+
+    def test_minimax_sound_design_changes_request_hash(self):
+        self._lock_project_character_references()
+        conn = self.db()
+        try:
+            plan = json.loads(conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()[0])
+            shot = plan["material_plan"][0]
+            shot["sound_design"] = "雨声逐渐增强"
+            conn.execute(
+                "UPDATE short_drama_production_plans SET plan_json=? WHERE id=?",
+                (json.dumps(plan, ensure_ascii=False), self.plan_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        body = {
+            "project_id": self.project["id"], "plan_id": self.plan_id,
+            "shot_key": shot["shot_key"],
+        }
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+            "MINIMAX_API_KEY": "configured-for-preflight-only",
+        }):
+            first = short_drama_autodraft.preview_provider_request(
+                self.db, "alice", "alice", body,
+            )
+            conn = self.db()
+            try:
+                plan = json.loads(conn.execute(
+                    "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                    (self.plan_id,),
+                ).fetchone()[0])
+                plan["material_plan"][0]["sound_design"] = "风声突然停止"
+                conn.execute(
+                    "UPDATE short_drama_production_plans SET plan_json=? WHERE id=?",
+                    (json.dumps(plan, ensure_ascii=False), self.plan_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            changed = short_drama_autodraft.preview_provider_request(
+                self.db, "alice", "alice", body,
+            )
+
+        self.assertNotEqual(first["request_hash"], changed["request_hash"])
+
+    def test_minimax_runtime_queue_phase_is_exposed_without_fake_progress(self):
+        self._lock_project_character_references()
+        self._init_shared_jobs_table()
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            feature_flags, "is_enabled", return_value=True,
+        ):
+            quote = self._provider_quote()
+            job = short_drama_autodraft.start_provider_job(
+                self.db,
+                "alice",
+                "alice",
+                {"quote_token": quote["quote_token"]},
+                "minimax-runtime-queue-phase-1",
+                deduct_points=lambda _user, cost, _reason, _key: 100 - cost,
+                refund_points=lambda _user, _cost, _reason, _key: 100,
+                enqueue_job=lambda _job_id, _kind, _mode: True,
+                project_usage=short_drama._project_point_usage,
+            )
+
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE jobs SET status='running' WHERE id=?", (int(job["id"]),)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with mock.patch(
+            "content_domains.video.get_video_job_diagnostics",
+            return_value={
+                "phase": "minimax_queued",
+                "provider_video_id": "minimax-upstream-queued-1",
+            },
+        ):
+            projected = short_drama_autodraft.reconcile_shared_xiaole_job(
+                self.db, int(job["id"])
+            )
+
+        self.assertEqual("queued", projected["status"])
+        self.assertEqual("minimax_queued", projected["phase"])
+        self.assertTrue(projected["progress_indeterminate"])
+        self.assertEqual(
+            "minimax-upstream-queued-1", projected["provider_job_id"]
+        )
+
+    def test_minimax_pending_asset_failure_refunds_before_enqueue(self):
+        self._lock_project_character_references()
+        self._init_shared_jobs_table()
+        charged = []
+        refunded = []
+        enqueued = []
+
+        def deduct(username, cost, reason, transaction_key=""):
+            charged.append((username, cost, reason, transaction_key))
+            return 100 - cost
+
+        def refund(username, cost, reason, transaction_key=""):
+            refunded.append((username, cost, reason, transaction_key))
+            return 100
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            feature_flags, "is_enabled", return_value=True,
+        ):
+            quote = self._provider_quote()
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft.start_provider_job(
+                    self.db,
+                    "alice",
+                    "alice",
+                    {"quote_token": quote["quote_token"]},
+                    "minimax-asset-registration-failed-1",
+                    deduct_points=deduct,
+                    refund_points=refund,
+                    enqueue_job=lambda *args: enqueued.append(args) or True,
+                    project_usage=short_drama._project_point_usage,
+                    video_asset_recorder=lambda *_args: (_ for _ in ()).throw(
+                        RuntimeError("asset database unavailable")
+                    ),
+                )
+
+        conn = self.db()
+        conn.row_factory = sqlite3.Row
+        try:
+            shared = conn.execute("SELECT * FROM jobs").fetchone()
+            projected = conn.execute(
+                "SELECT * FROM short_drama_provider_shot_jobs"
+            ).fetchone()
+            attempt = conn.execute(
+                "SELECT * FROM short_drama_provider_shot_attempts"
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertEqual(
+            "video_asset_register_failed", raised.exception.code
+        )
+        self.assertEqual("error", shared["status"])
+        self.assertEqual(1, shared["refunded"])
+        self.assertEqual("failed", projected["status"])
+        self.assertEqual("refunded", attempt["state"])
+        self.assertEqual(1, len(charged))
+        self.assertEqual(1, len(refunded))
+        self.assertEqual([], enqueued)
+
+    def test_minimax_asset_registration_failure_refunds_before_enqueue(self):
+        self._lock_project_character_references()
+        self._init_shared_jobs_table()
+        charged = []
+        refunded = []
+        enqueued = []
+
+        def deduct(username, cost, reason, transaction_key=""):
+            charged.append((username, cost, reason, transaction_key))
+            return 100 - cost
+
+        def refund(username, cost, reason, transaction_key=""):
+            refunded.append((username, cost, reason, transaction_key))
+            return 100
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            feature_flags, "is_enabled", return_value=True,
+        ):
+            quote = self._provider_quote()
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft.start_provider_job(
+                    self.db,
+                    "alice",
+                    "alice",
+                    {"quote_token": quote["quote_token"]},
+                    "minimax-asset-registration-failure-1",
+                    deduct_points=deduct,
+                    refund_points=refund,
+                    video_asset_recorder=lambda *_args: (_ for _ in ()).throw(
+                        RuntimeError("asset db unavailable")
+                    ),
+                    enqueue_job=lambda *args: enqueued.append(args) or True,
+                    project_usage=short_drama._project_point_usage,
+                )
+
+        conn = self.db()
+        conn.row_factory = sqlite3.Row
+        try:
+            shared = conn.execute("SELECT * FROM jobs").fetchone()
+            projected = conn.execute(
+                "SELECT * FROM short_drama_provider_shot_jobs"
+            ).fetchone()
+            attempt = conn.execute(
+                "SELECT * FROM short_drama_provider_shot_attempts"
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertEqual("video_asset_register_failed", raised.exception.code)
+        self.assertEqual("error", shared["status"])
+        self.assertEqual(1, shared["refunded"])
+        self.assertEqual("failed", projected["status"])
+        self.assertEqual("refunded", attempt["state"])
+        self.assertEqual(1, len(charged))
+        self.assertEqual(1, len(refunded))
+        self.assertEqual([], enqueued)
+
+    def test_all_validated_minimax_versions_default_to_provider_audio(self):
+        conn = self.db()
+        conn.row_factory = sqlite3.Row
+        try:
+            plan = json.loads(conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()[0])
+            shot_keys = [
+                str(item["shot_key"]) for item in plan["material_plan"]
+            ]
+            now = int(time.time())
+            audio = {
+                "audible": True, "codec": "aac", "sample_rate": 48000,
+                "channels": 2, "mean_volume_dbfs": -20.0,
+                "max_volume_dbfs": -2.0,
+            }
+            for index, shot_key in enumerate(shot_keys, 1):
+                job_id = "native-contract-job-%d" % index
+                conn.execute(
+                    "INSERT INTO short_drama_provider_shot_jobs "
+                    "(id,project_id,owner_username,actor_username,plan_id,shot_key,"
+                    "character_key,avatar_id,provider,provider_job_id,status,progress,"
+                    "poll_count,input_hash,request_json,result_json,cost,created_at,updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,'succeeded',100,1,?,?,?,0,?,?)",
+                    (
+                        job_id, self.project["id"], "alice", "alice", self.plan_id,
+                        shot_key, "lead", "character:lead", "minimax_h3",
+                        "upstream-%d" % index, "input-%d" % index,
+                        json.dumps({"duration_seconds": 5}),
+                        json.dumps({"native_audio": audio}), now, now,
+                    ),
+                )
+                conn.execute(
+                    "INSERT INTO short_drama_provider_shot_versions "
+                    "(id,project_id,job_id,shot_key,version,provider,provider_job_id,"
+                    "status,file,url,input_hash,created_at) "
+                    "VALUES (?,?,?,?,1,'minimax_h3',?,'ready',?,?,?,?)",
+                    (
+                        "native-contract-version-%d" % index,
+                        self.project["id"], job_id, shot_key,
+                        "upstream-%d" % index, "video/native-%d.mp4" % index,
+                        "/api/gen/file/video/native-%d.mp4" % index,
+                        "input-%d" % index, now,
+                    ),
+                )
+            conn.commit()
+            project = conn.execute(
+                "SELECT * FROM short_drama_projects WHERE id=?",
+                (self.project["id"],),
+            ).fetchone()
+            contract = short_drama_autodraft._locked_media_contract(conn, project)
+            self.assertTrue(contract["delivery_eligible"])
+            self.assertEqual("provider_audio", contract["media_mode"])
+            self.assertEqual(
+                "validated_provider_native_audio", contract["evidence_source"]
+            )
+            self.assertEqual([], contract["audio_tracks"])
+
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs SET result_json=? WHERE id=?",
+                (json.dumps({"native_audio": {"audible": False}}),
+                 "native-contract-job-1"),
+            )
+            conn.commit()
+            incomplete = short_drama_autodraft._locked_media_contract(conn, project)
+            self.assertFalse(incomplete["delivery_eligible"])
+            self.assertEqual("provider_native_audio_incomplete", incomplete["reason"])
+            self.assertEqual([shot_keys[0]], incomplete["invalid_shot_keys"])
+
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs SET result_json=? WHERE id=?",
+                (json.dumps({"native_audio": audio}), "native-contract-job-1"),
+            )
+            conn.execute(
+                "UPDATE short_drama_provider_shot_versions SET shot_key=? WHERE id=?",
+                ("stale_shot", "native-contract-version-%d" % len(shot_keys)),
+            )
+            conn.commit()
+            stale = short_drama_autodraft._automatic_native_audio_contract(
+                conn, project, len(shot_keys)
+            )
+            self.assertIsNone(stale)
+        finally:
+            conn.close()
+
+    def test_minimax_shared_completion_without_audio_evidence_is_not_ready(self):
+        self._lock_project_character_references()
+        self._init_shared_jobs_table()
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            feature_flags, "is_enabled", return_value=True,
+        ):
+            quote = self._provider_quote()
+            job = short_drama_autodraft.start_provider_job(
+                self.db, "alice", "alice",
+                {"quote_token": quote["quote_token"]},
+                "minimax-missing-native-audio",
+                deduct_points=lambda _user, cost, _reason, _key: 100 - cost,
+                refund_points=lambda _user, _cost, _reason, _key: 100,
+                enqueue_job=lambda *_args: True,
+                project_usage=short_drama._project_point_usage,
+            )
+        result_without_audio = {
+            "type": "video", "status": "done", "mode": "minimax",
+            "provider_video_id": "h3-without-audio-evidence",
+            "video_file": "video/no-audio-evidence.mp4",
+            "video_url": "/api/gen/file/video/no-audio-evidence.mp4",
+        }
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE jobs SET status='done',result=? WHERE id=?",
+                (json.dumps(result_without_audio), int(job["id"])),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+            short_drama_autodraft.reconcile_shared_xiaole_job(
+                self.db, int(job["id"])
+            )
+        self.assertEqual("shared_video_result_incomplete", raised.exception.code)
+
 
 class ShortDramaContinuityChainTests(unittest.TestCase):
     def setUp(self):

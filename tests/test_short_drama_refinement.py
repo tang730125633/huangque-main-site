@@ -338,7 +338,7 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.assertTrue(result["billing"]["delivery_enabled"])
         self.assertFalse(result["billing"]["deliverable"])
 
-    def test_local_ffmpeg_capability_enables_real_1080p_delivery(self):
+    def test_local_ffmpeg_capability_enables_real_2k_delivery(self):
         process = mock.Mock(
             returncode=0, stdout=" V..... libx264 A..... aac ", stderr=""
         )
@@ -352,7 +352,56 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.assertTrue(capability["delivery_enabled"])
         self.assertTrue(capability["deliverable"])
         self.assertEqual("local_ffmpeg", capability["adapter"])
-        self.assertEqual("local_1080p_renderer", capability["reason"])
+        self.assertEqual("local_2k_renderer", capability["reason"])
+
+    def test_formal_2k_cost_uses_duration_tiers(self):
+        cases = (
+            (30, 10), (60, 10),
+            (61, 15), (90, 15),
+            (91, 20), (120, 20),
+        )
+        for duration, expected in cases:
+            with self.subTest(duration=duration):
+                self.assertEqual(
+                    expected,
+                    short_drama_refinement._formal_2k_cost(duration),
+                )
+
+    def test_local_ffmpeg_quote_is_paid_2k_for_project_duration(self):
+        version = self.confirmed_version("paid-2k-quote")
+        capability = {
+            "delivery_enabled": True,
+            "deliverable": True,
+            "mode": "local_ffmpeg",
+            "adapter": "local_ffmpeg",
+            "formal_cost": 0,
+            "reason": "local_2k_renderer",
+        }
+        with mock.patch.object(
+            short_drama_refinement,
+            "_delivery_capability",
+            return_value=capability,
+        ):
+            quote = short_drama_refinement.create_delivery_quote(
+                self.db,
+                "alice",
+                {
+                    "project_id": self.project["id"],
+                    "version_id": version["id"],
+                },
+            )
+        self.assertEqual("2k", quote["resolution"])
+        self.assertEqual(10, quote["cost"])
+
+    def test_formal_2k_dimensions_follow_project_ratio(self):
+        self.assertEqual(
+            (2560, 1440),
+            short_drama_refinement._dimensions("16:9", "2k"),
+        )
+        self.assertEqual(
+            (1440, 2560),
+            short_drama_refinement._dimensions("9:16", "2k"),
+        )
 
     def _assert_real_formal_delivery(self, ratio, preview_size, expected_size):
         ffmpeg = shutil.which(os.environ.get("FFMPEG_BIN", "ffmpeg"))
@@ -425,6 +474,8 @@ class ShortDramaRefinementTests(unittest.TestCase):
                     "project_id": self.project["id"],
                     "quote_token": quote["quote_token"],
                 }, "real-delivery-job-" + ratio,
+                deduct_points=lambda *args: None,
+                refund_points=lambda *args: None,
             )
             for _ in range(4):
                 job = short_drama_refinement.get_delivery_job(
@@ -446,10 +497,10 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.assertTrue(subtitle.stdout.strip())
 
     def test_real_ffmpeg_horizontal_formal_delivery_contract(self):
-        self._assert_real_formal_delivery("16:9", "1280x720", (1920, 1080))
+        self._assert_real_formal_delivery("16:9", "1280x720", (2560, 1440))
 
     def test_real_ffmpeg_vertical_formal_delivery_contract(self):
-        self._assert_real_formal_delivery("9:16", "720x1280", (1080, 1920))
+        self._assert_real_formal_delivery("9:16", "720x1280", (1440, 2560))
 
     def test_single_shot_job_creates_new_issue_free_version(self):
         preview = short_drama_refinement.preview_change(
@@ -2034,6 +2085,36 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.assertFalse(contract["silent_confirmed"])
         self.assertEqual([], contract["audio_tracks"])
 
+    def test_delivery_revalidates_provider_audio_with_project_shot_count(self):
+        short_drama_refinement.set_media_preference(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"], "mode": "provider_audio",
+            },
+        )
+        version = self.confirmed_version("provider-audio-formal-delivery")
+        quote = short_drama_refinement.create_delivery_quote(
+            self.db, "alice", {
+                "project_id": self.project["id"], "version_id": version["id"],
+            },
+        )
+        delivery = short_drama_refinement.start_delivery_job(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "quote_token": quote["quote_token"],
+            }, "provider-audio-formal-delivery-job",
+        )
+        with mock.patch.object(
+            short_drama_refinement, "_valid_acceptance",
+            wraps=short_drama_refinement._valid_acceptance,
+        ) as validate_acceptance:
+            for _ in range(4):
+                delivery = short_drama_refinement.get_delivery_job(
+                    self.db, "alice", self.project["id"], delivery["id"]
+                )
+        completion_project = validate_acceptance.call_args.args[1]
+        self.assertEqual(6, completion_project.get("shot_count"))
+        self.assertEqual("succeeded", delivery["status"], delivery.get("error"))
+
     def test_production_delivery_is_closed_without_real_executor(self):
         job = short_drama_refinement.start_refinement_job(
             self.db, "alice", "alice",
@@ -2553,6 +2634,68 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.assertEqual("failed", replay["status"])
         self.assertEqual(job["poll_count"], replay["poll_count"])
         render.assert_called_once()
+
+    def test_paid_2k_render_failure_refunds_the_delivery_charge(self):
+        version = self.confirmed_version("paid-2k-render-refund")
+        capability = {
+            "delivery_enabled": True,
+            "deliverable": True,
+            "mode": "local_ffmpeg",
+            "adapter": "local_ffmpeg",
+            "formal_cost": 0,
+            "reason": "local_2k_renderer",
+        }
+        deduct = mock.Mock()
+        refund_spy = mock.Mock()
+
+        def refund(*args, **kwargs):
+            return refund_spy(*args, **kwargs)
+        with mock.patch.object(
+            short_drama_refinement,
+            "_delivery_capability",
+            return_value=capability,
+        ):
+            quote = short_drama_refinement.create_delivery_quote(
+                self.db, "alice", {
+                    "project_id": self.project["id"],
+                    "version_id": version["id"],
+                },
+            )
+            job = short_drama_refinement.start_delivery_job(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "quote_token": quote["quote_token"],
+                }, "paid-2k-render-refund-job",
+                deduct_points=deduct,
+                refund_points=refund,
+            )
+            for _ in range(3):
+                job = short_drama_refinement.get_delivery_job(
+                    self.db, "alice", self.project["id"], job["id"],
+                    refund_points=refund,
+                )
+            with mock.patch.object(
+                short_drama_refinement,
+                "_complete_delivery",
+                side_effect=OSError("2k renderer unavailable"),
+            ):
+                job = short_drama_refinement.get_delivery_job(
+                    self.db, "alice", self.project["id"], job["id"],
+                    refund_points=refund,
+                )
+        self.assertEqual("failed", job["status"])
+        deduct.assert_called_once()
+        refund_spy.assert_called_once()
+        self.assertEqual(10, refund_spy.call_args.args[1])
+        conn = self.db()
+        try:
+            state = conn.execute(
+                "SELECT state FROM short_drama_delivery_attempts WHERE job_id=?",
+                (job["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual("refunded", state)
 
     def test_local_ffmpeg_capability_reports_missing_tools(self):
         with mock.patch.dict(os.environ, {

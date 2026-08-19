@@ -35,6 +35,21 @@ test('镜头编辑提供单一声音设计区域并独立保存', () => {
   assert.match(workspaceSource, /sound_design:text\(fields\.sound_design/);
 });
 
+test('生成执行编辑器显示并提交声音设计', () => {
+  const soundDesignFields = workspaceSource.match(
+    /声音设计<textarea name="sound_design" maxlength="600"/g
+  ) || [];
+  assert.equal(soundDesignFields.length, 2);
+  assert.match(
+    workspaceSource,
+    /\['visual','camera','performance','scene','lighting','composition_style','continuity','sound_design','negative_prompt','provider_prompt'\]/
+  );
+  assert.match(
+    workspaceSource,
+    /\['visual','camera','performance','scene','lighting','composition_style','continuity','sound_design','negative_prompt','provider_prompt'\]\.forEach\(function\(fieldName\)/
+  );
+});
+
 test('剧本确认后正式项目切换为两栏并将聊天收进只读创作记录', () => {
   const css = fs.readFileSync(
     path.join(ROOT, 'site/workbench/short-drama-workspace.css'), 'utf8'
@@ -739,6 +754,40 @@ test('视频轮询只局部更新进度并保持工作区视口稳定', () => {
   assert.match(workspaceSource,/function workspaceViewportState\(\)/);
   assert.match(workspaceStyle,/\.sd-workspace-top\{position:fixed/);
   assert.match(workspaceStyle,/\.sd-workspace\{box-sizing:border-box;height:100dvh;padding-top:68px/);
+});
+
+test('麦克活动任务显示真实阶段并使用不确定进度条', () => {
+  const queued={
+    id:'90',shot_key:'shot_05',provider:'minimax_h3',status:'queued',
+    phase:'minimax_queued',progress:35,progress_indeterminate:true
+  };
+  const display=workspace.providerJobDisplay(queued);
+  const media=workspace.shotMediaHtml(
+    {shot_key:'shot_05'}, {versions:[],job:queued}
+  );
+  assert.equal(display.label,'麦克模型排队中');
+  assert.equal(display.indeterminate,true);
+  assert.match(media,/麦克模型排队中/);
+  assert.match(media,/sd-progress indeterminate/);
+  assert.doesNotMatch(media,/35%/);
+  assert.match(workspaceStyle,/\.sd-progress\.indeterminate i/);
+});
+
+test('镜头视频随可用宽度伸缩并为竖屏项目限制合理高度', () => {
+  const media={versions:[{
+    id:'v1',shot_key:'shot_01',version:1,selected:true,
+    url:'/api/gen/file/video/shot-01.mp4'
+  }],job:null};
+  const landscape=workspace.shotMediaHtml({shot_key:'shot_01'},media,'16:9');
+  const portrait=workspace.shotMediaHtml({shot_key:'shot_01'},media,'9:16');
+
+  assert.match(landscape,/sd-shot-media-landscape/);
+  assert.match(portrait,/sd-shot-media-portrait/);
+  assert.match(landscape,/class="sd-shot-media-frame"/);
+  assert.match(workspaceSource,/shotMediaHtml\(shot,mediaByShot\[text\(shot\.shot_key\)\],project&&project\.ratio\)/);
+  assert.match(workspaceStyle,/\.sd-shot-media-frame\{[^}]*width:100%[^}]*aspect-ratio:16\/9/);
+  assert.match(workspaceStyle,/\.sd-shot-media-portrait \.sd-shot-media-frame\{[^}]*72vh[^}]*aspect-ratio:9\/16/);
+  assert.doesNotMatch(workspaceStyle,/\.sd-shot-media video\{[^}]*max-height:430px/);
 });
 
 test('镜头角色更换会同步提示词且不改动未替换角色', () => {
@@ -1604,21 +1653,21 @@ test('镜头问题标记使用页面内弹窗并提供明确的问题类型', ()
   assert.match(workspaceStyle, /\.sd-refinement-issue-form/);
 });
 
-test('PR-5 正式交付展示 1080p 播放器和不可变快照证据', () => {
+test('PR-5 正式交付展示 2K 播放器和不可变快照证据', () => {
   const output = workspace.refinementHtml({
     project:{title:'晚风偶遇'},
     current_delivery:{
       version:1,status:'ready',url:'/assets/meiye_video.mp4',
       input_hash:'abc123',
-      snapshot:{resolution:'1080p',refinement_version:3,immutable:true,deliverable:true},
+      snapshot:{resolution:'2k',refinement_version:3,immutable:true,deliverable:true},
     },
   });
-  assert.match(output, /1080p 正式成片 v1/);
+  assert.match(output, /2K 正式成片 v1/);
   assert.match(output, /不可变交付快照/);
   assert.match(output, /abc123/);
   assert.doesNotMatch(output, /单独打开/);
-  assert.match(output, /下载 1080p 成片/);
-  assert.match(output, /download="晚风偶遇-v1-1080p\.mp4"/);
+  assert.match(output, /下载 2K 成片/);
+  assert.match(output, /download="晚风偶遇-v1-2k\.mp4"/);
 });
 
 test('formal delivery stays disabled when the real executor is unavailable', () => {
@@ -1632,7 +1681,7 @@ test('formal delivery stays disabled when the real executor is unavailable', () 
       reason:'formal_executor_unavailable'
     }
   }, true);
-  assert.match(output, /真实 1080p 交付暂未启用/);
+  assert.match(output, /真实 2K 交付暂未启用/);
   assert.match(output, /不会询价、建单或扣点/);
   assert.match(output, /disabled/);
   assert.doesNotMatch(output, /data-action="start-delivery"/);
@@ -1654,11 +1703,11 @@ test('local deterministic delivery is labelled as a free non-deliverable demo', 
     }
   });
   assert.match(output, /本地演示预览 v2/);
-  assert.match(output, /不是 1080p 正式交付文件/);
+  assert.match(output, /不是 2K 正式交付文件/);
   assert.match(output, /不可交付的演示快照/);
   assert.match(output, /下载演示预览/);
   assert.match(output, /download="晚风偶遇-v2-preview\.mp4"/);
-  assert.doesNotMatch(output, /1080p 正式成片/);
+  assert.doesNotMatch(output, /2K 正式成片/);
 });
 
 test('delivery explains when the generated file address is missing', () => {
@@ -1667,7 +1716,7 @@ test('delivery explains when the generated file address is missing', () => {
     current_delivery:{version:1,status:'ready',url:'',snapshot:{deliverable:true}},
   });
   assert.match(output, /成片文件地址缺失，请刷新后重试/);
-  assert.doesNotMatch(output, /下载 1080p 成片/);
+  assert.doesNotMatch(output, /下载 2K 成片/);
 });
 
 test('Provider executor renders preflight, quote, paid confirmation and result state', () => {
@@ -1727,6 +1776,7 @@ test('Provider executor renders preflight, quote, paid confirmation and result s
   assert.match(output, /1\/1 个角色已锁定/);
   assert.match(controls, /免费检查生成参数/);
   assert.match(controls, /电影感写实短剧镜头/);
+  assert.match(controls, /16:9 · 720p · 4 秒/);
   assert.match(controls, /剧本镜头为 3 秒；生成服务最低返回 4 秒/);
   assert.match(controls, /保留服务实际返回的完整镜头/);
   assert.match(controls, /确认扣 50 点并生成/);
@@ -2035,7 +2085,7 @@ test('Provider video generation explains why it is disabled before the script is
   assert.match(output, /请先确认并锁定当前剧本/);
 });
 
-test('all Provider shots expose the 720p assembly stage without charging again', () => {
+test('all Provider shots expose the free 1080p assembly stage', () => {
   const output = workspace.autodraftActionsHtml({
     confirmed_plan:{id:'plan-1'},
     billing:{cost:0,mode:'provider_assets_already_charged'},
@@ -2049,11 +2099,33 @@ test('all Provider shots expose the 720p assembly stage without charging again',
   assert.match(output, /全部镜头已完成/);
   assert.match(output, /6 个已生成镜头/);
   assert.match(output, /data-action="start-draft"/);
-  assert.match(output, /合成 720p 预览/);
+  assert.match(output, /合成 1080p 草稿/);
   assert.match(output, /本次合成不重复扣点/);
 });
 
-test('failed 720p assembly explains the failure and allows a safe retry', () => {
+test('historical 768p MiniMax shots must be regenerated before sharp assembly', () => {
+  const output = workspace.autodraftActionsHtml({
+    confirmed_plan:{id:'plan-1'},
+    billing:{cost:0,mode:'provider_assets_already_charged'},
+    provider_poc:{provider:'minimax_h3',shots:[],characters:[]},
+    production:{
+      ready:false,
+      mode:'provider_poc',
+      message:'历史 768p 版本不符合高清草稿要求。',
+      provider:{selected:'minimax_h3',configured:true},
+      assembly:{
+        required_count:2,ready_count:2,assets_ready:true,quality_ready:false,
+        low_resolution_shot_keys:['shot_01'],all_ready:false
+      }
+    }
+  }, true);
+  assert.match(output, /shot_01/);
+  assert.match(output, /768p/);
+  assert.match(output, /原生 2K/);
+  assert.doesNotMatch(output, /data-action="start-draft"/);
+});
+
+test('failed 1080p assembly explains the failure and allows a safe retry', () => {
   const output = workspace.autodraftActionsHtml({
     confirmed_plan:{id:'plan-1'},
     current_job:{
@@ -2070,18 +2142,19 @@ test('failed 720p assembly explains the failure and allows a safe retry', () => 
   assert.match(output, /上次合成失败/);
   assert.match(output, /FFprobe/);
   assert.match(output, /已经生成的镜头均已保留/);
-  assert.match(output, /重新合成 720p 预览/);
+  assert.match(output, /重新合成 1080p 草稿/);
   assert.match(output, /data-action="start-draft"/);
 });
 
-test('completed 720p assembly exposes playback, open and download actions', () => {
+test('completed 1080p assembly exposes playback, open and free download actions', () => {
   const output = workspace.draftHtml({
     current_version:{
       version:1,status:'ready',url:'/api/gen/file/preview.mp4',
-      manifest:{duration_ms:30000,issues:[],shots:[]}
+      manifest:{resolution:'1080p',duration_ms:30000,issues:[],shots:[]}
     }
   });
-  assert.match(output, /<video controls/);
+  assert.match(output, /1080p 全片草稿/);
+  assert.match(output, /<video[^>]*controls/);
   assert.match(output, /单独打开/);
   assert.match(output, /下载预览/);
   assert.match(output, /download/);
@@ -2172,14 +2245,17 @@ test('failed refinement assembly explains that the new shot is retained and retr
   assert.match(output, /回到这个镜头重试/);
 });
 
-test('media preparation is separate from issue shots and offers a silent preview path', () => {
+test('media preparation is separate from issue shots and requires native video audio', () => {
   const refinement = {
     current_refinement:{
       id:'r-media',status:'draft',
       issues:[{code:'locked_voice_timeline_missing',message:'missing media timeline'}]
     },
     acceptance_requirements:{
-      media:{ready:false,reason:'locked_voice_timeline_missing',mode:'voice_timeline'}
+      media:{
+        ready:false,reason:'provider_native_audio_incomplete',mode:'provider_audio',
+        invalid_shot_keys:['shot_02']
+      }
     }
   };
   const groups = workspace.refinementIssueGroups(refinement.current_refinement);
@@ -2187,10 +2263,12 @@ test('media preparation is separate from issue shots and offers a silent preview
   assert.equal(groups.preparation.length, 1);
   const actions = workspace.refinementActionsHtml(refinement, true);
   assert.match(actions, /还有 1 项验收准备未完成/);
-  assert.match(actions, /请选择成片声音方式/);
-  assert.match(actions, /data-action="go-to-voice-settings"/);
-  assert.match(actions, /data-action="confirm-provider-audio"/);
-  assert.match(actions, /data-action="confirm-silent-media"/);
+  assert.match(actions, /视频原生声音/);
+  assert.match(actions, /shot_02/);
+  assert.match(actions, /调整.*声音设计.*重新生成/);
+  assert.doesNotMatch(actions, /data-action="go-to-voice-settings"/);
+  assert.doesNotMatch(actions, /data-action="confirm-provider-audio"/);
+  assert.doesNotMatch(actions, /data-action="confirm-silent-media"/);
   assert.doesNotMatch(actions, /还有 1 个问题镜头/);
   const provider = workspace.refinementProviderHtml({provider_poc:{shots:[]}}, refinement, true);
   assert.equal(provider, '');
@@ -2202,19 +2280,28 @@ test('provider audio mode keeps generated shot sound and does not require subtit
     acceptance_requirements:{media:{ready:true,mode:'provider_audio'}}
   }, true);
   assert.match(output, /镜头原声连续且音量正常/);
+  assert.match(output, /当前声音：视频原生声音/);
+  assert.match(output, /台词、环境声、动作音效和音乐由视频生成服务随画面生成/);
   assert.match(output, /已确认本片无需字幕/);
   assert.doesNotMatch(output, /静音模式符合预期/);
 });
 
-test('delivered projects can create a new audio assembly without changing the snapshot', () => {
+test('delivered projects show their immutable historical sound mode without new mode buttons', () => {
   const output = workspace.refinementActionsHtml({
     current_delivery:{snapshot:{deliverable:true}},
     media_preference:{mode:'silent'}
   }, true);
   assert.match(output, /当前交付快照保持不变/);
   assert.match(output, /当前声音：完全静音/);
-  assert.match(output, /data-action="confirm-provider-audio"/);
-  assert.match(output, /不会重新生成镜头或重复扣点/);
+  assert.doesNotMatch(output, /data-action="go-to-voice-settings"/);
+  assert.doesNotMatch(output, /data-action="confirm-provider-audio"/);
+  assert.doesNotMatch(output, /data-action="confirm-silent-media"/);
+});
+
+test('current workspace has no active separate voice or silent media handlers', () => {
+  assert.doesNotMatch(workspaceSource, /getAttribute\('data-action'\)==='go-to-voice-settings'/);
+  assert.doesNotMatch(workspaceSource, /getAttribute\('data-action'\)==='confirm-provider-audio'/);
+  assert.doesNotMatch(workspaceSource, /getAttribute\('data-action'\)==='confirm-silent-media'/);
 });
 
 test('silent media acceptance uses silent-specific checklist labels', () => {
@@ -2242,22 +2329,38 @@ test('refinement exposes the paid real-provider regeneration flow for issue shot
   assert.match(output, /40 点/);
 });
 
-test('confirmed refinement exposes real 1080p export when local renderer is enabled', () => {
+test('confirmed refinement exposes paid 2K export when local renderer is enabled', () => {
   const output = workspace.refinementActionsHtml({
     current_refinement:{id:'r3',status:'confirmed',issues:[]},
     billing:{
-      formal_cost:0,
+      formal_cost:10,
       mode:'local_ffmpeg',
       delivery_enabled:true,
       deliverable:true,
-      reason:'local_1080p_renderer'
+      reason:'local_2k_renderer'
     }
   }, true);
   assert.match(output, /精修版本已确认/);
-  assert.match(output, /1080p · 不可变快照/);
+  assert.match(output, /10 点/);
+  assert.match(output, /2K · 不可变快照/);
   assert.match(output, /data-action="start-delivery"/);
-  assert.match(output, /生成 1080p 正式成片/);
-  assert.match(output, /不重复扣点/);
+  assert.match(output, /导出 2K 正式成片/);
+  assert.match(output, /确认后扣点/);
+  assert.match(workspaceSource, /确认扣除.*点，导出 2K 正式成片/);
+});
+
+test('failed 2K export explains retry without regenerating shots', () => {
+  const output = workspace.refinementActionsHtml({
+    current_refinement:{id:'r3',status:'confirmed',issues:[]},
+    current_delivery_job:{
+      id:'delivery-1',status:'failed',error:{detail:'正式成片时长与锁定时间线不一致'}
+    },
+    billing:{formal_cost:10,mode:'local_ffmpeg',delivery_enabled:true}
+  }, true);
+  assert.match(output, /上次导出未完成/);
+  assert.match(output, /正式成片时长与锁定时间线不一致/);
+  assert.match(output, /重新导出 2K 正式成片/);
+  assert.match(output, /不会重新生成镜头或重复扣点/);
 });
 
 test('scene locking offers upload, prompt generation, preview and explicit confirmation', () => {

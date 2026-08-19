@@ -1,8 +1,8 @@
 """Standalone short-drama refinement and delivery preparation (PR-5).
 
-The local deterministic adapter is an explicit, zero-cost development preview.
-It must never be presented or billed as a real 1080p formal delivery.  Production
-delivery stays closed until a real renderer can create and validate a new asset.
+The deterministic demo adapter remains non-deliverable.  When the explicit
+local FFmpeg executor is enabled, it creates a paid 2K delivery from the
+accepted full-film draft while preserving immutable evidence.
 """
 
 import hashlib
@@ -669,7 +669,7 @@ def _current_draft(conn, project_id):
     ).fetchone()
     if not row:
         raise RefinementError(
-            "playable_draft_required", "请先完成 720p 可播放草稿", 409
+            "playable_draft_required", "请先完成可播放的全片草稿", 409
         )
     item = dict(row)
     item["manifest"] = _json(item.pop("manifest_json"), {})
@@ -1002,7 +1002,7 @@ def _seed_refinement(conn, project_id, actor_username):
         "shots": list(manifest.get("shots") or []),
         "issues": list(manifest.get("issues") or []),
         "input_hash": draft["input_hash"],
-        "change_summary": "从 720p 自动草稿创建精修工作副本",
+        "change_summary": "从全片草稿创建精修工作副本",
         "created_by": actor_username,
         "confirmed_at": None,
         "created_at": now,
@@ -1098,7 +1098,7 @@ def _delivery_capability():
             "mode": "local_ffmpeg",
             "adapter": "local_ffmpeg",
             "formal_cost": 0,
-            "reason": "local_1080p_renderer",
+            "reason": "local_2k_renderer",
             "checks": checks,
         }
     demo_enabled = (
@@ -1129,14 +1129,31 @@ def _require_delivery_available():
     if not capability["delivery_enabled"]:
         raise RefinementError(
             "formal_delivery_unavailable",
-            "真实 1080p 正式交付执行器尚未启用，本次不会询价或扣点",
+            "真实 2K 正式交付执行器尚未启用，本次不会询价或扣点",
             503,
         )
     return capability
 
 
-def _formal_cost(capability=None):
+def _formal_2k_cost(duration_seconds):
+    duration = max(0, int(duration_seconds or 0))
+    if duration <= 60:
+        return 10
+    if duration <= 90:
+        return 15
+    if duration <= 120:
+        return 20
+    raise RefinementError(
+        "delivery_duration_unsupported",
+        "2K 正式导出仅支持 120 秒以内的短剧",
+        409,
+    )
+
+
+def _formal_cost(capability=None, duration_seconds=None):
     capability = capability or _delivery_capability()
+    if capability.get("mode") == "local_ffmpeg":
+        return _formal_2k_cost(duration_seconds)
     return max(0, int(capability.get("formal_cost") or 0))
 
 
@@ -1166,7 +1183,7 @@ def _render_refinement_preview(conn, job, source):
         str(job.get("replacement_provider_version_id") or ""),
     )
     project_row = conn.execute(
-        "SELECT id,ratio,target_duration FROM short_drama_projects WHERE id=?",
+        "SELECT id,ratio,target_duration,shot_count FROM short_drama_projects WHERE id=?",
         (job["project_id"],),
     ).fetchone()
     project = dict(project_row) if project_row else None
@@ -1678,6 +1695,8 @@ def _dimensions(ratio, resolution):
         ("9:16", "720p"): (720, 1280),
         ("16:9", "1080p"): (1920, 1080),
         ("9:16", "1080p"): (1080, 1920),
+        ("16:9", "2k"): (2560, 1440),
+        ("9:16", "2k"): (1440, 2560),
     }
     try:
         return profiles[(ratio, resolution)]
@@ -1685,13 +1704,14 @@ def _dimensions(ratio, resolution):
         raise RefinementError("delivery_ratio_invalid", "项目画幅不受支持", 409) from error
 
 
-def _validate_delivery_media(path, ratio, duration_ms, *, subtitle_required):
+def _validate_delivery_media(
+        path, ratio, duration_ms, *, subtitle_required, resolution="2k"):
     try:
         probe = media_plan.probe_media(path)
     except media_plan.MediaPlanError as error:
         raise RefinementError(error.code, str(error), 409) from error
     width, height = media_plan.dimensions_for_ratio(probe)
-    expected = _dimensions(ratio, "1080p")
+    expected = _dimensions(ratio, resolution)
     if (width, height) != expected:
         raise RefinementError(
             "delivery_dimensions_invalid", "正式成片尺寸与项目画幅不一致", 409
@@ -1734,12 +1754,11 @@ def _complete_delivery(conn, row):
             ("development_free", "local_deterministic"),
             ("local_ffmpeg", "local_ffmpeg"),
         }
-        and int(job.get("cost") or 0) == 0
     )
     if not supported:
         raise RefinementError(
             "formal_executor_unavailable",
-            "真实 1080p 正式交付执行器尚未接入，禁止使用本地适配器交付",
+            "真实 2K 正式交付执行器尚未接入，禁止使用本地适配器交付",
             503,
         )
     source = _refinement(conn.execute(
@@ -1754,12 +1773,17 @@ def _complete_delivery(conn, row):
             "delivery_source_missing", "演示预览来源不存在", 409
         )
     project_row = conn.execute(
-        "SELECT id,ratio,target_duration FROM short_drama_projects WHERE id=?",
+        "SELECT id,ratio,target_duration,shot_count FROM short_drama_projects WHERE id=?",
         (job["project_id"],),
     ).fetchone()
     project = dict(project_row) if project_row else None
     if not project:
         raise RefinementError("delivery_project_missing", "短剧项目不存在", 404)
+    expected_cost = _formal_cost(capability, project.get("target_duration"))
+    if int(job.get("cost") or 0) != expected_cost:
+        raise RefinementError(
+            "delivery_cost_invalid", "正式导出任务费用与当前时长档位不一致", 409
+        )
     acceptance = _valid_acceptance(conn, project, source, require=True)
     media_contract = acceptance["snapshot"].get("media_contract") or {}
     deliverable = capability["mode"] == "local_ffmpeg"
@@ -1771,7 +1795,7 @@ def _complete_delivery(conn, row):
         if not source_url.startswith(prefix):
             raise RefinementError(
                 "delivery_source_uncontrolled",
-                "1080p 导出只允许使用已归档的项目预览文件", 409,
+                "2K 导出只允许使用已归档的项目预览文件", 409,
             )
         server_dir = Path(__file__).resolve().parents[1]
         root = Path(os.environ.get(
@@ -1786,15 +1810,15 @@ def _complete_delivery(conn, row):
             ) from error
         if not source_file.is_file():
             raise RefinementError(
-                "delivery_source_missing", "720p 合成预览文件不存在", 409
+                "delivery_source_missing", "1080p 合成草稿文件不存在", 409
             )
         target = root / "short_drama_delivery" / job["project_id"] / job["id"]
         temp = target.with_name(".%s.tmp" % target.name)
         if temp.exists():
             shutil.rmtree(temp)
         temp.mkdir(parents=True, exist_ok=True)
-        rendered = temp / "final-1080p.mp4"
-        width, height = _dimensions(project["ratio"], "1080p")
+        rendered = temp / "final-2k.mp4"
+        width, height = _dimensions(project["ratio"], "2k")
         command = [
             os.environ.get("FFMPEG_BIN", "ffmpeg"), "-y", "-hide_banner",
             "-loglevel", "error", "-i", str(source_file),
@@ -1802,7 +1826,7 @@ def _complete_delivery(conn, row):
             "-vf", "scale=%d:%d:force_original_aspect_ratio=decrease,"
             "pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black,fps=25,setsar=1"
             % (width, height, width, height),
-            "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "18",
             "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
             "-c:s", "mov_text",
             "-movflags", "+faststart", str(rendered),
@@ -1813,16 +1837,17 @@ def _complete_delivery(conn, row):
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise RefinementError(
-                "formal_renderer_unavailable", "1080p 导出执行器不可用", 503
+                "formal_renderer_unavailable", "2K 导出执行器不可用", 503
             ) from error
         if result.returncode != 0 or not rendered.is_file():
             raise RefinementError(
                 "formal_render_failed",
-                str(result.stderr or "1080p 正式导出失败").strip()[-500:], 409,
+                str(result.stderr or "2K 正式导出失败").strip()[-500:], 409,
             )
         validation = _validate_delivery_media(
             rendered, project["ratio"], _refinement_duration_ms(project, source),
             subtitle_required=bool(media_contract.get("subtitle_required")),
+            resolution="2k",
         )
         if target.exists():
             shutil.rmtree(target)
@@ -1830,7 +1855,7 @@ def _complete_delivery(conn, row):
         temp.rename(target)
         output_file = (
             Path("short_drama_delivery") / job["project_id"] / job["id"] /
-            "final-1080p.mp4"
+            "final-2k.mp4"
         ).as_posix()
         output_url = "/api/gen/file/" + output_file
         digest = hashlib.sha256()
@@ -1846,7 +1871,7 @@ def _complete_delivery(conn, row):
     version_id = uuid.uuid4().hex
     snapshot = {
         "contract_version": "standalone-delivery-v1",
-        "resolution": "1080p" if deliverable else "source",
+        "resolution": "2k" if deliverable else "source",
         "refinement_version_id": source["id"],
         "refinement_version": source["version"],
         "source_hash": source["input_hash"],
@@ -1857,7 +1882,7 @@ def _complete_delivery(conn, row):
         "output_hash": output_hash,
         "media_validation": validation if deliverable else {},
         "adapter": capability["adapter"],
-        "output_kind": "formal_1080p" if deliverable else "demo_preview",
+        "output_kind": "formal_2k" if deliverable else "demo_preview",
         "deliverable": deliverable,
         "immutable": True,
     }
@@ -1873,9 +1898,9 @@ def _complete_delivery(conn, row):
     )
     result = {
         "version_id": version_id, "version": version,
-        "resolution": "1080p" if deliverable else "source",
+        "resolution": "2k" if deliverable else "source",
         "url": output_url, "snapshot_hash": input_hash,
-        "output_kind": "formal_1080p" if deliverable else "demo_preview",
+        "output_kind": "formal_2k" if deliverable else "demo_preview",
         "deliverable": deliverable,
     }
     conn.execute(
@@ -1924,6 +1949,13 @@ def _advance_delivery(conn, row):
                     }), int(time.time()), job["id"],
                 ),
             )
+            if int(job.get("cost") or 0) > 0:
+                conn.execute(
+                    "UPDATE short_drama_delivery_attempts SET state='refund_pending',"
+                    "error=?,updated_at=? WHERE job_id=? "
+                    "AND state IN ('linked','refund_pending')",
+                    (str(error)[:300], int(time.time()), job["id"]),
+                )
             return _job(conn.execute(
                 "SELECT * FROM short_drama_delivery_jobs WHERE id=?", (job["id"],),
             ).fetchone())
@@ -1970,7 +2002,7 @@ def workspace(db_factory, owner_username, actor_username, project_id, can_edit=T
             and str(refinement_job.get("source_version_id") or "")
             != str(current.get("id") or "")
         ):
-            # A newer 720p/refinement version already superseded this job's
+            # A newer full-film/refinement version already superseded this job's
             # source.  Do not keep showing an old failure beside the new film.
             refinement_job = None
         active_delivery = (
@@ -1988,6 +2020,16 @@ def workspace(db_factory, owner_username, actor_username, project_id, can_edit=T
         ).fetchone()
         acceptance = _valid_acceptance(conn, project, current)
         capability = _delivery_capability()
+        billing = dict(capability)
+        billing["formal_cost"] = _formal_cost(
+            capability, project.get("target_duration")
+        )
+        if capability.get("mode") == "local_ffmpeg":
+            billing["pricing_tiers"] = [
+                {"min_seconds": 30, "max_seconds": 60, "cost": 10},
+                {"min_seconds": 61, "max_seconds": 90, "cost": 15},
+                {"min_seconds": 91, "max_seconds": 120, "cost": 20},
+            ]
         conn.commit()
         return {
             "project": project,
@@ -2018,6 +2060,11 @@ def workspace(db_factory, owner_username, actor_username, project_id, can_edit=T
                     "evidence_source": str(
                         media_contract.get("evidence_source") or ""
                     ),
+                    "invalid_shot_keys": [
+                        str(value) for value in
+                        media_contract.get("invalid_shot_keys") or []
+                        if str(value)
+                    ],
                 },
             },
             "media_preference": dict(preference_row) if preference_row else {
@@ -2028,7 +2075,7 @@ def workspace(db_factory, owner_username, actor_username, project_id, can_edit=T
             "current_delivery_job": delivery_job,
             "current_delivery": active_delivery,
             "delivery_versions": deliveries,
-            "billing": capability,
+            "billing": billing,
             "permissions": {"can_edit": bool(can_edit), "actor": actor_username},
         }
     finally:
@@ -2780,7 +2827,7 @@ def confirm_refinement(db_factory, owner_username, actor_username, body):
         if snapshot.get("media_current") is not True:
             raise RefinementError(
                 "refinement_source_stale",
-                "锁定音轨或字幕已变化，请重新生成并播放 720p 预览", 409,
+                "锁定音轨或字幕已变化，请重新生成并播放 1080p 草稿", 409,
             )
         supplied_hashes = body.get("source_hashes")
         if not isinstance(supplied_hashes, dict) or supplied_hashes != source_hashes:
@@ -2914,14 +2961,14 @@ def create_delivery_quote(db_factory, owner_username, body):
         _require_deliverable_media_contract(acceptance["snapshot"])
         now = int(time.time())
         token = uuid.uuid4().hex
-        cost = _formal_cost(capability)
+        cost = _formal_cost(capability, project.get("target_duration"))
         input_hash = _hash({
             "project_id": project_id, "version_id": version_id,
             "source_hash": source["input_hash"],
             "resolution": (
                 "source"
                 if capability["mode"] == "development_free"
-                else "1080p"
+                else "2k"
             ),
             "mode": capability["mode"],
             "adapter": capability["adapter"],
@@ -2939,7 +2986,7 @@ def create_delivery_quote(db_factory, owner_username, body):
             "resolution": (
                 "source"
                 if capability["mode"] == "development_free"
-                else "1080p"
+                else "2k"
             ),
             "cost": cost, "expires_at": now + 300, "input_hash": input_hash,
             "mode": capability["mode"],
@@ -3033,7 +3080,7 @@ def start_delivery_job(
             "resolution": (
                 "source"
                 if capability["mode"] == "development_free"
-                else "1080p"
+                else "2k"
             ),
             "mode": capability["mode"],
             "adapter": capability["adapter"],
@@ -3045,6 +3092,15 @@ def start_delivery_job(
             raise RefinementError(
                 "demo_delivery_must_be_free",
                 "本地演示预览费用必须为 0，本次不会扣点",
+                409,
+            )
+        if (
+            capability["mode"] == "local_ffmpeg"
+            and cost != _formal_cost(capability, project.get("target_duration"))
+        ):
+            raise RefinementError(
+                "delivery_quote_stale",
+                "项目时长或 2K 导出价格已变化，请重新获取报价",
                 409,
             )
         if callable(project_usage):
@@ -3106,7 +3162,7 @@ def start_delivery_job(
             if not callable(deduct_points):
                 raise RefinementError("billing_unavailable", "正式导出扣点服务不可用", 503)
             try:
-                deduct_points(actor_username, cost, "短剧 1080p 正式导出", charge_key)
+                deduct_points(actor_username, cost, "短剧 2K 正式导出", charge_key)
             except Exception:
                 ledger = charge_lookup(charge_key) if callable(charge_lookup) else None
                 if not _ledger_matches(actor_username, cost, ledger):
@@ -3178,7 +3234,9 @@ def start_delivery_job(
             job_conn.close()
 
 
-def get_delivery_job(db_factory, owner_username, project_id, job_id):
+def get_delivery_job(
+        db_factory, owner_username, project_id, job_id, refund_points=None):
+    refund_attempt = None
     conn = _connection(db_factory)
     try:
         _project(conn, owner_username, project_id)
@@ -3189,10 +3247,23 @@ def get_delivery_job(db_factory, owner_username, project_id, job_id):
         if not row:
             raise LookupError("delivery job does not exist")
         item = _advance_delivery(conn, row)
+        if item.get("status") == "failed" and int(item.get("cost") or 0) > 0:
+            attempt_row = conn.execute(
+                "SELECT * FROM short_drama_delivery_attempts WHERE job_id=? "
+                "AND state IN ('refund_pending','refunded')",
+                (job_id,),
+            ).fetchone()
+            refund_attempt = dict(attempt_row) if attempt_row else None
         conn.commit()
-        return item
     finally:
         conn.close()
+    if refund_attempt and callable(refund_points):
+        refund_attempt = reconcile_delivery_refund(
+            db_factory, refund_points, refund_attempt
+        )
+    if refund_attempt:
+        item["refund_state"] = refund_attempt.get("state")
+    return item
 
 
 def reconcile_delivery_refund(
@@ -3285,7 +3356,7 @@ def retry_delivery_attempt_refunds(db_factory, points_domain, limit=100):
             dict(row)
             for row in conn.execute(
                 "SELECT * FROM short_drama_delivery_attempts "
-                "WHERE state='refund_pending' AND job_id IS NULL "
+                "WHERE state='refund_pending' "
                 "ORDER BY updated_at,id LIMIT ?",
                 (max(1, int(limit or 100)),),
             ).fetchall()
