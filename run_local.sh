@@ -1,8 +1,12 @@
 #!/bin/bash
 # 本地一键启动：后端 + Mac worker，全在本机跑。
 # 用法：bash run_local.sh    然后浏览器打开 http://localhost:8090
+set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$(pwd)"
+: "${LEADGEN_PASSWORD:?请先通过环境变量配置 LEADGEN_PASSWORD}"
+: "${LEADGEN_WORKER_TOKEN:?请先通过环境变量配置 LEADGEN_WORKER_TOKEN}"
+export LEADGEN_PASSWORD LEADGEN_WORKER_TOKEN
 
 echo "▶ 启动后端 (localhost:8090)…"
 pkill -f "uvicorn app:app" 2>/dev/null
@@ -20,7 +24,7 @@ sleep 2
 
 echo
 echo "✅ 已启动！"
-echo "   网页：http://localhost:8090   （口令 meiye2026）"
+echo "   网页：http://localhost:8090"
 echo "   后端日志：/tmp/leadgen_local_server.log"
 echo "   worker日志：/tmp/leadgen_local_worker.log"
 echo "   停止：bash stop_local.sh"
