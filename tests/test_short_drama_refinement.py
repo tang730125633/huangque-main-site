@@ -774,15 +774,35 @@ class ShortDramaRefinementTests(unittest.TestCase):
             )
         calls = []
 
-        def complete(owner_conn, row):
+        def complete(owner_conn, row, **_kwargs):
             calls.append(row["id"])
             other = short_drama_refinement._connection(self.db)
             try:
+                stale = int(time.time()) - (
+                    short_drama_refinement._DELIVERY_RENDER_LEASE_SECONDS + 5
+                )
+                other.execute(
+                    "UPDATE short_drama_delivery_jobs SET updated_at=? WHERE id=?",
+                    (stale, row["id"]),
+                )
+                other.commit()
+                deadline = time.time() + 2
+                while time.time() < deadline:
+                    refreshed = other.execute(
+                        "SELECT updated_at FROM short_drama_delivery_jobs WHERE id=?",
+                        (row["id"],),
+                    ).fetchone()[0]
+                    if refreshed > stale:
+                        break
+                    time.sleep(0.01)
+                self.assertGreater(refreshed, stale)
                 current = other.execute(
                     "SELECT * FROM short_drama_delivery_jobs WHERE id=?",
                     (row["id"],),
                 ).fetchone()
-                observed = short_drama_refinement._advance_delivery(other, current)
+                observed = short_drama_refinement._advance_delivery(
+                    other, current, self.db,
+                )
                 other.commit()
             finally:
                 other.close()
@@ -796,6 +816,8 @@ class ShortDramaRefinementTests(unittest.TestCase):
             ).fetchone())
 
         with mock.patch.object(
+            short_drama_refinement, "_DELIVERY_RENDER_HEARTBEAT_SECONDS", 0.01,
+        ), mock.patch.object(
             short_drama_refinement, "_complete_delivery", side_effect=complete,
         ):
             completed = short_drama_refinement.get_delivery_job(
@@ -803,6 +825,55 @@ class ShortDramaRefinementTests(unittest.TestCase):
             )
         self.assertEqual("succeeded", completed["status"])
         self.assertEqual([job["id"]], calls)
+
+    def test_stale_crashed_render_lease_is_reclaimed(self):
+        version = self.confirmed_version("stale-render-takeover")
+        quote = short_drama_refinement.create_delivery_quote(
+            self.db, "alice", {
+                "project_id": self.project["id"], "version_id": version["id"],
+            },
+        )
+        job = short_drama_refinement.start_delivery_job(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "quote_token": quote["quote_token"],
+            }, "stale-render-takeover",
+        )
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_delivery_jobs SET status='running',"
+                "phase='rendering:crashed',poll_count=4,updated_at=? WHERE id=?",
+                (
+                    int(time.time())
+                    - short_drama_refinement._DELIVERY_RENDER_LEASE_SECONDS - 1,
+                    job["id"],
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        claimed_phases = []
+
+        def complete(owner_conn, row, **_kwargs):
+            claimed_phases.append(row["phase"])
+            owner_conn.execute(
+                "UPDATE short_drama_delivery_jobs SET status='succeeded',"
+                "phase='completed',progress=100 WHERE id=?", (row["id"],),
+            )
+            return short_drama_refinement._job(owner_conn.execute(
+                "SELECT * FROM short_drama_delivery_jobs WHERE id=?", (row["id"],),
+            ).fetchone())
+
+        with mock.patch.object(
+            short_drama_refinement, "_complete_delivery", side_effect=complete,
+        ):
+            recovered = short_drama_refinement.get_delivery_job(
+                self.db, "alice", self.project["id"], job["id"]
+            )
+        self.assertEqual("succeeded", recovered["status"])
+        self.assertEqual(1, len(claimed_phases))
+        self.assertNotEqual("rendering:crashed", claimed_phases[0])
 
     def test_delivery_orphan_reaper_removes_crash_publish_but_keeps_version(self):
         root = Path(self.tmp.name) / "short_drama_delivery" / self.project["id"]
@@ -3508,6 +3579,71 @@ class ShortDramaRefinementTests(unittest.TestCase):
             conn.close()
         self.assertEqual("accepted", state)
         self.assertIsNone(job_id)
+
+    def test_same_key_replay_immediately_recovers_unknown_charge(self):
+        version = self.confirmed_version("replay-recovers-unknown-charge")
+        production = {
+            "delivery_enabled": True, "deliverable": True,
+            "mode": "production", "adapter": "real_executor_test_double",
+            "formal_cost": 80, "reason": "",
+        }
+        body = {"project_id": self.project["id"]}
+        with mock.patch.object(
+            short_drama_refinement, "_delivery_capability", return_value=production,
+        ):
+            quote = short_drama_refinement.create_delivery_quote(
+                self.db, "alice", dict(body, version_id=version["id"]),
+            )
+            request = dict(body, quote_token=quote["quote_token"])
+            with self.assertRaises(short_drama_refinement.RefinementError):
+                short_drama_refinement.start_delivery_job(
+                    self.db, "alice", "alice", request, "replay-charge",
+                    deduct_points=mock.Mock(side_effect=TimeoutError("timeout")),
+                    charge_lookup=mock.Mock(side_effect=TimeoutError("timeout")),
+                )
+            deduct = mock.Mock()
+            recovered = short_drama_refinement.start_delivery_job(
+                self.db, "alice", "alice", request, "replay-charge",
+                deduct_points=deduct,
+                charge_lookup=mock.Mock(return_value={
+                    "username": "alice", "delta": -80,
+                }),
+            )
+        self.assertTrue(recovered["replayed"])
+        self.assertEqual("queued", recovered["status"])
+        deduct.assert_not_called()
+
+    def test_same_key_replay_reports_stable_failed_attempt(self):
+        production, attempt_id, quote = self.create_stale_delivery_attempt(
+            "terminal-replay", state="failed",
+        )
+        with mock.patch.object(
+            short_drama_refinement, "_delivery_capability", return_value=production,
+        ), self.assertRaises(short_drama_refinement.RefinementError) as raised:
+            short_drama_refinement.start_delivery_job(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "quote_token": quote["quote_token"],
+                }, "terminal-replay",
+            )
+        self.assertEqual("delivery_attempt_failed", raised.exception.code)
+
+    def test_same_key_replay_advances_refund_pending(self):
+        production, _attempt_id, quote = self.create_stale_delivery_attempt(
+            "refund-replay", state="refund_pending",
+        )
+        refund = mock.Mock()
+        with mock.patch.object(
+            short_drama_refinement, "_delivery_capability", return_value=production,
+        ), self.assertRaises(short_drama_refinement.RefinementError) as raised:
+            short_drama_refinement.start_delivery_job(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "quote_token": quote["quote_token"],
+                }, "refund-replay", refund_points=refund,
+            )
+        self.assertEqual("delivery_attempt_refunded", raised.exception.code)
+        refund.assert_called_once()
 
     def test_refund_failure_is_persisted_for_recovery(self):
         version = self.confirmed_version("repair-for-refund-pending")

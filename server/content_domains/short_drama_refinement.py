@@ -42,6 +42,7 @@ _REASSEMBLY_LEASE_SECONDS = 30
 _DELIVERY_REFUND_LEASE_SECONDS = 60
 _MEDIA_PREFERENCE_MIGRATION = "refinement_media_preferences_provider_audio_v1"
 _DELIVERY_RENDER_LEASE_SECONDS = 35 * 60
+_DELIVERY_RENDER_HEARTBEAT_SECONDS = 60
 
 
 class RefinementError(ValueError):
@@ -49,6 +50,58 @@ class RefinementError(ValueError):
         super().__init__(message)
         self.code = code
         self.status = int(status)
+
+
+class _DeliveryRenderHeartbeat:
+    def __init__(self, db_factory, job_id, phase):
+        self.db_factory = db_factory
+        self.job_id = str(job_id)
+        self.phase = str(phase)
+        self.cancel_event = threading.Event()
+        self._stop_event = threading.Event()
+        self._thread = None
+        self._last_success = time.monotonic()
+
+    def start(self):
+        self._thread = threading.Thread(
+            target=self._run,
+            name="short-drama-delivery-heartbeat-" + self.job_id[:8],
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self):
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+
+    def _run(self):
+        while not self._stop_event.wait(
+            max(0.01, float(_DELIVERY_RENDER_HEARTBEAT_SECONDS))
+        ):
+            conn = None
+            try:
+                conn = _connection(self.db_factory)
+                updated = conn.execute(
+                    "UPDATE short_drama_delivery_jobs SET updated_at=? "
+                    "WHERE id=? AND status IN ('queued','running') AND phase=?",
+                    (int(time.time()), self.job_id, self.phase),
+                )
+                conn.commit()
+                if updated.rowcount != 1:
+                    self.cancel_event.set()
+                    return
+                self._last_success = time.monotonic()
+            except sqlite3.Error:
+                if (
+                    time.monotonic() - self._last_success
+                    >= _DELIVERY_RENDER_LEASE_SECONDS
+                ):
+                    self.cancel_event.set()
+                    return
+            finally:
+                if conn is not None:
+                    conn.close()
 
 
 _SCHEMA = """
@@ -1845,7 +1898,7 @@ def _delivery_contract_binding(project_id, source, capability, acceptance):
     }
 
 
-def _complete_delivery(conn, row):
+def _complete_delivery(conn, row, cancel_event=None):
     job = _job(row)
     capability = _require_delivery_available()
     supported = (
@@ -1928,7 +1981,7 @@ def _complete_delivery(conn, row):
             validation = short_drama_formal_renderer.render_native_2k(
                 sources, project["ratio"],
                 _confirmed_refinement_duration_ms(project, source),
-                media_contract, rendered,
+                media_contract, rendered, cancel_event=cancel_event,
             )
         except short_drama_autodraft.AutodraftError as error:
             shutil.rmtree(temp, ignore_errors=True)
@@ -1943,6 +1996,10 @@ def _complete_delivery(conn, row):
         subtitle_temp = temp / "locked-subtitles.srt"
         if subtitle_temp.exists():
             subtitle_temp.unlink()
+        if cancel_event is not None and cancel_event.is_set():
+            raise RefinementError(
+                "delivery_render_lease_lost", "2K 正式导出执行权已失效", 409,
+            )
         if target.exists():
             shutil.rmtree(target)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -2012,7 +2069,7 @@ def _complete_delivery(conn, row):
     ).fetchone())
 
 
-def _advance_delivery(conn, row):
+def _advance_delivery(conn, row, db_factory=None):
     job = _job(row)
     if not job or job["status"] not in ACTIVE:
         return job
@@ -2046,9 +2103,22 @@ def _advance_delivery(conn, row):
         row = conn.execute(
             "SELECT * FROM short_drama_delivery_jobs WHERE id=?", (job["id"],)
         ).fetchone()
+        lease = _DeliveryRenderHeartbeat(db_factory, job["id"], render_phase)
+        lease.start()
         try:
-            return _complete_delivery(conn, row)
+            completed = _complete_delivery(
+                conn, row, cancel_event=lease.cancel_event,
+            )
+            if lease.cancel_event.is_set():
+                raise RefinementError(
+                    "delivery_render_lease_lost",
+                    "2K 正式导出执行权已失效", 409,
+                )
+            conn.commit()
+            lease.stop()
+            return completed
         except Exception as error:
+            lease.stop()
             conn.rollback()
             root = Path(os.environ.get(
                 "CONTENT_OUT",
@@ -2176,7 +2246,8 @@ def workspace(db_factory, owner_username, actor_username, project_id, can_edit=T
             "ORDER BY created_at DESC LIMIT 1", (project_id,),
         ).fetchone()
         delivery_job = (
-            _advance_delivery(conn, delivery_job_row) if delivery_job_row else None
+            _advance_delivery(conn, delivery_job_row, db_factory)
+            if delivery_job_row else None
         )
         refinements = _refinement_versions(conn, project_id)
         deliveries = _delivery_versions(conn, project_id)
@@ -3230,7 +3301,10 @@ def start_delivery_job(
                 conn.commit()
                 result["replayed"] = True
                 return result
-            raise RefinementError("delivery_recovery_pending", "扣点状态正在恢复", 409)
+            conn.commit()
+            return _replay_delivery_attempt(
+                db_factory, existing["id"], charge_lookup, refund_points,
+            )
         if int(quote["expires_at"]) < now:
             raise RefinementError("delivery_quote_expired", "正式导出报价已过期", 409)
         if quote["consumed_job_id"]:
@@ -3446,7 +3520,7 @@ def get_delivery_job(
         ).fetchone()
         if not row:
             raise LookupError("delivery job does not exist")
-        item = _advance_delivery(conn, row)
+        item = _advance_delivery(conn, row, db_factory)
         if item.get("status") == "failed" and int(item.get("cost") or 0) > 0:
             attempt_row = conn.execute(
                 "SELECT * FROM short_drama_delivery_attempts WHERE job_id=? "
@@ -3575,25 +3649,36 @@ def retry_delivery_attempt_refunds(db_factory, points_domain, limit=100):
     return recovered
 
 
-def _claim_stale_delivery_attempts(db_factory, limit, stale_after):
+def _claim_stale_delivery_attempts(
+    db_factory, limit, stale_after, attempt_id=None,
+):
     now = int(time.time())
     cutoff = now - max(1, int(stale_after or 300))
     conn = _connection(db_factory)
     try:
         conn.execute("BEGIN IMMEDIATE")
-        candidates = conn.execute(
-            "SELECT id,state,updated_at FROM short_drama_delivery_attempts "
-            "WHERE state IN ('accepted','charged') AND job_id IS NULL "
-            "AND updated_at<=? ORDER BY updated_at,id LIMIT ?",
-            (cutoff, max(1, min(1000, int(limit or 100)))),
-        ).fetchall()
+        if attempt_id:
+            candidates = conn.execute(
+                "SELECT id,state,updated_at FROM short_drama_delivery_attempts "
+                "WHERE id=? AND state IN ('accepted','charged') "
+                "AND job_id IS NULL",
+                (str(attempt_id),),
+            ).fetchall()
+        else:
+            candidates = conn.execute(
+                "SELECT id,state,updated_at FROM short_drama_delivery_attempts "
+                "WHERE state IN ('accepted','charged') AND job_id IS NULL "
+                "AND updated_at<=? ORDER BY updated_at,id LIMIT ?",
+                (cutoff, max(1, min(1000, int(limit or 100)))),
+            ).fetchall()
         claimed = []
         for candidate in candidates:
+            claim_token = max(now, int(candidate["updated_at"]) + 1)
             updated = conn.execute(
                 "UPDATE short_drama_delivery_attempts SET state='charged',updated_at=? "
                 "WHERE id=? AND state=? AND job_id IS NULL AND updated_at=?",
                 (
-                    now, candidate["id"], candidate["state"],
+                    claim_token, candidate["id"], candidate["state"],
                     int(candidate["updated_at"]),
                 ),
             )
@@ -3601,7 +3686,7 @@ def _claim_stale_delivery_attempts(db_factory, limit, stale_after):
                 row = conn.execute(
                     "SELECT * FROM short_drama_delivery_attempts "
                     "WHERE id=? AND state='charged' AND updated_at=?",
-                    (candidate["id"], now),
+                    (candidate["id"], claim_token),
                 ).fetchone()
                 if row:
                     item = dict(row)
@@ -3762,6 +3847,7 @@ def _link_claimed_delivery_attempt(db_factory, attempt_id, claimed_at):
 
 def retry_delivery_attempt_recovery(
     db_factory, points_domain, charge_lookup=None, limit=100, stale_after=300,
+    attempt_id=None,
 ):
     """Recover attempts interrupted after an idempotent ledger debit."""
     lookup = charge_lookup or getattr(
@@ -3769,7 +3855,7 @@ def retry_delivery_attempt_recovery(
     )
     result = {"claimed": 0, "linked": 0, "failed": 0, "refund_pending": 0}
     for attempt in _claim_stale_delivery_attempts(
-        db_factory, limit, stale_after
+        db_factory, limit, stale_after, attempt_id=attempt_id,
     ):
         result["claimed"] += 1
         claimed_at = int(attempt["updated_at"])
@@ -3810,3 +3896,59 @@ def retry_delivery_attempt_recovery(
                     db_factory, attempt["id"], claimed_at, "failed", str(error),
                 ))
     return result
+
+
+def _replay_delivery_attempt(
+    db_factory, attempt_id, charge_lookup=None, refund_points=None,
+):
+    retry_delivery_attempt_recovery(
+        db_factory, None, charge_lookup, limit=1, attempt_id=attempt_id,
+    )
+    conn = _connection(db_factory)
+    try:
+        row = conn.execute(
+            "SELECT * FROM short_drama_delivery_attempts WHERE id=?",
+            (attempt_id,),
+        ).fetchone()
+        attempt = dict(row) if row else None
+    finally:
+        conn.close()
+    if not attempt:
+        raise RefinementError(
+            "delivery_attempt_missing", "正式导出恢复记录不存在", 409,
+        )
+    if (
+        attempt["state"] == "refund_pending"
+        and callable(refund_points)
+    ):
+        attempt = reconcile_delivery_refund(
+            db_factory, refund_points, attempt, direct_callable=True,
+        )
+    if attempt.get("job_id"):
+        conn = _connection(db_factory)
+        try:
+            job = _job(conn.execute(
+                "SELECT * FROM short_drama_delivery_jobs WHERE id=?",
+                (attempt["job_id"],),
+            ).fetchone())
+        finally:
+            conn.close()
+        if job:
+            job["replayed"] = True
+            return job
+    state = str(attempt.get("state") or "")
+    if state == "failed":
+        raise RefinementError(
+            "delivery_attempt_failed", "正式导出恢复已终止，请重新询价", 409,
+        )
+    if state == "refunded":
+        raise RefinementError(
+            "delivery_attempt_refunded", "本次正式导出已退款，请重新询价", 409,
+        )
+    if state == "refund_pending":
+        raise RefinementError(
+            "delivery_refund_pending", "正式导出退款正在恢复", 409,
+        )
+    raise RefinementError(
+        "delivery_recovery_pending", "扣点状态正在恢复", 409,
+    )
