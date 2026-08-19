@@ -390,6 +390,8 @@ def _production_input(record, options):
     # into the production panel again, and the original script is not returned.
     if record["action"] in {"digital-ip-text-generate", "digital-ip-batch-generate"}:
         payload.setdefault("text", record["source_text"])
+    if record["action"] == "audio-generate" and isinstance(payload.get("text"), str):
+        payload["text"] = re.sub(r"[\r\n\t\f\v]+", " ", payload["text"]).strip()
     if record["action"] == "canvas-ops":
         allowed = set(PRODUCTION_FALLBACK_FIELDS["canvas-ops"])
         unknown = sorted(set(payload) - allowed)
