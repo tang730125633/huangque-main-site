@@ -347,14 +347,12 @@ def _production_source(convo, target):
 
 
 def _production_source_or_unbound(convo, target, *, unbound=False):
-    if target:
-        return _production_source(convo, target)
-    if not unbound:
-        return _production_source(convo, target)
-    return {
-        "category_id": "", "topic_id": "", "script_version": 0,
-        "script_digest": _production_digest(""), "script": "", "source_bound": False,
-    }
+    if unbound:
+        return {
+            "category_id": "", "topic_id": "", "script_version": 0,
+            "script_digest": _production_digest(""), "script": "", "source_bound": False,
+        }
+    return _production_source(convo, target)
 
 
 def _production_target_from_message(convo, message):
