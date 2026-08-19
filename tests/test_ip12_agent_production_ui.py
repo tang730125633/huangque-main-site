@@ -273,6 +273,57 @@ console.log(JSON.stringify({
         self.assertNotIn("detail.error", source)
         self.assertNotIn("安全整理", self.html)
 
+    def test_generic_array_and_object_fields_require_valid_json(self):
+        if not shutil.which("node"):
+            self.skipTest("node unavailable")
+        start = self.html.index("function productionParameterSchema")
+        end = self.html.index("function productionDraftKey", start)
+        quote_start = self.html.index("function productionQuote")
+        quote_end = self.html.index("function renderProductionPanel", quote_start)
+        functions = self.html[start:end] + self.html[quote_start:quote_end]
+        script = functions + r"""
+const record = {
+  missing_prerequisites:['upload_ids', 'settings'], options:{},
+  parameter_schema:{type:'object', properties:{
+    upload_ids:{type:'array'}, settings:{type:'object'}
+  }, required:['upload_ids', 'settings']}
+};
+const specs = productionFieldSpecs(record);
+const invalid = typedProductionOptions(record, {upload_ids:'[not json]', settings:'{"quality":"high"}'});
+const valid = typedProductionOptions(record, {upload_ids:'["up_1","up_2"]', settings:'{"quality":"high"}'});
+console.log(JSON.stringify({
+  types:specs.map(spec => spec.type), invalid:productionUnfilledFields(record, invalid),
+  valid:productionUnfilledFields(record, valid), values:valid,
+  confirmBlocked:productionHasValidQuote(Object.assign({}, record, {status:'quoted', cost:1, options:invalid}))
+}));
+"""
+        got = json.loads(subprocess.run(
+            ["node", "-e", script], capture_output=True, text=True, check=True,
+        ).stdout)
+        self.assertEqual(got["types"], ["array", "object"])
+        self.assertEqual(got["invalid"], ["upload_ids"])
+        self.assertEqual(got["valid"], [])
+        self.assertEqual(got["values"], {"upload_ids": ["up_1", "up_2"], "settings": {"quality": "high"}})
+        self.assertFalse(got["confirmBlocked"])
+        self.assertIn("JSON.parse", functions)
+        self.assertNotIn("eval(", functions)
+
+    def test_generic_action_results_are_escaped_and_upload_prerequisites_reuse_navigation(self):
+        result = self.html[self.html.index("function productionActionResultHtml"):self.html.index("function productionFieldControl")]
+        self.assertIn("record&&record.action_result", result)
+        self.assertIn("<pre>", result)
+        self.assertIn("eHtml(text.slice(0,4000))", result)
+        controls = self.html[self.html.index("function productionUiRoute"):self.html.index("function productionOptionsHtml")]
+        self.assertIn("productionUploadPrerequisite", controls)
+        self.assertIn("/(?:^|_)upload_ids?$/i", controls)
+        self.assertIn("前往对应功能页准备素材", controls)
+        self.assertIn("productionRoute(productionUiRoute(record))", controls)
+        self.assertIn("navigateToProductionRoute(this.dataset.uiRoute)", controls)
+        navigation = self.html[self.html.index("function navigateToProductionRoute"):self.html.index("function openProductionCanvas")]
+        self.assertIn("conversation_id", navigation)
+        self.assertIn("project_id", navigation)
+        self.assertIn("return_to", navigation)
+
 
 if __name__ == "__main__":
     unittest.main()
