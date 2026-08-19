@@ -1,7 +1,10 @@
+import hashlib
 import math
 import os
 import re
 import subprocess
+import time
+from pathlib import Path
 
 from . import short_drama_assembly_plan as media_plan
 
@@ -17,6 +20,50 @@ class NativeAudioError(RuntimeError):
     def __init__(self, code, message):
         super().__init__(message)
         self.code = str(code)
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    size = 0
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            size += len(chunk)
+            digest.update(chunk)
+    return digest.hexdigest(), size
+
+
+def inspect_native_media(path, expected_resolution="2K"):
+    target = Path(path)
+    try:
+        before = target.stat()
+        resolution = inspect_native_resolution(target, expected_resolution)
+        audio = inspect_native_audio(target)
+        sha256, size = sha256_file(target)
+        after = target.stat()
+    except NativeAudioError:
+        raise
+    except (OSError, ValueError) as error:
+        raise NativeAudioError(
+            "provider_media_probe_failed",
+            "视频媒体校验失败，请重新生成当前镜头",
+        ) from error
+    identity_before = (
+        before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
+    )
+    identity_after = (
+        after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
+    )
+    if identity_before != identity_after or size != after.st_size:
+        raise NativeAudioError(
+            "provider_media_changed", "媒体校验期间文件发生变化，请重新生成当前镜头"
+        )
+    return {
+        "sha256": sha256,
+        "size_bytes": size,
+        "resolution": resolution,
+        "audio": audio,
+        "inspected_at": int(time.time()),
+    }
 
 
 def inspect_native_resolution(path, expected_resolution, probe=media_plan.probe_media):
