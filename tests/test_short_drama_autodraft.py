@@ -46,6 +46,30 @@ class Handler:
 
 
 class ShortDramaAutodraftTests(unittest.TestCase):
+    @staticmethod
+    def _native_media_evidence(raw_hash="a" * 64, derived_hash="b" * 64):
+        audio = {
+            "audible": True, "codec": "aac", "sample_rate": 48000,
+            "channels": 2, "mean_volume_dbfs": -24.3,
+            "max_volume_dbfs": -3.1,
+        }
+        return {
+            "raw": {
+                "file": "video/minimax_h3_raw_result.mp4",
+                "sha256": raw_hash,
+                "size_bytes": 12345,
+            },
+            "derived": {
+                "file": "video/minimax_h3_result.mp4",
+                "sha256": derived_hash,
+                "size_bytes": 12000,
+                "derived_from_sha256": raw_hash,
+            },
+            "resolution": {"width": 2560, "height": 1440},
+            "audio": audio,
+            "inspected_at": 1700000000,
+        }
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.database = str(Path(self.tmp.name) / "content.db")
@@ -3754,6 +3778,61 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                 self.db, int(job["id"])
             )
         self.assertEqual("shared_video_result_incomplete", raised.exception.code)
+
+
+    def test_minimax_shared_completion_without_media_lineage_is_not_ready(self):
+        self._lock_project_character_references()
+        self._init_shared_jobs_table()
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            feature_flags, "is_enabled", return_value=True,
+        ):
+            quote = self._provider_quote()
+            job = short_drama_autodraft.start_provider_job(
+                self.db, "alice", "alice",
+                {"quote_token": quote["quote_token"]},
+                "minimax-missing-native-audio",
+                deduct_points=lambda _user, cost, _reason, _key: 100 - cost,
+                refund_points=lambda _user, _cost, _reason, _key: 100,
+                enqueue_job=lambda *_args: True,
+                project_usage=short_drama._project_point_usage,
+            )
+        result_without_lineage = {
+            "type": "video", "status": "done", "mode": "minimax",
+            "provider_video_id": "h3-without-media-lineage",
+            "video_file": "video/no-audio-evidence.mp4",
+            "video_url": "/api/gen/file/video/no-audio-evidence.mp4",
+            "native_audio": {
+                "audible": True, "codec": "aac", "sample_rate": 48000,
+                "channels": 2, "mean_volume_dbfs": -24.3,
+                "max_volume_dbfs": -3.1,
+            },
+        }
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE jobs SET status='done',result=? WHERE id=?",
+                (json.dumps(result_without_lineage), int(job["id"])),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+            short_drama_autodraft.reconcile_shared_xiaole_job(
+                self.db, int(job["id"])
+            )
+        self.assertEqual("shared_video_result_incomplete", raised.exception.code)
+
+    def test_minimax_native_media_sanitizer_rejects_mismatched_lineage(self):
+        valid = self._native_media_evidence()
+        sanitized = short_drama_autodraft._sanitized_native_media(valid)
+        self.assertEqual("a" * 64, sanitized["raw"]["sha256"])
+        broken = self._native_media_evidence()
+        broken["derived"]["derived_from_sha256"] = "c" * 64
+        self.assertEqual({}, short_drama_autodraft._sanitized_native_media(broken))
 
 
 class ShortDramaContinuityChainTests(unittest.TestCase):
