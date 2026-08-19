@@ -568,6 +568,55 @@ _EXPLICIT_MEDIA_ACTIONS.update({
     "digital-ip-text-generate": "video", "canvas-ops": "canvas",
 })
 
+_CAPABILITY_LABELS = {
+    "image-generate": "图片生成", "audio-generate": "音频生成", "video-generate": "视频生成",
+    "digital-ip-text-generate": "文本数字人口播", "digital-ip-batch-generate": "批量数字人口播",
+    "digital-ip-audio-generate": "音频驱动数字人", "cinematic-open-generate": "电影化身",
+    "cinematic-motion-generate": "动作模仿", "tryon-fast-generate": "快速换装",
+    "tryon-classic-generate": "视频换装", "video-compose-create": "一键成片",
+    "video-compose-analyze": "一键成片分析", "video-compose-review": "一键成片审阅",
+    "video-compose-render": "一键成片渲染", "digital-presenter-create": "数字主持人",
+    "digital-presenter-update": "数字主持人修改", "canvas-create": "Canvas 创建",
+    "canvas-agent-plan": "Canvas Agent 规划", "canvas-ops": "Canvas 编辑",
+}
+_CAPABILITY_FIELD_LABELS = {
+    "person_image_upload_id": "人物图片", "person_video_upload_id": "人物视频",
+    "clothes_upload_id": "服装图片", "background_upload_id": "背景图片",
+    "reference_image_upload_ids": "参考图片", "reference_video_upload_ids": "参考视频",
+    "avatar_id": "数字人形象", "avatar_ids": "数字人形象", "audio_file": "音频素材",
+    "text": "口播文案", "script_text": "口播文案", "voice": "音色", "voice_key": "音色",
+    "prompt": "制作要求", "board_id": "Canvas 画布", "source_asset_id": "源视频素材",
+    "project_id": "项目", "decisions": "剪辑取舍",
+}
+
+
+def _capability_help_reply(account_id, action):
+    try:
+        catalog = _bridge_catalog(account_id)
+        entry = next(item for item in catalog["actions"] if item.get("action") == action)
+    except (RuntimeError, StopIteration):
+        return "我暂时无法读取黄雀的实时能力目录；本次没有创建任务，也没有扣点。"
+    label = _CAPABILITY_LABELS.get(action, str(entry.get("purpose") or action))
+    availability = (entry.get("availability") or {}).get("status")
+    if availability != "available":
+        return f"{label}当前暂不可用；本次没有创建任务，也没有扣点。"
+    schema = entry.get("input_schema") or {}
+    required = [
+        _CAPABILITY_FIELD_LABELS.get(name, name)
+        for name in schema.get("required") or []
+        if name not in {"request_id", "expected_revision", "revision"}
+    ]
+    prerequisite = "开始前需要准备" + "、".join(required) + "。" if required else "不需要预先准备素材。"
+    billing = (
+        "正式生成前会先显示实时报价，只有你明确确认后才会提交并扣点。"
+        if entry.get("billing") == "quote_then_confirm"
+        else "这项能力本身不扣点；如会修改内容，仍会先请你确认。"
+    )
+    return (
+        f"{label}的用法：{entry.get('purpose') or label}。{prerequisite}{billing}"
+        "你明确说开始时，我会继续收集缺少的素材或参数；本次只做说明，没有打开功能页，也没有创建任务。"
+    )
+
 
 def _expanded_production_intent(message):
     """Recognize the feature-page actions that the old five-action map missed."""
@@ -578,7 +627,10 @@ def _expanded_production_intent(message):
     for action, family in _EXPLICIT_MEDIA_ACTIONS.items():
         if action in text:
             if action not in _DIRECT_READ_ACTIONS and explanatory_question:
-                return None
+                return {
+                    "capability_family": family, "recommended_action": action,
+                    "candidate_actions": [action], "help_only": True,
+                }
             return {
                 "capability_family": family, "recommended_action": action,
                 "candidate_actions": [action],
@@ -586,7 +638,10 @@ def _expanded_production_intent(message):
     for family, action, pattern in _SPECIAL_PRODUCTION_INTENTS:
         if re.search(pattern, text, re.I):
             if action not in _DIRECT_READ_ACTIONS and explanatory_question:
-                return None
+                return {
+                    "capability_family": family, "recommended_action": action,
+                    "candidate_actions": [action], "help_only": True,
+                }
             return {
                 "capability_family": family,
                 "recommended_action": action,
@@ -2999,7 +3054,8 @@ def _process_production_intent_turn(
 ):
     family = intent["capability_family"]
     selected_action = intent["recommended_action"]
-    source_unbound = selected_action in (_DIRECT_READ_ACTIONS | _NAVIGATION_ONLY_ACTIONS)
+    help_only = bool(intent.get("help_only"))
+    source_unbound = help_only or selected_action in (_DIRECT_READ_ACTIONS | _NAVIGATION_ONLY_ACTIONS)
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
         if convo is None:
@@ -3010,6 +3066,14 @@ def _process_production_intent_turn(
         snapshot_revision = state["revision"]
     labels = {"image": "图片", "audio": "音频", "video": "视频", "canvas": "Canvas"}
     label = labels[family]
+    if help_only:
+        assistant = _capability_help_reply(current_account_id(), selected_action)
+        message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
+        assistant, next_state = _persist_unprocessed_turn(
+            cid, user_message, snapshot_revision, message_id=message_id,
+            assistant_override=assistant,
+        )
+        return _chat_result(assistant, next_state), 200
     ratio_match = re.search(
         r"(?<!\d)(?:9\s*[:：]\s*16|16\s*[:：]\s*9|1\s*[:：]\s*1)(?!\d)",
         user_message,
@@ -3223,6 +3287,9 @@ def process_chat_request(body):
                     )
                     source_optional = production_intent and production_intent.get("recommended_action") in (
                         _DIRECT_READ_ACTIONS | _NAVIGATION_ONLY_ACTIONS
+                    )
+                    source_optional = source_optional or bool(
+                        production_intent and production_intent.get("help_only")
                     )
                     if production_intent is not None and content_target is None and not source_optional:
                         content_target = _production_target_from_message(convo, user_message)
