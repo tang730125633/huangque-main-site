@@ -44,22 +44,6 @@ def replay_existing(db_factory, username, endpoint, key, accepted_bodies):
             if row["response_json"] else ("processing", None)
         )
 
-
-def completed_response(db_factory, username, endpoint, key):
-    """Return an existing completed response without changing its hash claim."""
-    if not key:
-        return None
-    with closing(db_factory()) as connection:
-        ensure_table(connection)
-        row = connection.execute(
-            "SELECT response_json FROM submission_idempotency "
-            "WHERE username=? AND endpoint=? AND idem_key=?",
-            (username, endpoint, key),
-        ).fetchone()
-        if not row or not row["response_json"]:
-            return None
-        return json.loads(row["response_json"])
-
 def begin(db_factory, username, endpoint, key, body):
     if not key:
         return "disabled", None

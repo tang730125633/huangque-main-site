@@ -281,7 +281,7 @@ class HQCLIContentTests(unittest.TestCase):
         self.assertIn("仅支持 2K", result["detail"])
         self.assertEqual([], self.points.deductions)
 
-    def test_minimax_completed_replay_precedes_expired_reference_expansion(self):
+    def test_minimax_historical_upload_hash_conflict_fails_closed(self):
         request = {
             "prompt": "让 @图片1 挥手", "channel": "minimax",
             "duration": 5, "ratio": "9:16",
@@ -335,21 +335,34 @@ class HQCLIContentTests(unittest.TestCase):
                 core, "jdb", side_effect=database_factory,
             ), mock.patch.object(
                 cli_uploads, "expand_image_payload",
-                side_effect=ValueError("upload expired"),
+                side_effect=AssertionError("hash conflicts must precede upload lookup"),
             ) as expand:
                 status, result = self._post(
                     "/api/gen/xiaole_video", request,
                     expected=24, idempotency_key="minimax-expired-replay-001",
                 )
+                different_image = dict(
+                    request, reference_upload_ids=["img_" + "b" * 32],
+                )
+                image_status, image_result = self._post(
+                    "/api/gen/xiaole_video", different_image,
+                    expected=24, idempotency_key="minimax-expired-replay-001",
+                )
                 mismatched = dict(request, prompt="让 @图片1 跳舞")
-                mismatch_status, _ = self._post(
+                mismatch_status, mismatch_result = self._post(
                     "/api/gen/xiaole_video", mismatched,
                     expected=24, idempotency_key="minimax-expired-replay-001",
                 )
 
-        self.assertEqual((200, 91), (status, result["job_id"]))
-        self.assertEqual(400, mismatch_status)
-        self.assertEqual(1, expand.call_count)
+        self.assertEqual((409, "idempotency_conflict"), (status, result["code"]))
+        self.assertEqual(
+            (409, "idempotency_conflict"), (image_status, image_result["code"]),
+        )
+        self.assertEqual(
+            (409, "idempotency_conflict"),
+            (mismatch_status, mismatch_result["code"]),
+        )
+        expand.assert_not_called()
         self.assertEqual([], self.points.deductions)
 
     def test_minimax_submit_expands_private_reference_before_charge_and_queue(self):

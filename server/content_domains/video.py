@@ -1337,33 +1337,6 @@ def minimax_idempotency_replay_bodies(payload):
     return candidates
 
 
-def minimax_historical_upload_replay_matches(request_payload, job_payload):
-    """Verify that an expired upload-id retry is the request stored in a job."""
-    if not isinstance(request_payload, dict) or not isinstance(job_payload, dict):
-        return False
-    upload_refs = request_payload.get("reference_upload_ids")
-    if not isinstance(upload_refs, list) or request_payload.get("reference_images"):
-        return False
-    upload_count = sum(bool(str(item or "").strip()) for item in upload_refs)
-    if not upload_count:
-        return False
-    job_refs = job_payload.get("reference_images")
-    if not isinstance(job_refs, list):
-        return False
-    job_ref_count = sum(bool(str(item or "").strip()) for item in job_refs)
-    if upload_count != job_ref_count:
-        return False
-    try:
-        requested = minimax_idempotency_claim_body(request_payload)
-        stored = minimax_idempotency_claim_body(job_payload)
-    except (TypeError, ValueError):
-        return False
-    for body in (requested, stored):
-        body.pop("reference_upload_ids", None)
-        body.pop("reference_images", None)
-    return requested == stored
-
-
 def validate_xiaole_video_payload(payload, username=None):
     """校验共用任务入口；micro / omni 只允许各自官方适配器。"""
     if not isinstance(payload, dict):
