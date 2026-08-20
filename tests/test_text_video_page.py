@@ -168,6 +168,20 @@ process.stdout.write(JSON.stringify({afterSceneEdit:afterSceneEdit,afterPlanInpu
         self.assertIn("生成分镜方案失败", PAGE)
         self.assertIn("视频任务提交失败", PAGE)
 
+    def test_missing_talking_avatar_has_a_persistent_actionable_hint(self):
+        result = self._run_page_runtime("missingAvatarHint")
+        self.assertEqual(result["beforeUpload"], {
+            "disabled": True,
+            "hintHidden": False,
+            "hint": "请先上传默认人物形象图片，上传完成后才能生成分镜方案",
+            "title": "请先上传默认人物形象图片",
+        })
+        self.assertEqual(result["afterUpload"], {
+            "disabled": False,
+            "hintHidden": True,
+            "title": None,
+        })
+
     def test_talking_progress_and_non_blocking_warnings_are_rendered(self):
         self.assertIn("正在生成口播素材", PAGE)
         self.assertIn("talking_warnings", PAGE)

@@ -63,6 +63,8 @@
   .tv-avatar-actions button,.tv-scene-actions button{min-height:34px;padding:0 12px;border:1px solid rgba(148,164,187,.24);border-radius:6px;background:#141b26;color:#d9e2ee;font:600 12px inherit;cursor:pointer;white-space:normal;overflow-wrap:anywhere}
   .tv-avatar-actions button:hover,.tv-scene-actions button:hover{border-color:rgba(231,178,76,.54);color:#f5c86f}
   .tv-avatar-actions button:disabled,.tv-scene-actions button:disabled{opacity:.5;cursor:not-allowed}
+  .tv-field-hint{margin:0;color:#f5c86f;font-size:11.5px;line-height:1.55}
+  .tv-field-hint[hidden]{display:none}
   .tv-field-error{margin:0;color:#fca5a5;font-size:11.5px;line-height:1.55}
   .tv-field-error[hidden]{display:none}
   .tv-scene-list{display:grid;gap:9px}
@@ -171,6 +173,7 @@
                 <button id="removeTalkingAvatar" type="button" disabled>移除</button>
               </div>
             </div>
+            <p id="talkingAvatarRequirement" class="tv-field-hint" role="status" aria-live="polite" hidden>请先上传默认人物形象图片，上传完成后才能生成分镜方案</p>
             <p id="talkingUploadError" class="tv-field-error" role="alert" hidden></p>
           </div>
           <div class="tv-talking-section tv-range-field">
@@ -247,9 +250,13 @@
   function clearTalkingErrors(){setFieldError('talkingUploadError','');setFieldError('talkingPlanError','');setFieldError('talkingFinalError','');}
   function setStatus(message,state){var node=el('statusText');node.textContent=message;node.className='tv-status'+(state?' '+state:'');}
   function syncGenerateButton(){
-    var state=talkingState.snapshot(),button=el('generateBtn');
-    button.disabled=isBusy||!stylesReady||!voicesReady||pendingAvatarUploads>0||(state.enabled&&!state.defaultAvatar);
+    var state=talkingState.snapshot(),button=el('generateBtn'),missingAvatar=state.enabled&&!state.defaultAvatar,hint=el('talkingAvatarRequirement');
+    button.disabled=isBusy||!stylesReady||!voicesReady||pendingAvatarUploads>0||missingAvatar;
     button.textContent=isBusy?busyLabel:(state.enabled?(state.plan?'确认并生成视频':'生成分镜方案'):'生成视频');
+    hint.textContent='请先上传默认人物形象图片，上传完成后才能生成分镜方案';
+    hint.hidden=!missingAvatar;
+    if(missingAvatar){button.setAttribute('title','请先上传默认人物形象图片');button.setAttribute('aria-describedby','talkingAvatarRequirement');}
+    else{button.removeAttribute('title');button.removeAttribute('aria-describedby');}
   }
   function setBusy(value,label){isBusy=value;busyLabel=label||'正在生成';syncGenerateButton();}
   function elapsed(){return Math.max(0,Math.round((Date.now()-startedAt)/1000));}
