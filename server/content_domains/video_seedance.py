@@ -225,6 +225,22 @@ def _reference_item(url):
     }
 
 
+def _reference_video_item(url):
+    url = str(url or "").strip()
+    parsed = urllib.parse.urlsplit(url)
+    valid_http = (parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+                  and not parsed.username and not parsed.password)
+    valid_asset = (parsed.scheme == "asset" and bool(re.fullmatch(
+        r"asset://asset-[A-Za-z0-9._-]{1,240}", url)))
+    if not (valid_http or valid_asset):
+        raise ValueError("Seedance 参考视频必须是公网 URL 或已授权 asset:// 素材")
+    return {
+        "type": "video_url",
+        "video_url": {"url": url},
+        "role": "reference_video",
+    }
+
+
 def _build_payload(
     model,
     prompt,
@@ -233,6 +249,7 @@ def _build_payload(
     resolution,
     generate_audio,
     reference_images=None,
+    reference_videos=None,
 ):
     model = str(model or "").strip()
     if model not in MODELS:
@@ -259,8 +276,12 @@ def _build_payload(
     refs = list(reference_images or [])
     if len(refs) > 9:
         raise ValueError("Seedance 最多支持 9 张参考图")
+    videos = list(reference_videos or [])
+    if len(videos) > 3:
+        raise ValueError("Seedance 最多支持 3 段参考视频")
     content = [{"type": "text", "text": prompt}]
     content.extend(_reference_item(url) for url in refs)
+    content.extend(_reference_video_item(url) for url in videos)
     return {
         "model": model,
         "content": content,
@@ -396,6 +417,7 @@ def generate(
     sleep=None,
     api_key=None,
     provider_key_id=None,
+    reference_videos=None,
 ):
     """只创建一次付费任务；取得 id 后才进入可安全重试的 GET 轮询。"""
     payload = _build_payload(
@@ -406,6 +428,7 @@ def generate(
         resolution,
         generate_audio,
         reference_images,
+        reference_videos,
     )
     opener = _opener()
     try:
