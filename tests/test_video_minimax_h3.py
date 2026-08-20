@@ -575,7 +575,7 @@ class MiniMaxH3VideoTests(unittest.TestCase):
             self.assertEqual(payload, (output_root / result).read_bytes())
         self.assertEqual(2, len(requests))
 
-    def test_restricted_minimax_download_wraps_validation_close_failure(self):
+    def test_restricted_minimax_download_wraps_local_validation_failures(self):
         payload = b"\x00\x00\x00\x18ftypisomminimax-local-close"
         requests = []
 
@@ -650,8 +650,8 @@ class MiniMaxH3VideoTests(unittest.TestCase):
             with patch.object(video, "_validate_restricted_download_url"), \
                     patch.object(video, "_restricted_download_opener", return_value=Opener()), \
                     patch.object(video, "_out_path", side_effect=lambda rel: output_root / rel), \
-                    patch.object(video, "_validate_downloaded_video_file",
-                                 side_effect=OSError("probe read failed")), \
+                    patch.object(video.subprocess, "run", side_effect=
+                                 video.subprocess.TimeoutExpired("ffprobe", 60)), \
                     patch.object(Path, "replace", autospec=True) as publish, \
                     patch.object(video.time, "sleep"):
                 with self.assertRaises(video.CompletedVideoDownloadError):

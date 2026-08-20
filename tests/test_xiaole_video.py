@@ -604,7 +604,7 @@ class XiaoleVideoTests(unittest.TestCase):
             self.assertEqual(download.call_count, 1)
             self.assertEqual(list((output_root / "video").iterdir()), [])
 
-    def test_completed_video_download_wraps_validation_io_failure_without_refetching(self):
+    def test_completed_video_download_wraps_ffprobe_start_failure_without_refetching(self):
         payload = b"\x00\x00\x00\x18ftypisomlocal-validation"
 
         class Response:
@@ -629,12 +629,14 @@ class XiaoleVideoTests(unittest.TestCase):
             output_root = Path(temp_dir)
             (output_root / "video").mkdir()
             with patch.object(self.video, "_xiaole_download_candidates", return_value=[
-                    ("https://cdn.example/video.mp4", {}, None)]), \
+                    ("https://relay.example/video.mp4", {}, None),
+                    ("https://direct.example/video.mp4", {}, None),
+                 ]), \
                  patch.object(self.video.urllib.request, "urlopen",
                               side_effect=lambda *_args, **_kwargs: Response()) as download, \
                  patch.object(self.video, "_out_path", side_effect=lambda rel: output_root / rel), \
-                 patch.object(self.video, "_validate_downloaded_video_file",
-                              side_effect=OSError("disk validation read failed")), \
+                 patch.object(self.video.subprocess, "run",
+                              side_effect=FileNotFoundError("ffprobe missing")), \
                  patch.object(self.video.time, "sleep"):
                 with self.assertRaises(self.video.CompletedVideoDownloadError):
                     self.video._download_xiaole_video(

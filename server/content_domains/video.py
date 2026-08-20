@@ -3829,6 +3829,10 @@ def _stream_download_retry(open_fn, destination, what, max_bytes):
     ))
 
 
+class _VideoValidationInfrastructureError(RuntimeError):
+    """Local ffprobe execution failed before media validity was established."""
+
+
 def _validate_downloaded_video_file(path):
     try:
         result = subprocess.run(
@@ -3839,7 +3843,9 @@ def _validate_downloaded_video_file(path):
             text=True, timeout=60, check=False,
         )
     except (OSError, subprocess.SubprocessError) as error:
-        raise ValueError("下载媒体无法完成视频流校验") from error
+        raise _VideoValidationInfrastructureError(
+            "下载媒体无法完成视频流校验"
+        ) from error
     try:
         payload = json.loads(result.stdout or "{}")
     except (TypeError, ValueError) as error:
@@ -4126,6 +4132,8 @@ def _download_video_file_direct(url, prefix="vid", *, allowed_hosts=None, max_by
                 ) from error
             try:
                 _validate_downloaded_video_file(temporary)
+            except _VideoValidationInfrastructureError as error:
+                raise _CompletedVideoLocalIOError(str(error)) from error
             except OSError as error:
                 raise _CompletedVideoLocalIOError(
                     "视频下载结果无法读取校验"
@@ -5389,6 +5397,8 @@ def _download_xiaole_video(
                 )
                 try:
                     _validate_downloaded_video_file(temporary)
+                except _VideoValidationInfrastructureError as error:
+                    raise _CompletedVideoLocalIOError(str(error)) from error
                 except OSError as error:
                     raise _CompletedVideoLocalIOError(
                         "视频下载结果无法读取校验"
