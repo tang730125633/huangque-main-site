@@ -3,7 +3,13 @@
 import os
 import urllib.parse
 
-from .base import ShotVisualCapability, ShotVisualProvider, VisualProviderError
+from .base import (
+    HEYGEN_PROMPT_MAX_CHARACTERS,
+    ShotVisualCapability,
+    ShotVisualProvider,
+    VisualProviderError,
+    validate_prompt,
+)
 
 
 class HeyGenCinematicShotProvider(ShotVisualProvider):
@@ -40,10 +46,7 @@ class HeyGenCinematicShotProvider(ShotVisualProvider):
             raise VisualProviderError(
                 "provider_avatar_required", "镜头角色尚未绑定 Provider 形象"
             )
-        if not prompt:
-            raise VisualProviderError(
-                "visual_prompt_required", "镜头缺少可执行的画面提示词"
-            )
+        prompt = validate_prompt(prompt, HEYGEN_PROMPT_MAX_CHARACTERS)
         if ratio not in self.capability.ratios:
             raise VisualProviderError(
                 "visual_ratio_unsupported", "Provider 不支持当前画幅"

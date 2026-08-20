@@ -8,7 +8,13 @@ legacy jobs be queried or fetched, but it must never submit new upstream work.
 import base64
 import json
 
-from .base import ShotVisualCapability, ShotVisualProvider, VisualProviderError
+from .base import (
+    MINIMAX_PROMPT_MAX_CHARACTERS,
+    ShotVisualCapability,
+    ShotVisualProvider,
+    VisualProviderError,
+    validate_prompt,
+)
 
 
 MINIMAX_ORIGIN_METASO = "metaso"
@@ -188,8 +194,7 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
         except (TypeError, ValueError) as error:
             raise VisualProviderError("visual_duration_invalid", "镜头时长必须是整数秒") from error
         refs = list(request.get("reference_images") or [])
-        if not prompt:
-            raise VisualProviderError("visual_prompt_required", "镜头缺少可执行的画面提示词")
+        prompt = validate_prompt(prompt, MINIMAX_PROMPT_MAX_CHARACTERS)
         if ratio not in self.capability.ratios:
             raise VisualProviderError("visual_ratio_unsupported", "麦克视频不支持当前画面比例")
         if not self.capability.minimum_seconds <= duration <= self.capability.maximum_seconds:

@@ -1460,20 +1460,42 @@ def _visual_prompt(shot):
     return " ".join(parts)
 
 
-def _execution_visual_prompt(execution):
-    supplement = str(execution.get("provider_prompt") or "").strip()
-    fields = (
-        ("画面与人物动作", "visual"),
-        ("景别与运镜", "camera"),
-        ("表演与情绪", "performance"),
-        ("当前镜头场景补充", "scene"),
-        ("光线、时间与天气", "lighting"),
-        ("构图与运镜补充", "composition_style"),
-        ("连续性要求", "continuity"),
+_EXECUTION_PROMPT_SEMANTICS = "structured-supplement-v1"
+_EXECUTION_PROMPT_FIELDS = (
+    ("画面与人物动作", "visual"),
+    ("景别与运镜", "camera"),
+    ("表演与情绪", "performance"),
+    ("当前镜头场景补充", "scene"),
+    ("光线、时间与天气", "lighting"),
+    ("构图与运镜补充", "composition_style"),
+    ("连续性要求", "continuity"),
+)
+
+
+def _legacy_execution_prompt(execution):
+    return "；".join(
+        str(execution.get(key) or "").strip()
+        for _label, key in _EXECUTION_PROMPT_FIELDS
+        if str(execution.get(key) or "").strip()
     )
+
+
+def _normalize_execution_prompt_semantics(execution):
+    semantics = str(execution.get("prompt_semantics") or "").strip()
+    supplement = str(execution.get("provider_prompt") or "").strip()
+    if semantics != _EXECUTION_PROMPT_SEMANTICS:
+        if supplement and supplement == _legacy_execution_prompt(execution):
+            execution["provider_prompt"] = ""
+        execution["prompt_semantics"] = _EXECUTION_PROMPT_SEMANTICS
+    return execution
+
+
+def _execution_visual_prompt(execution):
+    execution = _normalize_execution_prompt_semantics(dict(execution))
+    supplement = str(execution.get("provider_prompt") or "").strip()
     structured = [
         "%s：%s" % (label, str(execution.get(key) or "").strip())
-        for label, key in fields
+        for label, key in _EXECUTION_PROMPT_FIELDS
         if str(execution.get(key) or "").strip()
     ]
     if not structured:
@@ -1537,6 +1559,10 @@ def _clean_execution(value):
                 "provider_execution_too_long", "镜头生成要求中的内容过长", 422,
             )
         result[key] = text
+    result["prompt_semantics"] = str(
+        value.get("prompt_semantics") or ""
+    ).strip()
+    _normalize_execution_prompt_semantics(result)
     # Character and bound-scene references are mandatory identity inputs. The
     # continuity tail is derived from immutable scene identities below rather
     # than trusted from a client toggle.
@@ -1581,6 +1607,7 @@ def _execution_override(conn, project_id, shot_key):
     if not row:
         return None
     result = _json(row["execution_json"], {})
+    _normalize_execution_prompt_semantics(result)
     result["updated_at"] = int(row["updated_at"])
     return result
 

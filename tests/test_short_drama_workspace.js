@@ -42,6 +42,22 @@ test('执行编辑器把最终提示词改为可选补充而不覆盖结构化�
     workspaceSource,
     /name="provider_prompt" required maxlength="1600"/
   );
+  assert.match(
+    workspaceSource,
+    /hasOwnProperty\.call\(saved,key\)\?saved\[key\]/
+  );
+  assert.match(
+    workspaceSource,
+    /value\('provider_prompt',''\)/
+  );
+  assert.doesNotMatch(
+    workspaceSource,
+    /value\('provider_prompt',shot\.provider_prompt\)/
+  );
+  assert.match(
+    workspaceSource,
+    /execution\.prompt_semantics='structured-supplement-v1'/
+  );
 });
 
 test('生成执行编辑器显示并提交声音设计', () => {
@@ -763,20 +779,29 @@ test('当前镜头覆盖绑定优先于旧剧本绑定并展示实际提交提�
   const job={
     status:'failed',shot_key:'shot_07',
     error:{provider_code:'1026',provider_message:'input text sensitive'},
-    request:{prompt:'普通室内教室，林默整理书包',reference_images:[{character_key:'character_2',name:'林默'}]}
+    request:{prompt:'画面与人物动作：中国初中教室里，瘦弱男生林默整理书包；补充生成要求：镜头缓慢推进',reference_images:[{character_key:'character_2',name:'林默'}]}
   };
   const characters=[{character_key:'character_1',name:'陈宇'},{character_key:'character_2',name:'林默'}];
   const shot={shot_key:'shot_07',provider_prompt:'旧提示词中的陈宇'};
   const providerShot={character_keys:['character_1']};
-  const execution={character_keys:['character_2'],provider_prompt:'普通室内教室，林默整理书包'};
+  const execution={character_keys:['character_2'],visual:'中国初中教室里，瘦弱男生林默整理书包',negative_prompt:'禁止未成年人和字幕',provider_prompt:'补充要求：镜头缓慢推进'};
   const review=workspace.providerInputReview(shot,providerShot,characters,job,execution);
   const html=workspace.providerFailureRecoveryHtml(job,{shot,providerShot,providerCharacters:characters,execution});
   assert.deepEqual(review.expected,['林默']);
   assert.deepEqual(review.unexpected,[]);
+  assert.equal(review.prompt,job.request.prompt);
+  assert.notEqual(review.prompt,execution.provider_prompt);
+  assert.deepEqual(review.candidates,['初中']);
+  const optimized=workspace.optimizedSensitiveExecution(shot,providerShot,execution,review);
+  assert.equal(optimized.visual,'普通室内教室里，清瘦人物林默整理书包');
+  assert.equal(optimized.provider_prompt,execution.provider_prompt);
+  assert.equal(optimized.negative_prompt,execution.negative_prompt);
+  assert.notEqual(optimized.provider_prompt,review.prompt);
+  assert.equal(optimized.prompt_semantics,'structured-supplement-v1');
   assert.match(html,/角色绑定正常/);
   assert.match(html,/优化文字并免费重新预检/);
   assert.doesNotMatch(html,/角色名称不一致/);
-  assert.equal(workspace.currentShotExecutionPrompt(shot,{provider_job:job,provider_execution_overrides:{shot_07:execution}}),'普通室内教室，林默整理书包');
+  assert.equal(workspace.currentShotExecutionPrompt(shot,{provider_job:job,provider_execution_overrides:{shot_07:execution}}),job.request.prompt);
 });
 
 test('视频轮询只局部更新进度并保持工作区视口稳定', () => {

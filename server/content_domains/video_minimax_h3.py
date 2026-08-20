@@ -12,6 +12,7 @@ import urllib.parse
 import urllib.request
 
 from . import provider_keys
+from providers.short_drama_visual.base import MINIMAX_PROMPT_MAX_CHARACTERS
 
 
 MODEL = "MiniMax-H3"
@@ -294,7 +295,7 @@ def build_request(
     resolution=DEFAULT_RESOLUTION, allow_legacy_resolution=False,
 ):
     prompt = str(prompt or "").strip()
-    if not prompt or len(prompt) > 7000:
+    if not prompt or len(prompt) > MINIMAX_PROMPT_MAX_CHARACTERS:
         raise ValueError("麦克视频提示词必须为 1～7000 个字符")
     refs = list(reference_images or [])
     if len(refs) > MAX_REFERENCE_IMAGES:

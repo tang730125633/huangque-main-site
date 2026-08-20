@@ -926,6 +926,71 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertIn("景别与运镜：固定中近景，对焦顾承川，背景虚化", prompt)
         self.assertIn("连续性要求：服装和人物位置承接上一镜头", prompt)
 
+    def test_legacy_synthesized_prompt_is_not_appended_twice(self):
+        legacy = {
+            "visual": "男孩把糖果递给女孩",
+            "camera": "中近景缓慢推近",
+            "performance": "先犹豫再微笑",
+            "scene": "傍晚长椅",
+            "lighting": "暖色夕阳",
+            "composition_style": "电影感写实",
+            "continuity": "服装和糖果袋承接上一镜头",
+        }
+        legacy["provider_prompt"] = short_drama_autodraft._legacy_execution_prompt(
+            legacy
+        )
+        cleaned = short_drama_autodraft._clean_execution(legacy)
+        self.assertEqual("", cleaned["provider_prompt"])
+        self.assertEqual(
+            short_drama_autodraft._EXECUTION_PROMPT_SEMANTICS,
+            cleaned["prompt_semantics"],
+        )
+        compiled = short_drama_autodraft._execution_visual_prompt(cleaned)
+        self.assertEqual(1, compiled.count(legacy["visual"]))
+        self.assertNotIn("补充生成要求：", compiled)
+
+    def test_free_preflight_rejects_aggregate_prompt_over_provider_limit(self):
+        conn = self.db()
+        try:
+            plan = json.loads(conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()[0])
+            shot = plan["material_plan"][0]
+        finally:
+            conn.close()
+        avatar = self._provider_avatar()
+        execution = {
+            "visual": "动" * 600,
+            "camera": "镜" * 300,
+            "performance": "演" * 300,
+            "scene": "景" * 160,
+            "lighting": "光" * 240,
+            "composition_style": "构" * 240,
+            "continuity": "连" * 360,
+            "sound_design": "",
+            "negative_prompt": "",
+            "provider_prompt": "",
+            "character_keys": [shot["character_keys"][0]],
+            "prompt_semantics": short_drama_autodraft._EXECUTION_PROMPT_SEMANTICS,
+        }
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "heygen_cinematic",
+            "HEYGEN_API_KEY": "configured-for-preflight-only",
+        }):
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft.preview_provider_request(
+                    self.db, "alice", "alice", {
+                        "project_id": self.project["id"],
+                        "plan_id": self.plan_id,
+                        "shot_key": shot["shot_key"],
+                        "avatar_id": avatar["id"],
+                        "execution": execution,
+                    }, avatar_lookup=lambda _username, _avatar_id: avatar,
+                )
+        self.assertEqual("visual_prompt_too_long", raised.exception.code)
+        self.assertEqual(422, raised.exception.status)
+
     def test_sensitive_failure_cannot_disable_continuity_or_scene_references(self):
         execution = short_drama_autodraft._clean_execution({
             "provider_prompt": "校园教室里，学生收拾书包",

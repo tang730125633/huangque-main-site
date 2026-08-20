@@ -37,6 +37,8 @@ from .core import (
 
 import random   # 429 退避重试的抖动：不加抖动，同一批 worker 退避后又会撞在一起
 
+from providers.short_drama_visual.base import HEYGEN_PROMPT_MAX_CHARACTERS
+
 from .audio import gen_audio, get_audio_asset
 from .image_mentions import resolve_image_mentions, validate_image_mentions
 from . import (
@@ -6841,7 +6843,7 @@ def gen_avatar(payload):
 CINEMATIC_MAX_AVATARS = 3        # HeyGen 硬上限：avatar_id 是 1~3 个 look 的数组
 CINEMATIC_RESOLUTIONS = {"720p", "1080p"}  # 兼容旧客户端；服务端最终统一覆盖为 720p
 CINEMATIC_OUTPUT_RESOLUTION = "720p"
-CINEMATIC_PROMPT_MAX = 2000
+CINEMATIC_PROMPT_MAX = HEYGEN_PROMPT_MAX_CHARACTERS
 CINEMATIC_DURATION_RANGE = (4, 15)   # HeyGen: 4~15 秒
 CINEMATIC_AUTO_DURATION = 10         # 选了「自适应」但没传参考视频时的回落值
 CINEMATIC_MODES = ("motion", "duo", "open")
